@@ -18,6 +18,7 @@ rfd = "0.17"
 winreg = "0.56"
 fontdb = "0.24"
 ab_glyph = "0.2"
+egui_tiles = { version = "0.14", features = ["serde"] }
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_System_Com",

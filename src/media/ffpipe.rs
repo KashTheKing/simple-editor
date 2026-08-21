@@ -110,6 +110,9 @@ pub fn probe(path: &str) -> Result<Asset, String> {
         fps: 0.0,
         audio_streams: Vec::new(),
         codec: String::new(),
+        folder: String::new(),
+        tags: Vec::new(),
+        label: 0,
     };
     let mut video: Option<&Value> = None;
     let mut stream_dur: f64 = 0.0;

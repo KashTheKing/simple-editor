@@ -25,14 +25,19 @@ pub struct LibraryResponse {
     pub open_paths: Vec<PathBuf>,
     pub remove: Vec<Id>,
     pub clear_recent: bool,
+    /// The project changed (folders / tags / labels edited) — app pushes undo via `undo` first.
+    pub edited: bool,
+    /// settings.recent_assets changed (tags / labels / pins / removals) — app saves settings.
+    pub settings_changed: bool,
 }
 
 pub fn show(
     ui: &mut egui::Ui,
     state: &mut LibraryState,
-    project: &Project,
-    settings: &Settings,
+    project: &mut Project,
+    settings: &mut Settings,
     _palette: &Palette,
+    _undo: &mut dyn FnMut(&Project),
 ) -> LibraryResponse {
     let mut resp = LibraryResponse::default();
     ui.horizontal(|ui| {
@@ -200,6 +205,9 @@ mod tests {
                 fps: 30.0,
                 audio_streams: Vec::new(),
                 codec: String::new(),
+                folder: String::new(),
+                tags: Vec::new(),
+                label: 0,
             });
         }
         let mut settings = Settings::default();
@@ -212,7 +220,8 @@ mod tests {
             for _ in 0..2 {
                 let _ = ctx.run(egui::RawInput::default(), |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
-                        let r = show(ui, &mut state, &project, &settings, &palette);
+                        let mut undo = |_: &Project| {};
+                        let r = show(ui, &mut state, &mut project, &mut settings, &palette, &mut undo);
                         assert!(!r.import && !r.clear_recent);
                         assert!(r.add_to_timeline.is_empty() && r.open_paths.is_empty() && r.remove.is_empty());
                     });

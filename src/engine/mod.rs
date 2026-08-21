@@ -2,7 +2,9 @@
 
 pub mod blend;
 pub mod compose;
+pub mod effects;
 pub mod export;
 pub mod mixer;
+pub mod subtitles;
 pub mod text;
 pub mod xmeml;

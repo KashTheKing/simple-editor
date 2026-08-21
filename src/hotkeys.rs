@@ -87,6 +87,15 @@ actions! {
     AddAudioTrack => "add_audio_track", "Add Audio Track", None;
     ToggleLibrary => "toggle_library", "Show / Hide Library", sc(CTRL, Key::Num1);
     ToggleInspector => "toggle_inspector", "Show / Hide Inspector", sc(CTRL, Key::Num2);
+    ToggleEffects => "toggle_effects", "Show / Hide Effects", sc(CTRL, Key::Num3);
+    ToggleTransitions => "toggle_transitions", "Show / Hide Transitions", sc(CTRL, Key::Num4);
+    ToggleCurves => "toggle_curves", "Show / Hide Curve Editor", sc(CTRL, Key::Num5);
+    ToggleSubtitles => "toggle_subtitles", "Show / Hide Subtitles", sc(CTRL, Key::Num6);
+    Retime => "retime", "Speed / Retime…", sc(CTRL, Key::R);
+    FreezeFrame => "freeze", "Freeze Frame at Playhead", sc(SHIFT, Key::R);
+    Fullscreen => "fullscreen", "Fullscreen Playback", sc(NONE, Key::F11);
+    AddTransition => "add_transition", "Add Transition at Selected Cut", sc(CTRL_SHIFT, Key::T);
+    AddSubtitle => "add_subtitle", "Add Subtitle at Playhead", sc(ALT, Key::S);
 }
 
 pub struct Hotkeys {

@@ -792,7 +792,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, c: TimelineCtx<'_>) ->
                     let Some((ti, ci)) = p.find(id) else { continue };
                     let mut tmp = p.tracks[ti].clips[ci].clone();
                     if *start {
-                        tmp.trim_start(want);
+                        let hr = p.head_room(&tmp);
+                        tmp.trim_start(want, hr);
                     } else {
                         let md = p.max_clip_duration(&tmp);
                         tmp.trim_end(want, md);
@@ -969,6 +970,9 @@ mod tests {
                 fps: 30.0,
                 audio_streams: vec![AudioStreamInfo { channels: 2, sample_rate: 48000, ..Default::default() }],
                 codec: "h264".into(),
+                folder: String::new(),
+                tags: Vec::new(),
+                label: 0,
             });
             project.insert_asset_clips(aid, 0.0, None);
             let waves = WaveformCache::new(ctx.clone(), Backend::Ffmpeg);
@@ -1143,8 +1147,8 @@ mod tests {
         assert_eq!(h.undos, 0);
         assert_eq!(h.video_clip().start, 0.0);
         // V1 2-10 linked with A1 2-10; unlinked audio on A1 at 0-1.5 blocks the audio's left edge
-        h.project.tracks[0].clips[0].trim_start(2.0);
-        h.project.tracks[1].clips[0].trim_start(2.0);
+        h.project.tracks[0].clips[0].trim_start(2.0, f64::INFINITY);
+        h.project.tracks[1].clips[0].trim_start(2.0, f64::INFINITY);
         h.project.tracks[1].clips.insert(0, Clip::new(99, ClipKind::Audio, "blk", 0.0, 1.5));
         h.frame(vec![]);
         let from = pos2(h.state.x_at(2.0) + 2.0, lanes.top() + 30.0);

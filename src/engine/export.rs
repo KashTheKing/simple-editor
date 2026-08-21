@@ -566,6 +566,9 @@ mod tests {
                 .map(|i| AudioStreamInfo { index: i, channels: 2, sample_rate: 48000, ..Default::default() })
                 .collect(),
             codec: "h264".into(),
+            folder: String::new(),
+            tags: Vec::new(),
+            label: 0,
         }
     }
 

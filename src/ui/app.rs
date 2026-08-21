@@ -104,6 +104,9 @@ mod tests {
             fps: 0.0,
             audio_streams: Vec::new(),
             codec: String::new(),
+            folder: String::new(),
+            tags: Vec::new(),
+            label: 0,
         }
     }
 
@@ -803,6 +806,9 @@ impl App {
                 self.settings.show_inspector = !self.settings.show_inspector;
                 self.settings.save();
             }
+            // TODO(app-layout agent): wire these (panes, retime window, fullscreen, transitions, subtitles)
+            ToggleEffects | ToggleTransitions | ToggleCurves | ToggleSubtitles | Retime | FreezeFrame | Fullscreen
+            | AddTransition | AddSubtitle => {}
         }
     }
 
@@ -1141,7 +1147,15 @@ impl eframe::App for App {
 
         if self.settings.show_library {
             egui::SidePanel::left("library").resizable(true).default_width(230.0).show(ctx, |ui| {
-                let resp = library::show(ui, &mut self.library, &self.project, &self.settings, &self.palette);
+                let App { project, settings, library: lib, undo, redo, palette, .. } = self;
+                let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
+                let resp = library::show(ui, lib, project, settings, palette, &mut push);
+                if resp.edited {
+                    self.after_edit();
+                }
+                if resp.settings_changed {
+                    self.settings.save();
+                }
                 if resp.import {
                     self.act_import();
                 }
@@ -1194,6 +1208,7 @@ impl eframe::App for App {
                     selection,
                     playhead: *playhead,
                     playing: player.is_playing(),
+                    fullscreen: false,
                     palette,
                     undo: &mut push,
                     frame: new_frame,
@@ -1203,39 +1218,7 @@ impl eframe::App for App {
             if let Some(t) = resp.seek {
                 self.seek(t);
             }
-            if resp.toggle_play {
-                actions.push(Action::PlayPause);
-            }
-            if resp.stop {
-                actions.push(Action::Stop);
-            }
-            if resp.step < 0 {
-                actions.push(Action::StepBack);
-            }
-            if resp.step > 0 {
-                actions.push(Action::StepForward);
-            }
-            if resp.prev_cut {
-                actions.push(Action::PrevCut);
-            }
-            if resp.next_cut {
-                actions.push(Action::NextCut);
-            }
-            if resp.go_start {
-                actions.push(Action::GoStart);
-            }
-            if resp.go_end {
-                actions.push(Action::GoEnd);
-            }
-            if resp.mark_in {
-                actions.push(Action::MarkIn);
-            }
-            if resp.mark_out {
-                actions.push(Action::MarkOut);
-            }
-            if resp.clear_in_out {
-                actions.push(Action::ClearInOut);
-            }
+            actions.extend(resp.actions);
             if resp.edited {
                 self.after_edit();
             }

@@ -11,6 +11,8 @@ pub type Id = u64;
 pub const MIN_CLIP: f64 = 0.001;
 const EPS: f64 = 1e-6;
 const KEY_EPS: f64 = 1e-4;
+/// Two clips abut (for transitions) when their boundary times differ by less than this.
+pub const ABUT_EPS: f64 = 1e-4;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, Hash)]
 pub enum TrackKind {
@@ -79,13 +81,56 @@ impl BlendMode {
     }
 }
 
+/// Interpolation of the segment that *starts* at a keyframe.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, Default, Hash)]
+pub enum Ease {
+    #[default]
+    Linear,
+    EaseIn,
+    EaseOut,
+    EaseInOut,
+    /// Step: hold the key's value until the next key.
+    Hold,
+}
+
+impl Ease {
+    pub const ALL: [Ease; 5] = [Ease::Linear, Ease::EaseIn, Ease::EaseOut, Ease::EaseInOut, Ease::Hold];
+    pub fn name(self) -> &'static str {
+        match self {
+            Ease::Linear => "Linear",
+            Ease::EaseIn => "Ease In",
+            Ease::EaseOut => "Ease Out",
+            Ease::EaseInOut => "Ease In/Out",
+            Ease::Hold => "Hold",
+        }
+    }
+    /// Map a linear 0..1 progress to the eased progress.
+    pub fn apply(self, f: f64) -> f64 {
+        let f = f.clamp(0.0, 1.0);
+        match self {
+            Ease::Linear => f,
+            Ease::EaseIn => f * f,
+            Ease::EaseOut => 1.0 - (1.0 - f) * (1.0 - f),
+            Ease::EaseInOut => f * f * (3.0 - 2.0 * f),
+            Ease::Hold => 0.0,
+        }
+    }
+}
+
+fn is_linear(e: &Ease) -> bool {
+    *e == Ease::Linear
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Keyframe {
     pub t: f64,
     pub v: f64,
+    /// Easing of the segment from this key to the next.
+    #[serde(default, skip_serializing_if = "is_linear")]
+    pub ease: Ease,
 }
 
-/// A scalar property that is either constant (`value`) or linearly keyframed (`keys`, sorted by t).
+/// A scalar property that is either constant (`value`) or keyframed (`keys`, sorted by t).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Animated {
     pub value: f64,
@@ -103,7 +148,7 @@ impl Animated {
     pub fn is_default(&self, def: f64) -> bool {
         !self.is_animated() && (self.value - def).abs() < EPS
     }
-    /// Value at clip-local time t (linear interpolation, clamped at the ends).
+    /// Value at clip-local time t (eased interpolation, clamped at the ends).
     pub fn at(&self, t: f64) -> f64 {
         let k = &self.keys;
         if k.is_empty() {
@@ -120,7 +165,7 @@ impl Animated {
             if t < w[1].t {
                 let span = w[1].t - w[0].t;
                 let f = if span > 0.0 { (t - w[0].t) / span } else { 1.0 };
-                return w[0].v + (w[1].v - w[0].v) * f;
+                return w[0].v + (w[1].v - w[0].v) * w[0].ease.apply(f);
             }
         }
         last.v
@@ -133,7 +178,7 @@ impl Animated {
     }
     fn insert(&mut self, t: f64, v: f64) {
         let i = self.keys.partition_point(|k| k.t < t);
-        self.keys.insert(i, Keyframe { t, v });
+        self.keys.insert(i, Keyframe { t, v, ease: Ease::Linear });
     }
     /// Set the value at time t: upserts a keyframe when animated, otherwise sets the constant.
     pub fn set_at(&mut self, t: f64, v: f64) {
@@ -167,6 +212,25 @@ impl Animated {
     pub fn shift(&mut self, dt: f64) {
         for k in &mut self.keys {
             k.t += dt;
+        }
+    }
+    /// Move key `i` to `new_t` (keeps keys sorted); returns its new index.
+    pub fn move_key(&mut self, i: usize, new_t: f64) -> usize {
+        if i >= self.keys.len() {
+            return i;
+        }
+        let mut k = self.keys.remove(i);
+        k.t = new_t;
+        let j = self.keys.partition_point(|o| o.t < new_t);
+        self.keys.insert(j, k);
+        j
+    }
+    pub fn ease_at(&self, t: f64) -> Option<Ease> {
+        self.key_index_at(t).map(|i| self.keys[i].ease)
+    }
+    pub fn set_ease_at(&mut self, t: f64, ease: Ease) {
+        if let Some(i) = self.key_index_at(t) {
+            self.keys[i].ease = ease;
         }
     }
 }
@@ -223,6 +287,10 @@ impl Default for TextStyle {
 }
 
 impl TextStyle {
+    /// Default look for burnt-in subtitles.
+    pub fn subtitle_default() -> Self {
+        Self { text: String::new(), size: 48.0, outline_width: 3.0, ..Self::default() }
+    }
     /// Stable hash of every field (for render caches).
     pub fn cache_key(&self) -> u64 {
         let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -270,6 +338,18 @@ impl AudioStreamInfo {
     }
 }
 
+/// Colour labels for assets (0 = none).
+pub const LABEL_COLORS: [(&str, [u8; 3]); 8] = [
+    ("Red", [220, 70, 70]),
+    ("Orange", [230, 140, 50]),
+    ("Yellow", [220, 200, 60]),
+    ("Green", [80, 180, 90]),
+    ("Teal", [60, 180, 180]),
+    ("Blue", [70, 120, 220]),
+    ("Purple", [150, 90, 200]),
+    ("Gray", [150, 150, 150]),
+];
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Asset {
     pub id: Id,
@@ -284,6 +364,14 @@ pub struct Asset {
     pub audio_streams: Vec<AudioStreamInfo>,
     #[serde(default)]
     pub codec: String,
+    /// Library folder ("" = root, "Footage/Day 1" = nested).
+    #[serde(default)]
+    pub folder: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// 0 = none, 1..=8 = index+1 into LABEL_COLORS.
+    #[serde(default)]
+    pub label: u8,
 }
 
 impl Asset {
@@ -295,8 +383,226 @@ impl Asset {
     }
 }
 
+// ---------- effects ----------
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, Hash)]
+pub enum EffectKind {
+    Blur,
+    Pixelate,
+    Tint,
+    Color,
+    Vignette,
+    Sharpen,
+    Invert,
+    Grayscale,
+    Flip,
+    Crop,
+    Wobble,
+}
+
+/// One effect parameter: label, default and UI range.
+#[derive(Clone, Copy, Debug)]
+pub struct ParamSpec {
+    pub name: &'static str,
+    pub default: f64,
+    pub min: f64,
+    pub max: f64,
+}
+
+const fn ps(name: &'static str, default: f64, min: f64, max: f64) -> ParamSpec {
+    ParamSpec { name, default, min, max }
+}
+
+impl EffectKind {
+    pub const ALL: [EffectKind; 11] = [
+        EffectKind::Blur,
+        EffectKind::Pixelate,
+        EffectKind::Tint,
+        EffectKind::Color,
+        EffectKind::Vignette,
+        EffectKind::Sharpen,
+        EffectKind::Invert,
+        EffectKind::Grayscale,
+        EffectKind::Flip,
+        EffectKind::Crop,
+        EffectKind::Wobble,
+    ];
+    pub fn name(self) -> &'static str {
+        match self {
+            EffectKind::Blur => "Blur",
+            EffectKind::Pixelate => "Pixelate",
+            EffectKind::Tint => "Color Tint",
+            EffectKind::Color => "Color Correction",
+            EffectKind::Vignette => "Vignette",
+            EffectKind::Sharpen => "Sharpen",
+            EffectKind::Invert => "Invert",
+            EffectKind::Grayscale => "Black & White",
+            EffectKind::Flip => "Flip",
+            EffectKind::Crop => "Crop",
+            EffectKind::Wobble => "Camera Shake",
+        }
+    }
+    /// Parameters in index order (matches `Effect.params`). Pixel sizes are project pixels.
+    pub fn params(self) -> &'static [ParamSpec] {
+        match self {
+            EffectKind::Blur => P_BLUR,
+            EffectKind::Pixelate => P_PIXELATE,
+            EffectKind::Tint => P_TINT,
+            EffectKind::Color => P_COLOR,
+            EffectKind::Vignette => P_VIGNETTE,
+            EffectKind::Sharpen => P_SHARPEN,
+            EffectKind::Invert => P_INVERT,
+            EffectKind::Grayscale => P_GRAYSCALE,
+            EffectKind::Flip => P_FLIP,
+            EffectKind::Crop => P_CROP,
+            EffectKind::Wobble => P_WOBBLE,
+        }
+    }
+}
+
+const P_BLUR: &[ParamSpec] = &[ps("Radius", 8.0, 0.0, 100.0)];
+const P_PIXELATE: &[ParamSpec] = &[ps("Block size", 16.0, 1.0, 200.0)];
+const P_TINT: &[ParamSpec] = &[
+    ps("Red", 255.0, 0.0, 255.0),
+    ps("Green", 128.0, 0.0, 255.0),
+    ps("Blue", 0.0, 0.0, 255.0),
+    ps("Amount", 0.5, 0.0, 1.0),
+];
+const P_COLOR: &[ParamSpec] = &[
+    ps("Brightness", 0.0, -1.0, 1.0),
+    ps("Contrast", 1.0, 0.0, 3.0),
+    ps("Saturation", 1.0, 0.0, 3.0),
+    ps("Hue", 0.0, -180.0, 180.0),
+    ps("Gamma", 1.0, 0.1, 5.0),
+];
+const P_VIGNETTE: &[ParamSpec] =
+    &[ps("Radius", 0.8, 0.0, 1.5), ps("Softness", 0.5, 0.0, 1.0), ps("Strength", 0.6, 0.0, 1.0)];
+const P_SHARPEN: &[ParamSpec] = &[ps("Amount", 0.5, 0.0, 3.0), ps("Radius", 2.0, 0.5, 20.0)];
+const P_INVERT: &[ParamSpec] = &[ps("Amount", 1.0, 0.0, 1.0)];
+const P_GRAYSCALE: &[ParamSpec] = &[ps("Amount", 1.0, 0.0, 1.0)];
+const P_FLIP: &[ParamSpec] = &[ps("Horizontal", 1.0, 0.0, 1.0), ps("Vertical", 0.0, 0.0, 1.0)];
+const P_CROP: &[ParamSpec] = &[
+    ps("Left", 0.0, 0.0, 0.5),
+    ps("Right", 0.0, 0.0, 0.5),
+    ps("Top", 0.0, 0.0, 0.5),
+    ps("Bottom", 0.0, 0.0, 0.5),
+    ps("Feather", 0.0, 0.0, 0.5),
+];
+const P_WOBBLE: &[ParamSpec] = &[
+    ps("Amplitude X", 20.0, 0.0, 500.0),
+    ps("Amplitude Y", 20.0, 0.0, 500.0),
+    ps("Roll", 2.0, 0.0, 45.0),
+    ps("Yaw", 3.0, 0.0, 45.0),
+    ps("Pitch", 3.0, 0.0, 45.0),
+    ps("Frequency", 2.0, 0.1, 30.0),
+    ps("Seed", 1.0, 0.0, 1000.0),
+];
+
+/// An effect instance on a clip; `params[i]` follows `kind.params()[i]` (each keyframeable).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Effect {
+    pub kind: EffectKind,
+    #[serde(default = "tru")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub params: Vec<Animated>,
+}
+
+impl Effect {
+    pub fn new(kind: EffectKind) -> Self {
+        Self { kind, enabled: true, params: kind.params().iter().map(|p| Animated::new(p.default)).collect() }
+    }
+    /// Parameter i at clip-local time t (spec default when missing, e.g. older files).
+    pub fn at(&self, i: usize, t: f64) -> f64 {
+        self.params.get(i).map(|a| a.at(t)).unwrap_or_else(|| self.kind.params().get(i).map(|p| p.default).unwrap_or(0.0))
+    }
+    pub fn specs(&self) -> &'static [ParamSpec] {
+        self.kind.params()
+    }
+}
+
+// ---------- transitions ----------
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, Hash)]
+pub enum TransitionKind {
+    /// Dissolve A → B.
+    CrossFade,
+    /// A → colour → B (dip to black/white/…).
+    FadeToColor,
+    /// B pushes A out (direction).
+    Push,
+    /// B wipes over A (direction).
+    Wipe,
+}
+
+impl TransitionKind {
+    pub const ALL: [TransitionKind; 4] =
+        [TransitionKind::CrossFade, TransitionKind::FadeToColor, TransitionKind::Push, TransitionKind::Wipe];
+    pub fn name(self) -> &'static str {
+        match self {
+            TransitionKind::CrossFade => "Cross Fade",
+            TransitionKind::FadeToColor => "Fade to Color",
+            TransitionKind::Push => "Push",
+            TransitionKind::Wipe => "Wipe",
+        }
+    }
+    pub fn has_direction(self) -> bool {
+        matches!(self, TransitionKind::Push | TransitionKind::Wipe)
+    }
+}
+
+/// A transition centred on the cut between a clip and its right neighbour on the same track:
+/// it spans [right.start - duration/2, right.start + duration/2). Both clips are extended virtually
+/// into that window (the engine clamps source times). Audio tracks use CrossFade (a gain crossfade).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Transition {
+    pub id: Id,
+    /// The clip on the right side of the cut.
+    pub right: Id,
+    pub kind: TransitionKind,
+    pub duration: f64,
+    #[serde(default = "black")]
+    pub color: [u8; 4],
+    /// 0 = left, 1 = right, 2 = up, 3 = down (Push / Wipe).
+    #[serde(default)]
+    pub direction: u8,
+    #[serde(default)]
+    pub ease: Ease,
+}
+
+fn black() -> [u8; 4] {
+    [0, 0, 0, 255]
+}
+
+impl Transition {
+    /// Progress 0..1 at timeline time t, given the cut time (right clip's start).
+    pub fn progress(&self, cut: f64, t: f64) -> f64 {
+        if self.duration <= 0.0 {
+            return 1.0;
+        }
+        let f = (t - (cut - self.duration / 2.0)) / self.duration;
+        self.ease.apply(f.clamp(0.0, 1.0))
+    }
+    pub fn window(&self, cut: f64) -> (f64, f64) {
+        (cut - self.duration / 2.0, cut + self.duration / 2.0)
+    }
+}
+
+// ---------- subtitles ----------
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Cue {
+    pub id: Id,
+    pub start: f64,
+    pub end: f64,
+    pub text: String,
+}
+
 fn tru() -> bool {
     true
+}
+fn one() -> f64 {
+    1.0
 }
 fn a0() -> Animated {
     Animated::new(0.0)
@@ -319,7 +625,7 @@ pub struct Clip {
     /// Timeline start (seconds).
     pub start: f64,
     pub duration: f64,
-    /// Offset into the source media at `start`.
+    /// Earliest source time used by the clip (the source window is [src_in, src_in + duration*speed)).
     #[serde(default)]
     pub src_in: f64,
     /// For Audio clips: which audio stream of the asset (0-based among audio streams).
@@ -327,6 +633,16 @@ pub struct Clip {
     pub audio_stream: usize,
     #[serde(default = "tru")]
     pub enabled: bool,
+    // --- retime ---
+    /// Playback rate (1 = normal, 2 = twice as fast, 0.5 = half speed). Always > 0.
+    #[serde(default = "one")]
+    pub speed: f64,
+    /// Play the source window backwards.
+    #[serde(default)]
+    pub reverse: bool,
+    /// Freeze frame: show/hold the source frame at this source time for the whole clip (audio is silent).
+    #[serde(default)]
+    pub freeze: Option<f64>,
     // --- visual properties (project pixels / degrees / 0..1) ---
     #[serde(default = "a0")]
     pub x: Animated,
@@ -340,10 +656,21 @@ pub struct Clip {
     pub opacity: Animated,
     #[serde(default)]
     pub blend: BlendMode,
+    /// Effect stack, applied in order before blending.
+    #[serde(default)]
+    pub effects: Vec<Effect>,
     // --- audio ---
     /// Linear gain (1 = unity).
     #[serde(default = "a1")]
     pub volume: Animated,
+    /// -1 = left … 0 = centre … 1 = right.
+    #[serde(default = "a0")]
+    pub pan: Animated,
+    /// Fade in/out lengths in seconds (gain ramps at the clip edges).
+    #[serde(default)]
+    pub fade_in: f64,
+    #[serde(default)]
+    pub fade_out: f64,
     /// Present for Text clips.
     #[serde(default)]
     pub text: Option<TextStyle>,
@@ -362,13 +689,20 @@ impl Clip {
             src_in: 0.0,
             audio_stream: 0,
             enabled: true,
+            speed: 1.0,
+            reverse: false,
+            freeze: None,
             x: a0(),
             y: a0(),
             scale: a1(),
             rotation: a0(),
             opacity: a1(),
             blend: BlendMode::Normal,
+            effects: Vec::new(),
             volume: a1(),
+            pan: a0(),
+            fade_in: 0.0,
+            fade_out: 0.0,
             text: if kind == ClipKind::Text { Some(TextStyle::default()) } else { None },
         }
     }
@@ -383,12 +717,25 @@ impl Clip {
     pub fn local(&self, t: f64) -> f64 {
         t - self.start
     }
-    /// Source media time at timeline time t.
-    pub fn src_time(&self, t: f64) -> f64 {
-        self.src_in + (t - self.start)
+    /// Length of the source window in source seconds.
+    pub fn src_len(&self) -> f64 {
+        self.duration * self.speed
     }
+    /// Source media time at timeline time t (speed, reverse and freeze applied).
+    pub fn src_time(&self, t: f64) -> f64 {
+        if let Some(f) = self.freeze {
+            return f;
+        }
+        let l = self.local(t) * self.speed;
+        if self.reverse {
+            self.src_in + self.src_len() - l
+        } else {
+            self.src_in + l
+        }
+    }
+    /// Latest source time used by the clip.
     pub fn src_end(&self) -> f64 {
-        self.src_in + self.duration
+        self.src_in + self.src_len()
     }
     pub fn is_visual(&self) -> bool {
         self.kind != ClipKind::Audio
@@ -396,7 +743,11 @@ impl Clip {
     pub fn uses_asset(&self) -> bool {
         self.kind != ClipKind::Text
     }
-    /// Any non-default visual transform/blend (disqualifies lossless export).
+    /// Speed, reverse or freeze in effect.
+    pub fn is_retimed(&self) -> bool {
+        (self.speed - 1.0).abs() > EPS || self.reverse || self.freeze.is_some()
+    }
+    /// Anything that needs re-rendering (disqualifies a lossless `-c copy` export).
     pub fn has_effects(&self) -> bool {
         !self.x.is_default(0.0)
             || !self.y.is_default(0.0)
@@ -404,14 +755,59 @@ impl Clip {
             || !self.rotation.is_default(0.0)
             || !self.opacity.is_default(1.0)
             || self.blend != BlendMode::Normal
+            || self.is_retimed()
+            || !self.effects.is_empty()
+            || !self.pan.is_default(0.0)
+            || self.fade_in > 0.0
+            || self.fade_out > 0.0
     }
-    pub fn animated_mut(&mut self) -> [&mut Animated; 6] {
-        [&mut self.x, &mut self.y, &mut self.scale, &mut self.rotation, &mut self.opacity, &mut self.volume]
+    /// Change the playback rate keeping the source window and the timeline start (duration follows).
+    pub fn set_speed(&mut self, speed: f64) {
+        let speed = if speed.is_finite() { speed.clamp(0.01, 100.0) } else { 1.0 };
+        if self.freeze.is_none() {
+            let len = self.src_len();
+            self.duration = (len / speed).max(MIN_CLIP);
+        }
+        self.speed = speed;
     }
-    pub fn animated(&self) -> [&Animated; 6] {
-        [&self.x, &self.y, &self.scale, &self.rotation, &self.opacity, &self.volume]
+    pub fn animated_mut(&mut self) -> [&mut Animated; 7] {
+        [
+            &mut self.x,
+            &mut self.y,
+            &mut self.scale,
+            &mut self.rotation,
+            &mut self.opacity,
+            &mut self.volume,
+            &mut self.pan,
+        ]
     }
-    /// (label, property) pairs for the inspector — visual ones for visual clips, volume for audio.
+    pub fn animated(&self) -> [&Animated; 7] {
+        [&self.x, &self.y, &self.scale, &self.rotation, &self.opacity, &self.volume, &self.pan]
+    }
+    /// Every keyframeable property including effect parameters.
+    pub fn all_animated_mut(&mut self) -> Vec<&mut Animated> {
+        let mut v: Vec<&mut Animated> = vec![
+            &mut self.x,
+            &mut self.y,
+            &mut self.scale,
+            &mut self.rotation,
+            &mut self.opacity,
+            &mut self.volume,
+            &mut self.pan,
+        ];
+        for e in &mut self.effects {
+            v.extend(e.params.iter_mut());
+        }
+        v
+    }
+    pub fn all_animated(&self) -> Vec<&Animated> {
+        let mut v: Vec<&Animated> = self.animated().to_vec();
+        for e in &self.effects {
+            v.extend(e.params.iter());
+        }
+        v
+    }
+    /// (label, property) pairs for the inspector — visual ones for visual clips, volume/pan for audio.
     pub fn props_mut(&mut self) -> Vec<(&'static str, &mut Animated)> {
         if self.is_visual() {
             vec![
@@ -422,18 +818,33 @@ impl Clip {
                 ("Opacity", &mut self.opacity),
             ]
         } else {
-            vec![("Volume", &mut self.volume)]
+            vec![("Volume", &mut self.volume), ("Pan", &mut self.pan)]
         }
     }
-    /// Sorted, de-duplicated clip-local keyframe times (for drawing diamonds).
+    /// Sorted, de-duplicated clip-local keyframe times across all properties (for drawing diamonds).
     pub fn key_times(&self) -> Vec<f64> {
-        let mut v: Vec<f64> = self.animated().iter().flat_map(|a| a.keys.iter().map(|k| k.t)).collect();
+        let mut v: Vec<f64> = self.all_animated().iter().flat_map(|a| a.keys.iter().map(|k| k.t)).collect();
         v.sort_by(f64::total_cmp);
         v.dedup_by(|a, b| (*a - *b).abs() < KEY_EPS);
         v
     }
+    /// Shift every keyframe (all properties, effects included) by dt.
+    pub fn shift_keys(&mut self, dt: f64) {
+        for a in self.all_animated_mut() {
+            a.shift(dt);
+        }
+    }
+    /// Move every keyframe sitting at clip-local `t_old` to `t_new` (clamped inside the clip).
+    pub fn move_keys(&mut self, t_old: f64, t_new: f64) {
+        let t_new = t_new.clamp(0.0, self.duration);
+        for a in self.all_animated_mut() {
+            if let Some(i) = a.key_index_at(t_old) {
+                a.move_key(i, t_new);
+            }
+        }
+    }
     /// Split at timeline time t. `self` becomes the left part; returns the right part with `new_id`.
-    /// None if t is not strictly inside the clip.
+    /// None if t is not strictly inside the clip. Speed/reverse aware.
     pub fn split(&mut self, t: f64, new_id: Id) -> Option<Clip> {
         if t <= self.start + MIN_CLIP || t >= self.end() - MIN_CLIP {
             return None;
@@ -443,35 +854,42 @@ impl Clip {
         right.id = new_id;
         right.start = t;
         right.duration = self.end() - t;
-        right.src_in = self.src_in + off;
-        for a in right.animated_mut() {
-            a.shift(-off);
+        if self.freeze.is_none() {
+            if self.reverse {
+                // left plays the later part of the source window, right the earlier part
+                let src_in = self.src_in;
+                self.src_in = src_in + (self.duration - off) * self.speed;
+                right.src_in = src_in;
+            } else {
+                right.src_in = self.src_in + off * self.speed;
+            }
         }
+        right.shift_keys(-off);
         self.duration = off;
         Some(right)
     }
     /// Move the left edge to `new_start`, keeping the right edge fixed (slip-trim).
-    pub fn trim_start(&mut self, new_start: f64) {
-        // media clips can't slip before the source's first frame; images/text are unbounded
-        let min_start = if matches!(self.kind, ClipKind::Video | ClipKind::Audio) {
-            self.start - self.src_in
-        } else {
-            f64::NEG_INFINITY
-        };
+    /// `headroom` = source seconds available before the left edge (`Project::head_room`), INFINITY = unbounded.
+    pub fn trim_start(&mut self, new_start: f64, headroom: f64) {
+        let min_start = if headroom.is_finite() { self.start - headroom.max(0.0) / self.speed } else { f64::NEG_INFINITY };
         let ns = new_start.max(min_start).max(0.0).min(self.end() - MIN_CLIP);
         let d = ns - self.start;
         self.start = ns;
         self.duration -= d;
-        self.src_in += d;
-        for a in self.animated_mut() {
-            a.shift(-d);
+        if self.freeze.is_none() && !self.reverse {
+            self.src_in += d * self.speed;
         }
+        self.shift_keys(-d);
     }
-    /// Move the right edge to `new_end`. `max_duration` = longest allowed duration
-    /// (asset.duration - src_in for media; f64::INFINITY for text/images).
+    /// Move the right edge to `new_end`. `max_duration` = longest allowed duration (`Project::max_clip_duration`).
     pub fn trim_end(&mut self, new_end: f64, max_duration: f64) {
         let ne = new_end.min(self.start + max_duration).max(self.start + MIN_CLIP);
+        let d = ne - self.end();
         self.duration = ne - self.start;
+        if self.freeze.is_none() && self.reverse {
+            // the right edge of a reversed clip is the earliest source time
+            self.src_in = (self.src_in - d * self.speed).max(0.0);
+        }
     }
 }
 
@@ -484,6 +902,7 @@ pub struct Track {
     pub id: Id,
     pub name: String,
     pub kind: TrackKind,
+    /// Audio: muted. Video: hidden (the "V" visibility toggle).
     #[serde(default)]
     pub muted: bool,
     #[serde(default)]
@@ -493,6 +912,8 @@ pub struct Track {
     pub height: f32,
     #[serde(default)]
     pub clips: Vec<Clip>,
+    #[serde(default)]
+    pub transitions: Vec<Transition>,
 }
 
 impl Track {
@@ -505,6 +926,7 @@ impl Track {
             solo: false,
             height: if kind == TrackKind::Video { 64.0 } else { 56.0 },
             clips: Vec::new(),
+            transitions: Vec::new(),
         }
     }
     pub fn sort(&mut self) {
@@ -521,6 +943,29 @@ impl Track {
                 .iter()
                 .any(|c| !ignore.contains(&c.id) && c.start < start + dur - EPS && start < c.end() - EPS)
     }
+    /// The clip ending exactly where `right` starts (the left side of that cut).
+    pub fn left_of(&self, right: &Clip) -> Option<&Clip> {
+        self.clips.iter().find(|c| c.id != right.id && (c.end() - right.start).abs() < ABUT_EPS)
+    }
+    /// (transition, left clip, right clip) for a transition of this track, if it is still valid.
+    pub fn transition_pair(&self, tr: &Transition) -> Option<(&Clip, &Clip)> {
+        let right = self.clips.iter().find(|c| c.id == tr.right)?;
+        let left = self.left_of(right)?;
+        Some((left, right))
+    }
+    /// The transition whose window contains timeline time t, with its clips.
+    pub fn transition_at(&self, t: f64) -> Option<(&Transition, &Clip, &Clip)> {
+        self.transitions.iter().find_map(|tr| {
+            let (l, r) = self.transition_pair(tr)?;
+            let (a, b) = tr.window(r.start);
+            (t >= a && t < b).then_some((tr, l, r))
+        })
+    }
+    /// Drop transitions whose clips no longer abut.
+    pub fn prune_transitions(&mut self) {
+        let keep: Vec<Id> = self.transitions.iter().filter(|t| self.transition_pair(t).is_some()).map(|t| t.id).collect();
+        self.transitions.retain(|t| keep.contains(&t.id));
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -532,12 +977,20 @@ pub struct Project {
     pub height: u32,
     pub fps: f64,
     pub assets: Vec<Asset>,
+    /// Library folders that exist even while empty ("A/B" nesting by '/').
+    pub folders: Vec<String>,
     /// Order: all video tracks (V1, V2, ...) then all audio tracks (A1, A2, ...).
     pub tracks: Vec<Track>,
     pub in_point: Option<f64>,
     pub out_point: Option<f64>,
     /// Set when the project was created by opening a video file directly; enables "Save" (overwrite).
     pub source_video: Option<String>,
+    /// Subtitle cues (kept sorted by start). Rendered bottom-centre by the compositor when `show_subtitles`.
+    pub subtitles: Vec<Cue>,
+    pub subtitle_style: TextStyle,
+    /// Distance from the bottom edge in project pixels.
+    pub subtitle_margin: f32,
+    pub show_subtitles: bool,
     next_id: Id,
 }
 
@@ -556,10 +1009,15 @@ impl Project {
             height: 1080,
             fps: 30.0,
             assets: Vec::new(),
+            folders: Vec::new(),
             tracks: Vec::new(),
             in_point: None,
             out_point: None,
             source_video: None,
+            subtitles: Vec::new(),
+            subtitle_style: TextStyle::subtitle_default(),
+            subtitle_margin: 60.0,
+            show_subtitles: true,
             next_id: 0,
         };
         p.add_track(TrackKind::Video);
@@ -598,6 +1056,9 @@ impl Project {
     pub fn asset(&self, id: Id) -> Option<&Asset> {
         self.assets.iter().find(|a| a.id == id)
     }
+    pub fn asset_mut(&mut self, id: Id) -> Option<&mut Asset> {
+        self.assets.iter_mut().find(|a| a.id == id)
+    }
     pub fn asset_by_path(&self, path: &str) -> Option<&Asset> {
         self.assets.iter().find(|a| a.path.eq_ignore_ascii_case(path))
     }
@@ -616,6 +1077,37 @@ impl Project {
         self.assets.retain(|a| a.id != id);
         for t in &mut self.tracks {
             t.clips.retain(|c| !(c.uses_asset() && c.asset == id));
+        }
+        self.tidy();
+    }
+    /// All folder names (explicit + used by assets), sorted.
+    pub fn folder_names(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.folders.clone();
+        v.extend(self.assets.iter().filter(|a| !a.folder.is_empty()).map(|a| a.folder.clone()));
+        v.sort();
+        v.dedup();
+        v
+    }
+    /// Create (or ensure) a folder; returns false if the name is empty.
+    pub fn add_folder(&mut self, name: &str) -> bool {
+        let name = name.trim().trim_matches('/').to_string();
+        if name.is_empty() {
+            return false;
+        }
+        if !self.folders.contains(&name) {
+            self.folders.push(name);
+            self.folders.sort();
+        }
+        true
+    }
+    /// Remove a folder (and sub-folders); assets inside move to the root.
+    pub fn remove_folder(&mut self, name: &str) {
+        let prefix = format!("{name}/");
+        self.folders.retain(|f| f != name && !f.starts_with(&prefix));
+        for a in &mut self.assets {
+            if a.folder == name || a.folder.starts_with(&prefix) {
+                a.folder.clear();
+            }
         }
     }
 
@@ -704,11 +1196,26 @@ impl Project {
             !t.muted
         }
     }
-    pub fn max_clip_duration(&self, clip: &Clip) -> f64 {
-        match clip.kind {
-            ClipKind::Text | ClipKind::Image => f64::INFINITY,
-            _ => self.asset(clip.asset).map(|a| (a.duration - clip.src_in).max(MIN_CLIP)).unwrap_or(f64::INFINITY),
+    /// Source seconds available before the clip's left edge (for `Clip::trim_start`).
+    pub fn head_room(&self, clip: &Clip) -> f64 {
+        if !matches!(clip.kind, ClipKind::Video | ClipKind::Audio) || clip.freeze.is_some() {
+            return f64::INFINITY;
         }
+        let Some(a) = self.asset(clip.asset) else { return f64::INFINITY };
+        if clip.reverse {
+            (a.duration - clip.src_end()).max(0.0)
+        } else {
+            clip.src_in.max(0.0)
+        }
+    }
+    /// Longest duration the clip may have (right edge), given its source window, speed and direction.
+    pub fn max_clip_duration(&self, clip: &Clip) -> f64 {
+        if !matches!(clip.kind, ClipKind::Video | ClipKind::Audio) || clip.freeze.is_some() {
+            return f64::INFINITY;
+        }
+        let Some(a) = self.asset(clip.asset) else { return f64::INFINITY };
+        let extra = if clip.reverse { clip.src_in } else { a.duration - clip.src_end() };
+        (clip.duration + extra.max(0.0) / clip.speed).max(MIN_CLIP)
     }
 
     // ---------- tracks ----------
@@ -763,6 +1270,14 @@ impl Project {
     }
 
     // ---------- editing ----------
+    /// Re-sort clips and drop transitions whose cuts no longer exist. Call after any layout change.
+    pub fn tidy(&mut self) {
+        for t in &mut self.tracks {
+            t.sort();
+            t.prune_transitions();
+        }
+    }
+
     /// Place an asset on the timeline at `at`: video/image clip on a video track (preferring `video_track`)
     /// plus one linked audio clip per audio stream (stream N preferring track A(N+1)). Returns new clip ids.
     pub fn insert_asset_clips(&mut self, asset_id: Id, at: f64, video_track: Option<usize>) -> Vec<Id> {
@@ -844,7 +1359,29 @@ impl Project {
                 self.tracks[ti].sort();
             }
         }
+        self.tidy();
         new_ids
+    }
+
+    /// Freeze-frame the clips at timeline time t: each clip is split at t and its right part becomes a
+    /// still of the frame at t (linked clips of the same time too). Returns the frozen clip ids.
+    pub fn freeze_at(&mut self, t: f64, ids: &[Id]) -> Vec<Id> {
+        let ids = self.expand_links(ids);
+        let mut frozen = Vec::new();
+        for id in ids {
+            let Some(c) = self.clip(id) else { continue };
+            let src = c.src_time(t);
+            let target = if c.contains(t) && t > c.start + MIN_CLIP {
+                self.split_at(t, Some(&[id])).first().copied().unwrap_or(id)
+            } else {
+                id
+            };
+            if let Some(c) = self.clip_mut(target) {
+                c.freeze = Some(src);
+                frozen.push(target);
+            }
+        }
+        frozen
     }
 
     /// Delete clips. With `ripple`, later clips close the gap (per track, only where no other clip overlaps the gap).
@@ -865,6 +1402,7 @@ impl Project {
                 self.close_gap(a, b);
             }
         }
+        self.tidy();
     }
 
     /// Shift clips starting at/after `b` left by (b-a) on every track where [a,b) is free.
@@ -896,6 +1434,7 @@ impl Project {
             self.all_clips().filter(|(_, c)| c.start >= a - EPS && c.end() <= b + EPS).map(|(_, c)| c.id).collect();
         self.delete_clips(&ids, false);
         self.close_gap(a, b);
+        self.tidy();
     }
 
     /// Keep only [a,b), moving it to start at 0. Clears in/out points.
@@ -953,11 +1492,10 @@ impl Project {
             let ci = self.tracks[from].clips.iter().position(|c| c.id == id).unwrap();
             let mut c = self.tracks[from].clips.remove(ci);
             c.start = ns;
+            // transitions belong to the track; moving the right clip across tracks carries none
             self.tracks[to].clips.push(c);
         }
-        for t in &mut self.tracks {
-            t.sort();
-        }
+        self.tidy();
         true
     }
 
@@ -979,6 +1517,115 @@ impl Project {
             }
         }
     }
+    /// Apply speed/reverse to the clips and their linked clips (keeps source windows; durations follow).
+    /// Returns false if the new lengths would collide with neighbours (nothing changed).
+    pub fn set_speed(&mut self, ids: &[Id], speed: f64, reverse: bool) -> bool {
+        let ids = self.expand_links(ids);
+        let mut tmp: Vec<(usize, usize, Clip)> = Vec::new();
+        for &id in &ids {
+            let Some((ti, ci)) = self.find(id) else { continue };
+            let mut c = self.tracks[ti].clips[ci].clone();
+            c.set_speed(speed);
+            c.reverse = reverse;
+            if !self.tracks[ti].fits(c.start, c.duration, &ids) {
+                return false;
+            }
+            tmp.push((ti, ci, c));
+        }
+        for (ti, ci, c) in tmp {
+            self.tracks[ti].clips[ci] = c;
+        }
+        self.tidy();
+        true
+    }
+
+    // ---------- transitions ----------
+    /// Add (or replace) a transition at the cut on the left of clip `right`. Linked audio clips whose
+    /// left neighbour is linked with the video's left neighbour get an audio CrossFade of the same length.
+    /// Returns the new transition id, or None if `right` has no abutting left neighbour.
+    pub fn add_transition(&mut self, right: Id, kind: TransitionKind, duration: f64) -> Option<Id> {
+        let (ti, _) = self.find(right)?;
+        let r = self.clip(right)?.clone();
+        self.tracks[ti].left_of(&r)?;
+        let duration = duration.max(MIN_CLIP);
+        let id = self.new_id();
+        self.tracks[ti].transitions.retain(|t| t.right != right);
+        self.tracks[ti].transitions.push(Transition {
+            id,
+            right,
+            kind,
+            duration,
+            color: [0, 0, 0, 255],
+            direction: 0,
+            ease: Ease::Linear,
+        });
+        // mirror on linked clips (audio crossfade)
+        if r.link != 0 {
+            let partners: Vec<Id> = self.linked(right).into_iter().filter(|&p| p != right).collect();
+            for p in partners {
+                let Some((pti, _)) = self.find(p) else { continue };
+                if pti == ti {
+                    continue;
+                }
+                let pc = self.clip(p).unwrap().clone();
+                if self.tracks[pti].left_of(&pc).is_none() {
+                    continue;
+                }
+                let pid = self.new_id();
+                let pkind = if self.tracks[pti].kind == TrackKind::Audio { TransitionKind::CrossFade } else { kind };
+                self.tracks[pti].transitions.retain(|t| t.right != p);
+                self.tracks[pti].transitions.push(Transition {
+                    id: pid,
+                    right: p,
+                    kind: pkind,
+                    duration,
+                    color: [0, 0, 0, 255],
+                    direction: 0,
+                    ease: Ease::Linear,
+                });
+            }
+        }
+        Some(id)
+    }
+    pub fn remove_transition(&mut self, id: Id) {
+        for t in &mut self.tracks {
+            t.transitions.retain(|x| x.id != id);
+        }
+    }
+    pub fn transition_mut(&mut self, id: Id) -> Option<&mut Transition> {
+        self.tracks.iter_mut().flat_map(|t| t.transitions.iter_mut()).find(|x| x.id == id)
+    }
+    /// Transitions touching a clip (as left or right side): (track index, transition).
+    pub fn transitions_of(&self, clip: Id) -> Vec<(usize, &Transition)> {
+        let mut out = Vec::new();
+        for (ti, t) in self.tracks.iter().enumerate() {
+            for tr in &t.transitions {
+                if let Some((l, r)) = t.transition_pair(tr) {
+                    if l.id == clip || r.id == clip {
+                        out.push((ti, tr));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    // ---------- subtitles ----------
+    pub fn cue_at(&self, t: f64) -> Option<&Cue> {
+        self.subtitles.iter().find(|c| t >= c.start && t < c.end)
+    }
+    pub fn add_cue(&mut self, start: f64, end: f64, text: impl Into<String>) -> Id {
+        let id = self.new_id();
+        self.subtitles.push(Cue { id, start, end: end.max(start + MIN_CLIP), text: text.into() });
+        self.sort_cues();
+        id
+    }
+    pub fn remove_cue(&mut self, id: Id) {
+        self.subtitles.retain(|c| c.id != id);
+    }
+    pub fn sort_cues(&mut self) {
+        self.subtitles.sort_by(|a, b| a.start.total_cmp(&b.start));
+    }
 
     // ---------- persistence ----------
     pub fn to_json(&self) -> String {
@@ -991,6 +1638,8 @@ impl Project {
             .iter()
             .map(|a| a.id)
             .chain(p.tracks.iter().map(|t| t.id))
+            .chain(p.tracks.iter().flat_map(|t| t.transitions.iter().map(|x| x.id)))
+            .chain(p.subtitles.iter().map(|c| c.id))
             .chain(p.all_clips().map(|(_, c)| c.id.max(c.link)))
             .max()
             .unwrap_or(0);
@@ -1003,8 +1652,22 @@ impl Project {
         p.height = p.height.max(16);
         for t in &mut p.tracks {
             t.clips.retain(|c| c.start >= 0.0 && c.duration.is_finite() && c.duration > 0.0);
-            t.sort();
+            for c in &mut t.clips {
+                if !(c.speed.is_finite() && c.speed > 0.0) {
+                    c.speed = 1.0;
+                }
+                for e in &mut c.effects {
+                    // older files / edited files: make sure every parameter exists
+                    while e.params.len() < e.kind.params().len() {
+                        let d = e.kind.params()[e.params.len()].default;
+                        e.params.push(Animated::new(d));
+                    }
+                }
+            }
         }
+        p.subtitles.retain(|c| c.start.is_finite() && c.end.is_finite() && c.end > c.start);
+        p.tidy();
+        p.sort_cues();
         Ok(p)
     }
     /// Writes beside the target then renames, so a failed write can't destroy the previous save.
@@ -1037,6 +1700,9 @@ mod tests {
                 .map(|i| AudioStreamInfo { index: i, channels: 2, sample_rate: 48000, ..Default::default() })
                 .collect(),
             codec: "h264".into(),
+            folder: String::new(),
+            tags: Vec::new(),
+            label: 0,
         }
     }
 
@@ -1054,6 +1720,23 @@ mod tests {
         a.toggle_key(0.0);
         assert!(!a.is_animated());
         assert_eq!(a.value, 5.0);
+    }
+
+    #[test]
+    fn easing_and_key_moves() {
+        let mut a = Animated::new(0.0);
+        a.toggle_key(0.0);
+        a.set_at(2.0, 10.0);
+        a.set_ease_at(0.0, Ease::Hold);
+        assert_eq!(a.at(1.0), 0.0);
+        a.set_ease_at(0.0, Ease::EaseInOut);
+        assert!((a.at(1.0) - 5.0).abs() < 1e-9);
+        assert!(a.at(0.5) < 2.5);
+        a.set_ease_at(0.0, Ease::EaseIn);
+        assert!((a.at(1.0) - 2.5).abs() < 1e-9);
+        let j = a.move_key(1, -1.0); // moves before the first key and stays sorted
+        assert_eq!(j, 0);
+        assert_eq!(a.keys[0].v, 10.0);
     }
 
     #[test]
@@ -1124,6 +1807,7 @@ mod tests {
     fn json_roundtrip() {
         let mut p = Project::from_media(asset(0, 10.0, 2));
         p.add_text_clip(1.0, 2.0);
+        p.add_cue(0.5, 1.5, "hi");
         let s = p.to_json();
         let q = Project::from_json(&s).unwrap();
         assert_eq!(q.tracks.len(), p.tracks.len());
@@ -1138,7 +1822,7 @@ mod tests {
         let mut c = Clip::new(1, ClipKind::Video, "c", 2.0, 5.0);
         c.src_in = 1.0;
         c.opacity.toggle_key(1.0);
-        c.trim_start(0.0); // clamped to start - src_in = 1.0
+        c.trim_start(0.0, 1.0); // headroom 1 s → clamped to start - 1 = 1.0
         assert!((c.start - 1.0).abs() < 1e-9);
         assert!((c.src_in).abs() < 1e-9);
         assert!((c.duration - 6.0).abs() < 1e-9);
@@ -1147,9 +1831,103 @@ mod tests {
         assert!((c.duration - 10.0).abs() < 1e-9);
         // images/text are unbounded on both sides
         let mut img = Clip::new(2, ClipKind::Image, "i", 5.0, 5.0);
-        img.trim_start(3.0);
+        img.trim_start(3.0, f64::INFINITY);
         assert!((img.start - 3.0).abs() < 1e-9);
         assert!((img.duration - 7.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn speed_reverse_freeze() {
+        let mut p = Project::from_media(asset(0, 10.0, 1));
+        let v = p.tracks[0].clips[0].id;
+        // 2x: source window stays [0,10), duration halves, audio follows
+        assert!(p.set_speed(&[v], 2.0, false));
+        let c = p.clip(v).unwrap().clone();
+        assert!((c.duration - 5.0).abs() < 1e-9);
+        assert!((c.src_time(1.0) - 2.0).abs() < 1e-9);
+        assert!((p.tracks[1].clips[0].duration - 5.0).abs() < 1e-9);
+        assert!((p.max_clip_duration(&c) - 5.0).abs() < 1e-9);
+        // split at 2 s: right half starts at source 4 s
+        p.split_at(2.0, None);
+        assert!((p.tracks[0].clips[1].src_in - 4.0).abs() < 1e-9);
+        assert!((p.tracks[0].clips[1].src_time(3.0) - 6.0).abs() < 1e-9);
+        // reverse the right half: t=2 shows source 10, t=5 shows source 4
+        let r = p.tracks[0].clips[1].id;
+        assert!(p.set_speed(&[r], 2.0, true));
+        let c = p.clip(r).unwrap().clone();
+        assert!((c.src_time(2.0) - 10.0).abs() < 1e-9);
+        assert!((c.src_time(5.0) - 4.0).abs() < 1e-9);
+        // reversed: head room is what is left after src_end (nothing), max duration adds src_in/speed
+        assert!((p.head_room(&c)).abs() < 1e-9);
+        assert!((p.max_clip_duration(&c) - 5.0).abs() < 1e-9);
+        // extend the right edge by 1 s → earliest source time moves 2 s earlier
+        let mut c2 = c.clone();
+        c2.trim_end(6.0, p.max_clip_duration(&c));
+        assert!((c2.src_in - 2.0).abs() < 1e-9);
+        assert!((c2.src_time(6.0) - 2.0).abs() < 1e-9);
+        // freeze at t=3 splits and holds source 8 (2x reversed clip: 10 - 1*2)
+        let frozen = p.freeze_at(3.0, &[r]);
+        assert_eq!(frozen.len(), 2); // video + linked audio
+        let f = p.clip(frozen[0]).unwrap();
+        assert_eq!(f.freeze, Some(8.0));
+        assert!((f.src_time(4.0) - 8.0).abs() < 1e-9);
+        assert!(p.max_clip_duration(f).is_infinite());
+    }
+
+    #[test]
+    fn transitions_add_and_prune() {
+        let mut p = Project::from_media(asset(0, 10.0, 1));
+        let right = p.split_at(4.0, None)[0];
+        let id = p.add_transition(right, TransitionKind::CrossFade, 1.0).unwrap();
+        assert_eq!(p.tracks[0].transitions.len(), 1);
+        assert_eq!(p.tracks[1].transitions.len(), 1); // mirrored on the linked audio cut
+        let (tr, l, r) = p.tracks[0].transition_at(3.9).unwrap();
+        assert_eq!(tr.id, id);
+        assert!(l.end() == r.start);
+        assert!((tr.progress(r.start, 3.5) - 0.0).abs() < 1e-9);
+        assert!((tr.progress(r.start, 4.5) - 1.0).abs() < 1e-9);
+        assert!(p.tracks[0].transition_at(4.6).is_none());
+        // no left neighbour → None
+        let first = p.tracks[0].clips[0].id;
+        assert!(p.add_transition(first, TransitionKind::Push, 1.0).is_none());
+        // moving the right clip away invalidates the transition
+        assert!(p.move_clips(&p.expand_links(&[right]), 2.0, 0, None));
+        assert!(p.tracks[0].transitions.is_empty());
+        assert!(p.tracks[1].transitions.is_empty());
+    }
+
+    #[test]
+    fn effects_params_and_keys() {
+        let mut c = Clip::new(1, ClipKind::Video, "c", 0.0, 4.0);
+        c.effects.push(Effect::new(EffectKind::Blur));
+        assert_eq!(c.effects[0].at(0, 1.0), 8.0);
+        c.effects[0].params[0].toggle_key(1.0);
+        c.effects[0].params[0].set_at(3.0, 20.0);
+        assert_eq!(c.key_times(), vec![1.0, 3.0]);
+        c.move_keys(3.0, 2.0);
+        assert_eq!(c.key_times(), vec![1.0, 2.0]);
+        assert!(c.has_effects());
+        let json = serde_json::to_string(&c).unwrap();
+        let d: Clip = serde_json::from_str(&json).unwrap();
+        assert_eq!(d.effects[0].kind, EffectKind::Blur);
+    }
+
+    #[test]
+    fn subtitles_and_folders() {
+        let mut p = Project::new();
+        p.add_cue(2.0, 3.0, "b");
+        p.add_cue(0.0, 1.0, "a");
+        assert_eq!(p.subtitles[0].text, "a");
+        assert_eq!(p.cue_at(2.5).unwrap().text, "b");
+        assert!(p.cue_at(1.5).is_none());
+        assert!(p.add_folder("Footage/Day 1"));
+        assert!(!p.add_folder("  "));
+        let aid = p.add_asset(asset(0, 1.0, 0));
+        p.asset_mut(aid).unwrap().folder = "Footage/Day 1".into();
+        assert_eq!(p.folder_names(), vec!["Footage/Day 1".to_string()]);
+        p.remove_folder("Footage");
+        assert!(p.folders.is_empty());
+        assert_eq!(p.asset(aid).unwrap().folder, "");
     }
 
     #[test]

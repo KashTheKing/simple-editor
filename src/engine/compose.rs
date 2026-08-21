@@ -369,6 +369,9 @@ mod tests {
             fps: 30.0,
             audio_streams: Vec::new(),
             codec: "h264".into(),
+            folder: String::new(),
+            tags: Vec::new(),
+            label: 0,
         }
     }
 
@@ -432,7 +435,7 @@ mod tests {
         project.insert_asset_clips(id, 0.0, None);
         let clip = &mut project.tracks[0].clips[0];
         assert_eq!(clip.kind, ClipKind::Image);
-        clip.scale.keys = vec![Keyframe { t: 0.0, v: 0.25 }, Keyframe { t: 4.0, v: 0.5 }];
+        clip.scale.keys = vec![Keyframe { t: 0.0, v: 0.25, ease: crate::model::Ease::Linear }, Keyframe { t: 4.0, v: 0.5, ease: crate::model::Ease::Linear }];
         let sizes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let mut pool = DecoderPool::new(Backend::Ffmpeg);
         pool.insert_video(&project.assets[0].path, Box::new(SizeSpy(sizes.clone())));

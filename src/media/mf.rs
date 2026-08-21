@@ -191,6 +191,9 @@ pub fn probe(path: &str) -> Result<Asset, String> {
         fps: 0.0,
         audio_streams: Vec::new(),
         codec: String::new(),
+        folder: String::new(),
+        tags: Vec::new(),
+        label: 0,
     };
     let mut has_video = false;
     for s in streams(&reader) {

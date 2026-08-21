@@ -2,8 +2,10 @@
 //! visual clip (drag to move = edits clip.x / clip.y at the playhead time via `Animated::set_at`, calling
 //! `undo` once at drag start), and the transport bar: |◀  ◀◀(prev cut)  ◀(step)  ▶/⏸  ▶(step)  ▶▶  ▶|
 //! plus timecode / duration, In/Out buttons and the in/out times.
+//! In `fullscreen` mode only the video is drawn (no transport, no overlay): Esc / F11 leave it (app).
 
 use crate::engine::compose::placement;
+use crate::hotkeys::Action;
 use crate::media::Frame;
 use crate::model::{ClipKind, Id, Project};
 use crate::theme::Palette;
@@ -23,6 +25,8 @@ pub struct PreviewCtx<'a> {
     pub selection: &'a [Id],
     pub playhead: f64,
     pub playing: bool,
+    /// Video only: no transport bar, no selection overlay / drag.
+    pub fullscreen: bool,
     pub palette: &'a Palette,
     pub undo: &'a mut dyn FnMut(&Project),
     /// A newly rendered frame to upload this update (None = keep the current texture).
@@ -32,17 +36,8 @@ pub struct PreviewCtx<'a> {
 #[derive(Default)]
 pub struct PreviewResponse {
     pub seek: Option<f64>,
-    pub toggle_play: bool,
-    pub stop: bool,
-    /// ±1 frame step.
-    pub step: i32,
-    pub prev_cut: bool,
-    pub next_cut: bool,
-    pub go_start: bool,
-    pub go_end: bool,
-    pub mark_in: bool,
-    pub mark_out: bool,
-    pub clear_in_out: bool,
+    /// Transport buttons map straight to actions (PlayPause, Stop, StepBack, …, MarkIn, ClearInOut).
+    pub actions: Vec<Action>,
     pub edited: bool,
     /// Pixel size available for the video image (for Player::set_canvas).
     pub canvas: (u32, u32),
@@ -50,6 +45,10 @@ pub struct PreviewResponse {
 
 pub fn show(ui: &mut egui::Ui, state: &mut PreviewState, mut c: PreviewCtx<'_>) -> PreviewResponse {
     let mut r = PreviewResponse::default();
+    if c.fullscreen {
+        video(ui, state, &mut c, &mut r);
+        return r;
+    }
     ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
         transport(ui, &c, &mut r);
         video(ui, state, &mut c, &mut r);
@@ -61,29 +60,32 @@ fn transport(ui: &mut egui::Ui, c: &PreviewCtx<'_>, r: &mut PreviewResponse) {
     let fps = c.project.fps;
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
-        r.go_start = ui.button("|◀").clicked();
-        r.prev_cut = ui.button("◀◀").clicked();
-        if ui.button("◀").clicked() {
-            r.step = -1;
-        }
-        r.toggle_play = ui.button(if c.playing { "⏸" } else { "▶" }).clicked();
-        r.stop = ui.button("■").clicked();
-        if ui.button("▶").clicked() {
-            r.step = 1;
-        }
-        r.next_cut = ui.button("▶▶").clicked();
-        r.go_end = ui.button("▶|").clicked();
+        let mut b = |ui: &mut egui::Ui, label: &str, a: Action| {
+            if ui.button(label).clicked() {
+                r.actions.push(a);
+            }
+        };
+        b(ui, "|◀", Action::GoStart);
+        b(ui, "◀◀", Action::PrevCut);
+        b(ui, "◀", Action::StepBack);
+        b(ui, if c.playing { "⏸" } else { "▶" }, Action::PlayPause);
+        b(ui, "■", Action::Stop);
+        b(ui, "▶", Action::StepForward);
+        b(ui, "▶▶", Action::NextCut);
+        b(ui, "▶|", Action::GoEnd);
         ui.add_space(8.0);
         ui.monospace(format!("{} / {}", timecode(c.playhead, fps), timecode(c.project.duration(), fps)));
         ui.add_space(8.0);
-        r.mark_in = ui.button("In").clicked();
-        r.mark_out = ui.button("Out").clicked();
-        r.clear_in_out = ui.button("Clear").clicked();
+        b(ui, "In", Action::MarkIn);
+        b(ui, "Out", Action::MarkOut);
+        b(ui, "Clear", Action::ClearInOut);
         if c.project.in_point.is_some() || c.project.out_point.is_some() {
             ui.add_space(4.0);
             let tc = |t: Option<f64>| t.map(|t| timecode(t, fps)).unwrap_or_else(|| "-".into());
             ui.monospace(format!("{} → {}", tc(c.project.in_point), tc(c.project.out_point)));
         }
+        ui.add_space(8.0);
+        b(ui, "⛶", Action::Fullscreen);
     });
 }
 
@@ -120,6 +122,14 @@ fn video(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r:
     }
     if let Some(t) = &state.texture {
         painter.image(t.id(), lb, Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)), Color32::WHITE);
+    }
+    if c.fullscreen {
+        // double-click toggles fullscreen, like every player
+        if resp.double_clicked() {
+            r.actions.push(Action::Fullscreen);
+        }
+        state.drag = None;
+        return;
     }
 
     // selection overlay + drag-to-move

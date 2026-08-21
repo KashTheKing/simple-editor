@@ -1,11 +1,18 @@
-//! egui UI. Layout (DaVinci-like, bare): menu bar / [Library | Preview | Inspector] / Timeline.
+//! egui UI. Dockable layout (ui/layout.rs) of panes: Library, Preview, Inspector, Effects, Transitions,
+//! Subtitles, Timeline, Curves — DaVinci-like by default, bare Windows-forms styling.
 
 pub mod app;
+pub mod curves;
+pub mod effects_ui;
 pub mod inspector;
+pub mod layout;
 pub mod library;
 pub mod preview;
+pub mod retime;
 pub mod settings_ui;
+pub mod subtitles_ui;
 pub mod timeline;
+pub mod transitions_ui;
 
 use crate::model::Id;
 
