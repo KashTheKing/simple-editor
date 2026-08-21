@@ -54,11 +54,7 @@ pub fn placement(
     let lt = clip.local(t);
     let s = cw as f32 / project.width.max(1) as f32;
     let (nw, nh) = (native.0.max(1) as f32, native.1.max(1) as f32);
-    let fit = if contain {
-        (cw as f32 / nw).min(ch as f32 / nh)
-    } else {
-        1.0
-    };
+    let fit = if contain { (cw as f32 / nw).min(ch as f32 / nh) } else { 1.0 };
     let k = clip.scale.at(lt) as f32;
     Placement {
         cx: cw as f32 / 2.0 + clip.x.at(lt) as f32 * s,
@@ -83,10 +79,7 @@ impl Default for Compositor {
 
 impl Compositor {
     pub fn new() -> Self {
-        Self {
-            layer: Frame::default(),
-            src: Frame::default(),
-        }
+        Self { layer: Frame::default(), src: Frame::default() }
     }
 
     /// Render timeline time `t` into `out` at w×h (out is resized). Never panics on missing media:
@@ -185,12 +178,7 @@ pub fn draw_layer(dst: &mut Frame, src: &Frame, p: Placement, mode: BlendMode, o
             let s = (y - oy) as usize * ss;
             let (dx0, dx1) = (x0 as usize * 4, x1 as usize * 4);
             let (sx0, sx1) = ((x0 - ox) as usize * 4, (x1 - ox) as usize * 4);
-            blend::composite_row(
-                &mut dst.rgba[d + dx0..d + dx1],
-                &src.rgba[s + sx0..s + sx1],
-                mode,
-                opacity,
-            );
+            blend::composite_row(&mut dst.rgba[d + dx0..d + dx1], &src.rgba[s + sx0..s + sx1], mode, opacity);
         }
         return;
     }
@@ -288,13 +276,7 @@ mod tests {
         let mut src = Frame::new(2, 2);
         src.fill([255, 0, 0, 255]);
         let mut scratch = Frame::default();
-        let p = Placement {
-            cx: 4.0,
-            cy: 4.0,
-            w: 4.0,
-            h: 4.0,
-            rot: 0.0,
-        };
+        let p = Placement { cx: 4.0, cy: 4.0, w: 4.0, h: 4.0, rot: 0.0 };
         draw_layer(&mut dst, &src, p, BlendMode::Normal, 1.0, &mut scratch);
         for y in 0..8 {
             for x in 0..8 {
@@ -312,37 +294,19 @@ mod tests {
         src.fill([0, 255, 0, 255]);
         let mut scratch = Frame::default();
         // native size at the top-left corner, 50% opacity
-        let p = Placement {
-            cx: 1.0,
-            cy: 1.0,
-            w: 2.0,
-            h: 2.0,
-            rot: 0.0,
-        };
+        let p = Placement { cx: 1.0, cy: 1.0, w: 2.0, h: 2.0, rot: 0.0 };
         draw_layer(&mut dst, &src, p, BlendMode::Normal, 0.5, &mut scratch);
         assert_eq!(px(&dst, 0, 0), [0, 128, 0, 255]);
         assert_eq!(px(&dst, 1, 1), [0, 128, 0, 255]);
         assert_eq!(px(&dst, 2, 2), [0, 0, 0, 255]);
         // partially off-canvas
         let mut dst = black(4, 4);
-        let p = Placement {
-            cx: 0.0,
-            cy: 0.0,
-            w: 2.0,
-            h: 2.0,
-            rot: 0.0,
-        };
+        let p = Placement { cx: 0.0, cy: 0.0, w: 2.0, h: 2.0, rot: 0.0 };
         draw_layer(&mut dst, &src, p, BlendMode::Normal, 1.0, &mut scratch);
         assert_eq!(px(&dst, 0, 0), [0, 255, 0, 255]);
         assert_eq!(px(&dst, 1, 0), [0, 0, 0, 255]);
         // fully off-canvas: no-op, no panic
-        let p = Placement {
-            cx: 100.0,
-            cy: 100.0,
-            w: 2.0,
-            h: 2.0,
-            rot: 45.0,
-        };
+        let p = Placement { cx: 100.0, cy: 100.0, w: 2.0, h: 2.0, rot: 45.0 };
         draw_layer(&mut dst, &src, p, BlendMode::Normal, 1.0, &mut scratch);
     }
 
@@ -359,13 +323,7 @@ mod tests {
             }
         }
         let mut scratch = Frame::default();
-        let p = Placement {
-            cx: 4.0,
-            cy: 4.0,
-            w: 4.0,
-            h: 2.0,
-            rot: 90.0,
-        };
+        let p = Placement { cx: 4.0, cy: 4.0, w: 4.0, h: 2.0, rot: 90.0 };
         draw_layer(&mut dst, &src, p, BlendMode::Normal, 1.0, &mut scratch);
         assert_eq!(px(&dst, 3, 2), [255, 0, 0, 255]);
         assert_eq!(px(&dst, 4, 2), [255, 0, 0, 255]);

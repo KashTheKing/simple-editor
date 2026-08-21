@@ -17,8 +17,8 @@ use std::time::Instant;
 
 const PROJECT_EXT: &str = "sedit";
 const MEDIA_EXTS: &[&str] = &[
-    "mp4", "mov", "mkv", "webm", "avi", "m4v", "wmv", "ts", "m2ts", "mts", "flv", "3gp", "mpg", "mpeg", "gif",
-    "mp3", "wav", "m4a", "aac", "flac", "ogg", "opus", "wma", "png", "jpg", "jpeg", "bmp", "webp", "tif", "tiff",
+    "mp4", "mov", "mkv", "webm", "avi", "m4v", "wmv", "ts", "m2ts", "mts", "flv", "3gp", "mpg", "mpeg", "gif", "mp3",
+    "wav", "m4a", "aac", "flac", "ogg", "opus", "wma", "png", "jpg", "jpeg", "bmp", "webp", "tif", "tiff",
 ];
 
 enum ExportKind {
@@ -338,7 +338,9 @@ impl App {
 
     fn ffmpeg_missing(&mut self) -> bool {
         if media::ffpipe::ffmpeg_exe().is_none() {
-            self.toast("ffmpeg.exe not found — install FFmpeg (winget install Gyan.FFmpeg) or set its folder in Settings");
+            self.toast(
+                "ffmpeg.exe not found — install FFmpeg (winget install Gyan.FFmpeg) or set its folder in Settings",
+            );
             return true;
         }
         false
@@ -414,7 +416,9 @@ impl App {
             return;
         };
         match std::fs::write(&out, crate::engine::xmeml::export_xmeml(&self.project)) {
-            Ok(()) => self.toast("XML exported — import it in Premiere (File ▸ Import) or Resolve (File ▸ Import ▸ Timeline)"),
+            Ok(()) => {
+                self.toast("XML exported — import it in Premiere (File ▸ Import) or Resolve (File ▸ Import ▸ Timeline)")
+            }
             Err(e) => self.toast(format!("XML export failed: {e}")),
         }
     }
@@ -431,7 +435,9 @@ impl App {
         if self.settings.confirm_overwrite {
             let r = rfd::MessageDialog::new()
                 .set_title("Overwrite original video?")
-                .set_description(format!("{src}\n\nThe file will be replaced with the edited video. This cannot be undone."))
+                .set_description(format!(
+                    "{src}\n\nThe file will be replaced with the edited video. This cannot be undone."
+                ))
                 .set_buttons(rfd::MessageButtons::OkCancel)
                 .set_level(rfd::MessageLevel::Warning)
                 .show();
@@ -473,7 +479,10 @@ impl App {
                         self.open_media(&original);
                     }
                     Err(e) => {
-                        self.toast(format!("Couldn't replace the original ({e}); edited file left at {}", temp.display()));
+                        self.toast(format!(
+                            "Couldn't replace the original ({e}); edited file left at {}",
+                            temp.display()
+                        ));
                         self.player.set_project(&self.project);
                     }
                 }
@@ -559,7 +568,8 @@ impl App {
                 }
             }
             Split => {
-                let only = if self.selection.is_empty() { None } else { Some(self.project.expand_links(&self.selection)) };
+                let only =
+                    if self.selection.is_empty() { None } else { Some(self.project.expand_links(&self.selection)) };
                 self.push_undo();
                 let new = self.project.split_at(self.playhead, only.as_deref());
                 if new.is_empty() {
@@ -934,7 +944,8 @@ impl eframe::App for App {
         if !ctx.wants_keyboard_input() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Y)) {
             actions.push(Action::Redo);
         }
-        if !ctx.wants_keyboard_input() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace)) {
+        if !ctx.wants_keyboard_input() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace))
+        {
             actions.push(Action::Delete);
         }
 
@@ -945,13 +956,22 @@ impl eframe::App for App {
             actions.extend(self.menu_bar(ui));
         });
 
-        egui::TopBottomPanel::bottom("timeline")
-            .resizable(true)
-            .default_height(300.0)
-            .min_height(120.0)
-            .show(ctx, |ui| {
-                let App { project, selection, playhead, undo, redo, waveforms, timeline: tl, settings, player, palette, .. } =
-                    self;
+        egui::TopBottomPanel::bottom("timeline").resizable(true).default_height(300.0).min_height(120.0).show(
+            ctx,
+            |ui| {
+                let App {
+                    project,
+                    selection,
+                    playhead,
+                    undo,
+                    redo,
+                    waveforms,
+                    timeline: tl,
+                    settings,
+                    player,
+                    palette,
+                    ..
+                } = self;
                 let mut push = |p: &Project| {
                     undo.push(p.to_json());
                     redo.clear();
@@ -992,7 +1012,8 @@ impl eframe::App for App {
                     }
                     self.after_edit();
                 }
-            });
+            },
+        );
 
         if self.settings.show_library {
             egui::SidePanel::left("library").resizable(true).default_width(230.0).show(ctx, |ui| {

@@ -88,10 +88,8 @@ impl Backend {
 }
 
 pub fn is_image_path(path: &str) -> bool {
-    let ext = std::path::Path::new(path)
-        .extension()
-        .map(|e| e.to_string_lossy().to_ascii_lowercase())
-        .unwrap_or_default();
+    let ext =
+        std::path::Path::new(path).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
     matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "bmp" | "gif" | "webp" | "tif" | "tiff" | "tga" | "psd")
 }
 
@@ -154,17 +152,11 @@ impl DecoderPool {
     }
     pub fn video(&mut self, path: &str) -> Option<&mut (dyn VideoSource + 'static)> {
         let b = self.backend;
-        self.videos
-            .entry(path.to_string())
-            .or_insert_with(|| open_video(path, b).ok())
-            .as_deref_mut()
+        self.videos.entry(path.to_string()).or_insert_with(|| open_video(path, b).ok()).as_deref_mut()
     }
     pub fn audio(&mut self, path: &str, stream: usize) -> Option<&mut (dyn AudioSource + 'static)> {
         let b = self.backend;
-        self.audios
-            .entry((path.to_string(), stream))
-            .or_insert_with(|| open_audio(path, stream, b).ok())
-            .as_deref_mut()
+        self.audios.entry((path.to_string(), stream)).or_insert_with(|| open_audio(path, stream, b).ok()).as_deref_mut()
     }
     /// Inject a ready-made source (tests / synthetic media).
     pub fn insert_video(&mut self, path: &str, v: Box<dyn VideoSource>) {

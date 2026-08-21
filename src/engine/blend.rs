@@ -27,11 +27,7 @@ pub fn blend_channel(mode: BlendMode, s: f32, d: f32) -> f32 {
             if s <= 0.5 {
                 d - (1.0 - 2.0 * s) * d * (1.0 - d)
             } else {
-                let g = if d <= 0.25 {
-                    ((16.0 * d - 12.0) * d + 4.0) * d
-                } else {
-                    d.sqrt()
-                };
+                let g = if d <= 0.25 { ((16.0 * d - 12.0) * d + 4.0) * d } else { d.sqrt() };
                 d + (2.0 * s - 1.0) * (g - d)
             }
         }
@@ -140,12 +136,7 @@ pub fn composite_rect(
     }
     for y in y0..y1.min(dst.height) {
         let row = y as usize * stride;
-        composite_row(
-            &mut dst.rgba[row + x0..row + x1],
-            &layer.rgba[row + x0..row + x1],
-            mode,
-            opacity,
-        );
+        composite_row(&mut dst.rgba[row + x0..row + x1], &layer.rgba[row + x0..row + x1], mode, opacity);
     }
 }
 

@@ -47,8 +47,7 @@ fn init() -> Result<(), String> {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
     }
-    MF.get_or_init(|| unsafe { MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET).map_err(err) })
-        .clone()
+    MF.get_or_init(|| unsafe { MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET).map_err(err) }).clone()
 }
 
 fn open_reader(path: &str) -> Result<IMFSourceReader, String> {
@@ -60,14 +59,10 @@ fn open_reader(path: &str) -> Result<IMFSourceReader, String> {
         let mut attrs = None;
         MFCreateAttributes(&mut attrs, 1).map_err(err)?;
         let attrs = attrs.ok_or("MF: MFCreateAttributes returned null")?;
-        attrs
-            .SetUINT32(&MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, 1)
-            .map_err(err)?;
+        attrs.SetUINT32(&MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, 1).map_err(err)?;
         let url = HSTRING::from(path);
         let reader = MFCreateSourceReaderFromURL(&url, &attrs).map_err(err)?;
-        reader
-            .SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS.0 as u32, false)
-            .map_err(err)?;
+        reader.SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS.0 as u32, false).map_err(err)?;
         Ok(reader)
     }
 }
@@ -90,22 +85,12 @@ fn streams(reader: &IMFSourceReader) -> Vec<StreamInfo> {
             break;
         };
         let major = unsafe { ty.GetGUID(&MF_MT_MAJOR_TYPE) }.unwrap_or(GUID_NULL);
-        v.push(StreamInfo {
-            index: i,
-            major,
-            ty,
-            language: String::new(),
-            title: String::new(),
-        });
+        v.push(StreamInfo { index: i, major, ty, language: String::new(), title: String::new() });
     }
     unsafe {
         let mut p = std::ptr::null_mut();
-        let r = reader.GetServiceForStream(
-            MF_SOURCE_READER_MEDIASOURCE.0 as u32,
-            &GUID_NULL,
-            &IMFMediaSource::IID,
-            &mut p,
-        );
+        let r =
+            reader.GetServiceForStream(MF_SOURCE_READER_MEDIASOURCE.0 as u32, &GUID_NULL, &IMFMediaSource::IID, &mut p);
         if r.is_ok() && !p.is_null() {
             let src = IMFMediaSource::from_raw(p);
             if let Ok(pd) = src.CreatePresentationDescriptor() {
@@ -123,11 +108,9 @@ fn streams(reader: &IMFSourceReader) -> Vec<StreamInfo> {
     }
     // ponytail: MF's MPEG-4 source (mp4/mov/m4a: MIME */mp4, video/quicktime) enumerates tracks in
     // reverse `trak` order (verified); MKV/ASF/TS/AVI sources are in container order. Reverse to match ffmpeg.
-    let mime = unsafe {
-        reader.GetPresentationAttribute(MF_SOURCE_READER_MEDIASOURCE.0 as u32, &MF_PD_MIME_TYPE)
-    }
-    .map(|pv| pv.to_string())
-    .unwrap_or_default();
+    let mime = unsafe { reader.GetPresentationAttribute(MF_SOURCE_READER_MEDIASOURCE.0 as u32, &MF_PD_MIME_TYPE) }
+        .map(|pv| pv.to_string())
+        .unwrap_or_default();
     if mime.ends_with("/mp4") || mime == "video/quicktime" {
         v.reverse();
     }
@@ -135,13 +118,11 @@ fn streams(reader: &IMFSourceReader) -> Vec<StreamInfo> {
 }
 
 fn duration_secs(reader: &IMFSourceReader) -> f64 {
-    unsafe {
-        reader.GetPresentationAttribute(MF_SOURCE_READER_MEDIASOURCE.0 as u32, &MF_PD_DURATION)
-    }
-    .ok()
-    .and_then(|pv| u64::try_from(&pv).ok())
-    .map(|d| d as f64 / HNS)
-    .unwrap_or(0.0)
+    unsafe { reader.GetPresentationAttribute(MF_SOURCE_READER_MEDIASOURCE.0 as u32, &MF_PD_DURATION) }
+        .ok()
+        .and_then(|pv| u64::try_from(&pv).ok())
+        .map(|d| d as f64 / HNS)
+        .unwrap_or(0.0)
 }
 
 fn get_string(a: &IMFAttributes, key: &GUID) -> String {
@@ -182,10 +163,7 @@ fn codec_name(sub: GUID) -> &'static str {
         (MFAudioFormat_PCM, "pcm"),
         (MFAudioFormat_Float, "pcm"),
     ];
-    CODECS
-        .iter()
-        .find(|(g, _)| *g == sub)
-        .map_or("", |(_, n)| n)
+    CODECS.iter().find(|(g, _)| *g == sub).map_or("", |(_, n)| n)
 }
 
 pub fn probe(path: &str) -> Result<Asset, String> {
@@ -215,8 +193,7 @@ pub fn probe(path: &str) -> Result<Asset, String> {
             asset.audio_streams.push(AudioStreamInfo {
                 index: asset.audio_streams.len(),
                 channels: unsafe { s.ty.GetUINT32(&MF_MT_AUDIO_NUM_CHANNELS) }.unwrap_or(0),
-                sample_rate: unsafe { s.ty.GetUINT32(&MF_MT_AUDIO_SAMPLES_PER_SECOND) }
-                    .unwrap_or(0),
+                sample_rate: unsafe { s.ty.GetUINT32(&MF_MT_AUDIO_SAMPLES_PER_SECOND) }.unwrap_or(0),
                 language: s.language,
                 title: s.title,
                 codec: codec_name(sub).into(),
@@ -286,19 +263,14 @@ unsafe impl Send for MfVideo {}
 
 pub fn open_video(path: &str) -> Result<Box<dyn VideoSource>, String> {
     let reader = open_reader(path)?;
-    let vs = streams(&reader)
-        .into_iter()
-        .find(|s| s.major == MFMediaType_Video)
-        .ok_or("MF: no video stream")?;
+    let vs = streams(&reader).into_iter().find(|s| s.major == MFMediaType_Video).ok_or("MF: no video stream")?;
     let (stream, nat) = (vs.index, vs.ty);
     let duration = duration_secs(&reader);
     unsafe {
         reader.SetStreamSelection(stream, true).map_err(err)?;
         let mt = MFCreateMediaType().map_err(err)?;
-        mt.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)
-            .map_err(err)?;
-        mt.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_RGB32)
-            .map_err(err)?;
+        mt.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video).map_err(err)?;
+        mt.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_RGB32).map_err(err)?;
         reader.SetCurrentMediaType(stream, None, &mt).map_err(err)?;
     }
     let fps = frame_rate(&nat);
@@ -310,11 +282,7 @@ pub fn open_video(path: &str) -> Result<Box<dyn VideoSource>, String> {
         stride: 0,
         fps,
         duration,
-        frame_hns: if fps > 0.0 {
-            (HNS / fps) as i64
-        } else {
-            333_333
-        },
+        frame_hns: if fps > 0.0 { (HNS / fps) as i64 } else { 333_333 },
         native: Vec::new(),
         have: false,
         pts: 0,
@@ -355,9 +323,7 @@ impl MfVideo {
         }
         self.width = w;
         self.height = h;
-        self.stride = unsafe { cur.GetUINT32(&MF_MT_DEFAULT_STRIDE) }
-            .map(|s| s as i32)
-            .unwrap_or(0);
+        self.stride = unsafe { cur.GetUINT32(&MF_MT_DEFAULT_STRIDE) }.map(|s| s as i32).unwrap_or(0);
         self.native.resize((w * h * 4) as usize, 0);
         self.have = false;
         self.svalid = false;
@@ -379,21 +345,12 @@ impl MfVideo {
             let mut ts = 0i64;
             let mut sample = None;
             let r = unsafe {
-                self.reader.ReadSample(
-                    self.stream,
-                    0,
-                    None,
-                    Some(&mut flags),
-                    Some(&mut ts),
-                    Some(&mut sample),
-                )
+                self.reader.ReadSample(self.stream, 0, None, Some(&mut flags), Some(&mut ts), Some(&mut sample))
             };
             if r.is_err() || flags & MF_SOURCE_READERF_ERROR.0 as u32 != 0 {
                 return false;
             }
-            if flags & MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED.0 as u32 != 0
-                && !self.refresh_type()
-            {
+            if flags & MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED.0 as u32 != 0 && !self.refresh_type() {
                 return false;
             }
             if flags & MF_SOURCE_READERF_ENDOFSTREAM.0 as u32 != 0 {
@@ -443,21 +400,13 @@ impl MfVideo {
                 if buf.Lock(&mut p, None, Some(&mut len)).is_err() || p.is_null() {
                     return false;
                 }
-                let stride = if self.stride != 0 {
-                    self.stride as isize
-                } else {
-                    (w * 4) as isize
-                };
+                let stride = if self.stride != 0 { self.stride as isize } else { (w * 4) as isize };
                 if (len as usize) < h * stride.unsigned_abs() {
                     let _ = buf.Unlock();
                     return false;
                 }
                 // Negative stride: memory starts with the bottom row, so the top row is the last one.
-                let top = if stride < 0 {
-                    p.offset((h as isize - 1) * -stride)
-                } else {
-                    p
-                };
+                let top = if stride < 0 { p.offset((h as isize - 1) * -stride) } else { p };
                 convert_rows(top, stride, w, h, &mut self.native);
                 let _ = buf.Unlock();
             }
@@ -485,32 +434,14 @@ impl MfVideo {
             let key = (self.width, self.height, w, h);
             if self.tab_key != key {
                 self.tab_key = key;
-                self.xs = (0..=w)
-                    .map(|i| (i as u64 * self.width as u64 / w as u64) as u32)
-                    .collect();
-                self.ys = (0..=h)
-                    .map(|j| (j as u64 * self.height as u64 / h as u64) as u32)
-                    .collect();
+                self.xs = (0..=w).map(|i| (i as u64 * self.width as u64 / w as u64) as u32).collect();
+                self.ys = (0..=h).map(|j| (j as u64 * self.height as u64 / h as u64) as u32).collect();
                 self.acc.resize(w as usize * 3, 0);
             }
-            box_down(
-                &self.native,
-                self.width,
-                &self.xs,
-                &self.ys,
-                &mut self.acc,
-                &mut self.scaled,
-            );
+            box_down(&self.native, self.width, &self.xs, &self.ys, &mut self.acc, &mut self.scaled);
         } else {
             // ponytail: bilinear per pixel — the compositor never asks for more than native size.
-            bilinear(
-                &self.native,
-                self.width,
-                self.height,
-                w,
-                h,
-                &mut self.scaled,
-            );
+            bilinear(&self.native, self.width, self.height, w, h, &mut self.scaled);
         }
         self.svalid = true;
         self.sw = w;
@@ -548,11 +479,7 @@ fn box_down(src: &[u8], sw: u32, xs: &[u32], ys: &[u32], acc: &mut [u32], dst: &
             }
         }
         let rows = (y1 - y0) as u32;
-        for (i, (d, a)) in drow
-            .chunks_exact_mut(4)
-            .zip(acc.chunks_exact(3))
-            .enumerate()
-        {
+        for (i, (d, a)) in drow.chunks_exact_mut(4).zip(acc.chunks_exact(3)).enumerate() {
             let n = (rows * (xs[i + 1] - xs[i])).max(1);
             d[0] = (a[0] / n) as u8;
             d[1] = (a[1] / n) as u8;
@@ -641,11 +568,7 @@ fn push_audio(src: &[f32], ch: usize, rate: u32, rs: &mut Resamp, fifo: &mut Vec
         return;
     }
     if !rs.primed {
-        *rs = Resamp {
-            pos: 1.0,
-            last: frame(0),
-            primed: true,
-        };
+        *rs = Resamp { pos: 1.0, last: frame(0), primed: true };
     }
     // ponytail: linear interpolation — a windowed-sinc resampler if aliasing ever matters.
     let step = rate as f64 / SAMPLE_RATE as f64;
@@ -695,30 +618,18 @@ pub fn open_audio(path: &str, stream: usize) -> Result<Box<dyn AudioSource>, Str
     let (rate, ch) = unsafe {
         reader.SetStreamSelection(idx, true).map_err(err)?;
         let full = MFCreateMediaType().map_err(err)?;
-        full.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Audio)
-            .map_err(err)?;
-        full.SetGUID(&MF_MT_SUBTYPE, &MFAudioFormat_Float)
-            .map_err(err)?;
-        full.SetUINT32(&MF_MT_AUDIO_BITS_PER_SAMPLE, 32)
-            .map_err(err)?;
-        full.SetUINT32(&MF_MT_AUDIO_NUM_CHANNELS, CHANNELS as u32)
-            .map_err(err)?;
-        full.SetUINT32(&MF_MT_AUDIO_SAMPLES_PER_SECOND, SAMPLE_RATE)
-            .map_err(err)?;
-        full.SetUINT32(&MF_MT_AUDIO_BLOCK_ALIGNMENT, 4 * CHANNELS as u32)
-            .map_err(err)?;
-        full.SetUINT32(
-            &MF_MT_AUDIO_AVG_BYTES_PER_SECOND,
-            4 * CHANNELS as u32 * SAMPLE_RATE,
-        )
-        .map_err(err)?;
+        full.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Audio).map_err(err)?;
+        full.SetGUID(&MF_MT_SUBTYPE, &MFAudioFormat_Float).map_err(err)?;
+        full.SetUINT32(&MF_MT_AUDIO_BITS_PER_SAMPLE, 32).map_err(err)?;
+        full.SetUINT32(&MF_MT_AUDIO_NUM_CHANNELS, CHANNELS as u32).map_err(err)?;
+        full.SetUINT32(&MF_MT_AUDIO_SAMPLES_PER_SECOND, SAMPLE_RATE).map_err(err)?;
+        full.SetUINT32(&MF_MT_AUDIO_BLOCK_ALIGNMENT, 4 * CHANNELS as u32).map_err(err)?;
+        full.SetUINT32(&MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 4 * CHANNELS as u32 * SAMPLE_RATE).map_err(err)?;
         if reader.SetCurrentMediaType(idx, None, &full).is_err() {
             // MF won't convert rate/channels: take native rate/channels as float, convert in Rust.
             let mt = MFCreateMediaType().map_err(err)?;
-            mt.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Audio)
-                .map_err(err)?;
-            mt.SetGUID(&MF_MT_SUBTYPE, &MFAudioFormat_Float)
-                .map_err(err)?;
+            mt.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Audio).map_err(err)?;
+            mt.SetGUID(&MF_MT_SUBTYPE, &MFAudioFormat_Float).map_err(err)?;
             reader.SetCurrentMediaType(idx, None, &mt).map_err(err)?;
         }
         audio_format(&reader, idx)?
@@ -757,8 +668,7 @@ impl MfAudio {
     fn seek(&mut self, f0: i64) -> bool {
         // ponytail: MF's MP3 source lands ~60 ms *after* the requested position; pre-roll and let the
         // timestamp-based locate discard the excess (audio decode is cheap).
-        let pv =
-            PROPVARIANT::from((f0 - AUDIO_PREROLL_FRAMES).max(0) * HNS as i64 / SAMPLE_RATE as i64);
+        let pv = PROPVARIANT::from((f0 - AUDIO_PREROLL_FRAMES).max(0) * HNS as i64 / SAMPLE_RATE as i64);
         let ok = unsafe { self.reader.SetCurrentPosition(&GUID_NULL, &pv) }.is_ok();
         self.fifo.clear();
         self.located = false;
@@ -776,19 +686,9 @@ impl MfAudio {
         let mut flags = 0u32;
         let mut ts = 0i64;
         let mut sample = None;
-        let r = unsafe {
-            self.reader.ReadSample(
-                self.stream,
-                0,
-                None,
-                Some(&mut flags),
-                Some(&mut ts),
-                Some(&mut sample),
-            )
-        };
-        if r.is_err()
-            || flags & (MF_SOURCE_READERF_ERROR.0 | MF_SOURCE_READERF_ENDOFSTREAM.0) as u32 != 0
-        {
+        let r =
+            unsafe { self.reader.ReadSample(self.stream, 0, None, Some(&mut flags), Some(&mut ts), Some(&mut sample)) };
+        if r.is_err() || flags & (MF_SOURCE_READERF_ERROR.0 | MF_SOURCE_READERF_ENDOFSTREAM.0) as u32 != 0 {
             // ponytail: read errors are treated as end of stream (no retry storm at audio rate).
             self.mark_eof(f0);
             return false;
@@ -818,24 +718,14 @@ impl MfAudio {
             }
             let bytes = std::slice::from_raw_parts(p, len as usize);
             self.tmp.clear();
-            self.tmp.extend(
-                bytes
-                    .chunks_exact(4)
-                    .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])),
-            );
+            self.tmp.extend(bytes.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])));
             let _ = buf.Unlock();
         }
         if !self.located {
             self.fifo_pos = (ts as f64 * SAMPLE_RATE as f64 / HNS).round() as i64;
             self.located = true;
         }
-        push_audio(
-            &self.tmp,
-            self.ch as usize,
-            self.rate,
-            &mut self.rs,
-            &mut self.fifo,
-        );
+        push_audio(&self.tmp, self.ch as usize, self.rate, &mut self.rs, &mut self.fifo);
         true
     }
 }
@@ -852,9 +742,7 @@ impl AudioSource for MfAudio {
         if n == 0 || self.eof_at.is_some_and(|e| f0 >= e) {
             return;
         }
-        if (!self.located || f0 < self.fifo_pos || f0 > self.fifo_end() + AUDIO_FWD_FRAMES)
-            && !self.seek(f0)
-        {
+        if (!self.located || f0 < self.fifo_pos || f0 > self.fifo_end() + AUDIO_FWD_FRAMES) && !self.seek(f0) {
             return;
         }
         let mut reads = 0;
@@ -899,44 +787,13 @@ mod tests {
             let out: PathBuf = dir.join("test.mp4");
             let st = Command::new("ffmpeg")
                 .args(["-v", "error", "-y"])
-                .args([
-                    "-f",
-                    "lavfi",
-                    "-i",
-                    "color=red:s=320x240:d=2,drawbox=y=120:h=120:color=blue:t=fill",
-                ])
+                .args(["-f", "lavfi", "-i", "color=red:s=320x240:d=2,drawbox=y=120:h=120:color=blue:t=fill"])
                 .args(["-f", "lavfi", "-i", "color=lime:s=320x240:d=2"])
-                .args([
-                    "-f",
-                    "lavfi",
-                    "-i",
-                    "sine=frequency=440:duration=4,volume=4",
-                ])
-                .args([
-                    "-f",
-                    "lavfi",
-                    "-i",
-                    "sine=frequency=880:duration=4,volume=4",
-                ])
-                .args([
-                    "-filter_complex",
-                    "[0:v][1:v]concat=n=2:v=1[v]",
-                    "-map",
-                    "[v]",
-                    "-map",
-                    "2:a",
-                    "-map",
-                    "3:a",
-                ])
-                .args([
-                    "-r", "30", "-pix_fmt", "yuv420p", "-c:v", "libx264", "-c:a", "aac",
-                ])
-                .args([
-                    "-metadata:s:a:0",
-                    "language=eng",
-                    "-metadata:s:a:1",
-                    "title=Music",
-                ])
+                .args(["-f", "lavfi", "-i", "sine=frequency=440:duration=4,volume=4"])
+                .args(["-f", "lavfi", "-i", "sine=frequency=880:duration=4,volume=4"])
+                .args(["-filter_complex", "[0:v][1:v]concat=n=2:v=1[v]", "-map", "[v]", "-map", "2:a", "-map", "3:a"])
+                .args(["-r", "30", "-pix_fmt", "yuv420p", "-c:v", "libx264", "-c:a", "aac"])
+                .args(["-metadata:s:a:0", "language=eng", "-metadata:s:a:1", "title=Music"])
                 .arg(&out)
                 .status()
                 .ok()?;
@@ -960,9 +817,7 @@ mod tests {
     }
     fn zero_crossings(stereo: &[f32]) -> usize {
         let l: Vec<f32> = stereo.chunks_exact(2).map(|c| c[0]).collect();
-        l.windows(2)
-            .filter(|w| (w[0] < 0.0) != (w[1] < 0.0))
-            .count()
+        l.windows(2).filter(|w| (w[0] < 0.0) != (w[1] < 0.0)).count()
     }
     fn rms(s: &[f32]) -> f64 {
         (s.iter().map(|v| (*v as f64) * (*v as f64)).sum::<f64>() / s.len().max(1) as f64).sqrt()
@@ -1004,11 +859,7 @@ mod tests {
         assert!(v.frame_at(0.5, 320, 240, &mut f));
         assert_eq!((f.width, f.height), (320, 240));
         assert!(is_red(px(&f, 10, 10)), "top-left {:?}", px(&f, 10, 10));
-        assert!(
-            is_blue(px(&f, 10, 230)),
-            "bottom-left {:?} (orientation)",
-            px(&f, 10, 230)
-        );
+        assert!(is_blue(px(&f, 10, 230)), "bottom-left {:?} (orientation)", px(&f, 10, 230));
         assert!(v.frame_at(2.5, 320, 240, &mut f));
         assert!(is_green(px(&f, 160, 120)), "{:?}", px(&f, 160, 120));
         assert!(v.frame_at(0.5, 320, 240, &mut f), "seek back");
@@ -1061,11 +912,7 @@ mod tests {
         // sequential block continues without a gap: the sine must stay continuous across the boundary
         let last = buf[buf.len() - 2];
         a.read_at(1.0 + 4800.0 / 48000.0, &mut buf);
-        assert!(
-            (buf[0] - last).abs() < 0.15,
-            "discontinuity {last} -> {}",
-            buf[0]
-        );
+        assert!((buf[0] - last).abs() < 0.15, "discontinuity {last} -> {}", buf[0]);
         assert!((0.1..=1.0).contains(&rms(&buf)));
         // repeat read of the same block is served from the FIFO
         let mut again = vec![0f32; 4800 * 2];
@@ -1086,10 +933,7 @@ mod tests {
         assert!((0.1..=1.0).contains(&rms(&buf)), "stream 1 rms");
         let zc1 = zero_crossings(&buf);
         eprintln!("zero crossings: stream0={zc0} stream1={zc1}");
-        assert!(
-            (80..=96).contains(&zc0) && (168..=184).contains(&zc1),
-            "stream order {zc0} {zc1}"
-        );
+        assert!((80..=96).contains(&zc0) && (168..=184).contains(&zc1), "stream order {zc0} {zc1}");
         assert!(open_audio(&p, 2).is_err());
         let t0 = Instant::now();
         let mut t = 0.0;
@@ -1104,24 +948,12 @@ mod tests {
     fn push_audio_converts() {
         // 48k stereo passthrough
         let mut fifo = Vec::new();
-        push_audio(
-            &[1.0, 2.0, 3.0, 4.0],
-            2,
-            48000,
-            &mut Resamp::default(),
-            &mut fifo,
-        );
+        push_audio(&[1.0, 2.0, 3.0, 4.0], 2, 48000, &mut Resamp::default(), &mut fifo);
         assert_eq!(fifo, [1.0, 2.0, 3.0, 4.0]);
         // mono dup + 6ch keeps L/R
         fifo.clear();
         push_audio(&[0.5], 1, 48000, &mut Resamp::default(), &mut fifo);
-        push_audio(
-            &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
-            6,
-            48000,
-            &mut Resamp::default(),
-            &mut fifo,
-        );
+        push_audio(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 6, 48000, &mut Resamp::default(), &mut fifo);
         assert_eq!(fifo, [0.5, 0.5, 1.0, 2.0]);
         // 24k mono ramp -> 48k: interpolated midpoints, continuous across buffers
         fifo.clear();
@@ -1133,13 +965,7 @@ mod tests {
         assert_eq!(l, [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
         // 96k -> 48k: one out per two in
         fifo.clear();
-        push_audio(
-            &[0.0, 1.0, 2.0, 3.0],
-            1,
-            96000,
-            &mut Resamp::default(),
-            &mut fifo,
-        );
+        push_audio(&[0.0, 1.0, 2.0, 3.0], 1, 96000, &mut Resamp::default(), &mut fifo);
         assert_eq!(fifo.len() / 2, 2);
     }
 
@@ -1148,11 +974,7 @@ mod tests {
         // 4x2 source: left half red, right half blue
         let mut src = vec![0u8; 4 * 2 * 4];
         for (i, p) in src.chunks_exact_mut(4).enumerate() {
-            p.copy_from_slice(if i % 4 < 2 {
-                &[255, 0, 0, 255]
-            } else {
-                &[0, 0, 255, 255]
-            });
+            p.copy_from_slice(if i % 4 < 2 { &[255, 0, 0, 255] } else { &[0, 0, 255, 255] });
         }
         let xs = [0u32, 2, 4];
         let ys = [0u32, 2];
@@ -1168,9 +990,6 @@ mod tests {
         let rows: [[u8; 8]; 2] = [[1, 2, 3, 0, 4, 5, 6, 0], [7, 8, 9, 0, 10, 11, 12, 0]]; // mem: bottom row first
         let mut out = vec![0u8; 16];
         unsafe { convert_rows(rows[1].as_ptr(), -8, 2, 2, &mut out) };
-        assert_eq!(
-            out,
-            [9, 8, 7, 255, 12, 11, 10, 255, 3, 2, 1, 255, 6, 5, 4, 255]
-        );
+        assert_eq!(out, [9, 8, 7, 255, 12, 11, 10, 255, 3, 2, 1, 255, 6, 5, 4, 255]);
     }
 }

@@ -78,10 +78,7 @@ impl Settings {
         Self::dir().join("settings.json")
     }
     pub fn load() -> Self {
-        std::fs::read_to_string(Self::path())
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+        std::fs::read_to_string(Self::path()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
     }
     pub fn save(&self) {
         let _ = std::fs::create_dir_all(Self::dir());
@@ -90,10 +87,7 @@ impl Settings {
         }
     }
     pub fn now() -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0)
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
     }
     /// Record a media file as recently used (most recent first, capped).
     pub fn touch_recent(&mut self, path: &str) {

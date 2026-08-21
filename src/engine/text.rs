@@ -30,13 +30,7 @@ impl Default for TextRasterizer {
 impl TextRasterizer {
     /// Cheap; fonts load lazily (or via `load_system_fonts` from a background thread).
     pub fn new() -> Self {
-        Self {
-            cache: HashMap::new(),
-            families: Vec::new(),
-            loaded: false,
-            db: Database::new(),
-            fonts: HashMap::new(),
-        }
+        Self { cache: HashMap::new(), families: Vec::new(), loaded: false, db: Database::new(), fonts: HashMap::new() }
     }
     /// Scan system fonts (≈100 ms). Idempotent.
     pub fn load_system_fonts(&mut self) {
@@ -45,11 +39,8 @@ impl TextRasterizer {
         }
         self.loaded = true;
         self.db.load_system_fonts();
-        let mut fams: Vec<String> = self
-            .db
-            .faces()
-            .filter_map(|f| f.families.first().map(|(n, _)| n.clone()))
-            .collect();
+        let mut fams: Vec<String> =
+            self.db.faces().filter_map(|f| f.families.first().map(|(n, _)| n.clone())).collect();
         fams.sort();
         fams.dedup();
         self.families = fams;
@@ -166,11 +157,7 @@ impl TextRasterizer {
             (0.0, 0.0, 0.0)
         };
         let has_box = style.box_color[3] > 0;
-        let pad = if has_box {
-            style.box_padding.max(0.0) * scale
-        } else {
-            0.0
-        };
+        let pad = if has_box { style.box_padding.max(0.0) * scale } else { 0.0 };
         let m = (r + shx.abs().max(shy.abs()) + blur * 2.0).max(pad).ceil() as i32 + 1;
         // ponytail: hard cap on the image size — bigger text just gets clipped
         let w = ((bx1 - bx0).ceil() as i32 + 2 * m).clamp(1, MAX_SIDE as i32) as u32;
@@ -206,11 +193,7 @@ impl TextRasterizer {
                         continue;
                     }
                     let j = sy as usize * wu + sx as usize;
-                    let v = if outline.is_empty() {
-                        fill[j]
-                    } else {
-                        fill[j].max(outline[j])
-                    };
+                    let v = if outline.is_empty() { fill[j] } else { fill[j].max(outline[j]) };
                     s[y as usize * wu + x as usize] = v;
                 }
             }
@@ -229,19 +212,11 @@ impl TextRasterizer {
             let y1 = ((block_h + oy + pad).ceil().max(0.0) as u32).min(h);
             for y in y0..y1 {
                 for x in x0..x1 {
-                    over(
-                        &mut out.rgba[(y as usize * wu + x as usize) * 4..][..4],
-                        style.box_color,
-                        255,
-                    );
+                    over(&mut out.rgba[(y as usize * wu + x as usize) * 4..][..4], style.box_color, 255);
                 }
             }
         }
-        for (mask, color) in [
-            (&shadow, style.shadow_color),
-            (&outline, style.outline_color),
-            (&fill, style.color),
-        ] {
+        for (mask, color) in [(&shadow, style.shadow_color), (&outline, style.outline_color), (&fill, style.color)] {
             if mask.is_empty() || color[3] == 0 {
                 continue;
             }
@@ -360,11 +335,7 @@ mod tests {
         assert!(a.width > 4 && a.height > 4, "{}x{}", a.width, a.height);
         assert!(alpha_sum(&a) > 0);
         // white fill: every covered pixel is white
-        assert!(a
-            .rgba
-            .chunks_exact(4)
-            .filter(|p| p[3] > 0)
-            .all(|p| p[0] == 255 && p[1] == 255 && p[2] == 255));
+        assert!(a.rgba.chunks_exact(4).filter(|p| p[3] > 0).all(|p| p[0] == 255 && p[1] == 255 && p[2] == 255));
         let b = tr.render(&style, 0.5);
         assert!(Arc::ptr_eq(&a, &b), "cache hit expected");
         let c = tr.render(&style, 1.0);

@@ -40,10 +40,7 @@ pub fn run(args: &[String]) -> i32 {
             .map(|s| s.to_string())
             .or_else(|| p.downcast_ref::<String>().cloned())
             .unwrap_or_default();
-        let at = info
-            .location()
-            .map(|l| format!(" at {}:{}", l.file(), l.line()))
-            .unwrap_or_default();
+        let at = info.location().map(|l| format!(" at {}:{}", l.file(), l.line())).unwrap_or_default();
         *PANIC_AT.lock().unwrap() = format!("{msg}{at}");
     }));
 
@@ -52,10 +49,7 @@ pub fn run(args: &[String]) -> i32 {
         println!("SELFTEST FAILED (1)");
         return 1;
     };
-    let dir = args
-        .first()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::temp_dir().join("simple-editor-selftest"));
+    let dir = args.first().map(PathBuf::from).unwrap_or_else(|| std::env::temp_dir().join("simple-editor-selftest"));
     let mp4 = dir.join("test.mp4").to_string_lossy().into_owned();
     let png = dir.join("logo.png").to_string_lossy().into_owned();
     println!("selftest dir: {}", dir.display());
@@ -91,54 +85,21 @@ pub fn run(args: &[String]) -> i32 {
         step(&mut fails, &format!("probe/{bn}"), || {
             let a = media::probe(&mp4, b)?;
             check!(near(a.duration, 4.0, 0.1), "duration {}", a.duration);
-            check!(
-                a.width == 320 && a.height == 240,
-                "size {}x{}",
-                a.width,
-                a.height
-            );
+            check!(a.width == 320 && a.height == 240, "size {}x{}", a.width, a.height);
             check!(near(a.fps, 30.0, 0.5), "fps {}", a.fps);
-            check!(
-                a.audio_streams.len() == 2,
-                "{} audio streams",
-                a.audio_streams.len()
-            );
+            check!(a.audio_streams.len() == 2, "{} audio streams", a.audio_streams.len());
             Ok(())
         });
         step(&mut fails, &format!("video/{bn}"), || {
             let mut v = media::open_video(&mp4, b)?;
             let mut f = Frame::default();
-            check!(
-                v.frame_at(0.5, 320, 240, &mut f),
-                "frame_at(0.5) returned false"
-            );
-            check!(
-                is_red(px(&f, 160, 120)),
-                "t=0.5 centre {:?}, expected red",
-                px(&f, 160, 120)
-            );
-            check!(
-                v.frame_at(2.5, 320, 240, &mut f),
-                "frame_at(2.5) returned false"
-            );
-            check!(
-                is_green(px(&f, 160, 120)),
-                "t=2.5 centre {:?}, expected green",
-                px(&f, 160, 120)
-            );
-            check!(
-                v.frame_at(0.5, 320, 240, &mut f),
-                "frame_at(0.5) again returned false"
-            );
-            check!(
-                is_red(px(&f, 160, 120)),
-                "t=0.5 again centre {:?}, expected red",
-                px(&f, 160, 120)
-            );
-            check!(
-                v.frame_at(1.0, 160, 120, &mut f),
-                "frame_at(1.0, 160x120) returned false"
-            );
+            check!(v.frame_at(0.5, 320, 240, &mut f), "frame_at(0.5) returned false");
+            check!(is_red(px(&f, 160, 120)), "t=0.5 centre {:?}, expected red", px(&f, 160, 120));
+            check!(v.frame_at(2.5, 320, 240, &mut f), "frame_at(2.5) returned false");
+            check!(is_green(px(&f, 160, 120)), "t=2.5 centre {:?}, expected green", px(&f, 160, 120));
+            check!(v.frame_at(0.5, 320, 240, &mut f), "frame_at(0.5) again returned false");
+            check!(is_red(px(&f, 160, 120)), "t=0.5 again centre {:?}, expected red", px(&f, 160, 120));
+            check!(v.frame_at(1.0, 160, 120, &mut f), "frame_at(1.0, 160x120) returned false");
             check!(
                 f.width == 160 && f.height == 120 && f.rgba.len() == 160 * 120 * 4,
                 "scaled frame {}x{} ({} bytes)",
@@ -151,10 +112,7 @@ pub fn run(args: &[String]) -> i32 {
             for i in 0..60 {
                 ok += v.frame_at(i as f64 / 30.0, 320, 240, &mut f) as u32;
             }
-            println!(
-                "  {bn}: 60 sequential frame_at calls in {} ms",
-                t0.elapsed().as_millis()
-            );
+            println!("  {bn}: 60 sequential frame_at calls in {} ms", t0.elapsed().as_millis());
             check!(ok == 60, "only {ok}/60 sequential frames decoded");
             Ok(())
         });
@@ -165,11 +123,7 @@ pub fn run(args: &[String]) -> i32 {
             let r = rms(&buf);
             check!((0.1..=1.0).contains(&r), "stream 0 rms at 1.0 = {r}");
             a.read_at(10.0, &mut buf);
-            check!(
-                buf.iter().all(|s| *s == 0.0),
-                "stream 0 at 10.0 not silent (rms {})",
-                rms(&buf)
-            );
+            check!(buf.iter().all(|s| *s == 0.0), "stream 0 at 10.0 not silent (rms {})", rms(&buf));
             let mut a1 = media::open_audio(&mp4, 1, b)?;
             a1.read_at(1.0, &mut buf);
             let r = rms(&buf);
@@ -189,69 +143,37 @@ pub fn run(args: &[String]) -> i32 {
         project = Project::from_media(probe()?);
         let names: Vec<&str> = project.tracks.iter().map(|t| t.name.as_str()).collect();
         check!(names == ["V1", "A1", "A2"], "tracks {names:?}");
-        check!(
-            near(project.duration(), 4.0, 0.1),
-            "duration {}",
-            project.duration()
-        );
+        check!(near(project.duration(), 4.0, 0.1), "duration {}", project.duration());
         let n = project.split_at(2.0, None).len();
         check!(n == 3, "split_at(2.0) made {n} clips, expected 3");
         Ok(())
     });
     step(&mut fails, "compose", || {
         comp.render(&project, 1.0, 320, 240, &mut pool, &mut text, &mut frame);
-        check!(
-            frame.width == 320 && frame.height == 240,
-            "canvas {}x{}",
-            frame.width,
-            frame.height
-        );
-        check!(
-            is_red(px(&frame, 160, 120)),
-            "t=1.0 centre {:?}, expected red",
-            px(&frame, 160, 120)
-        );
+        check!(frame.width == 320 && frame.height == 240, "canvas {}x{}", frame.width, frame.height);
+        check!(is_red(px(&frame, 160, 120)), "t=1.0 centre {:?}, expected red", px(&frame, 160, 120));
         comp.render(&project, 3.0, 320, 240, &mut pool, &mut text, &mut frame);
-        check!(
-            is_green(px(&frame, 160, 120)),
-            "t=3.0 centre {:?}, expected green",
-            px(&frame, 160, 120)
-        );
+        check!(is_green(px(&frame, 160, 120)), "t=3.0 centre {:?}, expected green", px(&frame, 160, 120));
         Ok(())
     });
     step(&mut fails, "compose/blend", || {
         let aid = project.add_asset(media::probe(&png, Backend::Auto)?);
         let ti = project.add_track(TrackKind::Video);
         let ids = project.insert_asset_clips(aid, 0.0, Some(ti));
-        let c = ids
-            .first()
-            .and_then(|&id| project.clip_mut(id))
-            .ok_or("no image clip inserted")?;
+        let c = ids.first().and_then(|&id| project.clip_mut(id)).ok_or("no image clip inserted")?;
         c.scale.value = 0.25;
         c.blend = BlendMode::Multiply;
         c.opacity.value = 1.0;
         comp.render(&project, 1.0, 320, 240, &mut pool, &mut text, &mut frame);
         let c = px(&frame, 160, 120);
-        check!(
-            c[0] < 60 && c[2] < 60,
-            "centre {c:?}, expected red*blue (dark)"
-        );
-        check!(
-            is_red(px(&frame, 5, 5)),
-            "corner {:?}, expected red",
-            px(&frame, 5, 5)
-        );
+        check!(c[0] < 60 && c[2] < 60, "centre {c:?}, expected red*blue (dark)");
+        check!(is_red(px(&frame, 5, 5)), "corner {:?}, expected red", px(&frame, 5, 5));
         Ok(())
     });
     step(&mut fails, "compose/text", || {
         let id = project.add_text_clip(1.0, 2.0);
         let c = project.clip_mut(id).ok_or("no text clip")?;
-        c.text = Some(TextStyle {
-            text: "Hi".into(),
-            size: 40.0,
-            outline_width: 2.0,
-            ..TextStyle::default()
-        });
+        c.text = Some(TextStyle { text: "Hi".into(), size: 40.0, outline_width: 2.0, ..TextStyle::default() });
         comp.render(&project, 1.0, 320, 240, &mut pool, &mut text, &mut frame);
         let white = (60..180)
             .flat_map(|y| (100..220).map(move |x| (x, y)))
@@ -270,11 +192,7 @@ pub fn run(args: &[String]) -> i32 {
             project.tracks[i].muted = true;
         }
         mixer.mix(&project, 1.0, &mut pool, &mut buf);
-        check!(
-            buf.iter().all(|s| *s == 0.0),
-            "rms {} with all muted, expected 0",
-            rms(&buf)
-        );
+        check!(buf.iter().all(|s| *s == 0.0), "rms {} with all muted, expected 0", rms(&buf));
         let a2 = *project.audio_tracks().last().ok_or("no audio tracks")?;
         project.tracks[a2].solo = true;
         mixer.mix(&project, 1.0, &mut pool, &mut buf);
@@ -288,11 +206,7 @@ pub fn run(args: &[String]) -> i32 {
         let mut wf = WaveformCache::new(eframe::egui::Context::default(), Backend::Auto);
         let t0 = Instant::now();
         let mut peaks = wf.get(&mp4, 0);
-        check!(
-            t0.elapsed() < Duration::from_millis(500),
-            "first get blocked for {:?}",
-            t0.elapsed()
-        );
+        check!(t0.elapsed() < Duration::from_millis(500), "first get blocked for {:?}", t0.elapsed());
         let peaks = loop {
             if let Some(p) = peaks {
                 break p;
@@ -301,11 +215,7 @@ pub fn run(args: &[String]) -> i32 {
             std::thread::sleep(Duration::from_millis(50));
             peaks = wf.get(&mp4, 0);
         };
-        check!(
-            (380..=420).contains(&peaks.len()),
-            "peaks len {}, expected ≈400",
-            peaks.len()
-        );
+        check!((380..=420).contains(&peaks.len()), "peaks len {}, expected ≈400", peaks.len());
         let mx = peaks.max.iter().cloned().fold(0.0f32, f32::max);
         check!(mx > 0.1, "peak max {mx}");
         Ok(())
@@ -327,11 +237,7 @@ pub fn run(args: &[String]) -> i32 {
     step(&mut fails, "export/mp4", || {
         let out = dir.join("export.mp4");
         let _ = std::fs::remove_file(&out);
-        let prog = export::start_export(
-            trimmed(0.5, 3.5)?,
-            opts(&out),
-            Arc::new(Mutex::new(TextRasterizer::new())),
-        );
+        let prog = export::start_export(trimmed(0.5, 3.5)?, opts(&out), Arc::new(Mutex::new(TextRasterizer::new())));
         wait_done(&prog, Duration::from_secs(120))?;
         check!(out.is_file(), "output missing");
         let out = out.to_string_lossy().into_owned();
@@ -339,34 +245,16 @@ pub fn run(args: &[String]) -> i32 {
         check!(near(d, 3.0, 0.2), "duration {d}, expected 3.0");
         let mut v = media::open_video(&out, Backend::Auto)?;
         let mut f = Frame::default();
-        check!(
-            v.frame_at(0.5, 320, 240, &mut f),
-            "frame_at(0.5) returned false"
-        );
-        check!(
-            is_red(px(&f, 160, 120)),
-            "t=0.5 centre {:?}, expected red",
-            px(&f, 160, 120)
-        );
-        check!(
-            v.frame_at(2.5, 320, 240, &mut f),
-            "frame_at(2.5) returned false"
-        );
-        check!(
-            is_green(px(&f, 160, 120)),
-            "t=2.5 centre {:?}, expected green",
-            px(&f, 160, 120)
-        );
+        check!(v.frame_at(0.5, 320, 240, &mut f), "frame_at(0.5) returned false");
+        check!(is_red(px(&f, 160, 120)), "t=0.5 centre {:?}, expected red", px(&f, 160, 120));
+        check!(v.frame_at(2.5, 320, 240, &mut f), "frame_at(2.5) returned false");
+        check!(is_green(px(&f, 160, 120)), "t=2.5 centre {:?}, expected green", px(&f, 160, 120));
         Ok(())
     });
     step(&mut fails, "export/wav", || {
         let out = dir.join("export.wav");
         let _ = std::fs::remove_file(&out);
-        let prog = export::start_export(
-            trimmed(0.5, 3.5)?,
-            opts(&out),
-            Arc::new(Mutex::new(TextRasterizer::new())),
-        );
+        let prog = export::start_export(trimmed(0.5, 3.5)?, opts(&out), Arc::new(Mutex::new(TextRasterizer::new())));
         wait_done(&prog, Duration::from_secs(120))?;
         let d = ffprobe_duration(&out.to_string_lossy())?;
         check!(near(d, 3.0, 0.2), "duration {d}, expected 3.0");
@@ -376,8 +264,7 @@ pub fn run(args: &[String]) -> i32 {
     // 7. lossless cut of [1.0, 3.0) — lands on keyframes, so only a loose duration check.
     step(&mut fails, "lossless", || {
         let p = trimmed(1.0, 3.0)?;
-        let segs = export::lossless_segments(&p)
-            .ok_or("lossless_segments returned None for a plain cut")?;
+        let segs = export::lossless_segments(&p).ok_or("lossless_segments returned None for a plain cut")?;
         check!(
             segs.len() == 1 && near(segs[0].0, 1.0, 0.01) && near(segs[0].1, 2.0, 0.01),
             "segments {segs:?}, expected [(1.0, 2.0)]"
@@ -396,10 +283,7 @@ pub fn run(args: &[String]) -> i32 {
         let xml = xmeml::export_xmeml(&Project::from_media(probe()?));
         check!(xml.contains("<xmeml"), "no <xmeml element");
         let p = mp4.replace('\\', "/");
-        check!(
-            xml.contains(&p) || xml.contains(&p.replace(' ', "%20")),
-            "asset path {p} missing"
-        );
+        check!(xml.contains(&p) || xml.contains(&p.replace(' ', "%20")), "asset path {p} missing");
         Ok(())
     });
 
@@ -420,10 +304,7 @@ fn step(fails: &mut u32, name: &str, f: impl FnOnce() -> R) {
             *fails += 1;
         }
         Err(_) => {
-            println!(
-                "FAIL {name}: panic: {}",
-                PANIC_AT.lock().map(|s| s.clone()).unwrap_or_default()
-            );
+            println!("FAIL {name}: panic: {}", PANIC_AT.lock().map(|s| s.clone()).unwrap_or_default());
             *fails += 1;
         }
     }
@@ -439,16 +320,8 @@ fn bname(b: Backend) -> &'static str {
 
 /// Run ffmpeg with `-y -v error` + args; Err = last stderr text.
 fn ff(exe: &Path, args: &[&str]) -> R {
-    let out = ffpipe::command(exe)
-        .args(["-y", "-v", "error"])
-        .args(args)
-        .output()
-        .map_err(|e| e.to_string())?;
-    check!(
-        out.status.success(),
-        "ffmpeg: {}",
-        String::from_utf8_lossy(&out.stderr).trim()
-    );
+    let out = ffpipe::command(exe).args(["-y", "-v", "error"]).args(args).output().map_err(|e| e.to_string())?;
+    check!(out.status.success(), "ffmpeg: {}", String::from_utf8_lossy(&out.stderr).trim());
     Ok(())
 }
 
@@ -458,8 +331,7 @@ fn ffprobe_duration(path: &str) -> Result<f64, String> {
         .args(["-v", "quiet", "-print_format", "json", "-show_format", path])
         .output()
         .map_err(|e| e.to_string())?;
-    let v: serde_json::Value =
-        serde_json::from_slice(&out.stdout).map_err(|e| format!("ffprobe {path}: {e}"))?;
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|e| format!("ffprobe {path}: {e}"))?;
     v["format"]["duration"]
         .as_str()
         .and_then(|s| s.parse().ok())
@@ -471,17 +343,8 @@ fn ffprobe_duration(path: &str) -> Result<f64, String> {
 fn wait_done(p: &Arc<Progress>, timeout: Duration) -> R {
     let t0 = Instant::now();
     while !p.is_done() {
-        check!(
-            !(Arc::strong_count(p) == 1 && !p.is_done()),
-            "worker ended without finishing ({})",
-            p.status()
-        );
-        check!(
-            t0.elapsed() < timeout,
-            "timeout after {:?} ({})",
-            timeout,
-            p.status()
-        );
+        check!(!(Arc::strong_count(p) == 1 && !p.is_done()), "worker ended without finishing ({})", p.status());
+        check!(t0.elapsed() < timeout, "timeout after {:?} ({})", timeout, p.status());
         std::thread::sleep(Duration::from_millis(50));
     }
     p.error().map_or(Ok(()), Err)
@@ -489,10 +352,7 @@ fn wait_done(p: &Arc<Progress>, timeout: Duration) -> R {
 
 fn px(f: &Frame, x: u32, y: u32) -> [u8; 4] {
     let i = ((y * f.width + x) * 4) as usize;
-    f.rgba
-        .get(i..i + 4)
-        .map(|p| [p[0], p[1], p[2], p[3]])
-        .unwrap_or([0; 4])
+    f.rgba.get(i..i + 4).map(|p| [p[0], p[1], p[2], p[3]]).unwrap_or([0; 4])
 }
 
 fn rms(s: &[f32]) -> f32 {
@@ -544,11 +404,7 @@ mod tests {
         let dir = std::env::temp_dir().join("simple-editor-selftest-unit");
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("one.wav").to_string_lossy().into_owned();
-        ff(
-            &ffmpeg,
-            &["-f", "lavfi", "-i", "sine=frequency=440:duration=1", &p],
-        )
-        .unwrap();
+        ff(&ffmpeg, &["-f", "lavfi", "-i", "sine=frequency=440:duration=1", &p]).unwrap();
         let d = ffprobe_duration(&p).unwrap();
         assert!(near(d, 1.0, 0.05), "{d}");
         assert!(ffprobe_duration("C:/definitely/missing.mp4").is_err());

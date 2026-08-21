@@ -288,10 +288,7 @@ pub struct Asset {
 
 impl Asset {
     pub fn name(&self) -> String {
-        Path::new(&self.path)
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| self.path.clone())
+        Path::new(&self.path).file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| self.path.clone())
     }
     pub fn has_video(&self) -> bool {
         matches!(self.kind, ClipKind::Video | ClipKind::Image)
@@ -523,9 +520,10 @@ impl Track {
     /// True if [start, start+dur) is free on this track, ignoring clips in `ignore`.
     pub fn fits(&self, start: f64, dur: f64, ignore: &[Id]) -> bool {
         start >= -EPS
-            && !self.clips.iter().any(|c| {
-                !ignore.contains(&c.id) && c.start < start + dur - EPS && start < c.end() - EPS
-            })
+            && !self
+                .clips
+                .iter()
+                .any(|c| !ignore.contains(&c.id) && c.start < start + dur - EPS && start < c.end() - EPS)
     }
 }
 
@@ -715,10 +713,7 @@ impl Project {
     pub fn max_clip_duration(&self, clip: &Clip) -> f64 {
         match clip.kind {
             ClipKind::Text | ClipKind::Image => f64::INFINITY,
-            _ => self
-                .asset(clip.asset)
-                .map(|a| (a.duration - clip.src_in).max(MIN_CLIP))
-                .unwrap_or(f64::INFINITY),
+            _ => self.asset(clip.asset).map(|a| (a.duration - clip.src_in).max(MIN_CLIP)).unwrap_or(f64::INFINITY),
         }
     }
 
@@ -794,11 +789,8 @@ impl Project {
         for (i, s) in asset.audio_streams.iter().enumerate() {
             let prefer = self.audio_tracks().get(i).copied();
             let ti = self.find_free_track(TrackKind::Audio, at, dur, prefer);
-            let name = if asset.audio_streams.len() > 1 {
-                format!("{} [{}]", asset.name(), s.label())
-            } else {
-                asset.name()
-            };
+            let name =
+                if asset.audio_streams.len() > 1 { format!("{} [{}]", asset.name(), s.label()) } else { asset.name() };
             let mut c = Clip::new(self.new_id(), ClipKind::Audio, name, at, dur);
             c.asset = asset.id;
             c.audio_stream = s.index;
@@ -906,11 +898,8 @@ impl Project {
         }
         self.split_at(a, None);
         self.split_at(b, None);
-        let ids: Vec<Id> = self
-            .all_clips()
-            .filter(|(_, c)| c.start >= a - EPS && c.end() <= b + EPS)
-            .map(|(_, c)| c.id)
-            .collect();
+        let ids: Vec<Id> =
+            self.all_clips().filter(|(_, c)| c.start >= a - EPS && c.end() <= b + EPS).map(|(_, c)| c.id).collect();
         self.delete_clips(&ids, false);
         self.close_gap(a, b);
     }

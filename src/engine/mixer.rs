@@ -101,12 +101,7 @@ mod tests {
             width: 0,
             height: 0,
             fps: 0.0,
-            audio_streams: vec![AudioStreamInfo {
-                index: 0,
-                channels: 2,
-                sample_rate: 48000,
-                ..Default::default()
-            }],
+            audio_streams: vec![AudioStreamInfo { index: 0, channels: 2, sample_rate: 48000, ..Default::default() }],
             codec: "pcm".into(),
         };
         Project::from_media(asset)
@@ -158,10 +153,7 @@ mod tests {
         let mut p = project();
         let ai = p.audio_tracks()[0];
         let c = &mut p.tracks[ai].clips[0];
-        c.volume.keys = vec![
-            crate::model::Keyframe { t: 0.0, v: 0.0 },
-            crate::model::Keyframe { t: 1.0, v: 2.0 },
-        ];
+        c.volume.keys = vec![crate::model::Keyframe { t: 0.0, v: 0.0 }, crate::model::Keyframe { t: 1.0, v: 2.0 }];
         let mut pool = pool();
         let mut mx = Mixer::new();
         let mut out = vec![0.0f32; 2 * 4800]; // 100 ms block from t=0 → volume 0 → 0.2 → samples 0 → 0.1
