@@ -1128,6 +1128,10 @@ impl eframe::App for App {
                         palette,
                         snap: settings.snap,
                         playing: player.is_playing(),
+                        // ponytail: integration point — the app-layout agent passes Some(&mut self.thumbs)
+                        // and the auto-cut pane's kept ranges here
+                        thumbs: None,
+                        keep_ranges: &[],
                     },
                 );
                 if resp.seeked {
