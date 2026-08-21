@@ -24,6 +24,11 @@ pub struct ExportOptions {
     pub crf: u32,
     pub preset: String,
     pub backend: Backend,
+    /// Output size when it differs from the project (frames are rendered at project size and scaled by
+    /// ffmpeg `-vf scale=W:H:flags=<scaler>`); None = project size.
+    pub out_size: Option<(u32, u32)>,
+    /// ffmpeg scale flags: "neighbor" | "bilinear" | "bicubic" | "lanczos" | "area" | "spline".
+    pub scaler: String,
 }
 
 pub struct Progress {
@@ -569,6 +574,7 @@ mod tests {
             folder: String::new(),
             tags: Vec::new(),
             label: 0,
+            description: String::new(),
         }
     }
 
@@ -810,6 +816,8 @@ mod tests {
             crf: 23,
             preset: "ultrafast".into(),
             backend: Backend::Auto,
+            out_size: None,
+            scaler: "bicubic".into(),
         };
         let text = Arc::new(Mutex::new(TextRasterizer::new()));
         let prog = start_export(p.clone(), opts.clone(), text.clone());

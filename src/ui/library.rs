@@ -59,6 +59,7 @@ fn kind_tag(k: ClipKind) -> &'static str {
         ClipKind::Audio => "A",
         ClipKind::Image => "I",
         ClipKind::Text => "T",
+        ClipKind::Sequence => "S",
     }
 }
 
@@ -208,6 +209,7 @@ mod tests {
                 folder: String::new(),
                 tags: Vec::new(),
                 label: 0,
+                description: String::new(),
             });
         }
         let mut settings = Settings::default();

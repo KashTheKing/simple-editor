@@ -203,6 +203,7 @@ mod tests {
             folder: String::new(),
             tags: Vec::new(),
             label: 0,
+            description: String::new(),
         }
     }
 

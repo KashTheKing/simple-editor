@@ -154,6 +154,10 @@ pub struct TimelineResponse {
     pub seeked: bool,
     /// Files dropped via dnd `DragPayload::Path` — (path, timeline time, track index).
     pub dropped_files: Vec<(PathBuf, f64, Option<usize>)>,
+    /// Other dnd payloads (Sequence / Template) dropped on the lanes — the app places them.
+    pub dropped_other: Vec<(DragPayload, f64, Option<usize>)>,
+    /// Actions requested from the timeline's context menus (Retime, AddTransition, FreezeFrame, AutoCut, …).
+    pub actions: Vec<crate::hotkeys::Action>,
 }
 
 struct Drag {
@@ -625,7 +629,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, c: TimelineCtx<'_>) ->
                 DragPayload::Asset(aid) => {
                     c.project.asset(*aid).map(|a| if a.kind == ClipKind::Image { 5.0 } else { a.duration })
                 }
-                DragPayload::Path(_) => None,
+                DragPayload::Path(_) | DragPayload::Template(_) => None,
+                DragPayload::Sequence(sid) => Some(c.project.sequence_duration(*sid)),
             }
             .unwrap_or(2.0);
             let ti = state.track_at(pos.y, c.project).or_else(|| c.project.video_tracks().first().copied());
@@ -643,6 +648,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, c: TimelineCtx<'_>) ->
             match &*payload {
                 DragPayload::Asset(aid) => act = Some(Act::DropAsset(*aid, t, ti)),
                 DragPayload::Path(p) => out.dropped_files.push((PathBuf::from(p), t, ti)),
+                other => out.dropped_other.push((other.clone(), t, ti)),
             }
         }
     }
@@ -973,6 +979,7 @@ mod tests {
                 folder: String::new(),
                 tags: Vec::new(),
                 label: 0,
+                description: String::new(),
             });
             project.insert_asset_clips(aid, 0.0, None);
             let waves = WaveformCache::new(ctx.clone(), Backend::Ffmpeg);

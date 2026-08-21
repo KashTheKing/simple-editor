@@ -5,6 +5,7 @@
 
 pub mod ffpipe;
 pub mod mf;
+pub mod thumbs;
 pub mod waveform;
 
 use crate::model::Asset;

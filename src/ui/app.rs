@@ -107,6 +107,7 @@ mod tests {
             folder: String::new(),
             tags: Vec::new(),
             label: 0,
+            description: String::new(),
         }
     }
 
@@ -467,6 +468,8 @@ impl App {
             crf: self.settings.crf,
             preset: self.settings.preset.clone(),
             backend: self.backend(),
+            out_size: None,
+            scaler: self.settings.export_scaler.clone(),
         }
     }
 
@@ -808,7 +811,8 @@ impl App {
             }
             // TODO(app-layout agent): wire these (panes, retime window, fullscreen, transitions, subtitles)
             ToggleEffects | ToggleTransitions | ToggleCurves | ToggleSubtitles | Retime | FreezeFrame | Fullscreen
-            | AddTransition | AddSubtitle => {}
+            | AddTransition | AddSubtitle | TogglePlanner | AutoCut | NestSequence | OpenParentSequence | SaveTemplate
+            | ApplyFlow => {}
         }
     }
 

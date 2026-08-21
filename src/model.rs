@@ -26,6 +26,29 @@ pub enum ClipKind {
     Image,
     Text,
     Audio,
+    /// A nested timeline (`Project.sequences`) used as footage; `clip.sequence` is its id. Lives on video
+    /// tracks; carries the sequence's audio too (the mixer walks video tracks for these).
+    Sequence,
+}
+
+/// Resampling quality used when the compositor scales/rotates layers (export == preview).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, Default, Hash)]
+pub enum Scaler {
+    Nearest,
+    #[default]
+    Bilinear,
+    Bicubic,
+}
+
+impl Scaler {
+    pub const ALL: [Scaler; 3] = [Scaler::Nearest, Scaler::Bilinear, Scaler::Bicubic];
+    pub fn name(self) -> &'static str {
+        match self {
+            Scaler::Nearest => "Nearest neighbour",
+            Scaler::Bilinear => "Bilinear",
+            Scaler::Bicubic => "Bicubic",
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, Default, Hash)]
@@ -82,7 +105,7 @@ impl BlendMode {
 }
 
 /// Interpolation of the segment that *starts* at a keyframe.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, Default, Hash)]
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize, Default)]
 pub enum Ease {
     #[default]
     Linear,
@@ -91,10 +114,23 @@ pub enum Ease {
     EaseInOut,
     /// Step: hold the key's value until the next key.
     Hold,
+    /// CSS-style cubic bezier through (0,0) (x1,y1) (x2,y2) (1,1): the velocity handles of the curve
+    /// editor. y may leave 0..1 (overshoot / anticipate).
+    Bezier { x1: f32, y1: f32, x2: f32, y2: f32 },
 }
 
 impl Ease {
+    /// The fixed kinds (the curve editor offers these plus the bezier presets below).
     pub const ALL: [Ease; 5] = [Ease::Linear, Ease::EaseIn, Ease::EaseOut, Ease::EaseInOut, Ease::Hold];
+    /// Named velocity presets (bezier handles).
+    pub const PRESETS: [(&'static str, Ease); 6] = [
+        ("Smooth", Ease::Bezier { x1: 0.42, y1: 0.0, x2: 0.58, y2: 1.0 }),
+        ("Snap", Ease::Bezier { x1: 0.9, y1: 0.0, x2: 0.1, y2: 1.0 }),
+        ("Slow Start", Ease::Bezier { x1: 0.55, y1: 0.0, x2: 1.0, y2: 0.45 }),
+        ("Slow End", Ease::Bezier { x1: 0.0, y1: 0.55, x2: 0.45, y2: 1.0 }),
+        ("Overshoot", Ease::Bezier { x1: 0.34, y1: 1.56, x2: 0.64, y2: 1.0 }),
+        ("Anticipate", Ease::Bezier { x1: 0.36, y1: 0.0, x2: 0.66, y2: -0.56 }),
+    ];
     pub fn name(self) -> &'static str {
         match self {
             Ease::Linear => "Linear",
@@ -102,6 +138,17 @@ impl Ease {
             Ease::EaseOut => "Ease Out",
             Ease::EaseInOut => "Ease In/Out",
             Ease::Hold => "Hold",
+            Ease::Bezier { .. } => "Bezier",
+        }
+    }
+    /// Bezier handles equivalent to this ease (for dragging handles in the curve editor).
+    pub fn handles(self) -> (f32, f32, f32, f32) {
+        match self {
+            Ease::Linear | Ease::Hold => (0.33, 0.33, 0.67, 0.67),
+            Ease::EaseIn => (0.42, 0.0, 1.0, 1.0),
+            Ease::EaseOut => (0.0, 0.0, 0.58, 1.0),
+            Ease::EaseInOut => (0.42, 0.0, 0.58, 1.0),
+            Ease::Bezier { x1, y1, x2, y2 } => (x1, y1, x2, y2),
         }
     }
     /// Map a linear 0..1 progress to the eased progress.
@@ -113,8 +160,27 @@ impl Ease {
             Ease::EaseOut => 1.0 - (1.0 - f) * (1.0 - f),
             Ease::EaseInOut => f * f * (3.0 - 2.0 * f),
             Ease::Hold => 0.0,
+            Ease::Bezier { x1, y1, x2, y2 } => cubic_bezier(f, x1 as f64, y1 as f64, x2 as f64, y2 as f64),
         }
     }
+}
+
+/// y for the x = `f` on the cubic bezier (0,0) (x1,y1) (x2,y2) (1,1) — Newton iterations on the x polynomial.
+fn cubic_bezier(f: f64, x1: f64, y1: f64, x2: f64, y2: f64) -> f64 {
+    let (x1, x2) = (x1.clamp(0.0, 1.0), x2.clamp(0.0, 1.0));
+    let bx = |t: f64| 3.0 * (1.0 - t) * (1.0 - t) * t * x1 + 3.0 * (1.0 - t) * t * t * x2 + t * t * t;
+    let by = |t: f64| 3.0 * (1.0 - t) * (1.0 - t) * t * y1 + 3.0 * (1.0 - t) * t * t * y2 + t * t * t;
+    let dbx = |t: f64| 3.0 * (1.0 - t) * (1.0 - t) * x1 + 6.0 * (1.0 - t) * t * (x2 - x1) + 3.0 * t * t * (1.0 - x2);
+    let mut t = f;
+    for _ in 0..8 {
+        let d = dbx(t);
+        if d.abs() < 1e-6 {
+            break;
+        }
+        t -= (bx(t) - f) / d;
+        t = t.clamp(0.0, 1.0);
+    }
+    by(t)
 }
 
 fn is_linear(e: &Ease) -> bool {
@@ -372,6 +438,9 @@ pub struct Asset {
     /// 0 = none, 1..=8 = index+1 into LABEL_COLORS.
     #[serde(default)]
     pub label: u8,
+    /// Free-form notes: what this asset is / what it's for (library + inspector).
+    #[serde(default)]
+    pub description: String,
 }
 
 impl Asset {
@@ -631,8 +700,14 @@ pub struct Clip {
     /// For Audio clips: which audio stream of the asset (0-based among audio streams).
     #[serde(default)]
     pub audio_stream: usize,
+    /// For Sequence clips: the nested timeline id.
+    #[serde(default)]
+    pub sequence: Id,
     #[serde(default = "tru")]
     pub enabled: bool,
+    /// Colour label shown on the timeline: 0 = inherit the asset's label, 1..=8 = LABEL_COLORS index + 1.
+    #[serde(default)]
+    pub label: u8,
     // --- retime ---
     /// Playback rate (1 = normal, 2 = twice as fast, 0.5 = half speed). Always > 0.
     #[serde(default = "one")]
@@ -688,7 +763,9 @@ impl Clip {
             duration,
             src_in: 0.0,
             audio_stream: 0,
+            sequence: 0,
             enabled: true,
+            label: 0,
             speed: 1.0,
             reverse: false,
             freeze: None,
@@ -741,7 +818,7 @@ impl Clip {
         self.kind != ClipKind::Audio
     }
     pub fn uses_asset(&self) -> bool {
-        self.kind != ClipKind::Text
+        matches!(self.kind, ClipKind::Video | ClipKind::Image | ClipKind::Audio)
     }
     /// Speed, reverse or freeze in effect.
     pub fn is_retimed(&self) -> bool {
@@ -968,6 +1045,67 @@ impl Track {
     }
 }
 
+/// A nested timeline ("compound clip"): its own tracks/size/fps; placed on video tracks as a
+/// `ClipKind::Sequence` clip and rendered/mixed recursively. Edited by swapping it into `Project.tracks`
+/// (`open_sequence` / `close_sequence`).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Sequence {
+    pub id: Id,
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    pub fps: f64,
+    pub tracks: Vec<Track>,
+}
+
+impl Sequence {
+    pub fn duration(&self) -> f64 {
+        self.tracks.iter().map(|t| t.end()).fold(0.0, f64::max)
+    }
+}
+
+/// The main timeline's state while a sequence is swapped in for editing.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Stash {
+    pub tracks: Vec<Track>,
+    pub width: u32,
+    pub height: u32,
+    pub fps: f64,
+    pub in_point: Option<f64>,
+    pub out_point: Option<f64>,
+}
+
+/// Planner item: a checkable task with notes, colour, nested sub-tasks and a moodboard of assets.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct PlanItem {
+    pub id: Id,
+    pub title: String,
+    pub done: bool,
+    pub notes: String,
+    /// 0 = none, 1..=8 = LABEL_COLORS index + 1.
+    pub color: u8,
+    /// Moodboard: asset ids (each with an optional description in `asset_notes`).
+    pub assets: Vec<Id>,
+    pub asset_notes: Vec<String>,
+    pub children: Vec<PlanItem>,
+}
+
+impl Default for PlanItem {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            title: String::new(),
+            done: false,
+            notes: String::new(),
+            color: 0,
+            assets: Vec::new(),
+            asset_notes: Vec::new(),
+            children: Vec::new(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Project {
@@ -979,7 +1117,10 @@ pub struct Project {
     pub assets: Vec<Asset>,
     /// Library folders that exist even while empty ("A/B" nesting by '/').
     pub folders: Vec<String>,
-    /// Order: all video tracks (V1, V2, ...) then all audio tracks (A1, A2, ...).
+    /// Folders on disk browsed directly from the library (files are imported on drop).
+    pub linked_folders: Vec<String>,
+    /// Order: all video tracks (V1, V2, ...) then all audio tracks (A1, A2, ...). While `editing` is
+    /// Some(seq), these are that sequence's tracks (the main timeline is in `main_stash`).
     pub tracks: Vec<Track>,
     pub in_point: Option<f64>,
     pub out_point: Option<f64>,
@@ -991,6 +1132,16 @@ pub struct Project {
     /// Distance from the bottom edge in project pixels.
     pub subtitle_margin: f32,
     pub show_subtitles: bool,
+    /// Compositor resampling quality.
+    pub scaler: Scaler,
+    /// Nested timelines (usable as footage via `ClipKind::Sequence`).
+    pub sequences: Vec<Sequence>,
+    /// The sequence currently swapped into `tracks` for editing (None = main timeline).
+    pub editing: Option<Id>,
+    pub main_stash: Option<Stash>,
+    /// Planner (nested tasks with moodboards) and free-form notes (process / ideas / style).
+    pub plan: Vec<PlanItem>,
+    pub notes: String,
     next_id: Id,
 }
 
@@ -1010,6 +1161,7 @@ impl Project {
             fps: 30.0,
             assets: Vec::new(),
             folders: Vec::new(),
+            linked_folders: Vec::new(),
             tracks: Vec::new(),
             in_point: None,
             out_point: None,
@@ -1018,6 +1170,12 @@ impl Project {
             subtitle_style: TextStyle::subtitle_default(),
             subtitle_margin: 60.0,
             show_subtitles: true,
+            scaler: Scaler::Bilinear,
+            sequences: Vec::new(),
+            editing: None,
+            main_stash: None,
+            plan: Vec::new(),
+            notes: String::new(),
             next_id: 0,
         };
         p.add_track(TrackKind::Video);
@@ -1627,6 +1785,396 @@ impl Project {
         self.subtitles.sort_by(|a, b| a.start.total_cmp(&b.start));
     }
 
+    // ---------- sequences (nested timelines) ----------
+    pub fn sequence(&self, id: Id) -> Option<&Sequence> {
+        self.sequences.iter().find(|s| s.id == id)
+    }
+    pub fn sequence_mut(&mut self, id: Id) -> Option<&mut Sequence> {
+        self.sequences.iter_mut().find(|s| s.id == id)
+    }
+    /// New empty sequence (V1 + A1) with the given format; returns its id.
+    pub fn new_sequence(&mut self, name: impl Into<String>, width: u32, height: u32, fps: f64) -> Id {
+        let id = self.new_id();
+        let mut seq = Sequence { id, name: name.into(), width, height, fps, tracks: Vec::new() };
+        let v = Track::new(self.new_id(), TrackKind::Video, "V1");
+        let a = Track::new(self.new_id(), TrackKind::Audio, "A1");
+        seq.tracks.push(v);
+        seq.tracks.push(a);
+        self.sequences.push(seq);
+        id
+    }
+    /// Duration of a sequence (the live tracks when it is the one being edited).
+    pub fn sequence_duration(&self, id: Id) -> f64 {
+        if self.editing == Some(id) {
+            return self.duration();
+        }
+        self.sequence(id).map(|s| s.duration()).unwrap_or(0.0)
+    }
+    /// Tracks of a sequence for rendering (its own, or the live `tracks` while it is being edited).
+    pub fn sequence_tracks(&self, id: Id) -> Option<&[Track]> {
+        if self.editing == Some(id) {
+            return Some(&self.tracks);
+        }
+        self.sequence(id).map(|s| s.tracks.as_slice())
+    }
+    /// True if sequence `outer` contains `inner` directly or through nested sequence clips.
+    pub fn sequence_contains(&self, outer: Id, inner: Id) -> bool {
+        fn walk(p: &Project, tracks: &[Track], inner: Id, depth: u32) -> bool {
+            if depth > 32 {
+                return true; // treat runaway nesting as a cycle
+            }
+            tracks.iter().flat_map(|t| t.clips.iter()).any(|c| {
+                c.kind == ClipKind::Sequence
+                    && (c.sequence == inner
+                        || p.sequence_tracks(c.sequence).map(|tr| walk(p, tr, inner, depth + 1)).unwrap_or(false))
+            })
+        }
+        outer == inner || self.sequence_tracks(outer).map(|t| walk(self, t, inner, 0)).unwrap_or(false)
+    }
+    /// Swap sequence `id` into `tracks` for editing (closing any other open sequence first).
+    pub fn open_sequence(&mut self, id: Id) -> bool {
+        if self.editing == Some(id) {
+            return true;
+        }
+        if self.sequence(id).is_none() {
+            return false;
+        }
+        self.close_sequence();
+        let stash = Stash {
+            tracks: std::mem::take(&mut self.tracks),
+            width: self.width,
+            height: self.height,
+            fps: self.fps,
+            in_point: self.in_point.take(),
+            out_point: self.out_point.take(),
+        };
+        let seq = self.sequence_mut(id).unwrap();
+        let tracks = std::mem::take(&mut seq.tracks);
+        let (w, h, fps) = (seq.width, seq.height, seq.fps);
+        self.main_stash = Some(stash);
+        self.tracks = tracks;
+        self.width = w;
+        self.height = h;
+        self.fps = fps;
+        self.editing = Some(id);
+        true
+    }
+    /// Put the edited sequence back and restore the main timeline.
+    pub fn close_sequence(&mut self) {
+        let Some(id) = self.editing.take() else { return };
+        let tracks = std::mem::take(&mut self.tracks);
+        let (w, h, fps) = (self.width, self.height, self.fps);
+        if let Some(seq) = self.sequence_mut(id) {
+            seq.tracks = tracks;
+            seq.width = w;
+            seq.height = h;
+            seq.fps = fps;
+        }
+        if let Some(st) = self.main_stash.take() {
+            self.tracks = st.tracks;
+            self.width = st.width;
+            self.height = st.height;
+            self.fps = st.fps;
+            self.in_point = st.in_point;
+            self.out_point = st.out_point;
+        }
+    }
+    /// Place a sequence as a clip at `at` (video track `video_track` preferred). None on cycles / unknown id.
+    pub fn insert_sequence_clip(&mut self, seq: Id, at: f64, video_track: Option<usize>) -> Option<Id> {
+        let name = self.sequence(seq)?.name.clone();
+        // a sequence can't contain itself: the timeline being edited (or main) must not be inside `seq`
+        if let Some(cur) = self.editing {
+            if self.sequence_contains(seq, cur) {
+                return None;
+            }
+        }
+        let dur = self.sequence_duration(seq).max(MIN_CLIP);
+        let ti = self.find_free_track(TrackKind::Video, at, dur, video_track);
+        let mut c = Clip::new(self.new_id(), ClipKind::Sequence, name, at, dur);
+        c.sequence = seq;
+        let id = c.id;
+        self.tracks[ti].clips.push(c);
+        self.tracks[ti].sort();
+        Some(id)
+    }
+    /// Move the selected clips (+ linked) into a new sequence and replace them with one Sequence clip.
+    /// Returns the new sequence id.
+    pub fn nest_selection(&mut self, ids: &[Id], name: impl Into<String>) -> Option<Id> {
+        let ids = self.expand_links(ids);
+        if ids.is_empty() {
+            return None;
+        }
+        let start = ids.iter().filter_map(|&id| self.clip(id)).map(|c| c.start).fold(f64::INFINITY, f64::min);
+        let end = ids.iter().filter_map(|&id| self.clip(id)).map(|c| c.end()).fold(0.0, f64::max);
+        if !start.is_finite() || end <= start {
+            return None;
+        }
+        let (w, h, fps) = (self.width, self.height, self.fps);
+        let seq_id = self.new_sequence(name, w, h, fps);
+        // move clips: keep their track kind and relative order of tracks
+        let mut moved: Vec<(TrackKind, usize, Clip)> = Vec::new(); // (kind, index within kind, clip)
+        let mut top_video: Option<usize> = None;
+        for &id in &ids {
+            let Some((ti, ci)) = self.find(id) else { continue };
+            let kind = self.tracks[ti].kind;
+            let list = if kind == TrackKind::Video { self.video_tracks() } else { self.audio_tracks() };
+            let pos = list.iter().position(|&x| x == ti).unwrap_or(0);
+            if kind == TrackKind::Video {
+                top_video = Some(top_video.map_or(ti, |t: usize| t.max(ti)));
+            }
+            let mut c = self.tracks[ti].clips.remove(ci);
+            c.start -= start;
+            moved.push((kind, pos, c));
+        }
+        self.tidy();
+        let next_ids: Vec<Id> = (0..64).map(|_| self.new_id()).collect();
+        let mut nid = next_ids.into_iter();
+        if let Some(seq) = self.sequence_mut(seq_id) {
+            for (kind, pos, c) in moved {
+                // ensure track `pos` of this kind exists
+                loop {
+                    let have = seq.tracks.iter().filter(|t| t.kind == kind).count();
+                    if have > pos {
+                        break;
+                    }
+                    let id = nid.next().unwrap_or(0);
+                    let n = have + 1;
+                    let name = format!("{}{}", if kind == TrackKind::Video { "V" } else { "A" }, n);
+                    let t = Track::new(id, kind, name);
+                    let idx = if kind == TrackKind::Video {
+                        seq.tracks.iter().rposition(|t| t.kind == TrackKind::Video).map(|i| i + 1).unwrap_or(0)
+                    } else {
+                        seq.tracks.len()
+                    };
+                    seq.tracks.insert(idx, t);
+                }
+                let ti = seq
+                    .tracks
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, t)| t.kind == kind)
+                    .nth(pos)
+                    .map(|(i, _)| i)
+                    .unwrap_or(0);
+                seq.tracks[ti].clips.push(c);
+                seq.tracks[ti].sort();
+            }
+        }
+        let vt = top_video.or_else(|| self.video_tracks().last().copied());
+        self.insert_sequence_clip(seq_id, start, vt);
+        Some(seq_id)
+    }
+
+    // ---------- labels ----------
+    /// Effective colour label of a clip (its own, else its asset's). 0 = none.
+    pub fn clip_label(&self, clip: &Clip) -> u8 {
+        if clip.label != 0 {
+            return clip.label;
+        }
+        if clip.uses_asset() {
+            return self.asset(clip.asset).map(|a| a.label).unwrap_or(0);
+        }
+        0
+    }
+
+    // ---------- planner ----------
+    fn plan_find_in(items: &mut [PlanItem], id: Id) -> Option<&mut PlanItem> {
+        for it in items {
+            if it.id == id {
+                return Some(it);
+            }
+            if let Some(f) = Self::plan_find_in(&mut it.children, id) {
+                return Some(f);
+            }
+        }
+        None
+    }
+    pub fn plan_item_mut(&mut self, id: Id) -> Option<&mut PlanItem> {
+        Self::plan_find_in(&mut self.plan, id)
+    }
+    /// Add an item (under `parent` or at the top level); returns its id.
+    pub fn plan_add(&mut self, parent: Option<Id>, title: impl Into<String>) -> Id {
+        let id = self.new_id();
+        let item = PlanItem { id, title: title.into(), ..Default::default() };
+        match parent.and_then(|p| self.plan_item_mut(p)) {
+            Some(p) => p.children.push(item),
+            None => self.plan.push(item),
+        }
+        id
+    }
+    pub fn plan_remove(&mut self, id: Id) {
+        fn rm(items: &mut Vec<PlanItem>, id: Id) {
+            items.retain(|i| i.id != id);
+            for i in items {
+                rm(&mut i.children, id);
+            }
+        }
+        rm(&mut self.plan, id);
+    }
+    /// All asset ids referenced by moodboards (never counted as "unused").
+    pub fn plan_assets(&self) -> std::collections::HashSet<Id> {
+        fn walk(items: &[PlanItem], out: &mut std::collections::HashSet<Id>) {
+            for i in items {
+                out.extend(i.assets.iter().copied());
+                walk(&i.children, out);
+            }
+        }
+        let mut s = std::collections::HashSet::new();
+        walk(&self.plan, &mut s);
+        s
+    }
+
+    // ---------- usage ----------
+    /// Asset ids referenced by any clip (main timeline, stash, every sequence).
+    pub fn used_assets(&self) -> std::collections::HashSet<Id> {
+        let mut s = std::collections::HashSet::new();
+        let mut add = |tracks: &[Track]| {
+            for c in tracks.iter().flat_map(|t| t.clips.iter()) {
+                if c.uses_asset() {
+                    s.insert(c.asset);
+                }
+            }
+        };
+        add(&self.tracks);
+        if let Some(st) = &self.main_stash {
+            add(&st.tracks);
+        }
+        for seq in &self.sequences {
+            add(&seq.tracks);
+        }
+        s
+    }
+    /// Remove assets no clip uses (planner moodboard assets are kept). Returns how many were removed.
+    pub fn remove_unused_assets(&mut self) -> usize {
+        let used = self.used_assets();
+        let planned = self.plan_assets();
+        let before = self.assets.len();
+        self.assets.retain(|a| used.contains(&a.id) || planned.contains(&a.id));
+        before - self.assets.len()
+    }
+
+    // ---------- auto-cut ----------
+    /// Split the clips (+ linked) at every time in `cuts`, then delete the pieces lying inside any of the
+    /// `remove` ranges (timeline times, half-open), optionally closing the gaps (ripple). Returns the number
+    /// of pieces removed.
+    pub fn auto_cut(&mut self, ids: &[Id], cuts: &[f64], remove: &[(f64, f64)], ripple: bool) -> usize {
+        let ids = self.expand_links(ids);
+        let mut group = ids.clone();
+        for &t in cuts {
+            let new = self.split_at(t, Some(&group));
+            group.extend(new);
+        }
+        let victims: Vec<Id> = group
+            .iter()
+            .filter_map(|&id| self.clip(id))
+            .filter(|c| {
+                let mid = c.start + c.duration / 2.0;
+                remove.iter().any(|&(a, b)| mid >= a && mid < b)
+            })
+            .map(|c| c.id)
+            .collect();
+        let n = victims.len();
+        if n > 0 {
+            self.delete_clips(&victims, ripple);
+        }
+        n
+    }
+
+    // ---------- templates ----------
+    /// Place a saved group of clips (times relative to the group start) at `at`. Assets are re-added by
+    /// path (ids remapped); clip/link ids are fresh; tracks chosen by kind in order (new ones when blocked).
+    pub fn place_clips(&mut self, clips: Vec<Clip>, assets: Vec<Asset>, at: f64) -> Vec<Id> {
+        let mut asset_map: std::collections::HashMap<Id, Id> = std::collections::HashMap::new();
+        for a in assets {
+            let old = a.id;
+            let new = self.add_asset(a);
+            asset_map.insert(old, new);
+        }
+        let mut link_map: std::collections::HashMap<Id, Id> = std::collections::HashMap::new();
+        let mut out = Vec::new();
+        for mut c in clips {
+            c.id = self.new_id();
+            if c.link != 0 {
+                let l = *link_map.entry(c.link).or_insert_with(|| 0);
+                c.link = if l == 0 {
+                    let nl = self.new_id();
+                    link_map.insert(c.link, nl);
+                    nl
+                } else {
+                    l
+                };
+            }
+            if c.uses_asset() {
+                match asset_map.get(&c.asset) {
+                    Some(&a) => c.asset = a,
+                    None => continue,
+                }
+            }
+            if c.kind == ClipKind::Sequence && self.sequence(c.sequence).is_none() {
+                continue;
+            }
+            c.start += at;
+            let kind = if c.kind == ClipKind::Audio { TrackKind::Audio } else { TrackKind::Video };
+            let ti = self.find_free_track(kind, c.start, c.duration, None);
+            out.push(c.id);
+            self.tracks[ti].clips.push(c);
+            self.tracks[ti].sort();
+        }
+        out
+    }
+
+    // ---------- motion helpers ----------
+    /// Make two abutting clips "flow": for every visual property animated on either clip, the outgoing
+    /// value/velocity of `a` continues into `b` (a gets an ease-in to the cut, b an ease-out from it, and
+    /// both meet at the same value at the cut). Returns false if the clips don't abut.
+    pub fn flow_clips(&mut self, a: Id, b: Id) -> bool {
+        let (Some(ca), Some(cb)) = (self.clip(a).cloned(), self.clip(b).cloned()) else { return false };
+        if (ca.end() - cb.start).abs() > ABUT_EPS {
+            return false;
+        }
+        let props = ["x", "y", "scale", "rotation", "opacity"];
+        fn pick(c: &mut Clip, i: usize) -> &mut Animated {
+            match i {
+                0 => &mut c.x,
+                1 => &mut c.y,
+                2 => &mut c.scale,
+                3 => &mut c.rotation,
+                _ => &mut c.opacity,
+            }
+        }
+        let (da, db) = (ca.duration, cb.duration);
+        let mut na = ca.clone();
+        let mut nb = cb.clone();
+        for i in 0..props.len() {
+            let va_end = pick(&mut na, i).at(da);
+            let vb_start = pick(&mut nb, i).at(0.0);
+            let animated = pick(&mut na, i).is_animated() || pick(&mut nb, i).is_animated();
+            if !animated {
+                continue;
+            }
+            let meet = (va_end + vb_start) / 2.0;
+            let pa = pick(&mut na, i);
+            if !pa.is_animated() {
+                pa.toggle_key(0.0);
+            }
+            pa.set_at(da, meet);
+            if let Some(k) = pa.keys.iter_mut().rev().nth(1) {
+                k.ease = Ease::EaseIn;
+            }
+            let pb = pick(&mut nb, i);
+            if !pb.is_animated() {
+                pb.toggle_key(db);
+            }
+            pb.set_at(0.0, meet);
+            if let Some(k) = pb.keys.first_mut() {
+                k.ease = Ease::EaseOut;
+            }
+        }
+        *self.clip_mut(a).unwrap() = na;
+        *self.clip_mut(b).unwrap() = nb;
+        true
+    }
+
     // ---------- persistence ----------
     pub fn to_json(&self) -> String {
         serde_json::to_string_pretty(self).unwrap_or_default()
@@ -1640,10 +2188,20 @@ impl Project {
             .chain(p.tracks.iter().map(|t| t.id))
             .chain(p.tracks.iter().flat_map(|t| t.transitions.iter().map(|x| x.id)))
             .chain(p.subtitles.iter().map(|c| c.id))
+            .chain(p.sequences.iter().map(|s| s.id))
+            .chain(p.sequences.iter().flat_map(|s| s.tracks.iter().map(|t| t.id)))
+            .chain(p.sequences.iter().flat_map(|s| s.tracks.iter().flat_map(|t| t.clips.iter().map(|c| c.id.max(c.link)))))
+            .chain(p.main_stash.iter().flat_map(|s| s.tracks.iter().flat_map(|t| t.clips.iter().map(|c| c.id.max(c.link)))))
             .chain(p.all_clips().map(|(_, c)| c.id.max(c.link)))
             .max()
             .unwrap_or(0);
-        p.next_id = p.next_id.max(max_id);
+        fn plan_max(items: &[PlanItem]) -> Id {
+            items.iter().map(|i| i.id.max(plan_max(&i.children))).max().unwrap_or(0)
+        }
+        p.next_id = p.next_id.max(max_id).max(plan_max(&p.plan));
+        if p.editing.is_some_and(|id| p.sequence(id).is_none()) {
+            p.editing = None;
+        }
         // hand-edited files: keep every value in the range the UI can produce (fps 0 would make NaN times)
         if !(p.fps >= 1.0 && p.fps <= 1000.0) {
             p.fps = 30.0;
@@ -1703,6 +2261,7 @@ mod tests {
             folder: String::new(),
             tags: Vec::new(),
             label: 0,
+            description: String::new(),
         }
     }
 
@@ -1954,6 +2513,96 @@ mod tests {
         let mut bad = Project::new();
         bad.tracks[0].clips.push(Clip::new(99, ClipKind::Text, "t", 0.0, -1.0));
         assert!(Project::from_json(&bad.to_json()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn sequences_open_close_nest() {
+        let mut p = Project::from_media(asset(0, 10.0, 1));
+        let v = p.tracks[0].clips[0].id;
+        // nest the whole clip (+ audio) into a sequence
+        let seq = p.nest_selection(&[v], "Intro").unwrap();
+        assert_eq!(p.sequences.len(), 1);
+        assert_eq!(p.sequence(seq).unwrap().tracks.len(), 2);
+        assert_eq!(p.tracks[0].clips.len(), 1);
+        assert_eq!(p.tracks[0].clips[0].kind, ClipKind::Sequence);
+        assert!((p.sequence_duration(seq) - 10.0).abs() < 1e-9);
+        assert!((p.duration() - 10.0).abs() < 1e-9);
+        assert!(p.used_assets().len() == 1); // the asset is used inside the sequence
+        // open the sequence for editing: tracks swap, main is stashed
+        assert!(p.open_sequence(seq));
+        assert_eq!(p.editing, Some(seq));
+        assert_eq!(p.tracks[0].clips[0].kind, ClipKind::Video);
+        assert!(p.main_stash.is_some());
+        // can't place itself inside itself
+        assert!(p.insert_sequence_clip(seq, 0.0, None).is_none());
+        p.close_sequence();
+        assert_eq!(p.editing, None);
+        assert_eq!(p.tracks[0].clips[0].kind, ClipKind::Sequence);
+        // round trip keeps everything
+        let q = Project::from_json(&p.to_json()).unwrap();
+        assert_eq!(q.sequences.len(), 1);
+        assert!((q.sequence_duration(seq) - 10.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn planner_and_unused() {
+        let mut p = Project::from_media(asset(0, 10.0, 1));
+        let extra = p.add_asset(asset(1, 3.0, 0));
+        let third = p.add_asset(asset(2, 3.0, 0));
+        let a = p.plan_add(None, "Intro");
+        let b = p.plan_add(Some(a), "Hook shot");
+        p.plan_item_mut(b).unwrap().assets.push(extra);
+        p.plan_item_mut(b).unwrap().done = true;
+        assert_eq!(p.plan[0].children[0].title, "Hook shot");
+        assert!(p.plan_assets().contains(&extra));
+        assert_eq!(p.remove_unused_assets(), 1); // `third` gone, `extra` kept by the moodboard
+        assert!(p.asset(extra).is_some() && p.asset(third).is_none());
+        p.plan_remove(a);
+        assert!(p.plan.is_empty());
+    }
+
+    #[test]
+    fn auto_cut_removes_quiet_parts() {
+        let mut p = Project::from_media(asset(0, 10.0, 1));
+        let a = p.tracks[1].clips[0].id;
+        // cuts at 2,4,6,8; remove [0,2) and [4,6) and [8,10) → keeps [2,4) and [6,8), rippled together
+        let n = p.auto_cut(&[a], &[2.0, 4.0, 6.0, 8.0], &[(0.0, 2.0), (4.0, 6.0), (8.0, 10.0)], true);
+        assert_eq!(n, 6); // 3 audio + 3 linked video pieces
+        assert_eq!(p.tracks[1].clips.len(), 2);
+        assert_eq!(p.tracks[0].clips.len(), 2);
+        assert!((p.duration() - 4.0).abs() < 1e-9);
+        assert!((p.tracks[0].clips[1].src_in - 6.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn flow_and_place() {
+        let mut p = Project::new();
+        let a = p.add_text_clip(0.0, 2.0);
+        let b = p.add_text_clip(2.0, 2.0);
+        p.clip_mut(a).unwrap().x.toggle_key(0.0);
+        p.clip_mut(a).unwrap().x.set_at(2.0, 100.0);
+        p.clip_mut(b).unwrap().x.toggle_key(0.0);
+        p.clip_mut(b).unwrap().x.set_at(2.0, -100.0); // b starts at 0 → after flow both meet at 50
+        assert!(p.flow_clips(a, b));
+        assert!((p.clip(a).unwrap().x.at(2.0) - 50.0).abs() < 1e-9);
+        assert!((p.clip(b).unwrap().x.at(0.0) - 50.0).abs() < 1e-9);
+        assert_eq!(p.clip(b).unwrap().x.keys[0].ease, Ease::EaseOut);
+        // place the two clips again as a template at t=10
+        let clips: Vec<Clip> = [a, b].iter().map(|&id| p.clip(id).unwrap().clone()).collect();
+        let ids = p.place_clips(clips, Vec::new(), 10.0);
+        assert_eq!(ids.len(), 2);
+        assert!((p.clip(ids[0]).unwrap().start - 10.0).abs() < 1e-9);
+        assert_eq!(p.tracks[0].clips.len(), 4);
+    }
+
+    #[test]
+    fn bezier_ease() {
+        let e = Ease::Bezier { x1: 0.42, y1: 0.0, x2: 0.58, y2: 1.0 };
+        assert!((e.apply(0.0)).abs() < 1e-6 && (e.apply(1.0) - 1.0).abs() < 1e-6);
+        assert!((e.apply(0.5) - 0.5).abs() < 1e-3);
+        assert!(e.apply(0.25) < 0.25); // ease-in start
+        let s = serde_json::to_string(&e).unwrap();
+        assert_eq!(serde_json::from_str::<Ease>(&s).unwrap(), e);
     }
 
     #[test]

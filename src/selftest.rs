@@ -228,6 +228,8 @@ pub fn run(args: &[String]) -> i32 {
         crf: 23,
         preset: "ultrafast".into(),
         backend: Backend::Auto,
+        out_size: None,
+        scaler: "bicubic".into(),
     };
     let trimmed = |a: f64, b: f64| -> Result<Project, String> {
         let mut p = Project::from_media(probe()?);

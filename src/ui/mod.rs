@@ -1,12 +1,16 @@
 //! egui UI. Dockable layout (ui/layout.rs) of panes: Library, Preview, Inspector, Effects, Transitions,
-//! Subtitles, Timeline, Curves — DaVinci-like by default, bare Windows-forms styling.
+//! Subtitles, Timeline, Curves, Planner, Auto-cut — DaVinci-like by default, bare Windows-forms styling.
+//! Windows (Settings, Retime, Export) never block the editor.
 
 pub mod app;
+pub mod autocut_ui;
 pub mod curves;
 pub mod effects_ui;
+pub mod export_ui;
 pub mod inspector;
 pub mod layout;
 pub mod library;
+pub mod planner;
 pub mod preview;
 pub mod retime;
 pub mod settings_ui;
@@ -16,13 +20,17 @@ pub mod transitions_ui;
 
 use crate::model::Id;
 
-/// Drag-and-drop payload from the library / recent panels to the timeline (egui dnd API).
+/// Drag-and-drop payload from the library / recent / planner panels to the timeline (egui dnd API).
 #[derive(Clone, Debug)]
 pub enum DragPayload {
     /// A library asset id.
     Asset(Id),
-    /// A file path (recent panel) — the timeline reports it back as a dropped file.
+    /// A file path (recent panel, linked folders) — the timeline reports it back as a dropped file.
     Path(String),
+    /// A nested timeline (Project.sequences) id.
+    Sequence(Id),
+    /// A saved template (Settings.templates) by name.
+    Template(String),
 }
 
 /// HH:MM:SS:FF timecode.

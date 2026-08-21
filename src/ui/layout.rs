@@ -20,10 +20,12 @@ pub enum Pane {
     Transitions,
     Curves,
     Subtitles,
+    Planner,
+    AutoCut,
 }
 
 impl Pane {
-    pub const ALL: [Pane; 8] = [
+    pub const ALL: [Pane; 10] = [
         Pane::Preview,
         Pane::Timeline,
         Pane::Library,
@@ -32,6 +34,8 @@ impl Pane {
         Pane::Transitions,
         Pane::Curves,
         Pane::Subtitles,
+        Pane::Planner,
+        Pane::AutoCut,
     ];
     pub fn title(self) -> &'static str {
         match self {
@@ -43,6 +47,8 @@ impl Pane {
             Pane::Transitions => "Transitions",
             Pane::Curves => "Curves",
             Pane::Subtitles => "Subtitles",
+            Pane::Planner => "Planner",
+            Pane::AutoCut => "Auto-cut",
         }
     }
 }

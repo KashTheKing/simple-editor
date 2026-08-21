@@ -114,6 +114,8 @@ impl Compositor {
                     continue;
                 }
                 match clip.kind {
+                    // TODO(engine-video): render the nested timeline recursively (see ARCHITECTURE.md)
+                    ClipKind::Sequence => continue,
                     ClipKind::Video | ClipKind::Image => {
                         let Some(asset) = project.asset(clip.asset) else {
                             continue;
@@ -372,6 +374,7 @@ mod tests {
             folder: String::new(),
             tags: Vec::new(),
             label: 0,
+            description: String::new(),
         }
     }
 

@@ -113,6 +113,7 @@ pub fn probe(path: &str) -> Result<Asset, String> {
         folder: String::new(),
         tags: Vec::new(),
         label: 0,
+        description: String::new(),
     };
     let mut video: Option<&Value> = None;
     let mut stream_dur: f64 = 0.0;

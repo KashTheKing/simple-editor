@@ -30,6 +30,30 @@ pub struct LayoutProfile {
     pub json: String,
 }
 
+/// A saved keyframe curve for one property. Key times are normalised to 0..1 of the clip length unless
+/// `absolute` (seconds from the clip start); values are absolute.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct CurvePreset {
+    pub name: String,
+    pub keys: Vec<crate::model::Keyframe>,
+    pub absolute: bool,
+}
+
+/// A saved motion: curves for several properties at once ("slide in", "Ken Burns", …).
+/// Property names as in `Clip::props_mut` labels ("Position X", "Scale", …) or "<Effect>: <Param>".
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct MotionPreset {
+    pub name: String,
+    pub props: Vec<(String, CurvePreset)>,
+}
+
+/// A reusable group of clips (relative times) + the assets they need, serialised by engine::presets.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct Template {
+    pub name: String,
+    pub json: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -65,6 +89,20 @@ pub struct Settings {
     pub layout: String,
     /// Saved layout profiles (also exportable to / importable from `.sedit-layout` files).
     pub layout_profiles: Vec<LayoutProfile>,
+    /// Keyframe / motion presets and clip templates (global, reusable across projects).
+    pub curve_presets: Vec<CurvePreset>,
+    pub motion_presets: Vec<MotionPreset>,
+    pub templates: Vec<Template>,
+    /// Extra font files (.ttf/.otf) imported by the user (loaded by the text rasterizer + font lists).
+    pub user_fonts: Vec<String>,
+    /// Export: output scaling when the output size differs from the project
+    /// (ffmpeg scale flags: "neighbor" | "bilinear" | "bicubic" | "lanczos" | "area" | "spline").
+    pub export_scaler: String,
+    /// Export: "project" or "WxH".
+    pub export_resolution: String,
+    /// MCP server (AI co-editing) on 127.0.0.1:mcp_port/mcp.
+    pub mcp_enabled: bool,
+    pub mcp_port: u16,
 }
 
 impl Default for Settings {
@@ -88,6 +126,14 @@ impl Default for Settings {
             recent_projects: Vec::new(),
             layout: String::new(),
             layout_profiles: Vec::new(),
+            curve_presets: Vec::new(),
+            motion_presets: Vec::new(),
+            templates: Vec::new(),
+            user_fonts: Vec::new(),
+            export_scaler: "lanczos".into(),
+            export_resolution: "project".into(),
+            mcp_enabled: false,
+            mcp_port: 7337,
         }
     }
 }
