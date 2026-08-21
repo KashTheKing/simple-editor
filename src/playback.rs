@@ -71,6 +71,8 @@ enum Cmd {
     Canvas,
     Backend(Backend),
     ClearDecoders(SyncSender<()>),
+    /// One-shot render at time t, at most max_w px wide (project aspect), reply on the channel.
+    RenderOnce(f64, u32, SyncSender<Arc<Frame>>),
     Quit,
 }
 
@@ -176,6 +178,14 @@ impl Player {
     pub fn take_frame(&mut self) -> Option<Arc<Frame>> {
         lock(&self.shared.frame).take()
     }
+    /// Synchronously render the timeline at `t`, at most `max_w` px wide (project aspect kept), on the
+    /// render thread (its decoders stay warm). None if the thread is gone or takes longer than 3 s.
+    /// Not a hot path (MCP `render.frame` tool): allocates a fresh frame per call.
+    pub fn render_once(&self, t: f64, max_w: u32) -> Option<Arc<Frame>> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.render.send(Cmd::RenderOnce(t, max_w, tx)).ok()?;
+        rx.recv_timeout(Duration::from_secs(3)).ok()
+    }
     /// Synchronously drop every decoder on both threads (before overwriting a source file).
     pub fn release_files(&mut self) {
         let (tx, rx) = mpsc::sync_channel(2);
@@ -243,6 +253,14 @@ fn render_thread(
                 Cmd::ClearDecoders(ack) => {
                     pool.clear();
                     let _ = ack.send(());
+                }
+                Cmd::RenderOnce(t, max_w, reply) => {
+                    let (pw, ph) = (project.width.max(1), project.height.max(1));
+                    let w = pw.min(max_w.max(16));
+                    let h = ((ph as u64 * w as u64) / pw as u64).max(1) as u32;
+                    let mut f = Frame::default();
+                    comp.render(&project, t, w, h, &mut pool, &mut lock(&text), &mut f);
+                    let _ = reply.send(Arc::new(f));
                 }
                 Cmd::Quit => return,
             }
@@ -323,6 +341,7 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
                     pool.clear();
                     let _ = ack.send(());
                 }
+                Cmd::RenderOnce(..) => {} // render-thread only
                 Cmd::Quit => return,
             }
         }
@@ -482,5 +501,11 @@ mod tests {
         p.set_canvas(160, 120, 100); // clamp keeps aspect, and the preview re-renders after release
         let t = p.time();
         wait_frame(&mut p, t, (100, 75));
+
+        // render_once: synchronous frame for tools (MCP render.frame), independent of the preview canvas
+        let f = p.render_once(2.5, 160).expect("render_once");
+        assert_eq!((f.width, f.height), (160, 120));
+        let c = centre(&f);
+        assert!(c[0] < 70 && c[1] > 200, "expected green from render_once at 2.5 s, got {c:?}");
     }
 }

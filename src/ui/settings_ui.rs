@@ -63,6 +63,7 @@ pub fn show(
     hotkeys: &mut Hotkeys,
     encoders: &[String],
     _palette: &Palette,
+    mcp_status: &str,
 ) -> bool {
     let mut changed = false;
     let stale = state
@@ -81,7 +82,7 @@ pub fn show(
         });
         ui.separator();
         changed = match state.tab {
-            0 => general(ui, state, settings),
+            0 => general(ui, state, settings, mcp_status),
             1 => export(ui, settings, encoders),
             _ => hotkeys_tab(ui, state, hotkeys),
         };
@@ -110,7 +111,7 @@ fn combo(ui: &mut egui::Ui, id: &str, value: &mut String, options: &[(&str, &str
     changed
 }
 
-fn general(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Settings) -> bool {
+fn general(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Settings, mcp_status: &str) -> bool {
     let mut changed = false;
     egui::Grid::new("general").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
         ui.label("Theme");
@@ -164,8 +165,53 @@ fn general(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Settings) -> bool 
             ui.weak(st.ctxmenu);
         }
     });
-    changed |= ui.checkbox(&mut s.show_library, "Show library panel").changed();
-    changed |= ui.checkbox(&mut s.show_inspector, "Show inspector panel").changed();
+    ui.add_space(6.0);
+    ui.separator();
+    // ---- imported fonts ----
+    ui.horizontal(|ui| {
+        ui.label("Fonts");
+        if ui.button("Import font…").clicked() {
+            if let Some(paths) = rfd::FileDialog::new().add_filter("Fonts", &["ttf", "otf", "ttc"]).pick_files() {
+                for p in paths {
+                    let p = p.to_string_lossy().into_owned();
+                    if !s.user_fonts.iter().any(|f| f.eq_ignore_ascii_case(&p)) {
+                        s.user_fonts.push(p);
+                        changed = true;
+                    }
+                }
+            }
+        }
+        ui.weak("(.ttf / .otf, usable in text clips and subtitles)");
+    });
+    let mut remove = None;
+    for (i, f) in s.user_fonts.iter().enumerate() {
+        ui.horizontal(|ui| {
+            if ui.small_button("✕").clicked() {
+                remove = Some(i);
+            }
+            let name = std::path::Path::new(f).file_name().map(|n| n.to_string_lossy().into_owned());
+            ui.label(name.unwrap_or_else(|| f.clone())).on_hover_text(f);
+        });
+    }
+    if let Some(i) = remove {
+        s.user_fonts.remove(i);
+        changed = true;
+    }
+    ui.add_space(6.0);
+    ui.separator();
+    // ---- MCP server ----
+    changed |= ui.checkbox(&mut s.mcp_enabled, "MCP server (AI co-editing)").changed();
+    ui.horizontal(|ui| {
+        ui.label("Port");
+        changed |= ui.add(egui::DragValue::new(&mut s.mcp_port).range(1024..=65535)).changed();
+        ui.weak(format!("http://127.0.0.1:{}/mcp", s.mcp_port));
+    });
+    ui.horizontal(|ui| {
+        if ui.button("Copy Claude Code command").clicked() {
+            ui.ctx().copy_text(crate::mcp::claude_code_command(s.mcp_port));
+        }
+        ui.weak(mcp_status);
+    });
     changed
 }
 
@@ -391,7 +437,7 @@ mod tests {
             st.tab = tab;
             for _ in 0..2 {
                 let _ = ctx.run(egui::RawInput::default(), |ctx| {
-                    assert!(!show(ctx, &mut st, &mut settings, &mut hk, &encoders, &palette));
+                    assert!(!show(ctx, &mut st, &mut settings, &mut hk, &encoders, &palette, "stopped"));
                 });
             }
             assert!(st.open && st.status.is_some());
