@@ -18,6 +18,8 @@ pub struct PreviewState {
     pub texture: Option<egui::TextureHandle>,
     /// Active overlay drag: clip (x, y) at drag start and the accumulated pointer delta (points).
     drag: Option<(f64, f64, Vec2)>,
+    /// Last pointer movement (fullscreen hides the cursor after 2 s of stillness).
+    moved_at: Option<std::time::Instant>,
 }
 
 pub struct PreviewCtx<'a> {
@@ -128,8 +130,22 @@ fn video(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r:
         if resp.double_clicked() {
             r.actions.push(Action::Fullscreen);
         }
+        // hide the cursor after 2 s without movement
+        let moved = ui.input(|i| i.pointer.delta() != Vec2::ZERO || i.pointer.any_down());
+        if moved || state.moved_at.is_none() {
+            state.moved_at = Some(std::time::Instant::now());
+        }
+        if state.moved_at.map(|t| t.elapsed().as_secs_f32() > 2.0).unwrap_or(false) {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::None);
+        } else {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+        }
         state.drag = None;
         return;
+    }
+    state.moved_at = None;
+    if resp.double_clicked() {
+        r.actions.push(Action::Fullscreen);
     }
 
     // selection overlay + drag-to-move
