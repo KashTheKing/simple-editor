@@ -281,18 +281,21 @@ impl Animated {
         }
     }
     /// Move key `i` to `new_t` (keeps keys sorted); returns its new index.
+    /// Move key `i` to `new_t`, keeping the list sorted. A key already sitting at `new_t` is replaced
+    /// (dragging one keyframe onto another merges them instead of stacking duplicates).
     pub fn move_key(&mut self, i: usize, new_t: f64) -> usize {
         if i >= self.keys.len() {
             return i;
         }
         let mut k = self.keys.remove(i);
         k.t = new_t;
+        if let Some(j) = self.key_index_at(new_t) {
+            self.keys[j] = k;
+            return j;
+        }
         let j = self.keys.partition_point(|o| o.t < new_t);
         self.keys.insert(j, k);
         j
-    }
-    pub fn ease_at(&self, t: f64) -> Option<Ease> {
-        self.key_index_at(t).map(|i| self.keys[i].ease)
     }
     pub fn set_ease_at(&mut self, t: f64, ease: Ease) {
         if let Some(i) = self.key_index_at(t) {
@@ -644,16 +647,26 @@ fn black() -> [u8; 4] {
 }
 
 impl Transition {
-    /// Progress 0..1 at timeline time t, given the cut time (right clip's start).
-    pub fn progress(&self, cut: f64, t: f64) -> f64 {
-        if self.duration <= 0.0 {
+    /// Half the transition length, clamped to the clips it joins: an over-long transition must not
+    /// reach past either neighbour (it would hide the clips beside them).
+    pub fn half(&self, left: &Clip, right: &Clip) -> f64 {
+        (self.duration / 2.0).min(left.duration).min(right.duration)
+    }
+    /// The window [cut - half, cut + half) actually played, clamped to the clips.
+    pub fn window(&self, left: &Clip, right: &Clip) -> (f64, f64) {
+        let h = self.half(left, right);
+        (right.start - h, right.start + h)
+    }
+    /// Eased progress 0..1 across a window of `cut ± half`.
+    pub fn progress_at(&self, cut: f64, half: f64, t: f64) -> f64 {
+        if half <= 0.0 {
             return 1.0;
         }
-        let f = (t - (cut - self.duration / 2.0)) / self.duration;
-        self.ease.apply(f.clamp(0.0, 1.0))
+        self.ease.apply(((t - (cut - half)) / (2.0 * half)).clamp(0.0, 1.0))
     }
-    pub fn window(&self, cut: f64) -> (f64, f64) {
-        (cut - self.duration / 2.0, cut + self.duration / 2.0)
+    /// Eased progress 0..1 at timeline time t over the clamped window.
+    pub fn progress(&self, left: &Clip, right: &Clip, t: f64) -> f64 {
+        self.progress_at(right.start, self.half(left, right), t)
     }
 }
 
@@ -847,17 +860,6 @@ impl Clip {
         }
         self.speed = speed;
     }
-    pub fn animated_mut(&mut self) -> [&mut Animated; 7] {
-        [
-            &mut self.x,
-            &mut self.y,
-            &mut self.scale,
-            &mut self.rotation,
-            &mut self.opacity,
-            &mut self.volume,
-            &mut self.pan,
-        ]
-    }
     pub fn animated(&self) -> [&Animated; 7] {
         [&self.x, &self.y, &self.scale, &self.rotation, &self.opacity, &self.volume, &self.pan]
     }
@@ -1030,11 +1032,11 @@ impl Track {
         let left = self.left_of(right)?;
         Some((left, right))
     }
-    /// The transition whose window contains timeline time t, with its clips.
+    /// The transition playing at timeline time t (clamped window), with its clips.
     pub fn transition_at(&self, t: f64) -> Option<(&Transition, &Clip, &Clip)> {
         self.transitions.iter().find_map(|tr| {
             let (l, r) = self.transition_pair(tr)?;
-            let (a, b) = tr.window(r.start);
+            let (a, b) = tr.window(l, r);
             (t >= a && t < b).then_some((tr, l, r))
         })
     }
@@ -1231,10 +1233,22 @@ impl Project {
         id
     }
     /// Removes an asset and every clip using it.
+    /// Removes an asset and every clip using it — in the live timeline, the stashed main timeline and
+    /// every nested sequence (a leftover clip would render black / silent).
     pub fn remove_asset(&mut self, id: Id) {
         self.assets.retain(|a| a.id != id);
-        for t in &mut self.tracks {
-            t.clips.retain(|c| !(c.uses_asset() && c.asset == id));
+        let drop_clips = |tracks: &mut Vec<Track>| {
+            for t in tracks.iter_mut() {
+                t.clips.retain(|c| !(c.uses_asset() && c.asset == id));
+                t.prune_transitions();
+            }
+        };
+        drop_clips(&mut self.tracks);
+        if let Some(st) = &mut self.main_stash {
+            drop_clips(&mut st.tracks);
+        }
+        for seq in &mut self.sequences {
+            drop_clips(&mut seq.tracks);
         }
         self.tidy();
     }
@@ -1528,8 +1542,11 @@ impl Project {
         let mut frozen = Vec::new();
         for id in ids {
             let Some(c) = self.clip(id) else { continue };
+            if !c.contains(t) {
+                continue; // freezing a clip the playhead is not over would store an out-of-range source time
+            }
             let src = c.src_time(t);
-            let target = if c.contains(t) && t > c.start + MIN_CLIP {
+            let target = if t > c.start + MIN_CLIP {
                 self.split_at(t, Some(&[id])).first().copied().unwrap_or(id)
             } else {
                 id
@@ -2443,8 +2460,8 @@ mod tests {
         let (tr, l, r) = p.tracks[0].transition_at(3.9).unwrap();
         assert_eq!(tr.id, id);
         assert!(l.end() == r.start);
-        assert!((tr.progress(r.start, 3.5) - 0.0).abs() < 1e-9);
-        assert!((tr.progress(r.start, 4.5) - 1.0).abs() < 1e-9);
+        assert!((tr.progress(l, r, 3.5) - 0.0).abs() < 1e-9);
+        assert!((tr.progress(l, r, 4.5) - 1.0).abs() < 1e-9);
         assert!(p.tracks[0].transition_at(4.6).is_none());
         // no left neighbour → None
         let first = p.tracks[0].clips[0].id;

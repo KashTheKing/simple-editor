@@ -109,36 +109,17 @@ impl Extra {
 /// `Transition::duration` is not clamped when it is set, and an over-long window would otherwise hide
 /// every other clip on the track (and keep both clips playing past their own ends).
 pub fn trans_half(tr: &Transition, left: &Clip, right: &Clip) -> f64 {
-    (tr.duration / 2.0).min(left.duration).min(right.duration)
-}
-
-/// `Transition::window` clamped to the clips of the cut.
-pub fn trans_window(tr: &Transition, left: &Clip, right: &Clip) -> (f64, f64) {
-    let h = trans_half(tr, left, right);
-    (right.start - h, right.start + h)
+    tr.half(left, right)
 }
 
 /// Eased progress 0..1 across a transition window of `cut ± half`.
 pub fn trans_progress_at(tr: &Transition, cut: f64, half: f64, t: f64) -> f64 {
-    if half <= 0.0 {
-        return 1.0;
-    }
-    tr.ease.apply(((t - (cut - half)) / (2.0 * half)).clamp(0.0, 1.0))
+    tr.progress_at(cut, half, t)
 }
 
-/// `Transition::progress` over the clamped window.
+/// Eased progress 0..1 over the clamped window.
 pub fn trans_progress(tr: &Transition, left: &Clip, right: &Clip, t: f64) -> f64 {
-    trans_progress_at(tr, right.start, trans_half(tr, left, right), t)
-}
-
-/// `Track::transition_at` over the clamped window: the transition of `track` playing at t, with its
-/// clips. An over-long transition no longer swallows the clips beside it.
-fn transition_at(track: &Track, t: f64) -> Option<(&Transition, &Clip, &Clip)> {
-    track.transitions.iter().find_map(|tr| {
-        let (l, r) = track.transition_pair(tr)?;
-        let (a, b) = trans_window(tr, l, r);
-        (t >= a && t < b).then_some((tr, l, r))
-    })
+    tr.progress(left, right, t)
 }
 
 /// Mute/solo resolution over an arbitrary track list (mirrors `Project::active`).
@@ -258,7 +239,7 @@ impl Compositor {
             if track.kind != TrackKind::Video || !track_active(tracks, ti) {
                 continue;
             }
-            if let Some((tr, left, right)) = transition_at(track, t) {
+            if let Some((tr, left, right)) = track.transition_at(t) {
                 self.render_transition(project, pw, tr, left, right, t, w, h, pool, text, out, depth);
                 continue;
             }

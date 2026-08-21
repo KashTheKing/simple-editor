@@ -811,8 +811,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
 
         // transitions: an overlapping band centred on each valid cut
         for tr in &track.transitions {
-            let Some((_, right)) = track.transition_pair(tr) else { continue };
-            let (wa, wb) = tr.window(right.start);
+            let Some((left, right)) = track.transition_pair(tr) else { continue };
+            // the played window is clamped to the two clips (an over-long transition can't reach past them)
+            let (wa, wb) = tr.window(left, right);
             let (xa, xb) = (state.x_at(wa), state.x_at(wb));
             if xb < lanes.left() || xa > lanes.right() {
                 continue;
@@ -1931,10 +1932,11 @@ mod tests {
         let from = pos2(h.state.x_at(5.5) - 2.0, lanes.top() + 30.0);
         assert!(h.drag(from, from + vec2(300.0, 0.0)), "transition drag edits");
         assert!((dur(&h) - 5.0).abs() < 1e-6, "duration {}", dur(&h));
-        // shrink the left clip to 1 s: now the clips cap it at 2 × the shorter one
+        // shrink the left clip to 1 s: the played window clamps to ±1 s, and the clips cap the drag at
+        // 2 × the shorter one
         h.project.tracks[0].clips[0].trim_start(4.0, f64::INFINITY);
         h.frame(vec![]);
-        let from = pos2(h.state.x_at(7.5) - 2.0, lanes.top() + 30.0);
+        let from = pos2(h.state.x_at(6.0) - 2.0, lanes.top() + 30.0);
         assert!(h.drag(from, from + vec2(300.0, 0.0)), "second transition drag edits");
         assert!((dur(&h) - 2.0).abs() < 1e-6, "duration {}", dur(&h));
     }
