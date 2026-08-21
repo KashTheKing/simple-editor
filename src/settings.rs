@@ -24,6 +24,9 @@ pub struct Settings {
     /// x264/x265 preset ("ultrafast".."veryslow"); NVENC/QSV/AMF map to their own presets.
     pub preset: String,
     pub confirm_overwrite: bool,
+    /// Save (Ctrl+S) over the opened video uses the instant `-c copy` cut when the project is a plain cut
+    /// (cuts snap to keyframes) instead of re-encoding.
+    pub lossless_save: bool,
     /// Register "Edit with Simple Editor" in the Explorer context menu for videos.
     pub context_menu: bool,
     /// "system" | "dark" | "light"
@@ -49,6 +52,7 @@ impl Default for Settings {
             crf: 18,
             preset: "veryfast".into(),
             confirm_overwrite: true,
+            lossless_save: false,
             context_menu: true,
             theme: "system".into(),
             decoder: "auto".into(),

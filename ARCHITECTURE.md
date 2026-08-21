@@ -57,7 +57,8 @@ don't own**; if you truly need something, add a private helper in your own file 
 
 * **Open a video** → `Project::from_media(asset)`: project size/fps from the video, V1 with the clip,
   one audio track per audio stream (A1, A2, …), all linked. `source_video` set → **Save (Ctrl+S) =
-  re-encode over the original** (temp file in the same folder, `Player::release_files()`, rename).
+  re-encode over the original** (temp file in the same folder, `Player::release_files()`, rename) — or the
+  instant `-c copy` cut when `Settings.lossless_save` is on and `export::lossless_segments` applies.
 * **Export As** → any extension; codec by extension/settings; Compositor frames piped to ffmpeg stdin,
   audio pre-mixed to a temp WAV. **Fast Lossless Cut** → `-c copy` when the project is a pure cut.
 * **Preview == export**: both use `Compositor::render` and `Mixer::mix`, only the canvas size differs.

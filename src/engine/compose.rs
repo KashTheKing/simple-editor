@@ -347,12 +347,6 @@ mod tests {
         fn size(&self) -> (u32, u32) {
             (320, 240)
         }
-        fn duration(&self) -> f64 {
-            10.0
-        }
-        fn fps(&self) -> f64 {
-            30.0
-        }
         fn frame_at(&mut self, t: f64, w: u32, h: u32, out: &mut Frame) -> bool {
             if t >= 10.0 {
                 return false;
@@ -418,12 +412,6 @@ mod tests {
     impl VideoSource for SizeSpy {
         fn size(&self) -> (u32, u32) {
             (320, 240)
-        }
-        fn duration(&self) -> f64 {
-            0.0
-        }
-        fn fps(&self) -> f64 {
-            0.0
         }
         fn frame_at(&mut self, _t: f64, w: u32, h: u32, out: &mut Frame) -> bool {
             self.0.lock().unwrap().push((w, h));

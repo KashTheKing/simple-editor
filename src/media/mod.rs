@@ -52,8 +52,6 @@ impl Frame {
 pub trait VideoSource: Send {
     /// Native (coded) size.
     fn size(&self) -> (u32, u32);
-    fn duration(&self) -> f64;
-    fn fps(&self) -> f64;
     /// Decode the frame displayed at source time `t`, scaled (aspect-ignorant, caller picks w/h; the
     /// compositor never asks for more than native size, so upscaling need only be correct) into `out`.
     /// Returns false at/after EOF or on error (then `out` is untouched). Must be cheap for sequential

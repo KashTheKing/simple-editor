@@ -246,8 +246,6 @@ struct MfVideo {
     height: u32,
     /// MF_MT_DEFAULT_STRIDE of the current type (0 = unknown; negative = bottom-up).
     stride: i32,
-    fps: f64,
-    duration: f64,
     /// Fallback frame duration when a sample has none.
     frame_hns: i64,
     /// Native-size top-down RGBA of the cached frame.
@@ -287,7 +285,6 @@ pub fn open_video(path: &str) -> Result<Box<dyn VideoSource>, String> {
     let reader = open_reader(path)?;
     let vs = streams(&reader).into_iter().find(|s| s.major == MFMediaType_Video).ok_or("MF: no video stream")?;
     let (stream, nat) = (vs.index, vs.ty);
-    let duration = duration_secs(&reader);
     let mp4 = is_mp4(&reader);
     unsafe {
         reader.SetStreamSelection(stream, true).map_err(err)?;
@@ -303,8 +300,6 @@ pub fn open_video(path: &str) -> Result<Box<dyn VideoSource>, String> {
         width: 0,
         height: 0,
         stride: 0,
-        fps,
-        duration,
         frame_hns: if fps > 0.0 { (HNS / fps) as i64 } else { 333_333 },
         native: Vec::new(),
         have: false,
@@ -541,12 +536,6 @@ fn bilinear(src: &[u8], sw: u32, sh: u32, w: u32, h: u32, dst: &mut [u8]) {
 impl VideoSource for MfVideo {
     fn size(&self) -> (u32, u32) {
         (self.width, self.height)
-    }
-    fn duration(&self) -> f64 {
-        self.duration
-    }
-    fn fps(&self) -> f64 {
-        self.fps
     }
     fn frame_at(&mut self, t: f64, w: u32, h: u32, out: &mut Frame) -> bool {
         if w == 0 || h == 0 {
@@ -923,7 +912,6 @@ mod tests {
         };
         let mut v = open_video(&p).expect("open_video");
         assert_eq!(v.size(), (320, 240));
-        assert!((v.fps() - 30.0).abs() < 0.05);
         let mut f = Frame::default();
         assert!(v.frame_at(0.5, 320, 240, &mut f));
         assert_eq!((f.width, f.height), (320, 240));

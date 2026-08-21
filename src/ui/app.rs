@@ -569,7 +569,13 @@ impl App {
             original.file_stem().unwrap_or_default().to_string_lossy()
         ));
         self.player.pause();
-        let prog = export::start_export(self.project.clone(), self.export_opts(temp.clone()), self.text.clone());
+        // opt-in: a plain cut can be saved instantly with `-c copy` (keyframe-accurate) instead of re-encoding
+        let lossless = self.settings.lossless_save && export::lossless_segments(&self.project).is_some();
+        let prog = if lossless {
+            export::start_lossless_cut(self.project.clone(), temp.clone())
+        } else {
+            export::start_export(self.project.clone(), self.export_opts(temp.clone()), self.text.clone())
+        };
         self.export = Some((prog, ExportKind::Overwrite { original, temp }));
     }
 

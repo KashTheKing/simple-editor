@@ -4,10 +4,11 @@ A tiny, fast video trimmer/editor for Windows. Open a video, watch it, cut it, a
 images/video/text, keyframe things — and save over the original or export to any format.
 
 * **Rust + egui**, single ~10 MB exe, starts instantly, low CPU/GPU/memory.
-* **Decoding**: Windows Media Foundation (native, hardware decode, instant seeks); ffmpeg.exe as a
+* **Decoding**: Windows Media Foundation (native system codecs, no extra DLLs, instant seeks); ffmpeg.exe as a
   universal fallback (and for images).
 * **Export**: ffmpeg.exe — any container/codec by extension (mp4, mov, mkv, webm, avi, gif, mp3, wav…),
-  hardware encoders (NVENC/QSV/AMF) selectable in Settings; **Fast Lossless Cut** (`-c copy`) for plain cuts.
+  hardware encoders (NVENC/QSV/AMF) selectable in Settings; **Fast Lossless Cut** (`-c copy`) for plain
+  cuts — optionally also for Ctrl+S (Settings ▸ General), instant but keyframe-accurate.
 * **Timeline**: multiple video + audio tracks, per-track mute/solo, linked audio/video clips, split
   (Ctrl+B), ripple delete, trim by dragging edges, snapping, waveforms, keyframe diamonds, drag-to-resize
   track heights, Ctrl+Scroll zoom / Shift+Scroll pan / Alt+Scroll track height, draggable playhead, in/out points.

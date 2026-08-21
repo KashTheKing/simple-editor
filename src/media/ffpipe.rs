@@ -8,7 +8,9 @@
 //!  * `probe(path)` -> Asset via `ffprobe -v error -print_format json -show_streams -show_format`.
 //!  * `open_video(path)` -> VideoSource: `ffmpeg -ss T -i path -map 0:v:0 -f rawvideo -pix_fmt rgba -s WxH
 //!    -fps_mode cfr -r FPS -an -sn pipe:1`, read W*H*4 bytes per frame (pts = T + n/fps); restart on
-//!    non-sequential seeks or size change. Images (1 frame) are decoded once per size and cached.
+//!    non-sequential seeks (at the requested size) or when a request outgrows the pipe (then at native size,
+//!    so later sizes never restart); smaller requests are shrunk in Rust. Images (1 frame) are decoded once
+//!    per size and cached.
 //!  * `open_audio(path, stream)` -> AudioSource: `ffmpeg -ss T -i path -map 0:a:N -f f32le -ac 2 -ar 48000 pipe:1`.
 //!  Kill children on Drop.
 
@@ -166,12 +168,50 @@ pub fn probe(path: &str) -> Result<Asset, String> {
         a.kind = ClipKind::Image;
         a.duration = 0.0;
     }
+    // Duration-less containers (stream-written WebM, raw .h264/.aac, some TS): measure the packets.
+    if a.duration <= 0.0 && a.kind != ClipKind::Image && (video.is_some() || !a.audio_streams.is_empty()) {
+        a.duration = packet_duration(&exe, path, if video.is_some() { "v:0" } else { "a:0" });
+    }
     Ok(a)
+}
+
+/// Duration of stream `sel` from its packets: max(pts_time + duration_time) - min(pts_time); when no packet
+/// carries a pts (raw .h264) the durations are summed instead. Full demux, so only for files whose container
+/// has no duration. 0.0 on failure.
+fn packet_duration(exe: &std::path::Path, path: &str, sel: &str) -> f64 {
+    let entries = "packet=pts_time,duration_time";
+    let Ok(out) = command(exe)
+        .args(["-v", "error", "-select_streams", sel, "-show_entries", entries, "-of", "csv=p=0", path])
+        .stdin(Stdio::null())
+        .output()
+    else {
+        return 0.0;
+    };
+    let (mut start, mut end, mut sum) = (f64::INFINITY, 0.0f64, 0.0f64);
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let mut f = line.split(',').map(|x| x.trim().parse::<f64>().ok());
+        let (pts, dur) = (f.next().flatten(), f.next().flatten().unwrap_or(0.0));
+        sum += dur;
+        if let Some(pts) = pts {
+            start = start.min(pts);
+            end = end.max(pts + dur);
+        }
+    }
+    if start.is_finite() {
+        (end - start).max(0.0)
+    } else {
+        sum
+    }
 }
 
 // ---------------------------------------------------------------- helpers
 
+#[cfg(test)]
+thread_local!(static SPAWNS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) });
+
 fn spawn(args: &[String]) -> Result<(Child, ChildStdout), String> {
+    #[cfg(test)]
+    SPAWNS.with(|c| c.set(c.get() + 1));
     let exe = ffmpeg_exe().ok_or("ffmpeg.exe not found")?;
     let mut child = command(&exe)
         .args(["-nostdin", "-loglevel", "error"])
@@ -210,12 +250,16 @@ struct VideoPipe {
     have: bool,
     /// Earliest known end (set when the pipe hits EOF) — avoids respawn storms past the end.
     end: f64,
+    /// `cur` shrunk to `skey` = (frame index, w, h): repeated calls at the same t and size are free.
+    scaled: Vec<u8>,
+    skey: (i64, u32, u32),
 }
 
 impl VideoPipe {
     fn respawn(&mut self, idx: i64, w: u32, h: u32) -> bool {
         kill(&mut self.child);
         self.have = false;
+        self.skey = (-1, 0, 0);
         // Half a millisecond early so rounding never lands just past frame `idx` (ffmpeg drops frames < T).
         let t = (idx as f64 / self.fps - 0.0005).max(0.0);
         let args = [
@@ -272,26 +316,23 @@ impl VideoSource for VideoPipe {
     fn size(&self) -> (u32, u32) {
         self.size
     }
-    fn duration(&self) -> f64 {
-        self.duration
-    }
-    fn fps(&self) -> f64 {
-        self.fps
-    }
     fn frame_at(&mut self, t: f64, w: u32, h: u32, out: &mut Frame) -> bool {
         if w == 0 || h == 0 || t >= self.end || (self.duration > 0.0 && t >= self.duration + 0.5 / self.fps) {
             return false;
         }
         let t = t.max(0.0);
         let idx = (t * self.fps + 1e-6).floor() as i64;
-        let cur_idx = self.next - 1;
-        let same_size = self.out_size == (w, h);
-        if same_size && self.have && idx == cur_idx {
-            // cached
-        } else {
-            let sequential = self.child.is_some() && same_size && idx >= self.next - 1 && t <= self.cur.pts + 1.5;
-            if !sequential && !self.respawn(idx, w, h) {
-                return false;
+        // The pipe's output is only ever shrunk in Rust, so any request that fits keeps it running.
+        let fits = w <= self.out_size.0 && h <= self.out_size.1;
+        if !(fits && self.have && idx == self.next - 1) {
+            let sequential = self.child.is_some() && idx >= self.next - 1 && t <= self.cur.pts + 1.5;
+            if !sequential || !fits {
+                // Outgrown on the same t progression (keyframed scale): respawn once at native so later sizes
+                // never respawn. Real seek: the requested size.
+                let (sw, sh) = if sequential { (w.max(self.size.0), h.max(self.size.1)) } else { (w, h) };
+                if !self.respawn(idx, sw, sh) {
+                    return false;
+                }
             }
             while self.next <= idx {
                 if !self.read_next() {
@@ -303,9 +344,43 @@ impl VideoSource for VideoPipe {
             }
         }
         out.resize(w, h);
-        out.rgba.copy_from_slice(&self.cur.rgba);
         out.pts = self.cur.pts;
+        if (w, h) == self.out_size {
+            out.rgba.copy_from_slice(&self.cur.rgba);
+        } else {
+            let key = (self.next - 1, w, h);
+            if self.skey != key {
+                self.scaled.resize((w * h * 4) as usize, 0);
+                box_down(&self.cur.rgba, self.out_size.0, self.out_size.1, w, h, &mut self.scaled);
+                self.skey = key;
+            }
+            out.rgba.copy_from_slice(&self.scaled);
+        }
         true
+    }
+}
+
+/// Area-average downscale of top-down RGBA (`w <= sw`, `h <= sh`).
+fn box_down(src: &[u8], sw: u32, sh: u32, w: u32, h: u32, dst: &mut [u8]) {
+    debug_assert!(w <= sw && h <= sh);
+    let (sw, sh, w, h) = (sw as usize, sh as usize, w as usize, h as usize);
+    for (j, drow) in dst.chunks_exact_mut(w * 4).enumerate() {
+        let (y0, y1) = (j * sh / h, (j + 1) * sh / h);
+        for (i, d) in drow.chunks_exact_mut(4).enumerate() {
+            let (x0, x1) = (i * sw / w, (i + 1) * sw / w);
+            let mut acc = [0u32; 4];
+            for y in y0..y1 {
+                for px in src[(y * sw + x0) * 4..(y * sw + x1) * 4].chunks_exact(4) {
+                    for k in 0..4 {
+                        acc[k] += px[k] as u32;
+                    }
+                }
+            }
+            let n = ((y1 - y0) * (x1 - x0)).max(1) as u32;
+            for k in 0..4 {
+                d[k] = (acc[k] / n) as u8;
+            }
+        }
     }
 }
 
@@ -325,12 +400,6 @@ struct ImageSource {
 impl VideoSource for ImageSource {
     fn size(&self) -> (u32, u32) {
         self.size
-    }
-    fn duration(&self) -> f64 {
-        0.0
-    }
-    fn fps(&self) -> f64 {
-        0.0
     }
     fn frame_at(&mut self, _t: f64, w: u32, h: u32, out: &mut Frame) -> bool {
         if w == 0 || h == 0 {
@@ -399,6 +468,8 @@ pub fn open_video(path: &str) -> Result<Box<dyn VideoSource>, String> {
         cur: Frame::default(),
         have: false,
         end: f64::INFINITY,
+        scaled: Vec::new(),
+        skey: (-1, 0, 0),
     }))
 }
 
@@ -651,7 +722,6 @@ pub(crate) mod tests {
     fn video_decode_seek_scale() {
         let mut v = open_video(&test_mp4()).unwrap();
         assert_eq!(v.size(), (320, 240));
-        assert!((v.fps() - 30.0).abs() < 0.01);
         let mut f = Frame::default();
         assert!(v.frame_at(0.5, 320, 240, &mut f));
         assert!(is_red(centre(&f)), "{:?}", centre(&f));
@@ -763,5 +833,71 @@ pub(crate) mod tests {
             .expect("ffmpeg on PATH");
         assert!(st.success());
         assert_eq!(probe(&still.to_string_lossy()).unwrap().kind, ClipKind::Image);
+    }
+
+    /// A WebM streamed to stdout carries no duration anywhere; probe must measure the packets.
+    #[test]
+    fn probe_duration_from_packets() {
+        let p = Path::new(&test_mp4()).with_file_name(format!("{}-stdout.webm", std::process::id()));
+        let out = std::fs::File::create(&p).unwrap();
+        let st = Command::new("ffmpeg")
+            .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "color=red:s=160x120:d=3", "-f", "lavfi", "-i"])
+            .args(["sine=duration=3", "-c:v", "libvpx", "-c:a", "libopus", "-f", "webm", "-"])
+            .stdout(out)
+            .status()
+            .expect("ffmpeg on PATH");
+        assert!(st.success());
+        let a = probe(&p.to_string_lossy()).unwrap();
+        assert_eq!(a.kind, ClipKind::Video);
+        assert!((a.duration - 3.0).abs() < 0.2, "{}", a.duration);
+        assert_eq!((a.width, a.height), (160, 120));
+        assert_eq!(a.audio_streams.len(), 1);
+    }
+
+    /// Size changes on a sequential t progression (keyframed scale) must not respawn ffmpeg: the pipe is
+    /// shrunk in Rust, and one growth respawns at native size after which every size fits.
+    #[test]
+    fn scale_keeps_pipe() {
+        let mut v = open_video(&test_mp4()).unwrap();
+        let mut f = Frame::default();
+        let sizes = [(80, 60), (120, 90), (160, 120)];
+        let before = SPAWNS.with(|c| c.get());
+        let t0 = std::time::Instant::now();
+        for n in 0..=60 {
+            let t = 0.5 + n as f64 / 30.0;
+            let (w, h) = sizes[n % 3];
+            assert!(v.frame_at(t, w, h, &mut f), "n={n}");
+            assert_eq!((f.width, f.height), (w, h));
+            let c = centre(&f);
+            assert!(if t < 2.0 { is_red(c) } else { is_green(c) }, "t={t} {c:?}");
+        }
+        let spawns = SPAWNS.with(|c| c.get()) - before;
+        eprintln!("scale_keeps_pipe: 61 frames, {spawns} spawns, {:?}", t0.elapsed());
+        // first (80x60) + one growth (120x90 -> native 320x240); 160x120 then fits
+        assert_eq!(spawns, 2);
+        // repeated call at the same t/size is free
+        assert!(v.frame_at(2.5, 80, 60, &mut f));
+        assert_eq!(SPAWNS.with(|c| c.get()) - before, 2);
+        // a real seek still respawns (at the requested size)
+        assert!(v.frame_at(0.5, 80, 60, &mut f));
+        assert!(is_red(centre(&f)));
+        assert_eq!(SPAWNS.with(|c| c.get()) - before, 3);
+        assert!(v.frame_at(0.5 + 1.0 / 30.0, 40, 30, &mut f));
+        assert_eq!((f.width, f.height), (40, 30));
+        assert!(is_red(centre(&f)));
+        assert_eq!(SPAWNS.with(|c| c.get()) - before, 3);
+    }
+
+    #[test]
+    fn box_down_averages() {
+        // 4x2 -> 2x1: each output pixel averages a 2x2 box.
+        #[rustfmt::skip]
+        let src = [
+            0, 0, 0, 255,   100, 100, 100, 255,   200, 0, 0, 255,   200, 0, 0, 255,
+            0, 0, 0, 255,   100, 100, 100, 255,   0, 0, 0, 255,     0, 0, 0, 255,
+        ];
+        let mut dst = [0u8; 8];
+        box_down(&src, 4, 2, 2, 1, &mut dst);
+        assert_eq!(dst, [50, 50, 50, 255, 100, 0, 0, 255]);
     }
 }
