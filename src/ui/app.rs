@@ -106,6 +106,11 @@ pub struct App {
     convert_jobs: Vec<(Arc<Progress>, PathBuf)>,
     /// Asset id + target extension for the Convert To… options window.
     convert_dialog: Option<(Id, String)>,
+    /// Was the Auto-cut pane drawn last frame? (its keep-range shading is only valid while it is open).
+    /// `autocut_drawing` accumulates this frame; the timeline reads `autocut_shown` so the shading does
+    /// not depend on which pane the tile tree draws first.
+    autocut_shown: bool,
+    autocut_drawing: bool,
     /// Fonts already handed to the rasterizer (so we only reload when the list grows).
     loaded_fonts: usize,
 }
@@ -412,9 +417,11 @@ impl App {
             mcp_jobs: Vec::new(),
             convert_jobs: Vec::new(),
             convert_dialog: None,
+            autocut_shown: false,
+            autocut_drawing: false,
             loaded_fonts: 0,
         };
-        curves::set_available_presets(app.settings.curve_presets.clone());
+        app.refresh_presets();
         app.player.set_project(&app.project);
         if let Some(p) = open {
             app.open_path(&p);
@@ -485,6 +492,9 @@ impl App {
     fn seek(&mut self, t: f64) {
         self.playhead = t.clamp(0.0, self.project.duration().max(0.0));
         self.player.seek(self.playhead);
+        // an explicit seek always brings the playhead back into view (a user pan only suspends the
+        // follow while playing)
+        self.timeline.follow_playhead(self.playhead);
     }
 
     fn backend(&self) -> Backend {
@@ -1141,21 +1151,32 @@ impl App {
                 self.fullscreen = !self.fullscreen;
                 self.player.seek(self.playhead); // re-render at the new canvas size
             }
-            AddTransition => {
+            AddTransition | AddTransitionEnd => {
+                let at_end = a == AddTransitionEnd;
                 if self.selection.is_empty() {
-                    self.toast("Select the clip on the right side of the cut first");
+                    self.toast("Select a clip next to the cut first");
                 } else {
                     let snap = self.project.to_json();
                     let ids = self.selection.clone();
                     let mut added = 0;
                     for id in ids {
-                        if self.project.add_transition(id, TransitionKind::CrossFade, 1.0).is_some() {
-                            added += 1;
+                        // a transition always belongs to the clip on the RIGHT of the cut
+                        let right = if at_end {
+                            crate::ui::transitions_ui::right_neighbor(&self.project, id)
+                        } else {
+                            Some(id)
+                        };
+                        if let Some(right) = right {
+                            if self.project.add_transition(right, TransitionKind::CrossFade, 1.0).is_some() {
+                                added += 1;
+                            }
                         }
                     }
                     if added > 0 {
                         push_undo_json(&mut self.undo, &mut self.redo, snap);
                         self.after_edit();
+                    } else if at_end {
+                        self.toast("Nothing abuts the end of this clip — transitions sit on a cut");
                     } else {
                         self.toast("No abutting left neighbour — transitions sit on a cut");
                     }
@@ -1277,6 +1298,7 @@ impl App {
                         waveforms,
                         thumbs,
                         autocut,
+                        autocut_shown,
                         timeline: tl,
                         settings,
                         player,
@@ -1297,7 +1319,9 @@ impl App {
                             snap: settings.snap,
                             playing: player.is_playing(),
                             thumbs: Some(thumbs),
-                            keep_ranges: &autocut.overlay,
+                            // only while the Auto-cut pane is on screen: a stale overlay would keep
+                            // shading the timeline after the pane is hidden or a new project is opened
+                            keep_ranges: if *autocut_shown { &autocut.overlay } else { &[] },
                         },
                     )
                 };
@@ -1466,6 +1490,7 @@ impl App {
                 }
             }
             Pane::AutoCut => {
+                self.autocut_drawing = true;
                 let changed = {
                     let App { project, selection, undo, redo, autocut: st, waveforms, palette, .. } = self;
                     let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
@@ -1479,6 +1504,17 @@ impl App {
     }
 
     /// Place a saved template (by name) on the timeline at `t`.
+    /// Hand the saved curve/motion presets (built-ins first) to the curve editor. Called on start and
+    /// whenever the lists change — never per frame.
+    fn refresh_presets(&self) {
+        curves::set_available_presets(self.settings.curve_presets.clone());
+        let motions: Vec<crate::settings::MotionPreset> = crate::engine::presets::builtin_motions()
+            .into_iter()
+            .chain(self.settings.motion_presets.iter().cloned())
+            .collect();
+        curves::set_available_motions(motions);
+    }
+
     /// Per-frame hand-offs from panels that can't reach Settings, plus background convert jobs.
     fn poll_panels(&mut self) {
         // saved presets from the effects / curves panels
@@ -1488,12 +1524,19 @@ impl App {
             self.settings.save();
             self.toast("Motion preset saved");
         }
+        if let Some(m) = curves::take_pending_motion_preset() {
+            self.settings.motion_presets.retain(|p| p.name != m.name);
+            self.settings.motion_presets.push(m);
+            self.settings.save();
+            self.refresh_presets();
+            self.toast("Motion preset saved");
+        }
         if let Some(c) = curves::take_pending_curve_preset() {
             self.settings.curve_presets.retain(|p| p.name != c.name);
             self.settings.curve_presets.push(c);
             self.settings.save();
             // hand them over only when they change (this used to clone the whole list every frame)
-            curves::set_available_presets(self.settings.curve_presets.clone());
+            self.refresh_presets();
             self.toast("Curve preset saved");
         }
         // font import from the inspector
@@ -1807,6 +1850,7 @@ impl App {
                 self.menu_item(ui, AddText, true, &mut out);
                 self.menu_item(ui, AddSubtitle, true, &mut out);
                 self.menu_item(ui, AddTransition, has_sel, &mut out);
+                self.menu_item(ui, AddTransitionEnd, has_sel, &mut out);
                 self.menu_item(ui, Retime, has_sel, &mut out);
                 self.menu_item(ui, FreezeFrame, has_sel, &mut out);
                 self.menu_item(ui, NestSequence, has_sel, &mut out);
@@ -2831,6 +2875,9 @@ impl eframe::App for App {
             }
         }
         self.poll_panels();
+        // carry last frame's "the Auto-cut pane was on screen" into this frame's timeline drawing
+        self.autocut_shown = self.autocut_drawing;
+        self.autocut_drawing = false;
 
         // close handling: confirm unsaved changes
         if ctx.input(|i| i.viewport().close_requested()) && !self.close_confirmed {

@@ -562,6 +562,16 @@ impl AudioSource for AudioPipe {
             out.fill(0.0);
             return;
         }
+        // A small step back (the mixer reads one guard frame beyond what it consumes, and resampling
+        // re-reads the block edge) is served from the frames still sitting behind `pos` — respawning
+        // ffmpeg for one frame would cost ~50-100 ms per block.
+        if self.child.is_some() && want < self.next {
+            let back = (self.next - want) as usize;
+            if back * 2 <= self.pos {
+                self.pos -= back * 2;
+                self.next = want;
+            }
+        }
         let sequential = self.child.is_some() && want >= self.next && want <= self.next + SAMPLE_RATE as i64 / 2;
         if !sequential && !self.respawn(want) {
             out.fill(0.0);
@@ -755,6 +765,22 @@ pub(crate) mod tests {
         // still usable after EOF
         assert!(v.frame_at(2.5, 160, 120, &mut f));
         assert!(is_green(centre(&f)));
+    }
+
+    #[test]
+    fn audio_reads_with_guard_frame_do_not_respawn() {
+        let path = test_mp4();
+        let Ok(mut a) = open_audio(&path, 0) else { return };
+        let mut buf = vec![0f32; 4800 * 2];
+        let before = SPAWNS.with(|s| s.get());
+        // the mixer's pattern: read [t, t+0.1) but only consume 0.1 s minus one frame each time
+        let mut t = 0.5;
+        for _ in 0..20 {
+            a.read_at(t, &mut buf);
+            t += (4800 - 1) as f64 / SAMPLE_RATE as f64;
+        }
+        let spawns = SPAWNS.with(|s| s.get()) - before;
+        assert!(spawns <= 1, "{spawns} ffmpeg respawns for 20 near-sequential audio blocks");
     }
 
     #[test]

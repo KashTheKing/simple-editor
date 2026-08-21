@@ -12,7 +12,7 @@
 //! selected) shows its two handles; dragging one converts the segment to `Ease::Bezier`.
 
 use crate::model::{Animated, Clip, Ease, Id, Project};
-use crate::settings::CurvePreset;
+use crate::settings::{CurvePreset, MotionPreset};
 use crate::theme::Palette;
 use eframe::egui::{self, pos2, vec2, Align2, Color32, Pos2, Rect, Sense, Shape, Stroke};
 use std::cell::RefCell;
@@ -26,6 +26,19 @@ thread_local! {
     // set_available_presets() each frame (or when they change) and polls take_pending_curve_preset().
     static AVAILABLE: RefCell<Vec<CurvePreset>> = const { RefCell::new(Vec::new()) };
     static PENDING: RefCell<Option<CurvePreset>> = const { RefCell::new(None) };
+    // motion presets (all properties of a clip at once): built-ins + Settings.motion_presets
+    static MOTIONS: RefCell<Vec<MotionPreset>> = const { RefCell::new(Vec::new()) };
+    static PENDING_MOTION: RefCell<Option<MotionPreset>> = const { RefCell::new(None) };
+}
+
+/// The app hands the applicable motion presets (built-ins + saved) to the panel.
+pub fn set_available_motions(v: Vec<MotionPreset>) {
+    MOTIONS.with(|m| *m.borrow_mut() = v);
+}
+
+/// A motion preset captured via "Save motion" waiting for the app to store it in Settings.
+pub fn take_pending_motion_preset() -> Option<MotionPreset> {
+    PENDING_MOTION.with(|p| p.borrow_mut().take())
 }
 
 /// The app hands the current Settings.curve_presets to the panel with this (cheap: only on change or
@@ -79,6 +92,7 @@ pub struct CurvesState {
     drag_y: Option<(f64, f64)>,
     preset_name: String,
     preset_sel: usize,
+    motion_sel: usize,
     /// Key under the open context menu.
     menu_key: Option<(usize, usize)>,
 }
@@ -99,6 +113,7 @@ impl Default for CurvesState {
             drag_y: None,
             preset_name: String::new(),
             preset_sel: 0,
+            motion_sel: 0,
             menu_key: None,
         }
     }
@@ -293,6 +308,55 @@ pub fn show(
             }
         }
     }
+
+    // ---- motion presets (every animated property of the clip at once) ----
+    ui.horizontal(|ui| {
+        let motions: Vec<String> = MOTIONS.with(|m| m.borrow().iter().map(|p| p.name.clone()).collect());
+        ui.label("Motion");
+        if motions.is_empty() {
+            ui.weak("(none)");
+        } else {
+            state.motion_sel = state.motion_sel.min(motions.len() - 1);
+            egui::ComboBox::from_id_salt("motion_preset").selected_text(motions[state.motion_sel].clone()).show_ui(
+                ui,
+                |ui| {
+                    for (i, n) in motions.iter().enumerate() {
+                        ui.selectable_value(&mut state.motion_sel, i, n);
+                    }
+                },
+            );
+            let mut apply: Option<bool> = None; // Some(scaled)
+            if ui.small_button("Apply").on_hover_text("Stretch the preset to this clip's length").clicked() {
+                apply = Some(true);
+            }
+            if ui.small_button("Apply exact").on_hover_text("Keep the preset's own timing").clicked() {
+                apply = Some(false);
+            }
+            if let Some(scaled) = apply {
+                let preset = MOTIONS.with(|m| m.borrow().get(state.motion_sel).cloned());
+                if let Some(preset) = preset {
+                    undo(project);
+                    if let Some(c) = project.clip_mut(id) {
+                        crate::engine::presets::apply_motion(&preset, c, scaled);
+                        out.edited = true;
+                    }
+                }
+            }
+        }
+        let can_save = !state.preset_name.trim().is_empty();
+        if ui
+            .add_enabled(can_save, egui::Button::new("Save motion"))
+            .on_hover_text("Save every animated property of this clip under the name on the left")
+            .clicked()
+        {
+            if let Some(c) = project.clip(id) {
+                PENDING_MOTION.with(|s| {
+                    *s.borrow_mut() = Some(crate::engine::presets::capture_motion(state.preset_name.trim(), c))
+                });
+                state.preset_name.clear();
+            }
+        }
+    });
 
     // ---- presets + flow row ----
     ui.horizontal(|ui| {

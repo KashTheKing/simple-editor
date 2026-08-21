@@ -116,7 +116,12 @@ pub enum Ease {
     Hold,
     /// CSS-style cubic bezier through (0,0) (x1,y1) (x2,y2) (1,1): the velocity handles of the curve
     /// editor. y may leave 0..1 (overshoot / anticipate).
-    Bezier { x1: f32, y1: f32, x2: f32, y2: f32 },
+    Bezier {
+        x1: f32,
+        y1: f32,
+        x2: f32,
+        y2: f32,
+    },
 }
 
 impl Ease {
@@ -586,7 +591,10 @@ impl Effect {
     }
     /// Parameter i at clip-local time t (spec default when missing, e.g. older files).
     pub fn at(&self, i: usize, t: f64) -> f64 {
-        self.params.get(i).map(|a| a.at(t)).unwrap_or_else(|| self.kind.params().get(i).map(|p| p.default).unwrap_or(0.0))
+        self.params
+            .get(i)
+            .map(|a| a.at(t))
+            .unwrap_or_else(|| self.kind.params().get(i).map(|p| p.default).unwrap_or(0.0))
     }
     pub fn specs(&self) -> &'static [ParamSpec] {
         self.kind.params()
@@ -950,7 +958,8 @@ impl Clip {
     /// Move the left edge to `new_start`, keeping the right edge fixed (slip-trim).
     /// `headroom` = source seconds available before the left edge (`Project::head_room`), INFINITY = unbounded.
     pub fn trim_start(&mut self, new_start: f64, headroom: f64) {
-        let min_start = if headroom.is_finite() { self.start - headroom.max(0.0) / self.speed } else { f64::NEG_INFINITY };
+        let min_start =
+            if headroom.is_finite() { self.start - headroom.max(0.0) / self.speed } else { f64::NEG_INFINITY };
         let ns = new_start.max(min_start).max(0.0).min(self.end() - MIN_CLIP);
         let d = ns - self.start;
         self.start = ns;
@@ -1042,7 +1051,8 @@ impl Track {
     }
     /// Drop transitions whose clips no longer abut.
     pub fn prune_transitions(&mut self) {
-        let keep: Vec<Id> = self.transitions.iter().filter(|t| self.transition_pair(t).is_some()).map(|t| t.id).collect();
+        let keep: Vec<Id> =
+            self.transitions.iter().filter(|t| self.transition_pair(t).is_some()).map(|t| t.id).collect();
         self.transitions.retain(|t| keep.contains(&t.id));
     }
 }
@@ -1546,11 +1556,8 @@ impl Project {
                 continue; // freezing a clip the playhead is not over would store an out-of-range source time
             }
             let src = c.src_time(t);
-            let target = if t > c.start + MIN_CLIP {
-                self.split_at(t, Some(&[id])).first().copied().unwrap_or(id)
-            } else {
-                id
-            };
+            let target =
+                if t > c.start + MIN_CLIP { self.split_at(t, Some(&[id])).first().copied().unwrap_or(id) } else { id };
             if let Some(c) = self.clip_mut(target) {
                 c.freeze = Some(src);
                 frozen.push(target);
@@ -1965,14 +1972,8 @@ impl Project {
                     };
                     seq.tracks.insert(idx, t);
                 }
-                let ti = seq
-                    .tracks
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, t)| t.kind == kind)
-                    .nth(pos)
-                    .map(|(i, _)| i)
-                    .unwrap_or(0);
+                let ti =
+                    seq.tracks.iter().enumerate().filter(|(_, t)| t.kind == kind).nth(pos).map(|(i, _)| i).unwrap_or(0);
                 seq.tracks[ti].clips.push(c);
                 seq.tracks[ti].sort();
             }
@@ -2207,8 +2208,14 @@ impl Project {
             .chain(p.subtitles.iter().map(|c| c.id))
             .chain(p.sequences.iter().map(|s| s.id))
             .chain(p.sequences.iter().flat_map(|s| s.tracks.iter().map(|t| t.id)))
-            .chain(p.sequences.iter().flat_map(|s| s.tracks.iter().flat_map(|t| t.clips.iter().map(|c| c.id.max(c.link)))))
-            .chain(p.main_stash.iter().flat_map(|s| s.tracks.iter().flat_map(|t| t.clips.iter().map(|c| c.id.max(c.link)))))
+            .chain(
+                p.sequences.iter().flat_map(|s| s.tracks.iter().flat_map(|t| t.clips.iter().map(|c| c.id.max(c.link)))),
+            )
+            .chain(
+                p.main_stash
+                    .iter()
+                    .flat_map(|s| s.tracks.iter().flat_map(|t| t.clips.iter().map(|c| c.id.max(c.link)))),
+            )
             .chain(p.all_clips().map(|(_, c)| c.id.max(c.link)))
             .max()
             .unwrap_or(0);
@@ -2545,7 +2552,7 @@ mod tests {
         assert!((p.sequence_duration(seq) - 10.0).abs() < 1e-9);
         assert!((p.duration() - 10.0).abs() < 1e-9);
         assert!(p.used_assets().len() == 1); // the asset is used inside the sequence
-        // open the sequence for editing: tracks swap, main is stashed
+                                             // open the sequence for editing: tracks swap, main is stashed
         assert!(p.open_sequence(seq));
         assert_eq!(p.editing, Some(seq));
         assert_eq!(p.tracks[0].clips[0].kind, ClipKind::Video);

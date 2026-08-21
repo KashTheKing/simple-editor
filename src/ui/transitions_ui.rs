@@ -49,7 +49,7 @@ impl Gesture {
 }
 
 /// The clip starting exactly where `id` ends, on the same track.
-fn right_neighbor(project: &Project, id: Id) -> Option<Id> {
+pub(crate) fn right_neighbor(project: &Project, id: Id) -> Option<Id> {
     let ti = project.track_of(id)?;
     let c = project.clip(id)?;
     project.tracks[ti].clips.iter().find(|o| o.id != id && (o.start - c.end()).abs() < ABUT_EPS).map(|o| o.id)

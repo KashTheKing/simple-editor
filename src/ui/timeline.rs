@@ -137,6 +137,12 @@ impl TimelineState {
     }
     /// Scroll so `t` is visible (used when the playhead runs off-screen while playing). Suspended after a
     /// user pan until `t` is back in view.
+    /// Scroll `t` into view unconditionally (an explicit seek: Home/End, prev/next cut, a subtitle
+    /// click, an MCP `playback.seek`). Unlike `ensure_visible` a previous user pan does not suppress it.
+    pub fn follow_playhead(&mut self, t: f64) {
+        self.user_panned = false;
+        self.ensure_visible(t);
+    }
     pub fn ensure_visible(&mut self, t: f64) {
         let w = (self.lanes_rect.width() / self.zoom) as f64;
         if w <= 0.0 {
@@ -417,6 +423,10 @@ fn clip_menu(
     // The Transitions pane covers the right-hand cut (transitions_ui::right_neighbor).
     if ui.button("Add Transition at Start").clicked() {
         actions.push(Action::AddTransition);
+    }
+
+    if ui.button("Add Transition at End").clicked() {
+        actions.push(Action::AddTransitionEnd);
     }
     if ui.button("Auto-cut…").clicked() {
         actions.push(Action::AutoCut);

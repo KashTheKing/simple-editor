@@ -96,6 +96,7 @@ actions! {
     Fullscreen => "fullscreen", "Fullscreen Playback", sc(NONE, Key::F11);
     AddTransition => "add_transition", "Add Transition at Selected Cut", sc(CTRL_SHIFT, Key::T);
     AddSubtitle => "add_subtitle", "Add Subtitle at Playhead", sc(ALT, Key::S);
+    AddTransitionEnd => "add_transition_end", "Add Transition at Clip End", None;
     TogglePlanner => "toggle_planner", "Show / Hide Planner", sc(CTRL, Key::Num7);
     AutoCut => "auto_cut", "Auto-cut (silence) Panel", sc(CTRL_ALT, Key::A);
     NestSequence => "nest", "Nest Selection into a New Sequence", sc(ALT, Key::N);
