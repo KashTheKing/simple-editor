@@ -3,81 +3,459 @@
 //! time = base_time + elapsed. Video frames are rendered at the project fps and published via
 //! `take_frame`; `ctx.request_repaint()` is called whenever a new frame is ready.
 //!
-//! Commands (mpsc from the UI thread): SetProject(Arc<Project>), Seek(t), Play, Pause, Canvas(w,h),
-//! Backend, ClearDecoders(ack). While paused, every Seek/SetProject/Canvas re-renders the current time
-//! (latest request wins — drain the queue before rendering). Audio thread mirrors the clock: when playing
-//! it keeps ~100 ms of mixed audio ahead of the clock in the ring; seek/pause flush the ring.
-//! Reaching the project end pauses (the UI sees is_playing() flip).
+//! Commands (mpsc from the UI thread): SetProject, Seek, Play, Pause, Canvas, Backend, ClearDecoders(ack),
+//! Quit. The payload (project, clock, canvas) lives in `Shared`, so draining the queue and reading the
+//! latest state gives "latest request wins" for free. While paused, every Seek/SetProject/Canvas
+//! re-renders the current time; the render thread blocks on the channel when idle (zero CPU).
+//! Audio thread mirrors the clock: when playing it keeps ~120 ms of mixed audio ahead in the ring;
+//! seek/pause flush the ring. Reaching the project end pauses (the UI sees is_playing() flip).
 
+use crate::engine::compose::Compositor;
+use crate::engine::mixer::Mixer;
 use crate::engine::text::TextRasterizer;
-use crate::media::{Backend, Frame};
+use crate::media::{Backend, DecoderPool, Frame, SAMPLE_RATE};
 use crate::model::Project;
-use std::sync::{Arc, Mutex};
+use std::collections::VecDeque;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
+
+/// Audio mixed per block (frames) and how far ahead of the clock the ring is kept.
+const BLOCK: usize = 1024;
+const LEAD_SECS: f64 = 0.12;
+
+/// Wall clock + canvas shared by the UI and both threads. `now()` flips `playing` off at the end.
+struct Clock {
+    playing: bool,
+    base_t: f64,
+    base_at: Instant,
+    duration: f64,
+    /// Render size in pixels (already clamped to the preview max width); (0,0) = nothing to render.
+    canvas: (u32, u32),
+}
+
+impl Clock {
+    fn now(&mut self) -> f64 {
+        if !self.playing {
+            return self.base_t;
+        }
+        let t = self.base_t + self.base_at.elapsed().as_secs_f64();
+        if t < self.duration {
+            return t;
+        }
+        self.playing = false;
+        self.base_t = self.duration;
+        self.duration
+    }
+}
+
+struct Shared {
+    clock: Mutex<Clock>,
+    /// Newest rendered frame not yet taken by the UI.
+    frame: Mutex<Option<Arc<Frame>>>,
+    project: Mutex<Arc<Project>>,
+}
+
+/// Poison-tolerant lock: a panicking worker must never take the UI down with it.
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+#[derive(Clone)]
+enum Cmd {
+    SetProject,
+    Seek,
+    Play,
+    Pause,
+    Canvas,
+    Backend(Backend),
+    ClearDecoders(SyncSender<()>),
+    Quit,
+}
 
 pub struct Player {
-    #[allow(dead_code)]
-    ctx: eframe::egui::Context,
-    #[allow(dead_code)]
-    text: Arc<Mutex<TextRasterizer>>,
-    #[allow(dead_code)]
-    backend: Backend,
-    time: f64,
-    playing: bool,
+    shared: Arc<Shared>,
+    render: Sender<Cmd>,
+    audio: Sender<Cmd>,
     duration: f64,
 }
 
 impl Player {
     pub fn new(ctx: eframe::egui::Context, backend: Backend, text: Arc<Mutex<TextRasterizer>>) -> Self {
-        Self { ctx, text, backend, time: 0.0, playing: false, duration: 0.0 }
+        let shared = Arc::new(Shared {
+            clock: Mutex::new(Clock {
+                playing: false,
+                base_t: 0.0,
+                base_at: Instant::now(),
+                duration: 0.0,
+                canvas: (0, 0),
+            }),
+            frame: Mutex::new(None),
+            project: Mutex::new(Arc::new(Project::new())),
+        });
+        let (render, rx) = mpsc::channel();
+        let s = shared.clone();
+        let _ =
+            std::thread::Builder::new().name("render".into()).spawn(move || render_thread(s, rx, ctx, backend, text));
+        let (audio, rx) = mpsc::channel();
+        let s = shared.clone();
+        let _ = std::thread::Builder::new().name("audio".into()).spawn(move || audio_thread(s, rx, backend));
+        Self { shared, render, audio, duration: 0.0 }
+    }
+    fn both(&self, c: Cmd) {
+        let _ = self.audio.send(c.clone());
+        let _ = self.render.send(c);
     }
     /// Replace the project (cheap clone; called after every edit). Re-renders the current frame.
     pub fn set_project(&mut self, project: &Project) {
         self.duration = project.duration();
-        todo!("playback::Player::set_project")
+        *lock(&self.shared.project) = Arc::new(project.clone());
+        lock(&self.shared.clock).duration = self.duration;
+        self.both(Cmd::SetProject);
     }
-    pub fn set_backend(&mut self, _b: Backend) {
-        todo!("playback::Player::set_backend")
+    pub fn set_backend(&mut self, b: Backend) {
+        self.both(Cmd::Backend(b));
     }
     /// Preview canvas size in pixels (the Player clamps width to `max_width`, keeping aspect).
-    pub fn set_canvas(&mut self, _w: u32, _h: u32, _max_width: u32) {
-        todo!("playback::Player::set_canvas")
+    pub fn set_canvas(&mut self, w: u32, h: u32, max_width: u32) {
+        let (w, h) = if max_width > 0 && w > max_width {
+            (max_width, ((h as u64 * max_width as u64) / w as u64).max(1) as u32)
+        } else {
+            (w, h)
+        };
+        let mut c = lock(&self.shared.clock);
+        if c.canvas != (w, h) {
+            c.canvas = (w, h);
+            drop(c);
+            let _ = self.render.send(Cmd::Canvas);
+        }
     }
     pub fn play(&mut self) {
-        self.playing = true;
-        todo!("playback::Player::play")
+        {
+            let mut c = lock(&self.shared.clock);
+            let t = c.now();
+            c.base_t = if t >= c.duration - 1e-6 { 0.0 } else { t };
+            c.base_at = Instant::now();
+            c.playing = true;
+        }
+        self.both(Cmd::Play);
     }
     pub fn pause(&mut self) {
-        self.playing = false;
-        todo!("playback::Player::pause")
+        {
+            let mut c = lock(&self.shared.clock);
+            c.base_t = c.now();
+            c.playing = false;
+        }
+        self.both(Cmd::Pause);
     }
     pub fn toggle(&mut self) {
-        if self.playing {
+        if self.is_playing() {
             self.pause()
         } else {
             self.play()
         }
     }
     pub fn is_playing(&self) -> bool {
-        self.playing
+        let mut c = lock(&self.shared.clock);
+        c.now();
+        c.playing
     }
     /// Current timeline time (advances while playing).
     pub fn time(&self) -> f64 {
-        self.time
+        lock(&self.shared.clock).now()
     }
-    /// Clamp to [0, duration] and re-render if paused.
+    /// Clamp to [0, duration] and re-render if paused (keeps playing from `t` if playing).
     pub fn seek(&mut self, t: f64) {
-        self.time = t.clamp(0.0, self.duration.max(0.0));
-        todo!("playback::Player::seek")
+        {
+            let mut c = lock(&self.shared.clock);
+            c.base_t = t.clamp(0.0, c.duration.max(0.0));
+            c.base_at = Instant::now();
+        }
+        self.both(Cmd::Seek);
     }
     /// Newest rendered frame not yet taken (UI uploads it to a texture).
     pub fn take_frame(&mut self) -> Option<Arc<Frame>> {
-        todo!("playback::Player::take_frame")
+        lock(&self.shared.frame).take()
     }
     /// Synchronously drop every decoder on both threads (before overwriting a source file).
     pub fn release_files(&mut self) {
-        todo!("playback::Player::release_files")
+        let (tx, rx) = mpsc::sync_channel(2);
+        self.both(Cmd::ClearDecoders(tx));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        for _ in 0..2 {
+            // a dead thread drops its sender → Disconnected → we stop waiting early
+            if rx.recv_timeout(deadline.saturating_duration_since(Instant::now())).is_err() {
+                break;
+            }
+        }
     }
+    #[allow(dead_code)]
     pub fn duration(&self) -> f64 {
         self.duration
+    }
+}
+
+impl Drop for Player {
+    fn drop(&mut self) {
+        self.both(Cmd::Quit);
+    }
+}
+
+fn render_thread(
+    shared: Arc<Shared>,
+    rx: Receiver<Cmd>,
+    ctx: eframe::egui::Context,
+    backend: Backend,
+    text: Arc<Mutex<TextRasterizer>>,
+) {
+    let mut pool = DecoderPool::new(backend);
+    let mut comp = Compositor::new();
+    let mut project = lock(&shared.project).clone();
+    // double buffer: `held` = last published, `spare` = the one before (free again once the UI took it)
+    let (mut held, mut spare): (Option<Arc<Frame>>, Option<Arc<Frame>>) = (None, None);
+    let mut dirty = false;
+    let mut pending: Option<Cmd> = None;
+    loop {
+        let playing = {
+            let mut c = lock(&shared.clock);
+            c.now();
+            c.playing
+        };
+        if pending.is_none() && !dirty && !playing {
+            let Ok(c) = rx.recv() else { return }; // idle: block, zero CPU
+            pending = Some(c);
+        }
+        // drain everything queued; the shared state already holds the latest values
+        loop {
+            let c = match pending.take() {
+                Some(c) => c,
+                None => match rx.try_recv() {
+                    Ok(c) => c,
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => return,
+                },
+            };
+            match c {
+                Cmd::SetProject => {
+                    project = lock(&shared.project).clone();
+                    dirty = true;
+                }
+                Cmd::Seek | Cmd::Play | Cmd::Pause | Cmd::Canvas => dirty = true,
+                Cmd::Backend(b) => {
+                    pool.set_backend(b);
+                    dirty = true;
+                }
+                Cmd::ClearDecoders(ack) => {
+                    pool.clear();
+                    let _ = ack.send(());
+                }
+                Cmd::Quit => return,
+            }
+        }
+        let (playing, t, (w, h)) = {
+            let mut c = lock(&shared.clock);
+            let t = c.now();
+            (c.playing, t, c.canvas)
+        };
+        if !playing && !dirty {
+            continue;
+        }
+        dirty = false;
+        let start = Instant::now();
+        if w > 0 && h > 0 {
+            let mut frame = match spare.take().map(Arc::try_unwrap) {
+                Some(Ok(f)) => f, // UI is done with it: no allocation
+                _ => Frame::default(),
+            };
+            comp.render(&project, t, w, h, &mut pool, &mut lock(&text), &mut frame);
+            let frame = Arc::new(frame);
+            *lock(&shared.frame) = Some(frame.clone()); // replaces an untaken (stale) frame: latest wins
+            spare = held.replace(frame);
+            ctx.request_repaint();
+        }
+        if playing {
+            // pace at the project fps from this render's start; if we are behind we simply render the
+            // current clock time next (never queue up). Commands wake us early.
+            let due = start + Duration::from_secs_f64(1.0 / project.fps.max(1.0));
+            match rx.recv_timeout(due.saturating_duration_since(Instant::now())) {
+                Ok(c) => pending = Some(c),
+                Err(RecvTimeoutError::Disconnected) => return,
+                Err(RecvTimeoutError::Timeout) => {}
+            }
+        }
+    }
+}
+
+fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
+    use cpal::traits::StreamTrait;
+    let mut pool = DecoderPool::new(backend);
+    let mut mixer = Mixer::new();
+    let ring: Arc<Mutex<VecDeque<f32>>> = Arc::new(Mutex::new(VecDeque::new()));
+    let stream = open_output(ring.clone());
+    let mut running = false; // device stream started (kept stopped while idle: no wakeups, no audiodg load)
+    let mut project = lock(&shared.project).clone();
+    let mut block = vec![0f32; BLOCK * 2];
+    let mut mixed_until = 0.0;
+    let mut pending: Option<Cmd> = None;
+    let is_playing = || {
+        let mut c = lock(&shared.clock);
+        c.now();
+        c.playing
+    };
+    loop {
+        if pending.is_none() && !running && !(stream.is_some() && is_playing()) {
+            let Ok(c) = rx.recv() else { return }; // idle (or no device): block, zero CPU
+            pending = Some(c);
+        }
+        loop {
+            let c = match pending.take() {
+                Some(c) => c,
+                None => match rx.try_recv() {
+                    Ok(c) => c,
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => return,
+                },
+            };
+            match c {
+                Cmd::SetProject => project = lock(&shared.project).clone(),
+                Cmd::Play | Cmd::Seek => {
+                    lock(&ring).clear();
+                    mixed_until = lock(&shared.clock).now();
+                }
+                Cmd::Pause => lock(&ring).clear(),
+                Cmd::Canvas => {}
+                Cmd::Backend(b) => pool.set_backend(b),
+                Cmd::ClearDecoders(ack) => {
+                    pool.clear();
+                    let _ = ack.send(());
+                }
+                Cmd::Quit => return,
+            }
+        }
+        let Some(stream) = &stream else { continue };
+        let playing = is_playing();
+        if playing && !running {
+            running = stream.play().is_ok();
+        } else if !playing && running && lock(&ring).is_empty() {
+            // let the tail play out after the clock auto-stops at the end, then stop the device
+            let _ = stream.pause();
+            running = false;
+        }
+        let queued = lock(&ring).len() as f64 / (2 * SAMPLE_RATE) as f64;
+        if playing && queued < LEAD_SECS {
+            // ponytail: wall clock is the master; the ring is refilled only as the device drains it, so it
+            // can't grow past LEAD + one block. Resample against the clock if A/V drift ever matters.
+            mixer.mix(&project, mixed_until, &mut pool, &mut block);
+            lock(&ring).extend(block.iter().copied());
+            mixed_until += BLOCK as f64 / SAMPLE_RATE as f64;
+        } else {
+            match rx.recv_timeout(Duration::from_millis(4)) {
+                Ok(c) => pending = Some(c),
+                Err(RecvTimeoutError::Disconnected) => return,
+                Err(RecvTimeoutError::Timeout) => {}
+            }
+        }
+    }
+}
+
+/// Default output device as 48 kHz stereo f32; None = no audio (playback still runs off the wall clock).
+fn open_output(ring: Arc<Mutex<VecDeque<f32>>>) -> Option<cpal::Stream> {
+    use cpal::traits::{DeviceTrait, HostTrait};
+    let device = cpal::default_host().default_output_device()?;
+    // ponytail: WASAPI shared mode converts any PCM rate/channel count for output (cpal sets
+    // AUTOCONVERTPCM), so we ask for exactly what the mixer produces. Add a resampler if a device refuses.
+    let config = cpal::StreamConfig { channels: 2, sample_rate: SAMPLE_RATE, buffer_size: cpal::BufferSize::Default };
+    let stream = device
+        .build_output_stream(
+            config,
+            move |out: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                let mut r = lock(&ring);
+                for s in out.iter_mut() {
+                    *s = r.pop_front().unwrap_or(0.0); // zero-fill on underrun
+                }
+            },
+            |e| eprintln!("audio: {e}"),
+            None,
+        )
+        .map_err(|e| eprintln!("audio: no output stream ({e}); playing silently"))
+        .ok()?;
+    Some(stream)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::media;
+    use std::thread::sleep;
+
+    /// Newest frame rendered for exactly `t` at `size` (earlier renders may still be in flight).
+    fn wait_frame(p: &mut Player, t: f64, size: (u32, u32)) -> Arc<Frame> {
+        for _ in 0..300 {
+            if let Some(f) = p.take_frame() {
+                if (f.pts - t).abs() < 1e-6 && (f.width, f.height) == size {
+                    return f;
+                }
+            }
+            sleep(Duration::from_millis(10));
+        }
+        panic!("no {size:?} frame for t={t} within 3 s");
+    }
+    fn centre(f: &Frame) -> [u8; 4] {
+        let i = ((f.height / 2 * f.width + f.width / 2) * 4) as usize;
+        [f.rgba[i], f.rgba[i + 1], f.rgba[i + 2], f.rgba[i + 3]]
+    }
+
+    #[test]
+    fn player_seek_play_pause_release() {
+        use cpal::traits::HostTrait;
+        if cpal::default_host().default_output_device().is_none() {
+            println!("playback test: no audio device, running silently");
+        }
+        let path = media::ffpipe::tests::test_mp4(); // red 0–2 s, lime 2–4 s, 320x240, sine audio
+        let asset = media::probe(&path, Backend::Auto).unwrap();
+        let project = Project::from_media(asset);
+        let mut p =
+            Player::new(eframe::egui::Context::default(), Backend::Auto, Arc::new(Mutex::new(TextRasterizer::new())));
+        p.set_project(&project);
+        p.set_canvas(320, 240, 1280);
+        let dur = p.duration();
+        assert!((dur - 4.0).abs() < 0.2, "duration {dur}");
+
+        p.seek(0.5);
+        let c = centre(&wait_frame(&mut p, 0.5, (320, 240)));
+        assert!(c[0] > 200 && c[1] < 70 && c[2] < 70, "expected red at 0.5 s, got {c:?}");
+
+        p.seek(2.5);
+        let c = centre(&wait_frame(&mut p, 2.5, (320, 240)));
+        assert!(c[0] < 70 && c[1] > 200 && c[2] < 70, "expected green at 2.5 s, got {c:?}");
+
+        p.play();
+        assert!(p.is_playing());
+        sleep(Duration::from_millis(600));
+        let t = p.time();
+        assert!((3.05..3.45).contains(&t), "time after 600 ms of play: {t}");
+        let f = p.take_frame().expect("frames arrive while playing");
+        let now = p.time();
+        assert!(f.pts > 2.5 && f.pts <= now, "pts {} vs time {now}", f.pts);
+
+        p.pause();
+        let t1 = p.time();
+        sleep(Duration::from_millis(100));
+        assert_eq!(p.time(), t1);
+        assert!(!p.is_playing());
+
+        // play from the end rewinds
+        p.seek(dur);
+        p.play();
+        let t = p.time();
+        assert!(t < 0.2, "rewound: {t}");
+        p.pause();
+
+        let start = Instant::now();
+        p.release_files();
+        assert!(start.elapsed() < Duration::from_secs(2), "release_files took {:?}", start.elapsed());
+        p.set_canvas(160, 120, 100); // clamp keeps aspect, and the preview re-renders after release
+        let t = p.time();
+        wait_frame(&mut p, t, (100, 75));
     }
 }
