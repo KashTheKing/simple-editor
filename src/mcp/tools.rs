@@ -57,3 +57,67 @@ pub const TOOLS: &[(&str, &str, &[&str])] = &[
 pub fn names() -> Vec<&'static str> {
     TOOLS.iter().map(|t| t.0).collect()
 }
+
+use serde_json::{json, Value};
+
+/// JSON schema for one tool's arguments ("name:type:required:description" docs).
+pub fn input_schema(args: &[&str]) -> Value {
+    let mut props = serde_json::Map::new();
+    let mut required = Vec::new();
+    for a in args {
+        let mut it = a.splitn(4, ':');
+        let name = it.next().unwrap_or("");
+        let ty = it.next().unwrap_or("string");
+        let req = it.next().unwrap_or("false");
+        let desc = it.next().unwrap_or("");
+        let mut p = serde_json::Map::new();
+        p.insert("type".into(), Value::String(ty.into()));
+        if !desc.is_empty() {
+            p.insert("description".into(), Value::String(desc.into()));
+        }
+        props.insert(name.into(), Value::Object(p));
+        if req == "true" {
+            required.push(Value::String(name.into()));
+        }
+    }
+    json!({"type": "object", "properties": props, "required": required})
+}
+
+/// The `tools/list` payload: [{name, description, inputSchema}].
+pub fn list_json() -> Value {
+    Value::Array(
+        TOOLS
+            .iter()
+            .map(|(name, desc, args)| json!({"name": name, "description": desc, "inputSchema": input_schema(args)}))
+            .collect(),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn schema_builder() {
+        let s = input_schema(&["id:integer:true:the id", "path:string:false:"]);
+        assert_eq!(s["type"], "object");
+        assert_eq!(s["properties"]["id"]["type"], "integer");
+        assert_eq!(s["properties"]["id"]["description"], "the id");
+        assert_eq!(s["required"], json!(["id"]));
+        assert!(s["properties"]["path"].get("description").is_none()); // empty description omitted
+        assert_eq!(s["properties"]["path"]["type"], "string");
+        // every catalogue entry builds a valid object schema with known types
+        for (name, _, args) in TOOLS {
+            let v = input_schema(args);
+            assert_eq!(v["type"], "object", "{name}");
+            for (_, p) in v["properties"].as_object().unwrap() {
+                let ty = p["type"].as_str().unwrap();
+                assert!(
+                    matches!(ty, "string" | "number" | "integer" | "boolean" | "array" | "object"),
+                    "{name}: bad type {ty}"
+                );
+            }
+        }
+        assert_eq!(list_json().as_array().unwrap().len(), TOOLS.len());
+    }
+}
