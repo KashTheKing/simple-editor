@@ -51,6 +51,8 @@ pub struct App {
     started: Instant,
     screenshot_requested: bool,
     close_confirmed: bool,
+    /// Last title sent to the OS — `send_viewport_cmd` forces a repaint, so only send on change.
+    last_title: String,
     palette: Palette,
 }
 
@@ -102,6 +104,7 @@ impl App {
             started: Instant::now(),
             screenshot_requested: false,
             close_confirmed: false,
+            last_title: String::new(),
             palette,
         };
         app.player.set_project(&app.project);
@@ -949,7 +952,11 @@ impl eframe::App for App {
             actions.push(Action::Delete);
         }
 
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
+        let title = self.title();
+        if title != self.last_title {
+            self.last_title = title.clone();
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+        }
 
         // ---- layout ----
         egui::TopBottomPanel::top("menu").show(ctx, |ui| {
