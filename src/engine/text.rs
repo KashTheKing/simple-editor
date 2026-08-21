@@ -19,6 +19,8 @@ pub struct TextRasterizer {
     loaded: bool,
     db: Database,
     fonts: HashMap<ID, Option<FontArc>>,
+    /// User font file paths already loaded (or attempted), so repeat calls are cheap.
+    user_fonts: Vec<String>,
 }
 
 impl Default for TextRasterizer {
@@ -30,7 +32,14 @@ impl Default for TextRasterizer {
 impl TextRasterizer {
     /// Cheap; fonts load lazily (or via `load_system_fonts` from a background thread).
     pub fn new() -> Self {
-        Self { cache: HashMap::new(), families: Vec::new(), loaded: false, db: Database::new(), fonts: HashMap::new() }
+        Self {
+            cache: HashMap::new(),
+            families: Vec::new(),
+            loaded: false,
+            db: Database::new(),
+            fonts: HashMap::new(),
+            user_fonts: Vec::new(),
+        }
     }
     /// Scan system fonts (≈100 ms). Idempotent.
     pub fn load_system_fonts(&mut self) {
@@ -39,6 +48,29 @@ impl TextRasterizer {
         }
         self.loaded = true;
         self.db.load_system_fonts();
+        self.refresh_families();
+    }
+    /// Load user font files (`Settings.user_fonts`) into the database. Idempotent: paths already
+    /// loaded (or that failed) are skipped on repeat calls.
+    pub fn load_user_fonts(&mut self, paths: &[String]) {
+        let mut added = false;
+        for p in paths {
+            if self.user_fonts.iter().any(|q| q == p) {
+                continue;
+            }
+            // ponytail: failed paths are remembered and never retried — restart to retry
+            self.user_fonts.push(p.clone());
+            if self.db.load_font_file(p).is_ok() {
+                added = true;
+            }
+        }
+        if added {
+            self.refresh_families();
+            // styles that fell back to another font before this one existed must re-render
+            self.cache.clear();
+        }
+    }
+    fn refresh_families(&mut self) {
         let mut fams: Vec<String> =
             self.db.faces().filter_map(|f| f.families.first().map(|(n, _)| n.clone())).collect();
         fams.sort();
@@ -383,6 +415,32 @@ mod tests {
         s4.align = 0;
         let e = tr.render(&s4, 0.5);
         assert!(e.height > a.height * 2);
+    }
+
+    #[test]
+    fn user_font_load_is_idempotent_and_listed() {
+        let src = std::path::Path::new("C:\\Windows\\Fonts\\arial.ttf");
+        if !src.exists() {
+            eprintln!("no arial.ttf — skipping");
+            return;
+        }
+        let dst = std::env::temp_dir().join(format!("se-userfont-{}.ttf", std::process::id()));
+        std::fs::copy(src, &dst).expect("copy font");
+        let mut tr = TextRasterizer::new();
+        let paths = vec![dst.to_string_lossy().into_owned()];
+        tr.load_user_fonts(&paths);
+        assert!(tr.families().iter().any(|f| f == "Arial"), "{:?}", tr.families());
+        let n = tr.families().len();
+        tr.load_user_fonts(&paths); // idempotent
+        assert_eq!(tr.families().len(), n);
+        // renders with the user family (before system fonts are scanned the db has only this file,
+        // but render() also pulls in system fonts — either way it must not panic and must cover pixels)
+        let mut style = TextStyle::default();
+        style.font = "Arial".into();
+        assert!(alpha_sum(&tr.render(&style, 0.5)) > 0);
+        // a missing path is remembered without error
+        tr.load_user_fonts(&["Z:\\nope\\missing-font.ttf".into()]);
+        let _ = std::fs::remove_file(&dst);
     }
 
     #[test]
