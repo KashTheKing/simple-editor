@@ -128,6 +128,8 @@ don't own**; if you truly need something, add a private helper in your own file 
   callback; wall clock is the master; ~120 ms lead.
 * Export/convert threads: their own pool/compositor/mixer or ffmpeg child. Waveform + thumbnail workers:
   their own decoders. MCP server thread: sockets only; all project access happens on the UI thread.
+* Every decode on a long-lived worker (render, audio, thumbs, waveform) runs under `catch_unwind`: a
+  panicking decoder degrades to one missing frame/thumbnail, it never kills the thread for the session.
 * MF objects are created and used on one thread each (`unsafe impl Send` newtypes, COM/MF init per thread).
 
 ## Conventions

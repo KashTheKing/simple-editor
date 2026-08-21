@@ -92,6 +92,15 @@ fn keep_ranges(start: f64, end: f64, remove: &[(f64, f64)], out: &mut Vec<(f64, 
     }
 }
 
+/// Apply's ripple shifts every later clip left, which invalidates the absolute times cached for them —
+/// so applying right-to-left keeps each detection valid until it has been used.
+fn sort_right_to_left(project: &Project, cached: &mut [Detection]) {
+    cached.sort_by(|a, b| {
+        let s = |d: &Detection| project.clip(d.clip).map_or(0.0, |c| c.start);
+        s(b).total_cmp(&s(a))
+    });
+}
+
 pub fn show(
     ui: &mut egui::Ui,
     state: &mut AutoCutState,
@@ -193,6 +202,7 @@ pub fn show(
             state.overlay.extend(keep.iter().copied());
             state.cached.push(Detection { clip: *id, cuts, quiet, kept: keep.len(), kept_secs });
         }
+        sort_right_to_left(project, &mut state.cached);
     }
 
     // ---- live status ----
@@ -277,6 +287,21 @@ mod tests {
         // unsorted + out-of-clip ranges are clamped
         keep_ranges(1.0, 9.0, &[(8.0, 12.0), (-1.0, 2.0)], &mut out);
         assert_eq!(out, vec![(2.0, 8.0)]);
+    }
+
+    #[test]
+    fn detections_are_applied_right_to_left() {
+        let mut p = Project::new();
+        p.tracks[1].clips.push(Clip::new(1001, ClipKind::Audio, "a", 0.0, 10.0));
+        p.tracks[1].clips.push(Clip::new(1002, ClipKind::Audio, "b", 10.0, 10.0));
+        let det = |clip| Detection { clip, cuts: Vec::new(), quiet: Vec::new(), kept: 0, kept_secs: 0.0 };
+        let mut cached = vec![det(1001), det(1002)];
+        sort_right_to_left(&p, &mut cached);
+        assert_eq!(
+            cached.iter().map(|d| d.clip).collect::<Vec<_>>(),
+            vec![1002, 1001],
+            "the later clip must be cut before ripple moves it"
+        );
     }
 
     #[test]

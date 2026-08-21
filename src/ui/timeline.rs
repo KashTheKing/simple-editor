@@ -366,8 +366,11 @@ fn draw_filmstrip(
     if h < 12.0 || !vis.is_positive() {
         return;
     }
+    // ponytail: 16 px decode buckets, so a track-height drag reuses thumbs instead of queueing a fresh
+    // set (new cache key + new t grid) every frame. Ceiling: <5 % horizontal squash from the rounding.
+    let hq = (((h as u32 + 8) / 16) * 16).max(16);
     let aspect = if asset.height > 0 { asset.width as f32 / asset.height as f32 } else { 16.0 / 9.0 };
-    let step = (h * aspect).max(80.0);
+    let step = (hq as f32 * aspect).max(80.0);
     let pc = p.with_clip_rect(vis);
     let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
     let mut n = ((vis.left() - rect.left()) / step).floor().max(0.0);
@@ -377,7 +380,7 @@ fn draw_filmstrip(
             break;
         }
         let t = clip.src_time(state.time_at(x)).max(0.0);
-        if let Some((tex, [tw, th])) = thumbs.texture(ectx, &asset.path, t, h as u32) {
+        if let Some((tex, [tw, th])) = thumbs.texture(ectx, &asset.path, t, hq) {
             let w = h * tw as f32 / th.max(1) as f32;
             pc.image(tex, Rect::from_min_size(pos2(x, rect.top() + band), vec2(w.min(step), h)), uv, Color32::WHITE);
         }
@@ -409,10 +412,10 @@ fn clip_menu(
     if ui.button("Freeze Frame at Playhead").clicked() {
         actions.push(Action::FreezeFrame);
     }
+    // ponytail: one entry — Action::AddTransition always targets the cut on the selected clip's left.
+    // "at End" pushed the same action, so it either duplicated this or toasted "no left neighbour".
+    // The Transitions pane covers the right-hand cut (transitions_ui::right_neighbor).
     if ui.button("Add Transition at Start").clicked() {
-        actions.push(Action::AddTransition);
-    }
-    if ui.button("Add Transition at End").clicked() {
         actions.push(Action::AddTransition);
     }
     if ui.button("Auto-cut…").clicked() {
@@ -1242,6 +1245,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     if let (Some(drag), Some(pos)) = (state.drag.as_mut(), pointer) {
         let zoom = zoom0;
         let dx = (pos.x - drag.origin.x) as f64 / zoom as f64;
+        let ox = drag.origin.x; // grab point (auto-scroll compensates it), for gestures that edit at one time
         let thr = (SNAP_PX / zoom) as f64;
         let p = &mut *c.project;
         match &mut drag.g {
@@ -1330,7 +1334,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                         let gain = if db <= DB_BOT + 0.25 { 0.0 } else { 10f64.powf(db as f64 / 20.0) };
                         let cl = &mut p.tracks[ti].clips[ci];
                         if cl.volume.is_animated() {
-                            let lt = (t_at(pos.x) - cl.start).clamp(0.0, cl.duration);
+                            // latch to the grab time: editing at the live x inserts a key per frame of the drag
+                            let lt = (t_at(ox) - cl.start).clamp(0.0, cl.duration);
                             cl.volume.set_at(lt, gain);
                             *changed = true;
                         } else if (cl.volume.value - gain).abs() > 1e-9 {
@@ -1367,19 +1372,22 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 }
             }
             Gesture::TransDur { track, id, changed } => {
-                let tr = &p.tracks[*track];
-                let cut = tr
-                    .transitions
-                    .iter()
-                    .find(|t| t.id == *id)
-                    .and_then(|t| tr.transition_pair(t))
-                    .map(|(_, r)| r.start);
-                if let Some(cut) = cut {
-                    let d = ((t_at(pos.x) - cut).abs() * 2.0).max(0.1);
-                    if let Some(tr) = p.tracks[*track].transitions.iter_mut().find(|t| t.id == *id) {
-                        if (tr.duration - d).abs() > 1e-9 {
-                            tr.duration = d;
-                            *changed = true;
+                // the project can be replaced mid-drag (undo, MCP project.open/sequence.open): index may be stale
+                if let Some(tr) = p.tracks.get_mut(*track) {
+                    let lim = tr
+                        .transitions
+                        .iter()
+                        .find(|t| t.id == *id)
+                        .and_then(|t| tr.transition_pair(t))
+                        .map(|(l, r)| (r.start, 2.0 * l.duration.min(r.duration)));
+                    if let Some((cut, max)) = lim {
+                        // cap: the Transitions panel's 0.1..5 s range, and what the two clips can actually supply
+                        let d = ((t_at(pos.x) - cut).abs() * 2.0).min(max).min(5.0).max(0.1);
+                        if let Some(t) = tr.transitions.iter_mut().find(|t| t.id == *id) {
+                            if (t.duration - d).abs() > 1e-9 {
+                                t.duration = d;
+                                *changed = true;
+                            }
                         }
                     }
                 }
@@ -1854,6 +1862,26 @@ mod tests {
     }
 
     #[test]
+    fn headless_volume_line_drag_keys_once_on_animated_clip() {
+        let mut h = Harness::new();
+        let lanes = h.state.lanes_rect;
+        // keyframed volume, unity at both ends → the line still sits at 70 % height
+        h.project.tracks[1].clips[0].volume.toggle_key(0.0);
+        h.project.tracks[1].clips[0].volume.toggle_key(9.0);
+        h.frame(vec![]);
+        let row_top = lanes.top() + h.project.tracks[0].height;
+        let rect_h = h.project.tracks[1].height - 2.0;
+        let line_y = (row_top + h.project.tracks[1].height - 1.0) - 0.7 * rect_h;
+        let from = pos2(lanes.left() + 40.0, line_y); // t = 1 s at zoom 40
+        assert!(h.drag(from, from + vec2(160.0, 12.0)), "volume drag edits");
+        let v = &h.audio_clip().volume;
+        // one key at the grab time, edited in place for the rest of the gesture — not one per frame
+        assert_eq!(v.keys.len(), 3, "keys {:?}", v.keys);
+        assert!((v.keys[1].t - 1.0).abs() < 1e-6, "key at the grab time, got {:?}", v.keys);
+        assert!(v.keys[1].v < 1.0, "grabbed key lowered, got {:?}", v.keys);
+    }
+
+    #[test]
     fn headless_keyframe_drag_moves_key() {
         let mut h = Harness::new();
         let lanes = h.state.lanes_rect;
@@ -1887,6 +1915,50 @@ mod tests {
         assert!((tr.duration - 2.9).abs() < 0.06, "duration {}", tr.duration);
         // clips untouched
         assert!((h.project.tracks[0].clips[1].start - 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn headless_transition_edge_drag_clamps_duration() {
+        use crate::model::TransitionKind;
+        let mut h = Harness::new();
+        let lanes = h.state.lanes_rect;
+        h.project.split_at(5.0, None);
+        let right_id = h.project.tracks[0].clips[1].id;
+        h.project.add_transition(right_id, TransitionKind::CrossFade, 1.0).unwrap();
+        h.frame(vec![]);
+        let dur = |h: &Harness| h.project.tracks[0].transitions.iter().find(|t| t.right == right_id).unwrap().duration;
+        // two 5 s clips: the Transitions panel's 5 s cap binds
+        let from = pos2(h.state.x_at(5.5) - 2.0, lanes.top() + 30.0);
+        assert!(h.drag(from, from + vec2(300.0, 0.0)), "transition drag edits");
+        assert!((dur(&h) - 5.0).abs() < 1e-6, "duration {}", dur(&h));
+        // shrink the left clip to 1 s: now the clips cap it at 2 × the shorter one
+        h.project.tracks[0].clips[0].trim_start(4.0, f64::INFINITY);
+        h.frame(vec![]);
+        let from = pos2(h.state.x_at(7.5) - 2.0, lanes.top() + 30.0);
+        assert!(h.drag(from, from + vec2(300.0, 0.0)), "second transition drag edits");
+        assert!((dur(&h) - 2.0).abs() < 1e-6, "duration {}", dur(&h));
+    }
+
+    #[test]
+    fn headless_transition_drag_survives_project_swap() {
+        use crate::model::TransitionKind;
+        let mut h = Harness::new();
+        let lanes = h.state.lanes_rect;
+        h.project.split_at(5.0, None);
+        let right_id = h.project.tracks[0].clips[1].id;
+        h.project.add_transition(right_id, TransitionKind::CrossFade, 1.0).unwrap();
+        h.frame(vec![]);
+        let from = pos2(h.state.x_at(5.5) - 2.0, lanes.top() + 30.0);
+        h.press(from);
+        h.frame(vec![Event::PointerMoved(from + vec2(10.0, 0.0))]);
+        assert!(matches!(h.state.drag, Some(Drag { g: Gesture::TransDur { .. }, .. })), "edge drag started");
+        // undo / MCP project.open can replace the project mid-drag: the captured track index goes stale
+        if let Some(Drag { g: Gesture::TransDur { track, .. }, .. }) = h.state.drag.as_mut() {
+            *track = 9;
+        }
+        h.project = Project::new();
+        h.frame(vec![Event::PointerMoved(from + vec2(40.0, 0.0))]); // used to panic: index out of bounds
+        h.release(from + vec2(40.0, 0.0));
     }
 
     #[test]

@@ -206,6 +206,17 @@ impl Drop for Player {
     }
 }
 
+/// Run one decode+compose/mix under `catch_unwind`: a panicking decoder must not kill the render or audio
+/// thread for the rest of the session (the UI would freeze on the last frame with no error). On a panic the
+/// decoders are dropped so the next call starts clean. False = the call panicked and its output is garbage.
+fn guarded(pool: &mut DecoderPool, f: impl FnOnce(&mut DecoderPool)) -> bool {
+    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(pool))).is_ok() {
+        return true;
+    }
+    pool.clear();
+    false
+}
+
 fn render_thread(
     shared: Arc<Shared>,
     rx: Receiver<Cmd>,
@@ -259,7 +270,7 @@ fn render_thread(
                     let w = pw.min(max_w.max(16));
                     let h = ((ph as u64 * w as u64) / pw as u64).max(1) as u32;
                     let mut f = Frame::default();
-                    comp.render(&project, t, w, h, &mut pool, &mut lock(&text), &mut f);
+                    guarded(&mut pool, |pool| comp.render(&project, t, w, h, pool, &mut lock(&text), &mut f));
                     let _ = reply.send(Arc::new(f));
                 }
                 Cmd::Quit => return,
@@ -280,7 +291,7 @@ fn render_thread(
                 Some(Ok(f)) => f, // UI is done with it: no allocation
                 _ => Frame::default(),
             };
-            comp.render(&project, t, w, h, &mut pool, &mut lock(&text), &mut frame);
+            guarded(&mut pool, |pool| comp.render(&project, t, w, h, pool, &mut lock(&text), &mut frame));
             let frame = Arc::new(frame);
             *lock(&shared.frame) = Some(frame.clone()); // replaces an untaken (stale) frame: latest wins
             spare = held.replace(frame);
@@ -370,8 +381,9 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
             if now - (mixed_until - queued) > 0.05 {
                 mixed_until = now + queued;
             }
-            mixer.mix(&project, mixed_until, &mut pool, &mut block);
-            lock(&ring).extend(block.iter().copied());
+            if guarded(&mut pool, |pool| mixer.mix(&project, mixed_until, pool, &mut block)) {
+                lock(&ring).extend(block.iter().copied()); // a panicked block would be garbage: underrun instead
+            }
             mixed_until += BLOCK as f64 / SAMPLE_RATE as f64;
         } else {
             match rx.recv_timeout(Duration::from_millis(4)) {
@@ -507,5 +519,18 @@ mod tests {
         assert_eq!((f.width, f.height), (160, 120));
         let c = centre(&f);
         assert!(c[0] < 70 && c[1] > 200, "expected green from render_once at 2.5 s, got {c:?}");
+    }
+
+    /// A panicking decoder is contained: the caller lives on and the next call still runs.
+    #[test]
+    fn guarded_contains_a_panicking_decode() {
+        let mut pool = DecoderPool::new(Backend::Ffmpeg);
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {})); // the panic below is expected: keep the log clean
+        assert!(!guarded(&mut pool, |_| panic!("decoder exploded")));
+        std::panic::set_hook(hook);
+        let mut ran = false;
+        assert!(guarded(&mut pool, |_| ran = true));
+        assert!(ran);
     }
 }

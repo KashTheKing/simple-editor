@@ -12,7 +12,7 @@
 use crate::media::thumbs::ThumbCache;
 use crate::model::{ClipKind, Id, PlanItem, Project, LABEL_COLORS};
 use crate::theme::Palette;
-use crate::ui::DragPayload;
+use crate::ui::{label_color, DragPayload};
 use eframe::egui::{self, Response, RichText, TextEdit};
 
 #[derive(Default)]
@@ -141,18 +141,14 @@ impl TreeUi<'_> {
         self.start |= edit_start(r);
         self.changed |= r.changed();
     }
+    /// Text fields: one undo entry per visit to the field, not per keystroke.
+    fn note_text(&mut self, r: &Response) {
+        self.start |= r.gained_focus();
+        self.changed |= r.changed();
+    }
     fn click(&mut self) {
         self.start = true;
         self.changed = true;
-    }
-}
-
-fn label_color(idx: u8, palette: &Palette) -> egui::Color32 {
-    if idx == 0 || idx as usize > LABEL_COLORS.len() {
-        palette.text_dim
-    } else {
-        let [r, g, b] = LABEL_COLORS[idx as usize - 1].1;
-        egui::Color32::from_rgb(r, g, b)
     }
 }
 
@@ -201,7 +197,7 @@ fn tree_rows(ui: &mut egui::Ui, items: &mut [PlanItem], depth: usize, t: &mut Tr
                 if r.has_focus() {
                     *t.selected = Some(it.id);
                 }
-                t.note(&r);
+                t.note_text(&r);
                 let mut op = |o: Op| *t.op = Some(o);
                 if ui.small_button("+").on_hover_text("Add sub-task").clicked() {
                     op(Op::Add(Some(it.id)));
@@ -263,7 +259,8 @@ pub fn show(
                 "Describe your process, ideas and style while you edit — the style summary / AI tools read this.",
             ),
         );
-        if edit_start(&r) {
+        // one undo entry per visit to the notes field, not per keystroke
+        if r.gained_focus() {
             once(&mut undone, undo, project);
         }
         if r.changed() {
@@ -283,6 +280,8 @@ pub fn show(
         ui.label("");
     });
 
+    // ponytail: per-frame deep clone of the task tree, written back on change — keeps `undo` able to
+    // snapshot the untouched project. Upgrade: drive tree_rows from &mut project.plan if a big plan shows.
     let mut plan = project.plan.clone();
     let mut op: Option<Op> = None;
     let mut t = TreeUi {
@@ -360,7 +359,7 @@ fn details(
     let mut changed = false;
     ui.separator();
     let r = ui.add(TextEdit::multiline(&mut it.notes).desired_rows(2).desired_width(f32::INFINITY).hint_text("notes"));
-    start |= edit_start(&r);
+    start |= r.gained_focus();
     changed |= r.changed();
     while it.asset_notes.len() < it.assets.len() {
         it.asset_notes.push(String::new());
@@ -396,7 +395,7 @@ fn details(
                 }
             });
             let r = ui.add(TextEdit::singleline(&mut it.asset_notes[i]).desired_width(f32::INFINITY).hint_text("note"));
-            start |= edit_start(&r);
+            start |= r.gained_focus();
             changed |= r.changed();
         }
     });

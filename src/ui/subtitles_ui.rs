@@ -158,15 +158,16 @@ pub fn show(
                 });
                 let mut text = project.subtitles[i].text.clone();
                 let r = ui.add(egui::TextEdit::multiline(&mut text).desired_rows(1).desired_width(f32::INFINITY));
+                // One undo entry per visit to the field, not per keystroke. "Add at playhead" focuses the
+                // new cue itself and has already pushed one, so that focus does not push another.
                 if state.focus == Some(id) {
                     r.request_focus();
                     state.focus = None;
+                } else if r.gained_focus() {
+                    once(&mut undone, undo, project);
                 }
                 if r.has_focus() {
                     state.selected = Some(id);
-                }
-                if edit_start(&r) {
-                    once(&mut undone, undo, project);
                 }
                 if r.changed() {
                     project.subtitles[i].text = text;
@@ -271,8 +272,7 @@ fn import_dialog(
 ) {
     let Some(path) = rfd::FileDialog::new().add_filter("Subtitles", &["srt", "vtt"]).pick_file() else { return };
     let Ok(text) = std::fs::read_to_string(&path) else { return };
-    // ponytail: catch_unwind so a still-todo!() engine::subtitles in a sibling worktree can't crash the app.
-    let cues = std::panic::catch_unwind(|| crate::engine::subtitles::parse(&text)).unwrap_or_default();
+    let cues = crate::engine::subtitles::parse(&text);
     if cues.is_empty() {
         return;
     }
@@ -299,17 +299,8 @@ fn export_dialog(project: &Project, vtt: bool) {
         return;
     };
     let cues = &project.subtitles;
-    let text = std::panic::catch_unwind(|| {
-        if vtt {
-            crate::engine::subtitles::to_vtt(cues)
-        } else {
-            crate::engine::subtitles::to_srt(cues)
-        }
-    })
-    .unwrap_or_default();
-    if !text.is_empty() {
-        let _ = std::fs::write(path, text);
-    }
+    let text = if vtt { crate::engine::subtitles::to_vtt(cues) } else { crate::engine::subtitles::to_srt(cues) };
+    let _ = std::fs::write(path, text);
 }
 
 #[cfg(test)]
@@ -339,15 +330,11 @@ mod tests {
         assert_eq!(p.subtitles[0].text, "a");
     }
 
-    /// Runs engine::subtitles::parse on a small SRT; skips while the engine is still a todo!() stub.
+    /// Runs engine::subtitles::parse on a small SRT.
     #[test]
-    fn import_parses_srt_when_engine_ready() {
+    fn import_parses_srt() {
         let srt = "1\n00:00:01,000 --> 00:00:02,500\nHello\n\n2\n00:00:03,000 --> 00:00:04,000\nWorld\n";
-        let prev = std::panic::take_hook();
-        std::panic::set_hook(Box::new(|_| {}));
-        let r = std::panic::catch_unwind(|| crate::engine::subtitles::parse(srt));
-        std::panic::set_hook(prev);
-        let Ok(cues) = r else { return }; // engine not implemented yet in this worktree
+        let cues = crate::engine::subtitles::parse(srt);
         assert_eq!(cues.len(), 2);
         assert!((cues[0].0 - 1.0).abs() < 1e-3 && (cues[0].1 - 2.5).abs() < 1e-3);
         assert_eq!(cues[0].2, "Hello");

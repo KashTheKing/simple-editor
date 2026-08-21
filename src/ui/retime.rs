@@ -41,9 +41,16 @@ fn apply_speed(
     }
 }
 
+/// Freeze only the clips the playhead is actually over: `freeze_at` stores `src_time(playhead)`, which is
+/// an out-of-range (often negative) source time for a clip elsewhere on the timeline.
 fn apply_freeze(project: &mut Project, selection: &[Id], playhead: f64, undo: &mut dyn FnMut(&Project)) -> bool {
+    let sel: Vec<Id> =
+        selection.iter().copied().filter(|&id| project.clip(id).is_some_and(|c| c.contains(playhead))).collect();
+    if sel.is_empty() {
+        return false;
+    }
     let pre = project.clone();
-    if project.freeze_at(playhead, selection).is_empty() {
+    if project.freeze_at(playhead, &sel).is_empty() {
         false
     } else {
         undo(&pre);
@@ -116,7 +123,12 @@ pub fn show(
             if ui.button("Apply").clicked() {
                 changed |= apply_speed(project, selection, state.percent / 100.0, state.reverse, &mut state.note, undo);
             }
-            if ui.button("Freeze frame at playhead").clicked() && apply_freeze(project, selection, playhead, undo) {
+            if ui
+                .add_enabled(clip.contains(playhead), egui::Button::new("Freeze frame at playhead"))
+                .on_disabled_hover_text("Move the playhead over the clip to freeze a frame.")
+                .clicked()
+                && apply_freeze(project, selection, playhead, undo)
+            {
                 changed = true;
             }
             if clip.freeze.is_some() && ui.button("Unfreeze").clicked() && apply_unfreeze(project, selection, undo) {
@@ -199,6 +211,21 @@ mod tests {
         // nothing frozen → no-op, no undo
         assert!(!apply_unfreeze(&mut p, &[id], &mut |_| undos += 1));
         assert_eq!(undos, 2);
+    }
+
+    /// The playhead outside the clip is not a freeze: no undo, no negative source time.
+    #[test]
+    fn freeze_outside_clip_is_a_no_op() {
+        let (mut p, id) = project_10s();
+        p.clip_mut(id).unwrap().start = 10.0; // clip spans 10..20
+        let mut undos = 0;
+        assert!(!apply_freeze(&mut p, &[id], 0.0, &mut |_| undos += 1));
+        assert_eq!(undos, 0);
+        assert!(p.all_clips().all(|(_, c)| c.freeze.is_none()));
+        // inside the clip still works
+        assert!(apply_freeze(&mut p, &[id], 12.0, &mut |_| undos += 1));
+        assert_eq!(undos, 1);
+        assert!(p.all_clips().any(|(_, c)| c.freeze.is_some_and(|f| f >= 0.0)));
     }
 
     /// Headless: window lays out (with and without a selection) and reports no change.

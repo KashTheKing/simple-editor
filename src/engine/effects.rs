@@ -18,6 +18,17 @@
 use crate::media::Frame;
 use crate::model::{Effect, EffectKind};
 
+/// A pixel-sized parameter (project px) as whole image px at `scale`, floored at `min`. A non-zero
+/// request never rounds down to nothing, so a small radius still shows in the small preview canvas
+/// instead of appearing only on export (preview == export).
+fn px(v: f64, scale: f32, min: f64) -> usize {
+    if v <= 0.0 {
+        0
+    } else {
+        (v * scale as f64).round().max(min) as usize
+    }
+}
+
 /// Apply one effect in place at clip-local time `t`. `scratch` is a reusable buffer.
 pub fn apply(effect: &Effect, t: f64, scale: f32, img: &mut Frame, scratch: &mut Frame) {
     if img.is_empty() || !effect.enabled {
@@ -27,14 +38,15 @@ pub fn apply(effect: &Effect, t: f64, scale: f32, img: &mut Frame, scratch: &mut
     match effect.kind {
         EffectKind::Blur => {
             // 3 box passes of radius r/2 ≈ Gaussian with sigma ≈ r/2 (visual radius ≈ r)
-            let r = (e(0) * scale as f64 * 0.5).round() as i64;
+            let r = px(e(0) * 0.5, scale, 1.0);
             if r > 0 {
                 for _ in 0..3 {
-                    blur_pass(img, scratch, r as usize);
+                    blur_pass(img, scratch, r);
                 }
             }
         }
-        EffectKind::Pixelate => pixelate(img, (e(0) * scale as f64).round().max(1.0) as u32),
+        // block 1 is the no-op, so a requested block of ≥ 2 keeps at least 2 px at preview scale
+        EffectKind::Pixelate => pixelate(img, if e(0) >= 2.0 { px(e(0), scale, 2.0) as u32 } else { 1 }),
         EffectKind::Tint => {
             let a = e(3).clamp(0.0, 1.0);
             let target = [e(0), e(1), e(2)];
@@ -52,7 +64,7 @@ pub fn apply(effect: &Effect, t: f64, scale: f32, img: &mut Frame, scratch: &mut
         }
         EffectKind::Color => color(img, e(0), e(1), e(2), e(3), e(4)),
         EffectKind::Vignette => vignette(img, e(0) as f32, e(1) as f32, e(2) as f32),
-        EffectKind::Sharpen => sharpen(img, scratch, e(0) as f32, (e(1) * scale as f64).round().max(1.0) as usize),
+        EffectKind::Sharpen => sharpen(img, scratch, e(0) as f32, px(e(1), scale, 1.0)),
         EffectKind::Invert => {
             let a = e(0).clamp(0.0, 1.0);
             let mut lut = [0u8; 256];
@@ -415,12 +427,29 @@ mod tests {
         let before = img2.rgba.clone();
         apply(&eff(K::Blur, &[0.0]), 0.0, 1.0, &mut img2, &mut scratch);
         assert_eq!(img2.rgba, before);
+        // a small radius at preview scale still blurs (must not round down to 0 px — preview == export)
+        for s in [0.05f32, 0.36, 0.5] {
+            let mut small = noisy(16, 16);
+            let v0 = variance(&small);
+            apply(&eff(K::Blur, &[1.0]), 0.0, s, &mut small, &mut scratch);
+            assert!(variance(&small) < v0, "scale {s} did not blur");
+        }
     }
 
     #[test]
     fn pixelate_makes_blocks_uniform() {
         let mut img = noisy(8, 8);
         let mut scratch = Frame::default();
+        // at preview scale a requested block keeps at least 2 px (never silently a no-op)…
+        let mut small = noisy(8, 8);
+        let before = small.rgba.clone();
+        apply(&eff(K::Pixelate, &[4.0]), 0.0, 0.1, &mut small, &mut scratch);
+        assert_ne!(small.rgba, before, "block rounded down to a no-op");
+        // …while a block of 1 stays a no-op at full scale
+        let mut one = noisy(8, 8);
+        let before = one.rgba.clone();
+        apply(&eff(K::Pixelate, &[1.0]), 0.0, 1.0, &mut one, &mut scratch);
+        assert_eq!(one.rgba, before);
         apply(&eff(K::Pixelate, &[4.0]), 0.0, 1.0, &mut img, &mut scratch);
         for by in [0u32, 4] {
             for bx in [0u32, 4] {

@@ -13,8 +13,9 @@
 //!   * Transform the layer into canvas space per `placement()` (sampling per `project.scaler`;
 //!     straight row copies for the common axis-aligned case), then `blend::composite_row` /
 //!     `blend::composite_rect`.
-//! Transitions (`Track::transition_at`) render both clips of the cut — extended virtually into the
-//! window — and blend per kind. Subtitles (`Project::cue_at`) draw last, bottom-centre.
+//! Transitions render both clips of the cut — extended virtually into the window, which is clamped to
+//! the two clips (`trans_window`) so an over-long one cannot hide the rest of the track — and blend per
+//! kind. Subtitles (`Project::cue_at`) draw last, bottom-centre.
 //! Background is opaque black. Out-of-view layers are skipped.
 
 use crate::engine::blend;
@@ -102,6 +103,42 @@ struct Extra {
 
 impl Extra {
     const NONE: Extra = Extra { opacity: 1.0, dx: 0.0, dy: 0.0, fade: 0.0, color: [0, 0, 0, 255] };
+}
+
+/// Half-width of a transition window, clamped so it never reaches past either clip of the cut.
+/// `Transition::duration` is not clamped when it is set, and an over-long window would otherwise hide
+/// every other clip on the track (and keep both clips playing past their own ends).
+pub fn trans_half(tr: &Transition, left: &Clip, right: &Clip) -> f64 {
+    (tr.duration / 2.0).min(left.duration).min(right.duration)
+}
+
+/// `Transition::window` clamped to the clips of the cut.
+pub fn trans_window(tr: &Transition, left: &Clip, right: &Clip) -> (f64, f64) {
+    let h = trans_half(tr, left, right);
+    (right.start - h, right.start + h)
+}
+
+/// Eased progress 0..1 across a transition window of `cut ± half`.
+pub fn trans_progress_at(tr: &Transition, cut: f64, half: f64, t: f64) -> f64 {
+    if half <= 0.0 {
+        return 1.0;
+    }
+    tr.ease.apply(((t - (cut - half)) / (2.0 * half)).clamp(0.0, 1.0))
+}
+
+/// `Transition::progress` over the clamped window.
+pub fn trans_progress(tr: &Transition, left: &Clip, right: &Clip, t: f64) -> f64 {
+    trans_progress_at(tr, right.start, trans_half(tr, left, right), t)
+}
+
+/// `Track::transition_at` over the clamped window: the transition of `track` playing at t, with its
+/// clips. An over-long transition no longer swallows the clips beside it.
+fn transition_at(track: &Track, t: f64) -> Option<(&Transition, &Clip, &Clip)> {
+    track.transitions.iter().find_map(|tr| {
+        let (l, r) = track.transition_pair(tr)?;
+        let (a, b) = trans_window(tr, l, r);
+        (t >= a && t < b).then_some((tr, l, r))
+    })
 }
 
 /// Mute/solo resolution over an arbitrary track list (mirrors `Project::active`).
@@ -221,7 +258,7 @@ impl Compositor {
             if track.kind != TrackKind::Video || !track_active(tracks, ti) {
                 continue;
             }
-            if let Some((tr, left, right)) = track.transition_at(t) {
+            if let Some((tr, left, right)) = transition_at(track, t) {
                 self.render_transition(project, pw, tr, left, right, t, w, h, pool, text, out, depth);
                 continue;
             }
@@ -251,7 +288,7 @@ impl Compositor {
         out: &mut Frame,
         depth: usize,
     ) {
-        let p = tr.progress(right.start, t) as f32;
+        let p = trans_progress(tr, left, right, t) as f32;
         match tr.kind {
             TransitionKind::CrossFade => {
                 self.render_clip(project, pw, left, t, w, h, pool, text, out, depth, Extra::NONE);
@@ -380,7 +417,9 @@ impl Compositor {
                 let Some(style) = &clip.text else { return };
                 let img = text.render(style, s);
                 let mut p = placement_w(pw, clip, t, (img.width, img.height), w, h, false);
-                if clip.effects.iter().any(|e| e.enabled) {
+                // a fade also needs the copy path — fade_to writes into the layer, and the cached text
+                // bitmap is shared
+                if clip.effects.iter().any(|e| e.enabled) || extra.fade > 0.0 {
                     self.src.resize(img.width, img.height);
                     self.src.rgba.copy_from_slice(&img.rgba);
                     apply_effects(clip, lt, s, s, &mut self.src, &mut self.fx, &mut p);
@@ -1133,6 +1172,71 @@ mod tests {
         let c = px(&out, 32, 24);
         assert_eq!(c[0], 255);
         assert!(c[1] > 100 && c[1] < 155, "{c:?}");
+    }
+
+    #[test]
+    fn transition_window_clamped_to_clips() {
+        // A [0,2) red, B [2,3) green, C [3,5) blue with a 4 s transition on the A|B cut: the window is
+        // clamped to [1,3) by the 1 s clip B, so C renders normally at t=3.5.
+        let (mut project, mut pool) = transition_project(TransitionKind::CrossFade, 4.0);
+        project.tracks[0].clips[1].duration = 1.0;
+        let mut c3 = crate::model::Clip::new(project.new_id(), ClipKind::Video, "c", 3.0, 2.0);
+        let mut a3 = fake_asset();
+        a3.path = "Z:\\nope\\fake3.mp4".into();
+        c3.asset = project.add_asset(a3);
+        project.tracks[0].clips.push(c3);
+        pool.insert_video("Z:\\nope\\fake3.mp4", Box::new(FakeVideo([0, 255, 255, 255])));
+        let mut comp = Compositor::new();
+        let mut text = TextRasterizer::new();
+        let mut out = Frame::default();
+        comp.render(&project, 3.5, 64, 48, &mut pool, &mut text, &mut out);
+        assert_eq!(px(&out, 32, 24), [0, 255, 255, 255], "clip C hidden by an over-long transition");
+        // inside the clamped window the cut still dissolves (t = 2 is the cut → 50/50)
+        comp.render(&project, 2.0, 64, 48, &mut pool, &mut text, &mut out);
+        let c = px(&out, 32, 24);
+        assert!((120..=135).contains(&c[0]) && (120..=135).contains(&c[2]), "{c:?}");
+    }
+
+    #[test]
+    fn text_clip_fades_to_colour() {
+        // Two abutting text clips with an opaque box, FadeToColor to white: the cut is fully white even
+        // though neither clip has an effect.
+        let mut project = Project::new();
+        (project.width, project.height) = (320, 240);
+        let a = project.add_text_clip(0.0, 2.0);
+        let b = project.add_text_clip(2.0, 2.0);
+        for id in [a, b] {
+            let st = project.clip_mut(id).unwrap().text.as_mut().expect("text style");
+            st.box_color = [255, 0, 0, 255];
+            st.color = [0, 255, 0, 255];
+        }
+        let tid = project.new_id();
+        let vt = project.video_tracks()[0];
+        project.tracks[vt].transitions.push(crate::model::Transition {
+            id: tid,
+            right: b,
+            kind: TransitionKind::FadeToColor,
+            duration: 2.0,
+            color: [255, 255, 255, 255],
+            direction: 0,
+            ease: Ease::Linear,
+        });
+        let mut pool = DecoderPool::new(Backend::Ffmpeg);
+        let mut comp = Compositor::new();
+        let mut text = TextRasterizer::new();
+        let mut out = Frame::default();
+        let count = |f: &Frame, c: [u8; 4]| f.rgba.chunks_exact(4).filter(|p| *p == c).count();
+        comp.render(&project, 1.0, 64, 48, &mut pool, &mut text, &mut out);
+        if text.families().is_empty() {
+            eprintln!("no system fonts - skipping");
+            return;
+        }
+        assert!(count(&out, [255, 0, 0, 255]) > 0, "no text box before the window");
+        // at the cut the fade is full: the layer is the transition colour, no source colours left
+        comp.render(&project, 2.0, 64, 48, &mut pool, &mut text, &mut out);
+        assert_eq!(count(&out, [255, 0, 0, 255]), 0, "text clip ignored the fade");
+        assert_eq!(count(&out, [0, 255, 0, 255]), 0);
+        assert!(count(&out, [255, 255, 255, 255]) > 0, "no fade colour drawn");
     }
 
     #[test]

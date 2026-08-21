@@ -10,6 +10,7 @@ use crate::engine::export::{self, ExportOptions};
 use crate::media::Backend;
 use crate::model::Project;
 use crate::settings::Settings;
+use crate::ui::{combo, encoder_options, ENCODER_PRESETS};
 use eframe::egui;
 use std::path::Path;
 
@@ -43,8 +44,6 @@ const SCALERS: [(&str, &str); 6] = [
     ("area", "Area"),
     ("spline", "Spline"),
 ];
-// ponytail: copied from settings_ui (not ours to touch) — keep the two lists in sync by hand.
-const PRESETS: [&str; 7] = ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow"];
 
 /// Output size for a resolution preset: None = project size. Height presets derive the width from the
 /// project aspect (rounded to even).
@@ -63,26 +62,6 @@ fn preset_size(pw: u32, ph: u32, preset: &str, custom: (u32, u32)) -> Option<(u3
             }
         }
     }
-}
-
-/// Encoder names worth offering (same families as the settings window).
-fn encoder_options(encoders: &[String]) -> Vec<&str> {
-    const KEYS: [&str; 9] = ["264", "265", "hevc", "vp9", "av1", "x264", "x265", "nvenc", "qsv"];
-    encoders.iter().map(String::as_str).filter(|e| KEYS.iter().any(|k| e.contains(k)) || e.contains("amf")).collect()
-}
-
-fn combo(ui: &mut egui::Ui, id: &str, value: &mut String, options: &[(&str, &str)]) -> bool {
-    let mut changed = false;
-    let current = options.iter().find(|(v, _)| v == value).map(|(_, l)| *l).unwrap_or(value.as_str());
-    egui::ComboBox::from_id_salt(id).selected_text(current).show_ui(ui, |ui| {
-        for (v, label) in options {
-            if ui.selectable_label(value == v, *label).clicked() {
-                *value = (*v).to_string();
-                changed = true;
-            }
-        }
-    });
-    changed
 }
 
 pub fn show(
@@ -104,7 +83,7 @@ pub fn show(
     egui::Window::new("Export").open(&mut open).resizable(false).default_width(300.0).show(ctx, |ui| {
         egui::Grid::new("export_opts").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
             ui.label("Resolution");
-            let mut changed = combo(ui, "export_res", &mut state.preset, &RES_PRESETS);
+            let mut changed = combo(ui, "export_res", &mut state.preset, &RES_PRESETS, None);
             ui.end_row();
             if state.preset == "custom" {
                 ui.label("Size");
@@ -129,7 +108,7 @@ pub fn show(
 
             ui.label("Scaler");
             ui.horizontal(|ui| {
-                combo(ui, "export_scaler", &mut settings.export_scaler, &SCALERS);
+                combo(ui, "export_scaler", &mut settings.export_scaler, &SCALERS, None);
                 if size.is_none() {
                     ui.weak("(same size)");
                 }
@@ -140,7 +119,7 @@ pub fn show(
             let opts: Vec<(&str, &str)> = std::iter::once(("auto", "auto"))
                 .chain(encoder_options(encoders).into_iter().map(|e| (e, e)))
                 .collect();
-            combo(ui, "export_encoder", &mut settings.encoder, &opts);
+            combo(ui, "export_encoder", &mut settings.encoder, &opts, None);
             ui.end_row();
 
             ui.label("Quality (CRF)");
@@ -151,8 +130,8 @@ pub fn show(
             ui.end_row();
 
             ui.label("Preset");
-            let opts: Vec<(&str, &str)> = PRESETS.iter().map(|p| (*p, *p)).collect();
-            combo(ui, "export_preset", &mut settings.preset, &opts);
+            let opts: Vec<(&str, &str)> = ENCODER_PRESETS.iter().map(|p| (*p, *p)).collect();
+            combo(ui, "export_preset", &mut settings.preset, &opts, None);
             ui.end_row();
         });
 
@@ -180,6 +159,9 @@ pub fn show(
         });
     });
     state.open = open;
+    if !open {
+        settings.save(); // the window's options are settings — keep them when it closes without exporting
+    }
     out
 }
 

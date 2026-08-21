@@ -85,7 +85,11 @@ impl WaveformCache {
         if st.pending.insert(key) {
             let (state, ctx, backend, path) = (self.state.clone(), self.ctx.clone(), self.backend, path.to_string());
             std::thread::spawn(move || {
-                let peaks = load_or_compute(&path, stream, backend);
+                // ponytail: a decoder panic must leave the key resolved (as empty peaks, same as a file
+                // that won't open) — otherwise it stays pending forever and callers wait for good.
+                let peaks =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| load_or_compute(&path, stream, backend)))
+                        .unwrap_or_else(|_| Peaks { min: Vec::new(), max: Vec::new() });
                 if let Ok(mut st) = state.lock() {
                     st.pending.remove(&key);
                     st.ready.insert(key, Arc::new(peaks));

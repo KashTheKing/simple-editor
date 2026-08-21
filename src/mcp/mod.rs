@@ -81,6 +81,7 @@ impl Server {
     }
 
     /// The actual bound port (differs from the requested one when starting on port 0).
+    #[cfg(test)]
     pub fn port(&self) -> u16 {
         self.port
     }

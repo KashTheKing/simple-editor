@@ -285,6 +285,25 @@ fn apply_clip_fields(clip: &mut Clip, fields: &Value) -> Result<(), String> {
     Ok(())
 }
 
+/// Nothing to save/export: the MAIN timeline is empty. `Project::is_empty()` only sees the open sequence,
+/// and `main_stash` is Some exactly while one is open — so this is `export_project().is_empty()` without the clone.
+fn timeline_is_empty(p: &Project) -> bool {
+    p.is_empty() && p.main_stash.as_ref().is_none_or(|s| s.tracks.iter().all(|t| t.clips.is_empty()))
+}
+
+/// Where "Convert To…" writes: `<stem>_converted.<ext>` next to the source, uniquified so a convert can
+/// never overwrite the source itself or a file already on disk (possibly one the timeline is using).
+fn converted_path(src: &Path, ext: &str) -> PathBuf {
+    let stem = src.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "output".into());
+    let mut out = src.with_file_name(format!("{stem}_converted.{ext}"));
+    let mut n = 2;
+    while out.exists() {
+        out = src.with_file_name(format!("{stem}_converted_{n}.{ext}"));
+        n += 1;
+    }
+    out
+}
+
 /// Tools whose success means "one undo step + after_edit" (media.import pushes its own undo).
 const MUTATING_TOOLS: &[&str] = &[
     "project.set",
@@ -395,6 +414,7 @@ impl App {
             convert_dialog: None,
             loaded_fonts: 0,
         };
+        curves::set_available_presets(app.settings.curve_presets.clone());
         app.player.set_project(&app.project);
         if let Some(p) = open {
             app.open_path(&p);
@@ -469,6 +489,10 @@ impl App {
 
     fn backend(&self) -> Backend {
         Backend::parse(&self.settings.decoder)
+    }
+
+    fn timeline_is_empty(&self) -> bool {
+        timeline_is_empty(&self.project)
     }
 
     /// The project with any open sequence closed — exports always render the MAIN timeline.
@@ -690,7 +714,7 @@ impl App {
 
     /// Open the (non-blocking) Export window.
     fn act_export(&mut self) {
-        if self.ffmpeg_missing() || self.project.is_empty() {
+        if self.ffmpeg_missing() || self.timeline_is_empty() {
             return;
         }
         self.detect_encoders_once();
@@ -699,7 +723,7 @@ impl App {
 
     /// The Export window confirmed: start the export (options include the chosen output path).
     fn start_export_choice(&mut self, choice: export_ui::ExportChoice) {
-        if self.export.is_some() || self.ffmpeg_missing() || self.project.is_empty() {
+        if self.export.is_some() || self.ffmpeg_missing() || self.timeline_is_empty() {
             return;
         }
         // writing over a file the player/decoders are reading from is the Overwrite path's job (release + reopen)
@@ -769,7 +793,8 @@ impl App {
         else {
             return;
         };
-        match std::fs::write(&out, crate::engine::style::style_summary(&self.project)) {
+        // the summary describes the MAIN timeline, even while a nested sequence is open
+        match std::fs::write(&out, crate::engine::style::style_summary(&self.export_project())) {
             Ok(()) => self.toast("Style summary exported"),
             Err(e) => self.toast(format!("Style summary failed: {e}")),
         }
@@ -785,7 +810,11 @@ impl App {
             self.toast("An export is already running");
             return;
         }
-        if self.ffmpeg_missing() || self.project.is_empty() {
+        if self.timeline_is_empty() {
+            self.toast("Timeline is empty — nothing to save");
+            return;
+        }
+        if self.ffmpeg_missing() {
             return;
         }
         if self.settings.confirm_overwrite {
@@ -799,6 +828,34 @@ impl App {
                 .show();
             if r != rfd::MessageDialogResult::Ok {
                 return;
+            }
+        }
+        // the new file is reloaded as a fresh project afterwards, so state that isn't burned into the video
+        // (subtitles, planner, notes, sequences, imported media, undo) is dropped — offer to save a .sedit first
+        let p = &self.project;
+        let loses = !p.plan.is_empty()
+            || !p.notes.is_empty()
+            || !p.subtitles.is_empty()
+            || !p.sequences.is_empty()
+            || p.assets.len() > 1;
+        if loses && (self.dirty || self.project_path.is_none()) {
+            match rfd::MessageDialog::new()
+                .set_title("Save the project first?")
+                .set_description(
+                    "Overwriting reloads the new file as a fresh project — subtitles, planner, notes, \
+                     sequences and imported media are not kept. Save a project file (.sedit) first?",
+                )
+                .set_buttons(rfd::MessageButtons::YesNoCancel)
+                .set_level(rfd::MessageLevel::Warning)
+                .show()
+            {
+                rfd::MessageDialogResult::Yes => {
+                    if !self.save_project() {
+                        return;
+                    }
+                }
+                rfd::MessageDialogResult::No => {}
+                _ => return,
             }
         }
         let original = PathBuf::from(&src);
@@ -836,6 +893,8 @@ impl App {
             ExportKind::File => self.toast("Export finished"),
             ExportKind::Overwrite { original, temp } => {
                 self.player.release_files();
+                // the thumbnail worker holds a decoder (ffmpeg child) on the source — drop it while we retry
+                self.thumbs.clear();
                 // ponytail: killed ffmpeg children release their file handle a few ms after wait() returns — retry briefly
                 let mut r = std::fs::rename(&temp, &original);
                 let deadline = Instant::now() + Duration::from_millis(500);
@@ -848,7 +907,6 @@ impl App {
                         self.toast("Saved over the original video");
                         // in-memory peaks are keyed by path only and the file behind it just changed
                         self.waveforms.clear();
-                        self.thumbs.clear();
                         self.open_media(&original);
                     }
                     Err(e) => {
@@ -958,25 +1016,34 @@ impl App {
             }
             SelectAll => self.selection = self.project.all_clips().map(|(_, c)| c.id).collect(),
             Deselect => self.selection.clear(),
+            // in/out marks are saved with the project: undoable, and they make it dirty like any other edit
             MarkIn => {
+                self.push_undo();
                 self.project.in_point = Some(self.playhead);
                 if let Some(o) = self.project.out_point {
                     if o <= self.playhead {
                         self.project.out_point = None;
                     }
                 }
+                self.after_edit();
             }
             MarkOut => {
+                self.push_undo();
                 self.project.out_point = Some(self.playhead);
                 if let Some(i) = self.project.in_point {
                     if i >= self.playhead {
                         self.project.in_point = None;
                     }
                 }
+                self.after_edit();
             }
             ClearInOut => {
-                self.project.in_point = None;
-                self.project.out_point = None;
+                if self.project.in_point.is_some() || self.project.out_point.is_some() {
+                    self.push_undo();
+                    self.project.in_point = None;
+                    self.project.out_point = None;
+                    self.after_edit();
+                }
             }
             TrimToInOut | RippleDeleteInOut => {
                 let a0 = self.project.in_point.unwrap_or(0.0);
@@ -1123,8 +1190,7 @@ impl App {
             OpenParentSequence => {
                 if self.project.editing.is_some() {
                     self.project.close_sequence();
-                    self.after_edit();
-                    self.seek(self.playhead); // clamp into the parent timeline
+                    self.sequence_view_changed(self.playhead); // clamps into the parent timeline
                 }
             }
             SaveTemplate => {
@@ -1164,7 +1230,8 @@ impl App {
         match pane {
             Pane::Preview => {
                 let frame = self.pending_frame.take();
-                let App { project, selection, playhead, undo, redo, preview: pv, player, palette, .. } = self;
+                let App { project, selection, playhead, undo, redo, preview: pv, player, palette, fullscreen, .. } =
+                    self;
                 let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
                 let resp = preview::show(
                     ui,
@@ -1174,7 +1241,7 @@ impl App {
                         selection,
                         playhead: *playhead,
                         playing: player.is_playing(),
-                        fullscreen: false,
+                        fullscreen: *fullscreen,
                         palette,
                         undo: &mut push,
                         frame,
@@ -1425,9 +1492,10 @@ impl App {
             self.settings.curve_presets.retain(|p| p.name != c.name);
             self.settings.curve_presets.push(c);
             self.settings.save();
+            // hand them over only when they change (this used to clone the whole list every frame)
+            curves::set_available_presets(self.settings.curve_presets.clone());
             self.toast("Curve preset saved");
         }
-        curves::set_available_presets(self.settings.curve_presets.clone());
         // font import from the inspector
         if let Some(path) = inspector::take_pending_font_import() {
             if !self.settings.user_fonts.iter().any(|f| f.eq_ignore_ascii_case(&path)) {
@@ -1473,15 +1541,19 @@ impl App {
         if self.project.editing == Some(id) {
             return;
         }
-        self.push_undo();
         if self.project.open_sequence(id) {
-            self.selection.clear();
-            self.seek(0.0);
-            self.after_edit();
+            self.sequence_view_changed(0.0);
         } else {
-            self.undo.pop();
             self.toast("That sequence no longer exists");
         }
+    }
+
+    /// Navigating in/out of a nested sequence is a view change, not an edit: re-sync the player,
+    /// but no undo step and no dirty flag (that made "just looking" prompt to save on exit).
+    fn sequence_view_changed(&mut self, t: f64) {
+        self.selection.clear();
+        self.player.set_project(&self.project);
+        self.seek(t);
     }
 
     /// "Convert To…" on a library asset: transcode next to the source, then import the result.
@@ -1491,8 +1563,7 @@ impl App {
         }
         let Some(a) = self.project.asset(asset) else { return };
         let src = PathBuf::from(&a.path);
-        let stem = src.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "output".into());
-        let out = src.with_file_name(format!("{stem}_converted.{ext}"));
+        let out = converted_path(&src, ext);
         let opts = crate::engine::convert::ConvertOptions {
             src,
             out: out.clone(),
@@ -1646,7 +1717,7 @@ impl App {
         use Action::*;
         let mut out = Vec::new();
         let has_sel = !self.selection.is_empty();
-        let has_clips = !self.project.is_empty();
+        let has_clips = !self.timeline_is_empty();
         let can_overwrite = self.project.source_video.is_some() && has_clips;
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
@@ -1654,24 +1725,46 @@ impl App {
                 self.menu_item(ui, OpenFile, true, &mut out);
                 self.menu_item(ui, OpenProject, true, &mut out);
                 let recents = self.settings.recent_projects.clone();
+                let mut forget: Option<Option<String>> = None; // Some(path) = drop one, None = clear all
                 ui.menu_button("Open Recent Project", |ui| {
                     ui.set_max_width(420.0);
                     if recents.is_empty() {
                         ui.label("(none)");
                     }
-                    for r in recents {
-                        let p = Path::new(&r);
+                    for r in &recents {
+                        let p = Path::new(r);
                         let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| r.clone());
                         let folder = p.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
                         let b = egui::Button::new(name).shortcut_text(folder).wrap_mode(egui::TextWrapMode::Truncate);
-                        if ui.add(b).on_hover_text(&r).clicked() {
+                        let resp = ui.add(b);
+                        resp.context_menu(|ui| {
+                            if ui.button("Remove from recent").clicked() {
+                                ui.close();
+                                forget = Some(Some(r.clone()));
+                            }
+                        });
+                        if resp.on_hover_text(r).clicked() {
                             ui.close();
                             if self.confirm_discard() {
-                                self.open_project(Path::new(&r));
+                                self.open_project(Path::new(r));
                             }
                         }
                     }
+                    if !recents.is_empty() {
+                        ui.separator();
+                        if ui.button("Clear history").clicked() {
+                            ui.close();
+                            forget = Some(None);
+                        }
+                    }
                 });
+                if let Some(one) = forget {
+                    match one {
+                        Some(path) => self.settings.recent_projects.retain(|p| *p != path),
+                        None => self.settings.recent_projects.clear(),
+                    }
+                    self.settings.save();
+                }
                 self.menu_item(ui, ImportMedia, true, &mut out);
                 ui.separator();
                 self.menu_item(ui, Save, true, &mut out);
@@ -1913,14 +2006,11 @@ impl App {
             }
             ctx.request_repaint_after(Duration::from_millis(200));
         }
-        let mut calls = Vec::new();
-        if let Some((_, rx)) = &self.mcp {
-            while let Ok(c) = rx.try_recv() {
-                calls.push(c);
-            }
-        }
-        for c in calls {
+        // one per frame: render.frame blocks the UI thread for up to 3 s, so a queue must not run in one go
+        let call = self.mcp.as_ref().and_then(|(_, rx)| rx.try_recv().ok());
+        if let Some(c) = call {
             self.handle_tool(c);
+            ctx.request_repaint(); // anything else queued runs on the next frames
         }
     }
 
@@ -1937,12 +2027,15 @@ impl App {
             _ => {
                 let before = MUTATING_TOOLS.contains(&name.as_str()).then(|| self.project.to_json());
                 let r = self.run_tool(&name, &args);
-                if r.is_ok() {
-                    if let Some(snap) = before {
+                if let Some(snap) = before {
+                    if r.is_ok() {
                         if snap != self.project.to_json() {
                             push_undo_json(&mut self.undo, &mut self.redo, snap);
                         }
                         self.after_edit();
+                    } else if let Ok(p) = Project::from_json(&snap) {
+                        // a failed tool is a no-op: some arms mutate before returning Err (subtitles.set, clip.set)
+                        self.project = p;
                     }
                 }
                 let _ = reply.send(r);
@@ -1974,11 +2067,14 @@ impl App {
                 scaler,
             };
             let prog = export::start_export(self.export_project(), opts, self.text.clone());
+            // same slot the UI uses: exclusion, the progress/Cancel window and the close guard all key off it
+            self.export = Some((prog.clone(), ExportKind::File));
             Ok((prog, out))
         } else {
             let src = PathBuf::from(req(arg_str(args, "path"), "path")?);
             let ext = req(arg_str(args, "ext"), "ext")?.trim_start_matches('.').to_string();
-            let out = src.with_extension(&ext);
+            // never write over the source (converting to its own container used to do exactly that)
+            let out = converted_path(&src, &ext);
             let opts = crate::engine::convert::ConvertOptions {
                 src,
                 out: out.clone(),
@@ -2024,6 +2120,8 @@ impl App {
                     "assets": p.assets.len(), "sequences": p.sequences.len(),
                     "subtitles": p.subtitles.len(), "plan_done": done, "plan_total": total,
                     "notes": p.notes, "style": crate::engine::style::style_summary(p),
+                    // non-null = these tracks/size are a nested sequence's, not the main timeline's
+                    "editing_sequence": p.editing,
                 }))
             }
             "project.get" => serde_json::to_value(&self.project).map_err(|e| e.to_string()),
@@ -2500,7 +2598,7 @@ impl App {
                 self.playhead = self.player.time();
                 Ok(json!({"ok": true, "t": self.playhead}))
             }
-            "style.summary" => Ok(json!({"markdown": crate::engine::style::style_summary(&self.project)})),
+            "style.summary" => Ok(json!({"markdown": crate::engine::style::style_summary(&self.export_project())})),
             "templates.list" => {
                 let templates: Vec<&str> = self.settings.templates.iter().map(|t| t.name.as_str()).collect();
                 let motions: Vec<String> = crate::engine::presets::builtin_motions()
@@ -2537,8 +2635,13 @@ impl App {
         let mut done = None;
         let mut cancel = false;
         egui::Window::new(title).open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
-            let r = ui.text_edit_singleline(&mut name);
-            r.request_focus();
+            // focus only on the window's first frame — every frame would steal it from the panels behind it
+            let id = ui.id().with("name");
+            let first = ctx.read_response(id).is_none();
+            let r = ui.add(egui::TextEdit::singleline(&mut name).id(id));
+            if first {
+                r.request_focus();
+            }
             let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             ui.horizontal(|ui| {
                 if (ui.button("Save").clicked() || enter) && !name.trim().is_empty() {
@@ -2618,9 +2721,11 @@ impl App {
         // export window
         if self.export_ui.open {
             self.detect_encoders_once();
+            // the export always renders the MAIN timeline — show its size/lossless state, not the open sequence's
+            let main = self.project.editing.is_some().then(|| self.export_project());
             let choice = {
                 let App { project, settings, export_ui: st, encoders, export, .. } = self;
-                export_ui::show(ctx, st, project, settings, encoders, export.is_some())
+                export_ui::show(ctx, st, main.as_ref().unwrap_or(project), settings, encoders, export.is_some())
             };
             if let Some(c) = choice {
                 self.start_export_choice(c);
@@ -2802,27 +2907,10 @@ impl eframe::App for App {
 
         // ---- layout ----
         if self.fullscreen {
-            egui::CentralPanel::default().frame(egui::Frame::NONE.fill(egui::Color32::BLACK)).show(ctx, |ui| {
-                let frame = self.pending_frame.take();
-                let App { project, selection, playhead, undo, redo, preview: pv, player, palette, .. } = self;
-                let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
-                let resp = preview::show(
-                    ui,
-                    pv,
-                    preview::PreviewCtx {
-                        project,
-                        selection,
-                        playhead: *playhead,
-                        playing: player.is_playing(),
-                        fullscreen: true,
-                        palette,
-                        undo: &mut push,
-                        frame,
-                    },
-                );
-                self.player.set_canvas(resp.canvas.0, resp.canvas.1, self.settings.preview_max_width);
-                self.pending_actions.extend(resp.actions);
-            });
+            // same pane as the docked preview (it reads self.fullscreen) — no second copy to drift
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
+                .show(ctx, |ui| self.draw_pane(ui, Pane::Preview));
         } else {
             egui::TopBottomPanel::top("menu").show(ctx, |ui| {
                 actions.extend(self.menu_bar(ui));
@@ -2849,9 +2937,8 @@ impl eframe::App for App {
             }
         }
 
-        if !self.fullscreen {
-            self.windows(ctx);
-        }
+        // also in fullscreen: an export's progress + Cancel must not disappear behind it
+        self.windows(ctx);
 
         // persist the layout when it changed, debounced to the end of drag gestures
         if self.layout_dirty && !ctx.input(|i| i.pointer.any_down()) {
@@ -2917,6 +3004,39 @@ mod tests {
         assert_eq!(p.assets[0].path, dir.join("a.mp4").to_string_lossy());
         assert_eq!(missing, vec!["Z:\\gone\\b.mp4".to_string()]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn converted_path_never_hits_the_source_or_an_existing_file() {
+        let dir = std::env::temp_dir().join(format!("se-conv-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("clip.mp4");
+        std::fs::write(&src, b"x").unwrap();
+        // converting to the same container must not write over the source
+        let out = converted_path(&src, "mp4");
+        assert_ne!(out, src);
+        assert_eq!(out.file_name().unwrap(), "clip_converted.mp4");
+        // nor over a file that is already there (the timeline may be using it)
+        std::fs::write(&out, b"y").unwrap();
+        assert_eq!(converted_path(&src, "mp4").file_name().unwrap(), "clip_converted_2.mp4");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_empty_open_sequence_is_not_an_empty_timeline() {
+        let mut p = Project::from_media(asset("a.mp4"));
+        assert!(!timeline_is_empty(&p));
+        let ids: Vec<Id> = p.all_clips().map(|(_, c)| c.id).collect();
+        let seq = p.nest_selection(&ids, "S").unwrap();
+        assert!(p.open_sequence(seq));
+        let inner: Vec<Id> = p.all_clips().map(|(_, c)| c.id).collect();
+        p.delete_clips(&inner, false);
+        assert!(p.is_empty()); // this sequence is empty…
+        assert!(!timeline_is_empty(&p)); // …but the main timeline still holds the Sequence clip
+        p.close_sequence();
+        let all: Vec<Id> = p.all_clips().map(|(_, c)| c.id).collect();
+        p.delete_clips(&all, false);
+        assert!(timeline_is_empty(&p));
     }
 
     #[test]

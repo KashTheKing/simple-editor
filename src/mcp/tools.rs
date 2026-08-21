@@ -53,11 +53,6 @@ pub const TOOLS: &[(&str, &str, &[&str])] = &[
     ("templates.apply", "Place a saved template at a time.", &["name:string:true:", "at:number:true:"]),
 ];
 
-/// Names of every tool (for validation in the App).
-pub fn names() -> Vec<&'static str> {
-    TOOLS.iter().map(|t| t.0).collect()
-}
-
 use serde_json::{json, Value};
 
 /// JSON schema for one tool's arguments ("name:type:required:description" docs).

@@ -74,6 +74,9 @@ pub struct CurvesState {
     pub y_lo: f64,
     pub y_hi: f64,
     drag: Option<Drag>,
+    /// y scale latched for the running key/handle drag: the per-frame auto scale is derived from the very
+    /// values the drag writes, so a live scale would feed the dragged value back into itself.
+    drag_y: Option<(f64, f64)>,
     preset_name: String,
     preset_sel: usize,
     /// Key under the open context menu.
@@ -93,6 +96,7 @@ impl Default for CurvesState {
             y_lo: 0.0,
             y_hi: 1.0,
             drag: None,
+            drag_y: None,
             preset_name: String::new(),
             preset_sel: 0,
             menu_key: None,
@@ -362,26 +366,29 @@ pub fn show(
 
     // property list (child ui so labels wrap/scroll naturally)
     let mut list_ui = ui.new_child(egui::UiBuilder::new().max_rect(list_rect));
-    for i in 0..n_props {
-        let a = prop_ref(&clip_data, i);
-        list_ui.horizontal(|ui| {
-            let mut visible = !state.hidden.contains(&i);
-            if ui.checkbox(&mut visible, "").changed() {
-                if visible {
-                    state.hidden.retain(|&h| h != i);
-                } else {
-                    state.hidden.push(i);
+    // scrolled: a clip with a few multi-param effects overflows the short bottom-tile pane
+    egui::ScrollArea::vertical().id_salt("curve_props").show(&mut list_ui, |ui| {
+        for i in 0..n_props {
+            let a = prop_ref(&clip_data, i);
+            ui.horizontal(|ui| {
+                let mut visible = !state.hidden.contains(&i);
+                if ui.checkbox(&mut visible, "").changed() {
+                    if visible {
+                        state.hidden.retain(|&h| h != i);
+                    } else {
+                        state.hidden.push(i);
+                    }
                 }
-            }
-            let (_, sw) = ui.allocate_space(vec2(10.0, 10.0));
-            ui.painter().rect_filled(sw, 2, prop_color(&pal, i));
-            let label = prop_label(&clip_data, i);
-            let text = if a.is_some_and(|a| a.is_animated()) { format!("{label} ◆") } else { label };
-            if ui.selectable_label(state.active == i, text).clicked() {
-                state.active = i;
-            }
-        });
-    }
+                let (_, sw) = ui.allocate_space(vec2(10.0, 10.0));
+                ui.painter().rect_filled(sw, 2, prop_color(&pal, i));
+                let label = prop_label(&clip_data, i);
+                let text = if a.is_some_and(|a| a.is_animated()) { format!("{label} ◆") } else { label };
+                if ui.selectable_label(state.active == i, text).clicked() {
+                    state.active = i;
+                }
+            });
+        }
+    });
 
     // ---- graph mapping ----
     if graph.width() < 20.0 || graph.height() < RULER_H + 10.0 {
@@ -399,6 +406,14 @@ pub fn show(
     let mut scales: Vec<(f64, f64)> = Vec::with_capacity(n_props);
     for i in 0..n_props {
         scales.push(prop_ref(&clip_data, i).map(y_range).unwrap_or((0.0, 1.0)));
+    }
+    // freeze the dragged property's scale for the whole gesture (see CurvesState::drag_y)
+    if let (Some(Drag::Key { prop, .. } | Drag::HandleOut { prop, .. } | Drag::HandleIn { prop, .. }), Some(ys)) =
+        (state.drag, state.drag_y)
+    {
+        if let Some(s) = scales.get_mut(prop) {
+            *s = ys;
+        }
     }
     let y_at = |v: f64, (lo, hi): (f64, f64)| plot.bottom() - (((v - lo) / (hi - lo)) * plot.height() as f64) as f32;
     let v_at = |y: f32, (lo, hi): (f64, f64)| lo + (((plot.bottom() - y) / plot.height()) as f64) * (hi - lo);
@@ -496,6 +511,10 @@ pub fn show(
             } else if let Some(h) = handle_hit(pos) {
                 undo(project);
                 state.drag = Some(h);
+                state.drag_y = match h {
+                    Drag::HandleOut { prop, .. } | Drag::HandleIn { prop, .. } => scales.get(prop).copied(),
+                    _ => None,
+                };
             } else if let Some((p, k)) = key_hit(pos) {
                 if !state.selected.contains(&(p, k)) {
                     state.selected.clear();
@@ -503,6 +522,7 @@ pub fn show(
                 }
                 undo(project);
                 state.drag = Some(Drag::Key { prop: p, key: k });
+                state.drag_y = scales.get(p).copied();
             }
         }
     }
@@ -583,6 +603,7 @@ pub fn show(
     }
     if resp.drag_stopped() {
         state.drag = None;
+        state.drag_y = None;
     }
     if resp.double_clicked() {
         if let Some(pos) = pointer {
@@ -887,6 +908,21 @@ mod tests {
         let dt = 60.0 / h.state.pps as f64;
         assert!((k.t - (1.0 + dt)).abs() < 0.05, "time should follow the drag: {} vs {}", k.t, 1.0 + dt);
         assert!(k.v > 1.0, "value should rise when dragging up: {}", k.v);
+    }
+
+    #[test]
+    fn held_key_drag_does_not_run_away() {
+        let mut h = Harness::new();
+        let from = h.scale_key_pos(1); // key at t = 3, v = 3
+        h.press(from);
+        h.frame(vec![Event::PointerMoved(from + vec2(0.0, -12.0))]);
+        h.frame(vec![]);
+        let v = h.clip().scale.keys[1].v;
+        for _ in 0..30 {
+            h.frame(vec![]); // no pointer events at all — the drag is still held
+        }
+        let after = h.clip().scale.keys[1].v;
+        assert!((after - v).abs() < 1e-6, "value drifted while the pointer was still: {v} -> {after}");
     }
 
     #[test]

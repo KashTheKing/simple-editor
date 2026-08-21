@@ -74,6 +74,8 @@ fn run_convert(opts: &ConvertOptions, prog: &Progress) -> Result<(), String> {
         if !vf.is_empty() {
             cmd.args(["-vf", &vf]);
         }
+        // keep every audio stream — ffmpeg's default stream selection would keep only one
+        cmd.args(["-map", "0:v:0?", "-map", "0:a?"]);
         cmd.args(args);
     }
     cmd.arg(&tmp.0);
@@ -169,6 +171,9 @@ mod tests {
         assert_eq!(wait_done(&prog), None);
         assert!(prog.fraction() > 0.5, "{}", prog.fraction());
         assert_eq!(probe(&mp4, "stream=width,height").lines().next(), Some("160,120"));
+        // both source audio streams survive (default stream selection would keep one)
+        let audio = probe(&mp4, "stream=codec_type").lines().filter(|l| *l == "audio").count();
+        assert_eq!(audio, 2, "audio streams kept");
         // failure (bad source) reports an error and leaves no output
         let bad = dir.join("bad.mp4");
         assert!(wait_done(&start_convert(opts(&dir.join("missing.mp4"), bad.clone()))).is_some());

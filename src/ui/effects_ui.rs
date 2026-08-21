@@ -65,12 +65,15 @@ impl Gesture {
     }
 }
 
-fn key_buttons(ui: &mut egui::Ui, a: &mut Animated, lt: f64, palette: &Palette, g: &mut Gesture) {
+fn key_buttons(ui: &mut egui::Ui, a: &mut Animated, lt: f64, palette: &Palette, g: &mut Gesture, _at: (usize, usize)) {
     let mut b = Button::new("◆").small();
     if a.has_key_at(lt) {
         b = b.fill(palette.keyframe);
     }
-    if ui.add(b).on_hover_text("Toggle keyframe at playhead").clicked() {
+    let r = ui.add(b).on_hover_text("Toggle keyframe at playhead");
+    #[cfg(test)]
+    test_rects::push(format!("kf{}_{}", _at.0, _at.1), r.rect);
+    if r.clicked() {
         a.toggle_key(lt);
         g.click();
     }
@@ -138,7 +141,9 @@ pub fn show(
     // ponytail: edit a per-frame clone and write back (inspector pattern) so `undo` can snapshot first.
     let orig = project.clip(id).cloned();
     let Some(mut clip) = orig else { return edited };
-    let lt = clip.local(playhead);
+    // clamped: the playhead can sit off the clip, and keys written outside [0, duration] are invisible
+    // in every editor yet still make the param "animated" forever (mixer.rs clamps the same way).
+    let lt = clip.local(playhead).clamp(0.0, clip.duration);
     let mut g = Gesture::default();
 
     ui.separator();
@@ -188,7 +193,12 @@ pub fn show(
                 ui.label(spec.name);
                 ui.horizontal(|ui| {
                     let mut v = a.at(lt);
-                    let mut dv = DragValue::new(&mut v).range(spec.min..=spec.max).speed((spec.max - spec.min) / 200.0);
+                    // clamp_existing_to_range(false): clamping an out-of-range stored value reports
+                    // `changed()`, which would fake an edit just by drawing the panel.
+                    let mut dv = DragValue::new(&mut v)
+                        .range(spec.min..=spec.max)
+                        .clamp_existing_to_range(false)
+                        .speed((spec.max - spec.min) / 200.0);
                     if fx.kind == EffectKind::Wobble {
                         dv = dv.suffix(wobble_suffix(spec.name));
                     }
@@ -199,7 +209,7 @@ pub fn show(
                         a.set_at(lt, v);
                     }
                     g.note(&r);
-                    key_buttons(ui, a, lt, palette, &mut g);
+                    key_buttons(ui, a, lt, palette, &mut g, (i, j));
                 });
                 ui.end_row();
             }
@@ -256,13 +266,14 @@ mod tests {
         selection: Vec<Id>,
         undos: usize,
         time: f64,
+        playhead: f64,
     }
 
     impl Harness {
         fn new() -> Self {
             let mut project = Project::new();
             project.tracks[0].clips.push(Clip::new(7, ClipKind::Video, "v", 0.0, 4.0));
-            Self { ctx: egui::Context::default(), project, selection: vec![7], undos: 0, time: 0.0 }
+            Self { ctx: egui::Context::default(), project, selection: vec![7], undos: 0, time: 0.0, playhead: 1.0 }
         }
         fn frame(&mut self, events: Vec<Event>) -> bool {
             self.time += 0.05;
@@ -273,12 +284,13 @@ mod tests {
                 ..Default::default()
             };
             let pal = Palette::new(true, Color32::WHITE);
-            let Harness { ctx, project, selection, undos, .. } = self;
+            let Harness { ctx, project, selection, undos, playhead, .. } = self;
+            let playhead = *playhead;
             let mut edited = false;
             let _ = ctx.run(input, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut undo = |_: &Project| *undos += 1;
-                    edited |= show(ui, project, selection, 1.0, &pal, &mut undo);
+                    edited |= show(ui, project, selection, playhead, &pal, &mut undo);
                 });
             });
             edited
@@ -374,6 +386,20 @@ mod tests {
         let radius = h.clip().effects[0].params[0].value;
         assert!(radius > 8.0, "radius should have grown from the default: {radius}");
         assert_eq!(h.undos, 1, "one drag gesture = one undo");
+    }
+
+    #[test]
+    fn keyframe_button_off_clip_keys_inside_the_clip() {
+        let mut h = Harness::new();
+        h.project.tracks[0].clips[0].start = 10.0; // clip lives at 10..14
+        h.project.tracks[0].clips[0].effects.push(Effect::new(EffectKind::Blur));
+        h.playhead = 0.0; // playhead well before the clip → local time -10
+        h.frame(vec![]);
+        let r = test_rects::get("kf0_0").expect("keyframe button recorded");
+        assert!(h.click(r.center()));
+        let keys = &h.clip().effects[0].params[0].keys;
+        assert_eq!(keys.len(), 1);
+        assert!(keys[0].t >= 0.0 && keys[0].t <= 4.0, "key must land inside the clip, got t = {}", keys[0].t);
     }
 
     #[test]

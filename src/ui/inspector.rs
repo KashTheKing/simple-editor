@@ -16,7 +16,7 @@
 
 use crate::model::{Animated, BlendMode, ClipKind, Id, Project, LABEL_COLORS};
 use crate::theme::Palette;
-use crate::ui::timecode;
+use crate::ui::{label_name, timecode};
 use eframe::egui::{self, Button, DragValue, Grid, Response, RichText, Slider};
 use std::cell::RefCell;
 
@@ -35,6 +35,12 @@ struct Gesture {
 impl Gesture {
     fn note(&mut self, r: &Response) {
         self.start |= edit_start(r);
+        self.changed |= r.changed();
+    }
+    /// Text fields: the gesture starts when the field is entered, so typing a paragraph is one undo
+    /// entry instead of one per character (which used to evict the whole undo stack).
+    fn note_text(&mut self, r: &Response) {
+        self.start |= r.gained_focus();
         self.changed |= r.changed();
     }
     fn click(&mut self) {
@@ -98,10 +104,10 @@ fn project_section(ui: &mut egui::Ui, project: &mut Project, undo: &mut dyn FnMu
         ui.label("Name");
         let mut name = project.name.clone(); // ponytail: per-frame clone so undo can snapshot before the write
         let r = ui.text_edit_singleline(&mut name);
+        if r.gained_focus() {
+            undo(project); // once per visit to the field, not per keystroke
+        }
         if r.changed() {
-            if edit_start(&r) {
-                undo(project);
-            }
             project.name = name;
             edited = true;
         }
@@ -132,14 +138,6 @@ fn project_section(ui: &mut egui::Ui, project: &mut Project, undo: &mut dyn FnMu
     edited
 }
 
-fn label_name(idx: u8) -> &'static str {
-    if idx == 0 || idx as usize > LABEL_COLORS.len() {
-        "None"
-    } else {
-        LABEL_COLORS[idx as usize - 1].0
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn clip_section(
     ui: &mut egui::Ui,
@@ -168,7 +166,10 @@ fn clip_section(
     ui.strong("Clip");
     Grid::new("inspector_clip").num_columns(2).show(ui, |ui| {
         ui.label("Name");
-        g.note(&ui.text_edit_singleline(&mut clip.name));
+        let r = ui.text_edit_singleline(&mut clip.name);
+        #[cfg(test)]
+        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("test_name_field"), r.id));
+        g.note_text(&r);
         ui.end_row();
         ui.label("Enabled");
         g.note(&ui.checkbox(&mut clip.enabled, ""));
@@ -315,15 +316,24 @@ fn clip_section(
             if r.changed() {
                 asset_desc = Some(desc);
             }
-            ga.note(&r);
+            ga.note_text(&r);
+            // The raw text is kept so a comma survives typing; it is stored with the tags it produced and
+            // dropped again as soon as the asset's tags were changed elsewhere (library details box).
             let tags_id = egui::Id::new(("asset_tags", a.id));
-            let mut buf = ui.ctx().data_mut(|d| d.get_temp::<String>(tags_id)).unwrap_or_else(|| a.tags.join(", "));
+            let mut buf = ui
+                .ctx()
+                .data_mut(|d| d.get_temp::<(String, Vec<String>)>(tags_id))
+                .filter(|(_, src)| *src == a.tags)
+                .map(|(b, _)| b)
+                .unwrap_or_else(|| a.tags.join(", "));
             let r = ui.add(egui::TextEdit::singleline(&mut buf).hint_text("tags, comma, separated"));
             if r.changed() {
-                asset_tags = Some(buf.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect());
-                ui.ctx().data_mut(|d| d.insert_temp(tags_id, buf));
+                let tags: Vec<String> =
+                    buf.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
+                ui.ctx().data_mut(|d| d.insert_temp(tags_id, (buf, tags.clone())));
+                asset_tags = Some(tags);
             }
-            ga.note(&r);
+            ga.note_text(&r);
         }
     }
 
@@ -331,7 +341,7 @@ fn clip_section(
         let style = clip.text.get_or_insert_with(Default::default);
         ui.separator();
         ui.strong("Text");
-        g.note(&ui.text_edit_multiline(&mut style.text));
+        g.note_text(&ui.text_edit_multiline(&mut style.text));
         Grid::new("inspector_text").num_columns(2).show(ui, |ui| {
             ui.label("Font");
             ui.horizontal(|ui| {
@@ -542,6 +552,44 @@ mod tests {
         assert!(p.clip(id).unwrap().pan.value > 0.0, "pan moved right");
         run(&ctx, egui::RawInput::default(), &mut p, &mut undos);
         assert_eq!(undos, 1, "no undo without an edit");
+    }
+
+    /// Typing in a text field snapshots once when the field is entered, not once per character.
+    #[test]
+    fn name_edit_pushes_one_undo_per_visit() {
+        let mut p = Project::new();
+        let c = Clip::new(0, ClipKind::Text, "a", 0.0, 5.0);
+        let id = c.id;
+        p.tracks[0].clips.push(c);
+        let palette = Palette::new(true, egui::Color32::WHITE);
+        let ctx = egui::Context::default();
+        let mut undos = 0;
+        // focus is requested inside the pass: done between passes it counts as "had focus last frame"
+        let mut run = |input: egui::RawInput, focus: Option<egui::Id>, p: &mut Project, undos: &mut usize| {
+            let mut edited = false;
+            let _ = ctx.run(input, |ctx| {
+                if let Some(f) = focus {
+                    ctx.memory_mut(|m| m.request_focus(f));
+                }
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let mut undo = |_: &Project| *undos += 1;
+                    edited = show(ui, p, &[id], 1.0, &[], &palette, &mut undo);
+                });
+            });
+            edited
+        };
+        run(egui::RawInput::default(), None, &mut p, &mut undos); // layout, records the name field id
+        assert_eq!(undos, 0);
+        let field = ctx.data_mut(|d| d.get_temp::<egui::Id>(egui::Id::new("test_name_field"))).expect("name id");
+        assert!(!run(egui::RawInput::default(), Some(field), &mut p, &mut undos), "entering a field is not an edit");
+        assert_eq!(undos, 1, "one snapshot when the field is entered");
+        for ch in ["h", "i"] {
+            let mut input = egui::RawInput::default();
+            input.events.push(egui::Event::Text(ch.into()));
+            assert!(run(input, None, &mut p, &mut undos));
+        }
+        assert_eq!(undos, 1, "no extra snapshot per keystroke");
+        assert!(p.clip(id).unwrap().name.contains("hi"), "{}", p.clip(id).unwrap().name);
     }
 
     /// Headless: sections for effects / retime / audio fades lay out without panicking.

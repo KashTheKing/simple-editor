@@ -11,6 +11,7 @@
 use crate::hotkeys::{Action, Hotkeys};
 use crate::settings::Settings;
 use crate::theme::Palette;
+use crate::ui::{combo, encoder_options, ENCODER_PRESETS};
 use eframe::egui::{self, Event, Key, KeyboardShortcut, Modifiers};
 
 #[derive(Default)]
@@ -22,6 +23,9 @@ pub struct SettingsUi {
     status: Option<Status>,
     /// Last rebind note ("Unbound X") shown under the hotkey table.
     note: String,
+    /// MCP port while it is being dragged / typed; committed to the settings when the gesture ends
+    /// (the app restarts the server on every value it sees, and a busy one in between switches it off).
+    port_edit: Option<u16>,
 }
 
 struct Status {
@@ -54,7 +58,6 @@ impl Status {
 const THEMES: [(&str, &str); 3] = [("system", "System"), ("dark", "Dark"), ("light", "Light")];
 const DECODERS: [(&str, &str); 3] =
     [("auto", "Auto (Media Foundation, ffmpeg fallback)"), ("mf", "Media Foundation"), ("ffmpeg", "ffmpeg")];
-const PRESETS: [&str; 7] = ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow"];
 
 pub fn show(
     ctx: &egui::Context,
@@ -92,22 +95,8 @@ pub fn show(
         state.rebinding = None;
         state.status = None;
         state.note.clear();
+        state.port_edit = None;
     }
-    changed
-}
-
-/// ComboBox over (value, label) pairs writing into a String setting. Returns true if the value changed.
-fn combo(ui: &mut egui::Ui, id: &str, value: &mut String, options: &[(&str, &str)]) -> bool {
-    let mut changed = false;
-    let current = options.iter().find(|(v, _)| *v == value.as_str()).map(|(_, l)| *l).unwrap_or(value.as_str());
-    egui::ComboBox::from_id_salt(id).selected_text(current).width(260.0).show_ui(ui, |ui| {
-        for (v, label) in options {
-            if ui.selectable_label(value.as_str() == *v, *label).clicked() && value.as_str() != *v {
-                *value = v.to_string();
-                changed = true;
-            }
-        }
-    });
     changed
 }
 
@@ -115,11 +104,11 @@ fn general(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Settings, mcp_stat
     let mut changed = false;
     egui::Grid::new("general").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
         ui.label("Theme");
-        changed |= combo(ui, "theme", &mut s.theme, &THEMES);
+        changed |= combo(ui, "theme", &mut s.theme, &THEMES, Some(260.0));
         ui.end_row();
 
         ui.label("Decoder");
-        changed |= combo(ui, "decoder", &mut s.decoder, &DECODERS);
+        changed |= combo(ui, "decoder", &mut s.decoder, &DECODERS, Some(260.0));
         ui.end_row();
 
         ui.label("ffmpeg folder");
@@ -203,7 +192,7 @@ fn general(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Settings, mcp_stat
     changed |= ui.checkbox(&mut s.mcp_enabled, "MCP server (AI co-editing)").changed();
     ui.horizontal(|ui| {
         ui.label("Port");
-        changed |= ui.add(egui::DragValue::new(&mut s.mcp_port).range(1024..=65535)).changed();
+        changed |= port_field(ui, state, s);
         ui.weak(format!("http://127.0.0.1:{}/mcp", s.mcp_port));
     });
     ui.horizontal(|ui| {
@@ -215,10 +204,23 @@ fn general(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Settings, mcp_stat
     changed
 }
 
-/// Encoder names worth offering: the h264 / hevc / vp9 / av1 families (software + nvenc/qsv/amf).
-fn encoder_options(encoders: &[String]) -> Vec<&str> {
-    const KEYS: [&str; 9] = ["264", "265", "hevc", "vp9", "av1", "x264", "x265", "nvenc", "qsv"];
-    encoders.iter().map(String::as_str).filter(|e| KEYS.iter().any(|k| e.contains(k)) || e.contains("amf")).collect()
+/// MCP port DragValue. The app restarts the server whenever `settings.mcp_port` changes, so the value is
+/// held in `state.port_edit` while the user drags or types and only written when the gesture ends —
+/// otherwise a drag from 7337 to 7400 walks through ~60 ports and one busy port in between turns the
+/// server off. Returns true when the setting changed.
+fn port_field(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Settings) -> bool {
+    let mut port = state.port_edit.unwrap_or(s.mcp_port);
+    let r = ui.add(egui::DragValue::new(&mut port).range(1024..=65535));
+    if r.dragged() || r.has_focus() {
+        state.port_edit = Some(port);
+        return false;
+    }
+    state.port_edit = None;
+    if port != s.mcp_port {
+        s.mcp_port = port;
+        return true;
+    }
+    false
 }
 
 fn export(ui: &mut egui::Ui, s: &mut Settings, encoders: &[String]) -> bool {
@@ -229,7 +231,7 @@ fn export(ui: &mut egui::Ui, s: &mut Settings, encoders: &[String]) -> bool {
             let opts: Vec<(&str, &str)> = std::iter::once(("auto", "auto"))
                 .chain(encoder_options(encoders).into_iter().map(|e| (e, e)))
                 .collect();
-            changed |= combo(ui, "encoder", &mut s.encoder, &opts);
+            changed |= combo(ui, "encoder", &mut s.encoder, &opts, Some(260.0));
             if encoders.is_empty() {
                 ui.weak("(ffmpeg not found)");
             }
@@ -244,8 +246,8 @@ fn export(ui: &mut egui::Ui, s: &mut Settings, encoders: &[String]) -> bool {
         ui.end_row();
 
         ui.label("Preset");
-        let opts: Vec<(&str, &str)> = PRESETS.iter().map(|p| (*p, *p)).collect();
-        changed |= combo(ui, "preset", &mut s.preset, &opts);
+        let opts: Vec<(&str, &str)> = ENCODER_PRESETS.iter().map(|p| (*p, *p)).collect();
+        changed |= combo(ui, "preset", &mut s.preset, &opts, Some(260.0));
         ui.end_row();
     });
     changed

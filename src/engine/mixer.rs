@@ -1,17 +1,18 @@
 //! Audio mixer: sums every audible audio clip at timeline time t into interleaved stereo f32.
 //! Used by playback (real-time, block by block) and export (offline to WAV).
 //! Handles speed/reverse (linear resampling), freeze (silence), volume/pan/fades (gains lerped across
-//! each block), audio-track transitions (gain crossfades with virtual clip extension) and Sequence clips
-//! on video tracks (their timeline mixed recursively, depth ≤ 8).
+//! each block), transitions (gain crossfades with virtual clip extension — on video tracks too, so a
+//! transition between Sequence clips crossfades their audio with the picture) and Sequence clips on
+//! video tracks (their timeline mixed recursively, depth ≤ 8).
 
 use crate::media::{AudioSource, DecoderPool, SAMPLE_RATE};
 use crate::model::{Clip, ClipKind, Project, Track, TrackKind, Transition};
 
 const MAX_DEPTH: usize = 8;
 
-/// Transition windows touching a clip: (cut time, transition, clip is the right side). At most one per
-/// clip edge.
-type Ext<'a> = [Option<(f64, &'a Transition, bool)>; 2];
+/// Transition windows touching a clip: (cut time, clamped half-window, transition, clip is the right
+/// side). At most one per clip edge.
+type Ext<'a> = [Option<(f64, f64, &'a Transition, bool)>; 2];
 
 pub struct Mixer {
     /// Buffer pool, two per recursion depth: [2d] = source-read/resample buffer, [2d+1] = sequence
@@ -105,15 +106,25 @@ impl Mixer {
                         {
                             continue;
                         }
-                        if clip.end() <= t || clip.start >= t_end {
+                        let ext = clip_transitions(track, clip);
+                        let (estart, eend) = play_range(clip, &ext);
+                        if eend <= t || estart >= t_end {
                             continue;
                         }
-                        let i0 = (((clip.start.max(t) - t) * sr).round() as usize).min(frames);
-                        let i1 = (((clip.end().min(t_end) - t) * sr).round() as usize).min(frames);
+                        let i0 = (((estart.max(t) - t) * sr).round() as usize).min(frames);
+                        let i1 = (((eend.min(t_end) - t) * sr).round() as usize).min(frames);
                         if i1 <= i0 || project.sequence_tracks(clip.sequence).is_none() {
                             continue;
                         }
-                        self.mix_seq_clip(project, clip, t + i0 as f64 / sr, pool, &mut out[i0 * 2..i1 * 2], depth);
+                        self.mix_seq_clip(
+                            project,
+                            clip,
+                            &ext,
+                            t + i0 as f64 / sr,
+                            pool,
+                            &mut out[i0 * 2..i1 * 2],
+                            depth,
+                        );
                     }
                 }
             }
@@ -151,10 +162,12 @@ impl Mixer {
 
     /// One Sequence clip on a video track: recursively mix its sequence's tracks at source rate into a
     /// scratch buffer, then treat that buffer exactly like clip source audio (resample + gains).
+    #[allow(clippy::too_many_arguments)]
     fn mix_seq_clip(
         &mut self,
         project: &Project,
         clip: &Clip,
+        ext: &Ext,
         t0: f64,
         pool: &mut DecoderPool,
         out: &mut [f32],
@@ -167,7 +180,7 @@ impl Mixer {
         let s0 = if clip.reverse { clip.src_time(t0) - (m - 1) as f64 / sr } else { clip.src_time(t0) };
         if let Some(tracks) = project.sequence_tracks(clip.sequence) {
             self.mix_tracks(project, tracks, s0, pool, &mut buf, depth + 1);
-            resample_add(clip, &[None, None], t0, &buf, out);
+            resample_add(clip, ext, t0, &buf, out);
         }
         self.put(depth * 2 + 1, buf);
     }
@@ -199,15 +212,17 @@ fn active_in(tracks: &[Track], i: usize) -> bool {
     }
 }
 
-/// The (still valid) transitions whose window this clip plays in.
+/// The (still valid) transitions whose window this clip plays in (windows clamped to the cut's clips,
+/// so an over-long transition cannot drag a clip past its neighbours — same rule as the compositor).
 fn clip_transitions<'a>(track: &'a Track, clip: &Clip) -> Ext<'a> {
     let mut ext = [None, None];
     for tr in &track.transitions {
         let Some((l, r)) = track.transition_pair(tr) else { continue };
+        let h = crate::engine::compose::trans_half(tr, l, r);
         if r.id == clip.id {
-            ext[0] = Some((r.start, tr, true));
+            ext[0] = Some((r.start, h, tr, true));
         } else if l.id == clip.id {
-            ext[1] = Some((r.start, tr, false));
+            ext[1] = Some((r.start, h, tr, false));
         }
     }
     ext
@@ -217,11 +232,11 @@ fn clip_transitions<'a>(track: &'a Track, clip: &Clip) -> Ext<'a> {
 fn play_range(clip: &Clip, ext: &Ext) -> (f64, f64) {
     let mut s = clip.start;
     let mut e = clip.end();
-    if let Some((cut, tr, _)) = ext[0] {
-        s = s.min(tr.window(cut).0);
+    if let Some((cut, h, ..)) = ext[0] {
+        s = s.min(cut - h);
     }
-    if let Some((cut, tr, _)) = ext[1] {
-        e = e.max(tr.window(cut).1);
+    if let Some((cut, h, ..)) = ext[1] {
+        e = e.max(cut + h);
     }
     (s, e)
 }
@@ -238,10 +253,9 @@ fn gains(clip: &Clip, ext: &Ext, tt: f64) -> (f32, f32) {
         g *= ((clip.duration - lt) / clip.fade_out).clamp(0.0, 1.0) as f32;
     }
     for e in ext.iter().flatten() {
-        let (cut, tr, is_right) = *e;
-        let (a, b) = tr.window(cut);
-        if tt >= a && tt < b {
-            let p = tr.progress(cut, tt) as f32;
+        let (cut, h, tr, is_right) = *e;
+        if tt >= cut - h && tt < cut + h {
+            let p = crate::engine::compose::trans_progress_at(tr, cut, h, tt) as f32;
             g *= if is_right { p } else { 1.0 - p };
         }
     }
@@ -523,6 +537,89 @@ mod tests {
         // exactly at the cut: p=0.5 → 0.6
         mx.mix(&p, 5.0, &mut pool, &mut out);
         assert!((out[0] - 0.6).abs() < 1e-3, "{}", out[0]);
+    }
+
+    /// A transition of `dur` on the cut between two clips already pushed on `ti`.
+    fn add_transition(p: &mut Project, ti: usize, right: crate::model::Id, dur: f64) {
+        p.tracks[ti].transitions.push(Transition {
+            id: 2000,
+            right,
+            kind: TransitionKind::CrossFade,
+            duration: dur,
+            color: [0, 0, 0, 255],
+            direction: 0,
+            ease: Ease::Linear,
+        });
+    }
+
+    #[test]
+    fn transition_window_clamped_to_clips() {
+        // A [0,5) then a 1 s B, with an 8 s transition: the window is clamped to B → [4,6), so nothing
+        // plays after 6 (an unclamped window would extend both clips out to 9).
+        let mut p = Project::new();
+        let a = p.add_asset(audio_asset(0, "Z:\\nope\\a.wav"));
+        let b = p.add_asset(audio_asset(0, "Z:\\nope\\b.wav"));
+        let ai = p.audio_tracks()[0];
+        let mut c1 = Clip::new(1000, ClipKind::Audio, "a", 0.0, 5.0);
+        c1.asset = a;
+        let mut c2 = Clip::new(1001, ClipKind::Audio, "b", 5.0, 1.0);
+        c2.asset = b;
+        c2.src_in = 5.0;
+        let right = c2.id;
+        p.tracks[ai].clips.push(c1);
+        p.tracks[ai].clips.push(c2);
+        add_transition(&mut p, ai, right, 8.0);
+        let mut pool = DecoderPool::new(Backend::Ffmpeg);
+        pool.insert_audio("Z:\\nope\\a.wav", 0, Box::new(Const(0.8)));
+        pool.insert_audio("Z:\\nope\\b.wav", 0, Box::new(Const(0.4)));
+        let mut mx = Mixer::new();
+        let mut out = vec![0.0f32; 2 * 480];
+        mx.mix(&p, 2.0, &mut pool, &mut out);
+        assert!((out[0] - 0.8).abs() < 1e-4, "before the clamped window: {}", out[0]);
+        mx.mix(&p, 5.0, &mut pool, &mut out);
+        assert!((out[0] - 0.6).abs() < 1e-3, "at the cut: {}", out[0]);
+        mx.mix(&p, 7.0, &mut pool, &mut out);
+        assert!(out.iter().all(|s| *s == 0.0), "audio past both clips: {}", out[0]);
+    }
+
+    #[test]
+    fn sequence_transition_crossfades_audio() {
+        // Two sequence clips on V1 with a 2 s CrossFade: their audio must dissolve with the picture.
+        let mut p = Project::new();
+        let mut seq = Vec::new();
+        for (i, path) in ["Z:\\nope\\a.wav", "Z:\\nope\\b.wav"].into_iter().enumerate() {
+            let asset = p.add_asset(audio_asset(0, path));
+            let s = p.new_sequence("s", 320, 240, 30.0);
+            let sq = p.sequence_mut(s).unwrap();
+            let sai = sq.tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
+            let mut inner = Clip::new(500 + i as crate::model::Id, ClipKind::Audio, "in", 0.0, 10.0);
+            inner.asset = asset;
+            sq.tracks[sai].clips.push(inner);
+            seq.push(s);
+        }
+        let vi = p.video_tracks()[0];
+        for (i, s) in seq.iter().enumerate() {
+            let mut c = Clip::new(1000 + i as crate::model::Id, ClipKind::Sequence, "sc", i as f64 * 5.0, 5.0);
+            c.sequence = *s;
+            c.src_in = i as f64 * 5.0;
+            p.tracks[vi].clips.push(c);
+        }
+        add_transition(&mut p, vi, 1001, 2.0);
+        let mut pool = DecoderPool::new(Backend::Ffmpeg);
+        pool.insert_audio("Z:\\nope\\a.wav", 0, Box::new(Const(0.8)));
+        pool.insert_audio("Z:\\nope\\b.wav", 0, Box::new(Const(0.4)));
+        let mut mx = Mixer::new();
+        let mut out = vec![0.0f32; 2 * 480];
+        // window [4,6): 0.25 in → 0.8·0.75 + 0.4·0.25 = 0.7 (was a hard cut at t=5)
+        mx.mix(&p, 4.5, &mut pool, &mut out);
+        assert!((out[0] - 0.7).abs() < 1e-3, "{}", out[0]);
+        mx.mix(&p, 5.5, &mut pool, &mut out);
+        assert!((out[0] - 0.5).abs() < 1e-3, "{}", out[0]);
+        // outside the window each sequence plays alone
+        mx.mix(&p, 2.0, &mut pool, &mut out);
+        assert!((out[0] - 0.8).abs() < 1e-4, "{}", out[0]);
+        mx.mix(&p, 8.0, &mut pool, &mut out);
+        assert!((out[0] - 0.4).abs() < 1e-4, "{}", out[0]);
     }
 
     #[test]

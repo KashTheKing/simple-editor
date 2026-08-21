@@ -156,7 +156,15 @@ pub fn show(
                     g.note(&ui.selectable_value(&mut tr.kind, k, k.name()));
                 }
             });
-            let r = ui.add(DragValue::new(&mut tr.duration).range(0.1..=5.0).speed(0.02).suffix(" s"));
+            // clamp_existing_to_range(false): clamping an out-of-range duration counts as a change and
+            // would fake an edit (undo snapshot + dirty flag) just by drawing the panel.
+            let r = ui.add(
+                DragValue::new(&mut tr.duration)
+                    .range(0.1..=5.0)
+                    .clamp_existing_to_range(false)
+                    .speed(0.02)
+                    .suffix(" s"),
+            );
             #[cfg(test)]
             test_rects::push(format!("tr_dur{_i}"), r.rect);
             g.note(&r);
@@ -338,6 +346,19 @@ mod tests {
         assert!(!h.click(r.center()), "disabled button must not add");
         assert!(h.project.tracks[0].transitions.is_empty());
         assert_eq!(h.undos, 0);
+    }
+
+    #[test]
+    fn out_of_range_duration_is_not_rewritten_by_merely_showing() {
+        let mut h = Harness::new();
+        let v1 = h.project.tracks[0].clips[0].id;
+        let v2 = h.project.tracks[0].clips[1].id;
+        let tid = h.project.add_transition(v2, TransitionKind::CrossFade, 1.0).unwrap();
+        h.project.transition_mut(tid).unwrap().duration = 8.0;
+        h.selection = vec![v1];
+        assert!(!h.frame(vec![]), "drawing the panel must not report an edit");
+        assert_eq!(h.undos, 0, "no undo snapshot without a user gesture");
+        assert!((h.project.transitions_of(v1)[0].1.duration - 8.0).abs() < 1e-9);
     }
 
     #[test]

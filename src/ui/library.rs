@@ -5,14 +5,15 @@
 //! asset rows (kind tag, label dot, tags, used dot; drag source `DragPayload::Asset`; double-click / "Add"
 //! → timeline at the playhead; right-click → add / reveal / label / Convert To / remove), a details box for
 //! the selected asset (path, format, description, tags, label, folder), "Remove unused", linked disk
-//! folders (browsed live, drag `DragPayload::Path`), the project's sequences (drag `DragPayload::Sequence`,
+//! folders (listed when expanded, cached until "Refresh"; drag `DragPayload::Path`), the sequences
+//! (drag `DragPayload::Sequence`,
 //! double-click opens) and saved templates (drag `DragPayload::Template`, place at playhead).
 //! Recent: settings.recent_assets across all projects with the same search/chips, pins, labels and tags.
 
 use crate::model::{ClipKind, Id, Project, LABEL_COLORS};
 use crate::settings::{RecentAsset, Settings};
 use crate::theme::Palette;
-use crate::ui::{duration_text, DragPayload};
+use crate::ui::{duration_text, label_color, DragPayload};
 use eframe::egui::{self, RichText};
 use std::path::PathBuf;
 
@@ -43,9 +44,9 @@ pub struct LibraryState {
     pub rename_template: Option<(usize, String)>,
     pub recent_tags_for: Option<String>,
     pub recent_tags_buf: String,
-    /// Linked-folder listing cache (folder → media file paths), refreshed every 5 s / on Refresh.
-    pub linked: Vec<(String, Vec<String>)>,
-    pub linked_at: Option<std::time::Instant>,
+    /// Linked-folder listing cache (folder → media file paths, None = folder unreadable). Filled the
+    /// first time a section is expanded, dropped on Refresh / unlink.
+    pub linked: Vec<(String, Option<Vec<String>>)>,
 }
 
 #[derive(Default)]
@@ -263,13 +264,14 @@ fn recent_clear(settings: &mut Settings, resp: &mut LibraryResponse) {
 
 // ---------- shared row widget ----------
 
-fn label_color(idx: u8, palette: &Palette) -> egui::Color32 {
-    if idx == 0 || idx as usize > LABEL_COLORS.len() {
-        palette.text_dim
-    } else {
-        let [r, g, b] = LABEL_COLORS[idx as usize - 1].1;
-        egui::Color32::from_rgb(r, g, b)
-    }
+/// Yes/No dialog for destructive, non-undoable actions.
+fn confirm(title: &str, description: &str) -> bool {
+    rfd::MessageDialog::new()
+        .set_title(title)
+        .set_description(description)
+        .set_buttons(rfd::MessageButtons::YesNo)
+        .show()
+        == rfd::MessageDialogResult::Yes
 }
 
 /// "Label ▸" submenu; returns the picked label.
@@ -302,12 +304,23 @@ fn row(
     contents: impl FnOnce(&mut egui::Ui),
 ) -> (egui::Response, bool) {
     ui.horizontal(|ui| {
-        let reserve = if button.is_some() { 40.0 } else { 0.0 };
+        // Width of the trailing button (+ spacing) so the row content stops before it.
+        let reserve = button.map_or(0.0, |b| {
+            let font = egui::TextStyle::Button.resolve(ui.style());
+            ui.painter().layout_no_wrap(b.to_owned(), font, egui::Color32::PLACEHOLDER).size().x
+                + ui.spacing().button_padding.x * 2.0
+                + ui.spacing().item_spacing.x
+        });
         let src = ui.dnd_drag_source(id, payload, |ui| {
+            // Hard-cap the row: an over-wide row widens the parent's max_rect, so every later row would
+            // grow too, and long labels must truncate at the pane edge instead of pushing the button out.
+            ui.set_max_width((ui.available_width() - reserve).max(0.0));
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
             let bg = ui.painter().add(egui::Shape::Noop);
             ui.horizontal(|ui| {
                 contents(ui);
-                ui.add_space((ui.available_width() - reserve).max(0.0));
+                // fill the row without `add_space`, which would add an item spacing past the right edge
+                ui.expand_to_include_x(ui.max_rect().right());
             });
             let rect = ui.min_rect();
             let v = ui.visuals();
@@ -332,10 +345,16 @@ fn row(
 /// TextEdit for inline renames; Some(text) once editing finishes with a non-empty name.
 fn inline_edit(ui: &mut egui::Ui, buf: &mut String) -> Option<String> {
     let r = ui.add(egui::TextEdit::singleline(buf).desired_width(120.0));
-    r.request_focus();
+    // Read the flag before touching focus: request_focus() makes has_focus() true, and lost_focus() is
+    // `had_focus_last_frame && !has_focus` — asking for focus first would make it permanently false.
     if r.lost_focus() {
-        let t = buf.trim().to_string();
-        return Some(t); // empty = cancel, caller decides
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            return Some(String::new()); // cancel
+        }
+        return Some(buf.trim().to_string()); // empty = cancel, caller decides
+    }
+    if !r.has_focus() {
+        r.request_focus();
     }
     None
 }
@@ -374,7 +393,10 @@ fn library_tab(
     ui.add(egui::TextEdit::singleline(&mut state.search).hint_text("search").desired_width(f32::INFINITY));
     filter_chips(ui, state, palette);
 
+    // ponytail: both walk every clip / plan item per frame. Upgrade: cache them behind a generation
+    // counter bumped by App::after_edit() if a big project ever shows it.
     let used = project.used_assets();
+    let planned = project.plan_assets();
     egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         folder_tree(ui, state, project, &mut ops, &mut op_start);
 
@@ -386,7 +408,8 @@ fn library_tab(
                     && matches_search(a, &state.search)
                     && matches_kind(a.kind, a.duration, state.kind_filter)
                     && (state.label_filter == 0 || a.label == state.label_filter)
-                    && (!state.unused_only || !used.contains(&a.id))
+                    // same predicate as "Remove unused" below: moodboard assets are not unused
+                    && (!state.unused_only || !(used.contains(&a.id) || planned.contains(&a.id)))
             })
             .collect();
         match state.sort {
@@ -403,19 +426,12 @@ fn library_tab(
 
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            let planned = project.plan_assets();
             let unused = project.assets.iter().filter(|a| !used.contains(&a.id) && !planned.contains(&a.id)).count();
-            if ui.add_enabled(unused > 0, egui::Button::new(format!("Remove unused ({unused})"))).clicked() {
-                let yes = rfd::MessageDialog::new()
-                    .set_title("Remove unused")
-                    .set_description(format!("Remove {unused} unused assets from the project?"))
-                    .set_buttons(rfd::MessageButtons::YesNo)
-                    .show()
-                    == rfd::MessageDialogResult::Yes;
-                if yes {
-                    ops.push(LibOp::RemoveUnused);
-                    op_start = true;
-                }
+            if ui.add_enabled(unused > 0, egui::Button::new(format!("Remove unused ({unused})"))).clicked()
+                && confirm("Remove unused", &format!("Remove {unused} unused assets from the project?"))
+            {
+                ops.push(LibOp::RemoveUnused);
+                op_start = true;
             }
             if ui.button("Link folder…").clicked() {
                 if let Some(p) = rfd::FileDialog::new().pick_folder() {
@@ -429,11 +445,12 @@ fn library_tab(
         templates_section(ui, state, settings, resp);
     });
 
-    // apply project mutations with a single undo per gesture
+    // apply project mutations with a single undo per gesture (text fields snapshot on focus, one frame
+    // before the first keystroke, so the snapshot is taken even when no op lands this frame)
+    if op_start {
+        undo(project);
+    }
     if !ops.is_empty() {
-        if op_start {
-            undo(project);
-        }
         for op in ops {
             match op {
                 LibOp::AssetLabel(id, l) => {
@@ -473,12 +490,11 @@ fn library_tab(
                 LibOp::LinkFolder(p) => {
                     if !project.linked_folders.contains(&p) {
                         project.linked_folders.push(p);
-                        state.linked_at = None;
                     }
                 }
                 LibOp::UnlinkFolder(p) => {
                     project.linked_folders.retain(|f| *f != p);
-                    state.linked_at = None;
+                    state.linked.retain(|(f, _)| *f != p);
                 }
                 LibOp::SeqNew => {
                     let n = project.sequences.len() + 1;
@@ -735,7 +751,9 @@ fn details_box(
         if r.changed() {
             ops.push(LibOp::AssetDesc(a.id, desc));
         }
-        *op_start |= r.drag_started() || (r.changed() && !r.dragged());
+        // Snapshot when the field is entered, not per keystroke: one undo entry per visit instead of one
+        // per character (which used to evict the whole 200-entry stack while typing a paragraph).
+        *op_start |= r.gained_focus();
         let r = ui.add(
             egui::TextEdit::singleline(&mut state.tags_buf)
                 .desired_width(f32::INFINITY)
@@ -744,8 +762,8 @@ fn details_box(
         if r.changed() {
             let tags = state.tags_buf.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
             ops.push(LibOp::AssetTags(a.id, tags));
-            *op_start = true;
         }
+        *op_start |= r.gained_focus();
         ui.horizontal(|ui| {
             let name = if a.label == 0 { "None" } else { LABEL_COLORS[a.label as usize - 1].0 };
             egui::ComboBox::from_id_salt("asset_label")
@@ -785,29 +803,22 @@ fn details_box(
     });
 }
 
-/// List media files of a folder on disk (non-recursive, known extensions only).
-fn scan_linked(folders: &[String]) -> Vec<(String, Vec<String>)> {
-    folders
-        .iter()
-        .map(|f| {
-            let mut files: Vec<String> = std::fs::read_dir(f)
-                .map(|rd| {
-                    rd.flatten()
-                        .filter_map(|e| {
-                            let p = e.path();
-                            let ext = p.extension()?.to_str()?.to_lowercase();
-                            (VIDEO_EXTS.contains(&ext.as_str())
-                                || AUDIO_EXTS.contains(&ext.as_str())
-                                || IMAGE_EXTS.contains(&ext.as_str()))
-                            .then(|| p.to_string_lossy().into_owned())
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            files.sort();
-            (f.clone(), files)
+/// List media files of a folder on disk (non-recursive, known extensions only). None = unreadable.
+fn scan_one(folder: &str) -> Option<Vec<String>> {
+    let mut files: Vec<String> = std::fs::read_dir(folder)
+        .ok()?
+        .flatten()
+        .filter_map(|e| {
+            let p = e.path();
+            let ext = p.extension()?.to_str()?.to_lowercase();
+            (VIDEO_EXTS.contains(&ext.as_str())
+                || AUDIO_EXTS.contains(&ext.as_str())
+                || IMAGE_EXTS.contains(&ext.as_str()))
+            .then(|| p.to_string_lossy().into_owned())
         })
-        .collect()
+        .collect();
+    files.sort();
+    Some(files)
 }
 
 fn linked_sections(
@@ -818,43 +829,52 @@ fn linked_sections(
     ops: &mut Vec<LibOp>,
     op_start: &mut bool,
 ) {
-    if project.linked_folders.is_empty() {
-        return;
-    }
-    let stale = state.linked_at.map_or(true, |t| t.elapsed().as_secs_f32() > 5.0)
-        || state.linked.len() != project.linked_folders.len()
-        || state.linked.iter().zip(&project.linked_folders).any(|((f, _), g)| f != g);
-    if stale {
-        state.linked = scan_linked(&project.linked_folders);
-        state.linked_at = Some(std::time::Instant::now());
-    }
-    for (i, (folder, files)) in state.linked.iter().enumerate() {
+    for (i, folder) in project.linked_folders.iter().enumerate() {
         let title = folder.rsplit(['\\', '/']).next().unwrap_or(folder);
         egui::CollapsingHeader::new(format!("⤷ {title}")).id_salt(("linked", i)).show(ui, |ui| {
+            // ponytail: blocking read_dir, cached until Refresh and only for expanded sections — a dead
+            // network share used to freeze the whole editor every 5 s. Upgrade: scan on a thread + mpsc
+            // (media/waveform.rs) if the first expand of a slow share is still too long.
+            let k = match state.linked.iter().position(|(f, _)| f == folder) {
+                Some(k) => k,
+                None => {
+                    state.linked.push((folder.clone(), scan_one(folder)));
+                    state.linked.len() - 1
+                }
+            };
+            let mut refresh = false;
             ui.horizontal(|ui| {
                 ui.add(egui::Label::new(RichText::new(folder).weak().small()).truncate()).on_hover_text(folder);
-                if ui.small_button("Refresh").clicked() {
-                    state.linked_at = None;
-                }
+                refresh = ui.small_button("Refresh").clicked();
                 if ui.small_button("✕").on_hover_text("Unlink folder").clicked() {
                     ops.push(LibOp::UnlinkFolder(folder.clone()));
                     *op_start = true;
                 }
             });
-            for (j, path) in files.iter().enumerate() {
-                let name = path.rsplit(['\\', '/']).next().unwrap_or(path);
-                let (r, _) =
-                    row(ui, egui::Id::new(("linked_file", i, j)), DragPayload::Path(path.clone()), false, None, |ui| {
-                        ui.label(name);
-                        ui.weak(kind_tag_for_class(ext_class(path)));
-                    });
-                if r.double_clicked() {
-                    resp.open_paths.push(PathBuf::from(path));
+            match &state.linked[k].1 {
+                None => {
+                    ui.weak("(folder unavailable)");
                 }
-                r.on_hover_text(path);
+                Some(files) if files.is_empty() => {
+                    ui.weak("(no media files)");
+                }
+                Some(files) => {
+                    for (j, path) in files.iter().enumerate() {
+                        let name = path.rsplit(['\\', '/']).next().unwrap_or(path);
+                        let id = egui::Id::new(("linked_file", i, j));
+                        let (r, _) = row(ui, id, DragPayload::Path(path.clone()), false, None, |ui| {
+                            ui.label(name);
+                            ui.weak(kind_tag_for_class(ext_class(path)));
+                        });
+                        if r.double_clicked() {
+                            resp.open_paths.push(PathBuf::from(path));
+                        }
+                        r.on_hover_text(path);
+                    }
+                }
             }
-            if files.is_empty() {
-                ui.weak("(no media files)");
+            if refresh {
+                state.linked.remove(k);
             }
         });
     }
@@ -982,8 +1002,11 @@ fn templates_section(ui: &mut egui::Ui, state: &mut LibraryState, settings: &mut
         resp.settings_changed = true;
     }
     if let Some(i) = delete {
-        settings.templates.remove(i);
-        resp.settings_changed = true;
+        // saved templates live in settings.json — no undo, so ask first
+        if confirm("Delete template", &format!("Delete the saved template \"{}\"?", settings.templates[i].name)) {
+            settings.templates.remove(i);
+            resp.settings_changed = true;
+        }
     }
 }
 
@@ -996,6 +1019,8 @@ enum RecOp {
     Clear,
 }
 
+const CLEAR_RECENT: &str = "Clear the whole recent list? Pins, labels and tags are lost (no undo).";
+
 fn recent_tab(
     ui: &mut egui::Ui,
     state: &mut LibraryState,
@@ -1004,7 +1029,7 @@ fn recent_tab(
     resp: &mut LibraryResponse,
 ) {
     ui.horizontal(|ui| {
-        if ui.button("Clear").clicked() {
+        if ui.button("Clear").clicked() && confirm("Clear recent", CLEAR_RECENT) {
             recent_clear(settings, resp);
             resp.clear_recent = true;
         }
@@ -1057,7 +1082,9 @@ fn recent_tab(
                 resp.open_paths.push(PathBuf::from(&rec.path));
             }
             r.context_menu(|ui| {
-                if ui.button("Open").clicked() || ui.button("Add to library").clicked() {
+                // one entry only: "Add to library" ran the same open_or_import, and `||` skipped drawing
+                // it on the frame "Open" was clicked
+                if ui.button("Open").clicked() {
                     resp.open_paths.push(PathBuf::from(&rec.path));
                     ui.close();
                 }
@@ -1100,7 +1127,11 @@ fn recent_tab(
             resp.settings_changed = true;
         }
         Some(RecOp::Remove(path)) => recent_remove(settings, resp, &path),
-        Some(RecOp::Clear) => recent_clear(settings, resp),
+        Some(RecOp::Clear) => {
+            if confirm("Clear recent", CLEAR_RECENT) {
+                recent_clear(settings, resp);
+            }
+        }
         None => {}
     }
 }
@@ -1242,6 +1273,63 @@ mod tests {
         assert!(!p.all_clips().any(|(_, c)| c.kind == ClipKind::Sequence));
     }
 
+    #[test]
+    fn scan_one_reports_unreadable_folders() {
+        assert!(scan_one(r"C:\does\not\exist\at\all").is_none());
+        assert!(scan_one(&std::env::temp_dir().to_string_lossy()).is_some());
+    }
+
+    /// A row that does not fit used to widen the parent Ui, so every row below it grew and its action
+    /// button ended up outside the pane.
+    #[test]
+    fn rows_keep_a_constant_width() {
+        let ctx = egui::Context::default();
+        let mut widths = Vec::new();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let pane = egui::Rect::from_min_size(ui.max_rect().min, egui::vec2(300.0, 4000.0));
+                ui.scope_builder(egui::UiBuilder::new().max_rect(pane), |ui| {
+                    for i in 0..30 {
+                        let id = egui::Id::new(("t", i));
+                        let (r, _) = row(ui, id, DragPayload::Template(String::new()), false, Some("Place"), |ui| {
+                            ui.label("▣ a template name far too long to ever fit into this narrow pane");
+                        });
+                        widths.push(r.rect.width());
+                    }
+                });
+            });
+        });
+        let first = widths[0];
+        assert!(first <= 300.0, "row wider than the pane: {first}");
+        assert!(widths.iter().all(|w| (w - first).abs() < 1.0), "rows grew down the list: {widths:?}");
+    }
+
+    /// The inline rename/create field commits when it loses focus (it used to re-grab focus first, so
+    /// `lost_focus()` could never fire and nothing was ever committed).
+    #[test]
+    fn inline_edit_commits_on_focus_loss() {
+        let ctx = egui::Context::default();
+        let mut buf = "Footage".to_string();
+        let mut out = None;
+        // focus is moved inside the pass: done between passes it counts as "had focus last frame"
+        let mut run = |steal: bool, buf: &mut String, out: &mut Option<String>| {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                if steal {
+                    ctx.memory_mut(|m| m.request_focus(egui::Id::new("somewhere else")));
+                }
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    *out = inline_edit(ui, buf);
+                });
+            });
+        };
+        run(false, &mut buf, &mut out);
+        assert!(out.is_none());
+        run(false, &mut buf, &mut out);
+        assert!(out.is_none(), "still editing while focused");
+        run(true, &mut buf, &mut out);
+        assert_eq!(out.as_deref(), Some("Footage"), "commits when focus moves away");
+    }
+
     /// Headless: both tabs lay out with folders, sequences, templates and a selected asset,
     /// reporting nothing when nothing was clicked.
     #[test]
@@ -1279,6 +1367,8 @@ mod tests {
                 });
             }
             assert_eq!(state.tab, tab);
+            // the linked section is collapsed: nothing was read from disk
+            assert!(state.linked.is_empty(), "collapsed linked folders must not be scanned");
         }
     }
 }

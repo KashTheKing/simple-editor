@@ -1,6 +1,6 @@
 //! Keyframe presets, motion presets and clip templates — capture from clips and apply back.
-//! Curve presets store keys normalised to 0..1 of the clip length (or absolute seconds); applying can
-//! stretch them to the target clip's duration ("scaled") or keep the saved timing ("exact").
+//! Curve presets store keys normalised to 0..1 of the clip length (stretched to the target clip's
+//! duration when applied) or as absolute seconds (kept as saved).
 
 use crate::model::{Animated, Asset, Clip, Ease, Effect, EffectKind, Keyframe, Project, MIN_CLIP};
 use crate::settings::{CurvePreset, MotionPreset, Template};
@@ -15,10 +15,13 @@ pub fn capture_curve(name: &str, anim: &Animated, clip_duration: f64, absolute: 
     Some(CurvePreset { name: name.into(), keys, absolute })
 }
 
-/// Apply a curve preset to a property. `scaled` = stretch normalised times to `clip_duration`
-/// (absolute presets are placed from 0 unchanged). Replaces existing keys.
-pub fn apply_curve(preset: &CurvePreset, anim: &mut Animated, clip_duration: f64, scaled: bool) {
-    anim.keys = if scaled { scaled_keys(&preset.keys, preset.absolute, clip_duration) } else { preset.keys.clone() };
+/// Apply a curve preset to a property: normalised times are stretched to `clip_duration`, absolute
+/// presets keep their seconds. Replaces existing keys.
+/// `scaled` is kept for the callers' "exact" button but is only meaningful for absolute presets, which
+/// ignore the duration anyway — placing a normalised preset's 0..1 times as seconds would crush the
+/// whole animation into the clip's first second. See `capture_curve`: nothing but tests saves absolute.
+pub fn apply_curve(preset: &CurvePreset, anim: &mut Animated, clip_duration: f64, _scaled: bool) {
+    anim.keys = scaled_keys(&preset.keys, preset.absolute, clip_duration);
 }
 
 /// Convenience: keyframes of a preset scaled to `duration` (used by the curve editor preview).
@@ -198,9 +201,10 @@ mod tests {
         apply_curve(&p, &mut b, 4.0, true);
         assert!((b.at(2.0) - a.at(1.0)).abs() < 1e-9);
         assert!((b.keys[2].t - 4.0).abs() < 1e-9);
-        // exact (unscaled): the stored normalised times are placed as-is
+        // "exact" on a normalised preset still stretches — placing 0..1 as seconds would squash the
+        // whole animation into the first second of the clip
         apply_curve(&p, &mut b, 4.0, false);
-        assert!((b.keys[2].t - 1.0).abs() < 1e-9);
+        assert!((b.keys[2].t - 4.0).abs() < 1e-9);
         // absolute preset: seconds survive any target duration, scaled or not
         let pa = capture_curve("c", &a, 2.0, true).unwrap();
         let mut c = Animated::new(0.0);

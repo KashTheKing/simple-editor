@@ -2,9 +2,10 @@
 //! immediately; misses are queued to ONE worker thread (newest request first, so scrubbing/zooming stays
 //! responsive) that owns a DecoderPool (backend from settings) and decodes `h`-pixel-tall RGBA thumbnails
 //! (aspect kept; images ignore `t`; Sequence clips are not handled here — the timeline draws a label).
-//! Results are kept in an LRU (≈512 entries, ~96 px tall ≈ 10 MB) and uploaded lazily as egui textures
-//! (`texture`) so panels can paint them directly. `ctx.request_repaint()` when a thumbnail lands.
-//! Key = (path, t rounded to 0.5 s buckets, h). `clear()` forgets everything (e.g. after save-over-original).
+//! Results are kept in an LRU bounded by both entry count (≤512) and decoded bytes (≤48 MB) and uploaded
+//! lazily as egui textures (`texture`) so panels can paint them directly. `ctx.request_repaint()` when a
+//! thumbnail lands. Key = (path, t rounded to 0.5 s buckets, h rounded up to 16 px); `clear()` forgets
+//! everything (e.g. after save-over-original).
 
 use crate::media::{is_image_path, Backend, DecoderPool, Frame};
 use eframe::egui;
@@ -14,6 +15,8 @@ use std::sync::{Arc, Condvar, Mutex};
 
 /// Max decoded thumbnails kept (failed lookups are memoised separately and never evicted).
 const CAP: usize = 512;
+/// Max decoded bytes kept — a 1080p source 300 px tall is 640 KB per entry, so CAP alone is not a bound.
+const BUDGET: usize = 48 << 20;
 
 struct Entry {
     /// None = decode failed; memoised so a bad file/time is never retried.
@@ -43,6 +46,12 @@ fn key_of(path: &str, t: f64, h: u32) -> u64 {
     let mut hs = std::collections::hash_map::DefaultHasher::new();
     (path, (t * 2.0).round() as i64, h).hash(&mut hs);
     hs.finish()
+}
+
+/// ponytail: 16 px steps so a track-height drag reuses cached thumbs instead of queueing a decode per
+/// pixel of height; rounding up means the texture is never upscaled on draw.
+fn qh(h: u32) -> u32 {
+    h.max(1).next_multiple_of(16)
 }
 
 /// The half-second bucket time actually decoded for a request at `t` (0 for images).
@@ -95,7 +104,7 @@ impl ThumbCache {
 
     /// Thumbnail frame of `path` at source time `t`, `h` px tall. None while computing (request queued).
     pub fn get(&mut self, path: &str, t: f64, h: u32) -> Option<Arc<Frame>> {
-        let t = bucket_time(path, t);
+        let (t, h) = (bucket_time(path, t), qh(h));
         let key = key_of(path, t, h);
         let (result, evicted) = {
             let mut st = self.shared.0.lock().ok()?;
@@ -125,7 +134,7 @@ impl ThumbCache {
     /// Same as `get` but as an egui texture (created/cached here), with its size in pixels.
     pub fn texture(&mut self, ctx: &egui::Context, path: &str, t: f64, h: u32) -> Option<(egui::TextureId, [u32; 2])> {
         let frame = self.get(path, t, h)?;
-        let key = key_of(path, bucket_time(path, t), h);
+        let key = key_of(path, bucket_time(path, t), qh(h));
         if let Some((th, size)) = self.textures.get(&key) {
             return Some((th.id(), *size));
         }
@@ -196,9 +205,18 @@ fn worker(shared: Arc<(Mutex<Shared>, Condvar)>, ctx: egui::Context) {
             Job::Quit => return,
             Job::Clear => pool = None, // drop decoders → release file handles
             Job::Decode(key, path, t, h, backend, epoch) => {
-                let pool = pool.get_or_insert_with(|| DecoderPool::new(backend));
-                pool.set_backend(backend); // no-op when unchanged
-                let frame = decode_thumb(pool, &path, t, h);
+                let p = pool.get_or_insert_with(|| DecoderPool::new(backend));
+                p.set_backend(backend); // no-op when unchanged
+                                        // ponytail: a decoder panic must not kill the only thumb worker — memoise it as a failed
+                                        // entry (so it is never retried) and drop the pool so the next job starts on fresh decoders.
+                let frame =
+                    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| decode_thumb(p, &path, t, h))) {
+                        Ok(f) => f,
+                        Err(_) => {
+                            pool = None;
+                            None
+                        }
+                    };
                 let Ok(mut st) = shared.0.lock() else { return };
                 if st.epoch != epoch {
                     continue; // cleared while decoding: discard the stale result
@@ -233,14 +251,19 @@ fn decode_thumb(pool: &mut DecoderPool, path: &str, t: f64, h: u32) -> Option<Fr
     }
 }
 
-/// Drop least-recently-used decoded thumbnails beyond CAP (failed memos are exempt: they cost nothing).
+/// Drop least-recently-used decoded thumbnails beyond CAP entries or BUDGET bytes (failed memos are
+/// exempt: they cost nothing).
 /// ponytail: O(n) min-scan per insert over ≤512 entries on the worker thread — a real LRU list if CAP grows.
 fn evict(st: &mut Shared) {
-    while st.ready.values().filter(|e| e.frame.is_some()).count() > CAP {
+    let live = |e: &Entry| e.frame.as_ref().map(|f| f.rgba.len());
+    let mut bytes: usize = st.ready.values().filter_map(live).sum();
+    let mut count = st.ready.values().filter(|e| e.frame.is_some()).count();
+    while bytes > BUDGET || count > CAP {
         let Some((&k, _)) = st.ready.iter().filter(|(_, e)| e.frame.is_some()).min_by_key(|(_, e)| e.tick) else {
             return;
         };
-        st.ready.remove(&k);
+        bytes -= st.ready.remove(&k).as_ref().and_then(live).unwrap_or(0);
+        count -= 1;
         st.evicted.push(k);
     }
 }
@@ -343,7 +366,7 @@ mod tests {
         let png = png.to_string_lossy().into_owned();
         let mut c = ThumbCache::new(egui::Context::default(), Backend::Ffmpeg);
         let f = poll(&mut c, &png, 7.0, 24, 10).expect("image thumb");
-        assert_eq!((f.width, f.height), (32, 24));
+        assert_eq!((f.width, f.height), (43, 32), "64x48 source at qh(24) = 32 px tall");
         let [r, _, b] = centre(&f);
         assert!(b > 180 && r < 90, "blue, got {:?}", centre(&f));
         // any t maps to the same cached entry
@@ -353,10 +376,8 @@ mod tests {
         assert_eq!(stt.ready.len(), 1);
     }
 
-    #[test]
-    fn lru_evicts_and_drops_textures() {
-        // shrink the cap indirectly: fill ready by hand and let evict() trim it
-        let mut st = Shared {
+    fn empty_shared() -> Shared {
+        Shared {
             ready: HashMap::new(),
             queue: Vec::new(),
             pending: HashSet::new(),
@@ -366,7 +387,13 @@ mod tests {
             epoch: 0,
             clear_pool: false,
             quit: false,
-        };
+        }
+    }
+
+    #[test]
+    fn lru_evicts_and_drops_textures() {
+        // shrink the cap indirectly: fill ready by hand and let evict() trim it
+        let mut st = empty_shared();
         for i in 0..(CAP as u64 + 3) {
             st.ready.insert(i, Entry { frame: Some(Arc::new(Frame::new(1, 1))), tick: i });
         }
@@ -377,5 +404,32 @@ mod tests {
         // the oldest ticks went first
         assert!(st.evicted.contains(&0) && st.evicted.contains(&1) && st.evicted.contains(&2));
         assert!(st.ready.contains_key(&9999));
+    }
+
+    /// Big thumbnails are bounded by bytes long before the entry count cap is reached.
+    #[test]
+    fn lru_evicts_on_byte_budget() {
+        let mut st = empty_shared();
+        let big = Arc::new(Frame::new(512, 512)); // 1 MiB each
+        for i in 0..64u64 {
+            st.ready.insert(i, Entry { frame: Some(big.clone()), tick: i });
+        }
+        evict(&mut st);
+        let bytes: usize = st.ready.values().filter_map(|e| e.frame.as_ref()).map(|f| f.rgba.len()).sum();
+        assert!(bytes <= BUDGET, "{bytes} > {BUDGET}");
+        assert_eq!(st.ready.len(), BUDGET >> 20, "kept the 48 newest, count cap never fired");
+        assert!(st.evicted.contains(&0) && !st.evicted.contains(&63), "oldest first");
+    }
+
+    /// A track-height drag must reuse cached entries instead of queueing a decode per pixel of height.
+    #[test]
+    fn height_quantised() {
+        assert_eq!([qh(0), qh(1), qh(16), qh(17), qh(40)], [16, 16, 16, 32, 48]);
+        assert!((1..1000).all(|h| qh(h) >= h), "never upscaled on draw");
+        // MIN_TRACK_H..MAX_TRACK_H in the timeline: 277 pixel heights → 18 distinct decodes
+        let keys: HashSet<u64> = (24..=300).map(|h| key_of("a.mp4", 0.5, qh(h))).collect();
+        assert_eq!(keys.len(), 18);
+        // get() and texture() must agree on the key, else every texture lookup misses
+        assert_eq!(key_of("a.mp4", 0.5, qh(41)), key_of("a.mp4", 0.5, qh(48)));
     }
 }
