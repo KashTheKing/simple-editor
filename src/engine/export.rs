@@ -74,7 +74,7 @@ impl Progress {
     }
 }
 
-const CANCELLED: &str = "cancelled";
+pub(crate) const CANCELLED: &str = "cancelled";
 /// Audio mix block (frames) — 100 ms.
 const MIX_BLOCK: usize = 4800;
 
@@ -87,7 +87,10 @@ pub fn start_export(project: Project, opts: ExportOptions, text: Arc<Mutex<TextR
 }
 
 /// Run `job` on a named thread; any Err (or panic) lands in `Progress::finish`.
-fn spawn_job(name: &str, job: impl FnOnce(&Progress) -> Result<(), String> + Send + 'static) -> Arc<Progress> {
+pub(crate) fn spawn_job(
+    name: &str,
+    job: impl FnOnce(&Progress) -> Result<(), String> + Send + 'static,
+) -> Arc<Progress> {
     let prog = Progress::new();
     let p = prog.clone();
     let spawned = std::thread::Builder::new().name(name.into()).spawn(move || {
@@ -104,7 +107,7 @@ fn spawn_job(name: &str, job: impl FnOnce(&Progress) -> Result<(), String> + Sen
     prog
 }
 
-fn ext_of(path: &Path) -> String {
+pub(crate) fn ext_of(path: &Path) -> String {
     path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default()
 }
 
@@ -155,8 +158,23 @@ fn run_export(
         }
     }
     let args = codec_args(&ext, &opts.encoder, opts.crf, &opts.preset, &detect_encoders());
-    if !audio_only && (w % 2 == 1 || h % 2 == 1) && args.iter().any(|a| a == "yuv420p" || a == "nv12") {
-        cmd.args(["-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2"]);
+    if !audio_only {
+        let scale = opts.out_size.filter(|&s| s != (w, h));
+        let mut vf = String::new();
+        if let Some((sw, sh)) = scale {
+            let flags = if opts.scaler.is_empty() { "bicubic" } else { &opts.scaler };
+            vf = format!("scale={sw}:{sh}:flags={flags}");
+        }
+        let (fw, fh) = scale.unwrap_or((w, h));
+        if (fw % 2 == 1 || fh % 2 == 1) && args.iter().any(|a| a == "yuv420p" || a == "nv12") {
+            if !vf.is_empty() {
+                vf.push(',');
+            }
+            vf.push_str("pad=ceil(iw/2)*2:ceil(ih/2)*2");
+        }
+        if !vf.is_empty() {
+            cmd.args(["-vf", &vf]);
+        }
     }
     cmd.args(&args);
     if is_gif {
@@ -255,10 +273,10 @@ fn wav_header(frames: u64) -> [u8; 44] {
 }
 
 /// Deleted on drop (a no-op once `commit`ted into place).
-struct TempFile(PathBuf);
+pub(crate) struct TempFile(pub(crate) PathBuf);
 impl TempFile {
     /// Move the finished file over `dst` (replaces an existing file).
-    fn commit(self, dst: &Path) -> Result<(), String> {
+    pub(crate) fn commit(self, dst: &Path) -> Result<(), String> {
         std::fs::rename(&self.0, dst).map_err(|e| format!("rename to {}: {e}", dst.display()))
     }
 }
@@ -271,14 +289,14 @@ impl Drop for TempFile {
 /// Hidden sibling of `out` (same folder, same extension so ffmpeg still picks the muxer by name) that
 /// ffmpeg writes into; it is renamed over `out` only on success, so a cancel or failure never truncates
 /// or deletes an existing destination — or the source, when cutting in place.
-fn temp_output(out: &Path) -> TempFile {
+pub(crate) fn temp_output(out: &Path) -> TempFile {
     let stem = out.file_stem().unwrap_or_default().to_string_lossy();
     let ext = out.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
     TempFile(out.with_file_name(format!(".{stem}.simple-editor-tmp{ext}")))
 }
 
 /// Drain ffmpeg's stderr on a helper thread; returns the last ~2000 chars.
-fn stderr_tail(child: &mut Child) -> Option<JoinHandle<String>> {
+pub(crate) fn stderr_tail(child: &mut Child) -> Option<JoinHandle<String>> {
     let mut err = child.stderr.take()?;
     Some(std::thread::spawn(move || {
         let mut buf = Vec::new();
@@ -291,7 +309,7 @@ fn stderr_tail(child: &mut Child) -> Option<JoinHandle<String>> {
 }
 
 /// Wait for ffmpeg, killing it if the job is cancelled. Non-zero exit → Err(stderr tail).
-fn wait_ffmpeg(child: &mut Child, tail: Option<JoinHandle<String>>, prog: &Progress) -> Result<(), String> {
+pub(crate) fn wait_ffmpeg(child: &mut Child, tail: Option<JoinHandle<String>>, prog: &Progress) -> Result<(), String> {
     let status = loop {
         if prog.is_cancelled() {
             let _ = child.kill();
@@ -319,10 +337,17 @@ fn wait_ffmpeg(child: &mut Child, tail: Option<JoinHandle<String>>, prog: &Progr
 
 /// If the project is a pure cut of exactly one video source (every clip from the same asset, audio clips
 /// exactly mirroring their linked video clip's timing on each audio stream (muted tracks may be dropped),
-/// no gaps between clips, no text/image clips, no effects, volume 1, all clips enabled), return the
-/// segments as (src_in, duration) in timeline order. Such a project can be written with `-c copy`.
+/// no gaps between clips, no text/image/sequence clips, no effects/retime/pan/fades, volume 1, all clips
+/// enabled, no transitions, no burnt-in subtitles), return the segments as (src_in, duration) in timeline
+/// order. Such a project can be written with `-c copy`.
 pub fn lossless_segments(project: &Project) -> Option<Vec<(f64, f64)>> {
     const EPS: f64 = 1e-4;
+    if project.show_subtitles && !project.subtitles.is_empty() {
+        return None;
+    }
+    if project.tracks.iter().any(|t| !t.transitions.is_empty()) {
+        return None;
+    }
     let mut asset = None;
     for (_, c) in project.all_clips() {
         if c.kind != ClipKind::Video && c.kind != ClipKind::Audio {
@@ -554,7 +579,7 @@ pub fn codec_args(ext: &str, encoder: &str, crf: u32, preset: &str, available: &
 pub const AUDIO_EXTS: &[&str] = &["mp3", "wav", "m4a", "flac", "ogg", "aac", "opus"];
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::model::{Asset, AudioStreamInfo, TrackKind};
 
@@ -589,7 +614,7 @@ mod tests {
         p
     }
 
-    fn wait_done(prog: &Progress) -> Option<String> {
+    pub(crate) fn wait_done(prog: &Progress) -> Option<String> {
         for _ in 0..1200 {
             if prog.is_done() {
                 return prog.error();
@@ -599,14 +624,14 @@ mod tests {
         Some("timeout".into())
     }
 
-    fn temp_dir(name: &str) -> PathBuf {
+    pub(crate) fn temp_dir(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("simple-editor-export-test-{}-{name}", std::process::id()));
         let _ = std::fs::create_dir_all(&d);
         d
     }
 
     /// red 0–2 s, green 2–4 s, two sine streams, keyframe every second. None if ffmpeg is missing.
-    fn gen_media(dir: &Path) -> Option<PathBuf> {
+    pub(crate) fn gen_media(dir: &Path) -> Option<PathBuf> {
         let exe = ffpipe::ffmpeg_exe()?;
         let out = dir.join("test.mp4");
         let st = ffpipe::command(&exe)
@@ -632,7 +657,7 @@ mod tests {
         Some(out)
     }
 
-    fn probe_duration(path: &Path) -> Option<f64> {
+    pub(crate) fn probe_duration(path: &Path) -> Option<f64> {
         let o = ffpipe::command(&ffpipe::ffprobe_exe()?)
             .args(["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0"])
             .arg(path)
@@ -718,6 +743,34 @@ mod tests {
         let id = q.add_asset(asset("C:/fake/other.mp4", 0));
         q.insert_asset_clips(id, 4.0, Some(0));
         assert!(lossless_segments(&q).is_none());
+        // retimed clip → None
+        let mut q = p.clone();
+        let sp = q.tracks[0].clips[0].id;
+        q.set_speed(&[sp], 2.0, false);
+        assert!(lossless_segments(&q).is_none());
+        // pan / fades → None
+        let mut q = p.clone();
+        q.tracks[1].clips[0].pan.value = 0.5;
+        assert!(lossless_segments(&q).is_none());
+        let mut q = p.clone();
+        q.tracks[1].clips[0].fade_in = 0.5;
+        assert!(lossless_segments(&q).is_none());
+        // transition → None
+        let mut q = p.clone();
+        let right = q.tracks[0].clips[1].id;
+        assert!(q.add_transition(right, crate::model::TransitionKind::CrossFade, 0.5).is_some());
+        assert!(lossless_segments(&q).is_none());
+        // burnt-in subtitles → None; hidden subtitles → Some
+        let mut q = p.clone();
+        q.add_cue(0.0, 1.0, "hi");
+        assert!(lossless_segments(&q).is_none());
+        q.show_subtitles = false;
+        assert!(lossless_segments(&q).is_some());
+        // sequence clip → None
+        let mut q = p.clone();
+        let seq = q.new_sequence("s", 320, 240, 30.0);
+        q.insert_sequence_clip(seq, 4.0, None);
+        assert!(lossless_segments(&q).is_none());
         // empty project → None
         assert!(lossless_segments(&Project::new()).is_none());
         // clip on a second video track → None
@@ -798,6 +851,38 @@ mod tests {
             "{:?}",
             std::fs::read_dir(&dir).unwrap().collect::<Vec<_>>()
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scaled_export_real() {
+        let dir = temp_dir("scaled");
+        let Some(src) = gen_media(&dir) else {
+            eprintln!("ffmpeg missing — skipped");
+            return;
+        };
+        let p = Project::from_media(asset(&src.to_string_lossy(), 2));
+        assert_eq!((p.width, p.height), (320, 240));
+        let out = dir.join("half.mp4");
+        let opts = ExportOptions {
+            out_path: out.clone(),
+            encoder: "auto".into(),
+            crf: 23,
+            preset: "ultrafast".into(),
+            backend: Backend::Auto,
+            out_size: Some((160, 120)),
+            scaler: "bicubic".into(),
+        };
+        let text = Arc::new(Mutex::new(TextRasterizer::new()));
+        assert_eq!(wait_done(&start_export(p, opts, text)), None);
+        let o = ffpipe::command(&ffpipe::ffprobe_exe().unwrap())
+            .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0"])
+            .arg(&out)
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&o.stdout).trim(), "160,120");
+        let d = probe_duration(&out).expect("probe");
+        assert!((d - 4.0).abs() < 0.2, "duration {d}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
