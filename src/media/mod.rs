@@ -166,6 +166,13 @@ impl DecoderPool {
             .or_insert_with(|| open_audio(path, stream, b).ok())
             .as_deref_mut()
     }
+    /// Inject a ready-made source (tests / synthetic media).
+    pub fn insert_video(&mut self, path: &str, v: Box<dyn VideoSource>) {
+        self.videos.insert(path.to_string(), Some(v));
+    }
+    pub fn insert_audio(&mut self, path: &str, stream: usize, a: Box<dyn AudioSource>) {
+        self.audios.insert((path.to_string(), stream), Some(a));
+    }
     /// Drop every decoder (releases file handles — required before overwriting a source file).
     pub fn clear(&mut self) {
         self.videos.clear();
