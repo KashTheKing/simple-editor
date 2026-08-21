@@ -1,4 +1,4 @@
-//! Windows Media Foundation backend (IMFSourceReader). Native, hardware-accelerated, no external deps.
+//! Windows Media Foundation backend (IMFSourceReader). Native software decode, no external deps, instant seeks.
 //!
 //! Contract (see media/mod.rs):
 //!  * `probe(path)`      -> Asset with duration, size, fps, every audio stream (language/title if available).
@@ -54,12 +54,20 @@ fn open_reader(path: &str) -> Result<IMFSourceReader, String> {
     if super::is_image_path(path) {
         return Err("MF: images are decoded by ffmpeg".into());
     }
+    // ponytail: MF's MPEG-2 source seeks to the *next* keyframe (EOF past the last one, verified) and reports
+    // a short duration; ffmpeg seeks TS/PS exactly, so let Auto fall through to it.
+    if matches!(super::ext(path).as_str(), "ts" | "m2ts" | "mts" | "m2t" | "mpg" | "mpeg" | "vob") {
+        return Err("MF: MPEG-TS/PS seeks are keyframe-coarse, use ffmpeg".into());
+    }
     init()?;
     unsafe {
         let mut attrs = None;
         MFCreateAttributes(&mut attrs, 1).map_err(err)?;
         let attrs = attrs.ok_or("MF: MFCreateAttributes returned null")?;
         attrs.SetUINT32(&MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, 1).map_err(err)?;
+        // The Matroska source reports half the real frame rate; without this the video processor
+        // frame-rate-converts to it and drops every second MKV/WebM frame.
+        attrs.SetUINT32(&MF_XVP_DISABLE_FRC, 1).map_err(err)?;
         let url = HSTRING::from(path);
         let reader = MFCreateSourceReaderFromURL(&url, &attrs).map_err(err)?;
         reader.SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS.0 as u32, false).map_err(err)?;
@@ -106,15 +114,20 @@ fn streams(reader: &IMFSourceReader) -> Vec<StreamInfo> {
             }
         }
     }
-    // ponytail: MF's MPEG-4 source (mp4/mov/m4a: MIME */mp4, video/quicktime) enumerates tracks in
-    // reverse `trak` order (verified); MKV/ASF/TS/AVI sources are in container order. Reverse to match ffmpeg.
-    let mime = unsafe { reader.GetPresentationAttribute(MF_SOURCE_READER_MEDIASOURCE.0 as u32, &MF_PD_MIME_TYPE) }
-        .map(|pv| pv.to_string())
-        .unwrap_or_default();
-    if mime.ends_with("/mp4") || mime == "video/quicktime" {
+    // ponytail: MF's MPEG-4 source enumerates tracks in reverse `trak` order (verified); MKV/ASF/TS/AVI
+    // sources are in container order. Reverse to match ffmpeg.
+    if is_mp4(reader) {
         v.reverse();
     }
     v
+}
+
+/// MF's MPEG-4 source (mp4/mov/m4a: MIME */mp4, video/quicktime).
+fn is_mp4(reader: &IMFSourceReader) -> bool {
+    let mime = unsafe { reader.GetPresentationAttribute(MF_SOURCE_READER_MEDIASOURCE.0 as u32, &MF_PD_MIME_TYPE) }
+        .map(|pv| pv.to_string())
+        .unwrap_or_default();
+    mime.ends_with("/mp4") || mime == "video/quicktime"
 }
 
 fn duration_secs(reader: &IMFSourceReader) -> f64 {
@@ -187,6 +200,10 @@ pub fn probe(path: &str) -> Result<Asset, String> {
             let size = unsafe { s.ty.GetUINT64(&MF_MT_FRAME_SIZE) }.unwrap_or(0);
             asset.width = (size >> 32) as u32;
             asset.height = size as u32;
+            // The reader auto-rotates (ADVANCED_VIDEO_PROCESSING), so report display dims like ffmpeg does.
+            if unsafe { s.ty.GetUINT32(&MF_MT_VIDEO_ROTATION) }.unwrap_or(0) % 180 == 90 {
+                std::mem::swap(&mut asset.width, &mut asset.height);
+            }
             asset.fps = frame_rate(&s.ty);
             asset.codec = codec_name(sub).into();
         } else if s.major == MFMediaType_Audio {
@@ -245,6 +262,11 @@ struct MfVideo {
     last_end: Option<i64>,
     /// Where the stream ends (known once EOF was hit).
     eof_at: Option<i64>,
+    /// MF time of the first frame = content t=0. MF keeps container time (mp4 initial empty edit, MKV
+    /// offset), ffmpeg/ffprobe are content-relative; requests are shifted into MF time.
+    origin: i64,
+    /// MPEG-4 source: SetCurrentPosition takes content-relative time while samples carry container time.
+    mp4: bool,
     // Scaled copy of the cached frame (valid when svalid && size matches).
     scaled: Vec<u8>,
     svalid: bool,
@@ -266,6 +288,7 @@ pub fn open_video(path: &str) -> Result<Box<dyn VideoSource>, String> {
     let vs = streams(&reader).into_iter().find(|s| s.major == MFMediaType_Video).ok_or("MF: no video stream")?;
     let (stream, nat) = (vs.index, vs.ty);
     let duration = duration_secs(&reader);
+    let mp4 = is_mp4(&reader);
     unsafe {
         reader.SetStreamSelection(stream, true).map_err(err)?;
         let mt = MFCreateMediaType().map_err(err)?;
@@ -290,6 +313,8 @@ pub fn open_video(path: &str) -> Result<Box<dyn VideoSource>, String> {
         rpts: 0,
         last_end: None,
         eof_at: None,
+        origin: 0,
+        mp4,
         scaled: Vec::new(),
         svalid: false,
         sw: 0,
@@ -302,11 +327,13 @@ pub fn open_video(path: &str) -> Result<Box<dyn VideoSource>, String> {
     if !v.refresh_type() {
         return Err("MF: cannot read video output type".into());
     }
-    // Decode the first frame now: surfaces "codec not decodable" at open (so Auto falls back to ffmpeg)
-    // and warms the cache for the usual first request at t=0.
+    // Decode the first frame now: surfaces "codec not decodable" at open (so Auto falls back to ffmpeg),
+    // fixes the time origin and warms the cache for the usual first request at t=0.
     if !v.read_until(0) {
         return Err("MF: cannot decode first video frame".into());
     }
+    v.origin = v.rpts.max(0);
+    v.pts = v.rpts;
     Ok(Box::new(v))
 }
 
@@ -331,7 +358,7 @@ impl MfVideo {
     }
 
     fn seek(&mut self, tt: i64) -> bool {
-        let pv = PROPVARIANT::from(tt);
+        let pv = PROPVARIANT::from(if self.mp4 { tt - self.origin } else { tt });
         let ok = unsafe { self.reader.SetCurrentPosition(&GUID_NULL, &pv) }.is_ok();
         self.have = false;
         self.last_end = None;
@@ -417,7 +444,7 @@ impl MfVideo {
     /// Write the cached frame at (w,h) into `out`.
     fn emit(&mut self, w: u32, h: u32, out: &mut Frame) {
         out.resize(w, h);
-        out.pts = self.rpts as f64 / HNS;
+        out.pts = (self.rpts - self.origin) as f64 / HNS;
         if w == self.width && h == self.height {
             out.rgba.copy_from_slice(&self.native);
             return;
@@ -525,7 +552,9 @@ impl VideoSource for MfVideo {
         if w == 0 || h == 0 {
             return false;
         }
-        let tt = hns(t);
+        // +5 ms display-time tolerance: MKV pts are ms-rounded (frame n's pts can land just after n/fps),
+        // raw mp4 pts jitter ±1 hns — without it every other frame repeats when stepping at n/fps.
+        let tt = hns(t) + 50_000 + self.origin;
         if self.eof_at.is_some_and(|e| tt >= e) {
             return false;
         }
@@ -599,6 +628,9 @@ struct MfAudio {
     located: bool,
     /// Output frame index where the data ends (known once EOF was hit).
     eof_at: Option<i64>,
+    /// Output frame index of the first sample = content t=0 (see MfVideo::origin).
+    origin: i64,
+    mp4: bool,
     rs: Resamp,
     tmp: Vec<f32>,
 }
@@ -608,12 +640,20 @@ unsafe impl Send for MfAudio {}
 
 pub fn open_audio(path: &str, stream: usize) -> Result<Box<dyn AudioSource>, String> {
     let reader = open_reader(path)?;
-    let idx = streams(&reader)
+    let s = streams(&reader)
         .into_iter()
         .filter(|s| s.major == MFMediaType_Audio)
         .nth(stream)
-        .ok_or_else(|| format!("MF: no audio stream {stream}"))?
-        .index;
+        .ok_or_else(|| format!("MF: no audio stream {stream}"))?;
+    // ponytail: MF's FLAC decoder mis-timestamps (drifts 60-120 ms after seeks in .flac, a block late in
+    // MKV/OGG, +96 ms in MP4 'fLaC'); ffmpeg seeks FLAC exactly, so let Auto fall through to it.
+    const FLAC_MP4: GUID = GUID { data1: 0x664C_6143, ..MFMPEG4Format_Base }; // 'fLaC'
+    let sub = unsafe { s.ty.GetGUID(&MF_MT_SUBTYPE) }.unwrap_or(GUID_NULL);
+    if sub == MFAudioFormat_FLAC || sub == FLAC_MP4 {
+        return Err("MF: FLAC timestamps unreliable, use ffmpeg".into());
+    }
+    let idx = s.index;
+    let mp4 = is_mp4(&reader);
     let duration = duration_secs(&reader);
     let (rate, ch) = unsafe {
         reader.SetStreamSelection(idx, true).map_err(err)?;
@@ -634,7 +674,7 @@ pub fn open_audio(path: &str, stream: usize) -> Result<Box<dyn AudioSource>, Str
         }
         audio_format(&reader, idx)?
     };
-    Ok(Box::new(MfAudio {
+    let mut a = MfAudio {
         reader,
         stream: idx,
         duration,
@@ -644,9 +684,22 @@ pub fn open_audio(path: &str, stream: usize) -> Result<Box<dyn AudioSource>, Str
         fifo_pos: 0,
         located: false,
         eof_at: None,
+        origin: 0,
+        mp4,
         rs: Resamp::default(),
         tmp: Vec::new(),
-    }))
+    };
+    // Decode the first sample now: surfaces "not decodable" at open (so Auto falls back to ffmpeg),
+    // fixes the time origin and warms the FIFO for the usual first read at t=0.
+    let mut reads = 0;
+    while !a.located {
+        reads += 1;
+        if reads > MAX_READS || !a.decode_more(0) {
+            return Err("MF: cannot decode first audio sample".into());
+        }
+    }
+    a.origin = a.fifo_pos;
+    Ok(Box::new(a))
 }
 
 /// (sample rate, channels) of the reader's current output type.
@@ -668,7 +721,8 @@ impl MfAudio {
     fn seek(&mut self, f0: i64) -> bool {
         // ponytail: MF's MP3 source lands ~60 ms *after* the requested position; pre-roll and let the
         // timestamp-based locate discard the excess (audio decode is cheap).
-        let pv = PROPVARIANT::from((f0 - AUDIO_PREROLL_FRAMES).max(0) * HNS as i64 / SAMPLE_RATE as i64);
+        let f = f0 - if self.mp4 { self.origin } else { 0 } - AUDIO_PREROLL_FRAMES;
+        let pv = PROPVARIANT::from(f.max(0) * HNS as i64 / SAMPLE_RATE as i64);
         let ok = unsafe { self.reader.SetCurrentPosition(&GUID_NULL, &pv) }.is_ok();
         self.fifo.clear();
         self.located = false;
@@ -737,7 +791,7 @@ impl AudioSource for MfAudio {
     fn read_at(&mut self, t: f64, out: &mut [f32]) {
         out.fill(0.0);
         let n = (out.len() / CHANNELS) as i64;
-        let f0 = (t.max(0.0) * SAMPLE_RATE as f64).round() as i64;
+        let f0 = (t.max(0.0) * SAMPLE_RATE as f64).round() as i64 + self.origin;
         let f1 = f0 + n;
         if n == 0 || self.eof_at.is_some_and(|e| f0 >= e) {
             return;
@@ -800,6 +854,21 @@ mod tests {
             st.success().then(|| out.to_string_lossy().into_owned())
         })
         .clone()
+    }
+
+    /// `ffmpeg <pre> -i test.mp4 <post> <name>` next to the test clip.
+    fn derive(name: &str, pre: &[&str], post: &[&str]) -> Option<String> {
+        let src = media()?;
+        let out = PathBuf::from(&src).with_file_name(format!("{}-{name}", std::process::id()));
+        let st = Command::new("ffmpeg")
+            .args(["-v", "error", "-y"])
+            .args(pre)
+            .args(["-i", &src])
+            .args(post)
+            .arg(&out)
+            .status()
+            .ok()?;
+        st.success().then(|| out.to_string_lossy().into_owned())
     }
 
     fn px(f: &Frame, x: u32, y: u32) -> [u8; 4] {
@@ -942,6 +1011,79 @@ mod tests {
             t += 4800.0 / 48000.0;
         }
         eprintln!("100 sequential audio blocks (10 s): {:?}", t0.elapsed());
+    }
+
+    /// Stepping at n/fps must visit every frame once (MKV: FRC disabled + ms-rounded pts tolerance).
+    #[test]
+    fn steps_every_frame_mkv_and_mp4() {
+        let Some(mkv) = derive("v30.mkv", &[], &["-c", "copy"]) else {
+            eprintln!("ffmpeg missing; skipped");
+            return;
+        };
+        for p in [mkv, media().unwrap()] {
+            let mut v = open_video(&p).expect("open_video");
+            let mut f = Frame::default();
+            for n in 0..120 {
+                let t = n as f64 / 30.0;
+                assert!(v.frame_at(t, 32, 24, &mut f), "{p} frame {n}");
+                assert!((f.pts - t).abs() < 0.002, "{p} frame {n}: pts {} (dup/skip)", f.pts);
+                let c = px(&f, 1, 1);
+                assert!(if n < 60 { is_red(c) } else { is_green(c) }, "{p} frame {n}: {c:?}");
+            }
+        }
+    }
+
+    /// Display-matrix rotation: both probes report display dims, both decoders deliver rotated frames.
+    #[test]
+    fn rotated_video_reports_display_size() {
+        let Some(p) = derive("rot90.mp4", &["-display_rotation", "90"], &["-c", "copy"]) else {
+            eprintln!("ffmpeg missing; skipped");
+            return;
+        };
+        assert_eq!(probe(&p).map(|a| (a.width, a.height)), Ok((240, 320)), "mf probe");
+        assert_eq!(crate::media::ffpipe::probe(&p).map(|a| (a.width, a.height)), Ok((240, 320)), "ffprobe");
+        for mut v in [open_video(&p).expect("mf"), crate::media::ffpipe::open_video(&p).expect("ffpipe")] {
+            assert_eq!(v.size(), (240, 320));
+            let mut f = Frame::default();
+            assert!(v.frame_at(0.5, 240, 320, &mut f));
+            let (l, r) = (px(&f, 10, 160), px(&f, 230, 160));
+            assert!((is_red(l) && is_blue(r)) || (is_blue(l) && is_red(r)), "halves {l:?} {r:?}");
+        }
+    }
+
+    /// Containers whose first timestamp is not 0 (mp4 with an initial empty edit, MKV with an offset):
+    /// content time 0 = first sample, like ffmpeg/ffprobe, so the clip neither starts frozen nor loses
+    /// its tail. MPEG-TS (MF seeks it to the next keyframe only) is left to ffmpeg.
+    #[test]
+    fn offset_start_is_content_relative() {
+        let (Some(ts), Some(mp4), Some(mkv)) = (
+            derive("off.ts", &[], &["-c", "copy", "-f", "mpegts"]),
+            derive("off10.mp4", &[], &["-c", "copy", "-output_ts_offset", "10"]),
+            derive("off10.mkv", &[], &["-c", "copy", "-output_ts_offset", "10"]),
+        ) else {
+            eprintln!("ffmpeg missing; skipped");
+            return;
+        };
+        assert!(open_video(&ts).is_err() && open_audio(&ts, 0).is_err(), "TS goes to ffmpeg");
+        assert!(crate::media::open_video(&ts, crate::media::Backend::Auto).is_ok());
+        for p in [mp4, mkv] {
+            let mut v = open_video(&p).expect("open_video");
+            let mut f = Frame::default();
+            for (t, green) in [(0.5, false), (2.5, true), (0.5, false), (3.9, true), (0.0, false)] {
+                assert!(v.frame_at(t, 32, 24, &mut f), "{p} frame_at({t})");
+                let c = px(&f, 1, 1);
+                assert!(if green { is_green(c) } else { is_red(c) }, "{p} t={t}: {c:?} pts {}", f.pts);
+                assert!((f.pts - t).abs() < 0.05, "{p} t={t}: pts {}", f.pts);
+            }
+            assert!(!v.frame_at(4.5, 32, 24, &mut f), "{p} past end");
+            let mut a = open_audio(&p, 0).expect("open_audio");
+            let mut buf = vec![0f32; 4800 * 2];
+            for t in [0.0, 1.0, 3.8, 0.5] {
+                a.read_at(t, &mut buf);
+                let r = rms(&buf);
+                assert!((0.1..=1.0).contains(&r), "{p} audio t={t}: rms {r}");
+            }
+        }
     }
 
     #[test]

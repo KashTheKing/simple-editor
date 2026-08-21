@@ -111,6 +111,8 @@ fn video(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r:
         if w > 0 && h > 0 && f.rgba.len() == w * h * 4 {
             let img = egui::ColorImage::from_rgba_premultiplied([w, h], &f.rgba);
             match &mut state.texture {
+                // same size: sub-image upload (tex_sub_image_2d) instead of re-specifying the texture
+                Some(t) if t.size() == [w, h] => t.set_partial([0, 0], img, TextureOptions::LINEAR),
                 Some(t) => t.set(img, TextureOptions::LINEAR),
                 None => state.texture = Some(ui.ctx().load_texture("preview", img, TextureOptions::LINEAR)),
             }

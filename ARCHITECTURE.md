@@ -10,7 +10,7 @@ layout (library | preview | inspector / timeline) without styling.
 
 | Concern | Choice | Why |
 |---|---|---|
-| UI | `eframe`/`egui` 0.36 (glow backend) | immediate mode, custom-painted timeline trivial, repaints only on input/playback, ~8 MB |
+| UI | `eframe`/`egui` 0.33 (glow backend) | immediate mode, custom-painted timeline trivial, repaints only on input/playback, ~8 MB |
 | Decode | Windows **Media Foundation** (`windows` crate) — `media/mf.rs` | native, hardware decode, zero deps, instant seeks |
 | Decode fallback / images / probe / export | `ffmpeg.exe` + `ffprobe.exe` child processes — `media/ffpipe.rs` | universal codecs, any output container; already on most machines |
 | Audio out | `cpal` (WASAPI) | small pure-Rust |
@@ -28,8 +28,8 @@ src/main.rs            entry: args (--selftest, --screenshot), eframe run
 src/model.rs           Project/Track/Clip/Asset/Animated/TextStyle + all edit ops (split, ripple, move, trim) + JSON
 src/settings.rs        Settings (JSON in %APPDATA%\SimpleEditor), recent assets/projects
 src/hotkeys.rs         Action enum, defaults, parse/format, poll(ctx)
-src/theme.rs           system dark/light + accent → egui visuals; Palette for custom painting
-src/contextmenu.rs     HKCU "Edit with Simple Editor" for SystemFileAssociations\video
+src/theme.rs           system dark/light + accent → egui visuals, Segoe UI fonts; Palette for custom painting
+src/contextmenu.rs     HKCU "Edit with Simple Editor" under SystemFileAssociations\.ext per video extension
 src/media/mod.rs       Frame, VideoSource/AudioSource traits, Backend, probe/open dispatch, DecoderPool
 src/media/mf.rs        Media Foundation decoders + probe                     (agent: media-mf)
 src/media/ffpipe.rs    ffmpeg/ffprobe process decoders + probe + exe lookup  (agent: media-ffpipe)
@@ -78,7 +78,7 @@ don't own**; if you truly need something, add a private helper in your own file 
 * `Player` render thread: owns a `DecoderPool` + `Compositor`; receives commands (mpsc); publishes
   `Arc<Frame>`; calls `ctx.request_repaint()`.
 * `Player` audio thread: owns its own `DecoderPool` + `Mixer`; fills a ring buffer consumed by the cpal
-  callback; wall clock is the master; ~100 ms lead.
+  callback; wall clock is the master; ~120 ms lead.
 * Export thread: its own pool/compositor/mixer. Waveform threads: their own `AudioSource`.
 * MF objects are created and used on one thread each; wrap in a newtype with `unsafe impl Send` only
   when the object is genuinely moved (never shared) across threads, and initialise COM/MF on each thread

@@ -262,7 +262,7 @@ impl AudioStreamInfo {
     pub fn label(&self) -> String {
         if !self.title.is_empty() {
             self.title.clone()
-        } else if !self.language.is_empty() {
+        } else if !self.language.is_empty() && self.language != "und" {
             self.language.clone()
         } else {
             format!("Audio {}", self.index + 1)
@@ -425,13 +425,10 @@ impl Clip {
             vec![("Volume", &mut self.volume)]
         }
     }
-    pub fn has_keys(&self) -> bool {
-        self.animated().iter().any(|a| a.is_animated())
-    }
     /// Sorted, de-duplicated clip-local keyframe times (for drawing diamonds).
     pub fn key_times(&self) -> Vec<f64> {
         let mut v: Vec<f64> = self.animated().iter().flat_map(|a| a.keys.iter().map(|k| k.t)).collect();
-        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        v.sort_by(f64::total_cmp);
         v.dedup_by(|a, b| (*a - *b).abs() < KEY_EPS);
         v
     }
@@ -455,7 +452,12 @@ impl Clip {
     }
     /// Move the left edge to `new_start`, keeping the right edge fixed (slip-trim).
     pub fn trim_start(&mut self, new_start: f64) {
-        let min_start = if self.uses_asset() { self.start - self.src_in } else { f64::NEG_INFINITY };
+        // media clips can't slip before the source's first frame; images/text are unbounded
+        let min_start = if matches!(self.kind, ClipKind::Video | ClipKind::Audio) {
+            self.start - self.src_in
+        } else {
+            f64::NEG_INFINITY
+        };
         let ns = new_start.max(min_start).max(0.0).min(self.end() - MIN_CLIP);
         let d = ns - self.start;
         self.start = ns;
@@ -505,14 +507,8 @@ impl Track {
             clips: Vec::new(),
         }
     }
-    pub fn clip_at(&self, t: f64) -> Option<&Clip> {
-        self.clips.iter().find(|c| c.contains(t))
-    }
-    pub fn clip_at_mut(&mut self, t: f64) -> Option<&mut Clip> {
-        self.clips.iter_mut().find(|c| c.contains(t))
-    }
     pub fn sort(&mut self) {
-        self.clips.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap());
+        self.clips.sort_by(|a, b| a.start.total_cmp(&b.start));
     }
     pub fn end(&self) -> f64 {
         self.clips.iter().map(|c| c.end()).fold(0.0, f64::max)
@@ -535,7 +531,6 @@ pub struct Project {
     pub width: u32,
     pub height: u32,
     pub fps: f64,
-    pub sample_rate: u32,
     pub assets: Vec<Asset>,
     /// Order: all video tracks (V1, V2, ...) then all audio tracks (A1, A2, ...).
     pub tracks: Vec<Track>,
@@ -560,7 +555,6 @@ impl Project {
             width: 1920,
             height: 1080,
             fps: 30.0,
-            sample_rate: 48000,
             assets: Vec::new(),
             tracks: Vec::new(),
             in_point: None,
@@ -696,7 +690,7 @@ impl Project {
             v.push(c.start);
             v.push(c.end());
         }
-        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        v.sort_by(f64::total_cmp);
         v.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
         v
     }
@@ -865,7 +859,7 @@ impl Project {
             t.clips.retain(|c| !ids.contains(&c.id));
         }
         if ripple {
-            ranges.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap()); // right to left
+            ranges.sort_by(|a, b| b.0.total_cmp(&a.0)); // right to left
             ranges.dedup_by(|a, b| (a.0 - b.0).abs() < EPS && (a.1 - b.1).abs() < EPS);
             for (a, b) in ranges {
                 self.close_gap(a, b);
@@ -937,17 +931,22 @@ impl Project {
             }
             plan.push((id, ti, to, ns.max(0.0), c.duration));
         }
-        for (_, _, to, ns, dur) in &plan {
-            if !self.tracks[*to].fits(*ns, *dur, ids) {
+        // moved clips must not overlap each other (sorted per destination track: neighbours suffice)
+        // or any clip that stays put
+        plan.sort_by(|a, b| a.2.cmp(&b.2).then(a.3.total_cmp(&b.3)));
+        for w in plan.windows(2) {
+            if w[0].2 == w[1].2 && w[1].3 < w[0].3 + w[0].4 - EPS {
                 return false;
             }
         }
-        // moved clips must not collide with each other
-        for (i, a) in plan.iter().enumerate() {
-            for b in plan.iter().skip(i + 1) {
-                if a.2 == b.2 && a.3 < b.3 + b.4 - EPS && b.3 < a.3 + a.4 - EPS {
-                    return false;
-                }
+        let moved: std::collections::HashSet<Id> = ids.iter().copied().collect();
+        for (_, _, to, ns, dur) in &plan {
+            let blocked = self.tracks[*to]
+                .clips
+                .iter()
+                .any(|c| !moved.contains(&c.id) && c.start < ns + dur - EPS && *ns < c.end() - EPS);
+            if blocked {
+                return false;
             }
         }
         for (id, from, to, ns, _) in plan {
@@ -996,13 +995,24 @@ impl Project {
             .max()
             .unwrap_or(0);
         p.next_id = p.next_id.max(max_id);
+        // hand-edited files: keep every value in the range the UI can produce (fps 0 would make NaN times)
+        if !(p.fps >= 1.0 && p.fps <= 1000.0) {
+            p.fps = 30.0;
+        }
+        p.width = p.width.max(16);
+        p.height = p.height.max(16);
         for t in &mut p.tracks {
+            t.clips.retain(|c| c.start >= 0.0 && c.duration.is_finite() && c.duration > 0.0);
             t.sort();
         }
         Ok(p)
     }
+    /// Writes beside the target then renames, so a failed write can't destroy the previous save.
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        std::fs::write(path, self.to_json())
+        let mut tmp = path.as_os_str().to_owned();
+        tmp.push(".tmp");
+        std::fs::write(&tmp, self.to_json())?;
+        std::fs::rename(&tmp, path)
     }
     pub fn load(path: &Path) -> Result<Self, String> {
         let s = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
@@ -1135,5 +1145,49 @@ mod tests {
         assert!((c.opacity.keys[0].t - 2.0).abs() < 1e-9);
         c.trim_end(100.0, 10.0 - c.src_in);
         assert!((c.duration - 10.0).abs() < 1e-9);
+        // images/text are unbounded on both sides
+        let mut img = Clip::new(2, ClipKind::Image, "i", 5.0, 5.0);
+        img.trim_start(3.0);
+        assert!((img.start - 3.0).abs() < 1e-9);
+        assert!((img.duration - 7.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn move_many() {
+        let mut p = Project::new();
+        let ids: Vec<Id> = (0..4).map(|i| p.add_text_clip(i as f64 * 2.0, 2.0)).collect(); // V1: [0,2)[2,4)[4,6)[6,8)
+        let blocker = p.add_text_clip(10.0, 1.0);
+        assert!(p.move_clips(&ids, 1.0, 0, None)); // adjacent moved clips don't block each other
+        assert!(!p.move_clips(&ids, 2.0, 0, None)); // last one would hit the blocker
+        assert!(!p.move_clips(&[ids[1]], 1.0, 0, None)); // onto a stationary clip
+        assert!((p.clip(ids[0]).unwrap().start - 1.0).abs() < 1e-9);
+        assert!((p.clip(blocker).unwrap().start - 10.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn from_json_sanitizes() {
+        let mut p = Project::from_media(asset(0, 10.0, 1));
+        p.add_text_clip(12.0, 1.0);
+        let s = p.to_json().replace("\"fps\": 30.0", "\"fps\": 0.0").replace("\"width\": 1280", "\"width\": 0");
+        let q = Project::from_json(&s).unwrap();
+        assert_eq!(q.fps, 30.0);
+        assert!(q.width >= 16);
+        assert!(q.snap_frame(1.0).is_finite());
+        let mut bad = Project::new();
+        bad.tracks[0].clips.push(Clip::new(99, ClipKind::Text, "t", 0.0, -1.0));
+        assert!(Project::from_json(&bad.to_json()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn save_is_atomic() {
+        let dir = std::env::temp_dir().join("simple-editor-model-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("p.sedit");
+        let p = Project::from_media(asset(0, 10.0, 1));
+        p.save(&path).unwrap();
+        p.save(&path).unwrap(); // overwrites
+        assert!(!dir.join("p.sedit.tmp").exists());
+        assert_eq!(Project::load(&path).unwrap().to_json(), p.to_json());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

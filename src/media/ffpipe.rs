@@ -3,7 +3,7 @@
 //!
 //! Contract (see media/mod.rs):
 //!  * `ffmpeg_exe()` / `ffprobe_exe()` locate the binaries: Settings.ffmpeg_dir (set via `set_dir`),
-//!    then next to the app exe, then `ffmpeg/` beside the exe, then PATH. Cached.
+//!    then next to the app exe, then `ffmpeg/` beside the exe, then PATH (a few stats per call, not cached).
 //!  * `command(exe)` returns a std Command with CREATE_NO_WINDOW (0x08000000) so no console flashes.
 //!  * `probe(path)` -> Asset via `ffprobe -v error -print_format json -show_streams -show_format`.
 //!  * `open_video(path)` -> VideoSource: `ffmpeg -ss T -i path -map 0:v:0 -f rawvideo -pix_fmt rgba -s WxH
@@ -140,6 +140,12 @@ pub fn probe(path: &str) -> Result<Asset, String> {
     if let Some(s) = video {
         a.width = f64_of(s, "width") as u32;
         a.height = f64_of(s, "height") as u32;
+        // Display Matrix rotation (phone portrait): ffmpeg autorotates frames, so report display dims.
+        let rot = s.get("side_data_list").and_then(Value::as_array).into_iter().flatten();
+        let rot = rot.map(|d| f64_of(d, "rotation")).find(|r| *r != 0.0).unwrap_or(0.0);
+        if (rot.abs().round() as i64) % 180 == 90 {
+            std::mem::swap(&mut a.width, &mut a.height);
+        }
         a.codec = str_of(s, "codec_name").to_string();
         a.fps = parse_rate(str_of(s, "avg_frame_rate"));
         if a.fps <= 0.0 {
@@ -148,7 +154,10 @@ pub fn probe(path: &str) -> Result<Asset, String> {
         let single = matches!(a.codec.as_str(), "png" | "mjpeg" | "bmp" | "webp" | "tiff" | "gif")
             && f64_of(s, "nb_frames") <= 1.0
             && f64_of(&format, "duration") <= 0.0;
-        let is_image = is_image_path(path) || str_of(&format, "format_name").ends_with("_pipe") || single;
+        // Animated GIFs are video (is_image_path still routes every GIF to ffmpeg, which is fine).
+        let animated = a.codec == "gif" && f64_of(s, "nb_frames") > 1.0;
+        let is_image =
+            !animated && (is_image_path(path) || str_of(&format, "format_name").ends_with("_pipe") || single);
         a.kind = if is_image { ClipKind::Image } else { ClipKind::Video };
         if is_image {
             a.duration = 0.0;
@@ -721,5 +730,38 @@ pub(crate) mod tests {
         assert!(v.frame_at(5.0, 32, 24, &mut f));
         assert!(v.frame_at(5.0, 64, 48, &mut f));
         assert_eq!((f.width, f.height), (64, 48));
+    }
+
+    /// Animated GIFs are video (every frame reachable); single-frame GIFs stay images.
+    #[test]
+    fn animated_gif_is_video() {
+        let p = Path::new(&test_mp4()).with_file_name(format!("{}-anim.gif", std::process::id()));
+        let st = Command::new("ffmpeg")
+            .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "color=red:s=64x48:d=1,format=rgb8"])
+            .args(["-f", "lavfi", "-i", "color=blue:s=64x48:d=1,format=rgb8"])
+            .args(["-filter_complex", "[0:v][1:v]concat=n=2:v=1[v]", "-map", "[v]", "-r", "10"])
+            .arg(&p)
+            .status()
+            .expect("ffmpeg on PATH");
+        assert!(st.success());
+        let p = p.to_string_lossy().into_owned();
+        let a = probe(&p).unwrap();
+        assert_eq!(a.kind, ClipKind::Video);
+        assert!((a.duration - 2.0).abs() < 0.5, "{}", a.duration);
+        let mut v = crate::media::open_video(&p, crate::media::Backend::Auto).unwrap();
+        let mut f = Frame::default();
+        assert!(v.frame_at(0.5, 64, 48, &mut f));
+        assert!(is_red(centre(&f)), "{:?}", centre(&f));
+        assert!(v.frame_at(1.5, 64, 48, &mut f));
+        let c = centre(&f);
+        assert!(c[2] > 150 && c[0] < 60, "{c:?}"); // rgb8 palette: blue = 170
+        let still = Path::new(&test_mp4()).with_file_name(format!("{}-still.gif", std::process::id()));
+        let st = Command::new("ffmpeg")
+            .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "color=blue:s=64x48", "-frames:v", "1"])
+            .arg(&still)
+            .status()
+            .expect("ffmpeg on PATH");
+        assert!(st.success());
+        assert_eq!(probe(&still.to_string_lossy()).unwrap().kind, ClipKind::Image);
     }
 }

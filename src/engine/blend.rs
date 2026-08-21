@@ -108,14 +108,8 @@ pub fn composite_row(dst: &mut [u8], src: &[u8], mode: BlendMode, opacity: f32) 
 }
 
 /// Composite `layer` (straight-alpha RGBA, same size as `dst`) onto `dst` (opaque canvas) with the
-/// given blend mode and global opacity. Pixels with alpha 0 are skipped. Normal/opacity 1 should take
-/// a fast path (alpha lerp only).
-pub fn composite(dst: &mut Frame, layer: &Frame, mode: BlendMode, opacity: f32) {
-    let (w, h) = (dst.width, dst.height);
-    composite_rect(dst, layer, mode, opacity, 0, 0, w, h);
-}
-
-/// `composite` restricted to the pixel rect [x0, x1) × [y0, y1) (clamped to the canvas).
+/// given blend mode and global opacity, restricted to the pixel rect [x0, x1) × [y0, y1) (clamped to
+/// the canvas). Pixels with alpha 0 are skipped.
 pub fn composite_rect(
     dst: &mut Frame,
     layer: &Frame,
@@ -159,7 +153,7 @@ mod tests {
         dst.fill([100, 100, 100, 255]);
         let mut layer = Frame::new(2, 1);
         layer.rgba.copy_from_slice(&[200, 200, 200, 128, 50, 50, 50, 0]);
-        composite(&mut dst, &layer, BlendMode::Normal, 1.0);
+        composite_rect(&mut dst, &layer, BlendMode::Normal, 1.0, 0, 0, 2, 1);
         // 100 + (200-100)*128/255 = 150.2
         assert_eq!(&dst.rgba[..4], &[150, 150, 150, 255]);
         // alpha 0 skipped
@@ -168,17 +162,17 @@ mod tests {
         // opacity 0.5 on an opaque layer
         dst.fill([100, 100, 100, 255]);
         layer.rgba[3] = 255;
-        composite(&mut dst, &layer, BlendMode::Normal, 0.5);
+        composite_rect(&mut dst, &layer, BlendMode::Normal, 0.5, 0, 0, 2, 1);
         assert_eq!(dst.rgba[0], 150);
 
         // multiply: 0.5*0.5 = 0.25 → 64
         dst.fill([128, 128, 128, 255]);
         layer.rgba[..4].copy_from_slice(&[128, 128, 128, 255]);
-        composite(&mut dst, &layer, BlendMode::Multiply, 1.0);
+        composite_rect(&mut dst, &layer, BlendMode::Multiply, 1.0, 0, 0, 2, 1);
         assert!((dst.rgba[0] as i32 - 64).abs() <= 1, "{}", dst.rgba[0]);
         // screen: 1-(0.5*0.5) = 0.75 → 191
         dst.fill([128, 128, 128, 255]);
-        composite(&mut dst, &layer, BlendMode::Screen, 1.0);
+        composite_rect(&mut dst, &layer, BlendMode::Screen, 1.0, 0, 0, 2, 1);
         assert!((dst.rgba[0] as i32 - 191).abs() <= 1, "{}", dst.rgba[0]);
         assert_eq!(dst.rgba[3], 255);
     }

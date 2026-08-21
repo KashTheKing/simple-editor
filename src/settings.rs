@@ -80,10 +80,14 @@ impl Settings {
     pub fn load() -> Self {
         std::fs::read_to_string(Self::path()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
     }
+    /// Writes a temp file then renames, so a failed write can't destroy the previous settings.
     pub fn save(&self) {
         let _ = std::fs::create_dir_all(Self::dir());
         if let Ok(s) = serde_json::to_string_pretty(self) {
-            let _ = std::fs::write(Self::path(), s);
+            let tmp = Self::dir().join("settings.json.tmp");
+            if std::fs::write(&tmp, s).is_ok() {
+                let _ = std::fs::rename(tmp, Self::path());
+            }
         }
     }
     pub fn now() -> u64 {

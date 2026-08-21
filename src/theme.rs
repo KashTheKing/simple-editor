@@ -8,16 +8,6 @@ fn reg_dword(root: winreg::HKEY, path: &str, name: &str) -> Option<u32> {
     winreg::RegKey::predef(root).open_subkey(path).ok()?.get_value::<u32, _>(name).ok()
 }
 
-pub fn system_dark() -> bool {
-    reg_dword(
-        winreg::enums::HKEY_CURRENT_USER,
-        r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
-        "AppsUseLightTheme",
-    )
-    .map(|v| v == 0)
-    .unwrap_or(true)
-}
-
 /// Windows accent colour (falls back to the default blue).
 pub fn system_accent() -> Color32 {
     static ACCENT: OnceLock<Color32> = OnceLock::new();
@@ -31,7 +21,6 @@ pub fn system_accent() -> Color32 {
 /// Colours for custom-painted widgets (timeline, preview, waveforms).
 #[derive(Clone, Copy, Debug)]
 pub struct Palette {
-    pub dark: bool,
     pub accent: Color32,
     pub bg: Color32,
     pub panel: Color32,
@@ -55,7 +44,6 @@ impl Palette {
         let g = |v: u8| Color32::from_gray(v);
         if dark {
             Self {
-                dark,
                 accent,
                 bg: g(28),
                 panel: g(38),
@@ -75,7 +63,6 @@ impl Palette {
             }
         } else {
             Self {
-                dark,
                 accent,
                 bg: g(250),
                 panel: g(240),
@@ -130,8 +117,24 @@ fn visuals(dark: bool, accent: Color32) -> Visuals {
     v
 }
 
+/// egui's bundled fonts with the Windows UI font (Segoe UI) in front, so text matches the OS.
+fn fonts() -> egui::FontDefinitions {
+    let mut f = egui::FontDefinitions::default();
+    let dir =
+        std::path::PathBuf::from(std::env::var_os("WINDIR").unwrap_or_else(|| r"C:\Windows".into())).join("Fonts");
+    if let Ok(bytes) = std::fs::read(dir.join("segoeui.ttf")) {
+        f.font_data.insert("Segoe UI".into(), std::sync::Arc::new(egui::FontData::from_owned(bytes)));
+        f.families.entry(egui::FontFamily::Proportional).or_default().insert(0, "Segoe UI".into());
+    }
+    f
+}
+
 /// Apply the theme preference ("system" | "dark" | "light") to the egui context.
 pub fn apply(ctx: &egui::Context, pref: &str) {
+    // set_fonts is a no-op when unchanged; egui's own Ctrl+=/Ctrl+-/Ctrl+0 UI zoom would hijack the
+    // timeline zoom hotkeys (and persist across runs)
+    ctx.set_fonts(fonts());
+    ctx.options_mut(|o| o.zoom_with_keyboard = false);
     let accent = system_accent();
     ctx.set_visuals_of(Theme::Dark, visuals(true, accent));
     ctx.set_visuals_of(Theme::Light, visuals(false, accent));

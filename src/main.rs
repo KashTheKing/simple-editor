@@ -32,7 +32,10 @@ fn main() {
                 screenshot = args.get(i + 1).map(PathBuf::from);
                 i += 1;
             }
-            a if !a.starts_with("--") && open.is_none() => open = Some(PathBuf::from(a)),
+            // absolute: the path is stored in the project/recents and must survive a different cwd
+            a if !a.starts_with("--") && open.is_none() => {
+                open = Some(std::path::absolute(a).unwrap_or_else(|_| PathBuf::from(a)))
+            }
             _ => {}
         }
         i += 1;

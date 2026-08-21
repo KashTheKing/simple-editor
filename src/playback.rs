@@ -16,6 +16,7 @@ use crate::engine::text::TextRasterizer;
 use crate::media::{Backend, DecoderPool, Frame, SAMPLE_RATE};
 use crate::model::Project;
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -77,7 +78,6 @@ pub struct Player {
     shared: Arc<Shared>,
     render: Sender<Cmd>,
     audio: Sender<Cmd>,
-    duration: f64,
 }
 
 impl Player {
@@ -100,7 +100,7 @@ impl Player {
         let (audio, rx) = mpsc::channel();
         let s = shared.clone();
         let _ = std::thread::Builder::new().name("audio".into()).spawn(move || audio_thread(s, rx, backend));
-        Self { shared, render, audio, duration: 0.0 }
+        Self { shared, render, audio }
     }
     fn both(&self, c: Cmd) {
         let _ = self.audio.send(c.clone());
@@ -108,9 +108,8 @@ impl Player {
     }
     /// Replace the project (cheap clone; called after every edit). Re-renders the current frame.
     pub fn set_project(&mut self, project: &Project) {
-        self.duration = project.duration();
         *lock(&self.shared.project) = Arc::new(project.clone());
-        lock(&self.shared.clock).duration = self.duration;
+        lock(&self.shared.clock).duration = project.duration();
         self.both(Cmd::SetProject);
     }
     pub fn set_backend(&mut self, b: Backend) {
@@ -188,10 +187,6 @@ impl Player {
                 break;
             }
         }
-    }
-    #[allow(dead_code)]
-    pub fn duration(&self) -> f64 {
-        self.duration
     }
 }
 
@@ -275,13 +270,11 @@ fn render_thread(
         }
         if playing {
             // pace at the project fps from this render's start; if we are behind we simply render the
-            // current clock time next (never queue up). Commands wake us early.
+            // current clock time next (never queue up). Commands are picked up by the drain above.
+            // ponytail: thread::sleep uses Windows' high-resolution waitable timer; recv_timeout rounds to
+            // the 15.6 ms scheduler tick (30 fps -> ~21 fps). timeBeginPeriod(1) would also work but costs power.
             let due = start + Duration::from_secs_f64(1.0 / project.fps.max(1.0));
-            match rx.recv_timeout(due.saturating_duration_since(Instant::now())) {
-                Ok(c) => pending = Some(c),
-                Err(RecvTimeoutError::Disconnected) => return,
-                Err(RecvTimeoutError::Timeout) => {}
-            }
+            std::thread::sleep(due.saturating_duration_since(Instant::now()));
         }
     }
 }
@@ -291,7 +284,8 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
     let mut pool = DecoderPool::new(backend);
     let mut mixer = Mixer::new();
     let ring: Arc<Mutex<VecDeque<f32>>> = Arc::new(Mutex::new(VecDeque::new()));
-    let stream = open_output(ring.clone());
+    let dead = Arc::new(AtomicBool::new(false)); // set by the stream's error callback (device gone/changed)
+    let mut stream: Option<cpal::Stream> = None; // opened on the first Play, re-opened once `dead`
     let mut running = false; // device stream started (kept stopped while idle: no wakeups, no audiodg load)
     let mut project = lock(&shared.project).clone();
     let mut block = vec![0f32; BLOCK * 2];
@@ -332,8 +326,14 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
                 Cmd::Quit => return,
             }
         }
-        let Some(stream) = &stream else { continue };
         let playing = is_playing();
+        if playing && (stream.is_none() || dead.swap(false, Ordering::Relaxed)) {
+            // lazy/late open: no device at startup, or it went away / the default changed mid-session.
+            // If it fails we fall back to the idle recv above (retried on the next command).
+            stream = open_output(ring.clone(), dead.clone());
+            running = false;
+        }
+        let Some(stream) = &stream else { continue };
         if playing && !running {
             running = stream.play().is_ok();
         } else if !playing && running && lock(&ring).is_empty() {
@@ -344,7 +344,13 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
         let queued = lock(&ring).len() as f64 / (2 * SAMPLE_RATE) as f64;
         if playing && queued < LEAD_SECS {
             // ponytail: wall clock is the master; the ring is refilled only as the device drains it, so it
-            // can't grow past LEAD + one block. Resample against the clock if A/V drift ever matters.
+            // can't grow past LEAD + one block. The ring head plays at timeline time `mixed_until - queued`;
+            // if that is already >50 ms in the past (slow first block, decoder respawn, underrun) snap the
+            // next block to land on time instead of carrying the lag forever. Resample if drift ever matters.
+            let now = lock(&shared.clock).now();
+            if now - (mixed_until - queued) > 0.05 {
+                mixed_until = now + queued;
+            }
             mixer.mix(&project, mixed_until, &mut pool, &mut block);
             lock(&ring).extend(block.iter().copied());
             mixed_until += BLOCK as f64 / SAMPLE_RATE as f64;
@@ -359,7 +365,7 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
 }
 
 /// Default output device as 48 kHz stereo f32; None = no audio (playback still runs off the wall clock).
-fn open_output(ring: Arc<Mutex<VecDeque<f32>>>) -> Option<cpal::Stream> {
+fn open_output(ring: Arc<Mutex<VecDeque<f32>>>, dead: Arc<AtomicBool>) -> Option<cpal::Stream> {
     use cpal::traits::{DeviceTrait, HostTrait};
     let device = cpal::default_host().default_output_device()?;
     // ponytail: WASAPI shared mode converts any PCM rate/channel count for output (cpal sets
@@ -374,7 +380,14 @@ fn open_output(ring: Arc<Mutex<VecDeque<f32>>>) -> Option<cpal::Stream> {
                     *s = r.pop_front().unwrap_or(0.0); // zero-fill on underrun
                 }
             },
-            |e| eprintln!("audio: {e}"),
+            move |e| {
+                eprintln!("audio: {e}");
+                // cpal keeps the stream on the old endpoint after a default-device change and only reports
+                // it; any non-xrun error means "rebuild the stream" (done lazily by audio_thread).
+                if e.kind() != cpal::ErrorKind::Xrun {
+                    dead.store(true, Ordering::Relaxed);
+                }
+            },
             None,
         )
         .map_err(|e| eprintln!("audio: no output stream ({e}); playing silently"))
@@ -418,7 +431,7 @@ mod tests {
             Player::new(eframe::egui::Context::default(), Backend::Auto, Arc::new(Mutex::new(TextRasterizer::new())));
         p.set_project(&project);
         p.set_canvas(320, 240, 1280);
-        let dur = p.duration();
+        let dur = project.duration();
         assert!((dur - 4.0).abs() < 0.2, "duration {dur}");
 
         p.seek(0.5);
@@ -431,12 +444,24 @@ mod tests {
 
         p.play();
         assert!(p.is_playing());
-        sleep(Duration::from_millis(600));
+        // frames arrive while playing, paced at the project fps (the old recv_timeout pacing rounded up to
+        // the 15.6 ms scheduler tick: every gap ~47 ms at 30 fps)
+        let (start, mut pts) = (Instant::now(), Vec::new());
+        while start.elapsed() < Duration::from_millis(600) {
+            if let Some(f) = p.take_frame() {
+                let now = p.time();
+                assert!(f.pts > 2.5 && f.pts <= now, "pts {} vs time {now}", f.pts);
+                pts.push(f.pts);
+            }
+            sleep(Duration::from_millis(1));
+        }
         let t = p.time();
         assert!((3.05..3.45).contains(&t), "time after 600 ms of play: {t}");
-        let f = p.take_frame().expect("frames arrive while playing");
-        let now = p.time();
-        assert!(f.pts > 2.5 && f.pts <= now, "pts {} vs time {now}", f.pts);
+        let mut gaps: Vec<f64> = pts.windows(2).map(|w| w[1] - w[0]).collect();
+        gaps.sort_by(f64::total_cmp);
+        assert!(gaps.len() >= 8, "only {} frames in 600 ms", pts.len());
+        let q1 = gaps[gaps.len() / 4]; // lower quartile: robust to a loaded test machine inflating some gaps
+        assert!(q1 < 1.25 / project.fps, "frame gap {q1:.4} s at {} fps", project.fps);
 
         p.pause();
         let t1 = p.time();

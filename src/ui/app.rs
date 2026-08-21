@@ -13,7 +13,10 @@ use crate::ui::{inspector, library, preview, settings_ui, timeline};
 use eframe::egui;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+// OLE drops deliver no pointer events (winit ignores the drop point), so handle_drops asks the OS for the cursor.
+windows::core::link!("user32.dll" "system" fn GetCursorPos(p: *mut windows::Win32::Foundation::POINT) -> windows::core::BOOL);
 
 const PROJECT_EXT: &str = "sedit";
 const MEDIA_EXTS: &[&str] = &[
@@ -51,9 +54,83 @@ pub struct App {
     started: Instant,
     screenshot_requested: bool,
     close_confirmed: bool,
+    /// Close was requested during an export: cancel it, then re-request the close once it has finished.
+    close_after_export: bool,
+    was_playing: bool,
     /// Last title sent to the OS — `send_viewport_cmd` forces a repaint, so only send on change.
     last_title: String,
     palette: Palette,
+}
+
+/// Push an undo snapshot (capped) and clear the redo history.
+fn push_undo_json(undo: &mut Vec<String>, redo: &mut Vec<String>, json: String) {
+    undo.push(json);
+    if undo.len() > 200 {
+        undo.remove(0);
+    }
+    redo.clear();
+}
+
+/// Moved/renamed sources: re-point assets to `project_dir/<file name>` when that exists (a silent black
+/// preview is the alternative); returns the paths that are still missing.
+fn relocate_assets(project: &mut Project, project_dir: Option<&Path>) -> Vec<String> {
+    let mut missing = Vec::new();
+    for a in &mut project.assets {
+        if Path::new(&a.path).exists() {
+            continue;
+        }
+        let alt = Path::new(&a.path).file_name().and_then(|n| project_dir.map(|d| d.join(n)));
+        match alt.filter(|p| p.exists()) {
+            Some(p) => a.path = p.to_string_lossy().into_owned(),
+            None => missing.push(a.path.clone()),
+        }
+    }
+    missing
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Asset, ClipKind};
+
+    fn asset(path: &str) -> Asset {
+        Asset {
+            id: Id::default(),
+            path: path.into(),
+            kind: ClipKind::Video,
+            duration: 1.0,
+            width: 0,
+            height: 0,
+            fps: 0.0,
+            audio_streams: Vec::new(),
+            codec: String::new(),
+        }
+    }
+
+    #[test]
+    fn relocate_assets_falls_back_to_project_dir() {
+        let dir = std::env::temp_dir().join(format!("se-relocate-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.mp4"), b"x").unwrap();
+        let mut p = Project::new();
+        p.assets.push(asset("Z:\\gone\\a.mp4"));
+        p.assets.push(asset("Z:\\gone\\b.mp4"));
+        let missing = relocate_assets(&mut p, Some(&dir));
+        assert_eq!(p.assets[0].path, dir.join("a.mp4").to_string_lossy());
+        assert_eq!(missing, vec!["Z:\\gone\\b.mp4".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn undo_snapshot_is_capped_and_clears_redo() {
+        let (mut undo, mut redo) = (Vec::new(), vec!["r".to_string()]);
+        for i in 0..205 {
+            push_undo_json(&mut undo, &mut redo, i.to_string());
+        }
+        assert_eq!(undo.len(), 200);
+        assert_eq!(undo[0], "5");
+        assert!(redo.is_empty());
+    }
 }
 
 impl App {
@@ -72,7 +149,12 @@ impl App {
                 }
             });
         }
-        if settings.context_menu && !crate::contextmenu::is_installed() {
+        // first-run install points the entry at this exe; skip for screenshot/debug runs so they don't re-point it
+        if settings.context_menu
+            && screenshot.is_none()
+            && !cfg!(debug_assertions)
+            && !crate::contextmenu::is_installed()
+        {
             let _ = crate::contextmenu::install();
         }
         let player = Player::new(cc.egui_ctx.clone(), backend, text.clone());
@@ -104,6 +186,8 @@ impl App {
             started: Instant::now(),
             screenshot_requested: false,
             close_confirmed: false,
+            close_after_export: false,
+            was_playing: false,
             last_title: String::new(),
             palette,
         };
@@ -121,11 +205,26 @@ impl App {
     }
 
     fn push_undo(&mut self) {
-        self.undo.push(self.project.to_json());
-        if self.undo.len() > 200 {
-            self.undo.remove(0);
+        push_undo_json(&mut self.undo, &mut self.redo, self.project.to_json());
+    }
+
+    /// Insert each asset's clips at `t` (video on `vt` if given), chaining them end to end.
+    fn insert_at(&mut self, ids: Vec<Id>, mut t: f64, vt: Option<usize>) {
+        for id in ids {
+            let new = self.project.insert_asset_clips(id, t, vt);
+            if let Some(c) = new.first().and_then(|c| self.project.clip(*c)) {
+                t = c.end();
+            }
         }
-        self.redo.clear();
+    }
+
+    /// Empty project + one media file: open it as the project (returns empty); otherwise import into the library.
+    fn open_or_import(&mut self, paths: &[PathBuf]) -> Vec<Id> {
+        if self.project.is_empty() && self.project.assets.is_empty() && paths.len() == 1 {
+            self.open_media(&paths[0]);
+            return Vec::new();
+        }
+        self.import_files(paths)
     }
 
     /// After any project mutation.
@@ -193,7 +292,10 @@ impl App {
 
     fn open_project(&mut self, path: &Path) {
         match Project::load(path) {
-            Ok(project) => {
+            Ok(mut project) => {
+                for m in relocate_assets(&mut project, path.parent()) {
+                    self.toast(format!("Missing media: {m}"));
+                }
                 self.set_project(project, Some(path.to_path_buf()));
                 self.settings.touch_recent_project(&path.to_string_lossy());
                 self.settings.save();
@@ -326,9 +428,15 @@ impl App {
         if !self.dirty {
             return true;
         }
+        // Yes saves a .sedit (the video itself only changes via Save / Overwrite Original Video) — say so
+        let msg = if self.project_path.is_some() {
+            "Save changes to the project?"
+        } else {
+            "Save changes as a project file (.sedit)?"
+        };
         let r = rfd::MessageDialog::new()
             .set_title("Simple Editor")
-            .set_description("Save changes to the project?")
+            .set_description(msg)
             .set_buttons(rfd::MessageButtons::YesNoCancel)
             .set_level(rfd::MessageLevel::Warning)
             .show();
@@ -380,6 +488,12 @@ impl App {
             d = d.set_directory(dir);
         }
         let Some(out) = d.save_file() else { return };
+        // writing over a file the player/decoders are reading from is the Overwrite path's job (release + reopen)
+        let out_c = std::fs::canonicalize(&out).ok();
+        if out_c.is_some() && self.project.assets.iter().any(|a| std::fs::canonicalize(&a.path).ok() == out_c) {
+            self.toast("That file is a source of this project — use Overwrite Original Video (Ctrl+S) instead");
+            return;
+        }
         self.player.pause();
         let prog = export::start_export(self.project.clone(), self.export_opts(out), self.text.clone());
         self.export = Some((prog, ExportKind::File));
@@ -476,9 +590,18 @@ impl App {
             ExportKind::File => self.toast("Export finished"),
             ExportKind::Overwrite { original, temp } => {
                 self.player.release_files();
-                match std::fs::rename(&temp, &original) {
+                // ponytail: killed ffmpeg children release their file handle a few ms after wait() returns — retry briefly
+                let mut r = std::fs::rename(&temp, &original);
+                let deadline = Instant::now() + Duration::from_millis(500);
+                while r.is_err() && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(10));
+                    r = std::fs::rename(&temp, &original);
+                }
+                match r {
                     Ok(()) => {
                         self.toast("Saved over the original video");
+                        // in-memory peaks are keyed by path only and the file behind it just changed
+                        self.waveforms.clear();
                         self.open_media(&original);
                     }
                     Err(e) => {
@@ -495,14 +618,7 @@ impl App {
 
     // ---------------- editing actions ----------------
 
-    fn selected_or_under_playhead(&self) -> Vec<Id> {
-        if !self.selection.is_empty() {
-            return self.project.expand_links(&self.selection);
-        }
-        Vec::new()
-    }
-
-    fn act(&mut self, a: Action, ctx: &egui::Context) {
+    fn act(&mut self, a: Action) {
         use Action::*;
         match a {
             NewProject => {
@@ -573,16 +689,14 @@ impl App {
             Split => {
                 let only =
                     if self.selection.is_empty() { None } else { Some(self.project.expand_links(&self.selection)) };
-                self.push_undo();
-                let new = self.project.split_at(self.playhead, only.as_deref());
-                if new.is_empty() {
-                    self.undo.pop();
-                } else {
+                let snap = self.project.to_json();
+                if !self.project.split_at(self.playhead, only.as_deref()).is_empty() {
+                    push_undo_json(&mut self.undo, &mut self.redo, snap);
                     self.after_edit();
                 }
             }
             Delete | RippleDelete => {
-                let ids = self.selected_or_under_playhead();
+                let ids = self.project.expand_links(&self.selection);
                 if !ids.is_empty() {
                     self.push_undo();
                     self.project.delete_clips(&ids, a == RippleDelete);
@@ -656,14 +770,13 @@ impl App {
                 }
             }
             NudgeLeft | NudgeRight => {
-                let ids = self.selected_or_under_playhead();
+                let ids = self.project.expand_links(&self.selection);
                 if !ids.is_empty() {
                     let dt = if a == NudgeLeft { -self.project.frame_dur() } else { self.project.frame_dur() };
-                    self.push_undo();
+                    let snap = self.project.to_json();
                     if self.project.move_clips(&ids, dt, 0, None) {
+                        push_undo_json(&mut self.undo, &mut self.redo, snap);
                         self.after_edit();
-                    } else {
-                        self.undo.pop();
                     }
                 }
             }
@@ -685,7 +798,6 @@ impl App {
                 self.settings.save();
             }
         }
-        let _ = ctx;
     }
 
     // ---------------- UI pieces ----------------
@@ -826,10 +938,18 @@ impl App {
 
     fn handle_drops(&mut self, ctx: &egui::Context) {
         let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().filter_map(|f| f.path.clone()).collect());
-        if dropped.is_empty() {
+        if dropped.is_empty() || self.export.is_some() {
             return;
         }
-        let pos = ctx.input(|i| i.pointer.latest_pos()).or_else(|| ctx.input(|i| i.pointer.hover_pos()));
+        // drop point in window points: OS cursor (physical px) / ppp − client-area origin
+        let pos = ctx.input(|i| {
+            let mut p = windows::Win32::Foundation::POINT::default();
+            if !unsafe { GetCursorPos(&mut p) }.as_bool() {
+                return None;
+            }
+            let inner = i.viewport().inner_rect?;
+            Some(egui::pos2(p.x as f32 / i.pixels_per_point, p.y as f32 / i.pixels_per_point) - inner.min.to_vec2())
+        });
         // a project file: open it
         if dropped.len() == 1
             && dropped[0].extension().map(|e| e.to_string_lossy().eq_ignore_ascii_case(PROJECT_EXT)).unwrap_or(false)
@@ -839,12 +959,7 @@ impl App {
             }
             return;
         }
-        // empty project + single media file: open it as the project
-        if self.project.is_empty() && self.project.assets.is_empty() && dropped.len() == 1 {
-            self.open_media(&dropped[0]);
-            return;
-        }
-        let ids = self.import_files(&dropped);
+        let ids = self.open_or_import(&dropped);
         if ids.is_empty() {
             return;
         }
@@ -857,12 +972,7 @@ impl App {
             }
             let track = self.timeline.track_at(p.y, &self.project);
             let vt = track.filter(|&i| self.project.tracks[i].kind == TrackKind::Video);
-            for id in ids {
-                let new = self.project.insert_asset_clips(id, t, vt);
-                if let Some(c) = new.first().and_then(|c| self.project.clip(*c)) {
-                    t = c.end();
-                }
-            }
+            self.insert_at(ids, t, vt);
             self.after_edit();
         } else {
             self.library.tab = 0;
@@ -911,7 +1021,12 @@ impl eframe::App for App {
 
         // close handling: confirm unsaved changes
         if ctx.input(|i| i.viewport().close_requested()) && !self.close_confirmed {
-            if self.dirty && self.screenshot.is_none() {
+            if let Some((prog, _)) = &self.export {
+                // let the export thread stop and clean up first; the close is re-requested once it has finished
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                prog.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+                self.close_after_export = true;
+            } else if self.dirty && self.screenshot.is_none() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 if self.confirm_discard() {
                     self.close_confirmed = true;
@@ -922,18 +1037,23 @@ impl eframe::App for App {
             }
         }
 
-        // playback clock
-        if self.player.is_playing() {
+        // playback clock (one extra read after it stops, so the playhead lands on the final time)
+        let playing = self.player.is_playing();
+        if playing || self.was_playing {
             self.playhead = self.player.time();
             self.timeline.ensure_visible(self.playhead);
-            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+            ctx.request_repaint_after(Duration::from_millis(16));
         }
+        self.was_playing = playing;
         let new_frame = self.player.take_frame();
 
         // export progress
         if let Some((prog, _)) = &self.export {
             if prog.is_done() {
                 self.finish_export();
+                if std::mem::take(&mut self.close_after_export) {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
             } else {
                 ctx.request_repaint_after(std::time::Duration::from_millis(100));
             }
@@ -979,10 +1099,7 @@ impl eframe::App for App {
                     palette,
                     ..
                 } = self;
-                let mut push = |p: &Project| {
-                    undo.push(p.to_json());
-                    redo.clear();
-                };
+                let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
                 let resp = timeline::show(
                     ui,
                     tl,
@@ -1009,13 +1126,7 @@ impl eframe::App for App {
                     for (path, t, track) in resp.dropped_files {
                         let ids = self.import_files(&[path]);
                         let vt = track.filter(|&i| self.project.tracks[i].kind == TrackKind::Video);
-                        let mut at = t;
-                        for id in ids {
-                            let new = self.project.insert_asset_clips(id, at, vt);
-                            if let Some(c) = new.first().and_then(|c| self.project.clip(*c)) {
-                                at = c.end();
-                            }
-                        }
+                        self.insert_at(ids, t, vt);
                     }
                     self.after_edit();
                 }
@@ -1030,20 +1141,12 @@ impl eframe::App for App {
                 }
                 if !resp.add_to_timeline.is_empty() {
                     self.push_undo();
-                    let mut t = self.playhead;
-                    for id in resp.add_to_timeline {
-                        let new = self.project.insert_asset_clips(id, t, None);
-                        if let Some(c) = new.first().and_then(|c| self.project.clip(*c)) {
-                            t = c.end();
-                        }
-                    }
+                    self.insert_at(resp.add_to_timeline, self.playhead, None);
                     self.after_edit();
                 }
                 if !resp.open_paths.is_empty() {
-                    if self.project.is_empty() && self.project.assets.is_empty() && resp.open_paths.len() == 1 {
-                        self.open_media(&resp.open_paths[0]);
-                    } else {
-                        let ids = self.import_files(&resp.open_paths);
+                    let ids = self.open_or_import(&resp.open_paths);
+                    if !ids.is_empty() {
                         self.library.selected = ids.last().copied();
                         self.library.tab = 0;
                     }
@@ -1066,10 +1169,7 @@ impl eframe::App for App {
             egui::SidePanel::right("inspector").resizable(true).default_width(290.0).show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     let App { project, selection, playhead, undo, redo, fonts, palette, .. } = self;
-                    let mut push = |p: &Project| {
-                        undo.push(p.to_json());
-                        redo.clear();
-                    };
+                    let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
                     if inspector::show(ui, project, selection, *playhead, fonts, palette, &mut push) {
                         self.after_edit();
                     }
@@ -1079,10 +1179,7 @@ impl eframe::App for App {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             let App { project, selection, playhead, undo, redo, preview: pv, player, palette, .. } = self;
-            let mut push = |p: &Project| {
-                undo.push(p.to_json());
-                redo.clear();
-            };
+            let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
             let resp = preview::show(
                 ui,
                 pv,
@@ -1138,8 +1235,11 @@ impl eframe::App for App {
             }
         });
 
-        for a in actions {
-            self.act(a, ctx);
+        // the export modal only blocks the pointer; hold hotkeys/transport too so nothing edits or plays mid-export
+        if self.export.is_none() {
+            for a in actions {
+                self.act(a);
+            }
         }
 
         // settings window

@@ -10,8 +10,10 @@
 //! Video/Audio Track, Remove Track (on headers), Mute/Solo). Ctrl+Scroll = zoom around the cursor,
 //! Shift+Scroll = horizontal pan, Alt+Scroll = height of the track under the cursor, plain scroll =
 //! vertical pan. Accepts egui dnd payloads `DragPayload` (Asset → Project::insert_asset_clips at the drop
-//! time/track; Path → returned in `dropped_files`). Every mutation calls `c.undo(&project)` first (once per
-//! gesture, at drag start) and sets `edited`. While `playing`, auto-scroll keeps the playhead visible.
+//! time/track; Path → returned in `dropped_files`). Every mutation calls `c.undo(&project)` with the project as
+//! it was before the gesture (once per gesture, only if it changed something) and sets `edited`. While `playing`,
+//! auto-scroll keeps the playhead visible unless the user panned away (resumes once the playhead re-enters the
+//! view or playback pauses).
 
 use crate::media::waveform::{Peaks, WaveformCache};
 use crate::model::{Clip, ClipKind, Id, Project, TrackKind};
@@ -62,11 +64,21 @@ pub struct TimelineState {
     pub lanes_rect: egui::Rect,
     /// Active move/trim gesture.
     drag: Option<Drag>,
+    /// The user panned/zoomed while playing: stop following the playhead until it is back in view.
+    user_panned: bool,
 }
 
 impl Default for TimelineState {
     fn default() -> Self {
-        Self { zoom: 40.0, scroll_x: 0.0, scroll_y: 0.0, header_w: 150.0, lanes_rect: egui::Rect::NOTHING, drag: None }
+        Self {
+            zoom: 40.0,
+            scroll_x: 0.0,
+            scroll_y: 0.0,
+            header_w: 150.0,
+            lanes_rect: egui::Rect::NOTHING,
+            drag: None,
+            user_panned: false,
+        }
     }
 }
 
@@ -107,13 +119,16 @@ impl TimelineState {
             self.scroll_x = (t - ((x - self.lanes_rect.left()) / self.zoom) as f64).max(0.0);
         }
     }
-    /// Scroll so `t` is visible (used when the playhead runs off-screen).
+    /// Scroll so `t` is visible (used when the playhead runs off-screen while playing). Suspended after a
+    /// user pan until `t` is back in view.
     pub fn ensure_visible(&mut self, t: f64) {
         let w = (self.lanes_rect.width() / self.zoom) as f64;
         if w <= 0.0 {
             return;
         }
-        if t < self.scroll_x || t > self.scroll_x + w {
+        if t >= self.scroll_x && t <= self.scroll_x + w {
+            self.user_panned = false;
+        } else if !self.user_panned {
             self.scroll_x = (t - w * 0.1).max(0.0);
         }
     }
@@ -144,12 +159,15 @@ pub struct TimelineResponse {
 struct Drag {
     /// Pointer position where the gesture started.
     origin: Pos2,
+    /// Project at gesture start — pushed as the undo snapshot on release, only if something changed.
+    before: Project,
     g: Gesture,
 }
 
 enum Gesture {
-    /// Move `ids` (selection + links). `orig` = start time of each id at drag start; `dt`/`dtrack` = applied so far.
-    Move { ids: Vec<Id>, orig: Vec<f64>, kind: TrackKind, row_h: f32, dt: f64, dtrack: i32 },
+    /// Move `ids` (selection + links). `orig` = start time of each id at drag start; `tr` = track of the pressed
+    /// clip; `dt`/`dtrack` = applied so far.
+    Move { ids: Vec<Id>, orig: Vec<f64>, kind: TrackKind, tr: usize, dt: f64, dtrack: i32 },
     /// Trim the start (`start`) or end edge of `ids`; `edge` = edge time at drag start.
     Trim { ids: Vec<Id>, start: bool, edge: f64, changed: bool },
 }
@@ -299,12 +317,15 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, c: TimelineCtx<'_>) ->
     state.lanes_rect = lanes;
     if c.playing {
         state.ensure_visible(*c.playhead);
+    } else {
+        state.user_panned = false;
     }
     let (mods, pointer, primary_down) = ui.input(|i| (i.modifiers, i.pointer.latest_pos(), i.pointer.primary_down()));
 
     // ---- scroll / zoom (only when hovered) ----
     if ui.rect_contains_pointer(full) {
         if let Some(pos) = pointer {
+            let sx = state.scroll_x;
             let (delta, zoom) = ui.input(|i| (i.smooth_scroll_delta, i.zoom_delta()));
             if zoom != 1.0 {
                 state.zoom_by(zoom.clamp(0.5, 2.0), Some(pos.x));
@@ -319,6 +340,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, c: TimelineCtx<'_>) ->
                     state.scroll_x = (state.scroll_x - (delta.x / state.zoom) as f64).max(0.0);
                     state.scroll_y -= delta.y;
                 }
+            }
+            if state.scroll_x != sx {
+                state.user_panned = true;
             }
         }
     }
@@ -355,6 +379,16 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, c: TimelineCtx<'_>) ->
     // lanes background response first so clips (added later) win hit-testing
     let lanes_resp = ui.interact(lanes, id.with("lanes"), Sense::click_and_drag());
     let ruler_resp = ui.interact(ruler, id.with("ruler"), Sense::click_and_drag());
+    // playhead line: registered before the clips so egui's thin-widget tie-break lets the 6 px edge handles
+    // beat the 8 px playhead, which still beats clip bodies
+    let px = state.x_at(*c.playhead);
+    let ph_resp = ui
+        .interact(
+            Rect::from_x_y_ranges(px - 4.0..=px + 4.0, lanes.y_range()).intersect(lanes),
+            id.with("ph"),
+            Sense::click_and_drag(),
+        )
+        .on_hover_cursor(CursorIcon::ResizeHorizontal);
 
     let mut act: Option<Act> = None;
     let mut click: Option<Id> = None;
@@ -540,15 +574,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, c: TimelineCtx<'_>) ->
     painter.hline(ruler.x_range(), ruler.bottom() - 0.5, thin);
     painter.vline(header.right() - 0.5, full.y_range(), thin);
 
-    // ---- playhead ----
+    // ---- playhead (recomputed: a double-click seek above moves it this frame) ----
     let px = state.x_at(*c.playhead);
-    let ph_resp = ui
-        .interact(
-            Rect::from_x_y_ranges(px - 4.0..=px + 4.0, lanes.y_range()).intersect(lanes),
-            id.with("ph"),
-            Sense::click_and_drag(),
-        )
-        .on_hover_cursor(CursorIcon::ResizeHorizontal);
     if px >= lanes.left() - 1.0 && px <= lanes.right() + 1.0 {
         let pp = painter.with_clip_rect(Rect::from_min_max(ruler.min, lanes.max));
         pp.vline(px, Rangef::new(ruler.top(), lanes.bottom()), Stroke::new(1.5, pal.playhead));
@@ -677,12 +704,12 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, c: TimelineCtx<'_>) ->
         }
     }
     if let Some(cid) = start_move {
-        if let Some(ti) = c.project.track_of(cid) {
+        if let Some(tr) = c.project.track_of(cid) {
             let ids = c.project.expand_links(c.selection);
             let orig = ids.iter().map(|&id| c.project.clip(id).map(|cl| cl.start).unwrap_or(0.0)).collect();
-            let (kind, row_h) = (c.project.tracks[ti].kind, c.project.tracks[ti].height);
-            (c.undo)(c.project);
-            state.drag = Some(Drag { origin, g: Gesture::Move { ids, orig, kind, row_h, dt: 0.0, dtrack: 0 } });
+            let kind = c.project.tracks[tr].kind;
+            let g = Gesture::Move { ids, orig, kind, tr, dt: 0.0, dtrack: 0 };
+            state.drag = Some(Drag { origin, before: c.project.clone(), g });
         }
     } else if let Some((cid, start)) = start_trim {
         if let Some(clip) = c.project.clip(cid) {
@@ -698,17 +725,18 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, c: TimelineCtx<'_>) ->
                         .map_or(false, |cl| ((if start { cl.start } else { cl.end() }) - edge).abs() < 1e-6)
                 })
                 .collect();
-            (c.undo)(c.project);
-            state.drag = Some(Drag { origin, g: Gesture::Trim { ids, start, edge, changed: false } });
+            let g = Gesture::Trim { ids, start, edge, changed: false };
+            state.drag = Some(Drag { origin, before: c.project.clone(), g });
         }
     }
+    let hover_tr = pointer.and_then(|pos| state.track_at(pos.y, c.project));
     if let (Some(drag), Some(pos)) = (state.drag.as_mut(), pointer) {
         let zoom = state.zoom;
         let dx = (pos.x - drag.origin.x) as f64 / zoom as f64;
         let thr = (SNAP_PX / zoom) as f64;
         let p = &mut *c.project;
         match &mut drag.g {
-            Gesture::Move { ids, orig, kind, row_h, dt, dtrack } => {
+            Gesture::Move { ids, orig, kind, tr, dt, dtrack } => {
                 let mut want = dx;
                 if c.snap {
                     let s0 = orig.first().copied().unwrap_or(0.0);
@@ -729,11 +757,13 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, c: TimelineCtx<'_>) ->
                 }
                 let min_start = orig.iter().copied().fold(f64::INFINITY, f64::min);
                 want = want.max(-min_start);
-                let dy = pos.y - drag.origin.y;
-                let mut want_tr = (dy / *row_h).round() as i32;
-                if *kind == TrackKind::Video {
-                    want_tr = -want_tr; // video rows are displayed in reverse order
-                }
+                // destination row = same-kind track under the pointer (keeps the last one while outside)
+                let list = if *kind == TrackKind::Video { p.video_tracks() } else { p.audio_tracks() };
+                let pos_of = |t: usize| list.iter().position(|&x| x == t);
+                let want_tr = match (hover_tr.and_then(pos_of), pos_of(*tr)) {
+                    (Some(h), Some(o)) => h as i32 - o as i32,
+                    _ => *dtrack,
+                };
                 let (ddt, ddtr) = (want - *dt, want_tr - *dtrack);
                 if ddt.abs() > 1e-9 || ddtr != 0 {
                     if p.move_clips(ids, ddt, ddtr, Some(*kind)) {
@@ -756,6 +786,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, c: TimelineCtx<'_>) ->
                         want = t;
                     }
                 }
+                // all-or-nothing (like move_clips): linked clips keep identical extents when one is blocked
+                let mut upd = Vec::with_capacity(ids.len());
                 for &id in ids.iter() {
                     let Some((ti, ci)) = p.find(id) else { continue };
                     let mut tmp = p.tracks[ti].clips[ci].clone();
@@ -765,10 +797,15 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, c: TimelineCtx<'_>) ->
                         let md = p.max_clip_duration(&tmp);
                         tmp.trim_end(want, md);
                     }
+                    if !p.tracks[ti].fits(tmp.start, tmp.duration, &[id]) {
+                        upd.clear();
+                        break;
+                    }
+                    upd.push((ti, ci, tmp));
+                }
+                for (ti, ci, tmp) in upd {
                     let cl = &p.tracks[ti].clips[ci];
-                    if (cl.start != tmp.start || cl.duration != tmp.duration)
-                        && p.tracks[ti].fits(tmp.start, tmp.duration, &[id])
-                    {
+                    if cl.start != tmp.start || cl.duration != tmp.duration {
                         p.tracks[ti].clips[ci] = tmp;
                         *changed = true;
                     }
@@ -778,10 +815,14 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, c: TimelineCtx<'_>) ->
     }
     if !primary_down {
         if let Some(d) = state.drag.take() {
-            out.edited |= match d.g {
+            let edited = match d.g {
                 Gesture::Move { dt, dtrack, .. } => dt != 0.0 || dtrack != 0,
                 Gesture::Trim { changed, .. } => changed,
             };
+            if edited {
+                (c.undo)(&d.before);
+                out.edited = true;
+            }
         }
     }
     out
@@ -876,6 +917,26 @@ mod tests {
         s.scroll_x = 2.0;
         assert!((s.time_at(s.x_at(7.25)) - 7.25).abs() < 1e-4);
         assert_eq!(s.x_at(2.0), 100.0);
+    }
+
+    #[test]
+    fn ensure_visible_follows_unless_user_panned() {
+        let mut s = TimelineState {
+            lanes_rect: Rect::from_min_max(pos2(100.0, 0.0), pos2(900.0, 100.0)),
+            zoom: 40.0, // 20 s visible
+            scroll_x: 30.0,
+            ..Default::default()
+        };
+        s.ensure_visible(2.0);
+        assert_eq!(s.scroll_x, 0.0);
+        s.scroll_x = 30.0;
+        s.user_panned = true;
+        s.ensure_visible(2.0);
+        assert_eq!(s.scroll_x, 30.0, "panned away: no snap back");
+        s.ensure_visible(35.0);
+        assert!(!s.user_panned, "playhead back in view resumes following");
+        s.ensure_visible(60.0);
+        assert_eq!(s.scroll_x, 58.0);
     }
 
     // ---- headless egui harness: real layout + hit-testing + gestures ----
@@ -1049,6 +1110,69 @@ mod tests {
         assert!(r.seeked);
         assert!((h.playhead - 4.0).abs() < 0.05, "playhead {}", h.playhead);
         h.release(pos2(rx, lanes.top() - RULER_H * 0.5));
+    }
+
+    #[test]
+    fn headless_edge_handle_beats_playhead_after_split() {
+        let mut h = Harness::new();
+        let lanes = h.state.lanes_rect;
+        h.playhead = 5.0;
+        h.project.split_at(5.0, None);
+        h.frame(vec![]);
+        assert_eq!(h.project.tracks[0].clips.len(), 2);
+        // press inside the right clip's left edge zone, which overlaps the playhead hit-rect, drag 1 s right
+        let from = pos2(h.state.x_at(5.0) + 2.0, lanes.top() + 30.0);
+        assert!(h.drag(from, from + vec2(40.0, 0.0)));
+        assert_eq!(h.undos, 1);
+        let right = &h.project.tracks[0].clips[1];
+        assert!((right.start - 6.0).abs() < 0.05, "trimmed start {}", right.start);
+        assert!((h.project.tracks[1].clips[1].start - 6.0).abs() < 0.05, "linked audio trims too");
+        assert_eq!(h.playhead, 5.0, "playhead not scrubbed");
+    }
+
+    #[test]
+    fn headless_linked_trim_is_all_or_nothing_and_no_dead_undo() {
+        let mut h = Harness::new();
+        let lanes = h.state.lanes_rect;
+        // press-and-hold / blocked move (clip at 0 dragged left): nothing changes, no undo entry
+        let p = pos2(lanes.left() + 100.0, lanes.top() + 30.0);
+        h.press(p);
+        h.frame(vec![]);
+        h.release(p);
+        assert!(!h.drag(p, p - vec2(80.0, 0.0)));
+        assert_eq!(h.undos, 0);
+        assert_eq!(h.video_clip().start, 0.0);
+        // V1 2-10 linked with A1 2-10; unlinked audio on A1 at 0-1.5 blocks the audio's left edge
+        h.project.tracks[0].clips[0].trim_start(2.0);
+        h.project.tracks[1].clips[0].trim_start(2.0);
+        h.project.tracks[1].clips.insert(0, Clip::new(99, ClipKind::Audio, "blk", 0.0, 1.5));
+        h.frame(vec![]);
+        let from = pos2(h.state.x_at(2.0) + 2.0, lanes.top() + 30.0);
+        assert!(h.drag(from, from - vec2(80.0, 0.0))); // to t = 0 in 0.5 s steps
+        assert_eq!(h.undos, 1);
+        let (v, a) = (&h.project.tracks[0].clips[0], &h.project.tracks[1].clips[1]);
+        assert!((v.start - 1.5).abs() < 0.05, "video start {}", v.start);
+        assert_eq!(v.start, a.start, "linked clips keep identical extents");
+        assert_eq!(v.end(), a.end());
+    }
+
+    #[test]
+    fn headless_cross_track_move_uses_track_under_pointer() {
+        let mut h = Harness::new();
+        let lanes = h.state.lanes_rect;
+        h.project.add_track(TrackKind::Video); // V2 (index 1), displayed above V1
+        h.project.tracks[1].height = 200.0;
+        h.frame(vec![]);
+        // drag the V1 clip up: pointer ends 150 px into the tall V2 row -> lands on V2 (dy/row_h would overshoot)
+        let from = pos2(h.state.x_at(0.0) + 50.0, lanes.top() + 200.0 + 30.0);
+        assert!(h.drag(from, pos2(from.x, lanes.top() + 150.0)));
+        assert_eq!(h.project.tracks[1].clips.len(), 1, "clip on V2");
+        assert_eq!(h.project.tracks[0].clips.len(), 0);
+        // drag it down 150 px: still inside V2 -> no change, no undo
+        let from = pos2(from.x, lanes.top() + 10.0);
+        assert!(!h.drag(from, pos2(from.x, lanes.top() + 160.0)));
+        assert_eq!(h.project.tracks[1].clips.len(), 1, "still on V2");
+        assert_eq!(h.undos, 1);
     }
 
     #[test]

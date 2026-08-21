@@ -68,6 +68,12 @@ impl WaveformCache {
     pub fn set_backend(&mut self, b: Backend) {
         self.backend = b;
     }
+    /// Forget all in-memory peaks (a file at a known path was rewritten, e.g. Save over the original).
+    /// Swaps the state so an in-flight computation finishes into the orphaned map instead of re-inserting
+    /// stale peaks; unchanged files just reload from the len+mtime-keyed disk cache.
+    pub fn clear(&mut self) {
+        self.state = Arc::default();
+    }
     /// Non-blocking. Returns the peaks if available; otherwise starts computing them in the background
     /// (once) and returns None. Calls `ctx.request_repaint()` when a computation finishes.
     pub fn get(&mut self, path: &str, stream: usize) -> Option<Arc<Peaks>> {
@@ -210,6 +216,38 @@ mod tests {
         // failure is remembered as empty peaks (no respawn loop)
         let mut c3 = WaveformCache::new(eframe::egui::Context::default(), Backend::Ffmpeg);
         assert!(poll(&mut c3, "Z:/definitely/missing.mp4").is_empty());
+    }
+
+    /// After the file at a path is rewritten, clear() makes get() recompute instead of serving old peaks.
+    #[test]
+    fn clear_forgets_rewritten_file() {
+        let poll = |c: &mut WaveformCache, path: &str| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            loop {
+                if let Some(p) = c.get(path, 0) {
+                    return p;
+                }
+                assert!(std::time::Instant::now() < deadline, "waveform never finished");
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        };
+        let path = std::path::Path::new(&ffpipe::tests::test_mp4())
+            .with_file_name(format!("{}-rewrite.mp4", std::process::id()));
+        std::fs::copy(ffpipe::tests::test_mp4(), &path).unwrap();
+        let path = path.to_string_lossy().into_owned();
+        let mut c = WaveformCache::new(eframe::egui::Context::default(), Backend::Ffmpeg);
+        let old = poll(&mut c, &path);
+        assert!(old.len() > 350, "{}", old.len());
+        let st = std::process::Command::new("ffmpeg")
+            .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=1", "-c:a", "aac"])
+            .arg(&path)
+            .status()
+            .expect("ffmpeg on PATH");
+        assert!(st.success());
+        assert_eq!(poll(&mut c, &path).len(), old.len(), "stale until cleared");
+        c.clear();
+        let new = poll(&mut c, &path);
+        assert!(new.len() < 150, "{} (old {})", new.len(), old.len());
     }
 
     #[test]

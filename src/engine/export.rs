@@ -111,6 +111,7 @@ fn run_export(
 ) -> Result<(), String> {
     let ffmpeg = ffpipe::ffmpeg_exe().ok_or("ffmpeg.exe not found")?;
     let ext = ext_of(&opts.out_path);
+    let tmp = temp_output(&opts.out_path);
     let audio_only = AUDIO_EXTS.contains(&ext.as_str());
     let is_gif = ext == "gif";
     let dur = project.duration();
@@ -127,7 +128,7 @@ fn run_export(
             .audio_tracks()
             .into_iter()
             .any(|i| project.active(i) && project.tracks[i].clips.iter().any(|c| c.enabled));
-    let wav = if has_audio { Some(TempFile(mix_to_wav(project, &mut pool, prog, dur)?)) } else { None };
+    let wav = if has_audio { Some(mix_to_wav(project, &mut pool, prog, dur)?) } else { None };
     if audio_only && wav.is_none() {
         return Err("Nothing to export: no audio clips".into());
     }
@@ -156,12 +157,10 @@ fn run_export(
     if is_gif {
         cmd.arg("-an");
     }
-    if !audio_only && wav.is_some() {
-        cmd.arg("-shortest");
-    }
-    cmd.arg(&opts.out_path);
+    // (no `-shortest`: it drops the last video frame when dur isn't a whole number of frames; video and
+    // WAV both end at ≥ dur anyway)
+    cmd.arg(&tmp.0);
     cmd.stdin(if audio_only { Stdio::null() } else { Stdio::piped() }).stdout(Stdio::null()).stderr(Stdio::piped());
-    let existed = opts.out_path.exists();
     let mut child = cmd.spawn().map_err(|e| format!("ffmpeg: {e}"))?;
     let tail = stderr_tail(&mut child);
 
@@ -190,33 +189,30 @@ fn run_export(
     }
     drop(stdin);
 
-    // 4. wait
-    let r = wait_ffmpeg(&mut child, tail, prog);
-    if r.is_err() && (prog.is_cancelled() || !existed) {
-        let _ = std::fs::remove_file(&opts.out_path);
-    }
-    r
+    // 4. wait, then move the finished file into place (decoders released first so an in-place
+    // export over the source can replace it)
+    wait_ffmpeg(&mut child, tail, prog)?;
+    drop(pool);
+    tmp.commit(&opts.out_path)
 }
 
 /// Mix the whole timeline into a temp WAV (f32 stereo 48 kHz). Progress 0..0.1.
-fn mix_to_wav(project: &Project, pool: &mut DecoderPool, prog: &Progress, dur: f64) -> Result<PathBuf, String> {
+fn mix_to_wav(project: &Project, pool: &mut DecoderPool, prog: &Progress, dur: f64) -> Result<TempFile, String> {
     static N: AtomicU32 = AtomicU32::new(0);
-    let path = std::env::temp_dir().join(format!(
+    let tmp = TempFile(std::env::temp_dir().join(format!(
         "simple-editor-mix-{}-{}.wav",
         std::process::id(),
         N.fetch_add(1, Ordering::Relaxed)
-    ));
+    )));
     let total = (dur * SAMPLE_RATE as f64).ceil() as u64;
-    let mut f = std::io::BufWriter::new(std::fs::File::create(&path).map_err(|e| format!("temp wav: {e}"))?);
-    f.write_all(&wav_header(total)).map_err(|e| e.to_string())?;
+    let mut f = std::io::BufWriter::new(std::fs::File::create(&tmp.0).map_err(|e| format!("temp wav: {e}"))?);
+    f.write_all(&wav_header(total)).map_err(|e| format!("temp wav: {e}"))?;
     let mut mixer = Mixer::new();
     let mut buf = vec![0f32; MIX_BLOCK * 2];
     let mut bytes = vec![0u8; MIX_BLOCK * 8];
     let mut done = 0u64;
     while done < total {
         if prog.is_cancelled() {
-            drop(f);
-            let _ = std::fs::remove_file(&path);
             return Err(CANCELLED.into());
         }
         let n = (total - done).min(MIX_BLOCK as u64) as usize;
@@ -224,16 +220,13 @@ fn mix_to_wav(project: &Project, pool: &mut DecoderPool, prog: &Progress, dur: f
         for (b, s) in bytes.chunks_exact_mut(4).zip(&buf[..n * 2]) {
             b.copy_from_slice(&s.to_le_bytes());
         }
-        if let Err(e) = f.write_all(&bytes[..n * 8]) {
-            drop(f);
-            let _ = std::fs::remove_file(&path);
-            return Err(format!("temp wav: {e}"));
-        }
+        f.write_all(&bytes[..n * 8]).map_err(|e| format!("temp wav: {e}"))?;
         done += n as u64;
         prog.set(0.1 * done as f32 / total.max(1) as f32, "Mixing audio…");
     }
-    f.flush().map_err(|e| e.to_string())?;
-    Ok(path)
+    f.flush().map_err(|e| format!("temp wav: {e}"))?;
+    drop(f);
+    Ok(tmp)
 }
 
 /// 44-byte RIFF/WAVE header: IEEE float 32-bit, stereo, 48 kHz, `frames` sample frames.
@@ -256,12 +249,27 @@ fn wav_header(frames: u64) -> [u8; 44] {
     h
 }
 
-/// Deleted on drop.
+/// Deleted on drop (a no-op once `commit`ted into place).
 struct TempFile(PathBuf);
+impl TempFile {
+    /// Move the finished file over `dst` (replaces an existing file).
+    fn commit(self, dst: &Path) -> Result<(), String> {
+        std::fs::rename(&self.0, dst).map_err(|e| format!("rename to {}: {e}", dst.display()))
+    }
+}
 impl Drop for TempFile {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
     }
+}
+
+/// Hidden sibling of `out` (same folder, same extension so ffmpeg still picks the muxer by name) that
+/// ffmpeg writes into; it is renamed over `out` only on success, so a cancel or failure never truncates
+/// or deletes an existing destination — or the source, when cutting in place.
+fn temp_output(out: &Path) -> TempFile {
+    let stem = out.file_stem().unwrap_or_default().to_string_lossy();
+    let ext = out.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+    TempFile(out.with_file_name(format!(".{stem}.simple-editor-tmp{ext}")))
 }
 
 /// Drain ffmpeg's stderr on a helper thread; returns the last ~2000 chars.
@@ -390,6 +398,7 @@ fn run_lossless(project: &Project, out: &Path, prog: &Progress) -> Result<(), St
 
     let ext = ext_of(out);
     let stem = out.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+    let tmp = temp_output(out);
     let n = segs.len();
     let mut parts: Vec<TempFile> = Vec::new();
     let run = |cmd: &mut std::process::Command| -> Result<(), String> {
@@ -400,7 +409,7 @@ fn run_lossless(project: &Project, out: &Path, prog: &Progress) -> Result<(), St
     };
     for (i, &(src_in, dur)) in segs.iter().enumerate() {
         prog.set(i as f32 / n as f32, format!("Cutting segment {} / {n}", i + 1));
-        let dst = if n == 1 { out.to_path_buf() } else { out.with_file_name(format!("{stem}.part{i}.{ext}")) };
+        let dst = if n == 1 { tmp.0.clone() } else { out.with_file_name(format!("{stem}.part{i}.{ext}")) };
         let mut cmd = ffpipe::command(&ffmpeg);
         cmd.args(["-y", "-hide_banner", "-loglevel", "error"]);
         cmd.args(["-ss", &format!("{src_in:.6}"), "-t", &format!("{dur:.6}"), "-i", &src]);
@@ -412,13 +421,10 @@ fn run_lossless(project: &Project, out: &Path, prog: &Progress) -> Result<(), St
             cmd.arg("-an");
         }
         cmd.args(["-c", "copy", "-avoid_negative_ts", "make_zero"]).arg(&dst);
-        let r = run(&mut cmd);
         if n > 1 {
             parts.push(TempFile(dst));
-        } else if r.is_err() {
-            let _ = std::fs::remove_file(&dst);
         }
-        r?;
+        run(&mut cmd)?;
     }
     if n > 1 {
         prog.set(0.95, "Joining segments…");
@@ -431,13 +437,10 @@ fn run_lossless(project: &Project, out: &Path, prog: &Progress) -> Result<(), St
         std::fs::write(&list.0, txt).map_err(|e| format!("concat list: {e}"))?;
         let mut cmd = ffpipe::command(&ffmpeg);
         cmd.args(["-y", "-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i"]);
-        cmd.arg(&list.0).args(["-map", "0", "-c", "copy"]).arg(out);
-        if let Err(e) = run(&mut cmd) {
-            let _ = std::fs::remove_file(out);
-            return Err(e);
-        }
+        cmd.arg(&list.0).args(["-map", "0", "-c", "copy"]).arg(&tmp.0);
+        run(&mut cmd)?;
     }
-    Ok(())
+    tmp.commit(out)
 }
 
 static ENCODERS: Mutex<Option<(PathBuf, Vec<String>)>> = Mutex::new(None);
@@ -474,7 +477,8 @@ fn parse_encoders(s: &str) -> Vec<String> {
 
 /// ffmpeg output arguments (codec/quality) for an extension, given the user's encoder preference and the
 /// available encoders. "auto": mp4/mov/mkv/m4v → libx264 (+aac), webm → libvpx-vp9 (+libopus),
-/// gif → gif, avi → mpeg4 (+mp3), audio-only → sensible codec for the container.
+/// gif → gif, avi → mpeg4 (+mp3), audio-only → sensible codec for the container. The preference is
+/// overridden where the container forbids it (webm: vp9/av1 only; mov: no vp9/av1).
 /// Hardware encoders (nvenc/qsv/amf) use `-cq`/`-global_quality`/`-qp` instead of `-crf`.
 pub fn codec_args(ext: &str, encoder: &str, crf: u32, preset: &str, available: &[String]) -> Vec<String> {
     let ext = ext.to_ascii_lowercase();
@@ -488,6 +492,7 @@ pub fn codec_args(ext: &str, encoder: &str, crf: u32, preset: &str, available: &
             }
         }
         "avi" | "mp3" => "-c:a libmp3lame -q:a 2",
+        "mpg" | "mpeg" | "vob" => "-c:a mp2 -b:a 192k",
         "wav" => "-c:a pcm_s16le",
         "flac" => "-c:a flac",
         _ => "-c:a aac -b:a 192k",
@@ -504,6 +509,12 @@ pub fn codec_args(ext: &str, encoder: &str, crf: u32, preset: &str, available: &
             },
             e => e,
         };
+        let vpx_av1 = matches!(enc, "libvpx-vp9" | "libaom-av1" | "libsvtav1");
+        if ext == "webm" && !vpx_av1 {
+            enc = "libvpx-vp9"; // webm muxer: only vp8/vp9/av1
+        } else if ext == "mov" && vpx_av1 {
+            enc = "libx264"; // mov muxer rejects vp9/av1
+        }
         if !has(enc) {
             enc = "libx264";
         }
@@ -535,7 +546,6 @@ pub fn codec_args(ext: &str, encoder: &str, crf: u32, preset: &str, available: &
     v
 }
 
-pub const VIDEO_EXTS: &[&str] = &["mp4", "mov", "mkv", "webm", "avi", "m4v", "gif"];
 pub const AUDIO_EXTS: &[&str] = &["mp3", "wav", "m4a", "flac", "ogg", "aac", "opus"];
 
 #[cfg(test)]
@@ -645,6 +655,12 @@ mod tests {
         assert!(s.contains("-c:v mpeg4") && s.contains("libmp3lame"), "{s}");
         let s = j(codec_args("mp4", "h264_amf", 22, "", &[]));
         assert!(s.contains("-rc cqp -qp_i 22 -qp_p 22"), "{s}");
+        // container forbids the preferred encoder → clamped
+        assert!(j(codec_args("webm", "libx264", 30, "", &[])).contains("-c:v libvpx-vp9"));
+        assert!(j(codec_args("webm", "hevc_nvenc", 30, "", &[])).contains("-c:v libvpx-vp9"));
+        assert!(j(codec_args("mov", "libvpx-vp9", 20, "", &[])).contains("-c:v libx264"));
+        assert!(j(codec_args("mkv", "libvpx-vp9", 20, "", &[])).contains("-c:v libvpx-vp9"));
+        assert!(j(codec_args("mpg", "auto", 20, "", &[])).ends_with("-c:a mp2 -b:a 192k"));
     }
 
     #[test]
@@ -757,12 +773,26 @@ mod tests {
             .output()
             .unwrap();
         assert_eq!(String::from_utf8_lossy(&o.stdout).lines().count(), 2);
+        // a failed cut never removes a pre-existing destination (wrong container → ffmpeg rejects)
+        let gif = dir.join("keep.gif");
+        std::fs::write(&gif, b"keep").unwrap();
+        assert!(wait_done(&start_lossless_cut(cut_project(&src.to_string_lossy()), gif.clone())).is_some());
+        assert_eq!(std::fs::read(&gif).unwrap(), b"keep");
+        // cutting in place (destination == source) replaces the source with the cut, never loses it
+        let p = cut_project(&src.to_string_lossy());
+        assert_eq!(wait_done(&start_lossless_cut(p, src.clone())), None);
+        let d = probe_duration(&src).expect("source still readable");
+        assert!((d - 2.0).abs() < 0.6, "duration {d}");
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            4,
+            "{:?}",
+            std::fs::read_dir(&dir).unwrap().collect::<Vec<_>>()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Needs Compositor + Mixer (other modules) — enable once they land.
     #[test]
-    #[ignore]
     fn full_export_real() {
         let dir = temp_dir("export");
         let Some(src) = gen_media(&dir) else {
@@ -786,10 +816,14 @@ mod tests {
         // audio-only + cancel paths
         let mp3 = ExportOptions { out_path: dir.join("export.mp3"), ..opts.clone() };
         assert_eq!(wait_done(&start_export(p.clone(), mp3, text.clone())), None);
-        let prog = start_export(p, ExportOptions { out_path: dir.join("cancel.mp4"), ..opts }, text);
+        // cancel: a pre-existing destination is left untouched, no temp file remains
+        let cancel = dir.join("cancel.mp4");
+        std::fs::write(&cancel, b"keep").unwrap();
+        let prog = start_export(p, ExportOptions { out_path: cancel.clone(), ..opts }, text);
         prog.cancel.store(true, Ordering::SeqCst);
         assert_eq!(wait_done(&prog).as_deref(), Some(CANCELLED));
-        assert!(!dir.join("cancel.mp4").exists());
+        assert_eq!(std::fs::read(&cancel).unwrap(), b"keep");
+        assert!(!dir.join(".cancel.simple-editor-tmp.mp4").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

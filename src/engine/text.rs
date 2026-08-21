@@ -245,41 +245,59 @@ fn over(d: &mut [u8], c: [u8; 4], cov: u8) {
     d[3] = (oa * 255.0 + 0.5) as u8;
 }
 
-/// Disc dilation of a coverage mask by radius `r` (antialiased rim).
+/// Disc dilation of a coverage mask by radius `r` (antialiased rim): exact Euclidean distance transform
+/// (Felzenszwalb–Huttenlocher, columns then rows), O(px) whatever the radius.
 fn dilate(src: &[u8], w: u32, h: u32, r: f32) -> Vec<u8> {
-    // ponytail: O(filled px × r²) splat — swap for a distance transform if big outlines hitch
-    let rr = r.ceil() as i32;
-    let mut offs: Vec<(i32, i32, u32)> = Vec::new();
-    for dy in -rr..=rr {
-        for dx in -rr..=rr {
-            let d = ((dx * dx + dy * dy) as f32).sqrt();
-            let wgt = (r + 0.5 - d).clamp(0.0, 1.0);
-            if wgt > 0.0 {
-                offs.push((dx, dy, (wgt * 255.0 + 0.5) as u32));
+    const INF: f32 = 1e20;
+    let (w, h) = (w as usize, h as usize);
+    // squared distance to the nearest covered (≥ 50 %) pixel
+    let mut d: Vec<f32> = src.iter().map(|&v| if v >= 128 { 0.0 } else { INF }).collect();
+    let n = w.max(h);
+    // line scratch in f64: q² exceeds f32's exact integer range on lines longer than 4096 px
+    let (mut f, mut g, mut v, mut z) = (vec![0f64; n], vec![0f64; n], vec![0usize; n], vec![0f64; n + 1]);
+    // (lines, len, line stride, element stride): columns, then rows
+    for (lines, len, ls, es) in [(w, h, 1, w), (h, w, w, 1)] {
+        for l in 0..lines {
+            for j in 0..len {
+                f[j] = d[l * ls + j * es] as f64;
+            }
+            dt1d(&f[..len], &mut g, &mut v, &mut z);
+            for j in 0..len {
+                d[l * ls + j * es] = g[j] as f32;
             }
         }
     }
-    let (wi, hi) = (w as i32, h as i32);
-    let mut out = vec![0u8; src.len()];
-    for y in 0..hi {
-        for x in 0..wi {
-            let v = src[(y * wi + x) as usize] as u32;
-            if v == 0 {
-                continue;
-            }
-            for &(dx, dy, wgt) in &offs {
-                let (px, py) = (x + dx, y + dy);
-                if px >= 0 && py >= 0 && px < wi && py < hi {
-                    let i = (py * wi + px) as usize;
-                    let nv = ((v * wgt + 127) / 255) as u8;
-                    if nv > out[i] {
-                        out[i] = nv;
-                    }
-                }
-            }
+    d.iter().map(|&d2| ((r + 0.5 - d2.sqrt()).clamp(0.0, 1.0) * 255.0 + 0.5) as u8).collect()
+}
+
+/// 1-D squared-distance transform of sampled function `f` into `d` (lower envelope of parabolas).
+/// `v`/`z` are scratch of len ≥ f.len() / f.len()+1.
+fn dt1d(f: &[f64], d: &mut [f64], v: &mut [usize], z: &mut [f64]) {
+    let n = f.len();
+    let mut k = 0usize;
+    v[0] = 0;
+    z[0] = f64::NEG_INFINITY;
+    z[1] = f64::INFINITY;
+    let s_at = |q: usize, p: usize| ((f[q] + (q * q) as f64) - (f[p] + (p * p) as f64)) / (2.0 * (q - p) as f64);
+    for q in 1..n {
+        let mut s = s_at(q, v[k]);
+        while s <= z[k] {
+            k -= 1;
+            s = s_at(q, v[k]);
         }
+        k += 1;
+        v[k] = q;
+        z[k] = s;
+        z[k + 1] = f64::INFINITY;
     }
-    out
+    k = 0;
+    for (q, dq) in d[..n].iter_mut().enumerate() {
+        while z[k + 1] < q as f64 {
+            k += 1;
+        }
+        let p = v[k];
+        *dq = (q as f64 - p as f64).powi(2) + f[p];
+    }
 }
 
 /// Two iterations of a separable box blur with radius `r` (≈ Gaussian of radius 2r).
@@ -396,5 +414,43 @@ mod tests {
         assert!(b[23] > 0 && b[16] > 0 && b[10] > 0);
         assert_eq!(b[0], 0);
         assert_eq!(b[3], 0);
+    }
+
+    #[test]
+    fn dilate_matches_brute_force_and_is_fast() {
+        // sparse seeds on a 40×30 mask, r = 3.7: every pixel equals the brute-force nearest-seed disc
+        let (w, h) = (40usize, 30usize);
+        let mut m = vec![0u8; w * h];
+        for &(x, y) in &[(3usize, 4usize), (20, 15), (21, 15), (38, 28), (0, 0)] {
+            m[y * w + x] = 255;
+        }
+        m[10 * w + 10] = 100; // below 50 % coverage: not a seed
+        let r = 3.7f32;
+        let d = dilate(&m, w as u32, h as u32, r);
+        for y in 0..h {
+            for x in 0..w {
+                let mut best = f32::INFINITY;
+                for (i, &v) in m.iter().enumerate() {
+                    if v >= 128 {
+                        let (xx, yy) = ((i % w) as f32, (i / w) as f32);
+                        best = best.min(((x as f32 - xx).powi(2) + (y as f32 - yy).powi(2)).sqrt());
+                    }
+                }
+                let want = ((r + 0.5 - best).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+                assert_eq!(d[y * w + x], want, "at {x},{y}");
+            }
+        }
+        // size-1000 / outline-50 class (2000×600, r = 100): O(px), so well under a second
+        let (w, h) = (2000u32, 600u32);
+        let mut big = vec![0u8; (w * h) as usize];
+        for y in 200..400 {
+            big[(y * w + 500) as usize..(y * w + 1500) as usize].fill(255);
+        }
+        let t = std::time::Instant::now();
+        let d = dilate(&big, w, h, 100.0);
+        assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
+        assert_eq!(d[(300 * w + 1000) as usize], 255);
+        assert_eq!(d[(300 * w + 1550) as usize], 255); // 51 px out
+        assert_eq!(d[(300 * w + 1600) as usize], 0); // 101 px out
     }
 }

@@ -1,5 +1,5 @@
 //! Media decoding: a small trait layer over two backends.
-//!  * `mf`     — Windows Media Foundation (native, hardware accelerated, instant seeks). Primary.
+//!  * `mf`     — Windows Media Foundation (native software decode, no external deps, instant seeks). Primary.
 //!  * `ffpipe` — ffmpeg.exe / ffprobe.exe child processes. Universal fallback, images, probing, export.
 //! Everything produces top-down RGBA8 frames and interleaved stereo f32 audio at SAMPLE_RATE.
 
@@ -41,9 +41,6 @@ impl Frame {
             px.copy_from_slice(&rgba);
         }
     }
-    pub fn clear(&mut self) {
-        self.rgba.fill(0);
-    }
     pub fn stride(&self) -> usize {
         self.width as usize * 4
     }
@@ -57,7 +54,8 @@ pub trait VideoSource: Send {
     fn size(&self) -> (u32, u32);
     fn duration(&self) -> f64;
     fn fps(&self) -> f64;
-    /// Decode the frame displayed at source time `t`, scaled (aspect-ignorant, caller picks w/h) into `out`.
+    /// Decode the frame displayed at source time `t`, scaled (aspect-ignorant, caller picks w/h; the
+    /// compositor never asks for more than native size, so upscaling need only be correct) into `out`.
     /// Returns false at/after EOF or on error (then `out` is untouched). Must be cheap for sequential
     /// increasing `t` (playback: keep decoding forward); may seek for other jumps.
     fn frame_at(&mut self, t: f64, w: u32, h: u32, out: &mut Frame) -> bool;
@@ -87,10 +85,13 @@ impl Backend {
     }
 }
 
+/// Lower-case file extension ("" when none).
+pub fn ext(path: &str) -> String {
+    std::path::Path::new(path).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default()
+}
+
 pub fn is_image_path(path: &str) -> bool {
-    let ext =
-        std::path::Path::new(path).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
-    matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "bmp" | "gif" | "webp" | "tif" | "tiff" | "tga" | "psd")
+    matches!(ext(path).as_str(), "png" | "jpg" | "jpeg" | "bmp" | "gif" | "webp" | "tif" | "tiff" | "tga" | "psd")
 }
 
 /// Probe a media file into an Asset (id = 0). ffprobe gives the richest stream metadata, so it is
@@ -141,9 +142,6 @@ impl DecoderPool {
     pub fn new(backend: Backend) -> Self {
         Self { backend, videos: HashMap::new(), audios: HashMap::new() }
     }
-    pub fn backend(&self) -> Backend {
-        self.backend
-    }
     pub fn set_backend(&mut self, b: Backend) {
         if b != self.backend {
             self.backend = b;
@@ -159,20 +157,18 @@ impl DecoderPool {
         self.audios.entry((path.to_string(), stream)).or_insert_with(|| open_audio(path, stream, b).ok()).as_deref_mut()
     }
     /// Inject a ready-made source (tests / synthetic media).
+    #[cfg(test)]
     pub fn insert_video(&mut self, path: &str, v: Box<dyn VideoSource>) {
         self.videos.insert(path.to_string(), Some(v));
     }
+    #[cfg(test)]
     pub fn insert_audio(&mut self, path: &str, stream: usize, a: Box<dyn AudioSource>) {
         self.audios.insert((path.to_string(), stream), Some(a));
     }
-    /// Drop every decoder (releases file handles — required before overwriting a source file).
+    /// Drop every decoder (releases file handles — required before overwriting a source file). Also
+    /// forgets failed opens, so they are retried next time.
     pub fn clear(&mut self) {
         self.videos.clear();
         self.audios.clear();
-    }
-    /// Forget a failed open so it is retried next time.
-    pub fn retry(&mut self, path: &str) {
-        self.videos.retain(|k, v| !(k == path && v.is_none()));
-        self.audios.retain(|k, v| !(k.0 == path && v.is_none()));
     }
 }

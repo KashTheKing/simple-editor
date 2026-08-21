@@ -43,11 +43,15 @@ pub fn export_xmeml(project: &Project) -> String {
             x.push_str("<track>\n");
             for c in &track.clips {
                 let Some(asset) = project.asset(c.asset).filter(|_| c.uses_asset()) else {
+                    let mut name = esc(&c.name);
+                    while name.contains("--") {
+                        name = name.replace("--", "- -"); // "--" is illegal inside an XML comment
+                    }
                     let _ = writeln!(
                         x,
                         "<!-- {} clip \"{}\" at {}..{} skipped (not interchangeable) -->",
                         if c.kind == ClipKind::Text { "text" } else { "unresolved" },
-                        esc(&c.name),
+                        name,
                         fr(c.start),
                         fr(c.end())
                     );
@@ -160,11 +164,13 @@ fn esc(s: &str) -> String {
     o
 }
 
-/// `C:\a b\v.mp4` → `file://localhost/C:/a%20b/v.mp4`
+/// `C:\a b\v.mp4` → `file://localhost/C:/a%20b/v.mp4`; UNC `\\host\share\v.mp4` → `file://host/share/v.mp4`
 fn pathurl(path: &str) -> String {
     let p = path.replace('\\', "/");
-    let p = p.trim_start_matches('/');
-    let mut o = String::from("file://localhost/");
+    let (mut o, p) = match p.strip_prefix("//") {
+        Some(unc) => (String::from("file://"), unc),
+        None => (String::from("file://localhost/"), p.trim_start_matches('/')),
+    };
     for b in p.bytes() {
         match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' | b':' => o.push(b as char),
@@ -231,5 +237,14 @@ mod tests {
         // second clip: start 4 s → frame 120 at 29.97
         assert!(x.contains("<start>120</start>"), "{x}");
         assert!(x.ends_with("</xmeml>\n"));
+        // "--" never appears inside the skipped-clip comment
+        for c in p.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).filter(|c| c.kind == ClipKind::Text) {
+            c.name = "Intro --- v2".into();
+        }
+        let x = export_xmeml(&p);
+        assert!(!x.contains("---") && !x.contains("\"Intro --"), "{x}");
+        assert!(x.contains("clip \"Intro - - - v2\""), "{x}");
+        // UNC paths keep their host
+        assert_eq!(pathurl("\\\\nas\\share\\a b\\v.mp4"), "file://nas/share/a%20b/v.mp4");
     }
 }

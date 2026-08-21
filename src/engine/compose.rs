@@ -7,7 +7,8 @@
 //!     placement size (clamped to native size, min 1) — decoders scale for us.
 //!   * Text: `text.render(style, canvas_w / project.width)` (already at canvas scale) — contain=false.
 //!   * Transform the layer into canvas space per `placement()` (bilinear for rotation / non-integer
-//!     scale; straight row copies for the common axis-aligned case), then `blend::composite`.
+//!     scale; straight row copies for the common axis-aligned case), then `blend::composite_row` /
+//!     `blend::composite_rect`.
 //! Background is opaque black. Out-of-view layers are skipped.
 
 use crate::engine::blend;
@@ -131,8 +132,16 @@ impl Compositor {
                         if !(p.w.is_finite() && p.h.is_finite()) {
                             continue;
                         }
-                        let dw = (p.w.round() as u32).clamp(1, native.0);
-                        let dh = (p.h.round() as u32).clamp(1, native.1);
+                        // Keyframed scale on an image: decode once at the size the largest key needs (images
+                        // always go through ffmpeg, which re-decodes per requested size); draw_layer resizes.
+                        let pd = match clip.scale.keys.iter().max_by(|a, b| a.v.total_cmp(&b.v)) {
+                            Some(k) if clip.kind == ClipKind::Image => {
+                                placement(project, clip, clip.start + k.t, native, w, h, true)
+                            }
+                            _ => p,
+                        };
+                        let dw = (pd.w.round() as u32).clamp(1, native.0);
+                        let dh = (pd.h.round() as u32).clamp(1, native.1);
                         if !dec.frame_at(clip.src_time(t), dw, dh, &mut self.src) {
                             continue;
                         }
@@ -257,7 +266,7 @@ pub fn draw_layer(dst: &mut Frame, src: &Frame, p: Placement, mode: BlendMode, o
 mod tests {
     use super::*;
     use crate::media::{Backend, VideoSource};
-    use crate::model::{Asset, ClipKind, Project};
+    use crate::model::{Asset, ClipKind, Keyframe, Project};
 
     fn px(f: &Frame, x: u32, y: u32) -> [u8; 4] {
         let i = (y * f.width + x) as usize * 4;
@@ -402,5 +411,55 @@ mod tests {
         empty.insert_video("other", Box::new(FakeVideo([0, 0, 0, 255])));
         comp.render(&project, 1.0, 16, 16, &mut empty, &mut text, &mut out);
         assert_eq!(px(&out, 8, 8), [0, 0, 0, 255]);
+    }
+
+    /// Records every (w, h) it is asked for.
+    struct SizeSpy(std::sync::Arc<std::sync::Mutex<Vec<(u32, u32)>>>);
+    impl VideoSource for SizeSpy {
+        fn size(&self) -> (u32, u32) {
+            (320, 240)
+        }
+        fn duration(&self) -> f64 {
+            0.0
+        }
+        fn fps(&self) -> f64 {
+            0.0
+        }
+        fn frame_at(&mut self, _t: f64, w: u32, h: u32, out: &mut Frame) -> bool {
+            self.0.lock().unwrap().push((w, h));
+            out.resize(w, h);
+            out.fill([0, 0, 255, 255]);
+            true
+        }
+    }
+
+    #[test]
+    fn keyframed_image_scale_decodes_one_size() {
+        let mut project = Project::new();
+        (project.width, project.height, project.fps) = (320, 240, 30.0);
+        let mut a = fake_asset();
+        a.kind = ClipKind::Image;
+        a.path = "Z:\\nope\\pic.png".into();
+        let id = project.add_asset(a);
+        project.insert_asset_clips(id, 0.0, None);
+        let clip = &mut project.tracks[0].clips[0];
+        assert_eq!(clip.kind, ClipKind::Image);
+        clip.scale.keys = vec![Keyframe { t: 0.0, v: 0.25 }, Keyframe { t: 4.0, v: 0.5 }];
+        let sizes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut pool = DecoderPool::new(Backend::Ffmpeg);
+        pool.insert_video(&project.assets[0].path, Box::new(SizeSpy(sizes.clone())));
+        let mut comp = Compositor::new();
+        let mut text = TextRasterizer::new();
+        let mut out = Frame::default();
+        for i in 0..5 {
+            comp.render(&project, i as f64, 320, 240, &mut pool, &mut text, &mut out);
+        }
+        // one decode size for the whole clip (the largest key), yet drawn at the animated size
+        let s = sizes.lock().unwrap().clone();
+        assert_eq!(s.len(), 5);
+        assert!(s.iter().all(|&x| x == (160, 120)), "{s:?}");
+        comp.render(&project, 0.0, 320, 240, &mut pool, &mut text, &mut out);
+        assert_eq!(px(&out, 160, 120), [0, 0, 255, 255]);
+        assert_eq!(px(&out, 100, 120), [0, 0, 0, 255]); // scale 0.25 → 80 px wide, centred
     }
 }
