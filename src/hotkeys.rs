@@ -28,8 +28,20 @@ const NONE: Modifiers = Modifiers::NONE;
 const CTRL: Modifiers = Modifiers::CTRL;
 const SHIFT: Modifiers = Modifiers::SHIFT;
 const ALT: Modifiers = Modifiers::ALT;
-const CTRL_SHIFT: Modifiers = Modifiers { alt: false, ctrl: true, shift: true, mac_cmd: false, command: true };
-const CTRL_ALT: Modifiers = Modifiers { alt: true, ctrl: true, shift: false, mac_cmd: false, command: true };
+const CTRL_SHIFT: Modifiers = Modifiers { alt: false, ctrl: true, shift: true, mac_cmd: false, command: false };
+const CTRL_ALT: Modifiers = Modifiers { alt: true, ctrl: true, shift: false, mac_cmd: false, command: false };
+
+/// Canonical form so `Ctrl` and `Command` (egui sets both on Windows) compare equal.
+fn canon(ks: &KeyboardShortcut) -> (bool, bool, bool, Key) {
+    (ks.modifiers.ctrl || ks.modifiers.command, ks.modifiers.shift, ks.modifiers.alt, ks.logical_key)
+}
+fn same(a: Option<KeyboardShortcut>, b: Option<KeyboardShortcut>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => canon(&a) == canon(&b),
+        _ => false,
+    }
+}
 
 actions! {
     NewProject => "new_project", "New Project", sc(CTRL, Key::N);
@@ -99,7 +111,7 @@ impl Hotkeys {
         s.hotkeys.clear();
         for &a in Action::ALL {
             let cur = self.get(a);
-            if cur != a.default_shortcut() {
+            if !same(cur, a.default_shortcut()) {
                 s.hotkeys.insert(a.id().to_string(), cur.map(|k| Self::format(&k)).unwrap_or_default());
             }
         }
@@ -111,7 +123,7 @@ impl Hotkeys {
     pub fn set(&mut self, a: Action, ks: Option<KeyboardShortcut>) {
         if let Some(k) = ks {
             for (_, v) in self.map.iter_mut() {
-                if *v == Some(k) {
+                if same(*v, Some(k)) {
                     *v = None;
                 }
             }
@@ -126,7 +138,7 @@ impl Hotkeys {
     }
     /// Which action (if any) already uses this shortcut.
     pub fn conflict(&self, ks: KeyboardShortcut) -> Option<Action> {
-        Action::ALL.iter().copied().find(|&a| self.get(a) == Some(ks))
+        Action::ALL.iter().copied().find(|&a| same(self.get(a), Some(ks)))
     }
     /// Display text for menus ("Ctrl+B" or "").
     pub fn text(&self, a: Action) -> String {
@@ -190,7 +202,7 @@ mod tests {
         for &a in Action::ALL {
             if let Some(k) = a.default_shortcut() {
                 let txt = Hotkeys::format(&k);
-                assert_eq!(Hotkeys::parse(&txt), Some(k), "{txt}");
+                assert!(same(Hotkeys::parse(&txt), Some(k)), "{txt}");
             }
         }
     }

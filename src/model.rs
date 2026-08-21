@@ -1104,7 +1104,7 @@ mod tests {
     #[test]
     fn move_and_fit() {
         let mut p = Project::from_media(asset(0, 10.0, 1));
-        let a2 = asset(0, 3.0, 0);
+        let a2 = asset(1, 3.0, 0);
         let aid = p.add_asset(a2);
         let ids = p.insert_asset_clips(aid, 10.0, Some(0));
         assert_eq!(ids.len(), 1);
