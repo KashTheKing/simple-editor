@@ -816,10 +816,10 @@ mod tests {
     fn line_tool_keeps_the_press_as_its_origin() {
         // (dx, dy) of the drag -> expected sign of (w, h)
         for (to, want) in [
-            (pos2(400.0, 250.0), (1.0, 1.0)),   // right + down
-            (pos2(400.0, 50.0), (1.0, -1.0)),   // right + up
-            (pos2(100.0, 250.0), (-1.0, 1.0)),  // left  + down
-            (pos2(100.0, 50.0), (-1.0, -1.0)),  // left  + up
+            (pos2(400.0, 250.0), (1.0, 1.0)),  // right + down
+            (pos2(400.0, 50.0), (1.0, -1.0)),  // right + up
+            (pos2(100.0, 250.0), (-1.0, 1.0)), // left  + down
+            (pos2(100.0, 50.0), (-1.0, -1.0)), // left  + up
         ] {
             let mut h = H::new();
             h.tool = Tool::Shape(ShapeKind::Line);

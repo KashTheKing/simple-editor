@@ -908,7 +908,8 @@ pub fn show(
     // ---- copy / paste the selected keys (consumed, and only over the graph: Ctrl+V elsewhere is not ours) ----
     if ui.rect_contains_pointer(graph) {
         if ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::C)) && !state.selected.is_empty() {
-            let key_of = |&(p, k): &(usize, usize)| prop_ref(&clip_data, p).and_then(|a| a.keys.get(k)).map(|x| (p, *x));
+            let key_of =
+                |&(p, k): &(usize, usize)| prop_ref(&clip_data, p).and_then(|a| a.keys.get(k)).map(|x| (p, *x));
             let picked: Vec<(usize, Keyframe)> = state.selected.iter().filter_map(key_of).collect();
             let t0 = picked.iter().map(|(_, k)| k.t).fold(f64::MAX, f64::min);
             state.clipboard = picked.into_iter().map(|(p, k)| (p, Keyframe { t: k.t - t0, ..k })).collect();
@@ -1446,7 +1447,8 @@ mod tests {
     #[test]
     fn copy_paste_lands_at_the_playhead_keeping_relative_times() {
         let mut h = Harness::new();
-        let ctrl = |key| Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::CTRL };
+        let ctrl =
+            |key| Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::CTRL };
         h.frame(vec![Event::PointerMoved(h.scale_key_pos(0))]); // the shortcuts only fire over the graph
         h.state.selected = vec![(2, 0), (2, 1)];
         h.frame(vec![ctrl(egui::Key::C)]);
