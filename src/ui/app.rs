@@ -1273,6 +1273,12 @@ impl App {
                         palette,
                         undo: &mut push,
                         frame,
+                        // TODO(app agent): pass the real tool / settings / pre-render progress and
+                        // consume resp.set_quality, resp.set_movie_mode, resp.new_shape, resp.stroke.
+                        tool: crate::ui::tools::Tool::Select,
+                        quality: 100,
+                        movie_mode: false,
+                        prerender: None,
                     },
                 );
                 self.player.set_canvas(resp.canvas.0, resp.canvas.1, self.settings.preview_max_width);
@@ -1372,7 +1378,7 @@ impl App {
                 let resp = {
                     let App { project, settings, library: lib, undo, redo, palette, .. } = self;
                     let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
-                    library::show(ui, lib, project, settings, palette, &mut push)
+                    library::show(ui, lib, project, settings, None, palette, &mut push)
                 };
                 if resp.edited {
                     self.after_edit();
@@ -1437,7 +1443,9 @@ impl App {
                 let changed = {
                     let App { project, selection, playhead, undo, redo, palette, .. } = self;
                     let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
-                    effects_ui::show(ui, project, selection, *playhead, palette, &mut push)
+                    // TODO(app agent): also consume resp.mask_for (switch to the mask tool) and
+                    // resp.open_nodes (open the node pane).
+                    effects_ui::show(ui, project, selection, *playhead, palette, &mut push).edited
                 };
                 if changed {
                     self.after_edit();

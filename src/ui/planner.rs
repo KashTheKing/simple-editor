@@ -12,6 +12,7 @@
 use crate::media::thumbs::ThumbCache;
 use crate::model::{ClipKind, Id, PlanItem, Project, LABEL_COLORS};
 use crate::theme::Palette;
+use crate::ui::markers_ui::x_button;
 use crate::ui::{label_color, DragPayload};
 use eframe::egui::{self, Response, RichText, TextEdit};
 
@@ -214,7 +215,7 @@ fn tree_rows(ui: &mut egui::Ui, items: &mut [PlanItem], depth: usize, t: &mut Tr
                 if ui.small_button("⇥").on_hover_text("Indent").clicked() {
                     op(Op::In(it.id));
                 }
-                if ui.small_button("✕").clicked() {
+                if x_button(ui).on_hover_text("Delete task").clicked() {
                     op(Op::Remove(it.id));
                 }
             })
@@ -390,7 +391,7 @@ fn details(
                 if ui.small_button("Add to timeline").clicked() {
                     resp.add_to_timeline.push(aid);
                 }
-                if ui.small_button("✕").clicked() {
+                if x_button(ui).on_hover_text("Remove from moodboard").clicked() {
                     rm = Some(i);
                 }
             });
