@@ -114,6 +114,8 @@ pub(crate) enum Glyph {
     Spacer,
     /// An eighth note — the audio-effects catalogue card (no picture to render for those).
     MusicNote,
+    /// A file-explorer folder: a tab sitting on a body.
+    Folder,
 }
 
 const STRIP: [(Tool, Glyph, &str); 16] = [
@@ -714,6 +716,12 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
             p.line_segment([head + egui::vec2(2.4, -0.5), stem_top], Stroke::new(1.6, fg));
             let flag = vec![stem_top, stem_top + egui::vec2(4.0, 1.5), stem_top + egui::vec2(0.5, 4.5)];
             p.add(egui::Shape::convex_polygon(flag, fg, Stroke::NONE));
+        }
+        Glyph::Folder => {
+            let body = egui::Rect::from_center_size(c + egui::vec2(0.0, 1.5), egui::vec2(12.0, 8.0));
+            let tab = egui::Rect::from_min_size(body.left_top() - egui::vec2(0.0, 2.5), egui::vec2(5.0, 2.5));
+            p.rect_stroke(tab, CornerRadius::ZERO, stroke, StrokeKind::Inside);
+            p.rect_stroke(body, CornerRadius::ZERO, stroke, StrokeKind::Inside);
         }
     }
 }
