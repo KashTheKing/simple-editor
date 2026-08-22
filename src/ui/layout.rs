@@ -630,7 +630,8 @@ mod tests {
             let _ = ctx.run(egui::RawInput::default(), |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let rect = egui::Rect::from_min_size(ui.max_rect().min, egui::vec2(w, 200.0));
-                    let b = egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::top_down_justified(egui::Align::Min));
+                    let menu = egui::Layout::top_down_justified(egui::Align::Min);
+                    let b = egui::UiBuilder::new().max_rect(rect).layout(menu);
                     ui.scope_builder(b, |ui| {
                         inner = add(ui);
                         width = ui.min_rect().width();
