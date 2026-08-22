@@ -413,12 +413,13 @@ fn key_range(state: &TimelineState, clip: Id, prop: usize, a: &crate::model::Ani
 /// a gain behind a nonlinear dB slider.
 /// ponytail: same property order as curves.rs — move it next to `prop_ref` if a second caller shows up.
 fn prop_range(c: &Clip, i: usize) -> Option<(f64, f64)> {
-    let nb = if c.is_visual() { 5 } else { 2 };
+    let nb = if c.is_visual() { 6 } else { 3 };
     if i < nb {
         return match (c.is_visual(), i) {
-            (true, 2) => Some((0.01, 20.0)), // Scale
-            (true, 4) => Some((0.0, 1.0)),   // Opacity
-            (false, 1) => Some((-1.0, 1.0)), // Pan
+            (true, 2) => Some((0.01, 20.0)),              // Scale
+            (true, 4) => Some((0.0, 1.0)),                // Opacity
+            (false, 1) => Some((-1.0, 1.0)),              // Pan
+            (_, _) if i == nb - 1 => Some((0.01, 100.0)), // Speed — same clamp as Clip::set_speed
             _ => None,
         };
     }
@@ -941,6 +942,17 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     badge,
                     small.clone(),
                     pal.text,
+                );
+            }
+            // retime preview: while the Stretch tool drags this clip's edge, show the rate it is landing on
+            // big in the middle — the corner badge is easy to miss mid-drag
+            if matches!(&state.drag, Some(Drag { g: Gesture::Stretch { id, .. }, .. }) if *id == clip.id) {
+                name_pc.text(
+                    vis.center(),
+                    Align2::CENTER_CENTER,
+                    format!("{:.2}x", clip.speed),
+                    font.clone(),
+                    pal.accent,
                 );
             }
             if clip.kind == ClipKind::Adjustment {
@@ -2704,9 +2716,11 @@ mod tests {
         assert_eq!(prop_range(h.video_clip(), 0), None, "Position X is unbounded");
         assert_eq!(prop_range(h.audio_clip(), 0), None, "Volume is dB-scaled");
         assert_eq!(prop_range(h.audio_clip(), 1), Some((-1.0, 1.0)), "Pan");
+        assert_eq!(prop_range(h.video_clip(), 5), Some((0.01, 100.0)), "Speed");
+        assert_eq!(prop_range(h.audio_clip(), 2), Some((0.01, 100.0)), "Speed (audio)");
         h.project.tracks[0].clips[0].effects.push(Effect::new(EffectKind::Blur));
         let spec = h.video_clip().effects[0].specs()[0];
-        assert_eq!(prop_range(h.video_clip(), 5), Some((spec.min, spec.max)), "first Blur param");
+        assert_eq!(prop_range(h.video_clip(), 6), Some((spec.min, spec.max)), "first Blur param");
     }
 
     #[test]

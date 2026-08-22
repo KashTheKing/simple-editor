@@ -1,5 +1,5 @@
 //! Curve (graph) editor for the FIRST selected clip: x = clip-local time over [0, duration], y = value.
-//! Left: a list of the clip's keyframeable properties (`Clip::props_mut` names + "Volume"/"Pan" +
+//! Left: a list of the clip's keyframeable properties (`Clip::props_mut` names + "Volume"/"Pan"/"Speed" +
 //! "<effect>: <param>" for effect params) with a colour swatch and a checkbox to show/hide each curve
 //! (auto-scaled per property; the selected property's scale drives the y axis labels). Right: the graph —
 //! curves drawn with the eased segments (sample `Animated::at` every ~2 px), keys as diamonds (accent when
@@ -136,9 +136,9 @@ pub struct CurvesResponse {
 
 fn base_count(c: &Clip) -> usize {
     if c.is_visual() {
-        5
+        6
     } else {
-        2
+        3
     }
 }
 
@@ -147,8 +147,11 @@ pub(crate) fn prop_count(c: &Clip) -> usize {
 }
 
 pub(crate) fn prop_label(c: &Clip, i: usize) -> String {
-    let names: &[&str] =
-        if c.is_visual() { &["Position X", "Position Y", "Scale", "Rotation", "Opacity"] } else { &["Volume", "Pan"] };
+    let names: &[&str] = if c.is_visual() {
+        &["Position X", "Position Y", "Scale", "Rotation", "Opacity", "Speed"]
+    } else {
+        &["Volume", "Pan", "Speed"]
+    };
     if i < names.len() {
         return names[i].to_string();
     }
@@ -172,12 +175,15 @@ pub(crate) fn prop_ref(c: &Clip, i: usize) -> Option<&Animated> {
                 1 => &c.y,
                 2 => &c.scale,
                 3 => &c.rotation,
-                _ => &c.opacity,
+                4 => &c.opacity,
+                _ => &c.speed_curve,
             }
-        } else if i == 0 {
-            &c.volume
         } else {
-            &c.pan
+            match i {
+                0 => &c.volume,
+                1 => &c.pan,
+                _ => &c.speed_curve,
+            }
         });
     }
     let mut i = i - nb;
@@ -199,12 +205,15 @@ pub(crate) fn prop_mut(c: &mut Clip, i: usize) -> Option<&mut Animated> {
                 1 => &mut c.y,
                 2 => &mut c.scale,
                 3 => &mut c.rotation,
-                _ => &mut c.opacity,
+                4 => &mut c.opacity,
+                _ => &mut c.speed_curve,
             }
-        } else if i == 0 {
-            &mut c.volume
         } else {
-            &mut c.pan
+            match i {
+                0 => &mut c.volume,
+                1 => &mut c.pan,
+                _ => &mut c.speed_curve,
+            }
         });
     }
     let mut i = i - nb;
@@ -1050,18 +1059,22 @@ mod tests {
     fn prop_plumbing_matches_labels() {
         let mut c = Clip::new(1, ClipKind::Video, "v", 0.0, 2.0);
         c.effects.push(crate::model::Effect::new(crate::model::EffectKind::Blur));
-        assert_eq!(prop_count(&c), 6);
+        assert_eq!(prop_count(&c), 7);
         assert_eq!(prop_label(&c, 0), "Position X");
         assert_eq!(prop_label(&c, 2), "Scale");
-        assert_eq!(prop_label(&c, 5), "Blur: Radius");
+        assert_eq!(prop_label(&c, 5), "Speed");
+        assert_eq!(prop_label(&c, 6), "Blur: Radius");
         c.scale.value = 2.5;
         assert_eq!(prop_ref(&c, 2).map(|a| a.value), Some(2.5));
-        prop_mut(&mut c, 5).map(|a| a.value = 9.0);
+        prop_mut(&mut c, 5).map(|a| a.value = 0.5);
+        assert_eq!(c.speed_curve.value, 0.5);
+        prop_mut(&mut c, 6).map(|a| a.value = 9.0);
         assert_eq!(c.effects[0].params[0].value, 9.0);
         let a = Clip::new(2, ClipKind::Audio, "a", 0.0, 2.0);
-        assert_eq!(prop_count(&a), 2);
+        assert_eq!(prop_count(&a), 3);
         assert_eq!(prop_label(&a, 0), "Volume");
         assert_eq!(prop_label(&a, 1), "Pan");
+        assert_eq!(prop_label(&a, 2), "Speed");
     }
 
     #[test]

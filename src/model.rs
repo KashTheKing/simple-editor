@@ -1755,6 +1755,10 @@ pub struct Clip {
     /// Playback rate (1 = normal, 2 = twice as fast, 0.5 = half speed). Always > 0.
     #[serde(default = "one")]
     pub speed: f64,
+    /// Keyframed speed ramp (curve editor). Only consulted while it has keys — the constant `speed`
+    /// above still owns the source window and the duration.
+    #[serde(default = "a1")]
+    pub speed_curve: Animated,
     /// Play the source window backwards.
     #[serde(default)]
     pub reverse: bool,
@@ -1825,6 +1829,7 @@ impl Clip {
             enabled: true,
             label: 0,
             speed: 1.0,
+            speed_curve: a1(),
             reverse: false,
             freeze: None,
             x: a0(),
@@ -1861,12 +1866,23 @@ impl Clip {
     pub fn src_len(&self) -> f64 {
         self.duration * self.speed
     }
+    /// Playback rate at clip-local time `l` (the ramp when keyframed, else the constant).
+    pub fn rate(&self, l: f64) -> f64 {
+        if self.speed_curve.is_animated() {
+            self.speed_curve.at(l).clamp(0.01, 100.0)
+        } else {
+            self.speed
+        }
+    }
     /// Source media time at timeline time t (speed, reverse and freeze applied).
     pub fn src_time(&self, t: f64) -> f64 {
         if let Some(f) = self.freeze {
             return f;
         }
-        let l = self.local(t) * self.speed;
+        // ponytail: a keyframed ramp samples the rate at the clip-local time instead of integrating it, so
+        // the source lands where the keys say at the keys and drifts between them. Sum the eased segments
+        // if the drift ever shows.
+        let l = self.local(t) * self.rate(self.local(t));
         if self.reverse {
             self.src_in + self.src_len() - l
         } else {
@@ -1889,7 +1905,7 @@ impl Clip {
     }
     /// Speed, reverse or freeze in effect.
     pub fn is_retimed(&self) -> bool {
-        (self.speed - 1.0).abs() > EPS || self.reverse || self.freeze.is_some()
+        (self.speed - 1.0).abs() > EPS || self.speed_curve.is_animated() || self.reverse || self.freeze.is_some()
     }
     /// Anything that needs re-rendering (disqualifies a lossless `-c copy` export).
     pub fn has_effects(&self) -> bool {
@@ -1915,9 +1931,13 @@ impl Clip {
             self.duration = (len / speed).max(MIN_CLIP);
         }
         self.speed = speed;
+        // keep the curve's constant in step so the graph editor starts a ramp from the real rate
+        if !self.speed_curve.is_animated() {
+            self.speed_curve.value = speed;
+        }
     }
-    pub fn animated(&self) -> [&Animated; 7] {
-        [&self.x, &self.y, &self.scale, &self.rotation, &self.opacity, &self.volume, &self.pan]
+    pub fn animated(&self) -> [&Animated; 8] {
+        [&self.x, &self.y, &self.scale, &self.rotation, &self.opacity, &self.volume, &self.pan, &self.speed_curve]
     }
     /// Every keyframeable property including effect parameters.
     pub fn all_animated_mut(&mut self) -> Vec<&mut Animated> {
@@ -1929,6 +1949,7 @@ impl Clip {
             &mut self.opacity,
             &mut self.volume,
             &mut self.pan,
+            &mut self.speed_curve,
         ];
         for e in &mut self.effects {
             v.extend(e.params.iter_mut());
@@ -3654,6 +3675,10 @@ impl Project {
                 if !(c.speed.is_finite() && c.speed > 0.0) {
                     c.speed = 1.0;
                 }
+                c.speed_curve.keys.retain(|k| k.t.is_finite() && k.v.is_finite() && k.v > 0.0);
+                if !c.speed_curve.is_animated() {
+                    c.speed_curve.value = c.speed; // older files have no curve at all
+                }
                 for e in &mut c.effects {
                     // older files / edited files: make sure every parameter exists
                     while e.params.len() < e.kind.params().len() {
@@ -3932,6 +3957,22 @@ mod tests {
         assert_eq!(f.freeze, Some(8.0));
         assert!((f.src_time(4.0) - 8.0).abs() < 1e-9);
         assert!(p.max_clip_duration(f).is_infinite());
+    }
+
+    #[test]
+    fn keyframed_speed_ramps_src_time() {
+        let mut c = Clip::new(1, ClipKind::Video, "v", 2.0, 4.0);
+        c.speed_curve.keys =
+            vec![Keyframe { t: 0.0, v: 1.0, ease: Ease::Linear }, Keyframe { t: 4.0, v: 3.0, ease: Ease::Linear }];
+        assert!(c.is_retimed());
+        // local 2 s at rate 2 → source 4 s; local 3 s at rate 2.5 → source 7.5 s
+        assert!((c.src_time(4.0) - 4.0).abs() < 1e-9, "{}", c.src_time(4.0));
+        assert!((c.src_time(5.0) - 7.5).abs() < 1e-9, "{}", c.src_time(5.0));
+        // no keys → the constant speed still rules
+        c.speed_curve.keys.clear();
+        c.set_speed(2.0);
+        assert!((c.src_time(4.0) - 4.0).abs() < 1e-9);
+        assert!((c.speed_curve.value - 2.0).abs() < 1e-9);
     }
 
     #[test]

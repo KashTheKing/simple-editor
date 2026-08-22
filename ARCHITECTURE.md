@@ -99,7 +99,8 @@ src/selftest.rs        headless end-to-end check (`--selftest`)
 monotonic `next_id`.
 
 * `Clip` — `kind` (Video/Image/Text/Audio/Sequence/Shape/Adjustment), timing (`start`, `duration`,
-  `src_in`), retime (`speed`, `reverse`, `freeze`), transform/`opacity`/`blend`, `effects` (linear stack)
+  `src_in`), retime (`speed` + the keyframable `speed_curve` ramp, `reverse`, `freeze`),
+  transform/`opacity`/`blend`, `effects` (linear stack)
   or `graph` (node DAG), `mask`, audio (`volume`, `pan`, `fade_in/out`, `bus`), `text`, `shape`,
   `markers`, `label`, `link` (clips that move/split/delete together).
 * `Animated { value, keys }` — every keyframeable property. Keys carry an `Ease`
