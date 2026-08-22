@@ -1,21 +1,38 @@
-//! Transitions panel. Catalogue: TransitionKind::ALL with a default duration DragValue (0.1..5 s) and,
-//! for FadeToColor a colour button, for Push/Wipe a direction selector. "Add at start of selected clip"
-//! (Project::add_transition(right = selected clip)) and "Add at end of selected clip" (right = the clip
-//! that starts where the selected one ends, on the same track) — disabled with a hint when the cut has no
-//! abutting neighbour. Below: the transitions touching the selected clip (Project::transitions_of):
-//! kind combo, duration, colour/direction/ease editors, ✕ remove. Returns true when the project changed
-//! (call `undo` once per gesture first).
+//! Transitions panel. Catalogue: one CARD per `TransitionKind` (same size and frame as an effect card),
+//! previewing the transition half-way over the stock picture the effect thumbnails are rendered from —
+//! the app hands it over with `set_stock`, and without it a card falls back to a neutral named tile.
+//! A card selects the kind, and is a drag source emitting `DragPayload::Transition`. Next to the grid the
+//! default duration DragValue (0.1..5 s), a colour button for FadeToColor and a direction selector for
+//! Push/Wipe. "Add at start" / "Add at end" apply it to EVERY selected clip through `add_transitions`,
+//! which is also what the menu, the hotkeys and MCP call — it records the choice in `TransitionsState`,
+//! so Ctrl+T (Action::AddLastTransition) repeats whatever was applied last, whichever path applied it.
+//! Below: the transitions touching the first selected clip (Project::transitions_of): kind combo,
+//! duration, colour/direction/ease editors, ✕ remove. Returns true when the project changed (call
+//! `undo` once per gesture first).
 
 use crate::model::{Ease, Id, Project, Transition, TransitionKind, ABUT_EPS};
 use crate::theme::Palette;
-use crate::ui::Gesture;
-use eframe::egui::{self, Button, DragValue};
+use crate::ui::effects_ui::CARD;
+use crate::ui::{DragPayload, Gesture};
+use eframe::egui::{self, pos2, vec2, Button, Color32, DragValue, Rect, Response, Stroke, StrokeKind, Vec2};
+use std::cell::RefCell;
 
 #[cfg(test)]
 use crate::ui::effects_ui::test_rects;
 
+thread_local! {
+    /// The catalogue's stock picture, uploaded by the app from the same source as the effect thumbnails.
+    /// The handle lives here so the texture outlives the app's own thumbnail list.
+    static STOCK: RefCell<Option<egui::TextureHandle>> = const { RefCell::new(None) };
+}
+
+/// The app hands over the picture the effect catalogue renders from; the cards preview over it.
+pub fn set_stock(tex: egui::TextureHandle) {
+    STOCK.with(|s| *s.borrow_mut() = Some(tex));
+}
+
 pub struct TransitionsState {
-    /// Catalogue settings for the next transition to add.
+    /// Catalogue settings for the next transition to add — and the memory of the last one added.
     pub duration: f64,
     pub kind: usize,
     pub color: [u8; 4],
@@ -28,11 +45,157 @@ impl Default for TransitionsState {
     }
 }
 
+impl TransitionsState {
+    /// The selected kind — also the one Ctrl+T repeats, because every apply path records here.
+    pub fn kind(&self) -> TransitionKind {
+        TransitionKind::ALL[self.kind.min(TransitionKind::ALL.len() - 1)]
+    }
+    /// Remember what was just applied (from any path) so Ctrl+T is never stale.
+    pub(crate) fn remember(&mut self, kind: TransitionKind, dur: f64) {
+        self.kind = TransitionKind::ALL.iter().position(|&k| k == kind).unwrap_or(0);
+        self.duration = dur;
+    }
+}
+
 /// The clip starting exactly where `id` ends, on the same track.
 pub(crate) fn right_neighbor(project: &Project, id: Id) -> Option<Id> {
     let ti = project.track_of(id)?;
     let c = project.clip(id)?;
     project.tracks[ti].clips.iter().find(|o| o.id != id && (o.start - c.end()).abs() < ABUT_EPS).map(|o| o.id)
+}
+
+/// A clip abuts the left edge of `id`, i.e. there is a cut to put a transition on.
+fn has_left(project: &Project, id: Id) -> bool {
+    let Some(ti) = project.track_of(id) else { return false };
+    project.clip(id).is_some_and(|c| project.tracks[ti].left_of(c).is_some())
+}
+
+/// Add a transition at the cut left of every id (or at its right edge with `at_end`), with the colour
+/// and direction from `st`, and record the choice in `st`. THE funnel: panel, menu, hotkeys and MCP all
+/// come through here (or call `remember`), which is what keeps Ctrl+T on the last transition actually
+/// used. Returns how many were added — a transition always belongs to the clip on the RIGHT of the cut,
+/// and `Project::add_transition` replaces the one already on that cut, so overlapping selections are fine.
+pub(crate) fn add_transitions(
+    project: &mut Project,
+    ids: &[Id],
+    st: &mut TransitionsState,
+    kind: TransitionKind,
+    dur: f64,
+    at_end: bool,
+) -> usize {
+    st.remember(kind, dur);
+    let mut added = 0;
+    for &id in ids {
+        let right = if at_end { right_neighbor(project, id) } else { project.clip(id).map(|c| c.id) };
+        let Some(right) = right else { continue };
+        if let Some(tid) = project.add_transition(right, kind, dur) {
+            if let Some(t) = project.transition_mut(tid) {
+                t.color = st.color;
+                t.direction = st.direction;
+            }
+            added += 1;
+        }
+    }
+    added
+}
+
+/// Half-way through the transition: enough to show the wipe/push/fade on a still card.
+const PREVIEW_P: f32 = 0.5;
+
+/// Where the incoming clip travels from, mirroring `compose::dir_vec` (0 left, 1 right, 2 up, 3 down).
+fn dir_vec(direction: u8, size: Vec2) -> Vec2 {
+    match direction {
+        0 => vec2(-size.x, 0.0),
+        1 => vec2(size.x, 0.0),
+        2 => vec2(0.0, -size.y),
+        _ => vec2(0.0, size.y),
+    }
+}
+
+/// The part of the tile the incoming clip has reached at `p` (same regions as `compose`'s wipe).
+fn wipe_rect(tile: Rect, direction: u8, p: f32) -> Rect {
+    let (w, h) = (tile.width() * p, tile.height() * p);
+    match direction {
+        0 => Rect::from_min_max(tile.min, pos2(tile.left() + w, tile.bottom())),
+        1 => Rect::from_min_max(pos2(tile.right() - w, tile.top()), tile.max),
+        2 => Rect::from_min_max(tile.min, pos2(tile.right(), tile.top() + h)),
+        _ => Rect::from_min_max(pos2(tile.left(), tile.bottom() - h), tile.max),
+    }
+}
+
+/// Draw the transition over the stock picture: A is the picture, B the same picture tinted, so the two
+/// sides of the cut read apart without decoding a second image.
+fn paint_preview(
+    p: &egui::Painter,
+    tile: Rect,
+    tex: egui::TextureId,
+    kind: TransitionKind,
+    st: &TransitionsState,
+    palette: &Palette,
+) {
+    let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+    let (a, b) = (Color32::WHITE, palette.accent);
+    match kind {
+        TransitionKind::CrossFade => {
+            p.image(tex, tile, uv, a);
+            p.image(tex, tile, uv, b.gamma_multiply(0.5));
+        }
+        TransitionKind::FadeToColor => {
+            p.image(tex, tile, uv, a);
+            let c = st.color;
+            p.rect_filled(tile, 2.0, Color32::from_rgba_unmultiplied(c[0], c[1], c[2], 190));
+        }
+        TransitionKind::Push => {
+            let d = dir_vec(st.direction, tile.size());
+            let p = p.with_clip_rect(tile);
+            p.image(tex, tile.translate(-d * PREVIEW_P), uv, a);
+            p.image(tex, tile.translate(d * (1.0 - PREVIEW_P)), uv, b);
+        }
+        TransitionKind::Wipe => {
+            p.image(tex, tile, uv, a);
+            p.with_clip_rect(wipe_rect(tile, st.direction, PREVIEW_P)).image(tex, tile, uv, b);
+        }
+    }
+}
+
+/// One catalogue card: the preview tile with the name underneath, selected/hover border. Dragging it
+/// carries `DragPayload::Transition`; clicking it selects the kind.
+fn transition_card(
+    ui: &mut egui::Ui,
+    kind: TransitionKind,
+    st: &TransitionsState,
+    palette: &Palette,
+    selected: bool,
+) -> Response {
+    let font = egui::TextStyle::Small.resolve(ui.style());
+    let name_h = ui.text_style_height(&egui::TextStyle::Small);
+    let id = ui.id().with(("tr_card", kind.name()));
+    let src = ui.dnd_drag_source(id, DragPayload::Transition(kind), |ui| {
+        let (rect, _) = ui.allocate_exact_size(vec2(CARD.0, CARD.1 + name_h + 2.0), egui::Sense::hover());
+        let tile = Rect::from_min_size(rect.min, vec2(CARD.0, CARD.1));
+        let p = ui.painter();
+        match STOCK.with(|s| s.borrow().as_ref().map(|t| t.id())) {
+            Some(tex) => paint_preview(p, tile, tex, kind, st, palette),
+            None => {
+                // no GPU thumbnails yet: a neutral tile that still names the transition
+                p.rect_filled(tile, 2.0, palette.header);
+                let g = p.layout(kind.name().to_string(), font.clone(), palette.text_dim, CARD.0 - 8.0);
+                p.galley(tile.center() - g.size() / 2.0, g, palette.text_dim);
+            }
+        }
+        let label = p.layout_no_wrap(kind.name().to_string(), font, palette.text);
+        let lx = (rect.left() + (CARD.0 - label.size().x) / 2.0).max(rect.left());
+        p.with_clip_rect(Rect::from_min_max(pos2(rect.left(), tile.bottom()), rect.max)).galley(
+            pos2(lx, tile.bottom() + 2.0),
+            label,
+            palette.text,
+        );
+    });
+    let r = ui.interact(src.response.rect, id.with("click"), egui::Sense::click());
+    let tile = Rect::from_min_size(src.response.rect.min, vec2(CARD.0, CARD.1));
+    let border = if selected || r.hovered() { palette.accent } else { palette.border };
+    ui.painter().rect_stroke(tile, 2.0, Stroke::new(if selected { 2.0 } else { 1.0 }, border), StrokeKind::Inside);
+    r.on_hover_text(format!("{} — click to pick, drag onto a cut", kind.name()))
 }
 
 fn direction_row(ui: &mut egui::Ui, dir: &mut u8, g: &mut Gesture) {
@@ -47,7 +210,7 @@ pub fn show(
     project: &mut Project,
     selection: &[Id],
     _playhead: f64,
-    _palette: &Palette,
+    palette: &Palette,
     undo: &mut dyn FnMut(&Project),
 ) -> bool {
     #[cfg(test)]
@@ -58,13 +221,19 @@ pub fn show(
     // ---- catalogue / defaults for the next transition ----
     ui.strong("Transitions");
     state.kind = state.kind.min(TransitionKind::ALL.len() - 1);
-    let kind = TransitionKind::ALL[state.kind];
-    ui.horizontal(|ui| {
-        egui::ComboBox::from_id_salt("tr_add_kind").selected_text(kind.name()).show_ui(ui, |ui| {
-            for (i, k) in TransitionKind::ALL.iter().enumerate() {
-                ui.selectable_value(&mut state.kind, i, k.name());
+    ui.horizontal_wrapped(|ui| {
+        for (i, k) in TransitionKind::ALL.into_iter().enumerate() {
+            let r = transition_card(ui, k, state, palette, state.kind == i);
+            #[cfg(test)]
+            test_rects::push(format!("card_{}", k.name()), r.rect);
+            if r.clicked() {
+                state.kind = i;
             }
-        });
+        }
+    });
+    let kind = state.kind();
+    ui.horizontal(|ui| {
+        ui.label("Duration");
         ui.add(DragValue::new(&mut state.duration).range(0.1..=5.0).speed(0.02).suffix(" s"));
         if kind == TransitionKind::FadeToColor {
             ui.color_edit_button_srgba_unmultiplied(&mut state.color);
@@ -77,48 +246,39 @@ pub fn show(
         });
     }
 
-    // ---- add at the cuts around the selected clip ----
-    let sel = selection.iter().copied().find(|&id| project.clip(id).is_some());
-    let Some(sel) = sel else {
+    // ---- add at the cuts around every selected clip ----
+    let ids: Vec<Id> = selection.iter().copied().filter(|&id| project.clip(id).is_some()).collect();
+    let Some(&sel) = ids.first() else {
         ui.label("Select a clip");
         return false;
     };
-    let kind = TransitionKind::ALL[state.kind];
-    let has_left = project
-        .track_of(sel)
-        .and_then(|ti| project.clip(sel).map(|c| (ti, c.clone())))
-        .is_some_and(|(ti, c)| project.tracks[ti].left_of(&c).is_some());
-    let right_of_end = right_neighbor(project, sel);
-    let mut add_right_clip: Option<Id> = None; // the clip forming the right side of the cut
+    let any_left = ids.iter().any(|&id| has_left(project, id));
+    let any_right = ids.iter().any(|&id| right_neighbor(project, id).is_some());
+    let mut apply: Option<bool> = None; // Some(at_end)
     ui.horizontal(|ui| {
         let r = ui
-            .add_enabled(has_left, Button::new("Add at start"))
-            .on_hover_text("Transition into the selected clip")
+            .add_enabled(any_left, Button::new("Add at start"))
+            .on_hover_text("Transition into every selected clip")
             .on_disabled_hover_text("No clip ends where the selected one starts");
         #[cfg(test)]
         test_rects::push("add_start".into(), r.rect);
         if r.clicked() {
-            add_right_clip = Some(sel);
+            apply = Some(false);
         }
         let r = ui
-            .add_enabled(right_of_end.is_some(), Button::new("Add at end"))
-            .on_hover_text("Transition out of the selected clip")
+            .add_enabled(any_right, Button::new("Add at end"))
+            .on_hover_text("Transition out of every selected clip")
             .on_disabled_hover_text("No clip starts where the selected one ends");
         #[cfg(test)]
         test_rects::push("add_end".into(), r.rect);
         if r.clicked() {
-            add_right_clip = right_of_end;
+            apply = Some(true);
         }
     });
-    if let Some(right) = add_right_clip {
+    if let Some(at_end) = apply {
         undo(project);
-        if let Some(tid) = project.add_transition(right, kind, state.duration) {
-            if let Some(t) = project.transition_mut(tid) {
-                t.color = state.color;
-                t.direction = state.direction;
-            }
-            changed = true;
-        }
+        let dur = state.duration;
+        changed |= add_transitions(project, &ids, state, kind, dur, at_end) > 0;
     }
 
     // ---- transitions touching the selected clip ----
@@ -193,8 +353,8 @@ pub fn show(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Asset, AudioStreamInfo, ClipKind, TrackKind};
-    use eframe::egui::{vec2, Color32, Event, Modifiers, PointerButton, Pos2, RawInput, Rect};
+    use crate::model::{Asset, AudioStreamInfo, ClipKind};
+    use eframe::egui::{Event, Modifiers, PointerButton, Pos2, RawInput};
 
     struct Harness {
         ctx: egui::Context,
@@ -328,6 +488,38 @@ mod tests {
         assert_eq!(h.undos, 0);
     }
 
+    /// Every selected clip gets a transition, not just the first one, and it is one undo entry.
+    #[test]
+    fn add_covers_every_selected_clip_with_one_undo() {
+        let mut h = Harness::new();
+        let aid = h.project.assets[0].id;
+        h.project.insert_asset_clips(aid, 20.0, Some(0)); // three abutting pairs: cuts at 10 and 20
+        let v2 = h.project.tracks[0].clips[1].id;
+        let v3 = h.project.tracks[0].clips[2].id;
+        h.selection = vec![v2, v3];
+        h.frame(vec![]);
+        let r = test_rects::get("add_start").expect("add button recorded");
+        assert!(h.click(r.center()));
+        let rights: Vec<Id> = h.project.tracks[0].transitions.iter().map(|t| t.right).collect();
+        assert_eq!(rights.len(), 2, "both cuts of the selection: {rights:?}");
+        assert!(rights.contains(&v2) && rights.contains(&v3));
+        assert_eq!(h.undos, 1, "one undo for the whole selection");
+    }
+
+    /// Applying through the shared funnel records the choice, colour and direction included.
+    #[test]
+    fn apply_records_the_last_used_transition() {
+        let mut h = Harness::new();
+        let v2 = h.project.tracks[0].clips[1].id;
+        h.state.color = [1, 2, 3, 255];
+        h.state.direction = 2;
+        assert_eq!(add_transitions(&mut h.project, &[v2], &mut h.state, TransitionKind::Wipe, 0.4, false), 1);
+        assert_eq!(h.state.kind(), TransitionKind::Wipe, "Ctrl+T would repeat what was just applied");
+        assert!((h.state.duration - 0.4).abs() < 1e-9);
+        let tr = h.project.tracks[0].transitions.iter().find(|t| t.right == v2).expect("transition");
+        assert_eq!((tr.kind, tr.direction, tr.color), (TransitionKind::Wipe, 2, [1, 2, 3, 255]));
+    }
+
     #[test]
     fn out_of_range_duration_is_not_rewritten_by_merely_showing() {
         let mut h = Harness::new();
@@ -348,5 +540,31 @@ mod tests {
         let v2 = h.project.tracks[0].clips[1].id;
         assert_eq!(right_neighbor(&h.project, v1), Some(v2));
         assert_eq!(right_neighbor(&h.project, v2), None);
+    }
+
+    /// The card grid is drawn (and clickable) with no stock picture, and a click picks the kind.
+    #[test]
+    fn cards_pick_the_kind_without_a_stock_picture() {
+        let mut h = Harness::new();
+        h.selection = vec![h.project.tracks[0].clips[1].id];
+        h.frame(vec![]);
+        let r = test_rects::get("card_Wipe").expect("card recorded");
+        assert!(r.width() >= CARD.0 - 1.0 && r.height() >= CARD.1, "card is card-sized: {r:?}");
+        h.click(r.center());
+        assert_eq!(h.state.kind(), TransitionKind::Wipe);
+        assert_eq!(h.undos, 0, "picking a kind is not an edit");
+    }
+
+    /// The preview geometry follows the direction the same way the compositor does.
+    #[test]
+    fn wipe_region_follows_the_direction() {
+        let tile = Rect::from_min_max(pos2(0.0, 0.0), pos2(100.0, 50.0));
+        assert_eq!(wipe_rect(tile, 0, 0.5), Rect::from_min_max(pos2(0.0, 0.0), pos2(50.0, 50.0)));
+        assert_eq!(wipe_rect(tile, 1, 0.5), Rect::from_min_max(pos2(50.0, 0.0), pos2(100.0, 50.0)));
+        assert_eq!(wipe_rect(tile, 2, 0.5), Rect::from_min_max(pos2(0.0, 0.0), pos2(100.0, 25.0)));
+        assert_eq!(wipe_rect(tile, 3, 0.5), Rect::from_min_max(pos2(0.0, 25.0), pos2(100.0, 50.0)));
+        // the incoming clip travels from the named edge (compose::dir_vec)
+        assert_eq!(dir_vec(0, vec2(100.0, 50.0)), vec2(-100.0, 0.0));
+        assert_eq!(dir_vec(3, vec2(100.0, 50.0)), vec2(0.0, 50.0));
     }
 }

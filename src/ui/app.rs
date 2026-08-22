@@ -182,8 +182,6 @@ pub struct App {
     /// Ctrl+C / Ctrl+X clip clipboard — a template (clips + the assets they use), so paste reuses
     /// `Project::place_clips` and its fresh clip / link ids.
     clipboard: Option<crate::settings::Template>,
-    /// Kind + duration of the last transition added (Ctrl+T repeats it).
-    last_transition: (TransitionKind, f64),
     /// Movie mode pre-render cache.
     prerender: PreRender,
     /// Movie mode paused the clock because the frame under the playhead was not rendered yet.
@@ -251,25 +249,6 @@ fn relocate_assets(project: &mut Project, project_dir: Option<&Path>) -> Vec<Str
 /// ponytail: the panic message goes to the default hook (stderr); the caller toasts and degrades.
 fn guarded<T>(f: impl FnOnce() -> T) -> Option<T> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).ok()
-}
-
-/// Add `kind` transitions at the cut left of each selected clip (or at its right edge with `at_end`).
-/// Returns how many were added. A transition always belongs to the clip on the RIGHT of the cut.
-fn add_transitions(project: &mut Project, ids: &[Id], kind: TransitionKind, dur: f64, at_end: bool) -> usize {
-    let mut added = 0;
-    for &id in ids {
-        let right = if at_end {
-            crate::ui::transitions_ui::right_neighbor(project, id)
-        } else {
-            project.clip(id).map(|c| c.id)
-        };
-        if let Some(right) = right {
-            if project.add_transition(right, kind, dur).is_some() {
-                added += 1;
-            }
-        }
-    }
-    added
 }
 
 /// Give the clip's last effect a mask, or the clip itself when it has no effects. False = there is one already.
@@ -851,7 +830,6 @@ impl App {
             was_focused: true,
             attrs: None,
             clipboard: None,
-            last_transition: (TransitionKind::CrossFade, 1.0),
             prerender: PreRender::new(),
             movie_stall: false,
             canvas: (0, 0),
@@ -1588,13 +1566,15 @@ impl App {
             ToggleMixer => self.toggle_pane(Pane::Mixer),
             ToggleTools => self.toggle_pane(Pane::Tools),
             AddLastTransition => {
-                let (kind, dur) = self.last_transition;
+                // the panel state IS the memory: every apply path records into it (transitions_ui)
+                let (kind, dur) = (self.transitions_ui.kind(), self.transitions_ui.duration);
                 if self.selection.is_empty() {
                     self.toast("Select a clip next to the cut first");
                 } else {
                     let snap = self.project.to_json();
                     let ids = self.selection.clone();
-                    if add_transitions(&mut self.project, &ids, kind, dur, false) > 0 {
+                    let st = &mut self.transitions_ui;
+                    if transitions_ui::add_transitions(&mut self.project, &ids, st, kind, dur, false) > 0 {
                         push_undo_json(&mut self.undo, &mut self.redo, snap);
                         self.after_edit();
                         self.toast(format!("{} ({dur:.2} s)", kind.name()));
@@ -1757,9 +1737,9 @@ impl App {
                     let snap = self.project.to_json();
                     let ids = self.selection.clone();
                     let (kind, dur) = (TransitionKind::CrossFade, 1.0);
-                    let added = add_transitions(&mut self.project, &ids, kind, dur, at_end);
+                    let st = &mut self.transitions_ui;
+                    let added = transitions_ui::add_transitions(&mut self.project, &ids, st, kind, dur, at_end);
                     if added > 0 {
-                        self.last_transition = (kind, dur);
                         push_undo_json(&mut self.undo, &mut self.redo, snap);
                         self.after_edit();
                     } else if at_end {
@@ -2867,6 +2847,9 @@ impl App {
             effects_ui::set_thumbnail(kind, tex.id(), [frame.width, frame.height]);
             self.effect_thumbs.push(tex);
         }
+        // the transitions catalogue previews its wipes over the same picture (painted, no GPU pass)
+        let img = egui::ColorImage::from_rgba_premultiplied([src.width as usize, src.height as usize], &src.rgba);
+        transitions_ui::set_stock(ctx.load_texture("tr_stock", img, egui::TextureOptions::LINEAR));
         self.effect_thumbs_key = Some(key);
     }
 
@@ -4008,6 +3991,7 @@ impl App {
                 };
                 let dur = arg_f64(args, "duration").unwrap_or(1.0);
                 let id = self.project.add_transition(right, kind, dur).ok_or("no abutting left neighbour")?;
+                self.transitions_ui.remember(kind, dur); // Ctrl+T repeats this one too
                 Ok(json!({"ok": true, "transition_id": id}))
             }
             "timeline.auto_cut" => {
@@ -5245,19 +5229,20 @@ mod tests {
         let mut p = Project::from_media(long_asset("a.mp4"));
         let ids: Vec<Id> = p.split_at(1.0, None);
         let (first, second) = (p.all_clips().next().unwrap().1.id, ids[0]);
-        // the "Add Transition" action's default: cross fade, 1 s — remembered by the app
-        let mut last = (TransitionKind::CrossFade, 1.0);
-        assert_eq!(add_transitions(&mut p, &[second], last.0, last.1, false), 1);
+        // the "Add Transition" action's default: cross fade, 1 s — remembered in the panel state
+        let mut st = transitions_ui::TransitionsState::default();
+        let add = transitions_ui::add_transitions;
+        assert_eq!(add(&mut p, &[second], &mut st, TransitionKind::CrossFade, 1.0, false), 1);
         let tr = p.tracks[0].transitions[0].clone();
-        assert_eq!((tr.kind, tr.duration), last);
+        assert_eq!((tr.kind, tr.duration), (TransitionKind::CrossFade, 1.0));
         // a different choice replaces the memory and Ctrl+T applies exactly that at the next cut
-        last = (TransitionKind::Wipe, 0.4);
         let ids2 = p.split_at(2.0, None);
-        assert_eq!(add_transitions(&mut p, &ids2, last.0, last.1, false), 1);
+        assert_eq!(add(&mut p, &ids2, &mut st, TransitionKind::Wipe, 0.4, false), 1);
+        assert_eq!(st.kind(), TransitionKind::Wipe, "Ctrl+T follows whatever went through the funnel");
         let tr = p.tracks[0].transitions.iter().find(|t| t.right == ids2[0]).expect("second transition");
         assert_eq!((tr.kind, tr.duration), (TransitionKind::Wipe, 0.4));
         // nothing abuts the very first clip's left edge
-        assert_eq!(add_transitions(&mut p, &[first], last.0, last.1, false), 0);
+        assert_eq!(add(&mut p, &[first], &mut st, TransitionKind::Wipe, 0.4, false), 0);
     }
 
     #[test]
