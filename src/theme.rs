@@ -33,6 +33,8 @@ pub struct Palette {
     pub clip_image: Color32,
     pub clip_text: Color32,
     pub clip_sequence: Color32,
+    pub clip_shape: Color32,
+    pub clip_adjust: Color32,
     pub waveform: Color32,
     pub playhead: Color32,
     pub in_out: Color32,
@@ -57,6 +59,8 @@ impl Palette {
                 clip_image: Color32::from_rgb(110, 84, 140),
                 clip_text: Color32::from_rgb(150, 112, 58),
                 clip_sequence: Color32::from_rgb(60, 130, 140),
+                clip_shape: Color32::from_rgb(120, 100, 60),
+                clip_adjust: Color32::from_rgb(96, 96, 110),
                 waveform: Color32::from_rgb(150, 215, 170),
                 playhead: Color32::from_rgb(235, 70, 70),
                 in_out: accent,
@@ -77,6 +81,8 @@ impl Palette {
                 clip_image: Color32::from_rgb(190, 170, 215),
                 clip_text: Color32::from_rgb(225, 195, 140),
                 clip_sequence: Color32::from_rgb(150, 205, 215),
+                clip_shape: Color32::from_rgb(225, 210, 160),
+                clip_adjust: Color32::from_rgb(190, 190, 205),
                 waveform: Color32::from_rgb(30, 110, 60),
                 playhead: Color32::from_rgb(220, 40, 40),
                 in_out: accent,
@@ -93,6 +99,8 @@ impl Palette {
             Image => self.clip_image,
             Text => self.clip_text,
             Sequence => self.clip_sequence,
+            Shape => self.clip_shape,
+            Adjustment => self.clip_adjust,
         }
     }
 }

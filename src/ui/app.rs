@@ -1121,6 +1121,11 @@ impl App {
                 self.after_edit();
             }
             ToggleLibrary => self.toggle_pane(Pane::Library),
+            // TODO(round 3): wired by the app agent (tools, nodes, mixer, capture, markers, paste,
+            // export frame, timeline import, movie mode, shapes, masks, adjustment layers, last transition)
+            AddLastTransition | CopyAttributes | PasteAttributes | AddMarker | ToggleMarkers | ToggleNodes
+            | ToggleMixer | ToggleTools | AddShape | AddAdjustment | AddMask | ExportFrame | ScreenCapture
+            | Voiceover | ImportTimeline | MovieMode => {}
             ToggleInspector => self.toggle_pane(Pane::Inspector),
             ToggleEffects => self.toggle_pane(Pane::Effects),
             ToggleTransitions => self.toggle_pane(Pane::Transitions),

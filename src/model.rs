@@ -29,6 +29,11 @@ pub enum ClipKind {
     /// A nested timeline (`Project.sequences`) used as footage; `clip.sequence` is its id. Lives on video
     /// tracks; carries the sequence's audio too (the mixer walks video tracks for these).
     Sequence,
+    /// A vector shape or a recorded drawing (`Clip.shape`).
+    Shape,
+    /// An automation / adjustment layer: its effects (or node graph) apply to everything composited
+    /// below it on lower video tracks, for as long as the clip lasts. Draws nothing of its own.
+    Adjustment,
 }
 
 /// Resampling quality used when the compositor scales/rotates layers (export == preview).
@@ -475,6 +480,21 @@ pub enum EffectKind {
     Flip,
     Crop,
     Wobble,
+    // --- round 3 ---
+    ChromaKey,
+    Curves,
+    Levels,
+    HueShift,
+    JpegCompress,
+    MotionBlur,
+    Plane3d,
+    EdgeGlow,
+    Threshold,
+    BlobTrack,
+    Vhs,
+    RecDot,
+    /// A user-written GLSL fragment shader (source in `Effect.shader`, up to 8 generic knobs).
+    Shader,
 }
 
 /// One effect parameter: label, default and UI range.
@@ -491,19 +511,43 @@ const fn ps(name: &'static str, default: f64, min: f64, max: f64) -> ParamSpec {
 }
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 11] = [
+    pub const ALL: [EffectKind; 24] = [
         EffectKind::Blur,
+        EffectKind::MotionBlur,
         EffectKind::Pixelate,
+        EffectKind::JpegCompress,
+        EffectKind::Vhs,
+        EffectKind::ChromaKey,
+        EffectKind::Threshold,
+        EffectKind::EdgeGlow,
         EffectKind::Tint,
         EffectKind::Color,
+        EffectKind::Curves,
+        EffectKind::Levels,
+        EffectKind::HueShift,
+        EffectKind::Grayscale,
+        EffectKind::Invert,
         EffectKind::Vignette,
         EffectKind::Sharpen,
-        EffectKind::Invert,
-        EffectKind::Grayscale,
         EffectKind::Flip,
         EffectKind::Crop,
+        EffectKind::Plane3d,
         EffectKind::Wobble,
+        EffectKind::BlobTrack,
+        EffectKind::RecDot,
+        EffectKind::Shader,
     ];
+    /// Catalogue grouping for the effects panel.
+    pub fn category(self) -> &'static str {
+        use EffectKind::*;
+        match self {
+            Color | Curves | Levels | HueShift | Tint | Grayscale | Invert | Threshold => "Adjustments",
+            Blur | MotionBlur | Sharpen | Pixelate | JpegCompress | Vhs | EdgeGlow | Vignette | RecDot => "Stylize",
+            ChromaKey | Crop | BlobTrack => "Keying & Matte",
+            Flip | Plane3d | Wobble => "Transform",
+            Shader => "Custom",
+        }
+    }
     pub fn name(self) -> &'static str {
         match self {
             EffectKind::Blur => "Blur",
@@ -517,6 +561,19 @@ impl EffectKind {
             EffectKind::Flip => "Flip",
             EffectKind::Crop => "Crop",
             EffectKind::Wobble => "Camera Shake",
+            EffectKind::ChromaKey => "Chroma Key",
+            EffectKind::Curves => "Color Curves",
+            EffectKind::Levels => "Levels",
+            EffectKind::HueShift => "Hue / Saturation",
+            EffectKind::JpegCompress => "JPEG Compression",
+            EffectKind::MotionBlur => "Motion Blur",
+            EffectKind::Plane3d => "3D Plane",
+            EffectKind::EdgeGlow => "Edge Glow",
+            EffectKind::Threshold => "Threshold",
+            EffectKind::BlobTrack => "Blob Tracking",
+            EffectKind::Vhs => "VHS",
+            EffectKind::RecDot => "Security Camera REC",
+            EffectKind::Shader => "Custom Shader",
         }
     }
     /// Parameters in index order (matches `Effect.params`). Pixel sizes are project pixels.
@@ -533,7 +590,40 @@ impl EffectKind {
             EffectKind::Flip => P_FLIP,
             EffectKind::Crop => P_CROP,
             EffectKind::Wobble => P_WOBBLE,
+            EffectKind::ChromaKey => P_CHROMA,
+            EffectKind::Curves => P_CURVES,
+            EffectKind::Levels => P_LEVELS,
+            EffectKind::HueShift => P_HUE,
+            EffectKind::JpegCompress => P_JPEG,
+            EffectKind::MotionBlur => P_MOTIONBLUR,
+            EffectKind::Plane3d => P_PLANE3D,
+            EffectKind::EdgeGlow => P_EDGEGLOW,
+            EffectKind::Threshold => P_THRESHOLD,
+            EffectKind::BlobTrack => P_BLOBTRACK,
+            EffectKind::Vhs => P_VHS,
+            EffectKind::RecDot => P_RECDOT,
+            EffectKind::Shader => P_SHADER,
         }
+    }
+    /// Parameters shown as a checkbox (stored as 0/1) rather than a number.
+    pub fn is_bool_param(self, i: usize) -> bool {
+        matches!(
+            (self, i),
+            (EffectKind::Flip, 0)
+                | (EffectKind::Flip, 1)
+                | (EffectKind::ChromaKey, 5)
+                | (EffectKind::Vhs, 6)
+                | (EffectKind::RecDot, 3)
+                | (EffectKind::BlobTrack, 4)
+        )
+    }
+    /// Effects whose output depends on neighbouring frames (the renderer must supply them).
+    pub fn needs_motion(self) -> bool {
+        self == EffectKind::MotionBlur
+    }
+    /// Effects the compositor applies by moving the layer instead of touching pixels.
+    pub fn is_geometric(self) -> bool {
+        matches!(self, EffectKind::Wobble | EffectKind::Plane3d)
     }
 }
 
@@ -565,6 +655,101 @@ const P_CROP: &[ParamSpec] = &[
     ps("Bottom", 0.0, 0.0, 0.5),
     ps("Feather", 0.0, 0.0, 0.5),
 ];
+const P_CHROMA: &[ParamSpec] = &[
+    ps("Key R", 0.0, 0.0, 255.0),
+    ps("Key G", 255.0, 0.0, 255.0),
+    ps("Key B", 0.0, 0.0, 255.0),
+    ps("Similarity", 0.4, 0.0, 1.0),
+    ps("Smoothness", 0.1, 0.0, 1.0),
+    ps("Show mask", 0.0, 0.0, 1.0),
+    ps("Spill removal", 0.5, 0.0, 1.0),
+    ps("Edge shrink", 0.0, -5.0, 5.0),
+];
+/// Five control points per channel (input -> output, 0..1) drive a monotone spline; the UI draws a
+/// classic curve editor and writes these values.
+const P_CURVES: &[ParamSpec] = &[
+    ps("Master 1/4", 0.25, 0.0, 1.0),
+    ps("Master 2/4", 0.5, 0.0, 1.0),
+    ps("Master 3/4", 0.75, 0.0, 1.0),
+    ps("Red 1/4", 0.25, 0.0, 1.0),
+    ps("Red 2/4", 0.5, 0.0, 1.0),
+    ps("Red 3/4", 0.75, 0.0, 1.0),
+    ps("Green 1/4", 0.25, 0.0, 1.0),
+    ps("Green 2/4", 0.5, 0.0, 1.0),
+    ps("Green 3/4", 0.75, 0.0, 1.0),
+    ps("Blue 1/4", 0.25, 0.0, 1.0),
+    ps("Blue 2/4", 0.5, 0.0, 1.0),
+    ps("Blue 3/4", 0.75, 0.0, 1.0),
+];
+const P_LEVELS: &[ParamSpec] = &[
+    ps("In black", 0.0, 0.0, 1.0),
+    ps("In white", 1.0, 0.0, 1.0),
+    ps("Gamma", 1.0, 0.1, 5.0),
+    ps("Out black", 0.0, 0.0, 1.0),
+    ps("Out white", 1.0, 0.0, 1.0),
+];
+const P_HUE: &[ParamSpec] =
+    &[ps("Hue", 0.0, -180.0, 180.0), ps("Saturation", 1.0, 0.0, 3.0), ps("Lightness", 0.0, -1.0, 1.0)];
+const P_JPEG: &[ParamSpec] =
+    &[ps("Quality", 20.0, 1.0, 100.0), ps("Block size", 8.0, 2.0, 32.0), ps("Chroma subsample", 1.0, 0.0, 1.0)];
+const P_MOTIONBLUR: &[ParamSpec] =
+    &[ps("Shutter angle", 180.0, 0.0, 360.0), ps("Samples", 8.0, 2.0, 32.0), ps("Adaptive", 1.0, 0.0, 1.0)];
+/// A 3D plane: the layer is mapped through a perspective transform (also usable as a node).
+const P_PLANE3D: &[ParamSpec] = &[
+    ps("Yaw", 0.0, -89.0, 89.0),
+    ps("Pitch", 0.0, -89.0, 89.0),
+    ps("Roll", 0.0, -180.0, 180.0),
+    ps("Distance", 2.0, 0.5, 20.0),
+    ps("Field of view", 45.0, 5.0, 120.0),
+    ps("Offset Z", 0.0, -5.0, 5.0),
+];
+const P_EDGEGLOW: &[ParamSpec] = &[
+    ps("Threshold", 0.2, 0.0, 1.0),
+    ps("Width", 2.0, 0.5, 20.0),
+    ps("Glow", 1.0, 0.0, 4.0),
+    ps("R", 120.0, 0.0, 255.0),
+    ps("G", 200.0, 0.0, 255.0),
+    ps("B", 255.0, 0.0, 255.0),
+    ps("Keep source", 1.0, 0.0, 1.0),
+];
+const P_THRESHOLD: &[ParamSpec] =
+    &[ps("Level", 0.5, 0.0, 1.0), ps("Softness", 0.05, 0.0, 0.5), ps("Per channel", 0.0, 0.0, 1.0)];
+/// Tracks the largest blob matching a colour; its centre drives `BlobTrack`-linked properties.
+const P_BLOBTRACK: &[ParamSpec] = &[
+    ps("Target R", 255.0, 0.0, 255.0),
+    ps("Target G", 0.0, 0.0, 255.0),
+    ps("Target B", 0.0, 0.0, 255.0),
+    ps("Tolerance", 0.25, 0.0, 1.0),
+    ps("Show overlay", 1.0, 0.0, 1.0),
+    ps("Smoothing", 0.5, 0.0, 1.0),
+];
+const P_VHS: &[ParamSpec] = &[
+    ps("Noise", 0.3, 0.0, 1.0),
+    ps("Chroma bleed", 0.5, 0.0, 1.0),
+    ps("Scanlines", 0.4, 0.0, 1.0),
+    ps("Tracking jitter", 0.2, 0.0, 1.0),
+    ps("Head switching", 0.3, 0.0, 1.0),
+    ps("Sharpen ringing", 0.4, 0.0, 1.0),
+    ps("Colour bleed only", 0.0, 0.0, 1.0),
+    ps("Tape wear", 0.2, 0.0, 1.0),
+];
+const P_RECDOT: &[ParamSpec] = &[
+    ps("Size", 18.0, 2.0, 200.0),
+    ps("Blink Hz", 0.5, 0.0, 5.0),
+    ps("Corner", 0.0, 0.0, 3.0),
+    ps("Timecode", 1.0, 0.0, 1.0),
+    ps("Margin", 40.0, 0.0, 500.0),
+];
+const P_SHADER: &[ParamSpec] = &[
+    ps("u1", 0.0, -10.0, 10.0),
+    ps("u2", 0.0, -10.0, 10.0),
+    ps("u3", 0.0, -10.0, 10.0),
+    ps("u4", 0.0, -10.0, 10.0),
+    ps("u5", 0.0, -10.0, 10.0),
+    ps("u6", 0.0, -10.0, 10.0),
+    ps("u7", 0.0, -10.0, 10.0),
+    ps("u8", 0.0, -10.0, 10.0),
+];
 const P_WOBBLE: &[ParamSpec] = &[
     ps("Amplitude X", 20.0, 0.0, 500.0),
     ps("Amplitude Y", 20.0, 0.0, 500.0),
@@ -575,6 +760,104 @@ const P_WOBBLE: &[ParamSpec] = &[
     ps("Seed", 1.0, 0.0, 1000.0),
 ];
 
+/// Starting point for `EffectKind::Shader`: `tex` = the layer, `uv` = 0..1, `u_time` = clip-local
+/// seconds, `u1..u8` = the eight knobs, `u_res` = layer size in px. Output goes to `out_color`
+/// (straight alpha, same convention as every other effect).
+pub const DEFAULT_SHADER: &str = r#"// custom effect — edit freely
+vec4 effect(vec4 src, vec2 uv) {
+    // u1 = amount, u2 = speed
+    float wave = sin(uv.y * 40.0 + u_time * max(u2, 0.0) * 6.28318) * u1 * 0.02;
+    return texture(tex, vec2(uv.x + wave, uv.y));
+}
+"#;
+
+/// A mask shape. Points are in project pixels relative to the layer centre; a mask limits where an
+/// effect applies (or where the whole clip is visible when it sits on `Clip.mask`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, Hash, Default)]
+pub enum MaskShape {
+    #[default]
+    Rect,
+    Ellipse,
+    /// Straight-edged polygon through `points`.
+    Polygon,
+    /// Free-hand / bezier path through `points` (smoothed).
+    Path,
+}
+
+impl MaskShape {
+    pub const ALL: [MaskShape; 4] = [MaskShape::Rect, MaskShape::Ellipse, MaskShape::Polygon, MaskShape::Path];
+    pub fn name(self) -> &'static str {
+        match self {
+            MaskShape::Rect => "Rectangle",
+            MaskShape::Ellipse => "Ellipse",
+            MaskShape::Polygon => "Polygon",
+            MaskShape::Path => "Path",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Mask {
+    pub shape: MaskShape,
+    /// Rect/Ellipse: centre + half-size. Polygon/Path: ignored (see `points`).
+    pub cx: Animated,
+    pub cy: Animated,
+    pub rx: Animated,
+    pub ry: Animated,
+    /// Polygon/Path vertices (project px, relative to the layer centre).
+    pub points: Vec<(f32, f32)>,
+    pub rotation: Animated,
+    /// Soft edge in project px.
+    pub feather: Animated,
+    /// Grow (+) / shrink (-) the shape in project px.
+    pub expand: Animated,
+    /// Mask strength 0..1.
+    pub opacity: Animated,
+    pub invert: bool,
+    pub enabled: bool,
+}
+
+impl Default for Mask {
+    fn default() -> Self {
+        Self {
+            shape: MaskShape::Rect,
+            cx: Animated::new(0.0),
+            cy: Animated::new(0.0),
+            rx: Animated::new(200.0),
+            ry: Animated::new(200.0),
+            points: Vec::new(),
+            rotation: Animated::new(0.0),
+            feather: Animated::new(0.0),
+            expand: Animated::new(0.0),
+            opacity: Animated::new(1.0),
+            invert: false,
+            enabled: true,
+        }
+    }
+}
+
+impl Mask {
+    pub fn new(shape: MaskShape) -> Self {
+        Self { shape, ..Default::default() }
+    }
+    pub fn animated_mut(&mut self) -> Vec<&mut Animated> {
+        vec![
+            &mut self.cx,
+            &mut self.cy,
+            &mut self.rx,
+            &mut self.ry,
+            &mut self.rotation,
+            &mut self.feather,
+            &mut self.expand,
+            &mut self.opacity,
+        ]
+    }
+    pub fn animated(&self) -> Vec<&Animated> {
+        vec![&self.cx, &self.cy, &self.rx, &self.ry, &self.rotation, &self.feather, &self.expand, &self.opacity]
+    }
+}
+
 /// An effect instance on a clip; `params[i]` follows `kind.params()[i]` (each keyframeable).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Effect {
@@ -583,11 +866,23 @@ pub struct Effect {
     pub enabled: bool,
     #[serde(default)]
     pub params: Vec<Animated>,
+    /// Limits the effect to (or outside) a shape.
+    #[serde(default)]
+    pub mask: Option<Mask>,
+    /// `EffectKind::Shader` only: the GLSL fragment shader source.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub shader: String,
 }
 
 impl Effect {
     pub fn new(kind: EffectKind) -> Self {
-        Self { kind, enabled: true, params: kind.params().iter().map(|p| Animated::new(p.default)).collect() }
+        Self {
+            kind,
+            enabled: true,
+            params: kind.params().iter().map(|p| Animated::new(p.default)).collect(),
+            mask: None,
+            shader: if kind == EffectKind::Shader { DEFAULT_SHADER.to_string() } else { String::new() },
+        }
     }
     /// Parameter i at clip-local time t (spec default when missing, e.g. older files).
     pub fn at(&self, i: usize, t: f64) -> f64 {
@@ -598,6 +893,553 @@ impl Effect {
     }
     pub fn specs(&self) -> &'static [ParamSpec] {
         self.kind.params()
+    }
+}
+
+// ---------- node graph ----------
+
+/// What a node does. `Input` is the clip's own decoded layer; `Output` is what the compositor draws.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum NodeKind {
+    /// The clip's decoded layer (or, in an adjustment clip, everything below it).
+    Input,
+    /// A solid colour (RGBA) filling the canvas.
+    Color([u8; 4]),
+    /// Another clip's layer at the same time (compositing across tracks).
+    Clip(Id),
+    Effect(Effect),
+    /// Combines two inputs (`a` under `b`) with a blend mode and opacity.
+    Blend {
+        mode: BlendMode,
+        opacity: Animated,
+    },
+    /// Uses `b`'s luminance (or alpha) as a matte for `a`.
+    Matte {
+        invert: bool,
+        use_alpha: bool,
+    },
+    /// A standalone mask (matte generator).
+    Mask(Mask),
+    Output,
+}
+
+impl NodeKind {
+    /// How many inputs the node consumes.
+    pub fn inputs(&self) -> usize {
+        match self {
+            NodeKind::Input | NodeKind::Color(_) | NodeKind::Clip(_) | NodeKind::Mask(_) => 0,
+            NodeKind::Effect(_) | NodeKind::Output => 1,
+            NodeKind::Blend { .. } | NodeKind::Matte { .. } => 2,
+        }
+    }
+    pub fn title(&self) -> String {
+        match self {
+            NodeKind::Input => "Input".into(),
+            NodeKind::Color(_) => "Color".into(),
+            NodeKind::Clip(_) => "Clip".into(),
+            NodeKind::Effect(e) => e.kind.name().into(),
+            NodeKind::Blend { .. } => "Blend".into(),
+            NodeKind::Matte { .. } => "Matte".into(),
+            NodeKind::Mask(m) => format!("Mask ({})", m.shape.name()),
+            NodeKind::Output => "Output".into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Node {
+    pub id: Id,
+    pub kind: NodeKind,
+    /// Editor position (graph units).
+    pub x: f32,
+    pub y: f32,
+    #[serde(default = "tru")]
+    pub enabled: bool,
+}
+
+/// `to`'s input `port` is fed by `from`'s output.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Edge {
+    pub from: Id,
+    pub to: Id,
+    pub port: usize,
+}
+
+/// A clip's effect chain as a DAG. When present it replaces `Clip.effects` (kept as the simple linear
+/// stack for clips that never opened the node editor). Always contains exactly one `Output`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct NodeGraph {
+    pub nodes: Vec<Node>,
+    pub edges: Vec<Edge>,
+}
+
+impl NodeGraph {
+    /// Input -> Output, ready to have effects dropped in between.
+    pub fn new(next_id: &mut impl FnMut() -> Id) -> Self {
+        let (i, o) = (next_id(), next_id());
+        Self {
+            nodes: vec![
+                Node { id: i, kind: NodeKind::Input, x: 0.0, y: 0.0, enabled: true },
+                Node { id: o, kind: NodeKind::Output, x: 320.0, y: 0.0, enabled: true },
+            ],
+            edges: vec![Edge { from: i, to: o, port: 0 }],
+        }
+    }
+    /// A graph equivalent to a linear effect stack (used when a clip's stack is converted).
+    pub fn from_effects(effects: &[Effect], next_id: &mut impl FnMut() -> Id) -> Self {
+        let mut g = Self::new(next_id);
+        let out = g.output().unwrap();
+        let mut prev = g.nodes[0].id;
+        g.edges.clear();
+        for (i, e) in effects.iter().enumerate() {
+            let id = next_id();
+            g.nodes.push(Node {
+                id,
+                kind: NodeKind::Effect(e.clone()),
+                x: 160.0 * (i + 1) as f32,
+                y: 0.0,
+                enabled: e.enabled,
+            });
+            g.edges.push(Edge { from: prev, to: id, port: 0 });
+            prev = id;
+        }
+        if let Some(o) = g.nodes.iter_mut().find(|n| n.id == out) {
+            o.x = 160.0 * (effects.len() + 1) as f32;
+        }
+        g.edges.push(Edge { from: prev, to: out, port: 0 });
+        g
+    }
+    pub fn node(&self, id: Id) -> Option<&Node> {
+        self.nodes.iter().find(|n| n.id == id)
+    }
+    pub fn node_mut(&mut self, id: Id) -> Option<&mut Node> {
+        self.nodes.iter_mut().find(|n| n.id == id)
+    }
+    pub fn output(&self) -> Option<Id> {
+        self.nodes.iter().find(|n| n.kind == NodeKind::Output).map(|n| n.id)
+    }
+    /// The node feeding `to`'s input `port`.
+    pub fn input_of(&self, to: Id, port: usize) -> Option<Id> {
+        self.edges.iter().find(|e| e.to == to && e.port == port).map(|e| e.from)
+    }
+    /// Connect (replacing whatever fed that port). Refused when it would create a cycle.
+    pub fn connect(&mut self, from: Id, to: Id, port: usize) -> bool {
+        if from == to || self.node(from).is_none() || self.node(to).is_none() {
+            return false;
+        }
+        let prev: Vec<Edge> = self.edges.iter().filter(|e| e.to == to && e.port == port).copied().collect();
+        self.edges.retain(|e| !(e.to == to && e.port == port));
+        self.edges.push(Edge { from, to, port });
+        if self.has_cycle() {
+            self.edges.pop();
+            self.edges.extend(prev);
+            return false;
+        }
+        true
+    }
+    pub fn disconnect(&mut self, to: Id, port: usize) {
+        self.edges.retain(|e| !(e.to == to && e.port == port));
+    }
+    /// Remove a node (the Output can never be removed) and re-link its first input to its consumers.
+    pub fn remove_node(&mut self, id: Id) {
+        if self.node(id).map(|n| n.kind == NodeKind::Output).unwrap_or(true) {
+            return;
+        }
+        let up = self.input_of(id, 0);
+        let down: Vec<(Id, usize)> = self.edges.iter().filter(|e| e.from == id).map(|e| (e.to, e.port)).collect();
+        self.nodes.retain(|n| n.id != id);
+        self.edges.retain(|e| e.from != id && e.to != id);
+        if let Some(up) = up {
+            for (to, port) in down {
+                self.connect(up, to, port);
+            }
+        }
+    }
+    /// Depth-first cycle check (the editor refuses connections that would loop).
+    pub fn has_cycle(&self) -> bool {
+        fn visit(g: &NodeGraph, id: Id, state: &mut std::collections::HashMap<Id, u8>) -> bool {
+            match state.get(&id) {
+                Some(1) => return true,
+                Some(2) => return false,
+                _ => {}
+            }
+            state.insert(id, 1);
+            let ins: Vec<Id> = g.edges.iter().filter(|e| e.to == id).map(|e| e.from).collect();
+            for i in ins {
+                if visit(g, i, state) {
+                    return true;
+                }
+            }
+            state.insert(id, 2);
+            false
+        }
+        let mut state = std::collections::HashMap::new();
+        self.nodes.iter().any(|n| visit(self, n.id, &mut state))
+    }
+    /// Nodes reachable from the output, inputs before consumers.
+    pub fn eval_order(&self) -> Vec<Id> {
+        let Some(out) = self.output() else { return Vec::new() };
+        let mut order = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        fn walk(g: &NodeGraph, id: Id, seen: &mut std::collections::HashSet<Id>, order: &mut Vec<Id>) {
+            if !seen.insert(id) {
+                return;
+            }
+            let mut ins: Vec<(usize, Id)> = g.edges.iter().filter(|e| e.to == id).map(|e| (e.port, e.from)).collect();
+            ins.sort();
+            for (_, from) in ins {
+                walk(g, from, seen, order);
+            }
+            order.push(id);
+        }
+        walk(self, out, &mut seen, &mut order);
+        order
+    }
+    /// Every animated property in the graph (effect params, blend opacity, mask properties).
+    pub fn animated_mut(&mut self) -> Vec<&mut Animated> {
+        let mut v = Vec::new();
+        for n in &mut self.nodes {
+            match &mut n.kind {
+                NodeKind::Effect(e) => {
+                    v.extend(e.params.iter_mut());
+                    if let Some(m) = &mut e.mask {
+                        v.extend(m.animated_mut());
+                    }
+                }
+                NodeKind::Blend { opacity, .. } => v.push(opacity),
+                NodeKind::Mask(m) => v.extend(m.animated_mut()),
+                _ => {}
+            }
+        }
+        v
+    }
+    pub fn animated(&self) -> Vec<&Animated> {
+        let mut v = Vec::new();
+        for n in &self.nodes {
+            match &n.kind {
+                NodeKind::Effect(e) => {
+                    v.extend(e.params.iter());
+                    if let Some(m) = &e.mask {
+                        v.extend(m.animated());
+                    }
+                }
+                NodeKind::Blend { opacity, .. } => v.push(opacity),
+                NodeKind::Mask(m) => v.extend(m.animated()),
+                _ => {}
+            }
+        }
+        v
+    }
+}
+
+// ---------- shapes & drawing ----------
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, Hash, Default)]
+pub enum ShapeKind {
+    #[default]
+    Rect,
+    Ellipse,
+    Triangle,
+    Polygon,
+    Star,
+    Line,
+    Arrow,
+    /// Free-hand strokes (see `ShapeStyle.strokes`).
+    Draw,
+}
+
+impl ShapeKind {
+    pub const ALL: [ShapeKind; 8] = [
+        ShapeKind::Rect,
+        ShapeKind::Ellipse,
+        ShapeKind::Triangle,
+        ShapeKind::Polygon,
+        ShapeKind::Star,
+        ShapeKind::Line,
+        ShapeKind::Arrow,
+        ShapeKind::Draw,
+    ];
+    pub fn name(self) -> &'static str {
+        match self {
+            ShapeKind::Rect => "Rectangle",
+            ShapeKind::Ellipse => "Ellipse",
+            ShapeKind::Triangle => "Triangle",
+            ShapeKind::Polygon => "Polygon",
+            ShapeKind::Star => "Star",
+            ShapeKind::Line => "Line",
+            ShapeKind::Arrow => "Arrow",
+            ShapeKind::Draw => "Drawing",
+        }
+    }
+}
+
+/// One free-hand stroke: points in project px (relative to the layer centre) with the clip-local time
+/// each point was drawn, so a recorded sketch can play back at any rate.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct Stroke {
+    pub color: [u8; 4],
+    pub width: f32,
+    /// (x, y, t) - t in clip-local seconds at the recording rate.
+    pub points: Vec<(f32, f32, f32)>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ShapeStyle {
+    pub kind: ShapeKind,
+    pub fill: [u8; 4],
+    pub stroke: [u8; 4],
+    pub stroke_width: f32,
+    /// Rect corner radius / Arrow head size (project px).
+    pub corner: f32,
+    /// Polygon / Star sides.
+    pub sides: u32,
+    /// Half-size in project px (Rect/Ellipse/...) or the offset of the far end (Line/Arrow).
+    pub w: Animated,
+    pub h: Animated,
+    /// Free-hand strokes for `ShapeKind::Draw`.
+    pub strokes: Vec<Stroke>,
+    /// Playback rate of a recorded drawing (1 = as recorded, 2 = twice as fast, 0 = all at once).
+    pub draw_rate: f32,
+    /// Page behind a drawing (alpha 0 = transparent, e.g. a white sketch page).
+    pub page: [u8; 4],
+}
+
+impl Default for ShapeStyle {
+    fn default() -> Self {
+        Self {
+            kind: ShapeKind::Rect,
+            fill: [255, 255, 255, 255],
+            stroke: [0, 0, 0, 0],
+            stroke_width: 4.0,
+            corner: 0.0,
+            sides: 5,
+            w: Animated::new(300.0),
+            h: Animated::new(200.0),
+            strokes: Vec::new(),
+            draw_rate: 1.0,
+            page: [0, 0, 0, 0],
+        }
+    }
+}
+
+impl ShapeStyle {
+    pub fn new(kind: ShapeKind) -> Self {
+        let mut s = Self { kind, ..Default::default() };
+        if matches!(kind, ShapeKind::Line | ShapeKind::Arrow | ShapeKind::Draw) {
+            s.stroke = [255, 255, 255, 255];
+            s.fill = [0, 0, 0, 0];
+        }
+        s
+    }
+    /// Recorded length of a drawing in seconds.
+    pub fn draw_duration(&self) -> f64 {
+        self.strokes.iter().flat_map(|s| s.points.iter().map(|p| p.2 as f64)).fold(0.0, f64::max)
+    }
+    pub fn cache_key(&self) -> u64 {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.kind.hash(&mut h);
+        (self.fill, self.stroke, self.page).hash(&mut h);
+        for f in [self.stroke_width, self.corner, self.draw_rate] {
+            f.to_bits().hash(&mut h);
+        }
+        self.sides.hash(&mut h);
+        self.strokes.len().hash(&mut h);
+        for st in &self.strokes {
+            st.points.len().hash(&mut h);
+            st.color.hash(&mut h);
+            st.width.to_bits().hash(&mut h);
+        }
+        h.finish()
+    }
+}
+
+// ---------- markers ----------
+
+/// A note on the timeline (or, in `Clip.markers`, on a clip). The AI tools read these too.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Marker {
+    pub id: Id,
+    /// Timeline seconds (project markers) or clip-local seconds (clip markers).
+    pub t: f64,
+    /// 0 = a point marker; > 0 = a range.
+    pub duration: f64,
+    pub name: String,
+    pub note: String,
+    /// Index into `Project.labels` + 1 (0 = none).
+    pub label: u8,
+}
+
+impl Default for Marker {
+    fn default() -> Self {
+        Self { id: 0, t: 0.0, duration: 0.0, name: String::new(), note: String::new(), label: 0 }
+    }
+}
+
+// ---------- labels ----------
+
+/// A user-editable colour label. `Project.labels` starts as `default_labels()`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Label {
+    pub name: String,
+    pub color: [u8; 3],
+}
+
+pub fn default_labels() -> Vec<Label> {
+    LABEL_COLORS.iter().map(|(n, c)| Label { name: (*n).to_string(), color: *c }).collect()
+}
+
+// ---------- audio buses ----------
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, Hash)]
+pub enum FilterKind {
+    /// 3-band parametric EQ (low shelf, peak, high shelf).
+    Eq,
+    HighPass,
+    LowPass,
+    Reverb,
+    Echo,
+    Distortion,
+    Compressor,
+    NoiseGate,
+    /// Adds noise (white / pink / a pure tone).
+    Noise,
+    Gain,
+}
+
+impl FilterKind {
+    pub const ALL: [FilterKind; 10] = [
+        FilterKind::Eq,
+        FilterKind::HighPass,
+        FilterKind::LowPass,
+        FilterKind::Reverb,
+        FilterKind::Echo,
+        FilterKind::Distortion,
+        FilterKind::Compressor,
+        FilterKind::NoiseGate,
+        FilterKind::Noise,
+        FilterKind::Gain,
+    ];
+    pub fn name(self) -> &'static str {
+        match self {
+            FilterKind::Eq => "EQ (3-band)",
+            FilterKind::HighPass => "High-pass",
+            FilterKind::LowPass => "Low-pass",
+            FilterKind::Reverb => "Reverb",
+            FilterKind::Echo => "Echo / Delay",
+            FilterKind::Distortion => "Distortion",
+            FilterKind::Compressor => "Compressor",
+            FilterKind::NoiseGate => "Noise gate",
+            FilterKind::Noise => "Noise",
+            FilterKind::Gain => "Gain",
+        }
+    }
+    pub fn params(self) -> &'static [ParamSpec] {
+        match self {
+            FilterKind::Eq => F_EQ,
+            FilterKind::HighPass | FilterKind::LowPass => F_PASS,
+            FilterKind::Reverb => F_REVERB,
+            FilterKind::Echo => F_ECHO,
+            FilterKind::Distortion => F_DIST,
+            FilterKind::Compressor => F_COMP,
+            FilterKind::NoiseGate => F_GATE,
+            FilterKind::Noise => F_NOISE,
+            FilterKind::Gain => F_GAIN,
+        }
+    }
+}
+
+const F_EQ: &[ParamSpec] = &[
+    ps("Low gain dB", 0.0, -24.0, 24.0),
+    ps("Low freq", 120.0, 20.0, 1000.0),
+    ps("Mid gain dB", 0.0, -24.0, 24.0),
+    ps("Mid freq", 1000.0, 100.0, 8000.0),
+    ps("Mid Q", 1.0, 0.1, 10.0),
+    ps("High gain dB", 0.0, -24.0, 24.0),
+    ps("High freq", 6000.0, 1000.0, 20000.0),
+];
+const F_PASS: &[ParamSpec] = &[ps("Frequency", 200.0, 20.0, 20000.0), ps("Resonance", 0.7, 0.1, 10.0)];
+const F_REVERB: &[ParamSpec] = &[
+    ps("Room size", 0.5, 0.0, 1.0),
+    ps("Damping", 0.5, 0.0, 1.0),
+    ps("Width", 1.0, 0.0, 1.0),
+    ps("Mix", 0.25, 0.0, 1.0),
+    ps("Pre-delay ms", 20.0, 0.0, 200.0),
+];
+const F_ECHO: &[ParamSpec] = &[
+    ps("Delay ms", 350.0, 1.0, 2000.0),
+    ps("Feedback", 0.35, 0.0, 0.95),
+    ps("Mix", 0.3, 0.0, 1.0),
+    ps("Ping-pong", 0.0, 0.0, 1.0),
+];
+const F_DIST: &[ParamSpec] = &[ps("Drive", 4.0, 1.0, 50.0), ps("Tone", 0.5, 0.0, 1.0), ps("Mix", 1.0, 0.0, 1.0)];
+const F_COMP: &[ParamSpec] = &[
+    ps("Threshold dB", -18.0, -60.0, 0.0),
+    ps("Ratio", 4.0, 1.0, 20.0),
+    ps("Attack ms", 10.0, 0.1, 200.0),
+    ps("Release ms", 120.0, 5.0, 2000.0),
+    ps("Makeup dB", 0.0, -12.0, 24.0),
+];
+const F_GATE: &[ParamSpec] =
+    &[ps("Threshold dB", -45.0, -80.0, 0.0), ps("Attack ms", 2.0, 0.1, 100.0), ps("Release ms", 120.0, 5.0, 2000.0)];
+const F_NOISE: &[ParamSpec] =
+    &[ps("Level dB", -40.0, -80.0, 0.0), ps("Type", 0.0, 0.0, 2.0), ps("Tone Hz", 1000.0, 20.0, 18000.0)];
+const F_GAIN: &[ParamSpec] = &[ps("Gain dB", 0.0, -60.0, 24.0)];
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct AudioFilter {
+    pub kind: FilterKind,
+    #[serde(default = "tru")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub params: Vec<Animated>,
+}
+
+impl AudioFilter {
+    pub fn new(kind: FilterKind) -> Self {
+        Self { kind, enabled: true, params: kind.params().iter().map(|p| Animated::new(p.default)).collect() }
+    }
+    /// Parameter i at time t (spec default when missing).
+    pub fn at(&self, i: usize, t: f64) -> f64 {
+        self.params
+            .get(i)
+            .map(|a| a.at(t))
+            .unwrap_or_else(|| self.kind.params().get(i).map(|p| p.default).unwrap_or(0.0))
+    }
+}
+
+/// A mixer bus. The first bus is always "Main"; every other bus routes into it (or into another bus).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Bus {
+    pub id: Id,
+    pub name: String,
+    pub gain: Animated,
+    pub pan: Animated,
+    pub muted: bool,
+    pub solo: bool,
+    /// Fold to mono after the filter chain.
+    pub mono: bool,
+    pub filters: Vec<AudioFilter>,
+    /// Where this bus sends its output (0 = Main). Main sends nowhere.
+    pub output: Id,
+}
+
+impl Default for Bus {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            name: "Bus".into(),
+            gain: Animated::new(1.0),
+            pan: Animated::new(0.0),
+            muted: false,
+            solo: false,
+            mono: false,
+            filters: Vec::new(),
+            output: 0,
+        }
     }
 }
 
@@ -767,9 +1609,24 @@ pub struct Clip {
     pub fade_in: f64,
     #[serde(default)]
     pub fade_out: f64,
+    /// Which bus this audio clip feeds (0 = its track's bus).
+    #[serde(default)]
+    pub bus: Id,
     /// Present for Text clips.
     #[serde(default)]
     pub text: Option<TextStyle>,
+    /// Present for Shape clips.
+    #[serde(default)]
+    pub shape: Option<ShapeStyle>,
+    /// Limits where the whole clip is visible.
+    #[serde(default)]
+    pub mask: Option<Mask>,
+    /// Node graph; when present it replaces `effects` for rendering.
+    #[serde(default)]
+    pub graph: Option<NodeGraph>,
+    /// Clip-local markers.
+    #[serde(default)]
+    pub markers: Vec<Marker>,
 }
 
 impl Clip {
@@ -801,7 +1658,12 @@ impl Clip {
             pan: a0(),
             fade_in: 0.0,
             fade_out: 0.0,
+            bus: 0,
             text: if kind == ClipKind::Text { Some(TextStyle::default()) } else { None },
+            shape: if kind == ClipKind::Shape { Some(ShapeStyle::default()) } else { None },
+            mask: None,
+            graph: None,
+            markers: Vec::new(),
         }
     }
     pub fn end(&self) -> f64 {
@@ -838,6 +1700,14 @@ impl Clip {
     pub fn is_visual(&self) -> bool {
         self.kind != ClipKind::Audio
     }
+    /// Draws pixels of its own (an Adjustment layer only re-processes what is below it).
+    pub fn draws(&self) -> bool {
+        self.is_visual() && self.kind != ClipKind::Adjustment
+    }
+    /// The effect chain to render: the node graph when the clip has one, else the linear stack.
+    pub fn has_chain(&self) -> bool {
+        self.graph.as_ref().map(|g| g.nodes.len() > 2).unwrap_or(false) || !self.effects.is_empty()
+    }
     pub fn uses_asset(&self) -> bool {
         matches!(self.kind, ClipKind::Video | ClipKind::Image | ClipKind::Audio)
     }
@@ -855,6 +1725,8 @@ impl Clip {
             || self.blend != BlendMode::Normal
             || self.is_retimed()
             || !self.effects.is_empty()
+            || self.mask.is_some()
+            || self.graph.as_ref().map(|g| g.nodes.len() > 2).unwrap_or(false)
             || !self.pan.is_default(0.0)
             || self.fade_in > 0.0
             || self.fade_out > 0.0
@@ -884,6 +1756,19 @@ impl Clip {
         ];
         for e in &mut self.effects {
             v.extend(e.params.iter_mut());
+            if let Some(m) = &mut e.mask {
+                v.extend(m.animated_mut());
+            }
+        }
+        if let Some(m) = &mut self.mask {
+            v.extend(m.animated_mut());
+        }
+        if let Some(g) = &mut self.graph {
+            v.extend(g.animated_mut());
+        }
+        if let Some(sh) = &mut self.shape {
+            v.push(&mut sh.w);
+            v.push(&mut sh.h);
         }
         v
     }
@@ -891,6 +1776,19 @@ impl Clip {
         let mut v: Vec<&Animated> = self.animated().to_vec();
         for e in &self.effects {
             v.extend(e.params.iter());
+            if let Some(m) = &e.mask {
+                v.extend(m.animated());
+            }
+        }
+        if let Some(m) = &self.mask {
+            v.extend(m.animated());
+        }
+        if let Some(g) = &self.graph {
+            v.extend(g.animated());
+        }
+        if let Some(sh) = &self.shape {
+            v.push(&sh.w);
+            v.push(&sh.h);
         }
         v
     }
@@ -1002,6 +1900,9 @@ pub struct Track {
     pub clips: Vec<Clip>,
     #[serde(default)]
     pub transitions: Vec<Transition>,
+    /// Audio tracks: the bus every clip feeds unless the clip overrides it (0 = Main).
+    #[serde(default)]
+    pub bus: Id,
 }
 
 impl Track {
@@ -1015,6 +1916,7 @@ impl Track {
             height: if kind == TrackKind::Video { 64.0 } else { 56.0 },
             clips: Vec::new(),
             transitions: Vec::new(),
+            bus: 0,
         }
     }
     pub fn sort(&mut self) {
@@ -1146,6 +2048,12 @@ pub struct Project {
     pub show_subtitles: bool,
     /// Compositor resampling quality.
     pub scaler: Scaler,
+    /// Colour labels (name + colour), editable by the user.
+    pub labels: Vec<Label>,
+    /// Timeline markers (sorted by time).
+    pub markers: Vec<Marker>,
+    /// Mixer buses; `buses[0]` is Main and always exists.
+    pub buses: Vec<Bus>,
     /// Nested timelines (usable as footage via `ClipKind::Sequence`).
     pub sequences: Vec<Sequence>,
     /// The sequence currently swapped into `tracks` for editing (None = main timeline).
@@ -1183,6 +2091,9 @@ impl Project {
             subtitle_margin: 60.0,
             show_subtitles: true,
             scaler: Scaler::Bilinear,
+            labels: default_labels(),
+            markers: Vec::new(),
+            buses: Vec::new(),
             sequences: Vec::new(),
             editing: None,
             main_stash: None,
@@ -2193,6 +3104,297 @@ impl Project {
         true
     }
 
+    // ---------- labels ----------
+    /// Colour of label index `idx` (1-based; 0 or unknown = None).
+    pub fn label_color(&self, idx: u8) -> Option<[u8; 3]> {
+        (idx > 0).then(|| self.labels.get(idx as usize - 1).map(|l| l.color)).flatten()
+    }
+    pub fn label_name(&self, idx: u8) -> &str {
+        if idx == 0 {
+            return "None";
+        }
+        self.labels.get(idx as usize - 1).map(|l| l.name.as_str()).unwrap_or("None")
+    }
+    /// Add a label; returns its 1-based index.
+    pub fn add_label(&mut self, name: impl Into<String>, color: [u8; 3]) -> u8 {
+        self.labels.push(Label { name: name.into(), color });
+        self.labels.len() as u8
+    }
+    /// Remove a label; clips/assets/markers using it fall back to "none", higher indices shift down.
+    pub fn remove_label(&mut self, idx: u8) {
+        if idx == 0 || idx as usize > self.labels.len() {
+            return;
+        }
+        self.labels.remove(idx as usize - 1);
+        let fix = |l: &mut u8| {
+            if *l == idx {
+                *l = 0;
+            } else if *l > idx {
+                *l -= 1;
+            }
+        };
+        for a in &mut self.assets {
+            fix(&mut a.label);
+        }
+        for m in &mut self.markers {
+            fix(&mut m.label);
+        }
+        let mut all: Vec<&mut Track> = self.tracks.iter_mut().collect();
+        if let Some(st) = &mut self.main_stash {
+            all.extend(st.tracks.iter_mut());
+        }
+        for sq in &mut self.sequences {
+            all.extend(sq.tracks.iter_mut());
+        }
+        for t in all {
+            for c in &mut t.clips {
+                fix(&mut c.label);
+                for m in &mut c.markers {
+                    fix(&mut m.label);
+                }
+            }
+        }
+    }
+
+    // ---------- markers ----------
+    pub fn add_marker(&mut self, t: f64, name: impl Into<String>) -> Id {
+        let id = self.new_id();
+        self.markers.push(Marker { id, t: t.max(0.0), name: name.into(), ..Default::default() });
+        self.sort_markers();
+        id
+    }
+    pub fn remove_marker(&mut self, id: Id) {
+        self.markers.retain(|m| m.id != id);
+        for t in &mut self.tracks {
+            for c in &mut t.clips {
+                c.markers.retain(|m| m.id != id);
+            }
+        }
+    }
+    pub fn marker_mut(&mut self, id: Id) -> Option<&mut Marker> {
+        if let Some(i) = self.markers.iter().position(|m| m.id == id) {
+            return self.markers.get_mut(i);
+        }
+        self.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).flat_map(|c| c.markers.iter_mut()).find(|m| m.id == id)
+    }
+    pub fn sort_markers(&mut self) {
+        self.markers.sort_by(|a, b| a.t.total_cmp(&b.t));
+    }
+    /// Add a marker on a clip (time is clip-local).
+    pub fn add_clip_marker(&mut self, clip: Id, local_t: f64, name: impl Into<String>) -> Option<Id> {
+        let id = self.new_id();
+        let name = name.into();
+        let c = self.clip_mut(clip)?;
+        c.markers.push(Marker { id, t: local_t.clamp(0.0, c.duration), name, ..Default::default() });
+        c.markers.sort_by(|a, b| a.t.total_cmp(&b.t));
+        Some(id)
+    }
+    /// Every marker in timeline time: project markers plus clip markers offset by their clip.
+    pub fn markers_in_timeline(&self) -> Vec<(Id, f64, f64, String, u8)> {
+        let mut v: Vec<(Id, f64, f64, String, u8)> =
+            self.markers.iter().map(|m| (m.id, m.t, m.duration, m.name.clone(), m.label)).collect();
+        for (_, c) in self.all_clips() {
+            for m in &c.markers {
+                v.push((m.id, c.start + m.t, m.duration, m.name.clone(), m.label));
+            }
+        }
+        v.sort_by(|a, b| a.1.total_cmp(&b.1));
+        v
+    }
+
+    // ---------- buses ----------
+    /// The Main bus id, creating the default bus set on first use.
+    pub fn main_bus(&mut self) -> Id {
+        if self.buses.is_empty() {
+            let id = self.new_id();
+            self.buses.push(Bus { id, name: "Main".into(), output: 0, ..Default::default() });
+        }
+        self.buses[0].id
+    }
+    pub fn bus(&self, id: Id) -> Option<&Bus> {
+        self.buses.iter().find(|b| b.id == id)
+    }
+    pub fn bus_mut(&mut self, id: Id) -> Option<&mut Bus> {
+        self.buses.iter_mut().find(|b| b.id == id)
+    }
+    pub fn add_bus(&mut self, name: impl Into<String>) -> Id {
+        let main = self.main_bus();
+        let id = self.new_id();
+        self.buses.push(Bus { id, name: name.into(), output: main, ..Default::default() });
+        id
+    }
+    /// Remove a bus (never Main); tracks/clips and sends fall back to Main.
+    pub fn remove_bus(&mut self, id: Id) {
+        let main = self.main_bus();
+        if id == main {
+            return;
+        }
+        self.buses.retain(|b| b.id != id);
+        for b in &mut self.buses {
+            if b.output == id {
+                b.output = main;
+            }
+        }
+        for t in &mut self.tracks {
+            if t.bus == id {
+                t.bus = 0;
+            }
+            for c in &mut t.clips {
+                if c.bus == id {
+                    c.bus = 0;
+                }
+            }
+        }
+    }
+    /// Which bus a clip feeds: its own override, else its track's, else Main.
+    pub fn bus_of(&self, track: usize, clip: &Clip) -> Id {
+        let main = self.buses.first().map(|b| b.id).unwrap_or(0);
+        if clip.bus != 0 && self.bus(clip.bus).is_some() {
+            return clip.bus;
+        }
+        let t = self.tracks.get(track).map(|t| t.bus).unwrap_or(0);
+        if t != 0 && self.bus(t).is_some() {
+            t
+        } else {
+            main
+        }
+    }
+
+    // ---------- shapes / adjustment layers ----------
+    /// Add a shape clip on the topmost video track that has room.
+    pub fn add_shape_clip(&mut self, kind: ShapeKind, at: f64, dur: f64) -> Id {
+        let prefer = self.video_tracks().last().copied();
+        let ti = self.find_free_track(TrackKind::Video, at, dur, prefer);
+        let mut c = Clip::new(self.new_id(), ClipKind::Shape, kind.name(), at, dur);
+        c.shape = Some(ShapeStyle::new(kind));
+        let id = c.id;
+        self.tracks[ti].clips.push(c);
+        self.tracks[ti].sort();
+        id
+    }
+    /// Add an adjustment (automation) layer above everything at `at`.
+    pub fn add_adjustment_clip(&mut self, at: f64, dur: f64) -> Id {
+        let prefer = self.video_tracks().last().copied();
+        let ti = self.find_free_track(TrackKind::Video, at, dur, prefer);
+        let c = Clip::new(self.new_id(), ClipKind::Adjustment, "Adjustment", at, dur);
+        let id = c.id;
+        self.tracks[ti].clips.push(c);
+        self.tracks[ti].sort();
+        id
+    }
+
+    // ---------- node graphs ----------
+    /// Give the clip a node graph built from its current effect stack (idempotent).
+    pub fn ensure_graph(&mut self, clip: Id) -> bool {
+        let Some(c) = self.clip(clip) else { return false };
+        if c.graph.is_some() {
+            return true;
+        }
+        let effects = c.effects.clone();
+        let mut next = || {
+            self.next_id += 1;
+            self.next_id
+        };
+        let g = NodeGraph::from_effects(&effects, &mut next);
+        if let Some(c) = self.clip_mut(clip) {
+            c.graph = Some(g);
+        }
+        true
+    }
+    /// Add a node to a clip's graph at editor position (x, y); returns its id.
+    pub fn add_node(&mut self, clip: Id, kind: NodeKind, x: f32, y: f32) -> Option<Id> {
+        self.ensure_graph(clip);
+        let id = self.new_id();
+        let c = self.clip_mut(clip)?;
+        let g = c.graph.as_mut()?;
+        g.nodes.push(Node { id, kind, x, y, enabled: true });
+        Some(id)
+    }
+
+    // ---------- copy / paste attributes ----------
+    /// Snapshot of a clip to paste attributes from (Ctrl+Alt+C).
+    pub fn copy_attributes(&self, clip: Id) -> Option<Clip> {
+        self.clip(clip).cloned()
+    }
+    /// Apply the selected attributes of `src` onto `ids` (timing and media are never touched).
+    /// Returns how many clips changed.
+    pub fn paste_attributes(&mut self, src: &Clip, ids: &[Id], set: AttrSet) -> usize {
+        let mut n = 0;
+        for &id in ids {
+            let Some(c) = self.clip_mut(id) else { continue };
+            if c.id == src.id {
+                continue;
+            }
+            if set.transform {
+                c.x = src.x.clone();
+                c.y = src.y.clone();
+                c.scale = src.scale.clone();
+                c.rotation = src.rotation.clone();
+            }
+            if set.opacity {
+                c.opacity = src.opacity.clone();
+            }
+            if set.blend {
+                c.blend = src.blend;
+            }
+            if set.effects {
+                c.effects = src.effects.clone();
+            }
+            if set.graph {
+                c.graph = src.graph.clone();
+            }
+            if set.mask {
+                c.mask = src.mask.clone();
+            }
+            if set.speed {
+                c.set_speed(src.speed);
+                c.reverse = src.reverse;
+                c.freeze = src.freeze;
+            }
+            if set.audio {
+                c.volume = src.volume.clone();
+                c.pan = src.pan.clone();
+                c.fade_in = src.fade_in;
+                c.fade_out = src.fade_out;
+                c.bus = src.bus;
+            }
+            if set.text {
+                if let Some(t) = &src.text {
+                    c.text = Some(t.clone());
+                }
+            }
+            if set.shape {
+                if let Some(sh) = &src.shape {
+                    c.shape = Some(sh.clone());
+                }
+            }
+            if set.label {
+                c.label = src.label;
+            }
+            if set.markers {
+                c.markers = src.markers.clone();
+            }
+            n += 1;
+        }
+        if n > 0 {
+            self.tidy();
+        }
+        n
+    }
+
+    // ---------- track helpers ----------
+    /// Insert a new video track directly above `above_kind_index` (index within the video tracks) and
+    /// return its index in `tracks`. Used when a clip is dragged past the top of the timeline.
+    pub fn insert_video_track_above(&mut self, video_pos: usize) -> usize {
+        let idx = self.add_track(TrackKind::Video); // appended after the existing video tracks
+        let list = self.video_tracks();
+        let target = video_pos.min(list.len().saturating_sub(1));
+        // `add_track` already puts it last among video tracks (i.e. the topmost row)
+        let _ = target;
+        self.rename_tracks();
+        idx
+    }
+
     // ---------- persistence ----------
     pub fn to_json(&self) -> String {
         serde_json::to_string_pretty(self).unwrap_or_default()
@@ -2206,6 +3408,10 @@ impl Project {
             .chain(p.tracks.iter().map(|t| t.id))
             .chain(p.tracks.iter().flat_map(|t| t.transitions.iter().map(|x| x.id)))
             .chain(p.subtitles.iter().map(|c| c.id))
+            .chain(p.markers.iter().map(|m| m.id))
+            .chain(p.buses.iter().map(|b| b.id))
+            .chain(p.all_clips().flat_map(|(_, c)| c.markers.iter().map(|m| m.id)))
+            .chain(p.all_clips().filter_map(|(_, c)| c.graph.as_ref()).flat_map(|g| g.nodes.iter().map(|n| n.id)))
             .chain(p.sequences.iter().map(|s| s.id))
             .chain(p.sequences.iter().flat_map(|s| s.tracks.iter().map(|t| t.id)))
             .chain(
@@ -2248,6 +3454,11 @@ impl Project {
             }
         }
         p.subtitles.retain(|c| c.start.is_finite() && c.end.is_finite() && c.end > c.start);
+        if p.labels.is_empty() {
+            p.labels = default_labels();
+        }
+        p.markers.retain(|m| m.t.is_finite() && m.t >= 0.0);
+        p.sort_markers();
         p.tidy();
         p.sort_cues();
         Ok(p)
@@ -2640,5 +3851,79 @@ mod tests {
         assert!(!dir.join("p.sedit.tmp").exists());
         assert_eq!(Project::load(&path).unwrap().to_json(), p.to_json());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Which parts of a clip `Project::paste_attributes` copies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AttrSet {
+    pub transform: bool,
+    pub opacity: bool,
+    pub blend: bool,
+    pub effects: bool,
+    pub graph: bool,
+    pub mask: bool,
+    pub speed: bool,
+    pub audio: bool,
+    pub text: bool,
+    pub shape: bool,
+    pub label: bool,
+    pub markers: bool,
+}
+
+impl Default for AttrSet {
+    fn default() -> Self {
+        Self {
+            transform: true,
+            opacity: true,
+            blend: true,
+            effects: true,
+            graph: true,
+            mask: true,
+            speed: false,
+            audio: true,
+            text: false,
+            shape: false,
+            label: true,
+            markers: false,
+        }
+    }
+}
+
+impl AttrSet {
+    pub const NONE: AttrSet = AttrSet {
+        transform: false,
+        opacity: false,
+        blend: false,
+        effects: false,
+        graph: false,
+        mask: false,
+        speed: false,
+        audio: false,
+        text: false,
+        shape: false,
+        label: false,
+        markers: false,
+    };
+    /// (label, field) pairs for the paste dialog.
+    pub fn fields(&mut self) -> Vec<(&'static str, &mut bool)> {
+        vec![
+            ("Transform (position, scale, rotation)", &mut self.transform),
+            ("Opacity", &mut self.opacity),
+            ("Blend mode", &mut self.blend),
+            ("Effects", &mut self.effects),
+            ("Node graph", &mut self.graph),
+            ("Mask", &mut self.mask),
+            ("Speed / reverse / freeze", &mut self.speed),
+            ("Audio (volume, pan, fades, bus)", &mut self.audio),
+            ("Text style", &mut self.text),
+            ("Shape style", &mut self.shape),
+            ("Colour label", &mut self.label),
+            ("Markers", &mut self.markers),
+        ]
+    }
+    pub fn any(&self) -> bool {
+        let mut me = *self;
+        me.fields().iter().any(|(_, v)| **v)
     }
 }

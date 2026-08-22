@@ -351,6 +351,9 @@ impl Compositor {
         }
         let s = w as f32 / pw.max(1) as f32;
         match clip.kind {
+            // TODO(engine-gpu/shapes): Shape draws its vector/drawing layer; Adjustment re-processes
+            // everything already on the canvas (both land in round 3's renderer)
+            ClipKind::Shape | ClipKind::Adjustment => {}
             ClipKind::Video | ClipKind::Image => {
                 let Some(asset) = project.asset(clip.asset) else {
                     return;

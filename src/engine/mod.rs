@@ -2,12 +2,19 @@
 
 pub mod autocut;
 pub mod blend;
+pub mod capture;
 pub mod compose;
 pub mod convert;
 pub mod effects;
 pub mod export;
+pub mod gpu;
+pub mod import;
 pub mod mixer;
+pub mod mixer_fx;
+pub mod prerender;
 pub mod presets;
+pub mod shaders;
+pub mod shapes;
 pub mod style;
 pub mod subtitles;
 pub mod text;

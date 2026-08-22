@@ -103,6 +103,31 @@ pub struct Settings {
     /// MCP server (AI co-editing) on 127.0.0.1:mcp_port/mcp.
     pub mcp_enabled: bool,
     pub mcp_port: u16,
+    // ---- round 3 ----
+    /// Render the preview on the GPU (OpenGL) when a context is available.
+    pub gpu: bool,
+    /// Preview render scale in percent (100 = full canvas; lower is faster).
+    pub preview_quality: u32,
+    /// "Movie mode": play back pre-rendered full-quality frames.
+    pub movie_mode: bool,
+    /// Screen capture defaults.
+    pub capture_fps: u32,
+    pub capture_bitrate_kbps: u32,
+    pub capture_mic: String,
+    pub capture_desktop_audio: bool,
+    pub capture_cursor: bool,
+    /// Start/stop screen recording automatically when the editor loses/gains focus.
+    pub capture_on_blur: bool,
+    pub capture_dir: String,
+    /// Voiceover defaults.
+    pub voice_device: String,
+    pub voice_channels: u32,
+    /// Export-frame defaults ("project" | "2x" | "4x" | "WxH") and image format.
+    pub frame_resolution: String,
+    pub frame_format: String,
+    pub frame_quality: u32,
+    /// Stock image the effects panel renders its thumbnails from (empty = a generated test pattern).
+    pub effect_thumb_image: String,
 }
 
 impl Default for Settings {
@@ -134,6 +159,22 @@ impl Default for Settings {
             export_resolution: "project".into(),
             mcp_enabled: false,
             mcp_port: 7337,
+            gpu: true,
+            preview_quality: 100,
+            movie_mode: false,
+            capture_fps: 30,
+            capture_bitrate_kbps: 8000,
+            capture_mic: String::new(),
+            capture_desktop_audio: true,
+            capture_cursor: true,
+            capture_on_blur: false,
+            capture_dir: String::new(),
+            voice_device: String::new(),
+            voice_channels: 1,
+            frame_resolution: "project".into(),
+            frame_format: "png".into(),
+            frame_quality: 92,
+            effect_thumb_image: String::new(),
         }
     }
 }

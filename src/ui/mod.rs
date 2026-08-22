@@ -4,18 +4,26 @@
 
 pub mod app;
 pub mod autocut_ui;
+pub mod capture_ui;
 pub mod curves;
 pub mod effects_ui;
 pub mod export_ui;
+pub mod frame_ui;
+pub mod import_ui;
 pub mod inspector;
 pub mod layout;
 pub mod library;
+pub mod markers_ui;
+pub mod mixer_ui;
+pub mod nodes;
+pub mod paste_ui;
 pub mod planner;
 pub mod preview;
 pub mod retime;
 pub mod settings_ui;
 pub mod subtitles_ui;
 pub mod timeline;
+pub mod tools;
 pub mod transitions_ui;
 
 use crate::model::{Id, LABEL_COLORS};

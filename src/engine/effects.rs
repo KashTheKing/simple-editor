@@ -35,6 +35,26 @@ pub fn apply(effect: &Effect, t: f64, scale: f32, img: &mut Frame, scratch: &mut
         return;
     }
     let e = |i: usize| effect.at(i, t);
+    // round-3 kinds are GPU shaders (engine/gpu): the CPU path leaves the layer untouched so previews and
+    // exports on a machine without a GL context degrade gracefully instead of panicking.
+    if matches!(
+        effect.kind,
+        EffectKind::ChromaKey
+            | EffectKind::Curves
+            | EffectKind::Levels
+            | EffectKind::HueShift
+            | EffectKind::JpegCompress
+            | EffectKind::MotionBlur
+            | EffectKind::Plane3d
+            | EffectKind::EdgeGlow
+            | EffectKind::Threshold
+            | EffectKind::BlobTrack
+            | EffectKind::Vhs
+            | EffectKind::RecDot
+            | EffectKind::Shader
+    ) {
+        return;
+    }
     match effect.kind {
         EffectKind::Blur => {
             // 3 box passes of radius r/2 ≈ Gaussian with sigma ≈ r/2 (visual radius ≈ r)
@@ -91,6 +111,20 @@ pub fn apply(effect: &Effect, t: f64, scale: f32, img: &mut Frame, scratch: &mut
         EffectKind::Flip => flip(img, e(0) >= 0.5, e(1) >= 0.5),
         EffectKind::Crop => crop(img, e(0) as f32, e(1) as f32, e(2) as f32, e(3) as f32, e(4) as f32),
         EffectKind::Wobble => {} // geometric — handled by the compositor's placement
+        // GPU-only kinds returned above; listed so a new kind is a compile error, not a silent no-op
+        EffectKind::ChromaKey
+        | EffectKind::Curves
+        | EffectKind::Levels
+        | EffectKind::HueShift
+        | EffectKind::JpegCompress
+        | EffectKind::MotionBlur
+        | EffectKind::Plane3d
+        | EffectKind::EdgeGlow
+        | EffectKind::Threshold
+        | EffectKind::BlobTrack
+        | EffectKind::Vhs
+        | EffectKind::RecDot
+        | EffectKind::Shader => {}
     }
 }
 

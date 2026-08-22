@@ -119,6 +119,8 @@ fn kind_tag(k: ClipKind) -> &'static str {
         ClipKind::Image => "I",
         ClipKind::Text => "T",
         ClipKind::Sequence => "S",
+        ClipKind::Shape => "Sh",
+        ClipKind::Adjustment => "Adj",
     }
 }
 
@@ -166,6 +168,8 @@ fn kind_rank(k: ClipKind) -> u8 {
         ClipKind::Image => 2,
         ClipKind::Text => 3,
         ClipKind::Sequence => 4,
+        ClipKind::Shape => 5,
+        ClipKind::Adjustment => 6,
     }
 }
 

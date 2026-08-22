@@ -72,7 +72,7 @@ actions! {
     MarkIn => "mark_in", "Mark In", sc(NONE, Key::I);
     MarkOut => "mark_out", "Mark Out", sc(NONE, Key::O);
     ClearInOut => "clear_in_out", "Clear In / Out", sc(ALT, Key::X);
-    TrimToInOut => "trim_in_out", "Trim to In / Out", sc(CTRL, Key::T);
+    TrimToInOut => "trim_in_out", "Trim to In / Out", sc(CTRL_SHIFT, Key::I);
     RippleDeleteInOut => "ripple_in_out", "Ripple Delete In / Out", sc(CTRL_SHIFT, Key::Delete);
     AddText => "add_text", "Add Text", sc(NONE, Key::T);
     ZoomIn => "zoom_in", "Zoom In", sc(CTRL, Key::Equals);
@@ -103,6 +103,23 @@ actions! {
     OpenParentSequence => "parent_sequence", "Back to Parent Timeline", sc(ALT, Key::ArrowUp);
     SaveTemplate => "save_template", "Save Selection as Template…", None;
     ApplyFlow => "flow", "Flow Motion Between Selected Clips", None;
+    // ---- round 3 ----
+    AddLastTransition => "add_last_transition", "Add Last Used Transition", sc(CTRL, Key::T);
+    CopyAttributes => "copy_attrs", "Copy Attributes", sc(CTRL_ALT, Key::C);
+    PasteAttributes => "paste_attrs", "Paste Attributes…", sc(CTRL_ALT, Key::V);
+    AddMarker => "add_marker", "Add Marker at Playhead", sc(NONE, Key::M);
+    ToggleMarkers => "toggle_markers", "Show / Hide Markers", sc(CTRL, Key::Num8);
+    ToggleNodes => "toggle_nodes", "Show / Hide Node Editor", sc(CTRL, Key::Num9);
+    ToggleMixer => "toggle_mixer", "Show / Hide Mixer", sc(CTRL, Key::Num0);
+    ToggleTools => "toggle_tools", "Show / Hide Tools", None;
+    AddShape => "add_shape", "Add Shape", sc(SHIFT, Key::S);
+    AddAdjustment => "add_adjustment", "Add Adjustment Layer", sc(CTRL_ALT, Key::L);
+    AddMask => "add_mask", "Add Mask to Selection", sc(CTRL_SHIFT, Key::M);
+    ExportFrame => "export_frame", "Export Frame…", sc(CTRL_SHIFT, Key::F);
+    ScreenCapture => "screen_capture", "Screen Recording…", None;
+    Voiceover => "voiceover", "Record Voiceover…", sc(CTRL_ALT, Key::R);
+    ImportTimeline => "import_timeline", "Import Timeline (Premiere / Resolve XML, EDL)…", None;
+    MovieMode => "movie_mode", "Movie Mode (pre-render)", None;
 }
 
 pub struct Hotkeys {
