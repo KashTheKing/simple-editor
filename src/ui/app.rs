@@ -3136,7 +3136,7 @@ impl App {
                     ui.label("(none)");
                 }
                 for p in profiles {
-                    if ui.button(&p.name).clicked() {
+                    if layout::profile_button(ui, &p.name).clicked() {
                         ui.close();
                         match Layout::from_json_migrating(&p.json) {
                             Some(l) => {
