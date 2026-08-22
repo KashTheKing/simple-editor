@@ -1845,7 +1845,8 @@ impl App {
             }
             Pane::Library => {
                 let resp = {
-                    let App { project, settings, library: lib, ytdlp_available, thumbs, undo, redo, palette, .. } = self;
+                    let App { project, settings, library: lib, ytdlp_available, thumbs, undo, redo, palette, .. } =
+                        self;
                     let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
                     let ytdlp = ytdlp_available.load(std::sync::atomic::Ordering::Relaxed);
                     library::show(ui, lib, project, settings, Some(thumbs), palette, ytdlp, &mut push)
@@ -2893,8 +2894,15 @@ impl App {
             self.screenshot = None;
             return;
         }
-        // shoot as soon as the first rendered frame is on screen (or after 2.5 s when nothing renders)
-        if !self.screenshot_requested && (self.first_frame_at.is_some() || self.started.elapsed().as_secs_f32() > 2.5) {
+        // shoot as soon as the first rendered frame is on screen (or after the timeout when nothing renders).
+        // SE_SCREENSHOT_DELAY=<seconds> waits instead, for checks that need caches (thumbnails) warmed up.
+        let elapsed = self.started.elapsed().as_secs_f32();
+        let delay: Option<f32> = std::env::var("SE_SCREENSHOT_DELAY").ok().and_then(|v| v.parse().ok());
+        let ready = match delay {
+            Some(d) => elapsed > d,
+            None => self.first_frame_at.is_some() || elapsed > 2.5,
+        };
+        if !self.screenshot_requested && ready {
             self.screenshot_requested = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
         }

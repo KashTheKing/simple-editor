@@ -168,9 +168,12 @@ pub fn fragment(kind: EffectKind, user_src: &str) -> Option<String> {
     if kind == EffectKind::Shader {
         return Some(user_shader(user_src));
     }
-    Some(format!("{PRELUDE}
+    Some(format!(
+        "{PRELUDE}
 {}
-{MAIN}", body(kind)?))
+{MAIN}",
+        body(kind)?
+    ))
 }
 
 /// Blend modes as a GLSL function (`vec3 blend(int mode, vec3 s, vec3 d)`) mirroring engine::blend.

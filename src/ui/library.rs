@@ -1547,7 +1547,8 @@ mod tests {
             let _ = ctx.run(egui::RawInput::default(), |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut undo = |_: &Project| panic!("no undo without edits");
-                    let r = show(ui, &mut state, &mut project, &mut settings, Some(&mut cache), &palette, true, &mut undo);
+                    let r =
+                        show(ui, &mut state, &mut project, &mut settings, Some(&mut cache), &palette, true, &mut undo);
                     assert!(!r.edited && !r.edit_labels);
                 });
             });

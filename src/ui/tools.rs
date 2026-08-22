@@ -59,19 +59,37 @@ impl Default for ToolsState {
 
 /// The strip, left to right: (tool, icon, name). `Tool::Mask` stands for whichever mask shape is
 /// selected (the combo next to it picks one), the shape tools each get their own button.
-const STRIP: [(Tool, &str, &str); 12] = [
-    (Tool::Select, "\u{25b6}", "Select"),
-    (Tool::Text, "T", "Text"),
-    (Tool::Shape(ShapeKind::Rect), "\u{25a0}", "Rectangle"),
-    (Tool::Shape(ShapeKind::Ellipse), "\u{25cf}", "Ellipse"),
-    (Tool::Shape(ShapeKind::Triangle), "\u{25b2}", "Triangle"),
-    (Tool::Shape(ShapeKind::Polygon), "\u{25c6}", "Polygon"),
-    (Tool::Shape(ShapeKind::Star), "\u{2605}", "Star"),
-    (Tool::Shape(ShapeKind::Line), "/", "Line"),
-    (Tool::Shape(ShapeKind::Arrow), "\u{2192}", "Arrow"),
-    (Tool::Draw, "\u{270e}", "Draw"),
-    (Tool::Mask(MaskShape::Rect), "\u{25d0}", "Mask"),
-    (Tool::Zoom, "\u{2315}", "Zoom"),
+/// What `icon_button` draws. Painted with the painter, not typed: several of the obvious characters
+/// (polygon, pencil, half-disc, magnifier) are missing from Segoe UI and egui's bundled fonts and came
+/// out as tofu boxes, which made half the strip look identical.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Glyph {
+    Cursor,
+    Letter(char),
+    Rect,
+    Ellipse,
+    Poly(u32),
+    Star,
+    Line,
+    Arrow,
+    Pencil,
+    Mask,
+    Zoom,
+}
+
+const STRIP: [(Tool, Glyph, &str); 12] = [
+    (Tool::Select, Glyph::Cursor, "Select"),
+    (Tool::Text, Glyph::Letter('T'), "Text"),
+    (Tool::Shape(ShapeKind::Rect), Glyph::Rect, "Rectangle"),
+    (Tool::Shape(ShapeKind::Ellipse), Glyph::Ellipse, "Ellipse"),
+    (Tool::Shape(ShapeKind::Triangle), Glyph::Poly(3), "Triangle"),
+    (Tool::Shape(ShapeKind::Polygon), Glyph::Poly(5), "Polygon"),
+    (Tool::Shape(ShapeKind::Star), Glyph::Star, "Star"),
+    (Tool::Shape(ShapeKind::Line), Glyph::Line, "Line"),
+    (Tool::Shape(ShapeKind::Arrow), Glyph::Arrow, "Arrow"),
+    (Tool::Draw, Glyph::Pencil, "Draw"),
+    (Tool::Mask(MaskShape::Rect), Glyph::Mask, "Mask"),
+    (Tool::Zoom, Glyph::Zoom, "Zoom"),
 ];
 
 /// Single-key shortcut of a tool (used for the tooltips and by `handle_hotkeys`).
@@ -267,7 +285,7 @@ fn icon_button(
     ui: &mut egui::Ui,
     palette: &Palette,
     id: egui::Id,
-    icon: &str,
+    icon: Glyph,
     tip: &str,
     active: bool,
 ) -> egui::Response {
@@ -281,8 +299,100 @@ fn icon_button(
         p.rect_stroke(rect, CornerRadius::same(2), Stroke::new(1.0, palette.border), StrokeKind::Inside);
     }
     let fg = if active { on_accent(palette.accent) } else { palette.text };
-    p.text(rect.center(), Align2::CENTER_CENTER, icon, FontId::proportional(13.0), fg);
+    draw_glyph(p, rect, icon, fg);
     r.on_hover_text(tip)
+}
+
+/// Paint one tool glyph inside `rect` (a 24x22 button) in `fg`.
+pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Color32) {
+    let c = rect.center();
+    let r = 6.0; // half-extent of the drawn icon
+    let stroke = Stroke::new(1.4, fg);
+    let poly = |n: u32, rot: f32, rad: f32| -> Vec<egui::Pos2> {
+        (0..n)
+            .map(|i| {
+                let a = rot + std::f32::consts::TAU * i as f32 / n as f32;
+                c + egui::vec2(a.cos() * rad, a.sin() * rad)
+            })
+            .collect()
+    };
+    match g {
+        Glyph::Letter(ch) => {
+            p.text(c, Align2::CENTER_CENTER, ch, FontId::proportional(13.0), fg);
+        }
+        // a classic arrow cursor
+        Glyph::Cursor => {
+            let pts = vec![
+                c + egui::vec2(-3.5, -6.5),
+                c + egui::vec2(-3.5, 5.5),
+                c + egui::vec2(-0.5, 2.5),
+                c + egui::vec2(1.5, 6.5),
+                c + egui::vec2(3.5, 5.5),
+                c + egui::vec2(1.5, 1.8),
+                c + egui::vec2(5.0, 1.5),
+            ];
+            p.add(egui::Shape::convex_polygon(pts, fg, Stroke::NONE));
+        }
+        Glyph::Rect => {
+            p.rect_stroke(
+                egui::Rect::from_center_size(c, egui::vec2(12.0, 9.0)),
+                CornerRadius::ZERO,
+                stroke,
+                StrokeKind::Inside,
+            );
+        }
+        Glyph::Ellipse => {
+            p.circle_stroke(c, r, stroke);
+        }
+        Glyph::Poly(n) => {
+            let pts = poly(n, -std::f32::consts::FRAC_PI_2, r);
+            p.add(egui::Shape::closed_line(pts, stroke));
+        }
+        Glyph::Star => {
+            let outer = poly(5, -std::f32::consts::FRAC_PI_2, r);
+            let inner = poly(5, -std::f32::consts::FRAC_PI_2 + std::f32::consts::TAU / 10.0, r * 0.45);
+            let mut pts = Vec::with_capacity(10);
+            for i in 0..5 {
+                pts.push(outer[i]);
+                pts.push(inner[i]);
+            }
+            p.add(egui::Shape::closed_line(pts, stroke));
+        }
+        Glyph::Line => {
+            p.line_segment([c + egui::vec2(-6.0, 5.0), c + egui::vec2(6.0, -5.0)], stroke);
+        }
+        Glyph::Arrow => {
+            p.line_segment([c + egui::vec2(-6.0, 0.0), c + egui::vec2(4.0, 0.0)], stroke);
+            let head = vec![c + egui::vec2(6.5, 0.0), c + egui::vec2(2.5, -3.2), c + egui::vec2(2.5, 3.2)];
+            p.add(egui::Shape::convex_polygon(head, fg, Stroke::NONE));
+        }
+        // pencil: a slanted body with a tip at the bottom-left
+        Glyph::Pencil => {
+            let body = vec![
+                c + egui::vec2(1.0, -6.0),
+                c + egui::vec2(5.5, -1.5),
+                c + egui::vec2(-2.0, 6.0),
+                c + egui::vec2(-6.0, 6.5),
+                c + egui::vec2(-5.5, 2.5),
+            ];
+            p.add(egui::Shape::convex_polygon(body, fg, Stroke::NONE));
+        }
+        // mask: a circle whose left half is filled (matte in / matte out)
+        Glyph::Mask => {
+            p.circle_stroke(c, r, stroke);
+            let half: Vec<egui::Pos2> = (0..=12)
+                .map(|i| {
+                    let a = std::f32::consts::FRAC_PI_2 + std::f32::consts::PI * i as f32 / 12.0;
+                    c + egui::vec2(a.cos() * r, a.sin() * r)
+                })
+                .collect();
+            p.add(egui::Shape::convex_polygon(half, fg, Stroke::NONE));
+        }
+        Glyph::Zoom => {
+            p.circle_stroke(c + egui::vec2(-1.0, -1.0), 4.5, stroke);
+            p.line_segment([c + egui::vec2(2.2, 2.2), c + egui::vec2(6.0, 6.0)], Stroke::new(1.8, fg));
+        }
+    }
 }
 
 /// Readable text colour on top of the accent fill.
