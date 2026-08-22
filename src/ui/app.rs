@@ -523,21 +523,30 @@ fn apply_mask_fields(mask: &mut Mask, fields: &Value) -> Result<(), String> {
     Ok(())
 }
 
-/// "Blur" / "Color" / "Blend" / "Matte" / "Mask" / "Input" → a node kind for `clip.add_node`.
+/// "Blur" / "Color" / "Blend" / "Combine" / "Merge" / "Matte" / "Mask" / "Text" / "Input" → a node kind.
 fn node_kind(s: &str) -> Result<NodeKind, String> {
     match s.to_ascii_lowercase().as_str() {
         "input" => return Ok(NodeKind::Input),
         "output" => return Err("every graph already has exactly one Output".into()),
         "blend" => return Ok(NodeKind::Blend { mode: BlendMode::Normal, opacity: crate::model::Animated::new(1.0) }),
+        "combine" => {
+            return Ok(NodeKind::Combine { mode: BlendMode::Normal, factor: crate::model::Animated::new(0.5) })
+        }
+        "merge" => return Ok(NodeKind::Merge),
         "matte" => return Ok(NodeKind::Matte { invert: false, use_alpha: false }),
         "color" => return Ok(NodeKind::Color([0, 0, 0, 255])),
         "mask" => return Ok(NodeKind::Mask(Mask::new(MaskShape::Ellipse))),
+        "text" => return Ok(NodeKind::Text(crate::model::TextStyle { text: "{time}".into(), ..Default::default() })),
         _ => {}
     }
     let kind = EffectKind::ALL
         .into_iter()
         .find(|k| k.name().eq_ignore_ascii_case(s) || format!("{k:?}").eq_ignore_ascii_case(s))
-        .ok_or_else(|| format!("unknown node kind '{s}' (an effect name, Blend, Matte, Mask, Color or Input)"))?;
+        .ok_or_else(|| {
+            format!(
+                "unknown node kind '{s}' (an effect name, Blend, Combine, Merge, Matte, Mask, Color, Text or Input)"
+            )
+        })?;
     Ok(NodeKind::Effect(Effect::new(kind)))
 }
 
@@ -2361,6 +2370,20 @@ impl App {
             self.layout.reveal(Pane::Nodes);
             self.layout_dirty = true;
         }
+        if let Some(id) = inspector::take_unlink_nodes() {
+            self.push_undo();
+            match self.project.unlink_graph(id) {
+                Ok(n) => {
+                    self.after_edit();
+                    self.toast(format!("Unlinked — {n} effect layer{}", if n == 1 { "" } else { "s" }));
+                }
+                // nothing changed, so the snapshot above would be a no-op undo entry
+                Err(e) => {
+                    self.undo.pop();
+                    self.toast(format!("Can't unlink this graph: {e}"));
+                }
+            }
+        }
         // URL downloads: import the finished file, report failures
         let mut fetched: Vec<(Option<PathBuf>, Option<String>)> = Vec::new();
         self.downloads.retain(|d| {
@@ -2601,7 +2624,8 @@ impl App {
             return;
         };
         match guarded(|| GpuRenderer::new(gl)) {
-            Some(Ok(g)) => {
+            Some(Ok(mut g)) => {
+                g.text = Some(self.text.clone()); // Text nodes rasterise with the same fonts as everything else
                 self.gpu = Some(g);
                 self.player.set_gpu(true);
                 self.toast(format!("GPU preview: {}", self.gpu_name));

@@ -936,12 +936,21 @@ pub enum NodeKind {
     Color([u8; 4]),
     /// Another clip's layer at the same time (compositing across tracks).
     Clip(Id),
+    /// A project asset sampled as a texture — footage that need not be on the timeline at all.
+    Asset(Id),
     Effect(Effect),
     /// Combines two inputs (`a` under `b`) with a blend mode and opacity.
     Blend {
         mode: BlendMode,
         opacity: Animated,
     },
+    /// Same two inputs, mixed in by `factor` (0..1) — "how much of `b`", not its opacity.
+    Combine {
+        mode: BlendMode,
+        factor: Animated,
+    },
+    /// `b` composited straight over `a` (alpha over, no knobs).
+    Merge,
     /// Uses `b`'s luminance (or alpha) as a matte for `a`.
     Matte {
         invert: bool,
@@ -949,6 +958,9 @@ pub enum NodeKind {
     },
     /// A standalone mask (matte generator).
     Mask(Mask),
+    /// A string rasterised into the graph. `{frame}`, `{time}` and `{n}` expand at evaluation time,
+    /// which is all a frame counter or a running clock needs (see `expand_text`).
+    Text(TextStyle),
     Output,
 }
 
@@ -956,9 +968,14 @@ impl NodeKind {
     /// How many inputs the node consumes.
     pub fn inputs(&self) -> usize {
         match self {
-            NodeKind::Input | NodeKind::Color(_) | NodeKind::Clip(_) | NodeKind::Mask(_) => 0,
+            NodeKind::Input
+            | NodeKind::Color(_)
+            | NodeKind::Clip(_)
+            | NodeKind::Asset(_)
+            | NodeKind::Mask(_)
+            | NodeKind::Text(_) => 0,
             NodeKind::Effect(_) | NodeKind::Output => 1,
-            NodeKind::Blend { .. } | NodeKind::Matte { .. } => 2,
+            NodeKind::Blend { .. } | NodeKind::Combine { .. } | NodeKind::Merge | NodeKind::Matte { .. } => 2,
         }
     }
     pub fn title(&self) -> String {
@@ -966,13 +983,39 @@ impl NodeKind {
             NodeKind::Input => "Input".into(),
             NodeKind::Color(_) => "Color".into(),
             NodeKind::Clip(_) => "Clip".into(),
+            NodeKind::Asset(_) => "Asset".into(),
             NodeKind::Effect(e) => e.kind.name().into(),
             NodeKind::Blend { .. } => "Blend".into(),
+            NodeKind::Combine { .. } => "Combine".into(),
+            NodeKind::Merge => "Merge".into(),
             NodeKind::Matte { .. } => "Matte".into(),
             NodeKind::Mask(m) => format!("Mask ({})", m.shape.name()),
+            NodeKind::Text(_) => "Text".into(),
             NodeKind::Output => "Output".into(),
         }
     }
+}
+
+/// Expand a text node's format at time `t` (timeline seconds, `lt` clip-local): `{frame}` is the
+/// timeline frame number, `{time}` the timeline clock, `{n}` the frames since the clip started — so a
+/// counter is `{n}` and a clock is `{time}`. Anything else is left alone.
+pub fn expand_text(fmt: &str, t: f64, lt: f64, fps: f64) -> String {
+    let fps = if fps.is_finite() && fps > 0.0 { fps } else { 30.0 };
+    let count = |s: f64| (s.max(0.0) * fps).floor() as i64;
+    let mut out = fmt.to_string();
+    if out.contains("{frame}") {
+        out = out.replace("{frame}", &count(t).to_string());
+    }
+    if out.contains("{n}") {
+        out = out.replace("{n}", &count(lt).to_string());
+    }
+    if out.contains("{time}") {
+        let s = t.max(0.0);
+        let (h, m, sec, cs) = (s as i64 / 3600, (s as i64 / 60) % 60, s as i64 % 60, (s.fract() * 100.0) as i64);
+        let clock = if h > 0 { format!("{h}:{m:02}:{sec:02}.{cs:02}") } else { format!("{m:02}:{sec:02}.{cs:02}") };
+        out = out.replace("{time}", &clock);
+    }
+    out
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -1038,6 +1081,38 @@ impl NodeGraph {
         }
         g.edges.push(Edge { from: prev, to: out, port: 0 });
         g
+    }
+    /// The inverse of `from_effects`: the port-0 chain from Output back to Input as a linear stack.
+    /// Err (with a reason for the toast) when the graph is not that shape — anything the output does
+    /// not read is not part of the picture and is dropped without complaint.
+    pub fn to_effects(&self) -> Result<Vec<Effect>, String> {
+        let out = self.output().ok_or("it has no Output node")?;
+        let mut chain = Vec::new();
+        let mut spine = vec![out];
+        let mut cur = self.input_of(out, 0);
+        while let Some(id) = cur {
+            let n = self.node(id).ok_or("a wire points at a missing node")?;
+            spine.push(id);
+            match &n.kind {
+                NodeKind::Input => break,
+                NodeKind::Effect(e) => {
+                    let mut e = e.clone();
+                    e.enabled &= n.enabled;
+                    chain.push(e);
+                    cur = self.input_of(id, 0);
+                }
+                k => return Err(format!("a {} node has no effect-stack equivalent", k.title())),
+            }
+        }
+        if cur.is_none() {
+            return Err("the chain does not start at the Input node".into());
+        }
+        if let Some(extra) = self.eval_order().into_iter().find(|id| !spine.contains(id)) {
+            let name = self.node(extra).map(|n| n.kind.title()).unwrap_or_default();
+            return Err(format!("the {name} node feeds a branch a flat effect list can't hold"));
+        }
+        chain.reverse();
+        Ok(chain)
     }
     pub fn node(&self, id: Id) -> Option<&Node> {
         self.nodes.iter().find(|n| n.id == id)
@@ -1137,6 +1212,7 @@ impl NodeGraph {
                     }
                 }
                 NodeKind::Blend { opacity, .. } => v.push(opacity),
+                NodeKind::Combine { factor, .. } => v.push(factor),
                 NodeKind::Mask(m) => v.extend(m.animated_mut()),
                 _ => {}
             }
@@ -1154,6 +1230,7 @@ impl NodeGraph {
                     }
                 }
                 NodeKind::Blend { opacity, .. } => v.push(opacity),
+                NodeKind::Combine { factor, .. } => v.push(factor),
                 NodeKind::Mask(m) => v.extend(m.animated()),
                 _ => {}
             }
@@ -3326,6 +3403,17 @@ impl Project {
         }
         true
     }
+    /// Drop a clip's node graph back onto its linear effect stack; returns how many effects landed.
+    /// Err when the graph is more than a chain (the caller toasts it) — nothing is touched then.
+    pub fn unlink_graph(&mut self, clip: Id) -> Result<usize, String> {
+        let g = self.clip(clip).and_then(|c| c.graph.as_ref()).ok_or("that clip has no node graph")?;
+        let effects = g.to_effects()?;
+        let n = effects.len();
+        let c = self.clip_mut(clip).ok_or("that clip is gone")?;
+        c.effects = effects;
+        c.graph = None;
+        Ok(n)
+    }
     /// Add a node to a clip's graph at editor position (x, y); returns its id.
     pub fn add_node(&mut self, clip: Id, kind: NodeKind, x: f32, y: f32) -> Option<Id> {
         self.ensure_graph(clip);
@@ -3863,6 +3951,48 @@ mod tests {
         assert!(!dir.join("p.sedit.tmp").exists());
         assert_eq!(Project::load(&path).unwrap().to_json(), p.to_json());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unlink_graph_round_trips_the_effect_stack() {
+        let mut p = Project::from_media(asset(0, 10.0, 1));
+        let id = p.tracks[0].clips[0].id;
+        let mut blur = Effect::new(EffectKind::Blur);
+        blur.params[0].value = 7.0;
+        let mut off = Effect::new(EffectKind::Sharpen);
+        off.enabled = false;
+        p.clip_mut(id).unwrap().effects = vec![blur, off];
+        p.ensure_graph(id);
+        assert_eq!(p.unlink_graph(id), Ok(2));
+        let c = p.clip(id).unwrap();
+        assert!(c.graph.is_none(), "the graph is gone");
+        // order, parameters and the disabled flag survive the round trip
+        assert_eq!(c.effects.iter().map(|e| e.kind).collect::<Vec<_>>(), vec![EffectKind::Blur, EffectKind::Sharpen]);
+        assert_eq!(c.effects[0].at(0, 0.0), 7.0);
+        assert!(c.effects[0].enabled && !c.effects[1].enabled);
+
+        // a branch (Blend pulling in a second source) has no flat equivalent: refuse, change nothing
+        p.ensure_graph(id);
+        let g = p.clip(id).unwrap().graph.clone().unwrap();
+        let (input, out) = (g.nodes[0].id, g.output().unwrap());
+        let blend = p.add_node(id, NodeKind::Blend { mode: BlendMode::Normal, opacity: Animated::new(1.0) }, 0.0, 0.0);
+        let color = p.add_node(id, NodeKind::Color([255, 0, 0, 255]), 0.0, 0.0).unwrap();
+        let blend = blend.unwrap();
+        let g = p.clip_mut(id).unwrap().graph.as_mut().unwrap();
+        assert!(g.connect(input, blend, 0) && g.connect(color, blend, 1) && g.connect(blend, out, 0));
+        assert!(p.unlink_graph(id).is_err(), "a two-input branch cannot be linearised");
+        assert!(p.clip(id).unwrap().graph.is_some(), "and the graph is left alone");
+    }
+
+    #[test]
+    fn text_node_format_expands() {
+        // 25 fps: t = 2 s is timeline frame 50, 1 s into the clip is counter 25
+        assert_eq!(expand_text("{n} / {frame}", 2.0, 1.0, 25.0), "25 / 50");
+        assert_eq!(expand_text("{time}", 61.5, 0.0, 25.0), "01:01.50");
+        assert_eq!(expand_text("{time}", 3661.0, 0.0, 25.0), "1:01:01.00");
+        // nonsense fps falls back, unknown braces and negative times are left alone
+        assert_eq!(expand_text("{frame} {x}", 1.0, 0.0, 0.0), "30 {x}");
+        assert_eq!(expand_text("{n}", 0.0, -5.0, 30.0), "0");
     }
 }
 

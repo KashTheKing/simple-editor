@@ -54,7 +54,7 @@ pub const TOOLS: &[(&str, &str, &[&str])] = &[
     // ---- round 3 ----
     ("clip.add_mask", "Add a mask to a clip (or to one of its effects with `effect`).", &["clip_id:integer:true:", "shape:string:false:Rect|Ellipse|Polygon|Path (default Ellipse)", "effect:integer:false:effect index; omit for the clip itself"]),
     ("clip.set_mask", "Edit a mask: fields {shape, cx, cy, rx, ry, rotation, feather, expand, opacity, invert, enabled, points:[[x,y],…]} in project pixels relative to the layer centre.", &["clip_id:integer:true:", "fields:object:true:", "effect:integer:false:"]),
-    ("clip.add_node", "Add a node to the clip's node graph (created from its effect stack on first use).", &["clip_id:integer:true:", "kind:string:true:an effect name, or Blend|Matte|Mask|Color|Input", "x:number:false:", "y:number:false:"]),
+    ("clip.add_node", "Add a node to the clip's node graph (created from its effect stack on first use).", &["clip_id:integer:true:", "kind:string:true:an effect name, or Blend|Combine|Merge|Matte|Mask|Color|Text|Input", "x:number:false:", "y:number:false:"]),
     ("clip.connect_nodes", "Wire one node's output into another node's input port (cycles are refused).", &["clip_id:integer:true:", "from:integer:true:", "to:integer:true:", "port:integer:false:default 0"]),
     ("markers.list", "Every marker in timeline time (project markers + clip markers).", &[]),
     ("markers.add", "Add a marker at a timeline time (on a clip with clip_id).", &["t:number:true:", "name:string:false:", "note:string:false:", "label:integer:false:", "duration:number:false:range markers", "clip_id:integer:false:"]),

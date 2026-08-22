@@ -444,6 +444,23 @@ fn layer_for(
     comp: &mut Compositor,
     set: &mut LayerSet,
 ) {
+    // Asset nodes sample footage that need not be on the timeline, so nothing else decodes it: one
+    // frame per asset, keyed by the asset id (`gpu::eval_graph_on` looks it up there). Before the
+    // `draws()` gate, since an adjustment layer can hold them too.
+    // ponytail: sampled at the clip's own local time, at canvas size — no per-node time offset yet.
+    for aid in clip.graph.iter().flat_map(|g| g.nodes.iter()).filter_map(|n| match n.kind {
+        crate::model::NodeKind::Asset(a) => Some(a),
+        _ => None,
+    }) {
+        let Some(asset) = project.asset(aid).filter(|a| a.width > 0 && a.height > 0) else { continue };
+        if set.get(aid).is_some() {
+            continue;
+        }
+        let (dw, dh) = (w.min(asset.width), h.min(asset.height));
+        if let Some(f) = decode_one(pool, &asset.path, clip.local(t), asset.duration, dw, dh, spare) {
+            set.layers.push((aid, f));
+        }
+    }
     if !clip.draws() {
         return;
     }

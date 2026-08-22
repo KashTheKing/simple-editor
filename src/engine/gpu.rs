@@ -207,6 +207,9 @@ pub struct GpuRenderer {
     blank: glow::Texture,
     /// Targets handed to the caller; recycled at the start of the next frame.
     loaned: Vec<Target>,
+    /// What `NodeKind::Text` rasterises with — the app hands over the same one the player and export
+    /// use, so fonts and the glyph cache are shared. None = Text nodes render nothing.
+    pub text: Option<Arc<std::sync::Mutex<crate::engine::text::TextRasterizer>>>,
 }
 
 impl GpuRenderer {
@@ -239,6 +242,7 @@ impl GpuRenderer {
                 textures: HashMap::new(),
                 blank,
                 loaned: Vec::new(),
+                text: None,
             };
             // The composite program is the one nothing works without: fail loudly here instead of
             // silently rendering black later.
@@ -450,11 +454,18 @@ impl GpuRenderer {
     }
 
     /// Evaluate a node graph, returning the output texture.
-    pub fn eval_graph(&mut self, graph: &NodeGraph, clip: &Clip, t: f64, layers: &LayerSet) -> Option<glow::Texture> {
+    pub fn eval_graph(
+        &mut self,
+        graph: &NodeGraph,
+        clip: &Clip,
+        t: f64,
+        fps: f64,
+        layers: &LayerSet,
+    ) -> Option<glow::Texture> {
         let input = layers.get(clip.id).map(|f| (self.upload(clip.id, f), f.width, f.height));
         let size = input.map(|(_, w, h)| (w, h)).filter(|s| s.0 > 0 && s.1 > 0)?;
         let host = self.host_fbo();
-        let out = self.eval_graph_on(graph, clip, t, layers, input.map(|(tex, ..)| tex), size, 1.0);
+        let out = self.eval_graph_on(graph, clip, t, fps, layers, input.map(|(tex, ..)| tex), size, 1.0);
         self.restore(host);
         let out = out?;
         let tex = out.tex;
@@ -991,7 +1002,9 @@ impl GpuRenderer {
 
         if clip.kind == ClipKind::Adjustment {
             // re-process everything already on the canvas
-            let Some(out) = self.run_chain(clip, t, layers, canvas.tex, (cw, ch), s) else { return canvas };
+            let Some(out) = self.run_chain(clip, t, project.fps, layers, canvas.tex, (cw, ch), s) else {
+                return canvas;
+            };
             self.pool.put(canvas);
             return out;
         }
@@ -1038,7 +1051,7 @@ impl GpuRenderer {
         // effect scale: layer px per project px (matches compose::apply_effects' img_scale — footage
         // is decoded at roughly the placed size, text/shape bitmaps arrive at canvas scale already)
         let img_scale = if contain { s * (lsize.0 as f32 / p.w.max(1e-3)) } else { s };
-        let processed = self.run_chain(clip, t, layers, tex, lsize, img_scale);
+        let processed = self.run_chain(clip, t, project.fps, layers, tex, lsize, img_scale);
         let (src, size, own) = match &processed {
             Some(target) => (target.tex, (target.w, target.h), true),
             None => (tex, lsize, false),
@@ -1062,10 +1075,12 @@ impl GpuRenderer {
     }
 
     /// The clip's effect chain (node graph when it has one, else the linear stack). None = unchanged.
+    #[allow(clippy::too_many_arguments)]
     fn run_chain(
         &mut self,
         clip: &Clip,
         t: f64,
+        fps: f64,
         layers: &LayerSet,
         src: glow::Texture,
         size: (u32, u32),
@@ -1073,7 +1088,7 @@ impl GpuRenderer {
     ) -> Option<Target> {
         let lt = clip.local(t);
         if let Some(g) = &clip.graph {
-            return self.eval_graph_on(g, clip, t, layers, Some(src), size, scale);
+            return self.eval_graph_on(g, clip, t, fps, layers, Some(src), size, scale);
         }
         let mut cur: Option<Target> = None;
         for e in &clip.effects {
@@ -1108,6 +1123,7 @@ impl GpuRenderer {
         graph: &NodeGraph,
         clip: &Clip,
         t: f64,
+        fps: f64,
         layers: &LayerSet,
         input: Option<glow::Texture>,
         size: (u32, u32),
@@ -1142,13 +1158,16 @@ impl GpuRenderer {
                         }
                         target
                     }
-                    NodeKind::Clip(other) => match layers.get(*other) {
+                    // an asset layer is decoded by the caller under the asset's own id (ids are unique
+                    // project-wide), so both of these are just "someone else's bitmap"
+                    NodeKind::Clip(other) | NodeKind::Asset(other) => match layers.get(*other) {
                         Some(f) if !f.is_empty() => {
                             let tex = self.upload(*other, f);
                             self.copy_to(tex, size)
                         }
                         _ => self.transparent(size),
                     },
+                    NodeKind::Text(style) => self.text_node(id, style, t, lt, fps, scale, size),
                     NodeKind::Effect(_) if a.is_none() => self.transparent(size),
                     NodeKind::Effect(e) => {
                         let src = a.unwrap_or(self.blank);
@@ -1167,7 +1186,13 @@ impl GpuRenderer {
                             None => self.copy_to(src, size),
                         }
                     }
-                    NodeKind::Blend { mode, opacity } => {
+                    // Blend / Combine / Merge are all "b onto a" — mode and amount are the only difference
+                    NodeKind::Blend { .. } | NodeKind::Combine { .. } | NodeKind::Merge => {
+                        let (mode, amount) = match &node.kind {
+                            NodeKind::Blend { mode, opacity } => (*mode, opacity.at(lt)),
+                            NodeKind::Combine { mode, factor } => (*mode, factor.at(lt)),
+                            _ => (BlendMode::Normal, 1.0),
+                        };
                         let under = match a {
                             Some(tex) => self.copy_to(tex, size),
                             None => self.transparent(size),
@@ -1176,8 +1201,8 @@ impl GpuRenderer {
                             (Some(under), Some(over)) => {
                                 let inv =
                                     [[1.0 / size.0 as f32, 0.0, 0.0], [0.0, 1.0 / size.1 as f32, 0.0], [0.0, 0.0, 1.0]];
-                                let op = opacity.at(lt).clamp(0.0, 1.0) as f32;
-                                Some(self.composite(under, over, size, inv, *mode, op, Scaler::Bilinear, None))
+                                let op = amount.clamp(0.0, 1.0) as f32;
+                                Some(self.composite(under, over, size, inv, mode, op, Scaler::Bilinear, None))
                             }
                             (u, _) => u,
                         }
@@ -1217,6 +1242,42 @@ impl GpuRenderer {
         let t = self.acquire(size.0, size.1)?;
         self.clear(&t, [0.0; 4]);
         Some(t)
+    }
+
+    /// A Text node: expand the format, rasterise it (shared `TextRasterizer`) and centre it on an
+    /// otherwise transparent canvas. A counter re-rasterises every frame — that is what it is for.
+    #[allow(clippy::too_many_arguments)]
+    fn text_node(
+        &mut self,
+        id: Id,
+        style: &crate::model::TextStyle,
+        t: f64,
+        lt: f64,
+        fps: f64,
+        scale: f32,
+        size: (u32, u32),
+    ) -> Option<Target> {
+        let rasterizer = self.text.clone()?;
+        let mut style = style.clone();
+        style.text = crate::model::expand_text(&style.text, t, lt, fps);
+        let img = rasterizer.lock().ok()?.render(&style, scale);
+        let base = self.transparent(size)?;
+        if img.is_empty() || (img.width <= 1 && img.height <= 1) {
+            return Some(base);
+        }
+        let p = crate::engine::compose::Placement {
+            cx: size.0 as f32 / 2.0,
+            cy: size.1 as f32 / 2.0,
+            w: img.width as f32,
+            h: img.height as f32,
+            rot: 0.0,
+            yaw: 0.0,
+            pitch: 0.0,
+        };
+        let Some(inv) = inverse_placement(&p, size.0 as f32, 0.0) else { return Some(base) };
+        let tex = self.upload(id, &img);
+        let wh = (img.width, img.height);
+        Some(self.composite(base, tex, wh, inv, BlendMode::Normal, 1.0, Scaler::Bilinear, None))
     }
 
     fn matte(

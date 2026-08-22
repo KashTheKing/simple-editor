@@ -104,8 +104,9 @@ src/selftest.rs        headless end-to-end check (`--selftest`)
 * `Effect { kind, params: Vec<Animated>, mask, shader }` — `EffectKind::params()` is the parameter
   table (name/default/min/max); `is_bool_param()` marks checkbox params; `is_geometric()` marks effects
   folded into the placement; `needs_motion()` marks ones needing neighbouring frames.
-* `NodeGraph { nodes, edges }` — `NodeKind::{Input, Color, Clip, Effect, Blend, Matte, Mask, Output}`,
-  cycle-refusing `connect`, `eval_order()`. Present ⇒ it replaces the linear stack for rendering.
+* `NodeGraph { nodes, edges }` — `NodeKind::{Input, Color, Clip, Asset, Effect, Blend, Combine, Merge,
+  Matte, Mask, Text, Output}`, cycle-refusing `connect`, `eval_order()`, `to_effects()` (the inverse of
+  `from_effects`, used by `Project::unlink_graph`). Present ⇒ it replaces the linear stack for rendering.
 * `Mask` — Rect/Ellipse/Polygon/Path with animated centre/radii/rotation/feather/expand/opacity/invert.
 * `Transition` — lives on a `Track`, centred on a cut, **window clamped to its two clips**
   (`Transition::window(left, right)`); kinds CrossFade / FadeToColor / Push / Wipe.
@@ -160,7 +161,9 @@ user GLSL Shader (edited in a non-blocking window that compiles the source and p
 Each has keyframeable params and an optional mask.
 **Transitions** — cross fade, fade to colour, push, wipe; audio crossfades mirror them.
 **Masks** — per clip and per effect; rect/ellipse/polygon/path with feather, expand, invert.
-**Node editor** — chain/combine effects with blend, matte, mask, colour and clip inputs.
+**Node editor** — chain/combine effects with blend/combine/merge, matte, mask, colour, clip, asset and
+text (`{frame}`/`{time}`/`{n}` counters and clocks) inputs; "Unlink" turns a simple chain back into a
+plain effect list.
 **Keyframes** — value-positioned diamonds on clips, a graph editor with bezier velocity handles, easing
 menus, curve/motion presets (scaled or exact), and "flow" between two clips.
 **Text** — system + imported fonts, size, bold/italic, fill/outline/shadow/box, alignment, spacing.

@@ -56,6 +56,12 @@ thread_local! {
     static OPEN_SEQUENCE: RefCell<Option<Id>> = const { RefCell::new(None) };
     static EDIT_MASK: RefCell<Option<Id>> = const { RefCell::new(None) };
     static OPEN_NODES: RefCell<Option<Id>> = const { RefCell::new(None) };
+    static UNLINK_NODES: RefCell<Option<Id>> = const { RefCell::new(None) };
+}
+
+/// Clip the user asked to turn back into a plain effect stack (`Project::unlink_graph`).
+pub fn take_unlink_nodes() -> Option<Id> {
+    UNLINK_NODES.with(|p| p.borrow_mut().take())
 }
 
 /// Clip whose mask the user wants to draw in the viewport ("Edit in viewport") — the app switches the
@@ -457,6 +463,11 @@ fn clip_section(
         if has {
             let n = clip.graph.as_ref().map(|gr| gr.nodes.len()).unwrap_or(0);
             ui.weak(format!("{n} nodes"));
+            let r = ui.button("Unlink").on_hover_text("Back to a plain effect list (a simple chain only)");
+            mark(ui, "unlink_nodes", &r);
+            if r.clicked() {
+                UNLINK_NODES.with(|p| *p.borrow_mut() = Some(id));
+            }
         }
     });
 

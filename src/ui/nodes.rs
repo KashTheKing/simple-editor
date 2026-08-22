@@ -5,8 +5,9 @@
 //! and its parameters inline (collapsed to the first two when the node is small). Drag from a port to
 //! another to connect (`NodeGraph::connect` refuses cycles); drag a wire off a port to disconnect;
 //! right-click a node for Delete / Duplicate / Add mask; right-click the canvas for the "Add node" menu
-//! (every `EffectKind` grouped by `category()`, Blend, Matte, Mask, Color, Clip, Input). Selecting a node
-//! shows its full parameters in the Inspector and lets the Curves pane keyframe them.
+//! (every `EffectKind` grouped by `category()`, Blend, Combine, Merge, Matte, Mask, Color, Clip, Text,
+//! Input, then one entry per project asset — an Asset node needs a real id, so it is picked there).
+//! Selecting a node shows its full parameters in the Inspector and lets the Curves pane keyframe them.
 //! `Project::ensure_graph` converts a clip's linear stack the first time this pane opens for it — an
 //! undoable edit, since the renderer evaluates the graph from then on and ignores `clip.effects`.
 //! Every mutation calls `undo` once per gesture.
@@ -63,6 +64,7 @@ enum Act {
     Delete(Id),
     Move(Id, f32, f32),
     SetParam(Id, usize, f64),
+    SetText(Id, String),
     SetEnabled(Id, bool),
     Connect(Id, Id, usize),
     Disconnect(Id, usize),
@@ -275,6 +277,24 @@ pub fn show(
 
         // inline parameters (real widgets only when the box is close to full size)
         if z >= 0.6 {
+            if let NodeKind::Text(style) = &n.kind {
+                let row = Rect::from_min_size(
+                    r.min + vec2(6.0 * z, HEADER_H * z + 2.0),
+                    vec2((NODE_W - 12.0) * z, ROW_H * z),
+                );
+                let mut txt = style.text.clone();
+                let mut sub = ui.new_child(UiBuilder::new().max_rect(row).id_salt(("txt", n.id)));
+                sub.set_clip_rect(row.intersect(rect));
+                let te = sub
+                    .add(egui::TextEdit::singleline(&mut txt).desired_width(f32::INFINITY))
+                    .on_hover_text("{frame} timeline frame · {time} clock · {n} frames into the clip");
+                if te.changed() {
+                    acts.push(Act::SetText(n.id, txt));
+                }
+                if te.gained_focus() {
+                    needs_undo = true;
+                }
+            }
             if let NodeKind::Effect(e) = &n.kind {
                 for (pi, spec) in e.specs().iter().take(INLINE_PARAMS).enumerate() {
                     let row = Rect::from_min_size(
@@ -350,7 +370,8 @@ pub fn show(
         state.menu_at = Some((g.x, g.y));
     }
     let at = state.menu_at.unwrap_or((40.0, 40.0));
-    resp.context_menu(|ui| add_menu(ui, base, at, &mut acts, &mut needs_undo));
+    let assets: Vec<(Id, String)> = project.assets.iter().map(|a| (a.id, a.name())).collect();
+    resp.context_menu(|ui| add_menu(ui, base, at, &assets, &mut acts, &mut needs_undo));
 
     // Delete / Ctrl+D on the selected node (the same actions as the menu, reachable from the keyboard)
     if let Some(sel) = state.selected {
@@ -417,6 +438,16 @@ fn apply(project: &mut Project, clip: Id, act: Act, selected: &mut Option<Id>) -
             }
             None => false,
         },
+        Act::SetText(id, s) => match g.node_mut(id) {
+            Some(n) => match &mut n.kind {
+                NodeKind::Text(style) => {
+                    style.text = s;
+                    true
+                }
+                _ => false,
+            },
+            None => false,
+        },
         Act::SetParam(id, i, v) => match g.node_mut(id) {
             Some(n) => match &mut n.kind {
                 NodeKind::Effect(e) => match e.params.get_mut(i) {
@@ -460,8 +491,16 @@ fn apply(project: &mut Project, clip: Id, act: Act, selected: &mut Option<Id>) -
     }
 }
 
-/// "Add node": every `EffectKind` under its `category()`, then the non-effect nodes.
-fn add_menu(ui: &mut egui::Ui, base: egui::Id, at: (f32, f32), acts: &mut Vec<Act>, needs_undo: &mut bool) {
+/// "Add node": every `EffectKind` under its `category()`, then the non-effect nodes and the project's
+/// assets (an Asset node needs a real id, so it is picked here instead of on the node box).
+fn add_menu(
+    ui: &mut egui::Ui,
+    base: egui::Id,
+    at: (f32, f32),
+    assets: &[(Id, String)],
+    acts: &mut Vec<Act>,
+    needs_undo: &mut bool,
+) {
     let mut push = |ui: &egui::Ui, kind: NodeKind| {
         acts.push(Act::Add(kind, at.0, at.1));
         *needs_undo = true;
@@ -486,15 +525,28 @@ fn add_menu(ui: &mut egui::Ui, base: egui::Id, at: (f32, f32), acts: &mut Vec<Ac
         ui.label(egui::RichText::new("Graph").small().weak());
         for (name, kind) in [
             ("Blend", NodeKind::Blend { mode: BlendMode::Normal, opacity: Animated::new(1.0) }),
+            ("Combine", NodeKind::Combine { mode: BlendMode::Normal, factor: Animated::new(0.5) }),
+            ("Merge", NodeKind::Merge),
             ("Matte", NodeKind::Matte { invert: false, use_alpha: false }),
             ("Mask", NodeKind::Mask(Mask::default())),
             ("Color", NodeKind::Color([0, 0, 0, 255])),
             // ponytail: a fresh Clip node points at nothing — the inspector picks the source clip
             ("Clip", NodeKind::Clip(0)),
+            // a fresh Text node is the clock; a plain string is one edit away
+            ("Text", NodeKind::Text(crate::model::TextStyle { text: "{time}".into(), ..Default::default() })),
             ("Input", NodeKind::Input),
         ] {
             if menu_entry(ui, base.with(("add", name)), name).clicked() {
                 push(ui, kind);
+            }
+        }
+        if !assets.is_empty() {
+            ui.separator();
+            ui.label(egui::RichText::new("Asset").small().weak());
+            for (id, name) in assets {
+                if menu_entry(ui, base.with(("asset", *id)), name).clicked() {
+                    push(ui, NodeKind::Asset(*id));
+                }
             }
         }
     });
@@ -529,6 +581,7 @@ fn hint(ui: &mut egui::Ui, palette: &Palette, text: &str) {
 fn node_height(kind: &NodeKind, thumb: bool) -> f32 {
     let params = match kind {
         NodeKind::Effect(e) => e.specs().len().min(INLINE_PARAMS),
+        NodeKind::Text(_) => 1, // the format field
         _ => 0,
     };
     let rows = kind.inputs().max(params).max(1);
@@ -613,6 +666,9 @@ fn paint_node(
     // non-effect nodes have no inline widgets; show a one-line summary instead
     let summary = match &n.kind {
         NodeKind::Blend { mode, opacity } => Some(format!("{:?}  {:.0}%", mode, opacity.value * 100.0)),
+        NodeKind::Combine { mode, factor } => Some(format!("{:?}  {:.0}%", mode, factor.value * 100.0)),
+        NodeKind::Merge => Some("b over a".into()),
+        NodeKind::Asset(id) => Some(format!("#{id}")),
         NodeKind::Matte { invert, use_alpha } => {
             Some(format!("{}{}", if *use_alpha { "alpha" } else { "luma" }, if *invert { " inv" } else { "" }))
         }
