@@ -2,7 +2,12 @@
 //! effect applied to a stock image with its name underneath, grouped by `EffectKind::category()` under
 //! collapsible headers, with a search box. Thumbnails arrive through `set_thumbnail(kind, id, size)`,
 //! which the app calls after rendering them on the GPU; without a GL context a card still shows its name
-//! on a neutral tile (never blank). Clicking a card adds the effect to every selected visual clip.
+//! on a neutral tile (never blank) — an effect with `EffectKind::applies_to_audio()` instead gets a
+//! solid green tile with a music-note glyph, since it has no picture to render. The catalogue is filtered
+//! to what the first selected clip can use (audio clip -> audio effects only, and vice versa); with
+//! nothing selected it shows everything. Every card is also a dnd drag source (`DragPayload::Effect`,
+//! same mechanism as `ui::library`'s asset tiles) so it can be dropped onto a clip, alongside its
+//! existing click-to-add. Clicking a card adds the effect to every eligible selected clip.
 //! Below: the FIRST selected clip's effect stack, in order: for each effect a header row (enabled
 //! checkbox, name, mask button, "Edit shader…" for a custom shader, copy/paste params, ▲ ▼ reorder,
 //! ✕ remove) and its parameters from
@@ -14,10 +19,10 @@
 //! is what the renderer evaluates, so stack edits would be invisible.
 //! Every change → undo once per gesture (same `edit_start` rule as the inspector).
 
-use crate::model::{Animated, Effect, EffectKind, Id, Mask, Project};
+use crate::model::{Animated, ClipKind, Effect, EffectKind, Id, Mask, Project};
 use crate::settings::MotionPreset;
 use crate::theme::Palette;
-use crate::ui::{mask_grid, Gesture};
+use crate::ui::{mask_grid, DragPayload, Gesture};
 use eframe::egui::{self, Button, DragValue, Grid, Response, StrokeKind};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -79,34 +84,58 @@ fn matches(kind: EffectKind, q: &str) -> bool {
     kind.name().to_lowercase().contains(&q) || kind.category().to_lowercase().contains(&q)
 }
 
-/// One catalogue card: the thumbnail (or a neutral named tile) with the effect name underneath.
+/// Whether `kind` belongs in the catalogue for the selected clip: `audio` is the first selected clip's
+/// "is it an audio clip" (None = nothing selected, so nothing is filtered out).
+fn fits_selection(kind: EffectKind, audio: Option<bool>) -> bool {
+    audio.map_or(true, |a| kind.applies_to_audio() == a)
+}
+
+/// One catalogue card: the thumbnail (or a neutral named tile, or a green tile + note for an audio
+/// effect) with the effect name underneath. Also a dnd drag source for `DragPayload::Effect`, same
+/// pattern as `ui::library`'s `tile()` — the click-sensing `interact` is registered after the drag
+/// source so a plain click still reaches it (egui hands the click to the topmost click-sensing widget).
 fn effect_card(ui: &mut egui::Ui, kind: EffectKind, palette: &Palette) -> Response {
     let font = egui::TextStyle::Small.resolve(ui.style());
     let name_h = ui.text_style_height(&egui::TextStyle::Small);
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(CARD.0, CARD.1 + name_h + 2.0), egui::Sense::click());
-    let tile = egui::Rect::from_min_size(rect.min, egui::vec2(CARD.0, CARD.1));
-    let p = ui.painter();
-    match thumbnail(kind) {
-        Some((tex, _)) => {
-            p.image(tex, tile, egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+    let id = ui.id().with(("fx_card", kind));
+    let src = ui.dnd_drag_source(id, DragPayload::Effect(kind), |ui| {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(CARD.0, CARD.1 + name_h + 2.0), egui::Sense::hover());
+        let tile = egui::Rect::from_min_size(rect.min, egui::vec2(CARD.0, CARD.1));
+        let p = ui.painter();
+        if kind.applies_to_audio() {
+            // no picture to render for an audio effect: a solid tile + note reads at a glance
+            p.rect_filled(tile, 2.0, palette.clip_audio);
+            crate::ui::tools::draw_glyph(p, tile, crate::ui::tools::Glyph::MusicNote, egui::Color32::WHITE);
+        } else {
+            match thumbnail(kind) {
+                Some((tex, _)) => {
+                    p.image(
+                        tex,
+                        tile,
+                        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                        egui::Color32::WHITE,
+                    );
+                }
+                None => {
+                    // no GL / not rendered yet: a neutral tile that still names the effect
+                    p.rect_filled(tile, 2.0, palette.header);
+                    let g = p.layout(kind.name().to_string(), font.clone(), palette.text_dim, CARD.0 - 8.0);
+                    p.galley(tile.center() - g.size() / 2.0, g, palette.text_dim);
+                }
+            }
         }
-        None => {
-            // no GL / not rendered yet: a neutral tile that still names the effect
-            p.rect_filled(tile, 2.0, palette.header);
-            let g = p.layout(kind.name().to_string(), font.clone(), palette.text_dim, CARD.0 - 8.0);
-            p.galley(tile.center() - g.size() / 2.0, g, palette.text_dim);
-        }
-    }
-    let border = if resp.hovered() { palette.accent } else { palette.border };
-    p.rect_stroke(tile, 2.0, egui::Stroke::new(1.0, border), StrokeKind::Inside);
-    let label = p.layout_no_wrap(kind.name().to_string(), font, palette.text);
-    let lx = (rect.left() + (CARD.0 - label.size().x) / 2.0).max(rect.left());
-    p.with_clip_rect(egui::Rect::from_min_max(egui::pos2(rect.left(), tile.bottom()), rect.max)).galley(
-        egui::pos2(lx, tile.bottom() + 2.0),
-        label,
-        palette.text,
-    );
-    resp.on_hover_text(format!("{} · {}", kind.name(), kind.category()))
+        let border = if ui.rect_contains_pointer(tile) { palette.accent } else { palette.border };
+        p.rect_stroke(tile, 2.0, egui::Stroke::new(1.0, border), StrokeKind::Inside);
+        let label = p.layout_no_wrap(kind.name().to_string(), font, palette.text);
+        let lx = (rect.left() + (CARD.0 - label.size().x) / 2.0).max(rect.left());
+        p.with_clip_rect(egui::Rect::from_min_max(egui::pos2(rect.left(), tile.bottom()), rect.max)).galley(
+            egui::pos2(lx, tile.bottom() + 2.0),
+            label,
+            palette.text,
+        );
+    });
+    let r = ui.interact(src.response.rect, id.with("click"), egui::Sense::click());
+    r.on_hover_text(format!("{} · {}", kind.name(), kind.category()))
 }
 
 /// Test-only registry of widget rects so headless tests can click real widgets without pixel-guessing.
@@ -171,9 +200,9 @@ pub struct EffectsResponse {
     pub edit_shader: Option<usize>,
 }
 
-/// The catalogue grid: search box + collapsible category sections of thumbnail cards.
-/// Returns the effect a card click asked for.
-fn catalogue(ui: &mut egui::Ui, palette: &Palette) -> Option<EffectKind> {
+/// The catalogue grid: search box + collapsible category sections of thumbnail cards, filtered to what
+/// the selected clip (`audio`) can use. Returns the effect a card click asked for.
+fn catalogue(ui: &mut egui::Ui, palette: &Palette, audio: Option<bool>) -> Option<EffectKind> {
     let mut add = None;
     let search_id = ui.id().with("fx_search");
     let mut q: String = ui.ctx().data_mut(|d| d.get_temp(search_id).unwrap_or_default());
@@ -181,9 +210,10 @@ fn catalogue(ui: &mut egui::Ui, palette: &Palette) -> Option<EffectKind> {
         ui.strong("Effects");
         ui.add(egui::TextEdit::singleline(&mut q).hint_text("🔍 search").desired_width(f32::INFINITY));
     });
-    let hits: Vec<EffectKind> = EffectKind::ALL.into_iter().filter(|&k| matches(k, &q)).collect();
+    let hits: Vec<EffectKind> =
+        EffectKind::ALL.into_iter().filter(|&k| matches(k, &q) && fits_selection(k, audio)).collect();
     if hits.is_empty() {
-        ui.weak("No effect matches");
+        ui.weak(if audio == Some(true) { "No audio effects yet" } else { "No effect matches" });
     }
     for cat in categories() {
         let in_cat: Vec<EffectKind> = hits.iter().copied().filter(|k| k.category() == cat).collect();
@@ -219,14 +249,24 @@ pub fn show(
     #[cfg(test)]
     test_rects::clear();
 
+    // first selected clip that still exists — drives both the catalogue's audio-aware filter and the
+    // stack panel below
+    let first_id = selection.iter().find(|&&id| project.clip(id).is_some()).copied();
+    let audio_sel = first_id.and_then(|id| project.clip(id)).map(|c| c.kind == ClipKind::Audio);
+
     // ---- catalogue ----
-    if let Some(kind) = catalogue(ui, palette) {
+    if let Some(kind) = catalogue(ui, palette, audio_sel) {
         // a clip with a node graph renders from the graph, so anything pushed on its linear stack would
-        // be invisible — those clips are skipped (the stack below is greyed out for the same reason)
+        // be invisible — those clips are skipped (the stack below is greyed out for the same reason).
+        // each selected clip is checked on its own kind, not just the first (a mixed video+audio
+        // selection can still get an eligible effect on every clip it applies to).
         let targets: Vec<Id> = selection
             .iter()
             .copied()
-            .filter(|&id| project.clip(id).is_some_and(|c| c.is_visual() && c.graph.is_none()))
+            .filter(|&id| {
+                let Some(c) = project.clip(id) else { return false };
+                (c.kind == ClipKind::Audio) == kind.applies_to_audio() && c.graph.is_none()
+            })
             .collect();
         if !targets.is_empty() {
             undo(project);
@@ -240,7 +280,7 @@ pub fn show(
     }
 
     // ---- stack of the first selected clip ----
-    let Some(&id) = selection.iter().find(|&&id| project.clip(id).is_some()) else {
+    let Some(id) = first_id else {
         ui.separator();
         ui.label("Select a clip");
         return out;
@@ -769,6 +809,17 @@ mod tests {
         h.selection.clear();
         assert!(!h.frame(vec![]));
         assert_eq!(h.undos, 0);
+    }
+
+    /// No `EffectKind` applies to audio yet (see `EffectKind::applies_to_audio`), so selecting an audio
+    /// clip must hide every pixel-effect card rather than leave them there to silently no-op on click.
+    #[test]
+    fn audio_clip_filters_the_catalogue() {
+        clear_thumbnails();
+        let mut h = Harness::new();
+        h.project.tracks[0].clips[0].kind = ClipKind::Audio;
+        h.frame(vec![]);
+        assert!(test_rects::get("card_Blur").is_none(), "a pixel effect must not be offered for an audio clip");
     }
 
     #[test]

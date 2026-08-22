@@ -112,6 +112,8 @@ pub(crate) enum Glyph {
     Magnet,
     /// Two posts with a double-headed arrow between them — a gap being widened.
     Spacer,
+    /// An eighth note — the audio-effects catalogue card (no picture to render for those).
+    MusicNote,
 }
 
 const STRIP: [(Tool, Glyph, &str); 16] = [
@@ -703,6 +705,15 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
                     stroke,
                 );
             }
+        }
+        // eighth note: filled notehead, a stem and a flag
+        Glyph::MusicNote => {
+            let head = c + egui::vec2(-2.5, 3.5);
+            p.circle_filled(head, 2.6, fg);
+            let stem_top = c + egui::vec2(2.0, -6.0);
+            p.line_segment([head + egui::vec2(2.4, -0.5), stem_top], Stroke::new(1.6, fg));
+            let flag = vec![stem_top, stem_top + egui::vec2(4.0, 1.5), stem_top + egui::vec2(0.5, 4.5)];
+            p.add(egui::Shape::convex_polygon(flag, fg, Stroke::NONE));
         }
     }
 }
