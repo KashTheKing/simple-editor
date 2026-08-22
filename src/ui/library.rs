@@ -1,21 +1,25 @@
 //! Left panel: tabs "Library" and "Recent".
 //! The search + filter strip is a TOOLBAR: a framed band in the panel fill with a separator under it,
 //! a "Filters" caption, small chips and a search box with a magnifier prefix and a clear button — so it
-//! reads as chrome, not as content. Asset rows carry a thumbnail (when the app passes its ThumbCache)
-//! and are tinted with their colour label (a left bar + the name in that colour).
-//! Library: search (name/tags/description/folder), filter chips (All/Video/Audio/Image/Sequences,
-//! Short SFX ≤ 10 s, Music > 10 s, label colour, Unused only), sort (name/duration/kind/recent), a
-//! collapsible folder tree (click filters, right-click new/rename/delete, drag an asset onto a folder),
-//! asset rows (kind tag, label dot, tags, used dot; drag source `DragPayload::Asset`; double-click / "Add"
-//! → timeline at the playhead; right-click → add / reveal / label / Convert To / remove), a details box for
-//! the selected asset (path, format, description, tags, label, folder), "Remove unused", linked disk
-//! folders (listed when expanded, cached until "Refresh"; drag `DragPayload::Path`), the sequences
-//! (drag `DragPayload::Sequence`,
-//! double-click opens) and saved templates (drag `DragPayload::Template`, place at playhead).
+//! reads as chrome, not as content.
+//! Library: a file-explorer tree with two roots — "Imported" (the folders and files this project
+//! contains) and "Global" (Recent, plus the folders the user linked). Folders come first at every level,
+//! a node opens on its ▸ arrow, and a folder on disk is read one level at a time, only when it is
+//! expanded (never eagerly — a recursive walk of a media drive would hang the UI). Every file row shows
+//! its thumbnail; a single click selects it and reports it through `LibraryResponse::preview` for the
+//! preview pane, a double click puts it on the timeline (or imports it, for a file that is not in the
+//! project yet). The description / tags box only exists while something is selected — clicking the empty
+//! space below the tree drops the selection and the box with it.
+//! The toolbar keeps working over the tree: search (name/tags/description/folder), filter chips
+//! (All/Video/Audio/Image/Sequences, Short SFX ≤ 10 s, Music > 10 s, label colour, Unused only), sort
+//! (name/duration/kind/recent) and the List/Gallery switch (`LibraryState.view`: 0 = `row()` list,
+//! 1 = `tile()` gallery). A search or a filter flattens "Imported" into its hits, the way an explorer
+//! shows search results. Below the tree: "Remove unused", "Link folder…", the sequences
+//! (drag `DragPayload::Sequence`, double-click opens) and saved templates (drag `DragPayload::Template`).
 //! Recent: everything reusable, in sections — "Files" (settings.recent_assets across all projects, with
 //! the same search/chips, pins, labels and tags) then "Effects", "Node graphs", "Adjustment layers" and
 //! "Sequences", fed from the project (effect kinds and graphs in use, its sequences) and from the presets
-//! store in settings.json. Both tabs honour `LibraryState.view`: 0 = `row()` list, 1 = `tile()` gallery.
+//! store in settings.json.
 //! Clicking a reusable tile applies it through `LibraryResponse` (add_effect / apply_preset / copy_graph /
 //! place_template / open_sequence).
 
@@ -44,9 +48,15 @@ pub struct LibraryState {
     pub sort: u8,
     /// 0 = list rows, 1 = thumbnail gallery. Applies to both tabs.
     pub view: u8,
+    /// The folder clicked in the tree — highlighted, and the subtree a search is limited to.
     /// None = all folders, Some("") = root only, Some(name) = that folder (+ subfolders)
     pub folder: Option<String>,
-    pub collapsed: Vec<String>,
+    /// Tree nodes whose open state differs from the default (roots and project folders start open,
+    /// Recent and folders on disk start closed). Keys: "imported", "global", "recent", "f:<folder>",
+    /// `dir_key(path)`.
+    pub flipped: Vec<String>,
+    /// Selected file that is not a project asset (a Recent or linked-folder path).
+    pub sel_path: Option<String>,
     /// (folder being renamed, edit buffer = new last segment)
     pub rename_folder: Option<(String, String)>,
     /// (parent, edit buffer) — "" parent = top level
@@ -58,9 +68,9 @@ pub struct LibraryState {
     pub rename_template: Option<(usize, String)>,
     pub recent_tags_for: Option<String>,
     pub recent_tags_buf: String,
-    /// Linked-folder listing cache (folder → media file paths, None = folder unreadable). Filled the
-    /// first time a section is expanded, dropped on Refresh / unlink.
-    pub linked: Vec<(String, Option<Vec<String>>)>,
+    /// One-level directory listings, keyed by folder path: (entry path, is a folder), folders first,
+    /// None = unreadable. Only ever filled for a node the user expanded; dropped on Refresh / unlink.
+    pub dirs: Vec<(String, Option<Vec<(String, bool)>>)>,
 }
 
 #[derive(Default)]
@@ -99,6 +109,8 @@ pub struct LibraryResponse {
     pub apply_preset: Option<usize>,
     /// Clip whose node graph should be copied onto the selection.
     pub copy_graph: Option<Id>,
+    /// Single-clicked file (asset, recent or linked folder) — the app shows it in the preview pane.
+    pub preview: Option<PathBuf>,
 }
 
 /// (name, colour) of every `Project.labels` entry, snapshotted once per frame.
@@ -157,15 +169,30 @@ pub fn show(
     resp
 }
 
-/// One asset thumbnail, `h` points tall, or nothing when the cache has none yet.
-fn thumb(ui: &mut egui::Ui, thumbs: &mut Option<&mut ThumbCache>, path: &str, h: f32) {
-    let Some(cache) = thumbs.as_deref_mut() else { return };
-    let Some((tex, [w, th])) = cache.texture(ui.ctx(), path, 0.0, (h * 2.0) as u32) else { return };
+/// One asset thumbnail, `h` points tall; false when the cache has none yet.
+fn thumb(ui: &mut egui::Ui, thumbs: &mut Option<&mut ThumbCache>, path: &str, h: f32) -> bool {
+    let Some(cache) = thumbs.as_deref_mut() else { return false };
+    let Some((tex, [w, th])) = cache.texture(ui.ctx(), path, 0.0, (h * 2.0) as u32) else { return false };
     if th == 0 {
-        return;
+        return false;
     }
     let size = egui::vec2(w as f32 * (h / th as f32), h);
     ui.add(egui::Image::new(SizedTexture::new(tex, size)));
+    true
+}
+
+/// The picture in front of a file row: its thumbnail, or a painted icon while the cache has none (and
+/// for audio, which has no picture at all).
+/// ponytail: asking for a thumbnail is what queues the decode, so expanding a folder of 500 clips queues
+/// 500 of them (LIFO, so what you look at wins). Upgrade: only ask for rows inside the viewport.
+fn file_art(ui: &mut egui::Ui, thumbs: &mut Option<&mut ThumbCache>, path: &str, palette: &Palette) {
+    let class = ext_class(path);
+    if matches!(class, 1 | 3) && thumb(ui, thumbs, path, 18.0) {
+        return;
+    }
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(24.0, 16.0), egui::Sense::hover());
+    let g = if class == 2 { Glyph::SpeakerOn } else { Glyph::FilmStrip };
+    draw_glyph(ui.painter(), rect, g, palette.text_dim);
 }
 
 // ---------- pure filter helpers ----------
@@ -293,25 +320,29 @@ fn ext_class(path: &str) -> u8 {
     }
 }
 
-/// Recents can only filter kind by extension (duration unknown): SFX/Music chips behave as Audio.
+/// Search + kind chips against a bare path (recents and files on disk have no duration): the SFX/Music
+/// chips can only mean "audio" there.
+fn path_matches(path: &str, q: &str, kind: u8) -> bool {
+    let class_ok = match kind {
+        1 | 3 => ext_class(path) == kind,
+        2 | 5 | 6 => ext_class(path) == 2,
+        4 => false,
+        _ => true,
+    };
+    class_ok && (q.is_empty() || path.to_lowercase().contains(&q.to_lowercase()))
+}
+
+/// Same, plus the recent entry's own tags and colour label.
 fn recent_matches(r: &RecentAsset, q: &str, kind: u8, label: u8) -> bool {
     if label != 0 && r.label != label {
         return false;
     }
-    let class_ok = match kind {
-        1 | 3 => ext_class(&r.path) == kind,
-        2 | 5 | 6 => ext_class(&r.path) == 2,
-        4 => false,
-        _ => true,
-    };
-    if !class_ok {
+    if !path_matches(&r.path, "", kind) {
         return false;
     }
-    if q.is_empty() {
-        return true;
-    }
-    let q = q.to_lowercase();
-    r.path.to_lowercase().contains(&q) || r.tags.iter().any(|t| t.to_lowercase().contains(&q))
+    q.is_empty()
+        || path_matches(&r.path, q, kind)
+        || r.tags.iter().any(|t| t.to_lowercase().contains(&q.to_lowercase()))
 }
 
 fn recent_remove(settings: &mut Settings, resp: &mut LibraryResponse, path: &str) {
@@ -539,14 +570,15 @@ fn library_tab(
     // counter bumped by App::after_edit() if a big project ever shows it.
     let used = project.used_assets();
     let planned = project.plan_assets();
+    // a search or a filter chip flattens "Imported" into its hits, the way an explorer shows search results
+    let flat = !state.search.is_empty() || state.kind_filter != 0 || state.label_filter != 0 || state.unused_only;
     egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-        folder_tree(ui, state, project, &mut ops, &mut op_start);
-
-        // filtered + sorted asset rows
+        // filtered + sorted assets; the tree hangs each of them under its own folder
         let mut order: Vec<usize> = (0..project.assets.len())
             .filter(|&i| {
                 let a = &project.assets[i];
-                folder_ok(state.folder.as_deref(), &a.folder)
+                // the folder chosen in the tree only narrows a search — the tree itself shows every folder
+                (!flat || folder_ok(state.folder.as_deref(), &a.folder))
                     && matches_search(a, &state.search)
                     && matches_kind(a.kind, a.duration, state.kind_filter)
                     && (state.label_filter == 0 || a.label == state.label_filter)
@@ -560,16 +592,21 @@ fn library_tab(
             3 => order.sort_by_key(|&i| std::cmp::Reverse(project.assets[i].id)),
             _ => order.sort_by_cached_key(|&i| project.assets[i].name().to_lowercase()),
         }
-        if state.view == 1 {
-            ui.horizontal_wrapped(|ui| {
-                for i in order {
-                    asset_tile(ui, state, project, i, thumbs, labels, palette, resp);
-                }
-            });
-        } else {
-            for i in order {
-                asset_row(ui, state, project, i, &used, thumbs, labels, palette, resp, &mut ops, &mut op_start);
-            }
+        {
+            let mut tree = Tree {
+                state: &mut *state,
+                project: &*project,
+                settings: &*settings,
+                used: &used,
+                labels,
+                palette,
+                thumbs: &mut *thumbs,
+                resp: &mut *resp,
+                ops: &mut ops,
+                op_start: &mut op_start,
+            };
+            tree.imported(ui, &order, flat);
+            tree.global(ui);
         }
 
         details_box(ui, state, project, labels, palette, resp, &mut ops, &mut op_start);
@@ -590,9 +627,14 @@ fn library_tab(
                 }
             }
         });
-        linked_sections(ui, state, project, resp, &mut ops, &mut op_start);
         sequences_section(ui, state, project, resp, &mut ops, &mut op_start);
         templates_section(ui, state, settings, resp);
+        // clicking the empty space below the tree drops the selection, and the details box with it
+        let rest = ui.available_size();
+        if rest.y > 1.0 && ui.allocate_response(rest, egui::Sense::click()).clicked() {
+            state.selected = None;
+            state.sel_path = None;
+        }
     });
 
     // apply project mutations with a single undo per gesture (text fields snapshot on focus, one frame
@@ -644,7 +686,7 @@ fn library_tab(
                 }
                 LibOp::UnlinkFolder(p) => {
                     project.linked_folders.retain(|f| *f != p);
-                    state.linked.retain(|(f, _)| *f != p);
+                    state.dirs.retain(|(f, _)| !f.starts_with(&p));
                 }
                 LibOp::SeqNew => {
                     let n = project.sequences.len() + 1;
@@ -725,217 +767,6 @@ fn toolbar(
     ui.separator();
 }
 
-fn folder_tree(
-    ui: &mut egui::Ui,
-    state: &mut LibraryState,
-    project: &Project,
-    ops: &mut Vec<LibOp>,
-    op_start: &mut bool,
-) {
-    let names = project.folder_names();
-    // file-explorer root: everything in the project hangs off "Library"
-    ui.label(RichText::new("Library").strong());
-    ui.horizontal(|ui| {
-        ui.add_space(10.0);
-        if ui.selectable_label(state.folder.is_none(), "Imported").clicked() {
-            state.folder = None;
-        }
-        if ui.selectable_label(false, "Recent").clicked() {
-            state.tab = 1;
-        }
-        let r = ui.selectable_label(state.folder.as_deref() == Some(""), "▤ Root");
-        if r.clicked() {
-            state.folder = Some(String::new());
-        }
-        if let Some(p) = r.dnd_release_payload::<DragPayload>() {
-            if let DragPayload::Asset(aid) = *p {
-                ops.push(LibOp::AssetFolder(aid, String::new()));
-                *op_start = true;
-            }
-        }
-    });
-    let mut skip: Option<String> = None;
-    for name in &names {
-        if let Some(s) = &skip {
-            if name.starts_with(s.as_str()) {
-                continue;
-            }
-            skip = None;
-        }
-        let depth = name.matches('/').count();
-        let last = name.rsplit('/').next().unwrap_or(name);
-        let has_children =
-            names.iter().any(|n| n.len() > name.len() && n.starts_with(name) && n.as_bytes()[name.len()] == b'/');
-        let closed = state.collapsed.contains(name);
-        let mut rename_done: Option<String> = None;
-        ui.horizontal(|ui| {
-            ui.add_space(8.0 + depth as f32 * 12.0);
-            if has_children {
-                if ui.small_button(if closed { "▸" } else { "▾" }).clicked() {
-                    if closed {
-                        state.collapsed.retain(|c| c != name);
-                    } else {
-                        state.collapsed.push(name.clone());
-                    }
-                }
-            } else {
-                ui.add_space(18.0);
-            }
-            if state.rename_folder.as_ref().is_some_and(|(o, _)| o == name) {
-                let (_, buf) = state.rename_folder.as_mut().unwrap();
-                rename_done = inline_edit(ui, buf);
-            } else {
-                let r = ui.selectable_label(state.folder.as_deref() == Some(name.as_str()), format!("▤ {last}"));
-                if r.clicked() {
-                    state.folder = Some(name.clone());
-                }
-                r.context_menu(|ui| {
-                    if ui.button("New folder").clicked() {
-                        state.new_folder = Some((name.clone(), String::new()));
-                        ui.close();
-                    }
-                    if ui.button("Rename").clicked() {
-                        state.rename_folder = Some((name.clone(), last.to_string()));
-                        ui.close();
-                    }
-                    if ui.button("Delete").clicked() {
-                        ops.push(LibOp::FolderDelete(name.clone()));
-                        *op_start = true;
-                        ui.close();
-                    }
-                });
-                if let Some(p) = r.dnd_release_payload::<DragPayload>() {
-                    if let DragPayload::Asset(aid) = *p {
-                        ops.push(LibOp::AssetFolder(aid, name.clone()));
-                        *op_start = true;
-                    }
-                }
-            }
-        });
-        if let Some(new_last) = rename_done {
-            if !new_last.is_empty() && new_last != *last {
-                let parent = name.rfind('/').map(|i| &name[..i]);
-                let new = match parent {
-                    Some(p) => format!("{p}/{new_last}"),
-                    None => new_last,
-                };
-                ops.push(LibOp::FolderRename(name.clone(), new));
-                *op_start = true;
-            }
-            state.rename_folder = None;
-        }
-        if closed {
-            skip = Some(format!("{name}/"));
-        }
-    }
-    if let Some((parent, buf)) = &mut state.new_folder {
-        let parent = parent.clone();
-        let mut done = None;
-        ui.horizontal(|ui| {
-            ui.add_space(20.0);
-            ui.label("▤");
-            done = inline_edit(ui, buf);
-        });
-        if let Some(name) = done {
-            if !name.is_empty() {
-                let full = if parent.is_empty() { name } else { format!("{parent}/{name}") };
-                ops.push(LibOp::FolderNew(full));
-                *op_start = true;
-            }
-            state.new_folder = None;
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
-fn asset_row(
-    ui: &mut egui::Ui,
-    state: &mut LibraryState,
-    project: &Project,
-    i: usize,
-    used: &std::collections::HashSet<Id>,
-    thumbs: &mut Option<&mut ThumbCache>,
-    labels: &Labels,
-    palette: &Palette,
-    resp: &mut LibraryResponse,
-    ops: &mut Vec<LibOp>,
-    op_start: &mut bool,
-) {
-    let a = &project.assets[i];
-    let selected = state.selected == Some(a.id);
-    let tint = (a.label != 0).then(|| lbl_color(labels, a.label, palette));
-    let (r, add) =
-        row(ui, egui::Id::new(("asset", a.id)), DragPayload::Asset(a.id), selected, selected.then_some("Add"), |ui| {
-            // label tint: a colour bar on the left and the name in the same colour
-            if let Some(c) = tint {
-                let (bar, _) = ui.allocate_exact_size(egui::vec2(3.0, 14.0), egui::Sense::hover());
-                ui.painter().rect_filled(bar, 1.0, c);
-            }
-            if a.has_video() {
-                thumb(ui, thumbs, &a.path, 18.0);
-            }
-            let mut name = RichText::new(a.name());
-            if let Some(c) = tint {
-                name = name.color(c);
-            }
-            ui.label(if selected { name.strong() } else { name });
-            ui.weak(kind_tag(a.kind));
-            ui.weak(duration_text(a.duration));
-            if used.contains(&a.id) {
-                ui.label(RichText::new("•").color(palette.accent)).on_hover_text("Used in the timeline");
-            }
-            if !a.tags.is_empty() {
-                ui.add(egui::Label::new(RichText::new(a.tags.join(" · ")).weak().small()).truncate());
-            }
-        });
-    if r.clicked() {
-        state.selected = Some(a.id);
-    }
-    if add || r.double_clicked() {
-        state.selected = Some(a.id);
-        resp.add_to_timeline.push(a.id);
-    }
-    r.context_menu(|ui| {
-        if ui.button("Add to timeline at playhead").clicked() {
-            resp.add_to_timeline.push(a.id);
-            ui.close();
-        }
-        if ui.button("Reveal folder").clicked() {
-            let _ = std::process::Command::new("explorer").arg(format!("/select,{}", a.path)).spawn();
-            ui.close();
-        }
-        match label_menu(ui, a.label, labels) {
-            Some(LabelPick::Set(l)) => {
-                ops.push(LibOp::AssetLabel(a.id, l));
-                *op_start = true;
-            }
-            Some(LabelPick::Edit) => resp.edit_labels = true,
-            None => {}
-        }
-        ui.menu_button("Convert To", |ui| {
-            for t in crate::engine::convert::TARGETS {
-                if ui.button(*t).clicked() {
-                    resp.convert.push((a.id, (*t).to_string()));
-                    ui.close();
-                }
-            }
-        });
-        if ui.button("Convert To… (options)").clicked() {
-            resp.convert_dialog = Some(a.id);
-            ui.close();
-        }
-        if ui.button("Compress…").clicked() {
-            resp.compress = Some(a.id);
-            ui.close();
-        }
-        if ui.button("Remove from project").clicked() {
-            resp.remove.push(a.id);
-            ui.close();
-        }
-    });
-}
-
 /// What fills a gallery tile's picture box.
 enum Art {
     /// A cached picture (asset filmstrip, effect catalogue card) fitted into the box.
@@ -1008,34 +839,6 @@ fn tile_art(ui: &egui::Ui, thumbs: &mut Option<&mut ThumbCache>, path: &str) -> 
         Some((tex, size)) => Art::Image(tex, size),
         None => Art::None,
     }
-}
-
-/// Gallery cell: a thumbnail with the name under it. Same click/drag behaviour as `asset_row`,
-/// without the context menu (the list view keeps that).
-fn asset_tile(
-    ui: &mut egui::Ui,
-    state: &mut LibraryState,
-    project: &Project,
-    i: usize,
-    thumbs: &mut Option<&mut ThumbCache>,
-    labels: &Labels,
-    palette: &Palette,
-    resp: &mut LibraryResponse,
-) {
-    let a = &project.assets[i];
-    let selected = state.selected == Some(a.id);
-    let tint = (a.label != 0).then(|| lbl_color(labels, a.label, palette)).unwrap_or(palette.text);
-    let art = if a.has_video() { tile_art(ui, thumbs, &a.path) } else { Art::None };
-    let id = egui::Id::new(("tile", a.id));
-    let r = tile(ui, id, DragPayload::Asset(a.id), selected, kind_tag(a.kind), &a.name(), tint, palette, art);
-    if r.clicked() {
-        state.selected = Some(a.id);
-    }
-    if r.double_clicked() {
-        state.selected = Some(a.id);
-        resp.add_to_timeline.push(a.id);
-    }
-    r.on_hover_text(&a.path);
 }
 
 /// Gallery cell width (points). Thumbnails are 16:9 inside it.
@@ -1135,81 +938,20 @@ fn details_box(
     });
 }
 
-/// List media files of a folder on disk (non-recursive, known extensions only). None = unreadable.
-fn scan_one(folder: &str) -> Option<Vec<String>> {
-    let mut files: Vec<String> = std::fs::read_dir(folder)
+/// One level of a folder on disk: subfolders first, then media files. None = unreadable.
+fn scan_dir(dir: &str) -> Option<Vec<(String, bool)>> {
+    let mut v: Vec<(String, bool)> = std::fs::read_dir(dir)
         .ok()?
         .flatten()
         .filter_map(|e| {
-            let p = e.path();
-            let ext = p.extension()?.to_str()?.to_lowercase();
-            (VIDEO_EXTS.contains(&ext.as_str())
-                || AUDIO_EXTS.contains(&ext.as_str())
-                || IMAGE_EXTS.contains(&ext.as_str()))
-            .then(|| p.to_string_lossy().into_owned())
+            let p = e.path().to_string_lossy().into_owned();
+            let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            (is_dir || ext_class(&p) != 0).then_some((p, is_dir))
         })
         .collect();
-    files.sort();
-    Some(files)
-}
-
-fn linked_sections(
-    ui: &mut egui::Ui,
-    state: &mut LibraryState,
-    project: &Project,
-    resp: &mut LibraryResponse,
-    ops: &mut Vec<LibOp>,
-    op_start: &mut bool,
-) {
-    for (i, folder) in project.linked_folders.iter().enumerate() {
-        let title = folder.rsplit(['\\', '/']).next().unwrap_or(folder);
-        egui::CollapsingHeader::new(format!("⤷ {title}")).id_salt(("linked", i)).show(ui, |ui| {
-            // ponytail: blocking read_dir, cached until Refresh and only for expanded sections — a dead
-            // network share used to freeze the whole editor every 5 s. Upgrade: scan on a thread + mpsc
-            // (media/waveform.rs) if the first expand of a slow share is still too long.
-            let k = match state.linked.iter().position(|(f, _)| f == folder) {
-                Some(k) => k,
-                None => {
-                    state.linked.push((folder.clone(), scan_one(folder)));
-                    state.linked.len() - 1
-                }
-            };
-            let mut refresh = false;
-            ui.horizontal(|ui| {
-                ui.add(egui::Label::new(RichText::new(folder).weak().small()).truncate()).on_hover_text(folder);
-                refresh = ui.small_button("Refresh").clicked();
-                if ui.small_button("✕").on_hover_text("Unlink folder").clicked() {
-                    ops.push(LibOp::UnlinkFolder(folder.clone()));
-                    *op_start = true;
-                }
-            });
-            match &state.linked[k].1 {
-                None => {
-                    ui.weak("(folder unavailable)");
-                }
-                Some(files) if files.is_empty() => {
-                    ui.weak("(no media files)");
-                }
-                Some(files) => {
-                    for (j, path) in files.iter().enumerate() {
-                        let name = path.rsplit(['\\', '/']).next().unwrap_or(path);
-                        let id = egui::Id::new(("linked_file", i, j));
-                        let (r, _) = row(ui, id, DragPayload::Path(path.clone()), false, None, |ui| {
-                            ui.label(name);
-                            ui.weak(kind_tag_for_class(ext_class(path)));
-                        });
-                        if r.double_clicked() {
-                            resp.open_paths.push(PathBuf::from(path));
-                        }
-                        r.on_hover_text(path);
-                    }
-                }
-            }
-            if refresh {
-                state.linked.remove(k);
-            }
-        });
-    }
+    // folders first, then files — a file explorer, not an alphabetical dump
+    v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase())));
+    Some(v)
 }
 
 fn kind_tag_for_class(c: u8) -> &'static str {
@@ -1218,6 +960,562 @@ fn kind_tag_for_class(c: u8) -> &'static str {
         2 => "A",
         3 => "I",
         _ => "",
+    }
+}
+
+// ---------- the file tree ----------
+
+/// Indent of a row `depth` levels into the tree. Rows that hold no disclosure triangle (files, hints)
+/// add `ARROW`, so their icon lines up with the folder icons beside them.
+fn indent(depth: usize) -> f32 {
+    4.0 + depth as f32 * 14.0
+}
+
+/// Width of the disclosure column.
+const ARROW: f32 = 14.0;
+
+/// The folder that directly contains `path`; "" for a top-level folder.
+fn parent_of(path: &str) -> &str {
+    match path.rfind('/') {
+        Some(i) => &path[..i],
+        None => "",
+    }
+}
+
+/// Every project folder plus the parents only an asset implies ("A/B" with no "A" in `folders`), so no
+/// branch of the tree hangs off a node that is never drawn.
+fn folder_tree_names(project: &Project) -> Vec<String> {
+    let mut names = project.folder_names();
+    let mut implied: Vec<String> = Vec::new();
+    for n in &names {
+        let mut p = parent_of(n);
+        while !p.is_empty() {
+            implied.push(p.to_string());
+            p = parent_of(p);
+        }
+    }
+    names.append(&mut implied);
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// Tree key of a folder on disk (one place, so the tests build the same key).
+fn dir_key(path: &str) -> String {
+    format!("d:{path}")
+}
+
+/// Shared borrows for the tree rows: they recurse, and would otherwise thread a dozen arguments each.
+struct Tree<'a, 'b> {
+    state: &'a mut LibraryState,
+    project: &'a Project,
+    settings: &'a Settings,
+    used: &'a std::collections::HashSet<Id>,
+    labels: &'a Labels,
+    palette: &'a Palette,
+    thumbs: &'a mut Option<&'b mut ThumbCache>,
+    resp: &'a mut LibraryResponse,
+    ops: &'a mut Vec<LibOp>,
+    op_start: &'a mut bool,
+}
+
+impl Tree<'_, '_> {
+    /// Is this node open? Only the flip away from `dflt` is remembered, so a new folder inherits it.
+    fn is_open(&self, key: &str, dflt: bool) -> bool {
+        self.state.flipped.iter().any(|k| k == key) != dflt
+    }
+
+    fn flip(&mut self, key: &str) {
+        match self.state.flipped.iter().position(|k| k == key) {
+            Some(i) => {
+                self.state.flipped.remove(i);
+            }
+            None => self.state.flipped.push(key.to_string()),
+        }
+    }
+
+    /// The disclosure triangle at the head of a tree row; returns the node's state after this frame's
+    /// click. Painted, not written: ▸ and ▾ are tofu boxes in Segoe UI.
+    fn arrow(&mut self, ui: &mut egui::Ui, key: &str, dflt: bool, children: bool) -> bool {
+        let open = self.is_open(key, dflt);
+        let (rect, r) = ui.allocate_exact_size(egui::vec2(ARROW, 14.0), egui::Sense::click());
+        if !children {
+            return false;
+        }
+        let c = rect.center();
+        let pts = if open {
+            vec![c + egui::vec2(-4.0, -2.0), c + egui::vec2(4.0, -2.0), c + egui::vec2(0.0, 3.5)]
+        } else {
+            vec![c + egui::vec2(-2.0, -4.0), c + egui::vec2(3.5, 0.0), c + egui::vec2(-2.0, 4.0)]
+        };
+        let col = if r.hovered() { self.palette.text } else { self.palette.text_dim };
+        ui.painter().add(egui::Shape::convex_polygon(pts, col, egui::Stroke::NONE));
+        if r.clicked() {
+            self.flip(key);
+            return !open;
+        }
+        open
+    }
+
+    fn folder_icon(&self, ui: &mut egui::Ui, g: Glyph) {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(18.0, 14.0), egui::Sense::hover());
+        draw_glyph(ui.painter(), rect, g, self.palette.text_dim);
+    }
+
+    /// Move an asset dropped onto a folder row into that folder.
+    fn drop_asset(&mut self, r: &egui::Response, folder: &str) {
+        if let Some(p) = r.dnd_release_payload::<DragPayload>() {
+            if let DragPayload::Asset(id) = *p {
+                self.ops.push(LibOp::AssetFolder(id, folder.to_string()));
+                *self.op_start = true;
+            }
+        }
+    }
+
+    /// A single click selects and asks the app to show the file in the preview pane.
+    fn preview(&mut self, path: &str) {
+        self.resp.preview = Some(PathBuf::from(path));
+    }
+
+    /// Root 1 — "Imported": the folders and files this project contains.
+    fn imported(&mut self, ui: &mut egui::Ui, order: &[usize], flat: bool) {
+        let mut open = false;
+        ui.horizontal(|ui| {
+            ui.add_space(indent(0));
+            open = self.arrow(ui, "imported", true, true);
+            // the root means "every folder", so a search from here searches the whole project
+            let r = ui.selectable_label(self.state.folder.is_none(), RichText::new("Imported").strong());
+            if r.clicked() {
+                self.state.folder = None;
+            }
+            self.drop_asset(&r, "");
+            r.on_hover_text("What this project contains — drop an asset here to move it to the root");
+        });
+        if !open {
+            return;
+        }
+        if flat {
+            self.assets(ui, 1, order);
+            return;
+        }
+        let names = folder_tree_names(self.project);
+        self.folder(ui, "", 1, &names, order);
+    }
+
+    /// The subfolders of `path` (folders first, like an explorer), then the assets that live in it.
+    fn folder(&mut self, ui: &mut egui::Ui, path: &str, depth: usize, names: &[String], order: &[usize]) {
+        for child in names.iter().filter(|n| parent_of(n) == path) {
+            let key = format!("f:{child}");
+            let last = child.rsplit('/').next().unwrap_or(child).to_string();
+            let kids = names.iter().any(|n| parent_of(n) == child.as_str())
+                || order.iter().any(|&i| self.project.assets[i].folder == *child);
+            let mut open = false;
+            let mut renamed: Option<String> = None;
+            ui.horizontal(|ui| {
+                ui.add_space(indent(depth));
+                open = self.arrow(ui, &key, true, kids);
+                self.folder_icon(ui, Glyph::Folder);
+                if self.state.rename_folder.as_ref().is_some_and(|(o, _)| o == child) {
+                    let (_, buf) = self.state.rename_folder.as_mut().unwrap();
+                    renamed = inline_edit(ui, buf);
+                    return;
+                }
+                let r = ui.selectable_label(self.state.folder.as_deref() == Some(child.as_str()), &last);
+                if r.clicked() {
+                    self.state.folder = Some(child.clone());
+                }
+                r.context_menu(|ui| {
+                    if ui.button("New folder").clicked() {
+                        self.state.new_folder = Some((child.clone(), String::new()));
+                        ui.close();
+                    }
+                    if ui.button("Rename").clicked() {
+                        self.state.rename_folder = Some((child.clone(), last.clone()));
+                        ui.close();
+                    }
+                    if ui.button("Delete").clicked() {
+                        self.ops.push(LibOp::FolderDelete(child.clone()));
+                        *self.op_start = true;
+                        ui.close();
+                    }
+                });
+                self.drop_asset(&r, child);
+            });
+            if let Some(new_last) = renamed {
+                if !new_last.is_empty() && new_last != last {
+                    let parent = parent_of(child);
+                    let new = if parent.is_empty() { new_last } else { format!("{parent}/{new_last}") };
+                    self.ops.push(LibOp::FolderRename(child.clone(), new));
+                    *self.op_start = true;
+                }
+                self.state.rename_folder = None;
+            }
+            if open {
+                self.folder(ui, child, depth + 1, names, order);
+            }
+        }
+        // the "New folder" field appears under the folder it was asked for
+        if self.state.new_folder.as_ref().is_some_and(|(p, _)| p == path) {
+            let mut done = None;
+            ui.horizontal(|ui| {
+                ui.add_space(indent(depth) + ARROW);
+                self.folder_icon(ui, Glyph::Folder);
+                let (_, buf) = self.state.new_folder.as_mut().unwrap();
+                done = inline_edit(ui, buf);
+            });
+            if let Some(name) = done {
+                if !name.is_empty() {
+                    let full = if path.is_empty() { name } else { format!("{path}/{name}") };
+                    self.ops.push(LibOp::FolderNew(full));
+                    *self.op_start = true;
+                }
+                self.state.new_folder = None;
+            }
+        }
+        let here: Vec<usize> = order.iter().copied().filter(|&i| self.project.assets[i].folder == *path).collect();
+        self.assets(ui, depth, &here);
+    }
+
+    /// A run of assets, as rows or as gallery tiles (already filtered and sorted by the caller).
+    fn assets(&mut self, ui: &mut egui::Ui, depth: usize, list: &[usize]) {
+        if self.state.view == 1 {
+            ui.horizontal_wrapped(|ui| {
+                ui.add_space(indent(depth) + ARROW);
+                for &i in list {
+                    self.asset_tile(ui, i);
+                }
+            });
+        } else {
+            for &i in list {
+                self.asset_row(ui, depth, i);
+            }
+        }
+    }
+
+    fn asset_row(&mut self, ui: &mut egui::Ui, depth: usize, i: usize) {
+        let a = &self.project.assets[i];
+        let selected = self.state.selected == Some(a.id);
+        let tint = (a.label != 0).then(|| lbl_color(self.labels, a.label, self.palette));
+        let used = self.used.contains(&a.id);
+        let (palette, thumbs) = (self.palette, &mut *self.thumbs);
+        let (r, add) = row(
+            ui,
+            egui::Id::new(("asset", a.id)),
+            DragPayload::Asset(a.id),
+            selected,
+            selected.then_some("Add"),
+            |ui| {
+                ui.add_space(indent(depth) + ARROW);
+                // label tint: a colour bar on the left and the name in the same colour
+                if let Some(c) = tint {
+                    let (bar, _) = ui.allocate_exact_size(egui::vec2(3.0, 14.0), egui::Sense::hover());
+                    ui.painter().rect_filled(bar, 1.0, c);
+                }
+                file_art(ui, thumbs, &a.path, palette);
+                let mut name = RichText::new(a.name());
+                if let Some(c) = tint {
+                    name = name.color(c);
+                }
+                ui.label(if selected { name.strong() } else { name });
+                ui.weak(kind_tag(a.kind));
+                ui.weak(duration_text(a.duration));
+                if used {
+                    ui.label(RichText::new("•").color(palette.accent)).on_hover_text("Used in the timeline");
+                }
+                if !a.tags.is_empty() {
+                    ui.add(egui::Label::new(RichText::new(a.tags.join(" · ")).weak().small()).truncate());
+                }
+            },
+        );
+        if r.clicked() {
+            self.select_asset(a.id, &a.path);
+        }
+        if add || r.double_clicked() {
+            self.select_asset(a.id, &a.path);
+            self.resp.add_to_timeline.push(a.id);
+        }
+        self.asset_menu(&r, i);
+    }
+
+    fn asset_tile(&mut self, ui: &mut egui::Ui, i: usize) {
+        let a = &self.project.assets[i];
+        let selected = self.state.selected == Some(a.id);
+        let tint = (a.label != 0).then(|| lbl_color(self.labels, a.label, self.palette)).unwrap_or(self.palette.text);
+        let art = if a.has_video() { tile_art(ui, self.thumbs, &a.path) } else { Art::None };
+        let id = egui::Id::new(("tile", a.id));
+        let payload = DragPayload::Asset(a.id);
+        let r = tile(ui, id, payload, selected, kind_tag(a.kind), &a.name(), tint, self.palette, art);
+        if r.clicked() {
+            self.select_asset(a.id, &a.path);
+        }
+        if r.double_clicked() {
+            self.select_asset(a.id, &a.path);
+            self.resp.add_to_timeline.push(a.id);
+        }
+        self.asset_menu(&r, i);
+        r.on_hover_text(&a.path);
+    }
+
+    fn select_asset(&mut self, id: Id, path: &str) {
+        self.state.selected = Some(id);
+        self.state.sel_path = None;
+        self.preview(path);
+    }
+
+    fn asset_menu(&mut self, r: &egui::Response, i: usize) {
+        let a = &self.project.assets[i];
+        let labels = self.labels;
+        r.context_menu(|ui| {
+            if ui.button("Add to timeline at playhead").clicked() {
+                self.resp.add_to_timeline.push(a.id);
+                ui.close();
+            }
+            if ui.button("Reveal folder").clicked() {
+                let _ = std::process::Command::new("explorer").arg(format!("/select,{}", a.path)).spawn();
+                ui.close();
+            }
+            match label_menu(ui, a.label, labels) {
+                Some(LabelPick::Set(l)) => {
+                    self.ops.push(LibOp::AssetLabel(a.id, l));
+                    *self.op_start = true;
+                }
+                Some(LabelPick::Edit) => self.resp.edit_labels = true,
+                None => {}
+            }
+            ui.menu_button("Convert To", |ui| {
+                for t in crate::engine::convert::TARGETS {
+                    if ui.button(*t).clicked() {
+                        self.resp.convert.push((a.id, (*t).to_string()));
+                        ui.close();
+                    }
+                }
+            });
+            if ui.button("Convert To… (options)").clicked() {
+                self.resp.convert_dialog = Some(a.id);
+                ui.close();
+            }
+            if ui.button("Compress…").clicked() {
+                self.resp.compress = Some(a.id);
+                ui.close();
+            }
+            if ui.button("Remove from project").clicked() {
+                self.resp.remove.push(a.id);
+                ui.close();
+            }
+        });
+    }
+
+    /// Root 2 — "Global": Recent, and the folders the user linked, browsed straight from disk.
+    fn global(&mut self, ui: &mut egui::Ui) {
+        let mut open = false;
+        ui.horizontal(|ui| {
+            ui.add_space(indent(0));
+            open = self.arrow(ui, "global", true, true);
+            ui.label(RichText::new("Global").strong())
+                .on_hover_text("Recent files and the folders you linked — everything outside this project");
+        });
+        if !open {
+            return;
+        }
+        self.recent(ui, 1);
+        let linked: &[String] = &self.project.linked_folders;
+        for folder in linked {
+            self.dir(ui, folder, 1, true);
+        }
+        if linked.is_empty() {
+            ui.horizontal(|ui| {
+                ui.add_space(indent(1) + ARROW);
+                ui.weak("(no linked folders — \"Link folder…\" below)");
+            });
+        }
+    }
+
+    /// Recent files, from settings.json — the same list the Recent tab shows, under the toolbar's filters.
+    fn recent(&mut self, ui: &mut egui::Ui, depth: usize) {
+        let mut open = false;
+        ui.horizontal(|ui| {
+            ui.add_space(indent(depth));
+            open = self.arrow(ui, "recent", false, true);
+            self.folder_icon(ui, Glyph::Hourglass);
+            let r = ui.selectable_label(false, "Recent").on_hover_text("Files opened recently, across every project");
+            if r.clicked() {
+                self.flip("recent");
+                open = !open;
+            }
+        });
+        if !open {
+            return;
+        }
+        let (q, kind, label) = (self.state.search.clone(), self.state.kind_filter, self.state.label_filter);
+        let paths: Vec<String> = self
+            .settings
+            .recent_assets
+            .iter()
+            .filter(|r| recent_matches(r, &q, kind, label))
+            .map(|r| r.path.clone())
+            .collect();
+        if paths.is_empty() {
+            ui.horizontal(|ui| {
+                ui.add_space(indent(depth + 1) + ARROW);
+                ui.weak("(none)");
+            });
+            return;
+        }
+        self.files(ui, depth + 1, &paths, true);
+    }
+
+    /// One folder on disk. `root` marks a linked folder — Refresh / Unlink live in its menu.
+    fn dir(&mut self, ui: &mut egui::Ui, path: &str, depth: usize, root: bool) {
+        let key = dir_key(path);
+        let name = path.rsplit(['\\', '/']).find(|s| !s.is_empty()).unwrap_or(path).to_string();
+        let mut open = false;
+        ui.horizontal(|ui| {
+            ui.add_space(indent(depth));
+            open = self.arrow(ui, &key, false, true);
+            self.folder_icon(ui, Glyph::Folder);
+            let r = ui.selectable_label(false, &name);
+            if r.clicked() {
+                self.flip(&key);
+                open = !open;
+            }
+            r.context_menu(|ui| {
+                if ui.button("Refresh").clicked() {
+                    self.state.dirs.retain(|(p, _)| !p.starts_with(path));
+                    ui.close();
+                }
+                if root && ui.button("Unlink folder").clicked() {
+                    self.ops.push(LibOp::UnlinkFolder(path.to_string()));
+                    *self.op_start = true;
+                    ui.close();
+                }
+            });
+            r.on_hover_text(path);
+        });
+        if !open {
+            return;
+        }
+        let Some(entries) = self.listing(path) else {
+            ui.horizontal(|ui| {
+                ui.add_space(indent(depth + 1) + ARROW);
+                ui.weak("(folder unavailable)");
+            });
+            return;
+        };
+        if entries.is_empty() {
+            ui.horizontal(|ui| {
+                ui.add_space(indent(depth + 1) + ARROW);
+                ui.weak("(empty)");
+            });
+        }
+        for (p, _) in entries.iter().filter(|(_, d)| *d) {
+            self.dir(ui, p, depth + 1, false);
+        }
+        let files: Vec<String> = entries.into_iter().filter(|(_, d)| !*d).map(|(p, _)| p).collect();
+        self.files(ui, depth + 1, &files, false);
+    }
+
+    /// One level of a folder, read the first time the node is expanded and cached until Refresh.
+    /// ponytail: a blocking read_dir on the UI thread, one level per expansion — an eager recursive walk
+    /// of a media drive would hang the editor. Upgrade: scan on a worker + mpsc, like media/waveform.rs.
+    fn listing(&mut self, path: &str) -> Option<Vec<(String, bool)>> {
+        if let Some((_, v)) = self.state.dirs.iter().find(|(p, _)| p.as_str() == path) {
+            return v.clone();
+        }
+        let v = scan_dir(path);
+        self.state.dirs.push((path.to_string(), v.clone()));
+        v
+    }
+
+    /// A run of files that are not in the project. `recent` shows their folder and Recent label colour.
+    fn files(&mut self, ui: &mut egui::Ui, depth: usize, paths: &[String], recent: bool) {
+        if self.state.view == 1 {
+            ui.horizontal_wrapped(|ui| {
+                ui.add_space(indent(depth) + ARROW);
+                for p in paths {
+                    self.file_tile(ui, p, recent);
+                }
+            });
+        } else {
+            for p in paths {
+                self.file(ui, p, depth, recent);
+            }
+        }
+    }
+
+    /// Colour label of a recent file, if it has one.
+    fn recent_tint(&self, path: &str) -> Option<egui::Color32> {
+        let r = self.settings.recent_assets.iter().find(|r| r.path.eq_ignore_ascii_case(path))?;
+        (r.label != 0).then(|| lbl_color(self.labels, r.label, self.palette))
+    }
+
+    /// One media file on disk: thumbnail, name, kind. Single click previews it, double click imports it.
+    fn file(&mut self, ui: &mut egui::Ui, path: &str, depth: usize, recent: bool) {
+        if !path_matches(path, &self.state.search, self.state.kind_filter) {
+            return;
+        }
+        let selected = self.state.sel_path.as_deref() == Some(path);
+        let tint = if recent { self.recent_tint(path) } else { None };
+        let (name, dir) = split_path(path);
+        let (name, dir) = (name.to_string(), dir.to_string());
+        let (palette, thumbs) = (self.palette, &mut *self.thumbs);
+        let id = egui::Id::new(("file", depth, recent, path));
+        let (r, _) = row(ui, id, DragPayload::Path(path.to_string()), selected, None, |ui| {
+            ui.add_space(indent(depth) + ARROW);
+            if let Some(c) = tint {
+                let (bar, _) = ui.allocate_exact_size(egui::vec2(3.0, 14.0), egui::Sense::hover());
+                ui.painter().rect_filled(bar, 1.0, c);
+            }
+            file_art(ui, thumbs, path, palette);
+            match tint {
+                Some(c) => ui.label(RichText::new(&name).color(c)),
+                None => ui.label(&name),
+            };
+            ui.weak(kind_tag_for_class(ext_class(path)));
+            if recent {
+                ui.add(egui::Label::new(RichText::new(&dir).weak().small()).truncate());
+            }
+        });
+        self.file_click(&r, path);
+        r.on_hover_text(path);
+    }
+
+    fn file_tile(&mut self, ui: &mut egui::Ui, path: &str, recent: bool) {
+        if !path_matches(path, &self.state.search, self.state.kind_filter) {
+            return;
+        }
+        let selected = self.state.sel_path.as_deref() == Some(path);
+        let tint = if recent { self.recent_tint(path) } else { None };
+        let class = ext_class(path);
+        let art = if matches!(class, 1 | 3) { tile_art(ui, self.thumbs, path) } else { Art::None };
+        let name = split_path(path).0.to_string();
+        let id = egui::Id::new(("file_tile", recent, path));
+        let payload = DragPayload::Path(path.to_string());
+        let tint = tint.unwrap_or(self.palette.text);
+        let r = tile(ui, id, payload, selected, kind_tag_for_class(class), &name, tint, self.palette, art);
+        self.file_click(&r, path);
+        r.on_hover_text(path);
+    }
+
+    /// Select + preview on a single click, import on a double click, plus the file menu.
+    fn file_click(&mut self, r: &egui::Response, path: &str) {
+        if r.clicked() {
+            self.state.sel_path = Some(path.to_string());
+            self.state.selected = None;
+            self.preview(path);
+        }
+        if r.double_clicked() {
+            self.resp.open_paths.push(PathBuf::from(path));
+        }
+        r.context_menu(|ui| {
+            if ui.button("Add to the project").clicked() {
+                self.resp.open_paths.push(PathBuf::from(path));
+                ui.close();
+            }
+            if ui.button("Reveal folder").clicked() {
+                let _ = std::process::Command::new("explorer").arg(format!("/select,{path}")).spawn();
+                ui.close();
+            }
+        });
     }
 }
 
@@ -1561,9 +1859,9 @@ fn recent_tab(
             let tint = (rec.label != 0).then(|| lbl_color(labels, rec.label, palette));
             let id = egui::Id::new(("recent", i));
             let payload = DragPayload::Path(rec.path.clone());
-            let media = matches!(ext_class(&rec.path), 1 | 3);
             let (r, open) = if view == 1 {
-                let art = if media { tile_art(ui, thumbs, &rec.path) } else { Art::None };
+                let art =
+                    if matches!(ext_class(&rec.path), 1 | 3) { tile_art(ui, thumbs, &rec.path) } else { Art::None };
                 let tag = kind_tag_for_class(ext_class(&rec.path));
                 (tile(ui, id, payload, false, tag, name, tint.unwrap_or(palette.text), palette, art), false)
             } else {
@@ -1576,9 +1874,7 @@ fn recent_tab(
                         ui.painter().rect_filled(bar, 1.0, c);
                     }
                     // videos and stills get the same filmstrip thumbnail the library rows use
-                    if media {
-                        thumb(ui, thumbs, &rec.path, 18.0);
-                    }
+                    file_art(ui, thumbs, &rec.path, palette);
                     match tint {
                         Some(c) => ui.label(RichText::new(name).color(c)),
                         None => ui.label(name),
@@ -1799,9 +2095,20 @@ mod tests {
     }
 
     #[test]
-    fn scan_one_reports_unreadable_folders() {
-        assert!(scan_one(r"C:\does\not\exist\at\all").is_none());
-        assert!(scan_one(&std::env::temp_dir().to_string_lossy()).is_some());
+    fn scan_dir_reports_unreadable_folders() {
+        assert!(scan_dir(r"C:\does\not\exist\at\all").is_none());
+        assert!(scan_dir(&std::env::temp_dir().to_string_lossy()).is_some());
+    }
+
+    #[test]
+    fn folder_parents_are_implied() {
+        assert_eq!(parent_of("A/B/C"), "A/B");
+        assert_eq!(parent_of("A"), "");
+        let mut p = Project::new();
+        // an asset can sit in "A/B" without "A" ever being created
+        let id = p.add_asset(asset(0, ClipKind::Video, 1.0));
+        p.asset_mut(id).unwrap().folder = "A/B".into();
+        assert_eq!(folder_tree_names(&p), vec!["A".to_string(), "A/B".to_string()]);
     }
 
     /// A row that does not fit used to widen the parent Ui, so every row below it grew and its action
@@ -1936,9 +2243,6 @@ mod tests {
         }
     }
 
-    /// Headless: both tabs lay out with folders, sequences, templates and a selected asset,
-    /// reporting nothing when nothing was clicked.
-    #[test]
     /// The "Import URL…" button exists only when yt-dlp was found, and clicking it asks the app to
     /// open the Import URL window.
     #[test]
@@ -2030,6 +2334,9 @@ ame	hat\keeps\going\clip-with-a-long-name.mp4",
         })
     }
 
+    /// Headless: both tabs lay out with folders, sequences, templates and a selected asset,
+    /// reporting nothing when nothing was clicked.
+    #[test]
     fn show_headless() {
         let mut project = Project::new();
         for (i, kind) in [ClipKind::Video, ClipKind::Audio, ClipKind::Image].iter().enumerate() {
@@ -2064,9 +2371,109 @@ ame	hat\keeps\going\clip-with-a-long-name.mp4",
                 });
             }
             assert_eq!(state.tab, tab);
-            // the linked section is collapsed: nothing was read from disk
-            assert!(state.linked.is_empty(), "collapsed linked folders must not be scanned");
+            // the linked folder is collapsed: nothing was read from disk
+            assert!(state.dirs.is_empty(), "collapsed linked folders must not be scanned");
         }
+    }
+
+    /// A linked folder is browsed one level at a time: expanding a node reads that directory and
+    /// nothing else, and a single click on a file asks the app to preview it.
+    #[test]
+    fn linked_folders_are_read_one_level_per_expansion() {
+        let root = std::env::temp_dir().join(format!("se_lib_fs_{}", std::process::id()));
+        let sub = root.join("sub");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(root.join("a.mp4"), b"x").unwrap();
+        std::fs::write(sub.join("b.mp4"), b"x").unwrap();
+        std::fs::write(root.join("notes.txt"), b"x").unwrap();
+        let (root, sub) = (root.to_string_lossy().into_owned(), sub.to_string_lossy().into_owned());
+
+        let mut project = Project::new();
+        project.linked_folders.push(root.clone());
+        let mut settings = Settings::default();
+        let palette = Palette::new(true, egui::Color32::WHITE);
+        let ctx = egui::Context::default();
+        let mut state = LibraryState::default();
+        let mut run = |state: &mut LibraryState, project: &mut Project, click: Option<egui::Pos2>| {
+            let mut input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 1200.0))),
+                ..Default::default()
+            };
+            if let Some(pos) = click {
+                for pressed in [true, false] {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    });
+                }
+            }
+            let mut got = None;
+            let out = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let mut undo = |_: &Project| {};
+                    let r = show(ui, state, project, &mut settings, None, &palette, false, &mut undo);
+                    got = r.preview;
+                });
+            });
+            (out.shapes, got)
+        };
+
+        // collapsed: the linked folder is listed but never read
+        run(&mut state, &mut project, None);
+        assert!(state.dirs.is_empty(), "a collapsed folder must not be scanned");
+
+        // expanding the root reads exactly one level
+        state.flipped.push(dir_key(&root));
+        run(&mut state, &mut project, None);
+        let listed = |state: &LibraryState, p: &str| {
+            state.dirs.iter().find(|(k, _)| k == p).map(|(_, v)| v.clone().unwrap_or_default())
+        };
+        let top = listed(&state, &root).expect("the root was read");
+        assert_eq!(top.len(), 2, "only the sub-folder and the media file: {top:?}");
+        assert!(top[0].1 && top[0].0 == sub, "folders come first: {top:?}");
+        assert!(listed(&state, &sub).is_none(), "a collapsed sub-folder must not be scanned");
+
+        // and expanding the sub-folder reads the next one
+        state.flipped.push(dir_key(&sub));
+        let (shapes, _) = run(&mut state, &mut project, None);
+        assert_eq!(listed(&state, &sub).map(|v| v.len()), Some(1));
+
+        // a single click on the file reports it for the preview pane
+        let at = text_rect(&shapes, "a.mp4").expect("the file row was drawn").center();
+        let (_, previewed) = run(&mut state, &mut project, Some(at));
+        let file = std::path::Path::new(&root).join("a.mp4");
+        assert_eq!(previewed.as_deref(), Some(file.as_path()), "a single click previews the file");
+        assert_eq!(state.sel_path.as_deref(), file.to_str());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The description / tags box only exists while something is selected.
+    #[test]
+    fn details_box_follows_the_selection() {
+        let mut project = Project::new();
+        let id = project.add_asset(asset(0, ClipKind::Video, 5.0));
+        let mut settings = Settings::default();
+        let palette = Palette::new(true, egui::Color32::WHITE);
+        let ctx = egui::Context::default();
+        let mut state = LibraryState::default();
+        let mut drawn = |state: &mut LibraryState, project: &mut Project| {
+            let out = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let mut undo = |_: &Project| {};
+                    show(ui, state, project, &mut settings, None, &palette, false, &mut undo);
+                });
+            });
+            text_rect(&out.shapes, "description").is_some()
+        };
+        assert!(!drawn(&mut state, &mut project), "nothing selected: no details box");
+        state.selected = Some(id);
+        assert!(drawn(&mut state, &mut project), "selected: the details box is there");
+        state.selected = None;
+        assert!(!drawn(&mut state, &mut project), "clicked away: the details box is gone");
     }
 
     /// Recent is a gallery of everything reusable: the files plus effects, node graphs, saved adjustment

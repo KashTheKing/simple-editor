@@ -1986,6 +1986,8 @@ impl App {
                 if resp.import {
                     self.act_import();
                 }
+                // single-clicked in the Library: the file the preview pane should show (source viewer)
+                let _ = resp.preview;
                 if !resp.add_to_timeline.is_empty() {
                     self.push_undo();
                     self.insert_at(resp.add_to_timeline, self.playhead, None);
