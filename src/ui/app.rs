@@ -2244,12 +2244,16 @@ impl App {
             }
             Pane::Tools => {
                 let was = self.tools.recording;
+                let snap_was = self.settings.snap;
                 {
-                    let App { tools: st, palette, .. } = self;
-                    tools::show(ui, st, palette);
+                    let App { tools: st, palette, settings, .. } = self;
+                    tools::show(ui, st, palette, &mut settings.snap);
                 }
                 if self.tools.recording != was {
                     self.toggle_draw_recording(self.tools.recording);
+                }
+                if self.settings.snap != snap_was {
+                    self.settings.save();
                 }
             }
             Pane::Nodes => {
@@ -2319,7 +2323,9 @@ impl App {
 
     /// Add a shape clip at the playhead, styled from the tool strip. `place` = (centre x, centre y, half
     /// width, half height) in project px when the shape was dragged out in the viewport (Action::AddShape
-    /// passes None and keeps the default size).
+    /// passes None and keeps the default size). For `ShapeKind::Draw` the playhead/5s here are only a
+    /// placeholder — `add_stroke` / `toggle_draw_recording` re-pin start and duration to the strokes
+    /// actually recorded once there is ink to measure.
     fn add_shape(&mut self, kind: ShapeKind, place: Option<(f32, f32, f32, f32)>) -> Id {
         self.push_undo();
         let id = self.project.add_shape_clip(kind, self.playhead, 5.0);
@@ -2367,16 +2373,35 @@ impl App {
             }
             return;
         }
-        let Some((id, at)) = self.draw_rec.take() else { return };
-        let drawn = self.project.clip(id).and_then(|c| c.shape.as_ref()).is_some_and(|s| !s.strokes.is_empty());
-        if drawn {
-            // the drawing lasts as long as the take did
-            if let Some(c) = self.project.clip_mut(id) {
-                c.duration =
-                    (self.playhead - at).max(c.shape.as_ref().map_or(0.0, |s| s.draw_duration())).max(MIN_CLIP);
+        let Some((id, _)) = self.draw_rec.take() else { return };
+        // the clip was placed at record-press time with a placeholder length; pin its real bounds to
+        // exactly the first and last point drawn (`add_stroke` already times every point from that press)
+        // instead of the press-to-stop span, which pads the clip with dead time on either side.
+        let bounds = self.project.clip(id).and_then(|c| c.shape.as_ref()).map(|s| {
+            let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+            for st in &s.strokes {
+                for p in &st.points {
+                    lo = lo.min(p.2);
+                    hi = hi.max(p.2);
+                }
             }
-        } else {
-            self.project.delete_clips(&[id], false); // nothing was drawn: leave no stub behind
+            (lo, hi)
+        });
+        match bounds.filter(|(lo, _)| lo.is_finite()) {
+            Some((lo, hi)) => {
+                if let Some(c) = self.project.clip_mut(id) {
+                    c.start += lo as f64;
+                    c.duration = ((hi - lo).max(0.0) as f64).max(MIN_CLIP);
+                    if let Some(s) = c.shape.as_mut() {
+                        for st in &mut s.strokes {
+                            for p in &mut st.points {
+                                p.2 -= lo;
+                            }
+                        }
+                    }
+                }
+            }
+            None => self.project.delete_clips(&[id], false), // nothing was drawn: leave no stub behind
         }
         if self.voice_rec.is_none() {
             self.player.pause();
@@ -2410,12 +2435,40 @@ impl App {
             None => self.add_shape(ShapeKind::Draw, None),
         };
         if let Some(c) = self.project.clip_mut(id) {
-            // a long take must not outlive its clip, or the ink stops appearing halfway through
-            let len = c.shape.as_mut().map_or(0.0, |s| {
+            if let Some(s) = c.shape.as_mut() {
                 s.strokes.push(stroke);
-                s.draw_duration()
-            });
-            c.duration = c.duration.max(len);
+            }
+            if rec.is_some() {
+                // still recording: keep the preview at least as long as what's drawn so far; the exact
+                // start/end are pinned once the take stops (toggle_draw_recording)
+                let len = c.shape.as_ref().map_or(0.0, |s| s.draw_duration());
+                c.duration = c.duration.max(len);
+            } else {
+                // not part of a running take (a plain drag): pin the clip to exactly what's drawn, instead
+                // of leaving it at add_shape's placeholder duration if the stroke was shorter than that
+                let bounds = c.shape.as_mut().map(|s| {
+                    let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+                    for st in &s.strokes {
+                        for p in &st.points {
+                            lo = lo.min(p.2);
+                            hi = hi.max(p.2);
+                        }
+                    }
+                    if lo > 0.0 {
+                        for st in &mut s.strokes {
+                            for p in &mut st.points {
+                                p.2 -= lo;
+                            }
+                        }
+                        hi -= lo;
+                    }
+                    (lo.max(0.0), hi.max(0.0))
+                });
+                if let Some((lo, hi)) = bounds {
+                    c.start += lo as f64;
+                    c.duration = (hi as f64).max(MIN_CLIP);
+                }
+            }
         }
         self.selection = vec![id];
         self.after_edit();
@@ -4907,11 +4960,15 @@ impl eframe::App for App {
         self.screenshot_tick(ctx);
 
         // hotkeys
-        // the tool strip claims the bare letters (V/T/S/D/M) before the action table is polled, so a
-        // rebound action can never shadow a tool
+        // the tool strip claims the bare letters (V/T/D/M, Shift+S) before the action table is polled, so
+        // a rebound action can never shadow a tool
         if let Some(t) = tools::handle_hotkeys(ctx, &mut self.tools) {
             self.tools.tool = t;
             self.layout.reveal(Pane::Tools);
+        }
+        // bare S is snapping's own key, claimed the same way (see tools::handle_snap_hotkey)
+        if tools::handle_snap_hotkey(ctx, &mut self.settings.snap) {
+            self.settings.save();
         }
         let mut actions = self.hotkeys.poll(ctx);
         if !ctx.wants_keyboard_input() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Y)) {
