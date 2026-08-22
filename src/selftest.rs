@@ -234,6 +234,7 @@ pub fn run(args: &[String]) -> i32 {
         backend: Backend::Auto,
         out_size: None,
         scaler: "bicubic".into(),
+        frames: crate::engine::export::FrameSource::Cpu,
     };
     let trimmed = |a: f64, b: f64| -> Result<Project, String> {
         let mut p = Project::from_media(probe()?);

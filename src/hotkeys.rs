@@ -1,5 +1,6 @@
 //! Keyboard shortcuts: a fixed list of actions, default bindings, user overrides (stored in Settings),
-//! and per-frame polling. Mouse modifiers (Ctrl+Scroll zoom, Alt+Scroll track height, Shift+Scroll pan)
+//! and per-frame polling. The bare letters V / T / S / D / M belong to the tool strip (ui::tools), which
+//! consumes them before this table is polled, so actions that used them sit on Shift+<letter>. Mouse modifiers (Ctrl+Scroll zoom, Alt+Scroll track height, Shift+Scroll pan)
 //! are fixed and not part of this table.
 
 use crate::settings::Settings;
@@ -74,12 +75,12 @@ actions! {
     ClearInOut => "clear_in_out", "Clear In / Out", sc(ALT, Key::X);
     TrimToInOut => "trim_in_out", "Trim to In / Out", sc(CTRL_SHIFT, Key::I);
     RippleDeleteInOut => "ripple_in_out", "Ripple Delete In / Out", sc(CTRL_SHIFT, Key::Delete);
-    AddText => "add_text", "Add Text", sc(NONE, Key::T);
+    AddText => "add_text", "Add Text Clip", sc(SHIFT, Key::T);
     ZoomIn => "zoom_in", "Zoom In", sc(CTRL, Key::Equals);
     ZoomOut => "zoom_out", "Zoom Out", sc(CTRL, Key::Minus);
     ZoomFit => "zoom_fit", "Zoom to Fit", sc(SHIFT, Key::Z);
     LinkToggle => "link", "Link / Unlink", sc(CTRL, Key::L);
-    ToggleEnabled => "toggle_enabled", "Enable / Disable Clip", sc(NONE, Key::D);
+    ToggleEnabled => "toggle_enabled", "Enable / Disable Clip", sc(SHIFT, Key::D);
     NudgeLeft => "nudge_left", "Nudge Left 1 Frame", sc(NONE, Key::Comma);
     NudgeRight => "nudge_right", "Nudge Right 1 Frame", sc(NONE, Key::Period);
     ToggleSnap => "snap", "Toggle Snapping", sc(NONE, Key::N);
@@ -107,7 +108,7 @@ actions! {
     AddLastTransition => "add_last_transition", "Add Last Used Transition", sc(CTRL, Key::T);
     CopyAttributes => "copy_attrs", "Copy Attributes", sc(CTRL_ALT, Key::C);
     PasteAttributes => "paste_attrs", "Paste Attributes…", sc(CTRL_ALT, Key::V);
-    AddMarker => "add_marker", "Add Marker at Playhead", sc(NONE, Key::M);
+    AddMarker => "add_marker", "Add Marker at Playhead", sc(SHIFT, Key::M);
     ToggleMarkers => "toggle_markers", "Show / Hide Markers", sc(CTRL, Key::Num8);
     ToggleNodes => "toggle_nodes", "Show / Hide Node Editor", sc(CTRL, Key::Num9);
     ToggleMixer => "toggle_mixer", "Show / Hide Mixer", sc(CTRL, Key::Num0);

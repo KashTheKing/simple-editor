@@ -533,8 +533,8 @@ mod tests {
     #[test]
     fn tick_renders_a_second_one_frame_at_a_time() {
         let mut p = project_with_clip(); // 33×17 @ 10 fps, one text clip: no decoder needed
-        // an odd size gives this test a cache key of its own, so the tests that assert "no file
-        // for this second" never race with the one this writes
+                                         // an odd size gives this test a cache key of its own, so the tests that assert "no file
+                                         // for this second" never race with the one this writes
         p.width = 33;
         p.height = 17;
         let path = path_for(key_for(&p, 0));

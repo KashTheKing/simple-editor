@@ -134,6 +134,15 @@ pub struct App {
     gpu_name: String,
     /// GPU renderer, built lazily from `gl` while `settings.gpu` is on; None = CPU compositor.
     gpu: Option<GpuRenderer>,
+    /// Effect catalogue thumbnails: the egui textures (kept alive while the panel shows them) and the
+    /// key set they were built from, so they are re-rendered only when the stock image or size changes.
+    /// GPU frame requests from export threads (they decode; we composite on the GL context).
+    gpu_export: (
+        std::sync::mpsc::Sender<crate::engine::export::GpuFrameRequest>,
+        std::sync::mpsc::Receiver<crate::engine::export::GpuFrameRequest>,
+    ),
+    effect_thumbs: Vec<egui::TextureHandle>,
+    effect_thumbs_key: Option<(String, u32)>,
     /// The GPU path failed once — do not retry until the setting is switched off and on again.
     gpu_failed: bool,
     /// The frame the GPU rendered last: its buffer is reused once the preview released it.
@@ -759,6 +768,9 @@ impl App {
             gl,
             gpu_name,
             gpu: None,
+            gpu_export: std::sync::mpsc::channel(),
+            effect_thumbs: Vec::new(),
+            effect_thumbs_key: None,
             gpu_failed: false,
             gpu_prev: None,
             tools: tools::ToolsState::default(),
@@ -1080,6 +1092,7 @@ impl App {
             backend: self.backend(),
             out_size: None,
             scaler: self.settings.export_scaler.clone(),
+            frames: self.export_frames(),
         }
     }
 
@@ -2407,9 +2420,85 @@ impl App {
         }
     }
 
+    /// Render one catalogue thumbnail per `EffectKind` over the stock image and hand them to the effects
+    /// panel. Runs once per (stock image, size) — the GPU renderer owns the GL context, so this happens on
+    /// the UI thread. Without a GPU the panel keeps its neutral named cards.
+    fn build_effect_thumbnails(&mut self, ctx: &egui::Context) {
+        const TW: u32 = 96;
+        const TH: u32 = 54;
+        let key = (self.settings.effect_thumb_image.clone(), TW);
+        if self.gpu.is_none() || self.effect_thumbs_key.as_ref() == Some(&key) {
+            return;
+        }
+        let src = effect_thumb_source(&key.0, TW, TH, self.backend());
+        if src.is_empty() {
+            return;
+        }
+        effects_ui::clear_thumbnails();
+        self.effect_thumbs.clear();
+        let mut out = Frame::default();
+        for kind in EffectKind::ALL {
+            // geometric kinds move the layer instead of touching pixels: show the plain source
+            let effect = crate::model::Effect::new(kind);
+            let rendered = {
+                let Some(gpu) = self.gpu.as_mut() else { break };
+                guarded(|| gpu.effect_preview(&src, &effect, 0.35, &mut out)).unwrap_or(false)
+            };
+            let frame = if rendered { &out } else { &src };
+            if frame.is_empty() || frame.rgba.len() != (frame.width * frame.height * 4) as usize {
+                continue;
+            }
+            let img =
+                egui::ColorImage::from_rgba_premultiplied([frame.width as usize, frame.height as usize], &frame.rgba);
+            let tex = ctx.load_texture(format!("fxthumb_{}", kind.name()), img, egui::TextureOptions::LINEAR);
+            effects_ui::set_thumbnail(kind, tex.id(), [frame.width, frame.height]);
+            self.effect_thumbs.push(tex);
+        }
+        self.effect_thumbs_key = Some(key);
+    }
+
+    /// Where a new export should get its pictures: the GPU renderer when it is running (so the file
+    /// matches the preview), otherwise the export thread's own CPU compositor.
+    fn export_frames(&self) -> crate::engine::export::FrameSource {
+        match self.gpu {
+            Some(_) => crate::engine::export::FrameSource::Gpu(self.gpu_export.0.clone()),
+            None => crate::engine::export::FrameSource::Cpu,
+        }
+    }
+
+    /// Serve the frames export threads are waiting on. Called every frame; each request is answered on
+    /// the GL context, so exports run the same shaders as the preview. Returns true if any were served
+    /// (the caller keeps repainting so a background export is never starved).
+    fn serve_gpu_exports(&mut self) -> bool {
+        let mut served = false;
+        while let Ok(req) = self.gpu_export.1.try_recv() {
+            served = true;
+            let mut out = Frame::default();
+            let ok = {
+                let App { gpu, project, .. } = self;
+                match gpu.as_mut() {
+                    Some(g) => {
+                        out.resize(req.w, req.h);
+                        guarded(|| g.render_frame(project, req.t, req.w, req.h, &req.layers, &mut out)).is_some()
+                    }
+                    None => false,
+                }
+            };
+            if !ok {
+                self.gpu_off("the renderer panicked");
+            }
+            // None tells the export thread to finish on the CPU compositor
+            let _ = req.reply.send(ok.then_some(out));
+        }
+        served
+    }
+
     /// Fall back to the CPU compositor and say why, once.
     fn gpu_off(&mut self, why: &str) {
         self.gpu = None;
+        effects_ui::clear_thumbnails();
+        self.effect_thumbs.clear();
+        self.effect_thumbs_key = None;
         self.gpu_failed = true;
         self.player.set_gpu(false);
         self.toast(format!("GPU rendering unavailable ({why}) — using the CPU compositor"));
@@ -3130,6 +3219,7 @@ impl App {
                 backend: self.backend(),
                 out_size,
                 scaler,
+                frames: self.export_frames(),
             };
             let prog = export::start_export(self.export_project(), opts, self.text.clone());
             // same slot the UI uses: exclusion, the progress/Cancel window and the close guard all key off it
@@ -4209,6 +4299,11 @@ impl eframe::App for App {
             }
         }
         self.poll_panels();
+        self.build_effect_thumbnails(ctx);
+        if self.serve_gpu_exports() || self.export.is_some() {
+            // a GPU export needs this thread to keep coming back to serve its frames
+            ctx.request_repaint();
+        }
         // carry last frame's "the Auto-cut pane was on screen" into this frame's timeline drawing
         self.autocut_shown = self.autocut_drawing;
         self.autocut_drawing = false;
@@ -4317,6 +4412,12 @@ impl eframe::App for App {
         self.screenshot_tick(ctx);
 
         // hotkeys
+        // the tool strip claims the bare letters (V/T/S/D/M) before the action table is polled, so a
+        // rebound action can never shadow a tool
+        if let Some(t) = tools::handle_hotkeys(ctx, &mut self.tools) {
+            self.tools.tool = t;
+            self.layout.reveal(Pane::Tools);
+        }
         let mut actions = self.hotkeys.poll(ctx);
         if !ctx.wants_keyboard_input() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Y)) {
             actions.push(Action::Redo);
@@ -4714,7 +4815,8 @@ mod tests {
             (Action::AddLastTransition, "Ctrl+T"),
             (Action::CopyAttributes, "Ctrl+Alt+C"),
             (Action::PasteAttributes, "Ctrl+Alt+V"),
-            (Action::AddMarker, "M"),
+            // the bare letters V/T/S/D/M belong to the tool strip, so this moved to Shift+M
+            (Action::AddMarker, "Shift+M"),
             (Action::AddMask, "Ctrl+Shift+M"),
             (Action::ExportFrame, "Ctrl+Shift+F"),
         ] {

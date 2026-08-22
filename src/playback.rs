@@ -385,7 +385,7 @@ fn render_thread(
 /// already the quality-scaled render size, so `gpu::render_size` must not be applied again. Adjustment
 /// layers need no bitmap (they re-process the canvas). Effects that `needs_motion()` also get neighbours.
 #[allow(clippy::too_many_arguments)]
-fn decode_layers(
+pub(crate) fn decode_layers(
     project: &Project,
     t: f64,
     w: u32,

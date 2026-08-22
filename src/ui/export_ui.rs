@@ -230,6 +230,7 @@ fn pick_and_build(state: &ExportUi, project: &Project, settings: &Settings) -> O
             backend: Backend::parse(&settings.decoder),
             out_size: preset_size(project.width, project.height, &state.preset, state.custom),
             scaler: settings.export_scaler.clone(),
+            frames: crate::engine::export::FrameSource::Cpu,
         },
         lossless: state.lossless,
     })

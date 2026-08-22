@@ -16,6 +16,35 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+/// One frame the export thread wants composited on the GPU. The UI thread owns the GL context, so it
+/// picks these up in `App::update`, renders `layers` and sends the pixels back.
+pub struct GpuFrameRequest {
+    pub layers: crate::engine::gpu::LayerSet,
+    pub t: f64,
+    pub w: u32,
+    pub h: u32,
+    /// The rendered frame, or None when the renderer died (the export falls back to the CPU compositor).
+    pub reply: std::sync::mpsc::SyncSender<Option<Frame>>,
+}
+
+/// Where an export gets its pictures.
+#[derive(Clone)]
+pub enum FrameSource {
+    /// Composite on this thread with `engine::compose` (no GPU-only effects, no node graphs).
+    Cpu,
+    /// Decode here, composite on the UI thread's GL context — identical to what the preview shows.
+    Gpu(std::sync::mpsc::Sender<GpuFrameRequest>),
+}
+
+impl std::fmt::Debug for FrameSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            FrameSource::Cpu => "Cpu",
+            FrameSource::Gpu(_) => "Gpu",
+        })
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ExportOptions {
     pub out_path: PathBuf,
@@ -29,6 +58,8 @@ pub struct ExportOptions {
     pub out_size: Option<(u32, u32)>,
     /// ffmpeg scale flags: "neighbor" | "bilinear" | "bicubic" | "lanczos" | "area" | "spline".
     pub scaler: String,
+    /// CPU compositor, or the UI thread's GPU renderer (so exports match the preview exactly).
+    pub frames: FrameSource,
 }
 
 pub struct Progress {
@@ -195,13 +226,33 @@ fn run_export(
         let n = (dur * fps).ceil().max(1.0) as u64;
         let mut frame = Frame::new(w, h);
         let mut comp = Compositor::new();
-        let gaps = cpu_gaps(project);
+        // GPU path: decode here (off the UI thread), composite there (the GL context lives on the UI
+        // thread), so an export runs the very same shaders the preview does.
+        let mut gpu = match &opts.frames {
+            FrameSource::Gpu(tx) => Some((tx.clone(), GpuScratch::new(opts.backend))),
+            FrameSource::Cpu => None,
+        };
+        let mut gaps = if gpu.is_some() { String::new() } else { cpu_gaps(project) };
         for i in 0..n {
             if prog.is_cancelled() {
                 break;
             }
             let t = i as f64 / fps;
-            {
+            let mut done = false;
+            if let Some((tx, scratch)) = gpu.as_mut() {
+                match scratch.render(project, t, w, h, tx, &text) {
+                    Some(f) => {
+                        frame = f;
+                        done = true;
+                    }
+                    // the renderer died or the UI stopped answering: finish on the CPU and say so
+                    None => {
+                        gpu = None;
+                        gaps = cpu_gaps(project);
+                    }
+                }
+            }
+            if !done {
                 let mut tr = text.lock().unwrap_or_else(|e| e.into_inner());
                 comp.render(project, t, w, h, &mut pool, &mut tr, &mut frame);
             }
@@ -220,6 +271,54 @@ fn run_export(
     wait_ffmpeg(&mut child, tail, prog)?;
     drop(pool);
     tmp.commit(&opts.out_path)
+}
+
+/// Decoder state for the GPU export path: the same layer decoding the player does, on this thread.
+struct GpuScratch {
+    pool: DecoderPool,
+    spare: Vec<Frame>,
+    shapes: crate::engine::shapes::ShapeRasterizer,
+    comp: Compositor,
+}
+
+impl GpuScratch {
+    fn new(backend: Backend) -> Self {
+        Self {
+            pool: DecoderPool::new(backend),
+            spare: Vec::new(),
+            shapes: crate::engine::shapes::ShapeRasterizer::new(),
+            comp: Compositor::new(),
+        }
+    }
+    /// Decode the layers for `t` and have the UI thread composite them. None = give up on the GPU path
+    /// (renderer gone, UI not answering within 5 s, or the request channel closed).
+    fn render(
+        &mut self,
+        project: &Project,
+        t: f64,
+        w: u32,
+        h: u32,
+        tx: &std::sync::mpsc::Sender<GpuFrameRequest>,
+        text: &Arc<Mutex<TextRasterizer>>,
+    ) -> Option<Frame> {
+        let layers = {
+            let mut tr = text.lock().unwrap_or_else(|e| e.into_inner());
+            crate::playback::decode_layers(
+                project,
+                t,
+                w,
+                h,
+                &mut self.pool,
+                &mut self.spare,
+                &mut tr,
+                &mut self.shapes,
+                &mut self.comp,
+            )
+        };
+        let (reply, rx) = std::sync::mpsc::sync_channel(1);
+        tx.send(GpuFrameRequest { layers, t, w, h, reply }).ok()?;
+        rx.recv_timeout(Duration::from_secs(5)).ok().flatten()
+    }
 }
 
 /// What this export cannot render, as a suffix for the progress line (empty when nothing is dropped).
@@ -954,6 +1053,7 @@ pub(crate) mod tests {
             backend: Backend::Auto,
             out_size: Some((160, 120)),
             scaler: "bicubic".into(),
+            frames: FrameSource::Cpu,
         };
         let text = Arc::new(Mutex::new(TextRasterizer::new()));
         assert_eq!(wait_done(&start_export(p, opts, text)), None);
@@ -985,6 +1085,7 @@ pub(crate) mod tests {
             backend: Backend::Auto,
             out_size: None,
             scaler: "bicubic".into(),
+            frames: FrameSource::Cpu,
         };
         let text = Arc::new(Mutex::new(TextRasterizer::new()));
         let prog = start_export(p.clone(), opts.clone(), text.clone());

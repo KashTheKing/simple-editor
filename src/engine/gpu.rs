@@ -356,6 +356,42 @@ impl GpuRenderer {
     }
 
     /// Apply one effect to a texture (used by the effect-thumbnail grid and the node editor previews).
+    /// Render `effect` over `src` and read the result back into `out` (catalogue thumbnails).
+    /// `t` is the clip-local time to sample animated parameters at. False when the effect has no GPU body.
+    pub fn effect_preview(&mut self, src: &Frame, effect: &Effect, t: f64, out: &mut Frame) -> bool {
+        if src.is_empty() {
+            return false;
+        }
+        let (w, h) = (src.width, src.height);
+        let host = self.host_fbo();
+        let tex = self.upload(u64::MAX, src);
+        let dst = self.run_effect(tex, (w, h), effect, t, 1.0, None, None);
+        let ok = match dst {
+            Some(target) => {
+                out.resize(w, h);
+                let gl = self.gl.clone();
+                unsafe {
+                    gl.bind_framebuffer(glow::FRAMEBUFFER, Some(target.fbo));
+                    gl.pixel_store_i32(glow::PACK_ALIGNMENT, 1);
+                    gl.read_pixels(
+                        0,
+                        0,
+                        w as i32,
+                        h as i32,
+                        glow::RGBA,
+                        glow::UNSIGNED_BYTE,
+                        glow::PixelPackData::Slice(Some(&mut out.rgba)),
+                    );
+                }
+                self.pool.put(target);
+                true
+            }
+            None => false,
+        };
+        self.restore(host);
+        ok
+    }
+
     pub fn apply_effect(
         &mut self,
         src: glow::Texture,
