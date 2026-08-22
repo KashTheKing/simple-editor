@@ -5,7 +5,8 @@
 //! (`Project::bus_of`), each bus runs its filter chain, then gain/pan/mono, then sums into its output bus.
 //! Interleaved stereo f32 @ 48 kHz, processed in place, block-continuous.
 //!
-//! Filters (`model::FilterKind`): Eq (3-band RBJ: low shelf, peaking, high shelf), HighPass/LowPass (RBJ),
+//! Filters (`model::FilterKind`): Eq (5-band RBJ: low shelf, three peaks, high shelf — `EQ_BANDS` maps
+//! bands to parameter indices), HighPass/LowPass (RBJ),
 //! Reverb (Freeverb comb+allpass), Echo (delay line + feedback, optional ping-pong), Distortion (soft clip
 //! + tone), Compressor (peak detector, attack/release, makeup), NoiseGate, Noise (white/pink/tone), Gain.
 //!
@@ -48,7 +49,8 @@ pub enum Band {
     HighShelf,
 }
 
-/// Normalised RBJ coefficients `[b0, b1, b2, a1, a2]` (a0 divided out). Shelves use slope S = 1.
+/// Normalised RBJ coefficients `[b0, b1, b2, a1, a2]` (a0 divided out). Shelves take Q like the peaks
+/// (Q = 0.707 is the classic slope-1 shelf).
 pub fn coeffs(band: Band, f0: f32, q: f32, gain_db: f32, sr: f32) -> [f32; 5] {
     let f0 = f0.clamp(10.0, sr * 0.45);
     let q = q.clamp(0.05, 20.0);
@@ -56,8 +58,7 @@ pub fn coeffs(band: Band, f0: f32, q: f32, gain_db: f32, sr: f32) -> [f32; 5] {
     let (sn, cs) = w0.sin_cos();
     let alpha = sn / (2.0 * q);
     let a = 10f32.powf(gain_db / 40.0);
-    // shelf alpha for S = 1, and the 2·sqrt(A)·alpha term
-    let tsa = 2.0 * a.sqrt() * (sn * 0.5 * std::f32::consts::SQRT_2);
+    let tsa = 2.0 * a.sqrt() * alpha;
     let (b0, b1, b2, a0, a1, a2) = match band {
         Band::LowPass => ((1.0 - cs) * 0.5, 1.0 - cs, (1.0 - cs) * 0.5, 1.0 + alpha, -2.0 * cs, 1.0 - alpha),
         Band::HighPass => ((1.0 + cs) * 0.5, -(1.0 + cs), (1.0 + cs) * 0.5, 1.0 + alpha, -2.0 * cs, 1.0 - alpha),
@@ -99,16 +100,23 @@ pub fn response_db(c: &[f32; 5], freq: f32, sr: f32) -> f32 {
     lin_to_db(num / den)
 }
 
+/// The EQ's five bands, low to high, as `(shape, gain param, freq param, Q param)`. The first seven
+/// `F_EQ` slots keep the meaning the 3-band EQ gave them, so projects saved before the extra peaks
+/// still load — hence the scattered indices.
+pub const EQ_BANDS: [(Band, usize, usize, usize); 5] = [
+    (Band::LowShelf, 0, 1, 7),
+    (Band::Peak, 9, 10, 11),
+    (Band::Peak, 2, 3, 4),
+    (Band::Peak, 12, 13, 14),
+    (Band::HighShelf, 5, 6, 8),
+];
+
 /// The bands an EQ / pass filter is made of at time `t`, as `(band, freq, q, gain_db)`.
 /// Empty for every other kind — the UI draws a response curve exactly when this is non-empty.
 pub fn filter_bands(f: &AudioFilter, t: f64) -> Vec<(Band, f32, f32, f32)> {
     let p = |i: usize| f.at(i, t) as f32;
     match f.kind {
-        FilterKind::Eq => vec![
-            (Band::LowShelf, p(1), 0.707, p(0)),
-            (Band::Peak, p(3), p(4), p(2)),
-            (Band::HighShelf, p(6), 0.707, p(5)),
-        ],
+        FilterKind::Eq => EQ_BANDS.iter().map(|&(b, gi, fi, qi)| (b, p(fi), p(qi), p(gi))).collect(),
         FilterKind::HighPass => vec![(Band::HighPass, p(0), p(1), 0.0)],
         FilterKind::LowPass => vec![(Band::LowPass, p(0), p(1), 0.0)],
         _ => Vec::new(),
@@ -253,7 +261,7 @@ struct Delay {
 
 /// The DSP memory a filter kind needs. Sized once in `FilterState::new`.
 enum Dsp {
-    /// 1 band (pass filters) or 3 bands (EQ) × 2 channels, band-major.
+    /// 1 band (pass filters) or `EQ_BANDS.len()` bands (EQ) × 2 channels, band-major.
     Biquads(Vec<Biquad>),
     Reverb(Box<Freeverb>),
     Echo(Delay),
@@ -289,7 +297,7 @@ impl FilterState {
     pub fn new(f: &AudioFilter, sample_rate: u32) -> Self {
         let sr = if sample_rate == 0 { SAMPLE_RATE as f32 } else { sample_rate as f32 };
         let dsp = match f.kind {
-            FilterKind::Eq => Dsp::Biquads(vec![Biquad::default(); 6]),
+            FilterKind::Eq => Dsp::Biquads(vec![Biquad::default(); EQ_BANDS.len() * 2]),
             FilterKind::HighPass | FilterKind::LowPass => Dsp::Biquads(vec![Biquad::default(); 2]),
             FilterKind::Reverb => Dsp::Reverb(Box::new(Freeverb::new(sr))),
             FilterKind::Echo => Dsp::Echo(Delay { buf: vec![0.0; ((sr * MAX_ECHO_S) as usize + 2) * 2], pos: 0 }),
@@ -315,12 +323,8 @@ impl FilterState {
         let p = |i: usize| f.at(i, t) as f32;
         match (&mut self.dsp, f.kind) {
             (Dsp::Biquads(bq), FilterKind::Eq) => {
-                let bands = [
-                    coeffs(Band::LowShelf, p(1), 0.707, p(0), sr),
-                    coeffs(Band::Peak, p(3), p(4).max(0.1), p(2), sr),
-                    coeffs(Band::HighShelf, p(6), 0.707, p(5), sr),
-                ];
-                for (b, c) in bq.chunks_exact_mut(2).zip(bands) {
+                for (b, &(band, gi, fi, qi)) in bq.chunks_exact_mut(2).zip(EQ_BANDS.iter()) {
+                    let c = coeffs(band, p(fi), p(qi).max(0.1), p(gi), sr);
                     b[0].c = c;
                     b[1].c = c;
                 }
@@ -795,6 +799,43 @@ mod tests {
         let high = filt(FilterKind::Eq, &[(5, 6.0), (6, 4000.0)]);
         assert!(filter_response_db(&high, 0.0, 16000.0) > 5.0);
         assert!(filter_response_db(&high, 0.0, 100.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn eq_five_bands() {
+        let flat = AudioFilter::new(FilterKind::Eq);
+        for hz in [20.0, 100.0, 1000.0, 10_000.0, 20_000.0] {
+            assert!(filter_response_db(&flat, 0.0, hz).abs() < 0.01, "default EQ must be flat at {hz} Hz");
+        }
+        // every band boosts around its own default corner (a shelf reaches full gain past the knee)
+        for &(band, gi, fi, _) in &EQ_BANDS {
+            let f0 = FilterKind::Eq.params()[fi].default as f32;
+            let probe = match band {
+                Band::LowShelf => f0 * 0.2,
+                Band::HighShelf => f0 * 3.0,
+                _ => f0,
+            };
+            let db = filter_response_db(&filt(FilterKind::Eq, &[(gi, 12.0)]), 0.0, probe);
+            assert!(db > 9.0, "{band:?} at {probe} Hz: {db} dB");
+        }
+        // one of the added peaks measures what the analytic curve promises
+        let ratio = thru_rms(&filt(FilterKind::Eq, &[(9, 12.0)]), 400.0) / thru_rms(&flat, 400.0);
+        assert!((ratio - 4.0).abs() < 0.5, "+12 dB at 400 Hz ≈ ×4, got ×{ratio}");
+        // shelves take a Q now (0.707 = the slope-1 shelf they were pinned to): it reshapes the knee
+        // — a resonant shelf dips on the far side of the corner — without touching the plateau
+        let tight = filt(FilterKind::Eq, &[(0, 12.0), (7, 2.0)]);
+        let wide = filt(FilterKind::Eq, &[(0, 12.0), (7, 0.4)]);
+        let (t, w) = (filter_response_db(&tight, 0.0, 240.0), filter_response_db(&wide, 0.0, 240.0));
+        assert!((t - w).abs() > 2.0, "shelf Q must reshape the knee: {t} vs {w}");
+        for f in [&tight, &wide] {
+            let plateau = filter_response_db(f, 0.0, 20.0);
+            assert!((plateau - 12.0).abs() < 1.0, "the shelf still reaches +12 dB: {plateau}");
+        }
+        // a project saved by the 3-band EQ is seven params long and still means the same thing
+        let mut old = filt(FilterKind::Eq, &[(0, -12.0), (1, 200.0)]);
+        old.params.truncate(7);
+        assert!(filter_response_db(&old, 0.0, 40.0) < -10.0, "old low shelf");
+        assert!(filter_response_db(&old, 0.0, 8000.0).abs() < 0.5, "old EQ flat up top");
     }
 
     #[test]
