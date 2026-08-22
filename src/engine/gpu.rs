@@ -356,6 +356,31 @@ impl GpuRenderer {
     }
 
     /// Apply one effect to a texture (used by the effect-thumbnail grid and the node editor previews).
+    /// Render the timeline into an off-screen texture the caller can paint directly (zero-copy preview).
+    /// The texture stays owned by the renderer and is valid until the next call; `reclaim()` recycles it
+    /// on the following frame, so the caller must paint it in the same frame it asked for it.
+    pub fn render_preview_texture(
+        &mut self,
+        project: &Project,
+        t: f64,
+        w: u32,
+        h: u32,
+        layers: &LayerSet,
+    ) -> Option<(glow::Texture, u32, u32)> {
+        if w == 0 || h == 0 {
+            return None;
+        }
+        self.reclaim();
+        let host = self.host_fbo();
+        let canvas = self.render_canvas(project, t, w, h, layers);
+        self.restore(host);
+        let canvas = canvas?;
+        let out = (canvas.tex, canvas.w, canvas.h);
+        // hand it out for this frame; `loaned` returns it to the pool on the next `reclaim`
+        self.loaned.push(canvas);
+        Some(out)
+    }
+
     /// Render `effect` over `src` and read the result back into `out` (catalogue thumbnails).
     /// `t` is the clip-local time to sample animated parameters at. False when the effect has no GPU body.
     pub fn effect_preview(&mut self, src: &Frame, effect: &Effect, t: f64, out: &mut Frame) -> bool {

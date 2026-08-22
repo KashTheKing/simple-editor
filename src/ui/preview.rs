@@ -63,6 +63,9 @@ pub struct PreviewCtx<'a> {
     pub undo: &'a mut dyn FnMut(&Project),
     /// A newly rendered frame to upload this update (None = keep the current texture).
     pub frame: Option<Arc<Frame>>,
+    /// A texture the GPU renderer already holds, with its pixel size — painted directly, with no
+    /// readback and no upload. Takes precedence over `frame`.
+    pub gpu_texture: Option<(egui::TextureId, [u32; 2])>,
     /// Active editing tool (`Tool::Select` = drag moves the selected clip).
     pub tool: Tool,
     /// Current preview render scale in percent (settings.preview_quality).
@@ -300,7 +303,10 @@ fn video(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r:
             }
         }
     }
-    if let Some(t) = &state.texture {
+    // the GPU renderer's own texture wins: nothing is read back or re-uploaded
+    if let Some((id, _)) = c.gpu_texture {
+        painter.image(id, lb, Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)), Color32::WHITE);
+    } else if let Some(t) = &state.texture {
         painter.image(t.id(), lb, Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)), Color32::WHITE);
     }
     if c.fullscreen {
@@ -477,6 +483,7 @@ mod tests {
                             palette: &pal,
                             undo: &mut undo,
                             frame: None,
+                            gpu_texture: None,
                             tool: *tool,
                             quality: 100,
                             movie_mode: false,

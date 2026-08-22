@@ -141,6 +141,12 @@ pub struct App {
         std::sync::mpsc::Sender<crate::engine::export::GpuFrameRequest>,
         std::sync::mpsc::Receiver<crate::engine::export::GpuFrameRequest>,
     ),
+    /// The GPU canvas the preview paints (zero-copy): id + pixel size. Stays valid until the next GPU
+    /// render, which is also when it is replaced.
+    gpu_tex: Option<(egui::TextureId, [u32; 2])>,
+    /// glow texture -> egui id. The renderer's pool reuses a handful of textures, so registering each one
+    /// once keeps eframe's texture map small (registering per frame would grow it forever).
+    gpu_tex_ids: std::collections::HashMap<eframe::glow::Texture, egui::TextureId>,
     effect_thumbs: Vec<egui::TextureHandle>,
     effect_thumbs_key: Option<(String, u32)>,
     /// The GPU path failed once — do not retry until the setting is switched off and on again.
@@ -769,6 +775,8 @@ impl App {
             gpu_name,
             gpu: None,
             gpu_export: std::sync::mpsc::channel(),
+            gpu_tex: None,
+            gpu_tex_ids: std::collections::HashMap::new(),
             effect_thumbs: Vec::new(),
             effect_thumbs_key: None,
             gpu_failed: false,
@@ -1749,6 +1757,7 @@ impl App {
                         tools,
                         settings,
                         prerender,
+                        gpu_tex,
                         ..
                     } = self;
                     let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
@@ -1769,6 +1778,7 @@ impl App {
                             palette,
                             undo: &mut push,
                             frame,
+                            gpu_texture: *gpu_tex,
                             tool: tools.tool,
                             quality: settings.preview_quality,
                             movie_mode: settings.movie_mode,
@@ -2496,12 +2506,45 @@ impl App {
     /// Fall back to the CPU compositor and say why, once.
     fn gpu_off(&mut self, why: &str) {
         self.gpu = None;
+        self.gpu_tex = None;
+        self.gpu_tex_ids.clear();
         effects_ui::clear_thumbnails();
         self.effect_thumbs.clear();
         self.effect_thumbs_key = None;
         self.gpu_failed = true;
         self.player.set_gpu(false);
         self.toast(format!("GPU rendering unavailable ({why}) — using the CPU compositor"));
+    }
+
+    /// Render the timeline into a GL texture and register it with egui, so the preview paints the GPU's
+    /// own canvas — no glReadPixels, no re-upload. None when there is no GPU (the caller falls back to
+    /// `gpu_frame`). The texture is only valid for this frame, which is exactly how long it is painted.
+    fn gpu_preview_texture(
+        &mut self,
+        layers: &crate::engine::gpu::LayerSet,
+        t: f64,
+        w: u32,
+        h: u32,
+        frame: &mut eframe::Frame,
+    ) -> Option<(egui::TextureId, [u32; 2])> {
+        if self.gpu.is_none() || w == 0 || h == 0 {
+            return None;
+        }
+        let made = {
+            let App { gpu, project, .. } = self;
+            let gpu = gpu.as_mut()?;
+            guarded(|| gpu.render_preview_texture(project, t, w, h, layers)).flatten()
+        };
+        let (tex, tw, th) = made?;
+        let id = match self.gpu_tex_ids.get(&tex) {
+            Some(&id) => id,
+            None => {
+                let id = frame.register_native_glow_texture(tex);
+                self.gpu_tex_ids.insert(tex, id);
+                id
+            }
+        };
+        Some((id, [tw, th]))
     }
 
     /// Render decoded layers with the GPU into a frame the preview can upload. None = the GPU path died
@@ -4343,7 +4386,12 @@ impl eframe::App for App {
             if let Some(layers) = self.player.take_layers() {
                 let (w, h) = self.canvas;
                 let t = self.player.time();
-                if let Some(f) = self.gpu_frame(&layers, t, w, h) {
+                // zero copy: render into a GL texture and let egui paint it directly. Only when nothing
+                // else needs the pixels on the CPU (movie mode reads from its own cache).
+                if let Some(tex) = self.gpu_preview_texture(&layers, t, w, h, _frame) {
+                    self.gpu_tex = Some(tex);
+                    self.pending_frame = None;
+                } else if let Some(f) = self.gpu_frame(&layers, t, w, h) {
                     self.pending_frame = Some(f);
                 }
             }
