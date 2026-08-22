@@ -4396,6 +4396,45 @@ mod tests {
         assert!(f.rgba.chunks_exact(4).all(|p| p[3] == 255), "test pattern must be opaque");
     }
 
+    /// The frame writer really produces an image of the requested size (needs ffmpeg; skipped without).
+    #[test]
+    fn write_image_scales_and_writes() {
+        if media::ffpipe::ffmpeg_exe().is_none() {
+            println!("write_image test: no ffmpeg, skipped");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("se-frame-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let frame = effect_thumb_source("", 64, 48, Backend::Ffmpeg);
+        for (name, quality) in [("shot.png", 100), ("shot.jpg", 80), ("shot.webp", 80)] {
+            let out = dir.join(name);
+            let opts = frame_ui::FrameExport {
+                out: out.clone(),
+                size: (128, 96), // upscaled by ffmpeg, like a 2x frame export
+                scaler: Scaler::Bilinear,
+                resize: "lanczos".into(),
+                with_effects: true,
+                quality,
+            };
+            write_image(&frame, &opts).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(out.is_file(), "{name} not written");
+            let probe = media::probe(&out.to_string_lossy(), Backend::Ffmpeg).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!((probe.width, probe.height), (128, 96), "{name} size");
+        }
+        // a path ffmpeg cannot write is an error, not a panic
+        let bad = frame_ui::FrameExport {
+            out: PathBuf::from("Z:/nope/shot.png"),
+            size: (64, 48),
+            scaler: Scaler::Bilinear,
+            resize: String::new(),
+            with_effects: true,
+            quality: 90,
+        };
+        assert!(write_image(&frame, &bad).is_err());
+        assert!(write_image(&Frame::default(), &bad).is_err(), "an empty frame is refused");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Every action is dispatched (`act` matches exhaustively) and every pane can be toggled from
     /// the View menu; here we only check the round-3 actions still carry their advertised bindings.
     #[test]
