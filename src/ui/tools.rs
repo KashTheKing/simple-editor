@@ -29,6 +29,8 @@ pub enum Tool {
     Marker,
     /// Drag a clip edge to change its speed instead of trimming it.
     Stretch,
+    /// Drag the timeline lanes to open (or close) a gap from the press time onward.
+    Spacer,
 }
 
 pub struct ToolsState {
@@ -102,13 +104,16 @@ pub(crate) enum Glyph {
     Nodes,
     /// A stack of sheets — an adjustment layer.
     Layers,
+    /// Two posts with a double-headed arrow between them — a gap being widened.
+    Spacer,
 }
 
-const STRIP: [(Tool, Glyph, &str); 15] = [
+const STRIP: [(Tool, Glyph, &str); 16] = [
     (Tool::Select, Glyph::Cursor, "Select"),
     (Tool::Cut, Glyph::Razor, "Cut"),
     (Tool::Marker, Glyph::Flag, "Marker"),
     (Tool::Stretch, Glyph::Hourglass, "Stretch"),
+    (Tool::Spacer, Glyph::Spacer, "Spacer"),
     (Tool::Text, Glyph::Letter('T'), "Text"),
     (Tool::Shape(ShapeKind::Rect), Glyph::Rect, "Rectangle"),
     (Tool::Shape(ShapeKind::Ellipse), Glyph::Ellipse, "Ellipse"),
@@ -132,7 +137,7 @@ pub fn tool_hotkey(tool: Tool) -> Option<Key> {
         Tool::Mask(_) => Some(Key::M),
         Tool::Cut => Some(Key::C),
         Tool::Stretch => Some(Key::R),
-        Tool::Zoom | Tool::Marker => None,
+        Tool::Zoom | Tool::Marker | Tool::Spacer => None,
     }
 }
 
@@ -213,6 +218,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut ToolsState, palette: &Palette) -> boo
             let active = same_tool(tool, state.tool);
             let tip = match tool_hotkey(tool) {
                 Some(k) => format!("{name} ({})", k.name()),
+                // the spacer's gesture is not readable from its picture
+                None if tool == Tool::Spacer => format!("{name} — drag the lanes to open or close a gap"),
                 None => name.to_string(),
             };
             if icon_button(ui, palette, base.with(("tool", name)), icon, &tip, active).clicked() && !active {
@@ -323,7 +330,7 @@ fn style_controls(ui: &mut egui::Ui, state: &mut ToolsState, palette: &Palette) 
                 changed = true;
             }
         }
-        Tool::Text | Tool::Select | Tool::Zoom | Tool::Cut | Tool::Marker | Tool::Stretch => {}
+        Tool::Text | Tool::Select | Tool::Zoom | Tool::Cut | Tool::Marker | Tool::Stretch | Tool::Spacer => {}
     }
     changed
 }
@@ -467,6 +474,17 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
             for i in 0..4 {
                 let x = -4.5 + i as f32 * 3.0;
                 p.line_segment([c + egui::vec2(x, 1.5), c + egui::vec2(x, 5.0)], Stroke::new(1.0, fg));
+            }
+        }
+        // spacer: two posts with a double-headed arrow pushing them apart
+        Glyph::Spacer => {
+            for x in [-6.5, 6.5] {
+                p.line_segment([c + egui::vec2(x, -6.0), c + egui::vec2(x, 6.0)], stroke);
+            }
+            p.line_segment([c + egui::vec2(-4.5, 0.0), c + egui::vec2(4.5, 0.0)], stroke);
+            for (tip, back) in [(-5.5f32, -2.0f32), (5.5, 2.0)] {
+                let head = vec![c + egui::vec2(tip, 0.0), c + egui::vec2(back, -3.0), c + egui::vec2(back, 3.0)];
+                p.add(egui::Shape::convex_polygon(head, fg, Stroke::NONE));
             }
         }
         // pennant on a pole

@@ -121,6 +121,11 @@ actions! {
     Voiceover => "voiceover", "Record Voiceover…", sc(CTRL_ALT, Key::R);
     ImportTimeline => "import_timeline", "Import Timeline (Premiere / Resolve XML, EDL)…", None;
     MovieMode => "movie_mode", "Movie Mode (pre-render)", None;
+    // ---- clip clipboard (Copy/Paste *Attributes* above is a different feature) ----
+    CopyClips => "copy_clips", "Copy Clips", sc(CTRL, Key::C);
+    CutClips => "cut_clips", "Cut Clips", sc(CTRL, Key::X);
+    PasteClips => "paste_clips", "Paste Clips at Playhead", sc(CTRL, Key::V);
+    PasteInPlace => "paste_in_place", "Paste Clips on the First Free Track", sc(CTRL_SHIFT, Key::V);
 }
 
 pub struct Hotkeys {

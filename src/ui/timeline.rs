@@ -112,6 +112,9 @@ pub struct TimelineState {
     pub selected_marker: Option<Id>,
     /// Rename buffer for the marker context menu.
     rename: Option<(Id, String)>,
+    /// Track under the last press on the lanes — where Ctrl+V pastes.
+    /// ponytail: an index, not an id, so removing a track just makes the next paste land on its neighbour.
+    pub last_track: Option<usize>,
 }
 
 impl Default for TimelineState {
@@ -127,8 +130,27 @@ impl Default for TimelineState {
             band: None,
             selected_marker: None,
             rename: None,
+            last_track: None,
         }
     }
+}
+
+/// Paste a copied group (relative times, the way `presets::capture_template` stores one) at `at`, with
+/// fresh clip / link / marker ids. `Project::place_clips` picks the first track of each kind with room
+/// (adding one when nothing is free); `target` then pulls the group onto the row the user last clicked,
+/// if the whole group fits there.
+pub fn paste_clips(p: &mut Project, clips: Vec<Clip>, assets: Vec<Asset>, at: f64, target: Option<usize>) -> Vec<Id> {
+    let ids = p.place_clips(clips, assets, at);
+    if let Some(ti) = target.filter(|&i| i < p.tracks.len()) {
+        let kind = p.tracks[ti].kind;
+        let list = if kind == TrackKind::Video { p.video_tracks() } else { p.audio_tracks() };
+        let row = |t: usize| list.iter().position(|&x| x == t);
+        let from = ids.iter().filter_map(|&id| p.track_of(id)).filter_map(row).min();
+        if let (Some(to), Some(from)) = (row(ti), from) {
+            p.move_clips(&ids, 0.0, to as i32 - from as i32, Some(kind));
+        }
+    }
+    ids
 }
 
 impl TimelineState {
@@ -259,6 +281,9 @@ enum Gesture {
     TransDur { track: usize, id: Id, changed: bool },
     /// Drag a marker: project marker (`clip` = None) or clip-local marker.
     Marker { id: Id, clip: Option<Id>, changed: bool },
+    /// Spacer tool: shift every clip starting at or after the press time. `room` = how far left the
+    /// group can go before it hits the clip in front of it (or 0).
+    Spacer { ids: Vec<Id>, dt: f64, room: f64 },
 }
 
 /// Deferred project mutation (collected while the project is borrowed for drawing).
@@ -288,6 +313,8 @@ enum Act {
     RenameMarker(Id, String),
     DelMarker(Id),
     MarkerLabel(Id, u8),
+    /// Route the selected audio clips to a bus (0 = inherit the track's).
+    Bus(Id),
 }
 
 /// Display order: video tracks reversed (Vn on top, V1 just above audio), then A1..An.
@@ -511,6 +538,17 @@ fn marker_hit(
     });
 }
 
+/// Wave colour of an audio clip: the plain palette green while it has no label, otherwise its own
+/// (already computed) body colour pushed to the opposite end of the brightness scale — the body is
+/// painted in that colour, so an unshifted wave would be invisible on it.
+fn wave_color(body: Color32, label: u8, pal: &Palette) -> Color32 {
+    if label == 0 {
+        return pal.waveform;
+    }
+    let target = if body.intensity() > 0.5 { Color32::BLACK } else { Color32::WHITE };
+    body.lerp_to_gamma(target, 0.55)
+}
+
 fn label_color(p: &Project, idx: u8, fallback: Color32) -> Color32 {
     match p.label_color(idx) {
         Some([r, g, b]) => Color32::from_rgb(r, g, b),
@@ -607,11 +645,14 @@ fn label_menu(ui: &mut egui::Ui, labels: &[Label], act: &mut Option<Act>, edit_l
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn clip_menu(
     ui: &mut egui::Ui,
     linked: bool,
     enabled: bool,
+    audio: bool,
     labels: &[Label],
+    buses: &[crate::model::Bus],
     act: &mut Option<Act>,
     actions: &mut Vec<crate::hotkeys::Action>,
     edit_labels: &mut bool,
@@ -656,7 +697,19 @@ fn clip_menu(
     if ui.button("Paste Attributes…").clicked() {
         actions.push(Action::PasteAttributes);
     }
-    if ui.button("Add Mask").clicked() {
+    // a mask means nothing on audio; that clip wants its mixer routing instead
+    if audio {
+        ui.menu_button("Bus", |ui| {
+            if ui.button("(track)").clicked() {
+                *act = Some(Act::Bus(0));
+            }
+            for b in buses {
+                if ui.button(&b.name).clicked() {
+                    *act = Some(Act::Bus(b.id));
+                }
+            }
+        });
+    } else if ui.button("Add Mask").clicked() {
         actions.push(Action::AddMask);
     }
     ui.separator();
@@ -776,8 +829,17 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         )
         .on_hover_cursor(CursorIcon::ResizeHorizontal);
 
+    // the row under the press is where Ctrl+V pastes
+    if ui.input(|i| i.pointer.primary_pressed()) {
+        if let Some(ti) = pointer.filter(|p| lanes.contains(*p)).and_then(|p| state.track_at(p.y, c.project)) {
+            state.last_track = Some(ti);
+        }
+    }
+
     let mut act: Option<Act> = None;
     let mut click: Option<Id> = None;
+    // spacer tool: a press on empty lane space opens a gap instead of rubber-banding
+    let mut start_spacer = false;
     let mut start_move: Option<Id> = None;
     let mut start_trim: Option<(Id, bool)> = None;
     let mut start_vol: Option<Id> = None;
@@ -798,6 +860,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     let mut rename = state.rename.take();
     let mut seek_marker: Option<f64> = None;
     let labels: &[Label] = &c.project.labels;
+    let buses: &[crate::model::Bus] = &c.project.buses;
 
     // ---- rows ----
     let mut y = lanes.top() - state.scroll_y;
@@ -876,7 +939,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 }
             }
             // custom labels win over the per-kind fill (Shape / Adjustment have their own)
-            let mut color = label_color(c.project, c.project.clip_label(clip), pal.clip_color(clip.kind));
+            let clip_label = c.project.clip_label(clip);
+            let mut color = label_color(c.project, clip_label, pal.clip_color(clip.kind));
             if !clip.enabled || !active {
                 color = color.gamma_multiply(0.5);
             }
@@ -898,7 +962,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             if clip.kind == ClipKind::Audio {
                 if let Some(asset) = c.project.asset(clip.asset) {
                     if let Some(peaks) = c.waveforms.get(&asset.path, clip.audio_stream) {
-                        draw_waveform(&lp, &peaks, clip, vis.shrink(1.0), state, pal.waveform);
+                        draw_waveform(&lp, &peaks, clip, vis.shrink(1.0), state, wave_color(color, clip_label, &pal));
                     }
                 }
             } else if matches!(clip.kind, ClipKind::Video | ClipKind::Image) {
@@ -1072,10 +1136,10 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             if br.drag_started_by(egui::PointerButton::Primary) {
                 start_move = Some(clip.id);
             }
-            let (linked, enabled) = (clip.link != 0, clip.enabled);
+            let (linked, enabled, aud) = (clip.link != 0, clip.enabled, clip.kind == ClipKind::Audio);
             let mut rclick = br.secondary_clicked();
             br.context_menu(|ui| {
-                clip_menu(ui, linked, enabled, labels, &mut act, &mut out.actions, &mut out.edit_labels)
+                clip_menu(ui, linked, enabled, aud, labels, buses, &mut act, &mut out.actions, &mut out.edit_labels)
             });
             if clip.kind == ClipKind::Audio {
                 if let Some(pos) = pointer {
@@ -1112,7 +1176,17 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     }
                     rclick |= r.secondary_clicked();
                     r.context_menu(|ui| {
-                        clip_menu(ui, linked, enabled, labels, &mut act, &mut out.actions, &mut out.edit_labels)
+                        clip_menu(
+                            ui,
+                            linked,
+                            enabled,
+                            aud,
+                            labels,
+                            buses,
+                            &mut act,
+                            &mut out.actions,
+                            &mut out.edit_labels,
+                        )
                     });
                 }
             }
@@ -1405,7 +1479,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     }
     // a press that missed every clip starts a rubber band (Shift adds to the selection)
     if state.drag.is_none() && lanes_resp.drag_started_by(egui::PointerButton::Primary) {
-        if let Some(o) = lanes_resp.interact_pointer_pos().or(pointer) {
+        if c.tool == Tool::Spacer {
+            start_spacer = true;
+        } else if let Some(o) = lanes_resp.interact_pointer_pos().or(pointer) {
             state.band = Some((o, mods.shift));
         }
     }
@@ -1637,6 +1713,13 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     m.label = l;
                 }
             }
+            Act::Bus(b) => {
+                for id in &ids {
+                    if let Some(cl) = p.clip_mut(*id).filter(|cl| cl.kind == ClipKind::Audio) {
+                        cl.bus = b;
+                    }
+                }
+            }
         }
         out.edited = true;
     }
@@ -1648,7 +1731,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
 
     // ---- gestures ----
     let origin = ui.input(|i| i.pointer.press_origin()).or(pointer).unwrap_or(Pos2::ZERO);
-    if let Some(cid) = start_move.or(start_trim.map(|(id, _)| id)) {
+    // with the spacer tool every lane press is a gap gesture, clip bodies and edges included
+    let spacer = c.tool == Tool::Spacer && (start_spacer || start_move.is_some() || start_trim.is_some());
+    if let Some(cid) = start_move.or(start_trim.map(|(id, _)| id)).filter(|_| !spacer) {
         if !c.selection.contains(&cid) {
             if !mods.ctrl {
                 c.selection.clear();
@@ -1656,7 +1741,23 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             c.selection.push(cid);
         }
     }
-    if let Some(cid) = start_move {
+    if spacer {
+        let t0 = state.time_at(origin.x).max(0.0);
+        let ids: Vec<Id> = c.project.all_clips().filter(|(_, cl)| cl.start >= t0).map(|(_, cl)| cl.id).collect();
+        // how far left the whole group can go: the tightest gap in front of it, per track
+        let room = c
+            .project
+            .tracks
+            .iter()
+            .filter_map(|t| {
+                let first = t.clips.iter().map(|cl| cl.start).filter(|&s| s >= t0).fold(f64::INFINITY, f64::min);
+                let prev = t.clips.iter().filter(|cl| cl.start < t0).map(|cl| cl.end()).fold(0.0, f64::max);
+                first.is_finite().then_some(first - prev)
+            })
+            .fold(f64::INFINITY, f64::min);
+        let room = if room.is_finite() { room.max(0.0) } else { 0.0 };
+        state.drag = Some(Drag { origin, before: c.project.clone(), g: Gesture::Spacer { ids, dt: 0.0, room } });
+    } else if let Some(cid) = start_move {
         if let Some(tr) = c.project.track_of(cid) {
             let ids = c.project.expand_links(c.selection);
             let orig = ids.iter().map(|&id| c.project.clip(id).map(|cl| cl.start).unwrap_or(0.0)).collect();
@@ -1948,6 +2049,13 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     p.sort_markers();
                 }
             }
+            Gesture::Spacer { ids, dt, room } => {
+                // move_clips is all-or-nothing, so the clip in front of the group is never overrun
+                let want = if c.snap { p.snap_frame(dx) } else { dx }.max(-*room);
+                if (want - *dt).abs() > 1e-9 && p.move_clips(ids, want - *dt, 0, None) {
+                    *dt = want;
+                }
+            }
         }
     }
     // ---- edge auto-scroll while dragging (playhead scrub, move/trim, keyframes, …) ----
@@ -1980,6 +2088,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         if let Some(d) = state.drag.take() {
             let mut edited = match &d.g {
                 Gesture::Move { dt, dtrack, .. } => *dt != 0.0 || *dtrack != 0,
+                Gesture::Spacer { dt, .. } => *dt != 0.0,
                 Gesture::Trim { changed, .. }
                 | Gesture::Stretch { changed, .. }
                 | Gesture::Volume { changed, .. }
@@ -2958,6 +3067,109 @@ mod tests {
         h.release_m(p, Modifiers::ALT);
         h.frame(vec![]);
         assert_eq!(h.selection, vec![vid], "Alt+click selects only the clicked clip");
+    }
+
+    /// Spacer: a lane drag shifts everything starting at or after the press, forward without limit and
+    /// backward only as far as the clip in front of the group.
+    #[test]
+    fn headless_spacer_opens_and_closes_a_gap() {
+        let mut h = Harness::new();
+        let lanes = h.state.lanes_rect;
+        h.project.tracks[1].clips.clear(); // video only
+        h.project.tracks[0].clips.clear();
+        h.project.tracks[0].clips.push(Clip::new(101, ClipKind::Video, "a", 0.0, 5.0));
+        h.project.tracks[0].clips.push(Clip::new(102, ClipKind::Video, "b", 6.0, 5.0));
+        h.tool = Tool::Spacer;
+        h.frame(vec![]);
+        let start = |h: &Harness, i: usize| h.project.tracks[0].clips[i].start;
+        // press in the gap at t = 5.5 and drag +80 px (= +2 s at zoom 40)
+        let from = pos2(h.state.x_at(5.5), lanes.top() + 30.0);
+        assert!(h.drag(from, from + vec2(80.0, 0.0)), "spacer drag edits");
+        assert_eq!(h.undos, 1, "one undo per gesture");
+        assert_eq!(start(&h, 0), 0.0, "clips before the press stay put");
+        assert!((start(&h, 1) - 8.0).abs() < 0.05, "gap opened to {}", start(&h, 1));
+        // drag far left: the group stops on the clip in front of it instead of overlapping it
+        assert!(h.drag(from, from - vec2(400.0, 0.0)), "closing drag edits");
+        assert_eq!(h.undos, 2);
+        assert_eq!(start(&h, 0), 0.0);
+        assert!((start(&h, 1) - 5.0).abs() < 0.05, "gap closed to {}, not past the left clip", start(&h, 1));
+        // pressing on a clip body spaces from there too, instead of moving that clip
+        let body = pos2(h.state.x_at(2.0), lanes.top() + 30.0);
+        assert!(h.drag(body, body + vec2(40.0, 0.0)), "body drag edits");
+        assert_eq!(start(&h, 0), 0.0, "the pressed clip is not the one that moves");
+        assert!((start(&h, 1) - 6.0).abs() < 0.05, "clips after the press moved to {}", start(&h, 1));
+    }
+
+    #[test]
+    fn paste_clips_keeps_offsets_and_takes_fresh_ids() {
+        use crate::engine::presets::{capture_template, decode_template};
+        let mut h = Harness::new();
+        h.project.tracks[1].clips.clear();
+        h.project.split_at(4.0, None);
+        let ids: Vec<Id> = h.project.tracks[0].clips.iter().map(|c| c.id).collect();
+        let links: Vec<Id> = h.project.tracks[0].clips.iter().map(|c| c.link).collect();
+        h.project.add_track(TrackKind::Video); // V2 = track index 1
+        let tpl = capture_template("c", &h.project, &ids);
+
+        let (clips, assets) = decode_template(&tpl).unwrap();
+        let new = paste_clips(&mut h.project, clips, assets, 20.0, Some(1));
+        assert_eq!(new.len(), 2);
+        assert!(new.iter().all(|id| !ids.contains(id)), "fresh clip ids");
+        let starts: Vec<f64> = new.iter().map(|&id| h.project.clip(id).unwrap().start).collect();
+        assert_eq!(starts, vec![20.0, 24.0], "relative offsets survive the paste");
+        assert!(new.iter().all(|&id| h.project.track_of(id) == Some(1)), "pasted onto the clicked track");
+        let nl: Vec<Id> = new.iter().map(|&id| h.project.clip(id).unwrap().link).collect();
+        assert!(nl.iter().all(|l| *l != 0 && !links.contains(l)), "fresh link ids: {nl:?} vs {links:?}");
+        // no target (Paste In Place): the first track of the kind with room takes it
+        let (clips, assets) = decode_template(&tpl).unwrap();
+        let free = paste_clips(&mut h.project, clips, assets, 40.0, None);
+        assert!(free.iter().all(|&id| h.project.track_of(id) == Some(0)), "V1 is free at 40 s");
+    }
+
+    #[test]
+    fn waveform_takes_the_clip_label_colour() {
+        let pal = Palette::new(true, Color32::from_rgb(0, 120, 212));
+        assert_eq!(wave_color(pal.clip_audio, 0, &pal), pal.waveform, "unlabelled clips keep the palette wave");
+        let bright = Color32::from_rgb(240, 220, 60);
+        let w = wave_color(bright, 2, &pal);
+        assert!(w.intensity() < bright.intensity(), "a bright label darkens its wave so it still reads");
+        assert!(w.r() > w.b(), "the label's hue survives: {w:?}");
+        let dark = Color32::from_rgb(30, 40, 120);
+        assert!(wave_color(dark, 2, &pal).intensity() > dark.intensity(), "a dark label lightens its wave");
+    }
+
+    #[test]
+    fn audio_clip_menu_swaps_add_mask_for_a_bus() {
+        let mut p = Project::new();
+        p.add_bus("Music");
+        let ctx = egui::Context::default();
+        let mut texts = |audio: bool| -> Vec<String> {
+            let (mut act, mut acts, mut edit) = (None, Vec::new(), false);
+            let full = ctx.run(
+                RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(400.0, 1400.0))),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        clip_menu(ui, false, true, audio, &p.labels, &p.buses, &mut act, &mut acts, &mut edit)
+                    });
+                },
+            );
+            full.shapes
+                .iter()
+                .filter_map(|cs| match &cs.shape {
+                    Shape::Text(t) => Some(t.galley.text().to_string()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let v = texts(false);
+        assert!(v.iter().any(|s| s == "Add Mask"), "video clips keep Add Mask: {v:?}");
+        assert!(!v.iter().any(|s| s == "Bus"), "video clips get no bus routing");
+        let a = texts(true);
+        assert!(!a.iter().any(|s| s == "Add Mask"), "a mask means nothing on audio: {a:?}");
+        assert!(a.iter().any(|s| s == "Bus"), "audio clips get the bus submenu: {a:?}");
     }
 
     #[test]
