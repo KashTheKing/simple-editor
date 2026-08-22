@@ -1,3 +1,6 @@
 target/
 *.pdb
 .cache/
+
+# agent worktrees (transient)
+.claude/
