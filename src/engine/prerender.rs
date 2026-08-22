@@ -246,8 +246,8 @@ impl PreRender {
         self.queue.sort_unstable();
     }
 
-    /// Collect finished seconds and hand queued ones to the workers (call once per frame). Returns true
-    /// while work is outstanding. `_budget_ms` is ignored — rendering left the UI thread.
+    /// Collect finished seconds and keep the worker fed (call once per frame). Returns true while work
+    /// is outstanding. The budget is ignored: rendering left the UI thread, so there is nothing to slice.
     pub fn tick(&mut self, project: &Project, _budget_ms: f32) -> bool {
         if self.queue.is_empty() {
             self.worker = None; // idle: closing the job channel lets the thread exit
@@ -625,6 +625,22 @@ mod tests {
         assert_eq!(pr.progress(), 1.0);
     }
 
+    /// Every edit re-requests the whole timeline. Unmerged, `ranges` grows with the edit count and
+    /// takes `segments()` and `progress()` — drawn every frame — with it, until the UI stalls.
+    #[test]
+    fn repeated_requests_merge_into_one_range() {
+        let p = project_with_clip();
+        let mut pr = PreRender::new();
+        for _ in 0..50 {
+            pr.request(&p, 0.0, 4.0);
+        }
+        assert_eq!(pr.ranges, vec![(0.0, 4.0)], "re-requesting the same range must not grow it");
+        pr.request(&p, 10.0, 12.0);
+        assert_eq!(pr.ranges, vec![(0.0, 4.0), (10.0, 12.0)], "a disjoint request stays its own run");
+        pr.request(&p, 3.0, 11.0);
+        assert_eq!(pr.ranges, vec![(0.0, 12.0)], "one that bridges them merges all three");
+    }
+
     #[test]
     fn seconds_cover_the_range() {
         assert_eq!(sec_range(0.0, 1.0).collect::<Vec<_>>(), vec![0]);
@@ -634,7 +650,7 @@ mod tests {
     }
 
     #[test]
-    fn tick_farms_seconds_out_to_the_workers() {
+    fn tick_hands_seconds_to_the_worker() {
         let mut p = project_with_clip(); // 33×17 @ 10 fps, one text clip: no decoder needed
                                          // an odd size gives this test a cache key of its own, so the tests that assert "no file
                                          // for this second" never race with the one this writes
@@ -649,8 +665,7 @@ mod tests {
         assert_eq!(pr.queue, vec![0, 1, 2]);
         let start = std::time::Instant::now();
         while pr.tick(&p, 4.0) {
-            // never more work outstanding than there are workers, and a tick itself renders nothing
-            assert!(pr.inflight.len() <= DEPTH, "{} seconds in flight", pr.inflight.len());
+            assert!(pr.inflight.len() <= DEPTH, "{} seconds in flight at once", pr.inflight.len());
             assert!(start.elapsed() < std::time::Duration::from_secs(30), "not converging");
         }
         assert!(paths.iter().all(|path| path.exists()), "every finished second is published");
