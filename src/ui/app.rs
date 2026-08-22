@@ -2492,16 +2492,16 @@ impl App {
             }
         }
         // URL downloads: import the finished file, report failures
-        let mut fetched: Vec<(Option<PathBuf>, Option<String>)> = Vec::new();
+        let mut fetched: Vec<(Option<PathBuf>, Option<String>, bool)> = Vec::new();
         self.downloads.retain(|d| {
             if d.progress.is_done() {
-                fetched.push((d.path(), d.progress.error()));
+                fetched.push((d.path(), d.progress.error(), d.progress.is_cancelled()));
                 false
             } else {
                 true
             }
         });
-        for (path, err) in fetched {
+        for (path, err, cancelled) in fetched {
             match (path, err) {
                 (Some(p), None) => {
                     let ids = self.import_files(&[p.clone()]);
@@ -2509,6 +2509,8 @@ impl App {
                     self.library.tab = 0;
                     self.toast(format!("Imported {}", p.file_name().unwrap_or_default().to_string_lossy()));
                 }
+                // cancelling is not a failure — matches finish_export's wording
+                (_, Some(_)) if cancelled => self.toast("Download cancelled"),
                 (_, Some(e)) => self.toast(format!("Download failed: {e}")),
                 (None, None) => self.toast("Download finished but produced no file"),
             }
