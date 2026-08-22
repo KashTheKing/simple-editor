@@ -365,11 +365,15 @@ fn tool_drag(
         return true;
     }
 
+    // a mask shapes pixels: an audio clip has none, so the mask tool finds no target on one and the
+    // gesture is a no-op (no mask, and no undo entry for an edit that never happened)
+    let mask_target = c.selection.iter().copied().find(|&id| c.project.clip(id).is_some_and(|cl| cl.is_visual()));
+
     if resp.drag_started() {
         if let Some(p) = resp.interact_pointer_pos() {
             let t0 = ui.input(|i| i.time);
             state.tool_drag = Some(ToolDrag { from: p, t0, points: Vec::new() });
-            if matches!(tool, Tool::Mask(_)) {
+            if matches!(tool, Tool::Mask(_)) && mask_target.is_some() {
                 (c.undo)(c.project);
             }
         }
@@ -390,8 +394,7 @@ fn tool_drag(
             Tool::Mask(shape) => {
                 let (x0, y0) = to_proj(d.from);
                 let (x1, y1) = to_proj(now);
-                let id = c.selection.iter().copied().find(|&id| c.project.clip(id).is_some());
-                if let Some(clip) = id.and_then(|id| c.project.clip_mut(id)) {
+                if let Some(clip) = mask_target.and_then(|id| c.project.clip_mut(id)) {
                     let m = clip.mask.get_or_insert_with(|| Mask::new(shape));
                     m.shape = shape;
                     m.cx.value = ((x0 + x1) / 2.0) as f64;
@@ -953,6 +956,19 @@ mod tests {
         assert_eq!(m.shape, MaskShape::Ellipse);
         assert!(m.rx.value > 1.0 && m.ry.value > 1.0, "{:?}", (m.rx.value, m.ry.value));
         assert_eq!(h.undos, 1, "one undo for the mask gesture");
+    }
+
+    /// A mask shapes pixels: dragging one over a selected audio clip does nothing at all.
+    #[test]
+    fn mask_tool_drag_ignores_an_audio_clip() {
+        let mut h = H::new();
+        h.project.clip_mut(7).unwrap().kind = ClipKind::Audio;
+        h.tool = Tool::Mask(MaskShape::Ellipse);
+        h.frame(vec![]);
+        let out = h.drag(pos2(240.0, 140.0), pos2(420.0, 260.0));
+        assert!(!out.mask_edit, "nothing was masked");
+        assert!(h.project.clip(7).unwrap().mask.is_none(), "no mask on an audio clip");
+        assert_eq!(h.undos, 0, "and no undo entry for the edit that never happened");
     }
 
     #[test]

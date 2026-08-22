@@ -310,6 +310,8 @@ pub fn show(
         ui.disable();
     }
     let n = clip.effects.len();
+    // a mask shapes pixels — an audio clip's filters get no mask controls at all
+    let maskable = clip.is_visual();
     let mut remove: Option<usize> = None;
     let mut swap: Option<(usize, usize)> = None;
     let mut copy: Option<usize> = None;
@@ -320,25 +322,27 @@ pub fn show(
             g.note(&ui.checkbox(&mut fx.enabled, ""));
             ui.label(fx.kind.name());
             let masked = fx.mask.is_some();
-            let mask = ui
-                .add(Button::new(if masked { "Edit mask" } else { "Add mask" }).small())
-                .on_hover_text("Limit this effect to a shape (drawn in the viewport)");
-            #[cfg(test)]
-            test_rects::push(format!("mask{i}"), mask.rect);
-            if mask.clicked() {
-                if !masked {
-                    fx.mask = Some(Mask::default());
-                    g.click();
-                }
-                out.mask_for = Some(i);
-            }
-            if masked {
-                let rm = crate::ui::markers_ui::x_button(ui).on_hover_text("Remove this mask");
+            if maskable {
+                let mask = ui
+                    .add(Button::new(if masked { "Edit mask" } else { "Add mask" }).small())
+                    .on_hover_text("Limit this effect to a shape (drawn in the viewport)");
                 #[cfg(test)]
-                test_rects::push(format!("maskx{i}"), rm.rect);
-                if rm.clicked() {
-                    fx.mask = None;
-                    g.click();
+                test_rects::push(format!("mask{i}"), mask.rect);
+                if mask.clicked() {
+                    if !masked {
+                        fx.mask = Some(Mask::default());
+                        g.click();
+                    }
+                    out.mask_for = Some(i);
+                }
+                if masked {
+                    let rm = crate::ui::markers_ui::x_button(ui).on_hover_text("Remove this mask");
+                    #[cfg(test)]
+                    test_rects::push(format!("maskx{i}"), rm.rect);
+                    if rm.clicked() {
+                        fx.mask = None;
+                        g.click();
+                    }
                 }
             }
             if fx.kind == EffectKind::Shader {
@@ -399,7 +403,7 @@ pub fn show(
         }
         // the effect's own mask: same grid as the inspector's clip mask, so it can be shaped without
         // the viewport (the mask tool only ever edits clip.mask)
-        if let Some(m) = &mut fx.mask {
+        if let Some(m) = fx.mask.as_mut().filter(|_| maskable) {
             let _r = ui.scope(|ui| mask_grid(ui, m, lt, palette, &mut g, egui::Id::new(("fx_mask", i)))).response;
             #[cfg(test)]
             test_rects::push(format!("maskgrid{i}"), _r.rect);
@@ -741,6 +745,26 @@ mod tests {
         assert!(h.click(r.center()), "✕ drops the mask");
         assert!(h.clip().effects[0].mask.is_none());
         assert_eq!(h.undos, 1);
+    }
+
+    /// A mask shapes pixels: an audio clip's stack gets no mask button and no mask grid, even when a
+    /// mask reached it (Paste Attributes, a hand-edited project).
+    #[test]
+    fn audio_clips_get_no_effect_mask_controls() {
+        let mut h = Harness::new();
+        {
+            let c = &mut h.project.tracks[0].clips[0];
+            c.kind = ClipKind::Audio;
+            let mut fx = Effect::new(EffectKind::Blur);
+            fx.mask = Some(Mask::default());
+            c.effects.push(fx);
+        }
+        h.frame(vec![]);
+        assert!(test_rects::get("del0").is_some(), "the row itself still renders");
+        assert!(test_rects::get("mask0").is_none(), "no Add/Edit mask button");
+        assert!(test_rects::get("maskx0").is_none(), "no mask remove button");
+        assert!(test_rects::get("maskgrid0").is_none(), "no mask parameters");
+        assert_eq!(h.last.mask_for, None);
     }
 
     #[test]
