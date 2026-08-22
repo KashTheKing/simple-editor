@@ -167,7 +167,7 @@ pub fn merge_motion(preset: &MotionPreset, clip: &mut Clip, offset: f64) {
 /// Snapshot a clip's node graph if it has one, else its effect stack. The JSON's shape is what tells
 /// the two apart afterwards (`EffectPreset::is_graph`) — nothing else has to be stored.
 pub fn capture_effects(name: &str, clip: &Clip) -> EffectPreset {
-    let json = match &clip.graph {
+    let json = match clip.graph.as_ref().filter(|_| clip.uses_graph()) {
         Some(g) => serde_json::to_string(g),
         None => serde_json::to_string(&clip.effects),
     };

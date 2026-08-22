@@ -914,6 +914,13 @@ pub struct Effect {
     /// `EffectKind::Shader` only: the GLSL fragment shader source.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub shader: String,
+    /// Clip-local second the effect switches on (CapCut-style window inside the clip).
+    #[serde(default)]
+    pub start: f64,
+    /// How long it stays on; `<= 0` means "to the end of the clip", which is what every effect written
+    /// before this field existed deserialises to.
+    #[serde(default)]
+    pub len: f64,
 }
 
 impl Effect {
@@ -924,7 +931,14 @@ impl Effect {
             params: kind.params().iter().map(|p| Animated::new(p.default)).collect(),
             mask: None,
             shader: if kind == EffectKind::Shader { DEFAULT_SHADER.to_string() } else { String::new() },
+            start: 0.0,
+            len: 0.0,
         }
+    }
+    /// Is the effect on at clip-local time `t`? Enabled + inside its window (the default window is the
+    /// whole clip, so this is just `enabled` for every project that never touched the timing).
+    pub fn on_at(&self, t: f64) -> bool {
+        self.enabled && t >= self.start - EPS && (self.len <= 0.0 || t <= self.start + self.len + EPS)
     }
     /// Parameter i at clip-local time t (spec default when missing, e.g. older files).
     pub fn at(&self, i: usize, t: f64) -> f64 {
@@ -1950,6 +1964,12 @@ impl Clip {
     pub fn uses_asset(&self) -> bool {
         matches!(self.kind, ClipKind::Video | ClipKind::Image | ClipKind::Audio)
     }
+    /// Does the renderer evaluate the node graph instead of the linear effect stack? The node editor is
+    /// opt-in: a bare Input→Output graph says nothing the stack does not, so it never shadows it —
+    /// otherwise a clip that once had the node pane pointed at it could never take a plain effect again.
+    pub fn uses_graph(&self) -> bool {
+        self.graph.as_ref().is_some_and(|g| g.nodes.len() > 2)
+    }
     /// Speed, reverse or freeze in effect.
     pub fn is_retimed(&self) -> bool {
         (self.speed - 1.0).abs() > EPS || self.speed_curve.is_animated() || self.reverse || self.freeze.is_some()
@@ -1965,7 +1985,7 @@ impl Clip {
             || self.is_retimed()
             || !self.effects.is_empty()
             || self.mask.is_some()
-            || self.graph.as_ref().map(|g| g.nodes.len() > 2).unwrap_or(false)
+            || self.uses_graph()
             || !self.pan.is_default(0.0)
             || self.fade_in > 0.0
             || self.fade_out > 0.0
@@ -4248,6 +4268,34 @@ mod tests {
         assert!(g.connect(input, blend, 0) && g.connect(color, blend, 1) && g.connect(blend, out, 0));
         assert!(p.unlink_graph(id).is_err(), "a two-input branch cannot be linearised");
         assert!(p.clip(id).unwrap().graph.is_some(), "and the graph is left alone");
+    }
+
+    /// An effect covers the whole clip until it is given a window, and a file written before the window
+    /// existed deserialises to exactly that.
+    #[test]
+    fn effect_window_defaults_to_the_whole_clip() {
+        let mut e = Effect::new(EffectKind::Blur);
+        assert!(e.on_at(0.0) && e.on_at(1000.0));
+        e.start = 1.0;
+        e.len = 2.0;
+        assert!(!e.on_at(0.5) && e.on_at(1.0) && e.on_at(3.0) && !e.on_at(3.5));
+        e.enabled = false;
+        assert!(!e.on_at(2.0), "disabled beats the window");
+
+        let old: Effect = serde_json::from_str(r#"{"kind":"Blur","params":[]}"#).unwrap();
+        assert!(old.on_at(0.0) && old.on_at(1e6), "an old project keeps whole-clip effects");
+    }
+
+    /// The node editor is opt-in: a bare Input→Output graph must not shadow the clip's effect list.
+    #[test]
+    fn a_bare_graph_does_not_take_over_the_effect_stack() {
+        let mut p = Project::from_media(asset(0, 10.0, 1));
+        let id = p.tracks[0].clips[0].id;
+        p.ensure_graph(id);
+        assert_eq!(p.clip(id).unwrap().graph.as_ref().unwrap().nodes.len(), 2);
+        assert!(!p.clip(id).unwrap().uses_graph(), "Input→Output says nothing the stack does not");
+        assert!(p.add_node(id, NodeKind::Effect(Effect::new(EffectKind::Blur)), 0.0, 0.0).is_some());
+        assert!(p.clip(id).unwrap().uses_graph(), "a real node makes the graph the renderer's truth");
     }
 
     #[test]

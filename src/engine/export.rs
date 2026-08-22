@@ -340,7 +340,7 @@ fn cpu_gaps(project: &Project) -> String {
     let mut graphs = 0usize;
     let tracks = project.tracks.iter().chain(project.sequences.iter().flat_map(|s| s.tracks.iter()));
     for clip in tracks.flat_map(|t| t.clips.iter()).filter(|c| c.enabled) {
-        if clip.graph.as_ref().is_some_and(|g| g.nodes.len() > 2) {
+        if clip.uses_graph() {
             graphs += 1;
         }
         for e in clip.effects.iter().filter(|e| e.enabled) {

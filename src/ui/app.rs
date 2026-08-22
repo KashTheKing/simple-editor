@@ -2043,20 +2043,49 @@ impl App {
                         }
                         DragPayload::Template(name) => self.place_template(&name, t),
                         // dropped onto a clip that can actually take this kind (see effects_ui's own
-                        // click-to-add gate) — elsewhere on the timeline it is silently a no-op
+                        // click-to-add gate); a miss says so rather than swallowing the gesture
                         DragPayload::Effect(kind) => {
-                            let target = track
+                            let hit = track
                                 .and_then(|ti| self.project.tracks.get(ti))
                                 .and_then(|tr| tr.clips.iter().find(|c| c.contains(t)))
-                                .filter(|c| (c.kind == ClipKind::Audio) == kind.applies_to_audio() && c.graph.is_none())
-                                .map(|c| c.id);
-                            if let Some(id) = target {
-                                let snap = self.project.to_json();
-                                if let Some(c) = self.project.clip_mut(id) {
-                                    c.effects.push(Effect::new(kind));
+                                .filter(|c| (c.kind == ClipKind::Audio) == kind.applies_to_audio());
+                            match hit.map(|c| (c.id, c.uses_graph())) {
+                                Some((id, false)) => {
+                                    let snap = self.project.to_json();
+                                    if let Some(c) = self.project.clip_mut(id) {
+                                        c.effects.push(Effect::new(kind));
+                                    }
+                                    push_undo_json(&mut self.undo, &mut self.redo, snap);
+                                    self.after_edit();
+                                    self.toast(format!("{} added", kind.name()));
                                 }
-                                push_undo_json(&mut self.undo, &mut self.redo, snap);
-                                self.after_edit();
+                                Some((_, true)) => self.toast("That clip renders from its node graph"),
+                                None => self.toast(format!("Drop {} on a clip it applies to", kind.name())),
+                            }
+                        }
+                        // a transition belongs to a cut, so the half of the clip it lands on picks which
+                        // one: left half = the cut at its start, right half = the cut at its end
+                        DragPayload::Transition(kind) => {
+                            let hit = track
+                                .and_then(|ti| self.project.tracks.get(ti))
+                                .and_then(|tr| tr.clips.iter().find(|c| c.contains(t)))
+                                .map(|c| (c.id, transitions_ui::drop_at_end(c, t)));
+                            match hit {
+                                Some((id, at_end)) => {
+                                    let snap = self.project.to_json();
+                                    let dur = self.transitions_ui.duration;
+                                    let st = &mut self.transitions_ui;
+                                    if transitions_ui::add_transitions(&mut self.project, &[id], st, kind, dur, at_end)
+                                        > 0
+                                    {
+                                        push_undo_json(&mut self.undo, &mut self.redo, snap);
+                                        self.after_edit();
+                                        self.toast(format!("{} ({dur:.2} s)", kind.name()));
+                                    } else {
+                                        self.toast("No abutting clip on that side — transitions sit on a cut");
+                                    }
+                                }
+                                None => self.toast("Drop a transition on the clip beside the cut"),
                             }
                         }
                         _ => {}
@@ -2142,7 +2171,7 @@ impl App {
                         .selection
                         .iter()
                         .copied()
-                        .filter(|&id| self.project.clip(id).is_some_and(|c| c.is_visual() && c.graph.is_none()))
+                        .filter(|&id| self.project.clip(id).is_some_and(|c| c.is_visual() && !c.uses_graph()))
                         .collect();
                     if targets.is_empty() {
                         self.toast("Select a clip first");
