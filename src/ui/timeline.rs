@@ -21,10 +21,18 @@
 //! handles, draggable keyframe diamonds with an easing context menu, transition bands (edge drag = duration,
 //! right-click = remove), colour labels / sequence tint, speed badges, thumbnail filmstrips (ThumbCache),
 //! auto-cut keep-range shading and Sequence open-on-double-click.
+//!
+//! Round 3: rubber-band select on empty lane space (Shift adds; dragging any selected clip moves the whole
+//! selection as one undo step), drag past the top video / bottom audio row to drop onto a freshly created
+//! track (gutter preview, Esc cancels the gesture), keyframe diamonds in a value lane on tall clips (y =
+//! value, x = time, tooltip, one undo per gesture), project markers on the ruler and clip markers inside
+//! clips (click selects, double-click seeks, drag moves, right-click = Rename / Delete / Set label),
+//! clip colours from `Project.labels`, hatched Adjustment layers with an "adj" badge, and the Add Marker /
+//! Copy & Paste Attributes / Add Mask / Nest / Convert to Adjustment Layer context-menu entries.
 
 use crate::media::thumbs::ThumbCache;
 use crate::media::waveform::{Peaks, WaveformCache};
-use crate::model::{Asset, Clip, ClipKind, Ease, Id, Project, TrackKind, LABEL_COLORS};
+use crate::model::{Asset, Clip, ClipKind, Ease, Id, Label, Project, TrackKind};
 use crate::theme::Palette;
 use crate::ui::DragPayload;
 use eframe::egui::{
@@ -47,6 +55,14 @@ const DB_TOP: f32 = 12.0;
 const DB_BOT: f32 = -60.0;
 const MIN_TRACK_H: f32 = 24.0;
 const MAX_TRACK_H: f32 = 300.0;
+/// Clip height from which keyframe diamonds move into a value lane (y = value) instead of the bottom strip.
+const KEY_LANE_MIN: f32 = 28.0;
+/// Inset of the value lane inside the clip rect (points), top and bottom.
+const KEY_PAD: f32 = 3.0;
+/// Insertion gutter shown when clips are dragged past the first/last row.
+const GUTTER_H: f32 = 5.0;
+/// Marker flag size on the ruler / inside clips.
+const FLAG_W: f32 = 7.0;
 /// (major tick, minor tick) seconds; the first major that spans >= 80 px wins.
 const TICKS: [(f64, f64); 16] = [
     (0.05, 0.01),
@@ -82,6 +98,12 @@ pub struct TimelineState {
     drag: Option<Drag>,
     /// The user panned/zoomed while playing: stop following the playhead until it is back in view.
     user_panned: bool,
+    /// Rubber band in progress: (press origin, add to the selection instead of replacing it).
+    band: Option<(Pos2, bool)>,
+    /// Marker picked by the last click (drawn highlighted).
+    pub selected_marker: Option<Id>,
+    /// Rename buffer for the marker context menu.
+    rename: Option<(Id, String)>,
 }
 
 impl Default for TimelineState {
@@ -94,6 +116,9 @@ impl Default for TimelineState {
             lanes_rect: egui::Rect::NOTHING,
             drag: None,
             user_panned: false,
+            band: None,
+            selected_marker: None,
+            rename: None,
         }
     }
 }
@@ -186,6 +211,8 @@ pub struct TimelineResponse {
     pub actions: Vec<crate::hotkeys::Action>,
     /// A Sequence clip was double-clicked — the app calls `Project::open_sequence` with this sequence id.
     pub open_sequence: Option<Id>,
+    /// "Edit labels…" was picked in a clip's colour submenu — the app opens its label editor.
+    pub edit_labels: bool,
 }
 
 struct Drag {
@@ -198,18 +225,23 @@ struct Drag {
 
 enum Gesture {
     /// Move `ids` (selection + links). `orig` = start time of each id at drag start; `tr` = track of the pressed
-    /// clip; `dt`/`dtrack` = applied so far.
-    Move { ids: Vec<Id>, orig: Vec<f64>, kind: TrackKind, tr: usize, dt: f64, dtrack: i32 },
+    /// clip; `dt`/`dtrack` = applied so far. `new_track` = the pointer is past the first/last row of `kind`,
+    /// so releasing here adds a track and drops the clips on it.
+    Move { ids: Vec<Id>, orig: Vec<f64>, kind: TrackKind, tr: usize, dt: f64, dtrack: i32, new_track: bool },
     /// Trim the start (`start`) or end edge of `ids`; `edge` = edge time at drag start.
     Trim { ids: Vec<Id>, start: bool, edge: f64, changed: bool },
     /// Drag the volume line of an audio clip vertically.
     Volume { id: Id, changed: bool },
     /// Drag a fade handle horizontally (`out` = fade-out, else fade-in).
     Fade { id: Id, out: bool, changed: bool },
-    /// Drag the keyframe diamond(s) at clip-local time `t` horizontally.
-    Keys { id: Id, t: f64, changed: bool },
+    /// Drag the keyframe diamond(s) at clip-local time `t`: horizontally = time (every property keyed there),
+    /// vertically = the value of curve-editor property `prop` (value-lane mode only), mapped through the
+    /// value `range` captured at press so the diamond does not chase the pointer as the range grows.
+    Keys { id: Id, t: f64, prop: Option<usize>, range: (f64, f64), changed: bool },
     /// Drag a transition band edge (duration changes symmetrically around the cut).
     TransDur { track: usize, id: Id, changed: bool },
+    /// Drag a marker: project marker (`clip` = None) or clip-local marker.
+    Marker { id: Id, clip: Option<Id>, changed: bool },
 }
 
 /// Deferred project mutation (collected while the project is borrowed for drawing).
@@ -232,6 +264,11 @@ enum Act {
     /// Delete every keyframe at clip-local time `t`.
     DelKeys(Id, f64),
     RemoveTransition(Id),
+    /// Add a project marker at this timeline time.
+    AddMarker(f64),
+    RenameMarker(Id, String),
+    DelMarker(Id),
+    MarkerLabel(Id, u8),
 }
 
 /// Display order: video tracks reversed (Vn on top, V1 just above audio), then A1..An.
@@ -325,6 +362,113 @@ fn draw_waveform(p: &egui::Painter, peaks: &Peaks, clip: &Clip, vis: Rect, state
     }
 }
 
+/// Does the clip have any keyframe at all? Cheap (no allocation), unlike `Clip::key_times`, so the 1000-clip
+/// case never touches the keyframe path.
+fn has_keys(c: &Clip) -> bool {
+    c.animated().iter().any(|a| a.is_animated())
+        || c.effects.iter().any(|e| e.params.iter().any(|a| a.is_animated()) || e.mask.is_some())
+        || c.mask.is_some()
+        || c.graph.is_some()
+        || c.shape.is_some()
+}
+
+/// Value range the diamonds of `prop` are mapped through: the live auto-range, or the one frozen at the
+/// start of the drag so the dragged key does not push its own scale around.
+fn key_range(state: &TimelineState, clip: Id, prop: usize, a: &crate::model::Animated) -> (f64, f64) {
+    if let Some(Drag { g: Gesture::Keys { id, prop: Some(p), range, .. }, .. }) = &state.drag {
+        if *id == clip && *p == prop {
+            return *range;
+        }
+    }
+    crate::ui::curves::y_range(a)
+}
+
+/// Diagonal hatching (adjustment layers read as "applies to everything below").
+fn hatch(p: &egui::Painter, vis: Rect, color: Color32) {
+    let (step, stroke, h) = (8.0f32, Stroke::new(1.0, color), vis.height());
+    let mut x = (vis.left() / step).floor() * step - h;
+    while x < vis.right() {
+        p.line_segment([pos2(x, vis.bottom()), pos2(x + h, vis.top())], stroke);
+        x += step;
+    }
+}
+
+/// Marker flag: a stem down from `top` with a pennant to the right.
+fn flag(p: &egui::Painter, x: f32, top: f32, bottom: f32, color: Color32, wide: bool) {
+    p.vline(x, Rangef::new(top, bottom), Stroke::new(if wide { 2.0 } else { 1.0 }, color));
+    p.add(Shape::convex_polygon(
+        vec![pos2(x, top), pos2(x + FLAG_W, top + 3.0), pos2(x, top + 6.0)],
+        color,
+        Stroke::NONE,
+    ));
+}
+
+/// Shared marker interaction (ruler flags and clip flags): click selects, double-click seeks, drag moves,
+/// right-click = Rename / Delete / Set label.
+#[allow(clippy::too_many_arguments)]
+fn marker_hit(
+    r: egui::Response,
+    m: &crate::model::Marker,
+    clip: Option<Id>,
+    clip_start: f64,
+    selected: &mut Option<Id>,
+    start: &mut Option<(Id, Option<Id>)>,
+    act: &mut Option<Act>,
+    rename: &mut Option<(Id, String)>,
+    seek: &mut Option<f64>,
+    labels: &[Label],
+) {
+    if r.clicked() {
+        *selected = Some(m.id);
+    }
+    if r.double_clicked() {
+        *seek = Some(clip_start + m.t);
+    }
+    if r.drag_started_by(egui::PointerButton::Primary) {
+        *selected = Some(m.id);
+        *start = Some((m.id, clip));
+    }
+    if r.secondary_clicked() {
+        *selected = Some(m.id);
+        *rename = Some((m.id, m.name.clone()));
+    }
+    let r = r.on_hover_ui(|ui| {
+        ui.label(if m.name.is_empty() { "(unnamed marker)" } else { m.name.as_str() });
+    });
+    r.context_menu(|ui| {
+        ui.horizontal(|ui| {
+            ui.label("Name");
+            if let Some((_, buf)) = rename.as_mut().filter(|(rid, _)| *rid == m.id) {
+                let te = ui.add(egui::TextEdit::singleline(buf).desired_width(140.0));
+                if te.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    *act = Some(Act::RenameMarker(m.id, buf.clone()));
+                    ui.close();
+                }
+            }
+        });
+        if ui.button("Delete").clicked() {
+            *act = Some(Act::DelMarker(m.id));
+        }
+        ui.menu_button("Set label", |ui| {
+            if ui.button("None").clicked() {
+                *act = Some(Act::MarkerLabel(m.id, 0));
+            }
+            for (i, l) in labels.iter().enumerate() {
+                if ui.button(&l.name).clicked() {
+                    *act = Some(Act::MarkerLabel(m.id, i as u8 + 1));
+                }
+            }
+        });
+    });
+}
+
+fn label_color(p: &Project, idx: u8, fallback: Color32) -> Color32 {
+    match p.label_color(idx) {
+        Some([r, g, b]) => Color32::from_rgb(r, g, b),
+        None => fallback,
+    }
+}
+
 fn diamond(c: Pos2, r: f32, color: Color32) -> Shape {
     Shape::convex_polygon(
         vec![pos2(c.x, c.y - r), pos2(c.x + r, c.y), pos2(c.x, c.y + r), pos2(c.x - r, c.y)],
@@ -394,12 +538,34 @@ fn draw_filmstrip(
     }
 }
 
+/// Colour submenu: the project's own labels (name + colour), not the built-in defaults.
+fn label_menu(ui: &mut egui::Ui, labels: &[Label], act: &mut Option<Act>, edit_labels: &mut bool) {
+    if ui.button("None").clicked() {
+        *act = Some(Act::Label(0));
+    }
+    for (i, l) in labels.iter().enumerate() {
+        let color = Color32::from_rgb(l.color[0], l.color[1], l.color[2]);
+        if ui.button(egui::RichText::new(format!("■ {}", l.name)).color(color)).clicked() {
+            *act = Some(Act::Label(i as u8 + 1));
+        }
+    }
+    ui.separator();
+    if ui.button("Apply label to asset").clicked() {
+        *act = Some(Act::LabelToAsset);
+    }
+    if ui.button("Edit labels…").clicked() {
+        *edit_labels = true;
+    }
+}
+
 fn clip_menu(
     ui: &mut egui::Ui,
     linked: bool,
     enabled: bool,
+    labels: &[Label],
     act: &mut Option<Act>,
     actions: &mut Vec<crate::hotkeys::Action>,
+    edit_labels: &mut bool,
 ) {
     use crate::hotkeys::Action;
     if ui.button("Split at Playhead").clicked() {
@@ -432,26 +598,29 @@ fn clip_menu(
         actions.push(Action::AutoCut);
     }
     ui.separator();
-    if ui.button("Nest into Sequence").clicked() {
+    if ui.button("Add Marker").clicked() {
+        actions.push(Action::AddMarker);
+    }
+    if ui.button("Copy Attributes").clicked() {
+        actions.push(Action::CopyAttributes);
+    }
+    if ui.button("Paste Attributes…").clicked() {
+        actions.push(Action::PasteAttributes);
+    }
+    if ui.button("Add Mask").clicked() {
+        actions.push(Action::AddMask);
+    }
+    ui.separator();
+    if ui.button("Nest into Sequence…").clicked() {
         actions.push(Action::NestSequence);
+    }
+    if ui.button("Convert to Adjustment Layer").clicked() {
+        actions.push(Action::AddAdjustment);
     }
     if ui.button("Save as Template…").clicked() {
         actions.push(Action::SaveTemplate);
     }
-    ui.menu_button("Color Label", |ui| {
-        if ui.button("None").clicked() {
-            *act = Some(Act::Label(0));
-        }
-        for (i, (name, _)) in LABEL_COLORS.iter().enumerate() {
-            if ui.button(*name).clicked() {
-                *act = Some(Act::Label(i as u8 + 1));
-            }
-        }
-        ui.separator();
-        if ui.button("Apply label to asset").clicked() {
-            *act = Some(Act::LabelToAsset);
-        }
-    });
+    ui.menu_button("Color Label", |ui| label_menu(ui, labels, act, edit_labels));
     ui.separator();
     if ui.button(if linked { "Unlink" } else { "Link" }).clicked() {
         *act = Some(Act::Link);
@@ -481,7 +650,15 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     } else {
         state.user_panned = false;
     }
-    let (mods, pointer, primary_down) = ui.input(|i| (i.modifiers, i.pointer.latest_pos(), i.pointer.primary_down()));
+    let (mods, pointer, primary_down, escape) =
+        ui.input(|i| (i.modifiers, i.pointer.latest_pos(), i.pointer.primary_down(), i.key_pressed(egui::Key::Escape)));
+    // Esc aborts the gesture: put the project back as it was at press time and drop the band.
+    if escape {
+        state.band = None;
+        if let Some(d) = state.drag.take() {
+            *c.project = d.before;
+        }
+    }
 
     // ---- scroll / zoom (only when hovered) ----
     if ui.rect_contains_pointer(full) {
@@ -556,13 +733,22 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     let mut start_trim: Option<(Id, bool)> = None;
     let mut start_vol: Option<Id> = None;
     let mut start_fade: Option<(Id, bool)> = None;
-    let mut start_key: Option<(Id, f64)> = None;
+    let mut start_key: Option<(Id, f64, Option<usize>)> = None;
     let mut start_trans: Option<(usize, Id)> = None;
+    let mut start_marker: Option<(Id, Option<Id>)> = None;
     let mut resize: Option<(usize, f32)> = None;
     let mut divider_y: Option<f32> = None;
-    let mut key_hits: Vec<(Id, f64, Pos2)> = Vec::new();
+    let mut key_hits: Vec<(Id, f64, Pos2, Option<usize>)> = Vec::new();
+    let mut marker_hits: Vec<(Id, Id, Rect)> = Vec::new();
     let linked_sel = c.project.expand_links(c.selection);
     let thin = Stroke::new(1.0, pal.border);
+    // rubber band: hit-tested while the rows are painted, applied on release
+    let band_rect = state.band.map(|(o, _)| Rect::from_two_pos(o, pointer.unwrap_or(o)).intersect(lanes));
+    let mut band_ids: Vec<Id> = Vec::new();
+    // marker rename buffer, moved out of `state` so the menu closures can borrow it while `state` paints
+    let mut rename = state.rename.take();
+    let mut seek_marker: Option<f64> = None;
+    let labels: &[Label] = &c.project.labels;
 
     // ---- rows ----
     let mut y = lanes.top() - state.scroll_y;
@@ -630,18 +816,31 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             }
             let rect = Rect::from_min_max(pos2(x0, row.top() + 1.0), pos2(x1, row.bottom() - 1.0));
             let vis = rect.intersect(lanes);
-            let label = c.project.clip_label(clip);
-            let mut color = if label != 0 {
-                let [r, g, b] = LABEL_COLORS[(label as usize - 1).min(LABEL_COLORS.len() - 1)].1;
-                Color32::from_rgb(r, g, b)
-            } else {
-                pal.clip_color(clip.kind)
-            };
+            if let Some(br) = band_rect {
+                if br.intersects(rect) {
+                    band_ids.push(clip.id);
+                }
+            }
+            // custom labels win over the per-kind fill (Shape / Adjustment have their own)
+            let mut color = label_color(c.project, c.project.clip_label(clip), pal.clip_color(clip.kind));
             if !clip.enabled || !active {
                 color = color.gamma_multiply(0.5);
             }
             lp.rect_filled(rect, 0, color);
             lp.rect_stroke(rect, 0, thin, StrokeKind::Inside);
+            // sub-pixel clips (zoomed way out): fill only — no text, waveform, diamonds or hit-testing.
+            // ponytail: 4 pt is well under the ~18 pt a clip needs for its trim handles, and the rubber
+            // band still catches them; give them their own interact if that ever bites.
+            let detailed = vis.width() >= 4.0;
+            if clip.kind == ClipKind::Adjustment && detailed {
+                hatch(&lp.with_clip_rect(vis), vis, pal.text.gamma_multiply(0.25));
+            }
+            if !detailed {
+                if c.selection.contains(&clip.id) {
+                    lp.rect_stroke(rect, 0, Stroke::new(2.0, pal.selection), StrokeKind::Inside);
+                }
+                continue;
+            }
             if clip.kind == ClipKind::Audio {
                 if let Some(asset) = c.project.asset(clip.asset) {
                     if let Some(peaks) = c.waveforms.get(&asset.path, clip.audio_stream) {
@@ -690,6 +889,15 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     pal.text,
                 );
             }
+            if clip.kind == ClipKind::Adjustment {
+                name_pc.text(
+                    pos2(rect.right() - 3.0, rect.bottom() - 2.0),
+                    Align2::RIGHT_BOTTOM,
+                    "adj",
+                    small.clone(),
+                    pal.text,
+                );
+            }
             if clip.kind == ClipKind::Audio {
                 // volume line (dB mapped) + fade ramps/handles over the waveform
                 let vs = Stroke::new(1.0, pal.accent);
@@ -723,14 +931,58 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     lp.rect_filled(Rect::from_center_size(pos2(hx, rect.top() + 3.0), vec2(6.0, 6.0)), 0, pal.text);
                 }
             }
-            for t in clip.key_times() {
-                let kx = state.x_at(clip.start + t);
-                if kx < lanes.left() - 6.0 || kx > lanes.right() + 6.0 {
+            // keyframe diamonds: on a tall clip in a value lane — 0 % at the bottom, 100 % at the top of the
+            // range of the first property keyed at that time (the curve editor's auto-range, so both panes
+            // agree) — otherwise in the bottom strip
+            if has_keys(clip) {
+                let lane = rect.height() >= KEY_LANE_MIN;
+                let props = crate::ui::curves::prop_count(clip);
+                for t in clip.key_times() {
+                    let kx = state.x_at(clip.start + t);
+                    if kx < lanes.left() - 6.0 || kx > lanes.right() + 6.0 {
+                        continue;
+                    }
+                    // ponytail: the lane follows the curve editor's property list (transform + effect
+                    // params). Mask / graph / shape keys keep the bottom strip — extend curves::prop_ref
+                    // to them if they ever need a value lane too.
+                    let prop = lane
+                        .then(|| {
+                            (0..props).find(|&i| crate::ui::curves::prop_ref(clip, i).is_some_and(|a| a.has_key_at(t)))
+                        })
+                        .flatten();
+                    let ky = match prop.and_then(|i| crate::ui::curves::prop_ref(clip, i).map(|a| (i, a))) {
+                        Some((i, a)) => {
+                            let (lo, hi) = key_range(state, clip.id, i, a);
+                            let f = ((a.at(t) - lo) / (hi - lo).max(1e-9)).clamp(0.0, 1.0) as f32;
+                            rect.bottom() - KEY_PAD - f * (rect.height() - 2.0 * KEY_PAD)
+                        }
+                        None => rect.bottom() - 5.0,
+                    };
+                    let kp = pos2(kx, ky);
+                    lp.add(diamond(kp, 4.0, pal.keyframe));
+                    key_hits.push((clip.id, t, kp, prop));
+                }
+            }
+            // clip markers (clip-local time), drawn from the top of the clip down
+            for m in &clip.markers {
+                let mx = state.x_at(clip.start + m.t);
+                if mx < vis.left() - FLAG_W || mx > vis.right() {
                     continue;
                 }
-                let kp = pos2(kx, rect.bottom() - 5.0);
-                lp.add(diamond(kp, 4.0, pal.keyframe));
-                key_hits.push((clip.id, t, kp));
+                let sel = state.selected_marker == Some(m.id);
+                flag(
+                    &lp.with_clip_rect(vis),
+                    mx,
+                    rect.top() + 1.0,
+                    rect.bottom(),
+                    label_color(c.project, m.label, pal.text),
+                    sel,
+                );
+                // interaction is registered after the clip bodies (below) so the small flags win hit-testing
+                let mr = Rect::from_min_size(pos2(mx - 2.0, rect.top()), vec2(FLAG_W + 4.0, 10.0)).intersect(lanes);
+                if mr.is_positive() {
+                    marker_hits.push((clip.id, m.id, mr));
+                }
             }
             let selected = c.selection.contains(&clip.id);
             if selected {
@@ -760,7 +1012,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             }
             let (linked, enabled) = (clip.link != 0, clip.enabled);
             let mut rclick = br.secondary_clicked();
-            br.context_menu(|ui| clip_menu(ui, linked, enabled, &mut act, &mut out.actions));
+            br.context_menu(|ui| {
+                clip_menu(ui, linked, enabled, labels, &mut act, &mut out.actions, &mut out.edit_labels)
+            });
             if clip.kind == ClipKind::Audio {
                 if let Some(pos) = pointer {
                     if pos.x >= vis.left() && pos.x <= vis.right() {
@@ -795,7 +1049,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                         start_trim = Some((clip.id, is_start));
                     }
                     rclick |= r.secondary_clicked();
-                    r.context_menu(|ui| clip_menu(ui, linked, enabled, &mut act, &mut out.actions));
+                    r.context_menu(|ui| {
+                        clip_menu(ui, linked, enabled, labels, &mut act, &mut out.actions, &mut out.edit_labels)
+                    });
                 }
             }
             if clip.kind == ClipKind::Audio {
@@ -878,13 +1134,28 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     }
 
     // keyframe diamonds: registered after everything in the rows so the small targets win hit-testing
-    for (i, &(kcid, kt, kp)) in key_hits.iter().enumerate() {
+    for (i, &(kcid, kt, kp, kprop)) in key_hits.iter().enumerate() {
+        let cursor = if kprop.is_some() { CursorIcon::Move } else { CursorIcon::ResizeHorizontal };
         let r = ui
             .interact(Rect::from_center_size(kp, vec2(10.0, 10.0)), id.with(("key", i)), Sense::click_and_drag())
-            .on_hover_cursor(CursorIcon::ResizeHorizontal);
+            .on_hover_cursor(cursor);
         if r.drag_started_by(egui::PointerButton::Primary) {
-            start_key = Some((kcid, kt));
+            start_key = Some((kcid, kt, kprop));
         }
+        let clip = c.project.clip(kcid);
+        let r = r.on_hover_ui(|ui| {
+            // built only while hovered — a per-frame format! per diamond is not worth it
+            match (clip, kprop) {
+                (Some(cl), Some(pi)) => {
+                    let v = crate::ui::curves::prop_ref(cl, pi).map(|a| a.at(kt)).unwrap_or(0.0);
+                    ui.label(format!("{} {:.3}\n{:.2} s", crate::ui::curves::prop_label(cl, pi), v, cl.start + kt));
+                }
+                (Some(cl), None) => {
+                    ui.label(format!("{:.2} s", cl.start + kt));
+                }
+                _ => {}
+            }
+        });
         r.context_menu(|ui| {
             for e in Ease::ALL {
                 if ui.button(e.name()).clicked() {
@@ -903,6 +1174,27 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         });
     }
 
+    // clip markers, on top of the clip bodies
+    for &(cid, mid, mr) in &marker_hits {
+        let Some((cl, m)) = c.project.clip(cid).and_then(|cl| Some((cl, cl.markers.iter().find(|m| m.id == mid)?)))
+        else {
+            continue;
+        };
+        let r = ui.interact(mr, id.with(("cmk", mid)), Sense::click_and_drag());
+        marker_hit(
+            r,
+            m,
+            Some(cid),
+            cl.start,
+            &mut state.selected_marker,
+            &mut start_marker,
+            &mut act,
+            &mut rename,
+            &mut seek_marker,
+            labels,
+        );
+    }
+
     // auto-cut preview: shade the kept ranges over the lanes
     for &(ka, kb) in c.keep_ranges {
         let xa = state.x_at(ka).max(lanes.left());
@@ -919,6 +1211,32 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         if c.project.tracks.iter().any(|t| t.kind == TrackKind::Audio) {
             bp.hline(body.x_range(), dy - 1.0, Stroke::new(2.0, pal.border));
         }
+    }
+
+    // ---- rubber band ----
+    if let (Some(br), Some((_, add))) = (band_rect, state.band) {
+        lp.rect_filled(br, 0, pal.accent.gamma_multiply(0.15));
+        lp.rect_stroke(br, 0, Stroke::new(1.0, pal.accent), StrokeKind::Inside);
+        if !primary_down {
+            if !add {
+                c.selection.clear();
+            }
+            for cid in band_ids.drain(..) {
+                if !c.selection.contains(&cid) {
+                    c.selection.push(cid);
+                }
+            }
+            state.band = None;
+        }
+    }
+    // ---- insertion gutter: dragging clips past the first/last row of their kind ----
+    if let Some(Drag { g: Gesture::Move { kind, new_track: true, .. }, .. }) = &state.drag {
+        let g = if *kind == TrackKind::Video {
+            Rect::from_min_max(lanes.min, pos2(lanes.right(), lanes.top() + GUTTER_H))
+        } else {
+            Rect::from_min_max(pos2(lanes.left(), lanes.bottom() - GUTTER_H), lanes.max)
+        };
+        lp.rect_filled(g, 0, pal.accent);
     }
 
     // ---- ruler ticks ----
@@ -949,6 +1267,38 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     painter.hline(ruler.x_range(), ruler.bottom() - 0.5, thin);
     painter.vline(header.right() - 0.5, full.y_range(), thin);
 
+    // ---- project markers on the ruler ----
+    for m in &c.project.markers {
+        let mx = state.x_at(m.t);
+        if mx < ruler.left() - FLAG_W || mx > ruler.right() {
+            continue;
+        }
+        let sel = state.selected_marker == Some(m.id);
+        flag(&rp, mx, ruler.top() + 1.0, ruler.bottom(), label_color(c.project, m.label, pal.accent), sel);
+        let mr = Rect::from_min_size(pos2(mx - 2.0, ruler.top()), vec2(FLAG_W + 4.0, RULER_H)).intersect(ruler);
+        if mr.is_positive() {
+            let r = ui.interact(mr, id.with(("mk", m.id)), Sense::click_and_drag());
+            marker_hit(
+                r,
+                m,
+                None,
+                0.0,
+                &mut state.selected_marker,
+                &mut start_marker,
+                &mut act,
+                &mut rename,
+                &mut seek_marker,
+                labels,
+            );
+        }
+    }
+    let ph_now = *c.playhead;
+    ruler_resp.context_menu(|ui| {
+        if ui.button("Add Marker at Playhead").clicked() {
+            act = Some(Act::AddMarker(ph_now));
+        }
+    });
+
     // ---- playhead (recomputed: a double-click seek above moves it this frame) ----
     let px = state.x_at(*c.playhead);
     if px >= lanes.left() - 1.0 && px <= lanes.right() + 1.0 {
@@ -973,9 +1323,15 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         out.seeked = true;
     }
 
-    // ---- lanes background: deselect / context menu / dnd ----
+    // ---- lanes background: deselect / rubber band / context menu / dnd ----
     if lanes_resp.clicked() && !mods.ctrl {
         c.selection.clear();
+    }
+    // a press that missed every clip starts a rubber band (Shift adds to the selection)
+    if state.drag.is_none() && lanes_resp.drag_started_by(egui::PointerButton::Primary) {
+        if let Some(o) = lanes_resp.interact_pointer_pos().or(pointer) {
+            state.band = Some((o, mods.shift));
+        }
     }
     lanes_resp.context_menu(|ui| {
         if ui.button("Add Video Track").clicked() {
@@ -1184,8 +1540,31 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 }
             }
             Act::RemoveTransition(tid) => p.remove_transition(tid),
+            Act::AddMarker(t) => {
+                let mid = p.add_marker(t, "Marker");
+                state.selected_marker = Some(mid);
+            }
+            Act::RenameMarker(mid, name) => {
+                if let Some(m) = p.marker_mut(mid) {
+                    m.name = name;
+                }
+            }
+            Act::DelMarker(mid) => {
+                p.remove_marker(mid);
+                state.selected_marker = None;
+            }
+            Act::MarkerLabel(mid, l) => {
+                if let Some(m) = p.marker_mut(mid) {
+                    m.label = l;
+                }
+            }
         }
         out.edited = true;
+    }
+    state.rename = rename;
+    if let Some(t) = seek_marker {
+        *c.playhead = c.project.snap_frame(t.max(0.0));
+        out.seeked = true;
     }
 
     // ---- gestures ----
@@ -1203,7 +1582,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             let ids = c.project.expand_links(c.selection);
             let orig = ids.iter().map(|&id| c.project.clip(id).map(|cl| cl.start).unwrap_or(0.0)).collect();
             let kind = c.project.tracks[tr].kind;
-            let g = Gesture::Move { ids, orig, kind, tr, dt: 0.0, dtrack: 0 };
+            let g = Gesture::Move { ids, orig, kind, tr, dt: 0.0, dtrack: 0, new_track: false };
             state.drag = Some(Drag { origin, before: c.project.clone(), g });
         }
     } else if let Some((cid, start)) = start_trim {
@@ -1228,14 +1607,28 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     } else if let Some((cid, fout)) = start_fade {
         state.drag =
             Some(Drag { origin, before: c.project.clone(), g: Gesture::Fade { id: cid, out: fout, changed: false } });
-    } else if let Some((cid, kt)) = start_key {
-        state.drag =
-            Some(Drag { origin, before: c.project.clone(), g: Gesture::Keys { id: cid, t: kt, changed: false } });
+    } else if let Some((cid, kt, prop)) = start_key {
+        // freeze the value scale at press time: dragging a key must not move the scale under itself
+        let range = prop
+            .and_then(|pi| c.project.clip(cid).and_then(|cl| crate::ui::curves::prop_ref(cl, pi)))
+            .map(crate::ui::curves::y_range)
+            .unwrap_or((0.0, 1.0));
+        state.drag = Some(Drag {
+            origin,
+            before: c.project.clone(),
+            g: Gesture::Keys { id: cid, t: kt, prop, range, changed: false },
+        });
     } else if let Some((tri, tid)) = start_trans {
         state.drag = Some(Drag {
             origin,
             before: c.project.clone(),
             g: Gesture::TransDur { track: tri, id: tid, changed: false },
+        });
+    } else if let Some((mid, mclip)) = start_marker {
+        state.drag = Some(Drag {
+            origin,
+            before: c.project.clone(),
+            g: Gesture::Marker { id: mid, clip: mclip, changed: false },
         });
     }
     let hover_tr = pointer.and_then(|pos| state.track_at(pos.y, c.project));
@@ -1260,7 +1653,13 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         let thr = (SNAP_PX / zoom) as f64;
         let p = &mut *c.project;
         match &mut drag.g {
-            Gesture::Move { ids, orig, kind, tr, dt, dtrack } => {
+            Gesture::Move { ids, orig, kind, tr, dt, dtrack, new_track } => {
+                // past the first video row (up) or the last audio row (down): offer a fresh track
+                let first_top = ltop - sy;
+                *new_track = match kind {
+                    TrackKind::Video => pos.y < first_top && pos.y >= ruler.top(),
+                    TrackKind::Audio => pos.y > first_top + content_h,
+                } && pos.y <= lanes.bottom();
                 let mut want = dx;
                 if c.snap {
                     let s0 = orig.first().copied().unwrap_or(0.0);
@@ -1371,7 +1770,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     }
                 }
             }
-            Gesture::Keys { id, t, changed } => {
+            Gesture::Keys { id, t, prop, range, changed } => {
                 let nt = p.snap_frame(t_at(pos.x));
                 if let Some(cl) = p.clip_mut(*id) {
                     let lt = (nt - cl.start).clamp(0.0, cl.duration);
@@ -1379,6 +1778,23 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                         cl.move_keys(*t, lt);
                         *t = lt;
                         *changed = true;
+                    }
+                }
+                // value lane: y inside the clip rect → value, through the range frozen at press time
+                if let (Some(pi), Some((ti, ci))) = (*prop, p.find(*id)) {
+                    if let Some(top) = row_top_of(p, ti) {
+                        let h = p.tracks[ti].height;
+                        let inner = (h - 2.0 - 2.0 * KEY_PAD).max(1.0);
+                        let f = (((top + h - 1.0 - KEY_PAD) - pos.y) / inner).clamp(0.0, 1.0) as f64;
+                        let v = range.0 + f * (range.1 - range.0);
+                        if let Some(a) = crate::ui::curves::prop_mut(&mut p.tracks[ti].clips[ci], pi) {
+                            if let Some(ki) = a.key_index_at(*t) {
+                                if (a.keys[ki].v - v).abs() > 1e-9 {
+                                    a.keys[ki].v = v;
+                                    *changed = true;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1401,6 +1817,23 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                             }
                         }
                     }
+                }
+            }
+            Gesture::Marker { id, clip, changed } => {
+                let want = p.snap_frame(t_at(pos.x).max(0.0));
+                // clip markers are clip-local and stay inside their clip
+                let nt = match clip.and_then(|cid| p.clip(cid)) {
+                    Some(cl) => (want - cl.start).clamp(0.0, cl.duration),
+                    None => want,
+                };
+                if let Some(m) = p.marker_mut(*id) {
+                    if (m.t - nt).abs() > 1e-9 {
+                        m.t = nt;
+                        *changed = true;
+                    }
+                }
+                if clip.is_none() && *changed {
+                    p.sort_markers();
                 }
             }
         }
@@ -1433,14 +1866,28 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     }
     if !primary_down {
         if let Some(d) = state.drag.take() {
-            let edited = match d.g {
-                Gesture::Move { dt, dtrack, .. } => dt != 0.0 || dtrack != 0,
+            let mut edited = match &d.g {
+                Gesture::Move { dt, dtrack, .. } => *dt != 0.0 || *dtrack != 0,
                 Gesture::Trim { changed, .. }
                 | Gesture::Volume { changed, .. }
                 | Gesture::Fade { changed, .. }
                 | Gesture::Keys { changed, .. }
-                | Gesture::TransDur { changed, .. } => changed,
+                | Gesture::TransDur { changed, .. }
+                | Gesture::Marker { changed, .. } => *changed,
             };
+            // released over the gutter: add a track at the far end and drop the clips of that kind on it
+            if let Gesture::Move { ids, kind, new_track: true, .. } = &d.g {
+                let p = &mut *c.project;
+                let ti = p.add_track(*kind);
+                let list = if *kind == TrackKind::Video { p.video_tracks() } else { p.audio_tracks() };
+                let pos_of = |t: usize| list.iter().position(|&x| x == t).map(|i| i as i32);
+                let from =
+                    ids.iter().filter_map(|&cid| p.track_of(cid)).find(|&t| p.tracks[t].kind == *kind).and_then(pos_of);
+                match from.zip(pos_of(ti)).filter(|(f, to)| f != to) {
+                    Some((f, to)) if p.move_clips(ids, 0.0, to - f, Some(*kind)) => edited = true,
+                    _ => p.remove_track(ti),
+                }
+            }
             if edited {
                 (c.undo)(&d.before);
                 out.edited = true;
@@ -1575,6 +2022,8 @@ mod tests {
         undos: usize,
         waves: WaveformCache,
         time: f64,
+        /// Paint list of the last frame (asserting on what was actually drawn).
+        shapes: Vec<egui::epaint::ClippedShape>,
     }
 
     impl Harness {
@@ -1607,6 +2056,7 @@ mod tests {
                 undos: 0,
                 waves,
                 time: 0.0,
+                shapes: Vec::new(),
             };
             h.frame(vec![]); // layout pass: sets lanes_rect
             h
@@ -1626,7 +2076,7 @@ mod tests {
             let pal = Palette::new(true, Color32::from_rgb(0, 120, 212));
             let Harness { ctx, state, project, selection, playhead, undos, waves, .. } = self;
             let mut resp = None;
-            let _ = ctx.run(input, |ctx| {
+            let full = ctx.run(input, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut undo = |_: &Project| *undos += 1;
                     resp = Some(show(
@@ -1647,7 +2097,25 @@ mod tests {
                     ));
                 });
             });
+            self.shapes = full.shapes;
             resp.unwrap()
+        }
+        /// Every text painted last frame, with its top-left position.
+        fn texts(&self) -> Vec<(String, Pos2)> {
+            self.shapes
+                .iter()
+                .filter_map(|cs| match &cs.shape {
+                    Shape::Text(t) => Some((t.galley.text().to_string(), t.pos)),
+                    _ => None,
+                })
+                .collect()
+        }
+        fn painted_text(&self, needle: &str) -> Option<Pos2> {
+            self.texts().into_iter().find(|(s, _)| s.contains(needle)).map(|(_, p)| p)
+        }
+        /// Is any filled rect painted in this colour?
+        fn has_fill(&self, color: Color32) -> bool {
+            self.shapes.iter().any(|cs| matches!(&cs.shape, Shape::Rect(r) if r.fill == color))
         }
         fn press(&mut self, pos: Pos2) -> TimelineResponse {
             self.press_m(pos, Modifiers::NONE)
@@ -1896,16 +2364,266 @@ mod tests {
     fn headless_keyframe_drag_moves_key() {
         let mut h = Harness::new();
         let lanes = h.state.lanes_rect;
+        h.project.tracks[0].height = MIN_TRACK_H; // < KEY_LANE_MIN → bottom strip, time only
         h.project.tracks[0].clips[0].opacity.toggle_key(2.0);
         h.frame(vec![]);
         let row_bottom = lanes.top() + h.project.tracks[0].height;
         let kp = pos2(h.state.x_at(2.0), row_bottom - 1.0 - 5.0);
-        assert!(h.drag(kp, kp + vec2(40.0, 0.0)), "keyframe drag edits");
+        assert!(h.drag(kp, kp + vec2(40.0, 20.0)), "keyframe drag edits");
         assert_eq!(h.undos, 1);
         let keys = &h.project.tracks[0].clips[0].opacity.keys;
         assert_eq!(keys.len(), 1);
         assert!((keys[0].t - 3.0).abs() < 1.0 / 30.0 + 1e-6, "key moved to {}", keys[0].t);
+        assert_eq!(keys[0].v, 1.0, "short clip: vertical drag does not touch the value");
         assert_eq!(h.project.tracks[0].clips[0].start, 0.0, "clip not moved");
+    }
+
+    #[test]
+    fn headless_keyframe_value_lane_drag_changes_time_and_value() {
+        let mut h = Harness::new();
+        let lanes = h.state.lanes_rect;
+        h.project.tracks[0].clips[0].opacity.toggle_key(2.0);
+        h.frame(vec![]);
+        // 64 pt row → value lane. One key at 1.0 auto-ranges to 0.5..1.5, so it sits mid-lane.
+        let th = h.project.tracks[0].height;
+        let inner = th - 2.0 - 2.0 * KEY_PAD;
+        let kp = pos2(h.state.x_at(2.0), lanes.top() + th - 1.0 - KEY_PAD - 0.5 * inner);
+        assert!(h.drag(kp, kp + vec2(40.0, 0.25 * inner)), "value-lane drag edits");
+        assert_eq!(h.undos, 1, "one undo for the whole gesture");
+        let keys = &h.project.tracks[0].clips[0].opacity.keys;
+        assert_eq!(keys.len(), 1);
+        assert!((keys[0].t - 3.0).abs() < 1.0 / 30.0 + 1e-6, "time moved to {}", keys[0].t);
+        assert!((keys[0].v - 0.75).abs() < 0.05, "value dragged down to {}", keys[0].v);
+        assert_eq!(h.project.tracks[0].clips[0].start, 0.0, "clip not moved");
+    }
+
+    #[test]
+    fn headless_rubber_band_selects_and_moves_together() {
+        let mut h = Harness::new();
+        let lanes = h.state.lanes_rect;
+        h.project.tracks[1].clips.clear(); // drop the linked audio: two video clips only
+        h.project.split_at(5.0, None);
+        h.frame(vec![]);
+        let (a, b) = (h.project.tracks[0].clips[0].id, h.project.tracks[0].clips[1].id);
+        // press on empty lane space below the tracks, drag up across both clips
+        let from = pos2(h.state.x_at(9.0), lanes.top() + 200.0);
+        h.drag(from, pos2(h.state.x_at(4.0), lanes.top() + 5.0));
+        assert_eq!(h.selection, vec![a, b], "band selected both clips");
+        assert!(h.state.band.is_none(), "band cleared on release");
+        // dragging one of them moves the whole selection, as one undo step
+        let grab = pos2(h.state.x_at(1.0), lanes.top() + 30.0);
+        assert!(h.drag(grab, grab + vec2(40.0, 0.0)));
+        assert_eq!(h.undos, 1);
+        assert!((h.project.tracks[0].clips[0].start - 1.0).abs() < 0.05);
+        assert!((h.project.tracks[0].clips[1].start - 6.0).abs() < 0.05);
+    }
+
+    #[test]
+    fn headless_rubber_band_shift_adds_and_esc_cancels() {
+        let mut h = Harness::new();
+        let lanes = h.state.lanes_rect;
+        h.project.tracks[1].clips.clear();
+        h.project.split_at(5.0, None);
+        h.frame(vec![]);
+        let (a, b) = (h.project.tracks[0].clips[0].id, h.project.tracks[0].clips[1].id);
+        let empty_y = lanes.top() + 200.0;
+        // band over the left clip only
+        h.drag(pos2(h.state.x_at(0.5), empty_y), pos2(h.state.x_at(2.0), lanes.top() + 5.0));
+        assert_eq!(h.selection, vec![a]);
+        // Shift-band over the right clip adds to it
+        let (from, to) = (pos2(h.state.x_at(7.0), empty_y), pos2(h.state.x_at(9.0), lanes.top() + 5.0));
+        h.press_m(from, Modifiers::SHIFT);
+        for i in 1..=4 {
+            let p = from + (to - from) * (i as f32 / 4.0);
+            h.frame_m(vec![Event::PointerMoved(p)], Modifiers::SHIFT);
+        }
+        h.release_m(to, Modifiers::SHIFT);
+        h.frame(vec![]);
+        assert_eq!(h.selection, vec![a, b], "Shift added to the selection");
+        // Esc during a clip move puts everything back and leaves no undo entry
+        let grab = pos2(h.state.x_at(1.0), lanes.top() + 30.0);
+        h.press(grab);
+        h.frame(vec![Event::PointerMoved(grab + vec2(80.0, 0.0))]);
+        assert!(h.project.tracks[0].clips[0].start > 0.5, "moved mid-drag");
+        h.frame(vec![Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        }]);
+        h.release(grab + vec2(80.0, 0.0));
+        h.frame(vec![]);
+        assert_eq!(h.project.tracks[0].clips[0].start, 0.0, "Esc restored the pre-drag project");
+        assert_eq!(h.project.tracks[0].clips.len(), 2);
+        assert_eq!(h.undos, 0, "cancelled gesture pushes no undo");
+    }
+
+    #[test]
+    fn headless_drag_past_top_row_creates_a_video_track() {
+        let mut h = Harness::new();
+        let lanes = h.state.lanes_rect;
+        let vid = h.video_clip().id;
+        let from = pos2(h.state.x_at(2.0), lanes.top() + 30.0);
+        // drag up into the ruler: the gutter appears, release drops the clip on a fresh V2
+        h.press(from);
+        for y in [lanes.top() + 10.0, lanes.top() - 5.0, lanes.top() - 12.0] {
+            h.frame(vec![Event::PointerMoved(pos2(from.x, y))]);
+        }
+        assert!(matches!(h.state.drag, Some(Drag { g: Gesture::Move { new_track: true, .. }, .. })), "gutter armed");
+        h.release(pos2(from.x, lanes.top() - 12.0));
+        h.frame(vec![]);
+        assert_eq!(h.project.video_tracks().len(), 2, "a video track was created");
+        assert_eq!(h.project.tracks[1].clips.len(), 1, "clip on the new top track");
+        assert_eq!(h.project.tracks[1].clips[0].id, vid);
+        assert!(h.project.tracks[0].clips.is_empty(), "V1 is empty now");
+        assert_eq!(h.project.tracks[2].clips.len(), 1, "linked audio stayed on A1");
+        assert_eq!(h.undos, 1);
+        // and the same past the bottom for audio: A2 appears below A1
+        let a1_top = lanes.top() + h.project.tracks[1].height + h.project.tracks[0].height;
+        let from = pos2(h.state.x_at(2.0), a1_top + 30.0);
+        h.press(from);
+        for y in [a1_top + 80.0, lanes.top() + 250.0, lanes.top() + 300.0] {
+            h.frame(vec![Event::PointerMoved(pos2(from.x, y))]);
+        }
+        h.release(pos2(from.x, lanes.top() + 300.0));
+        h.frame(vec![]);
+        assert_eq!(h.project.audio_tracks().len(), 2, "an audio track was created");
+        assert_eq!(h.project.tracks[3].clips.len(), 1, "audio clip moved to A2");
+        assert!(h.project.tracks[2].clips.is_empty(), "A1 is empty now");
+        assert_eq!(h.undos, 2);
+    }
+
+    #[test]
+    fn headless_marker_click_seek_and_drag() {
+        let mut h = Harness::new();
+        let lanes = h.state.lanes_rect;
+        let mid = h.project.add_marker(2.0, "cut here");
+        h.frame(vec![]);
+        let mp = pos2(h.state.x_at(2.0) + 1.0, lanes.top() - RULER_H + 4.0);
+        h.press(mp);
+        h.release(mp);
+        h.frame(vec![]);
+        assert_eq!(h.state.selected_marker, Some(mid), "click selects the marker");
+        assert_eq!(h.playhead, 0.0, "a marker click does not scrub the ruler");
+        // drag it 80 px right = 2 s
+        assert!(h.drag(mp, mp + vec2(80.0, 0.0)), "marker drag edits");
+        assert_eq!(h.undos, 1, "one undo per marker drag");
+        assert!((h.project.markers[0].t - 4.0).abs() < 0.05, "marker at {}", h.project.markers[0].t);
+        // and a clip marker moves inside its clip
+        let cid = h.video_clip().id;
+        let cm = h.project.add_clip_marker(cid, 1.0, "beat").unwrap();
+        h.frame(vec![]);
+        let cp = pos2(h.state.x_at(1.0) + 1.0, lanes.top() + 4.0);
+        assert!(h.drag(cp, cp + vec2(40.0, 0.0)), "clip marker drag edits");
+        assert_eq!(h.undos, 2);
+        let m = h.video_clip().markers.iter().find(|m| m.id == cm).unwrap();
+        assert!((m.t - 2.0).abs() < 0.05, "clip marker local t {}", m.t);
+    }
+
+    #[test]
+    fn headless_clip_colour_and_menu_come_from_project_labels() {
+        let mut h = Harness::new();
+        h.project.labels.clear();
+        let idx = h.project.add_label("Neon", [10, 200, 30]);
+        h.project.tracks[0].clips[0].label = idx;
+        h.frame(vec![]);
+        assert!(h.has_fill(Color32::from_rgb(10, 200, 30)), "clip painted in the project label's colour");
+        // the colour submenu lists the project's labels plus "Edit labels…"
+        let (mut act, mut edit) = (None, false);
+        let labels = h.project.labels.clone();
+        let mut pos = None;
+        let full = h.ctx.run(
+            RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(400.0, 400.0))), ..Default::default() },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| label_menu(ui, &labels, &mut act, &mut edit));
+            },
+        );
+        for cs in &full.shapes {
+            if let Shape::Text(t) = &cs.shape {
+                if t.galley.text().contains("Neon") {
+                    pos = Some(t.pos);
+                }
+                assert!(!t.galley.text().contains("Orange"), "built-in labels must not leak in");
+            }
+        }
+        let pos = pos.expect("the project label is listed");
+        // click it → Act::Label(1)
+        let click = pos + vec2(4.0, 4.0);
+        for pressed in [true, false] {
+            let _ = h.ctx.run(
+                RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(400.0, 400.0))),
+                    events: vec![Event::PointerButton {
+                        pos: click,
+                        button: PointerButton::Primary,
+                        pressed,
+                        modifiers: Modifiers::NONE,
+                    }],
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| label_menu(ui, &labels, &mut act, &mut edit));
+                },
+            );
+        }
+        assert!(matches!(act, Some(Act::Label(1))), "clicking the label picks index 1, got {:?}", act.is_some());
+    }
+
+    #[test]
+    fn headless_adjustment_and_shape_clips_paint() {
+        use crate::model::ShapeKind;
+        let mut h = Harness::new();
+        h.project.add_adjustment_clip(11.0, 3.0);
+        h.project.add_shape_clip(ShapeKind::Rect, 15.0, 3.0);
+        h.state.zoom = 20.0;
+        h.frame(vec![]);
+        let pal = Palette::new(true, Color32::from_rgb(0, 120, 212));
+        assert!(h.has_fill(pal.clip_adjust), "adjustment clip uses its own fill");
+        assert!(h.has_fill(pal.clip_shape), "shape clip uses its own fill");
+        assert!(h.painted_text("adj").is_some(), "adjustment badge painted");
+        assert!(h.painted_text("Rect").is_some(), "shape clip name painted");
+    }
+
+    #[test]
+    fn headless_1000_clips_stays_fast() {
+        let mut h = Harness::new();
+        h.project = Project::new();
+        for _ in 0..3 {
+            h.project.add_track(TrackKind::Video);
+        }
+        let tracks = h.project.video_tracks();
+        for i in 0..1000usize {
+            let (ti, n) = (tracks[i % tracks.len()], (i / tracks.len()) as f64);
+            let mut c = Clip::new(i as Id + 1000, ClipKind::Video, "clip", n * 2.0, 1.8);
+            c.label = (i % 8) as u8 + 1;
+            h.project.tracks[ti].clips.push(c);
+        }
+        h.project.tidy();
+        h.frame(vec![]);
+        let lanes = h.state.lanes_rect;
+        h.state.zoom_to_fit(h.project.duration(), lanes.width());
+        h.frame(vec![]);
+        let t0 = std::time::Instant::now();
+        for i in 0..20 {
+            h.frame(vec![Event::PointerMoved(pos2(lanes.left() + 5.0 * i as f32, lanes.top() + 20.0))]);
+        }
+        let ms = t0.elapsed().as_secs_f64() * 1000.0 / 20.0;
+        println!("timeline: 1000 clips, zoom-to-fit: {ms:.2} ms/frame");
+        assert_eq!(h.project.all_clips().count(), 1000);
+        // ~0.5 ms on this machine (dev profile, opt-level 1); the budget is 3 ms, the ceiling catches
+        // O(n²) or per-clip-allocation regressions without being flaky on a loaded box
+        assert!(ms < 10.0, "1000-clip frame took {ms:.2} ms");
+        // and the same again zoomed in, where clips get their full detail treatment
+        h.state.zoom = 40.0;
+        h.state.scroll_x = 0.0;
+        let t0 = std::time::Instant::now();
+        for _ in 0..20 {
+            h.frame(vec![]);
+        }
+        let ms = t0.elapsed().as_secs_f64() * 1000.0 / 20.0;
+        println!("timeline: 1000 clips, zoom 40: {ms:.2} ms/frame");
+        assert!(ms < 10.0, "zoomed-in frame took {ms:.2} ms");
     }
 
     #[test]
