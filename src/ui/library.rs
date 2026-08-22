@@ -847,6 +847,15 @@ fn folder_tree(
     }
 }
 
+/// Duration cell of an asset — "Loading…" while its import probe is still out (see engine::import).
+fn dur_cell(a: &crate::model::Asset) -> String {
+    if crate::engine::import::is_probing(&a.path) {
+        "Loading…".to_string()
+    } else {
+        duration_text(a.duration)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 fn asset_row(
@@ -881,7 +890,7 @@ fn asset_row(
             }
             ui.label(if selected { name.strong() } else { name });
             ui.weak(kind_tag(a.kind));
-            ui.weak(duration_text(a.duration));
+            ui.weak(dur_cell(a));
             if used.contains(&a.id) {
                 ui.label(RichText::new("•").color(palette.accent)).on_hover_text("Used in the timeline");
             }
@@ -1060,7 +1069,7 @@ fn details_box(
     }
     egui::Frame::group(ui.style()).show(ui, |ui| {
         ui.add(egui::Label::new(RichText::new(&a.path).weak()).truncate()).on_hover_text(&a.path);
-        let mut line = format!("{} · {}", kind_tag(a.kind), duration_text(a.duration));
+        let mut line = format!("{} · {}", kind_tag(a.kind), dur_cell(a));
         if a.width > 0 {
             line.push_str(&format!(" · {}×{}", a.width, a.height));
         }
