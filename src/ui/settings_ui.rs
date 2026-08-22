@@ -32,8 +32,10 @@ struct Status {
     /// Inputs the status was computed from; recomputed at the start of a frame when they differ
     /// (the app applies ffmpeg_dir / context_menu changes after `show` returns).
     ffmpeg_dir: String,
+    ytdlp_dir: String,
     context_menu: bool,
     ffmpeg: String,
+    ytdlp: String,
     ctxmenu: &'static str,
 }
 
@@ -44,12 +46,17 @@ impl Status {
         };
         Self {
             ffmpeg_dir: s.ffmpeg_dir.clone(),
+            ytdlp_dir: s.ytdlp_dir.clone(),
             context_menu: s.context_menu,
             ffmpeg: format!(
                 "ffmpeg: {}\nffprobe: {}",
                 exe(crate::media::ffpipe::ffmpeg_exe()),
                 exe(crate::media::ffpipe::ffprobe_exe())
             ),
+            ytdlp: match crate::media::ytdlp::exe() {
+                Some(p) => format!("yt-dlp: {}", p.display()),
+                None => "yt-dlp: not found — the Library's \"Import URL…\" button is hidden".into(),
+            },
             ctxmenu: if crate::contextmenu::is_installed() { "(installed)" } else { "(not installed)" },
         }
     }
@@ -69,10 +76,11 @@ pub fn show(
     mcp_status: &str,
 ) -> bool {
     let mut changed = false;
-    let stale = state
-        .status
-        .as_ref()
-        .is_none_or(|s| s.ffmpeg_dir != settings.ffmpeg_dir || s.context_menu != settings.context_menu);
+    let stale = state.status.as_ref().is_none_or(|s| {
+        s.ffmpeg_dir != settings.ffmpeg_dir
+            || s.ytdlp_dir != settings.ytdlp_dir
+            || s.context_menu != settings.context_menu
+    });
     if stale {
         state.status = Some(Status::compute(settings));
     }
@@ -128,6 +136,39 @@ fn general(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Settings, mcp_stat
         if let Some(st) = &state.status {
             ui.weak(&st.ffmpeg);
         }
+        ui.end_row();
+
+        ui.label("yt-dlp folder");
+        ui.horizontal(|ui| {
+            changed |=
+                ui.add(egui::TextEdit::singleline(&mut s.ytdlp_dir).desired_width(200.0).hint_text("auto")).changed();
+            if ui.button("Browse…").clicked() {
+                if let Some(p) = rfd::FileDialog::new().pick_folder() {
+                    s.ytdlp_dir = p.to_string_lossy().into_owned();
+                    changed = true;
+                }
+            }
+        });
+        ui.end_row();
+
+        ui.label("");
+        if let Some(st) = &state.status {
+            ui.weak(&st.ytdlp);
+        }
+        ui.end_row();
+
+        ui.label("Downloads folder");
+        ui.horizontal(|ui| {
+            changed |= ui
+                .add(egui::TextEdit::singleline(&mut s.download_dir).desired_width(200.0).hint_text("Videos"))
+                .changed();
+            if ui.button("Browse…").clicked() {
+                if let Some(p) = rfd::FileDialog::new().pick_folder() {
+                    s.download_dir = p.to_string_lossy().into_owned();
+                    changed = true;
+                }
+            }
+        });
         ui.end_row();
 
         ui.label("Preview max width");

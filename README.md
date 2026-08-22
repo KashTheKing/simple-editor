@@ -14,6 +14,8 @@ images/video/text, keyframe things — and save over the original or export to a
   track heights, Ctrl+Scroll zoom / Shift+Scroll pan / Alt+Scroll track height, draggable playhead, in/out points.
 * **Inspector**: position / scale / rotation / opacity / volume with keyframes, 13 blend modes, text tool
   (system fonts, size, bold/italic, fill/outline/shadow/box, alignment, spacing).
+* **Import URL…** (Library): paste a link and yt-dlp downloads it straight into the library — audio-only
+  for music/SFX. The button only appears when yt-dlp is installed; set its folder in Settings.
 * **Library** + **Recent** panels (recent media across projects), drag & drop from Explorer.
 * **Theme**: follows Windows dark/light + accent colour. Bare Windows-forms style, DaVinci-like layout.
 * **Hotkeys**: every action rebindable in Settings.

@@ -106,6 +106,13 @@ pub struct App {
     convert_jobs: Vec<(Arc<Progress>, PathBuf)>,
     /// Asset id + target extension for the Convert To… options window.
     convert_dialog: Option<(Id, String)>,
+    /// A working yt-dlp was found — gates the Library's URL import. Detected on a background thread
+    /// (it spawns `yt-dlp --version`) at start-up and again when the setting changes.
+    ytdlp_available: Arc<std::sync::atomic::AtomicBool>,
+    /// Import-URL window state: (url, audio only).
+    url_dialog: Option<(String, bool)>,
+    /// Running URL downloads — polled each frame, imported into the library when they finish.
+    downloads: Vec<crate::media::ytdlp::Download>,
     /// Was the Auto-cut pane drawn last frame? (its keep-range shading is only valid while it is open).
     /// `autocut_drawing` accumulates this frame; the timeline reads `autocut_shown` so the shading does
     /// not depend on which pane the tile tree draws first.
@@ -113,6 +120,24 @@ pub struct App {
     autocut_drawing: bool,
     /// Fonts already handed to the rasterizer (so we only reload when the list grows).
     loaded_fonts: usize,
+}
+
+/// Non-blocking progress window for background jobs (conversions, downloads): one row per job with a
+/// progress bar and Cancel. Draws nothing when there are no jobs.
+fn job_window(ctx: &egui::Context, title: &str, jobs: &[(Arc<Progress>, String)]) {
+    if jobs.is_empty() {
+        return;
+    }
+    egui::Window::new(title).resizable(false).default_width(320.0).show(ctx, |ui| {
+        for (prog, name) in jobs {
+            ui.label(egui::RichText::new(name).small());
+            ui.add(egui::ProgressBar::new(prog.fraction()).show_percentage().text(prog.status()));
+            if ui.button("Cancel").clicked() {
+                prog.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+    });
+    ctx.request_repaint_after(Duration::from_millis(150));
 }
 
 /// Push an undo snapshot (capped) and clear the redo history.
@@ -341,6 +366,7 @@ impl App {
         crate::winpos::place_on_cursor_monitor(cc);
         let settings = Settings::load();
         media::ffpipe::set_dir(&settings.ffmpeg_dir);
+        media::ytdlp::set_dir(&settings.ytdlp_dir);
         theme::apply(&cc.egui_ctx, &settings.theme);
         let backend = Backend::parse(&settings.decoder);
         let text = Arc::new(Mutex::new(TextRasterizer::new()));
@@ -419,10 +445,14 @@ impl App {
             mcp_jobs: Vec::new(),
             convert_jobs: Vec::new(),
             convert_dialog: None,
+            ytdlp_available: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            url_dialog: None,
+            downloads: Vec::new(),
             autocut_shown: false,
             autocut_drawing: false,
             loaded_fonts: 0,
         };
+        app.detect_ytdlp(&cc.egui_ctx);
         app.refresh_presets();
         app.player.set_project(&app.project);
         if let Some(p) = open {
@@ -1370,9 +1400,10 @@ impl App {
             }
             Pane::Library => {
                 let resp = {
-                    let App { project, settings, library: lib, undo, redo, palette, .. } = self;
+                    let App { project, settings, library: lib, ytdlp_available, undo, redo, palette, .. } = self;
                     let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
-                    library::show(ui, lib, project, settings, palette, &mut push)
+                    let ytdlp = ytdlp_available.load(std::sync::atomic::Ordering::Relaxed);
+                    library::show(ui, lib, project, settings, palette, ytdlp, &mut push)
                 };
                 if resp.edited {
                     self.after_edit();
@@ -1414,6 +1445,9 @@ impl App {
                 }
                 if let Some(id) = resp.open_sequence {
                     self.enter_sequence(id);
+                }
+                if resp.import_url {
+                    self.url_dialog = Some((String::new(), false));
                 }
                 for name in resp.place_template {
                     self.place_template(&name, self.playhead);
@@ -1564,6 +1598,29 @@ impl App {
         if let Some(id) = inspector::take_open_sequence() {
             self.enter_sequence(id);
         }
+        // URL downloads: import the finished file, report failures
+        let mut fetched: Vec<(Option<PathBuf>, Option<String>)> = Vec::new();
+        self.downloads.retain(|d| {
+            if d.progress.is_done() {
+                fetched.push((d.path(), d.progress.error()));
+                false
+            } else {
+                true
+            }
+        });
+        for (path, err) in fetched {
+            match (path, err) {
+                (Some(p), None) => {
+                    let ids = self.import_files(&[p.clone()]);
+                    self.library.selected = ids.last().copied();
+                    self.library.tab = 0;
+                    self.toast(format!("Imported {}", p.file_name().unwrap_or_default().to_string_lossy()));
+                }
+                (_, Some(e)) => self.toast(format!("Download failed: {e}")),
+                (None, None) => self.toast("Download finished but produced no file"),
+            }
+        }
+
         // library conversions
         let mut done: Vec<(PathBuf, Option<String>)> = Vec::new();
         self.convert_jobs.retain(|(prog, out)| {
@@ -1604,6 +1661,79 @@ impl App {
         self.selection.clear();
         self.player.set_project(&self.project);
         self.seek(t);
+    }
+
+    /// Import URL window (non-blocking): paste a link, pick a folder, download with yt-dlp, and the
+    /// finished file is imported into the library like any other media.
+    fn url_window(&mut self, ctx: &egui::Context) {
+        let Some((mut url, mut audio_only)) = self.url_dialog.clone() else { return };
+        let mut open = true;
+        let mut start = false;
+        let dir = self.download_dir();
+        egui::Window::new("Import URL").open(&mut open).resizable(false).default_width(420.0).show(ctx, |ui| {
+            ui.label("Paste a link (YouTube, Vimeo, X, TikTok, direct file, …)");
+            let r = ui.add(egui::TextEdit::singleline(&mut url).desired_width(400.0).hint_text("https://…"));
+            // Enter in the field downloads, like every other URL box
+            start |= r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if crate::media::ffpipe::ffmpeg_exe().is_some() {
+                ui.checkbox(&mut audio_only, "Audio only (music / SFX)");
+            }
+            ui.horizontal(|ui| {
+                ui.label("Save to");
+                ui.weak(dir.to_string_lossy());
+                if ui.small_button("Browse…").clicked() {
+                    if let Some(p) = rfd::FileDialog::new().set_directory(&dir).pick_folder() {
+                        self.settings.download_dir = p.to_string_lossy().into_owned();
+                        self.settings.save();
+                    }
+                }
+            });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                start |= ui.add_enabled(!url.trim().is_empty(), egui::Button::new("Download")).clicked();
+                ui.weak(format!("{} running", self.downloads.len()));
+            });
+        });
+        match (open, start) {
+            (_, true) => {
+                self.url_dialog = None;
+                self.start_download(url.trim(), audio_only);
+            }
+            (true, false) => self.url_dialog = Some((url, audio_only)),
+            (false, false) => self.url_dialog = None,
+        }
+    }
+
+    /// Configured download folder, or the user's Videos folder.
+    fn download_dir(&self) -> PathBuf {
+        let d = self.settings.download_dir.trim();
+        if d.is_empty() {
+            crate::media::ytdlp::default_dir()
+        } else {
+            PathBuf::from(d)
+        }
+    }
+
+    /// Look for a working yt-dlp on a background thread (it spawns `yt-dlp --version`, and a candidate
+    /// that hangs must not hang the editor); the Library button appears once it reports success.
+    fn detect_ytdlp(&self, ctx: &egui::Context) {
+        let flag = self.ytdlp_available.clone();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let found = media::ytdlp::exe().is_some();
+            flag.store(found, std::sync::atomic::Ordering::Relaxed);
+            ctx.request_repaint(); // the Library button appears without waiting for the next input
+        });
+    }
+
+    fn start_download(&mut self, url: &str, audio_only: bool) {
+        if !self.ytdlp_available.load(std::sync::atomic::Ordering::Relaxed) {
+            self.toast("yt-dlp not found — set its folder in Settings");
+            return;
+        }
+        let opts = crate::media::ytdlp::DownloadOptions { url: url.to_string(), dir: self.download_dir(), audio_only };
+        self.toast("Downloading…");
+        self.downloads.push(crate::media::ytdlp::start_download(opts));
     }
 
     /// "Convert To…" on a library asset: transcode next to the source, then import the result.
@@ -2712,6 +2842,7 @@ impl App {
     }
 
     fn windows(&mut self, ctx: &egui::Context) {
+        self.url_window(ctx);
         // "Convert To…" options (non-blocking; the timeline stays usable)
         if let Some((id, ext)) = self.convert_dialog.clone() {
             let name = self.project.asset(id).map(|a| a.name()).unwrap_or_default();
@@ -2740,24 +2871,16 @@ impl App {
                 (false, false) => self.convert_dialog = None,
             }
         }
-        // background conversions: progress + cancel
-        if !self.convert_jobs.is_empty() {
-            let jobs: Vec<(Arc<Progress>, String)> = self
-                .convert_jobs
-                .iter()
-                .map(|(p, o)| (p.clone(), o.file_name().unwrap_or_default().to_string_lossy().into_owned()))
-                .collect();
-            egui::Window::new("Converting").resizable(false).default_width(300.0).show(ctx, |ui| {
-                for (prog, name) in jobs {
-                    ui.label(name);
-                    ui.add(egui::ProgressBar::new(prog.fraction()).show_percentage());
-                    if ui.button("Cancel").clicked() {
-                        prog.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
-                    }
-                }
-            });
-            ctx.request_repaint_after(Duration::from_millis(150));
-        }
+        // background conversions / downloads: progress + cancel
+        let convert_jobs: Vec<(Arc<Progress>, String)> = self
+            .convert_jobs
+            .iter()
+            .map(|(p, o)| (p.clone(), o.file_name().unwrap_or_default().to_string_lossy().into_owned()))
+            .collect();
+        job_window(ctx, "Converting", &convert_jobs);
+        let downloads: Vec<(Arc<Progress>, String)> =
+            self.downloads.iter().map(|d| (d.progress.clone(), d.url.clone())).collect();
+        job_window(ctx, "Downloading", &downloads);
         // retime (Ctrl+R)
         if self.retime.open {
             let changed = {
@@ -2803,6 +2926,7 @@ impl App {
             let theme_before = self.settings.theme.clone();
             let ctxmenu_before = self.settings.context_menu;
             let ffdir_before = self.settings.ffmpeg_dir.clone();
+            let ytdlp_dir_before = self.settings.ytdlp_dir.clone();
             self.detect_encoders_once();
             let mcp_status = match (&self.mcp, self.settings.mcp_enabled) {
                 (Some((s, _)), _) => format!("running at {}", s.url()),
@@ -2828,6 +2952,11 @@ impl App {
                     media::ffpipe::set_dir(&self.settings.ffmpeg_dir);
                     self.encoders.clear();
                 }
+                if self.settings.ytdlp_dir != ytdlp_dir_before {
+                    media::ytdlp::set_dir(&self.settings.ytdlp_dir);
+                }
+                // the folder may have changed, and yt-dlp may have been installed since we last looked
+                self.detect_ytdlp(ctx);
                 if self.settings.decoder != backend_before {
                     let b = self.backend();
                     self.player.set_backend(b);

@@ -69,6 +69,8 @@ pub struct LibraryResponse {
     pub open_sequence: Option<Id>,
     /// Template names to place at the playhead.
     pub place_template: Vec<String>,
+    /// The user asked to import media from a URL (the app opens the Import URL window).
+    pub import_url: bool,
 }
 
 /// Project mutations collected during the frame, applied after all widgets (one undo per gesture).
@@ -88,12 +90,14 @@ enum LibOp {
     RemoveUnused,
 }
 
+/// `ytdlp` = yt-dlp was found at start-up; the "Import URL…" button only exists when it is installed.
 pub fn show(
     ui: &mut egui::Ui,
     state: &mut LibraryState,
     project: &mut Project,
     settings: &mut Settings,
     palette: &Palette,
+    ytdlp: bool,
     undo: &mut dyn FnMut(&Project),
 ) -> LibraryResponse {
     let mut resp = LibraryResponse::default();
@@ -103,7 +107,7 @@ pub fn show(
     });
     ui.separator();
     if state.tab == 0 {
-        library_tab(ui, state, project, settings, palette, &mut resp, undo);
+        library_tab(ui, state, project, settings, palette, ytdlp, &mut resp, undo);
     } else {
         recent_tab(ui, state, settings, palette, &mut resp);
     }
@@ -366,21 +370,28 @@ fn inline_edit(ui: &mut egui::Ui, buf: &mut String) -> Option<String> {
 // ---------- library tab ----------
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn library_tab(
     ui: &mut egui::Ui,
     state: &mut LibraryState,
     project: &mut Project,
     settings: &mut Settings,
     palette: &Palette,
+    ytdlp: bool,
     resp: &mut LibraryResponse,
     undo: &mut dyn FnMut(&Project),
 ) {
     let mut ops: Vec<LibOp> = Vec::new();
     let mut op_start = false; // true when this frame starts an undo-worthy gesture
 
-    ui.horizontal(|ui| {
+    // wrapped: the pane is often ~250 px wide and a non-wrapping row clips its last buttons away
+    ui.horizontal_wrapped(|ui| {
         if ui.button("Import…").clicked() {
             resp.import = true;
+        }
+        // only when yt-dlp is installed — the whole URL import is optional
+        if ytdlp && ui.button("Import URL…").on_hover_text("Download media from a link with yt-dlp").clicked() {
+            resp.import_url = true;
         }
         if ui.button("New folder…").clicked() {
             state.new_folder = Some((String::new(), String::new()));
@@ -1337,6 +1348,65 @@ mod tests {
     /// Headless: both tabs lay out with folders, sequences, templates and a selected asset,
     /// reporting nothing when nothing was clicked.
     #[test]
+    /// The "Import URL…" button exists only when yt-dlp was found, and clicking it asks the app to
+    /// open the Import URL window.
+    #[test]
+    fn import_url_button_is_gated_on_ytdlp() {
+        let run = |ytdlp: bool, click: bool| -> (bool, bool) {
+            let mut project = Project::new();
+            let mut settings = Settings::default();
+            let palette = Palette::new(true, egui::Color32::WHITE);
+            let ctx = egui::Context::default();
+            let mut state = LibraryState::default();
+            let mut seen = false;
+            let mut asked = false;
+            // frame 1 lays the button out, frame 2 can click it at the position it landed on
+            let mut at = egui::Pos2::ZERO;
+            for frame in 0..2 {
+                let mut input = egui::RawInput::default();
+                if click && frame == 1 && at != egui::Pos2::ZERO {
+                    input.events.push(egui::Event::PointerButton {
+                        pos: at,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: Default::default(),
+                    });
+                    input.events.push(egui::Event::PointerButton {
+                        pos: at,
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        modifiers: Default::default(),
+                    });
+                }
+                let out = ctx.run(input, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let mut undo = |_: &Project| {};
+                        let r = show(ui, &mut state, &mut project, &mut settings, &palette, ytdlp, &mut undo);
+                        asked |= r.import_url;
+                    });
+                });
+                // find the button by its label among the frame's shapes
+                if let Some(rect) = text_rect(&out.shapes, "Import URL…") {
+                    seen = true;
+                    at = rect.center();
+                }
+            }
+            (seen, asked)
+        };
+        assert_eq!(run(false, false), (false, false), "button must be hidden without yt-dlp");
+        let (seen, asked) = run(true, true);
+        assert!(seen, "button must be shown when yt-dlp is installed");
+        assert!(asked, "clicking it must ask the app to open the Import URL window");
+    }
+
+    /// Rect of the painted text `label` in a frame's shapes (None when it was never drawn).
+    fn text_rect(shapes: &[egui::epaint::ClippedShape], label: &str) -> Option<egui::Rect> {
+        shapes.iter().find_map(|c| match &c.shape {
+            egui::epaint::Shape::Text(t) if t.galley.text().contains(label) => Some(t.visual_bounding_rect()),
+            _ => None,
+        })
+    }
+
     fn show_headless() {
         let mut project = Project::new();
         for (i, kind) in [ClipKind::Video, ClipKind::Audio, ClipKind::Image].iter().enumerate() {
@@ -1363,7 +1433,7 @@ mod tests {
                 let _ = ctx.run(egui::RawInput::default(), |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
                         let mut undo = |_: &Project| panic!("no undo without edits");
-                        let r = show(ui, &mut state, &mut project, &mut settings, &palette, &mut undo);
+                        let r = show(ui, &mut state, &mut project, &mut settings, &palette, true, &mut undo);
                         assert!(!r.import && !r.clear_recent && !r.edited && !r.settings_changed);
                         assert!(r.add_to_timeline.is_empty() && r.open_paths.is_empty() && r.remove.is_empty());
                         assert!(r.convert.is_empty() && r.open_sequence.is_none() && r.place_template.is_empty());

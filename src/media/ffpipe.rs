@@ -39,6 +39,18 @@ pub fn ffprobe_exe() -> Option<PathBuf> {
 
 fn find(name: &str) -> Option<PathBuf> {
     let dir = DIR.lock().unwrap().clone();
+    find_exe(name, &dir)
+}
+
+/// Locate a helper executable: `dir` (when set), then next to our exe (and an `ffmpeg` subfolder),
+/// then PATH. Shared with `media::ytdlp` — not cached, so callers must not run it every frame.
+pub(crate) fn find_exe(name: &str, dir: &str) -> Option<PathBuf> {
+    find_all_exe(name, dir).into_iter().next()
+}
+
+/// Every place `name` exists, in lookup order. `ytdlp` needs this because a PATH entry can hold a
+/// broken shim (a pip launcher for an uninstalled Python) that must be skipped for the next one.
+pub(crate) fn find_all_exe(name: &str, dir: &str) -> Vec<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     if !dir.is_empty() {
         candidates.push(PathBuf::from(&dir).join(name));
@@ -49,14 +61,16 @@ fn find(name: &str) -> Option<PathBuf> {
             candidates.push(d.join("ffmpeg").join(name));
         }
     }
+    if let Some(path) = std::env::var_os("PATH") {
+        candidates.extend(std::env::split_paths(&path).map(|p| p.join(name)));
+    }
+    let mut out: Vec<PathBuf> = Vec::new();
     for c in candidates {
-        if c.is_file() {
-            return Some(c);
+        if c.is_file() && !out.contains(&c) {
+            out.push(c);
         }
     }
-    // PATH
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).map(|p| p.join(name)).find(|p| p.is_file())
+    out
 }
 
 /// A Command for `exe` that never opens a console window.

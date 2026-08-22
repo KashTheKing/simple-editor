@@ -59,6 +59,10 @@ pub struct Template {
 pub struct Settings {
     /// Directory containing ffmpeg.exe / ffprobe.exe. Empty = app dir, then PATH.
     pub ffmpeg_dir: String,
+    /// Directory containing yt-dlp.exe (the optional URL import). Empty = app dir, then PATH.
+    pub ytdlp_dir: String,
+    /// Where URL downloads are written. Empty = the user's Videos folder.
+    pub download_dir: String,
     /// "auto" (libx264 / libvpx-vp9 by extension) or an ffmpeg encoder name
     /// ("libx264", "h264_nvenc", "h264_qsv", "h264_amf", "libx265", "hevc_nvenc", ...).
     pub encoder: String,
@@ -134,6 +138,8 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             ffmpeg_dir: String::new(),
+            ytdlp_dir: String::new(),
+            download_dir: String::new(),
             encoder: "auto".into(),
             crf: 18,
             preset: "veryfast".into(),

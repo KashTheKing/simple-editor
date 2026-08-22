@@ -7,6 +7,7 @@ pub mod ffpipe;
 pub mod mf;
 pub mod thumbs;
 pub mod waveform;
+pub mod ytdlp;
 
 use crate::model::Asset;
 use std::collections::HashMap;

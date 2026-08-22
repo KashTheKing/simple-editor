@@ -37,6 +37,7 @@ src/media/mod.rs       Frame, VideoSource/AudioSource traits, Backend, probe/ope
 src/media/mf.rs        Media Foundation decoders + probe
 src/media/ffpipe.rs    ffmpeg/ffprobe process decoders + probe + exe lookup
 src/media/waveform.rs  peaks cache (background compute, disk cache)
+src/media/ytdlp.rs     optional URL import: download a link with yt-dlp.exe (validated at detection)
 src/media/thumbs.rs    thumbnail cache (timeline filmstrips, library previews)       (agent: engine-misc)
 src/engine/blend.rs    blend modes + composite
 src/engine/compose.rs  Compositor: timeline → RGBA canvas; placement(); effects, transitions,
@@ -83,6 +84,10 @@ don't own**; if you truly need something, add a private helper in your own file 
   one audio track per audio stream (A1, A2, …), all linked. `source_video` set → **Save (Ctrl+S) =
   re-encode over the original** (temp file in the same folder, `Player::release_files()`, rename) — or the
   instant `-c copy` cut when `Settings.lossless_save` is on and `export::lossless_segments` applies.
+* **URL import** (optional): the Library's "Import URL…" button exists only when a *working* `yt-dlp.exe`
+  is found — each candidate on PATH is verified with `--version` on a background thread, because a broken
+  pip shim can shadow a good install. Downloads land in `Settings.download_dir` (default: Videos) and are
+  imported like any other media; ffmpeg, when present, is passed via `--ffmpeg-location`.
 * **Export** → Export window (non-blocking): resolution + scaler (ffmpeg `scale` flags) + encoder; any
   extension; Compositor frames piped to ffmpeg stdin, audio pre-mixed to a temp WAV. **Convert To…**
   (library) transcodes files directly (engine/convert.rs).
