@@ -179,6 +179,9 @@ pub struct App {
     was_focused: bool,
     /// Ctrl+Alt+C clipboard for Paste Attributes.
     attrs: Option<Clip>,
+    /// Ctrl+C / Ctrl+X clip clipboard — a template (clips + the assets they use), so paste reuses
+    /// `Project::place_clips` and its fresh clip / link ids.
+    clipboard: Option<crate::settings::Template>,
     /// Kind + duration of the last transition added (Ctrl+T repeats it).
     last_transition: (TransitionKind, f64),
     /// Movie mode pre-render cache.
@@ -847,6 +850,7 @@ impl App {
             draw_rec: None,
             was_focused: true,
             attrs: None,
+            clipboard: None,
             last_transition: (TransitionKind::CrossFade, 1.0),
             prerender: PreRender::new(),
             movie_stall: false,
@@ -1614,6 +1618,38 @@ impl App {
                     self.toast("Select the clips to paste onto");
                 } else {
                     self.paste_ui.open = true;
+                }
+            }
+            CopyClips | CutClips => {
+                let ids = self.project.expand_links(&self.selection);
+                if ids.is_empty() {
+                    self.toast("Select the clips to copy first");
+                } else {
+                    self.clipboard = Some(crate::engine::presets::capture_template("clipboard", &self.project, &ids));
+                    if a == CutClips {
+                        self.push_undo();
+                        self.project.delete_clips(&ids, false);
+                        self.selection.clear();
+                        self.after_edit();
+                    }
+                }
+            }
+            PasteClips | PasteInPlace => {
+                match self.clipboard.as_ref().and_then(crate::engine::presets::decode_template) {
+                    Some((clips, assets)) => {
+                        // Paste In Place ignores the clicked row: place_clips takes the first track with room
+                        let target = (a == PasteClips).then_some(self.timeline.last_track).flatten();
+                        let snap = self.project.to_json();
+                        let ids = timeline::paste_clips(&mut self.project, clips, assets, self.playhead, target);
+                        if ids.is_empty() {
+                            self.toast("Nothing could be pasted here");
+                        } else {
+                            push_undo_json(&mut self.undo, &mut self.redo, snap);
+                            self.selection = ids;
+                            self.after_edit();
+                        }
+                    }
+                    None => self.toast("Nothing copied yet — Ctrl+C copies the selected clips"),
                 }
             }
             AddMarker => {
@@ -3342,6 +3378,11 @@ impl App {
             ui.menu_button("Edit", |ui| {
                 self.menu_item(ui, Undo, !self.undo.is_empty(), &mut out);
                 self.menu_item(ui, Redo, !self.redo.is_empty(), &mut out);
+                ui.separator();
+                self.menu_item(ui, CopyClips, has_sel, &mut out);
+                self.menu_item(ui, CutClips, has_sel, &mut out);
+                self.menu_item(ui, PasteClips, self.clipboard.is_some(), &mut out);
+                self.menu_item(ui, PasteInPlace, self.clipboard.is_some(), &mut out);
                 ui.separator();
                 self.menu_item(ui, Split, has_clips, &mut out);
                 self.menu_item(ui, Delete, has_sel, &mut out);

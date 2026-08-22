@@ -3223,6 +3223,10 @@ impl Project {
         let mut out = Vec::new();
         for mut c in clips {
             c.id = self.new_id();
+            // clip markers carry ids too: a copy that kept them would shadow the original in `marker_mut`
+            for i in 0..c.markers.len() {
+                c.markers[i].id = self.new_id();
+            }
             if c.link != 0 {
                 let l = *link_map.entry(c.link).or_insert_with(|| 0);
                 c.link = if l == 0 {
