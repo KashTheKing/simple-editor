@@ -11,6 +11,7 @@ layout (dockable panes) without styling. Popups never block the editor (plain `e
 | Concern | Choice | Why |
 |---|---|---|
 | UI | `eframe`/`egui` 0.33 (glow backend) + `egui_tiles` 0.14 (docking) | immediate mode, custom-painted timeline trivial, repaints only on input/playback |
+| GPU effects | OpenGL through eframe's own `glow` context — `engine/gpu.rs` + `engine/shaders.rs` | no new dependency, one shader per effect; the CPU compositor stays the fallback |
 | Decode | Windows **Media Foundation** (`windows` crate) — `media/mf.rs` | native system codecs, no extra DLLs, instant seeks (software decode; D3D manager is the upgrade path) |
 | Decode fallback / images / probe / export / convert | `ffmpeg.exe` + `ffprobe.exe` child processes — `media/ffpipe.rs` | universal codecs, any output container; already on most machines |
 | Audio out | `cpal` (WASAPI) | small pure-Rust |
@@ -39,6 +40,13 @@ src/media/ffpipe.rs    ffmpeg/ffprobe process decoders + probe + exe lookup
 src/media/waveform.rs  peaks cache (background compute, disk cache)
 src/media/ytdlp.rs     optional URL import: download a link with yt-dlp.exe (validated at detection)
 src/media/thumbs.rs    thumbnail cache (timeline filmstrips, library previews)       (agent: engine-misc)
+src/engine/gpu.rs      GpuRenderer: the effect chain as GL shaders (UI thread owns the context)   (agent: engine-gpu)
+src/engine/shaders.rs  GLSL sources for every GPU effect + composite/mask/blend helpers          (agent: engine-gpu)
+src/engine/shapes.rs   vector shapes / recorded drawings -> RGBA layers (CPU rasteriser)          (agent: engine-gpu)
+src/engine/prerender.rs movie mode: full-quality frame cache, rendered in slices                 (agent: engine-gpu)
+src/engine/mixer_fx.rs audio filters (EQ/reverb/echo/…) + bus graph                             (agent: engine-audio)
+src/engine/capture.rs  screen recording + voiceover through ffmpeg children                      (agent: engine-misc)
+src/engine/import.rs   FCP7 XML / EDL / prproj import with a per-item report                     (agent: engine-misc)
 src/engine/blend.rs    blend modes + composite
 src/engine/compose.rs  Compositor: timeline → RGBA canvas; placement(); effects, transitions,
                        nested sequences, subtitles, scaler modes, camera-shake homography       (agent: engine-video)
@@ -71,7 +79,15 @@ src/ui/subtitles_ui.rs subtitle editor                                          
 src/ui/retime.rs       speed/reverse/freeze window                                             (agent: ui-panels-lib)
 src/ui/planner.rs      planner (nested tasks, moodboards) + notes                              (agent: ui-panels-lib)
 src/ui/export_ui.rs    export window (resolution, scaler, encoder, lossless)                  (agent: ui-panels-lib)
-src/ui/settings_ui.rs  settings window incl. hotkey editor, MCP, fonts                         (agent: app-layout)
+src/ui/settings_ui.rs  settings window: General / Performance / Capture / Export / Hotkeys      (agent: app-layout)
+src/ui/tools.rs        tool strip (select, text, shapes, draw, mask, zoom) under the viewport     (agent: ui-timeline)
+src/ui/nodes.rs        node editor for a clip's effect graph                                      (agent: ui-panels-fx)
+src/ui/mixer_ui.rs     mixer: bus strips, meters, filter chains, routing                          (agent: ui-panels-lib)
+src/ui/markers_ui.rs   markers pane (project + clip markers)                                      (agent: ui-panels-lib)
+src/ui/capture_ui.rs   screen recorder + voiceover windows                                        (agent: ui-panels-lib)
+src/ui/frame_ui.rs     "Export Frame" window (size, scaler, format, with/without effects)         (agent: ui-panels-lib)
+src/ui/import_ui.rs    imported-timeline report window                                            (agent: ui-panels-lib)
+src/ui/paste_ui.rs     "Paste Attributes" window (AttrSet checkboxes)                             (agent: ui-panels-fx)
 src/selftest.rs        headless end-to-end check
 ```
 
@@ -117,9 +133,33 @@ don't own**; if you truly need something, add a private helper in your own file 
 * **Auto-cut**: `engine::autocut` finds loud/quiet segments from waveform peaks; `Project::auto_cut`
   splits (+ linked video) and removes; the pane shades the kept ranges on the timeline while you keep editing.
 * **MCP**: when enabled, `mcp::Server` serves `mcp/tools.rs` over HTTP; the App executes `ToolCall`s on the
-  UI thread each frame (undo per call) and replies; `render.frame` uses `Player::render_once`.
+  UI thread each frame (undo per call) and replies; `render.frame` / `frame.export` render through the same
+  path as the preview (GPU when it is on). Round-3 tools: masks, nodes, markers, buses/filters/routing,
+  shapes, timeline import, frame export, labels.
+* **GPU preview** (`Settings.gpu`): `App` builds an `engine::gpu::GpuRenderer` from `cc.gl` on the UI thread.
+  The player then publishes **decoded layers** (`Player::take_layers` → `LayerSet`) instead of a composited
+  frame, and the renderer draws them. Any `Err` (or a panic in a driver) falls back to the CPU compositor with
+  one toast and is not retried until the setting is toggled. `Settings.preview_quality` scales the preview
+  render size; it never affects an export.
+* **Movie mode** (`Settings.movie_mode`): `engine::prerender` renders the in/out range (or the whole timeline)
+  at full quality in small slices on the UI thread; ready frames are shown instead of live ones and every edit
+  invalidates the cache.
+* **Tools / shapes / masks**: `ui::tools::Tool` selects what a drag in the preview does; `AddShape` creates a
+  `ClipKind::Shape` clip from the tool's style, `AddAdjustment` an adjustment layer, `AddMask` puts a `Mask` on
+  the selected clip's last effect (or the clip itself) and arms the mask tool.
+* **Capture**: `engine::capture` drives ffmpeg (`gdigrab` / `dshow`) for screen recordings and voiceovers;
+  finished files are imported, and a voiceover is placed at the time recording started. With
+  `Settings.capture_on_blur` and the recorder window open, losing window focus starts it and regaining it stops.
+* **Copy / paste attributes**: Ctrl+Alt+C snapshots a clip, Ctrl+Alt+V opens the `AttrSet` picker and applies
+  `Project::paste_attributes` as one undo step.
 * **Layout**: `ui/layout.rs` egui_tiles tree; panes pop out into OS windows; profiles saved in settings and
-  exportable as `.sedit-layout` JSON.
+  exportable as `.sedit-layout` JSON. Default: top row = tabs(Library, Effects, Transitions, Planner) |
+  Preview with the **Tools** strip directly beneath it | tabs(Inspector, Curves, Nodes, Subtitles, Markers);
+  bottom row across the full width = tabs(**Timeline**, Mixer, Auto-cut), Timeline active. A stored layout
+  without the round-3 panes is rejected by `Layout::from_json`, so the app resets to this default (View ▸
+  Layout ▸ Reset layout does the same on demand).
+* **Panes never take the app down**: `App::draw_pane` runs each pane under `catch_unwind`; one that panics is
+  reported once and replaced by a note for the rest of the session.
 * **Mute/Solo** per audio track; video tracks: V (visibility) / S. **Linked clips** select/move/split together.
 * **Theme**: `theme::apply` at start and when settings change; custom painting uses `theme::palette(ctx)`.
 * **Context menu** installed on first run (release builds) if `settings.context_menu` (HKCU, no admin).
@@ -131,6 +171,9 @@ don't own**; if you truly need something, add a private helper in your own file 
   `Arc<Frame>`; calls `ctx.request_repaint()`.
 * `Player` audio thread: owns its own `DecoderPool` + `Mixer`; fills a ring buffer consumed by the cpal
   callback; wall clock is the master; ~120 ms lead.
+* GL is owned by the UI thread alone: the `GpuRenderer`, every `render_to_texture` / `render_frame` call and
+  the pre-render slices run inside `App::update`; worker threads only decode. Headless runs (`--selftest`,
+  unit tests) have no context at all, so every GPU path is `Option`/`Result` and degrades to the CPU one.
 * Export/convert threads: their own pool/compositor/mixer or ffmpeg child. Waveform + thumbnail workers:
   their own decoders. MCP server thread: sockets only; all project access happens on the UI thread.
 * Every decode on a long-lived worker (render, audio, thumbs, waveform) runs under `catch_unwind`: a

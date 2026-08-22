@@ -1157,7 +1157,7 @@ void main() {
 "#;
 
 #[cfg(test)]
-mod tests {
+mod shader_body_tests {
     use super::*;
     use crate::model::EffectKind as K;
 

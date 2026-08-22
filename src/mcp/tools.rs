@@ -51,6 +51,23 @@ pub const TOOLS: &[(&str, &str, &[&str])] = &[
     ("style.summary", "Markdown style summary of the project (how it was edited) — for writing style guides.", &[]),
     ("templates.list", "Saved clip templates and motion presets.", &[]),
     ("templates.apply", "Place a saved template at a time.", &["name:string:true:", "at:number:true:"]),
+    // ---- round 3 ----
+    ("clip.add_mask", "Add a mask to a clip (or to one of its effects with `effect`).", &["clip_id:integer:true:", "shape:string:false:Rect|Ellipse|Polygon|Path (default Ellipse)", "effect:integer:false:effect index; omit for the clip itself"]),
+    ("clip.set_mask", "Edit a mask: fields {shape, cx, cy, rx, ry, rotation, feather, expand, opacity, invert, enabled, points:[[x,y],…]} in project pixels relative to the layer centre.", &["clip_id:integer:true:", "fields:object:true:", "effect:integer:false:"]),
+    ("clip.add_node", "Add a node to the clip's node graph (created from its effect stack on first use).", &["clip_id:integer:true:", "kind:string:true:an effect name, or Blend|Matte|Mask|Color|Input", "x:number:false:", "y:number:false:"]),
+    ("clip.connect_nodes", "Wire one node's output into another node's input port (cycles are refused).", &["clip_id:integer:true:", "from:integer:true:", "to:integer:true:", "port:integer:false:default 0"]),
+    ("markers.list", "Every marker in timeline time (project markers + clip markers).", &[]),
+    ("markers.add", "Add a marker at a timeline time (on a clip with clip_id).", &["t:number:true:", "name:string:false:", "note:string:false:", "label:integer:false:", "duration:number:false:range markers", "clip_id:integer:false:"]),
+    ("markers.remove", "Remove a marker by id.", &["id:integer:true:"]),
+    ("audio.buses", "Mixer buses (id, name, gain, pan, mute/solo/mono, output, filters).", &[]),
+    ("audio.add_bus", "Create a bus (it feeds Main until routed elsewhere).", &["name:string:false:"]),
+    ("audio.add_filter", "Add a filter to a bus with optional params {name: value}.", &["bus:integer:true:", "kind:string:true:Eq|HighPass|LowPass|Reverb|Echo|Distortion|Compressor|NoiseGate|Noise|Gain", "params:object:false:"]),
+    ("audio.route", "Send a clip, a track or a bus into a bus (bus 0 = Main / inherit).", &["bus:integer:true:destination bus", "clip_id:integer:false:", "track:integer:false:track index", "from_bus:integer:false:"]),
+    ("shapes.add", "Add a vector shape clip.", &["kind:string:false:Rect|Ellipse|Triangle|Polygon|Star|Line|Arrow|Draw", "at:number:true:", "duration:number:false:default 5", "fill:array:false:[r,g,b,a]", "stroke:array:false:[r,g,b,a]", "stroke_width:number:false:", "sides:integer:false:", "width:number:false:project px", "height:number:false:project px"]),
+    ("timeline.import", "Import a timeline from another editor (FCP7 XML, EDL, .prproj); returns the report and opens it in the app (replace=true swaps the project in).", &["path:string:true:", "replace:boolean:false:"]),
+    ("frame.export", "Save the frame at time t as PNG/JPG/WebP (by the path's extension).", &["path:string:true:", "t:number:false:default playhead", "width:integer:false:", "height:integer:false:", "with_effects:boolean:false:default true", "quality:integer:false:1..100 for JPG/WebP", "resize:string:false:neighbor|bilinear|bicubic|lanczos"]),
+    ("labels.list", "Colour labels of the project (index is 1-based; 0 = none).", &[]),
+    ("labels.set", "Rename / recolour a label (index), add one (no index) or remove one (index + remove=true).", &["index:integer:false:1-based", "name:string:false:", "color:array:false:[r,g,b]", "remove:boolean:false:"]),
 ];
 
 use serde_json::{json, Value};

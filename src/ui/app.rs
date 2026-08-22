@@ -4,20 +4,28 @@
 //! tool calls against the live project (one undo step per mutating call).
 
 use crate::engine::export::{self, ExportOptions, Progress};
+use crate::engine::gpu::GpuRenderer;
+use crate::engine::mixer_fx::BusGraph;
+use crate::engine::prerender::PreRender;
 use crate::engine::text::TextRasterizer;
 use crate::hotkeys::{Action, Hotkeys};
 use crate::mcp;
 use crate::media::thumbs::ThumbCache;
 use crate::media::waveform::WaveformCache;
 use crate::media::{self, Backend, Frame};
-use crate::model::{BlendMode, Clip, ClipKind, EffectKind, Id, Project, Scaler, TrackKind, TransitionKind};
+use crate::model::{
+    BlendMode, Clip, ClipKind, Effect, EffectKind, FilterKind, Id, Mask, MaskShape, NodeKind, Project, Scaler,
+    ShapeKind, TrackKind, TransitionKind,
+};
 use crate::playback::Player;
 use crate::settings::Settings;
 use crate::theme::{self, Palette};
 use crate::ui::layout::{self, Layout, Pane};
+use crate::ui::tools::Tool;
 use crate::ui::{
-    autocut_ui, curves, effects_ui, export_ui, inspector, library, planner, preview, retime, settings_ui, subtitles_ui,
-    timeline, transitions_ui, DragPayload,
+    autocut_ui, capture_ui, curves, effects_ui, export_ui, frame_ui, import_ui, inspector, library, markers_ui,
+    mixer_ui, nodes, paste_ui, planner, preview, retime, settings_ui, subtitles_ui, timeline, tools, transitions_ui,
+    DragPayload,
 };
 use eframe::egui;
 use serde_json::{json, Value};
@@ -120,6 +128,42 @@ pub struct App {
     autocut_drawing: bool,
     /// Fonts already handed to the rasterizer (so we only reload when the list grows).
     loaded_fonts: usize,
+    // ---------------- round 3 ----------------
+    /// The eframe glow context (None when eframe runs without one) and the renderer it reports.
+    gl: Option<Arc<eframe::glow::Context>>,
+    gpu_name: String,
+    /// GPU renderer, built lazily from `gl` while `settings.gpu` is on; None = CPU compositor.
+    gpu: Option<GpuRenderer>,
+    /// The GPU path failed once — do not retry until the setting is switched off and on again.
+    gpu_failed: bool,
+    /// The frame the GPU rendered last: its buffer is reused once the preview released it.
+    gpu_prev: Option<Arc<Frame>>,
+    tools: tools::ToolsState,
+    nodes: nodes::NodesState,
+    mixer: mixer_ui::MixerState,
+    markers: markers_ui::MarkersState,
+    buses: BusGraph,
+    capture_ui: capture_ui::CaptureUi,
+    frame_ui: frame_ui::FrameUi,
+    import_ui: import_ui::ImportUi,
+    paste_ui: paste_ui::PasteUi,
+    /// Running screen recording / voiceover (voiceover remembers the timeline time it started at).
+    screen_rec: Option<(crate::engine::capture::Capture, PathBuf)>,
+    voice_rec: Option<(crate::engine::capture::Capture, PathBuf, f64)>,
+    /// Viewport focus last frame (record-on-blur watches this).
+    was_focused: bool,
+    /// Ctrl+Alt+C clipboard for Paste Attributes.
+    attrs: Option<Clip>,
+    /// Kind + duration of the last transition added (Ctrl+T repeats it).
+    last_transition: (TransitionKind, f64),
+    /// Movie mode pre-render cache.
+    prerender: PreRender,
+    /// Preview canvas size in px, as the pane last reported it (the GPU renders at this size).
+    canvas: (u32, u32),
+    /// dshow audio inputs, listed once when the Settings / capture windows first need them.
+    audio_inputs: Option<Vec<(String, bool)>>,
+    /// Panes whose draw panicked: shown as a message instead of taking the whole editor down.
+    failed_panes: Vec<Pane>,
 }
 
 /// Non-blocking progress window for background jobs (conversions, downloads): one row per job with a
@@ -164,6 +208,163 @@ fn relocate_assets(project: &mut Project, project_dir: Option<&Path>) -> Vec<Str
         }
     }
     missing
+}
+
+/// Run something that may panic (GPU driver, pre-render, a panel widget) without taking the editor
+/// down — same policy as the decoder threads. None = it panicked.
+/// ponytail: the panic message goes to the default hook (stderr); the caller toasts and degrades.
+fn guarded<T>(f: impl FnOnce() -> T) -> Option<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).ok()
+}
+
+/// Add `kind` transitions at the cut left of each selected clip (or at its right edge with `at_end`).
+/// Returns how many were added. A transition always belongs to the clip on the RIGHT of the cut.
+fn add_transitions(project: &mut Project, ids: &[Id], kind: TransitionKind, dur: f64, at_end: bool) -> usize {
+    let mut added = 0;
+    for &id in ids {
+        let right = if at_end {
+            crate::ui::transitions_ui::right_neighbor(project, id)
+        } else {
+            project.clip(id).map(|c| c.id)
+        };
+        if let Some(right) = right {
+            if project.add_transition(right, kind, dur).is_some() {
+                added += 1;
+            }
+        }
+    }
+    added
+}
+
+/// Give the clip's last effect a mask, or the clip itself when it has no effects. False = there is one already.
+fn add_mask(project: &mut Project, clip: Id, shape: MaskShape) -> bool {
+    let Some(c) = project.clip_mut(clip) else { return false };
+    match c.effects.iter_mut().rev().find(|e| e.enabled) {
+        Some(e) if e.mask.is_none() => {
+            e.mask = Some(Mask::new(shape));
+            true
+        }
+        Some(_) => false,
+        None if c.mask.is_none() => {
+            c.mask = Some(Mask::new(shape));
+            true
+        }
+        None => false,
+    }
+}
+
+/// Preview render size for a pane of `canvas` px at `quality` percent (25..100). Zero stays zero
+/// (nothing to render), and the aspect ratio is kept.
+fn preview_canvas(canvas: (u32, u32), quality: u32) -> (u32, u32) {
+    if canvas.0 == 0 || canvas.1 == 0 {
+        return (0, 0);
+    }
+    let q = quality.clamp(25, 100) as f32 / 100.0;
+    (((canvas.0 as f32 * q) as u32).max(16), ((canvas.1 as f32 * q) as u32).max(16))
+}
+
+/// Render size for an image export: downscales are rendered straight at the target (the compositor's
+/// `Scaler` does the filtering), upscales are rendered at project size and enlarged by ffmpeg with the
+/// chosen resize flag — rendering a 4K frame from a 1080p timeline gains nothing but time.
+fn frame_render_size(project: (u32, u32), target: (u32, u32)) -> (u32, u32) {
+    let (pw, ph) = (project.0.max(16), project.1.max(16));
+    let (tw, th) = (target.0.max(16), target.1.max(16));
+    if tw <= pw && th <= ph {
+        (tw, th)
+    } else {
+        (pw, ph)
+    }
+}
+
+// TODO(ui-panels-fx): call these from `effects_ui::set_thumbnail(kind, ...)` once that hook exists —
+// the app renders each kind once on the GPU from this source and hands the result over.
+#[allow(dead_code)]
+/// Cache key of one effect thumbnail: kind, source image and size. Changing the stock image (or the
+/// grid size) invalidates every thumbnail; two different effects never share a key.
+fn effect_thumb_key(kind: EffectKind, size: (u32, u32), image: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325; // FNV-1a
+    let mut eat = |b: &[u8]| {
+        for &x in b {
+            h ^= x as u64;
+            h = h.wrapping_mul(0x1000_0000_01b3);
+        }
+    };
+    eat(kind.name().as_bytes());
+    eat(&size.0.to_le_bytes());
+    eat(&size.1.to_le_bytes());
+    eat(image.as_bytes());
+    h
+}
+
+#[allow(dead_code)]
+/// The picture the effect thumbnails are rendered from: the user's stock image, else a generated test
+/// pattern (colour wedges + a grey ramp + a checker corner, so blur / keying / levels all show up).
+fn effect_thumb_source(image: &str, w: u32, h: u32, backend: Backend) -> Frame {
+    if !image.is_empty() {
+        if let Ok(mut src) = media::open_video(image, backend) {
+            let mut f = Frame::default();
+            if src.frame_at(0.0, w, h, &mut f) && !f.is_empty() {
+                return f;
+            }
+        }
+    }
+    let mut f = Frame::new(w.max(1), h.max(1));
+    const BARS: [[u8; 3]; 6] =
+        [[220, 40, 40], [220, 200, 40], [40, 200, 80], [40, 160, 220], [140, 60, 200], [230, 230, 230]];
+    for y in 0..f.height {
+        for x in 0..f.width {
+            let i = ((y * f.width + x) * 4) as usize;
+            let px = if y * 3 < f.height * 2 {
+                let b = BARS[(x as usize * BARS.len() / f.width.max(1) as usize).min(BARS.len() - 1)];
+                [b[0], b[1], b[2], 255]
+            } else if x * 4 < f.width {
+                let c = if ((x / 8) + (y / 8)) % 2 == 0 { 30 } else { 210 };
+                [c, c, c, 255]
+            } else {
+                let g = (x * 255 / f.width.max(1)) as u8;
+                [g, g, g, 255]
+            };
+            f.rgba[i..i + 4].copy_from_slice(&px);
+        }
+    }
+    f
+}
+
+/// Write one rendered frame as PNG / JPG / WebP through ffmpeg (raw RGBA on stdin), resizing to
+/// `opts.size` with `opts.resize` when the render came out at a different size.
+fn write_image(frame: &Frame, opts: &frame_ui::FrameExport) -> Result<(), String> {
+    if frame.is_empty() {
+        return Err("empty frame".into());
+    }
+    let exe = media::ffpipe::ffmpeg_exe().ok_or("ffmpeg.exe not found")?;
+    let ext = opts.out.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_else(|| "png".into());
+    let mut cmd = media::ffpipe::command(&exe);
+    cmd.args(["-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgba"]);
+    cmd.args(["-s", &format!("{}x{}", frame.width, frame.height), "-i", "-"]);
+    if (frame.width, frame.height) != opts.size {
+        let flags = if opts.resize.is_empty() { "lanczos" } else { opts.resize.as_str() };
+        cmd.args(["-vf", &format!("scale={}:{}:flags={flags}", opts.size.0, opts.size.1)]);
+    }
+    let q = opts.quality.clamp(1, 100);
+    match ext.as_str() {
+        // ffmpeg's mjpeg qscale is 2 (best) .. 31 (worst)
+        "jpg" | "jpeg" => cmd.args(["-q:v", &format!("{}", 2 + (100 - q) * 29 / 100)]),
+        "webp" => cmd.args(["-quality", &format!("{q}")]),
+        _ => cmd.args(["-compression_level", "9"]),
+    };
+    cmd.args(["-frames:v", "1"]).arg(&opts.out);
+    cmd.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().map_err(|e| format!("ffmpeg: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        let _ = stdin.write_all(&frame.rgba); // a broken pipe shows up as a non-zero exit below
+    }
+    let out = child.wait_with_output().map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
 }
 
 /// Standard base64 (RFC 4648, with padding) — for the `render.frame` PNG data url. Tool path, not hot.
@@ -238,6 +439,78 @@ fn anim_of<'a>(clip: &'a mut Clip, name: &str) -> Option<&'a mut crate::model::A
     let e = clip.effects.iter_mut().find(|e| e.kind.name().eq_ignore_ascii_case(effect))?;
     let i = e.kind.params().iter().position(|p| p.name.eq_ignore_ascii_case(param))?;
     e.params.get_mut(i)
+}
+
+fn mask_shape(s: &str) -> Result<MaskShape, String> {
+    MaskShape::ALL
+        .into_iter()
+        .find(|m| m.name().eq_ignore_ascii_case(s) || format!("{m:?}").eq_ignore_ascii_case(s))
+        .ok_or_else(|| format!("unknown mask shape '{s}' (Rect | Ellipse | Polygon | Path)"))
+}
+
+/// The mask slot of a clip, or of one of its effects (`effect` = index in the effect stack).
+fn mask_slot(project: &mut Project, clip: Id, effect: Option<usize>) -> Result<&mut Option<Mask>, String> {
+    let c = project.clip_mut(clip).ok_or("no such clip")?;
+    match effect {
+        None => Ok(&mut c.mask),
+        Some(i) => Ok(&mut c.effects.get_mut(i).ok_or("no effect at that index")?.mask),
+    }
+}
+
+fn apply_mask_fields(mask: &mut Mask, fields: &Value) -> Result<(), String> {
+    let obj = fields.as_object().ok_or("'fields' must be an object")?;
+    for (k, v) in obj {
+        match k.as_str() {
+            "shape" => mask.shape = mask_shape(v.as_str().ok_or("shape: string")?)?,
+            "invert" => mask.invert = v.as_bool().ok_or("invert: bool")?,
+            "enabled" => mask.enabled = v.as_bool().ok_or("enabled: bool")?,
+            "points" => {
+                let a = v.as_array().ok_or("points: [[x, y], …]")?;
+                mask.points = a
+                    .iter()
+                    .filter_map(|p| {
+                        let p = p.as_array()?;
+                        Some((p.first()?.as_f64()? as f32, p.get(1)?.as_f64()? as f32))
+                    })
+                    .collect();
+            }
+            "cx" | "cy" | "rx" | "ry" | "rotation" | "feather" | "expand" | "opacity" => {
+                let val = v.as_f64().ok_or_else(|| format!("{k}: number"))?;
+                let a = match k.as_str() {
+                    "cx" => &mut mask.cx,
+                    "cy" => &mut mask.cy,
+                    "rx" => &mut mask.rx,
+                    "ry" => &mut mask.ry,
+                    "rotation" => &mut mask.rotation,
+                    "feather" => &mut mask.feather,
+                    "expand" => &mut mask.expand,
+                    _ => &mut mask.opacity,
+                };
+                a.keys.clear();
+                a.value = val;
+            }
+            _ => return Err(format!("unknown mask field '{k}'")),
+        }
+    }
+    Ok(())
+}
+
+/// "Blur" / "Color" / "Blend" / "Matte" / "Mask" / "Input" → a node kind for `clip.add_node`.
+fn node_kind(s: &str) -> Result<NodeKind, String> {
+    match s.to_ascii_lowercase().as_str() {
+        "input" => return Ok(NodeKind::Input),
+        "output" => return Err("every graph already has exactly one Output".into()),
+        "blend" => return Ok(NodeKind::Blend { mode: BlendMode::Normal, opacity: crate::model::Animated::new(1.0) }),
+        "matte" => return Ok(NodeKind::Matte { invert: false, use_alpha: false }),
+        "color" => return Ok(NodeKind::Color([0, 0, 0, 255])),
+        "mask" => return Ok(NodeKind::Mask(Mask::new(MaskShape::Ellipse))),
+        _ => {}
+    }
+    let kind = EffectKind::ALL
+        .into_iter()
+        .find(|k| k.name().eq_ignore_ascii_case(s) || format!("{k:?}").eq_ignore_ascii_case(s))
+        .ok_or_else(|| format!("unknown node kind '{s}' (an effect name, Blend, Matte, Mask, Color or Input)"))?;
+    Ok(NodeKind::Effect(Effect::new(kind)))
 }
 
 fn color_arg(v: &Value) -> Option<[u8; 4]> {
@@ -358,6 +631,17 @@ const MUTATING_TOOLS: &[&str] = &[
     "plan.remove",
     "notes.set",
     "templates.apply",
+    "clip.add_mask",
+    "clip.set_mask",
+    "clip.add_node",
+    "clip.connect_nodes",
+    "markers.add",
+    "markers.remove",
+    "audio.add_bus",
+    "audio.add_filter",
+    "audio.route",
+    "shapes.add",
+    "labels.set",
 ];
 
 impl App {
@@ -392,6 +676,17 @@ impl App {
         let thumbs = ThumbCache::new(cc.egui_ctx.clone(), backend);
         let hotkeys = Hotkeys::from_settings(&settings);
         let palette = theme::palette(&cc.egui_ctx);
+        // GL belongs to this (UI) thread; the renderer itself is built on first use so a driver that
+        // rejects the shaders only costs a toast.
+        let gl = cc.gl.clone();
+        let gpu_name = gl
+            .as_ref()
+            .map(|gl| {
+                use eframe::glow::HasContext;
+                unsafe { gl.get_parameter_string(eframe::glow::RENDERER) }
+            })
+            .unwrap_or_else(|| "no OpenGL context".into());
+        // an old layout profile has no Tools / Nodes / Mixer / Markers pane: reset to the new default
         let layout = Layout::from_json(&settings.layout).unwrap_or_default();
         let layout_json = layout.to_json();
         let mut app = Self {
@@ -451,6 +746,29 @@ impl App {
             autocut_shown: false,
             autocut_drawing: false,
             loaded_fonts: 0,
+            gl,
+            gpu_name,
+            gpu: None,
+            gpu_failed: false,
+            gpu_prev: None,
+            tools: tools::ToolsState::default(),
+            nodes: nodes::NodesState::default(),
+            mixer: mixer_ui::MixerState::default(),
+            markers: markers_ui::MarkersState::default(),
+            buses: BusGraph::new(),
+            capture_ui: capture_ui::CaptureUi::default(),
+            frame_ui: frame_ui::FrameUi::default(),
+            import_ui: import_ui::ImportUi::default(),
+            paste_ui: paste_ui::PasteUi::default(),
+            screen_rec: None,
+            voice_rec: None,
+            was_focused: true,
+            attrs: None,
+            last_transition: (TransitionKind::CrossFade, 1.0),
+            prerender: PreRender::new(),
+            canvas: (0, 0),
+            audio_inputs: None,
+            failed_panes: Vec::new(),
         };
         app.detect_ytdlp(&cc.egui_ctx);
         app.refresh_presets();
@@ -496,6 +814,13 @@ impl App {
         let p = &self.project;
         self.selection.retain(|id| p.clip(*id).is_some());
         self.player.set_project(&self.project);
+        if self.settings.movie_mode {
+            // the picture changed: drop what was pre-rendered and render the range again
+            let end = self.project.duration();
+            let App { prerender, .. } = self;
+            guarded(|| prerender.invalidate(0.0, end));
+            self.request_prerender();
+        }
     }
 
     fn set_project(&mut self, project: Project, path: Option<PathBuf>) {
@@ -1151,11 +1476,121 @@ impl App {
                 self.after_edit();
             }
             ToggleLibrary => self.toggle_pane(Pane::Library),
-            // TODO(round 3): wired by the app agent (tools, nodes, mixer, capture, markers, paste,
-            // export frame, timeline import, movie mode, shapes, masks, adjustment layers, last transition)
-            AddLastTransition | CopyAttributes | PasteAttributes | AddMarker | ToggleMarkers | ToggleNodes
-            | ToggleMixer | ToggleTools | AddShape | AddAdjustment | AddMask | ExportFrame | ScreenCapture
-            | Voiceover | ImportTimeline | MovieMode => {}
+            ToggleMarkers => self.toggle_pane(Pane::Markers),
+            ToggleNodes => self.toggle_pane(Pane::Nodes),
+            ToggleMixer => self.toggle_pane(Pane::Mixer),
+            ToggleTools => self.toggle_pane(Pane::Tools),
+            AddLastTransition => {
+                let (kind, dur) = self.last_transition;
+                if self.selection.is_empty() {
+                    self.toast("Select a clip next to the cut first");
+                } else {
+                    let snap = self.project.to_json();
+                    let ids = self.selection.clone();
+                    if add_transitions(&mut self.project, &ids, kind, dur, false) > 0 {
+                        push_undo_json(&mut self.undo, &mut self.redo, snap);
+                        self.after_edit();
+                        self.toast(format!("{} ({dur:.2} s)", kind.name()));
+                    } else {
+                        self.toast("No abutting left neighbour — transitions sit on a cut");
+                    }
+                }
+            }
+            CopyAttributes => match self.selection.first().and_then(|&id| self.project.copy_attributes(id)) {
+                Some(c) => {
+                    let name = c.name.clone();
+                    self.attrs = Some(c);
+                    self.toast(format!("Copied attributes from '{name}'"));
+                }
+                None => self.toast("Select a clip to copy attributes from"),
+            },
+            PasteAttributes => {
+                if self.attrs.is_none() {
+                    self.toast("Copy attributes from a clip first (Ctrl+Alt+C)");
+                } else if self.selection.is_empty() {
+                    self.toast("Select the clips to paste onto");
+                } else {
+                    self.paste_ui.open = true;
+                }
+            }
+            AddMarker => {
+                self.push_undo();
+                let t = self.playhead;
+                let id = self.project.add_marker(t, format!("Marker at {}", crate::ui::timecode(t, self.project.fps)));
+                self.markers.selected = Some(id);
+                self.layout.reveal(Pane::Markers);
+                self.layout_dirty = true;
+                self.after_edit();
+            }
+            AddShape => {
+                let kind = match self.tools.tool {
+                    Tool::Shape(k) => k,
+                    Tool::Draw => ShapeKind::Draw,
+                    _ => ShapeKind::Rect,
+                };
+                self.push_undo();
+                let id = self.project.add_shape_clip(kind, self.playhead, 5.0);
+                if let Some(c) = self.project.clip_mut(id) {
+                    if let Some(s) = c.shape.as_mut() {
+                        s.fill = self.tools.fill;
+                        s.stroke = self.tools.stroke;
+                        s.stroke_width = self.tools.stroke_width;
+                        s.sides = self.tools.sides;
+                        s.corner = self.tools.corner;
+                        s.draw_rate = self.tools.draw_rate;
+                        s.page = self.tools.page;
+                    }
+                }
+                self.selection = vec![id];
+                self.after_edit();
+            }
+            AddAdjustment => {
+                self.push_undo();
+                let id = self.project.add_adjustment_clip(self.playhead, 5.0);
+                self.selection = vec![id];
+                self.after_edit();
+            }
+            AddMask => {
+                let shape = match self.tools.tool {
+                    Tool::Mask(s) => s,
+                    _ => MaskShape::Ellipse,
+                };
+                let Some(&id) = self.selection.first() else {
+                    self.toast("Select a clip (or an effect on it) to mask");
+                    return;
+                };
+                self.push_undo();
+                let added = add_mask(&mut self.project, id, shape);
+                if added {
+                    self.tools.tool = Tool::Mask(shape);
+                    self.layout.reveal(Pane::Tools);
+                    self.layout_dirty = true;
+                    self.after_edit();
+                } else {
+                    self.undo.pop();
+                    self.toast("That clip already has a mask");
+                }
+            }
+            ExportFrame => {
+                if self.timeline_is_empty() {
+                    self.toast("Timeline is empty — nothing to export");
+                } else if !self.ffmpeg_missing() {
+                    self.frame_ui.open = true;
+                }
+            }
+            ScreenCapture => self.capture_ui.screen_open = !self.capture_ui.screen_open,
+            Voiceover => self.capture_ui.voice_open = !self.capture_ui.voice_open,
+            ImportTimeline => self.act_import_timeline(),
+            MovieMode => {
+                self.settings.movie_mode = !self.settings.movie_mode;
+                self.settings.save();
+                if self.settings.movie_mode {
+                    self.request_prerender();
+                } else {
+                    guarded(|| self.prerender.clear());
+                }
+                self.toast(if self.settings.movie_mode { "Movie mode on" } else { "Movie mode off" });
+            }
             ToggleInspector => self.toggle_pane(Pane::Inspector),
             ToggleEffects => self.toggle_pane(Pane::Effects),
             ToggleTransitions => self.toggle_pane(Pane::Transitions),
@@ -1195,21 +1630,10 @@ impl App {
                 } else {
                     let snap = self.project.to_json();
                     let ids = self.selection.clone();
-                    let mut added = 0;
-                    for id in ids {
-                        // a transition always belongs to the clip on the RIGHT of the cut
-                        let right = if at_end {
-                            crate::ui::transitions_ui::right_neighbor(&self.project, id)
-                        } else {
-                            Some(id)
-                        };
-                        if let Some(right) = right {
-                            if self.project.add_transition(right, TransitionKind::CrossFade, 1.0).is_some() {
-                                added += 1;
-                            }
-                        }
-                    }
+                    let (kind, dur) = (TransitionKind::CrossFade, 1.0);
+                    let added = add_transitions(&mut self.project, &ids, kind, dur, at_end);
                     if added > 0 {
+                        self.last_transition = (kind, dur);
                         push_undo_json(&mut self.undo, &mut self.redo, snap);
                         self.after_edit();
                     } else if at_end {
@@ -1284,7 +1708,20 @@ impl App {
 
     // ---------------- panes ----------------
 
+    /// Draw one pane, containing a panic in its widget so the rest of the editor keeps working
+    /// (same policy as the decoder threads). A pane that panicked once is not drawn again this session.
     fn draw_pane(&mut self, ui: &mut egui::Ui, pane: Pane) {
+        if self.failed_panes.contains(&pane) {
+            ui.weak(format!("{} is unavailable in this build.", pane.title()));
+            return;
+        }
+        if guarded(|| self.draw_pane_inner(ui, pane)).is_none() {
+            self.failed_panes.push(pane);
+            self.toast(format!("{} failed to draw — the pane is disabled for this session", pane.title()));
+        }
+    }
+
+    fn draw_pane_inner(&mut self, ui: &mut egui::Ui, pane: Pane) {
         match pane {
             Pane::Preview => {
                 let frame = self.pending_frame.take();
@@ -1311,7 +1748,9 @@ impl App {
                         prerender: None,
                     },
                 );
-                self.player.set_canvas(resp.canvas.0, resp.canvas.1, self.settings.preview_max_width);
+                let (cw, ch) = preview_canvas(resp.canvas, self.settings.preview_quality);
+                self.player.set_canvas(cw, ch, self.settings.preview_max_width);
+                self.canvas = (cw.min(self.settings.preview_max_width.max(16)), ch);
                 if let Some(t) = resp.seek {
                     self.seek(t);
                 }
@@ -1549,6 +1988,44 @@ impl App {
                     self.after_edit();
                 }
             }
+            Pane::Tools => {
+                let App { tools: st, palette, .. } = self;
+                tools::show(ui, st, palette);
+            }
+            Pane::Nodes => {
+                let resp = {
+                    let App { project, selection, playhead, undo, redo, nodes: st, palette, .. } = self;
+                    let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
+                    nodes::show(ui, st, project, selection, *playhead, palette, &mut push)
+                };
+                if resp.edited {
+                    self.after_edit();
+                }
+            }
+            Pane::Mixer => {
+                let changed = {
+                    let App { project, selection, mixer: st, buses, palette, undo, redo, .. } = self;
+                    let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
+                    mixer_ui::show(ui, st, project, selection, buses, palette, &mut push)
+                };
+                if changed {
+                    self.after_edit();
+                }
+            }
+            Pane::Markers => {
+                let resp = {
+                    let App { project, selection, playhead, markers: st, palette, undo, redo, .. } = self;
+                    let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
+                    markers_ui::show(ui, st, project, selection, *playhead, palette, &mut push)
+                };
+                if let Some(t) = resp.seek {
+                    self.player.pause();
+                    self.seek(t);
+                }
+                if resp.edited {
+                    self.after_edit();
+                }
+            }
         }
     }
 
@@ -1782,6 +2259,264 @@ impl App {
         }
     }
 
+    // ---------------- round 3: GPU, capture, frames, movie mode ----------------
+
+    /// Build / drop the GPU renderer to match `settings.gpu`, and tell the player which kind of output
+    /// the UI wants (decoded layers for the GPU, a composited frame for the CPU compositor).
+    fn sync_gpu(&mut self) {
+        let want = self.settings.gpu && !self.gpu_failed;
+        if want == self.gpu.is_some() {
+            return;
+        }
+        if !want {
+            self.gpu = None;
+            self.player.set_gpu(false);
+            return;
+        }
+        let Some(gl) = self.gl.clone() else {
+            self.gpu_failed = true; // no GL context at all (software / headless run)
+            self.player.set_gpu(false);
+            return;
+        };
+        match guarded(|| GpuRenderer::new(gl)) {
+            Some(Ok(g)) => {
+                self.gpu = Some(g);
+                self.player.set_gpu(true);
+                self.toast(format!("GPU preview: {}", self.gpu_name));
+            }
+            Some(Err(e)) => self.gpu_off(&e),
+            None => self.gpu_off("the renderer panicked"),
+        }
+    }
+
+    /// Fall back to the CPU compositor and say why, once.
+    fn gpu_off(&mut self, why: &str) {
+        self.gpu = None;
+        self.gpu_failed = true;
+        self.player.set_gpu(false);
+        self.toast(format!("GPU rendering unavailable ({why}) — using the CPU compositor"));
+    }
+
+    /// Render decoded layers with the GPU into a frame the preview can upload. None = the GPU path died
+    /// (already switched off).
+    fn gpu_frame(&mut self, layers: &crate::engine::gpu::LayerSet, t: f64, w: u32, h: u32) -> Option<Arc<Frame>> {
+        if self.gpu.is_none() || w == 0 || h == 0 {
+            return None;
+        }
+        // reuse the buffer of the frame handed out last time, once the preview has uploaded it
+        let mut out = match self.gpu_prev.take().map(Arc::try_unwrap) {
+            Some(Ok(f)) => f,
+            _ => Frame::default(),
+        };
+        let ok = {
+            let App { gpu, project, .. } = self;
+            let gpu = gpu.as_mut()?;
+            guarded(|| gpu.render_frame(project, t, w, h, layers, &mut out)).is_some()
+        };
+        if !ok {
+            self.gpu_off("the renderer panicked");
+            return None;
+        }
+        out.pts = t;
+        let frame = Arc::new(out);
+        self.gpu_prev = Some(frame.clone());
+        Some(frame)
+    }
+
+    /// One frame at `t`, `w` px wide, through the same path the preview uses (GPU when it is on, the
+    /// player's compositor otherwise) — export-frame and the MCP tools.
+    fn render_frame_now(&mut self, t: f64, w: u32) -> Option<Arc<Frame>> {
+        if self.gpu.is_some() {
+            let (pw, ph) = (self.project.width.max(16), self.project.height.max(16));
+            let w = w.clamp(16, pw);
+            let h = ((ph as u64 * w as u64) / pw as u64).max(1) as u32;
+            if let Some(layers) = self.player.layers_once(t, w) {
+                if let Some(f) = self.gpu_frame(&layers, t, w, h) {
+                    return Some(f);
+                }
+            }
+        }
+        self.player.render_once(t, w)
+    }
+
+    /// Movie mode: ask for the in/out range, or the whole timeline when there is none.
+    fn request_prerender(&mut self) {
+        let a = self.project.in_point.unwrap_or(0.0);
+        let b = self.project.out_point.unwrap_or_else(|| self.project.duration());
+        if b > a {
+            let App { prerender, project, .. } = self;
+            if guarded(|| prerender.request(project, a, b)).is_none() {
+                self.settings.movie_mode = false;
+                self.toast("Movie mode is not available in this build");
+            }
+        }
+    }
+
+    /// "Export Frame…" confirmed: render at the chosen size and write the image with ffmpeg.
+    fn export_frame(&mut self, opts: frame_ui::FrameExport) {
+        let (rw, rh) = frame_render_size((self.project.width, self.project.height), opts.size);
+        let scaler_before = self.project.scaler;
+        self.project.scaler = opts.scaler;
+        let frame = if opts.with_effects {
+            self.render_frame_now(self.playhead, rw)
+        } else {
+            self.source_frame(self.playhead, rw, rh)
+        };
+        self.project.scaler = scaler_before;
+        let Some(frame) = frame else {
+            self.toast("Could not render that frame");
+            return;
+        };
+        match write_image(&frame, &opts) {
+            Ok(()) => self.toast(format!("Frame saved to {}", opts.out.display())),
+            Err(e) => self.toast(format!("Frame export failed: {e}")),
+        }
+    }
+
+    /// The decoded frame of the top-most visual clip under the playhead ("source frame only").
+    fn source_frame(&mut self, t: f64, w: u32, h: u32) -> Option<Arc<Frame>> {
+        let clip = self
+            .project
+            .tracks
+            .iter()
+            .enumerate()
+            .filter(|(i, tr)| tr.kind == TrackKind::Video && self.project.active(*i))
+            .flat_map(|(_, tr)| tr.clips.iter())
+            .filter(|c| c.enabled && c.contains(t) && c.uses_asset())
+            .next_back()?;
+        let asset = self.project.asset(clip.asset)?;
+        let mut src = media::open_video(&asset.path, self.backend()).ok()?;
+        let mut f = Frame::default();
+        src.frame_at(clip.src_time(t).max(0.0), w, h, &mut f).then(|| Arc::new(f))
+    }
+
+    /// Import a timeline from another editor (FCP7 XML / EDL / .prproj) and show the report.
+    fn act_import_timeline(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("Timelines (XML, EDL, prproj)", crate::engine::import::IMPORT_EXTS)
+            .add_filter("All files", &["*"])
+            .pick_file()
+        else {
+            return;
+        };
+        match guarded(|| crate::engine::import::import_file(&path)) {
+            Some(Ok(report)) => {
+                self.toast(format!("Imported {} clips on {} tracks", report.clips, report.tracks));
+                self.import_ui.report = Some(report);
+                self.import_ui.open = true;
+            }
+            Some(Err(e)) => self.toast(format!("Import failed: {e}")),
+            None => self.toast("Timeline import is not available in this build"),
+        }
+    }
+
+    /// Start / stop the screen recorder (also driven by focus when `capture_on_blur` is on).
+    fn start_screen_capture(&mut self) {
+        if self.screen_rec.is_some() || self.ffmpeg_missing() {
+            return;
+        }
+        let out = self.capture_path("screen", "mp4");
+        let opts = crate::engine::capture::ScreenCaptureOptions {
+            out: out.clone(),
+            fps: self.settings.capture_fps.max(1),
+            bitrate_kbps: self.settings.capture_bitrate_kbps,
+            crf: self.settings.crf,
+            region: None,
+            mic: self.settings.capture_mic.clone(),
+            desktop_audio: self.settings.capture_desktop_audio,
+            cursor: self.settings.capture_cursor,
+        };
+        match guarded(|| crate::engine::capture::start_screen(opts)) {
+            Some(Ok(c)) => self.screen_rec = Some((c, out)),
+            Some(Err(e)) => self.toast(format!("Screen recording failed: {e}")),
+            None => self.toast("Screen recording is not available in this build"),
+        }
+    }
+
+    fn stop_screen_capture(&mut self) {
+        let Some((c, out)) = self.screen_rec.take() else { return };
+        if guarded(move || c.stop()).is_none() {
+            return;
+        }
+        self.import_recording(out, None);
+    }
+
+    fn start_voiceover(&mut self) {
+        if self.voice_rec.is_some() || self.ffmpeg_missing() {
+            return;
+        }
+        let out = self.capture_path("voiceover", "wav");
+        let opts = crate::engine::capture::VoiceoverOptions {
+            out: out.clone(),
+            device: self.settings.voice_device.clone(),
+            sample_rate: 48_000,
+            channels: self.settings.voice_channels.clamp(1, 2),
+        };
+        match guarded(|| crate::engine::capture::start_voiceover(opts)) {
+            Some(Ok(c)) => {
+                self.voice_rec = Some((c, out, self.playhead));
+                self.player.play(); // the take lines up with what you hear
+            }
+            Some(Err(e)) => self.toast(format!("Voiceover failed: {e}")),
+            None => self.toast("Voiceover recording is not available in this build"),
+        }
+    }
+
+    fn stop_voiceover(&mut self) {
+        let Some((c, out, at)) = self.voice_rec.take() else { return };
+        self.player.pause();
+        if guarded(move || c.stop()).is_none() {
+            return;
+        }
+        self.import_recording(out, Some(at));
+    }
+
+    /// A finished recording: import it and (for a voiceover) drop it on the timeline at `at`.
+    fn import_recording(&mut self, out: PathBuf, at: Option<f64>) {
+        // ffmpeg finalises the container a moment after it is asked to stop
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !out.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        if !out.exists() {
+            self.toast(format!("Recording not written: {}", out.display()));
+            return;
+        }
+        let ids = self.import_files(&[out.clone()]);
+        match at {
+            Some(t) => {
+                self.push_undo();
+                self.insert_at(ids, t, None);
+                self.after_edit();
+                self.toast("Voiceover placed on the timeline");
+            }
+            None => {
+                self.library.tab = 0;
+                self.library.selected = ids.last().copied();
+                self.toast(format!("Recording imported: {}", out.file_name().unwrap_or_default().to_string_lossy()));
+            }
+        }
+    }
+
+    /// dshow audio inputs, asked for once (the ffmpeg device probe takes ~a second).
+    fn audio_inputs(&mut self) -> Vec<(String, bool)> {
+        if self.audio_inputs.is_none() {
+            self.audio_inputs = Some(guarded(crate::engine::capture::audio_devices).unwrap_or_default());
+        }
+        self.audio_inputs.clone().unwrap_or_default()
+    }
+
+    /// `<capture_dir>/<what>-<unix seconds>.<ext>`, falling back to the temp folder.
+    fn capture_path(&self, what: &str, ext: &str) -> PathBuf {
+        let dir = if self.settings.capture_dir.is_empty() {
+            std::env::temp_dir()
+        } else {
+            PathBuf::from(&self.settings.capture_dir)
+        };
+        let _ = std::fs::create_dir_all(&dir);
+        dir.join(format!("{what}-{}.{ext}", Settings::now()))
+    }
+
     // ---------------- UI pieces ----------------
 
     fn menu_item(&mut self, ui: &mut egui::Ui, a: Action, enabled: bool, out: &mut Vec<Action>) {
@@ -1795,15 +2530,19 @@ impl App {
 
     fn view_menu(&mut self, ui: &mut egui::Ui, out: &mut Vec<Action>) {
         use Action::*;
-        const PANES: [(Pane, Option<Action>); 10] = [
+        const PANES: [(Pane, Option<Action>); 14] = [
             (Pane::Preview, None),
             (Pane::Timeline, None),
+            (Pane::Tools, Some(ToggleTools)),
             (Pane::Library, Some(ToggleLibrary)),
             (Pane::Inspector, Some(ToggleInspector)),
             (Pane::Effects, Some(ToggleEffects)),
             (Pane::Transitions, Some(ToggleTransitions)),
             (Pane::Curves, Some(ToggleCurves)),
+            (Pane::Nodes, Some(ToggleNodes)),
             (Pane::Subtitles, Some(ToggleSubtitles)),
+            (Pane::Markers, Some(ToggleMarkers)),
+            (Pane::Mixer, Some(ToggleMixer)),
             (Pane::Planner, Some(TogglePlanner)),
             (Pane::AutoCut, Some(Action::AutoCut)),
         ];
@@ -1898,6 +2637,10 @@ impl App {
             }
         });
         ui.separator();
+        let mut movie = self.settings.movie_mode;
+        if ui.checkbox(&mut movie, "Movie mode (pre-rendered playback)").changed() {
+            out.push(MovieMode);
+        }
         self.menu_item(ui, Fullscreen, true, out);
     }
 
@@ -1965,10 +2708,15 @@ impl App {
                     self.act_overwrite();
                 }
                 self.menu_item(ui, ExportXml, has_clips, &mut out);
+                self.menu_item(ui, ExportFrame, has_clips, &mut out);
                 if ui.button("Export Style Summary (.md)…").clicked() {
                     ui.close();
                     self.act_export_style();
                 }
+                ui.separator();
+                self.menu_item(ui, ImportTimeline, true, &mut out);
+                self.menu_item(ui, ScreenCapture, true, &mut out);
+                self.menu_item(ui, Voiceover, true, &mut out);
                 ui.separator();
                 self.menu_item(ui, Settings, true, &mut out);
                 ui.separator();
@@ -1992,9 +2740,17 @@ impl App {
                 self.menu_item(ui, LinkToggle, has_sel, &mut out);
                 self.menu_item(ui, ToggleEnabled, has_sel, &mut out);
                 ui.separator();
+                self.menu_item(ui, CopyAttributes, has_sel, &mut out);
+                self.menu_item(ui, PasteAttributes, has_sel && self.attrs.is_some(), &mut out);
+                ui.separator();
                 self.menu_item(ui, AddText, true, &mut out);
+                self.menu_item(ui, AddShape, true, &mut out);
+                self.menu_item(ui, AddAdjustment, true, &mut out);
+                self.menu_item(ui, AddMask, has_sel, &mut out);
+                self.menu_item(ui, AddMarker, true, &mut out);
                 self.menu_item(ui, AddSubtitle, true, &mut out);
                 self.menu_item(ui, AddTransition, has_sel, &mut out);
+                self.menu_item(ui, AddLastTransition, has_sel, &mut out);
                 self.menu_item(ui, AddTransitionEnd, has_sel, &mut out);
                 self.menu_item(ui, Retime, has_sel, &mut out);
                 self.menu_item(ui, FreezeFrame, has_sel, &mut out);
@@ -2766,7 +3522,7 @@ impl App {
             "render.frame" => {
                 let t = req(arg_f64(args, "t"), "t")?;
                 let w = arg_u64(args, "width").map(|w| w as u32).unwrap_or(640).clamp(16, 3840);
-                let frame = self.player.render_once(t, w).ok_or("render timed out")?;
+                let frame = self.render_frame_now(t, w).ok_or("render timed out")?;
                 let png = mcp::png_encode(&frame);
                 Ok(json!({
                     "width": frame.width, "height": frame.height,
@@ -2810,6 +3566,248 @@ impl App {
                 let (clips, assets) = crate::engine::presets::decode_template(&tpl).ok_or("template is corrupted")?;
                 let ids = self.project.place_clips(clips, assets, at);
                 Ok(json!({"ok": true, "clip_ids": ids}))
+            }
+            // ---------------- round 3 ----------------
+            "clip.add_mask" => {
+                let id = req(arg_u64(args, "clip_id"), "clip_id")?;
+                let shape = mask_shape(arg_str(args, "shape").unwrap_or("Ellipse"))?;
+                let slot = mask_slot(&mut self.project, id, arg_u64(args, "effect").map(|i| i as usize))?;
+                if slot.is_some() {
+                    return Err("that clip / effect already has a mask".into());
+                }
+                *slot = Some(Mask::new(shape));
+                Ok(json!({"ok": true}))
+            }
+            "clip.set_mask" => {
+                let id = req(arg_u64(args, "clip_id"), "clip_id")?;
+                let fields = req(args.get("fields"), "fields")?.clone();
+                let slot = mask_slot(&mut self.project, id, arg_u64(args, "effect").map(|i| i as usize))?;
+                let mask = slot.as_mut().ok_or("no mask on that clip / effect (call clip.add_mask first)")?;
+                apply_mask_fields(mask, &fields)?;
+                Ok(json!({"ok": true}))
+            }
+            "clip.add_node" => {
+                let id = req(arg_u64(args, "clip_id"), "clip_id")?;
+                let kind = node_kind(req(arg_str(args, "kind"), "kind")?)?;
+                let (x, y) = (arg_f64(args, "x").unwrap_or(160.0) as f32, arg_f64(args, "y").unwrap_or(120.0) as f32);
+                let node = self.project.add_node(id, kind, x, y).ok_or("no such clip")?;
+                Ok(json!({"ok": true, "node_id": node}))
+            }
+            "clip.connect_nodes" => {
+                let id = req(arg_u64(args, "clip_id"), "clip_id")?;
+                let from = req(arg_u64(args, "from"), "from")?;
+                let to = req(arg_u64(args, "to"), "to")?;
+                let port = arg_u64(args, "port").unwrap_or(0) as usize;
+                self.project.ensure_graph(id);
+                let g = self.project.clip_mut(id).and_then(|c| c.graph.as_mut()).ok_or("no such clip")?;
+                if !g.connect(from, to, port) {
+                    return Err("connection refused (unknown node, bad port or a cycle)".into());
+                }
+                Ok(json!({"ok": true}))
+            }
+            "markers.list" => {
+                let list: Vec<Value> = self
+                    .project
+                    .markers_in_timeline()
+                    .into_iter()
+                    .map(|(id, t, dur, name, label)| json!({"id": id, "t": t, "duration": dur, "name": name,
+                                                            "label": label, "label_name": self.project.label_name(label)}))
+                    .collect();
+                Ok(json!(list))
+            }
+            "markers.add" => {
+                let t = req(arg_f64(args, "t"), "t")?;
+                let name = arg_str(args, "name").unwrap_or("Marker").to_string();
+                let id = match arg_u64(args, "clip_id") {
+                    Some(clip) => {
+                        let start = self.project.clip(clip).ok_or("no such clip")?.start;
+                        self.project.add_clip_marker(clip, t - start, name).ok_or("no such clip")?
+                    }
+                    None => self.project.add_marker(t, name),
+                };
+                if let Some(m) = self.project.marker_mut(id) {
+                    if let Some(n) = arg_str(args, "note") {
+                        m.note = n.to_string();
+                    }
+                    if let Some(l) = arg_u64(args, "label") {
+                        m.label = l.min(255) as u8;
+                    }
+                    if let Some(d) = arg_f64(args, "duration") {
+                        m.duration = d.max(0.0);
+                    }
+                }
+                Ok(json!({"ok": true, "id": id}))
+            }
+            "markers.remove" => {
+                let id = req(arg_u64(args, "id"), "id")?;
+                self.project.remove_marker(id);
+                Ok(json!({"ok": true}))
+            }
+            "audio.buses" => {
+                self.project.main_bus();
+                let list: Vec<Value> = self
+                    .project
+                    .buses
+                    .iter()
+                    .map(|b| {
+                        json!({"id": b.id, "name": b.name, "gain": b.gain.value, "pan": b.pan.value,
+                               "muted": b.muted, "solo": b.solo, "mono": b.mono, "output": b.output,
+                               "filters": b.filters.iter().map(|f| f.kind.name()).collect::<Vec<_>>()})
+                    })
+                    .collect();
+                Ok(json!(list))
+            }
+            "audio.add_bus" => {
+                let name = arg_str(args, "name").unwrap_or("Bus").to_string();
+                let id = self.project.add_bus(name);
+                Ok(json!({"ok": true, "bus_id": id}))
+            }
+            "audio.add_filter" => {
+                let bus = req(arg_u64(args, "bus"), "bus")?;
+                let kind_s = req(arg_str(args, "kind"), "kind")?;
+                let kind = FilterKind::ALL
+                    .into_iter()
+                    .find(|k| k.name().eq_ignore_ascii_case(kind_s) || format!("{k:?}").eq_ignore_ascii_case(kind_s))
+                    .ok_or_else(|| format!("unknown filter '{kind_s}'"))?;
+                let mut f = crate::model::AudioFilter::new(kind);
+                if let Some(params) = args.get("params").and_then(|v| v.as_object()) {
+                    for (pname, pval) in params {
+                        let i = kind
+                            .params()
+                            .iter()
+                            .position(|s| s.name.eq_ignore_ascii_case(pname))
+                            .ok_or_else(|| format!("unknown param '{pname}' for {}", kind.name()))?;
+                        f.params[i].value = pval.as_f64().ok_or("param values must be numbers")?;
+                    }
+                }
+                let b = self.project.bus_mut(bus).ok_or("no such bus")?;
+                b.filters.push(f);
+                Ok(json!({"ok": true, "index": b.filters.len() - 1}))
+            }
+            "audio.route" => {
+                let bus = req(arg_u64(args, "bus"), "bus")?;
+                if bus != 0 && self.project.bus(bus).is_none() {
+                    return Err("no such bus".into());
+                }
+                if let Some(clip) = arg_u64(args, "clip_id") {
+                    self.project.clip_mut(clip).ok_or("no such clip")?.bus = bus;
+                } else if let Some(track) = arg_u64(args, "track") {
+                    let t = self.project.tracks.get_mut(track as usize).ok_or("no such track")?;
+                    t.bus = bus;
+                } else if let Some(from) = arg_u64(args, "from_bus") {
+                    let main = self.project.main_bus();
+                    if from == main {
+                        return Err("the Main bus has no output".into());
+                    }
+                    self.project.bus_mut(from).ok_or("no such bus")?.output = bus;
+                } else {
+                    return Err("pass clip_id, track or from_bus".into());
+                }
+                Ok(json!({"ok": true}))
+            }
+            "shapes.add" => {
+                let kind_s = arg_str(args, "kind").unwrap_or("Rect");
+                let kind = ShapeKind::ALL
+                    .into_iter()
+                    .find(|k| k.name().eq_ignore_ascii_case(kind_s) || format!("{k:?}").eq_ignore_ascii_case(kind_s))
+                    .ok_or_else(|| format!("unknown shape '{kind_s}'"))?;
+                let at = req(arg_f64(args, "at"), "at")?;
+                let dur = arg_f64(args, "duration").unwrap_or(5.0).max(0.1);
+                let id = self.project.add_shape_clip(kind, at, dur);
+                if let Some(s) = self.project.clip_mut(id).and_then(|c| c.shape.as_mut()) {
+                    if let Some(c) = args.get("fill").and_then(color_arg) {
+                        s.fill = c;
+                    }
+                    if let Some(c) = args.get("stroke").and_then(color_arg) {
+                        s.stroke = c;
+                    }
+                    if let Some(w) = arg_f64(args, "stroke_width") {
+                        s.stroke_width = w as f32;
+                    }
+                    if let Some(n) = arg_u64(args, "sides") {
+                        s.sides = n.clamp(3, 64) as u32;
+                    }
+                    if let Some(w) = arg_f64(args, "width") {
+                        s.w.value = w;
+                    }
+                    if let Some(h) = arg_f64(args, "height") {
+                        s.h.value = h;
+                    }
+                }
+                Ok(json!({"ok": true, "clip_id": id}))
+            }
+            "timeline.import" => {
+                let path = PathBuf::from(req(arg_str(args, "path"), "path")?);
+                let report = crate::engine::import::import_file(&path)?;
+                let md = report.to_markdown();
+                let (clips, tracks, missing) = (report.clips, report.tracks, report.missing_media);
+                if arg_bool(args, "replace").unwrap_or(false) {
+                    self.set_project(report.project, None);
+                } else {
+                    self.import_ui.report = Some(report);
+                    self.import_ui.open = true;
+                }
+                Ok(json!({"ok": true, "clips": clips, "tracks": tracks, "missing_media": missing, "report": md}))
+            }
+            "frame.export" => {
+                let out = PathBuf::from(req(arg_str(args, "path"), "path")?);
+                let t = arg_f64(args, "t").unwrap_or(self.playhead);
+                let (pw, ph) = (self.project.width.max(16), self.project.height.max(16));
+                let w = arg_u64(args, "width").map(|w| w as u32).unwrap_or(pw).clamp(16, 7680);
+                let h = arg_u64(args, "height")
+                    .map(|h| h as u32)
+                    .unwrap_or_else(|| ((ph as u64 * w as u64) / pw as u64).max(1) as u32)
+                    .clamp(16, 4320);
+                let opts = frame_ui::FrameExport {
+                    out: out.clone(),
+                    size: (w, h),
+                    scaler: self.project.scaler,
+                    resize: arg_str(args, "resize").unwrap_or(&self.settings.export_scaler).to_string(),
+                    with_effects: arg_bool(args, "with_effects").unwrap_or(true),
+                    quality: arg_u64(args, "quality").map(|q| q as u32).unwrap_or(self.settings.frame_quality),
+                };
+                let (rw, _) = frame_render_size((pw, ph), opts.size);
+                let frame = self.render_frame_now(t, rw).ok_or("render timed out")?;
+                write_image(&frame, &opts)?;
+                Ok(json!({"ok": true, "path": out.to_string_lossy(), "width": w, "height": h}))
+            }
+            "labels.list" => {
+                let list: Vec<Value> = self
+                    .project
+                    .labels
+                    .iter()
+                    .enumerate()
+                    .map(|(i, l)| json!({"index": i + 1, "name": l.name, "color": l.color}))
+                    .collect();
+                Ok(json!(list))
+            }
+            "labels.set" => {
+                let color = args.get("color").and_then(color_arg).map(|c| [c[0], c[1], c[2]]);
+                match arg_u64(args, "index") {
+                    Some(i) if arg_bool(args, "remove").unwrap_or(false) => {
+                        self.project.remove_label(i as u8);
+                        Ok(json!({"ok": true, "labels": self.project.labels.len()}))
+                    }
+                    Some(i) => {
+                        let l = self
+                            .project
+                            .labels
+                            .get_mut((i as usize).checked_sub(1).ok_or("index is 1-based")?)
+                            .ok_or("no such label")?;
+                        if let Some(n) = arg_str(args, "name") {
+                            l.name = n.to_string();
+                        }
+                        if let Some(c) = color {
+                            l.color = c;
+                        }
+                        Ok(json!({"ok": true, "index": i}))
+                    }
+                    None => {
+                        let name = req(arg_str(args, "name"), "name")?.to_string();
+                        let idx = self.project.add_label(name, color.unwrap_or([128, 128, 128]));
+                        Ok(json!({"ok": true, "index": idx}))
+                    }
+                }
             }
             _ => Err(format!("unknown tool '{name}'")),
         }
@@ -2931,6 +3929,7 @@ impl App {
         // settings window
         if self.settings_ui.open {
             let backend_before = self.settings.decoder.clone();
+            let gpu_before = self.settings.gpu;
             let theme_before = self.settings.theme.clone();
             let ctxmenu_before = self.settings.context_menu;
             let ffdir_before = self.settings.ffmpeg_dir.clone();
@@ -2941,6 +3940,7 @@ impl App {
                 (None, true) => "starting…".into(),
                 (None, false) => "stopped".into(),
             };
+            let inputs = self.audio_inputs();
             let changed = settings_ui::show(
                 ctx,
                 &mut self.settings_ui,
@@ -2949,6 +3949,8 @@ impl App {
                 &self.encoders,
                 &self.palette,
                 &mcp_status,
+                &self.gpu_name,
+                &inputs,
             );
             if changed {
                 self.hotkeys.to_settings(&mut self.settings);
@@ -2965,6 +3967,9 @@ impl App {
                 }
                 // the folder may have changed, and yt-dlp may have been installed since we last looked
                 self.detect_ytdlp(ctx);
+                if self.settings.gpu != gpu_before {
+                    self.gpu_failed = false; // an explicit toggle retries the renderer
+                }
                 if self.settings.decoder != backend_before {
                     let b = self.backend();
                     self.player.set_backend(b);
@@ -2983,6 +3988,74 @@ impl App {
                 }
                 // TODO(integration): text.lock().load_user_fonts(&settings.user_fonts) + refresh self.fonts
                 // once the text rasterizer grows user-font support (engine-video agent).
+            }
+        }
+        // "Export Frame…" (Ctrl+Shift+F)
+        if self.frame_ui.open {
+            let choice = {
+                let App { frame_ui: st, project, settings, .. } = self;
+                frame_ui::show(ctx, st, project, settings)
+            };
+            if let Some(c) = choice {
+                self.settings.save();
+                self.export_frame(c);
+            }
+        }
+        // "Paste Attributes" (Ctrl+Alt+V) — one undo step for the whole paste
+        if self.paste_ui.open {
+            let name = self.attrs.as_ref().map(|c| c.name.clone()).unwrap_or_default();
+            let targets = self.selection.len();
+            let chosen = paste_ui::show(ctx, &mut self.paste_ui, &name, targets);
+            if let Some(set) = chosen {
+                if let Some(src) = self.attrs.clone() {
+                    let snap = self.project.to_json();
+                    let ids = self.selection.clone();
+                    let n = self.project.paste_attributes(&src, &ids, set);
+                    if n > 0 {
+                        push_undo_json(&mut self.undo, &mut self.redo, snap);
+                        self.after_edit();
+                    }
+                    self.toast(format!("Pasted attributes onto {n} clip(s)"));
+                }
+                self.paste_ui.open = false;
+            }
+        }
+        // screen recording / voiceover
+        if self.capture_ui.screen_open || self.capture_ui.voice_open {
+            let resp = {
+                let App { capture_ui: st, settings, palette, screen_rec, voice_rec, .. } = self;
+                capture_ui::show(ctx, st, settings, screen_rec.is_some(), voice_rec.is_some(), palette)
+            };
+            if resp.start_screen {
+                self.start_screen_capture();
+            }
+            if resp.stop_screen {
+                self.stop_screen_capture();
+            }
+            if resp.start_voice {
+                self.start_voiceover();
+            }
+            if resp.stop_voice {
+                self.stop_voiceover();
+            }
+            if let Some((path, at)) = resp.import {
+                self.import_recording(path, at);
+            }
+        }
+        // imported timeline report — "Use this project" swaps it in
+        if self.import_ui.open {
+            let accept = {
+                let App { import_ui: st, palette, .. } = self;
+                import_ui::show(ctx, st, palette)
+            };
+            if accept {
+                if let Some(r) = self.import_ui.report.take() {
+                    if self.confirm_discard() {
+                        self.set_project(r.project, None);
+                        self.toast("Imported timeline is now the project");
+                    }
+                }
+                self.import_ui.open = false;
             }
         }
         // export / convert progress — non-modal: keep editing while it runs
@@ -3049,13 +4122,61 @@ impl eframe::App for App {
             ctx.request_repaint_after(Duration::from_millis(16));
         }
         self.was_playing = playing;
-        if let Some(f) = self.player.take_frame() {
-            if self.first_frame_at.is_none() {
-                self.first_frame_at = Some(Instant::now());
-                #[cfg(debug_assertions)]
-                eprintln!("first frame after {} ms", self.started.elapsed().as_millis());
+        // GPU on: the player hands over decoded layers and we render them here (this thread owns GL);
+        // GPU off / unavailable: the render thread already composited the frame on the CPU.
+        self.sync_gpu();
+        // leave the layers in place until the preview pane has reported its size (first frame), so the
+        // very first decode is not thrown away
+        if self.canvas.0 > 0 && self.canvas.1 > 0 {
+            if let Some(layers) = self.player.take_layers() {
+                let (w, h) = self.canvas;
+                let t = self.player.time();
+                if let Some(f) = self.gpu_frame(&layers, t, w, h) {
+                    self.pending_frame = Some(f);
+                }
             }
+        }
+        if let Some(f) = self.player.take_frame() {
             self.pending_frame = Some(f);
+        }
+        if self.pending_frame.is_some() && self.first_frame_at.is_none() {
+            self.first_frame_at = Some(Instant::now());
+            #[cfg(debug_assertions)]
+            eprintln!("first frame after {} ms", self.started.elapsed().as_millis());
+        }
+        // movie mode: keep rendering the requested range in small slices and show what is ready
+        if self.settings.movie_mode {
+            let t = self.playhead;
+            let App { prerender, project, .. } = self;
+            match guarded(|| (prerender.tick(project, 4.0), prerender.frame(project, t))) {
+                Some((busy, ready)) => {
+                    if let Some(f) = ready {
+                        self.pending_frame = Some(f);
+                    }
+                    if busy {
+                        ctx.request_repaint_after(Duration::from_millis(16));
+                    }
+                }
+                None => {
+                    self.settings.movie_mode = false;
+                    self.toast("Movie mode is not available in this build");
+                }
+            }
+        }
+        // record-on-blur: start when the editor loses focus, stop (and import) when it comes back
+        let focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
+        if self.settings.capture_on_blur && self.capture_ui.screen_open {
+            if self.was_focused && !focused && self.screen_rec.is_none() {
+                self.start_screen_capture();
+            } else if !self.was_focused && focused && self.screen_rec.is_some() {
+                self.stop_screen_capture();
+            }
+        }
+        self.was_focused = focused;
+        if self.screen_rec.is_some() || self.voice_rec.is_some() {
+            let c = self.screen_rec.as_ref().map(|(c, _)| c).or(self.voice_rec.as_ref().map(|(c, _, _)| c));
+            self.capture_ui.elapsed = c.and_then(|c| guarded(|| c.elapsed())).unwrap_or(0.0);
+            ctx.request_repaint_after(Duration::from_millis(250));
         }
 
         // export progress
@@ -3183,6 +4304,11 @@ mod tests {
         }
     }
 
+    /// A 10 s video asset, long enough to split a few times.
+    fn long_asset(path: &str) -> Asset {
+        Asset { duration: 10.0, width: 320, height: 240, fps: 30.0, ..asset(path) }
+    }
+
     #[test]
     fn relocate_assets_falls_back_to_project_dir() {
         let dir = std::env::temp_dir().join(format!("se-relocate-{}", std::process::id()));
@@ -3299,6 +4425,169 @@ mod tests {
         assert_eq!(ts.size, 90.0);
         assert_eq!(ts.color, [10, 20, 30, 255]);
         assert_eq!(ts.align, 0);
+    }
+
+    /// Ctrl+T repeats the last transition: same kind and duration, on the selected clip's left cut.
+    #[test]
+    fn last_transition_is_remembered_and_reapplied() {
+        let mut p = Project::from_media(long_asset("a.mp4"));
+        let ids: Vec<Id> = p.split_at(1.0, None);
+        let (first, second) = (p.all_clips().next().unwrap().1.id, ids[0]);
+        // the "Add Transition" action's default: cross fade, 1 s — remembered by the app
+        let mut last = (TransitionKind::CrossFade, 1.0);
+        assert_eq!(add_transitions(&mut p, &[second], last.0, last.1, false), 1);
+        let tr = p.tracks[0].transitions[0].clone();
+        assert_eq!((tr.kind, tr.duration), last);
+        // a different choice replaces the memory and Ctrl+T applies exactly that at the next cut
+        last = (TransitionKind::Wipe, 0.4);
+        let ids2 = p.split_at(2.0, None);
+        assert_eq!(add_transitions(&mut p, &ids2, last.0, last.1, false), 1);
+        let tr = p.tracks[0].transitions.iter().find(|t| t.right == ids2[0]).expect("second transition");
+        assert_eq!((tr.kind, tr.duration), (TransitionKind::Wipe, 0.4));
+        // nothing abuts the very first clip's left edge
+        assert_eq!(add_transitions(&mut p, &[first], last.0, last.1, false), 0);
+    }
+
+    #[test]
+    fn masks_land_on_the_last_effect_then_the_clip() {
+        let mut p = Project::from_media(long_asset("a.mp4"));
+        let id = p.all_clips().next().unwrap().1.id;
+        // no effects: the clip itself gets the mask
+        assert!(add_mask(&mut p, id, MaskShape::Ellipse));
+        assert_eq!(p.clip(id).unwrap().mask.as_ref().map(|m| m.shape), Some(MaskShape::Ellipse));
+        assert!(!add_mask(&mut p, id, MaskShape::Rect), "a second mask on the same clip is refused");
+        // with an effect, the mask goes on the effect (that is what a mask usually means)
+        p.clip_mut(id).unwrap().effects.push(Effect::new(EffectKind::Blur));
+        assert!(add_mask(&mut p, id, MaskShape::Polygon));
+        assert_eq!(p.clip(id).unwrap().effects[0].mask.as_ref().map(|m| m.shape), Some(MaskShape::Polygon));
+        assert!(!add_mask(&mut p, 999, MaskShape::Rect), "unknown clip");
+    }
+
+    /// Paste Attributes only touches the boxes that were ticked (and never timing or media).
+    #[test]
+    fn paste_attributes_applies_only_the_chosen_fields() {
+        let mut p = Project::from_media(long_asset("a.mp4"));
+        let ids = p.split_at(2.0, None);
+        let src_id = p.all_clips().next().unwrap().1.id;
+        {
+            let c = p.clip_mut(src_id).unwrap();
+            c.opacity.value = 0.25;
+            c.blend = BlendMode::Screen;
+            c.effects.push(Effect::new(EffectKind::Blur));
+            c.label = 3;
+        }
+        let src = p.copy_attributes(src_id).unwrap();
+        let target = ids[0];
+        let (start, dur) = (p.clip(target).unwrap().start, p.clip(target).unwrap().duration);
+        let set = crate::model::AttrSet { opacity: true, ..crate::model::AttrSet::NONE };
+        assert_eq!(p.paste_attributes(&src, &[target], set), 1);
+        let c = p.clip(target).unwrap();
+        assert_eq!(c.opacity.value, 0.25);
+        assert_eq!(c.blend, BlendMode::Normal, "blend was not ticked");
+        assert!(c.effects.is_empty(), "effects were not ticked");
+        assert_eq!(c.label, 0, "label was not ticked");
+        assert_eq!((c.start, c.duration), (start, dur), "timing is never pasted");
+        // ticking effects + label copies those too
+        let set = crate::model::AttrSet { effects: true, label: true, ..crate::model::AttrSet::NONE };
+        p.paste_attributes(&src, &[target], set);
+        let c = p.clip(target).unwrap();
+        assert_eq!(c.effects.len(), 1);
+        assert_eq!(c.label, 3);
+    }
+
+    #[test]
+    fn frame_export_and_preview_sizes() {
+        // downscale: render straight at the target
+        assert_eq!(frame_render_size((1920, 1080), (960, 540)), (960, 540));
+        assert_eq!(frame_render_size((1920, 1080), (1920, 1080)), (1920, 1080));
+        // upscale (2x / 4x buttons): render at project size, ffmpeg enlarges with the chosen flag
+        assert_eq!(frame_render_size((1920, 1080), (3840, 2160)), (1920, 1080));
+        // mixed (wider but shorter) counts as an upscale, and degenerate sizes are clamped
+        assert_eq!(frame_render_size((1920, 1080), (4000, 100)), (1920, 1080));
+        assert_eq!(frame_render_size((0, 0), (0, 0)), (16, 16));
+        // preview quality scales the canvas, keeps zero at zero and never goes below 16 px
+        assert_eq!(preview_canvas((800, 600), 100), (800, 600));
+        assert_eq!(preview_canvas((800, 600), 50), (400, 300));
+        assert_eq!(preview_canvas((800, 600), 1), (200, 150)); // clamped to 25 %
+        assert_eq!(preview_canvas((0, 600), 50), (0, 0));
+        assert_eq!(preview_canvas((10, 10), 25), (16, 16));
+    }
+
+    #[test]
+    fn effect_thumbnail_cache_keys() {
+        let a = effect_thumb_key(EffectKind::Blur, (96, 54), "");
+        assert_eq!(a, effect_thumb_key(EffectKind::Blur, (96, 54), ""), "stable for the same inputs");
+        assert_ne!(a, effect_thumb_key(EffectKind::Vhs, (96, 54), ""), "kind matters");
+        assert_ne!(a, effect_thumb_key(EffectKind::Blur, (192, 108), ""), "size matters");
+        assert_ne!(a, effect_thumb_key(EffectKind::Blur, (96, 54), "C:/pic.png"), "stock image matters");
+        // every kind gets its own key at one size
+        let mut keys: Vec<u64> = EffectKind::ALL.iter().map(|&k| effect_thumb_key(k, (96, 54), "x")).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), EffectKind::ALL.len());
+        // the generated test pattern is a real image with colour in it
+        let f = effect_thumb_source("", 32, 24, Backend::Ffmpeg);
+        assert_eq!((f.width, f.height), (32, 24));
+        assert_eq!(f.rgba.len(), 32 * 24 * 4);
+        assert!(f.rgba.chunks_exact(4).any(|p| p[0] > 200 && p[1] < 80), "no red wedge in the test pattern");
+        assert!(f.rgba.chunks_exact(4).all(|p| p[3] == 255), "test pattern must be opaque");
+    }
+
+    /// The frame writer really produces an image of the requested size (needs ffmpeg; skipped without).
+    #[test]
+    fn write_image_scales_and_writes() {
+        if media::ffpipe::ffmpeg_exe().is_none() {
+            println!("write_image test: no ffmpeg, skipped");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("se-frame-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let frame = effect_thumb_source("", 64, 48, Backend::Ffmpeg);
+        for (name, quality) in [("shot.png", 100), ("shot.jpg", 80), ("shot.webp", 80)] {
+            let out = dir.join(name);
+            let opts = frame_ui::FrameExport {
+                out: out.clone(),
+                size: (128, 96), // upscaled by ffmpeg, like a 2x frame export
+                scaler: Scaler::Bilinear,
+                resize: "lanczos".into(),
+                with_effects: true,
+                quality,
+            };
+            write_image(&frame, &opts).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(out.is_file(), "{name} not written");
+            let probe = media::probe(&out.to_string_lossy(), Backend::Ffmpeg).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!((probe.width, probe.height), (128, 96), "{name} size");
+        }
+        // a path ffmpeg cannot write is an error, not a panic
+        let bad = frame_ui::FrameExport {
+            out: PathBuf::from("Z:/nope/shot.png"),
+            size: (64, 48),
+            scaler: Scaler::Bilinear,
+            resize: String::new(),
+            with_effects: true,
+            quality: 90,
+        };
+        assert!(write_image(&frame, &bad).is_err());
+        assert!(write_image(&Frame::default(), &bad).is_err(), "an empty frame is refused");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Every action is dispatched (`act` matches exhaustively) and every pane can be toggled from
+    /// the View menu; here we only check the round-3 actions still carry their advertised bindings.
+    #[test]
+    fn round3_actions_are_bound() {
+        use crate::hotkeys::Hotkeys;
+        let h = Hotkeys::defaults();
+        for (a, text) in [
+            (Action::AddLastTransition, "Ctrl+T"),
+            (Action::CopyAttributes, "Ctrl+Alt+C"),
+            (Action::PasteAttributes, "Ctrl+Alt+V"),
+            (Action::AddMarker, "M"),
+            (Action::AddMask, "Ctrl+Shift+M"),
+            (Action::ExportFrame, "Ctrl+Shift+F"),
+        ] {
+            assert_eq!(h.text(a), text, "{a:?}");
+        }
     }
 
     #[test]

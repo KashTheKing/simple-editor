@@ -144,6 +144,10 @@ pub fn show(
             state.lossless = false;
         }
         ui.weak("Audio extensions (mp3, wav, m4a, flac) export audio only; gif has no audio.");
+        if settings.gpu || settings.preview_quality < 100 {
+            // Settings ▸ Performance only changes what you watch, never what is written
+            ui.weak("GPU preview and preview quality do not change the exported picture.");
+        }
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             let can = !exporting && !project.is_empty();

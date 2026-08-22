@@ -1492,7 +1492,7 @@ mod tests {
             let _ = ctx.run(egui::RawInput::default(), |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut undo = |_: &Project| {};
-                    show(ui, &mut state, &mut project, &mut settings, None, &palette, &mut undo);
+                    show(ui, &mut state, &mut project, &mut settings, None, &palette, true, &mut undo);
                 });
             });
             search_rect = ctx
@@ -1512,7 +1512,7 @@ mod tests {
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 let mut undo = |_: &Project| {};
-                show(ui, &mut state, &mut project, &mut settings, None, &palette, &mut undo);
+                show(ui, &mut state, &mut project, &mut settings, None, &palette, true, &mut undo);
             });
         });
         assert!(state.search.is_empty());
@@ -1547,7 +1547,7 @@ mod tests {
             let _ = ctx.run(egui::RawInput::default(), |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut undo = |_: &Project| panic!("no undo without edits");
-                    let r = show(ui, &mut state, &mut project, &mut settings, Some(&mut cache), &palette, &mut undo);
+                    let r = show(ui, &mut state, &mut project, &mut settings, Some(&mut cache), &palette, true, &mut undo);
                     assert!(!r.edited && !r.edit_labels);
                 });
             });
@@ -1590,7 +1590,7 @@ mod tests {
                 let out = ctx.run(input, |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
                         let mut undo = |_: &Project| {};
-                        let r = show(ui, &mut state, &mut project, &mut settings, &palette, ytdlp, &mut undo);
+                        let r = show(ui, &mut state, &mut project, &mut settings, None, &palette, ytdlp, &mut undo);
                         asked |= r.import_url;
                     });
                 });
