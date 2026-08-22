@@ -1131,6 +1131,8 @@ impl GpuRenderer {
     ) -> Option<Target> {
         let lt = clip.local(t);
         let order = graph.eval_order();
+        // the logic half of the graph, resolved once for the whole frame
+        let vals = graph.eval_values(lt, fps);
         let mut done: Vec<(Id, Target)> = Vec::with_capacity(order.len());
         let out_id = graph.output()?;
         for id in order {
@@ -1167,9 +1169,32 @@ impl GpuRenderer {
                         }
                         _ => self.transparent(size),
                     },
-                    NodeKind::Text(style) => self.text_node(id, style, t, lt, fps, scale, size),
+                    NodeKind::String(style) => self.text_node(id, style, t, lt, fps, scale, size),
+                    // a number is a grey card at its value, so logic can be used as a matte as it is
+                    NodeKind::Number(_)
+                    | NodeKind::Bool(_)
+                    | NodeKind::Random { .. }
+                    | NodeKind::Math(_)
+                    | NodeKind::Compare(_)
+                    | NodeKind::Logic(_) => {
+                        let v = vals.get(&id).copied().unwrap_or(0.0).clamp(0.0, 1.0) as f32;
+                        let target = self.acquire(size.0, size.1);
+                        if let Some(target) = &target {
+                            self.clear(target, [v, v, v, 1.0]);
+                        }
+                        target
+                    }
+                    NodeKind::Select => {
+                        let cond = graph.input_of(id, 0).and_then(|f| vals.get(&f).copied()).unwrap_or(0.0);
+                        match if cond >= 0.5 { b } else { tex_of(&done, port(2)) } {
+                            Some(tex) => self.copy_to(tex, size),
+                            None => self.transparent(size),
+                        }
+                    }
                     NodeKind::Effect(_) if a.is_none() => self.transparent(size),
                     NodeKind::Effect(e) => {
+                        let owned = driven(e, graph, id, &vals);
+                        let e = &*owned;
                         let src = a.unwrap_or(self.blank);
                         let mask = e.mask.as_ref().filter(|m| m.enabled).and_then(|m| {
                             self.render_mask(m, size, lt, scale, (size.0 as f32 / 2.0, size.1 as f32 / 2.0))
@@ -1193,6 +1218,8 @@ impl GpuRenderer {
                             NodeKind::Combine { mode, factor } => (*mode, factor.at(lt)),
                             _ => (BlendMode::Normal, 1.0),
                         };
+                        // port 2 (when wired) computes the amount instead
+                        let amount = graph.input_of(id, 2).and_then(|f| vals.get(&f).copied()).unwrap_or(amount);
                         let under = match a {
                             Some(tex) => self.copy_to(tex, size),
                             None => self.transparent(size),
@@ -1399,6 +1426,21 @@ impl LayerSet {
 
 // ---------------- pure helpers (tested without a GL context) ----------------
 
+/// An effect node's parameter ports: a value node wired to port `i + 1` computes parameter `i` for
+/// this frame, which is the graph's only way to drive a knob. Untouched effects are not cloned.
+pub fn driven<'a>(e: &'a Effect, graph: &NodeGraph, id: Id, vals: &HashMap<Id, f64>) -> std::borrow::Cow<'a, Effect> {
+    let mut out = std::borrow::Cow::Borrowed(e);
+    for i in 0..e.specs().len() {
+        let Some(v) = graph.input_of(id, i + 1).and_then(|f| vals.get(&f).copied()) else { continue };
+        let e = out.to_mut();
+        while e.params.len() <= i {
+            e.params.push(crate::model::Animated::new(0.0));
+        }
+        e.params[i] = crate::model::Animated::new(v);
+    }
+    out
+}
+
 /// The canvas size `render_to_texture` actually renders at for a given preview quality. Callers must
 /// rasterise text/shape/subtitle layers at *this* size (they are placed 1:1, not fitted).
 pub fn render_size(w: u32, h: u32, quality: f32) -> (u32, u32) {
@@ -1564,6 +1606,43 @@ mod tests {
     use super::*;
     use crate::engine::compose::Placement;
     use std::num::NonZeroU32;
+
+    #[test]
+    fn a_value_node_drives_an_effect_parameter() {
+        let mut next = 0;
+        let mut nid = || {
+            next += 1;
+            next
+        };
+        let mut g = NodeGraph::new(&mut nid);
+        let fx_id = nid();
+        let num_id = nid();
+        g.nodes.push(crate::model::Node {
+            id: fx_id,
+            kind: NodeKind::Effect(Effect::new(EffectKind::Blur)),
+            x: 0.0,
+            y: 0.0,
+            enabled: true,
+        });
+        g.nodes.push(crate::model::Node {
+            id: num_id,
+            kind: NodeKind::Number(crate::model::Animated::new(42.0)),
+            x: 0.0,
+            y: 0.0,
+            enabled: true,
+        });
+        let out = g.output().unwrap();
+        assert!(g.connect(fx_id, out, 0));
+        let fx = Effect::new(EffectKind::Blur);
+        // nothing wired: the effect is passed straight through, not cloned
+        let vals = g.eval_values(0.0, 30.0);
+        assert!(matches!(driven(&fx, &g, fx_id, &vals), std::borrow::Cow::Borrowed(_)));
+        // the number on the radius port replaces the radius for this frame
+        assert!(g.connect(num_id, fx_id, 1));
+        let vals = g.eval_values(0.0, 30.0);
+        assert_eq!(driven(&fx, &g, fx_id, &vals).at(0, 0.0), 42.0);
+        assert_eq!(fx.at(0, 0.0), Effect::new(EffectKind::Blur).at(0, 0.0), "the stored effect is untouched");
+    }
 
     fn fake_target(w: u32, h: u32, id: u32) -> Target {
         // GL handles are never touched by the pool itself.

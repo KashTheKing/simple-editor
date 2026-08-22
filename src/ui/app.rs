@@ -532,7 +532,9 @@ fn node_kind(s: &str) -> Result<NodeKind, String> {
         "matte" => return Ok(NodeKind::Matte { invert: false, use_alpha: false }),
         "color" => return Ok(NodeKind::Color([0, 0, 0, 255])),
         "mask" => return Ok(NodeKind::Mask(Mask::new(MaskShape::Ellipse))),
-        "text" => return Ok(NodeKind::Text(crate::model::TextStyle { text: "{time}".into(), ..Default::default() })),
+        "text" | "string" => {
+            return Ok(NodeKind::String(crate::model::TextStyle { text: "{time}".into(), ..Default::default() }))
+        }
         _ => {}
     }
     let kind = EffectKind::ALL

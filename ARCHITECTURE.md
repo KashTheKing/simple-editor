@@ -110,8 +110,11 @@ monotonic `next_id`.
   table (name/default/min/max); `is_bool_param()` marks checkbox params; `is_geometric()` marks effects
   folded into the placement; `needs_motion()` marks ones needing neighbouring frames.
 * `NodeGraph { nodes, edges }` — `NodeKind::{Input, Color, Clip, Asset, Effect, Blend, Combine, Merge,
-  Matte, Mask, Text, Output}`, cycle-refusing `connect`, `eval_order()`, `to_effects()` (the inverse of
-  `from_effects`, used by `Project::unlink_graph`). Present ⇒ it replaces the linear stack for rendering.
+  Matte, Mask, String, Number, Bool, Random, Math, Compare, Logic, Select, Output}` (`String` was called
+  `Text`; a serde alias keeps old projects loading), cycle-refusing `connect`, `eval_order()`,
+  `eval_values()` — the scalar half of the graph, which drives effect parameter ports — and
+  `to_effects()` (the inverse of `from_effects`, used by `Project::unlink_graph`). Present ⇒ it replaces
+  the linear stack for rendering.
 * `Mask` — Rect/Ellipse/Polygon/Path with animated centre/radii/rotation/feather/expand/opacity/invert.
 * `Transition` — lives on a `Track`, centred on a cut, **window clamped to its two clips**
   (`Transition::window(left, right)`); kinds CrossFade / FadeToColor / Push / Wipe.
