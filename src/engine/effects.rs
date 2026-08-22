@@ -14,6 +14,16 @@
 //!  * Invert / Grayscale: mix by `amount`.
 //!  * Flip: horizontal / vertical mirror (params >= 0.5 = on).
 //!  * Crop: fractions cut from each edge (alpha = 0), with an optional feathered edge.
+//!  * Threshold / Levels / Curves: one 256-entry LUT per channel.
+//!  * HueShift: RGB -> HSL -> RGB per pixel.
+//!  * ChromaKey: Cb/Cr distance to the key colour with spill removal (no edge shrink — that needs
+//!    neighbourhood taps; the GPU body does it).
+//!  * RecDot: a blinking dot plus a seven-segment HH:MM:SS timecode drawn as rectangles.
+//!
+//! Still GPU-only (engine/shaders.rs has the fragment bodies, the CPU path leaves the layer alone):
+//! Vhs, MotionBlur, EdgeGlow, JpegCompress, the BlobTrack overlay and user Shaders. `track` below is
+//! the CPU half of BlobTrack — it runs anywhere, so the tracked centroid can drive properties even
+//! without a GL context.
 
 use crate::media::Frame;
 use crate::model::{Effect, EffectKind};
@@ -35,22 +45,16 @@ pub fn apply(effect: &Effect, t: f64, scale: f32, img: &mut Frame, scratch: &mut
         return;
     }
     let e = |i: usize| effect.at(i, t);
-    // round-3 kinds are GPU shaders (engine/gpu): the CPU path leaves the layer untouched so previews and
-    // exports on a machine without a GL context degrade gracefully instead of panicking.
+    // These kinds only exist as GPU shaders (engine/gpu): the CPU path leaves the layer untouched so
+    // previews and exports on a machine without a GL context degrade gracefully instead of panicking.
     if matches!(
         effect.kind,
-        EffectKind::ChromaKey
-            | EffectKind::Curves
-            | EffectKind::Levels
-            | EffectKind::HueShift
-            | EffectKind::JpegCompress
+        EffectKind::JpegCompress
             | EffectKind::MotionBlur
             | EffectKind::Plane3d
             | EffectKind::EdgeGlow
-            | EffectKind::Threshold
             | EffectKind::BlobTrack
             | EffectKind::Vhs
-            | EffectKind::RecDot
             | EffectKind::Shader
     ) {
         return;
@@ -110,27 +114,37 @@ pub fn apply(effect: &Effect, t: f64, scale: f32, img: &mut Frame, scratch: &mut
         }
         EffectKind::Flip => flip(img, e(0) >= 0.5, e(1) >= 0.5),
         EffectKind::Crop => crop(img, e(0) as f32, e(1) as f32, e(2) as f32, e(3) as f32, e(4) as f32),
-        EffectKind::Wobble => {} // geometric — handled by the compositor's placement
+        EffectKind::Threshold => threshold(img, e(0) as f32, e(1) as f32, e(2) >= 0.5),
+        EffectKind::HueShift => hue_shift(img, e(0) as f32, e(1) as f32, e(2) as f32),
+        EffectKind::Levels => levels(img, e(0), e(1), e(2), e(3), e(4)),
+        EffectKind::Curves => curves(img, &std::array::from_fn::<f64, 12, _>(|i| e(i))),
+        EffectKind::ChromaKey => {
+            chroma_key(img, [e(0) as f32, e(1) as f32, e(2) as f32], e(3) as f32, e(4) as f32, e(5) >= 0.5, e(6) as f32)
+        }
+        EffectKind::RecDot => rec_dot(img, t, scale, e(0), e(1), e(2), e(3) >= 0.5, e(4)),
+        // geometric — handled by the compositor's placement (see `wobble`)
+        EffectKind::Wobble | EffectKind::Plane3d => {}
         // GPU-only kinds returned above; listed so a new kind is a compile error, not a silent no-op
-        EffectKind::ChromaKey
-        | EffectKind::Curves
-        | EffectKind::Levels
-        | EffectKind::HueShift
-        | EffectKind::JpegCompress
+        EffectKind::JpegCompress
         | EffectKind::MotionBlur
-        | EffectKind::Plane3d
         | EffectKind::EdgeGlow
-        | EffectKind::Threshold
         | EffectKind::BlobTrack
         | EffectKind::Vhs
-        | EffectKind::RecDot
         | EffectKind::Shader => {}
     }
 }
 
-/// Camera-shake deltas at clip-local time t: (dx, dy) in project px, (roll, yaw, pitch) in degrees.
-/// Deterministic from the seed, smooth (sum of a few incommensurate sines), frequency in Hz.
+/// Placement deltas for a geometric effect at clip-local time t: (dx, dy) in project px,
+/// (roll, yaw, pitch) in degrees.
+///
+/// `Wobble` is camera shake: deterministic from the seed, smooth (sum of a few incommensurate sines),
+/// frequency in Hz. `Plane3d` is static — its yaw/pitch/roll go straight to the placement, which the
+/// CPU compositor already renders as a homography. Distance / field of view / offset Z only exist in
+/// the GPU path (`plane3d_matrix`); the CPU fallback ignores them.
 pub fn wobble(effect: &Effect, t: f64) -> (f64, f64, f64, f64, f64) {
+    if effect.kind == EffectKind::Plane3d {
+        return (0.0, 0.0, effect.at(2, t), effect.at(0, t), effect.at(1, t));
+    }
     let freq = effect.at(5, t).max(0.0);
     let seed = effect.at(6, t);
     let w = std::f64::consts::TAU * freq * t;
@@ -149,7 +163,102 @@ pub fn wobble(effect: &Effect, t: f64) -> (f64, f64, f64, f64, f64) {
 
 /// True for effects that only move the layer (handled by the compositor's placement, not `apply`).
 pub fn is_geometric(kind: EffectKind) -> bool {
-    kind == EffectKind::Wobble
+    kind.is_geometric()
+}
+
+/// `Plane3d` as a row-major 3×3 homography mapping normalised layer coordinates (0..1, v = 0 at the
+/// top) to normalised output coordinates, for the GPU composite pass. `None` when a corner ends up on
+/// or behind the camera plane.
+///
+/// The plane is a unit square at z = 0; yaw rotates about Y, pitch about X, roll is applied in 2D after
+/// the projection (matching the CPU compositor). `Field of view` sets how hard the perspective divide
+/// bites, `Distance` is a plain dolly (2 = neutral) and `Offset Z` pushes the whole plane away. At the
+/// default parameters this is exactly the identity.
+pub fn plane3d_matrix(effect: &Effect, t: f64) -> Option<[f32; 9]> {
+    let (sy, cy) = effect.at(0, t).to_radians().sin_cos();
+    let (sp, cp) = effect.at(1, t).to_radians().sin_cos();
+    let (sr, cr) = effect.at(2, t).to_radians().sin_cos();
+    let zoom = 2.0 / effect.at(3, t).max(0.01);
+    let tan_half = (effect.at(4, t).clamp(1.0, 179.0).to_radians() * 0.5).tan().max(1e-3);
+    let off = effect.at(5, t) * 0.5;
+    let mut quad = [[0.0f32; 2]; 4];
+    for (k, (x, y)) in [(-0.5, -0.5), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5)].into_iter().enumerate() {
+        let (x1, z1) = (x * cy, -x * sy);
+        let (y2, z2) = (y * cp - z1 * sp, y * sp + z1 * cp + off);
+        let denom = 1.0 + 2.0 * tan_half * z2;
+        if denom < 0.05 {
+            return None;
+        }
+        let (px, py) = (x1 / denom * zoom, y2 / denom * zoom);
+        quad[k] = [(0.5 + px * cr - py * sr) as f32, (0.5 + px * sr + py * cr) as f32];
+    }
+    Some(square_to_quad(&quad))
+}
+
+/// Row-major 3×3 mapping the unit square (0,0) (1,0) (1,1) (0,1) onto `q` (Heckbert).
+fn square_to_quad(q: &[[f32; 2]; 4]) -> [f32; 9] {
+    let [a, b, c, d] = *q;
+    let (dx1, dy1) = (b[0] - c[0], b[1] - c[1]);
+    let (dx2, dy2) = (d[0] - c[0], d[1] - c[1]);
+    let (sx, sy) = (a[0] - b[0] + c[0] - d[0], a[1] - b[1] + c[1] - d[1]);
+    let den = dx1 * dy2 - dx2 * dy1;
+    let (g, h) = if (sx.abs() < 1e-6 && sy.abs() < 1e-6) || den.abs() < 1e-9 {
+        (0.0, 0.0)
+    } else {
+        ((sx * dy2 - dx2 * sy) / den, (dx1 * sy - sx * dy1) / den)
+    };
+    [
+        b[0] - a[0] + g * b[0],
+        d[0] - a[0] + h * d[0],
+        a[0],
+        b[1] - a[1] + g * b[1],
+        d[1] - a[1] + h * d[1],
+        a[1],
+        g,
+        h,
+        1.0,
+    ]
+}
+
+/// `BlobTrack` on the CPU: the centroid of every pixel within `Tolerance` of the target colour, as
+/// (cx, cy) in 0..1 layer coordinates plus the matched area as a fraction of the frame. `None` when
+/// nothing matches. `params` is the effect's parameter list (`EffectKind::BlobTrack.params()` order).
+///
+/// ponytail: centroid of *all* matching pixels, not the largest connected component — upgrade to a
+/// union-find labelling if a second blob of the same colour ever needs to be ignored.
+pub fn track(frame: &Frame, params: &[f64]) -> Option<(f64, f64, f64)> {
+    if frame.is_empty() || params.len() < 4 {
+        return None;
+    }
+    let target = [params[0] as f32 / 255.0, params[1] as f32 / 255.0, params[2] as f32 / 255.0];
+    let tol = (params[3].clamp(0.0, 1.0) as f32) * 1.2;
+    let tol2 = tol * tol;
+    let (w, h) = (frame.width as usize, frame.height as usize);
+    let (mut sx, mut sy, mut n) = (0f64, 0f64, 0usize);
+    for y in 0..h {
+        let row = y * frame.stride();
+        for x in 0..w {
+            let p = &frame.rgba[row + x * 4..row + x * 4 + 4];
+            if p[3] < 8 {
+                continue;
+            }
+            let mut d2 = 0.0f32;
+            for c in 0..3 {
+                let d = p[c] as f32 / 255.0 - target[c];
+                d2 += d * d;
+            }
+            if d2 <= tol2 {
+                sx += x as f64 + 0.5;
+                sy += y as f64 + 0.5;
+                n += 1;
+            }
+        }
+    }
+    if n == 0 {
+        return None;
+    }
+    let nf = n as f64;
+    Some((sx / nf / w as f64, sy / nf / h as f64, nf / (w * h) as f64))
 }
 
 /// One separable box pass (radius `r`, edge-replicated): rows img→scratch, columns scratch→img.
@@ -411,6 +520,293 @@ fn crop(img: &mut Frame, l: f32, r: f32, tp: f32, b: f32, feather: f32) {
     }
 }
 
+/// Build a 256-entry LUT from a 0..1 -> 0..1 function.
+fn lut_from(f: impl Fn(f64) -> f64) -> [u8; 256] {
+    std::array::from_fn(|v| (f(v as f64 / 255.0).clamp(0.0, 1.0) * 255.0 + 0.5) as u8)
+}
+
+fn apply_lut(img: &mut Frame, lut: &[u8; 256]) {
+    for px in img.rgba.chunks_exact_mut(4) {
+        px[0] = lut[px[0] as usize];
+        px[1] = lut[px[1] as usize];
+        px[2] = lut[px[2] as usize];
+    }
+}
+
+/// Posterise to black/white at `level` with a `softness`-wide ramp, on luma or per channel.
+fn threshold(img: &mut Frame, level: f32, softness: f32, per_channel: bool) {
+    let sm = softness.max(1e-4) * 0.5;
+    let lut: [u8; 256] = lut_from(|x| smoothstep((x as f32 - (level - sm)) / (2.0 * sm)) as f64);
+    if per_channel {
+        apply_lut(img, &lut);
+        return;
+    }
+    for px in img.rgba.chunks_exact_mut(4) {
+        let l = ((px[0] as u32 * 54 + px[1] as u32 * 183 + px[2] as u32 * 19) >> 8).min(255) as usize;
+        let v = lut[l];
+        px[0] = v;
+        px[1] = v;
+        px[2] = v;
+    }
+}
+
+/// Rec.601-free HSL round trip (matches the GPU body): hue in turns, s/l in 0..1.
+fn rgb_to_hsl(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
+    let mx = r.max(g).max(b);
+    let mn = r.min(g).min(b);
+    let l = (mx + mn) * 0.5;
+    let d = mx - mn;
+    if d <= 1e-5 {
+        return (0.0, 0.0, l);
+    }
+    let s = d / (1.0 - (2.0 * l - 1.0).abs()).max(1e-5);
+    let h = if mx == r {
+        ((g - b) / d).rem_euclid(6.0)
+    } else if mx == g {
+        (b - r) / d + 2.0
+    } else {
+        (r - g) / d + 4.0
+    };
+    (h / 6.0, s, l)
+}
+
+fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (f32, f32, f32) {
+    let (s, l) = (s.clamp(0.0, 1.0), l.clamp(0.0, 1.0));
+    if s <= 0.0 {
+        return (l, l, l);
+    }
+    let q = if l < 0.5 { l * (1.0 + s) } else { l + s - l * s };
+    let p = 2.0 * l - q;
+    let c = |t: f32| {
+        let u = t.rem_euclid(1.0);
+        if u < 1.0 / 6.0 {
+            p + (q - p) * 6.0 * u
+        } else if u < 0.5 {
+            q
+        } else if u < 2.0 / 3.0 {
+            p + (q - p) * (2.0 / 3.0 - u) * 6.0
+        } else {
+            p
+        }
+    };
+    (c(h + 1.0 / 3.0), c(h), c(h - 1.0 / 3.0))
+}
+
+/// Rotate hue by `deg`, scale saturation, offset lightness.
+fn hue_shift(img: &mut Frame, deg: f32, sat: f32, light: f32) {
+    let turn = deg / 360.0;
+    for px in img.rgba.chunks_exact_mut(4) {
+        let (h, s, l) = rgb_to_hsl(px[0] as f32 / 255.0, px[1] as f32 / 255.0, px[2] as f32 / 255.0);
+        let (r, g, b) = hsl_to_rgb(h + turn, (s * sat.max(0.0)).clamp(0.0, 1.0), l + light);
+        px[0] = (r.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+        px[1] = (g.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+        px[2] = (b.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+    }
+}
+
+/// Remap [in_black, in_white] onto [out_black, out_white] through `gamma` (v^(1/g), like Color).
+fn levels(img: &mut Frame, inb: f64, inw: f64, gamma: f64, outb: f64, outw: f64) {
+    let span = (inw - inb).max(1e-4);
+    let g = gamma.max(0.01);
+    let lut = lut_from(|x| outb + ((x - inb) / span).clamp(0.0, 1.0).powf(1.0 / g) * (outw - outb));
+    apply_lut(img, &lut);
+}
+
+/// Monotone cubic (Fritsch–Carlson) through (0,0) (0.25,a) (0.5,b) (0.75,c) (1,1) — the exact curve
+/// `shaders::CURVES` evaluates on the GPU, so preview and export agree.
+pub fn curve_at(x: f64, a: f64, b: f64, c: f64) -> f64 {
+    let y = [0.0, a, b, c, 1.0];
+    let mut d = [0.0f64; 4];
+    for i in 0..4 {
+        d[i] = (y[i + 1] - y[i]) * 4.0;
+    }
+    let mut m = [0.0f64; 5];
+    m[0] = d[0];
+    m[4] = d[3];
+    for i in 1..4 {
+        m[i] = if d[i - 1] * d[i] <= 0.0 { 0.0 } else { (d[i - 1] + d[i]) * 0.5 };
+    }
+    for i in 0..4 {
+        if d[i].abs() < 1e-6 {
+            m[i] = 0.0;
+            m[i + 1] = 0.0;
+        } else {
+            let (ai, bi) = (m[i] / d[i], m[i + 1] / d[i]);
+            let s = ai * ai + bi * bi;
+            if s > 9.0 {
+                let k = 3.0 / s.sqrt();
+                m[i] = k * ai * d[i];
+                m[i + 1] = k * bi * d[i];
+            }
+        }
+    }
+    let xc = x.clamp(0.0, 1.0);
+    let i = ((xc * 4.0).floor() as usize).min(3);
+    let t = xc * 4.0 - i as f64;
+    let (t2, t3) = (t * t, t * t * t);
+    (2.0 * t3 - 3.0 * t2 + 1.0) * y[i]
+        + (t3 - 2.0 * t2 + t) * 0.25 * m[i]
+        + (-2.0 * t3 + 3.0 * t2) * y[i + 1]
+        + (t3 - t2) * 0.25 * m[i + 1]
+}
+
+/// Per-channel curves then the master curve (12 knots: master, R, G, B).
+fn curves(img: &mut Frame, k: &[f64; 12]) {
+    let master = lut_from(|x| curve_at(x, k[0], k[1], k[2]));
+    let chans: [[u8; 256]; 3] = [
+        lut_from(|x| curve_at(x, k[3], k[4], k[5])),
+        lut_from(|x| curve_at(x, k[6], k[7], k[8])),
+        lut_from(|x| curve_at(x, k[9], k[10], k[11])),
+    ];
+    // fold the master into each channel LUT so it stays one lookup per pixel
+    let fold: [[u8; 256]; 3] = std::array::from_fn(|c| std::array::from_fn(|v| master[chans[c][v] as usize]));
+    for px in img.rgba.chunks_exact_mut(4) {
+        px[0] = fold[0][px[0] as usize];
+        px[1] = fold[1][px[1] as usize];
+        px[2] = fold[2][px[2] as usize];
+    }
+}
+
+fn to_ycc(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
+    (0.299 * r + 0.587 * g + 0.114 * b, -0.168736 * r - 0.331264 * g + 0.5 * b, 0.5 * r - 0.418688 * g - 0.081312 * b)
+}
+
+/// Key out colours near `key` (0..255) by their Cb/Cr distance, with spill removal. No edge shrink —
+/// that needs neighbourhood taps; `shaders::CHROMA_KEY` does it on the GPU.
+fn chroma_key(img: &mut Frame, key: [f32; 3], similarity: f32, smoothness: f32, show_mask: bool, spill: f32) {
+    let (_, kb, kr) = to_ycc(key[0] / 255.0, key[1] / 255.0, key[2] / 255.0);
+    let klen = (kb * kb + kr * kr).sqrt();
+    let sim = similarity.clamp(0.0, 1.0) * 0.5;
+    let width = (smoothness.clamp(0.0, 1.0) * 0.5).max(0.0005);
+    let spill = spill.clamp(0.0, 1.0);
+    for px in img.rgba.chunks_exact_mut(4) {
+        let (r, g, b) = (px[0] as f32 / 255.0, px[1] as f32 / 255.0, px[2] as f32 / 255.0);
+        let (y, cb, cr) = to_ycc(r, g, b);
+        let a = smoothstep((((cb - kb).powi(2) + (cr - kr).powi(2)).sqrt() - sim) / width);
+        if show_mask {
+            let v = (a * 255.0 + 0.5) as u8;
+            px[0] = v;
+            px[1] = v;
+            px[2] = v;
+            px[3] = 255;
+            continue;
+        }
+        if spill > 0.0 && klen > 1e-3 {
+            let proj = (cb * kb + cr * kr) / klen;
+            if proj > 0.0 {
+                let (nb, nr) = (cb - kb / klen * proj * spill, cr - kr / klen * proj * spill);
+                let rgb = [y + 1.402 * nr, y - 0.344136 * nb - 0.714136 * nr, y + 1.772 * nb];
+                for c in 0..3 {
+                    px[c] = (rgb[c].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+                }
+            }
+        }
+        px[3] = (px[3] as f32 * a) as u8;
+    }
+}
+
+/// Seven-segment masks for 0..9 (bit 0 = top, then clockwise from top-right, bit 6 = middle).
+const SEVEN_SEG: [u8; 10] = [0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F];
+/// Segment geometry in digit-cell units (cx, cy, half-w, half-h) with `T` the stroke thickness.
+const SEG_T: f32 = 0.11;
+const SEGMENTS: [(f32, f32, f32, f32); 7] = [
+    (0.5, SEG_T, 0.5 - SEG_T, SEG_T),
+    (1.0 - SEG_T, 0.25, SEG_T, 0.25 - SEG_T),
+    (1.0 - SEG_T, 0.75, SEG_T, 0.25 - SEG_T),
+    (0.5, 1.0 - SEG_T, 0.5 - SEG_T, SEG_T),
+    (SEG_T, 0.75, SEG_T, 0.25 - SEG_T),
+    (SEG_T, 0.25, SEG_T, 0.25 - SEG_T),
+    (0.5, 0.5, 0.5 - SEG_T, SEG_T),
+];
+
+/// Opaque axis-aligned rectangle (canvas px, clipped).
+fn fill_rect(img: &mut Frame, x0: f32, y0: f32, x1: f32, y1: f32, rgb: [u8; 3]) {
+    let (w, h) = (img.width as i64, img.height as i64);
+    let xs = (x0.round() as i64).clamp(0, w);
+    let xe = (x1.round() as i64).clamp(0, w);
+    let ys = (y0.round() as i64).clamp(0, h);
+    let ye = (y1.round() as i64).clamp(0, h);
+    let stride = img.stride();
+    for y in ys..ye {
+        let row = y as usize * stride;
+        for x in xs..xe {
+            let p = row + x as usize * 4;
+            img.rgba[p..p + 3].copy_from_slice(&rgb);
+            img.rgba[p + 3] = 255;
+        }
+    }
+}
+
+fn draw_digit(img: &mut Frame, x: f32, y: f32, w: f32, h: f32, digit: usize, rgb: [u8; 3]) {
+    let mask = SEVEN_SEG[digit.min(9)];
+    for (i, (cx, cy, hx, hy)) in SEGMENTS.iter().enumerate() {
+        if mask & (1 << i) != 0 {
+            fill_rect(img, x + (cx - hx) * w, y + (cy - hy) * h, x + (cx + hx) * w, y + (cy + hy) * h, rgb);
+        }
+    }
+}
+
+/// Blinking record dot in a corner (0 = TL, 1 = TR, 2 = BL, 3 = BR) plus an optional HH:MM:SS timecode.
+#[allow(clippy::too_many_arguments)]
+fn rec_dot(img: &mut Frame, t: f64, scale: f32, size: f64, hz: f64, corner: f64, timecode: bool, margin: f64) {
+    let sz = (size.max(2.0) * scale as f64) as f32;
+    let mg = (margin.max(0.0) * scale as f64) as f32;
+    let corner = corner.clamp(0.0, 3.0).round() as u8;
+    let (right, bottom) = (corner == 1 || corner == 3, corner == 2 || corner == 3);
+    let (w, h) = (img.width as f32, img.height as f32);
+    let ax = if right { w - mg - sz * 0.5 } else { mg + sz * 0.5 };
+    let ay = if bottom { h - mg - sz * 0.5 } else { mg + sz * 0.5 };
+    let on = hz <= 0.0 || (t * hz).rem_euclid(1.0) < 0.5;
+    if on {
+        let r = sz * 0.5;
+        let stride = img.stride();
+        for y in ((ay - r).max(0.0) as usize)..((ay + r).ceil().min(h) as usize) {
+            let row = y * stride;
+            for x in ((ax - r).max(0.0) as usize)..((ax + r).ceil().min(w) as usize) {
+                let (dx, dy) = (x as f32 + 0.5 - ax, y as f32 + 0.5 - ay);
+                let d = (dx * dx + dy * dy).sqrt();
+                let a = (r + 0.5 - d).clamp(0.0, 1.0);
+                if a <= 0.0 {
+                    continue;
+                }
+                let p = row + x * 4;
+                for (c, v) in [230u8, 30, 30].into_iter().enumerate() {
+                    img.rgba[p + c] = (img.rgba[p + c] as f32 + (v as f32 - img.rgba[p + c] as f32) * a) as u8;
+                }
+                img.rgba[p + 3] = img.rgba[p + 3].max((a * 255.0) as u8);
+            }
+        }
+    }
+    if !timecode {
+        return;
+    }
+    let (dh, dw, gap) = (sz, sz * 0.55, sz * 0.12);
+    let (cw, colw) = (dw + gap, sz * 0.3 + gap);
+    let total = 6.0 * cw + 2.0 * colw;
+    let mut x = if right { ax - sz * 0.5 - gap * 2.0 - total } else { ax + sz * 0.5 + gap * 2.0 };
+    let y0 = ay - dh * 0.5;
+    let secs = t.max(0.0) as u64;
+    let digits = [
+        (secs / 3600 % 100) / 10,
+        (secs / 3600 % 100) % 10,
+        (secs / 60 % 60) / 10,
+        (secs / 60 % 60) % 10,
+        (secs % 60) / 10,
+        (secs % 60) % 10,
+    ];
+    for (i, d) in digits.into_iter().enumerate() {
+        draw_digit(img, x, y0, dw, dh, d as usize, [235, 235, 235]);
+        x += cw;
+        if i == 1 || i == 3 {
+            let cx = x + colw * 0.5;
+            let r = sz * 0.07;
+            fill_rect(img, cx - r, y0 + dh * 0.33 - r, cx + r, y0 + dh * 0.33 + r, [235, 235, 235]);
+            fill_rect(img, cx - r, y0 + dh * 0.7 - r, cx + r, y0 + dh * 0.7 + r, [235, 235, 235]);
+            x += colw;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -652,6 +1048,228 @@ mod tests {
     #[test]
     fn geometric_flag() {
         assert!(is_geometric(EffectKind::Wobble));
+        assert!(is_geometric(EffectKind::Plane3d));
         assert!(!is_geometric(EffectKind::Blur));
+    }
+
+    /// A frame of one flat colour.
+    fn flat(w: u32, h: u32, rgba: [u8; 4]) -> Frame {
+        let mut f = Frame::new(w, h);
+        f.fill(rgba);
+        f
+    }
+
+    fn run(kind: K, params: &[f64], img: &mut Frame) {
+        apply(&eff(kind, params), 0.0, 1.0, img, &mut Frame::default());
+    }
+
+    #[test]
+    fn threshold_splits_at_the_level() {
+        // per channel, no softness: below the level -> 0, above -> 255
+        let mut img = Frame::new(2, 1);
+        img.rgba.copy_from_slice(&[100, 100, 100, 255, 155, 155, 155, 255]);
+        run(K::Threshold, &[0.5, 0.0, 1.0], &mut img);
+        assert_eq!(&img.rgba[..3], &[0, 0, 0]);
+        assert_eq!(&img.rgba[4..7], &[255, 255, 255]);
+        // the level moves the split
+        let mut img = flat(2, 1, [100, 100, 100, 255]);
+        run(K::Threshold, &[0.3, 0.0, 1.0], &mut img);
+        assert_eq!(&img.rgba[..3], &[255, 255, 255]);
+        // luma mode greys the output out of a colour
+        let mut img = flat(1, 1, [255, 0, 0, 255]);
+        run(K::Threshold, &[0.1, 0.0, 0.0], &mut img);
+        assert_eq!(&img.rgba[..3], &[255, 255, 255]);
+        // softness leaves mid values in between
+        let mut img = flat(1, 1, [128, 128, 128, 255]);
+        run(K::Threshold, &[0.5, 0.5, 1.0], &mut img);
+        assert!((100..=160).contains(&img.rgba[0]), "{}", img.rgba[0]);
+    }
+
+    #[test]
+    fn hue_shift_turns_red_into_green() {
+        let mut img = flat(1, 1, [255, 0, 0, 255]);
+        run(K::HueShift, &[120.0, 1.0, 0.0], &mut img);
+        assert_eq!(&img.rgba[..3], &[0, 255, 0]);
+        // and another 120 degrees is blue
+        run(K::HueShift, &[120.0, 1.0, 0.0], &mut img);
+        assert_eq!(&img.rgba[..3], &[0, 0, 255]);
+        // saturation 0 -> grey, lightness lifts it
+        let mut img = flat(1, 1, [255, 0, 0, 255]);
+        run(K::HueShift, &[0.0, 0.0, 0.0], &mut img);
+        assert_eq!(&img.rgba[..3], &[128, 128, 128]);
+        run(K::HueShift, &[0.0, 1.0, 0.5], &mut img);
+        assert!(img.rgba[0] > 200, "{}", img.rgba[0]);
+    }
+
+    #[test]
+    fn levels_clamp_and_remap() {
+        let mut img = Frame::new(3, 1);
+        img.rgba.copy_from_slice(&[0, 0, 0, 255, 100, 100, 100, 255, 255, 255, 255, 255]);
+        run(K::Levels, &[0.5, 1.0, 1.0, 0.0, 1.0], &mut img);
+        assert_eq!(img.rgba[0], 0, "below in-black clamps to 0");
+        assert_eq!(img.rgba[4], 0, "0.39 is below in-black 0.5");
+        assert_eq!(img.rgba[8], 255, "in-white stays white");
+        // output range compresses
+        let mut img = flat(2, 1, [0, 255, 0, 255]);
+        run(K::Levels, &[0.0, 1.0, 1.0, 0.2, 0.8], &mut img);
+        assert_eq!(img.rgba[0], 51);
+        assert_eq!(img.rgba[1], 204);
+        // gamma > 1 lifts the mid tones
+        let mut img = flat(1, 1, [128, 128, 128, 255]);
+        run(K::Levels, &[0.0, 1.0, 2.0, 0.0, 1.0], &mut img);
+        assert!(img.rgba[0] > 150, "{}", img.rgba[0]);
+    }
+
+    #[test]
+    fn curves_are_identity_at_the_default_knots() {
+        for x in [0.0, 0.25, 0.5, 0.75, 1.0, 0.1, 0.9] {
+            assert!((curve_at(x, 0.25, 0.5, 0.75) - x).abs() < 1e-9, "x = {x}");
+        }
+        let base = noisy(8, 8);
+        let mut img = base.clone();
+        run(K::Curves, &[0.25, 0.5, 0.75, 0.25, 0.5, 0.75, 0.25, 0.5, 0.75, 0.25, 0.5, 0.75], &mut img);
+        assert_eq!(img.rgba, base.rgba, "default knots must be a no-op");
+        // a lifted master curve brightens without inverting the order
+        let mut img = flat(1, 1, [128, 128, 128, 255]);
+        run(K::Curves, &[0.4, 0.7, 0.9, 0.25, 0.5, 0.75, 0.25, 0.5, 0.75, 0.25, 0.5, 0.75], &mut img);
+        assert!(img.rgba[0] > 160, "{}", img.rgba[0]);
+        // per-channel: only red is pushed down
+        let mut img = flat(1, 1, [200, 200, 200, 255]);
+        run(K::Curves, &[0.25, 0.5, 0.75, 0.05, 0.1, 0.2, 0.25, 0.5, 0.75, 0.25, 0.5, 0.75], &mut img);
+        assert!(img.rgba[0] < 100, "{}", img.rgba[0]);
+        assert_eq!(img.rgba[1], 200);
+        // knots out of order: the spline must still stay inside the knot range, never ring past it
+        for i in 0..=100 {
+            let v = curve_at(i as f64 / 100.0, 0.9, 0.1, 0.95);
+            assert!((-1e-9..=1.0 + 1e-9).contains(&v), "out of range at {i}: {v}");
+        }
+        // sane knots stay monotone
+        let mut prev = f64::MIN;
+        for i in 0..=100 {
+            let v = curve_at(i as f64 / 100.0, 0.1, 0.4, 0.8);
+            assert!(v >= prev - 1e-9, "not monotone at {i}: {v} < {prev}");
+            prev = v;
+        }
+    }
+
+    #[test]
+    fn chroma_key_removes_the_key_colour_only() {
+        let mut img = Frame::new(3, 1);
+        // green (the key), red, white
+        img.rgba.copy_from_slice(&[0, 255, 0, 255, 255, 0, 0, 255, 255, 255, 255, 255]);
+        run(K::ChromaKey, &[0.0, 255.0, 0.0, 0.4, 0.1, 0.0, 0.5, 0.0], &mut img);
+        assert_eq!(img.rgba[3], 0, "the key colour is gone");
+        assert_eq!(img.rgba[7], 255, "red survives");
+        assert_eq!(&img.rgba[4..7], &[255, 0, 0], "red is not despilled");
+        assert_eq!(img.rgba[11], 255, "white survives");
+        // show mask paints the matte instead
+        let mut img = Frame::new(2, 1);
+        img.rgba.copy_from_slice(&[0, 255, 0, 255, 255, 0, 0, 255]);
+        run(K::ChromaKey, &[0.0, 255.0, 0.0, 0.4, 0.1, 1.0, 0.5, 0.0], &mut img);
+        assert_eq!(&img.rgba[..4], &[0, 0, 0, 255]);
+        assert_eq!(&img.rgba[4..8], &[255, 255, 255, 255]);
+        // spill removal pulls green out of a greenish skin tone but keeps it opaque
+        let mut img = flat(1, 1, [200, 190, 150, 255]);
+        run(K::ChromaKey, &[0.0, 255.0, 0.0, 0.4, 0.1, 0.0, 1.0, 0.0], &mut img);
+        assert_eq!(img.rgba[3], 255);
+    }
+
+    #[test]
+    fn blob_tracking_finds_a_red_square() {
+        let mut f = flat(20, 20, [0, 0, 0, 255]);
+        for y in 8..12u32 {
+            for x in 8..12u32 {
+                let i = ((y * 20 + x) * 4) as usize;
+                f.rgba[i..i + 4].copy_from_slice(&[255, 0, 0, 255]);
+            }
+        }
+        let p = K::BlobTrack.params().iter().map(|s| s.default).collect::<Vec<_>>();
+        let (cx, cy, area) = track(&f, &p).expect("found");
+        assert!((cx - 0.5).abs() < 1e-9 && (cy - 0.5).abs() < 1e-9, "{cx} {cy}");
+        assert!((area - 16.0 / 400.0).abs() < 1e-9, "{area}");
+        // off-centre square moves the centroid
+        let mut f2 = flat(20, 20, [0, 0, 0, 255]);
+        for y in 0..4u32 {
+            for x in 0..4u32 {
+                let i = ((y * 20 + x) * 4) as usize;
+                f2.rgba[i..i + 4].copy_from_slice(&[255, 0, 0, 255]);
+            }
+        }
+        let (cx2, cy2, _) = track(&f2, &p).expect("found");
+        assert!(cx2 < 0.2 && cy2 < 0.2, "{cx2} {cy2}");
+        // nothing matching, and a degenerate frame
+        assert!(track(&flat(4, 4, [0, 0, 255, 255]), &p).is_none());
+        assert!(track(&Frame::default(), &p).is_none());
+        assert!(track(&f, &[]).is_none());
+    }
+
+    #[test]
+    fn plane3d_matrix_is_identity_by_default() {
+        let m = plane3d_matrix(&Effect::new(K::Plane3d), 0.0).expect("valid");
+        let id = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        for (a, b) in m.iter().zip(id.iter()) {
+            assert!((a - b).abs() < 1e-5, "{m:?}");
+        }
+        // yaw introduces a real perspective term and foreshortens one side
+        let yawed = plane3d_matrix(&eff(K::Plane3d, &[50.0, 0.0, 0.0, 2.0, 45.0, 0.0]), 0.0).expect("valid");
+        assert!(yawed[6].abs() > 1e-3, "no perspective row: {yawed:?}");
+        // map the two vertical edges and compare their projected heights
+        let edge = |m: &[f32; 9], u: f32| {
+            let at = |v: f32| {
+                let w = m[6] * u + m[7] * v + m[8];
+                (m[3] * u + m[4] * v + m[5]) / w
+            };
+            (at(1.0) - at(0.0)).abs()
+        };
+        // +yaw swings the right edge towards the camera, so it ends up taller than the left one
+        assert!(edge(&yawed, 1.0) > edge(&yawed, 0.0) * 1.05, "yaw should foreshorten the far edge");
+        let flat = plane3d_matrix(&Effect::new(K::Plane3d), 0.0).unwrap();
+        assert!((edge(&flat, 1.0) - edge(&flat, 0.0)).abs() < 1e-6, "no yaw, no foreshortening");
+        // pushed behind the camera -> no matrix instead of a fold-over
+        assert!(plane3d_matrix(&eff(K::Plane3d, &[0.0, 0.0, 0.0, 2.0, 45.0, -5.0]), 0.0).is_none());
+    }
+
+    #[test]
+    fn plane3d_drives_the_placement_on_the_cpu() {
+        let e = eff(K::Plane3d, &[30.0, -10.0, 5.0, 2.0, 45.0, 0.0]);
+        assert_eq!(wobble(&e, 0.0), (0.0, 0.0, 5.0, 30.0, -10.0));
+    }
+
+    #[test]
+    fn rec_dot_paints_a_dot_and_a_timecode() {
+        let mut img = flat(96, 40, [0, 0, 0, 255]);
+        // size 12, always on, top-left, timecode, margin 4
+        apply(&eff(K::RecDot, &[12.0, 0.0, 0.0, 1.0, 4.0]), 0.0, 1.0, &mut img, &mut Frame::default());
+        let at = |img: &Frame, x: u32, y: u32| {
+            let i = ((y * 96 + x) * 4) as usize;
+            [img.rgba[i], img.rgba[i + 1], img.rgba[i + 2]]
+        };
+        let dot = at(&img, 10, 10);
+        assert!(dot[0] > 150 && dot[1] < 80, "dot at the top-left: {dot:?}");
+        let ink = img.rgba.chunks_exact(4).filter(|p| p[0] > 200 && p[1] > 200 && p[2] > 200).count();
+        assert!(ink > 40, "timecode digits drawn: {ink}");
+        // blink: off during the second half of the cycle
+        let mut img = flat(96, 40, [0, 0, 0, 255]);
+        apply(&eff(K::RecDot, &[12.0, 1.0, 0.0, 0.0, 4.0]), 0.6, 1.0, &mut img, &mut Frame::default());
+        assert_eq!(at(&img, 10, 10), [0, 0, 0], "dot is blinked off");
+        // a different corner moves it
+        let mut img = flat(96, 40, [0, 0, 0, 255]);
+        apply(&eff(K::RecDot, &[12.0, 0.0, 3.0, 0.0, 4.0]), 0.0, 1.0, &mut img, &mut Frame::default());
+        assert_eq!(at(&img, 10, 10), [0, 0, 0]);
+        assert!(at(&img, 88, 30)[0] > 150, "dot at the bottom-right: {:?}", at(&img, 88, 30));
+    }
+
+    #[test]
+    fn gpu_only_kinds_are_still_no_ops() {
+        for k in [K::Vhs, K::MotionBlur, K::EdgeGlow, K::JpegCompress, K::BlobTrack, K::Shader] {
+            let mut img = noisy(8, 8);
+            let before = img.rgba.clone();
+            let mut e = Effect::new(k);
+            for p in e.params.iter_mut() {
+                p.value = 1.0;
+            }
+            apply(&e, 0.0, 1.0, &mut img, &mut Frame::default());
+            assert_eq!(img.rgba, before, "{k:?} must leave the CPU path alone");
+        }
     }
 }

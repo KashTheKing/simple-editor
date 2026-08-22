@@ -1,12 +1,13 @@
 //! Style summary: a deterministic Markdown description of how a project was edited — statistics an AI (or a
 //! human) can turn into a reusable style guide: format, duration, tracks, cut cadence (count, mean/median
 //! clip length, shortest/longest), transitions used (kinds, durations), effects (kinds + typical params),
-//! text styles (fonts, sizes, colours, outlines/shadows), colour labels, retimes, audio (levels, fades,
-//! music/SFX split by length), subtitles usage, the planner (done/todo), and the free-form notes verbatim.
+//! text styles (fonts, sizes, colours, outlines/shadows), colour labels, retimes, masks and node graphs,
+//! audio (levels, fades, music/SFX split by length), subtitles usage, the planner (done/todo), and the
+//! free-form notes verbatim.
 //! Also served by the MCP tool `style.summary` and exported via File ▸ Export Style Summary (.md).
 
 use crate::model::{
-    ClipKind, EffectKind, PlanItem, Project, TextStyle, Track, TrackKind, TransitionKind, LABEL_COLORS,
+    ClipKind, EffectKind, NodeKind, PlanItem, Project, TextStyle, Track, TrackKind, TransitionKind, LABEL_COLORS,
 };
 use std::fmt::Write;
 
@@ -170,27 +171,83 @@ pub fn style_summary(project: &Project) -> String {
     let _ = writeln!(s);
 
     // ---- Effects ----
+    // Every effect on a clip's linear stack *and* every Effect node in a clip's graph, grouped by the
+    // catalogue category so 24 kinds still read as a handful of lines.
+    let all_effects = || {
+        all_clips().flat_map(|c| {
+            let stack = c.effects.iter();
+            let nodes = c.graph.iter().flat_map(|g| {
+                g.nodes.iter().filter_map(|n| match &n.kind {
+                    NodeKind::Effect(e) => Some(e),
+                    _ => None,
+                })
+            });
+            stack.chain(nodes)
+        })
+    };
     let _ = writeln!(s, "## Effects");
     let mut any = false;
+    let mut category = "";
     for kind in EffectKind::ALL {
-        let instances: Vec<_> = all_clips().flat_map(|c| c.effects.iter()).filter(|e| e.kind == kind).collect();
+        let instances: Vec<_> = all_effects().filter(|e| e.kind == kind).collect();
         if instances.is_empty() {
             continue;
         }
         any = true;
+        if kind.category() != category {
+            category = kind.category();
+            let _ = writeln!(s, "### {category}");
+        }
         let params: Vec<String> = kind
             .params()
             .iter()
             .enumerate()
             .map(|(i, spec)| {
                 let m = median(instances.iter().map(|e| e.at(i, 0.0)).collect());
-                format!("{} {}", spec.name, num(m))
+                if kind.is_bool_param(i) {
+                    format!("{} {}", spec.name, if m >= 0.5 { "on" } else { "off" })
+                } else {
+                    format!("{} {}", spec.name, num(m))
+                }
             })
             .collect();
-        let _ = writeln!(s, "- {} ×{} — median {}", kind.name(), instances.len(), params.join(", "));
+        let mut line = format!("- {} ×{} — median {}", kind.name(), instances.len(), params.join(", "));
+        let off = instances.iter().filter(|e| !e.enabled).count();
+        if off > 0 {
+            let _ = write!(line, " ({off} disabled)");
+        }
+        let masked = instances.iter().filter(|e| e.mask.is_some()).count();
+        if masked > 0 {
+            let _ = write!(line, " ({masked} masked)");
+        }
+        let _ = writeln!(s, "{line}");
     }
     if !any {
         let _ = writeln!(s, "(none)");
+    }
+    let _ = writeln!(s);
+
+    // ---- Masks & node graphs ----
+    let _ = writeln!(s, "## Masks & node graphs");
+    let clip_masks = counted(all_clips().filter_map(|c| c.mask.as_ref()).map(|m| m.shape.name().to_string()));
+    let effect_masks = counted(all_effects().filter_map(|e| e.mask.as_ref()).map(|m| m.shape.name().to_string()));
+    let graphs: Vec<_> = all_clips().filter_map(|c| c.graph.as_ref()).collect();
+    if clip_masks.is_empty() && effect_masks.is_empty() && graphs.is_empty() {
+        let _ = writeln!(s, "(none)");
+    }
+    for (label, list) in [("Clip masks", &clip_masks), ("Effect masks", &effect_masks)] {
+        if list.is_empty() {
+            continue;
+        }
+        let total: usize = list.iter().map(|(_, n)| n).sum();
+        let by: Vec<String> = list.iter().map(|(name, n)| format!("{n} {name}")).collect();
+        let _ = writeln!(s, "- {label}: {total} ({})", by.join(", "));
+    }
+    if !graphs.is_empty() {
+        let nodes: Vec<String> = graphs.iter().flat_map(|g| g.nodes.iter()).map(|n| n.kind.title()).collect();
+        let total = nodes.len();
+        let by: Vec<String> = counted(nodes.into_iter()).iter().map(|(name, n)| format!("{n} {name}")).collect();
+        let _ = writeln!(s, "- Node graphs: {} clips, {total} nodes ({})", graphs.len(), by.join(", "));
     }
     let _ = writeln!(s);
 
@@ -318,7 +375,7 @@ pub fn style_summary(project: &Project) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Asset, AudioStreamInfo, Effect, Id};
+    use crate::model::{Asset, AudioStreamInfo, Effect, Id, Mask, MaskShape};
 
     fn asset(id: Id, dur: f64, streams: usize) -> Asset {
         Asset {
@@ -347,7 +404,15 @@ mod tests {
         p.add_transition(right, TransitionKind::CrossFade, 1.0);
         let v = p.tracks[0].clips[0].id;
         p.clip_mut(v).unwrap().effects.push(Effect::new(EffectKind::Blur));
+        // a round-3 effect with a bool param and a mask, so both render in the summary
+        let mut vhs = Effect::new(EffectKind::Vhs);
+        vhs.mask = Some(Mask::new(MaskShape::Ellipse));
+        p.clip_mut(v).unwrap().effects.push(vhs);
+        p.clip_mut(v).unwrap().effects.push(Effect::new(EffectKind::Curves));
+        p.clip_mut(v).unwrap().mask = Some(Mask::new(MaskShape::Rect));
         p.clip_mut(v).unwrap().label = 3; // Yellow
+                                          // a node graph on the other half: Input -> Threshold -> Output, counted with the stack effects
+        p.add_node(right, NodeKind::Effect(Effect::new(EffectKind::Threshold)), 160.0, 0.0);
         let txt = p.add_text_clip(1.0, 2.0);
         p.clip_mut(txt).unwrap().text.as_mut().unwrap().outline_width = 3.0;
         let a = p.tracks[2].clips[0].id; // audio left half (text clip pushed V onto a new track? no: audio tracks after video)
@@ -369,7 +434,18 @@ mod tests {
             "## Transitions",
             "- Cross Fade ×2 — median 1 s", // mirrored onto the linked audio cut
             "## Effects",
+            "### Stylize",
             "- Blur ×1 — median Radius 8",
+            // round-3 kinds read as well as the old ones: bool params as on/off, masks called out
+            "- VHS ×1 — median Noise 0.3, Chroma bleed 0.5, Scanlines 0.4, Tracking jitter 0.2, \
+             Head switching 0.3, Sharpen ringing 0.4, Colour bleed only off, Tape wear 0.2 (1 masked)",
+            "### Adjustments",
+            "- Threshold ×1 — median Level 0.5, Softness 0.05, Per channel 0",
+            "- Color Curves ×1 — median Master 1/4 0.25",
+            "## Masks & node graphs",
+            "- Clip masks: 1 (1 Rectangle)",
+            "- Effect masks: 1 (1 Ellipse)",
+            "- Node graphs: 1 clips, 3 nodes (1 Input, 1 Output, 1 Threshold)",
             "## Text styles",
             "outline 3 px #000000 ×1",
             "## Labels",
