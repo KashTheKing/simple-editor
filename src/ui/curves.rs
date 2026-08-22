@@ -5,13 +5,16 @@
 //! curves drawn with the eased segments (sample `Animated::at` every ~2 px), keys as diamonds (accent when
 //! selected), playhead line (click on the ruler strip seeks → `seeked`), constant (unkeyed) properties
 //! shown as a flat dashed line. Interaction: drag a key horizontally/vertically (time clamped to the clip,
-//! vertical changes the value — `Animated::move_key` + `keys[i].v`; undo once at drag start), click a key
-//! to select it, Delete removes it, double-click on empty graph area adds a key for the active property at
-//! that (t, v), right-click a key → easing menu (Ease::ALL) + Delete; Ctrl+Scroll zooms the time axis,
-//! Shift+Scroll pans. Bezier velocity handles: a Bezier segment (or any segment whose left key is
+//! vertical changes the value; undo once at drag start) — the whole selection moves with it, click a key
+//! to select it, Ctrl+click adds/removes one, dragging empty graph space rubber-bands a group (like the
+//! timeline's clip band), Delete removes the selection and Ctrl+C / Ctrl+V copy it and paste it at the
+//! playhead keeping the relative times, double-click on empty graph area adds a key for the active
+//! property at that (t, v), right-click a key → easing menu (Ease::ALL) + Delete; Ctrl+Scroll zooms the
+//! time axis, Shift+Scroll pans, plain Scroll zooms the value axis around the pointer and "Fit" frames
+//! every key. Bezier velocity handles: a Bezier segment (or any segment whose left key is
 //! selected) shows its two handles; dragging one converts the segment to `Ease::Bezier`.
 
-use crate::model::{Animated, Clip, Ease, Id, Project};
+use crate::model::{Animated, Clip, Ease, Id, Keyframe, Project};
 use crate::settings::{CurvePreset, MotionPreset};
 use crate::theme::Palette;
 use eframe::egui::{self, pos2, vec2, Align2, Color32, Pos2, Rect, Sense, Shape, Stroke};
@@ -24,6 +27,8 @@ const LIST_MAX: f32 = 320.0;
 /// Grab width of the splitter between the property list and the graph.
 const SPLIT_W: f32 = 5.0;
 const HIT_PX: f32 = 6.0;
+/// Two keys closer than this in time are the same key (model::KEY_EPS, which is private).
+const T_EPS: f64 = 1e-4;
 
 thread_local! {
     // ponytail: thread_local hand-off because show() can't reach Settings. The app calls
@@ -85,6 +90,9 @@ pub struct CurvesState {
     /// Time zoom/pan of the graph (seconds at the left edge, px per second; 0 = fit the clip).
     pub scroll_x: f64,
     pub zoom: f32,
+    /// Value-axis view on top of each property's auto range: 1 = the whole range, pan in range units.
+    pub y_zoom: f64,
+    pub y_pan: f64,
     /// Selected keys as (property index, key index).
     pub selected: Vec<(usize, usize)>,
     /// Last frame's graph rect / effective px-per-second / active y scale (hit-testing + tests).
@@ -93,9 +101,18 @@ pub struct CurvesState {
     pub y_lo: f64,
     pub y_hi: f64,
     drag: Option<Drag>,
-    /// y scale latched for the running key/handle drag: the per-frame auto scale is derived from the very
-    /// values the drag writes, so a live scale would feed the dragged value back into itself.
-    drag_y: Option<(f64, f64)>,
+    /// y scales latched per property for the running key/handle drag: the per-frame auto scale is derived
+    /// from the very values the drag writes, so a live scale would feed the dragged value back into itself.
+    drag_y: Vec<(usize, (f64, f64))>,
+    /// The selected keys as they were when the drag started, per property: (prop, keys, selected indices).
+    /// The whole gesture is re-derived from this snapshot, so nothing accumulates rounding.
+    drag_keys: Vec<(usize, Vec<Keyframe>, Vec<usize>)>,
+    /// Pointer position at drag start — the group moves by the delta from it.
+    drag_from: Option<Pos2>,
+    /// Rubber-band press origin while a band select is in progress.
+    band: Option<Pos2>,
+    /// Copied keys as (property, key) with times relative to the earliest of them.
+    clipboard: Vec<(usize, Keyframe)>,
     preset_name: String,
     preset_sel: usize,
     motion_sel: usize,
@@ -111,13 +128,19 @@ impl Default for CurvesState {
             hidden: Vec::new(),
             scroll_x: 0.0,
             zoom: 0.0,
+            y_zoom: 1.0,
+            y_pan: 0.0,
             selected: Vec::new(),
             graph: Rect::NOTHING,
             pps: 0.0,
             y_lo: 0.0,
             y_hi: 1.0,
             drag: None,
-            drag_y: None,
+            drag_y: Vec::new(),
+            drag_keys: Vec::new(),
+            drag_from: None,
+            band: None,
+            clipboard: Vec::new(),
             preset_name: String::new(),
             preset_sel: 0,
             motion_sel: 0,
@@ -239,6 +262,59 @@ pub(crate) fn y_range(a: &Animated) -> (f64, f64) {
     }
     let pad = ((hi - lo) * 0.1).max(0.5);
     (lo - pad, hi + pad)
+}
+
+/// The value-axis view applied to a property's auto range (`pan` in units of that range, so one pair of
+/// numbers drives every property's lane whatever its units are).
+fn zoomed((lo, hi): (f64, f64), zoom: f64, pan: f64) -> (f64, f64) {
+    let span = hi - lo;
+    let c = (lo + hi) * 0.5 + pan * span;
+    let h = span * 0.5 / zoom.max(0.01);
+    (c - h, c + h)
+}
+
+/// Re-lay `orig` with the keys at `sel` shifted by (dt, dv) and write it back; returns their new indices.
+/// A moved key landing on an unmoved one replaces it, exactly like `Animated::move_key`.
+fn move_group(a: &mut Animated, orig: &[Keyframe], sel: &[usize], dt: f64, dv: f64) -> Vec<usize> {
+    let mut v: Vec<(Keyframe, bool)> = orig
+        .iter()
+        .enumerate()
+        .map(|(i, k)| {
+            let m = sel.contains(&i);
+            (Keyframe { t: k.t + if m { dt } else { 0.0 }, v: k.v + if m { dv } else { 0.0 }, ease: k.ease }, m)
+        })
+        .collect();
+    v.sort_by(|a, b| a.0.t.total_cmp(&b.0.t));
+    // ponytail: O(n²) collision scan — a property with thousands of keys would notice, nothing else will
+    let moved: Vec<f64> = v.iter().filter(|(_, m)| *m).map(|(k, _)| k.t).collect();
+    v.retain(|(k, m)| *m || !moved.iter().any(|t| (t - k.t).abs() < T_EPS));
+    a.keys = v.iter().map(|(k, _)| *k).collect();
+    v.iter().enumerate().filter(|(_, (_, m))| *m).map(|(i, _)| i).collect()
+}
+
+/// Frame every key of the visible properties on the time axis and reset the value view.
+fn fit_view(state: &mut CurvesState, c: &Clip, n_props: usize) {
+    state.y_zoom = 1.0;
+    state.y_pan = 0.0;
+    let (mut lo, mut hi) = (f64::MAX, f64::MIN);
+    for p in 0..n_props {
+        if state.hidden.contains(&p) {
+            continue;
+        }
+        for k in prop_ref(c, p).map(|a| a.keys.as_slice()).unwrap_or(&[]) {
+            lo = lo.min(k.t);
+            hi = hi.max(k.t);
+        }
+    }
+    let w = state.graph.width() as f64;
+    if hi > lo && w > 20.0 {
+        let pad = (hi - lo) * 0.05;
+        state.zoom = (w / (hi - lo + 2.0 * pad)).clamp(2.0, 10_000.0) as f32;
+        state.scroll_x = lo - pad;
+    } else {
+        state.zoom = 0.0; // one key or none to frame: back to fitting the whole clip
+        state.scroll_x = 0.0;
+    }
 }
 
 fn prop_color(pal: &Palette, i: usize) -> Color32 {
@@ -374,12 +450,23 @@ pub fn show(
             if ui.small_button("Apply exact").on_hover_text("Keep the preset's own timing").clicked() {
                 apply = Some(false);
             }
-            if let Some(scaled) = apply {
+            let merge = ui
+                .small_button("Merge")
+                .on_hover_text("Add the preset's keys from the playhead on, keeping what is already there")
+                .clicked();
+            if apply.is_some() || merge {
                 let preset = MOTIONS.with(|m| m.borrow().get(state.motion_sel).cloned());
                 if let Some(preset) = preset {
                     undo(project);
+                    let ph = *playhead;
                     if let Some(c) = project.clip_mut(id) {
-                        crate::engine::presets::apply_motion(&preset, c, scaled);
+                        match apply {
+                            Some(scaled) => crate::engine::presets::apply_motion(&preset, c, scaled),
+                            None => {
+                                let off = c.local(ph).clamp(0.0, c.duration);
+                                crate::engine::presets::merge_motion(&preset, c, off);
+                            }
+                        }
                         out.edited = true;
                     }
                 }
@@ -457,6 +544,15 @@ pub fn show(
                 out.edited |= project.flow_clips(a, b);
             }
         }
+        if ui
+            .small_button("Fit")
+            .on_hover_text("Frame every keyframe (Ctrl+Scroll zooms time, Scroll zooms values)")
+            .clicked()
+        {
+            if let Some(c) = project.clip(id) {
+                fit_view(state, c, n_props);
+            }
+        }
     });
 
     // ---- layout: property list | graph ----
@@ -528,13 +624,12 @@ pub fn show(
     // per-property y scales
     let mut scales: Vec<(f64, f64)> = Vec::with_capacity(n_props);
     for i in 0..n_props {
-        scales.push(prop_ref(&clip_data, i).map(y_range).unwrap_or((0.0, 1.0)));
+        let auto = prop_ref(&clip_data, i).map(y_range).unwrap_or((0.0, 1.0));
+        scales.push(zoomed(auto, state.y_zoom, state.y_pan));
     }
-    // freeze the dragged property's scale for the whole gesture (see CurvesState::drag_y)
-    if let (Some(Drag::Key { prop, .. } | Drag::HandleOut { prop, .. } | Drag::HandleIn { prop, .. }), Some(ys)) =
-        (state.drag, state.drag_y)
-    {
-        if let Some(s) = scales.get_mut(prop) {
+    // freeze the dragged properties' scales for the whole gesture (see CurvesState::drag_y)
+    for &(p, ys) in &state.drag_y {
+        if let Some(s) = scales.get_mut(p) {
             *s = ys;
         }
     }
@@ -562,6 +657,13 @@ pub fn show(
         } else if delta.x != 0.0 {
             state.zoom = pps; // panning fixes the zoom so the fit doesn't snap back
             state.scroll_x = (state.scroll_x - (delta.x / pps) as f64).clamp(-dur, dur);
+        } else if delta.y != 0.0 {
+            // plain wheel zooms the value axis, keeping the value under the pointer put:
+            // u = centre + half * (2f - 1) must not move, so the centre takes up the slack
+            let f = mpos.map(|m| ((plot.bottom() - m.y) / plot.height()).clamp(0.0, 1.0) as f64).unwrap_or(0.5);
+            let h0 = 0.5 / state.y_zoom;
+            state.y_zoom = (state.y_zoom * (1.0 + delta.y as f64 * 0.01)).clamp(0.05, 100.0);
+            state.y_pan += (h0 - 0.5 / state.y_zoom) * (2.0 * f - 1.0);
         }
     }
 
@@ -635,8 +737,10 @@ pub fn show(
                 undo(project);
                 state.drag = Some(h);
                 state.drag_y = match h {
-                    Drag::HandleOut { prop, .. } | Drag::HandleIn { prop, .. } => scales.get(prop).copied(),
-                    _ => None,
+                    Drag::HandleOut { prop, .. } | Drag::HandleIn { prop, .. } => {
+                        scales.get(prop).map(|&s| (prop, s)).into_iter().collect()
+                    }
+                    _ => Vec::new(),
                 };
             } else if let Some((p, k)) = key_hit(pos) {
                 if !state.selected.contains(&(p, k)) {
@@ -645,7 +749,22 @@ pub fn show(
                 }
                 undo(project);
                 state.drag = Some(Drag::Key { prop: p, key: k });
-                state.drag_y = scales.get(p).copied();
+                state.drag_from = Some(pos);
+                // snapshot every property holding a selected key: the whole selection moves as one
+                let mut props: Vec<usize> = state.selected.iter().map(|s| s.0).collect();
+                props.sort_unstable();
+                props.dedup();
+                state.drag_y = props.iter().filter_map(|&p| scales.get(p).map(|&s| (p, s))).collect();
+                state.drag_keys = props
+                    .iter()
+                    .filter_map(|&p| {
+                        let a = prop_ref(&clip_data, p)?;
+                        let idx: Vec<usize> = state.selected.iter().filter(|s| s.0 == p).map(|s| s.1).collect();
+                        (!idx.is_empty()).then(|| (p, a.keys.clone(), idx))
+                    })
+                    .collect();
+            } else {
+                state.band = Some(pos); // empty graph space: rubber-band a group, like the timeline's clips
             }
         }
     }
@@ -668,7 +787,8 @@ pub fn show(
                         state.selected.clear();
                         state.selected.push(pk);
                     }
-                    None => state.selected.clear(),
+                    None if !ctrl => state.selected.clear(),
+                    None => {}
                 }
             }
         }
@@ -681,18 +801,30 @@ pub fn show(
                     out.seeked = true;
                 }
                 Drag::Key { prop, key } => {
-                    let t = t_at(pos.x, sx).clamp(0.0, dur);
-                    let v = v_at(pos.y.clamp(plot.top(), plot.bottom()), scales[prop]);
-                    if let Some(a) = project.clip_mut(id).and_then(|c| prop_mut(c, prop)) {
-                        let j = a.move_key(key, t);
-                        if let Some(k) = a.keys.get_mut(j) {
-                            k.v = v;
+                    let o = state.drag_from.unwrap_or(pos);
+                    let dx = ((pos.x - o.x) / pps) as f64;
+                    let dy = (o.y - pos.y.clamp(plot.top(), plot.bottom())) / plot.height();
+                    let (mut sel, mut anchor) = (Vec::new(), key);
+                    for (p, orig, idx) in state.drag_keys.clone() {
+                        // clamp the shift so the group keeps its shape when it hits the clip's edges
+                        let (lo, hi) = idx
+                            .iter()
+                            .filter_map(|&i| orig.get(i))
+                            .fold((f64::MAX, f64::MIN), |(a, b), k| (a.min(k.t), b.max(k.t)));
+                        let dt = dx.clamp(-lo, (dur - hi).max(-lo));
+                        let dv = dy as f64 * (scales[p].1 - scales[p].0);
+                        let Some(a) = project.clip_mut(id).and_then(|c| prop_mut(c, p)) else { continue };
+                        let new = move_group(a, &orig, &idx, dt, dv);
+                        if p == prop {
+                            if let Some(j) = idx.iter().position(|&i| i == key) {
+                                anchor = new.get(j).copied().unwrap_or(key);
+                            }
                         }
-                        state.drag = Some(Drag::Key { prop, key: j });
-                        state.selected.clear();
-                        state.selected.push((prop, j));
+                        sel.extend(new.into_iter().map(|k| (p, k)));
                         out.edited = true;
                     }
+                    state.drag = Some(Drag::Key { prop, key: anchor });
+                    state.selected = sel;
                 }
                 Drag::HandleOut { prop, key } | Drag::HandleIn { prop, key } => {
                     let is_out = matches!(drag, Drag::HandleOut { .. });
@@ -725,8 +857,25 @@ pub fn show(
         }
     }
     if resp.drag_stopped() {
+        // rubber band: everything inside it joins the selection (Ctrl keeps what was already selected)
+        if let Some(o) = state.band.take() {
+            let br = Rect::from_two_pos(o, pointer.unwrap_or(o));
+            if !ui.input(|i| i.modifiers.ctrl) {
+                state.selected.clear();
+            }
+            for p in (0..n_props).filter(|&p| visible(p)) {
+                let Some(a) = prop_ref(&clip_data, p) else { continue };
+                for (k, key) in a.keys.iter().enumerate() {
+                    if br.contains(pos2(x_at(key.t, sx), y_at(key.v, scales[p]))) && !state.selected.contains(&(p, k)) {
+                        state.selected.push((p, k));
+                    }
+                }
+            }
+        }
         state.drag = None;
-        state.drag_y = None;
+        state.drag_y.clear();
+        state.drag_keys.clear();
+        state.drag_from = None;
     }
     if resp.double_clicked() {
         if let Some(pos) = pointer {
@@ -754,6 +903,38 @@ pub fn show(
         }
         state.selected.clear();
         out.edited = true;
+    }
+
+    // ---- copy / paste the selected keys (consumed, and only over the graph: Ctrl+V elsewhere is not ours) ----
+    if ui.rect_contains_pointer(graph) {
+        if ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::C)) && !state.selected.is_empty() {
+            let key_of = |&(p, k): &(usize, usize)| prop_ref(&clip_data, p).and_then(|a| a.keys.get(k)).map(|x| (p, *x));
+            let picked: Vec<(usize, Keyframe)> = state.selected.iter().filter_map(key_of).collect();
+            let t0 = picked.iter().map(|(_, k)| k.t).fold(f64::MAX, f64::min);
+            state.clipboard = picked.into_iter().map(|(p, k)| (p, Keyframe { t: k.t - t0, ..k })).collect();
+        }
+        if ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::V)) && !state.clipboard.is_empty() {
+            undo(project);
+            let t0 = clip_data.local(*playhead).clamp(0.0, dur);
+            let mut at: Vec<(usize, f64)> = Vec::new();
+            for (p, key) in state.clipboard.clone() {
+                let t = (t0 + key.t).clamp(0.0, dur);
+                if let Some(a) = project.clip_mut(id).and_then(|c| prop_mut(c, p)) {
+                    if a.key_index_at(t).is_none() {
+                        a.toggle_key(t); // makes an unkeyed property animated too
+                    }
+                    a.set_at(t, key.v);
+                    a.set_ease_at(t, key.ease);
+                    at.push((p, t));
+                }
+            }
+            // indices only settle once every paste is in
+            if let Some(c) = project.clip(id) {
+                state.selected =
+                    at.iter().filter_map(|&(p, t)| prop_ref(c, p)?.key_index_at(t).map(|k| (p, k))).collect();
+            }
+            out.edited = true;
+        }
     }
 
     // ---- context menu on a key / right-click adds a key ----
@@ -833,8 +1014,15 @@ pub fn show(
         }
         t += step;
     }
-    // y grid for the active scale
+    // y grid for the active scale, with the lane's range spelled out in the ruler
     let (lo, hi) = scales[state.active];
+    painter.text(
+        pos2(graph.right() - 3.0, graph.top()),
+        Align2::RIGHT_TOP,
+        format!("{} {lo:.2} … {hi:.2}", prop_label(&clip_data, state.active)),
+        font.clone(),
+        pal.text_dim,
+    );
     for i in 0..=4 {
         let v = lo + (hi - lo) * i as f64 / 4.0;
         let y = y_at(v, (lo, hi));
@@ -904,6 +1092,12 @@ pub fn show(
                 Stroke::new(1.0, pal.text),
             ));
         }
+    }
+    // rubber band in progress
+    if let Some(o) = state.band {
+        let br = Rect::from_two_pos(o, pointer.unwrap_or(o)).intersect(plot);
+        plot_painter.rect_filled(br, 0, pal.accent.gamma_multiply(0.15));
+        plot_painter.rect_stroke(br, 0, Stroke::new(1.0, pal.accent), egui::StrokeKind::Inside);
     }
     // playhead
     let ph = clip_data.local(*playhead);
@@ -1217,6 +1411,80 @@ mod tests {
             "handle drag must convert the segment to Bezier: {:?}",
             h.clip().scale.keys[0].ease
         );
+    }
+
+    #[test]
+    fn rubber_band_selects_a_group_that_then_drags_together() {
+        let mut h = Harness::new();
+        let plot = Rect::from_min_max(pos2(h.state.graph.left(), h.state.graph.top() + RULER_H), h.state.graph.max);
+        // band across the whole plot from an empty bottom-left corner
+        let from = pos2(plot.left() + 4.0, plot.bottom() - 4.0);
+        let to = pos2(plot.right() - 4.0, plot.top() + 4.0);
+        h.press(from);
+        for i in 1..=4 {
+            h.frame(vec![Event::PointerMoved(from + (to - from) * (i as f32 / 4.0))]);
+        }
+        h.release(to);
+        assert_eq!(h.state.selected, vec![(2, 0), (2, 1)], "the band caught both keys");
+        assert_eq!(h.undos, 0, "selecting is not an edit");
+        // now drag one of them: the other comes along, keeping the gap between them
+        let k0 = h.scale_key_pos(0);
+        h.press(k0);
+        for i in 1..=4 {
+            h.frame(vec![Event::PointerMoved(k0 + vec2(10.0 * i as f32, 0.0))]);
+        }
+        h.release(k0 + vec2(40.0, 0.0));
+        let dt = 40.0 / h.state.pps as f64;
+        let keys = &h.clip().scale.keys;
+        assert_eq!(keys.len(), 2);
+        assert!((keys[0].t - (1.0 + dt)).abs() < 0.05, "first key followed the drag: {}", keys[0].t);
+        assert!((keys[1].t - (3.0 + dt)).abs() < 0.05, "second key came with it: {}", keys[1].t);
+        assert!((keys[0].v - 1.0).abs() < 1e-6 && (keys[1].v - 3.0).abs() < 1e-6, "a flat drag keeps the values");
+        assert_eq!(h.undos, 1, "one gesture = one undo");
+    }
+
+    #[test]
+    fn copy_paste_lands_at_the_playhead_keeping_relative_times() {
+        let mut h = Harness::new();
+        let ctrl = |key| Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::CTRL };
+        h.frame(vec![Event::PointerMoved(h.scale_key_pos(0))]); // the shortcuts only fire over the graph
+        h.state.selected = vec![(2, 0), (2, 1)];
+        h.frame(vec![ctrl(egui::Key::C)]);
+        assert_eq!(h.state.clipboard.len(), 2);
+        assert!((h.state.clipboard[0].1.t).abs() < 1e-9, "times are relative to the earliest key");
+        h.playhead = 0.5;
+        let r = h.frame(vec![ctrl(egui::Key::V)]);
+        assert!(r.edited);
+        let ts: Vec<f64> = h.clip().scale.keys.iter().map(|k| k.t).collect();
+        assert_eq!(ts.len(), 4, "pasted alongside the originals: {ts:?}");
+        assert!((ts[0] - 0.5).abs() < 1e-6 && (ts[2] - 2.5).abs() < 1e-6, "{ts:?}");
+        assert_eq!(h.state.selected, vec![(2, 0), (2, 2)], "the pasted keys are the selection");
+        assert_eq!(h.undos, 1);
+    }
+
+    #[test]
+    fn scroll_zooms_the_value_axis_and_fit_frames_the_keys() {
+        let mut h = Harness::new();
+        let span0 = h.state.y_hi - h.state.y_lo;
+        let mid = pos2(h.state.graph.center().x, h.state.graph.center().y);
+        h.frame(vec![Event::PointerMoved(mid)]);
+        h.frame(vec![Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: vec2(0.0, 4.0),
+            modifiers: Modifiers::NONE,
+        }]);
+        h.frame(vec![]); // y_lo/y_hi are published before the scroll is read, so look one frame later
+        assert!(h.state.y_zoom > 1.0, "a plain wheel zooms the value axis: {}", h.state.y_zoom);
+        assert!(h.state.y_hi - h.state.y_lo < span0, "the visible value range shrank");
+        assert!(h.state.zoom == 0.0, "the time axis is untouched");
+        // Fit: the keys span 1..3 s of a 4 s clip, so time zooms in and the value view resets
+        let c = h.project.clip(7).unwrap().clone();
+        fit_view(&mut h.state, &c, prop_count(&c));
+        assert_eq!((h.state.y_zoom, h.state.y_pan), (1.0, 0.0));
+        assert!((h.state.scroll_x - 0.9).abs() < 1e-6, "framed just before the first key: {}", h.state.scroll_x);
+        h.frame(vec![]);
+        let w = h.state.graph.width() as f64;
+        assert!((h.state.pps as f64 * 2.2 - w).abs() < 1.0, "2.2 s fill the graph: {} px/s of {w}", h.state.pps);
     }
 
     #[test]
