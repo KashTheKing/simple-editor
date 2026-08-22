@@ -1488,7 +1488,7 @@ pub fn default_labels() -> Vec<Label> {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, Hash)]
 pub enum FilterKind {
-    /// 3-band parametric EQ (low shelf, peak, high shelf).
+    /// 5-band parametric EQ (low shelf, three peaks, high shelf).
     Eq,
     HighPass,
     LowPass,
@@ -1517,7 +1517,7 @@ impl FilterKind {
     ];
     pub fn name(self) -> &'static str {
         match self {
-            FilterKind::Eq => "EQ (3-band)",
+            FilterKind::Eq => "EQ (5-band)",
             FilterKind::HighPass => "High-pass",
             FilterKind::LowPass => "Low-pass",
             FilterKind::Reverb => "Reverb",
@@ -1544,6 +1544,8 @@ impl FilterKind {
     }
 }
 
+/// Five bands, but the first seven slots are frozen in the order the 3-band EQ used so old projects
+/// keep their meaning; `mixer_fx::EQ_BANDS` groups them back into bands for the DSP and the UI.
 const F_EQ: &[ParamSpec] = &[
     ps("Low gain dB", 0.0, -24.0, 24.0),
     ps("Low freq", 120.0, 20.0, 1000.0),
@@ -1552,6 +1554,14 @@ const F_EQ: &[ParamSpec] = &[
     ps("Mid Q", 1.0, 0.1, 10.0),
     ps("High gain dB", 0.0, -24.0, 24.0),
     ps("High freq", 6000.0, 1000.0, 20000.0),
+    ps("Low Q", 0.707, 0.1, 10.0),
+    ps("High Q", 0.707, 0.1, 10.0),
+    ps("Low-mid gain dB", 0.0, -24.0, 24.0),
+    ps("Low-mid freq", 400.0, 40.0, 4000.0),
+    ps("Low-mid Q", 1.0, 0.1, 10.0),
+    ps("High-mid gain dB", 0.0, -24.0, 24.0),
+    ps("High-mid freq", 3000.0, 400.0, 16000.0),
+    ps("High-mid Q", 1.0, 0.1, 10.0),
 ];
 const F_PASS: &[ParamSpec] = &[ps("Frequency", 200.0, 20.0, 20000.0), ps("Resonance", 0.7, 0.1, 10.0)];
 const F_REVERB: &[ParamSpec] = &[
@@ -1586,13 +1596,37 @@ pub struct AudioFilter {
     pub kind: FilterKind,
     #[serde(default = "tru")]
     pub enabled: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_params")]
     pub params: Vec<Animated>,
+}
+
+/// Filter parameters were plain numbers before they became keyframeable; those load as constants.
+fn de_params<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Animated>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum NumOrAnim {
+        Num(f64),
+        Anim(Animated),
+    }
+    Ok(Vec::<NumOrAnim>::deserialize(d)?
+        .into_iter()
+        .map(|p| match p {
+            NumOrAnim::Num(v) => Animated::new(v),
+            NumOrAnim::Anim(a) => a,
+        })
+        .collect())
 }
 
 impl AudioFilter {
     pub fn new(kind: FilterKind) -> Self {
         Self { kind, enabled: true, params: kind.params().iter().map(|p| Animated::new(p.default)).collect() }
+    }
+    /// Append the parameters a shorter (older) project is missing, at their spec defaults.
+    pub fn fill_params(&mut self) {
+        let specs = self.kind.params();
+        for s in &specs[self.params.len().min(specs.len())..] {
+            self.params.push(Animated::new(s.default));
+        }
     }
     /// Parameter i at time t (spec default when missing).
     pub fn at(&self, i: usize, t: f64) -> f64 {

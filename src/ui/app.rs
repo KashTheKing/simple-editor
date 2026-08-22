@@ -2301,9 +2301,9 @@ impl App {
             }
             Pane::Mixer => {
                 let changed = {
-                    let App { project, selection, mixer: st, buses, palette, undo, redo, .. } = self;
+                    let App { project, selection, playhead, mixer: st, buses, palette, undo, redo, .. } = self;
                     let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
-                    mixer_ui::show(ui, st, project, selection, buses, palette, &mut push)
+                    mixer_ui::show(ui, st, project, selection, buses, *playhead, palette, &mut push)
                 };
                 if changed {
                     self.after_edit();
