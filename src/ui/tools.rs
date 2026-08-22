@@ -102,6 +102,8 @@ pub(crate) enum Glyph {
     Nodes,
     /// A stack of sheets — an adjustment layer.
     Layers,
+    /// A shooting target: rings and cross ticks — motion tracking.
+    Target,
 }
 
 const STRIP: [(Tool, Glyph, &str); 15] = [
@@ -612,6 +614,17 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
             for dy in [-4.0_f32, 0.0, 4.0] {
                 let sheet = egui::Rect::from_center_size(c + egui::vec2(0.0, dy), egui::vec2(12.0, 3.0));
                 p.rect_stroke(sheet, CornerRadius::same(1), stroke, StrokeKind::Inside);
+            }
+        }
+        // tracking: a shooting target — two rings and four cross ticks
+        Glyph::Target => {
+            p.circle_stroke(c, r, stroke);
+            p.circle_stroke(c, r * 0.4, stroke);
+            for (dx, dy) in [(1.0_f32, 0.0_f32), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
+                p.line_segment(
+                    [c + egui::vec2(dx * r, dy * r), c + egui::vec2(dx * (r + 2.5), dy * (r + 2.5))],
+                    stroke,
+                );
             }
         }
     }

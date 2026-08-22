@@ -65,6 +65,7 @@ src/engine/autocut.rs  silence/speech segmentation from waveform peaks
 src/engine/presets.rs  curve/motion presets, effect-chain / node-graph presets, clip templates
 src/engine/prerender.rs "movie mode" full-quality frame cache on disk
 src/engine/style.rs    Markdown style summary of a project (for AI style guides)
+src/engine/tracking.rs point / area tracking: NCC template match on a worker thread -> a reusable path
 src/engine/xmeml.rs    FCP7 XML export for Premiere / Resolve
 src/playback.rs        Player: render thread + audio thread + wall clock; decode_layers() for the GPU
 src/mcp/mod.rs         MCP server (HTTP + JSON-RPC), ToolCall channel, png_encode
@@ -85,6 +86,7 @@ src/ui/planner.rs      nested task planner with moodboards + project notes
 src/ui/presets_ui.rs   Presets pane: effects / node graphs / adjustment layers / templates (machine-local)
 src/ui/subtitles_ui.rs subtitle editor
 src/ui/autocut_ui.rs   auto-cut pane
+src/ui/tracking_ui.rs  Tracking pane: place a box, track a clip, save the result as a path
 src/ui/{retime,export_ui,frame_ui,capture_ui,import_ui,paste_ui,transitions_ui,settings_ui,shader_ui}.rs windows
 src/selftest.rs        headless end-to-end check (`--selftest`)
 ```
@@ -174,6 +176,9 @@ shape is selected) into `ShapeStyle.points` — empty keeps the regular n-gon. T
 records while the video plays (every stroke of the take joins one drawing clip, until the video stops or
 the tool is put away), and a drawing or polygon outline can be saved to `Project.paths` and reused as a
 motion path: `Project::apply_path` keyframes a clip's X/Y along it, and a mask node's centre can follow it.
+**Tracking** — the Tracking pane follows a point or a box through a clip (normalised cross-correlation
+template matching, template refreshed every N frames, on a worker thread with a progress bar); the result
+saves into `Project.paths` and can be applied straight to the clip's X/Y keyframes.
 **Adjustment layers** — effects that apply to everything below them.
 **Sequences** — nested timelines usable as footage.
 **Audio** — waveforms, per-clip volume line + fades, pan, mute/solo, buses with EQ/reverb/echo/

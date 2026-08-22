@@ -89,6 +89,9 @@ pub struct PreviewCtx<'a> {
     pub movie_mode: bool,
     /// Pre-render progress 0..1 while frames are being cached (None = not pre-rendering).
     pub prerender: Option<f32>,
+    /// Tracker box of the Tracking pane (centre + half sizes, project px relative to the canvas
+    /// centre) while that pane is on screen — drawn here and dragged to place the template.
+    pub tracker: Option<(f32, f32, f32, f32)>,
 }
 
 #[derive(Default)]
@@ -112,6 +115,8 @@ pub struct PreviewResponse {
     pub stroke: Option<ModelStroke>,
     /// The selected clip's mask was edited with a mask tool.
     pub mask_edit: bool,
+    /// The tracker box was dragged to this centre (project px relative to the canvas centre).
+    pub set_tracker: Option<(f32, f32)>,
 }
 
 pub fn show(ui: &mut egui::Ui, state: &mut PreviewState, mut c: PreviewCtx<'_>) -> PreviewResponse {
@@ -463,6 +468,27 @@ fn video(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r:
         r.actions.push(Action::Fullscreen);
     }
 
+    // the Tracking pane's box: drawn over the video and dragged to place the template. A press that
+    // started inside it owns the gesture, so the clip underneath is not moved as well.
+    // ponytail: the drag centres the box on the pointer instead of keeping the grab offset — keeping it
+    // needs the offset stored in PreviewState, and "put the tracker here" is what the gesture means.
+    if let Some((tcx, tcy, thw, thh)) = c.tracker {
+        let k = lb.width() / c.project.width.max(1) as f32; // points per project px
+        let ctr = lb.center();
+        let bx = Rect::from_center_size(ctr + vec2(tcx * k, tcy * k), vec2(thw * 2.0 * k, thh * 2.0 * k));
+        let st = Stroke::new(1.5, c.palette.accent);
+        painter.rect_stroke(bx, 0.0, st, StrokeKind::Middle);
+        painter.line_segment([bx.center() - vec2(5.0, 0.0), bx.center() + vec2(5.0, 0.0)], st);
+        painter.line_segment([bx.center() - vec2(0.0, 5.0), bx.center() + vec2(0.0, 5.0)], st);
+        if ui.input(|i| i.pointer.press_origin()).is_some_and(|p| bx.contains(p)) && resp.dragged() {
+            if let Some(p) = resp.interact_pointer_pos() {
+                r.set_tracker = Some(((p.x - ctr.x) / k, (p.y - ctr.y) / k));
+            }
+            state.drag = None;
+            return;
+        }
+    }
+
     // selection overlay + drag-to-move
     let Some(clip) = c
         .selection
@@ -646,6 +672,7 @@ mod tests {
                             quality: 100,
                             movie_mode: false,
                             prerender: Some(0.4),
+                            tracker: None,
                         },
                     );
                 });

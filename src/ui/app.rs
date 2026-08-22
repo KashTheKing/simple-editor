@@ -25,7 +25,7 @@ use crate::ui::tools::Tool;
 use crate::ui::{
     autocut_ui, capture_ui, curves, effects_ui, export_ui, frame_ui, import_ui, inspector, library, markers_ui,
     mixer_ui, nodes, paste_ui, planner, presets_ui, preview, retime, settings_ui, shader_ui, subtitles_ui, timeline,
-    tools, transitions_ui, DragPayload,
+    tools, tracking_ui, transitions_ui, DragPayload,
 };
 use eframe::egui;
 use serde_json::{json, Value};
@@ -82,6 +82,7 @@ pub struct App {
     planner: planner::PlannerState,
     presets: presets_ui::PresetsState,
     autocut: autocut_ui::AutoCutState,
+    tracking: tracking_ui::TrackState,
     retime: retime::RetimeUi,
     export_ui: export_ui::ExportUi,
     /// Some = the "Save Template" / "Save Profile" name windows are open (the String is the name field).
@@ -129,6 +130,9 @@ pub struct App {
     /// not depend on which pane the tile tree draws first.
     autocut_shown: bool,
     autocut_drawing: bool,
+    /// Same trick for the Tracking pane: the preview only draws its box while the pane is on screen.
+    tracking_shown: bool,
+    tracking_drawing: bool,
     /// Fonts already handed to the rasterizer (so we only reload when the list grows).
     loaded_fonts: usize,
     // ---------------- round 3 ----------------
@@ -776,6 +780,7 @@ impl App {
             planner: planner::PlannerState::default(),
             presets: presets_ui::PresetsState::default(),
             autocut: autocut_ui::AutoCutState::default(),
+            tracking: tracking_ui::TrackState::default(),
             retime: retime::RetimeUi::default(),
             export_ui: export_ui::ExportUi::default(),
             template_name: None,
@@ -808,6 +813,8 @@ impl App {
             downloads: Vec::new(),
             autocut_shown: false,
             autocut_drawing: false,
+            tracking_shown: false,
+            tracking_drawing: false,
             loaded_fonts: 0,
             gl,
             gpu_name,
@@ -1805,6 +1812,8 @@ impl App {
                         settings,
                         prerender,
                         gpu_tex,
+                        tracking,
+                        tracking_shown,
                         ..
                     } = self;
                     let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
@@ -1830,6 +1839,7 @@ impl App {
                             quality: settings.preview_quality,
                             movie_mode: settings.movie_mode,
                             prerender: done,
+                            tracker: tracking_shown.then(|| tracking.box_rect()),
                         },
                     )
                 };
@@ -1848,6 +1858,9 @@ impl App {
                 if resp.set_movie_mode.is_some() {
                     // the action toggles the setting and starts / clears the pre-render
                     self.pending_actions.push(Action::MovieMode);
+                }
+                if let Some((x, y)) = resp.set_tracker {
+                    (self.tracking.cx, self.tracking.cy) = (x, y);
                 }
                 if let Some((kind, cx, cy, w, h)) = resp.new_shape {
                     let id = self.add_shape(kind, Some((cx, cy, w, h)));
@@ -2190,6 +2203,18 @@ impl App {
                     let App { project, selection, undo, redo, autocut: st, waveforms, palette, .. } = self;
                     let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
                     autocut_ui::show(ui, st, project, selection, waveforms, palette, &mut push)
+                };
+                if changed {
+                    self.after_edit();
+                }
+            }
+            Pane::Tracking => {
+                self.tracking_drawing = true;
+                let backend = self.backend();
+                let changed = {
+                    let App { project, selection, undo, redo, tracking: st, palette, .. } = self;
+                    let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
+                    tracking_ui::show(ui, st, project, selection, backend, palette, &mut push)
                 };
                 if changed {
                     self.after_edit();
@@ -3040,7 +3065,7 @@ impl App {
 
     fn view_menu(&mut self, ui: &mut egui::Ui, out: &mut Vec<Action>) {
         use Action::*;
-        const PANES: [(Pane, Option<Action>); 15] = [
+        const PANES: [(Pane, Option<Action>); 16] = [
             (Pane::Preview, None),
             (Pane::Timeline, None),
             (Pane::Tools, Some(ToggleTools)),
@@ -3056,6 +3081,7 @@ impl App {
             (Pane::Presets, None),
             (Pane::Planner, Some(TogglePlanner)),
             (Pane::AutoCut, Some(Action::AutoCut)),
+            (Pane::Tracking, None),
         ];
         for (pane, action) in PANES {
             let mut v = self.layout.is_visible(pane);
@@ -4727,6 +4753,8 @@ impl eframe::App for App {
         // carry last frame's "the Auto-cut pane was on screen" into this frame's timeline drawing
         self.autocut_shown = self.autocut_drawing;
         self.autocut_drawing = false;
+        self.tracking_shown = self.tracking_drawing;
+        self.tracking_drawing = false;
 
         // close handling: confirm unsaved changes
         if ctx.input(|i| i.viewport().close_requested()) && !self.close_confirmed {

@@ -3,7 +3,7 @@
 //! profiles (JSON — also written to / read from `.sedit-layout` files so profiles can be shared).
 //!
 //! Default layout (DaVinci-like): top row = [tabs(Library, Effects, Transitions, Presets, Planner) |
-//! Preview with the Tools strip beneath it | tabs(Inspector, Curves, Nodes, Subtitles, Markers)],
+//! Preview with the Tools strip beneath it | tabs(Inspector, Curves, Nodes, Subtitles, Markers, Tracking)],
 //! bottom row (full width, always visible) = tabs(Timeline, Mixer, Auto-cut). `show` draws the
 //! tree in the given `ui` and each popped pane in its own viewport (closing that window docks the pane
 //! back); `draw(ui, pane)` renders a pane. Behaviour: tab titles = Pane::title, a "⧉" button in the tab
@@ -35,10 +35,12 @@ pub enum Pane {
     Markers,
     /// Machine-local reusable things (effect chains, node graphs, adjustment layers, templates).
     Presets,
+    /// Point / area tracking of a clip into a reusable project path.
+    Tracking,
 }
 
 impl Pane {
-    pub const ALL: [Pane; 15] = [
+    pub const ALL: [Pane; 16] = [
         Pane::Preview,
         Pane::Timeline,
         Pane::Library,
@@ -54,6 +56,7 @@ impl Pane {
         Pane::Mixer,
         Pane::Markers,
         Pane::Presets,
+        Pane::Tracking,
     ];
     /// Panes added in round 3 — a stored layout without them is from an older version (see `from_json`).
     pub const ROUND3: [Pane; 4] = [Pane::Tools, Pane::Nodes, Pane::Mixer, Pane::Markers];
@@ -74,6 +77,7 @@ impl Pane {
             Pane::Mixer => "Mixer",
             Pane::Markers => "Markers",
             Pane::Presets => "Presets",
+            Pane::Tracking => "Tracking",
         }
     }
 }
@@ -101,7 +105,10 @@ impl Layout {
             tiles.insert_tab_tile(ids) // the first pane is the active tab
         };
         let left = tabs(&mut tiles, &[Pane::Library, Pane::Effects, Pane::Transitions, Pane::Presets, Pane::Planner]);
-        let right = tabs(&mut tiles, &[Pane::Inspector, Pane::Curves, Pane::Nodes, Pane::Subtitles, Pane::Markers]);
+        let right = tabs(
+            &mut tiles,
+            &[Pane::Inspector, Pane::Curves, Pane::Nodes, Pane::Subtitles, Pane::Markers, Pane::Tracking],
+        );
         // centre column: the viewport with the Tools strip directly beneath it
         let preview = tiles.insert_pane(Pane::Preview);
         let tools = tiles.insert_pane(Pane::Tools);

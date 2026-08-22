@@ -18,4 +18,5 @@ pub mod shapes;
 pub mod style;
 pub mod subtitles;
 pub mod text;
+pub mod tracking;
 pub mod xmeml;

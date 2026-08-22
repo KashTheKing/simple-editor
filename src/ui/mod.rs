@@ -1,5 +1,5 @@
 //! egui UI. Dockable layout (ui/layout.rs) of panes: Library, Preview, Inspector, Effects, Transitions,
-//! Subtitles, Timeline, Curves, Planner, Auto-cut — DaVinci-like by default, bare Windows-forms styling.
+//! Subtitles, Timeline, Curves, Planner, Auto-cut, Tracking — DaVinci-like by default, bare Windows-forms styling.
 //! Windows (Settings, Retime, Export) never block the editor.
 
 pub mod app;
@@ -26,6 +26,7 @@ pub mod shader_ui;
 pub mod subtitles_ui;
 pub mod timeline;
 pub mod tools;
+pub mod tracking_ui;
 pub mod transitions_ui;
 
 use crate::model::{Animated, Id, Mask, MaskShape, Project, LABEL_COLORS};
