@@ -14,32 +14,44 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 
 static DIR: Mutex<String> = Mutex::new(String::new());
+// checking every candidate's --version (below) is a handful of process spawns, so the result is cached
+// until set_dir invalidates it — cheap enough at start-up, too slow to redo on every download.
+static CACHE: Mutex<Option<Option<PathBuf>>> = Mutex::new(None);
 
 /// Set the user-configured yt-dlp directory ("" = app dir, then PATH).
 pub fn set_dir(dir: &str) {
     *DIR.lock().unwrap_or_else(|e| e.into_inner()) = dir.to_string();
+    *CACHE.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
-/// A working `yt-dlp.exe`, or None when it is not installed (the URL import is hidden then).
+/// The best working `yt-dlp.exe`, or None when none is installed (the URL import is hidden then).
 ///
 /// Each candidate is verified with `--version`, because a PATH entry can hold a broken pip shim (one
-/// left behind by an uninstalled Python exits 1 and prints nothing); the first *working* one wins.
-/// This spawns a process, so it runs on a background thread at start-up and when the setting changes —
-/// never per frame.
+/// left behind by an uninstalled Python exits 1 and prints nothing). Machines with more than one Python
+/// install commonly have several *working* copies at very different ages — yt-dlp ships near-weekly to
+/// keep up with site changes, so picking merely the first one found can land on a copy too stale to get
+/// past current extractor/bot-check logic ("Sign in to confirm you're not a bot" and friends). The
+/// version string sorts as "YYYY.MM.DD[.N]", so the newest wins.
 pub fn exe() -> Option<PathBuf> {
+    if let Some(cached) = CACHE.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        return cached;
+    }
     let dir = DIR.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    ffpipe::find_all_exe("yt-dlp.exe", &dir).into_iter().find(|p| works(p))
+    let found = ffpipe::find_all_exe("yt-dlp.exe", &dir)
+        .into_iter()
+        .filter_map(|p| version(&p).map(|v| (p, v)))
+        .max_by(|a, b| a.1.cmp(&b.1))
+        .map(|(p, _)| p);
+    *CACHE.lock().unwrap_or_else(|e| e.into_inner()) = Some(found.clone());
+    found
 }
 
-/// Does this executable actually run? (`--version` prints a version and exits 0.)
-fn works(exe: &std::path::Path) -> bool {
-    ffpipe::command(exe)
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .map(|o| o.status.success() && !o.stdout.is_empty())
-        .unwrap_or(false)
+/// This exe's version string ("2026.08.19"), or None if it does not actually run (a broken shim exits
+/// non-zero and prints nothing).
+fn version(exe: &std::path::Path) -> Option<String> {
+    let out = ffpipe::command(exe).arg("--version").stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+    let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !v.is_empty()).then_some(v)
 }
 
 /// Where downloads go by default: the user's Videos folder, else the temp dir.
@@ -78,6 +90,25 @@ fn parse_percent(line: &str) -> Option<f32> {
     let v = line.strip_prefix("dl:")?.trim().trim_end_matches('%').trim();
     // yt-dlp paints "  N/A%" before the size is known
     v.parse::<f32>().ok().map(|p| (p / 100.0).clamp(0.0, 1.0))
+}
+
+/// yt-dlp's own stderr, tacking on an update hint when the message is one it (or YouTube's bot-check)
+/// prints for a stale extractor — these are real yt-dlp errors, not ours, but "install a newer yt-dlp"
+/// is the actual fix often enough that it is worth saying plainly instead of leaving the user to guess.
+fn annotate_if_outdated(err: &str) -> String {
+    if err == export::CANCELLED {
+        return err.to_string(); // not a failure — the caller reports it as a cancel, not an error
+    }
+    let lower = err.to_ascii_lowercase();
+    const SIGNS: [&str; 4] =
+        ["yt-dlp -u", "confirm you are on the latest version", "sign in to confirm", "please reload"];
+    if SIGNS.iter().any(|s| lower.contains(s)) {
+        let hint = "your yt-dlp looks outdated — update it and try again: \
+            yt-dlp -U (or `pip install -U yt-dlp` if it came from pip)";
+        format!("{err}\n\n{hint}")
+    } else {
+        err.to_string()
+    }
 }
 
 pub fn start_download(opts: DownloadOptions) -> Download {
@@ -138,7 +169,7 @@ fn run(opts: &DownloadOptions, prog: &Progress, out: &Mutex<Option<PathBuf>>) ->
             }
         }
     }
-    export::wait_ffmpeg(&mut child, tail, prog)?;
+    export::wait_ffmpeg(&mut child, tail, prog).map_err(|e| annotate_if_outdated(&e))?;
 
     let file = out.lock().unwrap_or_else(|e| e.into_inner()).clone();
     match file {
@@ -163,6 +194,19 @@ mod tests {
         // a printed path is not progress
         assert_eq!(parse_percent(r"C:\Users\me\Videos\clip [abc].mp4"), None);
         assert_eq!(parse_percent(""), None);
+    }
+
+    #[test]
+    fn outdated_yt_dlp_gets_an_update_hint() {
+        let bot_check = "ERROR: [youtube] abc123: Sign in to confirm you're not a bot.";
+        assert!(annotate_if_outdated(bot_check).contains("yt-dlp -U"));
+        let stale_extractor =
+            "ERROR: [youtube] abc123: some error; Confirm you are on the latest version using  yt-dlp -U";
+        assert!(annotate_if_outdated(stale_extractor).contains("pip install -U yt-dlp"));
+        // unrelated failures are passed through untouched
+        let unrelated = "ERROR: [youtube] abc123: Video unavailable";
+        assert_eq!(annotate_if_outdated(unrelated), unrelated);
+        assert_eq!(annotate_if_outdated(export::CANCELLED), export::CANCELLED);
     }
 
     /// The whole download path against a LOCAL http server — no third-party site is contacted.
@@ -234,7 +278,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let fake = dir.join("yt-dlp.exe");
         std::fs::write(&fake, b"not an executable").unwrap();
-        assert!(!works(&fake));
+        assert!(version(&fake).is_none());
         set_dir(&dir.to_string_lossy());
         assert!(exe().is_none_or(|p| p != fake), "a broken shim was accepted");
         set_dir("");
