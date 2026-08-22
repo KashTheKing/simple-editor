@@ -746,7 +746,7 @@ impl App {
         let waveforms = WaveformCache::new(cc.egui_ctx.clone(), backend);
         let thumbs = ThumbCache::new(cc.egui_ctx.clone(), backend);
         let hotkeys = Hotkeys::from_settings(&settings);
-        let palette = theme::palette(&cc.egui_ctx);
+        let palette = theme::palette_with(&cc.egui_ctx, &settings.palette);
         // GL belongs to this (UI) thread; the renderer itself is built on first use so a driver that
         // rejects the shaders only costs a toast.
         let gl = cc.gl.clone();
@@ -4760,7 +4760,7 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.palette = theme::palette(ctx);
+        self.palette = theme::palette_with(ctx, &self.settings.palette);
         if self.fonts.is_empty() {
             if let Ok(t) = self.text.try_lock() {
                 if t.is_loaded() {

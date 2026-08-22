@@ -1,5 +1,6 @@
 //! App settings — one JSON file at %APPDATA%\SimpleEditor\settings.json.
 
+use crate::theme::PaletteOverride;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -149,6 +150,9 @@ pub struct Settings {
     pub frame_quality: u32,
     /// Stock image the effects panel renders its thumbnails from (empty = the embedded default).
     pub effect_thumb_image: String,
+    /// Settings > Appearance: override for the custom-painted (timeline/preview/waveform) palette.
+    /// Default ("system" mode, every colour unset) reproduces today's Windows-derived palette exactly.
+    pub palette: PaletteOverride,
 }
 
 impl Default for Settings {
@@ -199,6 +203,7 @@ impl Default for Settings {
             frame_format: "png".into(),
             frame_quality: 92,
             effect_thumb_image: String::new(),
+            palette: PaletteOverride::default(),
         }
     }
 }
@@ -295,5 +300,18 @@ mod tests {
         // an old settings file without the field still loads, back to the default
         let old: Settings = serde_json::from_str("{}").unwrap();
         assert!(old.effect_thumb_image.is_empty());
+    }
+
+    #[test]
+    fn palette_override_round_trips() {
+        assert_eq!(Settings::default().palette, PaletteOverride::default(), "unset = today's behaviour");
+        let mut s = Settings::default();
+        s.palette.mode = "custom".into();
+        s.palette.accent = Some([200, 30, 40]);
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.palette, s.palette);
+        // an old settings file without the field still loads, back to the default (system, no overrides)
+        let old: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(old.palette, PaletteOverride::default());
     }
 }

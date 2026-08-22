@@ -2,6 +2,7 @@
 //! Bare, flat, Windows-Forms-ish visuals; DaVinci-like layout comes from the panels, not styling.
 
 use eframe::egui::{self, Color32, CornerRadius, Theme, Visuals};
+use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 
 fn reg_dword(root: winreg::HKEY, path: &str, name: &str) -> Option<u32> {
@@ -105,6 +106,67 @@ impl Palette {
     }
 }
 
+/// Settings-window override for `Palette`'s hand-tuned colours ("Appearance" tab). `mode` picks the
+/// base ("system" = today's Windows-derived behaviour, untouched; "light"/"dark" force the base;
+/// "custom" keeps following Windows but every field below can still override it); each colour is
+/// `None` until the user turns it on, so an untouched `PaletteOverride` changes nothing.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct PaletteOverride {
+    pub mode: String,
+    pub background: Option<[u8; 3]>,
+    pub panel: Option<[u8; 3]>,
+    pub header: Option<[u8; 3]>,
+    pub border: Option<[u8; 3]>,
+    pub text: Option<[u8; 3]>,
+    pub text_dim: Option<[u8; 3]>,
+    pub accent: Option<[u8; 3]>,
+    pub selection: Option<[u8; 3]>,
+    pub keyframe: Option<[u8; 3]>,
+    pub waveform: Option<[u8; 3]>,
+}
+
+/// `palette(ctx)` layered with a user override. "system" mode (the default, everything `None`) is
+/// exactly `palette(ctx)` — the round-trip the Settings window's "Reset to system" button restores.
+pub fn palette_with(ctx: &egui::Context, ov: &PaletteOverride) -> Palette {
+    let dark = match ov.mode.as_str() {
+        "light" => false,
+        "dark" => true,
+        "custom" => ctx.style().visuals.dark_mode,
+        _ => return palette(ctx),
+    };
+    let rgb = |c: [u8; 3]| Color32::from_rgb(c[0], c[1], c[2]);
+    let mut p = Palette::new(dark, ov.accent.map(rgb).unwrap_or_else(system_accent));
+    if let Some(c) = ov.background {
+        p.bg = rgb(c);
+    }
+    if let Some(c) = ov.panel {
+        p.panel = rgb(c);
+    }
+    if let Some(c) = ov.header {
+        p.header = rgb(c);
+    }
+    if let Some(c) = ov.border {
+        p.border = rgb(c);
+    }
+    if let Some(c) = ov.text {
+        p.text = rgb(c);
+    }
+    if let Some(c) = ov.text_dim {
+        p.text_dim = rgb(c);
+    }
+    if let Some(c) = ov.selection {
+        p.selection = rgb(c);
+    }
+    if let Some(c) = ov.keyframe {
+        p.keyframe = rgb(c);
+    }
+    if let Some(c) = ov.waveform {
+        p.waveform = rgb(c);
+    }
+    p
+}
+
 fn visuals(dark: bool, accent: Color32) -> Visuals {
     let mut v = if dark { Visuals::dark() } else { Visuals::light() };
     let r = CornerRadius::same(2);
@@ -165,4 +227,33 @@ pub fn apply(ctx: &egui::Context, pref: &str) {
 /// Palette for the theme currently in effect.
 pub fn palette(ctx: &egui::Context) -> Palette {
     Palette::new(ctx.style().visuals.dark_mode, system_accent())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn override_round_trips_and_falls_through() {
+        let ctx = egui::Context::default();
+        // unset (the default): falls through to today's system-derived palette exactly.
+        let derived = palette_with(&ctx, &PaletteOverride::default());
+        let sys = palette(&ctx);
+        assert_eq!(derived.bg, sys.bg);
+        assert_eq!(derived.accent, sys.accent);
+
+        // custom: only the fields turned on differ; the rest still tracks the (overridden) base.
+        let mut ov = PaletteOverride { mode: "custom".into(), ..Default::default() };
+        ov.background = Some([10, 20, 30]);
+        ov.accent = Some([200, 30, 40]);
+        let p = palette_with(&ctx, &ov);
+        assert_eq!(p.bg, Color32::from_rgb(10, 20, 30));
+        assert_eq!(p.accent, Color32::from_rgb(200, 30, 40));
+        assert_eq!(p.panel, Palette::new(ctx.style().visuals.dark_mode, Color32::from_rgb(200, 30, 40)).panel);
+
+        // what Settings::save()/load() actually persists.
+        let json = serde_json::to_string(&ov).unwrap();
+        let back: PaletteOverride = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, ov);
+    }
 }

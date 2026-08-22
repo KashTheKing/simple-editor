@@ -69,6 +69,8 @@ impl Status {
 const THEMES: [(&str, &str); 3] = [("system", "System"), ("dark", "Dark"), ("light", "Light")];
 const DECODERS: [(&str, &str); 3] =
     [("auto", "Auto (Media Foundation, ffmpeg fallback)"), ("mf", "Media Foundation"), ("ffmpeg", "ffmpeg")];
+const PALETTE_MODES: [(&str, &str); 4] =
+    [("system", "Follow Windows"), ("light", "Light"), ("dark", "Dark"), ("custom", "Custom")];
 
 #[allow(clippy::too_many_arguments)]
 pub fn show(
@@ -101,6 +103,7 @@ pub fn show(
             ui.selectable_value(&mut state.tab, 2, "Capture");
             ui.selectable_value(&mut state.tab, 3, "Export");
             ui.selectable_value(&mut state.tab, 4, "Hotkeys");
+            ui.selectable_value(&mut state.tab, 5, "Appearance");
         });
         ui.separator();
         changed = match state.tab {
@@ -108,7 +111,8 @@ pub fn show(
             1 => performance(ui, settings, gpu_name),
             2 => capture_tab(ui, settings, audio_inputs),
             3 => export(ui, settings, encoders),
-            _ => hotkeys_tab(ui, state, hotkeys),
+            4 => hotkeys_tab(ui, state, hotkeys),
+            _ => appearance(ui, settings),
         };
     });
     state.open = open;
@@ -529,6 +533,77 @@ fn capture(ctx: &egui::Context, state: &mut SettingsUi, a: Action, hotkeys: &mut
     changed
 }
 
+/// Appearance: mode (Follow Windows / Light / Dark / Custom) + a colour override per `Palette` field
+/// the app actually paints with. Mutates `s.palette` directly, so `theme::palette_with` (recomputed
+/// every frame in `App::update`) picks it up immediately — no restart, no extra plumbing.
+fn appearance(ui: &mut egui::Ui, s: &mut Settings) -> bool {
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        ui.label("Mode");
+        changed |= combo(ui, "palette_mode", &mut s.palette.mode, &PALETTE_MODES, Some(200.0));
+        if ui.button("Reset to system").clicked() {
+            s.palette = crate::theme::PaletteOverride::default();
+            changed = true;
+        }
+    });
+    ui.weak("Custom colours only take effect once the mode above is Light, Dark or Custom.");
+    ui.add_space(6.0);
+
+    let base = crate::theme::palette_with(ui.ctx(), &s.palette);
+    ui.horizontal(|ui| {
+        ui.label("Preview");
+        for c in [
+            base.bg,
+            base.panel,
+            base.header,
+            base.border,
+            base.text,
+            base.text_dim,
+            base.accent,
+            base.selection,
+            base.keyframe,
+            base.waveform,
+        ] {
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover());
+            ui.painter().rect_filled(rect, 2.0, c);
+            ui.painter().rect_stroke(rect, 2.0, (1.0, base.border), egui::StrokeKind::Outside);
+        }
+    });
+    ui.add_space(6.0);
+
+    egui::Grid::new("appearance").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+        changed |= color_row(ui, "Background", &mut s.palette.background, base.bg);
+        changed |= color_row(ui, "Panel", &mut s.palette.panel, base.panel);
+        changed |= color_row(ui, "Header", &mut s.palette.header, base.header);
+        changed |= color_row(ui, "Border", &mut s.palette.border, base.border);
+        changed |= color_row(ui, "Text", &mut s.palette.text, base.text);
+        changed |= color_row(ui, "Text (dim)", &mut s.palette.text_dim, base.text_dim);
+        changed |= color_row(ui, "Accent", &mut s.palette.accent, base.accent);
+        changed |= color_row(ui, "Selection", &mut s.palette.selection, base.selection);
+        changed |= color_row(ui, "Keyframe", &mut s.palette.keyframe, base.keyframe);
+        changed |= color_row(ui, "Waveform", &mut s.palette.waveform, base.waveform);
+    });
+    changed
+}
+
+/// One overridable colour: checkbox turns the override on/off, the button edits it while on (shown
+/// at `fallback` — today's derived colour — while off, so turning it on starts from what's in effect).
+fn color_row(ui: &mut egui::Ui, label: &str, ov: &mut Option<[u8; 3]>, fallback: egui::Color32) -> bool {
+    let mut changed = false;
+    ui.label(label);
+    let mut on = ov.is_some();
+    let mut rgb = ov.unwrap_or([fallback.r(), fallback.g(), fallback.b()]);
+    ui.horizontal(|ui| {
+        changed |= ui.checkbox(&mut on, "").changed();
+        ui.add_enabled_ui(on, |ui| {
+            changed |= egui::color_picker::color_edit_button_srgb(ui, &mut rgb).changed();
+        });
+    });
+    ui.end_row();
+    *ov = on.then_some(rgb);
+    changed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -615,7 +690,7 @@ mod tests {
         let palette = Palette::new(false, egui::Color32::BLACK);
         let mut st = SettingsUi { open: true, ..Default::default() };
         let inputs = vec![("Microphone (USB)".to_string(), false), ("Stereo Mix".to_string(), true)];
-        for tab in [0, 1, 2, 3, 4] {
+        for tab in [0, 1, 2, 3, 4, 5] {
             st.tab = tab;
             for _ in 0..2 {
                 let _ = ctx.run(egui::RawInput::default(), |ctx| {
@@ -637,5 +712,28 @@ mod tests {
         // the new tabs left the settings alone
         assert_eq!(settings.preview_quality, Settings::default().preview_quality);
         assert_eq!(settings.capture_fps, Settings::default().capture_fps);
+        assert_eq!(settings.palette, crate::theme::PaletteOverride::default());
+    }
+
+    /// The Appearance tab's per-colour toggle: off stays unset, and an already-on value round-trips
+    /// through a redraw unchanged (no spurious `changed` from just laying the row out).
+    #[test]
+    fn color_row_toggle_persists() {
+        let ctx = egui::Context::default();
+        let mut ov: Option<[u8; 3]> = None;
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                assert!(!color_row(ui, "Test", &mut ov, egui::Color32::from_rgb(1, 2, 3)));
+            });
+        });
+        assert!(ov.is_none(), "left alone: stays unset");
+
+        ov = Some([1, 2, 3]);
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                assert!(!color_row(ui, "Test", &mut ov, egui::Color32::from_rgb(9, 9, 9)));
+            });
+        });
+        assert_eq!(ov, Some([1, 2, 3]));
     }
 }
