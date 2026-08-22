@@ -954,7 +954,90 @@ impl Effect {
 
 // ---------- node graph ----------
 
+/// Arithmetic for a `Math` node.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, Default, Hash)]
+pub enum MathOp {
+    #[default]
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Min,
+    Max,
+    Pow,
+    Mod,
+}
+
+impl MathOp {
+    pub const ALL: [MathOp; 8] =
+        [MathOp::Add, MathOp::Sub, MathOp::Mul, MathOp::Div, MathOp::Min, MathOp::Max, MathOp::Pow, MathOp::Mod];
+    pub fn name(self) -> &'static str {
+        match self {
+            MathOp::Add => "Add",
+            MathOp::Sub => "Subtract",
+            MathOp::Mul => "Multiply",
+            MathOp::Div => "Divide",
+            MathOp::Min => "Min",
+            MathOp::Max => "Max",
+            MathOp::Pow => "Power",
+            MathOp::Mod => "Modulo",
+        }
+    }
+}
+
+/// Comparison for a `Compare` node.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, Default, Hash)]
+pub enum CmpOp {
+    #[default]
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    Eq,
+    Ne,
+}
+
+impl CmpOp {
+    pub const ALL: [CmpOp; 6] = [CmpOp::Lt, CmpOp::Le, CmpOp::Gt, CmpOp::Ge, CmpOp::Eq, CmpOp::Ne];
+    pub fn name(self) -> &'static str {
+        match self {
+            CmpOp::Lt => "Less",
+            CmpOp::Le => "Less or equal",
+            CmpOp::Gt => "Greater",
+            CmpOp::Ge => "Greater or equal",
+            CmpOp::Eq => "Equal",
+            CmpOp::Ne => "Not equal",
+        }
+    }
+}
+
+/// Boolean logic for a `Logic` node.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, Default, Hash)]
+pub enum LogicOp {
+    #[default]
+    And,
+    Or,
+    Not,
+    Xor,
+}
+
+impl LogicOp {
+    pub const ALL: [LogicOp; 4] = [LogicOp::And, LogicOp::Or, LogicOp::Not, LogicOp::Xor];
+    pub fn name(self) -> &'static str {
+        match self {
+            LogicOp::And => "And",
+            LogicOp::Or => "Or",
+            LogicOp::Not => "Not",
+            LogicOp::Xor => "Xor",
+        }
+    }
+}
+
 /// What a node does. `Input` is the clip's own decoded layer; `Output` is what the compositor draws.
+///
+/// Two kinds of wire run through a graph: pictures (one texture per node, evaluated on the GPU) and
+/// **values** (one number per node, `NodeGraph::eval_values`). Value ports on a picture node — an
+/// effect's parameter ports, a blend's amount — are what let the logic nodes drive the image.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum NodeKind {
     /// The clip's decoded layer (or, in an adjustment clip, everything below it).
@@ -986,13 +1069,35 @@ pub enum NodeKind {
     /// A standalone mask (matte generator).
     Mask(Mask),
     /// A string rasterised into the graph. `{frame}`, `{time}` and `{n}` expand at evaluation time,
-    /// which is all a frame counter or a running clock needs (see `expand_text`).
-    Text(TextStyle),
+    /// which is all a frame counter or a running clock needs (see `expand_text`). Called `Text` in
+    /// projects written before it was renamed — the alias keeps those loading.
+    #[serde(alias = "Text")]
+    String(TextStyle),
+    /// A keyframeable constant: the plain number input, and a grey card at its value as a picture.
+    Number(Animated),
+    /// A constant flag — 1.0 or 0.0 downstream.
+    Bool(bool),
+    /// Deterministic noise in `min..max`, hashed from (`seed`, frame): the same project always
+    /// renders the same numbers, and every frame gets a different one. A constant is a `Number`.
+    Random {
+        seed: u32,
+        min: f64,
+        max: f64,
+    },
+    /// Arithmetic on two value inputs.
+    Math(MathOp),
+    /// Compares two value inputs: 1.0 when it holds, 0.0 when it does not.
+    Compare(CmpOp),
+    /// Boolean logic on two value inputs (`Not` reads only `a`); anything >= 0.5 counts as true.
+    Logic(LogicOp),
+    /// `cond ? a : b` — the switch. Works on values *and* on pictures.
+    Select,
     Output,
 }
 
 impl NodeKind {
-    /// How many inputs the node consumes.
+    /// How many inputs the node consumes. An effect takes its picture on port 0 and one optional
+    /// value per parameter after it, so any number in the graph can drive any knob.
     pub fn inputs(&self) -> usize {
         match self {
             NodeKind::Input
@@ -1000,10 +1105,54 @@ impl NodeKind {
             | NodeKind::Clip(_)
             | NodeKind::Asset(_)
             | NodeKind::Mask(_)
-            | NodeKind::Text(_) => 0,
-            NodeKind::Effect(_) | NodeKind::Output => 1,
-            NodeKind::Blend { .. } | NodeKind::Combine { .. } | NodeKind::Merge | NodeKind::Matte { .. } => 2,
+            | NodeKind::String(_)
+            | NodeKind::Number(_)
+            | NodeKind::Bool(_)
+            | NodeKind::Random { .. } => 0,
+            NodeKind::Output => 1,
+            NodeKind::Effect(e) => 1 + e.specs().len(),
+            NodeKind::Merge | NodeKind::Matte { .. } | NodeKind::Math(_) | NodeKind::Compare(_) => 2,
+            NodeKind::Logic(op) => {
+                if *op == LogicOp::Not {
+                    1
+                } else {
+                    2
+                }
+            }
+            NodeKind::Blend { .. } | NodeKind::Combine { .. } | NodeKind::Select => 3,
         }
+    }
+    /// What port `i` takes, for the node box and the tooltips. Empty when it has no name.
+    pub fn port_label(&self, i: usize) -> &str {
+        match self {
+            NodeKind::Effect(e) => {
+                if i == 0 {
+                    "in"
+                } else {
+                    e.specs().get(i - 1).map(|s| s.name).unwrap_or("")
+                }
+            }
+            NodeKind::Blend { .. } => ["a", "b", "opacity"][i.min(2)],
+            NodeKind::Combine { .. } => ["a", "b", "factor"][i.min(2)],
+            NodeKind::Merge => ["a", "b"][i.min(1)],
+            NodeKind::Matte { .. } => ["a", "matte"][i.min(1)],
+            NodeKind::Math(_) | NodeKind::Compare(_) | NodeKind::Logic(_) => ["a", "b"][i.min(1)],
+            NodeKind::Select => ["cond", "a", "b"][i.min(2)],
+            _ => "",
+        }
+    }
+    /// Nodes whose output is a number rather than a picture (they still paint as a grey card, so a
+    /// value can be used as a matte without a conversion node).
+    pub fn is_value(&self) -> bool {
+        matches!(
+            self,
+            NodeKind::Number(_)
+                | NodeKind::Bool(_)
+                | NodeKind::Random { .. }
+                | NodeKind::Math(_)
+                | NodeKind::Compare(_)
+                | NodeKind::Logic(_)
+        )
     }
     pub fn title(&self) -> String {
         match self {
@@ -1017,10 +1166,26 @@ impl NodeKind {
             NodeKind::Merge => "Merge".into(),
             NodeKind::Matte { .. } => "Matte".into(),
             NodeKind::Mask(m) => format!("Mask ({})", m.shape.name()),
-            NodeKind::Text(_) => "Text".into(),
+            NodeKind::String(_) => "String".into(),
+            NodeKind::Number(_) => "Number".into(),
+            NodeKind::Bool(_) => "Boolean".into(),
+            NodeKind::Random { .. } => "Random".into(),
+            NodeKind::Math(op) => op.name().into(),
+            NodeKind::Compare(op) => op.name().into(),
+            NodeKind::Logic(op) => op.name().into(),
+            NodeKind::Select => "Select".into(),
             NodeKind::Output => "Output".into(),
         }
     }
+}
+
+/// splitmix64 folded to 0..1 — the `Random` node's whole implementation.
+fn hash01(x: u64) -> f64 {
+    let mut z = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    (z >> 11) as f64 / (1u64 << 53) as f64
 }
 
 /// Expand a text node's format at time `t` (timeline seconds, `lt` clip-local): `{frame}` is the
@@ -1227,7 +1392,86 @@ impl NodeGraph {
         walk(self, out, &mut seen, &mut order);
         order
     }
-    /// Every animated property in the graph (effect params, blend opacity, mask properties).
+    /// The scalar half of the graph at clip-local time `lt`: one number per node, in evaluation
+    /// order, so a `Math`/`Compare`/`Select` chain resolves in a single pass. Picture-only nodes
+    /// evaluate to 0. GL-free on purpose — the renderer calls it once per frame and it is what the
+    /// tests exercise.
+    pub fn eval_values(&self, lt: f64, fps: f64) -> std::collections::HashMap<Id, f64> {
+        let fps = if fps.is_finite() && fps > 0.0 { fps } else { 30.0 };
+        let frame = (lt.max(0.0) * fps).floor() as u64;
+        let mut vals: std::collections::HashMap<Id, f64> = std::collections::HashMap::new();
+        for id in self.eval_order() {
+            let Some(n) = self.node(id) else { continue };
+            let port = |p: usize| self.input_of(id, p).and_then(|f| vals.get(&f).copied()).unwrap_or(0.0);
+            let (a, b) = (port(0), port(1));
+            // a disabled node passes its first input through, exactly like the picture side
+            let v = if !n.enabled {
+                a
+            } else {
+                match &n.kind {
+                    NodeKind::Number(x) => x.at(lt),
+                    NodeKind::Bool(x) => *x as u8 as f64,
+                    NodeKind::Random { seed, min, max } => min + (max - min) * hash01((*seed as u64) << 32 ^ frame),
+                    NodeKind::Math(op) => match op {
+                        MathOp::Add => a + b,
+                        MathOp::Sub => a - b,
+                        MathOp::Mul => a * b,
+                        MathOp::Div => {
+                            if b == 0.0 {
+                                0.0
+                            } else {
+                                a / b
+                            }
+                        }
+                        MathOp::Min => a.min(b),
+                        MathOp::Max => a.max(b),
+                        MathOp::Pow => a.powf(b),
+                        MathOp::Mod => {
+                            if b == 0.0 {
+                                0.0
+                            } else {
+                                a.rem_euclid(b)
+                            }
+                        }
+                    },
+                    NodeKind::Compare(op) => {
+                        let t = match op {
+                            CmpOp::Lt => a < b,
+                            CmpOp::Le => a <= b,
+                            CmpOp::Gt => a > b,
+                            CmpOp::Ge => a >= b,
+                            CmpOp::Eq => (a - b).abs() < 1e-9,
+                            CmpOp::Ne => (a - b).abs() >= 1e-9,
+                        };
+                        t as u8 as f64
+                    }
+                    NodeKind::Logic(op) => {
+                        let (x, y) = (a >= 0.5, b >= 0.5);
+                        let t = match op {
+                            LogicOp::And => x && y,
+                            LogicOp::Or => x || y,
+                            LogicOp::Not => !x,
+                            LogicOp::Xor => x != y,
+                        };
+                        t as u8 as f64
+                    }
+                    NodeKind::Select => {
+                        if a >= 0.5 {
+                            b
+                        } else {
+                            port(2)
+                        }
+                    }
+                    NodeKind::Blend { opacity, .. } => opacity.at(lt),
+                    NodeKind::Combine { factor, .. } => factor.at(lt),
+                    _ => 0.0,
+                }
+            };
+            vals.insert(id, if v.is_finite() { v } else { 0.0 });
+        }
+        vals
+    }
+    /// Every animated property in the graph (effect params, blend opacity, numbers, mask properties).
     pub fn animated_mut(&mut self) -> Vec<&mut Animated> {
         let mut v = Vec::new();
         for n in &mut self.nodes {
@@ -1240,6 +1484,7 @@ impl NodeGraph {
                 }
                 NodeKind::Blend { opacity, .. } => v.push(opacity),
                 NodeKind::Combine { factor, .. } => v.push(factor),
+                NodeKind::Number(a) => v.push(a),
                 NodeKind::Mask(m) => v.extend(m.animated_mut()),
                 _ => {}
             }
@@ -1258,6 +1503,7 @@ impl NodeGraph {
                 }
                 NodeKind::Blend { opacity, .. } => v.push(opacity),
                 NodeKind::Combine { factor, .. } => v.push(factor),
+                NodeKind::Number(a) => v.push(a),
                 NodeKind::Mask(m) => v.extend(m.animated()),
                 _ => {}
             }
@@ -4307,6 +4553,90 @@ mod tests {
         // nonsense fps falls back, unknown braces and negative times are left alone
         assert_eq!(expand_text("{frame} {x}", 1.0, 0.0, 0.0), "30 {x}");
         assert_eq!(expand_text("{n}", 0.0, -5.0, 30.0), "0");
+    }
+
+    /// A bare node straight into a graph (the editor goes through `Project::add_node`).
+    fn push(g: &mut NodeGraph, id: Id, kind: NodeKind) -> Id {
+        g.nodes.push(Node { id, kind, x: 0.0, y: 0.0, enabled: true });
+        id
+    }
+
+    #[test]
+    fn the_logic_nodes_evaluate_as_a_chain() {
+        let mut next = 100;
+        let mut nid = || {
+            next += 1;
+            next
+        };
+        let mut g = NodeGraph::new(&mut nid);
+        let out = g.output().unwrap();
+        let a = push(&mut g, nid(), NodeKind::Number(Animated::new(3.0)));
+        let b = push(&mut g, nid(), NodeKind::Number(Animated::new(4.0)));
+        let sum = push(&mut g, nid(), NodeKind::Math(MathOp::Add));
+        let gt = push(&mut g, nid(), NodeKind::Compare(CmpOp::Gt));
+        let not = push(&mut g, nid(), NodeKind::Logic(LogicOp::Not));
+        let sel = push(&mut g, nid(), NodeKind::Select);
+        assert!(g.connect(a, sum, 0) && g.connect(b, sum, 1));
+        assert!(g.connect(sum, gt, 0) && g.connect(b, gt, 1)); // 7 > 4
+        assert!(g.connect(gt, not, 0));
+        assert!(g.connect(not, sel, 0) && g.connect(a, sel, 1) && g.connect(b, sel, 2));
+        assert!(g.connect(sel, out, 0));
+        let v = g.eval_values(0.0, 30.0);
+        assert_eq!(v[&sum], 7.0);
+        assert_eq!(v[&gt], 1.0);
+        assert_eq!(v[&not], 0.0);
+        assert_eq!(v[&sel], 4.0, "the condition was negated, so Select takes b");
+        // flip the comparison and the switch follows
+        g.node_mut(gt).unwrap().kind = NodeKind::Compare(CmpOp::Lt);
+        let v = g.eval_values(0.0, 30.0);
+        assert_eq!(v[&sel], 3.0);
+        // only what the Output reads is evaluated, exactly like the picture side
+        let loose = push(&mut g, nid(), NodeKind::Number(Animated::new(9.0)));
+        assert!(!g.eval_values(0.0, 30.0).contains_key(&loose));
+        // a division by zero is 0, not a NaN loose in the render
+        g.node_mut(sum).unwrap().kind = NodeKind::Math(MathOp::Div);
+        g.disconnect(sum, 1);
+        assert_eq!(g.eval_values(0.0, 30.0)[&sum], 0.0);
+    }
+
+    #[test]
+    fn random_is_seeded_so_a_render_repeats() {
+        let mut next = 200;
+        let mut nid = || {
+            next += 1;
+            next
+        };
+        let mut g = NodeGraph::new(&mut nid);
+        let out = g.output().unwrap();
+        let r = push(&mut g, nid(), NodeKind::Random { seed: 7, min: -1.0, max: 1.0 });
+        assert!(g.connect(r, out, 0));
+        let first = g.eval_values(0.5, 30.0)[&r];
+        assert_eq!(first, g.eval_values(0.5, 30.0)[&r], "same seed, same frame, same number");
+        assert!((-1.0..=1.0).contains(&first), "{first} is outside min..max");
+        assert_ne!(first, g.eval_values(1.5, 30.0)[&r], "a different frame draws again");
+        g.node_mut(r).unwrap().kind = NodeKind::Random { seed: 8, min: -1.0, max: 1.0 };
+        assert_ne!(first, g.eval_values(0.5, 30.0)[&r], "a different seed is a different sequence");
+    }
+
+    #[test]
+    fn an_old_text_node_loads_as_a_string_node() {
+        let k = NodeKind::String(TextStyle { text: "hello".into(), ..Default::default() });
+        let json = serde_json::to_string(&k).unwrap();
+        assert!(json.starts_with("{\"String\""), "{json}");
+        let old = json.replacen("\"String\"", "\"Text\"", 1);
+        assert_eq!(serde_json::from_str::<NodeKind>(&old).unwrap(), k, "projects from before the rename still load");
+    }
+
+    #[test]
+    fn an_effect_node_takes_one_value_port_per_parameter() {
+        let fx = NodeKind::Effect(Effect::new(EffectKind::Tint));
+        assert_eq!(fx.inputs(), 1 + EffectKind::Tint.params().len());
+        assert_eq!(fx.port_label(0), "in");
+        assert_eq!(fx.port_label(1), EffectKind::Tint.params()[0].name);
+        // Not reads one input, the other logic nodes two
+        assert_eq!(NodeKind::Logic(LogicOp::Not).inputs(), 1);
+        assert_eq!(NodeKind::Logic(LogicOp::And).inputs(), 2);
+        assert_eq!(NodeKind::Select.port_label(0), "cond");
     }
 }
 

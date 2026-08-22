@@ -112,10 +112,13 @@ monotonic `next_id`.
   are the clip-local window it runs in (`Effect::on_at`; `len <= 0` = to the end of the clip, i.e. every
   project written before the window existed).
 * `NodeGraph { nodes, edges }` — `NodeKind::{Input, Color, Clip, Asset, Effect, Blend, Combine, Merge,
-  Matte, Mask, Text, Output}`, cycle-refusing `connect`, `eval_order()`, `to_effects()` (the inverse of
-  `from_effects`, used by `Project::unlink_graph`). The node editor is **opt-in**: only a graph with real
-  nodes in it (`Clip::uses_graph`) replaces the linear stack for rendering — a bare Input→Output
-  pass-through never shadows `effects`, and the Nodes pane builds one only when asked.
+  Matte, Mask, String, Number, Bool, Random, Math, Compare, Logic, Select, Output}` (`String` was called
+  `Text`; a serde alias keeps old projects loading), cycle-refusing `connect`, `eval_order()`,
+  `eval_values()` — the scalar half of the graph, which drives effect parameter ports — and
+  `to_effects()` (the inverse of `from_effects`, used by `Project::unlink_graph`). The node editor is
+  **opt-in**: only a graph with real nodes in it (`Clip::uses_graph`) replaces the linear stack for
+  rendering — a bare Input→Output pass-through never shadows `effects`, and the Nodes pane builds one
+  only when asked.
 * `Mask` — Rect/Ellipse/Polygon/Path with animated centre/radii/rotation/feather/expand/opacity/invert.
 * `Transition` — lives on a `Track`, centred on a cut, **window clamped to its two clips**
   (`Transition::window(left, right)`); kinds CrossFade / FadeToColor / Push / Wipe.

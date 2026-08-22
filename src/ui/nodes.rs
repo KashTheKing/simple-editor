@@ -1,23 +1,30 @@
 //! Node editor: the selected clip's effect chain as a graph you can wire up.
 //!
-//! Canvas with pan (middle-drag / scroll) and zoom (Ctrl+Scroll). Each node is a rounded box:
-//! title (`NodeKind::title`), an enable checkbox, input ports on the left, one output port on the right,
-//! and its parameters inline (collapsed to the first two when the node is small). Drag from a port to
-//! another to connect (`NodeGraph::connect` refuses cycles); drag a wire off a port to disconnect;
-//! right-click a node for Delete / Duplicate / Add mask; right-click the canvas for the "Add node" menu
-//! (every `EffectKind` grouped by `category()`, Blend, Combine, Merge, Matte, Mask, Color, Clip, Text,
-//! Input, then one entry per project asset — an Asset node needs a real id, so it is picked there).
-//! Selecting a node shows its full parameters in the Inspector and lets the Curves pane keyframe them.
+//! Canvas with pan (middle-drag / scroll) and zoom (Ctrl+Scroll), plus a properties panel on the right
+//! showing **every** parameter of the picked node — that panel is the only place several kinds (Blend,
+//! Matte, Mask, Color, Clip, Random, …) can be edited at all. Each node is a rounded box: title
+//! (`NodeKind::title`), an enable checkbox, labelled input ports on the left, one output port on the
+//! right, and the first couple of parameters inline. An effect's ports are its picture (port 0) then one
+//! per parameter, so a Number / Random / Math chain can drive any knob; a wired knob greys out in the
+//! panel. Drag from a port to another to connect (`NodeGraph::connect` refuses cycles); drag a wire off a
+//! port to disconnect; right-click a node for Delete / Duplicate / Add mask / **Replace** (swap in any
+//! other kind, or retarget an Asset — connections that still fit are kept); right-click the canvas for
+//! the "Add node" menu (every `EffectKind` grouped by `category()`, the graph nodes, the value nodes, then
+//! one entry per project asset — an Asset node needs a real id, so it is picked there).
 //! Ctrl+click adds/removes a node, a primary drag over empty canvas rubber-bands a group (Shift adds),
 //! dragging any picked node moves the whole selection, Delete removes it and Ctrl+C / Ctrl+V duplicates
 //! it (edges *between* the copied nodes come along; wires to the outside are dropped). Effects and
-//! transitions dragged out of their panels drop in as fresh, unwired nodes.
-//! A clip without a graph gets a "Build a node graph from it" button instead of one: `ensure_graph`
-//! converts the linear stack, and from then on the renderer evaluates the graph and ignores
-//! `clip.effects` — far too much to do to a clip just because this pane is docked somewhere.
+//! transitions dragged out of their panels drop in as fresh, unwired nodes; a library asset dropped on
+//! empty canvas becomes an Asset node, and dropped *on* a node it replaces that node's value.
+//! A clip without a graph gets a "Build a node graph from it" button rather than one being made for it:
+//! `ensure_graph` converts the linear stack only when asked, and from then on the renderer evaluates the
+//! graph and ignores `clip.effects` — far too much to do to a clip just because this pane is docked.
 //! Every mutation calls `undo` once per gesture.
 
-use crate::model::{Animated, BlendMode, Edge, Effect, EffectKind, Id, Mask, Node, NodeKind, Project, TransitionKind};
+use crate::model::{
+    Animated, BlendMode, CmpOp, Edge, Effect, EffectKind, Id, LogicOp, Mask, MaskShape, MathOp, Node, NodeGraph,
+    NodeKind, Project, TextStyle as TextProps, TransitionKind,
+};
 use crate::theme::Palette;
 use crate::ui::DragPayload;
 use eframe::egui;
@@ -95,6 +102,9 @@ enum Act {
     Move(Id, f32, f32),
     SetParam(Id, usize, f64),
     SetText(Id, String),
+    /// Replace what a node *is* (its value, or its whole kind): the properties panel, the Replace
+    /// menu and a dropped asset all land here. Wires the new kind still has a port for survive.
+    SetKind(Id, NodeKind),
     SetEnabled(Id, bool),
     Connect(Id, Id, usize),
     Disconnect(Id, usize),
@@ -153,8 +163,25 @@ pub fn show(
     let lt = project.clip(clip_id).map(|c| c.local(playhead)).unwrap_or(0.0);
     state.selection.retain(|s| graph.node(*s).is_some());
 
-    let rect = ui.available_rect_before_wrap();
+    let mut acts: Vec<Act> = Vec::new();
+    let mut needs_undo = false;
     let base = ui.id();
+    // pickable sources for the Asset / Clip nodes, and the saved drawings a mask centre can follow
+    let assets: Vec<(Id, String)> = project.assets.iter().map(|a| (a.id, a.name())).collect();
+    let clips: Vec<(Id, String)> =
+        project.tracks.iter().flat_map(|t| t.clips.iter()).map(|c| (c.id, format!("#{} {}", c.id, c.name))).collect();
+    let paths: Vec<(Id, String)> = project.paths.iter().map(|p| (p.id, p.name.clone())).collect();
+
+    egui::SidePanel::right(base.with("props")).default_width(210.0).show_inside(ui, |ui| {
+        match state.primary().and_then(|id| graph.node(id)) {
+            Some(n) => node_panel(ui, n, &graph, lt, &assets, &clips, &mut acts, &mut needs_undo),
+            None => {
+                ui.weak("Select a node");
+            }
+        }
+    });
+
+    let rect = ui.available_rect_before_wrap();
     let resp = ui.allocate_rect(rect, Sense::click_and_drag());
     let p = ui.painter().with_clip_rect(rect);
     p.rect_filled(rect, 0, palette.bg);
@@ -216,11 +243,6 @@ pub fn show(
             .min_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(prt, _)| *prt)
     };
-
-    let mut acts: Vec<Act> = Vec::new();
-    let mut needs_undo = false;
-    // saved drawings / polygons: a mask node's centre can travel along one (the graph's position input)
-    let paths: Vec<(Id, String)> = project.paths.iter().map(|p| (p.id, p.name.clone())).collect();
 
     // rubber band: hit-tested while the boxes are drawn, applied on release (mirrors the timeline)
     let band_rect = state.band.map(|(o, _)| Rect::from_two_pos(o, pointer.unwrap_or(o)).intersect(rect));
@@ -333,13 +355,42 @@ pub fn show(
             needs_undo = true;
         }
 
+        // a library asset dropped on a node replaces what that node is
+        if let Some(payload) = nr.dnd_release_payload::<DragPayload>() {
+            if let DragPayload::Asset(aid) = *payload {
+                acts.push(Act::SetKind(n.id, NodeKind::Asset(aid)));
+                needs_undo = true;
+            }
+        }
+
         // inline parameters (real widgets only when the box is close to full size)
         if z >= 0.6 {
-            if let NodeKind::Text(style) = &n.kind {
-                let row = Rect::from_min_size(
-                    r.min + vec2(6.0 * z, HEADER_H * z + 2.0),
-                    vec2((NODE_W - 12.0) * z, ROW_H * z),
-                );
+            if let NodeKind::Number(a) = &n.kind {
+                let mut v = a.at(lt);
+                let mut sub = ui.new_child(UiBuilder::new().max_rect(row_rect(r, 0, z)).id_salt(("num", n.id)));
+                sub.set_clip_rect(row_rect(r, 0, z).intersect(rect));
+                let dv = sub.add(egui::DragValue::new(&mut v).speed(0.01));
+                if dv.changed() {
+                    let mut a = a.clone();
+                    a.value = v;
+                    acts.push(Act::SetKind(n.id, NodeKind::Number(a)));
+                }
+                if dv.drag_started() || dv.gained_focus() {
+                    needs_undo = true;
+                }
+            }
+            if let NodeKind::Bool(b) = &n.kind {
+                let mut v = *b;
+                let mut sub = ui.new_child(UiBuilder::new().max_rect(row_rect(r, 0, z)).id_salt(("bool", n.id)));
+                sub.set_clip_rect(row_rect(r, 0, z).intersect(rect));
+                let label = if v { "true" } else { "false" };
+                if sub.checkbox(&mut v, label).changed() {
+                    acts.push(Act::SetKind(n.id, NodeKind::Bool(v)));
+                    needs_undo = true;
+                }
+            }
+            if let NodeKind::String(style) = &n.kind {
+                let row = row_rect(r, 0, z);
                 let mut txt = style.text.clone();
                 let mut sub = ui.new_child(UiBuilder::new().max_rect(row).id_salt(("txt", n.id)));
                 sub.set_clip_rect(row.intersect(rect));
@@ -355,10 +406,8 @@ pub fn show(
             }
             if let NodeKind::Effect(e) = &n.kind {
                 for (pi, spec) in e.specs().iter().take(INLINE_PARAMS).enumerate() {
-                    let row = Rect::from_min_size(
-                        r.min + vec2(6.0 * z, (HEADER_H + ROW_H * pi as f32) * z + 2.0),
-                        vec2((NODE_W - 12.0) * z, ROW_H * z),
-                    );
+                    // parameter pi sits on the row of the port that can drive it (port 0 is the picture)
+                    let row = row_rect(r, pi + 1, z);
                     let mut v = e.at(pi, lt);
                     let mut sub = ui.new_child(UiBuilder::new().max_rect(row).id_salt(("p", n.id, pi)));
                     sub.set_clip_rect(row.intersect(rect));
@@ -422,6 +471,12 @@ pub fn show(
                     }
                 }
             }
+            // swap the node's value (another asset) or the node itself for any other kind
+            if !is_output {
+                ui.menu_button("Replace", |ui| {
+                    add_menu(ui, base.with("rep"), (nx, ny), Some(id), &assets, &mut acts, &mut needs_undo)
+                });
+            }
         });
     }
 
@@ -460,6 +515,10 @@ pub fn show(
         let kind = match &*payload {
             DragPayload::Effect(k) => Some(NodeKind::Effect(Effect::new(*k))),
             DragPayload::Transition(k) => Some(transition_node(*k)),
+            // media from the library: the canvas takes it as a source node
+            DragPayload::Asset(id) => Some(NodeKind::Asset(*id)),
+            // ponytail: a bare path would have to be probed and imported first — drop it on the
+            // timeline or the library, then drag the asset here
             _ => None,
         };
         if let Some(kind) = kind {
@@ -475,8 +534,7 @@ pub fn show(
         state.menu_at = Some((g.x, g.y));
     }
     let at = state.menu_at.unwrap_or((40.0, 40.0));
-    let assets: Vec<(Id, String)> = project.assets.iter().map(|a| (a.id, a.name())).collect();
-    resp.context_menu(|ui| add_menu(ui, base, at, &assets, &mut acts, &mut needs_undo));
+    resp.context_menu(|ui| add_menu(ui, base, at, None, &assets, &mut acts, &mut needs_undo));
 
     // Delete / Ctrl+D / Ctrl+C / Ctrl+V on the selection (the menu's actions, from the keyboard)
     if !ui.ctx().wants_keyboard_input() && pointer.is_some() {
@@ -600,9 +658,24 @@ fn apply(project: &mut Project, clip: Id, act: Act, selected: &mut Vec<Id>) -> b
             }
             None => false,
         },
+        // the Output is the one node that can neither be replaced nor duplicated
+        Act::SetKind(id, kind) => {
+            if kind == NodeKind::Output
+                || !matches!(g.node(id), Some(n) if n.kind != kind && n.kind != NodeKind::Output)
+            {
+                return false;
+            }
+            let ports = kind.inputs();
+            if let Some(n) = g.node_mut(id) {
+                n.kind = kind;
+            }
+            // wires into ports the new kind does not have go; every other connection is kept
+            g.edges.retain(|e| e.to != id || e.port < ports);
+            true
+        }
         Act::SetText(id, s) => match g.node_mut(id) {
             Some(n) => match &mut n.kind {
-                NodeKind::Text(style) => {
+                NodeKind::String(style) => {
                     style.text = s;
                     true
                 }
@@ -654,17 +727,23 @@ fn apply(project: &mut Project, clip: Id, act: Act, selected: &mut Vec<Id>) -> b
 }
 
 /// "Add node": every `EffectKind` under its `category()`, then the non-effect nodes and the project's
-/// assets (an Asset node needs a real id, so it is picked here instead of on the node box).
+/// assets (an Asset node needs a real id, so it is picked here instead of on the node box). With
+/// `target` set it is the Replace menu instead: the same catalogue, swapped into an existing node.
+#[allow(clippy::too_many_arguments)]
 fn add_menu(
     ui: &mut egui::Ui,
     base: egui::Id,
     at: (f32, f32),
+    target: Option<Id>,
     assets: &[(Id, String)],
     acts: &mut Vec<Act>,
     needs_undo: &mut bool,
 ) {
     let mut push = |ui: &egui::Ui, kind: NodeKind| {
-        acts.push(Act::Add(kind, at.0, at.1));
+        acts.push(match target {
+            Some(id) => Act::SetKind(id, kind),
+            None => Act::Add(kind, at.0, at.1),
+        });
         *needs_undo = true;
         ui.close();
     };
@@ -692,11 +771,27 @@ fn add_menu(
             ("Matte", NodeKind::Matte { invert: false, use_alpha: false }),
             ("Mask", NodeKind::Mask(Mask::default())),
             ("Color", NodeKind::Color([0, 0, 0, 255])),
-            // ponytail: a fresh Clip node points at nothing — the inspector picks the source clip
+            // ponytail: a fresh Clip node points at nothing — the properties panel picks the source
             ("Clip", NodeKind::Clip(0)),
-            // a fresh Text node is the clock; a plain string is one edit away
-            ("Text", NodeKind::Text(crate::model::TextStyle { text: "{time}".into(), ..Default::default() })),
             ("Input", NodeKind::Input),
+        ] {
+            if menu_entry(ui, base.with(("add", name)), name).clicked() {
+                push(ui, kind);
+            }
+        }
+        ui.separator();
+        ui.label(egui::RichText::new("Value").small().weak());
+        // one entry per family: the operator itself is a combo in the properties panel
+        for (name, kind) in [
+            ("Number", NodeKind::Number(Animated::new(1.0))),
+            ("Boolean", NodeKind::Bool(true)),
+            // a fresh String node is the clock; a plain string is one edit away
+            ("String", NodeKind::String(TextProps { text: "{time}".into(), ..Default::default() })),
+            ("Random", NodeKind::Random { seed: 1, min: 0.0, max: 1.0 }),
+            ("Math", NodeKind::Math(MathOp::Add)),
+            ("Compare", NodeKind::Compare(CmpOp::Lt)),
+            ("Logic", NodeKind::Logic(LogicOp::And)),
+            ("Select", NodeKind::Select),
         ] {
             if menu_entry(ui, base.with(("add", name)), name).clicked() {
                 push(ui, kind);
@@ -712,6 +807,281 @@ fn add_menu(
             }
         }
     });
+}
+
+// ---------- properties panel ----------
+
+/// One gesture's worth of widget responses: `changed` decides whether to write the node back,
+/// `snapshot` whether to push an undo entry first (drags and typing snapshot on their first frame,
+/// click-once widgets on the change itself).
+#[derive(Default)]
+struct Edits {
+    changed: bool,
+    snapshot: bool,
+}
+
+impl Edits {
+    fn add(&mut self, r: &egui::Response) -> &mut Self {
+        self.changed |= r.changed();
+        self.snapshot |= r.drag_started() || r.gained_focus() || (r.changed() && !r.dragged());
+        self
+    }
+}
+
+/// Every parameter of one node, edited on a clone and written back as a single `SetKind`. This is
+/// the answer to "I can't edit properties of many nodes": *every* `NodeKind` has an arm here.
+#[allow(clippy::too_many_arguments)]
+fn node_panel(
+    ui: &mut egui::Ui,
+    node: &Node,
+    graph: &NodeGraph,
+    lt: f64,
+    assets: &[(Id, String)],
+    clips: &[(Id, String)],
+    acts: &mut Vec<Act>,
+    needs_undo: &mut bool,
+) {
+    ui.strong(node.kind.title());
+    ui.separator();
+    let mut k = node.kind.clone();
+    let mut e = Edits::default();
+    egui::ScrollArea::vertical().show(ui, |ui| match &mut k {
+        NodeKind::Input => {
+            ui.weak("this clip's own picture");
+        }
+        NodeKind::Output => {
+            ui.weak("what the compositor draws");
+        }
+        NodeKind::Merge => {
+            ui.weak("b straight over a");
+        }
+        NodeKind::Select => {
+            ui.weak("cond >= 0.5 picks a, else b — works on pictures and on numbers");
+        }
+        NodeKind::Color(c) => {
+            ui.horizontal(|ui| {
+                ui.label("Color");
+                e.add(&ui.color_edit_button_srgba_unmultiplied(c));
+            });
+        }
+        NodeKind::Clip(id) => {
+            pick(ui, &mut e, "Clip", id, clips);
+        }
+        NodeKind::Asset(id) => {
+            pick(ui, &mut e, "Asset", id, assets);
+        }
+        NodeKind::Blend { mode, opacity } => {
+            blend_ui(ui, &mut e, mode, opacity, "Opacity", graph, node.id);
+        }
+        NodeKind::Combine { mode, factor } => {
+            blend_ui(ui, &mut e, mode, factor, "Factor", graph, node.id);
+        }
+        NodeKind::Matte { invert, use_alpha } => {
+            e.add(&ui.checkbox(use_alpha, "Use alpha (not luma)"));
+            e.add(&ui.checkbox(invert, "Invert"));
+        }
+        NodeKind::Mask(m) => mask_ui(ui, &mut e, m),
+        NodeKind::String(s) => {
+            e.add(&ui.text_edit_multiline(&mut s.text))
+                .add(&ui.text_edit_singleline(&mut s.font).on_hover_text("Font family"));
+            num(ui, &mut e, "Size", &mut s.size, 4.0..=400.0);
+            ui.horizontal(|ui| {
+                e.add(&ui.checkbox(&mut s.bold, "Bold")).add(&ui.checkbox(&mut s.italic, "Italic"));
+            });
+            ui.horizontal(|ui| {
+                ui.label("Fill");
+                e.add(&ui.color_edit_button_srgba_unmultiplied(&mut s.color));
+                ui.label("Outline");
+                e.add(&ui.color_edit_button_srgba_unmultiplied(&mut s.outline_color));
+            });
+            num(ui, &mut e, "Outline width", &mut s.outline_width, 0.0..=40.0);
+            ui.horizontal(|ui| {
+                e.add(&ui.checkbox(&mut s.shadow, "Shadow"));
+                e.add(&ui.color_edit_button_srgba_unmultiplied(&mut s.shadow_color));
+            });
+            num(ui, &mut e, "Shadow x", &mut s.shadow_x, -100.0..=100.0);
+            num(ui, &mut e, "Shadow y", &mut s.shadow_y, -100.0..=100.0);
+            num(ui, &mut e, "Shadow blur", &mut s.shadow_blur, 0.0..=100.0);
+            ui.horizontal(|ui| {
+                ui.label("Align");
+                for (i, name) in ["Left", "Center", "Right"].iter().enumerate() {
+                    e.add(&ui.selectable_value(&mut s.align, i as u8, *name));
+                }
+            });
+            num(ui, &mut e, "Line spacing", &mut s.line_spacing, 0.1..=4.0);
+            num(ui, &mut e, "Letter spacing", &mut s.letter_spacing, -20.0..=40.0);
+            ui.horizontal(|ui| {
+                ui.label("Box");
+                e.add(&ui.color_edit_button_srgba_unmultiplied(&mut s.box_color));
+            });
+            num(ui, &mut e, "Box padding", &mut s.box_padding, 0.0..=200.0);
+            ui.weak("{frame} · {time} · {n}");
+        }
+        NodeKind::Number(a) => {
+            ui.horizontal(|ui| {
+                ui.label("Value");
+                e.add(&ui.add(egui::DragValue::new(&mut a.value).speed(0.01)));
+            });
+            if a.is_animated() {
+                ui.weak(format!("{} keyframes — {:.3} now", a.keys.len(), a.at(lt)));
+            }
+        }
+        NodeKind::Bool(b) => {
+            e.add(&ui.checkbox(b, if *b { "true" } else { "false" }));
+        }
+        NodeKind::Random { seed, min, max } => {
+            ui.horizontal(|ui| {
+                ui.label("Seed");
+                e.add(&ui.add(egui::DragValue::new(seed)));
+            });
+            num64(ui, &mut e, "Min", min);
+            num64(ui, &mut e, "Max", max);
+            ui.weak("hashed from (seed, frame): the same project always renders the same numbers");
+        }
+        NodeKind::Math(op) => op_ui(ui, &mut e, op, &MathOp::ALL, MathOp::name),
+        NodeKind::Compare(op) => op_ui(ui, &mut e, op, &CmpOp::ALL, CmpOp::name),
+        NodeKind::Logic(op) => op_ui(ui, &mut e, op, &LogicOp::ALL, LogicOp::name),
+        NodeKind::Effect(fx) => {
+            for (i, spec) in fx.kind.params().iter().enumerate() {
+                while fx.params.len() <= i {
+                    let d = fx.kind.params()[fx.params.len()].default;
+                    fx.params.push(Animated::new(d));
+                }
+                // a value node on port i+1 computes this knob, so the widget stops mattering
+                let wired = graph.input_of(node.id, i + 1).is_some();
+                ui.horizontal(|ui| {
+                    ui.label(spec.name);
+                    let r = if fx.kind.is_bool_param(i) {
+                        let mut b = fx.params[i].value >= 0.5;
+                        let r = ui.add_enabled(!wired, egui::Checkbox::new(&mut b, ""));
+                        fx.params[i].value = if b { 1.0 } else { 0.0 };
+                        r
+                    } else {
+                        ui.add_enabled(
+                            !wired,
+                            egui::DragValue::new(&mut fx.params[i].value)
+                                .speed((spec.max - spec.min).abs().max(1.0) / 200.0)
+                                .range(spec.min..=spec.max),
+                        )
+                    };
+                    e.add(&r);
+                    if wired {
+                        ui.weak("wired");
+                    }
+                });
+            }
+            if fx.kind == EffectKind::Shader {
+                ui.weak("GLSL lives in the shader window");
+            }
+            let mut on = fx.mask.is_some();
+            if ui.checkbox(&mut on, "Mask").changed() {
+                fx.mask = on.then(Mask::default);
+                e.changed = true;
+                e.snapshot = true;
+            }
+            if let Some(m) = &mut fx.mask {
+                mask_ui(ui, &mut e, m);
+            }
+        }
+    });
+    if e.changed {
+        *needs_undo |= e.snapshot;
+        acts.push(Act::SetKind(node.id, k));
+    } else if e.snapshot {
+        *needs_undo = true;
+    }
+}
+
+/// Combo over (id, name) pairs — the Clip and Asset nodes' whole editor.
+fn pick(ui: &mut egui::Ui, e: &mut Edits, label: &str, id: &mut Id, items: &[(Id, String)]) {
+    let cur = items.iter().find(|(i, _)| i == id).map(|(_, n)| n.clone()).unwrap_or_else(|| "(none)".into());
+    egui::ComboBox::from_label(label).selected_text(cur).show_ui(ui, |ui| {
+        for (i, name) in items {
+            e.add(&ui.selectable_value(id, *i, name));
+        }
+    });
+    if items.is_empty() {
+        ui.weak("nothing to point at yet");
+    }
+}
+
+fn op_ui<T: Copy + PartialEq>(ui: &mut egui::Ui, e: &mut Edits, op: &mut T, all: &[T], name: fn(T) -> &'static str) {
+    egui::ComboBox::from_label("Operator").selected_text(name(*op)).show_ui(ui, |ui| {
+        for o in all {
+            e.add(&ui.selectable_value(op, *o, name(*o)));
+        }
+    });
+}
+
+fn num(ui: &mut egui::Ui, e: &mut Edits, label: &str, v: &mut f32, range: std::ops::RangeInclusive<f32>) {
+    ui.horizontal(|ui| {
+        ui.label(label);
+        e.add(&ui.add(egui::DragValue::new(v).range(range)));
+    });
+}
+
+fn num64(ui: &mut egui::Ui, e: &mut Edits, label: &str, v: &mut f64) {
+    ui.horizontal(|ui| {
+        ui.label(label);
+        e.add(&ui.add(egui::DragValue::new(v).speed(0.01)));
+    });
+}
+
+fn anim(ui: &mut egui::Ui, e: &mut Edits, label: &str, a: &mut Animated) {
+    ui.horizontal(|ui| {
+        ui.label(label);
+        e.add(&ui.add(egui::DragValue::new(&mut a.value).speed(0.5)));
+        if a.is_animated() {
+            ui.weak(format!("{}k", a.keys.len()));
+        }
+    });
+}
+
+fn blend_ui(
+    ui: &mut egui::Ui,
+    e: &mut Edits,
+    mode: &mut BlendMode,
+    amount: &mut Animated,
+    label: &str,
+    graph: &NodeGraph,
+    id: Id,
+) {
+    egui::ComboBox::from_label("Mode").selected_text(mode.name()).show_ui(ui, |ui| {
+        for m in BlendMode::ALL {
+            e.add(&ui.selectable_value(mode, m, m.name()));
+        }
+    });
+    let wired = graph.input_of(id, 2).is_some();
+    ui.horizontal(|ui| {
+        ui.label(label);
+        e.add(&ui.add_enabled(!wired, egui::DragValue::new(&mut amount.value).speed(0.01).range(0.0..=1.0)));
+        if wired {
+            ui.weak("wired");
+        }
+    });
+}
+
+/// The mask editor, shared by the Mask node and an effect node's own mask.
+fn mask_ui(ui: &mut egui::Ui, e: &mut Edits, m: &mut Mask) {
+    egui::ComboBox::from_label("Shape").selected_text(m.shape.name()).show_ui(ui, |ui| {
+        for s in MaskShape::ALL {
+            e.add(&ui.selectable_value(&mut m.shape, s, s.name()));
+        }
+    });
+    anim(ui, e, "Center x", &mut m.cx);
+    anim(ui, e, "Center y", &mut m.cy);
+    anim(ui, e, "Radius x", &mut m.rx);
+    anim(ui, e, "Radius y", &mut m.ry);
+    anim(ui, e, "Rotation", &mut m.rotation);
+    anim(ui, e, "Feather", &mut m.feather);
+    anim(ui, e, "Expand", &mut m.expand);
+    anim(ui, e, "Opacity", &mut m.opacity);
+    ui.horizontal(|ui| {
+        e.add(&ui.checkbox(&mut m.invert, "Invert")).add(&ui.checkbox(&mut m.enabled, "Enabled"));
+    });
+    if matches!(m.shape, MaskShape::Polygon | MaskShape::Path) {
+        ui.weak(format!("{} points (drawn on the preview)", m.points.len()));
+    }
 }
 
 /// Menu row with a caller-chosen id (so the headless tests can find it).
@@ -741,13 +1111,29 @@ fn hint(ui: &mut egui::Ui, palette: &Palette, text: &str) {
 }
 
 fn node_height(kind: &NodeKind, thumb: bool) -> f32 {
-    let params = match kind {
-        NodeKind::Effect(e) => e.specs().len().min(INLINE_PARAMS),
-        NodeKind::Text(_) => 1, // the format field
+    // an effect's parameter rows are its ports, so only the source nodes need a row of their own
+    let fields = match kind {
+        NodeKind::String(_) | NodeKind::Number(_) | NodeKind::Bool(_) => 1,
         _ => 0,
     };
-    let rows = kind.inputs().max(params).max(1);
+    let rows = kind.inputs().max(fields).max(1);
     HEADER_H + rows as f32 * ROW_H + 6.0 + if thumb { THUMB_H } else { 0.0 }
+}
+
+/// The inline widget strip on row `i` of a node box (row 0 sits just under the header).
+fn row_rect(r: Rect, i: usize, z: f32) -> Rect {
+    Rect::from_min_size(
+        r.min + vec2(6.0 * z, (HEADER_H + ROW_H * i as f32) * z + 2.0),
+        vec2((NODE_W - 12.0) * z, ROW_H * z),
+    )
+}
+
+/// Rows that already carry an inline widget: their port needs no painted label.
+fn inline_row(kind: &NodeKind, row: usize) -> bool {
+    match kind {
+        NodeKind::Effect(e) => row >= 1 && row <= INLINE_PARAMS.min(e.specs().len()),
+        _ => false,
+    }
 }
 
 fn in_port(r: Rect, i: usize, z: f32) -> Pos2 {
@@ -803,7 +1189,12 @@ fn paint_node(
     p.rect_filled(head, cr, if n.enabled { palette.header } else { palette.bg });
     let border = if selected { Stroke::new(2.0, palette.accent) } else { Stroke::new(1.0, palette.border) };
     p.rect_stroke(r, cr, border, StrokeKind::Inside);
-    let title_color = if n.enabled { palette.text } else { palette.text_dim };
+    // the logic nodes carry numbers, not pictures — the accent title says so at a glance
+    let title_color = match (n.enabled, n.kind.is_value()) {
+        (false, _) => palette.text_dim,
+        (true, true) => palette.accent,
+        (true, false) => palette.text,
+    };
     p.text(
         pos2(r.left() + 18.0 * z, head.center().y),
         Align2::LEFT_CENTER,
@@ -818,14 +1209,20 @@ fn paint_node(
         );
         p.image(tex, t, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
     }
-    // ports
+    // ports, each labelled unless an inline widget already says what it is
+    let small = TextStyle::Small.resolve(ui.style());
     for i in 0..n.kind.inputs() {
-        p.circle_filled(in_port(r, i, z), PORT_R * z, palette.text_dim);
+        let at = in_port(r, i, z);
+        p.circle_filled(at, PORT_R * z, palette.text_dim);
+        let label = n.kind.port_label(i);
+        if !label.is_empty() && !inline_row(&n.kind, i) && z >= 0.6 {
+            p.text(pos2(r.left() + 8.0 * z, at.y), Align2::LEFT_CENTER, label, small.clone(), palette.text_dim);
+        }
     }
     if n.kind != NodeKind::Output {
         p.circle_filled(out_port(r, z), PORT_R * z, palette.text_dim);
     }
-    // non-effect nodes have no inline widgets; show a one-line summary instead
+    // nodes without inline widgets get a one-line summary, right-aligned so port labels stay readable
     let summary = match &n.kind {
         NodeKind::Blend { mode, opacity } => Some(format!("{:?}  {:.0}%", mode, opacity.value * 100.0)),
         NodeKind::Combine { mode, factor } => Some(format!("{:?}  {:.0}%", mode, factor.value * 100.0)),
@@ -836,14 +1233,15 @@ fn paint_node(
         }
         NodeKind::Color(c) => Some(format!("#{:02X}{:02X}{:02X}", c[0], c[1], c[2])),
         NodeKind::Clip(id) => Some(if *id == 0 { "(pick a clip)".into() } else { format!("#{id}") }),
+        NodeKind::Random { seed, min, max } => Some(format!("#{seed}  {min:.2}..{max:.2}")),
         _ => None,
     };
     if let Some(s) = summary {
         p.text(
-            pos2(r.left() + 8.0 * z, r.top() + (HEADER_H + ROW_H * 0.5) * z),
-            Align2::LEFT_CENTER,
+            pos2(r.right() - 8.0 * z, r.top() + (HEADER_H + ROW_H * 0.5) * z),
+            Align2::RIGHT_CENTER,
             s,
-            TextStyle::Small.resolve(ui.style()),
+            small,
             palette.text_dim,
         );
     }
@@ -1048,7 +1446,7 @@ mod tests {
         h.menu_click(pos2(560.0, 200.0), ("add", "Blur"));
         let fx = h.out.selected.expect("selected");
         // wire Input -> Blur -> Output by dragging between the ports
-        let (ir, fr, orr) = (h.node_rect(input), h.node_rect(fx), h.node_rect(output));
+        let (ir, fr) = (h.node_rect(input), h.node_rect(fx));
         let z = h.state.zoom;
         h.drag(out_port(ir, z), in_port(fr, 0, z));
         let (fr, orr) = (h.node_rect(fx), h.node_rect(output));
@@ -1065,7 +1463,7 @@ mod tests {
         let (input, _) = h.ids();
         h.menu_click(pos2(420.0, 120.0), ("add", "Blur"));
         let fx = h.out.selected.expect("selected");
-        h.menu_click(pos2(660.0, 260.0), ("add", "Sharpen"));
+        h.menu_click(pos2(560.0, 260.0), ("add", "Sharpen"));
         let fx2 = h.out.selected.expect("selected");
         let z = h.state.zoom;
         let (ir, fr) = (h.node_rect(input), h.node_rect(fx));
@@ -1206,8 +1604,8 @@ mod tests {
         let before = value(&h);
         let r = h.node_rect(fx);
         let z = h.state.zoom;
-        // the first inline parameter row: its DragValue fills the right-hand side of the row
-        let start = pos2(r.left() + 62.0 * z, r.top() + (HEADER_H + ROW_H * 0.5) * z + 2.0);
+        // the first inline parameter row (row 0 is the picture port): its DragValue fills the right side
+        let start = pos2(r.left() + 62.0 * z, r.top() + (HEADER_H + ROW_H * 1.5) * z + 2.0);
         h.undos = 0;
         // click the DragValue to type into it (the frame that gains focus has no change to apply yet)
         h.press(start, PointerButton::Primary);
@@ -1249,7 +1647,7 @@ mod tests {
             let n = h.graph().node(fx).unwrap();
             (n.x, n.y)
         };
-        h.frame(vec![Event::PointerMoved(pos2(800.0, 500.0))]);
+        h.frame(vec![Event::PointerMoved(pos2(600.0, 500.0))]);
         h.frame(vec![Event::Key {
             key: egui::Key::D,
             physical_key: None,
@@ -1309,7 +1707,7 @@ mod tests {
     fn two_nodes(h: &mut Harness) -> (Id, Id) {
         h.menu_click(pos2(420.0, 160.0), ("add", "Blur"));
         let a = h.out.selected.expect("selected");
-        h.menu_click(pos2(660.0, 320.0), ("add", "Sharpen"));
+        h.menu_click(pos2(560.0, 320.0), ("add", "Sharpen"));
         let b = h.out.selected.expect("selected");
         let (input, _) = h.ids();
         let z = h.state.zoom;
@@ -1341,7 +1739,7 @@ mod tests {
         h.click_node(a, Modifiers::CTRL);
         assert_eq!(h.state.selection, vec![b]);
         h.click_node(a, Modifiers::CTRL);
-        h.frame(vec![Event::PointerMoved(pos2(800.0, 520.0))]);
+        h.frame(vec![Event::PointerMoved(pos2(600.0, 520.0))]);
         h.key(egui::Key::Delete, Modifiers::NONE);
         assert_eq!(h.graph().nodes.len(), 2, "both picked nodes were deleted");
         assert!(h.state.selection.is_empty());
@@ -1352,11 +1750,11 @@ mod tests {
         let mut h = Harness::new();
         let (input, output) = h.ids();
         // press on empty canvas below the two nodes and drag up across both
-        h.drag(pos2(700.0, 500.0), pos2(10.0, 12.0));
+        h.drag(pos2(620.0, 500.0), pos2(10.0, 12.0));
         assert_eq!(h.state.selection, vec![input, output]);
         assert!(h.state.band.is_none(), "band cleared on release");
         // a band over empty space replaces the selection with nothing
-        h.drag(pos2(700.0, 500.0), pos2(500.0, 300.0));
+        h.drag(pos2(620.0, 500.0), pos2(500.0, 300.0));
         assert!(h.state.selection.is_empty(), "{:?}", h.state.selection);
     }
 
@@ -1367,7 +1765,7 @@ mod tests {
         let (input, _) = h.ids();
         h.click_node(a, Modifiers::NONE);
         h.click_node(b, Modifiers::CTRL);
-        h.frame(vec![Event::PointerMoved(pos2(800.0, 520.0))]);
+        h.frame(vec![Event::PointerMoved(pos2(600.0, 520.0))]);
         h.key(egui::Key::C, Modifiers::CTRL);
         h.undos = 0;
         h.key(egui::Key::V, Modifiers::CTRL);
@@ -1407,6 +1805,74 @@ mod tests {
         assert!(h.undos >= 1, "a dropped node is undoable");
         drop(&mut h, DragPayload::Transition(TransitionKind::CrossFade), pos2(300.0, 450.0));
         assert!(h.graph().nodes.iter().any(|n| n.kind.title() == "Combine"), "a cross fade drops in as a mix");
+    }
+
+    #[test]
+    fn replacing_a_node_keeps_every_wire_the_new_kind_still_has_a_port_for() {
+        let mut h = Harness::new();
+        let (input, output) = h.ids();
+        let clip = h.clip();
+        let blend = h
+            .project
+            .add_node(clip, NodeKind::Blend { mode: BlendMode::Normal, opacity: Animated::new(1.0) }, 0.0, 0.0)
+            .unwrap();
+        {
+            let g = h.project.clip_mut(clip).unwrap().graph.as_mut().unwrap();
+            // all three ports fed, and the blend feeding the output
+            assert!(g.connect(input, blend, 0) && g.connect(input, blend, 1) && g.connect(input, blend, 2));
+            assert!(g.connect(blend, output, 0));
+        }
+        let mut sel = vec![blend];
+        // Merge has two ports, so the opacity wire (port 2) is the only one that cannot survive
+        assert!(apply(&mut h.project, clip, Act::SetKind(blend, NodeKind::Merge), &mut sel));
+        let g = h.graph();
+        assert_eq!(g.node(blend).unwrap().kind, NodeKind::Merge);
+        assert_eq!(g.input_of(blend, 0), Some(input));
+        assert_eq!(g.input_of(blend, 1), Some(input));
+        assert_eq!(g.input_of(blend, 2), None, "the port is gone, so is its wire");
+        assert_eq!(g.input_of(output, 0), Some(blend), "what the node feeds never changes");
+        // the Output node is not replaceable, and nothing else may become one
+        assert!(!apply(&mut h.project, clip, Act::SetKind(output, NodeKind::Merge), &mut sel));
+        assert!(!apply(&mut h.project, clip, Act::SetKind(blend, NodeKind::Output), &mut sel));
+        assert_eq!(h.graph().nodes.iter().filter(|n| n.kind == NodeKind::Output).count(), 1);
+    }
+
+    #[test]
+    fn dropping_an_asset_on_a_node_retargets_it() {
+        let mut h = Harness::new();
+        let (input, output) = h.ids();
+        let aid = h.project.assets[0].id;
+        // the drag starts in the library, so only the release lands on the node
+        h.press(pos2(2.0, 2.0), PointerButton::Primary);
+        egui::DragAndDrop::set_payload(&h.ctx, DragPayload::Asset(aid));
+        let at = h.node_rect(input).center();
+        h.frame(vec![Event::PointerMoved(at)]);
+        h.release(at, PointerButton::Primary);
+        assert_eq!(h.graph().node(input).unwrap().kind, NodeKind::Asset(aid));
+        assert_eq!(h.graph().input_of(output, 0), Some(input), "the wire out of it survives");
+        assert_eq!(h.graph().nodes.len(), 2, "no node was added");
+    }
+
+    #[test]
+    fn the_properties_panel_follows_the_picked_node() {
+        let mut h = Harness::new();
+        let clip = h.clip();
+        // one node of every kind that used to have no editor at all
+        for kind in [
+            NodeKind::Matte { invert: false, use_alpha: false },
+            NodeKind::Mask(Mask::default()),
+            NodeKind::Color([1, 2, 3, 4]),
+            NodeKind::Random { seed: 3, min: 0.0, max: 1.0 },
+            NodeKind::Math(MathOp::Mul),
+            NodeKind::Select,
+            NodeKind::String(TextProps::default()),
+        ] {
+            let id = h.project.add_node(clip, kind.clone(), 40.0, 40.0).unwrap();
+            h.state.selection = vec![id];
+            h.frame(vec![]);
+            assert_eq!(h.out.selected, Some(id));
+            assert_eq!(h.graph().node(id).unwrap().kind, kind, "drawing the panel must not edit anything");
+        }
     }
 
     #[test]
