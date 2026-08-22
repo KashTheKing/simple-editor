@@ -357,7 +357,26 @@ pub fn show(
                 ui.label(spec.name);
                 ui.horizontal(|ui| {
                     let mut v = a.at(lt);
-                    let r = if kind.is_bool_param(j) {
+                    let r = if kind == EffectKind::Wobble && spec.name == "Motion" {
+                        // a named waveform reads better than 0..4 (Sine / Layered / Cubic / …)
+                        let names = crate::model::WOBBLE_MOTIONS;
+                        let cur = (v.round().clamp(0.0, (names.len() - 1) as f64)) as usize;
+                        let mut sel = cur;
+                        let inner = egui::ComboBox::from_id_salt(("wobble_motion", i))
+                            .selected_text(names[cur])
+                            .width(96.0)
+                            .show_ui(ui, |ui| {
+                                for (k, n) in names.iter().enumerate() {
+                                    ui.selectable_value(&mut sel, k, *n);
+                                }
+                            });
+                        let mut r = inner.response;
+                        if sel != cur {
+                            v = sel as f64;
+                            r.mark_changed();
+                        }
+                        r
+                    } else if kind.is_bool_param(j) {
                         // stored as 0/1 — a checkbox is the honest widget (Flip H/V, "Show mask", …)
                         let mut on = v >= 0.5;
                         let r = ui.checkbox(&mut on, "");

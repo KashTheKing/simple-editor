@@ -760,9 +760,17 @@ const P_WOBBLE: &[ParamSpec] = &[
     ps("Roll", 2.0, 0.0, 45.0),
     ps("Yaw", 3.0, 0.0, 45.0),
     ps("Pitch", 3.0, 0.0, 45.0),
-    ps("Frequency", 2.0, 0.1, 30.0),
+    ps("Frequency", 2.0, 0.05, 30.0),
     ps("Seed", 1.0, 0.0, 1000.0),
+    // 0 = Sine (one clean wave), 1 = Layered (three sines, the old look), 2 = Cubic (smoothed random
+    // steps), 3 = Triangle, 4 = Random (stepped hold). See `WOBBLE_MOTIONS` / `engine::effects::wobble`.
+    ps("Motion", 1.0, 0.0, 4.0),
+    // 0 = every wiggle as-is, 1 = heavily smoothed (a slow drift). Divides the effective frequency.
+    ps("Smoothness", 0.0, 0.0, 1.0),
 ];
+
+/// Names for the Camera Shake "Motion" knob, in value order (the inspector shows these).
+pub const WOBBLE_MOTIONS: [&str; 5] = ["Sine", "Layered", "Cubic", "Triangle", "Random"];
 
 /// Starting point for `EffectKind::Shader`: `tex` = the layer, `uv` = 0..1, `u_time` = clip-local
 /// seconds, `u1..u8` = the eight knobs, `u_res` = layer size in px. Output goes to `out_color`

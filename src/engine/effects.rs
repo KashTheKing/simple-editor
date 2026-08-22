@@ -147,13 +147,16 @@ pub fn wobble(effect: &Effect, t: f64) -> (f64, f64, f64, f64, f64) {
     if effect.kind == EffectKind::Plane3d {
         return (0.0, 0.0, effect.at(2, t), effect.at(0, t), effect.at(1, t));
     }
-    let freq = effect.at(5, t).max(0.0);
     let seed = effect.at(6, t);
+    // Smoothness slows the motion down (1 = an eighth of the set frequency), so a shake can be made as
+    // slow and gentle as wanted without editing every amplitude.
+    // Motion (7) and Smoothness (8) only exist on effects created after round 3; older saved projects
+    // keep the original layered-sine look at their set frequency.
+    let method = if effect.params.len() > 7 { effect.at(7, t) } else { 1.0 };
+    let smooth = if effect.params.len() > 8 { effect.at(8, t).clamp(0.0, 1.0) } else { 0.0 };
+    let freq = effect.at(5, t).max(0.0) / (1.0 + 7.0 * smooth);
     let w = std::f64::consts::TAU * freq * t;
-    let n = |axis: f64| -> f64 {
-        let p = seed * 1.7 + axis * 13.37;
-        0.5 * (w + p).sin() + 0.35 * (w * 1.618_034 + p * 2.236).sin() + 0.15 * (w * 2.718_281_8 + p * 3.19).sin()
-    };
+    let n = |axis: f64| -> f64 { wobble_wave(method, w, seed * 1.7 + axis * 13.37) };
     (
         effect.at(0, t) * n(1.0),
         effect.at(1, t) * n(2.0),
@@ -161,6 +164,37 @@ pub fn wobble(effect: &Effect, t: f64) -> (f64, f64, f64, f64, f64) {
         effect.at(3, t) * n(4.0),
         effect.at(4, t) * n(5.0),
     )
+}
+
+/// One shake axis in -1..1. `method` picks the waveform (see `model::WOBBLE_MOTIONS`), `w` is the phase
+/// in radians and `p` the per-axis offset so the axes never move together.
+fn wobble_wave(method: f64, w: f64, p: f64) -> f64 {
+    // deterministic value noise: hash the step index, smoothstep or cubic-interpolate between steps
+    let hash = |i: f64| -> f64 {
+        let x = (i * 127.1 + p * 311.7).sin() * 43758.545;
+        2.0 * (x - x.floor()) - 1.0
+    };
+    let x = w / std::f64::consts::TAU;
+    let (i, f) = (x.floor(), x - x.floor());
+    match method.round() as i32 {
+        // a single clean wave
+        0 => (w + p).sin(),
+        // smoothed random steps (cubic / Catmull-Rom through the noise values)
+        2 => {
+            let (a, b, c, d) = (hash(i - 1.0), hash(i), hash(i + 1.0), hash(i + 2.0));
+            let (f2, f3) = (f * f, f * f * f);
+            0.5 * ((2.0 * b) + (c - a) * f + (2.0 * a - 5.0 * b + 4.0 * c - d) * f2 + (3.0 * (b - c) + d - a) * f3)
+        }
+        // triangle
+        3 => {
+            let u = (x + p * 0.1).fract().abs();
+            4.0 * (u - 0.5).abs() - 1.0
+        }
+        // stepped random (holds each value for a whole cycle)
+        4 => hash(i),
+        // layered sines — the original look, and the default
+        _ => 0.5 * (w + p).sin() + 0.35 * (w * 1.618_034 + p * 2.236).sin() + 0.15 * (w * 2.718_281_8 + p * 3.19).sin(),
+    }
 }
 
 /// `BlobTrack` on the CPU: the centroid of every pixel within `Tolerance` of the target colour, as
@@ -1177,6 +1211,47 @@ mod tests {
         apply(&eff(K::RecDot, &[12.0, 0.0, 3.0, 0.0, 4.0]), 0.0, 1.0, &mut img, &mut Frame::default());
         assert_eq!(at(&img, 10, 10), [0, 0, 0]);
         assert!(at(&img, 88, 30)[0] > 150, "dot at the bottom-right: {:?}", at(&img, 88, 30));
+    }
+
+    #[test]
+    fn wobble_motion_methods_and_smoothness() {
+        use crate::model::{Effect, EffectKind};
+        let mut e = Effect::new(EffectKind::Wobble);
+        assert_eq!(e.params.len(), 9, "Motion + Smoothness knobs");
+        // every method stays inside the amplitude it was given, and is deterministic
+        for m in 0..5 {
+            e.params[7] = crate::model::Animated::new(m as f64);
+            for i in 0..40 {
+                let t = i as f64 * 0.05;
+                let (dx, dy, roll, ..) = wobble(&e, t);
+                assert!(dx.abs() <= 20.0 + 1e-6 && dy.abs() <= 20.0 + 1e-6, "method {m} amplitude {dx} {dy}");
+                assert!(roll.abs() <= 2.0 + 1e-6);
+                assert_eq!(wobble(&e, t).0, dx, "method {m} is deterministic");
+            }
+        }
+        // Smoothness slows it down: over one second the path travels much less ground
+        let travel = |e: &Effect| -> f64 {
+            (1..200)
+                .map(|i| {
+                    let (a, _, _, _, _) = wobble(e, (i - 1) as f64 * 0.005);
+                    let (b, _, _, _, _) = wobble(e, i as f64 * 0.005);
+                    (b - a).abs()
+                })
+                .sum()
+        };
+        e.params[7] = crate::model::Animated::new(1.0);
+        e.params[8] = crate::model::Animated::new(0.0);
+        let fast = travel(&e);
+        e.params[8] = crate::model::Animated::new(1.0);
+        let slow = travel(&e);
+        assert!(slow < fast * 0.4, "smoothness should calm the motion: {slow} vs {fast}");
+        // Sine is a pure wave: it crosses zero exactly twice per period
+        e.params[7] = crate::model::Animated::new(0.0);
+        e.params[8] = crate::model::Animated::new(0.0);
+        e.params[5] = crate::model::Animated::new(1.0);
+        let signs: Vec<bool> = (0..200).map(|i| wobble(&e, i as f64 * 0.005).0 >= 0.0).collect();
+        let flips = signs.windows(2).filter(|w| w[0] != w[1]).count();
+        assert_eq!(flips, 2, "one sine period has two zero crossings");
     }
 
     #[test]
