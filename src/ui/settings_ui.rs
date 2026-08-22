@@ -2,6 +2,10 @@
 //!  * General: theme (system/dark/light), decoder (auto/mf/ffmpeg), ffmpeg folder (text + Browse…, shows
 //!    whether ffmpeg/ffprobe were found), preview max width, snapping, confirm overwrite,
 //!    "Edit with Simple Editor" context menu checkbox (install/uninstall via crate::contextmenu).
+//!  * Performance: GPU preview toggle + the detected OpenGL renderer, preview render quality (%),
+//!    movie mode (pre-rendered playback) and the stock image the effect thumbnails are rendered from.
+//!  * Capture: screen recording (fps, bitrate, microphone, desktop audio, cursor, record-on-blur, output
+//!    folder) and voiceover (input device, channels). Device lists come from `engine::capture`.
 //!  * Export: encoder combo (auto + detected encoders filtered to h264/hevc/vp9/av1 families), CRF, preset.
 //!  * Hotkeys: table of every Action (label, current binding, "Rebind" → waits for the next key press with
 //!    modifiers (Escape cancels, Backspace/Delete unbinds), "Reset"), plus "Reset all". Conflicts are
@@ -59,6 +63,7 @@ const THEMES: [(&str, &str); 3] = [("system", "System"), ("dark", "Dark"), ("lig
 const DECODERS: [(&str, &str); 3] =
     [("auto", "Auto (Media Foundation, ffmpeg fallback)"), ("mf", "Media Foundation"), ("ffmpeg", "ffmpeg")];
 
+#[allow(clippy::too_many_arguments)]
 pub fn show(
     ctx: &egui::Context,
     state: &mut SettingsUi,
@@ -67,6 +72,10 @@ pub fn show(
     encoders: &[String],
     _palette: &Palette,
     mcp_status: &str,
+    // OpenGL renderer string ("no OpenGL context" when eframe runs without one)
+    gpu_name: &str,
+    // dshow audio inputs (`engine::capture::audio_devices`); the bool marks loopback/desktop devices
+    audio_inputs: &[(String, bool)],
 ) -> bool {
     let mut changed = false;
     let stale = state
@@ -80,13 +89,17 @@ pub fn show(
     egui::Window::new("Settings").open(&mut open).default_width(520.0).collapsible(false).show(ctx, |ui| {
         ui.horizontal(|ui| {
             ui.selectable_value(&mut state.tab, 0, "General");
-            ui.selectable_value(&mut state.tab, 1, "Export");
-            ui.selectable_value(&mut state.tab, 2, "Hotkeys");
+            ui.selectable_value(&mut state.tab, 1, "Performance");
+            ui.selectable_value(&mut state.tab, 2, "Capture");
+            ui.selectable_value(&mut state.tab, 3, "Export");
+            ui.selectable_value(&mut state.tab, 4, "Hotkeys");
         });
         ui.separator();
         changed = match state.tab {
             0 => general(ui, state, settings, mcp_status),
-            1 => export(ui, settings, encoders),
+            1 => performance(ui, settings, gpu_name),
+            2 => capture_tab(ui, settings, audio_inputs),
+            3 => export(ui, settings, encoders),
             _ => hotkeys_tab(ui, state, hotkeys),
         };
     });
@@ -221,6 +234,127 @@ fn port_field(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Settings) -> bo
         return true;
     }
     false
+}
+
+fn performance(ui: &mut egui::Ui, s: &mut Settings, gpu_name: &str) -> bool {
+    let mut changed = false;
+    egui::Grid::new("perf").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+        ui.label("GPU preview");
+        ui.vertical(|ui| {
+            changed |= ui.checkbox(&mut s.gpu, "Render the preview with OpenGL shaders").changed();
+            ui.weak(format!("Renderer: {gpu_name}"));
+            ui.weak("Off (or when the driver refuses the shaders) the CPU compositor is used.");
+        });
+        ui.end_row();
+
+        ui.label("Preview quality");
+        ui.horizontal(|ui| {
+            let mut q = s.preview_quality.clamp(25, 100);
+            changed |= ui.add(egui::DragValue::new(&mut q).range(25..=100).suffix(" %").speed(1)).changed();
+            s.preview_quality = q;
+            ui.weak("of the preview size — lower is faster, the export is unaffected");
+        });
+        ui.end_row();
+
+        ui.label("Movie mode");
+        ui.vertical(|ui| {
+            changed |= ui.checkbox(&mut s.movie_mode, "Play back pre-rendered frames").changed();
+            ui.weak("Renders the in/out range (or the whole timeline) at full quality in the background.");
+        });
+        ui.end_row();
+
+        ui.label("Effect thumbnails");
+        ui.horizontal(|ui| {
+            changed |= ui
+                .add(
+                    egui::TextEdit::singleline(&mut s.effect_thumb_image)
+                        .desired_width(200.0)
+                        .hint_text("test pattern"),
+                )
+                .changed();
+            if ui.button("Browse…").clicked() {
+                if let Some(p) =
+                    rfd::FileDialog::new().add_filter("Images", &["png", "jpg", "jpeg", "bmp", "webp"]).pick_file()
+                {
+                    s.effect_thumb_image = p.to_string_lossy().into_owned();
+                    changed = true;
+                }
+            }
+            if !s.effect_thumb_image.is_empty() && ui.small_button("✕").clicked() {
+                s.effect_thumb_image.clear();
+                changed = true;
+            }
+        });
+        ui.end_row();
+    });
+    changed
+}
+
+fn capture_tab(ui: &mut egui::Ui, s: &mut Settings, audio_inputs: &[(String, bool)]) -> bool {
+    let mut changed = false;
+    let devices = |ui: &mut egui::Ui, id: &str, value: &mut String, want_loopback: bool| -> bool {
+        let mut opts: Vec<(&str, &str)> = vec![("", "(none)")];
+        opts.extend(audio_inputs.iter().filter(|(_, lb)| !want_loopback || *lb).map(|(n, _)| (n.as_str(), n.as_str())));
+        combo(ui, id, value, &opts, Some(260.0))
+    };
+    ui.strong("Screen recording");
+    egui::Grid::new("capture").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+        ui.label("Frame rate");
+        ui.horizontal(|ui| {
+            changed |= ui.add(egui::DragValue::new(&mut s.capture_fps).range(5..=120)).changed();
+            ui.weak("fps");
+        });
+        ui.end_row();
+
+        ui.label("Bitrate");
+        ui.horizontal(|ui| {
+            changed |=
+                ui.add(egui::DragValue::new(&mut s.capture_bitrate_kbps).range(0..=100_000).speed(100)).changed();
+            ui.weak("kbit/s (0 = use the export quality / CRF)");
+        });
+        ui.end_row();
+
+        ui.label("Microphone");
+        changed |= devices(ui, "cap_mic", &mut s.capture_mic, false);
+        ui.end_row();
+
+        ui.label("Output folder");
+        ui.horizontal(|ui| {
+            changed |= ui
+                .add(egui::TextEdit::singleline(&mut s.capture_dir).desired_width(200.0).hint_text("temp folder"))
+                .changed();
+            if ui.button("Browse…").clicked() {
+                if let Some(p) = rfd::FileDialog::new().pick_folder() {
+                    s.capture_dir = p.to_string_lossy().into_owned();
+                    changed = true;
+                }
+            }
+        });
+        ui.end_row();
+    });
+    changed |= ui.checkbox(&mut s.capture_desktop_audio, "Record desktop audio (needs a loopback device)").changed();
+    changed |= ui.checkbox(&mut s.capture_cursor, "Record the mouse cursor").changed();
+    changed |= ui
+        .checkbox(&mut s.capture_on_blur, "Record while the editor is in the background (starts when it loses focus)")
+        .changed();
+    if audio_inputs.is_empty() {
+        ui.weak("No audio input devices found (ffmpeg -list_devices).");
+    }
+    ui.add_space(6.0);
+    ui.separator();
+    ui.strong("Voiceover");
+    egui::Grid::new("voice").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+        ui.label("Input device");
+        changed |= devices(ui, "voice_dev", &mut s.voice_device, false);
+        ui.end_row();
+        ui.label("Channels");
+        ui.horizontal(|ui| {
+            changed |= ui.add(egui::DragValue::new(&mut s.voice_channels).range(1..=2)).changed();
+            ui.weak("1 = mono, 2 = stereo");
+        });
+        ui.end_row();
+    });
+    changed
 }
 
 fn export(ui: &mut egui::Ui, s: &mut Settings, encoders: &[String]) -> bool {
@@ -435,14 +569,28 @@ mod tests {
         let encoders = vec!["libx264".to_string(), "aac".to_string()];
         let palette = Palette::new(false, egui::Color32::BLACK);
         let mut st = SettingsUi { open: true, ..Default::default() };
-        for tab in [0, 1, 2] {
+        let inputs = vec![("Microphone (USB)".to_string(), false), ("Stereo Mix".to_string(), true)];
+        for tab in [0, 1, 2, 3, 4] {
             st.tab = tab;
             for _ in 0..2 {
                 let _ = ctx.run(egui::RawInput::default(), |ctx| {
-                    assert!(!show(ctx, &mut st, &mut settings, &mut hk, &encoders, &palette, "stopped"));
+                    assert!(!show(
+                        ctx,
+                        &mut st,
+                        &mut settings,
+                        &mut hk,
+                        &encoders,
+                        &palette,
+                        "stopped",
+                        "Test GL",
+                        &inputs
+                    ));
                 });
             }
             assert!(st.open && st.status.is_some());
         }
+        // the new tabs left the settings alone
+        assert_eq!(settings.preview_quality, Settings::default().preview_quality);
+        assert_eq!(settings.capture_fps, Settings::default().capture_fps);
     }
 }

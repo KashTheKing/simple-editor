@@ -2,12 +2,16 @@
 //! hidden/shown, popped out into their own OS windows (egui immediate viewports) and saved/loaded as
 //! profiles (JSON — also written to / read from `.sedit-layout` files so profiles can be shared).
 //!
-//! Default layout (DaVinci-like): top row = [Library | Preview | tabs(Inspector, Effects, Transitions,
-//! Subtitles, Planner)], bottom row (full width) = tabs(Timeline, Curves, Auto-cut). `show` draws the
+//! Default layout (DaVinci-like): top row = [tabs(Library, Effects, Transitions, Planner) |
+//! Preview with the Tools strip beneath it | tabs(Inspector, Curves, Nodes, Subtitles, Markers)],
+//! bottom row (full width, always visible) = tabs(Timeline, Mixer, Auto-cut). `show` draws the
 //! tree in the given `ui` and each popped pane in its own viewport (closing that window docks the pane
 //! back); `draw(ui, pane)` renders a pane. Behaviour: tab titles = Pane::title, a "⧉" button in the tab
 //! bar pops the active pane out, "✕" hides it. Hidden panes stay in the tree (egui_tiles visibility) so
 //! they come back exactly where they were.
+//!
+//! Migration: a stored layout from an older version does not know the round-3 panes; `from_json` rejects
+//! it (None) so the app falls back to this default instead of an editor with no Tools/Mixer/Markers.
 
 use eframe::egui;
 use serde::{Deserialize, Serialize};
@@ -24,10 +28,15 @@ pub enum Pane {
     Subtitles,
     Planner,
     AutoCut,
+    // ---- round 3 ----
+    Tools,
+    Nodes,
+    Mixer,
+    Markers,
 }
 
 impl Pane {
-    pub const ALL: [Pane; 10] = [
+    pub const ALL: [Pane; 14] = [
         Pane::Preview,
         Pane::Timeline,
         Pane::Library,
@@ -38,7 +47,13 @@ impl Pane {
         Pane::Subtitles,
         Pane::Planner,
         Pane::AutoCut,
+        Pane::Tools,
+        Pane::Nodes,
+        Pane::Mixer,
+        Pane::Markers,
     ];
+    /// Panes added in round 3 — a stored layout without them is from an older version (see `from_json`).
+    pub const ROUND3: [Pane; 4] = [Pane::Tools, Pane::Nodes, Pane::Mixer, Pane::Markers];
     pub fn title(self) -> &'static str {
         match self {
             Pane::Preview => "Preview",
@@ -51,6 +66,10 @@ impl Pane {
             Pane::Subtitles => "Subtitles",
             Pane::Planner => "Planner",
             Pane::AutoCut => "Auto-cut",
+            Pane::Tools => "Tools",
+            Pane::Nodes => "Nodes",
+            Pane::Mixer => "Mixer",
+            Pane::Markers => "Markers",
         }
     }
 }
@@ -73,34 +92,43 @@ impl Layout {
     pub fn default_layout() -> Self {
         use egui_tiles::{Container, Linear, LinearDir, Tile};
         let mut tiles = egui_tiles::Tiles::default();
-        let library = tiles.insert_pane(Pane::Library);
+        let tabs = |tiles: &mut egui_tiles::Tiles<Pane>, panes: &[Pane]| {
+            let ids: Vec<_> = panes.iter().map(|&p| tiles.insert_pane(p)).collect();
+            tiles.insert_tab_tile(ids) // the first pane is the active tab
+        };
+        let left = tabs(&mut tiles, &[Pane::Library, Pane::Effects, Pane::Transitions, Pane::Planner]);
+        let right = tabs(&mut tiles, &[Pane::Inspector, Pane::Curves, Pane::Nodes, Pane::Subtitles, Pane::Markers]);
+        // centre column: the viewport with the Tools strip directly beneath it
         let preview = tiles.insert_pane(Pane::Preview);
-        let right_panes: Vec<_> = [Pane::Inspector, Pane::Effects, Pane::Transitions, Pane::Subtitles, Pane::Planner]
-            .iter()
-            .map(|&p| tiles.insert_pane(p))
-            .collect();
-        let right = tiles.insert_tab_tile(right_panes);
-        let mut top_row = Linear::new(LinearDir::Horizontal, vec![library, preview, right]);
-        top_row.shares.set_share(library, 0.2);
-        top_row.shares.set_share(preview, 0.6);
-        top_row.shares.set_share(right, 0.2);
+        let tools = tiles.insert_pane(Pane::Tools);
+        let mut centre_col = Linear::new(LinearDir::Vertical, vec![preview, tools]);
+        centre_col.shares.set_share(preview, 0.9);
+        centre_col.shares.set_share(tools, 0.1);
+        let centre = tiles.insert_new(Tile::Container(Container::Linear(centre_col)));
+        let mut top_row = Linear::new(LinearDir::Horizontal, vec![left, centre, right]);
+        top_row.shares.set_share(left, 0.2);
+        top_row.shares.set_share(centre, 0.58);
+        top_row.shares.set_share(right, 0.22);
         let top = tiles.insert_new(Tile::Container(Container::Linear(top_row)));
-        let bottom_panes: Vec<_> =
-            [Pane::Timeline, Pane::Curves, Pane::AutoCut].iter().map(|&p| tiles.insert_pane(p)).collect();
-        let bottom = tiles.insert_tab_tile(bottom_panes); // Timeline is the active tab (first child)
+        // full-width bottom row: the Timeline is the active tab and is never hidden by the default layout
+        let bottom = tabs(&mut tiles, &[Pane::Timeline, Pane::Mixer, Pane::AutoCut]);
         let mut rows = Linear::new(LinearDir::Vertical, vec![top, bottom]);
-        rows.shares.set_share(top, 0.7);
-        rows.shares.set_share(bottom, 0.3);
+        rows.shares.set_share(top, 0.68);
+        rows.shares.set_share(bottom, 0.32);
         let root = tiles.insert_new(Tile::Container(Container::Linear(rows)));
         Self { tree: egui_tiles::Tree::new("layout", root, tiles), popped: Vec::new() }
     }
     pub fn to_json(&self) -> String {
         serde_json::to_string(self).unwrap_or_default()
     }
-    /// None on malformed / incompatible JSON (caller falls back to the default layout).
+    /// None on malformed / incompatible JSON (caller falls back to the default layout). A layout saved
+    /// before round 3 knows nothing about Tools / Nodes / Mixer / Markers: rather than dropping four panes
+    /// into the root as loose tabs, it is rejected here and the caller resets to the new default.
     pub fn from_json(s: &str) -> Option<Self> {
         let l: Self = serde_json::from_str(s).ok()?;
-        l.tree.root().is_some().then_some(l)
+        l.tree.root()?;
+        let has_all = Pane::ROUND3.iter().all(|p| l.tree.tiles.find_pane(p).is_some() || l.popped.contains(p));
+        has_all.then_some(l)
     }
     /// Visible = docked in the tree (and not hidden) or popped out.
     pub fn is_visible(&self, pane: Pane) -> bool {
@@ -261,13 +289,56 @@ mod tests {
             assert!(l.tree.tiles.find_pane(&p).is_some(), "{p:?} missing from the default layout");
             assert!(l.is_visible(p), "{p:?} should be visible (a tab may be inactive but is not hidden)");
         }
-        // Timeline is the active bottom tab: Curves / AutoCut are behind it (inactive, still visible)
+        // Timeline is the active bottom tab: Mixer / AutoCut are behind it (inactive, still visible)
         let timeline = l.tree.tiles.find_pane(&Pane::Timeline).unwrap();
         let parent = l.tree.tiles.parent_of(timeline).unwrap();
         match l.tree.tiles.get_container(parent).unwrap() {
-            egui_tiles::Container::Tabs(t) => assert_eq!(t.active, Some(timeline)),
+            egui_tiles::Container::Tabs(t) => {
+                assert_eq!(t.active, Some(timeline));
+                let names: Vec<Pane> = t.children.iter().filter_map(|c| l.tree.tiles.get_pane(c)).copied().collect();
+                assert_eq!(names, vec![Pane::Timeline, Pane::Mixer, Pane::AutoCut]);
+            }
             c => panic!("Timeline parent is {c:?}, expected tabs"),
         }
+    }
+
+    /// The requested default: left tabs | Preview above Tools | right tabs, over a full-width bottom row.
+    #[test]
+    fn default_layout_puts_tools_under_the_preview() {
+        let l = Layout::default_layout();
+        let preview = l.tree.tiles.find_pane(&Pane::Preview).unwrap();
+        let tools = l.tree.tiles.find_pane(&Pane::Tools).unwrap();
+        // both sit in the same vertical column, Preview first
+        let col = l.tree.tiles.parent_of(preview).unwrap();
+        assert_eq!(l.tree.tiles.parent_of(tools), Some(col));
+        match l.tree.tiles.get_container(col).unwrap() {
+            egui_tiles::Container::Linear(lin) => {
+                assert_eq!(lin.dir, egui_tiles::LinearDir::Vertical);
+                assert_eq!(lin.children, vec![preview, tools]);
+            }
+            c => panic!("Preview column is {c:?}, expected a vertical linear"),
+        }
+        // the right tab group carries the round-3 panes
+        for p in [Pane::Nodes, Pane::Markers, Pane::Inspector] {
+            assert!(l.is_visible(p), "{p:?} not visible");
+        }
+    }
+
+    /// A layout stored before round 3 must not survive: it has no Tools / Mixer / Nodes / Markers.
+    #[test]
+    fn old_layouts_are_rejected_so_the_app_resets() {
+        let l = Layout::default_layout();
+        let json = l.to_json();
+        assert!(Layout::from_json(&json).is_some());
+        // drop one round-3 pane from the tree: that is what an old profile looks like
+        let mut old = l.clone();
+        let id = old.tree.tiles.find_pane(&Pane::Mixer).unwrap();
+        old.tree.tiles.remove(id);
+        assert!(Layout::from_json(&old.to_json()).is_none());
+        // …unless it is popped out into its own window
+        let mut popped = l.clone();
+        popped.popout(Pane::Markers);
+        assert!(Layout::from_json(&popped.to_json()).is_some());
     }
 
     #[test]

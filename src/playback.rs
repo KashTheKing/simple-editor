@@ -9,12 +9,19 @@
 //! re-renders the current time; the render thread blocks on the channel when idle (zero CPU).
 //! Audio thread mirrors the clock: when playing it keeps ~120 ms of mixed audio ahead in the ring;
 //! seek/pause flush the ring. Reaching the project end pauses (the UI sees is_playing() flip).
+//!
+//! GPU mode (`set_gpu(true)`, settings.gpu + a working `engine::gpu::GpuRenderer`): the render thread
+//! stops compositing and instead publishes the **decoded layers** for the current instant
+//! (`take_layers` → `engine::gpu::LayerSet`); the UI thread renders them with the GL context it owns.
+//! Everything else (clock, pacing, decoder pool, audio) is identical, so falling back to the CPU
+//! compositor is a single `set_gpu(false)`.
 
-use crate::engine::compose::Compositor;
+use crate::engine::compose::{placement, Compositor};
+use crate::engine::gpu::LayerSet;
 use crate::engine::mixer::Mixer;
 use crate::engine::text::TextRasterizer;
 use crate::media::{Backend, DecoderPool, Frame, SAMPLE_RATE};
-use crate::model::Project;
+use crate::model::{ClipKind, Project, TrackKind};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError};
@@ -54,6 +61,8 @@ struct Shared {
     clock: Mutex<Clock>,
     /// Newest rendered frame not yet taken by the UI.
     frame: Mutex<Option<Arc<Frame>>>,
+    /// GPU mode: newest decoded layer set not yet taken by the UI (no CPU compositing happened).
+    layers: Mutex<Option<Arc<LayerSet>>>,
     project: Mutex<Arc<Project>>,
 }
 
@@ -70,9 +79,13 @@ enum Cmd {
     Pause,
     Canvas,
     Backend(Backend),
+    /// Publish decoded layers instead of a composited frame (the UI renders them on the GPU).
+    Gpu(bool),
     ClearDecoders(SyncSender<()>),
     /// One-shot render at time t, at most max_w px wide (project aspect), reply on the channel.
     RenderOnce(f64, u32, SyncSender<Arc<Frame>>),
+    /// One-shot layer decode at time t (GPU path: the UI thread renders them), reply on the channel.
+    LayersOnce(f64, u32, SyncSender<Arc<LayerSet>>),
     Quit,
 }
 
@@ -93,6 +106,7 @@ impl Player {
                 canvas: (0, 0),
             }),
             frame: Mutex::new(None),
+            layers: Mutex::new(None),
             project: Mutex::new(Arc::new(Project::new())),
         });
         let (render, rx) = mpsc::channel();
@@ -116,6 +130,11 @@ impl Player {
     }
     pub fn set_backend(&mut self, b: Backend) {
         self.both(Cmd::Backend(b));
+    }
+    /// GPU preview: the render thread publishes decoded layers (`take_layers`) instead of a composited
+    /// frame. Switching back to false resumes the CPU compositor on the next render.
+    pub fn set_gpu(&mut self, on: bool) {
+        let _ = self.render.send(Cmd::Gpu(on));
     }
     /// Preview canvas size in pixels (the Player clamps width to `max_width`, keeping aspect).
     pub fn set_canvas(&mut self, w: u32, h: u32, max_width: u32) {
@@ -178,12 +197,24 @@ impl Player {
     pub fn take_frame(&mut self) -> Option<Arc<Frame>> {
         lock(&self.shared.frame).take()
     }
+    /// GPU mode only: the newest decoded layers not yet taken (the UI renders them with `engine::gpu`).
+    /// Always None while the CPU compositor is running.
+    pub fn take_layers(&mut self) -> Option<Arc<LayerSet>> {
+        lock(&self.shared.layers).take()
+    }
     /// Synchronously render the timeline at `t`, at most `max_w` px wide (project aspect kept), on the
     /// render thread (its decoders stay warm). None if the thread is gone or takes longer than 3 s.
     /// Not a hot path (MCP `render.frame` tool): allocates a fresh frame per call.
     pub fn render_once(&self, t: f64, max_w: u32) -> Option<Arc<Frame>> {
         let (tx, rx) = mpsc::sync_channel(1);
         self.render.send(Cmd::RenderOnce(t, max_w, tx)).ok()?;
+        rx.recv_timeout(Duration::from_secs(3)).ok()
+    }
+    /// Synchronously decode the layers at `t` (at most `max_w` px wide) on the render thread, for a
+    /// one-off GPU render on the UI thread (export-frame, MCP tools). None if it takes longer than 3 s.
+    pub fn layers_once(&self, t: f64, max_w: u32) -> Option<Arc<LayerSet>> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.render.send(Cmd::LayersOnce(t, max_w, tx)).ok()?;
         rx.recv_timeout(Duration::from_secs(3)).ok()
     }
     /// Synchronously drop every decoder on both threads (before overwriting a source file).
@@ -231,6 +262,10 @@ fn render_thread(
     let (mut held, mut spare): (Option<Arc<Frame>>, Option<Arc<Frame>>) = (None, None);
     let mut dirty = false;
     let mut pending: Option<Cmd> = None;
+    // GPU mode state: published layer set + recycled layer buffers
+    let mut gpu = false;
+    let mut held_layers: Option<Arc<LayerSet>> = None;
+    let mut spare_layers: Vec<Frame> = Vec::new();
     loop {
         let playing = {
             let mut c = lock(&shared.clock);
@@ -261,9 +296,25 @@ fn render_thread(
                     pool.set_backend(b);
                     dirty = true;
                 }
+                Cmd::Gpu(on) => {
+                    if gpu != on {
+                        gpu = on;
+                        *lock(&shared.layers) = None;
+                        held_layers = None;
+                        dirty = true;
+                    }
+                }
                 Cmd::ClearDecoders(ack) => {
                     pool.clear();
                     let _ = ack.send(());
+                }
+                Cmd::LayersOnce(t, max_w, reply) => {
+                    let (pw, ph) = (project.width.max(1), project.height.max(1));
+                    let w = pw.min(max_w.max(16));
+                    let h = ((ph as u64 * w as u64) / pw as u64).max(1) as u32;
+                    let mut set = LayerSet::default();
+                    guarded(&mut pool, |pool| set = decode_layers(&project, t, w, h, pool, &mut spare_layers));
+                    let _ = reply.send(Arc::new(set));
                 }
                 Cmd::RenderOnce(t, max_w, reply) => {
                     let (pw, ph) = (project.width.max(1), project.height.max(1));
@@ -286,7 +337,15 @@ fn render_thread(
         }
         dirty = false;
         let start = Instant::now();
-        if w > 0 && h > 0 {
+        if gpu && w > 0 && h > 0 {
+            // the UI thread owns the GL context: decode here, render there
+            let mut set = LayerSet::default();
+            guarded(&mut pool, |pool| set = decode_layers(&project, t, w, h, pool, &mut spare_layers));
+            let set = Arc::new(set);
+            *lock(&shared.layers) = Some(set.clone());
+            recycle(held_layers.replace(set), &mut spare_layers); // buffers of the set before that
+            ctx.request_repaint();
+        } else if w > 0 && h > 0 {
             let mut frame = match spare.take().map(Arc::try_unwrap) {
                 Some(Ok(f)) => f, // UI is done with it: no allocation
                 _ => Frame::default(),
@@ -304,6 +363,93 @@ fn render_thread(
             // the 15.6 ms scheduler tick (30 fps -> ~21 fps). timeBeginPeriod(1) would also work but costs power.
             let due = start + Duration::from_secs_f64(1.0 / project.fps.max(1.0));
             std::thread::sleep(due.saturating_duration_since(Instant::now()));
+        }
+    }
+}
+
+/// Decode every media layer visible at `t` for a canvas of (w, h) px, at the size the compositor would
+/// have decoded it (placement, capped at the source's native size). Text / shapes / sequences /
+/// adjustment layers are the renderer's job — it has the project and rasterises them itself; this only
+/// produces what needs a decoder. Clips whose effects `needs_motion()` also get neighbouring samples.
+fn decode_layers(
+    project: &Project,
+    t: f64,
+    w: u32,
+    h: u32,
+    pool: &mut DecoderPool,
+    spare: &mut Vec<Frame>,
+) -> LayerSet {
+    let mut set = LayerSet::default();
+    let fd = project.frame_dur();
+    for (ti, track) in project.tracks.iter().enumerate() {
+        if track.kind != TrackKind::Video || !project.active(ti) {
+            continue;
+        }
+        for clip in &track.clips {
+            if !clip.enabled || !clip.contains(t) || !matches!(clip.kind, ClipKind::Video | ClipKind::Image) {
+                continue;
+            }
+            let Some(asset) = project.asset(clip.asset) else { continue };
+            let native = (asset.width, asset.height);
+            if native.0 == 0 || native.1 == 0 {
+                continue;
+            }
+            let p = placement(project, clip, t, native, w, h, true);
+            if !(p.w.is_finite() && p.h.is_finite()) {
+                continue;
+            }
+            let dw = (p.w.round().max(1.0) as u32).clamp(1, native.0);
+            let dh = (p.h.round().max(1.0) as u32).clamp(1, native.1);
+            let motion = clip.effects.iter().any(|e| e.enabled && e.kind.needs_motion());
+            if let Some(f) = decode_one(pool, &asset.path, clip.src_time(t), asset.duration, dw, dh, spare) {
+                set.layers.push((clip.id, f));
+            }
+            // ponytail: two extra samples half a frame apart feed shutter-based effects; a shutter-angle
+            // driven sample count is the upgrade if motion blur ever needs to be exact.
+            if motion {
+                for k in [-1.0, -0.5] {
+                    let st = clip.src_time(t + k * fd);
+                    if let Some(f) = decode_one(pool, &asset.path, st, asset.duration, dw, dh, spare) {
+                        set.motion.push((clip.id, k * fd, f));
+                    }
+                }
+            }
+        }
+    }
+    set
+}
+
+/// One decode into a recycled buffer. None when the decoder or the frame is unavailable.
+fn decode_one(
+    pool: &mut DecoderPool,
+    path: &str,
+    src_t: f64,
+    src_duration: f64,
+    dw: u32,
+    dh: u32,
+    spare: &mut Vec<Frame>,
+) -> Option<Arc<Frame>> {
+    let st = if src_duration > 0.0 { src_t.clamp(0.0, (src_duration - 1e-4).max(0.0)) } else { src_t.max(0.0) };
+    let mut frame = spare.pop().unwrap_or_default();
+    let dec = pool.video(path)?;
+    if !dec.frame_at(st, dw, dh, &mut frame) {
+        spare.push(frame);
+        return None;
+    }
+    Some(Arc::new(frame))
+}
+
+/// Take the buffers of a layer set nobody uses any more back into the spare pool.
+fn recycle(old: Option<Arc<LayerSet>>, spare: &mut Vec<Frame>) {
+    const KEEP: usize = 8;
+    let Some(Ok(set)) = old.map(Arc::try_unwrap) else { return };
+    let frames = set.layers.into_iter().map(|(_, f)| f).chain(set.motion.into_iter().map(|(_, _, f)| f));
+    for f in frames {
+        if spare.len() >= KEEP {
+            return;
+        }
+        if let Ok(f) = Arc::try_unwrap(f) {
+            spare.push(f);
         }
     }
 }
@@ -348,11 +494,12 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
                 Cmd::Pause => lock(&ring).clear(),
                 Cmd::Canvas => {}
                 Cmd::Backend(b) => pool.set_backend(b),
+                Cmd::Gpu(_) => {} // render-thread only
                 Cmd::ClearDecoders(ack) => {
                     pool.clear();
                     let _ = ack.send(());
                 }
-                Cmd::RenderOnce(..) => {} // render-thread only
+                Cmd::RenderOnce(..) | Cmd::LayersOnce(..) => {} // render-thread only
                 Cmd::Quit => return,
             }
         }
@@ -519,6 +666,47 @@ mod tests {
         assert_eq!((f.width, f.height), (160, 120));
         let c = centre(&f);
         assert!(c[0] < 70 && c[1] > 200, "expected green from render_once at 2.5 s, got {c:?}");
+    }
+
+    /// GPU mode: the render thread publishes decoded layers instead of a composited frame, and going
+    /// back to the CPU path resumes composited frames. No GL context is involved.
+    #[test]
+    fn gpu_mode_publishes_layers() {
+        let path = media::ffpipe::tests::test_mp4();
+        let asset = media::probe(&path, Backend::Auto).unwrap();
+        let project = Project::from_media(asset);
+        let mut p =
+            Player::new(eframe::egui::Context::default(), Backend::Auto, Arc::new(Mutex::new(TextRasterizer::new())));
+        p.set_project(&project);
+        p.set_canvas(320, 240, 1280);
+        p.set_gpu(true);
+        p.seek(0.5);
+        let mut set = None;
+        for _ in 0..300 {
+            if let Some(s) = p.take_layers() {
+                if s.layers.first().map(|(_, f)| (f.pts - 0.5).abs() < 0.2).unwrap_or(false) {
+                    set = Some(s);
+                    break;
+                }
+            }
+            sleep(Duration::from_millis(10));
+        }
+        let set = set.expect("no layers within 3 s");
+        assert_eq!(set.layers.len(), 1, "one video clip → one layer");
+        let (id, frame) = &set.layers[0];
+        assert_eq!(*id, project.all_clips().find(|(_, c)| c.is_visual()).unwrap().1.id);
+        assert!(set.get(*id).is_some());
+        let c = centre(frame);
+        assert!(c[0] > 200 && c[1] < 70, "expected red at 0.5 s, got {c:?}");
+        assert!(set.motion.is_empty(), "no motion-blur effect → no extra samples");
+
+        // switching back to the CPU compositor resumes composited frames and stops layer publishing
+        p.set_gpu(false);
+        p.seek(2.5);
+        let f = wait_frame(&mut p, 2.5, (320, 240));
+        let c = centre(&f);
+        assert!(c[1] > 200 && c[0] < 70, "expected green from the CPU path, got {c:?}");
+        assert!(p.take_layers().is_none(), "layers must stop when the GPU path is off");
     }
 
     /// A panicking decoder is contained: the caller lives on and the next call still runs.
