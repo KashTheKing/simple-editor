@@ -407,8 +407,8 @@ fn lbl_name(labels: &Labels, idx: u8) -> &str {
     }
 }
 
-/// One list row: a drag source with a click-sensing overlay (select / double-click / context menu) and
-/// an optional action button on the right. Returns (row response, button clicked).
+/// One list row: select / double-click / context menu, and a deliberate press-and-move drags it
+/// (`ui::drag_source`). Optional action button on the right. Returns (row response, button clicked).
 fn row(
     ui: &mut egui::Ui,
     id: egui::Id,
@@ -426,7 +426,7 @@ fn row(
                 + ui.spacing().item_spacing.x
         });
         let content_right = ui.max_rect().right() - reserve;
-        let src = ui.dnd_drag_source(id, payload, |ui| {
+        let r = crate::ui::drag_source(ui, id, payload, |ui| {
             // Hard-cap the row: an over-wide row widens the parent's max_rect, so every later row would
             // grow too, and long labels must truncate at the pane edge instead of pushing the button out.
             ui.set_max_width((content_right - ui.max_rect().left()).max(0.0));
@@ -451,16 +451,13 @@ fn row(
             };
             ui.painter().set(bg, egui::Shape::rect_filled(rect, 2.0, fill));
         });
-        // Registered after the drag-only widget so clicks reach it (egui gives the topmost click-sensing widget
-        // the click and the drag-sensing one the drag).
-        let r = ui.interact(src.response.rect, id.with("click"), egui::Sense::click());
         // Put the button in the reserved slot rather than after the contents: the contents can be wider
         // than their cap, and appending would then push the button off the pane edge.
         let clicked = button.is_some_and(|b| {
             let gap = ui.spacing().item_spacing.x;
             let slot = egui::Rect::from_min_size(
-                egui::pos2(content_right + gap, src.response.rect.top()),
-                egui::vec2(reserve - gap, src.response.rect.height()),
+                egui::pos2(content_right + gap, r.rect.top()),
+                egui::vec2(reserve - gap, r.rect.height()),
             );
             let r = ui.put(slot, egui::Button::new(b).small());
             #[cfg(test)]
@@ -790,7 +787,7 @@ fn tile(
     palette: &Palette,
     art: Art,
 ) -> egui::Response {
-    let src = ui.dnd_drag_source(id, payload, |ui| {
+    let r = crate::ui::drag_source(ui, id, payload, |ui| {
         ui.set_max_width(TILE);
         ui.vertical(|ui| {
             ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
@@ -821,10 +818,9 @@ fn tile(
             ui.add(egui::Label::new(if selected { name.strong() } else { name }).truncate());
         });
     });
-    let r = ui.interact(src.response.rect, id.with("click"), egui::Sense::click());
     if selected {
         ui.painter().rect_stroke(
-            src.response.rect,
+            r.rect,
             2.0,
             egui::Stroke::new(1.0, palette.selection),
             egui::StrokeKind::Inside,

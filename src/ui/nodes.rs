@@ -284,11 +284,13 @@ pub fn show(
             band_ids.push(n.id);
         }
         let nr = ui.interact(r, base.with(("node", n.id)), Sense::click_and_drag());
-        // grabbing one of several picked nodes keeps the group; anything else picks (Ctrl toggles)
-        if nr.clicked() || (nr.drag_started() && !state.selection.contains(&n.id)) {
+        // grabbing one of several picked nodes keeps the group; anything else picks (Ctrl toggles).
+        // primary only: a held right button must reach the context menu, never re-pick the node.
+        let grabbed = nr.drag_started_by(egui::PointerButton::Primary);
+        if nr.clicked() || (grabbed && !state.selection.contains(&n.id)) {
             state.pick(n.id, mods.ctrl);
         }
-        if nr.drag_started_by(egui::PointerButton::Primary) && !linking {
+        if grabbed && !linking {
             state.dragging = Some(n.id);
             needs_undo = true; // exactly one snapshot for the whole move
         }
