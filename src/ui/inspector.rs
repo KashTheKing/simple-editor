@@ -11,12 +11,17 @@
 //!    `take_pending_font_import`), size, bold/italic, colour pickers (fill, outline, drop shadow, box),
 //!    outline width, drop shadow on/off + x/y/blur, alignment, line/letter spacing, box padding.
 //!  * sequence clips: the sequence's name + "Open sequence" (handed to the app via `take_open_sequence`).
+//!  * round 3: the clip's label from `Project.labels` (plus a compact "Edit labels…" editor), its mask
+//!    (shape, feather, expand, opacity, invert, "Edit in viewport"), "Open node editor", the shape style
+//!    of Shape clips (kind, fill/stroke, width, sides, corner, draw rate, page), clip markers (add /
+//!    remove), an audio bus override, and a note on Adjustment clips.
 //! Call `undo(project)` once per gesture (on `drag_started()` / first `changed()` of a widget) before mutating.
 //! Returns true if the project changed.
 
-use crate::model::{Animated, BlendMode, ClipKind, Id, Project, LABEL_COLORS};
+use crate::model::{Animated, BlendMode, ClipKind, Id, Label, Mask, MaskShape, Project, ShapeKind, ShapeStyle};
 use crate::theme::Palette;
-use crate::ui::{label_name, timecode};
+use crate::ui::markers_ui::x_button;
+use crate::ui::timecode;
 use eframe::egui::{self, Button, DragValue, Grid, Response, RichText, Slider};
 use std::cell::RefCell;
 
@@ -49,6 +54,14 @@ impl Gesture {
     }
 }
 
+/// Test-only: remember a widget rect so headless tests can click the real button.
+#[cfg(test)]
+fn mark(ui: &egui::Ui, name: &str, r: &Response) {
+    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(("insp", name.to_string())), r.rect));
+}
+#[cfg(not(test))]
+fn mark(_ui: &egui::Ui, _name: &str, _r: &Response) {}
+
 fn gain_to_db(g: f64) -> f64 {
     if g <= 0.0 {
         -60.0
@@ -69,6 +82,19 @@ fn db_to_gain(db: f64) -> f64 {
 thread_local! {
     static PENDING_FONT: RefCell<Option<String>> = const { RefCell::new(None) };
     static OPEN_SEQUENCE: RefCell<Option<Id>> = const { RefCell::new(None) };
+    static EDIT_MASK: RefCell<Option<Id>> = const { RefCell::new(None) };
+    static OPEN_NODES: RefCell<Option<Id>> = const { RefCell::new(None) };
+}
+
+/// Clip whose mask the user wants to draw in the viewport ("Edit in viewport") — the app switches the
+/// active tool to a mask tool and points the preview at this clip.
+pub fn take_edit_mask() -> Option<Id> {
+    EDIT_MASK.with(|p| p.borrow_mut().take())
+}
+
+/// Clip the user asked to open in the node editor.
+pub fn take_open_nodes() -> Option<Id> {
+    OPEN_NODES.with(|p| p.borrow_mut().take())
 }
 
 /// Font file (.ttf/.otf) the user picked with "Import font…" — the app adds it to settings.user_fonts
@@ -159,6 +185,12 @@ fn clip_section(
     let fps = project.fps;
     let lt = clip.local(playhead);
     let mut g = Gesture::default();
+    // snapshots: the widgets edit a clone of the clip, so the project must not stay borrowed
+    let labels: Vec<Label> = project.labels.clone();
+    let buses: Vec<(Id, String)> = project.buses.iter().map(|b| (b.id, b.name.clone())).collect();
+    let labels_open_id = egui::Id::new("inspector_labels_open");
+    let mut edit_labels: bool = ui.ctx().data(|d| d.get_temp(labels_open_id).unwrap_or(false));
+    let mut label_ops: Vec<LabelOp> = Vec::new();
 
     if n_selected > 1 {
         ui.label(format!("{n_selected} clips selected"));
@@ -175,11 +207,30 @@ fn clip_section(
         g.note(&ui.checkbox(&mut clip.enabled, ""));
         ui.end_row();
         ui.label("Label");
-        egui::ComboBox::from_id_salt("clip_label").selected_text(label_name(clip.label)).show_ui(ui, |ui| {
-            g.note(&ui.selectable_value(&mut clip.label, 0, "None"));
-            for (i, (name, [r, gc, b])) in LABEL_COLORS.iter().enumerate() {
-                let t = RichText::new(format!("● {name}")).color(egui::Color32::from_rgb(*r, *gc, *b));
-                g.note(&ui.selectable_value(&mut clip.label, i as u8 + 1, t));
+        ui.horizontal(|ui| {
+            let name = if clip.label == 0 {
+                "None".to_string()
+            } else {
+                labels.get(clip.label as usize - 1).map(|l| l.name.clone()).unwrap_or_else(|| "None".into())
+            };
+            egui::ComboBox::from_id_salt("clip_label").selected_text(name).show_ui(ui, |ui| {
+                g.note(&ui.selectable_value(&mut clip.label, 0, "None"));
+                for (i, l) in labels.iter().enumerate() {
+                    let [r, gc, b] = l.color;
+                    let t = RichText::new(format!("● {}", l.name)).color(egui::Color32::from_rgb(r, gc, b));
+                    g.note(&ui.selectable_value(&mut clip.label, i as u8 + 1, t));
+                }
+                ui.separator();
+                if ui.selectable_label(false, "Edit labels…").clicked() {
+                    edit_labels = true;
+                    ui.close();
+                }
+            });
+            if clip.label != 0 {
+                if let Some(l) = labels.get(clip.label as usize - 1) {
+                    let [r, gc, b] = l.color;
+                    ui.label(RichText::new("●").color(egui::Color32::from_rgb(r, gc, b)));
+                }
             }
         });
         ui.end_row();
@@ -411,7 +462,240 @@ fn clip_section(
         });
     }
 
-    if g.start || ga.start {
+    // ---------- round 3 sections ----------
+    if clip.kind == ClipKind::Adjustment {
+        ui.separator();
+        ui.weak("Adjustment layer — its effects apply to everything below it on the timeline.");
+    }
+
+    // node graph
+    ui.separator();
+    ui.horizontal(|ui| {
+        ui.strong("Nodes");
+        let has = clip.graph.is_some();
+        let r = ui.button("Open node editor").on_hover_text(if has {
+            "Edit the node graph"
+        } else {
+            "Convert this clip's effect stack to nodes"
+        });
+        mark(ui, "open_nodes", &r);
+        if r.clicked() {
+            OPEN_NODES.with(|p| *p.borrow_mut() = Some(id));
+        }
+        if has {
+            let n = clip.graph.as_ref().map(|gr| gr.nodes.len()).unwrap_or(0);
+            ui.weak(format!("{n} nodes"));
+        }
+    });
+
+    // mask
+    ui.separator();
+    ui.horizontal(|ui| {
+        ui.strong("Mask");
+        if clip.mask.is_none() {
+            let r = ui.button("Add mask");
+            mark(ui, "add_mask", &r);
+            if r.clicked() {
+                clip.mask = Some(Mask::default());
+                g.click();
+            }
+        } else {
+            let r = ui.button("Edit in viewport").on_hover_text("Drag the mask over the preview");
+            mark(ui, "edit_mask", &r);
+            if r.clicked() {
+                EDIT_MASK.with(|p| *p.borrow_mut() = Some(id));
+            }
+            if x_button(ui).on_hover_text("Remove mask").clicked() {
+                clip.mask = None;
+                g.click();
+            }
+        }
+    });
+    if let Some(m) = &mut clip.mask {
+        Grid::new("inspector_mask").num_columns(2).show(ui, |ui| {
+            ui.label("Shape");
+            egui::ComboBox::from_id_salt("mask_shape").selected_text(m.shape.name()).show_ui(ui, |ui| {
+                for sh in MaskShape::ALL {
+                    g.note(&ui.selectable_value(&mut m.shape, sh, sh.name()));
+                }
+            });
+            ui.end_row();
+            ui.label("Enabled");
+            g.note(&ui.checkbox(&mut m.enabled, ""));
+            ui.end_row();
+            ui.label("Invert");
+            g.note(&ui.checkbox(&mut m.invert, ""));
+            ui.end_row();
+            let rows: [(&str, f64, f64, f64); 3] =
+                [("Feather", 0.0, 500.0, 0.5), ("Expand", -500.0, 500.0, 0.5), ("Opacity", 0.0, 1.0, 0.01)];
+            for (label, lo, hi, speed) in rows {
+                ui.label(label);
+                ui.horizontal(|ui| {
+                    let a: &mut Animated = match label {
+                        "Feather" => &mut m.feather,
+                        "Expand" => &mut m.expand,
+                        _ => &mut m.opacity,
+                    };
+                    let mut v = a.at(lt);
+                    let r = ui.add(DragValue::new(&mut v).range(lo..=hi).speed(speed).clamp_existing_to_range(false));
+                    if r.changed() {
+                        a.set_at(lt, v);
+                    }
+                    g.note(&r);
+                    key_buttons(ui, a, lt, palette, &mut g);
+                });
+                ui.end_row();
+            }
+        });
+    }
+
+    // shape style
+    if let Some(sh) = &mut clip.shape {
+        ui.separator();
+        ui.strong("Shape");
+        Grid::new("inspector_shape").num_columns(2).show(ui, |ui| {
+            ui.label("Kind");
+            egui::ComboBox::from_id_salt("shape_kind").selected_text(sh.kind.name()).show_ui(ui, |ui| {
+                for k in ShapeKind::ALL {
+                    g.note(&ui.selectable_value(&mut sh.kind, k, k.name()));
+                }
+            });
+            ui.end_row();
+            ui.label("Fill");
+            g.note(&ui.color_edit_button_srgba_unmultiplied(&mut sh.fill));
+            ui.end_row();
+            ui.label("Stroke");
+            ui.horizontal(|ui| {
+                g.note(&ui.color_edit_button_srgba_unmultiplied(&mut sh.stroke));
+                g.note(&ui.add(DragValue::new(&mut sh.stroke_width).range(0.0..=200.0).speed(0.2)));
+            });
+            ui.end_row();
+            ui.label("Sides");
+            g.note(&ui.add(DragValue::new(&mut sh.sides).range(3..=64)));
+            ui.end_row();
+            ui.label("Corner");
+            g.note(&ui.add(DragValue::new(&mut sh.corner).range(0.0..=500.0).speed(0.5)));
+            ui.end_row();
+            for label in ["Width", "Height"] {
+                ui.label(label);
+                ui.horizontal(|ui| {
+                    let a: &mut Animated = if label == "Width" { &mut sh.w } else { &mut sh.h };
+                    let mut v = a.at(lt);
+                    let r = ui.add(DragValue::new(&mut v).range(1.0..=20000.0).speed(1.0));
+                    if r.changed() {
+                        a.set_at(lt, v);
+                    }
+                    g.note(&r);
+                    key_buttons(ui, a, lt, palette, &mut g);
+                });
+                ui.end_row();
+            }
+            if sh.kind == ShapeKind::Draw {
+                ui.label("Draw rate");
+                ui.horizontal(|ui| {
+                    g.note(&ui.add(DragValue::new(&mut sh.draw_rate).range(0.0..=8.0).speed(0.05)));
+                    ui.weak(format!("{} strokes · {:.1} s", sh.strokes.len(), sh.draw_duration()));
+                });
+                ui.end_row();
+                ui.label("Page");
+                g.note(&ui.color_edit_button_srgba_unmultiplied(&mut sh.page));
+                ui.end_row();
+            }
+        });
+    } else if clip.kind == ClipKind::Shape {
+        ui.separator();
+        if ui.button("Add shape style").clicked() {
+            clip.shape = Some(ShapeStyle::default());
+            g.click();
+        }
+    }
+
+    // audio bus override
+    if clip.kind == ClipKind::Audio || clip.kind == ClipKind::Video {
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.strong("Bus");
+            let name = buses
+                .iter()
+                .find(|(bid, _)| *bid == clip.bus)
+                .map(|(_, n)| n.clone())
+                .unwrap_or_else(|| "Track default".into());
+            egui::ComboBox::from_id_salt("clip_bus").selected_text(name).width(140.0).show_ui(ui, |ui| {
+                g.note(&ui.selectable_value(&mut clip.bus, 0, "Track default"));
+                for (bid, n) in &buses {
+                    g.note(&ui.selectable_value(&mut clip.bus, *bid, n));
+                }
+            });
+        });
+    }
+
+    // clip markers
+    ui.separator();
+    ui.horizontal(|ui| {
+        ui.strong("Markers");
+        let r = ui.small_button("+ at playhead");
+        mark(ui, "add_marker", &r);
+        if r.clicked() {
+            let t = lt.clamp(0.0, clip.duration);
+            let mid = project.new_id();
+            clip.markers.push(crate::model::Marker { id: mid, t, ..Default::default() });
+            clip.markers.sort_by(|a, b| a.t.total_cmp(&b.t));
+            g.click();
+        }
+    });
+    let mut rm_marker: Option<usize> = None;
+    for (i, m) in clip.markers.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            let r = ui.add(DragValue::new(&mut m.t).range(0.0..=1e6).speed(0.05).suffix(" s").fixed_decimals(2));
+            g.note(&r);
+            let w = (ui.available_width() - 30.0).max(50.0);
+            let r = ui.add(egui::TextEdit::singleline(&mut m.name).desired_width(w).hint_text("marker"));
+            g.note_text(&r);
+            if x_button(ui).on_hover_text("Delete marker").clicked() {
+                rm_marker = Some(i);
+            }
+        });
+    }
+    if let Some(i) = rm_marker {
+        clip.markers.remove(i);
+        g.click();
+    }
+    if clip.markers.is_empty() {
+        ui.weak("No clip markers");
+    }
+
+    // compact labels editor (labels live on the project, not the clip)
+    if edit_labels {
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.strong("Labels");
+            if ui.small_button("Add").clicked() {
+                label_ops.push(LabelOp::Add);
+            }
+            if ui.small_button("Done").clicked() {
+                edit_labels = false;
+            }
+        });
+        for (i, l) in labels.iter().enumerate() {
+            ui.horizontal(|ui| {
+                let mut color = l.color;
+                if ui.color_edit_button_srgb(&mut color).changed() {
+                    label_ops.push(LabelOp::Color(i, color));
+                }
+                let mut name = l.name.clone();
+                let w = (ui.available_width() - 30.0).max(50.0);
+                if ui.add(egui::TextEdit::singleline(&mut name).desired_width(w)).changed() {
+                    label_ops.push(LabelOp::Rename(i, name));
+                }
+                if x_button(ui).on_hover_text("Remove label").clicked() {
+                    label_ops.push(LabelOp::Remove(i));
+                }
+            });
+        }
+    }
+    ui.ctx().data_mut(|d| d.insert_temp(labels_open_id, edit_labels));
+
+    if g.start || ga.start || !label_ops.is_empty() {
         undo(project);
     }
     if g.changed {
@@ -429,7 +713,35 @@ fn clip_section(
             }
         }
     }
-    g.changed || ga.changed
+    let labels_changed = !label_ops.is_empty();
+    for op in label_ops {
+        match op {
+            LabelOp::Add => {
+                project.add_label(format!("Label {}", project.labels.len() + 1), [160, 160, 160]);
+            }
+            LabelOp::Rename(i, name) => {
+                if let Some(l) = project.labels.get_mut(i) {
+                    l.name = name;
+                }
+            }
+            LabelOp::Color(i, c) => {
+                if let Some(l) = project.labels.get_mut(i) {
+                    l.color = c;
+                }
+            }
+            // remove_label() also re-points every clip / asset / marker using it
+            LabelOp::Remove(i) => project.remove_label(i as u8 + 1),
+        }
+    }
+    g.changed || ga.changed || labels_changed
+}
+
+/// Edits to `Project.labels` collected during the frame (applied after the clip write-back).
+enum LabelOp {
+    Add,
+    Rename(usize, String),
+    Color(usize, [u8; 3]),
+    Remove(usize),
 }
 
 /// How many clips (main timeline, stash, every sequence) use the asset.
@@ -506,9 +818,9 @@ mod tests {
         assert_eq!(asset_use_count(&p, aid), 1);
         p.split_at(4.0, None);
         assert_eq!(asset_use_count(&p, aid), 2);
-        assert_eq!(label_name(0), "None");
-        assert_eq!(label_name(1), "Red");
-        assert_eq!(label_name(200), "None");
+        assert_eq!(crate::ui::label_name(0), "None");
+        assert_eq!(crate::ui::label_name(1), "Red");
+        assert_eq!(crate::ui::label_name(200), "None");
     }
 
     /// A keyboard nudge on the Pan slider of an audio clip pushes exactly one undo and moves the pan.
@@ -590,6 +902,122 @@ mod tests {
         }
         assert_eq!(undos, 1, "no extra snapshot per keystroke");
         assert!(p.clip(id).unwrap().name.contains("hi"), "{}", p.clip(id).unwrap().name);
+    }
+
+    struct H {
+        ctx: egui::Context,
+        project: Project,
+        id: Id,
+        undos: usize,
+        time: f64,
+    }
+
+    impl H {
+        fn shape_clip() -> Self {
+            let mut project = Project::new();
+            let id = project.add_shape_clip(crate::model::ShapeKind::Star, 0.0, 3.0);
+            Self { ctx: egui::Context::default(), project, id, undos: 0, time: 0.0 }
+        }
+        fn frame(&mut self, events: Vec<egui::Event>) -> bool {
+            self.time += 0.05;
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 1400.0))),
+                time: Some(self.time),
+                events,
+                ..Default::default()
+            };
+            let pal = Palette::new(true, egui::Color32::WHITE);
+            let H { ctx, project, id, undos, .. } = self;
+            let id = *id;
+            let mut changed = false;
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let mut undo = |_: &Project| *undos += 1;
+                    changed |= show(ui, project, &[id], 1.0, &[], &pal, &mut undo);
+                });
+            });
+            changed
+        }
+        fn rect(&self, name: &str) -> egui::Rect {
+            self.ctx
+                .data(|d| d.get_temp::<egui::Rect>(egui::Id::new(("insp", name.to_string()))))
+                .unwrap_or_else(|| panic!("no widget rect for {name}"))
+        }
+        fn click(&mut self, pos: egui::Pos2) -> bool {
+            let mut e = self.frame(vec![egui::Event::PointerMoved(pos)]);
+            e |= self.frame(vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            }]);
+            e |= self.frame(vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }]);
+            e
+        }
+    }
+
+    /// The mask section appears, "Add mask" creates one with a single undo, and the follow-up
+    /// "Edit in viewport" hands the clip to the app.
+    #[test]
+    fn mask_section_adds_and_hands_off() {
+        let mut h = H::shape_clip();
+        h.frame(vec![]);
+        let r = h.rect("add_mask");
+        assert!(h.click(r.center()), "adding a mask edits the project");
+        assert!(h.project.clip(h.id).unwrap().mask.is_some());
+        assert_eq!(h.undos, 1, "one undo per gesture");
+        h.frame(vec![]);
+        let r = h.rect("edit_mask");
+        let _ = take_edit_mask();
+        h.click(r.center());
+        assert_eq!(take_edit_mask(), Some(h.id), "the app is told which clip to mask");
+        assert_eq!(h.undos, 1, "asking to edit in the viewport is not an edit");
+    }
+
+    /// Shape clips get the style section, and a Shape clip's markers can be added from the inspector.
+    #[test]
+    fn shape_and_marker_sections() {
+        let mut h = H::shape_clip();
+        h.frame(vec![]);
+        assert!(h.project.clip(h.id).unwrap().shape.is_some(), "the shape style exists");
+        let r = h.rect("add_marker");
+        assert!(h.click(r.center()), "adding a marker edits the project");
+        let markers = &h.project.clip(h.id).unwrap().markers;
+        assert_eq!(markers.len(), 1);
+        assert!(markers[0].t >= 0.0 && markers[0].t <= 3.0, "inside the clip: {}", markers[0].t);
+        assert_eq!(h.undos, 1);
+    }
+
+    #[test]
+    fn node_button_hands_the_clip_off() {
+        let mut h = H::shape_clip();
+        h.frame(vec![]);
+        let r = h.rect("open_nodes");
+        let _ = take_open_nodes();
+        h.click(r.center());
+        assert_eq!(take_open_nodes(), Some(h.id));
+        assert_eq!(h.undos, 0);
+    }
+
+    /// The label combo lists the project's own labels, and removing one re-points the clips using it.
+    #[test]
+    fn labels_come_from_the_project() {
+        let mut p = Project::new();
+        assert!(!p.labels.is_empty(), "a new project ships the default labels");
+        let n = p.labels.len();
+        let idx = p.add_label("Hero", [10, 20, 30]);
+        assert_eq!(idx as usize, n + 1);
+        assert_eq!(p.label_name(idx), "Hero");
+        assert_eq!(p.label_color(idx), Some([10, 20, 30]));
+        let cid = p.add_shape_clip(crate::model::ShapeKind::Rect, 0.0, 1.0);
+        p.clip_mut(cid).unwrap().label = idx;
+        p.remove_label(idx);
+        assert_eq!(p.clip(cid).unwrap().label, 0, "the clip falls back to no label");
     }
 
     /// Headless: sections for effects / retime / audio fades lay out without panicking.

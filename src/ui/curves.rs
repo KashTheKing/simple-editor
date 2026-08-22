@@ -19,6 +19,10 @@ use std::cell::RefCell;
 
 pub(crate) const RULER_H: f32 = 16.0;
 const LIST_W: f32 = 150.0;
+const LIST_MIN: f32 = 90.0;
+const LIST_MAX: f32 = 320.0;
+/// Grab width of the splitter between the property list and the graph.
+const SPLIT_W: f32 = 5.0;
 const HIT_PX: f32 = 6.0;
 
 thread_local! {
@@ -74,6 +78,8 @@ enum Drag {
 pub struct CurvesState {
     /// Index of the active property in the panel's property list.
     pub active: usize,
+    /// Width of the property list in points (drag the splitter; remembered across frames).
+    pub list_w: f32,
     /// Hidden curves (property indices).
     pub hidden: Vec<usize>,
     /// Time zoom/pan of the graph (seconds at the left edge, px per second; 0 = fit the clip).
@@ -101,6 +107,7 @@ impl Default for CurvesState {
     fn default() -> Self {
         Self {
             active: 0,
+            list_w: LIST_W,
             hidden: Vec::new(),
             scroll_x: 0.0,
             zoom: 0.0,
@@ -272,6 +279,32 @@ enum MenuAct {
     Delete,
 }
 
+/// Add (or move) a key of the active property at clip-local time `t` and value `v`, selecting it.
+/// Used by both the double-click and the right-click-on-empty-graph gestures.
+fn add_key_at(
+    project: &mut Project,
+    id: Id,
+    state: &mut CurvesState,
+    out: &mut CurvesResponse,
+    undo: &mut dyn FnMut(&Project),
+    t: f64,
+    v: f64,
+) {
+    undo(project);
+    let active = state.active;
+    if let Some(a) = project.clip_mut(id).and_then(|c| prop_mut(c, active)) {
+        if !a.is_animated() {
+            a.toggle_key(t);
+        }
+        a.set_at(t, v);
+        if let Some(k) = a.key_index_at(t) {
+            state.selected.clear();
+            state.selected.push((active, k));
+        }
+        out.edited = true;
+    }
+}
+
 pub fn show(
     ui: &mut egui::Ui,
     state: &mut CurvesState,
@@ -419,9 +452,26 @@ pub fn show(
 
     // ---- layout: property list | graph ----
     let avail = ui.available_rect_before_wrap();
-    let list_rect = Rect::from_min_max(avail.min, pos2(avail.left() + LIST_W, avail.bottom()));
-    let graph = Rect::from_min_max(pos2(list_rect.right() + 4.0, avail.top()), avail.max);
+    state.list_w = state.list_w.clamp(LIST_MIN, LIST_MAX.min((avail.width() - 40.0).max(LIST_MIN)));
+    let list_rect = Rect::from_min_max(avail.min, pos2(avail.left() + state.list_w, avail.bottom()));
+    let split =
+        Rect::from_min_max(pos2(list_rect.right(), avail.top()), pos2(list_rect.right() + SPLIT_W, avail.bottom()));
+    let graph = Rect::from_min_max(pos2(split.right(), avail.top()), avail.max);
     ui.allocate_rect(avail, Sense::hover());
+
+    // splitter: drag to resize the property list so long "<Effect>: <Param>" names stay readable
+    let sr = ui.interact(split, ui.id().with("curve_split"), Sense::drag());
+    if sr.hovered() || sr.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+    }
+    if sr.dragged() {
+        state.list_w = (state.list_w + sr.drag_delta().x).clamp(LIST_MIN, LIST_MAX);
+    }
+    ui.painter().rect_filled(
+        split.shrink2(vec2(1.0, 0.0)),
+        0,
+        if sr.hovered() || sr.dragged() { pal.accent } else { pal.border },
+    );
     let clip_data = match project.clip(id) {
         Some(c) => c.clone(),
         None => return out,
@@ -674,19 +724,7 @@ pub fn show(
             if pos.y >= plot.top() && key_hit(pos).is_none() {
                 let t = t_at(pos.x, sx).clamp(0.0, dur);
                 let v = v_at(pos.y, scales[state.active]);
-                undo(project);
-                let active = state.active;
-                if let Some(a) = project.clip_mut(id).and_then(|c| prop_mut(c, active)) {
-                    if !a.is_animated() {
-                        a.toggle_key(t);
-                    }
-                    a.set_at(t, v);
-                    if let Some(k) = a.key_index_at(t) {
-                        state.selected.clear();
-                        state.selected.push((active, k));
-                    }
-                    out.edited = true;
-                }
+                add_key_at(project, id, state, &mut out, undo, t, v);
             }
         }
     }
@@ -705,9 +743,26 @@ pub fn show(
         out.edited = true;
     }
 
-    // ---- context menu on a key ----
+    // ---- context menu on a key / right-click adds a key ----
     if resp.secondary_clicked() {
         state.menu_key = pointer.and_then(key_hit);
+        // empty graph area: right-click adds a key for the active property right there (same as
+        // double-click, which stays as the second way in)
+        if state.menu_key.is_none() {
+            if let Some(pos) = pointer {
+                if pos.y >= plot.top() {
+                    add_key_at(
+                        project,
+                        id,
+                        state,
+                        &mut out,
+                        undo,
+                        t_at(pos.x, sx).clamp(0.0, dur),
+                        v_at(pos.y, scales[state.active]),
+                    );
+                }
+            }
+        }
     }
     let mut act: Option<MenuAct> = None;
     if let Some((_p, _k)) = state.menu_key {
@@ -933,6 +988,58 @@ mod tests {
             let y = plot.bottom() - (((key.v - lo) / (hi - lo)) * plot.height() as f64) as f32;
             pos2(x, y)
         }
+    }
+
+    #[test]
+    fn splitter_drag_resizes_the_property_list() {
+        let mut h = Harness::new();
+        let w0 = h.state.list_w;
+        assert_eq!(w0, LIST_W);
+        // grab the splitter strip just right of the list and drag it right
+        let y = h.state.graph.center().y;
+        let x = h.state.graph.left() - SPLIT_W / 2.0;
+        h.press(pos2(x, y));
+        for i in 1..=4 {
+            h.frame(vec![Event::PointerMoved(pos2(x + 15.0 * i as f32, y))]);
+        }
+        h.release(pos2(x + 60.0, y));
+        assert!(h.state.list_w > w0 + 40.0, "list grew: {} -> {}", w0, h.state.list_w);
+        assert!(h.state.graph.left() > w0, "the graph moved right with it");
+        // and it clamps
+        h.state.list_w = 1000.0;
+        h.frame(vec![]);
+        assert!(h.state.list_w <= LIST_MAX);
+        h.state.list_w = 1.0;
+        h.frame(vec![]);
+        assert!(h.state.list_w >= LIST_MIN);
+    }
+
+    #[test]
+    fn right_click_on_empty_graph_adds_a_key() {
+        let mut h = Harness::new();
+        h.state.active = 0; // Position X — not animated yet
+        h.frame(vec![]);
+        assert!(!h.clip().x.is_animated());
+        let plot = Rect::from_min_max(pos2(h.state.graph.left(), h.state.graph.top() + RULER_H), h.state.graph.max);
+        let pos = pos2(plot.left() + plot.width() * 0.5, plot.center().y);
+        h.frame(vec![Event::PointerMoved(pos)]);
+        h.frame(vec![Event::PointerButton {
+            pos,
+            button: PointerButton::Secondary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        }]);
+        let r = h.frame(vec![Event::PointerButton {
+            pos,
+            button: PointerButton::Secondary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        }]);
+        assert!(r.edited, "right-click on empty graph edits");
+        let keys = &h.clip().x.keys;
+        assert_eq!(keys.len(), 1, "one key added");
+        assert!(keys[0].t > 1.5 && keys[0].t < 2.5, "at the clicked time: {}", keys[0].t);
+        assert_eq!(h.undos, 1, "one undo for the gesture");
     }
 
     #[test]

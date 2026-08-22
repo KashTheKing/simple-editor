@@ -1,4 +1,8 @@
 //! Left panel: tabs "Library" and "Recent".
+//! The search + filter strip is a TOOLBAR: a framed band in the panel fill with a separator under it,
+//! a "Filters" caption, small chips and a search box with a magnifier prefix and a clear button — so it
+//! reads as chrome, not as content. Asset rows carry a thumbnail (when the app passes its ThumbCache)
+//! and are tinted with their colour label (a left bar + the name in that colour).
 //! Library: search (name/tags/description/folder), filter chips (All/Video/Audio/Image/Sequences,
 //! Short SFX ≤ 10 s, Music > 10 s, label colour, Unused only), sort (name/duration/kind/recent), a
 //! collapsible folder tree (click filters, right-click new/rename/delete, drag an asset onto a folder),
@@ -10,10 +14,12 @@
 //! double-click opens) and saved templates (drag `DragPayload::Template`, place at playhead).
 //! Recent: settings.recent_assets across all projects with the same search/chips, pins, labels and tags.
 
-use crate::model::{ClipKind, Id, Project, LABEL_COLORS};
+use crate::media::thumbs::ThumbCache;
+use crate::model::{ClipKind, Id, Project};
 use crate::settings::{RecentAsset, Settings};
 use crate::theme::Palette;
 use crate::ui::{duration_text, label_color, DragPayload};
+use eframe::egui::load::SizedTexture;
 use eframe::egui::{self, RichText};
 use std::path::PathBuf;
 
@@ -71,6 +77,17 @@ pub struct LibraryResponse {
     pub place_template: Vec<String>,
     /// The user asked to import media from a URL (the app opens the Import URL window).
     pub import_url: bool,
+    /// "Edit labels…" was picked in a label menu — the app opens the label editor (Inspector).
+    pub edit_labels: bool,
+}
+
+/// (name, colour) of every `Project.labels` entry, snapshotted once per frame.
+type Labels = Vec<(String, [u8; 3])>;
+
+/// What a label menu returned.
+enum LabelPick {
+    Set(u8),
+    Edit,
 }
 
 /// Project mutations collected during the frame, applied after all widgets (one undo per gesture).
@@ -90,28 +107,45 @@ enum LibOp {
     RemoveUnused,
 }
 
+/// `thumbs`: the app's ThumbCache, so asset rows can show a picture. None (no cache / headless) simply
+/// draws the rows without thumbnails.
 /// `ytdlp` = yt-dlp was found at start-up; the "Import URL…" button only exists when it is installed.
+#[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut egui::Ui,
     state: &mut LibraryState,
     project: &mut Project,
     settings: &mut Settings,
+    thumbs: Option<&mut ThumbCache>,
     palette: &Palette,
     ytdlp: bool,
     undo: &mut dyn FnMut(&Project),
 ) -> LibraryResponse {
     let mut resp = LibraryResponse::default();
+    let labels: Labels = project.labels.iter().map(|l| (l.name.clone(), l.color)).collect();
+    let mut thumbs = thumbs;
     ui.horizontal(|ui| {
         ui.selectable_value(&mut state.tab, 0, "Library");
         ui.selectable_value(&mut state.tab, 1, "Recent");
     });
     ui.separator();
     if state.tab == 0 {
-        library_tab(ui, state, project, settings, palette, ytdlp, &mut resp, undo);
+        library_tab(ui, state, project, settings, &mut thumbs, &labels, palette, ytdlp, &mut resp, undo);
     } else {
-        recent_tab(ui, state, settings, palette, &mut resp);
+        recent_tab(ui, state, settings, &labels, palette, &mut resp);
     }
     resp
+}
+
+/// One asset thumbnail, `h` points tall, or nothing when the cache has none yet.
+fn thumb(ui: &mut egui::Ui, thumbs: &mut Option<&mut ThumbCache>, path: &str, h: f32) {
+    let Some(cache) = thumbs.as_deref_mut() else { return };
+    let Some((tex, [w, th])) = cache.texture(ui.ctx(), path, 0.0, (h * 2.0) as u32) else { return };
+    if th == 0 {
+        return;
+    }
+    let size = egui::vec2(w as f32 * (h / th as f32), h);
+    ui.add(egui::Image::new(SizedTexture::new(tex, size)));
 }
 
 // ---------- pure filter helpers ----------
@@ -282,23 +316,44 @@ fn confirm(title: &str, description: &str) -> bool {
         == rfd::MessageDialogResult::Yes
 }
 
-/// "Label ▸" submenu; returns the picked label.
-fn label_menu(ui: &mut egui::Ui, current: u8) -> Option<u8> {
+/// "Label ▸" submenu over the project's own labels; returns the pick ("Edit labels…" included).
+fn label_menu(ui: &mut egui::Ui, current: u8, labels: &Labels) -> Option<LabelPick> {
     let mut picked = None;
     ui.menu_button("Label", |ui| {
         if ui.selectable_label(current == 0, "None").clicked() {
-            picked = Some(0);
+            picked = Some(LabelPick::Set(0));
             ui.close();
         }
-        for (i, (name, [r, g, b])) in LABEL_COLORS.iter().enumerate() {
+        for (i, (name, [r, g, b])) in labels.iter().enumerate() {
             let t = RichText::new(format!("● {name}")).color(egui::Color32::from_rgb(*r, *g, *b));
             if ui.selectable_label(current == i as u8 + 1, t).clicked() {
-                picked = Some(i as u8 + 1);
+                picked = Some(LabelPick::Set(i as u8 + 1));
                 ui.close();
             }
         }
+        ui.separator();
+        if ui.button("Edit labels…").clicked() {
+            picked = Some(LabelPick::Edit);
+            ui.close();
+        }
     });
     picked
+}
+
+/// Colour of a label index using the project's palette (falls back to the built-in colours).
+fn lbl_color(labels: &Labels, idx: u8, palette: &Palette) -> egui::Color32 {
+    match labels.get(idx.wrapping_sub(1) as usize) {
+        Some((_, [r, g, b])) if idx > 0 => egui::Color32::from_rgb(*r, *g, *b),
+        _ => label_color(idx, palette),
+    }
+}
+
+/// Name of a label index in the project's palette.
+fn lbl_name(labels: &Labels, idx: u8) -> &str {
+    match labels.get(idx.wrapping_sub(1) as usize) {
+        Some((n, _)) if idx > 0 => n.as_str(),
+        _ => "None",
+    }
 }
 
 /// One list row: a drag source with a click-sensing overlay (select / double-click / context menu) and
@@ -376,6 +431,8 @@ fn library_tab(
     state: &mut LibraryState,
     project: &mut Project,
     settings: &mut Settings,
+    thumbs: &mut Option<&mut ThumbCache>,
+    labels: &Labels,
     palette: &Palette,
     ytdlp: bool,
     resp: &mut LibraryResponse,
@@ -384,29 +441,36 @@ fn library_tab(
     let mut ops: Vec<LibOp> = Vec::new();
     let mut op_start = false; // true when this frame starts an undo-worthy gesture
 
-    // wrapped: the pane is often ~250 px wide and a non-wrapping row clips its last buttons away
-    ui.horizontal_wrapped(|ui| {
+    let mut import = false;
+    let mut new_folder = false;
+    let mut sort = state.sort;
+    let mut import_url = false;
+    toolbar(ui, state, labels, palette, |ui, state| {
         if ui.button("Import…").clicked() {
-            resp.import = true;
+            import = true;
         }
         // only when yt-dlp is installed — the whole URL import is optional
         if ytdlp && ui.button("Import URL…").on_hover_text("Download media from a link with yt-dlp").clicked() {
-            resp.import_url = true;
+            import_url = true;
         }
         if ui.button("New folder…").clicked() {
-            state.new_folder = Some((String::new(), String::new()));
+            new_folder = true;
         }
         egui::ComboBox::from_id_salt("lib_sort")
             .selected_text(["Name", "Duration", "Kind", "Recent"][state.sort.min(3) as usize])
             .width(80.0)
             .show_ui(ui, |ui| {
                 for (i, n) in ["Name", "Duration", "Kind", "Recent"].iter().enumerate() {
-                    ui.selectable_value(&mut state.sort, i as u8, *n);
+                    ui.selectable_value(&mut sort, i as u8, *n);
                 }
             });
     });
-    ui.add(egui::TextEdit::singleline(&mut state.search).hint_text("search").desired_width(f32::INFINITY));
-    filter_chips(ui, state, palette);
+    state.sort = sort;
+    resp.import |= import;
+    resp.import_url |= import_url;
+    if new_folder {
+        state.new_folder = Some((String::new(), String::new()));
+    }
 
     // ponytail: both walk every clip / plan item per frame. Upgrade: cache them behind a generation
     // counter bumped by App::after_edit() if a big project ever shows it.
@@ -434,10 +498,10 @@ fn library_tab(
             _ => order.sort_by_cached_key(|&i| project.assets[i].name().to_lowercase()),
         }
         for i in order {
-            asset_row(ui, state, project, i, &used, palette, resp, &mut ops, &mut op_start);
+            asset_row(ui, state, project, i, &used, thumbs, labels, palette, resp, &mut ops, &mut op_start);
         }
 
-        details_box(ui, state, project, palette, &mut ops, &mut op_start);
+        details_box(ui, state, project, labels, palette, resp, &mut ops, &mut op_start);
 
         ui.add_space(4.0);
         ui.horizontal(|ui| {
@@ -531,20 +595,51 @@ fn library_tab(
     }
 }
 
-fn filter_chips(ui: &mut egui::Ui, state: &mut LibraryState, palette: &Palette) {
-    ui.horizontal_wrapped(|ui| {
-        for (i, n) in ["All", "Video", "Audio", "Image", "Seq", "Short SFX", "Music"].iter().enumerate() {
-            ui.selectable_value(&mut state.kind_filter, i as u8, *n);
-        }
-        for i in 1..=LABEL_COLORS.len() as u8 {
-            let dot = RichText::new("●").color(label_color(i, palette));
-            if ui.selectable_label(state.label_filter == i, dot).on_hover_text(LABEL_COLORS[i as usize - 1].0).clicked()
+/// The search + filter toolbar: a framed band in the panel fill with a separator under it, so it never
+/// reads as content. `head` draws the tab-specific leading row (Import / Clear / sort).
+fn toolbar(
+    ui: &mut egui::Ui,
+    state: &mut LibraryState,
+    labels: &Labels,
+    palette: &Palette,
+    head: impl FnOnce(&mut egui::Ui, &mut LibraryState),
+) {
+    egui::Frame::new().fill(palette.panel).inner_margin(egui::Margin::symmetric(4, 3)).show(ui, |ui| {
+        ui.horizontal(|ui| head(ui, state));
+        ui.horizontal(|ui| {
+            ui.label("🔍");
+            let clear_w = 22.0;
+            let w = (ui.available_width() - clear_w - ui.spacing().item_spacing.x).max(40.0);
+            let r = ui.add(egui::TextEdit::singleline(&mut state.search).hint_text("search").desired_width(w));
+            #[cfg(test)]
+            ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("lib_search_rect"), r.rect));
+            let _ = r;
+            if ui
+                .add_enabled(!state.search.is_empty(), egui::Button::new("✕").small())
+                .on_hover_text("Clear search")
+                .clicked()
             {
-                state.label_filter = if state.label_filter == i { 0 } else { i };
+                state.search.clear();
             }
-        }
-        ui.toggle_value(&mut state.unused_only, "Unused");
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 3.0;
+            ui.weak(RichText::new("Filters").small());
+            for (i, n) in ["All", "Video", "Audio", "Image", "Seq", "Short SFX", "Music"].iter().enumerate() {
+                if ui.selectable_label(state.kind_filter == i as u8, RichText::new(*n).small()).clicked() {
+                    state.kind_filter = i as u8;
+                }
+            }
+            for i in 1..=labels.len() as u8 {
+                let dot = RichText::new("●").color(lbl_color(labels, i, palette));
+                if ui.selectable_label(state.label_filter == i, dot).on_hover_text(lbl_name(labels, i)).clicked() {
+                    state.label_filter = if state.label_filter == i { 0 } else { i };
+                }
+            }
+            ui.toggle_value(&mut state.unused_only, RichText::new("Unused").small());
+        });
     });
+    ui.separator();
 }
 
 fn folder_tree(
@@ -664,12 +759,15 @@ fn folder_tree(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn asset_row(
     ui: &mut egui::Ui,
     state: &mut LibraryState,
     project: &Project,
     i: usize,
     used: &std::collections::HashSet<Id>,
+    thumbs: &mut Option<&mut ThumbCache>,
+    labels: &Labels,
     palette: &Palette,
     resp: &mut LibraryResponse,
     ops: &mut Vec<LibOp>,
@@ -677,12 +775,21 @@ fn asset_row(
 ) {
     let a = &project.assets[i];
     let selected = state.selected == Some(a.id);
+    let tint = (a.label != 0).then(|| lbl_color(labels, a.label, palette));
     let (r, add) =
         row(ui, egui::Id::new(("asset", a.id)), DragPayload::Asset(a.id), selected, selected.then_some("Add"), |ui| {
-            if a.label != 0 {
-                ui.label(RichText::new("●").color(label_color(a.label, palette)));
+            // label tint: a colour bar on the left and the name in the same colour
+            if let Some(c) = tint {
+                let (bar, _) = ui.allocate_exact_size(egui::vec2(3.0, 14.0), egui::Sense::hover());
+                ui.painter().rect_filled(bar, 1.0, c);
             }
-            let name = RichText::new(a.name());
+            if a.has_video() {
+                thumb(ui, thumbs, &a.path, 18.0);
+            }
+            let mut name = RichText::new(a.name());
+            if let Some(c) = tint {
+                name = name.color(c);
+            }
             ui.label(if selected { name.strong() } else { name });
             ui.weak(kind_tag(a.kind));
             ui.weak(duration_text(a.duration));
@@ -709,9 +816,13 @@ fn asset_row(
             let _ = std::process::Command::new("explorer").arg(format!("/select,{}", a.path)).spawn();
             ui.close();
         }
-        if let Some(l) = label_menu(ui, a.label) {
-            ops.push(LibOp::AssetLabel(a.id, l));
-            *op_start = true;
+        match label_menu(ui, a.label, labels) {
+            Some(LabelPick::Set(l)) => {
+                ops.push(LibOp::AssetLabel(a.id, l));
+                *op_start = true;
+            }
+            Some(LabelPick::Edit) => resp.edit_labels = true,
+            None => {}
         }
         ui.menu_button("Convert To", |ui| {
             for t in crate::engine::convert::TARGETS {
@@ -733,11 +844,14 @@ fn asset_row(
 }
 
 /// Details of the selected asset: path, format, description, tags, label, folder.
+#[allow(clippy::too_many_arguments)]
 fn details_box(
     ui: &mut egui::Ui,
     state: &mut LibraryState,
     project: &Project,
+    labels: &Labels,
     palette: &Palette,
+    resp: &mut LibraryResponse,
     ops: &mut Vec<LibOp>,
     op_start: &mut bool,
 ) {
@@ -780,9 +894,9 @@ fn details_box(
         }
         *op_start |= r.gained_focus();
         ui.horizontal(|ui| {
-            let name = if a.label == 0 { "None" } else { LABEL_COLORS[a.label as usize - 1].0 };
+            let name = lbl_name(labels, a.label);
             egui::ComboBox::from_id_salt("asset_label")
-                .selected_text(RichText::new(format!("● {name}")).color(label_color(a.label, palette)))
+                .selected_text(RichText::new(format!("● {name}")).color(lbl_color(labels, a.label, palette)))
                 .show_ui(ui, |ui| {
                     let mut pick = |l: u8, ui: &mut egui::Ui| {
                         ops.push(LibOp::AssetLabel(a.id, l));
@@ -792,11 +906,16 @@ fn details_box(
                     if ui.selectable_label(a.label == 0, "None").clicked() {
                         pick(0, ui);
                     }
-                    for (i, (n, [r, g, b])) in LABEL_COLORS.iter().enumerate() {
+                    for (i, (n, [r, g, b])) in labels.iter().enumerate() {
                         let t = RichText::new(format!("● {n}")).color(egui::Color32::from_rgb(*r, *g, *b));
                         if ui.selectable_label(a.label == i as u8 + 1, t).clicked() {
                             pick(i as u8 + 1, ui);
                         }
+                    }
+                    ui.separator();
+                    if ui.button("Edit labels…").clicked() {
+                        resp.edit_labels = true;
+                        ui.close();
                     }
                 });
             let folder_text = if a.folder.is_empty() { "Root" } else { a.folder.as_str() };
@@ -1040,17 +1159,20 @@ fn recent_tab(
     ui: &mut egui::Ui,
     state: &mut LibraryState,
     settings: &mut Settings,
+    labels: &Labels,
     palette: &Palette,
     resp: &mut LibraryResponse,
 ) {
-    ui.horizontal(|ui| {
+    let mut clear = false;
+    toolbar(ui, state, labels, palette, |ui, _state| {
         if ui.button("Clear").clicked() && confirm("Clear recent", CLEAR_RECENT) {
-            recent_clear(settings, resp);
-            resp.clear_recent = true;
+            clear = true;
         }
-        ui.add(egui::TextEdit::singleline(&mut state.search).hint_text("search").desired_width(f32::INFINITY));
     });
-    filter_chips(ui, state, palette);
+    if clear {
+        recent_clear(settings, resp);
+        resp.clear_recent = true;
+    }
     if let Some(path) = state.recent_tags_for.clone() {
         ui.horizontal(|ui| {
             ui.weak("Tags:");
@@ -1084,10 +1206,15 @@ fn recent_tab(
                     if rec.pinned {
                         ui.weak("★");
                     }
-                    if rec.label != 0 {
-                        ui.label(RichText::new("●").color(label_color(rec.label, palette)));
+                    let tint = (rec.label != 0).then(|| lbl_color(labels, rec.label, palette));
+                    if let Some(c) = tint {
+                        let (bar, _) = ui.allocate_exact_size(egui::vec2(3.0, 14.0), egui::Sense::hover());
+                        ui.painter().rect_filled(bar, 1.0, c);
                     }
-                    ui.label(name);
+                    match tint {
+                        Some(c) => ui.label(RichText::new(name).color(c)),
+                        None => ui.label(name),
+                    };
                     ui.add(egui::Label::new(RichText::new(dir).weak()).truncate());
                     if !rec.tags.is_empty() {
                         ui.add(egui::Label::new(RichText::new(rec.tags.join(" · ")).weak().small()).truncate());
@@ -1107,8 +1234,10 @@ fn recent_tab(
                     op = Some(RecOp::Pin(rec.path.clone()));
                     ui.close();
                 }
-                if let Some(l) = label_menu(ui, rec.label) {
-                    op = Some(RecOp::Label(rec.path.clone(), l));
+                match label_menu(ui, rec.label, labels) {
+                    Some(LabelPick::Set(l)) => op = Some(RecOp::Label(rec.path.clone(), l)),
+                    Some(LabelPick::Edit) => resp.edit_labels = true,
+                    None => {}
                 }
                 if ui.button("Tags…").clicked() {
                     state.recent_tags_for = Some(rec.path.clone());
@@ -1345,6 +1474,86 @@ mod tests {
         assert_eq!(out.as_deref(), Some("Footage"), "commits when focus moves away");
     }
 
+    /// The filter/search strip renders as a toolbar: the search box sits inside it, a clear button
+    /// empties the query, and the label chips come from the project's own labels.
+    #[test]
+    fn filter_toolbar_renders_and_clears() {
+        let mut project = Project::new();
+        let mut a = asset(0, ClipKind::Video, 5.0);
+        a.path = r"C:\media\one.mp4".into();
+        project.add_asset(a);
+        project.labels.truncate(2);
+        let mut settings = Settings::default();
+        let palette = Palette::new(true, egui::Color32::WHITE);
+        let ctx = egui::Context::default();
+        let mut state = LibraryState { search: "one".into(), ..Default::default() };
+        let mut search_rect = egui::Rect::NOTHING;
+        for _ in 0..2 {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let mut undo = |_: &Project| {};
+                    show(ui, &mut state, &mut project, &mut settings, None, &palette, &mut undo);
+                });
+            });
+            search_rect = ctx
+                .data(|d| d.get_temp::<egui::Rect>(egui::Id::new("lib_search_rect")))
+                .expect("the toolbar drew its search box");
+        }
+        assert!(search_rect.width() > 20.0, "search box has room: {search_rect:?}");
+        assert!(search_rect.top() < 120.0, "the toolbar sits at the top of the panel: {search_rect:?}");
+        // the label chips only offer the labels the project actually has
+        let labels: Labels = project.labels.iter().map(|l| (l.name.clone(), l.color)).collect();
+        assert_eq!(labels.len(), 2);
+        assert_eq!(lbl_name(&labels, 1), project.labels[0].name);
+        assert_eq!(lbl_name(&labels, 0), "None");
+        assert_eq!(lbl_name(&labels, 9), "None", "out of range falls back");
+        // clearing the search empties the field
+        state.search.clear();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let mut undo = |_: &Project| {};
+                show(ui, &mut state, &mut project, &mut settings, None, &palette, &mut undo);
+            });
+        });
+        assert!(state.search.is_empty());
+    }
+
+    /// Rows are tinted with the project's label colour, and a recoloured label changes the tint.
+    #[test]
+    fn rows_use_the_project_label_colour() {
+        let mut project = Project::new();
+        let palette = Palette::new(true, egui::Color32::WHITE);
+        project.labels[0].color = [1, 2, 3];
+        let labels: Labels = project.labels.iter().map(|l| (l.name.clone(), l.color)).collect();
+        assert_eq!(lbl_color(&labels, 1, &palette), egui::Color32::from_rgb(1, 2, 3));
+        // 0 / unknown fall back to the dim "no label" colour
+        assert_eq!(lbl_color(&labels, 0, &palette), label_color(0, &palette));
+        assert_eq!(lbl_color(&labels, 250, &palette), label_color(250, &palette));
+    }
+
+    /// Headless with a thumbnail cache attached: rows still lay out (no decode is required).
+    #[test]
+    fn rows_lay_out_with_a_thumb_cache() {
+        let mut project = Project::new();
+        let mut a = asset(0, ClipKind::Video, 5.0);
+        a.path = r"C:\media\one.mp4".into();
+        project.add_asset(a);
+        let mut settings = Settings::default();
+        let palette = Palette::new(true, egui::Color32::WHITE);
+        let ctx = egui::Context::default();
+        let mut cache = ThumbCache::new(ctx.clone(), crate::media::Backend::Ffmpeg);
+        let mut state = LibraryState::default();
+        for _ in 0..2 {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let mut undo = |_: &Project| panic!("no undo without edits");
+                    let r = show(ui, &mut state, &mut project, &mut settings, Some(&mut cache), &palette, &mut undo);
+                    assert!(!r.edited && !r.edit_labels);
+                });
+            });
+        }
+    }
+
     /// Headless: both tabs lay out with folders, sequences, templates and a selected asset,
     /// reporting nothing when nothing was clicked.
     #[test]
@@ -1433,7 +1642,7 @@ mod tests {
                 let _ = ctx.run(egui::RawInput::default(), |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
                         let mut undo = |_: &Project| panic!("no undo without edits");
-                        let r = show(ui, &mut state, &mut project, &mut settings, &palette, true, &mut undo);
+                        let r = show(ui, &mut state, &mut project, &mut settings, None, &palette, true, &mut undo);
                         assert!(!r.import && !r.clear_recent && !r.edited && !r.settings_changed);
                         assert!(r.add_to_timeline.is_empty() && r.open_paths.is_empty() && r.remove.is_empty());
                         assert!(r.convert.is_empty() && r.open_sequence.is_none() && r.place_template.is_empty());
