@@ -593,6 +593,10 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
     let mut project = lock(&shared.project).clone();
     let mut block = vec![0f32; BLOCK * 2];
     let mut mixed_until = 0.0;
+    // true from a Play/Seek reset until the ring has been pre-filled to LEAD_SECS once: suppresses the
+    // underrun catch-up below so a slow first block (cold device/decoder open) cannot skip mixed_until
+    // past a fade-in sitting at the new start time — it only ever plays audio mixed from that exact time.
+    let mut filling = false;
     let mut pending: Option<Cmd> = None;
     let is_playing = || {
         let mut c = lock(&shared.clock);
@@ -618,6 +622,7 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
                 Cmd::Play | Cmd::Seek => {
                     lock(&ring).clear();
                     mixed_until = lock(&shared.clock).now();
+                    filling = true;
                 }
                 Cmd::Pause => lock(&ring).clear(),
                 Cmd::Canvas => {}
@@ -650,10 +655,13 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
         if playing && queued < LEAD_SECS {
             // ponytail: wall clock is the master; the ring is refilled only as the device drains it, so it
             // can't grow past LEAD + one block. The ring head plays at timeline time `mixed_until - queued`;
-            // if that is already >50 ms in the past (slow first block, decoder respawn, underrun) snap the
-            // next block to land on time instead of carrying the lag forever. Resample if drift ever matters.
+            // if that is already >50 ms in the past (decoder respawn, mid-playback underrun) snap the next
+            // block to land on time instead of carrying the lag forever. Not while still `filling`, though:
+            // a cold device/decoder open makes this same block "late" on every fresh Play/Seek, and snapping
+            // then would skip mixed_until straight past a fade-in sitting at the new start time. Resample if
+            // drift ever matters.
             let now = lock(&shared.clock).now();
-            if now - (mixed_until - queued) > 0.05 {
+            if !filling && now - (mixed_until - queued) > 0.05 {
                 mixed_until = now + queued;
             }
             if guarded(&mut pool, |pool| mixer.mix(&project, mixed_until, pool, &mut block)) {
@@ -661,6 +669,7 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
             }
             mixed_until += BLOCK as f64 / SAMPLE_RATE as f64;
         } else {
+            filling = false; // ring reached LEAD_SECS (or we're paused): back to normal underrun detection
             match rx.recv_timeout(Duration::from_millis(4)) {
                 Ok(c) => pending = Some(c),
                 Err(RecvTimeoutError::Disconnected) => return,
