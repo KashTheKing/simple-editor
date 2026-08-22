@@ -642,6 +642,25 @@ mod tests {
         assert!(out[0].abs() < 1e-3);
     }
 
+    /// A fade-in at the very start of playback (block-sized like `playback::BLOCK`) must not bleed full
+    /// volume: sample 0 is near-silent and every following sample in the block is >= the one before it.
+    #[test]
+    fn fade_in_first_block_near_silent_and_rising() {
+        let mut p = project();
+        let ai = p.audio_tracks()[0];
+        p.tracks[ai].clips[0].fade_in = 0.5;
+        let mut pool = pool();
+        let mut mx = Mixer::new();
+        let mut out = vec![0.0f32; 2 * 1024]; // playback::BLOCK
+        mx.mix(&p, 0.0, &mut pool, &mut out);
+        assert!(out[0].abs() < 1e-4, "sample 0 not near-silent: {}", out[0]);
+        let mut prev = -1.0f32;
+        for s in out.chunks_exact(2).map(|s| s[0]) {
+            assert!(s + 1e-6 >= prev, "gain dipped: {s} after {prev}");
+            prev = s;
+        }
+    }
+
     #[test]
     fn transition_crossfade() {
         // A1: Const(0.8) on [0,5) then Const(0.4) on [5,10), CrossFade of 2 s at the cut.
