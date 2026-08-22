@@ -2,16 +2,17 @@
 //! an export would, without re-running the effect chain every frame.
 //!
 //! Cache: `Settings::cache_dir()/prerender/<hash>.rgba`, one file per second of timeline at project
-//! resolution, keyed by a hash of everything affecting the picture in that second. Work happens in small
-//! slices on the UI thread (the GPU renderer owns the GL context) or on the CPU compositor without GL.
+//! resolution, keyed by a hash of everything affecting the picture in that second. A worker thread
+//! renders whole seconds with the CPU compositor; the UI thread only hands out seconds and collects
+//! finished ones, so a slow frame lands on the worker and never on a repaint.
 //!
 //! File layout: `SEPR` + version + width + height + frame count (u32 LE each), then that many
-//! `width * height * 4` RGBA frames. `frame()` seeks to the one it needs, so a second costs one 8 MB
-//! read at 1080p and never a full second of RAM.
+//! `width * height * 4` RGBA frames. `frame()` seeks to the one it needs, so a served frame costs one
+//! read and never a whole second of RAM.
 //!
-//! ponytail: rendering runs on `engine::compose::Compositor` — `tick` has no room for the GL renderer,
-//! and the cache is identical either way. Hand a `&mut GpuRenderer` in when movie mode needs the GPU
-//! shaders (that is the only change required; the keys and files do not move).
+//! ponytail: rendering runs on `engine::compose::Compositor` — the GL renderer is UI-thread-only and a
+//! worker cannot touch it. Movie mode wanting the GPU shaders means routing layers back to the UI thread
+//! the way `export::GpuScratch` does (the keys and files do not move).
 
 use crate::engine::compose::Compositor;
 use crate::engine::text::TextRasterizer;
@@ -22,8 +23,9 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
-use std::time::Instant;
 
 const MAGIC: &[u8; 4] = b"SEPR";
 const VERSION: u32 = 1;
@@ -35,97 +37,146 @@ const CACHE_BUDGET: u64 = 8 << 30;
 pub struct PreRender {
     /// Requested ranges, seconds, merged and clamped to whole seconds.
     ranges: Vec<(f64, f64)>,
-    /// Whole seconds still to render, in order.
+    /// Whole seconds still to render, in order. A second stays here while a worker has it.
     queue: Vec<i64>,
     /// Seconds rendered this session with the key they were rendered under.
     done: Vec<(i64, u64)>,
     /// Seconds invalidated since they were rendered (never served, always re-rendered).
     dirty: Vec<i64>,
-    /// Scratch, so a tick does not allocate a compositor per slice.
-    work: Option<Box<Work>>,
+    /// Seconds handed to the worker, with the key each is rendering under.
+    inflight: Vec<(i64, u64)>,
+    /// Bumped by every invalidation; a job behind it is dropped mid-second.
+    generation: Arc<AtomicU64>,
+    /// Spawned on the first queued second, dropped when the queue drains.
+    worker: Option<Worker>,
 }
 
-/// Everything a slice of rendering needs (lazily created: an idle PreRender costs nothing).
+/// Seconds handed over at once: one rendering plus one waiting, so the worker never idles between
+/// frames of the UI but an edit still gets picked up within a second of work.
+const DEPTH: usize = 2;
+
+/// The render worker. Dropping it closes the job channel, so the thread finishes its second and exits.
+struct Worker {
+    jobs: Sender<Job>,
+    results: Receiver<(i64, u64, Res)>,
+}
+
+/// One second of timeline for one worker, against a snapshot of the project it was queued from.
+struct Job {
+    project: Arc<Project>,
+    sec: i64,
+    key: u64,
+    w: u32,
+    h: u32,
+    n: u32,
+    fps: f64,
+    generation: u64,
+}
+
+/// How a worker's second ended.
+enum Res {
+    /// Written and published.
+    Done,
+    /// An edit overtook it: still queued, re-rendered under the new key.
+    Stale,
+    /// Out of disk / no cache dir: give up on pre-rendering.
+    Failed,
+}
+
+/// Per-worker scratch: a compositor with its own decoders and font cache.
 struct Work {
     comp: Compositor,
     pool: DecoderPool,
     text: TextRasterizer,
     frame: Frame,
-    /// The second being written, kept across ticks so a slice can stop between frames.
-    open: Option<Open>,
 }
 
-/// A half-written second: the temp file plus how far into it we got.
+/// A half-written second; dropping it without `finish()` throws the temp file away.
 struct Open {
-    sec: i64,
-    key: u64,
     tmp: PathBuf,
     path: PathBuf,
-    f: std::io::BufWriter<std::fs::File>,
-    /// Next frame index to render.
-    i: u32,
-}
-
-/// What a slice of rendering achieved.
-enum Slice {
-    /// The second is complete and published.
-    Done,
-    /// Out of budget mid-second; the next tick resumes where this one stopped.
-    More,
-    /// Out of disk / no cache dir: give up on pre-rendering.
-    Failed,
+    f: Option<std::io::BufWriter<std::fs::File>>,
 }
 
 impl Work {
-    /// Render frames of the open second until it is complete or the budget runs out.
-    fn render_slice(&mut self, project: &Project, w: u32, h: u32, n: u32, fps: f64, deadline: Instant) -> Slice {
-        let Work { comp, pool, text, frame, open } = self;
-        let Some(o) = open.as_mut() else { return Slice::Failed };
-        while o.i < n {
-            let t = o.sec as f64 + o.i as f64 / fps;
-            comp.render(project, t, w, h, pool, text, frame);
-            if o.f.write_all(&frame.rgba).is_err() {
-                return Slice::Failed;
+    fn new() -> Self {
+        Work {
+            comp: Compositor::new(),
+            pool: DecoderPool::new(Backend::Auto),
+            text: TextRasterizer::new(),
+            frame: Frame::default(),
+        }
+    }
+
+    /// Render one whole second into the cache, streaming frames out as they are made (a second of 1080p
+    /// RGBA is 250 MB, far too much to buffer). Decoding stays sequential, so the decoder never re-seeks.
+    fn render_sec(&mut self, job: &Job, generation: &AtomicU64) -> Res {
+        let Ok(mut o) = open_sec(job.key, job.w, job.h, job.n) else { return Res::Failed };
+        for i in 0..job.n {
+            if generation.load(Ordering::Relaxed) != job.generation {
+                return Res::Stale; // an edit landed: dropping `o` deletes the half-written file
             }
-            o.i += 1;
-            if o.i < n && Instant::now() >= deadline {
-                return Slice::More;
+            let t = job.sec as f64 + i as f64 / job.fps;
+            self.comp.render(&job.project, t, job.w, job.h, &mut self.pool, &mut self.text, &mut self.frame);
+            if !o.write(&self.frame.rgba) {
+                return Res::Failed;
             }
         }
-        if self.finish() {
-            Slice::Done
+        if o.finish() {
+            Res::Done
         } else {
-            Slice::Failed
-        }
-    }
-
-    /// Flush the open second and publish it (rename over the real name).
-    fn finish(&mut self) -> bool {
-        let Some(Open { tmp, path, f, .. }) = self.open.take() else { return false };
-        let ok = f.into_inner().map_err(|e| e.into_error()).and_then(|_| std::fs::rename(&tmp, &path));
-        if ok.is_err() {
-            let _ = std::fs::remove_file(&tmp);
-        }
-        ok.is_ok()
-    }
-
-    /// Throw away a half-written second (its file is useless).
-    fn abort(&mut self) {
-        if let Some(o) = self.open.take() {
-            drop(o.f);
-            let _ = std::fs::remove_file(&o.tmp);
+            Res::Failed
         }
     }
 }
 
-impl Drop for Work {
+impl Worker {
+    fn new(generation: Arc<AtomicU64>) -> Worker {
+        let (jobs, rx) = channel::<Job>();
+        let (tx, results) = channel();
+        // ponytail: one thread, measured, not guessed. A pool renders seconds concurrently, which means
+        // one decoder per worker seeking into the same file: on 1080p H.264 two Media Foundation readers
+        // bought nothing and four were 6x SLOWER than one (they each spawn a core's worth of internal
+        // threads). Split by *source file* if a multi-track project ever needs the cores.
+        std::thread::spawn(move || {
+            let mut work = Work::new();
+            while let Ok(job) = rx.recv() {
+                let r = work.render_sec(&job, &generation);
+                if tx.send((job.sec, job.key, r)).is_err() {
+                    return;
+                }
+            }
+        });
+        Worker { jobs, results }
+    }
+}
+
+impl Open {
+    fn write(&mut self, b: &[u8]) -> bool {
+        self.f.as_mut().is_some_and(|f| f.write_all(b).is_ok())
+    }
+
+    /// Flush the second and publish it (rename over the real name).
+    fn finish(mut self) -> bool {
+        let Some(f) = self.f.take() else { return false };
+        let ok = f.into_inner().map_err(|e| e.into_error()).and_then(|_| std::fs::rename(&self.tmp, &self.path));
+        if ok.is_err() {
+            let _ = std::fs::remove_file(&self.tmp);
+        }
+        ok.is_ok()
+    }
+}
+
+impl Drop for Open {
     fn drop(&mut self) {
-        self.abort();
+        if self.f.take().is_some() {
+            let _ = std::fs::remove_file(&self.tmp);
+        }
     }
 }
 
 /// Create the temp file for one second and write its header.
-fn open_sec(sec: i64, key: u64, w: u32, h: u32, n: u32) -> std::io::Result<Open> {
+fn open_sec(key: u64, w: u32, h: u32, n: u32) -> std::io::Result<Open> {
     let path = path_for(key);
     let tmp = path.with_extension("tmp");
     if let Some(d) = path.parent() {
@@ -136,7 +187,7 @@ fn open_sec(sec: i64, key: u64, w: u32, h: u32, n: u32) -> std::io::Result<Open>
     for v in [VERSION, w, h, n] {
         f.write_all(&v.to_le_bytes())?;
     }
-    Ok(Open { sec, key, tmp, path, f, i: 0 })
+    Ok(Open { tmp, path, f: Some(f) })
 }
 
 impl PreRender {
@@ -146,6 +197,8 @@ impl PreRender {
 
     /// Mark a range dirty (an edit touched it).
     pub fn invalidate(&mut self, from: f64, to: f64) {
+        // unconditional: the app invalidates the whole timeline per edit, so anything in flight is dead
+        self.generation.fetch_add(1, Ordering::Relaxed);
         let (a, b) = (from.min(to), from.max(to));
         for s in sec_range(a, b) {
             self.done.retain(|(x, _)| *x != s);
@@ -166,7 +219,18 @@ impl PreRender {
         if !(b > a) {
             return;
         }
+        // merged, not appended: `after_edit` re-requests the whole timeline on every single edit, and an
+        // unmerged list makes `segments()` and `progress()` — both drawn every frame — grow without end
         self.ranges.push((a, b));
+        self.ranges.sort_by(|x, y| x.0.total_cmp(&y.0));
+        let mut merged: Vec<(f64, f64)> = Vec::with_capacity(self.ranges.len());
+        for (x, y) in self.ranges.drain(..) {
+            match merged.last_mut() {
+                Some(l) if x <= l.1 => l.1 = l.1.max(y),
+                _ => merged.push((x, y)),
+            }
+        }
+        self.ranges = merged;
         for s in sec_range(a, b) {
             let key = key_for(project, s);
             if self.done.contains(&(s, key)) || self.queue.contains(&s) {
@@ -182,67 +246,68 @@ impl PreRender {
         self.queue.sort_unstable();
     }
 
-    /// Do a slice of work (call once per frame with a time budget). Returns true while busy.
-    pub fn tick(&mut self, project: &Project, budget_ms: f32) -> bool {
+    /// Collect finished seconds and hand queued ones to the workers (call once per frame). Returns true
+    /// while work is outstanding. `_budget_ms` is ignored — rendering left the UI thread.
+    pub fn tick(&mut self, project: &Project, _budget_ms: f32) -> bool {
         if self.queue.is_empty() {
-            self.work = None;
+            self.worker = None; // idle: closing the job channel lets the thread exit
+            self.inflight.clear();
             return false;
         }
-        let deadline = Instant::now() + std::time::Duration::from_secs_f32(budget_ms.max(0.0) / 1000.0);
         let (w, h) = (project.width.max(1), project.height.max(1));
         let fps = if project.fps > 1.0 { project.fps } else { 30.0 };
         let n = fps.round().max(1.0) as u32;
-        // taken out of `self` for the loop: the slice needs both the scratch and the queue
-        let mut work = self.work.take().unwrap_or_else(|| {
-            Box::new(Work {
-                comp: Compositor::new(),
-                pool: DecoderPool::new(Backend::Auto),
-                text: TextRasterizer::new(),
-                frame: Frame::default(),
-                open: None,
-            })
-        });
-        // ponytail: the budget is checked between frames, so a tick costs one composite, not a whole
-        // second of them. A worker thread is the upgrade if one 4K frame is too long for a UI frame.
-        while let Some(&sec) = self.queue.first() {
-            let key = key_for(project, sec);
-            let mut wrote = false;
-            if !path_for(key).exists() {
-                // streamed frame by frame: a second of 1080p RGBA is 250 MB, far too much to buffer
-                if work.open.as_ref().is_none_or(|o| (o.sec, o.key) != (sec, key)) {
-                    work.abort(); // an edit changed the key mid-second: that file is worthless now
-                    work.open = open_sec(sec, key, w, h, n).ok();
+        let generation = self.generation.clone();
+        let worker = self.worker.take().unwrap_or_else(|| Worker::new(generation.clone()));
+        let PreRender { queue, done, dirty, inflight, .. } = self;
+        let mut landed = false;
+        while let Ok((sec, key, r)) = worker.results.try_recv() {
+            inflight.retain(|(s, _)| *s != sec);
+            match r {
+                // out of disk / no cache dir: stop trying, playback falls back to live render
+                Res::Failed => {
+                    queue.clear();
+                    inflight.clear();
+                    return false;
                 }
-                match work.render_slice(project, w, h, n, fps, deadline) {
-                    Slice::More => {
-                        self.work = Some(work);
-                        return true;
+                Res::Stale => {} // still queued, re-dispatched below under the new key
+                Res::Done => {
+                    queue.retain(|s| *s != sec);
+                    dirty.retain(|d| *d != sec);
+                    if !done.contains(&(sec, key)) {
+                        done.push((sec, key));
                     }
-                    Slice::Failed => {
-                        // out of disk / no cache dir: stop trying, playback falls back to live render
-                        work.abort();
-                        self.queue.clear();
-                        self.work = Some(work);
-                        return false;
-                    }
-                    Slice::Done => wrote = true,
+                    landed = true;
                 }
-            }
-            self.queue.remove(0);
-            self.dirty.retain(|d| *d != sec);
-            if !self.done.contains(&(sec, key)) {
-                self.done.push((sec, key));
-            }
-            if wrote {
-                // an evicted second is no longer ready: drop it so the next request re-renders it
-                let evicted = prune(&dir(), CACHE_BUDGET);
-                self.done.retain(|(_, k)| !evicted.contains(k));
-            }
-            if Instant::now() >= deadline {
-                break;
             }
         }
-        self.work = Some(work);
+        if landed {
+            // an evicted second is no longer ready: drop it so the next request re-renders it
+            let evicted = prune(&dir(), CACHE_BUDGET);
+            done.retain(|(_, k)| !evicted.contains(k));
+        }
+        // keep the worker fed, off a snapshot of the project as it is right now
+        let g = generation.load(Ordering::Relaxed);
+        let mut snap: Option<Arc<Project>> = None;
+        while inflight.len() < DEPTH {
+            let Some(sec) = queue.iter().copied().find(|s| !inflight.iter().any(|(x, _)| x == s)) else { break };
+            let key = key_for(project, sec);
+            if path_for(key).exists() {
+                queue.retain(|s| *s != sec);
+                dirty.retain(|d| *d != sec);
+                if !done.contains(&(sec, key)) {
+                    done.push((sec, key));
+                }
+                continue;
+            }
+            let p = snap.get_or_insert_with(|| Arc::new(project.clone())).clone();
+            if worker.jobs.send(Job { project: p, sec, key, w, h, n, fps, generation: g }).is_err() {
+                queue.clear();
+                return false;
+            }
+            inflight.push((sec, key));
+        }
+        self.worker = Some(worker);
         !self.queue.is_empty()
     }
 
@@ -299,11 +364,13 @@ impl PreRender {
     }
 
     pub fn clear(&mut self) {
+        self.generation.fetch_add(1, Ordering::Relaxed);
         self.ranges.clear();
         self.queue.clear();
         self.done.clear();
         self.dirty.clear();
-        self.work = None;
+        self.inflight.clear();
+        self.worker = None;
     }
 }
 
@@ -567,27 +634,30 @@ mod tests {
     }
 
     #[test]
-    fn tick_renders_a_second_one_frame_at_a_time() {
+    fn tick_farms_seconds_out_to_the_workers() {
         let mut p = project_with_clip(); // 33×17 @ 10 fps, one text clip: no decoder needed
                                          // an odd size gives this test a cache key of its own, so the tests that assert "no file
                                          // for this second" never race with the one this writes
         p.width = 33;
         p.height = 17;
-        let path = path_for(key_for(&p, 0));
-        let _ = std::fs::remove_file(&path);
-        let mut pr = PreRender::new();
-        pr.request(&p, 0.0, 1.0);
-        assert_eq!(pr.queue, vec![0]);
-        // a zero budget still makes progress, one frame per tick — never a whole second in one go
-        let mut ticks = 0;
-        while pr.tick(&p, 0.0) {
-            ticks += 1;
-            assert!(ticks < 100, "not converging");
+        let paths: Vec<PathBuf> = (0..3).map(|s| path_for(key_for(&p, s))).collect();
+        for path in &paths {
+            let _ = std::fs::remove_file(path);
         }
-        assert!(ticks >= 9, "10 frames should take about 10 ticks, took {ticks}");
-        assert!(path.exists(), "the finished second is published");
-        assert!(pr.frame(&p, 0.05).is_some(), "and served from the cache");
-        let _ = std::fs::remove_file(&path);
+        let mut pr = PreRender::new();
+        pr.request(&p, 0.0, 3.0);
+        assert_eq!(pr.queue, vec![0, 1, 2]);
+        let start = std::time::Instant::now();
+        while pr.tick(&p, 4.0) {
+            // never more work outstanding than there are workers, and a tick itself renders nothing
+            assert!(pr.inflight.len() <= DEPTH, "{} seconds in flight", pr.inflight.len());
+            assert!(start.elapsed() < std::time::Duration::from_secs(30), "not converging");
+        }
+        assert!(paths.iter().all(|path| path.exists()), "every finished second is published");
+        assert!(pr.frame(&p, 2.05).is_some(), "and served from the cache");
+        for path in &paths {
+            let _ = std::fs::remove_file(path);
+        }
     }
 
     #[test]
