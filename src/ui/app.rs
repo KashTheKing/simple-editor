@@ -2274,9 +2274,9 @@ impl App {
             }
             Pane::Subtitles => {
                 let resp = {
-                    let App { project, playhead, undo, redo, subtitles_ui: st, fonts, palette, .. } = self;
+                    let App { project, playhead, selection, undo, redo, subtitles_ui: st, fonts, palette, .. } = self;
                     let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
-                    subtitles_ui::show(ui, st, project, playhead, fonts, palette, &mut push)
+                    subtitles_ui::show(ui, st, project, playhead, selection, fonts, palette, &mut push)
                 };
                 if resp.seeked {
                     self.player.pause();

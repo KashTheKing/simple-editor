@@ -153,6 +153,11 @@ pub struct Settings {
     /// Settings > Appearance: override for the custom-painted (timeline/preview/waveform) palette.
     /// Default ("system" mode, every colour unset) reproduces today's Windows-derived palette exactly.
     pub palette: PaletteOverride,
+    /// Directory containing a whisper.cpp binary (whisper-cli.exe). Empty = the cache's `whisper`
+    /// folder, then the app dir, then PATH. Speech-to-text is off until a model is downloaded.
+    pub whisper_dir: String,
+    /// Model the Subtitles pane offers first: a `engine::transcribe::MODELS` name or file name.
+    pub transcribe_model: String,
 }
 
 impl Default for Settings {
@@ -204,6 +209,8 @@ impl Default for Settings {
             frame_quality: 92,
             effect_thumb_image: String::new(),
             palette: PaletteOverride::default(),
+            whisper_dir: String::new(),
+            transcribe_model: String::new(),
         }
     }
 }

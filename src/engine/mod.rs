@@ -19,4 +19,5 @@ pub mod style;
 pub mod subtitles;
 pub mod text;
 pub mod tracking;
+pub mod transcribe;
 pub mod xmeml;
