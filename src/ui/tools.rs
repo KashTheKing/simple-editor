@@ -12,6 +12,7 @@
 use crate::model::{MaskShape, ShapeKind};
 use crate::theme::Palette;
 use eframe::egui;
+use egui::{Align2, Color32, CornerRadius, FontId, Key, Modifiers, Sense, Stroke, StrokeKind};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Tool {
@@ -56,7 +57,456 @@ impl Default for ToolsState {
     }
 }
 
+/// The strip, left to right: (tool, icon, name). `Tool::Mask` stands for whichever mask shape is
+/// selected (the combo next to it picks one), the shape tools each get their own button.
+const STRIP: [(Tool, &str, &str); 12] = [
+    (Tool::Select, "\u{25b6}", "Select"),
+    (Tool::Text, "T", "Text"),
+    (Tool::Shape(ShapeKind::Rect), "\u{25a0}", "Rectangle"),
+    (Tool::Shape(ShapeKind::Ellipse), "\u{25cf}", "Ellipse"),
+    (Tool::Shape(ShapeKind::Triangle), "\u{25b2}", "Triangle"),
+    (Tool::Shape(ShapeKind::Polygon), "\u{25c6}", "Polygon"),
+    (Tool::Shape(ShapeKind::Star), "\u{2605}", "Star"),
+    (Tool::Shape(ShapeKind::Line), "/", "Line"),
+    (Tool::Shape(ShapeKind::Arrow), "\u{2192}", "Arrow"),
+    (Tool::Draw, "\u{270e}", "Draw"),
+    (Tool::Mask(MaskShape::Rect), "\u{25d0}", "Mask"),
+    (Tool::Zoom, "\u{2315}", "Zoom"),
+];
+
+/// Single-key shortcut of a tool (used for the tooltips and by `handle_hotkeys`).
+pub fn tool_hotkey(tool: Tool) -> Option<Key> {
+    match tool {
+        Tool::Select => Some(Key::V),
+        Tool::Text => Some(Key::T),
+        Tool::Draw => Some(Key::D),
+        Tool::Shape(_) => Some(Key::S),
+        Tool::Mask(_) => Some(Key::M),
+        Tool::Zoom => None,
+    }
+}
+
+/// V / T / S / D / M, ignored while a text field has focus or any modifier is held. Pressing S or M
+/// again steps through the shape / mask variants. Returns the new tool when it changed; the key is
+/// consumed, so calling this twice in a frame is harmless.
+pub fn handle_hotkeys(ctx: &egui::Context, state: &mut ToolsState) -> Option<Tool> {
+    if ctx.wants_keyboard_input() {
+        return None;
+    }
+    let next = ctx.input_mut(|i| {
+        if !i.modifiers.is_none() {
+            return None;
+        }
+        if i.consume_key(Modifiers::NONE, Key::V) {
+            Some(Tool::Select)
+        } else if i.consume_key(Modifiers::NONE, Key::T) {
+            Some(Tool::Text)
+        } else if i.consume_key(Modifiers::NONE, Key::D) {
+            Some(Tool::Draw)
+        } else if i.consume_key(Modifiers::NONE, Key::S) {
+            Some(Tool::Shape(next_shape(state.tool)))
+        } else if i.consume_key(Modifiers::NONE, Key::M) {
+            Some(Tool::Mask(next_mask(state.tool)))
+        } else {
+            None
+        }
+    })?;
+    (next != state.tool).then(|| {
+        state.tool = next;
+        next
+    })
+}
+
+/// The shape tools in strip order (Draw has its own key, so it is not part of the S cycle).
+const SHAPE_CYCLE: [ShapeKind; 7] = [
+    ShapeKind::Rect,
+    ShapeKind::Ellipse,
+    ShapeKind::Triangle,
+    ShapeKind::Polygon,
+    ShapeKind::Star,
+    ShapeKind::Line,
+    ShapeKind::Arrow,
+];
+
+fn next_shape(cur: Tool) -> ShapeKind {
+    match cur {
+        Tool::Shape(k) => match SHAPE_CYCLE.iter().position(|c| *c == k) {
+            Some(i) => SHAPE_CYCLE[(i + 1) % SHAPE_CYCLE.len()],
+            None => SHAPE_CYCLE[0],
+        },
+        _ => SHAPE_CYCLE[0],
+    }
+}
+
+fn next_mask(cur: Tool) -> MaskShape {
+    match cur {
+        Tool::Mask(m) => match MaskShape::ALL.iter().position(|c| *c == m) {
+            Some(i) => MaskShape::ALL[(i + 1) % MaskShape::ALL.len()],
+            None => MaskShape::ALL[0],
+        },
+        _ => MaskShape::ALL[0],
+    }
+}
+
 /// Returns true when the tool or its style changed (the app may want to repaint the preview overlay).
-pub fn show(_ui: &mut egui::Ui, _state: &mut ToolsState, _palette: &Palette) -> bool {
-    todo!("ui::tools::show")
+pub fn show(ui: &mut egui::Ui, state: &mut ToolsState, palette: &Palette) -> bool {
+    let mut changed = handle_hotkeys(ui.ctx(), state).is_some();
+    let base = ui.id();
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        for (tool, icon, name) in STRIP {
+            let active = same_tool(tool, state.tool);
+            let tip = match tool_hotkey(tool) {
+                Some(k) => format!("{name} ({})", k.name()),
+                None => name.to_string(),
+            };
+            if icon_button(ui, palette, base.with(("tool", name)), icon, &tip, active).clicked() && !active {
+                state.tool = tool;
+                changed = true;
+            }
+        }
+        ui.separator();
+        changed |= style_controls(ui, state);
+    });
+    changed
+}
+
+/// The Mask button lights up for every mask shape (the combo beside it picks one); everything else is
+/// an exact match.
+fn same_tool(entry: Tool, cur: Tool) -> bool {
+    matches!((entry, cur), (Tool::Mask(_), Tool::Mask(_))) || entry == cur
+}
+
+/// Style controls for the active tool. Returns true when anything changed.
+fn style_controls(ui: &mut egui::Ui, state: &mut ToolsState) -> bool {
+    let mut changed = false;
+    match state.tool {
+        Tool::Shape(kind) => {
+            let outline_only = matches!(kind, ShapeKind::Line | ShapeKind::Arrow);
+            if !outline_only {
+                ui.label("Fill");
+                changed |= ui.color_edit_button_srgba_unmultiplied(&mut state.fill).changed();
+            }
+            ui.label("Stroke");
+            changed |= ui.color_edit_button_srgba_unmultiplied(&mut state.stroke).changed();
+            changed |= ui
+                .add(egui::DragValue::new(&mut state.stroke_width).speed(0.2).range(0.0..=200.0))
+                .on_hover_text("Stroke width (px)")
+                .changed();
+            match kind {
+                ShapeKind::Polygon | ShapeKind::Star => {
+                    ui.label("Sides");
+                    changed |= ui.add(egui::DragValue::new(&mut state.sides).range(3..=64)).changed();
+                }
+                ShapeKind::Rect => {
+                    ui.label("Corner");
+                    changed |= ui.add(egui::DragValue::new(&mut state.corner).speed(0.5).range(0.0..=2000.0)).changed();
+                }
+                ShapeKind::Arrow => {
+                    ui.label("Head");
+                    changed |= ui
+                        .add(egui::DragValue::new(&mut state.corner).speed(0.5).range(0.0..=2000.0))
+                        .on_hover_text("Arrow head size (px, 0 = follow the stroke width)")
+                        .changed();
+                }
+                _ => {}
+            }
+        }
+        Tool::Draw => {
+            ui.label("Brush");
+            changed |= ui.color_edit_button_srgba_unmultiplied(&mut state.brush).changed();
+            changed |= ui
+                .add(egui::DragValue::new(&mut state.brush_width).speed(0.2).range(0.5..=200.0))
+                .on_hover_text("Brush width (px)")
+                .changed();
+            ui.label("Rate");
+            for (rate, label) in [(0.5, "0.5x"), (1.0, "1x"), (2.0, "2x"), (0.0, "all")] {
+                let on = (state.draw_rate - rate).abs() < 1e-3;
+                if ui
+                    .selectable_label(on, label)
+                    .on_hover_text(if rate == 0.0 { "Show the whole sketch at once" } else { "Replay speed" })
+                    .clicked()
+                    && !on
+                {
+                    state.draw_rate = rate;
+                    changed = true;
+                }
+            }
+            let mut page = state.page[3] > 0;
+            if ui.checkbox(&mut page, "Page").changed() {
+                state.page[3] = if page { 255 } else { 0 };
+                if page && state.page[..3] == [0, 0, 0] {
+                    state.page = [255, 255, 255, 255];
+                }
+                changed = true;
+            }
+            if page {
+                changed |= ui.color_edit_button_srgba_unmultiplied(&mut state.page).changed();
+            }
+        }
+        Tool::Mask(shape) => {
+            ui.label("Mask");
+            let mut pick = shape;
+            egui::ComboBox::from_id_salt("tool-mask-shape").selected_text(shape.name()).width(90.0).show_ui(ui, |ui| {
+                for m in MaskShape::ALL {
+                    ui.selectable_value(&mut pick, m, m.name());
+                }
+            });
+            if pick != shape {
+                state.tool = Tool::Mask(pick);
+                changed = true;
+            }
+        }
+        Tool::Text | Tool::Select | Tool::Zoom => {}
+    }
+    changed
+}
+
+/// Bare square icon button: accent fill when active, a hover outline otherwise.
+fn icon_button(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    id: egui::Id,
+    icon: &str,
+    tip: &str,
+    active: bool,
+) -> egui::Response {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(24.0, 22.0), Sense::hover());
+    let r = ui.interact(rect, id, Sense::click());
+    let p = ui.painter();
+    if active {
+        p.rect_filled(rect, CornerRadius::same(2), palette.accent);
+    } else if r.hovered() {
+        p.rect_filled(rect, CornerRadius::same(2), palette.header);
+        p.rect_stroke(rect, CornerRadius::same(2), Stroke::new(1.0, palette.border), StrokeKind::Inside);
+    }
+    let fg = if active { on_accent(palette.accent) } else { palette.text };
+    p.text(rect.center(), Align2::CENTER_CENTER, icon, FontId::proportional(13.0), fg);
+    r.on_hover_text(tip)
+}
+
+/// Readable text colour on top of the accent fill.
+fn on_accent(c: Color32) -> Color32 {
+    let l = 0.299 * c.r() as f32 + 0.587 * c.g() as f32 + 0.114 * c.b() as f32;
+    if l > 140.0 {
+        Color32::BLACK
+    } else {
+        Color32::WHITE
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui::{Event, Pos2, Rect, Vec2};
+
+    struct Harness {
+        ctx: egui::Context,
+        state: ToolsState,
+        base: egui::Id,
+        time: f64,
+        changed: bool,
+    }
+
+    impl Harness {
+        fn new() -> Self {
+            let mut h = Self {
+                ctx: egui::Context::default(),
+                state: ToolsState::default(),
+                base: egui::Id::NULL,
+                time: 0.0,
+                changed: false,
+            };
+            h.frame(vec![]);
+            h
+        }
+        fn frame(&mut self, events: Vec<Event>) {
+            self.time += 0.05;
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 60.0))),
+                time: Some(self.time),
+                events,
+                ..Default::default()
+            };
+            let pal = Palette::new(true, Color32::from_rgb(0, 120, 212));
+            let Harness { ctx, state, base, changed, .. } = self;
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    *base = ui.id();
+                    *changed = show(ui, state, &pal);
+                });
+            });
+        }
+        /// Centre of a strip button by its name, from the previous frame's layout.
+        fn button(&self, name: &str) -> Pos2 {
+            self.ctx
+                .read_response(self.base.with(("tool", name)))
+                .unwrap_or_else(|| panic!("no button {name}"))
+                .rect
+                .center()
+        }
+        fn click(&mut self, name: &str) {
+            let pos = self.button(name);
+            self.frame(vec![Event::PointerMoved(pos)]);
+            self.frame(vec![Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            }]);
+            self.frame(vec![Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            }]);
+        }
+        fn key(&mut self, key: Key) {
+            self.frame(vec![
+                Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE },
+                Event::Key { key, physical_key: None, pressed: false, repeat: false, modifiers: Modifiers::NONE },
+            ]);
+        }
+    }
+
+    #[test]
+    fn strip_lays_out_every_tool() {
+        let h = Harness::new();
+        for (_, _, name) in STRIP {
+            let c = h.button(name);
+            assert!(c.x > 0.0 && c.x < 900.0, "{name} off-strip at {c:?}");
+        }
+    }
+
+    #[test]
+    fn clicking_switches_the_tool() {
+        let mut h = Harness::new();
+        assert_eq!(h.state.tool, Tool::Select);
+        h.click("Ellipse");
+        assert_eq!(h.state.tool, Tool::Shape(ShapeKind::Ellipse));
+        assert!(h.changed, "a switch is reported as a change");
+        h.click("Draw");
+        assert_eq!(h.state.tool, Tool::Draw);
+        h.click("Zoom");
+        assert_eq!(h.state.tool, Tool::Zoom);
+        h.click("Select");
+        assert_eq!(h.state.tool, Tool::Select);
+    }
+
+    #[test]
+    fn clicking_the_active_tool_reports_nothing() {
+        let mut h = Harness::new();
+        h.click("Star");
+        assert_eq!(h.state.tool, Tool::Shape(ShapeKind::Star));
+        h.click("Star");
+        assert!(!h.changed, "re-clicking the active tool is not a change");
+        assert_eq!(h.state.tool, Tool::Shape(ShapeKind::Star));
+    }
+
+    #[test]
+    fn mask_button_lights_up_for_every_mask_shape() {
+        assert!(same_tool(Tool::Mask(MaskShape::Rect), Tool::Mask(MaskShape::Path)));
+        assert!(!same_tool(Tool::Mask(MaskShape::Rect), Tool::Select));
+        assert!(!same_tool(Tool::Shape(ShapeKind::Rect), Tool::Shape(ShapeKind::Star)));
+        let mut h = Harness::new();
+        h.state.tool = Tool::Mask(MaskShape::Path);
+        h.frame(vec![]);
+        h.click("Mask");
+        assert_eq!(h.state.tool, Tool::Mask(MaskShape::Path), "the active mask shape survives a re-click");
+        h.click("Rectangle");
+        assert_eq!(h.state.tool, Tool::Shape(ShapeKind::Rect));
+        h.click("Mask");
+        assert_eq!(h.state.tool, Tool::Mask(MaskShape::Rect));
+    }
+
+    #[test]
+    fn single_key_shortcuts_switch_tools() {
+        let mut h = Harness::new();
+        h.key(Key::T);
+        assert_eq!(h.state.tool, Tool::Text);
+        h.key(Key::D);
+        assert_eq!(h.state.tool, Tool::Draw);
+        h.key(Key::V);
+        assert_eq!(h.state.tool, Tool::Select);
+        h.key(Key::S);
+        assert_eq!(h.state.tool, Tool::Shape(ShapeKind::Rect));
+        h.key(Key::S);
+        assert_eq!(h.state.tool, Tool::Shape(ShapeKind::Ellipse), "S steps through the shapes");
+        h.key(Key::M);
+        assert_eq!(h.state.tool, Tool::Mask(MaskShape::Rect));
+        h.key(Key::M);
+        assert_eq!(h.state.tool, Tool::Mask(MaskShape::Ellipse));
+    }
+
+    #[test]
+    fn modified_keys_are_left_alone() {
+        let mut h = Harness::new();
+        h.frame(vec![Event::Key {
+            key: Key::V,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::CTRL,
+        }]);
+        assert_eq!(h.state.tool, Tool::Select);
+        h.state.tool = Tool::Draw;
+        h.frame(vec![Event::Key {
+            key: Key::S,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::CTRL,
+        }]);
+        assert_eq!(h.state.tool, Tool::Draw, "Ctrl+S must stay the save shortcut");
+    }
+
+    #[test]
+    fn hotkeys_are_consumed_once() {
+        // `show` handles the keys itself, so a second call in the same frame must be a no-op
+        let mut state = ToolsState::default();
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 60.0))),
+            events: vec![Event::Key {
+                key: Key::S,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            }],
+            ..Default::default()
+        };
+        let pal = Palette::new(true, Color32::from_rgb(0, 120, 212));
+        let _ = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                show(ui, &mut state, &pal);
+                assert!(handle_hotkeys(ui.ctx(), &mut state).is_none(), "key already consumed");
+            });
+        });
+        assert_eq!(state.tool, Tool::Shape(ShapeKind::Rect));
+    }
+
+    #[test]
+    fn tool_hotkey_covers_the_documented_keys() {
+        assert_eq!(tool_hotkey(Tool::Select), Some(Key::V));
+        assert_eq!(tool_hotkey(Tool::Text), Some(Key::T));
+        assert_eq!(tool_hotkey(Tool::Shape(ShapeKind::Star)), Some(Key::S));
+        assert_eq!(tool_hotkey(Tool::Draw), Some(Key::D));
+        assert_eq!(tool_hotkey(Tool::Mask(MaskShape::Path)), Some(Key::M));
+        assert_eq!(tool_hotkey(Tool::Zoom), None);
+    }
+
+    #[test]
+    fn every_tool_renders_its_style_controls() {
+        let mut h = Harness::new();
+        let mut tools: Vec<Tool> = STRIP.iter().map(|(t, ..)| *t).collect();
+        tools.extend(MaskShape::ALL.map(Tool::Mask));
+        tools.push(Tool::Shape(ShapeKind::Draw));
+        for t in tools {
+            h.state.tool = t;
+            h.frame(vec![]);
+            assert_eq!(h.state.tool, t, "{t:?} controls must not change the tool on their own");
+            assert!(!h.changed, "{t:?} reports no change when nothing is touched");
+        }
+    }
 }
