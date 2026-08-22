@@ -83,7 +83,7 @@ src/ui/markers_ui.rs   marker list
 src/ui/planner.rs      nested task planner with moodboards + project notes
 src/ui/subtitles_ui.rs subtitle editor
 src/ui/autocut_ui.rs   auto-cut pane
-src/ui/{retime,export_ui,frame_ui,capture_ui,import_ui,paste_ui,transitions_ui,settings_ui}.rs  windows
+src/ui/{retime,export_ui,frame_ui,capture_ui,import_ui,paste_ui,transitions_ui,settings_ui,shader_ui}.rs windows
 src/selftest.rs        headless end-to-end check (`--selftest`)
 ```
 
@@ -154,7 +154,8 @@ one, in/out points, nudge, undo/redo (JSON snapshots, 200 deep).
 **Effects** — 24 kinds: Blur, Motion Blur, Pixelate, JPEG Compression, VHS, Chroma Key, Threshold, Edge
 Glow, Color Tint, Color Correction, Curves, Levels, Hue/Saturation, B&W, Invert, Vignette, Sharpen, Flip,
 Crop, 3D Plane, Camera Shake (motion waveform + smoothness), Blob Tracking, Security-camera REC, and a
-user GLSL Shader. Each has keyframeable params and an optional mask.
+user GLSL Shader (edited in a non-blocking window that compiles the source and prints the driver's log).
+Each has keyframeable params and an optional mask.
 **Transitions** — cross fade, fade to colour, push, wipe; audio crossfades mirror them.
 **Masks** — per clip and per effect; rect/ellipse/polygon/path with feather, expand, invert.
 **Node editor** — chain/combine effects with blend, matte, mask, colour and clip inputs.

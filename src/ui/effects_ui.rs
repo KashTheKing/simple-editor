@@ -4,7 +4,8 @@
 //! which the app calls after rendering them on the GPU; without a GL context a card still shows its name
 //! on a neutral tile (never blank). Clicking a card adds the effect to every selected visual clip.
 //! Below: the FIRST selected clip's effect stack, in order: for each effect a header row (enabled
-//! checkbox, name, mask button, copy/paste params, ▲ ▼ reorder, ✕ remove) and its parameters from
+//! checkbox, name, mask button, "Edit shader…" for a custom shader, copy/paste params, ▲ ▼ reorder,
+//! ✕ remove) and its parameters from
 //! `effect.specs()`: label + DragValue (range from ParamSpec, speed ≈ (max-min)/200) — or a CHECKBOX when
 //! `EffectKind::is_bool_param` — + "◆" keyframe toggle at clip-local playhead time (Animated::toggle_key /
 //! set_at, highlighted when a key exists) + "✕ keys". Tint shows a colour button bound to R/G/B as well.
@@ -166,6 +167,8 @@ pub struct EffectsResponse {
     pub mask_for: Option<usize>,
     /// "Node editor" was clicked: the app opens the node pane for the selected clip.
     pub open_nodes: bool,
+    /// Index of the `EffectKind::Shader` effect whose GLSL the user wants to edit (app opens the window).
+    pub edit_shader: Option<usize>,
 }
 
 /// The catalogue grid: search box + collapsible category sections of thumbnail cards.
@@ -296,6 +299,14 @@ pub fn show(
                 if rm.clicked() {
                     fx.mask = None;
                     g.click();
+                }
+            }
+            if fx.kind == EffectKind::Shader {
+                let ed = ui.add(Button::new("Edit shader…").small()).on_hover_text("Edit this effect's GLSL");
+                #[cfg(test)]
+                test_rects::push(format!("shader{i}"), ed.rect);
+                if ed.clicked() {
+                    out.edit_shader = Some(i);
                 }
             }
             let cp = ui.add(Button::new("⧉").small()).on_hover_text("Copy these parameters");

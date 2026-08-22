@@ -24,8 +24,8 @@ use crate::ui::layout::{self, Layout, Pane};
 use crate::ui::tools::Tool;
 use crate::ui::{
     autocut_ui, capture_ui, curves, effects_ui, export_ui, frame_ui, import_ui, inspector, library, markers_ui,
-    mixer_ui, nodes, paste_ui, planner, preview, retime, settings_ui, subtitles_ui, timeline, tools, transitions_ui,
-    DragPayload,
+    mixer_ui, nodes, paste_ui, planner, preview, retime, settings_ui, shader_ui, subtitles_ui, timeline, tools,
+    transitions_ui, DragPayload,
 };
 use eframe::egui;
 use serde_json::{json, Value};
@@ -162,6 +162,7 @@ pub struct App {
     buses: BusGraph,
     capture_ui: capture_ui::CaptureUi,
     frame_ui: frame_ui::FrameUi,
+    shader_ui: shader_ui::ShaderUi,
     import_ui: import_ui::ImportUi,
     paste_ui: paste_ui::PasteUi,
     /// Running screen recording / voiceover (voiceover remembers the timeline time it started at).
@@ -815,6 +816,7 @@ impl App {
             buses: BusGraph::new(),
             capture_ui: capture_ui::CaptureUi::default(),
             frame_ui: frame_ui::FrameUi::default(),
+            shader_ui: shader_ui::ShaderUi::default(),
             import_ui: import_ui::ImportUi::default(),
             paste_ui: paste_ui::PasteUi::default(),
             screen_rec: None,
@@ -2044,6 +2046,22 @@ impl App {
                 if resp.open_nodes {
                     self.layout.reveal(Pane::Nodes);
                     self.layout_dirty = true;
+                }
+                if let Some(i) = resp.edit_shader {
+                    // same clip the panel showed the stack of
+                    let id = self.selection.iter().copied().find(|&id| self.project.clip(id).is_some()).unwrap_or(0);
+                    let src = self
+                        .project
+                        .clip(id)
+                        .and_then(|c| c.effects.get(i))
+                        .filter(|fx| fx.kind == EffectKind::Shader)
+                        .map(|fx| fx.shader.clone());
+                    if let Some(src) = src {
+                        self.shader_ui.edit(id, i, &src);
+                        // a source the renderer already rejected opens with its log, not blank
+                        let known = self.gpu.as_ref().and_then(|g| g.shader_error(&src));
+                        self.shader_ui.error = known.unwrap_or_default().to_string();
+                    }
                 }
                 if resp.edited {
                     self.after_edit();
@@ -4398,6 +4416,29 @@ impl App {
             if let Some(c) = choice {
                 self.settings.save();
                 self.export_frame(c);
+            }
+        }
+        // GLSL editor — Apply is an effect edit like any other (undo + re-render), and the compile log
+        // goes straight back into the window so a rejected shader is never a silent no-op
+        if shader_ui::show(ctx, &mut self.shader_ui) {
+            if let Some((id, i)) = self.shader_ui.target {
+                let src = self.shader_ui.src.clone();
+                let snap = self.project.to_json();
+                let changed = match self.project.clip_mut(id).and_then(|c| c.effects.get_mut(i)) {
+                    Some(fx) if fx.kind == EffectKind::Shader && fx.shader != src => {
+                        fx.shader = src.clone();
+                        true
+                    }
+                    _ => false,
+                };
+                if changed {
+                    push_undo_json(&mut self.undo, &mut self.redo, snap);
+                    self.after_edit();
+                }
+                self.shader_ui.error = match self.gpu.as_mut() {
+                    Some(g) => g.check_shader(&src).err().unwrap_or_default(),
+                    None => "GPU renderer is off — this shader cannot be compiled or previewed.".into(),
+                };
             }
         }
         // "Paste Attributes" (Ctrl+Alt+V) — one undo step for the whole paste

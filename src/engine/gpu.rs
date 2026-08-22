@@ -490,6 +490,24 @@ impl GpuRenderer {
         self.programs.failed.values().next().map(|s| s.as_str())
     }
 
+    /// The GLSL log this user shader body was rejected with, if it ever was.
+    pub fn shader_error(&self, src: &str) -> Option<&str> {
+        self.programs.failed.get(&user_key(src)).map(|s| s.as_str())
+    }
+
+    /// Compile + link a user shader body without rendering anything, so the editor can show the log
+    /// before the effect is applied. The program lands in the cache the renderer reads.
+    pub fn check_shader(&mut self, src: &str) -> Result<(), String> {
+        let key = user_key(src);
+        if self.programs.map.contains_key(&key) {
+            return Ok(());
+        }
+        if let Some(e) = self.programs.failed.get(&key) {
+            return Err(e.clone());
+        }
+        self.link(key, &shaders::user_shader(src))
+    }
+
     // ---------------- internals ----------------
 
     /// The framebuffer eframe/egui had bound when it called us.
@@ -608,11 +626,8 @@ impl GpuRenderer {
 
     /// Compile (once) the program for an effect; None when the kind has no GPU body.
     fn effect_program(&mut self, effect: &Effect) -> Option<u64> {
-        let key = if effect.kind == EffectKind::Shader {
-            USER_BIT | hash_str(&effect.shader)
-        } else {
-            EFFECT_BASE + effect.kind as u64
-        };
+        let key =
+            if effect.kind == EffectKind::Shader { user_key(&effect.shader) } else { EFFECT_BASE + effect.kind as u64 };
         if self.programs.map.contains_key(&key) {
             return Some(key);
         }
@@ -1422,6 +1437,12 @@ fn column_major(m: &[[f32; 3]; 3]) -> [f32; 9] {
     [m[0][0], m[1][0], m[2][0], m[0][1], m[1][1], m[2][1], m[0][2], m[1][2], m[2][2]]
 }
 
+/// Cache key of a user shader body — shared by `effect_program`, `check_shader` and `shader_error`
+/// so the editor reads the very program the renderer would build.
+fn user_key(src: &str) -> u64 {
+    USER_BIT | hash_str(src)
+}
+
 fn hash_str(s: &str) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -1654,6 +1675,10 @@ mod tests {
         assert_eq!(hash_str("a"), hash_str("a"));
         assert_eq!(hash_str("a") & USER_BIT, 0, "the user bit must be free for tagging");
         assert!((USER_BIT | hash_str("a")) > EFFECT_BASE + 64);
+        // check_shader / shader_error look the program up by this key: a fixed source must not read
+        // back the broken one's log (that was the whole point of the editor)
+        assert_ne!(user_key("a"), user_key("b"));
+        assert_eq!(user_key("a"), USER_BIT | hash_str("a"));
     }
 
     /// The GLSL text of every program the renderer can build (the assembly `ensure`/`effect_program`
