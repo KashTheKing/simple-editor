@@ -211,6 +211,12 @@ fn job_window(ctx: &egui::Context, title: &str, jobs: &[(Arc<Progress>, String)]
     ctx.request_repaint_after(Duration::from_millis(150));
 }
 
+/// Marker in the undo stack for "a pane was dragged somewhere else". The arrangement itself lives in
+/// `Layout`'s own (much shorter) history — this only keeps Ctrl+Z stepping back in the right order.
+/// ponytail: once the layout history has scrolled past its 20 entries the marker undoes nothing; deepen
+/// the layout stack if that ever bites.
+const LAYOUT_STEP: &str = "\u{0}layout";
+
 /// Push an undo snapshot (capped) and clear the redo history.
 fn push_undo_json(undo: &mut Vec<String>, redo: &mut Vec<String>, json: String) {
     undo.push(json);
@@ -1401,19 +1407,31 @@ impl App {
             Settings => self.settings_ui.open = !self.settings_ui.open,
             Undo => {
                 if let Some(json) = self.undo.pop() {
-                    self.redo.push(self.project.to_json());
-                    if let Ok(p) = Project::from_json(&json) {
-                        self.project = p;
-                        self.after_edit();
+                    if json == LAYOUT_STEP {
+                        self.layout.undo();
+                        self.layout_dirty = true;
+                        self.redo.push(json);
+                    } else {
+                        self.redo.push(self.project.to_json());
+                        if let Ok(p) = Project::from_json(&json) {
+                            self.project = p;
+                            self.after_edit();
+                        }
                     }
                 }
             }
             Redo => {
                 if let Some(json) = self.redo.pop() {
-                    self.undo.push(self.project.to_json());
-                    if let Ok(p) = Project::from_json(&json) {
-                        self.project = p;
-                        self.after_edit();
+                    if json == LAYOUT_STEP {
+                        self.layout.redo();
+                        self.layout_dirty = true;
+                        self.undo.push(json);
+                    } else {
+                        self.undo.push(self.project.to_json());
+                        if let Ok(p) = Project::from_json(&json) {
+                            self.project = p;
+                            self.after_edit();
+                        }
                     }
                 }
             }
@@ -4918,13 +4936,13 @@ impl eframe::App for App {
                 actions.extend(self.menu_bar(ui));
             });
             egui::CentralPanel::default().show(ctx, |ui| {
-                let mut l = std::mem::replace(
-                    &mut self.layout,
-                    Layout { tree: egui_tiles::Tree::empty("layout"), popped: Vec::new() },
-                );
-                let changed = layout::show(ctx, ui, &mut l, &mut |ui, pane| self.draw_pane(ui, pane));
+                let mut l = std::mem::replace(&mut self.layout, Layout::new(egui_tiles::Tree::empty("layout")));
+                let (changed, moved) = layout::show(ctx, ui, &mut l, &mut |ui, pane| self.draw_pane(ui, pane));
                 self.layout = l;
                 self.layout_dirty |= changed;
+                if moved {
+                    push_undo_json(&mut self.undo, &mut self.redo, LAYOUT_STEP.to_owned());
+                }
             });
         }
 

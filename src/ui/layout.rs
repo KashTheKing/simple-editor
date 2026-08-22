@@ -10,6 +10,10 @@
 //! bar pops the active pane out, "✕" hides it. Hidden panes stay in the tree (egui_tiles visibility) so
 //! they come back exactly where they were.
 //!
+//! Dragging a tab paints nine drop squares over the tile under the cursor (centre = tabify, the eight
+//! around it = split), the dropped pane keeps the fraction of its parent it had instead of taking half of
+//! wherever it landed, and the move goes onto a small undo stack of its own so Ctrl+Z puts it back.
+//!
 //! Migration: a stored layout from an older version does not know the round-3 panes; `from_json` rejects
 //! it (None) so the app falls back to this default instead of an editor with no Tools/Mixer/Markers.
 
@@ -88,6 +92,12 @@ pub struct Layout {
     pub tree: egui_tiles::Tree<Pane>,
     #[serde(default)]
     pub popped: Vec<Pane>,
+    /// The layout's own undo history (serialised layouts): the layout is not the project, so it cannot
+    /// ride the project's snapshots. Never persisted, and 20 steps is plenty for "put that tab back".
+    #[serde(skip)]
+    pub undo: Vec<String>,
+    #[serde(skip)]
+    pub redo: Vec<String>,
 }
 
 impl Default for Layout {
@@ -127,7 +137,11 @@ impl Layout {
         rows.shares.set_share(top, 0.68);
         rows.shares.set_share(bottom, 0.32);
         let root = tiles.insert_new(Tile::Container(Container::Linear(rows)));
-        Self { tree: egui_tiles::Tree::new("layout", root, tiles), popped: Vec::new() }
+        Self::new(egui_tiles::Tree::new("layout", root, tiles))
+    }
+    /// A layout around a tree, with an empty history.
+    pub fn new(tree: egui_tiles::Tree<Pane>) -> Self {
+        Self { tree, popped: Vec::new(), undo: Vec::new(), redo: Vec::new() }
     }
     pub fn to_json(&self) -> String {
         serde_json::to_string(self).unwrap_or_default()
@@ -204,7 +218,31 @@ impl Layout {
         self.reveal(pane);
     }
     pub fn reset(&mut self) {
+        let (undo, redo) = (std::mem::take(&mut self.undo), std::mem::take(&mut self.redo));
         *self = Self::default_layout();
+        (self.undo, self.redo) = (undo, redo);
+    }
+    /// Remember the arrangement `snapshot` was taken from (before the move), so Ctrl+Z can go back to it.
+    pub fn push_undo(&mut self, snapshot: String) {
+        self.undo.push(snapshot);
+        if self.undo.len() > 20 {
+            self.undo.remove(0);
+        }
+        self.redo.clear();
+    }
+    pub fn undo(&mut self) -> bool {
+        self.step(true)
+    }
+    pub fn redo(&mut self) -> bool {
+        self.step(false)
+    }
+    fn step(&mut self, undoing: bool) -> bool {
+        let current = self.to_json();
+        let Some(json) = (if undoing { &mut self.undo } else { &mut self.redo }).pop() else { return false };
+        let Some(other) = Self::from_json(&json) else { return false };
+        (self.tree, self.popped) = (other.tree, other.popped);
+        if undoing { &mut self.redo } else { &mut self.undo }.push(current);
+        true
     }
     /// A pane that fell out of the tree entirely (e.g. an old profile): add it as a new tab in the root.
     fn insert_into_root(&mut self, pane: Pane) {
@@ -220,11 +258,34 @@ impl Layout {
     }
 }
 
+/// How much of its linear parent a tile takes up (None when the parent is a tab bar — a tab has no share).
+fn share_fraction(tree: &egui_tiles::Tree<Pane>, id: egui_tiles::TileId) -> Option<f32> {
+    let parent = tree.tiles.parent_of(id)?;
+    let egui_tiles::Container::Linear(lin) = tree.tiles.get_container(parent)? else { return None };
+    let total: f32 = lin.children.iter().map(|&c| lin.shares[c]).sum();
+    (total > 0.0).then(|| lin.shares[id] / total)
+}
+
+/// Give a just-dropped tile the same fraction of its new parent as it had in the old one: a fresh split
+/// hands out 1:1 shares, which silently halves whatever you dropped the pane onto.
+fn keep_share_fraction(tree: &mut egui_tiles::Tree<Pane>, id: egui_tiles::TileId, fraction: f32) {
+    let fraction = fraction.clamp(0.05, 0.95);
+    let Some(parent) = tree.tiles.parent_of(id) else { return };
+    let Some(egui_tiles::Tile::Container(egui_tiles::Container::Linear(lin))) = tree.tiles.get_mut(parent) else {
+        return;
+    };
+    let others: f32 = lin.children.iter().filter(|&&c| c != id).map(|&c| lin.shares[c]).sum();
+    if others > 0.0 {
+        lin.shares.set_share(id, others * fraction / (1.0 - fraction));
+    }
+}
+
 struct Behaviour<'a> {
     draw: &'a mut dyn FnMut(&mut egui::Ui, Pane),
     hide: Vec<Pane>,
     pop: Vec<Pane>,
     edited: bool,
+    dropped: bool,
 }
 
 impl egui_tiles::Behavior<Pane> for Behaviour<'_> {
@@ -255,22 +316,64 @@ impl egui_tiles::Behavior<Pane> for Behaviour<'_> {
     fn simplification_options(&self) -> egui_tiles::SimplificationOptions {
         egui_tiles::SimplificationOptions { all_panes_must_have_tabs: true, ..Default::default() }
     }
-    fn on_edit(&mut self, _edit_action: egui_tiles::EditAction) {
+    fn on_edit(&mut self, edit_action: egui_tiles::EditAction) {
         self.edited = true;
+        self.dropped |= edit_action == egui_tiles::EditAction::TileDropped;
+    }
+    /// Nine drop squares over the hovered tile instead of egui_tiles' thin outline: the centre one tabs
+    /// the pane in, the eight around it split in that direction. egui_tiles still owns the hit test, so a
+    /// corner resolves to whichever of its two edges is nearer — the translucent fill is where it lands.
+    fn paint_drag_preview(
+        &self,
+        visuals: &egui::Visuals,
+        painter: &egui::Painter,
+        parent_rect: Option<egui::Rect>,
+        preview_rect: egui::Rect,
+    ) {
+        let area = parent_rect.unwrap_or(preview_rect);
+        let stroke = self.drag_preview_stroke(visuals);
+        let fill = self.drag_preview_color(visuals);
+        painter.rect_filled(preview_rect, 1.0, fill.gamma_multiply(0.35));
+        painter.rect_stroke(area, 1.0, stroke, egui::StrokeKind::Inside);
+        let side = (area.size().min_elem() * 0.14).clamp(14.0, 34.0);
+        let step = side * 1.18;
+        // which ninth the pointer is in, so the square under it can light up
+        let hot = painter.ctx().pointer_interact_pos().map(|p| {
+            let cell = |v: f32, min: f32, len: f32| (3.0 * (v - min) / len.max(1.0)).floor().clamp(0.0, 2.0) as i32;
+            (cell(p.x, area.left(), area.width()), cell(p.y, area.top(), area.height()))
+        });
+        for row in 0..3 {
+            for col in 0..3 {
+                let c = area.center() + egui::vec2((col - 1) as f32, (row - 1) as f32) * step;
+                let sq = egui::Rect::from_center_size(c, egui::Vec2::splat(side));
+                let bg = if hot == Some((col, row)) { stroke.color } else { fill.gamma_multiply(0.6) };
+                painter.rect(sq, 2.0, bg, stroke, egui::StrokeKind::Inside);
+            }
+        }
     }
 }
 
 /// Draw the docked tree into `ui` and every popped pane in its own OS window; `draw(ui, pane)` renders
 /// a pane's content. A popped window that the user closes is docked back automatically.
-/// Returns true when the layout changed this frame (caller persists it).
+/// Returns (layout changed this frame — caller persists it, a pane was dropped somewhere new).
 pub fn show(
     ctx: &egui::Context,
     ui: &mut egui::Ui,
     layout: &mut Layout,
     draw: &mut dyn FnMut(&mut egui::Ui, Pane),
-) -> bool {
-    let mut beh = Behaviour { draw, hide: Vec::new(), pop: Vec::new(), edited: false };
+) -> (bool, bool) {
+    // the drop happens inside tree.ui(), so grab the "before" state while a drag is still in flight
+    let dragged = layout.tree.dragged_id(ctx).map(|id| (id, share_fraction(&layout.tree, id), layout.to_json()));
+    let mut beh = Behaviour { draw, hide: Vec::new(), pop: Vec::new(), edited: false, dropped: false };
     layout.tree.ui(&mut beh, ui);
+    let mut moved = false;
+    if let (true, Some((id, fraction, before))) = (beh.dropped, dragged) {
+        layout.push_undo(before);
+        if let Some(f) = fraction {
+            keep_share_fraction(&mut layout.tree, id, f);
+        }
+        moved = true;
+    }
     let (hide, pop, mut changed) = (beh.hide, beh.pop, beh.edited);
     for p in hide {
         if layout.is_visible(p) {
@@ -299,7 +402,7 @@ pub fn show(
         layout.dock(p);
         changed = true;
     }
-    changed
+    (changed, moved)
 }
 
 #[cfg(test)]
@@ -428,6 +531,40 @@ mod tests {
         assert!(r.is_visible(Pane::Timeline));
         assert!(Layout::from_json("{").is_none());
         assert!(Layout::from_json("{}").is_none());
+    }
+
+    /// Moving a pane keeps the slice of its parent it had (not the even split a fresh container hands
+    /// out), and the move is undoable / redoable on the layout's own stack.
+    #[test]
+    fn move_keeps_its_share_and_is_undoable() {
+        let mut l = Layout::default_layout();
+        let tools = l.tree.tiles.find_pane(&Pane::Tools).unwrap();
+        let column = l.tree.tiles.parent_of(tools).unwrap();
+        let was = share_fraction(&l.tree, tools).unwrap();
+        assert!((was - 0.1).abs() < 1e-4, "Tools owns a tenth of the centre column, got {was}");
+
+        // move it into the root row, exactly what a drop on a horizontal/vertical edge ends up doing
+        let root = l.tree.root().unwrap();
+        let snapshot = l.to_json();
+        l.tree.move_tile_to_container(tools, root, 2, false);
+        assert!((share_fraction(&l.tree, tools).unwrap() - 0.5).abs() < 1e-4, "egui_tiles splits evenly");
+        keep_share_fraction(&mut l.tree, tools, was);
+        assert!((share_fraction(&l.tree, tools).unwrap() - was).abs() < 1e-4, "the recorded fraction is back");
+        // and the two rows it joined keep their proportions to each other (0.68 : 0.32)
+        let top = l.tree.tiles.parent_of(l.tree.tiles.find_pane(&Pane::Preview).unwrap()).unwrap();
+        let top = l.tree.tiles.parent_of(top).unwrap();
+        let bottom = l.tree.tiles.parent_of(l.tree.tiles.find_pane(&Pane::Timeline).unwrap()).unwrap();
+        let ratio = share_fraction(&l.tree, top).unwrap() / share_fraction(&l.tree, bottom).unwrap();
+        assert!((ratio - 0.68 / 0.32).abs() < 1e-3, "the rest of the row was redistributed: {ratio}");
+
+        l.push_undo(snapshot);
+        assert!(l.undo(), "the move undoes");
+        assert_eq!(l.tree.tiles.parent_of(l.tree.tiles.find_pane(&Pane::Tools).unwrap()), Some(column));
+        assert!(l.redo(), "and redoes");
+        let tools = l.tree.tiles.find_pane(&Pane::Tools).unwrap();
+        assert_eq!(l.tree.tiles.parent_of(tools), Some(root));
+        assert!((share_fraction(&l.tree, tools).unwrap() - was).abs() < 1e-4, "the fraction survives the trip");
+        assert!(!l.redo(), "nothing left to redo");
     }
 
     #[test]
