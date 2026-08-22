@@ -1960,13 +1960,15 @@ impl App {
                     self.insert_at(resp.add_to_timeline, self.playhead, None);
                     self.after_edit();
                 }
+                // both used to sit inside the open_paths branch, so the Library's "New ▸ Adjustment layer"
+                // and "Open…" only ever fired on a frame that also opened a file — i.e. never
+                if resp.new_adjustment {
+                    self.pending_actions.push(Action::AddAdjustment);
+                }
+                if resp.open_dialog {
+                    self.pending_actions.push(Action::OpenFile);
+                }
                 if !resp.open_paths.is_empty() {
-                    if resp.new_adjustment {
-                        self.pending_actions.push(Action::AddAdjustment);
-                    }
-                    if resp.open_dialog {
-                        self.pending_actions.push(Action::OpenFile);
-                    }
                     let ids = self.open_or_import(&resp.open_paths);
                     if !ids.is_empty() {
                         self.library.selected = ids.last().copied();
@@ -2001,6 +2003,51 @@ impl App {
                 }
                 for name in resp.place_template {
                     self.place_template(&name, self.playhead);
+                }
+                // Recent tab, reusable sections: an effect / saved preset / node graph goes onto the
+                // selection (a clip rendering from a graph ignores its linear stack, so it is skipped).
+                if let Some(kind) = resp.add_effect {
+                    let targets: Vec<Id> = self
+                        .selection
+                        .iter()
+                        .copied()
+                        .filter(|&id| self.project.clip(id).is_some_and(|c| c.is_visual() && c.graph.is_none()))
+                        .collect();
+                    if targets.is_empty() {
+                        self.toast("Select a clip first");
+                    } else {
+                        self.push_undo();
+                        for id in targets {
+                            if let Some(c) = self.project.clip_mut(id) {
+                                c.effects.push(Effect::new(kind));
+                            }
+                        }
+                        self.after_edit();
+                    }
+                }
+                if let Some(i) = resp.apply_preset {
+                    self.apply_effect_preset(i);
+                }
+                if let Some(from) = resp.copy_graph {
+                    let graph = self.project.clip(from).and_then(|c| c.graph.clone());
+                    let targets: Vec<Id> = self
+                        .selection
+                        .iter()
+                        .copied()
+                        .filter(|&id| id != from && self.project.clip(id).is_some_and(|c| c.is_visual()))
+                        .collect();
+                    match graph {
+                        Some(g) if !targets.is_empty() => {
+                            self.push_undo();
+                            for id in targets {
+                                if let Some(c) = self.project.clip_mut(id) {
+                                    c.graph = Some(g.clone());
+                                }
+                            }
+                            self.after_edit();
+                        }
+                        _ => self.toast("Select another clip to copy this node graph onto"),
+                    }
                 }
             }
             Pane::Inspector => {

@@ -56,7 +56,7 @@ pub fn thumbnail_count() -> usize {
     THUMBS.with(|t| t.borrow().len())
 }
 
-fn thumbnail(kind: EffectKind) -> Option<(egui::TextureId, [u32; 2])> {
+pub(crate) fn thumbnail(kind: EffectKind) -> Option<(egui::TextureId, [u32; 2])> {
     THUMBS.with(|t| t.borrow().get(&kind).copied())
 }
 

@@ -94,6 +94,10 @@ pub(crate) enum Glyph {
     SpeakerOff,
     Camera,
     FilmStrip,
+    /// Two patch boxes joined by a cable — a node graph.
+    Nodes,
+    /// A stack of sheets — an adjustment layer.
+    Layers,
 }
 
 const STRIP: [(Tool, Glyph, &str); 15] = [
@@ -578,6 +582,21 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
                         fg,
                     );
                 }
+            }
+        }
+        // node graph: two patch boxes with a cable between them
+        Glyph::Nodes => {
+            let a = egui::Rect::from_center_size(c + egui::vec2(-3.5, -3.5), egui::vec2(7.0, 5.0));
+            let b = egui::Rect::from_center_size(c + egui::vec2(3.5, 3.5), egui::vec2(7.0, 5.0));
+            p.line_segment([a.right_center(), b.left_center()], stroke);
+            p.rect_stroke(a, CornerRadius::same(1), stroke, StrokeKind::Inside);
+            p.rect_stroke(b, CornerRadius::same(1), stroke, StrokeKind::Inside);
+        }
+        // adjustment layer: a stack of sheets
+        Glyph::Layers => {
+            for dy in [-4.0_f32, 0.0, 4.0] {
+                let sheet = egui::Rect::from_center_size(c + egui::vec2(0.0, dy), egui::vec2(12.0, 3.0));
+                p.rect_stroke(sheet, CornerRadius::same(1), stroke, StrokeKind::Inside);
             }
         }
     }

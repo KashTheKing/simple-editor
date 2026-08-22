@@ -12,12 +12,18 @@
 //! folders (listed when expanded, cached until "Refresh"; drag `DragPayload::Path`), the sequences
 //! (drag `DragPayload::Sequence`,
 //! double-click opens) and saved templates (drag `DragPayload::Template`, place at playhead).
-//! Recent: settings.recent_assets across all projects with the same search/chips, pins, labels and tags.
+//! Recent: everything reusable, in sections — "Files" (settings.recent_assets across all projects, with
+//! the same search/chips, pins, labels and tags) then "Effects", "Node graphs", "Adjustment layers" and
+//! "Sequences", fed from the project (effect kinds and graphs in use, its sequences) and from the presets
+//! store in settings.json. Both tabs honour `LibraryState.view`: 0 = `row()` list, 1 = `tile()` gallery.
+//! Clicking a reusable tile applies it through `LibraryResponse` (add_effect / apply_preset / copy_graph /
+//! place_template / open_sequence).
 
 use crate::media::thumbs::ThumbCache;
-use crate::model::{ClipKind, Id, Project};
+use crate::model::{ClipKind, EffectKind, Id, Project};
 use crate::settings::{RecentAsset, Settings};
 use crate::theme::Palette;
+use crate::ui::tools::{draw_glyph, Glyph};
 use crate::ui::{duration_text, label_color, DragPayload};
 use eframe::egui::load::SizedTexture;
 use eframe::egui::{self, RichText};
@@ -87,6 +93,12 @@ pub struct LibraryResponse {
     pub new_adjustment: bool,
     /// "Open…" — the app runs `Action::OpenFile` (its own file dialog / recents handling).
     pub open_dialog: bool,
+    /// An effect kind picked in the Recent tab — the app adds it to every selected visual clip.
+    pub add_effect: Option<EffectKind>,
+    /// Index into `Settings::effect_presets` to apply to the selection (chain or node graph).
+    pub apply_preset: Option<usize>,
+    /// Clip whose node graph should be copied onto the selection.
+    pub copy_graph: Option<Id>,
 }
 
 /// (name, colour) of every `Project.labels` entry, snapshotted once per frame.
@@ -140,7 +152,7 @@ pub fn show(
     if state.tab == 0 {
         library_tab(ui, state, project, settings, &mut thumbs, &labels, palette, ytdlp, &mut resp, undo);
     } else {
-        recent_tab(ui, state, settings, &mut thumbs, &labels, palette, &mut resp);
+        recent_tab(ui, state, project, settings, &mut thumbs, &labels, palette, &mut resp);
     }
     resp
 }
@@ -924,6 +936,80 @@ fn asset_row(
     });
 }
 
+/// What fills a gallery tile's picture box.
+enum Art {
+    /// A cached picture (asset filmstrip, effect catalogue card) fitted into the box.
+    Image(egui::TextureId, [u32; 2]),
+    /// Nothing to photograph (effects, graphs, adjustment layers, sequences): a painted icon.
+    Icon(Glyph),
+    None,
+}
+
+/// Gallery cell: a picture box with the kind tag in its corner and the name under it. Shared by the
+/// asset gallery and the Recent tab's sections; the caller decides what the click means.
+#[allow(clippy::too_many_arguments)]
+fn tile(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    payload: DragPayload,
+    selected: bool,
+    tag: &str,
+    name: &str,
+    tint: egui::Color32,
+    palette: &Palette,
+    art: Art,
+) -> egui::Response {
+    let src = ui.dnd_drag_source(id, payload, |ui| {
+        ui.set_max_width(TILE);
+        ui.vertical(|ui| {
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(TILE, TILE * 0.56), egui::Sense::hover());
+            ui.painter().rect_filled(rect, 2.0, palette.panel);
+            match art {
+                Art::Image(tex, [w, h]) if h > 0 => {
+                    let k = (rect.width() / w as f32).min(rect.height() / h as f32);
+                    let size = egui::vec2(w as f32 * k, h as f32 * k);
+                    ui.painter().image(
+                        tex,
+                        egui::Rect::from_center_size(rect.center(), size),
+                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        egui::Color32::WHITE,
+                    );
+                }
+                Art::Icon(g) => draw_glyph(ui.painter(), rect, g, palette.text_dim),
+                _ => {}
+            }
+            ui.painter().text(
+                rect.left_bottom() + egui::vec2(3.0, -3.0),
+                egui::Align2::LEFT_BOTTOM,
+                tag,
+                egui::TextStyle::Small.resolve(ui.style()),
+                palette.text_dim,
+            );
+            let name = RichText::new(name).color(tint);
+            ui.add(egui::Label::new(if selected { name.strong() } else { name }).truncate());
+        });
+    });
+    let r = ui.interact(src.response.rect, id.with("click"), egui::Sense::click());
+    if selected {
+        ui.painter().rect_stroke(
+            src.response.rect,
+            2.0,
+            egui::Stroke::new(1.0, palette.selection),
+            egui::StrokeKind::Inside,
+        );
+    }
+    r
+}
+
+/// The cached thumbnail of a media file at the gallery size, if the cache already has one.
+fn tile_art(ui: &egui::Ui, thumbs: &mut Option<&mut ThumbCache>, path: &str) -> Art {
+    match thumbs.as_deref_mut().and_then(|c| c.texture(ui.ctx(), path, 0.0, TILE as u32)) {
+        Some((tex, size)) => Art::Image(tex, size),
+        None => Art::None,
+    }
+}
+
 /// Gallery cell: a thumbnail with the name under it. Same click/drag behaviour as `asset_row`,
 /// without the context menu (the list view keeps that).
 fn asset_tile(
@@ -939,49 +1025,9 @@ fn asset_tile(
     let a = &project.assets[i];
     let selected = state.selected == Some(a.id);
     let tint = (a.label != 0).then(|| lbl_color(labels, a.label, palette)).unwrap_or(palette.text);
+    let art = if a.has_video() { tile_art(ui, thumbs, &a.path) } else { Art::None };
     let id = egui::Id::new(("tile", a.id));
-    let src = ui.dnd_drag_source(id, DragPayload::Asset(a.id), |ui| {
-        ui.set_max_width(TILE);
-        ui.vertical(|ui| {
-            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(TILE, TILE * 0.56), egui::Sense::hover());
-            ui.painter().rect_filled(rect, 2.0, palette.panel);
-            if a.has_video() {
-                if let Some(cache) = thumbs.as_deref_mut() {
-                    if let Some((tex, [w, h])) = cache.texture(ui.ctx(), &a.path, 0.0, TILE as u32) {
-                        if h > 0 {
-                            let k = (rect.width() / w as f32).min(rect.height() / h as f32);
-                            let size = egui::vec2(w as f32 * k, h as f32 * k);
-                            ui.painter().image(
-                                tex,
-                                egui::Rect::from_center_size(rect.center(), size),
-                                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                                egui::Color32::WHITE,
-                            );
-                        }
-                    }
-                }
-            }
-            ui.painter().text(
-                rect.left_bottom() + egui::vec2(3.0, -3.0),
-                egui::Align2::LEFT_BOTTOM,
-                kind_tag(a.kind),
-                egui::TextStyle::Small.resolve(ui.style()),
-                palette.text_dim,
-            );
-            let name = RichText::new(a.name()).color(tint);
-            ui.add(egui::Label::new(if selected { name.strong() } else { name }).truncate());
-        });
-    });
-    let r = ui.interact(src.response.rect, id.with("click"), egui::Sense::click());
-    if selected {
-        ui.painter().rect_stroke(
-            src.response.rect,
-            2.0,
-            egui::Stroke::new(1.0, palette.selection),
-            egui::StrokeKind::Inside,
-        );
-    }
+    let r = tile(ui, id, DragPayload::Asset(a.id), selected, kind_tag(a.kind), &a.name(), tint, palette, art);
     if r.clicked() {
         state.selected = Some(a.id);
     }
@@ -1307,10 +1353,155 @@ enum RecOp {
 
 const CLEAR_RECENT: &str = "Clear the whole recent list? Pins, labels and tags are lost (no undo).";
 
+/// One reusable thing the Recent tab lists beside the files.
+enum Reuse {
+    /// An effect kind already used somewhere in the project.
+    Effect(EffectKind),
+    /// Index into `Settings::effect_presets` — a saved chain or a saved node graph.
+    Preset(usize),
+    /// A clip that renders from a node graph.
+    Graph(Id),
+    /// Index into `Settings::templates` holding a saved adjustment layer.
+    Adjustment(usize),
+    Sequence(Id),
+}
+
+/// The reusable sections, read straight off the project and settings.json each frame.
+/// ponytail: linear scans + a JSON decode per template (`is_adjustment_template`), same as the Presets
+/// pane — the lists are short. A dedicated presets store plugs in here as extra `Reuse` items.
+fn reuse_sections(project: &Project, settings: &Settings) -> Vec<(&'static str, Vec<Reuse>)> {
+    let mut kinds: Vec<EffectKind> = Vec::new();
+    let mut graphs: Vec<Reuse> = Vec::new();
+    for (_, c) in project.all_clips() {
+        for e in &c.effects {
+            if !kinds.contains(&e.kind) {
+                kinds.push(e.kind);
+            }
+        }
+        if c.graph.is_some() {
+            graphs.push(Reuse::Graph(c.id));
+        }
+    }
+    let mut fx: Vec<Reuse> = kinds.into_iter().map(Reuse::Effect).collect();
+    for (i, p) in settings.effect_presets.iter().enumerate() {
+        if p.is_graph() {
+            graphs.push(Reuse::Preset(i));
+        } else {
+            fx.push(Reuse::Preset(i));
+        }
+    }
+    let adj = settings
+        .templates
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| crate::engine::presets::is_adjustment_template(t))
+        .map(|(i, _)| Reuse::Adjustment(i))
+        .collect();
+    let seqs = project.sequences.iter().map(|s| Reuse::Sequence(s.id)).collect();
+    vec![("Effects", fx), ("Node graphs", graphs), ("Adjustment layers", adj), ("Sequences", seqs)]
+}
+
+/// (name, kind tag, icon, drag payload) of one reusable item.
+/// ponytail: only sequences and adjustment layers have a drop target today — the others carry their name
+/// as a `Template` payload because `row()`/`tile()` are drag sources, and a stray drop just misses.
+fn reuse_face(item: &Reuse, project: &Project, settings: &Settings) -> (String, &'static str, Glyph, DragPayload) {
+    let by_name = |name: String, tag, icon| (name.clone(), tag, icon, DragPayload::Template(name));
+    match *item {
+        Reuse::Effect(k) => by_name(k.name().to_string(), "FX", Glyph::Star),
+        Reuse::Preset(i) => match settings.effect_presets.get(i) {
+            Some(p) if p.is_graph() => by_name(p.name.clone(), "Graph", Glyph::Nodes),
+            Some(p) => by_name(p.name.clone(), "FX", Glyph::Star),
+            None => by_name(String::new(), "FX", Glyph::Star),
+        },
+        Reuse::Graph(id) => {
+            let name = project.clip(id).map(|c| c.name.clone()).unwrap_or_default();
+            by_name(name, "Graph", Glyph::Nodes)
+        }
+        Reuse::Adjustment(i) => {
+            by_name(settings.templates.get(i).map(|t| t.name.clone()).unwrap_or_default(), "Adj", Glyph::Layers)
+        }
+        Reuse::Sequence(id) => {
+            let name = project.sequences.iter().find(|s| s.id == id).map(|s| s.name.clone()).unwrap_or_default();
+            (name, "Seq", Glyph::FilmStrip, DragPayload::Sequence(id))
+        }
+    }
+}
+
+/// What a click on a reusable item asks the app to do.
+fn reuse_pick(item: &Reuse, name: &str, resp: &mut LibraryResponse) {
+    match *item {
+        Reuse::Effect(k) => resp.add_effect = Some(k),
+        Reuse::Preset(i) => resp.apply_preset = Some(i),
+        Reuse::Graph(id) => resp.copy_graph = Some(id),
+        Reuse::Adjustment(_) => resp.place_template.push(name.to_string()),
+        Reuse::Sequence(id) => resp.open_sequence = Some(id),
+    }
+}
+
+/// The reusable sections under the recent files, in whichever view the toolbar selected.
+fn reuse_ui(
+    ui: &mut egui::Ui,
+    view: u8,
+    project: &Project,
+    settings: &Settings,
+    palette: &Palette,
+    resp: &mut LibraryResponse,
+) {
+    for (title, items) in reuse_sections(project, settings) {
+        section_head(ui, title);
+        if items.is_empty() {
+            ui.weak("(none)");
+            continue;
+        }
+        let mut draw = |ui: &mut egui::Ui, i: usize, item: &Reuse| {
+            let (name, tag, icon, payload) = reuse_face(item, project, settings);
+            let id = egui::Id::new((title, i));
+            let r = if view == 1 {
+                let art = match *item {
+                    Reuse::Effect(k) => match crate::ui::effects_ui::thumbnail(k) {
+                        Some((tex, size)) => Art::Image(tex, size),
+                        None => Art::Icon(icon),
+                    },
+                    _ => Art::Icon(icon),
+                };
+                tile(ui, id, payload, false, tag, &name, palette.text, palette, art)
+            } else {
+                row(ui, id, payload, false, None, |ui| {
+                    let (box_, _) = ui.allocate_exact_size(egui::vec2(18.0, 14.0), egui::Sense::hover());
+                    draw_glyph(ui.painter(), box_, icon, palette.text_dim);
+                    ui.label(&name);
+                    ui.weak(tag);
+                })
+                .0
+            };
+            if r.clicked() {
+                reuse_pick(item, &name, resp);
+            }
+        };
+        if view == 1 {
+            ui.horizontal_wrapped(|ui| {
+                for (i, item) in items.iter().enumerate() {
+                    draw(ui, i, item);
+                }
+            });
+        } else {
+            for (i, item) in items.iter().enumerate() {
+                draw(ui, i, item);
+            }
+        }
+    }
+}
+
+fn section_head(ui: &mut egui::Ui, title: &str) {
+    ui.add_space(4.0);
+    ui.strong(title);
+}
+
 #[allow(clippy::too_many_arguments)]
 fn recent_tab(
     ui: &mut egui::Ui,
     state: &mut LibraryState,
+    project: &Project,
     settings: &mut Settings,
     thumbs: &mut Option<&mut ThumbCache>,
     labels: &Labels,
@@ -1353,25 +1544,39 @@ fn recent_tab(
         });
     }
     let mut op: Option<RecOp> = None;
+    let view = state.view;
     egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+        section_head(ui, "Files");
         // ponytail: no existence check here (would stat 200 files per frame) — the open path reports errors.
-        for (i, rec) in settings.recent_assets.iter().enumerate() {
-            if !recent_matches(rec, &state.search, state.kind_filter, state.label_filter) {
-                continue;
-            }
+        let hits: Vec<usize> = settings
+            .recent_assets
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| recent_matches(r, &state.search, state.kind_filter, state.label_filter))
+            .map(|(i, _)| i)
+            .collect();
+        let mut file = |ui: &mut egui::Ui, i: usize| {
+            let rec = &settings.recent_assets[i];
             let (name, dir) = split_path(&rec.path);
-            let (r, open) =
-                row(ui, egui::Id::new(("recent", i)), DragPayload::Path(rec.path.clone()), false, Some("Open"), |ui| {
+            let tint = (rec.label != 0).then(|| lbl_color(labels, rec.label, palette));
+            let id = egui::Id::new(("recent", i));
+            let payload = DragPayload::Path(rec.path.clone());
+            let media = matches!(ext_class(&rec.path), 1 | 3);
+            let (r, open) = if view == 1 {
+                let art = if media { tile_art(ui, thumbs, &rec.path) } else { Art::None };
+                let tag = kind_tag_for_class(ext_class(&rec.path));
+                (tile(ui, id, payload, false, tag, name, tint.unwrap_or(palette.text), palette, art), false)
+            } else {
+                row(ui, id, payload, false, Some("Open"), |ui| {
                     if rec.pinned {
                         ui.weak("★");
                     }
-                    let tint = (rec.label != 0).then(|| lbl_color(labels, rec.label, palette));
                     if let Some(c) = tint {
                         let (bar, _) = ui.allocate_exact_size(egui::vec2(3.0, 14.0), egui::Sense::hover());
                         ui.painter().rect_filled(bar, 1.0, c);
                     }
                     // videos and stills get the same filmstrip thumbnail the library rows use
-                    if matches!(ext_class(&rec.path), 1 | 3) {
+                    if media {
                         thumb(ui, thumbs, &rec.path, 18.0);
                     }
                     match tint {
@@ -1382,7 +1587,8 @@ fn recent_tab(
                     if !rec.tags.is_empty() {
                         ui.add(egui::Label::new(RichText::new(rec.tags.join(" · ")).weak().small()).truncate());
                     }
-                });
+                })
+            };
             if open || r.double_clicked() {
                 resp.open_paths.push(PathBuf::from(&rec.path));
             }
@@ -1417,7 +1623,19 @@ fn recent_tab(
                 }
             });
             r.on_hover_text(&rec.path);
+        };
+        if view == 1 {
+            ui.horizontal_wrapped(|ui| {
+                for i in hits {
+                    file(ui, i);
+                }
+            });
+        } else {
+            for i in hits {
+                file(ui, i);
+            }
         }
+        reuse_ui(ui, view, project, settings, palette, resp);
     });
     match op {
         Some(RecOp::Pin(path)) => {
@@ -1794,7 +2012,8 @@ ame	hat\keeps\going\clip-with-a-long-name.mp4",
                     pane_right = pane.right();
                     ui.scope_builder(egui::UiBuilder::new().max_rect(pane), |ui| {
                         let mut resp = LibraryResponse::default();
-                        recent_tab(ui, &mut state, &mut settings, &mut None, &labels, &palette, &mut resp);
+                        let project = Project::new();
+                        recent_tab(ui, &mut state, &project, &mut settings, &mut None, &labels, &palette, &mut resp);
                         right = ui.ctx().data(|d| d.get_temp(egui::Id::new("row_btn_right")).unwrap_or(f32::NAN));
                     });
                 });
@@ -1848,5 +2067,70 @@ ame	hat\keeps\going\clip-with-a-long-name.mp4",
             // the linked section is collapsed: nothing was read from disk
             assert!(state.linked.is_empty(), "collapsed linked folders must not be scanned");
         }
+    }
+
+    /// Recent is a gallery of everything reusable: the files plus effects, node graphs, saved adjustment
+    /// layers and sequences. Both views lay out, every section is titled, and a click hands the right
+    /// intent back to the app.
+    #[test]
+    fn recent_tab_lists_everything_reusable() {
+        let mut project = Project::new();
+        project.tracks[0].clips.push(crate::model::Clip::new(7, ClipKind::Video, "v", 0.0, 4.0));
+        project.tracks[0].clips[0].effects.push(crate::model::Effect::new(EffectKind::Blur));
+        let adj = project.add_adjustment_clip(0.0, 2.0);
+        project.ensure_graph(adj);
+        let seq = project.new_sequence("Intro", 1280, 720, 30.0);
+        let mut settings = Settings::default();
+        settings.touch_recent(r"C:\media\old.mp4");
+        settings.effect_presets.push(crate::settings::EffectPreset { name: "Look".into(), json: "[]".into() });
+        settings
+            .effect_presets
+            .push(crate::settings::EffectPreset { name: "Graph".into(), json: "{\"nodes\":[]}".into() });
+        settings.templates.push(crate::engine::presets::capture_template("Grade", &project, &[adj]));
+
+        // project + settings feed the same four sections
+        let counts: Vec<(&str, usize)> =
+            reuse_sections(&project, &settings).iter().map(|(t, v)| (*t, v.len())).collect();
+        assert_eq!(counts, vec![("Effects", 2), ("Node graphs", 2), ("Adjustment layers", 1), ("Sequences", 1)]);
+
+        let palette = Palette::new(true, egui::Color32::WHITE);
+        let ctx = egui::Context::default();
+        for view in [0, 1] {
+            let mut state = LibraryState { tab: 1, view, ..Default::default() };
+            let mut titles = Vec::new();
+            for _ in 0..2 {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 1200.0))),
+                    ..Default::default()
+                };
+                let out = ctx.run(input, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let mut undo = |_: &Project| panic!("no undo without edits");
+                        let r = show(ui, &mut state, &mut project, &mut settings, None, &palette, false, &mut undo);
+                        assert!(r.add_effect.is_none() && r.apply_preset.is_none() && r.copy_graph.is_none());
+                    });
+                });
+                titles = ["Files", "Effects", "Node graphs", "Adjustment layers", "Sequences"]
+                    .iter()
+                    .filter(|t| text_rect(&out.shapes, t).is_some())
+                    .copied()
+                    .collect();
+            }
+            assert_eq!(titles.len(), 5, "view {view} is missing sections: {titles:?}");
+        }
+
+        // clicking each kind of item
+        let mut resp = LibraryResponse::default();
+        reuse_pick(&Reuse::Effect(EffectKind::Blur), "Blur", &mut resp);
+        reuse_pick(&Reuse::Preset(1), "Graph", &mut resp);
+        reuse_pick(&Reuse::Graph(adj), "", &mut resp);
+        reuse_pick(&Reuse::Adjustment(0), "Grade", &mut resp);
+        reuse_pick(&Reuse::Sequence(seq), "Intro", &mut resp);
+        assert_eq!(resp.add_effect, Some(EffectKind::Blur));
+        assert_eq!(resp.apply_preset, Some(1));
+        assert_eq!(resp.copy_graph, Some(adj));
+        assert_eq!(resp.place_template, vec!["Grade".to_string()]);
+        assert_eq!(resp.open_sequence, Some(seq));
+        assert_eq!(reuse_face(&Reuse::Effect(EffectKind::Blur), &project, &settings).0, "Blur");
     }
 }
