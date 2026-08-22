@@ -174,6 +174,9 @@ pub enum DragPayload {
     Sequence(Id),
     /// A saved template (Settings.templates) by name.
     Template(String),
+    /// A transition kind dragged off the Transitions catalogue onto a cut.
+    // ponytail: allow(dead_code) until the timeline/node drop handlers read the kind — drop it then.
+    Transition(#[allow(dead_code)] crate::model::TransitionKind),
 }
 
 /// HH:MM:SS:FF timecode.
