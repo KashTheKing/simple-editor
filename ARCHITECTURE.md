@@ -167,7 +167,9 @@ plain effect list.
 **Keyframes** — value-positioned diamonds on clips, a graph editor with bezier velocity handles, easing
 menus, curve/motion presets (scaled or exact), and "flow" between two clips.
 **Text** — system + imported fonts, size, bold/italic, fill/outline/shadow/box, alignment, spacing.
-**Shapes & drawing** — rect/ellipse/triangle/polygon/star/line/arrow plus recorded freehand drawings.
+**Shapes & drawing** — rect/ellipse/triangle/polygon/star/line/arrow plus recorded freehand drawings;
+the Polygon tool places real points (click to add, Enter / click a point to close, drag them when the
+shape is selected) into `ShapeStyle.points` — empty keeps the regular n-gon.
 **Adjustment layers** — effects that apply to everything below them.
 **Sequences** — nested timelines usable as footage.
 **Audio** — waveforms, per-clip volume line + fades, pan, mute/solo, buses with EQ/reverb/echo/

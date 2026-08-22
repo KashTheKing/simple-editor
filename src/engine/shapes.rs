@@ -199,6 +199,17 @@ fn half_size(style: &ShapeStyle, t: f64) -> (f32, f32) {
             0.0
         }
     };
+    // an explicit vertex list sizes its own layer (symmetric about the centre, like a drawing)
+    if let Some(pts) = style.poly_points() {
+        let (mut hx, mut hy) = (0.0f32, 0.0f32);
+        for &(x, y) in pts {
+            if x.is_finite() && y.is_finite() {
+                hx = hx.max(x.abs());
+                hy = hy.max(y.abs());
+            }
+        }
+        return (hx.min(20000.0).max(0.5), hy.min(20000.0).max(0.5));
+    }
     (f(style.w.at(t)), f(style.h.at(t)))
 }
 
@@ -263,7 +274,10 @@ fn shape_outline(style: &ShapeStyle, w: f32, h: f32, s: f32, out: &mut Vec<[f32;
         }
         ShapeKind::Triangle => out.extend_from_slice(&[[0.0, -h], [w, h], [-w, h]]),
         ShapeKind::Star => out.extend(ngon(style.sides, w, h, true)),
-        _ => out.extend(ngon(style.sides, w, h, false)),
+        _ => match style.poly_points() {
+            Some(pts) => out.extend(pts.iter().map(|&(x, y)| [x, y])),
+            None => out.extend(ngon(style.sides, w, h, false)),
+        },
     }
 }
 
@@ -715,6 +729,29 @@ mod tests {
             assert_eq!(px(&f, 50, 55)[3], 255, "{kind:?} centre filled");
             assert_eq!(px(&f, 2, 2)[3], 0, "{kind:?} top-left corner is empty");
         }
+    }
+
+    #[test]
+    fn explicit_points_draw_the_polygon() {
+        let mut r = ShapeRasterizer::new();
+        // Triangle's outline is exactly [(0,-h), (w,h), (-w,h)] — the same vertices by hand must give
+        // the same pixels, not the regular pentagon `sides` asks for
+        let regular = style(ShapeKind::Triangle, 50.0, 30.0);
+        let mut poly = style(ShapeKind::Polygon, 50.0, 30.0);
+        poly.points = vec![(0.0, -30.0), (50.0, 30.0), (-50.0, 30.0)];
+        assert_eq!(ShapeRasterizer::size(&poly, 0.0), ShapeRasterizer::size(&regular, 0.0));
+        let a = r.render(&regular, 1.0, 0.0);
+        let b = r.render(&poly, 1.0, 0.0);
+        assert_eq!((b.width, b.height), (a.width, a.height));
+        assert_eq!(b.rgba, a.rgba, "an explicit triangle covers what the regular one does");
+        // the layer is sized from the points, so w/h no longer bound them
+        let mut wrong_size = poly.clone();
+        wrong_size.w = Animated::new(5.0);
+        wrong_size.h = Animated::new(5.0);
+        assert_eq!(ShapeRasterizer::size(&wrong_size, 0.0), (100.0, 60.0));
+        // fewer than 3 points cannot enclose anything: back to the n-gon
+        poly.points.truncate(2);
+        assert!(!Arc::ptr_eq(&r.render(&poly, 1.0, 0.0), &b));
     }
 
     #[test]

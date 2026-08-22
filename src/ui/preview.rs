@@ -9,6 +9,9 @@
 //! moving the clip: a shape tool reports `new_shape`, the Draw tool records a timed `stroke`, and a mask
 //! tool edits the selected clip's mask (reported through `mask_edit`); a Polygon/Path mask gets its
 //! vertices from the drag rect (an empty point list would hide the clip entirely).
+//! The Polygon *shape* tool is SVG-style instead: each click appends a vertex (the path is drawn live),
+//! a click back on a placed vertex (which is where a double-click's second press lands) or Enter closes
+//! it into a shape, and re-selecting that shape with the Select tool puts a drag handle on every point.
 
 use crate::engine::compose::placement;
 use crate::hotkeys::Action;
@@ -39,6 +42,10 @@ pub struct PreviewState {
     drag: Option<(f64, f64, Vec2)>,
     /// Active tool drag (shape / draw / mask).
     tool_drag: Option<ToolDrag>,
+    /// Polygon tool: vertices placed so far, project px relative to the canvas centre.
+    poly: Vec<(f32, f32)>,
+    /// Select tool: index of the polygon vertex being dragged.
+    point_drag: Option<usize>,
     /// Last pointer movement (fullscreen hides the cursor after 2 s of stillness).
     moved_at: Option<std::time::Instant>,
     /// Content rect of the transport row last frame — it is centred against the panel using its own
@@ -48,7 +55,15 @@ pub struct PreviewState {
 
 impl Default for PreviewState {
     fn default() -> Self {
-        Self { texture: None, drag: None, tool_drag: None, moved_at: None, transport: Rect::ZERO }
+        Self {
+            texture: None,
+            drag: None,
+            tool_drag: None,
+            poly: Vec::new(),
+            point_drag: None,
+            moved_at: None,
+            transport: Rect::ZERO,
+        }
     }
 }
 
@@ -91,6 +106,8 @@ pub struct PreviewResponse {
     /// A shape dragged out with a shape tool: (kind, centre x, centre y, half width, half height) in
     /// project pixels relative to the canvas centre (same frame as `Clip.x/y` and `ShapeStyle.w/h`).
     pub new_shape: Option<(ShapeKind, f32, f32, f32, f32)>,
+    /// Vertices of a closed Polygon path, relative to that shape's centre (empty = a regular n-gon).
+    pub new_points: Vec<(f32, f32)>,
     /// A stroke recorded with the Draw tool (points relative to the canvas centre, timed from the press).
     pub stroke: Option<ModelStroke>,
     /// The selected clip's mask was edited with a mask tool.
@@ -261,6 +278,49 @@ fn tool_drag(
     let k = c.project.width as f32 / lb.width().max(1.0);
     let (hw, hh) = (c.project.width as f32 / 2.0, c.project.height as f32 / 2.0);
     let to_proj = move |p: Pos2| ((p.x - lb.min.x) * k - hw, (p.y - lb.min.y) * k - hh);
+    let to_screen = move |&(x, y): &(f32, f32)| pos2(lb.min.x + (x + hw) / k, lb.min.y + (y + hh) / k);
+
+    // the Polygon tool places real vertices: click to append, click a placed one / Enter to close
+    if tool == Tool::Shape(ShapeKind::Polygon) {
+        let at = resp.interact_pointer_pos();
+        // clicking a vertex that is already placed closes the path instead of stacking a duplicate on
+        // top of it — that is where a double-click's second press lands, and egui cannot be asked
+        // (quick clicks at different points read as double/triple clicks while you place vertices)
+        let on_vertex = at.is_some_and(|p| state.poly.iter().any(|q| (to_screen(q) - p).length() <= 6.0));
+        if (resp.clicked() || resp.drag_stopped()) && !on_vertex {
+            if let Some(p) = at {
+                state.poly.push(to_proj(p));
+            }
+        }
+        let p = ui.painter_at(lb);
+        let stroke = Stroke::new(1.5, c.palette.selection);
+        let mut pts: Vec<Pos2> = state.poly.iter().map(to_screen).collect();
+        if !pts.is_empty() {
+            for q in &pts {
+                p.circle_filled(*q, 3.5, c.palette.selection);
+            }
+            // rubber band from the last vertex to the cursor, and a hint of the closing edge
+            if let Some(at) = resp.hover_pos().or_else(|| ui.input(|i| i.pointer.latest_pos())) {
+                p.line_segment([pts[0], at], Stroke::new(1.0, c.palette.selection.gamma_multiply(0.5)));
+                pts.push(at);
+            }
+            p.add(Shape::line(pts, stroke));
+        }
+        if (on_vertex && (resp.clicked() || resp.double_clicked())) || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            if state.poly.len() >= 3 {
+                let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+                for &(x, y) in &state.poly {
+                    (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+                }
+                let (cx, cy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+                r.new_points = state.poly.iter().map(|&(x, y)| (x - cx, y - cy)).collect();
+                r.new_shape =
+                    Some((ShapeKind::Polygon, cx, cy, ((x1 - x0) / 2.0).max(2.0), ((y1 - y0) / 2.0).max(2.0)));
+            }
+            state.poly.clear();
+        }
+        return true;
+    }
 
     if resp.drag_started() {
         if let Some(p) = resp.interact_pointer_pos() {
@@ -392,14 +452,15 @@ fn video(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r:
     }
     state.moved_at = None;
     prerender_badge(ui, &painter, lb, c);
-    if resp.double_clicked() {
-        r.actions.push(Action::Fullscreen);
-    }
 
-    // a tool other than Select owns the drag (draw / mask / shape) — never move the clip then
+    // a tool other than Select owns the gesture (draw / mask / shape) — never move the clip then, and
+    // never let the polygon tool's closing double-click also toggle fullscreen
     if tool_drag(ui, state, c, r, &resp, lb) {
         state.drag = None;
         return;
+    }
+    if resp.double_clicked() {
+        r.actions.push(Action::Fullscreen);
     }
 
     // selection overlay + drag-to-move
@@ -433,12 +494,45 @@ fn video(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r:
         painter.add(Shape::closed_line(pts, stroke));
     }
 
+    // explicit polygon vertices: outline + one grab handle each, in the shape's own rotated/scaled frame
+    let poly: Vec<(f32, f32)> =
+        clip.shape.as_ref().and_then(|s| s.poly_points()).map(|p| p.to_vec()).unwrap_or_default();
+    let frame = (!poly.is_empty()).then(|| {
+        let p = placement(c.project, clip, c.playhead, (1, 1), cw, ch, false);
+        let (sn, cs) = p.rot.to_radians().sin_cos();
+        // project px -> screen points, through the clip's scale
+        let k = clip.scale.at(lt) as f32 * lb.width() / c.project.width.max(1) as f32;
+        (to_screen(p.cx, p.cy), sn, cs, if k.is_finite() && k.abs() > 1e-4 { k } else { 1e-4 })
+    });
+    // the grab is decided by where the press began, not by where the pointer has dragged to
+    let press = ui.input(|i| i.pointer.press_origin());
+    let mut hit = None;
+    if let Some((o, sn, cs, k)) = frame {
+        let scr: Vec<Pos2> =
+            poly.iter().map(|&(x, y)| pos2(o.x + (x * cs - y * sn) * k, o.y + (x * sn + y * cs) * k)).collect();
+        painter.add(Shape::closed_line(scr.clone(), stroke));
+        for (i, q) in scr.iter().enumerate() {
+            painter.circle_filled(*q, 3.5, c.palette.selection);
+            if press.is_some_and(|pp| (pp - *q).length() <= 7.0) {
+                hit = Some(i);
+            }
+        }
+    }
+
     if resp.drag_started() {
         (c.undo)(c.project);
-        state.drag = Some((clip.x.at(lt), clip.y.at(lt), Vec2::ZERO));
+        state.point_drag = hit;
+        state.drag = hit.is_none().then(|| (clip.x.at(lt), clip.y.at(lt), Vec2::ZERO));
     }
     if resp.dragged() {
-        if let Some((x0, y0, acc)) = &mut state.drag {
+        if let (Some(i), Some((o, sn, cs, k)), Some(pp)) = (state.point_drag, frame, resp.interact_pointer_pos()) {
+            // pointer -> the shape's own frame (undo the rotation and scale the handles were drawn with)
+            let (dx, dy) = ((pp.x - o.x) / k, (pp.y - o.y) / k);
+            if let Some(p) = c.project.clip_mut(id).and_then(|cl| cl.shape.as_mut()).and_then(|s| s.points.get_mut(i)) {
+                *p = (dx * cs + dy * sn, -dx * sn + dy * cs);
+                r.edited = true;
+            }
+        } else if let Some((x0, y0, acc)) = &mut state.drag {
             *acc += resp.drag_delta();
             let k = c.project.width as f32 / lb.width(); // project px per point
             let (nx, ny) = (*x0 + (acc.x * k) as f64, *y0 + (acc.y * k) as f64);
@@ -451,6 +545,7 @@ fn video(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r:
     }
     if resp.drag_stopped() {
         state.drag = None;
+        state.point_drag = None;
     }
 }
 
@@ -557,6 +652,17 @@ mod tests {
             });
             out
         }
+        fn click(&mut self, at: Pos2) -> PreviewResponse {
+            self.frame(vec![Event::PointerMoved(at)]);
+            let btn = |pressed| Event::PointerButton {
+                pos: at,
+                button: PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            };
+            self.frame(vec![btn(true)]);
+            self.frame(vec![btn(false)])
+        }
         fn drag(&mut self, from: Pos2, to: Pos2) -> PreviewResponse {
             self.frame(vec![Event::PointerMoved(from)]);
             self.frame(vec![Event::PointerButton {
@@ -611,6 +717,62 @@ mod tests {
         assert_eq!((c.x.value, c.y.value), (0.0, 0.0), "shape tool never moves the clip");
         assert_eq!(h.undos, 0, "no clip undo for a shape gesture");
         let _ = (cx, cy);
+    }
+
+    #[test]
+    fn polygon_tool_places_and_closes_real_points() {
+        let mut h = H::new();
+        h.tool = Tool::Shape(ShapeKind::Polygon);
+        h.frame(vec![]);
+        for p in [pos2(300.0, 120.0), pos2(380.0, 240.0), pos2(220.0, 240.0)] {
+            let out = h.click(p);
+            assert!(out.new_shape.is_none(), "the path is still open");
+        }
+        assert_eq!(h.state.poly.len(), 3, "one vertex per click");
+        let out = h.frame(vec![Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        }]);
+        let (kind, cx, cy, w, hh) = out.new_shape.expect("Enter closes the path");
+        assert_eq!(kind, ShapeKind::Polygon);
+        assert_eq!(out.new_points.len(), 3);
+        // the points are centred on the reported centre and the half-size is exactly their bounds
+        let mx = out.new_points.iter().fold(0.0f32, |a, p| a.max(p.0.abs()));
+        let my = out.new_points.iter().fold(0.0f32, |a, p| a.max(p.1.abs()));
+        assert!(w > 1.0 && hh > 1.0 && cx.is_finite() && cy.is_finite(), "{:?}", (cx, cy, w, hh));
+        assert!((mx - w).abs() < 0.5 && (my - hh).abs() < 0.5, "{:?} vs {:?}", (mx, my), (w, hh));
+        assert!(h.state.poly.is_empty(), "the in-progress path is consumed");
+        // clicking the last vertex again (a double-click's second press) closes a path too
+        for p in [pos2(200.0, 100.0), pos2(260.0, 100.0), pos2(260.0, 160.0)] {
+            h.click(p);
+        }
+        let out = h.click(pos2(260.0, 160.0));
+        assert_eq!(out.new_points.len(), 3, "a click back on a vertex closes: {:?}", out.new_points);
+    }
+
+    #[test]
+    fn select_tool_drags_a_polygon_vertex() {
+        let mut h = H::new();
+        let id = h.project.add_shape_clip(ShapeKind::Polygon, 0.0, 4.0);
+        let s = h.project.clip_mut(id).unwrap().shape.as_mut().unwrap();
+        s.points = vec![(0.0, 0.0), (200.0, 100.0), (-200.0, 100.0)];
+        h.selection = vec![id];
+        h.frame(vec![]);
+        // the transport row is measured now, so the video rect (and its centre) is known
+        h.frame(vec![]);
+        // the first vertex sits on the shape centre, i.e. the centre of the video
+        let at = pos2(h.panel.center().x, h.state.transport.top() / 2.0);
+        let out = h.drag(at, at + vec2(40.0, 20.0));
+        assert!(out.edited, "dragging a handle edits");
+        let cl = h.project.clip(id).unwrap();
+        let p = cl.shape.as_ref().unwrap().points[0];
+        assert!(p.0 > 10.0 && p.1 > 5.0, "the vertex followed the pointer: {p:?}");
+        assert_eq!(cl.shape.as_ref().unwrap().points[1], (200.0, 100.0), "the other vertices stay put");
+        assert_eq!((cl.x.value, cl.y.value), (0.0, 0.0), "grabbing a handle never moves the clip");
+        assert_eq!(h.undos, 1, "one undo for the gesture");
     }
 
     #[test]

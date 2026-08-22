@@ -1301,6 +1301,9 @@ pub struct ShapeStyle {
     pub corner: f32,
     /// Polygon / Star sides.
     pub sides: u32,
+    /// Explicit Polygon vertices in project px relative to the shape centre (the Polygon tool places
+    /// and drags these). Empty = the regular `sides`-gon, so old projects keep their shape.
+    pub points: Vec<(f32, f32)>,
     /// Half-size in project px (Rect/Ellipse/...) or the offset of the far end (Line/Arrow).
     pub w: Animated,
     pub h: Animated,
@@ -1321,6 +1324,7 @@ impl Default for ShapeStyle {
             stroke_width: 4.0,
             corner: 0.0,
             sides: 5,
+            points: Vec::new(),
             w: Animated::new(300.0),
             h: Animated::new(200.0),
             strokes: Vec::new(),
@@ -1339,6 +1343,11 @@ impl ShapeStyle {
         }
         s
     }
+    /// The explicit vertex list, or None when the regular `sides`-gon applies (fewer than 3 points
+    /// cannot enclose anything, so a half-placed path still draws as the n-gon).
+    pub fn poly_points(&self) -> Option<&[(f32, f32)]> {
+        (self.kind == ShapeKind::Polygon && self.points.len() >= 3).then_some(&self.points[..])
+    }
     /// Recorded length of a drawing in seconds.
     pub fn draw_duration(&self) -> f64 {
         self.strokes.iter().flat_map(|s| s.points.iter().map(|p| p.2 as f64)).fold(0.0, f64::max)
@@ -1351,6 +1360,10 @@ impl ShapeStyle {
             f.to_bits().hash(&mut h);
         }
         self.sides.hash(&mut h);
+        // vertices move under the mouse, so their values (not just the count) key the cache
+        for p in &self.points {
+            (p.0.to_bits(), p.1.to_bits()).hash(&mut h);
+        }
         self.strokes.len().hash(&mut h);
         for st in &self.strokes {
             st.points.len().hash(&mut h);
@@ -3709,6 +3722,28 @@ mod tests {
         let mut q = q;
         let id = q.new_id();
         assert!(id > p.next_id);
+    }
+
+    #[test]
+    fn polygon_points_round_trip() {
+        let mut p = Project::new();
+        let id = p.add_shape_clip(ShapeKind::Polygon, 0.0, 2.0);
+        let s = p.clip_mut(id).unwrap().shape.as_mut().unwrap();
+        assert!(s.poly_points().is_none(), "no points = the regular n-gon");
+        s.points = vec![(0.0, -50.0), (60.0, 40.0), (-60.0, 40.0)];
+        let key = s.cache_key();
+        let t = Project::from_json(&p.to_json()).unwrap().clip(id).unwrap().shape.clone().unwrap();
+        assert_eq!(t.points, vec![(0.0, -50.0), (60.0, 40.0), (-60.0, 40.0)]);
+        assert_eq!(t.poly_points().map(|v| v.len()), Some(3));
+        assert_eq!(t.cache_key(), key, "a round trip is the same rasterised layer");
+        // a dragged vertex must not reuse the cached layer
+        let mut moved = t.clone();
+        moved.points[1].0 += 5.0;
+        assert_ne!(moved.cache_key(), key);
+        // a project written before points existed still loads, as the regular n-gon
+        let old = p.to_json().replace("\"points\"", "\"was_not_a_field\"");
+        let o = Project::from_json(&old).unwrap();
+        assert!(o.clip(id).unwrap().shape.as_ref().unwrap().poly_points().is_none());
     }
 
     #[test]

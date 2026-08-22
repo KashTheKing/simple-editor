@@ -1847,7 +1847,13 @@ impl App {
                     self.pending_actions.push(Action::MovieMode);
                 }
                 if let Some((kind, cx, cy, w, h)) = resp.new_shape {
-                    self.add_shape(kind, Some((cx, cy, w, h)));
+                    let id = self.add_shape(kind, Some((cx, cy, w, h)));
+                    if !resp.new_points.is_empty() {
+                        if let Some(s) = self.project.clip_mut(id).and_then(|c| c.shape.as_mut()) {
+                            s.points = resp.new_points;
+                        }
+                        self.after_edit();
+                    }
                 }
                 if let Some(s) = resp.stroke {
                     self.add_stroke(s);
