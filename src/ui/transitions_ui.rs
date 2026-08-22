@@ -99,6 +99,13 @@ pub(crate) fn add_transitions(
     added
 }
 
+/// A transition card dropped on a clip at timeline time `t`: which of the clip's two cuts it means.
+/// The half you drop on picks it, so the gesture reads the same as "Add at start" / "Add at end".
+/// Shared so the timeline's drop highlight and the app's drop handler cannot drift apart.
+pub(crate) fn drop_at_end(clip: &crate::model::Clip, t: f64) -> bool {
+    t > clip.start + clip.duration / 2.0
+}
+
 /// Half-way through the transition: enough to show the wipe/push/fade on a still card.
 const PREVIEW_P: f32 = 0.5;
 
@@ -531,6 +538,19 @@ mod tests {
         assert!(!h.frame(vec![]), "drawing the panel must not report an edit");
         assert_eq!(h.undos, 0, "no undo snapshot without a user gesture");
         assert!((h.project.transitions_of(v1)[0].1.duration - 8.0).abs() < 1e-9);
+    }
+
+    /// Dropping a card on a clip picks the near cut, and applying it there is exactly the button's job.
+    #[test]
+    fn a_dropped_card_picks_the_cut_it_landed_next_to() {
+        let mut h = Harness::new();
+        let v2 = h.project.tracks[0].clips[1].id; // 10..20
+        let clip = h.project.clip(v2).unwrap().clone();
+        assert!(!drop_at_end(&clip, 11.0), "left half = the cut at its start");
+        assert!(drop_at_end(&clip, 19.0), "right half = the cut at its end");
+        let st = &mut h.state;
+        assert_eq!(add_transitions(&mut h.project, &[v2], st, TransitionKind::Push, 0.5, false), 1);
+        assert_eq!(h.project.tracks[0].transitions[0].right, v2);
     }
 
     #[test]

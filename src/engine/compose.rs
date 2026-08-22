@@ -515,7 +515,7 @@ impl Compositor {
         let mut p = placement_w(pw, clip, t, native, w, h, false);
         // a fade also needs the copy path — fade_to writes into the layer, and the cached bitmap is
         // shared with the rasteriser's cache
-        if clip.effects.iter().any(|e| e.enabled) || extra.fade > 0.0 {
+        if clip.effects.iter().any(|e| e.on_at(lt)) || extra.fade > 0.0 {
             self.src.resize(img.width, img.height);
             self.src.rgba.copy_from_slice(&img.rgba);
             apply_effects(clip, lt, s, s, &mut self.src, &mut self.fx, &mut self.pre, &mut self.cov, &mut p);
@@ -559,7 +559,7 @@ fn apply_effects(
     p: &mut Placement,
 ) {
     for e in &clip.effects {
-        if !e.enabled {
+        if !e.on_at(lt) {
             continue;
         }
         if e.kind.is_geometric() {

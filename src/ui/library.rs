@@ -1752,7 +1752,7 @@ fn reuse_sections(project: &Project, settings: &Settings) -> Vec<(&'static str, 
                 kinds.push(e.kind);
             }
         }
-        if c.graph.is_some() {
+        if c.uses_graph() {
             graphs.push(Reuse::Graph(c.id));
         }
     }
@@ -2628,6 +2628,8 @@ ame	hat\keeps\going\clip-with-a-long-name.mp4",
         project.tracks[0].clips.push(crate::model::Clip::new(7, ClipKind::Video, "v", 0.0, 4.0));
         project.tracks[0].clips[0].effects.push(crate::model::Effect::new(EffectKind::Blur));
         let adj = project.add_adjustment_clip(0.0, 2.0);
+        // a real node in it, or the graph is a bare pass-through and nothing worth reusing (uses_graph)
+        project.clip_mut(adj).unwrap().effects.push(crate::model::Effect::new(EffectKind::Blur));
         project.ensure_graph(adj);
         let seq = project.new_sequence("Intro", 1280, 720, 30.0);
         let mut settings = Settings::default();

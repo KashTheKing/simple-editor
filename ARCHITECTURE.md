@@ -106,12 +106,16 @@ monotonic `next_id`.
   `markers`, `label`, `link` (clips that move/split/delete together).
 * `Animated { value, keys }` — every keyframeable property. Keys carry an `Ease`
   (Linear/EaseIn/Out/InOut/Hold/**Bezier** handles). Times are clip-local seconds.
-* `Effect { kind, params: Vec<Animated>, mask, shader }` — `EffectKind::params()` is the parameter
-  table (name/default/min/max); `is_bool_param()` marks checkbox params; `is_geometric()` marks effects
-  folded into the placement; `needs_motion()` marks ones needing neighbouring frames.
+* `Effect { kind, params: Vec<Animated>, mask, shader, start, len }` — `EffectKind::params()` is the
+  parameter table (name/default/min/max); `is_bool_param()` marks checkbox params; `is_geometric()` marks
+  effects folded into the placement; `needs_motion()` marks ones needing neighbouring frames. `start`/`len`
+  are the clip-local window it runs in (`Effect::on_at`; `len <= 0` = to the end of the clip, i.e. every
+  project written before the window existed).
 * `NodeGraph { nodes, edges }` — `NodeKind::{Input, Color, Clip, Asset, Effect, Blend, Combine, Merge,
   Matte, Mask, Text, Output}`, cycle-refusing `connect`, `eval_order()`, `to_effects()` (the inverse of
-  `from_effects`, used by `Project::unlink_graph`). Present ⇒ it replaces the linear stack for rendering.
+  `from_effects`, used by `Project::unlink_graph`). The node editor is **opt-in**: only a graph with real
+  nodes in it (`Clip::uses_graph`) replaces the linear stack for rendering — a bare Input→Output
+  pass-through never shadows `effects`, and the Nodes pane builds one only when asked.
 * `Mask` — Rect/Ellipse/Polygon/Path with animated centre/radii/rotation/feather/expand/opacity/invert.
 * `Transition` — lives on a `Track`, centred on a cut, **window clamped to its two clips**
   (`Transition::window(left, right)`); kinds CrossFade / FadeToColor / Push / Wipe.

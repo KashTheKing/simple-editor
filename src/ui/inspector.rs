@@ -71,6 +71,11 @@ pub fn take_unlink_nodes() -> Option<Id> {
     UNLINK_NODES.with(|p| p.borrow_mut().take())
 }
 
+/// Ask for it from elsewhere — the effects panel offers the same escape hatch.
+pub fn ask_unlink_nodes(id: Id) {
+    UNLINK_NODES.with(|p| *p.borrow_mut() = Some(id));
+}
+
 /// Clip whose mask the user wants to draw in the viewport ("Edit in viewport") — the app switches the
 /// active tool to a mask tool and points the preview at this clip.
 pub fn take_edit_mask() -> Option<Id> {

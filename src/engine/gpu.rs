@@ -1021,7 +1021,7 @@ impl GpuRenderer {
         }
         // geometric effects move the layer instead of touching pixels
         let (mut focal, mut z0) = (cw as f32, 0.0f32);
-        for e in clip.effects.iter().filter(|e| e.enabled && e.kind.is_geometric()) {
+        for e in clip.effects.iter().filter(|e| e.on_at(lt) && e.kind.is_geometric()) {
             match e.kind {
                 EffectKind::Wobble => {
                     let (dx, dy, roll, yaw, pitch) = crate::engine::effects::wobble(e, lt);
@@ -1087,12 +1087,12 @@ impl GpuRenderer {
         scale: f32,
     ) -> Option<Target> {
         let lt = clip.local(t);
-        if let Some(g) = &clip.graph {
+        if let Some(g) = clip.graph.as_ref().filter(|_| clip.uses_graph()) {
             return self.eval_graph_on(g, clip, t, fps, layers, Some(src), size, scale);
         }
         let mut cur: Option<Target> = None;
         for e in &clip.effects {
-            if !e.enabled || e.kind.is_geometric() {
+            if !e.on_at(lt) || e.kind.is_geometric() {
                 continue;
             }
             let input = cur.as_ref().map(|t| t.tex).unwrap_or(src);

@@ -10,7 +10,9 @@
 //! Video/Audio Track, Remove Track (on headers), Mute/Solo). Ctrl+Scroll = zoom around the cursor,
 //! Shift+Scroll = horizontal pan, Alt+Scroll = height of the track under the cursor, plain scroll =
 //! vertical pan. Accepts egui dnd payloads `DragPayload` (Asset → Project::insert_asset_clips at the drop
-//! time/track; Path → returned in `dropped_files`). Every mutation calls `c.undo(&project)` with the project as
+//! time/track; Path → returned in `dropped_files`; Effect / Transition → the clip under the pointer is
+//! outlined while dragging and reported in `dropped_other`, so a card lands straight on that clip).
+//! Every mutation calls `c.undo(&project)` with the project as
 //! it was before the gesture (once per gesture, only if it changed something) and sets `edited`. While `playing`,
 //! auto-scroll keeps the playhead visible unless the user panned away (resumes once the playhead re-enters the
 //! view or playback pauses).
@@ -241,7 +243,8 @@ pub struct TimelineResponse {
     pub seeked: bool,
     /// Files dropped via dnd `DragPayload::Path` — (path, timeline time, track index).
     pub dropped_files: Vec<(PathBuf, f64, Option<usize>)>,
-    /// Other dnd payloads (Sequence / Template) dropped on the lanes — the app places them.
+    /// Other dnd payloads (Sequence / Template / Effect / Transition) dropped on the lanes — the app
+    /// places them; an Effect or a Transition goes onto the clip that contains the reported time.
     pub dropped_other: Vec<(DragPayload, f64, Option<usize>)>,
     /// Actions requested from the timeline's context menus (Retime, AddTransition, FreezeFrame, AutoCut, …).
     pub actions: Vec<crate::hotkeys::Action>,
@@ -336,6 +339,20 @@ fn row_top(state: &TimelineState, p: &Project, ti: usize) -> Option<f32> {
         top += p.tracks[i].height;
     }
     None
+}
+
+/// The clip under a drop at screen `pos` / timeline time `t`, with its lane rect — what an effect or a
+/// transition dragged out of its panel is aimed at (`app.rs` resolves the same clip from the reported
+/// time + track when the drop actually happens).
+fn drop_on_clip<'a>(state: &TimelineState, p: &'a Project, pos: Pos2, t: f64) -> Option<(Rect, &'a Clip)> {
+    let ti = state.track_at(pos.y, p)?;
+    let top = row_top(state, p, ti)?;
+    let clip = p.tracks.get(ti)?.clips.iter().find(|c| c.contains(t))?;
+    let rect = Rect::from_min_max(
+        pos2(state.x_at(clip.start), top + 1.0),
+        pos2(state.x_at(clip.end()), top + p.tracks[ti].height - 1.0),
+    );
+    Some((rect, clip))
 }
 
 /// Nearest candidate within `thr` of `t`.
@@ -1516,22 +1533,39 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         };
         if let Some(payload) = lanes_resp.dnd_hover_payload::<DragPayload>() {
             let t = drop_t(state, c.project);
-            let dur = match &*payload {
-                DragPayload::Asset(aid) => {
-                    c.project.asset(*aid).map(|a| if a.kind == ClipKind::Image { 5.0 } else { a.duration })
+            // an effect lands on ONE clip and a transition on ONE cut, so they highlight what is under
+            // the pointer instead of a ghost clip that would lie about a duration
+            let target = match &*payload {
+                DragPayload::Effect(k) => drop_on_clip(state, c.project, pos, t)
+                    .filter(|(_, cl)| (cl.kind == ClipKind::Audio) == k.applies_to_audio())
+                    .map(|(r, _)| r),
+                DragPayload::Transition(_) => drop_on_clip(state, c.project, pos, t).map(|(r, cl)| {
+                    // the half you are over picks the cut (same rule the app applies on release)
+                    let x = if crate::ui::transitions_ui::drop_at_end(cl, t) { r.right() } else { r.left() };
+                    Rect::from_min_max(pos2(x - 6.0, r.top()), pos2(x + 6.0, r.bottom()))
+                }),
+                _ => None,
+            };
+            if let Some(hit) = target {
+                lp.rect_filled(hit, 0, pal.selection.gamma_multiply(0.35));
+                lp.rect_stroke(hit, 0, Stroke::new(2.0, pal.selection), StrokeKind::Inside);
+            } else if !matches!(&*payload, DragPayload::Effect(_) | DragPayload::Transition(_)) {
+                let dur = match &*payload {
+                    DragPayload::Asset(aid) => {
+                        c.project.asset(*aid).map(|a| if a.kind == ClipKind::Image { 5.0 } else { a.duration })
+                    }
+                    DragPayload::Sequence(sid) => Some(c.project.sequence_duration(*sid)),
+                    _ => None,
                 }
-                DragPayload::Path(_) | DragPayload::Template(_) | DragPayload::Effect(_) => None,
-                DragPayload::Transition(_) => None,
-                DragPayload::Sequence(sid) => Some(c.project.sequence_duration(*sid)),
-            }
-            .unwrap_or(2.0);
-            let ti = state.track_at(pos.y, c.project).or_else(|| c.project.video_tracks().first().copied());
-            if let Some((ti, top)) = ti.and_then(|ti| Some((ti, row_top(state, c.project, ti)?))) {
-                let h = c.project.tracks[ti].height;
-                let ghost =
-                    Rect::from_min_max(pos2(state.x_at(t), top + 1.0), pos2(state.x_at(t + dur), top + h - 1.0));
-                lp.rect_filled(ghost, 0, pal.selection.gamma_multiply(0.3));
-                lp.rect_stroke(ghost, 0, Stroke::new(1.0, pal.selection), StrokeKind::Inside);
+                .unwrap_or(2.0);
+                let ti = state.track_at(pos.y, c.project).or_else(|| c.project.video_tracks().first().copied());
+                if let Some((ti, top)) = ti.and_then(|ti| Some((ti, row_top(state, c.project, ti)?))) {
+                    let h = c.project.tracks[ti].height;
+                    let ghost =
+                        Rect::from_min_max(pos2(state.x_at(t), top + 1.0), pos2(state.x_at(t + dur), top + h - 1.0));
+                    lp.rect_filled(ghost, 0, pal.selection.gamma_multiply(0.3));
+                    lp.rect_stroke(ghost, 0, Stroke::new(1.0, pal.selection), StrokeKind::Inside);
+                }
             }
         }
         if let Some(payload) = lanes_resp.dnd_release_payload::<DragPayload>() {
@@ -2552,6 +2586,39 @@ mod tests {
         assert!(!h.drag(from, pos2(from.x, lanes.top() + 160.0)));
         assert_eq!(h.project.tracks[1].clips.len(), 1, "still on V2");
         assert_eq!(h.undos, 1);
+    }
+
+    /// An effect card dragged out of the Effects panel is reported against the clip under the pointer
+    /// (the app pushes it on that clip's stack); over empty lane space it is reported with no clip so
+    /// the app can say so instead of swallowing the gesture.
+    #[test]
+    fn headless_dnd_effect_targets_the_clip_under_the_pointer() {
+        use crate::model::EffectKind;
+        let mut h = Harness::new();
+        let lanes = h.state.lanes_rect;
+        let on_clip = pos2(lanes.left() + 200.0, lanes.top() + 30.0); // t = 5 s, inside the 0..10 clip
+        h.press(pos2(10.0, 10.0));
+        egui::DragAndDrop::set_payload(&h.ctx, DragPayload::Effect(EffectKind::Blur));
+        h.frame(vec![Event::PointerMoved(on_clip)]);
+        let hit = drop_on_clip(&h.state, &h.project, on_clip, 5.0).map(|(_, c)| c.id);
+        assert_eq!(hit, Some(h.project.tracks[0].clips[0].id), "the drag highlights that clip");
+        let r = h.release(on_clip);
+        assert!(!r.edited, "the timeline changes nothing itself — the app adds the effect");
+        assert_eq!(r.dropped_other.len(), 1);
+        let (payload, t, ti) = &r.dropped_other[0];
+        assert!(matches!(payload, DragPayload::Effect(EffectKind::Blur)));
+        assert_eq!(*ti, Some(0));
+        assert!(h.project.tracks[0].clips[0].contains(*t), "reported time is inside the clip: {t}");
+
+        // past the end of the clip: still reported, but on nothing
+        let empty = pos2(lanes.left() + 480.0, lanes.top() + 30.0); // t = 12 s
+        h.press(pos2(10.0, 10.0));
+        egui::DragAndDrop::set_payload(&h.ctx, DragPayload::Effect(EffectKind::Blur));
+        h.frame(vec![Event::PointerMoved(empty)]);
+        assert!(drop_on_clip(&h.state, &h.project, empty, 12.0).is_none(), "nothing to highlight");
+        let r = h.release(empty);
+        let (_, t, _) = &r.dropped_other[0];
+        assert!(!h.project.tracks[0].clips[0].contains(*t));
     }
 
     #[test]

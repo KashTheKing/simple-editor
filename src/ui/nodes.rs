@@ -12,8 +12,9 @@
 //! dragging any picked node moves the whole selection, Delete removes it and Ctrl+C / Ctrl+V duplicates
 //! it (edges *between* the copied nodes come along; wires to the outside are dropped). Effects and
 //! transitions dragged out of their panels drop in as fresh, unwired nodes.
-//! `Project::ensure_graph` converts a clip's linear stack the first time this pane opens for it — an
-//! undoable edit, since the renderer evaluates the graph from then on and ignores `clip.effects`.
+//! A clip without a graph gets a "Build a node graph from it" button instead of one: `ensure_graph`
+//! converts the linear stack, and from then on the renderer evaluates the graph and ignores
+//! `clip.effects` — far too much to do to a clip just because this pane is docked somewhere.
 //! Every mutation calls `undo` once per gesture.
 
 use crate::model::{Animated, BlendMode, Edge, Effect, EffectKind, Id, Mask, Node, NodeKind, Project, TransitionKind};
@@ -126,9 +127,21 @@ pub fn show(
         return out;
     }
     // Converting the linear stack is a real edit, not a side effect of drawing: from here on the
-    // renderer evaluates the graph and ignores clip.effects, so it gets its own undo entry and tells
-    // the app the project changed.
+    // renderer evaluates the graph and ignores clip.effects. So the user has to ask for it — merely
+    // selecting a clip while this pane happens to be docked must not take its effect list away.
     if project.clip(clip_id).is_some_and(|c| c.graph.is_none()) {
+        let mut make = false;
+        let base_id = ui.id();
+        ui.vertical_centered(|ui| {
+            ui.add_space(24.0);
+            ui.label(egui::RichText::new("This clip renders from its effect list.").color(palette.text_dim));
+            let b = ui.button("Build a node graph from it");
+            // click-sensing interact on top of the button: a stable id the headless test can find
+            make = ui.interact(b.rect, base_id.with("build_graph"), Sense::click()).clicked();
+        });
+        if !make {
+            return out;
+        }
         undo(project);
         project.ensure_graph(clip_id);
         out.edited = true;
@@ -873,6 +886,7 @@ mod tests {
             });
             project.insert_asset_clips(aid, 0.0, None);
             let clip = project.tracks[0].clips[0].id;
+            project.ensure_graph(clip); // the pane no longer builds one just by being open
             let mut h = Self {
                 ctx: egui::Context::default(),
                 state: NodesState::default(),
@@ -986,6 +1000,24 @@ mod tests {
         assert_eq!(h.graph().eval_order(), vec![input, output]);
         h.frame(vec![]);
         assert_eq!(h.graph().nodes.len(), 2, "idempotent");
+    }
+
+    /// The pane is opt-in: pointing it at a clip that has no graph offers a button and leaves the clip's
+    /// effect list alone until it is pressed. Otherwise a Nodes pane sitting in the layout silently took
+    /// over every clip the user selected, and effects could never be put on footage directly again.
+    #[test]
+    fn a_clip_without_a_graph_is_left_alone_until_asked() {
+        let mut h = Harness::new();
+        let id = h.clip();
+        let c = h.project.clip_mut(id).unwrap();
+        c.graph = None;
+        c.effects.push(Effect::new(EffectKind::Blur));
+        h.frame(vec![]);
+        h.frame(vec![]);
+        assert!(h.project.clip(id).unwrap().graph.is_none(), "drawing the pane is not an edit");
+        assert_eq!(h.undos, 0);
+        assert!(!h.out.edited);
+        assert_eq!(h.project.clip(id).unwrap().effects.len(), 1, "and the effect list is untouched");
     }
 
     #[test]
@@ -1131,9 +1163,20 @@ mod tests {
 
     #[test]
     fn converting_the_effect_stack_is_undoable() {
-        // Harness::new draws exactly one frame, and that frame converts the clip
-        let h = Harness::new();
-        assert!(h.project.clip(h.clip()).unwrap().graph.is_some());
+        let mut h = Harness::new();
+        let id = h.clip();
+        h.project.clip_mut(id).unwrap().graph = None;
+        h.frame(vec![]);
+        let pos = h.ctx.read_response(h.base.with("build_graph")).expect("build button").rect.center();
+        h.press(pos, PointerButton::Primary);
+        // the release frame is the one that reports the edit; release() would draw another and clear it
+        h.frame(vec![Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        }]);
+        assert!(h.project.clip(id).unwrap().graph.is_some());
         assert_eq!(h.undos, 1, "the conversion is a snapshotted edit, not a silent side effect");
         assert!(h.out.edited, "and the app is told the project changed");
     }

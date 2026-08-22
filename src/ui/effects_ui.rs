@@ -11,12 +11,15 @@
 //! Below: the FIRST selected clip's effect stack, in order: for each effect a header row (enabled
 //! checkbox, name, mask button, "Edit shader…" for a custom shader, copy/paste params, ▲ ▼ reorder,
 //! ✕ remove) and its parameters from
-//! `effect.specs()`: label + DragValue (range from ParamSpec, speed ≈ (max-min)/200) — or a CHECKBOX when
+//! `effect.specs()`: a "From … for …" row giving the effect a window inside the clip (0 length = to the
+//! end of it, so an effect covers the whole clip until the user says otherwise), then
+//! label + DragValue (range from ParamSpec, speed ≈ (max-min)/200) — or a CHECKBOX when
 //! `EffectKind::is_bool_param` — + "◆" keyframe toggle at clip-local playhead time (Animated::toggle_key /
 //! set_at, highlighted when a key exists) + "✕ keys". Tint shows a colour button bound to R/G/B as well.
 //! An effect with a mask gets the inspector's mask grid inline (shape / position / radius / feather /
-//! invert …) plus a ✕ to drop it. A clip that renders from a node graph greys the stack out: the graph
-//! is what the renderer evaluates, so stack edits would be invisible.
+//! invert …) plus a ✕ to drop it. A clip that renders from a REAL node graph (`Clip::uses_graph`) greys
+//! the stack out — the graph is what the renderer evaluates, so stack edits would be invisible — and
+//! offers "Unlink" to get back to the list.
 //! Every change → undo once per gesture (same `edit_start` rule as the inspector).
 
 use crate::model::{Animated, ClipKind, Effect, EffectKind, Id, Mask, Project};
@@ -256,8 +259,9 @@ pub fn show(
 
     // ---- catalogue ----
     if let Some(kind) = catalogue(ui, palette, audio_sel) {
-        // a clip with a node graph renders from the graph, so anything pushed on its linear stack would
-        // be invisible — those clips are skipped (the stack below is greyed out for the same reason).
+        // a clip that renders from a real node graph would show nothing of what is pushed on its linear
+        // stack, so those clips are skipped (the stack below is greyed out for the same reason). A bare
+        // Input→Output graph is not one — see Clip::uses_graph.
         // each selected clip is checked on its own kind, not just the first (a mixed video+audio
         // selection can still get an eligible effect on every clip it applies to).
         let targets: Vec<Id> = selection
@@ -265,7 +269,7 @@ pub fn show(
             .copied()
             .filter(|&id| {
                 let Some(c) = project.clip(id) else { return false };
-                (c.kind == ClipKind::Audio) == kind.applies_to_audio() && c.graph.is_none()
+                (c.kind == ClipKind::Audio) == kind.applies_to_audio() && !c.uses_graph()
             })
             .collect();
         if !targets.is_empty() {
@@ -303,13 +307,22 @@ pub fn show(
             out.open_nodes = true;
         }
     });
-    if clip.graph.is_some() {
+    if clip.uses_graph() {
         // gpu::run_chain evaluates the graph and never looks at clip.effects — show the stack, but do
-        // not let the user edit into the void
-        ui.colored_label(palette.text_dim, "This clip renders from its node graph — edit it there.");
+        // not let the user edit into the void; "Unlink" is the way back to it in one click
+        ui.horizontal(|ui| {
+            ui.colored_label(palette.text_dim, "Renders from its node graph.");
+            let r = ui.small_button("Unlink").on_hover_text("Back to this plain effect list (a simple chain only)");
+            #[cfg(test)]
+            test_rects::push("unlink".into(), r.rect);
+            if r.clicked() {
+                crate::ui::inspector::ask_unlink_nodes(id);
+            }
+        });
         ui.disable();
     }
     let n = clip.effects.len();
+    let dur = clip.duration;
     let mut remove: Option<usize> = None;
     let mut swap: Option<(usize, usize)> = None;
     let mut copy: Option<usize> = None;
@@ -382,6 +395,37 @@ pub fn show(
                 test_rects::push(format!("up{i}"), up.rect);
                 test_rects::push(format!("down{i}"), down.rect);
                 test_rects::push(format!("del{i}"), del.rect);
+            }
+        });
+        // when it runs inside the clip — 0 length means "to the end", which is what every effect that
+        // predates this row already says
+        ui.horizontal(|ui| {
+            ui.label("From");
+            let r = ui.add(
+                DragValue::new(&mut fx.start)
+                    .range(0.0..=dur)
+                    .clamp_existing_to_range(false)
+                    .speed(dur / 200.0)
+                    .suffix(" s"),
+            );
+            #[cfg(test)]
+            test_rects::push(format!("fxstart{i}"), r.rect);
+            g.note(&r);
+            ui.label("for");
+            let r = ui
+                .add(
+                    DragValue::new(&mut fx.len)
+                        .range(0.0..=dur)
+                        .clamp_existing_to_range(false)
+                        .speed(dur / 200.0)
+                        .suffix(" s"),
+                )
+                .on_hover_text("0 = to the end of the clip");
+            #[cfg(test)]
+            test_rects::push(format!("fxlen{i}"), r.rect);
+            g.note(&r);
+            if fx.len <= 0.0 {
+                ui.weak("(rest of the clip)");
             }
         });
         if fx.kind == EffectKind::Tint && fx.params.len() >= 3 {
@@ -748,12 +792,61 @@ mod tests {
         clear_thumbnails();
         let mut h = Harness::new();
         h.project.ensure_graph(7);
+        let _ = h.project.add_node(7, crate::model::NodeKind::Effect(Effect::new(EffectKind::Invert)), 0.0, 0.0);
         h.frame(vec![]);
         let r = h.rect("card_Blur");
         // gpu::run_chain evaluates the graph and never reads clip.effects — the add would be invisible
         assert!(!h.click(r.center()));
         assert!(h.clip().effects.is_empty());
         assert_eq!(h.undos, 0);
+    }
+
+    /// The node editor is opt-in. A clip whose graph is the bare Input→Output pass-through `ensure_graph`
+    /// makes (e.g. the Nodes pane was once pointed at it) still renders its effect list, so the catalogue
+    /// must keep working on it — this is THE regression that made effects undroppable on footage.
+    #[test]
+    fn a_bare_graph_does_not_block_the_catalogue() {
+        clear_thumbnails();
+        let mut h = Harness::new();
+        h.project.ensure_graph(7);
+        h.frame(vec![]);
+        let r = h.rect("card_Blur");
+        assert!(h.click(r.center()), "a pass-through graph is not a graph");
+        assert_eq!(h.clip().effects.len(), 1);
+        assert_eq!(h.undos, 1);
+    }
+
+    /// Two numbers per effect: when it starts inside the clip and how long it lasts (0 = to the end).
+    #[test]
+    fn effect_window_is_editable_with_one_undo() {
+        let mut h = Harness::new();
+        h.project.tracks[0].clips[0].effects.push(Effect::new(EffectKind::Blur));
+        h.frame(vec![]);
+        assert!(h.clip().effects[0].on_at(0.0), "covers the whole clip by default");
+        let from = h.rect("fxstart0").center();
+        h.frame(vec![Event::PointerMoved(from)]);
+        h.frame(vec![Event::PointerButton {
+            pos: from,
+            button: PointerButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        }]);
+        let mut edited = false;
+        for i in 1..=4 {
+            edited |= h.frame(vec![Event::PointerMoved(from + vec2(10.0 * i as f32, 0.0))]);
+        }
+        edited |= h.frame(vec![Event::PointerButton {
+            pos: from + vec2(40.0, 0.0),
+            button: PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        }]);
+        edited |= h.frame(vec![]);
+        assert!(edited);
+        let fx = &h.clip().effects[0];
+        assert!(fx.start > 0.0, "the effect now starts later in the clip: {}", fx.start);
+        assert!(!fx.on_at(0.0) && fx.on_at(4.0), "off before its start, still on to the end");
+        assert_eq!(h.undos, 1, "one drag gesture = one undo");
     }
 
     #[test]
