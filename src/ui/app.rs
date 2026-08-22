@@ -173,6 +173,8 @@ pub struct App {
     last_transition: (TransitionKind, f64),
     /// Movie mode pre-render cache.
     prerender: PreRender,
+    /// Movie mode paused the clock because the frame under the playhead was not rendered yet.
+    movie_stall: bool,
     /// Preview canvas size in px, as the pane last reported it (the GPU renders at this size).
     canvas: (u32, u32),
     /// dshow audio inputs, listed once when the Settings / capture windows first need them.
@@ -796,6 +798,7 @@ impl App {
             attrs: None,
             last_transition: (TransitionKind::CrossFade, 1.0),
             prerender: PreRender::new(),
+            movie_stall: false,
             canvas: (0, 0),
             audio_inputs: None,
             failed_panes: Vec::new(),
@@ -805,6 +808,11 @@ impl App {
         app.player.set_project(&app.project);
         if let Some(p) = open {
             app.open_path(&p);
+            // launched from Explorer ("Open with"): behave like a player — full screen, rolling
+            if app.screenshot.is_none() && !app.project.tracks.iter().all(|t| t.clips.is_empty()) {
+                app.fullscreen = true;
+                app.player.play();
+            }
         }
         app
     }
@@ -1839,9 +1847,12 @@ impl App {
                         player,
                         palette,
                         tools,
+                        prerender,
                         ..
                     } = self;
                     let tool = tools.tool;
+                    let prerender_bar =
+                        if settings.movie_mode { guarded(|| prerender.segments()).unwrap_or_default() } else { vec![] };
                     let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
                     timeline::show(
                         ui,
@@ -1859,6 +1870,7 @@ impl App {
                             // only while the Auto-cut pane is on screen: a stale overlay would keep
                             // shading the timeline after the pane is hidden or a new project is opened
                             keep_ranges: if *autocut_shown { &autocut.overlay } else { &[] },
+                            prerender: &prerender_bar,
                             tool,
                         },
                     )
@@ -1922,6 +1934,12 @@ impl App {
                     self.after_edit();
                 }
                 if !resp.open_paths.is_empty() {
+                    if resp.new_adjustment {
+                        self.pending_actions.push(Action::AddAdjustment);
+                    }
+                    if resp.open_dialog {
+                        self.pending_actions.push(Action::OpenFile);
+                    }
                     let ids = self.open_or_import(&resp.open_paths);
                     if !ids.is_empty() {
                         self.library.selected = ids.last().copied();
@@ -4420,10 +4438,23 @@ impl eframe::App for App {
             let App { prerender, project, .. } = self;
             match guarded(|| (prerender.tick(project, 4.0), prerender.frame(project, t))) {
                 Some((busy, ready)) => {
-                    if let Some(f) = ready {
-                        self.pending_frame = Some(f);
+                    // movie mode plays every frame at the project rate: rather than let the wall clock
+                    // run past a second that is not rendered yet, hold it and resume when it lands.
+                    match ready {
+                        Some(f) => {
+                            self.pending_frame = Some(f);
+                            if self.movie_stall {
+                                self.movie_stall = false;
+                                self.player.play();
+                            }
+                        }
+                        None if self.player.is_playing() => {
+                            self.movie_stall = true;
+                            self.player.pause();
+                        }
+                        None => {}
                     }
-                    if busy {
+                    if busy || self.movie_stall {
                         ctx.request_repaint_after(Duration::from_millis(16));
                     }
                 }

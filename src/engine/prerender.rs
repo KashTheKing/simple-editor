@@ -274,6 +274,30 @@ impl PreRender {
         (1.0 - left / total as f32).clamp(0.0, 1.0)
     }
 
+    /// Requested ranges as merged runs of whole seconds with their state: `(from, to, ready)`.
+    /// Drawn as the pre-render bar at the top of the timeline.
+    pub fn segments(&self) -> Vec<(f64, f64, bool)> {
+        let mut secs: Vec<(i64, bool)> = Vec::new();
+        for (a, b) in &self.ranges {
+            for s in sec_range(*a, *b) {
+                let ready = !self.dirty.contains(&s) && self.done.iter().any(|(x, _)| *x == s);
+                match secs.iter_mut().find(|(x, _)| *x == s) {
+                    Some(e) => e.1 |= ready,
+                    None => secs.push((s, ready)),
+                }
+            }
+        }
+        secs.sort_by_key(|(s, _)| *s);
+        let mut out: Vec<(f64, f64, bool)> = Vec::new();
+        for (s, ready) in secs {
+            match out.last_mut() {
+                Some(l) if l.2 == ready && (l.1 - s as f64).abs() < 1e-9 => l.1 = (s + 1) as f64,
+                _ => out.push((s as f64, (s + 1) as f64, ready)),
+            }
+        }
+        out
+    }
+
     pub fn clear(&mut self) {
         self.ranges.clear();
         self.queue.clear();
@@ -419,6 +443,18 @@ fn prune(d: &Path, budget: u64) -> Vec<u64> {
 mod tests {
     use super::*;
     use crate::model::{Clip, EffectKind, Project, Track};
+
+    /// The timeline bar: rendered seconds merge into ready runs, everything else stays pending.
+    #[test]
+    fn segments_merge_by_state() {
+        let mut pr = PreRender::new();
+        pr.ranges = vec![(0.0, 5.0)];
+        pr.done = vec![(0, 1), (1, 1), (3, 1)];
+        pr.dirty = vec![1];
+        // 0 ready, 1 dirty, 2 pending, 3 ready, 4 pending
+        assert_eq!(pr.segments(), vec![(0.0, 1.0, true), (1.0, 3.0, false), (3.0, 4.0, true), (4.0, 5.0, false)]);
+        assert!(PreRender::new().segments().is_empty());
+    }
 
     /// Write a whole cache file at once (the renderer streams it; the tests do not need to).
     fn write_file(path: &PathBuf, data: &[u8]) -> std::io::Result<()> {

@@ -36,6 +36,8 @@ pub struct LibraryState {
     pub unused_only: bool,
     /// 0 name, 1 duration, 2 kind, 3 recently added
     pub sort: u8,
+    /// 0 = list rows, 1 = thumbnail gallery. Applies to both tabs.
+    pub view: u8,
     /// None = all folders, Some("") = root only, Some(name) = that folder (+ subfolders)
     pub folder: Option<String>,
     pub collapsed: Vec<String>,
@@ -79,6 +81,10 @@ pub struct LibraryResponse {
     pub import_url: bool,
     /// "Edit labels…" was picked in a label menu — the app opens the label editor (Inspector).
     pub edit_labels: bool,
+    /// "New ▸ Adjustment layer" — the app runs `Action::AddAdjustment`.
+    pub new_adjustment: bool,
+    /// "Open…" — the app runs `Action::OpenFile` (its own file dialog / recents handling).
+    pub open_dialog: bool,
 }
 
 /// (name, colour) of every `Project.labels` entry, snapshotted once per frame.
@@ -132,7 +138,7 @@ pub fn show(
     if state.tab == 0 {
         library_tab(ui, state, project, settings, &mut thumbs, &labels, palette, ytdlp, &mut resp, undo);
     } else {
-        recent_tab(ui, state, settings, &labels, palette, &mut resp);
+        recent_tab(ui, state, settings, &mut thumbs, &labels, palette, &mut resp);
     }
     resp
 }
@@ -459,18 +465,39 @@ fn library_tab(
 
     let mut import = false;
     let mut new_folder = false;
+    let mut resp_open = false;
     let mut sort = state.sort;
     let mut import_url = false;
+    let mut new_seq = false;
+    let mut new_adj = false;
     toolbar(ui, state, labels, palette, |ui, state| {
+        if ui.button("Open…").clicked() {
+            resp_open = true;
+        }
+        ui.menu_button("New ▾", |ui| {
+            if ui.button("Import files…").clicked() {
+                import = true;
+                ui.close();
+            }
+            if ui.button("Sequence").clicked() {
+                new_seq = true;
+                ui.close();
+            }
+            if ui.button("Adjustment layer").clicked() {
+                new_adj = true;
+                ui.close();
+            }
+            if ui.button("Folder…").clicked() {
+                new_folder = true;
+                ui.close();
+            }
+        });
         if ui.button("Import…").clicked() {
             import = true;
         }
         // only when yt-dlp is installed — the whole URL import is optional
         if ytdlp && ui.button("Import URL…").on_hover_text("Download media from a link with yt-dlp").clicked() {
             import_url = true;
-        }
-        if ui.button("New folder…").clicked() {
-            new_folder = true;
         }
         egui::ComboBox::from_id_salt("lib_sort")
             .selected_text(["Name", "Duration", "Kind", "Recent"][state.sort.min(3) as usize])
@@ -482,6 +509,12 @@ fn library_tab(
             });
     });
     state.sort = sort;
+    resp.open_dialog |= resp_open;
+    resp.new_adjustment |= new_adj;
+    if new_seq {
+        ops.push(LibOp::SeqNew);
+        op_start = true;
+    }
     resp.import |= import;
     resp.import_url |= import_url;
     if new_folder {
@@ -513,8 +546,16 @@ fn library_tab(
             3 => order.sort_by_key(|&i| std::cmp::Reverse(project.assets[i].id)),
             _ => order.sort_by_cached_key(|&i| project.assets[i].name().to_lowercase()),
         }
-        for i in order {
-            asset_row(ui, state, project, i, &used, thumbs, labels, palette, resp, &mut ops, &mut op_start);
+        if state.view == 1 {
+            ui.horizontal_wrapped(|ui| {
+                for i in order {
+                    asset_tile(ui, state, project, i, thumbs, labels, palette, resp);
+                }
+            });
+        } else {
+            for i in order {
+                asset_row(ui, state, project, i, &used, thumbs, labels, palette, resp, &mut ops, &mut op_start);
+            }
         }
 
         details_box(ui, state, project, labels, palette, resp, &mut ops, &mut op_start);
@@ -645,6 +686,13 @@ fn toolbar(
         });
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 3.0;
+            ui.weak(RichText::new("View").small());
+            for (i, n) in ["List", "Gallery"].iter().enumerate() {
+                if ui.selectable_label(state.view == i as u8, RichText::new(*n).small()).clicked() {
+                    state.view = i as u8;
+                }
+            }
+            ui.separator();
             ui.weak(RichText::new("Filters").small());
             for (i, n) in ["All", "Video", "Audio", "Image", "Seq", "Short SFX", "Music"].iter().enumerate() {
                 if ui.selectable_label(state.kind_filter == i as u8, RichText::new(*n).small()).clicked() {
@@ -671,9 +719,15 @@ fn folder_tree(
     op_start: &mut bool,
 ) {
     let names = project.folder_names();
+    // file-explorer root: everything in the project hangs off "Library"
+    ui.label(RichText::new("Library").strong());
     ui.horizontal(|ui| {
-        if ui.selectable_label(state.folder.is_none(), "All").clicked() {
+        ui.add_space(10.0);
+        if ui.selectable_label(state.folder.is_none(), "Imported").clicked() {
             state.folder = None;
+        }
+        if ui.selectable_label(false, "Recent").clicked() {
+            state.tab = 1;
         }
         let r = ui.selectable_label(state.folder.as_deref() == Some(""), "▤ Root");
         if r.clicked() {
@@ -863,6 +917,77 @@ fn asset_row(
         }
     });
 }
+
+/// Gallery cell: a thumbnail with the name under it. Same click/drag behaviour as `asset_row`,
+/// without the context menu (the list view keeps that).
+fn asset_tile(
+    ui: &mut egui::Ui,
+    state: &mut LibraryState,
+    project: &Project,
+    i: usize,
+    thumbs: &mut Option<&mut ThumbCache>,
+    labels: &Labels,
+    palette: &Palette,
+    resp: &mut LibraryResponse,
+) {
+    let a = &project.assets[i];
+    let selected = state.selected == Some(a.id);
+    let tint = (a.label != 0).then(|| lbl_color(labels, a.label, palette)).unwrap_or(palette.text);
+    let id = egui::Id::new(("tile", a.id));
+    let src = ui.dnd_drag_source(id, DragPayload::Asset(a.id), |ui| {
+        ui.set_max_width(TILE);
+        ui.vertical(|ui| {
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(TILE, TILE * 0.56), egui::Sense::hover());
+            ui.painter().rect_filled(rect, 2.0, palette.panel);
+            if a.has_video() {
+                if let Some(cache) = thumbs.as_deref_mut() {
+                    if let Some((tex, [w, h])) = cache.texture(ui.ctx(), &a.path, 0.0, TILE as u32) {
+                        if h > 0 {
+                            let k = (rect.width() / w as f32).min(rect.height() / h as f32);
+                            let size = egui::vec2(w as f32 * k, h as f32 * k);
+                            ui.painter().image(
+                                tex,
+                                egui::Rect::from_center_size(rect.center(), size),
+                                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                egui::Color32::WHITE,
+                            );
+                        }
+                    }
+                }
+            }
+            ui.painter().text(
+                rect.left_bottom() + egui::vec2(3.0, -3.0),
+                egui::Align2::LEFT_BOTTOM,
+                kind_tag(a.kind),
+                egui::TextStyle::Small.resolve(ui.style()),
+                palette.text_dim,
+            );
+            let name = RichText::new(a.name()).color(tint);
+            ui.add(egui::Label::new(if selected { name.strong() } else { name }).truncate());
+        });
+    });
+    let r = ui.interact(src.response.rect, id.with("click"), egui::Sense::click());
+    if selected {
+        ui.painter().rect_stroke(
+            src.response.rect,
+            2.0,
+            egui::Stroke::new(1.0, palette.selection),
+            egui::StrokeKind::Inside,
+        );
+    }
+    if r.clicked() {
+        state.selected = Some(a.id);
+    }
+    if r.double_clicked() {
+        state.selected = Some(a.id);
+        resp.add_to_timeline.push(a.id);
+    }
+    r.on_hover_text(&a.path);
+}
+
+/// Gallery cell width (points). Thumbnails are 16:9 inside it.
+const TILE: f32 = 108.0;
 
 /// Details of the selected asset: path, format, description, tags, label, folder.
 #[allow(clippy::too_many_arguments)]
@@ -1176,20 +1301,27 @@ enum RecOp {
 
 const CLEAR_RECENT: &str = "Clear the whole recent list? Pins, labels and tags are lost (no undo).";
 
+#[allow(clippy::too_many_arguments)]
 fn recent_tab(
     ui: &mut egui::Ui,
     state: &mut LibraryState,
     settings: &mut Settings,
+    thumbs: &mut Option<&mut ThumbCache>,
     labels: &Labels,
     palette: &Palette,
     resp: &mut LibraryResponse,
 ) {
     let mut clear = false;
+    let (mut open_dialog, mut import) = (false, false);
     toolbar(ui, state, labels, palette, |ui, _state| {
+        open_dialog = ui.button("Open…").clicked();
+        import = ui.button("Import…").clicked();
         if ui.button("Clear").clicked() && confirm("Clear recent", CLEAR_RECENT) {
             clear = true;
         }
     });
+    resp.open_dialog |= open_dialog;
+    resp.import |= import;
     if clear {
         recent_clear(settings, resp);
         resp.clear_recent = true;
@@ -1231,6 +1363,10 @@ fn recent_tab(
                     if let Some(c) = tint {
                         let (bar, _) = ui.allocate_exact_size(egui::vec2(3.0, 14.0), egui::Sense::hover());
                         ui.painter().rect_filled(bar, 1.0, c);
+                    }
+                    // videos and stills get the same filmstrip thumbnail the library rows use
+                    if matches!(ext_class(&rec.path), 1 | 3) {
+                        thumb(ui, thumbs, &rec.path, 18.0);
                     }
                     match tint {
                         Some(c) => ui.label(RichText::new(name).color(c)),
@@ -1652,7 +1788,7 @@ ame	hat\keeps\going\clip-with-a-long-name.mp4",
                     pane_right = pane.right();
                     ui.scope_builder(egui::UiBuilder::new().max_rect(pane), |ui| {
                         let mut resp = LibraryResponse::default();
-                        recent_tab(ui, &mut state, &mut settings, &labels, &palette, &mut resp);
+                        recent_tab(ui, &mut state, &mut settings, &mut None, &labels, &palette, &mut resp);
                         right = ui.ctx().data(|d| d.get_temp(egui::Id::new("row_btn_right")).unwrap_or(f32::NAN));
                     });
                 });

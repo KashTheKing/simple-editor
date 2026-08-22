@@ -203,6 +203,9 @@ pub struct TimelineCtx<'a> {
     pub thumbs: Option<&'a mut ThumbCache>,
     /// Timeline ranges shaded in `palette.selection` at 15 % alpha (auto-cut "keep" preview). Empty = nothing.
     pub keep_ranges: &'a [(f64, f64)],
+    /// Movie-mode pre-render coverage: merged `(from, to, ready)` runs, drawn as a bar along the top
+    /// of the ruler. Empty = movie mode is off / nothing requested.
+    pub prerender: &'a [(f64, f64, bool)],
     /// Active tool strip tool. Cut splits a clicked clip, Marker drops a marker, Stretch retimes an
     /// edge drag instead of trimming it; everything else behaves as Select.
     pub tool: crate::ui::tools::Tool,
@@ -1298,6 +1301,16 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         lp.rect_filled(g, 0, pal.accent);
     }
 
+    // ---- pre-render bar: a thin strip along the very top of the ruler ----
+    for &(a, b, ready) in c.prerender {
+        let (xa, xb) = (state.x_at(a), state.x_at(b));
+        let seg = Rect::from_min_max(pos2(xa.max(ruler.left()), ruler.top()), pos2(xb, ruler.top() + 3.0));
+        if seg.is_positive() {
+            let col = if ready { pal.selection } else { pal.text_dim };
+            rp.rect_filled(seg, 0, col);
+        }
+    }
+
     // ---- ruler ticks ----
     let (major, minor) = tick_step(state.zoom);
     let ratio = (major / minor).round() as i64;
@@ -2195,6 +2208,7 @@ mod tests {
                             playing: false,
                             thumbs: None,
                             keep_ranges: &[],
+                            prerender: &[],
                             tool: *tool,
                         },
                     ));
