@@ -125,6 +125,8 @@ pub struct App {
     url_dialog: Option<(String, bool)>,
     /// Running URL downloads — polled each frame, imported into the library when they finish.
     downloads: Vec<crate::media::ytdlp::Download>,
+    /// One receiver per import batch: ffprobe runs on a worker, `poll_probes` adopts the results.
+    probes: Vec<Receiver<crate::engine::import::Probed>>,
     /// Was the Auto-cut pane drawn last frame? (its keep-range shading is only valid while it is open).
     /// `autocut_drawing` accumulates this frame; the timeline reads `autocut_shown` so the shading does
     /// not depend on which pane the tile tree draws first.
@@ -799,6 +801,7 @@ impl App {
             ytdlp_available: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             url_dialog: None,
             downloads: Vec::new(),
+            probes: Vec::new(),
             autocut_shown: false,
             autocut_drawing: false,
             tracking_shown: false,
@@ -871,6 +874,8 @@ impl App {
     }
 
     /// Empty project + one media file: open it as the project (returns empty); otherwise import into the library.
+    /// ponytail: that single file is still probed on this thread — it settles the project format, size
+    /// and zoom before anything is drawn; give it a placeholder too if opening ever feels slow.
     fn open_or_import(&mut self, paths: &[PathBuf]) -> Vec<Id> {
         if self.project.is_empty() && self.project.assets.is_empty() && paths.len() == 1 {
             self.open_media(&paths[0]);
@@ -895,6 +900,7 @@ impl App {
     }
 
     fn set_project(&mut self, project: Project, path: Option<PathBuf>) {
+        self.probes.clear(); // import probes belong to the project that started them
         self.project = project;
         self.project_path = path;
         self.dirty = false;
@@ -979,30 +985,68 @@ impl App {
         }
     }
 
-    /// Import media files into the library (probe each). Returns new asset ids.
+    /// Import media files into the library. Probing spawns ffprobe per file (~100 ms), so each path
+    /// lands as a placeholder asset now and `poll_probes` folds in the real metadata a few frames
+    /// later — dropping ten files costs this thread nothing. Returns the asset ids.
+    /// ponytail: an MCP `media.import` reply therefore quotes duration 0 until the probe lands;
+    /// blocking the tool call on it is the fix if an agent ever needs the number in the same reply.
     fn import_files(&mut self, paths: &[PathBuf]) -> Vec<Id> {
         let mut ids = Vec::new();
-        let mut any = false;
+        let mut fresh: Vec<(Id, String)> = Vec::new();
         for path in paths {
             let p = path.to_string_lossy().into_owned();
-            match media::probe(&p, self.backend()) {
-                Ok(asset) => {
-                    if !any {
-                        self.push_undo();
-                        any = true;
-                    }
-                    let id = self.project.add_asset(asset);
-                    ids.push(id);
-                    self.settings.touch_recent(&p);
+            // a re-import of a file already in the library must not re-probe it: adopting the result
+            // would rebuild clips the user has since trimmed
+            if let Some(a) = self.project.asset_by_path(&p) {
+                ids.push(a.id);
+                continue;
+            }
+            if fresh.is_empty() {
+                self.push_undo();
+            }
+            let id = self.project.add_asset(crate::engine::import::placeholder(&p));
+            ids.push(id);
+            fresh.push((id, p));
+        }
+        if !fresh.is_empty() {
+            self.probes.push(crate::engine::import::probe_async(fresh, self.backend()));
+            self.after_edit();
+        }
+        ids
+    }
+
+    /// Import probes that finished on their worker: fill the placeholder in, drop it if the file
+    /// turned out to be unreadable, and re-place any clip that was laid down from the placeholder.
+    fn poll_probes(&mut self, ctx: &egui::Context) {
+        if self.probes.is_empty() {
+            return;
+        }
+        let mut landed: Vec<crate::engine::import::Probed> = Vec::new();
+        self.probes.retain(|rx| loop {
+            match rx.try_recv() {
+                Ok(p) => landed.push(p),
+                Err(std::sync::mpsc::TryRecvError::Empty) => break true,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => break false,
+            }
+        });
+        let mut any = false;
+        for p in landed {
+            match p.asset {
+                Ok(a) => {
+                    any |= crate::engine::import::adopt(&mut self.project, p.id, a);
+                    self.settings.touch_recent(&p.path);
                 }
-                Err(e) => self.toast(format!("Can't import {}: {e}", path.display())),
+                Err(e) => {
+                    self.project.remove_asset(p.id);
+                    self.toast(format!("Can't import {}: {e}", p.path));
+                    any = true;
+                }
             }
         }
         if any {
-            self.settings.save();
-            if self.project.is_empty() && self.project.assets.len() == ids.len() {
-                // first media into an empty project: adopt its format
-                if let Some(a) = ids.first().and_then(|id| self.project.asset(*id)).cloned() {
+            // first media into an empty project: adopt its format (only knowable now)
+            if self.project.is_empty() {
+                if let Some(a) = self.project.assets.first().cloned() {
                     if a.has_video() && a.width > 0 {
                         self.project.width = a.width;
                         self.project.height = a.height;
@@ -1012,9 +1056,12 @@ impl App {
                     }
                 }
             }
+            self.settings.save();
             self.after_edit();
         }
-        ids
+        if !self.probes.is_empty() {
+            ctx.request_repaint_after(Duration::from_millis(80));
+        }
     }
 
     fn media_dialog() -> rfd::FileDialog {
@@ -4866,6 +4913,7 @@ impl eframe::App for App {
             }
         }
         self.poll_panels();
+        self.poll_probes(ctx);
         self.build_effect_thumbnails(ctx);
         if self.serve_gpu_exports() || self.export.is_some() {
             // a GPU export needs this thread to keep coming back to serve its frames

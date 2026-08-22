@@ -6,11 +6,13 @@
 //! with the "export FCP7 XML instead" note below. Anything the reader cannot map (unknown effects,
 //! missing media, speed ramps, colour pages) becomes an `Issue` instead of failing the import.
 
-use crate::media::is_image_path;
+use crate::media::{self, is_image_path, Backend};
 use crate::model::{Asset, AudioStreamInfo, Clip, ClipKind, Id, Project, TrackKind, TransitionKind, MIN_CLIP};
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::Receiver;
+use std::sync::Mutex;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Level {
@@ -1033,6 +1035,120 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+// ---------- background asset probing ----------
+//
+// `media::probe` spawns ffprobe, ~100 ms a file, so ten dropped files used to stall the UI thread for
+// a second. An import now drops a `placeholder` asset into the project straight away and one worker
+// probes the batch; the app polls the receiver and `adopt`s each result on a later frame.
+
+/// Paths with a probe still out. By path rather than asset id: a probe outlives the project that
+/// started it, and paths are what the library has to hand.
+/// ponytail: linear scan under one lock — an import batch is a handful of files, not a thousand.
+static PROBING: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Is this asset still waiting for its metadata? (the library says "Loading…" instead of a duration)
+pub fn is_probing(path: &str) -> bool {
+    PROBING.lock().map(|v| v.iter().any(|p| p == path)).unwrap_or(false)
+}
+
+/// One finished probe, ready for `adopt`.
+pub struct Probed {
+    pub id: Id,
+    pub path: String,
+    pub asset: Result<Asset, String>,
+}
+
+/// Stand-in asset for a file whose probe has not come back: the name and a kind guessed from the
+/// extension are all we know. An audio placeholder claims one stream so that dropping a song on the
+/// timeline before the probe lands still makes a clip for `adopt` to rebuild.
+pub fn placeholder(path: &str) -> Asset {
+    let kind = if is_image_path(path) {
+        ClipKind::Image
+    } else if matches!(media::ext(path).as_str(), "mp3" | "wav" | "m4a" | "aac" | "flac" | "ogg" | "opus" | "wma") {
+        ClipKind::Audio
+    } else {
+        ClipKind::Video
+    };
+    Asset {
+        id: 0,
+        path: path.to_string(),
+        kind,
+        duration: 0.0,
+        width: 0,
+        height: 0,
+        fps: 0.0,
+        audio_streams: if kind == ClipKind::Audio { vec![AudioStreamInfo::default()] } else { Vec::new() },
+        codec: String::new(),
+        folder: String::new(),
+        tags: Vec::new(),
+        label: 0,
+        description: String::new(),
+    }
+}
+
+/// Probe `files` (placeholder asset id + path) on a worker. Returns at once; poll the receiver.
+pub fn probe_async(files: Vec<(Id, String)>, backend: Backend) -> Receiver<Probed> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    if let Ok(mut q) = PROBING.lock() {
+        q.extend(files.iter().map(|(_, path)| path.clone()));
+    }
+    std::thread::spawn(move || {
+        for (id, path) in files {
+            // a panicking probe must not strand the rest of the batch as permanent "Loading…"
+            let asset = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| media::probe(&path, backend)))
+                .unwrap_or_else(|_| Err("probe crashed".into()));
+            if let Ok(mut q) = PROBING.lock() {
+                if let Some(i) = q.iter().position(|p| *p == path) {
+                    q.remove(i);
+                }
+            }
+            if tx.send(Probed { id, path, asset }).is_err() {
+                break; // nobody is listening any more
+            }
+        }
+    });
+    rx
+}
+
+/// Fold a finished probe into `project`. The asset is seconds old, so every clip on it was placed
+/// against the placeholder (one MIN_CLIP-long clip, wrong audio streams): those are laid down again
+/// at the same starts now that the real duration is known. False when the asset is already gone.
+pub fn adopt(project: &mut Project, id: Id, probed: Asset) -> bool {
+    // the path has to still match: a project closed while its probes were out would otherwise let a
+    // stale result land on whatever asset inherited the id
+    let Some(a) = project.asset_mut(id).filter(|a| a.path == probed.path) else { return false };
+    // whatever the user filed the asset under while it loaded survives; the probe wins on everything else
+    let keep =
+        (std::mem::take(&mut a.folder), std::mem::take(&mut a.tags), a.label, std::mem::take(&mut a.description));
+    *a = Asset { id, folder: keep.0, tags: keep.1, label: keep.2, description: keep.3, ..probed };
+
+    let mut spots: Vec<(f64, Option<usize>)> = Vec::new();
+    for (ti, t) in project.tracks.iter_mut().enumerate() {
+        let video = t.kind == TrackKind::Video;
+        let before = t.clips.len();
+        t.clips.retain(|c| {
+            let mine = c.uses_asset() && c.asset == id;
+            if mine {
+                spots.push((c.start, video.then_some(ti)));
+            }
+            !mine
+        });
+        if t.clips.len() != before {
+            t.prune_transitions();
+        }
+    }
+    // one placement made one clip, but re-placing it can make three (video + its audio streams), so
+    // collapse the spots by start or a second adopt would multiply them.
+    // ponytail: two placements of the same asset at the same start collapse into one — they would have
+    // to have been dropped in the sub-second the probe was out.
+    spots.sort_by(|x, y| x.0.total_cmp(&y.0).then(y.1.is_some().cmp(&x.1.is_some())));
+    spots.dedup_by(|x, y| x.0 == y.0);
+    for (start, vt) in spots {
+        project.insert_asset_clips(id, start, vt);
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1259,5 +1375,46 @@ mod tests {
         assert_eq!(channels("A2"), (false, vec![1]));
         assert_eq!(channels("B"), (true, vec![0]));
         assert_eq!(channels("V"), (true, vec![]));
+    }
+
+    /// A placeholder holds the library row until the probe lands; adopting it rebuilds the clip that
+    /// was dropped on the timeline in the meantime (real duration, real audio streams, same start).
+    #[test]
+    fn placeholder_is_adopted_without_losing_the_clip() {
+        let mut p = Project::new();
+        let id = p.add_asset(placeholder(r"C:\media\late.mp4"));
+        assert_eq!(p.asset(id).unwrap().duration, 0.0);
+        p.insert_asset_clips(id, 3.0, None);
+        let placed = p.all_clips().count();
+        assert_eq!(placed, 1, "one MIN_CLIP stand-in while the duration is unknown");
+
+        assert!(adopt(&mut p, id, asset(r"C:\media\late.mp4", 2)));
+        assert_eq!(p.asset(id).unwrap().duration, 10.0);
+        let clips: Vec<(f64, f64)> = p.all_clips().map(|(_, c)| (c.start, c.duration)).collect();
+        assert_eq!(clips.len(), 3, "video + its two audio streams: {clips:?}");
+        assert!(clips.iter().all(|(s, d)| (*s - 3.0).abs() < 1e-9 && (*d - 10.0).abs() < 1e-9), "{clips:?}");
+        // adopting again (a re-probe of the same file) must not multiply the clips
+        assert!(adopt(&mut p, id, asset(r"C:\media\late.mp4", 2)));
+        assert_eq!(p.all_clips().count(), 3);
+        assert!(!adopt(&mut p, 999, asset(r"C:\media\gone.mp4", 0)), "unknown asset id");
+    }
+
+    /// The UI-thread half of an import is only the placeholders: ten files must hand back a receiver
+    /// immediately, long before any probe could have run. Backend::Mf keeps the check from spawning
+    /// ten ffprobe children and skewing the timing-sensitive tests beside it.
+    #[test]
+    fn probe_async_does_not_block_the_caller() {
+        let files: Vec<(Id, String)> = (1..=10).map(|i| (i as Id, format!(r"C:\nope\{i}.mp4"))).collect();
+        let paths: Vec<String> = files.iter().map(|(_, p)| p.clone()).collect();
+        let t = std::time::Instant::now();
+        let rx = probe_async(files, Backend::Mf);
+        let spent = t.elapsed();
+        assert!(spent < std::time::Duration::from_millis(50), "import blocked the UI thread for {spent:?}");
+        assert!(paths.iter().any(|p| is_probing(p)), "the library needs to know these are still loading");
+        // drain, so the worker is done and PROBING is clean again before anything else looks
+        for _ in 0..paths.len() {
+            assert!(rx.recv().unwrap().asset.is_err(), "nothing is at those paths");
+        }
+        assert!(paths.iter().all(|p| !is_probing(p)));
     }
 }

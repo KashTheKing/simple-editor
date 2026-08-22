@@ -59,7 +59,7 @@ src/engine/mixer_fx.rs filter DSP (EQ, reverb, echo, distortion, compressor, gat
 src/engine/export.rs   ffmpeg export (pipe), FrameSource::{Cpu,Gpu}, lossless cut, encoder detection
 src/engine/convert.rs  "Convert To…" transcodes (gif<->video, containers, audio, rescale)
 src/engine/capture.rs  screen recording + voiceover through ffmpeg (gdigrab / dshow)
-src/engine/import.rs   FCP7 XML / EDL / .prproj import with a per-item pass/fail report
+src/engine/import.rs   FCP7 XML / EDL / .prproj import with a per-item report; async asset probing
 src/engine/subtitles.rs SRT/VTT parse + write
 src/engine/autocut.rs  silence/speech segmentation from waveform peaks
 src/engine/presets.rs  curve/motion presets, effect-chain / node-graph presets, clip templates
