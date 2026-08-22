@@ -2,12 +2,14 @@
 //! pane, so it can also be popped out). One row of icon buttons:
 //!   Select (V) · Text (T) · Rectangle · Ellipse · Triangle · Polygon · Star · Line · Arrow · Draw (D) ·
 //!   Mask (rect/ellipse/polygon/path) · Zoom
-//! plus, for shape tools, fill and stroke colour buttons and a stroke-width DragValue; for Draw, a
+//! plus a magnet button that lights up while snapping is on (S, or Settings.snap's own `N` shortcut),
+//! then, for shape tools, fill and stroke colour buttons and a stroke-width DragValue; for Draw, a
 //! play/record button, the brush colour/width, the playback speed (0.5x / 1x / 2x) and a page toggle.
 //!
 //! The active tool changes what a click-drag in the Preview does (see `ui::preview`): Select edits the
-//! selected clip, a shape tool drags out a new Shape clip at the playhead, Draw records strokes while the
-//! mouse is down (timed, so the sketch replays), Mask edits the selected effect's / clip's mask.
+//! selected clip, a shape tool drags out a new Shape clip at the playhead (Shift locks its aspect ratio,
+//! Alt grows it from the press point instead of corner-to-corner), Draw records strokes while the mouse
+//! is down (timed, so the sketch replays), Mask edits the selected effect's / clip's mask.
 
 use crate::model::{MaskShape, ShapeKind};
 use crate::theme::Palette;
@@ -104,6 +106,8 @@ pub(crate) enum Glyph {
     Layers,
     /// A shooting target: rings and cross ticks — motion tracking.
     Target,
+    /// A horseshoe magnet — the snapping toggle.
+    Magnet,
 }
 
 const STRIP: [(Tool, Glyph, &str); 15] = [
@@ -124,53 +128,76 @@ const STRIP: [(Tool, Glyph, &str); 15] = [
     (Tool::Zoom, Glyph::Zoom, "Zoom"),
 ];
 
-/// Single-key shortcut of a tool (used for the tooltips and by `handle_hotkeys`).
+/// Single-key shortcut of a tool (used for the tooltips and by `handle_hotkeys`). The shape tools cycle
+/// on Shift+S instead (bare `S` toggles snapping), so their tooltip is built by hand in `show`.
 pub fn tool_hotkey(tool: Tool) -> Option<Key> {
     match tool {
         Tool::Select => Some(Key::V),
         Tool::Text => Some(Key::T),
         Tool::Draw => Some(Key::D),
-        Tool::Shape(_) => Some(Key::S),
         Tool::Mask(_) => Some(Key::M),
         Tool::Cut => Some(Key::C),
         Tool::Stretch => Some(Key::R),
-        Tool::Zoom | Tool::Marker => None,
+        Tool::Shape(_) | Tool::Zoom | Tool::Marker => None,
     }
 }
 
-/// V / T / S / D / M, ignored while a text field has focus or any modifier is held. Pressing S or M
-/// again steps through the shape / mask variants. Returns the new tool when it changed; the key is
-/// consumed, so calling this twice in a frame is harmless.
+/// V / T / D / M and Shift+S switch tools (Shift+S also steps through the shape variants; M steps
+/// through the mask variants), ignored while a text field has focus or an unlisted modifier is held.
+/// Bare `S` is snapping's key (see `handle_snap_hotkey`), not a tool switch. Returns the new tool when it
+/// changed; the key is consumed, so calling this twice in a frame is harmless.
 pub fn handle_hotkeys(ctx: &egui::Context, state: &mut ToolsState) -> Option<Tool> {
     if ctx.wants_keyboard_input() {
         return None;
     }
-    let next = ctx.input_mut(|i| {
+    ctx.input_mut(|i| {
+        // most-specific shortcut first: consume_key's own ctrl/command matching is exact, so this can
+        // never fire for e.g. Ctrl+Shift+S (Save As)
+        // ponytail: this also claims hotkeys.rs's default Shift+S (Action::AddShape) before the action
+        // table sees it — same trade-off the tool strip already makes for V/T/D/M. AddShape stays
+        // reachable from the Insert menu; give it a fresh binding in Settings > Hotkeys if that regresses.
+        if i.consume_key(Modifiers::SHIFT, Key::S) {
+            let next = Tool::Shape(next_shape(state.tool));
+            state.tool = next;
+            return Some(next);
+        }
         if !i.modifiers.is_none() {
             return None;
         }
-        if i.consume_key(Modifiers::NONE, Key::V) {
-            Some(Tool::Select)
+        let next = if i.consume_key(Modifiers::NONE, Key::V) {
+            Tool::Select
         } else if i.consume_key(Modifiers::NONE, Key::T) {
-            Some(Tool::Text)
+            Tool::Text
         } else if i.consume_key(Modifiers::NONE, Key::D) {
-            Some(Tool::Draw)
-        } else if i.consume_key(Modifiers::NONE, Key::S) {
-            Some(Tool::Shape(next_shape(state.tool)))
+            Tool::Draw
         } else if i.consume_key(Modifiers::NONE, Key::M) {
-            Some(Tool::Mask(next_mask(state.tool)))
+            Tool::Mask(next_mask(state.tool))
         } else if i.consume_key(Modifiers::NONE, Key::C) {
-            Some(Tool::Cut)
+            Tool::Cut
         } else if i.consume_key(Modifiers::NONE, Key::R) {
-            Some(Tool::Stretch)
+            Tool::Stretch
         } else {
-            None
-        }
-    })?;
-    (next != state.tool).then(|| {
-        state.tool = next;
-        next
+            return None;
+        };
+        (next != state.tool).then(|| {
+            state.tool = next;
+            next
+        })
     })
+}
+
+/// Bare `S` (no modifiers) toggles snapping — claimed here, ahead of the action table, so it can never
+/// race with Shift+S's shape cycle above or with the `N` binding in `hotkeys.rs` (`Action::ToggleSnap`,
+/// still live and unaffected). `*snap` flips in place; the caller persists it. Returns true when it fired.
+pub fn handle_snap_hotkey(ctx: &egui::Context, snap: &mut bool) -> bool {
+    if ctx.wants_keyboard_input() {
+        return false;
+    }
+    let pressed = ctx.input_mut(|i| i.modifiers.is_none() && i.consume_key(Modifiers::NONE, Key::S));
+    if pressed {
+        *snap = !*snap;
+    }
+    pressed
 }
 
 /// The shape tools in strip order (Draw has its own key, so it is not part of the S cycle).
@@ -204,23 +231,34 @@ fn next_mask(cur: Tool) -> MaskShape {
     }
 }
 
-/// Returns true when the tool or its style changed (the app may want to repaint the preview overlay).
-pub fn show(ui: &mut egui::Ui, state: &mut ToolsState, palette: &Palette) -> bool {
+/// Returns true when the tool, `*snap` or the style changed (the app may want to repaint the preview
+/// overlay). `snap` is `Settings.snap` — owned by the app, not this strip, so it comes in by reference.
+pub fn show(ui: &mut egui::Ui, state: &mut ToolsState, palette: &Palette, snap: &mut bool) -> bool {
     let mut changed = handle_hotkeys(ui.ctx(), state).is_some();
+    changed |= handle_snap_hotkey(ui.ctx(), snap);
     let base = ui.id();
     // wrapped: at a small pane width the strip must fold onto a second row, not clip its last buttons
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
         for (tool, icon, name) in STRIP {
             let active = same_tool(tool, state.tool);
-            let tip = match tool_hotkey(tool) {
-                Some(k) => format!("{name} ({})", k.name()),
-                None => name.to_string(),
+            let tip = if matches!(tool, Tool::Shape(_)) {
+                format!("{name} (Shift+S)")
+            } else {
+                match tool_hotkey(tool) {
+                    Some(k) => format!("{name} ({})", k.name()),
+                    None => name.to_string(),
+                }
             };
             if icon_button(ui, palette, base.with(("tool", name)), icon, &tip, active).clicked() && !active {
                 state.tool = tool;
                 changed = true;
             }
+        }
+        ui.separator();
+        if icon_button(ui, palette, base.with("snap"), Glyph::Magnet, "Snapping (S)", *snap).clicked() {
+            *snap = !*snap;
+            changed = true;
         }
         ui.separator();
         changed |= style_controls(ui, state, palette);
@@ -616,6 +654,27 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
                 p.rect_stroke(sheet, CornerRadius::same(1), stroke, StrokeKind::Inside);
             }
         }
+        // horseshoe magnet: a U-shaped body with a pole cap on each leg tip
+        Glyph::Magnet => {
+            let arc_c = c + egui::vec2(0.0, -1.0);
+            let arc_r = 5.0;
+            let arc: Vec<egui::Pos2> = (0..=12)
+                .map(|i| {
+                    let a = std::f32::consts::PI + std::f32::consts::PI * i as f32 / 12.0;
+                    arc_c + egui::vec2(a.cos() * arc_r, a.sin() * arc_r)
+                })
+                .collect();
+            p.add(egui::Shape::line(arc, stroke));
+            p.line_segment([arc_c + egui::vec2(-arc_r, 0.0), arc_c + egui::vec2(-arc_r, 6.5)], stroke);
+            p.line_segment([arc_c + egui::vec2(arc_r, 0.0), arc_c + egui::vec2(arc_r, 6.5)], stroke);
+            for x in [-arc_r, arc_r] {
+                p.rect_filled(
+                    egui::Rect::from_center_size(arc_c + egui::vec2(x, 6.5), egui::vec2(3.0, 2.6)),
+                    CornerRadius::same(1),
+                    fg,
+                );
+            }
+        }
         // tracking: a shooting target — two rings and four cross ticks
         Glyph::Target => {
             p.circle_stroke(c, r, stroke);
@@ -648,6 +707,7 @@ mod tests {
     struct Harness {
         ctx: egui::Context,
         state: ToolsState,
+        snap: bool,
         base: egui::Id,
         time: f64,
         changed: bool,
@@ -658,6 +718,7 @@ mod tests {
             let mut h = Self {
                 ctx: egui::Context::default(),
                 state: ToolsState::default(),
+                snap: false,
                 base: egui::Id::NULL,
                 time: 0.0,
                 changed: false,
@@ -674,11 +735,11 @@ mod tests {
                 ..Default::default()
             };
             let pal = Palette::new(true, Color32::from_rgb(0, 120, 212));
-            let Harness { ctx, state, base, changed, .. } = self;
+            let Harness { ctx, state, snap, base, changed, .. } = self;
             let _ = ctx.run(input, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     *base = ui.id();
-                    *changed = show(ui, state, &pal);
+                    *changed = show(ui, state, &pal, snap);
                 });
             });
         }
@@ -707,9 +768,12 @@ mod tests {
             }]);
         }
         fn key(&mut self, key: Key) {
+            self.key_mod(key, Modifiers::NONE);
+        }
+        fn key_mod(&mut self, key: Key, modifiers: Modifiers) {
             self.frame(vec![
-                Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE },
-                Event::Key { key, physical_key: None, pressed: false, repeat: false, modifiers: Modifiers::NONE },
+                Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers },
+                Event::Key { key, physical_key: None, pressed: false, repeat: false, modifiers },
             ]);
         }
     }
@@ -773,14 +837,27 @@ mod tests {
         assert_eq!(h.state.tool, Tool::Draw);
         h.key(Key::V);
         assert_eq!(h.state.tool, Tool::Select);
-        h.key(Key::S);
+        h.key_mod(Key::S, Modifiers::SHIFT);
         assert_eq!(h.state.tool, Tool::Shape(ShapeKind::Rect));
-        h.key(Key::S);
-        assert_eq!(h.state.tool, Tool::Shape(ShapeKind::Ellipse), "S steps through the shapes");
+        h.key_mod(Key::S, Modifiers::SHIFT);
+        assert_eq!(h.state.tool, Tool::Shape(ShapeKind::Ellipse), "Shift+S steps through the shapes");
         h.key(Key::M);
         assert_eq!(h.state.tool, Tool::Mask(MaskShape::Rect));
         h.key(Key::M);
         assert_eq!(h.state.tool, Tool::Mask(MaskShape::Ellipse));
+    }
+
+    #[test]
+    fn bare_s_toggles_snapping_not_the_tool() {
+        let mut h = Harness::new();
+        h.state.tool = Tool::Draw;
+        assert!(!h.snap);
+        h.key(Key::S);
+        assert!(h.snap, "bare S toggles snapping");
+        assert_eq!(h.state.tool, Tool::Draw, "bare S must not touch the active tool");
+        assert!(h.changed);
+        h.key(Key::S);
+        assert!(!h.snap, "S toggles back off");
     }
 
     #[test]
@@ -803,12 +880,14 @@ mod tests {
             modifiers: Modifiers::CTRL,
         }]);
         assert_eq!(h.state.tool, Tool::Draw, "Ctrl+S must stay the save shortcut");
+        assert!(!h.snap, "Ctrl+S must not toggle snapping either");
     }
 
     #[test]
     fn hotkeys_are_consumed_once() {
         // `show` handles the keys itself, so a second call in the same frame must be a no-op
         let mut state = ToolsState::default();
+        let mut snap = false;
         let ctx = egui::Context::default();
         let input = egui::RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 60.0))),
@@ -817,28 +896,51 @@ mod tests {
                 physical_key: None,
                 pressed: true,
                 repeat: false,
-                modifiers: Modifiers::NONE,
+                modifiers: Modifiers::SHIFT,
             }],
             ..Default::default()
         };
         let pal = Palette::new(true, Color32::from_rgb(0, 120, 212));
         let _ = ctx.run(input, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                show(ui, &mut state, &pal);
+                show(ui, &mut state, &pal, &mut snap);
                 assert!(handle_hotkeys(ui.ctx(), &mut state).is_none(), "key already consumed");
             });
         });
         assert_eq!(state.tool, Tool::Shape(ShapeKind::Rect));
+        assert!(!snap, "Shift+S is the shape cycle, not the snap toggle");
     }
 
     #[test]
     fn tool_hotkey_covers_the_documented_keys() {
         assert_eq!(tool_hotkey(Tool::Select), Some(Key::V));
         assert_eq!(tool_hotkey(Tool::Text), Some(Key::T));
-        assert_eq!(tool_hotkey(Tool::Shape(ShapeKind::Star)), Some(Key::S));
+        assert_eq!(tool_hotkey(Tool::Shape(ShapeKind::Star)), None, "shape tools cycle on Shift+S");
         assert_eq!(tool_hotkey(Tool::Draw), Some(Key::D));
         assert_eq!(tool_hotkey(Tool::Mask(MaskShape::Path)), Some(Key::M));
         assert_eq!(tool_hotkey(Tool::Zoom), None);
+    }
+
+    #[test]
+    fn clicking_the_magnet_toggles_snapping() {
+        let mut h = Harness::new();
+        assert!(!h.snap);
+        let pos = h.ctx.read_response(h.base.with("snap")).unwrap().rect.center();
+        h.frame(vec![Event::PointerMoved(pos)]);
+        h.frame(vec![Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        }]);
+        h.frame(vec![Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        }]);
+        assert!(h.snap, "clicking the magnet turns snapping on");
+        assert!(h.changed);
     }
 
     #[test]

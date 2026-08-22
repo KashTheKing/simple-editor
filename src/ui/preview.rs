@@ -208,6 +208,30 @@ fn signed_min(v: f32, min: f32) -> f32 {
     }
 }
 
+/// Shift locks the shape's aspect (square / circle / 45°-stepped line); Alt anchors it on the press point
+/// instead of corner-to-corner, so it grows symmetrically from where the drag started. Returns the two
+/// corners `draw_shape_preview` (and the final shape) should use in place of the raw press/cursor, so the
+/// live preview and what actually gets created always agree.
+fn constrain_drag(kind: ShapeKind, from: Pos2, to: Pos2, modifiers: egui::Modifiers) -> (Pos2, Pos2) {
+    let mut delta = to - from;
+    if modifiers.shift {
+        if matches!(kind, ShapeKind::Line | ShapeKind::Arrow) {
+            let len = delta.length();
+            let step = std::f32::consts::FRAC_PI_4;
+            let angle = (delta.y.atan2(delta.x) / step).round() * step;
+            delta = vec2(angle.cos(), angle.sin()) * len;
+        } else {
+            let m = delta.x.abs().max(delta.y.abs());
+            delta = vec2(m.copysign(delta.x), m.copysign(delta.y));
+        }
+    }
+    if modifiers.alt {
+        (from - delta, from + delta)
+    } else {
+        (from, from + delta)
+    }
+}
+
 /// Outline of the shape a drag is creating: `from` is where the press landed, `to` is the cursor.
 /// Bounded shapes fill the rectangle between them; a line or arrow runs from one to the other, so it
 /// must not be handed a normalised rect (its corners would point the wrong way down two of the four
@@ -399,8 +423,13 @@ fn tool_drag(
             }
             // draw the shape itself, not a box around it, so what you drag is what you get
             // `from`/`now` raw, not a normalised rect: a line runs press -> cursor, and only a bounded
-            // shape wants its corners sorted (see draw_shape_preview)
-            Tool::Shape(kind) => draw_shape_preview(&p, kind, d.from, now, c.palette, stroke),
+            // shape wants its corners sorted (see draw_shape_preview); Shift/Alt bend those corners first
+            // (constrain_drag) so the preview matches what drag_stopped below will actually create.
+            Tool::Shape(kind) => {
+                let modifiers = ui.input(|i| i.modifiers);
+                let (from, to) = constrain_drag(kind, d.from, now, modifiers);
+                draw_shape_preview(&p, kind, from, to, c.palette, stroke);
+            }
             _ => {
                 p.rect_stroke(Rect::from_two_pos(d.from, now), 0.0, stroke, StrokeKind::Inside);
             }
@@ -412,15 +441,18 @@ fn tool_drag(
         let (x1, y1) = to_proj(now);
         match tool {
             Tool::Shape(kind) => {
+                // Shift/Alt bend the two corners first (constrain_drag), same as the live preview above.
                 // Line/Arrow run from (-w, -h) to (+w, +h) about their centre (engine::shapes), so the
                 // half-extents stay SIGNED and the drag's direction survives; a dragged-up-right line
                 // used to come out pointing down-right because both were made absolute here.
-                let (dx, dy) = ((x1 - x0) / 2.0, (y1 - y0) / 2.0);
+                let modifiers = ui.input(|i| i.modifiers);
+                let (p0, p1) = constrain_drag(kind, pos2(x0, y0), pos2(x1, y1), modifiers);
+                let (dx, dy) = ((p1.x - p0.x) / 2.0, (p1.y - p0.y) / 2.0);
                 let (w, h) = match kind {
                     ShapeKind::Line | ShapeKind::Arrow => (signed_min(dx, 2.0), signed_min(dy, 2.0)),
                     _ => (dx.abs().max(2.0), dy.abs().max(2.0)),
                 };
-                r.new_shape = Some((kind, (x0 + x1) / 2.0, (y0 + y1) / 2.0, w, h));
+                r.new_shape = Some((kind, (p0.x + p1.x) / 2.0, (p0.y + p1.y) / 2.0, w, h));
             }
             Tool::Draw if d.points.len() > 1 => {
                 r.stroke = Some(ModelStroke { color: [255, 255, 255, 255], width: 6.0, points: d.points.clone() });
@@ -670,8 +702,17 @@ mod tests {
             }
         }
         fn frame(&mut self, events: Vec<Event>) -> PreviewResponse {
+            self.frame_mod(events, Modifiers::NONE)
+        }
+        fn frame_mod(&mut self, events: Vec<Event>, modifiers: Modifiers) -> PreviewResponse {
             self.time += 0.05;
-            let input = RawInput { screen_rect: Some(self.panel), time: Some(self.time), events, ..Default::default() };
+            let input = RawInput {
+                screen_rect: Some(self.panel),
+                time: Some(self.time),
+                events,
+                modifiers,
+                ..Default::default()
+            };
             let pal = Palette::new(true, Color32::WHITE);
             let H { ctx, state, project, selection, tool, undos, .. } = self;
             let mut out = PreviewResponse::default();
@@ -714,27 +755,27 @@ mod tests {
             self.frame(vec![btn(false)])
         }
         fn drag(&mut self, from: Pos2, to: Pos2) -> PreviewResponse {
-            self.frame(vec![Event::PointerMoved(from)]);
-            self.frame(vec![Event::PointerButton {
-                pos: from,
-                button: PointerButton::Primary,
-                pressed: true,
-                modifiers: Modifiers::NONE,
-            }]);
+            self.drag_mod(from, to, Modifiers::NONE)
+        }
+        /// Same gesture, with `modifiers` held down for the whole drag (Shift / Alt shape constraints).
+        fn drag_mod(&mut self, from: Pos2, to: Pos2, modifiers: Modifiers) -> PreviewResponse {
+            self.frame_mod(vec![Event::PointerMoved(from)], modifiers);
+            self.frame_mod(
+                vec![Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers }],
+                modifiers,
+            );
             let steps = 4;
             let (mut mask_edit, mut edited) = (false, false);
             for i in 1..=steps {
                 let p = from + (to - from) * (i as f32 / steps as f32);
-                let f = self.frame(vec![Event::PointerMoved(p)]);
+                let f = self.frame_mod(vec![Event::PointerMoved(p)], modifiers);
                 mask_edit |= f.mask_edit;
                 edited |= f.edited;
             }
-            let mut out = self.frame(vec![Event::PointerButton {
-                pos: to,
-                button: PointerButton::Primary,
-                pressed: false,
-                modifiers: Modifiers::NONE,
-            }]);
+            let mut out = self.frame_mod(
+                vec![Event::PointerButton { pos: to, button: PointerButton::Primary, pressed: false, modifiers }],
+                modifiers,
+            );
             // the flags are per-frame; the test wants the whole gesture
             out.mask_edit |= mask_edit;
             out.edited |= edited;
@@ -795,6 +836,43 @@ mod tests {
             assert!(x1 - x0 != 0.0 && y1 - y0 != 0.0);
             assert_eq!(((x1 - x0).signum(), (y1 - y0).signum()), want, "the far end must follow the cursor");
         }
+    }
+
+    #[test]
+    fn shift_locks_a_rect_drag_to_a_square() {
+        let mut h = H::new();
+        h.tool = Tool::Shape(ShapeKind::Rect);
+        h.frame(vec![]);
+        let out = h.drag_mod(pos2(250.0, 150.0), pos2(400.0, 220.0), Modifiers::SHIFT);
+        let (_, _, _, w, hh) = out.new_shape.expect("a shape was dragged out");
+        assert!((w - hh).abs() < 0.01, "Shift must square the drag: {w} x {hh}");
+    }
+
+    #[test]
+    fn shift_locks_a_line_to_45_degrees() {
+        let mut h = H::new();
+        h.tool = Tool::Shape(ShapeKind::Line);
+        h.frame(vec![]);
+        // a drag near 41 degrees should snap to a perfect 45-degree diagonal
+        let out = h.drag_mod(pos2(250.0, 150.0), pos2(400.0, 280.0), Modifiers::SHIFT);
+        let (_, _, _, w, hh) = out.new_shape.expect("a line was dragged out");
+        assert!((w.abs() - hh.abs()).abs() < 0.5, "45 deg: |w| should equal |hh|, got {w} x {hh}");
+    }
+
+    #[test]
+    fn alt_grows_a_shape_from_the_press_point() {
+        let mut h = H::new();
+        h.tool = Tool::Shape(ShapeKind::Rect);
+        h.frame(vec![]);
+        let press = pos2(250.0, 150.0);
+        let plain = h.drag(press, pos2(350.0, 220.0)).new_shape.unwrap();
+        let mut h2 = H::new();
+        h2.tool = Tool::Shape(ShapeKind::Rect);
+        h2.frame(vec![]);
+        let alt = h2.drag_mod(press, pos2(350.0, 220.0), Modifiers::ALT).new_shape.unwrap();
+        // same half-extents doubled, and the centre sits on the press point instead of the midpoint
+        assert!((alt.3 - plain.3 * 2.0).abs() < 0.5, "half-width doubles under Alt: {} vs {}", alt.3, plain.3);
+        assert!((alt.4 - plain.4 * 2.0).abs() < 0.5, "half-height doubles under Alt: {} vs {}", alt.4, plain.4);
     }
 
     #[test]
