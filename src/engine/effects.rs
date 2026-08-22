@@ -123,6 +123,13 @@ pub fn apply(effect: &Effect, t: f64, scale: f32, img: &mut Frame, scratch: &mut
         EffectKind::ChromaKey => {
             chroma_key(img, [e(0) as f32, e(1) as f32, e(2) as f32], e(3) as f32, e(4) as f32, e(5) >= 0.5, e(6) as f32)
         }
+        EffectKind::ColorReplace => color_replace(
+            img,
+            [e(0) as f32, e(1) as f32, e(2) as f32],
+            [e(3) as f32, e(4) as f32, e(5) as f32],
+            e(6) as f32,
+            e(7) as f32,
+        ),
         EffectKind::RecDot => rec_dot(img, t, scale, e(0), e(1), e(2), e(3) >= 0.5, e(4)),
         // geometric — handled by the compositor's placement (see `wobble`)
         EffectKind::Wobble | EffectKind::Plane3d => {}
@@ -650,6 +657,26 @@ fn to_ycc(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
 
 /// Key out colours near `key` (0..255) by their Cb/Cr distance, with spill removal. No edge shrink —
 /// that needs neighbourhood taps; `shaders::CHROMA_KEY` does it on the GPU.
+/// Blend every pixel within `tol` of `from` towards `to`, fading out over `tol .. tol + soft`.
+/// Distances are normalised so 1.0 is the full black-to-white diagonal, matching the GPU body.
+fn color_replace(img: &mut Frame, from: [f32; 3], to: [f32; 3], tol: f32, soft: f32) {
+    let f = from.map(|c| (c / 255.0).clamp(0.0, 1.0));
+    let t = to.map(|c| (c / 255.0).clamp(0.0, 1.0));
+    let tol = tol.clamp(0.0, 1.0);
+    let soft = soft.clamp(0.0, 1.0).max(0.0005);
+    for px in img.rgba.chunks_exact_mut(4) {
+        let c = [px[0] as f32 / 255.0, px[1] as f32 / 255.0, px[2] as f32 / 255.0];
+        let d = ((c[0] - f[0]).powi(2) + (c[1] - f[1]).powi(2) + (c[2] - f[2]).powi(2)).sqrt() / 1.732_050_8;
+        let hit = 1.0 - smoothstep(((d - tol) / soft).clamp(0.0, 1.0));
+        if hit <= 0.0 {
+            continue;
+        }
+        for i in 0..3 {
+            px[i] = ((c[i] + (t[i] - c[i]) * hit).clamp(0.0, 1.0) * 255.0).round() as u8;
+        }
+    }
+}
+
 fn chroma_key(img: &mut Frame, key: [f32; 3], similarity: f32, smoothness: f32, show_mask: bool, spill: f32) {
     let (_, kb, kr) = to_ycc(key[0] / 255.0, key[1] / 255.0, key[2] / 255.0);
     let klen = (kb * kb + kr * kr).sqrt();
@@ -1130,6 +1157,22 @@ mod tests {
             assert!(v >= prev - 1e-9, "not monotone at {i}: {v} < {prev}");
             prev = v;
         }
+    }
+
+    #[test]
+    fn color_replace_swaps_only_matching_pixels() {
+        let mut img = Frame::new(3, 1);
+        // red (the source), blue, white
+        img.rgba.copy_from_slice(&[255, 0, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255]);
+        // red -> green, tight tolerance
+        run(K::ColorReplace, &[255.0, 0.0, 0.0, 0.0, 255.0, 0.0, 0.05, 0.02], &mut img);
+        assert_eq!(&img.rgba[..4], &[0, 255, 0, 255], "the source colour is replaced");
+        assert_eq!(&img.rgba[4..8], &[0, 0, 255, 255], "blue is untouched");
+        assert_eq!(&img.rgba[8..12], &[255, 255, 255, 255], "white is untouched");
+        // a wide tolerance catches near-matches too
+        let mut img = flat(1, 1, [230, 20, 20, 255]);
+        run(K::ColorReplace, &[255.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.1], &mut img);
+        assert!(img.rgba[0] < 60, "near-red should have been replaced: {:?}", &img.rgba[..3]);
     }
 
     #[test]

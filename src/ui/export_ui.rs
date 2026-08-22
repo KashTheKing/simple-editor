@@ -21,6 +21,10 @@ pub struct ExportUi {
     pub preset: String,
     pub custom: (u32, u32),
     pub lossless: bool,
+    /// Off by default: exports strip metadata unless the user turns this on.
+    pub metadata_on: bool,
+    /// Editable `(key, value)` rows, seeded from the project the first time it is turned on.
+    pub metadata: Vec<(String, String)>,
 }
 
 pub struct ExportChoice {
@@ -136,6 +140,36 @@ pub fn show(
             ui.end_row();
         });
 
+        ui.add_space(2.0);
+        if ui.checkbox(&mut state.metadata_on, "Write metadata").changed() && state.metadata.is_empty() {
+            state.metadata = vec![
+                ("title".into(), project.name.clone()),
+                ("artist".into(), String::new()),
+                ("comment".into(), String::new()),
+            ];
+        }
+        if state.metadata_on {
+            let mut drop: Option<usize> = None;
+            for (i, (k, v)) in state.metadata.iter_mut().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(k).desired_width(70.0).hint_text("key"));
+                    ui.add(egui::TextEdit::singleline(v).desired_width(140.0).hint_text("value"));
+                    if ui.small_button("\u{2715}").on_hover_text("Remove").clicked() {
+                        drop = Some(i);
+                    }
+                });
+            }
+            if let Some(i) = drop {
+                state.metadata.remove(i);
+            }
+            if ui.small_button("+ field").clicked() {
+                state.metadata.push((String::new(), String::new()));
+            }
+        } else {
+            ui.weak("No title, encoder or creation time is written.");
+        }
+        ui.add_space(2.0);
+
         if export::lossless_segments(project).is_some() {
             ui.checkbox(&mut state.lossless, "Fast lossless cut (-c copy)");
             if state.lossless {
@@ -231,6 +265,7 @@ fn pick_and_build(state: &ExportUi, project: &Project, settings: &Settings) -> O
             out_size: preset_size(project.width, project.height, &state.preset, state.custom),
             scaler: settings.export_scaler.clone(),
             frames: crate::engine::export::FrameSource::Cpu,
+            metadata: if state.metadata_on { state.metadata.clone() } else { Vec::new() },
         },
         lossless: state.lossless,
     })

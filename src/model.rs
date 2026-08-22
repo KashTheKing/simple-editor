@@ -493,6 +493,8 @@ pub enum EffectKind {
     BlobTrack,
     Vhs,
     RecDot,
+    // --- round 4 ---
+    ColorReplace,
     /// A user-written GLSL fragment shader (source in `Effect.shader`, up to 8 generic knobs).
     Shader,
 }
@@ -511,13 +513,14 @@ const fn ps(name: &'static str, default: f64, min: f64, max: f64) -> ParamSpec {
 }
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 24] = [
+    pub const ALL: [EffectKind; 25] = [
         EffectKind::Blur,
         EffectKind::MotionBlur,
         EffectKind::Pixelate,
         EffectKind::JpegCompress,
         EffectKind::Vhs,
         EffectKind::ChromaKey,
+        EffectKind::ColorReplace,
         EffectKind::Threshold,
         EffectKind::EdgeGlow,
         EffectKind::Tint,
@@ -543,7 +546,7 @@ impl EffectKind {
         match self {
             Color | Curves | Levels | HueShift | Tint | Grayscale | Invert | Threshold => "Adjustments",
             Blur | MotionBlur | Sharpen | Pixelate | JpegCompress | Vhs | EdgeGlow | Vignette | RecDot => "Stylize",
-            ChromaKey | Crop | BlobTrack => "Keying & Matte",
+            ChromaKey | ColorReplace | Crop | BlobTrack => "Keying & Matte",
             Flip | Plane3d | Wobble => "Transform",
             Shader => "Custom",
         }
@@ -562,6 +565,7 @@ impl EffectKind {
             EffectKind::Crop => "Crop",
             EffectKind::Wobble => "Camera Shake",
             EffectKind::ChromaKey => "Chroma Key",
+            EffectKind::ColorReplace => "Color Replace",
             EffectKind::Curves => "Color Curves",
             EffectKind::Levels => "Levels",
             EffectKind::HueShift => "Hue / Saturation",
@@ -591,6 +595,7 @@ impl EffectKind {
             EffectKind::Crop => P_CROP,
             EffectKind::Wobble => P_WOBBLE,
             EffectKind::ChromaKey => P_CHROMA,
+            EffectKind::ColorReplace => P_COLOR_REPLACE,
             EffectKind::Curves => P_CURVES,
             EffectKind::Levels => P_LEVELS,
             EffectKind::HueShift => P_HUE,
@@ -658,6 +663,18 @@ const P_CROP: &[ParamSpec] = &[
     ps("Top", 0.0, 0.0, 0.5),
     ps("Bottom", 0.0, 0.0, 0.5),
     ps("Feather", 0.0, 0.0, 0.5),
+];
+/// Swap one colour for another: everything within `Tolerance` of the source colour is blended to the
+/// target, `Softness` widening the falloff past the tolerance.
+const P_COLOR_REPLACE: &[ParamSpec] = &[
+    ps("From R", 255.0, 0.0, 255.0),
+    ps("From G", 0.0, 0.0, 255.0),
+    ps("From B", 0.0, 0.0, 255.0),
+    ps("To R", 0.0, 0.0, 255.0),
+    ps("To G", 128.0, 0.0, 255.0),
+    ps("To B", 255.0, 0.0, 255.0),
+    ps("Tolerance", 0.2, 0.0, 1.0),
+    ps("Softness", 0.1, 0.0, 1.0),
 ];
 const P_CHROMA: &[ParamSpec] = &[
     ps("Key R", 0.0, 0.0, 255.0),

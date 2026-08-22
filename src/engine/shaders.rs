@@ -148,6 +148,7 @@ pub fn body(kind: crate::model::EffectKind) -> Option<&'static str> {
         K::Flip => FLIP,
         K::Crop => CROP,
         K::ChromaKey => CHROMA_KEY,
+        K::ColorReplace => COLOR_REPLACE,
         K::Curves => CURVES,
         K::Levels => LEVELS,
         K::HueShift => HUE_SHIFT,
@@ -751,6 +752,24 @@ void main() {
 }
 "#;
 
+/// Replace one colour with another: RGB distance to the source colour, faded out over
+/// `Tolerance .. Tolerance + Softness` (distance normalised so 1.0 is black-to-white).
+const COLOR_REPLACE: &str = r#"
+void main() {
+    vec2 uv = gl_FragCoord.xy / u_res;
+    vec4 src = texture(tex, uv);
+    vec3 from = clamp(vec3(p0, p1, p2) / 255.0, 0.0, 1.0);
+    vec3 to = clamp(vec3(p3, p4, p5) / 255.0, 0.0, 1.0);
+    float tol = clamp(p6, 0.0, 1.0);
+    float soft = max(clamp(p7, 0.0, 1.0), 0.0005);
+    float d = distance(src.rgb, from) / 1.7320508;
+    float hit = 1.0 - smoothstep(tol, tol + soft, d);
+    vec4 res = vec4(mix(src.rgb, to, hit), src.a);
+    float m = u_has_mask > 0.5 ? texture(u_mask, uv).r : 1.0;
+    out_color = mix(src, res, m);
+}
+"#;
+
 /// Twelve knots (master, R, G, B) driving a monotone cubic through (0,0) (.25,a) (.5,b) (.75,c) (1,1).
 /// Fritsch-Carlson tangents keep the spline monotone, so a curve never folds back on itself.
 /// Declares p8..p11 itself: `PRELUDE` only carries p0..p7.
@@ -1229,7 +1248,7 @@ mod shader_body_tests {
             let want = !matches!(k, K::Wobble | K::Plane3d | K::Shader);
             assert_eq!(has, want, "{:?}", k);
         }
-        assert_eq!(bodies().len(), 21);
+        assert_eq!(bodies().len(), 22);
     }
 
     #[test]

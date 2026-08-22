@@ -60,6 +60,9 @@ pub struct ExportOptions {
     pub scaler: String,
     /// CPU compositor, or the UI thread's GPU renderer (so exports match the preview exactly).
     pub frames: FrameSource,
+    /// Container metadata to write, as `(key, value)`. Empty = strip everything (`-map_metadata -1`),
+    /// which is the default: exports carry no title/encoder/creation-time unless asked for.
+    pub metadata: Vec<(String, String)>,
 }
 
 pub struct Progress {
@@ -210,6 +213,11 @@ fn run_export(
         }
     }
     cmd.args(&args);
+    // nothing is inherited from the inputs; only what the user typed is written
+    cmd.args(["-map_metadata", "-1"]);
+    for (k, v) in opts.metadata.iter().filter(|(k, _)| !k.trim().is_empty()) {
+        cmd.args(["-metadata", &format!("{}={}", k.trim(), v)]);
+    }
     if is_gif {
         cmd.arg("-an");
     }
@@ -1054,6 +1062,7 @@ pub(crate) mod tests {
             out_size: Some((160, 120)),
             scaler: "bicubic".into(),
             frames: FrameSource::Cpu,
+            metadata: Vec::new(),
         };
         let text = Arc::new(Mutex::new(TextRasterizer::new()));
         assert_eq!(wait_done(&start_export(p, opts, text)), None);
@@ -1086,6 +1095,7 @@ pub(crate) mod tests {
             out_size: None,
             scaler: "bicubic".into(),
             frames: FrameSource::Cpu,
+            metadata: Vec::new(),
         };
         let text = Arc::new(Mutex::new(TextRasterizer::new()));
         let prog = start_export(p.clone(), opts.clone(), text.clone());

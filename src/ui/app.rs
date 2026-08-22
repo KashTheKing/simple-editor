@@ -1109,6 +1109,7 @@ impl App {
             out_size: None,
             scaler: self.settings.export_scaler.clone(),
             frames: self.export_frames(),
+            metadata: Vec::new(),
         }
     }
 
@@ -3291,6 +3292,7 @@ impl App {
                 out_size,
                 scaler,
                 frames: self.export_frames(),
+                metadata: Vec::new(),
             };
             let prog = export::start_export(self.export_project(), opts, self.text.clone());
             // same slot the UI uses: exclusion, the progress/Cancel window and the close guard all key off it
