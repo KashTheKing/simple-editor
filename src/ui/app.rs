@@ -2101,16 +2101,20 @@ impl App {
             }
             Pane::Inspector => {
                 let changed = {
-                    let App { project, selection, playhead, undo, redo, fonts, palette, .. } = self;
+                    let App { project, selection, playhead, undo, redo, fonts, palette, settings, .. } = self;
                     let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
                     let mut changed = false;
                     egui::ScrollArea::vertical().show(ui, |ui| {
-                        changed = inspector::show(ui, project, selection, *playhead, fonts, palette, &mut push);
+                        changed =
+                            inspector::show(ui, project, selection, *playhead, fonts, palette, settings, &mut push);
                     });
                     changed
                 };
                 if changed {
                     self.after_edit();
+                }
+                if let Some(a) = inspector::take_pending_action() {
+                    self.pending_actions.push(a);
                 }
             }
             Pane::Effects => {
