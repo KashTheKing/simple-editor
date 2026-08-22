@@ -1,10 +1,11 @@
 //! Screen recording + voiceover windows (both non-modal, both keep the editor usable).
 //!
-//! Screen recorder: output path, fps, bitrate (or CRF), region (Whole desktop / Region… with a
-//! drag-to-pick overlay / current monitor), microphone combo (`engine::capture::audio_devices`), desktop
-//! audio toggle, cursor toggle, and "Record when the editor loses focus" (auto start/stop) —
-//! the app watches focus and drives `engine::capture`. While recording: elapsed time, a stop button and a
-//! note that the file is imported into the library when it finishes.
+//! Screen recorder: output folder, fps, bitrate (or CRF), area (Whole desktop / a Region typed in
+//! desktop pixels), microphone combo (`engine::capture::audio_devices`), desktop audio toggle, cursor
+//! toggle, and "Record when the editor loses focus" (auto start/stop) — the app watches focus and drives
+//! `engine::capture`. While recording: elapsed time, a stop button and a note that the file is imported
+//! into the library when it finishes. Both windows only *ask*: the app owns the running recording (and
+//! its output path) and imports the file itself when it stops.
 //!
 //! Voiceover: input device, channels, a level meter, "Record from the playhead" (playback rolls while
 //! recording, so the take lines up), stop → the WAV is imported and placed on an audio track at the start
@@ -21,10 +22,8 @@ use std::path::PathBuf;
 pub struct CaptureUi {
     pub screen_open: bool,
     pub voice_open: bool,
-    /// Region picker armed (the next drag on the desktop overlay sets the region).
-    pub picking_region: bool,
     pub elapsed: f64,
-    /// Region in desktop pixels, written by the app's picker overlay.
+    /// Region in desktop pixels (x, y, w, h) — typed in the window, used in "region" mode.
     pub region: Option<(i32, i32, u32, u32)>,
     /// "desktop" | "region"
     pub area: String,
@@ -32,13 +31,8 @@ pub struct CaptureUi {
     pub level: f32,
     /// Roll playback while recording the voiceover, so the take lines up with the timeline.
     pub from_playhead: bool,
-    /// Files being written right now, and the timeline time a voiceover take started at.
-    pub screen_out: Option<PathBuf>,
-    pub voice_out: Option<PathBuf>,
+    /// Timeline time the current voiceover take started at.
     pub voice_start: Option<f64>,
-    /// Internal: previous frame's recording flags (drives the "finished → import" edge).
-    pub was_screen: bool,
-    pub was_voice: bool,
 }
 
 /// What the app should do this frame.
@@ -48,8 +42,6 @@ pub struct CaptureResponse {
     pub stop_screen: bool,
     pub start_voice: bool,
     pub stop_voice: bool,
-    /// A finished recording to import (path, place on the timeline at this time).
-    pub import: Option<(PathBuf, Option<f64>)>,
     /// Filled together with `start_screen` / `start_voice` — the options the window built.
     pub screen: Option<ScreenCaptureOptions>,
     pub voice: Option<VoiceoverOptions>,
@@ -85,16 +77,8 @@ pub fn show(
     recording_voice: bool,
     palette: &Palette,
 ) -> CaptureResponse {
+    // the app owns the output path of a running recording and imports it itself when it stops
     let mut r = CaptureResponse { auto_on_blur: settings.capture_on_blur, ..Default::default() };
-    // a recording that just ended is the file to import
-    if state.was_screen && !recording_screen {
-        r.import = state.screen_out.take().map(|p| (p, None));
-    }
-    if state.was_voice && !recording_voice {
-        r.import = state.voice_out.take().map(|p| (p, state.voice_start));
-    }
-    state.was_screen = recording_screen;
-    state.was_voice = recording_voice;
     if state.area.is_empty() {
         state.area = "desktop".into();
     }
@@ -103,9 +87,6 @@ pub fn show(
     }
     if state.voice_open {
         voice_window(ctx, state, settings, recording_voice, palette, &mut r);
-    }
-    if !state.screen_open {
-        state.picking_region = false;
     }
     r
 }
@@ -153,20 +134,21 @@ fn screen_window(
                 ui.end_row();
 
                 ui.label("Capture");
-                ui.horizontal(|ui| {
-                    combo(ui, "cap_area", &mut state.area, &AREAS, Some(110.0));
-                    if state.area == "region" && ui.button("Pick…").clicked() {
-                        state.picking_region = true;
-                    }
-                });
+                combo(ui, "cap_area", &mut state.area, &AREAS, Some(110.0));
                 ui.end_row();
 
                 if state.area == "region" {
-                    ui.label("");
-                    match state.region {
-                        Some((x, y, w, h)) => ui.weak(format!("{w}×{h} at {x}, {y}")),
-                        None => ui.weak("whole desktop until a region is picked"),
-                    };
+                    // ponytail: typed coordinates, not a drag-to-pick desktop overlay — a fullscreen
+                    // transparent viewport is a lot of machinery for four numbers.
+                    let (mut x, mut y, mut w, mut h) = state.region.unwrap_or((0, 0, 1280, 720));
+                    ui.label("Region");
+                    ui.horizontal(|ui| {
+                        ui.add(egui::DragValue::new(&mut x).prefix("x ").speed(2.0));
+                        ui.add(egui::DragValue::new(&mut y).prefix("y ").speed(2.0));
+                        ui.add(egui::DragValue::new(&mut w).prefix("w ").range(16..=16384).speed(2.0));
+                        ui.add(egui::DragValue::new(&mut h).prefix("h ").range(16..=16384).speed(2.0));
+                    });
+                    state.region = Some((x, y, w, h));
                     ui.end_row();
                 }
 
@@ -176,9 +158,6 @@ fn screen_window(
                 combo(ui, "cap_mic", &mut settings.capture_mic, &opts, Some(180.0));
                 ui.end_row();
             });
-            if state.picking_region {
-                ui.colored_label(ui.visuals().warn_fg_color, "Drag on the desktop to pick the region.");
-            }
             ui.add_enabled_ui(has_loopback, |ui| {
                 ui.checkbox(&mut settings.capture_desktop_audio, "Desktop audio").on_disabled_hover_text(
                     "No loopback input found — enable \"Stereo Mix\" in Windows sound settings.",
@@ -199,9 +178,7 @@ fn screen_window(
                     r.stop_screen = true;
                 }
             } else if ui.button("Record").clicked() {
-                let out = out_path(settings, "screen", "mp4");
-                state.screen_out = Some(out.clone());
-                r.screen = Some(screen_options(settings, state, out, has_loopback));
+                r.screen = Some(screen_options(settings, state, out_path(settings, "screen", "mp4"), has_loopback));
                 r.start_screen = true;
                 settings.save();
             }
@@ -227,6 +204,16 @@ pub(crate) fn screen_options(
         mic: settings.capture_mic.clone(),
         desktop_audio: settings.capture_desktop_audio && has_loopback,
         cursor: settings.capture_cursor,
+    }
+}
+
+/// The options a voiceover take should run with.
+pub(crate) fn voice_options(settings: &Settings) -> VoiceoverOptions {
+    VoiceoverOptions {
+        out: out_path(settings, "voice", "wav"),
+        device: settings.voice_device.clone(),
+        sample_rate: 48_000,
+        channels: settings.voice_channels.clamp(1, 2),
     }
 }
 
@@ -267,28 +254,14 @@ fn voice_window(
             } else {
                 let can = !settings.voice_device.is_empty();
                 if ui.add_enabled(can, egui::Button::new("Record")).on_disabled_hover_text("Pick an input.").clicked() {
-                    let out = out_path(settings, "voice", "wav");
-                    state.voice_out = Some(out.clone());
-                    r.voice = Some(VoiceoverOptions {
-                        out,
-                        device: settings.voice_device.clone(),
-                        sample_rate: 48000,
-                        channels: settings.voice_channels.clamp(1, 2),
-                    });
+                    r.voice = Some(voice_options(settings));
                     r.start_voice = true;
                     settings.save();
                 }
                 if state.voice_start.is_some() && ui.button("Retake").clicked() {
                     r.retake = true;
                     r.start_voice = true;
-                    let out = out_path(settings, "voice", "wav");
-                    state.voice_out = Some(out.clone());
-                    r.voice = Some(VoiceoverOptions {
-                        out,
-                        device: settings.voice_device.clone(),
-                        sample_rate: 48000,
-                        channels: settings.voice_channels.clamp(1, 2),
-                    });
+                    r.voice = Some(voice_options(settings));
                 }
             }
         });
@@ -345,29 +318,6 @@ mod tests {
         assert!(o.desktop_audio);
     }
 
-    #[test]
-    fn finished_recording_is_offered_for_import() {
-        let ctx = egui::Context::default();
-        let palette = Palette::new(true, egui::Color32::BLUE);
-        let mut s = Settings::default();
-        let mut st = CaptureUi { screen_out: Some(PathBuf::from("r.mp4")), ..state() };
-        // frame 1: recording, nothing to import
-        let mut r = CaptureResponse::default();
-        let _ = ctx.run(egui::RawInput::default(), |ctx| r = show(ctx, &mut st, &mut s, true, false, &palette));
-        assert!(r.import.is_none());
-        // frame 2: it stopped → import the file exactly once
-        let _ = ctx.run(egui::RawInput::default(), |ctx| r = show(ctx, &mut st, &mut s, false, false, &palette));
-        assert_eq!(r.import.take(), Some((PathBuf::from("r.mp4"), None)));
-        let _ = ctx.run(egui::RawInput::default(), |ctx| r = show(ctx, &mut st, &mut s, false, false, &palette));
-        assert!(r.import.is_none());
-        // a voiceover take carries the timeline time it started at
-        st.voice_out = Some(PathBuf::from("v.wav"));
-        st.voice_start = Some(12.5);
-        let _ = ctx.run(egui::RawInput::default(), |ctx| r = show(ctx, &mut st, &mut s, false, true, &palette));
-        let _ = ctx.run(egui::RawInput::default(), |ctx| r = show(ctx, &mut st, &mut s, false, false, &palette));
-        assert_eq!(r.import, Some((PathBuf::from("v.wav"), Some(12.5))));
-    }
-
     /// Headless: both windows lay out, idle and recording, and ask for nothing on their own.
     #[test]
     fn show_headless() {
@@ -376,7 +326,7 @@ mod tests {
         let mut s = Settings::default();
         for area in ["desktop", "region"] {
             for rec in [false, true] {
-                let mut st = CaptureUi { area: area.into(), picking_region: true, elapsed: 3.5, ..state() };
+                let mut st = CaptureUi { area: area.into(), elapsed: 3.5, ..state() };
                 let mut r = CaptureResponse::default();
                 let _ = ctx.run(egui::RawInput::default(), |ctx| r = show(ctx, &mut st, &mut s, rec, rec, &palette));
                 assert!(!r.start_screen && !r.stop_screen && !r.start_voice && !r.stop_voice);
@@ -385,13 +335,12 @@ mod tests {
                 assert!(st.screen_open && st.voice_open);
             }
         }
-        // closing the screen window disarms the region picker
-        let mut st = CaptureUi { picking_region: true, ..state() };
-        st.screen_open = false;
+        // region mode seeds an editable region instead of silently recording the whole desktop
+        let mut st = CaptureUi { area: "region".into(), ..state() };
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             show(ctx, &mut st, &mut s, false, false, &palette);
         });
-        assert!(!st.picking_region);
+        assert!(st.region.is_some(), "region mode always has a concrete region");
     }
 
     #[test]

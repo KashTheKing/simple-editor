@@ -263,6 +263,16 @@ fn preview_canvas(canvas: (u32, u32), quality: u32) -> (u32, u32) {
     (((canvas.0 as f32 * q) as u32).max(16), ((canvas.1 as f32 * q) as u32).max(16))
 }
 
+/// `preview_max_width` applied to a canvas size, keeping the aspect ratio. Must match
+/// `Player::set_canvas`, or the GPU renders at a different shape than the player decodes at.
+fn clamp_canvas(w: u32, h: u32, max_width: u32) -> (u32, u32) {
+    if max_width > 0 && w > max_width {
+        (max_width, ((h as u64 * max_width as u64) / w.max(1) as u64).max(1) as u32)
+    } else {
+        (w, h)
+    }
+}
+
 /// Render size for an image export: downscales are rendered straight at the target (the compositor's
 /// `Scaler` does the filtering), upscales are rendered at project size and enlarged by ffmpeg with the
 /// chosen resize flag — rendering a 4K frame from a 1080p timeline gains nothing but time.
@@ -1528,21 +1538,7 @@ impl App {
                     Tool::Draw => ShapeKind::Draw,
                     _ => ShapeKind::Rect,
                 };
-                self.push_undo();
-                let id = self.project.add_shape_clip(kind, self.playhead, 5.0);
-                if let Some(c) = self.project.clip_mut(id) {
-                    if let Some(s) = c.shape.as_mut() {
-                        s.fill = self.tools.fill;
-                        s.stroke = self.tools.stroke;
-                        s.stroke_width = self.tools.stroke_width;
-                        s.sides = self.tools.sides;
-                        s.corner = self.tools.corner;
-                        s.draw_rate = self.tools.draw_rate;
-                        s.page = self.tools.page;
-                    }
-                }
-                self.selection = vec![id];
-                self.after_edit();
+                self.add_shape(kind, None);
             }
             AddAdjustment => {
                 self.push_undo();
@@ -1559,15 +1555,16 @@ impl App {
                     self.toast("Select a clip (or an effect on it) to mask");
                     return;
                 };
-                self.push_undo();
-                let added = add_mask(&mut self.project, id, shape);
-                if added {
+                // snapshot first, commit on success: popping the undo entry afterwards would leave the
+                // redo stack cleared for an edit that never happened
+                let snap = self.project.to_json();
+                if add_mask(&mut self.project, id, shape) {
+                    push_undo_json(&mut self.undo, &mut self.redo, snap);
                     self.tools.tool = Tool::Mask(shape);
                     self.layout.reveal(Pane::Tools);
                     self.layout_dirty = true;
                     self.after_edit();
                 } else {
-                    self.undo.pop();
                     self.toast("That clip already has a mask");
                 }
             }
@@ -1725,36 +1722,69 @@ impl App {
         match pane {
             Pane::Preview => {
                 let frame = self.pending_frame.take();
-                let App { project, selection, playhead, undo, redo, preview: pv, player, palette, fullscreen, .. } =
-                    self;
-                let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
-                let resp = preview::show(
-                    ui,
-                    pv,
-                    preview::PreviewCtx {
+                let resp = {
+                    let App {
                         project,
                         selection,
-                        playhead: *playhead,
-                        playing: player.is_playing(),
-                        fullscreen: *fullscreen,
+                        playhead,
+                        undo,
+                        redo,
+                        preview: pv,
+                        player,
                         palette,
-                        undo: &mut push,
-                        frame,
-                        // TODO(app agent): pass the real tool / settings / pre-render progress and
-                        // consume resp.set_quality, resp.set_movie_mode, resp.new_shape, resp.stroke.
-                        tool: crate::ui::tools::Tool::Select,
-                        quality: 100,
-                        movie_mode: false,
-                        prerender: None,
-                    },
-                );
+                        fullscreen,
+                        tools,
+                        settings,
+                        prerender,
+                        ..
+                    } = self;
+                    let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
+                    // only while movie mode is on: progress() walks the requested ranges
+                    let done = settings
+                        .movie_mode
+                        .then(|| guarded(|| prerender.progress()).unwrap_or(1.0))
+                        .filter(|&p| p < 1.0);
+                    preview::show(
+                        ui,
+                        pv,
+                        preview::PreviewCtx {
+                            project,
+                            selection,
+                            playhead: *playhead,
+                            playing: player.is_playing(),
+                            fullscreen: *fullscreen,
+                            palette,
+                            undo: &mut push,
+                            frame,
+                            tool: tools.tool,
+                            quality: settings.preview_quality,
+                            movie_mode: settings.movie_mode,
+                            prerender: done,
+                        },
+                    )
+                };
                 let (cw, ch) = preview_canvas(resp.canvas, self.settings.preview_quality);
                 self.player.set_canvas(cw, ch, self.settings.preview_max_width);
-                self.canvas = (cw.min(self.settings.preview_max_width.max(16)), ch);
+                // same clamp the player applies, so the GPU renders at the aspect the player decodes at
+                self.canvas = clamp_canvas(cw, ch, self.settings.preview_max_width);
                 if let Some(t) = resp.seek {
                     self.seek(t);
                 }
                 self.pending_actions.extend(resp.actions);
+                if let Some(q) = resp.set_quality {
+                    self.settings.preview_quality = q;
+                    self.settings.save();
+                }
+                if resp.set_movie_mode.is_some() {
+                    // the action toggles the setting and starts / clears the pre-render
+                    self.pending_actions.push(Action::MovieMode);
+                }
+                if let Some((kind, cx, cy, w, h)) = resp.new_shape {
+                    self.add_shape(kind, Some((cx, cy, w, h)));
+                }
+                if let Some(s) = resp.stroke {
+                    self.add_stroke(s);
+                }
                 if resp.edited {
                     self.after_edit();
                 }
@@ -1826,11 +1856,11 @@ impl App {
                     let vt = track.filter(|&i| self.project.tracks[i].kind == TrackKind::Video);
                     match payload {
                         DragPayload::Sequence(id) => {
-                            self.push_undo();
+                            let snap = self.project.to_json();
                             if self.project.insert_sequence_clip(id, t, vt).is_none() {
-                                self.undo.pop();
                                 self.toast("A sequence can't contain itself");
                             } else {
+                                push_undo_json(&mut self.undo, &mut self.redo, snap);
                                 self.after_edit();
                             }
                         }
@@ -1914,14 +1944,35 @@ impl App {
                 }
             }
             Pane::Effects => {
-                let changed = {
+                let resp = {
                     let App { project, selection, playhead, undo, redo, palette, .. } = self;
                     let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
-                    // TODO(app agent): also consume resp.mask_for (switch to the mask tool) and
-                    // resp.open_nodes (open the node pane).
-                    effects_ui::show(ui, project, selection, *playhead, palette, &mut push).edited
+                    // the always-open catalogue is taller than the pane: without this the per-clip
+                    // effect stack under it is unreachable
+                    egui::ScrollArea::vertical()
+                        .show(ui, |ui| effects_ui::show(ui, project, selection, *playhead, palette, &mut push))
+                        .inner
                 };
-                if changed {
+                if let Some(i) = resp.mask_for {
+                    // ponytail: the viewport's mask tool edits clip.mask, not the effect's own mask —
+                    // targeting an effect index is a preview.rs change, not an app one.
+                    let shape = self
+                        .selection
+                        .first()
+                        .and_then(|&id| self.project.clip(id))
+                        .and_then(|c| c.effects.get(i))
+                        .and_then(|fx| fx.mask.as_ref())
+                        .map(|m| m.shape)
+                        .unwrap_or(MaskShape::Ellipse);
+                    self.tools.tool = Tool::Mask(shape);
+                    self.layout.reveal(Pane::Tools);
+                    self.layout_dirty = true;
+                }
+                if resp.open_nodes {
+                    self.layout.reveal(Pane::Nodes);
+                    self.layout_dirty = true;
+                }
+                if resp.edited {
                     self.after_edit();
                 }
             }
@@ -2042,6 +2093,58 @@ impl App {
         curves::set_available_motions(motions);
     }
 
+    /// Add a shape clip at the playhead, styled from the tool strip. `place` = (centre x, centre y, half
+    /// width, half height) in project px when the shape was dragged out in the viewport (Action::AddShape
+    /// passes None and keeps the default size).
+    fn add_shape(&mut self, kind: ShapeKind, place: Option<(f32, f32, f32, f32)>) -> Id {
+        self.push_undo();
+        let id = self.project.add_shape_clip(kind, self.playhead, 5.0);
+        let App { project, tools, .. } = self;
+        if let Some(c) = project.clip_mut(id) {
+            if let Some((cx, cy, _, _)) = place {
+                c.x.value = cx as f64;
+                c.y.value = cy as f64;
+            }
+            if let Some(s) = c.shape.as_mut() {
+                s.fill = tools.fill;
+                s.stroke = tools.stroke;
+                s.stroke_width = tools.stroke_width;
+                s.sides = tools.sides;
+                s.corner = tools.corner;
+                s.draw_rate = tools.draw_rate;
+                s.page = tools.page;
+                if let Some((_, _, w, h)) = place {
+                    s.w.value = w as f64;
+                    s.h.value = h as f64;
+                }
+            }
+        }
+        self.selection = vec![id];
+        self.after_edit();
+        id
+    }
+
+    /// A stroke drawn in the viewport: append it to the selected drawing, or start a new one.
+    fn add_stroke(&mut self, mut stroke: crate::model::Stroke) {
+        stroke.color = self.tools.brush;
+        stroke.width = self.tools.brush_width.max(0.5);
+        let onto = self.selection.first().copied().filter(|&id| {
+            self.project.clip(id).and_then(|c| c.shape.as_ref()).is_some_and(|s| s.kind == ShapeKind::Draw)
+        });
+        let id = match onto {
+            Some(id) => {
+                self.push_undo();
+                id
+            }
+            None => self.add_shape(ShapeKind::Draw, None),
+        };
+        if let Some(s) = self.project.clip_mut(id).and_then(|c| c.shape.as_mut()) {
+            s.strokes.push(stroke);
+        }
+        self.selection = vec![id];
+        self.after_edit();
+    }
+
     /// Per-frame hand-offs from panels that can't reach Settings, plus background convert jobs.
     fn poll_panels(&mut self) {
         // saved presets from the effects / curves panels
@@ -2083,6 +2186,20 @@ impl App {
         }
         if let Some(id) = inspector::take_open_sequence() {
             self.enter_sequence(id);
+        }
+        // "Edit in viewport" / "Open node editor" from the inspector
+        if let Some(id) = inspector::take_edit_mask() {
+            let shape =
+                self.project.clip(id).and_then(|c| c.mask.as_ref()).map(|m| m.shape).unwrap_or(MaskShape::Ellipse);
+            self.selection = vec![id];
+            self.tools.tool = Tool::Mask(shape);
+            self.layout.reveal(Pane::Tools);
+            self.layout_dirty = true;
+        }
+        if let Some(id) = inspector::take_open_nodes() {
+            self.selection = vec![id];
+            self.layout.reveal(Pane::Nodes);
+            self.layout_dirty = true;
         }
         // URL downloads: import the finished file, report failures
         let mut fetched: Vec<(Option<PathBuf>, Option<String>)> = Vec::new();
@@ -2411,22 +2528,16 @@ impl App {
         }
     }
 
-    /// Start / stop the screen recorder (also driven by focus when `capture_on_blur` is on).
-    fn start_screen_capture(&mut self) {
+    /// Start / stop the screen recorder with the options the window built (also driven by focus when
+    /// `capture_on_blur` is on, which rebuilds them from settings + the window's region).
+    fn start_screen_capture(&mut self, opts: crate::engine::capture::ScreenCaptureOptions) {
         if self.screen_rec.is_some() || self.ffmpeg_missing() {
             return;
         }
-        let out = self.capture_path("screen", "mp4");
-        let opts = crate::engine::capture::ScreenCaptureOptions {
-            out: out.clone(),
-            fps: self.settings.capture_fps.max(1),
-            bitrate_kbps: self.settings.capture_bitrate_kbps,
-            crf: self.settings.crf,
-            region: None,
-            mic: self.settings.capture_mic.clone(),
-            desktop_audio: self.settings.capture_desktop_audio,
-            cursor: self.settings.capture_cursor,
-        };
+        let out = opts.out.clone();
+        if let Some(dir) = out.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
         match guarded(|| crate::engine::capture::start_screen(opts)) {
             Some(Ok(c)) => self.screen_rec = Some((c, out)),
             Some(Err(e)) => self.toast(format!("Screen recording failed: {e}")),
@@ -2442,17 +2553,14 @@ impl App {
         self.import_recording(out, None);
     }
 
-    fn start_voiceover(&mut self) {
+    fn start_voiceover(&mut self, opts: crate::engine::capture::VoiceoverOptions) {
         if self.voice_rec.is_some() || self.ffmpeg_missing() {
             return;
         }
-        let out = self.capture_path("voiceover", "wav");
-        let opts = crate::engine::capture::VoiceoverOptions {
-            out: out.clone(),
-            device: self.settings.voice_device.clone(),
-            sample_rate: 48_000,
-            channels: self.settings.voice_channels.clamp(1, 2),
-        };
+        let out = opts.out.clone();
+        if let Some(dir) = out.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
         match guarded(|| crate::engine::capture::start_voiceover(opts)) {
             Some(Ok(c)) => {
                 self.voice_rec = Some((c, out, self.playhead));
@@ -2507,15 +2615,19 @@ impl App {
         self.audio_inputs.clone().unwrap_or_default()
     }
 
-    /// `<capture_dir>/<what>-<unix seconds>.<ext>`, falling back to the temp folder.
-    fn capture_path(&self, what: &str, ext: &str) -> PathBuf {
-        let dir = if self.settings.capture_dir.is_empty() {
-            std::env::temp_dir()
-        } else {
-            PathBuf::from(&self.settings.capture_dir)
-        };
-        let _ = std::fs::create_dir_all(&dir);
-        dir.join(format!("{what}-{}.{ext}", Settings::now()))
+    /// Screen-capture options for the record-on-blur path, which has no window response to take them
+    /// from. Same folder the Screen Recording window shows (`capture_ui::capture_dir`).
+    fn blur_capture_options(&self) -> crate::engine::capture::ScreenCaptureOptions {
+        crate::engine::capture::ScreenCaptureOptions {
+            out: capture_ui::capture_dir(&self.settings).join(format!("screen-{}.mp4", Settings::now())),
+            fps: self.settings.capture_fps.clamp(1, 120),
+            bitrate_kbps: self.settings.capture_bitrate_kbps,
+            crf: self.settings.crf,
+            region: if self.capture_ui.area == "region" { self.capture_ui.region } else { None },
+            mic: self.settings.capture_mic.clone(),
+            desktop_audio: self.settings.capture_desktop_audio,
+            cursor: self.settings.capture_cursor,
+        }
     }
 
     // ---------------- UI pieces ----------------
@@ -2584,12 +2696,12 @@ impl App {
                 for p in profiles {
                     if ui.button(&p.name).clicked() {
                         ui.close();
-                        match Layout::from_json(&p.json) {
+                        match Layout::from_json_migrating(&p.json) {
                             Some(l) => {
                                 self.layout = l;
                                 self.layout_dirty = true;
                             }
-                            None => self.toast(format!("Profile '{}' is corrupted", p.name)),
+                            None => self.toast(format!("Profile '{}' could not be read", p.name)),
                         }
                     }
                 }
@@ -2612,7 +2724,7 @@ impl App {
                 if let Some(p) =
                     rfd::FileDialog::new().add_filter("Simple Editor layout", &["sedit-layout", "json"]).pick_file()
                 {
-                    match std::fs::read_to_string(&p).ok().and_then(|s| Layout::from_json(&s)) {
+                    match std::fs::read_to_string(&p).ok().and_then(|s| Layout::from_json_migrating(&s)) {
                         Some(l) => {
                             let name = p
                                 .file_stem()
@@ -4034,20 +4146,17 @@ impl App {
                 let App { capture_ui: st, settings, palette, screen_rec, voice_rec, .. } = self;
                 capture_ui::show(ctx, st, settings, screen_rec.is_some(), voice_rec.is_some(), palette)
             };
-            if resp.start_screen {
-                self.start_screen_capture();
-            }
             if resp.stop_screen {
                 self.stop_screen_capture();
-            }
-            if resp.start_voice {
-                self.start_voiceover();
             }
             if resp.stop_voice {
                 self.stop_voiceover();
             }
-            if let Some((path, at)) = resp.import {
-                self.import_recording(path, at);
+            if let Some(o) = resp.screen.filter(|_| resp.start_screen) {
+                self.start_screen_capture(o);
+            }
+            if let Some(o) = resp.voice.filter(|_| resp.start_voice) {
+                self.start_voiceover(o);
             }
         }
         // imported timeline report — "Use this project" swaps it in
@@ -4056,12 +4165,12 @@ impl App {
                 let App { import_ui: st, palette, .. } = self;
                 import_ui::show(ctx, st, palette)
             };
-            if accept {
+            // ask first: cancelling the unsaved-changes prompt must keep the report (and the ffprobes
+            // that built it), not throw the whole import away
+            if accept && self.confirm_discard() {
                 if let Some(r) = self.import_ui.report.take() {
-                    if self.confirm_discard() {
-                        self.set_project(r.project, None);
-                        self.toast("Imported timeline is now the project");
-                    }
+                    self.set_project(r.project, None);
+                    self.toast("Imported timeline is now the project");
                 }
                 self.import_ui.open = false;
             }
@@ -4175,7 +4284,8 @@ impl eframe::App for App {
         let focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
         if self.settings.capture_on_blur && self.capture_ui.screen_open {
             if self.was_focused && !focused && self.screen_rec.is_none() {
-                self.start_screen_capture();
+                let opts = self.blur_capture_options();
+                self.start_screen_capture(opts);
             } else if !self.was_focused && focused && self.screen_rec.is_some() {
                 self.stop_screen_capture();
             }
@@ -4519,6 +4629,20 @@ mod tests {
         assert_eq!(preview_canvas((800, 600), 1), (200, 150)); // clamped to 25 %
         assert_eq!(preview_canvas((0, 600), 50), (0, 0));
         assert_eq!(preview_canvas((10, 10), 25), (16, 16));
+    }
+
+    /// The GPU renders at `self.canvas`, the player decodes at its own clamp — they must agree, or the
+    /// preview comes out squashed whenever the pane is wider than preview_max_width.
+    #[test]
+    fn canvas_clamp_keeps_the_aspect_ratio() {
+        assert_eq!(clamp_canvas(800, 450, 1280), (800, 450), "under the limit: untouched");
+        assert_eq!(clamp_canvas(800, 450, 320), (320, 180), "height scales with the width");
+        assert_eq!(clamp_canvas(1920, 1080, 0), (1920, 1080), "0 = no limit (same as Player::set_canvas)");
+        assert_eq!(clamp_canvas(1000, 3, 100), (100, 1), "never collapses to zero");
+        // the same numbers the player would land on
+        let (w, h) = (1600u32, 900u32);
+        let max = 640u32;
+        assert_eq!(clamp_canvas(w, h, max), (max, ((h as u64 * max as u64) / w as u64) as u32));
     }
 
     #[test]

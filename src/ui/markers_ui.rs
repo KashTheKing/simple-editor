@@ -6,7 +6,7 @@
 
 use crate::model::{Id, Project};
 use crate::theme::Palette;
-use crate::ui::timecode;
+use crate::ui::{edit_start, timecode};
 use eframe::egui::{self, DragValue, Response, RichText};
 
 #[derive(Default)]
@@ -20,11 +20,6 @@ pub struct MarkersState {
 pub struct MarkersResponse {
     pub edited: bool,
     pub seek: Option<f64>,
-}
-
-/// True on the first frame of an edit gesture (drag start, or a click/typing change).
-fn edit_start(r: &Response) -> bool {
-    r.drag_started() || (r.changed() && !r.dragged())
 }
 
 /// A small red-on-hover ✕ (same shape as the planner / inspector delete buttons).

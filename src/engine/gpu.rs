@@ -71,6 +71,11 @@ const UNIFORMS: &[&str] = &[
     "p5",
     "p6",
     "p7",
+    // Curves declares p8..p11 itself; a program that does not is simply missing the location.
+    "p8",
+    "p9",
+    "p10",
+    "p11",
     "u_mask",
     "u_has_mask",
     "u_dst",
@@ -82,6 +87,10 @@ const UNIFORMS: &[&str] = &[
     "u_b",
     "u_matte_alpha",
     "u_matte_invert",
+    "u_prev",
+    "u_next",
+    "u_frames",
+    "u_motion",
     "m_shape",
     "m_center",
     "m_radius",
@@ -121,6 +130,13 @@ const U_TEX: u32 = 0;
 const U_MASK: u32 = 1;
 const U_DST: u32 = 2;
 const U_B: u32 = 3;
+const U_PREV: u32 = 4;
+const U_NEXT: u32 = 5;
+
+/// Texture-cache keys for the neighbouring frames of a motion-blurred clip. Clip ids are small
+/// counters (`Project::new_id`), so the top bits are free to tag a variant of the same clip.
+const MOTION_PREV: u64 = 1 << 62;
+const MOTION_NEXT: u64 = 1 << 61;
 
 /// A layer texture and the revision of the frame currently in it.
 struct LayerTex {
@@ -130,17 +146,24 @@ struct LayerTex {
     rev: (usize, u64),
 }
 
-/// Size-keyed target pool. Pure bookkeeping — GL objects are created by the renderer when `take`
-/// finds nothing reusable. Ping-pong falls out of it: `composite` takes a second canvas-sized target,
-/// draws into it and returns the old canvas here, so the two keep swapping.
+/// Size-keyed target pool. GL objects are created by the renderer when `take` finds nothing reusable
+/// and deleted here when the free list outgrows its budget. Ping-pong falls out of it: `composite`
+/// takes a second canvas-sized target, draws into it and returns the old canvas here, so the two keep
+/// swapping.
 #[derive(Default)]
 struct Pool {
+    /// The context, so `put` can actually free what it evicts. `None` in the pure-bookkeeping tests.
+    gl: Option<Arc<glow::Context>>,
     free: Vec<Target>,
     /// Targets handed out and not yet returned.
     live: usize,
 }
 
 impl Pool {
+    /// How many RGBA8 pixels the free list may hold (~256 MB: 8 × 4K, 30 × 1080p). Without a cap a
+    /// preview resize walks through one target per pixel width and never frees any of them.
+    const MAX_FREE_PX: usize = 64 << 20;
+
     /// A free target of exactly this size, if there is one (callers create one otherwise).
     fn take(&mut self, w: u32, h: u32) -> Option<Target> {
         let i = self.free.iter().position(|t| t.w == w && t.h == h)?;
@@ -154,6 +177,20 @@ impl Pool {
     fn put(&mut self, t: Target) {
         self.live = self.live.saturating_sub(1);
         self.free.push(t);
+        // ponytail: FIFO eviction, not true LRU — the oldest entry is the stale size, and resize
+        // churn is the only thing that grows this. Sort by last use if a real workload thrashes.
+        let px = |t: &Target| t.w as usize * t.h as usize;
+        let mut total: usize = self.free.iter().map(px).sum();
+        while total > Self::MAX_FREE_PX && self.free.len() > 1 {
+            let old = self.free.remove(0);
+            total -= px(&old);
+            if let Some(gl) = &self.gl {
+                unsafe {
+                    gl.delete_framebuffer(old.fbo);
+                    gl.delete_texture(old.tex);
+                }
+            }
+        }
     }
 }
 
@@ -194,11 +231,11 @@ impl GpuRenderer {
                 glow::PixelUnpackData::Slice(Some(&[255, 255, 255, 255])),
             );
             let mut r = Self {
+                pool: Pool { gl: Some(gl.clone()), ..Pool::default() },
                 gl,
                 vao,
                 vert,
                 programs: Programs::default(),
-                pool: Pool::default(),
                 textures: HashMap::new(),
                 blank,
                 loaned: Vec::new(),
@@ -327,7 +364,7 @@ impl GpuRenderer {
         t: f64,
     ) -> Option<glow::Texture> {
         let host = self.host_fbo();
-        let dst = self.run_effect(src, size, effect, t, 1.0, None);
+        let dst = self.run_effect(src, size, effect, t, 1.0, None, None);
         self.restore(host);
         let dst = dst?;
         let tex = dst.tex;
@@ -494,6 +531,11 @@ impl GpuRenderer {
                 Ok(())
             }
             Err(e) => {
+                // A failed effect program is otherwise a silent no-op: the chain just skips it.
+                // `last_error()` is what the UI should toast; this keeps a dev run from guessing.
+                if cfg!(debug_assertions) {
+                    eprintln!("GLSL program {key:#x} failed to build:\n{e}");
+                }
                 self.programs.failed.insert(key, e.clone());
                 Err(e)
             }
@@ -554,6 +596,9 @@ impl GpuRenderer {
     }
 
     /// One effect pass: `src` -> a new target of the same size. None when the effect has no GPU body.
+    /// `motion` is the (prev, next, count) sampler set a `needs_motion` kind wants; anything else
+    /// passes None.
+    #[allow(clippy::too_many_arguments)]
     fn run_effect(
         &mut self,
         src: glow::Texture,
@@ -562,14 +607,17 @@ impl GpuRenderer {
         t: f64,
         scale: f32,
         mask: Option<glow::Texture>,
+        motion: Option<(glow::Texture, glow::Texture, f32)>,
     ) -> Option<Target> {
         let key = self.effect_program(effect)?;
         let dst = self.acquire(size.0, size.1)?;
         let gl = self.gl.clone();
-        let mut params = [0.0f32; 8];
+        let mut params = [0.0f32; PARAM_NAMES.len()];
         for (i, p) in params.iter_mut().enumerate() {
             *p = effect.at(i, t) as f32;
         }
+        // uniforms persist on a cached program, so a motion kind must set these every draw
+        let motion = effect.kind.needs_motion().then(|| motion.unwrap_or((self.blank, self.blank, 0.0)));
         self.draw(key, &dst, src, mask, |prog| unsafe {
             gl.uniform_2_f32(prog.uni.get("u_res"), size.0 as f32, size.1 as f32);
             gl.uniform_1_f32(prog.uni.get("u_time"), t as f32);
@@ -577,8 +625,55 @@ impl GpuRenderer {
             for (i, v) in params.iter().enumerate() {
                 gl.uniform_1_f32(prog.uni.get(PARAM_NAMES[i]), *v);
             }
+            if let Some((prev, next, frames)) = motion {
+                gl.active_texture(glow::TEXTURE0 + U_PREV);
+                gl.bind_texture(glow::TEXTURE_2D, Some(prev));
+                gl.uniform_1_i32(prog.uni.get("u_prev"), U_PREV as i32);
+                gl.active_texture(glow::TEXTURE0 + U_NEXT);
+                gl.bind_texture(glow::TEXTURE_2D, Some(next));
+                gl.uniform_1_i32(prog.uni.get("u_next"), U_NEXT as i32);
+                gl.uniform_1_f32(prog.uni.get("u_frames"), frames);
+                // ponytail: no per-frame placement delta yet, so the 0-sample fallback (clip edge)
+                // blurs by nothing rather than guessing a direction.
+                gl.uniform_2_f32(prog.uni.get("u_motion"), 0.0, 0.0);
+            }
         });
         Some(dst)
+    }
+
+    /// The neighbouring frames a `needs_motion` effect wants: (prev, next, how many are real).
+    /// `LayerSet::motion` carries whatever the decoder managed to produce — 0, 1 or 2 samples.
+    fn motion_texs(&mut self, id: Id, layers: &LayerSet) -> (glow::Texture, glow::Texture, f32) {
+        let (mut before, mut after) = (None, None);
+        let (mut bo, mut ao) = (0.0f64, 0.0f64);
+        for (cid, off, f) in &layers.motion {
+            if *cid != id || f.is_empty() {
+                continue;
+            }
+            if *off < bo {
+                bo = *off;
+                before = Some(f);
+            } else if *off > ao {
+                ao = *off;
+                after = Some(f);
+            }
+        }
+        match (before, after) {
+            (None, None) => (self.blank, self.blank, 0.0),
+            (Some(f), None) => {
+                let tex = self.upload(id | MOTION_PREV, f);
+                (tex, tex, 1.0)
+            }
+            (None, Some(f)) => {
+                let tex = self.upload(id | MOTION_NEXT, f);
+                (tex, tex, 1.0)
+            }
+            (Some(p), Some(n)) => {
+                let prev = self.upload(id | MOTION_PREV, p);
+                let next = self.upload(id | MOTION_NEXT, n);
+                (prev, next, 2.0)
+            }
+        }
     }
 
     /// Rasterise `mask` at `size`; `scale` is canvas px per project px and `centre` the shape origin.
@@ -895,7 +990,8 @@ impl GpuRenderer {
                 .as_ref()
                 .filter(|m| m.enabled)
                 .and_then(|m| self.render_mask(m, size, lt, scale, (size.0 as f32 / 2.0, size.1 as f32 / 2.0)));
-            let next = self.run_effect(input, size, e, lt, scale, mask.as_ref().map(|m| m.tex));
+            let motion = e.kind.needs_motion().then(|| self.motion_texs(clip.id, layers));
+            let next = self.run_effect(input, size, e, lt, scale, mask.as_ref().map(|m| m.tex), motion);
             if let Some(m) = mask {
                 self.pool.put(m);
             }
@@ -962,7 +1058,8 @@ impl GpuRenderer {
                         let mask = e.mask.as_ref().filter(|m| m.enabled).and_then(|m| {
                             self.render_mask(m, size, lt, scale, (size.0 as f32 / 2.0, size.1 as f32 / 2.0))
                         });
-                        let r = self.run_effect(src, size, e, lt, scale, mask.as_ref().map(|m| m.tex));
+                        let motion = e.kind.needs_motion().then(|| self.motion_texs(clip.id, layers));
+                        let r = self.run_effect(src, size, e, lt, scale, mask.as_ref().map(|m| m.tex), motion);
                         if let Some(m) = mask {
                             self.pool.put(m);
                         }
@@ -1110,7 +1207,8 @@ impl Extra {
     const NONE: Extra = Extra { opacity: 1.0, dx: 0.0, dy: 0.0, mask: None };
 }
 
-const PARAM_NAMES: [&str; 8] = ["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7"];
+/// One name per parameter any effect can have (`Curves` has 12, everything else 8 or fewer).
+const PARAM_NAMES: [&str; 12] = ["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9", "p10", "p11"];
 
 /// `MASK`'s `m_points` array size.
 pub const MAX_MASK_POINTS: usize = 64;
@@ -1120,9 +1218,9 @@ pub const MAX_MASK_POINTS: usize = 64;
 #[derive(Default)]
 pub struct LayerSet {
     pub layers: Vec<(crate::model::Id, Arc<Frame>)>,
-    /// Extra samples for shutter-based effects: (clip id, offset seconds, frame).
-    /// ponytail: the renderer does not bind these yet, so a `MotionBlur` body sees only the current
-    /// frame — upgrade path is extra samplers (`u_prev`/`u_next`) set from here in `run_effect`.
+    /// Extra samples for shutter-based effects: (clip id, offset seconds, frame). `run_effect` binds
+    /// the earliest as `u_prev` and the latest as `u_next` (both the same one when only one arrived);
+    /// with none at all `u_frames` is 0 and the body falls back to the current frame.
     pub motion: Vec<(crate::model::Id, f64, Arc<Frame>)>,
 }
 
@@ -1331,6 +1429,32 @@ mod tests {
     }
 
     #[test]
+    fn pool_evicts_the_oldest_when_the_free_list_is_over_budget() {
+        let mut p = Pool::default();
+        // one target of exactly the budget, then a second one: the first must be dropped
+        let side = (Pool::MAX_FREE_PX as f64).sqrt() as u32;
+        p.put(fake_target(side, side, 1));
+        p.put(fake_target(64, 64, 2));
+        assert_eq!(p.free.len(), 1, "the oversized free list must shrink");
+        assert_eq!((p.free[0].w, p.free[0].h), (64, 64), "the newest target survives");
+        // a normal working set is untouched
+        let mut p = Pool::default();
+        for i in 0..8 {
+            p.put(fake_target(1920, 1080, i + 1));
+        }
+        assert_eq!(p.free.len(), 8, "8 × 1080p is well inside the budget");
+    }
+
+    #[test]
+    fn every_effect_parameter_reaches_a_uniform() {
+        let most = crate::model::EffectKind::ALL.iter().map(|k| k.params().len()).max().unwrap_or(0);
+        assert!(most <= PARAM_NAMES.len(), "{most} params but only {} are uploaded", PARAM_NAMES.len());
+        for n in PARAM_NAMES {
+            assert!(UNIFORMS.contains(&n), "{n} is never located at link time");
+        }
+    }
+
+    #[test]
     fn blend_int_mapping_matches_engine_blend() {
         assert_eq!(blend_index(BlendMode::Normal), 0);
         for (i, m) in BlendMode::ALL.iter().enumerate() {
@@ -1444,12 +1568,11 @@ mod tests {
         assert!((USER_BIT | hash_str("a")) > EFFECT_BASE + 64);
     }
 
+    /// The GLSL text of every program the renderer can build (the assembly `ensure`/`effect_program`
+    /// do, without a context). Only a driver can answer whether they link — run that from a windowed
+    /// harness — but a duplicate `main()` or a missing `effect()` is visible from here.
     #[test]
-    #[ignore = "needs a real GL context (run from a windowed harness: cargo test -- --ignored)"]
-    fn compiles_every_program_on_a_real_context() {
-        // The one thing only a driver can answer: does every source actually compile and link?
-        // With a context in hand this is `GpuRenderer::new(gl)` (which links COMPOSITE) followed by
-        // `ensure`/`effect_program` for each key below; all of them must return Ok/Some.
+    fn every_program_source_has_exactly_one_entry_point() {
         let mut sources = vec![
             format!("{}{}{}", shaders::PRELUDE, shaders::BLEND, shaders::COMPOSITE),
             format!("{}{}", shaders::PRELUDE, shaders::MASK),
@@ -1473,9 +1596,17 @@ mod tests {
         sources.extend(
             crate::model::EffectKind::ALL.iter().filter_map(|k| shaders::fragment(*k, crate::model::DEFAULT_SHADER)),
         );
-        assert!(sources.iter().all(|s| s.contains("void main()")), "every program needs an entry point");
         for src in &sources {
+            let n = src.matches("void main()").count();
+            assert_eq!(n, 1, "{n} entry points in {}", &src[..80.min(src.len())]);
             assert!(src.starts_with("#version 330 core"), "{}", &src[..40.min(src.len())]);
+            // `effect()` is only ever called by MAIN, and only bodies that define it get MAIN
+            assert_eq!(
+                src.contains("effect(src, uv)"),
+                src.contains("vec4 effect(vec4 src, vec2 uv)"),
+                "{}",
+                &src[..80.min(src.len())]
+            );
         }
     }
 }

@@ -36,7 +36,8 @@ const RES_PRESETS: [(&str, &str); 6] = [
     ("2160", "4K"),
     ("custom", "Custom"),
 ];
-const SCALERS: [(&str, &str); 6] = [
+/// ffmpeg `scale` flags offered anywhere an export resizes (also used by the Export Frame window).
+pub const SCALERS: [(&str, &str); 6] = [
     ("neighbor", "Nearest"),
     ("bilinear", "Bilinear"),
     ("bicubic", "Bicubic"),

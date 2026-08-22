@@ -440,7 +440,7 @@ mod tests {
             "- VHS ×1 — median Noise 0.3, Chroma bleed 0.5, Scanlines 0.4, Tracking jitter 0.2, \
              Head switching 0.3, Sharpen ringing 0.4, Colour bleed only off, Tape wear 0.2 (1 masked)",
             "### Adjustments",
-            "- Threshold ×1 — median Level 0.5, Softness 0.05, Per channel 0",
+            "- Threshold ×1 — median Level 0.5, Softness 0.05, Per channel off",
             "- Color Curves ×1 — median Master 1/4 0.25",
             "## Masks & node graphs",
             "- Clip masks: 1 (1 Rectangle)",

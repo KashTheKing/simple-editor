@@ -8,11 +8,15 @@
 //! `effect.specs()`: label + DragValue (range from ParamSpec, speed ≈ (max-min)/200) — or a CHECKBOX when
 //! `EffectKind::is_bool_param` — + "◆" keyframe toggle at clip-local playhead time (Animated::toggle_key /
 //! set_at, highlighted when a key exists) + "✕ keys". Tint shows a colour button bound to R/G/B as well.
+//! An effect with a mask gets the inspector's mask grid inline (shape / position / radius / feather /
+//! invert …) plus a ✕ to drop it. A clip that renders from a node graph greys the stack out: the graph
+//! is what the renderer evaluates, so stack edits would be invisible.
 //! Every change → undo once per gesture (same `edit_start` rule as the inspector).
 
 use crate::model::{Animated, Effect, EffectKind, Id, Mask, Project};
 use crate::settings::MotionPreset;
 use crate::theme::Palette;
+use crate::ui::{mask_grid, Gesture};
 use eframe::egui::{self, Button, DragValue, Grid, Response, StrokeKind};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -123,28 +127,6 @@ pub(crate) mod test_rects {
     }
 }
 
-/// True on the first frame of an edit gesture (drag start, or a non-drag change such as typing/clicking).
-fn edit_start(r: &Response) -> bool {
-    r.drag_started() || (r.changed() && !r.dragged())
-}
-
-#[derive(Default)]
-struct Gesture {
-    start: bool,
-    changed: bool,
-}
-
-impl Gesture {
-    fn note(&mut self, r: &Response) {
-        self.start |= edit_start(r);
-        self.changed |= r.changed();
-    }
-    fn click(&mut self) {
-        self.start = true;
-        self.changed = true;
-    }
-}
-
 fn key_buttons(ui: &mut egui::Ui, a: &mut Animated, lt: f64, palette: &Palette, g: &mut Gesture, _at: (usize, usize)) {
     let mut b = Button::new("◆").small();
     if a.has_key_at(lt) {
@@ -233,8 +215,13 @@ pub fn show(
 
     // ---- catalogue ----
     if let Some(kind) = catalogue(ui, palette) {
-        let targets: Vec<Id> =
-            selection.iter().copied().filter(|&id| project.clip(id).is_some_and(|c| c.is_visual())).collect();
+        // a clip with a node graph renders from the graph, so anything pushed on its linear stack would
+        // be invisible — those clips are skipped (the stack below is greyed out for the same reason)
+        let targets: Vec<Id> = selection
+            .iter()
+            .copied()
+            .filter(|&id| project.clip(id).is_some_and(|c| c.is_visual() && c.graph.is_none()))
+            .collect();
         if !targets.is_empty() {
             undo(project);
             for id in targets {
@@ -270,6 +257,12 @@ pub fn show(
             out.open_nodes = true;
         }
     });
+    if clip.graph.is_some() {
+        // gpu::run_chain evaluates the graph and never looks at clip.effects — show the stack, but do
+        // not let the user edit into the void
+        ui.colored_label(palette.text_dim, "This clip renders from its node graph — edit it there.");
+        ui.disable();
+    }
     let n = clip.effects.len();
     let mut remove: Option<usize> = None;
     let mut swap: Option<(usize, usize)> = None;
@@ -292,6 +285,15 @@ pub fn show(
                     g.click();
                 }
                 out.mask_for = Some(i);
+            }
+            if masked {
+                let rm = crate::ui::markers_ui::x_button(ui).on_hover_text("Remove this mask");
+                #[cfg(test)]
+                test_rects::push(format!("maskx{i}"), rm.rect);
+                if rm.clicked() {
+                    fx.mask = None;
+                    g.click();
+                }
             }
             let cp = ui.add(Button::new("⧉").small()).on_hover_text("Copy these parameters");
             #[cfg(test)]
@@ -340,6 +342,13 @@ pub fn show(
                 }
                 g.note(&r);
             });
+        }
+        // the effect's own mask: same grid as the inspector's clip mask, so it can be shaped without
+        // the viewport (the mask tool only ever edits clip.mask)
+        if let Some(m) = &mut fx.mask {
+            let _r = ui.scope(|ui| mask_grid(ui, m, lt, palette, &mut g, egui::Id::new(("fx_mask", i)))).response;
+            #[cfg(test)]
+            test_rects::push(format!("maskgrid{i}"), _r.rect);
         }
         let kind = fx.kind;
         Grid::new(("fx_params", i)).num_columns(2).show(ui, |ui| {
@@ -645,6 +654,33 @@ mod tests {
         assert_eq!(h.last.mask_for, Some(0), "the app is told which effect to mask");
         assert!(h.clip().effects[0].mask.is_some(), "a mask was created");
         assert_eq!(h.undos, 1);
+    }
+
+    #[test]
+    fn a_masked_effect_gets_the_mask_grid_and_a_remove_button() {
+        let mut h = Harness::new();
+        let mut fx = Effect::new(EffectKind::Blur);
+        fx.mask = Some(Mask::default());
+        h.project.tracks[0].clips[0].effects.push(fx);
+        h.frame(vec![]);
+        assert!(h.rect("maskgrid0").height() > 0.0, "the mask parameters are on the panel, not viewport-only");
+        let r = h.rect("maskx0");
+        assert!(h.click(r.center()), "✕ drops the mask");
+        assert!(h.clip().effects[0].mask.is_none());
+        assert_eq!(h.undos, 1);
+    }
+
+    #[test]
+    fn a_clip_with_a_node_graph_takes_no_stack_edits() {
+        clear_thumbnails();
+        let mut h = Harness::new();
+        h.project.ensure_graph(7);
+        h.frame(vec![]);
+        let r = h.rect("card_Blur");
+        // gpu::run_chain evaluates the graph and never reads clip.effects — the add would be invisible
+        assert!(!h.click(r.center()));
+        assert!(h.clip().effects.is_empty());
+        assert_eq!(h.undos, 0);
     }
 
     #[test]

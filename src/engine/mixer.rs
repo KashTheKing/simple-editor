@@ -335,7 +335,9 @@ fn read_block(src: &mut dyn AudioSource, s0: f64, buf: &mut [f32]) {
 /// Linearly resample `buf` (m source frames read at the clip's source time for `t0`) into `out`
 /// (n frames) and add with gains lerped across the block.
 /// ponytail: gains (volume keys, fades, transition ease) are sampled at the block ends and lerped —
-/// exact for linear ramps, ≤ one block (≈100 ms) of shape error otherwise; split at kinks if it matters.
+/// exact for linear ramps, ≤ one block of shape error otherwise; split at kinks if it matters. Both
+/// callers use 1024-frame blocks (≈21 ms: `playback::BLOCK` and `export::MIX_BLOCK`), so playback and
+/// export shape a fade identically.
 fn resample_add(clip: &Clip, ext: &Ext, t0: f64, buf: &[f32], out: &mut [f32]) {
     let n = out.len() / 2;
     let m = buf.len() / 2;

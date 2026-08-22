@@ -8,7 +8,8 @@
 
 use crate::model::{Ease, Id, Project, Transition, TransitionKind, ABUT_EPS};
 use crate::theme::Palette;
-use eframe::egui::{self, Button, DragValue, Response};
+use crate::ui::Gesture;
+use eframe::egui::{self, Button, DragValue};
 
 #[cfg(test)]
 use crate::ui::effects_ui::test_rects;
@@ -24,27 +25,6 @@ pub struct TransitionsState {
 impl Default for TransitionsState {
     fn default() -> Self {
         Self { duration: 1.0, kind: 0, color: [0, 0, 0, 255], direction: 0 }
-    }
-}
-
-fn edit_start(r: &Response) -> bool {
-    r.drag_started() || (r.changed() && !r.dragged())
-}
-
-#[derive(Default)]
-struct Gesture {
-    start: bool,
-    changed: bool,
-}
-
-impl Gesture {
-    fn note(&mut self, r: &Response) {
-        self.start |= edit_start(r);
-        self.changed |= r.changed();
-    }
-    fn click(&mut self) {
-        self.start = true;
-        self.changed = true;
     }
 }
 

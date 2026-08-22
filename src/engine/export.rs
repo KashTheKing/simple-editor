@@ -1,4 +1,4 @@
-//! Export: render the timeline with the Compositor + Mixer and pipe it into ffmpeg.exe
+//! Export: render the timeline with the CPU Compositor + Mixer and pipe it into ffmpeg.exe
 //! (`-f rawvideo -pix_fmt rgba -s WxH -r fps -i pipe:0` + pre-mixed temp WAV), encoder chosen by the
 //! output extension / settings. Plus the lossless `-c copy` fast path for pure cuts of one source.
 //! Runs on a background thread; the UI polls `Progress`.
@@ -75,8 +75,10 @@ impl Progress {
 }
 
 pub(crate) const CANCELLED: &str = "cancelled";
-/// Audio mix block (frames) — 100 ms.
-const MIX_BLOCK: usize = 4800;
+/// Audio mix block (frames). Same as `playback::BLOCK` on purpose: `mixer::resample_add` samples clip
+/// gains at the block ends and lerps between them, so a longer block here would smear fades, volume
+/// keyframes and audio crossfades shorter than the block — export must ramp like playback does.
+const MIX_BLOCK: usize = 1024;
 
 /// Start a full (re-encoding) export on a background thread. Frames are rendered at project size
 /// with `Compositor` and audio mixed with `Mixer` into a temp WAV first (fast), then video frames are
@@ -193,6 +195,7 @@ fn run_export(
         let n = (dur * fps).ceil().max(1.0) as u64;
         let mut frame = Frame::new(w, h);
         let mut comp = Compositor::new();
+        let gaps = cpu_gaps(project);
         for i in 0..n {
             if prog.is_cancelled() {
                 break;
@@ -205,7 +208,7 @@ fn run_export(
             if pipe.write_all(&frame.rgba).is_err() {
                 break; // ffmpeg died — its stderr tells why
             }
-            prog.set(0.1 + 0.9 * (i + 1) as f32 / n as f32, format!("Encoding {t:.1} / {dur:.1} s"));
+            prog.set(0.1 + 0.9 * (i + 1) as f32 / n as f32, format!("Encoding {t:.1} / {dur:.1} s{gaps}"));
         }
     } else {
         prog.set(0.5, "Encoding audio…");
@@ -217,6 +220,41 @@ fn run_export(
     wait_ffmpeg(&mut child, tail, prog)?;
     drop(pool);
     tmp.commit(&opts.out_path)
+}
+
+/// What this export cannot render, as a suffix for the progress line (empty when nothing is dropped).
+///
+/// ponytail: export renders on a background thread with the CPU `Compositor`; the GL context lives on
+/// the UI thread, so GPU-only effect kinds and node graphs are skipped. Naming them in the status beats
+/// dropping them silently — replace this with a real GPU render path (`GpuRenderer::render_frame` fed
+/// from the UI thread) and the note goes away.
+fn cpu_gaps(project: &Project) -> String {
+    let mut kinds: Vec<&str> = Vec::new();
+    let mut graphs = 0usize;
+    let tracks = project.tracks.iter().chain(project.sequences.iter().flat_map(|s| s.tracks.iter()));
+    for clip in tracks.flat_map(|t| t.clips.iter()).filter(|c| c.enabled) {
+        if clip.graph.as_ref().is_some_and(|g| g.nodes.len() > 2) {
+            graphs += 1;
+        }
+        for e in clip.effects.iter().filter(|e| e.enabled) {
+            let name = e.kind.name();
+            if crate::engine::effects::gpu_only(e.kind) && !kinds.contains(&name) {
+                kinds.push(name);
+            }
+        }
+    }
+    let mut parts: Vec<String> = Vec::new();
+    if !kinds.is_empty() {
+        parts.push(format!("{} (GPU-only)", kinds.join(", ")));
+    }
+    if graphs > 0 {
+        parts.push(format!("{graphs} node graph(s)"));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" — not rendered: {}", parts.join(", "))
+    }
 }
 
 /// Mix the whole timeline into a temp WAV (f32 stereo 48 kHz). Progress 0..0.1.
@@ -612,6 +650,50 @@ pub(crate) mod tests {
         let ids = p.linked(mid);
         p.delete_clips(&ids, true);
         p
+    }
+
+    /// A constant-valued audio source (mirrors the mixer's own test source).
+    struct Const(f32);
+    impl crate::media::AudioSource for Const {
+        fn duration(&self) -> f64 {
+            10.0
+        }
+        fn read_at(&mut self, _t: f64, out: &mut [f32]) {
+            out.fill(self.0);
+        }
+    }
+
+    #[test]
+    fn mix_block_keeps_short_fades_sharp() {
+        // `resample_add` lerps the clip gain across one block, so the block length is the fade's
+        // resolution: a 20 ms fade-in must be done at 20 ms, not still ramping (100 ms blocks put it
+        // at ~0.2). Export has to ramp exactly like playback does.
+        let mut p = Project::from_media(asset("Z:\\nope\\fake.wav", 1));
+        let ai = p.audio_tracks()[0];
+        p.tracks[ai].clips[0].fade_in = 0.02;
+        let mut pool = DecoderPool::new(Backend::Ffmpeg);
+        pool.insert_audio("Z:\\nope\\fake.wav", 0, Box::new(Const(1.0)));
+        let mut buf = vec![0f32; MIX_BLOCK * 2];
+        Mixer::new().mix(&p, 0.0, &mut pool, &mut buf);
+        let at = |ms: f64| buf[(ms / 1000.0 * SAMPLE_RATE as f64) as usize * 2];
+        assert!(at(0.0).abs() < 0.05, "fade should start at silence: {}", at(0.0));
+        assert!((at(10.0) - 0.5).abs() < 0.1, "half way through the fade: {}", at(10.0));
+        assert!(at(20.0) > 0.85, "20 ms fade still ramping at 20 ms: {}", at(20.0));
+    }
+
+    #[test]
+    fn cpu_gaps_names_what_export_drops() {
+        let mut p = Project::from_media(asset("Z:\\nope\\fake.mp4", 1));
+        assert_eq!(cpu_gaps(&p), "");
+        // effects the CPU compositor renders are not reported
+        let id = p.tracks[0].clips[0].id;
+        p.clip_mut(id).unwrap().effects.push(crate::model::Effect::new(crate::model::EffectKind::Blur));
+        assert_eq!(cpu_gaps(&p), "");
+        p.clip_mut(id).unwrap().effects.push(crate::model::Effect::new(crate::model::EffectKind::Vhs));
+        assert!(cpu_gaps(&p).contains("VHS"), "{}", cpu_gaps(&p));
+        // a disabled one is not a gap
+        p.clip_mut(id).unwrap().effects.last_mut().unwrap().enabled = false;
+        assert_eq!(cpu_gaps(&p), "");
     }
 
     pub(crate) fn wait_done(prog: &Progress) -> Option<String> {

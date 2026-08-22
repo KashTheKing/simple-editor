@@ -7,7 +7,8 @@
 //! right-click a node for Delete / Duplicate / Add mask; right-click the canvas for the "Add node" menu
 //! (every `EffectKind` grouped by `category()`, Blend, Matte, Mask, Color, Clip, Input). Selecting a node
 //! shows its full parameters in the Inspector and lets the Curves pane keyframe them.
-//! `Project::ensure_graph` converts a clip's linear stack the first time this pane opens for it.
+//! `Project::ensure_graph` converts a clip's linear stack the first time this pane opens for it — an
+//! undoable edit, since the renderer evaluates the graph from then on and ignores `clip.effects`.
 //! Every mutation calls `undo` once per gesture.
 
 use crate::model::{Animated, BlendMode, Effect, EffectKind, Id, Mask, NodeKind, Project};
@@ -38,6 +39,8 @@ pub struct NodesState {
     pub linking: Option<(Id, usize, bool)>,
     /// The node currently being moved (one undo per gesture).
     pub dragging: Option<Id>,
+    /// Input port a wire is being pulled off, until the pointer actually leaves it.
+    pub detach: Option<(Id, usize)>,
     /// Where the canvas was right-clicked, in graph units: new nodes land there.
     pub menu_at: Option<(f32, f32)>,
     /// Live previews, keyed by node. Empty unless a renderer hands textures over, and the panel is
@@ -87,7 +90,14 @@ pub fn show(
         hint(ui, palette, "Select a clip to edit its node graph");
         return out;
     }
-    project.ensure_graph(clip_id);
+    // Converting the linear stack is a real edit, not a side effect of drawing: from here on the
+    // renderer evaluates the graph and ignores clip.effects, so it gets its own undo entry and tells
+    // the app the project changed.
+    if project.clip(clip_id).is_some_and(|c| c.graph.is_none()) {
+        undo(project);
+        project.ensure_graph(clip_id);
+        out.edited = true;
+    }
     // the graph is small; a copy keeps the draw pass read-only so `undo` can snapshot mid-frame
     let Some(graph) = project.clip(clip_id).and_then(|c| c.graph.clone()) else {
         return out;
@@ -171,10 +181,11 @@ pub fn show(
                 if !is_out {
                     // pulling a wire off an input detaches it and keeps dragging the far end
                     match graph.input_of(node, port) {
+                        // the wire is only detached once the pointer leaves the port (below): a plain
+                        // click used to disconnect and reconnect, two undo entries for no net change
                         Some(up) => {
-                            acts.push(Act::Disconnect(node, port));
-                            needs_undo = true;
                             state.linking = Some((up, 0, true));
+                            state.detach = Some((node, port));
                         }
                         None => state.linking = Some((node, port, false)),
                     }
@@ -196,12 +207,28 @@ pub fn show(
                 }
             }
         }
+        // committed detach: the pointer left the port it was pulled from
+        if let Some((dn, dp)) = state.detach {
+            if let (Some(dr), Some(q)) = (rect_of(dn), pointer) {
+                if in_port(dr, dp, z).distance(q) > SNAP {
+                    acts.push(Act::Disconnect(dn, dp));
+                    needs_undo = true;
+                    state.detach = None;
+                }
+            }
+        }
         if released {
-            if let Some(q) = pointer {
+            // still attached = the gesture was a click on the port: leave the graph alone
+            let clicked_in_place = state.detach.take().is_some();
+            if let (false, Some(q)) = (clicked_in_place, pointer) {
                 if let Some((tn, tp, ..)) = nearest(q, Some(!is_out)) {
                     let (from, to, prt) = if is_out { (node, tn, tp) } else { (tn, node, port) };
-                    acts.push(Act::Connect(from, to, prt));
-                    needs_undo = true;
+                    // dry-run on the frame's copy: a refused (cycle-forming) wire must not push an
+                    // undo entry that changes nothing
+                    if graph.clone().connect(from, to, prt) {
+                        acts.push(Act::Connect(from, to, prt));
+                        needs_undo = true;
+                    }
                 }
             }
             state.linking = None;
@@ -210,7 +237,7 @@ pub fn show(
 
     // ---- node boxes ----
     let linking = state.linking.is_some();
-    for (i, r) in boxes.iter().copied().collect::<Vec<_>>() {
+    for &(i, r) in &boxes {
         let n = &graph.nodes[i];
         let nr = ui.interact(r, base.with(("node", n.id)), Sense::click_and_drag());
         if nr.clicked() || nr.drag_started() {
@@ -348,13 +375,13 @@ pub fn show(
     }
 
     // ---- apply ----
-    if !acts.is_empty() {
-        if needs_undo {
-            undo(project);
-        }
-        for a in acts {
-            out.edited |= apply(project, clip_id, a, &mut state.selected);
-        }
+    // not gated on `acts`: a gesture's first frame (drag start / entering a text field) usually has no
+    // act yet, and that is exactly the state the snapshot has to capture
+    if needs_undo {
+        undo(project);
+    }
+    for a in acts {
+        out.edited |= apply(project, clip_id, a, &mut state.selected);
     }
     out.selected = state.selected;
     out
@@ -785,6 +812,7 @@ mod tests {
         h.drag(out_port(fr, z), in_port(fr2, 0, z)); // Blur -> Sharpen
         assert_eq!(h.graph().input_of(fx2, 0), Some(fx), "edges: {:?}", h.graph().edges);
         let mut edges = h.graph().edges.clone();
+        let undos = h.undos;
         let (fr, fr2) = (h.node_rect(fx), h.node_rect(fx2));
         h.drag(out_port(fr2, z), in_port(fr, 0, z)); // Sharpen -> Blur would loop
                                                      // `connect` restores the previous edge, so compare as a set
@@ -794,6 +822,7 @@ mod tests {
         after.sort_by_key(key);
         assert_eq!(after, edges, "the cycle must be refused");
         assert!(!h.graph().has_cycle());
+        assert_eq!(undos, h.undos, "a refused wire pushes no undo entry");
     }
 
     #[test]
@@ -868,6 +897,59 @@ mod tests {
         let port = in_port(h.node_rect(output), 0, z);
         h.drag(port, port + vec2(0.0, 160.0)); // drop on empty canvas
         assert_eq!(h.graph().input_of(output, 0), None, "the wire was pulled off");
+    }
+
+    #[test]
+    fn converting_the_effect_stack_is_undoable() {
+        // Harness::new draws exactly one frame, and that frame converts the clip
+        let h = Harness::new();
+        assert!(h.project.clip(h.clip()).unwrap().graph.is_some());
+        assert_eq!(h.undos, 1, "the conversion is a snapshotted edit, not a silent side effect");
+        assert!(h.out.edited, "and the app is told the project changed");
+    }
+
+    #[test]
+    fn clicking_a_connected_input_port_changes_nothing() {
+        let mut h = Harness::new();
+        let (input, output) = h.ids();
+        let z = h.state.zoom;
+        let port = in_port(h.node_rect(output), 0, z);
+        h.undos = 0;
+        h.press(port, PointerButton::Primary);
+        h.release(port, PointerButton::Primary);
+        assert_eq!(h.graph().input_of(output, 0), Some(input), "the wire survives a plain click");
+        assert_eq!(h.undos, 0, "detach + re-attach must not push two no-op undo entries");
+    }
+
+    #[test]
+    fn typing_an_inline_parameter_snapshots_undo_first() {
+        let mut h = Harness::new();
+        h.menu_click(pos2(560.0, 200.0), ("add", "Blur"));
+        let fx = h.out.selected.expect("selected");
+        let value = |h: &Harness| match &h.graph().node(fx).unwrap().kind {
+            NodeKind::Effect(e) => e.at(0, 0.0),
+            _ => panic!("not an effect"),
+        };
+        let before = value(&h);
+        let r = h.node_rect(fx);
+        let z = h.state.zoom;
+        // the first inline parameter row: its DragValue fills the right-hand side of the row
+        let start = pos2(r.left() + 62.0 * z, r.top() + (HEADER_H + ROW_H * 0.5) * z + 2.0);
+        h.undos = 0;
+        // click the DragValue to type into it (the frame that gains focus has no change to apply yet)
+        h.press(start, PointerButton::Primary);
+        h.release(start, PointerButton::Primary);
+        h.frame(vec![Event::Text("9".into())]);
+        h.frame(vec![Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        }]);
+        h.frame(vec![]);
+        assert!((value(&h) - before).abs() > 1e-9, "the typed parameter took: {before} -> {}", value(&h));
+        assert_eq!(h.undos, 1, "the snapshot lands on the gesture's first frame, before the value changes");
     }
 
     #[test]

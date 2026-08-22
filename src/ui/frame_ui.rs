@@ -5,7 +5,10 @@
 //! the playhead, no compositing). Non-modal; returns the chosen options when the user confirms.
 
 use crate::model::Scaler;
+// the resize flags are the export window's list: a scaler picked there (area / spline) must not
+// silently turn into something else here
 use crate::ui::combo;
+use crate::ui::export_ui::SCALERS as RESIZE;
 use eframe::egui;
 use std::path::PathBuf;
 
@@ -14,7 +17,7 @@ pub struct FrameExport {
     pub out: PathBuf,
     pub size: (u32, u32),
     pub scaler: Scaler,
-    /// ffmpeg scale flag for the final resize ("neighbor" | "bilinear" | "bicubic" | "lanczos").
+    /// ffmpeg scale flag for the final resize (one of `ui::export_ui::SCALERS`).
     pub resize: String,
     /// false = the raw source frame under the playhead.
     pub with_effects: bool,
@@ -36,8 +39,6 @@ pub struct FrameUi {
 }
 
 const PRESETS: [(&str, &str); 4] = [("project", "Project"), ("2x", "2 ×"), ("4x", "4 ×"), ("custom", "Custom")];
-const RESIZE: [(&str, &str); 4] =
-    [("neighbor", "Nearest"), ("bilinear", "Bilinear"), ("bicubic", "Bicubic"), ("lanczos", "Lanczos")];
 const FORMATS: [(&str, &str); 3] = [("png", "PNG (lossless)"), ("jpg", "JPG"), ("webp", "WebP")];
 
 /// Output size for a preset. `custom` is clamped to something ffmpeg will accept.
@@ -47,6 +48,16 @@ fn size_of(pw: u32, ph: u32, preset: &str, custom: (u32, u32)) -> (u32, u32) {
         "4x" => (pw * 4, ph * 4),
         "custom" => (custom.0.clamp(16, 16384), custom.1.clamp(16, 16384)),
         _ => (pw.max(1), ph.max(1)),
+    }
+}
+
+/// What `settings.frame_resolution` remembers: a preset name, or "WxH" for a custom size (`init` parses
+/// both — storing the literal "custom" would lose the size).
+fn stored_resolution(state: &FrameUi) -> String {
+    if state.preset == "custom" {
+        format!("{}x{}", state.custom.0, state.custom.1)
+    } else {
+        state.preset.clone()
     }
 }
 
@@ -75,7 +86,7 @@ pub fn show(
             .show(ui, |ui| {
                 ui.label("Resolution");
                 if combo(ui, "frame_res", &mut state.preset, &PRESETS, None) {
-                    settings.frame_resolution = state.preset.clone();
+                    settings.frame_resolution = stored_resolution(state);
                 }
                 ui.end_row();
                 if state.preset == "custom" {
@@ -134,7 +145,7 @@ pub fn show(
         ui.add_space(4.0);
         if ui.button("Save Frame…").clicked() {
             settings.frame_quality = state.quality;
-            settings.frame_resolution = state.preset.clone();
+            settings.frame_resolution = stored_resolution(state);
             settings.save();
             if let Some(path) = pick(project, &settings.frame_format) {
                 out = Some(FrameExport {
@@ -214,11 +225,31 @@ mod tests {
         init(&mut st, &p, &s);
         assert_eq!((st.preset.as_str(), st.custom), ("custom", (800, 600)));
         assert_eq!(st.resize, "bicubic");
-        // an export-only scaler ("area"/"spline") is not offered here
+        // every export scaler is offered here too — no silent downgrade to lanczos
         s.export_scaler = "spline".into();
         let mut st = FrameUi::default();
         init(&mut st, &p, &s);
+        assert_eq!(st.resize, "spline");
+        s.export_scaler = "nonsense".into();
+        let mut st = FrameUi::default();
+        init(&mut st, &p, &s);
         assert_eq!(st.resize, "lanczos");
+    }
+
+    /// A custom size survives a restart: settings store "WxH", not the literal "custom".
+    #[test]
+    fn custom_size_round_trips_through_settings() {
+        let p = Project::new();
+        let mut s = Settings::default();
+        let st = FrameUi { preset: "custom".into(), custom: (3840, 2160), ..Default::default() };
+        s.frame_resolution = stored_resolution(&st);
+        assert_eq!(s.frame_resolution, "3840x2160");
+        let mut back = FrameUi::default();
+        init(&mut back, &p, &s);
+        assert_eq!((back.preset.as_str(), back.custom), ("custom", (3840, 2160)));
+        // a plain preset still stores its own name
+        let st = FrameUi { preset: "2x".into(), ..Default::default() };
+        assert_eq!(stored_resolution(&st), "2x");
     }
 
     /// Headless: the window lays out for every preset and confirms nothing on its own.

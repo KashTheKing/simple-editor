@@ -115,7 +115,7 @@ pub fn start_screen(opts: ScreenCaptureOptions) -> Result<Capture, String> {
     if opts.desktop_audio && loopback.is_none() {
         // ponytail: no WASAPI loopback of our own — a dshow loopback driver is the only route
         return Err("No desktop-audio device found. Enable \"Stereo Mix\" in Windows sound settings \
-                    (or install a loopback driver) and reopen the recorder."
+                    (or install a loopback driver), then restart Simple Editor."
             .into());
     }
     spawn(&opts.out, screen_args(&opts, loopback.as_deref()), "Recording")
@@ -264,6 +264,11 @@ const LOOPBACK_HINTS: [&str; 10] = [
 
 /// dshow audio input devices (`ffmpeg -list_devices true -f dshow -i dummy`), cached.
 /// The bool marks devices that look like desktop/loopback capture.
+///
+/// ponytail: probed once per process — the UI polls this every frame while the recorder/settings
+/// windows are open and each probe spawns ffmpeg (~250 ms), so it must not re-run per frame. A device
+/// plugged in (or Stereo Mix enabled) mid-session therefore needs a restart; swap the `OnceLock` for a
+/// `Mutex<Option<_>>` when there is a "Refresh" button next to the device combos to clear it.
 pub fn audio_devices() -> Vec<(String, bool)> {
     static CACHE: OnceLock<Vec<(String, bool)>> = OnceLock::new();
     CACHE

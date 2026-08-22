@@ -730,7 +730,11 @@ pub fn show(
     }
     // Delete removes the selected keys (only while the pointer is over the graph, so the timeline's
     // Delete keeps working elsewhere)
-    if !state.selected.is_empty() && ui.rect_contains_pointer(graph) && ui.input(|i| i.key_pressed(egui::Key::Delete)) {
+    // consuming (not just peeking) so the app's global Delete cannot also fire and remove the clip
+    if !state.selected.is_empty()
+        && ui.rect_contains_pointer(graph)
+        && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Delete))
+    {
         undo(project);
         let mut sel = state.selected.clone();
         sel.sort_by(|a, b| b.cmp(a)); // per-prop descending key index → removals don't shift later ones

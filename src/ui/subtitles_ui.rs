@@ -11,6 +11,7 @@
 
 use crate::model::{Id, Project};
 use crate::theme::Palette;
+use crate::ui::{edit_start, once};
 use eframe::egui::{self, DragValue, Response};
 
 /// Minimum cue length (end ≥ start + this).
@@ -28,19 +29,6 @@ pub struct SubtitlesState {
 pub struct SubtitlesResponse {
     pub edited: bool,
     pub seeked: bool,
-}
-
-/// True on the first frame of an edit gesture (drag start, or a non-drag change such as typing/clicking).
-fn edit_start(r: &Response) -> bool {
-    r.drag_started() || (r.changed() && !r.dragged())
-}
-
-/// Push undo at most once per frame.
-fn once(flag: &mut bool, undo: &mut dyn FnMut(&Project), p: &Project) {
-    if !*flag {
-        undo(p);
-        *flag = true;
-    }
 }
 
 /// "Add at playhead": a 2 s cue starting at the playhead.

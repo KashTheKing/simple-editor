@@ -11,17 +11,18 @@
 //! seek/pause flush the ring. Reaching the project end pauses (the UI sees is_playing() flip).
 //!
 //! GPU mode (`set_gpu(true)`, settings.gpu + a working `engine::gpu::GpuRenderer`): the render thread
-//! stops compositing and instead publishes the **decoded layers** for the current instant
-//! (`take_layers` → `engine::gpu::LayerSet`); the UI thread renders them with the GL context it owns.
+//! stops compositing and instead publishes the **layers** for the current instant (`take_layers` →
+//! `engine::gpu::LayerSet`); the UI thread renders them with the GL context it owns.
 //! Everything else (clock, pacing, decoder pool, audio) is identical, so falling back to the CPU
 //! compositor is a single `set_gpu(false)`.
 
 use crate::engine::compose::{placement, Compositor};
 use crate::engine::gpu::LayerSet;
 use crate::engine::mixer::Mixer;
+use crate::engine::shapes::ShapeRasterizer;
 use crate::engine::text::TextRasterizer;
 use crate::media::{Backend, DecoderPool, Frame, SAMPLE_RATE};
-use crate::model::{ClipKind, Project, TrackKind};
+use crate::model::{Clip, ClipKind, Project, TrackKind};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError};
@@ -257,6 +258,7 @@ fn render_thread(
 ) {
     let mut pool = DecoderPool::new(backend);
     let mut comp = Compositor::new();
+    let mut shapes = ShapeRasterizer::new();
     let mut project = lock(&shared.project).clone();
     // double buffer: `held` = last published, `spare` = the one before (free again once the UI took it)
     let (mut held, mut spare): (Option<Arc<Frame>>, Option<Arc<Frame>>) = (None, None);
@@ -313,7 +315,10 @@ fn render_thread(
                     let w = pw.min(max_w.max(16));
                     let h = ((ph as u64 * w as u64) / pw as u64).max(1) as u32;
                     let mut set = LayerSet::default();
-                    guarded(&mut pool, |pool| set = decode_layers(&project, t, w, h, pool, &mut spare_layers));
+                    let text = &mut lock(&text);
+                    guarded(&mut pool, |pool| {
+                        set = decode_layers(&project, t, w, h, pool, &mut spare_layers, text, &mut shapes, &mut comp)
+                    });
                     let _ = reply.send(Arc::new(set));
                 }
                 Cmd::RenderOnce(t, max_w, reply) => {
@@ -338,9 +343,14 @@ fn render_thread(
         dirty = false;
         let start = Instant::now();
         if gpu && w > 0 && h > 0 {
-            // the UI thread owns the GL context: decode here, render there
+            // the UI thread owns the GL context: decode/rasterise here, render there
             let mut set = LayerSet::default();
-            guarded(&mut pool, |pool| set = decode_layers(&project, t, w, h, pool, &mut spare_layers));
+            {
+                let text = &mut lock(&text);
+                guarded(&mut pool, |pool| {
+                    set = decode_layers(&project, t, w, h, pool, &mut spare_layers, text, &mut shapes, &mut comp)
+                });
+            }
             let set = Arc::new(set);
             *lock(&shared.layers) = Some(set.clone());
             recycle(held_layers.replace(set), &mut spare_layers); // buffers of the set before that
@@ -367,10 +377,14 @@ fn render_thread(
     }
 }
 
-/// Decode every media layer visible at `t` for a canvas of (w, h) px, at the size the compositor would
-/// have decoded it (placement, capped at the source's native size). Text / shapes / sequences /
-/// adjustment layers are the renderer's job — it has the project and rasterises them itself; this only
-/// produces what needs a decoder. Clips whose effects `needs_motion()` also get neighbouring samples.
+/// Everything `engine::gpu` needs for one timeline instant (its `LayerSet` contract): one bitmap per
+/// visual clip on screen at `t` — **both** clips of a transition, which the renderer draws virtually
+/// extended past their own bounds — plus the subtitle bitmap under `LayerSet::SUBTITLES`. Media is
+/// decoded at the size the compositor would have used (placement, capped at the source's native size);
+/// text/shape clips are rasterised and nested sequences composited on the CPU, all at (w, h) — which is
+/// already the quality-scaled render size, so `gpu::render_size` must not be applied again. Adjustment
+/// layers need no bitmap (they re-process the canvas). Effects that `needs_motion()` also get neighbours.
+#[allow(clippy::too_many_arguments)]
 fn decode_layers(
     project: &Project,
     t: f64,
@@ -378,35 +392,82 @@ fn decode_layers(
     h: u32,
     pool: &mut DecoderPool,
     spare: &mut Vec<Frame>,
+    text: &mut TextRasterizer,
+    shapes: &mut ShapeRasterizer,
+    comp: &mut Compositor,
 ) -> LayerSet {
     let mut set = LayerSet::default();
-    let fd = project.frame_dur();
     for (ti, track) in project.tracks.iter().enumerate() {
         if track.kind != TrackKind::Video || !project.active(ti) {
             continue;
         }
-        for clip in &track.clips {
-            if !clip.enabled || !clip.contains(t) || !matches!(clip.kind, ClipKind::Video | ClipKind::Image) {
-                continue;
+        // mirrors gpu::render_canvas / compose::render_tracks: inside a transition window both clips are
+        // drawn past their own bounds, so filtering by `contains(t)` here would hard-cut every transition
+        if let Some((_, left, right)) = track.transition_at(t) {
+            for clip in [left, right] {
+                layer_for(project, clip, t, w, h, pool, spare, text, shapes, comp, &mut set);
             }
-            let Some(asset) = project.asset(clip.asset) else { continue };
+            continue;
+        }
+        for clip in &track.clips {
+            if clip.enabled && clip.contains(t) {
+                layer_for(project, clip, t, w, h, pool, spare, text, shapes, comp, &mut set);
+            }
+        }
+    }
+    if project.show_subtitles {
+        if let Some(cue) = project.cue_at(t).filter(|c| !c.text.trim().is_empty()) {
+            let mut style = project.subtitle_style.clone();
+            style.text.clone_from(&cue.text);
+            let img = text.render(&style, w as f32 / project.width.max(1) as f32);
+            if img.width > 1 || img.height > 1 {
+                set.layers.push((LayerSet::SUBTITLES, img));
+            }
+        }
+    }
+    set
+}
+
+/// One clip's layer: video/images decode, text/shapes rasterise, a nested sequence is composited on the
+/// CPU. Kinds the renderer draws without a bitmap (Adjustment) or not at all (Audio) push nothing.
+#[allow(clippy::too_many_arguments)]
+fn layer_for(
+    project: &Project,
+    clip: &Clip,
+    t: f64,
+    w: u32,
+    h: u32,
+    pool: &mut DecoderPool,
+    spare: &mut Vec<Frame>,
+    text: &mut TextRasterizer,
+    shapes: &mut ShapeRasterizer,
+    comp: &mut Compositor,
+    set: &mut LayerSet,
+) {
+    if !clip.draws() {
+        return;
+    }
+    let s = w as f32 / project.width.max(1) as f32;
+    match clip.kind {
+        ClipKind::Video | ClipKind::Image => {
+            let Some(asset) = project.asset(clip.asset) else { return };
             let native = (asset.width, asset.height);
             if native.0 == 0 || native.1 == 0 {
-                continue;
+                return;
             }
             let p = placement(project, clip, t, native, w, h, true);
             if !(p.w.is_finite() && p.h.is_finite()) {
-                continue;
+                return;
             }
             let dw = (p.w.round().max(1.0) as u32).clamp(1, native.0);
             let dh = (p.h.round().max(1.0) as u32).clamp(1, native.1);
-            let motion = clip.effects.iter().any(|e| e.enabled && e.kind.needs_motion());
             if let Some(f) = decode_one(pool, &asset.path, clip.src_time(t), asset.duration, dw, dh, spare) {
                 set.layers.push((clip.id, f));
             }
             // ponytail: two extra samples half a frame apart feed shutter-based effects; a shutter-angle
             // driven sample count is the upgrade if motion blur ever needs to be exact.
-            if motion {
+            if clip.effects.iter().any(|e| e.enabled && e.kind.needs_motion()) {
+                let fd = project.frame_dur();
                 for k in [-1.0, -0.5] {
                     let st = clip.src_time(t + k * fd);
                     if let Some(f) = decode_one(pool, &asset.path, st, asset.duration, dw, dh, spare) {
@@ -415,8 +476,58 @@ fn decode_layers(
                 }
             }
         }
+        ClipKind::Text => {
+            let Some(style) = &clip.text else { return };
+            let img = text.render(style, s);
+            if img.width > 1 || img.height > 1 {
+                set.layers.push((clip.id, img));
+            }
+        }
+        ClipKind::Shape => {
+            let Some(style) = &clip.shape else { return };
+            let img = shapes.render(style, s, clip.local(t));
+            if !img.is_empty() {
+                set.layers.push((clip.id, img));
+            }
+        }
+        ClipKind::Sequence => {
+            let editing = project.editing == Some(clip.sequence);
+            let (qw, qh) = if editing {
+                (project.width, project.height) // its live size is swapped into the project
+            } else {
+                match project.sequence(clip.sequence) {
+                    Some(sq) => (sq.width, sq.height),
+                    None => return,
+                }
+            };
+            if qw == 0 || qh == 0 {
+                return;
+            }
+            let p = placement(project, clip, t, (qw, qh), w, h, true);
+            if !(p.w.is_finite() && p.h.is_finite() && p.w > 0.0 && p.h > 0.0) {
+                return;
+            }
+            let dw = (p.w.round() as u32).clamp(1, qw);
+            let dh = (p.h.round() as u32).clamp(1, qh);
+            let dur = project.sequence_duration(clip.sequence);
+            let st = clip.src_time(t).clamp(0.0, (dur - 1e-6).max(0.0));
+            // ponytail: gpu.rs wants a nested sequence as a ready bitmap, so the CPU compositor renders
+            // it — through a shallow project view (one Project clone per frame while a sequence clip is
+            // on screen). Making `Compositor::render_tracks` pub would drop both the clone and this.
+            let mut sub = project.clone();
+            if !editing {
+                let Some(sq) = project.sequence(clip.sequence) else { return };
+                sub.tracks.clone_from(&sq.tracks);
+                (sub.width, sub.height) = (qw, qh);
+                sub.editing = Some(clip.sequence);
+            }
+            sub.show_subtitles = false; // subtitles belong to the outer canvas
+            let mut frame = spare.pop().unwrap_or_default();
+            comp.render(&sub, st, dw, dh, pool, text, &mut frame);
+            set.layers.push((clip.id, Arc::new(frame)));
+        }
+        ClipKind::Audio | ClipKind::Adjustment => {}
     }
-    set
 }
 
 /// One decode into a recycled buffer. None when the decoder or the frame is unavailable.
@@ -707,6 +818,73 @@ mod tests {
         let c = centre(&f);
         assert!(c[1] > 200 && c[0] < 70, "expected green from the CPU path, got {c:?}");
         assert!(p.take_layers().is_none(), "layers must stop when the GPU path is off");
+    }
+
+    /// `decode_layers` owes the GPU renderer a bitmap for every visual clip, not just decoded media:
+    /// text, shapes, nested sequences and the subtitle overlay used to silently vanish on the GPU path.
+    #[test]
+    fn layers_cover_text_shape_sequence_and_subtitles() {
+        use crate::model::{ShapeKind, ShapeStyle};
+        let mut project = Project::new();
+        (project.width, project.height) = (320, 240);
+        let txt = project.add_text_clip(0.0, 4.0);
+        let shp = project.add_shape_clip(ShapeKind::Star, 0.0, 4.0);
+        let sid = project.new_sequence("seq", 320, 240, 30.0);
+        let mut inner = Clip::new(project.new_id(), ClipKind::Shape, "inner", 0.0, 4.0);
+        inner.shape = Some(ShapeStyle::new(ShapeKind::Rect)); // an empty sequence lasts 0 s
+        project.sequence_mut(sid).unwrap().tracks[0].clips.push(inner);
+        let seq = project.insert_sequence_clip(sid, 0.0, None).expect("sequence clip");
+        project.add_cue(0.0, 2.0, "HELLO");
+        assert!(project.show_subtitles);
+
+        let (mut pool, mut spare) = (DecoderPool::new(Backend::Ffmpeg), Vec::new());
+        let (mut text, mut shapes, mut comp) = (TextRasterizer::new(), ShapeRasterizer::new(), Compositor::new());
+        let set = decode_layers(&project, 1.0, 320, 240, &mut pool, &mut spare, &mut text, &mut shapes, &mut comp);
+        assert!(set.get(shp).is_some(), "shape clip has no layer");
+        assert!(set.get(seq).is_some(), "nested sequence has no layer");
+        if text.families().is_empty() {
+            eprintln!("no system fonts - skipping the text assertions");
+            return;
+        }
+        assert!(set.get(txt).is_some(), "text clip has no layer");
+        assert!(set.get(LayerSet::SUBTITLES).is_some(), "no subtitle layer");
+        // ...and none after the cue ends / with subtitles off
+        let set = decode_layers(&project, 3.0, 320, 240, &mut pool, &mut spare, &mut text, &mut shapes, &mut comp);
+        assert!(set.get(LayerSet::SUBTITLES).is_none(), "subtitle layer outside the cue");
+    }
+
+    /// Inside a transition window both clips are drawn extended past their own bounds, so both need a
+    /// layer — filtering by `contains(t)` made every GPU transition a hard cut.
+    #[test]
+    fn transition_window_yields_both_clips() {
+        use crate::model::{Ease, ShapeKind, Transition, TransitionKind};
+        let mut project = Project::new();
+        (project.width, project.height) = (320, 240);
+        let a = project.add_shape_clip(ShapeKind::Rect, 0.0, 2.0);
+        let b = project.add_shape_clip(ShapeKind::Ellipse, 2.0, 2.0);
+        let vt = project.video_tracks()[0];
+        assert!(project.tracks[vt].clips.len() == 2, "the two clips must abut on one track");
+        let id = project.new_id();
+        project.tracks[vt].transitions.push(Transition {
+            id,
+            right: b,
+            kind: TransitionKind::CrossFade,
+            duration: 1.0,
+            color: [0, 0, 0, 255],
+            direction: 0,
+            ease: Ease::Linear,
+        });
+        let (mut pool, mut spare) = (DecoderPool::new(Backend::Ffmpeg), Vec::new());
+        let (mut text, mut shapes, mut comp) = (TextRasterizer::new(), ShapeRasterizer::new(), Compositor::new());
+        // 1.7 s = 20% through the 1.5–2.5 s window: only `a` contains(t), yet both must be handed over
+        for t in [1.7, 2.3] {
+            let set = decode_layers(&project, t, 320, 240, &mut pool, &mut spare, &mut text, &mut shapes, &mut comp);
+            assert!(set.get(a).is_some(), "outgoing clip missing at t={t}");
+            assert!(set.get(b).is_some(), "incoming clip missing at t={t}");
+        }
+        // outside the window only the clip under the playhead
+        let set = decode_layers(&project, 0.5, 320, 240, &mut pool, &mut spare, &mut text, &mut shapes, &mut comp);
+        assert!(set.get(a).is_some() && set.get(b).is_none());
     }
 
     /// A panicking decoder is contained: the caller lives on and the next call still runs.

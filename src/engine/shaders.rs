@@ -1,15 +1,14 @@
 //! GLSL sources for every GPU effect (engine/gpu.rs compiles these).
 //!
 //! Convention: one full-screen triangle vertex shader (`VERT`) plus a fragment shader per effect built
-//! from `PRELUDE` + the effect body + `MAIN`. A **body** defines
+//! from `PRELUDE` + the effect body. A **per-effect body** (everything below the divider near the
+//! bottom of this file) is a complete shader: it defines its own `void main()`, samples `tex` and mixes
+//! its result back through the mask itself — see "Rules every body below follows".
 //!
-//! ```glsl
-//! vec4 effect(vec4 src, vec2 uv) { ... }   // straight alpha in, straight alpha out
-//! ```
-//!
-//! and nothing else (it may declare extra uniforms/helpers above it). `MAIN` samples `tex`, calls
-//! `effect` and mixes the result back through the mask — so no body ever writes `out_color` itself and
-//! every effect gets masking for free. `fragment()` does the assembly.
+//! The `vec4 effect(vec4 src, vec2 uv)` + `MAIN` convention is used only where the caller supplies the
+//! body: `EffectKind::Shader` (via `user_shader`) and gpu.rs's `COPY_BODY` / `MATTE_BODY`. `MAIN`
+//! samples `tex`, calls `effect` and applies the mask, so those bodies never write `out_color`.
+//! `fragment()` does the assembly for both cases.
 //!
 //! Uniforms available to every effect:
 //!   sampler2D tex      the layer being processed (straight alpha, top-down)
@@ -118,7 +117,9 @@ float mask_at(vec2 uv) { return (u_has_mask == 0) ? 1.0 : texture(u_mask, uv).r;
 vec4 apply_mask(vec4 src, vec4 fx, vec2 uv) { return mix(src, fx, mask_at(uv)); }
 "#;
 
-/// Entry point appended after an effect body: sample, run `effect`, mask.
+/// Entry point appended after a `vec4 effect(vec4 src, vec2 uv)` body: sample, run `effect`, mask.
+/// Used by `user_shader` (`EffectKind::Shader`) and gpu.rs's copy/matte programs only — the built-in
+/// bodies below write `out_color` themselves.
 pub const MAIN: &str = r#"
 void main() {
     vec2 uv = v_uv;
@@ -129,10 +130,10 @@ void main() {
 
 /// Body for each `EffectKind` that runs on the GPU. `None` = geometric or CPU-only.
 ///
-/// A body is GLSL that defines exactly `vec4 effect(vec4 src, vec2 uv)` — extra helpers and uniforms
-/// above it are fine, a `main()` is not: `fragment()` appends `MAIN`, which samples `tex`, calls
-/// `effect` and mixes the result back through the mask, so masking is automatic. Parameters arrive as
-/// `p0..p7` in `EffectKind::params()` order; pixel-sized ones must be multiplied by `u_scale`.
+/// A body is a complete shader minus the prelude: it defines `void main()`, samples `tex` itself and
+/// ends with `out_color = mix(src, res, m)` so masking is explicit (see the rules by the bodies).
+/// Parameters arrive as `p0..p7` in `EffectKind::params()` order (a kind with more declares the extras
+/// itself); pixel-sized ones must be multiplied by `u_scale`.
 pub fn body(kind: crate::model::EffectKind) -> Option<&'static str> {
     use crate::model::EffectKind as K;
     Some(match kind {
@@ -168,12 +169,9 @@ pub fn fragment(kind: EffectKind, user_src: &str) -> Option<String> {
     if kind == EffectKind::Shader {
         return Some(user_shader(user_src));
     }
-    Some(format!(
-        "{PRELUDE}
-{}
-{MAIN}",
-        body(kind)?
-    ))
+    // No `MAIN` here: a built-in body is already a complete shader. Appending it would define
+    // `main()` twice and call an `effect()` no body declares — the program would not link.
+    Some(format!("{PRELUDE}\n{}", body(kind)?))
 }
 
 /// Blend modes as a GLSL function (`vec3 blend(int mode, vec3 s, vec3 d)`) mirroring engine::blend.
@@ -491,6 +489,23 @@ mod tests {
         assert_eq!(undeclared_uniforms(&s), Vec::<String>::new());
         // the user body's own uses resolve through the #defines
         assert!(s.contains("u1") && s.contains("u_time"));
+    }
+
+    /// The bug this guards: `fragment()` used to append `MAIN` to bodies that already define `main()`,
+    /// so every built-in effect program failed to link and the GPU preview applied nothing.
+    #[test]
+    fn built_in_fragments_have_one_entry_point_and_no_undefined_effect() {
+        for k in crate::model::EffectKind::ALL {
+            if k == EffectKind::Shader {
+                continue;
+            }
+            let Some(src) = fragment(k, "") else { continue };
+            assert_eq!(src.matches("void main()").count(), 1, "{k:?}: not exactly one entry point");
+            assert!(!src.contains("effect(src, uv)"), "{k:?}: calls an effect() no body defines");
+            assert!(balanced(&src), "{k:?}: unbalanced braces");
+            assert!(src.starts_with("#version 330 core"), "{k:?}");
+            assert_eq!(undeclared_uniforms(&src), Vec::<String>::new(), "{k:?}");
+        }
     }
 
     #[test]

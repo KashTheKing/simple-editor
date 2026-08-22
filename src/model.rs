@@ -615,6 +615,10 @@ impl EffectKind {
                 | (EffectKind::Vhs, 6)
                 | (EffectKind::RecDot, 3)
                 | (EffectKind::BlobTrack, 4)
+                | (EffectKind::Threshold, 2)
+                | (EffectKind::JpegCompress, 2)
+                | (EffectKind::MotionBlur, 2)
+                | (EffectKind::EdgeGlow, 6)
         )
     }
     /// Effects whose output depends on neighbouring frames (the renderer must supply them).
@@ -1703,10 +1707,6 @@ impl Clip {
     /// Draws pixels of its own (an Adjustment layer only re-processes what is below it).
     pub fn draws(&self) -> bool {
         self.is_visual() && self.kind != ClipKind::Adjustment
-    }
-    /// The effect chain to render: the node graph when the clip has one, else the linear stack.
-    pub fn has_chain(&self) -> bool {
-        self.graph.as_ref().map(|g| g.nodes.len() > 2).unwrap_or(false) || !self.effects.is_empty()
     }
     pub fn uses_asset(&self) -> bool {
         matches!(self.kind, ClipKind::Video | ClipKind::Image | ClipKind::Audio)
@@ -3380,19 +3380,6 @@ impl Project {
             self.tidy();
         }
         n
-    }
-
-    // ---------- track helpers ----------
-    /// Insert a new video track directly above `above_kind_index` (index within the video tracks) and
-    /// return its index in `tracks`. Used when a clip is dragged past the top of the timeline.
-    pub fn insert_video_track_above(&mut self, video_pos: usize) -> usize {
-        let idx = self.add_track(TrackKind::Video); // appended after the existing video tracks
-        let list = self.video_tracks();
-        let target = video_pos.min(list.len().saturating_sub(1));
-        // `add_track` already puts it last among video tracks (i.e. the topmost row)
-        let _ = target;
-        self.rename_tracks();
-        idx
     }
 
     // ---------- persistence ----------

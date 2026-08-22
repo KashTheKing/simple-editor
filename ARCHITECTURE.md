@@ -137,8 +137,10 @@ don't own**; if you truly need something, add a private helper in your own file 
   path as the preview (GPU when it is on). Round-3 tools: masks, nodes, markers, buses/filters/routing,
   shapes, timeline import, frame export, labels.
 * **GPU preview** (`Settings.gpu`): `App` builds an `engine::gpu::GpuRenderer` from `cc.gl` on the UI thread.
-  The player then publishes **decoded layers** (`Player::take_layers` → `LayerSet`) instead of a composited
-  frame, and the renderer draws them. Any `Err` (or a panic in a driver) falls back to the CPU compositor with
+  The player then publishes **layers** (`Player::take_layers` → `LayerSet`) instead of a composited frame,
+  and the renderer draws them: one bitmap per visual clip on screen — decoded media, rasterised text/shapes,
+  nested sequences composited on the CPU, both clips of a transition, and the subtitle overlay. Adjustment
+  layers need none (they re-process the canvas). Any `Err` (or a panic in a driver) falls back to the CPU compositor with
   one toast and is not retried until the setting is toggled. `Settings.preview_quality` scales the preview
   render size; it never affects an export.
 * **Movie mode** (`Settings.movie_mode`): `engine::prerender` renders the in/out range (or the whole timeline)

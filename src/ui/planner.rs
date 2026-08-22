@@ -13,7 +13,7 @@ use crate::media::thumbs::ThumbCache;
 use crate::model::{ClipKind, Id, PlanItem, Project, LABEL_COLORS};
 use crate::theme::Palette;
 use crate::ui::markers_ui::x_button;
-use crate::ui::{label_color, DragPayload};
+use crate::ui::{edit_start, label_color, once, DragPayload};
 use eframe::egui::{self, Response, RichText, TextEdit};
 
 #[derive(Default)]
@@ -28,17 +28,6 @@ pub struct PlannerResponse {
     pub edited: bool,
     /// Asset ids the user asked to place on the timeline at the playhead.
     pub add_to_timeline: Vec<Id>,
-}
-
-fn edit_start(r: &Response) -> bool {
-    r.drag_started() || (r.changed() && !r.dragged())
-}
-
-fn once(flag: &mut bool, undo: &mut dyn FnMut(&Project), p: &Project) {
-    if !*flag {
-        undo(p);
-        *flag = true;
-    }
 }
 
 // ---------- pure tree helpers ----------

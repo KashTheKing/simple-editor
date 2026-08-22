@@ -130,6 +130,19 @@ impl Layout {
         let has_all = Pane::ROUND3.iter().all(|p| l.tree.tiles.find_pane(p).is_some() || l.popped.contains(p));
         has_all.then_some(l)
     }
+
+    /// Same, but an explicitly saved profile is migrated instead of rejected: panes it predates are added
+    /// to the root rather than making the whole profile unloadable.
+    pub fn from_json_migrating(s: &str) -> Option<Self> {
+        let mut l: Self = serde_json::from_str(s).ok()?;
+        l.tree.root()?;
+        for p in Pane::ROUND3 {
+            if l.tree.tiles.find_pane(&p).is_none() && !l.popped.contains(&p) {
+                l.insert_into_root(p);
+            }
+        }
+        Some(l)
+    }
     /// Visible = docked in the tree (and not hidden) or popped out.
     pub fn is_visible(&self, pane: Pane) -> bool {
         if self.popped.contains(&pane) {
@@ -339,6 +352,26 @@ mod tests {
         let mut popped = l.clone();
         popped.popout(Pane::Markers);
         assert!(Layout::from_json(&popped.to_json()).is_some());
+    }
+
+    /// A named profile is worth migrating rather than reporting as corrupt: the panes it predates are
+    /// added back and everything it did lay out survives.
+    #[test]
+    fn old_profiles_are_migrated_not_rejected() {
+        let mut old = Layout::default_layout();
+        for p in [Pane::Mixer, Pane::Nodes] {
+            let id = old.tree.tiles.find_pane(&p).unwrap();
+            old.tree.tiles.remove(id);
+        }
+        let json = old.to_json();
+        assert!(Layout::from_json(&json).is_none(), "the auto-restored layout still resets");
+        let migrated = Layout::from_json_migrating(&json).expect("a saved profile still loads");
+        for p in Pane::ALL {
+            assert!(migrated.tree.tiles.find_pane(&p).is_some(), "{p:?} missing after the migration");
+        }
+        assert!(migrated.is_visible(Pane::Timeline), "the panes it did have are untouched");
+        // genuinely broken JSON is still refused
+        assert!(Layout::from_json_migrating("not json").is_none());
     }
 
     #[test]

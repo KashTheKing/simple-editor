@@ -31,7 +31,7 @@ pub const TOOLS: &[(&str, &str, &[&str])] = &[
     ("sequence.open", "Edit a sequence (swap it into the timeline); omit id to go back to the main timeline.", &["id:integer:false:"]),
     ("clip.set", "Set clip fields: name, enabled, label, speed, reverse, freeze (source time or null), blend, fade_in, fade_out, and constant values of properties (x, y, scale, rotation, opacity, volume, pan); text clips: text style fields (text, font, size, color [r,g,b,a], outline_width, …).", &["clip_id:integer:true:", "fields:object:true:"]),
     ("clip.keyframe", "Set (or remove with remove=true) a keyframe of a property at clip-local time t.", &["clip_id:integer:true:", "property:string:true:", "t:number:true:", "value:number:false:", "ease:string:false:Linear|EaseIn|EaseOut|EaseInOut|Hold|cubic-bezier(x1,y1,x2,y2)", "remove:boolean:false:"]),
-    ("clip.add_effect", "Append an effect (Blur, Pixelate, Tint, Color, Vignette, Sharpen, Invert, Grayscale, Flip, Crop, Wobble) with optional params {name: value}.", &["clip_id:integer:true:", "kind:string:true:", "params:object:false:"]),
+    ("clip.add_effect", "Append an effect with optional params {name: value}.", &["clip_id:integer:true:", "kind:string:true:", "params:object:false:"]),
     ("clip.remove_effect", "Remove effect at index.", &["clip_id:integer:true:", "index:integer:true:"]),
     ("clip.apply_motion", "Apply a motion preset (built-in or saved) to a clip.", &["clip_id:integer:true:", "name:string:true:", "scaled:boolean:false:default true"]),
     ("subtitles.get", "Subtitle cues.", &[]),
@@ -95,12 +95,24 @@ pub fn input_schema(args: &[&str]) -> Value {
     json!({"type": "object", "properties": props, "required": required})
 }
 
+/// Every effect kind the `clip.add_effect` handler accepts — listed from the model, because a
+/// hand-written list in the catalogue goes stale the moment an effect is added.
+fn effect_kinds() -> String {
+    crate::model::EffectKind::ALL.iter().map(|k| k.name()).collect::<Vec<_>>().join(", ")
+}
+
 /// The `tools/list` payload: [{name, description, inputSchema}].
 pub fn list_json() -> Value {
     Value::Array(
         TOOLS
             .iter()
-            .map(|(name, desc, args)| json!({"name": name, "description": desc, "inputSchema": input_schema(args)}))
+            .map(|(name, desc, args)| {
+                let desc = match *name {
+                    "clip.add_effect" => format!("{desc} Kinds: {}.", effect_kinds()),
+                    _ => (*desc).to_string(),
+                };
+                json!({"name": name, "description": desc, "inputSchema": input_schema(args)})
+            })
             .collect(),
     )
 }
@@ -131,5 +143,18 @@ mod tests {
             }
         }
         assert_eq!(list_json().as_array().unwrap().len(), TOOLS.len());
+    }
+
+    /// Every effect the handler accepts is discoverable from the tool description.
+    #[test]
+    fn add_effect_lists_every_kind() {
+        let list = list_json();
+        let d = list.as_array().unwrap().iter().find(|t| t["name"] == "clip.add_effect").unwrap()["description"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        for k in crate::model::EffectKind::ALL {
+            assert!(d.contains(k.name()), "{} missing from the description", k.name());
+        }
     }
 }

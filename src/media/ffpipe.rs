@@ -653,7 +653,10 @@ pub(crate) mod tests {
     pub(crate) fn test_mp4() -> String {
         static P: OnceLock<String> = OnceLock::new();
         P.get_or_init(|| {
-            let dir = std::env::temp_dir().join("simple-editor-ffpipe-tests");
+            // ponytail: per-process dir — `OnceLock` only serialises within one test binary, and two
+            // concurrent `cargo test` runs used to truncate each other's fixture mid-read ("moov atom
+            // not found"). Costs one re-encode per run, which the unconditional `-y` already paid.
+            let dir = std::env::temp_dir().join(format!("simple-editor-ffpipe-tests-{}", std::process::id()));
             let _ = std::fs::create_dir_all(&dir);
             let p = dir.join("test.mp4");
             let st = Command::new("ffmpeg")

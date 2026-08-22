@@ -7,12 +7,13 @@
 //!
 //! When `PreviewCtx.tool` is anything but `Tool::Select`, a click-drag over the video draws instead of
 //! moving the clip: a shape tool reports `new_shape`, the Draw tool records a timed `stroke`, and a mask
-//! tool edits the selected clip's mask (reported through `mask_edit`).
+//! tool edits the selected clip's mask (reported through `mask_edit`); a Polygon/Path mask gets its
+//! vertices from the drag rect (an empty point list would hide the clip entirely).
 
 use crate::engine::compose::placement;
 use crate::hotkeys::Action;
 use crate::media::Frame;
-use crate::model::{ClipKind, Id, Mask, Project, ShapeKind, Stroke as ModelStroke};
+use crate::model::{ClipKind, Id, Mask, MaskShape, Project, ShapeKind, Stroke as ModelStroke};
 use crate::theme::Palette;
 use crate::ui::timecode;
 use crate::ui::tools::Tool;
@@ -230,6 +231,12 @@ fn tool_drag(
                     m.cy.value = ((y0 + y1) / 2.0) as f64;
                     m.rx.value = ((x1 - x0).abs() / 2.0).max(1.0) as f64;
                     m.ry.value = ((y1 - y0).abs() / 2.0).max(1.0) as f64;
+                    if matches!(shape, MaskShape::Polygon | MaskShape::Path) {
+                        // those shapes are rasterised from `points`; fewer than 3 vertices reads as
+                        // "outside everywhere" and the clip would vanish, so the drag rect seeds them
+                        m.points.clear();
+                        crate::ui::seed_mask_points(m);
+                    }
                     r.mask_edit = true;
                     r.edited = true;
                 }
@@ -558,6 +565,20 @@ mod tests {
         assert_eq!(m.shape, MaskShape::Ellipse);
         assert!(m.rx.value > 1.0 && m.ry.value > 1.0, "{:?}", (m.rx.value, m.ry.value));
         assert_eq!(h.undos, 1, "one undo for the mask gesture");
+    }
+
+    #[test]
+    fn polygon_mask_drag_leaves_usable_vertices() {
+        let mut h = H::new();
+        h.tool = Tool::Mask(MaskShape::Polygon);
+        h.frame(vec![]);
+        h.drag(pos2(240.0, 140.0), pos2(420.0, 260.0));
+        let m = h.project.clip(7).unwrap().mask.clone().expect("mask created");
+        assert_eq!(m.shape, MaskShape::Polygon);
+        // fewer than 3 points rasterises as "outside everywhere" and the clip disappears
+        assert!(m.points.len() >= 3, "{:?}", m.points);
+        let xs: Vec<f32> = m.points.iter().map(|p| p.0).collect();
+        assert!(xs.iter().cloned().fold(f32::MIN, f32::max) > xs.iter().cloned().fold(f32::MAX, f32::min));
     }
 
     #[test]

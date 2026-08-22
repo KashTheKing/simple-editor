@@ -21,8 +21,9 @@ use crate::settings::Settings;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 
 const MAGIC: &[u8; 4] = b"SEPR";
 const VERSION: u32 = 1;
@@ -50,6 +51,92 @@ struct Work {
     pool: DecoderPool,
     text: TextRasterizer,
     frame: Frame,
+    /// The second being written, kept across ticks so a slice can stop between frames.
+    open: Option<Open>,
+}
+
+/// A half-written second: the temp file plus how far into it we got.
+struct Open {
+    sec: i64,
+    key: u64,
+    tmp: PathBuf,
+    path: PathBuf,
+    f: std::io::BufWriter<std::fs::File>,
+    /// Next frame index to render.
+    i: u32,
+}
+
+/// What a slice of rendering achieved.
+enum Slice {
+    /// The second is complete and published.
+    Done,
+    /// Out of budget mid-second; the next tick resumes where this one stopped.
+    More,
+    /// Out of disk / no cache dir: give up on pre-rendering.
+    Failed,
+}
+
+impl Work {
+    /// Render frames of the open second until it is complete or the budget runs out.
+    fn render_slice(&mut self, project: &Project, w: u32, h: u32, n: u32, fps: f64, deadline: Instant) -> Slice {
+        let Work { comp, pool, text, frame, open } = self;
+        let Some(o) = open.as_mut() else { return Slice::Failed };
+        while o.i < n {
+            let t = o.sec as f64 + o.i as f64 / fps;
+            comp.render(project, t, w, h, pool, text, frame);
+            if o.f.write_all(&frame.rgba).is_err() {
+                return Slice::Failed;
+            }
+            o.i += 1;
+            if o.i < n && Instant::now() >= deadline {
+                return Slice::More;
+            }
+        }
+        if self.finish() {
+            Slice::Done
+        } else {
+            Slice::Failed
+        }
+    }
+
+    /// Flush the open second and publish it (rename over the real name).
+    fn finish(&mut self) -> bool {
+        let Some(Open { tmp, path, f, .. }) = self.open.take() else { return false };
+        let ok = f.into_inner().map_err(|e| e.into_error()).and_then(|_| std::fs::rename(&tmp, &path));
+        if ok.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        ok.is_ok()
+    }
+
+    /// Throw away a half-written second (its file is useless).
+    fn abort(&mut self) {
+        if let Some(o) = self.open.take() {
+            drop(o.f);
+            let _ = std::fs::remove_file(&o.tmp);
+        }
+    }
+}
+
+impl Drop for Work {
+    fn drop(&mut self) {
+        self.abort();
+    }
+}
+
+/// Create the temp file for one second and write its header.
+fn open_sec(sec: i64, key: u64, w: u32, h: u32, n: u32) -> std::io::Result<Open> {
+    let path = path_for(key);
+    let tmp = path.with_extension("tmp");
+    if let Some(d) = path.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    let mut f = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
+    f.write_all(MAGIC)?;
+    for v in [VERSION, w, h, n] {
+        f.write_all(&v.to_le_bytes())?;
+    }
+    Ok(Open { sec, key, tmp, path, f, i: 0 })
 }
 
 impl PreRender {
@@ -101,7 +188,7 @@ impl PreRender {
             self.work = None;
             return false;
         }
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs_f32(budget_ms.max(0.0) / 1000.0);
+        let deadline = Instant::now() + std::time::Duration::from_secs_f32(budget_ms.max(0.0) / 1000.0);
         let (w, h) = (project.width.max(1), project.height.max(1));
         let fps = if project.fps > 1.0 { project.fps } else { 30.0 };
         let n = fps.round().max(1.0) as u32;
@@ -112,47 +199,46 @@ impl PreRender {
                 pool: DecoderPool::new(Backend::Auto),
                 text: TextRasterizer::new(),
                 frame: Frame::default(),
+                open: None,
             })
         });
-        // ponytail: the budget is checked between seconds, so one slice is one second of frames —
-        // fine at preview sizes, and a partial-second resume is the upgrade if 4K ever stutters.
+        // ponytail: the budget is checked between frames, so a tick costs one composite, not a whole
+        // second of them. A worker thread is the upgrade if one 4K frame is too long for a UI frame.
         while let Some(&sec) = self.queue.first() {
             let key = key_for(project, sec);
-            let path = path_for(key);
-            if !path.exists() {
+            let mut wrote = false;
+            if !path_for(key).exists() {
                 // streamed frame by frame: a second of 1080p RGBA is 250 MB, far too much to buffer
-                let tmp = path.with_extension("tmp");
-                let write = |work: &mut Work| -> std::io::Result<()> {
-                    if let Some(d) = path.parent() {
-                        std::fs::create_dir_all(d)?;
-                    }
-                    let mut f = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
-                    f.write_all(MAGIC)?;
-                    for v in [VERSION, w, h, n] {
-                        f.write_all(&v.to_le_bytes())?;
-                    }
-                    for i in 0..n {
-                        let t = sec as f64 + i as f64 / fps;
-                        work.comp.render(project, t, w, h, &mut work.pool, &mut work.text, &mut work.frame);
-                        f.write_all(&work.frame.rgba)?;
-                    }
-                    drop(f.into_inner().map_err(|e| e.into_error())?);
-                    std::fs::rename(&tmp, &path)
-                };
-                if write(&mut work).is_err() {
-                    // out of disk / no cache dir: stop trying, playback just falls back to live render
-                    let _ = std::fs::remove_file(&tmp);
-                    self.queue.clear();
-                    return false;
+                if work.open.as_ref().is_none_or(|o| (o.sec, o.key) != (sec, key)) {
+                    work.abort(); // an edit changed the key mid-second: that file is worthless now
+                    work.open = open_sec(sec, key, w, h, n).ok();
                 }
-                prune(CACHE_BUDGET);
+                match work.render_slice(project, w, h, n, fps, deadline) {
+                    Slice::More => {
+                        self.work = Some(work);
+                        return true;
+                    }
+                    Slice::Failed => {
+                        // out of disk / no cache dir: stop trying, playback falls back to live render
+                        work.abort();
+                        self.queue.clear();
+                        self.work = Some(work);
+                        return false;
+                    }
+                    Slice::Done => wrote = true,
+                }
             }
             self.queue.remove(0);
             self.dirty.retain(|d| *d != sec);
             if !self.done.contains(&(sec, key)) {
                 self.done.push((sec, key));
             }
-            if std::time::Instant::now() >= deadline {
+            if wrote {
+                // an evicted second is no longer ready: drop it so the next request re-renders it
+                let evicted = prune(&dir(), CACHE_BUDGET);
+                self.done.retain(|(_, k)| !evicted.contains(k));
+            }
+            if Instant::now() >= deadline {
                 break;
             }
         }
@@ -295,9 +381,16 @@ fn read_frame(path: &PathBuf, i: u32, pts: f64) -> Option<Frame> {
     Some(out)
 }
 
-/// Keep the cache under `budget` bytes, oldest files first.
-fn prune(budget: u64) {
-    let Ok(rd) = std::fs::read_dir(dir()) else { return };
+/// The cache key a file name encodes (`path_for`'s inverse); None for anything else in the folder.
+fn key_of(p: &Path) -> Option<u64> {
+    u64::from_str_radix(p.file_name()?.to_str()?.strip_suffix(".rgba")?, 16).ok()
+}
+
+/// Keep the cache under `budget` bytes, oldest files first. Returns the keys it deleted so the caller
+/// can forget the seconds they held.
+fn prune(d: &Path, budget: u64) -> Vec<u64> {
+    let mut evicted = Vec::new();
+    let Ok(rd) = std::fs::read_dir(d) else { return evicted };
     let mut files: Vec<(std::time::SystemTime, u64, PathBuf)> = rd
         .flatten()
         .filter_map(|e| {
@@ -307,7 +400,7 @@ fn prune(budget: u64) {
         .collect();
     let mut total: u64 = files.iter().map(|(_, l, _)| *l).sum();
     if total <= budget {
-        return;
+        return evicted;
     }
     files.sort_by_key(|(t, _, _)| *t);
     for (_, len, p) in files {
@@ -316,8 +409,10 @@ fn prune(budget: u64) {
         }
         if std::fs::remove_file(&p).is_ok() {
             total = total.saturating_sub(len);
+            evicted.extend(key_of(&p));
         }
     }
+    evicted
 }
 
 #[cfg(test)]
@@ -433,6 +528,51 @@ mod tests {
         assert_eq!(sec_range(0.5, 2.1).collect::<Vec<_>>(), vec![0, 1, 2]);
         assert_eq!(sec_range(2.0, 2.0).count(), 0);
         assert_eq!(sec_range(f64::NAN, 1.0).count(), 0);
+    }
+
+    #[test]
+    fn tick_renders_a_second_one_frame_at_a_time() {
+        let mut p = project_with_clip(); // 33×17 @ 10 fps, one text clip: no decoder needed
+        // an odd size gives this test a cache key of its own, so the tests that assert "no file
+        // for this second" never race with the one this writes
+        p.width = 33;
+        p.height = 17;
+        let path = path_for(key_for(&p, 0));
+        let _ = std::fs::remove_file(&path);
+        let mut pr = PreRender::new();
+        pr.request(&p, 0.0, 1.0);
+        assert_eq!(pr.queue, vec![0]);
+        // a zero budget still makes progress, one frame per tick — never a whole second in one go
+        let mut ticks = 0;
+        while pr.tick(&p, 0.0) {
+            ticks += 1;
+            assert!(ticks < 100, "not converging");
+        }
+        assert!(ticks >= 9, "10 frames should take about 10 ticks, took {ticks}");
+        assert!(path.exists(), "the finished second is published");
+        assert!(pr.frame(&p, 0.05).is_some(), "and served from the cache");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn prune_reports_the_keys_it_deleted() {
+        let d = std::env::temp_dir().join(format!("se-prune-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let keys = [0x11u64, 0x22, 0x33];
+        for k in keys {
+            write_file(&d.join(format!("{k:016x}.rgba")), &[0u8; 64]).unwrap();
+        }
+        assert!(prune(&d, 1 << 20).is_empty(), "inside the budget nothing is touched");
+        assert_eq!(std::fs::read_dir(&d).unwrap().count(), 3);
+        let mut got = prune(&d, 0);
+        got.sort_unstable();
+        assert_eq!(got, keys, "every deleted second must be reported");
+        assert_eq!(std::fs::read_dir(&d).unwrap().count(), 0);
+        // a stray file is still pruned, it just has no key to forget
+        write_file(&d.join("half.tmp"), b"x").unwrap();
+        assert!(prune(&d, 0).is_empty());
+        assert_eq!(key_of(&path_for(0xdead_beef)), Some(0xdead_beef));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

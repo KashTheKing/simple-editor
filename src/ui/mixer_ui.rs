@@ -15,7 +15,8 @@
 use crate::engine::mixer_fx::{db_to_lin, filter_bands, filter_response_db, lin_to_db, BusGraph};
 use crate::model::{AudioFilter, Bus, FilterKind, Id, Project, TrackKind};
 use crate::theme::Palette;
-use eframe::egui::{self, pos2, vec2, Button, ComboBox, DragValue, Grid, Rect, Response, Sense, Stroke, TextEdit};
+use crate::ui::Gesture;
+use eframe::egui::{self, pos2, vec2, Button, ComboBox, DragValue, Grid, Rect, Sense, Stroke, TextEdit};
 
 /// Channel-strip width in points.
 const STRIP_W: f32 = 176.0;
@@ -47,28 +48,6 @@ pub(crate) mod test_rects {
     }
     pub fn get(name: &str) -> Option<Rect> {
         RECTS.with(|r| r.borrow().iter().rev().find(|(n, _)| n == name).map(|(_, rect)| *rect))
-    }
-}
-
-/// True on the first frame of an edit gesture (drag start, or a click / typed change).
-fn edit_start(r: &Response) -> bool {
-    r.drag_started() || (r.changed() && !r.dragged())
-}
-
-#[derive(Default)]
-struct Gesture {
-    start: bool,
-    changed: bool,
-}
-
-impl Gesture {
-    fn note(&mut self, r: &Response) {
-        self.start |= edit_start(r);
-        self.changed |= r.changed();
-    }
-    fn click(&mut self) {
-        self.start = true;
-        self.changed = true;
     }
 }
 

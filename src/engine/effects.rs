@@ -39,16 +39,12 @@ fn px(v: f64, scale: f32, min: f64) -> usize {
     }
 }
 
-/// Apply one effect in place at clip-local time `t`. `scratch` is a reusable buffer.
-pub fn apply(effect: &Effect, t: f64, scale: f32, img: &mut Frame, scratch: &mut Frame) {
-    if img.is_empty() || !effect.enabled {
-        return;
-    }
-    let e = |i: usize| effect.at(i, t);
-    // These kinds only exist as GPU shaders (engine/gpu): the CPU path leaves the layer untouched so
-    // previews and exports on a machine without a GL context degrade gracefully instead of panicking.
-    if matches!(
-        effect.kind,
+/// True for kinds that only exist as GPU shaders (engine/gpu): `apply` leaves the layer untouched, so
+/// previews and exports on a machine without a GL context degrade gracefully instead of panicking.
+/// Callers that must warn about what a CPU render drops (export) share this list.
+pub fn gpu_only(kind: EffectKind) -> bool {
+    matches!(
+        kind,
         EffectKind::JpegCompress
             | EffectKind::MotionBlur
             | EffectKind::Plane3d
@@ -56,9 +52,15 @@ pub fn apply(effect: &Effect, t: f64, scale: f32, img: &mut Frame, scratch: &mut
             | EffectKind::BlobTrack
             | EffectKind::Vhs
             | EffectKind::Shader
-    ) {
+    )
+}
+
+/// Apply one effect in place at clip-local time `t`. `scratch` is a reusable buffer.
+pub fn apply(effect: &Effect, t: f64, scale: f32, img: &mut Frame, scratch: &mut Frame) {
+    if img.is_empty() || !effect.enabled || gpu_only(effect.kind) {
         return;
     }
+    let e = |i: usize| effect.at(i, t);
     match effect.kind {
         EffectKind::Blur => {
             // 3 box passes of radius r/2 ≈ Gaussian with sigma ≈ r/2 (visual radius ≈ r)
@@ -140,7 +142,7 @@ pub fn apply(effect: &Effect, t: f64, scale: f32, img: &mut Frame, scratch: &mut
 /// `Wobble` is camera shake: deterministic from the seed, smooth (sum of a few incommensurate sines),
 /// frequency in Hz. `Plane3d` is static — its yaw/pitch/roll go straight to the placement, which the
 /// CPU compositor already renders as a homography. Distance / field of view / offset Z only exist in
-/// the GPU path (`plane3d_matrix`); the CPU fallback ignores them.
+/// the GPU path; the CPU fallback ignores them.
 pub fn wobble(effect: &Effect, t: f64) -> (f64, f64, f64, f64, f64) {
     if effect.kind == EffectKind::Plane3d {
         return (0.0, 0.0, effect.at(2, t), effect.at(0, t), effect.at(1, t));
@@ -159,65 +161,6 @@ pub fn wobble(effect: &Effect, t: f64) -> (f64, f64, f64, f64, f64) {
         effect.at(3, t) * n(4.0),
         effect.at(4, t) * n(5.0),
     )
-}
-
-/// True for effects that only move the layer (handled by the compositor's placement, not `apply`).
-pub fn is_geometric(kind: EffectKind) -> bool {
-    kind.is_geometric()
-}
-
-/// `Plane3d` as a row-major 3×3 homography mapping normalised layer coordinates (0..1, v = 0 at the
-/// top) to normalised output coordinates, for the GPU composite pass. `None` when a corner ends up on
-/// or behind the camera plane.
-///
-/// The plane is a unit square at z = 0; yaw rotates about Y, pitch about X, roll is applied in 2D after
-/// the projection (matching the CPU compositor). `Field of view` sets how hard the perspective divide
-/// bites, `Distance` is a plain dolly (2 = neutral) and `Offset Z` pushes the whole plane away. At the
-/// default parameters this is exactly the identity.
-pub fn plane3d_matrix(effect: &Effect, t: f64) -> Option<[f32; 9]> {
-    let (sy, cy) = effect.at(0, t).to_radians().sin_cos();
-    let (sp, cp) = effect.at(1, t).to_radians().sin_cos();
-    let (sr, cr) = effect.at(2, t).to_radians().sin_cos();
-    let zoom = 2.0 / effect.at(3, t).max(0.01);
-    let tan_half = (effect.at(4, t).clamp(1.0, 179.0).to_radians() * 0.5).tan().max(1e-3);
-    let off = effect.at(5, t) * 0.5;
-    let mut quad = [[0.0f32; 2]; 4];
-    for (k, (x, y)) in [(-0.5, -0.5), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5)].into_iter().enumerate() {
-        let (x1, z1) = (x * cy, -x * sy);
-        let (y2, z2) = (y * cp - z1 * sp, y * sp + z1 * cp + off);
-        let denom = 1.0 + 2.0 * tan_half * z2;
-        if denom < 0.05 {
-            return None;
-        }
-        let (px, py) = (x1 / denom * zoom, y2 / denom * zoom);
-        quad[k] = [(0.5 + px * cr - py * sr) as f32, (0.5 + px * sr + py * cr) as f32];
-    }
-    Some(square_to_quad(&quad))
-}
-
-/// Row-major 3×3 mapping the unit square (0,0) (1,0) (1,1) (0,1) onto `q` (Heckbert).
-fn square_to_quad(q: &[[f32; 2]; 4]) -> [f32; 9] {
-    let [a, b, c, d] = *q;
-    let (dx1, dy1) = (b[0] - c[0], b[1] - c[1]);
-    let (dx2, dy2) = (d[0] - c[0], d[1] - c[1]);
-    let (sx, sy) = (a[0] - b[0] + c[0] - d[0], a[1] - b[1] + c[1] - d[1]);
-    let den = dx1 * dy2 - dx2 * dy1;
-    let (g, h) = if (sx.abs() < 1e-6 && sy.abs() < 1e-6) || den.abs() < 1e-9 {
-        (0.0, 0.0)
-    } else {
-        ((sx * dy2 - dx2 * sy) / den, (dx1 * sy - sx * dy1) / den)
-    };
-    [
-        b[0] - a[0] + g * b[0],
-        d[0] - a[0] + h * d[0],
-        a[0],
-        b[1] - a[1] + g * b[1],
-        d[1] - a[1] + h * d[1],
-        a[1],
-        g,
-        h,
-        1.0,
-    ]
 }
 
 /// `BlobTrack` on the CPU: the centroid of every pixel within `Tolerance` of the target colour, as
@@ -1047,9 +990,12 @@ mod tests {
 
     #[test]
     fn geometric_flag() {
-        assert!(is_geometric(EffectKind::Wobble));
-        assert!(is_geometric(EffectKind::Plane3d));
-        assert!(!is_geometric(EffectKind::Blur));
+        assert!(EffectKind::Wobble.is_geometric());
+        assert!(EffectKind::Plane3d.is_geometric());
+        assert!(!EffectKind::Blur.is_geometric());
+        // every kind `apply` no-ops is flagged gpu_only, and no other kind is
+        assert!(gpu_only(EffectKind::Vhs) && gpu_only(EffectKind::Shader));
+        assert!(!gpu_only(EffectKind::Blur) && !gpu_only(EffectKind::Wobble));
     }
 
     /// A frame of one flat colour.
@@ -1201,32 +1147,6 @@ mod tests {
         assert!(track(&flat(4, 4, [0, 0, 255, 255]), &p).is_none());
         assert!(track(&Frame::default(), &p).is_none());
         assert!(track(&f, &[]).is_none());
-    }
-
-    #[test]
-    fn plane3d_matrix_is_identity_by_default() {
-        let m = plane3d_matrix(&Effect::new(K::Plane3d), 0.0).expect("valid");
-        let id = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
-        for (a, b) in m.iter().zip(id.iter()) {
-            assert!((a - b).abs() < 1e-5, "{m:?}");
-        }
-        // yaw introduces a real perspective term and foreshortens one side
-        let yawed = plane3d_matrix(&eff(K::Plane3d, &[50.0, 0.0, 0.0, 2.0, 45.0, 0.0]), 0.0).expect("valid");
-        assert!(yawed[6].abs() > 1e-3, "no perspective row: {yawed:?}");
-        // map the two vertical edges and compare their projected heights
-        let edge = |m: &[f32; 9], u: f32| {
-            let at = |v: f32| {
-                let w = m[6] * u + m[7] * v + m[8];
-                (m[3] * u + m[4] * v + m[5]) / w
-            };
-            (at(1.0) - at(0.0)).abs()
-        };
-        // +yaw swings the right edge towards the camera, so it ends up taller than the left one
-        assert!(edge(&yawed, 1.0) > edge(&yawed, 0.0) * 1.05, "yaw should foreshorten the far edge");
-        let flat = plane3d_matrix(&Effect::new(K::Plane3d), 0.0).unwrap();
-        assert!((edge(&flat, 1.0) - edge(&flat, 0.0)).abs() < 1e-6, "no yaw, no foreshortening");
-        // pushed behind the camera -> no matrix instead of a fold-over
-        assert!(plane3d_matrix(&eff(K::Plane3d, &[0.0, 0.0, 0.0, 2.0, 45.0, -5.0]), 0.0).is_none());
     }
 
     #[test]

@@ -1,15 +1,21 @@
 //! Compositor: renders the timeline at time t into an RGBA canvas. Used by preview (small canvas)
-//! and export (project-size canvas) — identical output, so preview == export.
+//! and export (project-size canvas) — same output, so preview == export. The one gap left against the
+//! GL renderer: node graphs (`Clip.graph`) and the GPU-only effect kinds (`effects::gpu_only`) are not
+//! evaluated here; `export::cpu_gaps` names them in the export progress line.
 //!
 //! Layer order: video tracks bottom→top in `project.tracks` order (V1 first, then V2 drawn over it…).
 //! For each active (`project.active(track)`), enabled, visual clip containing t:
 //!   * Video/Image: `pool.video(asset.path).frame_at(clip.src_time(t), dw, dh, ..)` where (dw,dh) is the
 //!     placement size (clamped to native size, min 1) — decoders scale for us.
-//!   * Text: `text.render(style, canvas_w / project.width)` (already at canvas scale) — contain=false.
+//!   * Text / Shape: `text.render(style, canvas_w / project.width)` / `shapes.render(style, s, local_t)`
+//!     (already at canvas scale) — contain=false.
 //!   * Sequence: the nested timeline is rendered recursively at `clip.src_time(t)` into its own canvas
 //!     (the sequence's size, fit like a video layer), depth ≤ 8.
+//!   * Adjustment: no layer of its own — the effect stack re-runs over the canvas below it.
 //!   * `clip.effects` run in stack order on the decoded layer (Wobble moves the placement instead:
-//!     dx/dy/roll, and yaw/pitch render through a perspective homography).
+//!     dx/dy/roll, and yaw/pitch render through a perspective homography). `Effect.mask` limits an
+//!     effect to its shape (layer space); `Clip.mask` limits the whole layer (canvas space) — both
+//!     mirror `shaders.rs::MASK`.
 //!   * Transform the layer into canvas space per `placement()` (sampling per `project.scaler`;
 //!     straight row copies for the common axis-aligned case), then `blend::composite_row` /
 //!     `blend::composite_rect`.
@@ -20,14 +26,18 @@
 
 use crate::engine::blend;
 use crate::engine::effects;
+use crate::engine::shapes::ShapeRasterizer;
 use crate::engine::text::TextRasterizer;
 use crate::media::{DecoderPool, Frame};
 use crate::model::{
-    BlendMode, Clip, ClipKind, Project, Scaler, TextStyle, Track, TrackKind, Transition, TransitionKind,
+    BlendMode, Clip, ClipKind, Mask, MaskShape, Project, Scaler, TextStyle, Track, TrackKind, Transition,
+    TransitionKind,
 };
 
 /// Recursion limit for nested sequences.
 const MAX_DEPTH: usize = 8;
+/// Mask polygon vertex cap — same as the GPU's `m_points[64]`.
+const MAX_MASK_POINTS: usize = 64;
 
 /// Where a layer lands on a canvas of (cw, ch) pixels: centre, size and rotation (degrees, clockwise).
 /// `yaw`/`pitch` (degrees) tilt the layer about the vertical/horizontal axis (camera shake) — rendered
@@ -139,6 +149,12 @@ pub struct Compositor {
     src: Frame,
     /// Effects scratch (blur passes).
     fx: Frame,
+    /// Pre-effect copy of the layer, for mixing a masked effect back in.
+    pre: Frame,
+    /// Mask coverage (0..255), one byte per pixel of whatever buffer the mask is rasterised over.
+    cov: Vec<u8>,
+    /// Vector shapes / drawings (own cache; one per compositor, like the GPU's texture cache).
+    shapes: ShapeRasterizer,
     /// Wipe-transition scratch canvas.
     wipe: Frame,
     /// Nested sequence canvases, one per recursion depth.
@@ -160,6 +176,9 @@ impl Compositor {
             layer: Frame::default(),
             src: Frame::default(),
             fx: Frame::default(),
+            pre: Frame::default(),
+            cov: Vec::new(),
+            shapes: ShapeRasterizer::new(),
             wipe: Frame::default(),
             seq: Vec::new(),
             sub_style: TextStyle::subtitle_default(),
@@ -351,9 +370,23 @@ impl Compositor {
         }
         let s = w as f32 / pw.max(1) as f32;
         match clip.kind {
-            // TODO(engine-gpu/shapes): Shape draws its vector/drawing layer; Adjustment re-processes
-            // everything already on the canvas (both land in round 3's renderer)
-            ClipKind::Shape | ClipKind::Adjustment => {}
+            ClipKind::Shape => {
+                let Some(style) = &clip.shape else { return };
+                let img = self.shapes.render(style, s, lt);
+                if img.is_empty() {
+                    return;
+                }
+                // place by the shape's own project size (the rasteriser may clamp very large layers)
+                let (sw, sh) = ShapeRasterizer::size(style, lt);
+                let native = ((sw * s).round().max(1.0) as u32, (sh * s).round().max(1.0) as u32);
+                self.draw_bitmap(project, pw, clip, &img, native, t, w, h, out, extra, opacity);
+            }
+            ClipKind::Adjustment => {
+                // No layer of its own: the effect stack re-runs over everything already on the canvas
+                // (mirrors gpu.rs, which likewise ignores placement, opacity and `clip.mask` here).
+                let mut p = placement_w(pw, clip, t, (w, h), w, h, false);
+                apply_effects(clip, lt, s, s, out, &mut self.fx, &mut self.pre, &mut self.cov, &mut p);
+            }
             ClipKind::Video | ClipKind::Image => {
                 let Some(asset) = project.asset(clip.asset) else {
                     return;
@@ -391,31 +424,28 @@ impl Compositor {
                     return;
                 }
                 let img_scale = s * (dw as f32 / p.w.max(1e-3));
-                apply_effects(clip, lt, s, img_scale, &mut self.src, &mut self.fx, &mut p);
+                apply_effects(
+                    clip,
+                    lt,
+                    s,
+                    img_scale,
+                    &mut self.src,
+                    &mut self.fx,
+                    &mut self.pre,
+                    &mut self.cov,
+                    &mut p,
+                );
                 fade_to(&mut self.src, extra.color, extra.fade);
                 p.cx += extra.dx;
                 p.cy += extra.dy;
-                draw_layer(out, &self.src, p, clip.blend, opacity, project.scaler, &mut self.layer);
+                let m = clip_mask(clip, w, h, lt, s, (p.cx, p.cy), &mut self.cov);
+                draw_layer_masked(out, &self.src, p, clip.blend, opacity, project.scaler, &mut self.layer, m);
             }
             ClipKind::Text => {
                 let Some(style) = &clip.text else { return };
                 let img = text.render(style, s);
-                let mut p = placement_w(pw, clip, t, (img.width, img.height), w, h, false);
-                // a fade also needs the copy path — fade_to writes into the layer, and the cached text
-                // bitmap is shared
-                if clip.effects.iter().any(|e| e.enabled) || extra.fade > 0.0 {
-                    self.src.resize(img.width, img.height);
-                    self.src.rgba.copy_from_slice(&img.rgba);
-                    apply_effects(clip, lt, s, s, &mut self.src, &mut self.fx, &mut p);
-                    fade_to(&mut self.src, extra.color, extra.fade);
-                    p.cx += extra.dx;
-                    p.cy += extra.dy;
-                    draw_layer(out, &self.src, p, clip.blend, opacity, project.scaler, &mut self.layer);
-                } else {
-                    p.cx += extra.dx;
-                    p.cy += extra.dy;
-                    draw_layer(out, &img, p, clip.blend, opacity, project.scaler, &mut self.layer);
-                }
+                let native = (img.width, img.height);
+                self.draw_bitmap(project, pw, clip, &img, native, t, w, h, out, extra, opacity);
             }
             ClipKind::Sequence => {
                 if depth >= MAX_DEPTH {
@@ -451,14 +481,54 @@ impl Compositor {
                 let mut nested = std::mem::take(&mut self.seq[depth]);
                 self.render_tracks(project, seq_tracks, qw, st, dw, dh, pool, text, &mut nested, depth + 1);
                 let img_scale = s * (dw as f32 / p.w.max(1e-3));
-                apply_effects(clip, lt, s, img_scale, &mut nested, &mut self.fx, &mut p);
+                apply_effects(clip, lt, s, img_scale, &mut nested, &mut self.fx, &mut self.pre, &mut self.cov, &mut p);
                 fade_to(&mut nested, extra.color, extra.fade);
                 p.cx += extra.dx;
                 p.cy += extra.dy;
-                draw_layer(out, &nested, p, clip.blend, opacity, project.scaler, &mut self.layer);
+                let m = clip_mask(clip, w, h, lt, s, (p.cx, p.cy), &mut self.cov);
+                draw_layer_masked(out, &nested, p, clip.blend, opacity, project.scaler, &mut self.layer, m);
                 self.seq[depth] = nested;
             }
             ClipKind::Audio => {}
+        }
+    }
+
+    /// Draw an already-rasterised layer bitmap (text / shape): effects, fade-to-colour, clip mask.
+    /// `native` is the layer size in canvas px (the bitmap itself may be rasterised smaller).
+    #[allow(clippy::too_many_arguments)]
+    fn draw_bitmap(
+        &mut self,
+        project: &Project,
+        pw: u32,
+        clip: &Clip,
+        img: &Frame,
+        native: (u32, u32),
+        t: f64,
+        w: u32,
+        h: u32,
+        out: &mut Frame,
+        extra: Extra,
+        opacity: f32,
+    ) {
+        let lt = clip.local(t);
+        let s = w as f32 / pw.max(1) as f32;
+        let mut p = placement_w(pw, clip, t, native, w, h, false);
+        // a fade also needs the copy path — fade_to writes into the layer, and the cached bitmap is
+        // shared with the rasteriser's cache
+        if clip.effects.iter().any(|e| e.enabled) || extra.fade > 0.0 {
+            self.src.resize(img.width, img.height);
+            self.src.rgba.copy_from_slice(&img.rgba);
+            apply_effects(clip, lt, s, s, &mut self.src, &mut self.fx, &mut self.pre, &mut self.cov, &mut p);
+            fade_to(&mut self.src, extra.color, extra.fade);
+            p.cx += extra.dx;
+            p.cy += extra.dy;
+            let m = clip_mask(clip, w, h, lt, s, (p.cx, p.cy), &mut self.cov);
+            draw_layer_masked(out, &self.src, p, clip.blend, opacity, project.scaler, &mut self.layer, m);
+        } else {
+            p.cx += extra.dx;
+            p.cy += extra.dy;
+            let m = clip_mask(clip, w, h, lt, s, (p.cx, p.cy), &mut self.cov);
+            draw_layer_masked(out, img, p, clip.blend, opacity, project.scaler, &mut self.layer, m);
         }
     }
 }
@@ -474,23 +544,174 @@ fn dir_vec(direction: u8, w: u32, h: u32) -> (f32, f32) {
 }
 
 /// Run the clip's effect stack on the layer image; geometric effects (Wobble) move `p` instead.
-/// `s` = canvas px per project px; `img_scale` = layer-image px per project px.
-fn apply_effects(clip: &Clip, lt: f64, s: f32, img_scale: f32, img: &mut Frame, fx: &mut Frame, p: &mut Placement) {
+/// `s` = canvas px per project px; `img_scale` = layer-image px per project px. A masked effect is
+/// mixed back over the pre-effect image by the mask's coverage (as `shaders.rs::apply_mask` does).
+#[allow(clippy::too_many_arguments)]
+fn apply_effects(
+    clip: &Clip,
+    lt: f64,
+    s: f32,
+    img_scale: f32,
+    img: &mut Frame,
+    fx: &mut Frame,
+    pre: &mut Frame,
+    cov: &mut Vec<u8>,
+    p: &mut Placement,
+) {
     for e in &clip.effects {
         if !e.enabled {
             continue;
         }
-        if effects::is_geometric(e.kind) {
+        if e.kind.is_geometric() {
             let (dx, dy, roll, yaw, pitch) = effects::wobble(e, lt);
             p.cx += dx as f32 * s;
             p.cy += dy as f32 * s;
             p.rot += roll as f32;
             p.yaw += yaw as f32;
             p.pitch += pitch as f32;
-        } else {
+            continue;
+        }
+        let mask = e.mask.as_ref().filter(|m| m.enabled);
+        if mask.is_none() {
             effects::apply(e, lt, img_scale, img, fx);
+            continue;
+        }
+        pre.resize(img.width, img.height);
+        pre.rgba.copy_from_slice(&img.rgba);
+        effects::apply(e, lt, img_scale, img, fx);
+        if img.width != pre.width || img.height != pre.height {
+            continue; // an effect that resized the layer cannot be mixed pixel-for-pixel
+        }
+        let centre = (img.width as f32 / 2.0, img.height as f32 / 2.0);
+        mask_coverage(mask.unwrap(), img.width, img.height, lt, img_scale, centre, cov);
+        for ((px, pp), &c) in img.rgba.chunks_exact_mut(4).zip(pre.rgba.chunks_exact(4)).zip(cov.iter()) {
+            if c == 255 {
+                continue;
+            }
+            for k in 0..4 {
+                px[k] = (pp[k] as i32 + (px[k] as i32 - pp[k] as i32) * c as i32 / 255) as u8;
+            }
         }
     }
+}
+
+/// Coverage for `clip.mask` over the whole canvas, or None when the clip has no enabled mask.
+/// The mask lives in canvas space around the layer's placed centre (matching gpu.rs).
+fn clip_mask<'a>(
+    clip: &Clip,
+    w: u32,
+    h: u32,
+    lt: f64,
+    s: f32,
+    centre: (f32, f32),
+    cov: &'a mut Vec<u8>,
+) -> Option<&'a [u8]> {
+    let mask = clip.mask.as_ref().filter(|m| m.enabled)?;
+    mask_coverage(mask, w, h, lt, s, centre, cov);
+    Some(&cov[..])
+}
+
+/// Rasterise `mask` into `out` (one coverage byte per pixel of a w×h buffer) — the CPU twin of
+/// `shaders.rs::MASK`, so preview and export agree. `scale` = buffer px per project px, `centre` =
+/// the layer centre in buffer px.
+fn mask_coverage(mask: &Mask, w: u32, h: u32, t: f64, scale: f32, centre: (f32, f32), out: &mut Vec<u8>) {
+    let n = w as usize * h as usize;
+    out.clear();
+    out.resize(n, 255);
+    if n == 0 {
+        return;
+    }
+    let opacity = mask.opacity.at(t).clamp(0.0, 1.0) as f32;
+    let feather = (mask.feather.at(t) as f32 * scale).max(1.0);
+    let expand = mask.expand.at(t) as f32 * scale;
+    let (sa, ca) = (mask.rotation.at(t) as f32).to_radians().sin_cos();
+    let poly = matches!(mask.shape, MaskShape::Polygon | MaskShape::Path);
+    // Rect/Ellipse: centred on cx/cy. Polygon/Path: points are relative to the layer centre.
+    let o =
+        if poly { centre } else { (centre.0 + mask.cx.at(t) as f32 * scale, centre.1 + mask.cy.at(t) as f32 * scale) };
+    let r = ((mask.rx.at(t) as f32 * scale).abs(), (mask.ry.at(t) as f32 * scale).abs());
+    let pts: Vec<[f32; 2]> = mask.points.iter().take(MAX_MASK_POINTS).map(|&(x, y)| [x * scale, y * scale]).collect();
+    // Rotated-space bounding box of the shape plus its soft edge, so a small mask does not pay for
+    // an SDF evaluation over the whole canvas.
+    let (mut bx, mut by) = (r.0, r.1);
+    if poly {
+        let (mut mx, mut my) = (0.0f32, 0.0f32);
+        for q in &pts {
+            mx = mx.max(q[0].abs());
+            my = my.max(q[1].abs());
+        }
+        (bx, by) = (mx, my);
+    }
+    let margin = feather + expand.max(0.0) + 1.0;
+    let (bx, by) = if mask.shape == MaskShape::Ellipse {
+        // the ellipse SDF is scaled by its smaller radius, so its soft edge reaches further out
+        // along the longer axis — grow the box proportionally instead of by a flat margin
+        let k = 1.0 + margin / r.0.min(r.1).max(1e-4);
+        (bx * k, by * k)
+    } else {
+        (bx + margin, by + margin)
+    };
+    let outside = if mask.invert { (opacity * 255.0 + 0.5) as u8 } else { 0 };
+    let far = pts.len() < 3 && poly;
+    for y in 0..h {
+        let dy = y as f32 + 0.5 - o.1;
+        let row = y as usize * w as usize;
+        for x in 0..w {
+            let dx = x as f32 + 0.5 - o.0;
+            let (qx, qy) = (dx * ca + dy * sa, -dx * sa + dy * ca);
+            if far || qx.abs() > bx || qy.abs() > by {
+                out[row + x as usize] = outside;
+                continue;
+            }
+            let d = match mask.shape {
+                MaskShape::Rect => sd_box(qx, qy, r.0, r.1),
+                MaskShape::Ellipse => sd_ellipse(qx, qy, r.0, r.1),
+                _ => sd_poly(qx, qy, &pts),
+            } - expand;
+            let mut c = (0.5 - d / feather).clamp(0.0, 1.0);
+            if mask.invert {
+                c = 1.0 - c;
+            }
+            out[row + x as usize] = (c * opacity * 255.0 + 0.5) as u8;
+        }
+    }
+}
+
+/// Signed distance to a box of half-size (bx, by).
+#[inline]
+fn sd_box(px: f32, py: f32, bx: f32, by: f32) -> f32 {
+    let (dx, dy) = (px.abs() - bx, py.abs() - by);
+    (dx.max(0.0).hypot(dy.max(0.0))) + dx.max(dy).min(0.0)
+}
+
+/// Cheap ellipse SDF (exact only on circles), matching the shader.
+#[inline]
+fn sd_ellipse(px: f32, py: f32, rx: f32, ry: f32) -> f32 {
+    let (rx, ry) = (rx.max(1e-4), ry.max(1e-4));
+    ((px / rx).hypot(py / ry) - 1.0) * rx.min(ry)
+}
+
+/// Signed distance to the closed polygon through `pts` (negative inside).
+fn sd_poly(px: f32, py: f32, pts: &[[f32; 2]]) -> f32 {
+    if pts.len() < 3 {
+        return 1e6;
+    }
+    let mut d = (px - pts[0][0]).powi(2) + (py - pts[0][1]).powi(2);
+    let mut s = 1.0f32;
+    let mut j = pts.len() - 1;
+    for i in 0..pts.len() {
+        let (ex, ey) = (pts[j][0] - pts[i][0], pts[j][1] - pts[i][1]);
+        let (wx, wy) = (px - pts[i][0], py - pts[i][1]);
+        let k = ((wx * ex + wy * ey) / (ex * ex + ey * ey).max(1e-9)).clamp(0.0, 1.0);
+        let (bx, by) = (wx - ex * k, wy - ey * k);
+        d = d.min(bx * bx + by * by);
+        let c = [py >= pts[i][1], py < pts[j][1], ex * wy > ey * wx];
+        if c.iter().all(|&v| v) || c.iter().all(|&v| !v) {
+            s = -s;
+        }
+        j = i;
+    }
+    s * d.sqrt()
 }
 
 /// Mix the layer's RGB towards `color` by `f` (FadeToColor transitions).
@@ -604,21 +825,38 @@ pub fn draw_layer(
     scaler: Scaler,
     scratch: &mut Frame,
 ) {
+    draw_layer_masked(dst, src, p, mode, opacity, scaler, scratch, None);
+}
+
+/// `draw_layer` with an optional canvas-sized coverage mask (0..255 per pixel) multiplied into the
+/// layer's alpha. A masked draw always takes the general path, which is where coverage is applied.
+#[allow(clippy::too_many_arguments)]
+fn draw_layer_masked(
+    dst: &mut Frame,
+    src: &Frame,
+    p: Placement,
+    mode: BlendMode,
+    opacity: f32,
+    scaler: Scaler,
+    scratch: &mut Frame,
+    mask: Option<&[u8]>,
+) {
     if dst.is_empty() || src.is_empty() || !(opacity > 0.0) {
         return;
     }
     if !(p.cx.is_finite() && p.cy.is_finite() && p.w > 0.0 && p.h > 0.0 && p.w.is_finite() && p.h.is_finite()) {
         return;
     }
+    let mask = mask.filter(|m| m.len() >= dst.width as usize * dst.height as usize);
     if p.yaw != 0.0 || p.pitch != 0.0 {
-        draw_layer_perspective(dst, src, p, mode, opacity, scaler, scratch);
+        draw_layer_perspective(dst, src, p, mode, opacity, scaler, scratch, mask);
         return;
     }
     let (cw, ch) = (dst.width as i64, dst.height as i64);
     let (sw, sh) = (src.width as i64, src.height as i64);
 
     // (a) axis-aligned, 1:1 — composite src rows straight onto the canvas at an integer offset.
-    if p.rot == 0.0 && (p.w - sw as f32).abs() < 0.5 && (p.h - sh as f32).abs() < 0.5 {
+    if mask.is_none() && p.rot == 0.0 && (p.w - sw as f32).abs() < 0.5 && (p.h - sh as f32).abs() < 0.5 {
         let ox = (p.cx - sw as f32 / 2.0).round() as i64;
         let oy = (p.cy - sh as f32 / 2.0).round() as i64;
         let (x0, x1) = (ox.max(0), (ox + sw).min(cw));
@@ -652,17 +890,22 @@ pub fn draw_layer(
     let (kx, ky) = (sw as f32 / p.w, sh as f32 / p.h);
     let (swm, shm) = ((sw - 1) as f32, (sh - 1) as f32);
     let stride = scratch.stride();
+    let mw = dst.width as usize;
     for y in y0..y1 {
         let row = y as usize * stride;
         let out = &mut scratch.rgba[row + x0 as usize * 4..row + x1 as usize * 4];
+        let mrow = mask.map(|m| &m[y as usize * mw..(y as usize + 1) * mw]);
         let dy = y as f32 + 0.5 - p.cy;
         for (i, o) in out.chunks_exact_mut(4).enumerate() {
             let dx = (x0 + i as u32) as f32 + 0.5 - p.cx;
             // canvas → layer space (undo the clockwise rotation)
             let u = dx * cos + dy * sin;
             let v = -dx * sin + dy * cos;
-            // 1px feathered rectangle coverage
-            let cov = ((hw - u.abs()).min(hh - v.abs()) + 0.5).clamp(0.0, 1.0);
+            // 1px feathered rectangle coverage, times the mask's
+            let mut cov = ((hw - u.abs()).min(hh - v.abs()) + 0.5).clamp(0.0, 1.0);
+            if let Some(m) = mrow {
+                cov *= m[(x0 + i as u32) as usize] as f32 / 255.0;
+            }
             if cov <= 0.0 {
                 o.copy_from_slice(&[0, 0, 0, 0]);
                 continue;
@@ -694,6 +937,7 @@ fn draw_layer_perspective(
     opacity: f32,
     scaler: Scaler,
     scratch: &mut Frame,
+    mask: Option<&[u8]>,
 ) {
     let f = dst.width as f32;
     let (hw, hh) = (p.w / 2.0, p.h / 2.0);
@@ -736,9 +980,11 @@ fn draw_layer_perspective(
     let (sw, sh) = (src.width as f32, src.height as f32);
     let (swm, shm) = (sw - 1.0, sh - 1.0);
     let stride = scratch.stride();
+    let mw = dst.width as usize;
     for y in y0..y1 {
         let row = y as usize * stride;
         let out = &mut scratch.rgba[row + x0 as usize * 4..row + x1 as usize * 4];
+        let mrow = mask.map(|m| &m[y as usize * mw..(y as usize + 1) * mw]);
         let py = y as f32 + 0.5;
         for (i, o) in out.chunks_exact_mut(4).enumerate() {
             let px = (x0 + i as u32) as f32 + 0.5;
@@ -750,7 +996,10 @@ fn draw_layer_perspective(
             let u = (inv[0][0] * px + inv[0][1] * py + inv[0][2]) / ww;
             let v = (inv[1][0] * px + inv[1][1] * py + inv[1][2]) / ww;
             // feathered coverage ≈ distance to the unit-square edge in source pixels
-            let cov = ((u.min(1.0 - u) * sw).min(v.min(1.0 - v) * sh) + 0.5).clamp(0.0, 1.0);
+            let mut cov = ((u.min(1.0 - u) * sw).min(v.min(1.0 - v) * sh) + 0.5).clamp(0.0, 1.0);
+            if let Some(m) = mrow {
+                cov *= m[(x0 + i as u32) as usize] as f32 / 255.0;
+            }
             if cov <= 0.0 || ww < 0.0 {
                 o.copy_from_slice(&[0, 0, 0, 0]);
                 continue;
@@ -1274,6 +1523,106 @@ mod tests {
         project.show_subtitles = false;
         comp.render(&project, 1.0, 128, 96, &mut pool, &mut text, &mut out);
         assert_eq!(white(&out, 48, 96), 0);
+    }
+
+    #[test]
+    fn shape_clip_renders_and_masks() {
+        // a blue 320x240 rect over the whole canvas (project px half-size 160x120)
+        let mut project = Project::new();
+        (project.width, project.height) = (320, 240);
+        let id = project.add_shape_clip(crate::model::ShapeKind::Rect, 0.0, 2.0);
+        {
+            let st = project.clip_mut(id).unwrap().shape.as_mut().expect("shape style");
+            st.fill = [0, 0, 255, 255];
+            st.w.value = 160.0;
+            st.h.value = 120.0;
+        }
+        let mut pool = DecoderPool::new(Backend::Ffmpeg);
+        let mut comp = Compositor::new();
+        let mut text = TextRasterizer::new();
+        let mut out = Frame::default();
+        comp.render(&project, 1.0, 64, 48, &mut pool, &mut text, &mut out);
+        assert_eq!(px(&out, 32, 24), [0, 0, 255, 255], "shape clip did not render");
+        assert_eq!(px(&out, 1, 1), [0, 0, 255, 255]);
+        // outside the clip -> black
+        comp.render(&project, 5.0, 64, 48, &mut pool, &mut text, &mut out);
+        assert_eq!(px(&out, 32, 24), [0, 0, 0, 255]);
+        // a small centred ellipse mask keeps the middle and drops the corners
+        let mut m = crate::model::Mask::new(MaskShape::Ellipse);
+        (m.rx.value, m.ry.value) = (40.0, 40.0);
+        project.clip_mut(id).unwrap().mask = Some(m);
+        comp.render(&project, 1.0, 64, 48, &mut pool, &mut text, &mut out);
+        assert_eq!(px(&out, 32, 24), [0, 0, 255, 255], "mask hid the middle");
+        assert_eq!(px(&out, 1, 1), [0, 0, 0, 255], "mask did not cut the corner");
+        // inverted: the middle goes, the corners stay
+        project.clip_mut(id).unwrap().mask.as_mut().unwrap().invert = true;
+        comp.render(&project, 1.0, 64, 48, &mut pool, &mut text, &mut out);
+        assert_eq!(px(&out, 32, 24), [0, 0, 0, 255]);
+        assert_eq!(px(&out, 1, 1), [0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn mask_coverage_shapes_and_feather() {
+        let mut cov = Vec::new();
+        // a very eccentric ellipse: its soft edge reaches far past rx along the long axis, so the
+        // bounding-box shortcut must scale with the radii instead of using a flat margin
+        let mut m = crate::model::Mask::new(MaskShape::Ellipse);
+        (m.rx.value, m.ry.value) = (30.0, 3.0);
+        m.feather.value = 4.0;
+        mask_coverage(&m, 160, 20, 0.0, 1.0, (80.0, 10.0), &mut cov);
+        assert_eq!(cov[10 * 160 + 80], 255, "centre of the mask");
+        let edge = cov[10 * 160 + 118];
+        assert!(edge > 0 && edge < 255, "feathered edge along the long axis: {edge}");
+        assert_eq!(cov[10 * 160 + 2], 0, "far outside");
+        // rect, inverted: the hole is inside
+        let mut r = crate::model::Mask::new(MaskShape::Rect);
+        (r.rx.value, r.ry.value) = (10.0, 5.0);
+        r.invert = true;
+        mask_coverage(&r, 160, 20, 0.0, 1.0, (80.0, 10.0), &mut cov);
+        assert_eq!(cov[10 * 160 + 80], 0);
+        assert_eq!(cov[10 * 160 + 2], 255);
+        // scale doubles every dimension
+        r.invert = false;
+        mask_coverage(&r, 160, 20, 0.0, 2.0, (80.0, 10.0), &mut cov);
+        assert_eq!(cov[10 * 160 + 99], 255, "rx 10 at scale 2 reaches 20 px");
+        assert_eq!(cov[10 * 160 + 105], 0);
+    }
+
+    #[test]
+    fn adjustment_layer_processes_the_canvas_below() {
+        // red video on V1, an Invert adjustment layer above it -> cyan
+        let mut project = Project::from_media(fake_asset());
+        let id = project.add_adjustment_clip(0.0, 2.0);
+        project.clip_mut(id).unwrap().effects.push(crate::model::Effect::new(crate::model::EffectKind::Invert));
+        let mut pool = DecoderPool::new(Backend::Ffmpeg);
+        pool.insert_video(&project.assets[0].path, Box::new(FakeVideo([255, 0, 0, 255])));
+        let mut comp = Compositor::new();
+        let mut text = TextRasterizer::new();
+        let mut out = Frame::default();
+        comp.render(&project, 1.0, 64, 48, &mut pool, &mut text, &mut out);
+        assert_eq!(px(&out, 32, 24), [0, 255, 255, 255], "adjustment layer did nothing");
+        // past the adjustment clip the canvas is untouched
+        comp.render(&project, 3.0, 64, 48, &mut pool, &mut text, &mut out);
+        assert_eq!(px(&out, 32, 24), [255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn effect_mask_limits_the_effect() {
+        // Invert masked to a small centred rect: the middle flips, the edges do not
+        let mut project = Project::from_media(fake_asset());
+        let mut e = crate::model::Effect::new(crate::model::EffectKind::Invert);
+        let mut m = crate::model::Mask::new(MaskShape::Rect);
+        (m.rx.value, m.ry.value) = (30.0, 30.0);
+        e.mask = Some(m);
+        project.tracks[0].clips[0].effects.push(e);
+        let mut pool = DecoderPool::new(Backend::Ffmpeg);
+        pool.insert_video(&project.assets[0].path, Box::new(FakeVideo([255, 0, 0, 255])));
+        let mut comp = Compositor::new();
+        let mut text = TextRasterizer::new();
+        let mut out = Frame::default();
+        comp.render(&project, 1.0, 64, 48, &mut pool, &mut text, &mut out);
+        assert_eq!(px(&out, 32, 24), [0, 255, 255, 255], "masked effect did not run inside the mask");
+        assert_eq!(px(&out, 1, 1), [255, 0, 0, 255], "masked effect leaked outside the mask");
     }
 
     #[test]

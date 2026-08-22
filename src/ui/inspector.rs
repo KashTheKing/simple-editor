@@ -12,47 +12,19 @@
 //!    outline width, drop shadow on/off + x/y/blur, alignment, line/letter spacing, box padding.
 //!  * sequence clips: the sequence's name + "Open sequence" (handed to the app via `take_open_sequence`).
 //!  * round 3: the clip's label from `Project.labels` (plus a compact "Edit labels…" editor), its mask
-//!    (shape, feather, expand, opacity, invert, "Edit in viewport"), "Open node editor", the shape style
+//!    (shape, position, radius, rotation, feather, expand, opacity, invert, "Edit in viewport" — the same
+//!    grid the Effects panel shows under a per-effect mask), "Open node editor", the shape style
 //!    of Shape clips (kind, fill/stroke, width, sides, corner, draw rate, page), clip markers (add /
 //!    remove), an audio bus override, and a note on Adjustment clips.
 //! Call `undo(project)` once per gesture (on `drag_started()` / first `changed()` of a widget) before mutating.
 //! Returns true if the project changed.
 
-use crate::model::{Animated, BlendMode, ClipKind, Id, Label, Mask, MaskShape, Project, ShapeKind, ShapeStyle};
+use crate::model::{Animated, BlendMode, ClipKind, Id, Label, Mask, Project, ShapeKind, ShapeStyle};
 use crate::theme::Palette;
 use crate::ui::markers_ui::x_button;
-use crate::ui::timecode;
-use eframe::egui::{self, Button, DragValue, Grid, Response, RichText, Slider};
+use crate::ui::{edit_start, key_buttons, mask_grid, timecode, Gesture};
+use eframe::egui::{self, DragValue, Grid, Response, RichText, Slider};
 use std::cell::RefCell;
-
-/// True on the first frame of an edit gesture (drag start, or a non-drag change such as typing/clicking).
-fn edit_start(r: &Response) -> bool {
-    r.drag_started() || (r.changed() && !r.dragged())
-}
-
-/// Accumulates widget responses over one frame: `start` → push undo, `changed` → write back.
-#[derive(Default)]
-struct Gesture {
-    start: bool,
-    changed: bool,
-}
-
-impl Gesture {
-    fn note(&mut self, r: &Response) {
-        self.start |= edit_start(r);
-        self.changed |= r.changed();
-    }
-    /// Text fields: the gesture starts when the field is entered, so typing a paragraph is one undo
-    /// entry instead of one per character (which used to evict the whole undo stack).
-    fn note_text(&mut self, r: &Response) {
-        self.start |= r.gained_focus();
-        self.changed |= r.changed();
-    }
-    fn click(&mut self) {
-        self.start = true;
-        self.changed = true;
-    }
-}
 
 /// Test-only: remember a widget rect so headless tests can click the real button.
 #[cfg(test)]
@@ -512,41 +484,7 @@ fn clip_section(
         }
     });
     if let Some(m) = &mut clip.mask {
-        Grid::new("inspector_mask").num_columns(2).show(ui, |ui| {
-            ui.label("Shape");
-            egui::ComboBox::from_id_salt("mask_shape").selected_text(m.shape.name()).show_ui(ui, |ui| {
-                for sh in MaskShape::ALL {
-                    g.note(&ui.selectable_value(&mut m.shape, sh, sh.name()));
-                }
-            });
-            ui.end_row();
-            ui.label("Enabled");
-            g.note(&ui.checkbox(&mut m.enabled, ""));
-            ui.end_row();
-            ui.label("Invert");
-            g.note(&ui.checkbox(&mut m.invert, ""));
-            ui.end_row();
-            let rows: [(&str, f64, f64, f64); 3] =
-                [("Feather", 0.0, 500.0, 0.5), ("Expand", -500.0, 500.0, 0.5), ("Opacity", 0.0, 1.0, 0.01)];
-            for (label, lo, hi, speed) in rows {
-                ui.label(label);
-                ui.horizontal(|ui| {
-                    let a: &mut Animated = match label {
-                        "Feather" => &mut m.feather,
-                        "Expand" => &mut m.expand,
-                        _ => &mut m.opacity,
-                    };
-                    let mut v = a.at(lt);
-                    let r = ui.add(DragValue::new(&mut v).range(lo..=hi).speed(speed).clamp_existing_to_range(false));
-                    if r.changed() {
-                        a.set_at(lt, v);
-                    }
-                    g.note(&r);
-                    key_buttons(ui, a, lt, palette, &mut g);
-                });
-                ui.end_row();
-            }
-        });
+        mask_grid(ui, m, lt, palette, &mut g, egui::Id::new("inspector_mask"));
     }
 
     // shape style
@@ -757,24 +695,6 @@ fn asset_use_count(project: &Project, aid: Id) -> usize {
         n += count(&s.tracks);
     }
     n
-}
-
-fn key_buttons(ui: &mut egui::Ui, a: &mut Animated, lt: f64, palette: &Palette, g: &mut Gesture) {
-    let mut b = Button::new("◆").small();
-    if a.has_key_at(lt) {
-        b = b.fill(palette.keyframe);
-    }
-    if ui.add(b).on_hover_text("Toggle keyframe at playhead").clicked() {
-        a.toggle_key(lt);
-        g.click();
-    }
-    if a.is_animated() {
-        if ui.small_button("✕ keys").clicked() {
-            a.clear_keys(lt);
-            g.click();
-        }
-        ui.label(format!("{} keys", a.keys.len()));
-    }
 }
 
 #[cfg(test)]

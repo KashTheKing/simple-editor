@@ -383,6 +383,31 @@ fn key_range(state: &TimelineState, clip: Id, prop: usize, a: &crate::model::Ani
     crate::ui::curves::y_range(a)
 }
 
+/// The range the rest of the UI enforces for property `i` (inspector sliders for the base props,
+/// `ParamSpec` for effect params), so a value-lane drag cannot write past what a `DragValue` allows.
+/// `None` where nothing enforces one: Position X/Y and Rotation are unbounded everywhere, and Volume is
+/// a gain behind a nonlinear dB slider.
+/// ponytail: same property order as curves.rs — move it next to `prop_ref` if a second caller shows up.
+fn prop_range(c: &Clip, i: usize) -> Option<(f64, f64)> {
+    let nb = if c.is_visual() { 5 } else { 2 };
+    if i < nb {
+        return match (c.is_visual(), i) {
+            (true, 2) => Some((0.01, 20.0)), // Scale
+            (true, 4) => Some((0.0, 1.0)),   // Opacity
+            (false, 1) => Some((-1.0, 1.0)), // Pan
+            _ => None,
+        };
+    }
+    let mut i = i - nb;
+    for e in &c.effects {
+        if i < e.params.len() {
+            return e.specs().get(i).map(|s| (s.min, s.max));
+        }
+        i -= e.params.len();
+    }
+    None
+}
+
 /// Diagonal hatching (adjustment layers read as "applies to everything below").
 fn hatch(p: &egui::Painter, vis: Rect, color: Color32) {
     let (step, stroke, h) = (8.0f32, Stroke::new(1.0, color), vis.height());
@@ -944,10 +969,13 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     }
                     // ponytail: the lane follows the curve editor's property list (transform + effect
                     // params). Mask / graph / shape keys keep the bottom strip — extend curves::prop_ref
-                    // to them if they ever need a value lane too.
+                    // to them if they ever need a value lane too. Audio volume (prop 0) too: it is drawn
+                    // and dragged on the dB scale above, which the linear lane would contradict.
+                    let first = if clip.is_visual() { 0 } else { 1 };
                     let prop = lane
                         .then(|| {
-                            (0..props).find(|&i| crate::ui::curves::prop_ref(clip, i).is_some_and(|a| a.has_key_at(t)))
+                            (first..props)
+                                .find(|&i| crate::ui::curves::prop_ref(clip, i).is_some_and(|a| a.has_key_at(t)))
                         })
                         .flatten();
                     let ky = match prop.and_then(|i| crate::ui::curves::prop_ref(clip, i).map(|a| (i, a))) {
@@ -1654,12 +1682,13 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         let p = &mut *c.project;
         match &mut drag.g {
             Gesture::Move { ids, orig, kind, tr, dt, dtrack, new_track } => {
-                // past the first video row (up) or the last audio row (down): offer a fresh track
-                let first_top = ltop - sy;
+                // past the first video row (up) or the last audio row (down): offer a fresh track.
+                // Armed off the painted gutter bands, not the first/last row — those are scrolled away
+                // once the lanes scroll, which used to make the gesture unreachable.
                 *new_track = match kind {
-                    TrackKind::Video => pos.y < first_top && pos.y >= ruler.top(),
-                    TrackKind::Audio => pos.y > first_top + content_h,
-                } && pos.y <= lanes.bottom();
+                    TrackKind::Video => pos.y < lanes.top() + GUTTER_H,
+                    TrackKind::Audio => pos.y > lanes.bottom() - GUTTER_H,
+                };
                 let mut want = dx;
                 if c.snap {
                     let s0 = orig.first().copied().unwrap_or(0.0);
@@ -1787,6 +1816,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                         let inner = (h - 2.0 - 2.0 * KEY_PAD).max(1.0);
                         let f = (((top + h - 1.0 - KEY_PAD) - pos.y) / inner).clamp(0.0, 1.0) as f64;
                         let v = range.0 + f * (range.1 - range.0);
+                        // the lane auto-scales past the property's own bounds (y_range pads by 10 %) —
+                        // clamp the written value the way every DragValue for it does
+                        let v = prop_range(&p.tracks[ti].clips[ci], pi).map_or(v, |(lo, hi)| v.clamp(lo, hi));
                         if let Some(a) = crate::ui::curves::prop_mut(&mut p.tracks[ti].clips[ci], pi) {
                             if let Some(ki) = a.key_index_at(*t) {
                                 if (a.keys[ki].v - v).abs() > 1e-9 {
@@ -2010,7 +2042,7 @@ mod tests {
 
     // ---- headless egui harness: real layout + hit-testing + gestures ----
     use crate::media::Backend;
-    use crate::model::{Asset, AudioStreamInfo};
+    use crate::model::{Asset, AudioStreamInfo, Effect, EffectKind};
     use egui::{Event, Modifiers, PointerButton, RawInput};
 
     struct Harness {
@@ -2482,16 +2514,93 @@ mod tests {
         // and the same past the bottom for audio: A2 appears below A1
         let a1_top = lanes.top() + h.project.tracks[1].height + h.project.tracks[0].height;
         let from = pos2(h.state.x_at(2.0), a1_top + 30.0);
+        let to = pos2(from.x, lanes.bottom() - 2.0);
         h.press(from);
-        for y in [a1_top + 80.0, lanes.top() + 250.0, lanes.top() + 300.0] {
+        for y in [a1_top + 80.0, lanes.bottom() - 40.0, to.y] {
             h.frame(vec![Event::PointerMoved(pos2(from.x, y))]);
         }
-        h.release(pos2(from.x, lanes.top() + 300.0));
+        h.release(to);
         h.frame(vec![]);
         assert_eq!(h.project.audio_tracks().len(), 2, "an audio track was created");
         assert_eq!(h.project.tracks[3].clips.len(), 1, "audio clip moved to A2");
         assert!(h.project.tracks[2].clips.is_empty(), "A1 is empty now");
         assert_eq!(h.undos, 2);
+    }
+
+    #[test]
+    fn headless_track_gutters_arm_while_the_lanes_scroll() {
+        let mut h = Harness::new();
+        let lanes = h.state.lanes_rect;
+        let (vid, aud) = (h.video_clip().id, h.audio_clip().id);
+        for _ in 0..5 {
+            h.project.add_track(TrackKind::Video);
+        }
+        h.state.scroll_y = 80.0; // past RULER_H, where the old row-relative arm zones were empty
+        h.frame(vec![]);
+        assert!(h.state.scroll_y > RULER_H, "lanes did not scroll: {}", h.state.scroll_y);
+        let armed = |h: &Harness| matches!(h.state.drag, Some(Drag { g: Gesture::Move { new_track: true, .. }, .. }));
+        let clip_at = |h: &Harness, id| {
+            let ti = h.project.track_of(id).unwrap();
+            pos2(h.state.x_at(2.0), row_top(&h.state, &h.project, ti).unwrap() + 30.0)
+        };
+        // audio first (the bottom gutter): drag A1's clip onto the bottom edge of the lanes
+        let (from, to) = (clip_at(&h, aud), pos2(h.state.x_at(2.0), lanes.bottom() - 2.0));
+        h.press(from);
+        h.frame(vec![Event::PointerMoved(to)]);
+        assert!(armed(&h), "audio gutter armed while scrolled");
+        h.release(to);
+        h.frame(vec![]);
+        assert_eq!(h.project.audio_tracks().len(), 2, "an audio track was created");
+        // then video (the top gutter): drag V1's clip onto the top edge
+        let (from, to) = (clip_at(&h, vid), pos2(h.state.x_at(2.0), lanes.top() + 2.0));
+        h.press(from);
+        h.frame(vec![Event::PointerMoved(to)]);
+        assert!(armed(&h), "video gutter armed while scrolled");
+        h.release(to);
+        h.frame(vec![]);
+        assert_eq!(h.project.video_tracks().len(), 7, "a video track was created");
+    }
+
+    #[test]
+    fn headless_value_lane_clamps_to_the_property_range() {
+        let mut h = Harness::new();
+        let lanes = h.state.lanes_rect;
+        h.project.tracks[0].clips[0].opacity.toggle_key(0.0);
+        h.project.tracks[0].clips[0].opacity.toggle_key(2.0);
+        h.project.tracks[0].clips[0].opacity.keys[1].v = 0.0;
+        h.frame(vec![]);
+        // keys at 1.0 and 0.0 auto-range to -0.5..1.5, so the low key sits a quarter up the lane and
+        // dragging it to the top of the lane asks for 1.5
+        let th = h.project.tracks[0].height;
+        let inner = th - 2.0 - 2.0 * KEY_PAD;
+        let kp = pos2(h.state.x_at(2.0), lanes.top() + th - 1.0 - KEY_PAD - 0.25 * inner);
+        assert!(h.drag(kp, pos2(kp.x, lanes.top() + 2.0)), "value-lane drag edits");
+        let keys = &h.project.tracks[0].clips[0].opacity.keys;
+        assert_eq!(keys[1].v, 1.0, "opacity clamped to its 0..1 range, got {keys:?}");
+        // effect params clamp to their ParamSpec
+        assert_eq!(prop_range(h.video_clip(), 2), Some((0.01, 20.0)), "Scale");
+        assert_eq!(prop_range(h.video_clip(), 0), None, "Position X is unbounded");
+        assert_eq!(prop_range(h.audio_clip(), 0), None, "Volume is dB-scaled");
+        assert_eq!(prop_range(h.audio_clip(), 1), Some((-1.0, 1.0)), "Pan");
+        h.project.tracks[0].clips[0].effects.push(Effect::new(EffectKind::Blur));
+        let spec = h.video_clip().effects[0].specs()[0];
+        assert_eq!(prop_range(h.video_clip(), 5), Some((spec.min, spec.max)), "first Blur param");
+    }
+
+    #[test]
+    fn headless_audio_volume_keys_stay_in_the_bottom_strip() {
+        let mut h = Harness::new();
+        let lanes = h.state.lanes_rect;
+        h.project.tracks[1].clips[0].volume.toggle_key(2.0);
+        h.frame(vec![]);
+        // the volume line is dB-mapped, so its keys keep the time-only strip: dragging one is time-only
+        let row_bottom = lanes.top() + h.project.tracks[0].height + h.project.tracks[1].height;
+        let kp = pos2(h.state.x_at(2.0), row_bottom - 1.0 - 5.0);
+        assert!(h.drag(kp, kp + vec2(40.0, -20.0)), "keyframe drag edits");
+        let keys = &h.audio_clip().volume.keys;
+        assert_eq!(keys.len(), 1);
+        assert!((keys[0].t - 3.0).abs() < 1.0 / 30.0 + 1e-6, "key moved to {}", keys[0].t);
+        assert_eq!(keys[0].v, 1.0, "vertical drag does not touch a volume key's value");
     }
 
     #[test]

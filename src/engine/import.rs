@@ -1,9 +1,10 @@
 //! Import timelines from other editors, with an honest per-item report.
 //!
 //! Supported: Final Cut Pro 7 XML (`.xml` - what Premiere Pro exports and DaVinci Resolve reads/writes),
-//! EDL (CMX 3600) and Premiere `.prproj` (gzip-wrapped XML: inflate, then the same reader). Anything the
-//! reader cannot map (unknown effects, missing media, speed ramps, colour pages) becomes an `Issue`
-//! instead of failing the import.
+//! EDL (CMX 3600) and *uncompressed* Premiere `.prproj` (the same XML reader). A real `.prproj` is
+//! gzip-wrapped and there is no inflate in-tree, so those are accepted by the picker only to answer
+//! with the "export FCP7 XML instead" note below. Anything the reader cannot map (unknown effects,
+//! missing media, speed ramps, colour pages) becomes an `Issue` instead of failing the import.
 
 use crate::media::is_image_path;
 use crate::model::{Asset, AudioStreamInfo, Clip, ClipKind, Id, Project, TrackKind, TransitionKind, MIN_CLIP};
@@ -828,9 +829,15 @@ impl El {
     }
 }
 
+/// Maximum element nesting. `El` drops recursively and `find_all` recurses, so an adversarial file of
+/// 100k nested tags would overflow the (UI-thread) stack — which no `catch_unwind` can catch. Real
+/// FCP7/EDL exports are under 20 deep.
+const MAX_XML_DEPTH: usize = 256;
+
 /// Minimal well-formed-ish XML reader: elements, attributes, text, CDATA; comments / PIs / DOCTYPE are
 /// skipped. Mismatched or missing close tags unwind instead of failing — exported timelines are machine
-/// written, but a truncated one should still give back what it has.
+/// written, but a truncated one should still give back what it has. Nesting is capped at
+/// `MAX_XML_DEPTH`.
 fn parse_xml(src: &str) -> Result<El, String> {
     let b = src.as_bytes();
     let mut i = 0usize;
@@ -876,6 +883,9 @@ fn parse_xml(src: &str) -> Result<El, String> {
             if selfclose {
                 attach(&mut stack, &mut root, el);
             } else {
+                if stack.len() >= MAX_XML_DEPTH {
+                    return Err(format!("XML nested deeper than {MAX_XML_DEPTH} elements"));
+                }
                 stack.push(el);
             }
         }
@@ -1230,6 +1240,10 @@ mod tests {
         assert_eq!(x.path(&["b", "c"]).map(|e| e.text.as_str()), Some("1 & 2"));
         assert_eq!(x.path(&["b", "d"]).map(|e| e.text.as_str()), Some("<raw>"));
         assert!(parse_xml("no elements here").is_err());
+        // deep nesting is rejected, not stack-overflowed (El drops recursively)
+        let deep = "<a>".repeat(MAX_XML_DEPTH + 10);
+        assert!(parse_xml(&deep).unwrap_err().contains("nested"));
+        assert!(parse_xml(&"<a>".repeat(MAX_XML_DEPTH - 1)).is_ok());
     }
 
     #[test]
