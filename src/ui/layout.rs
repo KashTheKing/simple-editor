@@ -2,9 +2,11 @@
 //! hidden/shown, popped out into their own OS windows (egui immediate viewports) and saved/loaded as
 //! profiles (JSON — also written to / read from `.sedit-layout` files so profiles can be shared).
 //!
-//! Default layout (DaVinci-like): top row = [tabs(Library, Effects, Transitions, Presets, Planner) |
-//! Preview with the Tools strip beneath it | tabs(Inspector, Curves, Nodes, Subtitles, Markers, Tracking)],
-//! bottom row (full width, always visible) = tabs(Timeline, Mixer, Auto-cut). `show` draws the
+//! Default layout (DaVinci-like), two rows of four columns:
+//! top    = [Library | Preview with the Tools strip beneath it | Inspector | tabs(Curves, Nodes, Tracking)]
+//! bottom = [tabs(Effects, Transitions, Presets) | Timeline | tabs(Mixer, Auto-cut, Subtitles) |
+//!           tabs(Markers, Planner)].
+//! The Timeline is a column of its own rather than a tab, so nothing can ever hide it. `show` draws the
 //! tree in the given `ui` and each popped pane in its own viewport (closing that window docks the pane
 //! back); `draw(ui, pane)` renders a pane. Behaviour: tab titles = Pane::title, a "⧉" button in the tab
 //! bar pops the active pane out, "✕" hides it. Hidden panes stay in the tree (egui_tiles visibility) so
@@ -114,11 +116,15 @@ impl Layout {
             let ids: Vec<_> = panes.iter().map(|&p| tiles.insert_pane(p)).collect();
             tiles.insert_tab_tile(ids) // the first pane is the active tab
         };
-        let left = tabs(&mut tiles, &[Pane::Library, Pane::Effects, Pane::Transitions, Pane::Presets, Pane::Planner]);
-        let right = tabs(
-            &mut tiles,
-            &[Pane::Inspector, Pane::Curves, Pane::Nodes, Pane::Subtitles, Pane::Markers, Pane::Tracking],
-        );
+        // a row of four columns with the given fractions; panes are listed explicitly so a variant this
+        // default does not know about is simply absent (the View menu still brings it in)
+        let row = |tiles: &mut egui_tiles::Tiles<Pane>, cols: [(egui_tiles::TileId, f32); 4]| {
+            let mut lin = Linear::new(LinearDir::Horizontal, cols.iter().map(|&(id, _)| id).collect());
+            for (id, share) in cols {
+                lin.shares.set_share(id, share);
+            }
+            tiles.insert_new(Tile::Container(Container::Linear(lin)))
+        };
         // centre column: the viewport with the Tools strip directly beneath it
         let preview = tiles.insert_pane(Pane::Preview);
         let tools = tiles.insert_pane(Pane::Tools);
@@ -126,16 +132,21 @@ impl Layout {
         centre_col.shares.set_share(preview, 0.9);
         centre_col.shares.set_share(tools, 0.1);
         let centre = tiles.insert_new(Tile::Container(Container::Linear(centre_col)));
-        let mut top_row = Linear::new(LinearDir::Horizontal, vec![left, centre, right]);
-        top_row.shares.set_share(left, 0.2);
-        top_row.shares.set_share(centre, 0.58);
-        top_row.shares.set_share(right, 0.22);
-        let top = tiles.insert_new(Tile::Container(Container::Linear(top_row)));
-        // full-width bottom row: the Timeline is the active tab and is never hidden by the default layout
-        let bottom = tabs(&mut tiles, &[Pane::Timeline, Pane::Mixer, Pane::AutoCut]);
+        let library = tiles.insert_pane(Pane::Library);
+        let inspector = tiles.insert_pane(Pane::Inspector);
+        // ponytail: Presets / Tracking ride along as trailing tabs of the group they belong with — the
+        // requested arrangement does not place them, and a homeless pane is only reachable via the menu
+        let graphs = tabs(&mut tiles, &[Pane::Curves, Pane::Nodes, Pane::Tracking]);
+        let top = row(&mut tiles, [(library, 0.18), (centre, 0.44), (inspector, 0.2), (graphs, 0.18)]);
+        // the Timeline is a column of its own, not a tab: nothing can end up in front of it
+        let looks = tabs(&mut tiles, &[Pane::Effects, Pane::Transitions, Pane::Presets]);
+        let timeline = tiles.insert_pane(Pane::Timeline);
+        let mix = tabs(&mut tiles, &[Pane::Mixer, Pane::AutoCut, Pane::Subtitles]);
+        let notes = tabs(&mut tiles, &[Pane::Markers, Pane::Planner]);
+        let bottom = row(&mut tiles, [(looks, 0.18), (timeline, 0.44), (mix, 0.2), (notes, 0.18)]);
         let mut rows = Linear::new(LinearDir::Vertical, vec![top, bottom]);
-        rows.shares.set_share(top, 0.68);
-        rows.shares.set_share(bottom, 0.32);
+        rows.shares.set_share(top, 0.62);
+        rows.shares.set_share(bottom, 0.38);
         let root = tiles.insert_new(Tile::Container(Container::Linear(rows)));
         Self::new(egui_tiles::Tree::new("layout", root, tiles))
     }
@@ -280,6 +291,23 @@ fn keep_share_fraction(tree: &mut egui_tiles::Tree<Pane>, id: egui_tiles::TileId
     }
 }
 
+/// One entry of the "Load profile" menu. A menu sizes itself from the previous frame's content, so a
+/// name that wraps makes the menu narrower, which wraps it harder — after a few frames "Editor 1" has
+/// collapsed to "Edito / r 1". Measuring the name pins the width instead of letting it feed back, and
+/// anything past the cap truncates on one line with the whole name on hover.
+pub fn profile_button(ui: &mut egui::Ui, name: &str) -> egui::Response {
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let text = ui.painter().layout_no_wrap(name.to_owned(), font, egui::Color32::PLACEHOLDER).size().x;
+    let wanted = text + ui.spacing().button_padding.x * 2.0;
+    ui.scope(|ui| {
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+        ui.set_min_width(wanted.min(240.0));
+        ui.button(name)
+    })
+    .inner
+    .on_hover_text(name)
+}
+
 struct Behaviour<'a> {
     draw: &'a mut dyn FnMut(&mut egui::Ui, Pane),
     hide: Vec<Pane>,
@@ -416,38 +444,62 @@ mod tests {
             assert!(l.tree.tiles.find_pane(&p).is_some(), "{p:?} missing from the default layout");
             assert!(l.is_visible(p), "{p:?} should be visible (a tab may be inactive but is not hidden)");
         }
-        // Timeline is the active bottom tab: Mixer / AutoCut are behind it (inactive, still visible)
+        // the Timeline is a column of its own, so no tab can sit in front of it
         let timeline = l.tree.tiles.find_pane(&Pane::Timeline).unwrap();
-        let parent = l.tree.tiles.parent_of(timeline).unwrap();
-        match l.tree.tiles.get_container(parent).unwrap() {
-            egui_tiles::Container::Tabs(t) => {
-                assert_eq!(t.active, Some(timeline));
-                let names: Vec<Pane> = t.children.iter().filter_map(|c| l.tree.tiles.get_pane(c)).copied().collect();
-                assert_eq!(names, vec![Pane::Timeline, Pane::Mixer, Pane::AutoCut]);
-            }
-            c => panic!("Timeline parent is {c:?}, expected tabs"),
-        }
+        assert!(matches!(l.tree.tiles.get(timeline), Some(egui_tiles::Tile::Pane(Pane::Timeline))));
     }
 
-    /// The requested default: left tabs | Preview above Tools | right tabs, over a full-width bottom row.
+    /// The requested default: two rows of four columns, none of them opening unusably small.
     #[test]
-    fn default_layout_puts_tools_under_the_preview() {
+    fn default_layout_arrangement() {
         let l = Layout::default_layout();
-        let preview = l.tree.tiles.find_pane(&Pane::Preview).unwrap();
-        let tools = l.tree.tiles.find_pane(&Pane::Tools).unwrap();
-        // both sit in the same vertical column, Preview first
-        let col = l.tree.tiles.parent_of(preview).unwrap();
-        assert_eq!(l.tree.tiles.parent_of(tools), Some(col));
-        match l.tree.tiles.get_container(col).unwrap() {
-            egui_tiles::Container::Linear(lin) => {
-                assert_eq!(lin.dir, egui_tiles::LinearDir::Vertical);
-                assert_eq!(lin.children, vec![preview, tools]);
+        let panes = |id: egui_tiles::TileId| -> Vec<Pane> {
+            match l.tree.tiles.get(id) {
+                Some(egui_tiles::Tile::Pane(p)) => vec![*p],
+                Some(egui_tiles::Tile::Container(c)) => {
+                    c.children().filter_map(|k| l.tree.tiles.get_pane(k)).copied().collect()
+                }
+                None => Vec::new(),
             }
+        };
+        let columns = |id: egui_tiles::TileId| -> Vec<Vec<Pane>> {
+            let Some(egui_tiles::Container::Linear(lin)) = l.tree.tiles.get_container(id) else {
+                panic!("{id:?} is not a row")
+            };
+            assert_eq!(lin.dir, egui_tiles::LinearDir::Horizontal);
+            for &c in &lin.children {
+                let f = share_fraction(&l.tree, c).unwrap();
+                assert!(f >= 0.15, "a column opens at {f} of the row");
+            }
+            lin.children.iter().map(|&c| panes(c)).collect()
+        };
+        let root = l.tree.root().unwrap();
+        let Some(egui_tiles::Container::Linear(rows)) = l.tree.tiles.get_container(root) else { panic!("no rows") };
+        assert_eq!(rows.dir, egui_tiles::LinearDir::Vertical);
+        let (top, bottom) = (rows.children[0], rows.children[1]);
+        assert_eq!(
+            columns(top),
+            vec![
+                vec![Pane::Library],
+                vec![Pane::Preview, Pane::Tools], // the Tools strip lives under the viewport
+                vec![Pane::Inspector],
+                vec![Pane::Curves, Pane::Nodes, Pane::Tracking],
+            ]
+        );
+        assert_eq!(
+            columns(bottom),
+            vec![
+                vec![Pane::Effects, Pane::Transitions, Pane::Presets],
+                vec![Pane::Timeline],
+                vec![Pane::Mixer, Pane::AutoCut, Pane::Subtitles],
+                vec![Pane::Markers, Pane::Planner],
+            ]
+        );
+        // the Preview column really is vertical (Tools beneath, not beside)
+        let col = l.tree.tiles.parent_of(l.tree.tiles.find_pane(&Pane::Preview).unwrap()).unwrap();
+        match l.tree.tiles.get_container(col).unwrap() {
+            egui_tiles::Container::Linear(lin) => assert_eq!(lin.dir, egui_tiles::LinearDir::Vertical),
             c => panic!("Preview column is {c:?}, expected a vertical linear"),
-        }
-        // the right tab group carries the round-3 panes
-        for p in [Pane::Nodes, Pane::Markers, Pane::Inspector] {
-            assert!(l.is_visible(p), "{p:?} not visible");
         }
     }
 
@@ -555,7 +607,7 @@ mod tests {
         let top = l.tree.tiles.parent_of(top).unwrap();
         let bottom = l.tree.tiles.parent_of(l.tree.tiles.find_pane(&Pane::Timeline).unwrap()).unwrap();
         let ratio = share_fraction(&l.tree, top).unwrap() / share_fraction(&l.tree, bottom).unwrap();
-        assert!((ratio - 0.68 / 0.32).abs() < 1e-3, "the rest of the row was redistributed: {ratio}");
+        assert!((ratio - 0.62 / 0.38).abs() < 1e-3, "the rest of the row was redistributed: {ratio}");
 
         l.push_undo(snapshot);
         assert!(l.undo(), "the move undoes");
@@ -565,6 +617,40 @@ mod tests {
         assert_eq!(l.tree.tiles.parent_of(tools), Some(root));
         assert!((share_fraction(&l.tree, tools).unwrap() - was).abs() < 1e-4, "the fraction survives the trip");
         assert!(!l.redo(), "nothing left to redo");
+    }
+
+    /// A menu is as wide as what it drew last frame, so feeding that width back in is what collapsed
+    /// "Editor 1" into two lines: the entry must keep its width and stay one row tall.
+    #[test]
+    fn profile_name_stays_on_one_line() {
+        let ctx = egui::Context::default();
+        // a menu ui: top-down justified, as wide as the last frame's content
+        let frame = |ctx: &egui::Context, w: f32, add: &mut dyn FnMut(&mut egui::Ui) -> f32| {
+            let (mut inner, mut width) = (0.0, w);
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let rect = egui::Rect::from_min_size(ui.max_rect().min, egui::vec2(w, 200.0));
+                    let menu = egui::Layout::top_down_justified(egui::Align::Min);
+                    let b = egui::UiBuilder::new().max_rect(rect).layout(menu);
+                    ui.scope_builder(b, |ui| {
+                        inner = add(ui);
+                        width = ui.min_rect().width();
+                    });
+                });
+            });
+            (inner, width)
+        };
+        let mut width = 400.0;
+        let mut height = 0.0;
+        for _ in 0..5 {
+            (height, width) = frame(&ctx, width, &mut |ui| profile_button(ui, "Editor 1").rect.height());
+        }
+        assert!(width > 40.0, "the menu collapsed to {width} px wide");
+        // in a pane too narrow for it the name truncates instead of wrapping onto a second line
+        let (wrapped, _) = frame(&ctx, 30.0, &mut |ui| ui.button("Editor 1").rect.height());
+        let (kept, _) = frame(&ctx, 30.0, &mut |ui| profile_button(ui, "Editor 1").rect.height());
+        assert!(kept < wrapped, "the name still wraps: {kept} px vs {wrapped} px for a plain button");
+        assert!((kept - height).abs() < 1.0, "one row either way: {kept} px vs {height} px");
     }
 
     #[test]
