@@ -337,6 +337,8 @@ const MUTATING_TOOLS: &[&str] = &[
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, open: Option<PathBuf>, screenshot: Option<PathBuf>) -> Self {
+        // eframe restores the window rect from the last session, which may be on another monitor
+        crate::winpos::place_on_cursor_monitor(cc);
         let settings = Settings::load();
         media::ffpipe::set_dir(&settings.ffmpeg_dir);
         theme::apply(&cc.egui_ctx, &settings.theme);

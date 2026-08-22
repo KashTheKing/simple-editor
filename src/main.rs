@@ -16,6 +16,7 @@ mod selftest;
 mod settings;
 mod theme;
 mod ui;
+mod winpos;
 
 use std::path::PathBuf;
 
