@@ -33,7 +33,6 @@ use eframe::egui::load::SizedTexture;
 use eframe::egui::{self, RichText};
 use std::path::PathBuf;
 
-#[derive(Default)]
 pub struct LibraryState {
     /// 0 = Library, 1 = Recent
     pub tab: usize,
@@ -48,6 +47,9 @@ pub struct LibraryState {
     pub sort: u8,
     /// 0 = list rows, 1 = thumbnail gallery. Applies to both tabs.
     pub view: u8,
+    /// Item size multiplier for both views (gallery tile size, list thumbnail height). 1.0 = default;
+    /// clamped in `set_zoom`. Ctrl+Scroll over a pane or the toolbar +/- buttons change it.
+    pub zoom: f32,
     /// The folder clicked in the tree — highlighted, and the subtree a search is limited to.
     /// None = all folders, Some("") = root only, Some(name) = that folder (+ subfolders)
     pub folder: Option<String>,
@@ -71,6 +73,42 @@ pub struct LibraryState {
     /// One-level directory listings, keyed by folder path: (entry path, is a folder), folders first,
     /// None = unreadable. Only ever filled for a node the user expanded; dropped on Refresh / unlink.
     pub dirs: Vec<(String, Option<Vec<(String, bool)>>)>,
+}
+
+impl Default for LibraryState {
+    fn default() -> Self {
+        Self {
+            tab: 0,
+            selected: None,
+            search: String::new(),
+            kind_filter: 0,
+            label_filter: 0,
+            unused_only: false,
+            sort: 0,
+            view: 0,
+            zoom: 1.0,
+            folder: None,
+            flipped: Vec::new(),
+            sel_path: None,
+            rename_folder: None,
+            new_folder: None,
+            tags_for: None,
+            tags_buf: String::new(),
+            rename_seq: None,
+            rename_template: None,
+            recent_tags_for: None,
+            recent_tags_buf: String::new(),
+            dirs: Vec::new(),
+        }
+    }
+}
+
+impl LibraryState {
+    /// Clamp and apply a zoom delta (from Ctrl+Scroll or a toolbar button). Returns the new value.
+    pub fn set_zoom(&mut self, delta: f32) -> f32 {
+        self.zoom = (self.zoom + delta).clamp(0.6, 2.5);
+        self.zoom
+    }
 }
 
 #[derive(Default)]
@@ -156,6 +194,13 @@ pub fn show(
     let mut resp = LibraryResponse::default();
     let labels: Labels = project.labels.iter().map(|l| (l.name.clone(), l.color)).collect();
     let mut thumbs = thumbs;
+    // Ctrl+Scroll over the whole pane zooms list/gallery items, matching the timeline's own gesture
+    if ui.rect_contains_pointer(ui.max_rect()) {
+        let zoom = ui.input(|i| i.zoom_delta());
+        if zoom != 1.0 {
+            state.set_zoom(zoom - 1.0);
+        }
+    }
     ui.horizontal(|ui| {
         ui.selectable_value(&mut state.tab, 0, "Library");
         ui.selectable_value(&mut state.tab, 1, "Recent");
@@ -169,7 +214,28 @@ pub fn show(
     resp
 }
 
-/// One asset thumbnail, `h` points tall; false when the cache has none yet.
+/// Lay `items` out as a grid of tiles, wrapping to a new row every time `tile_w` more of them would not
+/// fit the pane. `horizontal_wrapped` cannot do this for drag sources (see the call sites): their size
+/// is not known until after they are drawn, so its wrap test never fires and a gallery just grows one
+/// row deep, sideways, forever.
+fn tile_grid<T>(ui: &mut egui::Ui, indent: f32, items: &[T], tile_w: f32, mut draw: impl FnMut(&mut egui::Ui, &T)) {
+    if items.is_empty() {
+        return;
+    }
+    let spacing = ui.spacing().item_spacing.x;
+    let cols = (((ui.available_width() - indent + spacing) / (tile_w + spacing)).floor().max(1.0)) as usize;
+    for row in items.chunks(cols) {
+        ui.horizontal(|ui| {
+            ui.add_space(indent);
+            for item in row {
+                draw(ui, item);
+            }
+        });
+    }
+}
+
+/// One asset thumbnail, `h` points tall (already zoom-scaled by the caller); false when the cache has
+/// none yet.
 fn thumb(ui: &mut egui::Ui, thumbs: &mut Option<&mut ThumbCache>, path: &str, h: f32) -> bool {
     let Some(cache) = thumbs.as_deref_mut() else { return false };
     let Some((tex, [w, th])) = cache.texture(ui.ctx(), path, 0.0, (h * 2.0) as u32) else { return false };
@@ -185,12 +251,12 @@ fn thumb(ui: &mut egui::Ui, thumbs: &mut Option<&mut ThumbCache>, path: &str, h:
 /// for audio, which has no picture at all).
 /// ponytail: asking for a thumbnail is what queues the decode, so expanding a folder of 500 clips queues
 /// 500 of them (LIFO, so what you look at wins). Upgrade: only ask for rows inside the viewport.
-fn file_art(ui: &mut egui::Ui, thumbs: &mut Option<&mut ThumbCache>, path: &str, palette: &Palette) {
+fn file_art(ui: &mut egui::Ui, thumbs: &mut Option<&mut ThumbCache>, path: &str, palette: &Palette, zoom: f32) {
     let class = ext_class(path);
-    if matches!(class, 1 | 3) && thumb(ui, thumbs, path, 18.0) {
+    if matches!(class, 1 | 3) && thumb(ui, thumbs, path, 18.0 * zoom) {
         return;
     }
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(24.0, 16.0), egui::Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(24.0 * zoom, 16.0 * zoom), egui::Sense::hover());
     let g = if class == 2 { Glyph::SpeakerOn } else { Glyph::FilmStrip };
     draw_glyph(ui.painter(), rect, g, palette.text_dim);
 }
@@ -748,6 +814,12 @@ fn toolbar(
                     state.view = i as u8;
                 }
             }
+            if ui.small_button("–").on_hover_text("Zoom out (Ctrl+Scroll)").clicked() {
+                state.set_zoom(-0.15);
+            }
+            if ui.small_button("+").on_hover_text("Zoom in (Ctrl+Scroll)").clicked() {
+                state.set_zoom(0.15);
+            }
             ui.separator();
             ui.weak(RichText::new("Filters").small());
             for (i, n) in ["All", "Video", "Audio", "Image", "Seq", "Short SFX", "Music"].iter().enumerate() {
@@ -789,12 +861,14 @@ fn tile(
     tint: egui::Color32,
     palette: &Palette,
     art: Art,
+    zoom: f32,
 ) -> egui::Response {
+    let w = TILE * zoom;
     let src = ui.dnd_drag_source(id, payload, |ui| {
-        ui.set_max_width(TILE);
+        ui.set_max_width(w);
         ui.vertical(|ui| {
             ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(TILE, TILE * 0.56), egui::Sense::hover());
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(w, w * 0.56), egui::Sense::hover());
             ui.painter().rect_filled(rect, 2.0, palette.panel);
             match art {
                 Art::Image(tex, [w, h]) if h > 0 => {
@@ -834,8 +908,8 @@ fn tile(
 }
 
 /// The cached thumbnail of a media file at the gallery size, if the cache already has one.
-fn tile_art(ui: &egui::Ui, thumbs: &mut Option<&mut ThumbCache>, path: &str) -> Art {
-    match thumbs.as_deref_mut().and_then(|c| c.texture(ui.ctx(), path, 0.0, TILE as u32)) {
+fn tile_art(ui: &egui::Ui, thumbs: &mut Option<&mut ThumbCache>, path: &str, zoom: f32) -> Art {
+    match thumbs.as_deref_mut().and_then(|c| c.texture(ui.ctx(), path, 0.0, (TILE * zoom) as u32)) {
         Some((tex, size)) => Art::Image(tex, size),
         None => Art::None,
     }
@@ -1188,12 +1262,8 @@ impl Tree<'_, '_> {
     /// A run of assets, as rows or as gallery tiles (already filtered and sorted by the caller).
     fn assets(&mut self, ui: &mut egui::Ui, depth: usize, list: &[usize]) {
         if self.state.view == 1 {
-            ui.horizontal_wrapped(|ui| {
-                ui.add_space(indent(depth) + ARROW);
-                for &i in list {
-                    self.asset_tile(ui, i);
-                }
-            });
+            let w = TILE * self.state.zoom;
+            tile_grid(ui, indent(depth) + ARROW, list, w, |ui, &i| self.asset_tile(ui, i));
         } else {
             for &i in list {
                 self.asset_row(ui, depth, i);
@@ -1220,7 +1290,7 @@ impl Tree<'_, '_> {
                     let (bar, _) = ui.allocate_exact_size(egui::vec2(3.0, 14.0), egui::Sense::hover());
                     ui.painter().rect_filled(bar, 1.0, c);
                 }
-                file_art(ui, thumbs, &a.path, palette);
+                file_art(ui, thumbs, &a.path, palette, self.state.zoom);
                 let mut name = RichText::new(a.name());
                 if let Some(c) = tint {
                     name = name.color(c);
@@ -1250,10 +1320,10 @@ impl Tree<'_, '_> {
         let a = &self.project.assets[i];
         let selected = self.state.selected == Some(a.id);
         let tint = (a.label != 0).then(|| lbl_color(self.labels, a.label, self.palette)).unwrap_or(self.palette.text);
-        let art = if a.has_video() { tile_art(ui, self.thumbs, &a.path) } else { Art::None };
+        let art = if a.has_video() { tile_art(ui, self.thumbs, &a.path, self.state.zoom) } else { Art::None };
         let id = egui::Id::new(("tile", a.id));
         let payload = DragPayload::Asset(a.id);
-        let r = tile(ui, id, payload, selected, kind_tag(a.kind), &a.name(), tint, self.palette, art);
+        let r = tile(ui, id, payload, selected, kind_tag(a.kind), &a.name(), tint, self.palette, art, self.state.zoom);
         if r.clicked() {
             self.select_asset(a.id, &a.path);
         }
@@ -1438,12 +1508,8 @@ impl Tree<'_, '_> {
     /// A run of files that are not in the project. `recent` shows their folder and Recent label colour.
     fn files(&mut self, ui: &mut egui::Ui, depth: usize, paths: &[String], recent: bool) {
         if self.state.view == 1 {
-            ui.horizontal_wrapped(|ui| {
-                ui.add_space(indent(depth) + ARROW);
-                for p in paths {
-                    self.file_tile(ui, p, recent);
-                }
-            });
+            let w = TILE * self.state.zoom;
+            tile_grid(ui, indent(depth) + ARROW, paths, w, |ui, p| self.file_tile(ui, p, recent));
         } else {
             for p in paths {
                 self.file(ui, p, depth, recent);
@@ -1474,7 +1540,7 @@ impl Tree<'_, '_> {
                 let (bar, _) = ui.allocate_exact_size(egui::vec2(3.0, 14.0), egui::Sense::hover());
                 ui.painter().rect_filled(bar, 1.0, c);
             }
-            file_art(ui, thumbs, path, palette);
+            file_art(ui, thumbs, path, palette, self.state.zoom);
             match tint {
                 Some(c) => ui.label(RichText::new(&name).color(c)),
                 None => ui.label(&name),
@@ -1495,12 +1561,13 @@ impl Tree<'_, '_> {
         let selected = self.state.sel_path.as_deref() == Some(path);
         let tint = if recent { self.recent_tint(path) } else { None };
         let class = ext_class(path);
-        let art = if matches!(class, 1 | 3) { tile_art(ui, self.thumbs, path) } else { Art::None };
+        let art = if matches!(class, 1 | 3) { tile_art(ui, self.thumbs, path, self.state.zoom) } else { Art::None };
         let name = split_path(path).0.to_string();
         let id = egui::Id::new(("file_tile", recent, path));
         let payload = DragPayload::Path(path.to_string());
         let tint = tint.unwrap_or(self.palette.text);
-        let r = tile(ui, id, payload, selected, kind_tag_for_class(class), &name, tint, self.palette, art);
+        let r =
+            tile(ui, id, payload, selected, kind_tag_for_class(class), &name, tint, self.palette, art, self.state.zoom);
         self.file_click(&r, path);
         r.on_hover_text(path);
     }
@@ -1749,6 +1816,7 @@ fn reuse_pick(item: &Reuse, name: &str, resp: &mut LibraryResponse) {
 fn reuse_ui(
     ui: &mut egui::Ui,
     view: u8,
+    zoom: f32,
     project: &Project,
     settings: &Settings,
     palette: &Palette,
@@ -1771,7 +1839,7 @@ fn reuse_ui(
                     },
                     _ => Art::Icon(icon),
                 };
-                tile(ui, id, payload, false, tag, &name, palette.text, palette, art)
+                tile(ui, id, payload, false, tag, &name, palette.text, palette, art, zoom)
             } else {
                 row(ui, id, payload, false, None, |ui| {
                     let (box_, _) = ui.allocate_exact_size(egui::vec2(18.0, 14.0), egui::Sense::hover());
@@ -1786,11 +1854,8 @@ fn reuse_ui(
             }
         };
         if view == 1 {
-            ui.horizontal_wrapped(|ui| {
-                for (i, item) in items.iter().enumerate() {
-                    draw(ui, i, item);
-                }
-            });
+            let indexed: Vec<(usize, &Reuse)> = items.iter().enumerate().collect();
+            tile_grid(ui, 0.0, &indexed, TILE * zoom, |ui, &(i, item)| draw(ui, i, item));
         } else {
             for (i, item) in items.iter().enumerate() {
                 draw(ui, i, item);
@@ -1869,10 +1934,13 @@ fn recent_tab(
             let id = egui::Id::new(("recent", i));
             let payload = DragPayload::Path(rec.path.clone());
             let (r, open) = if view == 1 {
-                let art =
-                    if matches!(ext_class(&rec.path), 1 | 3) { tile_art(ui, thumbs, &rec.path) } else { Art::None };
+                let art = if matches!(ext_class(&rec.path), 1 | 3) {
+                    tile_art(ui, thumbs, &rec.path, state.zoom)
+                } else {
+                    Art::None
+                };
                 let tag = kind_tag_for_class(ext_class(&rec.path));
-                (tile(ui, id, payload, false, tag, name, tint.unwrap_or(palette.text), palette, art), false)
+                (tile(ui, id, payload, false, tag, name, tint.unwrap_or(palette.text), palette, art, state.zoom), false)
             } else {
                 row(ui, id, payload, false, Some("Open"), |ui| {
                     if rec.pinned {
@@ -1883,7 +1951,7 @@ fn recent_tab(
                         ui.painter().rect_filled(bar, 1.0, c);
                     }
                     // videos and stills get the same filmstrip thumbnail the library rows use
-                    file_art(ui, thumbs, &rec.path, palette);
+                    file_art(ui, thumbs, &rec.path, palette, state.zoom);
                     match tint {
                         Some(c) => ui.label(RichText::new(name).color(c)),
                         None => ui.label(name),
@@ -1930,17 +1998,13 @@ fn recent_tab(
             r.on_hover_text(&rec.path);
         };
         if view == 1 {
-            ui.horizontal_wrapped(|ui| {
-                for i in hits {
-                    file(ui, i);
-                }
-            });
+            tile_grid(ui, 0.0, &hits, TILE * state.zoom, |ui, &i| file(ui, i));
         } else {
             for i in hits {
                 file(ui, i);
             }
         }
-        reuse_ui(ui, view, project, settings, palette, resp);
+        reuse_ui(ui, view, state.zoom, project, settings, palette, resp);
     });
     match op {
         Some(RecOp::Pin(path)) => {
@@ -2143,6 +2207,76 @@ mod tests {
         let first = widths[0];
         assert!(first <= 300.0, "row wider than the pane: {first}");
         assert!(widths.iter().all(|w| (w - first).abs() < 1.0), "rows grew down the list: {widths:?}");
+    }
+
+    /// A gallery pane only ever grew sideways: `ScrollArea::vertical()` leaves egui's content width
+    /// unbounded, so `horizontal_wrapped` never found an edge to wrap at. Enough tiles in a narrow pane
+    /// must now drop to a second row instead of running off to the right forever.
+    #[test]
+    fn gallery_wraps_into_a_grid() {
+        let ctx = egui::Context::default();
+        let mut ys = Vec::new();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let pane = egui::Rect::from_min_size(ui.max_rect().min, egui::vec2(260.0, 4000.0));
+                ui.scope_builder(egui::UiBuilder::new().max_rect(pane), |ui| {
+                    egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+                        tile_grid(ui, 0.0, &(0..8).collect::<Vec<_>>(), 108.0, |ui, &i| {
+                            let id = egui::Id::new(("g", i));
+                            let r = tile(
+                                ui,
+                                id,
+                                DragPayload::Template(String::new()),
+                                false,
+                                "V",
+                                "clip",
+                                egui::Color32::WHITE,
+                                &Palette::new(true, egui::Color32::WHITE),
+                                Art::None,
+                                1.0,
+                            );
+                            ys.push(r.rect.top());
+                        });
+                    });
+                });
+            });
+        });
+        let rows: std::collections::BTreeSet<i32> = ys.iter().map(|y| y.round() as i32).collect();
+        assert!(rows.len() > 1, "8 tiles in a 260px pane must wrap to more than one row: {ys:?}");
+    }
+
+    /// Zooming out shrinks a gallery tile; zooming in grows it — both views share one `LibraryState::zoom`.
+    #[test]
+    fn zoom_scales_gallery_tiles() {
+        let ctx = egui::Context::default();
+        let mut width_at = |zoom: f32| {
+            let mut w = 0.0;
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let r = tile(
+                        ui,
+                        egui::Id::new("z"),
+                        DragPayload::Template(String::new()),
+                        false,
+                        "V",
+                        "clip",
+                        egui::Color32::WHITE,
+                        &Palette::new(true, egui::Color32::WHITE),
+                        Art::None,
+                        zoom,
+                    );
+                    w = r.rect.width();
+                });
+            });
+            w
+        };
+        let (small, base, big) = (width_at(0.6), width_at(1.0), width_at(2.5));
+        assert!(small < base && base < big, "tile did not scale with zoom: {small} < {base} < {big}");
+        // set_zoom clamps to the same range the toolbar buttons and Ctrl+Scroll rely on
+        let mut state = LibraryState::default();
+        assert_eq!(state.zoom, 1.0);
+        assert_eq!(state.set_zoom(-10.0), 0.6);
+        assert_eq!(state.set_zoom(10.0), 2.5);
     }
 
     /// The inline rename/create field commits when it loses focus (it used to re-grab focus first, so
