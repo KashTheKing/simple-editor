@@ -73,6 +73,8 @@ pub struct LibraryResponse {
     pub convert: Vec<(Id, String)>,
     /// Asset for which the app should open the Convert To… options dialog.
     pub convert_dialog: Option<Id>,
+    /// Asset for which the app should open the Compress… dialog.
+    pub compress: Option<Id>,
     /// Sequence to open for editing (double-clicked in the Sequences section).
     pub open_sequence: Option<Id>,
     /// Template names to place at the playhead.
@@ -909,6 +911,10 @@ fn asset_row(
         });
         if ui.button("Convert To… (options)").clicked() {
             resp.convert_dialog = Some(a.id);
+            ui.close();
+        }
+        if ui.button("Compress…").clicked() {
+            resp.compress = Some(a.id);
             ui.close();
         }
         if ui.button("Remove from project").clicked() {

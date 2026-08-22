@@ -24,6 +24,24 @@ pub struct ConvertOptions {
     pub scaler: String,
     /// GIF outputs: frame rate (default 15) and palette generation for quality.
     pub gif_fps: u32,
+    /// Compression target in bytes. Some = bitrate mode: the video bitrate is derived from the source
+    /// duration (minus a fixed audio allowance) and CRF is ignored. None = quality (CRF) mode.
+    pub target_bytes: Option<u64>,
+}
+
+/// Audio allowance subtracted from a size target, bits per second. Matches `codec_args`' AAC default.
+const AUDIO_BPS: f64 = 128_000.0;
+
+/// Video bitrate (bits/s) that lands `target` bytes over `dur` seconds, leaving room for the audio.
+/// None when the numbers make no sense (no duration, or the target is smaller than the audio track).
+pub fn target_bitrate(target: u64, dur: f64) -> Option<u32> {
+    if dur <= 0.0 || target == 0 {
+        return None;
+    }
+    // 2 % container overhead: muxing is never free, and overshooting the target is the failure people notice
+    let total = target as f64 * 8.0 * 0.98 / dur;
+    let v = total - AUDIO_BPS;
+    (v >= 32_000.0).then(|| v as u32)
 }
 
 /// Start a conversion; progress 0..1 by parsing ffmpeg `-progress pipe:1` (out_time_us) against the
@@ -62,7 +80,13 @@ fn run_convert(opts: &ConvertOptions, prog: &Progress) -> Result<(), String> {
         cmd.arg("-vn");
         cmd.args(codec_args(&ext, &opts.encoder, opts.crf, &opts.preset, &detect_encoders()));
     } else {
-        let args = codec_args(&ext, &opts.encoder, opts.crf, &opts.preset, &detect_encoders());
+        let mut args = codec_args(&ext, &opts.encoder, opts.crf, &opts.preset, &detect_encoders());
+        if let Some(bps) = opts.target_bytes.and_then(|t| target_bitrate(t, dur)) {
+            // bitrate mode: drop the quality knob the codec args set and cap the rate instead
+            strip_quality(&mut args);
+            let (b, buf) = (format!("{bps}"), format!("{}", bps * 2));
+            args.extend(["-b:v".into(), b.clone(), "-maxrate".into(), b, "-bufsize".into(), buf]);
+        }
         let mut vf = scale.unwrap_or_default();
         if args.iter().any(|a| a == "yuv420p" || a == "nv12") {
             // even-size guard (no-op on even input): the source size is not probed here
@@ -106,6 +130,47 @@ fn run_convert(opts: &ConvertOptions, prog: &Progress) -> Result<(), String> {
     tmp.commit(&opts.out)
 }
 
+/// Remove `-crf N` / `-qp N` / `-cq N` pairs so an explicit bitrate is not fighting a quality target.
+fn strip_quality(args: &mut Vec<String>) {
+    let mut i = 0;
+    while i < args.len() {
+        if matches!(args[i].as_str(), "-crf" | "-qp" | "-cq" | "-global_quality") && i + 1 < args.len() {
+            args.drain(i..i + 2);
+        } else {
+            i += 1;
+        }
+    }
+}
+
+#[cfg(test)]
+mod target_tests {
+    use super::*;
+
+    /// A size target becomes a video bitrate that leaves room for the audio, and refuses impossible asks.
+    #[test]
+    fn bitrate_from_a_size_target() {
+        // 10 MB over 60 s = 1.307 Mbit/s total, minus 128 kbit/s of audio
+        let bps = target_bitrate(10_000_000, 60.0).unwrap();
+        assert!((1_170_000..=1_190_000).contains(&bps), "{bps}");
+        // round trip: the encoded video plus the audio allowance lands within 2 % of the target
+        let bytes = (bps as f64 + 128_000.0) * 60.0 / 8.0;
+        assert!((bytes - 10_000_000.0).abs() < 10_000_000.0 * 0.03, "{bytes}");
+        assert_eq!(target_bitrate(10_000_000, 0.0), None, "no duration, no bitrate");
+        assert_eq!(target_bitrate(1_000, 60.0), None, "smaller than the audio track");
+        // the bitrate override wins over the codec's quality knob
+        let mut args: Vec<String> =
+            ["-c:v", "libx264", "-crf", "23", "-pix_fmt", "yuv420p"].iter().map(|s| s.to_string()).collect();
+        strip_quality(&mut args);
+        assert!(!args.iter().any(|a| a == "-crf" || a == "23"), "{args:?}");
+        assert!(args.iter().any(|a| a == "libx264"));
+    }
+}
+
+/// Container duration in seconds via ffprobe (used by the Compress window to size a bitrate).
+pub fn probe_seconds(path: &std::path::Path) -> Option<f64> {
+    probe_duration(path)
+}
+
 /// Container duration in seconds via ffprobe.
 fn probe_duration(path: &std::path::Path) -> Option<f64> {
     let o = ffpipe::command(&ffpipe::ffprobe_exe()?)
@@ -135,6 +200,7 @@ mod tests {
             out_size: None,
             scaler: "bicubic".into(),
             gif_fps: 12,
+            target_bytes: None,
         }
     }
 

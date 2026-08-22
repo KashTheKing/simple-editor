@@ -114,6 +114,8 @@ pub struct App {
     convert_jobs: Vec<(Arc<Progress>, PathBuf)>,
     /// Asset id + target extension for the Convert To… options window.
     convert_dialog: Option<(Id, String)>,
+    /// Compress… window state (None = closed).
+    compress: Option<Compress>,
     /// A working yt-dlp was found — gates the Library's URL import. Detected on a background thread
     /// (it spawns `yt-dlp --version`) at start-up and again when the setting changes.
     ytdlp_available: Arc<std::sync::atomic::AtomicBool>,
@@ -621,6 +623,28 @@ fn timeline_is_empty(p: &Project) -> bool {
     p.is_empty() && p.main_stash.as_ref().is_none_or(|s| s.tracks.iter().all(|t| t.clips.is_empty()))
 }
 
+/// Compress… window state: what to shrink, how hard, and where the result goes.
+struct Compress {
+    src: PathBuf,
+    /// false = quality (CRF), true = size target.
+    by_size: bool,
+    crf: u32,
+    target_mb: f64,
+    overwrite: bool,
+    source_bytes: Option<u64>,
+    duration: Option<f64>,
+}
+
+impl Compress {
+    fn new(src: PathBuf, crf: u32) -> Self {
+        let source_bytes = std::fs::metadata(&src).ok().map(|m| m.len());
+        let duration = crate::engine::convert::probe_seconds(&src);
+        // default target: half the current size, which is what "compress this" usually means
+        let target_mb = source_bytes.map_or(10.0, |b| (b as f64 / 2e6).max(0.1));
+        Self { src, by_size: false, crf: crf.max(23), target_mb, overwrite: false, source_bytes, duration }
+    }
+}
+
 /// Where "Convert To…" writes: `<stem>_converted.<ext>` next to the source, uniquified so a convert can
 /// never overwrite the source itself or a file already on disk (possibly one the timeline is using).
 fn converted_path(src: &Path, ext: &str) -> PathBuf {
@@ -767,6 +791,7 @@ impl App {
             mcp_jobs: Vec::new(),
             convert_jobs: Vec::new(),
             convert_dialog: None,
+            compress: None,
             ytdlp_available: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             url_dialog: None,
             downloads: Vec::new(),
@@ -1964,6 +1989,9 @@ impl App {
                 if let Some(id) = resp.convert_dialog {
                     self.convert_dialog = Some((id, "mp4".into()));
                 }
+                if let Some(p) = resp.compress.and_then(|id| self.project.asset(id)).map(|a| a.path.clone()) {
+                    self.compress = Some(Compress::new(PathBuf::from(p), self.settings.crf));
+                }
                 if let Some(id) = resp.open_sequence {
                     self.enter_sequence(id);
                 }
@@ -2408,6 +2436,7 @@ impl App {
             out_size: None,
             scaler: self.settings.export_scaler.clone(),
             gif_fps: 15,
+            target_bytes: None,
         };
         self.toast(format!("Converting to {ext}…"));
         self.convert_jobs.push((crate::engine::convert::start_convert(opts), out));
@@ -3147,6 +3176,91 @@ impl App {
         }
     }
 
+    /// Compress… — re-encode one file smaller, either by quality (CRF) or to a size target, writing a
+    /// copy or replacing the original.
+    fn compress_window(&mut self, ctx: &egui::Context) {
+        let Some(mut c) = self.compress.take() else { return };
+        let (mut open, mut start) = (true, false);
+        egui::Window::new("Compress").open(&mut open).resizable(false).default_width(320.0).show(ctx, |ui| {
+            ui.label(c.src.file_name().unwrap_or_default().to_string_lossy());
+            if let Some(b) = c.source_bytes {
+                ui.weak(format!("{:.1} MB on disk", b as f64 / 1e6));
+            }
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut c.by_size, false, "Amount");
+                ui.selectable_value(&mut c.by_size, true, "Target size");
+            });
+            if c.by_size {
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut c.target_mb).speed(0.5).range(0.1..=20_000.0).suffix(" MB"));
+                    if let Some(d) = c.duration.filter(|d| *d > 0.0) {
+                        match crate::engine::convert::target_bitrate((c.target_mb * 1e6) as u64, d) {
+                            Some(bps) => ui.weak(format!("\u{2248} {} kbps video", bps / 1000)),
+                            None => ui.colored_label(ui.visuals().error_fg_color, "too small for this length"),
+                        };
+                    }
+                });
+            } else {
+                ui.horizontal(|ui| {
+                    ui.add(egui::Slider::new(&mut c.crf, 18..=40).text("CRF"));
+                });
+                ui.weak("Higher = smaller file, more artefacts. 23 is the usual default.");
+            }
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut c.overwrite, false, "Save a copy");
+                ui.selectable_value(&mut c.overwrite, true, "Overwrite original");
+            });
+            if c.overwrite {
+                ui.colored_label(ui.visuals().warn_fg_color, "The original file is replaced when this finishes.");
+            } else {
+                ui.weak("Written next to the source as <name>_compressed.<ext> and added to the library.");
+            }
+            ui.add_space(4.0);
+            start = ui.button("Compress").clicked();
+        });
+        if start {
+            self.start_compress(&c);
+            return; // window closes; the job window takes over
+        }
+        if open {
+            self.compress = Some(c);
+        }
+    }
+
+    fn start_compress(&mut self, c: &Compress) {
+        if self.ffmpeg_missing() {
+            return;
+        }
+        let ext = c.src.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_else(|| "mp4".into());
+        let out = if c.overwrite {
+            c.src.clone()
+        } else {
+            let stem = c.src.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "output".into());
+            let mut p = c.src.with_file_name(format!("{stem}_compressed.{ext}"));
+            let mut n = 2;
+            while p.exists() {
+                p = c.src.with_file_name(format!("{stem}_compressed_{n}.{ext}"));
+                n += 1;
+            }
+            p
+        };
+        let opts = crate::engine::convert::ConvertOptions {
+            src: c.src.clone(),
+            out: out.clone(),
+            encoder: self.settings.encoder.clone(),
+            crf: c.crf,
+            preset: self.settings.preset.clone(),
+            out_size: None,
+            scaler: self.settings.export_scaler.clone(),
+            gif_fps: 15,
+            target_bytes: c.by_size.then(|| (c.target_mb * 1e6) as u64),
+        };
+        self.toast("Compressing\u{2026}");
+        self.convert_jobs.push((crate::engine::convert::start_convert(opts), out));
+    }
+
     fn screenshot_tick(&mut self, ctx: &egui::Context) {
         let Some(path) = self.screenshot.clone() else { return };
         // save when the screenshot event arrives
@@ -3312,6 +3426,7 @@ impl App {
                 out_size,
                 scaler,
                 gif_fps: 15,
+                target_bytes: arg_u64(args, "target_bytes"),
             };
             Ok((crate::engine::convert::start_convert(opts), out))
         }
@@ -4132,6 +4247,7 @@ impl App {
 
     fn windows(&mut self, ctx: &egui::Context) {
         self.url_window(ctx);
+        self.compress_window(ctx);
         // "Convert To…" options (non-blocking; the timeline stays usable)
         if let Some((id, ext)) = self.convert_dialog.clone() {
             let name = self.project.asset(id).map(|a| a.name()).unwrap_or_default();
