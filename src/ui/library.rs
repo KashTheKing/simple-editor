@@ -374,10 +374,14 @@ fn row(
                 + ui.spacing().button_padding.x * 2.0
                 + ui.spacing().item_spacing.x
         });
+        let content_right = ui.max_rect().right() - reserve;
         let src = ui.dnd_drag_source(id, payload, |ui| {
             // Hard-cap the row: an over-wide row widens the parent's max_rect, so every later row would
             // grow too, and long labels must truncate at the pane edge instead of pushing the button out.
-            ui.set_max_width((ui.available_width() - reserve).max(0.0));
+            ui.set_max_width((content_right - ui.max_rect().left()).max(0.0));
+            // Truncated labels still keep an ellipsis-wide minimum, so a row of them can overrun the cap
+            // anyway: clip so the spill is never painted over the button.
+            ui.set_clip_rect(ui.clip_rect().intersect(egui::Rect::everything_left_of(content_right)));
             ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
             let bg = ui.painter().add(egui::Shape::Noop);
             ui.horizontal(|ui| {
@@ -399,7 +403,19 @@ fn row(
         // Registered after the drag-only widget so clicks reach it (egui gives the topmost click-sensing widget
         // the click and the drag-sensing one the drag).
         let r = ui.interact(src.response.rect, id.with("click"), egui::Sense::click());
-        let clicked = button.is_some_and(|b| ui.small_button(b).clicked());
+        // Put the button in the reserved slot rather than after the contents: the contents can be wider
+        // than their cap, and appending would then push the button off the pane edge.
+        let clicked = button.is_some_and(|b| {
+            let gap = ui.spacing().item_spacing.x;
+            let slot = egui::Rect::from_min_size(
+                egui::pos2(content_right + gap, src.response.rect.top()),
+                egui::vec2(reserve - gap, src.response.rect.height()),
+            );
+            let r = ui.put(slot, egui::Button::new(b).small());
+            #[cfg(test)]
+            ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("row_btn_right"), r.rect.right()));
+            r.clicked()
+        });
         (r, clicked)
     })
     .inner
@@ -605,11 +621,16 @@ fn toolbar(
     head: impl FnOnce(&mut egui::Ui, &mut LibraryState),
 ) {
     egui::Frame::new().fill(palette.panel).inner_margin(egui::Margin::symmetric(4, 3)).show(ui, |ui| {
-        ui.horizontal(|ui| head(ui, state));
+        // wrapped: a narrow pane must stack the buttons, not push them past the right edge
+        // wrapped: a narrow pane must stack the buttons, not push them past the right edge
+        ui.horizontal_wrapped(|ui| head(ui, state));
         ui.horizontal(|ui| {
             ui.label("🔍");
             let clear_w = 22.0;
-            let w = (ui.available_width() - clear_w - ui.spacing().item_spacing.x).max(40.0);
+            // TextEdit::desired_width is the *text* width; its frame adds a margin on top, so the row
+            // used to be ~8px wider than the pane and dragged every later widget out with it.
+            let margin = ui.spacing().button_padding.x * 2.0;
+            let w = (ui.available_width() - clear_w - ui.spacing().item_spacing.x - margin).max(24.0);
             let r = ui.add(egui::TextEdit::singleline(&mut state.search).hint_text("search").desired_width(w));
             #[cfg(test)]
             ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("lib_search_rect"), r.rect));
@@ -1607,6 +1628,37 @@ mod tests {
         let (seen, asked) = run(true, true);
         assert!(seen, "button must be shown when yt-dlp is installed");
         assert!(asked, "clicking it must ask the app to open the Import URL window");
+    }
+
+    /// The trailing action button must stay inside the pane at any width (it used to be pushed off the
+    /// right edge in the recent tab once the path/tag labels were long).
+    #[test]
+    fn recent_open_button_stays_inside_the_pane() {
+        let mut settings = Settings::default();
+        settings.touch_recent(
+            r"C:ery\long\directory
+ame	hat\keeps\going\clip-with-a-long-name.mp4",
+        );
+        settings.recent_assets[0].tags = vec!["one".into(), "two".into(), "three".into()];
+        let labels = Labels::default();
+        let palette = Palette::new(true, egui::Color32::WHITE);
+        let ctx = egui::Context::default();
+        for w in [180.0_f32, 260.0, 420.0] {
+            let mut state = LibraryState { tab: 1, ..Default::default() };
+            let (mut right, mut pane_right) = (f32::NAN, f32::NAN);
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let pane = egui::Rect::from_min_size(ui.max_rect().min, egui::vec2(w, 600.0));
+                    pane_right = pane.right();
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(pane), |ui| {
+                        let mut resp = LibraryResponse::default();
+                        recent_tab(ui, &mut state, &mut settings, &labels, &palette, &mut resp);
+                        right = ui.ctx().data(|d| d.get_temp(egui::Id::new("row_btn_right")).unwrap_or(f32::NAN));
+                    });
+                });
+            });
+            assert!(right <= pane_right + 1.0, "the Open button overflows a {w}px pane: right={right}");
+        }
     }
 
     /// Rect of the painted text `label` in a frame's shapes (None when it was never drawn).

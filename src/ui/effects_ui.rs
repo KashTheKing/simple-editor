@@ -128,11 +128,14 @@ pub(crate) mod test_rects {
 }
 
 fn key_buttons(ui: &mut egui::Ui, a: &mut Animated, lt: f64, palette: &Palette, g: &mut Gesture, _at: (usize, usize)) {
-    let mut b = Button::new("◆").small();
-    if a.has_key_at(lt) {
-        b = b.fill(palette.keyframe);
-    }
-    let r = ui.add(b).on_hover_text("Toggle keyframe at playhead");
+    let r = crate::ui::tools::icon_button(
+        ui,
+        palette,
+        ui.id().with(("kf", _at)),
+        crate::ui::tools::Glyph::Diamond,
+        "Toggle keyframe at playhead",
+        a.has_key_at(lt),
+    );
     #[cfg(test)]
     test_rects::push(format!("kf{}_{}", _at.0, _at.1), r.rect);
     if r.clicked() {

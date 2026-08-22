@@ -70,11 +70,17 @@ pub(crate) fn once(flag: &mut bool, undo: &mut dyn FnMut(&Project), p: &Project)
 
 /// "◆" keyframe toggle at the clip-local playhead + "✕ keys" once the parameter is animated.
 pub(crate) fn key_buttons(ui: &mut egui::Ui, a: &mut Animated, lt: f64, palette: &Palette, g: &mut Gesture) {
-    let mut b = Button::new("◆").small();
-    if a.has_key_at(lt) {
-        b = b.fill(palette.keyframe);
-    }
-    if ui.add(b).on_hover_text("Toggle keyframe at playhead").clicked() {
+    let id = ui.id().with(("kf", a as *const _ as usize));
+    if crate::ui::tools::icon_button(
+        ui,
+        palette,
+        id,
+        crate::ui::tools::Glyph::Diamond,
+        "Toggle keyframe at playhead",
+        a.has_key_at(lt),
+    )
+    .clicked()
+    {
         a.toggle_key(lt);
         g.click();
     }

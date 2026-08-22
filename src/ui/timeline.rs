@@ -34,6 +34,14 @@ use crate::media::thumbs::ThumbCache;
 use crate::media::waveform::{Peaks, WaveformCache};
 use crate::model::{Asset, Clip, ClipKind, Ease, Id, Label, Project, TrackKind};
 use crate::theme::Palette;
+use crate::ui::tools::{draw_glyph, Glyph, Tool};
+
+/// What a header toggle paints: a picture, or a plain character.
+#[derive(Clone, Copy)]
+enum Cap {
+    Icon(Glyph),
+    Text(&'static str),
+}
 use crate::ui::DragPayload;
 use eframe::egui::{
     self, pos2, vec2, Align2, Color32, CornerRadius, CursorIcon, FontId, Pos2, Rangef, Rect, Sense, Shape, Stroke,
@@ -195,6 +203,9 @@ pub struct TimelineCtx<'a> {
     pub thumbs: Option<&'a mut ThumbCache>,
     /// Timeline ranges shaded in `palette.selection` at 15 % alpha (auto-cut "keep" preview). Empty = nothing.
     pub keep_ranges: &'a [(f64, f64)],
+    /// Active tool strip tool. Cut splits a clicked clip, Marker drops a marker, Stretch retimes an
+    /// edge drag instead of trimming it; everything else behaves as Select.
+    pub tool: crate::ui::tools::Tool,
 }
 
 #[derive(Default)]
@@ -230,6 +241,9 @@ enum Gesture {
     Move { ids: Vec<Id>, orig: Vec<f64>, kind: TrackKind, tr: usize, dt: f64, dtrack: i32, new_track: bool },
     /// Trim the start (`start`) or end edge of `ids`; `edge` = edge time at drag start.
     Trim { ids: Vec<Id>, start: bool, edge: f64, changed: bool },
+    /// Rate-stretch one clip by dragging an edge: the source window (`src_len` source seconds) is kept
+    /// and the speed follows the new duration.
+    Stretch { id: Id, start: bool, edge: f64, src_len: f64, changed: bool },
     /// Drag the volume line of an audio clip vertically.
     Volume { id: Id, changed: bool },
     /// Drag a fade handle horizontally (`out` = fade-out, else fade-in).
@@ -266,6 +280,8 @@ enum Act {
     RemoveTransition(Id),
     /// Add a project marker at this timeline time.
     AddMarker(f64),
+    /// Razor tool: split every clip crossing this timeline time.
+    SplitAt(f64),
     RenameMarker(Id, String),
     DelMarker(Id),
     MarkerLabel(Id, u8),
@@ -332,7 +348,7 @@ fn toggle_button(
     p: &egui::Painter,
     rect: Rect,
     id: egui::Id,
-    label: &str,
+    label: Cap,
     on: bool,
     pal: &Palette,
     font: &FontId,
@@ -341,7 +357,12 @@ fn toggle_button(
     let fill = if on { pal.accent } else { pal.panel };
     let stroke = if r.hovered() { pal.accent } else { pal.border };
     p.rect(rect, CornerRadius::same(2), fill, Stroke::new(1.0, stroke), StrokeKind::Inside);
-    p.text(rect.center(), Align2::CENTER_CENTER, label, font.clone(), pal.text);
+    match label {
+        Cap::Icon(g) => draw_glyph(p, rect, g, pal.text),
+        Cap::Text(t) => {
+            p.text(rect.center(), Align2::CENTER_CENTER, t, font.clone(), pal.text);
+        }
+    }
     r.clicked()
 }
 
@@ -806,11 +827,16 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         );
         // audio: M = muted; video: V = visible (= !muted)
         let is_video = track.kind == TrackKind::Video;
-        let (m_label, m_on) = if is_video { ("V", !track.muted) } else { ("M", track.muted) };
+        // real-world icons: an eye for video visibility, a speaker for audio mute
+        let (m_label, m_on) = if is_video {
+            (Cap::Icon(if track.muted { Glyph::EyeOff } else { Glyph::Eye }), !track.muted)
+        } else {
+            (Cap::Icon(if track.muted { Glyph::SpeakerOff } else { Glyph::SpeakerOn }), track.muted)
+        };
         if toggle_button(ui, &bp, mb, tid.with("m"), m_label, m_on, &pal, &small) {
             act = Some(Act::Mute(ti));
         }
-        if toggle_button(ui, &bp, sb, tid.with("s"), "S", track.solo, &pal, &small) {
+        if toggle_button(ui, &bp, sb, tid.with("s"), Cap::Text("S"), track.solo, &pal, &small) {
             act = Some(Act::Solo(ti));
         }
         let (empty, muted, solo) = (track.clips.is_empty(), track.muted, track.solo);
@@ -1023,7 +1049,12 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             let cid = id.with(clip.id);
             let br = ui.interact(vis, cid, Sense::click_and_drag());
             if br.clicked() {
-                click = Some(clip.id);
+                // razor / marker tools act where the pointer is instead of selecting
+                match (c.tool, br.interact_pointer_pos()) {
+                    (Tool::Cut, Some(pp)) => act = Some(Act::SplitAt(state.time_at(pp.x))),
+                    (Tool::Marker, Some(pp)) => act = Some(Act::AddMarker(state.time_at(pp.x).max(0.0))),
+                    _ => click = Some(clip.id),
+                }
             }
             if br.double_clicked() {
                 c.selection.clear();
@@ -1353,7 +1384,11 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
 
     // ---- lanes background: deselect / rubber band / context menu / dnd ----
     if lanes_resp.clicked() && !mods.ctrl {
-        c.selection.clear();
+        // the marker tool also works on empty lanes; everything else just deselects
+        match (c.tool, lanes_resp.interact_pointer_pos()) {
+            (Tool::Marker, Some(pp)) => act = Some(Act::AddMarker(state.time_at(pp.x).max(0.0))),
+            _ => c.selection.clear(),
+        }
     }
     // a press that missed every clip starts a rubber band (Shift adds to the selection)
     if state.drag.is_none() && lanes_resp.drag_started_by(egui::PointerButton::Primary) {
@@ -1514,6 +1549,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         (c.undo)(p);
         let ids = p.expand_links(c.selection);
         match a {
+            Act::SplitAt(t) => {
+                p.split_at(t, None);
+            }
             Act::Split => {
                 p.split_at(*c.playhead, Some(&ids));
             }
@@ -1627,7 +1665,11 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                         .map_or(false, |cl| ((if start { cl.start } else { cl.end() }) - edge).abs() < 1e-6)
                 })
                 .collect();
-            let g = Gesture::Trim { ids, start, edge, changed: false };
+            let g = if c.tool == Tool::Stretch {
+                Gesture::Stretch { id: cid, start, edge, src_len: clip.src_len(), changed: false }
+            } else {
+                Gesture::Trim { ids, start, edge, changed: false }
+            };
             state.drag = Some(Drag { origin, before: c.project.clone(), g });
         }
     } else if let Some(cid) = start_vol {
@@ -1761,6 +1803,31 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     if cl.start != tmp.start || cl.duration != tmp.duration {
                         p.tracks[ti].clips[ci] = tmp;
                         *changed = true;
+                    }
+                }
+            }
+            Gesture::Stretch { id, start, edge, src_len, changed } => {
+                let mut want = *edge + dx;
+                if c.snap {
+                    want = p.snap_frame(want);
+                }
+                if let Some((ti, ci)) = p.find(*id) {
+                    let cl = &p.tracks[ti].clips[ci];
+                    let (new_start, dur) = if *start {
+                        let w = want.clamp(0.0, cl.end() - crate::model::MIN_CLIP);
+                        (w, cl.end() - w)
+                    } else {
+                        (cl.start, want - cl.start)
+                    };
+                    let dur = dur.max(crate::model::MIN_CLIP);
+                    if p.tracks[ti].fits(new_start, dur, &[*id]) {
+                        let cl = &mut p.tracks[ti].clips[ci];
+                        if (cl.duration - dur).abs() > 1e-9 || (cl.start - new_start).abs() > 1e-9 {
+                            // speed = source seconds per timeline second: the window is untouched
+                            cl.set_speed(*src_len / dur);
+                            cl.start = new_start;
+                            *changed = true;
+                        }
                     }
                 }
             }
@@ -1901,6 +1968,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             let mut edited = match &d.g {
                 Gesture::Move { dt, dtrack, .. } => *dt != 0.0 || *dtrack != 0,
                 Gesture::Trim { changed, .. }
+                | Gesture::Stretch { changed, .. }
                 | Gesture::Volume { changed, .. }
                 | Gesture::Fade { changed, .. }
                 | Gesture::Keys { changed, .. }
@@ -2053,6 +2121,7 @@ mod tests {
         playhead: f64,
         undos: usize,
         waves: WaveformCache,
+        tool: Tool,
         time: f64,
         /// Paint list of the last frame (asserting on what was actually drawn).
         shapes: Vec<egui::epaint::ClippedShape>,
@@ -2087,6 +2156,7 @@ mod tests {
                 playhead: 0.0,
                 undos: 0,
                 waves,
+                tool: Tool::Select,
                 time: 0.0,
                 shapes: Vec::new(),
             };
@@ -2106,7 +2176,7 @@ mod tests {
                 ..Default::default()
             };
             let pal = Palette::new(true, Color32::from_rgb(0, 120, 212));
-            let Harness { ctx, state, project, selection, playhead, undos, waves, .. } = self;
+            let Harness { ctx, state, project, selection, playhead, undos, waves, tool, .. } = self;
             let mut resp = None;
             let full = ctx.run(input, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
@@ -2125,6 +2195,7 @@ mod tests {
                             playing: false,
                             thumbs: None,
                             keep_ranges: &[],
+                            tool: *tool,
                         },
                     ));
                 });
@@ -2186,6 +2257,43 @@ mod tests {
         fn audio_clip(&self) -> &Clip {
             &self.project.tracks[1].clips[0]
         }
+    }
+
+    /// The tool strip drives the timeline: razor splits where you click, the marker tool drops a
+    /// marker there, and stretch retimes an edge drag instead of trimming it.
+    #[test]
+    fn tools_cut_mark_and_stretch() {
+        let mut h = Harness::new();
+        let lanes = h.state.lanes_rect;
+        let p = pos2(lanes.left() + 100.0, lanes.top() + 30.0);
+
+        h.tool = Tool::Cut;
+        let before = h.project.tracks[0].clips.len();
+        h.press(p);
+        h.release(p);
+        h.frame(vec![]);
+        assert_eq!(h.project.tracks[0].clips.len(), before + 1, "razor click must split the clip");
+
+        h.tool = Tool::Marker;
+        assert!(h.project.markers.is_empty());
+        let p2 = pos2(lanes.left() + 220.0, lanes.top() + 30.0);
+        h.press(p2);
+        h.release(p2);
+        h.frame(vec![]);
+        assert_eq!(h.project.markers.len(), 1, "marker tool click must drop a marker");
+
+        // fresh timeline: the razor above left a clip butting up against the edge we want to stretch
+        let mut h = Harness::new();
+        let lanes = h.state.lanes_rect;
+        h.tool = Tool::Stretch;
+        let id = h.video_clip().id;
+        let (dur0, src0) = (h.video_clip().duration, h.video_clip().src_len());
+        let edge = lanes.left() + (h.video_clip().end() as f32) * h.state.zoom;
+        assert!(h.drag(pos2(edge, lanes.top() + 30.0), pos2(edge + 80.0, lanes.top() + 30.0)));
+        let c = h.project.clip(id).unwrap();
+        assert!(c.duration > dur0 + 0.5, "stretch must lengthen the clip: {} -> {}", dur0, c.duration);
+        assert!((c.src_len() - src0).abs() < 1e-6, "stretch must keep the source window: {} -> {}", src0, c.src_len());
+        assert!(c.speed < 1.0, "a longer clip over the same source must slow down: {}", c.speed);
     }
 
     #[test]

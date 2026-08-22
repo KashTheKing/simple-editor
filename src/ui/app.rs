@@ -1838,8 +1838,10 @@ impl App {
                         settings,
                         player,
                         palette,
+                        tools,
                         ..
                     } = self;
+                    let tool = tools.tool;
                     let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
                     timeline::show(
                         ui,
@@ -1857,6 +1859,7 @@ impl App {
                             // only while the Auto-cut pane is on screen: a stale overlay would keep
                             // shading the timeline after the pane is hidden or a new project is opened
                             keep_ranges: if *autocut_shown { &autocut.overlay } else { &[] },
+                            tool,
                         },
                     )
                 };
@@ -2130,7 +2133,14 @@ impl App {
             }
             if let Some(s) = c.shape.as_mut() {
                 s.fill = tools.fill;
-                s.stroke = tools.stroke;
+                // line / arrow / drawing have no fill, so a transparent stroke would draw nothing at all:
+                // fall back to the brush colour (and then the fill) instead of an invisible clip
+                let stroke_only = matches!(kind, ShapeKind::Line | ShapeKind::Arrow | ShapeKind::Draw);
+                s.stroke = match (stroke_only, tools.stroke[3], tools.brush[3]) {
+                    (true, 0, 0) => [tools.fill[0], tools.fill[1], tools.fill[2], 255],
+                    (true, 0, _) => tools.brush,
+                    _ => tools.stroke,
+                };
                 s.stroke_width = tools.stroke_width;
                 s.sides = tools.sides;
                 s.corner = tools.corner;

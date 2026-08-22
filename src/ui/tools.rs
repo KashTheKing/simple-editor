@@ -23,6 +23,12 @@ pub enum Tool {
     Draw,
     Mask(MaskShape),
     Zoom,
+    /// Razor: click a clip in the timeline to split it there.
+    Cut,
+    /// Click the timeline to drop a project marker.
+    Marker,
+    /// Drag a clip edge to change its speed instead of trimming it.
+    Stretch,
 }
 
 pub struct ToolsState {
@@ -75,10 +81,26 @@ pub(crate) enum Glyph {
     Pencil,
     Mask,
     Zoom,
+    Razor,
+    Flag,
+    Hourglass,
+    Eye,
+    EyeOff,
+    Diamond,
+    Record,
+    Mic,
+    Headphone,
+    SpeakerOn,
+    SpeakerOff,
+    Camera,
+    FilmStrip,
 }
 
-const STRIP: [(Tool, Glyph, &str); 12] = [
+const STRIP: [(Tool, Glyph, &str); 15] = [
     (Tool::Select, Glyph::Cursor, "Select"),
+    (Tool::Cut, Glyph::Razor, "Cut"),
+    (Tool::Marker, Glyph::Flag, "Marker"),
+    (Tool::Stretch, Glyph::Hourglass, "Stretch"),
     (Tool::Text, Glyph::Letter('T'), "Text"),
     (Tool::Shape(ShapeKind::Rect), Glyph::Rect, "Rectangle"),
     (Tool::Shape(ShapeKind::Ellipse), Glyph::Ellipse, "Ellipse"),
@@ -100,7 +122,9 @@ pub fn tool_hotkey(tool: Tool) -> Option<Key> {
         Tool::Draw => Some(Key::D),
         Tool::Shape(_) => Some(Key::S),
         Tool::Mask(_) => Some(Key::M),
-        Tool::Zoom => None,
+        Tool::Cut => Some(Key::C),
+        Tool::Stretch => Some(Key::R),
+        Tool::Zoom | Tool::Marker => None,
     }
 }
 
@@ -125,6 +149,10 @@ pub fn handle_hotkeys(ctx: &egui::Context, state: &mut ToolsState) -> Option<Too
             Some(Tool::Shape(next_shape(state.tool)))
         } else if i.consume_key(Modifiers::NONE, Key::M) {
             Some(Tool::Mask(next_mask(state.tool)))
+        } else if i.consume_key(Modifiers::NONE, Key::C) {
+            Some(Tool::Cut)
+        } else if i.consume_key(Modifiers::NONE, Key::R) {
+            Some(Tool::Stretch)
         } else {
             None
         }
@@ -170,7 +198,8 @@ fn next_mask(cur: Tool) -> MaskShape {
 pub fn show(ui: &mut egui::Ui, state: &mut ToolsState, palette: &Palette) -> bool {
     let mut changed = handle_hotkeys(ui.ctx(), state).is_some();
     let base = ui.id();
-    ui.horizontal(|ui| {
+    // wrapped: at a small pane width the strip must fold onto a second row, not clip its last buttons
+    ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
         for (tool, icon, name) in STRIP {
             let active = same_tool(tool, state.tool);
@@ -275,13 +304,32 @@ fn style_controls(ui: &mut egui::Ui, state: &mut ToolsState) -> bool {
                 changed = true;
             }
         }
-        Tool::Text | Tool::Select | Tool::Zoom => {}
+        Tool::Text | Tool::Select | Tool::Zoom | Tool::Cut | Tool::Marker | Tool::Stretch => {}
     }
     changed
 }
 
+/// A button showing `icon` and then `text`. Used wherever a control needs a real-world picture rather
+/// than a symbol character (half of those render as tofu boxes in Segoe UI).
+pub(crate) fn glyph_text_button(ui: &mut egui::Ui, icon: Glyph, text: &str) -> egui::Response {
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let galley = ui.painter().layout_no_wrap(text.to_owned(), font, Color32::PLACEHOLDER);
+    let pad = ui.spacing().button_padding;
+    let icon_w = 18.0;
+    let size = egui::vec2(icon_w + galley.size().x + pad.x * 2.0, galley.size().y.max(20.0) + pad.y * 2.0);
+    let (rect, r) = ui.allocate_exact_size(size, Sense::click());
+    let v = ui.style().interact(&r);
+    ui.painter().rect(rect, v.corner_radius, v.weak_bg_fill, v.bg_stroke, StrokeKind::Inside);
+    let icon_rect =
+        egui::Rect::from_min_size(egui::pos2(rect.left() + pad.x, rect.top()), egui::vec2(icon_w, rect.height()));
+    draw_glyph(ui.painter(), icon_rect, icon, v.text_color());
+    let tp = egui::pos2(icon_rect.right(), rect.center().y - galley.size().y / 2.0);
+    ui.painter().galley(tp, galley, v.text_color());
+    r
+}
+
 /// Bare square icon button: accent fill when active, a hover outline otherwise.
-fn icon_button(
+pub(crate) fn icon_button(
     ui: &mut egui::Ui,
     palette: &Palette,
     id: egui::Id,
@@ -391,6 +439,146 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
         Glyph::Zoom => {
             p.circle_stroke(c + egui::vec2(-1.0, -1.0), 4.5, stroke);
             p.line_segment([c + egui::vec2(2.2, 2.2), c + egui::vec2(6.0, 6.0)], Stroke::new(1.8, fg));
+        }
+        // razor blade: a rectangular blade with a toothed cutting edge along the bottom
+        Glyph::Razor => {
+            let body = egui::Rect::from_center_size(c + egui::vec2(0.0, -2.0), egui::vec2(12.0, 6.0));
+            p.rect_stroke(body, CornerRadius::same(1), stroke, StrokeKind::Inside);
+            p.line_segment([c + egui::vec2(-6.0, 1.5), c + egui::vec2(6.0, 1.5)], Stroke::new(2.0, fg));
+            for i in 0..4 {
+                let x = -4.5 + i as f32 * 3.0;
+                p.line_segment([c + egui::vec2(x, 1.5), c + egui::vec2(x, 5.0)], Stroke::new(1.0, fg));
+            }
+        }
+        // pennant on a pole
+        Glyph::Flag => {
+            p.line_segment([c + egui::vec2(-4.0, -6.5), c + egui::vec2(-4.0, 6.5)], Stroke::new(1.6, fg));
+            let cloth = vec![c + egui::vec2(-4.0, -6.0), c + egui::vec2(5.5, -3.0), c + egui::vec2(-4.0, 0.0)];
+            p.add(egui::Shape::convex_polygon(cloth, fg, Stroke::NONE));
+        }
+        // hourglass: two triangles meeting at the waist, between two plates
+        Glyph::Hourglass => {
+            p.line_segment([c + egui::vec2(-5.0, -6.5), c + egui::vec2(5.0, -6.5)], stroke);
+            p.line_segment([c + egui::vec2(-5.0, 6.5), c + egui::vec2(5.0, 6.5)], stroke);
+            p.add(egui::Shape::convex_polygon(
+                vec![c + egui::vec2(-4.5, -6.0), c + egui::vec2(4.5, -6.0), c],
+                fg,
+                Stroke::NONE,
+            ));
+            p.add(egui::Shape::convex_polygon(
+                vec![c + egui::vec2(-4.5, 6.0), c + egui::vec2(4.5, 6.0), c],
+                fg,
+                Stroke::NONE,
+            ));
+        }
+        // eye: two lids and a pupil (crossed out when hidden)
+        Glyph::Eye | Glyph::EyeOff => {
+            let lid = |up: f32| -> Vec<egui::Pos2> {
+                (0..=16)
+                    .map(|i| {
+                        let x = -7.0 + i as f32 * 14.0 / 16.0;
+                        let k: f32 = 1.0 - (x / 7.0) * (x / 7.0);
+                        c + egui::vec2(x, up * 4.2 * k.max(0.0))
+                    })
+                    .collect()
+            };
+            p.add(egui::Shape::line(lid(-1.0), stroke));
+            p.add(egui::Shape::line(lid(1.0), stroke));
+            p.circle_filled(c, 2.2, fg);
+            if g == Glyph::EyeOff {
+                p.line_segment([c + egui::vec2(-6.5, -6.0), c + egui::vec2(6.5, 6.0)], Stroke::new(1.8, fg));
+            }
+        }
+        Glyph::Diamond => {
+            let pts = vec![
+                c + egui::vec2(0.0, -5.5),
+                c + egui::vec2(4.5, 0.0),
+                c + egui::vec2(0.0, 5.5),
+                c + egui::vec2(-4.5, 0.0),
+            ];
+            p.add(egui::Shape::convex_polygon(pts, fg, Stroke::NONE));
+        }
+        Glyph::Record => {
+            p.circle_filled(c, 5.5, Color32::from_rgb(220, 60, 60));
+        }
+        // microphone: a capsule on a stand
+        Glyph::Mic => {
+            p.rect_filled(
+                egui::Rect::from_center_size(c + egui::vec2(0.0, -2.5), egui::vec2(5.0, 8.0)),
+                CornerRadius::same(2),
+                fg,
+            );
+            p.line_segment([c + egui::vec2(0.0, 3.0), c + egui::vec2(0.0, 6.0)], Stroke::new(1.6, fg));
+            p.line_segment([c + egui::vec2(-3.5, 6.0), c + egui::vec2(3.5, 6.0)], Stroke::new(1.6, fg));
+        }
+        // headphones: a headband over two ear cups
+        Glyph::Headphone => {
+            let band: Vec<egui::Pos2> = (0..=16)
+                .map(|i| {
+                    let a = std::f32::consts::PI + std::f32::consts::PI * i as f32 / 16.0;
+                    c + egui::vec2(a.cos() * 6.0, a.sin() * 6.0 + 1.0)
+                })
+                .collect();
+            p.add(egui::Shape::line(band, stroke));
+            for x in [-6.0, 6.0] {
+                p.rect_filled(
+                    egui::Rect::from_center_size(c + egui::vec2(x, 3.0), egui::vec2(3.5, 6.0)),
+                    CornerRadius::same(1),
+                    fg,
+                );
+            }
+        }
+        // speaker cone, with sound waves or crossed out
+        Glyph::SpeakerOn | Glyph::SpeakerOff => {
+            let cone = vec![
+                c + egui::vec2(-6.0, -2.0),
+                c + egui::vec2(-3.0, -2.0),
+                c + egui::vec2(0.5, -5.5),
+                c + egui::vec2(0.5, 5.5),
+                c + egui::vec2(-3.0, 2.0),
+                c + egui::vec2(-6.0, 2.0),
+            ];
+            p.add(egui::Shape::convex_polygon(cone, fg, Stroke::NONE));
+            if g == Glyph::SpeakerOn {
+                for (i, rad) in [3.0_f32, 5.5].iter().enumerate() {
+                    let arc: Vec<egui::Pos2> = (0..=10)
+                        .map(|k| {
+                            let a = -std::f32::consts::FRAC_PI_3 + 2.0 * std::f32::consts::FRAC_PI_3 * k as f32 / 10.0;
+                            c + egui::vec2(1.5 + a.cos() * rad, a.sin() * rad)
+                        })
+                        .collect();
+                    p.add(egui::Shape::line(arc, Stroke::new(1.3 - i as f32 * 0.2, fg)));
+                }
+            } else {
+                p.line_segment([c + egui::vec2(2.5, -3.5), c + egui::vec2(6.5, 3.5)], Stroke::new(1.6, fg));
+                p.line_segment([c + egui::vec2(6.5, -3.5), c + egui::vec2(2.5, 3.5)], Stroke::new(1.6, fg));
+            }
+        }
+        // stills camera: body, lens and a viewfinder bump
+        Glyph::Camera => {
+            let body = egui::Rect::from_center_size(c + egui::vec2(0.0, 1.0), egui::vec2(13.0, 9.0));
+            p.rect_stroke(body, CornerRadius::same(1), stroke, StrokeKind::Inside);
+            p.rect_filled(
+                egui::Rect::from_center_size(c + egui::vec2(-2.0, -4.5), egui::vec2(5.0, 2.5)),
+                CornerRadius::same(1),
+                fg,
+            );
+            p.circle_stroke(c + egui::vec2(0.0, 1.0), 3.0, stroke);
+        }
+        // film strip: a frame with sprocket holes down both edges
+        Glyph::FilmStrip => {
+            let body = egui::Rect::from_center_size(c, egui::vec2(13.0, 11.0));
+            p.rect_stroke(body, CornerRadius::same(1), stroke, StrokeKind::Inside);
+            for i in 0..3 {
+                let y = -3.5 + i as f32 * 3.5;
+                for x in [-4.8_f32, 4.8] {
+                    p.rect_filled(
+                        egui::Rect::from_center_size(c + egui::vec2(x, y), egui::vec2(2.2, 2.0)),
+                        CornerRadius::ZERO,
+                        fg,
+                    );
+                }
+            }
         }
     }
 }

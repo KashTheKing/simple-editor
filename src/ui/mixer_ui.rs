@@ -80,7 +80,7 @@ pub fn show(
     let main = list.first().map(|b| b.id).unwrap_or(0);
 
     ui.horizontal(|ui| {
-        let r = ui.add(Button::new("+ Bus").small());
+        let r = crate::ui::tools::glyph_text_button(ui, crate::ui::tools::Glyph::Headphone, "+ Bus");
         #[cfg(test)]
         test_rects::push("add_bus".into(), r.rect);
         if r.clicked() {

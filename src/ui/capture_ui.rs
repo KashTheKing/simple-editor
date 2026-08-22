@@ -15,6 +15,7 @@ use crate::engine::capture::{audio_devices, ScreenCaptureOptions, VoiceoverOptio
 use crate::settings::Settings;
 use crate::theme::Palette;
 use crate::ui::combo;
+use crate::ui::tools::{glyph_text_button, Glyph};
 use eframe::egui;
 use std::path::PathBuf;
 
@@ -177,7 +178,7 @@ fn screen_window(
                 if ui.button("Stop").clicked() {
                     r.stop_screen = true;
                 }
-            } else if ui.button("Record").clicked() {
+            } else if glyph_text_button(ui, Glyph::Record, "Record").clicked() {
                 r.screen = Some(screen_options(settings, state, out_path(settings, "screen", "mp4"), has_loopback));
                 r.start_screen = true;
                 settings.save();
@@ -253,7 +254,12 @@ fn voice_window(
                 }
             } else {
                 let can = !settings.voice_device.is_empty();
-                if ui.add_enabled(can, egui::Button::new("Record")).on_disabled_hover_text("Pick an input.").clicked() {
+                if ui
+                    .add_enabled_ui(can, |ui| glyph_text_button(ui, Glyph::Mic, "Record"))
+                    .inner
+                    .on_disabled_hover_text("Pick an input.")
+                    .clicked()
+                {
                     r.voice = Some(voice_options(settings));
                     r.start_voice = true;
                     settings.save();

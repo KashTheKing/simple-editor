@@ -156,19 +156,80 @@ fn transport(ui: &mut egui::Ui, state: &mut PreviewState, c: &PreviewCtx<'_>, r:
                 })
                 .response
                 .on_hover_text("Preview render scale");
-            let mut movie = c.movie_mode;
-            if ui
-                .toggle_value(&mut movie, "Movie")
-                .on_hover_text("Movie mode: play pre-rendered full-quality frames")
-                .changed()
+            // film strip: movie mode plays pre-rendered frames
+            if crate::ui::tools::icon_button(
+                ui,
+                c.palette,
+                ui.id().with("movie"),
+                crate::ui::tools::Glyph::FilmStrip,
+                "Movie mode: play pre-rendered full-quality frames",
+                c.movie_mode,
+            )
+            .clicked()
             {
-                r.set_movie_mode = Some(movie);
+                r.set_movie_mode = Some(!c.movie_mode);
             }
             b(ui, "⛶", Action::Fullscreen);
         })
         .response;
     // measured content width (without the centring pad) drives the next frame's padding
     state.transport = Rect::from_min_max(pos2(row.rect.left() + pad, row.rect.top()), row.rect.max);
+}
+
+/// Outline of the shape a drag is creating, drawn inside `r` (the drag rectangle).
+fn draw_shape_preview(p: &egui::Painter, kind: ShapeKind, r: Rect, palette: &Palette, stroke: Stroke) {
+    let fill = palette.selection.gamma_multiply(0.25);
+    let c = r.center();
+    let (hw, hh) = (r.width() / 2.0, r.height() / 2.0);
+    let poly = |n: u32, rot: f32| -> Vec<Pos2> {
+        (0..n)
+            .map(|i| {
+                let a = rot + std::f32::consts::TAU * i as f32 / n as f32;
+                pos2(c.x + a.cos() * hw, c.y + a.sin() * hh)
+            })
+            .collect()
+    };
+    let top = -std::f32::consts::FRAC_PI_2;
+    match kind {
+        ShapeKind::Rect => {
+            p.rect(r, 0.0, fill, stroke, StrokeKind::Inside);
+        }
+        ShapeKind::Ellipse => {
+            let pts = poly(48, 0.0);
+            p.add(Shape::convex_polygon(pts.clone(), fill, Stroke::NONE));
+            p.add(Shape::closed_line(pts, stroke));
+        }
+        ShapeKind::Triangle | ShapeKind::Polygon | ShapeKind::Star => {
+            let pts = if kind == ShapeKind::Star {
+                let (o, i) = (poly(5, top), poly(5, top + std::f32::consts::TAU / 10.0));
+                (0..5).flat_map(|k| [o[k], pos2(c.x + (i[k].x - c.x) * 0.45, c.y + (i[k].y - c.y) * 0.45)]).collect()
+            } else {
+                poly(if kind == ShapeKind::Triangle { 3 } else { 5 }, top)
+            };
+            p.add(Shape::convex_polygon(pts.clone(), fill, Stroke::NONE));
+            p.add(Shape::closed_line(pts, stroke));
+        }
+        ShapeKind::Line | ShapeKind::Arrow => {
+            let (a, b) = (r.min, r.max);
+            p.line_segment([a, b], stroke);
+            if kind == ShapeKind::Arrow {
+                let v = b - a;
+                let len = v.length().max(1.0);
+                let (ux, uy) = (v.x / len, v.y / len);
+                let head = (len * 0.25).clamp(6.0, 40.0);
+                let base = pos2(b.x - ux * head, b.y - uy * head);
+                let (px, py) = (-uy * head * 0.5, ux * head * 0.5);
+                p.add(Shape::convex_polygon(
+                    vec![b, pos2(base.x + px, base.y + py), pos2(base.x - px, base.y - py)],
+                    stroke.color,
+                    Stroke::NONE,
+                ));
+            }
+        }
+        ShapeKind::Draw => {
+            p.rect_stroke(r, 0.0, stroke, StrokeKind::Inside);
+        }
+    }
 }
 
 /// Largest `aspect` rect centred in `area`, edges snapped to whole physical pixels.
@@ -257,6 +318,8 @@ fn tool_drag(
                     p.add(Shape::line(pts, Stroke::new(2.0, c.palette.selection)));
                 }
             }
+            // draw the shape itself, not a box around it, so what you drag is what you get
+            Tool::Shape(kind) => draw_shape_preview(&p, kind, Rect::from_two_pos(d.from, now), c.palette, stroke),
             _ => {
                 p.rect_stroke(Rect::from_two_pos(d.from, now), 0.0, stroke, StrokeKind::Inside);
             }
