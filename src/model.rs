@@ -1348,6 +1348,21 @@ impl ShapeStyle {
     pub fn poly_points(&self) -> Option<&[(f32, f32)]> {
         (self.kind == ShapeKind::Polygon && self.points.len() >= 3).then_some(&self.points[..])
     }
+    /// The outline as a timed path, ready to drive an animation: a drawing's strokes end to end, or an
+    /// explicit polygon's vertices (one per second, so a closed shape still has a direction).
+    pub fn path_points(&self) -> Vec<(f32, f32, f32)> {
+        if self.kind != ShapeKind::Draw {
+            return self.points.iter().enumerate().map(|(i, &(x, y))| (x, y, i as f32)).collect();
+        }
+        let mut out: Vec<(f32, f32, f32)> = Vec::new();
+        for st in &self.strokes {
+            // strokes from one take already share a clock; older ones each start at 0, so anything that
+            // would step back in time is pushed behind what came before
+            let off = (out.last().map_or(0.0, |&(_, _, t)| t) - st.points.first().map_or(0.0, |p| p.2)).max(0.0);
+            out.extend(st.points.iter().map(|&(x, y, t)| (x, y, t + off)));
+        }
+        out
+    }
     /// Recorded length of a drawing in seconds.
     pub fn draw_duration(&self) -> f64 {
         self.strokes.iter().flat_map(|s| s.points.iter().map(|p| p.2 as f64)).fold(0.0, f64::max)
@@ -1372,6 +1387,52 @@ impl ShapeStyle {
         }
         h.finish()
     }
+}
+
+/// A drawing or polygon outline kept on the project so it can be reused: as a motion path for a clip's
+/// X/Y, as the centre of a mask node, or just as a sketch to look at again.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct PathAsset {
+    pub id: Id,
+    pub name: String,
+    /// (x, y, t): project px relative to the canvas centre, t in seconds from the start of the path.
+    pub points: Vec<(f32, f32, f32)>,
+}
+
+/// Turn a recorded path into X/Y keyframes spanning `duration` seconds. The recording's own timing is
+/// kept when it has any (the replay keeps its rhythm) and the points are spread evenly otherwise — a
+/// polygon has no clock. Key times are always strictly increasing: a still mouse records several points
+/// at one instant, and two keys at the same time would swallow each other (`Animated::key_index_at`).
+pub fn path_to_keys(points: &[(f32, f32, f32)], duration: f64) -> (Animated, Animated) {
+    let (mut x, mut y) = (Animated::new(0.0), Animated::new(0.0));
+    let (Some(first), Some(last)) = (points.first(), points.last()) else { return (x, y) };
+    let span = (last.2 - first.2) as f64;
+    let dur = duration.max(MIN_CLIP);
+    for (i, p) in points.iter().enumerate() {
+        let f = match (span > 0.0, points.len() > 1) {
+            (true, _) => (p.2 - first.2) as f64 / span,
+            (false, true) => i as f64 / (points.len() - 1) as f64,
+            (false, false) => 0.0,
+        };
+        let t = (f * dur).clamp(0.0, dur);
+        let t = match x.keys.last() {
+            Some(k) if t <= k.t + KEY_EPS => k.t + KEY_EPS,
+            _ => t,
+        };
+        x.keys.push(Keyframe { t, v: p.0 as f64, ease: Ease::Linear });
+        y.keys.push(Keyframe { t, v: p.1 as f64, ease: Ease::Linear });
+    }
+    // duplicate timestamps pushed the tail past the end: squeeze the whole path back into `dur` so it
+    // still finishes exactly where it was drawn
+    if let Some(k) = x.keys.last().filter(|k| k.t > dur) {
+        let s = dur / k.t;
+        for (a, b) in x.keys.iter_mut().zip(y.keys.iter_mut()) {
+            a.t *= s;
+            b.t *= s;
+        }
+    }
+    (x, y)
 }
 
 // ---------- markers ----------
@@ -2177,6 +2238,8 @@ pub struct Project {
     /// Planner (nested tasks with moodboards) and free-form notes (process / ideas / style).
     pub plan: Vec<PlanItem>,
     pub notes: String,
+    /// Saved drawing / polygon outlines, reusable as motion paths (see `PathAsset`).
+    pub paths: Vec<PathAsset>,
     next_id: Id,
 }
 
@@ -2214,6 +2277,7 @@ impl Project {
             main_stash: None,
             plan: Vec::new(),
             notes: String::new(),
+            paths: Vec::new(),
             next_id: 0,
         };
         p.add_track(TrackKind::Video);
@@ -3398,6 +3462,39 @@ impl Project {
         id
     }
 
+    // ---------- reusable paths ----------
+    pub fn path(&self, id: Id) -> Option<&PathAsset> {
+        self.paths.iter().find(|p| p.id == id)
+    }
+    /// Keep a path on the project. An empty name gets a numbered one.
+    pub fn add_path(&mut self, name: String, points: Vec<(f32, f32, f32)>) -> Id {
+        let id = self.new_id();
+        let name = if name.trim().is_empty() { format!("Path {}", self.paths.len() + 1) } else { name };
+        self.paths.push(PathAsset { id, name, points });
+        id
+    }
+    /// A clip's drawing / polygon outline in canvas coordinates — the clip's own position is folded in,
+    /// so the path lands where the sketch is on screen.
+    pub fn path_from_clip(&self, clip: Id) -> Vec<(f32, f32, f32)> {
+        let Some(c) = self.clip(clip) else { return Vec::new() };
+        let (ox, oy) = (c.x.value as f32, c.y.value as f32);
+        let Some(s) = &c.shape else { return Vec::new() };
+        s.path_points().into_iter().map(|(x, y, t)| (x + ox, y + oy, t)).collect()
+    }
+    /// Drive a clip's X/Y along a path over the clip's own length. False when the path is too short to
+    /// animate anything.
+    pub fn apply_path(&mut self, clip: Id, points: &[(f32, f32, f32)]) -> bool {
+        let Some(dur) = self.clip(clip).map(|c| c.duration) else { return false };
+        let (x, y) = path_to_keys(points, dur);
+        if x.keys.len() < 2 {
+            return false;
+        }
+        let Some(c) = self.clip_mut(clip) else { return false };
+        c.x = x;
+        c.y = y;
+        true
+    }
+
     // ---------- node graphs ----------
     /// Give the clip a node graph built from its current effect stack (idempotent).
     pub fn ensure_graph(&mut self, clip: Id) -> bool {
@@ -3744,6 +3841,40 @@ mod tests {
         let old = p.to_json().replace("\"points\"", "\"was_not_a_field\"");
         let o = Project::from_json(&old).unwrap();
         assert!(o.clip(id).unwrap().shape.as_ref().unwrap().poly_points().is_none());
+    }
+
+    #[test]
+    fn a_recorded_stroke_becomes_a_motion_path() {
+        let mut p = Project::new();
+        let id = p.add_shape_clip(ShapeKind::Draw, 0.0, 4.0);
+        let s = p.clip_mut(id).unwrap().shape.as_mut().unwrap();
+        // two takes, the second recorded 2 s in, with a still-mouse pause in the middle of the first
+        s.strokes = vec![
+            Stroke {
+                color: [255; 4],
+                width: 6.0,
+                points: vec![(-100.0, 0.0, 0.0), (0.0, 50.0, 0.5), (0.0, 50.0, 0.5)],
+            },
+            Stroke { color: [255; 4], width: 6.0, points: vec![(60.0, 20.0, 2.0), (120.0, -30.0, 2.5)] },
+        ];
+        p.clip_mut(id).unwrap().x.value = 10.0; // the sketch's own position is part of the path
+        let pts = p.path_from_clip(id);
+        assert_eq!(pts.len(), 5);
+        let mover = p.add_shape_clip(ShapeKind::Rect, 0.0, 8.0);
+        assert!(p.apply_path(mover, &pts));
+        let c = p.clip(mover).unwrap();
+        assert_eq!(c.x.keys.len(), 5);
+        for w in c.x.keys.windows(2) {
+            assert!(w[1].t > w[0].t, "key times must increase: {:?} -> {:?}", w[0].t, w[1].t);
+        }
+        assert!(c.x.keys.iter().all(|k| k.t <= 8.0 + 1e-9), "the path fits the clip: {:?}", c.x.keys);
+        // starts on the first point and ends on the last, both at the clip's own ends
+        assert!((c.x.at(0.0) - -90.0).abs() < 1e-6 && (c.y.at(0.0) - 0.0).abs() < 1e-6);
+        assert!((c.x.at(8.0) - 130.0).abs() < 1e-6 && (c.y.at(8.0) - -30.0).abs() < 1e-6);
+        // a path with no clock (a polygon outline) spreads its points evenly over the clip
+        let poly = path_to_keys(&[(0.0, -50.0, 0.0), (60.0, 40.0, 0.0), (-60.0, 40.0, 0.0)], 2.0);
+        assert_eq!(poly.0.keys.iter().map(|k| k.t).collect::<Vec<_>>(), vec![0.0, 1.0, 2.0]);
+        assert!(path_to_keys(&[], 3.0).0.keys.is_empty(), "an empty path animates nothing");
     }
 
     #[test]

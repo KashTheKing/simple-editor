@@ -93,7 +93,8 @@ src/selftest.rs        headless end-to-end check (`--selftest`)
 
 `Project` owns everything: `assets`, `folders`/`linked_folders`, `tracks` (video first, then audio),
 `sequences` (nested timelines) with `editing`/`main_stash` for the one being edited, `subtitles`,
-`markers`, `labels`, `buses`, `plan`, `notes`, in/out points, `scaler`, and a monotonic `next_id`.
+`markers`, `labels`, `buses`, `plan`, `notes`, `paths` (saved outlines), in/out points, `scaler`, and a
+monotonic `next_id`.
 
 * `Clip` — `kind` (Video/Image/Text/Audio/Sequence/Shape/Adjustment), timing (`start`, `duration`,
   `src_in`), retime (`speed`, `reverse`, `freeze`), transform/`opacity`/`blend`, `effects` (linear stack)
@@ -169,7 +170,10 @@ menus, curve/motion presets (scaled or exact), and "flow" between two clips.
 **Text** — system + imported fonts, size, bold/italic, fill/outline/shadow/box, alignment, spacing.
 **Shapes & drawing** — rect/ellipse/triangle/polygon/star/line/arrow plus recorded freehand drawings;
 the Polygon tool places real points (click to add, Enter / click a point to close, drag them when the
-shape is selected) into `ShapeStyle.points` — empty keeps the regular n-gon.
+shape is selected) into `ShapeStyle.points` — empty keeps the regular n-gon. The Draw tool's play button
+records while the video plays (every stroke of the take joins one drawing clip, until the video stops or
+the tool is put away), and a drawing or polygon outline can be saved to `Project.paths` and reused as a
+motion path: `Project::apply_path` keyframes a clip's X/Y along it, and a mask node's centre can follow it.
 **Adjustment layers** — effects that apply to everything below them.
 **Sequences** — nested timelines usable as footage.
 **Audio** — waveforms, per-clip volume line + fades, pan, mute/solo, buses with EQ/reverb/echo/

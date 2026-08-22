@@ -15,7 +15,7 @@ use crate::media::waveform::WaveformCache;
 use crate::media::{self, Backend, Frame};
 use crate::model::{
     BlendMode, Clip, ClipKind, Effect, EffectKind, FilterKind, Id, Mask, MaskShape, NodeKind, Project, Scaler,
-    ShapeKind, TrackKind, TransitionKind,
+    ShapeKind, TrackKind, TransitionKind, MIN_CLIP,
 };
 use crate::playback::Player;
 use crate::settings::Settings;
@@ -169,6 +169,8 @@ pub struct App {
     /// Running screen recording / voiceover (voiceover remembers the timeline time it started at).
     screen_rec: Option<(crate::engine::capture::Capture, PathBuf)>,
     voice_rec: Option<(crate::engine::capture::Capture, PathBuf, f64)>,
+    /// Running Draw take: the drawing every stroke joins, and the timeline time it started at.
+    draw_rec: Option<(Id, f64)>,
     /// Viewport focus last frame (record-on-blur watches this).
     was_focused: bool,
     /// Ctrl+Alt+C clipboard for Paste Attributes.
@@ -829,6 +831,7 @@ impl App {
             paste_ui: paste_ui::PasteUi::default(),
             screen_rec: None,
             voice_rec: None,
+            draw_rec: None,
             was_focused: true,
             attrs: None,
             last_transition: (TransitionKind::CrossFade, 1.0),
@@ -2193,8 +2196,14 @@ impl App {
                 }
             }
             Pane::Tools => {
-                let App { tools: st, palette, .. } = self;
-                tools::show(ui, st, palette);
+                let was = self.tools.recording;
+                {
+                    let App { tools: st, palette, .. } = self;
+                    tools::show(ui, st, palette);
+                }
+                if self.tools.recording != was {
+                    self.toggle_draw_recording(self.tools.recording);
+                }
             }
             Pane::Nodes => {
                 let resp = {
@@ -2299,12 +2308,52 @@ impl App {
         id
     }
 
-    /// A stroke drawn in the viewport: append it to the selected drawing, or start a new one.
+    /// The Draw tool's play/record button: the video plays and every stroke joins one drawing until the
+    /// take is stopped (button, video stopped, or the tool put away). A voiceover running at the same
+    /// time owns the transport, so it is left playing and its take is not cut short.
+    fn toggle_draw_recording(&mut self, on: bool) {
+        if on {
+            let id = self.add_shape(ShapeKind::Draw, None);
+            self.draw_rec = Some((id, self.playhead));
+            if !self.player.is_playing() {
+                self.pending_actions.push(Action::PlayPause);
+            }
+            return;
+        }
+        let Some((id, at)) = self.draw_rec.take() else { return };
+        let drawn = self.project.clip(id).and_then(|c| c.shape.as_ref()).is_some_and(|s| !s.strokes.is_empty());
+        if drawn {
+            // the drawing lasts as long as the take did
+            if let Some(c) = self.project.clip_mut(id) {
+                c.duration =
+                    (self.playhead - at).max(c.shape.as_ref().map_or(0.0, |s| s.draw_duration())).max(MIN_CLIP);
+            }
+        } else {
+            self.project.delete_clips(&[id], false); // nothing was drawn: leave no stub behind
+        }
+        if self.voice_rec.is_none() {
+            self.player.pause();
+        }
+        self.after_edit();
+    }
+
+    /// A stroke drawn in the viewport: append it to the take (or the selected drawing), or start a new one.
     fn add_stroke(&mut self, mut stroke: crate::model::Stroke) {
         stroke.color = self.tools.brush;
         stroke.width = self.tools.brush_width.max(0.5);
-        let onto = self.selection.first().copied().filter(|&id| {
-            self.project.clip(id).and_then(|c| c.shape.as_ref()).is_some_and(|s| s.kind == ShapeKind::Draw)
+        // during a take the stroke is timed from where the playhead was when the pen went down: its own
+        // points are timed from the press, so the last one dates the whole stroke
+        let rec = self.draw_rec.filter(|&(id, _)| self.project.clip(id).is_some());
+        if let Some((_, at)) = rec {
+            let off = ((self.playhead - at) - stroke.points.last().map_or(0.0, |p| p.2 as f64)).max(0.0) as f32;
+            for p in &mut stroke.points {
+                p.2 += off;
+            }
+        }
+        let onto = rec.map(|(id, _)| id).or_else(|| {
+            self.selection.first().copied().filter(|&id| {
+                self.project.clip(id).and_then(|c| c.shape.as_ref()).is_some_and(|s| s.kind == ShapeKind::Draw)
+            })
         });
         let id = match onto {
             Some(id) => {
@@ -2313,8 +2362,13 @@ impl App {
             }
             None => self.add_shape(ShapeKind::Draw, None),
         };
-        if let Some(s) = self.project.clip_mut(id).and_then(|c| c.shape.as_mut()) {
-            s.strokes.push(stroke);
+        if let Some(c) = self.project.clip_mut(id) {
+            // a long take must not outlive its clip, or the ink stops appearing halfway through
+            let len = c.shape.as_mut().map_or(0.0, |s| {
+                s.strokes.push(stroke);
+                s.draw_duration()
+            });
+            c.duration = c.duration.max(len);
         }
         self.selection = vec![id];
         self.after_edit();
@@ -4698,6 +4752,11 @@ impl eframe::App for App {
             self.playhead = self.player.time();
             self.timeline.ensure_visible(self.playhead);
             ctx.request_repaint_after(Duration::from_millis(16));
+        }
+        // a Draw take runs until the video stops or the tool is put away — not one stroke at a time
+        if self.draw_rec.is_some() && (self.tools.tool != Tool::Draw || (self.was_playing && !playing)) {
+            self.tools.recording = false;
+            self.toggle_draw_recording(false);
         }
         self.was_playing = playing;
         // GPU on: the player hands over decoded layers and we render them here (this thread owns GL);

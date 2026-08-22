@@ -69,6 +69,8 @@ enum Act {
     Connect(Id, Id, usize),
     Disconnect(Id, usize),
     AddMask(Id),
+    /// Drive a mask node's centre along a saved project path (node, path).
+    SetPath(Id, Id),
 }
 
 pub fn show(
@@ -174,6 +176,8 @@ pub fn show(
 
     let mut acts: Vec<Act> = Vec::new();
     let mut needs_undo = false;
+    // saved drawings / polygons: a mask node's centre can travel along one (the graph's position input)
+    let paths: Vec<(Id, String)> = project.paths.iter().map(|p| (p.id, p.name.clone())).collect();
 
     // ---- wire dragging ----
     let (pressed, released) = ui.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_released()));
@@ -353,6 +357,15 @@ pub fn show(
                 needs_undo = true;
                 ui.close();
             }
+            if matches!(&kind, NodeKind::Mask(_)) {
+                for (pid, name) in &paths {
+                    if menu_entry(ui, base.with(("path", id, pid)), &format!("Move along: {name}")).clicked() {
+                        acts.push(Act::SetPath(id, *pid));
+                        needs_undo = true;
+                        ui.close();
+                    }
+                }
+            }
         });
     }
 
@@ -410,6 +423,22 @@ pub fn show(
 
 /// Apply one buffered action; returns true when the project actually changed.
 fn apply(project: &mut Project, clip: Id, act: Act, selected: &mut Option<Id>) -> bool {
+    // reads the project before the graph is borrowed mutably
+    if let Act::SetPath(node, path) = act {
+        let Some(pts) = project.path(path).map(|p| p.points.clone()) else { return false };
+        let dur = project.clip(clip).map_or(0.0, |c| c.duration);
+        let (cx, cy) = crate::model::path_to_keys(&pts, dur);
+        if cx.keys.len() < 2 {
+            return false;
+        }
+        let Some(n) = project.clip_mut(clip).and_then(|c| c.graph.as_mut()).and_then(|g| g.node_mut(node)) else {
+            return false;
+        };
+        let NodeKind::Mask(m) = &mut n.kind else { return false };
+        m.cx = cx;
+        m.cy = cy;
+        return true;
+    }
     if let Act::Add(kind, x, y) = act {
         let id = project.add_node(clip, kind, x, y);
         if let Some(id) = id {
@@ -419,7 +448,7 @@ fn apply(project: &mut Project, clip: Id, act: Act, selected: &mut Option<Id>) -
     }
     let Some(g) = project.clip_mut(clip).and_then(|c| c.graph.as_mut()) else { return false };
     match act {
-        Act::Add(..) => false,
+        Act::Add(..) | Act::SetPath(..) => false,
         Act::Delete(id) => {
             if g.node(id).is_none_or(|n| n.kind == NodeKind::Output) {
                 return false;

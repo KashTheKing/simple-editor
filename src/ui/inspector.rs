@@ -169,6 +169,7 @@ fn clip_section(
     let labels_open_id = egui::Id::new("inspector_labels_open");
     let mut edit_labels: bool = ui.ctx().data(|d| d.get_temp(labels_open_id).unwrap_or(false));
     let mut label_ops: Vec<LabelOp> = Vec::new();
+    let mut path_op: Option<PathOp> = None;
 
     if n_selected > 1 {
         ui.label(format!("{n_selected} clips selected"));
@@ -559,6 +560,35 @@ fn clip_section(
         }
     }
 
+    // reusable paths: a drawing or a polygon outline is saved on the project, and any clip can then
+    // travel along one (its X/Y become keyframes over the clip's own length)
+    // ponytail: only the cheap "is there an outline" test runs per frame; the points are copied when
+    // Save is actually clicked
+    let outline = clip.shape.as_ref().is_some_and(|s| !s.strokes.is_empty() || s.points.len() >= 2);
+    let paths: Vec<(Id, String)> = project.paths.iter().map(|p| (p.id, p.name.clone())).collect();
+    if outline || !paths.is_empty() {
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.strong("Path");
+            if outline {
+                let r = ui.small_button("Save").on_hover_text("Keep this outline in the project as a reusable path");
+                mark(ui, "save_path", &r);
+                if r.clicked() {
+                    path_op = Some(PathOp::Save);
+                }
+            }
+            if !paths.is_empty() {
+                egui::ComboBox::from_id_salt("clip_path").selected_text("Animate X/Y").width(130.0).show_ui(ui, |ui| {
+                    for (pid, name) in &paths {
+                        if ui.selectable_label(false, name).clicked() {
+                            path_op = Some(PathOp::Apply(*pid));
+                        }
+                    }
+                });
+            }
+        });
+    }
+
     // audio bus override
     if clip.kind == ClipKind::Audio || clip.kind == ClipKind::Video {
         ui.separator();
@@ -644,7 +674,7 @@ fn clip_section(
     }
     ui.ctx().data_mut(|d| d.insert_temp(labels_open_id, edit_labels));
 
-    if g.start || ga.start || !label_ops.is_empty() {
+    if g.start || ga.start || !label_ops.is_empty() || path_op.is_some() {
         undo(project);
     }
     if g.changed {
@@ -682,7 +712,25 @@ fn clip_section(
             LabelOp::Remove(i) => project.remove_label(i as u8 + 1),
         }
     }
-    g.changed || ga.changed || labels_changed
+    // after the write-back: applying a path overwrites the X/Y the clone still held
+    match path_op {
+        Some(PathOp::Save) => {
+            let pts = project.path_from_clip(id);
+            project.add_path(clip.name.clone(), pts);
+        }
+        Some(PathOp::Apply(pid)) => {
+            let pts = project.path(pid).map(|p| p.points.clone()).unwrap_or_default();
+            project.apply_path(id, &pts);
+        }
+        None => {}
+    }
+    g.changed || ga.changed || labels_changed || path_op.is_some()
+}
+
+/// Save the clip's outline as a project path, or animate it along one that was saved.
+enum PathOp {
+    Save,
+    Apply(Id),
 }
 
 /// Edits to `Project.labels` collected during the frame (applied after the clip write-back).

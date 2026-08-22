@@ -2,8 +2,8 @@
 //! pane, so it can also be popped out). One row of icon buttons:
 //!   Select (V) · Text (T) · Rectangle · Ellipse · Triangle · Polygon · Star · Line · Arrow · Draw (D) ·
 //!   Mask (rect/ellipse/polygon/path) · Zoom
-//! plus, for shape tools, fill and stroke colour buttons and a stroke-width DragValue; for Draw, the
-//! brush colour/width, the record rate (0.5x / 1x / 2x) and a page-colour toggle.
+//! plus, for shape tools, fill and stroke colour buttons and a stroke-width DragValue; for Draw, a
+//! play/record button, the brush colour/width, the playback speed (0.5x / 1x / 2x) and a page toggle.
 //!
 //! The active tool changes what a click-drag in the Preview does (see `ui::preview`): Select edits the
 //! selected clip, a shape tool drags out a new Shape clip at the playhead, Draw records strokes while the
@@ -44,6 +44,9 @@ pub struct ToolsState {
     pub brush_width: f32,
     pub draw_rate: f32,
     pub page: [u8; 4],
+    /// Draw tool: a take is running — the app plays the video and drops every stroke into one drawing
+    /// until this goes back off (see `App::toggle_draw_recording`).
+    pub recording: bool,
 }
 
 impl Default for ToolsState {
@@ -59,6 +62,7 @@ impl Default for ToolsState {
             brush_width: 6.0,
             draw_rate: 1.0,
             page: [0, 0, 0, 0],
+            recording: false,
         }
     }
 }
@@ -217,7 +221,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut ToolsState, palette: &Palette) -> boo
             }
         }
         ui.separator();
-        changed |= style_controls(ui, state);
+        changed |= style_controls(ui, state, palette);
     });
     changed
 }
@@ -229,7 +233,7 @@ fn same_tool(entry: Tool, cur: Tool) -> bool {
 }
 
 /// Style controls for the active tool. Returns true when anything changed.
-fn style_controls(ui: &mut egui::Ui, state: &mut ToolsState) -> bool {
+fn style_controls(ui: &mut egui::Ui, state: &mut ToolsState, palette: &Palette) -> bool {
     let mut changed = false;
     match state.tool {
         Tool::Shape(kind) => {
@@ -264,18 +268,29 @@ fn style_controls(ui: &mut egui::Ui, state: &mut ToolsState) -> bool {
             }
         }
         Tool::Draw => {
+            // play + record: the app starts the video and keeps every stroke of the take in one drawing
+            let rec = state.recording;
+            let tip = "Play and record: every stroke joins one drawing until the video stops";
+            if icon_button(ui, palette, ui.id().with("draw-rec"), Glyph::Record, tip, rec).clicked() {
+                state.recording = !rec;
+                changed = true;
+            }
             ui.label("Brush");
             changed |= ui.color_edit_button_srgba_unmultiplied(&mut state.brush).changed();
             changed |= ui
                 .add(egui::DragValue::new(&mut state.brush_width).speed(0.2).range(0.5..=200.0))
                 .on_hover_text("Brush width (px)")
                 .changed();
-            ui.label("Rate");
+            ui.label("Speed");
             for (rate, label) in [(0.5, "0.5x"), (1.0, "1x"), (2.0, "2x"), (0.0, "all")] {
                 let on = (state.draw_rate - rate).abs() < 1e-3;
                 if ui
                     .selectable_label(on, label)
-                    .on_hover_text(if rate == 0.0 { "Show the whole sketch at once" } else { "Replay speed" })
+                    .on_hover_text(if rate == 0.0 {
+                        "Show the whole sketch at once"
+                    } else {
+                        "Playback speed of the recorded drawing"
+                    })
                     .clicked()
                     && !on
                 {
