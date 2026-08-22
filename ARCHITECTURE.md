@@ -63,7 +63,7 @@ src/engine/import.rs   FCP7 XML / EDL / .prproj import with a per-item pass/fail
 src/engine/subtitles.rs SRT/VTT parse + write
 src/engine/autocut.rs  silence/speech segmentation from waveform peaks
 src/engine/presets.rs  curve/motion presets, effect-chain / node-graph presets, clip templates
-src/engine/prerender.rs "movie mode" full-quality frame cache on disk
+src/engine/prerender.rs "movie mode" full-quality frame cache on disk, rendered on a worker thread
 src/engine/style.rs    Markdown style summary of a project (for AI style guides)
 src/engine/tracking.rs point / area tracking: NCC template match on a worker thread -> a reusable path
 src/engine/xmeml.rs    FCP7 XML export for Premiere / Resolve
