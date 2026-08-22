@@ -174,6 +174,10 @@ pub enum DragPayload {
     Sequence(Id),
     /// A saved template (Settings.templates) by name.
     Template(String),
+    /// An effect from the effects panel (dropped on a clip or the node canvas).
+    Effect(crate::model::EffectKind),
+    /// A transition from the transitions panel (dropped on a cut or the node canvas).
+    Transition(crate::model::TransitionKind),
 }
 
 /// HH:MM:SS:FF timecode.
