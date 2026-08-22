@@ -5,9 +5,9 @@
 //! on a neutral tile (never blank) — an effect with `EffectKind::applies_to_audio()` instead gets a
 //! solid green tile with a music-note glyph, since it has no picture to render. The catalogue is filtered
 //! to what the first selected clip can use (audio clip -> audio effects only, and vice versa); with
-//! nothing selected it shows everything. Every card is also a dnd drag source (`DragPayload::Effect`,
-//! same mechanism as `ui::library`'s asset tiles) so it can be dropped onto a clip, alongside its
-//! existing click-to-add. Clicking a card adds the effect to every eligible selected clip.
+//! nothing selected it shows everything. Clicking a card adds the effect to every eligible selected
+//! clip, right-clicking opens its quick actions (selected clips / every clip on the track), and only a
+//! deliberate press-and-move makes it a `DragPayload::Effect` drag source (`ui::drag_source`).
 //! Below: the FIRST selected clip's effect stack, in order: for each effect a header row (enabled
 //! checkbox, name, mask button, "Edit shader…" for a custom shader, copy/paste params, ▲ ▼ reorder,
 //! ✕ remove) and its parameters from
@@ -94,14 +94,13 @@ fn fits_selection(kind: EffectKind, audio: Option<bool>) -> bool {
 }
 
 /// One catalogue card: the thumbnail (or a neutral named tile, or a green tile + note for an audio
-/// effect) with the effect name underneath. Also a dnd drag source for `DragPayload::Effect`, same
-/// pattern as `ui::library`'s `tile()` — the click-sensing `interact` is registered after the drag
-/// source so a plain click still reaches it (egui hands the click to the topmost click-sensing widget).
+/// effect) with the effect name underneath. A plain clickable / right-clickable widget that only
+/// becomes a `DragPayload::Effect` source on a deliberate drag (`ui::drag_source`).
 fn effect_card(ui: &mut egui::Ui, kind: EffectKind, palette: &Palette) -> Response {
     let font = egui::TextStyle::Small.resolve(ui.style());
     let name_h = ui.text_style_height(&egui::TextStyle::Small);
     let id = ui.id().with(("fx_card", kind));
-    let src = ui.dnd_drag_source(id, DragPayload::Effect(kind), |ui| {
+    let r = crate::ui::drag_source(ui, id, DragPayload::Effect(kind), |ui| {
         let (rect, _) = ui.allocate_exact_size(egui::vec2(CARD.0, CARD.1 + name_h + 2.0), egui::Sense::hover());
         let tile = egui::Rect::from_min_size(rect.min, egui::vec2(CARD.0, CARD.1));
         let p = ui.painter();
@@ -137,7 +136,6 @@ fn effect_card(ui: &mut egui::Ui, kind: EffectKind, palette: &Palette) -> Respon
             palette.text,
         );
     });
-    let r = ui.interact(src.response.rect, id.with("click"), egui::Sense::click());
     r.on_hover_text(format!("{} · {}", kind.name(), kind.category()))
 }
 
@@ -203,10 +201,19 @@ pub struct EffectsResponse {
     pub edit_shader: Option<usize>,
 }
 
+/// Which clips a catalogue pick lands on: a click (and the first menu entry) means the selection, the
+/// card's quick-action menu can widen it to the whole track the selection sits on.
+#[derive(Clone, Copy)]
+enum Scope {
+    Selection,
+    Track,
+}
+
 /// The catalogue grid: search box + collapsible category sections of thumbnail cards, filtered to what
-/// the selected clip (`audio`) can use. Returns the effect a card click asked for.
-fn catalogue(ui: &mut egui::Ui, palette: &Palette, audio: Option<bool>) -> Option<EffectKind> {
+/// the selected clip (`audio`) can use. Returns the effect a card click or quick-action menu asked for.
+fn catalogue(ui: &mut egui::Ui, palette: &Palette, audio: Option<bool>) -> Option<(EffectKind, Scope)> {
     let mut add = None;
+    let has_sel = audio.is_some();
     let search_id = ui.id().with("fx_search");
     let mut q: String = ui.ctx().data_mut(|d| d.get_temp(search_id).unwrap_or_default());
     ui.horizontal(|ui| {
@@ -230,8 +237,18 @@ fn catalogue(ui: &mut egui::Ui, palette: &Palette, audio: Option<bool>) -> Optio
                     #[cfg(test)]
                     test_rects::push(format!("card_{}", kind.name()), r.rect);
                     if r.clicked() {
-                        add = Some(kind);
+                        add = Some((kind, Scope::Selection));
                     }
+                    r.context_menu(|ui| {
+                        if ui.add_enabled(has_sel, Button::new("Add to selected clip(s)")).clicked() {
+                            add = Some((kind, Scope::Selection));
+                            ui.close();
+                        }
+                        if ui.add_enabled(has_sel, Button::new("Add to all clips on this track")).clicked() {
+                            add = Some((kind, Scope::Track));
+                            ui.close();
+                        }
+                    });
                 }
             });
         });
@@ -258,20 +275,31 @@ pub fn show(
     let audio_sel = first_id.and_then(|id| project.clip(id)).map(|c| c.kind == ClipKind::Audio);
 
     // ---- catalogue ----
-    if let Some(kind) = catalogue(ui, palette, audio_sel) {
+    if let Some((kind, scope)) = catalogue(ui, palette, audio_sel) {
+        // "all clips on this track" = the track the first selected clip sits on
+        let track: Vec<Id> = match scope {
+            Scope::Selection => Vec::new(),
+            Scope::Track => first_id
+                .and_then(|id| project.track_of(id))
+                .map(|ti| project.tracks[ti].clips.iter().map(|c| c.id).collect())
+                .unwrap_or_default(),
+        };
         // a clip that renders from a real node graph would show nothing of what is pushed on its linear
         // stack, so those clips are skipped (the stack below is greyed out for the same reason). A bare
         // Input→Output graph is not one — see Clip::uses_graph.
         // each selected clip is checked on its own kind, not just the first (a mixed video+audio
         // selection can still get an eligible effect on every clip it applies to).
-        let targets: Vec<Id> = selection
-            .iter()
-            .copied()
-            .filter(|&id| {
-                let Some(c) = project.clip(id) else { return false };
-                (c.kind == ClipKind::Audio) == kind.applies_to_audio() && !c.uses_graph()
-            })
-            .collect();
+        let targets: Vec<Id> = match scope {
+            Scope::Selection => selection,
+            Scope::Track => track.as_slice(),
+        }
+        .iter()
+        .copied()
+        .filter(|&id| {
+            let Some(c) = project.clip(id) else { return false };
+            (c.kind == ClipKind::Audio) == kind.applies_to_audio() && !c.uses_graph()
+        })
+        .collect();
         if !targets.is_empty() {
             undo(project);
             for id in targets {
@@ -577,6 +605,7 @@ mod tests {
         time: f64,
         playhead: f64,
         last: EffectsResponse,
+        shapes: Vec<egui::epaint::ClippedShape>,
     }
 
     impl Harness {
@@ -591,6 +620,7 @@ mod tests {
                 time: 0.0,
                 playhead: 1.0,
                 last: EffectsResponse::default(),
+                shapes: Vec::new(),
             }
         }
         /// One update. egui may run the ui closure twice (multi-pass layout, e.g. the first frame a
@@ -605,10 +635,10 @@ mod tests {
                 ..Default::default()
             };
             let pal = Palette::new(true, Color32::WHITE);
-            let Harness { ctx, project, selection, undos, playhead, last, .. } = self;
+            let Harness { ctx, project, selection, undos, playhead, last, shapes, .. } = self;
             let playhead = *playhead;
             let mut out = EffectsResponse::default();
-            let _ = ctx.run(input, |ctx| {
+            let full = ctx.run(input, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut undo = |_: &Project| *undos += 1;
                     let r = show(ui, project, selection, playhead, &pal, &mut undo);
@@ -617,9 +647,22 @@ mod tests {
                     out.mask_for = r.mask_for.or(out.mask_for);
                 });
             });
+            *shapes = full.shapes;
             let edited = out.edited;
             *last = out;
             edited
+        }
+        /// Centre of the first painted text containing `label` — how a popup's entries are found.
+        fn text_at(&self, label: &str) -> Option<Pos2> {
+            self.shapes.iter().find_map(|c| match &c.shape {
+                egui::epaint::Shape::Text(t) if t.galley.text().contains(label) => {
+                    Some(t.visual_bounding_rect().center())
+                }
+                _ => None,
+            })
+        }
+        fn button(&mut self, pos: Pos2, button: PointerButton, pressed: bool) -> bool {
+            self.frame(vec![Event::PointerButton { pos, button, pressed, modifiers: Modifiers::NONE }])
         }
         fn click(&mut self, pos: Pos2) -> bool {
             let mut e = self.frame(vec![Event::PointerMoved(pos)]);
@@ -685,6 +728,28 @@ mod tests {
         assert_eq!(h.clip().effects.len(), 1);
         assert_eq!(h.clip().effects[0].kind, EffectKind::Blur);
         assert_eq!(h.undos, 1);
+    }
+
+    /// Right-clicking a card opens its quick actions instead of dragging it away: the secondary button
+    /// never arms a dnd payload, and "all clips on this track" reaches past the selection.
+    #[test]
+    fn card_right_click_is_a_menu_not_a_drag() {
+        clear_thumbnails();
+        let mut h = Harness::new();
+        h.project.tracks[0].clips.push(Clip::new(8, ClipKind::Video, "v2", 4.0, 4.0));
+        h.frame(vec![]);
+        let card = h.rect("card_Blur").center();
+        h.frame(vec![Event::PointerMoved(card)]);
+        h.button(card, PointerButton::Secondary, true);
+        h.frame(vec![]);
+        assert!(!egui::DragAndDrop::has_any_payload(&h.ctx), "the secondary button must never drag a card");
+        h.button(card, PointerButton::Secondary, false);
+        h.frame(vec![]);
+        let item = h.text_at("Add to all clips on this track").expect("quick action menu");
+        assert!(h.click(item), "the menu entry adds the effect");
+        assert_eq!(h.undos, 1);
+        let stacks: Vec<usize> = h.project.tracks[0].clips.iter().map(|c| c.effects.len()).collect();
+        assert_eq!(stacks, vec![1, 1], "every clip on the track got it, not just the selected one");
     }
 
     #[test]

@@ -1,9 +1,10 @@
 //! Transitions panel. Catalogue: one CARD per `TransitionKind` (same size and frame as an effect card),
 //! previewing the transition half-way over the stock picture the effect thumbnails are rendered from —
 //! the app hands it over with `set_stock`, and without it a card falls back to a neutral named tile.
-//! A card selects the kind, and is a drag source emitting `DragPayload::Transition`. Next to the grid the
-//! default duration DragValue (0.1..5 s), a colour button for FadeToColor and a direction selector for
-//! Push/Wipe. "Add at start" / "Add at end" apply it to EVERY selected clip through `add_transitions`,
+//! A card selects the kind, right-clicking it applies the transition straight away (start / end of the
+//! selection, or every cut on its track), and a press-and-move drags `DragPayload::Transition`. Next to
+//! the grid the default duration DragValue (0.1..5 s), a colour button for FadeToColor and a direction
+//! selector for Push/Wipe. "Add at start" / "Add at end" apply it to EVERY selected clip through `add_transitions`,
 //! which is also what the menu, the hotkeys and MCP call — it records the choice in `TransitionsState`,
 //! so Ctrl+T (Action::AddLastTransition) repeats whatever was applied last, whichever path applied it.
 //! Below: the transitions touching the first selected clip (Project::transitions_of): kind combo,
@@ -165,8 +166,9 @@ fn paint_preview(
     }
 }
 
-/// One catalogue card: the preview tile with the name underneath, selected/hover border. Dragging it
-/// carries `DragPayload::Transition`; clicking it selects the kind.
+/// One catalogue card: the preview tile with the name underneath, selected/hover border. Clicking it
+/// selects the kind, right-clicking opens its quick actions; a deliberate press-and-move drags
+/// `DragPayload::Transition` (`ui::drag_source`).
 fn transition_card(
     ui: &mut egui::Ui,
     kind: TransitionKind,
@@ -177,7 +179,7 @@ fn transition_card(
     let font = egui::TextStyle::Small.resolve(ui.style());
     let name_h = ui.text_style_height(&egui::TextStyle::Small);
     let id = ui.id().with(("tr_card", kind.name()));
-    let src = ui.dnd_drag_source(id, DragPayload::Transition(kind), |ui| {
+    let r = crate::ui::drag_source(ui, id, DragPayload::Transition(kind), |ui| {
         let (rect, _) = ui.allocate_exact_size(vec2(CARD.0, CARD.1 + name_h + 2.0), egui::Sense::hover());
         let tile = Rect::from_min_size(rect.min, vec2(CARD.0, CARD.1));
         let p = ui.painter();
@@ -198,8 +200,7 @@ fn transition_card(
             palette.text,
         );
     });
-    let r = ui.interact(src.response.rect, id.with("click"), egui::Sense::click());
-    let tile = Rect::from_min_size(src.response.rect.min, vec2(CARD.0, CARD.1));
+    let tile = Rect::from_min_size(r.rect.min, vec2(CARD.0, CARD.1));
     let border = if selected || r.hovered() { palette.accent } else { palette.border };
     ui.painter().rect_stroke(tile, 2.0, Stroke::new(if selected { 2.0 } else { 1.0 }, border), StrokeKind::Inside);
     r.on_hover_text(format!("{} — click to pick, drag onto a cut", kind.name()))
@@ -225,19 +226,45 @@ pub fn show(
     let mut changed = false;
     let mut g = Gesture::default();
 
+    // the cuts the selection offers — needed by the cards' quick-action menus, which are drawn first
+    let ids: Vec<Id> = selection.iter().copied().filter(|&id| project.clip(id).is_some()).collect();
+    let any_left = ids.iter().any(|&id| has_left(project, id));
+    let any_right = ids.iter().any(|&id| right_neighbor(project, id).is_some());
+    let mut apply: Option<bool> = None; // Some(at_end)
+    let mut every_cut = false;
+
     // ---- catalogue / defaults for the next transition ----
     ui.strong("Transitions");
     state.kind = state.kind.min(TransitionKind::ALL.len() - 1);
+    let mut pick = None;
     ui.horizontal_wrapped(|ui| {
         for (i, k) in TransitionKind::ALL.into_iter().enumerate() {
             let r = transition_card(ui, k, state, palette, state.kind == i);
             #[cfg(test)]
             test_rects::push(format!("card_{}", k.name()), r.rect);
             if r.clicked() {
-                state.kind = i;
+                pick = Some(i);
             }
+            // a quick action also picks the kind, so Ctrl+T repeats what the menu just applied
+            r.context_menu(|ui| {
+                if ui.add_enabled(any_left, Button::new("Add at start of selected clip(s)")).clicked() {
+                    (pick, apply) = (Some(i), Some(false));
+                    ui.close();
+                }
+                if ui.add_enabled(any_right, Button::new("Add at end of selected clip(s)")).clicked() {
+                    (pick, apply) = (Some(i), Some(true));
+                    ui.close();
+                }
+                if ui.add_enabled(!ids.is_empty(), Button::new("Add at every cut on this track")).clicked() {
+                    (pick, every_cut) = (Some(i), true);
+                    ui.close();
+                }
+            });
         }
     });
+    if let Some(i) = pick {
+        state.kind = i;
+    }
     let kind = state.kind();
     ui.horizontal(|ui| {
         ui.label("Duration");
@@ -254,14 +281,10 @@ pub fn show(
     }
 
     // ---- add at the cuts around every selected clip ----
-    let ids: Vec<Id> = selection.iter().copied().filter(|&id| project.clip(id).is_some()).collect();
     let Some(&sel) = ids.first() else {
         ui.label("Select a clip");
         return false;
     };
-    let any_left = ids.iter().any(|&id| has_left(project, id));
-    let any_right = ids.iter().any(|&id| right_neighbor(project, id).is_some());
-    let mut apply: Option<bool> = None; // Some(at_end)
     ui.horizontal(|ui| {
         let r = ui
             .add_enabled(any_left, Button::new("Add at start"))
@@ -286,6 +309,17 @@ pub fn show(
         undo(project);
         let dur = state.duration;
         changed |= add_transitions(project, &ids, state, kind, dur, at_end) > 0;
+    }
+    if every_cut {
+        // every clip on the track that has something abutting its left edge is a cut
+        let ti = project.track_of(sel);
+        let clips: Vec<Id> = ti.map(|ti| project.tracks[ti].clips.iter().map(|c| c.id).collect()).unwrap_or_default();
+        let cuts: Vec<Id> = clips.into_iter().filter(|&id| has_left(project, id)).collect();
+        if !cuts.is_empty() {
+            undo(project);
+            let dur = state.duration;
+            changed |= add_transitions(project, &cuts, state, kind, dur, false) > 0;
+        }
     }
 
     // ---- transitions touching the selected clip ----
@@ -370,6 +404,7 @@ mod tests {
         selection: Vec<Id>,
         undos: usize,
         time: f64,
+        shapes: Vec<egui::epaint::ClippedShape>,
     }
 
     impl Harness {
@@ -400,6 +435,7 @@ mod tests {
                 selection: Vec::new(),
                 undos: 0,
                 time: 0.0,
+                shapes: Vec::new(),
             }
         }
         fn frame(&mut self, events: Vec<Event>) -> bool {
@@ -411,15 +447,28 @@ mod tests {
                 ..Default::default()
             };
             let pal = Palette::new(true, Color32::WHITE);
-            let Harness { ctx, state, project, selection, undos, .. } = self;
+            let Harness { ctx, state, project, selection, undos, shapes, .. } = self;
             let mut changed = false;
-            let _ = ctx.run(input, |ctx| {
+            let full = ctx.run(input, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut undo = |_: &Project| *undos += 1;
                     changed |= show(ui, state, project, selection, 0.0, &pal, &mut undo);
                 });
             });
+            *shapes = full.shapes;
             changed
+        }
+        /// Centre of the first painted text containing `label` — how a popup's entries are found.
+        fn text_at(&self, label: &str) -> Option<Pos2> {
+            self.shapes.iter().find_map(|c| match &c.shape {
+                egui::epaint::Shape::Text(t) if t.galley.text().contains(label) => {
+                    Some(t.visual_bounding_rect().center())
+                }
+                _ => None,
+            })
+        }
+        fn button(&mut self, pos: Pos2, button: PointerButton, pressed: bool) -> bool {
+            self.frame(vec![Event::PointerButton { pos, button, pressed, modifiers: Modifiers::NONE }])
         }
         fn click(&mut self, pos: Pos2) -> bool {
             self.frame(vec![Event::PointerMoved(pos)]);
@@ -573,6 +622,49 @@ mod tests {
         h.click(r.center());
         assert_eq!(h.state.kind(), TransitionKind::Wipe);
         assert_eq!(h.undos, 0, "picking a kind is not an edit");
+    }
+
+    /// A card is clickable first and a drag source second: a stationary press — even one held long
+    /// past egui's click timeout — arms nothing, and only real pointer travel hands the payload over.
+    #[test]
+    fn a_card_only_drags_once_the_pointer_moves() {
+        let mut h = Harness::new();
+        h.selection = vec![h.project.tracks[0].clips[1].id];
+        h.frame(vec![]);
+        let card = test_rects::get("card_Wipe").expect("card recorded").center();
+        h.frame(vec![Event::PointerMoved(card)]);
+        h.button(card, PointerButton::Primary, true);
+        for _ in 0..20 {
+            h.frame(vec![]);
+        }
+        assert!(!egui::DragAndDrop::has_any_payload(&h.ctx), "holding still is not a drag");
+        h.frame(vec![Event::PointerMoved(card + vec2(24.0, 0.0))]);
+        let p = egui::DragAndDrop::payload::<DragPayload>(&h.ctx).expect("moving must arm the payload");
+        assert!(matches!(*p, DragPayload::Transition(TransitionKind::Wipe)), "the card under the press");
+    }
+
+    /// Right-clicking a card applies it instead of dragging it: the menu's "every cut" entry fills the
+    /// whole track in one undo.
+    #[test]
+    fn card_right_click_menu_fills_every_cut() {
+        let mut h = Harness::new();
+        let aid = h.project.assets[0].id;
+        h.project.insert_asset_clips(aid, 20.0, Some(0)); // cuts at 10 and 20
+        h.selection = vec![h.project.tracks[0].clips[0].id];
+        h.frame(vec![]);
+        let card = test_rects::get("card_Push").expect("card recorded").center();
+        h.frame(vec![Event::PointerMoved(card)]);
+        h.button(card, PointerButton::Secondary, true);
+        h.frame(vec![]);
+        assert!(!egui::DragAndDrop::has_any_payload(&h.ctx), "the secondary button must never drag a card");
+        h.button(card, PointerButton::Secondary, false);
+        h.frame(vec![]);
+        let item = h.text_at("Add at every cut on this track").expect("quick action menu");
+        assert!(h.click(item));
+        assert_eq!(h.project.tracks[0].transitions.len(), 2, "both cuts of the track");
+        assert!(h.project.tracks[0].transitions.iter().all(|t| t.kind == TransitionKind::Push));
+        assert_eq!(h.state.kind(), TransitionKind::Push, "the menu picks the kind it applied");
+        assert_eq!(h.undos, 1);
     }
 
     /// The preview geometry follows the direction the same way the compositor does.

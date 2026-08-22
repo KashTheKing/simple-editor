@@ -181,6 +181,54 @@ pub enum DragPayload {
     Transition(crate::model::TransitionKind),
 }
 
+/// How far the pointer must travel while held before a click turns into a drag.
+const DRAG_SLOP: f32 = 6.0;
+
+/// "The user really means to drag this": the primary button is down and the pointer has moved past
+/// `DRAG_SLOP`. egui also promotes a *stationary* long press to a drag (`is_decidedly_dragging`), and
+/// its `Sense::drag` widgets start dragging on the press of ANY button — which is how a right-click
+/// used to pluck a card out of a panel instead of opening its menu.
+pub(crate) fn drag_intent(ui: &egui::Ui) -> bool {
+    ui.input(|i| {
+        i.pointer.button_down(egui::PointerButton::Primary)
+            && match (i.pointer.press_origin(), i.pointer.interact_pos()) {
+                (Some(a), Some(b)) => a.distance(b) > DRAG_SLOP,
+                _ => false,
+            }
+    })
+}
+
+/// An item that is clickable and right-clickable first and a drag-and-drop source second: the payload
+/// is only handed to egui once `drag_intent` holds, and the body is lifted under the cursor from that
+/// moment (the one thing `Ui::dnd_drag_source` is good for). Use this instead of `dnd_drag_source`,
+/// which senses drag only — grab cursor on hover, and a drag on any press.
+pub(crate) fn drag_source<P: std::any::Any + Send + Sync>(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    payload: P,
+    contents: impl FnOnce(&mut egui::Ui),
+) -> Response {
+    let dragging = ui.ctx().is_being_dragged(id) && drag_intent(ui);
+    let rect = if dragging {
+        // paint the body into its own tooltip-order layer, then move that layer under the cursor
+        let layer = egui::LayerId::new(egui::Order::Tooltip, id);
+        let r = ui.scope_builder(egui::UiBuilder::new().layer_id(layer), contents).response;
+        if let Some(p) = ui.ctx().pointer_interact_pos() {
+            let shift = egui::emath::TSTransform::from_translation(p - r.rect.center());
+            ui.ctx().transform_layer_shapes(layer, shift);
+        }
+        r.rect
+    } else {
+        ui.scope(contents).response.rect
+    };
+    let r = ui.interact(rect, id, egui::Sense::click_and_drag());
+    if dragging {
+        // re-set every frame of the drag: egui drops the payload on release, never mid-gesture
+        egui::DragAndDrop::set_payload(ui.ctx(), payload);
+    }
+    r
+}
+
 /// HH:MM:SS:FF timecode.
 pub fn timecode(t: f64, fps: f64) -> String {
     let t = t.max(0.0);
