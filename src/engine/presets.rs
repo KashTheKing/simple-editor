@@ -27,6 +27,24 @@ pub fn apply_curve(preset: &CurvePreset, anim: &mut Animated, clip_duration: f64
     anim.keys = scaled_keys(&preset.keys, preset.absolute, clip_duration);
 }
 
+/// `apply_curve`'s sibling: ADD the preset's keys to what the property already has, shifted to start at
+/// `offset` seconds, so two presets can be layered on one property without hand-editing. `span` is the
+/// length a normalised preset is stretched over (callers pass the clip's remaining time so the merged
+/// keys land inside it). A preset key falling on an existing key's time wins.
+pub fn merge_curve(preset: &CurvePreset, anim: &mut Animated, span: f64, offset: f64) {
+    for k in scaled_keys(&preset.keys, preset.absolute, span) {
+        let t = k.t + offset;
+        let k = Keyframe { t, ..k };
+        match anim.key_index_at(t) {
+            Some(i) => anim.keys[i] = k,
+            None => {
+                let i = anim.keys.partition_point(|o| o.t < t);
+                anim.keys.insert(i, k);
+            }
+        }
+    }
+}
+
 /// Convenience: keyframes of a preset scaled to `duration` (used by the curve editor preview).
 pub fn scaled_keys(keys: &[Keyframe], absolute: bool, duration: f64) -> Vec<Keyframe> {
     keys.iter().map(|k| Keyframe { t: if absolute { k.t } else { k.t * duration }, ..*k }).collect()
@@ -109,23 +127,39 @@ pub fn capture_motion(name: &str, clip: &Clip) -> MotionPreset {
     MotionPreset { name: name.into(), props }
 }
 
+/// Resolve a motion preset label to the clip's property, creating the effect an "<Effect>: <Param>"
+/// label needs. None for labels this clip cannot hold.
+fn motion_prop<'a>(clip: &'a mut Clip, label: &str) -> Option<&'a mut Animated> {
+    if prop_of(clip, label).is_some() {
+        return prop_of(clip, label);
+    }
+    let (ename, pname) = label.split_once(": ")?;
+    let kind = EffectKind::ALL.into_iter().find(|k| k.name() == ename)?;
+    let pi = kind.params().iter().position(|p| p.name == pname)?;
+    if !clip.effects.iter().any(|e| e.kind == kind) {
+        clip.effects.push(Effect::new(kind));
+    }
+    clip.effects.iter_mut().find(|e| e.kind == kind).and_then(|e| e.params.get_mut(pi))
+}
+
 /// Apply a motion preset to a clip (properties it doesn't have are skipped; effect params create the
 /// effect when missing). `scaled` as in `apply_curve`.
 pub fn apply_motion(preset: &MotionPreset, clip: &mut Clip, scaled: bool) {
     let dur = clip.duration;
     for (label, curve) in &preset.props {
-        if let Some(anim) = prop_of(clip, label) {
+        if let Some(anim) = motion_prop(clip, label) {
             apply_curve(curve, anim, dur, scaled);
-            continue;
         }
-        let Some((ename, pname)) = label.split_once(": ") else { continue };
-        let Some(kind) = EffectKind::ALL.into_iter().find(|k| k.name() == ename) else { continue };
-        let Some(pi) = kind.params().iter().position(|p| p.name == pname) else { continue };
-        if !clip.effects.iter().any(|e| e.kind == kind) {
-            clip.effects.push(Effect::new(kind));
-        }
-        if let Some(anim) = clip.effects.iter_mut().find(|e| e.kind == kind).and_then(|e| e.params.get_mut(pi)) {
-            apply_curve(curve, anim, dur, scaled);
+    }
+}
+
+/// Layer a motion preset on top of the clip's existing keys, starting at clip-local `offset` and
+/// stretched over the time left in the clip (so "slide in left" then "slide in right" can be stacked).
+pub fn merge_motion(preset: &MotionPreset, clip: &mut Clip, offset: f64) {
+    let span = (clip.duration - offset).max(MIN_CLIP);
+    for (label, curve) in &preset.props {
+        if let Some(anim) = motion_prop(clip, label) {
+            merge_curve(curve, anim, span, offset);
         }
     }
 }
@@ -294,6 +328,46 @@ mod tests {
         let before = d.effects.len();
         apply_motion(&bogus, &mut d, true);
         assert_eq!(d.effects.len(), before);
+    }
+
+    #[test]
+    fn merge_keeps_existing_keys_and_layers_at_the_offset() {
+        // a property already animated 0..1 s
+        let mut a = Animated::new(0.0);
+        a.toggle_key(0.0);
+        a.set_at(1.0, 5.0);
+        let p = CurvePreset {
+            name: "slide".into(),
+            keys: vec![
+                Keyframe { t: 0.0, v: -100.0, ease: Ease::EaseIn },
+                Keyframe { t: 0.5, v: 0.0, ease: Ease::Linear },
+            ],
+            absolute: false,
+        };
+        // merged over the 2 s left after the offset: keys at 2.0 and 3.0, the old two untouched
+        merge_curve(&p, &mut a, 2.0, 2.0);
+        let ts: Vec<f64> = a.keys.iter().map(|k| k.t).collect();
+        assert_eq!(ts, vec![0.0, 1.0, 2.0, 3.0]);
+        assert!((a.at(1.0) - 5.0).abs() < 1e-9, "existing keys survive");
+        assert!((a.at(2.0) + 100.0).abs() < 1e-9);
+        assert_eq!(a.keys[2].ease, Ease::EaseIn);
+        // a preset key landing on an existing time wins, and stays sorted
+        merge_curve(&p, &mut a, 2.0, 1.0);
+        let ts: Vec<f64> = a.keys.iter().map(|k| k.t).collect();
+        assert_eq!(ts, vec![0.0, 1.0, 2.0, 3.0]);
+        assert!((a.at(1.0) + 100.0).abs() < 1e-9, "preset overwrote the key at 1.0");
+        // motion level: layering two presets on the same property keeps both
+        let mut c = Clip::new(1, ClipKind::Video, "c", 0.0, 4.0);
+        let m = MotionPreset { name: "m".into(), props: vec![("Position X".into(), p.clone())] };
+        merge_motion(&m, &mut c, 0.0); // 0.0 + 2.0
+        merge_motion(&m, &mut c, 2.5); // 2.5 + 3.25
+        assert_eq!(c.x.keys.len(), 4, "both layers are there: {:?}", c.x.keys);
+        assert!(c.x.keys.windows(2).all(|w| w[0].t < w[1].t), "sorted");
+        // effect params create their effect just like apply_motion
+        let m = MotionPreset { name: "m".into(), props: vec![("Blur: Radius".into(), p)] };
+        merge_motion(&m, &mut c, 0.0);
+        assert_eq!(c.effects.len(), 1);
+        assert!(c.effects[0].params[0].is_animated());
     }
 
     #[test]
