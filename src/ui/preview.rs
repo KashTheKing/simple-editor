@@ -193,9 +193,23 @@ fn transport(ui: &mut egui::Ui, state: &mut PreviewState, c: &PreviewCtx<'_>, r:
     state.transport = Rect::from_min_max(pos2(row.rect.left() + pad, row.rect.top()), row.rect.max);
 }
 
-/// Outline of the shape a drag is creating, drawn inside `r` (the drag rectangle).
-fn draw_shape_preview(p: &egui::Painter, kind: ShapeKind, r: Rect, palette: &Palette, stroke: Stroke) {
+/// Keep `v`'s direction while forcing at least `min` of length, so a zero-length drag still makes a
+/// visible shape without flipping which way it points.
+fn signed_min(v: f32, min: f32) -> f32 {
+    if v < 0.0 {
+        v.min(-min)
+    } else {
+        v.max(min)
+    }
+}
+
+/// Outline of the shape a drag is creating: `from` is where the press landed, `to` is the cursor.
+/// Bounded shapes fill the rectangle between them; a line or arrow runs from one to the other, so it
+/// must not be handed a normalised rect (its corners would point the wrong way down two of the four
+/// diagonals).
+fn draw_shape_preview(p: &egui::Painter, kind: ShapeKind, from: Pos2, to: Pos2, palette: &Palette, stroke: Stroke) {
     let fill = palette.selection.gamma_multiply(0.25);
+    let r = Rect::from_two_pos(from, to);
     let c = r.center();
     let (hw, hh) = (r.width() / 2.0, r.height() / 2.0);
     let poly = |n: u32, rot: f32| -> Vec<Pos2> {
@@ -227,7 +241,7 @@ fn draw_shape_preview(p: &egui::Painter, kind: ShapeKind, r: Rect, palette: &Pal
             p.add(Shape::closed_line(pts, stroke));
         }
         ShapeKind::Line | ShapeKind::Arrow => {
-            let (a, b) = (r.min, r.max);
+            let (a, b) = (from, to);
             p.line_segment([a, b], stroke);
             if kind == ShapeKind::Arrow {
                 let v = b - a;
@@ -379,7 +393,9 @@ fn tool_drag(
                 }
             }
             // draw the shape itself, not a box around it, so what you drag is what you get
-            Tool::Shape(kind) => draw_shape_preview(&p, kind, Rect::from_two_pos(d.from, now), c.palette, stroke),
+            // `from`/`now` raw, not a normalised rect: a line runs press -> cursor, and only a bounded
+            // shape wants its corners sorted (see draw_shape_preview)
+            Tool::Shape(kind) => draw_shape_preview(&p, kind, d.from, now, c.palette, stroke),
             _ => {
                 p.rect_stroke(Rect::from_two_pos(d.from, now), 0.0, stroke, StrokeKind::Inside);
             }
@@ -391,7 +407,14 @@ fn tool_drag(
         let (x1, y1) = to_proj(now);
         match tool {
             Tool::Shape(kind) => {
-                let (w, h) = (((x1 - x0).abs() / 2.0).max(2.0), ((y1 - y0).abs() / 2.0).max(2.0));
+                // Line/Arrow run from (-w, -h) to (+w, +h) about their centre (engine::shapes), so the
+                // half-extents stay SIGNED and the drag's direction survives; a dragged-up-right line
+                // used to come out pointing down-right because both were made absolute here.
+                let (dx, dy) = ((x1 - x0) / 2.0, (y1 - y0) / 2.0);
+                let (w, h) = match kind {
+                    ShapeKind::Line | ShapeKind::Arrow => (signed_min(dx, 2.0), signed_min(dy, 2.0)),
+                    _ => (dx.abs().max(2.0), dy.abs().max(2.0)),
+                };
                 r.new_shape = Some((kind, (x0 + x1) / 2.0, (y0 + y1) / 2.0, w, h));
             }
             Tool::Draw if d.points.len() > 1 => {
@@ -717,6 +740,34 @@ mod tests {
         assert_eq!((c.x.value, c.y.value), (0.0, 0.0), "shape tool never moves the clip");
         assert_eq!(h.undos, 0, "no clip undo for a shape gesture");
         let _ = (cx, cy);
+    }
+
+    /// A line follows the drag in every direction: the half-extents stay signed, so dragging up-right
+    /// makes a line that points up-right instead of snapping to its bounding box's other diagonal.
+    #[test]
+    fn line_tool_keeps_the_press_as_its_origin() {
+        // (dx, dy) of the drag -> expected sign of (w, h)
+        for (to, want) in [
+            (pos2(400.0, 250.0), (1.0, 1.0)),   // right + down
+            (pos2(400.0, 50.0), (1.0, -1.0)),   // right + up
+            (pos2(100.0, 250.0), (-1.0, 1.0)),  // left  + down
+            (pos2(100.0, 50.0), (-1.0, -1.0)),  // left  + up
+        ] {
+            let mut h = H::new();
+            h.tool = Tool::Shape(ShapeKind::Line);
+            h.frame(vec![]);
+            let from = pos2(250.0, 150.0);
+            let out = h.drag(from, to);
+            let (kind, cx, cy, w, hh) = out.new_shape.expect("a line was dragged out");
+            assert_eq!(kind, ShapeKind::Line);
+            assert_eq!(w.signum(), want.0, "w sign for a drag to {to:?}: got {w}");
+            assert_eq!(hh.signum(), want.1, "h sign for a drag to {to:?}: got {hh}");
+            // centre + the signed half-extents reproduce both ends, which is what engine::shapes draws
+            let (x0, y0) = (cx - w, cy - hh);
+            let (x1, y1) = (cx + w, cy + hh);
+            assert!(x1 - x0 != 0.0 && y1 - y0 != 0.0);
+            assert_eq!(((x1 - x0).signum(), (y1 - y0).signum()), want, "the far end must follow the cursor");
+        }
     }
 
     #[test]
