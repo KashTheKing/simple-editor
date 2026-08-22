@@ -216,12 +216,30 @@ impl Hotkeys {
     }
     /// Consume matching shortcuts this frame. Nothing fires while a text field has focus.
     pub fn poll(&self, ctx: &egui::Context) -> Vec<Action> {
+        self.poll_pass(ctx, false)
+    }
+    /// Second pass, run *after* the panes are drawn: the clip clipboard keys, which the curve and node
+    /// editors also claim while the pointer is over them (whoever is hovered wins, the timeline is the
+    /// fallback).
+    pub fn poll_late(&self, ctx: &egui::Context) -> Vec<Action> {
+        self.poll_pass(ctx, true)
+    }
+    fn poll_pass(&self, ctx: &egui::Context, late: bool) -> Vec<Action> {
         if ctx.wants_keyboard_input() {
             return Vec::new();
         }
+        if !late {
+            restore_clipboard_keys(ctx);
+        }
+        // consume_shortcut ignores *extra* shift/alt, so walking the table in declaration order would
+        // let Ctrl+Shift+Z fire plain Undo: try the most specific binding first.
+        let mut order: Vec<Action> = Action::ALL.iter().copied().filter(|&a| is_late(a) == late).collect();
+        order.sort_by_key(|&a| {
+            std::cmp::Reverse(self.get(a).map_or(0u8, |k| k.modifiers.shift as u8 + k.modifiers.alt as u8))
+        });
         let mut out = Vec::new();
         ctx.input_mut(|i| {
-            for &a in Action::ALL {
+            for a in order {
                 if let Some(ks) = self.get(a) {
                     if i.consume_shortcut(&ks) {
                         out.push(a);
@@ -231,6 +249,35 @@ impl Hotkeys {
         });
         out
     }
+}
+
+fn is_late(a: Action) -> bool {
+    matches!(a, Action::CopyClips | Action::CutClips | Action::PasteClips | Action::PasteInPlace)
+}
+
+/// egui-winit swallows the clipboard keys: Ctrl+C / Ctrl+X / Ctrl+V (and Ctrl+Alt+C/V, Shift+Delete,
+/// Ctrl+Insert) arrive as `Event::Copy` / `Cut` / `Paste` with the key event *dropped*, so no shortcut
+/// on those keys can ever match. Put the key events back. The clipboard event no longer says which key
+/// produced it, so the modifiers decide — with Shift down a Cut is Windows' Shift+Delete (Ctrl+Shift+X
+/// is nobody's shortcut). Callers skip this while a text field has focus, so text copy/paste is untouched.
+fn restore_clipboard_keys(ctx: &egui::Context) {
+    ctx.input_mut(|i| {
+        let m = i.modifiers;
+        let cmd = m.ctrl || m.command;
+        let mut keys: Vec<Key> = Vec::new();
+        for e in &i.events {
+            match e {
+                egui::Event::Cut if m.shift => keys.push(Key::Delete),
+                egui::Event::Cut if cmd => keys.push(Key::X),
+                egui::Event::Copy if cmd => keys.push(Key::C),
+                egui::Event::Paste(_) if cmd => keys.push(Key::V),
+                _ => {}
+            }
+        }
+        for key in keys {
+            i.events.push(egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: m });
+        }
+    });
 }
 
 #[cfg(test)]
@@ -245,6 +292,39 @@ mod tests {
             }
         }
     }
+    /// Feed the events egui-winit *actually* delivers for these chords (the raw key event is gone) and
+    /// check the actions still fire — and in the late pass for the clip clipboard, so a hovered curve /
+    /// node editor gets first refusal.
+    #[test]
+    fn clipboard_chords_survive_winit_translation() {
+        let h = Hotkeys::defaults();
+        let run = |ev: egui::Event, m: Modifiers| {
+            let ctx = egui::Context::default();
+            let raw = egui::RawInput { modifiers: m, events: vec![ev], ..Default::default() };
+            let (mut early, mut late) = (Vec::new(), Vec::new());
+            ctx.run(raw, |ctx| {
+                early = h.poll(ctx);
+                late = h.poll_late(ctx);
+            });
+            (early, late)
+        };
+        let ctrl = Modifiers { ctrl: true, command: true, ..Modifiers::NONE };
+        let ctrl_shift = Modifiers { shift: true, ..ctrl };
+        for (ev, m, want) in [
+            (egui::Event::Copy, ctrl, Action::CopyClips),
+            (egui::Event::Cut, ctrl, Action::CutClips),
+            (egui::Event::Paste("x".into()), ctrl, Action::PasteClips),
+            (egui::Event::Paste("x".into()), ctrl_shift, Action::PasteInPlace),
+        ] {
+            let (early, late) = run(ev, m);
+            assert!(early.is_empty(), "{want:?} must wait for the late pass, got {early:?}");
+            assert_eq!(late, vec![want]);
+        }
+        // Windows folds Shift+Delete into Cut too — that one is a normal (early) action
+        let (early, _) = run(egui::Event::Cut, Modifiers::SHIFT);
+        assert_eq!(early, vec![Action::RippleDelete]);
+    }
+
     #[test]
     fn no_duplicate_defaults() {
         let mut seen = std::collections::HashSet::new();
