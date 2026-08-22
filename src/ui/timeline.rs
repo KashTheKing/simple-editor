@@ -1432,7 +1432,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 DragPayload::Asset(aid) => {
                     c.project.asset(*aid).map(|a| if a.kind == ClipKind::Image { 5.0 } else { a.duration })
                 }
-                DragPayload::Path(_) | DragPayload::Template(_) => None,
+                DragPayload::Path(_) | DragPayload::Template(_) | DragPayload::Effect(_) => None,
                 DragPayload::Sequence(sid) => Some(c.project.sequence_duration(*sid)),
             }
             .unwrap_or(2.0);

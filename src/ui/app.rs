@@ -1948,6 +1948,23 @@ impl App {
                             }
                         }
                         DragPayload::Template(name) => self.place_template(&name, t),
+                        // dropped onto a clip that can actually take this kind (see effects_ui's own
+                        // click-to-add gate) — elsewhere on the timeline it is silently a no-op
+                        DragPayload::Effect(kind) => {
+                            let target = track
+                                .and_then(|ti| self.project.tracks.get(ti))
+                                .and_then(|tr| tr.clips.iter().find(|c| c.contains(t)))
+                                .filter(|c| (c.kind == ClipKind::Audio) == kind.applies_to_audio() && c.graph.is_none())
+                                .map(|c| c.id);
+                            if let Some(id) = target {
+                                let snap = self.project.to_json();
+                                if let Some(c) = self.project.clip_mut(id) {
+                                    c.effects.push(Effect::new(kind));
+                                }
+                                push_undo_json(&mut self.undo, &mut self.redo, snap);
+                                self.after_edit();
+                            }
+                        }
                         _ => {}
                     }
                 }

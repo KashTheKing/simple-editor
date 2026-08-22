@@ -28,7 +28,7 @@ pub mod timeline;
 pub mod tools;
 pub mod transitions_ui;
 
-use crate::model::{Animated, Id, Mask, MaskShape, Project, LABEL_COLORS};
+use crate::model::{Animated, EffectKind, Id, Mask, MaskShape, Project, LABEL_COLORS};
 use crate::theme::Palette;
 use eframe::egui::{self, Button, DragValue, Grid, Response};
 
@@ -174,6 +174,8 @@ pub enum DragPayload {
     Sequence(Id),
     /// A saved template (Settings.templates) by name.
     Template(String),
+    /// An effects-catalogue card (`ui::effects_ui`), dropped onto a clip to add it to that clip's stack.
+    Effect(EffectKind),
 }
 
 /// HH:MM:SS:FF timecode.

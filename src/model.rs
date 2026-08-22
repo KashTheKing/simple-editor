@@ -551,6 +551,19 @@ impl EffectKind {
             Shader => "Custom",
         }
     }
+    /// Effects that make sense on an audio clip, for the catalogue's audio-aware filtering — an audio
+    /// clip has no pixels, so every current kind (all pixel/GLSL effects) is false here. Exhaustive on
+    /// purpose (see `engine::effects::apply`'s tail) so a future audio kind is a compile-time reminder
+    /// to flip it on.
+    // ponytail: no audio EffectKind exists yet; add one and flip its arm here when it does.
+    pub fn applies_to_audio(self) -> bool {
+        use EffectKind::*;
+        match self {
+            Blur | Pixelate | Tint | Color | Vignette | Sharpen | Invert | Grayscale | Flip | Crop | Wobble
+            | ChromaKey | Curves | Levels | HueShift | JpegCompress | MotionBlur | Plane3d | EdgeGlow | Threshold
+            | BlobTrack | Vhs | RecDot | ColorReplace | Shader => false,
+        }
+    }
     pub fn name(self) -> &'static str {
         match self {
             EffectKind::Blur => "Blur",
@@ -3970,6 +3983,14 @@ mod tests {
         let json = serde_json::to_string(&c).unwrap();
         let d: Clip = serde_json::from_str(&json).unwrap();
         assert_eq!(d.effects[0].kind, EffectKind::Blur);
+    }
+
+    /// Every current kind is a pixel/GLSL effect — none apply to an audio clip yet (see the doc comment
+    /// on `applies_to_audio`). This pins that so the effects panel's audio filter stays correct rather
+    /// than silently drifting if a kind's classification is ever meant to change.
+    #[test]
+    fn no_effect_kind_applies_to_audio_yet() {
+        assert!(EffectKind::ALL.iter().all(|k| !k.applies_to_audio()));
     }
 
     #[test]
