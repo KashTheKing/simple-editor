@@ -326,10 +326,16 @@ fn effect_thumb_key(kind: EffectKind, size: (u32, u32), image: &str) -> u64 {
     h
 }
 
+/// The embedded stock picture, already decoded: `assets/bubble.webp` converted once to raw RGBA at card
+/// size, because nothing in the binary can decode a webp (no image crate, and ffmpeg may be missing).
+const STOCK: &[u8] = include_bytes!("../../assets/bubble_96x54.rgba");
+const STOCK_W: u32 = 96;
+const STOCK_H: u32 = 54;
+
 #[allow(dead_code)]
-/// The picture the effect thumbnails are rendered from: the user's stock image, else a generated test
-/// pattern (colour wedges + a grey ramp + a checker corner, so blur / keying / levels all show up).
+/// The picture the effect thumbnails are rendered from: the user's stock image, else the embedded one.
 fn effect_thumb_source(image: &str, w: u32, h: u32, backend: Backend) -> Frame {
+    let (w, h) = (w.max(1), h.max(1));
     if !image.is_empty() {
         if let Ok(mut src) = media::open_video(image, backend) {
             let mut f = Frame::default();
@@ -338,23 +344,14 @@ fn effect_thumb_source(image: &str, w: u32, h: u32, backend: Backend) -> Frame {
             }
         }
     }
-    let mut f = Frame::new(w.max(1), h.max(1));
-    const BARS: [[u8; 3]; 6] =
-        [[220, 40, 40], [220, 200, 40], [40, 200, 80], [40, 160, 220], [140, 60, 200], [230, 230, 230]];
-    for y in 0..f.height {
-        for x in 0..f.width {
-            let i = ((y * f.width + x) * 4) as usize;
-            let px = if y * 3 < f.height * 2 {
-                let b = BARS[(x as usize * BARS.len() / f.width.max(1) as usize).min(BARS.len() - 1)];
-                [b[0], b[1], b[2], 255]
-            } else if x * 4 < f.width {
-                let c = if ((x / 8) + (y / 8)) % 2 == 0 { 30 } else { 210 };
-                [c, c, c, 255]
-            } else {
-                let g = (x * 255 / f.width.max(1)) as u8;
-                [g, g, g, 255]
-            };
-            f.rgba[i..i + 4].copy_from_slice(&px);
+    // ponytail: nearest rescale — the catalogue asks for exactly STOCK_W x STOCK_H, so it is a plain copy
+    let mut f = Frame::new(w, h);
+    for y in 0..h {
+        let sy = y * STOCK_H / h;
+        for x in 0..w {
+            let s = ((sy * STOCK_W + x * STOCK_W / w) * 4) as usize;
+            let d = ((y * w + x) * 4) as usize;
+            f.rgba[d..d + 4].copy_from_slice(&STOCK[s..s + 4]);
         }
     }
     f
@@ -5006,12 +5003,15 @@ mod tests {
         keys.sort_unstable();
         keys.dedup();
         assert_eq!(keys.len(), EffectKind::ALL.len());
-        // the generated test pattern is a real image with colour in it
+        // no stock image set => the embedded default, unscaled at card size and resampled elsewhere
+        assert_eq!(STOCK.len(), (STOCK_W * STOCK_H * 4) as usize, "embedded RGBA is not W*H*4");
+        let card = effect_thumb_source("", STOCK_W, STOCK_H, Backend::Ffmpeg);
+        assert_eq!(card.rgba, STOCK, "at card size the embedded image is copied through untouched");
         let f = effect_thumb_source("", 32, 24, Backend::Ffmpeg);
         assert_eq!((f.width, f.height), (32, 24));
         assert_eq!(f.rgba.len(), 32 * 24 * 4);
-        assert!(f.rgba.chunks_exact(4).any(|p| p[0] > 200 && p[1] < 80), "no red wedge in the test pattern");
-        assert!(f.rgba.chunks_exact(4).all(|p| p[3] == 255), "test pattern must be opaque");
+        assert!(f.rgba.chunks_exact(4).all(|p| p[3] == 255), "the stock image must be opaque");
+        assert!(f.rgba.chunks_exact(4).any(|p| p[0] != p[1] || p[1] != p[2]), "the stock image has colour in it");
     }
 
     /// The frame writer really produces an image of the requested size (needs ffmpeg; skipped without).

@@ -1,0 +1,2 @@
+# raw RGBA stock image — autocrlf would silently corrupt it
+*.rgba binary

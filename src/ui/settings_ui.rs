@@ -310,7 +310,7 @@ fn performance(ui: &mut egui::Ui, s: &mut Settings, gpu_name: &str) -> bool {
                 .add(
                     egui::TextEdit::singleline(&mut s.effect_thumb_image)
                         .desired_width(200.0)
-                        .hint_text("test pattern"),
+                        .hint_text("built-in image"),
                 )
                 .changed();
             if ui.button("Browse…").clicked() {
@@ -321,7 +321,11 @@ fn performance(ui: &mut egui::Ui, s: &mut Settings, gpu_name: &str) -> bool {
                     changed = true;
                 }
             }
-            if !s.effect_thumb_image.is_empty() && ui.small_button("✕").clicked() {
+            if ui
+                .add_enabled(!s.effect_thumb_image.is_empty(), egui::Button::new("Reset to default"))
+                .on_hover_text("Render the catalogue over the image built into the app")
+                .clicked()
+            {
                 s.effect_thumb_image.clear();
                 changed = true;
             }

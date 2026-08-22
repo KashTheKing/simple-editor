@@ -130,7 +130,7 @@ pub struct Settings {
     pub frame_resolution: String,
     pub frame_format: String,
     pub frame_quality: u32,
-    /// Stock image the effects panel renders its thumbnails from (empty = a generated test pattern).
+    /// Stock image the effects panel renders its thumbnails from (empty = the embedded default).
     pub effect_thumb_image: String,
 }
 
@@ -265,5 +265,17 @@ mod tests {
         assert!(s.recent_assets[0].pinned && s.recent_assets[0].tags == vec!["x"]);
         s.remove_recent("b.mp4");
         assert_eq!(s.recent_assets.len(), 1);
+    }
+
+    #[test]
+    fn effect_thumb_image_round_trips() {
+        assert!(Settings::default().effect_thumb_image.is_empty(), "empty = the embedded default");
+        let mut s = Settings::default();
+        s.effect_thumb_image = r"C:\pics\stock.png".into();
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.effect_thumb_image, s.effect_thumb_image);
+        // an old settings file without the field still loads, back to the default
+        let old: Settings = serde_json::from_str("{}").unwrap();
+        assert!(old.effect_thumb_image.is_empty());
     }
 }
