@@ -18,6 +18,7 @@ pub mod mixer_ui;
 pub mod nodes;
 pub mod paste_ui;
 pub mod planner;
+pub mod presets_ui;
 pub mod preview;
 pub mod retime;
 pub mod settings_ui;

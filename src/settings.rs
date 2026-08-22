@@ -47,6 +47,21 @@ pub struct MotionPreset {
     pub props: Vec<(String, CurvePreset)>,
 }
 
+/// A saved effect chain (a `Vec<Effect>` as JSON) or node graph (a `NodeGraph`), captured from a clip
+/// by engine::presets. Machine-local like the other presets: it lives here, never in the project file.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct EffectPreset {
+    pub name: String,
+    pub json: String,
+}
+
+impl EffectPreset {
+    /// Which of the two it holds — a graph serialises to an object, an effect stack to an array.
+    pub fn is_graph(&self) -> bool {
+        self.json.trim_start().starts_with('{')
+    }
+}
+
 /// A reusable group of clips (relative times) + the assets they need, serialised by engine::presets.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
 pub struct Template {
@@ -93,9 +108,11 @@ pub struct Settings {
     pub layout: String,
     /// Saved layout profiles (also exportable to / importable from `.sedit-layout` files).
     pub layout_profiles: Vec<LayoutProfile>,
-    /// Keyframe / motion presets and clip templates (global, reusable across projects).
+    /// Keyframe / motion presets, effect-chain / node-graph presets and clip templates
+    /// (global, reusable across projects — the Presets pane lists all of them).
     pub curve_presets: Vec<CurvePreset>,
     pub motion_presets: Vec<MotionPreset>,
+    pub effect_presets: Vec<EffectPreset>,
     pub templates: Vec<Template>,
     /// Extra font files (.ttf/.otf) imported by the user (loaded by the text rasterizer + font lists).
     pub user_fonts: Vec<String>,
@@ -159,6 +176,7 @@ impl Default for Settings {
             layout_profiles: Vec::new(),
             curve_presets: Vec::new(),
             motion_presets: Vec::new(),
+            effect_presets: Vec::new(),
             templates: Vec::new(),
             user_fonts: Vec::new(),
             export_scaler: "lanczos".into(),

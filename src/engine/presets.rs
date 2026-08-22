@@ -2,8 +2,11 @@
 //! Curve presets store keys normalised to 0..1 of the clip length (stretched to the target clip's
 //! duration when applied) or as absolute seconds (kept as saved).
 
-use crate::model::{Animated, Asset, Clip, Ease, Effect, EffectKind, Keyframe, Project, MIN_CLIP};
-use crate::settings::{CurvePreset, MotionPreset, Template};
+use crate::model::{
+    Animated, Asset, Clip, ClipKind, Ease, Effect, EffectKind, Id, Keyframe, NodeGraph, Project, MIN_CLIP,
+};
+use crate::settings::{CurvePreset, EffectPreset, MotionPreset, Template};
+use std::collections::HashMap;
 
 /// Snapshot a property's keys as a preset (normalised unless `absolute`). None if the property has no keys.
 pub fn capture_curve(name: &str, anim: &Animated, clip_duration: f64, absolute: bool) -> Option<CurvePreset> {
@@ -127,6 +130,49 @@ pub fn apply_motion(preset: &MotionPreset, clip: &mut Clip, scaled: bool) {
     }
 }
 
+/// Snapshot a clip's node graph if it has one, else its effect stack. The JSON's shape is what tells
+/// the two apart afterwards (`EffectPreset::is_graph`) — nothing else has to be stored.
+pub fn capture_effects(name: &str, clip: &Clip) -> EffectPreset {
+    let json = match &clip.graph {
+        Some(g) => serde_json::to_string(g),
+        None => serde_json::to_string(&clip.effects),
+    };
+    EffectPreset { name: name.into(), json: json.unwrap_or_default() }
+}
+
+/// Apply a preset to `clip`: a graph replaces the clip's graph (with fresh node ids, so a later
+/// `add_node` cannot hand out one the preset already used), a stack replaces the effects *and* drops
+/// the graph, which would otherwise keep shadowing them. False when the JSON is not what it claims.
+pub fn apply_effects(preset: &EffectPreset, project: &mut Project, clip: Id) -> bool {
+    if preset.is_graph() {
+        let Ok(mut g) = serde_json::from_str::<NodeGraph>(&preset.json) else { return false };
+        let map: HashMap<Id, Id> = g.nodes.iter().map(|n| (n.id, project.new_id())).collect();
+        g.edges.retain(|e| map.contains_key(&e.from) && map.contains_key(&e.to));
+        for n in &mut g.nodes {
+            n.id = map[&n.id];
+        }
+        for e in &mut g.edges {
+            e.from = map[&e.from];
+            e.to = map[&e.to];
+        }
+        let Some(c) = project.clip_mut(clip) else { return false };
+        c.graph = Some(g);
+    } else {
+        let Ok(fx) = serde_json::from_str::<Vec<Effect>>(&preset.json) else { return false };
+        let Some(c) = project.clip_mut(clip) else { return false };
+        c.effects = fx;
+        c.graph = None;
+    }
+    true
+}
+
+/// True when a template holds nothing but adjustment layers — the Presets pane gives those their own
+/// section. ponytail: decodes the JSON per frame the list is drawn; templates are a handful of small
+/// blobs, memoise if that stops being true.
+pub fn is_adjustment_template(t: &Template) -> bool {
+    decode_template(t).is_some_and(|(c, _)| !c.is_empty() && c.iter().all(|c| c.kind == ClipKind::Adjustment))
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 struct TemplateData {
     clips: Vec<Clip>,
@@ -158,7 +204,8 @@ pub fn decode_template(t: &Template) -> Option<(Vec<Clip>, Vec<Asset>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{AudioStreamInfo, ClipKind, Id};
+    use crate::model::{AudioStreamInfo, ClipKind, Id, NodeKind};
+    use crate::settings::Settings;
 
     fn asset(id: Id, dur: f64, streams: usize) -> Asset {
         Asset {
@@ -295,5 +342,44 @@ mod tests {
         assert!((clips[1].start - 3.0).abs() < 1e-9);
         // malformed JSON → None
         assert!(decode_template(&Template { name: "x".into(), json: "{ nope".into() }).is_none());
+    }
+    /// Capture -> settings.json -> apply, for both flavours of effect preset.
+    #[test]
+    fn effect_presets_round_trip_through_settings() {
+        let mut p = Project::from_media(asset(0, 10.0, 0));
+        let id = p.all_clips().next().unwrap().1.id;
+        let c = p.clip_mut(id).unwrap();
+        c.effects.push(Effect::new(EffectKind::Blur));
+        c.effects[0].params[0].set_at(0.0, 12.0);
+
+        let mut s = Settings::default();
+        s.effect_presets.push(capture_effects("Look", p.clip(id).unwrap()));
+        p.ensure_graph(id);
+        s.effect_presets.push(capture_effects("Graph", p.clip(id).unwrap()));
+        // machine-local: the presets ride in settings.json, not the project file
+        let s: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert!(!s.effect_presets[0].is_graph() && s.effect_presets[1].is_graph());
+
+        // apply into a different project
+        let mut q = Project::from_media(asset(1, 4.0, 0));
+        let qid = q.all_clips().next().unwrap().1.id;
+        assert!(apply_effects(&s.effect_presets[0], &mut q, qid));
+        assert_eq!(q.clip(qid).unwrap().effects, p.clip(id).unwrap().effects);
+        assert!(q.clip(qid).unwrap().graph.is_none(), "a stack preset clears the graph shadowing it");
+        assert!(apply_effects(&s.effect_presets[1], &mut q, qid));
+        let g = q.clip(qid).unwrap().graph.clone().unwrap();
+        assert_eq!(g.nodes.len(), p.clip(id).unwrap().graph.as_ref().unwrap().nodes.len());
+        assert!(g.edges.iter().all(|e| g.nodes.iter().any(|n| n.id == e.from)), "edges kept their nodes");
+        // the pasted nodes got project ids, so the next node added is not a duplicate
+        let fresh = q.add_node(qid, NodeKind::Color([0; 4]), 0.0, 0.0).unwrap();
+        assert!(g.nodes.iter().all(|n| n.id != fresh));
+        // JSON that is not what it claims to be changes nothing
+        assert!(!apply_effects(&EffectPreset { name: "x".into(), json: "{ nope".into() }, &mut q, qid));
+        assert!(!apply_effects(&EffectPreset { name: "x".into(), json: "[1,2]".into() }, &mut q, qid));
+
+        // adjustment layers are simply templates holding nothing else (own section in the pane)
+        let a = q.add_adjustment_clip(0.0, 2.0);
+        assert!(is_adjustment_template(&capture_template("Adj", &q, &[a])));
+        assert!(!is_adjustment_template(&capture_template("Clip", &q, &[qid])));
     }
 }

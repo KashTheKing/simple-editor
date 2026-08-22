@@ -2,7 +2,7 @@
 //! hidden/shown, popped out into their own OS windows (egui immediate viewports) and saved/loaded as
 //! profiles (JSON — also written to / read from `.sedit-layout` files so profiles can be shared).
 //!
-//! Default layout (DaVinci-like): top row = [tabs(Library, Effects, Transitions, Planner) |
+//! Default layout (DaVinci-like): top row = [tabs(Library, Effects, Transitions, Presets, Planner) |
 //! Preview with the Tools strip beneath it | tabs(Inspector, Curves, Nodes, Subtitles, Markers)],
 //! bottom row (full width, always visible) = tabs(Timeline, Mixer, Auto-cut). `show` draws the
 //! tree in the given `ui` and each popped pane in its own viewport (closing that window docks the pane
@@ -33,10 +33,12 @@ pub enum Pane {
     Nodes,
     Mixer,
     Markers,
+    /// Machine-local reusable things (effect chains, node graphs, adjustment layers, templates).
+    Presets,
 }
 
 impl Pane {
-    pub const ALL: [Pane; 14] = [
+    pub const ALL: [Pane; 15] = [
         Pane::Preview,
         Pane::Timeline,
         Pane::Library,
@@ -51,6 +53,7 @@ impl Pane {
         Pane::Nodes,
         Pane::Mixer,
         Pane::Markers,
+        Pane::Presets,
     ];
     /// Panes added in round 3 — a stored layout without them is from an older version (see `from_json`).
     pub const ROUND3: [Pane; 4] = [Pane::Tools, Pane::Nodes, Pane::Mixer, Pane::Markers];
@@ -70,6 +73,7 @@ impl Pane {
             Pane::Nodes => "Nodes",
             Pane::Mixer => "Mixer",
             Pane::Markers => "Markers",
+            Pane::Presets => "Presets",
         }
     }
 }
@@ -96,7 +100,7 @@ impl Layout {
             let ids: Vec<_> = panes.iter().map(|&p| tiles.insert_pane(p)).collect();
             tiles.insert_tab_tile(ids) // the first pane is the active tab
         };
-        let left = tabs(&mut tiles, &[Pane::Library, Pane::Effects, Pane::Transitions, Pane::Planner]);
+        let left = tabs(&mut tiles, &[Pane::Library, Pane::Effects, Pane::Transitions, Pane::Presets, Pane::Planner]);
         let right = tabs(&mut tiles, &[Pane::Inspector, Pane::Curves, Pane::Nodes, Pane::Subtitles, Pane::Markers]);
         // centre column: the viewport with the Tools strip directly beneath it
         let preview = tiles.insert_pane(Pane::Preview);
@@ -136,7 +140,7 @@ impl Layout {
     pub fn from_json_migrating(s: &str) -> Option<Self> {
         let mut l: Self = serde_json::from_str(s).ok()?;
         l.tree.root()?;
-        for p in Pane::ROUND3 {
+        for p in Pane::ALL {
             if l.tree.tiles.find_pane(&p).is_none() && !l.popped.contains(&p) {
                 l.insert_into_root(p);
             }

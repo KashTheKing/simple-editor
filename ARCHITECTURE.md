@@ -36,7 +36,8 @@ src/main.rs            args (--selftest, --screenshot, a file to open), eframe r
 src/winpos.rs          opens the window on the monitor under the cursor (eframe's saved rect always won)
 src/model.rs           THE data model + every edit operation + .sedit JSON (see "Data model" below)
 src/settings.rs        %APPDATA%\SimpleEditor\settings.json: recents, layout profiles, curve/motion
-                       presets, templates, user fonts, GPU/quality/capture/frame/MCP options
+                       presets, effect/node-graph presets, templates, user fonts,
+                       GPU/quality/capture/frame/MCP options
 src/hotkeys.rs         Action enum, default bindings, parse/format, per-frame polling
 src/theme.rs           OS dark/light + accent -> egui visuals, Segoe UI; Palette for custom painting
 src/contextmenu.rs     HKCU "Edit with Simple Editor" per video extension
@@ -61,7 +62,7 @@ src/engine/capture.rs  screen recording + voiceover through ffmpeg (gdigrab / ds
 src/engine/import.rs   FCP7 XML / EDL / .prproj import with a per-item pass/fail report
 src/engine/subtitles.rs SRT/VTT parse + write
 src/engine/autocut.rs  silence/speech segmentation from waveform peaks
-src/engine/presets.rs  curve/motion presets + clip templates (capture/apply)
+src/engine/presets.rs  curve/motion presets, effect-chain / node-graph presets, clip templates
 src/engine/prerender.rs "movie mode" full-quality frame cache on disk
 src/engine/style.rs    Markdown style summary of a project (for AI style guides)
 src/engine/xmeml.rs    FCP7 XML export for Premiere / Resolve
@@ -81,6 +82,7 @@ src/ui/library.rs      library + recent: folders, tags, labels, search, filters,
 src/ui/mixer_ui.rs     bus strips, meters, filter chains
 src/ui/markers_ui.rs   marker list
 src/ui/planner.rs      nested task planner with moodboards + project notes
+src/ui/presets_ui.rs   Presets pane: effects / node graphs / adjustment layers / templates (machine-local)
 src/ui/subtitles_ui.rs subtitle editor
 src/ui/autocut_ui.rs   auto-cut pane
 src/ui/{retime,export_ui,frame_ui,capture_ui,import_ui,paste_ui,transitions_ui,settings_ui,shader_ui}.rs windows

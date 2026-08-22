@@ -315,7 +315,7 @@ fn recent_clear(settings: &mut Settings, resp: &mut LibraryResponse) {
 // ---------- shared row widget ----------
 
 /// Yes/No dialog for destructive, non-undoable actions.
-fn confirm(title: &str, description: &str) -> bool {
+pub(crate) fn confirm(title: &str, description: &str) -> bool {
     rfd::MessageDialog::new()
         .set_title(title)
         .set_description(description)
@@ -430,7 +430,7 @@ fn row(
 }
 
 /// TextEdit for inline renames; Some(text) once editing finishes with a non-empty name.
-fn inline_edit(ui: &mut egui::Ui, buf: &mut String) -> Option<String> {
+pub(crate) fn inline_edit(ui: &mut egui::Ui, buf: &mut String) -> Option<String> {
     let r = ui.add(egui::TextEdit::singleline(buf).desired_width(120.0));
     // Read the flag before touching focus: request_focus() makes has_focus() true, and lost_focus() is
     // `had_focus_last_frame && !has_focus` — asking for focus first would make it permanently false.

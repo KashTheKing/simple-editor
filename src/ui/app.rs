@@ -24,8 +24,8 @@ use crate::ui::layout::{self, Layout, Pane};
 use crate::ui::tools::Tool;
 use crate::ui::{
     autocut_ui, capture_ui, curves, effects_ui, export_ui, frame_ui, import_ui, inspector, library, markers_ui,
-    mixer_ui, nodes, paste_ui, planner, preview, retime, settings_ui, shader_ui, subtitles_ui, timeline, tools,
-    transitions_ui, DragPayload,
+    mixer_ui, nodes, paste_ui, planner, presets_ui, preview, retime, settings_ui, shader_ui, subtitles_ui, timeline,
+    tools, transitions_ui, DragPayload,
 };
 use eframe::egui;
 use serde_json::{json, Value};
@@ -80,6 +80,7 @@ pub struct App {
     curves: curves::CurvesState,
     subtitles_ui: subtitles_ui::SubtitlesState,
     planner: planner::PlannerState,
+    presets: presets_ui::PresetsState,
     autocut: autocut_ui::AutoCutState,
     retime: retime::RetimeUi,
     export_ui: export_ui::ExportUi,
@@ -762,6 +763,7 @@ impl App {
             curves: curves::CurvesState::default(),
             subtitles_ui: subtitles_ui::SubtitlesState::default(),
             planner: planner::PlannerState::default(),
+            presets: presets_ui::PresetsState::default(),
             autocut: autocut_ui::AutoCutState::default(),
             retime: retime::RetimeUi::default(),
             export_ui: export_ui::ExportUi::default(),
@@ -2152,6 +2154,22 @@ impl App {
                     self.after_edit();
                 }
             }
+            Pane::Presets => {
+                let has_sel = !self.selection.is_empty();
+                let resp = presets_ui::show(ui, &mut self.presets, &mut self.settings, has_sel);
+                if let Some(i) = resp.apply {
+                    self.apply_effect_preset(i);
+                }
+                for name in resp.place {
+                    self.place_template(&name, self.playhead);
+                }
+                if let Some(name) = resp.save {
+                    self.save_preset(&name);
+                }
+                if resp.settings_changed {
+                    self.settings.save();
+                }
+            }
             Pane::Markers => {
                 let resp = {
                     let App { project, selection, playhead, markers: st, palette, undo, redo, .. } = self;
@@ -2455,6 +2473,49 @@ impl App {
         };
         self.toast(format!("Converting to {ext}…"));
         self.convert_jobs.push((crate::engine::convert::start_convert(opts), out));
+    }
+
+    /// "Save from selection" in the Presets pane: one clip's node graph or effect stack becomes an
+    /// effect preset, anything else (adjustment layers, several clips) becomes a clip template — that is
+    /// the only flavour that can be *placed* rather than applied.
+    fn save_preset(&mut self, name: &str) {
+        let fx = match self.selection.as_slice() {
+            [id] => self
+                .project
+                .clip(*id)
+                .filter(|c| c.kind != ClipKind::Adjustment && (c.graph.is_some() || !c.effects.is_empty()))
+                .map(|c| crate::engine::presets::capture_effects(name, c)),
+            _ => None,
+        };
+        if let Some(p) = fx {
+            self.settings.effect_presets.retain(|x| x.name != name);
+            self.settings.effect_presets.push(p);
+        } else if self.selection.is_empty() {
+            return self.toast("Select a clip first");
+        } else {
+            let t = crate::engine::presets::capture_template(name, &self.project, &self.selection);
+            self.settings.templates.retain(|x| x.name != name);
+            self.settings.templates.push(t);
+        }
+        self.settings.save();
+        self.toast(format!("Saved \"{name}\""));
+    }
+
+    /// Apply a saved effect chain / node graph to every selected clip (one undo entry).
+    fn apply_effect_preset(&mut self, i: usize) {
+        let Some(p) = self.settings.effect_presets.get(i).cloned() else { return };
+        if self.selection.is_empty() {
+            return self.toast("Select a clip first");
+        }
+        self.push_undo();
+        let mut n = 0;
+        for id in self.selection.clone() {
+            n += crate::engine::presets::apply_effects(&p, &mut self.project, id) as usize;
+        }
+        if n == 0 {
+            return self.toast("That preset is corrupted");
+        }
+        self.after_edit();
     }
 
     fn place_template(&mut self, name: &str, t: f64) {
@@ -2848,7 +2909,7 @@ impl App {
 
     fn view_menu(&mut self, ui: &mut egui::Ui, out: &mut Vec<Action>) {
         use Action::*;
-        const PANES: [(Pane, Option<Action>); 14] = [
+        const PANES: [(Pane, Option<Action>); 15] = [
             (Pane::Preview, None),
             (Pane::Timeline, None),
             (Pane::Tools, Some(ToggleTools)),
@@ -2861,6 +2922,7 @@ impl App {
             (Pane::Subtitles, Some(ToggleSubtitles)),
             (Pane::Markers, Some(ToggleMarkers)),
             (Pane::Mixer, Some(ToggleMixer)),
+            (Pane::Presets, None),
             (Pane::Planner, Some(TogglePlanner)),
             (Pane::AutoCut, Some(Action::AutoCut)),
         ];
