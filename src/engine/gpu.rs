@@ -390,7 +390,10 @@ impl GpuRenderer {
         let (w, h) = (src.width, src.height);
         let host = self.host_fbo();
         let tex = self.upload(u64::MAX, src);
-        let dst = self.run_effect(tex, (w, h), effect, t, 1.0, None, None);
+        let blob = (effect.kind == EffectKind::BlobTrack)
+            .then(|| crate::engine::effects::track(src, &param_values(effect, t)))
+            .flatten();
+        let dst = self.run_effect(tex, (w, h), effect, t, 1.0, None, None, blob);
         let ok = match dst {
             Some(target) => {
                 out.resize(w, h);
@@ -425,7 +428,7 @@ impl GpuRenderer {
         t: f64,
     ) -> Option<glow::Texture> {
         let host = self.host_fbo();
-        let dst = self.run_effect(src, size, effect, t, 1.0, None, None);
+        let dst = self.run_effect(src, size, effect, t, 1.0, None, None, None);
         self.restore(host);
         let dst = dst?;
         let tex = dst.tex;
@@ -669,6 +672,8 @@ impl GpuRenderer {
         scale: f32,
         mask: Option<glow::Texture>,
         motion: Option<(glow::Texture, glow::Texture, f32)>,
+        // BlobTrack only: (cx, cy, area) from engine::effects::track, in 0..1 layer coordinates
+        blob: Option<(f64, f64, f64)>,
     ) -> Option<Target> {
         let key = self.effect_program(effect)?;
         let dst = self.acquire(size.0, size.1)?;
@@ -698,8 +703,23 @@ impl GpuRenderer {
                 // blurs by nothing rather than guessing a direction.
                 gl.uniform_2_f32(prog.uni.get("u_motion"), 0.0, 0.0);
             }
+            if effect.kind == EffectKind::BlobTrack {
+                // zero area = "nothing matched", which the shader reads as "draw no crosshair"
+                let (cx, cy, area) = blob.unwrap_or((0.5, 0.5, 0.0));
+                gl.uniform_3_f32(prog.uni.get("u_blob"), cx as f32, cy as f32, area as f32);
+            }
         });
         Some(dst)
+    }
+
+    /// `BlobTrack`: find the target colour's centroid on the clip's decoded frame. The tracking runs on
+    /// the CPU copy the decoder already produced, so no readback is needed; the shader only draws it.
+    fn track_blob(&self, effect: &Effect, clip: Id, t: f64, layers: &LayerSet) -> Option<(f64, f64, f64)> {
+        if effect.kind != EffectKind::BlobTrack {
+            return None;
+        }
+        let frame = layers.get(clip)?;
+        crate::engine::effects::track(frame, &param_values(effect, t))
     }
 
     /// The neighbouring frames a `needs_motion` effect wants: (prev, next, how many are real).
@@ -1052,7 +1072,8 @@ impl GpuRenderer {
                 .filter(|m| m.enabled)
                 .and_then(|m| self.render_mask(m, size, lt, scale, (size.0 as f32 / 2.0, size.1 as f32 / 2.0)));
             let motion = e.kind.needs_motion().then(|| self.motion_texs(clip.id, layers));
-            let next = self.run_effect(input, size, e, lt, scale, mask.as_ref().map(|m| m.tex), motion);
+            let blob = self.track_blob(e, clip.id, lt, layers);
+            let next = self.run_effect(input, size, e, lt, scale, mask.as_ref().map(|m| m.tex), motion, blob);
             if let Some(m) = mask {
                 self.pool.put(m);
             }
@@ -1120,7 +1141,8 @@ impl GpuRenderer {
                             self.render_mask(m, size, lt, scale, (size.0 as f32 / 2.0, size.1 as f32 / 2.0))
                         });
                         let motion = e.kind.needs_motion().then(|| self.motion_texs(clip.id, layers));
-                        let r = self.run_effect(src, size, e, lt, scale, mask.as_ref().map(|m| m.tex), motion);
+                        let blob = self.track_blob(e, clip.id, lt, layers);
+                        let r = self.run_effect(src, size, e, lt, scale, mask.as_ref().map(|m| m.tex), motion, blob);
                         if let Some(m) = mask {
                             self.pool.put(m);
                         }
@@ -1273,6 +1295,11 @@ const PARAM_NAMES: [&str; 12] = ["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7",
 
 /// `MASK`'s `m_points` array size.
 pub const MAX_MASK_POINTS: usize = 64;
+
+/// An effect's parameters at time `t`, in `EffectKind::params()` order.
+fn param_values(effect: &Effect, t: f64) -> Vec<f64> {
+    (0..effect.kind.params().len()).map(|i| effect.at(i, t)).collect()
+}
 
 /// Decoded layers for one timeline instant, produced by the player/export thread on the CPU and handed
 /// to the renderer: (clip id, decoded frame). Motion-blur effects also get the neighbouring frames.
