@@ -8,14 +8,82 @@
 //! field, "▶" (seek to the cue → `seeked`), "✕" delete; the cue containing the playhead is highlighted; a
 //! "Split at playhead" button on the highlighted cue. Undo once per gesture (same edit_start rule as the
 //! inspector); returns what changed.
+//!
+//! The "Transcribe" section drives `engine::transcribe`: pick a whisper.cpp model (its download size is
+//! named before the click and the download shows a progress bar), transcribe the selected clip's audio on
+//! a worker thread, and turn the transcript into cues ("Transcribe & generate subtitles"). Underneath it,
+//! the double-take detector lists the lines that were said more than once — "Mark on timeline" drops a
+//! marker per flubbed take (described by what was said) and "Cut the duplicates" ripples every take but
+//! the last one out, dragging the cues, the markers and the transcript along with the cut. With no model
+//! and no whisper.exe the section only ever explains what to install.
 
+use crate::engine::export::Progress;
+use crate::engine::transcribe::{self, Segment};
 use crate::model::{Id, Project};
 use crate::theme::Palette;
+use crate::ui::tools::{glyph_text_button, Glyph};
 use crate::ui::{edit_start, once};
-use eframe::egui::{self, DragValue, Response};
+use eframe::egui::{self, Button, DragValue, Response, Slider};
+use std::path::PathBuf;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::time::Duration;
 
 /// Minimum cue length (end ≥ start + this).
 const MIN_CUE: f64 = 0.1;
+
+/// How long a pause may sit between one take and its retake before they are unrelated lines.
+const TAKE_WINDOW: f64 = 20.0;
+
+/// Speech-to-text and the double-take detector (the "Transcribe" section).
+pub struct TranscribeState {
+    pub open: bool,
+    /// Index into `transcribe::MODELS`.
+    pub model: usize,
+    pub language: String,
+    pub max_chars: usize,
+    pub min_dur: f64,
+    pub words: bool,
+    /// Double-take similarity, 0.5..=1.0.
+    pub threshold: f32,
+    /// Transcript of the last run, in timeline seconds.
+    pub segments: Vec<Segment>,
+    /// Repeated takes over `segments` (each group keeps its last member).
+    pub groups: Vec<Vec<usize>>,
+    pub status: String,
+    /// Clip the transcript came from, and its source -> timeline (offset, scale).
+    clip: Option<Id>,
+    map: (f64, f64),
+    /// Markers dropped by "Mark on timeline", so a re-mark or a cut can take them away again.
+    marks: Vec<Id>,
+    job: Option<transcribe::Job>,
+    download: Option<Arc<Progress>>,
+    /// whisper binary, looked up once (the lookup stats PATH) — "Re-check" after installing it.
+    exe: Option<Option<PathBuf>>,
+}
+
+impl Default for TranscribeState {
+    fn default() -> Self {
+        Self {
+            open: false,
+            model: transcribe::default_model(),
+            language: "auto".into(),
+            max_chars: 42,
+            min_dur: 1.0,
+            words: false,
+            threshold: 0.85,
+            segments: Vec::new(),
+            groups: Vec::new(),
+            status: String::new(),
+            clip: None,
+            map: (0.0, 1.0),
+            marks: Vec::new(),
+            job: None,
+            download: None,
+            exe: None,
+        }
+    }
+}
 
 #[derive(Default)]
 pub struct SubtitlesState {
@@ -23,6 +91,7 @@ pub struct SubtitlesState {
     pub show_style: bool,
     /// Cue whose text field should grab focus (set by "Add at playhead").
     pub focus: Option<Id>,
+    pub transcribe: TranscribeState,
 }
 
 #[derive(Default)]
@@ -51,6 +120,7 @@ pub fn show(
     state: &mut SubtitlesState,
     project: &mut Project,
     playhead: &mut f64,
+    selection: &[Id],
     fonts: &[String],
     palette: &Palette,
     undo: &mut dyn FnMut(&Project),
@@ -84,10 +154,15 @@ pub fn show(
             resp.edited = true;
         }
         ui.toggle_value(&mut state.show_style, "Style");
+        ui.toggle_value(&mut state.transcribe.open, "Transcribe");
     });
 
     if state.show_style {
         style_section(ui, project, fonts, &mut undone, undo, &mut resp);
+    }
+    if state.transcribe.open {
+        ui.separator();
+        transcribe_section(ui, &mut state.transcribe, project, selection, &mut undone, undo, &mut resp);
     }
     ui.separator();
 
@@ -251,6 +326,263 @@ fn style_section(
     }
 }
 
+/// What a run needs: the clip's audio and how its source time maps back onto the timeline.
+struct Target {
+    clip: Id,
+    path: String,
+    src_start: f64,
+    src_dur: f64,
+    /// Timeline seconds of the transcript's zero, and source seconds -> timeline seconds.
+    offset: f64,
+    scale: f64,
+}
+
+/// The first selected clip that has footage behind it.
+///
+/// ponytail: one linear map over the whole clip, so a reversed clip transcribes forwards and a keyframed
+/// speed ramp drifts between its keys. Transcribe per ramp segment if that ever shows.
+fn target(project: &Project, selection: &[Id]) -> Option<Target> {
+    let c = selection.iter().find_map(|&id| project.clip(id))?;
+    let path = project.asset(c.asset).map(|a| a.path.clone()).filter(|p| !p.is_empty())?;
+    let (a, b) = (c.src_time(c.start), c.src_time(c.start + c.duration));
+    let (a, b) = if b > a + 0.05 { (a, b) } else { (c.src_in, c.src_in + c.duration.max(0.1)) };
+    Some(Target { clip: c.id, path, src_start: a, src_dur: b - a, offset: c.start, scale: c.duration / (b - a) })
+}
+
+/// A marker on every take "Cut the duplicates" would remove, named and described by what was said.
+fn mark_dups(project: &mut Project, segs: &[Segment], groups: &[Vec<usize>]) -> Vec<Id> {
+    let mut ids = Vec::new();
+    for g in groups {
+        for &i in &g[..g.len() - 1] {
+            let Some(s) = segs.get(i) else { continue };
+            let id = project.add_marker(s.start, transcribe::short_label(&s.text, 28));
+            if let Some(m) = project.marker_mut(id) {
+                m.duration = (s.end - s.start).max(0.0);
+                m.note = s.text.clone();
+            }
+            ids.push(id);
+        }
+    }
+    ids
+}
+
+/// Move one transcribed span through a ripple cut; false when the cut swallowed it.
+fn ripple_segment(s: &mut Segment, ranges: &[(f64, f64)]) -> bool {
+    let Some(a) = transcribe::ripple_time(s.start, ranges) else { return false };
+    let b = transcribe::ripple_time(s.end, ranges).unwrap_or(a + (s.end - s.start));
+    s.words.retain_mut(|w| match (transcribe::ripple_time(w.0, ranges), transcribe::ripple_time(w.1, ranges)) {
+        (Some(x), Some(y)) => {
+            (w.0, w.1) = (x, y);
+            true
+        }
+        _ => false,
+    });
+    (s.start, s.end) = (a, b.max(a));
+    true
+}
+
+/// Ripple every take but the last of each group out of the timeline, then drag the cues, our markers and
+/// the transcript along with the cut. Returns how many clips went.
+fn cut_dups(project: &mut Project, st: &mut TranscribeState) -> usize {
+    let ranges = transcribe::dup_ranges(&st.segments, &st.groups);
+    let (Some(clip), false) = (st.clip, ranges.is_empty()) else { return 0 };
+    let cuts: Vec<f64> = ranges.iter().flat_map(|&(a, b)| [a, b]).collect();
+    let n = project.auto_cut(&[clip], &cuts, &ranges, true);
+    for id in st.marks.drain(..) {
+        project.remove_marker(id);
+    }
+    project.subtitles.retain_mut(|c| {
+        let Some(a) = transcribe::ripple_time(c.start, &ranges) else { return false };
+        let b = transcribe::ripple_time(c.end, &ranges).unwrap_or(a + (c.end - c.start));
+        (c.start, c.end) = (a, b.max(a + MIN_CUE));
+        true
+    });
+    project.sort_cues();
+    st.segments.retain_mut(|s| ripple_segment(s, &ranges));
+    st.groups = transcribe::duplicate_takes(&st.segments, st.threshold, TAKE_WINDOW);
+    n
+}
+
+/// The "Transcribe" section: model + download, the run, and the double-take list.
+fn transcribe_section(
+    ui: &mut egui::Ui,
+    st: &mut TranscribeState,
+    project: &mut Project,
+    selection: &[Id],
+    undone: &mut bool,
+    undo: &mut dyn FnMut(&Project),
+    resp: &mut SubtitlesResponse,
+) {
+    let (name, file, mb) = transcribe::MODELS[st.model.min(transcribe::MODELS.len() - 1)];
+    let have = transcribe::have_model(file);
+    let exe = st.exe.get_or_insert_with(transcribe::exe).clone();
+    let warn = ui.visuals().warn_fg_color;
+
+    let downloading = st.download.as_ref().is_some_and(|p| !p.is_done());
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Model");
+        ui.add_enabled_ui(!downloading, |ui| {
+            egui::ComboBox::from_id_salt("whisper_model").selected_text(name).show_ui(ui, |ui| {
+                for (i, (n, _, size)) in transcribe::MODELS.iter().enumerate() {
+                    ui.selectable_value(&mut st.model, i, format!("{n}  ({size} MB)"));
+                }
+            });
+        });
+        if have {
+            ui.weak("downloaded");
+        }
+    });
+    if !have {
+        // the opt-in: nothing is fetched until this button is pressed, and the size is on it
+        ui.weak(format!("Downloads {mb} MB once, from huggingface.co into {}.", transcribe::models_dir().display()));
+        match st.download.clone() {
+            Some(p) if !p.is_done() => {
+                ui.add(egui::ProgressBar::new(p.fraction()).show_percentage().text(p.status()));
+                if ui.button("Cancel").clicked() {
+                    p.cancel.store(true, Ordering::SeqCst);
+                }
+                ui.ctx().request_repaint_after(Duration::from_millis(200));
+            }
+            done => {
+                if let Some(e) = done.and_then(|p| p.error()) {
+                    ui.colored_label(warn, e);
+                }
+                if ui.button(format!("Download model ({mb} MB)")).clicked() {
+                    st.download = Some(transcribe::download_model(file));
+                }
+            }
+        }
+    }
+    if exe.is_none() {
+        ui.horizontal_wrapped(|ui| {
+            ui.colored_label(warn, transcribe::install_hint());
+            if ui.small_button("Re-check").clicked() {
+                st.exe = None;
+            }
+        });
+    }
+
+    egui::Grid::new("transcribe_params").num_columns(2).show(ui, |ui| {
+        ui.label("Language");
+        ui.add(egui::TextEdit::singleline(&mut st.language).desired_width(60.0).hint_text("auto"));
+        ui.end_row();
+        ui.label("Line length");
+        ui.add(DragValue::new(&mut st.max_chars).range(20..=90).suffix(" chars"));
+        ui.end_row();
+        ui.label("Min duration");
+        ui.add(DragValue::new(&mut st.min_dur).range(0.3..=5.0).speed(0.05).suffix(" s"));
+        ui.end_row();
+        ui.label("Word timings");
+        ui.checkbox(&mut st.words, "")
+            .on_hover_text("Slower: whisper times every word, so the cues break exactly on speech");
+        ui.end_row();
+    });
+
+    let tgt = target(project, selection);
+    let running = st.job.as_ref().is_some_and(|j| !j.progress.is_done());
+    let mut go = false;
+    ui.horizontal_wrapped(|ui| {
+        ui.add_enabled_ui(have && exe.is_some() && tgt.is_some() && !running, |ui| {
+            go = glyph_text_button(ui, Glyph::Mic, "Transcribe & generate subtitles").clicked();
+        });
+        if running && ui.button("Cancel").clicked() {
+            if let Some(j) = &st.job {
+                j.cancel();
+            }
+        }
+        if tgt.is_none() {
+            ui.weak("Select a clip to transcribe.");
+        }
+    });
+    if let (true, Some(t)) = (go, &tgt) {
+        st.segments.clear();
+        st.groups.clear();
+        st.marks.clear();
+        st.status.clear();
+        st.clip = Some(t.clip);
+        st.map = (t.offset, t.scale);
+        st.job = Some(transcribe::start(transcribe::Options {
+            path: t.path.clone(),
+            src_start: t.src_start,
+            src_duration: t.src_dur,
+            model: file.to_string(),
+            language: st.language.clone(),
+            words: st.words,
+        }));
+    }
+
+    let done = st.job.as_ref().is_some_and(|j| j.progress.is_done());
+    if let Some(j) = &st.job {
+        ui.add(egui::ProgressBar::new(j.progress.fraction()).show_percentage().text(j.progress.status()));
+        if !done {
+            ui.ctx().request_repaint_after(Duration::from_millis(150));
+        }
+    }
+    if done {
+        let job = st.job.take().expect("done implies a job");
+        st.status = match job.progress.error() {
+            Some(e) => e,
+            None => {
+                let mut segs = job.segments();
+                transcribe::retime(&mut segs, st.map.0, st.map.1);
+                let cues = transcribe::to_cues(&segs, st.max_chars, st.min_dur);
+                once(undone, undo, project);
+                apply_import(project, &cues, false);
+                st.segments = segs;
+                st.groups = transcribe::duplicate_takes(&st.segments, st.threshold, TAKE_WINDOW);
+                resp.edited = true;
+                format!("{} cues from {} segments", cues.len(), st.segments.len())
+            }
+        };
+    }
+    if !st.status.is_empty() {
+        ui.weak(&st.status);
+    }
+
+    if st.segments.is_empty() {
+        return;
+    }
+    ui.separator();
+    let dups: usize = st.groups.iter().map(|g| g.len() - 1).sum();
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Double takes");
+        if ui.add(Slider::new(&mut st.threshold, 0.5..=1.0).fixed_decimals(2).text("similarity")).changed() {
+            st.groups = transcribe::duplicate_takes(&st.segments, st.threshold, TAKE_WINDOW);
+        }
+        ui.weak(format!("{dups} repeated"));
+    });
+    ui.horizontal_wrapped(|ui| {
+        if ui.add_enabled(dups > 0, Button::new("Mark on timeline")).clicked() {
+            once(undone, undo, project);
+            for id in st.marks.drain(..) {
+                project.remove_marker(id);
+            }
+            st.marks = mark_dups(project, &st.segments, &st.groups);
+            st.status = format!("marked {} take(s)", st.marks.len());
+            resp.edited = true;
+        }
+        if ui
+            .add_enabled(dups > 0 && st.clip.is_some(), Button::new("Cut the duplicates"))
+            .on_hover_text("Ripples every take but the last one out, and moves the cues with it")
+            .clicked()
+        {
+            once(undone, undo, project);
+            let n = cut_dups(project, st);
+            st.status = format!("cut {n} clip(s)");
+            resp.edited = true;
+        }
+    });
+    for (shown, &i) in st.groups.iter().flat_map(|g| &g[..g.len() - 1]).enumerate() {
+        if shown == 6 {
+            ui.weak(format!("… and {} more", dups - 6));
+            break;
+        }
+        if let Some(s) = st.segments.get(i) {
+            ui.weak(format!("{}  {}", crate::ui::duration_text(s.start), transcribe::short_label(&s.text, 64)));
+        }
+    }
+}
+
 /// Import an .srt/.vtt via rfd; asks replace (Yes) or append (No) when cues already exist.
 fn import_dialog(
     project: &mut Project,
@@ -294,6 +626,7 @@ fn export_dialog(project: &Project, vtt: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{Asset, AudioStreamInfo, ClipKind};
 
     #[test]
     fn add_at_creates_cue_at_playhead() {
@@ -339,18 +672,104 @@ mod tests {
         p.add_cue(2.0, 4.0, "b");
         let palette = Palette::new(true, egui::Color32::WHITE);
         let fonts = vec!["Segoe UI".to_string()];
-        let mut state = SubtitlesState { show_style: true, ..Default::default() };
+        // the transcribe section draws too: no model, no whisper.exe, no selection — only its hints
+        let mut state = SubtitlesState {
+            show_style: true,
+            transcribe: TranscribeState { open: true, ..Default::default() },
+            ..Default::default()
+        };
         let mut playhead = 2.5; // inside cue "b" → highlighted row with Split button
         let ctx = egui::Context::default();
         for _ in 0..2 {
             let _ = ctx.run(egui::RawInput::default(), |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut undo = |_: &Project| panic!("no undo without edits");
-                    let r = show(ui, &mut state, &mut p, &mut playhead, &fonts, &palette, &mut undo);
+                    let r = show(ui, &mut state, &mut p, &mut playhead, &[], &fonts, &palette, &mut undo);
                     assert!(!r.edited && !r.seeked);
                 });
             });
         }
         assert_eq!(p.subtitles.len(), 2);
+        assert!(state.transcribe.job.is_none() && state.transcribe.segments.is_empty());
+    }
+
+    /// A clip with an asset, on V1 + A1, running 0..10 s of the source.
+    fn clip_project(speed: f64) -> (Project, Id) {
+        let mut p = Project::new();
+        let aid = p.add_asset(Asset {
+            id: 0,
+            path: "C:/take.mp4".into(),
+            kind: ClipKind::Video,
+            duration: 10.0,
+            width: 320,
+            height: 240,
+            fps: 30.0,
+            audio_streams: vec![AudioStreamInfo { channels: 2, sample_rate: 48000, ..Default::default() }],
+            codec: String::new(),
+            folder: String::new(),
+            tags: Vec::new(),
+            label: 0,
+            description: String::new(),
+        });
+        p.insert_asset_clips(aid, 0.0, Some(0));
+        let id = p.tracks[0].clips[0].id;
+        if speed != 1.0 {
+            p.set_speed(&[id], speed, false);
+        }
+        (p, id)
+    }
+
+    #[test]
+    fn target_maps_source_time_onto_the_timeline() {
+        let (p, id) = clip_project(1.0);
+        assert!(target(&p, &[]).is_none(), "nothing selected");
+        let t = target(&p, &[id]).expect("a clip with footage");
+        assert_eq!((t.src_start, t.src_dur, t.offset, t.scale), (0.0, 10.0, 0.0, 1.0));
+        // at 2x the clip is 5 s of timeline over 10 s of source, so the transcript is squeezed by half
+        let (p, id) = clip_project(2.0);
+        let t = target(&p, &[id]).expect("a clip with footage");
+        assert!((t.src_dur - 10.0).abs() < 1e-6 && (t.scale - 0.5).abs() < 1e-6, "{:?}", (t.src_dur, t.scale));
+        // a text clip has no footage to listen to
+        let mut p = Project::new();
+        let txt = p.add_text_clip(0.0, 2.0);
+        assert!(target(&p, &[txt]).is_none());
+    }
+
+    #[test]
+    fn duplicate_takes_are_marked_then_cut_with_the_cues() {
+        let (mut p, id) = clip_project(1.0);
+        let seg = |a: f64, b: f64, t: &str| Segment { start: a, end: b, text: t.into(), words: Vec::new() };
+        let mut st = TranscribeState {
+            clip: Some(id),
+            segments: vec![
+                seg(0.0, 2.0, "Welcome to the channel"),
+                seg(2.5, 4.5, "Welcome to the channel"), // retake
+                seg(5.0, 7.0, "Welcome to the channel"), // keeper
+                seg(7.5, 9.5, "Now the actual video"),
+            ],
+            ..Default::default()
+        };
+        st.groups = transcribe::duplicate_takes(&st.segments, st.threshold, TAKE_WINDOW);
+        assert_eq!(st.groups, vec![vec![0, 1, 2]]);
+
+        st.marks = mark_dups(&mut p, &st.segments, &st.groups);
+        assert_eq!(st.marks.len(), 2, "the two flubbed takes, not the keeper");
+        let m = p.markers.iter().find(|m| m.id == st.marks[0]).expect("marker");
+        assert_eq!(m.note, "Welcome to the channel", "the marker is described by what was said");
+        assert!(m.duration > 0.0 && m.t == 0.0);
+
+        // cues over the whole transcript, then the cut takes the duplicates and drags the rest left
+        for s in &st.segments {
+            p.add_cue(s.start, s.end, s.text.clone());
+        }
+        let n = cut_dups(&mut p, &mut st);
+        assert!(n >= 2, "clips removed: {n}");
+        assert!(p.markers.is_empty(), "our markers went with the cut");
+        assert!((p.duration() - 6.0).abs() < 0.05, "the two takes (4 s) are gone: {}", p.duration());
+        assert_eq!(p.subtitles.len(), 2, "the duplicated cues went too");
+        assert!((p.subtitles[0].start - 1.0).abs() < 1e-6, "the keeper moved up: {:?}", p.subtitles[0]);
+        assert_eq!(p.subtitles[1].text, "Now the actual video");
+        assert_eq!(st.segments.len(), 2, "the transcript follows the cut");
+        assert!(st.groups.is_empty(), "nothing is a duplicate any more");
     }
 }

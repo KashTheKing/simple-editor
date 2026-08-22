@@ -149,6 +149,11 @@ pub struct Settings {
     pub frame_quality: u32,
     /// Stock image the effects panel renders its thumbnails from (empty = the embedded default).
     pub effect_thumb_image: String,
+    /// Directory containing a whisper.cpp binary (whisper-cli.exe). Empty = the cache's `whisper`
+    /// folder, then the app dir, then PATH. Speech-to-text is off until a model is downloaded.
+    pub whisper_dir: String,
+    /// Model the Subtitles pane offers first: a `engine::transcribe::MODELS` name or file name.
+    pub transcribe_model: String,
 }
 
 impl Default for Settings {
@@ -199,6 +204,8 @@ impl Default for Settings {
             frame_format: "png".into(),
             frame_quality: 92,
             effect_thumb_image: String::new(),
+            whisper_dir: String::new(),
+            transcribe_model: String::new(),
         }
     }
 }

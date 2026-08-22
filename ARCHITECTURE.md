@@ -66,6 +66,7 @@ src/engine/presets.rs  curve/motion presets, effect-chain / node-graph presets, 
 src/engine/prerender.rs "movie mode" full-quality frame cache on disk
 src/engine/style.rs    Markdown style summary of a project (for AI style guides)
 src/engine/tracking.rs point / area tracking: NCC template match on a worker thread -> a reusable path
+src/engine/transcribe.rs speech->text through a downloaded whisper.cpp model + exe, auto-subs, double takes
 src/engine/xmeml.rs    FCP7 XML export for Premiere / Resolve
 src/playback.rs        Player: render thread + audio thread + wall clock; decode_layers() for the GPU
 src/mcp/mod.rs         MCP server (HTTP + JSON-RPC), ToolCall channel, png_encode

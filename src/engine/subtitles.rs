@@ -43,7 +43,7 @@ fn parse_block(block: &[&str], out: &mut Vec<(f64, f64, String)>) {
 }
 
 /// "HH:MM:SS,mmm" / "HH:MM:SS.mmm" / "MM:SS.mmm" → seconds.
-fn parse_time(s: &str) -> Option<f64> {
+pub(crate) fn parse_time(s: &str) -> Option<f64> {
     let mut total = 0.0;
     let parts: Vec<&str> = s.split(':').collect();
     if !(2..=3).contains(&parts.len()) {
