@@ -1,6 +1,6 @@
 //! Node editor: the selected clip's effect chain as a graph you can wire up.
 //!
-//! Canvas with pan (drag empty space / middle-drag) and zoom (Ctrl+Scroll). Each node is a rounded box:
+//! Canvas with pan (middle-drag / scroll) and zoom (Ctrl+Scroll). Each node is a rounded box:
 //! title (`NodeKind::title`), an enable checkbox, input ports on the left, one output port on the right,
 //! and its parameters inline (collapsed to the first two when the node is small). Drag from a port to
 //! another to connect (`NodeGraph::connect` refuses cycles); drag a wire off a port to disconnect;
@@ -8,12 +8,17 @@
 //! (every `EffectKind` grouped by `category()`, Blend, Combine, Merge, Matte, Mask, Color, Clip, Text,
 //! Input, then one entry per project asset — an Asset node needs a real id, so it is picked there).
 //! Selecting a node shows its full parameters in the Inspector and lets the Curves pane keyframe them.
+//! Ctrl+click adds/removes a node, a primary drag over empty canvas rubber-bands a group (Shift adds),
+//! dragging any picked node moves the whole selection, Delete removes it and Ctrl+C / Ctrl+V duplicates
+//! it (edges *between* the copied nodes come along; wires to the outside are dropped). Effects and
+//! transitions dragged out of their panels drop in as fresh, unwired nodes.
 //! `Project::ensure_graph` converts a clip's linear stack the first time this pane opens for it — an
 //! undoable edit, since the renderer evaluates the graph from then on and ignores `clip.effects`.
 //! Every mutation calls `undo` once per gesture.
 
-use crate::model::{Animated, BlendMode, Effect, EffectKind, Id, Mask, NodeKind, Project};
+use crate::model::{Animated, BlendMode, Edge, Effect, EffectKind, Id, Mask, Node, NodeKind, Project, TransitionKind};
 use crate::theme::Palette;
+use crate::ui::DragPayload;
 use eframe::egui;
 use egui::{
     pos2, vec2, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, TextStyle, UiBuilder,
@@ -29,24 +34,48 @@ const SNAP: f32 = 12.0;
 const PORT_R: f32 = 4.0;
 /// At most this many parameters are shown on the box itself (the Inspector has the rest).
 const INLINE_PARAMS: usize = 2;
+/// Duplicates and pastes land this far from the original, so they are visibly separate.
+const OFFSET: f32 = 24.0;
 
 #[derive(Default)]
 pub struct NodesState {
     /// Pan/zoom of the canvas.
     pub offset: egui::Vec2,
     pub zoom: f32,
-    pub selected: Option<Id>,
+    /// The picked nodes; the last one is what the Inspector follows (`primary`).
+    pub selection: Vec<Id>,
     /// A connection being dragged: (node, port, from_output).
     pub linking: Option<(Id, usize, bool)>,
-    /// The node currently being moved (one undo per gesture).
+    /// The node under the pointer while moving (one undo per gesture; the selection travels with it).
     pub dragging: Option<Id>,
     /// Input port a wire is being pulled off, until the pointer actually leaves it.
     pub detach: Option<(Id, usize)>,
+    /// Rubber band in progress: (press origin in screen space, add instead of replace).
+    pub band: Option<(Pos2, bool)>,
+    /// Ctrl+C copy: the nodes and the edges between them, pasted with fresh ids.
+    pub clipboard: (Vec<Node>, Vec<Edge>),
     /// Where the canvas was right-clicked, in graph units: new nodes land there.
     pub menu_at: Option<(f32, f32)>,
     /// Live previews, keyed by node. Empty unless a renderer hands textures over, and the panel is
     /// fully usable without them (there is no GL context in tests or headless runs).
     pub thumbs: std::collections::HashMap<Id, egui::TextureId>,
+}
+
+impl NodesState {
+    /// The node the Inspector shows: the most recently picked one.
+    pub fn primary(&self) -> Option<Id> {
+        self.selection.last().copied()
+    }
+    /// Pick a node; `add` (Ctrl) toggles it in the selection instead of replacing it.
+    fn pick(&mut self, id: Id, add: bool) {
+        match (add, self.selection.iter().position(|&s| s == id)) {
+            (true, Some(i)) => {
+                self.selection.remove(i);
+            }
+            (true, None) => self.selection.push(id),
+            (false, _) => self.selection = vec![id],
+        }
+    }
 }
 
 #[derive(Default)]
@@ -71,6 +100,8 @@ enum Act {
     AddMask(Id),
     /// Drive a mask node's centre along a saved project path (node, path).
     SetPath(Id, Id),
+    /// Re-create copied nodes with fresh ids, offset, plus the edges between them.
+    Paste(Vec<Node>, Vec<Edge>),
 }
 
 pub fn show(
@@ -107,9 +138,7 @@ pub fn show(
         return out;
     };
     let lt = project.clip(clip_id).map(|c| c.local(playhead)).unwrap_or(0.0);
-    if state.selected.is_some_and(|s| graph.node(s).is_none()) {
-        state.selected = None;
-    }
+    state.selection.retain(|s| graph.node(*s).is_some());
 
     let rect = ui.available_rect_before_wrap();
     let base = ui.id();
@@ -118,6 +147,7 @@ pub fn show(
     p.rect_filled(rect, 0, palette.bg);
 
     // ---- pan / zoom ----
+    let mods = ui.input(|i| i.modifiers);
     let pointer = ui.input(|i| i.pointer.hover_pos()).filter(|q| rect.contains(*q));
     if pointer.is_some() {
         // egui folds Ctrl+Scroll (and pinch) into zoom_delta and keeps it out of the scroll delta
@@ -179,8 +209,13 @@ pub fn show(
     // saved drawings / polygons: a mask node's centre can travel along one (the graph's position input)
     let paths: Vec<(Id, String)> = project.paths.iter().map(|p| (p.id, p.name.clone())).collect();
 
+    // rubber band: hit-tested while the boxes are drawn, applied on release (mirrors the timeline)
+    let band_rect = state.band.map(|(o, _)| Rect::from_two_pos(o, pointer.unwrap_or(o)).intersect(rect));
+    let mut band_ids: Vec<Id> = Vec::new();
+
     // ---- wire dragging ----
-    let (pressed, released) = ui.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_released()));
+    let (pressed, released, down) =
+        ui.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_released(), i.pointer.primary_down()));
     if pressed && state.linking.is_none() {
         if let Some(q) = pointer {
             if let Some((node, port, is_out, _)) = nearest(q, None) {
@@ -245,9 +280,13 @@ pub fn show(
     let linking = state.linking.is_some();
     for &(i, r) in &boxes {
         let n = &graph.nodes[i];
+        if band_rect.is_some_and(|br| br.intersects(r)) {
+            band_ids.push(n.id);
+        }
         let nr = ui.interact(r, base.with(("node", n.id)), Sense::click_and_drag());
-        if nr.clicked() || nr.drag_started() {
-            state.selected = Some(n.id);
+        // grabbing one of several picked nodes keeps the group; anything else picks (Ctrl toggles)
+        if nr.clicked() || (nr.drag_started() && !state.selection.contains(&n.id)) {
+            state.pick(n.id, mods.ctrl);
         }
         if nr.drag_started_by(egui::PointerButton::Primary) && !linking {
             state.dragging = Some(n.id);
@@ -257,14 +296,16 @@ pub fn show(
             if nr.dragged() {
                 let d = nr.drag_delta() / z;
                 if d != egui::Vec2::ZERO {
-                    acts.push(Act::Move(n.id, n.x + d.x, n.y + d.y));
+                    for m in graph.nodes.iter().filter(|m| m.id == n.id || state.selection.contains(&m.id)) {
+                        acts.push(Act::Move(m.id, m.x + d.x, m.y + d.y));
+                    }
                 }
             }
             if nr.drag_stopped() {
                 state.dragging = None;
             }
         }
-        let selected = state.selected == Some(n.id);
+        let selected = state.selection.contains(&n.id);
         paint_node(&p, ui, r, n, selected, palette, z, state.thumbs.get(&n.id).copied());
 
         // enable toggle
@@ -341,14 +382,16 @@ pub fn show(
         let (id, kind) = (n.id, n.kind.clone());
         let (nx, ny) = (n.x, n.y);
         nr.context_menu(|ui| {
-            state.selected = Some(id);
+            if !state.selection.contains(&id) {
+                state.selection = vec![id];
+            }
             if !is_output && menu_entry(ui, base.with(("del", id)), "Delete").clicked() {
                 acts.push(Act::Delete(id));
                 needs_undo = true;
                 ui.close();
             }
             if menu_entry(ui, base.with(("dup", id)), "Duplicate").clicked() {
-                acts.push(Act::Add(kind.clone(), nx + 24.0, ny + 24.0));
+                acts.push(Act::Add(kind.clone(), nx + OFFSET, ny + OFFSET));
                 needs_undo = true;
                 ui.close();
             }
@@ -370,13 +413,49 @@ pub fn show(
     }
 
     // ---- canvas ----
-    if resp.dragged_by(egui::PointerButton::Middle)
-        || (resp.dragged_by(egui::PointerButton::Primary) && !linking && state.dragging.is_none())
-    {
+    if resp.dragged_by(egui::PointerButton::Middle) {
         state.offset += resp.drag_delta();
     }
+    // a primary drag that missed every node rubber-bands a group instead of panning (Shift adds)
+    if state.band.is_none()
+        && !linking
+        && state.dragging.is_none()
+        && resp.drag_started_by(egui::PointerButton::Primary)
+    {
+        if let Some(o) = resp.interact_pointer_pos().or(pointer) {
+            state.band = Some((o, mods.shift));
+        }
+    }
+    if let (Some(br), Some((_, add))) = (band_rect, state.band) {
+        p.rect_filled(br, 0, palette.accent.gamma_multiply(0.15));
+        p.rect_stroke(br, 0, Stroke::new(1.0, palette.accent), StrokeKind::Inside);
+        if !down {
+            if !add {
+                state.selection.clear();
+            }
+            for id in band_ids {
+                if !state.selection.contains(&id) {
+                    state.selection.push(id);
+                }
+            }
+            state.band = None;
+        }
+    }
+    // an effect or transition dragged out of its panel lands here as a fresh, unwired node
+    if let Some(payload) = resp.dnd_release_payload::<DragPayload>() {
+        let g = to_graph(pointer.unwrap_or(rect.center()));
+        let kind = match &*payload {
+            DragPayload::Effect(k) => Some(NodeKind::Effect(Effect::new(*k))),
+            DragPayload::Transition(k) => Some(transition_node(*k)),
+            _ => None,
+        };
+        if let Some(kind) = kind {
+            acts.push(Act::Add(kind, g.x, g.y));
+            needs_undo = true;
+        }
+    }
     if resp.clicked() {
-        state.selected = None;
+        state.selection.clear();
     }
     if resp.secondary_clicked() {
         let g = to_graph(pointer.unwrap_or(rect.center()));
@@ -386,25 +465,39 @@ pub fn show(
     let assets: Vec<(Id, String)> = project.assets.iter().map(|a| (a.id, a.name())).collect();
     resp.context_menu(|ui| add_menu(ui, base, at, &assets, &mut acts, &mut needs_undo));
 
-    // Delete / Ctrl+D on the selected node (the same actions as the menu, reachable from the keyboard)
-    if let Some(sel) = state.selected {
-        if !ui.ctx().wants_keyboard_input() && pointer.is_some() {
-            let (del, dup) = ui.input_mut(|i| {
-                (
-                    i.consume_key(egui::Modifiers::NONE, egui::Key::Delete),
-                    i.consume_key(egui::Modifiers::CTRL, egui::Key::D),
-                )
-            });
-            if del && graph.node(sel).is_some_and(|n| n.kind != NodeKind::Output) {
-                acts.push(Act::Delete(sel));
+    // Delete / Ctrl+D / Ctrl+C / Ctrl+V on the selection (the menu's actions, from the keyboard)
+    if !ui.ctx().wants_keyboard_input() && pointer.is_some() {
+        let (del, dup, copy, paste) = ui.input_mut(|i| {
+            (
+                i.consume_key(egui::Modifiers::NONE, egui::Key::Delete),
+                i.consume_key(egui::Modifiers::CTRL, egui::Key::D),
+                i.consume_key(egui::Modifiers::CTRL, egui::Key::C),
+                i.consume_key(egui::Modifiers::CTRL, egui::Key::V),
+            )
+        });
+        // the Output is part of every graph: it is never deleted, duplicated or copied
+        let sel: Vec<&Node> =
+            state.selection.iter().filter_map(|s| graph.node(*s)).filter(|n| n.kind != NodeKind::Output).collect();
+        for n in &sel {
+            if del {
+                acts.push(Act::Delete(n.id));
                 needs_undo = true;
             }
             if dup {
-                if let Some(n) = graph.node(sel) {
-                    acts.push(Act::Add(n.kind.clone(), n.x + 24.0, n.y + 24.0));
-                    needs_undo = true;
-                }
+                acts.push(Act::Add(n.kind.clone(), n.x + OFFSET, n.y + OFFSET));
+                needs_undo = true;
             }
+        }
+        if copy && !sel.is_empty() {
+            let ids: Vec<Id> = sel.iter().map(|n| n.id).collect();
+            state.clipboard = (
+                sel.iter().map(|n| (*n).clone()).collect(),
+                graph.edges.iter().filter(|e| ids.contains(&e.from) && ids.contains(&e.to)).copied().collect(),
+            );
+        }
+        if paste && !state.clipboard.0.is_empty() {
+            acts.push(Act::Paste(state.clipboard.0.clone(), state.clipboard.1.clone()));
+            needs_undo = true;
         }
     }
 
@@ -415,14 +508,25 @@ pub fn show(
         undo(project);
     }
     for a in acts {
-        out.edited |= apply(project, clip_id, a, &mut state.selected);
+        out.edited |= apply(project, clip_id, a, &mut state.selection);
     }
-    out.selected = state.selected;
+    out.selected = state.primary();
     out
 }
 
+/// The nearest node to a transition: a cross fade / push / wipe is a two-input mix at any one instant,
+/// and a dip to colour is that colour.
+// ponytail: Combine holds the mix but not a wipe's geometry — give the graph a real Transition node if
+// anyone needs to animate one there.
+fn transition_node(kind: TransitionKind) -> NodeKind {
+    match kind {
+        TransitionKind::FadeToColor => NodeKind::Color([0, 0, 0, 255]),
+        _ => NodeKind::Combine { mode: BlendMode::Normal, factor: Animated::new(0.5) },
+    }
+}
+
 /// Apply one buffered action; returns true when the project actually changed.
-fn apply(project: &mut Project, clip: Id, act: Act, selected: &mut Option<Id>) -> bool {
+fn apply(project: &mut Project, clip: Id, act: Act, selected: &mut Vec<Id>) -> bool {
     // reads the project before the graph is borrowed mutably
     if let Act::SetPath(node, path) = act {
         let Some(pts) = project.path(path).map(|p| p.points.clone()) else { return false };
@@ -442,21 +546,37 @@ fn apply(project: &mut Project, clip: Id, act: Act, selected: &mut Option<Id>) -
     if let Act::Add(kind, x, y) = act {
         let id = project.add_node(clip, kind, x, y);
         if let Some(id) = id {
-            *selected = Some(id);
+            *selected = vec![id];
         }
         return id.is_some();
     }
+    // fresh ids for the copies, then the edges that had both ends inside the copied set
+    if let Act::Paste(nodes, edges) = act {
+        let mut map: Vec<(Id, Id)> = Vec::with_capacity(nodes.len());
+        for n in &nodes {
+            if let Some(id) = project.add_node(clip, n.kind.clone(), n.x + OFFSET, n.y + OFFSET) {
+                map.push((n.id, id));
+            }
+        }
+        let Some(g) = project.clip_mut(clip).and_then(|c| c.graph.as_mut()) else { return false };
+        let new = |old: Id| map.iter().find(|(o, _)| *o == old).map(|(_, n)| *n);
+        for e in &edges {
+            if let (Some(from), Some(to)) = (new(e.from), new(e.to)) {
+                g.connect(from, to, e.port);
+            }
+        }
+        *selected = map.iter().map(|(_, n)| *n).collect();
+        return !map.is_empty();
+    }
     let Some(g) = project.clip_mut(clip).and_then(|c| c.graph.as_mut()) else { return false };
     match act {
-        Act::Add(..) | Act::SetPath(..) => false,
+        Act::Add(..) | Act::SetPath(..) | Act::Paste(..) => false,
         Act::Delete(id) => {
             if g.node(id).is_none_or(|n| n.kind == NodeKind::Output) {
                 return false;
             }
             g.remove_node(id);
-            if *selected == Some(id) {
-                *selected = None;
-            }
+            selected.retain(|s| *s != id);
             true
         }
         Act::Move(id, x, y) => match g.node_mut(id) {
@@ -773,11 +893,15 @@ mod tests {
             self.project.clip(self.clip()).and_then(|c| c.graph.as_ref()).expect("graph")
         }
         fn frame(&mut self, events: Vec<Event>) {
+            self.frame_m(events, Modifiers::NONE);
+        }
+        fn frame_m(&mut self, events: Vec<Event>, modifiers: Modifiers) {
             self.time += 0.05;
             let input = RawInput {
                 screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 600.0))),
                 time: Some(self.time),
                 events,
+                modifiers,
                 ..Default::default()
             };
             let pal = Palette::new(true, Color32::from_rgb(0, 120, 212));
@@ -797,12 +921,33 @@ mod tests {
                 .rect
         }
         fn press(&mut self, pos: Pos2, button: PointerButton) {
-            self.frame(vec![Event::PointerMoved(pos)]);
-            self.frame(vec![Event::PointerButton { pos, button, pressed: true, modifiers: Modifiers::NONE }]);
+            self.press_m(pos, button, Modifiers::NONE);
+        }
+        fn press_m(&mut self, pos: Pos2, button: PointerButton, modifiers: Modifiers) {
+            self.frame_m(vec![Event::PointerMoved(pos)], modifiers);
+            self.frame_m(vec![Event::PointerButton { pos, button, pressed: true, modifiers }], modifiers);
         }
         fn release(&mut self, pos: Pos2, button: PointerButton) {
-            self.frame(vec![Event::PointerButton { pos, button, pressed: false, modifiers: Modifiers::NONE }]);
-            self.frame(vec![]);
+            self.release_m(pos, button, Modifiers::NONE);
+        }
+        fn release_m(&mut self, pos: Pos2, button: PointerButton, modifiers: Modifiers) {
+            self.frame_m(vec![Event::PointerButton { pos, button, pressed: false, modifiers }], modifiers);
+            self.frame_m(vec![], modifiers);
+        }
+        /// Click a node's title bar (its middle is an inline parameter widget) — Ctrl to add it to /
+        /// drop it from the selection.
+        fn click_node(&mut self, id: Id, modifiers: Modifiers) {
+            let r = self.node_rect(id);
+            let c = pos2(r.center().x, r.top() + HEADER_H * 0.5 * self.state.zoom);
+            self.press_m(c, PointerButton::Primary, modifiers);
+            self.release_m(c, PointerButton::Primary, modifiers);
+        }
+        fn key(&mut self, key: egui::Key, modifiers: Modifiers) {
+            self.frame(vec![Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }]);
+        }
+        fn pos_of(&self, id: Id) -> (f32, f32) {
+            let n = self.graph().node(id).expect("node");
+            (n.x, n.y)
         }
         fn drag(&mut self, from: Pos2, to: Pos2) {
             self.press(from, PointerButton::Primary);
@@ -933,7 +1078,7 @@ mod tests {
     fn the_output_node_cannot_be_deleted() {
         let mut h = Harness::new();
         let (_, output) = h.ids();
-        h.state.selected = Some(output);
+        h.state.selection = vec![output];
         h.frame(vec![]);
         // no Delete row in the Output menu
         let orr = h.node_rect(output);
@@ -1098,7 +1243,7 @@ mod tests {
         let mut h = Harness::new();
         h.menu_click(pos2(560.0, 200.0), ("add", "Blur"));
         let fx = h.out.selected.expect("selected");
-        let mut sel = Some(fx);
+        let mut sel = vec![fx];
         let clip = h.clip();
         assert!(apply(&mut h.project, clip, Act::SetParam(fx, 0, 7.5), &mut sel));
         assert!(apply(&mut h.project, clip, Act::AddMask(fx), &mut sel));
@@ -1115,6 +1260,110 @@ mod tests {
         let with = node_height(&NodeKind::Effect(Effect::new(EffectKind::Blur)), true);
         assert!(with > plain + 40.0, "{plain} vs {with}");
         assert!(node_height(&NodeKind::Output, false) >= HEADER_H + ROW_H);
+    }
+
+    /// Two effect nodes, wired Input -> a -> b, neither selected afterwards.
+    fn two_nodes(h: &mut Harness) -> (Id, Id) {
+        h.menu_click(pos2(420.0, 160.0), ("add", "Blur"));
+        let a = h.out.selected.expect("selected");
+        h.menu_click(pos2(660.0, 320.0), ("add", "Sharpen"));
+        let b = h.out.selected.expect("selected");
+        let (input, _) = h.ids();
+        let z = h.state.zoom;
+        let (ir, ar) = (h.node_rect(input), h.node_rect(a));
+        h.drag(out_port(ir, z), in_port(ar, 0, z));
+        let (ar, br) = (h.node_rect(a), h.node_rect(b));
+        h.drag(out_port(ar, z), in_port(br, 0, z));
+        (a, b)
+    }
+
+    #[test]
+    fn ctrl_click_picks_several_nodes_and_they_move_and_delete_together() {
+        let mut h = Harness::new();
+        let (a, b) = two_nodes(&mut h);
+        h.click_node(a, Modifiers::NONE);
+        h.click_node(b, Modifiers::CTRL);
+        assert_eq!(h.state.selection, vec![a, b], "Ctrl+click added the second node");
+        let (before_a, before_b) = (h.pos_of(a), h.pos_of(b));
+        h.undos = 0;
+        let start = h.node_rect(a).center();
+        h.drag(start, start + vec2(50.0, 30.0));
+        let (after_a, after_b) = (h.pos_of(a), h.pos_of(b));
+        for (before, after) in [(before_a, after_a), (before_b, after_b)] {
+            assert!((after.0 - before.0 - 50.0).abs() < 1.0, "x {before:?} -> {after:?}");
+            assert!((after.1 - before.1 - 30.0).abs() < 1.0, "y {before:?} -> {after:?}");
+        }
+        assert_eq!(h.undos, 1, "one snapshot for the whole group move");
+        // Ctrl+click again drops a node from the selection, then Delete takes the rest
+        h.click_node(a, Modifiers::CTRL);
+        assert_eq!(h.state.selection, vec![b]);
+        h.click_node(a, Modifiers::CTRL);
+        h.frame(vec![Event::PointerMoved(pos2(800.0, 520.0))]);
+        h.key(egui::Key::Delete, Modifiers::NONE);
+        assert_eq!(h.graph().nodes.len(), 2, "both picked nodes were deleted");
+        assert!(h.state.selection.is_empty());
+    }
+
+    #[test]
+    fn a_rubber_band_picks_every_node_it_covers() {
+        let mut h = Harness::new();
+        let (input, output) = h.ids();
+        // press on empty canvas below the two nodes and drag up across both
+        h.drag(pos2(700.0, 500.0), pos2(10.0, 12.0));
+        assert_eq!(h.state.selection, vec![input, output]);
+        assert!(h.state.band.is_none(), "band cleared on release");
+        // a band over empty space replaces the selection with nothing
+        h.drag(pos2(700.0, 500.0), pos2(500.0, 300.0));
+        assert!(h.state.selection.is_empty(), "{:?}", h.state.selection);
+    }
+
+    #[test]
+    fn copy_paste_clones_the_selection_with_the_edges_inside_it() {
+        let mut h = Harness::new();
+        let (a, b) = two_nodes(&mut h);
+        let (input, _) = h.ids();
+        h.click_node(a, Modifiers::NONE);
+        h.click_node(b, Modifiers::CTRL);
+        h.frame(vec![Event::PointerMoved(pos2(800.0, 520.0))]);
+        h.key(egui::Key::C, Modifiers::CTRL);
+        h.undos = 0;
+        h.key(egui::Key::V, Modifiers::CTRL);
+        assert_eq!(h.graph().nodes.len(), 6, "two copies joined the four nodes");
+        assert_eq!(h.undos, 1, "one snapshot for the paste");
+        let copies = h.state.selection.clone();
+        assert_eq!(copies.len(), 2, "the copies are what stays selected");
+        assert!(!copies.contains(&a) && !copies.contains(&b), "fresh ids: {copies:?}");
+        let g = h.graph();
+        assert_eq!(g.input_of(copies[1], 0), Some(copies[0]), "the edge inside the copy came along");
+        assert_eq!(g.input_of(copies[0], 0), None, "the edge from Input did not");
+        assert_eq!(g.input_of(b, 0), Some(a), "the originals are untouched");
+        assert_eq!(g.input_of(a, 0), Some(input));
+        let (orig, copy) = (h.pos_of(a), h.pos_of(copies[0]));
+        assert!((copy.0 - orig.0 - OFFSET).abs() < 0.01 && (copy.1 - orig.1 - OFFSET).abs() < 0.01, "offset");
+    }
+
+    #[test]
+    fn dropping_an_effect_or_a_transition_makes_a_node_where_it_landed() {
+        let mut h = Harness::new();
+        // the drag starts outside the canvas (in the effects panel), so only the release lands here
+        let drop = |h: &mut Harness, payload: DragPayload, at: Pos2| {
+            h.press(pos2(2.0, 2.0), PointerButton::Primary);
+            egui::DragAndDrop::set_payload(&h.ctx, payload);
+            h.frame(vec![Event::PointerMoved(at)]);
+            h.release(at, PointerButton::Primary);
+        };
+        let at = pos2(600.0, 400.0);
+        drop(&mut h, DragPayload::Effect(EffectKind::Pixelate), at);
+        let g = h.graph();
+        assert_eq!(g.nodes.len(), 3, "{:?}", g.nodes.iter().map(|n| n.kind.title()).collect::<Vec<_>>());
+        let n = g.nodes.iter().find(|n| n.kind.title() == "Pixelate").expect("effect node");
+        assert!(g.edges.iter().all(|e| e.from != n.id && e.to != n.id), "wired to nothing");
+        // dropped at the pointer: graph units = (screen - origin) / zoom, and the canvas starts unpanned
+        let origin = h.ctx.read_response(h.base.with(("node", g.nodes[0].id))).expect("input node").rect.min;
+        assert!((n.x - (at.x - origin.x)).abs() < 1.0 && (n.y - (at.y - origin.y)).abs() < 1.0, "at {},{}", n.x, n.y);
+        assert!(h.undos >= 1, "a dropped node is undoable");
+        drop(&mut h, DragPayload::Transition(TransitionKind::CrossFade), pos2(300.0, 450.0));
+        assert!(h.graph().nodes.iter().any(|n| n.kind.title() == "Combine"), "a cross fade drops in as a mix");
     }
 
     #[test]
