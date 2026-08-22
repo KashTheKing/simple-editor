@@ -71,11 +71,32 @@ impl Default for ToolsState {
     }
 }
 
+/// Which way a triangle / arrow glyph points.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Dir {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+impl Dir {
+    /// Unit vector along the pointing direction (y grows downward, as everywhere in egui).
+    fn unit(self) -> egui::Vec2 {
+        match self {
+            Dir::Up => egui::vec2(0.0, -1.0),
+            Dir::Down => egui::vec2(0.0, 1.0),
+            Dir::Left => egui::vec2(-1.0, 0.0),
+            Dir::Right => egui::vec2(1.0, 0.0),
+        }
+    }
+}
+
 /// The strip, left to right: (tool, icon, name). `Tool::Mask` stands for whichever mask shape is
 /// selected (the combo next to it picks one), the shape tools each get their own button.
-/// What `icon_button` draws. Painted with the painter, not typed: several of the obvious characters
-/// (polygon, pencil, half-disc, magnifier) are missing from Segoe UI and egui's bundled fonts and came
-/// out as tofu boxes, which made half the strip look identical.
+/// What `icon_button` draws. Painted with the painter, not typed: nearly every obvious character
+/// (polygon, pencil, half-disc, magnifier, close, play, reorder arrows) is missing from Segoe UI and
+/// egui's bundled fonts and came out as a tofu box.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Glyph {
     Cursor,
@@ -116,6 +137,35 @@ pub(crate) enum Glyph {
     MusicNote,
     /// A file-explorer folder: a tab sitting on a body.
     Folder,
+    /// Two crossed strokes — close, delete, clear.
+    Cross,
+    /// A filled dot — a colour swatch, a bullet, "in use".
+    Dot,
+    /// Two sheets, one behind the other — copy.
+    Copy,
+    /// A clipboard — paste.
+    Paste,
+    /// A filled triangle pointing `Dir` — reorder, collapse, step one frame.
+    Tri(Dir),
+    /// Two triangles — the previous / next cut.
+    Skip(Dir),
+    /// A triangle backed against a bar — go to the very start / end.
+    Jump(Dir),
+    Play,
+    Pause,
+    Stop,
+    /// Four corner brackets — fullscreen.
+    Fullscreen,
+    /// A window with an arrow leaving it — pop this pane out.
+    PopOut,
+    /// An arrow into a margin bar — indent (true) / outdent (false).
+    Indent(bool),
+    /// A lane carrying two blocks — a nested sequence.
+    Sequence,
+    /// A card with a folded corner — a saved clip template.
+    Template,
+    /// A six-armed snowflake — a frozen frame.
+    Snowflake,
 }
 
 const STRIP: [(Tool, Glyph, &str); 16] = [
@@ -380,7 +430,8 @@ fn style_controls(ui: &mut egui::Ui, state: &mut ToolsState, palette: &Palette) 
 }
 
 /// A button showing `icon` and then `text`. Used wherever a control needs a real-world picture rather
-/// than a symbol character (half of those render as tofu boxes in Segoe UI).
+/// than a symbol character (half of those render as tofu boxes in Segoe UI). An empty `text` gives a
+/// bare icon button, centred.
 pub(crate) fn glyph_text_button(ui: &mut egui::Ui, icon: Glyph, text: &str) -> egui::Response {
     let font = egui::TextStyle::Button.resolve(ui.style());
     let galley = ui.painter().layout_no_wrap(text.to_owned(), font, Color32::PLACEHOLDER);
@@ -390,8 +441,8 @@ pub(crate) fn glyph_text_button(ui: &mut egui::Ui, icon: Glyph, text: &str) -> e
     let (rect, r) = ui.allocate_exact_size(size, Sense::click());
     let v = ui.style().interact(&r);
     ui.painter().rect(rect, v.corner_radius, v.weak_bg_fill, v.bg_stroke, StrokeKind::Inside);
-    let icon_rect =
-        egui::Rect::from_min_size(egui::pos2(rect.left() + pad.x, rect.top()), egui::vec2(icon_w, rect.height()));
+    let icon_x = if text.is_empty() { rect.center().x - icon_w / 2.0 } else { rect.left() + pad.x };
+    let icon_rect = egui::Rect::from_min_size(egui::pos2(icon_x, rect.top()), egui::vec2(icon_w, rect.height()));
     draw_glyph(ui.painter(), icon_rect, icon, v.text_color());
     let tp = egui::pos2(icon_rect.right(), rect.center().y - galley.size().y / 2.0);
     ui.painter().galley(tp, galley, v.text_color());
@@ -433,6 +484,12 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
                 c + egui::vec2(a.cos() * rad, a.sin() * rad)
             })
             .collect()
+    };
+    // isoceles triangle centred on `ctr`, `depth` from base to tip along `d`, `half` across the base
+    let tri = |ctr: egui::Pos2, d: Dir, depth: f32, half: f32| -> Vec<egui::Pos2> {
+        let u = d.unit();
+        let n = egui::vec2(-u.y, u.x);
+        vec![ctr + u * depth, ctr - u * depth + n * half, ctr - u * depth - n * half]
     };
     match g {
         Glyph::Letter(ch) => {
@@ -723,7 +780,164 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
             p.rect_stroke(tab, CornerRadius::ZERO, stroke, StrokeKind::Inside);
             p.rect_stroke(body, CornerRadius::ZERO, stroke, StrokeKind::Inside);
         }
+        Glyph::Cross => {
+            let s = Stroke::new(1.7, fg);
+            p.line_segment([c + egui::vec2(-4.2, -4.2), c + egui::vec2(4.2, 4.2)], s);
+            p.line_segment([c + egui::vec2(4.2, -4.2), c + egui::vec2(-4.2, 4.2)], s);
+        }
+        Glyph::Dot => {
+            p.circle_filled(c, 3.6, fg);
+        }
+        // copy: the sheet you are taking, with its original still behind it
+        Glyph::Copy => {
+            p.rect_stroke(
+                egui::Rect::from_min_size(c + egui::vec2(-6.0, -6.5), egui::vec2(8.0, 10.0)),
+                CornerRadius::same(1),
+                stroke,
+                StrokeKind::Inside,
+            );
+            p.rect_filled(
+                egui::Rect::from_min_size(c + egui::vec2(-2.0, -3.0), egui::vec2(8.0, 10.0)),
+                CornerRadius::same(1),
+                fg,
+            );
+        }
+        // paste: a clipboard — a board with its spring clip on top
+        Glyph::Paste => {
+            p.rect_stroke(
+                egui::Rect::from_center_size(c + egui::vec2(0.0, 1.0), egui::vec2(11.0, 12.0)),
+                CornerRadius::same(1),
+                stroke,
+                StrokeKind::Inside,
+            );
+            p.rect_filled(
+                egui::Rect::from_center_size(c + egui::vec2(0.0, -5.0), egui::vec2(6.5, 3.5)),
+                CornerRadius::same(1),
+                fg,
+            );
+        }
+        Glyph::Tri(d) => {
+            p.add(egui::Shape::convex_polygon(tri(c, d, 4.0, 4.2), fg, Stroke::NONE));
+        }
+        Glyph::Skip(d) => {
+            let u = d.unit();
+            for k in [-3.4, 3.4] {
+                p.add(egui::Shape::convex_polygon(tri(c + u * k, d, 3.4, 4.6), fg, Stroke::NONE));
+            }
+        }
+        // |◀ / ▶| — the bar sits at the far edge, in the direction of travel
+        Glyph::Jump(d) => {
+            let u = d.unit();
+            let n = egui::vec2(-u.y, u.x);
+            p.line_segment([c + u * 5.5 - n * 5.0, c + u * 5.5 + n * 5.0], Stroke::new(2.0, fg));
+            p.add(egui::Shape::convex_polygon(tri(c - u * 1.5, d, 3.8, 5.0), fg, Stroke::NONE));
+        }
+        Glyph::Play => {
+            p.add(egui::Shape::convex_polygon(tri(c + egui::vec2(0.8, 0.0), Dir::Right, 5.5, 6.0), fg, Stroke::NONE));
+        }
+        Glyph::Pause => {
+            for x in [-3.0_f32, 3.0] {
+                p.rect_filled(
+                    egui::Rect::from_center_size(c + egui::vec2(x, 0.0), egui::vec2(3.0, 11.0)),
+                    CornerRadius::ZERO,
+                    fg,
+                );
+            }
+        }
+        Glyph::Stop => {
+            p.rect_filled(egui::Rect::from_center_size(c, egui::vec2(10.0, 10.0)), CornerRadius::same(1), fg);
+        }
+        // fullscreen: four corner brackets pointing outwards
+        Glyph::Fullscreen => {
+            for (sx, sy) in [(-1.0_f32, -1.0_f32), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+                let corner = c + egui::vec2(sx * 6.5, sy * 5.5);
+                p.line_segment([corner, corner - egui::vec2(sx * 4.0, 0.0)], stroke);
+                p.line_segment([corner, corner - egui::vec2(0.0, sy * 3.5)], stroke);
+            }
+        }
+        // pop out: a window frame with an arrow leaving through its top-right corner
+        Glyph::PopOut => {
+            p.rect_stroke(
+                egui::Rect::from_center_size(c + egui::vec2(-1.0, 1.5), egui::vec2(11.0, 10.0)),
+                CornerRadius::same(1),
+                stroke,
+                StrokeKind::Inside,
+            );
+            p.line_segment([c + egui::vec2(0.0, -1.0), c + egui::vec2(6.0, -6.0)], stroke);
+            p.add(egui::Shape::convex_polygon(
+                vec![c + egui::vec2(6.5, -6.5), c + egui::vec2(1.5, -6.0), c + egui::vec2(6.0, -1.5)],
+                fg,
+                Stroke::NONE,
+            ));
+        }
+        // indent / outdent: an arrow shoved against the margin it moves towards
+        Glyph::Indent(inward) => {
+            let d = if inward { Dir::Right } else { Dir::Left };
+            let u = d.unit();
+            p.line_segment([c + u * 6.0 + egui::vec2(0.0, -5.5), c + u * 6.0 + egui::vec2(0.0, 5.5)], stroke);
+            p.line_segment([c - u * 6.0, c + u * 1.0], stroke);
+            p.add(egui::Shape::convex_polygon(tri(c + u * 2.5, d, 2.5, 3.2), fg, Stroke::NONE));
+        }
+        // nested sequence: two clip blocks standing on a timeline lane
+        Glyph::Sequence => {
+            p.line_segment([c + egui::vec2(-6.5, 5.5), c + egui::vec2(6.5, 5.5)], stroke);
+            for (x, h) in [(-6.0_f32, 9.0_f32), (0.5, 6.0)] {
+                p.rect_filled(
+                    egui::Rect::from_min_size(c + egui::vec2(x, 4.0 - h), egui::vec2(5.5, h)),
+                    CornerRadius::same(1),
+                    fg,
+                );
+            }
+        }
+        // template: a card with its top-right corner folded over
+        Glyph::Template => {
+            let fold = 4.0;
+            let (l, t, rr, b) = (c.x - 5.0, c.y - 6.0, c.x + 5.0, c.y + 6.0);
+            p.add(egui::Shape::closed_line(
+                vec![
+                    egui::pos2(l, t),
+                    egui::pos2(rr - fold, t),
+                    egui::pos2(rr, t + fold),
+                    egui::pos2(rr, b),
+                    egui::pos2(l, b),
+                ],
+                stroke,
+            ));
+            p.add(egui::Shape::line(
+                vec![egui::pos2(rr - fold, t), egui::pos2(rr - fold, t + fold), egui::pos2(rr, t + fold)],
+                stroke,
+            ));
+        }
+        // snowflake: three crossed arms, each with a pair of barbs
+        Glyph::Snowflake => {
+            let thin = Stroke::new(1.0, fg);
+            for i in 0..3 {
+                let a = std::f32::consts::FRAC_PI_2 + std::f32::consts::PI * i as f32 / 3.0;
+                let arm = egui::vec2(a.cos(), a.sin());
+                p.line_segment([c - arm * 6.5, c + arm * 6.5], thin);
+                let barb = egui::vec2(-arm.y, arm.x);
+                for s in [-1.0_f32, 1.0] {
+                    let tip = c + arm * (6.5 * s);
+                    p.line_segment([tip, tip - arm * 2.4 * s + barb * 1.8], thin);
+                    p.line_segment([tip, tip - arm * 2.4 * s - barb * 1.8], thin);
+                }
+            }
+        }
     }
+}
+
+/// Paint `icon` where a plain label would go — no button chrome, no hit area.
+pub(crate) fn glyph_label(ui: &mut egui::Ui, icon: Glyph, color: Color32) -> egui::Response {
+    let (rect, r) = ui.allocate_exact_size(egui::vec2(18.0, ui.spacing().interact_size.y), Sense::hover());
+    draw_glyph(ui.painter(), rect, icon, color);
+    r
+}
+
+/// The label-colour swatch every label menu shows: a filled round chip. A `Button`, so a caller can
+/// click it, select it or hang a menu off it.
+pub(crate) fn color_chip<'a>(color: Color32, selected: bool, palette: &Palette) -> egui::Button<'a> {
+    let ring = if selected { Stroke::new(2.0, palette.accent) } else { Stroke::new(1.0, palette.border) };
+    egui::Button::new("").fill(color).stroke(ring).corner_radius(CornerRadius::same(8)).min_size(egui::vec2(15.0, 15.0))
 }
 
 /// Readable text colour on top of the accent fill.
@@ -812,6 +1026,101 @@ mod tests {
                 Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers },
                 Event::Key { key, physical_key: None, pressed: false, repeat: false, modifiers },
             ]);
+        }
+    }
+
+    /// Every variant, so a new one cannot be added without deciding what it looks like.
+    const ALL_GLYPHS: &[Glyph] = &[
+        Glyph::Cursor,
+        Glyph::Letter('T'),
+        Glyph::Rect,
+        Glyph::Ellipse,
+        Glyph::Poly(5),
+        Glyph::Star,
+        Glyph::Line,
+        Glyph::Arrow,
+        Glyph::Pencil,
+        Glyph::Mask,
+        Glyph::Zoom,
+        Glyph::Razor,
+        Glyph::Flag,
+        Glyph::Hourglass,
+        Glyph::Eye,
+        Glyph::EyeOff,
+        Glyph::Diamond,
+        Glyph::Record,
+        Glyph::Mic,
+        Glyph::Headphone,
+        Glyph::SpeakerOn,
+        Glyph::SpeakerOff,
+        Glyph::Camera,
+        Glyph::FilmStrip,
+        Glyph::Nodes,
+        Glyph::Layers,
+        Glyph::Target,
+        Glyph::Magnet,
+        Glyph::Spacer,
+        Glyph::MusicNote,
+        Glyph::Folder,
+        Glyph::Cross,
+        Glyph::Dot,
+        Glyph::Copy,
+        Glyph::Paste,
+        Glyph::Tri(Dir::Up),
+        Glyph::Tri(Dir::Down),
+        Glyph::Tri(Dir::Left),
+        Glyph::Tri(Dir::Right),
+        Glyph::Skip(Dir::Left),
+        Glyph::Skip(Dir::Right),
+        Glyph::Jump(Dir::Left),
+        Glyph::Jump(Dir::Right),
+        Glyph::Play,
+        Glyph::Pause,
+        Glyph::Stop,
+        Glyph::Fullscreen,
+        Glyph::PopOut,
+        Glyph::Indent(true),
+        Glyph::Indent(false),
+        Glyph::Sequence,
+        Glyph::Template,
+        Glyph::Snowflake,
+    ];
+
+    /// Tessellated vertices produced by `paint`, on a throwaway context.
+    fn painted(paint: impl Fn(&egui::Painter, Rect)) -> usize {
+        let ctx = egui::Context::default();
+        let input = || egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 100.0))),
+            ..Default::default()
+        };
+        let mut run = || {
+            ctx.run(input(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let rect = Rect::from_min_size(Pos2::new(20.0, 20.0), Vec2::new(24.0, 22.0));
+                    ui.allocate_space(rect.size());
+                    paint(ui.painter(), rect);
+                });
+            })
+        };
+        run();
+        let out = run();
+        ctx.tessellate(out.shapes, 1.0)
+            .iter()
+            .map(|p| match &p.primitive {
+                egui::epaint::Primitive::Mesh(m) => m.vertices.len(),
+                _ => 0,
+            })
+            .sum()
+    }
+
+    #[test]
+    fn every_glyph_paints_a_picture() {
+        // the point of a Glyph is that nothing is typed — a variant that paints nothing would be a
+        // blank button, no better than the tofu box it replaced
+        let empty = painted(|_, _| {});
+        for g in ALL_GLYPHS {
+            let n = painted(|p, rect| draw_glyph(p, rect, *g, Color32::WHITE));
+            assert!(n > empty, "{g:?} painted nothing ({n} vs {empty} vertices)");
         }
     }
 

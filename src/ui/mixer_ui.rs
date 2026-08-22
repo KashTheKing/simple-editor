@@ -4,7 +4,7 @@
 //! Strip: name (editable), what feeds it, a stereo peak meter fed by `BusGraph::meter`, a gain fader
 //! (dB), pan knob, Mute (speaker glyph) / Solo / Mono, the output-bus combo, and the filter chain —
 //! each filter as a header row (enable, name, up/down, X) with its parameters below (DragValue per
-//! `FilterKind::params()` + a "◆" keyframe toggle); EQ / pass filters also draw a response plot over a
+//! `FilterKind::params()` + a diamond keyframe toggle); EQ / pass filters also draw a response plot over a
 //! labelled log-frequency grid with one draggable handle per band. "+ Filter" adds from
 //! `FilterKind::ALL`, "+ Bus" creates a bus, X deletes one (never Main; its users fall back to Main).
 //! Routing: every audio track is a row — click it to send it to the selected bus, or pick from its own
@@ -21,7 +21,7 @@
 use crate::engine::mixer_fx::{db_to_lin, filter_bands, filter_response_db, lin_to_db, BusGraph, EQ_BANDS};
 use crate::model::{Animated, AudioFilter, Bus, FilterKind, Id, Project, TrackKind};
 use crate::theme::Palette;
-use crate::ui::tools::{icon_button, Glyph};
+use crate::ui::tools::{glyph_text_button, icon_button, Dir, Glyph};
 use crate::ui::Gesture;
 use eframe::egui::{
     self, pos2, vec2, Align2, Button, ComboBox, DragValue, FontId, Grid, Rect, Sense, Stroke, TextEdit,
@@ -219,7 +219,7 @@ fn feeds(project: &Project, list: &[Bus], main: Id) -> Vec<(Id, String)> {
         .collect()
 }
 
-/// "◆" keyframe toggle for one parameter at the playhead; right-click clears every key. `at` only has
+/// Diamond keyframe toggle for one parameter at the playhead; right-click clears every key. `at` only has
 /// to be unique inside the strip — the mixer edits a fresh clone of the bus list every frame, so an
 /// id derived from the `Animated`'s address (`crate::ui::key_buttons`) would not survive a click.
 fn key_button(ui: &mut egui::Ui, a: &mut Animated, t: f64, palette: &Palette, g: &mut Gesture, at: (Id, usize, usize)) {
@@ -265,7 +265,7 @@ fn strip(
         if r.clicked() {
             state.selected_bus = Some(bus.id);
         }
-        let del = ui.add_enabled(!s.is_main, Button::new("✕").small());
+        let del = ui.add_enabled_ui(!s.is_main, crate::ui::markers_ui::x_button).inner;
         #[cfg(test)]
         test_rects::push(format!("del_bus{n}"), del.rect);
         if del.clicked() {
@@ -274,7 +274,7 @@ fn strip(
         }
     });
 
-    let feed = if s.feed.is_empty() { "◦ nothing routed here".to_string() } else { format!("◦ {}", s.feed) };
+    let feed = if s.feed.is_empty() { "nothing routed here" } else { s.feed };
     let r = ui
         .add(
             egui::Label::new(egui::RichText::new(feed).small().color(palette.text_dim))
@@ -391,16 +391,18 @@ fn filters(
             g.note(&ui.checkbox(&mut f.enabled, ""));
             ui.label(f.kind.name());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let del = ui.add(Button::new("✕").small());
+                let del = crate::ui::markers_ui::x_button(ui).on_hover_text("Remove this filter");
                 #[cfg(test)]
                 test_rects::push(format!("delfx{n}_{i}"), del.rect);
                 if del.clicked() {
                     remove = Some(i);
                 }
-                if ui.add_enabled(i + 1 < count, Button::new("▼").small()).clicked() {
+                let down = |ui: &mut egui::Ui| glyph_text_button(ui, Glyph::Tri(Dir::Down), "");
+                if ui.add_enabled_ui(i + 1 < count, down).inner.on_hover_text("Move down").clicked() {
                     swap = Some((i, i + 1));
                 }
-                if ui.add_enabled(i > 0, Button::new("▲").small()).clicked() {
+                let up = |ui: &mut egui::Ui| glyph_text_button(ui, Glyph::Tri(Dir::Up), "");
+                if ui.add_enabled_ui(i > 0, up).inner.on_hover_text("Move up").clicked() {
                     swap = Some((i, i - 1));
                 }
             });

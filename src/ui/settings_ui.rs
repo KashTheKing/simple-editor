@@ -233,7 +233,7 @@ fn general(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Settings, mcp_stat
     let mut remove = None;
     for (i, f) in s.user_fonts.iter().enumerate() {
         ui.horizontal(|ui| {
-            if ui.small_button("✕").clicked() {
+            if crate::ui::markers_ui::x_button(ui).on_hover_text("Remove this font").clicked() {
                 remove = Some(i);
             }
             let name = std::path::Path::new(f).file_name().map(|n| n.to_string_lossy().into_owned());

@@ -9,19 +9,21 @@
 //! same mechanism as `ui::library`'s asset tiles) so it can be dropped onto a clip, alongside its
 //! existing click-to-add. Clicking a card adds the effect to every eligible selected clip.
 //! Below: the FIRST selected clip's effect stack, in order: for each effect a header row (enabled
-//! checkbox, name, mask button, "Edit shader…" for a custom shader, copy/paste params, ▲ ▼ reorder,
-//! ✕ remove) and its parameters from
+//! checkbox, name, mask button, "Edit shader…" for a custom shader, copy/paste params, reorder,
+//! remove) and its parameters from
 //! `effect.specs()`: label + DragValue (range from ParamSpec, speed ≈ (max-min)/200) — or a CHECKBOX when
-//! `EffectKind::is_bool_param` — + "◆" keyframe toggle at clip-local playhead time (Animated::toggle_key /
-//! set_at, highlighted when a key exists) + "✕ keys". Tint shows a colour button bound to R/G/B as well.
+//! `EffectKind::is_bool_param` — + a diamond keyframe toggle at clip-local playhead time
+//! (Animated::toggle_key / set_at, highlighted when a key exists) + "keys" to clear them. Tint shows a
+//! colour button bound to R/G/B as well.
 //! An effect with a mask gets the inspector's mask grid inline (shape / position / radius / feather /
-//! invert …) plus a ✕ to drop it. A clip that renders from a node graph greys the stack out: the graph
+//! invert …) plus a delete button. A clip that renders from a node graph greys the stack out: the graph
 //! is what the renderer evaluates, so stack edits would be invisible.
 //! Every change → undo once per gesture (same `edit_start` rule as the inspector).
 
 use crate::model::{Animated, ClipKind, Effect, EffectKind, Id, Mask, Project};
 use crate::settings::MotionPreset;
 use crate::theme::Palette;
+use crate::ui::tools::{glyph_text_button, Dir, Glyph};
 use crate::ui::{mask_grid, DragPayload, Gesture};
 use eframe::egui::{self, Button, DragValue, Grid, Response, StrokeKind};
 use std::cell::RefCell;
@@ -172,7 +174,11 @@ fn key_buttons(ui: &mut egui::Ui, a: &mut Animated, lt: f64, palette: &Palette, 
         a.toggle_key(lt);
         g.click();
     }
-    if a.is_animated() && ui.small_button("✕ keys").on_hover_text("Remove all keyframes").clicked() {
+    if a.is_animated()
+        && crate::ui::tools::glyph_text_button(ui, crate::ui::tools::Glyph::Cross, "keys")
+            .on_hover_text("Remove all keyframes")
+            .clicked()
+    {
         a.clear_keys(lt);
         g.click();
     }
@@ -208,7 +214,8 @@ fn catalogue(ui: &mut egui::Ui, palette: &Palette, audio: Option<bool>) -> Optio
     let mut q: String = ui.ctx().data_mut(|d| d.get_temp(search_id).unwrap_or_default());
     ui.horizontal(|ui| {
         ui.strong("Effects");
-        ui.add(egui::TextEdit::singleline(&mut q).hint_text("🔍 search").desired_width(f32::INFINITY));
+        crate::ui::tools::glyph_label(ui, crate::ui::tools::Glyph::Zoom, palette.text_dim);
+        ui.add(egui::TextEdit::singleline(&mut q).hint_text("search").desired_width(f32::INFINITY));
     });
     let hits: Vec<EffectKind> =
         EffectKind::ALL.into_iter().filter(|&k| matches(k, &q) && fits_selection(k, audio)).collect();
@@ -349,7 +356,7 @@ pub fn show(
                     out.edit_shader = Some(i);
                 }
             }
-            let cp = ui.add(Button::new("⧉").small()).on_hover_text("Copy these parameters");
+            let cp = glyph_text_button(ui, Glyph::Copy, "").on_hover_text("Copy these parameters");
             #[cfg(test)]
             test_rects::push(format!("copy{i}"), cp.rect);
             if cp.clicked() {
@@ -357,7 +364,8 @@ pub fn show(
             }
             let can_paste = copied_kind == Some(fx.kind);
             let pt = ui
-                .add_enabled(can_paste, Button::new("⤵").small())
+                .add_enabled_ui(can_paste, |ui| glyph_text_button(ui, Glyph::Paste, ""))
+                .inner
                 .on_hover_text("Paste copied parameters")
                 .on_disabled_hover_text("Copy the same kind of effect first");
             #[cfg(test)]
@@ -365,15 +373,21 @@ pub fn show(
             if pt.clicked() {
                 paste = Some(i);
             }
-            let up = ui.add_enabled(i > 0, Button::new("▲").small());
+            let up = ui
+                .add_enabled_ui(i > 0, |ui| glyph_text_button(ui, Glyph::Tri(Dir::Up), ""))
+                .inner
+                .on_hover_text("Move up");
             if up.clicked() {
                 swap = Some((i, i - 1));
             }
-            let down = ui.add_enabled(i + 1 < n, Button::new("▼").small());
+            let down = ui
+                .add_enabled_ui(i + 1 < n, |ui| glyph_text_button(ui, Glyph::Tri(Dir::Down), ""))
+                .inner
+                .on_hover_text("Move down");
             if down.clicked() {
                 swap = Some((i, i + 1));
             }
-            let del = ui.add(Button::new("✕").small());
+            let del = crate::ui::markers_ui::x_button(ui).on_hover_text("Remove this effect");
             if del.clicked() {
                 remove = Some(i);
             }

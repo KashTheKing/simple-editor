@@ -633,7 +633,7 @@ fn label_menu(ui: &mut egui::Ui, labels: &[Label], act: &mut Option<Act>, edit_l
     }
     for (i, l) in labels.iter().enumerate() {
         let color = Color32::from_rgb(l.color[0], l.color[1], l.color[2]);
-        if ui.button(egui::RichText::new(format!("■ {}", l.name)).color(color)).clicked() {
+        if ui.button(egui::RichText::new(l.name.clone()).color(color)).clicked() {
             *act = Some(Act::Label(i as u8 + 1));
         }
     }
@@ -974,13 +974,17 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             let name_pc = lp.with_clip_rect(vis.shrink(1.0));
             let name_pos = pos2(vis.left() + 4.0, rect.top() + 2.0);
             if clip.kind == ClipKind::Sequence {
-                name_pc.text(name_pos, Align2::LEFT_TOP, format!("⧉ {}", clip.name), font.clone(), pal.text);
+                let badge = Rect::from_min_size(name_pos, vec2(15.0, 15.0));
+                draw_glyph(&name_pc, badge, Glyph::Sequence, pal.text);
+                name_pc.text(pos2(badge.right(), name_pos.y), Align2::LEFT_TOP, &clip.name, font.clone(), pal.text);
             } else {
                 name_pc.text(name_pos, Align2::LEFT_TOP, &clip.name, font.clone(), pal.text);
             }
             if clip.is_retimed() {
-                let badge = if clip.freeze.is_some() {
-                    "❄".to_string()
+                if clip.freeze.is_some() {
+                    // a snowflake, painted: the frozen clip has no rate to print
+                    let f = Rect::from_min_size(pos2(rect.right() - 17.0, rect.top() + 1.0), vec2(16.0, 16.0));
+                    draw_glyph(&name_pc, f, Glyph::Snowflake, pal.text);
                 } else {
                     let mut s = String::new();
                     if (clip.speed - 1.0).abs() > 1e-9 {
@@ -996,17 +1000,16 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                         if !s.is_empty() {
                             s.push(' ');
                         }
-                        s.push('⟲');
+                        s.push_str("rev");
                     }
-                    s
-                };
-                name_pc.text(
-                    pos2(rect.right() - 3.0, rect.top() + 2.0),
-                    Align2::RIGHT_TOP,
-                    badge,
-                    small.clone(),
-                    pal.text,
-                );
+                    name_pc.text(
+                        pos2(rect.right() - 3.0, rect.top() + 2.0),
+                        Align2::RIGHT_TOP,
+                        s,
+                        small.clone(),
+                        pal.text,
+                    );
+                }
             }
             // retime preview: while the Stretch tool drags this clip's edge, show the rate it is landing on
             // big in the middle — the corner badge is easy to miss mid-drag

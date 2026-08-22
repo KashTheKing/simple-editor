@@ -5,7 +5,7 @@
 //! outline width/colour, background box colour, margin from bottom = project.subtitle_margin).
 //! Below: the cue list (egui::Grid / ScrollArea): start and end as editable timecode-ish DragValues in
 //! seconds (3 decimals, end ≥ start + 0.1, keep the list sorted via Project::sort_cues), a multiline text
-//! field, "▶" (seek to the cue → `seeked`), "✕" delete; the cue containing the playhead is highlighted; a
+//! field, a play button (seek to the cue → `seeked`) and a delete one; the cue containing the playhead is highlighted; a
 //! "Split at playhead" button on the highlighted cue. Undo once per gesture (same edit_start rule as the
 //! inspector); returns what changed.
 //!
@@ -207,7 +207,7 @@ pub fn show(
                         project.subtitles[i].end = v.max(start + MIN_CUE);
                         resp.edited = true;
                     }
-                    if ui.small_button("▶").on_hover_text("Seek to cue").clicked() {
+                    if glyph_text_button(ui, Glyph::Play, "").on_hover_text("Seek to cue").clicked() {
                         *playhead = start;
                         state.selected = Some(id);
                         resp.seeked = true;
@@ -215,7 +215,7 @@ pub fn show(
                     if active && ph > start + 0.05 && ph < end - 0.05 && ui.small_button("Split").clicked() {
                         split = Some(id);
                     }
-                    if ui.small_button("✕").clicked() {
+                    if crate::ui::markers_ui::x_button(ui).on_hover_text("Delete this cue").clicked() {
                         del = Some(id);
                     }
                 });

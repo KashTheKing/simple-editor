@@ -1266,7 +1266,7 @@ impl App {
         };
         match std::fs::write(&out, crate::engine::xmeml::export_xmeml(&self.export_project())) {
             Ok(()) => {
-                self.toast("XML exported — import it in Premiere (File ▸ Import) or Resolve (File ▸ Import ▸ Timeline)")
+                self.toast("XML exported — import it in Premiere (File > Import) or Resolve (File > Import > Timeline)")
             }
             Err(e) => self.toast(format!("XML export failed: {e}")),
         }
@@ -1964,10 +1964,15 @@ impl App {
                 if let Some(seq) = self.project.editing {
                     let name = self.project.sequence(seq).map(|s| s.name.clone()).unwrap_or_default();
                     ui.horizontal(|ui| {
-                        if ui.button("⬑ Back").on_hover_text("Back to the main timeline (Alt+Up)").clicked() {
+                        let back = crate::ui::tools::glyph_text_button(
+                            ui,
+                            crate::ui::tools::Glyph::Tri(crate::ui::tools::Dir::Left),
+                            "Back",
+                        );
+                        if back.on_hover_text("Back to the main timeline (Alt+Up)").clicked() {
                             self.pending_actions.push(Action::OpenParentSequence);
                         }
-                        ui.label(format!("Main ▸ {name}"));
+                        ui.label(format!("Main > {name}"));
                     });
                 }
                 let resp = {
@@ -3522,11 +3527,11 @@ impl App {
                     .monospace(),
                 );
                 if self.player.is_playing() {
-                    ui.label("▶");
+                    crate::ui::tools::glyph_label(ui, crate::ui::tools::Glyph::Play, ui.visuals().text_color());
                 }
                 if let Some(seq) = self.project.editing {
                     let name = self.project.sequence(seq).map(|s| s.name.as_str()).unwrap_or("?").to_string();
-                    ui.label(egui::RichText::new(format!("editing: Main ▸ {name}")).weak());
+                    ui.label(egui::RichText::new(format!("editing: Main > {name}")).weak());
                 }
             });
         });

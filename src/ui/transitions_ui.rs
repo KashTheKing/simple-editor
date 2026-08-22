@@ -7,7 +7,7 @@
 //! which is also what the menu, the hotkeys and MCP call — it records the choice in `TransitionsState`,
 //! so Ctrl+T (Action::AddLastTransition) repeats whatever was applied last, whichever path applied it.
 //! Below: the transitions touching the first selected clip (Project::transitions_of): kind combo,
-//! duration, colour/direction/ease editors, ✕ remove. Returns true when the project changed (call
+//! duration, colour/direction/ease editors, remove. Returns true when the project changed (call
 //! `undo` once per gesture first).
 
 use crate::model::{Ease, Id, Project, Transition, TransitionKind, ABUT_EPS};
@@ -316,7 +316,7 @@ pub fn show(
                     g.note(&ui.selectable_value(&mut tr.ease, e, e.name()));
                 }
             });
-            let r = ui.add(Button::new("✕").small());
+            let r = crate::ui::markers_ui::x_button(ui).on_hover_text("Remove this transition");
             #[cfg(test)]
             test_rects::push(format!("tr_del{_i}"), r.rect);
             if r.clicked() {

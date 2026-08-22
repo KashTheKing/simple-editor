@@ -600,10 +600,12 @@ pub fn show(
                 }
                 let (_, sw) = ui.allocate_space(vec2(10.0, 10.0));
                 ui.painter().rect_filled(sw, 2, prop_color(&pal, i));
-                let label = prop_label(&clip_data, i);
-                let text = if a.is_some_and(|a| a.is_animated()) { format!("{label} ◆") } else { label };
-                if ui.selectable_label(state.active == i, text).clicked() {
+                if ui.selectable_label(state.active == i, prop_label(&clip_data, i)).clicked() {
                     state.active = i;
+                }
+                // a keyframe diamond marks the properties that actually carry keys
+                if a.is_some_and(|a| a.is_animated()) {
+                    crate::ui::tools::glyph_label(ui, crate::ui::tools::Glyph::Diamond, pal.text_dim);
                 }
             });
         }

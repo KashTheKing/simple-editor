@@ -8,8 +8,9 @@
 //!           tabs(Markers, Planner)].
 //! The Timeline is a column of its own rather than a tab, so nothing can ever hide it. `show` draws the
 //! tree in the given `ui` and each popped pane in its own viewport (closing that window docks the pane
-//! back); `draw(ui, pane)` renders a pane. Behaviour: tab titles = Pane::title, a "⧉" button in the tab
-//! bar pops the active pane out, "✕" hides it. Hidden panes stay in the tree (egui_tiles visibility) so
+//! back); `draw(ui, pane)` renders a pane. Behaviour: tab titles = Pane::title, a pop-out button in the
+//! tab bar puts the active pane in its own window, a cross hides it. Hidden panes stay in the tree
+//! (egui_tiles visibility) so
 //! they come back exactly where they were.
 //!
 //! Dragging a tab paints nine drop squares over the tile under the cursor (centre = tabify, the eight
@@ -19,6 +20,7 @@
 //! Migration: a stored layout from an older version does not know the round-3 panes; `from_json` rejects
 //! it (None) so the app falls back to this default instead of an editor with no Tools/Mixer/Markers.
 
+use crate::ui::tools::{glyph_text_button, Glyph};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
@@ -332,12 +334,11 @@ impl egui_tiles::Behavior<Pane> for Behaviour<'_> {
         tabs: &egui_tiles::Tabs,
         _scroll_offset: &mut f32,
     ) {
-        // U+1F5D9 / U+1F5D6: in egui's bundled emoji-icon font (✕ and ⧉ are not, and Segoe UI lacks both)
         let Some(&pane) = tabs.active.and_then(|id| tiles.get_pane(&id)) else { return };
-        if ui.small_button("🗙").on_hover_text("Hide (View menu shows it again)").clicked() {
+        if glyph_text_button(ui, Glyph::Cross, "").on_hover_text("Hide (View menu shows it again)").clicked() {
             self.hide.push(pane);
         }
-        if ui.small_button("🗖").on_hover_text("Pop out into its own window").clicked() {
+        if glyph_text_button(ui, Glyph::PopOut, "").on_hover_text("Pop out into its own window").clicked() {
             self.pop.push(pane);
         }
     }

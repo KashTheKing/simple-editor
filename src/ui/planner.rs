@@ -1,9 +1,9 @@
 //! Planner pane: tabs "Plan" and "Notes".
 //! Plan = a nested to-do tree (Project.plan): each row = checkbox (done), editable title, colour label dot
-//! (click → LABEL_COLORS menu), ▸/▾ collapse, "+" add sub-task, "✕" remove, ↑/↓ reorder among siblings,
-//! "⇥"/"⇤" indent/outdent; a selected item shows its notes (multiline) and its moodboard: the asset ids in
+//! (click → LABEL_COLORS menu), a collapse triangle, "+" add sub-task, delete, reorder among siblings,
+//! indent/outdent; a selected item shows its notes (multiline) and its moodboard: the asset ids in
 //! `assets` as rows (name, kind tag, thumbnail via ThumbCache if available, per-asset note in `asset_notes`,
-//! "Add to timeline", "✕"); assets are added by dropping library items (DragPayload::Asset) onto the item or
+//! "Add to timeline", delete); assets are added by dropping library items (DragPayload::Asset) onto the item or
 //! onto the moodboard area. Progress bar "done/total" at the top; "Add task" at the top level;
 //! "Clear completed". Notes tab = Project.notes as a large multiline TextEdit ("describe your process,
 //! ideas, style while you edit — the style summary / AI tools read this"). Undo once per gesture.
@@ -13,6 +13,7 @@ use crate::media::thumbs::ThumbCache;
 use crate::model::{ClipKind, Id, PlanItem, Project, LABEL_COLORS};
 use crate::theme::Palette;
 use crate::ui::markers_ui::x_button;
+use crate::ui::tools::{glyph_text_button, Dir, Glyph};
 use crate::ui::{edit_start, label_color, once, DragPayload};
 use eframe::egui::{self, Response, RichText, TextEdit};
 
@@ -145,13 +146,15 @@ impl TreeUi<'_> {
 /// Colour-dot button opening a LABEL_COLORS menu; returns the picked value.
 fn color_menu(ui: &mut egui::Ui, current: u8, palette: &Palette) -> Option<u8> {
     let mut picked = None;
-    ui.menu_button(RichText::new("●").color(label_color(current, palette)), |ui| {
+    let chip = crate::ui::tools::color_chip(label_color(current, palette), false, palette);
+    egui::containers::menu::MenuButton::from_button(chip).ui(ui, |ui| {
         if ui.button("None").clicked() {
             picked = Some(0);
             ui.close();
         }
         for (i, (name, [r, g, b])) in LABEL_COLORS.iter().enumerate() {
-            let t = RichText::new(format!("● {name}")).color(egui::Color32::from_rgb(*r, *g, *b));
+            // the name carries its own colour — no swatch character needed
+            let t = RichText::new(*name).color(egui::Color32::from_rgb(*r, *g, *b));
             if ui.button(t).clicked() {
                 picked = Some(i as u8 + 1);
                 ui.close();
@@ -169,7 +172,7 @@ fn tree_rows(ui: &mut egui::Ui, items: &mut [PlanItem], depth: usize, t: &mut Tr
                 ui.add_space(depth as f32 * 14.0);
                 if it.children.is_empty() {
                     ui.add_space(18.0);
-                } else if ui.small_button(if closed { "▸" } else { "▾" }).clicked() {
+                } else if glyph_text_button(ui, Glyph::Tri(if closed { Dir::Right } else { Dir::Down }), "").clicked() {
                     if closed {
                         t.collapsed.retain(|&c| c != it.id);
                     } else {
@@ -192,16 +195,16 @@ fn tree_rows(ui: &mut egui::Ui, items: &mut [PlanItem], depth: usize, t: &mut Tr
                 if ui.small_button("+").on_hover_text("Add sub-task").clicked() {
                     op(Op::Add(Some(it.id)));
                 }
-                if ui.small_button("↑").clicked() {
+                if glyph_text_button(ui, Glyph::Tri(Dir::Up), "").on_hover_text("Move up").clicked() {
                     op(Op::Up(it.id));
                 }
-                if ui.small_button("↓").clicked() {
+                if glyph_text_button(ui, Glyph::Tri(Dir::Down), "").on_hover_text("Move down").clicked() {
                     op(Op::Down(it.id));
                 }
-                if ui.small_button("⇤").on_hover_text("Outdent").clicked() {
+                if glyph_text_button(ui, Glyph::Indent(false), "").on_hover_text("Outdent").clicked() {
                     op(Op::Out(it.id));
                 }
-                if ui.small_button("⇥").on_hover_text("Indent").clicked() {
+                if glyph_text_button(ui, Glyph::Indent(true), "").on_hover_text("Indent").clicked() {
                     op(Op::In(it.id));
                 }
                 if x_button(ui).on_hover_text("Delete task").clicked() {

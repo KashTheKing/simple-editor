@@ -367,7 +367,7 @@ pub(crate) fn confirm(title: &str, description: &str) -> bool {
         == rfd::MessageDialogResult::Yes
 }
 
-/// "Label ▸" submenu over the project's own labels; returns the pick ("Edit labels…" included).
+/// "Label" submenu over the project's own labels; returns the pick ("Edit labels…" included).
 fn label_menu(ui: &mut egui::Ui, current: u8, labels: &Labels) -> Option<LabelPick> {
     let mut picked = None;
     ui.menu_button("Label", |ui| {
@@ -376,7 +376,7 @@ fn label_menu(ui: &mut egui::Ui, current: u8, labels: &Labels) -> Option<LabelPi
             ui.close();
         }
         for (i, (name, [r, g, b])) in labels.iter().enumerate() {
-            let t = RichText::new(format!("● {name}")).color(egui::Color32::from_rgb(*r, *g, *b));
+            let t = RichText::new(name.clone()).color(egui::Color32::from_rgb(*r, *g, *b));
             if ui.selectable_label(current == i as u8 + 1, t).clicked() {
                 picked = Some(LabelPick::Set(i as u8 + 1));
                 ui.close();
@@ -519,7 +519,7 @@ fn library_tab(
         if ui.button("Open…").clicked() {
             resp_open = true;
         }
-        ui.menu_button("New ▾", |ui| {
+        ui.menu_button("New", |ui| {
             if ui.button("Import files…").clicked() {
                 import = true;
                 ui.close();
@@ -722,8 +722,10 @@ fn toolbar(
         // wrapped: a narrow pane must stack the buttons, not push them past the right edge
         ui.horizontal_wrapped(|ui| head(ui, state));
         ui.horizontal(|ui| {
-            ui.label("🔍");
-            let clear_w = 22.0;
+            crate::ui::tools::glyph_label(ui, Glyph::Zoom, palette.text_dim);
+            // matches the painted cross button below (glyph + button padding); too small and the row
+            // overflows the pane, which widens every row after it
+            let clear_w = 26.0;
             // TextEdit::desired_width is the *text* width; its frame adds a margin on top, so the row
             // used to be ~8px wider than the pane and dragged every later widget out with it.
             let margin = ui.spacing().button_padding.x * 2.0;
@@ -733,7 +735,8 @@ fn toolbar(
             ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("lib_search_rect"), r.rect));
             let _ = r;
             if ui
-                .add_enabled(!state.search.is_empty(), egui::Button::new("✕").small())
+                .add_enabled_ui(!state.search.is_empty(), crate::ui::markers_ui::x_button)
+                .inner
                 .on_hover_text("Clear search")
                 .clicked()
             {
@@ -756,8 +759,9 @@ fn toolbar(
                 }
             }
             for i in 1..=labels.len() as u8 {
-                let dot = RichText::new("●").color(lbl_color(labels, i, palette));
-                if ui.selectable_label(state.label_filter == i, dot).on_hover_text(lbl_name(labels, i)).clicked() {
+                let chip =
+                    crate::ui::tools::color_chip(lbl_color(labels, i, palette), state.label_filter == i, palette);
+                if ui.add(chip).on_hover_text(lbl_name(labels, i)).clicked() {
                     state.label_filter = if state.label_filter == i { 0 } else { i };
                 }
             }
@@ -906,7 +910,7 @@ fn details_box(
         ui.horizontal(|ui| {
             let name = lbl_name(labels, a.label);
             egui::ComboBox::from_id_salt("asset_label")
-                .selected_text(RichText::new(format!("● {name}")).color(lbl_color(labels, a.label, palette)))
+                .selected_text(RichText::new(name).color(lbl_color(labels, a.label, palette)))
                 .show_ui(ui, |ui| {
                     let mut pick = |l: u8, ui: &mut egui::Ui| {
                         ops.push(LibOp::AssetLabel(a.id, l));
@@ -917,7 +921,7 @@ fn details_box(
                         pick(0, ui);
                     }
                     for (i, (n, [r, g, b])) in labels.iter().enumerate() {
-                        let t = RichText::new(format!("● {n}")).color(egui::Color32::from_rgb(*r, *g, *b));
+                        let t = RichText::new(n.clone()).color(egui::Color32::from_rgb(*r, *g, *b));
                         if ui.selectable_label(a.label == i as u8 + 1, t).clicked() {
                             pick(i as u8 + 1, ui);
                         }
@@ -1229,7 +1233,7 @@ impl Tree<'_, '_> {
                 ui.weak(kind_tag(a.kind));
                 ui.weak(dur_cell(a));
                 if used {
-                    ui.label(RichText::new("•").color(palette.accent)).on_hover_text("Used in the timeline");
+                    crate::ui::tools::glyph_label(ui, Glyph::Dot, palette.accent).on_hover_text("Used in the timeline");
                 }
                 if !a.tags.is_empty() {
                     ui.add(egui::Label::new(RichText::new(a.tags.join(" · ")).weak().small()).truncate());
@@ -1549,7 +1553,7 @@ fn sequences_section(
             let (_, buf) = state.rename_seq.as_mut().unwrap();
             let mut done = None;
             ui.horizontal(|ui| {
-                ui.label("⧉");
+                crate::ui::tools::glyph_label(ui, Glyph::Sequence, ui.visuals().weak_text_color());
                 done = inline_edit(ui, buf);
             });
             if let Some(name) = done {
@@ -1562,7 +1566,8 @@ fn sequences_section(
             continue;
         }
         let (r, _) = row(ui, egui::Id::new(("seq", s.id)), DragPayload::Sequence(s.id), false, None, |ui| {
-            ui.label(format!("⧉ {}", s.name));
+            crate::ui::tools::glyph_label(ui, Glyph::Sequence, ui.visuals().weak_text_color());
+            ui.label(&s.name);
             ui.weak(duration_text(project.sequence_duration(s.id)));
         });
         if r.double_clicked() {
@@ -1602,7 +1607,7 @@ fn templates_section(ui: &mut egui::Ui, state: &mut LibraryState, settings: &mut
             let (_, buf) = state.rename_template.as_mut().unwrap();
             let mut done = None;
             ui.horizontal(|ui| {
-                ui.label("▣");
+                crate::ui::tools::glyph_label(ui, Glyph::Template, ui.visuals().weak_text_color());
                 done = inline_edit(ui, buf);
             });
             if let Some(name) = done {
@@ -1616,7 +1621,8 @@ fn templates_section(ui: &mut egui::Ui, state: &mut LibraryState, settings: &mut
         let name = settings.templates[i].name.clone();
         let (r, place) =
             row(ui, egui::Id::new(("template", i)), DragPayload::Template(name.clone()), false, Some("Place"), |ui| {
-                ui.label(format!("▣ {name}"));
+                crate::ui::tools::glyph_label(ui, Glyph::Template, ui.visuals().weak_text_color());
+                ui.label(&name);
             });
         if place || r.double_clicked() {
             resp.place_template.push(name.clone());
@@ -1876,7 +1882,7 @@ fn recent_tab(
             } else {
                 row(ui, id, payload, false, Some("Open"), |ui| {
                     if rec.pinned {
-                        ui.weak("★");
+                        crate::ui::tools::glyph_label(ui, Glyph::Star, palette.text_dim).on_hover_text("Pinned");
                     }
                     if let Some(c) = tint {
                         let (bar, _) = ui.allocate_exact_size(egui::vec2(3.0, 14.0), egui::Sense::hover());
@@ -2133,7 +2139,8 @@ mod tests {
                     for i in 0..30 {
                         let id = egui::Id::new(("t", i));
                         let (r, _) = row(ui, id, DragPayload::Template(String::new()), false, Some("Place"), |ui| {
-                            ui.label("▣ a template name far too long to ever fit into this narrow pane");
+                            crate::ui::tools::glyph_label(ui, Glyph::Template, ui.visuals().weak_text_color());
+                            ui.label("a template name far too long to ever fit into this narrow pane");
                         });
                         widths.push(r.rect.width());
                     }
