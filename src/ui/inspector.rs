@@ -1,8 +1,10 @@
-//! Inspector panel. Nothing selected → Project settings (name, width, height, fps). One clip selected →
+//! Inspector panel. Nothing selected → Project panel (name, width, height, fps, duration, Save / Export /
+//! Export Frame buttons, export settings summary). One clip selected →
 //! clip name, enabled, colour label, timing (start / duration / source in), retime readout (Ctrl+R), and:
-//!  * visual clips: Position X/Y, Scale, Rotation, Opacity — each row = DragValue + "◆" keyframe toggle
-//!    (`Animated::toggle_key(clip.local(playhead))`, highlighted when a key exists at the playhead) +
-//!    "clear keys"; edits go through `Animated::set_at(local_t, v)` so keyframed props get keys; Blend mode combo.
+//!  * visual clips: Position X/Y, Scale, Rotation (DragValue), Opacity (0-100% slider) — each row + "◆"
+//!    keyframe toggle (`Animated::toggle_key(clip.local(playhead))`, highlighted when a key exists at the
+//!    playhead) + "clear keys"; edits go through `Animated::set_at(local_t, v)` so keyframed props get
+//!    keys; Blend mode combo.
 //!  * audio clips: Volume (dB slider mapped to linear gain) and Pan (-1..1 slider) with the same keyframe
 //!    controls, plus fade in/out lengths.
 //!  * effects summary (enable toggles, remove) and transitions touching the clip.
@@ -19,7 +21,9 @@
 //! Call `undo(project)` once per gesture (on `drag_started()` / first `changed()` of a widget) before mutating.
 //! Returns true if the project changed.
 
+use crate::hotkeys::Action;
 use crate::model::{Animated, BlendMode, ClipKind, Id, Label, Mask, Project, ShapeKind, ShapeStyle};
+use crate::settings::Settings;
 use crate::theme::Palette;
 use crate::ui::markers_ui::x_button;
 use crate::ui::{edit_start, key_buttons, mask_grid, timecode, Gesture};
@@ -57,6 +61,9 @@ thread_local! {
     static EDIT_MASK: RefCell<Option<Id>> = const { RefCell::new(None) };
     static OPEN_NODES: RefCell<Option<Id>> = const { RefCell::new(None) };
     static UNLINK_NODES: RefCell<Option<Id>> = const { RefCell::new(None) };
+    /// Project-panel button (Save / Export… / Export Frame… / edit export settings) — the app runs it
+    /// through the same Action dispatch the menus use.
+    static PENDING_ACTION: RefCell<Option<Action>> = const { RefCell::new(None) };
 }
 
 /// Clip the user asked to turn back into a plain effect stack (`Project::unlink_graph`).
@@ -86,6 +93,13 @@ pub fn take_open_sequence() -> Option<Id> {
     OPEN_SEQUENCE.with(|p| p.borrow_mut().take())
 }
 
+/// Action a project-panel button asked to run (Save / Export… / Export Frame…) — the app pushes it
+/// through the same `Action` dispatch the menus and hotkeys use.
+pub fn take_pending_action() -> Option<Action> {
+    PENDING_ACTION.with(|p| p.borrow_mut().take())
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut egui::Ui,
     project: &mut Project,
@@ -93,15 +107,21 @@ pub fn show(
     playhead: f64,
     fonts: &[String],
     palette: &Palette,
+    settings: &Settings,
     undo: &mut dyn FnMut(&Project),
 ) -> bool {
     match selection.iter().find(|&&id| project.clip(id).is_some()) {
-        None => project_section(ui, project, undo),
+        None => project_section(ui, project, settings, undo),
         Some(&id) => clip_section(ui, project, id, selection.len(), playhead, fonts, palette, undo),
     }
 }
 
-fn project_section(ui: &mut egui::Ui, project: &mut Project, undo: &mut dyn FnMut(&Project)) -> bool {
+fn project_section(
+    ui: &mut egui::Ui,
+    project: &mut Project,
+    settings: &Settings,
+    undo: &mut dyn FnMut(&Project),
+) -> bool {
     let mut edited = false;
     ui.strong("Project");
     Grid::new("inspector_project").num_columns(2).show(ui, |ui| {
@@ -138,7 +158,51 @@ fn project_section(ui: &mut egui::Ui, project: &mut Project, undo: &mut dyn FnMu
         num(ui, project, "Width", |p| p.width as f64, |p, v| p.width = v as u32, 16.0..=8192.0, 1.0);
         num(ui, project, "Height", |p| p.height as f64, |p, v| p.height = v as u32, 16.0..=8192.0, 1.0);
         num(ui, project, "FPS", |p| p.fps, |p, v| p.fps = v, 1.0..=240.0, 0.1);
+        ui.label("Duration");
+        ui.monospace(timecode(project.duration(), project.fps));
+        ui.end_row();
     });
+
+    ui.separator();
+    ui.horizontal(|ui| {
+        let r = ui.button("Save");
+        mark(ui, "project_save", &r);
+        if r.clicked() {
+            PENDING_ACTION.with(|p| *p.borrow_mut() = Some(Action::Save));
+        }
+        let r = ui.button("Export…");
+        mark(ui, "project_export", &r);
+        if r.clicked() {
+            PENDING_ACTION.with(|p| *p.borrow_mut() = Some(Action::ExportVideo));
+        }
+        let r = ui.button("Export Frame…");
+        mark(ui, "project_export_frame", &r);
+        if r.clicked() {
+            PENDING_ACTION.with(|p| *p.borrow_mut() = Some(Action::ExportFrame));
+        }
+    });
+
+    ui.separator();
+    ui.strong("Export settings");
+    let scaler_name = crate::ui::export_ui::SCALERS
+        .iter()
+        .find(|(k, _)| *k == settings.export_scaler.as_str())
+        .map(|(_, v)| *v)
+        .unwrap_or(settings.export_scaler.as_str());
+    let res = if settings.export_resolution.is_empty() || settings.export_resolution == "project" {
+        "Project size".to_string()
+    } else {
+        settings.export_resolution.clone()
+    };
+    ui.horizontal_wrapped(|ui| {
+        ui.weak(format!(
+            "{} · CRF {} · {} · {} · {}",
+            settings.encoder, settings.crf, settings.preset, res, scaler_name
+        ));
+    });
+    if ui.small_button("Edit export settings…").clicked() {
+        PENDING_ACTION.with(|p| *p.borrow_mut() = Some(Action::ExportVideo));
+    }
     edited
 }
 
@@ -260,7 +324,16 @@ fn clip_section(
                         r
                     }
                     "Scale" => ui.add(DragValue::new(&mut v).speed(0.01).range(0.01..=20.0)),
-                    "Opacity" => ui.add(DragValue::new(&mut v).speed(0.01).range(0.0..=1.0)),
+                    "Opacity" => {
+                        let mut pct = v * 100.0;
+                        let r = ui.add(Slider::new(&mut pct, 0.0..=100.0).suffix(" %").fixed_decimals(0));
+                        if r.changed() {
+                            v = pct / 100.0;
+                        }
+                        #[cfg(test)]
+                        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("test_opacity_slider"), r.id));
+                        r
+                    }
                     _ => ui.add(DragValue::new(&mut v).speed(1.0)),
                 };
                 if r.changed() {
@@ -821,7 +894,7 @@ mod tests {
                         *undos += 1;
                         assert_eq!(pre.clip(id).unwrap().pan.value, 0.0, "undo sees the pre-edit project");
                     };
-                    show(ui, p, &[id], 1.0, &fonts, &palette, &mut undo);
+                    show(ui, p, &[id], 1.0, &fonts, &palette, &Settings::default(), &mut undo);
                 });
             });
         };
@@ -845,6 +918,102 @@ mod tests {
         assert_eq!(undos, 1, "no undo without an edit");
     }
 
+    /// The Opacity control is a 0-100% slider that writes straight into `clip.opacity` — the same
+    /// `Animated` field the renderer reads via `props_mut()` — not a second, disconnected property.
+    #[test]
+    fn opacity_slider_drives_the_animated_field() {
+        let mut p = Project::new();
+        let vi = p.tracks.iter().position(|t| t.kind == crate::model::TrackKind::Video).unwrap();
+        let c = Clip::new(500, ClipKind::Video, "v", 0.0, 5.0);
+        let id = c.id;
+        p.tracks[vi].clips.push(c);
+        assert_eq!(p.clip(id).unwrap().opacity.value, 1.0, "clips start fully opaque");
+        let palette = Palette::new(true, egui::Color32::WHITE);
+        let fonts: Vec<String> = Vec::new();
+        let ctx = egui::Context::default();
+        let mut run = |ctx: &egui::Context, input: egui::RawInput, p: &mut Project| {
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let mut undo = |_: &Project| {};
+                    show(ui, p, &[id], 1.0, &fonts, &palette, &Settings::default(), &mut undo);
+                });
+            });
+        };
+        run(&ctx, egui::RawInput::default(), &mut p); // layout, records the opacity slider id
+        let slider =
+            ctx.data_mut(|d| d.get_temp::<egui::Id>(egui::Id::new("test_opacity_slider"))).expect("opacity id");
+        ctx.memory_mut(|m| m.request_focus(slider));
+        run(&ctx, egui::RawInput::default(), &mut p); // focus settles
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::Key {
+            key: egui::Key::ArrowLeft,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::default(),
+        });
+        run(&ctx, input, &mut p);
+        let o = p.clip(id).unwrap().opacity.value;
+        assert!(o < 1.0 && o >= 0.0, "opacity moved down off its default 1.0: {o}");
+    }
+
+    /// The project panel's Save / Export… / Export Frame… buttons push the same `Action`s the menus and
+    /// hotkeys use, through the `take_pending_action` hand-off.
+    #[test]
+    fn project_buttons_push_the_menu_actions() {
+        let cases = [
+            ("project_save", Action::Save),
+            ("project_export", Action::ExportVideo),
+            ("project_export_frame", Action::ExportFrame),
+        ];
+        for (button, expect) in cases {
+            let mut p = Project::new();
+            let palette = Palette::new(true, egui::Color32::WHITE);
+            let fonts: Vec<String> = Vec::new();
+            let settings = Settings::default();
+            let ctx = egui::Context::default();
+            let mut frame = |events: Vec<egui::Event>, p: &mut Project| {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 900.0))),
+                    events,
+                    ..Default::default()
+                };
+                let mut undo = |_: &Project| {};
+                let _ = ctx.run(input, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        show(ui, p, &[], 1.0, &fonts, &palette, &settings, &mut undo);
+                    });
+                });
+            };
+            let _ = take_pending_action(); // clear any leftover from a previous case
+            frame(vec![], &mut p); // layout, records the button rect
+            let r = ctx
+                .data(|d| d.get_temp::<egui::Rect>(egui::Id::new(("insp", button.to_string()))))
+                .unwrap_or_else(|| panic!("no widget rect for {button}"));
+            let pos = r.center();
+            frame(vec![egui::Event::PointerMoved(pos)], &mut p);
+            frame(
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                &mut p,
+            );
+            frame(
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                &mut p,
+            );
+            assert_eq!(take_pending_action(), Some(expect), "{button}");
+        }
+    }
+
     /// Typing in a text field snapshots once when the field is entered, not once per character.
     #[test]
     fn name_edit_pushes_one_undo_per_visit() {
@@ -864,7 +1033,7 @@ mod tests {
                 }
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut undo = |_: &Project| *undos += 1;
-                    edited = show(ui, p, &[id], 1.0, &[], &palette, &mut undo);
+                    edited = show(ui, p, &[id], 1.0, &[], &palette, &Settings::default(), &mut undo);
                 });
             });
             edited
@@ -912,7 +1081,7 @@ mod tests {
             let _ = ctx.run(input, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut undo = |_: &Project| *undos += 1;
-                    changed |= show(ui, project, &[id], 1.0, &[], &pal, &mut undo);
+                    changed |= show(ui, project, &[id], 1.0, &[], &pal, &Settings::default(), &mut undo);
                 });
             });
             changed
@@ -1032,7 +1201,7 @@ mod tests {
                 let _ = ctx.run(egui::RawInput::default(), |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
                         let mut undo = |_: &Project| panic!("no undo without edits");
-                        assert!(!show(ui, &mut p, &[sel], 1.0, &fonts, &palette, &mut undo));
+                        assert!(!show(ui, &mut p, &[sel], 1.0, &fonts, &palette, &Settings::default(), &mut undo));
                     });
                 });
             }
