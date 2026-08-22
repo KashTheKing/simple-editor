@@ -4,9 +4,17 @@
 //! each block), transitions (gain crossfades with virtual clip extension — on video tracks too, so a
 //! transition between Sequence clips crossfades their audio with the picture) and Sequence clips on
 //! video tracks (their timeline mixed recursively, depth ≤ 8).
+//!
+//! Routing: when the project has buses, every top-level clip's contribution lands in
+//! `Project::bus_of(track, clip)` instead of straight in the output, then `BusGraph` flushes the buses
+//! leaves-first (filters → gain/pan/mono → sum into the output bus) with Main summing into `out`.
+//! Bus mute/solo mirrors track mute/solo — any solo among the buses silences the un-soloed ones, except
+//! Main, which is the master everything sums through. Projects with no buses (the default) skip all of
+//! that and mix straight into `out`.
 
+use crate::engine::mixer_fx::BusGraph;
 use crate::media::{AudioSource, DecoderPool, SAMPLE_RATE};
-use crate::model::{Clip, ClipKind, Project, Track, TrackKind, Transition};
+use crate::model::{Clip, ClipKind, Id, Project, Track, TrackKind, Transition};
 
 const MAX_DEPTH: usize = 8;
 
@@ -14,190 +22,236 @@ const MAX_DEPTH: usize = 8;
 /// side). At most one per clip edge.
 type Ext<'a> = [Option<(f64, f64, &'a Transition, bool)>; 2];
 
-pub struct Mixer {
-    /// Buffer pool, two per recursion depth: [2d] = source-read/resample buffer, [2d+1] = sequence
-    /// sub-mix buffer. Grown once per size increase, never freed.
-    scratch: Vec<Vec<f32>>,
+/// Where a clip's samples go: a plain buffer (no buses / a nested sequence sub-mix) or the bus graph.
+enum Dest<'a> {
+    Buf(&'a mut [f32]),
+    /// The graph plus the block length in frames (bus buffers are all that long).
+    Buses(&'a mut BusGraph, usize),
 }
 
-impl Default for Mixer {
-    fn default() -> Self {
-        Self::new()
+impl Dest<'_> {
+    fn frames(&self) -> usize {
+        match self {
+            Dest::Buf(b) => b.len() / 2,
+            Dest::Buses(_, f) => *f,
+        }
     }
+    /// True when `slice`'s `bus` argument matters (only the top level routes).
+    fn routed(&self) -> bool {
+        matches!(self, Dest::Buses(..))
+    }
+    /// The [i0, i1) frame window of the buffer a clip on `bus` writes into.
+    fn slice(&mut self, bus: Id, i0: usize, i1: usize) -> &mut [f32] {
+        match self {
+            Dest::Buf(b) => &mut b[i0 * 2..i1 * 2],
+            Dest::Buses(g, frames) => &mut g.buffer(bus, *frames)[i0 * 2..i1 * 2],
+        }
+    }
+}
+
+/// Buffer pool, two per recursion depth: [2d] = source-read/resample buffer, [2d+1] = sequence
+/// sub-mix buffer. Grown once per size increase, never freed.
+#[derive(Default)]
+struct Scratch(Vec<Vec<f32>>);
+
+impl Scratch {
+    /// Take pool buffer `i`, zeroed and sized to `len` (capacity kept — grows once).
+    fn take(&mut self, i: usize, len: usize) -> Vec<f32> {
+        if self.0.len() <= i {
+            self.0.resize_with(i + 1, Vec::new);
+        }
+        let mut b = std::mem::take(&mut self.0[i]);
+        b.clear();
+        b.resize(len, 0.0);
+        b
+    }
+    fn put(&mut self, i: usize, b: Vec<f32>) {
+        self.0[i] = b;
+    }
+}
+
+#[derive(Default)]
+pub struct Mixer {
+    scratch: Scratch,
+    graph: BusGraph,
+    /// `graph.order()` copied once per block so the flush loop can hold `&mut graph`.
+    order: Vec<Id>,
 }
 
 impl Mixer {
     pub fn new() -> Self {
-        Self { scratch: Vec::new() }
+        Self::default()
+    }
+
+    /// The bus graph as of the last `mix` — the mixer panel reads its meters from here.
+    pub fn graph(&self) -> &BusGraph {
+        &self.graph
     }
 
     /// Mix into `out` (interleaved stereo, frames = out.len()/2) starting at timeline time `t`.
     /// `out` is zeroed first. For each audio track with `project.active(track)`, each enabled clip
     /// overlapping [t, t + frames/48000): read `pool.audio(asset.path, clip.audio_stream)` at
     /// `clip.src_time(..)` for the overlapping sub-range, apply `clip.volume` (ramped linearly from the
-    /// value at the block start to the block end), add. Clamp the result to [-1, 1].
+    /// value at the block start to the block end), add into the clip's bus. Buses are then flushed in
+    /// evaluation order and the result clamped to [-1, 1].
     pub fn mix(&mut self, project: &Project, t: f64, pool: &mut DecoderPool, out: &mut [f32]) {
         out.fill(0.0);
         if out.len() < 2 {
             return;
         }
-        self.mix_tracks(project, &project.tracks, t, pool, out, 0);
+        let Mixer { scratch, graph, order } = self;
+        if project.buses.is_empty() {
+            mix_tracks(scratch, project, &project.tracks, t, pool, &mut Dest::Buf(out), 0);
+        } else {
+            let frames = out.len() / 2;
+            graph.sync(project);
+            graph.begin(frames);
+            mix_tracks(scratch, project, &project.tracks, t, pool, &mut Dest::Buses(graph, frames), 0);
+            order.clear();
+            order.extend_from_slice(graph.order_ref());
+            for &id in order.iter() {
+                if let Some(bus) = project.bus(id) {
+                    graph.flush(bus, t, out);
+                }
+            }
+        }
         for s in out.iter_mut() {
             *s = s.clamp(-1.0, 1.0);
         }
     }
+}
 
-    /// Accumulate (no zeroing, no clamping) the audio of `tracks` over [t, t + out.len()/2 frames).
-    fn mix_tracks(
-        &mut self,
-        project: &Project,
-        tracks: &[Track],
-        t: f64,
-        pool: &mut DecoderPool,
-        out: &mut [f32],
-        depth: usize,
-    ) {
-        let frames = out.len() / 2;
-        if frames == 0 {
-            return;
+/// Accumulate (no zeroing, no clamping) the audio of `tracks` over [t, t + dest.frames() frames).
+fn mix_tracks(
+    scratch: &mut Scratch,
+    project: &Project,
+    tracks: &[Track],
+    t: f64,
+    pool: &mut DecoderPool,
+    dest: &mut Dest,
+    depth: usize,
+) {
+    let frames = dest.frames();
+    if frames == 0 {
+        return;
+    }
+    let sr = SAMPLE_RATE as f64;
+    let t_end = t + frames as f64 / sr;
+    for (ti, track) in tracks.iter().enumerate() {
+        if !active_in(tracks, ti) {
+            continue;
         }
-        let sr = SAMPLE_RATE as f64;
-        let t_end = t + frames as f64 / sr;
-        for (ti, track) in tracks.iter().enumerate() {
-            if !active_in(tracks, ti) {
-                continue;
-            }
-            match track.kind {
-                TrackKind::Audio => {
-                    for clip in &track.clips {
-                        if !clip.enabled || clip.kind != ClipKind::Audio || clip.freeze.is_some() {
-                            continue;
-                        }
-                        let ext = clip_transitions(track, clip);
-                        let (estart, eend) = play_range(clip, &ext);
-                        if eend <= t || estart >= t_end {
-                            continue;
-                        }
-                        let Some(asset) = project.asset(clip.asset) else {
-                            continue;
-                        };
-                        let i0 = (((estart.max(t) - t) * sr).round() as usize).min(frames);
-                        let i1 = (((eend.min(t_end) - t) * sr).round() as usize).min(frames);
-                        if i1 <= i0 {
-                            continue;
-                        }
-                        self.mix_audio_clip(
-                            clip,
-                            &ext,
-                            t + i0 as f64 / sr,
-                            &asset.path,
-                            pool,
-                            &mut out[i0 * 2..i1 * 2],
-                            depth,
-                        );
+        match track.kind {
+            TrackKind::Audio => {
+                for clip in &track.clips {
+                    if !clip.enabled || clip.kind != ClipKind::Audio || clip.freeze.is_some() {
+                        continue;
                     }
+                    let ext = clip_transitions(track, clip);
+                    let (estart, eend) = play_range(clip, &ext);
+                    if eend <= t || estart >= t_end {
+                        continue;
+                    }
+                    let Some(asset) = project.asset(clip.asset) else {
+                        continue;
+                    };
+                    let i0 = (((estart.max(t) - t) * sr).round() as usize).min(frames);
+                    let i1 = (((eend.min(t_end) - t) * sr).round() as usize).min(frames);
+                    if i1 <= i0 {
+                        continue;
+                    }
+                    let bus = if dest.routed() { project.bus_of(ti, clip) } else { 0 };
+                    let t0 = t + i0 as f64 / sr;
+                    mix_audio_clip(scratch, clip, &ext, t0, &asset.path, pool, dest.slice(bus, i0, i1), depth);
                 }
-                TrackKind::Video => {
-                    for clip in &track.clips {
-                        if !clip.enabled
-                            || clip.kind != ClipKind::Sequence
-                            || clip.freeze.is_some()
-                            || depth >= MAX_DEPTH
-                        {
-                            continue;
-                        }
-                        let ext = clip_transitions(track, clip);
-                        let (estart, eend) = play_range(clip, &ext);
-                        if eend <= t || estart >= t_end {
-                            continue;
-                        }
-                        let i0 = (((estart.max(t) - t) * sr).round() as usize).min(frames);
-                        let i1 = (((eend.min(t_end) - t) * sr).round() as usize).min(frames);
-                        if i1 <= i0 || project.sequence_tracks(clip.sequence).is_none() {
-                            continue;
-                        }
-                        self.mix_seq_clip(
-                            project,
-                            clip,
-                            &ext,
-                            t + i0 as f64 / sr,
-                            pool,
-                            &mut out[i0 * 2..i1 * 2],
-                            depth,
-                        );
+            }
+            TrackKind::Video => {
+                for clip in &track.clips {
+                    if !clip.enabled || clip.kind != ClipKind::Sequence || clip.freeze.is_some() || depth >= MAX_DEPTH {
+                        continue;
                     }
+                    let ext = clip_transitions(track, clip);
+                    let (estart, eend) = play_range(clip, &ext);
+                    if eend <= t || estart >= t_end {
+                        continue;
+                    }
+                    let i0 = (((estart.max(t) - t) * sr).round() as usize).min(frames);
+                    let i1 = (((eend.min(t_end) - t) * sr).round() as usize).min(frames);
+                    if i1 <= i0 || project.sequence_tracks(clip.sequence).is_none() {
+                        continue;
+                    }
+                    let bus = if dest.routed() { project.bus_of(ti, clip) } else { 0 };
+                    mix_seq_clip(
+                        scratch,
+                        project,
+                        clip,
+                        &ext,
+                        t + i0 as f64 / sr,
+                        pool,
+                        dest.slice(bus, i0, i1),
+                        depth,
+                    );
                 }
             }
         }
     }
+}
 
-    /// One audio clip: read ceil(n*speed)+1 source frames at the clip's source time, linearly resample
-    /// into `out` (n frames) and add with per-channel gains lerped from the block start to the block end.
-    fn mix_audio_clip(
-        &mut self,
-        clip: &Clip,
-        ext: &Ext,
-        t0: f64,
-        path: &str,
-        pool: &mut DecoderPool,
-        out: &mut [f32],
-        depth: usize,
-    ) {
-        let n = out.len() / 2;
-        let m = (n as f64 * clip.speed).ceil() as usize + 1;
-        let mut buf = self.take(depth * 2, m * 2);
-        let sr = SAMPLE_RATE as f64;
-        let s0 = if clip.reverse {
-            // the source block ends at src_time(t0) and is walked backwards
-            clip.src_time(t0) - (m - 1) as f64 / sr
-        } else {
-            clip.src_time(t0)
-        };
-        if let Some(src) = pool.audio(path, clip.audio_stream) {
-            read_block(src, s0, &mut buf);
-            resample_add(clip, ext, t0, &buf, out);
-        }
-        self.put(depth * 2, buf);
+/// One audio clip: read ceil(n*speed)+1 source frames at the clip's source time, linearly resample
+/// into `out` (n frames) and add with per-channel gains lerped from the block start to the block end.
+#[allow(clippy::too_many_arguments)]
+fn mix_audio_clip(
+    scratch: &mut Scratch,
+    clip: &Clip,
+    ext: &Ext,
+    t0: f64,
+    path: &str,
+    pool: &mut DecoderPool,
+    out: &mut [f32],
+    depth: usize,
+) {
+    let n = out.len() / 2;
+    let m = (n as f64 * clip.speed).ceil() as usize + 1;
+    let mut buf = scratch.take(depth * 2, m * 2);
+    let sr = SAMPLE_RATE as f64;
+    let s0 = if clip.reverse {
+        // the source block ends at src_time(t0) and is walked backwards
+        clip.src_time(t0) - (m - 1) as f64 / sr
+    } else {
+        clip.src_time(t0)
+    };
+    if let Some(src) = pool.audio(path, clip.audio_stream) {
+        read_block(src, s0, &mut buf);
+        resample_add(clip, ext, t0, &buf, out);
     }
+    scratch.put(depth * 2, buf);
+}
 
-    /// One Sequence clip on a video track: recursively mix its sequence's tracks at source rate into a
-    /// scratch buffer, then treat that buffer exactly like clip source audio (resample + gains).
-    #[allow(clippy::too_many_arguments)]
-    fn mix_seq_clip(
-        &mut self,
-        project: &Project,
-        clip: &Clip,
-        ext: &Ext,
-        t0: f64,
-        pool: &mut DecoderPool,
-        out: &mut [f32],
-        depth: usize,
-    ) {
-        let n = out.len() / 2;
-        let m = (n as f64 * clip.speed).ceil() as usize + 1;
-        let mut buf = self.take(depth * 2 + 1, m * 2);
-        let sr = SAMPLE_RATE as f64;
-        let s0 = if clip.reverse { clip.src_time(t0) - (m - 1) as f64 / sr } else { clip.src_time(t0) };
-        if let Some(tracks) = project.sequence_tracks(clip.sequence) {
-            self.mix_tracks(project, tracks, s0, pool, &mut buf, depth + 1);
-            resample_add(clip, ext, t0, &buf, out);
-        }
-        self.put(depth * 2 + 1, buf);
+/// One Sequence clip on a video track: recursively mix its sequence's tracks at source rate into a
+/// scratch buffer, then treat that buffer exactly like clip source audio (resample + gains).
+/// Nested tracks keep their own mute/solo but not their own buses — the whole sub-mix goes to the
+/// bus of the Sequence clip that hosts it.
+#[allow(clippy::too_many_arguments)]
+fn mix_seq_clip(
+    scratch: &mut Scratch,
+    project: &Project,
+    clip: &Clip,
+    ext: &Ext,
+    t0: f64,
+    pool: &mut DecoderPool,
+    out: &mut [f32],
+    depth: usize,
+) {
+    let n = out.len() / 2;
+    let m = (n as f64 * clip.speed).ceil() as usize + 1;
+    let mut buf = scratch.take(depth * 2 + 1, m * 2);
+    let sr = SAMPLE_RATE as f64;
+    let s0 = if clip.reverse { clip.src_time(t0) - (m - 1) as f64 / sr } else { clip.src_time(t0) };
+    if let Some(tracks) = project.sequence_tracks(clip.sequence) {
+        mix_tracks(scratch, project, tracks, s0, pool, &mut Dest::Buf(&mut buf), depth + 1);
+        resample_add(clip, ext, t0, &buf, out);
     }
-
-    /// Take pool buffer `i`, zeroed and sized to `len` (capacity kept — grows once).
-    fn take(&mut self, i: usize, len: usize) -> Vec<f32> {
-        if self.scratch.len() <= i {
-            self.scratch.resize_with(i + 1, Vec::new);
-        }
-        let mut b = std::mem::take(&mut self.scratch[i]);
-        b.clear();
-        b.resize(len, 0.0);
-        b
-    }
-    fn put(&mut self, i: usize, b: Vec<f32>) {
-        self.scratch[i] = b;
-    }
+    scratch.put(depth * 2 + 1, buf);
 }
 
 /// Mute/solo resolution over an arbitrary track list (same rule as `Project::active`, which only knows
@@ -400,6 +454,100 @@ mod tests {
         mx.mix(&p, 10.0 - 0.0005, &mut pool, &mut out);
         assert!((out[0] - 0.25).abs() < 1e-5);
         assert_eq!(out[95], 0.0);
+    }
+
+    #[test]
+    fn bus_routing() {
+        use crate::model::{AudioFilter, FilterKind};
+        let mut p = project();
+        let ai = p.audio_tracks()[0];
+        p.main_bus();
+        let a = p.add_bus("A");
+        p.tracks[ai].bus = a;
+        let mut pool = pool();
+        let mut mx = Mixer::new();
+        let mut out = vec![0.0f32; 2 * 480];
+
+        // A → Main with unity gain: the source comes through untouched
+        mx.mix(&p, 1.0, &mut pool, &mut out);
+        assert!(out.iter().all(|s| (s - 0.5).abs() < 1e-5), "{}", out[0]);
+
+        // a clip on a muted bus is silent
+        p.bus_mut(a).unwrap().muted = true;
+        mx.mix(&p, 1.0, &mut pool, &mut out);
+        assert!(out.iter().all(|s| *s == 0.0), "muted bus: {}", out[0]);
+        p.bus_mut(a).unwrap().muted = false;
+
+        // a solo elsewhere mutes A; soloing A brings it back (Main is never solo-silenced)
+        let b = p.add_bus("B");
+        p.bus_mut(b).unwrap().solo = true;
+        mx.mix(&p, 1.0, &mut pool, &mut out);
+        assert!(out.iter().all(|s| *s == 0.0), "other bus soloed: {}", out[0]);
+        p.bus_mut(a).unwrap().solo = true;
+        mx.mix(&p, 1.0, &mut pool, &mut out);
+        assert!(out.iter().all(|s| (s - 0.5).abs() < 1e-5), "A soloed: {}", out[0]);
+        p.bus_mut(a).unwrap().solo = false;
+        p.bus_mut(b).unwrap().solo = false;
+
+        // bus gain and pan
+        p.bus_mut(a).unwrap().gain.value = 0.5;
+        mx.mix(&p, 1.0, &mut pool, &mut out);
+        assert!(out.iter().all(|s| (s - 0.25).abs() < 1e-5), "bus gain: {}", out[0]);
+        p.bus_mut(a).unwrap().gain.value = 1.0;
+
+        // mono folds L and R: pan the clip hard left, then fold
+        p.tracks[ai].clips[0].pan.value = -1.0;
+        mx.mix(&p, 1.0, &mut pool, &mut out);
+        assert!((out[0] - 0.5).abs() < 1e-5 && out[1].abs() < 1e-5, "{:?}", &out[..2]);
+        p.bus_mut(a).unwrap().mono = true;
+        mx.mix(&p, 1.0, &mut pool, &mut out);
+        assert!(out.iter().all(|s| (s - 0.25).abs() < 1e-5), "mono: {:?}", &out[..2]);
+        p.bus_mut(a).unwrap().mono = false;
+        p.tracks[ai].clips[0].pan.value = 0.0;
+
+        // the bus filter chain runs on the summed bus
+        let mut f = AudioFilter::new(FilterKind::Gain);
+        f.params[0].value = -6.0;
+        p.bus_mut(a).unwrap().filters.push(f);
+        mx.mix(&p, 1.0, &mut pool, &mut out);
+        let want = 0.5 * crate::engine::mixer_fx::db_to_lin(-6.0);
+        assert!(out.iter().all(|s| (s - want).abs() < 1e-4), "bus filter: {} vs {want}", out[0]);
+        p.bus_mut(a).unwrap().filters.clear();
+
+        // a clip override beats its track's bus
+        p.bus_mut(a).unwrap().muted = true;
+        p.tracks[ai].clips[0].bus = b;
+        mx.mix(&p, 1.0, &mut pool, &mut out);
+        assert!(out.iter().all(|s| (s - 0.5).abs() < 1e-5), "clip override: {}", out[0]);
+
+        // removing that bus clears the override, so the clip inherits its (still muted) track bus…
+        p.remove_bus(b);
+        mx.mix(&p, 1.0, &mut pool, &mut out);
+        assert!(out.iter().all(|s| *s == 0.0), "back to the muted track bus: {}", out[0]);
+        // …and clearing the track bus falls back to Main
+        p.tracks[ai].bus = 0;
+        mx.mix(&p, 1.0, &mut pool, &mut out);
+        assert!(out.iter().all(|s| (s - 0.5).abs() < 1e-5), "fallback to Main: {}", out[0]);
+    }
+
+    #[test]
+    fn bus_chain_sums_into_main() {
+        // A → B → Main: the deeper bus must be flushed first, and its gain must apply on the way.
+        let mut p = project();
+        let ai = p.audio_tracks()[0];
+        p.main_bus();
+        let a = p.add_bus("A");
+        let b = p.add_bus("B");
+        p.bus_mut(a).unwrap().output = b;
+        p.bus_mut(b).unwrap().gain.value = 0.5;
+        p.tracks[ai].bus = a;
+        let mut pool = pool();
+        let mut mx = Mixer::new();
+        let mut out = vec![0.0f32; 2 * 480];
+        mx.mix(&p, 1.0, &mut pool, &mut out);
+        assert!(out.iter().all(|s| (s - 0.25).abs() < 1e-5), "{}", out[0]);
+        assert!((mx.graph().meter(a).0 - 0.5).abs() < 1e-4, "A meters pre-B: {:?}", mx.graph().meter(a));
+        assert!((mx.graph().meter(b).0 - 0.25).abs() < 1e-4, "{:?}", mx.graph().meter(b));
     }
 
     #[test]
