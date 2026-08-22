@@ -356,6 +356,17 @@ fn snap_target(t: f64, thr: f64, p: &Project, playhead: f64, exclude: &[Id]) -> 
     nearest(t, thr, [0.0, playhead].into_iter().chain(p.in_point).chain(p.out_point).chain(edges))
 }
 
+/// Frame-quantise a pointer time and pull it onto the nearest snap candidate. Every tool that turns a
+/// pointer x into a time goes through here, so the razor, the marker tool, marker drags and media drops
+/// land on the same edges that moves and trims already snap to.
+fn snap_time(t: f64, on: bool, zoom: f32, p: &Project, playhead: f64, exclude: &[Id]) -> f64 {
+    if !on {
+        return t;
+    }
+    let t = p.snap_frame(t);
+    snap_target(t, (SNAP_PX / zoom) as f64, p, playhead, exclude).unwrap_or(t)
+}
+
 /// (major, minor) tick spacing in seconds for a zoom (px/s).
 fn tick_step(zoom: f32) -> (f64, f64) {
     TICKS.iter().copied().find(|(major, _)| *major * zoom as f64 >= 80.0).unwrap_or(TICKS[TICKS.len() - 1])
@@ -659,6 +670,16 @@ fn clip_menu(
     edit_labels: &mut bool,
 ) {
     use crate::hotkeys::Action;
+    if ui.button("Copy").clicked() {
+        actions.push(Action::CopyClips);
+    }
+    if ui.button("Cut").clicked() {
+        actions.push(Action::CutClips);
+    }
+    if ui.button("Paste").clicked() {
+        actions.push(Action::PasteClips);
+    }
+    ui.separator();
     if ui.button("Split at Playhead").clicked() {
         *act = Some(Act::Split);
     }
@@ -830,8 +851,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         )
         .on_hover_cursor(CursorIcon::ResizeHorizontal);
 
-    // the row under the press is where Ctrl+V pastes
-    if ui.input(|i| i.pointer.primary_pressed()) {
+    // the row under the press is where Ctrl+V pastes — right-click counts, so the context menu's
+    // Paste lands on the row you opened it over
+    if ui.input(|i| i.pointer.primary_pressed() || i.pointer.secondary_pressed()) {
         if let Some(ti) = pointer.filter(|p| lanes.contains(*p)).and_then(|p| state.track_at(p.y, c.project)) {
             state.last_track = Some(ti);
         }
@@ -1129,9 +1151,16 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             let br = ui.interact(vis, cid, Sense::click_and_drag());
             if br.clicked() {
                 // razor / marker tools act where the pointer is instead of selecting
+                let (snap_on, zoom, ph) = (c.snap, state.zoom, *c.playhead);
                 match (c.tool, br.interact_pointer_pos()) {
-                    (Tool::Cut, Some(pp)) => act = Some(Act::SplitAt(state.time_at(pp.x))),
-                    (Tool::Marker, Some(pp)) => act = Some(Act::AddMarker(state.time_at(pp.x).max(0.0))),
+                    (Tool::Cut, Some(pp)) => {
+                        let t = snap_time(state.time_at(pp.x), snap_on, zoom, c.project, ph, &[]);
+                        act = Some(Act::SplitAt(t));
+                    }
+                    (Tool::Marker, Some(pp)) => {
+                        let t = snap_time(state.time_at(pp.x), snap_on, zoom, c.project, ph, &[]);
+                        act = Some(Act::AddMarker(t.max(0.0)));
+                    }
                     _ => click = Some(clip.id),
                 }
             }
@@ -1485,7 +1514,10 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     if lanes_resp.clicked() && !mods.ctrl {
         // the marker tool also works on empty lanes; everything else just deselects
         match (c.tool, lanes_resp.interact_pointer_pos()) {
-            (Tool::Marker, Some(pp)) => act = Some(Act::AddMarker(state.time_at(pp.x).max(0.0))),
+            (Tool::Marker, Some(pp)) => {
+                let t = snap_time(state.time_at(pp.x), c.snap, state.zoom, c.project, *c.playhead, &[]);
+                act = Some(Act::AddMarker(t.max(0.0)));
+            }
             _ => c.selection.clear(),
         }
     }
@@ -1506,13 +1538,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         }
     });
     if let Some(pos) = pointer {
-        let drop_t = |state: &TimelineState, p: &Project| {
-            let t = state.time_at(pos.x).max(0.0);
-            if c.snap {
-                p.snap_frame(t)
-            } else {
-                t
-            }
+        let (snap_on, ph) = (c.snap, *c.playhead);
+        let drop_t = move |state: &TimelineState, p: &Project| {
+            snap_time(state.time_at(pos.x), snap_on, state.zoom, p, ph, &[]).max(0.0)
         };
         if let Some(payload) = lanes_resp.dnd_hover_payload::<DragPayload>() {
             let t = drop_t(state, c.project);
@@ -1937,6 +1965,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 let mut want = *edge + dx;
                 if c.snap {
                     want = p.snap_frame(want);
+                    if let Some(t) = snap_target(want, thr, p, *c.playhead, &[*id]) {
+                        want = t;
+                    }
                 }
                 if let Some((ti, ci)) = p.find(*id) {
                     let cl = &p.tracks[ti].clips[ci];
@@ -2046,7 +2077,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 }
             }
             Gesture::Marker { id, clip, changed } => {
+                // markers always land on a frame; snapping additionally pulls them onto clip edges
                 let want = p.snap_frame(t_at(pos.x).max(0.0));
+                let want = if c.snap { snap_target(want, thr, p, *c.playhead, &[]).unwrap_or(want) } else { want };
                 // clip markers are clip-local and stay inside their clip
                 let nt = match clip.and_then(|cid| p.clip(cid)) {
                     Some(cl) => (want - cl.start).clamp(0.0, cl.duration),
@@ -2064,7 +2097,18 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             }
             Gesture::Spacer { ids, dt, room } => {
                 // move_clips is all-or-nothing, so the clip in front of the group is never overrun
-                let want = if c.snap { p.snap_frame(dx) } else { dx }.max(-*room);
+                let mut want = if c.snap { p.snap_frame(dx) } else { dx };
+                if c.snap {
+                    // what the user watches move is the group's leading edge: snap that, not the raw delta
+                    let now = ids.iter().filter_map(|&id| p.clip(id)).map(|cl| cl.start).fold(f64::INFINITY, f64::min);
+                    let lead = now - *dt; // where that edge sat before the gesture
+                    if lead.is_finite() {
+                        if let Some(t) = snap_target(lead + want, thr, p, *c.playhead, ids) {
+                            want = t - lead;
+                        }
+                    }
+                }
+                let want = want.max(-*room);
                 if (want - *dt).abs() > 1e-9 && p.move_clips(ids, want - *dt, 0, None) {
                     *dt = want;
                 }
@@ -2257,6 +2301,7 @@ mod tests {
         undos: usize,
         waves: WaveformCache,
         tool: Tool,
+        snap: bool,
         time: f64,
         /// Paint list of the last frame (asserting on what was actually drawn).
         shapes: Vec<egui::epaint::ClippedShape>,
@@ -2292,6 +2337,7 @@ mod tests {
                 undos: 0,
                 waves,
                 tool: Tool::Select,
+                snap: false,
                 time: 0.0,
                 shapes: Vec::new(),
             };
@@ -2311,7 +2357,7 @@ mod tests {
                 ..Default::default()
             };
             let pal = Palette::new(true, Color32::from_rgb(0, 120, 212));
-            let Harness { ctx, state, project, selection, playhead, undos, waves, tool, .. } = self;
+            let Harness { ctx, state, project, selection, playhead, undos, waves, tool, snap, .. } = self;
             let mut resp = None;
             let full = ctx.run(input, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
@@ -2326,7 +2372,7 @@ mod tests {
                             undo: &mut undo,
                             waveforms: waves,
                             palette: &pal,
-                            snap: false,
+                            snap: *snap,
                             playing: false,
                             thumbs: None,
                             keep_ranges: &[],
@@ -2430,6 +2476,43 @@ mod tests {
         assert!(c.duration > dur0 + 0.5, "stretch must lengthen the clip: {} -> {}", dur0, c.duration);
         assert!((c.src_len() - src0).abs() < 1e-6, "stretch must keep the source window: {} -> {}", src0, c.src_len());
         assert!(c.speed < 1.0, "a longer clip over the same source must slow down: {}", c.speed);
+    }
+
+    /// Snapping is not just for move/trim: the razor, the marker tool and marker drags land on the same
+    /// candidates as everything else. In/out points are used as the candidates here — the playhead has a
+    /// grab zone that would eat the clicks.
+    #[test]
+    fn every_tool_snaps() {
+        let mut h = Harness::new();
+        h.snap = true;
+        h.project.in_point = Some(3.0);
+        h.project.out_point = Some(5.0);
+        let lanes = h.state.lanes_rect;
+        let y = lanes.top() + 30.0;
+        let off = lanes.left() + 3.0 * h.state.zoom + 4.0; // 4 px past the in point, inside the 8 px threshold
+
+        // marker tool first: the razor's cut would put a trim handle over the spot we click
+        h.tool = Tool::Marker;
+        let p = pos2(off, y);
+        h.press(p);
+        h.release(p);
+        h.frame(vec![]);
+        assert_eq!(h.project.markers.len(), 1, "marker tool dropped nothing");
+        assert!((h.project.markers[0].t - 3.0).abs() < 1e-9, "marker tool must snap: {}", h.project.markers[0].t);
+
+        h.tool = Tool::Cut;
+        h.press(p);
+        h.release(p);
+        h.frame(vec![]);
+        assert_eq!(h.project.tracks[0].clips.len(), 2, "razor did not split");
+        let cut = h.project.tracks[0].clips[1].start;
+        assert!((cut - 3.0).abs() < 1e-9, "razor must snap to the in point: {cut}");
+
+        // and dragging the ruler flag snaps too — over to the out point, the only candidate near the drop
+        h.tool = Tool::Select;
+        let y = lanes.top() - RULER_H + 4.0;
+        assert!(h.drag(pos2(h.state.x_at(3.0) + 1.0, y), pos2(h.state.x_at(5.0) + 5.0, y)), "marker drag edits");
+        assert!((h.project.markers[0].t - 5.0).abs() < 1e-9, "marker drag must snap: {}", h.project.markers[0].t);
     }
 
     #[test]

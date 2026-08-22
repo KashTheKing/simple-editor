@@ -5101,6 +5101,8 @@ impl eframe::App for App {
             });
         }
 
+        // clip clipboard last: the curve and node editors claim Ctrl+C/V while the pointer is over them
+        actions.extend(self.hotkeys.poll_late(ctx));
         actions.append(&mut self.pending_actions);
         for a in actions {
             if a == Action::Fullscreen {
