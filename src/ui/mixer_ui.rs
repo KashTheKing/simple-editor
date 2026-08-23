@@ -50,6 +50,9 @@ const GRID_HZ: [(f32, &str); 10] = [
 #[derive(Default)]
 pub struct MixerState {
     pub selected_bus: Option<Id>,
+    /// Filters the user pulled out into their own window, as (bus, filter index). Kept in the pane's
+    /// state so the windows survive a repaint, and dropped when the filter goes.
+    pub popped: Vec<(Id, usize)>,
     /// Show the clip/track routing section.
     pub show_routing: bool,
     /// Band being dragged on a response plot, as (bus, filter index, band index). Latched for the whole
@@ -157,6 +160,31 @@ pub fn show(
             }
         });
     });
+
+    // floating filters: the same body as the strip, over the same clone, so an edit here lands in the
+    // write-back below exactly like an edit made in the strip
+    let mut still: Vec<(Id, usize)> = Vec::new();
+    for (bus_id, i) in state.popped.clone() {
+        let Some(bi) = list.iter().position(|b| b.id == bus_id) else { continue };
+        let Some(kind) = list[bi].filters.get(i).map(|f| f.kind.name()) else { continue };
+        let name = list[bi].name.clone();
+        let mut open = true;
+        egui::Window::new(format!("{name} - {kind}"))
+            .id(egui::Id::new(("popfx", bus_id, i)))
+            .open(&mut open)
+            .resizable(true)
+            .default_width(280.0)
+            .show(ui.ctx(), |ui| {
+                if let Some(f) = list[bi].filters.get_mut(i) {
+                    f.fill_params();
+                    filter_body(ui, f, bus_id, i, time, palette, state, &mut g, bi);
+                }
+            });
+        if open {
+            still.push((bus_id, i));
+        }
+    }
+    state.popped = still;
 
     if g.start {
         undo(project);
@@ -370,6 +398,82 @@ fn meter(ui: &mut egui::Ui, lr: (f32, f32), palette: &Palette) {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// One filter's editable half: its response curve and its parameter grid. Shared by the strip and by
+/// the pop-out window, so a floating filter is the same control surface, not a second implementation.
+#[allow(clippy::too_many_arguments)]
+fn filter_body(
+    ui: &mut egui::Ui,
+    f: &mut AudioFilter,
+    bus_id: Id,
+    i: usize,
+    time: f64,
+    palette: &Palette,
+    state: &mut MixerState,
+    g: &mut Gesture,
+    n: usize,
+) {
+    if curve(ui, f, (bus_id, i), time, palette, state, g, n) {
+        g.changed = true;
+    }
+    let specs = f.kind.params();
+    // the EQ's parameters are stored in the order the old 3-band EQ used; read them by band
+    let order: Vec<usize> = if f.kind == FilterKind::Eq {
+        EQ_BANDS.iter().flat_map(|&(_, gi, fi, qi)| [fi, gi, qi]).collect()
+    } else {
+        (0..specs.len()).collect()
+    };
+    Grid::new(("fx", bus_id, i)).num_columns(3).spacing(vec2(4.0, 2.0)).show(ui, |ui| {
+        for j in order {
+            let (Some(spec), Some(a)) = (specs.get(j), f.params.get_mut(j)) else { continue };
+            ui.label(spec.name);
+            let mut v = a.at(time);
+            let r = match spec.name {
+                "Ping-pong" => {
+                    let mut on = v >= 0.5;
+                    let r = ui.checkbox(&mut on, "");
+                    v = if on { 1.0 } else { 0.0 };
+                    r
+                }
+                "Type" => {
+                    let opts = ["White", "Pink", "Tone"];
+                    let cur = opts.get(v.round().clamp(0.0, 2.0) as usize).copied().unwrap_or("White");
+                    let mut picked = None;
+                    let mut r = ComboBox::from_id_salt(("ty", bus_id, i))
+                        .selected_text(cur)
+                        .width(84.0)
+                        .show_ui(ui, |ui| {
+                            for (k, o) in opts.iter().enumerate() {
+                                if ui.selectable_label(cur == *o, *o).clicked() {
+                                    picked = Some(k as f64);
+                                }
+                            }
+                        })
+                        .response;
+                    if let Some(k) = picked {
+                        v = k;
+                        r.mark_changed();
+                    }
+                    r
+                }
+                _ => ui.add(
+                    DragValue::new(&mut v)
+                        .range(spec.min..=spec.max)
+                        .clamp_existing_to_range(false)
+                        .speed((spec.max - spec.min) / 200.0),
+                ),
+            };
+            #[cfg(test)]
+            test_rects::push(format!("p{n}_{i}_{j}"), r.rect);
+            if r.changed() {
+                a.set_at(time, v);
+            }
+            g.note(&r);
+            key_button(ui, a, time, palette, g, (bus_id, i, j));
+            ui.end_row();
+        }
+    });
+}
+
 fn filters(
     ui: &mut egui::Ui,
     bus: &mut Bus,
@@ -384,11 +488,20 @@ fn filters(
     let count = bus.filters.len();
     let mut remove: Option<usize> = None;
     let mut swap: Option<(usize, usize)> = None;
+    let mut pop: Option<usize> = None;
     for (i, f) in bus.filters.iter_mut().enumerate() {
         // a project saved before the kind grew a parameter is short: top it up from the spec table
         f.fill_params();
         ui.horizontal(|ui| {
             g.note(&ui.checkbox(&mut f.enabled, ""));
+            // on the left: the right-hand group is already full at STRIP_W and a fourth button there
+            // gets clipped out of the strip
+            let po = glyph_text_button(ui, Glyph::PopOut, "").on_hover_text("Open in its own window");
+            #[cfg(test)]
+            test_rects::push(format!("popfx{n}_{i}"), po.rect);
+            if po.clicked() {
+                pop = Some(i);
+            }
             ui.label(f.kind.name());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let del = crate::ui::markers_ui::x_button(ui).on_hover_text("Remove this filter");
@@ -407,70 +520,16 @@ fn filters(
                 }
             });
         });
-        if curve(ui, f, (bus_id, i), time, palette, state, g, n) {
-            g.changed = true;
-        }
-        let specs = f.kind.params();
-        // the EQ's parameters are stored in the order the old 3-band EQ used; read them by band
-        let order: Vec<usize> = if f.kind == FilterKind::Eq {
-            EQ_BANDS.iter().flat_map(|&(_, gi, fi, qi)| [fi, gi, qi]).collect()
-        } else {
-            (0..specs.len()).collect()
-        };
-        Grid::new(("fx", bus_id, i)).num_columns(3).spacing(vec2(4.0, 2.0)).show(ui, |ui| {
-            for j in order {
-                let (Some(spec), Some(a)) = (specs.get(j), f.params.get_mut(j)) else { continue };
-                ui.label(spec.name);
-                let mut v = a.at(time);
-                let r = match spec.name {
-                    "Ping-pong" => {
-                        let mut on = v >= 0.5;
-                        let r = ui.checkbox(&mut on, "");
-                        v = if on { 1.0 } else { 0.0 };
-                        r
-                    }
-                    "Type" => {
-                        let opts = ["White", "Pink", "Tone"];
-                        let cur = opts.get(v.round().clamp(0.0, 2.0) as usize).copied().unwrap_or("White");
-                        let mut picked = None;
-                        let mut r = ComboBox::from_id_salt(("ty", bus_id, i))
-                            .selected_text(cur)
-                            .width(84.0)
-                            .show_ui(ui, |ui| {
-                                for (k, o) in opts.iter().enumerate() {
-                                    if ui.selectable_label(cur == *o, *o).clicked() {
-                                        picked = Some(k as f64);
-                                    }
-                                }
-                            })
-                            .response;
-                        if let Some(k) = picked {
-                            v = k;
-                            r.mark_changed();
-                        }
-                        r
-                    }
-                    _ => ui.add(
-                        DragValue::new(&mut v)
-                            .range(spec.min..=spec.max)
-                            .clamp_existing_to_range(false)
-                            .speed((spec.max - spec.min) / 200.0),
-                    ),
-                };
-                #[cfg(test)]
-                test_rects::push(format!("p{n}_{i}_{j}"), r.rect);
-                if r.changed() {
-                    a.set_at(time, v);
-                }
-                g.note(&r);
-                key_button(ui, a, time, palette, g, (bus_id, i, j));
-                ui.end_row();
-            }
-        });
+        filter_body(ui, f, bus_id, i, time, palette, state, g, n);
     }
     if let Some((a, b)) = swap {
         bus.filters.swap(a, b);
         g.click();
+    }
+    if let Some(i) = pop {
+        if !state.popped.contains(&(bus_id, i)) {
+            state.popped.push((bus_id, i));
+        }
     }
     if let Some(i) = remove {
         bus.filters.remove(i);
@@ -840,6 +899,27 @@ mod tests {
         // and it can be removed again
         assert!(h.click_named("delfx1_0"));
         assert!(h.project.buses[1].filters.is_empty());
+    }
+
+    /// A filter can be pulled out into its own window, and edits there land on the project the same way
+    /// the strip's do.
+    #[test]
+    fn a_filter_pops_out_into_its_own_window() {
+        let mut h = Harness::new();
+        let music = h.project.buses[1].id;
+        h.project.bus_mut(music).unwrap().filters.push(AudioFilter::new(FilterKind::Gain));
+        h.frame(vec![]);
+        // click() reports whether the project changed, and popping a filter out is not a project edit
+        let r = test_rects::get("popfx1_0").expect("the pop-out button is registered");
+        h.click(r.center());
+        assert_eq!(h.state.popped, vec![(music, 0)], "the filter is floating");
+        h.frame(vec![]);
+        // the floating copy draws the same parameter row, so the id is registered twice this frame
+        assert!(test_rects::get("p1_0_0").is_some(), "the window draws the parameter grid");
+        // and it stops floating when the filter is deleted underneath it
+        h.project.bus_mut(music).unwrap().filters.clear();
+        h.frame(vec![]);
+        assert!(h.state.popped.is_empty(), "a removed filter takes its window with it");
     }
 
     #[test]
