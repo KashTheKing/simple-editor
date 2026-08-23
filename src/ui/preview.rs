@@ -822,6 +822,45 @@ mod tests {
 
     /// A line follows the drag in every direction: the half-extents stay signed, so dragging up-right
     /// makes a line that points up-right instead of snapping to its bounding box's other diagonal.
+    /// One drag must produce exactly ONE shape. If the gesture fired on more than one frame the timeline
+    /// would gain several stacked clips and several undo entries, so a single Ctrl+Z would look dead.
+    #[test]
+    fn a_shape_drag_emits_exactly_one_shape() {
+        let mut h = H::new();
+        h.tool = Tool::Shape(ShapeKind::Line);
+        h.frame(vec![]);
+        let (from, to) = (pos2(250.0, 150.0), pos2(400.0, 80.0));
+        // drive the gesture by hand so every frame's response can be counted
+        h.frame(vec![Event::PointerMoved(from)]);
+        let mut n = 0;
+        let mut count = |r: PreviewResponse| {
+            if r.new_shape.is_some() {
+                n += 1;
+            }
+        };
+        count(h.frame(vec![Event::PointerButton {
+            pos: from,
+            button: PointerButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        }]));
+        for i in 1..=4 {
+            let p = from + (to - from) * (i as f32 / 4.0);
+            count(h.frame(vec![Event::PointerMoved(p)]));
+        }
+        count(h.frame(vec![Event::PointerButton {
+            pos: to,
+            button: PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        }]));
+        // a few idle frames after the release: a gesture that never cleared would keep firing
+        for _ in 0..3 {
+            count(h.frame(vec![]));
+        }
+        assert_eq!(n, 1, "one drag, one shape (each extra one is an extra undo step)");
+    }
+
     #[test]
     fn line_tool_keeps_the_press_as_its_origin() {
         // (dx, dy) of the drag -> expected sign of (w, h)
