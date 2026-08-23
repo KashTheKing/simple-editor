@@ -725,6 +725,33 @@ mod tests {
         assert_eq!(px(&g, 20, 4)[3], 0, "the shaft is thin away from the head");
     }
 
+    /// A REAL pixel check of the diagonal case (h != 0), not just the geometry that feeds it: a line
+    /// dragged up-and-right (w > 0, h < 0, since screen y grows downward) must actually cover pixels
+    /// near the bottom-left and top-right of its layer and be empty near the other two corners, and the
+    /// opposite diagonal (w > 0, h > 0) must do the reverse.
+    #[test]
+    fn diagonal_line_covers_the_right_corners() {
+        let mut r = ShapeRasterizer::new();
+        let mut up_right = style(ShapeKind::Line, 40.0, -30.0);
+        up_right.stroke = [255, 255, 255, 255];
+        up_right.stroke_width = 4.0;
+        let f = r.render(&up_right, 1.0, 0.0);
+        let (w, h) = (f.width, f.height);
+        assert!(px(&f, 3, h - 3)[3] > 150, "bottom-left must be covered: {:?}", px(&f, 3, h - 3));
+        assert!(px(&f, w - 3, 3)[3] > 150, "top-right must be covered: {:?}", px(&f, w - 3, 3));
+        assert_eq!(px(&f, 3, 3)[3], 0, "top-left must be empty: {:?}", px(&f, 3, 3));
+        assert_eq!(px(&f, w - 3, h - 3)[3], 0, "bottom-right must be empty: {:?}", px(&f, w - 3, h - 3));
+
+        let mut down_right = style(ShapeKind::Line, 40.0, 30.0);
+        down_right.stroke = [255, 255, 255, 255];
+        down_right.stroke_width = 4.0;
+        let g = r.render(&down_right, 1.0, 0.0);
+        assert!(px(&g, 3, 3)[3] > 150, "top-left must be covered: {:?}", px(&g, 3, 3));
+        assert!(px(&g, w - 3, h - 3)[3] > 150, "bottom-right must be covered: {:?}", px(&g, w - 3, h - 3));
+        assert_eq!(px(&g, w - 3, 3)[3], 0, "top-right must be empty: {:?}", px(&g, w - 3, 3));
+        assert_eq!(px(&g, 3, h - 3)[3], 0, "bottom-left must be empty: {:?}", px(&g, 3, h - 3));
+    }
+
     #[test]
     fn ngon_vertex_counts() {
         assert_eq!(ngon(6, 10.0, 10.0, false).len(), 6);

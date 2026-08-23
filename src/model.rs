@@ -1648,6 +1648,31 @@ impl ShapeStyle {
             f.to_bits().hash(&mut h);
         }
         self.sides.hash(&mut h);
+        // w/h were missing entirely: the rasteriser's own cache key only adds the LAYER size (built from
+        // their absolute value, engine::shapes::half_size), so two Lines of the same length pointing
+        // opposite ways hashed identically and one silently got served the other's cached pixels. Hash
+        // the animated curve itself, sign included, the same way `points` and `strokes` are below.
+        for a in [&self.w, &self.h] {
+            a.value.to_bits().hash(&mut h);
+            a.keys.len().hash(&mut h);
+            for k in &a.keys {
+                (k.t.to_bits(), k.v.to_bits()).hash(&mut h);
+                // Ease is not Hash (Bezier carries f32 handles), so hash it by hand
+                match k.ease {
+                    Ease::Linear => 0u8.hash(&mut h),
+                    Ease::EaseIn => 1u8.hash(&mut h),
+                    Ease::EaseOut => 2u8.hash(&mut h),
+                    Ease::EaseInOut => 3u8.hash(&mut h),
+                    Ease::Hold => 4u8.hash(&mut h),
+                    Ease::Bezier { x1, y1, x2, y2 } => {
+                        5u8.hash(&mut h);
+                        for f in [x1, y1, x2, y2] {
+                            f.to_bits().hash(&mut h);
+                        }
+                    }
+                }
+            }
+        }
         // vertices move under the mouse, so their values (not just the count) key the cache
         for p in &self.points {
             (p.0.to_bits(), p.1.to_bits()).hash(&mut h);
