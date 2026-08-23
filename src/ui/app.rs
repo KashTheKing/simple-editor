@@ -253,9 +253,10 @@ fn guarded<T>(f: impl FnOnce() -> T) -> Option<T> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).ok()
 }
 
-/// Give the clip's last effect a mask, or the clip itself when it has no effects. False = there is one already.
+/// Give the clip's last effect a mask, or the clip itself when it has no effects. False = there is one
+/// already, or the clip is audio (a mask shapes pixels, and audio has none).
 fn add_mask(project: &mut Project, clip: Id, shape: MaskShape) -> bool {
-    let Some(c) = project.clip_mut(clip) else { return false };
+    let Some(c) = project.clip_mut(clip).filter(|c| c.is_visual()) else { return false };
     match c.effects.iter_mut().rev().find(|e| e.enabled) {
         Some(e) if e.mask.is_none() => {
             e.mask = Some(Mask::new(shape));
@@ -475,6 +476,9 @@ fn mask_shape(s: &str) -> Result<MaskShape, String> {
 /// The mask slot of a clip, or of one of its effects (`effect` = index in the effect stack).
 fn mask_slot(project: &mut Project, clip: Id, effect: Option<usize>) -> Result<&mut Option<Mask>, String> {
     let c = project.clip_mut(clip).ok_or("no such clip")?;
+    if !c.is_visual() {
+        return Err("that clip is audio — a mask shapes pixels, and audio has none".into());
+    }
     match effect {
         None => Ok(&mut c.mask),
         Some(i) => Ok(&mut c.effects.get_mut(i).ok_or("no effect at that index")?.mask),
@@ -1722,6 +1726,8 @@ impl App {
                     self.layout.reveal(Pane::Tools);
                     self.layout_dirty = true;
                     self.after_edit();
+                } else if self.project.clip(id).is_some_and(|c| !c.is_visual()) {
+                    self.toast("A mask shapes pixels — an audio clip has none");
                 } else {
                     self.toast("That clip already has a mask");
                 }
@@ -5358,6 +5364,12 @@ mod tests {
         assert!(add_mask(&mut p, id, MaskShape::Polygon));
         assert_eq!(p.clip(id).unwrap().effects[0].mask.as_ref().map(|m| m.shape), Some(MaskShape::Polygon));
         assert!(!add_mask(&mut p, 999, MaskShape::Rect), "unknown clip");
+        // a mask shapes pixels: audio takes none, through either route (Ctrl+Shift+M or MCP)
+        let a = p.new_id();
+        p.tracks[1].clips.push(Clip::new(a, ClipKind::Audio, "a", 0.0, 1.0));
+        assert!(!add_mask(&mut p, a, MaskShape::Rect), "audio clips take no mask");
+        assert!(mask_slot(&mut p, a, None).is_err(), "and clip.add_mask / clip.set_mask refuse them");
+        assert!(p.clip(a).unwrap().mask.is_none());
     }
 
     /// Paste Attributes only touches the boxes that were ticked (and never timing or media).

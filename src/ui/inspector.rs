@@ -550,31 +550,33 @@ fn clip_section(
         }
     });
 
-    // mask
-    ui.separator();
-    ui.horizontal(|ui| {
-        ui.strong("Mask");
-        if clip.mask.is_none() {
-            let r = ui.button("Add mask");
-            mark(ui, "add_mask", &r);
-            if r.clicked() {
-                clip.mask = Some(Mask::default());
-                g.click();
+    // mask — a mask shapes pixels, so an audio clip gets no mask UI at all (not even a dead button)
+    if clip.is_visual() {
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.strong("Mask");
+            if clip.mask.is_none() {
+                let r = ui.button("Add mask");
+                mark(ui, "add_mask", &r);
+                if r.clicked() {
+                    clip.mask = Some(Mask::default());
+                    g.click();
+                }
+            } else {
+                let r = ui.button("Edit in viewport").on_hover_text("Drag the mask over the preview");
+                mark(ui, "edit_mask", &r);
+                if r.clicked() {
+                    EDIT_MASK.with(|p| *p.borrow_mut() = Some(id));
+                }
+                if x_button(ui).on_hover_text("Remove mask").clicked() {
+                    clip.mask = None;
+                    g.click();
+                }
             }
-        } else {
-            let r = ui.button("Edit in viewport").on_hover_text("Drag the mask over the preview");
-            mark(ui, "edit_mask", &r);
-            if r.clicked() {
-                EDIT_MASK.with(|p| *p.borrow_mut() = Some(id));
-            }
-            if x_button(ui).on_hover_text("Remove mask").clicked() {
-                clip.mask = None;
-                g.click();
-            }
+        });
+        if let Some(m) = &mut clip.mask {
+            mask_grid(ui, m, lt, palette, &mut g, egui::Id::new("inspector_mask"));
         }
-    });
-    if let Some(m) = &mut clip.mask {
-        mask_grid(ui, m, lt, palette, &mut g, egui::Id::new("inspector_mask"));
     }
 
     // shape style
@@ -1071,6 +1073,12 @@ mod tests {
             let id = project.add_shape_clip(crate::model::ShapeKind::Star, 0.0, 3.0);
             Self { ctx: egui::Context::default(), project, id, undos: 0, time: 0.0 }
         }
+        fn audio_clip() -> Self {
+            let mut project = Project::new();
+            let id = project.new_id();
+            project.tracks[1].clips.push(Clip::new(id, ClipKind::Audio, "a", 0.0, 3.0));
+            Self { ctx: egui::Context::default(), project, id, undos: 0, time: 0.0 }
+        }
         fn frame(&mut self, events: Vec<egui::Event>) -> bool {
             self.time += 0.05;
             let input = egui::RawInput {
@@ -1091,10 +1099,11 @@ mod tests {
             });
             changed
         }
+        fn maybe_rect(&self, name: &str) -> Option<egui::Rect> {
+            self.ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(("insp", name.to_string()))))
+        }
         fn rect(&self, name: &str) -> egui::Rect {
-            self.ctx
-                .data(|d| d.get_temp::<egui::Rect>(egui::Id::new(("insp", name.to_string()))))
-                .unwrap_or_else(|| panic!("no widget rect for {name}"))
+            self.maybe_rect(name).unwrap_or_else(|| panic!("no widget rect for {name}"))
         }
         fn click(&mut self, pos: egui::Pos2) -> bool {
             let mut e = self.frame(vec![egui::Event::PointerMoved(pos)]);
@@ -1130,6 +1139,18 @@ mod tests {
         h.click(r.center());
         assert_eq!(take_edit_mask(), Some(h.id), "the app is told which clip to mask");
         assert_eq!(h.undos, 1, "asking to edit in the viewport is not an edit");
+    }
+
+    /// A mask shapes pixels, so an audio clip shows no mask section at all — not even a dead button,
+    /// and not even for a mask a hand-edited project smuggled in.
+    #[test]
+    fn audio_clips_get_no_mask_section() {
+        let mut h = H::audio_clip();
+        h.frame(vec![]);
+        assert!(h.maybe_rect("add_mask").is_none(), "no Add mask on an audio clip");
+        h.project.clip_mut(h.id).unwrap().mask = Some(Mask::default());
+        h.frame(vec![]);
+        assert!(h.maybe_rect("edit_mask").is_none(), "and no editor for one that got in anyway");
     }
 
     /// Shape clips get the style section, and a Shape clip's markers can be added from the inspector.
