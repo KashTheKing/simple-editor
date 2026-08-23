@@ -4,3 +4,6 @@ target/
 
 # agent worktrees (transient)
 .claude/
+
+# per-agent worktree build dirs
+target*/

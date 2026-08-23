@@ -2865,14 +2865,14 @@ mod tests {
                     egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
                         tile_grid(ui, 0.0, &(0..8).collect::<Vec<usize>>(), TILE, |ui, &i| {
                             let r = tile(
-                                    ui,
-                                    egui::Id::new(("g", i)),
-                                    DragPayload::Template(String::new()),
-                                    false,
-                                    "V",
-                                    "clip",
-                                    egui::Color32::WHITE,
-                                    &Palette::new(true, egui::Color32::WHITE),
+                                ui,
+                                egui::Id::new(("g", i)),
+                                DragPayload::Template(String::new()),
+                                false,
+                                "V",
+                                "clip",
+                                egui::Color32::WHITE,
+                                &Palette::new(true, egui::Color32::WHITE),
                                 Art::Icon(Glyph::FilmStrip),
                                 TILE,
                             );
