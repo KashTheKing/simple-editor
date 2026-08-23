@@ -22,19 +22,14 @@ pub struct MarkersResponse {
     pub seek: Option<f64>,
 }
 
-/// A small red-on-hover ✕ (same shape as the planner / inspector delete buttons).
+/// The delete button used everywhere (planner, inspector, effects, mixer, …): a painted cross that
+/// turns red on hover.
 pub(crate) fn x_button(ui: &mut egui::Ui) -> Response {
-    let r = ui.small_button("✕");
+    let r = crate::ui::tools::glyph_text_button(ui, crate::ui::tools::Glyph::Cross, "");
     if r.hovered() {
         let c = egui::Color32::from_rgb(220, 70, 70);
         ui.painter().rect_stroke(r.rect, 2.0, egui::Stroke::new(1.0, c), egui::StrokeKind::Inside);
-        ui.painter().text(
-            r.rect.center(),
-            egui::Align2::CENTER_CENTER,
-            "✕",
-            egui::TextStyle::Button.resolve(ui.style()),
-            c,
-        );
+        crate::ui::tools::draw_glyph(ui.painter(), r.rect, crate::ui::tools::Glyph::Cross, c);
     }
     r
 }
@@ -133,7 +128,8 @@ pub fn show(
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut state.filter_label, 0, "All labels");
                 for (i, (name, [r, g, b])) in labels.iter().enumerate() {
-                    let t = RichText::new(format!("● {name}")).color(egui::Color32::from_rgb(*r, *g, *b));
+                    // the name is tinted with its own colour — no swatch character needed
+                    let t = RichText::new(name.clone()).color(egui::Color32::from_rgb(*r, *g, *b));
                     ui.selectable_value(&mut state.filter_label, i as u8 + 1, t);
                 }
             });
@@ -164,7 +160,7 @@ pub fn show(
                     Some([r, g, b]) => egui::Color32::from_rgb(r, g, b),
                     None => palette.text_dim,
                 };
-                let dot = ui.button(RichText::new("●").color(color));
+                let dot = ui.add(crate::ui::tools::color_chip(color, false, palette));
                 dot.context_menu(|ui| {
                     if ui.selectable_label(m.label == 0, "None").clicked() {
                         m.label = 0;
@@ -173,7 +169,7 @@ pub fn show(
                         ui.close();
                     }
                     for (i, (name, [r, g, b])) in labels.iter().enumerate() {
-                        let t = RichText::new(format!("● {name}")).color(egui::Color32::from_rgb(*r, *g, *b));
+                        let t = RichText::new(name.clone()).color(egui::Color32::from_rgb(*r, *g, *b));
                         if ui.selectable_label(m.label == i as u8 + 1, t).clicked() {
                             m.label = i as u8 + 1;
                             start = true;

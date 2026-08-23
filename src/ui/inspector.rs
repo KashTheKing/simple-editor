@@ -1,8 +1,8 @@
 //! Inspector panel. Nothing selected → Project panel (name, width, height, fps, duration, Save / Export /
 //! Export Frame buttons, export settings summary). One clip selected →
 //! clip name, enabled, colour label, timing (start / duration / source in), retime readout (Ctrl+R), and:
-//!  * visual clips: Position X/Y, Scale, Rotation (DragValue), Opacity (0-100% slider) — each row + "◆"
-//!    keyframe toggle (`Animated::toggle_key(clip.local(playhead))`, highlighted when a key exists at the
+//!  * visual clips: Position X/Y, Scale, Rotation (DragValue), Opacity (0-100% slider) — each row + a
+//!    diamond keyframe toggle (`Animated::toggle_key(clip.local(playhead))`, highlighted when a key exists at the
 //!    playhead) + "clear keys"; edits go through `Animated::set_at(local_t, v)` so keyframed props get
 //!    keys; Blend mode combo.
 //!  * audio clips: Volume (dB slider mapped to linear gain) and Pan (-1..1 slider) with the same keyframe
@@ -265,7 +265,7 @@ fn clip_section(
                 g.note(&ui.selectable_value(&mut clip.label, 0, "None"));
                 for (i, l) in labels.iter().enumerate() {
                     let [r, gc, b] = l.color;
-                    let t = RichText::new(format!("● {}", l.name)).color(egui::Color32::from_rgb(r, gc, b));
+                    let t = RichText::new(l.name.clone()).color(egui::Color32::from_rgb(r, gc, b));
                     g.note(&ui.selectable_value(&mut clip.label, i as u8 + 1, t));
                 }
                 ui.separator();
@@ -277,7 +277,7 @@ fn clip_section(
             if clip.label != 0 {
                 if let Some(l) = labels.get(clip.label as usize - 1) {
                     let [r, gc, b] = l.color;
-                    ui.label(RichText::new("●").color(egui::Color32::from_rgb(r, gc, b)));
+                    crate::ui::tools::glyph_label(ui, crate::ui::tools::Glyph::Dot, egui::Color32::from_rgb(r, gc, b));
                 }
             }
         });
@@ -376,7 +376,7 @@ fn clip_section(
         for (i, e) in clip.effects.iter_mut().enumerate() {
             ui.horizontal(|ui| {
                 g.note(&ui.checkbox(&mut e.enabled, e.kind.name()));
-                if ui.small_button("✕").clicked() {
+                if crate::ui::markers_ui::x_button(ui).on_hover_text("Remove this effect").clicked() {
                     rm = Some(i);
                 }
             });

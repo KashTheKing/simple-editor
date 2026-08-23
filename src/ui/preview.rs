@@ -1,7 +1,8 @@
 //! Preview panel: the rendered frame (letterboxed, black bars), a selection outline for the selected
 //! visual clip (drag to move = edits clip.x / clip.y at the playhead time via `Animated::set_at`, calling
 //! `undo` once at drag start), and the transport bar, centred under the video:
-//! |◀  ◀◀(prev cut)  ◀(step)  ▶/⏸  ▶(step)  ▶▶  ▶| plus timecode / duration, In/Out buttons and the
+//! go-start, prev cut, step back, play/pause, stop, step forward, next cut, go-end (all painted
+//! glyphs, NLE order) plus timecode / duration, In/Out buttons and the
 //! in/out times, a preview-quality selector (100 / 75 / 50 / 25 %) and a Movie mode toggle.
 //! In `fullscreen` mode only the video is drawn (no transport, no overlay): Esc / F11 leave it (app).
 //!
@@ -19,7 +20,7 @@ use crate::media::Frame;
 use crate::model::{ClipKind, Id, Mask, MaskShape, Project, ShapeKind, Stroke as ModelStroke};
 use crate::theme::Palette;
 use crate::ui::timecode;
-use crate::ui::tools::Tool;
+use crate::ui::tools::{glyph_text_button, Dir, Glyph, Tool};
 use eframe::egui::{self, pos2, vec2, Color32, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, TextureOptions, Vec2};
 use std::sync::Arc;
 
@@ -140,25 +141,31 @@ fn transport(ui: &mut egui::Ui, state: &mut PreviewState, c: &PreviewCtx<'_>, r:
         .horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             ui.add_space(pad);
-            let mut b = |ui: &mut egui::Ui, label: &str, a: Action| {
-                if ui.button(label).clicked() {
+            // `label` is the tooltip for an icon button and the caption for a text one
+            let mut b = |ui: &mut egui::Ui, icon: Option<Glyph>, label: &str, a: Action| {
+                let hit = match icon {
+                    Some(g) => glyph_text_button(ui, g, "").on_hover_text(label),
+                    None => ui.button(label),
+                };
+                if hit.clicked() {
                     r.actions.push(a);
                 }
             };
-            b(ui, "|◀", Action::GoStart);
-            b(ui, "◀◀", Action::PrevCut);
-            b(ui, "◀", Action::StepBack);
-            b(ui, if c.playing { "⏸" } else { "▶" }, Action::PlayPause);
-            b(ui, "■", Action::Stop);
-            b(ui, "▶", Action::StepForward);
-            b(ui, "▶▶", Action::NextCut);
-            b(ui, "▶|", Action::GoEnd);
+            b(ui, Some(Glyph::Jump(Dir::Left)), "Go to start", Action::GoStart);
+            b(ui, Some(Glyph::Skip(Dir::Left)), "Previous cut", Action::PrevCut);
+            b(ui, Some(Glyph::Tri(Dir::Left)), "Step back one frame", Action::StepBack);
+            let (pp, pp_tip) = if c.playing { (Glyph::Pause, "Pause") } else { (Glyph::Play, "Play") };
+            b(ui, Some(pp), pp_tip, Action::PlayPause);
+            b(ui, Some(Glyph::Stop), "Stop", Action::Stop);
+            b(ui, Some(Glyph::Tri(Dir::Right)), "Step forward one frame", Action::StepForward);
+            b(ui, Some(Glyph::Skip(Dir::Right)), "Next cut", Action::NextCut);
+            b(ui, Some(Glyph::Jump(Dir::Right)), "Go to end", Action::GoEnd);
             ui.add_space(8.0);
             ui.monospace(format!("{} / {}", timecode(c.playhead, fps), timecode(c.project.duration(), fps)));
             ui.add_space(8.0);
-            b(ui, "In", Action::MarkIn);
-            b(ui, "Out", Action::MarkOut);
-            b(ui, "Clear", Action::ClearInOut);
+            b(ui, None, "In", Action::MarkIn);
+            b(ui, None, "Out", Action::MarkOut);
+            b(ui, None, "Clear", Action::ClearInOut);
             if c.project.in_point.is_some() || c.project.out_point.is_some() {
                 ui.add_space(4.0);
                 let tc = |t: Option<f64>| t.map(|t| timecode(t, fps)).unwrap_or_else(|| "-".into());
@@ -183,7 +190,7 @@ fn transport(ui: &mut egui::Ui, state: &mut PreviewState, c: &PreviewCtx<'_>, r:
                 ui,
                 c.palette,
                 ui.id().with("movie"),
-                crate::ui::tools::Glyph::FilmStrip,
+                Glyph::FilmStrip,
                 "Movie mode: play pre-rendered full-quality frames",
                 c.movie_mode,
             )
@@ -191,7 +198,7 @@ fn transport(ui: &mut egui::Ui, state: &mut PreviewState, c: &PreviewCtx<'_>, r:
             {
                 r.set_movie_mode = Some(!c.movie_mode);
             }
-            b(ui, "⛶", Action::Fullscreen);
+            b(ui, Some(Glyph::Fullscreen), "Fullscreen", Action::Fullscreen);
         })
         .response;
     // measured content width (without the centring pad) drives the next frame's padding

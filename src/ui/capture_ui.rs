@@ -173,7 +173,8 @@ fn screen_window(
         ui.separator();
         ui.horizontal(|ui| {
             if recording {
-                ui.colored_label(ui.visuals().error_fg_color, "● REC");
+                crate::ui::tools::glyph_label(ui, Glyph::Record, ui.visuals().error_fg_color);
+                ui.colored_label(ui.visuals().error_fg_color, "REC");
                 ui.label(clock(state.elapsed));
                 if ui.button("Stop").clicked() {
                     r.stop_screen = true;
@@ -247,7 +248,8 @@ fn voice_window(
         meter(ui, state.level, palette);
         ui.horizontal(|ui| {
             if recording {
-                ui.colored_label(ui.visuals().error_fg_color, "● REC");
+                crate::ui::tools::glyph_label(ui, Glyph::Record, ui.visuals().error_fg_color);
+                ui.colored_label(ui.visuals().error_fg_color, "REC");
                 ui.label(clock(state.elapsed));
                 if ui.button("Stop").clicked() {
                     r.stop_voice = true;

@@ -71,7 +71,7 @@ pub(crate) fn once(flag: &mut bool, undo: &mut dyn FnMut(&Project), p: &Project)
     }
 }
 
-/// "◆" keyframe toggle at the clip-local playhead + "✕ keys" once the parameter is animated.
+/// Diamond keyframe toggle at the clip-local playhead + a "keys" clear button once it is animated.
 pub(crate) fn key_buttons(ui: &mut egui::Ui, a: &mut Animated, lt: f64, palette: &Palette, g: &mut Gesture) {
     let id = ui.id().with(("kf", a as *const _ as usize));
     if crate::ui::tools::icon_button(
@@ -88,7 +88,7 @@ pub(crate) fn key_buttons(ui: &mut egui::Ui, a: &mut Animated, lt: f64, palette:
         g.click();
     }
     if a.is_animated() {
-        if ui.small_button("✕ keys").clicked() {
+        if crate::ui::tools::glyph_text_button(ui, crate::ui::tools::Glyph::Cross, "keys").clicked() {
             a.clear_keys(lt);
             g.click();
         }
