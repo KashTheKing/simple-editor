@@ -161,6 +161,7 @@ enum LibOp {
 
 /// The frame the app's preview player produced this update, with its pixel size. The preview box paints
 /// it instead of the still thumbnail, which is what makes a clicked asset play.
+#[derive(Clone, Copy)]
 pub struct PreviewFrame {
     pub tex: egui::TextureId,
     pub size: [u32; 2],

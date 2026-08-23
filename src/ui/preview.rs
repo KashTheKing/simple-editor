@@ -300,7 +300,7 @@ fn draw_shape_preview(p: &egui::Painter, kind: ShapeKind, from: Pos2, to: Pos2, 
 }
 
 /// Largest `aspect` rect centred in `area`, edges snapped to whole physical pixels.
-fn letterbox(area: Rect, aspect: f32, ppp: f32) -> Rect {
+pub(crate) fn letterbox(area: Rect, aspect: f32, ppp: f32) -> Rect {
     let (aw, ah) = (area.width(), area.height());
     let (w, h) = if aw / ah > aspect { (ah * aspect, ah) } else { (aw, aw / aspect) };
     let snap = |v: f32| (v * ppp).round() / ppp;

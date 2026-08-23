@@ -55,6 +55,15 @@ struct McpJob {
     out: PathBuf,
 }
 
+/// The library's own preview player: a file, its own decoder/audio pipeline, and the duration/fps a
+/// transport needs (an asset's own probed values, since this project is a synthetic single-clip one).
+struct LibPreview {
+    path: PathBuf,
+    player: Player,
+    duration: f64,
+    fps: f64,
+}
+
 pub struct App {
     project: Project,
     project_path: Option<PathBuf>,
@@ -189,10 +198,15 @@ pub struct App {
     /// event either way), so a Ctrl+V after an internal-only copy produced NO event at all and could
     /// never be bound. Copying clips therefore also writes them out as text.
     os_clipboard: Option<String>,
-    /// The library's own preview: the file it is showing, a player of its own so it never disturbs the
-    /// program monitor or the timeline playhead, and the texture the pane paints this frame.
-    lib_preview: Option<(PathBuf, Player)>,
+    /// The library's own preview: a player of its own so it never disturbs the program monitor or the
+    /// timeline playhead, and the texture the pane paints this frame. While it is Some, the Preview
+    /// pane shows this instead of the timeline (see `draw_lib_preview`).
+    lib_preview: Option<LibPreview>,
     lib_preview_tex: Option<egui::TextureHandle>,
+    /// This update's uploaded frame, computed once (`Player::take_frame` consumes the buffered frame, so
+    /// pulling it twice in one update would starve whichever call came second). Both the library pane's
+    /// own preview box and the viewport override read this same value.
+    lib_preview_live: Option<library::PreviewFrame>,
     /// Movie mode pre-render cache.
     prerender: PreRender,
     /// Movie mode paused the clock because the frame under the playhead was not rendered yet.
@@ -677,6 +691,22 @@ fn converted_path(src: &Path, ext: &str) -> PathBuf {
     out
 }
 
+/// Time the library preview's "step back/forward one frame" buttons seek to.
+fn step_time(playhead: f64, fps: f64, forward: bool, duration: f64) -> f64 {
+    let dt = 1.0 / fps.max(1.0);
+    if forward {
+        (playhead + dt).min(duration)
+    } else {
+        (playhead - dt).max(0.0)
+    }
+}
+
+/// Time a library preview scrub-bar click/drag at fractional position `frac` (0..1 across the bar,
+/// unclamped so a drag past either end still reads as 0 or `duration`) seeks to.
+fn scrub_time(frac: f64, duration: f64) -> f64 {
+    frac.clamp(0.0, 1.0) * duration
+}
+
 /// Tools whose success means "one undo step + after_edit" (media.import pushes its own undo).
 const MUTATING_TOOLS: &[&str] = &[
     "project.set",
@@ -850,6 +880,7 @@ impl App {
             clipboard: None,
             os_clipboard: None,
             lib_preview: None,
+            lib_preview_live: None,
             lib_preview_tex: None,
             prerender: PreRender::new(),
             movie_stall: false,
@@ -1913,86 +1944,90 @@ impl App {
     fn draw_pane_inner(&mut self, ui: &mut egui::Ui, pane: Pane) {
         match pane {
             Pane::Preview => {
-                let frame = self.pending_frame.take();
-                let resp = {
-                    let App {
-                        project,
-                        selection,
-                        playhead,
-                        undo,
-                        redo,
-                        preview: pv,
-                        player,
-                        palette,
-                        fullscreen,
-                        tools,
-                        settings,
-                        prerender,
-                        gpu_tex,
-                        tracking,
-                        tracking_shown,
-                        ..
-                    } = self;
-                    let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
-                    // only while movie mode is on: progress() walks the requested ranges
-                    let done = settings
-                        .movie_mode
-                        .then(|| guarded(|| prerender.progress()).unwrap_or(1.0))
-                        .filter(|&p| p < 1.0);
-                    preview::show(
-                        ui,
-                        pv,
-                        preview::PreviewCtx {
+                if self.lib_preview.is_some() {
+                    self.draw_lib_preview(ui);
+                } else {
+                    let frame = self.pending_frame.take();
+                    let resp = {
+                        let App {
                             project,
                             selection,
-                            playhead: *playhead,
-                            playing: player.is_playing(),
-                            fullscreen: *fullscreen,
+                            playhead,
+                            undo,
+                            redo,
+                            preview: pv,
+                            player,
                             palette,
-                            undo: &mut push,
-                            frame,
-                            gpu_texture: *gpu_tex,
-                            tool: tools.tool,
-                            quality: settings.preview_quality,
-                            movie_mode: settings.movie_mode,
-                            prerender: done,
-                            tracker: tracking_shown.then(|| tracking.box_rect()),
-                        },
-                    )
-                };
-                let (cw, ch) = preview_canvas(resp.canvas, self.settings.preview_quality);
-                self.player.set_canvas(cw, ch, self.settings.preview_max_width);
-                // same clamp the player applies, so the GPU renders at the aspect the player decodes at
-                self.canvas = clamp_canvas(cw, ch, self.settings.preview_max_width);
-                if let Some(t) = resp.seek {
-                    self.seek(t);
-                }
-                self.pending_actions.extend(resp.actions);
-                if let Some(q) = resp.set_quality {
-                    self.settings.preview_quality = q;
-                    self.settings.save();
-                }
-                if resp.set_movie_mode.is_some() {
-                    // the action toggles the setting and starts / clears the pre-render
-                    self.pending_actions.push(Action::MovieMode);
-                }
-                if let Some((x, y)) = resp.set_tracker {
-                    (self.tracking.cx, self.tracking.cy) = (x, y);
-                }
-                if let Some((kind, cx, cy, w, h)) = resp.new_shape {
-                    let id = self.add_shape(kind, Some((cx, cy, w, h)));
-                    if !resp.new_points.is_empty() {
-                        if let Some(s) = self.project.clip_mut(id).and_then(|c| c.shape.as_mut()) {
-                            s.points = resp.new_points;
+                            fullscreen,
+                            tools,
+                            settings,
+                            prerender,
+                            gpu_tex,
+                            tracking,
+                            tracking_shown,
+                            ..
+                        } = self;
+                        let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
+                        // only while movie mode is on: progress() walks the requested ranges
+                        let done = settings
+                            .movie_mode
+                            .then(|| guarded(|| prerender.progress()).unwrap_or(1.0))
+                            .filter(|&p| p < 1.0);
+                        preview::show(
+                            ui,
+                            pv,
+                            preview::PreviewCtx {
+                                project,
+                                selection,
+                                playhead: *playhead,
+                                playing: player.is_playing(),
+                                fullscreen: *fullscreen,
+                                palette,
+                                undo: &mut push,
+                                frame,
+                                gpu_texture: *gpu_tex,
+                                tool: tools.tool,
+                                quality: settings.preview_quality,
+                                movie_mode: settings.movie_mode,
+                                prerender: done,
+                                tracker: tracking_shown.then(|| tracking.box_rect()),
+                            },
+                        )
+                    };
+                    let (cw, ch) = preview_canvas(resp.canvas, self.settings.preview_quality);
+                    self.player.set_canvas(cw, ch, self.settings.preview_max_width);
+                    // same clamp the player applies, so the GPU renders at the aspect the player decodes at
+                    self.canvas = clamp_canvas(cw, ch, self.settings.preview_max_width);
+                    if let Some(t) = resp.seek {
+                        self.seek(t);
+                    }
+                    self.pending_actions.extend(resp.actions);
+                    if let Some(q) = resp.set_quality {
+                        self.settings.preview_quality = q;
+                        self.settings.save();
+                    }
+                    if resp.set_movie_mode.is_some() {
+                        // the action toggles the setting and starts / clears the pre-render
+                        self.pending_actions.push(Action::MovieMode);
+                    }
+                    if let Some((x, y)) = resp.set_tracker {
+                        (self.tracking.cx, self.tracking.cy) = (x, y);
+                    }
+                    if let Some((kind, cx, cy, w, h)) = resp.new_shape {
+                        let id = self.add_shape(kind, Some((cx, cy, w, h)));
+                        if !resp.new_points.is_empty() {
+                            if let Some(s) = self.project.clip_mut(id).and_then(|c| c.shape.as_mut()) {
+                                s.points = resp.new_points;
+                            }
+                            self.after_edit();
                         }
+                    }
+                    if let Some(s) = resp.stroke {
+                        self.add_stroke(s);
+                    }
+                    if resp.edited {
                         self.after_edit();
                     }
-                }
-                if let Some(s) = resp.stroke {
-                    self.add_stroke(s);
-                }
-                if resp.edited {
-                    self.after_edit();
                 }
             }
             Pane::Timeline => {
@@ -2139,7 +2174,7 @@ impl App {
             }
             Pane::Library => {
                 let resp = {
-                    let live = self.lib_preview_frame(ui.ctx());
+                    let live = self.lib_preview_live;
                     let App { project, settings, library: lib, ytdlp_available, thumbs, undo, redo, palette, .. } =
                         self;
                     let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
@@ -3739,9 +3774,11 @@ impl App {
     }
 
     /// Point the library's preview player at `path` and roll it. A file already playing is left alone,
-    /// so re-clicking the selected row does not restart it.
+    /// so re-clicking the selected row does not restart it. Pauses the timeline: previewing a source and
+    /// the program monitor should not both be making sound at once.
     fn start_lib_preview(&mut self, ctx: &egui::Context, path: PathBuf) {
-        if self.lib_preview.as_ref().is_some_and(|(p, _)| *p == path) {
+        self.player.pause();
+        if self.lib_preview.as_ref().is_some_and(|lp| lp.path == path) {
             return;
         }
         // an asset the project already knows carries its probed duration; anything else would need a
@@ -3750,17 +3787,21 @@ impl App {
             self.lib_preview = None;
             return;
         };
+        let duration = asset.duration.max(crate::model::MIN_CLIP);
+        let fps = if asset.fps > 0.0 { asset.fps } else { 30.0 };
         let mut player = Player::new(ctx.clone(), self.backend(), self.text.clone());
         player.set_project(&Project::from_media(asset));
         player.play();
-        self.lib_preview = Some((path, player));
+        self.lib_preview = Some(LibPreview { path, player, duration, fps });
     }
 
     /// The library preview's current frame, uploaded for the pane to paint. None = nothing is previewing.
+    /// Called exactly once per update (see `self.lib_preview_live`) - `Player::take_frame` consumes the
+    /// buffered frame, so a second call in the same frame would come back empty.
     fn lib_preview_frame(&mut self, ctx: &egui::Context) -> Option<library::PreviewFrame> {
-        let (_, player) = self.lib_preview.as_mut()?;
-        let playing = player.is_playing();
-        if let Some(f) = player.take_frame() {
+        let lp = self.lib_preview.as_mut()?;
+        let playing = lp.player.is_playing();
+        if let Some(f) = lp.player.take_frame() {
             let (w, h) = (f.width as usize, f.height as usize);
             if w > 0 && h > 0 && f.rgba.len() == w * h * 4 {
                 let img = egui::ColorImage::from_rgba_premultiplied([w, h], &f.rgba);
@@ -3778,6 +3819,111 @@ impl App {
         }
         let t = self.lib_preview_tex.as_ref()?;
         Some(library::PreviewFrame { tex: t.id(), size: [t.size()[0] as u32, t.size()[1] as u32], playing })
+    }
+
+    /// The Preview pane while a library asset is being previewed: the timeline's player and project are
+    /// left untouched underneath (still decoding in the background, so resuming is instant), and this
+    /// draws the previewed file's own frame with a transport bound to its own `Player` instead.
+    fn draw_lib_preview(&mut self, ui: &mut egui::Ui) {
+        let Some(lp) = self.lib_preview.as_ref() else { return };
+        let name = lp.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let duration = lp.duration;
+        let fps = lp.fps;
+        let playhead = lp.player.time();
+        let playing = lp.player.is_playing();
+        let frame = self.lib_preview_live;
+        let palette = self.palette;
+
+        let (mut close, mut toggle, mut stop) = (false, false, false);
+        let mut seek_to: Option<f64> = None;
+
+        ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                let mut b = |ui: &mut egui::Ui, icon: tools::Glyph, label: &str| -> bool {
+                    tools::glyph_text_button(ui, icon, "").on_hover_text(label).clicked()
+                };
+                if b(ui, tools::Glyph::Jump(tools::Dir::Left), "Go to start") {
+                    seek_to = Some(0.0);
+                }
+                if b(ui, tools::Glyph::Tri(tools::Dir::Left), "Step back one frame") {
+                    seek_to = Some(step_time(playhead, fps, false, duration));
+                }
+                let pp_icon = if playing { tools::Glyph::Pause } else { tools::Glyph::Play };
+                let pp_label = if playing { "Pause" } else { "Play" };
+                if b(ui, pp_icon, pp_label) {
+                    toggle = true;
+                }
+                if b(ui, tools::Glyph::Stop, "Stop") {
+                    stop = true;
+                }
+                if b(ui, tools::Glyph::Tri(tools::Dir::Right), "Step forward one frame") {
+                    seek_to = Some(step_time(playhead, fps, true, duration));
+                }
+                if b(ui, tools::Glyph::Jump(tools::Dir::Right), "Go to end") {
+                    seek_to = Some(duration);
+                }
+                ui.add_space(8.0);
+                let tc = crate::ui::timecode;
+                ui.monospace(format!("{} / {}", tc(playhead, fps), tc(duration, fps)));
+                ui.add_space(8.0);
+                if markers_ui::x_button(ui).on_hover_text("Back to timeline").clicked() {
+                    close = true;
+                }
+                ui.weak(name);
+            });
+            // scrub bar: click or drag anywhere on it seeks
+            let (bar, br) =
+                ui.allocate_exact_size(egui::vec2(ui.available_width(), 10.0), egui::Sense::click_and_drag());
+            ui.painter().rect_filled(bar, 2.0, palette.panel);
+            let frac = (playhead / duration).clamp(0.0, 1.0) as f32;
+            let filled = egui::Rect::from_min_max(bar.min, egui::pos2(bar.left() + bar.width() * frac, bar.bottom()));
+            ui.painter().rect_filled(filled, 2.0, palette.accent);
+            ui.painter().rect_stroke(bar, 2.0, egui::Stroke::new(1.0, palette.border), egui::StrokeKind::Inside);
+            if (br.clicked() || br.dragged()) && bar.width() > 0.0 {
+                if let Some(p) = br.interact_pointer_pos() {
+                    let f = ((p.x - bar.left()) / bar.width()) as f64;
+                    seek_to = Some(scrub_time(f, duration));
+                }
+            }
+
+            // video, filling whatever is left
+            let (rect, _) = ui.allocate_exact_size(ui.available_size_before_wrap(), egui::Sense::hover());
+            ui.painter().rect_filled(rect, 0.0, egui::Color32::BLACK);
+            if let Some(f) = frame {
+                let aspect = f.size[0].max(1) as f32 / f.size[1].max(1) as f32;
+                let lb = preview::letterbox(rect, aspect, ui.pixels_per_point());
+                ui.painter().image(
+                    f.tex,
+                    lb,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+                let cw = (lb.width() * ui.pixels_per_point()) as u32;
+                let ch = (lb.height() * ui.pixels_per_point()) as u32;
+                if let Some(lp) = self.lib_preview.as_mut() {
+                    lp.player.set_canvas(cw.max(16), ch.max(16), self.settings.preview_max_width);
+                }
+            }
+        });
+
+        if let Some(lp) = self.lib_preview.as_mut() {
+            if toggle {
+                lp.player.toggle();
+            }
+            if stop {
+                lp.player.pause();
+                lp.player.seek(0.0);
+            }
+            if let Some(t) = seek_to {
+                lp.player.seek(t.clamp(0.0, duration));
+            }
+        }
+        if close {
+            self.lib_preview = None;
+            self.lib_preview_tex = None;
+            self.lib_preview_live = None;
+        }
     }
 
     fn screenshot_tick(&mut self, ctx: &egui::Context) {
@@ -5032,6 +5178,7 @@ impl eframe::App for App {
         }
         self.poll_panels();
         self.poll_probes(ctx);
+        self.lib_preview_live = self.lib_preview_frame(ctx);
         self.build_effect_thumbnails(ctx);
         if self.serve_gpu_exports() || self.export.is_some() {
             // a GPU export needs this thread to keep coming back to serve its frames
@@ -5608,6 +5755,20 @@ mod tests {
         assert!(write_image(&frame, &bad).is_err());
         assert!(write_image(&Frame::default(), &bad).is_err(), "an empty frame is refused");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Library-preview transport math: frame-step clamps at both ends of the file, and a scrub-bar
+    /// fraction (even one dragged past the bar's edge) maps to a time within the file.
+    #[test]
+    fn lib_preview_seek_math() {
+        assert_eq!(step_time(1.0, 25.0, true, 4.0), 1.04, "forward steps by 1/fps");
+        assert_eq!(step_time(0.02, 25.0, false, 4.0), 0.0, "backward step clamps at 0");
+        assert_eq!(step_time(3.99, 25.0, true, 4.0), 4.0, "forward step clamps at the file's duration");
+        assert_eq!(scrub_time(0.0, 4.0), 0.0);
+        assert_eq!(scrub_time(1.0, 4.0), 4.0);
+        assert_eq!(scrub_time(0.5, 4.0), 2.0);
+        assert_eq!(scrub_time(-0.2, 4.0), 0.0, "a drag past the left edge still reads as the start");
+        assert_eq!(scrub_time(1.2, 4.0), 4.0, "a drag past the right edge still reads as the end");
     }
 
     /// Every action is dispatched (`act` matches exhaustively) and every pane can be toggled from
