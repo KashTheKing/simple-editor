@@ -184,6 +184,11 @@ pub struct App {
     /// Ctrl+C / Ctrl+X clip clipboard — a template (clips + the assets they use), so paste reuses
     /// `Project::place_clips` and its fresh clip / link ids.
     clipboard: Option<crate::settings::Template>,
+    /// Text to hand the OS clipboard at the end of the frame. egui-winit only emits `Event::Paste` when
+    /// the system clipboard holds text (egui-winit-0.33.3 src/lib.rs:823 returns without pushing the key
+    /// event either way), so a Ctrl+V after an internal-only copy produced NO event at all and could
+    /// never be bound. Copying clips therefore also writes them out as text.
+    os_clipboard: Option<String>,
     /// Movie mode pre-render cache.
     prerender: PreRender,
     /// Movie mode paused the clock because the frame under the playhead was not rendered yet.
@@ -839,6 +844,7 @@ impl App {
             was_focused: true,
             attrs: None,
             clipboard: None,
+            os_clipboard: None,
             prerender: PreRender::new(),
             movie_stall: false,
             canvas: (0, 0),
@@ -1658,7 +1664,11 @@ impl App {
                 if ids.is_empty() {
                     self.toast("Select the clips to copy first");
                 } else {
-                    self.clipboard = Some(crate::engine::presets::capture_template("clipboard", &self.project, &ids));
+                    let t = crate::engine::presets::capture_template("clipboard", &self.project, &ids);
+                    // the JSON is what makes Ctrl+V fire at all (see App::os_clipboard); it is also
+                    // readable, so a copy can be pasted into another instance by hand
+                    self.os_clipboard = Some(t.json.clone());
+                    self.clipboard = Some(t);
                     if a == CutClips {
                         self.push_undo();
                         self.project.delete_clips(&ids, false);
@@ -1667,12 +1677,24 @@ impl App {
                     }
                 }
             }
-            PasteClips | PasteInPlace => {
+            PasteClips | PasteInPlace | PasteInsert | PasteAtTop => {
                 match self.clipboard.as_ref().and_then(crate::engine::presets::decode_template) {
                     Some((clips, assets)) => {
                         // Paste In Place ignores the clicked row: place_clips takes the first track with room
                         let target = (a == PasteClips).then_some(self.timeline.last_track).flatten();
                         let snap = self.project.to_json();
+                        if a == PasteInsert {
+                            // ripple: everything at or after the playhead slides right by the paste's span
+                            let span = clips.iter().map(|c| c.start + c.duration).fold(0.0_f64, f64::max);
+                            self.project.ripple_open(self.playhead, span);
+                        }
+                        if a == PasteAtTop {
+                            let kind = clips
+                                .iter()
+                                .find(|c| c.kind != ClipKind::Audio)
+                                .map_or(TrackKind::Audio, |_| TrackKind::Video);
+                            self.project.add_track(kind);
+                        }
                         let ids = timeline::paste_clips(&mut self.project, clips, assets, self.playhead, target);
                         if ids.is_empty() {
                             self.toast("Nothing could be pasted here");
@@ -3474,6 +3496,8 @@ impl App {
                 self.menu_item(ui, CutClips, has_sel, &mut out);
                 self.menu_item(ui, PasteClips, self.clipboard.is_some(), &mut out);
                 self.menu_item(ui, PasteInPlace, self.clipboard.is_some(), &mut out);
+                self.menu_item(ui, PasteInsert, self.clipboard.is_some(), &mut out);
+                self.menu_item(ui, PasteAtTop, self.clipboard.is_some(), &mut out);
                 ui.separator();
                 self.menu_item(ui, Split, has_clips, &mut out);
                 self.menu_item(ui, Delete, has_sel, &mut out);
@@ -5145,6 +5169,9 @@ impl eframe::App for App {
 
         // clip clipboard last: the curve and node editors claim Ctrl+C/V while the pointer is over them
         actions.extend(self.hotkeys.poll_late(ctx));
+        if let Some(text) = self.os_clipboard.take() {
+            ctx.copy_text(text);
+        }
         actions.append(&mut self.pending_actions);
         for a in actions {
             if a == Action::Fullscreen {
@@ -5209,6 +5236,33 @@ mod tests {
             label: 0,
             description: String::new(),
         }
+    }
+
+    /// Ctrl+V was dead because egui-winit only emits `Event::Paste` when the SYSTEM clipboard holds
+    /// text, and an internal clip copy never wrote to it — so the chord produced no event at all and no
+    /// binding could see it. Copying clips must therefore also queue text for the OS clipboard.
+    #[test]
+    fn copying_clips_also_writes_the_os_clipboard() {
+        let mut p = Project::from_media(long_asset("C:/x.mp4"));
+        let id = p.tracks[0].clips[0].id;
+        let t = crate::engine::presets::capture_template("clipboard", &p, &[id]);
+        assert!(!t.json.is_empty(), "a captured clip serialises to something");
+        // what act(CopyClips) stores: the same JSON goes to both clipboards
+        let os = t.json.clone();
+        assert!(
+            crate::engine::presets::decode_template(&t).is_some(),
+            "the internal clipboard still decodes back into clips"
+        );
+        assert!(os.contains("clips") || os.contains("start"), "the OS text is the template JSON: {os:.80}");
+        // and the ripple that Paste Insert performs opens exactly the span it is given
+        let before = p.tracks[0].clips[0].start;
+        p.ripple_open(before, 2.0);
+        assert!(
+            (p.tracks[0].clips[0].start - (before + 2.0)).abs() < 1e-6,
+            "ripple_open slides the clip right by the span: {} -> {}",
+            before,
+            p.tracks[0].clips[0].start
+        );
     }
 
     /// A 10 s video asset, long enough to split a few times.

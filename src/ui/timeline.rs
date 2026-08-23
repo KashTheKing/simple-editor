@@ -141,6 +141,23 @@ impl Default for TimelineState {
 /// fresh clip / link / marker ids. `Project::place_clips` picks the first track of each kind with room
 /// (adding one when nothing is free); `target` then pulls the group onto the row the user last clicked,
 /// if the whole group fits there.
+/// The paste flavours, shared by every timeline context menu. The app decides whether the clipboard
+/// actually holds anything — a menu that hid itself when empty would just look broken.
+fn paste_menu(ui: &mut egui::Ui, actions: &mut Vec<crate::hotkeys::Action>) {
+    use crate::hotkeys::Action;
+    for (label, a) in [
+        ("Paste", Action::PasteClips),
+        ("Paste Insert", Action::PasteInsert),
+        ("Paste At Top", Action::PasteAtTop),
+        ("Paste In Place", Action::PasteInPlace),
+    ] {
+        if ui.button(label).clicked() {
+            actions.push(a);
+            ui.close();
+        }
+    }
+}
+
 pub fn paste_clips(p: &mut Project, clips: Vec<Clip>, assets: Vec<Asset>, at: f64, target: Option<usize>) -> Vec<Id> {
     let ids = p.place_clips(clips, assets, at);
     if let Some(ti) = target.filter(|&i| i < p.tracks.len()) {
@@ -1504,6 +1521,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         if ui.button("Add Marker at Playhead").clicked() {
             act = Some(Act::AddMarker(ph_now));
         }
+        ui.separator();
+        paste_menu(ui, &mut out.actions);
     });
 
     // ---- playhead (recomputed: a double-click seek above moves it this frame) ----
@@ -1550,6 +1569,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         }
     }
     lanes_resp.context_menu(|ui| {
+        paste_menu(ui, &mut out.actions);
+        ui.separator();
         if ui.button("Add Video Track").clicked() {
             act = Some(Act::AddTrack(TrackKind::Video));
         }

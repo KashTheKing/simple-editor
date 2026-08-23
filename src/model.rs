@@ -3043,6 +3043,23 @@ impl Project {
         self.tidy();
     }
 
+    /// Open a gap of `span` seconds at `at`: split anything crossing it, then slide every clip from
+    /// there on to the right. The inverse of `ripple_delete_range`, used by Paste Insert.
+    pub fn ripple_open(&mut self, at: f64, span: f64) {
+        if span <= EPS {
+            return;
+        }
+        self.split_at(at, None);
+        // right to left, so a clip never lands on one that has not moved yet
+        let mut ids: Vec<(Id, f64)> =
+            self.all_clips().filter(|(_, c)| c.start >= at - EPS).map(|(_, c)| (c.id, c.start)).collect();
+        ids.sort_by(|x, y| y.1.total_cmp(&x.1));
+        for (id, _) in ids {
+            self.move_clips(&[id], span, 0, None);
+        }
+        self.tidy();
+    }
+
     /// Keep only [a,b), moving it to start at 0. Clears in/out points.
     pub fn trim_to_range(&mut self, a: f64, b: f64) {
         let end = self.duration().max(b) + 1.0;

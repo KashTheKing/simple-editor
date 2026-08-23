@@ -675,7 +675,7 @@ fn row(
                 + ui.spacing().item_spacing.x
         });
         let content_right = ui.max_rect().right() - reserve;
-        let src = ui.dnd_drag_source(id, payload, |ui| {
+        let src = crate::ui::drag_source(ui, id, payload, |ui| {
             // Hard-cap the row: an over-wide row widens the parent's max_rect, so every later row would
             // grow too, and long labels must truncate at the pane edge instead of pushing the button out.
             ui.set_max_width((content_right - ui.max_rect().left()).max(0.0));
@@ -700,21 +700,21 @@ fn row(
             };
             ui.painter().set(bg, egui::Shape::rect_filled(rect, 2.0, fill));
         });
-        // Registered after the drag-only widget so clicks reach it (egui gives the topmost click-sensing widget
-        // the click and the drag-sensing one the drag).
-        let r = ui.interact(src.response.rect, id.with("click"), egui::Sense::click());
+        // drag_source senses click_and_drag on one widget, so clicks, double-clicks, right-clicks and
+        // drags all come off this response — no second click-sensing overlay to register.
+        let r = src;
         // Put the button in the reserved slot rather than after the contents: the contents can be wider
         // than their cap, and appending would then push the button off the pane edge.
         let clicked = button.is_some_and(|b| {
             let gap = ui.spacing().item_spacing.x;
             let slot = egui::Rect::from_min_size(
-                egui::pos2(content_right + gap, src.response.rect.top()),
-                egui::vec2(reserve - gap, src.response.rect.height()),
+                egui::pos2(content_right + gap, r.rect.top()),
+                egui::vec2(reserve - gap, r.rect.height()),
             );
-            let r = ui.put(slot, egui::Button::new(b).small());
+            let br = ui.put(slot, egui::Button::new(b).small());
             #[cfg(test)]
-            ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("row_btn_right"), r.rect.right()));
-            r.clicked()
+            ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("row_btn_right"), br.rect.right()));
+            br.clicked()
         });
         (r, clicked)
     })
@@ -736,7 +736,7 @@ fn tile(
     art: Art,
     w: f32,
 ) -> egui::Response {
-    let src = ui.dnd_drag_source(id, payload, |ui| {
+    let src = crate::ui::drag_source(ui, id, payload, |ui| {
         ui.set_max_width(w);
         ui.vertical(|ui| {
             ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
@@ -753,14 +753,9 @@ fn tile(
             ui.add(egui::Label::new(if selected { name.strong() } else { name }).truncate());
         });
     });
-    let r = ui.interact(src.response.rect, id.with("click"), egui::Sense::click());
+    let r = src;
     if selected {
-        ui.painter().rect_stroke(
-            src.response.rect,
-            2.0,
-            egui::Stroke::new(1.0, palette.selection),
-            egui::StrokeKind::Inside,
-        );
+        ui.painter().rect_stroke(r.rect, 2.0, egui::Stroke::new(1.0, palette.selection), egui::StrokeKind::Inside);
     }
     r
 }
@@ -819,6 +814,13 @@ fn browser(
     let mut new_adj = false;
     let mut link = false;
     let mut clear_recent = false;
+    // ponytail: two extra walks so the toolbar can show the count before `used`/`planned` are built
+    // below; cache them behind a generation counter if a big project ever shows it.
+    let unused_n = {
+        let (u, pl) = (project.used_assets(), project.plan_assets());
+        project.assets.iter().filter(|a| !u.contains(&a.id) && !pl.contains(&a.id)).count()
+    };
+    let mut remove_unused = false;
     toolbar(ui, state, labels, palette, |ui, state| {
         if imported {
             let r = glyph_text_button(ui, Glyph::Letter('+'), "New");
@@ -856,6 +858,13 @@ fn browser(
         if !imported && ui.button("Clear recent").clicked() && confirm("Clear recent", CLEAR_RECENT) {
             clear_recent = true;
         }
+        // up here with the rest of the controls: below the tree is reserved for files
+        if imported
+            && ui.add_enabled(unused_n > 0, egui::Button::new(format!("Remove unused ({unused_n})"))).clicked()
+            && confirm("Remove unused", &format!("Remove {unused_n} unused assets from the project?"))
+        {
+            remove_unused = true;
+        }
         egui::ComboBox::from_id_salt("lib_sort")
             .selected_text(["Name", "Duration", "Kind", "Recent"][state.sort.min(3) as usize])
             .width(80.0)
@@ -866,6 +875,10 @@ fn browser(
             });
     });
     state.sort = sort;
+    if remove_unused {
+        ops.push(LibOp::RemoveUnused);
+        op_start = true;
+    }
     resp.open_dialog |= resp_open;
     resp.new_adjustment |= new_adj;
     resp.import |= import;
@@ -950,20 +963,11 @@ fn browser(
         if let Some((pick, ctrl, shift)) = click.take() {
             apply_click(state, &rows, &pick, ctrl, shift);
         }
-
         if imported {
-            ui.add_space(4.0);
-            let unused = project.assets.iter().filter(|a| !used.contains(&a.id) && !planned.contains(&a.id)).count();
-            if ui.add_enabled(unused > 0, egui::Button::new(format!("Remove unused ({unused})"))).clicked()
-                && confirm("Remove unused", &format!("Remove {unused} unused assets from the project?"))
-            {
-                ops.push(LibOp::RemoveUnused);
-                op_start = true;
-            }
-            sequences_section(ui, state, project, palette, resp, &mut ops, &mut op_start);
-            templates_section(ui, state, settings, palette, resp);
-            reuse_ui(ui, state.view, state.zoom, project, settings, palette, resp);
+            // the project's own reusable items, listed as more files rather than a section below
+            reuse_ui(ui, state.view, state.kind_filter, state.zoom, project, settings, palette, resp);
         }
+
         // clicking the empty space below the tree drops the selection, and the preview with it
         let rest = ui.available_size();
         if rest.y > 1.0 && ui.allocate_response(rest, egui::Sense::click()).clicked() {
@@ -2170,17 +2174,21 @@ fn reuse_pick(item: &Reuse, name: &str, resp: &mut LibraryResponse) {
 fn reuse_ui(
     ui: &mut egui::Ui,
     view: u8,
+    kind_filter: u8,
     zoom: f32,
     project: &Project,
     settings: &Settings,
     palette: &Palette,
     resp: &mut LibraryResponse,
 ) {
+    // these are files in the same list now, told apart by name and kind tag rather than by a heading,
+    // and narrowed with the "Project" chip; every other chip is about media, so it hides them
+    if !matches!(kind_filter, 0 | 7) {
+        return;
+    }
     for (title, items) in reuse_sections(project, settings) {
-        ui.add_space(4.0);
-        ui.strong(title);
+        let _ = title;
         if items.is_empty() {
-            ui.weak("(none)");
             continue;
         }
         let mut draw = |ui: &mut egui::Ui, i: usize, item: &Reuse| {
@@ -2927,13 +2935,17 @@ mod tests {
                         assert!(r.add_effect.is_none() && r.apply_preset.is_none() && r.copy_graph.is_none());
                     });
                 });
+                // the section headings are gone on purpose: these are files in the same list now, so
+                // assert on the ITEMS instead, and that no heading came back
                 titles = ["Sequences", "Templates", "Effects", "Node graphs", "Adjustment layers"]
                     .iter()
                     .filter(|t| text_rect(&out.shapes, t).is_some())
                     .copied()
                     .collect();
+                assert!(text_rect(&out.shapes, "Blur").is_some(), "view {view} lists the effect as a file");
+                assert!(text_rect(&out.shapes, "Look").is_some(), "view {view} lists the preset as a file");
             }
-            assert_eq!(titles.len(), 5, "view {view} is missing sections: {titles:?}");
+            assert!(titles.is_empty(), "view {view} still draws section headings: {titles:?}");
         }
 
         // clicking each kind of item

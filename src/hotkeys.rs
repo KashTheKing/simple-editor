@@ -126,6 +126,8 @@ actions! {
     CutClips => "cut_clips", "Cut Clips", sc(CTRL, Key::X);
     PasteClips => "paste_clips", "Paste Clips at Playhead", sc(CTRL, Key::V);
     PasteInPlace => "paste_in_place", "Paste Clips on the First Free Track", sc(CTRL_SHIFT, Key::V);
+    PasteInsert => "paste_insert", "Paste Insert (ripple the rest right)", sc(NONE, Key::F10);
+    PasteAtTop => "paste_at_top", "Paste on a New Track at the Top", sc(NONE, Key::F9);
 }
 
 pub struct Hotkeys {

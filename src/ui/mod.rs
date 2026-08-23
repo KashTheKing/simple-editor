@@ -213,9 +213,11 @@ pub(crate) fn drag_source<P: std::any::Any + Send + Sync>(
         // paint the body into its own tooltip-order layer, then move that layer under the cursor
         let layer = egui::LayerId::new(egui::Order::Tooltip, id);
         let r = ui.scope_builder(egui::UiBuilder::new().layer_id(layer), contents).response;
-        if let Some(p) = ui.ctx().pointer_interact_pos() {
-            let shift = egui::emath::TSTransform::from_translation(p - r.rect.center());
-            ui.ctx().transform_layer_shapes(layer, shift);
+        // translate by how far the pointer has travelled, NOT by (pointer - centre): snapping the body's
+        // centre under the cursor makes anything grabbed off-centre jump the moment the drag starts.
+        let (now, origin) = ui.ctx().input(|i| (i.pointer.interact_pos(), i.pointer.press_origin()));
+        if let (Some(p), Some(o)) = (now, origin) {
+            ui.ctx().transform_layer_shapes(layer, egui::emath::TSTransform::from_translation(p - o));
         }
         r.rect
     } else {

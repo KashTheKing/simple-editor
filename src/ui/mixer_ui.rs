@@ -102,6 +102,9 @@ pub fn show(
     let mut ed = Edits::default();
     // ponytail: clone the whole bus list every frame — a handful of buses with a few filters each is
     // nothing next to a repaint. Upgrade path if it ever shows up: edit in place and snapshot lazily.
+    // Main is the one bus that always exists: without it the pane is empty on a fresh project and there
+    // is nothing to route to. Creating it is not a user edit, so it takes no undo entry.
+    project.main_bus();
     let mut list = project.buses.clone();
     let names: Vec<(Id, String)> = list.iter().map(|b| (b.id, b.name.clone())).collect();
     let main = list.first().map(|b| b.id).unwrap_or(0);
@@ -116,9 +119,6 @@ pub fn show(
             g.click();
         }
         ui.checkbox(&mut state.show_routing, "Routing");
-        if list.is_empty() {
-            ui.label("no buses — clips go straight to the output");
-        }
     });
     // routing above the strips: the strips claim the rest of the pane for their own scrollbars
     if state.show_routing {
@@ -127,8 +127,8 @@ pub fn show(
     }
     ui.separator();
 
-    // Main last: it is where everything ends up.
-    let order: Vec<usize> = (1..list.len()).chain(0..list.len().min(1)).collect();
+    // Main first: it is the master, and every other bus is read as feeding into it.
+    let order: Vec<usize> = (0..list.len()).collect();
     egui::ScrollArea::horizontal().id_salt("mixer_strips").show(ui, |ui| {
         ui.horizontal_top(|ui| {
             for (n, &i) in order.iter().enumerate() {
@@ -794,7 +794,7 @@ mod tests {
         assert!(!h.frame(vec![]));
         assert_eq!(h.undos, 0);
         assert_eq!(h.project.buses.len(), 2);
-        // both strips are there (Main is drawn last, so it is index 1)
+        // both strips are there (Main draws first, so it is index 0)
         assert!(test_rects::get("m0").is_some() && test_rects::get("m1").is_some());
     }
 
@@ -804,23 +804,23 @@ mod tests {
         assert!(h.click_named("add_bus"));
         assert_eq!(h.project.buses.len(), 3);
         assert_eq!(h.undos, 1);
-        // strip 0 is the first non-Main bus; deleting it drops back to two
-        assert!(h.click_named("del_bus0"));
+        // strip 1 is the first non-Main bus; deleting it drops back to two
+        assert!(h.click_named("del_bus1"));
         assert_eq!(h.project.buses.len(), 2);
     }
 
     #[test]
     fn mute_solo_mono_toggle() {
         let mut h = Harness::new();
-        assert!(h.click_named("m0"));
-        assert!(h.project.buses[1].muted, "strip 0 is the Music bus");
-        assert!(h.click_named("s0"));
+        assert!(h.click_named("m1"));
+        assert!(h.project.buses[1].muted, "strip 1 is the Music bus");
+        assert!(h.click_named("s1"));
         assert!(h.project.buses[1].solo);
-        assert!(h.click_named("mono0"));
+        assert!(h.click_named("mono1"));
         assert!(h.project.buses[1].mono);
         assert_eq!(h.undos, 3);
         // Main can never be deleted
-        let del_main = test_rects::get("del_bus1").expect("Main delete button");
+        let del_main = test_rects::get("del_bus0").expect("Main delete button");
         h.click(del_main.center());
         assert_eq!(h.project.buses.len(), 2);
     }
@@ -832,13 +832,13 @@ mod tests {
         h.project.bus_mut(music).unwrap().filters.push(AudioFilter::new(FilterKind::Gain));
         h.frame(vec![]);
         // the Gain filter has one param row; drag it
-        let rect = test_rects::get("p0_0_0").expect("gain param");
+        let rect = test_rects::get("p1_0_0").expect("gain param");
         let changed = h.drag(rect.center(), vec2(40.0, 0.0));
         assert!(changed, "dragging the DragValue edits the project");
         assert!(h.project.buses[1].filters[0].params[0].value > 0.0);
         assert!(h.undos >= 1);
         // and it can be removed again
-        assert!(h.click_named("delfx0_0"));
+        assert!(h.click_named("delfx1_0"));
         assert!(h.project.buses[1].filters.is_empty());
     }
 
@@ -849,7 +849,7 @@ mod tests {
         h.project.bus_mut(music).unwrap().filters.push(AudioFilter::new(FilterKind::Eq));
         h.frame(vec![]);
         // grab the low shelf's handle: x is its frequency on the log axis, y its 0 dB gain
-        let plot = test_rects::get("curve0_0").expect("response plot");
+        let plot = test_rects::get("curve1_0").expect("response plot");
         let x = plot.left() + (120.0f32 / 20.0).log10() / 3.0 * plot.width();
         let handle = pos2(x, plot.center().y);
         assert!(h.drag(handle, vec2(0.0, -20.0)), "dragging a handle edits its band");
@@ -870,7 +870,7 @@ mod tests {
         assert_eq!(h.project.buses[1].filters[0].params[0].keys.len(), 1);
         // at another playhead the drag upserts a key instead of moving the constant
         h.playhead = 2.0;
-        let rect = test_rects::get("p0_0_0").expect("gain param");
+        let rect = test_rects::get("p1_0_0").expect("gain param");
         assert!(h.drag(rect.center(), vec2(40.0, 0.0)));
         let a = &h.project.buses[1].filters[0].params[0];
         assert_eq!(a.keys.len(), 2, "{:?}", a.keys);
