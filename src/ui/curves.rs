@@ -83,6 +83,11 @@ enum Drag {
 pub struct CurvesState {
     /// Index of the active property in the panel's property list.
     pub active: usize,
+    /// The bus whose automation the pane is editing; None = follow the clip selection.
+    pub target_bus: Option<Id>,
+    /// Last mixer selection this pane reacted to, so a bus picked there switches the target once and the
+    /// user can still choose something else here afterwards.
+    pub seen_mixer_bus: Option<Id>,
     /// Width of the property list in points (drag the splitter; remembered across frames).
     pub list_w: f32,
     /// Hidden curves (property indices).
@@ -123,6 +128,8 @@ pub struct CurvesState {
 impl Default for CurvesState {
     fn default() -> Self {
         Self {
+            target_bus: None,
+            seen_mixer_bus: None,
             active: 0,
             list_w: LIST_W,
             hidden: Vec::new(),
@@ -293,7 +300,7 @@ fn move_group(a: &mut Animated, orig: &[Keyframe], sel: &[usize], dt: f64, dv: f
 }
 
 /// Frame every key of the visible properties on the time axis and reset the value view.
-fn fit_view(state: &mut CurvesState, c: &Clip, n_props: usize) {
+fn fit_view(state: &mut CurvesState, snap: &[Animated], n_props: usize) {
     state.y_zoom = 1.0;
     state.y_pan = 0.0;
     let (mut lo, mut hi) = (f64::MAX, f64::MIN);
@@ -301,7 +308,7 @@ fn fit_view(state: &mut CurvesState, c: &Clip, n_props: usize) {
         if state.hidden.contains(&p) {
             continue;
         }
-        for k in prop_ref(c, p).map(|a| a.keys.as_slice()).unwrap_or(&[]) {
+        for k in snap.get(p).map(|a| a.keys.as_slice()).unwrap_or(&[]) {
             lo = lo.min(k.t);
             hi = hi.max(k.t);
         }
@@ -359,6 +366,105 @@ fn tick_step(pps: f32) -> f64 {
     600.0
 }
 
+/// What the curve editor is pointed at. A bus is just another list of `Animated` properties over a time
+/// span, which is all this editor ever needed from a clip — so buses edit exactly like clips here.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum Target {
+    Clip(Id),
+    Bus(Id),
+}
+
+/// A bus's properties: its own gain and pan, then every filter parameter in chain order.
+const BUS_BASE: usize = 2;
+
+fn t_count(p: &Project, t: Target) -> usize {
+    match t {
+        Target::Clip(id) => p.clip(id).map(prop_count).unwrap_or(0),
+        Target::Bus(id) => {
+            p.bus(id).map(|b| BUS_BASE + b.filters.iter().map(|f| f.params.len()).sum::<usize>()).unwrap_or(0)
+        }
+    }
+}
+
+fn t_ref(p: &Project, t: Target, i: usize) -> Option<&Animated> {
+    match t {
+        Target::Clip(id) => p.clip(id).and_then(|c| prop_ref(c, i)),
+        Target::Bus(id) => {
+            let b = p.bus(id)?;
+            match i {
+                0 => Some(&b.gain),
+                1 => Some(&b.pan),
+                _ => {
+                    let mut i = i - BUS_BASE;
+                    for f in &b.filters {
+                        if i < f.params.len() {
+                            return f.params.get(i);
+                        }
+                        i -= f.params.len();
+                    }
+                    None
+                }
+            }
+        }
+    }
+}
+
+fn t_mut(p: &mut Project, t: Target, i: usize) -> Option<&mut Animated> {
+    match t {
+        Target::Clip(id) => p.clip_mut(id).and_then(|c| prop_mut(c, i)),
+        Target::Bus(id) => {
+            let b = p.bus_mut(id)?;
+            match i {
+                0 => Some(&mut b.gain),
+                1 => Some(&mut b.pan),
+                _ => {
+                    let mut i = i - BUS_BASE;
+                    for f in &mut b.filters {
+                        if i < f.params.len() {
+                            return f.params.get_mut(i);
+                        }
+                        i -= f.params.len();
+                    }
+                    None
+                }
+            }
+        }
+    }
+}
+
+fn t_label(p: &Project, t: Target, i: usize) -> String {
+    match t {
+        Target::Clip(id) => p.clip(id).map(|c| prop_label(c, i)).unwrap_or_default(),
+        Target::Bus(id) => {
+            let Some(b) = p.bus(id) else { return String::new() };
+            match i {
+                0 => "Gain".to_string(),
+                1 => "Pan".to_string(),
+                _ => {
+                    let mut i = i - BUS_BASE;
+                    for f in &b.filters {
+                        if i < f.params.len() {
+                            let n = f.kind.params().get(i).map(|s| s.name).unwrap_or("?");
+                            return format!("{}: {}", f.kind.name(), n);
+                        }
+                        i -= f.params.len();
+                    }
+                    String::new()
+                }
+            }
+        }
+    }
+}
+
+/// (start, duration) of the target on the timeline. A bus spans the whole project: its automation is
+/// absolute time, not clip-local.
+fn t_span(p: &Project, t: Target) -> (f64, f64) {
+    match t {
+        Target::Clip(id) => p.clip(id).map(|c| (c.start, c.duration)).unwrap_or((0.0, 1.0)),
+        Target::Bus(_) => (0.0, p.duration().max(crate::model::MIN_CLIP)),
+    }
+}
+
 enum MenuAct {
     SetEase(Ease),
     Delete,
@@ -368,7 +474,7 @@ enum MenuAct {
 /// Used by both the double-click and the right-click-on-empty-graph gestures.
 fn add_key_at(
     project: &mut Project,
-    id: Id,
+    target: Target,
     state: &mut CurvesState,
     out: &mut CurvesResponse,
     undo: &mut dyn FnMut(&Project),
@@ -377,7 +483,7 @@ fn add_key_at(
 ) {
     undo(project);
     let active = state.active;
-    if let Some(a) = project.clip_mut(id).and_then(|c| prop_mut(c, active)) {
+    if let Some(a) = t_mut(project, target, active) {
         if !a.is_animated() {
             a.toggle_key(t);
         }
@@ -390,34 +496,74 @@ fn add_key_at(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut egui::Ui,
     state: &mut CurvesState,
     project: &mut Project,
     selection: &[Id],
+    mixer_bus: Option<Id>,
     playhead: &mut f64,
     palette: &Palette,
     undo: &mut dyn FnMut(&Project),
 ) -> CurvesResponse {
     let mut out = CurvesResponse::default();
     let pal = *palette;
-    let Some(&id) = selection.iter().find(|&&id| project.clip(id).is_some()) else {
-        ui.label("Select a clip");
-        return out;
+    // a bus the user picked wins over the clip selection; a bus that has since gone falls back
+    state.target_bus = state.target_bus.filter(|id| project.bus(*id).is_some());
+    // the mixer's selection drives this pane: picking a bus over there points the curves at it, which is
+    // what "buses and their filters should be selectable" means from the user's side
+    if let Some(b) = mixer_bus.filter(|b| project.bus(*b).is_some()) {
+        if state.target_bus != Some(b) && state.seen_mixer_bus != Some(b) {
+            state.target_bus = Some(b);
+            state.active = 0;
+            state.selected.clear();
+        }
+    }
+    state.seen_mixer_bus = mixer_bus;
+    ui.horizontal(|ui| {
+        ui.label("Curves for");
+        let buses: Vec<(Id, String)> = project.buses.iter().map(|b| (b.id, b.name.clone())).collect();
+        let text = match state.target_bus.and_then(|id| buses.iter().find(|(b, _)| *b == id)) {
+            Some((_, n)) => format!("Bus: {n}"),
+            None => "Selected clip".to_string(),
+        };
+        egui::ComboBox::from_id_salt("curve_target").selected_text(text).show_ui(ui, |ui| {
+            ui.selectable_value(&mut state.target_bus, None, "Selected clip");
+            for (id, name) in buses {
+                ui.selectable_value(&mut state.target_bus, Some(id), format!("Bus: {name}"));
+            }
+        });
+    });
+    let target = match state.target_bus {
+        Some(b) => Target::Bus(b),
+        None => match selection.iter().find(|&&id| project.clip(id).is_some()) {
+            Some(&id) => Target::Clip(id),
+            None => {
+                ui.label("Select a clip, or pick a bus above");
+                return out;
+            }
+        },
     };
-    let n_props = project.clip(id).map(prop_count).unwrap_or(0);
+    let id = match target {
+        Target::Clip(id) => id,
+        // clip-only controls are disabled for a bus; this id is never dereferenced in that case
+        Target::Bus(_) => 0,
+    };
+    let n_props = t_count(project, target);
     if n_props == 0 {
         ui.label("Nothing to animate");
         return out;
     }
     state.active = state.active.min(n_props - 1);
     // drop stale key selections (undo/effect removal may have invalidated them)
-    if let Some(c) = project.clip(id) {
-        state.selected.retain(|&(p, k)| prop_ref(c, p).is_some_and(|a| k < a.keys.len()));
+    {
+        let valid_key = |p: usize, k: usize| t_ref(project, target, p).is_some_and(|a| k < a.keys.len());
+        state.selected.retain(|&(p, k)| valid_key(p, k));
         if let Some(d) = state.drag {
             let valid = match d {
                 Drag::Key { prop, key } | Drag::HandleOut { prop, key } | Drag::HandleIn { prop, key } => {
-                    prop_ref(c, prop).is_some_and(|a| key < a.keys.len())
+                    valid_key(prop, key)
                 }
                 Drag::Seek => true,
             };
@@ -428,72 +574,77 @@ pub fn show(
     }
 
     // ---- motion presets (every animated property of the clip at once) ----
-    ui.horizontal(|ui| {
-        let motions: Vec<String> = MOTIONS.with(|m| m.borrow().iter().map(|p| p.name.clone()).collect());
-        ui.label("Motion");
-        if motions.is_empty() {
-            ui.weak("(none)");
-        } else {
-            state.motion_sel = state.motion_sel.min(motions.len() - 1);
-            egui::ComboBox::from_id_salt("motion_preset").selected_text(motions[state.motion_sel].clone()).show_ui(
-                ui,
-                |ui| {
-                    for (i, n) in motions.iter().enumerate() {
-                        ui.selectable_value(&mut state.motion_sel, i, n);
-                    }
-                },
-            );
-            let mut apply: Option<bool> = None; // Some(scaled)
-            if ui.small_button("Apply").on_hover_text("Stretch the preset to this clip's length").clicked() {
-                apply = Some(true);
-            }
-            if ui.small_button("Apply exact").on_hover_text("Keep the preset's own timing").clicked() {
-                apply = Some(false);
-            }
-            let merge = ui
-                .small_button("Merge")
-                .on_hover_text("Add the preset's keys from the playhead on, keeping what is already there")
-                .clicked();
-            if apply.is_some() || merge {
-                let preset = MOTIONS.with(|m| m.borrow().get(state.motion_sel).cloned());
-                if let Some(preset) = preset {
-                    undo(project);
-                    let ph = *playhead;
-                    if let Some(c) = project.clip_mut(id) {
-                        match apply {
-                            Some(scaled) => crate::engine::presets::apply_motion(&preset, c, scaled),
-                            None => {
-                                let off = c.local(ph).clamp(0.0, c.duration);
-                                crate::engine::presets::merge_motion(&preset, c, off);
-                            }
+    // motion presets and Flow act on a CLIP's own transform, so a bus target has nothing for them to do
+    let is_clip = matches!(target, Target::Clip(_));
+    ui.add_enabled_ui(is_clip, |ui| {
+        ui.horizontal(|ui| {
+            let motions: Vec<String> = MOTIONS.with(|m| m.borrow().iter().map(|p| p.name.clone()).collect());
+            ui.label("Motion");
+            if motions.is_empty() {
+                ui.weak("(none)");
+            } else {
+                state.motion_sel = state.motion_sel.min(motions.len() - 1);
+                egui::ComboBox::from_id_salt("motion_preset").selected_text(motions[state.motion_sel].clone()).show_ui(
+                    ui,
+                    |ui| {
+                        for (i, n) in motions.iter().enumerate() {
+                            ui.selectable_value(&mut state.motion_sel, i, n);
                         }
-                        out.edited = true;
+                    },
+                );
+                let mut apply: Option<bool> = None; // Some(scaled)
+                if ui.small_button("Apply").on_hover_text("Stretch the preset to this clip's length").clicked() {
+                    apply = Some(true);
+                }
+                if ui.small_button("Apply exact").on_hover_text("Keep the preset's own timing").clicked() {
+                    apply = Some(false);
+                }
+                let merge = ui
+                    .small_button("Merge")
+                    .on_hover_text("Add the preset's keys from the playhead on, keeping what is already there")
+                    .clicked();
+                if apply.is_some() || merge {
+                    let preset = MOTIONS.with(|m| m.borrow().get(state.motion_sel).cloned());
+                    if let Some(preset) = preset {
+                        undo(project);
+                        let ph = *playhead;
+                        if let Some(c) = project.clip_mut(id) {
+                            match apply {
+                                Some(scaled) => crate::engine::presets::apply_motion(&preset, c, scaled),
+                                None => {
+                                    let off = c.local(ph).clamp(0.0, c.duration);
+                                    crate::engine::presets::merge_motion(&preset, c, off);
+                                }
+                            }
+                            out.edited = true;
+                        }
                     }
                 }
             }
-        }
-        let can_save = !state.preset_name.trim().is_empty();
-        if ui
-            .add_enabled(can_save, egui::Button::new("Save motion"))
-            .on_hover_text("Save every animated property of this clip under the name on the left")
-            .clicked()
-        {
-            if let Some(c) = project.clip(id) {
-                PENDING_MOTION.with(|s| {
-                    *s.borrow_mut() = Some(crate::engine::presets::capture_motion(state.preset_name.trim(), c))
-                });
-                state.preset_name.clear();
+            let can_save = !state.preset_name.trim().is_empty() && is_clip;
+            if ui
+                .add_enabled(can_save, egui::Button::new("Save motion"))
+                .on_hover_text("Save every animated property of this clip under the name on the left")
+                .clicked()
+            {
+                if let Some(c) = project.clip(id) {
+                    PENDING_MOTION.with(|s| {
+                        *s.borrow_mut() = Some(crate::engine::presets::capture_motion(state.preset_name.trim(), c))
+                    });
+                    state.preset_name.clear();
+                }
             }
-        }
+        });
     });
 
     // ---- presets + flow row ----
+    let mut want_fit = false;
     ui.horizontal(|ui| {
         ui.add(egui::TextEdit::singleline(&mut state.preset_name).hint_text("Preset name").desired_width(90.0));
         let can_save = !state.preset_name.trim().is_empty();
         if ui.add_enabled(can_save, egui::Button::new("Save curve preset")).clicked() {
-            if let Some(a) = project.clip(id).and_then(|c| prop_ref(c, state.active)) {
-                let dur = project.clip(id).map(|c| c.duration).unwrap_or(1.0);
+            if let Some(a) = t_ref(project, target, state.active) {
+                let dur = t_span(project, target).1;
                 if let Some(p) = crate::engine::presets::capture_curve(state.preset_name.trim(), a, dur, false) {
                     PENDING.with(|s| *s.borrow_mut() = Some(p));
                     state.preset_name.clear();
@@ -532,7 +683,7 @@ pub fn show(
                 }
             }
         }
-        let flow = flow_pair(project, selection);
+        let flow = if is_clip { flow_pair(project, selection) } else { None };
         if ui
             .add_enabled(flow.is_some(), egui::Button::new("Flow →"))
             .on_hover_text("Continue the first clip's motion into the second")
@@ -549,9 +700,7 @@ pub fn show(
             .on_hover_text("Frame every keyframe (Ctrl+Scroll zooms time, Scroll zooms values)")
             .clicked()
         {
-            if let Some(c) = project.clip(id) {
-                fit_view(state, c, n_props);
-            }
+            want_fit = true;
         }
     });
 
@@ -577,18 +726,26 @@ pub fn show(
         0,
         if sr.hovered() || sr.dragged() { pal.accent } else { pal.border },
     );
-    let clip_data = match project.clip(id) {
-        Some(c) => c.clone(),
-        None => return out,
-    };
-    let dur = clip_data.duration.max(crate::model::MIN_CLIP);
+    // one read-only snapshot of every property, so the draw pass never re-borrows the project — and so a
+    // bus and a clip look identical from here down
+    let snap: Vec<Animated> = (0..n_props).filter_map(|i| t_ref(project, target, i).cloned()).collect();
+    if snap.len() != n_props {
+        ui.label("Nothing to animate");
+        return out;
+    }
+    let labels: Vec<String> = (0..n_props).map(|i| t_label(project, target, i)).collect();
+    let (span_start, span_dur) = t_span(project, target);
+    let dur = span_dur.max(crate::model::MIN_CLIP);
+    if want_fit {
+        fit_view(state, &snap, n_props);
+    }
 
     // property list (child ui so labels wrap/scroll naturally)
     let mut list_ui = ui.new_child(egui::UiBuilder::new().max_rect(list_rect));
     // scrolled: a clip with a few multi-param effects overflows the short bottom-tile pane
     egui::ScrollArea::vertical().id_salt("curve_props").show(&mut list_ui, |ui| {
         for i in 0..n_props {
-            let a = prop_ref(&clip_data, i);
+            let a = snap.get(i);
             ui.horizontal(|ui| {
                 let mut visible = !state.hidden.contains(&i);
                 if ui.checkbox(&mut visible, "").changed() {
@@ -600,7 +757,7 @@ pub fn show(
                 }
                 let (_, sw) = ui.allocate_space(vec2(10.0, 10.0));
                 ui.painter().rect_filled(sw, 2, prop_color(&pal, i));
-                if ui.selectable_label(state.active == i, prop_label(&clip_data, i)).clicked() {
+                if ui.selectable_label(state.active == i, labels[i].clone()).clicked() {
                     state.active = i;
                 }
                 // a keyframe diamond marks the properties that actually carry keys
@@ -626,7 +783,7 @@ pub fn show(
     // per-property y scales
     let mut scales: Vec<(f64, f64)> = Vec::with_capacity(n_props);
     for i in 0..n_props {
-        let auto = prop_ref(&clip_data, i).map(y_range).unwrap_or((0.0, 1.0));
+        let auto = snap.get(i).map(y_range).unwrap_or((0.0, 1.0));
         scales.push(zoomed(auto, state.y_zoom, state.y_pan));
     }
     // freeze the dragged properties' scales for the whole gesture (see CurvesState::drag_y)
@@ -677,7 +834,7 @@ pub fn show(
             if !visible(p) {
                 continue;
             }
-            let Some(a) = prop_ref(&clip_data, p) else { continue };
+            let Some(a) = snap.get(p) else { continue };
             for (k, key) in a.keys.iter().enumerate() {
                 let kp = pos2(x_at(key.t, sx), y_at(key.v, scales[p]));
                 let d = kp.distance(pos);
@@ -690,7 +847,7 @@ pub fn show(
     };
     // handles are shown for bezier segments and segments whose left key is selected
     let handle_positions = |p: usize, k: usize| -> Option<(Pos2, Pos2, Pos2, Pos2)> {
-        let a = prop_ref(&clip_data, p)?;
+        let a = snap.get(p)?;
         let (k0, k1) = (a.keys.get(k)?, a.keys.get(k + 1)?);
         let (x1, y1, x2, y2) = k0.ease.handles();
         let seg_dx = k1.t - k0.t;
@@ -705,14 +862,12 @@ pub fn show(
         if !visible(p) {
             return false;
         }
-        let bez = prop_ref(&clip_data, p)
-            .and_then(|a| a.keys.get(k))
-            .is_some_and(|key| matches!(key.ease, Ease::Bezier { .. }));
+        let bez = snap.get(p).and_then(|a| a.keys.get(k)).is_some_and(|key| matches!(key.ease, Ease::Bezier { .. }));
         bez || selected_snap.contains(&(p, k)) || selected_snap.contains(&(p, k + 1))
     };
     let handle_hit = |pos: Pos2| -> Option<Drag> {
         for p in 0..n_props {
-            let Some(a) = prop_ref(&clip_data, p) else { continue };
+            let Some(a) = snap.get(p) else { continue };
             for k in 0..a.keys.len().saturating_sub(1) {
                 if !shows_handles(p, k) {
                     continue;
@@ -760,7 +915,7 @@ pub fn show(
                 state.drag_keys = props
                     .iter()
                     .filter_map(|&p| {
-                        let a = prop_ref(&clip_data, p)?;
+                        let a = snap.get(p)?;
                         let idx: Vec<usize> = state.selected.iter().filter(|s| s.0 == p).map(|s| s.1).collect();
                         (!idx.is_empty()).then(|| (p, a.keys.clone(), idx))
                     })
@@ -773,7 +928,7 @@ pub fn show(
     if resp.clicked() {
         if let Some(pos) = pointer {
             if pos.y < plot.top() {
-                *playhead = clip_data.start + t_at(pos.x, sx).clamp(0.0, dur);
+                *playhead = span_start + t_at(pos.x, sx).clamp(0.0, dur);
                 out.seeked = true;
             } else {
                 let ctrl = ui.input(|i| i.modifiers.ctrl);
@@ -799,7 +954,7 @@ pub fn show(
         if let (Some(drag), Some(pos)) = (state.drag, pointer) {
             match drag {
                 Drag::Seek => {
-                    *playhead = clip_data.start + t_at(pos.x, sx).clamp(0.0, dur);
+                    *playhead = span_start + t_at(pos.x, sx).clamp(0.0, dur);
                     out.seeked = true;
                 }
                 Drag::Key { prop, key } => {
@@ -815,7 +970,7 @@ pub fn show(
                             .fold((f64::MAX, f64::MIN), |(a, b), k| (a.min(k.t), b.max(k.t)));
                         let dt = dx.clamp(-lo, (dur - hi).max(-lo));
                         let dv = dy as f64 * (scales[p].1 - scales[p].0);
-                        let Some(a) = project.clip_mut(id).and_then(|c| prop_mut(c, p)) else { continue };
+                        let Some(a) = t_mut(project, target, p) else { continue };
                         let new = move_group(a, &orig, &idx, dt, dv);
                         if p == prop {
                             if let Some(j) = idx.iter().position(|&i| i == key) {
@@ -830,7 +985,7 @@ pub fn show(
                 }
                 Drag::HandleOut { prop, key } | Drag::HandleIn { prop, key } => {
                     let is_out = matches!(drag, Drag::HandleOut { .. });
-                    if let Some(a) = project.clip_mut(id).and_then(|c| prop_mut(c, prop)) {
+                    if let Some(a) = t_mut(project, target, prop) {
                         if key + 1 < a.keys.len() {
                             let (k0t, k0v) = (a.keys[key].t, a.keys[key].v);
                             let (k1t, k1v) = (a.keys[key + 1].t, a.keys[key + 1].v);
@@ -866,7 +1021,7 @@ pub fn show(
                 state.selected.clear();
             }
             for p in (0..n_props).filter(|&p| visible(p)) {
-                let Some(a) = prop_ref(&clip_data, p) else { continue };
+                let Some(a) = snap.get(p) else { continue };
                 for (k, key) in a.keys.iter().enumerate() {
                     if br.contains(pos2(x_at(key.t, sx), y_at(key.v, scales[p]))) && !state.selected.contains(&(p, k)) {
                         state.selected.push((p, k));
@@ -884,7 +1039,7 @@ pub fn show(
             if pos.y >= plot.top() && key_hit(pos).is_none() {
                 let t = t_at(pos.x, sx).clamp(0.0, dur);
                 let v = v_at(pos.y, scales[state.active]);
-                add_key_at(project, id, state, &mut out, undo, t, v);
+                add_key_at(project, target, state, &mut out, undo, t, v);
             }
         }
     }
@@ -899,7 +1054,7 @@ pub fn show(
         let mut sel = state.selected.clone();
         sel.sort_by(|a, b| b.cmp(a)); // per-prop descending key index → removals don't shift later ones
         for (p, k) in sel {
-            if let Some(a) = project.clip_mut(id).and_then(|c| prop_mut(c, p)) {
+            if let Some(a) = t_mut(project, target, p) {
                 remove_key(a, k);
             }
         }
@@ -910,19 +1065,18 @@ pub fn show(
     // ---- copy / paste the selected keys (consumed, and only over the graph: Ctrl+V elsewhere is not ours) ----
     if ui.rect_contains_pointer(graph) {
         if ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::C)) && !state.selected.is_empty() {
-            let key_of =
-                |&(p, k): &(usize, usize)| prop_ref(&clip_data, p).and_then(|a| a.keys.get(k)).map(|x| (p, *x));
+            let key_of = |&(p, k): &(usize, usize)| snap.get(p).and_then(|a| a.keys.get(k)).map(|x| (p, *x));
             let picked: Vec<(usize, Keyframe)> = state.selected.iter().filter_map(key_of).collect();
             let t0 = picked.iter().map(|(_, k)| k.t).fold(f64::MAX, f64::min);
             state.clipboard = picked.into_iter().map(|(p, k)| (p, Keyframe { t: k.t - t0, ..k })).collect();
         }
         if ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::V)) && !state.clipboard.is_empty() {
             undo(project);
-            let t0 = clip_data.local(*playhead).clamp(0.0, dur);
+            let t0 = (*playhead - span_start).clamp(0.0, dur);
             let mut at: Vec<(usize, f64)> = Vec::new();
             for (p, key) in state.clipboard.clone() {
                 let t = (t0 + key.t).clamp(0.0, dur);
-                if let Some(a) = project.clip_mut(id).and_then(|c| prop_mut(c, p)) {
+                if let Some(a) = t_mut(project, target, p) {
                     if a.key_index_at(t).is_none() {
                         a.toggle_key(t); // makes an unkeyed property animated too
                     }
@@ -932,10 +1086,8 @@ pub fn show(
                 }
             }
             // indices only settle once every paste is in
-            if let Some(c) = project.clip(id) {
-                state.selected =
-                    at.iter().filter_map(|&(p, t)| prop_ref(c, p)?.key_index_at(t).map(|k| (p, k))).collect();
-            }
+            state.selected =
+                at.iter().filter_map(|&(p, t)| t_ref(project, target, p)?.key_index_at(t).map(|k| (p, k))).collect();
             out.edited = true;
         }
     }
@@ -950,7 +1102,7 @@ pub fn show(
                 if pos.y >= plot.top() {
                     add_key_at(
                         project,
-                        id,
+                        target,
                         state,
                         &mut out,
                         undo,
@@ -984,7 +1136,7 @@ pub fn show(
     }
     if let (Some(act), Some((p, k))) = (act, state.menu_key) {
         undo(project);
-        if let Some(a) = project.clip_mut(id).and_then(|c| prop_mut(c, p)) {
+        if let Some(a) = t_mut(project, target, p) {
             match act {
                 MenuAct::SetEase(e) if k < a.keys.len() => {
                     a.keys[k].ease = e;
@@ -1022,7 +1174,7 @@ pub fn show(
     painter.text(
         pos2(graph.right() - 3.0, graph.top()),
         Align2::RIGHT_TOP,
-        format!("{} {lo:.2} … {hi:.2}", prop_label(&clip_data, state.active)),
+        format!("{} {lo:.2} … {hi:.2}", labels[state.active].clone()),
         font.clone(),
         pal.text_dim,
     );
@@ -1053,7 +1205,7 @@ pub fn show(
         if !visible(p) {
             continue;
         }
-        let Some(a) = prop_ref(&clip_data, p) else { continue };
+        let Some(a) = snap.get(p) else { continue };
         let color = prop_color(&pal, p);
         let x0 = x_at(0.0, sx).max(plot.left());
         let x1 = x_at(dur, sx).min(plot.right());
@@ -1103,7 +1255,7 @@ pub fn show(
         plot_painter.rect_stroke(br, 0, Stroke::new(1.0, pal.accent), egui::StrokeKind::Inside);
     }
     // playhead
-    let ph = clip_data.local(*playhead);
+    let ph = *playhead - span_start;
     if ph >= 0.0 && ph <= dur {
         painter.vline(x_at(ph, sx), egui::Rangef::new(graph.top(), plot.bottom()), Stroke::new(1.0, pal.playhead));
     }
@@ -1115,6 +1267,42 @@ mod tests {
     use super::*;
     use crate::model::{Clip, ClipKind, Keyframe};
     use eframe::egui::{Event, Modifiers, PointerButton, RawInput};
+
+    /// A bus is a curve target like any clip: its gain, its pan and every filter parameter show up as
+    /// properties, and editing one writes straight back onto the bus.
+    #[test]
+    fn a_bus_is_a_curve_target() {
+        use crate::model::{AudioFilter, FilterKind};
+        let mut h = Harness::new();
+        let bus = h.project.main_bus();
+        h.project.bus_mut(bus).unwrap().filters.push(AudioFilter::new(FilterKind::Gain));
+        h.project.bus_mut(bus).unwrap().filters[0].fill_params();
+        let nparams = h.project.bus(bus).unwrap().filters[0].params.len();
+
+        let t = Target::Bus(bus);
+        assert_eq!(t_count(&h.project, t), BUS_BASE + nparams, "gain, pan, then the filter's parameters");
+        assert_eq!(t_label(&h.project, t, 0), "Gain");
+        assert_eq!(t_label(&h.project, t, 1), "Pan");
+        assert!(t_label(&h.project, t, BUS_BASE).starts_with("Gain: "), "filter params name their filter");
+        // a bus spans the whole project, not a clip
+        assert_eq!(t_span(&h.project, t).0, 0.0);
+
+        // writing through the target lands on the bus itself
+        t_mut(&mut h.project, t, 0).unwrap().set_at(1.0, 0.25);
+        assert_eq!(h.project.bus(bus).unwrap().gain.at(1.0), 0.25);
+        t_mut(&mut h.project, t, BUS_BASE).unwrap().set_at(2.0, 6.0);
+        assert_eq!(h.project.bus(bus).unwrap().filters[0].params[0].at(2.0), 6.0);
+        // and reading sees the same values
+        assert_eq!(t_ref(&h.project, t, 0).unwrap().at(1.0), 0.25);
+
+        // the pane draws the bus with no clip selected at all
+        h.selection.clear();
+        h.state.target_bus = Some(bus);
+        h.frame(vec![]);
+        h.frame(vec![]);
+        assert!(h.state.graph.width() > 0.0, "the graph laid out for a bus");
+        assert!(h.undos == 0, "drawing alone changes nothing");
+    }
 
     struct Harness {
         ctx: egui::Context,
@@ -1159,7 +1347,7 @@ mod tests {
             let _ = ctx.run(input, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut undo = |_: &Project| *undos += 1;
-                    resp = show(ui, state, project, selection, playhead, &pal, &mut undo);
+                    resp = show(ui, state, project, selection, None, playhead, &pal, &mut undo);
                 });
             });
             resp
@@ -1483,7 +1671,9 @@ mod tests {
         assert!(h.state.zoom == 0.0, "the time axis is untouched");
         // Fit: the keys span 1..3 s of a 4 s clip, so time zooms in and the value view resets
         let c = h.project.clip(7).unwrap().clone();
-        fit_view(&mut h.state, &c, prop_count(&c));
+        let n = prop_count(&c);
+        let snap: Vec<Animated> = (0..n).filter_map(|i| prop_ref(&c, i).cloned()).collect();
+        fit_view(&mut h.state, &snap, n);
         assert_eq!((h.state.y_zoom, h.state.y_pan), (1.0, 0.0));
         assert!((h.state.scroll_x - 0.9).abs() < 1e-6, "framed just before the first key: {}", h.state.scroll_x);
         h.frame(vec![]);

@@ -2333,9 +2333,10 @@ impl App {
             }
             Pane::Curves => {
                 let resp = {
-                    let App { project, selection, playhead, undo, redo, curves: st, palette, .. } = self;
+                    let App { project, selection, playhead, undo, redo, curves: st, palette, mixer, .. } = self;
+                    let bus = mixer.selected_bus;
                     let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
-                    curves::show(ui, st, project, selection, playhead, palette, &mut push)
+                    curves::show(ui, st, project, selection, bus, playhead, palette, &mut push)
                 };
                 if resp.seeked {
                     self.player.pause();
