@@ -338,13 +338,15 @@ fn kind_tag(k: ClipKind) -> &'static str {
 }
 
 /// Case-insensitive match of the search text against name, tags, description and folder.
+/// A search is about the FILE, so it matches the name and what the user wrote about it — never the
+/// containing folder. Matching the folder meant searching "pop" returned every file that happened to sit
+/// in a folder called pop, which is the opposite of narrowing.
 fn matches_search(a: &crate::model::Asset, q: &str) -> bool {
     if q.is_empty() {
         return true;
     }
     let q = q.to_lowercase();
     a.name().to_lowercase().contains(&q)
-        || a.folder.to_lowercase().contains(&q)
         || a.description.to_lowercase().contains(&q)
         || a.tags.iter().any(|t| t.to_lowercase().contains(&q))
 }
@@ -457,7 +459,8 @@ fn path_matches(path: &str, q: &str, kind: u8) -> bool {
         4 => false,
         _ => true,
     };
-    class_ok && (q.is_empty() || path.to_lowercase().contains(&q.to_lowercase()))
+    // the file name only: matching the whole path made every file under C:\pop\ a hit for "pop"
+    class_ok && (q.is_empty() || split_path(path).0.to_lowercase().contains(&q.to_lowercase()))
 }
 
 /// Same, plus the recent entry's own tags and colour label.
@@ -2288,7 +2291,7 @@ mod tests {
     }
 
     #[test]
-    fn search_matches_name_tags_description_folder() {
+    fn search_matches_name_tags_and_description_but_not_the_folder() {
         let mut a = asset(1, ClipKind::Video, 5.0);
         a.tags = vec!["Drone".into()];
         a.description = "Sunset flyover".into();
@@ -2297,8 +2300,14 @@ mod tests {
         assert!(matches_search(&a, "FILE1"));
         assert!(matches_search(&a, "drone"));
         assert!(matches_search(&a, "sunset"));
-        assert!(matches_search(&a, "day 1"));
+        // the containing folder is NOT a match: searching a folder's name used to return everything
+        // inside it, which is the opposite of narrowing
+        assert!(!matches_search(&a, "day 1"));
         assert!(!matches_search(&a, "nope"));
+        // and a file on disk matches on its name, not on any folder in its path
+        assert!(path_matches(r"C:\pop\kick.wav", "kick", 0));
+        assert!(!path_matches(r"C:\pop\kick.wav", "pop", 0));
+        assert!(path_matches(r"C:\sfx\pop_01.wav", "pop", 0));
     }
 
     #[test]

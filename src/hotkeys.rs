@@ -253,8 +253,12 @@ impl Hotkeys {
     }
 }
 
+/// Actions the curve and node editors also claim while the pointer is over them, so the timeline only
+/// gets them if no pane wanted them. Delete is here for the same reason the clipboard keys are: the early
+/// pass runs BEFORE any pane is drawn, so a global Delete would eat the key and remove the selected CLIPS
+/// while the user was deleting keyframes or nodes.
 fn is_late(a: Action) -> bool {
-    matches!(a, Action::CopyClips | Action::CutClips | Action::PasteClips | Action::PasteInPlace)
+    matches!(a, Action::CopyClips | Action::CutClips | Action::PasteClips | Action::PasteInPlace | Action::Delete)
 }
 
 /// egui-winit swallows the clipboard keys: Ctrl+C / Ctrl+X / Ctrl+V (and Ctrl+Alt+C/V, Shift+Delete,

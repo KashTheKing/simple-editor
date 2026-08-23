@@ -385,6 +385,27 @@ impl egui_tiles::Behavior<Pane> for Behaviour<'_> {
 /// Draw the docked tree into `ui` and every popped pane in its own OS window; `draw(ui, pane)` renders
 /// a pane's content. A popped window that the user closes is docked back automatically.
 /// Returns (layout changed this frame — caller persists it, a pane was dropped somewhere new).
+/// Repair tab containers whose `active` no longer names one of their children — which is what leaves a
+/// lone tab drawn as inactive after a rearrange, so it has to be clicked before its pane comes back.
+fn activate_orphan_tabs(tree: &mut egui_tiles::Tree<Pane>) {
+    let mut fix: Vec<(egui_tiles::TileId, egui_tiles::TileId)> = Vec::new();
+    for (id, tile) in tree.tiles.iter() {
+        if let egui_tiles::Tile::Container(egui_tiles::Container::Tabs(tabs)) = tile {
+            let ok = tabs.active.is_some_and(|a| tabs.children.contains(&a));
+            if !ok {
+                if let Some(&first) = tabs.children.first() {
+                    fix.push((*id, first));
+                }
+            }
+        }
+    }
+    for (id, child) in fix {
+        if let Some(egui_tiles::Tile::Container(egui_tiles::Container::Tabs(tabs))) = tree.tiles.get_mut(id) {
+            tabs.set_active(child);
+        }
+    }
+}
+
 pub fn show(
     ctx: &egui::Context,
     ui: &mut egui::Ui,
@@ -401,8 +422,12 @@ pub fn show(
         if let Some(f) = fraction {
             keep_share_fraction(&mut layout.tree, id, f);
         }
+        // the tab you just dropped is the one you want to look at; without this it lands behind
+        // whichever tab the container had active before
+        layout.tree.make_active(|tid, _| tid == id);
         moved = true;
     }
+    activate_orphan_tabs(&mut layout.tree);
     let (hide, pop, mut changed) = (beh.hide, beh.pop, beh.edited);
     for p in hide {
         if layout.is_visible(p) {

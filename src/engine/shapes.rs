@@ -123,7 +123,10 @@ impl ShapeRasterizer {
             }
             ShapeKind::Line | ShapeKind::Arrow => {
                 let head = if style.kind == ShapeKind::Arrow { arrow_head(style) * s } else { 0.0 };
-                let (a, b) = ([cx - w * s, cy - h * s], [cx + w * s, cy + h * s]);
+                // signed: the layer is sized from the absolute extents, but which corner the line runs
+                // between is exactly what the signs say
+                let (sw_, sh_) = signed_half(style, t);
+                let (a, b) = ([cx - sw_ * s, cy - sh_ * s], [cx + sw_ * s, cy + sh_ * s]);
                 let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
                 let len = (dx * dx + dy * dy).sqrt();
                 if len > 1e-4 {
@@ -210,6 +213,21 @@ fn half_size(style: &ShapeStyle, t: f64) -> (f32, f32) {
         }
         return (hx.min(20000.0).max(0.5), hy.min(20000.0).max(0.5));
     }
+    (f(style.w.at(t)), f(style.h.at(t)))
+}
+
+/// Half-extents WITH their sign, for the shapes whose extents encode a direction. Line and Arrow run
+/// from (-w, -h) to (+w, +h), so making them absolute (as `half_size` must, for a layer size) collapses
+/// every line onto the same diagonal whichever way it was actually drawn.
+fn signed_half(style: &ShapeStyle, t: f64) -> (f32, f32) {
+    let f = |a: f64| {
+        let v = a as f32;
+        if v.is_finite() {
+            v.clamp(-20000.0, 20000.0)
+        } else {
+            0.0
+        }
+    };
     (f(style.w.at(t)), f(style.h.at(t)))
 }
 

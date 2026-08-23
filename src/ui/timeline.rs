@@ -393,6 +393,18 @@ fn snap_target(t: f64, thr: f64, p: &Project, playhead: f64, exclude: &[Id]) -> 
 /// Frame-quantise a pointer time and pull it onto the nearest snap candidate. Every tool that turns a
 /// pointer x into a time goes through here, so the razor, the marker tool, marker drags and media drops
 /// land on the same edges that moves and trims already snap to.
+/// Where the playhead lands when snapping is on: clip edges, in/out and 0, but NOT the playhead itself,
+/// which would always be the nearest candidate and pin it where it already is.
+fn snap_playhead(t: f64, on: bool, zoom: f32, p: &Project) -> f64 {
+    if !on {
+        return p.snap_frame(t);
+    }
+    let t = p.snap_frame(t);
+    let edges = p.all_clips().flat_map(|(_, c)| [c.start, c.end()]);
+    let cands = [0.0].into_iter().chain(p.in_point).chain(p.out_point).chain(edges);
+    nearest(t, (SNAP_PX / zoom) as f64, cands).unwrap_or(t)
+}
+
 fn snap_time(t: f64, on: bool, zoom: f32, p: &Project, playhead: f64, exclude: &[Id]) -> f64 {
     if !on {
         return t;
@@ -1207,7 +1219,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 if clip.kind == ClipKind::Sequence {
                     out.open_sequence = Some(clip.sequence);
                 } else if let Some(p) = br.interact_pointer_pos() {
-                    *c.playhead = c.project.snap_frame(state.time_at(p.x).max(0.0));
+                    *c.playhead = snap_playhead(state.time_at(p.x).max(0.0), c.snap, state.zoom, c.project);
                     out.seeked = true;
                 }
             }
@@ -1545,7 +1557,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         None
     };
     if let Some(p) = scrub_x {
-        *c.playhead = c.project.snap_frame(state.time_at(p.x).max(0.0));
+        *c.playhead = snap_playhead(state.time_at(p.x).max(0.0), c.snap, state.zoom, c.project);
         out.seeked = true;
     }
 

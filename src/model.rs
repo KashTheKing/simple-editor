@@ -3870,12 +3870,23 @@ impl Project {
     }
     /// Drop a clip's node graph back onto its linear effect stack; returns how many effects landed.
     /// Err when the graph is more than a chain (the caller toasts it) — nothing is touched then.
+    /// Drop a clip's node graph entirely, keeping whatever of it can be expressed as an effect chain.
+    /// A graph that will not linearise (a branch, a cycle) still goes: "unlink" means the graph is gone
+    /// and the clip is back on its effect list, so leaving the nodes in place would be the one outcome
+    /// the user did not ask for. Err only when there was no graph to begin with.
     pub fn unlink_graph(&mut self, clip: Id) -> Result<usize, String> {
         let g = self.clip(clip).and_then(|c| c.graph.as_ref()).ok_or("that clip has no node graph")?;
-        let effects = g.to_effects()?;
-        let n = effects.len();
+        let converted = g.to_effects().ok();
         let c = self.clip_mut(clip).ok_or("that clip is gone")?;
-        c.effects = effects;
+        let n = match converted {
+            Some(effects) => {
+                let n = effects.len();
+                c.effects = effects;
+                n
+            }
+            // nothing salvageable: the clip keeps the effects it already had
+            None => 0,
+        };
         c.graph = None;
         Ok(n)
     }
@@ -4520,7 +4531,8 @@ mod tests {
         assert_eq!(c.effects[0].at(0, 0.0), 7.0);
         assert!(c.effects[0].enabled && !c.effects[1].enabled);
 
-        // a branch (Blend pulling in a second source) has no flat equivalent: refuse, change nothing
+        // a branch (Blend pulling in a second source) has no flat equivalent, but unlink still means the
+        // graph is gone: the clip keeps the effects it already had rather than staying on the nodes
         p.ensure_graph(id);
         let g = p.clip(id).unwrap().graph.clone().unwrap();
         let (input, out) = (g.nodes[0].id, g.output().unwrap());
@@ -4529,8 +4541,46 @@ mod tests {
         let blend = blend.unwrap();
         let g = p.clip_mut(id).unwrap().graph.as_mut().unwrap();
         assert!(g.connect(input, blend, 0) && g.connect(color, blend, 1) && g.connect(blend, out, 0));
-        assert!(p.unlink_graph(id).is_err(), "a two-input branch cannot be linearised");
-        assert!(p.clip(id).unwrap().graph.is_some(), "and the graph is left alone");
+        let kept: Vec<EffectKind> = p.clip(id).unwrap().effects.iter().map(|e| e.kind).collect();
+        assert_eq!(p.unlink_graph(id), Ok(0), "nothing of a branch converts");
+        assert!(p.clip(id).unwrap().graph.is_none(), "but the graph is gone either way");
+        assert_eq!(
+            p.clip(id).unwrap().effects.iter().map(|e| e.kind).collect::<Vec<_>>(),
+            kept,
+            "and the clip keeps the effect stack it already had"
+        );
+        // unlinking a clip that never had a graph is still an error
+        assert!(p.unlink_graph(id).is_err(), "no graph, nothing to unlink");
+    }
+
+    /// Undo restores the project by parsing a JSON snapshot, and silently does nothing when that parse
+    /// fails — so every shape the tools can make must survive a round trip, signs and all.
+    #[test]
+    fn every_shape_kind_round_trips_through_json() {
+        let mut p = Project::new();
+        for kind in [
+            ShapeKind::Rect,
+            ShapeKind::Ellipse,
+            ShapeKind::Triangle,
+            ShapeKind::Polygon,
+            ShapeKind::Star,
+            ShapeKind::Line,
+            ShapeKind::Arrow,
+            ShapeKind::Draw,
+        ] {
+            let id = p.add_shape_clip(kind, 0.0, 4.0);
+            // a line dragged up-and-right: the extents carry the direction, so they are negative
+            if let Some(sh) = p.clip_mut(id).and_then(|c| c.shape.as_mut()) {
+                sh.w.value = 60.0;
+                sh.h.value = -40.0;
+            }
+        }
+        let json = p.to_json();
+        let back = Project::from_json(&json).expect("a project full of shapes must parse back");
+        let kinds: Vec<ShapeKind> = back.all_clips().filter_map(|(_, c)| c.shape.as_ref().map(|s| s.kind)).collect();
+        assert_eq!(kinds.len(), 8, "every shape came back: {kinds:?}");
+        let h: Vec<f64> = back.all_clips().filter_map(|(_, c)| c.shape.as_ref().map(|s| s.h.value)).collect();
+        assert!(h.iter().all(|v| *v == -40.0), "the negative extent survived: {h:?}");
     }
 
     /// An effect covers the whole clip until it is given a window, and a file written before the window

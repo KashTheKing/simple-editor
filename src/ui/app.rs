@@ -5183,10 +5183,6 @@ impl eframe::App for App {
         if !ctx.wants_keyboard_input() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Y)) {
             actions.push(Action::Redo);
         }
-        if !ctx.wants_keyboard_input() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace))
-        {
-            actions.push(Action::Delete);
-        }
         if self.fullscreen && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
             actions.push(Action::Fullscreen);
         }
@@ -5218,8 +5214,13 @@ impl eframe::App for App {
             });
         }
 
-        // clip clipboard last: the curve and node editors claim Ctrl+C/V while the pointer is over them
+        // clipboard and Delete last: the curve and node editors claim those while the pointer is over
+        // them, and only what they leave behind should reach the timeline
         actions.extend(self.hotkeys.poll_late(ctx));
+        if !ctx.wants_keyboard_input() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace))
+        {
+            actions.push(Action::Delete);
+        }
         if let Some(text) = self.os_clipboard.take() {
             ctx.copy_text(text);
         }
