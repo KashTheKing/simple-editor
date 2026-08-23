@@ -1392,6 +1392,22 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn middle_drag_pans_the_canvas() {
+        let mut h = Harness::new();
+        let offset0 = h.state.offset;
+        h.press(pos2(300.0, 200.0), PointerButton::Middle);
+        for i in 1..=4 {
+            let p = pos2(300.0, 200.0) + Vec2::new(50.0, -30.0) * (i as f32 / 4.0);
+            h.frame(vec![Event::PointerMoved(p)]);
+        }
+        h.release(pos2(350.0, 170.0), PointerButton::Middle);
+        assert_ne!(h.state.offset, offset0, "middle-drag pans the canvas");
+        assert!(h.state.band.is_none(), "middle-drag must not start a rubber band");
+        assert_eq!(h.undos, 0, "panning is not a project edit");
+    }
+
+    #[test]
     fn opening_the_pane_converts_the_effect_stack() {
         let mut h = Harness::new();
         assert!(h.project.clip(h.clip()).unwrap().graph.is_some(), "ensure_graph ran");

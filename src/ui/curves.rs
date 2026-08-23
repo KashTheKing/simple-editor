@@ -826,6 +826,17 @@ pub fn show(
         }
     }
 
+    // middle-drag pans both axes, like the node editor's canvas; drag_delta() is per-frame, so this is
+    // additive across the gesture the same way the wheel-pan branch above is
+    if resp.dragged_by(egui::PointerButton::Middle) {
+        let d = resp.drag_delta();
+        state.zoom = pps; // panning fixes the zoom so a still-fitting view doesn't snap back
+        state.scroll_x = (state.scroll_x - (d.x / pps) as f64).clamp(-dur, dur);
+        let auto = snap.get(state.active).map(y_range).unwrap_or((0.0, 1.0));
+        let span = (auto.1 - auto.0).max(1e-9);
+        state.y_pan += (d.y as f64 / plot.height() as f64) * (state.y_hi - state.y_lo) / span;
+    }
+
     // hit-test helpers over visible props (snapshots keep the closures borrow-free)
     let visible = move |i: usize| !hidden_snap.contains(&i);
     let key_hit = |pos: Pos2| -> Option<(usize, usize)> {
@@ -886,7 +897,7 @@ pub fn show(
     };
 
     // ---- interaction ----
-    if resp.drag_started() {
+    if resp.drag_started_by(egui::PointerButton::Primary) {
         if let Some(pos) = press_origin.or(pointer) {
             if pos.y < plot.top() {
                 state.drag = Some(Drag::Seek);
@@ -1302,6 +1313,39 @@ mod tests {
         h.frame(vec![]);
         assert!(h.state.graph.width() > 0.0, "the graph laid out for a bus");
         assert!(h.undos == 0, "drawing alone changes nothing");
+    }
+
+    /// Middle-drag pans the graph on both axes, the same gesture the node editor's canvas already has.
+    /// It must not also trigger a seek, a key drag or a rubber band — those are primary-button gestures.
+    #[test]
+    fn middle_drag_pans_without_starting_a_primary_gesture() {
+        let mut h = Harness::new();
+        let ph_before = h.playhead;
+        let (sx0, y_pan0) = (h.state.scroll_x, h.state.y_pan);
+        let from = pos2(300.0, 200.0);
+        let to = from + vec2(60.0, -40.0);
+        h.frame(vec![Event::PointerMoved(from)]);
+        h.frame(vec![Event::PointerButton {
+            pos: from,
+            button: PointerButton::Middle,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        }]);
+        for i in 1..=4 {
+            let p = from + (to - from) * (i as f32 / 4.0);
+            h.frame(vec![Event::PointerMoved(p)]);
+        }
+        h.frame(vec![Event::PointerButton {
+            pos: to,
+            button: PointerButton::Middle,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        }]);
+        assert_ne!(h.state.scroll_x, sx0, "the time axis panned");
+        assert_ne!(h.state.y_pan, y_pan0, "the value axis panned");
+        assert_eq!(h.playhead, ph_before, "a middle-drag must not seek the playhead");
+        assert!(h.state.selected.is_empty(), "a middle-drag must not select or rubber-band keys");
+        assert_eq!(h.undos, 0, "panning is not a project edit");
     }
 
     struct Harness {
