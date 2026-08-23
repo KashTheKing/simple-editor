@@ -189,6 +189,10 @@ pub struct App {
     /// event either way), so a Ctrl+V after an internal-only copy produced NO event at all and could
     /// never be bound. Copying clips therefore also writes them out as text.
     os_clipboard: Option<String>,
+    /// The library's own preview: the file it is showing, a player of its own so it never disturbs the
+    /// program monitor or the timeline playhead, and the texture the pane paints this frame.
+    lib_preview: Option<(PathBuf, Player)>,
+    lib_preview_tex: Option<egui::TextureHandle>,
     /// Movie mode pre-render cache.
     prerender: PreRender,
     /// Movie mode paused the clock because the frame under the playhead was not rendered yet.
@@ -845,6 +849,8 @@ impl App {
             attrs: None,
             clipboard: None,
             os_clipboard: None,
+            lib_preview: None,
+            lib_preview_tex: None,
             prerender: PreRender::new(),
             movie_stall: false,
             canvas: (0, 0),
@@ -2133,11 +2139,12 @@ impl App {
             }
             Pane::Library => {
                 let resp = {
+                    let live = self.lib_preview_frame(ui.ctx());
                     let App { project, settings, library: lib, ytdlp_available, thumbs, undo, redo, palette, .. } =
                         self;
                     let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
                     let ytdlp = ytdlp_available.load(std::sync::atomic::Ordering::Relaxed);
-                    library::show(ui, lib, project, settings, Some(thumbs), palette, ytdlp, &mut push)
+                    library::show(ui, lib, project, settings, Some(thumbs), live.as_ref(), palette, ytdlp, &mut push)
                 };
                 if resp.edited {
                     self.after_edit();
@@ -2149,7 +2156,9 @@ impl App {
                     self.act_import();
                 }
                 // single-clicked in the Library: the file the preview pane should show (source viewer)
-                let _ = resp.preview;
+                if let Some(p) = resp.preview.clone() {
+                    self.start_lib_preview(ui.ctx(), p);
+                }
                 if !resp.add_to_timeline.is_empty() {
                     self.push_undo();
                     self.insert_at(resp.add_to_timeline, self.playhead, None);
@@ -3726,6 +3735,48 @@ impl App {
         };
         self.toast("Compressing\u{2026}");
         self.convert_jobs.push((crate::engine::convert::start_convert(opts), out));
+    }
+
+    /// Point the library's preview player at `path` and roll it. A file already playing is left alone,
+    /// so re-clicking the selected row does not restart it.
+    fn start_lib_preview(&mut self, ctx: &egui::Context, path: PathBuf) {
+        if self.lib_preview.as_ref().is_some_and(|(p, _)| *p == path) {
+            return;
+        }
+        // an asset the project already knows carries its probed duration; anything else would need a
+        // blocking ffprobe on the UI thread, so it keeps the still thumbnail until it is imported
+        let Some(asset) = self.project.assets.iter().find(|a| a.path == path.to_string_lossy()).cloned() else {
+            self.lib_preview = None;
+            return;
+        };
+        let mut player = Player::new(ctx.clone(), self.backend(), self.text.clone());
+        player.set_project(&Project::from_media(asset));
+        player.play();
+        self.lib_preview = Some((path, player));
+    }
+
+    /// The library preview's current frame, uploaded for the pane to paint. None = nothing is previewing.
+    fn lib_preview_frame(&mut self, ctx: &egui::Context) -> Option<library::PreviewFrame> {
+        let (_, player) = self.lib_preview.as_mut()?;
+        let playing = player.is_playing();
+        if let Some(f) = player.take_frame() {
+            let (w, h) = (f.width as usize, f.height as usize);
+            if w > 0 && h > 0 && f.rgba.len() == w * h * 4 {
+                let img = egui::ColorImage::from_rgba_premultiplied([w, h], &f.rgba);
+                match self.lib_preview_tex.as_mut() {
+                    Some(t) if t.size() == [w, h] => t.set_partial([0, 0], img, egui::TextureOptions::LINEAR),
+                    Some(t) => t.set(img, egui::TextureOptions::LINEAR),
+                    None => {
+                        self.lib_preview_tex = Some(ctx.load_texture("lib_preview", img, egui::TextureOptions::LINEAR))
+                    }
+                }
+            }
+        }
+        if playing {
+            ctx.request_repaint();
+        }
+        let t = self.lib_preview_tex.as_ref()?;
+        Some(library::PreviewFrame { tex: t.id(), size: [t.size()[0] as u32, t.size()[1] as u32], playing })
     }
 
     fn screenshot_tick(&mut self, ctx: &egui::Context) {

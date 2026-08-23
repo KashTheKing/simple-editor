@@ -159,6 +159,14 @@ enum LibOp {
     RemoveUnused,
 }
 
+/// The frame the app's preview player produced this update, with its pixel size. The preview box paints
+/// it instead of the still thumbnail, which is what makes a clicked asset play.
+pub struct PreviewFrame {
+    pub tex: egui::TextureId,
+    pub size: [u32; 2],
+    pub playing: bool,
+}
+
 /// `thumbs`: the app's ThumbCache, so rows and the preview can show a picture. None (no cache /
 /// headless) draws the painted fallback instead.
 /// `ytdlp` = yt-dlp was found at start-up; the "Import URL…" button only exists when it is installed.
@@ -169,6 +177,7 @@ pub fn show(
     project: &mut Project,
     settings: &mut Settings,
     thumbs: Option<&mut ThumbCache>,
+    live: Option<&PreviewFrame>,
     palette: &Palette,
     ytdlp: bool,
     undo: &mut dyn FnMut(&Project),
@@ -184,7 +193,7 @@ pub fn show(
         ui.selectable_value(&mut state.tab, 1, "Global");
     });
     ui.separator();
-    browser(ui, state, project, settings, &mut thumbs, &labels, palette, ytdlp, &mut resp, undo);
+    browser(ui, state, project, settings, &mut thumbs, live, &labels, palette, ytdlp, &mut resp, undo);
     state.seen_selected = state.selected;
     resp
 }
@@ -789,12 +798,14 @@ fn dur_cell(a: &crate::model::Asset) -> String {
 // ---------- the browser ----------
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn browser(
     ui: &mut egui::Ui,
     state: &mut LibraryState,
     project: &mut Project,
     settings: &mut Settings,
     thumbs: &mut Option<&mut ThumbCache>,
+    live: Option<&PreviewFrame>,
     labels: &Labels,
     palette: &Palette,
     ytdlp: bool,
@@ -910,7 +921,7 @@ fn browser(
     let flat = !state.search.is_empty() || state.kind_filter != 0 || state.label_filter != 0 || state.unused_only;
 
     // the preview owns the bottom of the pane, so it never scrolls away with the list
-    preview_panel(ui, state, project, settings, thumbs, labels, palette, resp, &mut ops, &mut op_start);
+    preview_panel(ui, state, project, settings, thumbs, live, labels, palette, resp, &mut ops, &mut op_start);
 
     let mut rows: Vec<(Pick, egui::Rect)> = Vec::new();
     let mut click: Option<(Pick, bool, bool)> = None;
@@ -1191,12 +1202,14 @@ fn toolbar(
 /// The dedicated asset preview: the bottom of the pane, and the only place tags / description / label /
 /// folder are edited.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn preview_panel(
     ui: &mut egui::Ui,
     state: &mut LibraryState,
     project: &Project,
     settings: &mut Settings,
     thumbs: &mut Option<&mut ThumbCache>,
+    live: Option<&PreviewFrame>,
     labels: &Labels,
     palette: &Palette,
     resp: &mut LibraryResponse,
@@ -1210,9 +1223,9 @@ fn preview_panel(
         .show_inside(ui, |ui| {
             egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| match state.anchor() {
                 Some(Pick::Asset(id)) if project.asset(id).is_some() => {
-                    asset_preview(ui, state, project, id, thumbs, labels, palette, resp, ops, op_start)
+                    asset_preview(ui, state, project, id, thumbs, live, labels, palette, resp, ops, op_start)
                 }
-                Some(Pick::Path(p)) => path_preview(ui, state, settings, thumbs, palette, resp, &p),
+                Some(Pick::Path(p)) => path_preview(ui, state, settings, thumbs, live, palette, resp, &p),
                 _ => {
                     ui.weak("Select a file to preview it");
                 }
@@ -1221,9 +1234,11 @@ fn preview_panel(
 }
 
 /// Name / path / format, over the picture — shared by both previews.
+#[allow(clippy::too_many_arguments)]
 fn preview_head(
     ui: &mut egui::Ui,
     thumbs: &mut Option<&mut ThumbCache>,
+    live: Option<&PreviewFrame>,
     palette: &Palette,
     path: &str,
     meta: &str,
@@ -1231,7 +1246,11 @@ fn preview_head(
 ) {
     ui.horizontal(|ui| {
         let h = 84.0;
-        let art = file_art(ui, thumbs, path, (h * 2.0) as u32);
+        // the live frame wins: asking the thumbnail cache as well would queue a decode per frame
+        let art = match live {
+            Some(f) => Art::Image(f.tex, f.size),
+            None => file_art(ui, thumbs, path, (h * 2.0) as u32),
+        };
         let (rect, _) = ui.allocate_exact_size(egui::vec2(h * 16.0 / 9.0, h), egui::Sense::hover());
         paint_art(ui, rect, art, palette);
         ui.vertical(|ui| {
@@ -1245,12 +1264,14 @@ fn preview_head(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn asset_preview(
     ui: &mut egui::Ui,
     state: &mut LibraryState,
     project: &Project,
     id: Id,
     thumbs: &mut Option<&mut ThumbCache>,
+    live: Option<&PreviewFrame>,
     labels: &Labels,
     palette: &Palette,
     resp: &mut LibraryResponse,
@@ -1272,7 +1293,7 @@ fn asset_preview(
     if !a.audio_streams.is_empty() {
         line.push_str(&format!(" · {} audio", a.audio_streams.len()));
     }
-    preview_head(ui, thumbs, palette, &a.path, &line, |ui| {
+    preview_head(ui, thumbs, live, palette, &a.path, &line, |ui| {
         ui.horizontal(|ui| {
             dot(ui, lbl_color(labels, a.label, palette));
             egui::ComboBox::from_id_salt("asset_label").selected_text(lbl_name(labels, a.label)).show_ui(ui, |ui| {
@@ -1343,17 +1364,19 @@ fn split_tags(s: &str) -> Vec<String> {
 
 /// Preview of a file that is not in the project yet: import it from here, and edit the tags it carries
 /// as a recent file (the only place a file outside the project can keep any).
+#[allow(clippy::too_many_arguments)]
 fn path_preview(
     ui: &mut egui::Ui,
     state: &mut LibraryState,
     settings: &mut Settings,
     thumbs: &mut Option<&mut ThumbCache>,
+    live: Option<&PreviewFrame>,
     palette: &Palette,
     resp: &mut LibraryResponse,
     path: &str,
 ) {
     let meta = kind_tag_for_class(ext_class(path)).to_string();
-    preview_head(ui, thumbs, palette, path, &meta, |ui| {
+    preview_head(ui, thumbs, live, palette, path, &meta, |ui| {
         if ui.button("Import to project").clicked() {
             resp.open_paths.push(PathBuf::from(path));
         }
@@ -2496,7 +2519,7 @@ mod tests {
             let _ = ctx.run(egui::RawInput::default(), |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut undo = |_: &Project| {};
-                    show(ui, &mut state, &mut project, &mut settings, None, &palette, true, &mut undo);
+                    show(ui, &mut state, &mut project, &mut settings, None, None, &palette, true, &mut undo);
                 });
             });
             search_rect = ctx
@@ -2516,7 +2539,7 @@ mod tests {
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 let mut undo = |_: &Project| {};
-                show(ui, &mut state, &mut project, &mut settings, None, &palette, true, &mut undo);
+                show(ui, &mut state, &mut project, &mut settings, None, None, &palette, true, &mut undo);
             });
         });
         assert!(state.search.is_empty());
@@ -2551,8 +2574,17 @@ mod tests {
             let _ = ctx.run(egui::RawInput::default(), |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut undo = |_: &Project| panic!("no undo without edits");
-                    let r =
-                        show(ui, &mut state, &mut project, &mut settings, Some(&mut cache), &palette, true, &mut undo);
+                    let r = show(
+                        ui,
+                        &mut state,
+                        &mut project,
+                        &mut settings,
+                        Some(&mut cache),
+                        None,
+                        &palette,
+                        true,
+                        &mut undo,
+                    );
                     assert!(!r.edited && !r.edit_labels);
                 });
             });
@@ -2581,7 +2613,8 @@ mod tests {
                 let out = ctx.run(input, |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
                         let mut undo = |_: &Project| {};
-                        let r = show(ui, &mut state, &mut project, &mut settings, None, &palette, ytdlp, &mut undo);
+                        let r =
+                            show(ui, &mut state, &mut project, &mut settings, None, None, &palette, ytdlp, &mut undo);
                         asked |= r.import_url;
                     });
                 });
@@ -2678,7 +2711,8 @@ mod tests {
                 let _ = ctx.run(egui::RawInput::default(), |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
                         let mut undo = |_: &Project| panic!("no undo without edits");
-                        let r = show(ui, &mut state, &mut project, &mut settings, None, &palette, true, &mut undo);
+                        let r =
+                            show(ui, &mut state, &mut project, &mut settings, None, None, &palette, true, &mut undo);
                         assert!(!r.import && !r.clear_recent && !r.edited && !r.settings_changed);
                         assert!(r.add_to_timeline.is_empty() && r.open_paths.is_empty() && r.remove.is_empty());
                         assert!(r.convert.is_empty() && r.open_sequence.is_none() && r.place_template.is_empty());
@@ -2724,7 +2758,7 @@ mod tests {
             let out = ctx.run(input, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut undo = |_: &Project| {};
-                    let r = show(ui, state, project, &mut settings, None, &palette, false, &mut undo);
+                    let r = show(ui, state, project, &mut settings, None, None, &palette, false, &mut undo);
                     got = r.preview;
                 });
             });
@@ -2780,7 +2814,7 @@ mod tests {
             let out = ctx.run(input, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut undo = |_: &Project| {};
-                    show(ui, state, project, &mut settings, None, &palette, false, &mut undo);
+                    show(ui, state, project, &mut settings, None, None, &palette, false, &mut undo);
                 });
             });
             text_rect(&out.shapes, label).is_some()
@@ -2819,7 +2853,7 @@ mod tests {
             let out = ctx.run(input, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut undo = |_: &Project| {};
-                    let r = show(ui, &mut state, &mut project, &mut settings, None, &palette, false, &mut undo);
+                    let r = show(ui, &mut state, &mut project, &mut settings, None, None, &palette, false, &mut undo);
                     removed = r.remove.clone();
                 });
             });
@@ -2842,7 +2876,7 @@ mod tests {
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 let mut undo = |_: &Project| {};
-                show(ui, &mut state, &mut project, &mut settings, None, &palette, false, &mut undo);
+                show(ui, &mut state, &mut project, &mut settings, None, None, &palette, false, &mut undo);
             });
         });
         assert_eq!(state.zoom, ZOOM_MAX, "an out-of-range zoom is clamped");
@@ -2850,7 +2884,7 @@ mod tests {
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 let mut undo = |_: &Project| {};
-                show(ui, &mut state, &mut project, &mut settings, None, &palette, false, &mut undo);
+                show(ui, &mut state, &mut project, &mut settings, None, None, &palette, false, &mut undo);
             });
         });
         assert_eq!(state.zoom, 1.0, "a default state reads as 1");
@@ -2931,7 +2965,8 @@ mod tests {
                 let out = ctx.run(input, |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
                         let mut undo = |_: &Project| panic!("no undo without edits");
-                        let r = show(ui, &mut state, &mut project, &mut settings, None, &palette, false, &mut undo);
+                        let r =
+                            show(ui, &mut state, &mut project, &mut settings, None, None, &palette, false, &mut undo);
                         assert!(r.add_effect.is_none() && r.apply_preset.is_none() && r.copy_graph.is_none());
                     });
                 });
