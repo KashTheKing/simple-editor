@@ -68,6 +68,11 @@ pub const TOOLS: &[(&str, &str, &[&str])] = &[
     ("frame.export", "Save the frame at time t as PNG/JPG/WebP (by the path's extension).", &["path:string:true:", "t:number:false:default playhead", "width:integer:false:", "height:integer:false:", "with_effects:boolean:false:default true", "quality:integer:false:1..100 for JPG/WebP", "resize:string:false:neighbor|bilinear|bicubic|lanczos"]),
     ("labels.list", "Colour labels of the project (index is 1-based; 0 = none).", &[]),
     ("labels.set", "Rename / recolour a label (index), add one (no index) or remove one (index + remove=true).", &["index:integer:false:1-based", "name:string:false:", "color:array:false:[r,g,b]", "remove:boolean:false:"]),
+    ("container.add", "Add a container clip pair (video slot + audio slot) at a time.", &["at:number:true:timeline seconds", "duration:number:false:default 5", "label:string:false:slot label"]),
+    ("container.replace", "Replace media in a container clip (effects, transforms, keyframes preserved).", &["clip_id:integer:true:", "asset_id:integer:true:", "pair:boolean:false:also replace linked audio container"]),
+    ("container.make", "Convert clips to containers (slots).", &["clip_ids:array:true:"]),
+    ("container.unmake", "Remove container flag from clips.", &["clip_ids:array:true:"]),
+    ("container.list", "List all container clips on the timeline.", &[]),
 ];
 
 use serde_json::{json, Value};

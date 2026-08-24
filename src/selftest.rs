@@ -384,7 +384,7 @@ pub fn run(args: &[String]) -> i32 {
         let mut pr = PreRender::new();
         pr.request(&p, 0.0, 1.0);
         let t0 = Instant::now();
-        while pr.tick(&p, 8.0) {
+        while pr.tick(&p, 8.0, None) {
             check!(t0.elapsed() < Duration::from_secs(30), "pre-render did not finish in 30 s");
         }
         check!(pr.progress() > 0.99, "progress {}", pr.progress());

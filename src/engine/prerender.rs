@@ -10,11 +10,14 @@
 //! `width * height * 4` RGBA frames. `frame()` seeks to the one it needs, so a served frame costs one
 //! read and never a whole second of RAM.
 //!
-//! ponytail: rendering runs on `engine::compose::Compositor` — the GL renderer is UI-thread-only and a
-//! worker cannot touch it. Movie mode wanting the GPU shaders means routing layers back to the UI thread
-//! the way `export::GpuScratch` does (the keys and files do not move).
+//! Rendering decodes on the worker thread and, when the GPU renderer is up, composites by round-tripping
+//! layers to the UI thread's GL context through a `GpuFrameRequest` — the same channel `export::GpuScratch`
+//! uses, so movie mode gets the identical shaders the preview does. Falls back to the CPU `Compositor`
+//! per-second if the GPU stops answering (renderer died, or it was never on).
 
 use crate::engine::compose::Compositor;
+use crate::engine::export::GpuFrameRequest;
+use crate::engine::shapes::ShapeRasterizer;
 use crate::engine::text::TextRasterizer;
 use crate::media::{Backend, DecoderPool, Frame};
 use crate::model::{ClipKind, Project, TrackKind};
@@ -26,6 +29,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
+use std::time::Duration;
 
 const MAGIC: &[u8; 4] = b"SEPR";
 const VERSION: u32 = 1;
@@ -71,6 +75,8 @@ struct Job {
     n: u32,
     fps: f64,
     generation: u64,
+    /// GPU compositor to round-trip frames through, when the renderer was on at request time.
+    gpu: Option<Sender<GpuFrameRequest>>,
 }
 
 /// How a worker's second ended.
@@ -89,6 +95,8 @@ struct Work {
     pool: DecoderPool,
     text: TextRasterizer,
     frame: Frame,
+    shapes: ShapeRasterizer,
+    spare: Vec<Frame>,
 }
 
 /// A half-written second; dropping it without `finish()` throws the temp file away.
@@ -105,20 +113,51 @@ impl Work {
             pool: DecoderPool::new(Backend::Auto),
             text: TextRasterizer::new(),
             frame: Frame::default(),
+            shapes: ShapeRasterizer::new(),
+            spare: Vec::new(),
         }
+    }
+
+    /// One frame through the GPU: decode here, composite on the UI thread, exactly like `export::GpuScratch`.
+    /// None = the renderer died or stopped answering — caller falls back to the CPU compositor.
+    fn gpu_render(&mut self, project: &Project, t: f64, w: u32, h: u32, tx: &Sender<GpuFrameRequest>) -> Option<Frame> {
+        let layers = crate::playback::decode_layers(
+            project,
+            t,
+            w,
+            h,
+            &mut self.pool,
+            &mut self.spare,
+            &mut self.text,
+            &mut self.shapes,
+            &mut self.comp,
+        );
+        let (reply, rx) = std::sync::mpsc::sync_channel(1);
+        tx.send(GpuFrameRequest { layers, t, w, h, reply }).ok()?;
+        rx.recv_timeout(Duration::from_secs(5)).ok().flatten()
     }
 
     /// Render one whole second into the cache, streaming frames out as they are made (a second of 1080p
     /// RGBA is 250 MB, far too much to buffer). Decoding stays sequential, so the decoder never re-seeks.
     fn render_sec(&mut self, job: &Job, generation: &AtomicU64) -> Res {
         let Ok(mut o) = open_sec(job.key, job.w, job.h, job.n) else { return Res::Failed };
+        let mut gpu = job.gpu.clone();
         for i in 0..job.n {
             if generation.load(Ordering::Relaxed) != job.generation {
                 return Res::Stale; // an edit landed: dropping `o` deletes the half-written file
             }
             let t = job.sec as f64 + i as f64 / job.fps;
-            self.comp.render(&job.project, t, job.w, job.h, &mut self.pool, &mut self.text, &mut self.frame);
-            if !o.write(&self.frame.rgba) {
+            let bytes = match gpu.as_ref().and_then(|tx| self.gpu_render(&job.project, t, job.w, job.h, tx)) {
+                Some(f) => f.rgba,
+                None => {
+                    gpu = None; // dead for the rest of this second; the next second gets a fresh Job
+                    self.comp.render(&job.project, t, job.w, job.h, &mut self.pool, &mut self.text, &mut self.frame);
+                    // clone, not take: `Frame::resize` is a no-op when width/height already match, so an
+                    // emptied-out rgba would stay empty on the next same-size render
+                    self.frame.rgba.clone()
+                }
+            };
+            if !o.write(&bytes) {
                 return Res::Failed;
             }
         }
@@ -248,7 +287,9 @@ impl PreRender {
 
     /// Collect finished seconds and keep the worker fed (call once per frame). Returns true while work
     /// is outstanding. The budget is ignored: rendering left the UI thread, so there is nothing to slice.
-    pub fn tick(&mut self, project: &Project, _budget_ms: f32) -> bool {
+    /// `gpu`: the GPU renderer's request channel when it is on, so new jobs composite through it (falling
+    /// back to the CPU compositor per-second if it stops answering); pass None to force CPU rendering.
+    pub fn tick(&mut self, project: &Project, _budget_ms: f32, gpu: Option<Sender<GpuFrameRequest>>) -> bool {
         if self.queue.is_empty() {
             self.worker = None; // idle: closing the job channel lets the thread exit
             self.inflight.clear();
@@ -301,7 +342,8 @@ impl PreRender {
                 continue;
             }
             let p = snap.get_or_insert_with(|| Arc::new(project.clone())).clone();
-            if worker.jobs.send(Job { project: p, sec, key, w, h, n, fps, generation: g }).is_err() {
+            let job = Job { project: p, sec, key, w, h, n, fps, generation: g, gpu: gpu.clone() };
+            if worker.jobs.send(job).is_err() {
                 queue.clear();
                 return false;
             }
@@ -664,7 +706,7 @@ mod tests {
         pr.request(&p, 0.0, 3.0);
         assert_eq!(pr.queue, vec![0, 1, 2]);
         let start = std::time::Instant::now();
-        while pr.tick(&p, 4.0) {
+        while pr.tick(&p, 4.0, None) {
             assert!(pr.inflight.len() <= DEPTH, "{} seconds in flight at once", pr.inflight.len());
             assert!(start.elapsed() < std::time::Duration::from_secs(30), "not converging");
         }

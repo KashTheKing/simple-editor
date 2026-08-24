@@ -154,7 +154,8 @@ pub struct App {
     gpu: Option<GpuRenderer>,
     /// Effect catalogue thumbnails: the egui textures (kept alive while the panel shows them) and the
     /// key set they were built from, so they are re-rendered only when the stock image or size changes.
-    /// GPU frame requests from export threads (they decode; we composite on the GL context).
+    /// GPU frame requests from export threads and movie-mode prerender workers (they decode; we composite
+    /// on the GL context) — shared, since both are served identically.
     gpu_export: (
         std::sync::mpsc::Sender<crate::engine::export::GpuFrameRequest>,
         std::sync::mpsc::Receiver<crate::engine::export::GpuFrameRequest>,
@@ -742,6 +743,10 @@ const MUTATING_TOOLS: &[&str] = &[
     "audio.route",
     "shapes.add",
     "labels.set",
+    "container.add",
+    "container.replace",
+    "container.make",
+    "container.unmake",
 ];
 
 impl App {
@@ -1144,6 +1149,24 @@ impl App {
             if let Some(id) = ids.last() {
                 self.library.selected = Some(*id);
                 self.library.tab = 0;
+            }
+        }
+    }
+
+    fn replace_container_dialog(&mut self, clip_id: Id, pair: bool) {
+        if let Some(p) = Self::media_dialog().pick_file() {
+            let ids = self.import_files(&[p]);
+            let Some(&aid) = ids.first() else { return };
+            let snap = self.project.to_json();
+            let ok = if pair {
+                self.project.replace_container_pair(clip_id, aid)
+            } else {
+                self.project.replace_container_media(clip_id, aid)
+            };
+            if ok {
+                push_undo_json(&mut self.undo, &mut self.redo, snap);
+                self.after_edit();
+                self.toast("Container media replaced");
             }
         }
     }
@@ -1918,6 +1941,41 @@ impl App {
                     }
                 }
             }
+            AddContainer => {
+                let snap = self.project.to_json();
+                let (vid, aid) = self.project.add_container_clip(self.playhead, 5.0);
+                push_undo_json(&mut self.undo, &mut self.redo, snap);
+                self.selection = vec![vid, aid];
+                self.after_edit();
+                self.toast("Container clip added");
+            }
+            ReplaceContainerMedia => {
+                if let Some(&id) = self.selection.first() {
+                    self.replace_container_dialog(id, false);
+                } else {
+                    self.toast("Select a container clip to replace");
+                }
+            }
+            MakeContainer => {
+                if !self.selection.is_empty() {
+                    let snap = self.project.to_json();
+                    self.project.make_container(&self.selection);
+                    push_undo_json(&mut self.undo, &mut self.redo, snap);
+                    self.after_edit();
+                    self.toast("Converted to container");
+                } else {
+                    self.toast("Select clips to convert to container");
+                }
+            }
+            UnmakeContainer => {
+                if !self.selection.is_empty() {
+                    let snap = self.project.to_json();
+                    self.project.unmake_container(&self.selection);
+                    push_undo_json(&mut self.undo, &mut self.redo, snap);
+                    self.after_edit();
+                    self.toast("Container removed");
+                }
+            }
         }
     }
 
@@ -2169,6 +2227,9 @@ impl App {
                 }
                 if let Some(id) = resp.open_sequence {
                     self.enter_sequence(id);
+                }
+                if let Some((cid, pair)) = resp.replace_container {
+                    self.replace_container_dialog(cid, pair);
                 }
                 self.pending_actions.extend(resp.actions);
             }
@@ -3037,9 +3098,10 @@ impl App {
         }
     }
 
-    /// Serve the frames export threads are waiting on. Called every frame; each request is answered on
-    /// the GL context, so exports run the same shaders as the preview. Returns true if any were served
-    /// (the caller keeps repainting so a background export is never starved).
+    /// Serve the frames export threads and movie-mode prerender workers are waiting on. Called every
+    /// frame; each request is answered on the GL context, so both run the same shaders as the preview.
+    /// Returns true if any were served (the caller keeps repainting so a background export is never
+    /// starved; prerender already repaints on its own while busy).
     fn serve_gpu_exports(&mut self) -> bool {
         let mut served = false;
         while let Ok(req) = self.gpu_export.1.try_recv() {
@@ -4873,6 +4935,67 @@ impl App {
                     }
                 }
             }
+            "container.add" => {
+                let at = req(arg_f64(args, "at"), "at")?;
+                let dur = arg_f64(args, "duration").unwrap_or(5.0).max(0.1);
+                let (vid, aid) = self.project.add_container_clip(at, dur);
+                if let Some(lbl) = arg_str(args, "label") {
+                    if let Some(vc) = self.project.clip_mut(vid) {
+                        vc.container_label = lbl.to_string();
+                    }
+                    if let Some(ac) = self.project.clip_mut(aid) {
+                        ac.container_label = lbl.to_string();
+                    }
+                }
+                Ok(json!({"ok": true, "video_clip_id": vid, "audio_clip_id": aid}))
+            }
+            "container.replace" => {
+                let clip_id = req(arg_u64(args, "clip_id"), "clip_id")?;
+                let asset_id = req(arg_u64(args, "asset_id"), "asset_id")?;
+                let pair = arg_bool(args, "pair").unwrap_or(false);
+                let ok = if pair {
+                    self.project.replace_container_pair(clip_id, asset_id)
+                } else {
+                    self.project.replace_container_media(clip_id, asset_id)
+                };
+                if ok {
+                    Ok(json!({"ok": true}))
+                } else {
+                    Err("failed to replace (clip not a container or asset not found)".into())
+                }
+            }
+            "container.make" => {
+                let ids = req(arg_ids(args, "clip_ids"), "clip_ids")?;
+                self.project.make_container(&ids);
+                Ok(json!({"ok": true}))
+            }
+            "container.unmake" => {
+                let ids = req(arg_ids(args, "clip_ids"), "clip_ids")?;
+                self.project.unmake_container(&ids);
+                Ok(json!({"ok": true}))
+            }
+            "container.list" => {
+                let containers: Vec<Value> = self
+                    .project
+                    .all_clips()
+                    .filter(|(_, c)| c.container)
+                    .map(|(ti, c)| {
+                        json!({
+                            "clip_id": c.id,
+                            "track_index": ti,
+                            "kind": format!("{:?}", c.kind),
+                            "name": c.name,
+                            "label": c.container_label,
+                            "is_empty": c.is_empty_container(),
+                            "asset_id": c.asset,
+                            "start": c.start,
+                            "duration": c.duration,
+                            "link": c.link,
+                        })
+                    })
+                    .collect();
+                Ok(json!(containers))
+            }
             _ => Err(format!("unknown tool '{name}'")),
         }
     }
@@ -5251,8 +5374,9 @@ impl eframe::App for App {
         // movie mode: keep rendering the requested range in small slices and show what is ready
         if self.settings.movie_mode {
             let t = self.playhead;
+            let gpu_tx = self.gpu.is_some().then(|| self.gpu_export.0.clone());
             let App { prerender, project, .. } = self;
-            match guarded(|| (prerender.tick(project, 4.0), prerender.frame(project, t))) {
+            match guarded(|| (prerender.tick(project, 4.0, gpu_tx), prerender.frame(project, t))) {
                 Some((busy, ready)) => {
                     // movie mode plays every frame at the project rate: rather than let the wall clock
                     // run past a second that is not rendered yet, hold it and resume when it lands.

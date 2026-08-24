@@ -388,6 +388,28 @@ impl Compositor {
                 apply_effects(clip, lt, s, s, out, &mut self.fx, &mut self.pre, &mut self.cov, &mut p);
             }
             ClipKind::Video | ClipKind::Image => {
+                if clip.is_empty_container() {
+                    let label_text = if !clip.container_label.is_empty() {
+                        format!("Container Slot\n[{}]", clip.container_label)
+                    } else {
+                        "Container Slot\n(Empty)".to_string()
+                    };
+                    let style = crate::model::TextStyle {
+                        text: label_text,
+                        size: 32.0,
+                        color: [220, 220, 220, 255],
+                        box_color: [40, 40, 40, 220],
+                        box_padding: 16.0,
+                        align: 1,
+                        ..Default::default()
+                    };
+                    let img = text.render(&style, s);
+                    if img.width > 1 || img.height > 1 {
+                        let native = (img.width, img.height);
+                        self.draw_bitmap(project, pw, clip, &img, native, t, w, h, out, extra, opacity);
+                    }
+                    return;
+                }
                 let Some(asset) = project.asset(clip.asset) else {
                     return;
                 };

@@ -467,6 +467,27 @@ fn layer_for(
     let s = w as f32 / project.width.max(1) as f32;
     match clip.kind {
         ClipKind::Video | ClipKind::Image => {
+            if clip.is_empty_container() {
+                let label_text = if !clip.container_label.is_empty() {
+                    format!("Container Slot\n[{}]", clip.container_label)
+                } else {
+                    "Container Slot\n(Empty)".to_string()
+                };
+                let style = crate::model::TextStyle {
+                    text: label_text,
+                    size: 32.0,
+                    color: [220, 220, 220, 255],
+                    box_color: [40, 40, 40, 220],
+                    box_padding: 16.0,
+                    align: 1,
+                    ..Default::default()
+                };
+                let img = text.render(&style, s);
+                if img.width > 1 || img.height > 1 {
+                    set.layers.push((clip.id, img));
+                }
+                return;
+            }
             let Some(asset) = project.asset(clip.asset) else { return };
             let native = (asset.width, asset.height);
             if native.0 == 0 || native.1 == 0 {

@@ -243,6 +243,31 @@ fn clip_section(
     if n_selected > 1 {
         ui.label(format!("{n_selected} clips selected"));
     }
+    if clip.container {
+        ui.strong("Container Slot");
+        Grid::new("inspector_container").num_columns(2).show(ui, |ui| {
+            ui.label("Slot label");
+            let r = ui.text_edit_singleline(&mut clip.container_label);
+            g.note_text(&r);
+            ui.end_row();
+
+            ui.label("Media");
+            ui.horizontal(|ui| {
+                if clip.asset == 0 {
+                    ui.weak("(Empty Slot)");
+                } else if let Some(a) = project.asset(clip.asset) {
+                    ui.label(a.name());
+                } else {
+                    ui.weak("Missing asset");
+                }
+                if ui.small_button("Replace…").clicked() {
+                    PENDING_ACTION.with(|p| *p.borrow_mut() = Some(Action::ReplaceContainerMedia));
+                }
+            });
+            ui.end_row();
+        });
+        ui.separator();
+    }
     ui.strong("Clip");
     Grid::new("inspector_clip").num_columns(2).show(ui, |ui| {
         ui.label("Name");

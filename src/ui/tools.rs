@@ -137,6 +137,8 @@ pub(crate) enum Glyph {
     MusicNote,
     /// A file-explorer folder: a tab sitting on a body.
     Folder,
+    /// A container / slot clip.
+    Container,
     /// Two crossed strokes — close, delete, clear.
     Cross,
     /// A filled dot — a colour swatch, a bullet, "in use".
@@ -889,6 +891,13 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
                 );
             }
         }
+        // container / slot: a frame box with an inner block
+        Glyph::Container => {
+            let outer = egui::Rect::from_center_size(c, egui::vec2(12.0, 10.0));
+            let inner = egui::Rect::from_center_size(c, egui::vec2(6.0, 4.5));
+            p.rect_stroke(outer, CornerRadius::same(1), stroke, StrokeKind::Inside);
+            p.rect_filled(inner, CornerRadius::ZERO, fg);
+        }
         // template: a card with its top-right corner folded over
         Glyph::Template => {
             let fold = 4.0;
@@ -1082,6 +1091,7 @@ mod tests {
         Glyph::Indent(true),
         Glyph::Indent(false),
         Glyph::Sequence,
+        Glyph::Container,
         Glyph::Template,
         Glyph::Snowflake,
     ];

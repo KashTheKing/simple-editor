@@ -128,6 +128,11 @@ actions! {
     PasteInPlace => "paste_in_place", "Paste Clips on the First Free Track", sc(CTRL_SHIFT, Key::V);
     PasteInsert => "paste_insert", "Paste Insert (ripple the rest right)", sc(NONE, Key::F10);
     PasteAtTop => "paste_at_top", "Paste on a New Track at the Top", sc(NONE, Key::F9);
+    // ---- container clips ----
+    AddContainer => "add_container", "Add Container Clip at Playhead", None;
+    ReplaceContainerMedia => "replace_container", "Replace Container Media…", None;
+    MakeContainer => "make_container", "Convert to Container", None;
+    UnmakeContainer => "unmake_container", "Remove Container", None;
 }
 
 pub struct Hotkeys {

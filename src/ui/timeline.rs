@@ -265,6 +265,8 @@ pub struct TimelineResponse {
     pub dropped_other: Vec<(DragPayload, f64, Option<usize>)>,
     /// Actions requested from the timeline's context menus (Retime, AddTransition, FreezeFrame, AutoCut, …).
     pub actions: Vec<crate::hotkeys::Action>,
+    /// Container media replacement request — (clip id, pair mode).
+    pub replace_container: Option<(Id, bool)>,
     /// A Sequence clip was double-clicked — the app calls `Project::open_sequence` with this sequence id.
     pub open_sequence: Option<Id>,
     /// "Edit labels…" was picked in a clip's colour submenu — the app opens its label editor.
@@ -335,6 +337,16 @@ enum Act {
     MarkerLabel(Id, u8),
     /// Route the selected audio clips to a bus (0 = inherit the track's).
     Bus(Id),
+    /// Replace media of a container clip.
+    ReplaceContainerMedia(Id),
+    /// Replace media of a container clip and linked audio.
+    ReplaceContainerPair(Id),
+    /// Convert selection to containers.
+    MakeContainer,
+    /// Remove container flag from selection.
+    UnmakeContainer,
+    /// Rename a container's slot label.
+    RenameContainer(Id, String),
 }
 
 /// Display order: video tracks reversed (Vn on top, V1 just above audio), then A1..An.
@@ -706,6 +718,8 @@ fn label_menu(ui: &mut egui::Ui, labels: &[Label], act: &mut Option<Act>, edit_l
 #[allow(clippy::too_many_arguments)]
 fn clip_menu(
     ui: &mut egui::Ui,
+    clip_id: Id,
+    is_container: bool,
     linked: bool,
     enabled: bool,
     audio: bool,
@@ -734,6 +748,26 @@ fn clip_menu(
     }
     if ui.button("Ripple Delete").clicked() {
         *act = Some(Act::Delete(true));
+    }
+    ui.separator();
+    if is_container {
+        ui.menu_button("Container", |ui| {
+            if ui.button("Replace Media…").clicked() {
+                *act = Some(Act::ReplaceContainerMedia(clip_id));
+                ui.close_menu();
+            }
+            if !audio && ui.button("Replace Pair…").clicked() {
+                *act = Some(Act::ReplaceContainerPair(clip_id));
+                ui.close_menu();
+            }
+            ui.separator();
+            if ui.button("Remove Container").clicked() {
+                *act = Some(Act::UnmakeContainer);
+                ui.close_menu();
+            }
+        });
+    } else if ui.button("Convert to Container").clicked() {
+        *act = Some(Act::MakeContainer);
     }
     ui.separator();
     if ui.button("Retime…").clicked() {
@@ -1015,12 +1049,17 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             }
             lp.rect_filled(rect, 0, color);
             lp.rect_stroke(rect, 0, thin, StrokeKind::Inside);
+            if clip.container {
+                lp.rect_stroke(rect, 0, Stroke::new(1.5, pal.accent), StrokeKind::Inside);
+            }
             // sub-pixel clips (zoomed way out): fill only — no text, waveform, diamonds or hit-testing.
             // ponytail: 4 pt is well under the ~18 pt a clip needs for its trim handles, and the rubber
             // band still catches them; give them their own interact if that ever bites.
             let detailed = vis.width() >= 4.0;
             if clip.kind == ClipKind::Adjustment && detailed {
                 hatch(&lp.with_clip_rect(vis), vis, pal.text.gamma_multiply(0.25));
+            } else if clip.is_empty_container() && detailed {
+                hatch(&lp.with_clip_rect(vis), vis, pal.accent.gamma_multiply(0.35));
             }
             if !detailed {
                 if c.selection.contains(&clip.id) {
@@ -1045,6 +1084,21 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 let badge = Rect::from_min_size(name_pos, vec2(15.0, 15.0));
                 draw_glyph(&name_pc, badge, Glyph::Sequence, pal.text);
                 name_pc.text(pos2(badge.right(), name_pos.y), Align2::LEFT_TOP, &clip.name, font.clone(), pal.text);
+            } else if clip.container {
+                let badge = Rect::from_min_size(name_pos, vec2(15.0, 15.0));
+                draw_glyph(&name_pc, badge, Glyph::Container, pal.accent);
+                let label = if clip.is_empty_container() {
+                    if !clip.container_label.is_empty() {
+                        format!("[{}] (Empty)", clip.container_label)
+                    } else {
+                        "Container (Empty)".to_string()
+                    }
+                } else if !clip.container_label.is_empty() && !clip.name.contains(&format!("[{}]", clip.container_label)) {
+                    format!("{} [{}]", clip.name, clip.container_label)
+                } else {
+                    clip.name.clone()
+                };
+                name_pc.text(pos2(badge.right() + 2.0, name_pos.y), Align2::LEFT_TOP, &label, font.clone(), pal.text);
             } else {
                 name_pc.text(name_pos, Align2::LEFT_TOP, &clip.name, font.clone(), pal.text);
             }
@@ -1201,13 +1255,15 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             if br.clicked() {
                 // razor / marker tools act where the pointer is instead of selecting
                 let (snap_on, zoom, ph) = (c.snap, state.zoom, *c.playhead);
-                match (c.tool, br.interact_pointer_pos()) {
-                    (Tool::Cut, Some(pp)) => {
-                        let t = snap_time(state.time_at(pp.x), snap_on, zoom, c.project, ph, &[]);
+                match c.tool {
+                    Tool::Cut => {
+                        let x = ui.input(|i| i.pointer.latest_pos()).unwrap_or(vis.center()).x;
+                        let t = snap_time(state.time_at(x), snap_on, zoom, c.project, ph, &[]);
                         act = Some(Act::SplitAt(t));
                     }
-                    (Tool::Marker, Some(pp)) => {
-                        let t = snap_time(state.time_at(pp.x), snap_on, zoom, c.project, ph, &[]);
+                    Tool::Marker => {
+                        let x = ui.input(|i| i.pointer.latest_pos()).unwrap_or(vis.center()).x;
+                        let t = snap_time(state.time_at(x), snap_on, zoom, c.project, ph, &[]);
                         act = Some(Act::AddMarker(t.max(0.0)));
                     }
                     _ => click = Some(clip.id),
@@ -1226,10 +1282,23 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             if br.drag_started_by(egui::PointerButton::Primary) {
                 start_move = Some(clip.id);
             }
-            let (linked, enabled, aud) = (clip.link != 0, clip.enabled, clip.kind == ClipKind::Audio);
+            let (linked, enabled, aud, is_cont) =
+                (clip.link != 0, clip.enabled, clip.kind == ClipKind::Audio, clip.container);
             let mut rclick = br.secondary_clicked();
             br.context_menu(|ui| {
-                clip_menu(ui, linked, enabled, aud, labels, buses, &mut act, &mut out.actions, &mut out.edit_labels)
+                clip_menu(
+                    ui,
+                    clip.id,
+                    is_cont,
+                    linked,
+                    enabled,
+                    aud,
+                    labels,
+                    buses,
+                    &mut act,
+                    &mut out.actions,
+                    &mut out.edit_labels,
+                )
             });
             if clip.kind == ClipKind::Audio {
                 if let Some(pos) = pointer {
@@ -1268,6 +1337,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     r.context_menu(|ui| {
                         clip_menu(
                             ui,
+                            clip.id,
+                            is_cont,
                             linked,
                             enabled,
                             aud,
@@ -1829,6 +1900,23 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     if let Some(cl) = p.clip_mut(*id).filter(|cl| cl.kind == ClipKind::Audio) {
                         cl.bus = b;
                     }
+                }
+            }
+            Act::ReplaceContainerMedia(cid) => {
+                out.replace_container = Some((cid, false));
+            }
+            Act::ReplaceContainerPair(cid) => {
+                out.replace_container = Some((cid, true));
+            }
+            Act::MakeContainer => {
+                p.make_container(&ids);
+            }
+            Act::UnmakeContainer => {
+                p.unmake_container(&ids);
+            }
+            Act::RenameContainer(cid, name) => {
+                if let Some(cl) = p.clip_mut(cid) {
+                    cl.container_label = name;
                 }
             }
         }
@@ -3353,7 +3441,7 @@ mod tests {
                 },
                 |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
-                        clip_menu(ui, false, true, audio, &p.labels, &p.buses, &mut act, &mut acts, &mut edit)
+                        clip_menu(ui, 1, false, false, true, audio, &p.labels, &p.buses, &mut act, &mut acts, &mut edit)
                     });
                 },
             );

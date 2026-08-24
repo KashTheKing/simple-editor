@@ -207,6 +207,11 @@ pub fn is_adjustment_template(t: &Template) -> bool {
     decode_template(t).is_some_and(|(c, _)| !c.is_empty() && c.iter().all(|c| c.kind == ClipKind::Adjustment))
 }
 
+/// True when a template holds at least one container clip.
+pub fn is_container_template(t: &Template) -> bool {
+    decode_template(t).is_some_and(|(c, _)| c.iter().any(|c| c.container))
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 struct TemplateData {
     clips: Vec<Clip>,
@@ -455,5 +460,119 @@ mod tests {
         let a = q.add_adjustment_clip(0.0, 2.0);
         assert!(is_adjustment_template(&capture_template("Adj", &q, &[a])));
         assert!(!is_adjustment_template(&capture_template("Clip", &q, &[qid])));
+    }
+
+    #[test]
+    fn container_roundtrip_template() {
+        let mut p = Project::new();
+        let (vid, aid) = p.add_container_clip(0.0, 5.0);
+        if let Some(c) = p.clip_mut(vid) {
+            c.container_label = "Hero Shot".into();
+        }
+        let t = capture_template("ContainerTpl", &p, &[vid, aid]);
+        assert!(is_container_template(&t));
+        assert!(!is_adjustment_template(&t));
+
+        let (clips, assets) = decode_template(&t).unwrap();
+        assert_eq!(clips.len(), 2);
+        assert!(clips[0].container);
+        assert!(clips[1].container);
+
+        let mut q = Project::new();
+        let placed = q.place_clips(clips, assets, 10.0);
+        assert_eq!(placed.len(), 2);
+        let v = q.clip(placed[0]).unwrap();
+        assert!(v.container);
+        assert_eq!(v.container_label, "Hero Shot");
+        assert_eq!(v.start, 10.0);
+        assert_eq!(v.duration, 5.0);
+        assert!(v.is_empty_container());
+    }
+
+    #[test]
+    fn replace_container_preserves_effects_and_transforms() {
+        let mut p = Project::new();
+        let (vid, _) = p.add_container_clip(2.0, 6.0);
+        let a1 = p.add_asset(asset(1, 10.0, 1));
+        p.replace_container_media(vid, a1);
+
+        // Add effects, keyframes, transform changes
+        let c = p.clip_mut(vid).unwrap();
+        c.x.set_at(0.0, 100.0);
+        c.scale.set_at(0.0, 1.5);
+        c.opacity.set_at(0.0, 0.8);
+        c.effects.push(Effect::new(EffectKind::Blur));
+        c.effects[0].params[0].set_at(0.0, 15.0);
+
+        // Replace with another asset
+        let a2 = p.add_asset(asset(2, 20.0, 1));
+        assert!(p.replace_container_media(vid, a2));
+
+        let c2 = p.clip(vid).unwrap();
+        assert_eq!(c2.asset, a2);
+        assert_eq!(c2.start, 2.0);
+        assert_eq!(c2.duration, 6.0);
+        assert_eq!(c2.src_in, 0.0);
+        assert_eq!(c2.x.at(0.0), 100.0);
+        assert_eq!(c2.scale.at(0.0), 1.5);
+        assert_eq!(c2.opacity.at(0.0), 0.8);
+        assert_eq!(c2.effects.len(), 1);
+        assert_eq!(c2.effects[0].kind, EffectKind::Blur);
+        assert_eq!(c2.effects[0].params[0].at(0.0), 15.0);
+    }
+
+    #[test]
+    fn replace_container_pair_syncs_audio() {
+        let mut p = Project::new();
+        let (vid, aid) = p.add_container_clip(0.0, 8.0);
+        let a = p.add_asset(asset(1, 15.0, 2));
+
+        assert!(p.replace_container_pair(vid, a));
+
+        let vc = p.clip(vid).unwrap();
+        let ac = p.clip(aid).unwrap();
+        assert_eq!(vc.asset, a);
+        assert_eq!(ac.asset, a);
+        assert_eq!(vc.link, ac.link);
+        assert_eq!(ac.audio_stream, 0);
+    }
+
+    #[test]
+    fn make_and_unmake_container() {
+        let mut p = Project::from_media(asset(1, 10.0, 1));
+        let ids: Vec<Id> = p.all_clips().map(|(_, c)| c.id).collect();
+        assert_eq!(ids.len(), 2);
+        assert!(!p.clip(ids[0]).unwrap().container);
+
+        p.make_container(&[ids[0]]);
+        assert!(p.clip(ids[0]).unwrap().container);
+        assert!(p.clip(ids[1]).unwrap().container, "linked audio converted together");
+
+        if let Some(c) = p.clip_mut(ids[0]) {
+            c.container_label = "Slot A".into();
+        }
+        p.unmake_container(&[ids[0]]);
+        assert!(!p.clip(ids[0]).unwrap().container);
+        assert!(p.clip(ids[0]).unwrap().container_label.is_empty());
+        assert!(!p.clip(ids[1]).unwrap().container);
+    }
+
+    #[test]
+    fn empty_container_serialization_roundtrip() {
+        let mut p = Project::new();
+        let (vid, aid) = p.add_container_clip(1.0, 4.0);
+        if let Some(c) = p.clip_mut(vid) {
+            c.container_label = "Intro".into();
+        }
+        let json = p.to_json();
+        let p2 = Project::from_json(&json).unwrap();
+        let vc = p2.clip(vid).unwrap();
+        let ac = p2.clip(aid).unwrap();
+        assert!(vc.container);
+        assert!(ac.container);
+        assert!(vc.is_empty_container());
+        assert!(ac.is_empty_container());
+        assert_eq!(vc.container_label, "Intro");
+        assert_eq!(vc.link, ac.link);
     }
 }

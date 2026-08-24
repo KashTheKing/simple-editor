@@ -75,9 +75,15 @@ pub fn show(
 
     // rows are read out before any of them can mutate `settings`
     let (fx, graphs) = (effect_rows(settings, false), effect_rows(settings, true));
-    let (mut adj, mut tpl) = (Vec::new(), Vec::new());
+    let (mut adj, mut cont, mut tpl) = (Vec::new(), Vec::new(), Vec::new());
     for (i, t) in settings.templates.iter().enumerate() {
-        let dst = if crate::engine::presets::is_adjustment_template(t) { &mut adj } else { &mut tpl };
+        let dst = if crate::engine::presets::is_adjustment_template(t) {
+            &mut adj
+        } else if crate::engine::presets::is_container_template(t) {
+            &mut cont
+        } else {
+            &mut tpl
+        };
         dst.push((i, t.name.clone()));
     }
 
@@ -88,6 +94,7 @@ pub fn show(
         section(ui, state, false, "Effects", &fx, &mut act, &mut resp);
         section(ui, state, false, "Node graphs", &graphs, &mut act, &mut resp);
         section(ui, state, true, "Adjustment layers", &adj, &mut act, &mut resp);
+        section(ui, state, true, "Container templates", &cont, &mut act, &mut resp);
         section(ui, state, true, "Templates", &tpl, &mut act, &mut resp);
     });
 

@@ -15,6 +15,10 @@ use super::{AudioSource, Frame, VideoSource, CHANNELS, SAMPLE_RATE};
 use crate::model::{Asset, AudioStreamInfo, ClipKind};
 use std::sync::OnceLock;
 use windows::core::{Interface, BOOL, GUID, HSTRING};
+use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
+use windows::Win32::Graphics::Direct3D11::{
+    D3D11CreateDevice, ID3D11Device, ID3D11Multithread, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_SDK_VERSION,
+};
 use windows::Win32::Media::MediaFoundation::*;
 use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
@@ -50,6 +54,47 @@ fn init() -> Result<(), String> {
     MF.get_or_init(|| unsafe { MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET).map_err(err) }).clone()
 }
 
+/// `IMFDXGIDeviceManager` is documented as safe to share and call from multiple threads (that's its
+/// purpose: every decoder MFT on every thread opens a handle to the same device through it).
+struct SharedDeviceManager(IMFDXGIDeviceManager);
+unsafe impl Send for SharedDeviceManager {}
+unsafe impl Sync for SharedDeviceManager {}
+
+/// D3D11 device + DXGI device manager for hardware-accelerated decode (DXVA). Built once per process;
+/// every source reader attaches to the same manager. `None` when the adapter/driver can't do it — callers
+/// fall back to the source reader's normal software decode, so this is purely a speed opt-in.
+fn dxgi_device_manager() -> Option<IMFDXGIDeviceManager> {
+    static MANAGER: OnceLock<Option<SharedDeviceManager>> = OnceLock::new();
+    MANAGER
+        .get_or_init(|| unsafe {
+            let mut device: Option<ID3D11Device> = None;
+            D3D11CreateDevice(
+                None,
+                D3D_DRIVER_TYPE_HARDWARE,
+                Default::default(),
+                D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
+                None,
+                D3D11_SDK_VERSION,
+                Some(&mut device),
+                None,
+                None,
+            )
+            .ok()?;
+            let device = device?;
+            // MF decoder MFTs call the device from their own thread; the app must opt the device into that.
+            let mt: ID3D11Multithread = device.cast().ok()?;
+            let _ = mt.SetMultithreadProtected(true);
+            let mut token = 0u32;
+            let mut manager: Option<IMFDXGIDeviceManager> = None;
+            MFCreateDXGIDeviceManager(&mut token, &mut manager).ok()?;
+            let manager = manager?;
+            manager.ResetDevice(&device, token).ok()?;
+            Some(SharedDeviceManager(manager))
+        })
+        .as_ref()
+        .map(|m| m.0.clone())
+}
+
 fn open_reader(path: &str) -> Result<IMFSourceReader, String> {
     if super::is_image_path(path) {
         return Err("MF: images are decoded by ffmpeg".into());
@@ -62,12 +107,17 @@ fn open_reader(path: &str) -> Result<IMFSourceReader, String> {
     init()?;
     unsafe {
         let mut attrs = None;
-        MFCreateAttributes(&mut attrs, 1).map_err(err)?;
+        MFCreateAttributes(&mut attrs, 2).map_err(err)?;
         let attrs = attrs.ok_or("MF: MFCreateAttributes returned null")?;
         attrs.SetUINT32(&MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, 1).map_err(err)?;
         // The Matroska source reports half the real frame rate; without this the video processor
         // frame-rate-converts to it and drops every second MKV/WebM frame.
         attrs.SetUINT32(&MF_XVP_DISABLE_FRC, 1).map_err(err)?;
+        // Hardware decode (DXVA) when the adapter supports it; the reader copies decoded frames back to
+        // system memory for our RGB32 output type either way, so nothing downstream changes.
+        if let Some(manager) = dxgi_device_manager() {
+            let _ = attrs.SetUnknown(&MF_SOURCE_READER_D3D_MANAGER, &manager);
+        }
         let url = HSTRING::from(path);
         let reader = MFCreateSourceReaderFromURL(&url, &attrs).map_err(err)?;
         reader.SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS.0 as u32, false).map_err(err)?;
