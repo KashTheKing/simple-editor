@@ -99,6 +99,8 @@ pub struct App {
     profile_name: Option<String>,
     fullscreen: bool,
     selection: Vec<Id>,
+    /// Selected transitions (timeline bands) — separate from the clip selection.
+    sel_transitions: Vec<Id>,
     playhead: f64,
     export: Option<(Arc<Progress>, ExportKind)>,
     encoders: Vec<String>,
@@ -837,6 +839,7 @@ impl App {
             profile_name: None,
             fullscreen: false,
             selection: Vec::new(),
+            sel_transitions: Vec::new(),
             playhead: 0.0,
             export: None,
             encoders: Vec::new(),
@@ -1626,8 +1629,12 @@ impl App {
             }
             Delete | RippleDelete => {
                 let ids = self.project.expand_links(&self.selection);
-                if !ids.is_empty() {
+                let trs = std::mem::take(&mut self.sel_transitions);
+                if !ids.is_empty() || !trs.is_empty() {
                     self.push_undo();
+                    for tid in trs {
+                        self.project.remove_transition(tid);
+                    }
                     self.project.delete_clips(&ids, a == RippleDelete);
                     self.selection.clear();
                     self.after_edit();
@@ -2157,6 +2164,7 @@ impl App {
                     let App {
                         project,
                         selection,
+                        sel_transitions,
                         playhead,
                         undo,
                         redo,
@@ -2182,6 +2190,7 @@ impl App {
                         timeline::TimelineCtx {
                             project,
                             selection,
+                            sel_transitions,
                             playhead,
                             undo: &mut push,
                             waveforms,
@@ -2411,12 +2420,23 @@ impl App {
             }
             Pane::Inspector => {
                 let changed = {
-                    let App { project, selection, playhead, undo, redo, fonts, palette, settings, .. } = self;
+                    let App {
+                        project, selection, sel_transitions, playhead, undo, redo, fonts, palette, settings, ..
+                    } = self;
                     let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
                     let mut changed = false;
                     egui::ScrollArea::vertical().show(ui, |ui| {
-                        changed =
-                            inspector::show(ui, project, selection, *playhead, fonts, palette, settings, &mut push);
+                        changed = inspector::show(
+                            ui,
+                            project,
+                            selection,
+                            sel_transitions,
+                            *playhead,
+                            fonts,
+                            palette,
+                            settings,
+                            &mut push,
+                        );
                     });
                     changed
                 };

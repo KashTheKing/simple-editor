@@ -109,6 +109,7 @@ pub fn show(
     ui: &mut egui::Ui,
     project: &mut Project,
     selection: &[Id],
+    sel_transitions: &[Id],
     playhead: f64,
     fonts: &[String],
     palette: &Palette,
@@ -116,9 +117,107 @@ pub fn show(
     undo: &mut dyn FnMut(&Project),
 ) -> bool {
     match selection.iter().find(|&&id| project.clip(id).is_some()) {
+        None if !sel_transitions.is_empty() => transition_section(ui, project, sel_transitions, undo),
         None => project_section(ui, project, settings, undo),
         Some(&id) => clip_section(ui, project, id, selection.len(), playhead, fonts, palette, undo),
     }
+}
+
+/// Selected transitions (timeline bands): one set of editors; each field you change is written to
+/// every selected transition, fields you leave alone keep their per-transition values.
+fn transition_section(ui: &mut egui::Ui, project: &mut Project, ids: &[Id], undo: &mut dyn FnMut(&Project)) -> bool {
+    use crate::model::{Ease, TransitionKind};
+    let list: Vec<crate::model::Transition> = ids
+        .iter()
+        .filter_map(|&id| project.tracks.iter().flat_map(|t| &t.transitions).find(|t| t.id == id).cloned())
+        .collect();
+    let Some(first) = list.first().cloned() else {
+        ui.label("Select a clip or a transition");
+        return false;
+    };
+    let mut g = Gesture::default();
+    if list.len() == 1 {
+        ui.strong("Transition");
+    } else {
+        ui.strong(format!("Transitions ({} selected)", list.len()));
+    }
+    let mut e = first.clone();
+    Grid::new("insp_transition").num_columns(2).show(ui, |ui| {
+        ui.label("Kind");
+        egui::ComboBox::from_id_salt("insp_tr_kind").selected_text(e.kind.name()).show_ui(ui, |ui| {
+            for k in TransitionKind::ALL {
+                g.note(&ui.selectable_value(&mut e.kind, k, k.name()));
+            }
+        });
+        ui.end_row();
+        ui.label("Duration");
+        // clamp_existing_to_range(false): merely drawing an out-of-range value must not fake an edit
+        g.note(&ui.add(
+            DragValue::new(&mut e.duration).range(0.1..=5.0).clamp_existing_to_range(false).speed(0.02).suffix(" s"),
+        ));
+        ui.end_row();
+        if e.kind == TransitionKind::FadeToColor {
+            ui.label("Color");
+            g.note(&ui.color_edit_button_srgba_unmultiplied(&mut e.color));
+            ui.end_row();
+        }
+        if e.kind.has_direction() {
+            ui.label("Direction");
+            ui.horizontal(|ui| {
+                for (i, name) in ["Left", "Right", "Up", "Down"].iter().enumerate() {
+                    g.note(&ui.selectable_value(&mut e.direction, i as u8, *name));
+                }
+            });
+            ui.end_row();
+        }
+        ui.label("Ease");
+        egui::ComboBox::from_id_salt("insp_tr_ease").selected_text(e.ease.name()).show_ui(ui, |ui| {
+            for ea in Ease::ALL {
+                g.note(&ui.selectable_value(&mut e.ease, ea, ea.name()));
+            }
+        });
+        ui.end_row();
+    });
+    let mut removed = false;
+    let label = if list.len() == 1 { "Remove transition".into() } else { format!("Remove {} transitions", list.len()) };
+    let r = ui.button(label);
+    mark(ui, "tr_remove", &r);
+    if r.clicked() {
+        g.click();
+        removed = true;
+    }
+    if g.start {
+        undo(project);
+    }
+    if !g.changed {
+        return false;
+    }
+    if removed {
+        for &id in ids {
+            project.remove_transition(id);
+        }
+        return true;
+    }
+    for &id in ids {
+        if let Some(t) = project.transition_mut(id) {
+            if e.kind != first.kind {
+                t.kind = e.kind;
+            }
+            if e.duration != first.duration {
+                t.duration = e.duration;
+            }
+            if e.color != first.color {
+                t.color = e.color;
+            }
+            if e.direction != first.direction {
+                t.direction = e.direction;
+            }
+            if e.ease != first.ease {
+                t.ease = e.ease;
+            }
+        }
+    }
+    true
 }
 
 fn project_section(
@@ -927,7 +1026,7 @@ mod tests {
                         *undos += 1;
                         assert_eq!(pre.clip(id).unwrap().pan.value, 0.0, "undo sees the pre-edit project");
                     };
-                    show(ui, p, &[id], 1.0, &fonts, &palette, &Settings::default(), &mut undo);
+                    show(ui, p, &[id], &[], 1.0, &fonts, &palette, &Settings::default(), &mut undo);
                 });
             });
         };
@@ -968,7 +1067,7 @@ mod tests {
             let _ = ctx.run(input, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut undo = |_: &Project| {};
-                    show(ui, p, &[id], 1.0, &fonts, &palette, &Settings::default(), &mut undo);
+                    show(ui, p, &[id], &[], 1.0, &fonts, &palette, &Settings::default(), &mut undo);
                 });
             });
         };
@@ -1014,7 +1113,7 @@ mod tests {
                 let mut undo = |_: &Project| {};
                 let _ = ctx.run(input, |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
-                        show(ui, p, &[], 1.0, &fonts, &palette, &settings, &mut undo);
+                        show(ui, p, &[], &[], 1.0, &fonts, &palette, &settings, &mut undo);
                     });
                 });
             };
@@ -1066,7 +1165,7 @@ mod tests {
                 }
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut undo = |_: &Project| *undos += 1;
-                    edited = show(ui, p, &[id], 1.0, &[], &palette, &Settings::default(), &mut undo);
+                    edited = show(ui, p, &[id], &[], 1.0, &[], &palette, &Settings::default(), &mut undo);
                 });
             });
             edited
@@ -1089,6 +1188,8 @@ mod tests {
         ctx: egui::Context,
         project: Project,
         id: Id,
+        /// Selected transitions handed to show(); when non-empty the clip selection is left empty.
+        sel_trans: Vec<Id>,
         undos: usize,
         time: f64,
     }
@@ -1097,13 +1198,25 @@ mod tests {
         fn shape_clip() -> Self {
             let mut project = Project::new();
             let id = project.add_shape_clip(crate::model::ShapeKind::Star, 0.0, 3.0);
-            Self { ctx: egui::Context::default(), project, id, undos: 0, time: 0.0 }
+            Self { ctx: egui::Context::default(), project, id, sel_trans: Vec::new(), undos: 0, time: 0.0 }
         }
         fn audio_clip() -> Self {
             let mut project = Project::new();
             let id = project.new_id();
             project.tracks[1].clips.push(Clip::new(id, ClipKind::Audio, "a", 0.0, 3.0));
-            Self { ctx: egui::Context::default(), project, id, undos: 0, time: 0.0 }
+            Self { ctx: egui::Context::default(), project, id, sel_trans: Vec::new(), undos: 0, time: 0.0 }
+        }
+        /// Two abutting video clips with a cut transition and an edge transition, both selected.
+        fn transitions() -> Self {
+            use crate::model::TransitionKind;
+            let mut project = Project::new();
+            let a = project.new_id();
+            project.tracks[0].clips.push(Clip::new(a, ClipKind::Video, "a", 0.0, 2.0));
+            let b = project.new_id();
+            project.tracks[0].clips.push(Clip::new(b, ClipKind::Video, "b", 2.0, 2.0));
+            let t1 = project.add_transition(b, TransitionKind::CrossFade, 1.0).unwrap();
+            let t2 = project.add_edge_transition(a, TransitionKind::CrossFade, 1.0, false).unwrap();
+            Self { ctx: egui::Context::default(), project, id: a, sel_trans: vec![t1, t2], undos: 0, time: 0.0 }
         }
         fn frame(&mut self, events: Vec<egui::Event>) -> bool {
             self.time += 0.05;
@@ -1114,13 +1227,13 @@ mod tests {
                 ..Default::default()
             };
             let pal = Palette::new(true, egui::Color32::WHITE);
-            let H { ctx, project, id, undos, .. } = self;
-            let id = *id;
+            let H { ctx, project, id, sel_trans, undos, .. } = self;
+            let sel: &[Id] = if sel_trans.is_empty() { &[*id] } else { &[] };
             let mut changed = false;
             let _ = ctx.run(input, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut undo = |_: &Project| *undos += 1;
-                    changed |= show(ui, project, &[id], 1.0, &[], &pal, &Settings::default(), &mut undo);
+                    changed |= show(ui, project, sel, sel_trans, 1.0, &[], &pal, &Settings::default(), &mut undo);
                 });
             });
             changed
@@ -1147,6 +1260,20 @@ mod tests {
             }]);
             e
         }
+    }
+
+    /// Selected transitions get their own inspector section, and "Remove" deletes them all in one undo.
+    #[test]
+    fn transition_section_shows_and_removes_all_selected() {
+        let mut h = H::transitions();
+        h.frame(vec![]);
+        let r = h.rect("tr_remove");
+        assert!(h.click(r.center()), "removing transitions edits the project");
+        assert!(h.project.tracks[0].transitions.is_empty(), "both selected transitions removed");
+        assert_eq!(h.undos, 1, "one undo for the whole removal");
+        // redrawing with the stale selection is not an edit (the section shows a hint instead)
+        assert!(!h.frame(vec![]));
+        assert_eq!(h.undos, 1);
     }
 
     /// The mask section appears, "Add mask" creates one with a single undo, and the follow-up
@@ -1253,7 +1380,7 @@ mod tests {
                 let _ = ctx.run(egui::RawInput::default(), |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
                         let mut undo = |_: &Project| panic!("no undo without edits");
-                        assert!(!show(ui, &mut p, &[sel], 1.0, &fonts, &palette, &Settings::default(), &mut undo));
+                        assert!(!show(ui, &mut p, &[sel], &[], 1.0, &fonts, &palette, &Settings::default(), &mut undo));
                     });
                 });
             }
