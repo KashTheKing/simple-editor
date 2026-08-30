@@ -5750,11 +5750,19 @@ impl eframe::App for App {
             }
         }
 
+        // live links (paths / expressions) re-bake when their inputs changed; a hash check otherwise
+        self.project.refresh_links();
         // playback clock (one extra read after it stops, so the playhead lands on the final time)
         let playing = self.player.is_playing();
         if playing || self.was_playing {
             self.playhead = self.player.time();
             self.timeline.ensure_visible(self.playhead);
+            // a numeric field left focused before play would see its bound value move every frame and
+            // report changed(), silently recording keyframes at the moving playhead — drop focus once
+            // when playback starts (not every frame, so text can still be typed mid-playback)
+            if playing && !self.was_playing {
+                ctx.memory_mut(|m| m.stop_text_input());
+            }
             ctx.request_repaint_after(Duration::from_millis(16));
         }
         // a Draw take runs until the video stops or the tool is put away — not one stroke at a time
