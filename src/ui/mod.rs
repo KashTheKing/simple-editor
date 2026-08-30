@@ -22,6 +22,7 @@ pub mod planner;
 pub mod presets_ui;
 pub mod preview;
 pub mod retime;
+pub mod heartbeat;
 pub mod settings_ui;
 pub mod shader_ui;
 pub mod subtitles_ui;

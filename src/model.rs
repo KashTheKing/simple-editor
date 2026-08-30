@@ -2986,6 +2986,22 @@ impl Project {
     pub fn audio_tracks(&self) -> Vec<usize> {
         (0..self.tracks.len()).filter(|&i| self.tracks[i].kind == TrackKind::Audio).collect()
     }
+    /// UI-only (preview decoration): true if a visual clip covers `t` on an active video track.
+    pub fn has_video_at(&self, t: f64) -> bool {
+        self.video_tracks().into_iter().any(|ti| {
+            self.active(ti) && self.tracks[ti].clips.iter().any(|c| c.enabled && c.is_visual() && c.contains(t))
+        })
+    }
+    /// UI-only: (asset id, audio_stream) for every enabled audio clip covering `t` on an active audio track.
+    pub fn audio_clips_at(&self, t: f64) -> Vec<(Id, usize)> {
+        self.audio_tracks()
+            .into_iter()
+            .filter(|&ti| self.active(ti))
+            .flat_map(|ti| {
+                self.tracks[ti].clips.iter().filter(|c| c.enabled && c.contains(t)).map(|c| (c.asset, c.audio_stream))
+            })
+            .collect()
+    }
     /// Sorted distinct clip boundaries (plus 0) for prev/next-cut navigation.
     pub fn cut_points(&self) -> Vec<f64> {
         let mut v = vec![0.0];
@@ -4587,6 +4603,28 @@ mod tests {
         assert_eq!(p.linked(v.id).len(), 3);
         assert_eq!(p.duration(), 10.0);
         assert!(p.source_video.is_some());
+    }
+
+    #[test]
+    fn has_video_at_and_audio_clips_at() {
+        let mut p = Project::new();
+        let at = p.tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
+        let mut c = Clip::new(1, ClipKind::Audio, "a", 0.0, 4.0);
+        c.asset = 7;
+        c.audio_stream = 2;
+        p.tracks[at].clips.push(c);
+
+        assert!(!p.has_video_at(1.0), "audio-only region should report no video");
+        assert_eq!(p.audio_clips_at(1.0), vec![(7, 2)]);
+        assert!(p.audio_clips_at(5.0).is_empty(), "outside the clip's range");
+
+        p.tracks[at].muted = true;
+        assert!(p.audio_clips_at(1.0).is_empty(), "a muted track contributes nothing");
+        p.tracks[at].muted = false;
+
+        let vt = p.tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        p.tracks[vt].clips.push(Clip::new(2, ClipKind::Video, "v", 0.0, 4.0));
+        assert!(p.has_video_at(1.0), "a video clip now covers the same time");
     }
 
     #[test]

@@ -206,6 +206,9 @@ pub struct Settings {
     pub whisper_dir: String,
     /// Model the Subtitles pane offers first: a `engine::transcribe::MODELS` name or file name.
     pub transcribe_model: String,
+    /// Library asset preview: draw a heartbeat-style waveform trace over audio-only files that have
+    /// no thumbnail. Off = plain black, on = the trace. Toggled from the preview's right-click menu.
+    pub audio_visualizer: bool,
     /// Social-guide overlay drawn over the preview (None = off). A view preference, not project data.
     pub guide: Option<crate::ui::guides::Guide>,
     /// User-saved project formats, applied from the inspector's Presets section.
@@ -274,6 +277,7 @@ impl Default for Settings {
             palette: PaletteOverride::default(),
             whisper_dir: String::new(),
             transcribe_model: String::new(),
+            audio_visualizer: true,
             guide: None,
             project_templates: Vec::new(),
             ui_look: "cozy".into(),
