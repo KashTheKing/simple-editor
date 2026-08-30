@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["LEGACY_KEY","VIDEO_EXTS"],"fn":["exe","install","is_installed","key","notify","uninstall"]};

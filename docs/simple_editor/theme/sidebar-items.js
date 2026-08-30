@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["apply","fonts","palette","palette_with","reg_dword","system_accent","visuals"],"struct":["Palette","PaletteOverride"]};

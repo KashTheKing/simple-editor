@@ -1,0 +1,80 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Shared header: version, precision, varyings, the uniform block and helpers (rgb&#60;-&#62;hsl, luma, hash noise, clamped sampling, mask application)."><title>PRELUDE in simple_editor::engine::shaders - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2" crossorigin href="../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../static.files/rustdoc-1a91846b.css"><meta name="rustdoc-vars" data-root-path="../../../" data-static-root-path="../../../static.files/" data-current-crate="simple_editor" data-themes="" data-resource-suffix="" data-rustdoc-version="1.88.0 (6b00bc388 2025-06-23)" data-channel="1.88.0" data-search-js="search-f7877310.js" data-settings-js="settings-5514c975.js" ><script src="../../../static.files/storage-4e99c027.js"></script><script defer src="sidebar-items.js"></script><script defer src="../../../static.files/main-7ef8a74a.js"></script><noscript><link rel="stylesheet" href="../../../static.files/noscript-893ab5e7.css"></noscript><link rel="alternate icon" type="image/png" href="../../../static.files/favicon-32x32-6580c154.png"><link rel="icon" type="image/svg+xml" href="../../../static.files/favicon-044be391.svg"></head><body class="rustdoc constant"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="mobile-topbar"><button class="sidebar-menu-toggle" title="show sidebar"></button></nav><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../../simple_editor/index.html">simple_<wbr>editor</a><span class="version">0.1.0</span></h2></div><div class="sidebar-elems"><div id="rustdoc-modnav"><h2><a href="index.html">In simple_<wbr>editor::<wbr>engine::<wbr>shaders</a></h2></div></div></nav><div class="sidebar-resizer"></div><main><div class="width-limiter"><rustdoc-search></rustdoc-search><section id="main-content" class="content"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../../index.html">simple_editor</a>::<wbr><a href="../index.html">engine</a>::<wbr><a href="index.html">shaders</a></div><h1>Constant <span class="constant">PRELUDE</span><button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../../src/simple_editor/engine/shaders.rs.html#41-118">Source</a> </span></div><pre class="rust item-decl"><code>pub const PRELUDE: &amp;<a class="primitive" href="https://doc.rust-lang.org/1.88.0/std/primitive.str.html">str</a> = r#&quot;#version 330 core
+precision highp float;
+
+in vec2 v_uv;
+out vec4 out_color;
+
+uniform sampler2D tex;
+uniform vec2 u_res;
+uniform float u_time;
+uniform float u_scale;
+uniform float p0;
+uniform float p1;
+uniform float p2;
+uniform float p3;
+uniform float p4;
+uniform float p5;
+uniform float p6;
+uniform float p7;
+uniform sampler2D u_mask;
+uniform int u_has_mask;
+
+float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+
+float hash12(vec2 p) {
+    vec3 q = fract(vec3(p.xyx) * 0.1031);
+    q += dot(q, q.yzx + 33.33);
+    return fract((q.x + q.y) * q.z);
+}
+
+float hash11(float x) { return hash12(vec2(x, x * 1.7 + 0.37)); }
+
+vec3 rgb2hsl(vec3 c) {
+    float mx = max(c.r, max(c.g, c.b));
+    float mn = min(c.r, min(c.g, c.b));
+    float l = (mx + mn) * 0.5;
+    float d = mx - mn;
+    float h = 0.0;
+    float s = 0.0;
+    if (d &gt; 1e-6) {
+        s = (l &gt; 0.5) ? d / max(2.0 - mx - mn, 1e-6) : d / max(mx + mn, 1e-6);
+        if (mx == c.r) {
+            h = (c.g - c.b) / d + ((c.g &lt; c.b) ? 6.0 : 0.0);
+        } else if (mx == c.g) {
+            h = (c.b - c.r) / d + 2.0;
+        } else {
+            h = (c.r - c.g) / d + 4.0;
+        }
+        h /= 6.0;
+    }
+    return vec3(h, s, l);
+}
+
+float hue2rgb(float p, float q, float t) {
+    t = fract(t);
+    if (t &lt; 1.0 / 6.0) { return p + (q - p) * 6.0 * t; }
+    if (t &lt; 0.5) { return q; }
+    if (t &lt; 2.0 / 3.0) { return p + (q - p) * (2.0 / 3.0 - t) * 6.0; }
+    return p;
+}
+
+vec3 hsl2rgb(vec3 c) {
+    if (c.y &lt;= 0.0) { return vec3(c.z); }
+    float q = (c.z &lt; 0.5) ? c.z * (1.0 + c.y) : c.z + c.y - c.z * c.y;
+    float p = 2.0 * c.z - q;
+    return vec3(hue2rgb(p, q, c.x + 1.0 / 3.0), hue2rgb(p, q, c.x), hue2rgb(p, q, c.x - 1.0 / 3.0));
+}
+
+/// Sample `t` with the uv clamped to the half-texel border of a `u_res`-sized image.
+vec4 sample_clamped(sampler2D t, vec2 uv) {
+    vec2 half_texel = 0.5 / max(u_res, vec2(1.0));
+    return texture(t, clamp(uv, half_texel, 1.0 - half_texel));
+}
+
+float mask_at(vec2 uv) { return (u_has_mask == 0) ? 1.0 : texture(u_mask, uv).r; }
+
+/// Blend an effect result back over the untouched source through the mask.
+vec4 apply_mask(vec4 src, vec4 fx, vec2 uv) { return mix(src, fx, mask_at(uv)); }
+&quot;#;</code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Shared header: version, precision, varyings, the uniform block and helpers (rgb&lt;-&gt;hsl, luma, hash
+noise, clamped sampling, mask application).</p>
+</div></details></section></div></main></body></html>

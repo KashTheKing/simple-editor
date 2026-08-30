@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["Act"],"fn":["effect_rows","section","show"],"struct":["PresetsResponse","PresetsState"]};

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["CACHE_MAX","MAX_DIM","MAX_PIXELS","REVEAL_HZ","STAR_INNER","SUB"],"fn":["add_disc","add_span","add_stroke","arc_steps","arrow_head","blend","bucket_time","draw_half_size","fill_path","half_size","ngon","reveal_bucket","revealed","shape_outline","signed_half","to_layer"],"struct":["Edge","Path","ShapeRasterizer"]};

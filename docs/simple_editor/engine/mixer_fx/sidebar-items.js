@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["ALLP_LEN","COMB_LEN","EQ_BANDS","MAX_ECHO_S","MAX_HOPS","REV_IN_GAIN","SPREAD"],"enum":["Band","Dsp"],"fn":["add_into","coef","coeffs","db_to_lin","filter_bands","filter_response_db","hops","lin_to_db","pink_tick","resolve","response_db","white"],"struct":["Allpass","Biquad","BusGraph","Comb","Delay","FilterState","Freeverb","Slot"]};

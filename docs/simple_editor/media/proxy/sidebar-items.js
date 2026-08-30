@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["dir","generate","proxy_path","run"]};

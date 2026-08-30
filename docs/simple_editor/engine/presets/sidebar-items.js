@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["PROPS"],"fn":["apply_curve","apply_effects","apply_motion","builtin_motions","capture_curve","capture_effects","capture_motion","capture_template","decode_template","is_adjustment_template","is_container_template","merge_curve","merge_motion","motion","motion_prop","prop_of","scaled_keys"],"struct":["TemplateData"]};

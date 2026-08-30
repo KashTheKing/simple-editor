@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["BLOCK","CACHE_BYTES","FPOOL_KEEP","LEAD_SECS","READ_AHEAD_SECS","STALL_BEHIND","TRAIL_SECS"],"enum":["Cmd"],"fn":["audio_thread","cpu_cached","decode_layers","decode_one","gpu_cached","guarded","layer_for","lock","open_output","reclaim","recycle","render_thread","video_dirty_spans"],"struct":["Cache","Clock","Player","Shared"]};

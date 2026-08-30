@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["CURVE_DB","CURVE_H","GRID_HZ","STRIP_W"],"fn":["curve","feeds","filter_body","filters","key_button","meter","routing","show","strip"],"struct":["Edits","MixerState","Strip"]};

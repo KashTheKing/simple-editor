@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":["autocut","blend","capture","compose","convert","effects","export","gpu","import","mixer","mixer_fx","prerender","presets","shaders","shapes","style","subtitles","text","tracking","transcribe","xmeml"]};

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["CARD","PARAM_CLIP","PENDING_MOTION","THUMBS"],"enum":["Scope"],"fn":["catalogue","categories","clear_thumbnails","effect_card","fits_selection","key_buttons","matches","set_thumbnail","show","take_pending_motion","thumbnail","thumbnail_count","wobble_suffix"],"struct":["EffectsResponse"]};

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["SHAPE_CYCLE","STRIP"],"enum":["Dir","Glyph","Tool"],"fn":["action_glyph","color_chip","draw_glyph","glyph_label","glyph_text_button","handle_hotkeys","handle_snap_hotkey","icon_button","next_mask","next_shape","on_accent","same_tool","show","style_controls","tool_hotkey"],"struct":["ToolsState"]};

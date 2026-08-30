@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_DEPTH"],"enum":["Dest"],"fn":["active_in","clip_transitions","gains","mix_audio_clip","mix_seq_clip","mix_tracks","play_range","read_block","resample_add"],"struct":["Mixer","Scratch"],"type":["Ext"]};

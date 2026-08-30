@@ -1,0 +1,72 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Composite/transform shader: samples a layer through an inverse 3x3 (perspective-capable) matrix with the chosen `Scaler` (0 = nearest, 1 = bilinear, 2 = bicubic Catmull-Rom) and blends it onto the canvas. Appended to `PRELUDE` + `BLEND`. `u_inv` maps canvas pixels (y down) to layer uv."><title>COMPOSITE in simple_editor::engine::shaders - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2" crossorigin href="../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../static.files/rustdoc-1a91846b.css"><meta name="rustdoc-vars" data-root-path="../../../" data-static-root-path="../../../static.files/" data-current-crate="simple_editor" data-themes="" data-resource-suffix="" data-rustdoc-version="1.88.0 (6b00bc388 2025-06-23)" data-channel="1.88.0" data-search-js="search-f7877310.js" data-settings-js="settings-5514c975.js" ><script src="../../../static.files/storage-4e99c027.js"></script><script defer src="sidebar-items.js"></script><script defer src="../../../static.files/main-7ef8a74a.js"></script><noscript><link rel="stylesheet" href="../../../static.files/noscript-893ab5e7.css"></noscript><link rel="alternate icon" type="image/png" href="../../../static.files/favicon-32x32-6580c154.png"><link rel="icon" type="image/svg+xml" href="../../../static.files/favicon-044be391.svg"></head><body class="rustdoc constant"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="mobile-topbar"><button class="sidebar-menu-toggle" title="show sidebar"></button></nav><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../../simple_editor/index.html">simple_<wbr>editor</a><span class="version">0.1.0</span></h2></div><div class="sidebar-elems"><div id="rustdoc-modnav"><h2><a href="index.html">In simple_<wbr>editor::<wbr>engine::<wbr>shaders</a></h2></div></div></nav><div class="sidebar-resizer"></div><main><div class="width-limiter"><rustdoc-search></rustdoc-search><section id="main-content" class="content"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../../index.html">simple_editor</a>::<wbr><a href="../index.html">engine</a>::<wbr><a href="index.html">shaders</a></div><h1>Constant <span class="constant">COMPOSITE</span><button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../../src/simple_editor/engine/shaders.rs.html#287-355">Source</a> </span></div><pre class="rust item-decl"><code>pub const COMPOSITE: &amp;<a class="primitive" href="https://doc.rust-lang.org/1.88.0/std/primitive.str.html">str</a> = r#&quot;
+uniform sampler2D u_dst;
+uniform vec2 u_layer;
+uniform mat3 u_inv;
+uniform int u_scaler;
+uniform int u_mode;
+uniform float u_opacity;
+
+vec4 tap(vec2 ip) {
+    return texelFetch(tex, ivec2(clamp(ip, vec2(0.0), u_layer - 1.0)), 0);
+}
+
+vec4 catmull_w(float t) {
+    float t2 = t * t;
+    float t3 = t2 * t;
+    return 0.5 * vec4(-t3 + 2.0 * t2 - t, 3.0 * t3 - 5.0 * t2 + 2.0, -3.0 * t3 + 4.0 * t2 + t, t3 - t2);
+}
+
+// Alpha-weighted accumulation (matches the CPU compositor: transparent texels must not darken edges).
+vec4 sample_layer(vec2 uv) {
+    vec2 sp = uv * u_layer - 0.5;
+    if (u_scaler == 0) { return tap(floor(sp + 0.5)); }
+    vec4 acc = vec4(0.0);
+    if (u_scaler == 1) {
+        vec2 f = floor(sp);
+        vec2 t = sp - f;
+        for (int j = 0; j &lt; 2; j++) {
+            for (int i = 0; i &lt; 2; i++) {
+                float w = (i == 0 ? 1.0 - t.x : t.x) * (j == 0 ? 1.0 - t.y : t.y);
+                vec4 c = tap(f + vec2(float(i), float(j)));
+                acc += vec4(c.rgb * c.a * w, c.a * w);
+            }
+        }
+    } else {
+        vec2 f = floor(sp);
+        vec4 wx = catmull_w(sp.x - f.x);
+        vec4 wy = catmull_w(sp.y - f.y);
+        for (int j = 0; j &lt; 4; j++) {
+            for (int i = 0; i &lt; 4; i++) {
+                float w = wx[i] * wy[j];
+                vec4 c = tap(f + vec2(float(i - 1), float(j - 1)));
+                acc += vec4(c.rgb * c.a * w, c.a * w);
+            }
+        }
+    }
+    if (acc.a &lt;= 0.0) { return vec4(0.0); }
+    return vec4(clamp(acc.rgb / acc.a, 0.0, 1.0), clamp(acc.a, 0.0, 1.0));
+}
+
+void main() {
+    vec3 h = u_inv * vec3(v_uv * u_res, 1.0);
+    float z = (abs(h.z) &lt; 1e-9) ? 1e-9 : h.z;
+    vec2 uv = h.xy / z;
+    // derivatives must be taken outside any branch
+    vec2 e = max(fwidth(uv), vec2(1e-8));
+    vec2 dd = min(uv, 1.0 - uv);
+    float cov = clamp(min(dd.x / e.x, dd.y / e.y) + 0.5, 0.0, 1.0);
+    vec4 d = texture(u_dst, v_uv);
+    if (cov &lt;= 0.0 || h.z &lt;= 0.0) { out_color = d; return; }
+    vec4 s = sample_layer(uv);
+    float a = s.a * u_opacity * cov * mask_at(v_uv);
+    if (a &lt;= 0.0) { out_color = d; return; }
+    float ao = a + d.a * (1.0 - a);
+    if (ao &lt;= 0.0) { out_color = vec4(0.0); return; }
+    vec3 b = blend(u_mode, s.rgb, d.rgb);
+    vec3 co = ((1.0 - d.a) * a * s.rgb + (1.0 - a) * d.a * d.rgb + a * d.a * b) / ao;
+    out_color = vec4(co, ao);
+}
+&quot;#;</code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Composite/transform shader: samples a layer through an inverse 3x3 (perspective-capable) matrix with
+the chosen <code>Scaler</code> (0 = nearest, 1 = bilinear, 2 = bicubic Catmull-Rom) and blends it onto the canvas.
+Appended to <code>PRELUDE</code> + <code>BLEND</code>. <code>u_inv</code> maps canvas pixels (y down) to layer uv.</p>
+</div></details></section></div></main></body></html>

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["PREVIEW_P","STOCK"],"enum":["Pos"],"fn":["add_transitions","dir_vec","direction_row","drop_at_end","has_left","move_transition","paint_preview","right_neighbor","set_stock","show","transition_card","wipe_rect"],"struct":["TransitionsState"]};

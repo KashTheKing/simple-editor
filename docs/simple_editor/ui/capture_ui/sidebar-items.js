@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["AREAS"],"fn":["capture_dir","clock","meter","out_path","screen_options","screen_window","show","voice_options","voice_window"],"struct":["CaptureResponse","CaptureUi"]};

@@ -1,0 +1,150 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="egui UI. Dockable layout (ui/layout.rs) of panes: Library, Preview, Inspector, Effects, Transitions, Subtitles, Timeline, Curves, Planner, Auto-cut, Tracking — DaVinci-like by default, bare Windows-forms styling. Windows (Settings, Retime, Export) never block the editor."><title>simple_editor::ui - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2" crossorigin href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-1a91846b.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="simple_editor" data-themes="" data-resource-suffix="" data-rustdoc-version="1.88.0 (6b00bc388 2025-06-23)" data-channel="1.88.0" data-search-js="search-f7877310.js" data-settings-js="settings-5514c975.js" ><script src="../../static.files/storage-4e99c027.js"></script><script defer src="../sidebar-items.js"></script><script defer src="../../static.files/main-7ef8a74a.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-893ab5e7.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-6580c154.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc mod"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="mobile-topbar"><button class="sidebar-menu-toggle" title="show sidebar"></button></nav><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../simple_editor/index.html">simple_<wbr>editor</a><span class="version">0.1.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Module ui</a></h2><h3><a href="#modules">Module Items</a></h3><ul class="block"><li><a href="#modules" title="Modules">Modules</a></li><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#enums" title="Enums">Enums</a></li><li><a href="#constants" title="Constants">Constants</a></li><li><a href="#functions" title="Functions">Functions</a></li></ul></section><div id="rustdoc-modnav"><h2 class="in-crate"><a href="../index.html">In crate simple_<wbr>editor</a></h2></div></div></nav><div class="sidebar-resizer"></div><main><div class="width-limiter"><rustdoc-search></rustdoc-search><section id="main-content" class="content"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">simple_editor</a></div><h1>Module <span>ui</span><button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/simple_editor/ui/mod.rs.html#1-318">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>egui UI. Dockable layout (ui/layout.rs) of panes: Library, Preview, Inspector, Effects, Transitions,
+Subtitles, Timeline, Curves, Planner, Auto-cut, Tracking — DaVinci-like by default, bare Windows-forms styling.
+Windows (Settings, Retime, Export) never block the editor.</p>
+</div></details><h2 id="modules" class="section-header">Modules<a href="#modules" class="anchor">§</a></h2><dl class="item-table"><dt><a class="mod" href="app/index.html" title="mod simple_editor::ui::app">app</a></dt><dd>The application: owns the project, undo stack, settings, player, dockable layout and wires the panels
+together. Non-blocking windows (Settings, Retime, Export, Save Template, Save Profile, export/convert
+progress) are plain <code>egui::Window</code>s — the editor stays usable while they are open. Also executes MCP
+tool calls against the live project (one undo step per mutating call).</dd><dt><a class="mod" href="autocut_ui/index.html" title="mod simple_editor::ui::autocut_ui">autocut_<wbr>ui</a></dt><dd>Auto-cut pane (non-blocking; the timeline stays usable while it is open). Works on the selected audio
+clips (a selected video clip uses its linked audio). Controls: threshold (dBFS slider -80..0),
+min silence, min speech, padding (DragValues), “Keep: loud parts / quiet parts” toggle, “Ripple (close
+gaps)” checkbox. It shows the detected segments live (count + total kept seconds) and publishes them to
+<code>overlay</code> (timeline time ranges to KEEP, per selected clip) so the timeline can shade them; buttons:
+“Split only” (cuts at the boundaries, removes nothing), “Apply” (Project::auto_cut with the cuts and the
+quiet ranges; linked video follows), “Clear”. Peaks come from WaveformCache (None while computing →
+“analysing…”); detection uses engine::autocut. Undo once per Apply/Split. Returns what changed.</dd><dt><a class="mod" href="capture_ui/index.html" title="mod simple_editor::ui::capture_ui">capture_<wbr>ui</a></dt><dd>Screen recording + voiceover windows (both non-modal, both keep the editor usable).</dd><dt><a class="mod" href="curves/index.html" title="mod simple_editor::ui::curves">curves</a></dt><dd>Curve (graph) editor for the FIRST selected clip: x = clip-local time over [0, duration], y = value.
+Left: a list of the clip’s keyframeable properties (<code>Clip::props_mut</code> names + “Volume”/“Pan”/“Speed” +
+“<effect>: <param>” for effect params) with a colour swatch and a checkbox to show/hide each curve
+(auto-scaled per property; the selected property’s scale drives the y axis labels). Right: the graph —
+curves drawn with the eased segments (sample <code>Animated::at</code> every ~2 px), keys as diamonds (accent when
+selected), playhead line (click on the ruler strip seeks → <code>seeked</code>), constant (unkeyed) properties
+shown as a flat dashed line. Interaction: drag a key horizontally/vertically (time clamped to the clip,
+vertical changes the value; undo once at drag start) — the whole selection moves with it, click a key
+to select it, Ctrl+click adds/removes one, dragging empty graph space rubber-bands a group (like the
+timeline’s clip band), Delete removes the selection and Ctrl+C / Ctrl+V copy it and paste it at the
+playhead keeping the relative times, double-click on empty graph area adds a key for the active
+property at that (t, v), right-click a key → easing menu (Ease::ALL) + Delete; Ctrl+Scroll zooms the
+time axis, Shift+Scroll pans, plain Scroll zooms the value axis around the pointer and “Fit” frames
+every key. Bezier velocity handles: a Bezier segment (or any segment whose left key is
+selected) shows its two handles; dragging one converts the segment to <code>Ease::Bezier</code>.</dd><dt><a class="mod" href="effects_ui/index.html" title="mod simple_editor::ui::effects_ui">effects_<wbr>ui</a></dt><dd>Effects panel. Top: the CATALOGUE as a thumbnail grid — one ~96x54 card per <code>EffectKind</code> showing the
+effect applied to a stock image with its name underneath, grouped by <code>EffectKind::category()</code> under
+collapsible headers, with a search box. Thumbnails arrive through <code>set_thumbnail(kind, id, size)</code>,
+which the app calls after rendering them on the GPU; without a GL context a card still shows its name
+on a neutral tile (never blank) — an effect with <code>EffectKind::applies_to_audio()</code> instead gets a
+solid green tile with a music-note glyph, since it has no picture to render. The catalogue is filtered
+to what the first selected clip can use (audio clip -&gt; audio effects only, and vice versa); with
+nothing selected it shows everything. Clicking a card adds the effect to every eligible selected
+clip, right-clicking opens its quick actions (selected clips / every clip on the track), and only a
+deliberate press-and-move makes it a <code>DragPayload::Effect</code> drag source (<code>ui::drag_source</code>).
+Below: the FIRST selected clip’s effect stack, in order: for each effect a header row (enabled
+checkbox, name, mask button, “Edit shader…” for a custom shader, copy/paste params, painted
+reorder and remove buttons) and its parameters from
+<code>effect.specs()</code>: a “From … for …” row giving the effect a window inside the clip (0 length = to the
+end of it, so an effect covers the whole clip until the user says otherwise), then
+label + DragValue (range from ParamSpec, speed ≈ (max-min)/200) — or a CHECKBOX when
+<code>EffectKind::is_bool_param</code> — + a diamond keyframe toggle at clip-local playhead time
+(Animated::toggle_key / set_at, highlighted when a key exists) + a button to clear them. Tint shows a
+colour button bound to R/G/B as well.
+An effect with a mask gets the inspector’s mask grid inline (shape / position / radius / feather /
+invert …) plus a delete button. A clip that renders from a REAL node graph (<code>Clip::uses_graph</code>) greys
+the stack out — the graph is what the renderer evaluates, so stack edits would be invisible — and
+offers “Unlink” to get back to the list.
+Every change → undo once per gesture (same <code>edit_start</code> rule as the inspector).</dd><dt><a class="mod" href="export_ui/index.html" title="mod simple_editor::ui::export_ui">export_<wbr>ui</a></dt><dd>Export window (non-blocking egui::Window “Export”): resolution (Project / 720p / 1080p / 1440p / 4K /
+Custom W×H, keeping the project aspect unless unlocked), scaler for up/downscaling (Nearest, Bilinear,
+Bicubic, Lanczos, Area, Spline → ffmpeg flags), encoder (auto + detected), quality CRF, preset, an
+“audio only” hint by extension, and the Fast Lossless Cut option when <code>export::lossless_segments</code> applies
+(with the keyframe-accuracy note). “Export…” opens the save dialog and returns the options; the window
+stays usable while an export runs (progress + cancel are shown by the app). Settings remember the last
+scaler/resolution. Returns Some(options) when the user confirmed an export this frame.</dd><dt><a class="mod" href="frame_ui/index.html" title="mod simple_editor::ui::frame_ui">frame_<wbr>ui</a></dt><dd>“Export Frame” window: save the frame at the playhead as an image.
+Options: resolution (Project / 2x / 4x / Custom W x H), upscaling mode (<code>Scaler</code> for the render plus
+the ffmpeg flag for the final resize), format (PNG / JPG / WebP with a quality slider for the lossy
+ones), and “Render with effects” vs “Source frame only” (the decoded frame of the top-most clip under
+the playhead, no compositing). Non-modal; returns the chosen options when the user confirms.</dd><dt><a class="mod" href="import_ui/index.html" title="mod simple_editor::ui::import_ui">import_<wbr>ui</a></dt><dd>Import report window: after <code>engine::import::import_file</code>, show what came through and what did not —
+a summary line (clips / tracks / missing media), then a scrollable table of <code>Issue</code>s grouped by level
+(Ok / Warning / Skipped) with the subject and detail. Buttons: “Use this project” (replaces the current
+one, with the usual unsaved-changes prompt), “Copy report” (markdown) and Close. Non-modal.</dd><dt><a class="mod" href="inspector/index.html" title="mod simple_editor::ui::inspector">inspector</a></dt><dd>Inspector panel. Nothing selected → Project panel (name, width, height, fps, duration, Save / Export /
+Export Frame buttons, export settings summary). One clip selected →
+clip name, enabled, colour label, timing (start / duration / source in), retime readout (Ctrl+R), and:</dd><dt><a class="mod" href="layout/index.html" title="mod simple_editor::ui::layout">layout</a></dt><dd>Dockable editor layout (egui_tiles): panes can be rearranged by dragging their tabs, split, tabbed,
+hidden/shown, popped out into their own OS windows (egui immediate viewports) and saved/loaded as
+profiles (JSON — also written to / read from <code>.sedit-layout</code> files so profiles can be shared).</dd><dt><a class="mod" href="library/index.html" title="mod simple_editor::ui::library">library</a></dt><dd>Left panel: the project browser — Premiere’s project panel, in two sub-tabs.</dd><dt><a class="mod" href="markers_ui/index.html" title="mod simple_editor::ui::markers_ui">markers_<wbr>ui</a></dt><dd>Markers pane: every marker in timeline order (project markers and clip markers together, via
+<code>Project::markers_in_timeline</code>). Rows: colour label dot (menu), time (editable DragValue, seconds),
+duration for ranges, name, note (multiline when the row is selected), “Go” (seek) and X (delete).
+Toolbar: “Add at playhead” (M), “Add on selected clip”, filter by label, and “Copy as list” (markdown,
+handy for the AI tools). Undo once per gesture; returns what changed.</dd><dt><a class="mod" href="mixer_ui/index.html" title="mod simple_editor::ui::mixer_ui">mixer_<wbr>ui</a></dt><dd>Mixer pane: the routing list (which track feeds which bus) on top, one channel strip per bus below
+(Main last). Everything in a strip scrolls vertically, so a long filter chain stays reachable.</dd><dt><a class="mod" href="nodes/index.html" title="mod simple_editor::ui::nodes">nodes</a></dt><dd>Node editor: the selected clip’s effect chain as a graph you can wire up.</dd><dt><a class="mod" href="paste_ui/index.html" title="mod simple_editor::ui::paste_ui">paste_<wbr>ui</a></dt><dd>“Paste Attributes” window (Ctrl+Alt+V): a checkbox per <code>AttrSet</code> field, All / None buttons, a line
+saying what is on the clipboard (“from ‘clip.mp4’”) and how many clips will change. Non-modal, like
+every other window. Returns Some(set) when the user confirms; the app then calls
+<code>Project::paste_attributes</code> (one undo step).</dd><dt><a class="mod" href="planner/index.html" title="mod simple_editor::ui::planner">planner</a></dt><dd>Planner pane: tabs “Plan” and “Notes”.
+Plan = a nested to-do tree (Project.plan): each row = checkbox (done), editable title, colour label dot
+(click → LABEL_COLORS menu), a collapse triangle, “+” add sub-task, delete, reorder among siblings,
+indent/outdent; a selected item shows its notes (multiline) and its moodboard: the asset ids in
+<code>assets</code> as rows (name, kind tag, thumbnail via ThumbCache if available, per-asset note in <code>asset_notes</code>,
+“Add to timeline”, delete); assets are added by dropping library items (DragPayload::Asset) onto the item or
+onto the moodboard area. Progress bar “done/total” at the top; “Add task” at the top level;
+“Clear completed”. Notes tab = Project.notes as a large multiline TextEdit (“describe your process,
+ideas, style while you edit — the style summary / AI tools read this”). Undo once per gesture.
+Returns what changed.</dd><dt><a class="mod" href="presets_ui/index.html" title="mod simple_editor::ui::presets_ui">presets_<wbr>ui</a></dt><dd>Presets pane: everything reusable that lives on the machine instead of in the project — saved effect
+chains, node graphs, adjustment layers and clip templates. All of it is in settings.json, so it
+survives a new project. Clicking a row applies it to the selection (templates place at the playhead);
+its context menu renames and deletes. “Save from selection” captures the selected clip’s node graph
+or effect stack, and falls back to a clip template for adjustment layers and multi-clip selections.</dd><dt><a class="mod" href="preview/index.html" title="mod simple_editor::ui::preview">preview</a></dt><dd>Preview panel: the rendered frame (letterboxed, black bars), a selection outline for the selected
+visual clip (drag to move = edits clip.x / clip.y at the playhead time via <code>Animated::set_at</code>, calling
+<code>undo</code> once at drag start), and the transport bar, centred under the video:
+go-start, prev cut, step back, play/pause, stop, step forward, next cut, go-end (all painted
+glyphs, NLE order) plus timecode / duration, In/Out buttons and the
+in/out times, a preview-quality selector (100 / 75 / 50 / 25 %) and a Movie mode toggle.
+In <code>fullscreen</code> mode only the video is drawn (no transport, no overlay): Esc / F11 leave it (app).</dd><dt><a class="mod" href="retime/index.html" title="mod simple_editor::ui::retime">retime</a></dt><dd>Retime window (Ctrl+R): speed / reverse / freeze for the selected clips (linked clips follow).
+egui::Window “Speed / Retime”: speed as a percent DragValue (1..10000 %, 100 = normal) + preset buttons
+(25 % 50 % 100 % 200 % 400 %), “Reverse” checkbox, “Freeze frame at playhead” button
+(Project::freeze_at(playhead, selection)) and “Unfreeze” (clear <code>freeze</code>), “Apply” → Project::set_speed
+(shows a note when the new length collides with a neighbour and nothing changed). Shows the resulting
+duration live. Undo once per applied change. Returns true when the project changed.</dd><dt><a class="mod" href="settings_ui/index.html" title="mod simple_editor::ui::settings_ui">settings_<wbr>ui</a></dt><dd>Settings window (egui::Window, closable). Tabs:</dd><dt><a class="mod" href="shader_ui/index.html" title="mod simple_editor::ui::shader_ui">shader_<wbr>ui</a></dt><dd>“Shader Editor” window for <code>EffectKind::Shader</code>: the GLSL body in a monospace editor, an Apply
+button, and the driver’s compile log verbatim (selectable, so it can be pasted somewhere) when the
+source was rejected. Non-modal — the timeline stays usable while it is open.
+The window only edits text: the app writes the source back onto the effect, pushes undo and asks
+<code>GpuRenderer::check_shader</code> for the log, then hands it here through <code>error</code>.</dd><dt><a class="mod" href="subtitles_ui/index.html" title="mod simple_editor::ui::subtitles_ui">subtitles_<wbr>ui</a></dt><dd>Subtitles panel. Toolbar: “Add at playhead” (cue [playhead, playhead+2 s) with the text “Subtitle”,
+selected + text field focused), “Import…” (rfd: srt/vtt → engine::subtitles::parse → replace or append
+after a yes/no), “Export SRT…” / “Export VTT…” (engine::subtitles::to_srt/to_vtt), “Burn in” checkbox
+(project.show_subtitles), and a “Style” collapsing section (font combo from <code>fonts</code>, size, colour,
+outline width/colour, background box colour, margin from bottom = project.subtitle_margin).
+Below: the cue list (egui::Grid / ScrollArea): start and end as editable timecode-ish DragValues in
+seconds (3 decimals, end ≥ start + 0.1, keep the list sorted via Project::sort_cues), a multiline text
+field, a play button (seek to the cue and play → <code>seeked</code> + <code>play</code>), a select checkbox and a delete
+one; the cue containing the playhead is highlighted; a “Split at playhead” button on the highlighted
+cue. A second toolbar row: “To text clips” (Project::cues_to_text_clips — editable Text clips on a
+“Subtitles” track), “Delete selected”, “Delete in range” (the In/Out range) and “Clear all”.
+“Open folder” → <code>open_folder</code>: the app writes the .srt sidecar and opens the folder. Undo once per
+gesture (same edit_start rule as the inspector); returns what changed.</dd><dt><a class="mod" href="timeline/index.html" title="mod simple_editor::ui::timeline">timeline</a></dt><dd>Timeline widget (custom painted). Header column (track name, M/S buttons, height drag handle at the
+bottom edge), ruler (ticks, in/out markers, click/drag scrubs), track lanes (video tracks top→bottom =
+Vn..V1, then A1..An), clips (name, waveform for audio via WaveformCache, keyframe diamonds, disabled
+= dimmed, selected = accent outline), playhead (drag by ruler or line).</dd><dt><a class="mod" href="tools/index.html" title="mod simple_editor::ui::tools">tools</a></dt><dd>Tool bar: a thin, movable strip that sits between the viewport and the timeline (its own dockable
+pane, so it can also be popped out). One row of icon buttons:
+Select (V) · Text (T) · Rectangle · Ellipse · Triangle · Polygon · Star · Line · Arrow · Draw (D) ·
+Mask (rect/ellipse/polygon/path) · Zoom
+plus a magnet button that lights up while snapping is on (S, or Settings.snap’s own <code>N</code> shortcut),
+then, for shape tools, fill and stroke colour buttons and a stroke-width DragValue; for Draw, a
+play/record button, the brush colour/width, the playback speed (0.5x / 1x / 2x) and a page toggle.</dd><dt><a class="mod" href="tracking_ui/index.html" title="mod simple_editor::ui::tracking_ui">tracking_<wbr>ui</a></dt><dd>Tracking pane (non-blocking): follow a point or a rectangular area through a clip and keep the
+result as a reusable project path.</dd><dt><a class="mod" href="transitions_ui/index.html" title="mod simple_editor::ui::transitions_ui">transitions_<wbr>ui</a></dt><dd>Transitions panel. Catalogue: one CARD per <code>TransitionKind</code> (same size and frame as an effect card),
+previewing the transition half-way over the stock picture the effect thumbnails are rendered from —
+the app hands it over with <code>set_stock</code>, and without it a card falls back to a neutral named tile.
+A card selects the kind, right-clicking it applies the transition straight away (start / end of the
+selection, or every cut on its track), and a press-and-move drags <code>DragPayload::Transition</code>. Next to
+the grid the default duration DragValue (0.1..5 s), a colour button for FadeToColor and a direction
+selector for Push/Wipe. “Add at start” / “Add at end” apply it to EVERY selected clip through <code>add_transitions</code>,
+which is also what the menu, the hotkeys and MCP call — it records the choice in <code>TransitionsState</code>,
+so Ctrl+T (Action::AddLastTransition) repeats whatever was applied last, whichever path applied it.
+A clip with no neighbour on that side gets an EDGE transition (blend from/to nothing) instead of
+a cut transition, so lone clips can fade in/out too.
+Below: the transitions touching the first selected clip (Project::transitions_of): kind combo,
+position combo (Start / End / Last / Next — re-anchors the transition relative to the clip),
+duration, colour/direction/ease editors, remove. Returns true when the project changed (call
+<code>undo</code> once per gesture first).</dd></dl><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.Gesture.html" title="struct simple_editor::ui::Gesture">Gesture</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Accumulates widget responses over one frame: <code>start</code> → push undo once, <code>changed</code> → write back.
+Shared by every panel so the gesture rule lives in one place.</dd></dl><h2 id="enums" class="section-header">Enums<a href="#enums" class="anchor">§</a></h2><dl class="item-table"><dt><a class="enum" href="enum.DragPayload.html" title="enum simple_editor::ui::DragPayload">Drag<wbr>Payload</a></dt><dd>Drag-and-drop payload from the library / recent / planner panels to the timeline (egui dnd API).</dd></dl><h2 id="constants" class="section-header">Constants<a href="#constants" class="anchor">§</a></h2><dl class="item-table"><dt><a class="constant" href="constant.DRAG_SLOP.html" title="constant simple_editor::ui::DRAG_SLOP">DRAG_<wbr>SLOP</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>How far the pointer must travel while held before a click turns into a drag.</dd><dt><a class="constant" href="constant.ENCODER_PRESETS.html" title="constant simple_editor::ui::ENCODER_PRESETS">ENCODER_<wbr>PRESETS</a></dt><dd>x264-style speed presets offered by the settings and export windows.</dd></dl><h2 id="functions" class="section-header">Functions<a href="#functions" class="anchor">§</a></h2><dl class="item-table"><dt><a class="fn" href="fn.combo.html" title="fn simple_editor::ui::combo">combo</a></dt><dd>ComboBox over (value, label) pairs writing into a String setting. Returns true if the value changed.</dd><dt><a class="fn" href="fn.drag_intent.html" title="fn simple_editor::ui::drag_intent">drag_<wbr>intent</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>“The user really means to drag this”: the primary button is down and the pointer has moved past
+<code>DRAG_SLOP</code>. egui also promotes a <em>stationary</em> long press to a drag (<code>is_decidedly_dragging</code>), and
+its <code>Sense::drag</code> widgets start dragging on the press of ANY button — which is how a right-click
+used to pluck a card out of a panel instead of opening its menu.</dd><dt><a class="fn" href="fn.drag_source.html" title="fn simple_editor::ui::drag_source">drag_<wbr>source</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>An item that is clickable and right-clickable first and a drag-and-drop source second: the payload
+is only handed to egui once <code>drag_intent</code> holds, and the body is lifted under the cursor from that
+moment (the one thing <code>Ui::dnd_drag_source</code> is good for). Use this instead of <code>dnd_drag_source</code>,
+which senses drag only — grab cursor on hover, and a drag on any press.</dd><dt><a class="fn" href="fn.duration_text.html" title="fn simple_editor::ui::duration_text">duration_<wbr>text</a></dt><dd>Short duration text “1:23.4”.</dd><dt><a class="fn" href="fn.edit_start.html" title="fn simple_editor::ui::edit_start">edit_<wbr>start</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>True on the first frame of an edit gesture (drag start, or a non-drag change such as typing/clicking).</dd><dt><a class="fn" href="fn.encoder_options.html" title="fn simple_editor::ui::encoder_options">encoder_<wbr>options</a></dt><dd>Encoder names worth offering: the h264 / hevc / vp9 / av1 families (software + nvenc/qsv/amf).</dd><dt><a class="fn" href="fn.key_buttons.html" title="fn simple_editor::ui::key_buttons">key_<wbr>buttons</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Diamond keyframe toggle at the clip-local playhead + a “keys” clear button once it is animated.</dd><dt><a class="fn" href="fn.label_color.html" title="fn simple_editor::ui::label_color">label_<wbr>color</a></dt><dd>Colour of a clip/asset/recent label index (0 or out of range = “no label” dim).</dd><dt><a class="fn" href="fn.label_name.html" title="fn simple_editor::ui::label_name">label_<wbr>name</a></dt><dd>Name of a label index (“None” for 0 / out of range).</dd><dt><a class="fn" href="fn.mask_grid.html" title="fn simple_editor::ui::mask_grid">mask_<wbr>grid</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Mask parameter grid, shared by the Inspector (the clip mask) and the Effects panel (a per-effect
+mask): shape, enabled, invert, position/size/rotation, feather, expand, opacity — each keyframable.</dd><dt><a class="fn" href="fn.once.html" title="fn simple_editor::ui::once">once</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>Push undo at most once per frame.</dd><dt><a class="fn" href="fn.seed_mask_points.html" title="fn simple_editor::ui::seed_mask_points">seed_<wbr>mask_<wbr>points</a><span title="Restricted Visibility">&nbsp;🔒</span> </dt><dd>A Polygon/Path mask is drawn from <code>points</code>; with fewer than 3 vertices the rasteriser reports
+“outside everywhere” and the masked clip disappears with no way back. Seed the vertices from the
+mask’s own rect so every shape switch leaves something visible and editable.</dd><dt><a class="fn" href="fn.timecode.html" title="fn simple_editor::ui::timecode">timecode</a></dt><dd>HH:MM:SS:FF timecode.</dd></dl></section></div></main></body></html>

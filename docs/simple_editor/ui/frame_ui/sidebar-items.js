@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["FORMATS","PRESETS"],"fn":["init","lossy","pick","show","size_of","stored_resolution"],"struct":["FrameExport","FrameUi"]};

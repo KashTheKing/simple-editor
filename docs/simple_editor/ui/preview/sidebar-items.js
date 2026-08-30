@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["QUALITIES"],"fn":["constrain_drag","draw_shape_preview","letterbox","prerender_badge","show","signed_min","tool_drag","transport","video"],"struct":["PreviewCtx","PreviewResponse","PreviewState","ToolDrag"]};

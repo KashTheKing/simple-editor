@@ -1,0 +1,74 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Blinking record dot in a corner (p2: 0 = top-left, 1 = top-right, 2 = bottom-left, 3 = bottom-right) plus an optional HH:MM:SS timecode drawn as seven-segment quads from the clip-local time."><title>REC_DOT in simple_editor::engine::shaders - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2" crossorigin href="../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../static.files/rustdoc-1a91846b.css"><meta name="rustdoc-vars" data-root-path="../../../" data-static-root-path="../../../static.files/" data-current-crate="simple_editor" data-themes="" data-resource-suffix="" data-rustdoc-version="1.88.0 (6b00bc388 2025-06-23)" data-channel="1.88.0" data-search-js="search-f7877310.js" data-settings-js="settings-5514c975.js" ><script src="../../../static.files/storage-4e99c027.js"></script><script defer src="sidebar-items.js"></script><script defer src="../../../static.files/main-7ef8a74a.js"></script><noscript><link rel="stylesheet" href="../../../static.files/noscript-893ab5e7.css"></noscript><link rel="alternate icon" type="image/png" href="../../../static.files/favicon-32x32-6580c154.png"><link rel="icon" type="image/svg+xml" href="../../../static.files/favicon-044be391.svg"></head><body class="rustdoc constant"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="mobile-topbar"><button class="sidebar-menu-toggle" title="show sidebar"></button></nav><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../../simple_editor/index.html">simple_<wbr>editor</a><span class="version">0.1.0</span></h2></div><div class="sidebar-elems"><div id="rustdoc-modnav"><h2><a href="index.html">In simple_<wbr>editor::<wbr>engine::<wbr>shaders</a></h2></div></div></nav><div class="sidebar-resizer"></div><main><div class="width-limiter"><rustdoc-search></rustdoc-search><section id="main-content" class="content"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../../index.html">simple_editor</a>::<wbr><a href="../index.html">engine</a>::<wbr><a href="index.html">shaders</a></div><h1>Constant <span class="constant">REC_DOT</span><button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../../src/simple_editor/engine/shaders.rs.html#1123-1194">Source</a> </span></div><pre class="rust item-decl"><code>const REC_DOT: &amp;<a class="primitive" href="https://doc.rust-lang.org/1.88.0/std/primitive.str.html">str</a> = r#&quot;
+float fx_rect(vec2 q, vec2 c, vec2 h) {
+    vec2 d = abs(q - c) - h;
+    return max(d.x, d.y) &lt; 0.0 ? 1.0 : 0.0;
+}
+float fx_digit(vec2 q, int d) {
+    if (q.x &lt; 0.0 || q.x &gt; 1.0 || q.y &lt; 0.0 || q.y &gt; 1.0) return 0.0;
+    int seg[10] = int[10](63, 6, 91, 79, 102, 109, 125, 7, 127, 111);
+    int m = seg[clamp(d, 0, 9)];
+    float t = 0.11;
+    float o = 0.0;
+    if ((m &amp; 1) != 0) o = max(o, fx_rect(q, vec2(0.5, t), vec2(0.5 - t, t)));
+    if ((m &amp; 2) != 0) o = max(o, fx_rect(q, vec2(1.0 - t, 0.25), vec2(t, 0.25 - t)));
+    if ((m &amp; 4) != 0) o = max(o, fx_rect(q, vec2(1.0 - t, 0.75), vec2(t, 0.25 - t)));
+    if ((m &amp; 8) != 0) o = max(o, fx_rect(q, vec2(0.5, 1.0 - t), vec2(0.5 - t, t)));
+    if ((m &amp; 16) != 0) o = max(o, fx_rect(q, vec2(t, 0.75), vec2(t, 0.25 - t)));
+    if ((m &amp; 32) != 0) o = max(o, fx_rect(q, vec2(t, 0.25), vec2(t, 0.25 - t)));
+    if ((m &amp; 64) != 0) o = max(o, fx_rect(q, vec2(0.5, 0.5), vec2(0.5 - t, t)));
+    return o;
+}
+void main() {
+    vec2 uv = gl_FragCoord.xy / u_res;
+    vec4 src = texture(tex, uv);
+    vec2 q = gl_FragCoord.xy;
+    float sc = max(u_scale, 0.05);
+    float sz = max(p0, 2.0) * sc;
+    float mg = max(p4, 0.0) * sc;
+    int corner = int(clamp(p2, 0.0, 3.0) + 0.5);
+    bool right = (corner == 1 || corner == 3);
+    bool bottom = (corner == 2 || corner == 3);
+    vec2 anchor = vec2(right ? u_res.x - mg - sz * 0.5 : mg + sz * 0.5,
+                       bottom ? u_res.y - mg - sz * 0.5 : mg + sz * 0.5);
+    float hz = max(p1, 0.0);
+    float on = hz &lt;= 0.0 ? 1.0 : (fract(u_time * hz) &lt; 0.5 ? 1.0 : 0.0);
+    float dot_ = 1.0 - smoothstep(sz * 0.5 - 1.0, sz * 0.5 + 1.0, distance(q, anchor));
+    vec3 c = mix(src.rgb, vec3(0.9, 0.12, 0.12), dot_ * on);
+    float cover = dot_ * on;
+    if (p3 &gt;= 0.5) {
+        float dh = sz;
+        float dw = sz * 0.55;
+        float gap = sz * 0.12;
+        float cw = dw + gap;
+        float colw = sz * 0.3 + gap;
+        float total = 6.0 * cw + 2.0 * colw;
+        float ox = right ? anchor.x - sz * 0.5 - gap * 2.0 - total : anchor.x + sz * 0.5 + gap * 2.0;
+        float oy = anchor.y - dh * 0.5;
+        int tot = int(max(u_time, 0.0));
+        int hh = (tot / 3600) - (tot / 360000) * 100;
+        int mm = (tot / 60) - (tot / 3600) * 60;
+        int ss = tot - (tot / 60) * 60;
+        int digs[6] = int[6](hh / 10, hh - (hh / 10) * 10, mm / 10, mm - (mm / 10) * 10,
+                             ss / 10, ss - (ss / 10) * 10);
+        float ink = 0.0;
+        float x = ox;
+        for (int i = 0; i &lt; 6; i++) {
+            ink = max(ink, fx_digit(vec2((q.x - x) / dw, (q.y - oy) / dh), digs[i]));
+            x += cw;
+            if (i == 1 || i == 3) {
+                float cx = x + colw * 0.5;
+                ink = max(ink, fx_rect(q, vec2(cx, oy + dh * 0.33), vec2(sz * 0.07)));
+                ink = max(ink, fx_rect(q, vec2(cx, oy + dh * 0.7), vec2(sz * 0.07)));
+                x += colw;
+            }
+        }
+        c = mix(c, vec3(1.0), ink * 0.9);
+        cover = max(cover, ink * 0.9);
+    }
+    vec4 res = vec4(c, max(src.a, cover));
+    float m = u_has_mask &gt; 0.5 ? texture(u_mask, uv).r : 1.0;
+    out_color = mix(src, res, m);
+}
+&quot;#;</code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Blinking record dot in a corner (p2: 0 = top-left, 1 = top-right, 2 = bottom-left, 3 = bottom-right)
+plus an optional HH:MM:SS timecode drawn as seven-segment quads from the clip-local time.</p>
+</div></details></section></div></main></body></html>

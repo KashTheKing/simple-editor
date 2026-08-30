@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["audio_targets","keep_ranges","show","sort_right_to_left"],"struct":["AutoCutState","Detection"]};

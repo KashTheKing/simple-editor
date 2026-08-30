@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["annotate_if_outdated","default_dir","exe","parse_percent","run","set_dir","start_download","version"],"static":["CACHE","DIR"],"struct":["Download","DownloadOptions"]};

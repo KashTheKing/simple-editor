@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["RES_PRESETS","SCALERS"],"fn":["init_from_settings","pick_and_build","preset_size","show"],"struct":["ExportChoice","ExportUi"]};

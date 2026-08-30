@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["LOOPBACK_HINTS"],"fn":["audio_devices","loopback_device","parse_devices","s","screen_args","spawn","start_screen","start_voiceover","voice_args"],"struct":["Capture","ScreenCaptureOptions","VoiceoverOptions"]};

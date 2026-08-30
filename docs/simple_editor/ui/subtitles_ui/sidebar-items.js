@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MIN_CUE","TAKE_WINDOW"],"fn":["add_at","apply_import","cut_dups","export_dialog","generate","import_dialog","mark_dups","ripple_segment","show","style_section","target","transcribe_section"],"struct":["SubtitlesResponse","SubtitlesState","Target","TranscribeState"]};

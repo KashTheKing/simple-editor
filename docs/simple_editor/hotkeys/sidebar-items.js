@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["ALT","CTRL","CTRL_ALT","CTRL_SHIFT","NONE","SHIFT"],"enum":["Action"],"fn":["canon","is_late","restore_clipboard_keys","same","sc"],"macro":["actions"],"struct":["Hotkeys"]};

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_SIDE"],"fn":["blur_lines","box_blur","dilate","dt1d","over"],"struct":["TextRasterizer"]};

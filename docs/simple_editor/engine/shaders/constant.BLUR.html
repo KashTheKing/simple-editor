@@ -1,0 +1,26 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="24-tap Vogel disc, Gaussian-weighted; radius `p0` project px."><title>BLUR in simple_editor::engine::shaders - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2" crossorigin href="../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../static.files/rustdoc-1a91846b.css"><meta name="rustdoc-vars" data-root-path="../../../" data-static-root-path="../../../static.files/" data-current-crate="simple_editor" data-themes="" data-resource-suffix="" data-rustdoc-version="1.88.0 (6b00bc388 2025-06-23)" data-channel="1.88.0" data-search-js="search-f7877310.js" data-settings-js="settings-5514c975.js" ><script src="../../../static.files/storage-4e99c027.js"></script><script defer src="sidebar-items.js"></script><script defer src="../../../static.files/main-7ef8a74a.js"></script><noscript><link rel="stylesheet" href="../../../static.files/noscript-893ab5e7.css"></noscript><link rel="alternate icon" type="image/png" href="../../../static.files/favicon-32x32-6580c154.png"><link rel="icon" type="image/svg+xml" href="../../../static.files/favicon-044be391.svg"></head><body class="rustdoc constant"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="mobile-topbar"><button class="sidebar-menu-toggle" title="show sidebar"></button></nav><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../../simple_editor/index.html">simple_<wbr>editor</a><span class="version">0.1.0</span></h2></div><div class="sidebar-elems"><div id="rustdoc-modnav"><h2><a href="index.html">In simple_<wbr>editor::<wbr>engine::<wbr>shaders</a></h2></div></div></nav><div class="sidebar-resizer"></div><main><div class="width-limiter"><rustdoc-search></rustdoc-search><section id="main-content" class="content"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../../index.html">simple_editor</a>::<wbr><a href="../index.html">engine</a>::<wbr><a href="index.html">shaders</a></div><h1>Constant <span class="constant">BLUR</span><button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../../src/simple_editor/engine/shaders.rs.html#542-566">Source</a> </span></div><pre class="rust item-decl"><code>const BLUR: &amp;<a class="primitive" href="https://doc.rust-lang.org/1.88.0/std/primitive.str.html">str</a> = r#&quot;
+void main() {
+    vec2 uv = gl_FragCoord.xy / u_res;
+    vec4 src = texture(tex, uv);
+    vec4 res = src;
+    float r = p0 * u_scale;
+    if (r &gt;= 0.5) {
+        // ponytail: one-pass Vogel disc instead of a separable Gaussian - if quality matters,
+        // add a direction knob and let gpu.rs run this program twice (H then V).
+        vec4 acc = vec4(0.0);
+        float wsum = 0.0;
+        for (int i = 0; i &lt; 24; i++) {
+            float fi = float(i) + 0.5;
+            float rad = sqrt(fi / 24.0) * r;
+            float ang = fi * 2.39996323;
+            float w = exp(-2.0 * rad * rad / (r * r));
+            acc += texture(tex, uv + vec2(cos(ang), sin(ang)) * rad / u_res) * w;
+            wsum += w;
+        }
+        res = acc / wsum;
+    }
+    float m = u_has_mask &gt; 0.5 ? texture(u_mask, uv).r : 1.0;
+    out_color = mix(src, res, m);
+}
+&quot;#;</code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>24-tap Vogel disc, Gaussian-weighted; radius <code>p0</code> project px.</p>
+</div></details></section></div></main></body></html>

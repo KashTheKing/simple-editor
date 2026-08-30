@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["UNIFORMS"],"fn":["show"],"struct":["ShaderUi"]};

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["CRC_TABLE","MAX_BODY","MAX_CONNS","READ_TIMEOUT"],"fn":["adler32","call_tool","claude_code_command","crc32","dispatch","handle_connection","handle_post","origin_ok","png_encode","rpc_err","session_id","write_chunk","write_response"],"mod":["tools"],"struct":["Server","ToolCall"]};

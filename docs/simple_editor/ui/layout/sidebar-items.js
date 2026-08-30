@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["Pane"],"fn":["activate_orphan_tabs","keep_share_fraction","profile_button","share_fraction","show"],"struct":["Behaviour","Layout"]};

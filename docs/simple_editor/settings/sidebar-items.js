@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"struct":["CurvePreset","EffectPreset","LayoutProfile","MotionPreset","RecentAsset","Settings","Template"]};

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["contains","hwnd_of","place","place_on_cursor_monitor","work_area"]};

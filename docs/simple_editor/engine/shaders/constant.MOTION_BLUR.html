@@ -1,0 +1,42 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Shutter-window average of the frames gpu.rs supplies."><title>MOTION_BLUR in simple_editor::engine::shaders - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2" crossorigin href="../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../static.files/rustdoc-1a91846b.css"><meta name="rustdoc-vars" data-root-path="../../../" data-static-root-path="../../../static.files/" data-current-crate="simple_editor" data-themes="" data-resource-suffix="" data-rustdoc-version="1.88.0 (6b00bc388 2025-06-23)" data-channel="1.88.0" data-search-js="search-f7877310.js" data-settings-js="settings-5514c975.js" ><script src="../../../static.files/storage-4e99c027.js"></script><script defer src="sidebar-items.js"></script><script defer src="../../../static.files/main-7ef8a74a.js"></script><noscript><link rel="stylesheet" href="../../../static.files/noscript-893ab5e7.css"></noscript><link rel="alternate icon" type="image/png" href="../../../static.files/favicon-32x32-6580c154.png"><link rel="icon" type="image/svg+xml" href="../../../static.files/favicon-044be391.svg"></head><body class="rustdoc constant"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="mobile-topbar"><button class="sidebar-menu-toggle" title="show sidebar"></button></nav><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../../simple_editor/index.html">simple_<wbr>editor</a><span class="version">0.1.0</span></h2></div><div class="sidebar-elems"><div id="rustdoc-modnav"><h2><a href="index.html">In simple_<wbr>editor::<wbr>engine::<wbr>shaders</a></h2></div></div></nav><div class="sidebar-resizer"></div><main><div class="width-limiter"><rustdoc-search></rustdoc-search><section id="main-content" class="content"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../../index.html">simple_editor</a>::<wbr><a href="../index.html">engine</a>::<wbr><a href="index.html">shaders</a></div><h1>Constant <span class="constant">MOTION_BLUR</span><button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../../src/simple_editor/engine/shaders.rs.html#943-979">Source</a> </span></div><pre class="rust item-decl"><code>const MOTION_BLUR: &amp;<a class="primitive" href="https://doc.rust-lang.org/1.88.0/std/primitive.str.html">str</a> = r#&quot;
+uniform sampler2D u_prev;
+uniform sampler2D u_next;
+uniform float u_frames;
+uniform vec2 u_motion;
+void main() {
+    vec2 uv = gl_FragCoord.xy / u_res;
+    vec4 src = texture(tex, uv);
+    float sh = clamp(p0, 0.0, 360.0) / 360.0;
+    int n = int(clamp(p1, 2.0, 32.0));
+    vec4 acc = vec4(0.0);
+    vec4 prev = src;
+    vec4 next = src;
+    if (u_frames &gt; 0.5) {
+        prev = texture(u_prev, uv);
+        next = u_frames &gt; 1.5 ? texture(u_next, uv) : prev;
+        for (int i = 0; i &lt; 32; i++) {
+            if (i &gt;= n) break;
+            float o = ((float(i) + 0.5) / float(n) - 0.5) * sh;
+            acc += o &lt; 0.0 ? mix(src, prev, clamp(-o, 0.0, 1.0)) : mix(src, next, clamp(o, 0.0, 1.0));
+        }
+    } else {
+        vec2 d = u_motion / u_res * sh;
+        for (int i = 0; i &lt; 32; i++) {
+            if (i &gt;= n) break;
+            acc += texture(tex, uv + d * ((float(i) + 0.5) / float(n) - 0.5));
+        }
+    }
+    vec4 res = acc / float(n);
+    if (p2 &gt;= 0.5 &amp;&amp; u_frames &gt; 0.5) {
+        float mv = length(prev.rgb - src.rgb) + length(next.rgb - src.rgb);
+        res = mix(src, res, clamp(mv * 4.0, 0.0, 1.0));
+    }
+    float m = u_has_mask &gt; 0.5 ? texture(u_mask, uv).r : 1.0;
+    out_color = mix(src, res, m);
+}
+&quot;#;</code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Shutter-window average of the frames gpu.rs supplies.</p>
+<p>Extra uniforms gpu.rs must bind (this kind reports <code>EffectKind::needs_motion()</code>):
+sampler2D u_prev / u_next  the layer one frame before / after (bind <code>tex</code> when missing)
+float     u_frames         how many of those are real: 0, 1 (prev only) or 2
+vec2      u_motion         the layer’s motion in layer pixels per frame, for the 0-frame fallback</p>
+</div></details></section></div></main></body></html>

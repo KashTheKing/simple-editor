@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["PEAKS_PER_SEC"],"fn":["cache_file","compute_peaks","load_or_compute","mem_key"],"struct":["Peaks","State","WaveformCache"]};

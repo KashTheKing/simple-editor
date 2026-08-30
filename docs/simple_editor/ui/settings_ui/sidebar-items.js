@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["DECODERS","PALETTE_MODES","THEMES"],"fn":["appearance","capture","capture_tab","color_row","export","general","hotkeys_tab","icon_row","performance","port_field","show"],"struct":["SettingsUi","Status"]};

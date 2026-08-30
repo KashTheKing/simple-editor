@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["as_markdown","mark","rows","show","x_button"],"struct":["MarkersResponse","MarkersState","Row"]};
