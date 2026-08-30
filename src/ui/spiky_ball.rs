@@ -1,53 +1,73 @@
-//! A procedural "spiky ball" drawn over the video rect whenever a preview pane is showing audio
-//! with no picture (see `Project::has_video_at`). Pure `egui::Painter` shapes, no textures or
-//! shaders — driven by the same `Peaks` amplitude envelope the timeline waveform already uses.
+//! An "electric wave" ball drawn over the video rect of the library asset preview whenever it's
+//! showing audio with no picture. Pure `egui::Painter` shapes, no textures or shaders — its outline
+//! traces the same `Peaks` amplitude envelope the timeline waveform already uses, sampled around a
+//! ring instead of along a line.
 
 use crate::theme::Palette;
 use eframe::egui;
 
-/// Smoothed amplitude for one preview's spiky ball: fast attack / slower decay so it pulses with
-/// beats instead of jittering every frame.
-#[derive(Default)]
+/// Samples around the ring. More = smoother wave, fewer = spikier.
+pub const SAMPLES: usize = 48;
+
+/// Smoothed per-sample amplitude ring: fast attack / slower decay per sample so the outline surges
+/// with beats and eases back, instead of jittering every frame.
 pub struct SpikyBall {
-    level: f32,
+    levels: [f32; SAMPLES],
+}
+
+impl Default for SpikyBall {
+    fn default() -> Self {
+        Self { levels: [0.0; SAMPLES] }
+    }
 }
 
 impl SpikyBall {
-    /// Feed this frame's raw amplitude (0..1, e.g. from `amplitude_at`) and dt in seconds.
-    pub fn update(&mut self, raw: f32, dt: f32) {
-        let raw = raw.clamp(0.0, 1.0);
-        // ponytail: fixed attack/decay constants for a snappy-hit / trailing-pulse feel;
-        // promote to Settings only if someone actually asks to tune it.
-        let rate = if raw > self.level { 20.0 } else { 4.0 };
-        self.level += (raw - self.level) * (rate * dt).min(1.0);
+    /// Feed this frame's raw per-sample amplitudes (0..1, from `waveform_ring`) and dt in seconds.
+    pub fn update(&mut self, raw: &[f32; SAMPLES], dt: f32) {
+        // ponytail: fixed attack/decay constants for a snappy-hit / trailing-glow feel; promote to
+        // Settings only if someone actually asks to tune it.
+        for (l, &r) in self.levels.iter_mut().zip(raw) {
+            let r = r.clamp(0.0, 1.0);
+            let rate = if r > *l { 20.0 } else { 4.0 };
+            *l += (r - *l) * (rate * dt).min(1.0);
+        }
     }
 
-    /// Paint a spiky ball centred on `rect` (the black video letterbox).
+    /// Paint the wavy ring, centred on `rect` (the black video letterbox), with a glow built from a
+    /// few widening, fading strokes over the same outline.
     pub fn paint(&self, painter: &egui::Painter, rect: egui::Rect, palette: &Palette) {
-        const SPIKES: usize = 16;
         let ctr = rect.center();
-        let base_r = rect.size().min_elem() * 0.12;
-        let spike_r = base_r * (1.0 + self.level * 1.8);
-        let pts: Vec<_> = (0..SPIKES * 2)
+        let base_r = rect.size().min_elem() * 0.16;
+        let pts: Vec<egui::Pos2> = (0..SAMPLES)
             .map(|i| {
-                let a = i as f32 * std::f32::consts::PI / SPIKES as f32;
-                let r = if i % 2 == 0 { spike_r } else { base_r };
+                let a = i as f32 / SAMPLES as f32 * std::f32::consts::TAU;
+                let r = base_r * (1.0 + self.levels[i] * 1.6);
                 ctr + egui::vec2(a.cos(), a.sin()) * r
             })
             .collect();
-        painter.add(egui::Shape::convex_polygon(pts, palette.accent.gamma_multiply(0.85), egui::Stroke::NONE));
-        painter.circle_stroke(ctr, base_r, egui::Stroke::new(1.5, palette.accent));
+        for (width, alpha) in [(7.0, 0.15), (4.0, 0.35), (1.75, 1.0)] {
+            painter.add(egui::Shape::closed_line(pts.clone(), egui::Stroke::new(width, palette.accent.gamma_multiply(alpha))));
+        }
     }
 }
 
-/// Amplitude at time `t`: max |peak| over `[t, t + window)` across the given `Peaks` (one per
-/// simultaneous audio clip) — same `Peaks::range` call the timeline waveform already uses.
-pub fn amplitude_at(peaks: &[std::sync::Arc<crate::media::waveform::Peaks>], t: f64, window: f64) -> f32 {
-    peaks
-        .iter()
-        .map(|p| {
-            let (lo, hi) = p.range(t, t + window);
-            lo.abs().max(hi.abs())
-        })
-        .fold(0.0, f32::max)
+/// `SAMPLES` amplitudes evenly spaced across `[t - window/2, t + window/2)`, each the max |peak|
+/// over its slice across every given `Peaks` (one per simultaneous audio clip) — the same
+/// `Peaks::range` call the timeline waveform already uses, just sampled around a ring instead of
+/// along the timeline's x axis.
+pub fn waveform_ring(peaks: &[std::sync::Arc<crate::media::waveform::Peaks>], t: f64, window: f64) -> [f32; SAMPLES] {
+    let mut out = [0.0f32; SAMPLES];
+    let slice = window / SAMPLES as f64;
+    let t0 = t - window / 2.0;
+    for (i, o) in out.iter_mut().enumerate() {
+        let a = t0 + slice * i as f64;
+        *o = peaks
+            .iter()
+            .map(|p| {
+                let (lo, hi) = p.range(a, a + slice);
+                lo.abs().max(hi.abs())
+            })
+            .fold(0.0, f32::max);
+    }
+    out
 }

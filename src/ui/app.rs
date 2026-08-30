@@ -2082,7 +2082,6 @@ impl App {
                             gpu_tex,
                             tracking,
                             tracking_shown,
-                            waveforms,
                             ..
                         } = self;
                         let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
@@ -2091,19 +2090,6 @@ impl App {
                             .movie_mode
                             .then(|| guarded(|| prerender.progress()).unwrap_or(1.0))
                             .filter(|&p| p < 1.0);
-                        let audio_only = !project.has_video_at(*playhead);
-                        let amplitude = if audio_only {
-                            let peaks: Vec<_> = project
-                                .audio_clips_at(*playhead)
-                                .into_iter()
-                                .filter_map(|(asset, stream)| {
-                                    project.asset(asset).and_then(|a| waveforms.get(&a.path, stream))
-                                })
-                                .collect();
-                            crate::ui::spiky_ball::amplitude_at(&peaks, *playhead, 1.0 / 30.0)
-                        } else {
-                            0.0
-                        };
                         preview::show(
                             ui,
                             pv,
@@ -2124,8 +2110,6 @@ impl App {
                                 buffering: player.is_buffering(),
                                 proxy: proxy_busy,
                                 tracker: tracking_shown.then(|| tracking.box_rect()),
-                                audio_only,
-                                amplitude,
                             },
                         )
                     };
@@ -4142,13 +4126,13 @@ impl App {
                 lp.player.set_canvas(cw.max(16), ch.max(16), self.settings.preview_max_width);
             }
             if !has_video {
-                let amplitude = self
+                let ring = self
                     .waveforms
                     .get(&path, 0)
-                    .map(|p| crate::ui::spiky_ball::amplitude_at(&[p], playhead, 1.0 / 30.0))
-                    .unwrap_or(0.0);
+                    .map(|p| crate::ui::spiky_ball::waveform_ring(&[p], playhead, 0.5))
+                    .unwrap_or([0.0; crate::ui::spiky_ball::SAMPLES]);
                 if let Some(lp) = self.lib_preview.as_mut() {
-                    lp.spiky.update(amplitude, ui.input(|i| i.stable_dt));
+                    lp.spiky.update(&ring, ui.input(|i| i.stable_dt));
                     lp.spiky.paint(ui.painter(), rect, &palette);
                 }
                 ui.ctx().request_repaint();
