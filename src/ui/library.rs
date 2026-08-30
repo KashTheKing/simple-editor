@@ -557,7 +557,9 @@ enum Art {
 /// ponytail: asking for a thumbnail is what queues the decode, so expanding a folder of 500 clips queues
 /// 500 of them (LIFO, so what you look at wins). Upgrade: only ask for rows inside the viewport.
 fn file_art(ui: &egui::Ui, thumbs: &mut Option<&mut ThumbCache>, path: &str, h: u32) -> Art {
-    if matches!(ext_class(path), 1 | 3) {
+    // audio (class 2) tries too: a file with embedded cover art decodes one via the same pipeline as
+    // any other video stream; one with none just memoises a permanent (cheap) miss like any bad file
+    if matches!(ext_class(path), 1 | 2 | 3) {
         if let Some((tex, size)) = thumbs.as_deref_mut().and_then(|c| c.texture(ui.ctx(), path, 0.0, h)) {
             if size[1] > 0 {
                 return Art::Image(tex, size);

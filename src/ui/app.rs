@@ -63,7 +63,7 @@ struct LibPreview {
     duration: f64,
     fps: f64,
     has_video: bool,
-    spiky: crate::ui::spiky_ball::SpikyBall,
+    heartbeat: crate::ui::heartbeat::Heartbeat,
 }
 
 pub struct App {
@@ -3989,11 +3989,18 @@ impl App {
         if self.lib_preview.as_ref().is_some_and(|lp| lp.path == path) {
             return;
         }
-        // an asset the project already knows carries its probed duration; anything else would need a
-        // blocking ffprobe on the UI thread, so it keeps the still thumbnail until it is imported
-        let Some(asset) = self.project.assets.iter().find(|a| a.path == path.to_string_lossy()).cloned() else {
-            self.lib_preview = None;
-            return;
+        // an asset the project already knows carries its probed duration; anything else (a Global/
+        // Recent file never imported) is probed on the spot — a single ffprobe call for metadata
+        // only, cheap enough for a click the user is actively waiting on
+        let asset = match self.project.assets.iter().find(|a| a.path == path.to_string_lossy()) {
+            Some(a) => a.clone(),
+            None => match crate::media::probe(&path.to_string_lossy(), self.backend()) {
+                Ok(a) => a,
+                Err(_) => {
+                    self.lib_preview = None;
+                    return;
+                }
+            },
         };
         let duration = asset.duration.max(crate::model::MIN_CLIP);
         let fps = if asset.fps > 0.0 { asset.fps } else { 30.0 };
@@ -4002,7 +4009,7 @@ impl App {
         player.set_project(&Project::from_media(asset));
         player.play();
         self.lib_preview =
-            Some(LibPreview { path, player, duration, fps, has_video, spiky: Default::default() });
+            Some(LibPreview { path, player, duration, fps, has_video, heartbeat: Default::default() });
     }
 
     /// The library preview's current frame, uploaded for the pane to paint. None = nothing is previewing.
@@ -4100,7 +4107,7 @@ impl App {
             }
 
             // video, filling whatever is left
-            let (rect, _) = ui.allocate_exact_size(ui.available_size_before_wrap(), egui::Sense::hover());
+            let (rect, resp) = ui.allocate_exact_size(ui.available_size_before_wrap(), egui::Sense::click());
             ui.painter().rect_filled(rect, 0.0, egui::Color32::BLACK);
             let lb = match frame {
                 Some(f) => {
@@ -4126,16 +4133,40 @@ impl App {
                 lp.player.set_canvas(cw.max(16), ch.max(16), self.settings.preview_max_width);
             }
             if !has_video {
-                let ring = self
-                    .waveforms
-                    .get(&path, 0)
-                    .map(|p| crate::ui::spiky_ball::waveform_ring(&[p], playhead, 0.5))
-                    .unwrap_or([0.0; crate::ui::spiky_ball::SAMPLES]);
-                if let Some(lp) = self.lib_preview.as_mut() {
-                    lp.spiky.update(&ring, ui.input(|i| i.stable_dt));
-                    lp.spiky.paint(ui.painter(), rect, &palette);
+                // cover art (an audio file's embedded picture, decoded through the same thumbnail
+                // pipeline as any other video frame) wins over the visualizer when there is one
+                let cover = self.thumbs.texture(ui.ctx(), &path, 0.0, (rect.height() * ui.pixels_per_point()) as u32);
+                if let Some((tex, size)) = cover {
+                    let aspect = size[0].max(1) as f32 / size[1].max(1) as f32;
+                    let lb = preview::letterbox(rect, aspect, ui.pixels_per_point());
+                    ui.painter().image(
+                        tex,
+                        lb,
+                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        egui::Color32::WHITE,
+                    );
+                } else if self.settings.audio_visualizer {
+                    let trace = self
+                        .waveforms
+                        .get(&path, 0)
+                        .map(|p| crate::ui::heartbeat::waveform_trace(&[p], playhead, 0.5))
+                        .unwrap_or([0.0; crate::ui::heartbeat::SAMPLES]);
+                    if let Some(lp) = self.lib_preview.as_mut() {
+                        lp.heartbeat.update(&trace, ui.input(|i| i.stable_dt));
+                        lp.heartbeat.paint(ui.painter(), rect, &palette);
+                    }
+                    ui.ctx().request_repaint();
                 }
-                ui.ctx().request_repaint();
+                resp.context_menu(|ui| {
+                    let mut on = self.settings.audio_visualizer;
+                    if ui.checkbox(&mut on, "Audio visualizer").changed() {
+                        self.settings.audio_visualizer = on;
+                        self.settings.save();
+                    }
+                    if ui.button("Close").clicked() {
+                        ui.close();
+                    }
+                });
             }
         });
 
