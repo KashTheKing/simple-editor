@@ -79,6 +79,14 @@ const MAX_TRACK_H: f32 = 300.0;
 const KEY_LANE_MIN: f32 = 28.0;
 /// Inset of the value lane inside the clip rect (points), top and bottom.
 const KEY_PAD: f32 = 3.0;
+/// On-screen clip width (same measure as `detailed` below) above which the keyframe mini-graph toggle
+/// appears: wide enough for the corner icon plus a graph worth looking at, not just barely visible.
+const MINI_GRAPH_MIN_W: f32 = 120.0;
+/// Mini-graph toggle: a square icon inset this far from the clip's top-right corner, this many px across.
+const MINI_GRAPH_PAD: f32 = 3.0;
+const MINI_GRAPH_BTN: f32 = 15.0;
+/// Height of the inline mini-graph panel dropped below a clip whose toggle is on.
+const MINI_GRAPH_H: f32 = 48.0;
 /// Insertion gutter shown when clips are dragged past the first/last row.
 const GUTTER_H: f32 = 5.0;
 /// Marker flag size on the ruler / inside clips.
@@ -135,6 +143,8 @@ pub struct TimelineState {
     sub_band: Option<(f64, bool)>,
     /// Cue edge being trimmed on the subtitle lane: (cue id, right edge?).
     sub_trim: Option<(Id, bool)>,
+    /// Clip ids whose inline keyframe mini-graph (toggled by the corner icon) is open.
+    mini_graph_open: Vec<Id>,
 }
 
 impl Default for TimelineState {
@@ -155,6 +165,7 @@ impl Default for TimelineState {
             sub_sel: Vec::new(),
             sub_band: None,
             sub_trim: None,
+            mini_graph_open: Vec::new(),
         }
     }
 }
@@ -545,6 +556,54 @@ fn key_range(state: &TimelineState, clip: Id, prop: usize, a: &crate::model::Ani
         }
     }
     crate::ui::curves::y_range(a)
+}
+
+/// Same colour cycle as the Curve Editor's per-property lines (`curves::prop_color`, private to that
+/// file) — duplicated here so this view stays self-contained rather than reaching into curves.rs.
+fn mini_prop_color(pal: &Palette, i: usize) -> Color32 {
+    let cycle =
+        [pal.clip_video, pal.clip_audio, pal.clip_image, pal.clip_text, pal.clip_sequence, pal.waveform, pal.keyframe];
+    cycle[i % cycle.len()]
+}
+
+/// Compact view-only keyframe graph for one clip: one polyline per animated property with 2+ keys, each
+/// normalized to its own auto-range (`curves::y_range`, the same range the value-lane diamonds use),
+/// dots at each key, dropped in a small panel below the clip. Not editable — that's the Curve Editor
+/// pane (`ui/curves.rs`); this is a lightweight glance, not a replacement for it.
+/// ponytail: doesn't negotiate space with the row(s) below — it just paints on top, clipped to the lanes.
+fn draw_mini_graph(p: &egui::Painter, clip: &Clip, rect: Rect, lanes: Rect, pal: &Palette) {
+    let panel = Rect::from_min_max(
+        pos2(rect.left(), rect.bottom() + 2.0),
+        pos2(rect.right(), rect.bottom() + 2.0 + MINI_GRAPH_H),
+    );
+    if !lanes.intersects(panel) {
+        return;
+    }
+    let cr = CornerRadius::same(3);
+    p.rect_filled(panel, cr, pal.panel);
+    p.rect_stroke(panel, cr, Stroke::new(1.0, pal.border), StrokeKind::Inside);
+    let inner = panel.shrink(4.0);
+    let dur = clip.duration.max(1e-6);
+    for i in 0..crate::ui::curves::prop_count(clip) {
+        let Some(a) = crate::ui::curves::prop_ref(clip, i) else { continue };
+        if a.keys.len() < 2 {
+            continue;
+        }
+        let (lo, hi) = crate::ui::curves::y_range(a);
+        let span = (hi - lo).max(1e-9);
+        let color = mini_prop_color(pal, i);
+        let mut last: Option<Pos2> = None;
+        for k in &a.keys {
+            let fx = (k.t / dur).clamp(0.0, 1.0) as f32;
+            let fy = ((k.v - lo) / span).clamp(0.0, 1.0) as f32;
+            let pt = pos2(inner.left() + fx * inner.width(), inner.bottom() - fy * inner.height());
+            if let Some(l) = last {
+                p.line_segment([l, pt], Stroke::new(1.2, color));
+            }
+            p.circle_filled(pt, 2.0, color);
+            last = Some(pt);
+        }
+    }
 }
 
 /// The range the rest of the UI enforces for property `i` (inspector sliders for the base props,
@@ -1505,6 +1564,31 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             if rclick && !selected {
                 c.selection.clear();
                 c.selection.push(clip.id);
+            }
+            // keyframe mini-graph: once the clip is wide enough on screen to be worth it (same measure
+            // as `detailed` above, just a higher bar), a small toggle icon sits in its top-right corner.
+            // Registered last so it wins hit-testing over the body underneath it, like the fade handles.
+            if has_keys(clip) && vis.width() >= MINI_GRAPH_MIN_W {
+                let btn = Rect::from_min_size(
+                    pos2(rect.right() - MINI_GRAPH_PAD - MINI_GRAPH_BTN, rect.top() + MINI_GRAPH_PAD),
+                    vec2(MINI_GRAPH_BTN, MINI_GRAPH_BTN),
+                )
+                .intersect(lanes);
+                if btn.is_positive() {
+                    let open = state.mini_graph_open.contains(&clip.id);
+                    let clicked =
+                        toggle_button(ui, &lp, btn, cid.with("mg"), Cap::Icon(Glyph::Diamond), open, &pal, &small);
+                    if clicked {
+                        if open {
+                            state.mini_graph_open.retain(|&x| x != clip.id);
+                        } else {
+                            state.mini_graph_open.push(clip.id);
+                        }
+                    }
+                }
+                if state.mini_graph_open.contains(&clip.id) {
+                    draw_mini_graph(&lp, clip, rect, lanes, &pal);
+                }
             }
         }
 
@@ -3375,6 +3459,48 @@ mod tests {
         assert!((keys[0].t - 3.0).abs() < 1.0 / 30.0 + 1e-6, "key moved to {}", keys[0].t);
         assert_eq!(keys[0].v, 1.0, "short clip: vertical drag does not touch the value");
         assert_eq!(h.project.tracks[0].clips[0].start, 0.0, "clip not moved");
+    }
+
+    #[test]
+    fn headless_mini_graph_toggle_needs_keys_and_width() {
+        let mut h = Harness::new();
+        let lanes = h.state.lanes_rect;
+        let vid = h.video_clip().id;
+        // default zoom (40 px/s) makes the 10 s clip 400 px wide — well past MINI_GRAPH_MIN_W (120)
+        let btn_center = |h: &Harness| {
+            let right = h.state.x_at(h.video_clip().end());
+            let top = lanes.top() + 1.0;
+            pos2(right - MINI_GRAPH_PAD - MINI_GRAPH_BTN * 0.5, top + MINI_GRAPH_PAD + MINI_GRAPH_BTN * 0.5)
+        };
+
+        // no keyframes yet: a click where the icon would sit just selects the clip like anywhere else
+        // on its body — proves nothing is drawn/interactive there regardless of zoom
+        let p = btn_center(&h);
+        h.press(p);
+        h.release(p);
+        h.frame(vec![]);
+        assert!(h.state.mini_graph_open.is_empty(), "no icon without keyframes");
+        // the harness's default video clip is linked to an audio clip, so a plain click selects the
+        // whole link group (same as clicking anywhere else on its body) — not just `vid` alone.
+        assert!(h.selection.contains(&vid), "click without keys falls through to the clip body");
+        h.selection.clear();
+
+        // key it: the same spot now toggles the mini graph instead of selecting
+        h.project.tracks[0].clips[0].opacity.toggle_key(2.0);
+        h.project.tracks[0].clips[0].opacity.toggle_key(5.0);
+        h.frame(vec![]);
+        let p = btn_center(&h);
+        h.press(p);
+        h.release(p);
+        h.frame(vec![]);
+        assert_eq!(h.state.mini_graph_open, vec![vid], "click opened the mini graph");
+        assert!(h.selection.is_empty(), "the icon must win hit-testing over the clip body under it");
+
+        // click again: closes it
+        h.press(p);
+        h.release(p);
+        h.frame(vec![]);
+        assert!(h.state.mini_graph_open.is_empty(), "second click closed it");
     }
 
     #[test]
