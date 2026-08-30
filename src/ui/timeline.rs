@@ -1074,10 +1074,11 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             if !clip.enabled || !active {
                 color = color.gamma_multiply(0.5);
             }
-            lp.rect_filled(rect, 0, color);
-            lp.rect_stroke(rect, 0, thin, StrokeKind::Inside);
+            let cr = CornerRadius::same(pal.clip_rounding as u8);
+            lp.rect_filled(rect, cr, color);
+            lp.rect_stroke(rect, cr, thin, StrokeKind::Inside);
             if clip.container {
-                lp.rect_stroke(rect, 0, Stroke::new(1.5, pal.accent), StrokeKind::Inside);
+                lp.rect_stroke(rect, cr, Stroke::new(1.5, pal.accent), StrokeKind::Inside);
             }
             // sub-pixel clips (zoomed way out): fill only — no text, waveform, diamonds or hit-testing.
             // ponytail: 4 pt is well under the ~18 pt a clip needs for its trim handles, and the rubber
@@ -1090,7 +1091,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             }
             if !detailed {
                 if c.selection.contains(&clip.id) {
-                    lp.rect_stroke(rect, 0, Stroke::new(2.0, pal.selection), StrokeKind::Inside);
+                    lp.rect_stroke(rect, cr, Stroke::new(2.0, pal.selection), StrokeKind::Inside);
                 }
                 continue;
             }
@@ -1276,9 +1277,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             }
             let selected = c.selection.contains(&clip.id);
             if selected {
-                lp.rect_stroke(rect, 0, Stroke::new(2.0, pal.selection), StrokeKind::Inside);
+                lp.rect_stroke(rect, cr, Stroke::new(2.0, pal.selection), StrokeKind::Inside);
             } else if linked_sel.contains(&clip.id) {
-                lp.rect_stroke(rect, 0, Stroke::new(1.0, pal.selection), StrokeKind::Inside);
+                lp.rect_stroke(rect, cr, Stroke::new(1.0, pal.selection), StrokeKind::Inside);
             }
 
             // interaction: body, then volume line, then edges, then fade handles on top
