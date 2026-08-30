@@ -193,6 +193,9 @@ pub struct Options {
     pub language: String,
     /// Ask whisper for one segment per word and regroup here.
     pub words: bool,
+    /// whisper.cpp `--prompt`: vocabulary/style hints (names, jargon, punctuation style). Not commands —
+    /// the model only mimics it, it does not follow instructions.
+    pub prompt: String,
 }
 
 /// A running transcription. `segments()` grows while it runs; `progress` drives the UI and cancels it.
@@ -259,6 +262,9 @@ fn run(opts: &Options, prog: &Progress, sink: &Mutex<Vec<Segment>>) -> Result<()
     if opts.words {
         cmd.args(["-ml", "1", "-sow"]);
     }
+    if !opts.prompt.trim().is_empty() {
+        cmd.arg("--prompt").arg(opts.prompt.trim());
+    }
     let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -276,17 +282,14 @@ fn run(opts: &Options, prog: &Progress, sink: &Mutex<Vec<Segment>>) -> Result<()
             let Some(seg) = parse_line(&line) else { continue };
             prog.set((0.05 + 0.94 * (seg.1 / total)).clamp(0.05, 0.99) as f32, "Transcribing…");
             raw.push(seg.clone());
-            if !opts.words {
-                sink.lock().unwrap_or_else(|e| e.into_inner()).push(Segment::plain(seg.0, seg.1, seg.2));
-            }
+            // raw segments, one word each with -ml 1: the UI regroups them into sentences, so the
+            // grouping can be re-run with new parameters without re-transcribing
+            sink.lock().unwrap_or_else(|e| e.into_inner()).push(Segment::plain(seg.0, seg.1, seg.2));
         }
     }
     let r = export::wait_ffmpeg(&mut child, tail, prog);
     let _ = std::fs::remove_file(&wav);
     r?;
-    if opts.words {
-        *sink.lock().unwrap_or_else(|e| e.into_inner()) = group_words(&raw, 120, 0.8);
-    }
     if raw.is_empty() {
         return Err("nothing was transcribed (no speech, or the model failed to load)".into());
     }
@@ -314,9 +317,28 @@ pub fn parse_line(line: &str) -> Option<(f64, f64, String)> {
     Some((start, end, text.to_string()))
 }
 
-/// One-word segments (`-ml 1 -sow`) → sentences, keeping the word timings. A sentence ends on
-/// `.?!`, on a gap longer than `max_gap`, or once it reaches `max_chars`.
-pub fn group_words(words: &[(f64, f64, String)], max_chars: usize, max_gap: f64) -> Vec<Segment> {
+/// How one-word segments are regrouped into sentences — every knob the "Regenerate" pass turns.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GroupOpts {
+    /// A sentence ends once it reaches this many characters.
+    pub max_chars: usize,
+    /// … or after a silence longer than this (seconds).
+    pub max_gap: f64,
+    /// … or on a word ending with any of these characters ("" = never split on punctuation).
+    pub punct: String,
+    /// … or after this many words (0 = no word limit).
+    pub max_words: usize,
+}
+
+impl Default for GroupOpts {
+    fn default() -> Self {
+        Self { max_chars: 120, max_gap: 0.8, punct: ".?!".into(), max_words: 0 }
+    }
+}
+
+/// One-word segments (`-ml 1 -sow`) → sentences, keeping the word timings. A sentence ends per
+/// `GroupOpts`: on punctuation, on a long gap, at `max_chars`, or at `max_words`.
+pub fn group_words(words: &[(f64, f64, String)], opts: &GroupOpts) -> Vec<Segment> {
     let mut out: Vec<Segment> = Vec::new();
     let mut cur = Segment::default();
     for (i, (a, b, w)) in words.iter().enumerate() {
@@ -334,7 +356,9 @@ pub fn group_words(words: &[(f64, f64, String)], max_chars: usize, max_gap: f64)
         cur.end = *b;
         cur.words.push((*a, *b, w.to_string()));
         let gap = words.get(i + 1).map_or(f64::INFINITY, |n| n.0 - *b);
-        if w.ends_with(['.', '?', '!']) || gap > max_gap || cur.text.chars().count() >= max_chars {
+        let full =
+            cur.text.chars().count() >= opts.max_chars || (opts.max_words > 0 && cur.words.len() >= opts.max_words);
+        if w.ends_with(|c: char| opts.punct.contains(c)) || gap > opts.max_gap || full {
             out.push(std::mem::take(&mut cur));
         }
     }
@@ -572,7 +596,7 @@ mod tests {
         .iter()
         .map(|(a, b, w)| (*a, *b, w.to_string()))
         .collect();
-        let segs = group_words(&words, 120, 0.8);
+        let segs = group_words(&words, &GroupOpts::default());
         assert_eq!(segs.len(), 3, "{segs:?}");
         assert_eq!(segs[0].text, "One two.");
         assert_eq!((segs[0].start, segs[0].end), (0.0, 0.6));
@@ -581,7 +605,17 @@ mod tests {
         assert_eq!(segs[1].words.len(), 2, "word timings survive the grouping");
         // max_chars breaks a run that never punctuates
         let long: Vec<(f64, f64, String)> = (0..10).map(|i| (i as f64, i as f64 + 0.5, "word".to_string())).collect();
-        assert!(group_words(&long, 12, 5.0).len() > 2);
+        let by_chars = GroupOpts { max_chars: 12, max_gap: 5.0, ..GroupOpts::default() };
+        assert!(group_words(&long, &by_chars).len() > 2);
+        // max_words and custom punctuation are further splits
+        let by_words = GroupOpts { max_gap: 5.0, max_words: 3, ..GroupOpts::default() };
+        assert!(group_words(&long, &by_words).iter().all(|s| s.words.len() <= 3));
+        let commas: Vec<(f64, f64, String)> =
+            [(0.0, 0.4, "so,"), (0.5, 0.9, "yes")].iter().map(|(a, b, w)| (*a, *b, w.to_string())).collect();
+        let on_comma = GroupOpts { punct: ".?!,".into(), max_gap: 5.0, ..GroupOpts::default() };
+        assert_eq!(group_words(&commas, &on_comma).len(), 2);
+        let no_punct = GroupOpts { punct: String::new(), max_gap: 5.0, ..GroupOpts::default() };
+        assert_eq!(group_words(&commas, &no_punct).len(), 1);
     }
 
     #[test]

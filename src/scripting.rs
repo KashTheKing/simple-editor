@@ -111,8 +111,7 @@ fn lua_to_json(v: mlua::Value) -> mlua::Result<Value> {
             let len = t.raw_len();
             let arrayish = len > 0
                 && t.pairs::<mlua::Value, mlua::Value>().all(|p| {
-                    p.map(|(k, _)| matches!(k, mlua::Value::Integer(i) if i >= 1 && i as usize <= len))
-                        .unwrap_or(false)
+                    p.map(|(k, _)| matches!(k, mlua::Value::Integer(i) if i >= 1 && i as usize <= len)).unwrap_or(false)
                 });
             if arrayish {
                 let mut a = Vec::with_capacity(len);

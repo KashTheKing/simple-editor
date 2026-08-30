@@ -518,7 +518,8 @@ fn render_thread(
         // prefetch horizon: READ_AHEAD_SECS of frames, capped so the window can't blow the cache
         // budget on its own (GPU layer sets are conservatively costed like one frame per index)
         let frame_bytes = (w as usize * h as usize * 4).max(1);
-        let read_ahead = ((fps * READ_AHEAD_SECS).ceil() as i64).clamp(8, (CACHE_BYTES / 2 / frame_bytes).max(8) as i64);
+        let read_ahead =
+            ((fps * READ_AHEAD_SECS).ceil() as i64).clamp(8, (CACHE_BYTES / 2 / frame_bytes).max(8) as i64);
         let last_idx = (((duration * fps).ceil() as i64) - 1).max(idx);
         // keep the trail + horizon around the playhead eviction-protected: a scrub-back replays free
         let trail = (fps * TRAIL_SECS).ceil() as i64;
@@ -646,8 +647,8 @@ fn render_thread(
                     break;
                 }
                 let horizon = (((duration * fps).ceil() as i64) - 1).min(idx + read_ahead);
-                let missing = ((idx + 1)..=horizon)
-                    .find(|i| if gpu { !lcache.contains(*i) } else { !fcache.contains(*i) });
+                let missing =
+                    ((idx + 1)..=horizon).find(|i| if gpu { !lcache.contains(*i) } else { !fcache.contains(*i) });
                 let Some(i) = missing else {
                     std::thread::sleep(Duration::from_secs_f64(remain));
                     break;
