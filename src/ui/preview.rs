@@ -188,10 +188,17 @@ fn scrub_bar(ui: &mut egui::Ui, c: &PreviewCtx<'_>, r: &mut PreviewResponse, wid
 
 fn transport(ui: &mut egui::Ui, state: &mut PreviewState, c: &PreviewCtx<'_>, r: &mut PreviewResponse) {
     let fps = c.project.fps;
-    // centred: pad by half the leftover of last frame's measured width (0 on the very first frame)
-    let pad = ((ui.available_width() - state.transport.width()) * 0.5).max(0.0);
+    // centred: pad by half the leftover of last frame's measured width. Skip the pad on an
+    // unmeasured/reset frame (width 0) — padding from a stale zero would overshoot the real content
+    // width, wrap the row (see `horizontal_wrapped` below), and corrupt the very measurement next
+    // frame's pad depends on, so it would never converge.
+    let pad = if state.transport.width() > 0.0 {
+        ((ui.available_width() - state.transport.width()) * 0.5).max(0.0)
+    } else {
+        0.0
+    };
     let row = ui
-        .horizontal(|ui| {
+        .horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             ui.add_space(pad);
             // `label` is the tooltip for an icon button and the caption for a text one
@@ -276,7 +283,6 @@ fn transport(ui: &mut egui::Ui, state: &mut PreviewState, c: &PreviewCtx<'_>, r:
             b(ui, Some(Glyph::Fullscreen), "Fullscreen", Action::Fullscreen);
         })
         .response;
-    // measured content width (without the centring pad) drives the next frame's padding
     state.transport = Rect::from_min_max(pos2(row.rect.left() + pad, row.rect.top()), row.rect.max);
 }
 

@@ -978,6 +978,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     let mut start_marker: Option<(Id, Option<Id>)> = None;
     let mut resize: Option<(usize, f32)> = None;
     let mut divider_y: Option<f32> = None;
+    // track-resize handle rects, collected as they're laid out below so the rubber-band-start check
+    // (near the end of this function) can tell a resize press from an empty-lane press
+    let mut handle_rects: Vec<Rect> = Vec::new();
     let mut key_hits: Vec<(Id, f64, Pos2, Option<usize>)> = Vec::new();
     let mut marker_hits: Vec<(Id, Id, Rect)> = Vec::new();
     let linked_sel = c.project.expand_links(c.selection);
@@ -1490,6 +1493,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         if hd.dragged() {
             resize = Some((ti, hd.drag_delta().y));
         }
+        handle_rects.push(handle);
     }
 
     // keyframe diamonds: registered after everything in the rows so the small targets win hit-testing
@@ -1905,10 +1909,18 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     }
     // a press that missed every clip starts a rubber band (Shift adds to the selection)
     if state.drag.is_none() && lanes_resp.drag_started_by(egui::PointerButton::Primary) {
-        if c.tool == Tool::Spacer {
-            start_spacer = true;
-        } else if let Some(o) = lanes_resp.interact_pointer_pos().or(pointer) {
-            state.band = Some((o, mods.shift));
+        // a vertical resize drag can cross HANDLE_H's few px before egui recognizes the drag as
+        // started, so lanes_resp can still see this as a drag-start too; use where the press actually
+        // began (not the possibly-drifted current pointer pos) to tell a resize press from an
+        // empty-lane one, and let the handle keep the gesture instead of also opening a rubber band.
+        let press_origin = ui.input(|i| i.pointer.press_origin()).or(pointer);
+        let on_resize_handle = press_origin.is_some_and(|p| handle_rects.iter().any(|r| r.contains(p)));
+        if !on_resize_handle {
+            if c.tool == Tool::Spacer {
+                start_spacer = true;
+            } else if let Some(o) = lanes_resp.interact_pointer_pos().or(pointer) {
+                state.band = Some((o, mods.shift));
+            }
         }
     }
     lanes_resp.context_menu(|ui| {
@@ -3298,6 +3310,22 @@ mod tests {
         assert_eq!(h.project.tracks[0].clips[0].start, 0.0, "Esc restored the pre-drag project");
         assert_eq!(h.project.tracks[0].clips.len(), 2);
         assert_eq!(h.undos, 0, "cancelled gesture pushes no undo");
+    }
+
+    #[test]
+    fn headless_resize_handle_drag_does_not_start_a_rubber_band() {
+        let mut h = Harness::new();
+        let lanes = h.state.lanes_rect;
+        let before_h = h.project.tracks[0].height;
+        let row_bottom = lanes.top() + before_h;
+        // press inside track 0's HANDLE_H-tall resize strip, then drag down well past it: the
+        // in-progress drag can leave the strip within a step or two, which used to also arm a rubber
+        // band from the lane background underneath
+        let from = pos2(h.state.x_at(2.0), row_bottom - 2.0);
+        h.drag(from, from + vec2(0.0, 30.0));
+        assert!(h.project.tracks[0].height > before_h, "the handle drag actually resized the track");
+        assert!(h.state.band.is_none(), "a resize press must not leave a rubber band armed");
+        assert!(h.selection.is_empty(), "a resize drag must not select clips underneath it");
     }
 
     #[test]

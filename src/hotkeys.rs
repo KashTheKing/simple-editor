@@ -1,7 +1,11 @@
 //! Keyboard shortcuts: a fixed list of actions, default bindings, user overrides (stored in Settings),
-//! and per-frame polling. The bare letters V / T / S / D / M belong to the tool strip (ui::tools), which
-//! consumes them before this table is polled, so actions that used them sit on Shift+<letter>. Mouse modifiers (Ctrl+Scroll zoom, Alt+Scroll track height, Shift+Scroll pan)
-//! are fixed and not part of this table.
+//! and per-frame polling. Tool selection (Select/Text/Draw/Mask/Marker/Cut/Stretch — the `Action::Tool*`
+//! entries below) lives here too, fully rebindable; `ui::tools::handle_hotkeys` polls its own binding
+//! for each one (mirroring `poll_pass` below: most-specific-shortcut-first) and sets the active tool
+//! directly, since the tool strip owns that state. Only bare S (the snap toggle) and Shift+S (cycling the
+//! shape tools, still riding on `AddShape`'s default below) stay hardcoded in `ui::tools`, ahead of
+//! everything here. Mouse modifiers (Ctrl+Scroll zoom, Alt+Scroll track height, Shift+Scroll pan) are
+//! fixed and not part of this table.
 
 use crate::settings::Settings;
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers};
@@ -133,6 +137,16 @@ actions! {
     ReplaceContainerMedia => "replace_container", "Replace Container Media…", None;
     MakeContainer => "make_container", "Convert to Container", None;
     UnmakeContainer => "unmake_container", "Remove Container", None;
+    // ---- tool selection (ui::tools) — polled and dispatched there, not through App::act ----
+    ToolSelect => "tool_select", "Select Tool", sc(NONE, Key::V);
+    ToolText => "tool_text", "Text Tool", sc(NONE, Key::T);
+    ToolDraw => "tool_draw", "Draw Tool", sc(NONE, Key::D);
+    // Mask used to be bare M; K (the obvious next pick) is already Stop's key, so this moves to G
+    // instead, freeing M for the Marker tool below (a separate key from AddMarker's Shift+M above).
+    ToolMask => "tool_mask", "Mask Tool (repeat to cycle shape)", sc(NONE, Key::G);
+    ToolMarker => "tool_marker", "Marker Tool", sc(NONE, Key::M);
+    ToolCut => "tool_cut", "Cut Tool (Razor)", sc(NONE, Key::C);
+    ToolStretch => "tool_stretch", "Stretch Tool", sc(NONE, Key::R);
 }
 
 pub struct Hotkeys {

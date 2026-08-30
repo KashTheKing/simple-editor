@@ -8,9 +8,10 @@
 //! nothing selected it shows everything. Clicking a card adds the effect to every eligible selected
 //! clip, right-clicking opens its quick actions (selected clips / every clip on the track), and only a
 //! deliberate press-and-move makes it a `DragPayload::Effect` drag source (`ui::drag_source`).
-//! Below: the FIRST selected clip's effect stack, in order: for each effect a header row (enabled
-//! checkbox, name, mask button, "Edit shader…" for a custom shader, copy/paste params, painted
-//! reorder and remove buttons) and its parameters from
+//! Below: the FIRST selected clip's effect stack, in order: each effect is its own `CollapsingHeader`
+//! (default open, independently foldable) whose header row (enabled checkbox, name, mask button, "Edit
+//! shader…" for a custom shader, copy/paste params, painted reorder and remove buttons) wraps instead of
+//! clipping in a narrow panel, and whose body holds its parameters from
 //! `effect.specs()`: a "From … for …" row giving the effect a window inside the clip (0 length = to the
 //! end of it, so an effect covers the whole clip until the user says otherwise), then
 //! label + DragValue (range from ParamSpec, speed ≈ (max-min)/200) — or a CHECKBOX when
@@ -366,191 +367,203 @@ pub fn show(
     let mut paste: Option<usize> = None;
     let copied_kind = PARAM_CLIP.with(|c| c.borrow().as_ref().map(|e| e.kind));
     for (i, fx) in clip.effects.iter_mut().enumerate() {
-        ui.horizontal(|ui| {
-            g.note(&ui.checkbox(&mut fx.enabled, ""));
-            ui.label(fx.kind.name());
-            let masked = fx.mask.is_some();
-            if maskable {
-                let mask = ui
-                    .add(Button::new(if masked { "Edit mask" } else { "Add mask" }).small())
-                    .on_hover_text("Limit this effect to a shape (drawn in the viewport)");
-                #[cfg(test)]
-                test_rects::push(format!("mask{i}"), mask.rect);
-                if mask.clicked() {
-                    if !masked {
-                        fx.mask = Some(Mask::default());
-                        g.click();
+        // one CollapsingState per effect (state keyed by stack index, same convention as the "fx_params"
+        // / "fx_mask" grids below) so each effect can be folded independently; `show_header` puts the
+        // toggle arrow ahead of custom, interactive header content instead of a plain text label, which
+        // is what lets the enabled checkbox / delete / reorder buttons stay reachable without expanding.
+        let header_id = ui.id().with(("fx_stack", i));
+        egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), header_id, true)
+            .show_header(ui, |ui| {
+                // wrapped, not a flat row: a narrow panel stacks the buttons instead of clipping them
+                ui.horizontal_wrapped(|ui| {
+                    g.note(&ui.checkbox(&mut fx.enabled, ""));
+                    ui.label(fx.kind.name());
+                    let masked = fx.mask.is_some();
+                    if maskable {
+                        let mask = ui
+                            .add(Button::new(if masked { "Edit mask" } else { "Add mask" }).small())
+                            .on_hover_text("Limit this effect to a shape (drawn in the viewport)");
+                        #[cfg(test)]
+                        test_rects::push(format!("mask{i}"), mask.rect);
+                        if mask.clicked() {
+                            if !masked {
+                                fx.mask = Some(Mask::default());
+                                g.click();
+                            }
+                            out.mask_for = Some(i);
+                        }
+                        if masked {
+                            let rm = crate::ui::markers_ui::x_button(ui).on_hover_text("Remove this mask");
+                            #[cfg(test)]
+                            test_rects::push(format!("maskx{i}"), rm.rect);
+                            if rm.clicked() {
+                                fx.mask = None;
+                                g.click();
+                            }
+                        }
                     }
-                    out.mask_for = Some(i);
-                }
-                if masked {
-                    let rm = crate::ui::markers_ui::x_button(ui).on_hover_text("Remove this mask");
+                    if fx.kind == EffectKind::Shader {
+                        let ed = ui.add(Button::new("Edit shader…").small()).on_hover_text("Edit this effect's GLSL");
+                        #[cfg(test)]
+                        test_rects::push(format!("shader{i}"), ed.rect);
+                        if ed.clicked() {
+                            out.edit_shader = Some(i);
+                        }
+                    }
+                    let cp = glyph_text_button(ui, Glyph::Copy, "").on_hover_text("Copy these parameters");
                     #[cfg(test)]
-                    test_rects::push(format!("maskx{i}"), rm.rect);
-                    if rm.clicked() {
-                        fx.mask = None;
-                        g.click();
+                    test_rects::push(format!("copy{i}"), cp.rect);
+                    if cp.clicked() {
+                        copy = Some(i);
                     }
-                }
-            }
-            if fx.kind == EffectKind::Shader {
-                let ed = ui.add(Button::new("Edit shader…").small()).on_hover_text("Edit this effect's GLSL");
-                #[cfg(test)]
-                test_rects::push(format!("shader{i}"), ed.rect);
-                if ed.clicked() {
-                    out.edit_shader = Some(i);
-                }
-            }
-            let cp = glyph_text_button(ui, Glyph::Copy, "").on_hover_text("Copy these parameters");
-            #[cfg(test)]
-            test_rects::push(format!("copy{i}"), cp.rect);
-            if cp.clicked() {
-                copy = Some(i);
-            }
-            let can_paste = copied_kind == Some(fx.kind);
-            let pt = ui
-                .add_enabled_ui(can_paste, |ui| glyph_text_button(ui, Glyph::Paste, ""))
-                .inner
-                .on_hover_text("Paste copied parameters")
-                .on_disabled_hover_text("Copy the same kind of effect first");
-            #[cfg(test)]
-            test_rects::push(format!("paste{i}"), pt.rect);
-            if pt.clicked() {
-                paste = Some(i);
-            }
-            let up = ui
-                .add_enabled_ui(i > 0, |ui| glyph_text_button(ui, Glyph::Tri(Dir::Up), ""))
-                .inner
-                .on_hover_text("Move up");
-            if up.clicked() {
-                swap = Some((i, i - 1));
-            }
-            let down = ui
-                .add_enabled_ui(i + 1 < n, |ui| glyph_text_button(ui, Glyph::Tri(Dir::Down), ""))
-                .inner
-                .on_hover_text("Move down");
-            if down.clicked() {
-                swap = Some((i, i + 1));
-            }
-            let del = crate::ui::markers_ui::x_button(ui).on_hover_text("Remove this effect");
-            if del.clicked() {
-                remove = Some(i);
-            }
-            #[cfg(test)]
-            {
-                test_rects::push(format!("up{i}"), up.rect);
-                test_rects::push(format!("down{i}"), down.rect);
-                test_rects::push(format!("del{i}"), del.rect);
-            }
-        });
-        // when it runs inside the clip — 0 length means "to the end", which is what every effect that
-        // predates this row already says
-        ui.horizontal(|ui| {
-            ui.label("From");
-            let r = ui.add(
-                DragValue::new(&mut fx.start)
-                    .range(0.0..=dur)
-                    .clamp_existing_to_range(false)
-                    .speed(dur / 200.0)
-                    .suffix(" s"),
-            );
-            #[cfg(test)]
-            test_rects::push(format!("fxstart{i}"), r.rect);
-            g.note(&r);
-            ui.label("for");
-            let r = ui
-                .add(
-                    DragValue::new(&mut fx.len)
-                        .range(0.0..=dur)
-                        .clamp_existing_to_range(false)
-                        .speed(dur / 200.0)
-                        .suffix(" s"),
-                )
-                .on_hover_text("0 = to the end of the clip");
-            #[cfg(test)]
-            test_rects::push(format!("fxlen{i}"), r.rect);
-            g.note(&r);
-            if fx.len <= 0.0 {
-                ui.weak("(rest of the clip)");
-            }
-        });
-        if fx.kind == EffectKind::Tint && fx.params.len() >= 3 {
-            ui.horizontal(|ui| {
-                ui.label("Colour");
-                let mut rgb = [fx.params[0].at(lt) as u8, fx.params[1].at(lt) as u8, fx.params[2].at(lt) as u8];
-                let r = ui.color_edit_button_srgb(&mut rgb);
-                if r.changed() {
-                    for (a, v) in fx.params.iter_mut().zip(rgb) {
-                        a.set_at(lt, v as f64);
-                    }
-                }
-                g.note(&r);
-            });
-        }
-        // the effect's own mask: same grid as the inspector's clip mask, so it can be shaped without
-        // the viewport (the mask tool only ever edits clip.mask)
-        if let Some(m) = fx.mask.as_mut().filter(|_| maskable) {
-            let _r = ui.scope(|ui| mask_grid(ui, m, lt, palette, &mut g, egui::Id::new(("fx_mask", i)))).response;
-            #[cfg(test)]
-            test_rects::push(format!("maskgrid{i}"), _r.rect);
-        }
-        let kind = fx.kind;
-        Grid::new(("fx_params", i)).num_columns(2).show(ui, |ui| {
-            for (j, spec) in kind.params().iter().enumerate() {
-                let Some(a) = fx.params.get_mut(j) else { continue };
-                ui.label(spec.name);
-                ui.horizontal(|ui| {
-                    let mut v = a.at(lt);
-                    let r = if kind == EffectKind::Wobble && spec.name == "Motion" {
-                        // a named waveform reads better than 0..4 (Sine / Layered / Cubic / …)
-                        let names = crate::model::WOBBLE_MOTIONS;
-                        let cur = (v.round().clamp(0.0, (names.len() - 1) as f64)) as usize;
-                        let mut sel = cur;
-                        let inner = egui::ComboBox::from_id_salt(("wobble_motion", i))
-                            .selected_text(names[cur])
-                            .width(96.0)
-                            .show_ui(ui, |ui| {
-                                for (k, n) in names.iter().enumerate() {
-                                    ui.selectable_value(&mut sel, k, *n);
-                                }
-                            });
-                        let mut r = inner.response;
-                        if sel != cur {
-                            v = sel as f64;
-                            r.mark_changed();
-                        }
-                        r
-                    } else if kind.is_bool_param(j) {
-                        // stored as 0/1 — a checkbox is the honest widget (Flip H/V, "Show mask", …)
-                        let mut on = v >= 0.5;
-                        let r = ui.checkbox(&mut on, "");
-                        if r.changed() {
-                            v = if on { 1.0 } else { 0.0 };
-                        }
-                        r
-                    } else {
-                        // clamp_existing_to_range(false): clamping an out-of-range stored value reports
-                        // `changed()`, which would fake an edit just by drawing the panel.
-                        let mut dv = DragValue::new(&mut v)
-                            .range(spec.min..=spec.max)
-                            .clamp_existing_to_range(false)
-                            .speed((spec.max - spec.min) / 200.0);
-                        if kind == EffectKind::Wobble {
-                            dv = dv.suffix(wobble_suffix(spec.name));
-                        }
-                        ui.add(dv)
-                    };
+                    let can_paste = copied_kind == Some(fx.kind);
+                    let pt = ui
+                        .add_enabled_ui(can_paste, |ui| glyph_text_button(ui, Glyph::Paste, ""))
+                        .inner
+                        .on_hover_text("Paste copied parameters")
+                        .on_disabled_hover_text("Copy the same kind of effect first");
                     #[cfg(test)]
-                    test_rects::push(format!("param{i}_{j}"), r.rect);
-                    if r.changed() {
-                        a.set_at(lt, v);
+                    test_rects::push(format!("paste{i}"), pt.rect);
+                    if pt.clicked() {
+                        paste = Some(i);
                     }
-                    g.note(&r);
-                    key_buttons(ui, a, lt, palette, &mut g, (i, j));
+                    let up = ui
+                        .add_enabled_ui(i > 0, |ui| glyph_text_button(ui, Glyph::Tri(Dir::Up), ""))
+                        .inner
+                        .on_hover_text("Move up");
+                    if up.clicked() {
+                        swap = Some((i, i - 1));
+                    }
+                    let down = ui
+                        .add_enabled_ui(i + 1 < n, |ui| glyph_text_button(ui, Glyph::Tri(Dir::Down), ""))
+                        .inner
+                        .on_hover_text("Move down");
+                    if down.clicked() {
+                        swap = Some((i, i + 1));
+                    }
+                    let del = crate::ui::markers_ui::x_button(ui).on_hover_text("Remove this effect");
+                    if del.clicked() {
+                        remove = Some(i);
+                    }
+                    #[cfg(test)]
+                    {
+                        test_rects::push(format!("up{i}"), up.rect);
+                        test_rects::push(format!("down{i}"), down.rect);
+                        test_rects::push(format!("del{i}"), del.rect);
+                    }
                 });
-                ui.end_row();
-            }
-        });
+            })
+            .body(|ui| {
+                // when it runs inside the clip — 0 length means "to the end", which is what every effect
+                // that predates this row already says
+                ui.horizontal(|ui| {
+                    ui.label("From");
+                    let r = ui.add(
+                        DragValue::new(&mut fx.start)
+                            .range(0.0..=dur)
+                            .clamp_existing_to_range(false)
+                            .speed(dur / 200.0)
+                            .suffix(" s"),
+                    );
+                    #[cfg(test)]
+                    test_rects::push(format!("fxstart{i}"), r.rect);
+                    g.note(&r);
+                    ui.label("for");
+                    let r = ui
+                        .add(
+                            DragValue::new(&mut fx.len)
+                                .range(0.0..=dur)
+                                .clamp_existing_to_range(false)
+                                .speed(dur / 200.0)
+                                .suffix(" s"),
+                        )
+                        .on_hover_text("0 = to the end of the clip");
+                    #[cfg(test)]
+                    test_rects::push(format!("fxlen{i}"), r.rect);
+                    g.note(&r);
+                    if fx.len <= 0.0 {
+                        ui.weak("(rest of the clip)");
+                    }
+                });
+                if fx.kind == EffectKind::Tint && fx.params.len() >= 3 {
+                    ui.horizontal(|ui| {
+                        ui.label("Colour");
+                        let mut rgb = [fx.params[0].at(lt) as u8, fx.params[1].at(lt) as u8, fx.params[2].at(lt) as u8];
+                        let r = ui.color_edit_button_srgb(&mut rgb);
+                        if r.changed() {
+                            for (a, v) in fx.params.iter_mut().zip(rgb) {
+                                a.set_at(lt, v as f64);
+                            }
+                        }
+                        g.note(&r);
+                    });
+                }
+                // the effect's own mask: same grid as the inspector's clip mask, so it can be shaped
+                // without the viewport (the mask tool only ever edits clip.mask)
+                if let Some(m) = fx.mask.as_mut().filter(|_| maskable) {
+                    let _r =
+                        ui.scope(|ui| mask_grid(ui, m, lt, palette, &mut g, egui::Id::new(("fx_mask", i)))).response;
+                    #[cfg(test)]
+                    test_rects::push(format!("maskgrid{i}"), _r.rect);
+                }
+                let kind = fx.kind;
+                Grid::new(("fx_params", i)).num_columns(2).show(ui, |ui| {
+                    for (j, spec) in kind.params().iter().enumerate() {
+                        let Some(a) = fx.params.get_mut(j) else { continue };
+                        ui.label(spec.name);
+                        ui.horizontal(|ui| {
+                            let mut v = a.at(lt);
+                            let r = if kind == EffectKind::Wobble && spec.name == "Motion" {
+                                // a named waveform reads better than 0..4 (Sine / Layered / Cubic / …)
+                                let names = crate::model::WOBBLE_MOTIONS;
+                                let cur = (v.round().clamp(0.0, (names.len() - 1) as f64)) as usize;
+                                let mut sel = cur;
+                                let inner = egui::ComboBox::from_id_salt(("wobble_motion", i))
+                                    .selected_text(names[cur])
+                                    .width(96.0)
+                                    .show_ui(ui, |ui| {
+                                        for (k, n) in names.iter().enumerate() {
+                                            ui.selectable_value(&mut sel, k, *n);
+                                        }
+                                    });
+                                let mut r = inner.response;
+                                if sel != cur {
+                                    v = sel as f64;
+                                    r.mark_changed();
+                                }
+                                r
+                            } else if kind.is_bool_param(j) {
+                                // stored as 0/1 — a checkbox is the honest widget (Flip H/V, "Show mask", …)
+                                let mut on = v >= 0.5;
+                                let r = ui.checkbox(&mut on, "");
+                                if r.changed() {
+                                    v = if on { 1.0 } else { 0.0 };
+                                }
+                                r
+                            } else {
+                                // clamp_existing_to_range(false): clamping an out-of-range stored value
+                                // reports `changed()`, which would fake an edit just by drawing the panel.
+                                let mut dv = DragValue::new(&mut v)
+                                    .range(spec.min..=spec.max)
+                                    .clamp_existing_to_range(false)
+                                    .speed((spec.max - spec.min) / 200.0);
+                                if kind == EffectKind::Wobble {
+                                    dv = dv.suffix(wobble_suffix(spec.name));
+                                }
+                                ui.add(dv)
+                            };
+                            #[cfg(test)]
+                            test_rects::push(format!("param{i}_{j}"), r.rect);
+                            if r.changed() {
+                                a.set_at(lt, v);
+                            }
+                            g.note(&r);
+                            key_buttons(ui, a, lt, palette, &mut g, (i, j));
+                        });
+                        ui.end_row();
+                    }
+                });
+            });
     }
     if let Some(i) = copy {
         PARAM_CLIP.with(|c| *c.borrow_mut() = clip.effects.get(i).cloned());

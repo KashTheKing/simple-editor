@@ -1592,6 +1592,14 @@ impl App {
                     self.set_project(Project::new(), None);
                 }
             }
+            ToolSelect | ToolText | ToolDraw | ToolMask | ToolMarker | ToolCut | ToolStretch => {
+                // normally already consumed by tools::handle_hotkeys before this table is polled; this
+                // arm only fires for a caller that dispatches the action directly (scripting/MCP).
+                if let Some(t) = tools::tool_for_action(a, self.tools.tool) {
+                    self.tools.tool = t;
+                    self.layout.reveal(Pane::Tools);
+                }
+            }
             OpenFile => self.act_open_file(),
             OpenProject => self.act_open_project(),
             Save => self.act_save(),
@@ -2657,8 +2665,8 @@ impl App {
                 let was = self.tools.recording;
                 let snap_was = self.settings.snap;
                 {
-                    let App { tools: st, palette, settings, .. } = self;
-                    tools::show(ui, st, palette, &mut settings.snap);
+                    let App { tools: st, palette, settings, hotkeys, .. } = self;
+                    tools::show(ui, st, palette, &mut settings.snap, hotkeys);
                 }
                 if self.tools.recording != was {
                     self.toggle_draw_recording(self.tools.recording);
@@ -3559,9 +3567,11 @@ impl App {
         let text = self.hotkeys.text(a);
         let glyph = self.glyph_for(a);
         // ponytail: the glyph is painted over a left gutter made of spaces in the label — that keeps
-        // egui's own menu-button sizing/shortcut layout instead of reimplementing the widget
+        // egui's own menu-button sizing/shortcut layout instead of reimplementing the widget.
+        // Gutter must clear the 24px-wide icon box drawn below (starts at +4px); at the 13px menu
+        // font a space is ~3px wide, so 5 spaces (~15px) undershot it and the label crowded the icon.
         let label = match glyph {
-            Some(_) => format!("     {}", a.label()),
+            Some(_) => format!("         {}", a.label()),
             None => a.label().to_string(),
         };
         let b = egui::Button::new(label).shortcut_text(text);
@@ -3695,7 +3705,8 @@ impl App {
                     if ui.button(name).clicked() {
                         ui.close();
                         self.layout.push_undo(self.layout.to_json());
-                        let (undo, redo) = (std::mem::take(&mut self.layout.undo), std::mem::take(&mut self.layout.redo));
+                        let (undo, redo) =
+                            (std::mem::take(&mut self.layout.undo), std::mem::take(&mut self.layout.redo));
                         self.layout = make();
                         (self.layout.undo, self.layout.redo) = (undo, redo);
                         self.layout_dirty = true;
@@ -3896,6 +3907,13 @@ impl App {
                 self.menu_item(ui, CopyAttributes, has_sel, &mut out);
                 self.menu_item(ui, PasteAttributes, has_sel && self.attrs.is_some(), &mut out);
                 ui.separator();
+                self.menu_item(ui, MarkIn, true, &mut out);
+                self.menu_item(ui, MarkOut, true, &mut out);
+                self.menu_item(ui, ClearInOut, true, &mut out);
+                self.menu_item(ui, TrimToInOut, has_clips, &mut out);
+                self.menu_item(ui, RippleDeleteInOut, has_clips, &mut out);
+            });
+            ui.menu_button("Clip", |ui| {
                 self.menu_item(ui, AddText, true, &mut out);
                 self.menu_item(ui, AddShape, true, &mut out);
                 self.menu_item(ui, AddAdjustment, true, &mut out);
@@ -3911,12 +3929,6 @@ impl App {
                 self.menu_item(ui, OpenParentSequence, self.project.editing.is_some(), &mut out);
                 self.menu_item(ui, SaveTemplate, has_sel, &mut out);
                 self.menu_item(ui, ApplyFlow, self.selection.len() == 2, &mut out);
-                ui.separator();
-                self.menu_item(ui, MarkIn, true, &mut out);
-                self.menu_item(ui, MarkOut, true, &mut out);
-                self.menu_item(ui, ClearInOut, true, &mut out);
-                self.menu_item(ui, TrimToInOut, has_clips, &mut out);
-                self.menu_item(ui, RippleDeleteInOut, has_clips, &mut out);
             });
             ui.menu_button("Timeline", |ui| {
                 self.menu_item(ui, AddVideoTrack, true, &mut out);
@@ -4312,7 +4324,10 @@ impl App {
             }
             // buffering: the clock is held while the read-ahead refills — say so over the video
             if buffering {
-                ui.put(egui::Rect::from_center_size(lb.center(), egui::vec2(32.0, 32.0)), egui::Spinner::new().size(32.0));
+                ui.put(
+                    egui::Rect::from_center_size(lb.center(), egui::vec2(32.0, 32.0)),
+                    egui::Spinner::new().size(32.0),
+                );
                 ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
             }
             if !has_video {
@@ -5972,7 +5987,7 @@ impl eframe::App for App {
         // hotkeys
         // the tool strip claims the bare letters (V/T/D/M, Shift+S) before the action table is polled, so
         // a rebound action can never shadow a tool
-        if let Some(t) = tools::handle_hotkeys(ctx, &mut self.tools) {
+        if let Some(t) = tools::handle_hotkeys(ctx, &self.hotkeys, &mut self.tools) {
             self.tools.tool = t;
             self.layout.reveal(Pane::Tools);
         }
