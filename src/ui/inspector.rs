@@ -112,7 +112,7 @@ pub fn show(
     playhead: f64,
     fonts: &[String],
     palette: &Palette,
-    settings: &Settings,
+    settings: &mut Settings,
     undo: &mut dyn FnMut(&Project),
 ) -> bool {
     match selection.iter().find(|&&id| project.clip(id).is_some()) {
@@ -124,7 +124,7 @@ pub fn show(
 fn project_section(
     ui: &mut egui::Ui,
     project: &mut Project,
-    settings: &Settings,
+    settings: &mut Settings,
     undo: &mut dyn FnMut(&Project),
 ) -> bool {
     let mut edited = false;
@@ -166,6 +166,86 @@ fn project_section(
         ui.label("Duration");
         ui.monospace(timecode(project.duration(), project.fps));
         ui.end_row();
+    });
+
+    ui.separator();
+    ui.strong("Presets");
+    ui.horizontal_wrapped(|ui| {
+        for p in crate::ui::guides::PRESETS {
+            let active = project.width == p.w && project.height == p.h;
+            let r = crate::ui::tools::glyph_text_button(ui, p.glyph, p.name).on_hover_text(format!(
+                "{}×{}{}",
+                p.w,
+                p.h,
+                if p.guide.is_some() { " · shows the platform guide overlay" } else { "" }
+            ));
+            if active {
+                ui.painter().rect_stroke(
+                    r.rect,
+                    2.0,
+                    egui::Stroke::new(1.0, ui.visuals().selection.stroke.color),
+                    egui::StrokeKind::Inside,
+                );
+            }
+            if r.clicked() {
+                undo(project);
+                project.width = p.w;
+                project.height = p.h;
+                edited = true;
+                if p.guide.is_some() {
+                    settings.guide = p.guide;
+                    settings.save();
+                }
+            }
+        }
+    });
+
+    // user templates: apply / delete, plus "save current as template" with an inline name field
+    if !settings.project_templates.is_empty() {
+        ui.add_space(4.0);
+        ui.strong("Templates");
+        let mut delete = None;
+        for (i, t) in settings.project_templates.iter().enumerate() {
+            ui.horizontal(|ui| {
+                let r = crate::ui::tools::glyph_text_button(ui, crate::ui::tools::Glyph::Template, &t.name)
+                    .on_hover_text(format!("{}×{} @ {} fps", t.width, t.height, t.fps));
+                if r.clicked() {
+                    undo(project);
+                    project.width = t.width;
+                    project.height = t.height;
+                    project.fps = t.fps;
+                    edited = true;
+                }
+                if ui.small_button("✕").on_hover_text("Delete template").clicked() {
+                    delete = Some(i);
+                }
+            });
+        }
+        if let Some(i) = delete {
+            settings.project_templates.remove(i);
+            settings.save();
+        }
+    }
+    ui.horizontal(|ui| {
+        let id = ui.id().with("tmpl_name");
+        let mut name = ui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_default();
+        let hint = format!("{}×{}", project.width, project.height);
+        ui.add(egui::TextEdit::singleline(&mut name).hint_text(&hint).desired_width(120.0));
+        if ui.button("Save as template").on_hover_text("Save the current size and FPS as a reusable template").clicked()
+        {
+            let name = if name.trim().is_empty() { hint } else { name.trim().to_string() };
+            settings.project_templates.retain(|t| t.name != name);
+            settings.project_templates.push(crate::settings::ProjectTemplate {
+                name,
+                width: project.width,
+                height: project.height,
+                fps: project.fps,
+            });
+            settings.save();
+            ui.data_mut(|d| d.remove::<String>(id));
+        } else {
+            ui.data_mut(|d| d.insert_temp(id, name));
+        }
     });
 
     ui.separator();
@@ -926,7 +1006,7 @@ mod tests {
                         *undos += 1;
                         assert_eq!(pre.clip(id).unwrap().pan.value, 0.0, "undo sees the pre-edit project");
                     };
-                    show(ui, p, &[id], 1.0, &fonts, &palette, &Settings::default(), &mut undo);
+                    show(ui, p, &[id], 1.0, &fonts, &palette, &mut Settings::default(), &mut undo);
                 });
             });
         };
@@ -967,7 +1047,7 @@ mod tests {
             let _ = ctx.run(input, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut undo = |_: &Project| {};
-                    show(ui, p, &[id], 1.0, &fonts, &palette, &Settings::default(), &mut undo);
+                    show(ui, p, &[id], 1.0, &fonts, &palette, &mut Settings::default(), &mut undo);
                 });
             });
         };
@@ -1002,7 +1082,7 @@ mod tests {
             let mut p = Project::new();
             let palette = Palette::new(true, egui::Color32::WHITE);
             let fonts: Vec<String> = Vec::new();
-            let settings = Settings::default();
+            let mut settings = Settings::default();
             let ctx = egui::Context::default();
             let mut frame = |events: Vec<egui::Event>, p: &mut Project| {
                 let input = egui::RawInput {
@@ -1013,7 +1093,7 @@ mod tests {
                 let mut undo = |_: &Project| {};
                 let _ = ctx.run(input, |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
-                        show(ui, p, &[], 1.0, &fonts, &palette, &settings, &mut undo);
+                        show(ui, p, &[], 1.0, &fonts, &palette, &mut settings, &mut undo);
                     });
                 });
             };
@@ -1065,7 +1145,7 @@ mod tests {
                 }
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut undo = |_: &Project| *undos += 1;
-                    edited = show(ui, p, &[id], 1.0, &[], &palette, &Settings::default(), &mut undo);
+                    edited = show(ui, p, &[id], 1.0, &[], &palette, &mut Settings::default(), &mut undo);
                 });
             });
             edited
@@ -1119,7 +1199,7 @@ mod tests {
             let _ = ctx.run(input, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut undo = |_: &Project| *undos += 1;
-                    changed |= show(ui, project, &[id], 1.0, &[], &pal, &Settings::default(), &mut undo);
+                    changed |= show(ui, project, &[id], 1.0, &[], &pal, &mut Settings::default(), &mut undo);
                 });
             });
             changed
@@ -1252,7 +1332,7 @@ mod tests {
                 let _ = ctx.run(egui::RawInput::default(), |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
                         let mut undo = |_: &Project| panic!("no undo without edits");
-                        assert!(!show(ui, &mut p, &[sel], 1.0, &fonts, &palette, &Settings::default(), &mut undo));
+                        assert!(!show(ui, &mut p, &[sel], 1.0, &fonts, &palette, &mut Settings::default(), &mut undo));
                     });
                 });
             }

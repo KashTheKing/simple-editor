@@ -204,6 +204,18 @@ pub(crate) enum Glyph {
     FloppyDisk,
     /// A console window: '>' prompt and an underscore.
     Terminal,
+    /// A wide 16:9 outline — landscape format.
+    Landscape,
+    /// A tall 9:16 outline — portrait / vertical format.
+    Portrait,
+    /// A square outline — 1:1 format.
+    Square,
+    /// A rounded rectangle with a play triangle — YouTube-style video badge.
+    PlayRect,
+    /// A 2x2 grid of rounded squares — a feed / profile grid.
+    GridIcon,
+    /// A frame with corner brackets and a centre tick — the social-guide overlay.
+    Guides,
 }
 
 impl Glyph {
@@ -283,6 +295,12 @@ impl Glyph {
         Glyph::UndoArrow(Dir::Right),
         Glyph::FloppyDisk,
         Glyph::Terminal,
+        Glyph::Landscape,
+        Glyph::Portrait,
+        Glyph::Square,
+        Glyph::PlayRect,
+        Glyph::GridIcon,
+        Glyph::Guides,
     ];
 
     /// Stable lower-case name of the variant, kept in sync with `from_name` — what a saved icon
@@ -366,6 +384,12 @@ impl Glyph {
             Glyph::UndoArrow(_) => "redo",
             Glyph::FloppyDisk => "floppy-disk",
             Glyph::Terminal => "terminal",
+            Glyph::Landscape => "landscape",
+            Glyph::Portrait => "portrait",
+            Glyph::Square => "square",
+            Glyph::PlayRect => "play-rect",
+            Glyph::GridIcon => "grid",
+            Glyph::Guides => "guides",
         }
     }
 
@@ -1350,6 +1374,63 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
             p.line_segment([c + egui::vec2(-4.5, -2.5), c + egui::vec2(-2.0, 0.0)], stroke);
             p.line_segment([c + egui::vec2(-2.0, 0.0), c + egui::vec2(-4.5, 2.5)], stroke);
             p.line_segment([c + egui::vec2(0.0, 2.5), c + egui::vec2(3.5, 2.5)], stroke);
+        }
+        Glyph::Landscape => {
+            p.rect_stroke(
+                egui::Rect::from_center_size(c, egui::vec2(14.0, 8.0)),
+                CornerRadius::same(1),
+                stroke,
+                StrokeKind::Inside,
+            );
+        }
+        Glyph::Portrait => {
+            p.rect_stroke(
+                egui::Rect::from_center_size(c, egui::vec2(8.0, 14.0)),
+                CornerRadius::same(1),
+                stroke,
+                StrokeKind::Inside,
+            );
+        }
+        Glyph::Square => {
+            p.rect_stroke(
+                egui::Rect::from_center_size(c, egui::vec2(11.0, 11.0)),
+                CornerRadius::same(1),
+                stroke,
+                StrokeKind::Inside,
+            );
+        }
+        Glyph::PlayRect => {
+            p.rect_stroke(
+                egui::Rect::from_center_size(c, egui::vec2(14.0, 10.0)),
+                CornerRadius::same(3),
+                stroke,
+                StrokeKind::Inside,
+            );
+            p.add(egui::Shape::convex_polygon(tri(c, Dir::Right, 2.6, 2.4), fg, Stroke::NONE));
+        }
+        Glyph::GridIcon => {
+            for (dx, dy) in [(-3.5, -3.5), (3.5, -3.5), (-3.5, 3.5), (3.5, 3.5)] {
+                p.rect_stroke(
+                    egui::Rect::from_center_size(c + egui::vec2(dx, dy), egui::vec2(5.5, 5.5)),
+                    CornerRadius::same(1),
+                    stroke,
+                    StrokeKind::Inside,
+                );
+            }
+        }
+        // four corner brackets around a small safe-zone rect
+        Glyph::Guides => {
+            for (sx, sy) in [(-1.0f32, -1.0f32), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+                let corner = c + egui::vec2(sx * 7.0, sy * 6.0);
+                p.line_segment([corner, corner - egui::vec2(sx * 4.0, 0.0)], stroke);
+                p.line_segment([corner, corner - egui::vec2(0.0, sy * 4.0)], stroke);
+            }
+            p.rect_stroke(
+                egui::Rect::from_center_size(c, egui::vec2(7.0, 6.0)),
+                CornerRadius::ZERO,
+                Stroke::new(1.0, fg),
+                StrokeKind::Inside,
+            );
         }
     }
 }

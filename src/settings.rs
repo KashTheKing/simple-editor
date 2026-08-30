@@ -70,6 +70,15 @@ pub struct Template {
     pub json: String,
 }
 
+/// A saved project format ("My podcast 4K"): applied from the inspector's Presets section.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ProjectTemplate {
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    pub fps: f64,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -164,6 +173,10 @@ pub struct Settings {
     pub whisper_dir: String,
     /// Model the Subtitles pane offers first: a `engine::transcribe::MODELS` name or file name.
     pub transcribe_model: String,
+    /// Social-guide overlay drawn over the preview (None = off). A view preference, not project data.
+    pub guide: Option<crate::ui::guides::Guide>,
+    /// User-saved project formats, applied from the inspector's Presets section.
+    pub project_templates: Vec<ProjectTemplate>,
 }
 
 impl Default for Settings {
@@ -220,6 +233,8 @@ impl Default for Settings {
             palette: PaletteOverride::default(),
             whisper_dir: String::new(),
             transcribe_model: String::new(),
+            guide: None,
+            project_templates: Vec::new(),
         }
     }
 }

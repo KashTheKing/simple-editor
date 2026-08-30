@@ -97,6 +97,8 @@ pub struct PreviewCtx<'a> {
     /// Tracker box of the Tracking pane (centre + half sizes, project px relative to the canvas
     /// centre) while that pane is on screen — drawn here and dragged to place the template.
     pub tracker: Option<(f32, f32, f32, f32)>,
+    /// Social-guide overlay to draw over the video (settings.guide).
+    pub guide: Option<crate::ui::guides::Guide>,
 }
 
 #[derive(Default)]
@@ -122,6 +124,8 @@ pub struct PreviewResponse {
     pub mask_edit: bool,
     /// The tracker box was dragged to this centre (project px relative to the canvas centre).
     pub set_tracker: Option<(f32, f32)>,
+    /// The user picked a social guide from the transport button (Some(None) = off).
+    pub set_guide: Option<Option<crate::ui::guides::Guide>>,
 }
 
 pub fn show(ui: &mut egui::Ui, state: &mut PreviewState, mut c: PreviewCtx<'_>) -> PreviewResponse {
@@ -218,6 +222,28 @@ fn transport(ui: &mut egui::Ui, state: &mut PreviewState, c: &PreviewCtx<'_>, r:
             {
                 r.set_movie_mode = Some(!c.movie_mode);
             }
+            // social-guide overlay picker
+            let gr = crate::ui::tools::icon_button(
+                ui,
+                c.palette,
+                ui.id().with("guide"),
+                Glyph::Guides,
+                "Social guide overlay",
+                c.guide.is_some(),
+            );
+            egui::Popup::menu(&gr).show(|ui| {
+                use crate::ui::guides::Guide;
+                let mut pick = |ui: &mut egui::Ui, label: &str, v: Option<Guide>| {
+                    if ui.radio(c.guide == v, label).clicked() {
+                        r.set_guide = Some(v);
+                        ui.close();
+                    }
+                };
+                pick(ui, "Off", None);
+                for g in Guide::ALL {
+                    pick(ui, g.name(), Some(g));
+                }
+            });
             b(ui, Some(Glyph::Fullscreen), "Fullscreen", Action::Fullscreen);
         })
         .response;
@@ -504,6 +530,16 @@ fn video(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r:
     let (cw, ch) = ((lb.width() * ppp).round().max(16.0) as u32, (lb.height() * ppp).round().max(16.0) as u32);
     r.canvas = (cw, ch);
 
+    // social-guide overlay: painted on the Foreground layer so it sits over the video, the selection
+    // outline and the tracker box, in windowed and fullscreen preview alike
+    if let Some(g) = c.guide {
+        let gp = ui
+            .ctx()
+            .layer_painter(egui::LayerId::new(egui::Order::Foreground, ui.id().with("social_guide")))
+            .with_clip_rect(rect);
+        crate::ui::guides::draw_guide(&gp, lb, g, c.palette);
+    }
+
     if let Some(f) = &c.frame {
         let (w, h) = (f.width as usize, f.height as usize);
         if w > 0 && h > 0 && f.rgba.len() == w * h * 4 {
@@ -778,6 +814,7 @@ mod tests {
                             buffering: false,
                             proxy: None,
                             tracker: None,
+                            guide: None,
                         },
                     );
                 });
