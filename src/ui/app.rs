@@ -99,6 +99,8 @@ pub struct App {
     profile_name: Option<String>,
     fullscreen: bool,
     selection: Vec<Id>,
+    /// Selected transitions (timeline bands) — separate from the clip selection.
+    sel_transitions: Vec<Id>,
     playhead: f64,
     export: Option<(Arc<Progress>, ExportKind)>,
     encoders: Vec<String>,
@@ -839,6 +841,7 @@ impl App {
             profile_name: None,
             fullscreen: false,
             selection: Vec::new(),
+            sel_transitions: Vec::new(),
             playhead: 0.0,
             export: None,
             encoders: Vec::new(),
@@ -1629,8 +1632,12 @@ impl App {
             }
             Delete | RippleDelete => {
                 let ids = self.project.expand_links(&self.selection);
-                if !ids.is_empty() {
+                let trs = std::mem::take(&mut self.sel_transitions);
+                if !ids.is_empty() || !trs.is_empty() {
                     self.push_undo();
+                    for tid in trs {
+                        self.project.remove_transition(tid);
+                    }
                     self.project.delete_clips(&ids, a == RippleDelete);
                     self.selection.clear();
                     self.after_edit();
@@ -1749,7 +1756,7 @@ impl App {
                         self.after_edit();
                         self.toast(format!("{} ({dur:.2} s)", kind.name()));
                     } else {
-                        self.toast("No abutting left neighbour — transitions sit on a cut");
+                        self.toast("Could not add a transition here");
                     }
                 }
             }
@@ -1930,10 +1937,8 @@ impl App {
                     if added > 0 {
                         push_undo_json(&mut self.undo, &mut self.redo, snap);
                         self.after_edit();
-                    } else if at_end {
-                        self.toast("Nothing abuts the end of this clip — transitions sit on a cut");
                     } else {
-                        self.toast("No abutting left neighbour — transitions sit on a cut");
+                        self.toast("Could not add a transition here");
                     }
                 }
             }
@@ -2162,6 +2167,7 @@ impl App {
                     let App {
                         project,
                         selection,
+                        sel_transitions,
                         playhead,
                         undo,
                         redo,
@@ -2187,6 +2193,7 @@ impl App {
                         timeline::TimelineCtx {
                             project,
                             selection,
+                            sel_transitions,
                             playhead,
                             undo: &mut push,
                             waveforms,
@@ -2270,7 +2277,7 @@ impl App {
                                         self.after_edit();
                                         self.toast(format!("{} ({dur:.2} s)", kind.name()));
                                     } else {
-                                        self.toast("No abutting clip on that side — transitions sit on a cut");
+                                        self.toast("Could not add a transition here");
                                     }
                                 }
                                 None => self.toast("Drop a transition on the clip beside the cut"),
@@ -2416,12 +2423,23 @@ impl App {
             }
             Pane::Inspector => {
                 let changed = {
-                    let App { project, selection, playhead, undo, redo, fonts, palette, settings, .. } = self;
+                    let App {
+                        project, selection, sel_transitions, playhead, undo, redo, fonts, palette, settings, ..
+                    } = self;
                     let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
                     let mut changed = false;
                     egui::ScrollArea::vertical().show(ui, |ui| {
-                        changed =
-                            inspector::show(ui, project, selection, *playhead, fonts, palette, settings, &mut push);
+                        changed = inspector::show(
+                            ui,
+                            project,
+                            selection,
+                            sel_transitions,
+                            *playhead,
+                            fonts,
+                            palette,
+                            settings,
+                            &mut push,
+                        );
                     });
                     changed
                 };
@@ -4610,7 +4628,12 @@ impl App {
                     k => return Err(format!("unknown transition kind '{k}'")),
                 };
                 let dur = arg_f64(args, "duration").unwrap_or(1.0);
-                let id = self.project.add_transition(right, kind, dur).ok_or("no abutting left neighbour")?;
+                // no abutting left neighbour → the clip blends in from nothing instead
+                let id = self
+                    .project
+                    .add_transition(right, kind, dur)
+                    .or_else(|| self.project.add_edge_transition(right, kind, dur, false))
+                    .ok_or("clip not found")?;
                 self.transitions_ui.remember(kind, dur); // Ctrl+T repeats this one too
                 Ok(json!({"ok": true, "transition_id": id}))
             }
@@ -5981,8 +6004,10 @@ mod tests {
         assert_eq!(st.kind(), TransitionKind::Wipe, "Ctrl+T follows whatever went through the funnel");
         let tr = p.tracks[0].transitions.iter().find(|t| t.right == ids2[0]).expect("second transition");
         assert_eq!((tr.kind, tr.duration), (TransitionKind::Wipe, 0.4));
-        // nothing abuts the very first clip's left edge
-        assert_eq!(add(&mut p, &[first], &mut st, TransitionKind::Wipe, 0.4, false), 0);
+        // nothing abuts the very first clip's left edge → it blends in from nothing instead
+        assert_eq!(add(&mut p, &[first], &mut st, TransitionKind::Wipe, 0.4, false), 1);
+        let tr = p.tracks[0].transitions.iter().find(|t| t.right == first).expect("edge transition");
+        assert_eq!(tr.edge, crate::model::TransitionEdge::In);
     }
 
     #[test]

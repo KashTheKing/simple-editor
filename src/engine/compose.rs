@@ -115,21 +115,17 @@ impl Extra {
     const NONE: Extra = Extra { opacity: 1.0, dx: 0.0, dy: 0.0, fade: 0.0, color: [0, 0, 0, 255] };
 }
 
-/// Half-width of a transition window, clamped so it never reaches past either clip of the cut.
-/// `Transition::duration` is not clamped when it is set, and an over-long window would otherwise hide
-/// every other clip on the track (and keep both clips playing past their own ends).
-pub fn trans_half(tr: &Transition, left: &Clip, right: &Clip) -> f64 {
-    tr.half(left, right)
-}
-
 /// Eased progress 0..1 across a transition window of `cut ± half`.
 pub fn trans_progress_at(tr: &Transition, cut: f64, half: f64, t: f64) -> f64 {
     tr.progress_at(cut, half, t)
 }
 
-/// Eased progress 0..1 over the clamped window.
-pub fn trans_progress(tr: &Transition, left: &Clip, right: &Clip, t: f64) -> f64 {
-    tr.progress(left, right, t)
+/// Eased progress 0..1 over the clamped window of any placement (edge transitions have one side).
+pub fn trans_progress(tr: &Transition, left: Option<&Clip>, right: Option<&Clip>, t: f64) -> f64 {
+    match tr.cut_half(left, right) {
+        Some((cut, h)) => tr.progress_at(cut, h, t),
+        None => 1.0,
+    }
 }
 
 /// Mute/solo resolution over an arbitrary track list (mirrors `Project::active`).
@@ -271,15 +267,16 @@ impl Compositor {
         }
     }
 
-    /// Blend the two clips of a transition per kind at progress `tr.progress`.
+    /// Blend the two sides of a transition per kind at progress `tr.progress`. Edge transitions have
+    /// one side missing (In: no left, Out: no right): that side is nothing — the black canvas.
     #[allow(clippy::too_many_arguments)]
     fn render_transition(
         &mut self,
         project: &Project,
         pw: u32,
         tr: &Transition,
-        left: &Clip,
-        right: &Clip,
+        left: Option<&Clip>,
+        right: Option<&Clip>,
         t: f64,
         w: u32,
         h: u32,
@@ -291,41 +288,61 @@ impl Compositor {
         let p = trans_progress(tr, left, right, t) as f32;
         match tr.kind {
             TransitionKind::CrossFade => {
-                self.render_clip(project, pw, left, t, w, h, pool, text, out, depth, Extra::NONE);
-                self.render_clip(
-                    project,
-                    pw,
-                    right,
-                    t,
-                    w,
-                    h,
-                    pool,
-                    text,
-                    out,
-                    depth,
-                    Extra { opacity: p, ..Extra::NONE },
-                );
+                if let Some(left) = left {
+                    // fading out to nothing, the outgoing clip itself thins; on a cut it stays opaque
+                    let op = if right.is_none() { 1.0 - p } else { 1.0 };
+                    let e = Extra { opacity: op, ..Extra::NONE };
+                    self.render_clip(project, pw, left, t, w, h, pool, text, out, depth, e);
+                }
+                if let Some(right) = right {
+                    let e = Extra { opacity: p, ..Extra::NONE };
+                    self.render_clip(project, pw, right, t, w, h, pool, text, out, depth, e);
+                }
             }
             TransitionKind::FadeToColor => {
-                // A→colour for p < 0.5, colour→B after
-                let (clip, fade) = if p < 0.5 { (left, 2.0 * p) } else { (right, 2.0 * (1.0 - p)) };
+                // A→colour for p < 0.5, colour→B after; an edge fades one clip over the whole window
+                let (clip, fade) = match (left, right) {
+                    (Some(l), Some(r)) => {
+                        if p < 0.5 {
+                            (l, 2.0 * p)
+                        } else {
+                            (r, 2.0 * (1.0 - p))
+                        }
+                    }
+                    (Some(l), None) => (l, p),
+                    (None, Some(r)) => (r, 1.0 - p),
+                    (None, None) => return,
+                };
                 let extra = Extra { fade: fade.clamp(0.0, 1.0), color: tr.color, ..Extra::NONE };
                 self.render_clip(project, pw, clip, t, w, h, pool, text, out, depth, extra);
             }
             TransitionKind::Push => {
                 let (dx, dy) = dir_vec(tr.direction, w, h);
-                let a = Extra { dx: -p * dx, dy: -p * dy, ..Extra::NONE };
-                let b = Extra { dx: (1.0 - p) * dx, dy: (1.0 - p) * dy, ..Extra::NONE };
-                self.render_clip(project, pw, left, t, w, h, pool, text, out, depth, a);
-                self.render_clip(project, pw, right, t, w, h, pool, text, out, depth, b);
+                if let Some(left) = left {
+                    let a = Extra { dx: -p * dx, dy: -p * dy, ..Extra::NONE };
+                    self.render_clip(project, pw, left, t, w, h, pool, text, out, depth, a);
+                }
+                if let Some(right) = right {
+                    let b = Extra { dx: (1.0 - p) * dx, dy: (1.0 - p) * dy, ..Extra::NONE };
+                    self.render_clip(project, pw, right, t, w, h, pool, text, out, depth, b);
+                }
             }
             TransitionKind::Wipe => {
-                self.render_clip(project, pw, left, t, w, h, pool, text, out, depth, Extra::NONE);
+                if let Some(left) = left {
+                    self.render_clip(project, pw, left, t, w, h, pool, text, out, depth, Extra::NONE);
+                }
+                // tmp = what the incoming side looks like: the canvas with `right` drawn on it, or
+                // plain black when the clip wipes out to nothing
                 let mut tmp = std::mem::take(&mut self.wipe);
                 tmp.resize(w, h);
-                tmp.rgba.copy_from_slice(&out.rgba);
-                tmp.pts = out.pts;
-                self.render_clip(project, pw, right, t, w, h, pool, text, &mut tmp, depth, Extra::NONE);
+                match right {
+                    Some(right) => {
+                        tmp.rgba.copy_from_slice(&out.rgba);
+                        tmp.pts = out.pts;
+                        self.render_clip(project, pw, right, t, w, h, pool, text, &mut tmp, depth, Extra::NONE);
+                    }
+                    None => tmp.fill([0, 0, 0, 255]),
+                }
                 // copy the wiped region (where B has arrived) from tmp back into out
                 let (x0, x1, y0, y1) = match tr.direction {
                     0 => (0, (w as f32 * p) as u32, 0, h),         // from the left
@@ -364,7 +381,8 @@ impl Compositor {
         extra: Extra,
     ) {
         let lt = clip.local(t);
-        let opacity = clip.opacity.at(lt).clamp(0.0, 1.0) as f32 * extra.opacity;
+        // fade in/out: the same clip fields the mixer ramps, applied as opacity on visual layers
+        let opacity = clip.opacity.at(lt).clamp(0.0, 1.0) as f32 * extra.opacity * clip.fade_mult(lt) as f32;
         if opacity <= 0.0 {
             return;
         }
@@ -1365,6 +1383,7 @@ mod tests {
             color: [255, 255, 255, 255],
             direction: 0,
             ease: Ease::Linear,
+            edge: Default::default(),
         });
         let mut pool = DecoderPool::new(Backend::Ffmpeg);
         pool.insert_video("Z:\\nope\\fake.mp4", Box::new(FakeVideo([255, 0, 0, 255])));
@@ -1429,6 +1448,59 @@ mod tests {
         assert!(c[1] > 100 && c[1] < 155, "{c:?}");
     }
 
+    /// Edge transitions blend a lone clip from/to nothing: In fades up from black over the first
+    /// `duration` seconds, Out down to black over the last, and outside the windows the clip is solid.
+    #[test]
+    fn edge_transitions_fade_from_and_to_black() {
+        let (mut project, mut pool) = transition_project(TransitionKind::CrossFade, 1.0);
+        project.tracks[0].clips.remove(1); // lone red clip [0,2)
+        let clip = project.tracks[0].clips[0].id;
+        let tr = &mut project.tracks[0].transitions[0];
+        (tr.right, tr.edge, tr.duration) = (clip, crate::model::TransitionEdge::In, 0.5);
+        let out_id = project.new_id();
+        project.tracks[0].transitions.push(crate::model::Transition {
+            id: out_id,
+            right: clip,
+            kind: TransitionKind::CrossFade,
+            duration: 0.5,
+            color: [0, 0, 0, 255],
+            direction: 0,
+            ease: Ease::Linear,
+            edge: crate::model::TransitionEdge::Out,
+        });
+        let mut comp = Compositor::new();
+        let mut text = TextRasterizer::new();
+        let mut out = Frame::default();
+        comp.render(&project, 0.25, 64, 48, &mut pool, &mut text, &mut out);
+        let c = px(&out, 32, 24);
+        assert!((120..=135).contains(&c[0]) && c[2] == 0, "half-way up the fade-in: {c:?}");
+        comp.render(&project, 1.0, 64, 48, &mut pool, &mut text, &mut out);
+        assert_eq!(px(&out, 32, 24), [255, 0, 0, 255], "between the windows the clip is solid");
+        comp.render(&project, 1.875, 64, 48, &mut pool, &mut text, &mut out);
+        let c = px(&out, 32, 24);
+        assert!((55..=70).contains(&c[0]), "3/4 through the fade-out: {c:?}");
+    }
+
+    /// Video clips apply the fade in/out fields as an opacity ramp (the audio fade, on pixels).
+    #[test]
+    fn video_fades_ramp_opacity() {
+        let (mut project, mut pool) = transition_project(TransitionKind::CrossFade, 1.0);
+        project.tracks[0].transitions.clear();
+        project.tracks[0].clips.remove(1);
+        let c = &mut project.tracks[0].clips[0];
+        c.fade_in = 1.0;
+        c.fade_out = 1.0;
+        let mut comp = Compositor::new();
+        let mut text = TextRasterizer::new();
+        let mut out = Frame::default();
+        comp.render(&project, 0.5, 64, 48, &mut pool, &mut text, &mut out);
+        let c = px(&out, 32, 24);
+        assert!((120..=135).contains(&c[0]), "half faded in over black: {c:?}");
+        comp.render(&project, 1.75, 64, 48, &mut pool, &mut text, &mut out);
+        let c = px(&out, 32, 24);
+        assert!((55..=70).contains(&c[0]), "3/4 through the fade-out: {c:?}");
+    }
+
     #[test]
     fn transition_window_clamped_to_clips() {
         // A [0,2) red, B [2,3) green, C [3,5) blue with a 4 s transition on the A|B cut: the window is
@@ -1475,6 +1547,7 @@ mod tests {
             color: [255, 255, 255, 255],
             direction: 0,
             ease: Ease::Linear,
+            edge: Default::default(),
         });
         let mut pool = DecoderPool::new(Backend::Ffmpeg);
         let mut comp = Compositor::new();
