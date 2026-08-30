@@ -5856,8 +5856,9 @@ impl eframe::App for App {
                 let mut l = std::mem::replace(&mut self.layout, Layout::new(egui_tiles::Tree::empty("layout")));
                 // cloned: the draw closure needs self mutably while the tab renderer reads the icons
                 let icons = self.settings.icon_overrides.clone();
+                let cozy = self.settings.ui_look != "sharp";
                 let (changed, moved, set_icon) =
-                    layout::show(ctx, ui, &mut l, &icons, tab_bar, &mut |ui, pane| self.draw_pane(ui, pane));
+                    layout::show(ctx, ui, &mut l, &icons, tab_bar, cozy, &mut |ui, pane| self.draw_pane(ui, pane));
                 self.layout = l;
                 self.layout_dirty |= changed;
                 if moved {

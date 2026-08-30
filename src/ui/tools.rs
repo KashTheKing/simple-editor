@@ -1396,7 +1396,7 @@ pub(crate) fn color_chip<'a>(color: Color32, selected: bool, palette: &Palette) 
 }
 
 /// Readable text colour on top of the accent fill.
-fn on_accent(c: Color32) -> Color32 {
+pub(crate) fn on_accent(c: Color32) -> Color32 {
     let l = 0.299 * c.r() as f32 + 0.587 * c.g() as f32 + 0.114 * c.b() as f32;
     if l > 140.0 {
         Color32::BLACK

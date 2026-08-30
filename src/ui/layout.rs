@@ -424,6 +424,8 @@ struct Behaviour<'a> {
     set_icon: Vec<(Pane, Option<String>)>,
     /// Tab-bar fill when the editor background image shows through (else egui_tiles' default).
     tab_bar: Option<egui::Color32>,
+    /// Cozy look: rounded tab tops, accent fill for the active tab instead of an accent outline.
+    cozy: bool,
     edited: bool,
     dropped: bool,
 }
@@ -482,18 +484,35 @@ impl egui_tiles::Behavior<Pane> for Behaviour<'_> {
         let tab_response =
             ui.interact(tab_rect, id, egui::Sense::click_and_drag()).on_hover_cursor(self.tab_hover_cursor_icon());
         if ui.is_rect_visible(tab_rect) && !state.is_being_dragged {
-            let bg_color = self.tab_bg_color(ui.visuals(), tiles, tile_id, state);
-            let stroke = self.tab_outline_stroke(ui.visuals(), tiles, tile_id, state);
-            ui.painter().rect(tab_rect.shrink(0.5), 0.0, bg_color, stroke, egui::StrokeKind::Inside);
-            if state.active {
-                // connect the tab with its contents
-                ui.painter().hline(
-                    tab_rect.x_range(),
-                    tab_rect.bottom(),
-                    egui::Stroke::new(stroke.width + 1.0, bg_color),
-                );
+            let text_color;
+            if self.cozy {
+                // cozy: rounded top corners, no accent outline — the active tab IS the accent,
+                // inactive tabs only light up on hover
+                let accent = ui.visuals().widgets.active.bg_fill;
+                let r = egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 };
+                if state.active {
+                    ui.painter().rect_filled(tab_rect.shrink(0.5), r, accent);
+                    text_color = crate::ui::tools::on_accent(accent);
+                } else {
+                    if tab_response.hovered() {
+                        ui.painter().rect_filled(tab_rect.shrink(0.5), r, ui.visuals().widgets.hovered.weak_bg_fill);
+                    }
+                    text_color = self.tab_text_color(ui.visuals(), tiles, tile_id, state);
+                }
+            } else {
+                let bg_color = self.tab_bg_color(ui.visuals(), tiles, tile_id, state);
+                let stroke = self.tab_outline_stroke(ui.visuals(), tiles, tile_id, state);
+                ui.painter().rect(tab_rect.shrink(0.5), 0.0, bg_color, stroke, egui::StrokeKind::Inside);
+                if state.active {
+                    // connect the tab with its contents
+                    ui.painter().hline(
+                        tab_rect.x_range(),
+                        tab_rect.bottom(),
+                        egui::Stroke::new(stroke.width + 1.0, bg_color),
+                    );
+                }
+                text_color = self.tab_text_color(ui.visuals(), tiles, tile_id, state);
             }
-            let text_color = self.tab_text_color(ui.visuals(), tiles, tile_id, state);
             if let Some(g) = glyph {
                 let icon_rect = egui::Rect::from_min_size(
                     egui::pos2(tab_rect.left() + x_margin, tab_rect.top()),
@@ -626,6 +645,7 @@ pub fn show(
     layout: &mut Layout,
     icons: &BTreeMap<String, String>,
     tab_bar: Option<egui::Color32>,
+    cozy: bool,
     draw: &mut dyn FnMut(&mut egui::Ui, Pane),
 ) -> (bool, bool, Vec<(Pane, Option<String>)>) {
     // the drop happens inside tree.ui(), so grab the "before" state while a drag is still in flight
@@ -637,6 +657,7 @@ pub fn show(
         pop: Vec::new(),
         set_icon: Vec::new(),
         tab_bar,
+        cozy,
         edited: false,
         dropped: false,
     };
