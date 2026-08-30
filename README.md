@@ -10,7 +10,7 @@ anyone editing video for work or school. Everything the big paid apps give you, 
 the price tag.
 
 **[Download the latest release](https://github.com/KashTheKing/simple-editor/releases/latest)**
-(about 10 MB) and **[join the Discord](https://discord.gg/BFbyDqCbmh)**. This is a young project and
+(about 10 MB) and **[join the Discord](https://discord.gg/6taNJVs5FT)**. This is a young project and
 I want your feedback. Tell me what's broken, what's missing, what would make you switch for good.
 
 > **Beta software.** Most features are still being tested and polished daily. It's great for
