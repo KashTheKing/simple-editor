@@ -172,11 +172,12 @@ fn project_section(
     ui.strong("Presets");
     ui.horizontal_wrapped(|ui| {
         for p in crate::ui::guides::PRESETS {
-            let active = project.width == p.w && project.height == p.h;
+            let active = project.width == p.w && project.height == p.h && (project.fps - p.fps).abs() < 0.001;
             let r = crate::ui::tools::glyph_text_button(ui, p.glyph, p.name).on_hover_text(format!(
-                "{}×{}{}",
+                "{}×{} @ {:.0} fps{}",
                 p.w,
                 p.h,
+                p.fps,
                 if p.guide.is_some() { " · shows the platform guide overlay" } else { "" }
             ));
             if active {
@@ -191,11 +192,39 @@ fn project_section(
                 undo(project);
                 project.width = p.w;
                 project.height = p.h;
+                project.fps = p.fps;
                 edited = true;
                 if p.guide.is_some() {
                     settings.guide = p.guide;
                     settings.save();
                 }
+            }
+        }
+    });
+
+    // quality / frame-rate quick buttons: the tier keeps the current aspect (shorter edge = tier)
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Quality");
+        for &(name, tier) in crate::ui::guides::RES_TIERS {
+            let (w, h) = crate::ui::guides::scale_to_tier(project.width, project.height, tier);
+            let r = ui
+                .selectable_label(project.width == w && project.height == h, name)
+                .on_hover_text(format!("{w}×{h} (keeps the current aspect)"));
+            if r.clicked() {
+                undo(project);
+                (project.width, project.height) = (w, h);
+                edited = true;
+            }
+        }
+    });
+    ui.horizontal_wrapped(|ui| {
+        ui.label("FPS");
+        for &fps in crate::ui::guides::FPS_PRESETS {
+            let label = if fps.fract() == 0.0 { format!("{fps:.0}") } else { format!("{fps}") };
+            if ui.selectable_label((project.fps - fps).abs() < 0.001, label).clicked() {
+                undo(project);
+                project.fps = fps;
+                edited = true;
             }
         }
     });

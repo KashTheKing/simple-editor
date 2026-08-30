@@ -30,26 +30,44 @@ impl Guide {
 }
 
 /// A one-click project format in the inspector. `guide` = overlay auto-enabled when picked.
+/// Save and export follow the project's width/height/fps, so a preset carries through to the output.
 pub struct Preset {
     pub name: &'static str,
     pub glyph: Glyph,
     pub w: u32,
     pub h: u32,
+    pub fps: f64,
     pub guide: Option<Guide>,
 }
 
 pub const PRESETS: &[Preset] = &[
-    Preset { name: "General Long Form", glyph: Glyph::Landscape, w: 1920, h: 1080, guide: None },
-    Preset { name: "General Short Form", glyph: Glyph::Portrait, w: 1080, h: 1920, guide: None },
-    Preset { name: "Square 1:1", glyph: Glyph::Square, w: 1080, h: 1080, guide: None },
-    Preset { name: "Portrait 4:5", glyph: Glyph::Portrait, w: 1080, h: 1350, guide: None },
-    Preset { name: "YouTube", glyph: Glyph::PlayRect, w: 1920, h: 1080, guide: Some(Guide::YouTube) },
-    Preset { name: "YouTube Shorts", glyph: Glyph::PlayRect, w: 1080, h: 1920, guide: Some(Guide::YtShorts) },
-    Preset { name: "TikTok", glyph: Glyph::MusicNote, w: 1080, h: 1920, guide: Some(Guide::TikTok) },
-    Preset { name: "Instagram Reels", glyph: Glyph::Camera, w: 1080, h: 1920, guide: Some(Guide::IgReels) },
-    Preset { name: "Instagram Post", glyph: Glyph::GridIcon, w: 1080, h: 1350, guide: Some(Guide::IgPost) },
-    Preset { name: "4K UHD", glyph: Glyph::FilmStrip, w: 3840, h: 2160, guide: None },
+    Preset { name: "General Long Form", glyph: Glyph::Landscape, w: 1920, h: 1080, fps: 30.0, guide: None },
+    Preset { name: "General Short Form", glyph: Glyph::Portrait, w: 1080, h: 1920, fps: 30.0, guide: None },
+    Preset { name: "Square 1:1", glyph: Glyph::Square, w: 1080, h: 1080, fps: 30.0, guide: None },
+    Preset { name: "Portrait 4:5", glyph: Glyph::Portrait, w: 1080, h: 1350, fps: 30.0, guide: None },
+    Preset { name: "YouTube", glyph: Glyph::PlayRect, w: 1920, h: 1080, fps: 30.0, guide: Some(Guide::YouTube) },
+    Preset { name: "YouTube Shorts", glyph: Glyph::PlayRect, w: 1080, h: 1920, fps: 30.0, guide: Some(Guide::YtShorts) },
+    Preset { name: "TikTok", glyph: Glyph::MusicNote, w: 1080, h: 1920, fps: 30.0, guide: Some(Guide::TikTok) },
+    Preset { name: "Instagram Reels", glyph: Glyph::Camera, w: 1080, h: 1920, fps: 30.0, guide: Some(Guide::IgReels) },
+    Preset { name: "Instagram Post", glyph: Glyph::GridIcon, w: 1080, h: 1350, fps: 30.0, guide: Some(Guide::IgPost) },
+    Preset { name: "4K UHD", glyph: Glyph::FilmStrip, w: 3840, h: 2160, fps: 60.0, guide: None },
 ];
+
+/// Quality tiers applied to the current aspect: the shorter edge becomes this many pixels
+/// (1080x1920 at "720p" -> 720x1280). See `scale_to_tier`.
+pub const RES_TIERS: &[(&str, u32)] =
+    &[("480p", 480), ("720p", 720), ("1080p", 1080), ("1440p", 1440), ("4K", 2160)];
+
+pub const FPS_PRESETS: &[f64] = &[23.976, 24.0, 25.0, 30.0, 50.0, 60.0];
+
+/// Keep the aspect of `(w, h)`, set the shorter edge to `tier`, both edges rounded to even
+/// (encoders want even dimensions).
+pub fn scale_to_tier(w: u32, h: u32, tier: u32) -> (u32, u32) {
+    let (w, h) = (w.max(16) as f64, h.max(16) as f64);
+    let k = tier as f64 / w.min(h);
+    let even = |v: f64| ((v * k / 2.0).round() as u32 * 2).max(16);
+    (even(w), even(h))
+}
 
 #[derive(Clone, Copy, PartialEq)]
 enum ZoneKind {
@@ -129,6 +147,13 @@ mod tests {
                 assert!(z.x0 < z.x1 && z.y0 < z.y1, "{} zone is inverted", g.name());
                 assert!(z.x0 >= 0.0 && z.y0 >= 0.0 && z.x1 <= w && z.y1 <= h, "{} zone leaves the canvas", g.name());
             }
+        }
+        for &(_, tier) in RES_TIERS {
+            assert_eq!(scale_to_tier(1080, 1920, tier).0, tier, "portrait shorter edge = tier");
+            assert_eq!(scale_to_tier(1920, 1080, tier).1, tier, "landscape shorter edge = tier");
+            let (w, h) = scale_to_tier(1080, 1350, tier);
+            assert!(w % 2 == 0 && h % 2 == 0, "even dimensions");
+            assert!((w as f32 / h as f32 - 0.8).abs() < 0.01, "4:5 aspect kept at {tier}");
         }
         for p in PRESETS {
             assert!(p.w >= 16 && p.h >= 16);
