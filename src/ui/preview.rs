@@ -52,6 +52,8 @@ pub struct PreviewState {
     /// Content rect of the transport row last frame — it is centred against the panel using its own
     /// measured width, so the first frame is left-aligned and every later one is centred.
     transport: Rect,
+    /// Beat/amplitude pulse drawn instead of the video when the pane is audio-only.
+    spiky: crate::ui::spiky_ball::SpikyBall,
 }
 
 impl Default for PreviewState {
@@ -64,6 +66,7 @@ impl Default for PreviewState {
             point_drag: None,
             moved_at: None,
             transport: Rect::ZERO,
+            spiky: Default::default(),
         }
     }
 }
@@ -97,6 +100,11 @@ pub struct PreviewCtx<'a> {
     /// Tracker box of the Tracking pane (centre + half sizes, project px relative to the canvas
     /// centre) while that pane is on screen — drawn here and dragged to place the template.
     pub tracker: Option<(f32, f32, f32, f32)>,
+    /// True when the current time has audio but no video footage — the video rect draws a
+    /// beat-reactive "spiky ball" instead of staying plain black.
+    pub audio_only: bool,
+    /// Current amplitude (0..1) driving the spiky ball, ignored unless `audio_only`.
+    pub amplitude: f32,
 }
 
 #[derive(Default)]
@@ -556,6 +564,11 @@ fn video(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r:
         ui.put(Rect::from_center_size(lb.center(), vec2(32.0, 32.0)), egui::Spinner::new().size(32.0));
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
     }
+    if c.audio_only {
+        state.spiky.update(c.amplitude, ui.input(|i| i.stable_dt));
+        state.spiky.paint(&painter, lb, c.palette);
+        ui.ctx().request_repaint();
+    }
     if c.fullscreen {
         // double-click toggles fullscreen, like every player
         if resp.double_clicked() {
@@ -807,6 +820,8 @@ mod tests {
                             buffering: false,
                             proxy: None,
                             tracker: None,
+                            audio_only: false,
+                            amplitude: 0.0,
                         },
                     );
                 });

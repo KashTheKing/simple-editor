@@ -62,6 +62,8 @@ struct LibPreview {
     player: Player,
     duration: f64,
     fps: f64,
+    has_video: bool,
+    spiky: crate::ui::spiky_ball::SpikyBall,
 }
 
 pub struct App {
@@ -2080,6 +2082,7 @@ impl App {
                             gpu_tex,
                             tracking,
                             tracking_shown,
+                            waveforms,
                             ..
                         } = self;
                         let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
@@ -2088,6 +2091,19 @@ impl App {
                             .movie_mode
                             .then(|| guarded(|| prerender.progress()).unwrap_or(1.0))
                             .filter(|&p| p < 1.0);
+                        let audio_only = !project.has_video_at(*playhead);
+                        let amplitude = if audio_only {
+                            let peaks: Vec<_> = project
+                                .audio_clips_at(*playhead)
+                                .into_iter()
+                                .filter_map(|(asset, stream)| {
+                                    project.asset(asset).and_then(|a| waveforms.get(&a.path, stream))
+                                })
+                                .collect();
+                            crate::ui::spiky_ball::amplitude_at(&peaks, *playhead, 1.0 / 30.0)
+                        } else {
+                            0.0
+                        };
                         preview::show(
                             ui,
                             pv,
@@ -2108,6 +2124,8 @@ impl App {
                                 buffering: player.is_buffering(),
                                 proxy: proxy_busy,
                                 tracker: tracking_shown.then(|| tracking.box_rect()),
+                                audio_only,
+                                amplitude,
                             },
                         )
                     };
@@ -3995,10 +4013,12 @@ impl App {
         };
         let duration = asset.duration.max(crate::model::MIN_CLIP);
         let fps = if asset.fps > 0.0 { asset.fps } else { 30.0 };
+        let has_video = asset.has_video();
         let mut player = Player::new(ctx.clone(), self.backend(), self.text.clone());
         player.set_project(&Project::from_media(asset));
         player.play();
-        self.lib_preview = Some(LibPreview { path, player, duration, fps });
+        self.lib_preview =
+            Some(LibPreview { path, player, duration, fps, has_video, spiky: Default::default() });
     }
 
     /// The library preview's current frame, uploaded for the pane to paint. None = nothing is previewing.
@@ -4033,10 +4053,12 @@ impl App {
     fn draw_lib_preview(&mut self, ui: &mut egui::Ui) {
         let Some(lp) = self.lib_preview.as_ref() else { return };
         let name = lp.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let path = lp.path.to_string_lossy().into_owned();
         let duration = lp.duration;
         let fps = lp.fps;
         let playhead = lp.player.time();
         let playing = lp.player.is_playing();
+        let has_video = lp.has_video;
         let frame = self.lib_preview_live;
         let palette = self.palette;
 
@@ -4118,6 +4140,18 @@ impl App {
             let ch = (lb.height() * ui.pixels_per_point()) as u32;
             if let Some(lp) = self.lib_preview.as_mut() {
                 lp.player.set_canvas(cw.max(16), ch.max(16), self.settings.preview_max_width);
+            }
+            if !has_video {
+                let amplitude = self
+                    .waveforms
+                    .get(&path, 0)
+                    .map(|p| crate::ui::spiky_ball::amplitude_at(&[p], playhead, 1.0 / 30.0))
+                    .unwrap_or(0.0);
+                if let Some(lp) = self.lib_preview.as_mut() {
+                    lp.spiky.update(amplitude, ui.input(|i| i.stable_dt));
+                    lp.spiky.paint(ui.painter(), rect, &palette);
+                }
+                ui.ctx().request_repaint();
             }
         });
 
