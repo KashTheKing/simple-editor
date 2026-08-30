@@ -374,7 +374,8 @@ fn clip_section(
             });
             ui.end_row();
         }
-        if clip.kind == ClipKind::Audio {
+        // gain fades on audio, opacity fades on visual clips (same fields, same ramps)
+        if clip.kind != ClipKind::Adjustment {
             let dur = clip.duration;
             ui.label("Fade in");
             g.note(&ui.add(DragValue::new(&mut clip.fade_in).range(0.0..=dur).speed(0.05).suffix(" s")));

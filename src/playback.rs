@@ -868,7 +868,7 @@ pub(crate) fn decode_layers(
         // mirrors gpu::render_canvas / compose::render_tracks: inside a transition window both clips are
         // drawn past their own bounds, so filtering by `contains(t)` here would hard-cut every transition
         if let Some((_, left, right)) = track.transition_at(t) {
-            for clip in [left, right] {
+            for clip in [left, right].into_iter().flatten() {
                 layer_for(project, clip, t, w, h, pool, spare, text, shapes, comp, &mut set);
             }
             continue;
@@ -1456,6 +1456,7 @@ mod tests {
             color: [0, 0, 0, 255],
             direction: 0,
             ease: Ease::Linear,
+            edge: Default::default(),
         });
         let (mut pool, mut spare) = (DecoderPool::new(Backend::Ffmpeg), Vec::new());
         let (mut text, mut shapes, mut comp) = (TextRasterizer::new(), ShapeRasterizer::new(), Compositor::new());

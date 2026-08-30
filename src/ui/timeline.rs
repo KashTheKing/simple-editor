@@ -1194,6 +1194,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     let y = rect.bottom() - db_frac(gain_db(clip.volume.value as f32)) * rect.height();
                     name_pc.hline(vis.x_range(), y, vs);
                 }
+            }
+            if clip.kind != ClipKind::Adjustment {
+                // fade ramps + handles: audio gain fades, opacity fades on visual clips
                 let fs = Stroke::new(1.0, pal.text);
                 let fi_x = (rect.left() + clip.fade_in as f32 * state.zoom).min(rect.right());
                 let fo_x = (rect.right() - clip.fade_out as f32 * state.zoom).max(rect.left());
@@ -1372,7 +1375,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     });
                 }
             }
-            if clip.kind == ClipKind::Audio {
+            if clip.kind != ClipKind::Adjustment {
                 let fi_x = (rect.left() + clip.fade_in as f32 * state.zoom).min(rect.right());
                 let fo_x = (rect.right() - clip.fade_out as f32 * state.zoom).max(rect.left());
                 for (hx, is_out, salt) in [(fi_x, false, "fi"), (fo_x, true, "fo")] {
@@ -1393,11 +1396,12 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             }
         }
 
-        // transitions: an overlapping band centred on each valid cut
+        // transitions: an overlapping band on each valid cut / clip edge
         for tr in &track.transitions {
-            let Some((left, right)) = track.transition_pair(tr) else { continue };
-            // the played window is clamped to the two clips (an over-long transition can't reach past them)
-            let (wa, wb) = tr.window(left, right);
+            let Some((left, right)) = track.transition_clips(tr) else { continue };
+            // the played window is clamped to the clip(s) (an over-long transition can't reach past them)
+            let Some((cut, half)) = tr.cut_half(left, right) else { continue };
+            let (wa, wb) = (cut - half, cut + half);
             let (xa, xb) = (state.x_at(wa), state.x_at(wb));
             if xb < lanes.left() || xa > lanes.right() {
                 continue;
@@ -2426,15 +2430,19 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             Gesture::TransDur { track, id, changed } => {
                 // the project can be replaced mid-drag (undo, MCP project.open/sequence.open): index may be stale
                 if let Some(tr) = p.tracks.get_mut(*track) {
-                    let lim = tr
-                        .transitions
-                        .iter()
-                        .find(|t| t.id == *id)
-                        .and_then(|t| tr.transition_pair(t))
-                        .map(|(l, r)| (r.start, 2.0 * l.duration.min(r.duration)));
-                    if let Some((cut, max)) = lim {
-                        // cap: the Transitions panel's 0.1..5 s range, and what the two clips can actually supply
-                        let d = ((t_at(pos.x) - cut).abs() * 2.0).min(max).min(5.0).max(0.1);
+                    // duration follows the dragged edge: distance from the anchor (the cut, or the
+                    // clip edge the transition hangs off), capped by what the clip(s) can supply
+                    let lim = tr.transitions.iter().find(|t| t.id == *id).and_then(|t| {
+                        let (l, r) = tr.transition_clips(t)?;
+                        Some(match t.edge {
+                            crate::model::TransitionEdge::Cut => (r?.start, 2.0, 2.0 * l?.duration.min(r?.duration)),
+                            crate::model::TransitionEdge::In => (r?.start, 1.0, r?.duration),
+                            crate::model::TransitionEdge::Out => (l?.end(), 1.0, l?.duration),
+                        })
+                    });
+                    if let Some((anchor, scale, max)) = lim {
+                        // cap: the Transitions panel's 0.1..5 s range, and what the clip(s) can actually supply
+                        let d = ((t_at(pos.x) - anchor).abs() * scale).min(max).min(5.0).max(0.1);
                         if let Some(t) = tr.transitions.iter_mut().find(|t| t.id == *id) {
                             if (t.duration - d).abs() > 1e-9 {
                                 t.duration = d;
