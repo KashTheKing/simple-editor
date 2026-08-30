@@ -381,8 +381,16 @@ fn clip_section(
             if let Animated { link: AnimLink::Expr(src), link_err, .. } = a {
                 ui.label("");
                 ui.horizontal(|ui| {
+                    let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
+                        let mut job = luau_highlight(ui, buf.as_str());
+                        job.wrap.max_width = wrap_width;
+                        ui.fonts_mut(|f| f.layout_job(job))
+                    };
                     g.note(&ui.add(
-                        egui::TextEdit::singleline(src).desired_width(150.0).hint_text("v + math.sin(t*4) * 20"),
+                        egui::TextEdit::singleline(src)
+                            .desired_width(150.0)
+                            .hint_text("return value + math.sin(t*4) * 20")
+                            .layouter(&mut layouter),
                     ));
                     if let Some(e) = link_err {
                         ui.colored_label(ui.visuals().warn_fg_color, "!").on_hover_text(e.clone());
@@ -848,6 +856,70 @@ fn clip_section(
     g.changed || ga.changed || labels_changed || path_op.is_some()
 }
 
+const LUAU_KEYWORDS: &[&str] = &[
+    "and", "break", "continue", "do", "else", "elseif", "end", "export", "false", "for", "function", "if", "in",
+    "local", "nil", "not", "or", "repeat", "return", "then", "true", "type", "until", "while",
+];
+
+/// Minimal hand-rolled Luau tokenizer for the expression field — keywords, strings, numbers and
+/// comments get a colour, everything else stays the default text colour. One expression at a time,
+/// so a full syntax-highlighting crate would be a lot of dependency for one line of text.
+fn luau_highlight(ui: &egui::Ui, text: &str) -> egui::text::LayoutJob {
+    use egui::text::{LayoutJob, TextFormat};
+    use egui::{Color32, FontId};
+
+    let font = egui::TextStyle::Monospace.resolve(ui.style());
+    let base = ui.visuals().text_color();
+    let (keyword, string, number, comment) =
+        (ui.visuals().hyperlink_color, Color32::from_rgb(0x9a, 0xc5, 0x6b), ui.visuals().warn_fg_color, base.gamma_multiply(0.6));
+
+    let mut job = LayoutJob::default();
+    let mut push = |s: &str, color: Color32, font: &FontId| {
+        job.append(s, 0.0, TextFormat { font_id: font.clone(), color, ..Default::default() });
+    };
+
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '-' && chars.get(i + 1) == Some(&'-') {
+            let s: String = chars[i..].iter().collect();
+            push(&s, comment, &font);
+            break;
+        } else if c == '"' || c == '\'' {
+            let start = i;
+            i += 1;
+            while i < chars.len() && chars[i] != c {
+                i += if chars[i] == '\\' { 2 } else { 1 };
+            }
+            i = (i + 1).min(chars.len());
+            let s: String = chars[start..i].iter().collect();
+            push(&s, string, &font);
+            continue;
+        } else if c.is_ascii_digit() {
+            let start = i;
+            while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '.') {
+                i += 1;
+            }
+            let s: String = chars[start..i].iter().collect();
+            push(&s, number, &font);
+            continue;
+        } else if c.is_alphabetic() || c == '_' {
+            let start = i;
+            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
+                i += 1;
+            }
+            let s: String = chars[start..i].iter().collect();
+            push(&s, if LUAU_KEYWORDS.contains(&s.as_str()) { keyword } else { base }, &font);
+            continue;
+        } else {
+            push(&c.to_string(), base, &font);
+            i += 1;
+        }
+    }
+    job
+}
+
 /// The "∿" menu on a property row: link the value to a saved path (Position X/Y) or a Luau
 /// expression, AE-style. Manual edits elsewhere break the link (`Animated::set_at`).
 fn link_menu(ui: &mut egui::Ui, label: &str, a: &mut Animated, paths: &[(Id, String)], g: &mut Gesture) {
@@ -877,7 +949,7 @@ fn link_menu(ui: &mut egui::Ui, label: &str, a: &mut Animated, paths: &[(Id, Str
         }
         if !matches!(a.link, AnimLink::Expr(_)) && ui.button("Expression…").clicked() {
             a.unlink();
-            a.link = AnimLink::Expr("v".into());
+            a.link = AnimLink::Expr("return value".into());
             g.click();
             ui.close();
         }

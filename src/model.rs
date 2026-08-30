@@ -207,7 +207,8 @@ pub struct Keyframe {
 }
 
 /// A live driver for an `Animated` value: follow a saved path's X or Y over the clip's duration, or a
-/// Luau expression of `t` (clip-local seconds) and `v` (the property's own keyframed/constant value).
+/// Luau expression of `t` (clip-local seconds) and `value` (the property's own keyframed/constant
+/// value), ending with `return <number>`.
 /// `Project::refresh_links` bakes active links into the transient `Animated::baked` samples that
 /// `at()` then reads, so every render/mixer read site stays project-free.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
@@ -1790,13 +1791,14 @@ pub fn path_to_keys(points: &[(f32, f32, f32)], duration: f64) -> (Animated, Ani
 /// Samples per second when baking an expression into keyframes.
 const EXPR_RATE: f64 = 30.0;
 
-/// Evaluate a Luau expression over the clip's duration into linear samples. `t` and `v` are in scope
-/// per sample; `v` is the property's own keyframed/constant value at that `t`.
+/// Evaluate a Luau expression over the clip's duration into linear samples. `t` (clip-local seconds)
+/// and `value` (the property's own keyframed/constant value at that `t`) are in scope; the script must
+/// end with `return <number>`, same as a Luau function body — no implicit-expression wrapping.
 fn bake_expr(src: &str, base: &Animated, dur: f64) -> Result<Vec<Keyframe>, String> {
     let lua = mlua::Lua::new();
     lua.sandbox(true).map_err(|e| e.to_string())?;
     let func = lua
-        .load(format!("local t, v = ...\nreturn ({src})"))
+        .load(format!("local t, value = ...\n{src}"))
         .set_name("expression")
         .into_function()
         .map_err(|e| e.to_string())?;
@@ -4648,7 +4650,7 @@ mod tests {
         // an expression sees t and the property's own base value v
         let c = p.clip_mut(id).unwrap();
         c.opacity.value = 0.5;
-        c.opacity.link = AnimLink::Expr("v + t / 8".into());
+        c.opacity.link = AnimLink::Expr("return value + t / 8".into());
         p.refresh_links();
         let c = p.clip(id).unwrap();
         assert!(c.opacity.link_err.is_none(), "{:?}", c.opacity.link_err);

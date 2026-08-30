@@ -118,6 +118,87 @@ One script run = one undo step; a failed tool call stops the script and rolls it
 runaway script is aborted after 5 s. MCP clients (e.g. Claude) and scripts share one API — an AI
 co-editor can write a script into the folder and you run it from the menu.
 
+## Path & expression links
+
+Any keyframable property (Position, Scale, Rotation, Opacity, Volume, Pan, effect/mask params) can
+be driven live instead of hand-keyed, After Effects–style: **follow a saved path**, or **drive it
+with a Luau expression**. Both are *links* — they re-evaluate every frame from their source, so
+editing the source (the path's points, or the expression text) updates every clip using it
+immediately, with nothing to re-bake or re-apply.
+
+### The link menu
+
+Every property row in the Inspector has a small **∿** button next to its keyframe diamond:
+
+| State | Look | Menu offers |
+|---|---|---|
+| Unlinked | ∿ (dim) | *Path: \<name\>* for each saved path (Position X/Y only), *Expression…* |
+| Linked | **∿** (bold) | *Unlink*, plus the same path/expression choices to switch |
+
+While a property is linked its slider/drag field is greyed out (still shows the live value) — drag
+it or type into it and the link is **dropped first**, then the edit lands as a normal
+keyframe/constant, same as breaking an expression's pickwhip in After Effects. There is no "linked
+but also keyframed" state.
+
+### Path links
+
+A path is a saved drawing/polygon outline or motion-tracked point list (`Inspector ▸ Path ▸ Save`,
+or the Tracking pane's *Save as path*) kept on the project so any clip can reuse it. Picking a path
+from a property's ∿ menu on **Position X** or **Position Y** links that axis to the path's X or Y
+over the clip's own duration, using the path's own recorded rhythm when it has one (a motion track)
+and spreading points evenly when it doesn't (a polygon has no clock) — both ends are clamped, so the
+clip holds the path's first point before its start and its last point after its end.
+
+Because it's a link, not a bake: redraw or re-track the saved path afterwards and every clip
+following it moves too. (Contrast with the Tracking pane's own *Apply to clip* button, which still
+bakes a one-shot copy of a track directly onto a clip's X/Y keys — useful when you want to hand-tweak
+the resulting keyframes afterward, which a live-linked property doesn't allow.)
+
+### Expression links
+
+Picking *Expression…* on any property opens a one-line Luau field syntax-highlighted for Luau
+(keywords, strings, numbers, comments). It must be a full script body ending in `return <number>` —
+no implicit "last expression" return, so you can use `local` variables or multi-line logic if you
+need them:
+
+```lua
+return value + math.sin(t * 4) * 20
+```
+
+```lua
+-- offset that eases out over the first second, then holds
+local ramp = math.min(t, 1)
+return value + 50 * (1 - (1 - ramp) ^ 3)
+```
+
+Two variables are in scope, filled in fresh for every sample:
+
+| Variable | Meaning |
+|---|---|
+| `t` | Clip-local time in seconds (0 at the clip's start) |
+| `value` | The property's own keyframed/constant value at `t` — the "no link" answer, so an expression can add to or override it |
+
+The expression has the full Luau standard library available (`math`, `string`, etc. — same sandbox
+as scripts: no `io`/`os`/`ffi`). It is **not** given `editor.tool(...)` — expressions only read `t`
+and `value` and return one number; they cannot reach the rest of the project or the timeline. There
+is no time budget on a single call (unlike the 5 s script budget) since it's expected to be cheap
+per-sample math, but a script that hangs will hang the evaluation pass, so keep it to arithmetic
+rather than loops over large data.
+
+A broken expression (syntax error, runtime error, or a result that isn't a finite number) never
+crashes the editor: the property falls back to its own value and a small `!` appears next to the
+field — hover it to see the Luau error text.
+
+### How it's evaluated (for scripting/MCP authors)
+
+Internally a link is baked once per frame into a dense sample table (30 Hz for expressions; the
+path's own point density for path links), and only re-baked when its inputs actually change — the
+path's points, the expression text, or the property's own keys/value that an expression reads as
+`value`. This keeps per-frame cost to a hash comparison for every linked property, decoupling the
+render/mixer/UI code that reads `Animated::at(t)` from the link machinery entirely: nothing outside
+of the bake step needs to know a property is linked. Links round-trip through the project JSON like
+any other clip data, so a saved project reopens with its links intact and live.
+
 ## Verify
 
 ```
