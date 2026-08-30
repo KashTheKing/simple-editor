@@ -1,6 +1,10 @@
 //! Inspector panel. Nothing selected → Project panel (name, width, height, fps, duration, Save / Export /
-//! Export Frame buttons, export settings summary). One clip selected →
+//! Export Frame buttons, export settings summary). One or more clips selected →
 //! clip name, enabled, colour label, timing (start / duration / source in), retime readout (Ctrl+R), and:
+//!  * multi-selection: Enabled, Label, transform/opacity (or volume/pan), fades and Blend edit every
+//!    selected clip at once (absolute overwrite of whatever changed, diff-against-original — mirrors
+//!    `transition_section`'s bulk-edit rule); everything else in this file (Name included) is disabled
+//!    and needs a single-clip selection.
 //!  * visual clips: Position X/Y, Scale, Rotation (DragValue), Opacity (0-100% slider) — each row + a
 //!    diamond keyframe toggle (`Animated::toggle_key(clip.local(playhead))`, highlighted when a key exists at the
 //!    playhead) + "clear keys"; edits go through `Animated::set_at(local_t, v)` so keyframed props get
@@ -119,7 +123,7 @@ pub fn show(
     match selection.iter().find(|&&id| project.clip(id).is_some()) {
         None if !sel_transitions.is_empty() => transition_section(ui, project, sel_transitions, undo),
         None => project_section(ui, project, settings, undo),
-        Some(&id) => clip_section(ui, project, id, selection.len(), playhead, fonts, palette, undo),
+        Some(_) => clip_section(ui, project, selection, playhead, fonts, palette, undo),
     }
 }
 
@@ -423,16 +427,25 @@ fn project_section(
 fn clip_section(
     ui: &mut egui::Ui,
     project: &mut Project,
-    id: Id,
-    n_selected: usize,
+    selection: &[Id],
     playhead: f64,
     fonts: &[String],
     palette: &Palette,
     undo: &mut dyn FnMut(&Project),
 ) -> bool {
+    // Every selected id that is still a live clip. The first is the "representative" — its widgets
+    // drive the section — and edits to the bulk-editable fields below (zone 1) propagate to the rest
+    // with diff-against-original, absolute-overwrite semantics (mirrors `transition_section`).
+    let clip_ids: Vec<Id> = selection.iter().copied().filter(|&i| project.clip(i).is_some()).collect();
+    let n_selected = clip_ids.len();
+    let Some(&id) = clip_ids.first() else {
+        return false;
+    };
     // ponytail: edit a per-frame clone of the clip and write it back at the end — lets `undo` snapshot the
     // untouched project first without borrow gymnastics. Upgrade: per-field scratch copies if it ever shows.
-    let Some(orig) = project.clip(id) else {
+    // Owned (not borrowed) so it survives the later `project.clip_mut` write-backs — needed to diff the
+    // bulk-editable fields against their pre-edit values for the sibling-propagation pass.
+    let Some(orig) = project.clip(id).cloned() else {
         return false;
     };
     let mut clip = orig.clone();
@@ -448,42 +461,55 @@ fn clip_section(
     let mut label_ops: Vec<LabelOp> = Vec::new();
     let mut path_op: Option<PathOp> = None;
     let path_list: Vec<(Id, String)> = project.paths.iter().map(|p| (p.id, p.name.clone())).collect();
+    // asset-details gesture/scratch (zone 2, but read back at commit time outside any wrap)
+    let mut ga = Gesture::default();
+    let mut asset_desc: Option<String> = None;
+    let mut asset_tags: Option<Vec<String>> = None;
+    let multi = n_selected > 1;
 
-    if n_selected > 1 {
+    if multi {
         ui.label(format!("{n_selected} clips selected"));
+        ui.weak("Transform, opacity, enabled, label, fades and blend edit all of them; everything else needs one clip.");
     }
     if clip.container {
-        ui.strong("Container Slot");
-        Grid::new("inspector_container").num_columns(2).show(ui, |ui| {
-            ui.label("Slot label");
-            let r = ui.text_edit_singleline(&mut clip.container_label);
-            g.note_text(&r);
-            ui.end_row();
+        ui.add_enabled_ui(!multi, |ui| {
+            ui.strong("Container Slot");
+            Grid::new("inspector_container").num_columns(2).show(ui, |ui| {
+                ui.label("Slot label");
+                let r = ui.text_edit_singleline(&mut clip.container_label);
+                g.note_text(&r);
+                ui.end_row();
 
-            ui.label("Media");
-            ui.horizontal(|ui| {
-                if clip.asset == 0 {
-                    ui.weak("(Empty Slot)");
-                } else if let Some(a) = project.asset(clip.asset) {
-                    ui.label(a.name());
-                } else {
-                    ui.weak("Missing asset");
-                }
-                if ui.small_button("Replace…").clicked() {
-                    PENDING_ACTION.with(|p| *p.borrow_mut() = Some(Action::ReplaceContainerMedia));
-                }
+                ui.label("Media");
+                ui.horizontal(|ui| {
+                    if clip.asset == 0 {
+                        ui.weak("(Empty Slot)");
+                    } else if let Some(a) = project.asset(clip.asset) {
+                        ui.label(a.name());
+                    } else {
+                        ui.weak("Missing asset");
+                    }
+                    if ui.small_button("Replace…").clicked() {
+                        PENDING_ACTION.with(|p| *p.borrow_mut() = Some(Action::ReplaceContainerMedia));
+                    }
+                });
+                ui.end_row();
             });
-            ui.end_row();
         });
         ui.separator();
     }
     ui.strong("Clip");
     Grid::new("inspector_clip").num_columns(2).show(ui, |ui| {
         ui.label("Name");
-        let r = ui.text_edit_singleline(&mut clip.name);
-        #[cfg(test)]
-        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("test_name_field"), r.id));
-        g.note_text(&r);
+        ui.add_enabled_ui(!multi, |ui| {
+            let r = ui.text_edit_singleline(&mut clip.name);
+            #[cfg(test)]
+            ui.ctx().data_mut(|d| {
+                d.insert_temp(egui::Id::new("test_name_field"), r.id);
+                d.insert_temp(egui::Id::new("test_name_field_enabled"), r.enabled());
+            });
+            g.note_text(&r);
+        });
         ui.end_row();
         ui.label("Enabled");
         g.note(&ui.checkbox(&mut clip.enabled, ""));
@@ -628,6 +654,10 @@ fn clip_section(
         }
     });
 
+    // Zone 2: everything below is per-clip data that does not bulk-edit — greyed out and non-interactive
+    // while more than one clip is selected, exactly like the Name field above (the labels editor at the
+    // very bottom is the one exception: it edits `Project.labels`, not this clip, so it stays live).
+    ui.add_enabled_ui(!multi, |ui| {
     if !clip.effects.is_empty() {
         ui.separator();
         ui.strong("Effects");
@@ -669,9 +699,6 @@ fn clip_section(
     }
 
     // asset details (description / tags live on the asset, not the clip)
-    let mut ga = Gesture::default();
-    let mut asset_desc: Option<String> = None;
-    let mut asset_tags: Option<Vec<String>> = None;
     if clip.uses_asset() {
         if let Some(a) = project.asset(clip.asset) {
             ui.separator();
@@ -981,8 +1008,10 @@ fn clip_section(
     if clip.markers.is_empty() {
         ui.weak("No clip markers");
     }
+    }); // end zone 2 (add_enabled_ui)
 
-    // compact labels editor (labels live on the project, not the clip)
+    // compact labels editor (labels live on the project, not the clip) — project-wide, so it stays
+    // interactive regardless of how many clips are selected (see the doc comment above zone 2).
     if edit_labels {
         ui.separator();
         ui.horizontal(|ui| {
@@ -1019,6 +1048,53 @@ fn clip_section(
     if g.changed {
         if let Some(c) = project.clip_mut(id) {
             *c = clip.clone();
+        }
+        // Bulk propagation: only the zone-1 fields, only when a field actually changed from `orig`, and
+        // always an absolute overwrite of the sibling's own value — never a relative delta (the same rule
+        // `transition_section` uses). `orig`/`clip`/`clip_ids` are owned values by this point, so fetching
+        // `project.clip_mut(sibling)` in the loop below borrows nothing that is still borrowed.
+        if multi {
+            // Diff each props_mut() field position-wise: `clip` and `orig` share a kind (it never changes
+            // in this section), so `props_mut()` yields the same labels in the same order for both.
+            let mut orig_probe = orig.clone();
+            let mut changed_props: Vec<(&'static str, f64)> = Vec::new();
+            for ((label, a), (_, oa)) in clip.props_mut().into_iter().zip(orig_probe.props_mut()) {
+                let v = a.at(lt);
+                if v != oa.at(lt) {
+                    changed_props.push((label, v));
+                }
+            }
+            for &sid in &clip_ids {
+                if sid == id {
+                    continue;
+                }
+                let Some(s) = project.clip_mut(sid) else { continue };
+                if clip.enabled != orig.enabled {
+                    s.enabled = clip.enabled;
+                }
+                if clip.label != orig.label {
+                    s.label = clip.label;
+                }
+                if clip.blend != orig.blend {
+                    s.blend = clip.blend;
+                }
+                if clip.fade_in != orig.fade_in {
+                    s.fade_in = clip.fade_in.clamp(0.0, s.duration);
+                }
+                if clip.fade_out != orig.fade_out {
+                    s.fade_out = clip.fade_out.clamp(0.0, s.duration);
+                }
+                if !changed_props.is_empty() {
+                    let slt = s.local(playhead);
+                    for (label, v) in &changed_props {
+                        for (slabel, sa) in s.props_mut() {
+                            if slabel == *label {
+                                sa.set_at(slt, *v);
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
     if ga.changed {
@@ -1326,6 +1402,145 @@ mod tests {
         run(&ctx, input, &mut p);
         let o = p.clip(id).unwrap().opacity.value;
         assert!(o < 1.0 && o >= 0.0, "opacity moved down off its default 1.0: {o}");
+    }
+
+    /// With 2+ clips selected, dragging the representative clip's Opacity slider propagates the new
+    /// ABSOLUTE value to every selected clip — even one whose opacity started at a different value than
+    /// the representative's (diff-against-original, absolute-overwrite: the same rule `transition_section`
+    /// uses for bulk-editing transitions, not a relative delta).
+    #[test]
+    fn opacity_bulk_edit_propagates_absolute_value_to_every_selected_clip() {
+        let mut p = Project::new();
+        let vi = p.tracks.iter().position(|t| t.kind == crate::model::TrackKind::Video).unwrap();
+        let a = Clip::new(500, ClipKind::Video, "a", 0.0, 5.0);
+        let id_a = a.id;
+        p.tracks[vi].clips.push(a);
+        let mut b = Clip::new(501, ClipKind::Video, "b", 0.0, 5.0);
+        b.opacity.value = 0.4; // starts at a different value than `a`'s default 1.0
+        let id_b = b.id;
+        p.tracks[vi].clips.push(b);
+        let palette = Palette::new(true, egui::Color32::WHITE);
+        let fonts: Vec<String> = Vec::new();
+        let ctx = egui::Context::default();
+        let mut run = |ctx: &egui::Context, input: egui::RawInput, p: &mut Project| {
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let mut undo = |_: &Project| {};
+                    show(ui, p, &[id_a, id_b], &[], 1.0, &fonts, &palette, &mut Settings::default(), &mut undo);
+                });
+            });
+        };
+        run(&ctx, egui::RawInput::default(), &mut p); // layout, records `a`'s opacity slider id
+        let slider =
+            ctx.data_mut(|d| d.get_temp::<egui::Id>(egui::Id::new("test_opacity_slider"))).expect("opacity id");
+        ctx.memory_mut(|m| m.request_focus(slider));
+        run(&ctx, egui::RawInput::default(), &mut p); // focus settles
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::Key {
+            key: egui::Key::ArrowLeft,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::default(),
+        });
+        run(&ctx, input, &mut p);
+        let oa = p.clip(id_a).unwrap().opacity.value;
+        let ob = p.clip(id_b).unwrap().opacity.value;
+        assert!(oa < 1.0 && oa >= 0.0, "the representative clip's opacity moved down: {oa}");
+        assert_eq!(oa, ob, "the new absolute value propagated to the other selected clip, not a relative delta");
+    }
+
+    /// With 2+ clips selected, the Name field (zone 1, but not bulk-editable) is disabled — it needs a
+    /// single-clip selection, unlike the transform/opacity/enabled/label/fade/blend fields around it.
+    #[test]
+    fn name_field_disabled_when_multiple_clips_selected() {
+        let mut p = Project::new();
+        let a = Clip::new(500, ClipKind::Text, "a", 0.0, 5.0);
+        let id_a = a.id;
+        p.tracks[0].clips.push(a);
+        let b = Clip::new(501, ClipKind::Text, "b", 0.0, 5.0);
+        let id_b = b.id;
+        p.tracks[0].clips.push(b);
+        let palette = Palette::new(true, egui::Color32::WHITE);
+        let ctx = egui::Context::default();
+        let mut settings = Settings::default();
+        let mut undo = |_: &Project| {};
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                show(ui, &mut p, &[id_a, id_b], &[], 1.0, &[], &palette, &mut settings, &mut undo);
+            });
+        });
+        let enabled = ctx
+            .data_mut(|d| d.get_temp::<bool>(egui::Id::new("test_name_field_enabled")))
+            .expect("name field enabled-flag not recorded");
+        assert!(!enabled, "Name is disabled while multiple clips are selected");
+        // sanity: narrowing back to one clip re-enables it
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                show(ui, &mut p, &[id_a], &[], 1.0, &[], &palette, &mut settings, &mut undo);
+            });
+        });
+        let enabled = ctx
+            .data_mut(|d| d.get_temp::<bool>(egui::Id::new("test_name_field_enabled")))
+            .expect("name field enabled-flag not recorded");
+        assert!(enabled, "Name is enabled again once only one clip is selected");
+    }
+
+    /// With 2+ clips selected, a zone-2 control (here: "Add mask", per-clip data that does not bulk-edit)
+    /// is disabled — the click lands on the widget rect but registers no edit at all.
+    #[test]
+    fn zone2_controls_disabled_when_multiple_clips_selected() {
+        let mut p = Project::new();
+        let a = p.add_shape_clip(crate::model::ShapeKind::Star, 0.0, 3.0);
+        let b = p.add_shape_clip(crate::model::ShapeKind::Star, 3.0, 3.0);
+        let palette = Palette::new(true, egui::Color32::WHITE);
+        let ctx = egui::Context::default();
+        let mut settings = Settings::default();
+        let mut undos = 0;
+        let mut frame = |events: Vec<egui::Event>, p: &mut Project, undos: &mut usize| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 1400.0))),
+                events,
+                ..Default::default()
+            };
+            let mut changed = false;
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let mut undo = |_: &Project| *undos += 1;
+                    changed |= show(ui, p, &[a, b], &[], 1.0, &[], &palette, &mut settings, &mut undo);
+                });
+            });
+            changed
+        };
+        frame(vec![], &mut p, &mut undos); // layout, records the (disabled) "Add mask" rect
+        let r = ctx
+            .data(|d| d.get_temp::<egui::Rect>(egui::Id::new(("insp", "add_mask".to_string()))))
+            .expect("add_mask rect recorded even while disabled");
+        let pos = r.center();
+        let mut changed = frame(vec![egui::Event::PointerMoved(pos)], &mut p, &mut undos);
+        changed |= frame(
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            &mut p,
+            &mut undos,
+        );
+        changed |= frame(
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            &mut p,
+            &mut undos,
+        );
+        assert!(!changed, "a disabled control must not register a click");
+        assert!(p.clip(a).unwrap().mask.is_none(), "Add mask did not fire while multiple clips were selected");
+        assert_eq!(undos, 0);
     }
 
     /// The project panel's Save / Export… / Export Frame… buttons push the same `Action`s the menus and

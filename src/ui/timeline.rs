@@ -31,10 +31,15 @@
 //! clips (click selects, double-click seeks, drag moves, right-click = Rename / Delete / Set label),
 //! clip colours from `Project.labels`, hatched Adjustment layers with an "adj" badge, and the Add Marker /
 //! Copy & Paste Attributes / Add Mask / Nest / Convert to Adjustment Layer context-menu entries.
+//!
+//! Round 4: right-click quick-changes, additive to the menus above — selected transitions get "Change
+//! Type" / "Change Easing" submenus on their band's context menu (absolute-overwrite every selected
+//! transition, one undo for the whole bulk pick), and 2+ selected clips sharing an effect kind get an
+//! "Effects" submenu on the clip context menu to toggle that shared effect on/off across the selection.
 
 use crate::media::thumbs::ThumbCache;
 use crate::media::waveform::{Peaks, WaveformCache};
-use crate::model::{Asset, Clip, ClipKind, Ease, Id, Label, Project, TrackKind};
+use crate::model::{Asset, Clip, ClipKind, Ease, EffectKind, Id, Label, Project, TrackKind, TransitionKind};
 use crate::theme::Palette;
 use crate::ui::tools::{draw_glyph, Glyph, Tool};
 
@@ -340,12 +345,24 @@ enum Act {
     Label(u8),
     /// Copy the selection's effective labels onto their assets.
     LabelToAsset,
+    /// Right-click quick-change: toggle a shared effect kind's enabled state across the selection.
+    /// The new state is the opposite of the first selected clip carrying that kind (mirrors the
+    /// Inspector's "first sets the baseline" convention, just with nothing to diff since the menu
+    /// only offers one action — toggle — rather than a value picker).
+    ToggleEffect(EffectKind),
     /// Set the easing of every property keyed at clip-local time `t`.
     SetEase(Id, f64, Ease),
     /// Delete every keyframe at clip-local time `t`.
     DelKeys(Id, f64),
     RemoveTransition(Id),
     RemoveTransitions(Vec<Id>),
+    /// Right-click quick-change: absolute-overwrite every listed transition's kind. Unlike
+    /// `inspector.rs`'s `transition_section` (diff-against-first, only fields the user actually
+    /// touched get written), a menu click IS the new value, so there's nothing to diff against.
+    SetTransitionsKind(Vec<Id>, TransitionKind),
+    /// Right-click quick-change: absolute-overwrite every listed transition's ease (see
+    /// `SetTransitionsKind`).
+    SetTransitionsEase(Vec<Id>, Ease),
     /// Add a project marker at this timeline time.
     AddMarker(f64),
     /// Razor tool: split every clip crossing this timeline time.
@@ -733,6 +750,50 @@ fn label_menu(ui: &mut egui::Ui, labels: &[Label], act: &mut Option<Act>, edit_l
     }
 }
 
+/// "Change Type" entries for the transition band's own right-click menu: absolute-overwrite every id
+/// in `sel` to the clicked kind (works for a single selected transition or a bulk one — a menu pick
+/// is the new value, there's nothing to diff against).
+fn transition_kind_menu(ui: &mut egui::Ui, sel: &[Id], act: &mut Option<Act>) {
+    for k in TransitionKind::ALL {
+        if ui.button(k.name()).clicked() {
+            *act = Some(Act::SetTransitionsKind(sel.to_vec(), k));
+        }
+    }
+}
+
+/// "Change Easing" entries (see `transition_kind_menu`).
+fn transition_ease_menu(ui: &mut egui::Ui, sel: &[Id], act: &mut Option<Act>) {
+    for e in Ease::ALL {
+        if ui.button(e.name()).clicked() {
+            *act = Some(Act::SetTransitionsEase(sel.to_vec(), e));
+        }
+    }
+}
+
+/// Effect kinds present on 2+ of the given clips (deduped per clip, so a clip carrying two Blurs only
+/// counts once) — what the timeline's multi-clip right-click "Effects" quick-menu offers to toggle.
+fn shared_effect_kinds(p: &Project, ids: &[Id]) -> Vec<EffectKind> {
+    if ids.len() < 2 {
+        return Vec::new();
+    }
+    let mut counts: Vec<(EffectKind, u32)> = Vec::new();
+    for &id in ids {
+        let Some(cl) = p.clip(id) else { continue };
+        let mut seen: Vec<EffectKind> = Vec::new();
+        for e in &cl.effects {
+            if seen.contains(&e.kind) {
+                continue;
+            }
+            seen.push(e.kind);
+            match counts.iter_mut().find(|(k, _)| *k == e.kind) {
+                Some((_, n)) => *n += 1,
+                None => counts.push((e.kind, 1)),
+            }
+        }
+    }
+    counts.into_iter().filter(|&(_, n)| n >= 2).map(|(k, _)| k).collect()
+}
+
 #[allow(clippy::too_many_arguments)]
 fn clip_menu(
     ui: &mut egui::Ui,
@@ -743,6 +804,7 @@ fn clip_menu(
     audio: bool,
     labels: &[Label],
     buses: &[crate::model::Bus],
+    shared_effects: &[EffectKind],
     act: &mut Option<Act>,
     actions: &mut Vec<crate::hotkeys::Action>,
     edit_labels: &mut bool,
@@ -831,6 +893,15 @@ fn clip_menu(
         });
     } else if ui.button("Add Mask").clicked() {
         actions.push(Action::AddMask);
+    }
+    if !shared_effects.is_empty() {
+        ui.menu_button("Effects", |ui| {
+            for k in shared_effects.iter().copied() {
+                if ui.button(format!("Toggle {}", k.name())).clicked() {
+                    *act = Some(Act::ToggleEffect(k));
+                }
+            }
+        });
     }
     ui.separator();
     if ui.button("Nest into Sequence…").clicked() {
@@ -994,6 +1065,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     let mut seek_marker: Option<f64> = None;
     let labels: &[Label] = &c.project.labels;
     let buses: &[crate::model::Bus] = &c.project.buses;
+    // multi-clip right-click "Effects" quick-toggle: only offered when 2+ selected clips share a kind
+    let shared_effects = shared_effect_kinds(c.project, c.selection);
 
     // ---- rows ----
     let mut y = lanes.top() - state.scroll_y;
@@ -1331,6 +1404,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     aud,
                     labels,
                     buses,
+                    &shared_effects,
                     &mut act,
                     &mut out.actions,
                     &mut out.edit_labels,
@@ -1380,6 +1454,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                             aud,
                             labels,
                             buses,
+                            &shared_effects,
                             &mut act,
                             &mut out.actions,
                             &mut out.edit_labels,
@@ -1463,6 +1538,13 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                             Act::RemoveTransition(tr.id)
                         });
                     }
+                    ui.separator();
+                    // right-click quick-change: bulk-edits every selected transition (or just this
+                    // one if it wasn't already part of the selection — `sel_transitions` was reset
+                    // to just `tr.id` above in that case), same absolute-overwrite as picking a new
+                    // value in the Inspector's transition kind/ease combo boxes.
+                    ui.menu_button("Change Type", |ui| transition_kind_menu(ui, c.sel_transitions, &mut act));
+                    ui.menu_button("Change Easing", |ui| transition_ease_menu(ui, c.sel_transitions, &mut act));
                 });
             }
             for (er, salt) in [
@@ -2149,6 +2231,21 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     }
                 }
             }
+            Act::ToggleEffect(k) => {
+                // absolute overwrite: everyone gets the opposite of what the first selected clip
+                // carrying this effect kind currently has (there's nothing to diff, it's a toggle)
+                let target = !ids
+                    .iter()
+                    .find_map(|&id| p.clip(id)?.effects.iter().find(|e| e.kind == k).map(|e| e.enabled))
+                    .unwrap_or(true);
+                for &id in &ids {
+                    if let Some(cl) = p.clip_mut(id) {
+                        if let Some(e) = cl.effects.iter_mut().find(|e| e.kind == k) {
+                            e.enabled = target;
+                        }
+                    }
+                }
+            }
             Act::SetEase(cid, t, e) => {
                 if let Some(cl) = p.clip_mut(cid) {
                     for a in cl.all_animated_mut() {
@@ -2171,6 +2268,20 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     p.remove_transition(tid);
                 }
                 c.sel_transitions.clear();
+            }
+            Act::SetTransitionsKind(tids, k) => {
+                for tid in tids {
+                    if let Some(t) = p.transition_mut(tid) {
+                        t.kind = k;
+                    }
+                }
+            }
+            Act::SetTransitionsEase(tids, e) => {
+                for tid in tids {
+                    if let Some(t) = p.transition_mut(tid) {
+                        t.ease = e;
+                    }
+                }
             }
             Act::AddMarker(t) => {
                 let mid = p.add_marker(t, "Marker");
@@ -3638,6 +3749,55 @@ mod tests {
         assert!((h.project.tracks[0].clips[1].start - 5.0).abs() < 1e-6);
     }
 
+    /// Right-clicking 2+ selected transitions offers "Change Type"/"Change Easing" quick-changes —
+    /// the timeline's fast path to what the Inspector's `transition_section` already bulk-edits.
+    /// Absolute-overwrite (a menu click IS the new value): every selected transition gets the picked
+    /// kind, in exactly one undo step for the whole bulk operation.
+    #[test]
+    fn transition_menu_bulk_changes_kind_with_one_undo() {
+        let mut h = Harness::new();
+        let lanes = h.state.lanes_rect;
+        h.project.split_at(4.0, None);
+        h.project.split_at(7.0, None);
+        let c2 = h.project.tracks[0].clips[1].id;
+        let c3 = h.project.tracks[0].clips[2].id;
+        let t1 = h.project.add_transition(c2, TransitionKind::CrossFade, 1.0).unwrap();
+        let t2 = h.project.add_transition(c3, TransitionKind::CrossFade, 1.0).unwrap();
+        h.frame(vec![]);
+        let band1 = pos2(h.state.x_at(4.0), lanes.top() + 30.0);
+        let band2 = pos2(h.state.x_at(7.0), lanes.top() + 30.0);
+        h.press(band1);
+        h.release(band1);
+        h.press_m(band2, Modifiers::CTRL);
+        h.release_m(band2, Modifiers::CTRL);
+        assert_eq!(h.sel_transitions, vec![t1, t2], "both bands selected before the right-click");
+
+        let undos0 = h.undos;
+        // right-click the already-selected band: opens the bulk menu, targeting both (sel_transitions
+        // is only reset to a single id when the right-clicked band wasn't already part of it)
+        let secondary = |pos: Pos2, pressed: bool| Event::PointerButton {
+            pos,
+            button: PointerButton::Secondary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        h.frame(vec![secondary(band1, true)]);
+        h.frame(vec![]);
+        h.frame(vec![secondary(band1, false)]);
+        h.frame(vec![]);
+        let change_type = h.painted_text("Change Type").expect("Change Type submenu button painted") + vec2(4.0, 4.0);
+        h.press(change_type);
+        h.release(change_type);
+        let push = h.painted_text("Push").expect("Push kind listed in the Change Type submenu") + vec2(4.0, 4.0);
+        h.press(push);
+        let r = h.release(push);
+        assert!(r.edited, "picking a kind from the menu edits the project");
+        assert_eq!(h.undos - undos0, 1, "one undo for the whole bulk operation, not one per transition");
+        let kind_of = |id: Id| h.project.tracks[0].transitions.iter().find(|t| t.id == id).unwrap().kind;
+        assert_eq!(kind_of(t1), TransitionKind::Push);
+        assert_eq!(kind_of(t2), TransitionKind::Push);
+    }
+
     #[test]
     fn headless_transition_edge_drag_clamps_duration() {
         use crate::model::TransitionKind;
@@ -3804,7 +3964,9 @@ mod tests {
                 },
                 |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
-                        clip_menu(ui, 1, false, false, true, audio, &p.labels, &p.buses, &mut act, &mut acts, &mut edit)
+                        clip_menu(
+                            ui, 1, false, false, true, audio, &p.labels, &p.buses, &[], &mut act, &mut acts, &mut edit,
+                        )
                     });
                 },
             );
@@ -3822,6 +3984,61 @@ mod tests {
         let a = texts(true);
         assert!(!a.iter().any(|s| s == "Add Mask"), "a mask means nothing on audio: {a:?}");
         assert!(a.iter().any(|s| s == "Bus"), "audio clips get the bus submenu: {a:?}");
+    }
+
+    /// Only an effect kind carried by 2+ of the given clips counts as "shared" (a clip's own duplicate
+    /// effects count once, and a clip missing entirely just doesn't contribute).
+    #[test]
+    fn shared_effect_kinds_needs_two_clips_with_the_same_kind() {
+        let mut p = Project::new();
+        let mut a = Clip::new(1, ClipKind::Video, "a", 0.0, 2.0);
+        a.effects.push(Effect::new(EffectKind::Blur));
+        a.effects.push(Effect::new(EffectKind::Blur)); // duplicate on one clip must still count once
+        let mut b = Clip::new(2, ClipKind::Video, "b", 2.0, 2.0);
+        b.effects.push(Effect::new(EffectKind::Blur));
+        b.effects.push(Effect::new(EffectKind::Vignette)); // only on b — not shared
+        let c = Clip::new(3, ClipKind::Video, "c", 4.0, 2.0); // no effects at all
+        p.tracks[0].clips = vec![a, b, c];
+        assert_eq!(shared_effect_kinds(&p, &[1, 2]), vec![EffectKind::Blur]);
+        assert_eq!(shared_effect_kinds(&p, &[1, 2, 3]), vec![EffectKind::Blur], "clip 3 contributes nothing");
+        assert!(shared_effect_kinds(&p, &[1]).is_empty(), "needs 2+ clips");
+        assert!(shared_effect_kinds(&p, &[2, 3]).is_empty(), "Blur is only on one of these two");
+    }
+
+    /// The timeline clip menu's "Effects" quick-toggle only appears when the caller found a shared
+    /// kind, and lists a "Toggle <name>" entry per kind passed in.
+    #[test]
+    fn clip_menu_effects_submenu_only_shows_shared_kinds() {
+        let p = Project::new();
+        let ctx = egui::Context::default();
+        let mut texts = |shared: &[EffectKind]| -> Vec<String> {
+            let (mut act, mut acts, mut edit) = (None, Vec::new(), false);
+            let full = ctx.run(
+                RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(400.0, 1400.0))),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        clip_menu(
+                            ui, 1, false, false, true, false, &p.labels, &p.buses, shared, &mut act, &mut acts,
+                            &mut edit,
+                        )
+                    });
+                },
+            );
+            full.shapes
+                .iter()
+                .filter_map(|cs| match &cs.shape {
+                    Shape::Text(t) => Some(t.galley.text().to_string()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let none = texts(&[]);
+        assert!(!none.iter().any(|s| s == "Effects"), "no shared kind: no Effects submenu: {none:?}");
+        let shared = texts(&[EffectKind::Blur]);
+        assert!(shared.iter().any(|s| s == "Effects"), "a shared kind offers the Effects submenu: {shared:?}");
     }
 
     #[test]
