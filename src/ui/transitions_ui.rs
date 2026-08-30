@@ -7,7 +7,10 @@
 //! selector for Push/Wipe. "Add at start" / "Add at end" apply it to EVERY selected clip through `add_transitions`,
 //! which is also what the menu, the hotkeys and MCP call — it records the choice in `TransitionsState`,
 //! so Ctrl+T (Action::AddLastTransition) repeats whatever was applied last, whichever path applied it.
+//! A clip with no neighbour on that side gets an EDGE transition (blend from/to nothing) instead of
+//! a cut transition, so lone clips can fade in/out too.
 //! Below: the transitions touching the first selected clip (Project::transitions_of): kind combo,
+//! position combo (Start / End / Last / Next — re-anchors the transition relative to the clip),
 //! duration, colour/direction/ease editors, remove. Returns true when the project changed (call
 //! `undo` once per gesture first).
 
@@ -72,7 +75,8 @@ fn has_left(project: &Project, id: Id) -> bool {
 }
 
 /// Add a transition at the cut left of every id (or at its right edge with `at_end`), with the colour
-/// and direction from `st`, and record the choice in `st`. THE funnel: panel, menu, hotkeys and MCP all
+/// and direction from `st`, and record the choice in `st`. A clip with no neighbour on that side gets
+/// an edge transition instead (blend from/to nothing). THE funnel: panel, menu, hotkeys and MCP all
 /// come through here (or call `remember`), which is what keeps Ctrl+T on the last transition actually
 /// used. Returns how many were added — a transition always belongs to the clip on the RIGHT of the cut,
 /// and `Project::add_transition` replaces the one already on that cut, so overlapping selections are fine.
@@ -87,9 +91,20 @@ pub(crate) fn add_transitions(
     st.remember(kind, dur);
     let mut added = 0;
     for &id in ids {
-        let right = if at_end { right_neighbor(project, id) } else { project.clip(id).map(|c| c.id) };
-        let Some(right) = right else { continue };
-        if let Some(tid) = project.add_transition(right, kind, dur) {
+        if project.clip(id).is_none() {
+            continue;
+        }
+        let tid = if at_end {
+            match right_neighbor(project, id) {
+                Some(right) => project.add_transition(right, kind, dur),
+                None => project.add_edge_transition(id, kind, dur, true),
+            }
+        } else if has_left(project, id) {
+            project.add_transition(id, kind, dur)
+        } else {
+            project.add_edge_transition(id, kind, dur, false)
+        };
+        if let Some(tid) = tid {
             if let Some(t) = project.transition_mut(tid) {
                 t.color = st.color;
                 t.direction = st.direction;
@@ -98,6 +113,81 @@ pub(crate) fn add_transitions(
         }
     }
     added
+}
+
+/// Where a transition sits relative to the selected clip — the panel's position selector.
+#[derive(Clone, Copy, PartialEq)]
+enum Pos {
+    /// Edge In: blend from nothing at the clip start.
+    Start,
+    /// Edge Out: blend to nothing at the clip end.
+    End,
+    /// Cut with the last (previous) clip.
+    Last,
+    /// Cut with the next clip.
+    Next,
+}
+
+impl Pos {
+    const ALL: [Pos; 4] = [Pos::Start, Pos::End, Pos::Last, Pos::Next];
+    fn name(self) -> &'static str {
+        match self {
+            Pos::Start => "Start",
+            Pos::End => "End",
+            Pos::Last => "Last",
+            Pos::Next => "Next",
+        }
+    }
+    fn hover(self) -> &'static str {
+        match self {
+            Pos::Start => "At the clip start, blending in from nothing",
+            Pos::End => "At the clip end, blending out to nothing",
+            Pos::Last => "On the cut with the previous clip",
+            Pos::Next => "On the cut with the next clip",
+        }
+    }
+    /// The position `tr` occupies relative to clip `sel`.
+    fn of(tr: &Transition, sel: Id) -> Pos {
+        match tr.edge {
+            crate::model::TransitionEdge::In => Pos::Start,
+            crate::model::TransitionEdge::Out => Pos::End,
+            crate::model::TransitionEdge::Cut => {
+                if tr.right == sel {
+                    Pos::Last
+                } else {
+                    Pos::Next
+                }
+            }
+        }
+    }
+}
+
+/// Re-anchor a transition at a new position relative to `sel`, keeping its settings.
+/// Returns true when it moved (the target position must exist).
+fn move_transition(project: &mut Project, tid: Id, sel: Id, pos: Pos) -> bool {
+    let Some(old) = project.tracks.iter().flat_map(|t| &t.transitions).find(|t| t.id == tid).cloned() else {
+        return false;
+    };
+    let target = match pos {
+        Pos::Next => right_neighbor(project, sel),
+        _ => Some(sel),
+    };
+    let Some(target) = target else { return false };
+    if pos == Pos::Last && !has_left(project, sel) {
+        return false;
+    }
+    project.remove_transition(tid);
+    let nid = match pos {
+        Pos::Start => project.add_edge_transition(target, old.kind, old.duration, false),
+        Pos::End => project.add_edge_transition(target, old.kind, old.duration, true),
+        Pos::Last | Pos::Next => project.add_transition(target, old.kind, old.duration),
+    };
+    if let Some(t) = nid.and_then(|nid| project.transition_mut(nid)) {
+        t.color = old.color;
+        t.direction = old.direction;
+        t.ease = old.ease;
+    }
+    nid.is_some()
 }
 
 /// A transition card dropped on a clip at timeline time `t`: which of the clip's two cuts it means.
@@ -247,11 +337,11 @@ pub fn show(
             }
             // a quick action also picks the kind, so Ctrl+T repeats what the menu just applied
             r.context_menu(|ui| {
-                if ui.add_enabled(any_left, Button::new("Add at start of selected clip(s)")).clicked() {
+                if ui.add_enabled(!ids.is_empty(), Button::new("Add at start of selected clip(s)")).clicked() {
                     (pick, apply) = (Some(i), Some(false));
                     ui.close();
                 }
-                if ui.add_enabled(any_right, Button::new("Add at end of selected clip(s)")).clicked() {
+                if ui.add_enabled(!ids.is_empty(), Button::new("Add at end of selected clip(s)")).clicked() {
                     (pick, apply) = (Some(i), Some(true));
                     ui.close();
                 }
@@ -286,19 +376,22 @@ pub fn show(
         return false;
     };
     ui.horizontal(|ui| {
-        let r = ui
-            .add_enabled(any_left, Button::new("Add at start"))
-            .on_hover_text("Transition into every selected clip")
-            .on_disabled_hover_text("No clip ends where the selected one starts");
+        let hint = |any: bool, cut: &str, edge: &str| if any { cut.to_string() } else { edge.to_string() };
+        let r = ui.add(Button::new("Add at start")).on_hover_text(hint(
+            any_left,
+            "Transition into every selected clip",
+            "No cut at the start — the clip blends in from nothing",
+        ));
         #[cfg(test)]
         test_rects::push("add_start".into(), r.rect);
         if r.clicked() {
             apply = Some(false);
         }
-        let r = ui
-            .add_enabled(any_right, Button::new("Add at end"))
-            .on_hover_text("Transition out of every selected clip")
-            .on_disabled_hover_text("No clip starts where the selected one ends");
+        let r = ui.add(Button::new("Add at end")).on_hover_text(hint(
+            any_right,
+            "Transition out of every selected clip",
+            "No cut at the end — the clip blends out to nothing",
+        ));
         #[cfg(test)]
         test_rects::push("add_end".into(), r.rect);
         if r.clicked() {
@@ -330,6 +423,7 @@ pub fn show(
     }
     let mut writes: Vec<Transition> = Vec::new();
     let mut removes: Vec<Id> = Vec::new();
+    let mut moves: Vec<(Id, Pos)> = Vec::new();
     for (_i, mut tr) in list.into_iter().enumerate() {
         ui.horizontal(|ui| {
             egui::ComboBox::from_id_salt(("tr_kind", tr.id)).selected_text(tr.kind.name()).show_ui(ui, |ui| {
@@ -337,6 +431,29 @@ pub fn show(
                     g.note(&ui.selectable_value(&mut tr.kind, k, k.name()));
                 }
             });
+            // where the transition sits relative to the selected clip; picking a spot re-anchors it
+            let mut pos = Pos::of(&tr, sel);
+            let cur = pos;
+            egui::ComboBox::from_id_salt(("tr_pos", tr.id)).selected_text(pos.name()).show_ui(ui, |ui| {
+                for p in Pos::ALL {
+                    let ok = match p {
+                        Pos::Start | Pos::End => true,
+                        Pos::Last => has_left(project, sel),
+                        Pos::Next => right_neighbor(project, sel).is_some(),
+                    };
+                    let r = ui.add_enabled(ok, Button::selectable(pos == p, p.name()));
+                    let r =
+                        if ok { r.on_hover_text(p.hover()) } else { r.on_disabled_hover_text("No clip on that side") };
+                    if r.clicked() {
+                        pos = p;
+                        g.click();
+                        ui.close();
+                    }
+                }
+            });
+            if pos != cur {
+                moves.push((tr.id, pos));
+            }
             // clamp_existing_to_range(false): clamping an out-of-range duration counts as a change and
             // would fake an edit (undo snapshot + dirty flag) just by drawing the panel.
             let r = ui.add(
@@ -381,6 +498,11 @@ pub fn show(
                 if let Some(t) = project.transition_mut(w.id) {
                     *t = w;
                 }
+            }
+        }
+        for &(tid, pos) in &moves {
+            if !removes.contains(&tid) {
+                move_transition(project, tid, sel, pos);
             }
         }
         for id in removes {
@@ -532,16 +654,56 @@ mod tests {
     }
 
     #[test]
-    fn no_neighbor_disables_add() {
+    fn no_neighbor_adds_an_edge_transition() {
         let mut h = Harness::new();
-        // select the FIRST clip: nothing ends at its start (t = 0), so "Add at start" is disabled
+        // select the FIRST clip: nothing ends at its start (t = 0), so it blends in from nothing
         let v1 = h.project.tracks[0].clips[0].id;
         h.selection = vec![v1];
         h.frame(vec![]);
         let r = test_rects::get("add_start").expect("add button recorded");
-        assert!(!h.click(r.center()), "disabled button must not add");
-        assert!(h.project.tracks[0].transitions.is_empty());
-        assert_eq!(h.undos, 0);
+        assert!(h.click(r.center()));
+        assert_eq!(h.project.tracks[0].transitions.len(), 1);
+        let tr = &h.project.tracks[0].transitions[0];
+        assert_eq!((tr.right, tr.edge), (v1, crate::model::TransitionEdge::In));
+        assert_eq!(h.undos, 1);
+    }
+
+    /// The last clip of the track gets an Out edge from "Add at end" (nothing abuts it).
+    #[test]
+    fn add_at_end_without_neighbor_fades_out() {
+        let mut h = Harness::new();
+        let v2 = h.project.tracks[0].clips[1].id;
+        h.selection = vec![v2];
+        assert_eq!(add_transitions(&mut h.project, &[v2], &mut h.state, TransitionKind::CrossFade, 1.0, true), 1);
+        let tr = &h.project.tracks[0].transitions[0];
+        assert_eq!((tr.right, tr.edge), (v2, crate::model::TransitionEdge::Out));
+    }
+
+    /// Re-anchoring keeps the transition's settings and moves it to the picked position.
+    #[test]
+    fn move_transition_reanchors_with_settings_kept() {
+        let mut h = Harness::new();
+        let v1 = h.project.tracks[0].clips[0].id;
+        let v2 = h.project.tracks[0].clips[1].id;
+        h.state.color = [9, 8, 7, 255];
+        h.state.direction = 3;
+        assert_eq!(add_transitions(&mut h.project, &[v2], &mut h.state, TransitionKind::Wipe, 0.7, false), 1);
+        let tid = h.project.tracks[0].transitions.iter().find(|t| t.right == v2).unwrap().id;
+        // Cut at v2's start ("Last") → edge In at v1's start ("Start" relative to v1)
+        assert!(move_transition(&mut h.project, tid, v1, Pos::Start));
+        let tr = h.project.tracks[0].transitions.iter().find(|t| t.right == v1).expect("moved onto v1");
+        assert_eq!(tr.edge, crate::model::TransitionEdge::In);
+        assert_eq!((tr.kind, tr.direction, tr.color), (TransitionKind::Wipe, 3, [9, 8, 7, 255]));
+        assert!((tr.duration - 0.7).abs() < 1e-9);
+        let tid = tr.id;
+        // ... and "Next" from v1 lands back on the cut whose right side is v2
+        assert!(move_transition(&mut h.project, tid, v1, Pos::Next));
+        let tr = h.project.tracks[0].transitions.iter().find(|t| t.right == v2).expect("cut transition");
+        assert_eq!(tr.edge, crate::model::TransitionEdge::Cut);
+        // moving to a cut that does not exist is refused and loses nothing
+        let tid = tr.id;
+        assert!(!move_transition(&mut h.project, tid, v2, Pos::Next), "v2 has no right neighbour");
+        assert!(h.project.tracks[0].transitions.iter().any(|t| t.id == tid));
     }
 
     /// Every selected clip gets a transition, not just the first one, and it is one undo entry.

@@ -888,14 +888,15 @@ impl GpuRenderer {
         Some(canvas)
     }
 
-    /// Both clips of a transition, per kind (mirrors `compose::render_transition`).
+    /// Both sides of a transition, per kind (mirrors `compose::render_transition`). Edge transitions
+    /// have one side missing (In: no left, Out: no right): that side is nothing — the black canvas.
     #[allow(clippy::too_many_arguments)]
     fn draw_transition(
         &mut self,
         project: &Project,
         tr: &crate::model::Transition,
-        left: &Clip,
-        right: &Clip,
+        left: Option<&Clip>,
+        right: Option<&Clip>,
         p: f32,
         t: f64,
         mut canvas: Target,
@@ -905,11 +906,30 @@ impl GpuRenderer {
         let (w, h) = (canvas.w as f32, canvas.h as f32);
         match tr.kind {
             CrossFade => {
-                canvas = self.draw_clip(project, left, t, canvas, layers, Extra::NONE);
-                self.draw_clip(project, right, t, canvas, layers, Extra { opacity: p, ..Extra::NONE })
+                if let Some(left) = left {
+                    // fading out to nothing, the outgoing clip itself thins; on a cut it stays opaque
+                    let op = if right.is_none() { 1.0 - p } else { 1.0 };
+                    canvas = self.draw_clip(project, left, t, canvas, layers, Extra { opacity: op, ..Extra::NONE });
+                }
+                if let Some(right) = right {
+                    canvas = self.draw_clip(project, right, t, canvas, layers, Extra { opacity: p, ..Extra::NONE });
+                }
+                canvas
             }
             FadeToColor => {
-                let (clip, fade) = if p < 0.5 { (left, 2.0 * p) } else { (right, 2.0 * (1.0 - p)) };
+                // A→colour for p < 0.5, colour→B after; an edge fades one clip over the whole window
+                let (clip, fade) = match (left, right) {
+                    (Some(l), Some(r)) => {
+                        if p < 0.5 {
+                            (l, 2.0 * p)
+                        } else {
+                            (r, 2.0 * (1.0 - p))
+                        }
+                    }
+                    (Some(l), None) => (l, p),
+                    (None, Some(r)) => (r, 1.0 - p),
+                    (None, None) => return canvas,
+                };
                 canvas = self.draw_clip(project, clip, t, canvas, layers, Extra::NONE);
                 self.fill_canvas(canvas, tr.color, fade.clamp(0.0, 1.0))
             }
@@ -920,19 +940,35 @@ impl GpuRenderer {
                     2 => (0.0, -h),
                     _ => (0.0, h),
                 };
-                let a = Extra { dx: -p * dx, dy: -p * dy, ..Extra::NONE };
-                let b = Extra { dx: (1.0 - p) * dx, dy: (1.0 - p) * dy, ..Extra::NONE };
-                canvas = self.draw_clip(project, left, t, canvas, layers, a);
-                self.draw_clip(project, right, t, canvas, layers, b)
+                if let Some(left) = left {
+                    let a = Extra { dx: -p * dx, dy: -p * dy, ..Extra::NONE };
+                    canvas = self.draw_clip(project, left, t, canvas, layers, a);
+                }
+                if let Some(right) = right {
+                    let b = Extra { dx: (1.0 - p) * dx, dy: (1.0 - p) * dy, ..Extra::NONE };
+                    canvas = self.draw_clip(project, right, t, canvas, layers, b);
+                }
+                canvas
             }
             Wipe => {
-                canvas = self.draw_clip(project, left, t, canvas, layers, Extra::NONE);
-                // the incoming clip is limited to the wiped rectangle by a rect mask
-                let (cx, cy, rx, ry) = match tr.direction {
-                    0 => (w * p / 2.0, h / 2.0, w * p / 2.0, h / 2.0),
-                    1 => (w - w * p / 2.0, h / 2.0, w * p / 2.0, h / 2.0),
-                    2 => (w / 2.0, h * p / 2.0, w / 2.0, h * p / 2.0),
-                    _ => (w / 2.0, h - h * p / 2.0, w / 2.0, h * p / 2.0),
+                // on a cut / In edge the incoming clip is limited to the wiped rectangle by a rect
+                // mask; on an Out edge black wipes over the clip, so the clip is drawn masked to the
+                // complement instead: the opposite direction's rectangle at 1 - p
+                let (clip, d, q) = match (left, right) {
+                    (l, Some(r)) => {
+                        if let Some(l) = l {
+                            canvas = self.draw_clip(project, l, t, canvas, layers, Extra::NONE);
+                        }
+                        (r, tr.direction, p)
+                    }
+                    (Some(l), None) => (l, tr.direction ^ 1, 1.0 - p),
+                    (None, None) => return canvas,
+                };
+                let (cx, cy, rx, ry) = match d {
+                    0 => (w * q / 2.0, h / 2.0, w * q / 2.0, h / 2.0),
+                    1 => (w - w * q / 2.0, h / 2.0, w * q / 2.0, h / 2.0),
+                    2 => (w / 2.0, h * q / 2.0, w / 2.0, h * q / 2.0),
+                    _ => (w / 2.0, h - h * q / 2.0, w / 2.0, h * q / 2.0),
                 };
                 let mut rect = Mask::new(MaskShape::Rect);
                 rect.rx = crate::model::Animated::new(rx as f64);
@@ -940,7 +976,7 @@ impl GpuRenderer {
                 let size = (canvas.w, canvas.h);
                 let Some(mask) = self.render_mask(&rect, size, 0.0, 1.0, (cx, cy)) else { return canvas };
                 let extra = Extra { mask: Some(mask.tex), ..Extra::NONE };
-                let out = self.draw_clip(project, right, t, canvas, layers, extra);
+                let out = self.draw_clip(project, clip, t, canvas, layers, extra);
                 self.pool.put(mask);
                 out
             }
@@ -993,7 +1029,7 @@ impl GpuRenderer {
         extra: Extra,
     ) -> Target {
         let lt = clip.local(t);
-        let opacity = clip.opacity.at(lt).clamp(0.0, 1.0) as f32 * extra.opacity;
+        let opacity = clip.opacity.at(lt).clamp(0.0, 1.0) as f32 * extra.opacity * clip.fade_mult(lt) as f32;
         if opacity <= 0.0 || clip.kind == ClipKind::Audio {
             return canvas;
         }

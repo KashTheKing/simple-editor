@@ -1985,13 +1985,26 @@ impl TransitionKind {
     }
 }
 
-/// A transition centred on the cut between a clip and its right neighbour on the same track:
-/// it spans [right.start - duration/2, right.start + duration/2). Both clips are extended virtually
-/// into that window (the engine clamps source times). Audio tracks use CrossFade (a gain crossfade).
+/// Where a transition sits. `Cut` (the default) is centred on the cut between a clip and its left
+/// neighbour; `In` / `Out` sit inside a single clip's first/last `duration` seconds and blend
+/// from/to nothing (black), so they need no neighbour.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, Default, Hash)]
+pub enum TransitionEdge {
+    #[default]
+    Cut,
+    In,
+    Out,
+}
+
+/// A transition on a cut or a clip edge. For `Cut` it is centred on the cut between `right` and its
+/// left neighbour, spanning [right.start - duration/2, right.start + duration/2); both clips are
+/// extended virtually into that window (the engine clamps source times). For `In` / `Out`, `right`
+/// is the single clip it belongs to and the window is its first/last `duration` seconds.
+/// Audio tracks use CrossFade (a gain crossfade / fade).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Transition {
     pub id: Id,
-    /// The clip on the right side of the cut.
+    /// The clip on the right side of the cut (`Cut`), or the clip the edge transition belongs to.
     pub right: Id,
     pub kind: TransitionKind,
     pub duration: f64,
@@ -2002,6 +2015,8 @@ pub struct Transition {
     pub direction: u8,
     #[serde(default)]
     pub ease: Ease,
+    #[serde(default)]
+    pub edge: TransitionEdge,
 }
 
 fn black() -> [u8; 4] {
@@ -2014,11 +2029,6 @@ impl Transition {
     pub fn half(&self, left: &Clip, right: &Clip) -> f64 {
         (self.duration / 2.0).min(left.duration).min(right.duration)
     }
-    /// The window [cut - half, cut + half) actually played, clamped to the clips.
-    pub fn window(&self, left: &Clip, right: &Clip) -> (f64, f64) {
-        let h = self.half(left, right);
-        (right.start - h, right.start + h)
-    }
     /// Eased progress 0..1 across a window of `cut ± half`.
     pub fn progress_at(&self, cut: f64, half: f64, t: f64) -> f64 {
         if half <= 0.0 {
@@ -2026,9 +2036,25 @@ impl Transition {
         }
         self.ease.apply(((t - (cut - half)) / (2.0 * half)).clamp(0.0, 1.0))
     }
-    /// Eased progress 0..1 at timeline time t over the clamped window.
-    pub fn progress(&self, left: &Clip, right: &Clip, t: f64) -> f64 {
-        self.progress_at(right.start, self.half(left, right), t)
+    /// (centre, half-width) of the clamped window for any placement; the window is `centre ± half`.
+    /// `Cut` needs both clips; `In` / `Out` need only their own (the window stays inside the clip).
+    pub fn cut_half(&self, left: Option<&Clip>, right: Option<&Clip>) -> Option<(f64, f64)> {
+        match self.edge {
+            TransitionEdge::Cut => {
+                let (l, r) = (left?, right?);
+                Some((r.start, self.half(l, r)))
+            }
+            TransitionEdge::In => {
+                let c = right?;
+                let h = (self.duration / 2.0).min(c.duration / 2.0);
+                Some((c.start + h, h))
+            }
+            TransitionEdge::Out => {
+                let c = left?;
+                let h = (self.duration / 2.0).min(c.duration / 2.0);
+                Some((c.end() - h, h))
+            }
+        }
     }
 }
 
@@ -2205,6 +2231,19 @@ impl Clip {
     /// Clip-local time.
     pub fn local(&self, t: f64) -> f64 {
         t - self.start
+    }
+    /// Gain/opacity multiplier of the fade in/out ramps at clip-local time `lt`. Time is clamped
+    /// into the clip so virtual transition extensions hold the edge value (mixer rule).
+    pub fn fade_mult(&self, lt: f64) -> f64 {
+        let lt = lt.clamp(0.0, self.duration);
+        let mut g = 1.0;
+        if self.fade_in > 0.0 && lt < self.fade_in {
+            g *= (lt / self.fade_in).clamp(0.0, 1.0);
+        }
+        if self.fade_out > 0.0 && lt > self.duration - self.fade_out {
+            g *= ((self.duration - lt) / self.fade_out).clamp(0.0, 1.0);
+        }
+        g
     }
     /// Length of the source window in source seconds.
     pub fn src_len(&self) -> f64 {
@@ -2484,24 +2523,28 @@ impl Track {
     pub fn left_of(&self, right: &Clip) -> Option<&Clip> {
         self.clips.iter().find(|c| c.id != right.id && (c.end() - right.start).abs() < ABUT_EPS)
     }
-    /// (transition, left clip, right clip) for a transition of this track, if it is still valid.
-    pub fn transition_pair(&self, tr: &Transition) -> Option<(&Clip, &Clip)> {
-        let right = self.clips.iter().find(|c| c.id == tr.right)?;
-        let left = self.left_of(right)?;
-        Some((left, right))
+    /// The (left, right) sides of a transition, if it is still valid. Edge transitions have one side
+    /// missing: `In` blends nothing → clip (no left), `Out` blends clip → nothing (no right).
+    pub fn transition_clips(&self, tr: &Transition) -> Option<(Option<&Clip>, Option<&Clip>)> {
+        let c = self.clips.iter().find(|c| c.id == tr.right)?;
+        match tr.edge {
+            TransitionEdge::Cut => Some((Some(self.left_of(c)?), Some(c))),
+            TransitionEdge::In => Some((None, Some(c))),
+            TransitionEdge::Out => Some((Some(c), None)),
+        }
     }
     /// The transition playing at timeline time t (clamped window), with its clips.
-    pub fn transition_at(&self, t: f64) -> Option<(&Transition, &Clip, &Clip)> {
+    pub fn transition_at(&self, t: f64) -> Option<(&Transition, Option<&Clip>, Option<&Clip>)> {
         self.transitions.iter().find_map(|tr| {
-            let (l, r) = self.transition_pair(tr)?;
-            let (a, b) = tr.window(l, r);
-            (t >= a && t < b).then_some((tr, l, r))
+            let (l, r) = self.transition_clips(tr)?;
+            let (cut, h) = tr.cut_half(l, r)?;
+            (t >= cut - h && t < cut + h).then_some((tr, l, r))
         })
     }
-    /// Drop transitions whose clips no longer abut.
+    /// Drop transitions whose clips no longer abut (edge transitions only need their clip to exist).
     pub fn prune_transitions(&mut self) {
         let keep: Vec<Id> =
-            self.transitions.iter().filter(|t| self.transition_pair(t).is_some()).map(|t| t.id).collect();
+            self.transitions.iter().filter(|t| self.transition_clips(t).is_some()).map(|t| t.id).collect();
         self.transitions.retain(|t| keep.contains(&t.id));
     }
 }
@@ -3210,12 +3253,28 @@ impl Project {
     /// left neighbour is linked with the video's left neighbour get an audio CrossFade of the same length.
     /// Returns the new transition id, or None if `right` has no abutting left neighbour.
     pub fn add_transition(&mut self, right: Id, kind: TransitionKind, duration: f64) -> Option<Id> {
+        self.add_transition_at(right, kind, duration, TransitionEdge::Cut)
+    }
+    /// Add (or replace) an edge transition at the start (`out` false) or end (`out` true) of `clip`:
+    /// the clip blends from/to nothing, no neighbour needed. Mirrors on linked clips like `add_transition`.
+    pub fn add_edge_transition(&mut self, clip: Id, kind: TransitionKind, duration: f64, out: bool) -> Option<Id> {
+        self.add_transition_at(clip, kind, duration, if out { TransitionEdge::Out } else { TransitionEdge::In })
+    }
+    fn add_transition_at(
+        &mut self,
+        right: Id,
+        kind: TransitionKind,
+        duration: f64,
+        edge: TransitionEdge,
+    ) -> Option<Id> {
         let (ti, _) = self.find(right)?;
         let r = self.clip(right)?.clone();
-        self.tracks[ti].left_of(&r)?;
+        if edge == TransitionEdge::Cut {
+            self.tracks[ti].left_of(&r)?;
+        }
         let duration = duration.max(MIN_CLIP);
         let id = self.new_id();
-        self.tracks[ti].transitions.retain(|t| t.right != right);
+        Self::clear_transition_slot(&mut self.tracks[ti], &r, edge);
         self.tracks[ti].transitions.push(Transition {
             id,
             right,
@@ -3224,8 +3283,9 @@ impl Project {
             color: [0, 0, 0, 255],
             direction: 0,
             ease: Ease::Linear,
+            edge,
         });
-        // mirror on linked clips (audio crossfade)
+        // mirror on linked clips (audio crossfade / fade)
         if r.link != 0 {
             let partners: Vec<Id> = self.linked(right).into_iter().filter(|&p| p != right).collect();
             for p in partners {
@@ -3234,12 +3294,12 @@ impl Project {
                     continue;
                 }
                 let pc = self.clip(p).unwrap().clone();
-                if self.tracks[pti].left_of(&pc).is_none() {
+                if edge == TransitionEdge::Cut && self.tracks[pti].left_of(&pc).is_none() {
                     continue;
                 }
                 let pid = self.new_id();
                 let pkind = if self.tracks[pti].kind == TrackKind::Audio { TransitionKind::CrossFade } else { kind };
-                self.tracks[pti].transitions.retain(|t| t.right != p);
+                Self::clear_transition_slot(&mut self.tracks[pti], &pc, edge);
                 self.tracks[pti].transitions.push(Transition {
                     id: pid,
                     right: p,
@@ -3248,10 +3308,26 @@ impl Project {
                     color: [0, 0, 0, 255],
                     direction: 0,
                     ease: Ease::Linear,
+                    edge,
                 });
             }
         }
         Some(id)
+    }
+    /// Remove whatever transition already occupies the spot a new one is going to: a `Cut` or `In`
+    /// at the start of `c` share the start slot (plus the previous clip's `Out`); an `Out` at the end
+    /// of `c` shares the end slot with the next clip's `Cut` / `In`.
+    fn clear_transition_slot(track: &mut Track, c: &Clip, edge: TransitionEdge) {
+        let prev = track.left_of(c).map(|l| l.id);
+        let next = track.clips.iter().find(|o| o.id != c.id && (o.start - c.end()).abs() < ABUT_EPS).map(|o| o.id);
+        let (start_clip, end_clip) = match edge {
+            TransitionEdge::Cut | TransitionEdge::In => (Some(c.id), prev),
+            TransitionEdge::Out => (next, Some(c.id)),
+        };
+        track.transitions.retain(|t| {
+            !(start_clip.is_some_and(|s| t.right == s && t.edge != TransitionEdge::Out)
+                || end_clip.is_some_and(|e| t.right == e && t.edge == TransitionEdge::Out))
+        });
     }
     pub fn remove_transition(&mut self, id: Id) {
         for t in &mut self.tracks {
@@ -3266,8 +3342,8 @@ impl Project {
         let mut out = Vec::new();
         for (ti, t) in self.tracks.iter().enumerate() {
             for tr in &t.transitions {
-                if let Some((l, r)) = t.transition_pair(tr) {
-                    if l.id == clip || r.id == clip {
+                if let Some((l, r)) = t.transition_clips(tr) {
+                    if l.is_some_and(|c| c.id == clip) || r.is_some_and(|c| c.id == clip) {
                         out.push((ti, tr));
                     }
                 }
@@ -4537,10 +4613,12 @@ mod tests {
         assert_eq!(p.tracks[0].transitions.len(), 1);
         assert_eq!(p.tracks[1].transitions.len(), 1); // mirrored on the linked audio cut
         let (tr, l, r) = p.tracks[0].transition_at(3.9).unwrap();
+        let (l, r) = (l.unwrap(), r.unwrap());
         assert_eq!(tr.id, id);
         assert!(l.end() == r.start);
-        assert!((tr.progress(l, r, 3.5) - 0.0).abs() < 1e-9);
-        assert!((tr.progress(l, r, 4.5) - 1.0).abs() < 1e-9);
+        let (cut, half) = tr.cut_half(Some(l), Some(r)).unwrap();
+        assert!((tr.progress_at(cut, half, 3.5) - 0.0).abs() < 1e-9);
+        assert!((tr.progress_at(cut, half, 4.5) - 1.0).abs() < 1e-9);
         assert!(p.tracks[0].transition_at(4.6).is_none());
         // no left neighbour → None
         let first = p.tracks[0].clips[0].id;
@@ -4549,6 +4627,62 @@ mod tests {
         assert!(p.move_clips(&p.expand_links(&[right]), 2.0, 0, None));
         assert!(p.tracks[0].transitions.is_empty());
         assert!(p.tracks[1].transitions.is_empty());
+    }
+
+    #[test]
+    fn edge_transitions_need_no_neighbour() {
+        let mut p = Project::from_media(asset(0, 10.0, 1));
+        let lone = p.tracks[0].clips[0].id;
+        let id = p.add_edge_transition(lone, TransitionKind::CrossFade, 2.0, false).unwrap();
+        assert_eq!(p.tracks[1].transitions.len(), 1, "mirrored fade on the linked audio clip");
+        assert_eq!(p.tracks[1].transitions[0].kind, TransitionKind::CrossFade);
+        let (tr, l, r) = p.tracks[0].transition_at(0.5).unwrap();
+        assert_eq!((tr.id, tr.edge), (id, TransitionEdge::In));
+        assert!(l.is_none() && r.is_some_and(|c| c.id == lone));
+        let (cut, h) = tr.cut_half(l, r).unwrap();
+        assert!((cut - 1.0).abs() < 1e-9 && (h - 1.0).abs() < 1e-9, "window = first 2 s of the clip");
+        assert!((tr.progress_at(cut, h, 0.0) - 0.0).abs() < 1e-9);
+        assert!((tr.progress_at(cut, h, 2.0) - 1.0).abs() < 1e-9);
+        assert!(p.tracks[0].transition_at(2.5).is_none());
+        // Out edge at the clip end, and the window is clamped to the clip
+        let out = p.add_edge_transition(lone, TransitionKind::FadeToColor, 30.0, true).unwrap();
+        let (tr, l, r) = p.tracks[0].transition_at(9.9).unwrap();
+        assert_eq!(tr.id, out);
+        assert!(l.is_some_and(|c| c.id == lone) && r.is_none());
+        let (cut, h) = tr.cut_half(l, r).unwrap();
+        assert!((cut - 5.0).abs() < 1e-9 && (h - 5.0).abs() < 1e-9, "clamped to the 10 s clip");
+        // both edges live on one clip; pruning keeps them while the clip exists
+        assert_eq!(p.tracks[0].transitions.len(), 2);
+        p.tracks[0].prune_transitions();
+        assert_eq!(p.tracks[0].transitions.len(), 2);
+    }
+
+    #[test]
+    fn a_cut_and_an_in_share_the_start_slot() {
+        let mut p = Project::from_media(asset(0, 10.0, 1));
+        let right = p.split_at(4.0, None)[0];
+        let left = p.tracks[0].clips[0].id;
+        p.add_edge_transition(right, TransitionKind::CrossFade, 1.0, false).unwrap();
+        // a Cut on the same clip's start replaces the In (same spot on the track)
+        p.add_transition(right, TransitionKind::Wipe, 1.0).unwrap();
+        assert_eq!(p.tracks[0].transitions.len(), 1);
+        assert_eq!(p.tracks[0].transitions[0].edge, TransitionEdge::Cut);
+        // ... and the previous clip's Out replaces that Cut in turn (same spot again)
+        p.add_edge_transition(left, TransitionKind::CrossFade, 1.0, true).unwrap();
+        assert_eq!(p.tracks[0].transitions.len(), 1);
+        assert_eq!(p.tracks[0].transitions[0].edge, TransitionEdge::Out);
+    }
+
+    #[test]
+    fn fade_mult_ramps_and_clamps() {
+        let mut c = Clip::new(1, ClipKind::Video, "v", 0.0, 10.0);
+        c.fade_in = 2.0;
+        c.fade_out = 4.0;
+        assert!((c.fade_mult(-1.0) - 0.0).abs() < 1e-9, "virtual extension holds the edge value");
+        assert!((c.fade_mult(1.0) - 0.5).abs() < 1e-9);
+        assert!((c.fade_mult(5.0) - 1.0).abs() < 1e-9);
+        assert!((c.fade_mult(8.0) - 0.5).abs() < 1e-9);
+        assert!((c.fade_mult(11.0) - 0.0).abs() < 1e-9);
     }
 
     #[test]

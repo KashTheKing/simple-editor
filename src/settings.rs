@@ -31,6 +31,39 @@ pub struct LayoutProfile {
     pub json: String,
 }
 
+/// A shareable theme — what "Export theme…" writes to a `.sedit-theme` file and
+/// "Import theme…" reads back (palette override + look + the base theme pref).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ThemeFile {
+    pub name: String,
+    /// "system" | "dark" | "light" (Settings::theme)
+    pub theme: String,
+    /// "cozy" | "sharp" (Settings::ui_look)
+    pub ui_look: String,
+    pub palette: PaletteOverride,
+    /// Background image settings ride along (the path only makes sense on machines that have the file).
+    pub bg_image: String,
+    pub bg_tint: [u8; 4],
+    pub bg_blur: u8,
+    pub panel_opacity: u8,
+}
+
+impl Default for ThemeFile {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            theme: String::new(),
+            ui_look: String::new(),
+            palette: PaletteOverride::default(),
+            bg_image: String::new(),
+            bg_tint: [0, 0, 0, 120],
+            bg_blur: 0,
+            panel_opacity: 255,
+        }
+    }
+}
+
 /// A saved keyframe curve for one property. Key times are normalised to 0..1 of the clip length unless
 /// `absolute` (seconds from the clip start); values are absolute.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
@@ -177,6 +210,14 @@ pub struct Settings {
     pub guide: Option<crate::ui::guides::Guide>,
     /// User-saved project formats, applied from the inspector's Presets section.
     pub project_templates: Vec<ProjectTemplate>,
+    /// UI look: "cozy" (rounded corners, soft button borders) or "sharp" (the old flat look).
+    pub ui_look: String,
+    /// Editor background image (empty = none), its tint (RGBA over the image) and load-time blur radius.
+    pub bg_image: String,
+    pub bg_tint: [u8; 4],
+    pub bg_blur: u8,
+    /// Panel/tab background opacity over the background image (255 = opaque, ignored without an image).
+    pub panel_opacity: u8,
 }
 
 impl Default for Settings {
@@ -235,6 +276,11 @@ impl Default for Settings {
             transcribe_model: String::new(),
             guide: None,
             project_templates: Vec::new(),
+            ui_look: "cozy".into(),
+            bg_image: String::new(),
+            bg_tint: [0, 0, 0, 120],
+            bg_blur: 0,
+            panel_opacity: 255,
         }
     }
 }
@@ -344,5 +390,41 @@ mod tests {
         // an old settings file without the field still loads, back to the default (system, no overrides)
         let old: Settings = serde_json::from_str("{}").unwrap();
         assert_eq!(old.palette, PaletteOverride::default());
+    }
+
+    #[test]
+    fn look_and_background_round_trip() {
+        let old: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(old.ui_look, "cozy");
+        assert!(old.bg_image.is_empty());
+        assert_eq!(old.panel_opacity, 255);
+        let mut s = Settings::default();
+        s.ui_look = "sharp".into();
+        s.bg_image = r"C:\pics\bg.jpg".into();
+        s.bg_tint = [10, 20, 30, 90];
+        s.bg_blur = 8;
+        s.panel_opacity = 180;
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!((back.ui_look, back.bg_image, back.bg_tint, back.bg_blur, back.panel_opacity),
+                   (s.ui_look, s.bg_image, s.bg_tint, s.bg_blur, s.panel_opacity));
+    }
+
+    #[test]
+    fn theme_file_round_trips() {
+        let tf = ThemeFile {
+            name: "Mine".into(),
+            theme: "dark".into(),
+            ui_look: "cozy".into(),
+            palette: crate::theme::preset("Dracula").unwrap(),
+            bg_image: r"C:\pics\bg.jpg".into(),
+            bg_tint: [10, 20, 30, 90],
+            bg_blur: 6,
+            panel_opacity: 200,
+        };
+        let back: ThemeFile = serde_json::from_str(&serde_json::to_string(&tf).unwrap()).unwrap();
+        assert_eq!(back, tf);
+        // an old theme file without the background fields still loads with sane defaults
+        let old: ThemeFile = serde_json::from_str("{}").unwrap();
+        assert_eq!(old.panel_opacity, 255);
     }
 }
