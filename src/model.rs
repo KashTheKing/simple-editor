@@ -4293,6 +4293,47 @@ impl Project {
         c.y.link = AnimLink::PathY(path);
         true
     }
+    /// Native (unscaled) pixel size of a clip's own footage: the asset's size for video/image, the
+    /// nested sequence's size for a `Sequence` clip. `None` for kinds with no meaningful size (text,
+    /// shape, adjustment, audio) or a footage clip missing its asset/sequence — mirrors
+    /// `GpuRenderer::native_size`, minus its decoded-frame fallback.
+    pub fn clip_native_size(&self, clip: &Clip) -> Option<(u32, u32)> {
+        let wh = match clip.kind {
+            ClipKind::Video | ClipKind::Image => self.asset(clip.asset).map(|a| (a.width, a.height)),
+            ClipKind::Sequence => self.sequence(clip.sequence).map(|s| (s.width, s.height)),
+            _ => None,
+        };
+        match wh {
+            Some((w, h)) if w > 0 && h > 0 => Some((w, h)),
+            _ => None,
+        }
+    }
+    /// Reset a clip's transform to fill the project canvas. `stretch = false` ("Fit to Screen") resets
+    /// x/y/scale/scale_x/scale_y to their defaults, which falls back to the engine's default "contain"
+    /// placement (letterboxed, native aspect preserved, centred). `stretch = true` ("Stretch to Screen")
+    /// additionally sets independent scale_x/scale_y so the footage fills the canvas edge to edge,
+    /// ignoring native aspect ratio. No-op (`false`) for a clip with no native size.
+    pub fn fit_clip_to_screen(&mut self, id: Id, stretch: bool) -> bool {
+        let Some((nw, nh)) = self.clip(id).and_then(|c| self.clip_native_size(c)) else { return false };
+        let (sx, sy) = if stretch {
+            let canvas_aspect = self.width as f64 / self.height as f64;
+            let native_aspect = nw as f64 / nh as f64;
+            if native_aspect >= canvas_aspect {
+                (1.0, native_aspect / canvas_aspect)
+            } else {
+                (canvas_aspect / native_aspect, 1.0)
+            }
+        } else {
+            (1.0, 1.0)
+        };
+        let Some(clip) = self.clip_mut(id) else { return false };
+        clip.x = a0();
+        clip.y = a0();
+        clip.scale = a1();
+        clip.scale_x = Animated::new(sx);
+        clip.scale_y = Animated::new(sy);
+        true
+    }
     /// Re-bake every live link (path / expression) whose inputs changed. Called once per frame;
     /// costs one hash per linked property when nothing changed.
     pub fn refresh_links(&mut self) {
@@ -4725,6 +4766,68 @@ mod tests {
         let old = p.to_json().replace("\"points\"", "\"was_not_a_field\"");
         let o = Project::from_json(&old).unwrap();
         assert!(o.clip(id).unwrap().shape.as_ref().unwrap().poly_points().is_none());
+    }
+
+    #[test]
+    fn fit_clip_to_screen_noop_without_native_size() {
+        let mut p = Project::new();
+        let id = p.add_shape_clip(ShapeKind::Rect, 0.0, 2.0);
+        assert!(!p.fit_clip_to_screen(id, false));
+        assert!(!p.fit_clip_to_screen(id, true));
+    }
+
+    #[test]
+    fn fit_clip_to_screen_resets_defaults_regardless_of_prior_values() {
+        let mut p = Project::new();
+        let aid = p.add_asset(asset(1, 5.0, 0));
+        let vt = p.tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        let mut c = Clip::new(101, ClipKind::Video, "v", 0.0, 5.0);
+        c.asset = aid;
+        c.x.value = 123.0;
+        c.y.value = -45.0;
+        c.scale.value = 3.0;
+        c.scale_x.value = 5.0;
+        c.scale_y.value = 0.2;
+        p.tracks[vt].clips.push(c);
+
+        assert!(p.fit_clip_to_screen(101, false));
+        let clip = p.clip(101).unwrap();
+        assert_eq!(clip.x.value, 0.0);
+        assert_eq!(clip.y.value, 0.0);
+        assert_eq!(clip.scale.value, 1.0);
+        assert_eq!(clip.scale_x.value, 1.0);
+        assert_eq!(clip.scale_y.value, 1.0);
+    }
+
+    /// Round-trips "Stretch to Screen" through the real placement formula: native 1280x720 (16:9,
+    /// same ratio the `asset()` helper always uses) placed on a 1080x1920 (9:16) canvas is
+    /// width-constrained, so the hand-derived scale_y is `native_aspect / canvas_aspect` — and the
+    /// resulting placement must fill the canvas exactly, both axes.
+    #[test]
+    fn fit_clip_to_screen_stretch_fills_canvas_exactly() {
+        let mut p = Project::new();
+        p.width = 1080;
+        p.height = 1920;
+        let aid = p.add_asset(asset(1, 5.0, 0)); // 1280x720, 16:9
+        let vt = p.tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        let mut c = Clip::new(100, ClipKind::Video, "v", 0.0, 5.0);
+        c.asset = aid;
+        c.x.value = 40.0; // pre-existing transform the reset must clear
+        c.scale.value = 2.0;
+        p.tracks[vt].clips.push(c);
+
+        assert!(p.fit_clip_to_screen(100, true));
+        let clip = p.clip(100).unwrap();
+        assert_eq!(clip.x.value, 0.0);
+        assert_eq!(clip.y.value, 0.0);
+        assert_eq!(clip.scale.value, 1.0);
+        let expected_sy = (1280.0_f64 / 720.0) / (1080.0 / 1920.0);
+        assert_eq!(clip.scale_x.value, 1.0);
+        assert!((clip.scale_y.value - expected_sy).abs() < 1e-12);
+
+        let placement = crate::engine::compose::placement(&p, clip, 0.0, (1280, 720), p.width, p.height, true);
+        assert!((placement.w - p.width as f32).abs() < 1e-3, "w = {} vs canvas {}", placement.w, p.width);
+        assert!((placement.h - p.height as f32).abs() < 1e-3, "h = {} vs canvas {}", placement.h, p.height);
     }
 
     #[test]

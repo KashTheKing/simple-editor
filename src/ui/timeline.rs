@@ -36,6 +36,9 @@
 //! Type" / "Change Easing" submenus on their band's context menu (absolute-overwrite every selected
 //! transition, one undo for the whole bulk pick), and 2+ selected clips sharing an effect kind get an
 //! "Effects" submenu on the clip context menu to toggle that shared effect on/off across the selection.
+//! Any clip with a native size (video/image/sequence) also gets a "Transform" submenu — "Stretch to
+//! Screen" / "Fit to Screen" (`Project::fit_clip_to_screen`), applied to every such clip in the
+//! selection as one undo step.
 
 use crate::media::thumbs::ThumbCache;
 use crate::media::waveform::{Peaks, WaveformCache};
@@ -350,6 +353,12 @@ enum Act {
     /// Inspector's "first sets the baseline" convention, just with nothing to diff since the menu
     /// only offers one action — toggle — rather than a value picker).
     ToggleEffect(EffectKind),
+    /// Right-click quick-change: "Stretch to Screen" on every selected clip with a native size —
+    /// `Project::fit_clip_to_screen(id, true)`, applied per clip (each against its own native size).
+    StretchToScreen,
+    /// Right-click quick-change: "Fit to Screen" on every selected clip with a native size —
+    /// `Project::fit_clip_to_screen(id, false)`.
+    FitToScreen,
     /// Set the easing of every property keyed at clip-local time `t`.
     SetEase(Id, f64, Ease),
     /// Delete every keyframe at clip-local time `t`.
@@ -802,6 +811,7 @@ fn clip_menu(
     linked: bool,
     enabled: bool,
     audio: bool,
+    has_native_size: bool,
     labels: &[Label],
     buses: &[crate::model::Bus],
     shared_effects: &[EffectKind],
@@ -900,6 +910,18 @@ fn clip_menu(
                 if ui.button(format!("Toggle {}", k.name())).clicked() {
                     *act = Some(Act::ToggleEffect(k));
                 }
+            }
+        });
+    }
+    // video/image/sequence only — resets the transform of every selected clip with a native size
+    // (Project::fit_clip_to_screen skips the rest, so this is safe on a mixed selection too).
+    if has_native_size {
+        ui.menu_button("Transform", |ui| {
+            if ui.button("Stretch to Screen").clicked() {
+                *act = Some(Act::StretchToScreen);
+            }
+            if ui.button("Fit to Screen").clicked() {
+                *act = Some(Act::FitToScreen);
             }
         });
     }
@@ -1393,6 +1415,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             }
             let (linked, enabled, aud, is_cont) =
                 (clip.link != 0, clip.enabled, clip.kind == ClipKind::Audio, clip.container);
+            let has_native = c.project.clip_native_size(clip).is_some();
             let mut rclick = br.secondary_clicked();
             br.context_menu(|ui| {
                 clip_menu(
@@ -1402,6 +1425,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     linked,
                     enabled,
                     aud,
+                    has_native,
                     labels,
                     buses,
                     &shared_effects,
@@ -1452,6 +1476,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                             linked,
                             enabled,
                             aud,
+                            has_native,
                             labels,
                             buses,
                             &shared_effects,
@@ -2244,6 +2269,16 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                             e.enabled = target;
                         }
                     }
+                }
+            }
+            Act::StretchToScreen => {
+                for &id in &ids {
+                    p.fit_clip_to_screen(id, true);
+                }
+            }
+            Act::FitToScreen => {
+                for &id in &ids {
+                    p.fit_clip_to_screen(id, false);
                 }
             }
             Act::SetEase(cid, t, e) => {
@@ -3965,7 +4000,8 @@ mod tests {
                 |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
                         clip_menu(
-                            ui, 1, false, false, true, audio, &p.labels, &p.buses, &[], &mut act, &mut acts, &mut edit,
+                            ui, 1, false, false, true, audio, false, &p.labels, &p.buses, &[], &mut act, &mut acts,
+                            &mut edit,
                         )
                     });
                 },
@@ -4021,8 +4057,8 @@ mod tests {
                 |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
                         clip_menu(
-                            ui, 1, false, false, true, false, &p.labels, &p.buses, shared, &mut act, &mut acts,
-                            &mut edit,
+                            ui, 1, false, false, true, false, false, &p.labels, &p.buses, shared, &mut act,
+                            &mut acts, &mut edit,
                         )
                     });
                 },
@@ -4039,6 +4075,81 @@ mod tests {
         assert!(!none.iter().any(|s| s == "Effects"), "no shared kind: no Effects submenu: {none:?}");
         let shared = texts(&[EffectKind::Blur]);
         assert!(shared.iter().any(|s| s == "Effects"), "a shared kind offers the Effects submenu: {shared:?}");
+    }
+
+    /// Right-clicking 2+ selected video clips offers a "Transform" submenu; "Stretch to Screen" fits
+    /// every selected clip with a native size to the project canvas — each against its OWN asset's
+    /// native size, not a shared one — in exactly one undo step for the whole bulk operation.
+    #[test]
+    fn transform_menu_bulk_stretches_selection_with_one_undo() {
+        let mut h = Harness::new();
+        // second clip on the same row, a different (portrait) native size from the harness's own
+        // 1280x720 asset, so the two clips must land on different scale_x/scale_y
+        let aid2 = h.project.add_asset(Asset {
+            id: 0,
+            path: "C:/y.mp4".into(),
+            kind: ClipKind::Video,
+            duration: 10.0,
+            width: 720,
+            height: 1280,
+            fps: 30.0,
+            audio_streams: Vec::new(),
+            codec: "h264".into(),
+            folder: String::new(),
+            tags: Vec::new(),
+            label: 0,
+            description: String::new(),
+        });
+        let id2 = h.project.insert_asset_clips(aid2, 11.0, Some(0))[0];
+        let id1 = h.video_clip().id;
+        h.project.clip_mut(id1).unwrap().x.value = 30.0; // pre-existing, different transforms
+        h.project.clip_mut(id2).unwrap().scale.value = 2.0;
+        h.frame(vec![]);
+
+        let lanes = h.state.lanes_rect;
+        let p1 = pos2(lanes.left() + 100.0, lanes.top() + 30.0); // inside clip 1 (0..10 s)
+        let p2 = pos2(h.state.x_at(11.2), lanes.top() + 30.0); // inside clip 2 (11..21 s)
+        h.press(p1);
+        h.release(p1);
+        // clear egui's double-click window before the second click: two single-clicks on different
+        // clips shortly after one another (in wall-clock time, which the harness's `time` field drives)
+        // must not be misread as one double-click on the second clip — that fires the double-click
+        // handler's unconditional `selection = [clip]`, stomping the ctrl-click's additive result below.
+        h.time += 1.0;
+        h.press_m(p2, Modifiers::CTRL);
+        h.release_m(p2, Modifiers::CTRL);
+        assert!(h.selection.contains(&id1) && h.selection.contains(&id2), "both clips selected: {:?}", h.selection);
+
+        let undos0 = h.undos;
+        let secondary = |pos: Pos2, pressed: bool| Event::PointerButton {
+            pos,
+            button: PointerButton::Secondary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        h.frame(vec![secondary(p1, true)]);
+        h.frame(vec![]);
+        h.frame(vec![secondary(p1, false)]);
+        h.frame(vec![]);
+        let xf = h.painted_text("Transform").expect("Transform submenu button painted") + vec2(4.0, 4.0);
+        h.press(xf);
+        h.release(xf);
+        let stretch = h.painted_text("Stretch to Screen").expect("Stretch to Screen listed") + vec2(4.0, 4.0);
+        h.press(stretch);
+        let r = h.release(stretch);
+        assert!(r.edited, "picking Stretch to Screen edits the project");
+        assert_eq!(h.undos - undos0, 1, "one undo for the whole bulk operation, not one per clip");
+
+        let c1 = h.project.clip(id1).unwrap();
+        let c2 = h.project.clip(id2).unwrap();
+        assert_eq!(c1.x.value, 0.0, "transform reset along with the stretch");
+        // 1280x720 (16:9) into the project's own 1920x1080 (16:9) canvas: same aspect, no stretch needed
+        assert_eq!((c1.scale_x.value, c1.scale_y.value), (1.0, 1.0));
+        // 720x1280 (9:16 portrait) into a 16:9 canvas is height-constrained
+        assert_eq!(c2.scale.value, 1.0, "scale reset too");
+        assert_eq!(c2.scale_y.value, 1.0);
+        let expected_sx = (1920.0_f64 / 1080.0) / (720.0 / 1280.0);
+        assert!((c2.scale_x.value - expected_sx).abs() < 1e-9, "scale_x {} vs {expected_sx}", c2.scale_x.value);
     }
 
     #[test]

@@ -231,6 +231,10 @@ fn project_section(
     undo: &mut dyn FnMut(&Project),
 ) -> bool {
     let mut edited = false;
+    // resolution before any of this frame's Width/Height/preset/quality-tier/template widgets can
+    // touch it — diffed at the bottom to offer the rescale prompt once, regardless of which control
+    // changed it.
+    let size_before = (project.width, project.height);
     ui.strong("Project");
     Grid::new("inspector_project").num_columns(2).show(ui, |ui| {
         ui.label("Name");
@@ -254,6 +258,7 @@ fn project_section(
             ui.label(label);
             let mut v = get(project);
             let r = ui.add(DragValue::new(&mut v).range(range).speed(speed));
+            mark(ui, &format!("project_{}", label.to_lowercase()), &r);
             if edit_start(&r) {
                 undo(project);
             }
@@ -420,6 +425,49 @@ fn project_section(
     if ui.small_button("Edit export settings…").clicked() {
         PENDING_ACTION.with(|p| *p.borrow_mut() = Some(Action::ExportVideo));
     }
+
+    // "Resize existing media?" — non-blocking (plain egui::Window, never Modal). Shown once when this
+    // frame's controls above changed the resolution and the project has footage with a native size;
+    // stays open across frames (egui::Id-keyed temp, like clip_section's labels_open_id) until dismissed.
+    let rescale_id = egui::Id::new("inspector_rescale_prompt");
+    let mut rescale_open: bool = ui.ctx().data(|d| d.get_temp(rescale_id).unwrap_or(false));
+    if (project.width, project.height) != size_before
+        && project.all_clips().any(|(_, c)| project.clip_native_size(c).is_some())
+    {
+        rescale_open = true;
+    }
+    if rescale_open {
+        let mut dismissed = false;
+        egui::Window::new("Resize Media?").resizable(false).collapsible(false).open(&mut rescale_open).show(
+            ui.ctx(),
+            |ui| {
+                ui.label("Resize existing media to fit the new project size?");
+                ui.horizontal(|ui| {
+                    let r = ui.button("Rescale");
+                    mark(ui, "rescale_prompt_rescale", &r);
+                    if r.clicked() {
+                        undo(project);
+                        let ids: Vec<Id> = project.all_clips().map(|(_, c)| c.id).collect();
+                        for id in ids {
+                            project.fit_clip_to_screen(id, false);
+                        }
+                        edited = true;
+                        dismissed = true;
+                    }
+                    let r = ui.button("Keep As Is");
+                    mark(ui, "rescale_prompt_keep", &r);
+                    if r.clicked() {
+                        dismissed = true;
+                    }
+                });
+            },
+        );
+        if dismissed {
+            rescale_open = false;
+        }
+    }
+    ui.ctx().data_mut(|d| d.insert_temp(rescale_id, rescale_open));
+
     edited
 }
 
@@ -1598,6 +1646,130 @@ mod tests {
             );
             assert_eq!(take_pending_action(), Some(expect), "{button}");
         }
+    }
+
+    /// Changing the project's Width via its DragValue opens the non-blocking "Resize existing media?"
+    /// prompt whenever the project has a clip with a native size; "Rescale" applies Fit to Screen to it,
+    /// "Keep As Is" leaves its transform untouched.
+    #[test]
+    fn resolution_change_offers_rescale_prompt() {
+        fn project_with_video_clip() -> (Project, Id) {
+            let mut p = Project::new(); // 1920x1080
+            let aid = p.add_asset(Asset {
+                id: 0,
+                path: "C:/v.mp4".into(),
+                kind: ClipKind::Video,
+                duration: 5.0,
+                width: 1280,
+                height: 720,
+                fps: 30.0,
+                audio_streams: Vec::new(),
+                codec: String::new(),
+                folder: String::new(),
+                tags: Vec::new(),
+                label: 0,
+                description: String::new(),
+            });
+            let vi = p.tracks.iter().position(|t| t.kind == crate::model::TrackKind::Video).unwrap();
+            let mut c = Clip::new(500, ClipKind::Video, "v", 0.0, 5.0);
+            c.asset = aid;
+            c.x.value = 42.0; // pre-existing transform: "Keep As Is" must leave this alone
+            let id = c.id;
+            p.tracks[vi].clips.push(c);
+            (p, id)
+        }
+
+        // drives the Width DragValue, then clicks whichever prompt button `rescale` names; returns the
+        // project afterwards.
+        let run = |rescale: bool| -> Project {
+            let (mut p, _id) = project_with_video_clip();
+            let palette = Palette::new(true, egui::Color32::WHITE);
+            let fonts: Vec<String> = Vec::new();
+            let ctx = egui::Context::default();
+            let mut settings = Settings::default();
+            let mut frame = |events: Vec<egui::Event>, p: &mut Project| {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 900.0))),
+                    events,
+                    ..Default::default()
+                };
+                let mut undo = |_: &Project| {};
+                let _ = ctx.run(input, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        show(ui, p, &[], &[], 1.0, &fonts, &palette, &mut settings, &mut undo);
+                    });
+                });
+            };
+            frame(vec![], &mut p); // layout, records the Width DragValue rect
+            let wr = ctx
+                .data(|d| d.get_temp::<egui::Rect>(egui::Id::new(("insp", "project_width".to_string()))))
+                .expect("width rect recorded");
+            let (from, to) = (wr.center(), wr.center() + egui::vec2(60.0, 0.0));
+            // drag the DragValue right, in a few steps like a real pointer move
+            frame(vec![egui::Event::PointerMoved(from)], &mut p);
+            frame(
+                vec![egui::Event::PointerButton {
+                    pos: from,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                &mut p,
+            );
+            for i in 1..=4 {
+                let pos = from + (to - from) * (i as f32 / 4.0);
+                frame(vec![egui::Event::PointerMoved(pos)], &mut p);
+            }
+            frame(
+                vec![egui::Event::PointerButton {
+                    pos: to,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                &mut p,
+            );
+            frame(vec![], &mut p);
+            assert_ne!(p.width, 1920, "dragging the Width control must change it");
+            let prompt_open =
+                ctx.data(|d| d.get_temp::<bool>(egui::Id::new("inspector_rescale_prompt"))).unwrap_or(false);
+            assert!(prompt_open, "a resolution change with native-size media must open the rescale prompt");
+
+            let btn = if rescale { "rescale_prompt_rescale" } else { "rescale_prompt_keep" };
+            let br = ctx
+                .data(|d| d.get_temp::<egui::Rect>(egui::Id::new(("insp", btn.to_string()))))
+                .unwrap_or_else(|| panic!("no rect recorded for {btn}"));
+            let bp = br.center();
+            frame(vec![egui::Event::PointerMoved(bp)], &mut p);
+            frame(
+                vec![egui::Event::PointerButton {
+                    pos: bp,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                &mut p,
+            );
+            frame(
+                vec![egui::Event::PointerButton {
+                    pos: bp,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                &mut p,
+            );
+            p
+        };
+
+        let rescaled = run(true);
+        let c = rescaled.clip(500).unwrap();
+        assert_eq!(c.x.value, 0.0, "Rescale resets the transform (Fit to Screen)");
+        assert_eq!((c.scale_x.value, c.scale_y.value), (1.0, 1.0));
+
+        let kept = run(false);
+        let c = kept.clip(500).unwrap();
+        assert_eq!(c.x.value, 42.0, "Keep As Is must leave the clip's transform untouched");
     }
 
     /// Typing in a text field snapshots once when the field is entered, not once per character.
