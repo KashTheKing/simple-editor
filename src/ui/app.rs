@@ -105,6 +105,8 @@ pub struct App {
     toasts: Vec<(String, Instant)>,
     screenshot: Option<PathBuf>,
     started: Instant,
+    /// Window starts hidden (see main.rs); shown once the first frame has been painted.
+    window_shown: bool,
     first_frame_at: Option<Instant>,
     screenshot_requested: bool,
     close_confirmed: bool,
@@ -843,6 +845,7 @@ impl App {
             toasts: Vec::new(),
             screenshot,
             started: Instant::now(),
+            window_shown: false,
             first_frame_at: None,
             screenshot_requested: false,
             close_confirmed: false,
@@ -5516,6 +5519,12 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if !self.window_shown {
+            // viewport commands apply after this frame is painted, so no white flash
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            self.window_shown = true;
+        }
         self.palette = theme::palette_with(ctx, &self.settings.palette);
         if self.fonts.is_empty() {
             if let Ok(t) = self.text.try_lock() {
