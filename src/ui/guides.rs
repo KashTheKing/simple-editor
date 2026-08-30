@@ -41,15 +41,15 @@ pub struct Preset {
 }
 
 pub const PRESETS: &[Preset] = &[
-    Preset { name: "General Long Form", glyph: Glyph::Landscape, w: 1920, h: 1080, fps: 30.0, guide: None },
-    Preset { name: "General Short Form", glyph: Glyph::Portrait, w: 1080, h: 1920, fps: 30.0, guide: None },
-    Preset { name: "Square 1:1", glyph: Glyph::Square, w: 1080, h: 1080, fps: 30.0, guide: None },
-    Preset { name: "Portrait 4:5", glyph: Glyph::Portrait, w: 1080, h: 1350, fps: 30.0, guide: None },
-    Preset { name: "YouTube", glyph: Glyph::PlayRect, w: 1920, h: 1080, fps: 30.0, guide: Some(Guide::YouTube) },
-    Preset { name: "YouTube Shorts", glyph: Glyph::PlayRect, w: 1080, h: 1920, fps: 30.0, guide: Some(Guide::YtShorts) },
-    Preset { name: "TikTok", glyph: Glyph::MusicNote, w: 1080, h: 1920, fps: 30.0, guide: Some(Guide::TikTok) },
-    Preset { name: "Instagram Reels", glyph: Glyph::Camera, w: 1080, h: 1920, fps: 30.0, guide: Some(Guide::IgReels) },
-    Preset { name: "Instagram Post", glyph: Glyph::GridIcon, w: 1080, h: 1350, fps: 30.0, guide: Some(Guide::IgPost) },
+    Preset { name: "General Long Form", glyph: Glyph::Landscape, w: 1920, h: 1080, fps: 60.0, guide: None },
+    Preset { name: "General Short Form", glyph: Glyph::Portrait, w: 1080, h: 1920, fps: 60.0, guide: None },
+    Preset { name: "Square 1:1", glyph: Glyph::Square, w: 1080, h: 1080, fps: 60.0, guide: None },
+    Preset { name: "Portrait 4:5", glyph: Glyph::Portrait, w: 1080, h: 1350, fps: 60.0, guide: None },
+    Preset { name: "YouTube", glyph: Glyph::PlayRect, w: 1920, h: 1080, fps: 60.0, guide: Some(Guide::YouTube) },
+    Preset { name: "YouTube Shorts", glyph: Glyph::PlayRect, w: 1080, h: 1920, fps: 60.0, guide: Some(Guide::YtShorts) },
+    Preset { name: "TikTok", glyph: Glyph::MusicNote, w: 1080, h: 1920, fps: 60.0, guide: Some(Guide::TikTok) },
+    Preset { name: "Instagram Reels", glyph: Glyph::Camera, w: 1080, h: 1920, fps: 60.0, guide: Some(Guide::IgReels) },
+    Preset { name: "Instagram Post", glyph: Glyph::GridIcon, w: 1080, h: 1350, fps: 60.0, guide: Some(Guide::IgPost) },
     Preset { name: "4K UHD", glyph: Glyph::FilmStrip, w: 3840, h: 2160, fps: 60.0, guide: None },
 ];
 
@@ -61,12 +61,20 @@ pub const RES_TIERS: &[(&str, u32)] =
 pub const FPS_PRESETS: &[f64] = &[23.976, 24.0, 25.0, 30.0, 50.0, 60.0];
 
 /// Keep the aspect of `(w, h)`, set the shorter edge to `tier`, both edges rounded to even
-/// (encoders want even dimensions).
+/// (encoders want even dimensions). An aspect within 2% of a common standard (16:9, 1:1, 4:5, 21:9,
+/// and their portraits) snaps to it, so a project that adopted a 1924x1080 clip still gets a clean
+/// 2560x1440 instead of 2566x1440.
 pub fn scale_to_tier(w: u32, h: u32, tier: u32) -> (u32, u32) {
     let (w, h) = (w.max(16) as f64, h.max(16) as f64);
-    let k = tier as f64 / w.min(h);
-    let even = |v: f64| ((v * k / 2.0).round() as u32 * 2).max(16);
-    (even(w), even(h))
+    let mut aspect = w.max(h) / w.min(h); // long/short edge, >= 1
+    for std in [16.0 / 9.0, 21.0 / 9.0, 5.0 / 4.0, 4.0 / 3.0, 1.0] {
+        if (aspect / std - 1.0).abs() < 0.02 {
+            aspect = std;
+            break;
+        }
+    }
+    let long = ((tier as f64 * aspect / 2.0).round() as u32 * 2).max(16);
+    if w >= h { (long, tier) } else { (tier, long) }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -155,6 +163,10 @@ mod tests {
             assert!(w % 2 == 0 && h % 2 == 0, "even dimensions");
             assert!((w as f32 / h as f32 - 0.8).abs() < 0.01, "4:5 aspect kept at {tier}");
         }
+        // a near-16:9 project (adopted from an odd clip) snaps to the clean standard size
+        assert_eq!(scale_to_tier(1924, 1080, 1440), (2560, 1440));
+        assert_eq!(scale_to_tier(1924, 1080, 2160), (3840, 2160));
+        assert_eq!(scale_to_tier(1080, 1924, 720), (720, 1280));
         for p in PRESETS {
             assert!(p.w >= 16 && p.h >= 16);
             // a preset that carries a guide must match that guide's base aspect
