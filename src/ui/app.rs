@@ -2164,6 +2164,7 @@ impl App {
                                 buffering: player.is_buffering(),
                                 proxy: proxy_busy,
                                 tracker: tracking_shown.then(|| tracking.box_rect()),
+                                guide: settings.guide,
                             },
                         )
                     };
@@ -2185,6 +2186,10 @@ impl App {
                     }
                     if let Some((x, y)) = resp.set_tracker {
                         (self.tracking.cx, self.tracking.cy) = (x, y);
+                    }
+                    if let Some(g) = resp.set_guide {
+                        self.settings.guide = g;
+                        self.settings.save();
                     }
                     if let Some((kind, cx, cy, w, h)) = resp.new_shape {
                         let id = self.add_shape(kind, Some((cx, cy, w, h)));
@@ -3759,6 +3764,21 @@ impl App {
             }
         });
         ui.separator();
+        ui.menu_button("Social Guides", |ui| {
+            use crate::ui::guides::Guide;
+            let mut pick = |ui: &mut egui::Ui, label: &str, v: Option<Guide>| {
+                if ui.radio(self.settings.guide == v, label).clicked() {
+                    self.settings.guide = v;
+                    self.settings.save();
+                    ui.close();
+                }
+            };
+            pick(ui, "Off", None);
+            ui.separator();
+            for g in Guide::ALL {
+                pick(ui, g.name(), Some(g));
+            }
+        });
         let mut movie = self.settings.movie_mode;
         if ui.checkbox(&mut movie, "Movie mode (pre-rendered playback)").changed() {
             out.push(MovieMode);

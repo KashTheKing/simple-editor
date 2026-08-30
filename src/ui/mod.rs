@@ -9,6 +9,7 @@ pub mod curves;
 pub mod effects_ui;
 pub mod export_ui;
 pub mod frame_ui;
+pub mod guides;
 pub mod import_ui;
 pub mod inspector;
 pub mod layout;
