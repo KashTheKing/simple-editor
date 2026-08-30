@@ -403,12 +403,19 @@ fn wrap_words(text: &str, max_chars: usize) -> Vec<Vec<&str>> {
     out
 }
 
-/// Segments → subtitle cues: wrapped to `max_chars`, timed by the word timings when there are any and
-/// proportionally to the characters otherwise, each held for at least `min_dur` unless the next cue
-/// needs the time. Where a sentence continues across the split, `cont` = (prefix, suffix) marks it:
-/// the suffix goes on the cut-off cue, the prefix on its continuation (e.g. `("…", " —")`).
+/// Segments → subtitle cues: wrapped to `max_chars` per line, `lines` lines to a cue (joined with \n),
+/// timed by the word timings when there are any and proportionally to the characters otherwise, each
+/// held for at least `min_dur` unless the next cue needs the time. Where a sentence continues across the
+/// cue split, `cont` = (prefix, suffix) marks it: the suffix goes on the cut-off cue, the prefix on its
+/// continuation (e.g. `("…", " —")`).
 /// ponytail: the marks are added after the wrap, so a marked line can run a few chars past `max_chars`.
-pub fn to_cues(segs: &[Segment], max_chars: usize, min_dur: f64, cont: (&str, &str)) -> Vec<(f64, f64, String)> {
+pub fn to_cues(
+    segs: &[Segment],
+    max_chars: usize,
+    lines: usize,
+    min_dur: f64,
+    cont: (&str, &str),
+) -> Vec<(f64, f64, String)> {
     let max_chars = max_chars.max(8);
     let mut out: Vec<(f64, f64, String)> = Vec::new();
     for s in segs {
@@ -416,18 +423,20 @@ pub fn to_cues(segs: &[Segment], max_chars: usize, min_dur: f64, cont: (&str, &s
         if chunks.is_empty() {
             continue;
         }
+        let packs: Vec<&[Vec<&str>]> = chunks.chunks(lines.max(1)).collect();
         let span = (s.end - s.start).max(0.0);
         let total: usize = chunks.iter().map(|c| c.join(" ").chars().count()).sum::<usize>().max(1);
         let (mut cum, mut cursor, mut t0) = (0usize, 0usize, s.start);
-        for (i, ch) in chunks.iter().enumerate() {
-            let mut text = ch.join(" ");
-            cum += text.chars().count();
-            let last = i + 1 == chunks.len();
+        for (i, pack) in packs.iter().enumerate() {
+            let mut text = pack.iter().map(|ch| ch.join(" ")).collect::<Vec<_>>().join("\n");
+            let words: usize = pack.iter().map(|ch| ch.len()).sum();
+            cum += pack.iter().map(|ch| ch.join(" ").chars().count()).sum::<usize>();
+            let last = i + 1 == packs.len();
             let (mut a, mut b) = (t0, if last { s.end } else { s.start + span * cum as f64 / total as f64 });
-            if cursor + ch.len() <= s.words.len() {
+            if cursor + words <= s.words.len() {
                 a = s.words[cursor].0;
-                b = s.words[cursor + ch.len() - 1].1;
-                cursor += ch.len();
+                b = s.words[cursor + words - 1].1;
+                cursor += words;
             }
             t0 = b;
             if i > 0 {
@@ -629,7 +638,7 @@ mod tests {
     #[test]
     fn cues_wrap_on_words_and_respect_the_minimum() {
         let segs = vec![seg(0.0, 4.0, "the quick brown fox jumps over the lazy dog")];
-        let cues = to_cues(&segs, 20, 0.5, ("", ""));
+        let cues = to_cues(&segs, 20, 1, 0.5, ("", ""));
         assert!(cues.len() >= 2, "{cues:?}");
         for c in &cues {
             assert!(c.2.chars().count() <= 20, "line too long: {:?}", c.2);
@@ -642,17 +651,29 @@ mod tests {
         assert!(tail.1 >= 4.0 && tail.1 <= 4.5, "{cues:?}");
         // a one-word flash is held for min_dur, but never past the next cue
         let segs = vec![seg(0.0, 0.2, "Hi"), seg(0.5, 3.0, "there")];
-        let cues = to_cues(&segs, 42, 1.0, ("", ""));
+        let cues = to_cues(&segs, 42, 1, 1.0, ("", ""));
         assert_eq!(cues.len(), 2);
         assert!((cues[0].1 - 0.5).abs() < 1e-9, "clamped to the next cue: {cues:?}");
         assert!((cues[1].1 - 3.0).abs() < 1e-9);
-        assert!(to_cues(&[seg(0.0, 1.0, "   ")], 42, 1.0, ("", "")).is_empty());
+        assert!(to_cues(&[seg(0.0, 1.0, "   ")], 42, 1, 1.0, ("", "")).is_empty());
+    }
+
+    #[test]
+    fn lines_per_cue_joins_wrapped_lines_with_newlines() {
+        let segs = vec![seg(0.0, 4.0, "the quick brown fox jumps over the lazy dog")];
+        let one = to_cues(&segs, 20, 1, 0.5, ("", ""));
+        let two = to_cues(&segs, 20, 2, 0.5, ("", ""));
+        assert_eq!(two.len(), one.len().div_ceil(2), "{two:?}");
+        assert!(two[0].2.contains('\n') && !two[0].2.contains("  "));
+        assert_eq!(two.iter().map(|c| c.2.replace('\n', " ")).collect::<Vec<_>>().join(" "), segs[0].text);
+        assert_eq!(two[0].0, 0.0);
+        assert!(two.last().unwrap().1 >= 4.0);
     }
 
     #[test]
     fn continuation_marks_only_the_split_edges() {
         let segs = vec![seg(0.0, 6.0, "the quick brown fox jumps over the lazy dog"), seg(7.0, 8.0, "Done.")];
-        let cues = to_cues(&segs, 20, 0.5, ("…", " —"));
+        let cues = to_cues(&segs, 20, 1, 0.5, ("…", " —"));
         let n = cues.len();
         assert!(n >= 3, "{cues:?}");
         // first chunk: suffix only; middle chunks: both; last chunk of the split segment: prefix only
@@ -670,7 +691,7 @@ mod tests {
             (4.0, 4.5, "three".into()),
             (4.5, 6.0, "four".into()),
         ];
-        let cues = to_cues(&[s], 12, 0.1, ("", ""));
+        let cues = to_cues(&[s], 12, 1, 0.1, ("", ""));
         assert_eq!(cues.len(), 2, "{cues:?}");
         assert_eq!(cues[0], (0.0, 1.0, "one two".to_string()), "the pause is not covered by cue 1");
         assert_eq!(cues[1], (4.0, 6.0, "three four".to_string()));

@@ -48,6 +48,8 @@ pub struct TranscribeState {
     pub model: usize,
     pub language: String,
     pub max_chars: usize,
+    /// Wrapped lines per cue, joined with newlines (1 = one-liners, 2 = the usual two-line subs).
+    pub lines: usize,
     pub min_dur: f64,
     pub words: bool,
     /// Vocabulary/style hints passed to whisper (`--prompt`).
@@ -83,6 +85,7 @@ impl Default for TranscribeState {
             model: transcribe::default_model(),
             language: "auto".into(),
             max_chars: 42,
+            lines: 1,
             min_dur: 1.0,
             words: false,
             prompt: String::new(),
@@ -565,7 +568,7 @@ fn generate(st: &mut TranscribeState, project: &mut Project) -> String {
         st.groups = transcribe::duplicate_takes(&st.segments, st.threshold, TAKE_WINDOW);
     }
     let cont = (project.subtitle_cont_prefix.clone(), project.subtitle_cont_suffix.clone());
-    let cues = transcribe::to_cues(&st.segments, st.max_chars, st.min_dur, (&cont.0, &cont.1));
+    let cues = transcribe::to_cues(&st.segments, st.max_chars, st.lines, st.min_dur, (&cont.0, &cont.1));
     let old: std::collections::HashSet<Id> = st.generated.iter().copied().collect();
     project.subtitles.retain(|c| !old.contains(&c.id));
     st.generated = cues.iter().map(|(s, e, t)| project.add_cue(*s, *e, t.clone())).collect();
@@ -637,6 +640,10 @@ fn transcribe_section(
         ui.end_row();
         ui.label("Line length");
         ui.add(DragValue::new(&mut st.max_chars).range(20..=90).suffix(" chars"));
+        ui.end_row();
+        ui.label("Lines per cue");
+        ui.add(DragValue::new(&mut st.lines).range(1..=4))
+            .on_hover_text("Wrapped lines shown together in one cue (2 = classic two-line subtitles)");
         ui.end_row();
         ui.label("Min duration");
         ui.add(DragValue::new(&mut st.min_dur).range(0.3..=5.0).speed(0.05).suffix(" s"));
