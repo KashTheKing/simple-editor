@@ -625,6 +625,7 @@ fn appearance(ui: &mut egui::Ui, s: &mut Settings) -> bool {
                     s.bg_tint = tf.bg_tint;
                     s.bg_blur = tf.bg_blur;
                     s.panel_opacity = tf.panel_opacity;
+                    s.save(); // belt and braces: persist right away, whatever happens to this frame's flow
                     changed = true;
                 }
             }
@@ -667,6 +668,19 @@ fn appearance(ui: &mut egui::Ui, s: &mut Settings) -> bool {
         tweaked |= color_row(ui, "Selection", &mut s.palette.selection, base.selection);
         tweaked |= color_row(ui, "Keyframe", &mut s.palette.keyframe, base.keyframe);
         tweaked |= color_row(ui, "Waveform", &mut s.palette.waveform, base.waveform);
+    });
+    ui.add_space(4.0);
+    ui.collapsing("Clip colours", |ui| {
+        egui::Grid::new("clip_colours").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+            tweaked |= color_row(ui, "Video clips", &mut s.palette.clip_video, base.clip_video);
+            tweaked |= color_row(ui, "Audio clips", &mut s.palette.clip_audio, base.clip_audio);
+            tweaked |= color_row(ui, "Image clips", &mut s.palette.clip_image, base.clip_image);
+            tweaked |= color_row(ui, "Text clips", &mut s.palette.clip_text, base.clip_text);
+            tweaked |= color_row(ui, "Sequence clips", &mut s.palette.clip_sequence, base.clip_sequence);
+            tweaked |= color_row(ui, "Shape clips", &mut s.palette.clip_shape, base.clip_shape);
+            tweaked |= color_row(ui, "Adjustment clips", &mut s.palette.clip_adjust, base.clip_adjust);
+        });
+        ui.weak("A clip's custom label colour (right-click a clip) still wins over these.");
     });
     if tweaked {
         // editing a colour forks the current theme into "Custom" — the colours stay as a starting point

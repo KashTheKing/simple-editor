@@ -134,6 +134,13 @@ pub struct PaletteOverride {
     pub selection: Option<[u8; 3]>,
     pub keyframe: Option<[u8; 3]>,
     pub waveform: Option<[u8; 3]>,
+    pub clip_video: Option<[u8; 3]>,
+    pub clip_audio: Option<[u8; 3]>,
+    pub clip_image: Option<[u8; 3]>,
+    pub clip_text: Option<[u8; 3]>,
+    pub clip_sequence: Option<[u8; 3]>,
+    pub clip_shape: Option<[u8; 3]>,
+    pub clip_adjust: Option<[u8; 3]>,
 }
 
 /// `palette(ctx)` layered with a user override. "system" mode (the default, everything `None`) is
@@ -182,6 +189,27 @@ fn apply_overrides(p: &mut Palette, ov: &PaletteOverride) {
     }
     if let Some(c) = ov.waveform {
         p.waveform = rgb(c);
+    }
+    if let Some(c) = ov.clip_video {
+        p.clip_video = rgb(c);
+    }
+    if let Some(c) = ov.clip_audio {
+        p.clip_audio = rgb(c);
+    }
+    if let Some(c) = ov.clip_image {
+        p.clip_image = rgb(c);
+    }
+    if let Some(c) = ov.clip_text {
+        p.clip_text = rgb(c);
+    }
+    if let Some(c) = ov.clip_sequence {
+        p.clip_sequence = rgb(c);
+    }
+    if let Some(c) = ov.clip_shape {
+        p.clip_shape = rgb(c);
+    }
+    if let Some(c) = ov.clip_adjust {
+        p.clip_adjust = rgb(c);
     }
 }
 
@@ -297,6 +325,7 @@ pub fn palette(ctx: &egui::Context) -> Palette {
 /// Built-in theme preset names, in menu order.
 pub const PRESETS: &[&str] = &[
     "Charcoal Dark",
+    "Dark High Contrast",
     "Light High Contrast",
     "Cyberpunk Neon",
     "GitHub Dark",
@@ -328,6 +357,9 @@ pub fn preset(name: &str) -> Option<PaletteOverride> {
     // (dark, bg, panel, header, border, text, text_dim, accent)
     #[allow(clippy::type_complexity)]
     let core: Option<(bool, [u8; 3], [u8; 3], [u8; 3], [u8; 3], [u8; 3], [u8; 3], [u8; 3])> = match name {
+        "Dark High Contrast" => {
+            Some((true, [0, 0, 0], [10, 10, 10], [32, 32, 32], [140, 140, 140], [255, 255, 255], [205, 205, 205], [255, 210, 0]))
+        }
         "Light High Contrast" => {
             Some((false, [255, 255, 255], [245, 245, 245], [232, 232, 232], [110, 110, 110], [0, 0, 0], [55, 55, 55], [0, 90, 180]))
         }
