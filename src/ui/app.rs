@@ -168,6 +168,8 @@ pub struct App {
     gpu_tex_ids: std::collections::HashMap<eframe::glow::Texture, egui::TextureId>,
     effect_thumbs: Vec<egui::TextureHandle>,
     effect_thumbs_key: Option<(String, u32)>,
+    /// Editor background image: (path, blur radius, texture) — reloaded when either key changes.
+    bg_tex: Option<(String, u8, egui::TextureHandle)>,
     /// The GPU path failed once — do not retry until the setting is switched off and on again.
     gpu_failed: bool,
     /// The frame the GPU rendered last: its buffer is reused once the preview released it.
@@ -387,6 +389,54 @@ fn effect_thumb_source(image: &str, w: u32, h: u32, backend: Backend) -> Frame {
         }
     }
     f
+}
+
+/// In-place box blur of an RGBA buffer, three separable passes ≈ gaussian. Runs once at background
+/// image load time, never per frame. ponytail: CPU blur at load; a shader pass if live blur is wanted.
+fn box_blur(rgba: &mut [u8], w: usize, h: usize, radius: usize) {
+    if w == 0 || h == 0 || radius == 0 {
+        return;
+    }
+    let mut tmp = vec![0u8; rgba.len()];
+    // one horizontal sliding-window pass over `src` into `dst`; the vertical pass reuses it transposed
+    // by swapping the stride arguments.
+    let pass = |src: &[u8], dst: &mut [u8], cols: usize, rows: usize, col_stride: usize, row_stride: usize| {
+        for row in 0..rows {
+            let at = |col: usize| row * row_stride + col * col_stride;
+            let mut sum = [0usize; 4];
+            for col in 0..=radius.min(cols - 1) {
+                let p = at(col);
+                for c in 0..4 {
+                    sum[c] += src[p + c] as usize;
+                }
+            }
+            let mut count = radius.min(cols - 1) + 1;
+            for col in 0..cols {
+                let p = at(col);
+                for c in 0..4 {
+                    dst[p + c] = (sum[c] / count) as u8;
+                }
+                if col + radius + 1 < cols {
+                    let q = at(col + radius + 1);
+                    for c in 0..4 {
+                        sum[c] += src[q + c] as usize;
+                    }
+                    count += 1;
+                }
+                if col >= radius {
+                    let q = at(col - radius);
+                    for c in 0..4 {
+                        sum[c] -= src[q + c] as usize;
+                    }
+                    count -= 1;
+                }
+            }
+        }
+    };
+    for _ in 0..3 {
+        pass(rgba, &mut tmp, w, h, 4, w * 4); // horizontal
+        pass(&tmp, rgba, h, w, w * 4, 4); // vertical
+    }
 }
 
 /// Write one rendered frame as PNG / JPG / WebP through ffmpeg (raw RGBA on stdin), resizing to
@@ -766,7 +816,7 @@ impl App {
         let settings = Settings::load();
         media::ffpipe::set_dir(&settings.ffmpeg_dir);
         media::ytdlp::set_dir(&settings.ytdlp_dir);
-        theme::apply(&cc.egui_ctx, &settings.theme);
+        theme::apply(&cc.egui_ctx, &settings.theme, &settings.palette, &settings.ui_look);
         let backend = Backend::parse(&settings.decoder);
         let text = Arc::new(Mutex::new(TextRasterizer::new()));
         {
@@ -875,6 +925,7 @@ impl App {
             gpu_tex_ids: std::collections::HashMap::new(),
             effect_thumbs: Vec::new(),
             effect_thumbs_key: None,
+            bg_tex: None,
             gpu_failed: false,
             gpu_prev: None,
             tools: tools::ToolsState::default(),
@@ -3483,6 +3534,21 @@ impl App {
             let fg = if enabled { ui.visuals().text_color() } else { ui.visuals().weak_text_color() };
             tools::draw_glyph(ui.painter(), rect, g, fg);
         }
+        // right-click any menu action: pick its icon in place (same picker as the tab context menu)
+        let mut set: Option<Option<String>> = None;
+        r.context_menu(|ui| {
+            if let Some(pick) = layout::icon_menu(ui) {
+                set = Some(pick);
+            }
+        });
+        if let Some(pick) = set {
+            let key = format!("action.{}", a.id());
+            match pick {
+                Some(name) => drop(self.settings.icon_overrides.insert(key, name)),
+                None => drop(self.settings.icon_overrides.remove(&key)),
+            }
+            self.settings.save();
+        }
         if r.clicked() {
             out.push(a);
             ui.close();
@@ -3491,10 +3557,37 @@ impl App {
 
     /// Icon shown next to a pane (View menu, icon picker), with the user's Settings override first.
     fn pane_glyph(&self, p: Pane) -> Option<tools::Glyph> {
-        if let Some(name) = self.settings.icon_overrides.get(&format!("pane.{}", p.title())) {
-            return if name == "none" { None } else { tools::Glyph::from_name(name) };
+        layout::pane_icon(&self.settings.icon_overrides, p)
+    }
+
+    /// (Re)load the editor background image texture when the path or blur setting changed.
+    fn ensure_bg_texture(&mut self, ctx: &egui::Context) {
+        let (path, blur) = (self.settings.bg_image.clone(), self.settings.bg_blur);
+        if path.is_empty() {
+            self.bg_tex = None;
+            return;
         }
-        Some(p.glyph())
+        if matches!(&self.bg_tex, Some((p, b, _)) if *p == path && *b == blur) {
+            return;
+        }
+        let mut f = Frame::default();
+        let ok = media::open_video(&path, self.backend())
+            .ok()
+            .map(|mut src| src.frame_at(0.0, 1280, 720, &mut f) && !f.is_empty())
+            .unwrap_or(false);
+        if !ok {
+            self.toast("Background image could not be read");
+            self.settings.bg_image.clear();
+            self.settings.save();
+            self.bg_tex = None;
+            return;
+        }
+        if blur > 0 {
+            box_blur(&mut f.rgba, f.width as usize, f.height as usize, blur as usize);
+        }
+        let img = egui::ColorImage::from_rgba_premultiplied([f.width as usize, f.height as usize], &f.rgba);
+        let tex = ctx.load_texture("editor-bg", img, egui::TextureOptions::LINEAR);
+        self.bg_tex = Some((path, blur, tex));
     }
 
     fn view_menu(&mut self, ui: &mut egui::Ui, out: &mut Vec<Action>) {
@@ -3553,6 +3646,22 @@ impl App {
             }
         });
         ui.menu_button("Layout", |ui| {
+            ui.menu_button("Preset", |ui| {
+                for (name, make) in [
+                    ("Default", Layout::default_layout as fn() -> Layout),
+                    ("Colorist", Layout::colorist_layout),
+                    ("Fast-Cut Assembly", Layout::fastcut_layout),
+                ] {
+                    if ui.button(name).clicked() {
+                        ui.close();
+                        self.layout.push_undo(self.layout.to_json());
+                        let (undo, redo) = (std::mem::take(&mut self.layout.undo), std::mem::take(&mut self.layout.redo));
+                        self.layout = make();
+                        (self.layout.undo, self.layout.redo) = (undo, redo);
+                        self.layout_dirty = true;
+                    }
+                }
+            });
             if ui.button("Save profile…").clicked() {
                 ui.close();
                 self.profile_name = Some(String::new());
@@ -5344,6 +5453,8 @@ impl App {
             let backend_before = self.settings.decoder.clone();
             let gpu_before = self.settings.gpu;
             let theme_before = self.settings.theme.clone();
+            let look_before = self.settings.ui_look.clone();
+            let palette_before = self.settings.palette.clone();
             let ctxmenu_before = self.settings.context_menu;
             let ffdir_before = self.settings.ffmpeg_dir.clone();
             let ytdlp_dir_before = self.settings.ytdlp_dir.clone();
@@ -5368,8 +5479,11 @@ impl App {
             if changed {
                 self.hotkeys.to_settings(&mut self.settings);
                 self.settings.save();
-                if self.settings.theme != theme_before {
-                    theme::apply(ctx, &self.settings.theme);
+                if self.settings.theme != theme_before
+                    || self.settings.ui_look != look_before
+                    || self.settings.palette != palette_before
+                {
+                    theme::apply(ctx, &self.settings.theme, &self.settings.palette, &self.settings.ui_look);
                 }
                 if self.settings.ffmpeg_dir != ffdir_before {
                     media::ffpipe::set_dir(&self.settings.ffmpeg_dir);
@@ -5517,6 +5631,14 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.palette = theme::palette_with(ctx, &self.settings.palette);
+        self.palette.rounding = if self.settings.ui_look == "sharp" { 2.0 } else { 6.0 };
+        if !self.settings.bg_image.is_empty() && self.settings.panel_opacity < 255 {
+            let a = self.settings.panel_opacity;
+            let al = |c: egui::Color32| egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a);
+            self.palette.bg = al(self.palette.bg);
+            self.palette.panel = al(self.palette.panel);
+            self.palette.header = al(self.palette.header);
+        }
         if self.fonts.is_empty() {
             if let Ok(t) = self.text.try_lock() {
                 if t.is_loaded() {
@@ -5717,13 +5839,39 @@ impl eframe::App for App {
             egui::TopBottomPanel::top("menu").show(ctx, |ui| {
                 actions.extend(self.menu_bar(ui));
             });
+            self.ensure_bg_texture(ctx);
+            let tab_bar = (self.bg_tex.is_some() && self.settings.panel_opacity < 255).then_some(self.palette.header);
             egui::CentralPanel::default().show(ctx, |ui| {
+                if let Some((_, _, tex)) = &self.bg_tex {
+                    let r = ui.max_rect();
+                    ui.painter().image(
+                        tex.id(),
+                        r,
+                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        egui::Color32::WHITE,
+                    );
+                    let t = self.settings.bg_tint;
+                    ui.painter().rect_filled(r, 0.0, egui::Color32::from_rgba_unmultiplied(t[0], t[1], t[2], t[3]));
+                }
                 let mut l = std::mem::replace(&mut self.layout, Layout::new(egui_tiles::Tree::empty("layout")));
-                let (changed, moved) = layout::show(ctx, ui, &mut l, &mut |ui, pane| self.draw_pane(ui, pane));
+                // cloned: the draw closure needs self mutably while the tab renderer reads the icons
+                let icons = self.settings.icon_overrides.clone();
+                let (changed, moved, set_icon) =
+                    layout::show(ctx, ui, &mut l, &icons, tab_bar, &mut |ui, pane| self.draw_pane(ui, pane));
                 self.layout = l;
                 self.layout_dirty |= changed;
                 if moved {
                     push_undo_json(&mut self.undo, &mut self.redo, LAYOUT_STEP.to_owned());
+                }
+                if !set_icon.is_empty() {
+                    for (pane, pick) in set_icon {
+                        let key = format!("pane.{}", pane.title());
+                        match pick {
+                            Some(name) => drop(self.settings.icon_overrides.insert(key, name)),
+                            None => drop(self.settings.icon_overrides.remove(&key)),
+                        }
+                    }
+                    self.settings.save();
                 }
             });
         }
@@ -5785,6 +5933,28 @@ impl eframe::App for App {
 mod tests {
     use super::*;
     use crate::model::{Asset, Ease};
+
+    #[test]
+    fn box_blur_spreads_and_preserves_flat_areas() {
+        // a flat image stays exactly flat
+        let (w, h) = (8, 8);
+        let mut flat = vec![100u8; w * h * 4];
+        box_blur(&mut flat, w, h, 2);
+        assert!(flat.iter().all(|&v| v == 100));
+        // a single bright pixel spreads to its neighbours and dims in place
+        let mut img = vec![0u8; w * h * 4];
+        let centre = ((4 * w + 4) * 4) as usize;
+        img[centre] = 255;
+        box_blur(&mut img, w, h, 1);
+        assert!(img[centre] < 255, "the spike must dim");
+        let neighbour = ((4 * w + 5) * 4) as usize;
+        assert!(img[neighbour] > 0, "and bleed into the pixel beside it");
+        // radius 0 is a no-op and empty buffers don't panic
+        let mut same = vec![7u8; 16];
+        box_blur(&mut same, 2, 2, 0);
+        assert_eq!(same, vec![7u8; 16]);
+        box_blur(&mut [], 0, 0, 3);
+    }
 
     fn asset(path: &str) -> Asset {
         Asset {

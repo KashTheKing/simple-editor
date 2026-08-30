@@ -552,6 +552,57 @@ fn capture(ctx: &egui::Context, state: &mut SettingsUi, a: Action, hotkeys: &mut
 fn appearance(ui: &mut egui::Ui, s: &mut Settings) -> bool {
     let mut changed = false;
     ui.horizontal(|ui| {
+        ui.label("Look");
+        changed |= combo(ui, "ui_look", &mut s.ui_look, &[("cozy", "Cozy (rounded)"), ("sharp", "Sharp")], Some(200.0));
+    });
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label("Theme");
+        let cur = if s.palette.preset.is_empty() { "Custom / none" } else { s.palette.preset.as_str() };
+        egui::ComboBox::from_id_salt("theme_preset").selected_text(cur).width(200.0).show_ui(ui, |ui| {
+            for name in crate::theme::PRESETS {
+                if ui.selectable_label(s.palette.preset == *name, *name).clicked() {
+                    if let Some(ov) = crate::theme::preset(name) {
+                        s.theme = ov.mode.clone();
+                        s.palette = ov;
+                        changed = true;
+                    }
+                }
+            }
+        });
+        if ui.button("Export theme…").clicked() {
+            let tf = crate::settings::ThemeFile {
+                name: if s.palette.preset.is_empty() { "My theme".into() } else { s.palette.preset.clone() },
+                theme: s.theme.clone(),
+                ui_look: s.ui_look.clone(),
+                palette: s.palette.clone(),
+            };
+            if let Some(out) = rfd::FileDialog::new()
+                .add_filter("Simple Editor theme", &["sedit-theme"])
+                .set_file_name("theme.sedit-theme")
+                .save_file()
+            {
+                let _ = std::fs::write(&out, serde_json::to_string_pretty(&tf).unwrap_or_default());
+            }
+        }
+        if ui.button("Import theme…").clicked() {
+            if let Some(p) =
+                rfd::FileDialog::new().add_filter("Simple Editor theme", &["sedit-theme", "json"]).pick_file()
+            {
+                if let Some(tf) = std::fs::read_to_string(&p)
+                    .ok()
+                    .and_then(|t| serde_json::from_str::<crate::settings::ThemeFile>(&t).ok())
+                {
+                    s.theme = tf.theme;
+                    s.ui_look = tf.ui_look;
+                    s.palette = tf.palette;
+                    changed = true;
+                }
+            }
+        }
+    });
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
         ui.label("Mode");
         changed |= combo(ui, "palette_mode", &mut s.palette.mode, &PALETTE_MODES, Some(200.0));
         if ui.button("Reset to system").clicked() {
@@ -595,6 +646,54 @@ fn appearance(ui: &mut egui::Ui, s: &mut Settings) -> bool {
         changed |= color_row(ui, "Selection", &mut s.palette.selection, base.selection);
         changed |= color_row(ui, "Keyframe", &mut s.palette.keyframe, base.keyframe);
         changed |= color_row(ui, "Waveform", &mut s.palette.waveform, base.waveform);
+    });
+    ui.add_space(8.0);
+    ui.collapsing("Background image", |ui| {
+        ui.weak("A picture behind the whole editor; lower the panel opacity to see it through the panes.");
+        ui.horizontal(|ui| {
+            ui.label("Image");
+            let name = if s.bg_image.is_empty() {
+                "(none)".to_string()
+            } else {
+                std::path::Path::new(&s.bg_image)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| s.bg_image.clone())
+            };
+            ui.label(name).on_hover_text(&s.bg_image);
+            if ui.button("Browse…").clicked() {
+                if let Some(p) = rfd::FileDialog::new()
+                    .add_filter("Images", &["png", "jpg", "jpeg", "bmp", "webp", "gif"])
+                    .pick_file()
+                {
+                    s.bg_image = p.to_string_lossy().into_owned();
+                    changed = true;
+                }
+            }
+            if !s.bg_image.is_empty() && ui.button("Clear").clicked() {
+                s.bg_image.clear();
+                changed = true;
+            }
+        });
+        ui.add_enabled_ui(!s.bg_image.is_empty(), |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Tint");
+                let mut c = egui::Color32::from_rgba_unmultiplied(s.bg_tint[0], s.bg_tint[1], s.bg_tint[2], s.bg_tint[3]);
+                if egui::color_picker::color_edit_button_srgba(ui, &mut c, egui::color_picker::Alpha::OnlyBlend)
+                    .changed()
+                {
+                    let [r, g, b, a] = c.to_srgba_unmultiplied();
+                    s.bg_tint = [r, g, b, a];
+                    changed = true;
+                }
+                ui.label("Blur");
+                changed |= ui.add(egui::DragValue::new(&mut s.bg_blur).range(0..=20)).changed();
+            });
+            ui.horizontal(|ui| {
+                ui.label("Panel opacity");
+                changed |= ui.add(egui::Slider::new(&mut s.panel_opacity, 60..=255)).changed();
+            });
+        });
     });
     ui.add_space(8.0);
     ui.collapsing("Icons", |ui| {

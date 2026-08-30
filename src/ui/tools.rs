@@ -644,14 +644,15 @@ pub(crate) fn glyph_text_button(ui: &mut egui::Ui, icon: Glyph, text: &str) -> e
     let galley = ui.painter().layout_no_wrap(text.to_owned(), font, Color32::PLACEHOLDER);
     let pad = ui.spacing().button_padding;
     let icon_w = 18.0;
-    let size = egui::vec2(icon_w + galley.size().x + pad.x * 2.0, galley.size().y.max(20.0) + pad.y * 2.0);
+    let gap = if text.is_empty() { 0.0 } else { 4.0 };
+    let size = egui::vec2(icon_w + gap + galley.size().x + pad.x * 2.0, galley.size().y.max(20.0) + pad.y * 2.0);
     let (rect, r) = ui.allocate_exact_size(size, Sense::click());
     let v = ui.style().interact(&r);
     ui.painter().rect(rect, v.corner_radius, v.weak_bg_fill, v.bg_stroke, StrokeKind::Inside);
     let icon_x = if text.is_empty() { rect.center().x - icon_w / 2.0 } else { rect.left() + pad.x };
     let icon_rect = egui::Rect::from_min_size(egui::pos2(icon_x, rect.top()), egui::vec2(icon_w, rect.height()));
     draw_glyph(ui.painter(), icon_rect, icon, v.text_color());
-    let tp = egui::pos2(icon_rect.right(), rect.center().y - galley.size().y / 2.0);
+    let tp = egui::pos2(icon_rect.right() + gap, rect.center().y - galley.size().y / 2.0);
     ui.painter().galley(tp, galley, v.text_color());
     r
 }
@@ -668,11 +669,12 @@ pub(crate) fn icon_button(
     let (rect, _) = ui.allocate_exact_size(egui::vec2(24.0, 22.0), Sense::hover());
     let r = ui.interact(rect, id, Sense::click());
     let p = ui.painter();
+    let cr = CornerRadius::same(palette.rounding as u8);
     if active {
-        p.rect_filled(rect, CornerRadius::same(2), palette.accent);
+        p.rect_filled(rect, cr, palette.accent);
     } else if r.hovered() {
-        p.rect_filled(rect, CornerRadius::same(2), palette.header);
-        p.rect_stroke(rect, CornerRadius::same(2), Stroke::new(1.0, palette.border), StrokeKind::Inside);
+        p.rect_filled(rect, cr, palette.header);
+        p.rect_stroke(rect, cr, Stroke::new(1.0, palette.border), StrokeKind::Inside);
     }
     let fg = if active { on_accent(palette.accent) } else { palette.text };
     draw_glyph(p, rect, icon, fg);
