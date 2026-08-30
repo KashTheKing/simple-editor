@@ -2255,6 +2255,13 @@ pub struct Clip {
     pub y: Animated,
     #[serde(default = "a1")]
     pub scale: Animated,
+    /// Additional horizontal-only multiplier on top of `scale` (1 = no-op). Groundwork for independent
+    /// non-uniform scaling; final horizontal factor is `scale.at(lt) * scale_x.at(lt)`.
+    #[serde(default = "a1")]
+    pub scale_x: Animated,
+    /// Additional vertical-only multiplier on top of `scale` (1 = no-op). See `scale_x`.
+    #[serde(default = "a1")]
+    pub scale_y: Animated,
     #[serde(default = "a0")]
     pub rotation: Animated,
     #[serde(default = "a1")]
@@ -2320,6 +2327,8 @@ impl Clip {
             x: a0(),
             y: a0(),
             scale: a1(),
+            scale_x: a1(),
+            scale_y: a1(),
             rotation: a0(),
             opacity: a1(),
             blend: BlendMode::Normal,
@@ -2506,6 +2515,8 @@ impl Clip {
                 ("Scale", &mut self.scale),
                 ("Rotation", &mut self.rotation),
                 ("Opacity", &mut self.opacity),
+                ("Scale X", &mut self.scale_x),
+                ("Scale Y", &mut self.scale_y),
             ]
         } else {
             vec![("Volume", &mut self.volume), ("Pan", &mut self.pan)]
@@ -4397,6 +4408,8 @@ impl Project {
                 c.x = src.x.clone();
                 c.y = src.y.clone();
                 c.scale = src.scale.clone();
+                c.scale_x = src.scale_x.clone();
+                c.scale_y = src.scale_y.clone();
                 c.rotation = src.rotation.clone();
             }
             if set.opacity {
@@ -4952,6 +4965,17 @@ mod tests {
         let json = serde_json::to_string(&c).unwrap();
         let d: Clip = serde_json::from_str(&json).unwrap();
         assert_eq!(d.effects[0].kind, EffectKind::Blur);
+    }
+
+    /// An old project file, saved before `scale_x`/`scale_y` existed, has no such keys in its JSON.
+    /// They must deserialize as the no-op multiplier (1.0) so old projects render unchanged.
+    #[test]
+    fn scale_x_y_default_to_noop_for_old_projects() {
+        let json = r#"{"id":1,"kind":"Video","name":"c","start":0.0,"duration":4.0,"scale":{"value":2.0}}"#;
+        let c: Clip = serde_json::from_str(json).unwrap();
+        assert_eq!(c.scale.value, 2.0, "old field is untouched");
+        assert_eq!(c.scale_x.value, 1.0);
+        assert_eq!(c.scale_y.value, 1.0);
     }
 
     /// Every current kind is a pixel/GLSL effect — none apply to an audio clip yet (see the doc comment

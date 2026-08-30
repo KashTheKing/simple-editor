@@ -2212,6 +2212,9 @@ impl App {
                             self.after_edit();
                         }
                     }
+                    if let Some((cx, cy, _, _)) = resp.new_text {
+                        self.add_text(cx, cy);
+                    }
                     if let Some(s) = resp.stroke {
                         self.add_stroke(s);
                     }
@@ -2774,6 +2777,21 @@ impl App {
                     s.h.value = h as f64;
                 }
             }
+        }
+        self.selection = vec![id];
+        self.after_edit();
+        id
+    }
+
+    /// Text tool drag-to-add: places a new text clip's centre where the user dragged on the viewport
+    /// (`PreviewResponse::new_text`). The drag's half-extents have no matching `TextStyle` field (text
+    /// boxes size to their content, not a fixed rect) so only the centre is used.
+    fn add_text(&mut self, cx: f32, cy: f32) -> Id {
+        self.push_undo();
+        let id = self.project.add_text_clip(self.playhead, 5.0);
+        if let Some(c) = self.project.clip_mut(id) {
+            c.x.value = cx as f64;
+            c.y.value = cy as f64;
         }
         self.selection = vec![id];
         self.after_edit();

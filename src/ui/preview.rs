@@ -17,7 +17,7 @@
 use crate::engine::compose::placement;
 use crate::hotkeys::Action;
 use crate::media::Frame;
-use crate::model::{ClipKind, Id, Mask, MaskShape, Project, ShapeKind, Stroke as ModelStroke};
+use crate::model::{ClipKind, Id, Mask, MaskShape, Project, ShapeKind, ShapeStyle, Stroke as ModelStroke};
 use crate::theme::Palette;
 use crate::ui::timecode;
 use crate::ui::tools::{glyph_text_button, Dir, Glyph, Tool};
@@ -116,6 +116,10 @@ pub struct PreviewResponse {
     /// A shape dragged out with a shape tool: (kind, centre x, centre y, half width, half height) in
     /// project pixels relative to the canvas centre (same frame as `Clip.x/y` and `ShapeStyle.w/h`).
     pub new_shape: Option<(ShapeKind, f32, f32, f32, f32)>,
+    /// A text box dragged out with the Text tool: (centre x, centre y, half width, half height), same
+    /// convention as `new_shape` minus the kind. The caller creates the clip (`Project::add_text_clip`)
+    /// and positions it at this centre.
+    pub new_text: Option<(f32, f32, f32, f32)>,
     /// Vertices of a closed Polygon path, relative to that shape's centre (empty = a regular n-gon).
     pub new_points: Vec<(f32, f32)>,
     /// A stroke recorded with the Draw tool (points relative to the canvas centre, timed from the press).
@@ -323,9 +327,18 @@ fn constrain_drag(kind: ShapeKind, from: Pos2, to: Pos2, modifiers: egui::Modifi
 /// Outline of the shape a drag is creating: `from` is where the press landed, `to` is the cursor.
 /// Bounded shapes fill the rectangle between them; a line or arrow runs from one to the other, so it
 /// must not be handed a normalised rect (its corners would point the wrong way down two of the four
-/// diagonals).
-fn draw_shape_preview(p: &egui::Painter, kind: ShapeKind, from: Pos2, to: Pos2, palette: &Palette, stroke: Stroke) {
-    let fill = palette.selection.gamma_multiply(0.25);
+/// diagonals). Painted with `style`'s actual fill/stroke/corner/sides (project px, scaled to screen
+/// points by `inv_k` = screen points per project px — the inverse of `tool_drag`'s `k`) so the live
+/// preview looks like the shape `engine::shapes::ShapeRasterizer` will actually render, not a generic
+/// translucent selection outline.
+fn draw_shape_preview(p: &egui::Painter, style: &ShapeStyle, from: Pos2, to: Pos2, k: f32) {
+    let kind = style.kind;
+    let inv_k = if k.is_finite() && k > 1e-4 { 1.0 / k } else { 1.0 };
+    let fill = Color32::from_rgba_unmultiplied(style.fill[0], style.fill[1], style.fill[2], style.fill[3]);
+    let sw = (style.stroke_width.max(0.0) * inv_k).max(0.75);
+    let stroke_color =
+        Color32::from_rgba_unmultiplied(style.stroke[0], style.stroke[1], style.stroke[2], style.stroke[3]);
+    let stroke = if style.stroke[3] > 0 { Stroke::new(sw, stroke_color) } else { Stroke::NONE };
     let r = Rect::from_two_pos(from, to);
     let c = r.center();
     let (hw, hh) = (r.width() / 2.0, r.height() / 2.0);
@@ -340,19 +353,31 @@ fn draw_shape_preview(p: &egui::Painter, kind: ShapeKind, from: Pos2, to: Pos2, 
     let top = -std::f32::consts::FRAC_PI_2;
     match kind {
         ShapeKind::Rect => {
-            p.rect(r, 0.0, fill, stroke, StrokeKind::Inside);
+            let corner = (style.corner.max(0.0) * inv_k).min(hw).min(hh);
+            p.rect(r, corner, fill, stroke, StrokeKind::Inside);
         }
         ShapeKind::Ellipse => {
             let pts = poly(48, 0.0);
             p.add(Shape::convex_polygon(pts.clone(), fill, Stroke::NONE));
             p.add(Shape::closed_line(pts, stroke));
         }
-        ShapeKind::Triangle | ShapeKind::Polygon | ShapeKind::Star => {
+        // matches engine::shapes::shape_outline's fixed apex-up / flat-base vertices exactly (a regular
+        // n-gon inscribed in the w x h ellipse, which the old preview used here, is a visibly different
+        // triangle).
+        ShapeKind::Triangle => {
+            let pts = vec![pos2(c.x, c.y - hh), pos2(c.x + hw, c.y + hh), pos2(c.x - hw, c.y + hh)];
+            p.add(Shape::convex_polygon(pts.clone(), fill, Stroke::NONE));
+            p.add(Shape::closed_line(pts, stroke));
+        }
+        ShapeKind::Polygon | ShapeKind::Star => {
+            let sides = style.sides.clamp(3, 64);
             let pts = if kind == ShapeKind::Star {
-                let (o, i) = (poly(5, top), poly(5, top + std::f32::consts::TAU / 10.0));
-                (0..5).flat_map(|k| [o[k], pos2(c.x + (i[k].x - c.x) * 0.45, c.y + (i[k].y - c.y) * 0.45)]).collect()
+                let (o, i) = (poly(sides, top), poly(sides, top + std::f32::consts::TAU / (2 * sides) as f32));
+                (0..sides as usize)
+                    .flat_map(|idx| [o[idx], pos2(c.x + (i[idx].x - c.x) * 0.45, c.y + (i[idx].y - c.y) * 0.45)])
+                    .collect()
             } else {
-                poly(if kind == ShapeKind::Triangle { 3 } else { 5 }, top)
+                poly(sides, top)
             };
             p.add(Shape::convex_polygon(pts.clone(), fill, Stroke::NONE));
             p.add(Shape::closed_line(pts, stroke));
@@ -364,12 +389,20 @@ fn draw_shape_preview(p: &egui::Painter, kind: ShapeKind, from: Pos2, to: Pos2, 
                 let v = b - a;
                 let len = v.length().max(1.0);
                 let (ux, uy) = (v.x / len, v.y / len);
-                let head = (len * 0.25).clamp(6.0, 40.0);
+                // same rule as engine::shapes::arrow_head: an explicit head size (`corner`), or a
+                // stroke-relative default.
+                let head_px = if style.corner > 0.0 && style.corner.is_finite() {
+                    style.corner
+                } else {
+                    (style.stroke_width.max(0.0) * 4.0).max(8.0)
+                };
+                // clamp's bounds must stay ordered (min <= max) even when the drag is barely a pixel long
+                let head = (head_px * inv_k).clamp(2.0, len.max(2.0));
                 let base = pos2(b.x - ux * head, b.y - uy * head);
                 let (px, py) = (-uy * head * 0.5, ux * head * 0.5);
                 p.add(Shape::convex_polygon(
                     vec![b, pos2(base.x + px, base.y + py), pos2(base.x - px, base.y - py)],
-                    stroke.color,
+                    stroke_color,
                     Stroke::NONE,
                 ));
             }
@@ -519,7 +552,17 @@ fn tool_drag(
             Tool::Shape(kind) => {
                 let modifiers = ui.input(|i| i.modifiers);
                 let (from, to) = constrain_drag(kind, d.from, now, modifiers);
-                draw_shape_preview(&p, kind, from, to, c.palette, stroke);
+                // ponytail: the tool strip's live fill/stroke/corner/sides picks (ToolsState) aren't
+                // threaded into PreviewCtx, so the preview approximates with ShapeStyle::new(kind)'s
+                // defaults rather than what add_shape() will actually style the clip with (tools.fill /
+                // .stroke / .stroke_width / .sides / .corner) — thread those through PreviewCtx if the
+                // mismatch matters.
+                let style = ShapeStyle::new(kind);
+                draw_shape_preview(&p, &style, from, to, k);
+            }
+            // text box outline: no real text is rendered here, just where the box will land
+            Tool::Text => {
+                p.rect_stroke(Rect::from_two_pos(d.from, now), 0.0, stroke, StrokeKind::Inside);
             }
             _ => {
                 p.rect_stroke(Rect::from_two_pos(d.from, now), 0.0, stroke, StrokeKind::Inside);
@@ -547,6 +590,13 @@ fn tool_drag(
             }
             Tool::Draw if d.points.len() > 1 => {
                 r.stroke = Some(ModelStroke { color: [255, 255, 255, 255], width: 6.0, points: d.points.clone() });
+            }
+            // same centre/half-size convention as new_shape (minus the kind); the caller creates the
+            // text clip and positions it here (mirroring how new_shape is turned into a Shape clip).
+            Tool::Text => {
+                let (cx, cy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+                let (tw, th) = ((x1 - x0).abs() / 2.0, (y1 - y0).abs() / 2.0);
+                r.new_text = Some((cx, cy, tw.max(2.0), th.max(2.0)));
             }
             _ => {}
         }
@@ -921,6 +971,76 @@ mod tests {
         assert_eq!((c.x.value, c.y.value), (0.0, 0.0), "shape tool never moves the clip");
         assert_eq!(h.undos, 0, "no clip undo for a shape gesture");
         let _ = (cx, cy);
+    }
+
+    /// The live preview (draw_shape_preview) is exercised for every shape kind by each frame of the
+    /// drag; this is the regression coverage for it (its output can't be asserted on pixel-by-pixel like
+    /// engine::shapes' rasteriser tests, since it paints straight into an egui::Painter, but a panic
+    /// there — e.g. the arrow head's corner/stroke_width-derived size clamped against a near-zero drag
+    /// length — would fail this test).
+    #[test]
+    fn shape_tool_preview_paints_without_panicking_for_every_kind() {
+        // Polygon is click-to-place-vertices (its own branch above, own coverage in
+        // `polygon_tool_places_and_closes_real_points`), not a single drag — skip it here.
+        for kind in ShapeKind::ALL.into_iter().filter(|&k| k != ShapeKind::Polygon) {
+            let mut h = H::new();
+            h.tool = Tool::Shape(kind);
+            h.frame(vec![]);
+            // small, not zero: big enough to clear egui's own drag-recognition threshold (a 3x2 px
+            // drag never registers as a drag at all, so drag_stopped() would never fire) while still
+            // small enough to stress the near-zero-length arrow-head/clamp path this test guards.
+            let out = h.drag(pos2(250.0, 150.0), pos2(262.0, 165.0));
+            let (k, ..) = out.new_shape.unwrap_or_else(|| panic!("{kind:?} drag reports a shape"));
+            assert_eq!(k, kind);
+        }
+    }
+
+    /// Bug fix regression: dragging with the Text tool must report a text box (once) instead of falling
+    /// into the generic tool arms, which used to draw a throwaway outline and discard it on release.
+    #[test]
+    fn text_tool_drag_reports_new_text_exactly_once_and_never_moves_the_clip() {
+        let mut h = H::new();
+        h.tool = Tool::Text;
+        h.frame(vec![]);
+        let (from, to) = (pos2(250.0, 150.0), pos2(400.0, 250.0));
+        // drive the gesture by hand so every frame's response can be counted (mirrors
+        // a_shape_drag_emits_exactly_one_shape below)
+        h.frame(vec![Event::PointerMoved(from)]);
+        let mut n = 0;
+        let mut last = None;
+        let mut count = |r: PreviewResponse| {
+            if let Some(t) = r.new_text {
+                n += 1;
+                last = Some(t);
+            }
+        };
+        count(h.frame(vec![Event::PointerButton {
+            pos: from,
+            button: PointerButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        }]));
+        for i in 1..=4 {
+            let p = from + (to - from) * (i as f32 / 4.0);
+            count(h.frame(vec![Event::PointerMoved(p)]));
+        }
+        count(h.frame(vec![Event::PointerButton {
+            pos: to,
+            button: PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        }]));
+        // a few idle frames after the release: a gesture that never cleared would keep firing
+        for _ in 0..3 {
+            count(h.frame(vec![]));
+        }
+        assert_eq!(n, 1, "one drag, one text box");
+        let (_, _, hw, hh) = last.expect("a text box was dragged out");
+        assert!(hw > 1.0 && hh > 1.0, "non-empty box: {hw} x {hh}");
+        // the drag must not have moved (or otherwise edited) the existing clip
+        let c = h.project.clip(7).unwrap();
+        assert_eq!((c.x.value, c.y.value), (0.0, 0.0), "text tool never moves the clip");
+        assert_eq!(h.undos, 0, "no clip undo for a text-box gesture");
     }
 
     /// A line follows the drag in every direction: the half-extents stay signed, so dragging up-right
