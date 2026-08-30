@@ -8,6 +8,18 @@
   --btn-fg: #ffffff;
 }
 
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #181818;
+    --fg: #eeeeee;
+    --muted: #aaaaaa;
+    --border: #444444;
+    --card-bg: #262626;
+    --btn-bg: #eeeeee;
+    --btn-fg: #181818;
+  }
+}
+
 body:has(#theme-toggle:checked) {
   --bg: #181818;
   --fg: #eeeeee;
@@ -50,13 +62,14 @@ body {
   background: #202020;
   border-radius: 16px;
   margin: 0 auto 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .icon {
   width: 96px;
   height: 96px;
-  display: block;
-  margin: 16px auto;
 }
 
 h1 {
