@@ -125,6 +125,8 @@ pub struct TimelineState {
     pub sub_sel: Vec<Id>,
     /// Band-select in progress on the subtitle lane: press-origin time and "Shift held" (add to selection).
     sub_band: Option<(f64, bool)>,
+    /// Cue edge being trimmed on the subtitle lane: (cue id, right edge?).
+    sub_trim: Option<(Id, bool)>,
 }
 
 impl Default for TimelineState {
@@ -144,6 +146,7 @@ impl Default for TimelineState {
             sub_h: SUB_LANE_H,
             sub_sel: Vec::new(),
             sub_band: None,
+            sub_trim: None,
         }
     }
 }
@@ -1632,6 +1635,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         enum SubAct {
             Convert(Vec<Id>),
             Delete(Vec<Id>),
+            Split(Id),
             Range,
             Clear,
         }
@@ -1727,6 +1731,20 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     out.seeked = true;
                 }
             }
+            // trim handles on both edges, like a clip's
+            for right in [false, true] {
+                let er = Rect::from_center_size(
+                    pos2(if right { xb } else { xa }, rect.center().y),
+                    vec2(6.0, rect.height()),
+                );
+                let e = ui
+                    .interact(er.intersect(subs_lane), id.with(("sub_e", cue.id, right)), Sense::drag())
+                    .on_hover_cursor(CursorIcon::ResizeHorizontal);
+                if e.drag_started_by(egui::PointerButton::Primary) {
+                    (c.undo)(c.project);
+                    state.sub_trim = Some((cue.id, right));
+                }
+            }
             // right-click outside the selection retargets it, like every explorer
             if r.secondary_clicked() && !sel {
                 state.sub_sel = vec![cue.id];
@@ -1734,7 +1752,13 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             let targets: Vec<Id> = if sel && state.sub_sel.len() > 1 { state.sub_sel.clone() } else { vec![cue.id] };
             let n = targets.len();
             let plural = |what: &str| if n > 1 { format!("{what} ({n})") } else { what.to_string() };
+            let cid = cue.id;
+            let ph_in = *c.playhead > cue.start + 0.05 && *c.playhead < cue.end - 0.05;
             r.on_hover_text(&cue.text).context_menu(|ui| {
+                if ui.add_enabled(ph_in, egui::Button::new("Split at Playhead")).on_hover_text("Ctrl+B").clicked() {
+                    sub_act = Some(SubAct::Split(cid));
+                    ui.close();
+                }
                 if ui.button(plural("Convert to Text Clip")).clicked() {
                     sub_act = Some(SubAct::Convert(targets.clone()));
                     ui.close();
@@ -1754,11 +1778,32 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 }
             });
         }
+        // active edge drag: follow the pointer while held, sort on release
+        if let Some((tid, right)) = state.sub_trim {
+            if primary_down {
+                if let (Some(p), Some(q)) = (pointer, c.project.subtitles.iter_mut().find(|q| q.id == tid)) {
+                    let t = state.time_at(p.x).max(0.0);
+                    if right {
+                        q.end = t.max(q.start + 0.1);
+                    } else {
+                        q.start = t.clamp(0.0, q.end - 0.1);
+                    }
+                    out.edited = true;
+                }
+            } else {
+                state.sub_trim = None;
+                c.project.sort_cues();
+                out.edited = true;
+            }
+        }
         if let Some(a) = sub_act {
             (c.undo)(c.project);
             match a {
                 SubAct::Convert(ids) => {
                     c.project.cues_to_text_clips(Some(&ids));
+                }
+                SubAct::Split(id) => {
+                    c.project.split_cue(id, *c.playhead);
                 }
                 SubAct::Delete(ids) => c.project.subtitles.retain(|q| !ids.contains(&q.id)),
                 SubAct::Range => {

@@ -968,6 +968,19 @@ mod tests {
     }
 
     #[test]
+    fn split_cue_makes_two_halves_with_the_same_text() {
+        let mut p = Project::new();
+        let id = p.add_cue(1.0, 3.0, "hello");
+        assert!(p.split_cue(id, 0.5).is_none(), "outside the cue");
+        assert!(p.split_cue(id, 1.01).is_none(), "too close to the edge");
+        let right = p.split_cue(id, 2.0).expect("split");
+        assert_eq!(p.subtitles.len(), 2);
+        assert!((p.subtitles[0].end - 2.0).abs() < 1e-9 && (p.subtitles[1].start - 2.0).abs() < 1e-9);
+        assert_eq!(p.subtitles[1].id, right);
+        assert_eq!(p.subtitles[1].text, "hello");
+    }
+
+    #[test]
     fn cues_convert_to_text_clips() {
         let mut p = Project::new();
         let a = p.add_cue(1.0, 2.0, "first");

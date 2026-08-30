@@ -1614,7 +1614,12 @@ impl App {
                 let only =
                     if self.selection.is_empty() { None } else { Some(self.project.expand_links(&self.selection)) };
                 let snap = self.project.to_json();
-                if !self.project.split_at(self.playhead, only.as_deref()).is_empty() {
+                let mut did = !self.project.split_at(self.playhead, only.as_deref()).is_empty();
+                // cues selected on the timeline's subtitle lane split too, like clips
+                for id in self.timeline.sub_sel.clone() {
+                    did |= self.project.split_cue(id, self.playhead).is_some();
+                }
+                if did {
                     push_undo_json(&mut self.undo, &mut self.redo, snap);
                     self.after_edit();
                 }

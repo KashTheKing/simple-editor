@@ -3289,6 +3289,17 @@ impl Project {
     pub fn remove_cue(&mut self, id: Id) {
         self.subtitles.retain(|c| c.id != id);
     }
+    /// Split cue `id` at `t` (both halves keep the text, like splitting a clip); the new right-half id,
+    /// or None when `t` is outside the cue or too close to an edge for two readable halves.
+    pub fn split_cue(&mut self, id: Id, t: f64) -> Option<Id> {
+        let c = self.subtitles.iter_mut().find(|c| c.id == id)?;
+        if t < c.start + 0.05 || t > c.end - 0.05 {
+            return None;
+        }
+        let (end, text) = (c.end, c.text.clone());
+        c.end = t;
+        Some(self.add_cue(t, end, text))
+    }
     /// Convert cues into editable Text clips on a topmost "Subtitles" video track, styled and placed
     /// like the burn-in. `only` limits it to those cue ids; converted cues are removed. Returns how many.
     pub fn cues_to_text_clips(&mut self, only: Option<&[Id]>) -> usize {
