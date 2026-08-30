@@ -44,11 +44,19 @@ body {
   margin: 0 auto;
 }
 
-.icon {
+.icon-wrap {
   width: 128px;
   height: 128px;
-  display: block;
+  background: #202020;
+  border-radius: 16px;
   margin: 0 auto 1rem;
+}
+
+.icon {
+  width: 96px;
+  height: 96px;
+  display: block;
+  margin: 16px auto;
 }
 
 h1 {
