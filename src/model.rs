@@ -3283,6 +3283,38 @@ impl Project {
     pub fn remove_cue(&mut self, id: Id) {
         self.subtitles.retain(|c| c.id != id);
     }
+    /// Convert cues into editable Text clips on a topmost "Subtitles" video track, styled and placed
+    /// like the burn-in. `only` limits it to those cue ids; converted cues are removed. Returns how many.
+    pub fn cues_to_text_clips(&mut self, only: Option<&[Id]>) -> usize {
+        let take: Vec<Cue> =
+            self.subtitles.iter().filter(|c| only.is_none_or(|o| o.contains(&c.id))).cloned().collect();
+        if take.is_empty() {
+            return 0;
+        }
+        let ti = match self.tracks.iter().position(|t| t.kind == TrackKind::Video && t.name == "Subtitles") {
+            Some(i) => i,
+            None => {
+                let id = self.new_id();
+                self.tracks.push(Track::new(id, TrackKind::Video, "Subtitles"));
+                self.tracks.len() - 1
+            }
+        };
+        // bottom-centred like the burn-in; the box height is estimated as one line of text
+        let y = self.height as f64 / 2.0 - self.subtitle_margin as f64 - self.subtitle_style.size as f64 * 0.75;
+        for cue in &take {
+            let mut c =
+                Clip::new(self.new_id(), ClipKind::Text, "Subtitle", cue.start, (cue.end - cue.start).max(MIN_CLIP));
+            let mut style = self.subtitle_style.clone();
+            style.text.clone_from(&cue.text);
+            c.text = Some(style);
+            c.y = Animated::new(y);
+            self.tracks[ti].clips.push(c);
+        }
+        self.tracks[ti].sort();
+        let ids: Vec<Id> = take.iter().map(|c| c.id).collect();
+        self.subtitles.retain(|c| !ids.contains(&c.id));
+        take.len()
+    }
     pub fn sort_cues(&mut self) {
         self.subtitles.sort_by(|a, b| a.start.total_cmp(&b.start));
     }
@@ -3924,11 +3956,8 @@ impl Project {
         }
         if link != 0 {
             let mut stream_idx = 0;
-            let linked_ids: Vec<Id> = self
-                .all_clips()
-                .filter(|(_, c)| c.link == link && c.id != video_id)
-                .map(|(_, c)| c.id)
-                .collect();
+            let linked_ids: Vec<Id> =
+                self.all_clips().filter(|(_, c)| c.link == link && c.id != video_id).map(|(_, c)| c.id).collect();
             for aid in linked_ids {
                 if let Some(c) = self.clip_mut(aid) {
                     if c.kind == ClipKind::Audio && c.container {

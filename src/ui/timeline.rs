@@ -52,6 +52,8 @@ use eframe::egui::{
 use std::path::PathBuf;
 
 const RULER_H: f32 = 22.0;
+/// Height of the subtitle lane pinned under the ruler (shown only when the project has cues).
+const SUB_LANE_H: f32 = 20.0;
 const EDGE_W: f32 = 6.0;
 const HANDLE_H: f32 = 4.0;
 const SNAP_PX: f32 = 8.0;
@@ -841,11 +843,14 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     ui.allocate_rect(full, Sense::hover());
     let id = ui.id().with("timeline");
     let content_h: f32 = c.project.tracks.iter().map(|t| t.height).sum();
-    let vbar_w = if content_h > full.height() - RULER_H - HBAR_H { VBAR_W } else { 0.0 };
+    let sub_h = if c.project.subtitles.is_empty() { 0.0 } else { SUB_LANE_H };
+    let vbar_w = if content_h > full.height() - RULER_H - sub_h - HBAR_H { VBAR_W } else { 0.0 };
     let ruler =
         Rect::from_min_max(pos2(full.left() + state.header_w, full.top()), pos2(full.right(), full.top() + RULER_H));
+    let subs_lane =
+        Rect::from_min_max(pos2(ruler.left(), ruler.bottom()), pos2(full.right() - vbar_w, ruler.bottom() + sub_h));
     let lanes =
-        Rect::from_min_max(pos2(ruler.left(), ruler.bottom()), pos2(full.right() - vbar_w, full.bottom() - HBAR_H));
+        Rect::from_min_max(pos2(ruler.left(), subs_lane.bottom()), pos2(full.right() - vbar_w, full.bottom() - HBAR_H));
     let header = Rect::from_min_max(pos2(full.left(), lanes.top()), pos2(lanes.left(), full.bottom()));
     let body = Rect::from_min_max(pos2(full.left(), lanes.top()), lanes.max);
     state.lanes_rect = lanes;
@@ -1093,7 +1098,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     } else {
                         "Container (Empty)".to_string()
                     }
-                } else if !clip.container_label.is_empty() && !clip.name.contains(&format!("[{}]", clip.container_label)) {
+                } else if !clip.container_label.is_empty()
+                    && !clip.name.contains(&format!("[{}]", clip.container_label))
+                {
                     format!("{} [{}]", clip.name, clip.container_label)
                 } else {
                     clip.name.clone()
@@ -1607,6 +1614,90 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         ui.separator();
         paste_menu(ui, &mut out.actions);
     });
+
+    // ---- subtitle lane: the burned-in cues as little clips above the video rows ----
+    if sub_h > 0.0 {
+        enum SubAct {
+            Convert(Id),
+            Delete(Id),
+            Range,
+            Clear,
+        }
+        let mut sub_act: Option<SubAct> = None;
+        let inout = match (c.project.in_point, c.project.out_point) {
+            (Some(a), Some(b)) if b > a => Some((a, b)),
+            _ => None,
+        };
+        let sp = painter.with_clip_rect(subs_lane);
+        sp.rect_filled(subs_lane, 0, pal.header.gamma_multiply(0.5));
+        sp.hline(subs_lane.x_range(), subs_lane.bottom() - 0.5, thin);
+        painter.text(
+            pos2(full.left() + 6.0, subs_lane.center().y),
+            Align2::LEFT_CENTER,
+            "Subtitles",
+            small.clone(),
+            pal.text_dim,
+        );
+        for cue in &c.project.subtitles {
+            let (xa, xb) = (state.x_at(cue.start), state.x_at(cue.end));
+            if xb < subs_lane.left() || xa > subs_lane.right() {
+                continue;
+            }
+            let rect =
+                Rect::from_min_max(pos2(xa, subs_lane.top() + 2.0), pos2(xb.max(xa + 2.0), subs_lane.bottom() - 2.0));
+            let r = ui.interact(rect.intersect(subs_lane), id.with(("sub", cue.id)), Sense::click());
+            let a = if r.hovered() { 0.55 } else { 0.3 };
+            sp.rect_filled(rect, 3.0, pal.selection.gamma_multiply(a));
+            sp.rect_stroke(rect, 3.0, thin, StrokeKind::Inside);
+            sp.with_clip_rect(rect.intersect(subs_lane)).text(
+                pos2(rect.left() + 3.0, rect.center().y),
+                Align2::LEFT_CENTER,
+                &cue.text,
+                small.clone(),
+                pal.text,
+            );
+            if r.clicked() {
+                *c.playhead = cue.start;
+                out.seeked = true;
+            }
+            let cid = cue.id;
+            r.on_hover_text(&cue.text).context_menu(|ui| {
+                if ui.button("Convert to Text Clip").clicked() {
+                    sub_act = Some(SubAct::Convert(cid));
+                    ui.close();
+                }
+                if ui.button("Delete Cue").clicked() {
+                    sub_act = Some(SubAct::Delete(cid));
+                    ui.close();
+                }
+                ui.separator();
+                if ui.add_enabled(inout.is_some(), egui::Button::new("Delete Cues in In/Out Range")).clicked() {
+                    sub_act = Some(SubAct::Range);
+                    ui.close();
+                }
+                if ui.button("Clear All Subtitles").clicked() {
+                    sub_act = Some(SubAct::Clear);
+                    ui.close();
+                }
+            });
+        }
+        if let Some(a) = sub_act {
+            (c.undo)(c.project);
+            match a {
+                SubAct::Convert(cid) => {
+                    c.project.cues_to_text_clips(Some(&[cid]));
+                }
+                SubAct::Delete(cid) => c.project.remove_cue(cid),
+                SubAct::Range => {
+                    if let Some((a, b)) = inout {
+                        c.project.subtitles.retain(|q| q.end <= a || q.start >= b);
+                    }
+                }
+                SubAct::Clear => c.project.subtitles.clear(),
+            }
+            out.edited = true;
+        }
+    }
 
     // ---- playhead (recomputed: a double-click seek above moves it this frame) ----
     let px = state.x_at(*c.playhead);

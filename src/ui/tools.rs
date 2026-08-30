@@ -1163,7 +1163,12 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
         // import / export: an open tray with an arrow dropping in or rising out
         Glyph::ImportArrow | Glyph::ExportArrow => {
             p.add(egui::Shape::line(
-                vec![c + egui::vec2(-6.0, 2.0), c + egui::vec2(-6.0, 6.0), c + egui::vec2(6.0, 6.0), c + egui::vec2(6.0, 2.0)],
+                vec![
+                    c + egui::vec2(-6.0, 2.0),
+                    c + egui::vec2(-6.0, 6.0),
+                    c + egui::vec2(6.0, 6.0),
+                    c + egui::vec2(6.0, 2.0),
+                ],
                 stroke,
             ));
             let d = if g == Glyph::ImportArrow { Dir::Down } else { Dir::Up };
@@ -1300,7 +1305,11 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
             let tip = arc[0];
             p.add(egui::Shape::line(arc, stroke));
             p.add(egui::Shape::convex_polygon(
-                vec![tip + egui::vec2(-2.5 * sx, 0.5), tip + egui::vec2(2.0 * sx, -1.5), tip + egui::vec2(1.5 * sx, 3.0)],
+                vec![
+                    tip + egui::vec2(-2.5 * sx, 0.5),
+                    tip + egui::vec2(2.0 * sx, -1.5),
+                    tip + egui::vec2(1.5 * sx, 3.0),
+                ],
                 fg,
                 Stroke::NONE,
             ));
@@ -1309,7 +1318,13 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
         Glyph::FloppyDisk => {
             let (l, t, rr, b) = (c.x - 6.0, c.y - 6.0, c.x + 6.0, c.y + 6.0);
             p.add(egui::Shape::closed_line(
-                vec![egui::pos2(l, t), egui::pos2(rr - 2.5, t), egui::pos2(rr, t + 2.5), egui::pos2(rr, b), egui::pos2(l, b)],
+                vec![
+                    egui::pos2(l, t),
+                    egui::pos2(rr - 2.5, t),
+                    egui::pos2(rr, t + 2.5),
+                    egui::pos2(rr, b),
+                    egui::pos2(l, b),
+                ],
                 stroke,
             ));
             p.rect_filled(

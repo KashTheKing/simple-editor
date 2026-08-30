@@ -465,10 +465,7 @@ impl MfVideo {
             return;
         }
         // even-aligned (4:2:0 sources dislike odd output) and capped at native — never upscale in MF
-        let t = (
-            ((req_w + 1) & !1).clamp(2, self.native_w & !1),
-            ((req_h + 1) & !1).clamp(2, self.native_h & !1),
-        );
+        let t = (((req_w + 1) & !1).clamp(2, self.native_w & !1), ((req_h + 1) & !1).clamp(2, self.native_h & !1));
         if t == (self.width, self.height) {
             self.req_last = t;
             self.req_streak = STABLE_REQS; // already decoding at the requested size
@@ -1137,7 +1134,10 @@ mod tests {
                 }
             }
             let dt = t0.elapsed();
-            eprintln!("4K -> {label}: {n} frames in {dt:?} ({:.1} ms/frame)", dt.as_secs_f64() * 1000.0 / n.max(1) as f64);
+            eprintln!(
+                "4K -> {label}: {n} frames in {dt:?} ({:.1} ms/frame)",
+                dt.as_secs_f64() * 1000.0 / n.max(1) as f64
+            );
             assert_eq!(n, 59);
             v.frame_at(0.0, dw, dh, &mut f); // seek back so the next size starts cold
         }

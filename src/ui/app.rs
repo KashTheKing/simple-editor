@@ -1221,6 +1221,27 @@ impl App {
         }
     }
 
+    /// "Open folder" in the subtitles panel: write the current cues as an .srt sidecar into
+    /// `<project dir>\<name> subtitles\` and open that folder in Explorer.
+    fn open_subtitle_folder(&mut self) {
+        let dir = match self.project_path.as_ref().and_then(|p| p.parent()) {
+            Some(d) => d.join(format!("{} subtitles", self.project.name)),
+            None => {
+                self.toast("Save the project first — the subtitle folder lives next to it");
+                return;
+            }
+        };
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            self.toast(format!("Could not create {}: {e}", dir.display()));
+            return;
+        }
+        if !self.project.subtitles.is_empty() {
+            let srt = crate::engine::subtitles::to_srt(&self.project.subtitles);
+            let _ = std::fs::write(dir.join(format!("{}.srt", self.project.name)), srt);
+        }
+        let _ = std::process::Command::new("explorer").arg(&dir).spawn();
+    }
+
     /// Ctrl+S: project file if there is one; otherwise overwrite the opened video; otherwise Save As.
     fn act_save(&mut self) {
         if self.project_path.is_some() {
@@ -2484,8 +2505,15 @@ impl App {
                     subtitles_ui::show(ui, st, project, playhead, selection, fonts, palette, &mut push)
                 };
                 if resp.seeked {
-                    self.player.pause();
                     self.player.seek(self.playhead);
+                    if resp.play {
+                        self.player.play();
+                    } else {
+                        self.player.pause();
+                    }
+                }
+                if resp.open_folder {
+                    self.open_subtitle_folder();
                 }
                 if resp.edited {
                     self.after_edit();
