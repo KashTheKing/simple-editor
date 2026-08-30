@@ -194,7 +194,7 @@ fn project_section(
                 project.height = p.h;
                 project.fps = p.fps;
                 edited = true;
-                if p.guide.is_some() {
+                if settings.guide != p.guide {
                     settings.guide = p.guide;
                     settings.save();
                 }
