@@ -46,7 +46,10 @@ src/media/mf.rs        Media Foundation decoders + probe
 src/media/ffpipe.rs    ffmpeg/ffprobe child-process decoders + probe + exe lookup
 src/media/waveform.rs  audio peaks cache (background compute, disk cache)
 src/media/thumbs.rs    thumbnail cache (timeline filmstrips, library rows)
+src/media/proxy.rs     background all-intra proxy transcodes (preview plays these, exports never do)
 src/media/ytdlp.rs     optional URL download
+src/scripting.rs       embedded Luau (mlua): sandboxed `editor.tool(...)` bridge into the MCP tool
+                       catalogue; scripts folder listing; 5 s VM budget
 src/engine/gpu.rs      GPU renderer: FBO pool, programs, node-graph eval, transitions, masks, readback
 src/engine/shaders.rs  all GLSL: VERT/PRELUDE/BLEND/MASK/COMPOSITE + one body per EffectKind
 src/engine/compose.rs  CPU compositor (fallback + "source frame only"): placement, transitions, masks
@@ -150,6 +153,25 @@ lazily, keeps a size-keyed FBO pool, and evaluates either the linear stack or th
 GL work happens **only on the UI thread** (it owns the context). Everything GPU degrades to `Option`/
 `Result` — a missing context or a rejected shader falls back and says so once.
 
+### Playback smoothness (`src/playback.rs`)
+
+* **Read-ahead**: while playing, the render thread pre-renders ~1.5 s of frames past the playhead into
+  the 512 MB LRU cache and eviction-protects a ~0.5 s trail behind it (instant scrub-backs). Prefetch
+  through the compositor also pre-opens the next clip's decoder before a cut.
+* **Buffering**: if the clock runs >150 ms past the newest published frame and the due frame is not
+  cached, the thread sets `Shared.buffering`, stops live-rendering and free-runs the prefetcher. The
+  app polls `Player::is_buffering()`, pauses the clock (flushing audio with it — audio never plays
+  over frozen video) and shows a spinner; hysteresis (⅓ of the horizon cached) resumes it.
+* **Selective invalidation**: `video_dirty_spans(old, new)` diffs projects on `SetProject` and evicts
+  only the frame ranges an edit can change (clips by id, JSON equality). Audio/marker/planner edits
+  evict nothing; canvas/fps/asset/sequence changes still clear everything.
+* **DecoderPool LRU**: at most 16 live video / 32 audio decoders per pool; least-recently-used are
+  dropped so long timelines don't hoard MF readers / ffmpeg children.
+* **Proxies** (`src/media/proxy.rs`): the app builds all-intra 720p proxies (ffmpeg, one background
+  job at a time, hash-of-(path, mtime, height) filenames in the cache dir) and pushes a
+  source→proxy map to the player (`Cmd::Proxies` → `DecoderPool::set_proxies`). Only preview pools
+  carry the map; export and one-shot renders always read originals.
+
 ## Threading
 
 * UI thread: egui, all GL, MCP tool execution, export frame service, pre-render slices.
@@ -205,6 +227,13 @@ Remove unused, optional URL import.
 **Import** — Premiere/Resolve FCP7 XML, EDL, `.prproj` with a per-item report.
 **Layout** — dockable panes, pop-out windows, saved/shared profiles.
 **AI** — MCP server (toggle in Settings) exposing ~50 tools over `http://127.0.0.1:<port>/mcp`.
+Luau scripts (`src/scripting.rs`, Scripts menu) call the identical tool catalogue in-process — one
+API surface for scripts and MCP clients; each script run is a single undo step.
+
+**Icons** — all UI icons are runtime-painted `Glyph` variants (`ui/tools.rs`; fonts lack the symbol
+chars). `tools::action_glyph` / `Pane::glyph` give defaults; `Settings.icon_overrides`
+("action.<id>" / "pane.<title>" → glyph name or "none", edited in Settings ▸ Appearance ▸ Icons)
+overrides them.
 
 ## Conventions
 

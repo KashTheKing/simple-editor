@@ -132,6 +132,12 @@ pub struct Settings {
     pub preview_quality: u32,
     /// "Movie mode": play back pre-rendered full-quality frames.
     pub movie_mode: bool,
+    /// Preview plays background-built all-intra proxies instead of the originals.
+    pub use_proxies: bool,
+    /// Proxy height in pixels (width keeps aspect).
+    pub proxy_height: u32,
+    /// User icon picks: "action.<Action>" / "pane.<Pane>" -> glyph name, or "none" to remove.
+    pub icon_overrides: BTreeMap<String, String>,
     /// Screen capture defaults.
     pub capture_fps: u32,
     pub capture_bitrate_kbps: u32,
@@ -195,6 +201,9 @@ impl Default for Settings {
             gpu: true,
             preview_quality: 100,
             movie_mode: false,
+            use_proxies: true,
+            proxy_height: 720,
+            icon_overrides: BTreeMap::new(),
             capture_fps: 30,
             capture_bitrate_kbps: 8000,
             capture_mic: String::new(),

@@ -12,6 +12,7 @@ mod mcp;
 mod media;
 mod model;
 mod playback;
+mod scripting;
 mod selftest;
 mod settings;
 mod theme;

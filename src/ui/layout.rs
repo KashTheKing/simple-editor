@@ -68,6 +68,27 @@ impl Pane {
     ];
     /// Panes added in round 3 — a stored layout without them is from an older version (see `from_json`).
     pub const ROUND3: [Pane; 4] = [Pane::Tools, Pane::Nodes, Pane::Mixer, Pane::Markers];
+    /// Default icon for this pane (View menu, icon picker). Overridable in Settings → Appearance.
+    pub fn glyph(self) -> Glyph {
+        match self {
+            Pane::Preview => Glyph::Clapperboard,
+            Pane::Timeline => Glyph::FilmStrip,
+            Pane::Library => Glyph::Folder,
+            Pane::Inspector => Glyph::Sliders,
+            Pane::Effects => Glyph::Bolt,
+            Pane::Transitions => Glyph::Transition,
+            Pane::Curves => Glyph::CurveIcon,
+            Pane::Subtitles => Glyph::Subtitles,
+            Pane::Planner => Glyph::Notepad,
+            Pane::AutoCut => Glyph::Waveform,
+            Pane::Tools => Glyph::Wrench,
+            Pane::Nodes => Glyph::Nodes,
+            Pane::Mixer => Glyph::SpeakerOn,
+            Pane::Markers => Glyph::Flag,
+            Pane::Presets => Glyph::Bookmark,
+            Pane::Tracking => Glyph::Target,
+        }
+    }
     pub fn title(self) -> &'static str {
         match self {
             Pane::Preview => "Preview",

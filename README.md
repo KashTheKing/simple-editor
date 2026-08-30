@@ -81,6 +81,43 @@ Requires Rust ≥ 1.88 (pinned to egui 0.33 for that reason).
   drag tabs to rearrange, "🗖" pops a pane into its own window, View ▸ Layout ▸ Reset layout restores it.
 * All hotkeys: Settings ▸ Hotkeys.
 
+## Playback
+
+Playback is the specialty: the render thread keeps ~1.5 s of frames decoded ahead of the playhead
+(and protects ~0.5 s behind it, so scrub-backs replay from RAM), pre-warming the next clip's decoder
+before a cut. If decode still falls behind, playback **buffers** — the clock (and audio) pauses and a
+spinner shows until the read-ahead refills — instead of playing audio over frozen video. Edits only
+evict the frames they can actually change; everything else stays cached.
+
+* **Proxy media** (Settings ▸ Performance): imported video gets a background low-res all-intra proxy
+  (every frame a keyframe), so scrubbing and reverse playback are as cheap as forward. Exports always
+  use the originals. Library ▸ right-click ▸ *Regenerate proxy* rebuilds one.
+* **Fullscreen (F11)**: move the mouse for the transport bar (it hides ~2 s after the mouse stops;
+  spacebar play/pause never summons it), double-click or Esc to leave.
+
+## Icons
+
+Menu actions, panes and panel buttons carry painted vector glyphs (film reel = import footage,
+lightning = effects, …). Pick your own per action/pane in Settings ▸ Appearance ▸ Icons — any glyph,
+"None" to remove, "Default" to restore.
+
+## Scripting (Luau)
+
+`Scripts` in the menu bar lists `.luau` files from `%APPDATA%\SimpleEditor\scripts` (an
+`example.luau` is created on first open). Scripts run sandboxed inside the editor and drive the same
+tool catalogue the MCP server exposes:
+
+```lua
+local s = editor.tool("project.summary", {})
+editor.tool("timeline.add_clip", { asset = 1, at = 0 })
+editor.log("done")          -- shows a toast
+-- editor.tools() lists every tool with its description
+```
+
+One script run = one undo step; a failed tool call stops the script and rolls its edit back. A
+runaway script is aborted after 5 s. MCP clients (e.g. Claude) and scripts share one API — an AI
+co-editor can write a script into the folder and you run it from the menu.
+
 ## Verify
 
 ```

@@ -99,6 +99,8 @@ pub struct LibraryResponse {
     pub settings_changed: bool,
     /// (asset id, target extension) — start a Convert To… with the default options.
     pub convert: Vec<(Id, String)>,
+    /// Source paths whose proxy should be rebuilt (the app releases decoders, deletes, rescans).
+    pub regen_proxy: Vec<String>,
     /// Asset for which the app should open the Convert To… options dialog.
     pub convert_dialog: Option<Id>,
     /// Asset for which the app should open the Compress… dialog.
@@ -860,14 +862,18 @@ fn browser(
         } else if ui.button("Link folder…").clicked() {
             link = true;
         }
-        if ui.button("Open…").clicked() {
+        if crate::ui::tools::glyph_text_button(ui, crate::ui::tools::Glyph::Folder, "Open…").clicked() {
             resp_open = true;
         }
-        if ui.button("Import…").clicked() {
+        if crate::ui::tools::glyph_text_button(ui, crate::ui::tools::Glyph::FilmReel, "Import…").clicked() {
             import = true;
         }
         // only when yt-dlp is installed — the whole URL import is optional
-        if ytdlp && ui.button("Import URL…").on_hover_text("Download media from a link with yt-dlp").clicked() {
+        if ytdlp
+            && crate::ui::tools::glyph_text_button(ui, crate::ui::tools::Glyph::ImportArrow, "Import URL…")
+                .on_hover_text("Download media from a link with yt-dlp")
+                .clicked()
+        {
             import_url = true;
         }
         if !imported && ui.button("Clear recent").clicked() && confirm("Clear recent", CLEAR_RECENT) {
@@ -1713,6 +1719,10 @@ impl Tree<'_, '_> {
             }
             if ui.button("Reveal folder").clicked() {
                 let _ = std::process::Command::new("explorer").arg(format!("/select,{}", a.path)).spawn();
+                ui.close();
+            }
+            if a.kind == ClipKind::Video && ui.button("Regenerate proxy").clicked() {
+                self.resp.regen_proxy.push(a.path.clone());
                 ui.close();
             }
             match label_menu(ui, a.label, labels, palette) {

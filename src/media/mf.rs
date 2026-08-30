@@ -34,6 +34,9 @@ const AUDIO_FWD_FRAMES: i64 = SAMPLE_RATE as i64 / 2;
 const AUDIO_PREROLL_FRAMES: i64 = SAMPLE_RATE as i64 / 4;
 /// Safety cap on ReadSample calls per request (no busy loops on a misbehaving source).
 const MAX_READS: u32 = 4096;
+/// Consecutive identical size requests before the decoder's output type follows them
+/// (see `ensure_decode_size`).
+const STABLE_REQS: u32 = 3;
 
 fn err(e: windows::core::Error) -> String {
     format!("MF: {e}")
@@ -95,7 +98,12 @@ fn dxgi_device_manager() -> Option<IMFDXGIDeviceManager> {
         .map(|m| m.0.clone())
 }
 
-fn open_reader(path: &str) -> Result<IMFSourceReader, String> {
+/// DXVA pays for itself only on big frames: a hardware decode is a GPU round-trip per frame
+/// (submit, decode, video-process, sync, copy back), which costs more than just software-decoding
+/// anything SD-sized. Attach the D3D manager at 720p and up.
+const DXVA_MIN_PIXELS: u64 = 1280 * 720;
+
+fn open_reader(path: &str, dxva: bool) -> Result<IMFSourceReader, String> {
     if super::is_image_path(path) {
         return Err("MF: images are decoded by ffmpeg".into());
     }
@@ -115,8 +123,10 @@ fn open_reader(path: &str) -> Result<IMFSourceReader, String> {
         attrs.SetUINT32(&MF_XVP_DISABLE_FRC, 1).map_err(err)?;
         // Hardware decode (DXVA) when the adapter supports it; the reader copies decoded frames back to
         // system memory for our RGB32 output type either way, so nothing downstream changes.
-        if let Some(manager) = dxgi_device_manager() {
-            let _ = attrs.SetUnknown(&MF_SOURCE_READER_D3D_MANAGER, &manager);
+        if dxva {
+            if let Some(manager) = dxgi_device_manager() {
+                let _ = attrs.SetUnknown(&MF_SOURCE_READER_D3D_MANAGER, &manager);
+            }
         }
         let url = HSTRING::from(path);
         let reader = MFCreateSourceReaderFromURL(&url, &attrs).map_err(err)?;
@@ -230,7 +240,7 @@ fn codec_name(sub: GUID) -> &'static str {
 }
 
 pub fn probe(path: &str) -> Result<Asset, String> {
-    let reader = open_reader(path)?;
+    let reader = open_reader(path, false)?; // probe never decodes a frame
     let mut asset = Asset {
         id: 0,
         path: path.to_string(),
@@ -296,6 +306,20 @@ fn frame_rate(ty: &IMFMediaType) -> f64 {
 struct MfVideo {
     reader: IMFSourceReader,
     stream: u32,
+    /// True source dimensions (from the first negotiated type, before any decode-size scaling).
+    /// Reported by `size()` — placement/export/asset math must see native size regardless of what
+    /// the decoder is currently asked to output.
+    native_w: u32,
+    native_h: u32,
+    /// False once a scaled `MF_MT_FRAME_SIZE` negotiation has failed once: some decoders reject an
+    /// arbitrary output size, so we stop retrying and decode at native size for the rest of the session.
+    scale_ok: bool,
+    /// Last even-aligned request size and how many consecutive calls asked for it (see
+    /// `ensure_decode_size`: only a settled request is worth a ~100 ms renegotiation).
+    req_last: (u32, u32),
+    req_streak: u32,
+    /// True after the first `SetCurrentMediaType` size negotiation (successful or not).
+    negotiated: bool,
     width: u32,
     height: u32,
     /// MF_MT_DEFAULT_STRIDE of the current type (0 = unknown; negative = bottom-up).
@@ -336,7 +360,18 @@ struct MfVideo {
 unsafe impl Send for MfVideo {}
 
 pub fn open_video(path: &str) -> Result<Box<dyn VideoSource>, String> {
-    let reader = open_reader(path)?;
+    let mut reader = open_reader(path, false)?;
+    // Big sources reopen with the D3D manager attached (see DXVA_MIN_PIXELS); a second open is a
+    // container parse, pennies against the per-frame decode it buys.
+    {
+        let vs = streams(&reader).into_iter().find(|s| s.major == MFMediaType_Video).ok_or("MF: no video stream")?;
+        let size = unsafe { vs.ty.GetUINT64(&MF_MT_FRAME_SIZE) }.unwrap_or(0);
+        if ((size >> 32) & 0xffff_ffff) * (size & 0xffff_ffff) >= DXVA_MIN_PIXELS {
+            if let Ok(r) = open_reader(path, true) {
+                reader = r;
+            }
+        }
+    }
     let vs = streams(&reader).into_iter().find(|s| s.major == MFMediaType_Video).ok_or("MF: no video stream")?;
     let (stream, nat) = (vs.index, vs.ty);
     let mp4 = is_mp4(&reader);
@@ -351,6 +386,12 @@ pub fn open_video(path: &str) -> Result<Box<dyn VideoSource>, String> {
     let mut v = MfVideo {
         reader,
         stream,
+        native_w: 0,
+        native_h: 0,
+        scale_ok: true,
+        req_last: (0, 0),
+        req_streak: 0,
+        negotiated: false,
         width: 0,
         height: 0,
         stride: 0,
@@ -376,6 +417,7 @@ pub fn open_video(path: &str) -> Result<Box<dyn VideoSource>, String> {
     if !v.refresh_type() {
         return Err("MF: cannot read video output type".into());
     }
+    (v.native_w, v.native_h) = (v.width, v.height);
     // Decode the first frame now: surfaces "codec not decodable" at open (so Auto falls back to ffmpeg),
     // fixes the time origin and warms the cache for the usual first request at t=0.
     if !v.read_until(0) {
@@ -404,6 +446,58 @@ impl MfVideo {
         self.have = false;
         self.svalid = false;
         true
+    }
+
+    /// Ask MF to decode+scale straight to the requested size instead of always paying for a full
+    /// native-resolution decode + copy + Rust rescale. `MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_
+    /// PROCESSING` (set at open) lets the reader's video processor MFT do this — hardware-accelerated
+    /// when DXVA is active — so a 4K source previewed at 1280 wide never copies a 4K (or even half-4K)
+    /// frame to system memory at all: the sample that crosses the bus already is preview-sized.
+    ///
+    /// A renegotiation (`SetCurrentMediaType` mid-stream) costs ~100 ms, so only a *settled* request is
+    /// followed: the same size on `STABLE_REQS` consecutive calls. A clip animating its on-screen scale
+    /// asks for a different size every call, never settles, and keeps decoding at the last settled size
+    /// with the CPU scaler covering the difference. The very first request after open negotiates at
+    /// once — that is the everyday "open a 4K file, preview it small" case, and warm-up frames at
+    /// native 4K would cost more than the negotiation.
+    fn ensure_decode_size(&mut self, req_w: u32, req_h: u32) {
+        if !self.scale_ok || self.native_w < 4 || self.native_h < 4 {
+            return;
+        }
+        // even-aligned (4:2:0 sources dislike odd output) and capped at native — never upscale in MF
+        let t = (
+            ((req_w + 1) & !1).clamp(2, self.native_w & !1),
+            ((req_h + 1) & !1).clamp(2, self.native_h & !1),
+        );
+        if t == (self.width, self.height) {
+            self.req_last = t;
+            self.req_streak = STABLE_REQS; // already decoding at the requested size
+            return;
+        }
+        if t == self.req_last {
+            self.req_streak = self.req_streak.saturating_add(1);
+        } else {
+            self.req_last = t;
+            self.req_streak = 1;
+        }
+        if self.req_streak < STABLE_REQS && self.negotiated {
+            return; // not settled yet: serve the current size, `rescale` bridges the gap
+        }
+        self.negotiated = true;
+        let negotiated = unsafe {
+            (|| -> Result<(), String> {
+                let mt = MFCreateMediaType().map_err(err)?;
+                mt.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video).map_err(err)?;
+                mt.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_RGB32).map_err(err)?;
+                mt.SetUINT64(&MF_MT_FRAME_SIZE, ((t.0 as u64) << 32) | t.1 as u64).map_err(err)?;
+                self.reader.SetCurrentMediaType(self.stream, None, &mt).map_err(err)
+            })()
+        };
+        // Position is untouched by an output-type change (only the sample format changes), so no reseek:
+        // the next read_until just picks up the new size on the following sample.
+        if negotiated.is_err() || !self.refresh_type() {
+            self.scale_ok = false; // this source refuses arbitrary output sizes: stop asking, decode native
+        }
     }
 
     fn seek(&mut self, tt: i64) -> bool {
@@ -589,12 +683,13 @@ fn bilinear(src: &[u8], sw: u32, sh: u32, w: u32, h: u32, dst: &mut [u8]) {
 
 impl VideoSource for MfVideo {
     fn size(&self) -> (u32, u32) {
-        (self.width, self.height)
+        (self.native_w, self.native_h)
     }
     fn frame_at(&mut self, t: f64, w: u32, h: u32, out: &mut Frame) -> bool {
         if w == 0 || h == 0 {
             return false;
         }
+        self.ensure_decode_size(w, h);
         // +5 ms display-time tolerance: MKV pts are ms-rounded (frame n's pts can land just after n/fps),
         // raw mp4 pts jitter ±1 hns — without it every other frame repeats when stepping at n/fps.
         let tt = hns(t) + 50_000 + self.origin;
@@ -682,7 +777,7 @@ struct MfAudio {
 unsafe impl Send for MfAudio {}
 
 pub fn open_audio(path: &str, stream: usize) -> Result<Box<dyn AudioSource>, String> {
-    let reader = open_reader(path)?;
+    let reader = open_reader(path, false)?; // audio decode has nothing for DXVA to do
     let s = streams(&reader)
         .into_iter()
         .filter(|s| s.major == MFMediaType_Audio)
@@ -1004,6 +1099,48 @@ mod tests {
             assert!(v.frame_at(1.5, 160, 120, &mut f));
         }
         eprintln!("100 repeated frame_at(1.5) @160x120: {:?}", t0.elapsed());
+    }
+
+    /// Where the milliseconds go on a 4K source: `cargo test --release bench_4k_preview -- --ignored --nocapture`.
+    /// Not a regular test (generates a 4K file, timing-only) — run it after touching the decode path.
+    #[test]
+    #[ignore]
+    fn bench_4k_preview() {
+        let dir = std::env::temp_dir().join("se-bench");
+        let _ = std::fs::create_dir_all(&dir);
+        let p = dir.join("4k30.mp4");
+        if !p.exists() {
+            let ok = std::process::Command::new("ffmpeg")
+                .args(["-y", "-f", "lavfi", "-i", "testsrc2=size=3840x2160:rate=30", "-t", "2"])
+                .args(["-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p"])
+                .arg(&p)
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if !ok {
+                eprintln!("ffmpeg missing; skipped");
+                return;
+            }
+        }
+        let path = p.to_string_lossy().to_string();
+        let t0 = Instant::now();
+        let mut v = open_video(&path).expect("open 4k");
+        eprintln!("open_video(4K): {:?}", t0.elapsed());
+        let mut f = Frame::default();
+        for (dw, dh, label) in [(1280u32, 720u32, "1280x720 preview"), (3840, 2160, "native 4K")] {
+            assert!(v.frame_at(0.0, dw, dh, &mut f), "first frame at {label}");
+            let t0 = Instant::now();
+            let mut n = 0;
+            for i in 1..60 {
+                if v.frame_at(i as f64 / 30.0, dw, dh, &mut f) {
+                    n += 1;
+                }
+            }
+            let dt = t0.elapsed();
+            eprintln!("4K -> {label}: {n} frames in {dt:?} ({:.1} ms/frame)", dt.as_secs_f64() * 1000.0 / n.max(1) as f64);
+            assert_eq!(n, 59);
+            v.frame_at(0.0, dw, dh, &mut f); // seek back so the next size starts cold
+        }
     }
 
     #[test]

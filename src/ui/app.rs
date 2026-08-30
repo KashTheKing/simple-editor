@@ -212,6 +212,16 @@ pub struct App {
     prerender: PreRender,
     /// Movie mode paused the clock because the frame under the playhead was not rendered yet.
     movie_stall: bool,
+    /// True while playback is held because the player reported buffering (spinner shown).
+    buffer_stall: bool,
+    /// A script picked from the Scripts menu, run on the next update (outside menu layout).
+    run_script_path: Option<std::path::PathBuf>,
+    /// Proxy build in flight: (source path, proxy file, job). One transcode at a time.
+    proxy_job: Option<(String, std::path::PathBuf, std::sync::Arc<crate::engine::export::Progress>)>,
+    /// source path -> proxy file, as last pushed to the player.
+    proxy_map: std::collections::HashMap<String, String>,
+    /// Next time the asset list is rescanned for missing proxies.
+    proxy_scan_at: Option<Instant>,
     /// Preview canvas size in px, as the pane last reported it (the GPU renders at this size).
     canvas: (u32, u32),
     /// dshow audio inputs, listed once when the Settings / capture windows first need them.
@@ -889,6 +899,11 @@ impl App {
             lib_preview_tex: None,
             prerender: PreRender::new(),
             movie_stall: false,
+            buffer_stall: false,
+            run_script_path: None,
+            proxy_job: None,
+            proxy_map: std::collections::HashMap::new(),
+            proxy_scan_at: None,
             canvas: (0, 0),
             audio_inputs: None,
             failed_panes: Vec::new(),
@@ -1537,12 +1552,19 @@ impl App {
                 }
             }
             PlayPause => {
-                if !self.player.is_playing() && self.playhead >= self.project.duration() - 1e-6 {
-                    self.seek(0.0);
+                if self.buffer_stall {
+                    self.buffer_stall = false; // buffering held the clock: space means "stop waiting"
+                } else {
+                    if !self.player.is_playing() && self.playhead >= self.project.duration() - 1e-6 {
+                        self.seek(0.0);
+                    }
+                    self.player.toggle();
                 }
-                self.player.toggle();
             }
-            Stop => self.player.pause(),
+            Stop => {
+                self.buffer_stall = false;
+                self.player.pause();
+            }
             StepBack => {
                 self.player.pause();
                 let t = self.project.snap_frame(self.playhead - self.project.frame_dur());
@@ -2006,6 +2028,7 @@ impl App {
                     self.draw_lib_preview(ui);
                 } else {
                     let frame = self.pending_frame.take();
+                    let proxy_busy = self.proxy_job.as_ref().map(|(_, _, p)| p.fraction());
                     let resp = {
                         let App {
                             project,
@@ -2048,6 +2071,8 @@ impl App {
                                 quality: settings.preview_quality,
                                 movie_mode: settings.movie_mode,
                                 prerender: done,
+                                buffering: player.is_buffering(),
+                                proxy: proxy_busy,
                                 tracker: tracking_shown.then(|| tracking.box_rect()),
                             },
                         )
@@ -2288,6 +2313,16 @@ impl App {
                 }
                 for (id, ext) in resp.convert {
                     self.start_asset_convert(id, &ext);
+                }
+                if !resp.regen_proxy.is_empty() {
+                    // decoders hold the proxy files open on Windows: release them before deleting
+                    self.player.set_proxies(std::collections::HashMap::new());
+                    self.player.release_files();
+                    for src in resp.regen_proxy {
+                        let _ = std::fs::remove_file(crate::media::proxy::proxy_path(&src, self.settings.proxy_height));
+                    }
+                    self.proxy_map.clear();
+                    self.proxy_scan_at = None; // rebuild + re-push on the next update
                 }
                 if let Some(id) = resp.convert_dialog {
                     self.convert_dialog = Some((id, "mp4".into()));
@@ -3387,13 +3422,46 @@ impl App {
 
     // ---------------- UI pieces ----------------
 
+    /// Icon shown next to a menu action: the user's pick from Settings → Appearance → Icons wins,
+    /// then the built-in defaults below. Abstract actions stay text-only.
+    fn glyph_for(&self, a: Action) -> Option<tools::Glyph> {
+        if let Some(name) = self.settings.icon_overrides.get(&format!("action.{}", a.id())) {
+            return if name == "none" { None } else { tools::Glyph::from_name(name) };
+        }
+        tools::action_glyph(a)
+    }
+
     fn menu_item(&mut self, ui: &mut egui::Ui, a: Action, enabled: bool, out: &mut Vec<Action>) {
         let text = self.hotkeys.text(a);
-        let b = egui::Button::new(a.label()).shortcut_text(text);
-        if ui.add_enabled(enabled, b).clicked() {
+        let glyph = self.glyph_for(a);
+        // ponytail: the glyph is painted over a left gutter made of spaces in the label — that keeps
+        // egui's own menu-button sizing/shortcut layout instead of reimplementing the widget
+        let label = match glyph {
+            Some(_) => format!("     {}", a.label()),
+            None => a.label().to_string(),
+        };
+        let b = egui::Button::new(label).shortcut_text(text);
+        let r = ui.add_enabled(enabled, b);
+        if let Some(g) = glyph {
+            let rect = egui::Rect::from_min_size(
+                egui::pos2(r.rect.min.x + 4.0, r.rect.center().y - 11.0),
+                egui::vec2(24.0, 22.0),
+            );
+            let fg = if enabled { ui.visuals().text_color() } else { ui.visuals().weak_text_color() };
+            tools::draw_glyph(ui.painter(), rect, g, fg);
+        }
+        if r.clicked() {
             out.push(a);
             ui.close();
         }
+    }
+
+    /// Icon shown next to a pane (View menu, icon picker), with the user's Settings override first.
+    fn pane_glyph(&self, p: Pane) -> Option<tools::Glyph> {
+        if let Some(name) = self.settings.icon_overrides.get(&format!("pane.{}", p.title())) {
+            return if name == "none" { None } else { tools::Glyph::from_name(name) };
+        }
+        Some(p.glyph())
     }
 
     fn view_menu(&mut self, ui: &mut egui::Ui, out: &mut Vec<Action>) {
@@ -3422,7 +3490,18 @@ impl App {
                 Some(a) => format!("{}   {}", pane.title(), self.hotkeys.text(a)),
                 None => pane.title().to_string(),
             };
-            if ui.checkbox(&mut v, label).changed() {
+            let changed = ui
+                .horizontal(|ui| {
+                    match self.pane_glyph(pane) {
+                        Some(g) => {
+                            tools::glyph_label(ui, g, ui.visuals().text_color());
+                        }
+                        None => ui.add_space(18.0),
+                    }
+                    ui.checkbox(&mut v, label).changed()
+                })
+                .inner;
+            if changed {
                 // AutoCut's action only reveals; go through the layout directly so unchecking works too
                 match action {
                     Some(a) if a != Action::AutoCut => out.push(a),
@@ -3673,6 +3752,25 @@ impl App {
                 }
             });
             ui.menu_button("View", |ui| self.view_menu(ui, &mut out));
+            ui.menu_button("Scripts", |ui| {
+                // re-reading the folder on every open IS the refresh mechanism
+                let scripts = crate::scripting::list();
+                for p in &scripts {
+                    let label = p.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    if crate::ui::tools::glyph_text_button(ui, crate::ui::tools::Glyph::Terminal, &label).clicked() {
+                        self.run_script_path = Some(p.clone());
+                        ui.close();
+                    }
+                }
+                if scripts.is_empty() {
+                    ui.weak("No scripts yet");
+                }
+                ui.separator();
+                if ui.button("Open Scripts Folder").clicked() {
+                    let _ = std::process::Command::new("explorer").arg(crate::scripting::scripts_dir()).spawn();
+                    ui.close();
+                }
+            });
             ui.menu_button("Help", |ui| {
                 ui.label(format!("Simple Editor {}", env!("CARGO_PKG_VERSION")));
                 ui.label(match media::ffpipe::ffmpeg_exe() {
@@ -4021,6 +4119,100 @@ impl App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
         }
         ctx.request_repaint_after(std::time::Duration::from_millis(100));
+    }
+
+    /// Proxy media: keep an all-intra low-res proxy built for every video asset and hand the map to
+    /// the player. Rescans every 2 s (a handful of stat calls); one ffmpeg transcode at a time.
+    /// ponytail: no per-asset badge yet — the preview shows one aggregate "Building proxy" line.
+    fn sync_proxies(&mut self) {
+        if let Some((src, _, p)) = &self.proxy_job {
+            if !p.is_done() {
+                return;
+            }
+            if let Some(e) = p.error() {
+                eprintln!("proxy for {src}: {e}");
+            }
+            self.proxy_job = None;
+            self.proxy_scan_at = None; // pick up the finished file (and start the next) right away
+        }
+        if self.proxy_scan_at.is_some_and(|t| t > Instant::now()) {
+            return;
+        }
+        self.proxy_scan_at = Some(Instant::now() + Duration::from_secs(2));
+        let h = self.settings.proxy_height.max(120);
+        let mut map = std::collections::HashMap::new();
+        let mut want: Option<(String, std::path::PathBuf)> = None;
+        if self.settings.use_proxies {
+            for a in &self.project.assets {
+                // only real video that out-sizes the proxy: images/audio gain nothing, and neither
+                // does footage already at or below proxy resolution
+                if a.kind != crate::model::ClipKind::Video || a.height <= h || a.duration <= 0.0 {
+                    continue;
+                }
+                let dst = crate::media::proxy::proxy_path(&a.path, h);
+                if dst.exists() {
+                    map.insert(a.path.clone(), dst.to_string_lossy().into_owned());
+                } else if want.is_none() && std::path::Path::new(&a.path).exists() {
+                    want = Some((a.path.clone(), dst));
+                }
+            }
+        }
+        if map != self.proxy_map {
+            self.proxy_map = map.clone();
+            self.player.set_proxies(map);
+        }
+        if let Some((src, dst)) = want {
+            if crate::media::ffpipe::ffmpeg_exe().is_some() {
+                let job = crate::media::proxy::generate(src.clone(), dst.clone(), h);
+                self.proxy_job = Some((src, dst, job));
+            }
+        }
+    }
+
+    // ---------------- scripting ----------------
+
+    /// Run one Luau script against the live project. The whole run is a single undo step; a tool
+    /// that fails mid-script rolls its own mutation back (same policy as MCP) and stops the script.
+    fn run_script(&mut self, path: &std::path::Path) {
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let src = match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(e) => return self.toast(format!("{name}: {e}")),
+        };
+        let snap = self.project.to_json();
+        let mut logs = Vec::new();
+        let result = {
+            let app = std::cell::RefCell::new(&mut *self);
+            let mut call = |tool: &str, args: &serde_json::Value| -> Result<serde_json::Value, String> {
+                let mut app = app.borrow_mut();
+                let before = MUTATING_TOOLS.contains(&tool).then(|| app.project.to_json());
+                let r = app.run_tool(tool, args);
+                if let Some(snap) = before {
+                    if r.is_ok() {
+                        app.after_edit();
+                    } else if let Ok(p) = Project::from_json(&snap) {
+                        app.project = p; // a failed tool is a no-op
+                    }
+                }
+                r
+            };
+            crate::scripting::run(&src, &name, &mut call, &mut logs)
+        };
+        if self.project.to_json() != snap {
+            push_undo_json(&mut self.undo, &mut self.redo, snap);
+        }
+        for l in &logs {
+            self.toast(format!("{name}: {l}"));
+        }
+        match result {
+            Ok(()) if logs.is_empty() => self.toast(format!("{name}: done")),
+            Ok(()) => {}
+            Err(e) => {
+                eprintln!("script {name}: {e}");
+                let line = e.lines().next().unwrap_or("failed").to_string();
+                self.toast(format!("{name}: {line}"));
+            }
+        }
     }
 
     // ---------------- MCP ----------------
@@ -5404,6 +5596,19 @@ impl eframe::App for App {
                 }
             }
         }
+        // buffering: the render thread fell behind decode — hold the clock (the audio ring flushes
+        // with the pause) and show a spinner until the read-ahead refills, instead of letting audio
+        // play on over a frozen frame. Same shape as the movie-mode stall above.
+        if self.player.is_buffering() {
+            if !self.buffer_stall && self.player.is_playing() {
+                self.buffer_stall = true;
+                self.player.pause();
+            }
+            ctx.request_repaint_after(Duration::from_millis(50)); // keep polling for the refill
+        } else if self.buffer_stall {
+            self.buffer_stall = false;
+            self.player.play();
+        }
         // record-on-blur: start when the editor loses focus, stop (and import) when it comes back
         let focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
         if self.settings.capture_on_blur && self.capture_ui.screen_open {
@@ -5433,6 +5638,10 @@ impl eframe::App for App {
             }
         }
 
+        if let Some(p) = self.run_script_path.take() {
+            self.run_script(&p);
+        }
+        self.sync_proxies();
         // MCP server + queued tool calls (executed here, on the UI thread, against the live project)
         self.sync_mcp(ctx);
         self.poll_mcp(ctx);

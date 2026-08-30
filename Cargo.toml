@@ -10,6 +10,7 @@ name = "simple-editor"
 path = "src/main.rs"
 
 [dependencies]
+mlua = { version = "0.10", features = ["luau"] }
 eframe = { version = "0.33", default-features = false, features = ["glow", "default_fonts", "persistence"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

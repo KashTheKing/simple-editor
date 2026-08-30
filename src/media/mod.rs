@@ -5,6 +5,7 @@
 
 pub mod ffpipe;
 pub mod mf;
+pub mod proxy;
 pub mod thumbs;
 pub mod waveform;
 pub mod ytdlp;
@@ -134,13 +135,30 @@ pub fn open_audio(path: &str, stream: usize, backend: Backend) -> Result<Box<dyn
 /// (None) so a missing file doesn't re-spawn work every frame.
 pub struct DecoderPool {
     backend: Backend,
-    videos: HashMap<String, Option<Box<dyn VideoSource>>>,
-    audios: HashMap<(String, usize), Option<Box<dyn AudioSource>>>,
+    videos: HashMap<String, (u64, Option<Box<dyn VideoSource>>)>,
+    audios: HashMap<(String, usize), (u64, Option<Box<dyn AudioSource>>)>,
+    /// Use counter for LRU eviction: a long timeline must not accumulate one live MF reader (or
+    /// ffmpeg.exe child) per distinct file forever.
+    tick: u64,
+    /// source path -> proxy file: preview decode opens the proxy instead of the original. Empty for
+    /// export / one-shot pools, which must always read the real footage. Video only.
+    proxies: std::collections::HashMap<String, String>,
 }
+
+/// Live decoders kept per pool (LRU past this). Failed opens (None) are cheap and never counted.
+const POOL_VIDEOS: usize = 16;
+const POOL_AUDIOS: usize = 32;
 
 impl DecoderPool {
     pub fn new(backend: Backend) -> Self {
-        Self { backend, videos: HashMap::new(), audios: HashMap::new() }
+        Self { backend, videos: HashMap::new(), audios: HashMap::new(), tick: 0, proxies: HashMap::new() }
+    }
+    /// Swap the proxy map (drops every open decoder: cached paths may now resolve differently).
+    pub fn set_proxies(&mut self, map: HashMap<String, String>) {
+        if map != self.proxies {
+            self.proxies = map;
+            self.clear();
+        }
     }
     pub fn set_backend(&mut self, b: Backend) {
         if b != self.backend {
@@ -149,21 +167,57 @@ impl DecoderPool {
         }
     }
     pub fn video(&mut self, path: &str) -> Option<&mut (dyn VideoSource + 'static)> {
+        // preview pools decode the proxy when one exists (export pools carry an empty map)
+        let path = self.proxies.get(path).cloned().unwrap_or_else(|| path.to_string());
+        let path = path.as_str();
         let b = self.backend;
-        self.videos.entry(path.to_string()).or_insert_with(|| open_video(path, b).ok()).as_deref_mut()
+        self.tick += 1;
+        let tick = self.tick;
+        let e = self.videos.entry(path.to_string()).or_insert_with(|| (tick, open_video(path, b).ok()));
+        e.0 = tick;
+        let hit = e.1.is_some();
+        if hit && self.videos.values().filter(|(_, v)| v.is_some()).count() > POOL_VIDEOS {
+            let evict = self
+                .videos
+                .iter()
+                .filter(|(p, (_, v))| v.is_some() && p.as_str() != path)
+                .min_by_key(|(_, (t, _))| *t)
+                .map(|(p, _)| p.clone());
+            if let Some(p) = evict {
+                self.videos.remove(&p);
+            }
+        }
+        self.videos.get_mut(path).and_then(|(_, v)| v.as_deref_mut())
     }
     pub fn audio(&mut self, path: &str, stream: usize) -> Option<&mut (dyn AudioSource + 'static)> {
         let b = self.backend;
-        self.audios.entry((path.to_string(), stream)).or_insert_with(|| open_audio(path, stream, b).ok()).as_deref_mut()
+        self.tick += 1;
+        let tick = self.tick;
+        let key = (path.to_string(), stream);
+        let e = self.audios.entry(key.clone()).or_insert_with(|| (tick, open_audio(path, stream, b).ok()));
+        e.0 = tick;
+        let hit = e.1.is_some();
+        if hit && self.audios.values().filter(|(_, v)| v.is_some()).count() > POOL_AUDIOS {
+            let evict = self
+                .audios
+                .iter()
+                .filter(|(k, (_, v))| v.is_some() && **k != key)
+                .min_by_key(|(_, (t, _))| *t)
+                .map(|(k, _)| k.clone());
+            if let Some(k) = evict {
+                self.audios.remove(&k);
+            }
+        }
+        self.audios.get_mut(&key).and_then(|(_, v)| v.as_deref_mut())
     }
     /// Inject a ready-made source (tests / synthetic media).
     #[cfg(test)]
     pub fn insert_video(&mut self, path: &str, v: Box<dyn VideoSource>) {
-        self.videos.insert(path.to_string(), Some(v));
+        self.videos.insert(path.to_string(), (self.tick, Some(v)));
     }
     #[cfg(test)]
     pub fn insert_audio(&mut self, path: &str, stream: usize, a: Box<dyn AudioSource>) {
-        self.audios.insert((path.to_string(), stream), Some(a));
+        self.audios.insert((path.to_string(), stream), (self.tick, Some(a)));
     }
     /// Drop every decoder (releases file handles — required before overwriting a source file). Also
     /// forgets failed opens, so they are retried next time.

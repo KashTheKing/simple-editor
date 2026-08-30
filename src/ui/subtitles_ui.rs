@@ -137,13 +137,13 @@ pub fn show(
             state.focus = Some(id);
             resp.edited = true;
         }
-        if ui.button("Import…").clicked() {
+        if crate::ui::tools::glyph_text_button(ui, crate::ui::tools::Glyph::ImportArrow, "Import…").clicked() {
             import_dialog(project, &mut undone, undo, &mut resp);
         }
-        if ui.button("Export SRT…").clicked() {
+        if crate::ui::tools::glyph_text_button(ui, crate::ui::tools::Glyph::ExportArrow, "Export SRT…").clicked() {
             export_dialog(project, false);
         }
-        if ui.button("Export VTT…").clicked() {
+        if crate::ui::tools::glyph_text_button(ui, crate::ui::tools::Glyph::ExportArrow, "Export VTT…").clicked() {
             export_dialog(project, true);
         }
         let mut burn = project.show_subtitles;

@@ -168,6 +168,211 @@ pub(crate) enum Glyph {
     Template,
     /// A six-armed snowflake — a frozen frame.
     Snowflake,
+    /// A movie reel: rim, hub, four spoke holes and a tape tail.
+    FilmReel,
+    /// A filled lightning zigzag — effects / performance.
+    Bolt,
+    /// An open tray with an arrow dropping into it — import.
+    ImportArrow,
+    /// The same tray with the arrow rising out — export.
+    ExportArrow,
+    /// Two overlapping squares with a diagonal across the overlap — a transition.
+    Transition,
+    /// A caption box with two text bars in its lower half.
+    Subtitles,
+    /// A cog: ring, eight stubs and a hub — settings.
+    Gear,
+    /// Three slider tracks, each with its knob at a different position.
+    Sliders,
+    /// An open-ended wrench head with a diagonal handle.
+    Wrench,
+    /// A clapperboard: body plus a slanted, hatched top bar.
+    Clapperboard,
+    /// Five vertical bars around a midline — an audio waveform.
+    Waveform,
+    /// Axes with a rising curve and two square handles — a value curve.
+    CurveIcon,
+    /// A clock face with two hands.
+    Clock,
+    /// A sheet with three ruled lines.
+    Notepad,
+    /// A ribbon with a notched V bottom.
+    Bookmark,
+    /// A curved arrow — undo (`Dir::Left`) / redo (`Dir::Right`).
+    UndoArrow(Dir),
+    /// A save disk: notched square, shutter and label.
+    FloppyDisk,
+    /// A console window: '>' prompt and an underscore.
+    Terminal,
+}
+
+impl Glyph {
+    /// Every unit variant plus a representative of each parameterized one, for the settings icon
+    /// picker (`from_name` resolves back into this list).
+    pub const ALL: &'static [Glyph] = &[
+        Glyph::Cursor,
+        Glyph::Letter('T'),
+        Glyph::Rect,
+        Glyph::Ellipse,
+        Glyph::Poly(5),
+        Glyph::Star,
+        Glyph::Line,
+        Glyph::Arrow,
+        Glyph::Pencil,
+        Glyph::Mask,
+        Glyph::Zoom,
+        Glyph::Razor,
+        Glyph::Flag,
+        Glyph::Hourglass,
+        Glyph::Eye,
+        Glyph::EyeOff,
+        Glyph::Diamond,
+        Glyph::Record,
+        Glyph::Mic,
+        Glyph::Headphone,
+        Glyph::SpeakerOn,
+        Glyph::SpeakerOff,
+        Glyph::Camera,
+        Glyph::FilmStrip,
+        Glyph::Nodes,
+        Glyph::Layers,
+        Glyph::Target,
+        Glyph::Magnet,
+        Glyph::Spacer,
+        Glyph::MusicNote,
+        Glyph::Folder,
+        Glyph::Container,
+        Glyph::Cross,
+        Glyph::Dot,
+        Glyph::Copy,
+        Glyph::Paste,
+        Glyph::Tri(Dir::Up),
+        Glyph::Tri(Dir::Down),
+        Glyph::Tri(Dir::Left),
+        Glyph::Tri(Dir::Right),
+        Glyph::Skip(Dir::Left),
+        Glyph::Skip(Dir::Right),
+        Glyph::Jump(Dir::Left),
+        Glyph::Jump(Dir::Right),
+        Glyph::Play,
+        Glyph::Pause,
+        Glyph::Stop,
+        Glyph::Fullscreen,
+        Glyph::PopOut,
+        Glyph::Indent(true),
+        Glyph::Indent(false),
+        Glyph::Sequence,
+        Glyph::Template,
+        Glyph::Snowflake,
+        Glyph::FilmReel,
+        Glyph::Bolt,
+        Glyph::ImportArrow,
+        Glyph::ExportArrow,
+        Glyph::Transition,
+        Glyph::Subtitles,
+        Glyph::Gear,
+        Glyph::Sliders,
+        Glyph::Wrench,
+        Glyph::Clapperboard,
+        Glyph::Waveform,
+        Glyph::CurveIcon,
+        Glyph::Clock,
+        Glyph::Notepad,
+        Glyph::Bookmark,
+        Glyph::UndoArrow(Dir::Left),
+        Glyph::UndoArrow(Dir::Right),
+        Glyph::FloppyDisk,
+        Glyph::Terminal,
+    ];
+
+    /// Stable lower-case name of the variant, kept in sync with `from_name` — what a saved icon
+    /// choice is stored as. Parameterized variants fold their direction into the name.
+    pub fn name(self) -> &'static str {
+        match self {
+            Glyph::Cursor => "cursor",
+            Glyph::Letter(_) => "letter",
+            Glyph::Rect => "rect",
+            Glyph::Ellipse => "ellipse",
+            Glyph::Poly(_) => "poly",
+            Glyph::Star => "star",
+            Glyph::Line => "line",
+            Glyph::Arrow => "arrow",
+            Glyph::Pencil => "pencil",
+            Glyph::Mask => "mask",
+            Glyph::Zoom => "zoom",
+            Glyph::Razor => "razor",
+            Glyph::Flag => "flag",
+            Glyph::Hourglass => "hourglass",
+            Glyph::Eye => "eye",
+            Glyph::EyeOff => "eye-off",
+            Glyph::Diamond => "diamond",
+            Glyph::Record => "record",
+            Glyph::Mic => "mic",
+            Glyph::Headphone => "headphone",
+            Glyph::SpeakerOn => "speaker-on",
+            Glyph::SpeakerOff => "speaker-off",
+            Glyph::Camera => "camera",
+            Glyph::FilmStrip => "film-strip",
+            Glyph::Nodes => "nodes",
+            Glyph::Layers => "layers",
+            Glyph::Target => "target",
+            Glyph::Magnet => "magnet",
+            Glyph::Spacer => "spacer",
+            Glyph::MusicNote => "music-note",
+            Glyph::Folder => "folder",
+            Glyph::Container => "container",
+            Glyph::Cross => "cross",
+            Glyph::Dot => "dot",
+            Glyph::Copy => "copy",
+            Glyph::Paste => "paste",
+            Glyph::Tri(Dir::Up) => "tri-up",
+            Glyph::Tri(Dir::Down) => "tri-down",
+            Glyph::Tri(Dir::Left) => "tri-left",
+            Glyph::Tri(Dir::Right) => "tri-right",
+            Glyph::Skip(Dir::Up) => "skip-up",
+            Glyph::Skip(Dir::Down) => "skip-down",
+            Glyph::Skip(Dir::Left) => "skip-left",
+            Glyph::Skip(Dir::Right) => "skip-right",
+            Glyph::Jump(Dir::Up) => "jump-up",
+            Glyph::Jump(Dir::Down) => "jump-down",
+            Glyph::Jump(Dir::Left) => "jump-left",
+            Glyph::Jump(Dir::Right) => "jump-right",
+            Glyph::Play => "play",
+            Glyph::Pause => "pause",
+            Glyph::Stop => "stop",
+            Glyph::Fullscreen => "fullscreen",
+            Glyph::PopOut => "pop-out",
+            Glyph::Indent(true) => "indent",
+            Glyph::Indent(false) => "outdent",
+            Glyph::Sequence => "sequence",
+            Glyph::Template => "template",
+            Glyph::Snowflake => "snowflake",
+            Glyph::FilmReel => "film-reel",
+            Glyph::Bolt => "bolt",
+            Glyph::ImportArrow => "import",
+            Glyph::ExportArrow => "export",
+            Glyph::Transition => "transition",
+            Glyph::Subtitles => "subtitles",
+            Glyph::Gear => "gear",
+            Glyph::Sliders => "sliders",
+            Glyph::Wrench => "wrench",
+            Glyph::Clapperboard => "clapperboard",
+            Glyph::Waveform => "waveform",
+            Glyph::CurveIcon => "curve",
+            Glyph::Clock => "clock",
+            Glyph::Notepad => "notepad",
+            Glyph::Bookmark => "bookmark",
+            Glyph::UndoArrow(Dir::Left) => "undo",
+            Glyph::UndoArrow(_) => "redo",
+            Glyph::FloppyDisk => "floppy-disk",
+            Glyph::Terminal => "terminal",
+        }
+    }
+
+    /// The reverse of `name` over `ALL` (so parameterized names come back as their representative).
+    pub fn from_name(s: &str) -> Option<Glyph> {
+        Self::ALL.iter().copied().find(|g| g.name() == s)
+    }
 }
 
 const STRIP: [(Tool, Glyph, &str); 16] = [
@@ -932,7 +1137,231 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
                 }
             }
         }
+        // movie reel: rim, hub, four spoke holes and a tape tail leaving bottom-right
+        Glyph::FilmReel => {
+            p.circle_stroke(c, r, stroke);
+            p.circle_filled(c, 1.2, fg);
+            for i in 0..4 {
+                let a = std::f32::consts::FRAC_PI_2 * i as f32;
+                p.circle_stroke(c + egui::vec2(a.cos(), a.sin()) * (r * 0.55), 1.3, Stroke::new(1.0, fg));
+            }
+            p.line_segment([c + egui::vec2(4.2, 4.2), c + egui::vec2(8.0, 6.0)], stroke);
+        }
+        // lightning bolt: a filled zigzag
+        Glyph::Bolt => {
+            let pts = vec![
+                c + egui::vec2(1.5, -6.5),
+                c + egui::vec2(-3.5, 1.0),
+                c + egui::vec2(-0.5, 1.0),
+                c + egui::vec2(-1.5, 6.5),
+                c + egui::vec2(3.5, -1.0),
+                c + egui::vec2(0.5, -1.0),
+            ];
+            p.add(egui::Shape::closed_line(pts.clone(), Stroke::new(1.0, fg)));
+            p.add(egui::Shape::convex_polygon(pts, fg, Stroke::NONE)); // concave, but close enough at 12px
+        }
+        // import / export: an open tray with an arrow dropping in or rising out
+        Glyph::ImportArrow | Glyph::ExportArrow => {
+            p.add(egui::Shape::line(
+                vec![c + egui::vec2(-6.0, 2.0), c + egui::vec2(-6.0, 6.0), c + egui::vec2(6.0, 6.0), c + egui::vec2(6.0, 2.0)],
+                stroke,
+            ));
+            let d = if g == Glyph::ImportArrow { Dir::Down } else { Dir::Up };
+            let tip_y = if g == Glyph::ImportArrow { 3.0 } else { -6.5 };
+            let tail_y = if g == Glyph::ImportArrow { -6.5 } else { 3.0 };
+            p.line_segment([c + egui::vec2(0.0, tail_y), c + egui::vec2(0.0, tip_y)], stroke);
+            p.add(egui::Shape::convex_polygon(tri(c + egui::vec2(0.0, tip_y), d, 2.8, 3.2), fg, Stroke::NONE));
+        }
+        // transition: two overlapping frames with a diagonal cut across the overlap
+        Glyph::Transition => {
+            let a = egui::Rect::from_center_size(c + egui::vec2(-2.5, -2.0), egui::vec2(9.0, 8.0));
+            let b = egui::Rect::from_center_size(c + egui::vec2(2.5, 2.0), egui::vec2(9.0, 8.0));
+            p.rect_stroke(a, CornerRadius::ZERO, stroke, StrokeKind::Inside);
+            p.rect_stroke(b, CornerRadius::ZERO, stroke, StrokeKind::Inside);
+            p.line_segment([a.left_bottom() + egui::vec2(2.0, 0.0), a.right_top() + egui::vec2(0.0, 2.0)], stroke);
+        }
+        // subtitles: a caption box with two text bars in its lower half
+        Glyph::Subtitles => {
+            p.rect_stroke(
+                egui::Rect::from_center_size(c, egui::vec2(13.0, 10.0)),
+                CornerRadius::same(2),
+                stroke,
+                StrokeKind::Inside,
+            );
+            p.line_segment([c + egui::vec2(-4.5, 1.0), c + egui::vec2(2.5, 1.0)], Stroke::new(1.6, fg));
+            p.line_segment([c + egui::vec2(-4.5, 3.2), c + egui::vec2(4.5, 3.2)], Stroke::new(1.6, fg));
+        }
+        // gear: a ring with eight tooth stubs and a hub
+        Glyph::Gear => {
+            p.circle_stroke(c, 4.2, stroke);
+            p.circle_filled(c, 1.4, fg);
+            for i in 0..8 {
+                let a = std::f32::consts::FRAC_PI_4 * i as f32;
+                let u = egui::vec2(a.cos(), a.sin());
+                p.line_segment([c + u * 4.2, c + u * 6.5], stroke);
+            }
+        }
+        // sliders: three tracks, each with its knob somewhere else
+        Glyph::Sliders => {
+            for (i, kx) in [(-1.0_f32, -2.5_f32), (0.0, 3.0), (1.0, -0.5)] {
+                let y = i * 4.5;
+                p.line_segment([c + egui::vec2(-6.5, y), c + egui::vec2(6.5, y)], stroke);
+                p.circle_filled(c + egui::vec2(kx, y), 1.8, fg);
+            }
+        }
+        // wrench: an open jaw (circle with a notch) and a diagonal handle
+        Glyph::Wrench => {
+            let jaw = c + egui::vec2(-3.5, -3.5);
+            p.circle_stroke(jaw, 3.0, stroke);
+            // notch: paint over the rim towards the top-left, opening the jaw
+            p.line_segment([jaw, jaw + egui::vec2(-3.5, -3.5)], Stroke::new(2.6, fg));
+            p.line_segment([jaw + egui::vec2(2.0, 2.0), c + egui::vec2(6.0, 6.0)], Stroke::new(2.2, fg));
+        }
+        // clapperboard: the body and a slanted top bar with two hatch strokes
+        Glyph::Clapperboard => {
+            let body = egui::Rect::from_center_size(c + egui::vec2(0.0, 2.0), egui::vec2(13.0, 7.5));
+            p.rect_stroke(body, CornerRadius::same(1), stroke, StrokeKind::Inside);
+            p.add(egui::Shape::closed_line(
+                vec![
+                    body.left_top(),
+                    body.left_top() + egui::vec2(1.0, -3.8),
+                    body.right_top() + egui::vec2(0.0, -2.8),
+                    body.right_top(),
+                ],
+                stroke,
+            ));
+            for x in [-2.5_f32, 2.0] {
+                p.line_segment([c + egui::vec2(x, -1.7), c + egui::vec2(x + 2.0, -4.8)], Stroke::new(1.0, fg));
+            }
+        }
+        // waveform: five bars mirrored about the midline
+        Glyph::Waveform => {
+            for (i, h) in [3.0_f32, 6.0, 4.0, 6.5, 2.5].iter().enumerate() {
+                let x = -6.0 + i as f32 * 3.0;
+                p.line_segment([c + egui::vec2(x, -h / 2.0), c + egui::vec2(x, h / 2.0)], Stroke::new(1.8, fg));
+            }
+        }
+        // value curve: L axes, an easing curve and two square handles
+        Glyph::CurveIcon => {
+            let o = c + egui::vec2(-6.0, 6.0);
+            p.line_segment([o, o + egui::vec2(0.0, -12.0)], stroke);
+            p.line_segment([o, o + egui::vec2(12.0, 0.0)], stroke);
+            p.add(egui::Shape::line(
+                vec![
+                    o + egui::vec2(1.0, -1.0),
+                    o + egui::vec2(5.0, -2.5),
+                    o + egui::vec2(8.0, -6.5),
+                    o + egui::vec2(11.0, -11.0),
+                ],
+                stroke,
+            ));
+            for d in [egui::vec2(5.0, -2.5), egui::vec2(8.0, -6.5)] {
+                p.rect_filled(egui::Rect::from_center_size(o + d, egui::vec2(2.4, 2.4)), CornerRadius::ZERO, fg);
+            }
+        }
+        Glyph::Clock => {
+            p.circle_stroke(c, r, stroke);
+            p.line_segment([c, c + egui::vec2(0.0, -4.0)], stroke);
+            p.line_segment([c, c + egui::vec2(3.0, 1.5)], stroke);
+        }
+        Glyph::Notepad => {
+            p.rect_stroke(
+                egui::Rect::from_center_size(c, egui::vec2(10.0, 12.0)),
+                CornerRadius::same(1),
+                stroke,
+                StrokeKind::Inside,
+            );
+            for dy in [-3.0_f32, 0.0, 3.0] {
+                p.line_segment([c + egui::vec2(-3.0, dy), c + egui::vec2(3.0, dy)], Stroke::new(1.0, fg));
+            }
+        }
+        // bookmark: a ribbon whose bottom edge is notched into a V
+        Glyph::Bookmark => {
+            p.add(egui::Shape::closed_line(
+                vec![
+                    c + egui::vec2(-3.5, -6.5),
+                    c + egui::vec2(3.5, -6.5),
+                    c + egui::vec2(3.5, 6.5),
+                    c + egui::vec2(0.0, 3.0),
+                    c + egui::vec2(-3.5, 6.5),
+                ],
+                stroke,
+            ));
+        }
+        // undo / redo: an arc curving over the top, arrowhead at the `Dir::Left` / `Dir::Right` end
+        Glyph::UndoArrow(d) => {
+            let sx = if d == Dir::Left { 1.0 } else { -1.0 };
+            let arc: Vec<egui::Pos2> = (0..=8)
+                .map(|i| {
+                    let a = std::f32::consts::PI + std::f32::consts::PI * 0.85 * i as f32 / 8.0;
+                    c + egui::vec2(a.cos() * 5.0 * sx, a.sin() * 5.0 + 1.5)
+                })
+                .collect();
+            let tip = arc[0];
+            p.add(egui::Shape::line(arc, stroke));
+            p.add(egui::Shape::convex_polygon(
+                vec![tip + egui::vec2(-2.5 * sx, 0.5), tip + egui::vec2(2.0 * sx, -1.5), tip + egui::vec2(1.5 * sx, 3.0)],
+                fg,
+                Stroke::NONE,
+            ));
+        }
+        // floppy disk: a square with its top-right corner cut, a shutter and a label
+        Glyph::FloppyDisk => {
+            let (l, t, rr, b) = (c.x - 6.0, c.y - 6.0, c.x + 6.0, c.y + 6.0);
+            p.add(egui::Shape::closed_line(
+                vec![egui::pos2(l, t), egui::pos2(rr - 2.5, t), egui::pos2(rr, t + 2.5), egui::pos2(rr, b), egui::pos2(l, b)],
+                stroke,
+            ));
+            p.rect_filled(
+                egui::Rect::from_min_size(egui::pos2(l + 2.5, t + 0.7), egui::vec2(5.5, 3.0)),
+                CornerRadius::ZERO,
+                fg,
+            );
+            p.rect_stroke(
+                egui::Rect::from_min_size(egui::pos2(l + 2.0, b - 4.5), egui::vec2(8.0, 3.8)),
+                CornerRadius::ZERO,
+                Stroke::new(1.0, fg),
+                StrokeKind::Inside,
+            );
+        }
+        // terminal: a window with a '>' prompt and an underscore cursor
+        Glyph::Terminal => {
+            p.rect_stroke(
+                egui::Rect::from_center_size(c, egui::vec2(13.0, 10.0)),
+                CornerRadius::same(1),
+                stroke,
+                StrokeKind::Inside,
+            );
+            p.line_segment([c + egui::vec2(-4.5, -2.5), c + egui::vec2(-2.0, 0.0)], stroke);
+            p.line_segment([c + egui::vec2(-2.0, 0.0), c + egui::vec2(-4.5, 2.5)], stroke);
+            p.line_segment([c + egui::vec2(0.0, 2.5), c + egui::vec2(3.5, 2.5)], stroke);
+        }
     }
+}
+
+/// Built-in icon for a menu action (None = text-only). The user's Settings → Appearance → Icons
+/// override wins over these; abstract actions stay text-only on purpose.
+pub(crate) fn action_glyph(a: crate::hotkeys::Action) -> Option<Glyph> {
+    use crate::hotkeys::Action::*;
+    Some(match a {
+        NewProject => Glyph::Clapperboard,
+        OpenFile | OpenProject => Glyph::Folder,
+        Save | SaveProjectAs => Glyph::FloppyDisk,
+        ExportVideo | ExportLossless | ExportXml => Glyph::ExportArrow,
+        ImportMedia => Glyph::FilmReel,
+        Settings => Glyph::Gear,
+        Undo => Glyph::UndoArrow(Dir::Left),
+        Redo => Glyph::UndoArrow(Dir::Right),
+        PlayPause => Glyph::Play,
+        Stop => Glyph::Stop,
+        Split => Glyph::Razor,
+        AddText => Glyph::Letter('T'),
+        AddMarker => Glyph::Flag,
+        Retime => Glyph::Clock,
+        Fullscreen => Glyph::Fullscreen,
+        ScreenCapture => Glyph::Camera,
+        _ => return None,
+    })
 }
 
 /// Paint `icon` where a plain label would go — no button chrome, no hit area.
@@ -1038,63 +1467,9 @@ mod tests {
         }
     }
 
-    /// Every variant, so a new one cannot be added without deciding what it looks like.
-    const ALL_GLYPHS: &[Glyph] = &[
-        Glyph::Cursor,
-        Glyph::Letter('T'),
-        Glyph::Rect,
-        Glyph::Ellipse,
-        Glyph::Poly(5),
-        Glyph::Star,
-        Glyph::Line,
-        Glyph::Arrow,
-        Glyph::Pencil,
-        Glyph::Mask,
-        Glyph::Zoom,
-        Glyph::Razor,
-        Glyph::Flag,
-        Glyph::Hourglass,
-        Glyph::Eye,
-        Glyph::EyeOff,
-        Glyph::Diamond,
-        Glyph::Record,
-        Glyph::Mic,
-        Glyph::Headphone,
-        Glyph::SpeakerOn,
-        Glyph::SpeakerOff,
-        Glyph::Camera,
-        Glyph::FilmStrip,
-        Glyph::Nodes,
-        Glyph::Layers,
-        Glyph::Target,
-        Glyph::Magnet,
-        Glyph::Spacer,
-        Glyph::MusicNote,
-        Glyph::Folder,
-        Glyph::Cross,
-        Glyph::Dot,
-        Glyph::Copy,
-        Glyph::Paste,
-        Glyph::Tri(Dir::Up),
-        Glyph::Tri(Dir::Down),
-        Glyph::Tri(Dir::Left),
-        Glyph::Tri(Dir::Right),
-        Glyph::Skip(Dir::Left),
-        Glyph::Skip(Dir::Right),
-        Glyph::Jump(Dir::Left),
-        Glyph::Jump(Dir::Right),
-        Glyph::Play,
-        Glyph::Pause,
-        Glyph::Stop,
-        Glyph::Fullscreen,
-        Glyph::PopOut,
-        Glyph::Indent(true),
-        Glyph::Indent(false),
-        Glyph::Sequence,
-        Glyph::Container,
-        Glyph::Template,
-        Glyph::Snowflake,
-    ];
+    /// Every variant (via `Glyph::ALL`), so a new one cannot be added without deciding what it looks
+    /// like — and without giving it a name for the icon picker.
+    const ALL_GLYPHS: &[Glyph] = Glyph::ALL;
 
     /// Tessellated vertices produced by `paint`, on a throwaway context.
     fn painted(paint: impl Fn(&egui::Painter, Rect)) -> usize {
