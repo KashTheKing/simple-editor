@@ -56,6 +56,31 @@ impl Scaler {
     }
 }
 
+/// Preview/export canvas background: what unfilled area of the frame clears to
+/// (`engine::gpu::GpuRenderer::render_canvas` is the one place that reads this). `Black` matches the
+/// hardcoded behaviour every project had before this setting existed.
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize, Default)]
+pub enum BackgroundMode {
+    /// Preview-only visual aid: bakes as literal grey squares on export, not real transparency.
+    Checkerboard,
+    #[default]
+    Black,
+    White,
+    Custom([u8; 4]),
+}
+
+impl BackgroundMode {
+    pub const ALL: [BackgroundMode; 3] = [BackgroundMode::Checkerboard, BackgroundMode::Black, BackgroundMode::White];
+    pub fn name(self) -> &'static str {
+        match self {
+            BackgroundMode::Checkerboard => "Checkerboard",
+            BackgroundMode::Black => "Black",
+            BackgroundMode::White => "White",
+            BackgroundMode::Custom(_) => "Custom",
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, Default, Hash)]
 pub enum BlendMode {
     #[default]
@@ -1867,11 +1892,28 @@ pub struct Marker {
     pub note: String,
     /// Index into `Project.labels` + 1 (0 = none).
     pub label: u8,
+    /// Glyph name (`ui::tools::Glyph::name()` / `from_name`) — same string convention as
+    /// `Settings.icon_overrides`. Missing on old projects: the container-level `#[serde(default)]`
+    /// above pulls it (and `sequence`) from `Marker::default()` below.
+    pub icon: String,
+    /// Which sequence this marker was created on (`None` = the main timeline). Project-level
+    /// markers only, for scoping `Project.markers` per sequence — clip markers already scope
+    /// through their clip and ignore this field.
+    pub sequence: Option<Id>,
 }
 
 impl Default for Marker {
     fn default() -> Self {
-        Self { id: 0, t: 0.0, duration: 0.0, name: String::new(), note: String::new(), label: 0 }
+        Self {
+            id: 0,
+            t: 0.0,
+            duration: 0.0,
+            name: String::new(),
+            note: String::new(),
+            label: 0,
+            icon: "flag".to_string(),
+            sequence: None,
+        }
     }
 }
 
@@ -2772,6 +2814,8 @@ pub struct Project {
     pub subtitle_cont_suffix: String,
     /// Compositor resampling quality.
     pub scaler: Scaler,
+    /// Preview/export canvas background (checkerboard / solid / custom colour).
+    pub preview_bg: BackgroundMode,
     /// Colour labels (name + colour), editable by the user.
     pub labels: Vec<Label>,
     /// Timeline markers (sorted by time).
@@ -2819,6 +2863,7 @@ impl Project {
             subtitle_cont_prefix: String::new(),
             subtitle_cont_suffix: String::new(),
             scaler: Scaler::Bilinear,
+            preview_bg: BackgroundMode::Black,
             labels: default_labels(),
             markers: Vec::new(),
             buses: Vec::new(),
@@ -3999,11 +4044,58 @@ impl Project {
     }
 
     // ---------- markers ----------
+    /// Stamped with `self.editing` so the marker only shows on the sequence (or main timeline) it was
+    /// created on — see `markers_ui::rows`.
     pub fn add_marker(&mut self, t: f64, name: impl Into<String>) -> Id {
         let id = self.new_id();
-        self.markers.push(Marker { id, t: t.max(0.0), name: name.into(), ..Default::default() });
+        self.markers.push(Marker {
+            id,
+            t: t.max(0.0),
+            name: name.into(),
+            sequence: self.editing,
+            ..Default::default()
+        });
         self.sort_markers();
         id
+    }
+    /// Move a project-level marker to the start time of whichever clip on the current sequence's
+    /// tracks (`self.tracks`) is nearest in time. No-op if the marker or a clip doesn't exist.
+    pub fn snap_marker_to_nearest_clip(&mut self, id: Id) {
+        let Some(t) = self.markers.iter().find(|m| m.id == id).map(|m| m.t) else { return };
+        let Some(nearest) =
+            self.all_clips().map(|(_, c)| c.start).min_by(|a, b| (a - t).abs().total_cmp(&(b - t).abs()))
+        else {
+            return;
+        };
+        if let Some(m) = self.markers.iter_mut().find(|m| m.id == id) {
+            m.t = nearest.max(0.0);
+        }
+        self.sort_markers();
+    }
+    /// Convert a project-level marker into a clip-local marker on the nearest clip (by clip start),
+    /// keeping its name/note/label/icon and converting `t` from timeline-absolute to clip-local
+    /// (clamped to the clip's duration). Returns `false` (no-op) without a marker or a clip to attach to.
+    pub fn link_marker_to_closest_clip(&mut self, id: Id) -> bool {
+        let Some(pos) = self.markers.iter().position(|m| m.id == id) else { return false };
+        let t = self.markers[pos].t;
+        let Some(clip_id) = self
+            .all_clips()
+            .map(|(_, c)| (c.id, c.start))
+            .min_by(|(_, a), (_, b)| (a - t).abs().total_cmp(&(b - t).abs()))
+            .map(|(id, _)| id)
+        else {
+            return false;
+        };
+        let m = self.markers.remove(pos);
+        let Some(c) = self.clip_mut(clip_id) else {
+            self.markers.push(m); // clip vanished mid-lookup (shouldn't happen) — put it back
+            self.sort_markers();
+            return false;
+        };
+        let local_t = (t - c.start).clamp(0.0, c.duration);
+        c.markers.push(Marker { t: local_t, sequence: None, ..m });
+        c.markers.sort_by(|a, b| a.t.total_cmp(&b.t));
+        true
     }
     pub fn remove_marker(&mut self, id: Id) {
         self.markers.retain(|m| m.id != id);
@@ -5079,6 +5171,85 @@ mod tests {
         assert_eq!(c.scale.value, 2.0, "old field is untouched");
         assert_eq!(c.scale_x.value, 1.0);
         assert_eq!(c.scale_y.value, 1.0);
+    }
+
+    /// An old project file, saved before `icon`/`sequence` existed, has no such keys. They must
+    /// deserialize as the flag glyph / main timeline, and roundtrip once set.
+    #[test]
+    fn marker_icon_and_sequence_default_for_old_projects() {
+        let json = r#"{"id":1,"t":3.0,"name":"m"}"#;
+        let m: Marker = serde_json::from_str(json).unwrap();
+        assert_eq!(m.icon, "flag");
+        assert_eq!(m.sequence, None);
+
+        let m2 = Marker { sequence: Some(7), icon: "star".into(), ..m };
+        let json = serde_json::to_string(&m2).unwrap();
+        assert_eq!(serde_json::from_str::<Marker>(&json).unwrap(), m2);
+    }
+
+    #[test]
+    fn add_marker_stamps_current_editing_sequence() {
+        let mut p = Project::new();
+        let main = p.add_marker(1.0, "main");
+        assert_eq!(p.marker_mut(main).unwrap().sequence, None);
+        p.editing = Some(99);
+        let seq = p.add_marker(2.0, "seq");
+        assert_eq!(p.marker_mut(seq).unwrap().sequence, Some(99));
+    }
+
+    #[test]
+    fn snap_marker_to_nearest_clip_moves_to_clip_start() {
+        let mut p = Project::new();
+        p.tracks[0].clips.push(Clip::new(1, ClipKind::Video, "a", 0.0, 2.0));
+        p.tracks[0].clips.push(Clip::new(2, ClipKind::Video, "b", 5.0, 2.0));
+        let mid = p.add_marker(4.0, "m");
+        p.snap_marker_to_nearest_clip(mid);
+        assert_eq!(p.marker_mut(mid).unwrap().t, 5.0, "closer to clip b's start than clip a's");
+    }
+
+    #[test]
+    fn link_marker_to_closest_clip_converts_to_clip_local() {
+        let mut p = Project::new();
+        p.tracks[0].clips.push(Clip::new(1, ClipKind::Video, "a", 10.0, 4.0));
+        let mid = p.add_marker(11.5, "beat");
+        p.marker_mut(mid).unwrap().note = "hit".into();
+        assert!(p.link_marker_to_closest_clip(mid));
+        assert!(p.markers.is_empty(), "removed from the project list");
+        let c = p.clip(1).unwrap();
+        assert_eq!(c.markers.len(), 1);
+        assert_eq!(c.markers[0].id, mid, "same id, just re-homed");
+        assert_eq!(c.markers[0].t, 1.5, "converted to clip-local time");
+        assert_eq!(c.markers[0].note, "hit", "note is preserved");
+    }
+
+    #[test]
+    fn link_marker_to_closest_clip_noop_without_clips() {
+        let mut p = Project::new(); // default tracks have no clips
+        let mid = p.add_marker(1.0, "m");
+        assert!(!p.link_marker_to_closest_clip(mid));
+        assert_eq!(p.markers.len(), 1, "left alone");
+    }
+
+    /// An old project file, saved before `preview_bg` existed, has no such key. It must deserialize as
+    /// `Black` so old projects (and a brand-new one) render exactly as before this setting existed.
+    #[test]
+    fn preview_bg_defaults_to_black_for_old_projects() {
+        let p = Project::from_json("{}").unwrap();
+        assert_eq!(p.preview_bg, BackgroundMode::Black);
+        assert_eq!(Project::new().preview_bg, BackgroundMode::Black);
+    }
+
+    #[test]
+    fn background_mode_roundtrips_through_json() {
+        for m in [
+            BackgroundMode::Checkerboard,
+            BackgroundMode::Black,
+            BackgroundMode::White,
+            BackgroundMode::Custom([10, 20, 30, 255]),
+        ] {
+            let json = serde_json::to_string(&m).unwrap();
+            assert_eq!(serde_json::from_str::<BackgroundMode>(&json).unwrap(), m);
+        }
     }
 
     /// Every current kind is a pixel/GLSL effect — none apply to an audio clip yet (see the doc comment

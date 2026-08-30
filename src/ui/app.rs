@@ -1922,7 +1922,7 @@ impl App {
                 self.push_undo();
                 let t = self.playhead;
                 let id = self.project.add_marker(t, format!("Marker at {}", crate::ui::timecode(t, self.project.fps)));
-                self.markers.selected = Some(id);
+                self.markers.selected = vec![id];
                 self.layout.reveal(Pane::Markers);
                 self.layout_dirty = true;
                 self.after_edit();

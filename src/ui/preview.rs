@@ -17,7 +17,9 @@
 use crate::engine::compose::placement;
 use crate::hotkeys::Action;
 use crate::media::Frame;
-use crate::model::{ClipKind, Id, Mask, MaskShape, Project, ShapeKind, ShapeStyle, Stroke as ModelStroke};
+use crate::model::{
+    BackgroundMode, ClipKind, Id, Mask, MaskShape, Project, ShapeKind, ShapeStyle, Stroke as ModelStroke,
+};
 use crate::theme::Palette;
 use crate::ui::timecode;
 use crate::ui::tools::{glyph_text_button, Dir, Glyph, Tool};
@@ -605,8 +607,51 @@ fn tool_drag(
     true
 }
 
+/// Right-click "Background" submenu on the video area: Checkerboard / Black / White / Custom (a colour
+/// picker). Mirrors the transport bar's social-guide picker (radio per option, `ui.close()` on pick)
+/// but as a `context_menu` submenu since the background has no dedicated toolbar button. Edits
+/// `project.preview_bg` through the same undo-once-per-gesture/`edited`-flag convention every other
+/// project-level edit in this file uses (e.g. the drag-to-move handling below).
+fn background_menu(resp: &egui::Response, c: &mut PreviewCtx<'_>, r: &mut PreviewResponse) {
+    resp.context_menu(|ui| {
+        ui.menu_button("Background", |ui| {
+            let mut pick = |ui: &mut egui::Ui, label: &str, v: BackgroundMode| {
+                if ui.radio(c.project.preview_bg == v, label).clicked() {
+                    (c.undo)(c.project);
+                    c.project.preview_bg = v;
+                    r.edited = true;
+                    ui.close();
+                }
+            };
+            for mode in BackgroundMode::ALL {
+                pick(ui, mode.name(), mode);
+            }
+            let custom = matches!(c.project.preview_bg, BackgroundMode::Custom(_));
+            ui.horizontal(|ui| {
+                if ui.radio(custom, "Custom").clicked() && !custom {
+                    (c.undo)(c.project);
+                    c.project.preview_bg = BackgroundMode::Custom([0, 0, 0, 255]);
+                    r.edited = true;
+                }
+                if let BackgroundMode::Custom(mut rgba) = c.project.preview_bg {
+                    let cr = ui.color_edit_button_srgba_unmultiplied(&mut rgba);
+                    // gate the undo push to once per drag/pick, like every other gesture in this file
+                    if crate::ui::edit_start(&cr) {
+                        (c.undo)(c.project);
+                    }
+                    if cr.changed() {
+                        c.project.preview_bg = BackgroundMode::Custom(rgba);
+                        r.edited = true;
+                    }
+                }
+            });
+        });
+    });
+}
+
 fn video(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r: &mut PreviewResponse) {
     let (rect, resp) = ui.allocate_exact_size(ui.available_size_before_wrap(), Sense::click_and_drag());
+    background_menu(&resp, c, r);
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, Color32::BLACK);
     let ppp = ui.pixels_per_point();
