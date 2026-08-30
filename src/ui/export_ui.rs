@@ -1,7 +1,8 @@
 //! Export window (non-blocking egui::Window "Export"): resolution (Project / 720p / 1080p / 1440p / 4K /
 //! Custom W×H, keeping the project aspect unless unlocked), scaler for up/downscaling (Nearest, Bilinear,
-//! Bicubic, Lanczos, Area, Spline → ffmpeg flags), encoder (auto + detected), quality CRF, preset, an
-//! "audio only" hint by extension, and the Fast Lossless Cut option when `export::lossless_segments` applies
+//! Bicubic, Lanczos, Area, Spline → ffmpeg flags), encoder (auto + detected), quality as a 0-100% slider
+//! (converted to/from the underlying CRF) with an estimated output size and a quality-loss warning, preset,
+//! an "audio only" hint by extension, and the Fast Lossless Cut option when `export::lossless_segments` applies
 //! (with the keyframe-accuracy note). "Export…" opens the save dialog and returns the options; the window
 //! stays usable while an export runs (progress + cancel are shown by the app). Settings remember the last
 //! scaler/resolution. Returns Some(options) when the user confirmed an export this frame.
@@ -10,7 +11,7 @@ use crate::engine::export::{self, ExportOptions};
 use crate::media::Backend;
 use crate::model::Project;
 use crate::settings::Settings;
-use crate::ui::{combo, encoder_options, ENCODER_PRESETS};
+use crate::ui::{combo, duration_text, encoder_options, ENCODER_PRESETS};
 use eframe::egui;
 use std::path::Path;
 
@@ -69,6 +70,16 @@ fn preset_size(pw: u32, ph: u32, preset: &str, custom: (u32, u32)) -> Option<(u3
     }
 }
 
+/// "58.2 MB" / "1.3 GB" — 1 decimal place, switching to GB at 1000 MB.
+fn format_bytes(bytes: u64) -> String {
+    let mb = bytes as f64 / 1e6;
+    if mb >= 1000.0 {
+        format!("{:.1} GB", mb / 1000.0)
+    } else {
+        format!("{mb:.1} MB")
+    }
+}
+
 pub fn show(
     ctx: &egui::Context,
     state: &mut ExportUi,
@@ -86,6 +97,7 @@ pub fn show(
     let mut out = None;
     let mut open = state.open;
     egui::Window::new("Export").open(&mut open).resizable(false).default_width(300.0).show(ctx, |ui| {
+        let mut out_size = (project.width, project.height);
         egui::Grid::new("export_opts").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
             ui.label("Resolution");
             let mut changed = combo(ui, "export_res", &mut state.preset, &RES_PRESETS, None);
@@ -104,6 +116,7 @@ pub fn show(
             let size = preset_size(project.width, project.height, &state.preset, state.custom);
             ui.label("Output");
             let (w, h) = size.unwrap_or((project.width, project.height));
+            out_size = (w, h);
             ui.weak(format!("{w}×{h}"));
             ui.end_row();
             if changed {
@@ -127,11 +140,12 @@ pub fn show(
             combo(ui, "export_encoder", &mut settings.encoder, &opts, None);
             ui.end_row();
 
-            ui.label("Quality (CRF)");
-            ui.horizontal(|ui| {
-                ui.add(egui::DragValue::new(&mut settings.crf).range(0..=51));
-                ui.weak("lower = better");
-            });
+            ui.label("Quality");
+            let mut pct = export::quality_percent_from_crf(settings.crf);
+            ui.add(egui::Slider::new(&mut pct, 0..=100).suffix("%"));
+            if pct != export::quality_percent_from_crf(settings.crf) {
+                settings.crf = export::crf_from_quality_percent(pct);
+            }
             ui.end_row();
 
             ui.label("Preset");
@@ -139,6 +153,27 @@ pub fn show(
             combo(ui, "export_preset", &mut settings.preset, &opts, None);
             ui.end_row();
         });
+
+        let (w, h) = out_size;
+        let est_bytes = export::estimate_export_bytes(w, h, project.fps, project.duration(), settings.crf);
+        ui.weak(format!(
+            "~{} ({w}×{h} · {:.0} fps · {})",
+            format_bytes(est_bytes),
+            project.fps,
+            duration_text(project.duration())
+        ))
+        .on_hover_text("Estimated — actual size depends on the footage.");
+        let pct = export::quality_percent_from_crf(settings.crf);
+        let warning = match pct {
+            85..=100 => "",
+            60..=84 => "Quality will be reduced slightly.",
+            35..=59 => "Quality will be reduced a medium amount.",
+            15..=34 => "Quality will be reduced a large amount.",
+            _ => "The video will barely be recognizable at this compression level.",
+        };
+        if !warning.is_empty() {
+            ui.colored_label(ui.visuals().warn_fg_color, warning);
+        }
 
         ui.add_space(2.0);
         if ui.checkbox(&mut state.metadata_on, "Write metadata").changed() && state.metadata.is_empty() {

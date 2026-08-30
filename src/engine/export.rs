@@ -721,6 +721,32 @@ pub fn codec_args(ext: &str, encoder: &str, crf: u32, preset: &str, available: &
     v
 }
 
+/// User-facing quality percent (100 = best) -> the CRF `codec_args` actually uses (0 = best, 51 = worst).
+/// `pct` is expected pre-clamped to 0..=100 (the slider's own range); clamps again here as a safety net.
+pub fn crf_from_quality_percent(pct: u32) -> u32 {
+    let pct = pct.min(100) as f64;
+    (((100.0 - pct) / 100.0) * 51.0).round().clamp(0.0, 51.0) as u32
+}
+
+/// Inverse of `crf_from_quality_percent`, for displaying the slider from a stored `Settings.crf`.
+pub fn quality_percent_from_crf(crf: u32) -> u32 {
+    let crf = crf.min(51) as f64;
+    (100.0 - (crf / 51.0) * 100.0).round().clamp(0.0, 100.0) as u32
+}
+
+/// Rough estimated output size in bytes for the export progress/quality UI — NOT a guarantee, since CRF
+/// targets a quality level, not a bitrate. Video bitrate is extrapolated from a "reasonable quality" x264
+/// ballpark at CRF 23 (0.1 bits/pixel/frame), scaled by the x264 rule of thumb that every 6 CRF steps
+/// roughly halves/doubles bitrate; audio assumes one ~128kbps AAC-ish stereo track.
+pub fn estimate_export_bytes(width: u32, height: u32, fps: f64, duration_secs: f64, crf: u32) -> u64 {
+    let pixels_per_sec = width as f64 * height as f64 * fps;
+    let base_bitrate_bps = pixels_per_sec * 0.1;
+    let scale = 2f64.powf((23.0 - crf as f64) / 6.0);
+    let video_bitrate_bps = (base_bitrate_bps * scale).clamp(50_000.0, (pixels_per_sec * 2.0).max(50_000.0));
+    let audio_bitrate_bps = 128_000.0;
+    ((video_bitrate_bps + audio_bitrate_bps) / 8.0 * duration_secs.max(0.0)) as u64
+}
+
 pub const AUDIO_EXTS: &[&str] = &["mp3", "wav", "m4a", "flac", "ogg", "aac", "opus"];
 
 #[cfg(test)]
@@ -890,6 +916,42 @@ pub(crate) mod tests {
     fn parse_encoder_list() {
         let s = " V..... = Video\n A..... = Audio\n ------\n V....D libx264  H.264\n A....D aac  AAC\n S..... srt  SubRip\n";
         assert_eq!(parse_encoders(s), vec!["libx264".to_string(), "aac".to_string()]);
+    }
+
+    #[test]
+    fn quality_percent_crf_conversion() {
+        assert_eq!(crf_from_quality_percent(100), 0);
+        assert_eq!(crf_from_quality_percent(50), 26);
+        assert_eq!(crf_from_quality_percent(0), 51);
+        assert_eq!(quality_percent_from_crf(0), 100);
+        assert_eq!(quality_percent_from_crf(51), 0);
+    }
+
+    #[test]
+    fn quality_percent_round_trip_within_tolerance() {
+        // Integer rounding both directions means this isn't exact; bound the drift instead.
+        for pct in [0, 10, 25, 33, 50, 66, 75, 90, 100] {
+            let crf = crf_from_quality_percent(pct);
+            let back = quality_percent_from_crf(crf);
+            let diff = (back as i32 - pct as i32).abs();
+            assert!(diff <= 2, "pct={pct} crf={crf} back={back} diff={diff}");
+        }
+    }
+
+    #[test]
+    fn estimate_bytes_sane_ballpark() {
+        // 1920x1080 @ 30fps, 60s, CRF 23, by hand: base = 1920*1080*30*0.1 = 6,220,800 bps;
+        // scale(23) = 1; + 128kbps audio = 6,348,800 bps; /8 * 60s = 47,616,000 bytes (~47.6 MB).
+        let bytes = estimate_export_bytes(1920, 1080, 30.0, 60.0, 23);
+        assert!((40_000_000..55_000_000).contains(&bytes), "{bytes}");
+    }
+
+    #[test]
+    fn estimate_bytes_crf_scaling_halves_roughly() {
+        let base = estimate_export_bytes(1920, 1080, 30.0, 60.0, 23);
+        let raised = estimate_export_bytes(1920, 1080, 30.0, 60.0, 29); // +6 CRF ~= half the bitrate
+        let ratio = raised as f64 / base as f64;
+        assert!((0.4..0.6).contains(&ratio), "ratio={ratio}");
     }
 
     #[test]

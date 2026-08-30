@@ -44,8 +44,26 @@ const MEDIA_EXTS: &[&str] = &[
 ];
 
 enum ExportKind {
-    File,
+    File { path: PathBuf },
     Overwrite { original: PathBuf, temp: PathBuf },
+}
+
+/// One toast notification. `open_path` is set when it should offer an "Open Folder" button for a
+/// file (or folder) it just finished writing.
+struct Toast {
+    msg: String,
+    at: Instant,
+    open_path: Option<PathBuf>,
+}
+
+impl Toast {
+    fn new(msg: impl Into<String>) -> Self {
+        Toast { msg: msg.into(), at: Instant::now(), open_path: None }
+    }
+
+    fn with_folder(msg: impl Into<String>, path: impl Into<PathBuf>) -> Self {
+        Toast { msg: msg.into(), at: Instant::now(), open_path: Some(path.into()) }
+    }
 }
 
 /// A blocking MCP tool job (export.video / media.convert): the reply is sent when the job finishes.
@@ -108,7 +126,7 @@ pub struct App {
     playhead: f64,
     export: Option<(Arc<Progress>, ExportKind)>,
     encoders: Vec<String>,
-    toasts: Vec<(String, Instant)>,
+    toasts: Vec<Toast>,
     screenshot: Option<PathBuf>,
     started: Instant,
     /// Window starts hidden (see main.rs); shown once the first frame has been painted.
@@ -986,7 +1004,12 @@ impl App {
     // ---------------- helpers ----------------
 
     fn toast(&mut self, msg: impl Into<String>) {
-        self.toasts.push((msg.into(), Instant::now()));
+        self.toasts.push(Toast::new(msg));
+    }
+
+    /// Like `toast`, but offers an "Open Folder" button for a file (or folder) just written to disk.
+    fn toast_with_folder(&mut self, msg: impl Into<String>, path: impl Into<PathBuf>) {
+        self.toasts.push(Toast::with_folder(msg, path));
     }
 
     fn push_undo(&mut self) {
@@ -1272,7 +1295,7 @@ impl App {
                 self.dirty = false;
                 self.settings.touch_recent_project(&path.to_string_lossy());
                 self.settings.save();
-                self.toast("Project saved");
+                self.toast_with_folder("Project saved", path);
                 true
             }
             Err(e) => {
@@ -1389,13 +1412,14 @@ impl App {
             return;
         }
         self.player.pause();
+        let path = choice.opts.out_path.clone();
         let project = self.export_project();
         let prog = if choice.lossless {
             export::start_lossless_cut(project, choice.opts.out_path.clone())
         } else {
             export::start_export(project, choice.opts, self.text.clone())
         };
-        self.export = Some((prog, ExportKind::File));
+        self.export = Some((prog, ExportKind::File { path }));
         self.settings.save(); // the window remembers resolution/scaler in settings
     }
 
@@ -1421,8 +1445,8 @@ impl App {
         }
         let Some(out) = d.save_file() else { return };
         self.player.pause();
-        let prog = export::start_lossless_cut(project, out);
-        self.export = Some((prog, ExportKind::File));
+        let prog = export::start_lossless_cut(project, out.clone());
+        self.export = Some((prog, ExportKind::File { path: out }));
     }
 
     fn act_export_xml(&mut self) {
@@ -1434,9 +1458,10 @@ impl App {
             return;
         };
         match std::fs::write(&out, crate::engine::xmeml::export_xmeml(&self.export_project())) {
-            Ok(()) => {
-                self.toast("XML exported — import it in Premiere (File > Import) or Resolve (File > Import > Timeline)")
-            }
+            Ok(()) => self.toast_with_folder(
+                "XML exported — import it in Premiere (File > Import) or Resolve (File > Import > Timeline)",
+                out,
+            ),
             Err(e) => self.toast(format!("XML export failed: {e}")),
         }
     }
@@ -1451,7 +1476,7 @@ impl App {
         };
         // the summary describes the MAIN timeline, even while a nested sequence is open
         match std::fs::write(&out, crate::engine::style::style_summary(&self.export_project())) {
-            Ok(()) => self.toast("Style summary exported"),
+            Ok(()) => self.toast_with_folder("Style summary exported", out),
             Err(e) => self.toast(format!("Style summary failed: {e}")),
         }
     }
@@ -1546,7 +1571,7 @@ impl App {
             return;
         }
         match kind {
-            ExportKind::File => self.toast("Export finished"),
+            ExportKind::File { path } => self.toast_with_folder("Export finished", path),
             ExportKind::Overwrite { original, temp } => {
                 self.player.release_files();
                 // the thumbnail worker holds a decoder (ffmpeg child) on the source — drop it while we retry
@@ -1560,7 +1585,7 @@ impl App {
                 }
                 match r {
                     Ok(()) => {
-                        self.toast("Saved over the original video");
+                        self.toast_with_folder("Saved over the original video", original.clone());
                         // in-memory peaks are keyed by path only and the file behind it just changed
                         self.waveforms.clear();
                         self.open_media(&original);
@@ -3022,7 +3047,10 @@ impl App {
                 None => {
                     let ids = self.import_files(&[out.clone()]);
                     self.library.selected = ids.last().copied();
-                    self.toast(format!("Converted → {}", out.file_name().unwrap_or_default().to_string_lossy()));
+                    self.toast_with_folder(
+                        format!("Converted → {}", out.file_name().unwrap_or_default().to_string_lossy()),
+                        out,
+                    );
                 }
             }
         }
@@ -3426,7 +3454,7 @@ impl App {
             return;
         };
         match write_image(&frame, &opts) {
-            Ok(()) => self.toast(format!("Frame saved to {}", opts.out.display())),
+            Ok(()) => self.toast_with_folder(format!("Frame saved to {}", opts.out.display()), opts.out),
             Err(e) => self.toast(format!("Frame export failed: {e}")),
         }
     }
@@ -3761,7 +3789,7 @@ impl App {
                     .save_file()
                 {
                     match std::fs::write(&out, self.layout.to_json()) {
-                        Ok(()) => self.toast("Layout exported"),
+                        Ok(()) => self.toast_with_folder("Layout exported", out),
                         Err(e) => self.toast(format!("Layout export failed: {e}")),
                     }
                 }
@@ -4648,7 +4676,7 @@ impl App {
             };
             let prog = export::start_export(self.export_project(), opts, self.text.clone());
             // same slot the UI uses: exclusion, the progress/Cancel window and the close guard all key off it
-            self.export = Some((prog.clone(), ExportKind::File));
+            self.export = Some((prog.clone(), ExportKind::File { path: out.clone() }));
             Ok((prog, out))
         } else {
             let src = PathBuf::from(req(arg_str(args, "path"), "path")?);
@@ -5791,7 +5819,7 @@ impl App {
         if let Some((prog, kind)) = &self.export {
             let prog = prog.clone();
             let title = match kind {
-                ExportKind::File => "Exporting…",
+                ExportKind::File { .. } => "Exporting…",
                 ExportKind::Overwrite { .. } => "Saving over the original…",
             };
             egui::Window::new(title)
@@ -6111,15 +6139,26 @@ impl eframe::App for App {
         }
 
         // toasts
-        self.toasts.retain(|(_, t)| t.elapsed().as_secs_f32() < 5.0);
+        self.toasts.retain(|t| t.at.elapsed().as_secs_f32() < 5.0);
         if !self.toasts.is_empty() {
             egui::Area::new(egui::Id::new("toasts"))
                 .anchor(egui::Align2::RIGHT_BOTTOM, [-12.0, -12.0])
                 .order(egui::Order::Foreground)
                 .show(ctx, |ui| {
-                    for (msg, _) in &self.toasts {
+                    for t in &self.toasts {
                         egui::Frame::popup(ui.style()).show(ui, |ui| {
-                            ui.label(msg);
+                            ui.label(&t.msg);
+                            if let Some(p) = &t.open_path {
+                                if ui.small_button("Open Folder").clicked() {
+                                    let mut cmd = std::process::Command::new("explorer");
+                                    if p.is_dir() {
+                                        cmd.arg(p);
+                                    } else {
+                                        cmd.arg("/select,").arg(p);
+                                    }
+                                    let _ = cmd.spawn();
+                                }
+                            }
                         });
                     }
                 });
@@ -6132,6 +6171,17 @@ impl eframe::App for App {
 mod tests {
     use super::*;
     use crate::model::{Asset, Ease};
+
+    /// `App::new` needs a real `eframe::CreationContext` (a GL context), so there is no headless
+    /// App harness to build one against here — this tests the same `Toast` construction that
+    /// `toast`/`toast_with_folder` do (both are one-line wrappers around it).
+    #[test]
+    fn toast_with_folder_sets_open_path_plain_toast_does_not() {
+        let plain = Toast::new("saved");
+        assert!(plain.open_path.is_none());
+        let with_folder = Toast::with_folder("saved", PathBuf::from("C:/out.mp4"));
+        assert_eq!(with_folder.open_path, Some(PathBuf::from("C:/out.mp4")));
+    }
 
     #[test]
     fn box_blur_spreads_and_preserves_flat_areas() {
