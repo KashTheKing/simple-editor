@@ -5,13 +5,19 @@
 //! outline width/colour, background box colour, margin from bottom = project.subtitle_margin).
 //! Below: the cue list (egui::Grid / ScrollArea): start and end as editable timecode-ish DragValues in
 //! seconds (3 decimals, end ≥ start + 0.1, keep the list sorted via Project::sort_cues), a multiline text
-//! field, a play button (seek to the cue → `seeked`) and a delete one; the cue containing the playhead is highlighted; a
-//! "Split at playhead" button on the highlighted cue. Undo once per gesture (same edit_start rule as the
-//! inspector); returns what changed.
+//! field, a play button (seek to the cue and play → `seeked` + `play`), a select checkbox and a delete
+//! one; the cue containing the playhead is highlighted; a "Split at playhead" button on the highlighted
+//! cue. A second toolbar row: "To text clips" (Project::cues_to_text_clips — editable Text clips on a
+//! "Subtitles" track), "Delete selected", "Delete in range" (the In/Out range) and "Clear all".
+//! "Open folder" → `open_folder`: the app writes the .srt sidecar and opens the folder. Undo once per
+//! gesture (same edit_start rule as the inspector); returns what changed.
 //!
 //! The "Transcribe" section drives `engine::transcribe`: pick a whisper.cpp model (its download size is
 //! named before the click and the download shows a progress bar), transcribe the selected clip's audio on
-//! a worker thread, and turn the transcript into cues ("Transcribe & generate subtitles"). Underneath it,
+//! a worker thread, and turn the transcript into cues ("Transcribe & generate subtitles"). The raw
+//! word timings are kept, so "Regenerate cues" rebuilds the cues with new grouping knobs (pause split,
+//! punctuation, max words/chars) without re-transcribing; a `--prompt` field feeds whisper vocabulary
+//! hints. Underneath it,
 //! the double-take detector lists the lines that were said more than once — "Mark on timeline" drops a
 //! marker per flubbed take (described by what was said) and "Cut the duplicates" ripples every take but
 //! the last one out, dragging the cues, the markers and the transcript along with the cut. With no model
@@ -42,8 +48,18 @@ pub struct TranscribeState {
     pub model: usize,
     pub language: String,
     pub max_chars: usize,
+    /// Wrapped lines per cue, joined with newlines (1 = one-liners, 2 = the usual two-line subs).
+    pub lines: usize,
     pub min_dur: f64,
     pub words: bool,
+    /// Vocabulary/style hints passed to whisper (`--prompt`).
+    pub prompt: String,
+    /// Sentence grouping for word-timed runs (gap, punctuation, max words/chars) — regenerate-time knobs.
+    pub group: transcribe::GroupOpts,
+    /// Raw one-word timings of the last word-timed run (timeline seconds) — what "Regenerate" regroups.
+    pub raw_words: Vec<(f64, f64, String)>,
+    /// Cues added by the last generate, so a regenerate replaces them instead of stacking duplicates.
+    pub generated: Vec<Id>,
     /// Double-take similarity, 0.5..=1.0.
     pub threshold: f32,
     /// Transcript of the last run, in timeline seconds.
@@ -69,8 +85,13 @@ impl Default for TranscribeState {
             model: transcribe::default_model(),
             language: "auto".into(),
             max_chars: 42,
+            lines: 1,
             min_dur: 1.0,
             words: false,
+            prompt: String::new(),
+            group: transcribe::GroupOpts::default(),
+            raw_words: Vec::new(),
+            generated: Vec::new(),
             threshold: 0.85,
             segments: Vec::new(),
             groups: Vec::new(),
@@ -88,6 +109,8 @@ impl Default for TranscribeState {
 #[derive(Default)]
 pub struct SubtitlesState {
     pub selected: Option<crate::model::Id>,
+    /// Multi-selected cues (the row checkboxes) for "Delete selected".
+    pub checked: std::collections::HashSet<Id>,
     pub show_style: bool,
     /// Cue whose text field should grab focus (set by "Add at playhead").
     pub focus: Option<Id>,
@@ -98,6 +121,10 @@ pub struct SubtitlesState {
 pub struct SubtitlesResponse {
     pub edited: bool,
     pub seeked: bool,
+    /// The cue's play button: seek there and start playback.
+    pub play: bool,
+    /// "Open folder" — the app writes the .srt sidecar next to the project and opens it in Explorer.
+    pub open_folder: bool,
 }
 
 /// "Add at playhead": a 2 s cue starting at the playhead.
@@ -146,6 +173,9 @@ pub fn show(
         if crate::ui::tools::glyph_text_button(ui, crate::ui::tools::Glyph::ExportArrow, "Export VTT…").clicked() {
             export_dialog(project, true);
         }
+        if ui.button("Open folder").on_hover_text("Open the project's subtitle folder in Explorer").clicked() {
+            resp.open_folder = true;
+        }
         let mut burn = project.show_subtitles;
         let r = ui.checkbox(&mut burn, "Burn in");
         if r.changed() {
@@ -155,6 +185,57 @@ pub fn show(
         }
         ui.toggle_value(&mut state.show_style, "Style");
         ui.toggle_value(&mut state.transcribe.open, "Transcribe");
+    });
+    ui.horizontal_wrapped(|ui| {
+        let any = !project.subtitles.is_empty();
+        let sel = state.checked.len();
+        let label = if sel > 0 { format!("To text clips ({sel})") } else { "To text clips".into() };
+        if ui
+            .add_enabled(any, Button::new(label))
+            .on_hover_text("Turn the selected cues (or all of them) into editable Text clips on a \"Subtitles\" track")
+            .clicked()
+        {
+            once(&mut undone, undo, project);
+            let only: Vec<Id> = state.checked.iter().copied().collect();
+            let n = project.cues_to_text_clips(if only.is_empty() { None } else { Some(&only) });
+            state.checked.clear();
+            resp.edited = n > 0;
+        }
+        let n = state.checked.len();
+        if ui.add_enabled(n > 0, Button::new(format!("Delete selected ({n})"))).clicked() {
+            once(&mut undone, undo, project);
+            project.subtitles.retain(|c| !state.checked.contains(&c.id));
+            state.checked.clear();
+            resp.edited = true;
+        }
+        let range = match (project.in_point, project.out_point) {
+            (Some(a), Some(b)) if b > a => Some((a, b)),
+            _ => None,
+        };
+        if ui
+            .add_enabled(any && range.is_some(), Button::new("Delete in range"))
+            .on_hover_text("Delete every cue that overlaps the In/Out range (set with I and O)")
+            .clicked()
+        {
+            let (a, b) = range.expect("button enabled only with a range");
+            once(&mut undone, undo, project);
+            project.subtitles.retain(|c| c.end <= a || c.start >= b);
+            state.checked.retain(|id| project.subtitles.iter().any(|c| c.id == *id));
+            resp.edited = true;
+        }
+        if ui.add_enabled(any, Button::new("Clear all")).clicked()
+            && rfd::MessageDialog::new()
+                .set_title("Clear subtitles")
+                .set_description(format!("Delete all {} subtitles?", project.subtitles.len()))
+                .set_buttons(rfd::MessageButtons::YesNo)
+                .show()
+                == rfd::MessageDialogResult::Yes
+        {
+            once(&mut undone, undo, project);
+            project.subtitles.clear();
+            state.checked.clear();
+            resp.edited = true;
+        }
     });
 
     if state.show_style {
@@ -169,6 +250,8 @@ pub fn show(
     let mut resort = false;
     let mut del: Option<Id> = None;
     let mut split: Option<Id> = None;
+    let mut convert: Option<Id> = None;
+    let (shift, primary_down) = ui.input(|i| (i.modifiers.shift, i.pointer.primary_down()));
     egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         for i in 0..project.subtitles.len() {
             let (id, start, end) = {
@@ -183,69 +266,99 @@ pub fn show(
             } else {
                 egui::Color32::TRANSPARENT
             };
-            egui::Frame::new().fill(fill).inner_margin(2.0).show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    let mut v = start;
-                    let r = ui.add(DragValue::new(&mut v).range(0.0..=(end - MIN_CUE)).speed(0.05).fixed_decimals(3));
-                    if edit_start(&r) {
+            let row_rect = egui::Frame::new()
+                .fill(fill)
+                .inner_margin(2.0)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let mut on = state.checked.contains(&id);
+                        if ui.checkbox(&mut on, "").on_hover_text("Select for \"Delete selected\"").changed() {
+                            if on {
+                                state.checked.insert(id);
+                            } else {
+                                state.checked.remove(&id);
+                            }
+                        }
+                        let mut v = start;
+                        let r =
+                            ui.add(DragValue::new(&mut v).range(0.0..=(end - MIN_CUE)).speed(0.05).fixed_decimals(3));
+                        if edit_start(&r) {
+                            once(&mut undone, undo, project);
+                        }
+                        if r.changed() {
+                            project.subtitles[i].start = v.clamp(0.0, end - MIN_CUE);
+                            resp.edited = true;
+                        }
+                        if r.drag_stopped() || (r.changed() && !r.dragged()) {
+                            resort = true;
+                        }
+                        let mut v = end;
+                        let r = ui.add(
+                            DragValue::new(&mut v).range((start + MIN_CUE)..=86400.0).speed(0.05).fixed_decimals(3),
+                        );
+                        if edit_start(&r) {
+                            once(&mut undone, undo, project);
+                        }
+                        if r.changed() {
+                            project.subtitles[i].end = v.max(start + MIN_CUE);
+                            resp.edited = true;
+                        }
+                        if glyph_text_button(ui, Glyph::Play, "").on_hover_text("Play from this cue").clicked() {
+                            *playhead = start;
+                            state.selected = Some(id);
+                            resp.seeked = true;
+                            resp.play = true;
+                        }
+                        if active && ph > start + 0.05 && ph < end - 0.05 && ui.small_button("Split").clicked() {
+                            split = Some(id);
+                        }
+                        if ui.small_button("T").on_hover_text("Convert to an editable Text clip").clicked() {
+                            convert = Some(id);
+                        }
+                        if crate::ui::markers_ui::x_button(ui).on_hover_text("Delete this cue").clicked() {
+                            del = Some(id);
+                        }
+                    });
+                    let mut text = project.subtitles[i].text.clone();
+                    let r = ui.add(egui::TextEdit::multiline(&mut text).desired_rows(1).desired_width(f32::INFINITY));
+                    // One undo entry per visit to the field, not per keystroke. "Add at playhead" focuses the
+                    // new cue itself and has already pushed one, so that focus does not push another.
+                    if state.focus == Some(id) {
+                        r.request_focus();
+                        state.focus = None;
+                    } else if r.gained_focus() {
                         once(&mut undone, undo, project);
                     }
-                    if r.changed() {
-                        project.subtitles[i].start = v.clamp(0.0, end - MIN_CUE);
-                        resp.edited = true;
-                    }
-                    if r.drag_stopped() || (r.changed() && !r.dragged()) {
-                        resort = true;
-                    }
-                    let mut v = end;
-                    let r =
-                        ui.add(DragValue::new(&mut v).range((start + MIN_CUE)..=86400.0).speed(0.05).fixed_decimals(3));
-                    if edit_start(&r) {
-                        once(&mut undone, undo, project);
-                    }
-                    if r.changed() {
-                        project.subtitles[i].end = v.max(start + MIN_CUE);
-                        resp.edited = true;
-                    }
-                    if glyph_text_button(ui, Glyph::Play, "").on_hover_text("Seek to cue").clicked() {
-                        *playhead = start;
+                    if r.has_focus() {
                         state.selected = Some(id);
-                        resp.seeked = true;
                     }
-                    if active && ph > start + 0.05 && ph < end - 0.05 && ui.small_button("Split").clicked() {
-                        split = Some(id);
+                    if r.changed() {
+                        project.subtitles[i].text = text;
+                        resp.edited = true;
                     }
-                    if crate::ui::markers_ui::x_button(ui).on_hover_text("Delete this cue").clicked() {
-                        del = Some(id);
-                    }
-                });
-                let mut text = project.subtitles[i].text.clone();
-                let r = ui.add(egui::TextEdit::multiline(&mut text).desired_rows(1).desired_width(f32::INFINITY));
-                // One undo entry per visit to the field, not per keystroke. "Add at playhead" focuses the
-                // new cue itself and has already pushed one, so that focus does not push another.
-                if state.focus == Some(id) {
-                    r.request_focus();
-                    state.focus = None;
-                } else if r.gained_focus() {
-                    once(&mut undone, undo, project);
-                }
-                if r.has_focus() {
-                    state.selected = Some(id);
-                }
-                if r.changed() {
-                    project.subtitles[i].text = text;
-                    resp.edited = true;
-                }
-            });
+                })
+                .response
+                .rect;
+            // Shift+drag over rows sweeps them into the selection (plain drags still edit the widgets)
+            if shift && primary_down && ui.rect_contains_pointer(row_rect) {
+                state.checked.insert(id);
+            }
         }
         if project.subtitles.is_empty() {
             ui.weak("No subtitles. \"Add at playhead\" or import an .srt / .vtt file.");
         }
     });
 
+    if let Some(id) = convert {
+        once(&mut undone, undo, project);
+        project.cues_to_text_clips(Some(&[id]));
+        state.checked.remove(&id);
+        resp.edited = true;
+    }
     if let Some(id) = del {
         once(&mut undone, undo, project);
         project.remove_cue(id);
+        state.checked.remove(&id);
         if state.selected == Some(id) {
             state.selected = None;
         }
@@ -279,6 +392,7 @@ fn style_section(
 ) {
     let mut style = project.subtitle_style.clone();
     let mut margin = project.subtitle_margin;
+    let mut cont = (project.subtitle_cont_prefix.clone(), project.subtitle_cont_suffix.clone());
     let mut start = false;
     let mut changed = false;
     let note = |r: &Response, start: &mut bool, changed: &mut bool| {
@@ -315,6 +429,48 @@ fn style_section(
         ui.label("Margin");
         note(&ui.add(DragValue::new(&mut margin).range(0.0..=1000.0)), &mut start, &mut changed);
         ui.end_row();
+        ui.label("Format");
+        ui.horizontal(|ui| {
+            note(&ui.toggle_value(&mut style.bold, "B"), &mut start, &mut changed);
+            note(&ui.toggle_value(&mut style.italic, "I"), &mut start, &mut changed);
+            for (v, lab) in [(0u8, "Left"), (1, "Center"), (2, "Right")] {
+                note(&ui.selectable_value(&mut style.align, v, lab), &mut start, &mut changed);
+            }
+        });
+        ui.end_row();
+        ui.label("Line spacing");
+        note(&ui.add(DragValue::new(&mut style.line_spacing).range(0.5..=3.0).speed(0.02)), &mut start, &mut changed);
+        ui.end_row();
+        ui.label("Letter spacing");
+        note(
+            &ui.add(DragValue::new(&mut style.letter_spacing).range(-5.0..=30.0).speed(0.1)),
+            &mut start,
+            &mut changed,
+        );
+        ui.end_row();
+        ui.label("Shadow");
+        ui.horizontal(|ui| {
+            note(&ui.checkbox(&mut style.shadow, ""), &mut start, &mut changed);
+            note(&ui.color_edit_button_srgba_unmultiplied(&mut style.shadow_color), &mut start, &mut changed);
+        });
+        ui.end_row();
+        ui.label("Continuation").on_hover_text(
+            "Added where a sentence is split across cues: the suffix ends the cut-off cue, the prefix \
+             starts the next (e.g. suffix \" —\" for em-dashes). Applied by Transcribe / Regenerate cues.",
+        );
+        ui.horizontal(|ui| {
+            note(
+                &ui.add(egui::TextEdit::singleline(&mut cont.0).desired_width(50.0).hint_text("prefix")),
+                &mut start,
+                &mut changed,
+            );
+            note(
+                &ui.add(egui::TextEdit::singleline(&mut cont.1).desired_width(50.0).hint_text("suffix")),
+                &mut start,
+                &mut changed,
+            );
+        });
+        ui.end_row();
     });
     if start {
         once(undone, undo, project);
@@ -322,6 +478,7 @@ fn style_section(
     if changed {
         project.subtitle_style = style;
         project.subtitle_margin = margin;
+        (project.subtitle_cont_prefix, project.subtitle_cont_suffix) = cont;
         resp.edited = true;
     }
 }
@@ -403,6 +560,21 @@ fn cut_dups(project: &mut Project, st: &mut TranscribeState) -> usize {
     n
 }
 
+/// Regroup the raw words (if the last run had word timings) with the current knobs and regenerate the
+/// cues, replacing the previously generated ones. No re-transcription — pure post-processing.
+fn generate(st: &mut TranscribeState, project: &mut Project) -> String {
+    if !st.raw_words.is_empty() {
+        st.segments = transcribe::group_words(&st.raw_words, &st.group);
+        st.groups = transcribe::duplicate_takes(&st.segments, st.threshold, TAKE_WINDOW);
+    }
+    let cont = (project.subtitle_cont_prefix.clone(), project.subtitle_cont_suffix.clone());
+    let cues = transcribe::to_cues(&st.segments, st.max_chars, st.lines, st.min_dur, (&cont.0, &cont.1));
+    let old: std::collections::HashSet<Id> = st.generated.iter().copied().collect();
+    project.subtitles.retain(|c| !old.contains(&c.id));
+    st.generated = cues.iter().map(|(s, e, t)| project.add_cue(*s, *e, t.clone())).collect();
+    format!("{} cues from {} segments", st.generated.len(), st.segments.len())
+}
+
 /// The "Transcribe" section: model + download, the run, and the double-take list.
 fn transcribe_section(
     ui: &mut egui::Ui,
@@ -469,6 +641,10 @@ fn transcribe_section(
         ui.label("Line length");
         ui.add(DragValue::new(&mut st.max_chars).range(20..=90).suffix(" chars"));
         ui.end_row();
+        ui.label("Lines per cue");
+        ui.add(DragValue::new(&mut st.lines).range(1..=4))
+            .on_hover_text("Wrapped lines shown together in one cue (2 = classic two-line subtitles)");
+        ui.end_row();
         ui.label("Min duration");
         ui.add(DragValue::new(&mut st.min_dur).range(0.3..=5.0).speed(0.05).suffix(" s"));
         ui.end_row();
@@ -476,6 +652,39 @@ fn transcribe_section(
         ui.checkbox(&mut st.words, "")
             .on_hover_text("Slower: whisper times every word, so the cues break exactly on speech");
         ui.end_row();
+        ui.label("Prompt").on_hover_text("Names, jargon and punctuation style hints for whisper — not commands");
+        ui.add(egui::TextEdit::singleline(&mut st.prompt).desired_width(220.0).hint_text("vocabulary hints…"));
+        ui.end_row();
+        if st.words || !st.raw_words.is_empty() {
+            ui.label("Pause split");
+            ui.add(DragValue::new(&mut st.group.max_gap).range(0.1..=5.0).speed(0.05).suffix(" s"))
+                .on_hover_text("A silence longer than this starts a new sentence");
+            ui.end_row();
+            ui.label("Break on");
+            ui.add(egui::TextEdit::singleline(&mut st.group.punct).desired_width(60.0).hint_text("none"))
+                .on_hover_text("A word ending with any of these characters ends the sentence");
+            ui.end_row();
+            ui.label("Max words");
+            let mut mw = st.group.max_words;
+            if ui
+                .add(DragValue::new(&mut mw).range(0..=40).custom_formatter(|v, _| {
+                    if v < 1.0 {
+                        "off".into()
+                    } else {
+                        format!("{v:.0}")
+                    }
+                }))
+                .on_hover_text("Cap a sentence at this many words (0 = no cap)")
+                .changed()
+            {
+                st.group.max_words = mw;
+            }
+            ui.end_row();
+            ui.label("Sentence chars");
+            ui.add(DragValue::new(&mut st.group.max_chars).range(30..=300).suffix(" chars"))
+                .on_hover_text("A sentence never grows past this many characters");
+            ui.end_row();
+        }
     });
 
     let tgt = target(project, selection);
@@ -490,6 +699,16 @@ fn transcribe_section(
                 j.cancel();
             }
         }
+        let can_regen = !running && (!st.segments.is_empty() || !st.raw_words.is_empty());
+        if ui
+            .add_enabled(can_regen, Button::new("Regenerate cues"))
+            .on_hover_text("Rebuild the cues from the last transcript with the knobs above — no re-transcription")
+            .clicked()
+        {
+            once(undone, undo, project);
+            st.status = generate(st, project);
+            resp.edited = true;
+        }
         if tgt.is_none() {
             ui.weak("Select a clip to transcribe.");
         }
@@ -499,6 +718,9 @@ fn transcribe_section(
         st.groups.clear();
         st.marks.clear();
         st.status.clear();
+        st.raw_words.clear();
+        // a fresh run appends to whatever cues exist — only a Regenerate replaces its own
+        st.generated.clear();
         st.clip = Some(t.clip);
         st.map = (t.offset, t.scale);
         st.job = Some(transcribe::start(transcribe::Options {
@@ -508,6 +730,7 @@ fn transcribe_section(
             model: file.to_string(),
             language: st.language.clone(),
             words: st.words,
+            prompt: st.prompt.clone(),
         }));
     }
 
@@ -525,13 +748,18 @@ fn transcribe_section(
             None => {
                 let mut segs = job.segments();
                 transcribe::retime(&mut segs, st.map.0, st.map.1);
-                let cues = transcribe::to_cues(&segs, st.max_chars, st.min_dur);
+                if st.words {
+                    // one word per segment: keep the raw words so "Regenerate cues" can regroup them
+                    st.raw_words = segs.iter().map(|s| (s.start, s.end, s.text.clone())).collect();
+                } else {
+                    st.raw_words.clear();
+                    st.segments = segs;
+                    st.groups = transcribe::duplicate_takes(&st.segments, st.threshold, TAKE_WINDOW);
+                }
                 once(undone, undo, project);
-                apply_import(project, &cues, false);
-                st.segments = segs;
-                st.groups = transcribe::duplicate_takes(&st.segments, st.threshold, TAKE_WINDOW);
+                let msg = generate(st, project);
                 resp.edited = true;
-                format!("{} cues from {} segments", cues.len(), st.segments.len())
+                msg
             }
         };
     }
@@ -717,6 +945,57 @@ mod tests {
             p.set_speed(&[id], speed, false);
         }
         (p, id)
+    }
+
+    #[test]
+    fn regenerate_replaces_its_own_cues_and_keeps_the_rest() {
+        let mut p = Project::new();
+        let manual = p.add_cue(50.0, 51.0, "hand-written");
+        let mut st = TranscribeState {
+            raw_words: vec![(0.0, 0.4, "One".into()), (0.5, 0.9, "two.".into()), (1.2, 1.6, "Three.".into())],
+            ..Default::default()
+        };
+        generate(&mut st, &mut p);
+        assert_eq!(st.segments.len(), 2, "grouped on punctuation");
+        let n = p.subtitles.len();
+        assert!(p.subtitles.iter().any(|c| c.id == manual));
+        // tighter knobs: every word its own sentence — same word data, no re-transcription
+        st.group.max_words = 1;
+        generate(&mut st, &mut p);
+        assert_eq!(st.segments.len(), 3);
+        assert!(p.subtitles.iter().any(|c| c.id == manual), "manual cue survives");
+        assert_eq!(p.subtitles.len(), n + 1, "old generated cues were replaced, not stacked");
+    }
+
+    #[test]
+    fn split_cue_makes_two_halves_with_the_same_text() {
+        let mut p = Project::new();
+        let id = p.add_cue(1.0, 3.0, "hello");
+        assert!(p.split_cue(id, 0.5).is_none(), "outside the cue");
+        assert!(p.split_cue(id, 1.01).is_none(), "too close to the edge");
+        let right = p.split_cue(id, 2.0).expect("split");
+        assert_eq!(p.subtitles.len(), 2);
+        assert!((p.subtitles[0].end - 2.0).abs() < 1e-9 && (p.subtitles[1].start - 2.0).abs() < 1e-9);
+        assert_eq!(p.subtitles[1].id, right);
+        assert_eq!(p.subtitles[1].text, "hello");
+    }
+
+    #[test]
+    fn cues_convert_to_text_clips() {
+        let mut p = Project::new();
+        let a = p.add_cue(1.0, 2.0, "first");
+        p.add_cue(3.0, 4.0, "second");
+        assert_eq!(p.cues_to_text_clips(Some(&[a])), 1);
+        assert_eq!(p.subtitles.len(), 1, "the converted cue is gone");
+        let track = p.tracks.iter().find(|t| t.name == "Subtitles").expect("subtitle track");
+        assert_eq!(track.clips.len(), 1);
+        let c = &track.clips[0];
+        assert_eq!(c.kind, ClipKind::Text);
+        assert_eq!(c.text.as_ref().unwrap().text, "first");
+        assert!((c.start - 1.0).abs() < 1e-9 && (c.duration - 1.0).abs() < 1e-9);
+        assert_eq!(p.cues_to_text_clips(None), 1, "convert-all reuses the track");
+        assert!(p.subtitles.is_empty());
+        assert_eq!(p.tracks.iter().filter(|t| t.name == "Subtitles").count(), 1);
     }
 
     #[test]
