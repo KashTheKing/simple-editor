@@ -20,9 +20,19 @@
 //! Migration: a stored layout from an older version does not know the round-3 panes; `from_json` rejects
 //! it (None) so the app falls back to this default instead of an editor with no Tools/Mixer/Markers.
 
-use crate::ui::tools::{glyph_text_button, Glyph};
+use crate::ui::tools::{draw_glyph, glyph_text_button, Glyph};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+/// Icon for a pane's tab / menu entry: the user's Settings → Appearance override first
+/// ("none" = no icon), then the built-in default.
+pub fn pane_icon(icons: &BTreeMap<String, String>, pane: Pane) -> Option<Glyph> {
+    if let Some(name) = icons.get(&format!("pane.{}", pane.title())) {
+        return if name == "none" { None } else { Glyph::from_name(name) };
+    }
+    Some(pane.glyph())
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub enum Pane {
@@ -173,6 +183,80 @@ impl Layout {
         let root = tiles.insert_new(Tile::Container(Container::Linear(rows)));
         Self::new(egui_tiles::Tree::new("layout", root, tiles))
     }
+    /// "Colorist": grading front and centre — a big Preview over a wide Curves/Nodes group, Effects
+    /// ready on the left, the cutting panes tucked away as trailing tabs.
+    pub fn colorist_layout() -> Self {
+        use egui_tiles::{Container, Linear, LinearDir, Tile};
+        let mut tiles = egui_tiles::Tiles::default();
+        let tabs = |tiles: &mut egui_tiles::Tiles<Pane>, panes: &[Pane]| {
+            let ids: Vec<_> = panes.iter().map(|&p| tiles.insert_pane(p)).collect();
+            tiles.insert_tab_tile(ids)
+        };
+        let preview = tiles.insert_pane(Pane::Preview);
+        let looks = tabs(&mut tiles, &[Pane::Effects, Pane::Presets, Pane::Library, Pane::Transitions]);
+        let inspector = tabs(&mut tiles, &[Pane::Inspector, Pane::Tracking]);
+        let mut top = Linear::new(LinearDir::Horizontal, vec![looks, preview, inspector]);
+        top.shares.set_share(looks, 0.2);
+        top.shares.set_share(preview, 0.6);
+        top.shares.set_share(inspector, 0.2);
+        let top = tiles.insert_new(Tile::Container(Container::Linear(top)));
+        let grade = tabs(&mut tiles, &[Pane::Curves, Pane::Nodes]);
+        let timeline = tabs(
+            &mut tiles,
+            &[Pane::Timeline, Pane::Tools, Pane::Mixer, Pane::AutoCut, Pane::Subtitles, Pane::Markers, Pane::Planner],
+        );
+        let mut bottom = Linear::new(LinearDir::Horizontal, vec![grade, timeline]);
+        bottom.shares.set_share(grade, 0.55);
+        bottom.shares.set_share(timeline, 0.45);
+        let bottom = tiles.insert_new(Tile::Container(Container::Linear(bottom)));
+        let mut rows = Linear::new(LinearDir::Vertical, vec![top, bottom]);
+        rows.shares.set_share(top, 0.62);
+        rows.shares.set_share(bottom, 0.38);
+        let root = tiles.insert_new(Tile::Container(Container::Linear(rows)));
+        Self::new(egui_tiles::Tree::new("layout", root, tiles))
+    }
+
+    /// "Fast-Cut Assembly": maximum monitor and timeline real estate — Library beside a big Preview on
+    /// top, the full-width Timeline below, everything else stacked as tabs behind the Library.
+    pub fn fastcut_layout() -> Self {
+        use egui_tiles::{Container, Linear, LinearDir, Tile};
+        let mut tiles = egui_tiles::Tiles::default();
+        let tabs = |tiles: &mut egui_tiles::Tiles<Pane>, panes: &[Pane]| {
+            let ids: Vec<_> = panes.iter().map(|&p| tiles.insert_pane(p)).collect();
+            tiles.insert_tab_tile(ids)
+        };
+        let source = tabs(
+            &mut tiles,
+            &[
+                Pane::Library,
+                Pane::Inspector,
+                Pane::Effects,
+                Pane::Transitions,
+                Pane::Curves,
+                Pane::Nodes,
+                Pane::Mixer,
+                Pane::AutoCut,
+                Pane::Subtitles,
+                Pane::Markers,
+                Pane::Planner,
+                Pane::Presets,
+                Pane::Tracking,
+                Pane::Tools,
+            ],
+        );
+        let preview = tiles.insert_pane(Pane::Preview);
+        let mut top = Linear::new(LinearDir::Horizontal, vec![source, preview]);
+        top.shares.set_share(source, 0.3);
+        top.shares.set_share(preview, 0.7);
+        let top = tiles.insert_new(Tile::Container(Container::Linear(top)));
+        let timeline = tiles.insert_pane(Pane::Timeline);
+        let mut rows = Linear::new(LinearDir::Vertical, vec![top, timeline]);
+        rows.shares.set_share(top, 0.6);
+        rows.shares.set_share(timeline, 0.4);
+        let root = tiles.insert_new(Tile::Container(Container::Linear(rows)));
+        Self::new(egui_tiles::Tree::new("layout", root, tiles))
+    }
+
     /// A layout around a tree, with an empty history.
     pub fn new(tree: egui_tiles::Tree<Pane>) -> Self {
         Self { tree, popped: Vec::new(), undo: Vec::new(), redo: Vec::new() }
@@ -333,10 +417,43 @@ pub fn profile_button(ui: &mut egui::Ui, name: &str) -> egui::Response {
 
 struct Behaviour<'a> {
     draw: &'a mut dyn FnMut(&mut egui::Ui, Pane),
+    icons: &'a BTreeMap<String, String>,
     hide: Vec<Pane>,
     pop: Vec<Pane>,
+    /// Icon picks from the tab context menu: `None` = back to default, `Some("none")` = no icon.
+    set_icon: Vec<(Pane, Option<String>)>,
+    /// Tab-bar fill when the editor background image shows through (else egui_tiles' default).
+    tab_bar: Option<egui::Color32>,
+    /// Cozy look: rounded tab tops, accent fill for the active tab instead of an accent outline.
+    cozy: bool,
     edited: bool,
     dropped: bool,
+}
+
+/// The "Set Icon" submenu shared by tab and toolbar-button context menus: Default / None / every glyph.
+/// Returns the pick (`None` = no click yet, `Some(None)` = reset to default, `Some(Some(name))`).
+pub fn icon_menu(ui: &mut egui::Ui) -> Option<Option<String>> {
+    let mut pick = None;
+    ui.menu_button("Set Icon", |ui| {
+        if ui.button("Default").clicked() {
+            pick = Some(None);
+            ui.close();
+        }
+        if ui.button("None").clicked() {
+            pick = Some(Some("none".to_string()));
+            ui.close();
+        }
+        ui.separator();
+        egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+            for &g in Glyph::ALL {
+                if glyph_text_button(ui, g, g.name()).clicked() {
+                    pick = Some(Some(g.name().to_string()));
+                    ui.close();
+                }
+            }
+        });
+    });
+    pick
 }
 
 impl egui_tiles::Behavior<Pane> for Behaviour<'_> {
@@ -346,6 +463,101 @@ impl egui_tiles::Behavior<Pane> for Behaviour<'_> {
     }
     fn tab_title_for_pane(&mut self, pane: &Pane) -> egui::WidgetText {
         pane.title().into()
+    }
+    /// Default tab (egui_tiles 0.14) minus the close button, plus the pane's icon before the title.
+    fn tab_ui(
+        &mut self,
+        tiles: &mut egui_tiles::Tiles<Pane>,
+        ui: &mut egui::Ui,
+        id: egui::Id,
+        tile_id: egui_tiles::TileId,
+        state: &egui_tiles::TabState,
+    ) -> egui::Response {
+        let glyph = tiles.get_pane(&tile_id).copied().and_then(|p| pane_icon(self.icons, p));
+        let text = self.tab_title_for_tile(tiles, tile_id);
+        let font_id = egui::TextStyle::Button.resolve(ui.style());
+        let galley = text.into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, font_id);
+        let x_margin = self.tab_title_spacing(ui.visuals());
+        let (icon_w, gap) = if glyph.is_some() { (16.0, 4.0) } else { (0.0, 0.0) };
+        let width = galley.size().x + icon_w + gap + 2.0 * x_margin;
+        let (_, tab_rect) = ui.allocate_space(egui::vec2(width, ui.available_height()));
+        let tab_response =
+            ui.interact(tab_rect, id, egui::Sense::click_and_drag()).on_hover_cursor(self.tab_hover_cursor_icon());
+        if ui.is_rect_visible(tab_rect) && !state.is_being_dragged {
+            let text_color;
+            if self.cozy {
+                // cozy: rounded top corners, no accent outline — the active tab IS the accent,
+                // inactive tabs only light up on hover
+                let accent = ui.visuals().widgets.active.bg_fill;
+                let r = egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 };
+                if state.active {
+                    ui.painter().rect_filled(tab_rect.shrink(0.5), r, accent);
+                    text_color = crate::ui::tools::on_accent(accent);
+                } else {
+                    if tab_response.hovered() {
+                        ui.painter().rect_filled(tab_rect.shrink(0.5), r, ui.visuals().widgets.hovered.weak_bg_fill);
+                    }
+                    text_color = self.tab_text_color(ui.visuals(), tiles, tile_id, state);
+                }
+            } else {
+                let bg_color = self.tab_bg_color(ui.visuals(), tiles, tile_id, state);
+                let stroke = self.tab_outline_stroke(ui.visuals(), tiles, tile_id, state);
+                ui.painter().rect(tab_rect.shrink(0.5), 0.0, bg_color, stroke, egui::StrokeKind::Inside);
+                if state.active {
+                    // connect the tab with its contents
+                    ui.painter().hline(
+                        tab_rect.x_range(),
+                        tab_rect.bottom(),
+                        egui::Stroke::new(stroke.width + 1.0, bg_color),
+                    );
+                }
+                text_color = self.tab_text_color(ui.visuals(), tiles, tile_id, state);
+            }
+            if let Some(g) = glyph {
+                let icon_rect = egui::Rect::from_min_size(
+                    egui::pos2(tab_rect.left() + x_margin, tab_rect.top()),
+                    egui::vec2(icon_w, tab_rect.height()),
+                );
+                draw_glyph(ui.painter(), icon_rect, g, text_color);
+            }
+            let inner = tab_rect.shrink2(egui::vec2(x_margin, 0.0));
+            let tp = egui::pos2(inner.left() + icon_w + gap, inner.center().y - galley.size().y / 2.0);
+            ui.painter().galley(tp, galley, text_color);
+        }
+        self.on_tab_button(tiles, tile_id, tab_response)
+    }
+    /// Right-click menu on a tab: the tab-bar buttons' actions plus the icon picker.
+    fn on_tab_button(
+        &mut self,
+        tiles: &egui_tiles::Tiles<Pane>,
+        tile_id: egui_tiles::TileId,
+        button_response: egui::Response,
+    ) -> egui::Response {
+        let Some(&pane) = tiles.get_pane(&tile_id) else { return button_response };
+        button_response.context_menu(|ui| {
+            if glyph_text_button(ui, Glyph::PopOut, "Pop Out").clicked() {
+                self.pop.push(pane);
+                ui.close();
+            }
+            if glyph_text_button(ui, Glyph::Cross, "Hide").clicked() {
+                self.hide.push(pane);
+                ui.close();
+            }
+            ui.separator();
+            if let Some(pick) = icon_menu(ui) {
+                self.set_icon.push((pane, pick));
+            }
+        });
+        button_response
+    }
+    fn tab_bar_color(&self, visuals: &egui::Visuals) -> egui::Color32 {
+        self.tab_bar.unwrap_or_else(|| {
+            if visuals.dark_mode {
+                visuals.extreme_bg_color
+            } else {
+                (egui::Rgba::from(visuals.panel_fill) * egui::Rgba::from_gray(0.8)).into()
+            }
+        })
     }
     fn top_bar_right_ui(
         &mut self,
@@ -431,11 +643,24 @@ pub fn show(
     ctx: &egui::Context,
     ui: &mut egui::Ui,
     layout: &mut Layout,
+    icons: &BTreeMap<String, String>,
+    tab_bar: Option<egui::Color32>,
+    cozy: bool,
     draw: &mut dyn FnMut(&mut egui::Ui, Pane),
-) -> (bool, bool) {
+) -> (bool, bool, Vec<(Pane, Option<String>)>) {
     // the drop happens inside tree.ui(), so grab the "before" state while a drag is still in flight
     let dragged = layout.tree.dragged_id(ctx).map(|id| (id, share_fraction(&layout.tree, id), layout.to_json()));
-    let mut beh = Behaviour { draw, hide: Vec::new(), pop: Vec::new(), edited: false, dropped: false };
+    let mut beh = Behaviour {
+        draw,
+        icons,
+        hide: Vec::new(),
+        pop: Vec::new(),
+        set_icon: Vec::new(),
+        tab_bar,
+        cozy,
+        edited: false,
+        dropped: false,
+    };
     layout.tree.ui(&mut beh, ui);
     let mut moved = false;
     if let (true, Some((id, fraction, before))) = (beh.dropped, dragged) {
@@ -449,7 +674,7 @@ pub fn show(
         moved = true;
     }
     activate_orphan_tabs(&mut layout.tree);
-    let (hide, pop, mut changed) = (beh.hide, beh.pop, beh.edited);
+    let (hide, pop, set_icon, mut changed) = (beh.hide, beh.pop, beh.set_icon, beh.edited);
     for p in hide {
         if layout.is_visible(p) {
             layout.toggle(p);
@@ -477,7 +702,7 @@ pub fn show(
         layout.dock(p);
         changed = true;
     }
-    (changed, moved)
+    (changed, moved, set_icon)
 }
 
 #[cfg(test)]
@@ -486,11 +711,17 @@ mod tests {
 
     #[test]
     fn default_layout_contains_every_pane() {
-        let l = Layout::default_layout();
-        for p in Pane::ALL {
-            assert!(l.tree.tiles.find_pane(&p).is_some(), "{p:?} missing from the default layout");
-            assert!(l.is_visible(p), "{p:?} should be visible (a tab may be inactive but is not hidden)");
+        for (name, l) in [
+            ("default", Layout::default_layout()),
+            ("colorist", Layout::colorist_layout()),
+            ("fastcut", Layout::fastcut_layout()),
+        ] {
+            for p in Pane::ALL {
+                assert!(l.tree.tiles.find_pane(&p).is_some(), "{p:?} missing from the {name} layout");
+                assert!(l.is_visible(p), "{p:?} hidden in the {name} layout");
+            }
         }
+        let l = Layout::default_layout();
         // the Timeline is a column of its own, so no tab can sit in front of it
         let timeline = l.tree.tiles.find_pane(&Pane::Timeline).unwrap();
         assert!(matches!(l.tree.tiles.get(timeline), Some(egui_tiles::Tile::Pane(Pane::Timeline))));

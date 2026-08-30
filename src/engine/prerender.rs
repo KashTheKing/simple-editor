@@ -32,7 +32,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const MAGIC: &[u8; 4] = b"SEPR";
-const VERSION: u32 = 1;
+// 2: video clips apply fade in/out as opacity — old tiles rendered before that are stale
+const VERSION: u32 = 2;
 const HEADER: u64 = 4 + 4 * 4;
 /// Stop growing the cache past this (raw RGBA is big); the oldest files go first.
 const CACHE_BUDGET: u64 = 8 << 30;
@@ -449,9 +450,11 @@ pub fn key_for(project: &Project, sec: i64) -> u64 {
             continue;
         }
         for tr in &track.transitions {
-            if let Some((l, r)) = track.transition_pair(tr) {
-                if l.start < b && r.end() > a {
-                    hash_json(&mut h, tr);
+            if let Some((l, r)) = track.transition_clips(tr) {
+                if let Some((cut, half)) = tr.cut_half(l, r) {
+                    if cut - half < b && cut + half > a {
+                        hash_json(&mut h, tr);
+                    }
                 }
             }
         }

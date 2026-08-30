@@ -247,6 +247,9 @@ impl TimelineState {
 pub struct TimelineCtx<'a> {
     pub project: &'a mut Project,
     pub selection: &'a mut Vec<Id>,
+    /// Selected transition ids (timeline bands) — separate from the clip selection: clicking one
+    /// kind of thing deselects the other, Ctrl adds within its own kind.
+    pub sel_transitions: &'a mut Vec<Id>,
     pub playhead: &'a mut f64,
     /// Call with the project *before* mutating it (once per gesture) — pushes an undo snapshot.
     pub undo: &'a mut dyn FnMut(&Project),
@@ -342,6 +345,7 @@ enum Act {
     /// Delete every keyframe at clip-local time `t`.
     DelKeys(Id, f64),
     RemoveTransition(Id),
+    RemoveTransitions(Vec<Id>),
     /// Add a project marker at this timeline time.
     AddMarker(f64),
     /// Razor tool: split every clip crossing this timeline time.
@@ -960,6 +964,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
 
     let mut act: Option<Act> = None;
     let mut click: Option<Id> = None;
+    let mut trans_click: Option<Id> = None;
+    // drop selected transitions that no longer exist (removed, pruned, project swapped)
+    c.sel_transitions.retain(|id| c.project.tracks.iter().any(|t| t.transitions.iter().any(|x| x.id == *id)));
     // spacer tool: a press on empty lane space opens a gap instead of rubber-banding
     let mut start_spacer = false;
     let mut start_move: Option<Id> = None;
@@ -978,6 +985,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     // rubber band: hit-tested while the rows are painted, applied on release
     let band_rect = state.band.map(|(o, _)| Rect::from_two_pos(o, pointer.unwrap_or(o)).intersect(lanes));
     let mut band_ids: Vec<Id> = Vec::new();
+    let mut band_trans: Vec<Id> = Vec::new();
     // marker rename buffer, moved out of `state` so the menu closures can borrow it while `state` paints
     let mut rename = state.rename.take();
     let mut seek_marker: Option<f64> = None;
@@ -1066,10 +1074,11 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             if !clip.enabled || !active {
                 color = color.gamma_multiply(0.5);
             }
-            lp.rect_filled(rect, 0, color);
-            lp.rect_stroke(rect, 0, thin, StrokeKind::Inside);
+            let cr = CornerRadius::same(pal.clip_rounding as u8);
+            lp.rect_filled(rect, cr, color);
+            lp.rect_stroke(rect, cr, thin, StrokeKind::Inside);
             if clip.container {
-                lp.rect_stroke(rect, 0, Stroke::new(1.5, pal.accent), StrokeKind::Inside);
+                lp.rect_stroke(rect, cr, Stroke::new(1.5, pal.accent), StrokeKind::Inside);
             }
             // sub-pixel clips (zoomed way out): fill only — no text, waveform, diamonds or hit-testing.
             // ponytail: 4 pt is well under the ~18 pt a clip needs for its trim handles, and the rubber
@@ -1082,7 +1091,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             }
             if !detailed {
                 if c.selection.contains(&clip.id) {
-                    lp.rect_stroke(rect, 0, Stroke::new(2.0, pal.selection), StrokeKind::Inside);
+                    lp.rect_stroke(rect, cr, Stroke::new(2.0, pal.selection), StrokeKind::Inside);
                 }
                 continue;
             }
@@ -1194,6 +1203,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     let y = rect.bottom() - db_frac(gain_db(clip.volume.value as f32)) * rect.height();
                     name_pc.hline(vis.x_range(), y, vs);
                 }
+            }
+            if clip.kind != ClipKind::Adjustment {
+                // fade ramps + handles: audio gain fades, opacity fades on visual clips
                 let fs = Stroke::new(1.0, pal.text);
                 let fi_x = (rect.left() + clip.fade_in as f32 * state.zoom).min(rect.right());
                 let fo_x = (rect.right() - clip.fade_out as f32 * state.zoom).max(rect.left());
@@ -1265,9 +1277,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             }
             let selected = c.selection.contains(&clip.id);
             if selected {
-                lp.rect_stroke(rect, 0, Stroke::new(2.0, pal.selection), StrokeKind::Inside);
+                lp.rect_stroke(rect, cr, Stroke::new(2.0, pal.selection), StrokeKind::Inside);
             } else if linked_sel.contains(&clip.id) {
-                lp.rect_stroke(rect, 0, Stroke::new(1.0, pal.selection), StrokeKind::Inside);
+                lp.rect_stroke(rect, cr, Stroke::new(1.0, pal.selection), StrokeKind::Inside);
             }
 
             // interaction: body, then volume line, then edges, then fade handles on top
@@ -1372,7 +1384,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     });
                 }
             }
-            if clip.kind == ClipKind::Audio {
+            if clip.kind != ClipKind::Adjustment {
                 let fi_x = (rect.left() + clip.fade_in as f32 * state.zoom).min(rect.right());
                 let fo_x = (rect.right() - clip.fade_out as f32 * state.zoom).max(rect.left());
                 for (hx, is_out, salt) in [(fi_x, false, "fi"), (fo_x, true, "fo")] {
@@ -1393,19 +1405,30 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             }
         }
 
-        // transitions: an overlapping band centred on each valid cut
+        // transitions: an overlapping band on each valid cut / clip edge
         for tr in &track.transitions {
-            let Some((left, right)) = track.transition_pair(tr) else { continue };
-            // the played window is clamped to the two clips (an over-long transition can't reach past them)
-            let (wa, wb) = tr.window(left, right);
+            let Some((left, right)) = track.transition_clips(tr) else { continue };
+            // the played window is clamped to the clip(s) (an over-long transition can't reach past them)
+            let Some((cut, half)) = tr.cut_half(left, right) else { continue };
+            let (wa, wb) = (cut - half, cut + half);
             let (xa, xb) = (state.x_at(wa), state.x_at(wb));
             if xb < lanes.left() || xa > lanes.right() {
                 continue;
             }
             let band = Rect::from_min_max(pos2(xa, row.top() + 1.0), pos2(xb, row.bottom() - 1.0));
             let bvis = band.intersect(lanes);
+            if let Some(br) = band_rect {
+                if br.intersects(band) {
+                    band_trans.push(tr.id);
+                }
+            }
+            let selected = c.sel_transitions.contains(&tr.id);
             lp.rect_filled(band, 0, pal.bg.gamma_multiply(0.5));
-            lp.rect_stroke(band, 0, Stroke::new(1.0, pal.accent), StrokeKind::Inside);
+            if selected {
+                lp.rect_filled(band, 0, pal.selection.gamma_multiply(0.25));
+            }
+            let (bs, bc) = if selected { (2.0, pal.selection) } else { (1.0, pal.accent) };
+            lp.rect_stroke(band, 0, Stroke::new(bs, bc), StrokeKind::Inside);
             if bvis.is_positive() {
                 lp.with_clip_rect(bvis).text(
                     band.center(),
@@ -1415,9 +1438,27 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     pal.text,
                 );
                 let br = ui.interact(bvis, id.with(tr.id), Sense::click());
+                if br.clicked() {
+                    trans_click = Some(tr.id);
+                }
+                if br.secondary_clicked() && !selected {
+                    c.sel_transitions.clear();
+                    c.sel_transitions.push(tr.id);
+                    c.selection.clear();
+                }
                 br.context_menu(|ui| {
-                    if ui.button("Remove Transition").clicked() {
-                        act = Some(Act::RemoveTransition(tr.id));
+                    let many = selected && c.sel_transitions.len() > 1;
+                    let label = if many {
+                        format!("Remove {} Selected Transitions", c.sel_transitions.len())
+                    } else {
+                        "Remove Transition".into()
+                    };
+                    if ui.button(label).clicked() {
+                        act = Some(if many {
+                            Act::RemoveTransitions(c.sel_transitions.clone())
+                        } else {
+                            Act::RemoveTransition(tr.id)
+                        });
                     }
                 });
             }
@@ -1538,10 +1579,16 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         if !primary_down {
             if !add {
                 c.selection.clear();
+                c.sel_transitions.clear();
             }
             for cid in band_ids.drain(..) {
                 if !c.selection.contains(&cid) {
                     c.selection.push(cid);
+                }
+            }
+            for tid in band_trans.drain(..) {
+                if !c.sel_transitions.contains(&tid) {
+                    c.sel_transitions.push(tid);
                 }
             }
             state.band = None;
@@ -1850,7 +1897,10 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 let t = snap_time(state.time_at(pp.x), c.snap, state.zoom, c.project, *c.playhead, &[]);
                 act = Some(Act::AddMarker(t.max(0.0)));
             }
-            _ => c.selection.clear(),
+            _ => {
+                c.selection.clear();
+                c.sel_transitions.clear();
+            }
         }
     }
     // a press that missed every clip starts a rubber band (Shift adds to the selection)
@@ -2008,7 +2058,24 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         let t = &mut c.project.tracks[ti];
         t.height = (t.height + dy).clamp(MIN_TRACK_H, MAX_TRACK_H);
     }
+    if let Some(tid) = trans_click {
+        // transitions select like clips: click replaces, Ctrl toggles; the clip selection makes way
+        if mods.ctrl {
+            match c.sel_transitions.iter().position(|&x| x == tid) {
+                Some(i) => {
+                    c.sel_transitions.remove(i);
+                }
+                None => c.sel_transitions.push(tid),
+            }
+        } else {
+            *c.sel_transitions = vec![tid];
+            c.selection.clear();
+        }
+    }
     if let Some(cid) = click {
+        if !mods.ctrl {
+            c.sel_transitions.clear();
+        }
         // click = whole link group, Alt+click = just this clip, Ctrl toggles the group
         let group = if mods.alt { vec![cid] } else { c.project.expand_links(&[cid]) };
         if mods.ctrl {
@@ -2087,6 +2154,12 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 }
             }
             Act::RemoveTransition(tid) => p.remove_transition(tid),
+            Act::RemoveTransitions(tids) => {
+                for tid in tids {
+                    p.remove_transition(tid);
+                }
+                c.sel_transitions.clear();
+            }
             Act::AddMarker(t) => {
                 let mid = p.add_marker(t, "Marker");
                 state.selected_marker = Some(mid);
@@ -2426,15 +2499,19 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             Gesture::TransDur { track, id, changed } => {
                 // the project can be replaced mid-drag (undo, MCP project.open/sequence.open): index may be stale
                 if let Some(tr) = p.tracks.get_mut(*track) {
-                    let lim = tr
-                        .transitions
-                        .iter()
-                        .find(|t| t.id == *id)
-                        .and_then(|t| tr.transition_pair(t))
-                        .map(|(l, r)| (r.start, 2.0 * l.duration.min(r.duration)));
-                    if let Some((cut, max)) = lim {
-                        // cap: the Transitions panel's 0.1..5 s range, and what the two clips can actually supply
-                        let d = ((t_at(pos.x) - cut).abs() * 2.0).min(max).min(5.0).max(0.1);
+                    // duration follows the dragged edge: distance from the anchor (the cut, or the
+                    // clip edge the transition hangs off), capped by what the clip(s) can supply
+                    let lim = tr.transitions.iter().find(|t| t.id == *id).and_then(|t| {
+                        let (l, r) = tr.transition_clips(t)?;
+                        Some(match t.edge {
+                            crate::model::TransitionEdge::Cut => (r?.start, 2.0, 2.0 * l?.duration.min(r?.duration)),
+                            crate::model::TransitionEdge::In => (r?.start, 1.0, r?.duration),
+                            crate::model::TransitionEdge::Out => (l?.end(), 1.0, l?.duration),
+                        })
+                    });
+                    if let Some((anchor, scale, max)) = lim {
+                        // cap: the Transitions panel's 0.1..5 s range, and what the clip(s) can actually supply
+                        let d = ((t_at(pos.x) - anchor).abs() * scale).min(max).min(5.0).max(0.1);
                         if let Some(t) = tr.transitions.iter_mut().find(|t| t.id == *id) {
                             if (t.duration - d).abs() > 1e-9 {
                                 t.duration = d;
@@ -2665,6 +2742,7 @@ mod tests {
         state: TimelineState,
         project: Project,
         selection: Vec<Id>,
+        sel_transitions: Vec<Id>,
         playhead: f64,
         undos: usize,
         waves: WaveformCache,
@@ -2701,6 +2779,7 @@ mod tests {
                 state: TimelineState::default(),
                 project,
                 selection: Vec::new(),
+                sel_transitions: Vec::new(),
                 playhead: 0.0,
                 undos: 0,
                 waves,
@@ -2725,7 +2804,8 @@ mod tests {
                 ..Default::default()
             };
             let pal = Palette::new(true, Color32::from_rgb(0, 120, 212));
-            let Harness { ctx, state, project, selection, playhead, undos, waves, tool, snap, .. } = self;
+            let Harness { ctx, state, project, selection, sel_transitions, playhead, undos, waves, tool, snap, .. } =
+                self;
             let mut resp = None;
             let full = ctx.run(input, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
@@ -2736,6 +2816,7 @@ mod tests {
                         TimelineCtx {
                             project,
                             selection,
+                            sel_transitions,
                             playhead,
                             undo: &mut undo,
                             waveforms: waves,
@@ -3463,6 +3544,50 @@ mod tests {
         let ms = t0.elapsed().as_secs_f64() * 1000.0 / 20.0;
         println!("timeline: 1000 clips, zoom 40: {ms:.2} ms/frame");
         assert!(ms < 10.0, "zoomed-in frame took {ms:.2} ms");
+    }
+
+    /// Transition bands select like clips: click replaces (and clears the clip selection), Ctrl+click
+    /// adds, clicking a clip clears them again, and the rubber band picks up the bands it crosses.
+    #[test]
+    fn transition_bands_select_like_clips() {
+        use crate::model::TransitionKind;
+        let mut h = Harness::new();
+        let lanes = h.state.lanes_rect;
+        h.project.split_at(4.0, None);
+        h.project.split_at(7.0, None);
+        let c2 = h.project.tracks[0].clips[1].id;
+        let c3 = h.project.tracks[0].clips[2].id;
+        let t1 = h.project.add_transition(c2, TransitionKind::CrossFade, 1.0).unwrap();
+        let t2 = h.project.add_transition(c3, TransitionKind::CrossFade, 1.0).unwrap();
+        h.selection = vec![c2];
+        h.frame(vec![]);
+        let band1 = pos2(h.state.x_at(4.0), lanes.top() + 30.0);
+        let band2 = pos2(h.state.x_at(7.0), lanes.top() + 30.0);
+        h.press(band1);
+        h.release(band1);
+        assert_eq!(h.sel_transitions, vec![t1]);
+        assert!(h.selection.is_empty(), "selecting a transition clears the clip selection");
+        // Ctrl+click adds the second, Ctrl+click again toggles it off
+        h.press_m(band2, Modifiers::CTRL);
+        h.release_m(band2, Modifiers::CTRL);
+        assert_eq!(h.sel_transitions, vec![t1, t2]);
+        h.press_m(band2, Modifiers::CTRL);
+        h.release_m(band2, Modifiers::CTRL);
+        assert_eq!(h.sel_transitions, vec![t1]);
+        // clicking a clip clears the transition selection
+        let clip = pos2(h.state.x_at(2.0), lanes.top() + 30.0);
+        h.press(clip);
+        h.release(clip);
+        assert!(h.sel_transitions.is_empty(), "selecting a clip clears the transition selection");
+        assert!(h.selection.contains(&h.project.tracks[0].clips[0].id));
+        // a rubber band from empty space across both cuts picks up both transitions
+        let from = pos2(h.state.x_at(11.0), lanes.top() + 30.0);
+        h.drag(from, pos2(h.state.x_at(3.4), lanes.top() + 30.0));
+        assert!(h.sel_transitions.contains(&t1) && h.sel_transitions.contains(&t2), "{:?}", h.sel_transitions);
+        // deleting a transition drops it from the selection on the next frame
+        h.project.remove_transition(t1);
+        h.frame(vec![]);
+        assert!(!h.sel_transitions.contains(&t1));
     }
 
     #[test]

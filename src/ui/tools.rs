@@ -204,6 +204,18 @@ pub(crate) enum Glyph {
     FloppyDisk,
     /// A console window: '>' prompt and an underscore.
     Terminal,
+    /// A wide 16:9 outline — landscape format.
+    Landscape,
+    /// A tall 9:16 outline — portrait / vertical format.
+    Portrait,
+    /// A square outline — 1:1 format.
+    Square,
+    /// A rounded rectangle with a play triangle — YouTube-style video badge.
+    PlayRect,
+    /// A 2x2 grid of rounded squares — a feed / profile grid.
+    GridIcon,
+    /// A frame with corner brackets and a centre tick — the social-guide overlay.
+    Guides,
 }
 
 impl Glyph {
@@ -283,6 +295,12 @@ impl Glyph {
         Glyph::UndoArrow(Dir::Right),
         Glyph::FloppyDisk,
         Glyph::Terminal,
+        Glyph::Landscape,
+        Glyph::Portrait,
+        Glyph::Square,
+        Glyph::PlayRect,
+        Glyph::GridIcon,
+        Glyph::Guides,
     ];
 
     /// Stable lower-case name of the variant, kept in sync with `from_name` — what a saved icon
@@ -366,6 +384,12 @@ impl Glyph {
             Glyph::UndoArrow(_) => "redo",
             Glyph::FloppyDisk => "floppy-disk",
             Glyph::Terminal => "terminal",
+            Glyph::Landscape => "landscape",
+            Glyph::Portrait => "portrait",
+            Glyph::Square => "square",
+            Glyph::PlayRect => "play-rect",
+            Glyph::GridIcon => "grid",
+            Glyph::Guides => "guides",
         }
     }
 
@@ -644,14 +668,15 @@ pub(crate) fn glyph_text_button(ui: &mut egui::Ui, icon: Glyph, text: &str) -> e
     let galley = ui.painter().layout_no_wrap(text.to_owned(), font, Color32::PLACEHOLDER);
     let pad = ui.spacing().button_padding;
     let icon_w = 18.0;
-    let size = egui::vec2(icon_w + galley.size().x + pad.x * 2.0, galley.size().y.max(20.0) + pad.y * 2.0);
+    let gap = if text.is_empty() { 0.0 } else { 4.0 };
+    let size = egui::vec2(icon_w + gap + galley.size().x + pad.x * 2.0, galley.size().y.max(20.0) + pad.y * 2.0);
     let (rect, r) = ui.allocate_exact_size(size, Sense::click());
     let v = ui.style().interact(&r);
     ui.painter().rect(rect, v.corner_radius, v.weak_bg_fill, v.bg_stroke, StrokeKind::Inside);
     let icon_x = if text.is_empty() { rect.center().x - icon_w / 2.0 } else { rect.left() + pad.x };
     let icon_rect = egui::Rect::from_min_size(egui::pos2(icon_x, rect.top()), egui::vec2(icon_w, rect.height()));
     draw_glyph(ui.painter(), icon_rect, icon, v.text_color());
-    let tp = egui::pos2(icon_rect.right(), rect.center().y - galley.size().y / 2.0);
+    let tp = egui::pos2(icon_rect.right() + gap, rect.center().y - galley.size().y / 2.0);
     ui.painter().galley(tp, galley, v.text_color());
     r
 }
@@ -668,11 +693,12 @@ pub(crate) fn icon_button(
     let (rect, _) = ui.allocate_exact_size(egui::vec2(24.0, 22.0), Sense::hover());
     let r = ui.interact(rect, id, Sense::click());
     let p = ui.painter();
+    let cr = CornerRadius::same(palette.rounding as u8);
     if active {
-        p.rect_filled(rect, CornerRadius::same(2), palette.accent);
+        p.rect_filled(rect, cr, palette.accent);
     } else if r.hovered() {
-        p.rect_filled(rect, CornerRadius::same(2), palette.header);
-        p.rect_stroke(rect, CornerRadius::same(2), Stroke::new(1.0, palette.border), StrokeKind::Inside);
+        p.rect_filled(rect, cr, palette.header);
+        p.rect_stroke(rect, cr, Stroke::new(1.0, palette.border), StrokeKind::Inside);
     }
     let fg = if active { on_accent(palette.accent) } else { palette.text };
     draw_glyph(p, rect, icon, fg);
@@ -1351,6 +1377,63 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
             p.line_segment([c + egui::vec2(-2.0, 0.0), c + egui::vec2(-4.5, 2.5)], stroke);
             p.line_segment([c + egui::vec2(0.0, 2.5), c + egui::vec2(3.5, 2.5)], stroke);
         }
+        Glyph::Landscape => {
+            p.rect_stroke(
+                egui::Rect::from_center_size(c, egui::vec2(14.0, 8.0)),
+                CornerRadius::same(1),
+                stroke,
+                StrokeKind::Inside,
+            );
+        }
+        Glyph::Portrait => {
+            p.rect_stroke(
+                egui::Rect::from_center_size(c, egui::vec2(8.0, 14.0)),
+                CornerRadius::same(1),
+                stroke,
+                StrokeKind::Inside,
+            );
+        }
+        Glyph::Square => {
+            p.rect_stroke(
+                egui::Rect::from_center_size(c, egui::vec2(11.0, 11.0)),
+                CornerRadius::same(1),
+                stroke,
+                StrokeKind::Inside,
+            );
+        }
+        Glyph::PlayRect => {
+            p.rect_stroke(
+                egui::Rect::from_center_size(c, egui::vec2(14.0, 10.0)),
+                CornerRadius::same(3),
+                stroke,
+                StrokeKind::Inside,
+            );
+            p.add(egui::Shape::convex_polygon(tri(c, Dir::Right, 2.6, 2.4), fg, Stroke::NONE));
+        }
+        Glyph::GridIcon => {
+            for (dx, dy) in [(-3.5, -3.5), (3.5, -3.5), (-3.5, 3.5), (3.5, 3.5)] {
+                p.rect_stroke(
+                    egui::Rect::from_center_size(c + egui::vec2(dx, dy), egui::vec2(5.5, 5.5)),
+                    CornerRadius::same(1),
+                    stroke,
+                    StrokeKind::Inside,
+                );
+            }
+        }
+        // four corner brackets around a small safe-zone rect
+        Glyph::Guides => {
+            for (sx, sy) in [(-1.0f32, -1.0f32), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+                let corner = c + egui::vec2(sx * 7.0, sy * 6.0);
+                p.line_segment([corner, corner - egui::vec2(sx * 4.0, 0.0)], stroke);
+                p.line_segment([corner, corner - egui::vec2(0.0, sy * 4.0)], stroke);
+            }
+            p.rect_stroke(
+                egui::Rect::from_center_size(c, egui::vec2(7.0, 6.0)),
+                CornerRadius::ZERO,
+                Stroke::new(1.0, fg),
+                StrokeKind::Inside,
+            );
+        }
     }
 }
 
@@ -1394,7 +1477,7 @@ pub(crate) fn color_chip<'a>(color: Color32, selected: bool, palette: &Palette) 
 }
 
 /// Readable text colour on top of the accent fill.
-fn on_accent(c: Color32) -> Color32 {
+pub(crate) fn on_accent(c: Color32) -> Color32 {
     let l = 0.299 * c.r() as f32 + 0.587 * c.g() as f32 + 0.114 * c.b() as f32;
     if l > 140.0 {
         Color32::BLACK

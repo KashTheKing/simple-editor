@@ -24,7 +24,7 @@ pub const TOOLS: &[(&str, &str, &[&str])] = &[
     ("timeline.delete", "Delete clips (linked clips follow).", &["clip_ids:array:true:", "ripple:boolean:false:close the gap"]),
     ("timeline.move", "Move clips by dt seconds (and dtrack tracks within their kind).", &["clip_ids:array:true:", "dt:number:true:", "dtrack:integer:false:"]),
     ("timeline.trim", "Trim a clip's edges to new timeline times.", &["clip_id:integer:true:", "start:number:false:new start", "end:number:false:new end"]),
-    ("timeline.add_transition", "Transition at the cut on the left of a clip.", &["right_clip_id:integer:true:", "kind:string:true:CrossFade|FadeToColor|Push|Wipe", "duration:number:false:default 1"]),
+    ("timeline.add_transition", "Transition at the cut on the left of a clip (a fade-in from nothing when no clip abuts there).", &["right_clip_id:integer:true:", "kind:string:true:CrossFade|FadeToColor|Push|Wipe", "duration:number:false:default 1"]),
     ("timeline.auto_cut", "Silence-based auto-cut of audio clips (+ linked video).", &["clip_ids:array:true:", "threshold_db:number:false:default -35", "min_silence:number:false:", "min_speech:number:false:", "padding:number:false:", "keep_quiet:boolean:false:", "ripple:boolean:false:default true"]),
     ("timeline.nest", "Nest clips into a new sequence; returns the sequence id.", &["clip_ids:array:true:", "name:string:false:"]),
     ("sequence.list", "Sequences (id, name, format, duration).", &[]),

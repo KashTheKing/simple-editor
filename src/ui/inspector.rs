@@ -22,7 +22,7 @@
 //! Returns true if the project changed.
 
 use crate::hotkeys::Action;
-use crate::model::{Animated, BlendMode, ClipKind, Id, Label, Mask, Project, ShapeKind, ShapeStyle};
+use crate::model::{AnimLink, Animated, BlendMode, ClipKind, Id, Label, Mask, Project, ShapeKind, ShapeStyle};
 use crate::settings::Settings;
 use crate::theme::Palette;
 use crate::ui::markers_ui::x_button;
@@ -109,22 +109,121 @@ pub fn show(
     ui: &mut egui::Ui,
     project: &mut Project,
     selection: &[Id],
+    sel_transitions: &[Id],
     playhead: f64,
     fonts: &[String],
     palette: &Palette,
-    settings: &Settings,
+    settings: &mut Settings,
     undo: &mut dyn FnMut(&Project),
 ) -> bool {
     match selection.iter().find(|&&id| project.clip(id).is_some()) {
+        None if !sel_transitions.is_empty() => transition_section(ui, project, sel_transitions, undo),
         None => project_section(ui, project, settings, undo),
         Some(&id) => clip_section(ui, project, id, selection.len(), playhead, fonts, palette, undo),
     }
 }
 
+/// Selected transitions (timeline bands): one set of editors; each field you change is written to
+/// every selected transition, fields you leave alone keep their per-transition values.
+fn transition_section(ui: &mut egui::Ui, project: &mut Project, ids: &[Id], undo: &mut dyn FnMut(&Project)) -> bool {
+    use crate::model::{Ease, TransitionKind};
+    let list: Vec<crate::model::Transition> = ids
+        .iter()
+        .filter_map(|&id| project.tracks.iter().flat_map(|t| &t.transitions).find(|t| t.id == id).cloned())
+        .collect();
+    let Some(first) = list.first().cloned() else {
+        ui.label("Select a clip or a transition");
+        return false;
+    };
+    let mut g = Gesture::default();
+    if list.len() == 1 {
+        ui.strong("Transition");
+    } else {
+        ui.strong(format!("Transitions ({} selected)", list.len()));
+    }
+    let mut e = first.clone();
+    Grid::new("insp_transition").num_columns(2).show(ui, |ui| {
+        ui.label("Kind");
+        egui::ComboBox::from_id_salt("insp_tr_kind").selected_text(e.kind.name()).show_ui(ui, |ui| {
+            for k in TransitionKind::ALL {
+                g.note(&ui.selectable_value(&mut e.kind, k, k.name()));
+            }
+        });
+        ui.end_row();
+        ui.label("Duration");
+        // clamp_existing_to_range(false): merely drawing an out-of-range value must not fake an edit
+        g.note(&ui.add(
+            DragValue::new(&mut e.duration).range(0.1..=5.0).clamp_existing_to_range(false).speed(0.02).suffix(" s"),
+        ));
+        ui.end_row();
+        if e.kind == TransitionKind::FadeToColor {
+            ui.label("Color");
+            g.note(&ui.color_edit_button_srgba_unmultiplied(&mut e.color));
+            ui.end_row();
+        }
+        if e.kind.has_direction() {
+            ui.label("Direction");
+            ui.horizontal(|ui| {
+                for (i, name) in ["Left", "Right", "Up", "Down"].iter().enumerate() {
+                    g.note(&ui.selectable_value(&mut e.direction, i as u8, *name));
+                }
+            });
+            ui.end_row();
+        }
+        ui.label("Ease");
+        egui::ComboBox::from_id_salt("insp_tr_ease").selected_text(e.ease.name()).show_ui(ui, |ui| {
+            for ea in Ease::ALL {
+                g.note(&ui.selectable_value(&mut e.ease, ea, ea.name()));
+            }
+        });
+        ui.end_row();
+    });
+    let mut removed = false;
+    let label = if list.len() == 1 { "Remove transition".into() } else { format!("Remove {} transitions", list.len()) };
+    let r = ui.button(label);
+    mark(ui, "tr_remove", &r);
+    if r.clicked() {
+        g.click();
+        removed = true;
+    }
+    if g.start {
+        undo(project);
+    }
+    if !g.changed {
+        return false;
+    }
+    if removed {
+        for &id in ids {
+            project.remove_transition(id);
+        }
+        return true;
+    }
+    for &id in ids {
+        if let Some(t) = project.transition_mut(id) {
+            if e.kind != first.kind {
+                t.kind = e.kind;
+            }
+            if e.duration != first.duration {
+                t.duration = e.duration;
+            }
+            if e.color != first.color {
+                t.color = e.color;
+            }
+            if e.direction != first.direction {
+                t.direction = e.direction;
+            }
+            if e.ease != first.ease {
+                t.ease = e.ease;
+            }
+        }
+    }
+    true
+}
+
 fn project_section(
     ui: &mut egui::Ui,
     project: &mut Project,
-    settings: &Settings,
+    settings: &mut Settings,
     undo: &mut dyn FnMut(&Project),
 ) -> bool {
     let mut edited = false;
@@ -166,6 +265,115 @@ fn project_section(
         ui.label("Duration");
         ui.monospace(timecode(project.duration(), project.fps));
         ui.end_row();
+    });
+
+    ui.separator();
+    ui.strong("Presets");
+    ui.horizontal_wrapped(|ui| {
+        for p in crate::ui::guides::PRESETS {
+            let active = project.width == p.w && project.height == p.h && (project.fps - p.fps).abs() < 0.001;
+            let r = crate::ui::tools::glyph_text_button(ui, p.glyph, p.name).on_hover_text(format!(
+                "{}×{} @ {:.0} fps{}",
+                p.w,
+                p.h,
+                p.fps,
+                if p.guide.is_some() { " · shows the platform guide overlay" } else { "" }
+            ));
+            if active {
+                ui.painter().rect_stroke(
+                    r.rect,
+                    2.0,
+                    egui::Stroke::new(1.0, ui.visuals().selection.stroke.color),
+                    egui::StrokeKind::Inside,
+                );
+            }
+            if r.clicked() {
+                undo(project);
+                project.width = p.w;
+                project.height = p.h;
+                project.fps = p.fps;
+                edited = true;
+                if settings.guide != p.guide {
+                    settings.guide = p.guide;
+                    settings.save();
+                }
+            }
+        }
+    });
+
+    // quality / frame-rate quick buttons: the tier keeps the current aspect (shorter edge = tier)
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Quality");
+        for &(name, tier) in crate::ui::guides::RES_TIERS {
+            let (w, h) = crate::ui::guides::scale_to_tier(project.width, project.height, tier);
+            let r = ui
+                .selectable_label(project.width == w && project.height == h, name)
+                .on_hover_text(format!("{w}×{h} (keeps the current aspect)"));
+            if r.clicked() {
+                undo(project);
+                (project.width, project.height) = (w, h);
+                edited = true;
+            }
+        }
+    });
+    ui.horizontal_wrapped(|ui| {
+        ui.label("FPS");
+        for &fps in crate::ui::guides::FPS_PRESETS {
+            let label = if fps.fract() == 0.0 { format!("{fps:.0}") } else { format!("{fps}") };
+            if ui.selectable_label((project.fps - fps).abs() < 0.001, label).clicked() {
+                undo(project);
+                project.fps = fps;
+                edited = true;
+            }
+        }
+    });
+
+    // user templates: apply / delete, plus "save current as template" with an inline name field
+    if !settings.project_templates.is_empty() {
+        ui.add_space(4.0);
+        ui.strong("Templates");
+        let mut delete = None;
+        for (i, t) in settings.project_templates.iter().enumerate() {
+            ui.horizontal(|ui| {
+                let r = crate::ui::tools::glyph_text_button(ui, crate::ui::tools::Glyph::Template, &t.name)
+                    .on_hover_text(format!("{}×{} @ {} fps", t.width, t.height, t.fps));
+                if r.clicked() {
+                    undo(project);
+                    project.width = t.width;
+                    project.height = t.height;
+                    project.fps = t.fps;
+                    edited = true;
+                }
+                if ui.small_button("✕").on_hover_text("Delete template").clicked() {
+                    delete = Some(i);
+                }
+            });
+        }
+        if let Some(i) = delete {
+            settings.project_templates.remove(i);
+            settings.save();
+        }
+    }
+    ui.horizontal(|ui| {
+        let id = ui.id().with("tmpl_name");
+        let mut name = ui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_default();
+        let hint = format!("{}×{}", project.width, project.height);
+        ui.add(egui::TextEdit::singleline(&mut name).hint_text(&hint).desired_width(120.0));
+        if ui.button("Save as template").on_hover_text("Save the current size and FPS as a reusable template").clicked()
+        {
+            let name = if name.trim().is_empty() { hint } else { name.trim().to_string() };
+            settings.project_templates.retain(|t| t.name != name);
+            settings.project_templates.push(crate::settings::ProjectTemplate {
+                name,
+                width: project.width,
+                height: project.height,
+                fps: project.fps,
+            });
+            settings.save();
+            ui.data_mut(|d| d.remove::<String>(id));
+        } else {
+            ui.data_mut(|d| d.insert_temp(id, name));
+        }
     });
 
     ui.separator();
@@ -239,6 +447,7 @@ fn clip_section(
     let mut edit_labels: bool = ui.ctx().data(|d| d.get_temp(labels_open_id).unwrap_or(false));
     let mut label_ops: Vec<LabelOp> = Vec::new();
     let mut path_op: Option<PathOp> = None;
+    let path_list: Vec<(Id, String)> = project.paths.iter().map(|p| (p.id, p.name.clone())).collect();
 
     if n_selected > 1 {
         ui.label(format!("{n_selected} clips selected"));
@@ -336,9 +545,10 @@ fn clip_section(
         }
         for (label, a) in clip.props_mut() {
             ui.label(label);
+            let linked = !a.link.is_none();
             ui.horizontal(|ui| {
                 let mut v = a.at(lt);
-                let r = match label {
+                let r = ui.add_enabled_ui(!linked, |ui| match label {
                     "Volume" => {
                         let mut db = gain_to_db(v);
                         let r = ui.add(Slider::new(&mut db, -60.0..=12.0).suffix(" dB").fixed_decimals(1));
@@ -365,16 +575,40 @@ fn clip_section(
                         r
                     }
                     _ => ui.add(DragValue::new(&mut v).speed(1.0)),
-                };
+                })
+                .inner;
                 if r.changed() {
                     a.set_at(lt, v);
                 }
                 g.note(&r);
                 key_buttons(ui, a, lt, palette, &mut g);
+                link_menu(ui, label, a, &path_list, &mut g);
             });
             ui.end_row();
+            // a linked expression is edited right under its property
+            if let Animated { link: AnimLink::Expr(src), link_err, .. } = a {
+                ui.label("");
+                ui.horizontal(|ui| {
+                    let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
+                        let mut job = luau_highlight(ui, buf.as_str());
+                        job.wrap.max_width = wrap_width;
+                        ui.fonts_mut(|f| f.layout_job(job))
+                    };
+                    g.note(&ui.add(
+                        egui::TextEdit::singleline(src)
+                            .desired_width(150.0)
+                            .hint_text("return value + math.sin(t*4) * 20")
+                            .layouter(&mut layouter),
+                    ));
+                    if let Some(e) = link_err {
+                        ui.colored_label(ui.visuals().warn_fg_color, "!").on_hover_text(e.clone());
+                    }
+                });
+                ui.end_row();
+            }
         }
-        if clip.kind == ClipKind::Audio {
+        // gain fades on audio, opacity fades on visual clips (same fields, same ramps)
+        if clip.kind != ClipKind::Adjustment {
             let dur = clip.duration;
             ui.label("Fade in");
             g.note(&ui.add(DragValue::new(&mut clip.fade_in).range(0.0..=dur).speed(0.05).suffix(" s")));
@@ -824,12 +1058,117 @@ fn clip_section(
             project.add_path(clip.name.clone(), pts);
         }
         Some(PathOp::Apply(pid)) => {
-            let pts = project.path(pid).map(|p| p.points.clone()).unwrap_or_default();
-            project.apply_path(id, &pts);
+            project.link_path(id, pid);
         }
         None => {}
     }
     g.changed || ga.changed || labels_changed || path_op.is_some()
+}
+
+const LUAU_KEYWORDS: &[&str] = &[
+    "and", "break", "continue", "do", "else", "elseif", "end", "export", "false", "for", "function", "if", "in",
+    "local", "nil", "not", "or", "repeat", "return", "then", "true", "type", "until", "while",
+];
+
+/// Minimal hand-rolled Luau tokenizer for the expression field — keywords, strings, numbers and
+/// comments get a colour, everything else stays the default text colour. One expression at a time,
+/// so a full syntax-highlighting crate would be a lot of dependency for one line of text.
+fn luau_highlight(ui: &egui::Ui, text: &str) -> egui::text::LayoutJob {
+    use egui::text::{LayoutJob, TextFormat};
+    use egui::{Color32, FontId};
+
+    let font = egui::TextStyle::Monospace.resolve(ui.style());
+    let base = ui.visuals().text_color();
+    let (keyword, string, number, comment) =
+        (ui.visuals().hyperlink_color, Color32::from_rgb(0x9a, 0xc5, 0x6b), ui.visuals().warn_fg_color, base.gamma_multiply(0.6));
+
+    let mut job = LayoutJob::default();
+    let mut push = |s: &str, color: Color32, font: &FontId| {
+        job.append(s, 0.0, TextFormat { font_id: font.clone(), color, ..Default::default() });
+    };
+
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '-' && chars.get(i + 1) == Some(&'-') {
+            let s: String = chars[i..].iter().collect();
+            push(&s, comment, &font);
+            break;
+        } else if c == '"' || c == '\'' {
+            let start = i;
+            i += 1;
+            while i < chars.len() && chars[i] != c {
+                i += if chars[i] == '\\' { 2 } else { 1 };
+            }
+            i = (i + 1).min(chars.len());
+            let s: String = chars[start..i].iter().collect();
+            push(&s, string, &font);
+            continue;
+        } else if c.is_ascii_digit() {
+            let start = i;
+            while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '.') {
+                i += 1;
+            }
+            let s: String = chars[start..i].iter().collect();
+            push(&s, number, &font);
+            continue;
+        } else if c.is_alphabetic() || c == '_' {
+            let start = i;
+            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
+                i += 1;
+            }
+            let s: String = chars[start..i].iter().collect();
+            push(&s, if LUAU_KEYWORDS.contains(&s.as_str()) { keyword } else { base }, &font);
+            continue;
+        } else {
+            push(&c.to_string(), base, &font);
+            i += 1;
+        }
+    }
+    job
+}
+
+/// The "∿" menu on a property row: link the value to a saved path (Position X/Y) or a Luau
+/// expression, AE-style. Manual edits elsewhere break the link (`Animated::set_at`).
+fn link_menu(ui: &mut egui::Ui, label: &str, a: &mut Animated, paths: &[(Id, String)], g: &mut Gesture) {
+    let lit = !a.link.is_none();
+    let r = ui.menu_button(if lit { RichText::new("∿").strong() } else { RichText::new("∿").weak() }, |ui| {
+        if lit {
+            if ui.button("Unlink").clicked() {
+                a.unlink();
+                g.click();
+                ui.close();
+            }
+            ui.separator();
+        }
+        let axis_x = label == "Position X";
+        if axis_x || label == "Position Y" {
+            for (pid, name) in paths {
+                if ui.button(format!("Path: {name}")).clicked() {
+                    a.unlink();
+                    a.link = if axis_x { AnimLink::PathX(*pid) } else { AnimLink::PathY(*pid) };
+                    g.click();
+                    ui.close();
+                }
+            }
+            if !paths.is_empty() {
+                ui.separator();
+            }
+        }
+        if !matches!(a.link, AnimLink::Expr(_)) && ui.button("Expression…").clicked() {
+            a.unlink();
+            a.link = AnimLink::Expr("return value".into());
+            g.click();
+            ui.close();
+        }
+    });
+    r.response.on_hover_text(match &a.link {
+        AnimLink::None => "Link to a path or expression".to_string(),
+        AnimLink::PathX(_) => "Following a path (X)".to_string(),
+        AnimLink::PathY(_) => "Following a path (Y)".to_string(),
+        AnimLink::Expr(_) => "Driven by an expression".to_string(),
+    });
 }
 
 /// Save the clip's outline as a project path, or animate it along one that was saved.
@@ -926,7 +1265,7 @@ mod tests {
                         *undos += 1;
                         assert_eq!(pre.clip(id).unwrap().pan.value, 0.0, "undo sees the pre-edit project");
                     };
-                    show(ui, p, &[id], 1.0, &fonts, &palette, &Settings::default(), &mut undo);
+                    show(ui, p, &[id], &[], 1.0, &fonts, &palette, &mut Settings::default(), &mut undo);
                 });
             });
         };
@@ -967,7 +1306,7 @@ mod tests {
             let _ = ctx.run(input, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut undo = |_: &Project| {};
-                    show(ui, p, &[id], 1.0, &fonts, &palette, &Settings::default(), &mut undo);
+                    show(ui, p, &[id], &[], 1.0, &fonts, &palette, &mut Settings::default(), &mut undo);
                 });
             });
         };
@@ -1002,7 +1341,7 @@ mod tests {
             let mut p = Project::new();
             let palette = Palette::new(true, egui::Color32::WHITE);
             let fonts: Vec<String> = Vec::new();
-            let settings = Settings::default();
+            let mut settings = Settings::default();
             let ctx = egui::Context::default();
             let mut frame = |events: Vec<egui::Event>, p: &mut Project| {
                 let input = egui::RawInput {
@@ -1013,7 +1352,7 @@ mod tests {
                 let mut undo = |_: &Project| {};
                 let _ = ctx.run(input, |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
-                        show(ui, p, &[], 1.0, &fonts, &palette, &settings, &mut undo);
+                        show(ui, p, &[], &[], 1.0, &fonts, &palette, &mut settings, &mut undo);
                     });
                 });
             };
@@ -1065,7 +1404,7 @@ mod tests {
                 }
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut undo = |_: &Project| *undos += 1;
-                    edited = show(ui, p, &[id], 1.0, &[], &palette, &Settings::default(), &mut undo);
+                    edited = show(ui, p, &[id], &[], 1.0, &[], &palette, &mut Settings::default(), &mut undo);
                 });
             });
             edited
@@ -1088,6 +1427,8 @@ mod tests {
         ctx: egui::Context,
         project: Project,
         id: Id,
+        /// Selected transitions handed to show(); when non-empty the clip selection is left empty.
+        sel_trans: Vec<Id>,
         undos: usize,
         time: f64,
     }
@@ -1096,13 +1437,25 @@ mod tests {
         fn shape_clip() -> Self {
             let mut project = Project::new();
             let id = project.add_shape_clip(crate::model::ShapeKind::Star, 0.0, 3.0);
-            Self { ctx: egui::Context::default(), project, id, undos: 0, time: 0.0 }
+            Self { ctx: egui::Context::default(), project, id, sel_trans: Vec::new(), undos: 0, time: 0.0 }
         }
         fn audio_clip() -> Self {
             let mut project = Project::new();
             let id = project.new_id();
             project.tracks[1].clips.push(Clip::new(id, ClipKind::Audio, "a", 0.0, 3.0));
-            Self { ctx: egui::Context::default(), project, id, undos: 0, time: 0.0 }
+            Self { ctx: egui::Context::default(), project, id, sel_trans: Vec::new(), undos: 0, time: 0.0 }
+        }
+        /// Two abutting video clips with a cut transition and an edge transition, both selected.
+        fn transitions() -> Self {
+            use crate::model::TransitionKind;
+            let mut project = Project::new();
+            let a = project.new_id();
+            project.tracks[0].clips.push(Clip::new(a, ClipKind::Video, "a", 0.0, 2.0));
+            let b = project.new_id();
+            project.tracks[0].clips.push(Clip::new(b, ClipKind::Video, "b", 2.0, 2.0));
+            let t1 = project.add_transition(b, TransitionKind::CrossFade, 1.0).unwrap();
+            let t2 = project.add_edge_transition(a, TransitionKind::CrossFade, 1.0, false).unwrap();
+            Self { ctx: egui::Context::default(), project, id: a, sel_trans: vec![t1, t2], undos: 0, time: 0.0 }
         }
         fn frame(&mut self, events: Vec<egui::Event>) -> bool {
             self.time += 0.05;
@@ -1113,13 +1466,13 @@ mod tests {
                 ..Default::default()
             };
             let pal = Palette::new(true, egui::Color32::WHITE);
-            let H { ctx, project, id, undos, .. } = self;
-            let id = *id;
+            let H { ctx, project, id, sel_trans, undos, .. } = self;
+            let sel: &[Id] = if sel_trans.is_empty() { &[*id] } else { &[] };
             let mut changed = false;
             let _ = ctx.run(input, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut undo = |_: &Project| *undos += 1;
-                    changed |= show(ui, project, &[id], 1.0, &[], &pal, &Settings::default(), &mut undo);
+                    changed |= show(ui, project, sel, sel_trans, 1.0, &[], &pal, &mut Settings::default(), &mut undo);
                 });
             });
             changed
@@ -1146,6 +1499,20 @@ mod tests {
             }]);
             e
         }
+    }
+
+    /// Selected transitions get their own inspector section, and "Remove" deletes them all in one undo.
+    #[test]
+    fn transition_section_shows_and_removes_all_selected() {
+        let mut h = H::transitions();
+        h.frame(vec![]);
+        let r = h.rect("tr_remove");
+        assert!(h.click(r.center()), "removing transitions edits the project");
+        assert!(h.project.tracks[0].transitions.is_empty(), "both selected transitions removed");
+        assert_eq!(h.undos, 1, "one undo for the whole removal");
+        // redrawing with the stale selection is not an edit (the section shows a hint instead)
+        assert!(!h.frame(vec![]));
+        assert_eq!(h.undos, 1);
     }
 
     /// The mask section appears, "Add mask" creates one with a single undo, and the follow-up
@@ -1252,7 +1619,7 @@ mod tests {
                 let _ = ctx.run(egui::RawInput::default(), |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
                         let mut undo = |_: &Project| panic!("no undo without edits");
-                        assert!(!show(ui, &mut p, &[sel], 1.0, &fonts, &palette, &Settings::default(), &mut undo));
+                        assert!(!show(ui, &mut p, &[sel], &[], 1.0, &fonts, &palette, &mut Settings::default(), &mut undo));
                     });
                 });
             }

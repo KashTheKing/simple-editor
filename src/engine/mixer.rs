@@ -271,12 +271,13 @@ fn active_in(tracks: &[Track], i: usize) -> bool {
 fn clip_transitions<'a>(track: &'a Track, clip: &Clip) -> Ext<'a> {
     let mut ext = [None, None];
     for tr in &track.transitions {
-        let Some((l, r)) = track.transition_pair(tr) else { continue };
-        let h = crate::engine::compose::trans_half(tr, l, r);
-        if r.id == clip.id {
-            ext[0] = Some((r.start, h, tr, true));
-        } else if l.id == clip.id {
-            ext[1] = Some((r.start, h, tr, false));
+        let Some((l, r)) = track.transition_clips(tr) else { continue };
+        let Some((cut, h)) = tr.cut_half(l, r) else { continue };
+        // right side gains in (a cut's incoming clip, or an In edge), left side gains out
+        if r.is_some_and(|r| r.id == clip.id) {
+            ext[0] = Some((cut, h, tr, true));
+        } else if l.is_some_and(|l| l.id == clip.id) {
+            ext[1] = Some((cut, h, tr, false));
         }
     }
     ext
@@ -299,13 +300,7 @@ fn play_range(clip: &Clip, ext: &Ext) -> (f64, f64) {
 /// Clip-local time is clamped into the clip for volume/pan/fades so virtual extensions hold the edge value.
 fn gains(clip: &Clip, ext: &Ext, tt: f64) -> (f32, f32) {
     let lt = clip.local(tt).clamp(0.0, clip.duration);
-    let mut g = clip.volume.at(lt) as f32;
-    if clip.fade_in > 0.0 && lt < clip.fade_in {
-        g *= (lt / clip.fade_in).clamp(0.0, 1.0) as f32;
-    }
-    if clip.fade_out > 0.0 && lt > clip.duration - clip.fade_out {
-        g *= ((clip.duration - lt) / clip.fade_out).clamp(0.0, 1.0) as f32;
-    }
+    let mut g = clip.volume.at(lt) as f32 * clip.fade_mult(lt) as f32;
     for e in ext.iter().flatten() {
         let (cut, h, tr, is_right) = *e;
         if tt >= cut - h && tt < cut + h {
@@ -686,6 +681,7 @@ mod tests {
             color: [0, 0, 0, 255],
             direction: 0,
             ease: Ease::Linear,
+            edge: Default::default(),
         });
         let mut pool = DecoderPool::new(Backend::Ffmpeg);
         pool.insert_audio("Z:\\nope\\a.wav", 0, Box::new(Const(0.8)));
@@ -718,6 +714,7 @@ mod tests {
             color: [0, 0, 0, 255],
             direction: 0,
             ease: Ease::Linear,
+            edge: Default::default(),
         });
     }
 
