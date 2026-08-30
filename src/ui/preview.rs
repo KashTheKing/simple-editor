@@ -90,6 +90,10 @@ pub struct PreviewCtx<'a> {
     pub movie_mode: bool,
     /// Pre-render progress 0..1 while frames are being cached (None = not pre-rendering).
     pub prerender: Option<f32>,
+    /// Playback is held while the player refills its read-ahead: draw a spinner over the video.
+    pub buffering: bool,
+    /// Progress 0..1 of the proxy build in flight (None = no proxy being built).
+    pub proxy: Option<f32>,
     /// Tracker box of the Tracking pane (centre + half sizes, project px relative to the canvas
     /// centre) while that pane is on screen — drawn here and dragged to place the template.
     pub tracker: Option<(f32, f32, f32, f32)>,
@@ -124,6 +128,22 @@ pub fn show(ui: &mut egui::Ui, state: &mut PreviewState, mut c: PreviewCtx<'_>) 
     let mut r = PreviewResponse::default();
     if c.fullscreen {
         video(ui, state, &mut c, &mut r);
+        // transport overlay: summoned by mouse movement, gone ~2 s after the mouse stops.
+        // `moved_at` is pointer-only (see video()), so spacebar play/pause never reveals the bar.
+        if state.moved_at.is_some_and(|t| t.elapsed().as_secs_f32() < 2.0) {
+            egui::Area::new(ui.id().with("fs_transport"))
+                .anchor(egui::Align2::CENTER_BOTTOM, vec2(0.0, -24.0))
+                .order(egui::Order::Foreground)
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::popup(ui.style()).fill(c.palette.panel.gamma_multiply(0.92)).show(ui, |ui| {
+                        transport(ui, state, &c, &mut r);
+                        // hovering the bar keeps it alive past the 2 s fade
+                        if ui.ui_contains_pointer() {
+                            state.moved_at = Some(std::time::Instant::now());
+                        }
+                    });
+                });
+        }
         return r;
     }
     ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
@@ -502,6 +522,11 @@ fn video(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r:
     } else if let Some(t) = &state.texture {
         painter.image(t.id(), lb, Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)), Color32::WHITE);
     }
+    // buffering: the clock is held while the read-ahead refills — say so over the video
+    if c.buffering {
+        ui.put(Rect::from_center_size(lb.center(), vec2(32.0, 32.0)), egui::Spinner::new().size(32.0));
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
+    }
     if c.fullscreen {
         // double-click toggles fullscreen, like every player
         if resp.double_clicked() {
@@ -640,10 +665,14 @@ fn video(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r:
     }
 }
 
-/// Small "Pre-rendering NN %" badge in the top-left of the video while frames are being cached.
+/// Small "Pre-rendering NN %" / "Building proxy NN %" badge in the top-left of the video.
 fn prerender_badge(ui: &egui::Ui, painter: &egui::Painter, lb: Rect, c: &PreviewCtx<'_>) {
-    let Some(p) = c.prerender else { return };
-    let text = format!("Pre-rendering {:.0} %", (p.clamp(0.0, 1.0) * 100.0));
+    let (p, label) = match (c.prerender, c.proxy) {
+        (Some(p), _) => (p, "Pre-rendering"),
+        (None, Some(p)) => (p, "Building proxy"),
+        (None, None) => return,
+    };
+    let text = format!("{label} {:.0} %", (p.clamp(0.0, 1.0) * 100.0));
     let font = egui::TextStyle::Small.resolve(ui.style());
     let galley = painter.layout_no_wrap(text, font, c.palette.text);
     let pad = vec2(6.0, 3.0);
@@ -746,6 +775,8 @@ mod tests {
                             quality: 100,
                             movie_mode: false,
                             prerender: Some(0.4),
+                            buffering: false,
+                            proxy: None,
                             tracker: None,
                         },
                     );

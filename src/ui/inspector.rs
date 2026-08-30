@@ -175,7 +175,7 @@ fn project_section(
         if r.clicked() {
             PENDING_ACTION.with(|p| *p.borrow_mut() = Some(Action::Save));
         }
-        let r = ui.button("Export…");
+        let r = crate::ui::tools::glyph_text_button(ui, crate::ui::tools::Glyph::ExportArrow, "Export…");
         mark(ui, "project_export", &r);
         if r.clicked() {
             PENDING_ACTION.with(|p| *p.borrow_mut() = Some(Action::ExportVideo));

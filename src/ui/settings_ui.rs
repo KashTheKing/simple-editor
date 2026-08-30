@@ -15,6 +15,7 @@
 use crate::hotkeys::{Action, Hotkeys};
 use crate::settings::Settings;
 use crate::theme::Palette;
+use crate::ui::tools::Glyph;
 use crate::ui::{combo, encoder_options, ENCODER_PRESETS};
 use eframe::egui::{self, Event, Key, KeyboardShortcut, Modifiers};
 
@@ -301,6 +302,18 @@ fn performance(ui: &mut egui::Ui, s: &mut Settings, gpu_name: &str) -> bool {
         });
         ui.end_row();
 
+        ui.label("Proxy media");
+        ui.vertical(|ui| {
+            changed |= ui.checkbox(&mut s.use_proxies, "Play low-res all-intra proxies in the preview").changed();
+            ui.horizontal(|ui| {
+                let mut h = s.proxy_height.clamp(120, 2160);
+                changed |= ui.add(egui::DragValue::new(&mut h).range(120..=2160).suffix(" px").speed(10)).changed();
+                s.proxy_height = h;
+                ui.weak("proxy height — built in the background, exports always use the originals");
+            });
+        });
+        ui.end_row();
+
         ui.label("Movie mode");
         ui.vertical(|ui| {
             changed |= ui.checkbox(&mut s.movie_mode, "Play back pre-rendered frames").changed();
@@ -583,6 +596,68 @@ fn appearance(ui: &mut egui::Ui, s: &mut Settings) -> bool {
         changed |= color_row(ui, "Keyframe", &mut s.palette.keyframe, base.keyframe);
         changed |= color_row(ui, "Waveform", &mut s.palette.waveform, base.waveform);
     });
+    ui.add_space(8.0);
+    ui.collapsing("Icons", |ui| {
+        ui.weak("Pick the glyph shown for each pane and menu action ('None' removes it, 'Default' restores).");
+        egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+            egui::Grid::new("icons_panes").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
+                for p in crate::ui::layout::Pane::ALL {
+                    changed |= icon_row(ui, s, format!("pane.{}", p.title()), p.title(), Some(p.glyph()));
+                }
+                for a in crate::hotkeys::Action::ALL {
+                    changed |=
+                        icon_row(ui, s, format!("action.{}", a.id()), a.label(), crate::ui::tools::action_glyph(*a));
+                }
+            });
+        });
+    });
+    changed
+}
+
+/// One icon assignment: current glyph (or blank), and a picker with every glyph, None and Default.
+fn icon_row(ui: &mut egui::Ui, s: &mut Settings, key: String, label: &str, default: Option<Glyph>) -> bool {
+    use crate::ui::tools::{glyph_label, glyph_text_button};
+    let mut changed = false;
+    ui.label(label);
+    let cur = match s.icon_overrides.get(&key) {
+        Some(n) if n == "none" => None,
+        Some(n) => Glyph::from_name(n).or(default),
+        None => default,
+    };
+    ui.horizontal(|ui| {
+        match cur {
+            Some(g) => {
+                glyph_label(ui, g, ui.visuals().text_color());
+            }
+            None => ui.add_space(18.0),
+        }
+        ui.menu_button("Change", |ui| {
+            ui.set_max_width(260.0);
+            ui.horizontal_wrapped(|ui| {
+                for g in Glyph::ALL {
+                    if glyph_text_button(ui, *g, "").on_hover_text(g.name()).clicked() {
+                        s.icon_overrides.insert(key.clone(), g.name().to_string());
+                        changed = true;
+                        ui.close();
+                    }
+                }
+            });
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui.button("None").clicked() {
+                    s.icon_overrides.insert(key.clone(), "none".into());
+                    changed = true;
+                    ui.close();
+                }
+                if ui.button("Default").clicked() {
+                    s.icon_overrides.remove(&key);
+                    changed = true;
+                    ui.close();
+                }
+            });
+        });
+    });
+    ui.end_row();
     changed
 }
 
