@@ -1579,7 +1579,12 @@ impl App {
                 }
             }
             PlayPause => {
-                if self.buffer_stall {
+                // a library asset preview owns the Preview pane while it's open, so space controls
+                // its player instead of the timeline's — otherwise pressing play while looking at a
+                // library asset would silently start the timeline playing behind it
+                if let Some(lp) = self.lib_preview.as_mut() {
+                    lp.player.toggle();
+                } else if self.buffer_stall {
                     self.buffer_stall = false; // buffering held the clock: space means "stop waiting"
                 } else {
                     if !self.player.is_playing() && self.playhead >= self.project.duration() - 1e-6 {
@@ -2210,6 +2215,11 @@ impl App {
                     )
                 };
                 if resp.seeked {
+                    // clicking the timeline means "play the timeline" — drop any library asset
+                    // preview so it stops owning the Preview pane and the transport
+                    self.lib_preview = None;
+                    self.lib_preview_tex = None;
+                    self.lib_preview_live = None;
                     self.player.pause();
                     self.player.seek(self.playhead);
                 }
@@ -4104,20 +4114,28 @@ impl App {
             // video, filling whatever is left
             let (rect, _) = ui.allocate_exact_size(ui.available_size_before_wrap(), egui::Sense::hover());
             ui.painter().rect_filled(rect, 0.0, egui::Color32::BLACK);
-            if let Some(f) = frame {
-                let aspect = f.size[0].max(1) as f32 / f.size[1].max(1) as f32;
-                let lb = preview::letterbox(rect, aspect, ui.pixels_per_point());
-                ui.painter().image(
-                    f.tex,
-                    lb,
-                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                    egui::Color32::WHITE,
-                );
-                let cw = (lb.width() * ui.pixels_per_point()) as u32;
-                let ch = (lb.height() * ui.pixels_per_point()) as u32;
-                if let Some(lp) = self.lib_preview.as_mut() {
-                    lp.player.set_canvas(cw.max(16), ch.max(16), self.settings.preview_max_width);
+            let lb = match frame {
+                Some(f) => {
+                    let aspect = f.size[0].max(1) as f32 / f.size[1].max(1) as f32;
+                    let lb = preview::letterbox(rect, aspect, ui.pixels_per_point());
+                    ui.painter().image(
+                        f.tex,
+                        lb,
+                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        egui::Color32::WHITE,
+                    );
+                    lb
                 }
+                // no frame yet: the pane's whole rect stands in for the letterbox
+                None => rect,
+            };
+            // set the canvas even before the first frame arrives: the player starts at 0x0 and
+            // renders nothing until it is told a size, so gating this on `frame` deadlocked the
+            // preview at a permanent black box
+            let cw = (lb.width() * ui.pixels_per_point()) as u32;
+            let ch = (lb.height() * ui.pixels_per_point()) as u32;
+            if let Some(lp) = self.lib_preview.as_mut() {
+                lp.player.set_canvas(cw.max(16), ch.max(16), self.settings.preview_max_width);
             }
         });
 
