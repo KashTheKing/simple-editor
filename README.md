@@ -1,7 +1,25 @@
 # Simple Editor
 
+![Simple Editor](docs/images/screenshot.png)
+
 A tiny, fast video trimmer/editor for Windows. Open a video, watch it, cut it, add music/SFX, overlay
 images/video/text, keyframe things — and save over the original or export to any format.
+
+Besides all of the general editing features it has: AI transcription, auto-subs, double-take
+detection, dead-air removing, software is literally just 1 file and <15MB file size and launches in
+<2ms, file-converter, YouTube/TikTok/X/URL video downloader and importer, Luau scripting/plugins,
+tooling, and expressions, OpenGL + custom GLSL shader effects, motion-tracking, masking, shapes,
+live-annotating and drawing, audio-mixing and filters with EQ, reverb, distortion, and more,
+node-graphs, CapCut-style templates/containers, effect/transition presets, preset and custom themes
+with preference for sharp and cozy style, full editor-layout customizability, planning and to-do
+lists, auto-keyframing and easy velocity tools for extremely smooth animations and transitions,
+style-reference sheet generator, MCP server for AI assistants to help you edit, importing/exporting
+project files from/to DaVinci Resolve and Premiere Pro, and MORE for COMPLETELY FREE.
+
+> **⚠️ Beta software.** Most features are experimental — nothing here is final or fully stable yet.
+> It's usable for general-purpose editing today, but it is **not** intended for large-scale projects
+> or anything that needs serious quality assurance. It's tested and updated daily on the way to being
+> stable — expect rough edges, and keep backups of anything that matters.
 
 * **Rust + egui**, single ~10 MB exe, starts instantly, low CPU/GPU/memory.
 * **Decoding**: Windows Media Foundation (native system codecs, no extra DLLs, instant seeks); ffmpeg.exe as a
@@ -52,12 +70,26 @@ the result.
 
 ## Requirements
 
-* Windows 10/11 (x64).
-* [FFmpeg](https://ffmpeg.org) on PATH (or set its folder in Settings) for export, images and fallback
-  decoding: `winget install Gyan.FFmpeg` or `choco install ffmpeg`. Playback of common files works
-  without it.
+* Windows 10/11 (x64). No installer — one `.exe`, run it from anywhere.
+* [FFmpeg](https://ffmpeg.org) on PATH (or set its folder in Settings ▸ General) for export, images
+  and fallback decoding: `winget install Gyan.FFmpeg` or `choco install ffmpeg`. Playback of common
+  files works without it, but you'll want it for export.
 * HEVC/AV1 playback through Media Foundation needs the Microsoft Store codec extensions; otherwise the
   ffmpeg fallback decoder is used automatically.
+
+### Optional bonus features
+
+These are off/hidden until you install their tool — the app never bundles or downloads them for you:
+
+* **YouTube/TikTok/X/URL import** (Library ▸ Import URL…) needs [yt-dlp](https://github.com/yt-dlp/yt-dlp):
+  `winget install yt-dlp.yt-dlp` or `choco install yt-dlp`, or drop `yt-dlp.exe` in the app's own folder.
+  The *Import URL…* button only appears once it's found on PATH or in Settings ▸ General (yt-dlp folder).
+* **AI transcription / auto-subs / double-take detection** need a [whisper.cpp](https://github.com/ggml-org/whisper.cpp)
+  build (`whisper-cli.exe`) and a model file. Point Settings ▸ General (Whisper folder) at the binary, or
+  drop it in `%APPDATA%\SimpleEditor\whisper`; the Subtitles pane's Transcribe section downloads a model
+  for you the first time you use it.
+* **Hardware export encoders** (NVENC/QSV/AMF) need the matching GPU driver installed; they show up in
+  the encoder dropdown (Settings ▸ Export) automatically when ffmpeg reports them available.
 
 ## Build
 
@@ -207,4 +239,4 @@ cargo run -- --selftest          # headless media/engine/export check (needs ffm
 cargo run -- video.mp4 --screenshot shot.ppm
 ```
 
-See `ARCHITECTURE.md` for the module map and contracts.
+See `ARCHITECTURE.md` for the module map and contracts, and `CHANGELOG.md` for release history.
