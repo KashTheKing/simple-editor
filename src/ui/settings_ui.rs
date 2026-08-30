@@ -70,9 +70,6 @@ impl Status {
 const THEMES: [(&str, &str); 3] = [("system", "System"), ("dark", "Dark"), ("light", "Light")];
 const DECODERS: [(&str, &str); 3] =
     [("auto", "Auto (Media Foundation, ffmpeg fallback)"), ("mf", "Media Foundation"), ("ffmpeg", "ffmpeg")];
-const PALETTE_MODES: [(&str, &str); 4] =
-    [("system", "Follow Windows"), ("light", "Light"), ("dark", "Dark"), ("custom", "Custom")];
-
 #[allow(clippy::too_many_arguments)]
 pub fn show(
     ctx: &egui::Context,
@@ -556,10 +553,34 @@ fn appearance(ui: &mut egui::Ui, s: &mut Settings) -> bool {
         changed |= combo(ui, "ui_look", &mut s.ui_look, &[("cozy", "Cozy (rounded)"), ("sharp", "Sharp")], Some(200.0));
     });
     ui.add_space(4.0);
+    let has_overrides = s.palette != crate::theme::PaletteOverride { mode: s.palette.mode.clone(), ..Default::default() };
     ui.horizontal(|ui| {
         ui.label("Theme");
-        let cur = if s.palette.preset.is_empty() { "Custom / none" } else { s.palette.preset.as_str() };
-        egui::ComboBox::from_id_salt("theme_preset").selected_text(cur).width(200.0).show_ui(ui, |ui| {
+        // one list: the three base modes, every built-in preset, and "Custom" once colours are tweaked
+        let cur = if !s.palette.preset.is_empty() {
+            s.palette.preset.clone()
+        } else if has_overrides {
+            "Custom".to_string()
+        } else {
+            match s.theme.as_str() {
+                "dark" => "Dark",
+                "light" => "Light",
+                _ => "Follow System",
+            }
+            .to_string()
+        };
+        egui::ComboBox::from_id_salt("theme_preset").selected_text(cur.clone()).width(200.0).show_ui(ui, |ui| {
+            for (label, theme) in [("Follow System", "system"), ("Dark", "dark"), ("Light", "light")] {
+                if ui.selectable_label(cur == label, label).clicked() {
+                    s.theme = theme.into();
+                    s.palette = crate::theme::PaletteOverride {
+                        mode: if theme == "system" { String::new() } else { theme.into() },
+                        ..Default::default()
+                    };
+                    changed = true;
+                }
+            }
+            ui.separator();
             for name in crate::theme::PRESETS {
                 if ui.selectable_label(s.palette.preset == *name, *name).clicked() {
                     if let Some(ov) = crate::theme::preset(name) {
@@ -576,6 +597,10 @@ fn appearance(ui: &mut egui::Ui, s: &mut Settings) -> bool {
                 theme: s.theme.clone(),
                 ui_look: s.ui_look.clone(),
                 palette: s.palette.clone(),
+                bg_image: s.bg_image.clone(),
+                bg_tint: s.bg_tint,
+                bg_blur: s.bg_blur,
+                panel_opacity: s.panel_opacity,
             };
             if let Some(out) = rfd::FileDialog::new()
                 .add_filter("Simple Editor theme", &["sedit-theme"])
@@ -596,21 +621,16 @@ fn appearance(ui: &mut egui::Ui, s: &mut Settings) -> bool {
                     s.theme = tf.theme;
                     s.ui_look = tf.ui_look;
                     s.palette = tf.palette;
+                    s.bg_image = tf.bg_image;
+                    s.bg_tint = tf.bg_tint;
+                    s.bg_blur = tf.bg_blur;
+                    s.panel_opacity = tf.panel_opacity;
                     changed = true;
                 }
             }
         }
     });
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        ui.label("Mode");
-        changed |= combo(ui, "palette_mode", &mut s.palette.mode, &PALETTE_MODES, Some(200.0));
-        if ui.button("Reset to system").clicked() {
-            s.palette = crate::theme::PaletteOverride::default();
-            changed = true;
-        }
-    });
-    ui.weak("Custom colours only take effect once the mode above is Light, Dark or Custom.");
+    ui.weak("Tweak any colour below to start a Custom theme from the one selected above.");
     ui.add_space(6.0);
 
     let base = crate::theme::palette_with(ui.ctx(), &s.palette);
@@ -635,18 +655,27 @@ fn appearance(ui: &mut egui::Ui, s: &mut Settings) -> bool {
     });
     ui.add_space(6.0);
 
+    let mut tweaked = false;
     egui::Grid::new("appearance").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-        changed |= color_row(ui, "Background", &mut s.palette.background, base.bg);
-        changed |= color_row(ui, "Panel", &mut s.palette.panel, base.panel);
-        changed |= color_row(ui, "Header", &mut s.palette.header, base.header);
-        changed |= color_row(ui, "Border", &mut s.palette.border, base.border);
-        changed |= color_row(ui, "Text", &mut s.palette.text, base.text);
-        changed |= color_row(ui, "Text (dim)", &mut s.palette.text_dim, base.text_dim);
-        changed |= color_row(ui, "Accent", &mut s.palette.accent, base.accent);
-        changed |= color_row(ui, "Selection", &mut s.palette.selection, base.selection);
-        changed |= color_row(ui, "Keyframe", &mut s.palette.keyframe, base.keyframe);
-        changed |= color_row(ui, "Waveform", &mut s.palette.waveform, base.waveform);
+        tweaked |= color_row(ui, "Background", &mut s.palette.background, base.bg);
+        tweaked |= color_row(ui, "Panel", &mut s.palette.panel, base.panel);
+        tweaked |= color_row(ui, "Header", &mut s.palette.header, base.header);
+        tweaked |= color_row(ui, "Border", &mut s.palette.border, base.border);
+        tweaked |= color_row(ui, "Text", &mut s.palette.text, base.text);
+        tweaked |= color_row(ui, "Text (dim)", &mut s.palette.text_dim, base.text_dim);
+        tweaked |= color_row(ui, "Accent", &mut s.palette.accent, base.accent);
+        tweaked |= color_row(ui, "Selection", &mut s.palette.selection, base.selection);
+        tweaked |= color_row(ui, "Keyframe", &mut s.palette.keyframe, base.keyframe);
+        tweaked |= color_row(ui, "Waveform", &mut s.palette.waveform, base.waveform);
     });
+    if tweaked {
+        // editing a colour forks the current theme into "Custom" — the colours stay as a starting point
+        s.palette.preset = String::new();
+        if s.palette.mode.is_empty() || s.palette.mode == "system" {
+            s.palette.mode = "custom".into(); // keep following Windows dark/light underneath
+        }
+        changed = true;
+    }
     ui.add_space(8.0);
     ui.collapsing("Background image", |ui| {
         ui.weak("A picture behind the whole editor; lower the panel opacity to see it through the panes.");

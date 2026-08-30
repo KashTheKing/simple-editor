@@ -33,7 +33,7 @@ pub struct LayoutProfile {
 
 /// A shareable theme — what "Export theme…" writes to a `.sedit-theme` file and
 /// "Import theme…" reads back (palette override + look + the base theme pref).
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct ThemeFile {
     pub name: String,
@@ -42,6 +42,26 @@ pub struct ThemeFile {
     /// "cozy" | "sharp" (Settings::ui_look)
     pub ui_look: String,
     pub palette: PaletteOverride,
+    /// Background image settings ride along (the path only makes sense on machines that have the file).
+    pub bg_image: String,
+    pub bg_tint: [u8; 4],
+    pub bg_blur: u8,
+    pub panel_opacity: u8,
+}
+
+impl Default for ThemeFile {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            theme: String::new(),
+            ui_look: String::new(),
+            palette: PaletteOverride::default(),
+            bg_image: String::new(),
+            bg_tint: [0, 0, 0, 120],
+            bg_blur: 0,
+            panel_opacity: 255,
+        }
+    }
 }
 
 /// A saved keyframe curve for one property. Key times are normalised to 0..1 of the clip length unless
@@ -381,8 +401,15 @@ mod tests {
             theme: "dark".into(),
             ui_look: "cozy".into(),
             palette: crate::theme::preset("Dracula").unwrap(),
+            bg_image: r"C:\pics\bg.jpg".into(),
+            bg_tint: [10, 20, 30, 90],
+            bg_blur: 6,
+            panel_opacity: 200,
         };
         let back: ThemeFile = serde_json::from_str(&serde_json::to_string(&tf).unwrap()).unwrap();
         assert_eq!(back, tf);
+        // an old theme file without the background fields still loads with sane defaults
+        let old: ThemeFile = serde_json::from_str("{}").unwrap();
+        assert_eq!(old.panel_opacity, 255);
     }
 }

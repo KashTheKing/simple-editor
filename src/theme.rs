@@ -138,8 +138,8 @@ pub fn palette_with(ctx: &egui::Context, ov: &PaletteOverride) -> Palette {
     let dark = match ov.mode.as_str() {
         "light" => false,
         "dark" => true,
-        "custom" => ctx.style().visuals.dark_mode,
-        _ => return palette(ctx),
+        // "custom" / "system": follow Windows for the base; any colour overrides still apply
+        _ => ctx.style().visuals.dark_mode,
     };
     let mut p = Palette::new(dark, ov.accent.map(rgb).unwrap_or_else(system_accent));
     apply_overrides(&mut p, ov);
