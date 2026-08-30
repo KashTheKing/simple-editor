@@ -185,13 +185,16 @@ pub fn show(
     });
     ui.horizontal_wrapped(|ui| {
         let any = !project.subtitles.is_empty();
+        let sel = state.checked.len();
+        let label = if sel > 0 { format!("To text clips ({sel})") } else { "To text clips".into() };
         if ui
-            .add_enabled(any, Button::new("To text clips"))
-            .on_hover_text("Turn every cue into an editable Text clip on a \"Subtitles\" track")
+            .add_enabled(any, Button::new(label))
+            .on_hover_text("Turn the selected cues (or all of them) into editable Text clips on a \"Subtitles\" track")
             .clicked()
         {
             once(&mut undone, undo, project);
-            let n = project.cues_to_text_clips(None);
+            let only: Vec<Id> = state.checked.iter().copied().collect();
+            let n = project.cues_to_text_clips(if only.is_empty() { None } else { Some(&only) });
             state.checked.clear();
             resp.edited = n > 0;
         }
@@ -244,6 +247,8 @@ pub fn show(
     let mut resort = false;
     let mut del: Option<Id> = None;
     let mut split: Option<Id> = None;
+    let mut convert: Option<Id> = None;
+    let (shift, primary_down) = ui.input(|i| (i.modifiers.shift, i.pointer.primary_down()));
     egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         for i in 0..project.subtitles.len() {
             let (id, start, end) = {
@@ -258,75 +263,95 @@ pub fn show(
             } else {
                 egui::Color32::TRANSPARENT
             };
-            egui::Frame::new().fill(fill).inner_margin(2.0).show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    let mut on = state.checked.contains(&id);
-                    if ui.checkbox(&mut on, "").on_hover_text("Select for \"Delete selected\"").changed() {
-                        if on {
-                            state.checked.insert(id);
-                        } else {
-                            state.checked.remove(&id);
+            let row_rect = egui::Frame::new()
+                .fill(fill)
+                .inner_margin(2.0)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let mut on = state.checked.contains(&id);
+                        if ui.checkbox(&mut on, "").on_hover_text("Select for \"Delete selected\"").changed() {
+                            if on {
+                                state.checked.insert(id);
+                            } else {
+                                state.checked.remove(&id);
+                            }
                         }
-                    }
-                    let mut v = start;
-                    let r = ui.add(DragValue::new(&mut v).range(0.0..=(end - MIN_CUE)).speed(0.05).fixed_decimals(3));
-                    if edit_start(&r) {
+                        let mut v = start;
+                        let r =
+                            ui.add(DragValue::new(&mut v).range(0.0..=(end - MIN_CUE)).speed(0.05).fixed_decimals(3));
+                        if edit_start(&r) {
+                            once(&mut undone, undo, project);
+                        }
+                        if r.changed() {
+                            project.subtitles[i].start = v.clamp(0.0, end - MIN_CUE);
+                            resp.edited = true;
+                        }
+                        if r.drag_stopped() || (r.changed() && !r.dragged()) {
+                            resort = true;
+                        }
+                        let mut v = end;
+                        let r = ui.add(
+                            DragValue::new(&mut v).range((start + MIN_CUE)..=86400.0).speed(0.05).fixed_decimals(3),
+                        );
+                        if edit_start(&r) {
+                            once(&mut undone, undo, project);
+                        }
+                        if r.changed() {
+                            project.subtitles[i].end = v.max(start + MIN_CUE);
+                            resp.edited = true;
+                        }
+                        if glyph_text_button(ui, Glyph::Play, "").on_hover_text("Play from this cue").clicked() {
+                            *playhead = start;
+                            state.selected = Some(id);
+                            resp.seeked = true;
+                            resp.play = true;
+                        }
+                        if active && ph > start + 0.05 && ph < end - 0.05 && ui.small_button("Split").clicked() {
+                            split = Some(id);
+                        }
+                        if ui.small_button("T").on_hover_text("Convert to an editable Text clip").clicked() {
+                            convert = Some(id);
+                        }
+                        if crate::ui::markers_ui::x_button(ui).on_hover_text("Delete this cue").clicked() {
+                            del = Some(id);
+                        }
+                    });
+                    let mut text = project.subtitles[i].text.clone();
+                    let r = ui.add(egui::TextEdit::multiline(&mut text).desired_rows(1).desired_width(f32::INFINITY));
+                    // One undo entry per visit to the field, not per keystroke. "Add at playhead" focuses the
+                    // new cue itself and has already pushed one, so that focus does not push another.
+                    if state.focus == Some(id) {
+                        r.request_focus();
+                        state.focus = None;
+                    } else if r.gained_focus() {
                         once(&mut undone, undo, project);
                     }
-                    if r.changed() {
-                        project.subtitles[i].start = v.clamp(0.0, end - MIN_CUE);
-                        resp.edited = true;
-                    }
-                    if r.drag_stopped() || (r.changed() && !r.dragged()) {
-                        resort = true;
-                    }
-                    let mut v = end;
-                    let r =
-                        ui.add(DragValue::new(&mut v).range((start + MIN_CUE)..=86400.0).speed(0.05).fixed_decimals(3));
-                    if edit_start(&r) {
-                        once(&mut undone, undo, project);
-                    }
-                    if r.changed() {
-                        project.subtitles[i].end = v.max(start + MIN_CUE);
-                        resp.edited = true;
-                    }
-                    if glyph_text_button(ui, Glyph::Play, "").on_hover_text("Play from this cue").clicked() {
-                        *playhead = start;
+                    if r.has_focus() {
                         state.selected = Some(id);
-                        resp.seeked = true;
-                        resp.play = true;
                     }
-                    if active && ph > start + 0.05 && ph < end - 0.05 && ui.small_button("Split").clicked() {
-                        split = Some(id);
+                    if r.changed() {
+                        project.subtitles[i].text = text;
+                        resp.edited = true;
                     }
-                    if crate::ui::markers_ui::x_button(ui).on_hover_text("Delete this cue").clicked() {
-                        del = Some(id);
-                    }
-                });
-                let mut text = project.subtitles[i].text.clone();
-                let r = ui.add(egui::TextEdit::multiline(&mut text).desired_rows(1).desired_width(f32::INFINITY));
-                // One undo entry per visit to the field, not per keystroke. "Add at playhead" focuses the
-                // new cue itself and has already pushed one, so that focus does not push another.
-                if state.focus == Some(id) {
-                    r.request_focus();
-                    state.focus = None;
-                } else if r.gained_focus() {
-                    once(&mut undone, undo, project);
-                }
-                if r.has_focus() {
-                    state.selected = Some(id);
-                }
-                if r.changed() {
-                    project.subtitles[i].text = text;
-                    resp.edited = true;
-                }
-            });
+                })
+                .response
+                .rect;
+            // Shift+drag over rows sweeps them into the selection (plain drags still edit the widgets)
+            if shift && primary_down && ui.rect_contains_pointer(row_rect) {
+                state.checked.insert(id);
+            }
         }
         if project.subtitles.is_empty() {
             ui.weak("No subtitles. \"Add at playhead\" or import an .srt / .vtt file.");
         }
     });
 
+    if let Some(id) = convert {
+        once(&mut undone, undo, project);
+        project.cues_to_text_clips(Some(&[id]));
+        state.checked.remove(&id);
+        resp.edited = true;
+    }
     if let Some(id) = del {
         once(&mut undone, undo, project);
         project.remove_cue(id);
@@ -364,6 +389,7 @@ fn style_section(
 ) {
     let mut style = project.subtitle_style.clone();
     let mut margin = project.subtitle_margin;
+    let mut cont = (project.subtitle_cont_prefix.clone(), project.subtitle_cont_suffix.clone());
     let mut start = false;
     let mut changed = false;
     let note = |r: &Response, start: &mut bool, changed: &mut bool| {
@@ -400,6 +426,48 @@ fn style_section(
         ui.label("Margin");
         note(&ui.add(DragValue::new(&mut margin).range(0.0..=1000.0)), &mut start, &mut changed);
         ui.end_row();
+        ui.label("Format");
+        ui.horizontal(|ui| {
+            note(&ui.toggle_value(&mut style.bold, "B"), &mut start, &mut changed);
+            note(&ui.toggle_value(&mut style.italic, "I"), &mut start, &mut changed);
+            for (v, lab) in [(0u8, "Left"), (1, "Center"), (2, "Right")] {
+                note(&ui.selectable_value(&mut style.align, v, lab), &mut start, &mut changed);
+            }
+        });
+        ui.end_row();
+        ui.label("Line spacing");
+        note(&ui.add(DragValue::new(&mut style.line_spacing).range(0.5..=3.0).speed(0.02)), &mut start, &mut changed);
+        ui.end_row();
+        ui.label("Letter spacing");
+        note(
+            &ui.add(DragValue::new(&mut style.letter_spacing).range(-5.0..=30.0).speed(0.1)),
+            &mut start,
+            &mut changed,
+        );
+        ui.end_row();
+        ui.label("Shadow");
+        ui.horizontal(|ui| {
+            note(&ui.checkbox(&mut style.shadow, ""), &mut start, &mut changed);
+            note(&ui.color_edit_button_srgba_unmultiplied(&mut style.shadow_color), &mut start, &mut changed);
+        });
+        ui.end_row();
+        ui.label("Continuation").on_hover_text(
+            "Added where a sentence is split across cues: the suffix ends the cut-off cue, the prefix \
+             starts the next (e.g. suffix \" —\" for em-dashes). Applied by Transcribe / Regenerate cues.",
+        );
+        ui.horizontal(|ui| {
+            note(
+                &ui.add(egui::TextEdit::singleline(&mut cont.0).desired_width(50.0).hint_text("prefix")),
+                &mut start,
+                &mut changed,
+            );
+            note(
+                &ui.add(egui::TextEdit::singleline(&mut cont.1).desired_width(50.0).hint_text("suffix")),
+                &mut start,
+                &mut changed,
+            );
+        });
+        ui.end_row();
     });
     if start {
         once(undone, undo, project);
@@ -407,6 +475,7 @@ fn style_section(
     if changed {
         project.subtitle_style = style;
         project.subtitle_margin = margin;
+        (project.subtitle_cont_prefix, project.subtitle_cont_suffix) = cont;
         resp.edited = true;
     }
 }
@@ -495,7 +564,8 @@ fn generate(st: &mut TranscribeState, project: &mut Project) -> String {
         st.segments = transcribe::group_words(&st.raw_words, &st.group);
         st.groups = transcribe::duplicate_takes(&st.segments, st.threshold, TAKE_WINDOW);
     }
-    let cues = transcribe::to_cues(&st.segments, st.max_chars, st.min_dur);
+    let cont = (project.subtitle_cont_prefix.clone(), project.subtitle_cont_suffix.clone());
+    let cues = transcribe::to_cues(&st.segments, st.max_chars, st.min_dur, (&cont.0, &cont.1));
     let old: std::collections::HashSet<Id> = st.generated.iter().copied().collect();
     project.subtitles.retain(|c| !old.contains(&c.id));
     st.generated = cues.iter().map(|(s, e, t)| project.add_cue(*s, *e, t.clone())).collect();
