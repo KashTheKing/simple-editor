@@ -22,7 +22,7 @@
 //! Returns true if the project changed.
 
 use crate::hotkeys::Action;
-use crate::model::{Animated, BlendMode, ClipKind, Id, Label, Mask, Project, ShapeKind, ShapeStyle};
+use crate::model::{AnimLink, Animated, BlendMode, ClipKind, Id, Label, Mask, Project, ShapeKind, ShapeStyle};
 use crate::settings::Settings;
 use crate::theme::Palette;
 use crate::ui::markers_ui::x_button;
@@ -239,6 +239,7 @@ fn clip_section(
     let mut edit_labels: bool = ui.ctx().data(|d| d.get_temp(labels_open_id).unwrap_or(false));
     let mut label_ops: Vec<LabelOp> = Vec::new();
     let mut path_op: Option<PathOp> = None;
+    let path_list: Vec<(Id, String)> = project.paths.iter().map(|p| (p.id, p.name.clone())).collect();
 
     if n_selected > 1 {
         ui.label(format!("{n_selected} clips selected"));
@@ -336,9 +337,10 @@ fn clip_section(
         }
         for (label, a) in clip.props_mut() {
             ui.label(label);
+            let linked = !a.link.is_none();
             ui.horizontal(|ui| {
                 let mut v = a.at(lt);
-                let r = match label {
+                let r = ui.add_enabled_ui(!linked, |ui| match label {
                     "Volume" => {
                         let mut db = gain_to_db(v);
                         let r = ui.add(Slider::new(&mut db, -60.0..=12.0).suffix(" dB").fixed_decimals(1));
@@ -365,14 +367,29 @@ fn clip_section(
                         r
                     }
                     _ => ui.add(DragValue::new(&mut v).speed(1.0)),
-                };
+                })
+                .inner;
                 if r.changed() {
                     a.set_at(lt, v);
                 }
                 g.note(&r);
                 key_buttons(ui, a, lt, palette, &mut g);
+                link_menu(ui, label, a, &path_list, &mut g);
             });
             ui.end_row();
+            // a linked expression is edited right under its property
+            if let Animated { link: AnimLink::Expr(src), link_err, .. } = a {
+                ui.label("");
+                ui.horizontal(|ui| {
+                    g.note(&ui.add(
+                        egui::TextEdit::singleline(src).desired_width(150.0).hint_text("v + math.sin(t*4) * 20"),
+                    ));
+                    if let Some(e) = link_err {
+                        ui.colored_label(ui.visuals().warn_fg_color, "!").on_hover_text(e.clone());
+                    }
+                });
+                ui.end_row();
+            }
         }
         if clip.kind == ClipKind::Audio {
             let dur = clip.duration;
@@ -824,12 +841,53 @@ fn clip_section(
             project.add_path(clip.name.clone(), pts);
         }
         Some(PathOp::Apply(pid)) => {
-            let pts = project.path(pid).map(|p| p.points.clone()).unwrap_or_default();
-            project.apply_path(id, &pts);
+            project.link_path(id, pid);
         }
         None => {}
     }
     g.changed || ga.changed || labels_changed || path_op.is_some()
+}
+
+/// The "∿" menu on a property row: link the value to a saved path (Position X/Y) or a Luau
+/// expression, AE-style. Manual edits elsewhere break the link (`Animated::set_at`).
+fn link_menu(ui: &mut egui::Ui, label: &str, a: &mut Animated, paths: &[(Id, String)], g: &mut Gesture) {
+    let lit = !a.link.is_none();
+    let r = ui.menu_button(if lit { RichText::new("∿").strong() } else { RichText::new("∿").weak() }, |ui| {
+        if lit {
+            if ui.button("Unlink").clicked() {
+                a.unlink();
+                g.click();
+                ui.close();
+            }
+            ui.separator();
+        }
+        let axis_x = label == "Position X";
+        if axis_x || label == "Position Y" {
+            for (pid, name) in paths {
+                if ui.button(format!("Path: {name}")).clicked() {
+                    a.unlink();
+                    a.link = if axis_x { AnimLink::PathX(*pid) } else { AnimLink::PathY(*pid) };
+                    g.click();
+                    ui.close();
+                }
+            }
+            if !paths.is_empty() {
+                ui.separator();
+            }
+        }
+        if !matches!(a.link, AnimLink::Expr(_)) && ui.button("Expression…").clicked() {
+            a.unlink();
+            a.link = AnimLink::Expr("v".into());
+            g.click();
+            ui.close();
+        }
+    });
+    r.response.on_hover_text(match &a.link {
+        AnimLink::None => "Link to a path or expression".to_string(),
+        AnimLink::PathX(_) => "Following a path (X)".to_string(),
+        AnimLink::PathY(_) => "Following a path (Y)".to_string(),
+        AnimLink::Expr(_) => "Driven by an expression".to_string(),
+    });
 }
 
 /// Save the clip's outline as a project path, or animate it along one that was saved.

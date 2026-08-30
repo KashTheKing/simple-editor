@@ -206,17 +206,48 @@ pub struct Keyframe {
     pub ease: Ease,
 }
 
+/// A live driver for an `Animated` value: follow a saved path's X or Y over the clip's duration, or a
+/// Luau expression of `t` (clip-local seconds) and `v` (the property's own keyframed/constant value).
+/// `Project::refresh_links` bakes active links into the transient `Animated::baked` samples that
+/// `at()` then reads, so every render/mixer read site stays project-free.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub enum AnimLink {
+    #[default]
+    None,
+    PathX(Id),
+    PathY(Id),
+    Expr(String),
+}
+
+impl AnimLink {
+    pub fn is_none(&self) -> bool {
+        *self == AnimLink::None
+    }
+}
+
 /// A scalar property that is either constant (`value`) or keyframed (`keys`, sorted by t).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Animated {
     pub value: f64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub keys: Vec<Keyframe>,
+    /// Live driver (path / expression); `None` for a plain property.
+    #[serde(default, skip_serializing_if = "AnimLink::is_none")]
+    pub link: AnimLink,
+    /// Transient samples of `link`; while non-empty they override `keys`/`value` in `at()`.
+    #[serde(skip)]
+    pub baked: Vec<Keyframe>,
+    /// Change stamp for `baked` (hash of the link and its inputs); 0 = never baked.
+    #[serde(skip)]
+    pub baked_rev: u64,
+    /// Last expression/path error, shown in the inspector. Transient.
+    #[serde(skip)]
+    pub link_err: Option<String>,
 }
 
 impl Animated {
     pub fn new(value: f64) -> Self {
-        Self { value, keys: Vec::new() }
+        Self { value, keys: Vec::new(), link: AnimLink::None, baked: Vec::new(), baked_rev: 0, link_err: None }
     }
     pub fn is_animated(&self) -> bool {
         !self.keys.is_empty()
@@ -224,12 +255,22 @@ impl Animated {
     pub fn is_default(&self, def: f64) -> bool {
         !self.is_animated() && (self.value - def).abs() < EPS
     }
-    /// Value at clip-local time t (eased interpolation, clamped at the ends).
+    /// Value at clip-local time t (eased interpolation, clamped at the ends). A baked live link
+    /// (path / expression) overrides the property's own keys.
     pub fn at(&self, t: f64) -> f64 {
-        let k = &self.keys;
-        if k.is_empty() {
+        if !self.baked.is_empty() {
+            return Self::eval_keys(&self.baked, t);
+        }
+        self.base_at(t)
+    }
+    /// The keyframed/constant value ignoring any live link — what an expression sees as `v`.
+    pub fn base_at(&self, t: f64) -> f64 {
+        if self.keys.is_empty() {
             return self.value;
         }
+        Self::eval_keys(&self.keys, t)
+    }
+    fn eval_keys(k: &[Keyframe], t: f64) -> f64 {
         if t <= k[0].t {
             return k[0].v;
         }
@@ -256,8 +297,19 @@ impl Animated {
         let i = self.keys.partition_point(|k| k.t < t);
         self.keys.insert(i, Keyframe { t, v, ease: Ease::Linear });
     }
+    /// Drop any live link, letting the property's own keys/constant show through again.
+    pub fn unlink(&mut self) {
+        self.link = AnimLink::None;
+        self.baked.clear();
+        self.baked_rev = 0;
+        self.link_err = None;
+    }
     /// Set the value at time t: upserts a keyframe when animated, otherwise sets the constant.
+    /// A manual edit detaches any live link (AE-style: dragging a linked value breaks the link).
     pub fn set_at(&mut self, t: f64, v: f64) {
+        if !self.link.is_none() {
+            self.unlink();
+        }
         if !self.is_animated() {
             self.value = v;
             return;
@@ -1731,6 +1783,71 @@ pub fn path_to_keys(points: &[(f32, f32, f32)], duration: f64) -> (Animated, Ani
         }
     }
     (x, y)
+}
+
+// ---------- live links (paths / expressions) ----------
+
+/// Samples per second when baking an expression into keyframes.
+const EXPR_RATE: f64 = 30.0;
+
+/// Evaluate a Luau expression over the clip's duration into linear samples. `t` and `v` are in scope
+/// per sample; `v` is the property's own keyframed/constant value at that `t`.
+fn bake_expr(src: &str, base: &Animated, dur: f64) -> Result<Vec<Keyframe>, String> {
+    let lua = mlua::Lua::new();
+    lua.sandbox(true).map_err(|e| e.to_string())?;
+    let func = lua
+        .load(format!("local t, v = ...\nreturn ({src})"))
+        .set_name("expression")
+        .into_function()
+        .map_err(|e| e.to_string())?;
+    // ponytail: fixed 30 Hz sampling capped at 4096 keys; adaptive sampling if someone links a 10-min clip
+    let n = ((dur * EXPR_RATE).ceil() as usize).clamp(1, 4096) + 1;
+    let mut keys = Vec::with_capacity(n);
+    for i in 0..n {
+        let t = dur * i as f64 / (n - 1) as f64;
+        let v: f64 = func.call((t, base.base_at(t))).map_err(|e| e.to_string())?;
+        if !v.is_finite() {
+            return Err("expression returned a non-finite number".into());
+        }
+        keys.push(Keyframe { t, v, ease: Ease::Linear });
+    }
+    Ok(keys)
+}
+
+/// Change stamp for a property's live link: hash of the link and everything its bake reads.
+fn link_rev(a: &Animated, dur: f64, paths: &[PathAsset]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    dur.to_bits().hash(&mut h);
+    match &a.link {
+        AnimLink::None => {}
+        AnimLink::PathX(id) | AnimLink::PathY(id) => {
+            matches!(a.link, AnimLink::PathX(_)).hash(&mut h);
+            id.hash(&mut h);
+            if let Some(p) = paths.iter().find(|p| p.id == *id) {
+                for (x, y, t) in &p.points {
+                    x.to_bits().hash(&mut h);
+                    y.to_bits().hash(&mut h);
+                    t.to_bits().hash(&mut h);
+                }
+            }
+        }
+        AnimLink::Expr(s) => {
+            s.hash(&mut h);
+            a.value.to_bits().hash(&mut h);
+            for k in &a.keys {
+                k.t.to_bits().hash(&mut h);
+                k.v.to_bits().hash(&mut h);
+                std::mem::discriminant(&k.ease).hash(&mut h);
+                if let Ease::Bezier { x1, y1, x2, y2 } = k.ease {
+                    for f in [x1, y1, x2, y2] {
+                        f.to_bits().hash(&mut h);
+                    }
+                }
+            }
+        }
+    }
+    h.finish().max(1) // 0 is reserved for "never baked"
 }
 
 // ---------- markers ----------
@@ -4058,6 +4175,65 @@ impl Project {
         c.y = y;
         true
     }
+    /// Live-link a clip's X/Y to a saved path: editing the path afterwards moves the clip too
+    /// (unlike `apply_path`, which bakes a one-shot copy).
+    pub fn link_path(&mut self, clip: Id, path: Id) -> bool {
+        if self.path(path).is_none() {
+            return false;
+        }
+        let Some(c) = self.clip_mut(clip) else { return false };
+        c.x.unlink();
+        c.y.unlink();
+        c.x.link = AnimLink::PathX(path);
+        c.y.link = AnimLink::PathY(path);
+        true
+    }
+    /// Re-bake every live link (path / expression) whose inputs changed. Called once per frame;
+    /// costs one hash per linked property when nothing changed.
+    pub fn refresh_links(&mut self) {
+        let paths = self.paths.clone(); // ponytail: cloned to split the borrow; index it if paths grow huge
+        let mut tracks: Vec<&mut Track> = self.tracks.iter_mut().collect();
+        if let Some(st) = &mut self.main_stash {
+            tracks.extend(st.tracks.iter_mut());
+        }
+        for sq in &mut self.sequences {
+            tracks.extend(sq.tracks.iter_mut());
+        }
+        for tr in tracks {
+            for c in &mut tr.clips {
+                let dur = c.duration;
+                for a in c.all_animated_mut() {
+                    if a.link.is_none() {
+                        continue;
+                    }
+                    let rev = link_rev(a, dur, &paths);
+                    if rev == a.baked_rev {
+                        continue;
+                    }
+                    a.baked_rev = rev;
+                    a.link_err = None;
+                    let res = match &a.link {
+                        AnimLink::None => unreachable!(),
+                        AnimLink::PathX(id) | AnimLink::PathY(id) => match paths.iter().find(|p| p.id == *id) {
+                            Some(p) => {
+                                let (x, y) = path_to_keys(&p.points, dur);
+                                Ok(if matches!(a.link, AnimLink::PathX(_)) { x.keys } else { y.keys })
+                            }
+                            None => Err("path no longer exists".to_string()),
+                        },
+                        AnimLink::Expr(src) => bake_expr(src, a, dur),
+                    };
+                    match res {
+                        Ok(keys) => a.baked = keys,
+                        Err(e) => {
+                            a.baked.clear();
+                            a.link_err = Some(e);
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // ---------- node graphs ----------
     /// Give the clip a node graph built from its current effect stack (idempotent).
@@ -4454,6 +4630,43 @@ mod tests {
         let poly = path_to_keys(&[(0.0, -50.0, 0.0), (60.0, 40.0, 0.0), (-60.0, 40.0, 0.0)], 2.0);
         assert_eq!(poly.0.keys.iter().map(|k| k.t).collect::<Vec<_>>(), vec![0.0, 1.0, 2.0]);
         assert!(path_to_keys(&[], 3.0).0.keys.is_empty(), "an empty path animates nothing");
+    }
+
+    #[test]
+    fn live_links_follow_edits_and_detach_on_manual_change() {
+        let mut p = Project::new();
+        let pid = p.add_path("walk".into(), vec![(0.0, 0.0, 0.0), (100.0, 50.0, 1.0)]);
+        let id = p.add_shape_clip(ShapeKind::Rect, 0.0, 4.0);
+        assert!(p.link_path(id, pid));
+        p.refresh_links();
+        let c = p.clip(id).unwrap();
+        assert!((c.x.at(4.0) - 100.0).abs() < 1e-6 && (c.y.at(4.0) - 50.0).abs() < 1e-6);
+        // editing the saved path moves the linked clip too — that's the point of a live link
+        p.paths[0].points[1].0 = 200.0;
+        p.refresh_links();
+        assert!((p.clip(id).unwrap().x.at(4.0) - 200.0).abs() < 1e-6);
+        // an expression sees t and the property's own base value v
+        let c = p.clip_mut(id).unwrap();
+        c.opacity.value = 0.5;
+        c.opacity.link = AnimLink::Expr("v + t / 8".into());
+        p.refresh_links();
+        let c = p.clip(id).unwrap();
+        assert!(c.opacity.link_err.is_none(), "{:?}", c.opacity.link_err);
+        assert!((c.opacity.at(0.0) - 0.5).abs() < 1e-6 && (c.opacity.at(4.0) - 1.0).abs() < 1e-6);
+        // a broken expression reports instead of animating, and never panics
+        let c = p.clip_mut(id).unwrap();
+        c.opacity.link = AnimLink::Expr("nonsense(".into());
+        p.refresh_links();
+        let c = p.clip(id).unwrap();
+        assert!(c.opacity.link_err.is_some() && (c.opacity.at(2.0) - 0.5).abs() < 1e-6);
+        // a manual edit breaks the link (AE-style), links survive a save/load round trip
+        let c = p.clip_mut(id).unwrap();
+        c.x.set_at(0.0, 7.0);
+        assert!(c.x.link.is_none() && c.x.baked.is_empty());
+        let mut o = Project::from_json(&p.to_json()).unwrap();
+        assert_eq!(o.clip(id).unwrap().y.link, AnimLink::PathY(pid));
+        o.refresh_links();
+        assert!((o.clip(id).unwrap().y.at(4.0) - 50.0).abs() < 1e-6);
     }
 
     #[test]
