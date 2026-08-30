@@ -136,7 +136,10 @@ pub fn show(ui: &mut egui::Ui, state: &mut PreviewState, mut c: PreviewCtx<'_>) 
                 .order(egui::Order::Foreground)
                 .show(ui.ctx(), |ui| {
                     egui::Frame::popup(ui.style()).fill(c.palette.panel.gamma_multiply(0.92)).show(ui, |ui| {
-                        transport(ui, state, &c, &mut r);
+                        ui.vertical(|ui| {
+                            scrub_bar(ui, &c, &mut r, state.transport.width().max(320.0));
+                            transport(ui, state, &c, &mut r);
+                        });
                         // hovering the bar keeps it alive past the 2 s fade
                         if ui.ui_contains_pointer() {
                             state.moved_at = Some(std::time::Instant::now());
@@ -146,11 +149,37 @@ pub fn show(ui: &mut egui::Ui, state: &mut PreviewState, mut c: PreviewCtx<'_>) 
         }
         return r;
     }
+    let hovered = ui.rect_contains_pointer(ui.max_rect());
     ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
         transport(ui, state, &c, &mut r);
+        // the space is always allocated so the video does not jump; the bar itself only appears
+        // (and takes clicks) while the pointer is over the pane, like the fullscreen overlay
+        if hovered {
+            scrub_bar(ui, &c, &mut r, ui.available_width());
+        } else {
+            ui.allocate_exact_size(vec2(ui.available_width(), 10.0), egui::Sense::hover());
+        }
         video(ui, state, &mut c, &mut r);
     });
     r
+}
+
+/// Progress / scrub bar (same look as the library preview's): fill shows the playhead, click or
+/// drag anywhere on it seeks.
+fn scrub_bar(ui: &mut egui::Ui, c: &PreviewCtx<'_>, r: &mut PreviewResponse, width: f32) {
+    let duration = c.project.duration().max(f64::MIN_POSITIVE);
+    let (bar, br) = ui.allocate_exact_size(vec2(width, 10.0), egui::Sense::click_and_drag());
+    ui.painter().rect_filled(bar, 2.0, c.palette.panel);
+    let frac = (c.playhead / duration).clamp(0.0, 1.0) as f32;
+    let filled = Rect::from_min_max(bar.min, pos2(bar.left() + bar.width() * frac, bar.bottom()));
+    ui.painter().rect_filled(filled, 2.0, c.palette.accent);
+    ui.painter().rect_stroke(bar, 2.0, egui::Stroke::new(1.0, c.palette.border), egui::StrokeKind::Inside);
+    if (br.clicked() || br.dragged()) && bar.width() > 0.0 {
+        if let Some(p) = br.interact_pointer_pos() {
+            let f = (((p.x - bar.left()) / bar.width()) as f64).clamp(0.0, 1.0);
+            r.seek = Some(f * duration);
+        }
+    }
 }
 
 fn transport(ui: &mut egui::Ui, state: &mut PreviewState, c: &PreviewCtx<'_>, r: &mut PreviewResponse) {
