@@ -43,6 +43,8 @@ pub struct Palette {
     pub selection: Color32,
     /// Corner radius for custom-painted widget-like surfaces (buttons, chips, cards).
     pub rounding: f32,
+    /// Corner radius for timeline clips (0 in the sharp look — fully rectangular).
+    pub clip_rounding: f32,
 }
 
 impl Palette {
@@ -70,6 +72,7 @@ impl Palette {
                 keyframe: Color32::from_rgb(255, 200, 60),
                 selection: accent,
                 rounding: 2.0,
+                clip_rounding: 0.0,
             }
         } else {
             Self {
@@ -93,6 +96,7 @@ impl Palette {
                 keyframe: Color32::from_rgb(200, 140, 0),
                 selection: accent,
                 rounding: 2.0,
+                clip_rounding: 0.0,
             }
         }
     }

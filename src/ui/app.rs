@@ -5631,7 +5631,9 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.palette = theme::palette_with(ctx, &self.settings.palette);
-        self.palette.rounding = if self.settings.ui_look == "sharp" { 2.0 } else { 6.0 };
+        let cozy_look = self.settings.ui_look != "sharp";
+        self.palette.rounding = if cozy_look { 6.0 } else { 2.0 };
+        self.palette.clip_rounding = if cozy_look { 5.0 } else { 0.0 };
         if !self.settings.bg_image.is_empty() && self.settings.panel_opacity < 255 {
             let a = self.settings.panel_opacity;
             let al = |c: egui::Color32| egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a);
