@@ -9,9 +9,14 @@
 //! to select it, Ctrl+click adds/removes one, dragging empty graph space rubber-bands a group (like the
 //! timeline's clip band), Delete removes the selection and Ctrl+C / Ctrl+V copy it and paste it at the
 //! playhead keeping the relative times, double-click on empty graph area adds a key for the active
-//! property at that (t, v), right-click a key → easing menu (Ease::ALL) + Delete; Ctrl+Scroll zooms the
-//! time axis, Shift+Scroll pans, plain Scroll zooms the value axis around the pointer and "Fit" frames
-//! every key. Bezier velocity handles: a Bezier segment (or any segment whose left key is
+//! property at that (t, v) and double-click directly on a key opens "Set Value…" for it; right-click a
+//! key → easing menu (Ease::ALL, applied to the whole selection when 2+ keys are selected), "Set Value…"
+//! (numeric entry for that key), "Blend Velocity" (2+ selected keys in one property: smooths the segments
+//! between them) and Delete; Ctrl+Scroll zooms the time axis, Shift+Scroll pans, plain Scroll zooms the
+//! value axis around the pointer and "Fit" frames every key. The "Auto scale" toggle (off by default)
+//! controls whether each property's value-axis range live-rescales from its current keys or stays frozen
+//! (per `CurvesState::frozen`) until "Fit" refreshes it, so editing a key doesn't lurch the whole graph's
+//! scale. Bezier velocity handles: a Bezier segment (or any segment whose left key is
 //! selected) shows its two handles; dragging one converts the segment to `Ease::Bezier`.
 
 use crate::model::{Animated, Clip, Ease, Id, Keyframe, Project};
@@ -98,6 +103,10 @@ pub struct CurvesState {
     /// Value-axis view on top of each property's auto range: 1 = the whole range, pan in range units.
     pub y_zoom: f64,
     pub y_pan: f64,
+    /// Live-rescale each property's value-axis range to its current keys every frame. Off (the default)
+    /// freezes each property's range in `frozen` until "Fit" refreshes it, so dragging a key to an
+    /// extreme value doesn't make the whole graph's scale lurch.
+    pub auto_scale: bool,
     /// Selected keys as (property index, key index).
     pub selected: Vec<(usize, usize)>,
     /// Last frame's graph rect / effective px-per-second / active y scale (hit-testing + tests).
@@ -109,6 +118,9 @@ pub struct CurvesState {
     /// y scales latched per property for the running key/handle drag: the per-frame auto scale is derived
     /// from the very values the drag writes, so a live scale would feed the dragged value back into itself.
     drag_y: Vec<(usize, (f64, f64))>,
+    /// Per-property y ranges frozen while `auto_scale` is off: the range in use for a property is
+    /// computed once (first time it's viewed) or refreshed on demand by "Fit", never on every edit.
+    frozen: Vec<(usize, (f64, f64))>,
     /// The selected keys as they were when the drag started, per property: (prop, keys, selected indices).
     /// The whole gesture is re-derived from this snapshot, so nothing accumulates rounding.
     drag_keys: Vec<(usize, Vec<Keyframe>, Vec<usize>)>,
@@ -123,6 +135,9 @@ pub struct CurvesState {
     motion_sel: usize,
     /// Key under the open context menu.
     menu_key: Option<(usize, usize)>,
+    /// The key staged in the "Set Value…" popup: (property, key, staged value). Seeded from the key's
+    /// current value; `None` means the popup is closed.
+    value_edit: Option<(usize, usize, f64)>,
 }
 
 impl Default for CurvesState {
@@ -137,6 +152,7 @@ impl Default for CurvesState {
             zoom: 0.0,
             y_zoom: 1.0,
             y_pan: 0.0,
+            auto_scale: false,
             selected: Vec::new(),
             graph: Rect::NOTHING,
             pps: 0.0,
@@ -144,6 +160,7 @@ impl Default for CurvesState {
             y_hi: 1.0,
             drag: None,
             drag_y: Vec::new(),
+            frozen: Vec::new(),
             drag_keys: Vec::new(),
             drag_from: None,
             band: None,
@@ -152,6 +169,7 @@ impl Default for CurvesState {
             preset_sel: 0,
             motion_sel: 0,
             menu_key: None,
+            value_edit: None,
         }
     }
 }
@@ -467,6 +485,8 @@ fn t_span(p: &Project, t: Target) -> (f64, f64) {
 
 enum MenuAct {
     SetEase(Ease),
+    SetValue,
+    BlendVelocity,
     Delete,
 }
 
@@ -491,6 +511,84 @@ fn add_key_at(
         if let Some(k) = a.key_index_at(t) {
             state.selected.clear();
             state.selected.push((active, k));
+        }
+        out.edited = true;
+    }
+}
+
+/// Write a staged "Set Value…" edit onto its key. Pure (no undo) — the caller pushes undo once, before
+/// calling this, per ARCHITECTURE.md's "call it once per gesture, before mutating".
+fn apply_value_edit(project: &mut Project, target: Target, p: usize, k: usize, v: f64) -> bool {
+    if let Some(a) = t_mut(project, target, p) {
+        if k < a.keys.len() {
+            a.keys[k].v = v;
+            return true;
+        }
+    }
+    false
+}
+
+/// Keys to apply a bulk easing edit to: the current selection plus the right-clicked key, deduplicated —
+/// a lone right-click (selection empty, or just that one key) reduces to the single-key case.
+fn ease_targets(selected: &[(usize, usize)], menu_key: (usize, usize)) -> Vec<(usize, usize)> {
+    let mut v = selected.to_vec();
+    if !v.contains(&menu_key) {
+        v.push(menu_key);
+    }
+    v
+}
+
+/// Apply one easing to every key in `targets`. Pure (no undo) — same reason as `apply_value_edit`.
+fn apply_ease_to(project: &mut Project, target: Target, targets: &[(usize, usize)], e: Ease) -> bool {
+    let mut edited = false;
+    for &(p, k) in targets {
+        if let Some(a) = t_mut(project, target, p) {
+            if k < a.keys.len() {
+                a.keys[k].ease = e;
+                edited = true;
+            }
+        }
+    }
+    edited
+}
+
+/// "Blend Velocity": redistribute easing across the selected keys within each property so the segments
+/// between them read as one smooth stretch — for each property's selected keys (sorted by time), sets
+/// every segment between two consecutive selected keys to `Ease::EaseInOut`. A property needs 2+ selected
+/// keys of its own to contribute; if none qualify (nothing selected, or everything scattered one-per-
+/// property) this is a no-op that pushes no undo.
+// ponytail: a flat EaseInOut per segment, not continuous-tangent bezier handles across the whole run —
+// true velocity-matched handle spacing is a fancier upgrade if this simple version isn't enough.
+fn blend_velocity(
+    project: &mut Project,
+    target: Target,
+    state: &mut CurvesState,
+    out: &mut CurvesResponse,
+    undo: &mut dyn FnMut(&Project),
+) {
+    if state.selected.len() < 2 {
+        return;
+    }
+    let mut by_prop: Vec<(usize, Vec<usize>)> = Vec::new();
+    for &(p, k) in &state.selected {
+        if !t_ref(project, target, p).is_some_and(|a| k < a.keys.len()) {
+            continue;
+        }
+        match by_prop.iter_mut().find(|(pp, _)| *pp == p) {
+            Some((_, idx)) => idx.push(k),
+            None => by_prop.push((p, vec![k])),
+        }
+    }
+    by_prop.retain(|(_, idx)| idx.len() >= 2);
+    if by_prop.is_empty() {
+        return;
+    }
+    undo(project);
+    for (p, mut idx) in by_prop {
+        let Some(a) = t_mut(project, target, p) else { continue };
+        idx.sort_by(|&i, &j| a.keys[i].t.total_cmp(&a.keys[j].t));
+        for w in idx.windows(2) {
+            a.keys[w[0]].ease = Ease::EaseInOut;
         }
         out.edited = true;
     }
@@ -696,11 +794,26 @@ pub fn show(
             }
         }
         if ui
+            .checkbox(&mut state.auto_scale, "Auto scale")
+            .on_hover_text(
+                "Live-rescale each property's value axis to its current keyframes. Off (default) freezes \
+                 each property's range until you click Fit, so dragging a key to an extreme value doesn't \
+                 make the whole graph's scale jump.",
+            )
+            .changed()
+            && state.auto_scale
+        {
+            state.frozen.clear(); // nothing left to freeze once scaling is live again
+        }
+        if ui
             .small_button("Fit")
             .on_hover_text("Frame every keyframe (Ctrl+Scroll zooms time, Scroll zooms values)")
             .clicked()
         {
             want_fit = true;
+            if !state.auto_scale {
+                state.frozen.clear(); // the explicit, on-demand re-snapshot while scaling isn't live
+            }
         }
     });
 
@@ -780,11 +893,20 @@ pub fn show(
     let x_at = |t: f64, sx: f64| plot.left() + ((t - sx) * pps as f64) as f32;
     let t_at = |x: f32, sx: f64| sx + ((x - plot.left()) / pps) as f64;
     let sx = state.scroll_x;
-    // per-property y scales
+    // per-property y scales: live off `snap` when auto_scale is on; otherwise a range frozen the first
+    // time a property is viewed (or last refreshed by "Fit") — see CurvesState::auto_scale/frozen.
     let mut scales: Vec<(f64, f64)> = Vec::with_capacity(n_props);
     for i in 0..n_props {
-        let auto = snap.get(i).map(y_range).unwrap_or((0.0, 1.0));
-        scales.push(zoomed(auto, state.y_zoom, state.y_pan));
+        let base = if state.auto_scale {
+            snap.get(i).map(y_range).unwrap_or((0.0, 1.0))
+        } else if let Some(&(_, r)) = state.frozen.iter().find(|&&(p, _)| p == i) {
+            r
+        } else {
+            let r = snap.get(i).map(y_range).unwrap_or((0.0, 1.0));
+            state.frozen.push((i, r));
+            r
+        };
+        scales.push(zoomed(base, state.y_zoom, state.y_pan));
     }
     // freeze the dragged properties' scales for the whole gesture (see CurvesState::drag_y)
     for &(p, ys) in &state.drag_y {
@@ -1047,10 +1169,16 @@ pub fn show(
     }
     if resp.double_clicked() {
         if let Some(pos) = pointer {
-            if pos.y >= plot.top() && key_hit(pos).is_none() {
-                let t = t_at(pos.x, sx).clamp(0.0, dur);
-                let v = v_at(pos.y, scales[state.active]);
-                add_key_at(project, target, state, &mut out, undo, t, v);
+            if pos.y >= plot.top() {
+                if let Some((p, k)) = key_hit(pos) {
+                    // double-click directly on an existing key: open "Set Value…" for it
+                    let v = snap.get(p).and_then(|a| a.keys.get(k)).map(|kf| kf.v).unwrap_or(0.0);
+                    state.value_edit = Some((p, k, v));
+                } else {
+                    let t = t_at(pos.x, sx).clamp(0.0, dur);
+                    let v = v_at(pos.y, scales[state.active]);
+                    add_key_at(project, target, state, &mut out, undo, t, v);
+                }
             }
         }
     }
@@ -1125,7 +1253,10 @@ pub fn show(
         }
     }
     let mut act: Option<MenuAct> = None;
-    if let Some((_p, _k)) = state.menu_key {
+    if state.menu_key.is_some() {
+        // 2+ selected keys turns "Easing" into a bulk edit and offers "Blend Velocity"; a single (or no)
+        // selection keeps today's single-key menu.
+        let sel_multi = state.selected.len() >= 2;
         resp.context_menu(|ui| {
             ui.menu_button("Easing", |ui| {
                 for e in Ease::ALL {
@@ -1140,27 +1271,90 @@ pub fn show(
                     }
                 }
             });
+            if ui.button("Set Value…").clicked() {
+                act = Some(MenuAct::SetValue);
+            }
+            if sel_multi
+                && ui
+                    .button("Blend Velocity")
+                    .on_hover_text("Smooth the easing across the selected keyframes' segments")
+                    .clicked()
+            {
+                act = Some(MenuAct::BlendVelocity);
+            }
             if ui.button("Delete").clicked() {
                 act = Some(MenuAct::Delete);
             }
         });
     }
-    if let (Some(act), Some((p, k))) = (act, state.menu_key) {
-        undo(project);
-        if let Some(a) = t_mut(project, target, p) {
-            match act {
-                MenuAct::SetEase(e) if k < a.keys.len() => {
-                    a.keys[k].ease = e;
+    if let (Some(act), Some(mk)) = (act, state.menu_key) {
+        match act {
+            MenuAct::SetValue => {
+                let (p, k) = mk;
+                let v = snap.get(p).and_then(|a| a.keys.get(k)).map(|kf| kf.v).unwrap_or(0.0);
+                state.value_edit = Some((p, k, v));
+            }
+            MenuAct::SetEase(e) => {
+                // bulk: the current selection plus the right-clicked key, deduplicated
+                let targets = ease_targets(&state.selected, mk);
+                undo(project);
+                if apply_ease_to(project, target, &targets, e) {
                     out.edited = true;
                 }
-                MenuAct::Delete => {
+            }
+            MenuAct::BlendVelocity => blend_velocity(project, target, state, &mut out, undo),
+            MenuAct::Delete => {
+                let (p, k) = mk;
+                undo(project);
+                if let Some(a) = t_mut(project, target, p) {
                     remove_key(a, k);
                     state.selected.retain(|&s| s != (p, k));
                     out.edited = true;
                     state.menu_key = None;
                 }
-                _ => {}
             }
+        }
+    }
+
+    // ---- "Set Value…" popup: numeric entry for one key, opened via the context menu or a double-click
+    // directly on an existing key. Non-blocking (plain egui::Window, per ARCHITECTURE.md) — Escape /
+    // click-away / Cancel just close it, Enter / Apply commit the staged number.
+    if let Some((p, k, mut v)) = state.value_edit {
+        let mut open = true;
+        let mut apply = false;
+        let mut cancel = false;
+        let win = egui::Window::new("Set Value")
+            .id(ui.id().with("curve_set_value"))
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open);
+        win.show(ui.ctx(), |ui| {
+            ui.horizontal(|ui| {
+                ui.label(labels.get(p).cloned().unwrap_or_default());
+                let r = ui.add(egui::DragValue::new(&mut v).speed(0.1));
+                if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    apply = true;
+                }
+            });
+            ui.horizontal(|ui| {
+                if ui.button("Apply").clicked() {
+                    apply = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    cancel = true;
+                }
+            });
+        });
+        if apply {
+            undo(project);
+            if apply_value_edit(project, target, p, k, v) {
+                out.edited = true;
+            }
+            state.value_edit = None;
+        } else if cancel || !open {
+            state.value_edit = None;
+        } else {
+            state.value_edit = Some((p, k, v));
         }
     }
 
@@ -1758,5 +1952,140 @@ mod tests {
         let r = h.frame(vec![]);
         assert!(!r.edited && !r.seeked);
         assert_eq!(h.undos, 0);
+    }
+
+    /// With `auto_scale` off (the default), a property's y range is frozen the first time it's viewed and
+    /// survives edits — including a drag that sends its own key to an extreme value — until "Fit"
+    /// explicitly re-snapshots it.
+    #[test]
+    fn auto_scale_off_freezes_ranges_until_fit_refreshes_them() {
+        let mut h = Harness::new();
+        assert!(!h.state.auto_scale, "off by default");
+        h.state.active = 0; // Position X: unrelated to the drag below
+        h.frame(vec![]);
+        let unrelated_before = (h.state.y_lo, h.state.y_hi);
+
+        // drag the Scale key (prop 2) way up, to an extreme value
+        let from = h.scale_key_pos(1); // t = 3, v = 3
+        let to = from + vec2(0.0, -400.0);
+        h.press(from);
+        for i in 1..=4 {
+            h.frame(vec![Event::PointerMoved(from + (to - from) * (i as f32 / 4.0))]);
+        }
+        h.release(to);
+        let dragged_v = h.clip().scale.keys[1].v;
+        assert!((dragged_v - 3.0).abs() > 1e-6, "the drag actually changed the key's value: {dragged_v}");
+
+        // an unrelated property's displayed range is untouched by another property's edit
+        h.state.active = 0;
+        h.frame(vec![]);
+        assert_eq!((h.state.y_lo, h.state.y_hi), unrelated_before, "unrelated property's frozen range survived");
+
+        // the dragged property's OWN range also stays frozen at its pre-drag spread until Fit — not
+        // rescaled to the now-different key value, however slightly it moved
+        h.state.active = 2;
+        h.frame(vec![]);
+        let scale_before = (h.state.y_lo, h.state.y_hi);
+        assert!(
+            (scale_before.0 - 0.5).abs() < 1e-6 && (scale_before.1 - 3.5).abs() < 1e-6,
+            "still the pre-drag key spread: {scale_before:?}"
+        );
+
+        // "Fit" clears frozen ranges when auto_scale is off; the next frame re-snapshots from live keys
+        h.state.frozen.clear();
+        h.frame(vec![]);
+        assert_ne!((h.state.y_lo, h.state.y_hi), scale_before, "Fit re-snapshotted the changed property's range");
+    }
+
+    /// Double-clicking directly on an existing key stages it in "Set Value…" instead of adding a key, and
+    /// confirming applies it with one undo; double-clicking empty graph space is unaffected (regression).
+    #[test]
+    fn double_click_on_a_key_opens_set_value_and_empty_space_still_adds_a_key() {
+        let mut h = Harness::new();
+        let kp = h.scale_key_pos(0); // t = 1, v = 1
+        h.press(kp);
+        h.release(kp);
+        h.press(kp);
+        h.release(kp);
+        assert_eq!(h.state.value_edit, Some((2, 0, 1.0)), "double-click on a key stages its current value");
+        assert_eq!(h.clip().scale.keys.len(), 2, "no key was added by the double-click");
+        assert_eq!(h.undos, 0, "opening the popup is not an edit");
+
+        // confirming applies the staged value through the same path the popup's Apply/Enter uses
+        let (p, k, _) = h.state.value_edit.unwrap();
+        assert!(apply_value_edit(&mut h.project, Target::Clip(7), p, k, 9.5));
+        assert_eq!(h.clip().scale.keys[0].v, 9.5);
+
+        // regression: double-click on EMPTY graph space still adds a key, unrelated property
+        h.state.value_edit = None;
+        h.state.active = 0; // Position X, unanimated
+        // clear egui's double-click window from the first double-click above: two double-clicks in
+        // quick succession (in wall-clock time, which the harness's `time` field drives) at different
+        // positions must not be read as one continuing multi-click sequence.
+        h.time += 1.0;
+        h.frame(vec![]);
+        let plot = Rect::from_min_max(pos2(h.state.graph.left(), h.state.graph.top() + RULER_H), h.state.graph.max);
+        let empty = pos2(plot.left() + plot.width() * 0.5, plot.center().y);
+        h.press(empty);
+        h.release(empty);
+        h.press(empty);
+        let r = h.release(empty);
+        assert!(r.edited, "double-click on empty space still edits");
+        assert_eq!(h.clip().x.keys.len(), 1, "a key was added on empty space");
+    }
+
+    /// Bulk easing covers the whole selection plus the right-clicked key (deduplicated), across different
+    /// properties, in one undo; a lone right-click reduces to the single-key case; "Blend Velocity" smooths
+    /// the segments between 2+ selected keys of one property in one undo, and is a no-op below that.
+    #[test]
+    fn bulk_easing_and_blend_velocity_cover_the_whole_selection() {
+        let mut h = Harness::new();
+        // give property 0 (Position X) a key too, so the selection can span two different properties
+        h.project.tracks[0].clips[0].x.keys.push(Keyframe { t: 0.5, v: 5.0, ease: Ease::Linear });
+
+        // Easing: selection ∪ the right-clicked key, deduplicated
+        let sel = vec![(0, 0), (2, 0)];
+        let targets = ease_targets(&sel, (2, 1));
+        assert_eq!(targets.len(), 3, "selection plus the right-clicked key, deduped: {targets:?}");
+        let mut undos = 0;
+        {
+            let mut undo = |_: &Project| undos += 1;
+            undo(&h.project);
+            assert!(apply_ease_to(&mut h.project, Target::Clip(7), &targets, Ease::EaseInOut));
+        }
+        assert_eq!(undos, 1, "one undo for the whole bulk apply");
+        assert_eq!(h.clip().x.keys[0].ease, Ease::EaseInOut);
+        assert_eq!(h.clip().scale.keys[0].ease, Ease::EaseInOut);
+        assert_eq!(h.clip().scale.keys[1].ease, Ease::EaseInOut);
+
+        // a lone right-click (nothing meaningfully selected) reduces to the single-key case
+        assert_eq!(ease_targets(&[], (2, 0)), vec![(2, 0)]);
+        assert_eq!(ease_targets(&[(2, 0)], (2, 0)), vec![(2, 0)]);
+
+        // Blend Velocity: 2+ selected keys in one property smooths the segments between them, one undo
+        h.project.tracks[0].clips[0].scale.keys[0].ease = Ease::Linear;
+        h.state.selected = vec![(2, 0), (2, 1)];
+        let mut undos2 = 0;
+        let mut out2 = CurvesResponse::default();
+        {
+            let mut undo2 = |_: &Project| undos2 += 1;
+            blend_velocity(&mut h.project, Target::Clip(7), &mut h.state, &mut out2, &mut undo2);
+        }
+        assert_eq!(undos2, 1, "one undo for the whole blend");
+        assert!(out2.edited);
+        assert_eq!(h.clip().scale.keys[0].ease, Ease::EaseInOut, "blend velocity smooths the segment");
+
+        // fewer than 2 selected in any one property: a no-op, even split across two properties
+        h.project.tracks[0].clips[0].scale.keys[0].ease = Ease::Linear;
+        h.state.selected = vec![(0, 0), (2, 0)];
+        let mut undos3 = 0;
+        let mut out3 = CurvesResponse::default();
+        {
+            let mut undo3 = |_: &Project| undos3 += 1;
+            blend_velocity(&mut h.project, Target::Clip(7), &mut h.state, &mut out3, &mut undo3);
+        }
+        assert_eq!(undos3, 0, "no property has 2+ selected keys: nothing to blend");
+        assert!(!out3.edited);
+        assert_eq!(h.clip().scale.keys[0].ease, Ease::Linear, "unchanged");
     }
 }
