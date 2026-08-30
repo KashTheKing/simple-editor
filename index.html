@@ -51,21 +51,39 @@
     <h2>Features</h2>
     <ul>
       <li><strong>Decoding</strong>: Windows Media Foundation (native system codecs, no extra DLLs, instant seeks); ffmpeg.exe as a universal fallback (and for images).</li>
-      <li><strong>Export</strong>: ffmpeg.exe — any container/codec by extension (mp4, mov, mkv, webm, avi, gif, mp3, wav…), hardware encoders (NVENC/QSV/AMF), and Fast Lossless Cut for instant, keyframe-accurate trims.</li>
-      <li><strong>Timeline</strong>: multiple video + audio tracks, per-track mute/solo, linked audio/video clips, split, ripple delete, trim by dragging edges, snapping, waveforms, keyframe diamonds, zoom/pan.</li>
-      <li><strong>Inspector</strong>: position / scale / rotation / opacity / volume with keyframes, 13 blend modes, a full text tool.</li>
-      <li><strong>Import URL…</strong>: paste a link and yt-dlp downloads it straight into the library.</li>
-      <li><strong>GPU effects</strong>: blur, motion blur, VHS, chroma key, curves/levels/hue, edge glow, threshold, 3D plane, JPEG crush, blob tracking, REC dot, and your own GLSL shader — with automatic CPU fallback.</li>
-      <li><strong>Tools, shapes and masks</strong>: rectangle/ellipse/triangle/polygon/star/line/arrow, freehand draw, vector shape clips, adjustment layers, masks on clips or effects.</li>
-      <li><strong>Node editor</strong>: a clip's effect stack as a graph when a straight stack isn't enough.</li>
-      <li><strong>Mixer</strong>: audio buses with EQ, high/low-pass, reverb, echo, distortion, compressor, noise gate, per-track and per-clip routing.</li>
-      <li><strong>Markers</strong>, <strong>Copy/Paste Attributes</strong>, and <strong>Export Frame</strong> (PNG/JPG/WebP at any scale).</li>
-      <li><strong>Screen recording and voiceover</strong> through ffmpeg, including recording while the editor is in the background.</li>
-      <li><strong>Import timelines</strong> from Premiere / DaVinci Resolve, EDL and <code>.prproj</code>, with an honest report of what didn't survive.</li>
-      <li><strong>Theme</strong>: follows Windows dark/light + accent colour.</li>
-      <li><strong>Scripting</strong>: sandboxed Luau scripts drive the same tool catalogue the MCP server exposes.</li>
-      <li><strong>MCP server</strong> for AI co-editing: the whole timeline, effects, masks, nodes, markers, buses, shapes and more as tools.</li>
-      <li>Plain JSON project format (<code>.sedit</code>), Explorer context menu integration, and every hotkey rebindable in Settings.</li>
+      <li><strong>Export</strong>: ffmpeg.exe — any container/codec by extension (mp4, mov, mkv, webm, avi, gif, mp3, wav…), hardware encoders (NVENC/QSV/AMF) selectable in Settings.</li>
+      <li><strong>Fast Lossless Cut</strong> (<code>-c copy</code>) for plain cuts — optionally also for Ctrl+S — instant but keyframe-accurate.</li>
+      <li><strong>Timeline</strong>: multiple video + audio tracks, per-track mute/solo, linked audio/video clips, split (Ctrl+B), ripple delete, trim by dragging edges, snapping, waveforms, keyframe diamonds.</li>
+      <li>Drag-to-resize track heights, Ctrl+Scroll zoom / Shift+Scroll pan / Alt+Scroll track height, draggable playhead, in/out points.</li>
+      <li><strong>Inspector</strong>: position / scale / rotation / opacity / volume with keyframes, 13 blend modes.</li>
+      <li><strong>Text tool</strong>: system fonts, size, bold/italic, fill/outline/shadow/box, alignment, spacing.</li>
+      <li><strong>Import URL…</strong> (Library): paste a link and yt-dlp downloads it straight into the library — audio-only for music/SFX.</li>
+      <li><strong>GPU effects</strong>: the preview runs the effect chain as OpenGL shaders — blur, motion blur, VHS, chroma key, curves/levels/hue, edge glow, threshold, 3D plane, JPEG crush, blob tracking, REC dot and your own GLSL shader. No GL context, old driver, or a rejected shader → automatic CPU compositor fallback.</li>
+      <li><strong>Preview render quality</strong> (25–100%) and <strong>movie mode</strong> (play back pre-rendered full-quality frames).</li>
+      <li><strong>Tools, shapes and masks</strong>: select, text, rectangle / ellipse / triangle / polygon / star / line / arrow, freehand draw, mask, zoom — vector shape clips, adjustment layers that process everything below them, masks on a clip or on a single effect.</li>
+      <li><strong>Node editor</strong>: a clip's effect stack as a graph (blend, matte, mask and clip inputs) when a straight stack isn't enough; the Curves pane keyframes node parameters too.</li>
+      <li><strong>Mixer</strong>: audio buses with EQ, high/low-pass, reverb, echo, distortion, compressor, noise gate, noise and gain; per-track and per-clip routing, meters, mute/solo/mono.</li>
+      <li><strong>Markers</strong> on the timeline and on clips (M), with colour labels, notes and a "copy as list" for AI tools.</li>
+      <li><strong>Copy / Paste Attributes</strong> (Ctrl+Alt+C / Ctrl+Alt+V) with a checkbox per attribute group.</li>
+      <li><strong>Export Frame</strong> (Ctrl+Shift+F) as PNG / JPG / WebP, at project size, 2×, 4× or a custom size.</li>
+      <li><strong>Screen recording and voiceover</strong> through ffmpeg — including "record while the editor is in the background," which starts when the window loses focus and stops (and imports) when it comes back.</li>
+      <li><strong>Import timelines</strong> from Premiere / DaVinci Resolve (Final Cut Pro 7 XML), EDL and <code>.prproj</code>, with an honest per-item report of what did not survive the trip.</li>
+      <li><strong>Library</strong> + <strong>Recent</strong> panels (recent media across projects), drag &amp; drop from Explorer.</li>
+      <li><strong>Theme</strong>: follows Windows dark/light + accent colour. Bare Windows-forms style, DaVinci-like layout.</li>
+      <li><strong>Hotkeys</strong>: every action rebindable in Settings.</li>
+      <li><strong>Explorer context menu</strong>: "Edit with Simple Editor" on video files.</li>
+      <li><strong>Project format</strong>: plain JSON (<code>.sedit</code>) + export to Final Cut Pro 7 XML for Premiere Pro / DaVinci Resolve.</li>
+      <li><strong>MCP server</strong> for AI co-editing: the whole timeline, effects, masks, nodes, markers, buses, shapes, frame export and timeline import as tools.</li>
+      <li><strong>Scripting (Luau)</strong>: sandboxed <code>.luau</code> scripts drive the same tool catalogue the MCP server exposes; one script run = one undo step.</li>
+      <li><strong>Icons</strong>: menu actions, panes and panel buttons carry painted vector glyphs — pick your own per action/pane in Settings, or remove/restore them.</li>
+    </ul>
+
+    <h2>Playback</h2>
+    <ul>
+      <li>The render thread keeps ~1.5&nbsp;s of frames decoded ahead of the playhead (and protects ~0.5&nbsp;s behind it, so scrub-backs replay from RAM), pre-warming the next clip's decoder before a cut.</li>
+      <li>If decode falls behind, playback <strong>buffers</strong> — the clock and audio pause and a spinner shows until the read-ahead refills — instead of playing audio over frozen video. Edits only evict the frames they can actually change.</li>
+      <li><strong>Proxy media</strong>: imported video gets a background low-res all-intra proxy (every frame a keyframe), so scrubbing and reverse playback are as cheap as forward. Exports always use the originals.</li>
+      <li><strong>Fullscreen</strong> (F11): move the mouse for the transport bar (it hides ~2&nbsp;s after the mouse stops; spacebar never summons it), double-click or Esc to leave.</li>
     </ul>
   </div>
 
