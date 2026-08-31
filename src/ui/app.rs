@@ -23,9 +23,9 @@ use crate::theme::{self, Palette};
 use crate::ui::layout::{self, Layout, Pane};
 use crate::ui::tools::Tool;
 use crate::ui::{
-    autocut_ui, capture_ui, curves, effects_ui, export_ui, frame_ui, import_ui, inspector, library, markers_ui,
-    mixer_ui, moodboard_ui, nodes, paste_ui, planner, presets_ui, preview, retime, settings_ui, shader_ui,
-    subtitles_ui, timeline, tools, tracking_ui, transitions_ui, DragPayload,
+    autocut_ui, capture_ui, curves, effects_ui, export_ui, frame_ui, history_ui, import_ui, inspector, library,
+    markers_ui, mixer_ui, moodboard_ui, nodes, paste_ui, planner, presets_ui, preview, retime, settings_ui,
+    shader_ui, subtitles_ui, timeline, tools, tracking_ui, transitions_ui, DragPayload,
 };
 use eframe::egui;
 use serde_json::{json, Value};
@@ -90,8 +90,8 @@ pub struct App {
     project: Project,
     project_path: Option<PathBuf>,
     dirty: bool,
-    undo: Vec<String>,
-    redo: Vec<String>,
+    undo: Vec<UndoEntry>,
+    redo: Vec<UndoEntry>,
     settings: Settings,
     hotkeys: Hotkeys,
     text: Arc<Mutex<TextRasterizer>>,
@@ -112,6 +112,7 @@ pub struct App {
     subtitles_ui: subtitles_ui::SubtitlesState,
     planner: planner::PlannerState,
     moodboard: moodboard_ui::MoodboardState,
+    history: history_ui::HistoryState,
     presets: presets_ui::PresetsState,
     autocut: autocut_ui::AutoCutState,
     tracking: tracking_ui::TrackState,
@@ -283,9 +284,93 @@ fn job_window(ctx: &egui::Context, title: &str, jobs: &[(Arc<Progress>, String)]
 /// the layout stack if that ever bites.
 const LAYOUT_STEP: &str = "\u{0}layout";
 
-/// Push an undo snapshot (capped) and clear the redo history.
-fn push_undo_json(undo: &mut Vec<String>, redo: &mut Vec<String>, json: String) {
-    undo.push(json);
+/// History panel filter bucket. `Layout` is a pane rearrangement (`LAYOUT_STEP`); everything else —
+/// clip/effect/marker/text/project edits — is `Editing`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HistoryCategory {
+    Editing,
+    Layout,
+}
+
+/// One entry in the undo/redo stack, doubling as a History panel row. `label` is derived automatically
+/// (see `describe_change`) at push time — no call site of `push_undo`/`push_undo_json` needs to name
+/// its own edit, which is what keeps this from being an every-call-site change across the whole UI
+/// layer despite there being ~50 of them.
+#[derive(Clone)]
+pub(crate) struct UndoEntry {
+    pub json: String,
+    pub label: String,
+    /// Seconds since Unix epoch (`SystemTime`, not `Instant` — a History panel needs a real clock to
+    /// group by day and survive across app restarts... though the stack itself is session-only today;
+    /// kept as a real timestamp anyway since "session-only" is the smaller, more surprising fact here).
+    pub at: f64,
+    pub category: HistoryCategory,
+}
+
+fn now_secs() -> f64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
+}
+
+/// A short, best-effort description of what changed between two project snapshots — compares a handful
+/// of high-signal counts/fields rather than a full structural diff (this is a "quick glance" History
+/// panel label, not a changelog). Falls back to "Project edited" when nothing tracked here differs.
+fn describe_change(old_json: &str, new_json: &str) -> String {
+    let (Ok(old), Ok(new)) = (Project::from_json(old_json), Project::from_json(new_json)) else {
+        return "Project edited".into();
+    };
+    let clips = |p: &Project| p.tracks.iter().map(|t| t.clips.len()).sum::<usize>();
+    let effects = |p: &Project| p.tracks.iter().flat_map(|t| &t.clips).map(|c| c.effects.len()).sum::<usize>();
+    let (oc, nc) = (clips(&old), clips(&new));
+    if oc != nc {
+        return match nc.cmp(&oc) {
+            std::cmp::Ordering::Greater if nc - oc == 1 => "Added a clip".into(),
+            std::cmp::Ordering::Greater => format!("Added {} clips", nc - oc),
+            std::cmp::Ordering::Less if oc - nc == 1 => "Removed a clip".into(),
+            _ => format!("Removed {} clips", oc - nc),
+        };
+    }
+    if old.width != new.width || old.height != new.height {
+        return "Changed project resolution".into();
+    }
+    if (old.fps - new.fps).abs() > f64::EPSILON {
+        return "Changed project frame rate".into();
+    }
+    if old.markers.len() != new.markers.len() {
+        return "Edited markers".into();
+    }
+    if old.notes.len() != new.notes.len() {
+        return "Edited notes".into();
+    }
+    if old.plan.len() != new.plan.len() {
+        return "Edited the planner".into();
+    }
+    if old.moodboard.len() != new.moodboard.len() {
+        return "Edited the moodboard".into();
+    }
+    let (oe, ne) = (effects(&old), effects(&new));
+    if oe != ne {
+        return "Edited effects".into();
+    }
+    if old.name != new.name {
+        return "Renamed the project".into();
+    }
+    "Project edited".into()
+}
+
+/// Push an undo snapshot (capped) and clear the redo history. The new entry's label describes the edit
+/// that led FROM the previous top-of-stack TO this one (see `describe_change`) — i.e. the edit the user
+/// just made, not the one about to happen.
+fn push_undo_json(undo: &mut Vec<UndoEntry>, redo: &mut Vec<UndoEntry>, json: String) {
+    let entry = if json == LAYOUT_STEP {
+        UndoEntry { label: "Rearranged panels".into(), category: HistoryCategory::Layout, at: now_secs(), json }
+    } else {
+        let label = match undo.last() {
+            Some(prev) if prev.json != LAYOUT_STEP => describe_change(&prev.json, &json),
+            _ => "Project edited".into(),
+        };
+        UndoEntry { json, label, category: HistoryCategory::Editing, at: now_secs() }
+    };
+    undo.push(entry);
     if undo.len() > 200 {
         undo.remove(0);
     }
@@ -906,6 +991,7 @@ impl App {
             subtitles_ui: subtitles_ui::SubtitlesState::default(),
             planner: planner::PlannerState::default(),
             moodboard: moodboard_ui::MoodboardState::default(),
+            history: history_ui::HistoryState::default(),
             presets: presets_ui::PresetsState::default(),
             autocut: autocut_ui::AutoCutState::default(),
             tracking: tracking_ui::TrackState::default(),
@@ -1639,14 +1725,20 @@ impl App {
             ImportMedia => self.act_import(),
             Settings => self.settings_ui.open = !self.settings_ui.open,
             Undo => {
-                if let Some(json) = self.undo.pop() {
-                    if json == LAYOUT_STEP {
+                if let Some(entry) = self.undo.pop() {
+                    if entry.json == LAYOUT_STEP {
                         self.layout.undo();
                         self.layout_dirty = true;
-                        self.redo.push(json);
+                        self.redo.push(entry);
                     } else {
-                        self.redo.push(self.project.to_json());
-                        if let Ok(p) = Project::from_json(&json) {
+                        let redo_at = now_secs();
+                        self.redo.push(UndoEntry {
+                            json: self.project.to_json(),
+                            label: entry.label.clone(),
+                            category: HistoryCategory::Editing,
+                            at: redo_at,
+                        });
+                        if let Ok(p) = Project::from_json(&entry.json) {
                             self.project = p;
                             self.after_edit();
                         }
@@ -1654,14 +1746,20 @@ impl App {
                 }
             }
             Redo => {
-                if let Some(json) = self.redo.pop() {
-                    if json == LAYOUT_STEP {
+                if let Some(entry) = self.redo.pop() {
+                    if entry.json == LAYOUT_STEP {
                         self.layout.redo();
                         self.layout_dirty = true;
-                        self.undo.push(json);
+                        self.undo.push(entry);
                     } else {
-                        self.undo.push(self.project.to_json());
-                        if let Ok(p) = Project::from_json(&json) {
+                        let undo_at = now_secs();
+                        self.undo.push(UndoEntry {
+                            json: self.project.to_json(),
+                            label: entry.label.clone(),
+                            category: HistoryCategory::Editing,
+                            at: undo_at,
+                        });
+                        if let Ok(p) = Project::from_json(&entry.json) {
                             self.project = p;
                             self.after_edit();
                         }
@@ -2687,6 +2785,11 @@ impl App {
                     self.after_edit();
                 }
             }
+            Pane::History => {
+                // deleting entries mutates the undo stack directly, not the project — no undo/push_undo
+                // of its own (history bookkeeping isn't itself a project edit).
+                history_ui::show(ui, &mut self.history, &mut self.undo);
+            }
             Pane::AutoCut => {
                 self.autocut_drawing = true;
                 let changed = {
@@ -3709,7 +3812,7 @@ impl App {
 
     fn view_menu(&mut self, ui: &mut egui::Ui, out: &mut Vec<Action>) {
         use Action::*;
-        const PANES: [(Pane, Option<Action>); 17] = [
+        const PANES: [(Pane, Option<Action>); 18] = [
             (Pane::Preview, None),
             (Pane::Timeline, None),
             (Pane::Tools, Some(ToggleTools)),
@@ -3727,6 +3830,7 @@ impl App {
             (Pane::AutoCut, Some(Action::AutoCut)),
             (Pane::Tracking, None),
             (Pane::Moodboard, None),
+            (Pane::History, None),
         ];
         for (pane, action) in PANES {
             let mut v = self.layout.is_visible(pane);
@@ -6351,12 +6455,14 @@ mod tests {
 
     #[test]
     fn undo_snapshot_is_capped_and_clears_redo() {
-        let (mut undo, mut redo) = (Vec::new(), vec!["r".to_string()]);
+        let mut undo: Vec<UndoEntry> = Vec::new();
+        let mut redo: Vec<UndoEntry> =
+            vec![UndoEntry { json: "r".into(), label: "r".into(), category: HistoryCategory::Editing, at: 0.0 }];
         for i in 0..205 {
             push_undo_json(&mut undo, &mut redo, i.to_string());
         }
         assert_eq!(undo.len(), 200);
-        assert_eq!(undo[0], "5");
+        assert_eq!(undo[0].json, "5");
         assert!(redo.is_empty());
     }
 

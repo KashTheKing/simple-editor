@@ -10,6 +10,7 @@ pub mod effects_ui;
 pub mod export_ui;
 pub mod frame_ui;
 pub mod guides;
+pub mod history_ui;
 pub mod import_ui;
 pub mod inspector;
 pub mod layout;
