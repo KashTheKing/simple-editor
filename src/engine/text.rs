@@ -101,11 +101,13 @@ impl TextRasterizer {
         frame
     }
 
-    fn font_for(&mut self, style: &TextStyle) -> Option<FontArc> {
+    /// Resolve a font by family name + weight/style (used for the base style and for any span that
+    /// overrides font/bold/italic). Unknown family falls back to the first loaded face, same as before.
+    fn font_for(&mut self, family: &str, bold: bool, italic: bool) -> Option<FontArc> {
         let q = Query {
-            families: &[Family::Name(&style.font), Family::SansSerif],
-            weight: if style.bold { Weight::BOLD } else { Weight::NORMAL },
-            style: if style.italic { Style::Italic } else { Style::Normal },
+            families: &[Family::Name(family), Family::SansSerif],
+            weight: if bold { Weight::BOLD } else { Weight::NORMAL },
+            style: if italic { Style::Italic } else { Style::Normal },
             stretch: Default::default(),
         };
         let id = self.db.query(&q).or_else(|| self.db.faces().next().map(|f| f.id))?;
@@ -125,34 +127,100 @@ impl TextRasterizer {
         if style.text.trim().is_empty() || !(px >= 1.0) || !px.is_finite() {
             return None;
         }
-        let font = self.font_for(style)?;
+        let font = self.font_for(&style.font, style.bold, style.italic)?;
         // `size` is the em size in px; ab_glyph's PxScale is the ascent-descent height.
         let upm = font.units_per_em().unwrap_or(font.height_unscaled());
         let sf = font.as_scaled(PxScale::from(px * font.height_unscaled() / upm));
         let ps = sf.scale();
-        let ls = style.letter_spacing * scale;
         let lh = (sf.ascent() - sf.descent() + sf.line_gap()) * style.line_spacing.max(0.1);
+        let n_chars = style.text.chars().count();
 
-        // ---- layout: glyph positions per line, then align ----
+        // Spans that change glyph SHAPE (font/size/bold/italic), resolved once per span rather than
+        // per char — a text clip has a handful of spans, not hundreds.
+        // ponytail: layout below still advances the cursor using the BASE font's metrics for every
+        // char, even one covered by a shape-changing span — mixing genuinely different advance widths
+        // into the existing single-pass line layout (kerning, line height, alignment) is a real rewrite
+        // of this function, not a proportionate one for how far the mouse-selects-a-word feature reaches.
+        // A span's glyph is outlined with its own font/size and drawn at the position the base layout
+        // already gave that character, so it reads in the right font/weight/size but a much bigger
+        // override can visually overlap its neighbours instead of pushing them aside. Upgrade path: give
+        // this pass a per-run advance/kerning loop keyed by resolved style instead of the single `sf`.
+        struct SpanShape {
+            font: FontArc,
+            ps: PxScale,
+        }
+        let mut span_shapes: Vec<Option<SpanShape>> = Vec::with_capacity(style.spans.len());
+        for s in &style.spans {
+            if s.font.is_none() && s.size.is_none() && s.bold.is_none() && s.italic.is_none() {
+                span_shapes.push(None);
+                continue;
+            }
+            let shape = (|| {
+                let fam = s.font.as_deref().unwrap_or(&style.font);
+                let bold = s.bold.unwrap_or(style.bold);
+                let italic = s.italic.unwrap_or(style.italic);
+                let size = s.size.unwrap_or(style.size).max(0.0);
+                let opx = (size * scale).max(1.0);
+                let f = self.font_for(fam, bold, italic)?;
+                let upm = f.units_per_em().unwrap_or(f.height_unscaled());
+                let ps = PxScale::from(opx * f.height_unscaled() / upm);
+                Some(SpanShape { font: f, ps })
+            })();
+            span_shapes.push(shape);
+        }
+        let span_at = |char_idx: usize| -> Option<usize> {
+            let mut found = None;
+            for (i, s) in style.spans.iter().enumerate() {
+                let end = s.end.min(n_chars);
+                if s.start < end && char_idx >= s.start && char_idx < end {
+                    found = Some(i);
+                }
+            }
+            found
+        };
+
+        // ---- layout: glyph positions (base font/size/kerning throughout), then align ----
         let mut glyphs: Vec<Glyph> = Vec::new();
+        let mut glyph_chars: Vec<char> = Vec::new();
+        let mut glyph_char_idx: Vec<usize> = Vec::new();
         let mut lines: Vec<(usize, usize, f32)> = Vec::new();
-        for line in style.text.split('\n') {
-            let start = glyphs.len();
+        {
             let mut x = 0.0f32;
             let mut prev: Option<GlyphId> = None;
-            for c in line.chars().filter(|c| *c != '\r') {
+            let mut last_ls = 0.0f32;
+            let mut line_start = 0usize;
+            for (char_idx, c) in style.text.chars().enumerate() {
+                if c == '\r' {
+                    continue;
+                }
+                if c == '\n' {
+                    if prev.is_some() {
+                        x -= last_ls;
+                    }
+                    lines.push((line_start, glyphs.len(), x.max(0.0)));
+                    line_start = glyphs.len();
+                    x = 0.0;
+                    prev = None;
+                    continue;
+                }
                 let id = sf.glyph_id(c);
                 if let Some(p) = prev {
                     x += sf.kern(p, id);
                 }
                 glyphs.push(id.with_scale_and_position(ps, point(x, 0.0)));
-                x += sf.h_advance(id) + ls;
+                glyph_chars.push(c);
+                glyph_char_idx.push(char_idx);
+                let cls =
+                    span_at(char_idx).and_then(|i| style.spans[i].letter_spacing).unwrap_or(style.letter_spacing)
+                        * scale;
+                x += sf.h_advance(id) + cls;
+                last_ls = cls;
                 prev = Some(id);
             }
             if prev.is_some() {
-                x -= ls;
+                x -= last_ls;
             }
-            lines.push((start, glyphs.len(), x.max(0.0)));
+            lines.push((line_start, glyphs.len(), x.max(0.0)));
         }
         let block_w = lines.iter().map(|l| l.2).fold(0.0, f32::max);
         let block_h = (lines.len() - 1) as f32 * lh + sf.ascent() - sf.descent();
@@ -169,7 +237,24 @@ impl TextRasterizer {
                 g.position.y += oy;
             }
         }
-        let outlined: Vec<OutlinedGlyph> = glyphs.iter().filter_map(|g| font.outline_glyph(g.clone())).collect();
+        // ---- outline glyphs: base shape, unless a span overrides font/size/bold/italic ----
+        let mut outlined: Vec<OutlinedGlyph> = Vec::with_capacity(glyphs.len());
+        let mut outlined_char: Vec<usize> = Vec::with_capacity(glyphs.len());
+        for (gi, g) in glyphs.iter().enumerate() {
+            let ci = glyph_char_idx[gi];
+            let shape = span_at(ci).and_then(|i| span_shapes[i].as_ref());
+            let og = if let Some(sh) = shape {
+                let id = sh.font.glyph_id(glyph_chars[gi]);
+                let g2 = id.with_scale_and_position(sh.ps, g.position);
+                sh.font.outline_glyph(g2).or_else(|| font.outline_glyph(g.clone()))
+            } else {
+                font.outline_glyph(g.clone())
+            };
+            if let Some(og) = og {
+                outlined.push(og);
+                outlined_char.push(ci);
+            }
+        }
 
         // ---- image size: layout block ∪ glyph pixel bounds, plus a uniform margin for effects ----
         let (mut bx0, mut by0, mut bx1, mut by1) = (0.0f32, 0.0f32, block_w.ceil(), block_h.ceil());
@@ -198,15 +283,24 @@ impl TextRasterizer {
         let (wu, n) = (w as usize, (w * h) as usize);
 
         // ---- masks ----
+        // `fill_owner[i]` is the char index (+1; 0 = none) of whichever glyph currently holds the
+        // highest coverage at pixel i, so the compose pass below can look up that char's span color.
+        // Two glyphs rarely overlap enough for the tie-break (last-drawn-wins-at-equal-coverage) to
+        // matter visually.
         let mut fill = vec![0u8; n];
-        for og in &outlined {
+        let mut fill_owner = vec![0u32; n];
+        for (og, &ci) in outlined.iter().zip(outlined_char.iter()) {
             let b = og.px_bounds();
             let (gx, gy) = ((b.min.x + ox) as i32, (b.min.y + oy) as i32);
             og.draw(|x, y, c| {
                 let (px, py) = (gx + x as i32, gy + y as i32);
                 if px >= 0 && py >= 0 && (px as u32) < w && (py as u32) < h {
                     let i = py as usize * wu + px as usize;
-                    fill[i] = fill[i].max((c.min(1.0) * 255.0 + 0.5) as u8);
+                    let cov = (c.min(1.0) * 255.0 + 0.5) as u8;
+                    if cov > fill[i] {
+                        fill[i] = cov;
+                        fill_owner[i] = ci as u32 + 1;
+                    }
                 }
             });
         }
@@ -248,7 +342,7 @@ impl TextRasterizer {
                 }
             }
         }
-        for (mask, color) in [(&shadow, style.shadow_color), (&outline, style.outline_color), (&fill, style.color)] {
+        for (mask, color) in [(&shadow, style.shadow_color), (&outline, style.outline_color)] {
             if mask.is_empty() || color[3] == 0 {
                 continue;
             }
@@ -256,6 +350,26 @@ impl TextRasterizer {
                 if m > 0 {
                     over(px, color, m);
                 }
+            }
+        }
+        // Fill is colored per pixel: a span covering the owning glyph's char overrides `style.color`
+        // for just those pixels, everything else uses the base color exactly as before spans existed.
+        if !fill.is_empty() {
+            for i in 0..n {
+                let m = fill[i];
+                if m == 0 {
+                    continue;
+                }
+                let color = if fill_owner[i] > 0 {
+                    let ci = (fill_owner[i] - 1) as usize;
+                    span_at(ci).and_then(|si| style.spans[si].color).unwrap_or(style.color)
+                } else {
+                    style.color
+                };
+                if color[3] == 0 {
+                    continue;
+                }
+                over(&mut out.rgba[i * 4..(i + 1) * 4], color, m);
             }
         }
         Some(out)
@@ -367,6 +481,7 @@ fn blur_lines(src: &[u8], dst: &mut [u8], lines: usize, len: usize, lstride: usi
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::TextSpan;
 
     fn alpha_sum(f: &Frame) -> u64 {
         f.rgba.chunks_exact(4).map(|p| p[3] as u64).sum()
@@ -415,6 +530,93 @@ mod tests {
         s4.align = 0;
         let e = tr.render(&s4, 0.5);
         assert!(e.height > a.height * 2);
+    }
+
+    /// CRITICAL regression guard: `spans: vec![]` is what every project ever saved before spans
+    /// existed loads as (`#[serde(default)]`), so it must render byte-identical to how this file
+    /// rendered before spans existed. `TextStyle::default()` already has `spans: vec![]` and is
+    /// exactly what `renders_default_style_and_caches` above pins (dimensions grow with scale, white
+    /// fill, outline/shadow/box growth, multi-line height) — this test adds the direct check: pushing
+    /// a span onto a style and then clearing it back to empty must not perturb the cache key or a
+    /// single output byte, proving the new span bookkeeping is a true no-op when spans is empty.
+    #[test]
+    fn spans_empty_matches_unspanned_baseline_byte_for_byte() {
+        let mut tr = TextRasterizer::new();
+        let base = TextStyle::default();
+        if tr.families().is_empty() {
+            eprintln!("no system fonts — skipping");
+            return;
+        }
+        let a = tr.render(&base, 0.6);
+
+        let mut touched = base.clone();
+        touched.spans.push(TextSpan { start: 0, end: 3, color: Some([255, 0, 0, 255]), ..Default::default() });
+        touched.spans.clear();
+        assert_eq!(touched.cache_key(), base.cache_key(), "empty spans must not change the cache key");
+        let b = tr.render(&touched, 0.6);
+        assert_eq!((a.width, a.height), (b.width, b.height));
+        assert_eq!(a.rgba, b.rgba, "unspanned render regressed");
+    }
+
+    /// A span with an out-of-range / inverted / zero-width char range covers no character, so it must
+    /// render identically to having no span at all — and must never panic (no unwrap on span data).
+    #[test]
+    fn spans_out_of_range_are_ignored_gracefully() {
+        let mut tr = TextRasterizer::new();
+        let base = TextStyle::default(); // text: "Text" — 4 chars
+        if tr.families().is_empty() {
+            eprintln!("no system fonts — skipping");
+            return;
+        }
+        let a = tr.render(&base, 0.6);
+
+        let mut s = base.clone();
+        s.spans = vec![
+            TextSpan { start: 100, end: 200, color: Some([255, 0, 0, 255]), ..Default::default() }, // past the end
+            TextSpan { start: 3, end: 1, color: Some([0, 255, 0, 255]), ..Default::default() }, // inverted
+            TextSpan { start: 2, end: 2, bold: Some(true), ..Default::default() },              // zero-width
+        ];
+        let b = tr.render(&s, 0.6); // must not panic
+        assert_eq!((a.width, a.height), (b.width, b.height));
+        assert_eq!(a.rgba, b.rgba, "an out-of-range span must be a no-op");
+    }
+
+    /// A span covering part of the text renders visibly different pixels in that range (here: color),
+    /// while the base render stays the baseline — this is the actual per-run override feature.
+    #[test]
+    fn span_color_override_is_visible_only_in_its_range() {
+        let mut tr = TextRasterizer::new();
+        let mut style = TextStyle::default();
+        style.text = "Hello World".into();
+        style.align = 0;
+        if tr.families().is_empty() {
+            eprintln!("no system fonts — skipping");
+            return;
+        }
+        let baseline = tr.render(&style, 1.0);
+        let all_white =
+            baseline.rgba.chunks_exact(4).filter(|p| p[3] > 0).all(|p| p[0] == 255 && p[1] == 255 && p[2] == 255);
+        assert!(all_white);
+
+        // "World" is chars 6..11 of "Hello World".
+        style.spans.push(TextSpan {
+            start: 6,
+            end: 11,
+            color: Some([255, 0, 0, 255]),
+            bold: Some(true),
+            ..Default::default()
+        });
+        let spanned = tr.render(&style, 1.0);
+        assert_ne!(baseline.rgba, spanned.rgba, "spanned render must differ from the baseline");
+        assert!(
+            spanned.rgba.chunks_exact(4).any(|p| p[3] > 0 && p[0] > 200 && p[1] < 80 && p[2] < 80),
+            "expected red-tinted pixels from the span's color override"
+        );
+        // "Hello " (unspanned) is still plain white.
+        assert!(
+            spanned.rgba.chunks_exact(4).filter(|p| p[3] > 0).any(|p| p[0] == 255 && p[1] == 255 && p[2] == 255),
+            "unspanned text must keep the base color"
+        );
     }
 
     #[test]

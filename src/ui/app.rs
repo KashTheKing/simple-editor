@@ -24,8 +24,8 @@ use crate::ui::layout::{self, Layout, Pane};
 use crate::ui::tools::Tool;
 use crate::ui::{
     autocut_ui, capture_ui, curves, effects_ui, export_ui, frame_ui, import_ui, inspector, library, markers_ui,
-    mixer_ui, nodes, paste_ui, planner, presets_ui, preview, retime, settings_ui, shader_ui, subtitles_ui, timeline,
-    tools, tracking_ui, transitions_ui, DragPayload,
+    mixer_ui, moodboard_ui, nodes, paste_ui, planner, presets_ui, preview, retime, settings_ui, shader_ui,
+    subtitles_ui, timeline, tools, tracking_ui, transitions_ui, DragPayload,
 };
 use eframe::egui;
 use serde_json::{json, Value};
@@ -111,6 +111,7 @@ pub struct App {
     curves: curves::CurvesState,
     subtitles_ui: subtitles_ui::SubtitlesState,
     planner: planner::PlannerState,
+    moodboard: moodboard_ui::MoodboardState,
     presets: presets_ui::PresetsState,
     autocut: autocut_ui::AutoCutState,
     tracking: tracking_ui::TrackState,
@@ -904,6 +905,7 @@ impl App {
             curves: curves::CurvesState::default(),
             subtitles_ui: subtitles_ui::SubtitlesState::default(),
             planner: planner::PlannerState::default(),
+            moodboard: moodboard_ui::MoodboardState::default(),
             presets: presets_ui::PresetsState::default(),
             autocut: autocut_ui::AutoCutState::default(),
             tracking: tracking_ui::TrackState::default(),
@@ -2664,6 +2666,25 @@ impl App {
                 }
                 if resp.edited {
                     self.after_edit();
+                } else if resp.tick {
+                    // the timer silently banked time onto a linked task: mark unsaved without the cost
+                    // of a full after_edit() (undo entry, player/prerender refresh) on every tick
+                    self.dirty = true;
+                }
+            }
+            Pane::Moodboard => {
+                let resp = {
+                    let App { project, undo, redo, moodboard: st, thumbs, palette, .. } = self;
+                    let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
+                    moodboard_ui::show(ui, st, project, thumbs, palette, &mut push)
+                };
+                if !resp.add_to_timeline.is_empty() {
+                    self.push_undo();
+                    self.insert_at(resp.add_to_timeline, self.playhead, None);
+                    self.after_edit();
+                }
+                if resp.edited {
+                    self.after_edit();
                 }
             }
             Pane::AutoCut => {
@@ -3688,7 +3709,7 @@ impl App {
 
     fn view_menu(&mut self, ui: &mut egui::Ui, out: &mut Vec<Action>) {
         use Action::*;
-        const PANES: [(Pane, Option<Action>); 16] = [
+        const PANES: [(Pane, Option<Action>); 17] = [
             (Pane::Preview, None),
             (Pane::Timeline, None),
             (Pane::Tools, Some(ToggleTools)),
@@ -3705,6 +3726,7 @@ impl App {
             (Pane::Planner, Some(TogglePlanner)),
             (Pane::AutoCut, Some(Action::AutoCut)),
             (Pane::Tracking, None),
+            (Pane::Moodboard, None),
         ];
         for (pane, action) in PANES {
             let mut v = self.layout.is_visible(pane);
@@ -4087,6 +4109,8 @@ impl App {
             return;
         }
         let on_timeline = pos.map(|p| self.timeline.lanes_rect.contains(p)).unwrap_or(false);
+        // one-frame-stale, like `lanes_rect` above — see `MoodboardState::content_rect`'s doc comment
+        let on_moodboard = pos.map(|p| self.moodboard.content_rect.contains(p)).unwrap_or(false);
         if on_timeline {
             let p = pos.unwrap();
             let mut t = self.timeline.time_at(p.x).max(0.0);
@@ -4097,6 +4121,19 @@ impl App {
             let vt = track.filter(|&i| self.project.tracks[i].kind == TrackKind::Video);
             self.insert_at(ids, t, vt);
             self.after_edit();
+        } else if on_moodboard {
+            // snapshot after the import (which already pushed its own undo step if any file was fresh —
+            // same two-steps-when-fresh/one-when-not pattern as `replace_container_dialog`) so adding the
+            // moodboard entries is still undoable even when every dropped file was already a known asset
+            let snap = self.project.to_json();
+            let mut changed = false;
+            for &id in &ids {
+                changed |= moodboard_ui::moodboard_add(&mut self.project, id);
+            }
+            if changed {
+                push_undo_json(&mut self.undo, &mut self.redo, snap);
+                self.after_edit();
+            }
         } else {
             self.library.tab = 0;
             self.library.selected = ids.last().copied();
@@ -5177,15 +5214,21 @@ impl App {
                 Ok(json!({"ok": true}))
             }
             "notes.get" => Ok(json!({"notes": self.project.notes})),
+            // `notes` is now a titled list (see the planner's Notes tab); this tool predates that and
+            // keeps working against the first note (creating an untitled one if there isn't one yet).
             "notes.set" => {
                 let text = req(arg_str(args, "text"), "text")?;
+                if self.project.notes.is_empty() {
+                    self.project.add_note("");
+                }
+                let n = &mut self.project.notes[0];
                 if arg_bool(args, "append").unwrap_or(false) {
-                    if !self.project.notes.is_empty() {
-                        self.project.notes.push_str("\n\n");
+                    if !n.body.is_empty() {
+                        n.body.push_str("\n\n");
                     }
-                    self.project.notes.push_str(text);
+                    n.body.push_str(text);
                 } else {
-                    self.project.notes = text.to_string();
+                    n.body = text.to_string();
                 }
                 Ok(json!({"ok": true}))
             }
@@ -6028,6 +6071,10 @@ impl eframe::App for App {
         self.poll_mcp(ctx);
 
         self.handle_drops(ctx);
+        // cleared so a frame where the Moodboard tab isn't the one actually drawn (a sibling tab in its
+        // group is active instead) can't have next frame's handle_drops match a stale rect from the last
+        // time it *was* drawn — `moodboard_ui::show` sets this back whenever it actually runs
+        self.moodboard.content_rect = egui::Rect::NOTHING;
         self.screenshot_tick(ctx);
 
         // hotkeys

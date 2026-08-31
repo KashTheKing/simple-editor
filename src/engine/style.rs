@@ -366,7 +366,12 @@ pub fn style_summary(project: &Project) -> String {
     if p.notes.is_empty() {
         let _ = writeln!(s, "(none)");
     } else {
-        let _ = writeln!(s, "{}", p.notes);
+        for n in &p.notes {
+            if !n.title.is_empty() {
+                let _ = writeln!(s, "### {}", n.title);
+            }
+            let _ = writeln!(s, "{}", n.body);
+        }
     }
 
     s
@@ -424,7 +429,8 @@ mod tests {
         let t = p.plan_add(None, "Intro");
         p.plan_item_mut(t).unwrap().done = true;
         p.plan_add(Some(t), "Hook");
-        p.notes = "fast cuts, punchy".into();
+        let nid = p.add_note("");
+        p.note_mut(nid).unwrap().body = "fast cuts, punchy".into();
         let md = style_summary(&p);
         for h in [
             "# Style Summary — style-test-0",

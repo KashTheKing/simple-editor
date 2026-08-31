@@ -416,6 +416,10 @@ pub struct TextStyle {
     /// Background box behind the text; alpha 0 = none.
     pub box_color: [u8; 4],
     pub box_padding: f32,
+    /// Styled sub-ranges of `text` (char-indexed, `[start, end)`) that override some of the run-level
+    /// fields above for just that range; every field left `None` keeps inheriting this clip's style.
+    /// Empty for every project saved before spans existed (`#[serde(default)]` on the struct covers it).
+    pub spans: Vec<TextSpan>,
 }
 
 impl Default for TextStyle {
@@ -439,8 +443,37 @@ impl Default for TextStyle {
             letter_spacing: 0.0,
             box_color: [0, 0, 0, 0],
             box_padding: 8.0,
+            spans: Vec::new(),
         }
     }
+}
+
+/// A styled sub-range of `TextStyle::text`, addressed by CHAR index (not byte — `text` may hold
+/// multi-byte UTF-8), half-open `[start, end)`. Only run-level fields are overridable here; `align`,
+/// `line_spacing`, `box_color` and `box_padding` are paragraph-level and stay clip-wide.
+///
+/// Rendering (`engine::text`) honors `color`, `font`/`size`/`bold`/`italic` (glyph shape) and
+/// `letter_spacing` per span; `outline_width`, `outline_color`, `shadow`, `shadow_color`, `shadow_x`,
+/// `shadow_y`, `shadow_blur` are accepted here for a future pass but currently always draw with the
+/// clip's base style — see the `ponytail:` comment in `engine::text::TextRasterizer::rasterize`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct TextSpan {
+    pub start: usize,
+    pub end: usize,
+    pub font: Option<String>,
+    pub size: Option<f32>,
+    pub bold: Option<bool>,
+    pub italic: Option<bool>,
+    pub color: Option<[u8; 4]>,
+    pub outline_width: Option<f32>,
+    pub outline_color: Option<[u8; 4]>,
+    pub shadow: Option<bool>,
+    pub shadow_color: Option<[u8; 4]>,
+    pub shadow_x: Option<f32>,
+    pub shadow_y: Option<f32>,
+    pub shadow_blur: Option<f32>,
+    pub letter_spacing: Option<f32>,
 }
 
 impl TextStyle {
@@ -467,6 +500,15 @@ impl TextStyle {
         }
         (self.bold, self.italic, self.shadow, self.align).hash(&mut h);
         (self.color, self.outline_color, self.shadow_color, self.box_color).hash(&mut h);
+        self.spans.len().hash(&mut h);
+        for s in &self.spans {
+            (s.start, s.end).hash(&mut h);
+            (&s.font, s.bold, s.italic, s.shadow).hash(&mut h);
+            (s.color, s.outline_color, s.shadow_color).hash(&mut h);
+            for f in [s.size, s.outline_width, s.shadow_x, s.shadow_y, s.shadow_blur, s.letter_spacing] {
+                f.map(f32::to_bits).hash(&mut h);
+            }
+        }
         h.finish()
     }
 }
@@ -2751,6 +2793,46 @@ pub struct Stash {
     pub out_point: Option<f64>,
 }
 
+/// One entry in `Project.notes`: a markdown note with an optional title and colour label. Rendered
+/// with `egui_commonmark` in the planner's Notes tab. `Project.notes` used to be a single free-form
+/// string; `de_notes` migrates a non-empty old value into one untitled note.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct Note {
+    pub id: Id,
+    pub title: String,
+    /// Index into `Project.labels` + 1 (0 = none), same convention as `Marker::label`.
+    pub label: u8,
+    pub body: String,
+}
+
+/// `notes` was a single free-form string before it became a list of titled markdown notes; a
+/// non-empty old string becomes one untitled note (its placeholder id 0 is fixed up to a real one in
+/// `Project::from_json`, which is the only place with a `next_id` counter to draw from).
+fn de_notes<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Note>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StrOrNotes {
+        Str(String),
+        List(Vec<Note>),
+    }
+    Ok(match StrOrNotes::deserialize(d)? {
+        StrOrNotes::Str(s) if !s.trim().is_empty() => vec![Note { body: s, ..Default::default() }],
+        StrOrNotes::Str(_) => Vec::new(),
+        StrOrNotes::List(v) => v,
+    })
+}
+
+/// One item on the standalone Moodboard pane (`Project.moodboard`): a project asset plus free-form
+/// label tags. These are plain user-typed words, not indices into `Project.labels` like everything
+/// else that carries a `label` field — the moodboard's filter row is a text/chip filter, not a colour.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct MoodItem {
+    pub asset: Id,
+    pub labels: Vec<String>,
+}
+
 /// Planner item: a checkable task with notes, colour, nested sub-tasks and a moodboard of assets.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -2765,6 +2847,12 @@ pub struct PlanItem {
     pub assets: Vec<Id>,
     pub asset_notes: Vec<String>,
     pub children: Vec<PlanItem>,
+    /// Optional short checklist ("label", done) shown compactly under the item when non-empty.
+    pub requirements: Vec<(String, bool)>,
+    /// Seconds accumulated by the planner's Timer tab while linked to this item. The timer's own
+    /// running state (mode, start time, whether it's live) is session-scoped UI state, not project
+    /// data — it lives in `ui::planner::PlannerState`, not here.
+    pub tracked_seconds: f64,
 }
 
 impl Default for PlanItem {
@@ -2778,6 +2866,8 @@ impl Default for PlanItem {
             assets: Vec::new(),
             asset_notes: Vec::new(),
             children: Vec::new(),
+            requirements: Vec::new(),
+            tracked_seconds: 0.0,
         }
     }
 }
@@ -2829,7 +2919,10 @@ pub struct Project {
     pub main_stash: Option<Stash>,
     /// Planner (nested tasks with moodboards) and free-form notes (process / ideas / style).
     pub plan: Vec<PlanItem>,
-    pub notes: String,
+    #[serde(default, deserialize_with = "de_notes")]
+    pub notes: Vec<Note>,
+    /// Standalone moodboard (`ui::moodboard_ui`) — separate from the per-task moodboards in `plan`.
+    pub moodboard: Vec<MoodItem>,
     /// Saved drawing / polygon outlines, reusable as motion paths (see `PathAsset`).
     pub paths: Vec<PathAsset>,
     next_id: Id,
@@ -2871,7 +2964,8 @@ impl Project {
             editing: None,
             main_stash: None,
             plan: Vec::new(),
-            notes: String::new(),
+            notes: Vec::new(),
+            moodboard: Vec::new(),
             paths: Vec::new(),
             next_id: 0,
         };
@@ -3823,7 +3917,8 @@ impl Project {
         }
         rm(&mut self.plan, id);
     }
-    /// All asset ids referenced by moodboards (never counted as "unused").
+    /// All asset ids referenced by any moodboard — the per-task planner moodboards and the standalone
+    /// Moodboard pane alike — never counted as "unused".
     pub fn plan_assets(&self) -> std::collections::HashSet<Id> {
         fn walk(items: &[PlanItem], out: &mut std::collections::HashSet<Id>) {
             for i in items {
@@ -3833,7 +3928,21 @@ impl Project {
         }
         let mut s = std::collections::HashSet::new();
         walk(&self.plan, &mut s);
+        s.extend(self.moodboard.iter().map(|m| m.asset));
         s
+    }
+
+    // ---------- notes ----------
+    pub fn add_note(&mut self, title: impl Into<String>) -> Id {
+        let id = self.new_id();
+        self.notes.push(Note { id, title: title.into(), ..Default::default() });
+        id
+    }
+    pub fn note_mut(&mut self, id: Id) -> Option<&mut Note> {
+        self.notes.iter_mut().find(|n| n.id == id)
+    }
+    pub fn remove_note(&mut self, id: Id) {
+        self.notes.retain(|n| n.id != id);
     }
 
     // ---------- usage ----------
@@ -4613,6 +4722,7 @@ impl Project {
             .chain(p.buses.iter().map(|b| b.id))
             .chain(p.all_clips().flat_map(|(_, c)| c.markers.iter().map(|m| m.id)))
             .chain(p.all_clips().filter_map(|(_, c)| c.graph.as_ref()).flat_map(|g| g.nodes.iter().map(|n| n.id)))
+            .chain(p.notes.iter().map(|n| n.id))
             .chain(p.sequences.iter().map(|s| s.id))
             .chain(p.sequences.iter().flat_map(|s| s.tracks.iter().map(|t| t.id)))
             .chain(
@@ -4630,6 +4740,12 @@ impl Project {
             items.iter().map(|i| i.id.max(plan_max(&i.children))).max().unwrap_or(0)
         }
         p.next_id = p.next_id.max(max_id).max(plan_max(&p.plan));
+        // a note migrated from the old flat-string format (or a hand-edited one) has no real id yet
+        for i in 0..p.notes.len() {
+            if p.notes[i].id == 0 {
+                p.notes[i].id = p.new_id();
+            }
+        }
         if p.editing.is_some_and(|id| p.sequence(id).is_none()) {
             p.editing = None;
         }
@@ -4663,6 +4779,7 @@ impl Project {
             p.labels = default_labels();
         }
         p.markers.retain(|m| m.t.is_finite() && m.t >= 0.0);
+        p.moodboard.retain(|m| p.assets.iter().any(|a| a.id == m.asset));
         p.sort_markers();
         p.tidy();
         p.sort_cues();
@@ -5348,6 +5465,77 @@ mod tests {
         assert!(p.asset(extra).is_some() && p.asset(third).is_none());
         p.plan_remove(a);
         assert!(p.plan.is_empty());
+    }
+
+    /// The standalone Moodboard pane's assets are protected from cleanup the same way the planner's
+    /// per-task moodboards already are.
+    #[test]
+    fn moodboard_assets_protected_from_cleanup() {
+        let mut p = Project::from_media(asset(0, 10.0, 1));
+        let kept = p.add_asset(asset(1, 3.0, 0));
+        let unused = p.add_asset(asset(2, 3.0, 0));
+        p.moodboard.push(MoodItem { asset: kept, labels: vec!["hero".into()] });
+        assert!(p.plan_assets().contains(&kept));
+        assert_eq!(p.remove_unused_assets(), 1);
+        assert!(p.asset(kept).is_some() && p.asset(unused).is_none());
+    }
+
+    /// An old project file (`notes` was one flat string) migrates a non-empty value into a single
+    /// untitled note with a real id; an old empty string, or a missing key, migrates to no notes at all.
+    #[test]
+    fn notes_migrate_from_old_string_format() {
+        let p = Project::from_json(r#"{"notes":"describe the process here"}"#).unwrap();
+        assert_eq!(p.notes.len(), 1);
+        assert_eq!(p.notes[0].title, "");
+        assert_eq!(p.notes[0].body, "describe the process here");
+        assert_ne!(p.notes[0].id, 0, "the placeholder id must be fixed up to a real one");
+
+        let p = Project::from_json(r#"{"notes":""}"#).unwrap();
+        assert!(p.notes.is_empty());
+        let p = Project::from_json("{}").unwrap();
+        assert!(p.notes.is_empty());
+    }
+
+    /// The current list-of-notes format round-trips (and a fresh project starts with none).
+    #[test]
+    fn notes_add_edit_roundtrip() {
+        let mut p = Project::new();
+        assert!(p.notes.is_empty());
+        let id = p.add_note("Style");
+        p.note_mut(id).unwrap().body = "**bold** ideas".into();
+        p.note_mut(id).unwrap().label = 2;
+        let mut q = Project::from_json(&p.to_json()).unwrap();
+        assert_eq!(q.notes.len(), 1);
+        assert_eq!(q.notes[0].title, "Style");
+        assert_eq!(q.notes[0].body, "**bold** ideas");
+        assert_eq!(q.notes[0].label, 2);
+        q.remove_note(id);
+        assert!(q.notes.is_empty());
+    }
+
+    /// `requirements` / `tracked_seconds` (added for the Timer tab and the compact checklist) round-trip
+    /// and default to empty/zero for a plan item written before either field existed.
+    #[test]
+    fn plan_item_requirements_and_tracked_seconds_roundtrip() {
+        let mut p = Project::new();
+        let id = p.plan_add(None, "Edit intro");
+        {
+            let it = p.plan_item_mut(id).unwrap();
+            it.requirements.push(("Colour graded".into(), false));
+            it.requirements.push(("Music licensed".into(), true));
+            it.tracked_seconds = 125.5;
+        }
+        let q = Project::from_json(&p.to_json()).unwrap();
+        assert_eq!(q.plan[0].requirements, vec![("Colour graded".to_string(), false), ("Music licensed".to_string(), true)]);
+        assert_eq!(q.plan[0].tracked_seconds, 125.5);
+
+        // an old plan item JSON without either field defaults to empty/zero
+        let old = Project::from_json(
+            r#"{"plan":[{"id":1,"title":"Old task","done":false,"notes":"","color":0,"assets":[],"asset_notes":[],"children":[]}]}"#,
+        )
+        .unwrap();
+        assert!(old.plan[0].requirements.is_empty());
+        assert_eq!(old.plan[0].tracked_seconds, 0.0);
     }
 
     #[test]
