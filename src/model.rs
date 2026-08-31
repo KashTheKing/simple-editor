@@ -4681,9 +4681,21 @@ impl Project {
                 c.fade_out = src.fade_out;
                 c.bus = src.bus;
             }
-            if set.text {
-                if let Some(t) = &src.text {
-                    c.text = Some(t.clone());
+            if (set.text_content || set.text_style) && src.text.is_some() {
+                let s = src.text.as_ref().unwrap();
+                if set.text_content && set.text_style {
+                    c.text = Some(s.clone());
+                } else if set.text_style {
+                    // style only: keep the destination's own wording
+                    let content = c.text.as_ref().map(|t| t.text.clone());
+                    let dst = c.text.get_or_insert_with(Default::default);
+                    *dst = s.clone();
+                    if let Some(content) = content {
+                        dst.text = content;
+                    }
+                } else {
+                    // content only: keep the destination's own style
+                    c.text.get_or_insert_with(Default::default).text = s.text.clone();
                 }
             }
             if set.shape {
@@ -4820,6 +4832,33 @@ mod tests {
             label: 0,
             description: String::new(),
         }
+    }
+
+    /// `paste_attributes` with only `text_style` set must NOT touch the destination clip's own
+    /// wording — the bug the user reported (pasting text attributes used to overwrite the text too,
+    /// since `AttrSet::text` copied the whole `TextStyle` including its content).
+    #[test]
+    fn paste_text_style_keeps_destination_wording_content_only_keeps_destination_style() {
+        let mut p = Project::new();
+        let mut src = Clip::new(1, ClipKind::Text, "src", 0.0, 4.0);
+        src.text = Some(TextStyle { text: "Hello".into(), size: 40.0, bold: true, ..Default::default() });
+        let mut dst = Clip::new(2, ClipKind::Text, "dst", 0.0, 4.0);
+        dst.text = Some(TextStyle { text: "World".into(), size: 72.0, bold: false, ..Default::default() });
+        let dst_id = dst.id;
+        p.tracks[0].clips.push(dst);
+
+        // style only: destination keeps its own wording, gains the source's look
+        let n = p.paste_attributes(&src, &[dst_id], AttrSet { text_style: true, ..AttrSet::NONE });
+        assert_eq!(n, 1);
+        let t = p.clip(dst_id).unwrap().text.as_ref().unwrap();
+        assert_eq!(t.text, "World", "style-only paste must not touch the wording");
+        assert_eq!((t.size, t.bold), (40.0, true), "style fields copy from the source");
+
+        // content only: destination keeps its (now-updated) style, gains the source's wording
+        p.paste_attributes(&src, &[dst_id], AttrSet { text_content: true, ..AttrSet::NONE });
+        let t = p.clip(dst_id).unwrap().text.as_ref().unwrap();
+        assert_eq!(t.text, "Hello", "content-only paste copies the wording");
+        assert_eq!((t.size, t.bold), (40.0, true), "content-only paste must not touch the style");
     }
 
     #[test]
@@ -5800,7 +5839,12 @@ pub struct AttrSet {
     pub mask: bool,
     pub speed: bool,
     pub audio: bool,
-    pub text: bool,
+    /// The text clip's wording (`TextStyle::text`) — separate from `text_style` so pasting a look
+    /// doesn't overwrite the destination's own words.
+    pub text_content: bool,
+    /// Every visual text field (font/size/bold/italic/colour/outline/shadow/spacing/align/box/spans)
+    /// except the wording itself.
+    pub text_style: bool,
     pub shape: bool,
     pub label: bool,
     pub markers: bool,
@@ -5817,7 +5861,8 @@ impl Default for AttrSet {
             mask: true,
             speed: false,
             audio: true,
-            text: false,
+            text_content: false,
+            text_style: false,
             shape: false,
             label: true,
             markers: false,
@@ -5835,7 +5880,8 @@ impl AttrSet {
         mask: false,
         speed: false,
         audio: false,
-        text: false,
+        text_content: false,
+        text_style: false,
         shape: false,
         label: false,
         markers: false,
@@ -5851,7 +5897,8 @@ impl AttrSet {
             ("Mask", &mut self.mask),
             ("Speed / reverse / freeze", &mut self.speed),
             ("Audio (volume, pan, fades, bus)", &mut self.audio),
-            ("Text style", &mut self.text),
+            ("Text content (wording)", &mut self.text_content),
+            ("Text style", &mut self.text_style),
             ("Shape style", &mut self.shape),
             ("Colour label", &mut self.label),
             ("Markers", &mut self.markers),

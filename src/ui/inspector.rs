@@ -26,8 +26,10 @@
 //! Returns true if the project changed.
 
 use crate::hotkeys::Action;
-use crate::model::{AnimLink, Animated, BlendMode, ClipKind, Id, Label, Mask, Project, ShapeKind, ShapeStyle};
-use crate::settings::Settings;
+use crate::model::{
+    AnimLink, Animated, BlendMode, ClipKind, Id, Label, Mask, Project, ShapeKind, ShapeStyle, TextSpan, TextStyle,
+};
+use crate::settings::{Settings, TextPreset};
 use crate::theme::Palette;
 use crate::ui::markers_ui::x_button;
 use crate::ui::{edit_start, key_buttons, mask_grid, timecode, Gesture};
@@ -56,6 +58,79 @@ fn db_to_gain(db: f64) -> f64 {
     } else {
         10f64.powf(db / 20.0)
     }
+}
+
+/// Seed a "Set Text Style" popup draft for the char range [a, b): an existing span exactly covering
+/// that range wins (edit it in place), else every field starts from the clip's base style.
+fn span_draft_at(style: &TextStyle, a: usize, b: usize) -> TextPreset {
+    let base = TextPreset {
+        name: String::new(),
+        font: style.font.clone(),
+        size: style.size,
+        bold: style.bold,
+        italic: style.italic,
+        color: style.color,
+        letter_spacing: style.letter_spacing,
+    };
+    let Some(s) = style.spans.iter().find(|s| s.start == a && s.end == b) else { return base };
+    TextPreset {
+        name: String::new(),
+        font: s.font.clone().unwrap_or(base.font),
+        size: s.size.unwrap_or(base.size),
+        bold: s.bold.unwrap_or(base.bold),
+        italic: s.italic.unwrap_or(base.italic),
+        color: s.color.unwrap_or(base.color),
+        letter_spacing: s.letter_spacing.unwrap_or(base.letter_spacing),
+    }
+}
+
+/// Push (or replace, if one already exists over the exact same range) a fully-overriding `TextSpan`
+/// covering [a, b) with `p`'s fields. Ponytail: a span is always a full override of every field this
+/// editor exposes, not a sparse per-field one — simpler than a per-field "inherit" toggle in the popup,
+/// and still correct since it only ever writes the fields the UI let the user see/change.
+fn set_span(style: &mut TextStyle, a: usize, b: usize, p: &TextPreset) {
+    style.spans.retain(|s| !(s.start == a && s.end == b));
+    style.spans.push(TextSpan {
+        start: a,
+        end: b,
+        font: Some(p.font.clone()),
+        size: Some(p.size),
+        bold: Some(p.bold),
+        italic: Some(p.italic),
+        color: Some(p.color),
+        letter_spacing: Some(p.letter_spacing),
+        ..Default::default()
+    });
+}
+
+/// The editable fields of a `TextPreset` — shared by the "Set Text Style" popup and (implicitly, same
+/// shape) the saved-preset list.
+fn text_preset_fields(ui: &mut egui::Ui, p: &mut TextPreset, fonts: &[String]) {
+    Grid::new("text_preset_fields").num_columns(2).show(ui, |ui| {
+        ui.label("Font");
+        egui::ComboBox::from_id_salt("span_font").selected_text(p.font.clone()).show_ui(ui, |ui| {
+            if !fonts.iter().any(|f| *f == p.font) {
+                let _ = ui.selectable_label(true, p.font.as_str());
+            }
+            for f in fonts {
+                ui.selectable_value(&mut p.font, f.clone(), f);
+            }
+        });
+        ui.end_row();
+        ui.label("Size");
+        ui.horizontal(|ui| {
+            ui.add(DragValue::new(&mut p.size).range(1.0..=1000.0));
+            ui.checkbox(&mut p.bold, "Bold");
+            ui.checkbox(&mut p.italic, "Italic");
+        });
+        ui.end_row();
+        ui.label("Colour");
+        ui.color_edit_button_srgba_unmultiplied(&mut p.color);
+        ui.end_row();
+        ui.label("Letter spacing");
+        ui.add(DragValue::new(&mut p.letter_spacing).range(-10.0..=50.0).speed(0.1));
+        ui.end_row();
+    });
 }
 
 // Hand-offs to the app (the show() signature has no room for these; the app polls them each frame).
@@ -123,7 +198,7 @@ pub fn show(
     match selection.iter().find(|&&id| project.clip(id).is_some()) {
         None if !sel_transitions.is_empty() => transition_section(ui, project, sel_transitions, undo),
         None => project_section(ui, project, settings, undo),
-        Some(_) => clip_section(ui, project, selection, playhead, fonts, palette, undo),
+        Some(_) => clip_section(ui, project, selection, playhead, fonts, palette, settings, undo),
     }
 }
 
@@ -472,6 +547,7 @@ fn project_section(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn clip_section(
     ui: &mut egui::Ui,
     project: &mut Project,
@@ -479,6 +555,7 @@ fn clip_section(
     playhead: f64,
     fonts: &[String],
     palette: &Palette,
+    settings: &mut Settings,
     undo: &mut dyn FnMut(&Project),
 ) -> bool {
     // Every selected id that is still a live clip. The first is the "representative" — its widgets
@@ -783,7 +860,24 @@ fn clip_section(
         let style = clip.text.get_or_insert_with(Default::default);
         ui.separator();
         ui.strong("Text");
-        g.note_text(&ui.text_edit_multiline(&mut style.text));
+        let text_out =
+            egui::TextEdit::multiline(&mut style.text).id_salt("inspector_text_body").show(ui);
+        g.note_text(&text_out.response);
+        // char range of the current selection (empty/collapsed = no selection) — used by "Style
+        // Selection…" below to know what a new/edited TextSpan should cover.
+        let live_sel: Option<(usize, usize)> = text_out.cursor_range.and_then(|r| {
+            let (a, b) = (r.primary.index, r.secondary.index);
+            (a != b).then(|| (a.min(b), a.max(b)))
+        });
+        // the text field loses focus (cursor_range -> None) the moment a button elsewhere is clicked,
+        // so "Style Selection…"/"Apply to Selection" need the LAST non-empty selection, not this
+        // frame's live one, to still know what to target once actually clicked.
+        let text_sel_id = egui::Id::new("inspector_text_sel");
+        if live_sel.is_some() {
+            ui.ctx().data_mut(|d| d.insert_temp(text_sel_id, live_sel));
+        }
+        let text_sel: Option<(usize, usize)> =
+            ui.ctx().data(|d| d.get_temp::<Option<(usize, usize)>>(text_sel_id)).flatten();
         Grid::new("inspector_text").num_columns(2).show(ui, |ui| {
             ui.label("Font");
             ui.horizontal(|ui| {
@@ -851,6 +945,131 @@ fn clip_section(
             });
             ui.end_row();
         });
+
+        // ---- per-selection style override (TextSpan) + saved text-style presets ----
+        // Only the fields the rasterizer actually honours per-span today (see TextSpan's doc comment
+        // in model.rs): font/size/bold/italic/colour/letter-spacing. Outline/shadow stay clip-wide.
+        ui.separator();
+        let span_draft_id = egui::Id::new("inspector_text_span_draft");
+        ui.horizontal(|ui| {
+            match text_sel {
+                Some((a, b)) if b > a => {
+                    ui.label(format!("{} character{} selected", b - a, if b - a == 1 { "" } else { "s" }));
+                }
+                _ => {
+                    ui.weak("Select text above, then style just that range");
+                }
+            }
+            let can = matches!(text_sel, Some((a, b)) if b > a);
+            let r = ui.add_enabled(can, egui::Button::new("Style Selection…"));
+            mark(ui, "style_selection", &r);
+            if r.clicked() {
+                if let Some((a, b)) = text_sel {
+                    let seed = span_draft_at(style, a, b);
+                    ui.ctx().data_mut(|d| d.insert_temp(span_draft_id, (a, b, seed)));
+                }
+            }
+        });
+        let draft: Option<(usize, usize, TextPreset)> = ui.ctx().data(|d| d.get_temp(span_draft_id));
+        if let Some((a, b, mut preset)) = draft {
+            let mut open = true;
+            let mut apply = false;
+            let mut cancel = false;
+            egui::Window::new("Set Text Style").resizable(false).collapsible(false).open(&mut open).show(
+                ui.ctx(),
+                |ui| {
+                    text_preset_fields(ui, &mut preset, fonts);
+                    ui.horizontal(|ui| {
+                        if ui.button("Apply").clicked() {
+                            apply = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            cancel = true;
+                        }
+                    });
+                },
+            );
+            if apply {
+                undo(project);
+                set_span(style, a, b, &preset);
+                g.changed = true;
+            }
+            if apply || cancel || !open {
+                ui.ctx().data_mut(|d| d.remove::<(usize, usize, TextPreset)>(span_draft_id));
+            } else {
+                ui.ctx().data_mut(|d| d.insert_temp(span_draft_id, (a, b, preset)));
+            }
+        }
+
+        let presets_open_id = egui::Id::new("inspector_text_presets_open");
+        let mut presets_open: bool = ui.ctx().data(|d| d.get_temp(presets_open_id).unwrap_or(false));
+        ui.checkbox(&mut presets_open, "Text style presets");
+        ui.ctx().data_mut(|d| d.insert_temp(presets_open_id, presets_open));
+        if presets_open {
+            ui.horizontal(|ui| {
+                if ui.button("Save current style as preset…").clicked() {
+                    let name = format!("Text style {}", settings.text_presets.len() + 1);
+                    settings.text_presets.push(TextPreset {
+                        name,
+                        font: style.font.clone(),
+                        size: style.size,
+                        bold: style.bold,
+                        italic: style.italic,
+                        color: style.color,
+                        letter_spacing: style.letter_spacing,
+                    });
+                    settings.save();
+                }
+            });
+            let mut delete: Option<usize> = None;
+            let mut apply_preset: Option<TextPreset> = None;
+            for (i, p) in settings.text_presets.iter_mut().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut p.name).desired_width(110.0));
+                    let can = matches!(text_sel, Some((a, b)) if b > a);
+                    if ui.add_enabled(can, egui::Button::new("Apply to Selection")).clicked() {
+                        apply_preset = Some(p.clone());
+                    }
+                    if ui.small_button("Export…").clicked() {
+                        if let Some(out) = rfd::FileDialog::new()
+                            .add_filter("Simple Editor text style", &["sedit-textstyle"])
+                            .set_file_name(format!("{}.sedit-textstyle", p.name))
+                            .save_file()
+                        {
+                            let _ = std::fs::write(&out, serde_json::to_string_pretty(p).unwrap_or_default());
+                        }
+                    }
+                    if x_button(ui).on_hover_text("Delete preset").clicked() {
+                        delete = Some(i);
+                    }
+                });
+            }
+            if ui.button("Import…").clicked() {
+                if let Some(p) = rfd::FileDialog::new()
+                    .add_filter("Simple Editor text style", &["sedit-textstyle", "json"])
+                    .pick_file()
+                {
+                    if let Ok(json) = std::fs::read_to_string(&p) {
+                        if let Ok(preset) = serde_json::from_str::<TextPreset>(&json) {
+                            settings.text_presets.retain(|x| x.name != preset.name);
+                            settings.text_presets.push(preset);
+                            settings.save();
+                        }
+                    }
+                }
+            }
+            if let Some(i) = delete {
+                settings.text_presets.remove(i);
+                settings.save();
+            }
+            if let Some(p) = apply_preset {
+                if let Some((a, b)) = text_sel {
+                    undo(project);
+                    set_span(style, a, b, &p);
+                    g.changed = true;
+                }
+            }
+        }
     }
 
     // ---------- round 3 sections ----------
