@@ -7,8 +7,12 @@ Priorities, in order: **performance (startup, seek, playback, export), low memor
 open → cut → save, then everything else.** Bare Windows-Forms-style UI matching the OS theme; DaVinci-like
 dockable layout without decoration. Popups never block the editor (plain `egui::Window`, never `Modal`).
 
-Measured baselines (release, RTX 2060 SUPER): exe 10.8 MB · first frame ~330 ms · idle CPU 0.0 % ·
-~125 MB working set with a clip open · 433 unit tests + a headless `--selftest`.
+Measured baselines (release, RTX 2060 SUPER): exe 15.06 MB (over the ~10 MB goal since
+egui_commonmark; tracked in goals.md) · first frame ~330 ms · idle CPU 0.0 % · ~125 MB working set
+with a clip open BEFORE playback caches fill — the playback cache may then grow to its budget
+(`Settings::cache_mb`, auto = ¼ of RAM clamped 512 MB–4 GB, plus ¼ of that for decoded source
+frames; deliberate, user-tunable in Settings ▸ Performance) · 655 unit tests + a headless
+`--selftest`.
 
 ## Stack
 
@@ -85,8 +89,12 @@ src/ui/nodes.rs        node-graph editor
 src/ui/curves.rs       keyframe graph editor (bezier velocity, presets, flow)
 src/ui/library.rs      library + recent: folders, tags, labels, search, filters, linked folders
 src/ui/mixer_ui.rs     bus strips, meters, filter chains
-src/ui/markers_ui.rs   marker list
-src/ui/planner.rs      nested task planner with moodboards + project notes
+src/ui/markers_ui.rs   marker list (collapsible rows, icons, per-sequence scoping, bulk ops)
+src/ui/planner.rs      Plan / Notes / Timer tabs: task tree, markdown notes, stopwatch dial
+src/ui/moodboard_ui.rs standalone moodboard pane (gallery/list/slideshow, tags, add-at-playhead)
+src/ui/history_ui.rs   History pane over the undo stack (day groups, search, filters, md export)
+src/ui/guides.rs       social-platform guide overlays + aspect/format presets
+src/ui/heartbeat.rs    repaint scheduling helper
 src/ui/presets_ui.rs   Presets pane: effects / node graphs / adjustment layers / templates (machine-local)
 src/ui/subtitles_ui.rs subtitle editor
 src/ui/autocut_ui.rs   auto-cut pane

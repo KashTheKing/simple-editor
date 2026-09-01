@@ -36,6 +36,9 @@ Pulled forward from CHANGELOG.md — mark new completions here as they land.
 - [x] Cozy/Sharp theme toggle, 25 built-in themes, exportable `.sedit-theme`, per-clip-kind colors
 - [x] No white flash on startup
 - [x] Live co-editing MCP server (Streamable HTTP, toggled in Settings)
+- [x] RAM-scaled playback cache (`cache_mb`, auto = ¼ RAM) + read-ahead costed from real entry sizes
+- [x] Proxy swaps evict only their source's spans (decoders + frames); decoded-source-frame cache
+- [x] Per-asset proxy status (queued / building N% / ready) in library, inspector and preview badge
 - [x] Luau scripting embedded (`editor.tool()` bridges into the MCP tool catalogue)
 
 ## In progress / open
