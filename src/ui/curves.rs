@@ -668,6 +668,7 @@ pub fn show(
     // selections let a bulk easing land on keys the user never picked on B.
     if state.last_target != Some(target) {
         state.last_target = Some(target);
+        state.active = 0;
         state.selected.clear();
         state.frozen.clear();
         state.drag_y.clear();

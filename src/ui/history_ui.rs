@@ -156,6 +156,8 @@ pub fn show(
                 i += 1;
                 keep
             });
+            // a cached label describes the change TO the (now different) next entry — recompute all
+            state.labels.clear();
             changed = true;
         }
         let r = ui.add_enabled(!visible.is_empty(), egui::Button::new("Export filtered to Markdown…"));
@@ -222,6 +224,7 @@ pub fn show(
     });
     if let Some(i) = delete {
         undo.remove(i);
+        state.labels.clear(); // the deleted entry's predecessor now describes a different neighbour
         changed = true;
     }
     changed
@@ -359,6 +362,9 @@ mod tests {
         assert!(changed);
         assert_eq!(h.undo.len(), 1, "both Editing entries removed, the Layout one survives");
         assert_eq!(h.undo[0].category, HistoryCategory::Layout);
+        // a cached label describes the change TO the next entry — deleting reshuffles every
+        // neighbour pair, so the whole cache must go (it rebuilds lazily on the next render)
+        assert!(h.state.labels.is_empty(), "deleting entries must drop the derived-label cache");
     }
 
     #[test]

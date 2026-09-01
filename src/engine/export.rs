@@ -923,6 +923,25 @@ pub(crate) mod tests {
         assert_eq!(parse_encoders(s), vec!["libx264".to_string(), "aac".to_string()]);
     }
 
+    /// The stored CRF is x264's 0..=51 scale; encoders on other scales get converted at emission.
+    /// VP9/AV1 use 0..=63 (an un-rescaled 51 was never "worst", compressing the whole slider into
+    /// 80% of the range) and QSV treats global_quality 0 as "unset" (best real value is 1).
+    #[test]
+    fn codec_args_convert_crf_scales_per_encoder() {
+        let has = |v: &[String], flag: &str, val: &str| v.windows(2).any(|w| w[0] == flag && w[1] == val);
+        let all = ["libx264", "libvpx-vp9", "libaom-av1", "h264_qsv"].map(String::from);
+        let v = codec_args("webm", "libvpx-vp9", 51, "medium", &all);
+        assert!(has(&v, "-crf", "63"), "vp9 worst = 63, got {v:?}");
+        let v = codec_args("webm", "libvpx-vp9", 0, "medium", &all);
+        assert!(has(&v, "-crf", "0"), "vp9 best stays 0: {v:?}");
+        let v = codec_args("mkv", "libaom-av1", 26, "medium", &all);
+        assert!(has(&v, "-crf", "32"), "av1 midpoint rescales 26 -> 32: {v:?}");
+        let v = codec_args("mp4", "h264_qsv", 0, "medium", &all);
+        assert!(has(&v, "-global_quality", "1"), "qsv 0 means unset — floor at 1: {v:?}");
+        let v = codec_args("mp4", "libx264", 18, "medium", &all);
+        assert!(has(&v, "-crf", "18"), "x264 passes through untouched: {v:?}");
+    }
+
     #[test]
     fn quality_percent_crf_conversion() {
         assert_eq!(crf_from_quality_percent(100), 0);
