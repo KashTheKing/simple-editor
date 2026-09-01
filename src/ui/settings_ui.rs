@@ -477,31 +477,34 @@ fn hotkeys_tab(ui: &mut egui::Ui, state: &mut SettingsUi, hotkeys: &mut Hotkeys)
         changed = true;
     }
     ui.add_space(4.0);
-    egui::ScrollArea::vertical().max_height(ui.available_height() - 40.0).auto_shrink([false, true]).show(ui, |ui| {
-        egui::Grid::new("hotkeys").num_columns(4).striped(true).spacing([12.0, 4.0]).show(ui, |ui| {
-            for &a in Action::ALL {
-                ui.label(a.label());
-                let text = hotkeys.text(a);
-                if state.rebinding == Some(a) {
-                    ui.strong("…");
-                } else if text.is_empty() {
-                    ui.weak("—");
-                } else {
-                    ui.label(text);
+    egui::ScrollArea::vertical().max_height((ui.available_height() - 40.0).max(0.0)).auto_shrink([false, true]).show(
+        ui,
+        |ui| {
+            egui::Grid::new("hotkeys").num_columns(4).striped(true).spacing([12.0, 4.0]).show(ui, |ui| {
+                for &a in Action::ALL {
+                    ui.label(a.label());
+                    let text = hotkeys.text(a);
+                    if state.rebinding == Some(a) {
+                        ui.strong("…");
+                    } else if text.is_empty() {
+                        ui.weak("—");
+                    } else {
+                        ui.label(text);
+                    }
+                    if ui.small_button("Rebind").clicked() {
+                        state.rebinding = Some(a);
+                        state.note.clear();
+                    }
+                    if ui.small_button("Reset").clicked() {
+                        let before = hotkeys.get(a);
+                        hotkeys.reset(a);
+                        changed |= hotkeys.get(a) != before;
+                    }
+                    ui.end_row();
                 }
-                if ui.small_button("Rebind").clicked() {
-                    state.rebinding = Some(a);
-                    state.note.clear();
-                }
-                if ui.small_button("Reset").clicked() {
-                    let before = hotkeys.get(a);
-                    hotkeys.reset(a);
-                    changed |= hotkeys.get(a) != before;
-                }
-                ui.end_row();
-            }
-        });
-    });
+            });
+        },
+    );
     ui.add_space(4.0);
     if let Some(a) = state.rebinding {
         let r = ui.strong(format!("Press keys for \"{}\"… (Esc cancels, Backspace/Delete unbinds)", a.label()));
@@ -762,7 +765,7 @@ fn appearance(ui: &mut egui::Ui, s: &mut Settings) -> bool {
     ui.add_space(8.0);
     ui.collapsing("Icons", |ui| {
         ui.weak("Pick the glyph shown for each pane and menu action ('None' removes it, 'Default' restores).");
-        egui::ScrollArea::vertical().max_height(ui.available_height() - 40.0).show(ui, |ui| {
+        egui::ScrollArea::vertical().max_height((ui.available_height() - 40.0).max(0.0)).show(ui, |ui| {
             egui::Grid::new("icons_panes").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
                 for p in crate::ui::layout::Pane::ALL {
                     changed |= icon_row(ui, s, format!("pane.{}", p.title()), p.title(), Some(p.glyph()));

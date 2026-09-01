@@ -871,7 +871,6 @@ fn shared_effect_kinds(p: &Project, ids: &[Id]) -> Vec<EffectKind> {
 }
 
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 fn clip_menu(
     ui: &mut egui::Ui,
     clip_id: Id,
