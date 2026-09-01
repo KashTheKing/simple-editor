@@ -838,7 +838,15 @@ fn prerender_badge(ui: &egui::Ui, painter: &egui::Painter, lb: Rect, c: &Preview
         (None, Some(p)) => (p, "Building proxy"),
         (None, None) => return,
     };
-    let text = format!("{label} {:.0} %", (p.clamp(0.0, 1.0) * 100.0));
+    let mut text = format!("{label} {:.0} %", (p.clamp(0.0, 1.0) * 100.0));
+    if c.prerender.is_none() {
+        // say WHICH file, so the pre-proxy window reads as progress on something, not vague churn
+        if let Some((src, _)) = crate::media::proxy::building() {
+            if let Some(name) = std::path::Path::new(&src).file_name() {
+                text = format!("{text} — {}", name.to_string_lossy());
+            }
+        }
+    }
     let font = egui::TextStyle::Small.resolve(ui.style());
     let galley = painter.layout_no_wrap(text, font, c.palette.text);
     let pad = vec2(6.0, 3.0);

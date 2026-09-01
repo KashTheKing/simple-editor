@@ -305,6 +305,19 @@ fn performance(ui: &mut egui::Ui, s: &mut Settings, gpu_name: &str) -> bool {
         });
         ui.end_row();
 
+        ui.label("Playback cache");
+        ui.horizontal(|ui| {
+            let mut mb = s.cache_mb.min(16384);
+            changed |= ui.add(egui::DragValue::new(&mut mb).range(0..=16384).suffix(" MB").speed(64)).changed();
+            s.cache_mb = mb;
+            let auto = crate::playback::cache_budget_bytes(0) >> 20;
+            ui.weak(format!(
+                "0 = automatic ({auto} MB here: ¼ of RAM, 512 MB–4 GB). Bigger survives longer 4K \
+                 scrubs; decoded source frames use up to another quarter of it."
+            ));
+        });
+        ui.end_row();
+
         ui.label("Proxy media");
         ui.vertical(|ui| {
             changed |= ui.checkbox(&mut s.use_proxies, "Play low-res all-intra proxies in the preview").changed();

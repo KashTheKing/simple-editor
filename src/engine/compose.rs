@@ -456,11 +456,13 @@ impl Compositor {
                 let Some(asset) = project.asset(clip.asset) else {
                     return;
                 };
-                let Some(dec) = pool.video(&asset.path) else {
-                    return;
-                };
+                // native size first, decoder borrow released — the decode below goes through
+                // pool.frame_at (the source-frame cache), which needs the pool borrow back
                 let mut native = (asset.width, asset.height);
                 if native.0 == 0 || native.1 == 0 {
+                    let Some(dec) = pool.video(&asset.path) else {
+                        return;
+                    };
                     native = dec.size();
                 }
                 if native.0 == 0 || native.1 == 0 {
@@ -485,7 +487,7 @@ impl Compositor {
                 } else {
                     clip.src_time(t).max(0.0)
                 };
-                if !dec.frame_at(st, dw, dh, &mut self.src) {
+                if !pool.frame_at(&asset.path, st, dw, dh, &mut self.src) {
                     return;
                 }
                 let img_scale = s * (dw as f32 / p.w.max(1e-3));

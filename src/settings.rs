@@ -209,6 +209,9 @@ pub struct Settings {
     pub use_proxies: bool,
     /// Proxy height in pixels (width keeps aspect).
     pub proxy_height: u32,
+    /// Playback cache RAM in MB; 0 = automatic (a quarter of installed RAM, clamped 512 MB-4 GB).
+    /// See `playback::cache_budget_bytes`. The decoded-source cache rides at a quarter of this.
+    pub cache_mb: u32,
     /// User icon picks: "action.<Action>" / "pane.<Pane>" -> glyph name, or "none" to remove.
     pub icon_overrides: BTreeMap<String, String>,
     /// Screen capture defaults.
@@ -292,6 +295,7 @@ impl Default for Settings {
             movie_mode: false,
             use_proxies: true,
             proxy_height: 720,
+            cache_mb: 0,
             icon_overrides: BTreeMap::new(),
             capture_fps: 30,
             capture_bitrate_kbps: 8000,
@@ -441,8 +445,10 @@ mod tests {
         s.bg_blur = 8;
         s.panel_opacity = 180;
         let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
-        assert_eq!((back.ui_look, back.bg_image, back.bg_tint, back.bg_blur, back.panel_opacity),
-                   (s.ui_look, s.bg_image, s.bg_tint, s.bg_blur, s.panel_opacity));
+        assert_eq!(
+            (back.ui_look, back.bg_image, back.bg_tint, back.bg_blur, back.panel_opacity),
+            (s.ui_look, s.bg_image, s.bg_tint, s.bg_blur, s.panel_opacity)
+        );
     }
 
     #[test]

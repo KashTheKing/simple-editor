@@ -945,7 +945,8 @@ impl App {
         {
             let _ = crate::contextmenu::install();
         }
-        let player = Player::new(cc.egui_ctx.clone(), backend, text.clone());
+        let mut player = Player::new(cc.egui_ctx.clone(), backend, text.clone());
+        player.set_cache_bytes(crate::playback::cache_budget_bytes(settings.cache_mb));
         let waveforms = WaveformCache::new(cc.egui_ctx.clone(), backend);
         let thumbs = ThumbCache::new(cc.egui_ctx.clone(), backend);
         let hotkeys = Hotkeys::from_settings(&settings);
@@ -2590,6 +2591,7 @@ impl App {
                         let _ = std::fs::remove_file(crate::media::proxy::proxy_path(&src, self.settings.proxy_height));
                     }
                     self.proxy_map.clear();
+                    crate::media::proxy::set_ready(Vec::new()); // regen: nothing is proxied right now
                     self.proxy_scan_at = None; // rebuild + re-push on the next update
                 }
                 if let Some(id) = resp.convert_dialog {
@@ -4689,6 +4691,7 @@ impl App {
             }
         }
         if map != self.proxy_map {
+            crate::media::proxy::set_ready(map.keys().cloned().collect()); // badges track the same push
             self.proxy_map = map.clone();
             self.player.set_proxies(map);
         }
@@ -5856,6 +5859,7 @@ impl App {
         // settings window
         if self.settings_ui.open {
             let backend_before = self.settings.decoder.clone();
+            let cache_before = self.settings.cache_mb;
             let gpu_before = self.settings.gpu;
             let theme_before = self.settings.theme.clone();
             let look_before = self.settings.ui_look.clone();
@@ -5907,6 +5911,9 @@ impl App {
                     self.player.set_backend(b);
                     self.waveforms.set_backend(b);
                     self.thumbs.set_backend(b);
+                }
+                if self.settings.cache_mb != cache_before {
+                    self.player.set_cache_bytes(crate::playback::cache_budget_bytes(self.settings.cache_mb));
                 }
                 if self.settings.context_menu != ctxmenu_before {
                     let r = if self.settings.context_menu {

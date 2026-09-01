@@ -907,6 +907,19 @@ fn clip_section(
                 ui.strong("Asset");
                 ui.add(egui::Label::new(RichText::new(a.name()).weak()).truncate()).on_hover_text(&a.path);
                 ui.weak(format!("Used in: {} clips", asset_use_count(project, a.id)));
+                // where this asset sits in the proxy pipeline (playback smoothness at 4K depends on it)
+                match crate::media::proxy::status(a, settings.use_proxies, settings.proxy_height) {
+                    crate::media::proxy::ProxyStatus::Ready => {
+                        ui.weak("Proxy: ready (preview plays the low-res proxy)");
+                    }
+                    crate::media::proxy::ProxyStatus::Building(f) => {
+                        ui.weak(format!("Proxy: building — {:.0} %", f * 100.0));
+                    }
+                    crate::media::proxy::ProxyStatus::Queued => {
+                        ui.weak("Proxy: queued (builds run one at a time)");
+                    }
+                    crate::media::proxy::ProxyStatus::NotNeeded => {}
+                }
                 let mut desc = a.description.clone();
                 let r = ui.add(egui::TextEdit::multiline(&mut desc).desired_rows(2).hint_text("description"));
                 if r.changed() {
