@@ -103,6 +103,34 @@ pub struct Template {
     pub json: String,
 }
 
+/// A saved text look (font/size/bold/italic/colour/letter-spacing) applied to a whole text clip or to
+/// a selected range within one (as a `crate::model::TextSpan`). Only the fields the rasterizer actually
+/// honours per-span are captured here — outline/shadow stay clip-wide (see `TextSpan`'s doc comment).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct TextPreset {
+    pub name: String,
+    pub font: String,
+    pub size: f32,
+    pub bold: bool,
+    pub italic: bool,
+    pub color: [u8; 4],
+    pub letter_spacing: f32,
+}
+
+impl Default for TextPreset {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            font: "Segoe UI".into(),
+            size: 72.0,
+            bold: false,
+            italic: false,
+            color: [255, 255, 255, 255],
+            letter_spacing: 0.0,
+        }
+    }
+}
+
 /// A saved project format ("My podcast 4K"): applied from the inspector's Presets section.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ProjectTemplate {
@@ -157,6 +185,9 @@ pub struct Settings {
     pub motion_presets: Vec<MotionPreset>,
     pub effect_presets: Vec<EffectPreset>,
     pub templates: Vec<Template>,
+    /// Saved text-clip looks (font/size/bold/italic/colour/letter-spacing), appliable to a whole clip
+    /// or a selected span. Also exportable to / importable from `.sedit-textstyle` files.
+    pub text_presets: Vec<TextPreset>,
     /// Extra font files (.ttf/.otf) imported by the user (loaded by the text rasterizer + font lists).
     pub user_fonts: Vec<String>,
     /// Export: output scaling when the output size differs from the project
@@ -250,6 +281,7 @@ impl Default for Settings {
             motion_presets: Vec::new(),
             effect_presets: Vec::new(),
             templates: Vec::new(),
+            text_presets: Vec::new(),
             user_fonts: Vec::new(),
             export_scaler: "lanczos".into(),
             export_resolution: "project".into(),

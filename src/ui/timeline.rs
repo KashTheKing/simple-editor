@@ -31,10 +31,18 @@
 //! clips (click selects, double-click seeks, drag moves, right-click = Rename / Delete / Set label),
 //! clip colours from `Project.labels`, hatched Adjustment layers with an "adj" badge, and the Add Marker /
 //! Copy & Paste Attributes / Add Mask / Nest / Convert to Adjustment Layer context-menu entries.
+//!
+//! Round 4: right-click quick-changes, additive to the menus above — selected transitions get "Change
+//! Type" / "Change Easing" submenus on their band's context menu (absolute-overwrite every selected
+//! transition, one undo for the whole bulk pick), and 2+ selected clips sharing an effect kind get an
+//! "Effects" submenu on the clip context menu to toggle that shared effect on/off across the selection.
+//! Any clip with a native size (video/image/sequence) also gets a "Transform" submenu — "Stretch to
+//! Screen" / "Fit to Screen" (`Project::fit_clip_to_screen`), applied to every such clip in the
+//! selection as one undo step.
 
 use crate::media::thumbs::ThumbCache;
 use crate::media::waveform::{Peaks, WaveformCache};
-use crate::model::{Asset, Clip, ClipKind, Ease, Id, Label, Project, TrackKind};
+use crate::model::{Asset, Clip, ClipKind, Ease, EffectKind, Id, Label, Project, TrackKind, TransitionKind};
 use crate::theme::Palette;
 use crate::ui::tools::{draw_glyph, Glyph, Tool};
 
@@ -71,6 +79,14 @@ const MAX_TRACK_H: f32 = 300.0;
 const KEY_LANE_MIN: f32 = 28.0;
 /// Inset of the value lane inside the clip rect (points), top and bottom.
 const KEY_PAD: f32 = 3.0;
+/// On-screen clip width (same measure as `detailed` below) above which the keyframe mini-graph toggle
+/// appears: wide enough for the corner icon plus a graph worth looking at, not just barely visible.
+const MINI_GRAPH_MIN_W: f32 = 120.0;
+/// Mini-graph toggle: a square icon inset this far from the clip's top-right corner, this many px across.
+const MINI_GRAPH_PAD: f32 = 3.0;
+const MINI_GRAPH_BTN: f32 = 15.0;
+/// Height of the inline mini-graph panel dropped below a clip whose toggle is on.
+const MINI_GRAPH_H: f32 = 48.0;
 /// Insertion gutter shown when clips are dragged past the first/last row.
 const GUTTER_H: f32 = 5.0;
 /// Marker flag size on the ruler / inside clips.
@@ -127,6 +143,8 @@ pub struct TimelineState {
     sub_band: Option<(f64, bool)>,
     /// Cue edge being trimmed on the subtitle lane: (cue id, right edge?).
     sub_trim: Option<(Id, bool)>,
+    /// Clip ids whose inline keyframe mini-graph (toggled by the corner icon) is open.
+    mini_graph_open: Vec<Id>,
 }
 
 impl Default for TimelineState {
@@ -147,6 +165,7 @@ impl Default for TimelineState {
             sub_sel: Vec::new(),
             sub_band: None,
             sub_trim: None,
+            mini_graph_open: Vec::new(),
         }
     }
 }
@@ -340,12 +359,30 @@ enum Act {
     Label(u8),
     /// Copy the selection's effective labels onto their assets.
     LabelToAsset,
+    /// Right-click quick-change: toggle a shared effect kind's enabled state across the selection.
+    /// The new state is the opposite of the first selected clip carrying that kind (mirrors the
+    /// Inspector's "first sets the baseline" convention, just with nothing to diff since the menu
+    /// only offers one action — toggle — rather than a value picker).
+    ToggleEffect(EffectKind),
+    /// Right-click quick-change: "Stretch to Screen" on every selected clip with a native size —
+    /// `Project::fit_clip_to_screen(id, true)`, applied per clip (each against its own native size).
+    StretchToScreen,
+    /// Right-click quick-change: "Fit to Screen" on every selected clip with a native size —
+    /// `Project::fit_clip_to_screen(id, false)`.
+    FitToScreen,
     /// Set the easing of every property keyed at clip-local time `t`.
     SetEase(Id, f64, Ease),
     /// Delete every keyframe at clip-local time `t`.
     DelKeys(Id, f64),
     RemoveTransition(Id),
     RemoveTransitions(Vec<Id>),
+    /// Right-click quick-change: absolute-overwrite every listed transition's kind. Unlike
+    /// `inspector.rs`'s `transition_section` (diff-against-first, only fields the user actually
+    /// touched get written), a menu click IS the new value, so there's nothing to diff against.
+    SetTransitionsKind(Vec<Id>, TransitionKind),
+    /// Right-click quick-change: absolute-overwrite every listed transition's ease (see
+    /// `SetTransitionsKind`).
+    SetTransitionsEase(Vec<Id>, Ease),
     /// Add a project marker at this timeline time.
     AddMarker(f64),
     /// Razor tool: split every clip crossing this timeline time.
@@ -500,6 +537,13 @@ fn draw_waveform(p: &egui::Painter, peaks: &Peaks, clip: &Clip, vis: Rect, state
     }
 }
 
+/// Would the inline mini graph have anything to plot? It draws properties with 2+ keys through the
+/// curve editor's plumbing, so this gates the toggle on exactly that — `has_keys` below is true for a
+/// bare mask/shape too and used to open an empty panel.
+fn has_curve_keys(c: &Clip) -> bool {
+    (0..crate::ui::curves::prop_count(c)).any(|i| crate::ui::curves::prop_ref(c, i).is_some_and(|a| a.keys.len() >= 2))
+}
+
 /// Does the clip have any keyframe at all? Cheap (no allocation), unlike `Clip::key_times`, so the 1000-clip
 /// case never touches the keyframe path.
 fn has_keys(c: &Clip) -> bool {
@@ -521,17 +565,66 @@ fn key_range(state: &TimelineState, clip: Id, prop: usize, a: &crate::model::Ani
     crate::ui::curves::y_range(a)
 }
 
+/// Same colour cycle as the Curve Editor's per-property lines (`curves::prop_color`, private to that
+/// file) — duplicated here so this view stays self-contained rather than reaching into curves.rs.
+fn mini_prop_color(pal: &Palette, i: usize) -> Color32 {
+    let cycle =
+        [pal.clip_video, pal.clip_audio, pal.clip_image, pal.clip_text, pal.clip_sequence, pal.waveform, pal.keyframe];
+    cycle[i % cycle.len()]
+}
+
+/// Compact view-only keyframe graph for one clip: one polyline per animated property with 2+ keys, each
+/// normalized to its own auto-range (`curves::y_range`, the same range the value-lane diamonds use),
+/// dots at each key, dropped in a small panel below the clip. Not editable — that's the Curve Editor
+/// pane (`ui/curves.rs`); this is a lightweight glance, not a replacement for it.
+/// ponytail: doesn't negotiate space with the row(s) below — it just paints on top, clipped to the lanes.
+fn draw_mini_graph(p: &egui::Painter, clip: &Clip, rect: Rect, lanes: Rect, pal: &Palette) {
+    let panel = Rect::from_min_max(
+        pos2(rect.left(), rect.bottom() + 2.0),
+        pos2(rect.right(), rect.bottom() + 2.0 + MINI_GRAPH_H),
+    );
+    if !lanes.intersects(panel) {
+        return;
+    }
+    let cr = CornerRadius::same(3);
+    p.rect_filled(panel, cr, pal.panel);
+    p.rect_stroke(panel, cr, Stroke::new(1.0, pal.border), StrokeKind::Inside);
+    let inner = panel.shrink(4.0);
+    let dur = clip.duration.max(1e-6);
+    for i in 0..crate::ui::curves::prop_count(clip) {
+        let Some(a) = crate::ui::curves::prop_ref(clip, i) else { continue };
+        if a.keys.len() < 2 {
+            continue;
+        }
+        let (lo, hi) = crate::ui::curves::y_range(a);
+        let span = (hi - lo).max(1e-9);
+        let color = mini_prop_color(pal, i);
+        let mut last: Option<Pos2> = None;
+        for k in &a.keys {
+            let fx = (k.t / dur).clamp(0.0, 1.0) as f32;
+            let fy = ((k.v - lo) / span).clamp(0.0, 1.0) as f32;
+            let pt = pos2(inner.left() + fx * inner.width(), inner.bottom() - fy * inner.height());
+            if let Some(l) = last {
+                p.line_segment([l, pt], Stroke::new(1.2, color));
+            }
+            p.circle_filled(pt, 2.0, color);
+            last = Some(pt);
+        }
+    }
+}
+
 /// The range the rest of the UI enforces for property `i` (inspector sliders for the base props,
 /// `ParamSpec` for effect params), so a value-lane drag cannot write past what a `DragValue` allows.
 /// `None` where nothing enforces one: Position X/Y and Rotation are unbounded everywhere, and Volume is
 /// a gain behind a nonlinear dB slider.
 /// ponytail: same property order as curves.rs — move it next to `prop_ref` if a second caller shows up.
 fn prop_range(c: &Clip, i: usize) -> Option<(f64, f64)> {
-    let nb = if c.is_visual() { 6 } else { 3 };
+    let nb = if c.is_visual() { 8 } else { 3 };
     if i < nb {
         return match (c.is_visual(), i) {
             (true, 2) => Some((0.01, 20.0)),              // Scale
-            (true, 4) => Some((0.0, 1.0)),                // Opacity
+            (true, 3) | (true, 4) => Some((0.01, 20.0)),  // Scale X / Scale Y — same clamp as Scale
+            (true, 6) => Some((0.0, 1.0)),                // Opacity
             (false, 1) => Some((-1.0, 1.0)),              // Pan
             (_, _) if i == nb - 1 => Some((0.01, 100.0)), // Speed — same clamp as Clip::set_speed
             _ => None,
@@ -733,6 +826,50 @@ fn label_menu(ui: &mut egui::Ui, labels: &[Label], act: &mut Option<Act>, edit_l
     }
 }
 
+/// "Change Type" entries for the transition band's own right-click menu: absolute-overwrite every id
+/// in `sel` to the clicked kind (works for a single selected transition or a bulk one — a menu pick
+/// is the new value, there's nothing to diff against).
+fn transition_kind_menu(ui: &mut egui::Ui, sel: &[Id], act: &mut Option<Act>) {
+    for k in TransitionKind::ALL {
+        if ui.button(k.name()).clicked() {
+            *act = Some(Act::SetTransitionsKind(sel.to_vec(), k));
+        }
+    }
+}
+
+/// "Change Easing" entries (see `transition_kind_menu`).
+fn transition_ease_menu(ui: &mut egui::Ui, sel: &[Id], act: &mut Option<Act>) {
+    for e in Ease::ALL {
+        if ui.button(e.name()).clicked() {
+            *act = Some(Act::SetTransitionsEase(sel.to_vec(), e));
+        }
+    }
+}
+
+/// Effect kinds present on 2+ of the given clips (deduped per clip, so a clip carrying two Blurs only
+/// counts once) — what the timeline's multi-clip right-click "Effects" quick-menu offers to toggle.
+fn shared_effect_kinds(p: &Project, ids: &[Id]) -> Vec<EffectKind> {
+    if ids.len() < 2 {
+        return Vec::new();
+    }
+    let mut counts: Vec<(EffectKind, u32)> = Vec::new();
+    for &id in ids {
+        let Some(cl) = p.clip(id) else { continue };
+        let mut seen: Vec<EffectKind> = Vec::new();
+        for e in &cl.effects {
+            if seen.contains(&e.kind) {
+                continue;
+            }
+            seen.push(e.kind);
+            match counts.iter_mut().find(|(k, _)| *k == e.kind) {
+                Some((_, n)) => *n += 1,
+                None => counts.push((e.kind, 1)),
+            }
+        }
+    }
+    counts.into_iter().filter(|&(_, n)| n >= 2).map(|(k, _)| k).collect()
+}
+
 #[allow(clippy::too_many_arguments)]
 fn clip_menu(
     ui: &mut egui::Ui,
@@ -741,8 +878,15 @@ fn clip_menu(
     linked: bool,
     enabled: bool,
     audio: bool,
+    has_native_size: bool,
+    // Some(currently open) when the clip has curves the inline mini graph could plot; None hides the
+    // entry. Toggling is UI state, not a project edit, so it reports through `toggle_graph`, not `Act`
+    // (every Act pushes an undo step).
+    graph_open: Option<bool>,
+    toggle_graph: &mut bool,
     labels: &[Label],
     buses: &[crate::model::Bus],
+    shared_effects: &[EffectKind],
     act: &mut Option<Act>,
     actions: &mut Vec<crate::hotkeys::Action>,
     edit_labels: &mut bool,
@@ -831,6 +975,34 @@ fn clip_menu(
         });
     } else if ui.button("Add Mask").clicked() {
         actions.push(Action::AddMask);
+    }
+    if !shared_effects.is_empty() {
+        ui.menu_button("Effects", |ui| {
+            for k in shared_effects.iter().copied() {
+                if ui.button(format!("Toggle {}", k.name())).clicked() {
+                    *act = Some(Act::ToggleEffect(k));
+                }
+            }
+        });
+    }
+    // video/image/sequence only — resets the transform of every selected clip with a native size
+    // (Project::fit_clip_to_screen skips the rest, so this is safe on a mixed selection too).
+    if has_native_size {
+        ui.menu_button("Transform", |ui| {
+            if ui.button("Stretch to Screen").clicked() {
+                *act = Some(Act::StretchToScreen);
+            }
+            if ui.button("Fit to Screen").clicked() {
+                *act = Some(Act::FitToScreen);
+            }
+        });
+    }
+    // second way into the inline mini keyframe graph, per the original ask ("if I zoom in on a clip OR
+    // right click it") — the zoomed-in corner icon stays the first
+    if let Some(open) = graph_open {
+        if ui.button(if open { "Hide Inline Keyframe Graph" } else { "Show Inline Keyframe Graph" }).clicked() {
+            *toggle_graph = true;
+        }
     }
     ui.separator();
     if ui.button("Nest into Sequence…").clicked() {
@@ -978,6 +1150,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     let mut start_marker: Option<(Id, Option<Id>)> = None;
     let mut resize: Option<(usize, f32)> = None;
     let mut divider_y: Option<f32> = None;
+    // track-resize handle rects, collected as they're laid out below so the rubber-band-start check
+    // (near the end of this function) can tell a resize press from an empty-lane press
+    let mut handle_rects: Vec<Rect> = Vec::new();
     let mut key_hits: Vec<(Id, f64, Pos2, Option<usize>)> = Vec::new();
     let mut marker_hits: Vec<(Id, Id, Rect)> = Vec::new();
     let linked_sel = c.project.expand_links(c.selection);
@@ -991,6 +1166,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     let mut seek_marker: Option<f64> = None;
     let labels: &[Label] = &c.project.labels;
     let buses: &[crate::model::Bus] = &c.project.buses;
+    // multi-clip right-click "Effects" quick-toggle: only offered when 2+ selected clips share a kind
+    let shared_effects = shared_effect_kinds(c.project, c.selection);
 
     // ---- rows ----
     let mut y = lanes.top() - state.scroll_y;
@@ -1317,6 +1494,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             }
             let (linked, enabled, aud, is_cont) =
                 (clip.link != 0, clip.enabled, clip.kind == ClipKind::Audio, clip.container);
+            let has_native = c.project.clip_native_size(clip).is_some();
+            let graph_open = has_curve_keys(clip).then(|| state.mini_graph_open.contains(&clip.id));
+            let mut toggle_graph = false;
             let mut rclick = br.secondary_clicked();
             br.context_menu(|ui| {
                 clip_menu(
@@ -1326,13 +1506,25 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     linked,
                     enabled,
                     aud,
+                    has_native,
+                    graph_open,
+                    &mut toggle_graph,
                     labels,
                     buses,
+                    &shared_effects,
                     &mut act,
                     &mut out.actions,
                     &mut out.edit_labels,
                 )
             });
+            if toggle_graph {
+                match state.mini_graph_open.iter().position(|&x| x == clip.id) {
+                    Some(i) => {
+                        state.mini_graph_open.remove(i);
+                    }
+                    None => state.mini_graph_open.push(clip.id),
+                }
+            }
             if clip.kind == ClipKind::Audio {
                 if let Some(pos) = pointer {
                     if pos.x >= vis.left() && pos.x <= vis.right() {
@@ -1375,8 +1567,12 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                             linked,
                             enabled,
                             aud,
+                            has_native,
+                            None, // edge-handle menu: skip the mini-graph entry, body right-click has it
+                            &mut false,
                             labels,
                             buses,
+                            &shared_effects,
                             &mut act,
                             &mut out.actions,
                             &mut out.edit_labels,
@@ -1402,6 +1598,33 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             if rclick && !selected {
                 c.selection.clear();
                 c.selection.push(clip.id);
+            }
+            // keyframe mini-graph: once the clip is wide enough on screen to be worth it (same measure
+            // as `detailed` above, just a higher bar), a small toggle icon sits in its top-right corner.
+            // Anchored to the VISIBLE right edge (`vis`), not the clip's own — a zoomed-in clip whose
+            // right edge is off-screen used to lose the button entirely, the opposite of "show it when
+            // zoomed in". Registered last so it wins hit-testing over the body underneath it.
+            if has_curve_keys(clip) && vis.width() >= MINI_GRAPH_MIN_W {
+                let btn = Rect::from_min_size(
+                    pos2(vis.right() - MINI_GRAPH_PAD - MINI_GRAPH_BTN, rect.top() + MINI_GRAPH_PAD),
+                    vec2(MINI_GRAPH_BTN, MINI_GRAPH_BTN),
+                )
+                .intersect(lanes);
+                if btn.is_positive() {
+                    let open = state.mini_graph_open.contains(&clip.id);
+                    let clicked =
+                        toggle_button(ui, &lp, btn, cid.with("mg"), Cap::Icon(Glyph::Diamond), open, &pal, &small);
+                    if clicked {
+                        if open {
+                            state.mini_graph_open.retain(|&x| x != clip.id);
+                        } else {
+                            state.mini_graph_open.push(clip.id);
+                        }
+                    }
+                }
+                if state.mini_graph_open.contains(&clip.id) {
+                    draw_mini_graph(&lp, clip, rect, lanes, &pal);
+                }
             }
         }
 
@@ -1460,6 +1683,13 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                             Act::RemoveTransition(tr.id)
                         });
                     }
+                    ui.separator();
+                    // right-click quick-change: bulk-edits every selected transition (or just this
+                    // one if it wasn't already part of the selection — `sel_transitions` was reset
+                    // to just `tr.id` above in that case), same absolute-overwrite as picking a new
+                    // value in the Inspector's transition kind/ease combo boxes.
+                    ui.menu_button("Change Type", |ui| transition_kind_menu(ui, c.sel_transitions, &mut act));
+                    ui.menu_button("Change Easing", |ui| transition_ease_menu(ui, c.sel_transitions, &mut act));
                 });
             }
             for (er, salt) in [
@@ -1490,6 +1720,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         if hd.dragged() {
             resize = Some((ti, hd.drag_delta().y));
         }
+        handle_rects.push(handle);
     }
 
     // keyframe diamonds: registered after everything in the rows so the small targets win hit-testing
@@ -1642,8 +1873,12 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     painter.hline(ruler.x_range(), ruler.bottom() - 0.5, thin);
     painter.vline(header.right() - 0.5, full.y_range(), thin);
 
-    // ---- project markers on the ruler ----
+    // ---- project markers on the ruler (only the open sequence's — same filter as markers_ui::rows;
+    // an unfiltered ruler let another timeline's markers be dragged/deleted from the wrong context) ----
     for m in &c.project.markers {
+        if m.sequence != c.project.editing {
+            continue;
+        }
         let mx = state.x_at(m.t);
         if mx < ruler.left() - FLAG_W || mx > ruler.right() {
             continue;
@@ -1905,10 +2140,18 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     }
     // a press that missed every clip starts a rubber band (Shift adds to the selection)
     if state.drag.is_none() && lanes_resp.drag_started_by(egui::PointerButton::Primary) {
-        if c.tool == Tool::Spacer {
-            start_spacer = true;
-        } else if let Some(o) = lanes_resp.interact_pointer_pos().or(pointer) {
-            state.band = Some((o, mods.shift));
+        // a vertical resize drag can cross HANDLE_H's few px before egui recognizes the drag as
+        // started, so lanes_resp can still see this as a drag-start too; use where the press actually
+        // began (not the possibly-drifted current pointer pos) to tell a resize press from an
+        // empty-lane one, and let the handle keep the gesture instead of also opening a rubber band.
+        let press_origin = ui.input(|i| i.pointer.press_origin()).or(pointer);
+        let on_resize_handle = press_origin.is_some_and(|p| handle_rects.iter().any(|r| r.contains(p)));
+        if !on_resize_handle {
+            if c.tool == Tool::Spacer {
+                start_spacer = true;
+            } else if let Some(o) = lanes_resp.interact_pointer_pos().or(pointer) {
+                state.band = Some((o, mods.shift));
+            }
         }
     }
     lanes_resp.context_menu(|ui| {
@@ -2137,6 +2380,31 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     }
                 }
             }
+            Act::ToggleEffect(k) => {
+                // absolute overwrite: everyone gets the opposite of what the first selected clip
+                // carrying this effect kind currently has (there's nothing to diff, it's a toggle)
+                let target = !ids
+                    .iter()
+                    .find_map(|&id| p.clip(id)?.effects.iter().find(|e| e.kind == k).map(|e| e.enabled))
+                    .unwrap_or(true);
+                for &id in &ids {
+                    if let Some(cl) = p.clip_mut(id) {
+                        if let Some(e) = cl.effects.iter_mut().find(|e| e.kind == k) {
+                            e.enabled = target;
+                        }
+                    }
+                }
+            }
+            Act::StretchToScreen => {
+                for &id in &ids {
+                    p.fit_clip_to_screen(id, true);
+                }
+            }
+            Act::FitToScreen => {
+                for &id in &ids {
+                    p.fit_clip_to_screen(id, false);
+                }
+            }
             Act::SetEase(cid, t, e) => {
                 if let Some(cl) = p.clip_mut(cid) {
                     for a in cl.all_animated_mut() {
@@ -2159,6 +2427,20 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     p.remove_transition(tid);
                 }
                 c.sel_transitions.clear();
+            }
+            Act::SetTransitionsKind(tids, k) => {
+                for tid in tids {
+                    if let Some(t) = p.transition_mut(tid) {
+                        t.kind = k;
+                    }
+                }
+            }
+            Act::SetTransitionsEase(tids, e) => {
+                for tid in tids {
+                    if let Some(t) = p.transition_mut(tid) {
+                        t.ease = e;
+                    }
+                }
             }
             Act::AddMarker(t) => {
                 let mid = p.add_marker(t, "Marker");
@@ -3220,6 +3502,48 @@ mod tests {
     }
 
     #[test]
+    fn headless_mini_graph_toggle_needs_keys_and_width() {
+        let mut h = Harness::new();
+        let lanes = h.state.lanes_rect;
+        let vid = h.video_clip().id;
+        // default zoom (40 px/s) makes the 10 s clip 400 px wide — well past MINI_GRAPH_MIN_W (120)
+        let btn_center = |h: &Harness| {
+            let right = h.state.x_at(h.video_clip().end());
+            let top = lanes.top() + 1.0;
+            pos2(right - MINI_GRAPH_PAD - MINI_GRAPH_BTN * 0.5, top + MINI_GRAPH_PAD + MINI_GRAPH_BTN * 0.5)
+        };
+
+        // no keyframes yet: a click where the icon would sit just selects the clip like anywhere else
+        // on its body — proves nothing is drawn/interactive there regardless of zoom
+        let p = btn_center(&h);
+        h.press(p);
+        h.release(p);
+        h.frame(vec![]);
+        assert!(h.state.mini_graph_open.is_empty(), "no icon without keyframes");
+        // the harness's default video clip is linked to an audio clip, so a plain click selects the
+        // whole link group (same as clicking anywhere else on its body) — not just `vid` alone.
+        assert!(h.selection.contains(&vid), "click without keys falls through to the clip body");
+        h.selection.clear();
+
+        // key it: the same spot now toggles the mini graph instead of selecting
+        h.project.tracks[0].clips[0].opacity.toggle_key(2.0);
+        h.project.tracks[0].clips[0].opacity.toggle_key(5.0);
+        h.frame(vec![]);
+        let p = btn_center(&h);
+        h.press(p);
+        h.release(p);
+        h.frame(vec![]);
+        assert_eq!(h.state.mini_graph_open, vec![vid], "click opened the mini graph");
+        assert!(h.selection.is_empty(), "the icon must win hit-testing over the clip body under it");
+
+        // click again: closes it
+        h.press(p);
+        h.release(p);
+        h.frame(vec![]);
+        assert!(h.state.mini_graph_open.is_empty(), "second click closed it");
+    }
+
+    #[test]
     fn headless_keyframe_value_lane_drag_changes_time_and_value() {
         let mut h = Harness::new();
         let lanes = h.state.lanes_rect;
@@ -3298,6 +3622,22 @@ mod tests {
         assert_eq!(h.project.tracks[0].clips[0].start, 0.0, "Esc restored the pre-drag project");
         assert_eq!(h.project.tracks[0].clips.len(), 2);
         assert_eq!(h.undos, 0, "cancelled gesture pushes no undo");
+    }
+
+    #[test]
+    fn headless_resize_handle_drag_does_not_start_a_rubber_band() {
+        let mut h = Harness::new();
+        let lanes = h.state.lanes_rect;
+        let before_h = h.project.tracks[0].height;
+        let row_bottom = lanes.top() + before_h;
+        // press inside track 0's HANDLE_H-tall resize strip, then drag down well past it: the
+        // in-progress drag can leave the strip within a step or two, which used to also arm a rubber
+        // band from the lane background underneath
+        let from = pos2(h.state.x_at(2.0), row_bottom - 2.0);
+        h.drag(from, from + vec2(0.0, 30.0));
+        assert!(h.project.tracks[0].height > before_h, "the handle drag actually resized the track");
+        assert!(h.state.band.is_none(), "a resize press must not leave a rubber band armed");
+        assert!(h.selection.is_empty(), "a resize drag must not select clips underneath it");
     }
 
     #[test]
@@ -3391,11 +3731,12 @@ mod tests {
         assert_eq!(prop_range(h.video_clip(), 0), None, "Position X is unbounded");
         assert_eq!(prop_range(h.audio_clip(), 0), None, "Volume is dB-scaled");
         assert_eq!(prop_range(h.audio_clip(), 1), Some((-1.0, 1.0)), "Pan");
-        assert_eq!(prop_range(h.video_clip(), 5), Some((0.01, 100.0)), "Speed");
+        assert_eq!(prop_range(h.video_clip(), 3), Some((0.01, 20.0)), "Scale X");
+        assert_eq!(prop_range(h.video_clip(), 7), Some((0.01, 100.0)), "Speed");
         assert_eq!(prop_range(h.audio_clip(), 2), Some((0.01, 100.0)), "Speed (audio)");
         h.project.tracks[0].clips[0].effects.push(Effect::new(EffectKind::Blur));
         let spec = h.video_clip().effects[0].specs()[0];
-        assert_eq!(prop_range(h.video_clip(), 6), Some((spec.min, spec.max)), "first Blur param");
+        assert_eq!(prop_range(h.video_clip(), 8), Some((spec.min, spec.max)), "first Blur param");
     }
 
     #[test]
@@ -3610,6 +3951,55 @@ mod tests {
         assert!((h.project.tracks[0].clips[1].start - 5.0).abs() < 1e-6);
     }
 
+    /// Right-clicking 2+ selected transitions offers "Change Type"/"Change Easing" quick-changes —
+    /// the timeline's fast path to what the Inspector's `transition_section` already bulk-edits.
+    /// Absolute-overwrite (a menu click IS the new value): every selected transition gets the picked
+    /// kind, in exactly one undo step for the whole bulk operation.
+    #[test]
+    fn transition_menu_bulk_changes_kind_with_one_undo() {
+        let mut h = Harness::new();
+        let lanes = h.state.lanes_rect;
+        h.project.split_at(4.0, None);
+        h.project.split_at(7.0, None);
+        let c2 = h.project.tracks[0].clips[1].id;
+        let c3 = h.project.tracks[0].clips[2].id;
+        let t1 = h.project.add_transition(c2, TransitionKind::CrossFade, 1.0).unwrap();
+        let t2 = h.project.add_transition(c3, TransitionKind::CrossFade, 1.0).unwrap();
+        h.frame(vec![]);
+        let band1 = pos2(h.state.x_at(4.0), lanes.top() + 30.0);
+        let band2 = pos2(h.state.x_at(7.0), lanes.top() + 30.0);
+        h.press(band1);
+        h.release(band1);
+        h.press_m(band2, Modifiers::CTRL);
+        h.release_m(band2, Modifiers::CTRL);
+        assert_eq!(h.sel_transitions, vec![t1, t2], "both bands selected before the right-click");
+
+        let undos0 = h.undos;
+        // right-click the already-selected band: opens the bulk menu, targeting both (sel_transitions
+        // is only reset to a single id when the right-clicked band wasn't already part of it)
+        let secondary = |pos: Pos2, pressed: bool| Event::PointerButton {
+            pos,
+            button: PointerButton::Secondary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        h.frame(vec![secondary(band1, true)]);
+        h.frame(vec![]);
+        h.frame(vec![secondary(band1, false)]);
+        h.frame(vec![]);
+        let change_type = h.painted_text("Change Type").expect("Change Type submenu button painted") + vec2(4.0, 4.0);
+        h.press(change_type);
+        h.release(change_type);
+        let push = h.painted_text("Push").expect("Push kind listed in the Change Type submenu") + vec2(4.0, 4.0);
+        h.press(push);
+        let r = h.release(push);
+        assert!(r.edited, "picking a kind from the menu edits the project");
+        assert_eq!(h.undos - undos0, 1, "one undo for the whole bulk operation, not one per transition");
+        let kind_of = |id: Id| h.project.tracks[0].transitions.iter().find(|t| t.id == id).unwrap().kind;
+        assert_eq!(kind_of(t1), TransitionKind::Push);
+        assert_eq!(kind_of(t2), TransitionKind::Push);
+    }
+
     #[test]
     fn headless_transition_edge_drag_clamps_duration() {
         use crate::model::TransitionKind;
@@ -3776,7 +4166,23 @@ mod tests {
                 },
                 |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
-                        clip_menu(ui, 1, false, false, true, audio, &p.labels, &p.buses, &mut act, &mut acts, &mut edit)
+                        clip_menu(
+                            ui,
+                            1,
+                            false,
+                            false,
+                            true,
+                            audio,
+                            false,
+                            None,
+                            &mut false,
+                            &p.labels,
+                            &p.buses,
+                            &[],
+                            &mut act,
+                            &mut acts,
+                            &mut edit,
+                        )
                     });
                 },
             );
@@ -3794,6 +4200,136 @@ mod tests {
         let a = texts(true);
         assert!(!a.iter().any(|s| s == "Add Mask"), "a mask means nothing on audio: {a:?}");
         assert!(a.iter().any(|s| s == "Bus"), "audio clips get the bus submenu: {a:?}");
+    }
+
+    /// Only an effect kind carried by 2+ of the given clips counts as "shared" (a clip's own duplicate
+    /// effects count once, and a clip missing entirely just doesn't contribute).
+    #[test]
+    fn shared_effect_kinds_needs_two_clips_with_the_same_kind() {
+        let mut p = Project::new();
+        let mut a = Clip::new(1, ClipKind::Video, "a", 0.0, 2.0);
+        a.effects.push(Effect::new(EffectKind::Blur));
+        a.effects.push(Effect::new(EffectKind::Blur)); // duplicate on one clip must still count once
+        let mut b = Clip::new(2, ClipKind::Video, "b", 2.0, 2.0);
+        b.effects.push(Effect::new(EffectKind::Blur));
+        b.effects.push(Effect::new(EffectKind::Vignette)); // only on b — not shared
+        let c = Clip::new(3, ClipKind::Video, "c", 4.0, 2.0); // no effects at all
+        p.tracks[0].clips = vec![a, b, c];
+        assert_eq!(shared_effect_kinds(&p, &[1, 2]), vec![EffectKind::Blur]);
+        assert_eq!(shared_effect_kinds(&p, &[1, 2, 3]), vec![EffectKind::Blur], "clip 3 contributes nothing");
+        assert!(shared_effect_kinds(&p, &[1]).is_empty(), "needs 2+ clips");
+        assert!(shared_effect_kinds(&p, &[2, 3]).is_empty(), "Blur is only on one of these two");
+    }
+
+    /// The timeline clip menu's "Effects" quick-toggle only appears when the caller found a shared
+    /// kind, and lists a "Toggle <name>" entry per kind passed in.
+    #[test]
+    fn clip_menu_effects_submenu_only_shows_shared_kinds() {
+        let p = Project::new();
+        let ctx = egui::Context::default();
+        let mut texts = |shared: &[EffectKind]| -> Vec<String> {
+            let (mut act, mut acts, mut edit) = (None, Vec::new(), false);
+            let full = ctx.run(
+                RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(400.0, 1400.0))),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        clip_menu(
+                            ui, 1, false, false, true, false, false, None, &mut false, &p.labels, &p.buses, shared,
+                            &mut act, &mut acts, &mut edit,
+                        )
+                    });
+                },
+            );
+            full.shapes
+                .iter()
+                .filter_map(|cs| match &cs.shape {
+                    Shape::Text(t) => Some(t.galley.text().to_string()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let none = texts(&[]);
+        assert!(!none.iter().any(|s| s == "Effects"), "no shared kind: no Effects submenu: {none:?}");
+        let shared = texts(&[EffectKind::Blur]);
+        assert!(shared.iter().any(|s| s == "Effects"), "a shared kind offers the Effects submenu: {shared:?}");
+    }
+
+    /// Right-clicking 2+ selected video clips offers a "Transform" submenu; "Stretch to Screen" fits
+    /// every selected clip with a native size to the project canvas — each against its OWN asset's
+    /// native size, not a shared one — in exactly one undo step for the whole bulk operation.
+    #[test]
+    fn transform_menu_bulk_stretches_selection_with_one_undo() {
+        let mut h = Harness::new();
+        // second clip on the same row, a different (portrait) native size from the harness's own
+        // 1280x720 asset, so the two clips must land on different scale_x/scale_y
+        let aid2 = h.project.add_asset(Asset {
+            id: 0,
+            path: "C:/y.mp4".into(),
+            kind: ClipKind::Video,
+            duration: 10.0,
+            width: 720,
+            height: 1280,
+            fps: 30.0,
+            audio_streams: Vec::new(),
+            codec: "h264".into(),
+            folder: String::new(),
+            tags: Vec::new(),
+            label: 0,
+            description: String::new(),
+        });
+        let id2 = h.project.insert_asset_clips(aid2, 11.0, Some(0))[0];
+        let id1 = h.video_clip().id;
+        h.project.clip_mut(id1).unwrap().x.value = 30.0; // pre-existing, different transforms
+        h.project.clip_mut(id2).unwrap().scale.value = 2.0;
+        h.frame(vec![]);
+
+        let lanes = h.state.lanes_rect;
+        let p1 = pos2(lanes.left() + 100.0, lanes.top() + 30.0); // inside clip 1 (0..10 s)
+        let p2 = pos2(h.state.x_at(11.2), lanes.top() + 30.0); // inside clip 2 (11..21 s)
+        h.press(p1);
+        h.release(p1);
+        // clear egui's double-click window before the second click: two single-clicks on different
+        // clips shortly after one another (in wall-clock time, which the harness's `time` field drives)
+        // must not be misread as one double-click on the second clip — that fires the double-click
+        // handler's unconditional `selection = [clip]`, stomping the ctrl-click's additive result below.
+        h.time += 1.0;
+        h.press_m(p2, Modifiers::CTRL);
+        h.release_m(p2, Modifiers::CTRL);
+        assert!(h.selection.contains(&id1) && h.selection.contains(&id2), "both clips selected: {:?}", h.selection);
+
+        let undos0 = h.undos;
+        let secondary = |pos: Pos2, pressed: bool| Event::PointerButton {
+            pos,
+            button: PointerButton::Secondary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        h.frame(vec![secondary(p1, true)]);
+        h.frame(vec![]);
+        h.frame(vec![secondary(p1, false)]);
+        h.frame(vec![]);
+        let xf = h.painted_text("Transform").expect("Transform submenu button painted") + vec2(4.0, 4.0);
+        h.press(xf);
+        h.release(xf);
+        let stretch = h.painted_text("Stretch to Screen").expect("Stretch to Screen listed") + vec2(4.0, 4.0);
+        h.press(stretch);
+        let r = h.release(stretch);
+        assert!(r.edited, "picking Stretch to Screen edits the project");
+        assert_eq!(h.undos - undos0, 1, "one undo for the whole bulk operation, not one per clip");
+
+        let c1 = h.project.clip(id1).unwrap();
+        let c2 = h.project.clip(id2).unwrap();
+        assert_eq!(c1.x.value, 0.0, "transform reset along with the stretch");
+        // 1280x720 (16:9) into the project's own 1920x1080 (16:9) canvas: same aspect, no stretch needed
+        assert_eq!((c1.scale_x.value, c1.scale_y.value), (1.0, 1.0));
+        // 720x1280 (9:16 portrait) into a 16:9 canvas is height-constrained
+        assert_eq!(c2.scale.value, 1.0, "scale reset too");
+        assert_eq!(c2.scale_y.value, 1.0);
+        let expected_sx = (1920.0_f64 / 1080.0) / (720.0 / 1280.0);
+        assert!((c2.scale_x.value - expected_sx).abs() < 1e-9, "scale_x {} vs {expected_sx}", c2.scale_x.value);
     }
 
     #[test]

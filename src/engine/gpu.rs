@@ -28,8 +28,8 @@
 
 use crate::engine::shaders;
 use crate::media::Frame;
-use crate::model::{BlendMode, Clip, ClipKind, Effect, EffectKind, Id, Mask, MaskShape, NodeGraph, NodeKind};
-use crate::model::{Project, Scaler, TrackKind};
+use crate::model::{BackgroundMode, BlendMode, Clip, ClipKind, Effect, EffectKind, Id, Mask, MaskShape, NodeGraph};
+use crate::model::{NodeKind, Project, Scaler, TrackKind};
 use eframe::glow;
 use eframe::glow::HasContext;
 use std::collections::HashMap;
@@ -108,6 +108,7 @@ const K_COMPOSITE: u64 = 1;
 const K_MASK: u64 = 2;
 const K_COPY: u64 = 3;
 const K_MATTE: u64 = 4;
+const K_CHECKER: u64 = 5;
 const EFFECT_BASE: u64 = 16;
 const USER_BIT: u64 = 1 << 63;
 
@@ -122,6 +123,18 @@ vec4 effect(vec4 src, vec2 uv) {
     float k = (u_matte_alpha != 0) ? m.a : luma(m.rgb) * m.a;
     if (u_matte_invert != 0) { k = 1.0 - k; }
     return vec4(src.rgb, src.a * clamp(k, 0.0, 1.0));
+}
+"#;
+/// The `BackgroundMode::Checkerboard` preview/export canvas fill: a fixed 2-tone, 16px-tile pattern in
+/// canvas pixels (`u_res` here is the canvas size, not a layer's — `clear_checker` sets it that way).
+/// `src`/`tex` are unused (there is nothing under the canvas yet, this runs where `clear()` would).
+// ponytail: fixed tile size / two greys, not user-configurable — promote to real params if a
+// "transparency grid" setting is ever wanted; the shader is already the extension point.
+const CHECKER_BODY: &str = r#"
+vec4 effect(vec4 src, vec2 uv) {
+    vec2 tile = floor(uv * u_res / 16.0);
+    float parity = mod(tile.x + tile.y, 2.0);
+    return vec4(mix(vec3(0.60), vec3(0.80), parity), 1.0);
 }
 "#;
 
@@ -597,6 +610,22 @@ impl GpuRenderer {
         }
     }
 
+    /// Fill `t` with the `BackgroundMode::Checkerboard` pattern (`CHECKER_BODY`) instead of a solid
+    /// clear. Falls back to a flat mid-grey `clear()` if the tiny program fails to link (a driver that
+    /// rejects this rejects everything else too, so the canvas is already about to be blank).
+    fn clear_checker(&mut self, t: &Target) {
+        if self.ensure(K_CHECKER).is_err() {
+            self.clear(t, [0.7, 0.7, 0.7, 1.0]);
+            return;
+        }
+        let gl = self.gl.clone();
+        let (w, h) = (t.w as f32, t.h as f32);
+        let tex = self.blank;
+        self.draw(K_CHECKER, t, tex, None, |p| unsafe {
+            gl.uniform_2_f32(p.uni.get("u_res"), w, h);
+        });
+    }
+
     /// Ensure a program is compiled and cached. `Err` carries the GLSL log.
     fn ensure(&mut self, key: u64) -> Result<(), String> {
         if self.programs.map.contains_key(&key) {
@@ -610,6 +639,7 @@ impl GpuRenderer {
             K_MASK => format!("{}{}", shaders::PRELUDE, shaders::MASK),
             K_COPY => format!("{}\n{}\n{}", shaders::PRELUDE, COPY_BODY, shaders::MAIN),
             K_MATTE => format!("{}\n{}\n{}", shaders::PRELUDE, MATTE_BODY, shaders::MAIN),
+            K_CHECKER => format!("{}\n{}\n{}", shaders::PRELUDE, CHECKER_BODY, shaders::MAIN),
             _ => return Err("no source for this program".into()),
         };
         self.link(key, &src)
@@ -863,7 +893,10 @@ impl GpuRenderer {
     /// The whole timeline at `t` into a fresh canvas target.
     fn render_canvas(&mut self, project: &Project, t: f64, w: u32, h: u32, layers: &LayerSet) -> Option<Target> {
         let mut canvas = self.acquire(w, h)?;
-        self.clear(&canvas, [0.0, 0.0, 0.0, 1.0]);
+        match clear_color(project.preview_bg) {
+            Some(c) => self.clear(&canvas, c),
+            None => self.clear_checker(&canvas),
+        }
         for (ti, track) in project.tracks.iter().enumerate() {
             if track.kind != TrackKind::Video || !project.active(ti) {
                 continue;
@@ -1498,6 +1531,19 @@ pub fn scaler_index(s: Scaler) -> i32 {
     }
 }
 
+/// The solid `clear()` colour for a background mode, or `None` for `Checkerboard` — there is no single
+/// colour there, so `render_canvas` draws `CHECKER_BODY` (`clear_checker`) instead.
+fn clear_color(mode: BackgroundMode) -> Option<[f32; 4]> {
+    match mode {
+        BackgroundMode::Checkerboard => None,
+        BackgroundMode::Black => Some([0.0, 0.0, 0.0, 1.0]),
+        BackgroundMode::White => Some([1.0, 1.0, 1.0, 1.0]),
+        BackgroundMode::Custom([r, g, b, a]) => {
+            Some([r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, a as f32 / 255.0])
+        }
+    }
+}
+
 /// The placed layer's four corners (TL, TR, BR, BL) in canvas pixels, projected through the
 /// yaw/pitch tilt with focal length `f` and depth offset `z0`. `None` when a corner is behind the
 /// camera. Mirrors `compose::draw_layer_perspective` (which uses f = canvas width, z0 = 0).
@@ -1776,6 +1822,31 @@ mod tests {
         assert_eq!(scaler_index(Scaler::Nearest), 0);
         assert_eq!(scaler_index(Scaler::Bilinear), 1);
         assert_eq!(scaler_index(Scaler::Bicubic), 2);
+    }
+
+    #[test]
+    fn clear_color_matches_background_mode() {
+        assert_eq!(clear_color(BackgroundMode::Black), Some([0.0, 0.0, 0.0, 1.0]));
+        assert_eq!(clear_color(BackgroundMode::White), Some([1.0, 1.0, 1.0, 1.0]));
+        assert_eq!(
+            clear_color(BackgroundMode::Custom([10, 20, 30, 128])),
+            Some([10.0 / 255.0, 20.0 / 255.0, 30.0 / 255.0, 128.0 / 255.0])
+        );
+        // no single colour represents a checker fill — render_canvas takes the clear_checker() path
+        assert_eq!(clear_color(BackgroundMode::Checkerboard), None);
+    }
+
+    /// No headless GL context exists in `cargo test` (see this module's doc comment: "headless
+    /// (`--selftest`, no GL) -> callers fall back to the CPU compositor"), so an actual rendered-pixel
+    /// smoke test isn't available here; this pins the GLSL source shape instead — it must vary by tile
+    /// parity (not collapse to one flat colour under `mod()`) and never sample `tex`, since it runs
+    /// where a solid `clear()` would, before any layer is composited under it.
+    #[test]
+    fn checker_body_is_a_real_two_tone_pattern_and_ignores_the_layer() {
+        assert!(CHECKER_BODY.contains("mod("), "must vary by tile parity, not draw one flat colour");
+        assert!(!CHECKER_BODY.contains("texture(tex"), "runs before any layer exists under the canvas");
+        let tones = CHECKER_BODY.matches("vec3(0.").count();
+        assert_eq!(tones, 2, "exactly two distinct tile colours: {CHECKER_BODY}");
     }
 
     fn map(m: &[[f32; 3]; 3], x: f32, y: f32) -> (f32, f32) {

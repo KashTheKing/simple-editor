@@ -94,25 +94,31 @@ pub fn show(
         state.status = Some(Status::compute(settings));
     }
     let mut open = state.open;
-    egui::Window::new("Settings").open(&mut open).default_width(520.0).collapsible(false).show(ctx, |ui| {
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut state.tab, 0, "General");
-            ui.selectable_value(&mut state.tab, 1, "Performance");
-            ui.selectable_value(&mut state.tab, 2, "Capture");
-            ui.selectable_value(&mut state.tab, 3, "Export");
-            ui.selectable_value(&mut state.tab, 4, "Hotkeys");
-            ui.selectable_value(&mut state.tab, 5, "Appearance");
+    egui::Window::new("Settings")
+        .open(&mut open)
+        // "when I open the settings tab, it should be really big" — sized to most of the screen,
+        // still resizable/movable like any other non-blocking window
+        .default_size([900.0, 700.0])
+        .collapsible(false)
+        .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut state.tab, 0, "General");
+                ui.selectable_value(&mut state.tab, 1, "Performance");
+                ui.selectable_value(&mut state.tab, 2, "Capture");
+                ui.selectable_value(&mut state.tab, 3, "Export");
+                ui.selectable_value(&mut state.tab, 4, "Hotkeys");
+                ui.selectable_value(&mut state.tab, 5, "Appearance");
+            });
+            ui.separator();
+            changed = match state.tab {
+                0 => general(ui, state, settings, mcp_status),
+                1 => performance(ui, settings, gpu_name),
+                2 => capture_tab(ui, settings, audio_inputs),
+                3 => export(ui, settings, encoders),
+                4 => hotkeys_tab(ui, state, hotkeys),
+                _ => appearance(ui, settings),
+            };
         });
-        ui.separator();
-        changed = match state.tab {
-            0 => general(ui, state, settings, mcp_status),
-            1 => performance(ui, settings, gpu_name),
-            2 => capture_tab(ui, settings, audio_inputs),
-            3 => export(ui, settings, encoders),
-            4 => hotkeys_tab(ui, state, hotkeys),
-            _ => appearance(ui, settings),
-        };
-    });
     state.open = open;
     if !open {
         state.rebinding = None;
@@ -458,31 +464,34 @@ fn hotkeys_tab(ui: &mut egui::Ui, state: &mut SettingsUi, hotkeys: &mut Hotkeys)
         changed = true;
     }
     ui.add_space(4.0);
-    egui::ScrollArea::vertical().max_height(380.0).auto_shrink([false, true]).show(ui, |ui| {
-        egui::Grid::new("hotkeys").num_columns(4).striped(true).spacing([12.0, 4.0]).show(ui, |ui| {
-            for &a in Action::ALL {
-                ui.label(a.label());
-                let text = hotkeys.text(a);
-                if state.rebinding == Some(a) {
-                    ui.strong("…");
-                } else if text.is_empty() {
-                    ui.weak("—");
-                } else {
-                    ui.label(text);
+    egui::ScrollArea::vertical().max_height((ui.available_height() - 40.0).max(0.0)).auto_shrink([false, true]).show(
+        ui,
+        |ui| {
+            egui::Grid::new("hotkeys").num_columns(4).striped(true).spacing([12.0, 4.0]).show(ui, |ui| {
+                for &a in Action::ALL {
+                    ui.label(a.label());
+                    let text = hotkeys.text(a);
+                    if state.rebinding == Some(a) {
+                        ui.strong("…");
+                    } else if text.is_empty() {
+                        ui.weak("—");
+                    } else {
+                        ui.label(text);
+                    }
+                    if ui.small_button("Rebind").clicked() {
+                        state.rebinding = Some(a);
+                        state.note.clear();
+                    }
+                    if ui.small_button("Reset").clicked() {
+                        let before = hotkeys.get(a);
+                        hotkeys.reset(a);
+                        changed |= hotkeys.get(a) != before;
+                    }
+                    ui.end_row();
                 }
-                if ui.small_button("Rebind").clicked() {
-                    state.rebinding = Some(a);
-                    state.note.clear();
-                }
-                if ui.small_button("Reset").clicked() {
-                    let before = hotkeys.get(a);
-                    hotkeys.reset(a);
-                    changed |= hotkeys.get(a) != before;
-                }
-                ui.end_row();
-            }
-        });
-    });
+            });
+        },
+    );
     ui.add_space(4.0);
     if let Some(a) = state.rebinding {
         let r = ui.strong(format!("Press keys for \"{}\"… (Esc cancels, Backspace/Delete unbinds)", a.label()));
@@ -553,7 +562,8 @@ fn appearance(ui: &mut egui::Ui, s: &mut Settings) -> bool {
         changed |= combo(ui, "ui_look", &mut s.ui_look, &[("cozy", "Cozy (rounded)"), ("sharp", "Sharp")], Some(200.0));
     });
     ui.add_space(4.0);
-    let has_overrides = s.palette != crate::theme::PaletteOverride { mode: s.palette.mode.clone(), ..Default::default() };
+    let has_overrides =
+        s.palette != crate::theme::PaletteOverride { mode: s.palette.mode.clone(), ..Default::default() };
     ui.horizontal(|ui| {
         ui.label("Theme");
         // one list: the three base modes, every built-in preset, and "Custom" once colours are tweaked
@@ -721,7 +731,8 @@ fn appearance(ui: &mut egui::Ui, s: &mut Settings) -> bool {
         ui.add_enabled_ui(!s.bg_image.is_empty(), |ui| {
             ui.horizontal(|ui| {
                 ui.label("Tint");
-                let mut c = egui::Color32::from_rgba_unmultiplied(s.bg_tint[0], s.bg_tint[1], s.bg_tint[2], s.bg_tint[3]);
+                let mut c =
+                    egui::Color32::from_rgba_unmultiplied(s.bg_tint[0], s.bg_tint[1], s.bg_tint[2], s.bg_tint[3]);
                 if egui::color_picker::color_edit_button_srgba(ui, &mut c, egui::color_picker::Alpha::OnlyBlend)
                     .changed()
                 {
@@ -741,7 +752,7 @@ fn appearance(ui: &mut egui::Ui, s: &mut Settings) -> bool {
     ui.add_space(8.0);
     ui.collapsing("Icons", |ui| {
         ui.weak("Pick the glyph shown for each pane and menu action ('None' removes it, 'Default' restores).");
-        egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+        egui::ScrollArea::vertical().max_height((ui.available_height() - 40.0).max(0.0)).show(ui, |ui| {
             egui::Grid::new("icons_panes").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
                 for p in crate::ui::layout::Pane::ALL {
                     changed |= icon_row(ui, s, format!("pane.{}", p.title()), p.title(), Some(p.glyph()));

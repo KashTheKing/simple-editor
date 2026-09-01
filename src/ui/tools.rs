@@ -1,17 +1,20 @@
 //! Tool bar: a thin, movable strip that sits between the viewport and the timeline (its own dockable
 //! pane, so it can also be popped out). One row of icon buttons:
-//!   Select (V) · Text (T) · Rectangle · Ellipse · Triangle · Polygon · Star · Line · Arrow · Draw (D) ·
-//!   Mask (rect/ellipse/polygon/path) · Zoom
+//!   Select (V) · Cut (C) · Marker (M) · Stretch (R) · Spacer · Text (T) · Rectangle · Ellipse ·
+//!   Triangle · Polygon · Star · Line · Arrow · Draw (D) · Mask (G; rect/ellipse/polygon/path) · Zoom
 //! plus a magnet button that lights up while snapping is on (S, or Settings.snap's own `N` shortcut),
 //! then, for shape tools, fill and stroke colour buttons and a stroke-width DragValue; for Draw, a
 //! play/record button, the brush colour/width, the playback speed (0.5x / 1x / 2x) and a page toggle.
+//! Every tool-select letter shown above is its default `Action::Tool*` binding (`hotkeys.rs`) and can be
+//! remapped in Settings ▸ Hotkeys; `handle_hotkeys` below polls the live binding, not a hardcoded key.
 //!
 //! The active tool changes what a click-drag in the Preview does (see `ui::preview`): Select edits the
 //! selected clip, a shape tool drags out a new Shape clip at the playhead (Shift locks its aspect ratio,
 //! Alt grows it from the press point instead of corner-to-corner), Draw records strokes while the mouse
 //! is down (timed, so the sketch replays), Mask edits the selected effect's / clip's mask.
 
-use crate::model::{MaskShape, ShapeKind};
+use crate::hotkeys::{Action, Hotkeys};
+use crate::model::{MaskShape, ShapeKind, ShapeStyle};
 use crate::theme::Palette;
 use eframe::egui;
 use egui::{Align2, Color32, CornerRadius, FontId, Key, Modifiers, Sense, Stroke, StrokeKind};
@@ -214,6 +217,8 @@ pub(crate) enum Glyph {
     PlayRect,
     /// A 2x2 grid of rounded squares — a feed / profile grid.
     GridIcon,
+    /// Three ruled rows, each with a leading bullet — a row/list view (paired with `GridIcon`).
+    ListIcon,
     /// A frame with corner brackets and a centre tick — the social-guide overlay.
     Guides,
 }
@@ -300,6 +305,7 @@ impl Glyph {
         Glyph::Square,
         Glyph::PlayRect,
         Glyph::GridIcon,
+        Glyph::ListIcon,
         Glyph::Guides,
     ];
 
@@ -389,6 +395,7 @@ impl Glyph {
             Glyph::Square => "square",
             Glyph::PlayRect => "play-rect",
             Glyph::GridIcon => "grid",
+            Glyph::ListIcon => "list",
             Glyph::Guides => "guides",
         }
     }
@@ -418,61 +425,135 @@ const STRIP: [(Tool, Glyph, &str); 16] = [
     (Tool::Zoom, Glyph::Zoom, "Zoom"),
 ];
 
-/// Single-key shortcut of a tool (used for the tooltips and by `handle_hotkeys`). The shape tools cycle
-/// on Shift+S instead (bare `S` toggles snapping), so their tooltip is built by hand in `show`.
-pub fn tool_hotkey(tool: Tool) -> Option<Key> {
+/// The `Action` that switches to `tool`, if it has one (the shape tools cycle on Shift+S / `Action::
+/// AddShape` instead, and Zoom/Spacer have no key of their own). Shared by `tool_hotkey` (tooltip text)
+/// and `handle_hotkeys` (polling which one fired).
+fn tool_action(tool: Tool) -> Option<Action> {
     match tool {
-        Tool::Select => Some(Key::V),
-        Tool::Text => Some(Key::T),
-        Tool::Draw => Some(Key::D),
-        Tool::Mask(_) => Some(Key::M),
-        Tool::Cut => Some(Key::C),
-        Tool::Stretch => Some(Key::R),
-        Tool::Shape(_) | Tool::Zoom | Tool::Marker | Tool::Spacer => None,
+        Tool::Select => Some(Action::ToolSelect),
+        Tool::Text => Some(Action::ToolText),
+        Tool::Draw => Some(Action::ToolDraw),
+        Tool::Mask(_) => Some(Action::ToolMask),
+        Tool::Marker => Some(Action::ToolMarker),
+        Tool::Cut => Some(Action::ToolCut),
+        Tool::Stretch => Some(Action::ToolStretch),
+        Tool::Zoom => Some(Action::ToolZoom),
+        Tool::Spacer => Some(Action::ToolSpacer),
+        Tool::Shape(_) => None, // the 7 shapes cycle on one key (Shift+S), not one action each
     }
 }
 
-/// V / T / D / M and Shift+S switch tools (Shift+S also steps through the shape variants; M steps
-/// through the mask variants), ignored while a text field has focus or an unlisted modifier is held.
-/// Bare `S` is snapping's key (see `handle_snap_hotkey`), not a tool switch. Returns the new tool when it
-/// changed; the key is consumed, so calling this twice in a frame is harmless.
-pub fn handle_hotkeys(ctx: &egui::Context, state: &mut ToolsState) -> Option<Tool> {
+/// Current (rebindable, via Settings ▸ Hotkeys) shortcut of a tool, formatted for the tooltip — e.g.
+/// `"V"`, or `"Ctrl+Alt+K"` if the user remapped it. `None` when the tool has no key or it's unbound.
+pub fn tool_hotkey(hotkeys: &Hotkeys, tool: Tool) -> Option<String> {
+    tool_action(tool).and_then(|a| hotkeys.get(a)).map(|ks| Hotkeys::format(&ks))
+}
+
+/// Tool selection (`Action::Tool*`) and Shift+S switch tools (Shift+S also steps through the shape
+/// variants; the Mask action steps through the mask variants), ignored while a text field has focus.
+/// Bare `S` is snapping's key (see `handle_snap_hotkey`), not a tool switch. Polled here rather than
+/// through the app's main `Hotkeys::poll` / `App::act` because the tool strip, not `App`, owns
+/// `ToolsState` — same reasoning as `handle_snap_hotkey`. Returns the new tool when it changed; the key
+/// is consumed, so calling this twice in a frame is harmless.
+/// The tool a `Action::Tool*` corresponds to, given the currently active tool (only `ToolMask` needs
+/// it, to cycle the mask shape). `None` for any other action. Shared by `handle_hotkeys` below and by
+/// `App::act`'s fallback arm for the rare case one of these actions fires through the general action
+/// table instead of the tool strip's own poll (e.g. invoked via scripting/MCP).
+/// The `ShapeStyle` a new shape clip will actually get from the current tool-strip picks — used by
+/// BOTH `App::add_shape` (creation) and the preview's live drag preview, so the drawn preview and the
+/// created clip can never drift apart in style.
+pub fn shape_style_from_tools(tools: &ToolsState, kind: ShapeKind) -> ShapeStyle {
+    let mut s = ShapeStyle::new(kind);
+    s.fill = tools.fill;
+    // line / arrow / drawing have no fill, so a transparent stroke would draw nothing at all:
+    // fall back to the brush colour (and then the fill) instead of an invisible clip
+    let stroke_only = matches!(kind, ShapeKind::Line | ShapeKind::Arrow | ShapeKind::Draw);
+    s.stroke = match (stroke_only, tools.stroke[3], tools.brush[3]) {
+        (true, 0, 0) => [tools.fill[0], tools.fill[1], tools.fill[2], 255],
+        (true, 0, _) => tools.brush,
+        _ => tools.stroke,
+    };
+    s.stroke_width = tools.stroke_width;
+    s.sides = tools.sides;
+    s.corner = tools.corner;
+    s.draw_rate = tools.draw_rate;
+    s.page = tools.page;
+    s
+}
+
+pub fn tool_for_action(action: Action, cur: Tool) -> Option<Tool> {
+    Some(match action {
+        Action::ToolSelect => Tool::Select,
+        Action::ToolText => Tool::Text,
+        Action::ToolDraw => Tool::Draw,
+        Action::ToolMask => Tool::Mask(next_mask(cur)),
+        Action::ToolMarker => Tool::Marker,
+        Action::ToolCut => Tool::Cut,
+        Action::ToolStretch => Tool::Stretch,
+        Action::ToolZoom => Tool::Zoom,
+        Action::ToolSpacer => Tool::Spacer,
+        _ => return None,
+    })
+}
+
+const TOOL_ACTIONS: [Action; 9] = [
+    Action::ToolSelect,
+    Action::ToolText,
+    Action::ToolDraw,
+    Action::ToolMask,
+    Action::ToolMarker,
+    Action::ToolCut,
+    Action::ToolStretch,
+    Action::ToolZoom,
+    Action::ToolSpacer,
+];
+
+/// Like `InputState::consume_shortcut`, but the pressed modifiers must match EXACTLY
+/// (`Modifiers::matches_exact`) — egui's own matching is "logical" and IGNORES extra Shift/Alt on the
+/// press. This poll runs before the `Hotkeys` action table, so a logical match here would swallow
+/// every `Shift+<letter>` action sharing a tool's base key (it did: Shift+T/D/R and the old Shift+M).
+fn consume_shortcut_exact(i: &mut egui::InputState, ks: &egui::KeyboardShortcut) -> bool {
+    let mut hit = false;
+    i.events.retain(|e| {
+        if !hit {
+            if let egui::Event::Key { key, modifiers, pressed: true, .. } = e {
+                if *key == ks.logical_key && modifiers.matches_exact(ks.modifiers) {
+                    hit = true;
+                    return false;
+                }
+            }
+        }
+        true
+    });
+    hit
+}
+
+pub fn handle_hotkeys(ctx: &egui::Context, hotkeys: &Hotkeys, state: &mut ToolsState) -> Option<Tool> {
     if ctx.wants_keyboard_input() {
         return None;
     }
     ctx.input_mut(|i| {
-        // most-specific shortcut first: consume_key's own ctrl/command matching is exact, so this can
-        // never fire for e.g. Ctrl+Shift+S (Save As)
         // ponytail: this also claims hotkeys.rs's default Shift+S (Action::AddShape) before the action
-        // table sees it — same trade-off the tool strip already makes for V/T/D/M. AddShape stays
-        // reachable from the Insert menu; give it a fresh binding in Settings > Hotkeys if that regresses.
-        if i.consume_key(Modifiers::SHIFT, Key::S) {
+        // table sees it — same trade-off the tool strip already makes for the tool letters below.
+        // AddShape stays reachable from the Insert menu; give it a fresh binding in Settings > Hotkeys if
+        // that regresses.
+        if consume_shortcut_exact(i, &egui::KeyboardShortcut::new(Modifiers::SHIFT, Key::S)) {
             let next = Tool::Shape(next_shape(state.tool));
             state.tool = next;
             return Some(next);
         }
-        if !i.modifiers.is_none() {
-            return None;
+        // exact-modifier matching, so no ordering games are needed: a tool on bare C can never steal
+        // Ctrl+C, and one on Shift+C never fires from Ctrl+Shift+C.
+        for action in TOOL_ACTIONS {
+            let tool = tool_for_action(action, state.tool).unwrap();
+            if hotkeys.get(action).is_some_and(|ks| consume_shortcut_exact(i, &ks)) {
+                return (tool != state.tool).then(|| {
+                    state.tool = tool;
+                    tool
+                });
+            }
         }
-        let next = if i.consume_key(Modifiers::NONE, Key::V) {
-            Tool::Select
-        } else if i.consume_key(Modifiers::NONE, Key::T) {
-            Tool::Text
-        } else if i.consume_key(Modifiers::NONE, Key::D) {
-            Tool::Draw
-        } else if i.consume_key(Modifiers::NONE, Key::M) {
-            Tool::Mask(next_mask(state.tool))
-        } else if i.consume_key(Modifiers::NONE, Key::C) {
-            Tool::Cut
-        } else if i.consume_key(Modifiers::NONE, Key::R) {
-            Tool::Stretch
-        } else {
-            return None;
-        };
-        (next != state.tool).then(|| {
-            state.tool = next;
-            next
-        })
+        None
     })
 }
 
@@ -523,8 +604,10 @@ fn next_mask(cur: Tool) -> MaskShape {
 
 /// Returns true when the tool, `*snap` or the style changed (the app may want to repaint the preview
 /// overlay). `snap` is `Settings.snap` — owned by the app, not this strip, so it comes in by reference.
-pub fn show(ui: &mut egui::Ui, state: &mut ToolsState, palette: &Palette, snap: &mut bool) -> bool {
-    let mut changed = handle_hotkeys(ui.ctx(), state).is_some();
+/// `hotkeys` is the app's live binding table (`App.hotkeys`), read-only here: it decides which key each
+/// tool responds to and shows in its tooltip, but only Settings ▸ Hotkeys can change it.
+pub fn show(ui: &mut egui::Ui, state: &mut ToolsState, palette: &Palette, snap: &mut bool, hotkeys: &Hotkeys) -> bool {
+    let mut changed = handle_hotkeys(ui.ctx(), hotkeys, state).is_some();
     changed |= handle_snap_hotkey(ui.ctx(), snap);
     let base = ui.id();
     // wrapped: at a small pane width the strip must fold onto a second row, not clip its last buttons
@@ -535,8 +618,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut ToolsState, palette: &Palette, snap: 
             let tip = if matches!(tool, Tool::Shape(_)) {
                 format!("{name} (Shift+S)")
             } else {
-                match tool_hotkey(tool) {
-                    Some(k) => format!("{name} ({})", k.name()),
+                match tool_hotkey(hotkeys, tool) {
+                    Some(k) => format!("{name} ({k})"),
                     // the spacer's gesture is not readable from its picture
                     None if tool == Tool::Spacer => format!("{name} — drag the lanes to open or close a gap"),
                     None => name.to_string(),
@@ -1420,6 +1503,17 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
                 );
             }
         }
+        // list view: three rows, each a leading bullet and a rule — pairs with GridIcon
+        Glyph::ListIcon => {
+            for dy in [-4.0_f32, 0.0, 4.0] {
+                p.rect_filled(
+                    egui::Rect::from_center_size(c + egui::vec2(-5.5, dy), egui::vec2(2.2, 2.2)),
+                    CornerRadius::ZERO,
+                    fg,
+                );
+                p.line_segment([c + egui::vec2(-2.0, dy), c + egui::vec2(6.5, dy)], stroke);
+            }
+        }
         // four corner brackets around a small safe-zone rect
         Glyph::Guides => {
             for (sx, sy) in [(-1.0f32, -1.0f32), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
@@ -1458,6 +1552,13 @@ pub(crate) fn action_glyph(a: crate::hotkeys::Action) -> Option<Glyph> {
         Retime => Glyph::Clock,
         Fullscreen => Glyph::Fullscreen,
         ScreenCapture => Glyph::Camera,
+        ToolSelect => Glyph::Cursor,
+        ToolText => Glyph::Letter('T'),
+        ToolDraw => Glyph::Pencil,
+        ToolMask => Glyph::Mask,
+        ToolMarker => Glyph::Flag,
+        ToolCut => Glyph::Razor,
+        ToolStretch => Glyph::Hourglass,
         _ => return None,
     })
 }
@@ -1495,6 +1596,7 @@ mod tests {
         ctx: egui::Context,
         state: ToolsState,
         snap: bool,
+        hotkeys: Hotkeys,
         base: egui::Id,
         time: f64,
         changed: bool,
@@ -1506,6 +1608,7 @@ mod tests {
                 ctx: egui::Context::default(),
                 state: ToolsState::default(),
                 snap: false,
+                hotkeys: Hotkeys::defaults(),
                 base: egui::Id::NULL,
                 time: 0.0,
                 changed: false,
@@ -1522,11 +1625,11 @@ mod tests {
                 ..Default::default()
             };
             let pal = Palette::new(true, Color32::from_rgb(0, 120, 212));
-            let Harness { ctx, state, snap, base, changed, .. } = self;
+            let Harness { ctx, state, snap, hotkeys, base, changed, .. } = self;
             let _ = ctx.run(input, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     *base = ui.id();
-                    *changed = show(ui, state, &pal, snap);
+                    *changed = show(ui, state, &pal, snap, hotkeys);
                 });
             });
         }
@@ -1664,16 +1767,42 @@ mod tests {
         assert_eq!(h.state.tool, Tool::Text);
         h.key(Key::D);
         assert_eq!(h.state.tool, Tool::Draw);
+        h.key(Key::C);
+        assert_eq!(h.state.tool, Tool::Cut);
+        h.key(Key::R);
+        assert_eq!(h.state.tool, Tool::Stretch);
         h.key(Key::V);
         assert_eq!(h.state.tool, Tool::Select);
         h.key_mod(Key::S, Modifiers::SHIFT);
         assert_eq!(h.state.tool, Tool::Shape(ShapeKind::Rect));
         h.key_mod(Key::S, Modifiers::SHIFT);
         assert_eq!(h.state.tool, Tool::Shape(ShapeKind::Ellipse), "Shift+S steps through the shapes");
-        h.key(Key::M);
+        // Mask moved off bare M (freed for the Marker tool below) to G, cycling shape same as before
+        h.key(Key::G);
         assert_eq!(h.state.tool, Tool::Mask(MaskShape::Rect));
+        h.key(Key::G);
+        assert_eq!(h.state.tool, Tool::Mask(MaskShape::Ellipse), "G steps through the mask shapes");
+        h.key_mod(Key::M, Modifiers::SHIFT);
+        assert_eq!(h.state.tool, Tool::Marker, "Shift+M selects the Marker tool (bare M adds a marker)");
+    }
+
+    /// Regression: the tool poll must match modifiers EXACTLY. egui's `consume_shortcut` matches
+    /// "logically" (extra Shift/Alt ignored), and since this poll runs before the `Hotkeys` table a
+    /// logical match ate every `Shift+<tool letter>` action — Shift+T (Add Text), Shift+D, Shift+R,
+    /// and the old Shift+M (Add Marker) all selected tools instead of firing.
+    #[test]
+    fn shifted_letters_are_left_for_the_action_table() {
+        let mut h = Harness::new();
+        h.state.tool = Tool::Select;
+        for key in [Key::T, Key::D, Key::R, Key::C, Key::V] {
+            h.key_mod(key, Modifiers::SHIFT);
+            assert_eq!(h.state.tool, Tool::Select, "Shift+{key:?} must not switch tools");
+            h.key_mod(key, Modifiers::CTRL);
+            assert_eq!(h.state.tool, Tool::Select, "Ctrl+{key:?} must not switch tools");
+        }
+        // bare M is Add Marker's key now, not a tool
         h.key(Key::M);
-        assert_eq!(h.state.tool, Tool::Mask(MaskShape::Ellipse));
+        assert_eq!(h.state.tool, Tool::Select, "bare M is left for Action::AddMarker");
     }
 
     #[test]
@@ -1730,10 +1859,11 @@ mod tests {
             ..Default::default()
         };
         let pal = Palette::new(true, Color32::from_rgb(0, 120, 212));
+        let hotkeys = Hotkeys::defaults();
         let _ = ctx.run(input, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                show(ui, &mut state, &pal, &mut snap);
-                assert!(handle_hotkeys(ui.ctx(), &mut state).is_none(), "key already consumed");
+                show(ui, &mut state, &pal, &mut snap, &hotkeys);
+                assert!(handle_hotkeys(ui.ctx(), &hotkeys, &mut state).is_none(), "key already consumed");
             });
         });
         assert_eq!(state.tool, Tool::Shape(ShapeKind::Rect));
@@ -1742,12 +1872,16 @@ mod tests {
 
     #[test]
     fn tool_hotkey_covers_the_documented_keys() {
-        assert_eq!(tool_hotkey(Tool::Select), Some(Key::V));
-        assert_eq!(tool_hotkey(Tool::Text), Some(Key::T));
-        assert_eq!(tool_hotkey(Tool::Shape(ShapeKind::Star)), None, "shape tools cycle on Shift+S");
-        assert_eq!(tool_hotkey(Tool::Draw), Some(Key::D));
-        assert_eq!(tool_hotkey(Tool::Mask(MaskShape::Path)), Some(Key::M));
-        assert_eq!(tool_hotkey(Tool::Zoom), None);
+        let hk = Hotkeys::defaults();
+        assert_eq!(tool_hotkey(&hk, Tool::Select).as_deref(), Some("V"));
+        assert_eq!(tool_hotkey(&hk, Tool::Text).as_deref(), Some("T"));
+        assert_eq!(tool_hotkey(&hk, Tool::Shape(ShapeKind::Star)), None, "shape tools cycle on Shift+S");
+        assert_eq!(tool_hotkey(&hk, Tool::Draw).as_deref(), Some("D"));
+        assert_eq!(tool_hotkey(&hk, Tool::Mask(MaskShape::Path)).as_deref(), Some("G"), "freed from M");
+        assert_eq!(tool_hotkey(&hk, Tool::Marker).as_deref(), Some("Shift+M"), "bare M is Add Marker's key");
+        assert_eq!(tool_hotkey(&hk, Tool::Cut).as_deref(), Some("C"));
+        assert_eq!(tool_hotkey(&hk, Tool::Stretch).as_deref(), Some("R"));
+        assert_eq!(tool_hotkey(&hk, Tool::Zoom), None);
     }
 
     #[test]

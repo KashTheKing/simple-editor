@@ -23,9 +23,9 @@ use crate::theme::{self, Palette};
 use crate::ui::layout::{self, Layout, Pane};
 use crate::ui::tools::Tool;
 use crate::ui::{
-    autocut_ui, capture_ui, curves, effects_ui, export_ui, frame_ui, import_ui, inspector, library, markers_ui,
-    mixer_ui, nodes, paste_ui, planner, presets_ui, preview, retime, settings_ui, shader_ui, subtitles_ui, timeline,
-    tools, tracking_ui, transitions_ui, DragPayload,
+    autocut_ui, capture_ui, curves, effects_ui, export_ui, frame_ui, history_ui, import_ui, inspector, library,
+    markers_ui, mixer_ui, moodboard_ui, nodes, paste_ui, planner, presets_ui, preview, retime, settings_ui, shader_ui,
+    subtitles_ui, timeline, tools, tracking_ui, transitions_ui, DragPayload,
 };
 use eframe::egui;
 use serde_json::{json, Value};
@@ -44,8 +44,26 @@ const MEDIA_EXTS: &[&str] = &[
 ];
 
 enum ExportKind {
-    File,
+    File { path: PathBuf },
     Overwrite { original: PathBuf, temp: PathBuf },
+}
+
+/// One toast notification. `open_path` is set when it should offer an "Open Folder" button for a
+/// file (or folder) it just finished writing.
+struct Toast {
+    msg: String,
+    at: Instant,
+    open_path: Option<PathBuf>,
+}
+
+impl Toast {
+    fn new(msg: impl Into<String>) -> Self {
+        Toast { msg: msg.into(), at: Instant::now(), open_path: None }
+    }
+
+    fn with_folder(msg: impl Into<String>, path: impl Into<PathBuf>) -> Self {
+        Toast { msg: msg.into(), at: Instant::now(), open_path: Some(path.into()) }
+    }
 }
 
 /// A blocking MCP tool job (export.video / media.convert): the reply is sent when the job finishes.
@@ -72,8 +90,8 @@ pub struct App {
     project: Project,
     project_path: Option<PathBuf>,
     dirty: bool,
-    undo: Vec<String>,
-    redo: Vec<String>,
+    undo: Vec<UndoEntry>,
+    redo: Vec<UndoEntry>,
     settings: Settings,
     hotkeys: Hotkeys,
     text: Arc<Mutex<TextRasterizer>>,
@@ -93,6 +111,8 @@ pub struct App {
     curves: curves::CurvesState,
     subtitles_ui: subtitles_ui::SubtitlesState,
     planner: planner::PlannerState,
+    moodboard: moodboard_ui::MoodboardState,
+    history: history_ui::HistoryState,
     presets: presets_ui::PresetsState,
     autocut: autocut_ui::AutoCutState,
     tracking: tracking_ui::TrackState,
@@ -108,7 +128,7 @@ pub struct App {
     playhead: f64,
     export: Option<(Arc<Progress>, ExportKind)>,
     encoders: Vec<String>,
-    toasts: Vec<(String, Instant)>,
+    toasts: Vec<Toast>,
     screenshot: Option<PathBuf>,
     started: Instant,
     /// Window starts hidden (see main.rs); shown once the first frame has been painted.
@@ -262,11 +282,92 @@ fn job_window(ctx: &egui::Context, title: &str, jobs: &[(Arc<Progress>, String)]
 /// `Layout`'s own (much shorter) history — this only keeps Ctrl+Z stepping back in the right order.
 /// ponytail: once the layout history has scrolled past its 20 entries the marker undoes nothing; deepen
 /// the layout stack if that ever bites.
-const LAYOUT_STEP: &str = "\u{0}layout";
+pub(crate) const LAYOUT_STEP: &str = "\u{0}layout";
 
-/// Push an undo snapshot (capped) and clear the redo history.
-fn push_undo_json(undo: &mut Vec<String>, redo: &mut Vec<String>, json: String) {
-    undo.push(json);
+/// History panel filter bucket. `Layout` is a pane rearrangement (`LAYOUT_STEP`); everything else —
+/// clip/effect/marker/text/project edits — is `Editing`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HistoryCategory {
+    Editing,
+    Layout,
+}
+
+/// One entry in the undo/redo stack, doubling as a History panel row. `label` stays EMPTY for project
+/// edits — the History panel derives one lazily from neighbouring snapshots (`describe_change`), which
+/// keeps the per-gesture push free of JSON parses and labels each row with its own edit instead of the
+/// previous one. Only sentinel entries (layout steps) carry a fixed label.
+#[derive(Clone)]
+pub(crate) struct UndoEntry {
+    pub json: String,
+    pub label: String,
+    /// Seconds since Unix epoch (`SystemTime`, not `Instant` — a History panel needs a real clock to
+    /// group by day and survive across app restarts... though the stack itself is session-only today;
+    /// kept as a real timestamp anyway since "session-only" is the smaller, more surprising fact here).
+    pub at: f64,
+    pub category: HistoryCategory,
+}
+
+fn now_secs() -> f64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
+}
+
+/// A short, best-effort description of what changed between two project snapshots — compares a handful
+/// of high-signal counts/fields rather than a full structural diff (this is a "quick glance" History
+/// panel label, not a changelog). Falls back to "Project edited" when nothing tracked here differs.
+/// Costs two full `Project::from_json` parses — only the History panel calls it (lazily, cached),
+/// NEVER the per-gesture undo push.
+pub(crate) fn describe_change(old_json: &str, new_json: &str) -> String {
+    let (Ok(old), Ok(new)) = (Project::from_json(old_json), Project::from_json(new_json)) else {
+        return "Project edited".into();
+    };
+    let clips = |p: &Project| p.tracks.iter().map(|t| t.clips.len()).sum::<usize>();
+    let effects = |p: &Project| p.tracks.iter().flat_map(|t| &t.clips).map(|c| c.effects.len()).sum::<usize>();
+    let (oc, nc) = (clips(&old), clips(&new));
+    if oc != nc {
+        return match nc.cmp(&oc) {
+            std::cmp::Ordering::Greater if nc - oc == 1 => "Added a clip".into(),
+            std::cmp::Ordering::Greater => format!("Added {} clips", nc - oc),
+            std::cmp::Ordering::Less if oc - nc == 1 => "Removed a clip".into(),
+            _ => format!("Removed {} clips", oc - nc),
+        };
+    }
+    if old.width != new.width || old.height != new.height {
+        return "Changed project resolution".into();
+    }
+    if (old.fps - new.fps).abs() > f64::EPSILON {
+        return "Changed project frame rate".into();
+    }
+    if old.markers.len() != new.markers.len() {
+        return "Edited markers".into();
+    }
+    if old.notes.len() != new.notes.len() {
+        return "Edited notes".into();
+    }
+    if old.plan.len() != new.plan.len() {
+        return "Edited the planner".into();
+    }
+    if old.moodboard.len() != new.moodboard.len() {
+        return "Edited the moodboard".into();
+    }
+    let (oe, ne) = (effects(&old), effects(&new));
+    if oe != ne {
+        return "Edited effects".into();
+    }
+    if old.name != new.name {
+        return "Renamed the project".into();
+    }
+    "Project edited".into()
+}
+
+/// Push an undo snapshot (capped) and clear the redo history. Labels are NOT derived here — that cost
+/// (two project parses) belongs to the History panel, lazily; see `UndoEntry::label`.
+fn push_undo_json(undo: &mut Vec<UndoEntry>, redo: &mut Vec<UndoEntry>, json: String) {
+    let entry = if json == LAYOUT_STEP {
+        UndoEntry { label: "Rearranged panels".into(), category: HistoryCategory::Layout, at: now_secs(), json }
+    } else {
+        UndoEntry { json, label: String::new(), category: HistoryCategory::Editing, at: now_secs() }
+    };
+    undo.push(entry);
     if undo.len() > 200 {
         undo.remove(0);
     }
@@ -886,6 +987,8 @@ impl App {
             curves: curves::CurvesState::default(),
             subtitles_ui: subtitles_ui::SubtitlesState::default(),
             planner: planner::PlannerState::default(),
+            moodboard: moodboard_ui::MoodboardState::default(),
+            history: history_ui::HistoryState::default(),
             presets: presets_ui::PresetsState::default(),
             autocut: autocut_ui::AutoCutState::default(),
             tracking: tracking_ui::TrackState::default(),
@@ -986,7 +1089,12 @@ impl App {
     // ---------------- helpers ----------------
 
     fn toast(&mut self, msg: impl Into<String>) {
-        self.toasts.push((msg.into(), Instant::now()));
+        self.toasts.push(Toast::new(msg));
+    }
+
+    /// Like `toast`, but offers an "Open Folder" button for a file (or folder) just written to disk.
+    fn toast_with_folder(&mut self, msg: impl Into<String>, path: impl Into<PathBuf>) {
+        self.toasts.push(Toast::with_folder(msg, path));
     }
 
     fn push_undo(&mut self) {
@@ -1272,7 +1380,7 @@ impl App {
                 self.dirty = false;
                 self.settings.touch_recent_project(&path.to_string_lossy());
                 self.settings.save();
-                self.toast("Project saved");
+                self.toast_with_folder("Project saved", path);
                 true
             }
             Err(e) => {
@@ -1389,13 +1497,20 @@ impl App {
             return;
         }
         self.player.pause();
-        let project = self.export_project();
+        let path = choice.opts.out_path.clone();
+        let mut project = self.export_project();
+        // "Use project background" checkbox: off → the export renders on black exactly as before the
+        // background setting existed; on → the authored `preview_bg` (checkerboard bakes as grey tiles,
+        // the tooltip says so). Only the exported clone is touched, never the live project.
+        if !choice.use_project_bg {
+            project.preview_bg = crate::model::BackgroundMode::Black;
+        }
         let prog = if choice.lossless {
             export::start_lossless_cut(project, choice.opts.out_path.clone())
         } else {
             export::start_export(project, choice.opts, self.text.clone())
         };
-        self.export = Some((prog, ExportKind::File));
+        self.export = Some((prog, ExportKind::File { path }));
         self.settings.save(); // the window remembers resolution/scaler in settings
     }
 
@@ -1421,8 +1536,8 @@ impl App {
         }
         let Some(out) = d.save_file() else { return };
         self.player.pause();
-        let prog = export::start_lossless_cut(project, out);
-        self.export = Some((prog, ExportKind::File));
+        let prog = export::start_lossless_cut(project, out.clone());
+        self.export = Some((prog, ExportKind::File { path: out }));
     }
 
     fn act_export_xml(&mut self) {
@@ -1434,9 +1549,10 @@ impl App {
             return;
         };
         match std::fs::write(&out, crate::engine::xmeml::export_xmeml(&self.export_project())) {
-            Ok(()) => {
-                self.toast("XML exported — import it in Premiere (File > Import) or Resolve (File > Import > Timeline)")
-            }
+            Ok(()) => self.toast_with_folder(
+                "XML exported — import it in Premiere (File > Import) or Resolve (File > Import > Timeline)",
+                out,
+            ),
             Err(e) => self.toast(format!("XML export failed: {e}")),
         }
     }
@@ -1451,7 +1567,7 @@ impl App {
         };
         // the summary describes the MAIN timeline, even while a nested sequence is open
         match std::fs::write(&out, crate::engine::style::style_summary(&self.export_project())) {
-            Ok(()) => self.toast("Style summary exported"),
+            Ok(()) => self.toast_with_folder("Style summary exported", out),
             Err(e) => self.toast(format!("Style summary failed: {e}")),
         }
     }
@@ -1521,7 +1637,10 @@ impl App {
             original.file_stem().unwrap_or_default().to_string_lossy()
         ));
         self.player.pause();
-        let project = self.export_project();
+        let mut project = self.export_project();
+        // no background checkbox on this path — always render on black, like every export did before
+        // `preview_bg` existed (a checkerboard preview aid must never bake into the overwritten original)
+        project.preview_bg = crate::model::BackgroundMode::Black;
         // opt-in: a plain cut can be saved instantly with `-c copy` (keyframe-accurate) instead of re-encoding
         let lossless = self.settings.lossless_save && export::lossless_segments(&project).is_some();
         let prog = if lossless {
@@ -1546,7 +1665,7 @@ impl App {
             return;
         }
         match kind {
-            ExportKind::File => self.toast("Export finished"),
+            ExportKind::File { path } => self.toast_with_folder("Export finished", path),
             ExportKind::Overwrite { original, temp } => {
                 self.player.release_files();
                 // the thumbnail worker holds a decoder (ffmpeg child) on the source — drop it while we retry
@@ -1560,7 +1679,7 @@ impl App {
                 }
                 match r {
                     Ok(()) => {
-                        self.toast("Saved over the original video");
+                        self.toast_with_folder("Saved over the original video", original.clone());
                         // in-memory peaks are keyed by path only and the file behind it just changed
                         self.waveforms.clear();
                         self.open_media(&original);
@@ -1592,6 +1711,15 @@ impl App {
                     self.set_project(Project::new(), None);
                 }
             }
+            ToolSelect | ToolText | ToolDraw | ToolMask | ToolMarker | ToolCut | ToolStretch | ToolZoom
+            | ToolSpacer => {
+                // normally already consumed by tools::handle_hotkeys before this table is polled; this
+                // arm only fires for a caller that dispatches the action directly (scripting/MCP).
+                if let Some(t) = tools::tool_for_action(a, self.tools.tool) {
+                    self.tools.tool = t;
+                    self.layout.reveal(Pane::Tools);
+                }
+            }
             OpenFile => self.act_open_file(),
             OpenProject => self.act_open_project(),
             Save => self.act_save(),
@@ -1604,14 +1732,20 @@ impl App {
             ImportMedia => self.act_import(),
             Settings => self.settings_ui.open = !self.settings_ui.open,
             Undo => {
-                if let Some(json) = self.undo.pop() {
-                    if json == LAYOUT_STEP {
+                if let Some(entry) = self.undo.pop() {
+                    if entry.json == LAYOUT_STEP {
                         self.layout.undo();
                         self.layout_dirty = true;
-                        self.redo.push(json);
+                        self.redo.push(entry);
                     } else {
-                        self.redo.push(self.project.to_json());
-                        if let Ok(p) = Project::from_json(&json) {
+                        let redo_at = now_secs();
+                        self.redo.push(UndoEntry {
+                            json: self.project.to_json(),
+                            label: entry.label.clone(),
+                            category: HistoryCategory::Editing,
+                            at: redo_at,
+                        });
+                        if let Ok(p) = Project::from_json(&entry.json) {
                             self.project = p;
                             self.after_edit();
                         }
@@ -1619,14 +1753,20 @@ impl App {
                 }
             }
             Redo => {
-                if let Some(json) = self.redo.pop() {
-                    if json == LAYOUT_STEP {
+                if let Some(entry) = self.redo.pop() {
+                    if entry.json == LAYOUT_STEP {
                         self.layout.redo();
                         self.layout_dirty = true;
-                        self.undo.push(json);
+                        self.undo.push(entry);
                     } else {
-                        self.undo.push(self.project.to_json());
-                        if let Ok(p) = Project::from_json(&json) {
+                        let undo_at = now_secs();
+                        self.undo.push(UndoEntry {
+                            json: self.project.to_json(),
+                            label: entry.label.clone(),
+                            category: HistoryCategory::Editing,
+                            at: undo_at,
+                        });
+                        if let Ok(p) = Project::from_json(&entry.json) {
                             self.project = p;
                             self.after_edit();
                         }
@@ -1886,10 +2026,25 @@ impl App {
                 }
             }
             AddMarker => {
-                self.push_undo();
                 let t = self.playhead;
-                let id = self.project.add_marker(t, format!("Marker at {}", crate::ui::timecode(t, self.project.fps)));
-                self.markers.selected = Some(id);
+                // per the ask, the hotkey attaches the marker to the selected clip when the playhead
+                // is over one — otherwise it stays a plain timeline marker (same as the panel buttons)
+                let on_clip = self
+                    .selection
+                    .iter()
+                    .find_map(|&id| self.project.clip(id).filter(|c| t >= c.start && t <= c.end()).map(|c| c.id));
+                self.push_undo();
+                let name = format!("Marker at {}", crate::ui::timecode(t, self.project.fps));
+                let id = match on_clip {
+                    Some(cid) => {
+                        let local = self.project.clip(cid).map(|c| (t - c.start).clamp(0.0, c.duration)).unwrap_or(0.0);
+                        self.project.add_clip_marker(cid, local, name)
+                    }
+                    None => Some(self.project.add_marker(t, name)),
+                };
+                if let Some(id) = id {
+                    self.markers.selected = vec![id];
+                }
                 self.layout.reveal(Pane::Markers);
                 self.layout_dirty = true;
                 self.after_edit();
@@ -2162,6 +2317,10 @@ impl App {
                                 frame,
                                 gpu_texture: *gpu_tex,
                                 tool: tools.tool,
+                                shape_style: match tools.tool {
+                                    Tool::Shape(k) => Some(tools::shape_style_from_tools(tools, k)),
+                                    _ => None,
+                                },
                                 quality: settings.preview_quality,
                                 movie_mode: settings.movie_mode,
                                 prerender: done,
@@ -2203,6 +2362,9 @@ impl App {
                             }
                             self.after_edit();
                         }
+                    }
+                    if let Some((cx, cy, _, _)) = resp.new_text {
+                        self.add_text(cx, cy);
                     }
                     if let Some(s) = resp.stroke {
                         self.add_stroke(s);
@@ -2571,9 +2733,19 @@ impl App {
             }
             Pane::Transitions => {
                 let changed = {
-                    let App { project, selection, playhead, undo, redo, transitions_ui: st, palette, .. } = self;
+                    let App {
+                        project,
+                        selection,
+                        sel_transitions,
+                        playhead,
+                        undo,
+                        redo,
+                        transitions_ui: st,
+                        palette,
+                        ..
+                    } = self;
                     let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
-                    transitions_ui::show(ui, st, project, selection, *playhead, palette, &mut push)
+                    transitions_ui::show(ui, st, project, selection, sel_transitions, *playhead, palette, &mut push)
                 };
                 if changed {
                     self.after_edit();
@@ -2630,6 +2802,41 @@ impl App {
                     self.after_edit();
                 }
             }
+            Pane::Moodboard => {
+                let resp = {
+                    let App { project, undo, redo, moodboard: st, thumbs, palette, .. } = self;
+                    let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
+                    moodboard_ui::show(ui, st, project, thumbs, palette, &mut push)
+                };
+                if !resp.add_to_timeline.is_empty() {
+                    self.push_undo();
+                    self.insert_at(resp.add_to_timeline, self.playhead, None);
+                    self.after_edit();
+                }
+                // Import button / dragged-in linked-folder files: import, then board them — same
+                // two-steps-when-fresh/one-when-not undo shape as the OS-file-drop path in handle_drops
+                if !resp.import_paths.is_empty() {
+                    let ids = self.import_files(&resp.import_paths);
+                    let snap = self.project.to_json();
+                    let mut changed = false;
+                    for &id in &ids {
+                        changed |= moodboard_ui::moodboard_add(&mut self.project, id);
+                    }
+                    if changed {
+                        push_undo_json(&mut self.undo, &mut self.redo, snap);
+                        self.after_edit();
+                    }
+                }
+                if resp.edited {
+                    self.after_edit();
+                }
+            }
+            Pane::History => {
+                // deleting entries mutates the undo stack directly, not the project — no undo/push_undo
+                // of its own (history bookkeeping isn't itself a project edit).
+                let App { history, undo, project, .. } = self;
+                history_ui::show(ui, history, undo, project);
+            }
             Pane::AutoCut => {
                 self.autocut_drawing = true;
                 let changed = {
@@ -2657,8 +2864,8 @@ impl App {
                 let was = self.tools.recording;
                 let snap_was = self.settings.snap;
                 {
-                    let App { tools: st, palette, settings, .. } = self;
-                    tools::show(ui, st, palette, &mut settings.snap);
+                    let App { tools: st, palette, settings, hotkeys, .. } = self;
+                    tools::show(ui, st, palette, &mut settings.snap, hotkeys);
                 }
                 if self.tools.recording != was {
                     self.toggle_draw_recording(self.tools.recording);
@@ -2747,25 +2954,36 @@ impl App {
                 c.y.value = cy as f64;
             }
             if let Some(s) = c.shape.as_mut() {
-                s.fill = tools.fill;
-                // line / arrow / drawing have no fill, so a transparent stroke would draw nothing at all:
-                // fall back to the brush colour (and then the fill) instead of an invisible clip
-                let stroke_only = matches!(kind, ShapeKind::Line | ShapeKind::Arrow | ShapeKind::Draw);
-                s.stroke = match (stroke_only, tools.stroke[3], tools.brush[3]) {
-                    (true, 0, 0) => [tools.fill[0], tools.fill[1], tools.fill[2], 255],
-                    (true, 0, _) => tools.brush,
-                    _ => tools.stroke,
-                };
-                s.stroke_width = tools.stroke_width;
-                s.sides = tools.sides;
-                s.corner = tools.corner;
-                s.draw_rate = tools.draw_rate;
-                s.page = tools.page;
+                // shared with the preview's live drag (tools::shape_style_from_tools) so what was
+                // previewed is exactly what lands on the clip
+                let styled = tools::shape_style_from_tools(tools, kind);
+                s.fill = styled.fill;
+                s.stroke = styled.stroke;
+                s.stroke_width = styled.stroke_width;
+                s.sides = styled.sides;
+                s.corner = styled.corner;
+                s.draw_rate = styled.draw_rate;
+                s.page = styled.page;
                 if let Some((_, _, w, h)) = place {
                     s.w.value = w as f64;
                     s.h.value = h as f64;
                 }
             }
+        }
+        self.selection = vec![id];
+        self.after_edit();
+        id
+    }
+
+    /// Text tool drag-to-add: places a new text clip's centre where the user dragged on the viewport
+    /// (`PreviewResponse::new_text`). The drag's half-extents have no matching `TextStyle` field (text
+    /// boxes size to their content, not a fixed rect) so only the centre is used.
+    fn add_text(&mut self, cx: f32, cy: f32) -> Id {
+        self.push_undo();
+        let id = self.project.add_text_clip(self.playhead, 5.0);
+        if let Some(c) = self.project.clip_mut(id) {
+            c.x.value = cx as f64;
+            c.y.value = cy as f64;
         }
         self.selection = vec![id];
         self.after_edit();
@@ -2996,7 +3214,10 @@ impl App {
                 None => {
                     let ids = self.import_files(&[out.clone()]);
                     self.library.selected = ids.last().copied();
-                    self.toast(format!("Converted → {}", out.file_name().unwrap_or_default().to_string_lossy()));
+                    self.toast_with_folder(
+                        format!("Converted → {}", out.file_name().unwrap_or_default().to_string_lossy()),
+                        out,
+                    );
                 }
             }
         }
@@ -3400,7 +3621,7 @@ impl App {
             return;
         };
         match write_image(&frame, &opts) {
-            Ok(()) => self.toast(format!("Frame saved to {}", opts.out.display())),
+            Ok(()) => self.toast_with_folder(format!("Frame saved to {}", opts.out.display()), opts.out),
             Err(e) => self.toast(format!("Frame export failed: {e}")),
         }
     }
@@ -3559,9 +3780,11 @@ impl App {
         let text = self.hotkeys.text(a);
         let glyph = self.glyph_for(a);
         // ponytail: the glyph is painted over a left gutter made of spaces in the label — that keeps
-        // egui's own menu-button sizing/shortcut layout instead of reimplementing the widget
+        // egui's own menu-button sizing/shortcut layout instead of reimplementing the widget.
+        // Gutter must clear the 24px-wide icon box drawn below (starts at +4px); at the 13px menu
+        // font a space is ~3px wide, so 5 spaces (~15px) undershot it and the label crowded the icon.
         let label = match glyph {
-            Some(_) => format!("     {}", a.label()),
+            Some(_) => format!("         {}", a.label()),
             None => a.label().to_string(),
         };
         let b = egui::Button::new(label).shortcut_text(text);
@@ -3632,7 +3855,7 @@ impl App {
 
     fn view_menu(&mut self, ui: &mut egui::Ui, out: &mut Vec<Action>) {
         use Action::*;
-        const PANES: [(Pane, Option<Action>); 16] = [
+        const PANES: [(Pane, Option<Action>); 18] = [
             (Pane::Preview, None),
             (Pane::Timeline, None),
             (Pane::Tools, Some(ToggleTools)),
@@ -3649,6 +3872,8 @@ impl App {
             (Pane::Planner, Some(TogglePlanner)),
             (Pane::AutoCut, Some(Action::AutoCut)),
             (Pane::Tracking, None),
+            (Pane::Moodboard, None),
+            (Pane::History, None),
         ];
         for (pane, action) in PANES {
             let mut v = self.layout.is_visible(pane);
@@ -3695,7 +3920,8 @@ impl App {
                     if ui.button(name).clicked() {
                         ui.close();
                         self.layout.push_undo(self.layout.to_json());
-                        let (undo, redo) = (std::mem::take(&mut self.layout.undo), std::mem::take(&mut self.layout.redo));
+                        let (undo, redo) =
+                            (std::mem::take(&mut self.layout.undo), std::mem::take(&mut self.layout.redo));
                         self.layout = make();
                         (self.layout.undo, self.layout.redo) = (undo, redo);
                         self.layout_dirty = true;
@@ -3732,7 +3958,7 @@ impl App {
                     .save_file()
                 {
                     match std::fs::write(&out, self.layout.to_json()) {
-                        Ok(()) => self.toast("Layout exported"),
+                        Ok(()) => self.toast_with_folder("Layout exported", out),
                         Err(e) => self.toast(format!("Layout export failed: {e}")),
                     }
                 }
@@ -3896,6 +4122,13 @@ impl App {
                 self.menu_item(ui, CopyAttributes, has_sel, &mut out);
                 self.menu_item(ui, PasteAttributes, has_sel && self.attrs.is_some(), &mut out);
                 ui.separator();
+                self.menu_item(ui, MarkIn, true, &mut out);
+                self.menu_item(ui, MarkOut, true, &mut out);
+                self.menu_item(ui, ClearInOut, true, &mut out);
+                self.menu_item(ui, TrimToInOut, has_clips, &mut out);
+                self.menu_item(ui, RippleDeleteInOut, has_clips, &mut out);
+            });
+            ui.menu_button("Clip", |ui| {
                 self.menu_item(ui, AddText, true, &mut out);
                 self.menu_item(ui, AddShape, true, &mut out);
                 self.menu_item(ui, AddAdjustment, true, &mut out);
@@ -3911,12 +4144,6 @@ impl App {
                 self.menu_item(ui, OpenParentSequence, self.project.editing.is_some(), &mut out);
                 self.menu_item(ui, SaveTemplate, has_sel, &mut out);
                 self.menu_item(ui, ApplyFlow, self.selection.len() == 2, &mut out);
-                ui.separator();
-                self.menu_item(ui, MarkIn, true, &mut out);
-                self.menu_item(ui, MarkOut, true, &mut out);
-                self.menu_item(ui, ClearInOut, true, &mut out);
-                self.menu_item(ui, TrimToInOut, has_clips, &mut out);
-                self.menu_item(ui, RippleDeleteInOut, has_clips, &mut out);
             });
             ui.menu_button("Timeline", |ui| {
                 self.menu_item(ui, AddVideoTrack, true, &mut out);
@@ -4029,6 +4256,8 @@ impl App {
             return;
         }
         let on_timeline = pos.map(|p| self.timeline.lanes_rect.contains(p)).unwrap_or(false);
+        // one-frame-stale, like `lanes_rect` above — see `MoodboardState::content_rect`'s doc comment
+        let on_moodboard = pos.map(|p| self.moodboard.content_rect.contains(p)).unwrap_or(false);
         if on_timeline {
             let p = pos.unwrap();
             let mut t = self.timeline.time_at(p.x).max(0.0);
@@ -4039,6 +4268,19 @@ impl App {
             let vt = track.filter(|&i| self.project.tracks[i].kind == TrackKind::Video);
             self.insert_at(ids, t, vt);
             self.after_edit();
+        } else if on_moodboard {
+            // snapshot after the import (which already pushed its own undo step if any file was fresh —
+            // same two-steps-when-fresh/one-when-not pattern as `replace_container_dialog`) so adding the
+            // moodboard entries is still undoable even when every dropped file was already a known asset
+            let snap = self.project.to_json();
+            let mut changed = false;
+            for &id in &ids {
+                changed |= moodboard_ui::moodboard_add(&mut self.project, id);
+            }
+            if changed {
+                push_undo_json(&mut self.undo, &mut self.redo, snap);
+                self.after_edit();
+            }
         } else {
             self.library.tab = 0;
             self.library.selected = ids.last().copied();
@@ -4312,7 +4554,10 @@ impl App {
             }
             // buffering: the clock is held while the read-ahead refills — say so over the video
             if buffering {
-                ui.put(egui::Rect::from_center_size(lb.center(), egui::vec2(32.0, 32.0)), egui::Spinner::new().size(32.0));
+                ui.put(
+                    egui::Rect::from_center_size(lb.center(), egui::vec2(32.0, 32.0)),
+                    egui::Spinner::new().size(32.0),
+                );
                 ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
             }
             if !has_video {
@@ -4613,9 +4858,14 @@ impl App {
                 frames: self.export_frames(),
                 metadata: Vec::new(),
             };
-            let prog = export::start_export(self.export_project(), opts, self.text.clone());
+            let mut project = self.export_project();
+            // MCP exports have no background opt-in either — "use_project_bg": true opts in per call
+            if !arg_bool(args, "use_project_bg").unwrap_or(false) {
+                project.preview_bg = crate::model::BackgroundMode::Black;
+            }
+            let prog = export::start_export(project, opts, self.text.clone());
             // same slot the UI uses: exclusion, the progress/Cancel window and the close guard all key off it
-            self.export = Some((prog.clone(), ExportKind::File));
+            self.export = Some((prog.clone(), ExportKind::File { path: out.clone() }));
             Ok((prog, out))
         } else {
             let src = PathBuf::from(req(arg_str(args, "path"), "path")?);
@@ -5116,15 +5366,21 @@ impl App {
                 Ok(json!({"ok": true}))
             }
             "notes.get" => Ok(json!({"notes": self.project.notes})),
+            // `notes` is now a titled list (see the planner's Notes tab); this tool predates that and
+            // keeps working against the first note (creating an untitled one if there isn't one yet).
             "notes.set" => {
                 let text = req(arg_str(args, "text"), "text")?;
+                if self.project.notes.is_empty() {
+                    self.project.add_note("");
+                }
+                let n = &mut self.project.notes[0];
                 if arg_bool(args, "append").unwrap_or(false) {
-                    if !self.project.notes.is_empty() {
-                        self.project.notes.push_str("\n\n");
+                    if !n.body.is_empty() {
+                        n.body.push_str("\n\n");
                     }
-                    self.project.notes.push_str(text);
+                    n.body.push_str(text);
                 } else {
-                    self.project.notes = text.to_string();
+                    n.body = text.to_string();
                 }
                 Ok(json!({"ok": true}))
             }
@@ -5758,7 +6014,7 @@ impl App {
         if let Some((prog, kind)) = &self.export {
             let prog = prog.clone();
             let title = match kind {
-                ExportKind::File => "Exporting…",
+                ExportKind::File { .. } => "Exporting…",
                 ExportKind::Overwrite { .. } => "Saving over the original…",
             };
             egui::Window::new(title)
@@ -5967,12 +6223,32 @@ impl eframe::App for App {
         self.poll_mcp(ctx);
 
         self.handle_drops(ctx);
+
+        // the planner's timer ticks HERE, every frame, so a countdown keeps counting, banks time onto
+        // its linked task, and notifies even while the Timer tab is hidden behind a sibling tab
+        {
+            let (banked, finished) = planner::tick(&mut self.planner, &mut self.project);
+            if banked {
+                // mark unsaved without the cost of a full after_edit() (undo entry, player refresh)
+                self.dirty = true;
+            }
+            if finished {
+                self.toast("Timer finished — time to stop");
+            }
+            if self.planner.timer.running {
+                ctx.request_repaint_after(std::time::Duration::from_millis(200));
+            }
+        }
+        // cleared so a frame where the Moodboard tab isn't the one actually drawn (a sibling tab in its
+        // group is active instead) can't have next frame's handle_drops match a stale rect from the last
+        // time it *was* drawn — `moodboard_ui::show` sets this back whenever it actually runs
+        self.moodboard.content_rect = egui::Rect::NOTHING;
         self.screenshot_tick(ctx);
 
         // hotkeys
         // the tool strip claims the bare letters (V/T/D/M, Shift+S) before the action table is polled, so
         // a rebound action can never shadow a tool
-        if let Some(t) = tools::handle_hotkeys(ctx, &mut self.tools) {
+        if let Some(t) = tools::handle_hotkeys(ctx, &self.hotkeys, &mut self.tools) {
             self.tools.tool = t;
             self.layout.reveal(Pane::Tools);
         }
@@ -6078,15 +6354,27 @@ impl eframe::App for App {
         }
 
         // toasts
-        self.toasts.retain(|(_, t)| t.elapsed().as_secs_f32() < 5.0);
+        // a toast with an Open Folder button needs time to be noticed AND clicked
+        self.toasts.retain(|t| t.at.elapsed().as_secs_f32() < if t.open_path.is_some() { 10.0 } else { 5.0 });
         if !self.toasts.is_empty() {
             egui::Area::new(egui::Id::new("toasts"))
                 .anchor(egui::Align2::RIGHT_BOTTOM, [-12.0, -12.0])
                 .order(egui::Order::Foreground)
                 .show(ctx, |ui| {
-                    for (msg, _) in &self.toasts {
+                    for t in &self.toasts {
                         egui::Frame::popup(ui.style()).show(ui, |ui| {
-                            ui.label(msg);
+                            ui.label(&t.msg);
+                            if let Some(p) = &t.open_path {
+                                if ui.small_button("Open Folder").clicked() {
+                                    let mut cmd = std::process::Command::new("explorer");
+                                    if p.is_dir() {
+                                        cmd.arg(p);
+                                    } else {
+                                        cmd.arg("/select,").arg(p);
+                                    }
+                                    let _ = cmd.spawn();
+                                }
+                            }
                         });
                     }
                 });
@@ -6099,6 +6387,17 @@ impl eframe::App for App {
 mod tests {
     use super::*;
     use crate::model::{Asset, Ease};
+
+    /// `App::new` needs a real `eframe::CreationContext` (a GL context), so there is no headless
+    /// App harness to build one against here — this tests the same `Toast` construction that
+    /// `toast`/`toast_with_folder` do (both are one-line wrappers around it).
+    #[test]
+    fn toast_with_folder_sets_open_path_plain_toast_does_not() {
+        let plain = Toast::new("saved");
+        assert!(plain.open_path.is_none());
+        let with_folder = Toast::with_folder("saved", PathBuf::from("C:/out.mp4"));
+        assert_eq!(with_folder.open_path, Some(PathBuf::from("C:/out.mp4")));
+    }
 
     #[test]
     fn box_blur_spreads_and_preserves_flat_areas() {
@@ -6221,12 +6520,14 @@ mod tests {
 
     #[test]
     fn undo_snapshot_is_capped_and_clears_redo() {
-        let (mut undo, mut redo) = (Vec::new(), vec!["r".to_string()]);
+        let mut undo: Vec<UndoEntry> = Vec::new();
+        let mut redo: Vec<UndoEntry> =
+            vec![UndoEntry { json: "r".into(), label: "r".into(), category: HistoryCategory::Editing, at: 0.0 }];
         for i in 0..205 {
             push_undo_json(&mut undo, &mut redo, i.to_string());
         }
         assert_eq!(undo.len(), 200);
-        assert_eq!(undo[0], "5");
+        assert_eq!(undo[0].json, "5");
         assert!(redo.is_empty());
     }
 
@@ -6485,8 +6786,8 @@ mod tests {
             (Action::AddLastTransition, "Ctrl+T"),
             (Action::CopyAttributes, "Ctrl+Alt+C"),
             (Action::PasteAttributes, "Ctrl+Alt+V"),
-            // the bare letters V/T/S/D/M belong to the tool strip, so this moved to Shift+M
-            (Action::AddMarker, "Shift+M"),
+            // bare M adds a marker (the user's explicit ask); the Marker tool sits on Shift+M
+            (Action::AddMarker, "M"),
             (Action::AddMask, "Ctrl+Shift+M"),
             (Action::ExportFrame, "Ctrl+Shift+F"),
         ] {

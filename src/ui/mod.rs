@@ -1,6 +1,6 @@
 //! egui UI. Dockable layout (ui/layout.rs) of panes: Library, Preview, Inspector, Effects, Transitions,
-//! Subtitles, Timeline, Curves, Planner, Auto-cut, Tracking — DaVinci-like by default, bare Windows-forms styling.
-//! Windows (Settings, Retime, Export) never block the editor.
+//! Subtitles, Timeline, Curves, Planner, Moodboard, Auto-cut, Tracking — DaVinci-like by default, bare
+//! Windows-forms styling. Windows (Settings, Retime, Export) never block the editor.
 
 pub mod app;
 pub mod autocut_ui;
@@ -10,12 +10,14 @@ pub mod effects_ui;
 pub mod export_ui;
 pub mod frame_ui;
 pub mod guides;
+pub mod history_ui;
 pub mod import_ui;
 pub mod inspector;
 pub mod layout;
 pub mod library;
 pub mod markers_ui;
 pub mod mixer_ui;
+pub mod moodboard_ui;
 pub mod nodes;
 pub mod paste_ui;
 pub mod planner;

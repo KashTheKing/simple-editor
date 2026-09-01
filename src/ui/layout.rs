@@ -5,7 +5,7 @@
 //! Default layout (DaVinci-like), two rows of four columns:
 //! top    = [Library | Preview with the Tools strip beneath it | Inspector | tabs(Curves, Nodes, Tracking)]
 //! bottom = [tabs(Effects, Transitions, Presets) | Timeline | tabs(Mixer, Auto-cut, Subtitles) |
-//!           tabs(Markers, Planner)].
+//!           tabs(Markers, Planner, Moodboard)].
 //! The Timeline is a column of its own rather than a tab, so nothing can ever hide it. `show` draws the
 //! tree in the given `ui` and each popped pane in its own viewport (closing that window docks the pane
 //! back); `draw(ui, pane)` renders a pane. Behaviour: tab titles = Pane::title, a pop-out button in the
@@ -55,10 +55,15 @@ pub enum Pane {
     Presets,
     /// Point / area tracking of a clip into a reusable project path.
     Tracking,
+    /// Standalone moodboard (`Project.moodboard`) — gallery/list/slideshow of reference assets, separate
+    /// from the per-task moodboards already on the Planner's items.
+    Moodboard,
+    /// Undo-stack history, grouped/searchable/filterable, exportable to Markdown.
+    History,
 }
 
 impl Pane {
-    pub const ALL: [Pane; 16] = [
+    pub const ALL: [Pane; 18] = [
         Pane::Preview,
         Pane::Timeline,
         Pane::Library,
@@ -75,6 +80,8 @@ impl Pane {
         Pane::Markers,
         Pane::Presets,
         Pane::Tracking,
+        Pane::Moodboard,
+        Pane::History,
     ];
     /// Panes added in round 3 — a stored layout without them is from an older version (see `from_json`).
     pub const ROUND3: [Pane; 4] = [Pane::Tools, Pane::Nodes, Pane::Mixer, Pane::Markers];
@@ -97,6 +104,8 @@ impl Pane {
             Pane::Markers => Glyph::Flag,
             Pane::Presets => Glyph::Bookmark,
             Pane::Tracking => Glyph::Target,
+            Pane::Moodboard => Glyph::GridIcon,
+            Pane::History => Glyph::Hourglass,
         }
     }
     pub fn title(self) -> &'static str {
@@ -117,6 +126,8 @@ impl Pane {
             Pane::Markers => "Markers",
             Pane::Presets => "Presets",
             Pane::Tracking => "Tracking",
+            Pane::Moodboard => "Moodboard",
+            Pane::History => "History",
         }
     }
 }
@@ -175,7 +186,7 @@ impl Layout {
         let looks = tabs(&mut tiles, &[Pane::Effects, Pane::Transitions, Pane::Presets]);
         let timeline = tiles.insert_pane(Pane::Timeline);
         let mix = tabs(&mut tiles, &[Pane::Mixer, Pane::AutoCut, Pane::Subtitles]);
-        let notes = tabs(&mut tiles, &[Pane::Markers, Pane::Planner]);
+        let notes = tabs(&mut tiles, &[Pane::Markers, Pane::Planner, Pane::Moodboard, Pane::History]);
         let bottom = row(&mut tiles, [(looks, 0.18), (timeline, 0.44), (mix, 0.2), (notes, 0.18)]);
         let mut rows = Linear::new(LinearDir::Vertical, vec![top, bottom]);
         rows.shares.set_share(top, 0.62);
@@ -203,7 +214,17 @@ impl Layout {
         let grade = tabs(&mut tiles, &[Pane::Curves, Pane::Nodes]);
         let timeline = tabs(
             &mut tiles,
-            &[Pane::Timeline, Pane::Tools, Pane::Mixer, Pane::AutoCut, Pane::Subtitles, Pane::Markers, Pane::Planner],
+            &[
+                Pane::Timeline,
+                Pane::Tools,
+                Pane::Mixer,
+                Pane::AutoCut,
+                Pane::Subtitles,
+                Pane::Markers,
+                Pane::Planner,
+                Pane::Moodboard,
+                Pane::History,
+            ],
         );
         let mut bottom = Linear::new(LinearDir::Horizontal, vec![grade, timeline]);
         bottom.shares.set_share(grade, 0.55);
@@ -242,6 +263,8 @@ impl Layout {
                 Pane::Presets,
                 Pane::Tracking,
                 Pane::Tools,
+                Pane::Moodboard,
+                Pane::History,
             ],
         );
         let preview = tiles.insert_pane(Pane::Preview);
@@ -770,7 +793,7 @@ mod tests {
                 vec![Pane::Effects, Pane::Transitions, Pane::Presets],
                 vec![Pane::Timeline],
                 vec![Pane::Mixer, Pane::AutoCut, Pane::Subtitles],
-                vec![Pane::Markers, Pane::Planner],
+                vec![Pane::Markers, Pane::Planner, Pane::Moodboard, Pane::History],
             ]
         );
         // the Preview column really is vertical (Tools beneath, not beside)

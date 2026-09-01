@@ -694,6 +694,11 @@ pub fn codec_args(ext: &str, encoder: &str, crf: u32, preset: &str, available: &
             enc = "libx264";
         }
         let preset = if preset.is_empty() { "medium" } else { preset };
+        // `crf` is stored on the x264 0..=51 scale (what the quality-percent slider maps through).
+        // Encoders on other scales get it converted HERE, at emission: vp9/av1 use 0..=63, and QSV's
+        // global_quality treats 0 as "unset" so its best real value is 1.
+        let crf63 = (crf as f64 * 63.0 / 51.0).round() as u32;
+        let crf_qsv = crf.max(1);
         video = match enc {
             "libx264" | "libx265" => {
                 format!("-c:v {enc} -preset {preset} -crf {crf} -pix_fmt yuv420p")
@@ -701,12 +706,12 @@ pub fn codec_args(ext: &str, encoder: &str, crf: u32, preset: &str, available: &
             "h264_nvenc" | "hevc_nvenc" => {
                 format!("-c:v {enc} -preset p4 -cq {crf} -b:v 0 -pix_fmt yuv420p")
             }
-            "h264_qsv" | "hevc_qsv" => format!("-c:v {enc} -global_quality {crf} -pix_fmt nv12"),
+            "h264_qsv" | "hevc_qsv" => format!("-c:v {enc} -global_quality {crf_qsv} -pix_fmt nv12"),
             "h264_amf" | "hevc_amf" => format!("-c:v {enc} -rc cqp -qp_i {crf} -qp_p {crf}"),
             "libvpx-vp9" => {
-                format!("-c:v libvpx-vp9 -crf {crf} -b:v 0 -row-mt 1 -cpu-used 2 -pix_fmt yuv420p")
+                format!("-c:v libvpx-vp9 -crf {crf63} -b:v 0 -row-mt 1 -cpu-used 2 -pix_fmt yuv420p")
             }
-            "libaom-av1" | "libsvtav1" => format!("-c:v {enc} -crf {crf} -pix_fmt yuv420p"),
+            "libaom-av1" | "libsvtav1" => format!("-c:v {enc} -crf {crf63} -pix_fmt yuv420p"),
             "mpeg4" => "-c:v mpeg4 -q:v 4 -pix_fmt yuv420p".into(),
             other => format!("-c:v {other}"),
         };
@@ -719,6 +724,32 @@ pub fn codec_args(ext: &str, encoder: &str, crf: u32, preset: &str, available: &
         v.extend(audio.split(' ').map(String::from));
     }
     v
+}
+
+/// User-facing quality percent (100 = best) -> the CRF `codec_args` actually uses (0 = best, 51 = worst).
+/// `pct` is expected pre-clamped to 0..=100 (the slider's own range); clamps again here as a safety net.
+pub fn crf_from_quality_percent(pct: u32) -> u32 {
+    let pct = pct.min(100) as f64;
+    (((100.0 - pct) / 100.0) * 51.0).round().clamp(0.0, 51.0) as u32
+}
+
+/// Inverse of `crf_from_quality_percent`, for displaying the slider from a stored `Settings.crf`.
+pub fn quality_percent_from_crf(crf: u32) -> u32 {
+    let crf = crf.min(51) as f64;
+    (100.0 - (crf / 51.0) * 100.0).round().clamp(0.0, 100.0) as u32
+}
+
+/// Rough estimated output size in bytes for the export progress/quality UI — NOT a guarantee, since CRF
+/// targets a quality level, not a bitrate. Video bitrate is extrapolated from a "reasonable quality" x264
+/// ballpark at CRF 23 (0.1 bits/pixel/frame), scaled by the x264 rule of thumb that every 6 CRF steps
+/// roughly halves/doubles bitrate; audio assumes one ~128kbps AAC-ish stereo track.
+pub fn estimate_export_bytes(width: u32, height: u32, fps: f64, duration_secs: f64, crf: u32) -> u64 {
+    let pixels_per_sec = width as f64 * height as f64 * fps;
+    let base_bitrate_bps = pixels_per_sec * 0.1;
+    let scale = 2f64.powf((23.0 - crf as f64) / 6.0);
+    let video_bitrate_bps = (base_bitrate_bps * scale).clamp(50_000.0, (pixels_per_sec * 2.0).max(50_000.0));
+    let audio_bitrate_bps = 128_000.0;
+    ((video_bitrate_bps + audio_bitrate_bps) / 8.0 * duration_secs.max(0.0)) as u64
 }
 
 pub const AUDIO_EXTS: &[&str] = &["mp3", "wav", "m4a", "flac", "ogg", "aac", "opus"];
@@ -890,6 +921,61 @@ pub(crate) mod tests {
     fn parse_encoder_list() {
         let s = " V..... = Video\n A..... = Audio\n ------\n V....D libx264  H.264\n A....D aac  AAC\n S..... srt  SubRip\n";
         assert_eq!(parse_encoders(s), vec!["libx264".to_string(), "aac".to_string()]);
+    }
+
+    /// The stored CRF is x264's 0..=51 scale; encoders on other scales get converted at emission.
+    /// VP9/AV1 use 0..=63 (an un-rescaled 51 was never "worst", compressing the whole slider into
+    /// 80% of the range) and QSV treats global_quality 0 as "unset" (best real value is 1).
+    #[test]
+    fn codec_args_convert_crf_scales_per_encoder() {
+        let has = |v: &[String], flag: &str, val: &str| v.windows(2).any(|w| w[0] == flag && w[1] == val);
+        let all = ["libx264", "libvpx-vp9", "libaom-av1", "h264_qsv"].map(String::from);
+        let v = codec_args("webm", "libvpx-vp9", 51, "medium", &all);
+        assert!(has(&v, "-crf", "63"), "vp9 worst = 63, got {v:?}");
+        let v = codec_args("webm", "libvpx-vp9", 0, "medium", &all);
+        assert!(has(&v, "-crf", "0"), "vp9 best stays 0: {v:?}");
+        let v = codec_args("mkv", "libaom-av1", 26, "medium", &all);
+        assert!(has(&v, "-crf", "32"), "av1 midpoint rescales 26 -> 32: {v:?}");
+        let v = codec_args("mp4", "h264_qsv", 0, "medium", &all);
+        assert!(has(&v, "-global_quality", "1"), "qsv 0 means unset — floor at 1: {v:?}");
+        let v = codec_args("mp4", "libx264", 18, "medium", &all);
+        assert!(has(&v, "-crf", "18"), "x264 passes through untouched: {v:?}");
+    }
+
+    #[test]
+    fn quality_percent_crf_conversion() {
+        assert_eq!(crf_from_quality_percent(100), 0);
+        assert_eq!(crf_from_quality_percent(50), 26);
+        assert_eq!(crf_from_quality_percent(0), 51);
+        assert_eq!(quality_percent_from_crf(0), 100);
+        assert_eq!(quality_percent_from_crf(51), 0);
+    }
+
+    #[test]
+    fn quality_percent_round_trip_within_tolerance() {
+        // Integer rounding both directions means this isn't exact; bound the drift instead.
+        for pct in [0, 10, 25, 33, 50, 66, 75, 90, 100] {
+            let crf = crf_from_quality_percent(pct);
+            let back = quality_percent_from_crf(crf);
+            let diff = (back as i32 - pct as i32).abs();
+            assert!(diff <= 2, "pct={pct} crf={crf} back={back} diff={diff}");
+        }
+    }
+
+    #[test]
+    fn estimate_bytes_sane_ballpark() {
+        // 1920x1080 @ 30fps, 60s, CRF 23, by hand: base = 1920*1080*30*0.1 = 6,220,800 bps;
+        // scale(23) = 1; + 128kbps audio = 6,348,800 bps; /8 * 60s = 47,616,000 bytes (~47.6 MB).
+        let bytes = estimate_export_bytes(1920, 1080, 30.0, 60.0, 23);
+        assert!((40_000_000..55_000_000).contains(&bytes), "{bytes}");
+    }
+
+    #[test]
+    fn estimate_bytes_crf_scaling_halves_roughly() {
+        let base = estimate_export_bytes(1920, 1080, 30.0, 60.0, 23);
+        let raised = estimate_export_bytes(1920, 1080, 30.0, 60.0, 29); // +6 CRF ~= half the bitrate
+        let ratio = raised as f64 / base as f64;
+        assert!((0.4..0.6).contains(&ratio), "ratio={ratio}");
     }
 
     #[test]

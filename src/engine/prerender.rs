@@ -602,7 +602,7 @@ mod tests {
 
         // irrelevant edits keep the key
         p.name = "renamed".into();
-        p.notes = "hello".into();
+        p.add_note("hello");
         assert_eq!(k0, key_for(&p, 0));
 
         // a clip move changes it

@@ -30,9 +30,29 @@ use crate::engine::shapes::ShapeRasterizer;
 use crate::engine::text::TextRasterizer;
 use crate::media::{DecoderPool, Frame};
 use crate::model::{
-    BlendMode, Clip, ClipKind, Mask, MaskShape, Project, Scaler, TextStyle, Track, TrackKind, Transition,
-    TransitionKind,
+    BackgroundMode, BlendMode, Clip, ClipKind, Mask, MaskShape, Project, Scaler, TextStyle, Track, TrackKind,
+    Transition, TransitionKind,
 };
+
+/// Clear the canvas to the project background (`Project::preview_bg`). Solid modes fill flat;
+/// `Checkerboard` paints the same fixed 16 px two-grey tile pattern as the GPU's `CHECKER_BODY`
+/// (0.60 / 0.80 → 153 / 204), so the two compositors agree pixel-for-pixel on tile size and tone.
+fn fill_background(out: &mut Frame, bg: BackgroundMode) {
+    match bg {
+        BackgroundMode::Black => out.fill([0, 0, 0, 255]),
+        BackgroundMode::White => out.fill([255, 255, 255, 255]),
+        BackgroundMode::Custom(c) => out.fill(c),
+        BackgroundMode::Checkerboard => {
+            let w = out.width as usize;
+            for (y, row) in out.rgba.chunks_exact_mut(w * 4).enumerate() {
+                for (x, px) in row.chunks_exact_mut(4).enumerate() {
+                    let g = if ((x / 16) + (y / 16)) % 2 == 0 { 153 } else { 204 };
+                    px.copy_from_slice(&[g, g, g, 255]);
+                }
+            }
+        }
+    }
+}
 
 /// Recursion limit for nested sequences.
 const MAX_DEPTH: usize = 8;
@@ -68,8 +88,9 @@ impl Placement {
 /// Placement of a clip's layer on a (cw, ch) canvas at timeline time t.
 /// `native` = the layer image size. With `contain` (video/images) the image is first fitted inside the
 /// canvas preserving aspect; text is already rendered at canvas scale so `contain = false`.
-/// Then: scale about the centre by `clip.scale`, offset by (clip.x, clip.y) project pixels (scaled to
-/// canvas), rotate by `clip.rotation`.
+/// Then: scale about the centre by `clip.scale` (with `clip.scale_x`/`clip.scale_y` as independent
+/// extra horizontal/vertical multipliers on top, for non-uniform stretch), offset by (clip.x, clip.y)
+/// project pixels (scaled to canvas), rotate by `clip.rotation`.
 pub fn placement(
     project: &Project,
     clip: &Clip,
@@ -89,11 +110,13 @@ fn placement_w(pw: u32, clip: &Clip, t: f64, native: (u32, u32), cw: u32, ch: u3
     let (nw, nh) = (native.0.max(1) as f32, native.1.max(1) as f32);
     let fit = if contain { (cw as f32 / nw).min(ch as f32 / nh) } else { 1.0 };
     let k = clip.scale.at(lt) as f32;
+    let kx = clip.scale_x.at(lt) as f32;
+    let ky = clip.scale_y.at(lt) as f32;
     Placement {
         cx: cw as f32 / 2.0 + clip.x.at(lt) as f32 * s,
         cy: ch as f32 / 2.0 + clip.y.at(lt) as f32 * s,
-        w: nw * fit * k,
-        h: nh * fit * k,
+        w: nw * fit * k * kx,
+        h: nh * fit * k * ky,
         rot: clip.rotation.at(lt) as f32,
         yaw: 0.0,
         pitch: 0.0,
@@ -229,7 +252,9 @@ impl Compositor {
         }
     }
 
-    /// Render a track list onto a fresh opaque-black canvas (recursion entry for nested sequences).
+    /// Render a track list onto a fresh opaque canvas cleared to `project.preview_bg` (recursion entry
+    /// for nested sequences — a nested sequence's unfilled area takes the same project background, which
+    /// matches the GPU path since its sequence layers come from this compositor too).
     /// `pw` = the "project width" the tracks' clips are placed against (project or sequence width).
     #[allow(clippy::too_many_arguments)]
     fn render_tracks(
@@ -246,7 +271,7 @@ impl Compositor {
         depth: usize,
     ) {
         out.resize(w, h);
-        out.fill([0, 0, 0, 255]);
+        fill_background(out, project.preview_bg);
         if w == 0 || h == 0 {
             return;
         }
@@ -1275,6 +1300,36 @@ mod tests {
         }
     }
 
+    /// The CPU compositor honours `Project::preview_bg` — it used to hardcode black, so the GPU
+    /// preview and every CPU-rendered frame (Export window, fallbacks, nested-sequence layers)
+    /// disagreed the moment the background was changed.
+    #[test]
+    fn cpu_canvas_uses_project_background() {
+        let mut project = Project::new();
+        let mut pool = DecoderPool::new(Backend::Ffmpeg);
+        let mut comp = Compositor::new();
+        let mut text = TextRasterizer::new();
+        let mut out = Frame::default();
+
+        comp.render(&project, 0.0, 64, 48, &mut pool, &mut text, &mut out);
+        assert_eq!(px(&out, 0, 0), [0, 0, 0, 255], "default stays black");
+
+        project.preview_bg = BackgroundMode::White;
+        comp.render(&project, 0.0, 64, 48, &mut pool, &mut text, &mut out);
+        assert_eq!(px(&out, 0, 0), [255, 255, 255, 255]);
+
+        project.preview_bg = BackgroundMode::Custom([10, 20, 30, 255]);
+        comp.render(&project, 0.0, 64, 48, &mut pool, &mut text, &mut out);
+        assert_eq!(px(&out, 63, 47), [10, 20, 30, 255]);
+
+        // checkerboard: same 16 px tiles and greys as the GPU shader (0.60 / 0.80 → 153 / 204)
+        project.preview_bg = BackgroundMode::Checkerboard;
+        comp.render(&project, 0.0, 64, 48, &mut pool, &mut text, &mut out);
+        assert_eq!(px(&out, 0, 0), [153, 153, 153, 255]);
+        assert_eq!(px(&out, 16, 0), [204, 204, 204, 255]);
+        assert_eq!(px(&out, 16, 16), [153, 153, 153, 255]);
+    }
+
     #[test]
     fn compositor_renders_fake_video() {
         let project = Project::from_media(fake_asset());
@@ -1353,6 +1408,33 @@ mod tests {
         comp.render(&project, 0.0, 320, 240, &mut pool, &mut text, &mut out);
         assert_eq!(px(&out, 160, 120), [0, 0, 255, 255]);
         assert_eq!(px(&out, 100, 120), [0, 0, 0, 255]); // scale 0.25 -> 80 px wide, centred
+    }
+
+    #[test]
+    fn placement_w_scale_x_y_default_matches_pre_existing_uniform_scale() {
+        // Regression guard: with scale_x/scale_y left at their 1.0 default, placement is byte-identical
+        // to the pre-existing uniform-`scale`-only formula (multiplying by 1.0 is a no-op).
+        let mut clip = Clip::new(1, ClipKind::Video, "c", 0.0, 4.0);
+        clip.scale.value = 3.0;
+        let p = placement_w(320, &clip, 0.0, (100, 50), 400, 400, false);
+        assert_eq!(p.w, 300.0); // 100 * 1.0(fit) * 3.0(scale) * 1.0(scale_x default)
+        assert_eq!(p.h, 150.0); // 50  * 1.0(fit) * 3.0(scale) * 1.0(scale_y default)
+    }
+
+    #[test]
+    fn placement_w_scale_x_y_independent_non_uniform_stretch() {
+        // scale (uniform) left at its 1.0 default; scale_x doubles width only.
+        let mut clip = Clip::new(1, ClipKind::Video, "c", 0.0, 4.0);
+        clip.scale_x.value = 2.0;
+        clip.scale_y.value = 1.0;
+        let native = (100u32, 50u32);
+        let p = placement_w(320, &clip, 0.0, native, 400, 400, false);
+        assert_eq!(p.w, 200.0);
+        assert_eq!(p.h, 50.0);
+        // genuinely non-uniform: w/h no longer matches the native aspect ratio, it's doubled by kx/ky.
+        let native_aspect = native.0 as f32 / native.1 as f32;
+        let placed_aspect = p.w / p.h;
+        assert!((placed_aspect - native_aspect * 2.0).abs() < 1e-6, "{placed_aspect} vs {native_aspect}");
     }
 
     /// Two abutting full-frame clips (red then blue) with a transition on the cut at t=2.

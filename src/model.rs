@@ -56,6 +56,31 @@ impl Scaler {
     }
 }
 
+/// Preview/export canvas background: what unfilled area of the frame clears to
+/// (`engine::gpu::GpuRenderer::render_canvas` is the one place that reads this). `Black` matches the
+/// hardcoded behaviour every project had before this setting existed.
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize, Default)]
+pub enum BackgroundMode {
+    /// Preview-only visual aid: bakes as literal grey squares on export, not real transparency.
+    Checkerboard,
+    #[default]
+    Black,
+    White,
+    Custom([u8; 4]),
+}
+
+impl BackgroundMode {
+    pub const ALL: [BackgroundMode; 3] = [BackgroundMode::Checkerboard, BackgroundMode::Black, BackgroundMode::White];
+    pub fn name(self) -> &'static str {
+        match self {
+            BackgroundMode::Checkerboard => "Checkerboard",
+            BackgroundMode::Black => "Black",
+            BackgroundMode::White => "White",
+            BackgroundMode::Custom(_) => "Custom",
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, Default, Hash)]
 pub enum BlendMode {
     #[default]
@@ -391,6 +416,10 @@ pub struct TextStyle {
     /// Background box behind the text; alpha 0 = none.
     pub box_color: [u8; 4],
     pub box_padding: f32,
+    /// Styled sub-ranges of `text` (char-indexed, `[start, end)`) that override some of the run-level
+    /// fields above for just that range; every field left `None` keeps inheriting this clip's style.
+    /// Empty for every project saved before spans existed (`#[serde(default)]` on the struct covers it).
+    pub spans: Vec<TextSpan>,
 }
 
 impl Default for TextStyle {
@@ -414,8 +443,37 @@ impl Default for TextStyle {
             letter_spacing: 0.0,
             box_color: [0, 0, 0, 0],
             box_padding: 8.0,
+            spans: Vec::new(),
         }
     }
+}
+
+/// A styled sub-range of `TextStyle::text`, addressed by CHAR index (not byte — `text` may hold
+/// multi-byte UTF-8), half-open `[start, end)`. Only run-level fields are overridable here; `align`,
+/// `line_spacing`, `box_color` and `box_padding` are paragraph-level and stay clip-wide.
+///
+/// Rendering (`engine::text`) honors `color`, `font`/`size`/`bold`/`italic` (glyph shape) and
+/// `letter_spacing` per span; `outline_width`, `outline_color`, `shadow`, `shadow_color`, `shadow_x`,
+/// `shadow_y`, `shadow_blur` are accepted here for a future pass but currently always draw with the
+/// clip's base style — see the `ponytail:` comment in `engine::text::TextRasterizer::rasterize`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct TextSpan {
+    pub start: usize,
+    pub end: usize,
+    pub font: Option<String>,
+    pub size: Option<f32>,
+    pub bold: Option<bool>,
+    pub italic: Option<bool>,
+    pub color: Option<[u8; 4]>,
+    pub outline_width: Option<f32>,
+    pub outline_color: Option<[u8; 4]>,
+    pub shadow: Option<bool>,
+    pub shadow_color: Option<[u8; 4]>,
+    pub shadow_x: Option<f32>,
+    pub shadow_y: Option<f32>,
+    pub shadow_blur: Option<f32>,
+    pub letter_spacing: Option<f32>,
 }
 
 impl TextStyle {
@@ -442,7 +500,82 @@ impl TextStyle {
         }
         (self.bold, self.italic, self.shadow, self.align).hash(&mut h);
         (self.color, self.outline_color, self.shadow_color, self.box_color).hash(&mut h);
+        self.spans.len().hash(&mut h);
+        for s in &self.spans {
+            (s.start, s.end).hash(&mut h);
+            (&s.font, s.bold, s.italic, s.shadow).hash(&mut h);
+            (s.color, s.outline_color, s.shadow_color).hash(&mut h);
+            for f in [s.size, s.outline_width, s.shadow_x, s.shadow_y, s.shadow_blur, s.letter_spacing] {
+                f.map(f32::to_bits).hash(&mut h);
+            }
+        }
         h.finish()
+    }
+
+    /// Drop spans that can never cover a character of `text` and clamp the rest to its char count —
+    /// called after any operation that installs spans wholesale (e.g. pasting a style whose ranges
+    /// index a different string). The rasterizer already ignores out-of-range spans defensively; this
+    /// keeps them out of the saved file so they can't silently resurrect on a later text edit.
+    pub fn clamp_spans(&mut self) {
+        let n = self.text.chars().count();
+        for s in &mut self.spans {
+            s.end = s.end.min(n);
+        }
+        self.spans.retain(|s| s.start < s.end);
+    }
+
+    /// Keep span ranges attached to the characters they styled across ONE text edit (`old` → the
+    /// current `self.text`). The edit is located by common char prefix/suffix; boundaries after it
+    /// shift by the length delta, and a boundary inside the replaced region clamps to the edit's
+    /// edge (so a replaced styled word stays styled, and a span fully inside the edit disappears).
+    /// One contiguous edit at a time is all an egui `TextEdit` produces per frame.
+    pub fn remap_spans(&mut self, old: &str) {
+        if self.spans.is_empty() || old == self.text {
+            return;
+        }
+        let o: Vec<char> = old.chars().collect();
+        let n: Vec<char> = self.text.chars().collect();
+        let p = o.iter().zip(n.iter()).take_while(|(a, b)| a == b).count();
+        let s = o[p..].iter().rev().zip(n[p..].iter().rev()).take_while(|(a, b)| a == b).count();
+        let (old_end, new_end) = (o.len() - s, n.len() - s); // o[p..old_end] was replaced by n[p..new_end]
+        let delta = new_end as isize - old_end as isize;
+        let map = |i: usize, is_end: bool| -> usize {
+            if i <= p {
+                i
+            } else if i >= old_end {
+                (i as isize + delta) as usize
+            } else if is_end {
+                p // the styled tail was replaced — keep the surviving head
+            } else {
+                new_end // the styled head was replaced — keep the surviving tail
+            }
+        };
+        for sp in &mut self.spans {
+            (sp.start, sp.end) = (map(sp.start, false), map(sp.end, true));
+        }
+        self.clamp_spans();
+    }
+
+    /// Remove per-char style overrides covering `[a, b)` (char indices): spans fully inside are
+    /// dropped, ones straddling an edge are trimmed, and a span strictly containing the range is
+    /// split in two. The inspector's "Clear Style on Selection".
+    pub fn clear_span_range(&mut self, a: usize, b: usize) {
+        if a >= b {
+            return;
+        }
+        let mut split_tails = Vec::new();
+        for s in &mut self.spans {
+            if s.start < a && s.end > b {
+                split_tails.push(TextSpan { start: b, end: s.end, ..s.clone() });
+                s.end = a;
+            } else if s.start < a {
+                s.end = s.end.min(a);
+            } else {
+                s.start = s.start.max(b);
+            }
+        }
+        self.spans.extend(split_tails);
+        self.spans.retain(|s| s.start < s.end);
     }
 }
 
@@ -1867,11 +2000,28 @@ pub struct Marker {
     pub note: String,
     /// Index into `Project.labels` + 1 (0 = none).
     pub label: u8,
+    /// Glyph name (`ui::tools::Glyph::name()` / `from_name`) — same string convention as
+    /// `Settings.icon_overrides`. Missing on old projects: the container-level `#[serde(default)]`
+    /// above pulls it (and `sequence`) from `Marker::default()` below.
+    pub icon: String,
+    /// Which sequence this marker was created on (`None` = the main timeline). Project-level
+    /// markers only, for scoping `Project.markers` per sequence — clip markers already scope
+    /// through their clip and ignore this field.
+    pub sequence: Option<Id>,
 }
 
 impl Default for Marker {
     fn default() -> Self {
-        Self { id: 0, t: 0.0, duration: 0.0, name: String::new(), note: String::new(), label: 0 }
+        Self {
+            id: 0,
+            t: 0.0,
+            duration: 0.0,
+            name: String::new(),
+            note: String::new(),
+            label: 0,
+            icon: "flag".to_string(),
+            sequence: None,
+        }
     }
 }
 
@@ -2255,6 +2405,13 @@ pub struct Clip {
     pub y: Animated,
     #[serde(default = "a1")]
     pub scale: Animated,
+    /// Additional horizontal-only multiplier on top of `scale` (1 = no-op). Groundwork for independent
+    /// non-uniform scaling; final horizontal factor is `scale.at(lt) * scale_x.at(lt)`.
+    #[serde(default = "a1")]
+    pub scale_x: Animated,
+    /// Additional vertical-only multiplier on top of `scale` (1 = no-op). See `scale_x`.
+    #[serde(default = "a1")]
+    pub scale_y: Animated,
     #[serde(default = "a0")]
     pub rotation: Animated,
     #[serde(default = "a1")]
@@ -2320,6 +2477,8 @@ impl Clip {
             x: a0(),
             y: a0(),
             scale: a1(),
+            scale_x: a1(),
+            scale_y: a1(),
             rotation: a0(),
             opacity: a1(),
             blend: BlendMode::Normal,
@@ -2444,8 +2603,19 @@ impl Clip {
             self.speed_curve.value = speed;
         }
     }
-    pub fn animated(&self) -> [&Animated; 8] {
-        [&self.x, &self.y, &self.scale, &self.rotation, &self.opacity, &self.volume, &self.pan, &self.speed_curve]
+    pub fn animated(&self) -> [&Animated; 10] {
+        [
+            &self.x,
+            &self.y,
+            &self.scale,
+            &self.scale_x,
+            &self.scale_y,
+            &self.rotation,
+            &self.opacity,
+            &self.volume,
+            &self.pan,
+            &self.speed_curve,
+        ]
     }
     /// Every keyframeable property including effect parameters.
     pub fn all_animated_mut(&mut self) -> Vec<&mut Animated> {
@@ -2453,6 +2623,8 @@ impl Clip {
             &mut self.x,
             &mut self.y,
             &mut self.scale,
+            &mut self.scale_x,
+            &mut self.scale_y,
             &mut self.rotation,
             &mut self.opacity,
             &mut self.volume,
@@ -2504,6 +2676,8 @@ impl Clip {
                 ("Position X", &mut self.x),
                 ("Position Y", &mut self.y),
                 ("Scale", &mut self.scale),
+                ("Scale X", &mut self.scale_x),
+                ("Scale Y", &mut self.scale_y),
                 ("Rotation", &mut self.rotation),
                 ("Opacity", &mut self.opacity),
             ]
@@ -2698,6 +2872,46 @@ pub struct Stash {
     pub out_point: Option<f64>,
 }
 
+/// One entry in `Project.notes`: a markdown note with an optional title and colour label. Rendered
+/// with `egui_commonmark` in the planner's Notes tab. `Project.notes` used to be a single free-form
+/// string; `de_notes` migrates a non-empty old value into one untitled note.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct Note {
+    pub id: Id,
+    pub title: String,
+    /// Index into `Project.labels` + 1 (0 = none), same convention as `Marker::label`.
+    pub label: u8,
+    pub body: String,
+}
+
+/// `notes` was a single free-form string before it became a list of titled markdown notes; a
+/// non-empty old string becomes one untitled note (its placeholder id 0 is fixed up to a real one in
+/// `Project::from_json`, which is the only place with a `next_id` counter to draw from).
+fn de_notes<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Note>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StrOrNotes {
+        Str(String),
+        List(Vec<Note>),
+    }
+    Ok(match StrOrNotes::deserialize(d)? {
+        StrOrNotes::Str(s) if !s.trim().is_empty() => vec![Note { body: s, ..Default::default() }],
+        StrOrNotes::Str(_) => Vec::new(),
+        StrOrNotes::List(v) => v,
+    })
+}
+
+/// One item on the standalone Moodboard pane (`Project.moodboard`): a project asset plus free-form
+/// label tags. These are plain user-typed words, not indices into `Project.labels` like everything
+/// else that carries a `label` field — the moodboard's filter row is a text/chip filter, not a colour.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct MoodItem {
+    pub asset: Id,
+    pub labels: Vec<String>,
+}
+
 /// Planner item: a checkable task with notes, colour, nested sub-tasks and a moodboard of assets.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -2712,6 +2926,12 @@ pub struct PlanItem {
     pub assets: Vec<Id>,
     pub asset_notes: Vec<String>,
     pub children: Vec<PlanItem>,
+    /// Optional short checklist ("label", done) shown compactly under the item when non-empty.
+    pub requirements: Vec<(String, bool)>,
+    /// Seconds accumulated by the planner's Timer tab while linked to this item. The timer's own
+    /// running state (mode, start time, whether it's live) is session-scoped UI state, not project
+    /// data — it lives in `ui::planner::PlannerState`, not here.
+    pub tracked_seconds: f64,
 }
 
 impl Default for PlanItem {
@@ -2725,6 +2945,8 @@ impl Default for PlanItem {
             assets: Vec::new(),
             asset_notes: Vec::new(),
             children: Vec::new(),
+            requirements: Vec::new(),
+            tracked_seconds: 0.0,
         }
     }
 }
@@ -2761,6 +2983,8 @@ pub struct Project {
     pub subtitle_cont_suffix: String,
     /// Compositor resampling quality.
     pub scaler: Scaler,
+    /// Preview/export canvas background (checkerboard / solid / custom colour).
+    pub preview_bg: BackgroundMode,
     /// Colour labels (name + colour), editable by the user.
     pub labels: Vec<Label>,
     /// Timeline markers (sorted by time).
@@ -2774,7 +2998,10 @@ pub struct Project {
     pub main_stash: Option<Stash>,
     /// Planner (nested tasks with moodboards) and free-form notes (process / ideas / style).
     pub plan: Vec<PlanItem>,
-    pub notes: String,
+    #[serde(default, deserialize_with = "de_notes")]
+    pub notes: Vec<Note>,
+    /// Standalone moodboard (`ui::moodboard_ui`) — separate from the per-task moodboards in `plan`.
+    pub moodboard: Vec<MoodItem>,
     /// Saved drawing / polygon outlines, reusable as motion paths (see `PathAsset`).
     pub paths: Vec<PathAsset>,
     next_id: Id,
@@ -2808,6 +3035,7 @@ impl Project {
             subtitle_cont_prefix: String::new(),
             subtitle_cont_suffix: String::new(),
             scaler: Scaler::Bilinear,
+            preview_bg: BackgroundMode::Black,
             labels: default_labels(),
             markers: Vec::new(),
             buses: Vec::new(),
@@ -2815,7 +3043,8 @@ impl Project {
             editing: None,
             main_stash: None,
             plan: Vec::new(),
-            notes: String::new(),
+            notes: Vec::new(),
+            moodboard: Vec::new(),
             paths: Vec::new(),
             next_id: 0,
         };
@@ -3767,7 +3996,8 @@ impl Project {
         }
         rm(&mut self.plan, id);
     }
-    /// All asset ids referenced by moodboards (never counted as "unused").
+    /// All asset ids referenced by any moodboard — the per-task planner moodboards and the standalone
+    /// Moodboard pane alike — never counted as "unused".
     pub fn plan_assets(&self) -> std::collections::HashSet<Id> {
         fn walk(items: &[PlanItem], out: &mut std::collections::HashSet<Id>) {
             for i in items {
@@ -3777,7 +4007,21 @@ impl Project {
         }
         let mut s = std::collections::HashSet::new();
         walk(&self.plan, &mut s);
+        s.extend(self.moodboard.iter().map(|m| m.asset));
         s
+    }
+
+    // ---------- notes ----------
+    pub fn add_note(&mut self, title: impl Into<String>) -> Id {
+        let id = self.new_id();
+        self.notes.push(Note { id, title: title.into(), ..Default::default() });
+        id
+    }
+    pub fn note_mut(&mut self, id: Id) -> Option<&mut Note> {
+        self.notes.iter_mut().find(|n| n.id == id)
+    }
+    pub fn remove_note(&mut self, id: Id) {
+        self.notes.retain(|n| n.id != id);
     }
 
     // ---------- usage ----------
@@ -3988,11 +4232,61 @@ impl Project {
     }
 
     // ---------- markers ----------
+    /// Stamped with `self.editing` so the marker only shows on the sequence (or main timeline) it was
+    /// created on — see `markers_ui::rows`.
     pub fn add_marker(&mut self, t: f64, name: impl Into<String>) -> Id {
         let id = self.new_id();
-        self.markers.push(Marker { id, t: t.max(0.0), name: name.into(), ..Default::default() });
+        self.markers.push(Marker {
+            id,
+            t: t.max(0.0),
+            name: name.into(),
+            sequence: self.editing,
+            ..Default::default()
+        });
         self.sort_markers();
         id
+    }
+    /// Move a project-level marker to the nearest clip EDGE (start or end) on the current sequence's
+    /// tracks (`self.tracks`) — a marker just before a clip's end must snap forward to that end, not
+    /// jump back to the clip's start. No-op if the marker or a clip doesn't exist.
+    pub fn snap_marker_to_nearest_clip(&mut self, id: Id) {
+        let Some(t) = self.markers.iter().find(|m| m.id == id).map(|m| m.t) else { return };
+        let Some(nearest) = self
+            .all_clips()
+            .flat_map(|(_, c)| [c.start, c.end()])
+            .min_by(|a, b| (a - t).abs().total_cmp(&(b - t).abs()))
+        else {
+            return;
+        };
+        if let Some(m) = self.markers.iter_mut().find(|m| m.id == id) {
+            m.t = nearest.max(0.0);
+        }
+        self.sort_markers();
+    }
+    /// Convert a project-level marker into a clip-local marker on the nearest clip (by clip start),
+    /// keeping its name/note/label/icon and converting `t` from timeline-absolute to clip-local
+    /// (clamped to the clip's duration). Returns `false` (no-op) without a marker or a clip to attach to.
+    pub fn link_marker_to_closest_clip(&mut self, id: Id) -> bool {
+        let Some(pos) = self.markers.iter().position(|m| m.id == id) else { return false };
+        let t = self.markers[pos].t;
+        let Some(clip_id) = self
+            .all_clips()
+            .map(|(_, c)| (c.id, c.start))
+            .min_by(|(_, a), (_, b)| (a - t).abs().total_cmp(&(b - t).abs()))
+            .map(|(id, _)| id)
+        else {
+            return false;
+        };
+        let m = self.markers.remove(pos);
+        let Some(c) = self.clip_mut(clip_id) else {
+            self.markers.push(m); // clip vanished mid-lookup (shouldn't happen) — put it back
+            self.sort_markers();
+            return false;
+        };
+        let local_t = (t - c.start).clamp(0.0, c.duration);
+        c.markers.push(Marker { t: local_t, sequence: None, ..m });
+        c.markers.sort_by(|a, b| a.t.total_cmp(&b.t));
+        true
     }
     pub fn remove_marker(&mut self, id: Id) {
         self.markers.retain(|m| m.id != id);
@@ -4282,6 +4576,49 @@ impl Project {
         c.y.link = AnimLink::PathY(path);
         true
     }
+    /// Native (unscaled) pixel size of a clip's own footage: the asset's size for video/image, the
+    /// nested sequence's size for a `Sequence` clip. `None` for kinds with no meaningful size (text,
+    /// shape, adjustment, audio) or a footage clip missing its asset/sequence — mirrors
+    /// `GpuRenderer::native_size`, minus its decoded-frame fallback.
+    pub fn clip_native_size(&self, clip: &Clip) -> Option<(u32, u32)> {
+        let wh = match clip.kind {
+            ClipKind::Video | ClipKind::Image => self.asset(clip.asset).map(|a| (a.width, a.height)),
+            ClipKind::Sequence => self.sequence(clip.sequence).map(|s| (s.width, s.height)),
+            _ => None,
+        };
+        match wh {
+            Some((w, h)) if w > 0 && h > 0 => Some((w, h)),
+            _ => None,
+        }
+    }
+    /// Reset a clip's transform to fill the project canvas (any keyframes on x/y/scale/rotation are
+    /// wholesale-replaced — this is a reset, not a tween). `stretch = false` ("Fit to Screen") resets
+    /// x/y/scale/rotation/scale_x/scale_y to their defaults, which falls back to the engine's default
+    /// "contain" placement (letterboxed, native aspect preserved, centred). `stretch = true` ("Stretch to Screen")
+    /// additionally sets independent scale_x/scale_y so the footage fills the canvas edge to edge,
+    /// ignoring native aspect ratio. No-op (`false`) for a clip with no native size.
+    pub fn fit_clip_to_screen(&mut self, id: Id, stretch: bool) -> bool {
+        let Some((nw, nh)) = self.clip(id).and_then(|c| self.clip_native_size(c)) else { return false };
+        let (sx, sy) = if stretch {
+            let canvas_aspect = self.width as f64 / self.height as f64;
+            let native_aspect = nw as f64 / nh as f64;
+            if native_aspect >= canvas_aspect {
+                (1.0, native_aspect / canvas_aspect)
+            } else {
+                (canvas_aspect / native_aspect, 1.0)
+            }
+        } else {
+            (1.0, 1.0)
+        };
+        let Some(clip) = self.clip_mut(id) else { return false };
+        clip.x = a0();
+        clip.y = a0();
+        clip.scale = a1();
+        clip.rotation = a0(); // a rotated quad can't fill the canvas — "to screen" implies upright
+        clip.scale_x = Animated::new(sx);
+        clip.scale_y = Animated::new(sy);
+        true
+    }
     /// Re-bake every live link (path / expression) whose inputs changed. Called once per frame;
     /// costs one hash per linked property when nothing changed.
     pub fn refresh_links(&mut self) {
@@ -4397,6 +4734,8 @@ impl Project {
                 c.x = src.x.clone();
                 c.y = src.y.clone();
                 c.scale = src.scale.clone();
+                c.scale_x = src.scale_x.clone();
+                c.scale_y = src.scale_y.clone();
                 c.rotation = src.rotation.clone();
             }
             if set.opacity {
@@ -4426,9 +4765,24 @@ impl Project {
                 c.fade_out = src.fade_out;
                 c.bus = src.bus;
             }
-            if set.text {
-                if let Some(t) = &src.text {
-                    c.text = Some(t.clone());
+            if (set.text_content || set.text_style) && src.text.is_some() {
+                let s = src.text.as_ref().unwrap();
+                if set.text_content && set.text_style {
+                    c.text = Some(s.clone());
+                } else if set.text_style {
+                    // style only: keep the destination's own wording
+                    let content = c.text.as_ref().map(|t| t.text.clone());
+                    let dst = c.text.get_or_insert_with(Default::default);
+                    *dst = s.clone();
+                    if let Some(content) = content {
+                        dst.text = content;
+                    }
+                    // the copied spans index the SOURCE's wording — clamp them to the destination's
+                    // so no dangling range is saved (it could resurrect on a later text edit)
+                    dst.clamp_spans();
+                } else {
+                    // content only: keep the destination's own style
+                    c.text.get_or_insert_with(Default::default).text = s.text.clone();
                 }
             }
             if set.shape {
@@ -4467,6 +4821,7 @@ impl Project {
             .chain(p.buses.iter().map(|b| b.id))
             .chain(p.all_clips().flat_map(|(_, c)| c.markers.iter().map(|m| m.id)))
             .chain(p.all_clips().filter_map(|(_, c)| c.graph.as_ref()).flat_map(|g| g.nodes.iter().map(|n| n.id)))
+            .chain(p.notes.iter().map(|n| n.id))
             .chain(p.sequences.iter().map(|s| s.id))
             .chain(p.sequences.iter().flat_map(|s| s.tracks.iter().map(|t| t.id)))
             .chain(
@@ -4484,6 +4839,12 @@ impl Project {
             items.iter().map(|i| i.id.max(plan_max(&i.children))).max().unwrap_or(0)
         }
         p.next_id = p.next_id.max(max_id).max(plan_max(&p.plan));
+        // a note migrated from the old flat-string format (or a hand-edited one) has no real id yet
+        for i in 0..p.notes.len() {
+            if p.notes[i].id == 0 {
+                p.notes[i].id = p.new_id();
+            }
+        }
         if p.editing.is_some_and(|id| p.sequence(id).is_none()) {
             p.editing = None;
         }
@@ -4517,6 +4878,7 @@ impl Project {
             p.labels = default_labels();
         }
         p.markers.retain(|m| m.t.is_finite() && m.t >= 0.0);
+        p.moodboard.retain(|m| p.assets.iter().any(|a| a.id == m.asset));
         p.sort_markers();
         p.tidy();
         p.sort_cues();
@@ -4557,6 +4919,122 @@ mod tests {
             label: 0,
             description: String::new(),
         }
+    }
+
+    /// `paste_attributes` with only `text_style` set must NOT touch the destination clip's own
+    /// wording — the bug the user reported (pasting text attributes used to overwrite the text too,
+    /// since `AttrSet::text` copied the whole `TextStyle` including its content).
+    #[test]
+    fn paste_text_style_keeps_destination_wording_content_only_keeps_destination_style() {
+        let mut p = Project::new();
+        let mut src = Clip::new(1, ClipKind::Text, "src", 0.0, 4.0);
+        src.text = Some(TextStyle { text: "Hello".into(), size: 40.0, bold: true, ..Default::default() });
+        let mut dst = Clip::new(2, ClipKind::Text, "dst", 0.0, 4.0);
+        dst.text = Some(TextStyle { text: "World".into(), size: 72.0, bold: false, ..Default::default() });
+        let dst_id = dst.id;
+        p.tracks[0].clips.push(dst);
+
+        // style only: destination keeps its own wording, gains the source's look
+        let n = p.paste_attributes(&src, &[dst_id], AttrSet { text_style: true, ..AttrSet::NONE });
+        assert_eq!(n, 1);
+        let t = p.clip(dst_id).unwrap().text.as_ref().unwrap();
+        assert_eq!(t.text, "World", "style-only paste must not touch the wording");
+        assert_eq!((t.size, t.bold), (40.0, true), "style fields copy from the source");
+
+        // content only: destination keeps its (now-updated) style, gains the source's wording
+        p.paste_attributes(&src, &[dst_id], AttrSet { text_content: true, ..AttrSet::NONE });
+        let t = p.clip(dst_id).unwrap().text.as_ref().unwrap();
+        assert_eq!(t.text, "Hello", "content-only paste copies the wording");
+        assert_eq!((t.size, t.bold), (40.0, true), "content-only paste must not touch the style");
+    }
+
+    /// Style-only paste copies the source's spans, whose char ranges index the SOURCE wording — they
+    /// must be clamped to the destination's (shorter) text instead of dangling in the saved file.
+    #[test]
+    fn paste_text_style_clamps_spans_to_destination_wording() {
+        let mut p = Project::new();
+        let mut src = Clip::new(1, ClipKind::Text, "src", 0.0, 4.0);
+        src.text = Some(TextStyle {
+            text: "Hello beautiful world".into(),
+            spans: vec![
+                TextSpan { start: 6, end: 15, color: Some([255, 0, 0, 255]), ..Default::default() },
+                TextSpan { start: 0, end: 4, bold: Some(true), ..Default::default() },
+            ],
+            ..Default::default()
+        });
+        let mut dst = Clip::new(2, ClipKind::Text, "dst", 0.0, 4.0);
+        dst.text = Some(TextStyle { text: "Hi there".into(), ..Default::default() }); // 8 chars
+        p.tracks[0].clips.push(dst);
+        p.paste_attributes(&src, &[2], AttrSet { text_style: true, ..AttrSet::NONE });
+        let t = p.clip(2).unwrap().text.as_ref().unwrap();
+        assert_eq!(t.text, "Hi there");
+        assert_eq!(t.spans.len(), 2);
+        assert!(t.spans.iter().all(|s| s.end <= 8 && s.start < s.end), "{:?}", t.spans);
+    }
+
+    /// Span ranges follow the characters they styled across a text edit (type before / inside /
+    /// replace over), instead of silently pointing at whatever now sits at the old offsets.
+    #[test]
+    fn remap_spans_follows_the_styled_characters() {
+        let styled = |text: &str| TextStyle {
+            text: text.into(),
+            spans: vec![TextSpan { start: 6, end: 11, bold: Some(true), ..Default::default() }], // "World"
+            ..Default::default()
+        };
+
+        // insert before the span: it shifts right
+        let mut t = styled("Hello World");
+        t.text = "Hey, Hello World".into();
+        t.remap_spans("Hello World");
+        assert_eq!((t.spans[0].start, t.spans[0].end), (11, 16));
+
+        // type inside the span: it grows around the insertion
+        let mut t = styled("Hello World");
+        t.text = "Hello WoXrld".into();
+        t.remap_spans("Hello World");
+        assert_eq!((t.spans[0].start, t.spans[0].end), (6, 12));
+
+        // delete the whole styled word: the span disappears
+        let mut t = styled("Hello World");
+        t.text = "Hello ".into();
+        t.remap_spans("Hello World");
+        assert!(t.spans.is_empty());
+
+        // replace overlapping the span's head: the surviving tail stays styled
+        let mut t = styled("Hello World");
+        t.text = "HelZrld".into(); // replaced chars 3..8 ("lo Wo") with "Z"
+        t.remap_spans("Hello World");
+        assert_eq!((t.spans[0].start, t.spans[0].end), (4, 7)); // "rld"
+
+        // non-ASCII: char indices, not bytes
+        let mut t = TextStyle {
+            text: "héllo wörld".into(),
+            spans: vec![TextSpan { start: 6, end: 11, bold: Some(true), ..Default::default() }],
+            ..Default::default()
+        };
+        t.text = "ah héllo wörld".into();
+        t.remap_spans("héllo wörld");
+        assert_eq!((t.spans[0].start, t.spans[0].end), (9, 14));
+    }
+
+    /// "Clear Style on Selection": trims, drops, or splits spans overlapping the cleared range.
+    #[test]
+    fn clear_span_range_trims_drops_and_splits() {
+        let mut t = TextStyle {
+            text: "abcdefghij".into(),
+            spans: vec![
+                TextSpan { start: 0, end: 10, bold: Some(true), ..Default::default() }, // contains → split
+                TextSpan { start: 4, end: 6, italic: Some(true), ..Default::default() }, // inside → dropped
+                TextSpan { start: 0, end: 5, color: Some([1, 2, 3, 255]), ..Default::default() }, // head survives
+                TextSpan { start: 5, end: 10, size: Some(9.0), ..Default::default() },  // tail survives
+            ],
+            ..Default::default()
+        };
+        t.clear_span_range(4, 6);
+        let mut ranges: Vec<(usize, usize)> = t.spans.iter().map(|s| (s.start, s.end)).collect();
+        ranges.sort();
+        assert_eq!(ranges, vec![(0, 4), (0, 4), (6, 10), (6, 10)]);
+        assert!(t.spans.iter().all(|s| s.end <= 4 || s.start >= 6));
     }
 
     #[test]
@@ -4712,6 +5190,70 @@ mod tests {
         let old = p.to_json().replace("\"points\"", "\"was_not_a_field\"");
         let o = Project::from_json(&old).unwrap();
         assert!(o.clip(id).unwrap().shape.as_ref().unwrap().poly_points().is_none());
+    }
+
+    #[test]
+    fn fit_clip_to_screen_noop_without_native_size() {
+        let mut p = Project::new();
+        let id = p.add_shape_clip(ShapeKind::Rect, 0.0, 2.0);
+        assert!(!p.fit_clip_to_screen(id, false));
+        assert!(!p.fit_clip_to_screen(id, true));
+    }
+
+    #[test]
+    fn fit_clip_to_screen_resets_defaults_regardless_of_prior_values() {
+        let mut p = Project::new();
+        let aid = p.add_asset(asset(1, 5.0, 0));
+        let vt = p.tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        let mut c = Clip::new(101, ClipKind::Video, "v", 0.0, 5.0);
+        c.asset = aid;
+        c.x.value = 123.0;
+        c.y.value = -45.0;
+        c.scale.value = 3.0;
+        c.rotation.value = 30.0;
+        c.scale_x.value = 5.0;
+        c.scale_y.value = 0.2;
+        p.tracks[vt].clips.push(c);
+
+        assert!(p.fit_clip_to_screen(101, false));
+        let clip = p.clip(101).unwrap();
+        assert_eq!(clip.x.value, 0.0);
+        assert_eq!(clip.y.value, 0.0);
+        assert_eq!(clip.scale.value, 1.0);
+        assert_eq!(clip.rotation.value, 0.0, "a rotated quad can't fill the canvas");
+        assert_eq!(clip.scale_x.value, 1.0);
+        assert_eq!(clip.scale_y.value, 1.0);
+    }
+
+    /// Round-trips "Stretch to Screen" through the real placement formula: native 1280x720 (16:9,
+    /// same ratio the `asset()` helper always uses) placed on a 1080x1920 (9:16) canvas is
+    /// width-constrained, so the hand-derived scale_y is `native_aspect / canvas_aspect` — and the
+    /// resulting placement must fill the canvas exactly, both axes.
+    #[test]
+    fn fit_clip_to_screen_stretch_fills_canvas_exactly() {
+        let mut p = Project::new();
+        p.width = 1080;
+        p.height = 1920;
+        let aid = p.add_asset(asset(1, 5.0, 0)); // 1280x720, 16:9
+        let vt = p.tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        let mut c = Clip::new(100, ClipKind::Video, "v", 0.0, 5.0);
+        c.asset = aid;
+        c.x.value = 40.0; // pre-existing transform the reset must clear
+        c.scale.value = 2.0;
+        p.tracks[vt].clips.push(c);
+
+        assert!(p.fit_clip_to_screen(100, true));
+        let clip = p.clip(100).unwrap();
+        assert_eq!(clip.x.value, 0.0);
+        assert_eq!(clip.y.value, 0.0);
+        assert_eq!(clip.scale.value, 1.0);
+        let expected_sy = (1280.0_f64 / 720.0) / (1080.0 / 1920.0);
+        assert_eq!(clip.scale_x.value, 1.0);
+        assert!((clip.scale_y.value - expected_sy).abs() < 1e-12);
+
+        let placement = crate::engine::compose::placement(&p, clip, 0.0, (1280, 720), p.width, p.height, true);
+        assert!((placement.w - p.width as f32).abs() < 1e-3, "w = {} vs canvas {}", placement.w, p.width);
+        assert!((placement.h - p.height as f32).abs() < 1e-3, "h = {} vs canvas {}", placement.h, p.height);
     }
 
     #[test]
@@ -4954,6 +5496,96 @@ mod tests {
         assert_eq!(d.effects[0].kind, EffectKind::Blur);
     }
 
+    /// An old project file, saved before `scale_x`/`scale_y` existed, has no such keys in its JSON.
+    /// They must deserialize as the no-op multiplier (1.0) so old projects render unchanged.
+    #[test]
+    fn scale_x_y_default_to_noop_for_old_projects() {
+        let json = r#"{"id":1,"kind":"Video","name":"c","start":0.0,"duration":4.0,"scale":{"value":2.0}}"#;
+        let c: Clip = serde_json::from_str(json).unwrap();
+        assert_eq!(c.scale.value, 2.0, "old field is untouched");
+        assert_eq!(c.scale_x.value, 1.0);
+        assert_eq!(c.scale_y.value, 1.0);
+    }
+
+    /// An old project file, saved before `icon`/`sequence` existed, has no such keys. They must
+    /// deserialize as the flag glyph / main timeline, and roundtrip once set.
+    #[test]
+    fn marker_icon_and_sequence_default_for_old_projects() {
+        let json = r#"{"id":1,"t":3.0,"name":"m"}"#;
+        let m: Marker = serde_json::from_str(json).unwrap();
+        assert_eq!(m.icon, "flag");
+        assert_eq!(m.sequence, None);
+
+        let m2 = Marker { sequence: Some(7), icon: "star".into(), ..m };
+        let json = serde_json::to_string(&m2).unwrap();
+        assert_eq!(serde_json::from_str::<Marker>(&json).unwrap(), m2);
+    }
+
+    #[test]
+    fn add_marker_stamps_current_editing_sequence() {
+        let mut p = Project::new();
+        let main = p.add_marker(1.0, "main");
+        assert_eq!(p.marker_mut(main).unwrap().sequence, None);
+        p.editing = Some(99);
+        let seq = p.add_marker(2.0, "seq");
+        assert_eq!(p.marker_mut(seq).unwrap().sequence, Some(99));
+    }
+
+    #[test]
+    fn snap_marker_to_nearest_clip_moves_to_clip_start() {
+        let mut p = Project::new();
+        p.tracks[0].clips.push(Clip::new(1, ClipKind::Video, "a", 0.0, 2.0));
+        p.tracks[0].clips.push(Clip::new(2, ClipKind::Video, "b", 5.0, 2.0));
+        let mid = p.add_marker(4.0, "m");
+        p.snap_marker_to_nearest_clip(mid);
+        assert_eq!(p.marker_mut(mid).unwrap().t, 5.0, "closer to clip b's start than clip a's");
+    }
+
+    #[test]
+    fn link_marker_to_closest_clip_converts_to_clip_local() {
+        let mut p = Project::new();
+        p.tracks[0].clips.push(Clip::new(1, ClipKind::Video, "a", 10.0, 4.0));
+        let mid = p.add_marker(11.5, "beat");
+        p.marker_mut(mid).unwrap().note = "hit".into();
+        assert!(p.link_marker_to_closest_clip(mid));
+        assert!(p.markers.is_empty(), "removed from the project list");
+        let c = p.clip(1).unwrap();
+        assert_eq!(c.markers.len(), 1);
+        assert_eq!(c.markers[0].id, mid, "same id, just re-homed");
+        assert_eq!(c.markers[0].t, 1.5, "converted to clip-local time");
+        assert_eq!(c.markers[0].note, "hit", "note is preserved");
+    }
+
+    #[test]
+    fn link_marker_to_closest_clip_noop_without_clips() {
+        let mut p = Project::new(); // default tracks have no clips
+        let mid = p.add_marker(1.0, "m");
+        assert!(!p.link_marker_to_closest_clip(mid));
+        assert_eq!(p.markers.len(), 1, "left alone");
+    }
+
+    /// An old project file, saved before `preview_bg` existed, has no such key. It must deserialize as
+    /// `Black` so old projects (and a brand-new one) render exactly as before this setting existed.
+    #[test]
+    fn preview_bg_defaults_to_black_for_old_projects() {
+        let p = Project::from_json("{}").unwrap();
+        assert_eq!(p.preview_bg, BackgroundMode::Black);
+        assert_eq!(Project::new().preview_bg, BackgroundMode::Black);
+    }
+
+    #[test]
+    fn background_mode_roundtrips_through_json() {
+        for m in [
+            BackgroundMode::Checkerboard,
+            BackgroundMode::Black,
+            BackgroundMode::White,
+            BackgroundMode::Custom([10, 20, 30, 255]),
+        ] {
+            let json = serde_json::to_string(&m).unwrap();
+            assert_eq!(serde_json::from_str::<BackgroundMode>(&json).unwrap(), m);
+        }
+    }
+
     /// Every current kind is a pixel/GLSL effect — none apply to an audio clip yet (see the doc comment
     /// on `applies_to_audio`). This pins that so the effects panel's audio filter stays correct rather
     /// than silently drifting if a kind's classification is ever meant to change.
@@ -5050,6 +5682,80 @@ mod tests {
         assert!(p.asset(extra).is_some() && p.asset(third).is_none());
         p.plan_remove(a);
         assert!(p.plan.is_empty());
+    }
+
+    /// The standalone Moodboard pane's assets are protected from cleanup the same way the planner's
+    /// per-task moodboards already are.
+    #[test]
+    fn moodboard_assets_protected_from_cleanup() {
+        let mut p = Project::from_media(asset(0, 10.0, 1));
+        let kept = p.add_asset(asset(1, 3.0, 0));
+        let unused = p.add_asset(asset(2, 3.0, 0));
+        p.moodboard.push(MoodItem { asset: kept, labels: vec!["hero".into()] });
+        assert!(p.plan_assets().contains(&kept));
+        assert_eq!(p.remove_unused_assets(), 1);
+        assert!(p.asset(kept).is_some() && p.asset(unused).is_none());
+    }
+
+    /// An old project file (`notes` was one flat string) migrates a non-empty value into a single
+    /// untitled note with a real id; an old empty string, or a missing key, migrates to no notes at all.
+    #[test]
+    fn notes_migrate_from_old_string_format() {
+        let p = Project::from_json(r#"{"notes":"describe the process here"}"#).unwrap();
+        assert_eq!(p.notes.len(), 1);
+        assert_eq!(p.notes[0].title, "");
+        assert_eq!(p.notes[0].body, "describe the process here");
+        assert_ne!(p.notes[0].id, 0, "the placeholder id must be fixed up to a real one");
+
+        let p = Project::from_json(r#"{"notes":""}"#).unwrap();
+        assert!(p.notes.is_empty());
+        let p = Project::from_json("{}").unwrap();
+        assert!(p.notes.is_empty());
+    }
+
+    /// The current list-of-notes format round-trips (and a fresh project starts with none).
+    #[test]
+    fn notes_add_edit_roundtrip() {
+        let mut p = Project::new();
+        assert!(p.notes.is_empty());
+        let id = p.add_note("Style");
+        p.note_mut(id).unwrap().body = "**bold** ideas".into();
+        p.note_mut(id).unwrap().label = 2;
+        let mut q = Project::from_json(&p.to_json()).unwrap();
+        assert_eq!(q.notes.len(), 1);
+        assert_eq!(q.notes[0].title, "Style");
+        assert_eq!(q.notes[0].body, "**bold** ideas");
+        assert_eq!(q.notes[0].label, 2);
+        q.remove_note(id);
+        assert!(q.notes.is_empty());
+    }
+
+    /// `requirements` / `tracked_seconds` (added for the Timer tab and the compact checklist) round-trip
+    /// and default to empty/zero for a plan item written before either field existed.
+    #[test]
+    fn plan_item_requirements_and_tracked_seconds_roundtrip() {
+        let mut p = Project::new();
+        let id = p.plan_add(None, "Edit intro");
+        {
+            let it = p.plan_item_mut(id).unwrap();
+            it.requirements.push(("Colour graded".into(), false));
+            it.requirements.push(("Music licensed".into(), true));
+            it.tracked_seconds = 125.5;
+        }
+        let q = Project::from_json(&p.to_json()).unwrap();
+        assert_eq!(
+            q.plan[0].requirements,
+            vec![("Colour graded".to_string(), false), ("Music licensed".to_string(), true)]
+        );
+        assert_eq!(q.plan[0].tracked_seconds, 125.5);
+
+        // an old plan item JSON without either field defaults to empty/zero
+        let old = Project::from_json(
+            r#"{"plan":[{"id":1,"title":"Old task","done":false,"notes":"","color":0,"assets":[],"asset_notes":[],"children":[]}]}"#,
+        )
+        .unwrap();
+        assert!(old.plan[0].requirements.is_empty());
+        assert_eq!(old.plan[0].tracked_seconds, 0.0);
     }
 
     #[test]
@@ -5314,7 +6020,12 @@ pub struct AttrSet {
     pub mask: bool,
     pub speed: bool,
     pub audio: bool,
-    pub text: bool,
+    /// The text clip's wording (`TextStyle::text`) — separate from `text_style` so pasting a look
+    /// doesn't overwrite the destination's own words.
+    pub text_content: bool,
+    /// Every visual text field (font/size/bold/italic/colour/outline/shadow/spacing/align/box/spans)
+    /// except the wording itself.
+    pub text_style: bool,
     pub shape: bool,
     pub label: bool,
     pub markers: bool,
@@ -5331,7 +6042,8 @@ impl Default for AttrSet {
             mask: true,
             speed: false,
             audio: true,
-            text: false,
+            text_content: false,
+            text_style: false,
             shape: false,
             label: true,
             markers: false,
@@ -5349,7 +6061,8 @@ impl AttrSet {
         mask: false,
         speed: false,
         audio: false,
-        text: false,
+        text_content: false,
+        text_style: false,
         shape: false,
         label: false,
         markers: false,
@@ -5365,7 +6078,8 @@ impl AttrSet {
             ("Mask", &mut self.mask),
             ("Speed / reverse / freeze", &mut self.speed),
             ("Audio (volume, pan, fades, bus)", &mut self.audio),
-            ("Text style", &mut self.text),
+            ("Text content (wording)", &mut self.text_content),
+            ("Text style", &mut self.text_style),
             ("Shape style", &mut self.shape),
             ("Colour label", &mut self.label),
             ("Markers", &mut self.markers),

@@ -68,6 +68,13 @@ pub struct LibraryState {
     /// Tree nodes whose open state differs from the default (project folders start open, Recent and
     /// folders on disk start closed). Keys: "recent", "f:<folder>", `dir_key(path)`.
     pub flipped: Vec<String>,
+    /// `flipped` from the instant the search box went from empty to non-empty; restored verbatim the
+    /// instant it goes back to empty. `None` while not searching — doubles as that flag, so no separate
+    /// bool tracks "was searching last frame" (see `sync_search_expand`).
+    pub search_flipped: Option<Vec<String>>,
+    /// Keys the CURRENT search has already auto-opened, so each is forced open exactly once — a user
+    /// re-collapsing one mid-search must stick, not fight a per-frame re-open. Cleared with the search.
+    pub search_opened: Vec<String>,
     /// (folder being renamed, edit buffer = new last segment)
     pub rename_folder: Option<(String, String)>,
     /// (parent, edit buffer) — "" parent = top level
@@ -739,7 +746,10 @@ fn row(
 }
 
 /// Gallery cell: a picture box with the kind tag in its corner and the name under it. Shared by the
-/// asset gallery and the reuse sections; the caller decides what the click means.
+/// asset gallery and the reuse sections; the caller decides what the click means. An optional trailing
+/// button on the name line reserves its own width first — the gallery analog of `row()`'s reserved
+/// button slot — so a long name truncates before it instead of pushing it past the tile's right edge.
+/// Returns (tile response, button clicked).
 #[allow(clippy::too_many_arguments)]
 fn tile(
     ui: &mut egui::Ui,
@@ -752,7 +762,16 @@ fn tile(
     palette: &Palette,
     art: Art,
     w: f32,
-) -> egui::Response {
+    button: Option<&str>,
+) -> (egui::Response, bool) {
+    // Width of the trailing button (+ spacing) so the name line stops before it (see `row()`).
+    let reserve = button.map_or(0.0, |b| {
+        let font = egui::TextStyle::Button.resolve(ui.style());
+        ui.painter().layout_no_wrap(b.to_owned(), font, egui::Color32::PLACEHOLDER).size().x
+            + ui.spacing().button_padding.x * 2.0
+            + ui.spacing().item_spacing.x
+    });
+    let mut name_rect = egui::Rect::NOTHING;
     let src = crate::ui::drag_source(ui, id, payload, |ui| {
         ui.set_max_width(w);
         ui.vertical(|ui| {
@@ -766,15 +785,34 @@ fn tile(
                 egui::TextStyle::Small.resolve(ui.style()),
                 palette.text_dim,
             );
-            let name = RichText::new(name).color(tint);
-            ui.add(egui::Label::new(if selected { name.strong() } else { name }).truncate());
+            name_rect = ui
+                .horizontal(|ui| {
+                    ui.set_max_width((w - reserve).max(0.0));
+                    let name = RichText::new(name).color(tint);
+                    ui.add(egui::Label::new(if selected { name.strong() } else { name }).truncate());
+                })
+                .response
+                .rect;
         });
     });
     let r = src;
     if selected {
         ui.painter().rect_stroke(r.rect, 2.0, egui::Stroke::new(1.0, palette.selection), egui::StrokeKind::Inside);
     }
-    r
+    // Put the button in the reserved slot on the name line, same reason as `row()`: appending it after
+    // the name could push it past the tile's own right edge instead of stopping at it.
+    let clicked = button.is_some_and(|b| {
+        let gap = ui.spacing().item_spacing.x;
+        let slot = egui::Rect::from_min_size(
+            egui::pos2(name_rect.right() + gap, name_rect.top()),
+            egui::vec2((reserve - gap).max(0.0), name_rect.height()),
+        );
+        let br = ui.put(slot, egui::Button::new(b).small());
+        #[cfg(test)]
+        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("tile_btn_right"), br.rect.right()));
+        br.clicked()
+    });
+    (r, clicked)
 }
 
 /// TextEdit for inline renames; Some(text) once editing finishes with a non-empty name.
@@ -931,6 +969,9 @@ fn browser(
     let planned = project.plan_assets();
     // a search or a filter chip flattens "Imported" into its hits, the way an explorer shows search results
     let flat = !state.search.is_empty() || state.kind_filter != 0 || state.label_filter != 0 || state.unused_only;
+    // "Imported" flattens above instead of showing its tree, but "Global" doesn't — open its Recent/
+    // linked-folder branches down to whatever the search box currently matches.
+    sync_search_expand(state, project, settings);
 
     // the preview owns the bottom of the pane, so it never scrolls away with the list
     preview_panel(ui, state, project, settings, thumbs, live, labels, palette, resp, &mut ops, &mut op_start);
@@ -1175,10 +1216,13 @@ fn toolbar(
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 3.0;
             ui.weak(RichText::new("View").small());
-            for (i, n) in ["List", "Gallery"].iter().enumerate() {
-                if ui.selectable_label(state.view == i as u8, RichText::new(*n).small()).clicked() {
-                    state.view = i as u8;
-                }
+            let list_id = egui::Id::new("lib_view_list");
+            if icon_button(ui, palette, list_id, Glyph::ListIcon, "List view", state.view == 0).clicked() {
+                state.view = 0;
+            }
+            let gallery_id = egui::Id::new("lib_view_gallery");
+            if icon_button(ui, palette, gallery_id, Glyph::GridIcon, "Gallery view", state.view == 1).clicked() {
+                state.view = 1;
             }
             if icon_button(ui, palette, egui::Id::new("lib_zoom_out"), Glyph::Letter('-'), "Smaller", false).clicked() {
                 state.zoom = (state.zoom / 1.25).clamp(ZOOM_MIN, ZOOM_MAX);
@@ -1451,6 +1495,79 @@ fn dir_key(path: &str) -> String {
     format!("d:{path}")
 }
 
+/// Every directory between `root` and `dir` (both inclusive), each as its `dir_key` — the chain a search
+/// match under `dir` needs opened so it draws without the user expanding each level by hand.
+fn dir_ancestors(root: &str, dir: &str) -> Vec<String> {
+    let mut keys = Vec::new();
+    let mut cur = dir.to_string();
+    loop {
+        keys.push(dir_key(&cur));
+        if cur == root {
+            break;
+        }
+        let parent = split_path(&cur).1;
+        if parent.is_empty() {
+            break; // malformed path — stop instead of looping forever
+        }
+        cur = parent.to_string();
+    }
+    keys
+}
+
+/// Auto-expands the Global tab's Recent group and linked-folder branches down to every file that
+/// currently matches the search box (only ever opens — a folder with no match inside it is left exactly
+/// as the user had it, open or closed), and restores whatever was open before the search the moment the
+/// box goes back to empty. Reads `state.dirs`, the already-read directory cache, never a fresh scan — a
+/// folder nobody has expanded yet can't surface a match here any more than it can draw one.
+fn sync_search_expand(state: &mut LibraryState, project: &Project, settings: &Settings) {
+    if state.search.is_empty() {
+        if let Some(snapshot) = state.search_flipped.take() {
+            state.flipped = snapshot;
+        }
+        state.search_opened.clear();
+        return;
+    }
+    if state.search_flipped.is_none() {
+        state.search_flipped = Some(state.flipped.clone());
+    }
+    let (q, kind, label) = (state.search.as_str(), state.kind_filter, state.label_filter);
+    let mut open: Vec<String> = Vec::new();
+    if settings.recent_assets.iter().any(|r| recent_matches(r, q, kind, label)) {
+        open.push("recent".to_string());
+    }
+    for (dir, entries) in &state.dirs {
+        let Some(entries) = entries else { continue };
+        if !entries.iter().any(|(p, is_dir)| !*is_dir && path_matches(p, q, kind)) {
+            continue;
+        }
+        // longest matching root, and only on a path-separator boundary — a plain starts_with let
+        // root C:/media claim C:/mediaXYZ/clips and, with nested linked roots, keyed the wrong chain
+        let root = project
+            .linked_folders
+            .iter()
+            .filter(|r| {
+                dir == r.as_str()
+                    || (dir.len() > r.len()
+                        && dir.starts_with(r.as_str())
+                        && matches!(dir.as_bytes()[r.len()], b'/' | b'\\'))
+            })
+            .max_by_key(|r| r.len());
+        if let Some(root) = root {
+            open.extend(dir_ancestors(root.as_str(), dir));
+        }
+    }
+    for key in open {
+        // once per search: if the user has since collapsed an auto-opened folder, leave it collapsed
+        if state.search_opened.contains(&key) {
+            continue;
+        }
+        if !state.flipped.iter().any(|k| *k == key) {
+            state.flipped.push(key.clone());
+        }
+        state.search_opened.push(key);
+    }
+}
+
 /// Shared borrows for the tree rows: they recurse, and would otherwise thread a dozen arguments each.
 struct Tree<'a, 'b> {
     state: &'a mut LibraryState,
@@ -1691,10 +1808,11 @@ impl Tree<'_, '_> {
         let art = file_art(ui, self.thumbs, &a.path, (w * 0.56 * 2.0) as u32);
         let id = egui::Id::new(("tile", a.id));
         let payload = DragPayload::Asset(a.id);
-        let r = tile(ui, id, payload, selected, kind_tag(a.kind), &a.name(), tint, self.palette, art, w);
+        let button = selected.then_some("Add");
+        let (r, add) = tile(ui, id, payload, selected, kind_tag(a.kind), &a.name(), tint, self.palette, art, w, button);
         let (aid, path) = (a.id, a.path.clone());
         self.hit(ui, &r, Pick::Asset(aid), &path);
-        if r.double_clicked() {
+        if add || r.double_clicked() {
             self.resp.add_to_timeline.push(aid);
         }
         self.asset_menu(&r, i);
@@ -1933,7 +2051,8 @@ impl Tree<'_, '_> {
         let id = egui::Id::new(("file_tile", recent, path));
         let payload = DragPayload::Path(path.to_string());
         let tint = tint.unwrap_or(self.palette.text);
-        let r = tile(ui, id, payload, selected, kind_tag_for_class(class), &name, tint, self.palette, art, w);
+        let (r, _) =
+            tile(ui, id, payload, selected, kind_tag_for_class(class), &name, tint, self.palette, art, w, None);
         self.file_click(ui, &r, path, recent);
         r.on_hover_text(path);
     }
@@ -2241,7 +2360,7 @@ fn reuse_ui(
                     },
                     _ => Art::Icon(icon),
                 };
-                tile(ui, id, payload, false, tag, &name, palette.text, palette, art, TILE * zoom)
+                tile(ui, id, payload, false, tag, &name, palette.text, palette, art, TILE * zoom, None).0
             } else {
                 row(ui, id, payload, false, None, |ui| {
                     glyph(ui, icon, palette);
@@ -2321,6 +2440,43 @@ mod tests {
         assert!(path_matches(r"C:\pop\kick.wav", "kick", 0));
         assert!(!path_matches(r"C:\pop\kick.wav", "pop", 0));
         assert!(path_matches(r"C:\sfx\pop_01.wav", "pop", 0));
+    }
+
+    /// A search auto-expands the Global tree down to a match nested under a linked folder (without
+    /// forcing open a branch that has none), and folding the box back to empty restores exactly what
+    /// was open before the search started.
+    #[test]
+    fn search_expands_and_restores_the_disk_tree() {
+        let root = r"C:\media".to_string();
+        let sub = r"C:\media\clips".to_string();
+        let hit = r"C:\media\clips\sunset.mp4".to_string();
+        let mut state = LibraryState::default();
+        // the tree as the user left it: the root open, its "clips" subfolder still closed
+        state.flipped.push(dir_key(&root));
+        state.dirs.push((root.clone(), Some(vec![(sub.clone(), true)])));
+        state.dirs.push((sub.clone(), Some(vec![(hit.clone(), false)])));
+        let mut project = Project::new();
+        project.linked_folders.push(root.clone());
+        let settings = Settings::default();
+
+        // typing a match opens every ancestor down to the file
+        state.search = "sunset".to_string();
+        sync_search_expand(&mut state, &project, &settings);
+        assert!(state.flipped.contains(&dir_key(&root)), "the root must stay open");
+        assert!(state.flipped.contains(&dir_key(&sub)), "the matching subfolder must auto-open");
+        assert_eq!(state.search_flipped, Some(vec![dir_key(&root)]), "the pre-search state is snapshotted once");
+
+        // narrowing to no match never force-closes what the search opened, and never re-snapshots
+        state.search = "nope".to_string();
+        sync_search_expand(&mut state, &project, &settings);
+        assert!(state.flipped.contains(&dir_key(&sub)), "auto-opened folders stay open while still searching");
+        assert_eq!(state.search_flipped, Some(vec![dir_key(&root)]), "the original snapshot is not overwritten");
+
+        // clearing the box restores exactly what was open before the search began
+        state.search.clear();
+        sync_search_expand(&mut state, &project, &settings);
+        assert_eq!(state.flipped, vec![dir_key(&root)], "the tree is restored to its pre-search state");
+        assert!(state.search_flipped.is_none());
     }
 
     #[test]
@@ -2683,6 +2839,40 @@ mod tests {
         }
     }
 
+    /// `tile()`'s trailing button (gallery-view "Add") must stay inside the tile's own width — same
+    /// reserved-slot idea as `row()`'s button, so a long name can't push it off the tile's right edge.
+    #[test]
+    fn tile_button_stays_inside_the_tile() {
+        let palette = Palette::new(true, egui::Color32::WHITE);
+        let ctx = egui::Context::default();
+        let long_name = "a very long asset name that keeps going and going and going.mp4";
+        let (mut tile_left, mut btn_right) = (f32::NAN, f32::NAN);
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let (r, _) = tile(
+                    ui,
+                    egui::Id::new("t"),
+                    DragPayload::Template(String::new()),
+                    true,
+                    "V",
+                    long_name,
+                    egui::Color32::WHITE,
+                    &palette,
+                    Art::Icon(Glyph::FilmStrip),
+                    TILE,
+                    Some("Add"),
+                );
+                tile_left = r.rect.left();
+                btn_right = ui.ctx().data(|d| d.get_temp(egui::Id::new("tile_btn_right")).unwrap_or(f32::NAN));
+            });
+        });
+        assert!(
+            btn_right <= tile_left + TILE + 1.0,
+            "the Add button overflows the tile: right={btn_right}, tile edge={}",
+            tile_left + TILE
+        );
+    }
+
     /// Rect of the painted text `label` in a frame's shapes (None when it was never drawn).
     fn text_rect(shapes: &[egui::epaint::ClippedShape], label: &str) -> Option<egui::Rect> {
         shapes.iter().find_map(|c| match &c.shape {
@@ -2928,7 +3118,7 @@ mod tests {
                 ui.scope_builder(egui::UiBuilder::new().max_rect(pane), |ui| {
                     egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
                         tile_grid(ui, 0.0, &(0..8).collect::<Vec<usize>>(), TILE, |ui, &i| {
-                            let r = tile(
+                            let (r, _) = tile(
                                 ui,
                                 egui::Id::new(("g", i)),
                                 DragPayload::Template(String::new()),
@@ -2939,6 +3129,7 @@ mod tests {
                                 &Palette::new(true, egui::Color32::WHITE),
                                 Art::Icon(Glyph::FilmStrip),
                                 TILE,
+                                None,
                             );
                             ys.push(r.rect.top());
                         });
