@@ -72,6 +72,9 @@ pub struct LibraryState {
     /// instant it goes back to empty. `None` while not searching — doubles as that flag, so no separate
     /// bool tracks "was searching last frame" (see `sync_search_expand`).
     pub search_flipped: Option<Vec<String>>,
+    /// Keys the CURRENT search has already auto-opened, so each is forced open exactly once — a user
+    /// re-collapsing one mid-search must stick, not fight a per-frame re-open. Cleared with the search.
+    pub search_opened: Vec<String>,
     /// (folder being renamed, edit buffer = new last segment)
     pub rename_folder: Option<(String, String)>,
     /// (parent, edit buffer) — "" parent = top level
@@ -1521,6 +1524,7 @@ fn sync_search_expand(state: &mut LibraryState, project: &Project, settings: &Se
         if let Some(snapshot) = state.search_flipped.take() {
             state.flipped = snapshot;
         }
+        state.search_opened.clear();
         return;
     }
     if state.search_flipped.is_none() {
@@ -1536,14 +1540,31 @@ fn sync_search_expand(state: &mut LibraryState, project: &Project, settings: &Se
         if !entries.iter().any(|(p, is_dir)| !*is_dir && path_matches(p, q, kind)) {
             continue;
         }
-        if let Some(root) = project.linked_folders.iter().find(|r| dir.starts_with(r.as_str())) {
+        // longest matching root, and only on a path-separator boundary — a plain starts_with let
+        // root C:/media claim C:/mediaXYZ/clips and, with nested linked roots, keyed the wrong chain
+        let root = project
+            .linked_folders
+            .iter()
+            .filter(|r| {
+                dir == r.as_str()
+                    || (dir.len() > r.len()
+                        && dir.starts_with(r.as_str())
+                        && matches!(dir.as_bytes()[r.len()], b'/' | b'\\'))
+            })
+            .max_by_key(|r| r.len());
+        if let Some(root) = root {
             open.extend(dir_ancestors(root.as_str(), dir));
         }
     }
     for key in open {
-        if !state.flipped.iter().any(|k| *k == key) {
-            state.flipped.push(key);
+        // once per search: if the user has since collapsed an auto-opened folder, leave it collapsed
+        if state.search_opened.contains(&key) {
+            continue;
         }
+        if !state.flipped.iter().any(|k| *k == key) {
+            state.flipped.push(key.clone());
+        }
+        state.search_opened.push(key);
     }
 }
 

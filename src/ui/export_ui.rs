@@ -28,20 +28,17 @@ pub struct ExportUi {
     pub metadata: Vec<(String, String)>,
     /// "Use project background" checkbox — see `ExportChoice::use_project_bg`.
     pub use_project_bg: bool,
+    /// The quality percent as last shown for a given stored CRF — pct→CRF→pct round-trips lose up to
+    /// 2 % (52 CRF steps vs 101 slider positions), so without this a typed "85" snapped back to 84.
+    pub pct_cache: Option<(u32, u32)>,
 }
 
 pub struct ExportChoice {
     pub opts: ExportOptions,
     pub lossless: bool,
-    // TODO(export-bg): read this in `App::start_export_choice` — force the exported
-    // `Project::preview_bg` to `BackgroundMode::Black` when false, leave it as authored when true.
-    #[allow(dead_code)]
-    /// The "Use project background" checkbox. `ExportOptions` (engine/export.rs) has no field for this
-    /// yet, so the caller is the one that must act on it (see the TODO above). It would only change the
-    /// rendered picture for a `FrameSource::Gpu` export, too — `pick_and_build` below always builds
-    /// `FrameSource::Cpu`, which renders through `engine::compose::Compositor` (its own hardcoded black
-    /// fill, outside this change's file scope), so this checkbox is a passthrough with no visible effect
-    /// until the caller also routes the export through the GPU frame source.
+    /// The "Use project background" checkbox. `App::start_export_choice` acts on it: off forces the
+    /// exported clone's `preview_bg` to `Black` (the pre-setting behaviour), on keeps it as authored.
+    /// Works on both frame sources — `engine::compose` clears to `preview_bg` too (`fill_background`).
     pub use_project_bg: bool,
 }
 
@@ -153,11 +150,15 @@ pub fn show(
             ui.end_row();
 
             ui.label("Quality");
-            let mut pct = export::quality_percent_from_crf(settings.crf);
+            // the shown percent is cached per stored CRF: 101 slider positions quantize onto 52 CRF
+            // values, so recomputing from CRF every frame snapped a typed "85" back to 84
+            let mut pct = match state.pct_cache {
+                Some((c, p)) if c == settings.crf => p,
+                _ => export::quality_percent_from_crf(settings.crf),
+            };
             ui.add(egui::Slider::new(&mut pct, 0..=100).suffix("%"));
-            if pct != export::quality_percent_from_crf(settings.crf) {
-                settings.crf = export::crf_from_quality_percent(pct);
-            }
+            settings.crf = export::crf_from_quality_percent(pct);
+            state.pct_cache = Some((settings.crf, pct));
             ui.end_row();
 
             ui.label("Preset");
@@ -166,25 +167,32 @@ pub fn show(
             ui.end_row();
         });
 
-        let (w, h) = out_size;
-        let est_bytes = export::estimate_export_bytes(w, h, project.fps, project.duration(), settings.crf);
-        ui.weak(format!(
-            "~{} ({w}×{h} · {:.0} fps · {})",
-            format_bytes(est_bytes),
-            project.fps,
-            duration_text(project.duration())
-        ))
-        .on_hover_text("Estimated — actual size depends on the footage.");
-        let pct = export::quality_percent_from_crf(settings.crf);
-        let warning = match pct {
-            85..=100 => "",
-            60..=84 => "Quality will be reduced slightly.",
-            35..=59 => "Quality will be reduced a medium amount.",
-            15..=34 => "Quality will be reduced a large amount.",
-            _ => "The video will barely be recognizable at this compression level.",
-        };
-        if !warning.is_empty() {
-            ui.colored_label(ui.visuals().warn_fg_color, warning);
+        // meaningless for a lossless cut (-c copy ignores quality entirely)
+        if !state.lossless {
+            let (w, h) = out_size;
+            let est_bytes = export::estimate_export_bytes(w, h, project.fps, project.duration(), settings.crf);
+            ui.weak(format!(
+                "~{} ({w}×{h} · {:.0} fps · {})",
+                format_bytes(est_bytes),
+                project.fps,
+                duration_text(project.duration())
+            ))
+            .on_hover_text("Estimated — actual size depends on the footage (and audio-only formats ignore it).");
+            let pct = export::quality_percent_from_crf(settings.crf);
+            // bands anchored so the default (CRF 18 ~ 65 %, visually lossless for x264) does NOT warn
+            let warning = match pct {
+                65..=100 => "",
+                45..=64 => "Quality will be reduced slightly.",
+                25..=44 => "Quality will be reduced a medium amount.",
+                10..=24 => "Quality will be reduced a large amount.",
+                _ => "The video will barely be recognizable at this compression level.",
+            };
+            if !warning.is_empty() {
+                ui.colored_label(ui.visuals().warn_fg_color, warning);
+            }
+            if pct >= 95 {
+                ui.weak("Near-lossless — files will be very large.");
+            }
         }
 
         ui.add_space(2.0);
@@ -225,12 +233,11 @@ pub fn show(
         } else {
             state.lossless = false;
         }
-        ui.checkbox(&mut state.use_project_bg, "Use project background")
-            .on_hover_text(
-                "Bakes the preview's Background setting (see the preview's right-click menu) into the \
+        ui.checkbox(&mut state.use_project_bg, "Use project background").on_hover_text(
+            "Bakes the preview's Background setting (see the preview's right-click menu) into the \
                  export instead of black. Checkerboard bakes as literal grey squares, not real \
                  transparency — that needs an alpha-capable codec this checkbox does not add.",
-            );
+        );
         ui.weak("Audio extensions (mp3, wav, m4a, flac) export audio only; gif has no audio.");
         if settings.gpu || settings.preview_quality < 100 {
             // Settings ▸ Performance only changes what you watch, never what is written

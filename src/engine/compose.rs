@@ -30,9 +30,29 @@ use crate::engine::shapes::ShapeRasterizer;
 use crate::engine::text::TextRasterizer;
 use crate::media::{DecoderPool, Frame};
 use crate::model::{
-    BlendMode, Clip, ClipKind, Mask, MaskShape, Project, Scaler, TextStyle, Track, TrackKind, Transition,
-    TransitionKind,
+    BackgroundMode, BlendMode, Clip, ClipKind, Mask, MaskShape, Project, Scaler, TextStyle, Track, TrackKind,
+    Transition, TransitionKind,
 };
+
+/// Clear the canvas to the project background (`Project::preview_bg`). Solid modes fill flat;
+/// `Checkerboard` paints the same fixed 16 px two-grey tile pattern as the GPU's `CHECKER_BODY`
+/// (0.60 / 0.80 → 153 / 204), so the two compositors agree pixel-for-pixel on tile size and tone.
+fn fill_background(out: &mut Frame, bg: BackgroundMode) {
+    match bg {
+        BackgroundMode::Black => out.fill([0, 0, 0, 255]),
+        BackgroundMode::White => out.fill([255, 255, 255, 255]),
+        BackgroundMode::Custom(c) => out.fill(c),
+        BackgroundMode::Checkerboard => {
+            let w = out.width as usize;
+            for (y, row) in out.rgba.chunks_exact_mut(w * 4).enumerate() {
+                for (x, px) in row.chunks_exact_mut(4).enumerate() {
+                    let g = if ((x / 16) + (y / 16)) % 2 == 0 { 153 } else { 204 };
+                    px.copy_from_slice(&[g, g, g, 255]);
+                }
+            }
+        }
+    }
+}
 
 /// Recursion limit for nested sequences.
 const MAX_DEPTH: usize = 8;
@@ -232,7 +252,9 @@ impl Compositor {
         }
     }
 
-    /// Render a track list onto a fresh opaque-black canvas (recursion entry for nested sequences).
+    /// Render a track list onto a fresh opaque canvas cleared to `project.preview_bg` (recursion entry
+    /// for nested sequences — a nested sequence's unfilled area takes the same project background, which
+    /// matches the GPU path since its sequence layers come from this compositor too).
     /// `pw` = the "project width" the tracks' clips are placed against (project or sequence width).
     #[allow(clippy::too_many_arguments)]
     fn render_tracks(
@@ -249,7 +271,7 @@ impl Compositor {
         depth: usize,
     ) {
         out.resize(w, h);
-        out.fill([0, 0, 0, 255]);
+        fill_background(out, project.preview_bg);
         if w == 0 || h == 0 {
             return;
         }
@@ -1276,6 +1298,36 @@ mod tests {
             label: 0,
             description: String::new(),
         }
+    }
+
+    /// The CPU compositor honours `Project::preview_bg` — it used to hardcode black, so the GPU
+    /// preview and every CPU-rendered frame (Export window, fallbacks, nested-sequence layers)
+    /// disagreed the moment the background was changed.
+    #[test]
+    fn cpu_canvas_uses_project_background() {
+        let mut project = Project::new();
+        let mut pool = DecoderPool::new(Backend::Ffmpeg);
+        let mut comp = Compositor::new();
+        let mut text = TextRasterizer::new();
+        let mut out = Frame::default();
+
+        comp.render(&project, 0.0, 64, 48, &mut pool, &mut text, &mut out);
+        assert_eq!(px(&out, 0, 0), [0, 0, 0, 255], "default stays black");
+
+        project.preview_bg = BackgroundMode::White;
+        comp.render(&project, 0.0, 64, 48, &mut pool, &mut text, &mut out);
+        assert_eq!(px(&out, 0, 0), [255, 255, 255, 255]);
+
+        project.preview_bg = BackgroundMode::Custom([10, 20, 30, 255]);
+        comp.render(&project, 0.0, 64, 48, &mut pool, &mut text, &mut out);
+        assert_eq!(px(&out, 63, 47), [10, 20, 30, 255]);
+
+        // checkerboard: same 16 px tiles and greys as the GPU shader (0.60 / 0.80 → 153 / 204)
+        project.preview_bg = BackgroundMode::Checkerboard;
+        comp.render(&project, 0.0, 64, 48, &mut pool, &mut text, &mut out);
+        assert_eq!(px(&out, 0, 0), [153, 153, 153, 255]);
+        assert_eq!(px(&out, 16, 0), [204, 204, 204, 255]);
+        assert_eq!(px(&out, 16, 16), [153, 153, 153, 255]);
     }
 
     #[test]

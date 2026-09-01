@@ -182,7 +182,7 @@ pub fn show(
     ui.horizontal_wrapped(|ui| {
         let n = state.selected.len();
         ui.label(if n > 0 { format!("{n} selected") } else { String::new() });
-        let enabled = n >= 2;
+        let enabled = n >= 1; // bulk ops are also the ONLY route to snap/link a single marker
         let del = ui.add_enabled(enabled, egui::Button::new("Delete"));
         mark(ui, "bulk_delete", &del);
         if del.clicked() {
@@ -194,7 +194,7 @@ pub fn show(
         }
         let snap = ui
             .add_enabled(enabled, egui::Button::new("Snap to Nearest Clip"))
-            .on_hover_text("Move each selected timeline marker to the start of its nearest clip");
+            .on_hover_text("Move each selected timeline marker to its nearest clip edge (start or end)");
         mark(ui, "bulk_snap", &snap);
         if snap.clicked() {
             undo(project);
@@ -321,6 +321,11 @@ pub fn show(
                         if name_r.clicked() {
                             select_hit = true;
                             ctrl_toggle = mods.ctrl || mods.shift;
+                            // "when I click on a marker, it should reposition my playhead" — a plain
+                            // click seeks too (Ctrl/Shift keep pure multi-select, Go stays for hover-time)
+                            if !ctrl_toggle {
+                                out.seek = Some(m.t + row.offset);
+                            }
                         }
 
                         let go = ui.small_button("Go").on_hover_text(timecode(row.abs_t, fps));

@@ -14,7 +14,7 @@
 //! is down (timed, so the sketch replays), Mask edits the selected effect's / clip's mask.
 
 use crate::hotkeys::{Action, Hotkeys};
-use crate::model::{MaskShape, ShapeKind};
+use crate::model::{MaskShape, ShapeKind, ShapeStyle};
 use crate::theme::Palette;
 use eframe::egui;
 use egui::{Align2, Color32, CornerRadius, FontId, Key, Modifiers, Sense, Stroke, StrokeKind};
@@ -437,7 +437,9 @@ fn tool_action(tool: Tool) -> Option<Action> {
         Tool::Marker => Some(Action::ToolMarker),
         Tool::Cut => Some(Action::ToolCut),
         Tool::Stretch => Some(Action::ToolStretch),
-        Tool::Shape(_) | Tool::Zoom | Tool::Spacer => None,
+        Tool::Zoom => Some(Action::ToolZoom),
+        Tool::Spacer => Some(Action::ToolSpacer),
+        Tool::Shape(_) => None, // the 7 shapes cycle on one key (Shift+S), not one action each
     }
 }
 
@@ -457,6 +459,28 @@ pub fn tool_hotkey(hotkeys: &Hotkeys, tool: Tool) -> Option<String> {
 /// it, to cycle the mask shape). `None` for any other action. Shared by `handle_hotkeys` below and by
 /// `App::act`'s fallback arm for the rare case one of these actions fires through the general action
 /// table instead of the tool strip's own poll (e.g. invoked via scripting/MCP).
+/// The `ShapeStyle` a new shape clip will actually get from the current tool-strip picks — used by
+/// BOTH `App::add_shape` (creation) and the preview's live drag preview, so the drawn preview and the
+/// created clip can never drift apart in style.
+pub fn shape_style_from_tools(tools: &ToolsState, kind: ShapeKind) -> ShapeStyle {
+    let mut s = ShapeStyle::new(kind);
+    s.fill = tools.fill;
+    // line / arrow / drawing have no fill, so a transparent stroke would draw nothing at all:
+    // fall back to the brush colour (and then the fill) instead of an invisible clip
+    let stroke_only = matches!(kind, ShapeKind::Line | ShapeKind::Arrow | ShapeKind::Draw);
+    s.stroke = match (stroke_only, tools.stroke[3], tools.brush[3]) {
+        (true, 0, 0) => [tools.fill[0], tools.fill[1], tools.fill[2], 255],
+        (true, 0, _) => tools.brush,
+        _ => tools.stroke,
+    };
+    s.stroke_width = tools.stroke_width;
+    s.sides = tools.sides;
+    s.corner = tools.corner;
+    s.draw_rate = tools.draw_rate;
+    s.page = tools.page;
+    s
+}
+
 pub fn tool_for_action(action: Action, cur: Tool) -> Option<Tool> {
     Some(match action {
         Action::ToolSelect => Tool::Select,
@@ -466,11 +490,13 @@ pub fn tool_for_action(action: Action, cur: Tool) -> Option<Tool> {
         Action::ToolMarker => Tool::Marker,
         Action::ToolCut => Tool::Cut,
         Action::ToolStretch => Tool::Stretch,
+        Action::ToolZoom => Tool::Zoom,
+        Action::ToolSpacer => Tool::Spacer,
         _ => return None,
     })
 }
 
-const TOOL_ACTIONS: [Action; 7] = [
+const TOOL_ACTIONS: [Action; 9] = [
     Action::ToolSelect,
     Action::ToolText,
     Action::ToolDraw,
@@ -478,7 +504,29 @@ const TOOL_ACTIONS: [Action; 7] = [
     Action::ToolMarker,
     Action::ToolCut,
     Action::ToolStretch,
+    Action::ToolZoom,
+    Action::ToolSpacer,
 ];
+
+/// Like `InputState::consume_shortcut`, but the pressed modifiers must match EXACTLY
+/// (`Modifiers::matches_exact`) — egui's own matching is "logical" and IGNORES extra Shift/Alt on the
+/// press. This poll runs before the `Hotkeys` action table, so a logical match here would swallow
+/// every `Shift+<letter>` action sharing a tool's base key (it did: Shift+T/D/R and the old Shift+M).
+fn consume_shortcut_exact(i: &mut egui::InputState, ks: &egui::KeyboardShortcut) -> bool {
+    let mut hit = false;
+    i.events.retain(|e| {
+        if !hit {
+            if let egui::Event::Key { key, modifiers, pressed: true, .. } = e {
+                if *key == ks.logical_key && modifiers.matches_exact(ks.modifiers) {
+                    hit = true;
+                    return false;
+                }
+            }
+        }
+        true
+    });
+    hit
+}
 
 pub fn handle_hotkeys(ctx: &egui::Context, hotkeys: &Hotkeys, state: &mut ToolsState) -> Option<Tool> {
     if ctx.wants_keyboard_input() {
@@ -489,21 +537,16 @@ pub fn handle_hotkeys(ctx: &egui::Context, hotkeys: &Hotkeys, state: &mut ToolsS
         // table sees it — same trade-off the tool strip already makes for the tool letters below.
         // AddShape stays reachable from the Insert menu; give it a fresh binding in Settings > Hotkeys if
         // that regresses.
-        if i.consume_key(Modifiers::SHIFT, Key::S) {
+        if consume_shortcut_exact(i, &egui::KeyboardShortcut::new(Modifiers::SHIFT, Key::S)) {
             let next = Tool::Shape(next_shape(state.tool));
             state.tool = next;
             return Some(next);
         }
-        // most-specific shortcut first, exactly like `Hotkeys::poll_pass`: consume_shortcut ignores
-        // *extra* shift/alt, so if two of these were ever remapped onto the same base key (e.g. Cut on
-        // bare C, Mask rebound to Shift+C) the plain one could steal the modified one's press.
-        let mut order: Vec<(Action, Tool)> =
-            TOOL_ACTIONS.iter().map(|&a| (a, tool_for_action(a, state.tool).unwrap())).collect();
-        order.sort_by_key(|&(a, _)| {
-            std::cmp::Reverse(hotkeys.get(a).map_or(0u8, |k| k.modifiers.shift as u8 + k.modifiers.alt as u8))
-        });
-        for (action, tool) in order {
-            if hotkeys.get(action).is_some_and(|ks| i.consume_shortcut(&ks)) {
+        // exact-modifier matching, so no ordering games are needed: a tool on bare C can never steal
+        // Ctrl+C, and one on Shift+C never fires from Ctrl+Shift+C.
+        for action in TOOL_ACTIONS {
+            let tool = tool_for_action(action, state.tool).unwrap();
+            if hotkeys.get(action).is_some_and(|ks| consume_shortcut_exact(i, &ks)) {
                 return (tool != state.tool).then(|| {
                     state.tool = tool;
                     tool
@@ -1739,8 +1782,27 @@ mod tests {
         assert_eq!(h.state.tool, Tool::Mask(MaskShape::Rect));
         h.key(Key::G);
         assert_eq!(h.state.tool, Tool::Mask(MaskShape::Ellipse), "G steps through the mask shapes");
+        h.key_mod(Key::M, Modifiers::SHIFT);
+        assert_eq!(h.state.tool, Tool::Marker, "Shift+M selects the Marker tool (bare M adds a marker)");
+    }
+
+    /// Regression: the tool poll must match modifiers EXACTLY. egui's `consume_shortcut` matches
+    /// "logically" (extra Shift/Alt ignored), and since this poll runs before the `Hotkeys` table a
+    /// logical match ate every `Shift+<tool letter>` action — Shift+T (Add Text), Shift+D, Shift+R,
+    /// and the old Shift+M (Add Marker) all selected tools instead of firing.
+    #[test]
+    fn shifted_letters_are_left_for_the_action_table() {
+        let mut h = Harness::new();
+        h.state.tool = Tool::Select;
+        for key in [Key::T, Key::D, Key::R, Key::C, Key::V] {
+            h.key_mod(key, Modifiers::SHIFT);
+            assert_eq!(h.state.tool, Tool::Select, "Shift+{key:?} must not switch tools");
+            h.key_mod(key, Modifiers::CTRL);
+            assert_eq!(h.state.tool, Tool::Select, "Ctrl+{key:?} must not switch tools");
+        }
+        // bare M is Add Marker's key now, not a tool
         h.key(Key::M);
-        assert_eq!(h.state.tool, Tool::Marker, "M now selects the Marker tool");
+        assert_eq!(h.state.tool, Tool::Select, "bare M is left for Action::AddMarker");
     }
 
     #[test]
@@ -1816,7 +1878,7 @@ mod tests {
         assert_eq!(tool_hotkey(&hk, Tool::Shape(ShapeKind::Star)), None, "shape tools cycle on Shift+S");
         assert_eq!(tool_hotkey(&hk, Tool::Draw).as_deref(), Some("D"));
         assert_eq!(tool_hotkey(&hk, Tool::Mask(MaskShape::Path)).as_deref(), Some("G"), "freed from M");
-        assert_eq!(tool_hotkey(&hk, Tool::Marker).as_deref(), Some("M"), "M was freed up by Mask's move");
+        assert_eq!(tool_hotkey(&hk, Tool::Marker).as_deref(), Some("Shift+M"), "bare M is Add Marker's key");
         assert_eq!(tool_hotkey(&hk, Tool::Cut).as_deref(), Some("C"));
         assert_eq!(tool_hotkey(&hk, Tool::Stretch).as_deref(), Some("R"));
         assert_eq!(tool_hotkey(&hk, Tool::Zoom), None);

@@ -511,6 +511,72 @@ impl TextStyle {
         }
         h.finish()
     }
+
+    /// Drop spans that can never cover a character of `text` and clamp the rest to its char count —
+    /// called after any operation that installs spans wholesale (e.g. pasting a style whose ranges
+    /// index a different string). The rasterizer already ignores out-of-range spans defensively; this
+    /// keeps them out of the saved file so they can't silently resurrect on a later text edit.
+    pub fn clamp_spans(&mut self) {
+        let n = self.text.chars().count();
+        for s in &mut self.spans {
+            s.end = s.end.min(n);
+        }
+        self.spans.retain(|s| s.start < s.end);
+    }
+
+    /// Keep span ranges attached to the characters they styled across ONE text edit (`old` → the
+    /// current `self.text`). The edit is located by common char prefix/suffix; boundaries after it
+    /// shift by the length delta, and a boundary inside the replaced region clamps to the edit's
+    /// edge (so a replaced styled word stays styled, and a span fully inside the edit disappears).
+    /// One contiguous edit at a time is all an egui `TextEdit` produces per frame.
+    pub fn remap_spans(&mut self, old: &str) {
+        if self.spans.is_empty() || old == self.text {
+            return;
+        }
+        let o: Vec<char> = old.chars().collect();
+        let n: Vec<char> = self.text.chars().collect();
+        let p = o.iter().zip(n.iter()).take_while(|(a, b)| a == b).count();
+        let s = o[p..].iter().rev().zip(n[p..].iter().rev()).take_while(|(a, b)| a == b).count();
+        let (old_end, new_end) = (o.len() - s, n.len() - s); // o[p..old_end] was replaced by n[p..new_end]
+        let delta = new_end as isize - old_end as isize;
+        let map = |i: usize, is_end: bool| -> usize {
+            if i <= p {
+                i
+            } else if i >= old_end {
+                (i as isize + delta) as usize
+            } else if is_end {
+                p // the styled tail was replaced — keep the surviving head
+            } else {
+                new_end // the styled head was replaced — keep the surviving tail
+            }
+        };
+        for sp in &mut self.spans {
+            (sp.start, sp.end) = (map(sp.start, false), map(sp.end, true));
+        }
+        self.clamp_spans();
+    }
+
+    /// Remove per-char style overrides covering `[a, b)` (char indices): spans fully inside are
+    /// dropped, ones straddling an edge are trimmed, and a span strictly containing the range is
+    /// split in two. The inspector's "Clear Style on Selection".
+    pub fn clear_span_range(&mut self, a: usize, b: usize) {
+        if a >= b {
+            return;
+        }
+        let mut split_tails = Vec::new();
+        for s in &mut self.spans {
+            if s.start < a && s.end > b {
+                split_tails.push(TextSpan { start: b, end: s.end, ..s.clone() });
+                s.end = a;
+            } else if s.start < a {
+                s.end = s.end.min(a);
+            } else {
+                s.start = s.start.max(b);
+            }
+        }
+        self.spans.extend(split_tails);
+        self.spans.retain(|s| s.start < s.end);
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
@@ -2537,8 +2603,19 @@ impl Clip {
             self.speed_curve.value = speed;
         }
     }
-    pub fn animated(&self) -> [&Animated; 8] {
-        [&self.x, &self.y, &self.scale, &self.rotation, &self.opacity, &self.volume, &self.pan, &self.speed_curve]
+    pub fn animated(&self) -> [&Animated; 10] {
+        [
+            &self.x,
+            &self.y,
+            &self.scale,
+            &self.scale_x,
+            &self.scale_y,
+            &self.rotation,
+            &self.opacity,
+            &self.volume,
+            &self.pan,
+            &self.speed_curve,
+        ]
     }
     /// Every keyframeable property including effect parameters.
     pub fn all_animated_mut(&mut self) -> Vec<&mut Animated> {
@@ -2546,6 +2623,8 @@ impl Clip {
             &mut self.x,
             &mut self.y,
             &mut self.scale,
+            &mut self.scale_x,
+            &mut self.scale_y,
             &mut self.rotation,
             &mut self.opacity,
             &mut self.volume,
@@ -2597,10 +2676,10 @@ impl Clip {
                 ("Position X", &mut self.x),
                 ("Position Y", &mut self.y),
                 ("Scale", &mut self.scale),
-                ("Rotation", &mut self.rotation),
-                ("Opacity", &mut self.opacity),
                 ("Scale X", &mut self.scale_x),
                 ("Scale Y", &mut self.scale_y),
+                ("Rotation", &mut self.rotation),
+                ("Opacity", &mut self.opacity),
             ]
         } else {
             vec![("Volume", &mut self.volume), ("Pan", &mut self.pan)]
@@ -4167,12 +4246,15 @@ impl Project {
         self.sort_markers();
         id
     }
-    /// Move a project-level marker to the start time of whichever clip on the current sequence's
-    /// tracks (`self.tracks`) is nearest in time. No-op if the marker or a clip doesn't exist.
+    /// Move a project-level marker to the nearest clip EDGE (start or end) on the current sequence's
+    /// tracks (`self.tracks`) — a marker just before a clip's end must snap forward to that end, not
+    /// jump back to the clip's start. No-op if the marker or a clip doesn't exist.
     pub fn snap_marker_to_nearest_clip(&mut self, id: Id) {
         let Some(t) = self.markers.iter().find(|m| m.id == id).map(|m| m.t) else { return };
-        let Some(nearest) =
-            self.all_clips().map(|(_, c)| c.start).min_by(|a, b| (a - t).abs().total_cmp(&(b - t).abs()))
+        let Some(nearest) = self
+            .all_clips()
+            .flat_map(|(_, c)| [c.start, c.end()])
+            .min_by(|a, b| (a - t).abs().total_cmp(&(b - t).abs()))
         else {
             return;
         };
@@ -4509,9 +4591,10 @@ impl Project {
             _ => None,
         }
     }
-    /// Reset a clip's transform to fill the project canvas. `stretch = false` ("Fit to Screen") resets
-    /// x/y/scale/scale_x/scale_y to their defaults, which falls back to the engine's default "contain"
-    /// placement (letterboxed, native aspect preserved, centred). `stretch = true` ("Stretch to Screen")
+    /// Reset a clip's transform to fill the project canvas (any keyframes on x/y/scale/rotation are
+    /// wholesale-replaced — this is a reset, not a tween). `stretch = false` ("Fit to Screen") resets
+    /// x/y/scale/rotation/scale_x/scale_y to their defaults, which falls back to the engine's default
+    /// "contain" placement (letterboxed, native aspect preserved, centred). `stretch = true` ("Stretch to Screen")
     /// additionally sets independent scale_x/scale_y so the footage fills the canvas edge to edge,
     /// ignoring native aspect ratio. No-op (`false`) for a clip with no native size.
     pub fn fit_clip_to_screen(&mut self, id: Id, stretch: bool) -> bool {
@@ -4531,6 +4614,7 @@ impl Project {
         clip.x = a0();
         clip.y = a0();
         clip.scale = a1();
+        clip.rotation = a0(); // a rotated quad can't fill the canvas — "to screen" implies upright
         clip.scale_x = Animated::new(sx);
         clip.scale_y = Animated::new(sy);
         true
@@ -4693,6 +4777,9 @@ impl Project {
                     if let Some(content) = content {
                         dst.text = content;
                     }
+                    // the copied spans index the SOURCE's wording — clamp them to the destination's
+                    // so no dangling range is saved (it could resurrect on a later text edit)
+                    dst.clamp_spans();
                 } else {
                     // content only: keep the destination's own style
                     c.text.get_or_insert_with(Default::default).text = s.text.clone();
@@ -4859,6 +4946,95 @@ mod tests {
         let t = p.clip(dst_id).unwrap().text.as_ref().unwrap();
         assert_eq!(t.text, "Hello", "content-only paste copies the wording");
         assert_eq!((t.size, t.bold), (40.0, true), "content-only paste must not touch the style");
+    }
+
+    /// Style-only paste copies the source's spans, whose char ranges index the SOURCE wording — they
+    /// must be clamped to the destination's (shorter) text instead of dangling in the saved file.
+    #[test]
+    fn paste_text_style_clamps_spans_to_destination_wording() {
+        let mut p = Project::new();
+        let mut src = Clip::new(1, ClipKind::Text, "src", 0.0, 4.0);
+        src.text = Some(TextStyle {
+            text: "Hello beautiful world".into(),
+            spans: vec![
+                TextSpan { start: 6, end: 15, color: Some([255, 0, 0, 255]), ..Default::default() },
+                TextSpan { start: 0, end: 4, bold: Some(true), ..Default::default() },
+            ],
+            ..Default::default()
+        });
+        let mut dst = Clip::new(2, ClipKind::Text, "dst", 0.0, 4.0);
+        dst.text = Some(TextStyle { text: "Hi there".into(), ..Default::default() }); // 8 chars
+        p.tracks[0].clips.push(dst);
+        p.paste_attributes(&src, &[2], AttrSet { text_style: true, ..AttrSet::NONE });
+        let t = p.clip(2).unwrap().text.as_ref().unwrap();
+        assert_eq!(t.text, "Hi there");
+        assert_eq!(t.spans.len(), 2);
+        assert!(t.spans.iter().all(|s| s.end <= 8 && s.start < s.end), "{:?}", t.spans);
+    }
+
+    /// Span ranges follow the characters they styled across a text edit (type before / inside /
+    /// replace over), instead of silently pointing at whatever now sits at the old offsets.
+    #[test]
+    fn remap_spans_follows_the_styled_characters() {
+        let styled = |text: &str| TextStyle {
+            text: text.into(),
+            spans: vec![TextSpan { start: 6, end: 11, bold: Some(true), ..Default::default() }], // "World"
+            ..Default::default()
+        };
+
+        // insert before the span: it shifts right
+        let mut t = styled("Hello World");
+        t.text = "Hey, Hello World".into();
+        t.remap_spans("Hello World");
+        assert_eq!((t.spans[0].start, t.spans[0].end), (11, 16));
+
+        // type inside the span: it grows around the insertion
+        let mut t = styled("Hello World");
+        t.text = "Hello WoXrld".into();
+        t.remap_spans("Hello World");
+        assert_eq!((t.spans[0].start, t.spans[0].end), (6, 12));
+
+        // delete the whole styled word: the span disappears
+        let mut t = styled("Hello World");
+        t.text = "Hello ".into();
+        t.remap_spans("Hello World");
+        assert!(t.spans.is_empty());
+
+        // replace overlapping the span's head: the surviving tail stays styled
+        let mut t = styled("Hello World");
+        t.text = "HelZrld".into(); // replaced chars 3..8 ("lo Wo") with "Z"
+        t.remap_spans("Hello World");
+        assert_eq!((t.spans[0].start, t.spans[0].end), (4, 7)); // "rld"
+
+        // non-ASCII: char indices, not bytes
+        let mut t = TextStyle {
+            text: "héllo wörld".into(),
+            spans: vec![TextSpan { start: 6, end: 11, bold: Some(true), ..Default::default() }],
+            ..Default::default()
+        };
+        t.text = "ah héllo wörld".into();
+        t.remap_spans("héllo wörld");
+        assert_eq!((t.spans[0].start, t.spans[0].end), (9, 14));
+    }
+
+    /// "Clear Style on Selection": trims, drops, or splits spans overlapping the cleared range.
+    #[test]
+    fn clear_span_range_trims_drops_and_splits() {
+        let mut t = TextStyle {
+            text: "abcdefghij".into(),
+            spans: vec![
+                TextSpan { start: 0, end: 10, bold: Some(true), ..Default::default() }, // contains → split
+                TextSpan { start: 4, end: 6, italic: Some(true), ..Default::default() }, // inside → dropped
+                TextSpan { start: 0, end: 5, color: Some([1, 2, 3, 255]), ..Default::default() }, // head survives
+                TextSpan { start: 5, end: 10, size: Some(9.0), ..Default::default() },  // tail survives
+            ],
+            ..Default::default()
+        };
+        t.clear_span_range(4, 6);
+        let mut ranges: Vec<(usize, usize)> = t.spans.iter().map(|s| (s.start, s.end)).collect();
+        ranges.sort();
+        assert_eq!(ranges, vec![(0, 4), (0, 4), (6, 10), (6, 10)]);
+        assert!(t.spans.iter().all(|s| s.end <= 4 || s.start >= 6));
     }
 
     #[test]
@@ -5034,6 +5210,7 @@ mod tests {
         c.x.value = 123.0;
         c.y.value = -45.0;
         c.scale.value = 3.0;
+        c.rotation.value = 30.0;
         c.scale_x.value = 5.0;
         c.scale_y.value = 0.2;
         p.tracks[vt].clips.push(c);
@@ -5043,6 +5220,7 @@ mod tests {
         assert_eq!(clip.x.value, 0.0);
         assert_eq!(clip.y.value, 0.0);
         assert_eq!(clip.scale.value, 1.0);
+        assert_eq!(clip.rotation.value, 0.0, "a rotated quad can't fill the canvas");
         assert_eq!(clip.scale_x.value, 1.0);
         assert_eq!(clip.scale_y.value, 1.0);
     }
@@ -5565,7 +5743,10 @@ mod tests {
             it.tracked_seconds = 125.5;
         }
         let q = Project::from_json(&p.to_json()).unwrap();
-        assert_eq!(q.plan[0].requirements, vec![("Colour graded".to_string(), false), ("Music licensed".to_string(), true)]);
+        assert_eq!(
+            q.plan[0].requirements,
+            vec![("Colour graded".to_string(), false), ("Music licensed".to_string(), true)]
+        );
         assert_eq!(q.plan[0].tracked_seconds, 125.5);
 
         // an old plan item JSON without either field defaults to empty/zero

@@ -86,6 +86,9 @@ pub struct PreviewCtx<'a> {
     pub gpu_texture: Option<(egui::TextureId, [u32; 2])>,
     /// Active editing tool (`Tool::Select` = drag moves the selected clip).
     pub tool: Tool,
+    /// The style a shape dragged out right now would be created with (tool-strip picks applied) —
+    /// `Some` only while a shape tool is active. Drives the live preview so it matches the result.
+    pub shape_style: Option<ShapeStyle>,
     /// Current preview render scale in percent (settings.preview_quality).
     pub quality: u32,
     /// Current movie mode (settings.movie_mode).
@@ -554,12 +557,9 @@ fn tool_drag(
             Tool::Shape(kind) => {
                 let modifiers = ui.input(|i| i.modifiers);
                 let (from, to) = constrain_drag(kind, d.from, now, modifiers);
-                // ponytail: the tool strip's live fill/stroke/corner/sides picks (ToolsState) aren't
-                // threaded into PreviewCtx, so the preview approximates with ShapeStyle::new(kind)'s
-                // defaults rather than what add_shape() will actually style the clip with (tools.fill /
-                // .stroke / .stroke_width / .sides / .corner) — thread those through PreviewCtx if the
-                // mismatch matters.
-                let style = ShapeStyle::new(kind);
+                // the real style the clip will be created with (PreviewCtx::shape_style, from the
+                // tool strip's picks) — a red 8-point star previews as a red 8-point star
+                let style = c.shape_style.clone().unwrap_or_else(|| ShapeStyle::new(kind));
                 draw_shape_preview(&p, &style, from, to, k);
             }
             // text box outline: no real text is rendered here, just where the box will land
@@ -938,6 +938,7 @@ mod tests {
                             frame: None,
                             gpu_texture: None,
                             tool: *tool,
+                            shape_style: None,
                             quality: 100,
                             movie_mode: false,
                             prerender: Some(0.4),

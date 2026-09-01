@@ -24,8 +24,8 @@ use crate::ui::layout::{self, Layout, Pane};
 use crate::ui::tools::Tool;
 use crate::ui::{
     autocut_ui, capture_ui, curves, effects_ui, export_ui, frame_ui, history_ui, import_ui, inspector, library,
-    markers_ui, mixer_ui, moodboard_ui, nodes, paste_ui, planner, presets_ui, preview, retime, settings_ui,
-    shader_ui, subtitles_ui, timeline, tools, tracking_ui, transitions_ui, DragPayload,
+    markers_ui, mixer_ui, moodboard_ui, nodes, paste_ui, planner, presets_ui, preview, retime, settings_ui, shader_ui,
+    subtitles_ui, timeline, tools, tracking_ui, transitions_ui, DragPayload,
 };
 use eframe::egui;
 use serde_json::{json, Value};
@@ -282,7 +282,7 @@ fn job_window(ctx: &egui::Context, title: &str, jobs: &[(Arc<Progress>, String)]
 /// `Layout`'s own (much shorter) history — this only keeps Ctrl+Z stepping back in the right order.
 /// ponytail: once the layout history has scrolled past its 20 entries the marker undoes nothing; deepen
 /// the layout stack if that ever bites.
-const LAYOUT_STEP: &str = "\u{0}layout";
+pub(crate) const LAYOUT_STEP: &str = "\u{0}layout";
 
 /// History panel filter bucket. `Layout` is a pane rearrangement (`LAYOUT_STEP`); everything else —
 /// clip/effect/marker/text/project edits — is `Editing`.
@@ -292,10 +292,10 @@ pub(crate) enum HistoryCategory {
     Layout,
 }
 
-/// One entry in the undo/redo stack, doubling as a History panel row. `label` is derived automatically
-/// (see `describe_change`) at push time — no call site of `push_undo`/`push_undo_json` needs to name
-/// its own edit, which is what keeps this from being an every-call-site change across the whole UI
-/// layer despite there being ~50 of them.
+/// One entry in the undo/redo stack, doubling as a History panel row. `label` stays EMPTY for project
+/// edits — the History panel derives one lazily from neighbouring snapshots (`describe_change`), which
+/// keeps the per-gesture push free of JSON parses and labels each row with its own edit instead of the
+/// previous one. Only sentinel entries (layout steps) carry a fixed label.
 #[derive(Clone)]
 pub(crate) struct UndoEntry {
     pub json: String,
@@ -314,7 +314,9 @@ fn now_secs() -> f64 {
 /// A short, best-effort description of what changed between two project snapshots — compares a handful
 /// of high-signal counts/fields rather than a full structural diff (this is a "quick glance" History
 /// panel label, not a changelog). Falls back to "Project edited" when nothing tracked here differs.
-fn describe_change(old_json: &str, new_json: &str) -> String {
+/// Costs two full `Project::from_json` parses — only the History panel calls it (lazily, cached),
+/// NEVER the per-gesture undo push.
+pub(crate) fn describe_change(old_json: &str, new_json: &str) -> String {
     let (Ok(old), Ok(new)) = (Project::from_json(old_json), Project::from_json(new_json)) else {
         return "Project edited".into();
     };
@@ -357,18 +359,13 @@ fn describe_change(old_json: &str, new_json: &str) -> String {
     "Project edited".into()
 }
 
-/// Push an undo snapshot (capped) and clear the redo history. The new entry's label describes the edit
-/// that led FROM the previous top-of-stack TO this one (see `describe_change`) — i.e. the edit the user
-/// just made, not the one about to happen.
+/// Push an undo snapshot (capped) and clear the redo history. Labels are NOT derived here — that cost
+/// (two project parses) belongs to the History panel, lazily; see `UndoEntry::label`.
 fn push_undo_json(undo: &mut Vec<UndoEntry>, redo: &mut Vec<UndoEntry>, json: String) {
     let entry = if json == LAYOUT_STEP {
         UndoEntry { label: "Rearranged panels".into(), category: HistoryCategory::Layout, at: now_secs(), json }
     } else {
-        let label = match undo.last() {
-            Some(prev) if prev.json != LAYOUT_STEP => describe_change(&prev.json, &json),
-            _ => "Project edited".into(),
-        };
-        UndoEntry { json, label, category: HistoryCategory::Editing, at: now_secs() }
+        UndoEntry { json, label: String::new(), category: HistoryCategory::Editing, at: now_secs() }
     };
     undo.push(entry);
     if undo.len() > 200 {
@@ -1501,7 +1498,13 @@ impl App {
         }
         self.player.pause();
         let path = choice.opts.out_path.clone();
-        let project = self.export_project();
+        let mut project = self.export_project();
+        // "Use project background" checkbox: off → the export renders on black exactly as before the
+        // background setting existed; on → the authored `preview_bg` (checkerboard bakes as grey tiles,
+        // the tooltip says so). Only the exported clone is touched, never the live project.
+        if !choice.use_project_bg {
+            project.preview_bg = crate::model::BackgroundMode::Black;
+        }
         let prog = if choice.lossless {
             export::start_lossless_cut(project, choice.opts.out_path.clone())
         } else {
@@ -1634,7 +1637,10 @@ impl App {
             original.file_stem().unwrap_or_default().to_string_lossy()
         ));
         self.player.pause();
-        let project = self.export_project();
+        let mut project = self.export_project();
+        // no background checkbox on this path — always render on black, like every export did before
+        // `preview_bg` existed (a checkerboard preview aid must never bake into the overwritten original)
+        project.preview_bg = crate::model::BackgroundMode::Black;
         // opt-in: a plain cut can be saved instantly with `-c copy` (keyframe-accurate) instead of re-encoding
         let lossless = self.settings.lossless_save && export::lossless_segments(&project).is_some();
         let prog = if lossless {
@@ -1705,7 +1711,8 @@ impl App {
                     self.set_project(Project::new(), None);
                 }
             }
-            ToolSelect | ToolText | ToolDraw | ToolMask | ToolMarker | ToolCut | ToolStretch => {
+            ToolSelect | ToolText | ToolDraw | ToolMask | ToolMarker | ToolCut | ToolStretch | ToolZoom
+            | ToolSpacer => {
                 // normally already consumed by tools::handle_hotkeys before this table is polled; this
                 // arm only fires for a caller that dispatches the action directly (scripting/MCP).
                 if let Some(t) = tools::tool_for_action(a, self.tools.tool) {
@@ -2019,10 +2026,25 @@ impl App {
                 }
             }
             AddMarker => {
-                self.push_undo();
                 let t = self.playhead;
-                let id = self.project.add_marker(t, format!("Marker at {}", crate::ui::timecode(t, self.project.fps)));
-                self.markers.selected = vec![id];
+                // per the ask, the hotkey attaches the marker to the selected clip when the playhead
+                // is over one — otherwise it stays a plain timeline marker (same as the panel buttons)
+                let on_clip = self
+                    .selection
+                    .iter()
+                    .find_map(|&id| self.project.clip(id).filter(|c| t >= c.start && t <= c.end()).map(|c| c.id));
+                self.push_undo();
+                let name = format!("Marker at {}", crate::ui::timecode(t, self.project.fps));
+                let id = match on_clip {
+                    Some(cid) => {
+                        let local = self.project.clip(cid).map(|c| (t - c.start).clamp(0.0, c.duration)).unwrap_or(0.0);
+                        self.project.add_clip_marker(cid, local, name)
+                    }
+                    None => Some(self.project.add_marker(t, name)),
+                };
+                if let Some(id) = id {
+                    self.markers.selected = vec![id];
+                }
                 self.layout.reveal(Pane::Markers);
                 self.layout_dirty = true;
                 self.after_edit();
@@ -2295,6 +2317,10 @@ impl App {
                                 frame,
                                 gpu_texture: *gpu_tex,
                                 tool: tools.tool,
+                                shape_style: match tools.tool {
+                                    Tool::Shape(k) => Some(tools::shape_style_from_tools(tools, k)),
+                                    _ => None,
+                                },
                                 quality: settings.preview_quality,
                                 movie_mode: settings.movie_mode,
                                 prerender: done,
@@ -2707,9 +2733,19 @@ impl App {
             }
             Pane::Transitions => {
                 let changed = {
-                    let App { project, selection, playhead, undo, redo, transitions_ui: st, palette, .. } = self;
+                    let App {
+                        project,
+                        selection,
+                        sel_transitions,
+                        playhead,
+                        undo,
+                        redo,
+                        transitions_ui: st,
+                        palette,
+                        ..
+                    } = self;
                     let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
-                    transitions_ui::show(ui, st, project, selection, *playhead, palette, &mut push)
+                    transitions_ui::show(ui, st, project, selection, sel_transitions, *playhead, palette, &mut push)
                 };
                 if changed {
                     self.after_edit();
@@ -2764,10 +2800,6 @@ impl App {
                 }
                 if resp.edited {
                     self.after_edit();
-                } else if resp.tick {
-                    // the timer silently banked time onto a linked task: mark unsaved without the cost
-                    // of a full after_edit() (undo entry, player/prerender refresh) on every tick
-                    self.dirty = true;
                 }
             }
             Pane::Moodboard => {
@@ -2781,6 +2813,20 @@ impl App {
                     self.insert_at(resp.add_to_timeline, self.playhead, None);
                     self.after_edit();
                 }
+                // Import button / dragged-in linked-folder files: import, then board them — same
+                // two-steps-when-fresh/one-when-not undo shape as the OS-file-drop path in handle_drops
+                if !resp.import_paths.is_empty() {
+                    let ids = self.import_files(&resp.import_paths);
+                    let snap = self.project.to_json();
+                    let mut changed = false;
+                    for &id in &ids {
+                        changed |= moodboard_ui::moodboard_add(&mut self.project, id);
+                    }
+                    if changed {
+                        push_undo_json(&mut self.undo, &mut self.redo, snap);
+                        self.after_edit();
+                    }
+                }
                 if resp.edited {
                     self.after_edit();
                 }
@@ -2788,7 +2834,8 @@ impl App {
             Pane::History => {
                 // deleting entries mutates the undo stack directly, not the project — no undo/push_undo
                 // of its own (history bookkeeping isn't itself a project edit).
-                history_ui::show(ui, &mut self.history, &mut self.undo);
+                let App { history, undo, project, .. } = self;
+                history_ui::show(ui, history, undo, project);
             }
             Pane::AutoCut => {
                 self.autocut_drawing = true;
@@ -2907,20 +2954,16 @@ impl App {
                 c.y.value = cy as f64;
             }
             if let Some(s) = c.shape.as_mut() {
-                s.fill = tools.fill;
-                // line / arrow / drawing have no fill, so a transparent stroke would draw nothing at all:
-                // fall back to the brush colour (and then the fill) instead of an invisible clip
-                let stroke_only = matches!(kind, ShapeKind::Line | ShapeKind::Arrow | ShapeKind::Draw);
-                s.stroke = match (stroke_only, tools.stroke[3], tools.brush[3]) {
-                    (true, 0, 0) => [tools.fill[0], tools.fill[1], tools.fill[2], 255],
-                    (true, 0, _) => tools.brush,
-                    _ => tools.stroke,
-                };
-                s.stroke_width = tools.stroke_width;
-                s.sides = tools.sides;
-                s.corner = tools.corner;
-                s.draw_rate = tools.draw_rate;
-                s.page = tools.page;
+                // shared with the preview's live drag (tools::shape_style_from_tools) so what was
+                // previewed is exactly what lands on the clip
+                let styled = tools::shape_style_from_tools(tools, kind);
+                s.fill = styled.fill;
+                s.stroke = styled.stroke;
+                s.stroke_width = styled.stroke_width;
+                s.sides = styled.sides;
+                s.corner = styled.corner;
+                s.draw_rate = styled.draw_rate;
+                s.page = styled.page;
                 if let Some((_, _, w, h)) = place {
                     s.w.value = w as f64;
                     s.h.value = h as f64;
@@ -4815,7 +4858,12 @@ impl App {
                 frames: self.export_frames(),
                 metadata: Vec::new(),
             };
-            let prog = export::start_export(self.export_project(), opts, self.text.clone());
+            let mut project = self.export_project();
+            // MCP exports have no background opt-in either — "use_project_bg": true opts in per call
+            if !arg_bool(args, "use_project_bg").unwrap_or(false) {
+                project.preview_bg = crate::model::BackgroundMode::Black;
+            }
+            let prog = export::start_export(project, opts, self.text.clone());
             // same slot the UI uses: exclusion, the progress/Cancel window and the close guard all key off it
             self.export = Some((prog.clone(), ExportKind::File { path: out.clone() }));
             Ok((prog, out))
@@ -6175,6 +6223,22 @@ impl eframe::App for App {
         self.poll_mcp(ctx);
 
         self.handle_drops(ctx);
+
+        // the planner's timer ticks HERE, every frame, so a countdown keeps counting, banks time onto
+        // its linked task, and notifies even while the Timer tab is hidden behind a sibling tab
+        {
+            let (banked, finished) = planner::tick(&mut self.planner, &mut self.project);
+            if banked {
+                // mark unsaved without the cost of a full after_edit() (undo entry, player refresh)
+                self.dirty = true;
+            }
+            if finished {
+                self.toast("Timer finished — time to stop");
+            }
+            if self.planner.timer.running {
+                ctx.request_repaint_after(std::time::Duration::from_millis(200));
+            }
+        }
         // cleared so a frame where the Moodboard tab isn't the one actually drawn (a sibling tab in its
         // group is active instead) can't have next frame's handle_drops match a stale rect from the last
         // time it *was* drawn — `moodboard_ui::show` sets this back whenever it actually runs
@@ -6290,7 +6354,8 @@ impl eframe::App for App {
         }
 
         // toasts
-        self.toasts.retain(|t| t.at.elapsed().as_secs_f32() < 5.0);
+        // a toast with an Open Folder button needs time to be noticed AND clicked
+        self.toasts.retain(|t| t.at.elapsed().as_secs_f32() < if t.open_path.is_some() { 10.0 } else { 5.0 });
         if !self.toasts.is_empty() {
             egui::Area::new(egui::Id::new("toasts"))
                 .anchor(egui::Align2::RIGHT_BOTTOM, [-12.0, -12.0])
@@ -6721,8 +6786,8 @@ mod tests {
             (Action::AddLastTransition, "Ctrl+T"),
             (Action::CopyAttributes, "Ctrl+Alt+C"),
             (Action::PasteAttributes, "Ctrl+Alt+V"),
-            // the bare letters V/T/S/D/M belong to the tool strip, so this moved to Shift+M
-            (Action::AddMarker, "Shift+M"),
+            // bare M adds a marker (the user's explicit ask); the Marker tool sits on Shift+M
+            (Action::AddMarker, "M"),
             (Action::AddMask, "Ctrl+Shift+M"),
             (Action::ExportFrame, "Ctrl+Shift+F"),
         ] {

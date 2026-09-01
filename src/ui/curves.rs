@@ -138,6 +138,9 @@ pub struct CurvesState {
     /// The key staged in the "Set Value…" popup: (property, key, staged value). Seeded from the key's
     /// current value; `None` means the popup is closed.
     value_edit: Option<(usize, usize, f64)>,
+    /// What the editor pointed at last frame — a change resets per-target state (selection, frozen
+    /// ranges, value view), since property indices mean different things on different targets.
+    last_target: Option<Target>,
 }
 
 impl Default for CurvesState {
@@ -170,6 +173,7 @@ impl Default for CurvesState {
             motion_sel: 0,
             menu_key: None,
             value_edit: None,
+            last_target: None,
         }
     }
 }
@@ -184,7 +188,7 @@ pub struct CurvesResponse {
 
 fn base_count(c: &Clip) -> usize {
     if c.is_visual() {
-        6
+        8
     } else {
         3
     }
@@ -196,7 +200,7 @@ pub(crate) fn prop_count(c: &Clip) -> usize {
 
 pub(crate) fn prop_label(c: &Clip, i: usize) -> String {
     let names: &[&str] = if c.is_visual() {
-        &["Position X", "Position Y", "Scale", "Rotation", "Opacity", "Speed"]
+        &["Position X", "Position Y", "Scale", "Scale X", "Scale Y", "Rotation", "Opacity", "Speed"]
     } else {
         &["Volume", "Pan", "Speed"]
     };
@@ -222,8 +226,10 @@ pub(crate) fn prop_ref(c: &Clip, i: usize) -> Option<&Animated> {
                 0 => &c.x,
                 1 => &c.y,
                 2 => &c.scale,
-                3 => &c.rotation,
-                4 => &c.opacity,
+                3 => &c.scale_x,
+                4 => &c.scale_y,
+                5 => &c.rotation,
+                6 => &c.opacity,
                 _ => &c.speed_curve,
             }
         } else {
@@ -252,8 +258,10 @@ pub(crate) fn prop_mut(c: &mut Clip, i: usize) -> Option<&mut Animated> {
                 0 => &mut c.x,
                 1 => &mut c.y,
                 2 => &mut c.scale,
-                3 => &mut c.rotation,
-                4 => &mut c.opacity,
+                3 => &mut c.scale_x,
+                4 => &mut c.scale_y,
+                5 => &mut c.rotation,
+                6 => &mut c.opacity,
                 _ => &mut c.speed_curve,
             }
         } else {
@@ -552,25 +560,11 @@ fn apply_ease_to(project: &mut Project, target: Target, targets: &[(usize, usize
     edited
 }
 
-/// "Blend Velocity": redistribute easing across the selected keys within each property so the segments
-/// between them read as one smooth stretch — for each property's selected keys (sorted by time), sets
-/// every segment between two consecutive selected keys to `Ease::EaseInOut`. A property needs 2+ selected
-/// keys of its own to contribute; if none qualify (nothing selected, or everything scattered one-per-
-/// property) this is a no-op that pushes no undo.
-// ponytail: a flat EaseInOut per segment, not continuous-tangent bezier handles across the whole run —
-// true velocity-matched handle spacing is a fancier upgrade if this simple version isn't enough.
-fn blend_velocity(
-    project: &mut Project,
-    target: Target,
-    state: &mut CurvesState,
-    out: &mut CurvesResponse,
-    undo: &mut dyn FnMut(&Project),
-) {
-    if state.selected.len() < 2 {
-        return;
-    }
+/// The selected keys grouped per property, pruned to properties owning 2+ of them — the set "Blend
+/// Velocity" acts on. Empty = the menu item should be disabled (it would be a silent no-op).
+fn blend_groups(project: &Project, target: Target, selected: &[(usize, usize)]) -> Vec<(usize, Vec<usize>)> {
     let mut by_prop: Vec<(usize, Vec<usize>)> = Vec::new();
-    for &(p, k) in &state.selected {
+    for &(p, k) in selected {
         if !t_ref(project, target, p).is_some_and(|a| k < a.keys.len()) {
             continue;
         }
@@ -580,6 +574,23 @@ fn blend_velocity(
         }
     }
     by_prop.retain(|(_, idx)| idx.len() >= 2);
+    by_prop
+}
+
+/// "Blend Velocity": per property with 2+ selected keys — spaces the selected keys out evenly between
+/// the first and last of them (only when they're consecutive in the key list, so re-timing can't jump
+/// them over an unselected key), then sets every segment between consecutive selected keys to
+/// `Ease::EaseInOut`, so the run reads as one smooth stretch. No qualifying property = no-op, no undo.
+// ponytail: a flat EaseInOut per segment, not continuous-tangent bezier handles across the whole run —
+// true velocity-matched handle spacing is a fancier upgrade if this simple version isn't enough.
+fn blend_velocity(
+    project: &mut Project,
+    target: Target,
+    state: &mut CurvesState,
+    out: &mut CurvesResponse,
+    undo: &mut dyn FnMut(&Project),
+) {
+    let by_prop = blend_groups(project, target, &state.selected);
     if by_prop.is_empty() {
         return;
     }
@@ -587,6 +598,15 @@ fn blend_velocity(
     for (p, mut idx) in by_prop {
         let Some(a) = t_mut(project, target, p) else { continue };
         idx.sort_by(|&i, &j| a.keys[i].t.total_cmp(&a.keys[j].t));
+        // "automatically space them out": even timing across the run, when it's a contiguous slice of
+        // the key list (an unselected key in the middle pins the timing — only the easing changes then)
+        let contiguous = idx.last().unwrap() - idx[0] + 1 == idx.len();
+        if contiguous && idx.len() > 2 {
+            let (t0, t1) = (a.keys[idx[0]].t, a.keys[*idx.last().unwrap()].t);
+            for (j, &k) in idx.iter().enumerate().skip(1).take(idx.len() - 2) {
+                a.keys[k].t = t0 + (t1 - t0) * j as f64 / (idx.len() - 1) as f64;
+            }
+        }
         for w in idx.windows(2) {
             a.keys[w[0]].ease = Ease::EaseInOut;
         }
@@ -643,6 +663,18 @@ pub fn show(
             }
         },
     };
+    // per-target view/selection state must not leak across targets: property INDEX i on clip A is a
+    // different property on clip B, so stale frozen ranges showed B's keys off-screen and stale key
+    // selections let a bulk easing land on keys the user never picked on B.
+    if state.last_target != Some(target) {
+        state.last_target = Some(target);
+        state.selected.clear();
+        state.frozen.clear();
+        state.drag_y.clear();
+        state.value_edit = None;
+        state.menu_key = None;
+        (state.y_zoom, state.y_pan) = (1.0, 0.0);
+    }
     let id = match target {
         Target::Clip(id) => id,
         // clip-only controls are disabled for a bus; this id is never dereferenced in that case
@@ -954,8 +986,16 @@ pub fn show(
         let d = resp.drag_delta();
         state.zoom = pps; // panning fixes the zoom so a still-fitting view doesn't snap back
         state.scroll_x = (state.scroll_x - (d.x / pps) as f64).clamp(-dur, dur);
+        // y_pan is in units of the active property's BASE span — the same one `zoomed()` scales, which
+        // with auto-scale off is the FROZEN range, not the live y_range (using the live one made the
+        // pan crawl by frozen/live once a key was dragged far outside the frozen band)
         let auto = snap.get(state.active).map(y_range).unwrap_or((0.0, 1.0));
-        let span = (auto.1 - auto.0).max(1e-9);
+        let base = if state.auto_scale {
+            auto
+        } else {
+            state.frozen.iter().find(|&&(p, _)| p == state.active).map(|&(_, r)| r).unwrap_or(auto)
+        };
+        let span = (base.1 - base.0).max(1e-9);
         state.y_pan += (d.y as f64 / plot.height() as f64) * (state.y_hi - state.y_lo) / span;
     }
 
@@ -1234,6 +1274,13 @@ pub fn show(
     // ---- context menu on a key / right-click adds a key ----
     if resp.secondary_clicked() {
         state.menu_key = pointer.and_then(key_hit);
+        // right-click outside the selection retargets it, like every explorer (timeline.rs convention) —
+        // so the bulk Easing/Blend entries act on the key under the cursor, never on a stale selection
+        if let Some(mk) = state.menu_key {
+            if !state.selected.contains(&mk) {
+                state.selected = vec![mk];
+            }
+        }
         // empty graph area: right-click adds a key for the active property right there (same as
         // double-click, which stays as the second way in)
         if state.menu_key.is_none() {
@@ -1274,13 +1321,18 @@ pub fn show(
             if ui.button("Set Value…").clicked() {
                 act = Some(MenuAct::SetValue);
             }
-            if sel_multi
-                && ui
-                    .button("Blend Velocity")
-                    .on_hover_text("Smooth the easing across the selected keyframes' segments")
+            // enabled only when it would actually do something: some property owns 2+ selected keys
+            // (a selection scattered one-key-per-property used to offer a silent no-op here)
+            if sel_multi {
+                let can = !blend_groups(project, target, &state.selected).is_empty();
+                if ui
+                    .add_enabled(can, egui::Button::new("Blend Velocity"))
+                    .on_hover_text("Evenly space the selected keyframes and smooth the easing between them")
+                    .on_disabled_hover_text("Needs 2+ selected keyframes on the same property")
                     .clicked()
-            {
-                act = Some(MenuAct::BlendVelocity);
+                {
+                    act = Some(MenuAct::BlendVelocity);
+                }
             }
             if ui.button("Delete").clicked() {
                 act = Some(MenuAct::Delete);
@@ -1682,16 +1734,22 @@ mod tests {
     fn prop_plumbing_matches_labels() {
         let mut c = Clip::new(1, ClipKind::Video, "v", 0.0, 2.0);
         c.effects.push(crate::model::Effect::new(crate::model::EffectKind::Blur));
-        assert_eq!(prop_count(&c), 7);
+        assert_eq!(prop_count(&c), 9);
         assert_eq!(prop_label(&c, 0), "Position X");
         assert_eq!(prop_label(&c, 2), "Scale");
-        assert_eq!(prop_label(&c, 5), "Speed");
-        assert_eq!(prop_label(&c, 6), "Blur: Radius");
+        assert_eq!(prop_label(&c, 3), "Scale X");
+        assert_eq!(prop_label(&c, 4), "Scale Y");
+        assert_eq!(prop_label(&c, 7), "Speed");
+        assert_eq!(prop_label(&c, 8), "Blur: Radius");
         c.scale.value = 2.5;
         assert_eq!(prop_ref(&c, 2).map(|a| a.value), Some(2.5));
-        prop_mut(&mut c, 5).map(|a| a.value = 0.5);
+        c.scale_x.value = 1.5;
+        assert_eq!(prop_ref(&c, 3).map(|a| a.value), Some(1.5));
+        prop_mut(&mut c, 4).map(|a| a.value = 0.5);
+        assert_eq!(c.scale_y.value, 0.5);
+        prop_mut(&mut c, 7).map(|a| a.value = 0.5);
         assert_eq!(c.speed_curve.value, 0.5);
-        prop_mut(&mut c, 6).map(|a| a.value = 9.0);
+        prop_mut(&mut c, 8).map(|a| a.value = 9.0);
         assert_eq!(c.effects[0].params[0].value, 9.0);
         let a = Clip::new(2, ClipKind::Audio, "a", 0.0, 2.0);
         assert_eq!(prop_count(&a), 3);
@@ -2019,9 +2077,9 @@ mod tests {
         // regression: double-click on EMPTY graph space still adds a key, unrelated property
         h.state.value_edit = None;
         h.state.active = 0; // Position X, unanimated
-        // clear egui's double-click window from the first double-click above: two double-clicks in
-        // quick succession (in wall-clock time, which the harness's `time` field drives) at different
-        // positions must not be read as one continuing multi-click sequence.
+                            // clear egui's double-click window from the first double-click above: two double-clicks in
+                            // quick succession (in wall-clock time, which the harness's `time` field drives) at different
+                            // positions must not be read as one continuing multi-click sequence.
         h.time += 1.0;
         h.frame(vec![]);
         let plot = Rect::from_min_max(pos2(h.state.graph.left(), h.state.graph.top() + RULER_H), h.state.graph.max);

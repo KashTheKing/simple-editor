@@ -694,6 +694,11 @@ pub fn codec_args(ext: &str, encoder: &str, crf: u32, preset: &str, available: &
             enc = "libx264";
         }
         let preset = if preset.is_empty() { "medium" } else { preset };
+        // `crf` is stored on the x264 0..=51 scale (what the quality-percent slider maps through).
+        // Encoders on other scales get it converted HERE, at emission: vp9/av1 use 0..=63, and QSV's
+        // global_quality treats 0 as "unset" so its best real value is 1.
+        let crf63 = (crf as f64 * 63.0 / 51.0).round() as u32;
+        let crf_qsv = crf.max(1);
         video = match enc {
             "libx264" | "libx265" => {
                 format!("-c:v {enc} -preset {preset} -crf {crf} -pix_fmt yuv420p")
@@ -701,12 +706,12 @@ pub fn codec_args(ext: &str, encoder: &str, crf: u32, preset: &str, available: &
             "h264_nvenc" | "hevc_nvenc" => {
                 format!("-c:v {enc} -preset p4 -cq {crf} -b:v 0 -pix_fmt yuv420p")
             }
-            "h264_qsv" | "hevc_qsv" => format!("-c:v {enc} -global_quality {crf} -pix_fmt nv12"),
+            "h264_qsv" | "hevc_qsv" => format!("-c:v {enc} -global_quality {crf_qsv} -pix_fmt nv12"),
             "h264_amf" | "hevc_amf" => format!("-c:v {enc} -rc cqp -qp_i {crf} -qp_p {crf}"),
             "libvpx-vp9" => {
-                format!("-c:v libvpx-vp9 -crf {crf} -b:v 0 -row-mt 1 -cpu-used 2 -pix_fmt yuv420p")
+                format!("-c:v libvpx-vp9 -crf {crf63} -b:v 0 -row-mt 1 -cpu-used 2 -pix_fmt yuv420p")
             }
-            "libaom-av1" | "libsvtav1" => format!("-c:v {enc} -crf {crf} -pix_fmt yuv420p"),
+            "libaom-av1" | "libsvtav1" => format!("-c:v {enc} -crf {crf63} -pix_fmt yuv420p"),
             "mpeg4" => "-c:v mpeg4 -q:v 4 -pix_fmt yuv420p".into(),
             other => format!("-c:v {other}"),
         };

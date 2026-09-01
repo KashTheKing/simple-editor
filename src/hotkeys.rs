@@ -1,11 +1,12 @@
 //! Keyboard shortcuts: a fixed list of actions, default bindings, user overrides (stored in Settings),
-//! and per-frame polling. Tool selection (Select/Text/Draw/Mask/Marker/Cut/Stretch — the `Action::Tool*`
-//! entries below) lives here too, fully rebindable; `ui::tools::handle_hotkeys` polls its own binding
-//! for each one (mirroring `poll_pass` below: most-specific-shortcut-first) and sets the active tool
-//! directly, since the tool strip owns that state. Only bare S (the snap toggle) and Shift+S (cycling the
-//! shape tools, still riding on `AddShape`'s default below) stay hardcoded in `ui::tools`, ahead of
-//! everything here. Mouse modifiers (Ctrl+Scroll zoom, Alt+Scroll track height, Shift+Scroll pan) are
-//! fixed and not part of this table.
+//! and per-frame polling. Tool selection (the `Action::Tool*` entries below) lives here too, fully
+//! rebindable; `ui::tools::handle_hotkeys` polls its own binding for each one with EXACT modifier
+//! matching (its poll runs before this table, and egui's logical matching would let a bare tool letter
+//! swallow every Shift+<letter> action on the same key) and sets the active tool directly, since the
+//! tool strip owns that state. Only bare S (the snap toggle) and Shift+S (cycling the shape tools,
+//! still riding on `AddShape`'s default below) stay hardcoded in `ui::tools`, ahead of everything here.
+//! Mouse modifiers (Ctrl+Scroll zoom, Alt+Scroll track height, Shift+Scroll pan) are fixed and not part
+//! of this table.
 
 use crate::settings::Settings;
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers};
@@ -112,7 +113,9 @@ actions! {
     AddLastTransition => "add_last_transition", "Add Last Used Transition", sc(CTRL, Key::T);
     CopyAttributes => "copy_attrs", "Copy Attributes", sc(CTRL_ALT, Key::C);
     PasteAttributes => "paste_attrs", "Paste Attributes…", sc(CTRL_ALT, Key::V);
-    AddMarker => "add_marker", "Add Marker at Playhead", sc(SHIFT, Key::M);
+    // Bare M, per the user's explicit ask ("adding a marker should be able to be done by clicking m");
+    // the Marker *tool* sits on Shift+M below. Safe because the tool poll matches modifiers exactly.
+    AddMarker => "add_marker", "Add Marker at Playhead", sc(NONE, Key::M);
     ToggleMarkers => "toggle_markers", "Show / Hide Markers", sc(CTRL, Key::Num8);
     ToggleNodes => "toggle_nodes", "Show / Hide Node Editor", sc(CTRL, Key::Num9);
     ToggleMixer => "toggle_mixer", "Show / Hide Mixer", sc(CTRL, Key::Num0);
@@ -142,11 +145,14 @@ actions! {
     ToolText => "tool_text", "Text Tool", sc(NONE, Key::T);
     ToolDraw => "tool_draw", "Draw Tool", sc(NONE, Key::D);
     // Mask used to be bare M; K (the obvious next pick) is already Stop's key, so this moves to G
-    // instead, freeing M for the Marker tool below (a separate key from AddMarker's Shift+M above).
+    // instead, freeing M for "add marker at playhead" above (the Marker tool itself is on Shift+M).
     ToolMask => "tool_mask", "Mask Tool (repeat to cycle shape)", sc(NONE, Key::G);
-    ToolMarker => "tool_marker", "Marker Tool", sc(NONE, Key::M);
+    ToolMarker => "tool_marker", "Marker Tool", sc(SHIFT, Key::M);
     ToolCut => "tool_cut", "Cut Tool (Razor)", sc(NONE, Key::C);
     ToolStretch => "tool_stretch", "Stretch Tool", sc(NONE, Key::R);
+    // unbound by default (no free letters left that make sense) — rebindable like every other tool
+    ToolZoom => "tool_zoom", "Zoom Tool", None;
+    ToolSpacer => "tool_spacer", "Spacer Tool", None;
 }
 
 pub struct Hotkeys {

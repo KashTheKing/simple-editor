@@ -48,10 +48,6 @@ pub struct PlannerResponse {
     pub edited: bool,
     /// Asset ids the user asked to place on the timeline at the playhead.
     pub add_to_timeline: Vec<Id>,
-    /// The timer silently banked elapsed time onto a linked task this frame: not a full `edited` (no
-    /// undo entry, no player/prerender refresh — see `timer_tick`), just enough for the caller to mark
-    /// the project dirty so the accumulated time isn't lost unsaved.
-    pub tick: bool,
 }
 
 /// Stopwatch / countdown mode for the Timer tab.
@@ -190,9 +186,26 @@ fn clock_text(secs: f64) -> String {
     format!("{:02}:{:02}", s / 60, s % 60)
 }
 
-/// The pure half of the Timer tab: advance `timer` by `dt` seconds (real wall-clock elapsed, computed by
-/// the caller from `Instant`s so this stays testable without mocking time) and, if linked, bank it onto
-/// that plan item. Returns whether it touched the project (so the caller can mark it dirty).
+/// Advance the timer by wall-clock time since the last call. Called by the App EVERY frame — not from
+/// the Timer tab, which may be a hidden sibling tab — so a countdown still finishes, banks time onto
+/// the linked task, and can notify while any other pane is in front. Returns
+/// `(banked_time_on_a_task, countdown_just_finished)`.
+pub fn tick(state: &mut PlannerState, project: &mut Project) -> (bool, bool) {
+    let t = &mut state.timer;
+    if !t.running {
+        t.last_tick = None;
+        return (false, false);
+    }
+    let now = Instant::now();
+    let dt = t.last_tick.map(|p| now.duration_since(p).as_secs_f64()).unwrap_or(0.0);
+    t.last_tick = Some(now);
+    let banked = timer_tick(t, project, dt);
+    (banked, !t.running) // timer_tick clears `running` exactly when a countdown reaches zero
+}
+
+/// The pure half of the tick: advance `timer` by `dt` seconds (computed by `tick` from `Instant`s so
+/// this stays testable without mocking time) and, if linked, bank it onto that plan item. Returns
+/// whether it touched the project (so the caller can mark it dirty).
 fn timer_tick(timer: &mut TimerState, project: &mut Project, dt: f64) -> bool {
     if dt <= 0.0 {
         return false;
@@ -632,7 +645,9 @@ fn notes_tab(
                         start |= r.gained_focus();
                         changed |= r.changed();
                         let icon = if editing { Glyph::Eye } else { Glyph::Pencil };
-                        if glyph_text_button(ui, icon, "").on_hover_text(if editing { "Preview" } else { "Edit" }).clicked()
+                        if glyph_text_button(ui, icon, "")
+                            .on_hover_text(if editing { "Preview" } else { "Edit" })
+                            .clicked()
                         {
                             toggle_edit = true;
                         }
@@ -716,19 +731,12 @@ fn timer_tab(
     state: &mut PlannerState,
     project: &mut Project,
     palette: &Palette,
-    resp: &mut PlannerResponse,
+    _resp: &mut PlannerResponse,
 ) {
     let t = &mut state.timer;
-    if t.running {
-        let now = Instant::now();
-        let dt = t.last_tick.map(|p| now.duration_since(p).as_secs_f64()).unwrap_or(0.0);
-        t.last_tick = Some(now);
-        if timer_tick(t, project, dt) {
-            resp.tick = true;
-        }
-    }
+    // ticking happens App-side every frame (`tick` above), so a hidden tab can't freeze the clock
     if t.running || t.done_flash {
-        // keep ticking (or blinking at zero) while this tab is visible, without a busy loop elsewhere
+        // smooth dial/blink updates while this tab is actually visible
         ui.ctx().request_repaint_after(Duration::from_millis(100));
     }
 
@@ -877,7 +885,7 @@ mod tests {
                     egui::CentralPanel::default().show(ctx, |ui| {
                         let mut undo = |_: &Project| panic!("no undo without edits");
                         let r = show(ui, &mut state, &mut p, &mut thumbs, &palette, &mut undo);
-                        assert!(!r.edited && !r.tick && r.add_to_timeline.is_empty());
+                        assert!(!r.edited && r.add_to_timeline.is_empty());
                     });
                 });
             }

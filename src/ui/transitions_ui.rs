@@ -307,6 +307,7 @@ pub fn show(
     state: &mut TransitionsState,
     project: &mut Project,
     selection: &[Id],
+    sel_transitions: &[Id],
     _playhead: f64,
     palette: &Palette,
     undo: &mut dyn FnMut(&Project),
@@ -315,6 +316,53 @@ pub fn show(
     test_rects::clear();
     let mut changed = false;
     let mut g = Gesture::default();
+
+    // ---- bulk edit of the transitions selected on the timeline ----
+    // The panel half of "change which transition type they use and which easing style ... through the
+    // context menu and in the transitions panel": absolute overwrite of every selected transition,
+    // same semantics as the timeline menu's SetTransitionsKind/-Ease and the inspector section.
+    let sel_live: Vec<Id> = sel_transitions
+        .iter()
+        .copied()
+        .filter(|id| project.tracks.iter().any(|t| t.transitions.iter().any(|tr| tr.id == *id)))
+        .collect();
+    if !sel_live.is_empty() {
+        ui.strong(format!("{} selected transition{}", sel_live.len(), if sel_live.len() == 1 { "" } else { "s" }));
+        let mut set: Option<(Option<TransitionKind>, Option<Ease>)> = None;
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Set type");
+            for k in TransitionKind::ALL {
+                if ui.small_button(k.name()).clicked() {
+                    set = Some((Some(k), None));
+                }
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Set easing");
+            for e in Ease::ALL {
+                if ui.small_button(e.name()).clicked() {
+                    set = Some((None, Some(e)));
+                }
+            }
+        });
+        if let Some((kind, ease)) = set {
+            undo(project);
+            for track in &mut project.tracks {
+                for tr in &mut track.transitions {
+                    if sel_live.contains(&tr.id) {
+                        if let Some(k) = kind {
+                            tr.kind = k;
+                        }
+                        if let Some(e) = ease {
+                            tr.ease = e;
+                        }
+                    }
+                }
+            }
+            changed = true;
+        }
+        ui.separator();
+    }
 
     // the cuts the selection offers — needed by the cards' quick-action menus, which are drawn first
     let ids: Vec<Id> = selection.iter().copied().filter(|&id| project.clip(id).is_some()).collect();
@@ -574,7 +622,7 @@ mod tests {
             let full = ctx.run(input, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut undo = |_: &Project| *undos += 1;
-                    changed |= show(ui, state, project, selection, 0.0, &pal, &mut undo);
+                    changed |= show(ui, state, project, selection, &[], 0.0, &pal, &mut undo);
                 });
             });
             *shapes = full.shapes;

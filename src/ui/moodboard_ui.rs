@@ -37,6 +37,10 @@ pub struct MoodboardState {
     view: View,
     pub filter: String,
     slide_index: usize,
+    /// In-progress tag edit: (asset id, raw text, undo-pushed-this-gesture). The raw text is the
+    /// buffer the focused field edits — rebuilding it from `labels` every frame normalised away the
+    /// comma the user just typed, which made a second tag untypeable.
+    tag_edit: Option<(Id, String, bool)>,
     /// This pane's content rect as of the last frame it was drawn — `App::handle_drops` checks an OS
     /// file drop's cursor position against it before importing, one-frame-stale, the same trick
     /// `TimelineState::lanes_rect` uses. `App::update` resets it to `NOTHING` right after `handle_drops`
@@ -47,7 +51,14 @@ pub struct MoodboardState {
 
 impl Default for MoodboardState {
     fn default() -> Self {
-        Self { view: View::Gallery, filter: String::new(), slide_index: 0, content_rect: egui::Rect::NOTHING }
+        // List by default: it's the only view where tags are editable, per the labelling ask
+        Self {
+            view: View::List,
+            filter: String::new(),
+            slide_index: 0,
+            tag_edit: None,
+            content_rect: egui::Rect::NOTHING,
+        }
     }
 }
 
@@ -56,6 +67,10 @@ pub struct MoodboardResponse {
     pub edited: bool,
     /// Asset ids the user asked to place on the timeline at the playhead.
     pub add_to_timeline: Vec<Id>,
+    /// Files to import into the project and then add to the board (the Import button, or a
+    /// linked-folder/recent row dragged in — `DragPayload::Path` — which isn't a project asset yet).
+    /// The App owns importing, so this pane just reports the paths.
+    pub import_paths: Vec<std::path::PathBuf>,
 }
 
 /// Test-only registry of widget rects, so headless tests can click real widgets without pixel-guessing
@@ -89,6 +104,50 @@ fn split_tags(s: &str) -> Vec<String> {
     s.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect()
 }
 
+/// Comma-separated tag editor for one item. While focused it edits the session buffer in
+/// `MoodboardState::tag_edit` (see its doc comment), and reports `(new tags, first-change-of-gesture)`
+/// only when the parsed tags actually differ — so undo is pushed once per focus gesture, not once per
+/// keystroke, and typing a trailing comma is not an "edit" at all.
+fn tag_field(
+    ui: &mut egui::Ui,
+    tag_edit: &mut Option<(Id, String, bool)>,
+    asset: Id,
+    labels: &[String],
+    width: f32,
+) -> Option<(Vec<String>, bool)> {
+    let mut text = match tag_edit {
+        Some((a, s, _)) if *a == asset => s.clone(),
+        _ => labels.join(", "),
+    };
+    let r = ui.add(TextEdit::singleline(&mut text).desired_width(width).hint_text("tags, comma, separated"));
+    if r.gained_focus() {
+        *tag_edit = Some((asset, text.clone(), false));
+    }
+    let mut out = None;
+    if r.changed() {
+        match tag_edit {
+            Some((a, s, _)) if *a == asset => *s = text.clone(),
+            _ => *tag_edit = Some((asset, text.clone(), false)),
+        }
+        let new = split_tags(&text);
+        if new != labels {
+            let fresh = match tag_edit {
+                Some((a, _, undone)) if *a == asset => {
+                    let f = !*undone;
+                    *undone = true;
+                    f
+                }
+                _ => true,
+            };
+            out = Some((new, fresh));
+        }
+    }
+    if r.lost_focus() && matches!(tag_edit, Some((a, _, _)) if *a == asset) {
+        *tag_edit = None;
+    }
+    out
+}
+
 const TILE: f32 = 110.0;
 const THUMB: f32 = 40.0;
 
@@ -98,7 +157,10 @@ fn asset_thumb(ui: &mut egui::Ui, project: &Project, thumbs: &mut ThumbCache, as
         if a.has_video() {
             if let Some((tex, [w, h])) = thumbs.texture(ui.ctx(), &a.path, 0.0, size as u32) {
                 let scale = size / (w.max(h).max(1) as f32);
-                ui.add(egui::Image::new(egui::load::SizedTexture::new(tex, egui::vec2(w as f32 * scale, h as f32 * scale))));
+                ui.add(egui::Image::new(egui::load::SizedTexture::new(
+                    tex,
+                    egui::vec2(w as f32 * scale, h as f32 * scale),
+                )));
                 return;
             }
         }
@@ -137,6 +199,14 @@ pub fn show(
             }
         }
         ui.separator();
+        let imp = ui.button("Import…").on_hover_text("Import files into the project and add them to the board");
+        mark(ui, "import", &imp);
+        if imp.clicked() {
+            if let Some(files) = rfd::FileDialog::new().pick_files() {
+                resp.import_paths.extend(files);
+            }
+        }
+        ui.separator();
         let w = (ui.available_width() - 10.0).max(60.0);
         ui.add(TextEdit::singleline(&mut state.filter).hint_text("filter by tag").desired_width(w));
     });
@@ -147,7 +217,7 @@ pub fn show(
         (0..project.moodboard.len()).filter(|&i| label_matches(&project.moodboard[i], &filter)).collect();
 
     let mut remove: Option<usize> = None;
-    let mut relabel: Option<(usize, Vec<String>)> = None;
+    let mut relabel: Option<(usize, Vec<String>, bool)> = None;
     let content_rect = ui.available_rect_before_wrap();
 
     let (frame_r, payload) = ui.dnd_drop_zone::<DragPayload, ()>(egui::Frame::group(ui.style()), |ui| {
@@ -159,7 +229,17 @@ pub fn show(
         match state.view {
             View::List => {
                 egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-                    list(ui, project, &visible, thumbs, palette, &mut resp, &mut remove, &mut relabel);
+                    list(
+                        ui,
+                        project,
+                        &mut state.tag_edit,
+                        &visible,
+                        thumbs,
+                        palette,
+                        &mut resp,
+                        &mut remove,
+                        &mut relabel,
+                    );
                 });
             }
             View::Gallery => {
@@ -178,13 +258,20 @@ pub fn show(
     state.content_rect = content_rect;
 
     if let Some(p) = payload {
-        if let DragPayload::Asset(aid) = *p {
-            if project.asset(aid).is_some() {
-                undo(project);
-                if moodboard_add(project, aid) {
+        match &*p {
+            DragPayload::Asset(aid) => {
+                // contains-check BEFORE undo: dropping an asset already on the board used to push an
+                // empty undo entry ("only if something changed")
+                if project.asset(*aid).is_some() && !project.moodboard.iter().any(|m| m.asset == *aid) {
+                    undo(project);
+                    moodboard_add(project, *aid);
                     resp.edited = true;
                 }
             }
+            // a linked-folder / recent file dragged in: not a project asset yet — hand it to the App
+            // to import-then-add, exactly like an OS file drop (this used to silently no-op)
+            DragPayload::Path(path) => resp.import_paths.push(std::path::PathBuf::from(path)),
+            _ => {}
         }
     }
     if let Some(i) = remove {
@@ -192,9 +279,11 @@ pub fn show(
         project.moodboard.remove(i);
         resp.edited = true;
     }
-    if let Some((i, labels)) = relabel {
+    if let Some((i, labels, fresh_gesture)) = relabel {
         if project.moodboard.get(i).is_some_and(|m| m.labels != labels) {
-            undo(project);
+            if fresh_gesture {
+                undo(project); // once per focus gesture — tag_field tracks it
+            }
             if let Some(m) = project.moodboard.get_mut(i) {
                 m.labels = labels;
             }
@@ -208,26 +297,23 @@ pub fn show(
 fn list(
     ui: &mut egui::Ui,
     project: &Project,
+    tag_edit: &mut Option<(Id, String, bool)>,
     visible: &[usize],
     thumbs: &mut ThumbCache,
     palette: &Palette,
     resp: &mut MoodboardResponse,
     remove: &mut Option<usize>,
-    relabel: &mut Option<(usize, Vec<String>)>,
+    relabel: &mut Option<(usize, Vec<String>, bool)>,
 ) {
     for &i in visible {
         let asset_id = project.moodboard[i].asset;
-        let mut tags_text = project.moodboard[i].labels.join(", ");
         let Some(a) = project.asset(asset_id) else { continue };
         let row = ui
             .horizontal(|ui| {
                 asset_thumb(ui, project, thumbs, asset_id, THUMB, palette);
                 ui.label(a.name());
-                let r = ui.add(
-                    TextEdit::singleline(&mut tags_text).desired_width(140.0).hint_text("tags, comma, separated"),
-                );
-                if r.changed() {
-                    *relabel = Some((i, split_tags(&tags_text)));
+                if let Some((tags, fresh)) = tag_field(ui, tag_edit, asset_id, &project.moodboard[i].labels, 140.0) {
+                    *relabel = Some((i, tags, fresh));
                 }
                 let add_r = ui.small_button("Add at Playhead");
                 mark(ui, format!("add_{asset_id}"), &add_r);
@@ -316,7 +402,7 @@ fn slideshow(
     palette: &Palette,
     resp: &mut MoodboardResponse,
     remove: &mut Option<usize>,
-    relabel: &mut Option<(usize, Vec<String>)>,
+    relabel: &mut Option<(usize, Vec<String>, bool)>,
 ) {
     if visible.is_empty() {
         return;
@@ -324,7 +410,6 @@ fn slideshow(
     state.slide_index = state.slide_index.min(visible.len() - 1);
     let i = visible[state.slide_index];
     let asset_id = project.moodboard[i].asset;
-    let mut tags_text = project.moodboard[i].labels.join(", ");
 
     ui.horizontal(|ui| {
         let prev_r = icon_button(ui, palette, ui.id().with("mb_prev"), Glyph::Skip(Dir::Left), "Previous", false);
@@ -345,9 +430,10 @@ fn slideshow(
             ui.label(a.name());
         }
     });
-    let r = ui.add(TextEdit::singleline(&mut tags_text).desired_width(f32::INFINITY).hint_text("tags, comma, separated"));
-    if r.changed() {
-        *relabel = Some((i, split_tags(&tags_text)));
+    if let Some((tags, fresh)) =
+        tag_field(ui, &mut state.tag_edit, asset_id, &project.moodboard[i].labels, f32::INFINITY)
+    {
+        *relabel = Some((i, tags, fresh));
     }
     ui.horizontal(|ui| {
         let add_r = ui.button("Add at Playhead");

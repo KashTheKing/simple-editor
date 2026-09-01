@@ -537,6 +537,13 @@ fn draw_waveform(p: &egui::Painter, peaks: &Peaks, clip: &Clip, vis: Rect, state
     }
 }
 
+/// Would the inline mini graph have anything to plot? It draws properties with 2+ keys through the
+/// curve editor's plumbing, so this gates the toggle on exactly that — `has_keys` below is true for a
+/// bare mask/shape too and used to open an empty panel.
+fn has_curve_keys(c: &Clip) -> bool {
+    (0..crate::ui::curves::prop_count(c)).any(|i| crate::ui::curves::prop_ref(c, i).is_some_and(|a| a.keys.len() >= 2))
+}
+
 /// Does the clip have any keyframe at all? Cheap (no allocation), unlike `Clip::key_times`, so the 1000-clip
 /// case never touches the keyframe path.
 fn has_keys(c: &Clip) -> bool {
@@ -612,11 +619,12 @@ fn draw_mini_graph(p: &egui::Painter, clip: &Clip, rect: Rect, lanes: Rect, pal:
 /// a gain behind a nonlinear dB slider.
 /// ponytail: same property order as curves.rs — move it next to `prop_ref` if a second caller shows up.
 fn prop_range(c: &Clip, i: usize) -> Option<(f64, f64)> {
-    let nb = if c.is_visual() { 6 } else { 3 };
+    let nb = if c.is_visual() { 8 } else { 3 };
     if i < nb {
         return match (c.is_visual(), i) {
             (true, 2) => Some((0.01, 20.0)),              // Scale
-            (true, 4) => Some((0.0, 1.0)),                // Opacity
+            (true, 3) | (true, 4) => Some((0.01, 20.0)),  // Scale X / Scale Y — same clamp as Scale
+            (true, 6) => Some((0.0, 1.0)),                // Opacity
             (false, 1) => Some((-1.0, 1.0)),              // Pan
             (_, _) if i == nb - 1 => Some((0.01, 100.0)), // Speed — same clamp as Clip::set_speed
             _ => None,
@@ -863,6 +871,7 @@ fn shared_effect_kinds(p: &Project, ids: &[Id]) -> Vec<EffectKind> {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn clip_menu(
     ui: &mut egui::Ui,
     clip_id: Id,
@@ -871,6 +880,11 @@ fn clip_menu(
     enabled: bool,
     audio: bool,
     has_native_size: bool,
+    // Some(currently open) when the clip has curves the inline mini graph could plot; None hides the
+    // entry. Toggling is UI state, not a project edit, so it reports through `toggle_graph`, not `Act`
+    // (every Act pushes an undo step).
+    graph_open: Option<bool>,
+    toggle_graph: &mut bool,
     labels: &[Label],
     buses: &[crate::model::Bus],
     shared_effects: &[EffectKind],
@@ -983,6 +997,13 @@ fn clip_menu(
                 *act = Some(Act::FitToScreen);
             }
         });
+    }
+    // second way into the inline mini keyframe graph, per the original ask ("if I zoom in on a clip OR
+    // right click it") — the zoomed-in corner icon stays the first
+    if let Some(open) = graph_open {
+        if ui.button(if open { "Hide Inline Keyframe Graph" } else { "Show Inline Keyframe Graph" }).clicked() {
+            *toggle_graph = true;
+        }
     }
     ui.separator();
     if ui.button("Nest into Sequence…").clicked() {
@@ -1475,6 +1496,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             let (linked, enabled, aud, is_cont) =
                 (clip.link != 0, clip.enabled, clip.kind == ClipKind::Audio, clip.container);
             let has_native = c.project.clip_native_size(clip).is_some();
+            let graph_open = has_curve_keys(clip).then(|| state.mini_graph_open.contains(&clip.id));
+            let mut toggle_graph = false;
             let mut rclick = br.secondary_clicked();
             br.context_menu(|ui| {
                 clip_menu(
@@ -1485,6 +1508,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     enabled,
                     aud,
                     has_native,
+                    graph_open,
+                    &mut toggle_graph,
                     labels,
                     buses,
                     &shared_effects,
@@ -1493,6 +1518,14 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     &mut out.edit_labels,
                 )
             });
+            if toggle_graph {
+                match state.mini_graph_open.iter().position(|&x| x == clip.id) {
+                    Some(i) => {
+                        state.mini_graph_open.remove(i);
+                    }
+                    None => state.mini_graph_open.push(clip.id),
+                }
+            }
             if clip.kind == ClipKind::Audio {
                 if let Some(pos) = pointer {
                     if pos.x >= vis.left() && pos.x <= vis.right() {
@@ -1536,6 +1569,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                             enabled,
                             aud,
                             has_native,
+                            None, // edge-handle menu: skip the mini-graph entry, body right-click has it
+                            &mut false,
                             labels,
                             buses,
                             &shared_effects,
@@ -1567,10 +1602,12 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             }
             // keyframe mini-graph: once the clip is wide enough on screen to be worth it (same measure
             // as `detailed` above, just a higher bar), a small toggle icon sits in its top-right corner.
-            // Registered last so it wins hit-testing over the body underneath it, like the fade handles.
-            if has_keys(clip) && vis.width() >= MINI_GRAPH_MIN_W {
+            // Anchored to the VISIBLE right edge (`vis`), not the clip's own — a zoomed-in clip whose
+            // right edge is off-screen used to lose the button entirely, the opposite of "show it when
+            // zoomed in". Registered last so it wins hit-testing over the body underneath it.
+            if has_curve_keys(clip) && vis.width() >= MINI_GRAPH_MIN_W {
                 let btn = Rect::from_min_size(
-                    pos2(rect.right() - MINI_GRAPH_PAD - MINI_GRAPH_BTN, rect.top() + MINI_GRAPH_PAD),
+                    pos2(vis.right() - MINI_GRAPH_PAD - MINI_GRAPH_BTN, rect.top() + MINI_GRAPH_PAD),
                     vec2(MINI_GRAPH_BTN, MINI_GRAPH_BTN),
                 )
                 .intersect(lanes);
@@ -1837,8 +1874,12 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     painter.hline(ruler.x_range(), ruler.bottom() - 0.5, thin);
     painter.vline(header.right() - 0.5, full.y_range(), thin);
 
-    // ---- project markers on the ruler ----
+    // ---- project markers on the ruler (only the open sequence's — same filter as markers_ui::rows;
+    // an unfiltered ruler let another timeline's markers be dragged/deleted from the wrong context) ----
     for m in &c.project.markers {
+        if m.sequence != c.project.editing {
+            continue;
+        }
         let mx = state.x_at(m.t);
         if mx < ruler.left() - FLAG_W || mx > ruler.right() {
             continue;
@@ -3691,11 +3732,12 @@ mod tests {
         assert_eq!(prop_range(h.video_clip(), 0), None, "Position X is unbounded");
         assert_eq!(prop_range(h.audio_clip(), 0), None, "Volume is dB-scaled");
         assert_eq!(prop_range(h.audio_clip(), 1), Some((-1.0, 1.0)), "Pan");
-        assert_eq!(prop_range(h.video_clip(), 5), Some((0.01, 100.0)), "Speed");
+        assert_eq!(prop_range(h.video_clip(), 3), Some((0.01, 20.0)), "Scale X");
+        assert_eq!(prop_range(h.video_clip(), 7), Some((0.01, 100.0)), "Speed");
         assert_eq!(prop_range(h.audio_clip(), 2), Some((0.01, 100.0)), "Speed (audio)");
         h.project.tracks[0].clips[0].effects.push(Effect::new(EffectKind::Blur));
         let spec = h.video_clip().effects[0].specs()[0];
-        assert_eq!(prop_range(h.video_clip(), 6), Some((spec.min, spec.max)), "first Blur param");
+        assert_eq!(prop_range(h.video_clip(), 8), Some((spec.min, spec.max)), "first Blur param");
     }
 
     #[test]
@@ -4126,7 +4168,20 @@ mod tests {
                 |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
                         clip_menu(
-                            ui, 1, false, false, true, audio, false, &p.labels, &p.buses, &[], &mut act, &mut acts,
+                            ui,
+                            1,
+                            false,
+                            false,
+                            true,
+                            audio,
+                            false,
+                            None,
+                            &mut false,
+                            &p.labels,
+                            &p.buses,
+                            &[],
+                            &mut act,
+                            &mut acts,
                             &mut edit,
                         )
                     });
@@ -4183,8 +4238,8 @@ mod tests {
                 |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
                         clip_menu(
-                            ui, 1, false, false, true, false, false, &p.labels, &p.buses, shared, &mut act,
-                            &mut acts, &mut edit,
+                            ui, 1, false, false, true, false, false, None, &mut false, &p.labels, &p.buses, shared,
+                            &mut act, &mut acts, &mut edit,
                         )
                     });
                 },
