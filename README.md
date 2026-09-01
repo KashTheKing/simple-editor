@@ -24,7 +24,7 @@ ramping, transitions, blend modes), Simple Editor also has:
 
 - AI transcription, auto subtitles, and double-take detection
 - Dead-air removal (auto-cut silence)
-- Just one file, under 15 MB, opens almost instantly
+- Just one file, ~15 MB, opens almost instantly
 - Built-in file converter
 - YouTube, TikTok, X, and general URL video downloader/importer
 - Luau scripting, plugins, tooling, and expressions

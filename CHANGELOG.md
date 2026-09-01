@@ -1,5 +1,37 @@
 # Changelog
 
+## unreleased
+
+### Playback & performance (PR #14)
+- **RAM-scaled playback cache**: `Settings::cache_mb` (Performance tab; 0 = automatic — ¼ of
+  installed RAM, clamped 512 MB–4 GB) replaces the fixed 512 MB budget; lowering it frees RAM
+  immediately. The prefetch horizon is sized from measured entry cost, so multi-layer GPU frames
+  no longer oversubscribe it.
+- **A finished proxy no longer restarts the read-ahead**: only the remapped source's spans (and
+  decoders) are evicted — other clips keep their warm caches.
+- **Decoded-source-frame cache** on the preview pool: scrubbing back past the composited cache is
+  a memcpy instead of an ffmpeg re-seek/respawn.
+- **Per-asset proxy status**: queued / building N % / ready — hourglass badge on library rows and
+  tiles, a line in the inspector's Asset block, and the preview badge now names the file.
+
+### Fixes (PR #12)
+- Tool hotkeys match modifiers exactly (Shift+T/D/R work again); bare **M adds a marker at the
+  playhead** (on the selected clip when under it), the Marker tool moved to Shift+M.
+- "Use project background" on export actually works (CPU compositor honours the background;
+  Overwrite-Original/MCP exports stay black unless opted in); background editable in project
+  settings.
+- History panel: layout rows can't desync the panel-undo stack, labels describe their own edit
+  (derived lazily — no more per-gesture JSON parses), local-time day grouping, label cache
+  invalidated on delete.
+- Bulk edit clamps propagated keyframes into each sibling and never severs expression/path links;
+  scale X/Y fully integrated (trim/split-safe keys, curve editor rows, ranges).
+- Marker ruler scoped per sequence; snap-to-clip uses nearest edge; single-marker snap/link;
+  row click seeks.
+- Timer ticks (and notifies) with its tab hidden; moodboard tags typeable with one undo per
+  gesture, in-app drags import, Import… button; text spans follow edits, style-paste clamps
+  ranges, Clear Style on Selection; per-encoder quality scales (VP9/AV1 0–63, QSV floor 1) with
+  honest warning bands; live shape preview uses the real tool style; Settings opens 900×700.
+
 ## beta-0.2.0
 
 Nine PRs since beta-0.1.0.
