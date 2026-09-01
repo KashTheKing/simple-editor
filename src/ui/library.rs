@@ -27,6 +27,7 @@
 //! `DragPayload::Sequence`, double-click opens), saved templates, and the effects / node graphs /
 //! adjustment layers already in use or saved in settings.json.
 
+use crate::media::proxy::ProxyStatus;
 use crate::media::thumbs::ThumbCache;
 use crate::model::{ClipKind, EffectKind, Id, Project};
 use crate::settings::{RecentAsset, Settings};
@@ -1760,6 +1761,7 @@ impl Tree<'_, '_> {
         let selected = self.state.sel_ids.contains(&a.id);
         let tint = (a.label != 0).then(|| lbl_color(self.labels, a.label, self.palette));
         let used = self.used.contains(&a.id);
+        let pstatus = crate::media::proxy::status(a, self.settings.use_proxies, self.settings.proxy_height);
         let (palette, thumbs, h) = (self.palette, &mut *self.thumbs, ROW_H * self.state.zoom);
         let (r, add) = row(
             ui,
@@ -1787,6 +1789,24 @@ impl Tree<'_, '_> {
                     ui.painter().circle_filled(d.center(), 3.0, palette.accent);
                     ui.allocate_response(egui::Vec2::ZERO, egui::Sense::hover()).on_hover_text("Used in the timeline");
                 }
+                // proxy pipeline badge — Queued/Building only (Ready is the steady state, no chrome);
+                // before the tags, which are truncated against content_right and could clip it
+                match pstatus {
+                    ProxyStatus::Queued | ProxyStatus::Building(_) => {
+                        let (g, gr) = ui.allocate_exact_size(egui::vec2(14.0, 12.0), egui::Sense::hover());
+                        crate::ui::tools::draw_glyph(
+                            ui.painter(),
+                            g,
+                            crate::ui::tools::Glyph::Hourglass,
+                            palette.text_dim,
+                        );
+                        gr.on_hover_text(match pstatus {
+                            ProxyStatus::Building(f) => format!("Building proxy — {:.0} %", f * 100.0),
+                            _ => "Proxy queued (builds run one at a time)".to_string(),
+                        });
+                    }
+                    _ => {}
+                }
                 if !a.tags.is_empty() {
                     ui.add(egui::Label::new(RichText::new(a.tags.join(" · ")).weak().small()).truncate());
                 }
@@ -1809,7 +1829,14 @@ impl Tree<'_, '_> {
         let id = egui::Id::new(("tile", a.id));
         let payload = DragPayload::Asset(a.id);
         let button = selected.then_some("Add");
-        let (r, add) = tile(ui, id, payload, selected, kind_tag(a.kind), &a.name(), tint, self.palette, art, w, button);
+        let tag = match crate::media::proxy::status(a, self.settings.use_proxies, self.settings.proxy_height) {
+            crate::media::proxy::ProxyStatus::Building(f) => {
+                format!("{} · proxy {:.0} %", kind_tag(a.kind), f * 100.0)
+            }
+            crate::media::proxy::ProxyStatus::Queued => format!("{} · proxy queued", kind_tag(a.kind)),
+            _ => kind_tag(a.kind).to_string(),
+        };
+        let (r, add) = tile(ui, id, payload, selected, &tag, &a.name(), tint, self.palette, art, w, button);
         let (aid, path) = (a.id, a.path.clone());
         self.hit(ui, &r, Pick::Asset(aid), &path);
         if add || r.double_clicked() {

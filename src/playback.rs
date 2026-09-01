@@ -4,12 +4,15 @@
 //! frame index / fps, exactly like export) and published via `take_frame`; `ctx.request_repaint()`
 //! is called whenever a new frame is ready.
 //!
-//! Finished work is cached in RAM (`Cache`, ~512 MB LRU): composited frames on the CPU path, decoded
-//! layer sets on the GPU path, keyed by frame index. Replays and scrub-backs over recently seen
-//! footage are served without touching a decoder. Any edit (SetProject), canvas resize, backend or
-//! GPU-mode switch clears the cache — entries can never go stale. While playing, the pacing gap
-//! until the next frame is due is spent pre-rendering upcoming frames into the cache instead of
-//! sleeping, so a decode hiccup lands in the prefetch window and not on a visible frame.
+//! Finished work is cached in RAM (`Cache`, byte-budgeted LRU — `Settings::cache_mb`, auto-scaled
+//! to installed RAM by default): composited frames on the CPU path, decoded layer sets on the GPU
+//! path, keyed by frame index. Replays and scrub-backs over recently seen footage are served
+//! without touching a decoder. Invalidation is selective where possible: an edit (SetProject)
+//! evicts only its dirty spans, a finished proxy (Proxies) only the spans using that source; a
+//! canvas resize, backend or GPU-mode switch still clears everything — entries can never go stale.
+//! While playing, the pacing gap until the next frame is due is spent pre-rendering upcoming frames
+//! into the cache instead of sleeping, so a decode hiccup lands in the prefetch window and not on a
+//! visible frame.
 //!
 //! Commands (mpsc from the UI thread): SetProject, Seek, Play, Pause, Canvas, Backend, ClearDecoders(ack),
 //! Quit. The payload (project, clock, canvas) lives in `Shared`, so draining the queue and reading the
@@ -40,9 +43,30 @@ use std::time::{Duration, Instant};
 /// Audio mixed per block (frames) and how far ahead of the clock the ring is kept.
 const BLOCK: usize = 1024;
 const LEAD_SECS: f64 = 0.12;
-/// RAM the render thread's finished-work cache may hold.
-/// ponytail: fixed 512 MB — a settings knob (or scaling to installed RAM) is the upgrade if it matters.
-const CACHE_BYTES: usize = 512 << 20;
+/// RAM the render thread's finished-work cache may hold until the app pushes the real budget
+/// (`Cmd::CacheBudget`, from `Settings::cache_mb` via `cache_budget_bytes`).
+const DEFAULT_CACHE_BYTES: usize = 512 << 20;
+
+/// Installed physical RAM, or `None` if the query fails (then the default budget stands).
+fn total_ram() -> Option<u64> {
+    use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    let mut m = MEMORYSTATUSEX { dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32, ..Default::default() };
+    unsafe { GlobalMemoryStatusEx(&mut m) }.ok()?;
+    Some(m.ullTotalPhys)
+}
+
+/// `Settings::cache_mb` → the byte budget the caches run with. `0` = automatic: a quarter of
+/// installed RAM, clamped to 512 MB..=4 GB (4K frames are ~33 MB each — a real read-ahead needs
+/// gigabytes, but the cache must never crowd out the OS on small machines).
+pub fn cache_budget_bytes(cache_mb: u32) -> usize {
+    if cache_mb > 0 {
+        return (cache_mb as usize) << 20;
+    }
+    match total_ram() {
+        Some(total) => ((total / 4).clamp(512 << 20, 4 << 30)) as usize,
+        None => DEFAULT_CACHE_BYTES,
+    }
+}
 /// How far past the playhead the prefetcher keeps frames ready (seconds).
 const READ_AHEAD_SECS: f64 = 1.5;
 /// Recently shown frames kept eviction-protected behind the playhead (seconds), so a short
@@ -63,11 +87,29 @@ struct Cache<T> {
     tick: u64,
     /// Inclusive index range evicted last (playhead trail + prefetch horizon).
     protect: (i64, i64),
+    /// Byte budget evictions keep `bytes` under (`Settings::cache_mb` → `Cmd::CacheBudget`).
+    budget: usize,
 }
 
 impl<T> Cache<T> {
-    fn new() -> Self {
-        Cache { map: HashMap::new(), bytes: 0, tick: 0, protect: (i64::MAX, i64::MIN) }
+    fn new(budget: usize) -> Self {
+        Cache { map: HashMap::new(), bytes: 0, tick: 0, protect: (i64::MAX, i64::MIN), budget }
+    }
+    /// Change the byte budget, evicting down immediately (lowering the setting must return RAM now,
+    /// not on the next insert).
+    fn set_budget(&mut self, budget: usize) -> Vec<Arc<T>> {
+        self.budget = budget;
+        self.evict_to_budget()
+    }
+    /// Mean payload size of the current entries — what one cached index really costs, which for a
+    /// GPU `LayerSet` is one bitmap PER VISIBLE CLIP, not one canvas frame. `None` while empty or
+    /// when every entry is zero-byte (an empty timeline's LayerSets), so callers can fall back to
+    /// the canvas-frame estimate without dividing by zero.
+    fn avg_entry_bytes(&self) -> Option<usize> {
+        if self.map.is_empty() || self.bytes == 0 {
+            return None;
+        }
+        Some(self.bytes / self.map.len())
     }
     /// Frames in [lo, hi] are evicted only when nothing else is left to evict.
     fn set_protect(&mut self, lo: i64, hi: i64) {
@@ -91,7 +133,14 @@ impl<T> Cache<T> {
             out.push(old);
         }
         self.bytes += bytes;
-        while self.bytes > CACHE_BYTES {
+        out.extend(self.evict_to_budget());
+        out
+    }
+    /// Evict LRU entries (protected range last) until `bytes <= budget`; shared by `insert` and
+    /// `set_budget`.
+    fn evict_to_budget(&mut self) -> Vec<Arc<T>> {
+        let mut out = Vec::new();
+        while self.bytes > self.budget {
             // ponytail: O(n) min scan per eviction; n is a few hundred at most. A heap if it ever shows up.
             let (lo, hi) = self.protect;
             let pick = self
@@ -180,6 +229,9 @@ enum Cmd {
     Gpu(bool),
     /// Preview decode reads these proxy files instead of the originals (source path -> proxy path).
     Proxies(HashMap<String, String>),
+    /// New byte budget for the finished-work caches (and, at a quarter of it, the decoded-source
+    /// cache on the preview pool). From `Settings::cache_mb` via `cache_budget_bytes`.
+    CacheBudget(usize),
     ClearDecoders(SyncSender<()>),
     /// One-shot render at time t, at most max_w px wide (project aspect), reply on the channel.
     RenderOnce(f64, u32, SyncSender<Arc<Frame>>),
@@ -236,6 +288,11 @@ impl Player {
     /// frame. Switching back to false resumes the CPU compositor on the next render.
     pub fn set_gpu(&mut self, on: bool) {
         let _ = self.render.send(Cmd::Gpu(on));
+    }
+    /// Byte budget for the render thread's caches (see `cache_budget_bytes`). Render-only, like
+    /// `set_gpu`/`set_proxies` — the audio thread caches nothing.
+    pub fn set_cache_bytes(&mut self, bytes: usize) {
+        let _ = self.render.send(Cmd::CacheBudget(bytes));
     }
     /// Preview canvas size in pixels (the Player clamps width to `max_width`, keeping aspect).
     pub fn set_canvas(&mut self, w: u32, h: u32, max_width: u32) {
@@ -381,8 +438,9 @@ fn render_thread(
     let mut spare_layers: Vec<Frame> = Vec::new();
     // finished-work caches, keyed by frame index on the fps grid (see module docs), plus a small pool
     // of recycled Frame buffers for the CPU compositor (fed by cache evictions)
-    let mut fcache: Cache<Frame> = Cache::new();
-    let mut lcache: Cache<LayerSet> = Cache::new();
+    let mut budget = DEFAULT_CACHE_BYTES; // replaced by Cmd::CacheBudget right after startup
+    let mut fcache: Cache<Frame> = Cache::new(budget);
+    let mut lcache: Cache<LayerSet> = Cache::new(budget);
     let mut fpool: Vec<Frame> = Vec::new();
     let mut last_pub: i64 = -1;
     // buffering: the clock outran decode; free-run the prefetcher (even while the UI pauses the
@@ -398,6 +456,23 @@ fn render_thread(
                 recycle(Some(old), &mut spare_layers);
             }
             last_pub = -1;
+        };
+    }
+    // evict only the frame indices covering the given `(start, end)` second spans (±1 frame slack,
+    // matching the span math's float fuzz), recycling the buffers — the selective alternative to
+    // clear_caches! for edits (SetProject) and proxy swaps (Proxies)
+    macro_rules! evict_spans {
+        ($spans:expr, $fps:expr) => {
+            for (a, b) in $spans {
+                let (lo, hi) = ((a * $fps).floor() as i64 - 1, (b * $fps).ceil() as i64 + 1);
+                for old in fcache.evict_range(lo, hi) {
+                    reclaim(old, &mut fpool);
+                }
+                for old in lcache.evict_range(lo, hi) {
+                    recycle(Some(old), &mut spare_layers);
+                }
+            }
+            last_pub = -1; // the current frame may sit in an evicted span: republish
         };
     }
     loop {
@@ -427,17 +502,7 @@ fn render_thread(
                     // evict only the frames the edit can have changed; None = anything could differ
                     match video_dirty_spans(&project, &new) {
                         Some(spans) => {
-                            let fps = new.fps.max(1.0);
-                            for (a, b) in spans {
-                                let (lo, hi) = ((a * fps).floor() as i64 - 1, (b * fps).ceil() as i64 + 1);
-                                for old in fcache.evict_range(lo, hi) {
-                                    reclaim(old, &mut fpool);
-                                }
-                                for old in lcache.evict_range(lo, hi) {
-                                    recycle(Some(old), &mut spare_layers);
-                                }
-                            }
-                            last_pub = -1; // the current frame may sit in an evicted span: republish
+                            evict_spans!(spans, new.fps.max(1.0));
                         }
                         None => {
                             clear_caches!();
@@ -464,9 +529,31 @@ fn render_thread(
                     }
                 }
                 Cmd::Proxies(map) => {
-                    pool.set_proxies(map);
-                    dirty = true;
-                    clear_caches!(); // cached frames may show the other source now
+                    // only the sources whose mapping actually changed re-decode — a proxy finishing
+                    // for clip B must not throw away clip A's read-ahead. Ordering is safe: Proxies
+                    // and SetProject share this FIFO, so a map built against a newer project than
+                    // `project` is healed by the SetProject queued right behind it (whose dirty
+                    // spans / full clear cover whatever moved).
+                    let changed = pool.set_proxies(map);
+                    if !changed.is_empty() {
+                        let fps = project.fps.max(1.0);
+                        let spans: Vec<(f64, f64)> =
+                            changed.iter().flat_map(|src| spans_using_source(&project, src)).collect();
+                        evict_spans!(spans, fps);
+                        dirty = true;
+                    }
+                }
+                Cmd::CacheBudget(n) => {
+                    budget = n;
+                    for old in fcache.set_budget(n) {
+                        reclaim(old, &mut fpool);
+                    }
+                    for old in lcache.set_budget(n) {
+                        recycle(Some(old), &mut spare_layers);
+                    }
+                    // a quarter of the finished-work budget for decoded source frames (fix for
+                    // "reloading the footage" on scrubs — see DecoderPool::frame_at)
+                    pool.set_source_cache_bytes(n / 4);
                 }
                 Cmd::ClearDecoders(ack) => {
                     pool.clear();
@@ -516,10 +603,14 @@ fn render_thread(
         // quantize to the fps grid (same formula as ffpipe): one render per frame index, cache-keyable
         let idx = (t * fps + 1e-6).floor() as i64;
         // prefetch horizon: READ_AHEAD_SECS of frames, capped so the window can't blow the cache
-        // budget on its own (GPU layer sets are conservatively costed like one frame per index)
+        // budget on its own. One index is costed at the ACTIVE cache's measured average — a GPU
+        // LayerSet is one bitmap per visible clip, so the old one-canvas-frame estimate oversized
+        // the window on multi-layer timelines and the inserts then evicted inside their own
+        // protected range (churn). Canvas size is the fallback while the cache is empty.
         let frame_bytes = (w as usize * h as usize * 4).max(1);
-        let read_ahead =
-            ((fps * READ_AHEAD_SECS).ceil() as i64).clamp(8, (CACHE_BYTES / 2 / frame_bytes).max(8) as i64);
+        let avg = if gpu { lcache.avg_entry_bytes() } else { fcache.avg_entry_bytes() };
+        let per_idx = avg.unwrap_or(frame_bytes).max(1);
+        let read_ahead = ((fps * READ_AHEAD_SECS).ceil() as i64).clamp(8, (budget / 2 / per_idx).max(8) as i64);
         let last_idx = (((duration * fps).ceil() as i64) - 1).max(idx);
         // keep the trail + horizon around the playhead eviction-protected: a scrub-back replays free
         let trail = (fps * TRAIL_SECS).ceil() as i64;
@@ -761,6 +852,48 @@ fn video_dirty_spans(old: &Project, new: &Project) -> Option<Vec<(f64, f64)>> {
         }
     }
     Some(spans)
+}
+
+/// Timeline spans (seconds) whose rendered pixels can involve the source file at `path` — the
+/// eviction set for a proxy swap (`Cmd::Proxies`): clips using a matching asset directly, clips
+/// whose node graph samples it (`NodeKind::Asset`, mirrored from `layer_for`), and any sequence
+/// clip whose nested content uses it — that clip's WHOLE span, since inverting the nested retime
+/// buys nothing over a slightly wider evict. Every span is widened by the longest transition in
+/// the project (a transition draws both neighbours past their own bounds). Path match is
+/// ASCII-case-insensitive, like `Project::asset_by_path`.
+fn spans_using_source(project: &Project, path: &str) -> Vec<(f64, f64)> {
+    use crate::model::{Id, NodeKind};
+    let ids: Vec<Id> = project.assets.iter().filter(|a| a.path.eq_ignore_ascii_case(path)).map(|a| a.id).collect();
+    if ids.is_empty() {
+        return Vec::new();
+    }
+    let uses = |c: &Clip| {
+        (c.uses_asset() && ids.contains(&c.asset))
+            || c.graph
+                .iter()
+                .flat_map(|g| g.nodes.iter())
+                .any(|n| matches!(n.kind, NodeKind::Asset(a) if ids.contains(&a)))
+    };
+    // does this sequence, recursively, contain a clip that uses the asset? (shape + depth guard
+    // mirror Project::sequence_contains; sequence_tracks honours the open-for-editing swap)
+    fn seq_uses(project: &Project, seq: Id, uses: &dyn Fn(&Clip) -> bool, depth: usize) -> bool {
+        if depth > 32 {
+            return false;
+        }
+        let Some(tracks) = project.sequence_tracks(seq) else { return false };
+        tracks
+            .iter()
+            .flat_map(|t| t.clips.iter())
+            .any(|c| uses(c) || (c.kind == ClipKind::Sequence && seq_uses(project, c.sequence, uses, depth + 1)))
+    }
+    let widen = project.tracks.iter().flat_map(|t| t.transitions.iter()).map(|tr| tr.duration).fold(0.0f64, f64::max);
+    let mut spans = Vec::new();
+    for (_, c) in project.all_clips() {
+        if uses(c) || (c.kind == ClipKind::Sequence && seq_uses(project, c.sequence, &uses, 0)) {
+            spans.push(((c.start - widen).max(0.0), c.end() + widen));
+        }
+    }
+    spans
 }
 
 /// Take a frame buffer nobody uses any more back into the compositor's pool.
@@ -1044,8 +1177,8 @@ fn decode_one(
 ) -> Option<Arc<Frame>> {
     let st = if src_duration > 0.0 { src_t.clamp(0.0, (src_duration - 1e-4).max(0.0)) } else { src_t.max(0.0) };
     let mut frame = spare.pop().unwrap_or_default();
-    let dec = pool.video(path)?;
-    if !dec.frame_at(st, dw, dh, &mut frame) {
+    // through the pool's source-frame cache: a replay/scrub-back is a memcpy, not a decoder seek
+    if !pool.frame_at(path, st, dw, dh, &mut frame) {
         spare.push(frame);
         return None;
     }
@@ -1112,7 +1245,7 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
                 Cmd::Pause => lock(&ring).clear(),
                 Cmd::Canvas => {}
                 Cmd::Backend(b) => pool.set_backend(b),
-                Cmd::Gpu(_) | Cmd::Proxies(_) => {} // render-thread only
+                Cmd::Gpu(_) | Cmd::Proxies(_) | Cmd::CacheBudget(_) => {} // render-thread only
                 Cmd::ClearDecoders(ack) => {
                     pool.clear();
                     let _ = ack.send(());
@@ -1336,6 +1469,116 @@ mod tests {
         p.seek(0.6);
         wait_frame(&mut p, 0.6, (320, 240));
         assert_eq!(p.cache_hits(), h3, "an edit inside the clip's span must evict its frames");
+    }
+
+    /// `spans_using_source`: direct users (case-insensitive), transition widening, nested
+    /// sequences, and graph-sampled assets all resolve to spans; unrelated paths to none.
+    #[test]
+    fn spans_using_source_covers_every_user_kind() {
+        use crate::model::{Node, NodeGraph, NodeKind, ShapeKind, Transition, TransitionKind};
+        let path = media::ffpipe::tests::test_mp4();
+        let asset = media::probe(&path, Backend::Auto).unwrap();
+        let project = Project::from_media(asset.clone());
+
+        assert!(spans_using_source(&project, "Z:\\other.mp4").is_empty(), "unrelated path: no spans");
+        let spans = spans_using_source(&project, &path.to_ascii_uppercase());
+        assert!(!spans.is_empty(), "case-insensitive path match");
+        let dur = project.duration();
+        let end = spans.iter().fold(f64::MIN, |m, &(_, b)| m.max(b));
+        assert!(end >= dur - 1e-6, "the using clip's span is covered: {end} vs {dur}");
+
+        // a transition on the track widens every span by its duration (it draws neighbours past
+        // their own bounds)
+        let mut tp = project.clone();
+        let vt = tp.tracks.iter().position(|t| !t.clips.is_empty()).unwrap();
+        let cid = tp.tracks[vt].clips[0].id;
+        tp.tracks[vt].transitions.push(Transition {
+            id: 9999,
+            right: cid,
+            kind: TransitionKind::ALL[0],
+            duration: 1.5,
+            color: [0, 0, 0, 255],
+            direction: 0,
+            ease: Default::default(),
+            edge: Default::default(),
+        });
+        let wend = spans_using_source(&tp, &path).iter().fold(f64::MIN, |m, &(_, b)| m.max(b));
+        assert!((wend - end - 1.5).abs() < 1e-6, "widened by the longest transition: {wend} vs {end}");
+
+        // nesting the clips into a sequence: the outer Sequence clip is found recursively
+        let mut np = project.clone();
+        let ids: Vec<crate::model::Id> = np.all_clips().map(|(_, c)| c.id).collect();
+        np.nest_selection(&ids, "seq").expect("nested");
+        assert!(!spans_using_source(&np, &path).is_empty(), "found through the nested sequence clip");
+
+        // a clip that only SAMPLES the asset through its node graph counts too
+        let mut gp = Project::new();
+        let aid = gp.add_asset(asset);
+        let sid = gp.add_shape_clip(ShapeKind::Rect, 0.0, 2.0);
+        let mut n = 100;
+        let mut next = move || {
+            n += 1;
+            n
+        };
+        let mut g = NodeGraph::new(&mut next);
+        g.nodes.push(Node { id: 999, kind: NodeKind::Asset(aid), x: 0.0, y: 0.0, enabled: true });
+        gp.clip_mut(sid).unwrap().graph = Some(g);
+        let gspans = spans_using_source(&gp, &path);
+        assert!(gspans.iter().any(|&(a, b)| a <= 0.0 && b >= 2.0), "graph-sampled asset: {gspans:?}");
+    }
+
+    /// The cache budget is enforced on insert AND on set_budget (lowering the setting returns RAM
+    /// immediately), and `avg_entry_bytes` refuses to divide by nothing.
+    #[test]
+    fn cache_budget_evicts_down_and_avg_guards() {
+        let mut c: Cache<u8> = Cache::new(100);
+        assert!(c.avg_entry_bytes().is_none(), "empty cache: no average");
+        c.insert(0, 0, Arc::new(0u8));
+        assert!(c.avg_entry_bytes().is_none(), "zero-byte entries must not produce a 0 average");
+        c.insert(1, 60, Arc::new(1u8));
+        c.insert(2, 60, Arc::new(2u8));
+        assert!(c.bytes <= 100, "insert evicts to budget, had {}", c.bytes);
+        assert_eq!(c.avg_entry_bytes(), Some(c.bytes / c.map.len()));
+        let out = c.set_budget(50);
+        assert!(!out.is_empty() && c.bytes <= 50, "set_budget evicts immediately ({} bytes left)", c.bytes);
+    }
+
+    #[test]
+    fn cache_budget_bytes_auto_and_explicit() {
+        assert_eq!(cache_budget_bytes(1024), 1024usize << 20, "explicit MB passes through");
+        let auto = cache_budget_bytes(0);
+        assert!((512usize << 20..=4usize << 30).contains(&auto), "auto in [512 MB, 4 GB]: {auto}");
+    }
+
+    /// A finished proxy evicts only the spans using that source — an unrelated mapping keeps the
+    /// whole cache (this used to clear everything, restarting the read-ahead on every proxy).
+    #[test]
+    fn proxy_swap_evicts_only_that_source() {
+        let path = media::ffpipe::tests::test_mp4();
+        let asset = media::probe(&path, Backend::Auto).unwrap();
+        let project = Project::from_media(asset);
+        let mut p =
+            Player::new(eframe::egui::Context::default(), Backend::Auto, Arc::new(Mutex::new(TextRasterizer::new())));
+        p.set_project(&project);
+        p.set_canvas(320, 240, 1280);
+        p.seek(0.5);
+        wait_frame(&mut p, 0.5, (320, 240));
+
+        let h0 = p.cache_hits();
+        let mut unrelated = HashMap::new();
+        unrelated.insert("Z:\\other.mp4".to_string(), "Z:\\other-proxy.mp4".to_string());
+        p.set_proxies(unrelated);
+        p.seek(0.5);
+        wait_frame(&mut p, 0.5, (320, 240));
+        assert!(p.cache_hits() > h0, "a proxy for another source must keep this source's cache");
+
+        let mut real = HashMap::new();
+        real.insert(path.clone(), "Z:\\nope\\proxy.mp4".to_string());
+        let h1 = p.cache_hits();
+        p.set_proxies(real);
+        p.seek(0.5);
+        wait_frame(&mut p, 0.5, (320, 240));
+        assert_eq!(p.cache_hits(), h1, "mapping THIS source must evict its span (fresh render)");
     }
 
     /// Frame-level invalidation: only the spans an edit can change are evicted.

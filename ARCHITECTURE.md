@@ -156,21 +156,30 @@ GL work happens **only on the UI thread** (it owns the context). Everything GPU 
 ### Playback smoothness (`src/playback.rs`)
 
 * **Read-ahead**: while playing, the render thread pre-renders ~1.5 s of frames past the playhead into
-  the 512 MB LRU cache and eviction-protects a ~0.5 s trail behind it (instant scrub-backs). Prefetch
-  through the compositor also pre-opens the next clip's decoder before a cut.
+  a byte-budgeted LRU cache and eviction-protects a ~0.5 s trail behind it (instant scrub-backs). The
+  budget is `Settings::cache_mb` (0 = automatic: a quarter of installed RAM, clamped 512 MB-4 GB —
+  `playback::cache_budget_bytes`); the horizon is sized from the cache's measured average entry cost,
+  so multi-layer GPU frames can't oversubscribe it. Prefetch through the compositor also pre-opens the
+  next clip's decoder before a cut.
 * **Buffering**: if the clock runs >150 ms past the newest published frame and the due frame is not
   cached, the thread sets `Shared.buffering`, stops live-rendering and free-runs the prefetcher. The
   app polls `Player::is_buffering()`, pauses the clock (flushing audio with it — audio never plays
   over frozen video) and shows a spinner; hysteresis (⅓ of the horizon cached) resumes it.
 * **Selective invalidation**: `video_dirty_spans(old, new)` diffs projects on `SetProject` and evicts
-  only the frame ranges an edit can change (clips by id, JSON equality). Audio/marker/planner edits
-  evict nothing; canvas/fps/asset/sequence changes still clear everything.
+  only the frame ranges an edit can change (clips by id, JSON equality). A finished proxy
+  (`Cmd::Proxies`) likewise evicts only `spans_using_source` for the remapped files instead of the
+  whole cache. Audio/marker/planner edits evict nothing; canvas/fps/asset/sequence changes still
+  clear everything.
 * **DecoderPool LRU**: at most 16 live video / 32 audio decoders per pool; least-recently-used are
-  dropped so long timelines don't hoard MF readers / ffmpeg children.
+  dropped so long timelines don't hoard MF readers / ffmpeg children. The preview pool also keeps a
+  decoded-source-frame LRU (`DecoderPool::frame_at`, a quarter of the cache budget; 0 = off for every
+  other pool) so a scrub-back past the composited cache is a memcpy, not an ffmpeg respawn.
 * **Proxies** (`src/media/proxy.rs`): the app builds all-intra 720p proxies (ffmpeg, one background
   job at a time, hash-of-(path, mtime, height) filenames in the cache dir) and pushes a
   source→proxy map to the player (`Cmd::Proxies` → `DecoderPool::set_proxies`). Only preview pools
-  carry the map; export and one-shot renders always read originals.
+  carry the map; export and one-shot renders always read originals. Per-asset status
+  (`proxy::status`: queued / building N% / ready) shows on library rows, the inspector's Asset block
+  and the preview badge.
 
 ## Threading
 
