@@ -43,7 +43,13 @@ Pulled forward from CHANGELOG.md — mark new completions here as they land.
 
 ## In progress / open
 
-- [ ] Get release binary back under ~10 MB (currently 12.97 MB)
+- [ ] Get release binary back under ~10 MB (currently 15.73 MB measured 2026-09-01; the overhaul
+  plan's wave 0c "size-diet" books the drop to ≈10.4 MB before any feature lands)
+- [ ] **UI/UX overhaul** — 23 workstreams in 4 waves, planned 2026-09-04 in
+  [plans/ui-overhaul/README.md](plans/ui-overhaul/README.md) (one issue-ready file per workstream
+  under `plans/ui-overhaul/issues/`; GitHub issues #16–#38, labels `ui-overhaul` + `wave-N`). Waves
+  run as concurrent worktrees; every workstream ships its MCP tools. Wave 0 (three serial refactor
+  PRs, #16 → #17 → #18) must land before anything else starts.
 - [ ] (add more as they're identified — via `/se-goal` or `/goal`)
 
 ## UX principles
