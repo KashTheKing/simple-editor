@@ -1,0 +1,1153 @@
+//! The application: owns the project, undo stack, settings, player, dockable layout and wires the panels
+//! together. Non-blocking windows (Settings, Retime, Export, Save Template, Save Profile, export/convert
+//! progress) are plain `egui::Window`s — the editor stays usable while they are open. Also executes MCP
+//! tool calls against the live project (one undo step per mutating call).
+
+use crate::engine::export::{self, ExportOptions, Progress};
+use crate::engine::gpu::GpuRenderer;
+use crate::engine::mixer_fx::BusGraph;
+use crate::engine::prerender::PreRender;
+use crate::engine::text::TextRasterizer;
+use crate::hotkeys::{Action, Hotkeys};
+use crate::mcp;
+use crate::media::thumbs::ThumbCache;
+use crate::media::waveform::WaveformCache;
+use crate::media::{self, Backend, Frame};
+use crate::model::{
+    BlendMode, Clip, ClipKind, Effect, EffectKind, FilterKind, Id, Mask, MaskShape, NodeKind, Project, Scaler,
+    ShapeKind, TrackKind, TransitionKind, MIN_CLIP,
+};
+use crate::playback::Player;
+use crate::settings::Settings;
+use crate::theme::{self, Palette};
+use crate::ui::layout::{self, Layout, Pane};
+use crate::ui::tools::Tool;
+use crate::ui::{
+    autocut_ui, capture_ui, curves, effects_ui, export_ui, frame_ui, history_ui, import_ui, inspector, library,
+    markers_ui, mixer_ui, moodboard_ui, nodes, paste_ui, planner, presets_ui, preview, retime, settings_ui, shader_ui,
+    subtitles_ui, timeline, tools, tracking_ui, transitions_ui, DragPayload,
+};
+use eframe::egui;
+use serde_json::{json, Value};
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+// OLE drops deliver no pointer events (winit ignores the drop point), so handle_drops asks the OS for the cursor.
+windows::core::link!("user32.dll" "system" fn GetCursorPos(p: *mut windows::Win32::Foundation::POINT) -> windows::core::BOOL);
+
+const PROJECT_EXT: &str = "sedit";
+const MEDIA_EXTS: &[&str] = &[
+    "mp4", "mov", "mkv", "webm", "avi", "m4v", "wmv", "ts", "m2ts", "mts", "flv", "3gp", "mpg", "mpeg", "gif", "mp3",
+    "wav", "m4a", "aac", "flac", "ogg", "opus", "wma", "png", "jpg", "jpeg", "bmp", "webp", "tif", "tiff",
+];
+
+mod actions;
+mod drops;
+mod files;
+mod gpu;
+mod jobs;
+mod lib_preview;
+mod library_pane;
+mod mcp_exec;
+mod menus;
+mod panes;
+mod preview_pane;
+mod thumbs;
+mod timeline_pane;
+mod tools_clip;
+mod tools_helpers;
+mod tools_media;
+mod tools_playback;
+mod tools_subtitles;
+mod tools_timeline;
+#[path = "windows.rs"]
+mod windows_dlg;
+
+enum ExportKind {
+    File { path: PathBuf },
+    Overwrite { original: PathBuf, temp: PathBuf },
+}
+
+/// One toast notification. `open_path` is set when it should offer an "Open Folder" button for a
+/// file (or folder) it just finished writing.
+struct Toast {
+    msg: String,
+    at: Instant,
+    open_path: Option<PathBuf>,
+}
+
+impl Toast {
+    fn new(msg: impl Into<String>) -> Self {
+        Toast { msg: msg.into(), at: Instant::now(), open_path: None }
+    }
+
+    fn with_folder(msg: impl Into<String>, path: impl Into<PathBuf>) -> Self {
+        Toast { msg: msg.into(), at: Instant::now(), open_path: Some(path.into()) }
+    }
+}
+
+/// A blocking MCP tool job (export.video / media.convert): the reply is sent when the job finishes.
+struct McpJob {
+    prog: Arc<Progress>,
+    reply: Sender<Result<Value, String>>,
+    out: PathBuf,
+}
+
+/// The library's own preview player: a file, its own decoder/audio pipeline, and the duration/fps a
+/// transport needs (an asset's own probed values, since this project is a synthetic single-clip one).
+struct LibPreview {
+    path: PathBuf,
+    player: Player,
+    duration: f64,
+    fps: f64,
+    has_video: bool,
+    /// A still image: no transport, no timecode, no scrub bar — just the picture.
+    is_image: bool,
+    heartbeat: crate::ui::heartbeat::Heartbeat,
+}
+
+pub struct App {
+    project: Project,
+    project_path: Option<PathBuf>,
+    dirty: bool,
+    undo: Vec<UndoEntry>,
+    redo: Vec<UndoEntry>,
+    settings: Settings,
+    hotkeys: Hotkeys,
+    text: Arc<Mutex<TextRasterizer>>,
+    fonts: Vec<String>,
+    player: Player,
+    waveforms: WaveformCache,
+    thumbs: ThumbCache,
+    layout: Layout,
+    /// Last layout JSON written to settings (persist only on change, debounced to gesture end).
+    layout_json: String,
+    layout_dirty: bool,
+    timeline: timeline::TimelineState,
+    preview: preview::PreviewState,
+    library: library::LibraryState,
+    settings_ui: settings_ui::SettingsUi,
+    transitions_ui: transitions_ui::TransitionsState,
+    curves: curves::CurvesState,
+    subtitles_ui: subtitles_ui::SubtitlesState,
+    planner: planner::PlannerState,
+    moodboard: moodboard_ui::MoodboardState,
+    history: history_ui::HistoryState,
+    presets: presets_ui::PresetsState,
+    autocut: autocut_ui::AutoCutState,
+    tracking: tracking_ui::TrackState,
+    retime: retime::RetimeUi,
+    export_ui: export_ui::ExportUi,
+    /// Some = the "Save Template" / "Save Profile" name windows are open (the String is the name field).
+    template_name: Option<String>,
+    profile_name: Option<String>,
+    fullscreen: bool,
+    selection: Vec<Id>,
+    /// Selected transitions (timeline bands) — separate from the clip selection.
+    sel_transitions: Vec<Id>,
+    playhead: f64,
+    export: Option<(Arc<Progress>, ExportKind)>,
+    encoders: Vec<String>,
+    toasts: Vec<Toast>,
+    screenshot: Option<PathBuf>,
+    started: Instant,
+    /// Window starts hidden (see main.rs); shown once the first frame has been painted.
+    window_shown: bool,
+    first_frame_at: Option<Instant>,
+    screenshot_requested: bool,
+    close_confirmed: bool,
+    /// Close was requested during an export: cancel it, then re-request the close once it has finished.
+    close_after_export: bool,
+    was_playing: bool,
+    /// Last title sent to the OS — `send_viewport_cmd` forces a repaint, so only send on change.
+    last_title: String,
+    palette: Palette,
+    /// Newest rendered frame, handed to the preview pane when it draws.
+    pending_frame: Option<Arc<Frame>>,
+    /// Actions requested by panels this frame (transport, context menus, breadcrumb).
+    pending_actions: Vec<Action>,
+    mcp: Option<(mcp::Server, Receiver<mcp::ToolCall>)>,
+    mcp_port_running: u16,
+    mcp_jobs: Vec<McpJob>,
+    /// Library "Convert To…" jobs: (progress, output path) — polled each frame, imported when done.
+    convert_jobs: Vec<(Arc<Progress>, PathBuf)>,
+    /// Asset id + target extension for the Convert To… options window.
+    convert_dialog: Option<(Id, String)>,
+    /// Compress… window state (None = closed).
+    compress: Option<Compress>,
+    /// A working yt-dlp was found — gates the Library's URL import. Detected on a background thread
+    /// (it spawns `yt-dlp --version`) at start-up and again when the setting changes.
+    ytdlp_available: Arc<std::sync::atomic::AtomicBool>,
+    /// Import-URL window state: (url, audio only).
+    url_dialog: Option<(String, bool)>,
+    /// Running URL downloads — polled each frame, imported into the library when they finish.
+    downloads: Vec<crate::media::ytdlp::Download>,
+    /// One receiver per import batch: ffprobe runs on a worker, `poll_probes` adopts the results.
+    probes: Vec<Receiver<crate::engine::import::Probed>>,
+    /// Was the Auto-cut pane drawn last frame? (its keep-range shading is only valid while it is open).
+    /// `autocut_drawing` accumulates this frame; the timeline reads `autocut_shown` so the shading does
+    /// not depend on which pane the tile tree draws first.
+    autocut_shown: bool,
+    autocut_drawing: bool,
+    /// Same trick for the Tracking pane: the preview only draws its box while the pane is on screen.
+    tracking_shown: bool,
+    tracking_drawing: bool,
+    /// Fonts already handed to the rasterizer (so we only reload when the list grows).
+    loaded_fonts: usize,
+    // ---------------- round 3 ----------------
+    /// The eframe glow context (None when eframe runs without one) and the renderer it reports.
+    gl: Option<Arc<eframe::glow::Context>>,
+    gpu_name: String,
+    /// GPU renderer, built lazily from `gl` while `settings.gpu` is on; None = CPU compositor.
+    gpu: Option<GpuRenderer>,
+    /// Effect catalogue thumbnails: the egui textures (kept alive while the panel shows them) and the
+    /// key set they were built from, so they are re-rendered only when the stock image or size changes.
+    /// GPU frame requests from export threads and movie-mode prerender workers (they decode; we composite
+    /// on the GL context) — shared, since both are served identically.
+    gpu_export: (
+        std::sync::mpsc::Sender<crate::engine::export::GpuFrameRequest>,
+        std::sync::mpsc::Receiver<crate::engine::export::GpuFrameRequest>,
+    ),
+    /// The GPU canvas the preview paints (zero-copy): id + pixel size. Stays valid until the next GPU
+    /// render, which is also when it is replaced.
+    gpu_tex: Option<(egui::TextureId, [u32; 2])>,
+    /// glow texture -> egui id. The renderer's pool reuses a handful of textures, so registering each one
+    /// once keeps eframe's texture map small (registering per frame would grow it forever).
+    gpu_tex_ids: std::collections::HashMap<eframe::glow::Texture, egui::TextureId>,
+    effect_thumbs: Vec<egui::TextureHandle>,
+    effect_thumbs_key: Option<(String, u32)>,
+    /// Editor background image: (path, blur radius, texture) — reloaded when either key changes.
+    bg_tex: Option<(String, u8, egui::TextureHandle)>,
+    /// The GPU path failed once — do not retry until the setting is switched off and on again.
+    gpu_failed: bool,
+    /// The frame the GPU rendered last: its buffer is reused once the preview released it.
+    gpu_prev: Option<Arc<Frame>>,
+    tools: tools::ToolsState,
+    nodes: nodes::NodesState,
+    mixer: mixer_ui::MixerState,
+    markers: markers_ui::MarkersState,
+    buses: BusGraph,
+    capture_ui: capture_ui::CaptureUi,
+    frame_ui: frame_ui::FrameUi,
+    shader_ui: shader_ui::ShaderUi,
+    import_ui: import_ui::ImportUi,
+    paste_ui: paste_ui::PasteUi,
+    /// Running screen recording / voiceover (voiceover remembers the timeline time it started at).
+    screen_rec: Option<(crate::engine::capture::Capture, PathBuf)>,
+    voice_rec: Option<(crate::engine::capture::Capture, PathBuf, f64)>,
+    /// Running Draw take: the drawing every stroke joins, and the timeline time it started at.
+    draw_rec: Option<(Id, f64)>,
+    /// Viewport focus last frame (record-on-blur watches this).
+    was_focused: bool,
+    /// Ctrl+Alt+C clipboard for Paste Attributes.
+    attrs: Option<Clip>,
+    /// Ctrl+C / Ctrl+X clip clipboard — a template (clips + the assets they use), so paste reuses
+    /// `Project::place_clips` and its fresh clip / link ids.
+    clipboard: Option<crate::settings::Template>,
+    /// Text to hand the OS clipboard at the end of the frame. egui-winit only emits `Event::Paste` when
+    /// the system clipboard holds text (egui-winit-0.33.3 src/lib.rs:823 returns without pushing the key
+    /// event either way), so a Ctrl+V after an internal-only copy produced NO event at all and could
+    /// never be bound. Copying clips therefore also writes them out as text.
+    os_clipboard: Option<String>,
+    /// The library's own preview: a player of its own so it never disturbs the program monitor or the
+    /// timeline playhead, and the texture the pane paints this frame. While it is Some, the Preview
+    /// pane shows this instead of the timeline (see `draw_lib_preview`).
+    lib_preview: Option<LibPreview>,
+    lib_preview_tex: Option<egui::TextureHandle>,
+    /// This update's uploaded frame, computed once (`Player::take_frame` consumes the buffered frame, so
+    /// pulling it twice in one update would starve whichever call came second). Both the library pane's
+    /// own preview box and the viewport override read this same value.
+    lib_preview_live: Option<library::PreviewFrame>,
+    /// Movie mode pre-render cache.
+    prerender: PreRender,
+    /// Movie mode paused the clock because the frame under the playhead was not rendered yet.
+    movie_stall: bool,
+    /// True while playback is held because the player reported buffering (spinner shown).
+    buffer_stall: bool,
+    /// A script picked from the Scripts menu, run on the next update (outside menu layout).
+    run_script_path: Option<std::path::PathBuf>,
+    /// Proxy build in flight: (source path, proxy file, job). One transcode at a time.
+    proxy_job: Option<(String, std::path::PathBuf, std::sync::Arc<crate::engine::export::Progress>)>,
+    /// source path -> proxy file, as last pushed to the player.
+    proxy_map: std::collections::HashMap<String, String>,
+    /// Next time the asset list is rescanned for missing proxies.
+    proxy_scan_at: Option<Instant>,
+    /// Preview canvas size in px, as the pane last reported it (the GPU renders at this size).
+    canvas: (u32, u32),
+    /// dshow audio inputs, listed once when the Settings / capture windows first need them.
+    audio_inputs: Option<Vec<(String, bool)>>,
+    /// Panes whose draw panicked: shown as a message instead of taking the whole editor down.
+    failed_panes: Vec<Pane>,
+}
+
+/// Non-blocking progress window for background jobs (conversions, downloads): one row per job with a
+/// progress bar and Cancel. Draws nothing when there are no jobs.
+fn job_window(ctx: &egui::Context, title: &str, jobs: &[(Arc<Progress>, String)]) {
+    if jobs.is_empty() {
+        return;
+    }
+    egui::Window::new(title).resizable(false).default_width(320.0).show(ctx, |ui| {
+        for (prog, name) in jobs {
+            ui.label(egui::RichText::new(name).small());
+            ui.add(egui::ProgressBar::new(prog.fraction()).show_percentage().text(prog.status()));
+            if ui.button("Cancel").clicked() {
+                prog.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+    });
+    ctx.request_repaint_after(Duration::from_millis(150));
+}
+
+/// Marker in the undo stack for "a pane was dragged somewhere else". The arrangement itself lives in
+/// `Layout`'s own (much shorter) history — this only keeps Ctrl+Z stepping back in the right order.
+/// ponytail: once the layout history has scrolled past its 20 entries the marker undoes nothing; deepen
+/// the layout stack if that ever bites.
+pub(crate) const LAYOUT_STEP: &str = "\u{0}layout";
+
+/// History panel filter bucket. `Layout` is a pane rearrangement (`LAYOUT_STEP`); everything else —
+/// clip/effect/marker/text/project edits — is `Editing`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HistoryCategory {
+    Editing,
+    Layout,
+}
+
+/// One entry in the undo/redo stack, doubling as a History panel row. `label` stays EMPTY for project
+/// edits — the History panel derives one lazily from neighbouring snapshots (`describe_change`), which
+/// keeps the per-gesture push free of JSON parses and labels each row with its own edit instead of the
+/// previous one. Only sentinel entries (layout steps) carry a fixed label.
+#[derive(Clone)]
+pub(crate) struct UndoEntry {
+    pub json: String,
+    pub label: String,
+    /// Seconds since Unix epoch (`SystemTime`, not `Instant` — a History panel needs a real clock to
+    /// group by day and survive across app restarts... though the stack itself is session-only today;
+    /// kept as a real timestamp anyway since "session-only" is the smaller, more surprising fact here).
+    pub at: f64,
+    pub category: HistoryCategory,
+}
+
+fn now_secs() -> f64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
+}
+
+/// A short, best-effort description of what changed between two project snapshots — compares a handful
+/// of high-signal counts/fields rather than a full structural diff (this is a "quick glance" History
+/// panel label, not a changelog). Falls back to "Project edited" when nothing tracked here differs.
+/// Costs two full `Project::from_json` parses — only the History panel calls it (lazily, cached),
+/// NEVER the per-gesture undo push.
+pub(crate) fn describe_change(old_json: &str, new_json: &str) -> String {
+    let (Ok(old), Ok(new)) = (Project::from_json(old_json), Project::from_json(new_json)) else {
+        return "Project edited".into();
+    };
+    let clips = |p: &Project| p.tracks.iter().map(|t| t.clips.len()).sum::<usize>();
+    let effects = |p: &Project| p.tracks.iter().flat_map(|t| &t.clips).map(|c| c.effects.len()).sum::<usize>();
+    let (oc, nc) = (clips(&old), clips(&new));
+    if oc != nc {
+        return match nc.cmp(&oc) {
+            std::cmp::Ordering::Greater if nc - oc == 1 => "Added a clip".into(),
+            std::cmp::Ordering::Greater => format!("Added {} clips", nc - oc),
+            std::cmp::Ordering::Less if oc - nc == 1 => "Removed a clip".into(),
+            _ => format!("Removed {} clips", oc - nc),
+        };
+    }
+    if old.width != new.width || old.height != new.height {
+        return "Changed project resolution".into();
+    }
+    if (old.fps - new.fps).abs() > f64::EPSILON {
+        return "Changed project frame rate".into();
+    }
+    if old.markers.len() != new.markers.len() {
+        return "Edited markers".into();
+    }
+    if old.notes.len() != new.notes.len() {
+        return "Edited notes".into();
+    }
+    if old.plan.len() != new.plan.len() {
+        return "Edited the planner".into();
+    }
+    if old.moodboard.len() != new.moodboard.len() {
+        return "Edited the moodboard".into();
+    }
+    let (oe, ne) = (effects(&old), effects(&new));
+    if oe != ne {
+        return "Edited effects".into();
+    }
+    if old.name != new.name {
+        return "Renamed the project".into();
+    }
+    "Project edited".into()
+}
+
+/// Push an undo snapshot (capped) and clear the redo history. Labels are NOT derived here — that cost
+/// (two project parses) belongs to the History panel, lazily; see `UndoEntry::label`.
+fn push_undo_json(undo: &mut Vec<UndoEntry>, redo: &mut Vec<UndoEntry>, json: String) {
+    let entry = if json == LAYOUT_STEP {
+        UndoEntry { label: "Rearranged panels".into(), category: HistoryCategory::Layout, at: now_secs(), json }
+    } else {
+        UndoEntry { json, label: String::new(), category: HistoryCategory::Editing, at: now_secs() }
+    };
+    undo.push(entry);
+    if undo.len() > 200 {
+        undo.remove(0);
+    }
+    redo.clear();
+}
+
+/// Moved/renamed sources: re-point assets to `project_dir/<file name>` when that exists (a silent black
+/// preview is the alternative); returns the paths that are still missing.
+fn relocate_assets(project: &mut Project, project_dir: Option<&Path>) -> Vec<String> {
+    let mut missing = Vec::new();
+    for a in &mut project.assets {
+        if Path::new(&a.path).exists() {
+            continue;
+        }
+        let alt = Path::new(&a.path).file_name().and_then(|n| project_dir.map(|d| d.join(n)));
+        match alt.filter(|p| p.exists()) {
+            Some(p) => a.path = p.to_string_lossy().into_owned(),
+            None => missing.push(a.path.clone()),
+        }
+    }
+    missing
+}
+
+/// Run something that may panic (GPU driver, pre-render, a panel widget) without taking the editor
+/// down — same policy as the decoder threads. None = it panicked.
+/// ponytail: the panic message goes to the default hook (stderr); the caller toasts and degrades.
+fn guarded<T>(f: impl FnOnce() -> T) -> Option<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).ok()
+}
+
+/// Give the clip's last effect a mask, or the clip itself when it has no effects. False = there is one
+/// already, or the clip is audio (a mask shapes pixels, and audio has none).
+fn preview_canvas(canvas: (u32, u32), quality: u32) -> (u32, u32) {
+    if canvas.0 == 0 || canvas.1 == 0 {
+        return (0, 0);
+    }
+    let q = quality.clamp(25, 100) as f32 / 100.0;
+    (((canvas.0 as f32 * q) as u32).max(16), ((canvas.1 as f32 * q) as u32).max(16))
+}
+
+/// `preview_max_width` applied to a canvas size, keeping the aspect ratio. Must match
+/// `Player::set_canvas`, or the GPU renders at a different shape than the player decodes at.
+fn clamp_canvas(w: u32, h: u32, max_width: u32) -> (u32, u32) {
+    if max_width > 0 && w > max_width {
+        (max_width, ((h as u64 * max_width as u64) / w.max(1) as u64).max(1) as u32)
+    } else {
+        (w, h)
+    }
+}
+
+/// Render size for an image export: downscales are rendered straight at the target (the compositor's
+/// `Scaler` does the filtering), upscales are rendered at project size and enlarged by ffmpeg with the
+/// chosen resize flag — rendering a 4K frame from a 1080p timeline gains nothing but time.
+fn frame_render_size(project: (u32, u32), target: (u32, u32)) -> (u32, u32) {
+    let (pw, ph) = (project.0.max(16), project.1.max(16));
+    let (tw, th) = (target.0.max(16), target.1.max(16));
+    if tw <= pw && th <= ph {
+        (tw, th)
+    } else {
+        (pw, ph)
+    }
+}
+
+// TODO(ui-panels-fx): call these from `effects_ui::set_thumbnail(kind, ...)` once that hook exists —
+// the app renders each kind once on the GPU from this source and hands the result over.
+#[allow(dead_code)]
+/// Cache key of one effect thumbnail: kind, source image and size. Changing the stock image (or the
+/// grid size) invalidates every thumbnail; two different effects never share a key.
+fn timeline_is_empty(p: &Project) -> bool {
+    p.is_empty() && p.main_stash.as_ref().is_none_or(|s| s.tracks.iter().all(|t| t.clips.is_empty()))
+}
+
+/// Compress… window state: what to shrink, how hard, and where the result goes.
+struct Compress {
+    src: PathBuf,
+    /// false = quality (CRF), true = size target.
+    by_size: bool,
+    crf: u32,
+    target_mb: f64,
+    overwrite: bool,
+    source_bytes: Option<u64>,
+    duration: Option<f64>,
+}
+
+impl Compress {
+    fn new(src: PathBuf, crf: u32) -> Self {
+        let source_bytes = std::fs::metadata(&src).ok().map(|m| m.len());
+        let duration = crate::engine::convert::probe_seconds(&src);
+        // default target: half the current size, which is what "compress this" usually means
+        let target_mb = source_bytes.map_or(10.0, |b| (b as f64 / 2e6).max(0.1));
+        Self { src, by_size: false, crf: crf.max(23), target_mb, overwrite: false, source_bytes, duration }
+    }
+}
+
+/// Where "Convert To…" writes: `<stem>_converted.<ext>` next to the source, uniquified so a convert can
+/// never overwrite the source itself or a file already on disk (possibly one the timeline is using).
+fn converted_path(src: &Path, ext: &str) -> PathBuf {
+    let stem = src.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "output".into());
+    let mut out = src.with_file_name(format!("{stem}_converted.{ext}"));
+    let mut n = 2;
+    while out.exists() {
+        out = src.with_file_name(format!("{stem}_converted_{n}.{ext}"));
+        n += 1;
+    }
+    out
+}
+
+impl App {
+    pub fn new(cc: &eframe::CreationContext<'_>, open: Option<PathBuf>, screenshot: Option<PathBuf>) -> Self {
+        // eframe restores the window rect from the last session, which may be on another monitor
+        crate::winpos::place_on_cursor_monitor(cc);
+        let settings = Settings::load();
+        media::ffpipe::set_dir(&settings.ffmpeg_dir);
+        media::ytdlp::set_dir(&settings.ytdlp_dir);
+        theme::apply(&cc.egui_ctx, &settings.theme, &settings.palette, &settings.ui_look);
+        let backend = Backend::parse(&settings.decoder);
+        let text = Arc::new(Mutex::new(TextRasterizer::new()));
+        {
+            // warm the font list off-thread so the first text clip / inspector doesn't hitch
+            let t = text.clone();
+            std::thread::spawn(move || {
+                if let Ok(mut t) = t.lock() {
+                    t.load_system_fonts();
+                }
+            });
+        }
+        // first-run install points the entry at this exe; skip for screenshot/debug runs so they don't re-point it
+        if settings.context_menu
+            && screenshot.is_none()
+            && !cfg!(debug_assertions)
+            && !crate::contextmenu::is_installed()
+        {
+            let _ = crate::contextmenu::install();
+        }
+        let mut player = Player::new(cc.egui_ctx.clone(), backend, text.clone());
+        player.set_cache_bytes(crate::playback::cache_budget_bytes(settings.cache_mb));
+        let waveforms = WaveformCache::new(cc.egui_ctx.clone(), backend);
+        let thumbs = ThumbCache::new(cc.egui_ctx.clone(), backend);
+        let hotkeys = Hotkeys::from_settings(&settings);
+        let palette = theme::palette_with(&cc.egui_ctx, &settings.palette);
+        // GL belongs to this (UI) thread; the renderer itself is built on first use so a driver that
+        // rejects the shaders only costs a toast.
+        let gl = cc.gl.clone();
+        let gpu_name = gl
+            .as_ref()
+            .map(|gl| {
+                use eframe::glow::HasContext;
+                unsafe { gl.get_parameter_string(eframe::glow::RENDERER) }
+            })
+            .unwrap_or_else(|| "no OpenGL context".into());
+        // an old layout profile has no Tools / Nodes / Mixer / Markers pane: reset to the new default
+        let layout = Layout::from_json(&settings.layout).unwrap_or_default();
+        let layout_json = layout.to_json();
+        let mut app = Self {
+            project: Project::new(),
+            project_path: None,
+            dirty: false,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            settings,
+            hotkeys,
+            text,
+            fonts: Vec::new(),
+            player,
+            waveforms,
+            thumbs,
+            layout,
+            layout_json,
+            layout_dirty: false,
+            timeline: timeline::TimelineState::default(),
+            preview: preview::PreviewState::default(),
+            library: library::LibraryState::default(),
+            settings_ui: settings_ui::SettingsUi::default(),
+            transitions_ui: transitions_ui::TransitionsState::default(),
+            curves: curves::CurvesState::default(),
+            subtitles_ui: subtitles_ui::SubtitlesState::default(),
+            planner: planner::PlannerState::default(),
+            moodboard: moodboard_ui::MoodboardState::default(),
+            history: history_ui::HistoryState::default(),
+            presets: presets_ui::PresetsState::default(),
+            autocut: autocut_ui::AutoCutState::default(),
+            tracking: tracking_ui::TrackState::default(),
+            retime: retime::RetimeUi::default(),
+            export_ui: export_ui::ExportUi::default(),
+            template_name: None,
+            profile_name: None,
+            fullscreen: false,
+            selection: Vec::new(),
+            sel_transitions: Vec::new(),
+            playhead: 0.0,
+            export: None,
+            encoders: Vec::new(),
+            toasts: Vec::new(),
+            screenshot,
+            started: Instant::now(),
+            window_shown: false,
+            first_frame_at: None,
+            screenshot_requested: false,
+            close_confirmed: false,
+            close_after_export: false,
+            was_playing: false,
+            last_title: String::new(),
+            palette,
+            pending_frame: None,
+            pending_actions: Vec::new(),
+            mcp: None,
+            mcp_port_running: 0,
+            mcp_jobs: Vec::new(),
+            convert_jobs: Vec::new(),
+            convert_dialog: None,
+            compress: None,
+            ytdlp_available: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            url_dialog: None,
+            downloads: Vec::new(),
+            probes: Vec::new(),
+            autocut_shown: false,
+            autocut_drawing: false,
+            tracking_shown: false,
+            tracking_drawing: false,
+            loaded_fonts: 0,
+            gl,
+            gpu_name,
+            gpu: None,
+            gpu_export: std::sync::mpsc::channel(),
+            gpu_tex: None,
+            gpu_tex_ids: std::collections::HashMap::new(),
+            effect_thumbs: Vec::new(),
+            effect_thumbs_key: None,
+            bg_tex: None,
+            gpu_failed: false,
+            gpu_prev: None,
+            tools: tools::ToolsState::default(),
+            nodes: nodes::NodesState::default(),
+            mixer: mixer_ui::MixerState::default(),
+            markers: markers_ui::MarkersState::default(),
+            buses: BusGraph::new(),
+            capture_ui: capture_ui::CaptureUi::default(),
+            frame_ui: frame_ui::FrameUi::default(),
+            shader_ui: shader_ui::ShaderUi::default(),
+            import_ui: import_ui::ImportUi::default(),
+            paste_ui: paste_ui::PasteUi::default(),
+            screen_rec: None,
+            voice_rec: None,
+            draw_rec: None,
+            was_focused: true,
+            attrs: None,
+            clipboard: None,
+            os_clipboard: None,
+            lib_preview: None,
+            lib_preview_live: None,
+            lib_preview_tex: None,
+            prerender: PreRender::new(),
+            movie_stall: false,
+            buffer_stall: false,
+            run_script_path: None,
+            proxy_job: None,
+            proxy_map: std::collections::HashMap::new(),
+            proxy_scan_at: None,
+            canvas: (0, 0),
+            audio_inputs: None,
+            failed_panes: Vec::new(),
+        };
+        app.detect_ytdlp(&cc.egui_ctx);
+        app.refresh_presets();
+        app.player.set_project(&app.project);
+        if let Some(p) = open {
+            app.open_path(&p);
+            // launched from Explorer ("Open with"): behave like a player — full screen, rolling
+            if app.screenshot.is_none() && !app.project.tracks.iter().all(|t| t.clips.is_empty()) {
+                app.fullscreen = true;
+                app.player.play();
+            }
+        }
+        app
+    }
+
+    // ---------------- helpers ----------------
+
+    fn toast(&mut self, msg: impl Into<String>) {
+        self.toasts.push(Toast::new(msg));
+    }
+
+    /// Like `toast`, but offers an "Open Folder" button for a file (or folder) just written to disk.
+    fn toast_with_folder(&mut self, msg: impl Into<String>, path: impl Into<PathBuf>) {
+        self.toasts.push(Toast::with_folder(msg, path));
+    }
+
+    fn push_undo(&mut self) {
+        push_undo_json(&mut self.undo, &mut self.redo, self.project.to_json());
+    }
+
+    /// Insert each asset's clips at `t` (video on `vt` if given), chaining them end to end.
+    fn insert_at(&mut self, ids: Vec<Id>, mut t: f64, vt: Option<usize>) {
+        for id in ids {
+            let new = self.project.insert_asset_clips(id, t, vt);
+            if let Some(c) = new.first().and_then(|c| self.project.clip(*c)) {
+                t = c.end();
+            }
+        }
+    }
+
+    /// Empty project + one media file: open it as the project (returns empty); otherwise import into the library.
+    /// ponytail: that single file is still probed on this thread — it settles the project format, size
+    /// and zoom before anything is drawn; give it a placeholder too if opening ever feels slow.
+    fn open_or_import(&mut self, paths: &[PathBuf]) -> Vec<Id> {
+        if self.project.is_empty() && self.project.assets.is_empty() && paths.len() == 1 {
+            self.open_media(&paths[0]);
+            return Vec::new();
+        }
+        self.import_files(paths)
+    }
+
+    /// After any project mutation.
+    fn after_edit(&mut self) {
+        self.dirty = true;
+        let p = &self.project;
+        self.selection.retain(|id| p.clip(*id).is_some());
+        self.player.set_project(&self.project);
+        if self.settings.movie_mode {
+            // the picture changed: drop what was pre-rendered and render the range again
+            let end = self.project.duration();
+            let App { prerender, .. } = self;
+            guarded(|| prerender.invalidate(0.0, end));
+            self.request_prerender();
+        }
+    }
+
+    fn set_project(&mut self, project: Project, path: Option<PathBuf>) {
+        self.probes.clear(); // import probes belong to the project that started them
+        self.project = project;
+        self.project_path = path;
+        self.dirty = false;
+        self.undo.clear();
+        self.redo.clear();
+        self.selection.clear();
+        self.playhead = 0.0;
+        self.player.pause();
+        self.player.set_project(&self.project);
+        self.player.seek(0.0);
+        self.timeline.zoom_to_fit(self.project.duration(), self.timeline.lanes_rect.width().max(800.0));
+    }
+
+    fn title(&self) -> String {
+        let name = self
+            .project_path
+            .as_ref()
+            .map(|p| p.file_name().unwrap_or_default().to_string_lossy().into_owned())
+            .unwrap_or_else(|| self.project.name.clone());
+        format!("{}{} — Simple Editor", if self.dirty { "*" } else { "" }, name)
+    }
+
+    fn seek(&mut self, t: f64) {
+        self.playhead = t.clamp(0.0, self.project.duration().max(0.0));
+        self.player.seek(self.playhead);
+        // an explicit seek always brings the playhead back into view (a user pan only suspends the
+        // follow while playing)
+        self.timeline.follow_playhead(self.playhead);
+    }
+
+    fn backend(&self) -> Backend {
+        Backend::parse(&self.settings.decoder)
+    }
+
+    fn timeline_is_empty(&self) -> bool {
+        timeline_is_empty(&self.project)
+    }
+
+    /// The project with any open sequence closed — exports always render the MAIN timeline.
+    fn export_project(&self) -> Project {
+        let mut p = self.project.clone();
+        if p.editing.is_some() {
+            p.close_sequence();
+        }
+        p
+    }
+
+    // ---------------- file operations ----------------
+
+    /// Import media files into the library. Probing spawns ffprobe per file (~100 ms), so each path
+    /// lands as a placeholder asset now and `poll_probes` folds in the real metadata a few frames
+    /// later — dropping ten files costs this thread nothing. Returns the asset ids.
+    /// ponytail: an MCP `media.import` reply therefore quotes duration 0 until the probe lands;
+    /// blocking the tool call on it is the fix if an agent ever needs the number in the same reply.
+    fn import_files(&mut self, paths: &[PathBuf]) -> Vec<Id> {
+        let mut ids = Vec::new();
+        let mut fresh: Vec<(Id, String)> = Vec::new();
+        for path in paths {
+            let p = path.to_string_lossy().into_owned();
+            // a re-import of a file already in the library must not re-probe it: adopting the result
+            // would rebuild clips the user has since trimmed
+            if let Some(a) = self.project.asset_by_path(&p) {
+                ids.push(a.id);
+                continue;
+            }
+            if fresh.is_empty() {
+                self.push_undo();
+            }
+            let id = self.project.add_asset(crate::engine::import::placeholder(&p));
+            ids.push(id);
+            fresh.push((id, p));
+        }
+        if !fresh.is_empty() {
+            self.probes.push(crate::engine::import::probe_async(fresh, self.backend()));
+            self.after_edit();
+        }
+        ids
+    }
+}
+
+impl eframe::App for App {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if !self.window_shown {
+            // viewport commands apply after this frame is painted, so no white flash
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            self.window_shown = true;
+        }
+        self.palette = theme::palette_with(ctx, &self.settings.palette);
+        let cozy_look = self.settings.ui_look != "sharp";
+        self.palette.rounding = if cozy_look { 6.0 } else { 2.0 };
+        self.palette.clip_rounding = if cozy_look { 5.0 } else { 0.0 };
+        if !self.settings.bg_image.is_empty() && self.settings.panel_opacity < 255 {
+            let a = self.settings.panel_opacity;
+            let al = |c: egui::Color32| egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a);
+            self.palette.bg = al(self.palette.bg);
+            self.palette.panel = al(self.palette.panel);
+            self.palette.header = al(self.palette.header);
+        }
+        if self.fonts.is_empty() {
+            if let Ok(t) = self.text.try_lock() {
+                if t.is_loaded() {
+                    self.fonts = t.families().to_vec();
+                }
+            }
+        }
+        self.poll_panels();
+        self.poll_probes(ctx);
+        self.lib_preview_live = self.lib_preview_frame(ctx);
+        self.build_effect_thumbnails(ctx);
+        if self.serve_gpu_exports() || self.export.is_some() {
+            // a GPU export needs this thread to keep coming back to serve its frames
+            ctx.request_repaint();
+        }
+        // carry last frame's "the Auto-cut pane was on screen" into this frame's timeline drawing
+        self.autocut_shown = self.autocut_drawing;
+        self.autocut_drawing = false;
+        self.tracking_shown = self.tracking_drawing;
+        self.tracking_drawing = false;
+
+        // close handling: confirm unsaved changes
+        if ctx.input(|i| i.viewport().close_requested()) && !self.close_confirmed {
+            if let Some((prog, _)) = &self.export {
+                // let the export thread stop and clean up first; the close is re-requested once it has finished
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                prog.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+                self.close_after_export = true;
+            } else if self.dirty && self.screenshot.is_none() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                if self.confirm_discard() {
+                    self.close_confirmed = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            } else {
+                self.close_confirmed = true;
+            }
+        }
+
+        // live links (paths / expressions) re-bake when their inputs changed; a hash check otherwise
+        self.project.refresh_links();
+        // playback clock (one extra read after it stops, so the playhead lands on the final time)
+        let playing = self.player.is_playing();
+        if playing || self.was_playing {
+            self.playhead = self.player.time();
+            self.timeline.ensure_visible(self.playhead);
+            // a numeric field left focused before play would see its bound value move every frame and
+            // report changed(), silently recording keyframes at the moving playhead — drop focus once
+            // when playback starts (not every frame, so text can still be typed mid-playback)
+            if playing && !self.was_playing {
+                ctx.memory_mut(|m| m.stop_text_input());
+            }
+            ctx.request_repaint_after(Duration::from_millis(16));
+        }
+        // a Draw take runs until the video stops or the tool is put away — not one stroke at a time
+        if self.draw_rec.is_some() && (self.tools.tool != Tool::Draw || (self.was_playing && !playing)) {
+            self.tools.recording = false;
+            self.toggle_draw_recording(false);
+        }
+        self.was_playing = playing;
+        // GPU on: the player hands over decoded layers and we render them here (this thread owns GL);
+        // GPU off / unavailable: the render thread already composited the frame on the CPU.
+        self.sync_gpu();
+        // leave the layers in place until the preview pane has reported its size (first frame), so the
+        // very first decode is not thrown away
+        if self.canvas.0 > 0 && self.canvas.1 > 0 {
+            if let Some(layers) = self.player.take_layers() {
+                let (w, h) = self.canvas;
+                let t = self.player.time();
+                // zero copy: render into a GL texture and let egui paint it directly. Only when nothing
+                // else needs the pixels on the CPU (movie mode reads from its own cache).
+                if let Some(tex) = self.gpu_preview_texture(&layers, t, w, h, _frame) {
+                    self.gpu_tex = Some(tex);
+                    self.pending_frame = None;
+                } else if let Some(f) = self.gpu_frame(&layers, t, w, h) {
+                    self.pending_frame = Some(f);
+                }
+            }
+        }
+        if let Some(f) = self.player.take_frame() {
+            self.pending_frame = Some(f);
+        }
+        if self.pending_frame.is_some() && self.first_frame_at.is_none() {
+            self.first_frame_at = Some(Instant::now());
+            #[cfg(debug_assertions)]
+            eprintln!("first frame after {} ms", self.started.elapsed().as_millis());
+        }
+        // movie mode: keep rendering the requested range in small slices and show what is ready
+        if self.settings.movie_mode {
+            let t = self.playhead;
+            let gpu_tx = self.gpu.is_some().then(|| self.gpu_export.0.clone());
+            let App { prerender, project, .. } = self;
+            match guarded(|| (prerender.tick(project, 4.0, gpu_tx), prerender.frame(project, t))) {
+                Some((busy, ready)) => {
+                    // movie mode plays every frame at the project rate: rather than let the wall clock
+                    // run past a second that is not rendered yet, hold it and resume when it lands.
+                    match ready {
+                        Some(f) => {
+                            self.pending_frame = Some(f);
+                            if self.movie_stall {
+                                self.movie_stall = false;
+                                self.player.play();
+                            }
+                        }
+                        None if self.player.is_playing() => {
+                            self.movie_stall = true;
+                            self.player.pause();
+                        }
+                        None => {}
+                    }
+                    if busy || self.movie_stall {
+                        ctx.request_repaint_after(Duration::from_millis(16));
+                    }
+                }
+                None => {
+                    self.settings.movie_mode = false;
+                    self.toast("Movie mode is not available in this build");
+                }
+            }
+        }
+        // buffering: the render thread fell behind decode — hold the clock (the audio ring flushes
+        // with the pause) and show a spinner until the read-ahead refills, instead of letting audio
+        // play on over a frozen frame. Same shape as the movie-mode stall above.
+        if self.player.is_buffering() {
+            if !self.buffer_stall && self.player.is_playing() {
+                self.buffer_stall = true;
+                self.player.pause();
+            }
+            ctx.request_repaint_after(Duration::from_millis(50)); // keep polling for the refill
+        } else if self.buffer_stall {
+            self.buffer_stall = false;
+            self.player.play();
+        }
+        // record-on-blur: start when the editor loses focus, stop (and import) when it comes back
+        let focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
+        if self.settings.capture_on_blur && self.capture_ui.screen_open {
+            if self.was_focused && !focused && self.screen_rec.is_none() {
+                let opts = self.blur_capture_options();
+                self.start_screen_capture(opts);
+            } else if !self.was_focused && focused && self.screen_rec.is_some() {
+                self.stop_screen_capture();
+            }
+        }
+        self.was_focused = focused;
+        if self.screen_rec.is_some() || self.voice_rec.is_some() {
+            let c = self.screen_rec.as_ref().map(|(c, _)| c).or(self.voice_rec.as_ref().map(|(c, _, _)| c));
+            self.capture_ui.elapsed = c.and_then(|c| guarded(|| c.elapsed())).unwrap_or(0.0);
+            ctx.request_repaint_after(Duration::from_millis(250));
+        }
+
+        // export progress
+        if let Some((prog, _)) = &self.export {
+            if prog.is_done() {
+                self.finish_export();
+                if std::mem::take(&mut self.close_after_export) {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            } else {
+                ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            }
+        }
+
+        if let Some(p) = self.run_script_path.take() {
+            self.run_script(&p);
+        }
+        self.sync_proxies();
+        // MCP server + queued tool calls (executed here, on the UI thread, against the live project)
+        self.sync_mcp(ctx);
+        self.poll_mcp(ctx);
+
+        self.handle_drops(ctx);
+
+        // the planner's timer ticks HERE, every frame, so a countdown keeps counting, banks time onto
+        // its linked task, and notifies even while the Timer tab is hidden behind a sibling tab
+        {
+            let (banked, finished) = planner::tick(&mut self.planner, &mut self.project);
+            if banked {
+                // mark unsaved without the cost of a full after_edit() (undo entry, player refresh)
+                self.dirty = true;
+            }
+            if finished {
+                self.toast("Timer finished — time to stop");
+            }
+            if self.planner.timer.running {
+                ctx.request_repaint_after(std::time::Duration::from_millis(200));
+            }
+        }
+        // cleared so a frame where the Moodboard tab isn't the one actually drawn (a sibling tab in its
+        // group is active instead) can't have next frame's handle_drops match a stale rect from the last
+        // time it *was* drawn — `moodboard_ui::show` sets this back whenever it actually runs
+        self.moodboard.content_rect = egui::Rect::NOTHING;
+        self.screenshot_tick(ctx);
+
+        // hotkeys
+        // the tool strip claims the bare letters (V/T/D/M, Shift+S) before the action table is polled, so
+        // a rebound action can never shadow a tool
+        if let Some(t) = tools::handle_hotkeys(ctx, &self.hotkeys, &mut self.tools) {
+            self.tools.tool = t;
+            self.layout.reveal(Pane::Tools);
+        }
+        // bare S is snapping's own key, claimed the same way (see tools::handle_snap_hotkey)
+        if tools::handle_snap_hotkey(ctx, &mut self.settings.snap) {
+            self.settings.save();
+        }
+        let mut actions = self.hotkeys.poll(ctx);
+        if !ctx.wants_keyboard_input() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Y)) {
+            actions.push(Action::Redo);
+        }
+        if self.fullscreen && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            actions.push(Action::Fullscreen);
+        }
+
+        let title = self.title();
+        if title != self.last_title {
+            self.last_title = title.clone();
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+        }
+
+        // ---- layout ----
+        if self.fullscreen {
+            // same pane as the docked preview (it reads self.fullscreen) — no second copy to drift
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
+                .show(ctx, |ui| self.draw_pane(ui, Pane::Preview));
+        } else {
+            egui::TopBottomPanel::top("menu").show(ctx, |ui| {
+                actions.extend(self.menu_bar(ui));
+            });
+            self.ensure_bg_texture(ctx);
+            let tab_bar = (self.bg_tex.is_some() && self.settings.panel_opacity < 255).then_some(self.palette.header);
+            egui::CentralPanel::default().show(ctx, |ui| {
+                if let Some((_, _, tex)) = &self.bg_tex {
+                    let r = ui.max_rect();
+                    ui.painter().image(
+                        tex.id(),
+                        r,
+                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        egui::Color32::WHITE,
+                    );
+                    let t = self.settings.bg_tint;
+                    ui.painter().rect_filled(r, 0.0, egui::Color32::from_rgba_unmultiplied(t[0], t[1], t[2], t[3]));
+                }
+                let mut l = std::mem::replace(&mut self.layout, Layout::new(egui_tiles::Tree::empty("layout")));
+                // cloned: the draw closure needs self mutably while the tab renderer reads the icons
+                let icons = self.settings.icon_overrides.clone();
+                let cozy = self.settings.ui_look != "sharp";
+                let (changed, moved, set_icon) =
+                    layout::show(ctx, ui, &mut l, &icons, tab_bar, cozy, &mut |ui, pane| self.draw_pane(ui, pane));
+                self.layout = l;
+                self.layout_dirty |= changed;
+                if moved {
+                    push_undo_json(&mut self.undo, &mut self.redo, LAYOUT_STEP.to_owned());
+                }
+                if !set_icon.is_empty() {
+                    for (pane, pick) in set_icon {
+                        let key = format!("pane.{}", pane.title());
+                        match pick {
+                            Some(name) => drop(self.settings.icon_overrides.insert(key, name)),
+                            None => drop(self.settings.icon_overrides.remove(&key)),
+                        }
+                    }
+                    self.settings.save();
+                }
+            });
+        }
+
+        // clipboard and Delete last: the curve and node editors claim those while the pointer is over
+        // them, and only what they leave behind should reach the timeline
+        actions.extend(self.hotkeys.poll_late(ctx));
+        if !ctx.wants_keyboard_input() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace))
+        {
+            actions.push(Action::Delete);
+        }
+        if let Some(text) = self.os_clipboard.take() {
+            ctx.copy_text(text);
+        }
+        actions.append(&mut self.pending_actions);
+        for a in actions {
+            if a == Action::Fullscreen {
+                // the viewport command needs the ctx; keep act() ctx-free
+                self.act(a);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
+            } else {
+                self.act(a);
+            }
+        }
+
+        // also in fullscreen: an export's progress + Cancel must not disappear behind it
+        self.windows(ctx);
+
+        // persist the layout when it changed, debounced to the end of drag gestures
+        if self.layout_dirty && !ctx.input(|i| i.pointer.any_down()) {
+            let json = self.layout.to_json();
+            if json != self.layout_json {
+                self.layout_json = json.clone();
+                self.settings.layout = json;
+                self.settings.save();
+            }
+            self.layout_dirty = false;
+        }
+
+        // toasts
+        // a toast with an Open Folder button needs time to be noticed AND clicked
+        self.toasts.retain(|t| t.at.elapsed().as_secs_f32() < if t.open_path.is_some() { 10.0 } else { 5.0 });
+        if !self.toasts.is_empty() {
+            egui::Area::new(egui::Id::new("toasts"))
+                .anchor(egui::Align2::RIGHT_BOTTOM, [-12.0, -12.0])
+                .order(egui::Order::Foreground)
+                .show(ctx, |ui| {
+                    for t in &self.toasts {
+                        egui::Frame::popup(ui.style()).show(ui, |ui| {
+                            ui.label(&t.msg);
+                            if let Some(p) = &t.open_path {
+                                if ui.small_button("Open Folder").clicked() {
+                                    let mut cmd = std::process::Command::new("explorer");
+                                    if p.is_dir() {
+                                        cmd.arg(p);
+                                    } else {
+                                        cmd.arg("/select,").arg(p);
+                                    }
+                                    let _ = cmd.spawn();
+                                }
+                            }
+                        });
+                    }
+                });
+            ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;

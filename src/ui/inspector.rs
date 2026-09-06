@@ -26,112 +26,22 @@
 //! Returns true if the project changed.
 
 use crate::hotkeys::Action;
-use crate::model::{
-    AnimLink, Animated, BlendMode, ClipKind, Id, Label, Mask, Project, ShapeKind, ShapeStyle, TextSpan, TextStyle,
-};
+use crate::model::{AnimLink, Animated, ClipKind, Id, Label, Mask, Project, ShapeKind, ShapeStyle};
 use crate::settings::{Settings, TextPreset};
 use crate::theme::Palette;
+use crate::ui::inspector_text::{set_span, span_draft_at};
 use crate::ui::markers_ui::x_button;
 use crate::ui::{edit_start, key_buttons, mask_grid, timecode, Gesture};
-use eframe::egui::{self, DragValue, Grid, Response, RichText, Slider};
+use eframe::egui::{self, DragValue, Grid, Response, RichText};
 use std::cell::RefCell;
 
 /// Test-only: remember a widget rect so headless tests can click the real button.
 #[cfg(test)]
-fn mark(ui: &egui::Ui, name: &str, r: &Response) {
+pub(super) fn mark(ui: &egui::Ui, name: &str, r: &Response) {
     ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(("insp", name.to_string())), r.rect));
 }
 #[cfg(not(test))]
-fn mark(_ui: &egui::Ui, _name: &str, _r: &Response) {}
-
-fn gain_to_db(g: f64) -> f64 {
-    if g <= 0.0 {
-        -60.0
-    } else {
-        (20.0 * g.log10()).max(-60.0)
-    }
-}
-
-fn db_to_gain(db: f64) -> f64 {
-    if db <= -60.0 {
-        0.0
-    } else {
-        10f64.powf(db / 20.0)
-    }
-}
-
-/// Seed a "Set Text Style" popup draft for the char range [a, b): an existing span exactly covering
-/// that range wins (edit it in place), else every field starts from the clip's base style.
-fn span_draft_at(style: &TextStyle, a: usize, b: usize) -> TextPreset {
-    let base = TextPreset {
-        name: String::new(),
-        font: style.font.clone(),
-        size: style.size,
-        bold: style.bold,
-        italic: style.italic,
-        color: style.color,
-        letter_spacing: style.letter_spacing,
-    };
-    let Some(s) = style.spans.iter().find(|s| s.start == a && s.end == b) else { return base };
-    TextPreset {
-        name: String::new(),
-        font: s.font.clone().unwrap_or(base.font),
-        size: s.size.unwrap_or(base.size),
-        bold: s.bold.unwrap_or(base.bold),
-        italic: s.italic.unwrap_or(base.italic),
-        color: s.color.unwrap_or(base.color),
-        letter_spacing: s.letter_spacing.unwrap_or(base.letter_spacing),
-    }
-}
-
-/// Push (or replace, if one already exists over the exact same range) a fully-overriding `TextSpan`
-/// covering [a, b) with `p`'s fields. Ponytail: a span is always a full override of every field this
-/// editor exposes, not a sparse per-field one — simpler than a per-field "inherit" toggle in the popup,
-/// and still correct since it only ever writes the fields the UI let the user see/change.
-fn set_span(style: &mut TextStyle, a: usize, b: usize, p: &TextPreset) {
-    style.spans.retain(|s| !(s.start == a && s.end == b));
-    style.spans.push(TextSpan {
-        start: a,
-        end: b,
-        font: Some(p.font.clone()),
-        size: Some(p.size),
-        bold: Some(p.bold),
-        italic: Some(p.italic),
-        color: Some(p.color),
-        letter_spacing: Some(p.letter_spacing),
-        ..Default::default()
-    });
-}
-
-/// The editable fields of a `TextPreset` — shared by the "Set Text Style" popup and (implicitly, same
-/// shape) the saved-preset list.
-fn text_preset_fields(ui: &mut egui::Ui, p: &mut TextPreset, fonts: &[String]) {
-    Grid::new("text_preset_fields").num_columns(2).show(ui, |ui| {
-        ui.label("Font");
-        egui::ComboBox::from_id_salt("span_font").selected_text(p.font.clone()).show_ui(ui, |ui| {
-            if !fonts.iter().any(|f| *f == p.font) {
-                let _ = ui.selectable_label(true, p.font.as_str());
-            }
-            for f in fonts {
-                ui.selectable_value(&mut p.font, f.clone(), f);
-            }
-        });
-        ui.end_row();
-        ui.label("Size");
-        ui.horizontal(|ui| {
-            ui.add(DragValue::new(&mut p.size).range(1.0..=1000.0));
-            ui.checkbox(&mut p.bold, "Bold");
-            ui.checkbox(&mut p.italic, "Italic");
-        });
-        ui.end_row();
-        ui.label("Colour");
-        ui.color_edit_button_srgba_unmultiplied(&mut p.color);
-        ui.end_row();
-        ui.label("Letter spacing");
-        ui.add(DragValue::new(&mut p.letter_spacing).range(-10.0..=50.0).speed(0.1));
-        ui.end_row();
-    });
-}
+pub(super) fn mark(_ui: &egui::Ui, _name: &str, _r: &Response) {}
 
 // Hand-offs to the app (the show() signature has no room for these; the app polls them each frame).
 thread_local! {
@@ -170,6 +80,11 @@ pub fn take_open_nodes() -> Option<Id> {
 /// and reloads the text rasterizer.
 pub fn take_pending_font_import() -> Option<String> {
     PENDING_FONT.with(|p| p.borrow_mut().take())
+}
+
+/// Set by inspector_text's "Import font…" button (PENDING_FONT is private to this file).
+pub(super) fn set_pending_font_import(path: String) {
+    PENDING_FONT.with(|p| *p.borrow_mut() = Some(path));
 }
 
 /// Sequence the user asked to open from the inspector.
@@ -631,12 +546,10 @@ fn clip_section(
     let mut g = Gesture::default();
     // snapshots: the widgets edit a clone of the clip, so the project must not stay borrowed
     let labels: Vec<Label> = project.labels.clone();
-    let buses: Vec<(Id, String)> = project.buses.iter().map(|b| (b.id, b.name.clone())).collect();
     let labels_open_id = egui::Id::new("inspector_labels_open");
     let mut edit_labels: bool = ui.ctx().data(|d| d.get_temp(labels_open_id).unwrap_or(false));
     let mut label_ops: Vec<LabelOp> = Vec::new();
     let mut path_op: Option<PathOp> = None;
-    let path_list: Vec<(Id, String)> = project.paths.iter().map(|p| (p.id, p.name.clone())).collect();
     // asset-details gesture/scratch (zone 2, but read back at commit time outside any wrap)
     let mut ga = Gesture::default();
     let mut asset_desc: Option<String> = None;
@@ -763,99 +676,19 @@ fn clip_section(
             });
             ui.end_row();
         }
-        for (label, a) in clip.props_mut() {
-            ui.label(label);
-            let linked = !a.link.is_none();
-            ui.horizontal(|ui| {
-                let mut v = a.at(lt);
-                let r = ui
-                    .add_enabled_ui(!linked, |ui| match label {
-                        "Volume" => {
-                            let mut db = gain_to_db(v);
-                            let r = ui.add(Slider::new(&mut db, -60.0..=12.0).suffix(" dB").fixed_decimals(1));
-                            if r.changed() {
-                                v = db_to_gain(db);
-                            }
-                            r
-                        }
-                        "Pan" => {
-                            let r = ui.add(Slider::new(&mut v, -1.0..=1.0).fixed_decimals(2));
-                            #[cfg(test)]
-                            ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("test_pan_slider"), r.id));
-                            r
-                        }
-                        "Scale" | "Scale X" | "Scale Y" => {
-                            ui.add(DragValue::new(&mut v).speed(0.01).range(0.01..=20.0))
-                        }
-                        "Opacity" => {
-                            let mut pct = v * 100.0;
-                            let r = ui.add(Slider::new(&mut pct, 0.0..=100.0).suffix(" %").fixed_decimals(0));
-                            if r.changed() {
-                                v = pct / 100.0;
-                            }
-                            #[cfg(test)]
-                            ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("test_opacity_slider"), r.id));
-                            r
-                        }
-                        _ => ui.add(DragValue::new(&mut v).speed(1.0)),
-                    })
-                    .inner;
-                if r.changed() {
-                    a.set_at(lt, v);
-                }
-                g.note(&r);
-                key_buttons(ui, a, lt, palette, &mut g);
-                link_menu(ui, label, a, &path_list, &mut g);
-            });
-            ui.end_row();
-            // a linked expression is edited right under its property
-            if let Animated { link: AnimLink::Expr(src), link_err, .. } = a {
-                ui.label("");
-                ui.horizontal(|ui| {
-                    let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
-                        let mut job = luau_highlight(ui, buf.as_str());
-                        job.wrap.max_width = wrap_width;
-                        ui.fonts_mut(|f| f.layout_job(job))
-                    };
-                    g.note(
-                        &ui.add(
-                            egui::TextEdit::singleline(src)
-                                .desired_width(150.0)
-                                .hint_text("return value + math.sin(t*4) * 20")
-                                .layouter(&mut layouter),
-                        ),
-                    );
-                    if let Some(e) = link_err {
-                        ui.colored_label(ui.visuals().warn_fg_color, "!").on_hover_text(e.clone());
-                    }
-                });
-                ui.end_row();
-            }
-        }
-        // gain fades on audio, opacity fades on visual clips (same fields, same ramps)
-        if clip.kind != ClipKind::Adjustment {
-            let dur = clip.duration;
-            ui.label("Fade in");
-            g.note(&ui.add(DragValue::new(&mut clip.fade_in).range(0.0..=dur).speed(0.05).suffix(" s")));
-            ui.end_row();
-            ui.label("Fade out");
-            g.note(&ui.add(DragValue::new(&mut clip.fade_out).range(0.0..=dur).speed(0.05).suffix(" s")));
-            ui.end_row();
-        }
-        if clip.is_visual() {
-            ui.label("Blend");
-            egui::ComboBox::from_id_salt("blend").selected_text(clip.blend.name()).show_ui(ui, |ui| {
-                for b in BlendMode::ALL {
-                    g.note(&ui.selectable_value(&mut clip.blend, b, b.name()));
-                }
-            });
-            ui.end_row();
-        }
     });
+
+    // Properties (Position/Scale/Rotation/Opacity or Volume/Pan), fades and blend — shared by audio and
+    // video clips, extracted to inspector_audio.rs. Its own Grid, so it sits just after (not inside) the
+    // "Clip" grid above. The audio-bus override itself is rendered separately below, at its original
+    // spot after the Path section, so pulling it out doesn't reorder the panel.
+    let audio_changed = crate::ui::inspector_audio::section(ui, project, &clip_ids, playhead, palette, undo);
 
     // Zone 2: everything below is per-clip data that does not bulk-edit — greyed out and non-interactive
     // while more than one clip is selected, exactly like the Name field above (the labels editor at the
     // very bottom is the one exception: it edits `Project.labels`, not this clip, so it stays live).
+    let mut text_changed = false;
+    let mut bus_changed = false;
     ui.add_enabled_ui(!multi, |ui| {
         if !clip.effects.is_empty() {
             ui.separator();
@@ -946,171 +779,16 @@ fn clip_section(
             }
         }
 
+        // Text/typography: multiline body, style grid, per-selection TextSpan overrides — extracted to
+        // inspector_text.rs. Its "Text style presets" sub-panel stays here (needs `&mut Settings`, which
+        // inspector_text::section's mandated signature has no room for), reusing that fn's persisted
+        // text-selection state (same `("inspector_text_sel", id)` Id) and its `span_draft_at`/`set_span`.
         if clip.kind == ClipKind::Text {
-            let style = clip.text.get_or_insert_with(Default::default);
-            ui.separator();
-            ui.strong("Text");
-            // snapshot the wording so per-word spans can follow the characters they style across this
-            // frame's edit (typing before a styled word used to shift the styling onto the wrong chars)
-            let text_before = (!style.spans.is_empty()).then(|| style.text.clone());
-            let text_out = egui::TextEdit::multiline(&mut style.text).id_salt("inspector_text_body").show(ui);
-            g.note_text(&text_out.response);
-            if text_out.response.changed() {
-                if let Some(before) = text_before {
-                    style.remap_spans(&before);
-                }
-            }
-            // char range of the current selection (empty/collapsed = no selection) — used by "Style
-            // Selection…" below to know what a new/edited TextSpan should cover.
-            let live_sel: Option<(usize, usize)> = text_out.cursor_range.and_then(|r| {
-                let (a, b) = (r.primary.index, r.secondary.index);
-                (a != b).then(|| (a.min(b), a.max(b)))
-            });
-            // the text field loses focus (cursor_range -> None) the moment a button elsewhere is clicked,
-            // so "Style Selection…"/"Apply to Selection" need the LAST non-empty selection, not this
-            // frame's live one, to still know what to target once actually clicked.
-            // keyed by clip id: a selection made on one clip must not arm the span buttons on another
+            text_changed = crate::ui::inspector_text::section(ui, project, &clip_ids, fonts, palette, undo);
+
             let text_sel_id = egui::Id::new(("inspector_text_sel", id));
-            if live_sel.is_some() {
-                ui.ctx().data_mut(|d| d.insert_temp(text_sel_id, live_sel));
-            }
             let text_sel: Option<(usize, usize)> =
                 ui.ctx().data(|d| d.get_temp::<Option<(usize, usize)>>(text_sel_id)).flatten();
-            Grid::new("inspector_text").num_columns(2).show(ui, |ui| {
-                ui.label("Font");
-                ui.horizontal(|ui| {
-                    egui::ComboBox::from_id_salt("font").selected_text(style.font.clone()).show_ui(ui, |ui| {
-                        if !fonts.iter().any(|f| *f == style.font) {
-                            let _ = ui.selectable_label(true, style.font.as_str());
-                        }
-                        for f in fonts {
-                            g.note(&ui.selectable_value(&mut style.font, f.clone(), f));
-                        }
-                    });
-                    if ui.small_button("Import font…").clicked() {
-                        if let Some(p) = rfd::FileDialog::new().add_filter("Fonts", &["ttf", "otf"]).pick_file() {
-                            PENDING_FONT.with(|f| *f.borrow_mut() = Some(p.to_string_lossy().into_owned()));
-                        }
-                    }
-                });
-                ui.end_row();
-                ui.label("Size");
-                ui.horizontal(|ui| {
-                    g.note(&ui.add(DragValue::new(&mut style.size).range(1.0..=1000.0)));
-                    g.note(&ui.checkbox(&mut style.bold, "Bold"));
-                    g.note(&ui.checkbox(&mut style.italic, "Italic"));
-                });
-                ui.end_row();
-                ui.label("Fill");
-                g.note(&ui.color_edit_button_srgba_unmultiplied(&mut style.color));
-                ui.end_row();
-                ui.label("Outline");
-                ui.horizontal(|ui| {
-                    g.note(&ui.color_edit_button_srgba_unmultiplied(&mut style.outline_color));
-                    g.note(&ui.add(DragValue::new(&mut style.outline_width).range(0.0..=50.0).speed(0.1)));
-                });
-                ui.end_row();
-                ui.label("Drop shadow");
-                ui.horizontal(|ui| {
-                    g.note(&ui.checkbox(&mut style.shadow, ""));
-                    g.note(&ui.color_edit_button_srgba_unmultiplied(&mut style.shadow_color));
-                });
-                ui.end_row();
-                ui.label("Shadow x/y/blur");
-                ui.horizontal(|ui| {
-                    g.note(&ui.add(DragValue::new(&mut style.shadow_x).range(-200.0..=200.0)));
-                    g.note(&ui.add(DragValue::new(&mut style.shadow_y).range(-200.0..=200.0)));
-                    g.note(&ui.add(DragValue::new(&mut style.shadow_blur).range(0.0..=50.0).speed(0.1)));
-                });
-                ui.end_row();
-                ui.label("Align");
-                ui.horizontal(|ui| {
-                    for (i, name) in ["Left", "Center", "Right"].iter().enumerate() {
-                        g.note(&ui.selectable_value(&mut style.align, i as u8, *name));
-                    }
-                });
-                ui.end_row();
-                ui.label("Line spacing");
-                g.note(&ui.add(DragValue::new(&mut style.line_spacing).range(0.5..=3.0).speed(0.01)));
-                ui.end_row();
-                ui.label("Letter spacing");
-                g.note(&ui.add(DragValue::new(&mut style.letter_spacing).range(-10.0..=50.0).speed(0.1)));
-                ui.end_row();
-                ui.label("Box");
-                ui.horizontal(|ui| {
-                    g.note(&ui.color_edit_button_srgba_unmultiplied(&mut style.box_color));
-                    g.note(&ui.add(DragValue::new(&mut style.box_padding).range(0.0..=100.0).speed(0.5)));
-                });
-                ui.end_row();
-            });
-
-            // ---- per-selection style override (TextSpan) + saved text-style presets ----
-            // Only the fields the rasterizer actually honours per-span today (see TextSpan's doc comment
-            // in model.rs): font/size/bold/italic/colour/letter-spacing. Outline/shadow stay clip-wide.
-            ui.separator();
-            let span_draft_id = egui::Id::new(("inspector_text_span_draft", id)); // per clip, like text_sel
-            ui.horizontal(|ui| {
-                match text_sel {
-                    Some((a, b)) if b > a => {
-                        ui.label(format!("{} character{} selected", b - a, if b - a == 1 { "" } else { "s" }));
-                    }
-                    _ => {
-                        ui.weak("Select text above, then style just that range");
-                    }
-                }
-                let can = matches!(text_sel, Some((a, b)) if b > a);
-                let r = ui.add_enabled(can, egui::Button::new("Style Selection…"));
-                mark(ui, "style_selection", &r);
-                if r.clicked() {
-                    if let Some((a, b)) = text_sel {
-                        let seed = span_draft_at(style, a, b);
-                        ui.ctx().data_mut(|d| d.insert_temp(span_draft_id, (a, b, seed)));
-                    }
-                }
-                // the undo for a styled word: drop the per-char overrides back to the clip style
-                let overlaps = |a: usize, b: usize| style.spans.iter().any(|sp| sp.start < b && sp.end > a);
-                let can_clear = matches!(text_sel, Some((a, b)) if b > a && overlaps(a, b));
-                let r = ui.add_enabled(can_clear, egui::Button::new("Clear Style on Selection"));
-                mark(ui, "clear_span", &r);
-                if r.clicked() {
-                    if let Some((a, b)) = text_sel {
-                        undo(project);
-                        style.clear_span_range(a, b);
-                        g.changed = true;
-                    }
-                }
-            });
-            let draft: Option<(usize, usize, TextPreset)> = ui.ctx().data(|d| d.get_temp(span_draft_id));
-            if let Some((a, b, mut preset)) = draft {
-                let mut open = true;
-                let mut apply = false;
-                let mut cancel = false;
-                egui::Window::new("Set Text Style").resizable(false).collapsible(false).open(&mut open).show(
-                    ui.ctx(),
-                    |ui| {
-                        text_preset_fields(ui, &mut preset, fonts);
-                        ui.horizontal(|ui| {
-                            if ui.button("Apply").clicked() {
-                                apply = true;
-                            }
-                            if ui.button("Cancel").clicked() {
-                                cancel = true;
-                            }
-                        });
-                    },
-                );
-                if apply {
-                    undo(project);
-                    set_span(style, a, b, &preset);
-                    g.changed = true;
-                }
-                if apply || cancel || !open {
-                    ui.ctx().data_mut(|d| d.remove::<(usize, usize, TextPreset)>(span_draft_id));
-                } else {
-                    ui.ctx().data_mut(|d| d.insert_temp(span_draft_id, (a, b, preset)));
-                }
-            }
-
             let presets_open_id = egui::Id::new("inspector_text_presets_open");
             let mut presets_open: bool = ui.ctx().data(|d| d.get_temp(presets_open_id).unwrap_or(false));
             ui.checkbox(&mut presets_open, "Text style presets");
@@ -1121,16 +799,18 @@ fn clip_section(
                     let label =
                         if has_sel { "Save selection's style as preset" } else { "Save current style as preset" };
                     if ui.button(label).on_hover_text("Rename it in the list below").clicked() {
-                        let name = format!("Text style {}", settings.text_presets.len() + 1);
                         // with a selection, capture its EFFECTIVE style (span overrides included) — the
                         // "I styled this word, save that look" workflow; otherwise the clip style
-                        let mut p = match text_sel {
-                            Some((a, b)) if b > a => span_draft_at(style, a, b),
-                            _ => span_draft_at(style, 0, 0),
-                        };
-                        p.name = name;
-                        settings.text_presets.push(p);
-                        settings.save();
+                        if let Some(style) = project.clip(id).and_then(|c| c.text.clone()) {
+                            let name = format!("Text style {}", settings.text_presets.len() + 1);
+                            let mut p = match text_sel {
+                                Some((a, b)) if b > a => span_draft_at(&style, a, b),
+                                _ => span_draft_at(&style, 0, 0),
+                            };
+                            p.name = name;
+                            settings.text_presets.push(p);
+                            settings.save();
+                        }
                     }
                 });
                 let mut delete: Option<usize> = None;
@@ -1201,19 +881,25 @@ fn clip_section(
                 match apply_preset {
                     Some((p, true)) => {
                         undo(project);
-                        style.font = p.font.clone();
-                        style.size = p.size;
-                        style.bold = p.bold;
-                        style.italic = p.italic;
-                        style.color = p.color;
-                        style.letter_spacing = p.letter_spacing;
-                        g.changed = true;
+                        if let Some(c) = project.clip_mut(id) {
+                            let style = c.text.get_or_insert_with(Default::default);
+                            style.font = p.font.clone();
+                            style.size = p.size;
+                            style.bold = p.bold;
+                            style.italic = p.italic;
+                            style.color = p.color;
+                            style.letter_spacing = p.letter_spacing;
+                        }
+                        text_changed = true;
                     }
                     Some((p, false)) => {
                         if let Some((a, b)) = text_sel {
                             undo(project);
-                            set_span(style, a, b, &p);
-                            g.changed = true;
+                            if let Some(c) = project.clip_mut(id) {
+                                let style = c.text.get_or_insert_with(Default::default);
+                                set_span(style, a, b, &p);
+                            }
+                            text_changed = true;
                         }
                     }
                     None => {}
@@ -1375,24 +1061,10 @@ fn clip_section(
             });
         }
 
-        // audio bus override
-        if clip.kind == ClipKind::Audio || clip.kind == ClipKind::Video {
-            ui.separator();
-            ui.horizontal(|ui| {
-                ui.strong("Bus");
-                let name = buses
-                    .iter()
-                    .find(|(bid, _)| *bid == clip.bus)
-                    .map(|(_, n)| n.clone())
-                    .unwrap_or_else(|| "Track default".into());
-                egui::ComboBox::from_id_salt("clip_bus").selected_text(name).width(140.0).show_ui(ui, |ui| {
-                    g.note(&ui.selectable_value(&mut clip.bus, 0, "Track default"));
-                    for (bid, n) in &buses {
-                        g.note(&ui.selectable_value(&mut clip.bus, *bid, n));
-                    }
-                });
-            });
-        }
+        // audio bus override (see inspector_audio::bus_section's doc comment for why this call site
+        // is separate from the audio_changed props/fades/blend call above); it pushes its own undo,
+        // like audio_changed/text_changed above, so it only needs folding into the final return.
+        bus_changed = crate::ui::inspector_audio::bus_section(ui, project, id, clip.kind, undo);
 
         // clip markers
         ui.separator();
@@ -1466,24 +1138,24 @@ fn clip_section(
         undo(project);
     }
     if g.changed {
+        // Targeted field write-back: `clip` only holds this fn's own fields by now (name / enabled /
+        // label / container_label / effects / mask / shape / markers) — properties, fades, blend, bus
+        // and text are owned by inspector_audio::section / inspector_text::section above, which already
+        // committed their own edits straight to `project`; overwriting the whole clip here would revert
+        // those with this fn's stale pre-edit clone.
         if let Some(c) = project.clip_mut(id) {
-            *c = clip.clone();
+            c.container_label = clip.container_label.clone();
+            c.name = clip.name.clone();
+            c.enabled = clip.enabled;
+            c.label = clip.label;
+            c.effects = clip.effects.clone();
+            c.mask = clip.mask.clone();
+            c.shape = clip.shape.clone();
+            c.markers = clip.markers.clone();
         }
-        // Bulk propagation: only the zone-1 fields, only when a field actually changed from `orig`, and
-        // always an absolute overwrite of the sibling's own value — never a relative delta (the same rule
-        // `transition_section` uses). `orig`/`clip`/`clip_ids` are owned values by this point, so fetching
-        // `project.clip_mut(sibling)` in the loop below borrows nothing that is still borrowed.
+        // Bulk propagation: only Enabled/Label are zone-1 (bulk-editable) among this fn's own fields;
+        // everything else here is zone-2 (single-clip only, already unreachable while multi is true).
         if multi {
-            // Diff each props_mut() field position-wise: `clip` and `orig` share a kind (it never changes
-            // in this section), so `props_mut()` yields the same labels in the same order for both.
-            let mut orig_probe = orig.clone();
-            let mut changed_props: Vec<(&'static str, f64)> = Vec::new();
-            for ((label, a), (_, oa)) in clip.props_mut().into_iter().zip(orig_probe.props_mut()) {
-                let v = a.at(lt);
-                if v != oa.at(lt) {
-                    changed_props.push((label, v));
-                }
-            }
             for &sid in &clip_ids {
                 if sid == id {
                     continue;
@@ -1494,31 +1166,6 @@ fn clip_section(
                 }
                 if clip.label != orig.label {
                     s.label = clip.label;
-                }
-                if clip.blend != orig.blend && s.is_visual() {
-                    s.blend = clip.blend;
-                }
-                if clip.fade_in != orig.fade_in {
-                    s.fade_in = clip.fade_in.clamp(0.0, s.duration);
-                }
-                if clip.fade_out != orig.fade_out {
-                    s.fade_out = clip.fade_out.clamp(0.0, s.duration);
-                }
-                if !changed_props.is_empty() {
-                    // clamp into the sibling: an unclamped local time wrote keyframes OUTSIDE the
-                    // sibling's 0..duration (invisible in every editor, but steering its value by
-                    // extrapolation) whenever the playhead wasn't over that sibling
-                    let slt = s.local(playhead).clamp(0.0, s.duration);
-                    for (label, v) in &changed_props {
-                        for (slabel, sa) in s.props_mut() {
-                            // a linked property (expression / path) is skipped, mirroring how the
-                            // representative's own row is disabled while linked — set_at would
-                            // silently sever the sibling's link otherwise
-                            if slabel == *label && sa.link.is_none() {
-                                sa.set_at(slt, *v);
-                            }
-                        }
-                    }
                 }
             }
         }
@@ -1564,7 +1211,7 @@ fn clip_section(
         }
         None => {}
     }
-    g.changed || ga.changed || labels_changed || path_op.is_some()
+    g.changed || ga.changed || labels_changed || path_op.is_some() || audio_changed || text_changed || bus_changed
 }
 
 const LUAU_KEYWORDS: &[&str] = &[
@@ -1575,7 +1222,7 @@ const LUAU_KEYWORDS: &[&str] = &[
 /// Minimal hand-rolled Luau tokenizer for the expression field — keywords, strings, numbers and
 /// comments get a colour, everything else stays the default text colour. One expression at a time,
 /// so a full syntax-highlighting crate would be a lot of dependency for one line of text.
-fn luau_highlight(ui: &egui::Ui, text: &str) -> egui::text::LayoutJob {
+pub(super) fn luau_highlight(ui: &egui::Ui, text: &str) -> egui::text::LayoutJob {
     use egui::text::{LayoutJob, TextFormat};
     use egui::{Color32, FontId};
 
@@ -1637,7 +1284,7 @@ fn luau_highlight(ui: &egui::Ui, text: &str) -> egui::text::LayoutJob {
 
 /// The "∿" menu on a property row: link the value to a saved path (Position X/Y) or a Luau
 /// expression, AE-style. Manual edits elsewhere break the link (`Animated::set_at`).
-fn link_menu(ui: &mut egui::Ui, label: &str, a: &mut Animated, paths: &[(Id, String)], g: &mut Gesture) {
+pub(super) fn link_menu(ui: &mut egui::Ui, label: &str, a: &mut Animated, paths: &[(Id, String)], g: &mut Gesture) {
     let lit = !a.link.is_none();
     let r = ui.menu_button(if lit { RichText::new("∿").strong() } else { RichText::new("∿").weak() }, |ui| {
         if lit {
@@ -1710,20 +1357,6 @@ fn asset_use_count(project: &Project, aid: Id) -> usize {
 mod tests {
     use super::*;
     use crate::model::{Asset, Clip};
-
-    #[test]
-    fn db_gain_roundtrip() {
-        assert_eq!(gain_to_db(1.0), 0.0);
-        assert!((db_to_gain(6.0) - 1.9953).abs() < 1e-3);
-        assert_eq!(db_to_gain(-60.0), 0.0);
-        assert_eq!(gain_to_db(0.0), -60.0);
-        for db in [-59.0, -20.0, -3.0, 0.0, 6.0, 12.0] {
-            assert!((gain_to_db(db_to_gain(db)) - db).abs() < 1e-9, "{db}");
-        }
-        for g in [0.002, 0.1, 0.5, 1.0, 2.0, 3.98] {
-            assert!((db_to_gain(gain_to_db(g)) - g).abs() < 1e-9, "{g}");
-        }
-    }
 
     #[test]
     fn use_count_and_labels() {

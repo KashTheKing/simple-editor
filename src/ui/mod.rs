@@ -10,9 +10,12 @@ pub mod effects_ui;
 pub mod export_ui;
 pub mod frame_ui;
 pub mod guides;
+pub mod heartbeat;
 pub mod history_ui;
 pub mod import_ui;
 pub mod inspector;
+pub mod inspector_audio;
+pub mod inspector_text;
 pub mod layout;
 pub mod library;
 pub mod markers_ui;
@@ -24,7 +27,6 @@ pub mod planner;
 pub mod presets_ui;
 pub mod preview;
 pub mod retime;
-pub mod heartbeat;
 pub mod settings_ui;
 pub mod shader_ui;
 pub mod subtitles_ui;
@@ -35,7 +37,7 @@ pub mod transitions_ui;
 
 use crate::model::{Animated, Id, Mask, MaskShape, Project, LABEL_COLORS};
 use crate::theme::Palette;
-use eframe::egui::{self, Button, DragValue, Grid, Response};
+use eframe::egui::{self, DragValue, Grid, Response};
 
 /// True on the first frame of an edit gesture (drag start, or a non-drag change such as typing/clicking).
 pub(crate) fn edit_start(r: &Response) -> bool {
