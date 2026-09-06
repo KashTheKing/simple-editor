@@ -38,7 +38,13 @@ f32 @ 48 kHz**. No new dependencies without a strong reason.
 ```
 src/main.rs            args (--selftest, --screenshot, a file to open), eframe run
 src/winpos.rs          opens the window on the monitor under the cursor (eframe's saved rect always won)
-src/model.rs           THE data model + every edit operation + .sedit JSON (see "Data model" below)
+src/model/mod.rs       THE data model + .sedit JSON — Project + core types (see "Data model" below)
+src/model/{asset,audio,clip,effect,graph,io,marker,path,project,shape,
+           subtitle,text,track,transition}.rs   one data type each, re-exported from model/mod.rs
+src/model/ops/{assets,attrs,autocut,buses,editing,graph,markers,paths,
+           planner,queries,sequences,shapes,subtitles,templates,tracks,transitions}.rs
+                       every edit operation on Project, grouped by concern (model/ops/mod.rs re-exports)
+src/model/tests.rs     model-level tests
 src/settings.rs        %APPDATA%\SimpleEditor\settings.json: recents, layout profiles, curve/motion
                        presets, effect/node-graph presets, templates, user fonts,
                        GPU/quality/capture/frame/MCP options
@@ -79,11 +85,26 @@ src/playback.rs        Player: render thread + audio thread + wall clock; decode
 src/mcp/mod.rs         MCP server (HTTP + JSON-RPC), ToolCall channel, png_encode
 src/mcp/tools.rs       tool catalogue — the shared truth for server and app
 src/ui/layout.rs       egui_tiles docking, pop-out viewports, layout profiles
-src/ui/app.rs          App: panes, menus, actions, undo, file ops, GPU wiring, MCP execution, windows
-src/ui/timeline.rs     the timeline widget (everything drawn and dragged on it)
+src/ui/app/mod.rs      App: top-level state + frame loop, panes, menus dispatch (app/*.rs re-exports)
+src/ui/app/{actions,drops,files,gpu,jobs,lib_preview,library_pane,mcp_exec,
+           menus,panes,preview_pane,thumbs,timeline_pane,tools_clip,tools_helpers,
+           tools_media,tools_playback,tools_subtitles,tools_timeline,windows_dlg}.rs
+                       App split by concern: actions/undo, file ops, GPU wiring, MCP execution, per-pane
+                       draw fns, per-tool input handling, windows (file `windows.rs`, `mod` name
+                       `windows_dlg` to avoid shadowing the `windows` crate)
+src/ui/app/tests.rs    app-level tests
+src/ui/timeline/mod.rs the timeline widget: layout + top-level draw (timeline/*.rs re-exports)
+src/ui/timeline/{header,cue_lane,gestures,menus,paint}.rs
+                       ruler/toolbar, subtitle-cue lane, drag/drop/trim gestures, context menus, painting
+src/ui/timeline/tests.rs timeline-level tests
 src/ui/preview.rs      viewport + transport + tool interactions
 src/ui/tools.rs        tool strip with painter-drawn icons
-src/ui/inspector.rs    every property of the selected clip / asset / project
+src/ui/inspector.rs    clip/asset/project properties: project panel, presets, per-clip zone-1/zone-2
+                       layout, label/mask/shape/path/markers sections (see its module doc)
+src/ui/inspector_audio.rs clip properties shared by audio & video clips (props grid, fades, blend) +
+                       the audio-bus override, extracted from inspector.rs's clip_section
+src/ui/inspector_text.rs text/typography editing + per-selection style overrides, extracted from
+                       inspector.rs's clip_section
 src/ui/effects_ui.rs   effect catalogue (thumbnail grid) + the clip's effect stack
 src/ui/nodes.rs        node-graph editor
 src/ui/curves.rs       keyframe graph editor (bezier velocity, presets, flow)
@@ -99,11 +120,13 @@ src/ui/presets_ui.rs   Presets pane: effects / node graphs / adjustment layers /
 src/ui/subtitles_ui.rs subtitle editor
 src/ui/autocut_ui.rs   auto-cut pane
 src/ui/tracking_ui.rs  Tracking pane: place a box, track a clip, save the result as a path
-src/ui/{retime,export_ui,frame_ui,capture_ui,import_ui,paste_ui,transitions_ui,settings_ui,shader_ui}.rs windows
+src/ui/{retime,export_ui,frame_ui,capture_ui,import_ui,paste_ui,transitions_ui,shader_ui}.rs windows
+src/ui/settings_ui/mod.rs Settings window: tabs + shared plumbing (settings_ui/*.rs re-exports)
+src/ui/settings_ui/{general,appearance,capture,hotkeys,performance}.rs one settings tab each
 src/selftest.rs        headless end-to-end check (`--selftest`)
 ```
 
-## Data model (`src/model.rs`)
+## Data model (`src/model/`)
 
 `Project` owns everything: `assets`, `folders`/`linked_folders`, `tracks` (video first, then audio),
 `sequences` (nested timelines) with `editing`/`main_stash` for the one being edited, `subtitles`,
@@ -258,7 +281,7 @@ overrides them.
 * No unwrap() on external data; reuse buffers in hot paths; no busy loops.
 * Mark deliberate shortcuts `// ponytail: <what> — <upgrade path>`.
 * Non-trivial logic leaves a `#[cfg(test)]` test or is covered by `--selftest`; widgets are tested with
-  headless `egui::Context::run` harnesses (see `ui/timeline.rs`, `ui/library.rs`).
+  headless `egui::Context::run` harnesses (see `ui/timeline/`, `ui/library.rs`).
 * Panels take an `undo` closure and call it **once per gesture, before mutating**, only if something
   changed. Panels that cannot reach `Settings` hand values back through documented thread-locals.
 

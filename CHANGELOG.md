@@ -2,6 +2,15 @@
 
 ## unreleased
 
+### Refactor (issue #16)
+- Split the five largest files by responsibility, zero behaviour change: `model.rs` (6.1K lines) into
+  `src/model/*.rs` (data types) + `src/model/ops/*.rs` (edit operations), `ui/app.rs` (6.8K lines)
+  into `src/ui/app/*.rs`, `ui/timeline.rs` (4.3K lines) into `src/ui/timeline/*.rs`,
+  `ui/settings_ui.rs` into `src/ui/settings_ui/*.rs`, and `ui/inspector.rs`'s clip-properties/text
+  sections into `ui/inspector_audio.rs`/`ui/inspector_text.rs`. 657 tests unchanged, `--selftest`
+  passes, release binary +46 KB (more per-file codegen boundaries after 5 files became 76 — not a
+  behaviour change).
+
 ### Playback & performance (PR #14)
 - **RAM-scaled playback cache**: `Settings::cache_mb` (Performance tab; 0 = automatic — ¼ of
   installed RAM, clamped 512 MB–4 GB) replaces the fixed 512 MB budget; lowering it frees RAM
