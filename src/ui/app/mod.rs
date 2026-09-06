@@ -45,23 +45,29 @@ const MEDIA_EXTS: &[&str] = &[
 
 mod actions;
 mod drops;
+mod edit_ops;
 mod files;
 mod gpu;
 mod jobs;
 mod lib_preview;
 mod library_pane;
 mod mcp_exec;
+mod media_sync;
 mod menus;
 mod panes;
 mod preview_pane;
 mod thumbs;
 mod timeline_pane;
+mod tools_args;
 mod tools_clip;
 mod tools_helpers;
 mod tools_media;
 mod tools_playback;
+#[cfg(test)]
+mod tools_registry_tests;
 mod tools_subtitles;
 mod tools_timeline;
+mod tools_ui;
 #[path = "windows.rs"]
 mod windows_dlg;
 
@@ -280,6 +286,23 @@ pub struct App {
     audio_inputs: Option<Vec<(String, bool)>>,
     /// Panes whose draw panicked: shown as a message instead of taking the whole editor down.
     failed_panes: Vec<Pane>,
+    // ---- ws:registries-schema-hooks ----
+    /// Which async GPU preview canvas-handles-monitor (wave 2) should be rendering into, if any —
+    /// no-op placeholder this wave (nothing reads or writes it yet outside its own scaffolding).
+    #[allow(dead_code)]
+    pub(crate) alt_render: Option<AltRenderKind>,
+}
+
+/// What an async, off-the-main-preview GPU render is for — hover preview, trim view, scopes, wipe
+/// compare (canvas-handles-monitor / pro-monitor, waves 2-3). A bare placeholder this wave: nothing
+/// attaches `Player::request_layers` to it yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum AltRenderKind {
+    Hover,
+    TrimView,
+    Scopes,
+    Wipe,
 }
 
 /// Non-blocking progress window for background jobs (conversions, downloads): one row per job with a
@@ -651,6 +674,7 @@ impl App {
             canvas: (0, 0),
             audio_inputs: None,
             failed_panes: Vec::new(),
+            alt_render: None,
         };
         app.detect_ytdlp(&cc.egui_ctx);
         app.refresh_presets();
@@ -824,6 +848,12 @@ impl eframe::App for App {
                     self.fonts = t.families().to_vec();
                 }
             }
+        }
+        // ---- ws:registries-schema-hooks ----
+        // A future workstream's per-frame hook (autosave tick, playback tick, ...) is a FRAME_HOOKS
+        // entry instead of a line added here. Nothing is registered yet.
+        for f in FRAME_HOOKS {
+            f(self, ctx);
         }
         self.poll_panels();
         self.poll_probes(ctx);
@@ -1064,8 +1094,19 @@ impl eframe::App for App {
                 // cloned: the draw closure needs self mutably while the tab renderer reads the icons
                 let icons = self.settings.icon_overrides.clone();
                 let cozy = self.settings.ui_look != "sharp";
-                let (changed, moved, set_icon) =
-                    layout::show(ctx, ui, &mut l, &icons, tab_bar, cozy, &mut |ui, pane| self.draw_pane(ui, pane));
+                let (changed, moved, set_icon) = layout::show(
+                    ctx,
+                    ui,
+                    &mut l,
+                    &icons,
+                    tab_bar,
+                    cozy,
+                    &mut |ui, pane| self.draw_pane(ui, pane),
+                    // ---- ws:registries-schema-hooks ----
+                    // no-op until ws:layout-modes-onboarding (wave 2) polls hotkeys on the popped
+                    // viewport's own ctx
+                    &mut |_ctx| {},
+                );
                 self.layout = l;
                 self.layout_dirty |= changed;
                 if moved {
@@ -1145,6 +1186,254 @@ impl eframe::App for App {
                     }
                 });
             ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        }
+    }
+}
+
+// =====================================================================================
+// ---- ws:registries-schema-hooks ----
+// The five append-only dispatch registries every later workstream plugs into: a `// ---- ws:<name>
+// ----` marker line per workstream (wave-then-name order), so a PR that fills its own line never
+// shares a hunk with another workstream's. See the "Shared-registry protocol" section of
+// plans/ui-overhaul/README.md. Only TOOL_TABLES carries real content this wave (the existing tool
+// groups, flattened for `mcp::tools::all()`); the other four start empty — nothing to migrate yet,
+// since `act()`/`draw_pane_inner()`/`windows()`/`update()` keep every existing arm unchanged and only
+// gained a small prelude loop (or, for `draw_pane_inner`, a trailing catch-all) that tries the
+// registry first.
+pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
+    tools_timeline::TOOLS,
+    tools_media::TOOLS,
+    tools_clip::TOOLS,
+    tools_playback::TOOLS,
+    tools_subtitles::TOOLS,
+    tools_ui::TOOLS,
+    // ---- ws:registries-schema-hooks ----
+    // ---- ws:size-diet ----
+    // ---- ws:split-god-files ----
+    // ---- ws:audio-analysis ----
+    // ---- ws:audio-dsp-automation ----
+    // ---- ws:color-engine ----
+    // ---- ws:command-palette ----
+    // ---- ws:forgiveness ----
+    // ---- ws:player-rate-loop ----
+    // ---- ws:snap-engine ----
+    // ---- ws:trim-model ----
+    // ---- ws:canvas-handles-monitor ----
+    // ---- ws:export-deliver ----
+    // ---- ws:inspector-gallery ----
+    // ---- ws:layout-modes-onboarding ----
+    // ---- ws:media-library ----
+    // ---- ws:source-monitor ----
+    // ---- ws:timeline-trim-gestures ----
+    // ---- ws:transcript-captions ----
+    // ---- ws:pro-monitor ----
+    // ---- ws:pro-timeline ----
+    // ---- ws:text-titles ----
+    // ---- ws:docs-refresh ----
+];
+
+pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
+    // ---- ws:registries-schema-hooks ----
+    // ---- ws:size-diet ----
+    // ---- ws:split-god-files ----
+    // ---- ws:audio-analysis ----
+    // ---- ws:audio-dsp-automation ----
+    // ---- ws:color-engine ----
+    // ---- ws:command-palette ----
+    // ---- ws:forgiveness ----
+    // ---- ws:player-rate-loop ----
+    // ---- ws:snap-engine ----
+    // ---- ws:trim-model ----
+    // ---- ws:canvas-handles-monitor ----
+    // ---- ws:export-deliver ----
+    // ---- ws:inspector-gallery ----
+    // ---- ws:layout-modes-onboarding ----
+    // ---- ws:media-library ----
+    // ---- ws:source-monitor ----
+    // ---- ws:timeline-trim-gestures ----
+    // ---- ws:transcript-captions ----
+    // ---- ws:pro-monitor ----
+    // ---- ws:pro-timeline ----
+    // ---- ws:text-titles ----
+    // ---- ws:docs-refresh ----
+];
+
+pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
+    // ---- ws:registries-schema-hooks ----
+    // ---- ws:size-diet ----
+    // ---- ws:split-god-files ----
+    // ---- ws:audio-analysis ----
+    // ---- ws:audio-dsp-automation ----
+    // ---- ws:color-engine ----
+    // ---- ws:command-palette ----
+    // ---- ws:forgiveness ----
+    // ---- ws:player-rate-loop ----
+    // ---- ws:snap-engine ----
+    // ---- ws:trim-model ----
+    // ---- ws:canvas-handles-monitor ----
+    // ---- ws:export-deliver ----
+    // ---- ws:inspector-gallery ----
+    // ---- ws:layout-modes-onboarding ----
+    // ---- ws:media-library ----
+    // ---- ws:source-monitor ----
+    // ---- ws:timeline-trim-gestures ----
+    // ---- ws:transcript-captions ----
+    // ---- ws:pro-monitor ----
+    // ---- ws:pro-timeline ----
+    // ---- ws:text-titles ----
+    // ---- ws:docs-refresh ----
+];
+
+pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
+    // ---- ws:registries-schema-hooks ----
+    // ---- ws:size-diet ----
+    // ---- ws:split-god-files ----
+    // ---- ws:audio-analysis ----
+    // ---- ws:audio-dsp-automation ----
+    // ---- ws:color-engine ----
+    // ---- ws:command-palette ----
+    // ---- ws:forgiveness ----
+    // ---- ws:player-rate-loop ----
+    // ---- ws:snap-engine ----
+    // ---- ws:trim-model ----
+    // ---- ws:canvas-handles-monitor ----
+    // ---- ws:export-deliver ----
+    // ---- ws:inspector-gallery ----
+    // ---- ws:layout-modes-onboarding ----
+    // ---- ws:media-library ----
+    // ---- ws:source-monitor ----
+    // ---- ws:timeline-trim-gestures ----
+    // ---- ws:transcript-captions ----
+    // ---- ws:pro-monitor ----
+    // ---- ws:pro-timeline ----
+    // ---- ws:text-titles ----
+    // ---- ws:docs-refresh ----
+];
+
+pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
+    // ---- ws:registries-schema-hooks ----
+    // ---- ws:size-diet ----
+    // ---- ws:split-god-files ----
+    // ---- ws:audio-analysis ----
+    // ---- ws:audio-dsp-automation ----
+    // ---- ws:color-engine ----
+    // ---- ws:command-palette ----
+    // ---- ws:forgiveness ----
+    // ---- ws:player-rate-loop ----
+    // ---- ws:snap-engine ----
+    // ---- ws:trim-model ----
+    // ---- ws:canvas-handles-monitor ----
+    // ---- ws:export-deliver ----
+    // ---- ws:inspector-gallery ----
+    // ---- ws:layout-modes-onboarding ----
+    // ---- ws:media-library ----
+    // ---- ws:source-monitor ----
+    // ---- ws:timeline-trim-gestures ----
+    // ---- ws:transcript-captions ----
+    // ---- ws:pro-monitor ----
+    // ---- ws:pro-timeline ----
+    // ---- ws:text-titles ----
+    // ---- ws:docs-refresh ----
+];
+
+/// The dominant kind of the current selection, for a contextual inspector/palette to key off without
+/// re-deriving it from `App.selection` itself (ws:inspector-gallery, wave 2). `Mixed` covers a
+/// selection spanning more than one kind; `EditPoint`/`Cue` are placeholders for selections this
+/// wave's App state doesn't track yet (edit-point set, subtitle cue).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // unused until ws:inspector-gallery (wave 2) reads it
+pub(crate) enum SelectionKind {
+    None,
+    Video,
+    Audio,
+    Text,
+    Shape,
+    Sequence,
+    Adjustment,
+    Transition,
+    Cue,
+    EditPoint,
+    Mixed,
+}
+
+impl App {
+    /// The dominant kind of the current clip/transition selection.
+    #[allow(dead_code)] // unused until ws:inspector-gallery (wave 2)
+    pub(crate) fn selection_kind(&self) -> SelectionKind {
+        if !self.sel_transitions.is_empty() && self.selection.is_empty() {
+            return SelectionKind::Transition;
+        }
+        let kinds: Vec<ClipKind> =
+            self.selection.iter().filter_map(|&id| self.project.clip(id)).map(|c| c.kind).collect();
+        match &kinds[..] {
+            [] => SelectionKind::None,
+            [first, rest @ ..] if rest.iter().all(|k| k == first) => match first {
+                ClipKind::Video | ClipKind::Image => SelectionKind::Video,
+                ClipKind::Audio => SelectionKind::Audio,
+                ClipKind::Text => SelectionKind::Text,
+                ClipKind::Shape => SelectionKind::Shape,
+                ClipKind::Sequence => SelectionKind::Sequence,
+                ClipKind::Adjustment => SelectionKind::Adjustment,
+            },
+            _ => SelectionKind::Mixed,
+        }
+    }
+
+    /// Bring `pane` to the front — today this is exactly `Layout::reveal` + marking the layout dirty
+    /// so it persists; ws:layout-modes-onboarding (wave 2) makes it pin/mode-aware without touching
+    /// call sites (a pinned pane stops auto-surfacing, a Granular-mode layout ignores it entirely).
+    #[allow(dead_code)] // unused until ws:layout-modes-onboarding (wave 2)
+    pub(crate) fn surface(&mut self, pane: Pane) {
+        self.layout.reveal(pane);
+        self.layout_dirty = true;
+    }
+
+    /// Real but partial: only the handful of guards worth centralising this wave (an export already
+    /// running, exporting an empty timeline, pasting attributes with nothing copied yet). The ~80
+    /// other `has_sel`/`has_clips` checks stay inline in `menu_bar` — command-palette (wave 1)
+    /// migrates them here when the palette actually needs to grey out rows. `Err`'s text is the toast
+    /// reason a caller (`ui.action`, and `act()`'s own prelude) shows the user.
+    pub(crate) fn enabled(&self, a: Action) -> Result<(), &'static str> {
+        match a {
+            Action::Save | Action::SaveProjectAs | Action::ExportVideo | Action::ExportLossless
+                if self.export.is_some() =>
+            {
+                Err("An export is running — try again when it finishes")
+            }
+            Action::ExportVideo | Action::ExportLossless if self.timeline_is_empty() => {
+                Err("Nothing to export — the timeline is empty")
+            }
+            Action::PasteAttributes if self.attrs.is_none() => Err("Copy attributes from a clip first"),
+            _ => Ok(()),
+        }
+    }
+
+    /// Set an undo entry's label directly (mirrors the existing `LAYOUT_STEP` sentinel path), so the
+    /// History panel skips `describe_change`'s lazy diff for a labelled edit and shows `label` instead
+    /// of "Project edited". Callers push the entry themselves (this only sets the label on the last
+    /// one) — see `push_undo_json`.
+    #[allow(dead_code)] // unused this wave — a future workstream's gesture wraps its own push in this
+    pub(crate) fn push_undo_labeled(&mut self, before: String, label: &'static str) {
+        push_undo_json(&mut self.undo, &mut self.redo, before);
+        if let Some(e) = self.undo.last_mut() {
+            e.label = label.to_string();
+        }
+    }
+
+    /// The one sanctioned funnel for a NEW timed-repaint request (`ctx.request_repaint_after` at a
+    /// computed instant rather than a fixed duration). This is not a retroactive migration: 17
+    /// pre-existing raw `ctx.request_repaint_after(...)` call sites (app.rs-descended files ~12,
+    /// planner.rs:740, preview.rs:694/709, subtitles_ui.rs:616/741) stay as they are — narrowing the
+    /// idle-CPU-0% principle to "the only path for new code", not an invariant already true of the
+    /// whole crate today.
+    /// ponytail: the 17 existing sites are an accepted, un-migrated ceiling — a follow-up cleanup
+    /// (size-diet or its own pass) can fold them into this fn; not a wave-0b blocker.
+    #[allow(dead_code)] // unused this wave — new timed-repaint code in a later workstream calls this
+    pub(crate) fn animate_until(&mut self, ctx: &egui::Context, at: Instant) {
+        if let Some(dt) = at.checked_duration_since(Instant::now()) {
+            ctx.request_repaint_after(dt);
+        } else {
+            ctx.request_repaint();
         }
     }
 }

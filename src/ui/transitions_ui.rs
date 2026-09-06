@@ -41,11 +41,16 @@ pub struct TransitionsState {
     pub kind: usize,
     pub color: [u8; 4],
     pub direction: u8,
+    // ---- ws:registries-schema-hooks ----
+    /// Index of the catalogue card the pointer is hovering, mirroring `EffectsResponse::hover` for a
+    /// future async GPU hover preview (ws:inspector-gallery, wave 2). Unread this wave.
+    #[allow(dead_code)]
+    pub hover: Option<usize>,
 }
 
 impl Default for TransitionsState {
     fn default() -> Self {
-        Self { duration: 1.0, kind: 0, color: [0, 0, 0, 255], direction: 0 }
+        Self { duration: 1.0, kind: 0, color: [0, 0, 0, 255], direction: 0, hover: None }
     }
 }
 
@@ -595,6 +600,10 @@ mod tests {
                 tags: Vec::new(),
                 label: 0,
                 description: String::new(),
+                rel_path: None,
+                parent: None,
+                range: None,
+                effects: Vec::new(),
             });
             project.insert_asset_clips(aid, 0.0, Some(0));
             project.insert_asset_clips(aid, 10.0, Some(0));

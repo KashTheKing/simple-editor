@@ -33,6 +33,12 @@ impl App {
     }
 
     pub(super) fn windows(&mut self, ctx: &egui::Context) {
+        // ---- ws:registries-schema-hooks ----
+        // A future workstream's non-blocking egui::Window (scopes, angle grid, cheat sheet, ...) is a
+        // WINDOW_DRAWERS entry instead of a line added here. Nothing is registered yet.
+        for f in WINDOW_DRAWERS {
+            f(self, ctx);
+        }
         self.url_window(ctx);
         self.compress_window(ctx);
         // "Convert To…" options (non-blocking; the timeline stays usable)

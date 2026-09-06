@@ -141,6 +141,10 @@ fn mix_tracks(
         if !active_in(tracks, ti) {
             continue;
         }
+        // ---- ws:registries-schema-hooks ----
+        // ws:audio-dsp-automation (wave 1) samples `track.volume.at(t)` here as a per-track gain
+        // multiplier once it lands; `track.volume` defaults to unity (`a1()`) so leaving this a
+        // comment-only marker is behavior-identical this wave — nothing multiplies by it yet.
         match track.kind {
             TrackKind::Audio => {
                 for clip in &track.clips {
@@ -405,6 +409,10 @@ mod tests {
             tags: Vec::new(),
             label: 0,
             description: String::new(),
+            rel_path: None,
+            parent: None,
+            range: None,
+            effects: Vec::new(),
         }
     }
 

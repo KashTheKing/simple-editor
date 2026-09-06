@@ -1,2 +1,7 @@
 # raw RGBA stock image — autocrlf would silently corrupt it
 *.rgba binary
+
+# ws:registries-schema-hooks — append-only files every concurrent workstream PR appends a row/line to;
+# union merge means two branches' appends both land instead of one clobbering the other.
+size_log.csv merge=union
+CHANGELOG.md merge=union

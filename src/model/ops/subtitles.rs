@@ -37,7 +37,10 @@ impl Project {
             Some(i) => i,
             None => {
                 let id = self.new_id();
-                self.tracks.push(Track::new(id, TrackKind::Video, "Subtitles"));
+                let video_count = self.video_tracks().len();
+                let mut t = Track::new(id, TrackKind::Video, "Subtitles");
+                t.ripple = Track::default_ripple(TrackKind::Video, video_count);
+                self.tracks.push(t);
                 self.tracks.len() - 1
             }
         };

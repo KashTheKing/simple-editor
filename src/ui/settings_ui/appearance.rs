@@ -213,7 +213,7 @@ pub(super) fn appearance(ui: &mut egui::Ui, s: &mut Settings) -> bool {
         ui.weak("Pick the glyph shown for each pane and menu action ('None' removes it, 'Default' restores).");
         egui::ScrollArea::vertical().max_height((ui.available_height() - 40.0).max(0.0)).show(ui, |ui| {
             egui::Grid::new("icons_panes").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
-                for p in crate::ui::layout::Pane::ALL {
+                for &p in crate::ui::layout::Pane::ALL {
                     changed |= icon_row(ui, s, format!("pane.{}", p.title()), p.title(), Some(p.glyph()));
                 }
                 for a in crate::hotkeys::Action::ALL {

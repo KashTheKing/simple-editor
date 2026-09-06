@@ -255,6 +255,10 @@ pub fn probe(path: &str) -> Result<Asset, String> {
         tags: Vec::new(),
         label: 0,
         description: String::new(),
+        rel_path: None,
+        parent: None,
+        range: None,
+        effects: Vec::new(),
     };
     let mut has_video = false;
     for s in streams(&reader) {

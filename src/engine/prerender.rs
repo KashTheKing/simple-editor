@@ -583,7 +583,9 @@ mod tests {
         p.fps = 10.0;
         if p.tracks.is_empty() {
             let id = p.new_id();
-            p.tracks.push(Track::new(id, TrackKind::Video, "V1"));
+            let mut t = Track::new(id, TrackKind::Video, "V1");
+            t.ripple = Track::default_ripple(TrackKind::Video, 0);
+            p.tracks.push(t);
         }
         let id = p.new_id();
         let mut c = Clip::new(id, ClipKind::Text, "t", 0.0, 4.0);

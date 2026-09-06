@@ -60,10 +60,17 @@ pub enum Pane {
     Moodboard,
     /// Undo-stack history, grouped/searchable/filterable, exportable to Markdown.
     History,
+    // ---- ws:registries-schema-hooks ----
+    /// Dockable two-up source monitor (player + in/out marks); a placeholder this wave — its real
+    /// content lands with ws:source-monitor (wave 2). Tab-stacked hidden behind Library in every
+    /// preset (`stack_unplaced`), never in `ROUND3`.
+    Source,
 }
 
 impl Pane {
-    pub const ALL: [Pane; 18] = [
+    /// A slice, not a fixed-size array (see `stack_unplaced`'s risk note): a new Pane variant only
+    /// needs a line here, not a signature change at every `Pane::ALL` call site.
+    pub const ALL: &'static [Pane] = &[
         Pane::Preview,
         Pane::Timeline,
         Pane::Library,
@@ -82,6 +89,30 @@ impl Pane {
         Pane::Tracking,
         Pane::Moodboard,
         Pane::History,
+        // ---- ws:registries-schema-hooks ----
+        Pane::Source,
+        // ---- ws:size-diet ----
+        // ---- ws:split-god-files ----
+        // ---- ws:audio-analysis ----
+        // ---- ws:audio-dsp-automation ----
+        // ---- ws:color-engine ----
+        // ---- ws:command-palette ----
+        // ---- ws:forgiveness ----
+        // ---- ws:player-rate-loop ----
+        // ---- ws:snap-engine ----
+        // ---- ws:trim-model ----
+        // ---- ws:canvas-handles-monitor ----
+        // ---- ws:export-deliver ----
+        // ---- ws:inspector-gallery ----
+        // ---- ws:layout-modes-onboarding ----
+        // ---- ws:media-library ----
+        // ---- ws:source-monitor ----
+        // ---- ws:timeline-trim-gestures ----
+        // ---- ws:transcript-captions ----
+        // ---- ws:pro-monitor ----
+        // ---- ws:pro-timeline ----
+        // ---- ws:text-titles ----
+        // ---- ws:docs-refresh ----
     ];
     /// Panes added in round 3 — a stored layout without them is from an older version (see `from_json`).
     pub const ROUND3: [Pane; 4] = [Pane::Tools, Pane::Nodes, Pane::Mixer, Pane::Markers];
@@ -106,6 +137,8 @@ impl Pane {
             Pane::Tracking => Glyph::Target,
             Pane::Moodboard => Glyph::GridIcon,
             Pane::History => Glyph::Hourglass,
+            // ws:source-monitor (wave 2) may pick a more specific glyph later.
+            Pane::Source => Glyph::Camera,
         }
     }
     pub fn title(self) -> &'static str {
@@ -128,6 +161,7 @@ impl Pane {
             Pane::Tracking => "Tracking",
             Pane::Moodboard => "Moodboard",
             Pane::History => "History",
+            Pane::Source => "Source",
         }
     }
 }
@@ -144,6 +178,12 @@ pub struct Layout {
     pub undo: Vec<String>,
     #[serde(skip)]
     pub redo: Vec<String>,
+    // ---- ws:registries-schema-hooks ----
+    /// Panes pinned against auto-surfacing (a selection-driven reveal skips them); consumed for real
+    /// by ws:layout-modes-onboarding (wave 2). Unread this wave.
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub pinned: Vec<Pane>,
 }
 
 impl Default for Layout {
@@ -192,6 +232,7 @@ impl Layout {
         rows.shares.set_share(top, 0.62);
         rows.shares.set_share(bottom, 0.38);
         let root = tiles.insert_new(Tile::Container(Container::Linear(rows)));
+        Self::stack_unplaced(&mut tiles, notes);
         Self::new(egui_tiles::Tree::new("layout", root, tiles))
     }
     /// "Colorist": grading front and centre — a big Preview over a wide Curves/Nodes group, Effects
@@ -234,6 +275,7 @@ impl Layout {
         rows.shares.set_share(top, 0.62);
         rows.shares.set_share(bottom, 0.38);
         let root = tiles.insert_new(Tile::Container(Container::Linear(rows)));
+        Self::stack_unplaced(&mut tiles, timeline);
         Self::new(egui_tiles::Tree::new("layout", root, tiles))
     }
 
@@ -277,12 +319,27 @@ impl Layout {
         rows.shares.set_share(top, 0.6);
         rows.shares.set_share(timeline, 0.4);
         let root = tiles.insert_new(Tile::Container(Container::Linear(rows)));
+        Self::stack_unplaced(&mut tiles, source);
         Self::new(egui_tiles::Tree::new("layout", root, tiles))
     }
 
     /// A layout around a tree, with an empty history.
     pub fn new(tree: egui_tiles::Tree<Pane>) -> Self {
-        Self { tree, popped: Vec::new(), undo: Vec::new(), redo: Vec::new() }
+        Self { tree, popped: Vec::new(), undo: Vec::new(), redo: Vec::new(), pinned: Vec::new() }
+    }
+    /// Ensure every `Pane::ALL` member absent from `tiles` (a new variant a preset builder never
+    /// listed explicitly) ends up tab-stacked behind `anchor`, hidden but reachable from the View
+    /// menu — so a new Pane never needs every preset builder edited, just this one call per builder.
+    pub(crate) fn stack_unplaced(tiles: &mut egui_tiles::Tiles<Pane>, anchor: egui_tiles::TileId) {
+        for &p in Pane::ALL {
+            if tiles.find_pane(&p).is_none() {
+                let id = tiles.insert_pane(p);
+                if let Some(egui_tiles::Tile::Container(egui_tiles::Container::Tabs(tabs))) = tiles.get_mut(anchor) {
+                    tabs.add_child(id);
+                }
+                tiles.set_visible(id, false);
+            }
+        }
     }
     pub fn to_json(&self) -> String {
         serde_json::to_string(self).unwrap_or_default()
@@ -302,7 +359,7 @@ impl Layout {
     pub fn from_json_migrating(s: &str) -> Option<Self> {
         let mut l: Self = serde_json::from_str(s).ok()?;
         l.tree.root()?;
-        for p in Pane::ALL {
+        for &p in Pane::ALL {
             if l.tree.tiles.find_pane(&p).is_none() && !l.popped.contains(&p) {
                 l.insert_into_root(p);
             }
@@ -670,6 +727,11 @@ pub fn show(
     tab_bar: Option<egui::Color32>,
     cozy: bool,
     draw: &mut dyn FnMut(&mut egui::Ui, Pane),
+    // ---- ws:registries-schema-hooks ----
+    // Polled (no-op today) inside each popped pane's own viewport, so a future workstream
+    // (layout-modes-onboarding, wave 2) can poll hotkeys there — Space/J/K/L are inert in a popped
+    // Preview today because hotkeys are only polled on the root ctx (see `App::update`).
+    on_viewport: &mut dyn FnMut(&egui::Context),
 ) -> (bool, bool, Vec<(Pane, Option<String>)>) {
     // the drop happens inside tree.ui(), so grab the "before" state while a drag is still in flight
     let dragged = layout.tree.dragged_id(ctx).map(|id| (id, share_fraction(&layout.tree, id), layout.to_json()));
@@ -717,6 +779,7 @@ pub fn show(
                 if ctx.input(|i| i.viewport().close_requested()) {
                     to_dock.push(pane);
                 }
+                on_viewport(ctx);
                 egui::CentralPanel::default().show(ctx, |ui| draw(ui, pane));
             },
         );
@@ -739,15 +802,30 @@ mod tests {
             ("colorist", Layout::colorist_layout()),
             ("fastcut", Layout::fastcut_layout()),
         ] {
-            for p in Pane::ALL {
+            for &p in Pane::ALL {
                 assert!(l.tree.tiles.find_pane(&p).is_some(), "{p:?} missing from the {name} layout");
-                assert!(l.is_visible(p), "{p:?} hidden in the {name} layout");
+                // ws:registries-schema-hooks: Pane::Source is deliberately a hidden trailing tab
+                // (stack_unplaced) — every OTHER pane stays visible exactly as before.
+                if p != Pane::Source {
+                    assert!(l.is_visible(p), "{p:?} hidden in the {name} layout");
+                } else {
+                    assert!(!l.is_visible(p), "Pane::Source must land hidden (stack_unplaced) in {name}");
+                }
             }
         }
         let l = Layout::default_layout();
         // the Timeline is a column of its own, so no tab can sit in front of it
         let timeline = l.tree.tiles.find_pane(&Pane::Timeline).unwrap();
         assert!(matches!(l.tree.tiles.get(timeline), Some(egui_tiles::Tile::Pane(Pane::Timeline))));
+    }
+
+    /// ws:registries-schema-hooks: the new Pane variant is reachable in every preset but never counted
+    /// among the round-3 panes an older stored layout is rejected for lacking.
+    #[test]
+    fn pane_source_not_in_round3() {
+        assert_eq!(Pane::ROUND3, [Pane::Tools, Pane::Nodes, Pane::Mixer, Pane::Markers]);
+        assert!(Pane::ALL.contains(&Pane::Source));
+        assert!(!Pane::ROUND3.contains(&Pane::Source));
     }
 
     /// The requested default: two rows of four columns, none of them opening unusably small.
@@ -793,7 +871,8 @@ mod tests {
                 vec![Pane::Effects, Pane::Transitions, Pane::Presets],
                 vec![Pane::Timeline],
                 vec![Pane::Mixer, Pane::AutoCut, Pane::Subtitles],
-                vec![Pane::Markers, Pane::Planner, Pane::Moodboard, Pane::History],
+                // Pane::Source rides along as a hidden trailing tab here (stack_unplaced)
+                vec![Pane::Markers, Pane::Planner, Pane::Moodboard, Pane::History, Pane::Source],
             ]
         );
         // the Preview column really is vertical (Tools beneath, not beside)
@@ -833,7 +912,7 @@ mod tests {
         let json = old.to_json();
         assert!(Layout::from_json(&json).is_none(), "the auto-restored layout still resets");
         let migrated = Layout::from_json_migrating(&json).expect("a saved profile still loads");
-        for p in Pane::ALL {
+        for &p in Pane::ALL {
             assert!(migrated.tree.tiles.find_pane(&p).is_some(), "{p:?} missing after the migration");
         }
         assert!(migrated.is_visible(Pane::Timeline), "the panes it did have are untouched");

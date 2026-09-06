@@ -186,3 +186,72 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
     }
     Some(run(app, name, args))
 }
+
+// ---- ws:registries-schema-hooks ----
+use crate::mcp::tools::{ToolDef, ToolKind, ToolOutcome};
+
+macro_rules! row {
+    ($name:literal, $kind:expr, $desc:literal, $args:expr) => {
+        ToolDef {
+            name: $name,
+            desc: $desc,
+            args: $args,
+            kind: $kind,
+            run: |a, v| dispatch(a, $name, v).unwrap().map(ToolOutcome::Done),
+        }
+    };
+}
+
+pub const TOOLS: &[ToolDef] = &[
+    row!("subtitles.get", ToolKind::Read, "Subtitle cues.", &[]),
+    row!("subtitles.set", ToolKind::Mutate, "Replace all cues: [{start,end,text}].", &["cues:array:true:"]),
+    row!("subtitles.import", ToolKind::Mutate, "Import .srt/.vtt (replaces).", &["path:string:true:"]),
+    row!("plan.get", ToolKind::Read, "Planner tree + notes.", &[]),
+    row!(
+        "plan.add",
+        ToolKind::Mutate,
+        "Add a planner item (optionally under a parent).",
+        &[
+            "title:string:true:",
+            "parent:integer:false:",
+            "notes:string:false:",
+            "assets:array:false:asset ids for the moodboard"
+        ]
+    ),
+    row!(
+        "plan.set",
+        ToolKind::Mutate,
+        "Update a planner item.",
+        &["id:integer:true:", "title:string:false:", "done:boolean:false:", "notes:string:false:"]
+    ),
+    row!("plan.remove", ToolKind::Mutate, "Remove a planner item.", &["id:integer:true:"]),
+    row!("notes.get", ToolKind::Read, "Free-form project notes.", &[]),
+    row!(
+        "notes.set",
+        ToolKind::Mutate,
+        "Replace the project notes (append=true to append a paragraph).",
+        &["text:string:true:", "append:boolean:false:"]
+    ),
+    row!("markers.list", ToolKind::Read, "Every marker in timeline time (project markers + clip markers).", &[]),
+    row!(
+        "markers.add",
+        ToolKind::Mutate,
+        "Add a marker at a timeline time (on a clip with clip_id).",
+        &[
+            "t:number:true:",
+            "name:string:false:",
+            "note:string:false:",
+            "label:integer:false:",
+            "duration:number:false:range markers",
+            "clip_id:integer:false:"
+        ]
+    ),
+    row!("markers.remove", ToolKind::Mutate, "Remove a marker by id.", &["id:integer:true:"]),
+    row!("labels.list", ToolKind::Read, "Colour labels of the project (index is 1-based; 0 = none).", &[]),
+    row!(
+        "labels.set",
+        ToolKind::Mutate,
+        "Rename / recolour a label (index), add one (no index) or remove one (index + remove=true).",
+        &["index:integer:false:1-based", "name:string:false:", "color:array:false:[r,g,b]", "remove:boolean:false:"]
+    ),
+];

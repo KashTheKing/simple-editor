@@ -255,6 +255,37 @@ pub struct Settings {
     pub bg_blur: u8,
     /// Panel/tab background opacity over the background image (255 = opaque, ignored without an image).
     pub panel_opacity: u8,
+    // ---- ws:registries-schema-hooks ----
+    /// "dynamic" (contextual, auto-surfacing panels) or "granular" (classic fixed multi-panel);
+    /// consumed by ws:layout-modes-onboarding (wave 2).
+    pub layout_mode: String,
+    /// The first-run welcome window has been shown (or dismissed) once; consumed by
+    /// ws:layout-modes-onboarding (wave 2).
+    pub onboarded: bool,
+    /// Autosave interval in seconds (0 = off); consumed by ws:forgiveness (wave 1).
+    pub autosave_secs: u32,
+    // ---- ws:size-diet ----
+    // ---- ws:split-god-files ----
+    // ---- ws:audio-analysis ----
+    // ---- ws:audio-dsp-automation ----
+    // ---- ws:color-engine ----
+    // ---- ws:command-palette ----
+    // ---- ws:forgiveness ----
+    // ---- ws:player-rate-loop ----
+    // ---- ws:snap-engine ----
+    // ---- ws:trim-model ----
+    // ---- ws:canvas-handles-monitor ----
+    // ---- ws:export-deliver ----
+    // ---- ws:inspector-gallery ----
+    // ---- ws:layout-modes-onboarding ----
+    // ---- ws:media-library ----
+    // ---- ws:source-monitor ----
+    // ---- ws:timeline-trim-gestures ----
+    // ---- ws:transcript-captions ----
+    // ---- ws:pro-monitor ----
+    // ---- ws:pro-timeline ----
+    // ---- ws:text-titles ----
+    // ---- ws:docs-refresh ----
 }
 
 impl Default for Settings {
@@ -321,6 +352,32 @@ impl Default for Settings {
             bg_tint: [0, 0, 0, 120],
             bg_blur: 0,
             panel_opacity: 255,
+            // ---- ws:registries-schema-hooks ----
+            layout_mode: "dynamic".into(),
+            onboarded: false,
+            autosave_secs: 30,
+            // ---- ws:size-diet ----
+            // ---- ws:split-god-files ----
+            // ---- ws:audio-analysis ----
+            // ---- ws:audio-dsp-automation ----
+            // ---- ws:color-engine ----
+            // ---- ws:command-palette ----
+            // ---- ws:forgiveness ----
+            // ---- ws:player-rate-loop ----
+            // ---- ws:snap-engine ----
+            // ---- ws:trim-model ----
+            // ---- ws:canvas-handles-monitor ----
+            // ---- ws:export-deliver ----
+            // ---- ws:inspector-gallery ----
+            // ---- ws:layout-modes-onboarding ----
+            // ---- ws:media-library ----
+            // ---- ws:source-monitor ----
+            // ---- ws:timeline-trim-gestures ----
+            // ---- ws:transcript-captions ----
+            // ---- ws:pro-monitor ----
+            // ---- ws:pro-timeline ----
+            // ---- ws:text-titles ----
+            // ---- ws:docs-refresh ----
         }
     }
 }

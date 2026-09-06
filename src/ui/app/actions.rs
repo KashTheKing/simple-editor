@@ -9,6 +9,15 @@ impl App {
             self.toast("An export is running — try again when it finishes");
             return;
         }
+        // ---- ws:registries-schema-hooks ----
+        // A later workstream's new Action variant is handled by its own ACT_HANDLERS entry instead of
+        // an edit to this match (which every wave-1+ workstream would otherwise share and conflict
+        // over). Nothing is registered here yet, so this loop is a no-op this wave.
+        for f in ACT_HANDLERS {
+            if f(self, a) {
+                return;
+            }
+        }
         match a {
             NewProject => {
                 if self.confirm_discard() {
@@ -551,6 +560,13 @@ impl App {
                     self.toast("Container removed");
                 }
             }
+            // ---- ws:registries-schema-hooks ----
+            // Every current Action variant has an arm above (hence `unreachable_patterns` today); this
+            // exists so a future workstream's new variant compiles unhandled-by-default instead of
+            // forcing an edit to every arm above — ACT_HANDLERS (tried first, see the loop above) is
+            // where that variant's real behavior goes.
+            #[allow(unreachable_patterns)]
+            _ => {}
         }
     }
 

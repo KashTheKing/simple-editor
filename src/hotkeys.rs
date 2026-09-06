@@ -140,6 +140,29 @@ actions! {
     ReplaceContainerMedia => "replace_container", "Replace Container Media…", None;
     MakeContainer => "make_container", "Convert to Container", None;
     UnmakeContainer => "unmake_container", "Remove Container", None;
+    // ---- ws:registries-schema-hooks ----
+    // ---- ws:size-diet ----
+    // ---- ws:split-god-files ----
+    // ---- ws:audio-analysis ----
+    // ---- ws:audio-dsp-automation ----
+    // ---- ws:color-engine ----
+    // ---- ws:command-palette ----
+    // ---- ws:forgiveness ----
+    // ---- ws:player-rate-loop ----
+    // ---- ws:snap-engine ----
+    // ---- ws:trim-model ----
+    // ---- ws:canvas-handles-monitor ----
+    // ---- ws:export-deliver ----
+    // ---- ws:inspector-gallery ----
+    // ---- ws:layout-modes-onboarding ----
+    // ---- ws:media-library ----
+    // ---- ws:source-monitor ----
+    // ---- ws:timeline-trim-gestures ----
+    // ---- ws:transcript-captions ----
+    // ---- ws:pro-monitor ----
+    // ---- ws:pro-timeline ----
+    // ---- ws:text-titles ----
+    // ---- ws:docs-refresh ----
     // ---- tool selection (ui::tools) — polled and dispatched there, not through App::act ----
     ToolSelect => "tool_select", "Select Tool", sc(NONE, Key::V);
     ToolText => "tool_text", "Text Tool", sc(NONE, Key::T);

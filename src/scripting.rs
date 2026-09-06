@@ -77,10 +77,10 @@ pub fn run(
             "tools",
             scope.create_function(|lua, ()| {
                 let t = lua.create_table()?;
-                for (i, (name, desc, _)) in crate::mcp::tools::TOOLS.iter().enumerate() {
+                for (i, def) in crate::mcp::tools::all().enumerate() {
                     let row = lua.create_table()?;
-                    row.set("name", *name)?;
-                    row.set("description", *desc)?;
+                    row.set("name", def.name)?;
+                    row.set("description", def.desc)?;
                     t.set(i + 1, row)?;
                 }
                 Ok(t)

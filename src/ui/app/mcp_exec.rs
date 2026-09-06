@@ -1,46 +1,6 @@
 use super::tools_helpers::*;
 use super::*;
-
-/// Tools whose success means "one undo step + after_edit" (media.import pushes its own undo).
-pub(super) const MUTATING_TOOLS: &[&str] = &[
-    "project.set",
-    "media.set",
-    "timeline.add_clip",
-    "timeline.split",
-    "timeline.delete",
-    "timeline.move",
-    "timeline.trim",
-    "timeline.add_transition",
-    "timeline.auto_cut",
-    "timeline.nest",
-    "clip.set",
-    "clip.keyframe",
-    "clip.add_effect",
-    "clip.remove_effect",
-    "clip.apply_motion",
-    "subtitles.set",
-    "subtitles.import",
-    "plan.add",
-    "plan.set",
-    "plan.remove",
-    "notes.set",
-    "templates.apply",
-    "clip.add_mask",
-    "clip.set_mask",
-    "clip.add_node",
-    "clip.connect_nodes",
-    "markers.add",
-    "markers.remove",
-    "audio.add_bus",
-    "audio.add_filter",
-    "audio.route",
-    "shapes.add",
-    "labels.set",
-    "container.add",
-    "container.replace",
-    "container.make",
-    "container.unmake",
-];
+use crate::mcp::tools::{ToolKind, ToolOutcome};
 
 impl App {
     pub(super) fn run_script(&mut self, path: &std::path::Path) {
@@ -55,16 +15,35 @@ impl App {
             let app = std::cell::RefCell::new(&mut *self);
             let mut call = |tool: &str, args: &serde_json::Value| -> Result<serde_json::Value, String> {
                 let mut app = app.borrow_mut();
-                let before = MUTATING_TOOLS.contains(&tool).then(|| app.project.to_json());
-                let r = app.run_tool(tool, args);
-                if let Some(snap) = before {
-                    if r.is_ok() {
-                        app.after_edit();
-                    } else if let Ok(p) = Project::from_json(&snap) {
-                        app.project = p; // a failed tool is a no-op
+                // ---- ws:registries-schema-hooks ----
+                // Every tool now runs through its own ToolDef.run (was: the hand-kept run_tool dispatch
+                // chain, still reachable through it — see tools_*.rs's row! macro). ToolKind::Mutate
+                // (via run_snapshot_if_mutate) replaces the old hand-kept mutating-tool name-set check;
+                // the snapshot/rollback primitive is shared with handle_tool below, but the undo-PUSH
+                // decision stays here (one entry for the WHOLE script, not per call) — collapsing that
+                // onto handle_tool's per-call push would regress run_script's undo count.
+                let Some(def) = mcp::tools::find(tool) else {
+                    return Err(format!("unknown tool '{tool}'"));
+                };
+                let before = app.run_snapshot_if_mutate(def);
+                match (def.run)(&mut app, args) {
+                    Ok(ToolOutcome::Done(v)) => {
+                        if before.is_some() {
+                            app.after_edit();
+                        }
+                        Ok(v)
+                    }
+                    // a script runs synchronously and can't await a background job's reply
+                    Ok(ToolOutcome::Job(..)) => {
+                        Err(format!("'{tool}' starts a background job and can't be called from a script"))
+                    }
+                    Err(e) => {
+                        if let Some(snap) = before {
+                            app.run_rollback(snap); // a failed tool is a no-op
+                        }
+                        Err(e)
                     }
                 }
-                r
             };
             crate::scripting::run(&src, &name, &mut call, &mut logs)
         };
@@ -82,6 +61,24 @@ impl App {
                 let line = e.lines().next().unwrap_or("failed").to_string();
                 self.toast(format!("{name}: {line}"));
             }
+        }
+    }
+
+    // ---- ws:registries-schema-hooks ----
+    /// Shared snapshot half of the Mutate rollback shape: `Some(project_json)` when `tool` is a
+    /// registered `ToolKind::Mutate` (a project.to_json() snapshot taken before running it), `None`
+    /// otherwise (Read/Job/Ui tools, or an unknown name — `run_tool`'s own "unknown tool" error covers
+    /// that). Callers push undo themselves (`handle_tool` per call, `run_script` per whole script) —
+    /// this only decides WHETHER to snapshot, not when to push.
+    pub(super) fn run_snapshot_if_mutate(&self, def: &mcp::tools::ToolDef) -> Option<String> {
+        (def.kind == ToolKind::Mutate).then(|| self.project.to_json())
+    }
+
+    /// Restore `snap` after a Mutate-kind call returned `Err` (some arms mutate before returning Err —
+    /// e.g. subtitles.set, clip.set — so a failed tool must still be a no-op).
+    pub(super) fn run_rollback(&mut self, snap: String) {
+        if let Ok(p) = Project::from_json(&snap) {
+            self.project = p;
         }
     }
 
@@ -145,29 +142,33 @@ impl App {
 
     pub(super) fn handle_tool(&mut self, call: mcp::ToolCall) {
         let mcp::ToolCall { name, args, reply } = call;
-        match name.as_str() {
-            // blocking jobs: start them and reply when they finish (polled per frame)
-            "export.video" | "media.convert" => match self.start_tool_job(&name, &args) {
-                Ok((prog, out)) => self.mcp_jobs.push(McpJob { prog, reply, out }),
-                Err(e) => {
-                    let _ = reply.send(Err(e));
-                }
-            },
-            _ => {
-                let before = MUTATING_TOOLS.contains(&name.as_str()).then(|| self.project.to_json());
-                let r = self.run_tool(&name, &args);
+        // ---- ws:registries-schema-hooks ----
+        // Every tool (including the two ToolKind::Job ones) now runs through its own ToolDef.run,
+        // replacing the old hand-matched "export.video" | "media.convert" arm and the old hand-kept
+        // mutating-tool name-set check (ToolKind::Mutate, via run_snapshot_if_mutate). An unknown name
+        // has no ToolDef: the "unknown tool" error matches run_tool's own fallback wording exactly.
+        let Some(def) = mcp::tools::find(&name) else {
+            let _ = reply.send(Err(format!("unknown tool '{name}'")));
+            return;
+        };
+        let before = self.run_snapshot_if_mutate(def);
+        match (def.run)(self, &args) {
+            Ok(ToolOutcome::Job(prog, out)) => self.mcp_jobs.push(McpJob { prog, reply, out }),
+            Ok(ToolOutcome::Done(v)) => {
                 if let Some(snap) = before {
-                    if r.is_ok() {
-                        if snap != self.project.to_json() {
-                            push_undo_json(&mut self.undo, &mut self.redo, snap);
-                        }
-                        self.after_edit();
-                    } else if let Ok(p) = Project::from_json(&snap) {
-                        // a failed tool is a no-op: some arms mutate before returning Err (subtitles.set, clip.set)
-                        self.project = p;
+                    if snap != self.project.to_json() {
+                        push_undo_json(&mut self.undo, &mut self.redo, snap);
                     }
+                    self.after_edit();
                 }
-                let _ = reply.send(r);
+                let _ = reply.send(Ok(v));
+            }
+            Err(e) => {
+                if let Some(snap) = before {
+                    // a failed tool is a no-op: some arms mutate before returning Err (subtitles.set, clip.set)
+                    self.run_rollback(snap);
+                }
+                let _ = reply.send(Err(e));
             }
         }
     }
@@ -226,7 +227,12 @@ impl App {
         }
     }
 
-    /// Execute one (non-job) MCP tool by name. The caller handles undo/after_edit for mutating tools.
+    /// Execute one (non-job) MCP tool by name, trying each group's dispatch chain in turn. Kept as a
+    /// single, name-only entry point (every `ToolDef.run` in the non-Job tool groups is a thin wrapper
+    /// calling into exactly this chain) even though `handle_tool`/`run_script` now go through
+    /// `ToolDef.run` directly for the undo-kind dispatch — a generic "run any tool by name" fn is worth
+    /// keeping as one definition rather than none.
+    #[allow(dead_code)]
     pub(super) fn run_tool(&mut self, name: &str, args: &Value) -> Result<Value, String> {
         if let Some(r) = tools_timeline::dispatch(self, name, args) {
             return r;

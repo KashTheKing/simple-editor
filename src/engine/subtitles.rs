@@ -2,7 +2,25 @@
 //! Basic formatting tags (<i>, <b>, {\an8}, VTT cue settings) are stripped on import; text is kept
 //! as plain lines. Times are seconds.
 
-use crate::model::Cue;
+use crate::model::{Cue, Project, TextStyle};
+
+// ---- ws:registries-schema-hooks ----
+/// The subtitle cue (if any) drawn at timeline time `t`, borrowed rather than owned: the cue's text
+/// and the project's subtitle style, factoring the cue-lookup + empty-text check duplicated between
+/// `engine::compose::render` and `playback`'s layer builder. Returning `&str`/`&TextStyle` (not an
+/// owned clone) matters — `compose::render`'s existing `sub_key` cache guard only clones into its own
+/// `sub_style` when the cue actually changes, and a cloning signature here would defeat that guard on
+/// every rendered frame.
+pub fn cue_layer_at(project: &Project, t: f64) -> Option<(&str, &TextStyle)> {
+    if !project.show_subtitles {
+        return None;
+    }
+    let cue = project.cue_at(t)?;
+    if cue.text.trim().is_empty() {
+        return None;
+    }
+    Some((cue.text.as_str(), &project.subtitle_style))
+}
 
 /// Parse SRT or WebVTT (auto-detected by the "WEBVTT" header / timestamp style). Malformed blocks are
 /// skipped. Returns (start, end, text) triples in file order.
@@ -156,5 +174,20 @@ mod tests {
                 assert_eq!(got.2, want.text);
             }
         }
+    }
+
+    #[test]
+    fn cue_layer_at_matches_render() {
+        let mut p = Project::new();
+        p.subtitles = vec![
+            Cue { id: 1, start: 0.0, end: 1.0, text: String::new() },
+            Cue { id: 2, start: 1.0, end: 2.0, text: "Hello".into() },
+        ];
+        assert!(cue_layer_at(&p, 0.5).is_none(), "an empty-text cue draws nothing");
+        let (text, style) = cue_layer_at(&p, 1.5).expect("a non-empty cue at t=1.5");
+        assert_eq!(text, "Hello");
+        assert_eq!(style.cache_key(), p.subtitle_style.cache_key(), "style is the project's subtitle style");
+        p.show_subtitles = false;
+        assert!(cue_layer_at(&p, 1.5).is_none(), "subtitles hidden: nothing, even over a real cue");
     }
 }

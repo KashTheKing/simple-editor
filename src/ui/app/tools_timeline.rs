@@ -262,3 +262,40 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
     }
     Some(run(app, name, args))
 }
+
+// ---- ws:registries-schema-hooks ----
+// One `ToolDef` per tool above, wired to `dispatch` by name — bodies untouched. Kind mirrors the old
+// hand-kept mutating-tool name list exactly (project.new/open/save self-manage the undo stack via
+// `set_project`/plain file I/O, so they stay `Read` here just as they were absent from that list).
+use crate::mcp::tools::{ToolDef, ToolKind, ToolOutcome};
+
+macro_rules! row {
+    ($name:literal, $kind:expr, $desc:literal, $args:expr) => {
+        ToolDef {
+            name: $name,
+            desc: $desc,
+            args: $args,
+            kind: $kind,
+            run: |a, v| dispatch(a, $name, v).unwrap().map(ToolOutcome::Done),
+        }
+    };
+}
+
+pub const TOOLS: &[ToolDef] = &[
+    row!("project.summary", ToolKind::Read, "Project overview: format, duration, tracks, clips per track, assets, sequences, subtitles count, planner progress, notes — and the markdown style summary.", &[]),
+    row!("project.get", ToolKind::Read, "Full project JSON (the .sedit document).", &[]),
+    row!("project.new", ToolKind::Read, "New empty project (discards unsaved changes).", &["width:integer:false:default 1920", "height:integer:false:default 1080", "fps:number:false:default 30"]),
+    row!("project.open", ToolKind::Read, "Open a .sedit project or a media file (creates a project around it).", &["path:string:true:absolute path"]),
+    row!("project.save", ToolKind::Read, "Save the project (.sedit). Without a path: the current project file (error if none).", &["path:string:false:.sedit path"]),
+    row!("project.set", ToolKind::Mutate, "Change project format/name.", &["name:string:false:", "width:integer:false:", "height:integer:false:", "fps:number:false:"]),
+    row!("timeline.list", ToolKind::Read, "Tracks and clips of the timeline being edited (main or the open sequence): ids, kind, asset, start, duration, src_in, speed, effects, label.", &[]),
+    row!("timeline.add_clip", ToolKind::Mutate, "Place an asset, a sequence, or a new text clip at a time.", &["asset_id:integer:false:", "sequence_id:integer:false:", "text:string:false:creates a text clip", "at:number:true:timeline seconds", "track:integer:false:video track index", "duration:number:false:text/image length"]),
+    row!("timeline.split", ToolKind::Mutate, "Split clips at t (all clips crossing t when clip_ids is omitted).", &["t:number:true:", "clip_ids:array:false:"]),
+    row!("timeline.delete", ToolKind::Mutate, "Delete clips (linked clips follow).", &["clip_ids:array:true:", "ripple:boolean:false:close the gap"]),
+    row!("timeline.move", ToolKind::Mutate, "Move clips by dt seconds (and dtrack tracks within their kind).", &["clip_ids:array:true:", "dt:number:true:", "dtrack:integer:false:"]),
+    row!("timeline.trim", ToolKind::Mutate, "Trim a clip's edges to new timeline times.", &["clip_id:integer:true:", "start:number:false:new start", "end:number:false:new end"]),
+    row!("timeline.add_transition", ToolKind::Mutate, "Transition at the cut on the left of a clip (a fade-in from nothing when no clip abuts there).", &["right_clip_id:integer:true:", "kind:string:true:CrossFade|FadeToColor|Push|Wipe", "duration:number:false:default 1"]),
+    row!("timeline.auto_cut", ToolKind::Mutate, "Silence-based auto-cut of audio clips (+ linked video).", &["clip_ids:array:true:", "threshold_db:number:false:default -35", "min_silence:number:false:", "min_speech:number:false:", "padding:number:false:", "keep_quiet:boolean:false:", "ripple:boolean:false:default true"]),
+    row!("timeline.nest", ToolKind::Mutate, "Nest clips into a new sequence; returns the sequence id.", &["clip_ids:array:true:", "name:string:false:"]),
+    row!("timeline.import", ToolKind::Read, "Import a timeline from another editor (FCP7 XML, EDL, .prproj); returns the report and opens it in the app (replace=true swaps the project in).", &["path:string:true:", "replace:boolean:false:"]),
+];

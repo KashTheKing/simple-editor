@@ -221,6 +221,29 @@ pub(crate) enum Glyph {
     ListIcon,
     /// A frame with corner brackets and a centre tick — the social-guide overlay.
     Guides,
+    // ---- ws:registries-schema-hooks ----
+    // ---- ws:size-diet ----
+    // ---- ws:split-god-files ----
+    // ---- ws:audio-analysis ----
+    // ---- ws:audio-dsp-automation ----
+    // ---- ws:color-engine ----
+    // ---- ws:command-palette ----
+    // ---- ws:forgiveness ----
+    // ---- ws:player-rate-loop ----
+    // ---- ws:snap-engine ----
+    // ---- ws:trim-model ----
+    // ---- ws:canvas-handles-monitor ----
+    // ---- ws:export-deliver ----
+    // ---- ws:inspector-gallery ----
+    // ---- ws:layout-modes-onboarding ----
+    // ---- ws:media-library ----
+    // ---- ws:source-monitor ----
+    // ---- ws:timeline-trim-gestures ----
+    // ---- ws:transcript-captions ----
+    // ---- ws:pro-monitor ----
+    // ---- ws:pro-timeline ----
+    // ---- ws:text-titles ----
+    // ---- ws:docs-refresh ----
 }
 
 impl Glyph {
@@ -307,6 +330,29 @@ impl Glyph {
         Glyph::GridIcon,
         Glyph::ListIcon,
         Glyph::Guides,
+        // ---- ws:registries-schema-hooks ----
+        // ---- ws:size-diet ----
+        // ---- ws:split-god-files ----
+        // ---- ws:audio-analysis ----
+        // ---- ws:audio-dsp-automation ----
+        // ---- ws:color-engine ----
+        // ---- ws:command-palette ----
+        // ---- ws:forgiveness ----
+        // ---- ws:player-rate-loop ----
+        // ---- ws:snap-engine ----
+        // ---- ws:trim-model ----
+        // ---- ws:canvas-handles-monitor ----
+        // ---- ws:export-deliver ----
+        // ---- ws:inspector-gallery ----
+        // ---- ws:layout-modes-onboarding ----
+        // ---- ws:media-library ----
+        // ---- ws:source-monitor ----
+        // ---- ws:timeline-trim-gestures ----
+        // ---- ws:transcript-captions ----
+        // ---- ws:pro-monitor ----
+        // ---- ws:pro-timeline ----
+        // ---- ws:text-titles ----
+        // ---- ws:docs-refresh ----
     ];
 
     /// Stable lower-case name of the variant, kept in sync with `from_name` — what a saved icon
@@ -397,6 +443,29 @@ impl Glyph {
             Glyph::GridIcon => "grid",
             Glyph::ListIcon => "list",
             Glyph::Guides => "guides",
+            // ---- ws:registries-schema-hooks ----
+            // ---- ws:size-diet ----
+            // ---- ws:split-god-files ----
+            // ---- ws:audio-analysis ----
+            // ---- ws:audio-dsp-automation ----
+            // ---- ws:color-engine ----
+            // ---- ws:command-palette ----
+            // ---- ws:forgiveness ----
+            // ---- ws:player-rate-loop ----
+            // ---- ws:snap-engine ----
+            // ---- ws:trim-model ----
+            // ---- ws:canvas-handles-monitor ----
+            // ---- ws:export-deliver ----
+            // ---- ws:inspector-gallery ----
+            // ---- ws:layout-modes-onboarding ----
+            // ---- ws:media-library ----
+            // ---- ws:source-monitor ----
+            // ---- ws:timeline-trim-gestures ----
+            // ---- ws:transcript-captions ----
+            // ---- ws:pro-monitor ----
+            // ---- ws:pro-timeline ----
+            // ---- ws:text-titles ----
+            // ---- ws:docs-refresh ----
         }
     }
 
@@ -1527,7 +1596,29 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
                 Stroke::new(1.0, fg),
                 StrokeKind::Inside,
             );
-        }
+        } // ---- ws:registries-schema-hooks ----
+          // ---- ws:size-diet ----
+          // ---- ws:split-god-files ----
+          // ---- ws:audio-analysis ----
+          // ---- ws:audio-dsp-automation ----
+          // ---- ws:color-engine ----
+          // ---- ws:command-palette ----
+          // ---- ws:forgiveness ----
+          // ---- ws:player-rate-loop ----
+          // ---- ws:snap-engine ----
+          // ---- ws:trim-model ----
+          // ---- ws:canvas-handles-monitor ----
+          // ---- ws:export-deliver ----
+          // ---- ws:inspector-gallery ----
+          // ---- ws:layout-modes-onboarding ----
+          // ---- ws:media-library ----
+          // ---- ws:source-monitor ----
+          // ---- ws:timeline-trim-gestures ----
+          // ---- ws:transcript-captions ----
+          // ---- ws:pro-monitor ----
+          // ---- ws:pro-timeline ----
+          // ---- ws:text-titles ----
+          // ---- ws:docs-refresh ----
     }
 }
 

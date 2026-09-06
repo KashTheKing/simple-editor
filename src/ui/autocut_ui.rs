@@ -321,6 +321,10 @@ mod tests {
             tags: Vec::new(),
             label: 0,
             description: String::new(),
+            rel_path: None,
+            parent: None,
+            range: None,
+            effects: Vec::new(),
         });
         p.insert_asset_clips(aid, 0.0, Some(0));
         let vid = p.tracks[0].clips[0].id;
@@ -350,6 +354,10 @@ mod tests {
             tags: Vec::new(),
             label: 0,
             description: String::new(),
+            rel_path: None,
+            parent: None,
+            range: None,
+            effects: Vec::new(),
         });
         project.insert_asset_clips(aid, 0.0, Some(0));
         let aud = project.tracks[1].clips[0].id;

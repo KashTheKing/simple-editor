@@ -53,6 +53,10 @@ fn asset(path: &str) -> Asset {
         tags: Vec::new(),
         label: 0,
         description: String::new(),
+        rel_path: None,
+        parent: None,
+        range: None,
+        effects: Vec::new(),
     }
 }
 

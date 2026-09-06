@@ -7,7 +7,8 @@ impl Project {
         let n = self.tracks.iter().filter(|t| t.kind == kind).count() + 1;
         let id = self.new_id();
         let name = format!("{}{}", if kind == TrackKind::Video { "V" } else { "A" }, n);
-        let track = Track::new(id, kind, name);
+        let mut track = Track::new(id, kind, name);
+        track.ripple = Track::default_ripple(kind, n - 1); // n is 1-based; index_within_kind is 0-based
         let idx = match kind {
             TrackKind::Video => self.video_tracks().last().map(|i| i + 1).unwrap_or(0),
             TrackKind::Audio => self.tracks.len(),

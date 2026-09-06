@@ -12,8 +12,11 @@ impl Project {
     pub fn new_sequence(&mut self, name: impl Into<String>, width: u32, height: u32, fps: f64) -> Id {
         let id = self.new_id();
         let mut seq = Sequence { id, name: name.into(), width, height, fps, tracks: Vec::new() };
-        let v = Track::new(self.new_id(), TrackKind::Video, "V1");
-        let a = Track::new(self.new_id(), TrackKind::Audio, "A1");
+        let mut v = Track::new(self.new_id(), TrackKind::Video, "V1");
+        let mut a = Track::new(self.new_id(), TrackKind::Audio, "A1");
+        // both are the first (only) track of their kind in a fresh sequence
+        v.ripple = Track::default_ripple(TrackKind::Video, 0);
+        a.ripple = Track::default_ripple(TrackKind::Audio, 0);
         seq.tracks.push(v);
         seq.tracks.push(a);
         self.sequences.push(seq);
@@ -156,7 +159,8 @@ impl Project {
                     let id = nid.next().unwrap_or(0);
                     let n = have + 1;
                     let name = format!("{}{}", if kind == TrackKind::Video { "V" } else { "A" }, n);
-                    let t = Track::new(id, kind, name);
+                    let mut t = Track::new(id, kind, name);
+                    t.ripple = Track::default_ripple(kind, have);
                     let idx = if kind == TrackKind::Video {
                         seq.tracks.iter().rposition(|t| t.kind == TrackKind::Video).map(|i| i + 1).unwrap_or(0)
                     } else {

@@ -108,3 +108,59 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
     }
     Some(run(app, name, args))
 }
+
+// ---- ws:registries-schema-hooks ----
+use crate::mcp::tools::{ToolDef, ToolKind, ToolOutcome};
+
+macro_rules! row {
+    ($name:literal, $kind:expr, $desc:literal, $args:expr) => {
+        ToolDef {
+            name: $name,
+            desc: $desc,
+            args: $args,
+            kind: $kind,
+            run: |a, v| dispatch(a, $name, v).unwrap().map(ToolOutcome::Done),
+        }
+    };
+}
+
+pub const TOOLS: &[ToolDef] = &[
+    row!("sequence.list", ToolKind::Read, "Sequences (id, name, format, duration).", &[]),
+    // not in the old hand-kept mutating-tool name list (switching the edited sequence isn't itself an undoable edit)
+    row!(
+        "sequence.open",
+        ToolKind::Read,
+        "Edit a sequence (swap it into the timeline); omit id to go back to the main timeline.",
+        &["id:integer:false:"]
+    ),
+    row!(
+        "render.frame",
+        ToolKind::Read,
+        "Render the timeline at time t as a PNG (base64 data url), max `width` px wide (default 640).",
+        &["t:number:true:", "width:integer:false:"]
+    ),
+    row!("playback.seek", ToolKind::Read, "Move the playhead.", &["t:number:true:"]),
+    row!("playback.play", ToolKind::Read, "Start playback.", &[]),
+    row!("playback.pause", ToolKind::Read, "Pause playback.", &[]),
+    row!("templates.list", ToolKind::Read, "Saved clip templates and motion presets.", &[]),
+    row!(
+        "templates.apply",
+        ToolKind::Mutate,
+        "Place a saved template at a time.",
+        &["name:string:true:", "at:number:true:"]
+    ),
+    row!(
+        "frame.export",
+        ToolKind::Read,
+        "Save the frame at time t as PNG/JPG/WebP (by the path's extension).",
+        &[
+            "path:string:true:",
+            "t:number:false:default playhead",
+            "width:integer:false:",
+            "height:integer:false:",
+            "with_effects:boolean:false:default true",
+            "quality:integer:false:1..100 for JPG/WebP",
+            "resize:string:false:neighbor|bilinear|bicubic|lanczos"
+        ]
+    ),
+];

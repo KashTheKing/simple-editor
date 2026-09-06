@@ -102,6 +102,27 @@ pub struct Clip {
     /// Clip-local markers.
     #[serde(default)]
     pub markers: Vec<Marker>,
+    // ---- ws:registries-schema-hooks ----
+    /// Essential-Sound role tag (Dialogue/Music/Sfx/Ambience), consumed by ws:audio-analysis and
+    /// ws:audio-dsp-automation (wave 1) for auto-duck/repair-chain targeting.
+    #[serde(default)]
+    pub audio_role: AudioRole,
+    /// Names of properties this clip exposes for one-click editing from outside its own inspector
+    /// section (e.g. a nested template's "Headline" text); consumed by ws:text-titles (wave 3).
+    #[serde(default)]
+    pub exposed: Vec<String>,
+}
+
+/// Essential-Sound role tag for an audio (or audio-bearing) clip. Sole definition — other
+/// workstreams (`ws:audio-dsp-automation`) import this rather than redeclaring it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Hash)]
+pub enum AudioRole {
+    #[default]
+    Unset,
+    Dialogue,
+    Music,
+    Sfx,
+    Ambience,
 }
 
 impl Clip {
@@ -144,6 +165,8 @@ impl Clip {
             mask: None,
             graph: None,
             markers: Vec::new(),
+            audio_role: AudioRole::Unset,
+            exposed: Vec::new(),
         }
     }
     /// True when this container has no media (asset == 0 for video/image/audio).
