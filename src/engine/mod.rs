@@ -1,5 +1,6 @@
 //! Rendering / mixing / export engine. Pure CPU, RGBA8 + f32 audio. Shared by preview and export.
 
+pub mod analysis;
 pub mod autocut;
 pub mod blend;
 pub mod capture;
