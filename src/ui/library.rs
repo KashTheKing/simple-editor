@@ -2155,7 +2155,8 @@ impl Tree<'_, '_> {
     }
 
     /// A run of assets, as rows or as gallery tiles (already filtered and sorted by the caller). In
-    /// the list, a subclip sits indented under its parent when both are in the run.
+    /// the list, a subclip sits indented under its parent when both are in the run — recursively, so
+    /// a subclip-of-a-subclip nests under ITS parent instead of never being drawn at all.
     fn assets(&mut self, ui: &mut egui::Ui, depth: usize, list: &[usize]) {
         if self.state.view == 1 {
             let w = TILE * self.state.zoom;
@@ -2165,16 +2166,22 @@ impl Tree<'_, '_> {
             for &i in list {
                 let a = &self.project.assets[i];
                 if a.parent.is_some_and(|p| ids.contains(&p)) {
-                    continue; // drawn under its parent below
+                    continue; // drawn under its parent below, at whatever depth that turns out to be
                 }
-                let id = a.id;
-                let kids: Vec<usize> =
-                    list.iter().copied().filter(|&j| self.project.assets[j].parent == Some(id)).collect();
-                self.asset_row(ui, depth, i);
-                for j in kids {
-                    self.asset_row(ui, depth + 1, j);
-                }
+                self.asset_and_kids(ui, depth, list, i);
             }
+        }
+    }
+
+    /// Draw asset row `i`, then every row in `list` that is its child, one level deeper — and so on
+    /// for THEIR children, so nesting isn't capped at one level (a grandchild used to be skipped by
+    /// `assets` above as "drawn under its parent" and then never actually drawn by anyone).
+    fn asset_and_kids(&mut self, ui: &mut egui::Ui, depth: usize, list: &[usize], i: usize) {
+        let id = self.project.assets[i].id;
+        self.asset_row(ui, depth, i);
+        let kids: Vec<usize> = list.iter().copied().filter(|&j| self.project.assets[j].parent == Some(id)).collect();
+        for j in kids {
+            self.asset_and_kids(ui, depth + 1, list, j);
         }
     }
 
@@ -3936,6 +3943,36 @@ mod tests {
         let s = text_rect(&out.shapes, "best take").expect("the subclip shows its own name");
         assert!(s.left() > p.left() + 8.0, "the subclip is indented under its parent");
         assert!(s.top() > p.top());
+    }
+
+    // ---- ws:media-library review fix ----
+    /// A subclip-of-a-subclip (grandchild) used to be skipped entirely: `Tree::assets` only nested one
+    /// level, so a row deferred to its parent (itself deferred) was never drawn by anyone. It must now
+    /// show up in `state.visible` (so keyboard nav reaches it) and sit indented one level deeper than
+    /// its own parent.
+    #[test]
+    fn subclip_of_a_subclip_nests_under_its_parent() {
+        let mut project = Project::new();
+        let master = project.add_asset(asset(0, ClipKind::Video, 100.0));
+        let child = project.add_subclip(master, 10.0, 20.0, Some("child".into())).unwrap();
+        let grandchild = project.add_subclip(child, 2.0, 5.0, Some("grandchild".into())).unwrap();
+        let mut settings = Settings::default();
+        let palette = Palette::new(true, egui::Color32::WHITE);
+        let ctx = headless_ctx();
+        let mut state = LibraryState::default();
+        let out = ctx.run(tall(900.0), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let mut undo = |_: &Project| {};
+                show(ui, &mut state, &mut project, &mut settings, None, None, &palette, false, &mut undo);
+            });
+        });
+        assert_eq!(state.visible, vec![master, child, grandchild], "grandchild must not be dropped");
+        let m = text_rect(&out.shapes, "file0.mp4").expect("master row");
+        let c = text_rect(&out.shapes, "child").expect("the child shows its own name");
+        let g = text_rect(&out.shapes, "grandchild").expect("the grandchild shows its own name");
+        assert!(c.left() > m.left() + 8.0, "the child is indented under the master");
+        assert!(g.left() > c.left() + 8.0, "the grandchild is indented one level deeper than its parent");
+        assert!(g.top() > c.top() && c.top() > m.top());
     }
 
     /// 1000 assets in the list stay cheap per frame (no per-row decode, no O(n²) walks) — same

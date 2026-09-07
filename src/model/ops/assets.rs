@@ -118,11 +118,21 @@ impl Project {
     /// Creates a subclip: a new library asset covering `[in_t, out_t)` of `parent`'s source. Copies
     /// `kind`/`path`/`width`/`height`/`fps` from the parent so it decodes like any other asset; `range`
     /// records the window it was cut from. None if `parent` doesn't exist or the range is empty/invalid.
+    ///
+    /// `in_t`/`out_t` are always relative to `parent`'s own window (0..`parent.duration`), same as for
+    /// a master asset. When `parent` is itself a subclip, its stored `range` is already an absolute
+    /// offset into the shared `path` (this same rule, applied one level up), so composing onto that
+    /// base — rather than storing `in_t`/`out_t` verbatim — is what makes a subclip-of-a-subclip play
+    /// the right footage instead of re-reading `path` from its own start.
     pub fn add_subclip(&mut self, parent: Id, in_t: f64, out_t: f64, name: Option<String>) -> Option<Id> {
         if !(in_t.is_finite() && out_t.is_finite() && out_t > in_t) {
             return None;
         }
         let p = self.asset(parent)?.clone(); // owned copy: `new_id` below needs `&mut self`
+        let (in_t, out_t) = match p.range {
+            Some((base, _)) if p.parent.is_some() => (base + in_t, base + out_t),
+            _ => (in_t, out_t),
+        };
         let id = self.new_id();
         self.assets.push(Asset {
             id,
@@ -393,5 +403,29 @@ mod tests {
                                            // an out-of-order/degenerate range is refused
         assert!(p.add_subclip(parent, 5.0, 2.0, None).is_none());
         assert!(p.add_subclip(999, 0.0, 1.0, None).is_none(), "unknown parent");
+    }
+
+    // ---- ws:media-library review fix ----
+    /// A subclip of a subclip must compose onto the parent's own absolute window, not read `in_t`/
+    /// `out_t` as if they were offsets into the root file: master 0..100, `s1` = 10..20, and a subclip
+    /// of `s1` over its own local 2..5 must land on the root's 12..15 — the exact scenario from the
+    /// PR #55 review (marks (2,5) on a subclip of 10..20 must play 12..15, not 2..5).
+    #[test]
+    fn add_subclip_of_a_subclip_composes_absolute_range() {
+        let mut p = Project::new();
+        let master = p.add_asset(asset("C:/master.mp4"));
+        let s1 = p.add_subclip(master, 10.0, 20.0, None).unwrap();
+        assert_eq!(p.asset(s1).unwrap().range, Some((10.0, 20.0)));
+
+        let s2 = p.add_subclip(s1, 2.0, 5.0, None).unwrap();
+        let a = p.asset(s2).unwrap();
+        assert_eq!(a.range, Some((12.0, 15.0)), "local marks (2,5) on s1 (10..20) compose to 12..15");
+        assert_eq!(a.duration, 3.0);
+        assert_eq!(a.parent, Some(s1), "lineage still points at the immediate parent, not the root");
+        assert_eq!(a.path, "C:/master.mp4");
+
+        // one more level: the same rule applies again, using s2's own (already-absolute) base
+        let s3 = p.add_subclip(s2, 1.0, 2.0, None).unwrap();
+        assert_eq!(p.asset(s3).unwrap().range, Some((13.0, 14.0)));
     }
 }
