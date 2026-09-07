@@ -5,3 +5,10 @@
 # union merge means two branches' appends both land instead of one clobbering the other.
 size_log.csv merge=union
 CHANGELOG.md merge=union
+
+# ws:orchestrator fix (2026-09-07) — several tests use include_str!() to scrape source text and
+# search for literal "\n"-delimited patterns (brace-matching, arm-boundary detection). Windows
+# checkouts with core.autocrlf=true silently convert working-tree .rs files to CRLF, breaking every
+# such LF-only literal search (found via new_subclip_undo_restores_pre_subclip_project failing after
+# the media-library merge). Force LF regardless of the developer's global git config.
+*.rs text eol=lf
