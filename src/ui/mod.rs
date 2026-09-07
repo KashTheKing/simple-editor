@@ -14,6 +14,8 @@ pub mod frame_ui;
 pub mod guides;
 pub mod heartbeat;
 pub mod history_ui;
+// ---- ws:layout-modes-onboarding ----
+pub mod home;
 pub mod import_ui;
 pub mod inspector;
 pub mod inspector_audio;
@@ -25,6 +27,8 @@ pub mod markers_ui;
 pub mod mixer_ui;
 pub mod moodboard_ui;
 pub mod nodes;
+// ---- ws:layout-modes-onboarding ----
+pub mod onboarding;
 pub mod palette;
 pub mod paste_ui;
 pub mod planner;

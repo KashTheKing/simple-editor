@@ -313,6 +313,10 @@ pub struct Settings {
     // ---- ws:export-deliver ----
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
+    /// Active workspace name (`ui::layout::WORKSPACES`), lit in the menu-bar strip / View menu.
+    pub workspace: String,
+    /// Show the Open / Import / Templates / Recent cards over an empty project (the home screen).
+    pub home_screen: bool,
     // ---- ws:media-library ----
     // ---- ws:source-monitor ----
     // ---- ws:timeline-trim-gestures ----
@@ -418,6 +422,8 @@ impl Default for Settings {
             // ---- ws:export-deliver ----
             // ---- ws:inspector-gallery ----
             // ---- ws:layout-modes-onboarding ----
+            workspace: "Edit".into(),
+            home_screen: true,
             // ---- ws:media-library ----
             // ---- ws:source-monitor ----
             // ---- ws:timeline-trim-gestures ----
@@ -674,5 +680,22 @@ mod tests {
         assert_eq!(back.ui_scale, s.ui_scale);
         assert_eq!(back.keymap_preset, s.keymap_preset);
         assert_eq!(back.palette_recent, s.palette_recent);
+    }
+
+    // ---- ws:layout-modes-onboarding ----
+    #[test]
+    fn layout_mode_settings_round_trip() {
+        let old: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(old.workspace, "Edit", "today's default layout is the Edit workspace");
+        assert!(old.home_screen, "default on");
+        assert_eq!(old.layout_mode, "dynamic");
+        assert!(!old.onboarded, "a settings file without the flag sees the welcome once");
+        let mut s = Settings::default();
+        s.workspace = "Color".into();
+        s.home_screen = false;
+        s.layout_mode = "granular".into();
+        s.onboarded = true;
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!((back.workspace.as_str(), back.home_screen, back.layout_mode.as_str(), back.onboarded), ("Color", false, "granular", true));
     }
 }

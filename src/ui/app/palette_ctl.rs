@@ -143,7 +143,9 @@ fn dispatch(app: &mut App, cmd: Command, arg_form: Option<(&'static str, Vec<(St
         }
         Command::Script(path) => app.run_script_path = Some(path),
         Command::Workspace(name) => {
-            app.toast(format!("Workspace '{name}' — full switching lands with layout-modes-onboarding"));
+            // ---- ws:layout-modes-onboarding ----
+            // the placeholder toast this arm carried until wave 2: the real switch
+            layout_ctl::switch_workspace(app, name);
         }
     }
 }
