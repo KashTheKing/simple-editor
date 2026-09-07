@@ -2,6 +2,26 @@
 
 ## unreleased
 
+### Transcript & captions (issue #29)
+- A transcribed clip's word timings now persist in the project (survive save/reopen) instead of
+  dying when the Subtitles pane closed. A new collapsible **Transcript** section there: click a
+  word to seek, drag-select a range and Delete to ripple-cut it (cues, markers and the transcript
+  shift together), search across every transcribed clip, and an editable filler-word list
+  ("um", "uh", "you know"…) with Mark-instead-first before it cuts.
+- Karaoke-style captions: subtitles can now animate word-by-word against the transcript
+  (Highlight / Pop / Typewriter), set from the new `subtitles.animation` script/MCP tool.
+- "Get captions" is now a single button that names the exact download size before it fetches
+  anything — never runs at startup.
+- Any imported video/audio clip's right-click menu gained a **Transcript** submenu:
+  Transcribe… (runs in the background, offers the model download first if needed), View
+  transcript (a live, non-blocking word list with click-to-seek and a filter box), and Export
+  transcript… (.txt / .srt / .json).
+- Basic text-to-speech: a Speech panel in the Transcript section using Windows' own voices, which
+  drops the result on the timeline as a linked audio clip.
+- Scripts/agents can now drive all of this: `transcript.get/set/cut_words/remove_fillers/search/
+  export`, `transcribe.run/install`, `tracking.run`, `subtitles.animation`, `tts.speak`, and
+  `media.transcribe`/`media.transcript`.
+
 ### Forgiveness (issue #21)
 - Toasts gained a kind (info/success/warn/error), an optional Undo button and an optional progress
   bar; `App::toast`/`toast_with_folder` (122 existing call sites) compile unchanged. Delete/Ripple
