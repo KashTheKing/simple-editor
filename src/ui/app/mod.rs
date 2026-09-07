@@ -54,8 +54,12 @@ mod drops;
 mod edit_ops;
 mod feedback;
 mod files;
+// ---- ws:layout-modes-onboarding ----
+mod frame;
 mod gpu;
 mod jobs;
+// ---- ws:layout-modes-onboarding ----
+mod layout_ctl;
 mod lib_preview;
 mod library_pane;
 mod mcp_exec;
@@ -80,6 +84,8 @@ mod tools_color;
 // ---- ws:command-palette ----
 mod tools_commands;
 mod tools_helpers;
+// ---- ws:layout-modes-onboarding ----
+mod tools_layout;
 mod tools_media;
 mod tools_playback;
 // ---- ws:canvas-handles-monitor ----
@@ -352,9 +358,18 @@ pub struct App {
     /// Scripts disabled for the session after their `@on` hook overran its budget once (one toast, then
     /// silently skipped by `fire_hook` for the rest of the session).
     disabled_hooks: Vec<PathBuf>,
-    /// Selection last handed to `fire_hook("selection_changed", ...)` — `palette_ctl::tick` compares
-    /// against `self.selection` each frame so the hook fires on an actual change, not every frame.
-    last_fired_selection: Vec<Id>,
+    /// Selection signature last handed to `fire_hook("selection_changed", ...)` — `palette_ctl::tick`
+    /// compares against `frame::SelSig::of(self)` each frame so the hook fires on any change (clips,
+    /// transitions, subtitle cues OR the edit point — not just `self.selection`), exactly once.
+    last_fired_selection: frame::SelSig,
+    // ---- ws:layout-modes-onboarding ----
+    /// The first-run welcome wizard while it is open — armed by `boot::run` on a fresh install (no
+    /// file argument, no `--screenshot`), `Action::ShowWelcome` and the `onboarding.reset` tool.
+    onboarding: Option<crate::ui::onboarding::Onboarding>,
+    /// The home / empty-state cards were dismissed for this session (`ui::home`).
+    home_dismissed: bool,
+    /// The selection `frame::tick` last reacted to, so auto-surface / glow fire once per change.
+    sel_sig: frame::SelSig,
 }
 
 // ---- ws:canvas-handles-monitor ----
@@ -604,14 +619,11 @@ impl App {
                 }
             });
         }
-        // first-run install points the entry at this exe; skip for screenshot/debug runs so they don't re-point it
-        if settings.context_menu
-            && screenshot.is_none()
-            && !cfg!(debug_assertions)
-            && !crate::contextmenu::is_installed()
-        {
-            let _ = crate::contextmenu::install();
-        }
+        // ---- ws:layout-modes-onboarding ----
+        // The Explorer context-menu install that used to run here on every launch (guarded on
+        // settings.context_menu / no --screenshot / release build / not yet installed) now lives in
+        // `boot::run`: a first run arms the welcome wizard, whose opt-in checkbox is the consent that
+        // was missing; later launches keep the same guard, gated on that recorded consent.
         let mut player = Player::new(cc.egui_ctx.clone(), backend, text.clone());
         player.set_cache_bytes(crate::playback::cache_budget_bytes(settings.cache_mb));
         let waveforms = WaveformCache::new(cc.egui_ctx.clone(), backend);
@@ -759,7 +771,11 @@ impl App {
             ),
             hook_running: false,
             disabled_hooks: Vec::new(),
-            last_fired_selection: Vec::new(),
+            last_fired_selection: frame::SelSig::default(),
+            // ---- ws:layout-modes-onboarding ----
+            onboarding: None,
+            home_dismissed: false,
+            sel_sig: frame::SelSig::default(),
         };
         if let Some(reason) = settings_bad {
             app.toast(format!("Settings file was corrupt (saved as settings.json.bad): {reason}"));
@@ -1182,6 +1198,12 @@ impl eframe::App for App {
                 // cloned: the draw closure needs self mutably while the tab renderer reads the icons
                 let icons = self.settings.icon_overrides.clone();
                 let cozy = self.settings.ui_look != "sharp";
+                // ---- ws:layout-modes-onboarding ----
+                // Both closures need `self` (draw: mutably; on_viewport: the hotkey table, then
+                // pending_actions), and layout::show calls them strictly one after the other — never
+                // nested — so a RefCell hands the borrow back and forth at runtime, the same shape
+                // `App::fire_hook` already uses for its tool-call closure.
+                let cell = std::cell::RefCell::new(&mut *self);
                 let (changed, moved, set_icon) = layout::show(
                     ctx,
                     ui,
@@ -1189,11 +1211,15 @@ impl eframe::App for App {
                     &icons,
                     tab_bar,
                     cozy,
-                    &mut |ui, pane| self.draw_pane(ui, pane),
+                    &mut |ui, pane| cell.borrow_mut().draw_pane(ui, pane),
                     // ---- ws:registries-schema-hooks ----
-                    // no-op until ws:layout-modes-onboarding (wave 2) polls hotkeys on the popped
-                    // viewport's own ctx
-                    &mut |_ctx| {},
+                    // filled by ws:layout-modes-onboarding: poll the action table on the popped
+                    // viewport's own ctx, so Space/J/K/L work in a torn-off Preview (each viewport
+                    // has its own input state, so nothing double-fires with the root poll above)
+                    &mut |vctx| {
+                        let acts = layout_ctl::poll_popout(&cell.borrow().hotkeys, vctx);
+                        cell.borrow_mut().pending_actions.extend(acts);
+                    },
                 );
                 self.layout = l;
                 self.layout_dirty |= changed;
@@ -1293,6 +1319,7 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:export-deliver ----
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
+    tools_layout::TOOLS,
     // ---- ws:media-library ----
     // ---- ws:source-monitor ----
     // ---- ws:timeline-trim-gestures ----
@@ -1325,6 +1352,7 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     // ---- ws:export-deliver ----
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
+    layout_ctl::act,
     // ---- ws:media-library ----
     // ---- ws:source-monitor ----
     // ---- ws:timeline-trim-gestures ----
@@ -1355,6 +1383,7 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:export-deliver ----
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
+    frame::tick,
     // ---- ws:media-library ----
     // ---- ws:source-monitor ----
     // ---- ws:timeline-trim-gestures ----
@@ -1385,6 +1414,7 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:export-deliver ----
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
+    layout_ctl::windows,
     // ---- ws:media-library ----
     // ---- ws:source-monitor ----
     // ---- ws:timeline-trim-gestures ----
