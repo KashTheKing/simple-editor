@@ -63,6 +63,7 @@ mod menus;
 // ---- ws:command-palette ----
 mod palette_ctl;
 mod panes;
+mod playback_ctl;
 mod preview_pane;
 // ---- ws:forgiveness ----
 // pub(crate): main.rs calls recovery::install_panic_hook() before eframe::run_native.
@@ -295,6 +296,7 @@ pub struct App {
     /// winpos's window-rect debounce: (drag/move started at, the rect it saw) while unsettled, `None`
     /// once saved. Owned here so `whatsnew::tick` can thread it into `winpos::tick` every frame.
     pub(crate) winpos_pending: Option<(Instant, [i32; 4])>,
+<<<<<<< HEAD
     // ---- ws:forgiveness ----
     // deviation: unlike Settings/Project, this struct had no pre-seeded per-workstream marker section
     // (only ws:registries-schema-hooks/ws:size-diet above) — adding one here, following the same
@@ -316,6 +318,13 @@ pub struct App {
     autosave: autosave::AutosaveState,
     /// `Action::RestoreBackup` opened the "Restore Autosave…" window (recovery.rs's `restore_window`).
     restore_backup_open: bool,
+    // ---- ws:player-rate-loop ----
+    /// Timeline seconds a Play In->Out / Play Around / Play to Out should auto-pause at; cleared once
+    /// reached (or if playback stops some other way). See `playback_ctl::tick`.
+    play_stop_at: Option<f64>,
+    /// `playhead` as of the last `playback_ctl::tick` — lets the paused-playhead-change scrub fire once
+    /// per change instead of every frame.
+    scrub_last_t: f64,
     // ---- ws:command-palette ----
     /// Ctrl+K palette state. Named `cmd_palette`, not `palette` — `App.palette` is already the live
     /// theme `Palette` (`self.palette` is read constantly for colours throughout `ui::app`), so reusing
@@ -733,6 +742,8 @@ impl App {
             pending_close: false,
             autosave: autosave::AutosaveState::default(),
             restore_backup_open: false,
+            play_stop_at: None,
+            scrub_last_t: 0.0,
             cmd_palette: palette::PaletteState::default(),
             cheat_sheet_open: false,
             // already-expired so `palette_ctl::tick`'s 1 Hz refresh runs on the very first frame instead
@@ -1266,6 +1277,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:forgiveness ----
     tools_project::TOOLS,
     // ---- ws:player-rate-loop ----
+    // already registered above (tools_playback::TOOLS predates the marker system; wave-0a wired it in
+    // directly) — this workstream appends new rows into that same const, not a second registration.
     // ---- ws:snap-engine ----
     // ---- ws:trim-model ----
     // ---- ws:canvas-handles-monitor ----
@@ -1294,6 +1307,7 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     palette_ctl::act,
     // ---- ws:forgiveness ----
     // ---- ws:player-rate-loop ----
+    playback_ctl::act,
     // ---- ws:snap-engine ----
     // ---- ws:trim-model ----
     // ---- ws:canvas-handles-monitor ----
@@ -1322,6 +1336,7 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:forgiveness ----
     autosave::autosave_tick,
     // ---- ws:player-rate-loop ----
+    playback_ctl::tick,
     // ---- ws:snap-engine ----
     // ---- ws:trim-model ----
     // ---- ws:canvas-handles-monitor ----

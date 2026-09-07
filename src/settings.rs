@@ -292,7 +292,16 @@ pub struct Settings {
     /// may already have it open. Not a real mutex — see the PR body's risks note.
     pub lock_warn: bool,
     // ---- ws:player-rate-loop ----
+    /// Emit one BLOCK (~21 ms) of audio on every paused playhead change (scrub feedback); gates
+    /// `playback_ctl::tick`'s scrub-on-paused-change hook.
+    pub audio_scrub: bool,
+    /// Symmetric pre/post roll (seconds) for Play Around Playhead.
+    pub preroll_secs: f32,
     // ---- ws:snap-engine ----
+    /// Markers (project + clip-local) count as timeline snap candidates. No per-field serde
+    /// attribute: `Settings`' container-level `#[serde(default)]` already back-fills old files,
+    /// exactly like the sibling `snap` field.
+    pub snap_markers: bool,
     // ---- ws:trim-model ----
     // ---- ws:canvas-handles-monitor ----
     // ---- ws:export-deliver ----
@@ -391,7 +400,10 @@ impl Default for Settings {
             // ---- ws:forgiveness ----
             lock_warn: true,
             // ---- ws:player-rate-loop ----
+            audio_scrub: true,
+            preroll_secs: 2.0,
             // ---- ws:snap-engine ----
+            snap_markers: true,
             // ---- ws:trim-model ----
             // ---- ws:canvas-handles-monitor ----
             // ---- ws:export-deliver ----
@@ -604,6 +616,19 @@ mod tests {
         let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(back.window_rect, s.window_rect);
         assert_eq!(back.last_seen_version, s.last_seen_version);
+    }
+
+    #[test]
+    fn audio_scrub_and_preroll_round_trip() {
+        let old: Settings = serde_json::from_str("{}").unwrap();
+        assert!(old.audio_scrub, "default on");
+        assert_eq!(old.preroll_secs, 2.0);
+        let mut s = Settings::default();
+        s.audio_scrub = false;
+        s.preroll_secs = 0.5;
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.audio_scrub, s.audio_scrub);
+        assert_eq!(back.preroll_secs, s.preroll_secs);
     }
 
     #[test]

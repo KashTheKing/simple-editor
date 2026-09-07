@@ -52,6 +52,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
                 waveforms,
                 palette,
                 snap: settings.snap,
+                snap_markers: settings.snap_markers,
                 playing: player.is_playing(),
                 thumbs: Some(thumbs),
                 // only while the Auto-cut pane is on screen: a stale overlay would keep
