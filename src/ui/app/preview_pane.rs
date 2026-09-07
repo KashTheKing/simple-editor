@@ -29,6 +29,9 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
                 gpu_tex,
                 tracking,
                 tracking_shown,
+                // ---- ws:canvas-handles-monitor ----
+                alt_render,
+                export,
                 ..
             } = app;
             let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
@@ -60,6 +63,13 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
                     proxy: proxy_busy,
                     tracker: tracking_shown.then(|| tracking.box_rect()),
                     guide: settings.guide,
+                    // ---- ws:canvas-handles-monitor ----
+                    canvas_snap: settings.canvas_snap,
+                    // an export is served on this thread: the monitor keeps the live frame meanwhile
+                    // (`monitor::tick` starts nothing either)
+                    alt_texture: export.is_none().then(|| alt_render.texture()).flatten(),
+                    use_proxies: settings.use_proxies,
+                    dropped: player.dropped_frames(),
                 },
             )
         };
@@ -84,6 +94,11 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
         }
         if let Some(g) = resp.set_guide {
             app.settings.guide = g;
+            app.settings.save();
+        }
+        // ---- ws:canvas-handles-monitor ----
+        if let Some(on) = resp.set_canvas_snap {
+            app.settings.canvas_snap = on;
             app.settings.save();
         }
         if let Some((kind, cx, cy, w, h)) = resp.new_shape {

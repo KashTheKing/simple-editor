@@ -53,6 +53,12 @@ pub struct ToolsState {
     /// Draw tool: a take is running — the app plays the video and drops every stroke into one drawing
     /// until this goes back off (see `App::toggle_draw_recording`).
     pub recording: bool,
+    // ---- ws:layout-modes-onboarding ----
+    /// Adaptive strip (Dynamic layout mode only): the tool the current selection most likely wants
+    /// next, moved to the front of the strip by `show`. `None` = the fixed `STRIP` order. Written by
+    /// `ui::app::frame::tick` from the dominant `SelectionKind`; never a user-reorderable toolbar
+    /// (ponytail: one reorder of the const, add per-user ordering only if asked).
+    pub lead: Option<Tool>,
 }
 
 impl Default for ToolsState {
@@ -69,6 +75,7 @@ impl Default for ToolsState {
             draw_rate: 1.0,
             page: [0, 0, 0, 0],
             recording: false,
+            lead: None,
         }
     }
 }
@@ -225,6 +232,8 @@ pub(crate) enum Glyph {
     // ---- ws:split-god-files ----
     // ---- ws:audio-analysis ----
     // ---- ws:audio-dsp-automation ----
+    /// Three vertical bars of increasing height — the mixer's level / LUFS meter row.
+    Meter,
     // ---- ws:color-engine ----
     // ---- ws:command-palette ----
     /// A small key cap grid — the cheat-sheet / Settings ▸ Hotkeys tab.
@@ -240,9 +249,19 @@ pub(crate) enum Glyph {
     SlipCursor,
     // ---- ws:trim-model ----
     // ---- ws:canvas-handles-monitor ----
+    /// Two overlapping L-shaped crop marks — painted at the pointer over a crop handle.
+    Crop,
+    /// A three-quarter circular arrow — painted at the pointer over the rotate knob.
+    Rotate,
     // ---- ws:export-deliver ----
+    /// Two stacked documents with a small clock in the corner — the render queue.
+    Queue,
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
+    /// A pushpin (head, bar, needle) — a tab pinned against auto-surfacing.
+    Pin,
+    /// Four corner arrows pointing outward — maximise a pane to the full tile.
+    Maximize,
     // ---- ws:media-library ----
     // ---- ws:source-monitor ----
     /// A bar with a block landing after its end — smart edit "Append at End".
@@ -352,6 +371,7 @@ impl Glyph {
         // ---- ws:split-god-files ----
         // ---- ws:audio-analysis ----
         // ---- ws:audio-dsp-automation ----
+        Glyph::Meter,
         // ---- ws:color-engine ----
         // ---- ws:command-palette ----
         Glyph::Keyboard,
@@ -363,9 +383,14 @@ impl Glyph {
         Glyph::SlipCursor,
         // ---- ws:trim-model ----
         // ---- ws:canvas-handles-monitor ----
+        Glyph::Crop,
+        Glyph::Rotate,
         // ---- ws:export-deliver ----
+        Glyph::Queue,
         // ---- ws:inspector-gallery ----
         // ---- ws:layout-modes-onboarding ----
+        Glyph::Pin,
+        Glyph::Maximize,
         // ---- ws:media-library ----
         // ---- ws:source-monitor ----
         Glyph::Append,
@@ -474,6 +499,7 @@ impl Glyph {
             // ---- ws:split-god-files ----
             // ---- ws:audio-analysis ----
             // ---- ws:audio-dsp-automation ----
+            Glyph::Meter => "meter",
             // ---- ws:color-engine ----
             // ---- ws:command-palette ----
             Glyph::Keyboard => "keyboard",
@@ -485,9 +511,14 @@ impl Glyph {
             Glyph::SlipCursor => "slip-cursor",
             // ---- ws:trim-model ----
             // ---- ws:canvas-handles-monitor ----
+            Glyph::Crop => "crop",
+            Glyph::Rotate => "rotate",
             // ---- ws:export-deliver ----
+            Glyph::Queue => "queue",
             // ---- ws:inspector-gallery ----
             // ---- ws:layout-modes-onboarding ----
+            Glyph::Pin => "pin",
+            Glyph::Maximize => "maximize",
             // ---- ws:media-library ----
             // ---- ws:source-monitor ----
             Glyph::Append => "append",
@@ -710,10 +741,13 @@ pub fn show(ui: &mut egui::Ui, state: &mut ToolsState, palette: &Palette, snap: 
     let mut changed = handle_hotkeys(ui.ctx(), hotkeys, state).is_some();
     changed |= handle_snap_hotkey(ui.ctx(), snap);
     let base = ui.id();
+    // ---- ws:layout-modes-onboarding ----
+    // adaptive order: the selection's lead tool (if any) moves to the front, the rest keep STRIP order
+    let order = strip_order(state.lead);
     // wrapped: at a small pane width the strip must fold onto a second row, not clip its last buttons
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
-        for (tool, icon, name) in STRIP {
+        for (tool, icon, name) in order {
             let active = same_tool(tool, state.tool);
             let tip = if matches!(tool, Tool::Shape(_)) {
                 format!("{name} (Shift+S)")
@@ -739,6 +773,20 @@ pub fn show(ui: &mut egui::Ui, state: &mut ToolsState, palette: &Palette, snap: 
         changed |= style_controls(ui, state, palette);
     });
     changed
+}
+
+// ---- ws:layout-modes-onboarding ----
+/// `STRIP` with `lead`'s entry (if it has one) moved to the front — the Dynamic-mode adaptive strip.
+/// Only the order changes: every tool stays, so `strip_lays_out_every_tool` holds for any lead.
+fn strip_order(lead: Option<Tool>) -> Vec<(Tool, Glyph, &'static str)> {
+    let mut order = STRIP.to_vec();
+    if let Some(lead) = lead {
+        if let Some(i) = order.iter().position(|(t, _, _)| same_tool(*t, lead)) {
+            let entry = order.remove(i);
+            order.insert(0, entry);
+        }
+    }
+    order
 }
 
 /// The Mask button lights up for every mask shape (the combo beside it picks one); everything else is
@@ -1661,12 +1709,24 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
             let head = vec![c + egui::vec2(7.5, 0.0), c + egui::vec2(4.5, -2.2), c + egui::vec2(4.5, 2.2)];
             p.add(egui::Shape::convex_polygon(head, fg, Stroke::NONE));
         } // ---- ws:registries-schema-hooks ----
-          // ---- ws:size-diet ----
-          // ---- ws:split-god-files ----
-          // ---- ws:audio-analysis ----
-          // ---- ws:audio-dsp-automation ----
-          // ---- ws:color-engine ----
-          // ---- ws:command-palette ----
+        // ---- ws:size-diet ----
+        // ---- ws:split-god-files ----
+        // ---- ws:audio-analysis ----
+        // ---- ws:audio-dsp-automation ----
+        // level meter: three bars rising left to right on a baseline
+        Glyph::Meter => {
+            for (i, h) in [4.0f32, 8.0, 12.0].into_iter().enumerate() {
+                let x = c.x - 5.0 + i as f32 * 5.0;
+                p.rect_filled(
+                    egui::Rect::from_min_max(egui::pos2(x - 1.5, c.y + 6.0 - h), egui::pos2(x + 1.5, c.y + 6.0)),
+                    CornerRadius::ZERO,
+                    fg,
+                );
+            }
+            p.line_segment([c + egui::vec2(-7.5, 6.5), c + egui::vec2(7.5, 6.5)], stroke);
+        }
+        // ---- ws:color-engine ----
+        // ---- ws:command-palette ----
         // rounded keycap outline with a 3x2 grid of small key dots inside
         Glyph::Keyboard => {
             p.rect_stroke(
@@ -1688,13 +1748,69 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
             let dir = egui::vec2(1.0, 1.0).normalized();
             p.line_segment([ring + dir * 4.0, ring + dir * 8.0], Stroke::new(1.8, fg));
         } // ---- ws:forgiveness ----
-          // ---- ws:player-rate-loop ----
-          // ---- ws:trim-model ----
-          // ---- ws:canvas-handles-monitor ----
-          // ---- ws:export-deliver ----
-          // ---- ws:inspector-gallery ----
-          // ---- ws:layout-modes-onboarding ----
-          // ---- ws:media-library ----
+        // ---- ws:player-rate-loop ----
+        // ---- ws:trim-model ----
+        // ---- ws:canvas-handles-monitor ----
+        // crop marks: two L corners (top-right and bottom-left) overlapping into a frame
+        Glyph::Crop => {
+            p.add(egui::Shape::line(
+                vec![c + egui::vec2(-7.0, -3.0), c + egui::vec2(3.0, -3.0), c + egui::vec2(3.0, 7.0)],
+                stroke,
+            ));
+            p.add(egui::Shape::line(
+                vec![c + egui::vec2(-3.0, -7.0), c + egui::vec2(-3.0, 3.0), c + egui::vec2(7.0, 3.0)],
+                stroke,
+            ));
+        }
+        // rotate: a three-quarter arc ending in an arrowhead
+        Glyph::Rotate => {
+            let pts: Vec<egui::Pos2> = (0..=18)
+                .map(|i| {
+                    let a = -std::f32::consts::FRAC_PI_2 + i as f32 / 18.0 * (std::f32::consts::TAU * 0.75);
+                    c + egui::vec2(a.cos(), a.sin()) * 5.0
+                })
+                .collect();
+            let end = pts[pts.len() - 1];
+            p.add(egui::Shape::line(pts, stroke));
+            p.add(egui::Shape::convex_polygon(
+                vec![end + egui::vec2(0.0, -3.5), end + egui::vec2(2.5, 0.5), end + egui::vec2(-2.5, 0.5)],
+                fg,
+                Stroke::NONE,
+            ));
+        }
+        // ---- ws:export-deliver ----
+        // queue: two offset document outlines (the stack) with a small clock dial at the corner
+        Glyph::Queue => {
+            for (dx, dy) in [(2.0f32, -2.0f32), (-2.0, 2.0)] {
+                p.rect_stroke(
+                    egui::Rect::from_center_size(c + egui::vec2(dx, dy), egui::vec2(9.0, 11.0)),
+                    CornerRadius::same(1),
+                    stroke,
+                    StrokeKind::Inside,
+                );
+            }
+            let dial = c + egui::vec2(5.5, 5.5);
+            p.circle_stroke(dial, 3.6, stroke);
+            p.line_segment([dial, dial + egui::vec2(0.0, -2.2)], Stroke::new(1.0, fg));
+            p.line_segment([dial, dial + egui::vec2(1.6, 0.0)], Stroke::new(1.0, fg));
+        }
+        // ---- ws:inspector-gallery ----
+        // ---- ws:layout-modes-onboarding ----
+        // pushpin: a filled head over a wider bar, with a needle dropping from the bar's middle
+        Glyph::Pin => {
+            p.rect_filled(egui::Rect::from_min_max(c + egui::vec2(-2.5, -6.5), c + egui::vec2(2.5, -1.5)), 1.0, fg);
+            p.line_segment([c + egui::vec2(-5.0, -1.0), c + egui::vec2(5.0, -1.0)], Stroke::new(1.8, fg));
+            p.line_segment([c + egui::vec2(0.0, -1.0), c + egui::vec2(0.0, 6.5)], stroke);
+        }
+        // four corner arrows: a diagonal from near the centre to each corner, capped with an L bracket
+        Glyph::Maximize => {
+            for (sx, sy) in [(-1.0f32, -1.0f32), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+                let tip = c + egui::vec2(sx * r, sy * r);
+                p.line_segment([c + egui::vec2(sx * 1.5, sy * 1.5), tip], stroke);
+                p.line_segment([tip, tip - egui::vec2(sx * 3.5, 0.0)], stroke);
+                p.line_segment([tip, tip - egui::vec2(0.0, sy * 3.5)], stroke);
+            }
+        } // ---- ws:media-library ----
           // ---- ws:source-monitor ----
         // append: a lane bar, then a block dropped just past its end with a right arrow above
         Glyph::Append => {
@@ -1952,6 +2068,34 @@ mod tests {
         for (_, _, name) in STRIP {
             let c = h.button(name);
             assert!(c.x > 0.0 && c.x < 900.0, "{name} off-strip at {c:?}");
+        }
+    }
+
+    // ---- ws:layout-modes-onboarding ----
+    /// The adaptive strip only reorders: a lead tool moves to the front, nothing is dropped, and no
+    /// lead means the fixed order.
+    #[test]
+    fn lead_tool_moves_to_the_front_and_keeps_every_tool() {
+        assert_eq!(strip_order(None).len(), STRIP.len());
+        assert_eq!(strip_order(None)[0].0, Tool::Select);
+        let text = strip_order(Some(Tool::Text));
+        assert_eq!(text[0].0, Tool::Text);
+        assert_eq!(text.len(), STRIP.len());
+        assert_eq!(text[1].0, Tool::Select, "the rest keep STRIP order");
+        // a lead the strip has no button for (a specific mask shape resolves via same_tool) is fine
+        let mask = strip_order(Some(Tool::Mask(MaskShape::Path)));
+        assert!(matches!(mask[0].0, Tool::Mask(_)));
+        let mut h = Harness::new();
+        h.state.lead = Some(Tool::Draw);
+        // egui's `read_response` prefers `this_pass`, which after ONE run still holds the pre-change
+        // frame's rects (it only becomes current after a second pass) — an extra settle frame with the
+        // same state is harmless (nothing else changes) and makes the reordered rects readable.
+        h.frame(vec![]);
+        h.frame(vec![]);
+        assert!(h.button("Draw").x < h.button("Select").x, "the lead tool is drawn first");
+        for (_, _, name) in STRIP {
+            let c = h.button(name);
+            assert!(c.x > 0.0 && c.x < 900.0, "{name} off-strip at {c:?} with a lead tool");
         }
     }
 

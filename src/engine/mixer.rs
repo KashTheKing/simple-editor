@@ -142,9 +142,11 @@ fn mix_tracks(
             continue;
         }
         // ---- ws:registries-schema-hooks ----
-        // ws:audio-dsp-automation (wave 1) samples `track.volume.at(t)` here as a per-track gain
-        // multiplier once it lands; `track.volume` defaults to unity (`a1()`) so leaving this a
-        // comment-only marker is behavior-identical this wave — nothing multiplies by it yet.
+        // ---- ws:audio-dsp-automation ----
+        // Track volume automation, sampled once at the block start and held for the block.
+        // ponytail: not lerped across the block like clip gain — a keyed ramp steps every ≈21 ms;
+        // sample it at both block ends in `resample_add` if the steps ever become audible.
+        let tg = track.volume.at(t) as f32;
         match track.kind {
             TrackKind::Audio => {
                 for clip in &track.clips {
@@ -166,7 +168,7 @@ fn mix_tracks(
                     }
                     let bus = if dest.routed() { project.bus_of(ti, clip) } else { 0 };
                     let t0 = t + i0 as f64 / sr;
-                    mix_audio_clip(scratch, clip, &ext, t0, &asset.path, pool, dest.slice(bus, i0, i1), depth);
+                    mix_audio_clip(scratch, clip, &ext, t0, &asset.path, pool, dest.slice(bus, i0, i1), depth, tg);
                 }
             }
             TrackKind::Video => {
@@ -194,6 +196,7 @@ fn mix_tracks(
                         pool,
                         dest.slice(bus, i0, i1),
                         depth,
+                        tg,
                     );
                 }
             }
@@ -213,6 +216,7 @@ fn mix_audio_clip(
     pool: &mut DecoderPool,
     out: &mut [f32],
     depth: usize,
+    track_gain: f32,
 ) {
     let n = out.len() / 2;
     let m = (n as f64 * clip.speed).ceil() as usize + 1;
@@ -226,7 +230,7 @@ fn mix_audio_clip(
     };
     if let Some(src) = pool.audio(path, clip.audio_stream) {
         read_block(src, s0, &mut buf);
-        resample_add(clip, ext, t0, &buf, out);
+        resample_add(clip, ext, t0, &buf, out, track_gain);
     }
     scratch.put(depth * 2, buf);
 }
@@ -245,6 +249,7 @@ fn mix_seq_clip(
     pool: &mut DecoderPool,
     out: &mut [f32],
     depth: usize,
+    track_gain: f32,
 ) {
     let n = out.len() / 2;
     let m = (n as f64 * clip.speed).ceil() as usize + 1;
@@ -253,7 +258,7 @@ fn mix_seq_clip(
     let s0 = if clip.reverse { clip.src_time(t0) - (m - 1) as f64 / sr } else { clip.src_time(t0) };
     if let Some(tracks) = project.sequence_tracks(clip.sequence) {
         mix_tracks(scratch, project, tracks, s0, pool, &mut Dest::Buf(&mut buf), depth + 1);
-        resample_add(clip, ext, t0, &buf, out);
+        resample_add(clip, ext, t0, &buf, out, track_gain);
     }
     scratch.put(depth * 2 + 1, buf);
 }
@@ -337,7 +342,9 @@ fn read_block(src: &mut dyn AudioSource, s0: f64, buf: &mut [f32]) {
 /// exact for linear ramps, ≤ one block of shape error otherwise; split at kinks if it matters. Both
 /// callers use 1024-frame blocks (≈21 ms: `playback::BLOCK` and `export::MIX_BLOCK`), so playback and
 /// export shape a fade identically.
-fn resample_add(clip: &Clip, ext: &Ext, t0: f64, buf: &[f32], out: &mut [f32]) {
+/// `track_gain` (ws:audio-dsp-automation: the hosting track's `volume` at the block start) scales
+/// both channels on top of the clip's own gains.
+fn resample_add(clip: &Clip, ext: &Ext, t0: f64, buf: &[f32], out: &mut [f32], track_gain: f32) {
     let n = out.len() / 2;
     let m = buf.len() / 2;
     if n == 0 || m == 0 {
@@ -345,6 +352,7 @@ fn resample_add(clip: &Clip, ext: &Ext, t0: f64, buf: &[f32], out: &mut [f32]) {
     }
     let (l0, r0) = gains(clip, ext, t0);
     let (l1, r1) = gains(clip, ext, t0 + n as f64 / SAMPLE_RATE as f64);
+    let (l0, r0, l1, r1) = (l0 * track_gain, r0 * track_gain, l1 * track_gain, r1 * track_gain);
     let dl = (l1 - l0) / n as f32;
     let dr = (r1 - r0) / n as f32;
     let last = m - 1;
@@ -376,6 +384,26 @@ mod tests {
             for (i, s) in out.iter_mut().enumerate() {
                 let tt = t + (i / 2) as f64 / SAMPLE_RATE as f64;
                 *s = if (0.0..10.0).contains(&tt) { self.0 } else { 0.0 };
+            }
+        }
+    }
+
+    // ---- ws:audio-dsp-automation ----
+    /// A real 440 Hz tone at amplitude `.0` — unlike `Const`, this has AC content, so K-weighted LUFS
+    /// (which high-passes out DC) reads something other than silence for it.
+    struct Sine(f32);
+    impl AudioSource for Sine {
+        fn duration(&self) -> f64 {
+            10.0
+        }
+        fn read_at(&mut self, t: f64, out: &mut [f32]) {
+            for (i, s) in out.iter_mut().enumerate() {
+                let tt = t + (i / 2) as f64 / SAMPLE_RATE as f64;
+                *s = if (0.0..10.0).contains(&tt) {
+                    self.0 * (std::f64::consts::TAU * 440.0 * tt).sin() as f32
+                } else {
+                    0.0
+                };
             }
         }
     }
@@ -459,6 +487,125 @@ mod tests {
         mx.mix(&p, 10.0 - 0.0005, &mut pool, &mut out);
         assert!((out[0] - 0.25).abs() < 1e-5);
         assert_eq!(out[95], 0.0);
+    }
+
+    // ---- ws:audio-dsp-automation ----
+    #[test]
+    fn track_volume_is_sampled_and_multiplies_clip_gain() {
+        let mut p = project();
+        let ai = p.audio_tracks()[0];
+        let mut pool = pool();
+        let mut mx = Mixer::new();
+        let mut out = vec![0.0f32; 2048];
+        mx.mix(&p, 1.0, &mut pool, &mut out);
+        assert!(out.iter().all(|s| (s - 0.5).abs() < 1e-5), "unity track volume: {}", out[0]);
+        // a constant 0.5 halves the clip's 0.5 source
+        p.tracks[ai].volume = crate::model::Animated::new(0.5);
+        mx.mix(&p, 1.0, &mut pool, &mut out);
+        assert!(out.iter().all(|s| (s - 0.25).abs() < 1e-5), "half track volume: {}", out[0]);
+        // keyed: 1.0 at t=0, 0.0 at t=2 → 0.5 at t=1, sampled once at the block start and held
+        p.tracks[ai].volume.keys = vec![
+            crate::model::Keyframe { t: 0.0, v: 1.0, ease: Ease::Linear },
+            crate::model::Keyframe { t: 2.0, v: 0.0, ease: Ease::Linear },
+        ];
+        mx.mix(&p, 1.0, &mut pool, &mut out);
+        assert!((out[0] - 0.25).abs() < 1e-3, "keyed track volume at 1 s: {}", out[0]);
+        assert!((out[out.len() - 2] - out[0]).abs() < 1e-6, "held for the block");
+        mx.mix(&p, 1.9, &mut pool, &mut out);
+        assert!((out[0] - 0.025).abs() < 1e-3, "keyed track volume at 1.9 s: {}", out[0]);
+        // and it applies with buses in the path too (same sample, routed through Main)
+        p.main_bus();
+        mx.mix(&p, 1.0, &mut pool, &mut out);
+        assert!((out[0] - 0.25).abs() < 1e-3, "through buses: {}", out[0]);
+        // a sequence clip on a video track takes the VIDEO track's volume
+        let mut p2 = Project::new();
+        let aid = p2.add_asset(audio_asset(0, "Z:\\nope\\fake.wav"));
+        let seq = p2.new_sequence("s", 320, 240, 30.0);
+        let mut inner = Clip::new(500, ClipKind::Audio, "in", 0.0, 4.0);
+        inner.asset = aid;
+        let s = p2.sequence_mut(seq).unwrap();
+        let sai = s.tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
+        s.tracks[sai].clips.push(inner);
+        p2.insert_sequence_clip(seq, 0.0, None).expect("placed");
+        let vi = p2.video_tracks()[0];
+        p2.tracks[vi].volume = crate::model::Animated::new(0.5);
+        mx.mix(&p2, 1.0, &mut pool, &mut out);
+        assert!(out.iter().all(|s| (s - 0.25).abs() < 1e-5), "sequence clip × V1 volume: {}", out[0]);
+    }
+
+    /// A project that never touched `Track.volume` (every track at the `a1()` default, including one
+    /// loaded from JSON without the field) mixes bit-identically to a build without the sampling.
+    #[test]
+    fn mixer_regression_existing_projects_unchanged() {
+        let mut p = project();
+        let ai = p.audio_tracks()[0];
+        p.tracks[ai].clips[0].volume.value = 0.5;
+        p.tracks[ai].clips[0].fade_in = 0.5;
+        let loaded = Project::from_json(&p.to_json()).expect("round-trip");
+        assert_eq!(loaded.tracks[ai].volume.value, 1.0);
+        let mut pool = pool();
+        let mut mx = Mixer::new();
+        let mut reference = vec![0.0f32; 2 * 1024];
+        let mut out = vec![0.0f32; 2 * 1024];
+        for t in [0.0, 0.25, 1.0, 9.99] {
+            // the reference is what the pre-change mixer produced: clip gain × fade, no track factor
+            mx.mix(&p, t, &mut pool, &mut out);
+            let (l0, _) = gains(&p.tracks[ai].clips[0], &[None, None], t);
+            let (l1, _) = gains(&p.tracks[ai].clips[0], &[None, None], t + 1024.0 / SAMPLE_RATE as f64);
+            for (k, fr) in reference.chunks_exact_mut(2).enumerate() {
+                let tt = t + k as f64 / SAMPLE_RATE as f64;
+                let g = if (0.0..10.0).contains(&tt) { 0.5 * (l0 + (l1 - l0) * k as f32 / 1024.0) } else { 0.0 };
+                fr[0] = g;
+                fr[1] = g;
+            }
+            for (a, b) in out.iter().zip(&reference) {
+                assert!((a - b).abs() < 1e-5, "t={t}: {a} vs {b}");
+            }
+            let mut out2 = vec![0.0f32; 2 * 1024];
+            mx.mix(&loaded, t, &mut pool, &mut out2);
+            assert_eq!(out, out2, "a JSON-loaded project (no volume field) mixes identically");
+        }
+    }
+
+    /// The meter data path end to end: a mixed block's post-fader bus output reaches a UI-side graph
+    /// through `BusMeterFeed` with a non-zero peak and a finite LUFS reading (what `App::sync_buses`
+    /// does every frame; `App` itself can't be built headless — see tools_registry_tests.rs).
+    #[test]
+    fn mixer_meters_reflect_live_playback() {
+        use crate::engine::mixer_fx::{BusGraph, BusMeterFeed};
+        let mut p = project();
+        let main = p.main_bus();
+        // a real tone, not the shared `pool()`'s DC `Const` — K-weighting high-passes DC out to silence
+        // (correctly: a DC offset has no loudness), which would make the LUFS assertions below bogus.
+        let mut pool = DecoderPool::new(Backend::Ffmpeg);
+        pool.insert_audio("Z:\\nope\\fake.wav", 0, Box::new(Sine(0.5)));
+        let mut mx = Mixer::new();
+        let mut out = vec![0.0f32; 2 * 1024];
+        let feed = BusMeterFeed::new();
+        let mut ui = BusGraph::new();
+        ui.sync(&p);
+        assert_eq!(ui.meter(main), (0.0, 0.0), "nothing synced yet");
+        // half a second of blocks, as playback.rs's audio thread would publish them
+        for i in 0..24 {
+            mx.mix(&p, 1.0 + i as f64 * 1024.0 / SAMPLE_RATE as f64, &mut pool, &mut out);
+            mx.graph().publish(&feed);
+        }
+        feed.drain_into(&mut ui);
+        let (l, r) = ui.meter(main);
+        // a 0.5-amplitude sine's peak-hold settles near 0.5 but sampling won't land exactly on a peak
+        assert!(l > 0.3 && r > 0.3, "Main peak {l} {r}");
+        let (mo, int) = ui.lufs(main);
+        assert!(mo.is_finite() && mo > -20.0 && mo < 0.0, "momentary {mo}");
+        assert!(int.is_finite() && (int - mo).abs() < 1.0, "integrated {int} vs momentary {mo}");
+        // silence afterwards leaves the peak decaying, not stuck
+        let ai = p.audio_tracks()[0];
+        p.tracks[ai].muted = true;
+        for i in 0..24 {
+            mx.mix(&p, 1.0 + i as f64 * 1024.0 / SAMPLE_RATE as f64, &mut pool, &mut out);
+            mx.graph().publish(&feed);
+        }
+        feed.drain_into(&mut ui);
+        assert!(ui.meter(main).0 < 0.1, "decayed: {:?}", ui.meter(main));
     }
 
     #[test]

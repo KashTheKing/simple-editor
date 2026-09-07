@@ -14,6 +14,8 @@ pub mod frame_ui;
 pub mod guides;
 pub mod heartbeat;
 pub mod history_ui;
+// ---- ws:layout-modes-onboarding ----
+pub mod home;
 pub mod import_ui;
 pub mod inspector;
 pub mod inspector_audio;
@@ -25,6 +27,8 @@ pub mod markers_ui;
 pub mod mixer_ui;
 pub mod moodboard_ui;
 pub mod nodes;
+// ---- ws:layout-modes-onboarding ----
+pub mod onboarding;
 pub mod palette;
 pub mod paste_ui;
 pub mod planner;
@@ -253,6 +257,33 @@ pub fn timecode(t: f64, fps: f64) -> String {
     format!("{:02}:{:02}:{:02}:{:02}", s / 3600, (s / 60) % 60, s % 60, f)
 }
 
+// ---- ws:canvas-handles-monitor ----
+/// The transport label's click-to-edit parser (and `playhead.set_timecode`): `hh:mm:ss:ff` /
+/// `hh:mm:ss` / `mm:ss` / a bare number of seconds are absolute; `+N` / `-N` are frames from `cur`,
+/// `+1.5s` / `-2s` seconds from `cur`. `None` for anything else — the edit is dropped, the playhead
+/// stays put. Never negative (a relative step past the start clamps to 0).
+pub(crate) fn parse_timecode(s: &str, fps: f64, cur: f64) -> Option<f64> {
+    let s = s.trim();
+    let fps = fps.max(1.0);
+    if let Some(rest) = s.strip_prefix('+').or_else(|| s.strip_prefix('-')) {
+        let sign = if s.starts_with('-') { -1.0 } else { 1.0 };
+        let secs = match rest.trim().strip_suffix('s') {
+            Some(secs) => secs.trim().parse::<f64>().ok()?,
+            None => rest.trim().parse::<f64>().ok()? / fps,
+        };
+        return Some((cur + sign * secs).max(0.0)).filter(|t| t.is_finite());
+    }
+    let n: Vec<f64> = s.split(':').map(|p| p.trim().parse::<f64>().ok()).collect::<Option<_>>()?;
+    let t = match n[..] {
+        [secs] => secs,
+        [m, s] => m * 60.0 + s,
+        [h, m, s] => h * 3600.0 + m * 60.0 + s,
+        [h, m, s, f] => h * 3600.0 + m * 60.0 + s + f / fps,
+        _ => return None,
+    };
+    (t.is_finite() && t >= 0.0).then_some(t)
+}
+
 /// Short duration text "1:23.4".
 pub fn duration_text(t: f64) -> String {
     let m = (t / 60.0).floor() as u64;
@@ -325,5 +356,31 @@ mod tests {
         let kept = m.points.clone();
         seed_mask_points(&mut m);
         assert_eq!(m.points, kept, "an existing outline is never overwritten");
+    }
+
+    // ---- ws:canvas-handles-monitor ----
+    #[test]
+    fn parse_timecode_parses_every_form() {
+        let near = |a: Option<f64>, b: f64| a.is_some_and(|a| (a - b).abs() < 1e-6);
+        let fps = 30.0;
+        assert!(near(parse_timecode("00:01:02:15", fps, 0.0), 62.5), "hh:mm:ss:ff");
+        assert!(near(parse_timecode("01:02:03", fps, 0.0), 3723.0), "hh:mm:ss");
+        assert!(near(parse_timecode("01:02", fps, 0.0), 62.0), "mm:ss");
+        assert!(near(parse_timecode("7.5", fps, 0.0), 7.5), "bare seconds");
+        assert!(near(parse_timecode("+48", fps, 10.0), 11.6), "+N frames");
+        assert!(near(parse_timecode("-15", fps, 10.0), 9.5), "-N frames");
+        assert!(near(parse_timecode("+1.5s", fps, 10.0), 11.5), "+N.Ns seconds");
+        assert!(near(parse_timecode("-2s", fps, 10.0), 8.0), "-Ns seconds");
+        assert!(near(parse_timecode("-2s", fps, 1.0), 0.0), "never negative");
+        assert!(near(parse_timecode(" 01:02 ", fps, 0.0), 62.0), "whitespace tolerated");
+        for junk in ["", "abc", "1:2:3:4:5", "+", "1:x", "-1", "+inf"] {
+            let got = parse_timecode(junk, fps, 10.0);
+            // "-1" is a legal "one frame back"; everything else is garbage
+            if junk == "-1" {
+                assert!(near(got, 10.0 - 1.0 / 30.0));
+            } else {
+                assert_eq!(got, None, "{junk:?} must not parse");
+            }
+        }
     }
 }

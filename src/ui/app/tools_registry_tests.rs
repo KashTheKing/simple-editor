@@ -69,6 +69,10 @@ const OP_TOOLS: &[(&str, &str)] = &[
     ("unnest", "timeline.unnest"),
     ("replace_clip", "timeline.replace"),
     ("magnetic_move", "timeline.magnetic_move"),
+    // ---- ws:audio-dsp-automation ----
+    ("apply_repair", "audio.repair"),
+    // ---- ws:canvas-handles-monitor ----
+    ("fit_clip_to_screen", "clip.fit"),
     // ---- ws:source-monitor ----
     ("subclip_from_marks", "source.subclip"),
 ];
@@ -103,7 +107,6 @@ const OP_INTERNAL: &[(&str, &str)] = &[
     ("add_path", "Draw-tool / motion-path capture is UI-only, no MCP tool"),
     ("apply_path", "Draw-tool / motion-path capture is UI-only, no MCP tool"),
     ("link_path", "Draw-tool / motion-path capture is UI-only, no MCP tool"),
-    ("fit_clip_to_screen", "viewer 'Fit' is a UI action, not an MCP tool"),
     ("refresh_links", "internal per-frame live-link rebake, not a user edit"),
     ("plan_item_mut", "accessor; edits go through plan.set"),
     ("add_note", "notes.set writes note[0] directly; no tool adds further titled notes yet"),

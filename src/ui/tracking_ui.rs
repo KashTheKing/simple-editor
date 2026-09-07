@@ -58,6 +58,30 @@ impl TrackState {
     }
 }
 
+// ---- ws:canvas-handles-monitor ----
+impl TrackState {
+    /// The finished track this pane holds, for Auto Reframe: the clip it belongs to (the explicit
+    /// pick, else the first selected visual clip — the pane's own rule) and its points, once at least
+    /// two frames were tracked and the worker is done. None = nothing to reframe from.
+    pub(crate) fn tracked(&self, project: &Project, selection: &[Id]) -> Option<(Id, &[(f32, f32, f32)])> {
+        if self.job.is_some() || self.points.len() < 2 {
+            return None;
+        }
+        target(project, self, selection).map(|id| (id, &self.points[..]))
+    }
+}
+
+// ---- ws:canvas-handles-monitor ----
+#[cfg(test)]
+impl TrackState {
+    /// A finished track with `points` already in hand — `points`/`job` are private (no live `App`
+    /// exists to drive `TrackJob::start` for real in a test; see `app::monitor`'s tests), so
+    /// `app::monitor::reframe`'s own tests build one through this instead of the tracking pane's UI.
+    pub(crate) fn with_points(points: Vec<(f32, f32, f32)>) -> Self {
+        Self { points, ..Default::default() }
+    }
+}
+
 /// The clip being tracked: the explicit pick if it still exists, else the first visual clip selected.
 fn target(project: &Project, state: &TrackState, selection: &[Id]) -> Option<Id> {
     state

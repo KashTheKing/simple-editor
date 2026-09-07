@@ -172,6 +172,24 @@ impl App {
         }
     }
 
+    // ---- ws:export-deliver ----
+    /// Render Selection / `render.range`: pre-render an explicit `[a, b)` into the movie-mode cache
+    /// without touching the in/out points (or the in/out request already in flight — `PreRender::
+    /// request` merges ranges). Turns movie mode on if it was off, or the cache would never be read.
+    pub(crate) fn request_prerender_range(&mut self, a: f64, b: f64) -> Result<(), &'static str> {
+        let (a, b) = (a.max(0.0), b.min(self.project.duration()));
+        if !(b > a) {
+            return Err("Nothing to render — the range is empty");
+        }
+        self.settings.movie_mode = true;
+        let App { prerender, project, .. } = self;
+        if guarded(|| prerender.request(project, a, b)).is_none() {
+            self.settings.movie_mode = false;
+            return Err("Movie mode is not available in this build");
+        }
+        Ok(())
+    }
+
     /// "Export Frame…" confirmed: render at the chosen size and write the image with ffmpeg.
     pub(super) fn export_frame(&mut self, opts: frame_ui::FrameExport) {
         let (rw, rh) = frame_render_size((self.project.width, self.project.height), opts.size);
