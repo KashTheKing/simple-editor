@@ -17,6 +17,26 @@ pub(super) fn rollback_project(snap: &str) -> Option<Project> {
 }
 
 impl App {
+    // ---- ws:forgiveness ----
+    /// Runs every `.luau` script in the scripts folder whose first few lines contain `-- @on <event>`,
+    /// reusing `run_script`'s existing undo/toast/rollback plumbing verbatim. This workstream owns and
+    /// fires only two events (`project_open`/`project_save`, see files.rs); the other four events named
+    /// in the master plan's mcp_parity section (selection_changed/import/export_done/marker_added) are
+    /// each a one-line addition in a DIFFERENT workstream's own file, not new infrastructure here.
+    /// ponytail: no `editor.event` payload wiring and no per-hook `@budget_ms`/disable-on-overrun yet —
+    /// `scripting::run`'s existing 5s interrupt budget already bounds a runaway hook, and nothing reads
+    /// a hook payload today; add both once `-- @name/@on/@budget_ms` header parsing lands (that
+    /// convention is command-palette's, per the master plan) and a real consumer needs the payload.
+    pub(crate) fn fire_hook(&mut self, event: &str, _payload: Value) {
+        let marker = format!("@on {event}");
+        for path in crate::scripting::list() {
+            let Ok(src) = std::fs::read_to_string(&path) else { continue };
+            if src.lines().take(10).any(|l| l.contains(&marker)) {
+                self.run_script(&path);
+            }
+        }
+    }
+
     pub(super) fn run_script(&mut self, path: &std::path::Path) {
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let src = match std::fs::read_to_string(path) {

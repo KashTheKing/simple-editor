@@ -28,12 +28,37 @@ impl App {
                 for m in relocate_assets(&mut project, path.parent()) {
                     self.toast(format!("Missing media: {m}"));
                 }
+                self.check_lock_file(path);
                 self.set_project(project, Some(path.to_path_buf()));
                 self.settings.touch_recent_project(&path.to_string_lossy());
                 self.settings.save();
+                self.fire_hook("project_open", json!({"path": path.to_string_lossy()}));
             }
             Err(e) => self.toast(format!("Can't open project: {e}")),
         }
+    }
+
+    /// `<path>.lock` sidecar: warn-only (never blocks open), always overwritten with the current pid —
+    /// documented ceiling, not a real cross-instance mutex (see the PR body's risks note).
+    fn lock_path(path: &Path) -> PathBuf {
+        let mut s = path.as_os_str().to_os_string();
+        s.push(".lock");
+        PathBuf::from(s)
+    }
+
+    pub(super) fn check_lock_file(&mut self, path: &Path) {
+        let lock = Self::lock_path(path);
+        if self.settings.lock_warn {
+            if let Ok(existing_pid) = std::fs::read_to_string(&lock) {
+                if !existing_pid.trim().is_empty() {
+                    self.toast(format!(
+                        "This project may already be open elsewhere (lock left by pid {})",
+                        existing_pid.trim()
+                    ));
+                }
+            }
+        }
+        let _ = std::fs::write(&lock, std::process::id().to_string());
     }
     pub(super) fn media_dialog() -> rfd::FileDialog {
         rfd::FileDialog::new()
@@ -43,21 +68,19 @@ impl App {
     }
 
     pub(super) fn act_open_file(&mut self) {
-        if !self.confirm_discard() {
-            return;
-        }
-        if let Some(p) = Self::media_dialog().pick_file() {
-            self.open_path(&p);
-        }
+        self.confirm_discard_then(|app| {
+            if let Some(p) = Self::media_dialog().pick_file() {
+                app.open_path(&p);
+            }
+        });
     }
 
     pub(super) fn act_open_project(&mut self) {
-        if !self.confirm_discard() {
-            return;
-        }
-        if let Some(p) = rfd::FileDialog::new().add_filter("Simple Editor project", &[PROJECT_EXT]).pick_file() {
-            self.open_project(&p);
-        }
+        self.confirm_discard_then(|app| {
+            if let Some(p) = rfd::FileDialog::new().add_filter("Simple Editor project", &[PROJECT_EXT]).pick_file() {
+                app.open_project(&p);
+            }
+        });
     }
 
     pub(super) fn act_import(&mut self) {
@@ -106,13 +129,18 @@ impl App {
         }
     }
 
-    pub(super) fn save_project(&mut self) -> bool {
+    /// pub(crate): `confirm::draw`'s Save button (Discard prompt) calls this from outside the `app`
+    /// module — see confirm.rs's module doc.
+    pub(crate) fn save_project(&mut self) -> bool {
         let Some(path) = self.project_path.clone() else { return self.save_project_as() };
         match self.project.save(&path) {
             Ok(()) => {
                 self.dirty = false;
                 self.settings.touch_recent_project(&path.to_string_lossy());
                 self.settings.save();
+                let _ = std::fs::remove_file(Self::lock_path(&path));
+                autosave::clear_for(&path);
+                self.fire_hook("project_save", json!({"path": path.to_string_lossy()}));
                 self.toast_with_folder("Project saved", path);
                 true
             }
@@ -155,10 +183,14 @@ impl App {
         }
     }
 
-    /// Ask to save unsaved changes. Returns false if the user cancelled.
-    pub(super) fn confirm_discard(&mut self) -> bool {
+    /// Ask to save unsaved changes, non-blocking: if the project isn't dirty, `on_yes` runs immediately
+    /// (synchronously, same frame); otherwise a Save/Discard/Cancel confirm window is queued and
+    /// `on_yes` runs on a LATER frame once it resolves Save (and the save succeeded) or Discard — never
+    /// on Cancel. Replaces the old blocking `confirm_discard() -> bool`.
+    pub(crate) fn confirm_discard_then(&mut self, on_yes: impl FnOnce(&mut App) + 'static) {
         if !self.dirty {
-            return true;
+            on_yes(self);
+            return;
         }
         // Yes saves a .sedit (the video itself only changes via Save / Overwrite Original Video) — say so
         let msg = if self.project_path.is_some() {
@@ -166,17 +198,7 @@ impl App {
         } else {
             "Save changes as a project file (.sedit)?"
         };
-        let r = rfd::MessageDialog::new()
-            .set_title("Simple Editor")
-            .set_description(msg)
-            .set_buttons(rfd::MessageButtons::YesNoCancel)
-            .set_level(rfd::MessageLevel::Warning)
-            .show();
-        match r {
-            rfd::MessageDialogResult::Yes => self.save_project(),
-            rfd::MessageDialogResult::No => true,
-            _ => false,
-        }
+        confirm::ask_discard(msg, on_yes);
     }
 
     pub(super) fn ffmpeg_missing(&mut self) -> bool {
@@ -306,6 +328,8 @@ impl App {
     }
 
     /// Re-encode the timeline over the opened video file (temp file in the same folder, then replace).
+    /// Non-blocking now: up to two confirm windows chain via continuations instead of two synchronous
+    /// blocking-dialog `.show()` calls.
     pub(super) fn act_overwrite(&mut self) {
         let Some(src) = self.project.source_video.clone() else {
             self.toast("No source video to overwrite — use Export Video As");
@@ -323,20 +347,21 @@ impl App {
             return;
         }
         if self.settings.confirm_overwrite {
-            let r = rfd::MessageDialog::new()
-                .set_title("Overwrite original video?")
-                .set_description(format!(
-                    "{src}\n\nThe file will be replaced with the edited video. This cannot be undone."
-                ))
-                .set_buttons(rfd::MessageButtons::OkCancel)
-                .set_level(rfd::MessageLevel::Warning)
-                .show();
-            if r != rfd::MessageDialogResult::Ok {
-                return;
-            }
+            confirm::ask_app(
+                "Overwrite original video?",
+                format!("{src}\n\nThe file will be replaced with the edited video. This cannot be undone."),
+                move |app| app.act_overwrite_offer_save_first(src),
+            );
+        } else {
+            self.act_overwrite_offer_save_first(src);
         }
-        // the new file is reloaded as a fresh project afterwards, so state that isn't burned into the video
-        // (subtitles, planner, notes, sequences, imported media, undo) is dropped — offer to save a .sedit first
+    }
+
+    /// Second stage of `act_overwrite`: the new file reloads as a fresh project afterward, so state
+    /// that isn't burned into the video (subtitles, planner, notes, sequences, extra media) would be
+    /// silently dropped — offer to save a .sedit first. Same Save/Discard/Cancel shape as
+    /// `confirm_discard_then`, so it reuses `confirm::ask_discard`.
+    fn act_overwrite_offer_save_first(&mut self, src: String) {
         let p = &self.project;
         let loses = !p.plan.is_empty()
             || !p.notes.is_empty()
@@ -344,26 +369,20 @@ impl App {
             || !p.sequences.is_empty()
             || p.assets.len() > 1;
         if loses && (self.dirty || self.project_path.is_none()) {
-            match rfd::MessageDialog::new()
-                .set_title("Save the project first?")
-                .set_description(
-                    "Overwriting reloads the new file as a fresh project — subtitles, planner, notes, \
-                     sequences and imported media are not kept. Save a project file (.sedit) first?",
-                )
-                .set_buttons(rfd::MessageButtons::YesNoCancel)
-                .set_level(rfd::MessageLevel::Warning)
-                .show()
-            {
-                rfd::MessageDialogResult::Yes => {
-                    if !self.save_project() {
-                        return;
-                    }
-                }
-                rfd::MessageDialogResult::No => {}
-                _ => return,
-            }
+            confirm::ask_discard(
+                "Overwriting reloads the new file as a fresh project — subtitles, planner, notes, \
+                 sequences and imported media are not kept. Save a project file (.sedit) first?",
+                move |app| app.act_overwrite_run(&src),
+            );
+        } else {
+            self.act_overwrite_run(&src);
         }
-        let original = PathBuf::from(&src);
+    }
+
+    /// Final stage: actually re-encode over the source. `src` is the same source path validated by
+    /// `act_overwrite`.
+    fn act_overwrite_run(&mut self, src: &str) {
+        let original = PathBuf::from(src);
         let ext = original.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_else(|| "mp4".into());
         let temp = original.with_file_name(format!(
             ".{}.simple-editor-tmp.{ext}",
@@ -621,5 +640,60 @@ impl App {
         };
         self.toast("Compressing\u{2026}");
         self.convert_jobs.push((crate::engine::convert::start_convert(opts), out));
+    }
+}
+
+// ---- ws:forgiveness ----
+#[cfg(test)]
+mod tests {
+    /// Structural (source-scan) tests, not App-level ones — this crate has no headless App-construction
+    /// path anywhere (see tools_registry_tests.rs's doc comment for why), so a check that would
+    /// otherwise call `open_project`/`save_project`/`confirm_discard_then` on a live `App` instead
+    /// verifies the same fact by scanning each function's own body, the same technique
+    /// `run_script_pushes_one_undo_per_script` (tools_registry_tests.rs) already uses in this crate.
+    fn fn_body<'a>(src: &'a str, signature: &str) -> &'a str {
+        let start = src.find(signature).unwrap_or_else(|| panic!("{signature} must exist"));
+        let after = &src[start..];
+        // bound to the next sibling fn at the same indentation (4 spaces) — good enough for this file's
+        // flat `impl App { fn ... }` shape.
+        let next_at = after[signature.len()..].find("\n    fn ").or_else(|| after[signature.len()..].find("\n    pub"));
+        match next_at {
+            Some(i) => &after[..signature.len() + i],
+            None => after,
+        }
+    }
+
+    #[test]
+    fn open_and_save_fire_project_hooks() {
+        let src = include_str!("files.rs");
+        let open_body = fn_body(src, "pub(super) fn open_project(");
+        assert_eq!(
+            open_body.matches("fire_hook(\"project_open\"").count(),
+            1,
+            "open_project must fire project_open exactly once on success"
+        );
+        let save_body = fn_body(src, "pub(crate) fn save_project(");
+        assert_eq!(
+            save_body.matches("fire_hook(\"project_save\"").count(),
+            1,
+            "save_project must fire project_save exactly once on success"
+        );
+    }
+
+    #[test]
+    fn confirm_discard_then_runs_continuation_without_blocking() {
+        let src = include_str!("files.rs");
+        let body = fn_body(src, "pub(crate) fn confirm_discard_then(");
+        assert!(
+            body.contains("if !self.dirty") && body.contains("on_yes(self)"),
+            "a clean project must run the continuation immediately, not queue a confirm window"
+        );
+        assert!(
+            body.contains("confirm::ask_discard("),
+            "a dirty project must queue a non-blocking Save/Discard/Cancel window, never a blocking dialog"
+        );
+        // the crate-wide grep for the removed blocking-dialog API (see the PR body's verification
+        // checklist) covers the "never blocks" property globally; not duplicated here as a literal
+        // string, since that string would itself trip that same grep.
     }
 }

@@ -38,6 +38,10 @@ pub struct SettingsUi {
     /// MCP port while it is being dragged / typed; committed to the settings when the gesture ends
     /// (the app restarts the server on every value it sees, and a busy one in between switches it off).
     pub(super) port_edit: Option<u16>,
+    /// ---- ws:forgiveness ----
+    /// Performance tab's "Clear Caches" button was clicked this frame — the app (windows.rs) reads and
+    /// resets this after calling `show`, since `performance()` has no `&mut App` to act on directly.
+    pub clear_caches: bool,
 }
 
 pub(super) struct Status {
@@ -116,7 +120,7 @@ pub fn show(
             ui.separator();
             changed = match state.tab {
                 0 => general::general(ui, state, settings, mcp_status),
-                1 => performance::performance(ui, settings, gpu_name),
+                1 => performance::performance(ui, settings, gpu_name, &mut state.clear_caches),
                 2 => capture::capture_tab(ui, settings, audio_inputs),
                 3 => capture::export(ui, settings, encoders),
                 4 => hotkeys::hotkeys_tab(ui, state, hotkeys),

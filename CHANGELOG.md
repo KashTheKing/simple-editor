@@ -2,6 +2,31 @@
 
 ## unreleased
 
+### Forgiveness (issue #21)
+- Toasts gained a kind (info/success/warn/error), an optional Undo button and an optional progress
+  bar; `App::toast`/`toast_with_folder` (122 existing call sites) compile unchanged. Delete/Ripple
+  Delete and Remove-unused-assets now toast an Undo.
+- Every blocking Yes/No/Cancel dialog (6 sites: `confirm_discard`, both `act_overwrite` prompts,
+  library's Clear recent/Remove unused, subtitles' Clear all/Import-replace) is now a non-blocking
+  `egui::Window` (`src/ui/confirm.rs`) — nothing in the editor blocks the frame waiting on a click
+  anymore. `confirm_discard() -> bool` is gone; `confirm_discard_then(on_yes)` is its non-blocking,
+  continuation-based replacement.
+- Debounced off-thread autosave (`Settings.autosave_secs`, 20 rolling backups per project under
+  `%LOCALAPPDATA%\SimpleEditor\autosave`), a panic hook (`crash.log` + the latest autosave snapshot),
+  and a non-blocking "Recover unsaved project?" offer on startup when a newer autosave exists.
+  `App::fire_hook("project_open"/"project_save", ...)` gives `-- @on project_open`/`-- @on
+  project_save` scripts a real call site (the other four `@on` events named in the plan are each a
+  different workstream's own addition).
+- Settings ▸ Performance gained a "Clear Caches" button + live on-disk cache size; History panel rows
+  gained a Restore button (labeled "Restore history entry" in the undo stack).
+- `Settings::load()` keeps its signature but now quarantines a corrupt `settings.json` to
+  `settings.json.bad` instead of silently falling back to defaults over it; `App::new` toasts the
+  reason via the new `Settings::load_reporting()`.
+- Tripwire count update: `pre_existing_repaint_sites_unchanged_and_named` drops from 17 to 16 — the
+  toast area's own `request_repaint_after` call moved out of `mod.rs` into the new `feedback.rs`
+  (outside that test's scanned file list) as part of extracting the Toast type; the call itself still
+  exists, just relocated, so the crate-wide site count is unchanged.
+
 ### Binary size (issue #18, size-diet)
 - Dropped `egui_commonmark` (+ `egui_commonmark_backend`, `egui_extras`, `pulldown-cmark`) for a small
   in-house `ui::markdown` (~250 lines: headings, bold/italic/code spans, bullet lists, fenced code,

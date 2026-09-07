@@ -152,6 +152,11 @@ actions! {
     // ---- ws:color-engine ----
     // ---- ws:command-palette ----
     // ---- ws:forgiveness ----
+    // Unbound by design (no free chord in the skeleton keymap): Settings ▸ Performance button /
+    // palette row / toast button only.
+    ClearCaches => "clear_caches", "Clear Caches", None;
+    RestoreBackup => "restore_backup", "Restore Autosave…", None;
+    UndoSettings => "undo_settings", "Undo Settings Change", None;
     // ---- ws:player-rate-loop ----
     // ---- ws:snap-engine ----
     // ---- ws:trim-model ----

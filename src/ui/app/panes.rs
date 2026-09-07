@@ -158,6 +158,18 @@ impl App {
                 if resp.edited {
                     self.after_edit();
                 }
+                // ---- ws:forgiveness ----
+                if resp.cleared_subtitles {
+                    self.toast_undo("Cleared subtitles", Action::Undo);
+                }
+                if let Some(cues) = resp.import_replace_cues {
+                    let n = self.project.subtitles.len();
+                    confirm::ask(
+                        "Import subtitles",
+                        format!("Replace the existing {n} subtitle(s)? (Cancel keeps them and discards this import.)"),
+                        confirm::ConfirmAction::ReplaceSubtitles(cues),
+                    );
+                }
             }
             Pane::Planner => {
                 let resp = {
@@ -206,8 +218,19 @@ impl App {
             Pane::History => {
                 // deleting entries mutates the undo stack directly, not the project — no undo/push_undo
                 // of its own (history bookkeeping isn't itself a project edit).
-                let App { history, undo, project, .. } = self;
-                history_ui::show(ui, history, undo, project);
+                let resp = {
+                    let App { history, undo, project, .. } = self;
+                    history_ui::show(ui, history, undo, project)
+                };
+                // ---- ws:forgiveness ----
+                if let Some(i) = resp.restore {
+                    let live = self.project.to_json();
+                    if let Some((before, restored)) = history_ui::restore_at(&self.undo, i, &live) {
+                        self.project = restored;
+                        self.push_undo_labeled(before, "Restore history entry");
+                        self.after_edit();
+                    }
+                }
             }
             Pane::AutoCut => {
                 self.autocut_drawing = true;

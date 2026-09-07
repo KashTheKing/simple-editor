@@ -22,6 +22,7 @@ mod winpos;
 use std::path::PathBuf;
 
 fn main() {
+    ui::app::recovery::install_panic_hook(); // ws:forgiveness: crash.log + a snapshot of the latest autosave
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(|s| s.as_str()) == Some("--selftest") {
         std::process::exit(selftest::run(&args[1..]));

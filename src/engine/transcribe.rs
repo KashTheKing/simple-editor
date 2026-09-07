@@ -574,6 +574,17 @@ mod tests {
         Segment::plain(start, end, text.into())
     }
 
+    // ---- ws:forgiveness ----
+    /// `Settings::load()` kept its `-> Self` signature specifically so this real second call site
+    /// (line 46, above) keeps compiling and returning a plain `Settings` — the quarantine-on-corrupt
+    /// behavior settings.rs's own tests cover is a transparent side effect of factoring `load_inner`
+    /// out, invisible from here.
+    #[test]
+    fn transcribe_settings_load_unaffected() {
+        let s: Settings = Settings::load();
+        let _ = s.whisper_dir; // compiles and returns a plain Settings, exactly as before
+    }
+
     #[test]
     fn parses_whisper_lines() {
         assert_eq!(

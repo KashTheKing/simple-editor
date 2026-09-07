@@ -5,6 +5,7 @@
 pub mod app;
 pub mod autocut_ui;
 pub mod capture_ui;
+pub mod confirm;
 pub mod curves;
 pub mod effects_ui;
 pub mod export_ui;
