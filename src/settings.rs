@@ -277,6 +277,13 @@ pub struct Settings {
     // ---- ws:audio-dsp-automation ----
     // ---- ws:color-engine ----
     // ---- ws:command-palette ----
+    /// UI zoom factor (`ctx.set_zoom_factor`); the Hotkeys tab's scale slider.
+    pub ui_scale: f32,
+    /// Applied keymap preset name (`keymaps::PRESETS`).
+    pub keymap_preset: String,
+    /// Palette command ids (`Action::id()`, `"pane.<title>"`, a tool name, ...), most-recent-first,
+    /// capped 20 — shown when the palette's query is empty instead of the full unsorted list.
+    pub palette_recent: Vec<String>,
     // ---- ws:forgiveness ----
     // ---- ws:player-rate-loop ----
     // ---- ws:snap-engine ----
@@ -371,6 +378,9 @@ impl Default for Settings {
             // ---- ws:audio-dsp-automation ----
             // ---- ws:color-engine ----
             // ---- ws:command-palette ----
+            ui_scale: 1.0,
+            keymap_preset: "Simple Editor".into(),
+            palette_recent: Vec::new(),
             // ---- ws:forgiveness ----
             // ---- ws:player-rate-loop ----
             // ---- ws:snap-engine ----
@@ -547,5 +557,22 @@ mod tests {
         // an old theme file without the background fields still loads with sane defaults
         let old: ThemeFile = serde_json::from_str("{}").unwrap();
         assert_eq!(old.panel_opacity, 255);
+    }
+
+    // ---- ws:command-palette ----
+    #[test]
+    fn command_palette_settings_round_trip() {
+        let old: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(old.ui_scale, 1.0);
+        assert_eq!(old.keymap_preset, "Simple Editor");
+        assert!(old.palette_recent.is_empty());
+        let mut s = Settings::default();
+        s.ui_scale = 1.25;
+        s.keymap_preset = "Premiere".into();
+        s.palette_recent = vec!["command_palette".into(), "pane.Library".into()];
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.ui_scale, s.ui_scale);
+        assert_eq!(back.keymap_preset, s.keymap_preset);
+        assert_eq!(back.palette_recent, s.palette_recent);
     }
 }

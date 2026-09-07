@@ -127,6 +127,8 @@ impl App {
             let look_before = self.settings.ui_look.clone();
             let palette_before = self.settings.palette.clone();
             let ctxmenu_before = self.settings.context_menu;
+            // ---- ws:command-palette ----
+            let keymap_before = self.settings.keymap_preset.clone();
             let ffdir_before = self.settings.ffmpeg_dir.clone();
             let ytdlp_dir_before = self.settings.ytdlp_dir.clone();
             self.detect_encoders_once();
@@ -186,6 +188,10 @@ impl App {
                     if let Err(e) = r {
                         self.toast(format!("Context menu: {e}"));
                     }
+                }
+                // ---- ws:command-palette ----
+                if self.settings.keymap_preset != keymap_before {
+                    self.toast(format!("Keymap preset applied: {}", self.settings.keymap_preset));
                 }
                 // TODO(integration): text.lock().load_user_fonts(&settings.user_fonts) + refresh self.fonts
                 // once the text rasterizer grows user-font support (engine-video agent).
