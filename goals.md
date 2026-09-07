@@ -7,11 +7,14 @@ trades size/deps/speed for a feature, or before designing a UI panel.
 
 ## Core goals (the non-negotiables)
 
-- **Small binary.** Target ~10 MB release exe. Measured pre-size-diet baseline: **<BEFORE_MB> MB**
-  (<BEFORE_BYTES> B, sha `<BEFORE_SHA>`) — the stale "12.97 MB" reading above predates
-  `egui_commonmark` landing. Post-size-diet (issue #18): **<AFTER_MB> MB** (<AFTER_BYTES> B, sha
-  `<AFTER_SHA>`), a measured delta of <DELTA_MB> MB — see `size_log.csv` and CHANGELOG.md's
-  "Binary size" entry. Any change that grows the binary should say by how much.
+- **Small binary.** Target ~10 MB release exe. Measured pre-size-diet baseline: **15.23 MB**
+  (15,970,816 B, sha `aaa3fdc`, measured fresh on main — supersedes any older, smaller reading from
+  before `egui_commonmark` landed). Post-size-diet (issue #18, corrected once the main-crate
+  `opt-level="s"` gate was confirmed kept, not reverted): **9.65 MB** (10,121,728 B, sha `bc4c19e`),
+  a measured delta of **-5.58 MB**. Wave 1-3 feature work (23 workstreams) then added size back: the
+  final measured exe at wave-3-complete is **11.60 MB** (12,167,168 B, sha `86c1793` — see
+  `size_log.csv`'s last row and ARCHITECTURE.md's header). Any change that grows the binary should
+  say by how much.
 - **Few dependencies.** Every new crate is a liability (compile time, binary size, supply chain,
   MSRV drift). Prefer stdlib, the `windows` crate, or shelling out to `ffmpeg.exe` over a new
   dependency. mlua (Luau scripting) is the one deliberately-approved exception so far.
@@ -42,18 +45,75 @@ Pulled forward from CHANGELOG.md — mark new completions here as they land.
 - [x] Proxy swaps evict only their source's spans (decoders + frames); decoded-source-frame cache
 - [x] Per-asset proxy status (queued / building N% / ready) in library, inspector and preview badge
 - [x] Luau scripting embedded (`editor.tool()` bridges into the MCP tool catalogue)
+- [x] **God-file split + registry protocol** (issues #16, #17): `app.rs`/`model.rs`/`timeline.rs`
+  split into `src/ui/app/*.rs` (58 files) / `src/model/*.rs` + `src/model/ops/*.rs` / `src/ui/timeline/*.rs`
+  (9 files), zero behaviour change; five dispatch registries (`TOOL_TABLES`/`ACT_HANDLERS`/
+  `FRAME_HOOKS`/`WINDOW_DRAWERS`/`PANE_DRAWERS`) + marker-section protocol let 23 workstreams add
+  files without ever sharing a merge hunk. See ARCHITECTURE.md's "Registries" section.
+- [x] **Command palette & scripting** (issue #20, command-palette): `Ctrl+K` palette over every
+  Action/Pane/arg-free ToolDef/script/workspace, `F1` cheat sheet, Avid/Premiere/Resolve keymap
+  presets, Luau `-- @on <event>` script-hook headers.
+- [x] **Forgiveness** (issue #21, forgiveness): non-blocking toasts with Undo actions replace every
+  blocking Yes/No dialog, debounced off-thread autosave + crash recovery offer, cache-clear/size in
+  Settings, History panel restore.
+- [x] **Trim & gesture primitives** (issues #22, #23, #30, snap-engine/trim-model/timeline-trim-gestures):
+  tiered `snap_target` with a pre-release guide line; ripple/roll/slip/slide/segment/multi-roller
+  trim primitives and per-track locked/ripple/magnetic flags; the frozen `arm()` modifier table
+  wired live for Edge and Drop gestures. See ARCHITECTURE.md's "Gesture model" section.
+- [x] **Color engine** (issue #24, color-engine): `Lut`/`Primaries`/`Qualifier`/`FrameBlend` effect
+  kinds, a stdlib `.cube` parser, builtin Looks, master/source-clip effect chains via `Asset.effects`.
+- [x] **Player rate/loop** (issue #25, player-rate-loop): `Clock.rate`/`loop_range` parameterise the
+  playback clock — JKL shuttle, Loop In→Out, Play In→Out, ±10-frame trims.
+- [x] **Audio analysis & DSP** (issues #19, #26, audio-analysis/audio-dsp-automation): beat/onset/BPM
+  detection, peak/RMS/LUFS analysis, cross-correlation sync offset, AutoDuck/Normalize/one-click
+  repair chains, `AudioRole` tagging, DeHum/Limiter/DeEsser filters, K-weighted LUFS metering,
+  per-bus volume automation.
+- [x] **Canvas handles & alt-render monitor** (issue #27, canvas-handles-monitor): on-canvas
+  transform/crop/rotate handles, canvas snap guides, the shared async `AltRenderState`/`AltRequest`
+  alt-render channel every hover-preview/trim-view/Scopes/multicam consumer now uses.
+- [x] **Export & delivery** (issue #28, export-deliver): platform export-preset tiles, a render
+  queue with ETA, Export In/Out range + letterbox, loudness normalisation, a render-in-place bake
+  pipeline (stabilize/denoise/slow-mo), markers CSV/YouTube-chapters export+import.
+- [x] **Layout modes & onboarding** (issue #31, layout-modes-onboarding): `Settings.layout_mode`
+  (Dynamic contextual vs. Granular explicit), named workspaces (Alt+1..6), per-panel pin/lock, a
+  first-run welcome wizard/home screen, an adaptive tool strip.
+- [x] **Source monitor** (issue #32, source-monitor): `Pane::Source` is real — a dockable two-up
+  monitor with its own Player, in/out marks, three-point/smart-edit editing, Subclip-from-marks,
+  Source Tape.
+- [x] **Inspector & Gallery** (issue #33, inspector-gallery): collapsible, primary-first inspector
+  sections with fold state in `Settings.inspector_folds`; a Color section; the re-purposed
+  `Pane::Presets` now draws a tabbed Gallery (effects/node-graphs/LUTs/Looks/Titles/Captions).
+- [x] **Media library** (issue #34, media-library): offline detection/badge, Relink/Consolidate,
+  subclips + Smart Bins, sortable list columns, thumbnail-viewport culling, image-sequence import.
+- [x] **Transcript & captions** (issue #29, transcript-captions): a persisted per-clip transcript
+  survives save/reopen, click-to-seek/drag-select-and-cut, filler-word removal, karaoke-style caption
+  animation, Windows-voices text-to-speech.
+- [x] **Pro monitor, pro timeline & titles** (issues #35, #36, #37, pro-monitor/pro-timeline/text-titles):
+  trim view + dynamic trim, Scopes, wipe compare, stills, multicam angle grid; asymmetric
+  multi-roller trims, track header rename/colour/reorder, view presets, an overview strip, a Find
+  window; Gallery ▸ Titles templates with keyframeable reveal/wave text animation.
+- [x] **MCP tool catalogue growth**: 236 tools at wave-3-complete (up from ~50 pre-overhaul), every
+  one traceable to a `ToolDef` row via `every_edit_op_has_a_tool`; see `docs/customizing.md`.
 
 ## In progress / open
 
-- [x] wave-0c size-diet (issue #18) landed: release exe <BEFORE_MB> MB -> <AFTER_MB> MB
-  (<DELTA_MB> MB measured, see CHANGELOG.md). Still short of the ~10 MB target — wave 1-3 feature
-  work adds back some of that budget (see the plan's Binary-size table); getting under ~10 MB stays
-  an open goal, not fully closed by this PR alone.
-- [ ] **UI/UX overhaul** — 23 workstreams in 4 waves, planned 2026-09-04 in
+- [x] wave-0c size-diet (issue #18) landed: release exe 15.23 MB -> 9.65 MB (-5.58 MB measured,
+  correcting an earlier PR-body report that mistakenly said the main-crate `opt-level="s"` gate was
+  skipped — `size_log.csv`'s `bc4c19e` row confirms it was kept, validated against
+  `bench_4k_preview`/`headless_1000_clips_stays_fast`). Wave 1-3 feature work added back 2,045,440 B
+  (+1.95 MB) across 23 workstreams, landing at 11.60 MB — still over the ~10 MB target. No
+  `chore/se-engine-split` follow-up was needed since the opt-level gate held; getting back under
+  ~10 MB stays an open goal, to be traded off against future feature work, not addressed by
+  docs-refresh (docs-only, Δ exe ≈ 0 KB).
+- [x] **UI/UX overhaul** — 23 workstreams in 4 waves, planned 2026-09-04 in
   [plans/ui-overhaul/README.md](plans/ui-overhaul/README.md) (one issue-ready file per workstream
   under `plans/ui-overhaul/issues/`; GitHub issues #16–#38, labels `ui-overhaul` + `wave-N`). Waves
-  run as concurrent worktrees; every workstream ships its MCP tools. Wave 0 (three serial refactor
-  PRs, #16 → #17 → #18) must land before anything else starts.
+  0-3 (all 22 non-docs workstreams) are merged into main; wave 4 (docs-refresh, #38, this PR) is the
+  serial closer documenting what actually shipped. All six originally-planned Luau `-- @on` hook
+  events (`selection_changed`, `import`, `export_done`, `project_open`, `project_save`,
+  `marker_added`) landed real `fire_hook` call sites — verified by grep against the merged tree, not
+  assumed from the plan; see ARCHITECTURE.md's "Registries" section and `docs/customizing.md` for
+  the owning file:line of each.
 - [ ] (add more as they're identified — via `/se-goal` or `/goal`)
 
 ## UX principles

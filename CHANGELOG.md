@@ -1,6 +1,99 @@
 # Changelog
 
-## unreleased
+## beta-0.3.0
+
+The full UI/UX overhaul (`plans/ui-overhaul/`): 22 feature workstreams across waves 1-3 plus the
+three wave-0 refactor PRs, closed out by this wave-4 docs pass (issue #38). This section folds what
+used to be a separate `## unreleased` heading (PRs #12/#14, plus issues #16/#18/#21/#29/#32, kept
+verbatim below) together with one new terse paragraph per remaining workstream area. Release exe at
+wave-3-complete: **12,167,168 B (11.60 MB)**, sha `86c1793` — see `size_log.csv` and goals.md's
+Core-goals line.
+
+### Command palette & scripting (issue #20)
+`Ctrl+K` opens a command palette over every Action, Pane, arg-free ToolDef (`:` opens a mini arg
+form), script and workspace, with recency-ordered results; `F1` opens a keyboard-shortcuts cheat
+sheet (a second palette entry point). Avid/Premiere/Resolve keymap presets are diff tables over the
+defaults (no re-keying). Luau scripts gained `-- @name/@desc/@icon/@hotkey/@on <event>/@budget_ms`
+header metadata so a script can appear as its own hotkey-bound, palette-visible command or subscribe
+to an editor event.
+
+### Trim & gesture primitives (issues #22, #23, #30)
+A tiered `snap_target` (playhead > cursor > selected-clip edges > adjacent clips > markers) draws its
+guide line before release and weakens as you zoom in. Ripple/roll/slip/slide/segment/multi-roller
+trim primitives landed headless-first in `model/ops/trim.rs`, with `Track.locked`/`ripple`/`magnetic`
+flags; `timeline-trim-gestures` then routed real mouse drags on the timeline through the frozen
+`arm()` modifier table (Edge and Drop zones wired live; Body/Lane/Seam's non-Shift rows stay
+tested-but-unwired, a known gap, not a silent claim of full coverage).
+
+### Color engine (issue #24)
+New `EffectKind::{Lut, Primaries, Qualifier, FrameBlend}` with GLSL bodies and CPU fallbacks, a
+stdlib `.cube` 1D/3D LUT parser, builtin Looks, and master/source-clip effect chains via a new
+`Asset.effects` field (applied ahead of any per-clip stack).
+
+### Player rate/loop (issue #25)
+`Clock.rate` and `Clock.loop_range` parameterise what used to be a fixed forward-1x, no-loop clock —
+one mechanism now backs JKL shuttle (with a −1,−2,−4,−8 repeat ladder), Loop In→Out, Play In→Out,
+Play Around Playhead, and the ±10-frame trim chords.
+
+### Audio analysis & DSP (issues #19, #26)
+Pure analysis functions over cached waveform peaks (onset/beat/BPM detection, peak/RMS/LUFS levels,
+cross-correlation sync offset for multicam) back new AutoDuck/Normalize inspector buttons and
+one-click repair chains; clips can be tagged with an `AudioRole` (Dialogue/Music/Sfx/Ambience).
+`mixer_fx.rs` gained cascaded-notch DeHum, a lookahead-limiter Limiter, and a sidechain DeEsser, plus
+a K-weighted LUFS meter fed to the UI over a ring buffer and per-bus gain automation keyframes.
+
+### Canvas handles & alt-render monitor (issue #27)
+On-canvas transform handles (corner/edge scale, rotate knob, a group box) replace numeric-field-only
+transform editing, with canvas snap guides and viewer zoom/pan. Introduces the shared
+`AltRenderState`/`AltRequest` async alt-render channel (GPU-accurate, never the CPU compositor,
+paused whenever an export is running) that every later hover-preview/trim-view/Scopes/multicam
+consumer builds on instead of its own render path.
+
+### Export & delivery (issue #28)
+One-click platform export-preset tiles (YouTube 1080p/4K, Shorts/Reels/TikTok 9:16, …), a render
+queue with an ETA, Export In/Out range with letterbox, loudness normalisation, a render-in-place bake
+pipeline (stabilize/denoise/slow-mo), and markers CSV / YouTube-chapters export and import.
+
+### Layout modes & onboarding (issue #31)
+`Settings.layout_mode` (Dynamic contextual vs. Granular explicit, chosen at first run and
+toggleable later), named workspaces (Simple/Audio/Text/Deliver, `Alt+1`.. `6`), a per-panel pin/lock
+so auto-surfacing can be opted out of per panel, a first-run welcome wizard and home screen, and an
+adaptive tool strip.
+
+### Inspector & Gallery (issue #33)
+The inspector's clip-properties sections are now collapsible (`CollapsingState`, primary controls
+first, fold state remembered in `Settings.inspector_folds`), with a new Color section for LUTs/
+Primaries/Qualifier. `Pane::Presets` keeps its variant but now draws a tabbed Gallery (effects, node
+graphs, adjustment layers, templates, LUTs, Looks, Titles, Captions) instead of the deleted
+`presets_ui.rs`.
+
+### Media library (issue #34)
+Offline-media detection with a badge plus Relink/Consolidate, subclips and Smart Bins, sortable list
+columns, thumbnail-viewport culling so large bins stay smooth, keyboard navigation, an empty-state
+hint, and image-sequence import (with its own `import` `-- @on` hook call site).
+
+### Source monitor (issue #32)
+See "Source monitor" below — `Pane::Source` landed as part of this wave.
+
+### Pro monitor, pro timeline & titles (issues #35, #36, #37)
+Pro-monitor: a trim view (outgoing/incoming frames via two alt-render requests), dynamic trim,
+Scopes, wipe compare, stills, and a 4-angle-capped multicam angle grid. Pro-timeline: asymmetric
+multi-roller trims from the edit-point set, inline track header rename/colour/reorder, timeline view
+presets, an overview minimap strip, and a Find window across clips/markers/text. Text-titles: a
+Gallery ▸ Titles tab with a handful of built-in templates whose params are exposed as keyframeable
+text animation (reveal/wave).
+
+### Binary size, corrected (issue #18)
+`size_log.csv`'s `bc4c19e` row corrects an earlier PR-body claim that the main-crate
+`opt-level = "s"` step was skipped: the merged commit actually kept it (retroactively validated —
+`headless_1000_clips_stays_fast` 0.93 ms, `bench_4k_preview` 29.0 ms/frame @720p / 74.7 ms/frame
+@native-4K, no regression). Real measured delta: **15,970,816 B (15.23 MB)** at `aaa3fdc` →
+**10,121,728 B (9.65 MB)** at `bc4c19e`, **-5,849,088 B (-5.58 MB)**. See the entry below for what
+shipped in the diet itself, and goals.md for the post-feature-wave number.
+
+The following entries were carried forward from this release's working `## unreleased` section
+(PRs #12/#14, issues #16/#18/#21/#29/#32) rather than rewritten — they already match the density
+this section aims for.
 
 ### Transcript & captions (issue #29)
 - A transcribed clip's word timings now persist in the project (survive save/reopen) instead of
@@ -93,7 +186,9 @@
   launch (`winpos::apply_rect`) from `main.rs`. Tradeoff: egui's own CollapsingHeader/scroll-position
   memory (e.g. the Planner's fold state) no longer survives a restart — accepted for wave 0, not
   rebuilt here (inspector fold state moves to `Settings` explicitly in wave-2 inspector-gallery).
-- `[profile.release.package."*"] opt-level = "s"` for dependencies. <MAIN_CRATE_OPT_LEVEL_NOTE>
+- `[profile.release.package."*"] opt-level = "s"` for dependencies, plus the main-crate `opt-level =
+  "s"` gate (kept, not reverted — see the "Binary size, corrected" entry above for the retroactive
+  bench validation that confirms it shipped).
 - Deleted verified-dead/duplicate code: `Tool::Zoom` (an unbound, always-no-op tool, including its
   `tool_drag` guard reference in `preview.rs`), `src/ui/presets_ui.rs` (270 lines — `Pane::Presets` now
   draws `library::reuse_ui`'s Effects/Node-graph/Adjustment-layer rows, the same ones `Pane::Library`'s
@@ -116,8 +211,8 @@
   therefore accurately the sanctioned path for **new** timed-repaint code from wave 0 onward, not yet a
   codebase-wide invariant — `winpos.rs`'s window-rect debounce and `whatsnew.rs`'s version-gate tick are
   its first two callers.
-- Measured release exe: baseline `<BEFORE_SHA>` <BEFORE_BYTES> B (<BEFORE_MB> MB) -> `<AFTER_SHA>`
-  <AFTER_BYTES> B (<AFTER_MB> MB), a delta of <DELTA_BYTES> B (<DELTA_MB> MB). See `size_log.csv`.
+- Measured release exe: baseline `aaa3fdc` 15,970,816 B (15.23 MB) -> `bc4c19e` 10,121,728 B
+  (9.65 MB), a delta of -5,849,088 B (-5.58 MB). See `size_log.csv`.
 
 ### Refactor (issue #16)
 - Split the five largest files by responsibility, zero behaviour change: `model.rs` (6.1K lines) into
