@@ -48,14 +48,15 @@ pub(super) fn handle(
             })
             .fold(f64::INFINITY, f64::min);
         let room = if room.is_finite() { room.max(0.0) } else { 0.0 };
-        state.drag = Some(Drag { origin, before: c.project.clone(), g: Gesture::Spacer { ids, dt: 0.0, room } });
+        state.drag =
+            Some(Drag { origin, before: c.project.clone(), g: Gesture::Spacer { ids, dt: 0.0, room }, snapped: None });
     } else if let Some(cid) = start_move {
         if let Some(tr) = c.project.track_of(cid) {
             let ids = c.project.expand_links(c.selection);
             let orig = ids.iter().map(|&id| c.project.clip(id).map(|cl| cl.start).unwrap_or(0.0)).collect();
             let kind = c.project.tracks[tr].kind;
             let g = Gesture::Move { ids, orig, kind, tr, dt: 0.0, dtrack: 0, new_track: false };
-            state.drag = Some(Drag { origin, before: c.project.clone(), g });
+            state.drag = Some(Drag { origin, before: c.project.clone(), g, snapped: None });
         }
     } else if let Some((cid, start)) = start_trim {
         if let Some(clip) = c.project.clip(cid) {
@@ -76,13 +77,22 @@ pub(super) fn handle(
             } else {
                 Gesture::Trim { ids, start, edge, changed: false }
             };
-            state.drag = Some(Drag { origin, before: c.project.clone(), g });
+            state.drag = Some(Drag { origin, before: c.project.clone(), g, snapped: None });
         }
     } else if let Some(cid) = start_vol {
-        state.drag = Some(Drag { origin, before: c.project.clone(), g: Gesture::Volume { id: cid, changed: false } });
+        state.drag = Some(Drag {
+            origin,
+            before: c.project.clone(),
+            g: Gesture::Volume { id: cid, changed: false },
+            snapped: None,
+        });
     } else if let Some((cid, fout)) = start_fade {
-        state.drag =
-            Some(Drag { origin, before: c.project.clone(), g: Gesture::Fade { id: cid, out: fout, changed: false } });
+        state.drag = Some(Drag {
+            origin,
+            before: c.project.clone(),
+            g: Gesture::Fade { id: cid, out: fout, changed: false },
+            snapped: None,
+        });
     } else if let Some((cid, kt, prop)) = start_key {
         // freeze the value scale at press time: dragging a key must not move the scale under itself
         let range = prop
@@ -93,18 +103,21 @@ pub(super) fn handle(
             origin,
             before: c.project.clone(),
             g: Gesture::Keys { id: cid, t: kt, prop, range, changed: false },
+            snapped: None,
         });
     } else if let Some((tri, tid)) = start_trans {
         state.drag = Some(Drag {
             origin,
             before: c.project.clone(),
             g: Gesture::TransDur { track: tri, id: tid, changed: false },
+            snapped: None,
         });
     } else if let Some((mid, mclip)) = start_marker {
         state.drag = Some(Drag {
             origin,
             before: c.project.clone(),
             g: Gesture::Marker { id: mid, clip: mclip, changed: false },
+            snapped: None,
         });
     }
     let hover_tr = pointer.and_then(|pos| state.track_at(pos.y, c.project));
@@ -126,9 +139,10 @@ pub(super) fn handle(
         let zoom = zoom0;
         let dx = (pos.x - drag.origin.x) as f64 / zoom as f64;
         let ox = drag.origin.x; // grab point (auto-scroll compensates it), for gestures that edit at one time
-        let thr = (SNAP_PX / zoom) as f64;
+        let thr = snap_thr(zoom, c.project.fps);
         let p = &mut *c.project;
-        match &mut drag.g {
+        let Drag { g, snapped, .. } = drag;
+        match g {
             Gesture::Move { ids, orig, kind, tr, dt, dtrack, new_track } => {
                 // past the first video row (up) or the last audio row (down): offer a fresh track.
                 // Armed off the painted gutter bands, not the first/last row — those are scrolled away
@@ -138,6 +152,7 @@ pub(super) fn handle(
                     TrackKind::Audio => pos.y > lanes.bottom() - GUTTER_H,
                 };
                 let mut want = dx;
+                *snapped = None;
                 if c.snap {
                     let s0 = orig.first().copied().unwrap_or(0.0);
                     want = p.snap_frame(s0 + want) - s0;
@@ -149,6 +164,7 @@ pub(super) fn handle(
                                 let adj = tgt - edge;
                                 if best.map_or(true, |b: f64| adj.abs() < b.abs()) {
                                     best = Some(adj);
+                                    *snapped = Some(tgt);
                                 }
                             }
                         }
@@ -180,10 +196,12 @@ pub(super) fn handle(
             }
             Gesture::Trim { ids, start, edge, changed } => {
                 let mut want = *edge + dx;
+                *snapped = None;
                 if c.snap {
                     want = p.snap_frame(want);
                     if let Some(t) = snap_target(want, thr, p, *c.playhead, ids) {
                         want = t;
+                        *snapped = Some(t);
                     }
                 }
                 // all-or-nothing (like move_clips): linked clips keep identical extents when one is blocked
@@ -214,10 +232,12 @@ pub(super) fn handle(
             }
             Gesture::Stretch { id, start, edge, src_len, changed } => {
                 let mut want = *edge + dx;
+                *snapped = None;
                 if c.snap {
                     want = p.snap_frame(want);
                     if let Some(t) = snap_target(want, thr, p, *c.playhead, &[*id]) {
                         want = t;
+                        *snapped = Some(t);
                     }
                 }
                 if let Some((ti, ci)) = p.find(*id) {
@@ -334,7 +354,9 @@ pub(super) fn handle(
             Gesture::Marker { id, clip, changed } => {
                 // markers always land on a frame; snapping additionally pulls them onto clip edges
                 let want = p.snap_frame(t_at(pos.x).max(0.0));
-                let want = if c.snap { snap_target(want, thr, p, *c.playhead, &[]).unwrap_or(want) } else { want };
+                let hit = c.snap.then(|| snap_target(want, thr, p, *c.playhead, &[])).flatten();
+                *snapped = hit;
+                let want = hit.unwrap_or(want);
                 // clip markers are clip-local and stay inside their clip
                 let nt = match clip.and_then(|cid| p.clip(cid)) {
                     Some(cl) => (want - cl.start).clamp(0.0, cl.duration),
@@ -353,6 +375,7 @@ pub(super) fn handle(
             Gesture::Spacer { ids, dt, room } => {
                 // move_clips is all-or-nothing, so the clip in front of the group is never overrun
                 let mut want = if c.snap { p.snap_frame(dx) } else { dx };
+                *snapped = None;
                 if c.snap {
                     // what the user watches move is the group's leading edge: snap that, not the raw delta
                     let now = ids.iter().filter_map(|&id| p.clip(id)).map(|cl| cl.start).fold(f64::INFINITY, f64::min);
@@ -360,12 +383,36 @@ pub(super) fn handle(
                     if lead.is_finite() {
                         if let Some(t) = snap_target(lead + want, thr, p, *c.playhead, ids) {
                             want = t - lead;
+                            *snapped = Some(t);
                         }
                     }
                 }
                 let want = want.max(-*room);
                 if (want - *dt).abs() > 1e-9 && p.move_clips(ids, want - *dt, 0, None) {
                     *dt = want;
+                }
+            }
+            Gesture::InOut { out, changed } => {
+                let mut want = p.snap_frame(t_at(pos.x).max(0.0));
+                *snapped = None;
+                if c.snap {
+                    if let Some(t) = snap_target(want, thr, p, *c.playhead, &[]) {
+                        want = t;
+                        *snapped = Some(t);
+                    }
+                }
+                if *out {
+                    let want = want.max(p.in_point.unwrap_or(0.0));
+                    if p.out_point != Some(want) {
+                        p.out_point = Some(want);
+                        *changed = true;
+                    }
+                } else {
+                    let want = p.out_point.map_or(want, |o| want.min(o));
+                    if p.in_point != Some(want) {
+                        p.in_point = Some(want);
+                        *changed = true;
+                    }
                 }
             }
         }

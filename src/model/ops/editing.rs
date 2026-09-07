@@ -1,3 +1,4 @@
+use crate::model::ops::trim;
 use crate::model::*;
 
 impl Project {
@@ -12,9 +13,27 @@ impl Project {
 
     /// Place an asset on the timeline at `at`: video/image clip on a video track (preferring `video_track`)
     /// plus one linked audio clip per audio stream (stream N preferring track A(N+1)). Returns new clip ids.
+    /// Thin wrapper (byte-identical behaviour) over `insert_asset_clips_ranged` with `range: None`.
     pub fn insert_asset_clips(&mut self, asset_id: Id, at: f64, video_track: Option<usize>) -> Vec<Id> {
+        self.insert_asset_clips_ranged(asset_id, at, video_track, None, None)
+    }
+
+    /// Three-point-editing primitive: like `insert_asset_clips`, but `range` (source seconds)
+    /// overrides the default `[0, duration)` window, and `audio_track` prefers a specific track for
+    /// stream 0 (later streams still fall back to `audio_tracks()[i]`, same as before).
+    pub fn insert_asset_clips_ranged(
+        &mut self,
+        asset_id: Id,
+        at: f64,
+        video_track: Option<usize>,
+        audio_track: Option<usize>,
+        range: Option<(f64, f64)>,
+    ) -> Vec<Id> {
         let Some(asset) = self.asset(asset_id).cloned() else { return Vec::new() };
-        let dur = if asset.kind == ClipKind::Image { 5.0 } else { asset.duration.max(MIN_CLIP) };
+        let (src_in, dur) = match range {
+            Some((s, e)) => (s, (e - s).max(MIN_CLIP)),
+            None => (0.0, if asset.kind == ClipKind::Image { 5.0 } else { asset.duration.max(MIN_CLIP) }),
+        };
         let n_parts = asset.has_video() as usize + asset.audio_streams.len();
         let link = if n_parts > 1 { self.new_id() } else { 0 };
         let mut ids = Vec::new();
@@ -22,19 +41,21 @@ impl Project {
             let ti = self.find_free_track(TrackKind::Video, at, dur, video_track);
             let mut c = Clip::new(self.new_id(), asset.kind, asset.name(), at, dur);
             c.asset = asset.id;
+            c.src_in = src_in;
             c.link = link;
             ids.push(c.id);
             self.tracks[ti].clips.push(c);
             self.tracks[ti].sort();
         }
         for (i, s) in asset.audio_streams.iter().enumerate() {
-            let prefer = self.audio_tracks().get(i).copied();
+            let prefer = if i == 0 { audio_track } else { None }.or_else(|| self.audio_tracks().get(i).copied());
             let ti = self.find_free_track(TrackKind::Audio, at, dur, prefer);
             let name =
                 if asset.audio_streams.len() > 1 { format!("{} [{}]", asset.name(), s.label()) } else { asset.name() };
             let mut c = Clip::new(self.new_id(), ClipKind::Audio, name, at, dur);
             c.asset = asset.id;
             c.audio_stream = s.index;
+            c.src_in = src_in;
             c.link = link;
             ids.push(c.id);
             self.tracks[ti].clips.push(c);
@@ -116,7 +137,15 @@ impl Project {
         frozen
     }
 
-    /// Delete clips. With `ripple`, later clips close the gap (per track, only where no other clip overlaps the gap).
+    /// Delete clips. With `ripple`, later clips close the gap (per track, only where no other clip
+    /// overlaps the gap). `ripple` here is the pre-existing, call-site-chosen toggle (ripple-delete
+    /// vs. leave-a-gap) — deliberately every track unconditionally, NOT scoped to `ripple_tracks()`:
+    /// this fn is a general-purpose primitive with many pre-existing callers (autocut, the RippleDelete
+    /// hotkey, timeline drag-delete, lossless-cut's segment builder) that already rely on every track
+    /// staying in sync when they ask for a ripple delete, regardless of the new per-track ripple flag.
+    /// Only the two call sites the plan names (`RippleDeleteInOut`/`PasteInsert`, in actions.rs) move to
+    /// `ripple_tracks()`-scoped ops (`ripple_delete_range`/`ripple_open`) — this fn's own behaviour is
+    /// intentionally unchanged.
     pub fn delete_clips(&mut self, ids: &[Id], ripple: bool) {
         let mut ranges: Vec<(f64, f64)> = Vec::new();
         for &id in ids {
@@ -130,20 +159,31 @@ impl Project {
         if ripple {
             ranges.sort_by(|a, b| b.0.total_cmp(&a.0)); // right to left
             ranges.dedup_by(|a, b| (a.0 - b.0).abs() < EPS && (a.1 - b.1).abs() < EPS);
+            let all: Vec<usize> = (0..self.tracks.len()).collect();
             for (a, b) in ranges {
-                self.close_gap(a, b);
+                self.close_gap(a, b, &all);
             }
         }
         self.tidy();
     }
 
-    /// Shift clips starting at/after `b` left by (b-a) on every track where [a,b) is free.
-    fn close_gap(&mut self, a: f64, b: f64) {
+    /// Shift clips starting at/after `b` left by (b-a), on `tracks` only, where [a,b) is free on that
+    /// track. EXTENDED (was: every track, unconditionally) — scoped to `tracks`. Deliberately does NOT
+    /// call `shift_time` itself: `delete_clips`'s ripple branch also calls this (with every track, to
+    /// keep its own long-standing behaviour exactly as it was), and several pre-existing callers of
+    /// `delete_clips(ids, true)` (autocut, `subtitles_ui::cut_dups`) already manage their own
+    /// marker/cue ripple mapping independently — folding `shift_time` in here double-shifted them
+    /// (`cut_dups`'s own cue remap on top of this one) and was caught by the existing
+    /// `duplicate_takes_are_marked_then_cut_with_the_cues` test. `ripple_delete_range`/`close_gap_at`
+    /// below call `shift_time` themselves after this, for exactly the two callers (the extended legacy
+    /// `RippleDeleteInOut`/`PasteInsert` actions, and every new trim-model op) that want it.
+    fn close_gap(&mut self, a: f64, b: f64, tracks: &[usize]) {
         let len = b - a;
         if len <= 0.0 {
             return;
         }
-        for t in &mut self.tracks {
+        for &ti in tracks {
+            let Some(t) = self.tracks.get_mut(ti) else { continue };
             if !t.fits(a, len, &[]) {
                 continue;
             }
@@ -155,42 +195,230 @@ impl Project {
         }
     }
 
-    /// Remove everything in [a,b) on all tracks and close the gap.
-    pub fn ripple_delete_range(&mut self, a: f64, b: f64) {
-        if b <= a + EPS {
-            return;
+    /// Like `split_at`, but scoped by TRACK INDEX instead of an id allow-list. `split_at`'s `only:
+    /// &[Id]` filter is an O(k) linear `.contains()` per clip — fine for the handful of ids its
+    /// existing callers pass, but the ripple ops below would need to pass every clip id on the
+    /// scoped tracks, turning that into O(n) per clip and O(n^2) overall (caught by
+    /// `splice_in_is_linear_on_1000_clips`). Scoping by the (small) track-index list instead keeps
+    /// every step below genuinely O(n).
+    pub(crate) fn split_at_scoped(&mut self, t: f64, tracks: &[usize]) -> Vec<Id> {
+        let mut new_ids = Vec::new();
+        let mut link_map: std::collections::HashMap<Id, Id> = std::collections::HashMap::new();
+        for &ti in tracks {
+            let n = self.tracks.get(ti).map(|tr| tr.clips.len()).unwrap_or(0);
+            let mut added = Vec::new();
+            for ci in 0..n {
+                let c = &self.tracks[ti].clips[ci];
+                if !c.contains(t) {
+                    continue;
+                }
+                let old_link = c.link;
+                let nid = self.new_id();
+                let new_link = if old_link != 0 {
+                    match link_map.get(&old_link) {
+                        Some(&l) => l,
+                        None => {
+                            let l = self.new_id();
+                            link_map.insert(old_link, l);
+                            l
+                        }
+                    }
+                } else {
+                    0
+                };
+                if let Some(mut right) = self.tracks[ti].clips[ci].split(t, nid) {
+                    right.link = new_link;
+                    new_ids.push(right.id);
+                    added.push(right);
+                }
+            }
+            if !added.is_empty() {
+                self.tracks[ti].clips.extend(added);
+                self.tracks[ti].sort();
+            }
         }
-        self.split_at(a, None);
-        self.split_at(b, None);
-        let ids: Vec<Id> =
-            self.all_clips().filter(|(_, c)| c.start >= a - EPS && c.end() <= b + EPS).map(|(_, c)| c.id).collect();
+        new_ids
+    }
+
+    /// Remove everything in [a,b) on `tracks` and close the gap there. EXTENDED (was: every track
+    /// unconditionally, and discarded the removed ids) — scoped to `tracks` and returns the removed
+    /// ids, so `Project::extract_range` (trim.rs) can be a one-line wrapper instead of reimplementing
+    /// split+delete+close_gap. O(n): one linear scan per step, no per-clip `move_clips` walk. Calls
+    /// `shift_time` itself (unlike the private `close_gap` it uses — see that fn's doc comment).
+    pub fn ripple_delete_range(&mut self, a: f64, b: f64, tracks: &[usize]) -> Vec<Id> {
+        if b <= a + EPS || tracks.is_empty() {
+            return Vec::new();
+        }
+        let set: std::collections::HashSet<usize> = tracks.iter().copied().collect();
+        self.split_at_scoped(a, tracks);
+        self.split_at_scoped(b, tracks);
+        let ids: Vec<Id> = self
+            .all_clips()
+            .filter(|(ti, c)| set.contains(ti) && c.start >= a - EPS && c.end() <= b + EPS)
+            .map(|(_, c)| c.id)
+            .collect();
         self.delete_clips(&ids, false);
-        self.close_gap(a, b);
+        self.close_gap(a, b, tracks);
+        self.shift_time(b, -(b - a), tracks);
         self.tidy();
+        ids
     }
 
-    /// Open a gap of `span` seconds at `at`: split anything crossing it, then slide every clip from
-    /// there on to the right. The inverse of `ripple_delete_range`, used by Paste Insert.
-    pub fn ripple_open(&mut self, at: f64, span: f64) {
-        if span <= EPS {
+    /// Open a gap of `span` seconds at `at` on `tracks`: split anything of theirs crossing it, then
+    /// shift every one of their clips at/after `at` right by `span` in one linear pass (a uniform
+    /// shift preserves every relative gap/overlap, so no per-clip collision check is needed — this
+    /// is what makes it O(n) instead of the old per-clip `move_clips` walk, each of which rescanned
+    /// the track). The inverse of `ripple_delete_range`, used by Paste Insert and `splice_in`.
+    /// EXTENDED: was every track unconditionally; now scoped to `tracks`.
+    pub fn ripple_open(&mut self, at: f64, span: f64, tracks: &[usize]) {
+        if span <= EPS || tracks.is_empty() {
             return;
         }
-        self.split_at(at, None);
-        // right to left, so a clip never lands on one that has not moved yet
-        let mut ids: Vec<(Id, f64)> =
-            self.all_clips().filter(|(_, c)| c.start >= at - EPS).map(|(_, c)| (c.id, c.start)).collect();
-        ids.sort_by(|x, y| y.1.total_cmp(&x.1));
-        for (id, _) in ids {
-            self.move_clips(&[id], span, 0, None);
+        self.split_at_scoped(at, tracks);
+        for &ti in tracks {
+            let Some(t) = self.tracks.get_mut(ti) else { continue };
+            for c in &mut t.clips {
+                if c.start >= at - EPS {
+                    c.start += span;
+                }
+            }
         }
+        self.shift_time(at, span, tracks);
         self.tidy();
     }
 
-    /// Keep only [a,b), moving it to start at 0. Clears in/out points.
+    /// Finds the local gap bounds under `(track, t)` — `[previous clip's end, next clip's start)` —
+    /// and closes it, scoped to `ripple_tracks()`. False if `t` isn't actually a gap, or there's
+    /// nothing after it to pull left.
+    pub fn close_gap_at(&mut self, track: usize, t: f64) -> bool {
+        let Some(tr) = self.tracks.get(track) else { return false };
+        if tr.locked || tr.clips.iter().any(|c| c.contains(t)) {
+            return false;
+        }
+        let a = tr.clips.iter().filter(|c| c.end() <= t + EPS).map(|c| c.end()).fold(0.0_f64, f64::max);
+        let b = tr
+            .clips
+            .iter()
+            .filter(|c| c.start >= t - EPS)
+            .map(|c| c.start)
+            .fold(None, |acc: Option<f64>, x| Some(acc.map_or(x, |m: f64| m.min(x))));
+        let Some(b) = b else { return false };
+        if b <= a + EPS {
+            return false;
+        }
+        let tracks = self.ripple_tracks();
+        self.close_gap(a, b, &tracks);
+        self.shift_time(b, -(b - a), &tracks);
+        true
+    }
+
+    /// Shifts `Project.markers` WHERE `m.sequence == self.editing` (main-timeline markers have
+    /// `sequence == None`) and `in_point`/`out_point`, at/after `from`, by `dt` seconds. While a
+    /// sequence is open it never touches `Project.subtitles` (`Cue` carries no sequence tag — cues
+    /// are always main-timeline-relative; ponytail: a documented ceiling, not a bug — see notes.md).
+    /// `tracks` gates the whole call: nothing rippled (an empty scope) means nothing else should
+    /// move either. Called by every ripple op in trim.rs, plus `close_gap`/`ripple_open` above (so
+    /// the legacy `RippleDeleteInOut`/`PasteInsert` actions get marker/cue shifting for free too).
+    pub fn shift_time(&mut self, from: f64, dt: f64, tracks: &[usize]) {
+        if tracks.is_empty() || dt.abs() < EPS {
+            return;
+        }
+        let editing = self.editing;
+        for m in &mut self.markers {
+            if m.sequence == editing && m.t >= from - EPS {
+                m.t = (m.t + dt).max(0.0);
+            }
+        }
+        if editing.is_none() {
+            for c in &mut self.subtitles {
+                if c.start >= from - EPS {
+                    c.start = (c.start + dt).max(0.0);
+                    c.end = (c.end + dt).max(0.0);
+                }
+            }
+        }
+        if let Some(ip) = self.in_point {
+            if ip >= from - EPS {
+                self.in_point = Some((ip + dt).max(0.0));
+            }
+        }
+        if let Some(op) = self.out_point {
+            if op >= from - EPS {
+                self.out_point = Some((op + dt).max(0.0));
+            }
+        }
+        self.sort_markers();
+    }
+
+    /// Clip ids starting at/after (`backward=false`) or strictly before (`backward=true`) `t`,
+    /// optionally restricted to one track — `A` / `Shift+A`'s select-forward/backward.
+    pub fn clips_from(&self, t: f64, track: Option<usize>, backward: bool) -> Vec<Id> {
+        self.all_clips()
+            .filter(|(ti, c)| {
+                track.map(|x| x == *ti).unwrap_or(true) && if backward { c.start < t - EPS } else { c.end() > t + EPS }
+            })
+            .map(|(_, c)| c.id)
+            .collect()
+    }
+
+    /// Clip ids covering `t` on any track — `Ctrl+Shift+D`'s select-under-playhead.
+    pub fn clips_at(&self, t: f64) -> Vec<Id> {
+        self.all_clips().filter(|(_, c)| c.contains(t)).map(|(_, c)| c.id).collect()
+    }
+
+    /// Nearest clip boundary to `t` (optionally restricted to one track) as an `EditPoint` — `U`'s
+    /// select-nearest-edit-point. `side` is `Both` when the boundary is shared by two abutting clips,
+    /// else the single side actually present (a track's own leading/trailing edge).
+    pub fn nearest_edit_point(&self, t: f64, track: Option<usize>) -> Option<trim::EditPoint> {
+        let tracks: Vec<usize> = match track {
+            Some(ti) => vec![ti],
+            None => (0..self.tracks.len()).collect(),
+        };
+        let mut best: Option<(usize, f64, f64)> = None; // (track, boundary_t, distance)
+        for ti in tracks {
+            let Some(tr) = self.tracks.get(ti) else { continue };
+            for c in &tr.clips {
+                for b in [c.start, c.end()] {
+                    let d = (b - t).abs();
+                    if best.map(|(_, _, bd)| d < bd).unwrap_or(true) {
+                        best = Some((ti, b, d));
+                    }
+                }
+            }
+        }
+        let (ti, bt, _) = best?;
+        let tr = &self.tracks[ti];
+        let has_left = tr.clips.iter().any(|c| (c.end() - bt).abs() < ABUT_EPS);
+        let has_right = tr.clips.iter().any(|c| (c.start - bt).abs() < ABUT_EPS);
+        let side = match (has_left, has_right) {
+            (true, true) => trim::Side::Both,
+            (true, false) => trim::Side::Left,
+            (false, true) => trim::Side::Right,
+            (false, false) => return None,
+        };
+        Some(trim::EditPoint { track: ti, t: bt, side })
+    }
+
+    /// Sets `in_point`/`out_point` from a clip's `[start, end)` — `clip` defaults to the clip under
+    /// `playhead` when `None`. Shared by the `X` ("Mark Clip") keyboard action and the `timeline.mark`
+    /// MCP tool so the logic exists once. `None` (no clip found either way) leaves in/out untouched.
+    pub fn mark_from_clip(&mut self, clip: Option<Id>, playhead: f64) -> Option<(f64, f64)> {
+        let id = clip.or_else(|| self.clips_at(playhead).first().copied())?;
+        let c = self.clip(id)?;
+        let (s, e) = (c.start, c.end());
+        self.in_point = Some(s);
+        self.out_point = Some(e);
+        Some((s, e))
+    }
+
+    /// Keep only [a,b), moving it to start at 0. Clears in/out points. Every track (not just
+    /// `ripple_tracks()`): this crops the whole project down to a range, so every track must stay in
+    /// sync — a position-locked secondary track left behind would desync forever, not just for one edit.
     pub fn trim_to_range(&mut self, a: f64, b: f64) {
         let end = self.duration().max(b) + 1.0;
-        self.ripple_delete_range(b, end);
-        self.ripple_delete_range(0.0, a);
+        let all: Vec<usize> = (0..self.tracks.len()).collect();
+        self.ripple_delete_range(b, end, &all);
+        self.ripple_delete_range(0.0, a, &all);
         self.in_point = None;
         self.out_point = None;
     }

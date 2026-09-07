@@ -34,6 +34,7 @@ use crate::media::thumbs::ThumbCache;
 use crate::model::{ClipKind, EffectKind, Id, Project};
 use crate::settings::{RecentAsset, Settings};
 use crate::theme::Palette;
+use crate::ui::confirm::{self, ConfirmAction};
 use crate::ui::tools::{draw_glyph, glyph_text_button, icon_button, Glyph};
 use crate::ui::{duration_text, label_color, DragPayload};
 use eframe::egui::{self, RichText};
@@ -102,7 +103,6 @@ pub struct LibraryResponse {
     /// Files to import into the library (and select).
     pub open_paths: Vec<PathBuf>,
     pub remove: Vec<Id>,
-    pub clear_recent: bool,
     /// The project changed (folders / tags / labels edited) — app pushes undo via `undo` first.
     pub edited: bool,
     /// settings.recent_assets changed (tags / labels / pins / removals) — app saves settings.
@@ -136,6 +136,9 @@ pub struct LibraryResponse {
     /// The file the anchor of the selection now points at — the app may show it in the source viewer.
     /// The library previews it itself either way.
     pub preview: Option<PathBuf>,
+    /// ---- ws:forgiveness ----
+    /// Remove Unused ran (instant, never confirmed) and removed `n` assets — the app toasts an Undo.
+    pub removed_unused: Option<usize>,
 }
 
 /// (name, colour) of every `Project.labels` entry, snapshotted once per frame.
@@ -494,11 +497,6 @@ fn recent_remove(settings: &mut Settings, resp: &mut LibraryResponse, path: &str
     resp.settings_changed = true;
 }
 
-fn recent_clear(settings: &mut Settings, resp: &mut LibraryResponse) {
-    settings.recent_assets.clear();
-    resp.settings_changed = true;
-}
-
 /// One level of a folder on disk: subfolders first, then media files. None = unreadable.
 fn scan_dir(dir: &str) -> Option<Vec<(String, bool)>> {
     let mut v: Vec<(String, bool)> = std::fs::read_dir(dir)
@@ -623,16 +621,6 @@ const ZOOM_MIN: f32 = 0.6;
 const ZOOM_MAX: f32 = 3.0;
 
 // ---------- shared widgets ----------
-
-/// Yes/No dialog for destructive, non-undoable actions.
-pub(crate) fn confirm(title: &str, description: &str) -> bool {
-    rfd::MessageDialog::new()
-        .set_title(title)
-        .set_description(description)
-        .set_buttons(rfd::MessageButtons::YesNo)
-        .show()
-        == rfd::MessageDialogResult::Yes
-}
 
 /// A filled dot in the label's colour — painted, because ● is tofu in half the shipped fonts.
 fn dot(ui: &mut egui::Ui, color: egui::Color32) {
@@ -873,7 +861,6 @@ fn browser(
     let mut new_seq = false;
     let mut new_adj = false;
     let mut link = false;
-    let mut clear_recent = false;
     // ponytail: two extra walks so the toolbar can show the count before `used`/`planned` are built
     // below; cache them behind a generation counter if a big project ever shows it.
     let unused_n = {
@@ -919,13 +906,12 @@ fn browser(
         {
             import_url = true;
         }
-        if !imported && ui.button("Clear recent").clicked() && confirm("Clear recent", CLEAR_RECENT) {
-            clear_recent = true;
+        if !imported && ui.button("Clear recent").clicked() {
+            confirm::ask("Clear recent", CLEAR_RECENT, ConfirmAction::ClearRecent);
         }
-        // up here with the rest of the controls: below the tree is reserved for files
-        if imported
-            && ui.add_enabled(unused_n > 0, egui::Button::new(format!("Remove unused ({unused_n})"))).clicked()
-            && confirm("Remove unused", &format!("Remove {unused_n} unused assets from the project?"))
+        // up here with the rest of the controls: below the tree is reserved for files — instant +
+        // Undo-toast (panes.rs/library_pane.rs), never confirmed: it's undoable, unlike the two above.
+        if imported && ui.add_enabled(unused_n > 0, egui::Button::new(format!("Remove unused ({unused_n})"))).clicked()
         {
             remove_unused = true;
         }
@@ -959,10 +945,6 @@ fn browser(
             ops.push(LibOp::LinkFolder(p.to_string_lossy().into_owned()));
             op_start = true;
         }
-    }
-    if clear_recent {
-        recent_clear(settings, resp);
-        resp.clear_recent = true;
     }
     batch_strip(ui, state, resp);
 
@@ -1124,7 +1106,10 @@ fn browser(
                 }
                 LibOp::SeqDelete(id) => delete_sequence(project, id),
                 LibOp::RemoveUnused => {
-                    project.remove_unused_assets();
+                    let n = project.remove_unused_assets();
+                    if n > 0 {
+                        resp.removed_unused = Some(n);
+                    }
                 }
             }
         }
@@ -2436,7 +2421,7 @@ mod tests {
     }
 
     #[test]
-    fn recent_remove_and_clear_flag_settings() {
+    fn recent_remove_flags_settings() {
         let mut s = Settings::default();
         s.touch_recent("a.mp4");
         s.touch_recent("b.mp4");
@@ -2444,10 +2429,9 @@ mod tests {
         recent_remove(&mut s, &mut resp, "a.mp4");
         assert!(resp.settings_changed);
         assert_eq!(s.recent_assets.len(), 1);
-        let mut resp = LibraryResponse::default();
-        recent_clear(&mut s, &mut resp);
-        assert!(resp.settings_changed);
-        assert!(s.recent_assets.is_empty());
+        // "Clear recent" is no longer this module's own synchronous rfd-backed helper — it now goes
+        // through confirm::ask(ConfirmAction::ClearRecent) -> confirm::apply_to_settings, covered by
+        // confirm.rs's own confirm_resolves_named_action test.
     }
 
     #[test]
@@ -2837,7 +2821,7 @@ mod tests {
                         let mut undo = |_: &Project| panic!("no undo without edits");
                         let r =
                             show(ui, &mut state, &mut project, &mut settings, None, None, &palette, true, &mut undo);
-                        assert!(!r.import && !r.clear_recent && !r.edited && !r.settings_changed);
+                        assert!(!r.import && !r.edited && !r.settings_changed);
                         assert!(r.add_to_timeline.is_empty() && r.open_paths.is_empty() && r.remove.is_empty());
                         assert!(r.convert.is_empty() && r.open_sequence.is_none() && r.place_template.is_empty());
                     });
@@ -2990,6 +2974,45 @@ mod tests {
             }
         }
         assert_eq!(removed, vec![a, b], "Remove takes the whole selection");
+    }
+
+    /// Remove Unused has no confirm step (unlike Clear recent, above it): one click removes every
+    /// asset unused by a sequence or a template, in the same frame, and the response carries the
+    /// count so the app can toast an Undo.
+    #[test]
+    fn remove_unused_is_instant_and_undoable() {
+        let mut project = Project::new();
+        project.add_asset(asset(0, ClipKind::Video, 5.0)); // never placed anywhere: unused
+        let mut settings = Settings::default();
+        let palette = Palette::new(true, egui::Color32::WHITE);
+        let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::test_fonts()); // size-diet: no default_fonts feature anymore
+        let mut state = LibraryState::default(); // tab 0 = Imported, where Remove Unused lives
+        let mut at = egui::Pos2::ZERO;
+        let mut removed_unused = None;
+        for frame in 0..2 {
+            let mut input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(500.0, 900.0))),
+                ..Default::default()
+            };
+            if frame == 1 {
+                assert_ne!(at, egui::Pos2::ZERO, "the toolbar must show a Remove unused button");
+                click_at(&mut input, at);
+            }
+            let out = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let mut undo = |_: &Project| {};
+                    let r = show(ui, &mut state, &mut project, &mut settings, None, None, &palette, false, &mut undo);
+                    removed_unused = r.removed_unused;
+                });
+            });
+            if let Some(rect) = text_rect(&out.shapes, "Remove unused (1)") {
+                at = rect.center();
+            }
+        }
+        // a single click, one frame: removed_unused is already set, no confirm window in between
+        assert_eq!(removed_unused, Some(1));
+        assert!(project.assets.is_empty(), "the unused asset is removed immediately");
     }
 
     /// The zoom scales both views and is clamped; a fresh state reads as 1.

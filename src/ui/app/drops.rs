@@ -19,9 +19,8 @@ impl App {
         if dropped.len() == 1
             && dropped[0].extension().map(|e| e.to_string_lossy().eq_ignore_ascii_case(PROJECT_EXT)).unwrap_or(false)
         {
-            if self.confirm_discard() {
-                self.open_project(&dropped[0]);
-            }
+            let dropped0 = dropped[0].clone();
+            self.confirm_discard_then(move |app| app.open_project(&dropped0));
             return;
         }
         let ids = self.open_or_import(&dropped);

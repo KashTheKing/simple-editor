@@ -294,8 +294,20 @@ pub struct Settings {
     /// capped 20 — shown when the palette's query is empty instead of the full unsorted list.
     pub palette_recent: Vec<String>,
     // ---- ws:forgiveness ----
+    /// Warn (toast, never block) when opening a project whose `.lock` sidecar shows another instance
+    /// may already have it open. Not a real mutex — see the PR body's risks note.
+    pub lock_warn: bool,
     // ---- ws:player-rate-loop ----
+    /// Emit one BLOCK (~21 ms) of audio on every paused playhead change (scrub feedback); gates
+    /// `playback_ctl::tick`'s scrub-on-paused-change hook.
+    pub audio_scrub: bool,
+    /// Symmetric pre/post roll (seconds) for Play Around Playhead.
+    pub preroll_secs: f32,
     // ---- ws:snap-engine ----
+    /// Markers (project + clip-local) count as timeline snap candidates. No per-field serde
+    /// attribute: `Settings`' container-level `#[serde(default)]` already back-fills old files,
+    /// exactly like the sibling `snap` field.
+    pub snap_markers: bool,
     // ---- ws:trim-model ----
     // ---- ws:canvas-handles-monitor ----
     // ---- ws:export-deliver ----
@@ -395,8 +407,12 @@ impl Default for Settings {
             keymap_preset: "Simple Editor".into(),
             palette_recent: Vec::new(),
             // ---- ws:forgiveness ----
+            lock_warn: true,
             // ---- ws:player-rate-loop ----
+            audio_scrub: true,
+            preroll_secs: 2.0,
             // ---- ws:snap-engine ----
+            snap_markers: true,
             // ---- ws:trim-model ----
             // ---- ws:canvas-handles-monitor ----
             // ---- ws:export-deliver ----
@@ -425,11 +441,45 @@ impl Settings {
         let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(Self::dir);
         base.join("SimpleEditor").join("cache")
     }
+    /// ---- ws:forgiveness ----
+    /// %LOCALAPPDATA%\SimpleEditor\autosave (rolling per-project backups; see `ui::app::autosave`).
+    /// Deliberately under %LOCALAPPDATA%, not the roaming %APPDATA% `dir()` — these can be multi-MB.
+    pub fn autosave_dir() -> PathBuf {
+        let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(Self::dir);
+        base.join("SimpleEditor").join("autosave")
+    }
     pub fn path() -> PathBuf {
         Self::dir().join("settings.json")
     }
+    /// Parses `settings.json`; on a parse failure, best-effort renames it to `settings.json.bad` (so
+    /// the corrupt file isn't silently overwritten by the next save) and returns
+    /// `(Self::default(), Some(reason))`. A MISSING file (first run) is not an error: `(default, None)`.
+    fn load_inner() -> (Self, Option<String>) {
+        Self::load_from(&Self::path())
+    }
+    /// The actual quarantine logic, over an explicit path — split out so a test can point it at a temp
+    /// file instead of the real %APPDATA%\SimpleEditor\settings.json.
+    fn load_from(path: &std::path::Path) -> (Self, Option<String>) {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return (Self::default(), None); // no file yet — first run, not corruption
+        };
+        match serde_json::from_str(&text) {
+            Ok(s) => (s, None),
+            Err(e) => {
+                let bad = path.with_extension("json.bad");
+                let _ = std::fs::rename(path, &bad);
+                (Self::default(), Some(e.to_string()))
+            }
+        }
+    }
+    /// Unchanged signature (`src/engine/transcribe.rs:46` is a real second caller) — now quarantines a
+    /// corrupt file as a side effect of factoring `load_inner` out, for free.
     pub fn load() -> Self {
-        std::fs::read_to_string(Self::path()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+        Self::load_inner().0
+    }
+    /// Only new public surface: used solely by `App::new` so it can toast the quarantine reason.
+    pub fn load_reporting() -> (Self, Option<String>) {
+        Self::load_inner()
     }
     /// Writes a temp file then renames, so a failed write can't destroy the previous settings.
     pub fn save(&self) {
@@ -508,6 +558,30 @@ mod tests {
         assert!(old.effect_thumb_image.is_empty());
     }
 
+    // ---- ws:forgiveness ----
+    #[test]
+    fn corrupt_settings_are_quarantined_not_overwritten() {
+        let path = std::env::temp_dir().join(format!("se-settings-test-{}.json", std::process::id()));
+        let bad = path.with_extension("json.bad");
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&bad);
+
+        let default_json = serde_json::to_string(&Settings::default()).unwrap();
+        std::fs::write(&path, "{ not valid json").unwrap();
+        let (s, reason) = Settings::load_from(&path);
+        assert_eq!(serde_json::to_string(&s).unwrap(), default_json);
+        assert!(reason.is_some(), "a parse failure must report a reason");
+        assert!(!path.exists(), "the corrupt file must be moved out of the way");
+        assert!(bad.exists(), "…to settings.json.bad");
+
+        // a second load (nothing left at `path`) is just a fresh-install default — no re-corruption
+        let (s2, reason2) = Settings::load_from(&path);
+        assert_eq!(serde_json::to_string(&s2).unwrap(), default_json);
+        assert!(reason2.is_none());
+
+        let _ = std::fs::remove_file(&bad);
+    }
+
     #[test]
     fn palette_override_round_trips() {
         assert_eq!(Settings::default().palette, PaletteOverride::default(), "unset = today's behaviour");
@@ -551,6 +625,19 @@ mod tests {
         let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(back.window_rect, s.window_rect);
         assert_eq!(back.last_seen_version, s.last_seen_version);
+    }
+
+    #[test]
+    fn audio_scrub_and_preroll_round_trip() {
+        let old: Settings = serde_json::from_str("{}").unwrap();
+        assert!(old.audio_scrub, "default on");
+        assert_eq!(old.preroll_secs, 2.0);
+        let mut s = Settings::default();
+        s.audio_scrub = false;
+        s.preroll_secs = 0.5;
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.audio_scrub, s.audio_scrub);
+        assert_eq!(back.preroll_secs, s.preroll_secs);
     }
 
     #[test]

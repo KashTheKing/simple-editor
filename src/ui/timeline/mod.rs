@@ -42,7 +42,7 @@
 
 use crate::media::thumbs::ThumbCache;
 use crate::media::waveform::{Peaks, WaveformCache};
-use crate::model::{Asset, Clip, ClipKind, Ease, EffectKind, Id, Label, Project, TrackKind, TransitionKind};
+use crate::model::{Asset, Clip, ClipKind, Ease, EffectKind, Id, Label, Project, TrackKind, TransitionKind, ABUT_EPS};
 use crate::theme::Palette;
 use crate::ui::tools::{draw_glyph, Glyph, Tool};
 
@@ -73,7 +73,7 @@ const SCROLL_MARGIN: f32 = 16.0;
 /// Volume line dB range: +12 dB at the top of the clip, -60 dB at the bottom, 0 dB at 70 % height.
 const DB_TOP: f32 = 12.0;
 const DB_BOT: f32 = -60.0;
-const MIN_TRACK_H: f32 = 24.0;
+pub(crate) const MIN_TRACK_H: f32 = 24.0;
 const MAX_TRACK_H: f32 = 300.0;
 /// Clip height from which keyframe diamonds move into a value lane (y = value) instead of the bottom strip.
 const KEY_LANE_MIN: f32 = 28.0;
@@ -141,10 +141,13 @@ pub struct TimelineState {
     pub sub_sel: Vec<Id>,
     /// Band-select in progress on the subtitle lane: press-origin time and "Shift held" (add to selection).
     sub_band: Option<(f64, bool)>,
-    /// Cue edge being trimmed on the subtitle lane: (cue id, right edge?).
-    sub_trim: Option<(Id, bool)>,
+    /// Active subtitle-cue gesture (trim or move) — undo pushed on release, only if changed.
+    cue_drag: Option<cue_lane::CueDrag>,
     /// Clip ids whose inline keyframe mini-graph (toggled by the corner icon) is open.
     mini_graph_open: Vec<Id>,
+    /// Edit point selected by a seam click (`Zone::Seam` in `arm.rs`) — consumed by trim-model's
+    /// keyboard trim actions (U / Shift+U / extend / etc.) in a different, already-existing file.
+    pub edit_point: Option<EditPoint>,
 }
 
 impl Default for TimelineState {
@@ -164,8 +167,9 @@ impl Default for TimelineState {
             sub_h: SUB_LANE_H,
             sub_sel: Vec::new(),
             sub_band: None,
-            sub_trim: None,
+            cue_drag: None,
             mini_graph_open: Vec::new(),
+            edit_point: None,
         }
     }
 }
@@ -263,6 +267,12 @@ impl TimelineState {
     }
 }
 
+// `EditPoint`/`Side` (which side of a seam a click targets — plain=Both, Ctrl=Left/outgoing,
+// Alt=Right/incoming, see `arm.rs`'s Seam zone) live in `model::ops::trim` — trim-model's keyboard
+// actions (`app/trim_actions.rs`) build the same primitives, so this is the one shared type rather
+// than a structurally-identical duplicate.
+pub use crate::model::ops::trim::{EditPoint, Side};
+
 pub struct TimelineCtx<'a> {
     pub project: &'a mut Project,
     pub selection: &'a mut Vec<Id>,
@@ -275,6 +285,9 @@ pub struct TimelineCtx<'a> {
     pub waveforms: &'a mut WaveformCache,
     pub palette: &'a Palette,
     pub snap: bool,
+    /// `Settings.snap_markers`: whether markers count as snap candidates (transitions/edges/in-out
+    /// always do). ws:snap-engine.
+    pub snap_markers: bool,
     pub playing: bool,
     /// Thumbnail cache for video/image filmstrips. None = no filmstrips (e.g. headless tests).
     pub thumbs: Option<&'a mut ThumbCache>,
@@ -315,6 +328,9 @@ struct Drag {
     /// Project at gesture start — pushed as the undo snapshot on release, only if something changed.
     before: Project,
     g: Gesture,
+    /// The candidate this gesture is currently snapped to (if any) — paints the accent guide line for
+    /// the whole gesture and disappears once the pointer drifts out of threshold or the gesture ends.
+    snapped: Option<f64>,
 }
 
 enum Gesture {
@@ -342,6 +358,9 @@ enum Gesture {
     /// Spacer tool: shift every clip starting at or after the press time. `room` = how far left the
     /// group can go before it hits the clip in front of it (or 0).
     Spacer { ids: Vec<Id>, dt: f64, room: f64 },
+    /// Drag a ruler in/out handle (`out` = the out point, else the in point); snapped, clamped so
+    /// in <= out.
+    InOut { out: bool, changed: bool },
 }
 
 /// Deferred project mutation (collected while the project is borrowed for drawing).
@@ -404,16 +423,31 @@ enum Act {
     RenameContainer(Id, String),
 }
 
+mod arm;
 mod cue_lane;
 mod gestures;
 mod header;
 mod menus;
 mod paint;
+mod snap;
 #[cfg(test)]
 mod tests;
 
+// `arm`/`GestureKind`/`TrackFlags` and `SnapKind` are registry-protocol surface: not called from this
+// wave's own code (arm() is tested but only wave-2/3 wire most of its results into real drags; SnapKind
+// is consumed by timeline.snap_query in tools_timeline.rs, a sibling module, not by mod.rs itself).
+#[allow(unused_imports)]
+pub(crate) use arm::{arm, GestureKind, TrackFlags, Zone};
 use menus::{clip_menu, label_menu, shared_effect_kinds, transition_ease_menu, transition_kind_menu};
+pub(crate) use paint::row_top;
 use paint::*;
+// `nearest` is only used by the test module's `nearest_within_threshold` (via this glob import);
+// selftest/release builds never call it directly.
+#[allow(unused_imports)]
+use snap::nearest;
+use snap::{snap_playhead, snap_target};
+#[allow(unused_imports)]
+pub(crate) use snap::{snap_thr, snap_time, target, SnapKind};
 
 pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>) -> TimelineResponse {
     let mut out = TimelineResponse::default();
@@ -809,7 +843,13 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
 
             // interaction: body, then volume line, then edges, then fade handles on top
             let cid = id.with(clip.id);
-            let br = ui.interact(vis, cid, Sense::click_and_drag());
+            // Body top/bottom split (ws:snap-engine): rows >= 2x MIN_TRACK_H get a bottom
+            // crosshair/hairline/click-to-split zone; default/short rows keep one whole-body zone
+            // unchanged. Same call-site position as before the split — the later marker_hits
+            // registration still wins hit-testing over both halves.
+            let split_body = rect.height() >= 2.0 * MIN_TRACK_H;
+            let top_vis = if split_body { Rect::from_min_max(vis.min, pos2(vis.right(), vis.center().y)) } else { vis };
+            let br = ui.interact(top_vis, cid, Sense::click_and_drag());
             if br.clicked() {
                 // razor / marker tools act where the pointer is instead of selecting
                 let (snap_on, zoom, ph) = (c.snap, state.zoom, *c.playhead);
@@ -839,6 +879,35 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             }
             if br.drag_started_by(egui::PointerButton::Primary) {
                 start_move = Some(clip.id);
+            }
+            if split_body {
+                let bot_vis = Rect::from_min_max(pos2(vis.left(), vis.center().y), vis.max);
+                let brb = ui
+                    .interact(bot_vis, cid.with("bottom"), Sense::click_and_drag())
+                    .on_hover_cursor(CursorIcon::Crosshair);
+                if brb.hovered() {
+                    if let Some(pos) = pointer {
+                        let (snap_on, zoom, ph) = (c.snap, state.zoom, *c.playhead);
+                        let t = snap_time(state.time_at(pos.x), snap_on, zoom, c.project, ph, &[]);
+                        let hx = state.x_at(t).clamp(bot_vis.left(), bot_vis.right());
+                        lp.vline(hx, bot_vis.y_range(), Stroke::new(1.0, pal.accent));
+                    }
+                }
+                if brb.clicked() {
+                    // Cut tool splits here exactly as it would on the top half; Marker still drops a
+                    // marker anywhere on the body; plain Select clicking the bottom half is the new
+                    // click-to-split gesture — same Act either way for Select/Cut.
+                    let (snap_on, zoom, ph) = (c.snap, state.zoom, *c.playhead);
+                    let x = ui.input(|i| i.pointer.latest_pos()).unwrap_or(bot_vis.center()).x;
+                    let t = snap_time(state.time_at(x), snap_on, zoom, c.project, ph, &[]);
+                    act = Some(match c.tool {
+                        Tool::Marker => Act::AddMarker(t.max(0.0)),
+                        _ => Act::SplitAt(t),
+                    });
+                }
+                if brb.drag_started_by(egui::PointerButton::Primary) {
+                    start_move = Some(clip.id);
+                }
             }
             let (linked, enabled, aud, is_cont) =
                 (clip.link != 0, clip.enabled, clip.kind == ClipKind::Audio, clip.container);
@@ -972,6 +1041,38 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 }
                 if state.mini_graph_open.contains(&clip.id) {
                     draw_mini_graph(&lp, clip, rect, lanes, &pal);
+                }
+            }
+        }
+
+        // seams (ws:snap-engine): adjacent same-track clips whose end/start times coincide get a thin
+        // 6 pt hit strip straddling the cut; click selects an EditPoint (plain=Both, Ctrl=Left/outgoing,
+        // Alt=Right/incoming — arm.rs's Seam zone). Registered after every clip in this row so it wins
+        // hit-testing over the (broader) edge-trim handles at the same cut.
+        {
+            let mut ordered: Vec<&Clip> = track.clips.iter().collect();
+            ordered.sort_by(|a, b| a.start.total_cmp(&b.start));
+            for w in ordered.windows(2) {
+                let (left, right) = (w[0], w[1]);
+                if (left.end() - right.start).abs() >= ABUT_EPS {
+                    continue;
+                }
+                let sx = state.x_at(left.end());
+                let sr = Rect::from_min_max(pos2(sx - 3.0, row.top() + 1.0), pos2(sx + 3.0, row.bottom() - 1.0))
+                    .intersect(lanes);
+                if !sr.is_positive() {
+                    continue;
+                }
+                let r = ui.interact(sr, id.with(("seam", left.id, right.id)), Sense::click());
+                if r.clicked() {
+                    let side = if mods.ctrl {
+                        Side::Left
+                    } else if mods.alt {
+                        Side::Right
+                    } else {
+                        Side::Both
+                    };
+                    state.edit_point = Some(EditPoint { track: ti, t: left.end(), side });
                 }
             }
         }
@@ -1151,6 +1252,31 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         }
     }
 
+    // ---- empty-timeline hint (ws:snap-engine) ----
+    if c.project.tracks.iter().all(|t| t.clips.is_empty()) {
+        let hint = lanes.shrink(24.0);
+        if hint.is_positive() {
+            let dash = pal.text_dim;
+            for [a, b] in [
+                [hint.left_top(), hint.right_top()],
+                [hint.right_top(), hint.right_bottom()],
+                [hint.right_bottom(), hint.left_bottom()],
+                [hint.left_bottom(), hint.left_top()],
+            ] {
+                for s in Shape::dashed_line(&[a, b], Stroke::new(1.0, dash), 6.0, 5.0) {
+                    lp.add(s);
+                }
+            }
+            lp.text(
+                hint.center(),
+                Align2::CENTER_CENTER,
+                "Drop video, audio or images here — or Ctrl+O",
+                font.clone(),
+                dash,
+            );
+        }
+    }
+
     // ---- rubber band ----
     if let (Some(br), Some((_, add))) = (band_rect, state.band) {
         lp.rect_filled(br, 0, pal.accent.gamma_multiply(0.15));
@@ -1250,6 +1376,41 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             );
         }
     }
+    // ---- ruler in/out handles (ws:snap-engine): draggable, snapped, clamped in <= out; right-click
+    // clears that mark. Registered after the ruler markers loop so a handle wins hit-testing over a
+    // marker flag sitting at the same x, and after ruler_resp/ph_resp (both registered near the top)
+    // so a handle wins over the ruler scrub / playhead-line drag at that exact spot.
+    for (is_out, t_opt) in [(false, c.project.in_point), (true, c.project.out_point)] {
+        let Some(t) = t_opt else { continue };
+        let hx = state.x_at(t);
+        if hx < ruler.left() - 4.0 || hx > ruler.right() + 4.0 {
+            continue;
+        }
+        let hr = Rect::from_center_size(pos2(hx, ruler.bottom() - 3.0), vec2(8.0, 8.0)).intersect(ruler);
+        if !hr.is_positive() {
+            continue;
+        }
+        let r = ui
+            .interact(hr, id.with(("inout", is_out)), Sense::click_and_drag())
+            .on_hover_cursor(CursorIcon::ResizeHorizontal);
+        if r.drag_started_by(egui::PointerButton::Primary) && state.drag.is_none() {
+            state.drag = Some(Drag {
+                origin: pointer.unwrap_or(hr.center()),
+                before: c.project.clone(),
+                g: Gesture::InOut { out: is_out, changed: false },
+                snapped: None,
+            });
+        }
+        if r.secondary_clicked() {
+            (c.undo)(c.project);
+            if is_out {
+                c.project.out_point = None;
+            } else {
+                c.project.in_point = None;
+            }
+            out.edited = true;
+        }
+    }
     let ph_now = *c.playhead;
     ruler_resp.context_menu(|ui| {
         if ui.button("Add Marker at Playhead").clicked() {
@@ -1288,6 +1449,15 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             Stroke::NONE,
         ));
     }
+    // ---- snap guide line: an accent hairline at whatever candidate the active gesture is snapped to
+    // (set last frame by gestures::handle) — one line for the whole gesture, gone once nothing is in
+    // range or the gesture ends. Also lit for the dnd asset-drop ghost, painted separately below.
+    if let Some(gx) = state.drag.as_ref().and_then(|d| d.snapped).map(|t| state.x_at(t)) {
+        if gx >= lanes.left() - 1.0 && gx <= lanes.right() + 1.0 {
+            let gp = painter.with_clip_rect(Rect::from_min_max(ruler.min, lanes.max));
+            gp.vline(gx, Rangef::new(ruler.top(), lanes.bottom()), Stroke::new(1.5, pal.accent));
+        }
+    }
     // scrub: ruler press/drag or playhead line drag
     let scrub_x = if primary_down && (ruler_resp.is_pointer_button_down_on() || ruler_resp.dragged()) {
         ruler_resp.interact_pointer_pos()
@@ -1314,6 +1484,13 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 c.sel_transitions.clear();
             }
         }
+    }
+    // middle-mouse pan (ws:snap-engine): drags the lanes without starting a gesture or selection.
+    if state.drag.is_none() && lanes_resp.dragged_by(egui::PointerButton::Middle) {
+        let d = lanes_resp.drag_delta();
+        state.scroll_x = (state.scroll_x - (d.x / state.zoom) as f64).max(0.0);
+        state.scroll_y = (state.scroll_y - d.y).clamp(0.0, (content_h - lanes.height()).max(0.0));
+        state.user_panned = true;
     }
     // a press that missed every clip starts a rubber band (Shift adds to the selection)
     if state.drag.is_none() && lanes_resp.drag_started_by(egui::PointerButton::Primary) {
@@ -1348,6 +1525,20 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         };
         if let Some(payload) = lanes_resp.dnd_hover_payload::<DragPayload>() {
             let t = drop_t(state, c.project);
+            // snap guide for the dnd ghost: only lit when a real tier actually hit (not just the
+            // frame-quantisation snap_time always applies), same accent line every other gesture uses
+            if snap_on {
+                let thr = snap::snap_thr(state.zoom, c.project.fps);
+                let hit = snap::target(c.project, state.time_at(pos.x), thr, ph, &[], &[], None, c.snap_markers);
+                if let Some((gx, _)) = hit {
+                    let gxp = state.x_at(gx);
+                    painter.with_clip_rect(Rect::from_min_max(ruler.min, lanes.max)).vline(
+                        gxp,
+                        Rangef::new(ruler.top(), lanes.bottom()),
+                        Stroke::new(1.5, pal.accent),
+                    );
+                }
+            }
             // an effect lands on ONE clip and a transition on ONE cut, so they highlight what is under
             // the pointer instead of a ghost clip that would lie about a duration
             let target = match &*payload {
@@ -1493,10 +1684,10 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         }
     }
     if let Some(cid) = click {
-        if !mods.ctrl {
+        if !mods.ctrl && !mods.shift {
             c.sel_transitions.clear();
         }
-        // click = whole link group, Alt+click = just this clip, Ctrl toggles the group
+        // click = whole link group, Alt+click = just this clip, Ctrl toggles the group, Shift adds it
         let group = if mods.alt { vec![cid] } else { c.project.expand_links(&[cid]) };
         if mods.ctrl {
             if c.selection.contains(&cid) {
@@ -1506,6 +1697,15 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     if !c.selection.contains(&g) {
                         c.selection.push(g);
                     }
+                }
+            }
+        } else if mods.shift {
+            // AUDIT FIX (snap-engine, wave 1): additive, distinct from Ctrl's toggle-out — the
+            // modifier table's Body/Shift row ("click = add link group to selection") had no matching
+            // code before this; Shift+click was indistinguishable from a plain click.
+            for g in group {
+                if !c.selection.contains(&g) {
+                    c.selection.push(g);
                 }
             }
         } else {
@@ -1723,7 +1923,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 | Gesture::Fade { changed, .. }
                 | Gesture::Keys { changed, .. }
                 | Gesture::TransDur { changed, .. }
-                | Gesture::Marker { changed, .. } => *changed,
+                | Gesture::Marker { changed, .. }
+                | Gesture::InOut { changed, .. } => *changed,
             };
             // released over the gutter: add a track at the far end and drop the clips of that kind on it
             if let Gesture::Move { ids, kind, new_track: true, .. } = &d.g {

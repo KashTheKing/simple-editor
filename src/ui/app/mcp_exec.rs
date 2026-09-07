@@ -17,6 +17,13 @@ pub(super) fn rollback_project(snap: &str) -> Option<Project> {
 }
 
 impl App {
+    // ---- ws:forgiveness ----
+    // deviation: this workstream's own fire_hook stub (scanning scripts for a bare `-- @on <event>`
+    // marker) is superseded by command-palette's real dispatcher (palette_ctl::fire_hook — reentrancy
+    // guard, per-hook budget, disable-on-overrun) now that PR #45 has merged; removed to avoid a
+    // duplicate-method conflict. files.rs's project_open/project_save call sites are unaffected — both
+    // pass string literals, which resolve to palette_ctl::fire_hook's `&'static str` parameter as-is.
+
     pub(super) fn run_script(&mut self, path: &std::path::Path) {
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let src = match std::fs::read_to_string(path) {

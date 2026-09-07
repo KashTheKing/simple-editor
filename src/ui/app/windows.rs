@@ -149,6 +149,10 @@ impl App {
                 &self.gpu_name,
                 &inputs,
             );
+            // ---- ws:forgiveness ----
+            if std::mem::take(&mut self.settings_ui.clear_caches) {
+                caches::clear(self);
+            }
             if changed {
                 self.hotkeys.to_settings(&mut self.settings);
                 self.settings.save();
@@ -277,12 +281,14 @@ impl App {
             };
             // ask first: cancelling the unsaved-changes prompt must keep the report (and the ffprobes
             // that built it), not throw the whole import away
-            if accept && self.confirm_discard() {
-                if let Some(r) = self.import_ui.report.take() {
-                    self.set_project(r.project, None);
-                    self.toast("Imported timeline is now the project");
-                }
-                self.import_ui.open = false;
+            if accept {
+                self.confirm_discard_then(move |app| {
+                    if let Some(r) = app.import_ui.report.take() {
+                        app.set_project(r.project, None);
+                        app.toast("Imported timeline is now the project");
+                    }
+                    app.import_ui.open = false;
+                });
             }
         }
         // export / convert progress — non-modal: keep editing while it runs

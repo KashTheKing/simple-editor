@@ -1148,3 +1148,534 @@ fn an_effect_node_takes_one_value_port_per_parameter() {
     assert_eq!(NodeKind::Logic(LogicOp::And).inputs(), 2);
     assert_eq!(NodeKind::Select.port_label(0), "cond");
 }
+
+// ==================================================================================================
+// ---- ws:trim-model ----
+// ripple/roll/slip/slide/trim_edges, splice/overwrite/lift/extract, join/duplicate/unnest/replace,
+// magnetic_move, track flags and the shift_time/edit-point/mark-clip queries (model/ops/{tracks,
+// editing,trim}.rs).
+use crate::model::ops::tracks::TrackFlag;
+use crate::model::ops::trim::Side;
+
+#[test]
+fn ripple_trim_shifts_only_ripple_tracks_and_moves_main_timeline_markers_cues() {
+    let mut p = Project::new();
+    p.add_track(TrackKind::Video); // V2 (index 1): second video track, defaults to ripple=false
+    let a_id = p.new_id();
+    p.tracks[0].clips.push(Clip::new(a_id, ClipKind::Video, "A", 0.0, 5.0));
+    let b_id = p.new_id();
+    p.tracks[0].clips.push(Clip::new(b_id, ClipKind::Video, "B", 5.0, 5.0));
+    let c_id = p.new_id();
+    p.tracks[1].clips.push(Clip::new(c_id, ClipKind::Video, "C", 5.0, 5.0));
+    p.add_marker(7.0, "m"); // sequence = self.editing = None (main timeline)
+    let cue_id = p.new_id();
+    p.subtitles.push(Cue { id: cue_id, start: 7.0, end: 8.0, text: "hi".into() });
+    p.in_point = Some(7.0);
+
+    assert!(p.ripple_trim(a_id, false, 3.0, true), "ripple end-trim must succeed");
+    assert!((p.clip(a_id).unwrap().end() - 3.0).abs() < 1e-9, "A shortened to end at 3");
+    assert!((p.clip(b_id).unwrap().start - 3.0).abs() < 1e-9, "B (ripple track) follows the cut left");
+    assert!((p.clip(c_id).unwrap().start - 5.0).abs() < 1e-9, "C (non-ripple track) never moves");
+    assert!((p.markers[0].t - 5.0).abs() < 1e-9, "the marker at/after the old edge shifts with it");
+    assert!((p.subtitles[0].start - 5.0).abs() < 1e-9, "main-timeline cue shifts too");
+    assert!((p.subtitles[0].end - 6.0).abs() < 1e-9);
+    assert!((p.in_point.unwrap() - 5.0).abs() < 1e-9);
+}
+
+#[test]
+fn shift_time_never_touches_subtitles_or_other_sequence_markers_while_editing_open() {
+    let mut p = Project::new();
+    p.add_marker(2.0, "main"); // sequence = None (main timeline)
+    let cue_id = p.new_id();
+    p.subtitles.push(Cue { id: cue_id, start: 2.0, end: 3.0, text: "hi".into() });
+    let seq_id = p.new_sequence("Seq", 1920, 1080, 30.0);
+    let other_seq = p.new_sequence("Other", 1920, 1080, 30.0);
+    let other_marker_id = p.new_id();
+    p.markers.push(Marker {
+        id: other_marker_id,
+        t: 2.0,
+        sequence: Some(other_seq),
+        name: "other".into(),
+        ..Default::default()
+    });
+    let sub_before = p.subtitles[0].clone();
+
+    p.open_sequence(seq_id);
+    let a_id = p.new_id();
+    p.tracks[0].clips.push(Clip::new(a_id, ClipKind::Video, "A", 0.0, 5.0));
+    let b_id = p.new_id();
+    p.tracks[0].clips.push(Clip::new(b_id, ClipKind::Video, "B", 5.0, 5.0));
+    p.add_marker(7.0, "in-seq"); // sequence = self.editing = Some(seq_id), the currently-open one
+
+    assert!(p.ripple_trim(a_id, false, 3.0, true));
+    assert!((p.clip(b_id).unwrap().start - 3.0).abs() < 1e-9);
+    assert_eq!(p.markers.iter().find(|m| m.name == "in-seq").unwrap().t, 5.0, "the open sequence's own marker moves");
+    assert_eq!(p.markers.iter().find(|m| m.name == "main").unwrap().t, 2.0, "main-timeline marker untouched");
+    assert_eq!(p.markers.iter().find(|m| m.name == "other").unwrap().t, 2.0, "a different sequence's marker untouched");
+    assert_eq!(p.subtitles[0], sub_before, "subtitles are byte-identical while a sequence is open");
+}
+
+#[test]
+fn legacy_ripple_actions_now_honour_ripple_tracks() {
+    let mut p = Project::new();
+    p.add_track(TrackKind::Video); // V2, ripple=false by default
+    let keep_id = p.new_id();
+    p.tracks[0].clips.push(Clip::new(keep_id, ClipKind::Video, "keep", 0.0, 2.0));
+    let del_id = p.new_id();
+    p.tracks[0].clips.push(Clip::new(del_id, ClipKind::Video, "del", 2.0, 3.0)); // [2,5)
+    let after_id = p.new_id();
+    p.tracks[0].clips.push(Clip::new(after_id, ClipKind::Video, "after", 5.0, 2.0)); // [5,7)
+    let v2_id = p.new_id();
+    p.tracks[1].clips.push(Clip::new(v2_id, ClipKind::Video, "v2clip", 5.0, 2.0)); // non-ripple track
+
+    let tracks = p.ripple_tracks();
+    let removed = p.ripple_delete_range(2.0, 5.0, &tracks);
+    assert_eq!(removed, vec![del_id]);
+    assert!((p.clip(after_id).unwrap().start - 2.0).abs() < 1e-9, "V1 (ripple) closes the gap");
+    assert!((p.clip(v2_id).unwrap().start - 5.0).abs() < 1e-9, "a non-ripple secondary track never shifts");
+}
+
+#[test]
+fn roll_edit_keeps_total_length_and_transition_id() {
+    let mut p = Project::new();
+    let left = p.new_id();
+    p.tracks[0].clips.push(Clip::new(left, ClipKind::Video, "L", 0.0, 5.0));
+    let right = p.new_id();
+    p.tracks[0].clips.push(Clip::new(right, ClipKind::Video, "R", 5.0, 5.0));
+    let total_before: f64 = p.tracks[0].clips.iter().map(|c| c.duration).sum();
+    let tr_id = p.add_transition(right, TransitionKind::CrossFade, 1.0).unwrap();
+
+    assert!(p.roll_edit(right, 7.0));
+    let total_after: f64 = p.tracks[0].clips.iter().map(|c| c.duration).sum();
+    assert!((total_after - total_before).abs() < 1e-9, "sum of durations unchanged");
+    assert!((p.clip(left).unwrap().end() - 7.0).abs() < 1e-9);
+    assert!((p.clip(right).unwrap().start - 7.0).abs() < 1e-9);
+    assert!(p.tracks[0].transitions.iter().any(|t| t.id == tr_id), "the transition keeps its id");
+}
+
+#[test]
+fn slip_clamps_to_source_window_forward_and_reversed() {
+    let mut p = Project::new();
+    let aid = p.add_asset(asset(0, 10.0, 0));
+    let cid = p.new_id();
+    let mut c = Clip::new(cid, ClipKind::Video, "c", 0.0, 4.0);
+    c.asset = aid;
+    c.src_in = 2.0; // window [2,6)
+    p.tracks[0].clips.push(c);
+
+    assert!(p.slip(&[cid], -5.0));
+    assert!((p.clip(cid).unwrap().src_in).abs() < 1e-9, "clamped to 0, not -3");
+    assert!((p.clip(cid).unwrap().start).abs() < 1e-9, "start never moves");
+    assert!((p.clip(cid).unwrap().duration - 4.0).abs() < 1e-9, "duration never moves");
+    assert!(p.slip(&[cid], 100.0));
+    assert!((p.clip(cid).unwrap().src_in - 6.0).abs() < 1e-9, "clamped to duration(10) - src_len(4) = 6");
+
+    let rid = p.new_id();
+    let mut r = Clip::new(rid, ClipKind::Video, "r", 5.0, 4.0);
+    r.asset = aid;
+    r.reverse = true;
+    r.src_in = 2.0;
+    p.tracks[0].clips.push(r);
+    assert!(p.slip(&[rid], -5.0));
+    assert!((p.clip(rid).unwrap().src_in).abs() < 1e-9, "same [src_in, src_in+src_len) bound as forward");
+    assert!(p.slip(&[rid], 100.0));
+    assert!((p.clip(rid).unwrap().src_in - 6.0).abs() < 1e-9);
+}
+
+#[test]
+fn trim_edges_asymmetric_multi_clip() {
+    let mut p = Project::new();
+    let a = p.new_id();
+    p.tracks[0].clips.push(Clip::new(a, ClipKind::Video, "A", 0.0, 5.0));
+    let x = p.new_id();
+    p.tracks[0].clips.push(Clip::new(x, ClipKind::Video, "X", 10.0, 5.0)); // non-participant
+    let b = p.new_id();
+    p.tracks[1].clips.push(Clip::new(b, ClipKind::Audio, "B", 0.0, 5.0));
+
+    assert!(p.trim_edges(&[(a, false), (b, false)], 3.0, false));
+    assert!((p.clip(a).unwrap().end() - 8.0).abs() < 1e-9);
+    assert!((p.clip(b).unwrap().end() - 8.0).abs() < 1e-9);
+
+    assert!(!p.trim_edges(&[(a, false), (b, false)], 5.0, false), "would push A into X");
+    assert!((p.clip(a).unwrap().end() - 8.0).abs() < 1e-9, "unchanged: A");
+    assert!((p.clip(b).unwrap().end() - 8.0).abs() < 1e-9, "unchanged: B (all-or-nothing)");
+}
+
+#[test]
+fn splice_in_is_linear_on_1000_clips() {
+    let mut p = Project::new();
+    let aid = p.add_asset(asset(0, 2.0, 0));
+    let mut ids = Vec::with_capacity(1000);
+    for i in 0..1000u64 {
+        let id = p.new_id();
+        ids.push(id);
+        p.tracks[0].clips.push(Clip::new(id, ClipKind::Video, "c", i as f64 * 2.0, 2.0));
+    }
+    let last = *ids.last().unwrap();
+    let last_start_before = p.clip(last).unwrap().start;
+
+    let start = std::time::Instant::now();
+    let new_ids = p.splice_in(aid, 1.0, Some(0), None);
+    let elapsed = start.elapsed();
+
+    assert!(!new_ids.is_empty(), "the asset was placed");
+    assert!(elapsed.as_millis() < 5, "splice_in took {elapsed:?} on 1000 clips — was O(n^2) before this change");
+    assert!(
+        (p.clip(last).unwrap().start - (last_start_before + 2.0)).abs() < 1e-6,
+        "every downstream clip shifted by exactly the inserted span"
+    );
+}
+
+#[test]
+fn overwrite_asset_clears_only_the_overlap() {
+    let mut p = Project::new();
+    let aid = p.add_asset(asset(0, 2.0, 0));
+    let before = p.new_id();
+    p.tracks[0].clips.push(Clip::new(before, ClipKind::Video, "before", 0.0, 2.0)); // [0,2)
+    let inside = p.new_id();
+    p.tracks[0].clips.push(Clip::new(inside, ClipKind::Video, "inside", 2.5, 1.0)); // [2.5,3.5) inside [2,4)
+    let after = p.new_id();
+    p.tracks[0].clips.push(Clip::new(after, ClipKind::Video, "after", 4.0, 2.0)); // [4,6)
+
+    let ids = p.overwrite_asset(aid, 2.0, Some(0), None); // places a 2s clip at [2,4)
+    assert!(!ids.is_empty());
+    assert!(p.clip(inside).is_none(), "fully-inside clip removed");
+    assert!((p.clip(before).unwrap().end() - 2.0).abs() < 1e-9, "clip outside the range untouched");
+    assert!((p.clip(after).unwrap().start - 4.0).abs() < 1e-9, "no ripple: clips after the range don't move");
+}
+
+#[test]
+fn lift_leaves_gap_extract_delegates_to_ripple_delete_range() {
+    let mut p_lift = Project::new();
+    let lift_a = p_lift.new_id();
+    p_lift.tracks[0].clips.push(Clip::new(lift_a, ClipKind::Video, "a", 0.0, 2.0));
+    let lift_b = p_lift.new_id();
+    p_lift.tracks[0].clips.push(Clip::new(lift_b, ClipKind::Video, "b", 2.0, 3.0)); // removed [2,5)
+    let after_id = p_lift.new_id();
+    p_lift.tracks[0].clips.push(Clip::new(after_id, ClipKind::Video, "c", 5.0, 2.0));
+    p_lift.lift_range(2.0, 5.0, None);
+    assert!((p_lift.clip(after_id).unwrap().start - 5.0).abs() < 1e-9, "lift leaves later clips' start unchanged");
+
+    let mut p1 = Project::new();
+    let (id_a, id_b, id_c) = (p1.new_id(), p1.new_id(), p1.new_id());
+    p1.tracks[0].clips.push(Clip::new(id_a, ClipKind::Video, "a", 0.0, 2.0));
+    p1.tracks[0].clips.push(Clip::new(id_b, ClipKind::Video, "b", 2.0, 3.0));
+    p1.tracks[0].clips.push(Clip::new(id_c, ClipKind::Video, "c", 5.0, 2.0));
+    let mut p2 = p1.clone();
+    let tracks = p1.ripple_tracks();
+    p1.ripple_delete_range(2.0, 5.0, &tracks);
+    p2.extract_range(2.0, 5.0, None);
+    assert_eq!(p1.to_json(), p2.to_json(), "extract_range(None) == ripple_delete_range(.., ripple_tracks())");
+}
+
+#[test]
+fn join_through_merges_contiguous_refuses_otherwise() {
+    let mut p = Project::new();
+    let aid = p.add_asset(asset(0, 10.0, 0));
+    let l = p.new_id();
+    let mut lc = Clip::new(l, ClipKind::Video, "L", 0.0, 3.0);
+    lc.asset = aid;
+    p.tracks[0].clips.push(lc);
+    let r = p.new_id();
+    let mut rc = Clip::new(r, ClipKind::Video, "R", 3.0, 3.0);
+    rc.asset = aid;
+    rc.src_in = 3.0; // contiguous with L's source window [0,3)
+    p.tracks[0].clips.push(rc);
+    assert!(p.join_through(l));
+    assert_eq!(p.tracks[0].clips.len(), 1);
+    assert!((p.clip(l).unwrap().duration - 6.0).abs() < 1e-9);
+
+    // different asset: refuses
+    let mut p2 = Project::new();
+    let a2 = p2.add_asset(asset(0, 10.0, 0));
+    let a3 = p2.add_asset(asset(1, 10.0, 0));
+    let l2 = p2.new_id();
+    let mut lc2 = Clip::new(l2, ClipKind::Video, "L", 0.0, 3.0);
+    lc2.asset = a2;
+    p2.tracks[0].clips.push(lc2);
+    let r2 = p2.new_id();
+    let mut rc2 = Clip::new(r2, ClipKind::Video, "R", 3.0, 3.0);
+    rc2.asset = a3;
+    p2.tracks[0].clips.push(rc2);
+    assert!(!p2.join_through(l2));
+    assert_eq!(p2.tracks[0].clips.len(), 2);
+
+    // a gap between them: refuses
+    let mut p3 = Project::new();
+    let a4 = p3.add_asset(asset(0, 10.0, 0));
+    let l3 = p3.new_id();
+    let mut lc3 = Clip::new(l3, ClipKind::Video, "L", 0.0, 3.0);
+    lc3.asset = a4;
+    p3.tracks[0].clips.push(lc3);
+    let r3 = p3.new_id();
+    let mut rc3 = Clip::new(r3, ClipKind::Video, "R", 4.0, 3.0); // gap [3,4)
+    rc3.asset = a4;
+    rc3.src_in = 3.0;
+    p3.tracks[0].clips.push(rc3);
+    assert!(!p3.join_through(l3));
+}
+
+#[test]
+fn duplicate_places_on_free_track_with_new_ids() {
+    let mut p = Project::new();
+    let id = p.new_id();
+    p.tracks[0].clips.push(Clip::new(id, ClipKind::Video, "a", 0.0, 3.0));
+    let before_tracks = p.tracks.len();
+    let new_ids = p.duplicate(&[id]);
+    assert_eq!(new_ids.len(), 1);
+    assert_ne!(new_ids[0], id, "a fresh id, not the original");
+    assert!(p.tracks.len() > before_tracks, "no room on the source track, so a new one was added");
+    let dup = p.clip(new_ids[0]).unwrap();
+    assert!((dup.start).abs() < 1e-9 && (dup.duration - 3.0).abs() < 1e-9, "same extents, different track");
+}
+
+#[test]
+fn unnest_is_inverse_of_nest_selection() {
+    let mut p = Project::new();
+    let id = p.new_id();
+    p.tracks[0].clips.push(Clip::new(id, ClipKind::Video, "a", 2.0, 3.0));
+    p.nest_selection(&[id], "Nested").unwrap();
+    let seq_clip = p.tracks[0].clips.iter().find(|c| c.kind == ClipKind::Sequence).unwrap().id;
+    assert!((p.clip(seq_clip).unwrap().start - 2.0).abs() < 1e-9);
+
+    let restored = p.unnest(seq_clip);
+    assert_eq!(restored.len(), 1);
+    assert!(p.clip(seq_clip).is_none(), "the sequence clip is gone");
+    let r = p.clip(restored[0]).unwrap();
+    assert!((r.start - 2.0).abs() < 1e-9, "back at its original timeline position");
+    assert!((r.duration - 3.0).abs() < 1e-9);
+
+    // speed != 1 refuses
+    let mut p2 = Project::new();
+    let id2 = p2.new_id();
+    p2.tracks[0].clips.push(Clip::new(id2, ClipKind::Video, "b", 0.0, 3.0));
+    p2.nest_selection(&[id2], "N2").unwrap();
+    let seq_clip2 = p2.tracks[0].clips.iter().find(|c| c.kind == ClipKind::Sequence).unwrap().id;
+    p2.clip_mut(seq_clip2).unwrap().speed = 2.0;
+    assert!(p2.unnest(seq_clip2).is_empty(), "retimed sequence clip refuses to unnest");
+}
+
+#[test]
+fn replace_clip_keeps_duration_effects_transform() {
+    let mut p = Project::new();
+    let a1id = p.add_asset(asset(0, 10.0, 0));
+    let a2id = p.add_asset(asset(1, 10.0, 0));
+    let id = p.new_id();
+    let mut c = Clip::new(id, ClipKind::Video, "c", 0.0, 4.0);
+    c.asset = a1id;
+    c.src_in = 2.0;
+    c.x.value = 50.0;
+    c.scale.value = 1.5;
+    c.rotation.value = 10.0;
+    c.label = 3;
+    c.effects.push(Effect::new(EffectKind::Tint));
+    p.tracks[0].clips.push(c);
+
+    assert!(p.replace_clip(id, a2id));
+    let after = p.clip(id).unwrap();
+    assert_eq!(after.asset, a2id);
+    assert_eq!(after.src_in, 0.0);
+    assert_eq!(after.duration, 4.0);
+    assert_eq!(after.x.value, 50.0);
+    assert_eq!(after.scale.value, 1.5);
+    assert_eq!(after.rotation.value, 10.0);
+    assert_eq!(after.label, 3);
+    assert_eq!(after.effects.len(), 1);
+}
+
+#[test]
+fn magnetic_move_shoves_on_magnetic_track_else_refuses() {
+    let mut p = Project::new();
+    p.tracks[0].magnetic = true;
+    let a = p.new_id();
+    p.tracks[0].clips.push(Clip::new(a, ClipKind::Video, "a", 0.0, 2.0));
+    let blocker = p.new_id();
+    p.tracks[0].clips.push(Clip::new(blocker, ClipKind::Video, "b", 2.0, 2.0)); // [2,4)
+
+    assert!(p.magnetic_move(&[a], 1.0, 0), "blocked move on a magnetic track opens space instead");
+    assert!((p.clip(a).unwrap().start - 1.0).abs() < 1e-9);
+    assert!(p.clip(blocker).unwrap().start > 2.0 - 1e-9, "blocker made room");
+
+    let mut p2 = Project::new();
+    let a2 = p2.new_id();
+    p2.tracks[0].clips.push(Clip::new(a2, ClipKind::Video, "a", 0.0, 2.0));
+    let b2 = p2.new_id();
+    p2.tracks[0].clips.push(Clip::new(b2, ClipKind::Video, "b", 2.0, 2.0));
+    assert!(!p2.magnetic_move(&[a2], 1.0, 0), "same shape, non-magnetic track: refuses (today's behaviour)");
+    assert!((p2.clip(a2).unwrap().start).abs() < 1e-9, "unchanged");
+}
+
+/// Regression: `magnetic_move`'s `dtrack` used to pass `track_kind: None` to `move_clips`, which only
+/// changes track when `track_kind == Some(kind)` — a silent no-op that left the clip on its source
+/// track no matter what `dtrack` said.
+#[test]
+fn magnetic_move_dtrack_actually_changes_track() {
+    let mut p = Project::new();
+    let v2 = p.add_track(TrackKind::Video);
+    p.tracks[v2].magnetic = true;
+    let a = p.new_id();
+    p.tracks[v2].clips.push(Clip::new(a, ClipKind::Video, "a", 0.0, 2.0));
+
+    assert!(p.magnetic_move(&[a], 0.0, -1), "dtrack=-1 should move the clip one video track earlier");
+    assert_eq!(p.track_of(a), Some(0), "clip actually landed on the destination track");
+}
+
+#[test]
+fn locked_track_refuses_every_new_op() {
+    let mut base = Project::new();
+    base.tracks[0].locked = true;
+    let aid = base.add_asset(asset(0, 10.0, 0));
+    let a = base.new_id();
+    let mut ca = Clip::new(a, ClipKind::Video, "A", 0.0, 3.0);
+    ca.asset = aid;
+    base.tracks[0].clips.push(ca);
+    let b = base.new_id();
+    let mut cb = Clip::new(b, ClipKind::Video, "B", 3.0, 3.0);
+    cb.asset = aid;
+    cb.src_in = 3.0;
+    base.tracks[0].clips.push(cb);
+
+    macro_rules! refuses {
+        ($op:expr) => {{
+            let mut p = base.clone();
+            let before = p.to_json();
+            let changed = $op(&mut p);
+            assert!(!changed, "op reported a change on a locked track");
+            assert_eq!(p.to_json(), before, "a locked track must leave the project byte-identical");
+        }};
+    }
+
+    refuses!(|p: &mut Project| p.ripple_trim(a, false, 5.0, true));
+    refuses!(|p: &mut Project| p.roll_edit(b, 4.0));
+    refuses!(|p: &mut Project| p.slip(&[a], 1.0));
+    refuses!(|p: &mut Project| p.slide(a, 1.0));
+    refuses!(|p: &mut Project| p.trim_edges(&[(a, false)], 1.0, false));
+    refuses!(|p: &mut Project| !p.splice_in(aid, 1.0, Some(0), None).is_empty());
+    refuses!(|p: &mut Project| !p.overwrite_asset(aid, 1.0, Some(0), None).is_empty());
+    refuses!(|p: &mut Project| !p.lift_range(0.0, 3.0, Some(&[0][..])).is_empty());
+    refuses!(|p: &mut Project| !p.extract_range(0.0, 3.0, Some(&[0][..])).is_empty());
+    refuses!(|p: &mut Project| p.join_through(a));
+    refuses!(|p: &mut Project| !p.duplicate(&[a]).is_empty());
+    refuses!(|p: &mut Project| p.magnetic_move(&[a], 1.0, 0));
+}
+
+#[test]
+fn ripple_tracks_excludes_position_locked_secondaries() {
+    let mut p = Project::new();
+    p.add_track(TrackKind::Video); // V2 (index 1): second video track, defaults to ripple=false
+    assert_eq!(p.ripple_tracks(), vec![0, 2], "V1 (index 0) and A1 (index 2) are ripple by default");
+
+    let del = p.new_id();
+    p.tracks[0].clips.push(Clip::new(del, ClipKind::Video, "del", 0.0, 5.0));
+    let v1_after = p.new_id();
+    p.tracks[0].clips.push(Clip::new(v1_after, ClipKind::Video, "after", 5.0, 2.0));
+    // V2 is otherwise empty, so [0,5) is trivially free there too — the old unscoped close_gap would
+    // still have shifted this clip left; the new one must not, since V2 isn't a ripple track.
+    let v2_after = p.new_id();
+    p.tracks[1].clips.push(Clip::new(v2_after, ClipKind::Video, "after2", 5.0, 2.0));
+
+    let tracks = p.ripple_tracks();
+    p.ripple_delete_range(0.0, 5.0, &tracks);
+    assert!((p.clip(v1_after).unwrap().start).abs() < 1e-9, "ripple track closes the gap");
+    assert!((p.clip(v2_after).unwrap().start - 5.0).abs() < 1e-9, "non-ripple track never shifts, even with room");
+}
+
+#[test]
+fn close_gap_at_finds_local_gap() {
+    let mut p = Project::new();
+    let before = p.new_id();
+    p.tracks[0].clips.push(Clip::new(before, ClipKind::Video, "before", 0.0, 2.0)); // [0,2)
+    let after = p.new_id();
+    p.tracks[0].clips.push(Clip::new(after, ClipKind::Video, "after", 5.0, 2.0)); // [5,7), gap [2,5)
+
+    assert!(p.close_gap_at(0, 3.0), "3.0 sits inside the [2,5) gap");
+    assert!((p.clip(after).unwrap().start - 2.0).abs() < 1e-9, "shifted left by exactly the gap span (3)");
+    assert!(!p.close_gap_at(0, 1.0), "1.0 is inside `before`, not a gap");
+}
+
+#[test]
+fn insert_asset_clips_unchanged_ranged_sets_window() {
+    let mut p1 = Project::new();
+    let a1 = p1.add_asset(asset(0, 10.0, 1));
+    let ids1 = p1.insert_asset_clips(a1, 2.0, Some(0));
+    let mut p2 = Project::new();
+    let a2 = p2.add_asset(asset(0, 10.0, 1));
+    let ids2 = p2.insert_asset_clips_ranged(a2, 2.0, Some(0), None, None);
+    assert_eq!(ids1.len(), ids2.len());
+    for (id1, id2) in ids1.iter().zip(ids2.iter()) {
+        let (c1, c2) = (p1.clip(*id1).unwrap(), p2.clip(*id2).unwrap());
+        assert_eq!((c1.start, c1.duration, c1.src_in, c1.kind), (c2.start, c2.duration, c2.src_in, c2.kind));
+    }
+
+    let mut p3 = Project::new();
+    let a3 = p3.add_asset(asset(0, 10.0, 0));
+    let ids3 = p3.insert_asset_clips_ranged(a3, 0.0, Some(0), None, Some((2.0, 5.0)));
+    let c3 = p3.clip(ids3[0]).unwrap();
+    assert_eq!(c3.src_in, 2.0);
+    assert!((c3.duration - 3.0).abs() < 1e-9);
+}
+
+#[test]
+fn track_flag_and_rename_color_move_setters() {
+    let mut p = Project::new();
+    p.add_track(TrackKind::Video); // V2 at index 1
+
+    assert!(p.set_track_flag(0, TrackFlag::Locked, true));
+    assert!(p.tracks[0].locked);
+    assert!(p.set_track_flag(0, TrackFlag::Ripple, false));
+    assert_eq!(p.tracks[0].ripple, Some(false));
+    assert!(p.set_track_flag(0, TrackFlag::Magnetic, true));
+    assert!(p.tracks[0].magnetic);
+    assert!(!p.tracks[1].locked, "only the target track mutates");
+
+    assert!(p.rename_track(0, "Overlay".into()));
+    assert_eq!(p.tracks[0].name, "Overlay");
+    assert!(!p.rename_track(0, "  ".into()), "blank name refused");
+    assert_eq!(p.tracks[0].name, "Overlay", "unchanged on refusal");
+
+    assert!(p.set_track_color(0, Some([10, 20, 30])));
+    assert_eq!(p.tracks[0].color, Some([10, 20, 30]));
+    assert!(p.set_track_color(0, None));
+    assert_eq!(p.tracks[0].color, None);
+
+    assert!(!p.move_track(0, true), "V1 is already first among video tracks");
+    assert!(p.move_track(0, false), "V1 can move down past V2");
+    assert_eq!(p.tracks[0].name, "V2", "V1's old slot now holds what was V2");
+    assert_eq!(p.tracks[1].name, "Overlay", "V2's old slot now holds what was V1 (renamed Overlay)");
+}
+
+#[test]
+fn nearest_edit_point_side_both_at_shared_seam() {
+    let mut p = Project::new();
+    let (seam_a, seam_b) = (p.new_id(), p.new_id());
+    p.tracks[0].clips.push(Clip::new(seam_a, ClipKind::Video, "a", 0.0, 5.0)); // [0,5)
+    p.tracks[0].clips.push(Clip::new(seam_b, ClipKind::Video, "b", 5.0, 5.0)); // [5,10), seam at 5
+
+    let ep = p.nearest_edit_point(5.1, Some(0)).unwrap();
+    assert_eq!(ep.side, Side::Both);
+    assert!((ep.t - 5.0).abs() < 1e-9);
+
+    let ep_start = p.nearest_edit_point(0.1, Some(0)).unwrap();
+    assert_eq!(ep_start.side, Side::Right, "nothing before the track's first clip");
+    assert!((ep_start.t).abs() < 1e-9);
+
+    let ep_end = p.nearest_edit_point(9.9, Some(0)).unwrap();
+    assert_eq!(ep_end.side, Side::Left, "nothing after the track's last clip");
+    assert!((ep_end.t - 10.0).abs() < 1e-9);
+}
+
+#[test]
+fn mark_from_clip_sets_in_out_from_bounds() {
+    let mut p = Project::new();
+    let id = p.new_id();
+    p.tracks[0].clips.push(Clip::new(id, ClipKind::Video, "a", 2.0, 3.0)); // [2,5)
+
+    assert_eq!(p.mark_from_clip(Some(id), 0.0), Some((2.0, 5.0)));
+    assert_eq!(p.in_point, Some(2.0));
+    assert_eq!(p.out_point, Some(5.0));
+
+    p.in_point = None;
+    p.out_point = None;
+    assert_eq!(p.mark_from_clip(None, 3.0), Some((2.0, 5.0)), "falls back to the clip under playhead");
+    assert_eq!(p.mark_from_clip(None, 100.0), None, "nothing there");
+}

@@ -24,9 +24,9 @@ use crate::theme::{self, Palette};
 use crate::ui::layout::{self, Layout, Pane};
 use crate::ui::tools::Tool;
 use crate::ui::{
-    autocut_ui, capture_ui, curves, effects_ui, export_ui, frame_ui, history_ui, import_ui, inspector, library,
-    markers_ui, mixer_ui, moodboard_ui, nodes, palette, paste_ui, planner, preview, retime, settings_ui, shader_ui,
-    subtitles_ui, timeline, tools, tracking_ui, transitions_ui, DragPayload,
+    autocut_ui, capture_ui, confirm, curves, effects_ui, export_ui, frame_ui, history_ui, import_ui, inspector,
+    library, markers_ui, mixer_ui, moodboard_ui, nodes, palette, paste_ui, planner, preview, retime, settings_ui,
+    shader_ui, subtitles_ui, timeline, tools, tracking_ui, transitions_ui, DragPayload,
 };
 use eframe::egui;
 use serde_json::{json, Value};
@@ -46,8 +46,13 @@ const MEDIA_EXTS: &[&str] = &[
 
 mod actions;
 mod audio_actions;
+// ---- ws:forgiveness ----
+mod autosave;
+mod boot;
+mod caches;
 mod drops;
 mod edit_ops;
+mod feedback;
 mod files;
 mod gpu;
 mod jobs;
@@ -59,7 +64,11 @@ mod menus;
 // ---- ws:command-palette ----
 mod palette_ctl;
 mod panes;
+mod playback_ctl;
 mod preview_pane;
+// ---- ws:forgiveness ----
+// pub(crate): main.rs calls recovery::install_panic_hook() before eframe::run_native.
+pub(crate) mod recovery;
 mod thumbs;
 mod timeline_pane;
 mod tools_args;
@@ -71,11 +80,15 @@ mod tools_commands;
 mod tools_helpers;
 mod tools_media;
 mod tools_playback;
+// ---- ws:forgiveness ----
+mod tools_project;
 #[cfg(test)]
 mod tools_registry_tests;
 mod tools_subtitles;
 mod tools_timeline;
+mod tools_trim;
 mod tools_ui;
+mod trim_actions;
 mod whatsnew;
 #[path = "windows.rs"]
 mod windows_dlg;
@@ -83,24 +96,6 @@ mod windows_dlg;
 enum ExportKind {
     File { path: PathBuf },
     Overwrite { original: PathBuf, temp: PathBuf },
-}
-
-/// One toast notification. `open_path` is set when it should offer an "Open Folder" button for a
-/// file (or folder) it just finished writing.
-struct Toast {
-    msg: String,
-    at: Instant,
-    open_path: Option<PathBuf>,
-}
-
-impl Toast {
-    fn new(msg: impl Into<String>) -> Self {
-        Toast { msg: msg.into(), at: Instant::now(), open_path: None }
-    }
-
-    fn with_folder(msg: impl Into<String>, path: impl Into<PathBuf>) -> Self {
-        Toast { msg: msg.into(), at: Instant::now(), open_path: Some(path.into()) }
-    }
 }
 
 /// A blocking MCP tool job (export.video / media.convert): the reply is sent when the job finishes.
@@ -164,7 +159,7 @@ pub struct App {
     playhead: f64,
     export: Option<(Arc<Progress>, ExportKind)>,
     encoders: Vec<String>,
-    toasts: Vec<Toast>,
+    toasts: Vec<feedback::Toast>,
     screenshot: Option<PathBuf>,
     started: Instant,
     /// Window starts hidden (see main.rs); shown once the first frame has been painted.
@@ -305,6 +300,34 @@ pub struct App {
     /// winpos's window-rect debounce: (drag/move started at, the rect it saw) while unsettled, `None`
     /// once saved. Owned here so `whatsnew::tick` can thread it into `winpos::tick` every frame.
     pub(crate) winpos_pending: Option<(Instant, [i32; 4])>,
+    // ---- ws:forgiveness ----
+    // deviation: unlike Settings/Project, this struct had no pre-seeded per-workstream marker section
+    // (only ws:registries-schema-hooks/ws:size-diet above) — adding one here, following the same
+    // pattern, since a future workstream will need the same treatment this struct's other fields got.
+    /// Single-slot Settings snapshot for `Action::UndoSettings` (taken by `settings_snapshot`) —
+    /// intentionally one slot, not a stack: a second destructive Settings op before the first is undone
+    /// silently drops the first offer (see the PR body's deliberate-simplifications note).
+    settings_undo: Option<Settings>,
+    /// Non-blocking confirm windows queued by `crate::ui::confirm::ask`/`ask_app`/`ask_discard`,
+    /// drained from the thread-local staging queue and drawn by `confirm::draw` (a WINDOW_DRAWER).
+    /// `pub(crate)`: `confirm::draw` lives in a SIBLING module (`crate::ui::confirm`, not a descendant
+    /// of `app`), so it needs crate-wide access to reach this field directly.
+    pub(crate) confirm_active: Vec<confirm::Pending>,
+    /// Set by the close-handler's `confirm_discard_then` continuation; `update()`'s top re-sends
+    /// `ViewportCommand::Close` once it sees this, since the original close was cancelled to let the
+    /// (now non-blocking) confirm window run first.
+    pending_close: bool,
+    /// Debounced off-thread autosave state (see autosave.rs).
+    autosave: autosave::AutosaveState,
+    /// `Action::RestoreBackup` opened the "Restore Autosave…" window (recovery.rs's `restore_window`).
+    restore_backup_open: bool,
+    // ---- ws:player-rate-loop ----
+    /// Timeline seconds a Play In->Out / Play Around / Play to Out should auto-pause at; cleared once
+    /// reached (or if playback stops some other way). See `playback_ctl::tick`.
+    play_stop_at: Option<f64>,
+    /// `playhead` as of the last `playback_ctl::tick` — lets the paused-playhead-change scrub fire once
+    /// per change instead of every frame.
+    scrub_last_t: f64,
     // ---- ws:command-palette ----
     /// Ctrl+K palette state. Named `cmd_palette`, not `palette` — `App.palette` is already the live
     /// theme `Palette` (`self.palette` is read constantly for colours throughout `ui::app`), so reusing
@@ -336,6 +359,13 @@ pub(crate) enum AltRenderKind {
     TrimView,
     Scopes,
     Wipe,
+}
+
+// ---- ws:forgiveness ----
+/// The on-disk cache directory's size — `settings_ui::performance` (a sibling module, not a descendant
+/// of `app`, so it can't reach `caches::cache_bytes` directly) reads this for its "Clear Caches" row.
+pub fn caches_bytes_for_ui() -> u64 {
+    caches::cache_bytes()
 }
 
 /// Non-blocking progress window for background jobs (conversions, downloads): one row per job with a
@@ -557,7 +587,7 @@ impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, open: Option<PathBuf>, screenshot: Option<PathBuf>) -> Self {
         // eframe restores the window rect from the last session, which may be on another monitor
         crate::winpos::place_on_cursor_monitor(cc);
-        let settings = Settings::load();
+        let (settings, settings_bad) = Settings::load_reporting();
         media::ffpipe::set_dir(&settings.ffmpeg_dir);
         media::ytdlp::set_dir(&settings.ytdlp_dir);
         theme::apply(&cc.egui_ctx, &settings.theme, &settings.palette, &settings.ui_look);
@@ -709,6 +739,14 @@ impl App {
             alt_render: None,
             whatsnew_open: false,
             winpos_pending: None,
+            // ---- ws:forgiveness ----
+            settings_undo: None,
+            confirm_active: Vec::new(),
+            pending_close: false,
+            autosave: autosave::AutosaveState::default(),
+            restore_backup_open: false,
+            play_stop_at: None,
+            scrub_last_t: 0.0,
             cmd_palette: palette::PaletteState::default(),
             cheat_sheet_open: false,
             // already-expired so `palette_ctl::tick`'s 1 Hz refresh runs on the very first frame instead
@@ -721,6 +759,9 @@ impl App {
             disabled_hooks: Vec::new(),
             last_fired_selection: Vec::new(),
         };
+        if let Some(reason) = settings_bad {
+            app.toast(format!("Settings file was corrupt (saved as settings.json.bad): {reason}"));
+        }
         app.detect_ytdlp(&cc.egui_ctx);
         app.refresh_presets();
         app.player.set_project(&app.project);
@@ -736,15 +777,7 @@ impl App {
     }
 
     // ---------------- helpers ----------------
-
-    fn toast(&mut self, msg: impl Into<String>) {
-        self.toasts.push(Toast::new(msg));
-    }
-
-    /// Like `toast`, but offers an "Open Folder" button for a file (or folder) just written to disk.
-    fn toast_with_folder(&mut self, msg: impl Into<String>, path: impl Into<PathBuf>) {
-        self.toasts.push(Toast::with_folder(msg, path));
-    }
+    // toast()/toast_with_folder()/push_toast()/toast_undo() moved to feedback.rs (ws:forgiveness).
 
     fn push_undo(&mut self) {
         push_undo_json(&mut self.undo, &mut self.redo, self.project.to_json());
@@ -875,6 +908,12 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             self.window_shown = true;
+            boot::run(self); // ws:forgiveness: offers crash recovery, if any
+        }
+        // ws:forgiveness: confirm_discard_then's continuation sets this once the (non-blocking) discard
+        // prompt resolves — the original close was cancelled below to let that prompt run, so re-send it.
+        if std::mem::take(&mut self.pending_close) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         self.palette = theme::palette_with(ctx, &self.settings.palette);
         let cozy_look = self.settings.ui_look != "sharp";
@@ -923,10 +962,12 @@ impl eframe::App for App {
                 self.close_after_export = true;
             } else if self.dirty && self.screenshot.is_none() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                if self.confirm_discard() {
-                    self.close_confirmed = true;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
+                // non-blocking now: the Close re-send happens at the top of `update` once this resolves
+                // (see `pending_close` above), not synchronously here.
+                self.confirm_discard_then(|app| {
+                    app.close_confirmed = true;
+                    app.pending_close = true;
+                });
             } else {
                 self.close_confirmed = true;
             }
@@ -1205,33 +1246,8 @@ impl eframe::App for App {
             self.layout_dirty = false;
         }
 
-        // toasts
-        // a toast with an Open Folder button needs time to be noticed AND clicked
-        self.toasts.retain(|t| t.at.elapsed().as_secs_f32() < if t.open_path.is_some() { 10.0 } else { 5.0 });
-        if !self.toasts.is_empty() {
-            egui::Area::new(egui::Id::new("toasts"))
-                .anchor(egui::Align2::RIGHT_BOTTOM, [-12.0, -12.0])
-                .order(egui::Order::Foreground)
-                .show(ctx, |ui| {
-                    for t in &self.toasts {
-                        egui::Frame::popup(ui.style()).show(ui, |ui| {
-                            ui.label(&t.msg);
-                            if let Some(p) = &t.open_path {
-                                if ui.small_button("Open Folder").clicked() {
-                                    let mut cmd = std::process::Command::new("explorer");
-                                    if p.is_dir() {
-                                        cmd.arg(p);
-                                    } else {
-                                        cmd.arg("/select,").arg(p);
-                                    }
-                                    let _ = cmd.spawn();
-                                }
-                            }
-                        });
-                    }
-                });
-            ctx.request_repaint_after(std::time::Duration::from_millis(500));
-        }
+        // toasts: drawn by feedback::draw, a WINDOW_DRAWER (ws:forgiveness) — this used to be an inline
+        // block here; see windows() -> WINDOW_DRAWERS.
     }
 }
 
@@ -1263,9 +1279,13 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:command-palette ----
     tools_commands::TOOLS,
     // ---- ws:forgiveness ----
+    tools_project::TOOLS,
     // ---- ws:player-rate-loop ----
+    // already registered above (tools_playback::TOOLS predates the marker system; wave-0a wired it in
+    // directly) — this workstream appends new rows into that same const, not a second registration.
     // ---- ws:snap-engine ----
     // ---- ws:trim-model ----
+    tools_trim::TOOLS,
     // ---- ws:canvas-handles-monitor ----
     // ---- ws:export-deliver ----
     // ---- ws:inspector-gallery ----
@@ -1293,8 +1313,10 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     palette_ctl::act,
     // ---- ws:forgiveness ----
     // ---- ws:player-rate-loop ----
+    playback_ctl::act,
     // ---- ws:snap-engine ----
     // ---- ws:trim-model ----
+    trim_actions::act,
     // ---- ws:canvas-handles-monitor ----
     // ---- ws:export-deliver ----
     // ---- ws:inspector-gallery ----
@@ -1319,7 +1341,9 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:command-palette ----
     palette_ctl::tick,
     // ---- ws:forgiveness ----
+    autosave::autosave_tick,
     // ---- ws:player-rate-loop ----
+    playback_ctl::tick,
     // ---- ws:snap-engine ----
     // ---- ws:trim-model ----
     // ---- ws:canvas-handles-monitor ----
@@ -1346,6 +1370,9 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:command-palette ----
     palette_ctl::windows,
     // ---- ws:forgiveness ----
+    feedback::draw,
+    confirm::draw,
+    recovery::restore_window,
     // ---- ws:player-rate-loop ----
     // ---- ws:snap-engine ----
     // ---- ws:trim-model ----
@@ -1508,13 +1535,54 @@ impl App {
     /// Set an undo entry's label directly (mirrors the existing `LAYOUT_STEP` sentinel path), so the
     /// History panel skips `describe_change`'s lazy diff for a labelled edit and shows `label` instead
     /// of "Project edited". Callers push the entry themselves (this only sets the label on the last
-    /// one) — see `push_undo_json`.
-    #[allow(dead_code)] // unused this wave — a future workstream's gesture wraps its own push in this
+    /// one) — see `push_undo_json`. First real caller: ws:forgiveness (Delete/RippleDelete, History
+    /// panel restore).
     pub(crate) fn push_undo_labeled(&mut self, before: String, label: &'static str) {
         push_undo_json(&mut self.undo, &mut self.redo, before);
         if let Some(e) = self.undo.last_mut() {
             e.label = label.to_string();
         }
+    }
+
+    // ---- ws:forgiveness ----
+    /// Resolve a queued `confirm::ConfirmAction` on Yes — the two `Project`-touching variants push a
+    /// labeled undo first (mirrors every other project edit); the two `Settings`-touching variants just
+    /// save (Settings isn't part of the undo stack). The actual field mutation is the pure
+    /// `confirm::apply_to_project`/`apply_to_settings` pair, so it's testable without a live `App`.
+    pub(crate) fn resolve_confirm(&mut self, action: confirm::ConfirmAction) {
+        match action {
+            confirm::ConfirmAction::ClearSubtitles => {
+                let before = self.project.to_json();
+                if confirm::apply_to_project(&mut self.project, &action) {
+                    self.push_undo_labeled(before, "Clear subtitles");
+                    self.after_edit();
+                }
+            }
+            confirm::ConfirmAction::ReplaceSubtitles(_) => {
+                let before = self.project.to_json();
+                if confirm::apply_to_project(&mut self.project, &action) {
+                    self.push_undo_labeled(before, "Replace subtitles");
+                    self.after_edit();
+                }
+            }
+            confirm::ConfirmAction::ClearRecent | confirm::ConfirmAction::DeleteTemplate(_) => {
+                if confirm::apply_to_settings(&mut self.settings, &action) {
+                    self.settings.save();
+                }
+            }
+            confirm::ConfirmAction::Custom(f) => f(self),
+        }
+    }
+
+    /// Single-slot Settings snapshot for `Action::UndoSettings` — call before a destructive Settings
+    /// mutation; `label` is reserved for a future toast/undo-entry description (see the
+    /// `settings_undo` field's doc comment for why this is one slot, not a stack).
+    /// ponytail: no caller yet this wave (see the PR body) — this workstream builds the primitive
+    /// (field + Action::UndoSettings arm + this setter); the first destructive Settings op (e.g. a
+    /// future "Reset all hotkeys") calls it.
+    #[allow(dead_code, unused_variables)]
+    pub(crate) fn settings_snapshot(&mut self, label: &'static str) {
+        self.settings_undo = Some(self.settings.clone());
     }
 
     /// The one sanctioned funnel for a NEW timed-repaint request (`ctx.request_repaint_after` at a

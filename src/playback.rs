@@ -182,20 +182,64 @@ struct Clock {
     duration: f64,
     /// Render size in pixels (already clamped to the preview max width); (0,0) = nothing to render.
     canvas: (u32, u32),
+    // ---- ws:player-rate-loop ----
+    /// Shuttle rate: `now() = base_t + elapsed * rate`. 1.0 = normal forward. `set_rate` rejects 0.0
+    /// (use `pause` to stop); `play()` forces this back to 1.0 so Stop/Play always resumes forward.
+    rate: f64,
+    /// `Some((in, out))` loops playback between those timeline seconds instead of stopping at 0/duration.
+    loop_range: Option<(f64, f64)>,
+    /// Bumped every time `now()` wraps a loop — the audio thread watches this to flush its ring at the
+    /// discontinuity instead of playing a stale block across the seam.
+    wraps: u64,
 }
 
 impl Clock {
+    /// Rate- and loop-aware wall-clock read. While playing: `raw = base_t + elapsed * rate`; inside a
+    /// loop range it wraps (rebasing `base_t`/`base_at` and bumping `wraps`) instead of stopping;
+    /// otherwise it stops at `duration` going forward (`rate >= 0`) or at `0.0` going backward
+    /// (`rate < 0`), mirroring the forward-only stop this replaces.
     fn now(&mut self) -> f64 {
         if !self.playing {
             return self.base_t;
         }
-        let t = self.base_t + self.base_at.elapsed().as_secs_f64();
-        if t < self.duration {
-            return t;
+        let raw = self.base_t + self.base_at.elapsed().as_secs_f64() * self.rate;
+        if let Some((a, b)) = self.loop_range {
+            let len = (b - a).max(1e-6);
+            if self.rate >= 0.0 {
+                if raw < b {
+                    return raw;
+                }
+                let wrapped = a + (raw - b) % len;
+                self.base_t = wrapped;
+                self.base_at = Instant::now();
+                self.wraps += 1;
+                return wrapped;
+            } else {
+                if raw > a {
+                    return raw;
+                }
+                let wrapped = b - (a - raw) % len;
+                self.base_t = wrapped;
+                self.base_at = Instant::now();
+                self.wraps += 1;
+                return wrapped;
+            }
         }
-        self.playing = false;
-        self.base_t = self.duration;
-        self.duration
+        if self.rate >= 0.0 {
+            if raw < self.duration {
+                return raw;
+            }
+            self.playing = false;
+            self.base_t = self.duration;
+            self.duration
+        } else {
+            if raw > 0.0 {
+                return raw;
+            }
+            self.playing = false;
+            self.base_t = 0.0;
+            0.0
+        }
     }
 }
 
@@ -210,6 +254,15 @@ struct Shared {
     cache_hits: AtomicU64,
     /// Playback fell behind decode: the UI should pause the clock and show a spinner until cleared.
     buffering: AtomicBool,
+    // ---- ws:player-rate-loop ----
+    /// Latest async layer request from `Player::request_layers`: (request id, time, max width).
+    req: Mutex<Option<(u64, f64, u32)>>,
+    /// The reply to the newest-processed `req`, polled (and consumed) by `Player::take_layers_reply`.
+    reply: Mutex<Option<(u64, Arc<LayerSet>)>>,
+    /// Cumulative genuinely-dropped frames (direction-normalized; see `dropped_delta`).
+    dropped: AtomicU64,
+    /// Allocator for `request_layers`' request ids.
+    next_req: AtomicU64,
 }
 
 /// Poison-tolerant lock: a panicking worker must never take the UI down with it.
@@ -237,6 +290,18 @@ enum Cmd {
     RenderOnce(f64, u32, SyncSender<Arc<Frame>>),
     /// One-shot layer decode at time t (GPU path: the UI thread renders them), reply on the channel.
     LayersOnce(f64, u32, SyncSender<Arc<LayerSet>>),
+    // ---- ws:player-rate-loop ----
+    /// The shuttle rate changed (render-thread: marks dirty so the next pass republishes at the new
+    /// pace). No payload — both threads re-read `Clock::rate` fresh; this is only a wake-up signal for
+    /// a thread that was idle-blocked on the channel.
+    Rate,
+    /// The loop range changed (render/audio threads re-read `Clock::loop_range` fresh each pass); same
+    /// wake-up-only shape as `Rate`.
+    Loop,
+    /// Audio-only: mix one BLOCK at this timeline time into the ring without touching the clock.
+    Scrub(f64),
+    /// Render-thread only: decode the layers for `Shared::req` and publish the reply, non-blocking.
+    LayersAsync,
     Quit,
 }
 
@@ -255,12 +320,19 @@ impl Player {
                 base_at: Instant::now(),
                 duration: 0.0,
                 canvas: (0, 0),
+                rate: 1.0,
+                loop_range: None,
+                wraps: 0,
             }),
             frame: Mutex::new(None),
             layers: Mutex::new(None),
             project: Mutex::new(Arc::new(Project::new())),
             cache_hits: AtomicU64::new(0),
             buffering: AtomicBool::new(false),
+            req: Mutex::new(None),
+            reply: Mutex::new(None),
+            dropped: AtomicU64::new(0),
+            next_req: AtomicU64::new(0),
         });
         let (render, rx) = mpsc::channel();
         let s = shared.clone();
@@ -315,6 +387,10 @@ impl Player {
             c.base_t = if t >= c.duration - 1e-6 { 0.0 } else { t };
             c.base_at = Instant::now();
             c.playing = true;
+            // ws:player-rate-loop: Play always resumes forward at 1x, regardless of a prior shuttle
+            // rate — Stop (pause()) leaves `rate` alone (now() ignores it while !playing), so without
+            // this a bare Space after J J J would silently resume playing backward at -4x.
+            c.rate = 1.0;
         }
         self.both(Cmd::Play);
     }
@@ -400,6 +476,78 @@ impl Player {
                 break;
             }
         }
+    }
+
+    // ---- ws:player-rate-loop ----
+
+    /// Rebase the clock at the current time with a new shuttle rate. Rejects (no-ops) exactly 0.0 —
+    /// use `pause` to stop. Negative = reverse; magnitude != 1.0 = fast/slow forward or reverse.
+    pub fn set_rate(&mut self, rate: f64) {
+        if rate == 0.0 {
+            return;
+        }
+        {
+            let mut c = lock(&self.shared.clock);
+            let t = c.now();
+            c.base_t = t;
+            c.base_at = Instant::now();
+            c.rate = rate;
+        }
+        self.both(Cmd::Rate);
+    }
+    /// Current shuttle rate (1.0 = normal forward).
+    pub fn rate(&self) -> f64 {
+        lock(&self.shared.clock).rate
+    }
+    /// Enable (`Some((in, out))`) or disable (`None`) Loop In->Out. If the playhead is currently outside
+    /// the new range, seeks to `in` first — otherwise `Clock::now`'s wrap math would land the next tick
+    /// at an unpredictable point inside the range (a modulo of however far past `out` playback had
+    /// drifted) instead of a clean loop start.
+    pub fn set_loop(&mut self, range: Option<(f64, f64)>) {
+        if let Some((a, b)) = range {
+            let t = self.time();
+            if t < a || t >= b {
+                self.seek(a);
+            }
+        }
+        {
+            lock(&self.shared.clock).loop_range = range;
+        }
+        self.both(Cmd::Loop);
+    }
+    /// The current loop range, if looping.
+    pub fn loop_range(&self) -> Option<(f64, f64)> {
+        lock(&self.shared.clock).loop_range
+    }
+    /// Frame-accurate relative seek: pauses, then moves by `frames` (negative = back) at `fps`.
+    pub fn step(&mut self, frames: i64, fps: f64) {
+        self.pause();
+        let t = self.time() + frames as f64 / fps.max(1.0);
+        self.seek(t);
+    }
+    /// Mix exactly one BLOCK (~21 ms @ 48 kHz/1024) of audio at `t` into the ring without moving the
+    /// clock — audio-only, for a paused playhead scrub. Audio-thread command only (not `both`).
+    pub fn scrub(&mut self, t: f64) {
+        let _ = self.audio.send(Cmd::Scrub(t));
+    }
+    /// Cumulative genuinely-dropped frames (direction-normalized: intentional rate-driven index
+    /// skipping never counts), for the wave-2 rate/dropped-frame badge.
+    pub fn dropped_frames(&self) -> u64 {
+        self.shared.dropped.load(Ordering::Relaxed)
+    }
+    /// Queue a non-blocking one-shot layer decode at `t` (at most `max_w` px wide); returns a request
+    /// id. Newest request always wins — an in-flight older request's reply is never surfaced once a
+    /// newer one has been queued. Never blocks the caller (unlike `layers_once`).
+    pub fn request_layers(&self, t: f64, max_w: u32) -> u64 {
+        let id = self.shared.next_req.fetch_add(1, Ordering::Relaxed) + 1;
+        *lock(&self.shared.req) = Some((id, t, max_w));
+        let _ = self.render.send(Cmd::LayersAsync);
+        id
+    }
+    /// Poll for `request_layers`' async reply (consumes it). `None` until ready, or forever for a
+    /// request superseded by a newer one before it was decoded.
+    pub fn take_layers_reply(&self) -> Option<(u64, Arc<LayerSet>)> {
+        lock(&self.shared.reply).take()
     }
 }
 
@@ -510,7 +658,14 @@ fn render_thread(
                     }
                     project = new;
                 }
-                Cmd::Seek | Cmd::Play | Cmd::Pause => dirty = true,
+                Cmd::Seek => {
+                    dirty = true;
+                    // a seek can jump the timeline index by any amount, including while still playing
+                    // (Player::seek keeps playing from `t`) — without this, dropped_delta(last_pub, idx,
+                    // rate) reads the whole jump as decode falling behind, not an intentional skip.
+                    last_pub = -1;
+                }
+                Cmd::Play | Cmd::Pause => dirty = true,
                 Cmd::Canvas => {
                     dirty = true;
                     clear_caches!(); // cached entries are the old canvas size
@@ -579,13 +734,32 @@ fn render_thread(
                     guarded(&mut pool, |pool| comp.render(&project, t, w, h, pool, &mut lock(&text), &mut f));
                     let _ = reply.send(Arc::new(f));
                 }
+                // ---- ws:player-rate-loop ----
+                Cmd::Rate => dirty = true,
+                Cmd::Loop => {} // loop_range is read fresh from Clock each pass
+                Cmd::LayersAsync => {
+                    // non-blocking mirror of LayersOnce: decode the latest request and publish the reply
+                    if let Some((id, t, max_w)) = *lock(&shared.req) {
+                        let (pw, ph) = (project.width.max(1), project.height.max(1));
+                        let w = pw.min(max_w.max(16));
+                        let h = ((ph as u64 * w as u64) / pw as u64).max(1) as u32;
+                        let mut set = LayerSet::default();
+                        let text = &mut lock(&text);
+                        guarded(&mut pool, |pool| {
+                            set =
+                                decode_layers(&project, t, w, h, pool, &mut spare_layers, text, &mut shapes, &mut comp)
+                        });
+                        *lock(&shared.reply) = Some((id, Arc::new(set)));
+                    }
+                }
+                Cmd::Scrub(_) => {} // audio-thread only
                 Cmd::Quit => return,
             }
         }
-        let (playing, t, (w, h), duration) = {
+        let (playing, t, (w, h), duration, rate) = {
             let mut c = lock(&shared.clock);
             let t = c.now();
-            (c.playing, t, c.canvas, c.duration)
+            (c.playing, t, c.canvas, c.duration, c.rate)
         };
         if !playing && !dirty && !stall {
             continue;
@@ -613,9 +787,11 @@ fn render_thread(
         let read_ahead = ((fps * READ_AHEAD_SECS).ceil() as i64).clamp(8, (budget / 2 / per_idx).max(8) as i64);
         let last_idx = (((duration * fps).ceil() as i64) - 1).max(idx);
         // keep the trail + horizon around the playhead eviction-protected: a scrub-back replays free
+        // (direction-aware: reverse shuttling protects what's already been shown behind idx instead)
         let trail = (fps * TRAIL_SECS).ceil() as i64;
-        fcache.set_protect(idx - trail, idx + read_ahead);
-        lcache.set_protect(idx - trail, idx + read_ahead);
+        let (protect_lo, protect_hi) = protect_bounds(idx, trail, read_ahead, rate);
+        fcache.set_protect(protect_lo, protect_hi);
+        lcache.set_protect(protect_lo, protect_hi);
         macro_rules! cached {
             ($i:expr) => {
                 if gpu {
@@ -638,8 +814,9 @@ fn render_thread(
         }
         if stall {
             // free-run the prefetcher: one frame per loop pass so commands stay responsive
-            let horizon = (idx + read_ahead).min(last_idx);
-            if let Some(i) = (idx..=horizon).find(|i| !cached!(*i)) {
+            // (direction-aware: nearest-to-idx first, stride-sampled at high |rate|)
+            let (rlo, rhi) = read_ahead_window(idx, read_ahead, last_idx, rate);
+            if let Some(i) = prefetch_order(rlo, rhi, rate).into_iter().find(|i| !cached!(*i)) {
                 let ok = if gpu {
                     gpu_cached(
                         &mut lcache,
@@ -679,8 +856,8 @@ fn render_thread(
                 }
             }
             // enough contiguous frames ready (hysteresis: a third of the horizon) -> resume
-            let goal = (idx + (read_ahead / 3).max(2)).min(last_idx);
-            if stall && (idx..=goal).all(|i| cached!(i)) {
+            let (glo, ghi) = read_ahead_window(idx, (read_ahead / 3).max(2), last_idx, rate);
+            if stall && (glo..=ghi).all(|i| cached!(i)) {
                 stall = false;
                 shared.buffering.store(false, Ordering::Relaxed);
                 dirty = true; // republish the (now cached) due frame on the next pass
@@ -722,6 +899,9 @@ fn render_thread(
                 );
                 *lock(&shared.frame) = Some(frame); // replaces an untaken (stale) frame: latest wins
             }
+            if playing && last_pub >= 0 {
+                shared.dropped.fetch_add(dropped_delta(last_pub, idx, rate), Ordering::Relaxed);
+            }
             last_pub = idx;
             ctx.request_repaint();
         }
@@ -733,13 +913,19 @@ fn render_thread(
             // ponytail: thread::sleep uses Windows' high-resolution waitable timer; recv_timeout rounds to
             // the 15.6 ms scheduler tick (30 fps -> ~21 fps). timeBeginPeriod(1) would also work but costs power.
             loop {
-                let remain = (idx + 1) as f64 / fps - lock(&shared.clock).now();
+                // next frame due in the direction of travel; dividing by the signed rate keeps this
+                // identical to the old `(idx+1)/fps - now()` at rate=1.0 while flipping sign for reverse
+                let target_idx = if rate >= 0.0 { idx + 1 } else { idx - 1 };
+                let denom = if rate >= 0.0 { rate.max(1e-6) } else { rate.min(-1e-6) };
+                let remain = (target_idx as f64 / fps - lock(&shared.clock).now()) / denom;
                 if remain <= 0.0 {
                     break;
                 }
-                let horizon = (((duration * fps).ceil() as i64) - 1).min(idx + read_ahead);
-                let missing =
-                    ((idx + 1)..=horizon).find(|i| if gpu { !lcache.contains(*i) } else { !fcache.contains(*i) });
+                let (rlo, rhi) = read_ahead_window(idx, read_ahead, last_idx, rate);
+                let missing = prefetch_order(rlo, rhi, rate)
+                    .into_iter()
+                    .skip(1) // idx itself is already rendered this pass
+                    .find(|i| if gpu { !lcache.contains(*i) } else { !fcache.contains(*i) });
                 let Some(i) = missing else {
                     std::thread::sleep(Duration::from_secs_f64(remain));
                     break;
@@ -784,6 +970,67 @@ fn render_thread(
     }
 }
 
+// ---- ws:player-rate-loop ----
+
+/// Cache eviction-protect window around `idx`, direction-aware: forward keeps `trail` frames behind
+/// and `read_ahead` ahead (unchanged from the old forward-only formula); reverse swaps which side is
+/// "ahead" — `read_ahead` frames toward 0 and `trail` frames back toward where playback came from.
+fn protect_bounds(idx: i64, trail: i64, read_ahead: i64, rate: f64) -> (i64, i64) {
+    if rate >= 0.0 {
+        (idx - trail, idx + read_ahead)
+    } else {
+        (idx - read_ahead, idx + trail)
+    }
+}
+
+/// Prefetch bounds, direction-aware: `read_ahead` frames beyond `idx` in the direction of travel,
+/// clamped to `[0, last_idx]`. One of the two returned bounds always equals `idx`.
+fn read_ahead_window(idx: i64, read_ahead: i64, last_idx: i64, rate: f64) -> (i64, i64) {
+    if rate >= 0.0 {
+        (idx, (idx + read_ahead).min(last_idx))
+    } else {
+        ((idx - read_ahead).max(0), idx)
+    }
+}
+
+/// Nearest-first, stride-sampled frame indices covering `[lo, hi]` — the order the prefetcher fills
+/// them in. Stride is `|rate|` rounded (minimum 1, so |rate| <= 1 samples every frame); forward scans
+/// from `lo` upward, reverse (`rate < 0`) scans from `hi` downward (nearest to the playhead first, since
+/// `read_ahead_window` puts `idx` at `hi` for a reverse window).
+fn prefetch_order(lo: i64, hi: i64, rate: f64) -> Vec<i64> {
+    let stride = rate.abs().round().max(1.0) as i64;
+    let mut out = Vec::new();
+    if rate >= 0.0 {
+        let mut i = lo;
+        while i <= hi {
+            out.push(i);
+            i += stride;
+        }
+    } else {
+        let mut i = hi;
+        while i >= lo {
+            out.push(i);
+            i -= stride;
+        }
+    }
+    out
+}
+
+/// Genuinely-dropped frames between two published indices, direction-normalized so a reverse-shuttle
+/// stall is counted instead of silently zeroed by a raw negative jump: `jump` is the published-index
+/// delta rotated into "frames of intended travel" (multiplying by `rate`'s sign), `stride` is how many
+/// frames one publish is expected to advance at this rate (intentional skipping, never a drop). Only
+/// the excess over `stride` counts as dropped.
+fn dropped_delta(prev_idx: i64, idx: i64, rate: f64) -> u64 {
+    if prev_idx < 0 {
+        return 0; // no prior publish to measure a jump from
+    }
+    let sign = if rate == 0.0 { 1.0 } else { rate.signum() };
+    let jump = (idx - prev_idx) as f64 * sign;
+    let stride = rate.abs().round().max(1.0);
+    (jump.round() as i64 - stride as i64).max(0) as u64
+}
+
 /// Timeline spans (seconds) whose cached frames the edit `old` -> `new` can have changed.
 /// None = the change can affect any frame (or is too entangled to bound): clear everything.
 /// Edits that cannot change pixels (markers, in/out points, audio tracks, buses, planner, notes,
@@ -818,6 +1065,13 @@ fn video_dirty_spans(old: &Project, new: &Project) -> Option<Vec<(f64, f64)>> {
         }
     }
     for (ot, nt) in old.tracks.iter().zip(&new.tracks) {
+        // ws:player-rate-loop: a reorder (same ids, different index) can flip z-order between two
+        // video tracks — bound spans computed against the OLD index assignment would be wrong for the
+        // new one, so treat any id mismatch at an index as unbounded (pro-timeline, wave 3, will allow
+        // track reordering and depends on this invariant already existing).
+        if ot.id != nt.id {
+            return None;
+        }
         if ot.kind != nt.kind {
             return None;
         }
@@ -1214,6 +1468,10 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
     // past a fade-in sitting at the new start time — it only ever plays audio mixed from that exact time.
     let mut filling = false;
     let mut pending: Option<Cmd> = None;
+    // ws:player-rate-loop: scratch mix window for 0<rate<=2 (sized for the widest case, rate=2 -> 2*BLOCK
+    // frames), decimated/duplicated down to exactly BLOCK output frames; last_wraps detects a loop seam.
+    let mut scratch = vec![0f32; BLOCK * 2 * 2];
+    let mut last_wraps: u64 = 0;
     let is_playing = || {
         let mut c = lock(&shared.clock);
         c.now();
@@ -1249,6 +1507,26 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
                     let _ = ack.send(());
                 }
                 Cmd::RenderOnce(..) | Cmd::LayersOnce(..) => {} // render-thread only
+                // ---- ws:player-rate-loop ----
+                Cmd::Rate | Cmd::Loop | Cmd::LayersAsync => {} // render-thread only
+                Cmd::Scrub(t) => {
+                    // mixes exactly one BLOCK at `t` into the ring without touching mixed_until — a
+                    // paused playhead scrub. Generalizes the lazy open/play path above so a scrub can
+                    // start the device even while !playing; the existing `!playing && running &&
+                    // ring.is_empty()` pause condition (below, after this drain loop) tears the stream
+                    // back down once this one block has drained, regardless of why it started.
+                    if stream.is_none() || dead.swap(false, Ordering::Relaxed) {
+                        stream = open_output(ring.clone(), dead.clone());
+                    }
+                    if let Some(s) = &stream {
+                        if !running {
+                            running = s.play().is_ok();
+                        }
+                        if running && guarded(&mut pool, |pool| mixer.mix(&project, t, pool, &mut block)) {
+                            lock(&ring).extend(block.iter().copied());
+                        }
+                    }
+                }
                 Cmd::Quit => return,
             }
         }
@@ -1267,8 +1545,19 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
             let _ = stream.pause();
             running = false;
         }
-        let queued = lock(&ring).len() as f64 / (2 * SAMPLE_RATE) as f64;
+        let mut queued = lock(&ring).len() as f64 / (2 * SAMPLE_RATE) as f64;
         if playing && queued < LEAD_SECS {
+            // ws:player-rate-loop: a loop wrap is a clock discontinuity the ring hasn't seen — flush it
+            // and refill from scratch, same as a fresh Play/Seek (whose own Cmd arm above already
+            // flushes; this only fires for an in-progress loop wrap between commands).
+            let cur_wraps = lock(&shared.clock).wraps;
+            if cur_wraps != last_wraps {
+                last_wraps = cur_wraps;
+                lock(&ring).clear();
+                mixed_until = lock(&shared.clock).now(); // mix from the post-wrap time, not the stale one
+                filling = true;
+                queued = 0.0;
+            }
             // ponytail: wall clock is the master; the ring is refilled only as the device drains it, so it
             // can't grow past LEAD + one block. The ring head plays at timeline time `mixed_until - queued`;
             // if that is already >50 ms in the past (decoder respawn, mid-playback underrun) snap the next
@@ -1280,10 +1569,35 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
             if !filling && now - (mixed_until - queued) > 0.05 {
                 mixed_until = now + queued;
             }
-            if guarded(&mut pool, |pool| mixer.mix(&project, mixed_until, pool, &mut block)) {
-                lock(&ring).extend(block.iter().copied()); // a panicked block would be garbage: underrun instead
+            let rate = lock(&shared.clock).rate;
+            if (rate - 1.0).abs() < 1e-9 {
+                // unchanged fast path: byte-identical to the pre-rate-loop code at the default rate
+                if guarded(&mut pool, |pool| mixer.mix(&project, mixed_until, pool, &mut block)) {
+                    lock(&ring).extend(block.iter().copied()); // a panicked block: underrun instead
+                }
+                mixed_until += BLOCK as f64 / SAMPLE_RATE as f64;
+            } else if rate > 0.0 && rate <= 2.0 {
+                // fixed-ratio resample: mix `win` real frames of source (spanning win/SAMPLE_RATE of
+                // TIMELINE time), then decimate/duplicate down to exactly BLOCK OUTPUT frames — that
+                // many frames of source content plays back in one BLOCK of real output time.
+                let win = ((BLOCK as f64 * rate).round().max(1.0) as usize).min(scratch.len() / 2);
+                let buf = &mut scratch[..win * 2];
+                if guarded(&mut pool, |pool| mixer.mix(&project, mixed_until, pool, buf)) {
+                    for i in 0..BLOCK {
+                        let si = (i * win / BLOCK).min(win - 1);
+                        block[i * 2] = buf[si * 2];
+                        block[i * 2 + 1] = buf[si * 2 + 1];
+                    }
+                    lock(&ring).extend(block.iter().copied());
+                }
+                mixed_until += win as f64 / SAMPLE_RATE as f64;
+            } else {
+                // reverse or >2x: not resampled/pitch-shifted — muted outright (still extends the ring
+                // so pacing/underrun logic sees normal progress; no drift tracking needed while muted).
+                block.fill(0.0);
+                lock(&ring).extend(block.iter().copied());
+                mixed_until = lock(&shared.clock).now();
             }
-            mixed_until += BLOCK as f64 / SAMPLE_RATE as f64;
         } else {
             filling = false; // ring reached LEAD_SECS (or we're paused): back to normal underrun detection
             match rx.recv_timeout(Duration::from_millis(4)) {
@@ -1619,6 +1933,254 @@ mod tests {
         vt.color = Some([200, 60, 60]);
         vt.volume = crate::model::Animated::new(0.5);
         assert!(video_dirty_spans(&project, &f).is_some(), "track flags/volume must not force a full clear");
+    }
+
+    /// ws:player-rate-loop — a track REORDER (same ids, swapped index) can flip which video draws on
+    /// top; a bounded diff computed against the old index assignment would be wrong for the new one, so
+    /// it must force a full clear (needed before pro-timeline, wave 3, allows track reordering).
+    #[test]
+    fn track_id_reorder_full_clears() {
+        let path = media::ffpipe::tests::test_mp4();
+        let asset = media::probe(&path, Backend::Auto).unwrap();
+        let mut project = Project::from_media(asset);
+        project.add_track(TrackKind::Video);
+        let mut reordered = project.clone();
+        let (id0, id1) = (reordered.tracks[0].id, reordered.tracks[1].id);
+        reordered.tracks[0].id = id1;
+        reordered.tracks[1].id = id0;
+        assert_eq!(
+            video_dirty_spans(&project, &reordered),
+            None,
+            "a Track.id reorder (same index, different id) must force a full clear"
+        );
+    }
+
+    #[test]
+    fn clock_rate_and_loop_wrap() {
+        // rate=2.0, no loop: advances at ~2x wall-clock
+        let mut c = Clock {
+            playing: true,
+            base_t: 0.0,
+            base_at: Instant::now(),
+            duration: 100.0,
+            canvas: (0, 0),
+            rate: 2.0,
+            loop_range: None,
+            wraps: 0,
+        };
+        sleep(Duration::from_millis(100));
+        let t = c.now();
+        assert!((0.12..0.40).contains(&t), "rate=2 should advance ~2x wall clock, got {t}");
+
+        // loop_range=(1.0,3.0), rate=1.0: wraps back near 1.0, never past 3.0, and counts the wrap
+        let mut c = Clock {
+            playing: true,
+            base_t: 2.9,
+            base_at: Instant::now(),
+            duration: 100.0,
+            canvas: (0, 0),
+            rate: 1.0,
+            loop_range: Some((1.0, 3.0)),
+            wraps: 0,
+        };
+        sleep(Duration::from_millis(200)); // 2.9 + ~0.2 = ~3.1, past b=3.0
+        let t = c.now();
+        assert!((1.0..2.0).contains(&t), "must wrap back inside [1,3), got {t}");
+        assert_eq!(c.wraps, 1);
+
+        // rate=-1.0 with the same loop range: wraps at the low end, symmetrically
+        let mut c = Clock {
+            playing: true,
+            base_t: 1.1,
+            base_at: Instant::now(),
+            duration: 100.0,
+            canvas: (0, 0),
+            rate: -1.0,
+            loop_range: Some((1.0, 3.0)),
+            wraps: 0,
+        };
+        sleep(Duration::from_millis(200)); // 1.1 - ~0.2 = ~0.9, past a=1.0 going backward
+        let t = c.now();
+        assert!((2.0..3.0).contains(&t), "reverse must wrap back inside [1,3), got {t}");
+        assert_eq!(c.wraps, 1);
+    }
+
+    #[test]
+    fn reverse_stops_at_zero() {
+        let mut c = Clock {
+            playing: true,
+            base_t: 0.3,
+            base_at: Instant::now(),
+            duration: 100.0,
+            canvas: (0, 0),
+            rate: -2.0,
+            loop_range: None,
+            wraps: 0,
+        };
+        sleep(Duration::from_millis(250)); // 0.3 - 2*0.25 = -0.2 -> clamps to 0, mirrors the duration-stop
+        let t = c.now();
+        assert_eq!(t, 0.0);
+        assert!(!c.playing, "reverse must stop playback at 0.0, mirroring the forward stop at duration");
+    }
+
+    /// A shuttle rate never survives past the next Play — Stop leaves `rate` alone (irrelevant while
+    /// paused), but `play()` always forces it back to 1.0 first, so Space after J J J resumes forward.
+    #[test]
+    fn play_forces_rate_1() {
+        let path = media::ffpipe::tests::test_mp4();
+        let asset = media::probe(&path, Backend::Auto).unwrap();
+        let project = Project::from_media(asset);
+        let mut p =
+            Player::new(eframe::egui::Context::default(), Backend::Auto, Arc::new(Mutex::new(TextRasterizer::new())));
+        p.set_project(&project);
+        p.set_rate(-4.0);
+        p.pause();
+        p.play();
+        assert_eq!(p.rate(), 1.0, "play() must force rate back to 1.0 regardless of the last shuttle rate");
+    }
+
+    /// `protect_bounds`/`read_ahead_window` swap which side of `idx` is "ahead" for a reverse shuttle.
+    #[test]
+    fn protect_and_prefetch_flip_for_reverse() {
+        for (idx, rate) in [(50i64, 1.0), (50, 4.0), (50, -1.0), (50, -4.0)] {
+            let (plo, phi) = protect_bounds(idx, 10, 20, rate);
+            let (rlo, rhi) = read_ahead_window(idx, 20, 1000, rate);
+            if rate >= 0.0 {
+                assert_eq!((plo, phi), (idx - 10, idx + 20), "forward protect: rate {rate}");
+                assert_eq!((rlo, rhi), (idx, idx + 20), "forward read-ahead: rate {rate}");
+            } else {
+                assert_eq!((plo, phi), (idx - 20, idx + 10), "reverse protect: rate {rate}");
+                assert_eq!((rlo, rhi), (idx - 20, idx), "reverse read-ahead: rate {rate}");
+            }
+        }
+    }
+
+    #[test]
+    fn prefetch_order_strides_and_orders_nearest_first() {
+        assert_eq!(prefetch_order(2, 10, 4.0), vec![2, 6, 10]);
+        // reverse, |rate|<=1: dense hi,hi-1,...,lo — nearest-to-idx (hi) first, no stride skip
+        assert_eq!(prefetch_order(5, 9, -1.0), vec![9, 8, 7, 6, 5]);
+    }
+
+    #[test]
+    fn dropped_delta_ignores_intentional_stride() {
+        assert_eq!(dropped_delta(10, 11, 1.0), 0, "exact stride at rate=1");
+        // note: the plan's own prose example used 15 here, inconsistent with its own formula (15-10=5 !=
+        // stride 4); 14 is the value actually consistent with `stride = rate.abs().round()` at rate=4.
+        assert_eq!(dropped_delta(10, 14, 4.0), 0, "exact stride at rate=4");
+        assert!(dropped_delta(10, 20, 1.0) > 0, "real stall at rate=1");
+        assert_eq!(dropped_delta(-1, 5, 1.0), 0, "no prior publish");
+        assert_eq!(dropped_delta(10, 9, -1.0), 0, "exact reverse stride");
+        assert!(dropped_delta(10, 3, -1.0) > 0, "real reverse stall");
+    }
+
+    /// A scrub-while-playing (a `seek()` call arriving mid-playback, same as dragging the playhead
+    /// without pausing) must not be miscounted as dropped frames: `Cmd::Seek` has to reset `last_pub`
+    /// just like `clear_caches!`/`evict_spans!` do, or the huge intentional index jump reads as a
+    /// decode stall.
+    #[test]
+    fn seek_while_playing_does_not_inflate_dropped_frames() {
+        let path = media::ffpipe::tests::test_mp4();
+        let asset = media::probe(&path, Backend::Auto).unwrap();
+        let project = Project::from_media(asset);
+        let mut p =
+            Player::new(eframe::egui::Context::default(), Backend::Auto, Arc::new(Mutex::new(TextRasterizer::new())));
+        p.set_project(&project);
+        p.set_canvas(320, 240, 1280);
+        p.seek(0.0);
+        p.play();
+        sleep(Duration::from_millis(150)); // let a few frames publish near t=0 so last_pub advances
+        p.seek(3.5); // big forward jump while still playing — an intentional scrub, not a stall
+        sleep(Duration::from_millis(300)); // let post-seek frames publish
+        eprintln!("DEBUG dropped_frames={} time={} playing={}", p.dropped_frames(), p.time(), p.is_playing());
+        assert!(p.dropped_frames() < 5, "seek-while-playing must not inflate dropped_frames, got {}", p.dropped_frames());
+    }
+
+    /// Arming Loop In->Out while the playhead sits outside the range must seek to `a` first — otherwise
+    /// `Clock::now`'s wrap math lands the next tick at an unpredictable point inside the range instead of
+    /// a clean loop start. Already being inside the range must leave the playhead alone.
+    #[test]
+    fn set_loop_seeks_into_range_only_when_outside() {
+        let path = media::ffpipe::tests::test_mp4();
+        let asset = media::probe(&path, Backend::Auto).unwrap();
+        let project = Project::from_media(asset);
+        let mut p =
+            Player::new(eframe::egui::Context::default(), Backend::Auto, Arc::new(Mutex::new(TextRasterizer::new())));
+        p.set_project(&project);
+
+        p.seek(3.9); // outside [0.5, 1.5)
+        p.set_loop(Some((0.5, 1.5)));
+        assert_eq!(p.time(), 0.5, "arming a loop while outside its range must seek to `in`");
+
+        p.set_loop(None);
+        p.seek(1.0); // inside [0.5, 1.5)
+        p.set_loop(Some((0.5, 1.5)));
+        assert_eq!(p.time(), 1.0, "arming a loop while already inside its range must not move the playhead");
+    }
+
+    /// While paused, `scrub` mixes audio without ever moving the clock.
+    #[test]
+    fn scrub_mixes_without_moving_clock() {
+        let path = media::ffpipe::tests::test_mp4();
+        let asset = media::probe(&path, Backend::Auto).unwrap();
+        let project = Project::from_media(asset);
+        let mut p =
+            Player::new(eframe::egui::Context::default(), Backend::Auto, Arc::new(Mutex::new(TextRasterizer::new())));
+        p.set_project(&project);
+        p.set_canvas(320, 240, 1280);
+        p.seek(1.0);
+        let t0 = p.time();
+        p.scrub(1.0);
+        sleep(Duration::from_millis(150)); // let the one-BLOCK mix settle (no audio device on CI: harmless)
+        assert_eq!(p.time(), t0, "scrub must never move the clock");
+        assert!(!p.is_playing());
+    }
+
+    /// Two `request_layers` calls in quick succession before either resolves: `take_layers_reply`
+    /// eventually surfaces only the second call's id, never the first's stale one.
+    #[test]
+    fn request_layers_newest_wins() {
+        let path = media::ffpipe::tests::test_mp4();
+        let asset = media::probe(&path, Backend::Auto).unwrap();
+        let project = Project::from_media(asset);
+        let mut p =
+            Player::new(eframe::egui::Context::default(), Backend::Auto, Arc::new(Mutex::new(TextRasterizer::new())));
+        p.set_project(&project);
+        let _id1 = p.request_layers(0.5, 160);
+        let id2 = p.request_layers(1.5, 160);
+        let mut last = None;
+        for _ in 0..300 {
+            if let Some((rid, _set)) = p.take_layers_reply() {
+                last = Some(rid);
+            }
+            sleep(Duration::from_millis(10));
+        }
+        assert_eq!(last, Some(id2), "only the newest request's id must ever surface");
+    }
+
+    /// After a scrub settles and nothing is outstanding, the render/audio threads have gone back to
+    /// their zero-CPU idle block: no further cache/dropped-frame activity or stray frame happens on its
+    /// own. (No hook into egui's own repaint-request count exists from a bare `Context::default()`, so
+    /// this checks the observable proxies the selftest idle step ultimately cares about: nothing keeps
+    /// working once nothing changed.)
+    #[test]
+    fn idle_no_repaint_while_paused_with_pending_scrub_state() {
+        let path = media::ffpipe::tests::test_mp4();
+        let asset = media::probe(&path, Backend::Auto).unwrap();
+        let project = Project::from_media(asset);
+        let mut p =
+            Player::new(eframe::egui::Context::default(), Backend::Auto, Arc::new(Mutex::new(TextRasterizer::new())));
+        p.set_project(&project);
+        p.set_canvas(320, 240, 1280);
+        p.seek(0.5);
+        wait_frame(&mut p, 0.5, (320, 240));
+        p.scrub(0.5);
+        sleep(Duration::from_millis(150));
+        let (h0, d0) = (p.cache_hits(), p.dropped_frames());
+        sleep(Duration::from_millis(200)); // idle window: paused, nothing requested
+        assert_eq!(p.cache_hits(), h0, "no further cache activity once idle");
+        assert_eq!(p.dropped_frames(), d0, "no further dropped-frame accounting once idle");
+        assert!(p.take_frame().is_none(), "no stray frame published while idle");
     }
 
     /// GPU mode: the render thread publishes decoded layers instead of a composited frame, and going

@@ -46,6 +46,29 @@ const OP_TOOLS: &[(&str, &str)] = &[
     // trim/keyframe/effect/mask/graph/route ops reached through clip.*/audio.* live in
     // src/ui/app/tools_clip.rs directly (they mutate a `Clip`/`Bus` field in place rather than
     // calling a named `Project::` op), so they never appear as a `pub fn NAME(&mut self` here.
+    // ---- ws:trim-model ----
+    ("close_gap_at", "timeline.close_gap"),
+    ("shift_time", "timeline.shift_time"),
+    ("mark_from_clip", "timeline.mark"),
+    ("set_track_flag", "track.set"),
+    ("rename_track", "track.set"),
+    ("set_track_color", "track.set"),
+    ("move_track", "track.move"),
+    ("ripple_trim", "timeline.ripple_trim"),
+    ("roll_edit", "timeline.roll"),
+    ("slip", "timeline.slip"),
+    ("slide", "timeline.slide"),
+    ("trim_edges", "timeline.trim_edges"),
+    ("extend_edit", "timeline.extend"),
+    ("overwrite_asset", "timeline.overwrite"),
+    ("splice_in", "timeline.splice"),
+    ("lift_range", "timeline.lift"),
+    ("extract_range", "timeline.extract"),
+    ("join_through", "timeline.join"),
+    ("duplicate", "timeline.duplicate"),
+    ("unnest", "timeline.unnest"),
+    ("replace_clip", "timeline.replace"),
+    ("magnetic_move", "timeline.magnetic_move"),
 ];
 
 /// (Project op fn name, why it has no MCP tool yet). Every entry is a real, deliberate gap — either a
@@ -98,6 +121,19 @@ const OP_INTERNAL: &[(&str, &str)] = &[
     ("find_free_track", "internal placement helper, not itself a user edit"),
     ("remove_transition", "no MCP tool yet (UI-only, e.g. right-click remove transition)"),
     ("transition_mut", "accessor; edits go through timeline.add_transition"),
+    // ---- ws:trim-model ----
+    (
+        "insert_asset_clips_ranged",
+        "superseded by splice_in/overwrite_asset, which call it directly — no separate MCP tool",
+    ),
+    // ---- ws:forgiveness ----
+    // Documentation only: `scan_mut_self_fns` only scans OP_FILES (src/model/ops/*.rs); none of these
+    // three live there (they live in src/ui/app/*), so the scan can never find or exercise these
+    // entries — they exist purely so a reader of this table isn't left wondering why history.restore/
+    // caches.clear/project.recover (all real MCP tools, see tools_project.rs) have no OP_TOOLS row.
+    ("caches::clear", "lives in src/ui/app/caches.rs, not src/model/ops/*.rs — exempt from this scan"),
+    ("recovery::recover_candidate", "lives in src/ui/app/recovery.rs, not src/model/ops/*.rs — exempt from this scan"),
+    ("history_ui::restore_at", "lives in src/ui/history_ui.rs, not src/model/ops/*.rs — exempt from this scan"),
 ];
 
 const OP_FILES: &[&str] = &[
@@ -117,6 +153,7 @@ const OP_FILES: &[&str] = &[
     include_str!("../../model/ops/templates.rs"),
     include_str!("../../model/ops/tracks.rs"),
     include_str!("../../model/ops/transitions.rs"),
+    include_str!("../../model/ops/trim.rs"),
 ];
 
 /// Every `pub fn NAME(...)` in `src` whose PARAMETER LIST (the balanced-paren span right after the

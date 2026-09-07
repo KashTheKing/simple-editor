@@ -11,7 +11,7 @@ pub(super) fn row_order(p: &Project) -> impl Iterator<Item = usize> + '_ {
 }
 
 /// Top y of track `ti` in display order (absolute points).
-pub(super) fn row_top(state: &TimelineState, p: &Project, ti: usize) -> Option<f32> {
+pub(crate) fn row_top(state: &TimelineState, p: &Project, ti: usize) -> Option<f32> {
     let mut top = state.lanes_rect.top() - state.scroll_y;
     for i in row_order(p) {
         if i == ti {
@@ -34,47 +34,6 @@ pub(super) fn drop_on_clip<'a>(state: &TimelineState, p: &'a Project, pos: Pos2,
         pos2(state.x_at(clip.end()), top + p.tracks[ti].height - 1.0),
     );
     Some((rect, clip))
-}
-
-/// Nearest candidate within `thr` of `t`.
-pub(super) fn nearest(t: f64, thr: f64, candidates: impl Iterator<Item = f64>) -> Option<f64> {
-    let mut best: Option<f64> = None;
-    for x in candidates {
-        let d = (x - t).abs();
-        if d <= thr && best.map_or(true, |b| d < (b - t).abs()) {
-            best = Some(x);
-        }
-    }
-    best
-}
-
-/// Snap target for `t`: 0, playhead, in/out, edges of clips not in `exclude` — within `thr` seconds.
-pub(super) fn snap_target(t: f64, thr: f64, p: &Project, playhead: f64, exclude: &[Id]) -> Option<f64> {
-    let edges = p.all_clips().filter(|(_, c)| !exclude.contains(&c.id)).flat_map(|(_, c)| [c.start, c.end()]);
-    nearest(t, thr, [0.0, playhead].into_iter().chain(p.in_point).chain(p.out_point).chain(edges))
-}
-
-/// Frame-quantise a pointer time and pull it onto the nearest snap candidate. Every tool that turns a
-/// pointer x into a time goes through here, so the razor, the marker tool, marker drags and media drops
-/// land on the same edges that moves and trims already snap to.
-/// Where the playhead lands when snapping is on: clip edges, in/out and 0, but NOT the playhead itself,
-/// which would always be the nearest candidate and pin it where it already is.
-pub(super) fn snap_playhead(t: f64, on: bool, zoom: f32, p: &Project) -> f64 {
-    if !on {
-        return p.snap_frame(t);
-    }
-    let t = p.snap_frame(t);
-    let edges = p.all_clips().flat_map(|(_, c)| [c.start, c.end()]);
-    let cands = [0.0].into_iter().chain(p.in_point).chain(p.out_point).chain(edges);
-    nearest(t, (SNAP_PX / zoom) as f64, cands).unwrap_or(t)
-}
-
-pub(super) fn snap_time(t: f64, on: bool, zoom: f32, p: &Project, playhead: f64, exclude: &[Id]) -> f64 {
-    if !on {
-        return t;
-    }
-    let t = p.snap_frame(t);
-    snap_target(t, (SNAP_PX / zoom) as f64, p, playhead, exclude).unwrap_or(t)
 }
 
 /// (major, minor) tick spacing in seconds for a zoom (px/s).

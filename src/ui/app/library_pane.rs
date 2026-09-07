@@ -48,9 +48,13 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
         }
         app.after_edit();
     }
-    if resp.clear_recent {
-        app.settings.recent_assets.clear();
-        app.settings.save();
+    // ---- ws:forgiveness ----
+    // "Clear recent" now goes through confirm::ask(ConfirmAction::ClearRecent) -> App::resolve_confirm
+    // directly (library.rs), not this response field — the old clear_recent bool/recent_clear() fn
+    // were deleted as dead code once that landed.
+    if let Some(n) = resp.removed_unused {
+        let s = if n == 1 { "" } else { "s" };
+        app.toast_undo(format!("Removed {n} unused asset{s}"), Action::Undo);
     }
     for (id, ext) in resp.convert {
         app.start_asset_convert(id, &ext);
