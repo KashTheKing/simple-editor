@@ -46,6 +46,7 @@ use crate::model::ops::tracks::TrackFlag;
 use crate::model::{
     Asset, Clip, ClipKind, Ease, EffectKind, Id, Label, Project, TrackKind, TransitionKind, ABUT_EPS, MIN_CLIP,
 };
+use crate::settings::TimelineView;
 use crate::theme::Palette;
 use crate::ui::tools::{draw_glyph, Glyph, Tool};
 
@@ -155,6 +156,15 @@ pub struct TimelineState {
     /// hatched; Delete closes it (`Project::close_gap_at`, ripple tracks only). Dropped by any clip
     /// click / band / Esc, and whenever it stops being a gap.
     pub gap_sel: Option<(usize, f64, f64)>,
+    // ---- ws:pro-timeline ----
+    /// Header inline-rename buffer: (track index, in-progress name). `header::draw_header` owns the
+    /// TextEdit; commits on Enter, cancels on a click elsewhere.
+    pub track_rename: Option<(usize, String)>,
+    /// Active index into `Settings.timeline_views` (the toolbar preset combo); clamped where read.
+    pub view_idx: usize,
+    /// Asymmetric multi-roller trim: edges armed by a Shift-click on a seam, consumed (and cleared) the
+    /// next time a plain edge-drag starts a `Gesture::Trim`.
+    rollers: Vec<(Id, bool)>,
 }
 
 impl Default for TimelineState {
@@ -178,6 +188,9 @@ impl Default for TimelineState {
             mini_graph_open: Vec::new(),
             edit_point: None,
             gap_sel: None,
+            track_rename: None,
+            view_idx: 0,
+            rollers: Vec::new(),
         }
     }
 }
@@ -311,6 +324,17 @@ pub struct TimelineCtx<'a> {
     /// ws:timeline-trim-gestures — the one asset selected in the Library (None when zero or 2+ are):
     /// gates the clip menu's "Replace with Library Selection".
     pub library_selected: Option<Id>,
+    // ---- ws:pro-timeline ----
+    /// Active `TimelineView` preset (resolved from `Settings.timeline_views[state.view_idx]` by
+    /// `app/timeline_pane.rs`, clamped) — gates the waveform/filmstrip/keyframe/clip-text paint passes.
+    pub view: &'a TimelineView,
+    /// `Settings.overview`: paint the inline overview minimap strip above the ruler.
+    pub overview: bool,
+    /// `Settings.boring_thr` (short_s, long_s): pacing tint thresholds.
+    pub boring_thr: (f32, f32),
+    /// Movie-mode pre-render coverage plus a realtime-safety flag per run: `(from, to, ready, heavy)`
+    /// from `PreRender::segments_with_heavy` (export-deliver). Empty = movie mode off.
+    pub realtime: &'a [(f64, f64, bool, bool)],
 }
 
 #[derive(Default)]
@@ -362,8 +386,11 @@ enum Gesture {
         magnetic: bool,
         want: (f64, i32),
     },
-    /// Trim the start (`start`) or end edge of `ids`; `edge` = edge time at drag start.
-    Trim { ids: Vec<Id>, start: bool, edge: f64, changed: bool },
+    /// Trim one or more edges by the SAME delta, each from its own press-time position — plain
+    /// single-edge trim is the `ids.len() == 1` case; ws:pro-timeline's asymmetric multi-roller trim
+    /// (Shift-click additional seams onto `TimelineState.rollers` first) is the general case. Each
+    /// `(Id, bool)` pair is (clip, is-start-edge); `edge0` is that same clip's edge time at drag start.
+    Trim { ids: Vec<(Id, bool)>, edge0: Vec<f64>, changed: bool },
     /// Rate-stretch one clip by dragging an edge: the source window (`src_len` source seconds) is kept
     /// and the speed follows the new duration.
     Stretch { id: Id, start: bool, edge: f64, src_len: f64, changed: bool },
@@ -478,6 +505,13 @@ enum Act {
     UnmakeContainer,
     /// Rename a container's slot label.
     RenameContainer(Id, String),
+    // ---- ws:pro-timeline ----
+    /// Header inline rename commit -> `Project::rename_track` (trim-model).
+    RenameTrack(usize, String),
+    /// Header colour swatch / context-menu pick -> `Project::set_track_color` (trim-model).
+    SetTrackColor(usize, Option<[u8; 3]>),
+    /// Header drag-grip release -> `Project::move_track` (trim-model). `true` = up.
+    ReorderTrack(usize, bool),
 }
 
 mod arm;
@@ -502,7 +536,10 @@ use gestures::gap_at;
 pub(crate) use gestures::delete_clips_magnetic;
 use menus::{clip_menu, label_menu, shared_effect_kinds, transition_ease_menu, transition_kind_menu};
 pub(crate) use paint::row_top;
+// ---- ws:pro-timeline ---- pure grouping/classification fns, reused by tools_timeline_pro.rs's
+// `timeline.dupes`/`timeline.pacing` MCP tools (a sibling module tree, so `pub(crate)` re-export here).
 use paint::*;
+pub(crate) use paint::{dupe_groups, pacing_spans};
 // `nearest` is only used by the test module's `nearest_within_threshold` (via this glob import);
 // selftest/release builds never call it directly.
 #[allow(unused_imports)]
@@ -519,9 +556,15 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     let id = ui.id().with("timeline");
     let content_h: f32 = c.project.tracks.iter().map(|t| t.height).sum();
     let sub_h = if c.project.subtitles.is_empty() { 0.0 } else { state.sub_h };
-    let vbar_w = if content_h > full.height() - RULER_H - sub_h - HBAR_H { VBAR_W } else { 0.0 };
-    let ruler =
-        Rect::from_min_max(pos2(full.left() + state.header_w, full.top()), pos2(full.right(), full.top() + RULER_H));
+    // ---- ws:pro-timeline: sequence tab strip (always) + inline overview minimap (Settings.overview) ----
+    let seq_tab_h: f32 = 20.0;
+    let overview_h: f32 = if c.overview { 28.0 } else { 0.0 };
+    let top_strip_h = seq_tab_h + overview_h;
+    let vbar_w = if content_h > full.height() - top_strip_h - RULER_H - sub_h - HBAR_H { VBAR_W } else { 0.0 };
+    let ruler = Rect::from_min_max(
+        pos2(full.left() + state.header_w, full.top() + top_strip_h),
+        pos2(full.right(), full.top() + top_strip_h + RULER_H),
+    );
     let subs_lane =
         Rect::from_min_max(pos2(ruler.left(), ruler.bottom()), pos2(full.right() - vbar_w, ruler.bottom() + sub_h));
     let lanes =
@@ -588,6 +631,57 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     painter.rect_filled(full, 0, pal.bg);
     painter.rect_filled(Rect::from_min_max(full.min, pos2(header.right(), full.bottom())), 0, pal.header);
     painter.rect_filled(ruler, 0, pal.header);
+    // ---- ws:pro-timeline: sequence tab strip: Main (+ the open sequence's name) -- drawn after the
+    // background fills above (which cover the whole `full` rect) so it isn't painted over ----
+    {
+        let tp = painter.with_clip_rect(Rect::from_min_max(full.min, pos2(full.right(), full.top() + seq_tab_h)));
+        let strip = Rect::from_min_max(pos2(full.left(), full.top()), pos2(full.right(), full.top() + seq_tab_h));
+        tp.rect_filled(strip, 0, pal.header);
+        let main_active = c.project.editing.is_none();
+        let main_r = Rect::from_min_size(pos2(strip.left() + 4.0, strip.top() + 2.0), vec2(52.0, seq_tab_h - 4.0));
+        let main_resp = ui.interact(main_r, id.with("tab_main"), Sense::click());
+        tp.rect_filled(
+            main_r,
+            CornerRadius::same(3),
+            if main_active { pal.accent.gamma_multiply(0.35) } else { pal.panel },
+        );
+        tp.text(main_r.center(), Align2::CENTER_CENTER, "Main", small.clone(), pal.text);
+        if main_resp.clicked() && !main_active {
+            out.actions.push(crate::hotkeys::Action::OpenParentSequence);
+        }
+        if let Some(seq) = c.project.editing.and_then(|sid| c.project.sequence(sid)) {
+            let w = (seq.name.len() as f32 * 6.5 + 16.0).max(50.0);
+            let r = Rect::from_min_size(pos2(main_r.right() + 4.0, strip.top() + 2.0), vec2(w, seq_tab_h - 4.0));
+            tp.rect_filled(r, CornerRadius::same(3), pal.accent.gamma_multiply(0.35));
+            tp.text(r.center(), Align2::CENTER_CENTER, &seq.name, small.clone(), pal.text);
+        }
+    }
+    // ---- inline overview minimap (Settings.overview): fit-to-window clip strip, click/drag scrubs ----
+    if c.overview {
+        let ov = Rect::from_min_max(
+            pos2(full.left() + state.header_w, full.top() + seq_tab_h),
+            pos2(full.right(), full.top() + seq_tab_h + overview_h),
+        );
+        let op = painter.with_clip_rect(ov);
+        op.rect_filled(ov, 0, pal.header);
+        let dur = c.project.duration().max(1.0);
+        for (_, cl) in c.project.all_clips() {
+            let x0 = ov.left() + (cl.start / dur) as f32 * ov.width();
+            let x1 = (ov.left() + (cl.end() / dur) as f32 * ov.width()).max(x0 + 1.0);
+            let color = label_color(c.project, c.project.clip_label(cl), pal.clip_color(cl.kind));
+            op.rect_filled(Rect::from_min_max(pos2(x0, ov.top() + 2.0), pos2(x1, ov.bottom() - 2.0)), 0, color);
+        }
+        let phx = ov.left() + (*c.playhead / dur) as f32 * ov.width();
+        op.vline(phx, ov.y_range(), Stroke::new(1.5, pal.playhead));
+        let ov_resp = ui.interact(ov, id.with("overview"), Sense::click_and_drag());
+        if let Some(pos) = ov_resp.interact_pointer_pos().filter(|_| ov_resp.clicked() || ov_resp.dragged()) {
+            let frac = ((pos.x - ov.left()) / ov.width()).clamp(0.0, 1.0) as f64;
+            *c.playhead = c.project.snap_frame(frac * dur);
+            out.seeked = true;
+        }
+    }
+    // ws:pro-timeline: boring-detector pacing bands (short/long clips), under the ticks
+    paint_pacing(&rp, c.project, state, ruler, c.boring_thr, &pal);
 
     // in/out shading (ruler + lanes)
     let (ip, op) = (c.project.in_point, c.project.out_point);
@@ -682,10 +776,29 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
 
         let tid = id.with(track.id);
         let active = c.project.active(ti);
-        if let Some(a) =
-            header::draw_header(ui, &bp, header, row, id, &pal, &font, &small, track, ti, active, &mut track_toggle)
-        {
+        if let Some(a) = header::draw_header(
+            ui,
+            &bp,
+            header,
+            row,
+            id,
+            &pal,
+            &font,
+            &small,
+            track,
+            ti,
+            active,
+            &mut track_toggle,
+            &mut state.track_rename,
+        ) {
             act = Some(a);
+        }
+        // ws:pro-timeline — track/bus volume automation line, audio tracks only (a video track's
+        // volume stays at the wave-0 default unity gain; painting a flat line for every one would be
+        // pure visual noise with nothing to show).
+        if track.kind == TrackKind::Audio {
+            let hcell = Rect::from_min_max(pos2(header.left(), row.top()), pos2(header.right(), row.bottom()));
+            paint_automation(&bp, track, hcell, &pal);
         }
         // ws:timeline-trim-gestures — a locked lane reads as "hands off": hatched under its clips
         if track.locked {
@@ -742,13 +855,14 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 }
                 continue;
             }
-            if clip.kind == ClipKind::Audio {
+            // ws:pro-timeline: the active TimelineView preset gates waveform/filmstrip/keyframe/text
+            if clip.kind == ClipKind::Audio && c.view.waves {
                 if let Some(asset) = c.project.asset(clip.asset) {
                     if let Some(peaks) = c.waveforms.get(&asset.path, clip.audio_stream) {
                         draw_waveform(&lp, &peaks, clip, vis.shrink(1.0), state, wave_color(color, clip_label, &pal));
                     }
                 }
-            } else if matches!(clip.kind, ClipKind::Video | ClipKind::Image) {
+            } else if matches!(clip.kind, ClipKind::Video | ClipKind::Image) && c.view.thumbs {
                 if let (Some(th), Some(asset)) = (c.thumbs.as_deref_mut(), c.project.asset(clip.asset)) {
                     draw_filmstrip(&lp, ui.ctx(), state, clip, asset, rect, vis.shrink(1.0), th);
                 }
@@ -758,25 +872,35 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             if clip.kind == ClipKind::Sequence {
                 let badge = Rect::from_min_size(name_pos, vec2(15.0, 15.0));
                 draw_glyph(&name_pc, badge, Glyph::Sequence, pal.text);
-                name_pc.text(pos2(badge.right(), name_pos.y), Align2::LEFT_TOP, &clip.name, font.clone(), pal.text);
+                if c.view.clip_text {
+                    name_pc.text(pos2(badge.right(), name_pos.y), Align2::LEFT_TOP, &clip.name, font.clone(), pal.text);
+                }
             } else if clip.container {
                 let badge = Rect::from_min_size(name_pos, vec2(15.0, 15.0));
                 draw_glyph(&name_pc, badge, Glyph::Container, pal.accent);
-                let label = if clip.is_empty_container() {
-                    if !clip.container_label.is_empty() {
-                        format!("[{}] (Empty)", clip.container_label)
+                if c.view.clip_text {
+                    let label = if clip.is_empty_container() {
+                        if !clip.container_label.is_empty() {
+                            format!("[{}] (Empty)", clip.container_label)
+                        } else {
+                            "Container (Empty)".to_string()
+                        }
+                    } else if !clip.container_label.is_empty()
+                        && !clip.name.contains(&format!("[{}]", clip.container_label))
+                    {
+                        format!("{} [{}]", clip.name, clip.container_label)
                     } else {
-                        "Container (Empty)".to_string()
-                    }
-                } else if !clip.container_label.is_empty()
-                    && !clip.name.contains(&format!("[{}]", clip.container_label))
-                {
-                    format!("{} [{}]", clip.name, clip.container_label)
-                } else {
-                    clip.name.clone()
-                };
-                name_pc.text(pos2(badge.right() + 2.0, name_pos.y), Align2::LEFT_TOP, &label, font.clone(), pal.text);
-            } else {
+                        clip.name.clone()
+                    };
+                    name_pc.text(
+                        pos2(badge.right() + 2.0, name_pos.y),
+                        Align2::LEFT_TOP,
+                        &label,
+                        font.clone(),
+                        pal.text,
+                    );
+                }
+            } else if c.view.clip_text {
                 name_pc.text(name_pos, Align2::LEFT_TOP, &clip.name, font.clone(), pal.text);
             }
             if clip.is_retimed() {
@@ -869,7 +993,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             // keyframe diamonds: on a tall clip in a value lane — 0 % at the bottom, 100 % at the top of the
             // range of the first property keyed at that time (the curve editor's auto-range, so both panes
             // agree) — otherwise in the bottom strip
-            if has_keys(clip) {
+            if has_keys(clip) && c.view.keys {
                 let lane = rect.height() >= KEY_LANE_MIN;
                 let props = crate::ui::curves::prop_count(clip);
                 for t in clip.key_times() {
@@ -1062,7 +1186,19 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                         .interact(er, cid.with(salt), Sense::click_and_drag())
                         .on_hover_cursor(CursorIcon::ResizeHorizontal);
                     if r.clicked() {
-                        click = Some(clip.id);
+                        // ws:pro-timeline: Shift-click a seam toggles it into the asymmetric multi-roller
+                        // trim set (Shift+DRAG on an edge is RateStretch per the frozen modifier table —
+                        // a plain click never starts a drag, so this claims no chord).
+                        if mods.shift {
+                            match state.rollers.iter().position(|&(id, s)| id == clip.id && s == is_start) {
+                                Some(i) => {
+                                    state.rollers.remove(i);
+                                }
+                                None => state.rollers.push((clip.id, is_start)),
+                            }
+                        } else {
+                            click = Some(clip.id);
+                        }
                     }
                     if r.drag_started_by(egui::PointerButton::Primary) {
                         start_trim = Some((clip.id, is_start));
@@ -1425,6 +1561,11 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             rp.rect_filled(seg, 0, col);
         }
     }
+    // ws:pro-timeline: realtime-safety tint just under the pre-render bar (paint only)
+    paint_realtime_bar(&rp, state, ruler, c.realtime, &pal);
+    // ws:pro-timeline: duplicate-source colour bars (dupe_groups is already O(n), same budget as the
+    // per-clip passes above — no extra `detailed` gate needed, headless_1000_clips_stays_fast covers it)
+    paint_dupes(&lp, c.project, state, lanes);
 
     // ---- ruler ticks ----
     let (major, minor) = tick_step(state.zoom);
@@ -1867,7 +2008,15 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         let p = &mut *c.project;
         // the trim-model ops below can refuse (locked track, no gap, not a sequence): those snapshot
         // first and only push undo if they actually changed something; every other Act pushes up front
-        let refusable = matches!(a, Act::CloseGap(..) | Act::Unnest(_) | Act::ReplaceClip(_));
+        let refusable = matches!(
+            a,
+            Act::CloseGap(..)
+                | Act::Unnest(_)
+                | Act::ReplaceClip(_)
+                | Act::RenameTrack(..)
+                | Act::SetTrackColor(..)
+                | Act::ReorderTrack(..)
+        );
         let before = refusable.then(|| p.clone());
         let mut changed = true;
         let mut label: &'static str = "";
@@ -2063,6 +2212,21 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 if let Some(cl) = p.clip_mut(cid) {
                     cl.container_label = name;
                 }
+            }
+            // ---- ws:pro-timeline: header UI dispatches to trim-model's existing ops directly (no
+            // App access inside show(), so App::run_tool_undoable isn't reachable here — the tests
+            // below drive this same path headlessly, which a live-App wrapper couldn't be) ----
+            Act::RenameTrack(ti, name) => {
+                label = "Rename track";
+                changed = p.rename_track(ti, name);
+            }
+            Act::SetTrackColor(ti, color) => {
+                label = "Track colour";
+                changed = p.set_track_color(ti, color);
+            }
+            Act::ReorderTrack(ti, up) => {
+                label = "Reorder track";
+                changed = p.move_track(ti, up);
             }
         }
         if let Some(b) = before {

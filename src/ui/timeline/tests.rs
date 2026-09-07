@@ -128,7 +128,13 @@ fn ensure_visible_follows_unless_user_panned() {
 // ---- headless egui harness: real layout + hit-testing + gestures ----
 use crate::media::Backend;
 use crate::model::{Asset, AudioStreamInfo, Effect, EffectKind};
+use crate::settings::TimelineView;
 use egui::{Event, Modifiers, PointerButton, RawInput};
+
+/// ws:pro-timeline: "everything on" view preset for the harness, so every pre-existing test's
+/// waveform/filmstrip/keyframe/clip-text assertions keep passing unchanged.
+const DETAILED_VIEW: TimelineView =
+    TimelineView { name: String::new(), waves: true, thumbs: true, keys: true, clip_text: true, row_h: 64.0 };
 
 struct Harness {
     ctx: egui::Context,
@@ -145,6 +151,11 @@ struct Harness {
     time: f64,
     /// Paint list of the last frame (asserting on what was actually drawn).
     shapes: Vec<egui::epaint::ClippedShape>,
+    // ---- ws:pro-timeline ----
+    view: TimelineView,
+    overview: bool,
+    boring_thr: (f32, f32),
+    realtime: Vec<(f64, f64, bool, bool)>,
 }
 
 impl Harness {
@@ -188,6 +199,10 @@ impl Harness {
             snap_markers: true,
             time: 0.0,
             shapes: Vec::new(),
+            view: DETAILED_VIEW,
+            overview: false,
+            boring_thr: (1.5, 20.0),
+            realtime: Vec::new(),
         };
         h.frame(vec![]); // layout pass: sets lanes_rect
         h
@@ -217,6 +232,10 @@ impl Harness {
             tool,
             snap,
             snap_markers,
+            view,
+            overview,
+            boring_thr,
+            realtime,
             ..
         } = self;
         let mut resp = None;
@@ -242,6 +261,10 @@ impl Harness {
                         prerender: &[],
                         tool: *tool,
                         library_selected: None,
+                        view,
+                        overview: *overview,
+                        boring_thr: *boring_thr,
+                        realtime,
                     },
                 ));
             });
@@ -842,7 +865,10 @@ fn headless_track_gutters_arm_while_the_lanes_scroll() {
     for _ in 0..5 {
         h.project.add_track(TrackKind::Video);
     }
-    h.state.scroll_y = 80.0; // past RULER_H, where the old row-relative arm zones were empty
+    // ws:pro-timeline: bumped from 80 to 100 -- the sequence tab strip now reserves 20 px above the
+    // ruler unconditionally, and the scrolled audio row needs that much more headroom to stay within
+    // `lanes.bottom()` (still comfortably "past RULER_H", the scenario this test is pinning).
+    h.state.scroll_y = 100.0;
     h.frame(vec![]);
     assert!(h.state.scroll_y > RULER_H, "lanes did not scroll: {}", h.state.scroll_y);
     let armed = |h: &Harness| matches!(h.state.drag, Some(Drag { g: Gesture::Move { new_track: true, .. }, .. }));
@@ -2572,4 +2598,293 @@ fn headless_1000_clip_ripple_trim_ghost_stays_fast() {
     assert!(ms < 10.0, "1000-clip RippleTrim ghost frame took {ms:.2} ms");
     h.release_m(from + vec2(28.0, 0.0), Modifiers::CTRL);
     h.frame(vec![]);
+}
+
+// ==================================================================================
+// ws:pro-timeline
+// ==================================================================================
+
+#[test]
+fn header_rename_commits_on_enter() {
+    let mut h = Harness::new();
+    h.state.track_rename = Some((0, "New Name".into()));
+    h.frame(vec![Event::Key {
+        key: egui::Key::Enter,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    }]);
+    assert_eq!(h.project.tracks[0].name, "New Name");
+    assert_eq!(h.undos, 1, "exactly one undo for the rename");
+    assert!(h.state.track_rename.is_none(), "rename mode closes after commit");
+}
+
+#[test]
+fn header_color_swatch_cycles_label_colors() {
+    let mut h = Harness::new();
+    h.frame(vec![]);
+    // egui's CentralPanel adds its own inset around `full`, so the header's own left edge (where the
+    // grip/swatch are anchored) isn't screen x=0 -- derive it from the real laid-out rect instead.
+    let header_left = h.state.lanes_rect.left() - h.state.header_w;
+    let swatch_pos = pos2(header_left + 18.0, h.state.lanes_rect.top() + 32.0);
+    assert_eq!(h.project.tracks[0].color, None);
+    for (i, (_, color)) in crate::model::LABEL_COLORS.iter().enumerate() {
+        h.press(swatch_pos);
+        h.release(swatch_pos);
+        h.frame(vec![]);
+        assert_eq!(h.project.tracks[0].color, Some(*color), "click {i}");
+    }
+    // one more click wraps back to None
+    h.press(swatch_pos);
+    h.release(swatch_pos);
+    h.frame(vec![]);
+    assert_eq!(h.project.tracks[0].color, None, "cycles back to None after all 8 label colours");
+}
+
+#[test]
+fn header_drag_reorder_swaps_same_kind_tracks() {
+    let mut h = Harness::new();
+    h.project.add_track(TrackKind::Video); // V2 at index 1; row_order shows V2 above V1
+    h.frame(vec![]);
+    let (v1_id, v2_id) = (h.project.tracks[0].id, h.project.tracks[1].id);
+    let lanes = h.state.lanes_rect;
+    let header_left = lanes.left() - h.state.header_w;
+    let v2_h = h.project.tracks[1].height;
+    // V1 is the SECOND displayed row (V2 draws above it, per row_order's video reversal)
+    let v1_row_top = lanes.top() + v2_h;
+    let grip = pos2(header_left + 4.0, v1_row_top + h.project.tracks[0].height * 0.5);
+    h.press(grip);
+    h.frame(vec![Event::PointerMoved(pos2(header_left + 4.0, lanes.top() - 5.0))]); // dragged up, above V2's row
+    let resp = h.release(pos2(header_left + 4.0, lanes.top() - 5.0));
+    assert!(resp.edited);
+    h.frame(vec![]);
+    assert_eq!(h.project.tracks[0].id, v2_id, "V2 swapped into slot 0");
+    assert_eq!(h.project.tracks[1].id, v1_id, "V1 (dragged up, past V2) swapped into slot 1");
+    assert_eq!(h.undos, 1);
+}
+
+#[test]
+fn view_preset_toggles_paint_calls() {
+    let mut h = Harness::new();
+    let name = h.video_clip().name.clone();
+    h.frame(vec![]);
+    let geom_before = (h.state.x_at(h.video_clip().start), h.state.x_at(h.video_clip().end()));
+    assert!(h.painted_text(&name).is_some(), "clip_text=true (the harness default) paints the clip name");
+    h.view.clip_text = false;
+    h.frame(vec![]);
+    assert!(h.painted_text(&name).is_none(), "clip_text=false suppresses the name");
+    let geom_after = (h.state.x_at(h.video_clip().start), h.state.x_at(h.video_clip().end()));
+    assert_eq!(geom_before, geom_after, "toggling a view flag must not move the clip");
+    h.view.clip_text = true;
+    h.frame(vec![]);
+    assert!(h.painted_text(&name).is_some(), "clip_text=true again re-paints the name");
+}
+
+#[test]
+fn overview_strip_paints_only_when_enabled() {
+    let mut h = Harness::new();
+    h.overview = false;
+    h.frame(vec![]);
+    let lanes_off = h.state.lanes_rect;
+    h.overview = true;
+    h.frame(vec![]);
+    let lanes_on = h.state.lanes_rect;
+    assert!(lanes_on.top() > lanes_off.top(), "the overview strip eats vertical space above the ruler when on");
+    // clicking inside the overview strip (still on, above the now-lower ruler) seeks
+    let pos = pos2(h.state.header_w + 50.0, lanes_off.top() + 4.0);
+    h.press(pos);
+    let resp = h.release(pos);
+    assert!(resp.seeked, "clicking the overview strip seeks the playhead");
+}
+
+#[test]
+fn sequence_tab_strip_shows_main_and_open() {
+    let mut h = Harness::new();
+    h.frame(vec![]);
+    assert!(h.painted_text("Main").is_some(), "Main tab always shown");
+    assert!(h.painted_text("Seq A").is_none());
+    let seq_id = h.project.new_sequence("Seq A", 1920, 1080, 30.0);
+    assert!(h.project.open_sequence(seq_id));
+    h.frame(vec![]);
+    assert!(h.painted_text("Seq A").is_some(), "open-sequence tab shown alongside Main");
+    // egui's CentralPanel insets `full`, so the tab strip's own origin isn't screen (0,0) -- the "Main"
+    // tab text position (painted this frame) is a reliable anchor regardless of that inset.
+    let main_text_pos = h.painted_text("Main").expect("Main tab painted");
+    let main_click = main_text_pos + vec2(10.0, 6.0);
+    h.press(main_click);
+    let resp = h.release(main_click);
+    assert!(
+        resp.actions.contains(&crate::hotkeys::Action::OpenParentSequence),
+        "clicking Main dispatches the existing OpenParentSequence path"
+    );
+}
+
+/// `clip_menu` has ~35 rows -- too tall for a right-click popup to lay out fully inside the 400 px
+/// headless screen (egui truncates an over-height menu with a "more" indicator rather than painting
+/// every row), so this calls `clip_menu` directly in a plain, generously-tall panel instead of going
+/// through a real right-click popup.
+#[test]
+fn clip_menu_always_offers_match_frame_and_reveal() {
+    let ctx = egui::Context::default();
+    ctx.set_fonts(crate::theme::test_fonts());
+    let (mut act, mut actions, mut edit_labels, mut toggle_graph) = (None, Vec::new(), false, false);
+    let (labels, buses, shared_effects): (Vec<Label>, Vec<crate::model::Bus>, Vec<EffectKind>) =
+        (vec![], vec![], vec![]);
+    let input =
+        RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 4000.0))), ..Default::default() };
+    let full = ctx.run(input, |ctx| {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            clip_menu(
+                ui,
+                1,
+                false,
+                false,
+                true,
+                false,
+                false,
+                false,
+                None,
+                None,
+                &mut toggle_graph,
+                &labels,
+                &buses,
+                &shared_effects,
+                &mut act,
+                &mut actions,
+                &mut edit_labels,
+            );
+        });
+    });
+    let texts: Vec<String> = full
+        .shapes
+        .iter()
+        .filter_map(|cs| match &cs.shape {
+            Shape::Text(t) => Some(t.galley.text().to_string()),
+            _ => None,
+        })
+        .collect();
+    assert!(texts.iter().any(|s| s.contains("Match Frame")), "Match Frame row in every clip menu");
+    assert!(texts.iter().any(|s| s.contains("Reveal in Library")), "Reveal in Library row in every clip menu");
+}
+
+#[test]
+fn dupes_group_by_asset_and_src_range() {
+    let mut p = Project::new();
+    let aid = 42;
+    let mut a = Clip::new(1, ClipKind::Video, "a", 0.0, 2.0);
+    (a.asset, a.src_in) = (aid, 1.0); // source range [1,3)
+    let mut b = Clip::new(2, ClipKind::Video, "b", 5.0, 2.0);
+    (b.asset, b.src_in) = (aid, 1.0); // same range [1,3) -- dupe of a
+    let mut c = Clip::new(3, ClipKind::Video, "c", 8.0, 2.0);
+    (c.asset, c.src_in) = (aid, 9.0); // range [9,11) -- singleton, excluded
+    p.tracks[0].clips = vec![a, b, c];
+    let groups = dupe_groups(&p);
+    assert_eq!(groups.len(), 1, "exactly one dupe group (the singleton is excluded)");
+    let mut g = groups[0].clone();
+    g.sort();
+    assert_eq!(g, vec![1, 2]);
+}
+
+#[test]
+fn pacing_bands_match_thresholds() {
+    let mut p = Project::new();
+    let short = Clip::new(1, ClipKind::Video, "s", 0.0, 0.5); // shorter than 1.5
+    let ok = Clip::new(2, ClipKind::Video, "ok", 1.0, 5.0); // inside [1.5, 20.0]
+    let long = Clip::new(3, ClipKind::Video, "l", 10.0, 25.0); // longer than 20.0
+    p.tracks[0].clips = vec![short, ok, long];
+    let flagged: Vec<Id> = pacing_spans(&p, (1.5, 20.0)).into_iter().map(|(id, ..)| id).collect();
+    assert!(flagged.contains(&1) && flagged.contains(&3), "too-short and too-long clips are flagged");
+    assert!(!flagged.contains(&2), "a clip inside the range is not flagged");
+}
+
+#[test]
+fn realtime_bar_skips_effect_free_seconds() {
+    let mut h = Harness::new();
+    let pal = Palette::new(true, Color32::from_rgb(0, 120, 212));
+    h.realtime = vec![(0.0, 2.0, true, true)]; // heavy but already ready -- no tint
+    h.frame(vec![]);
+    assert!(!h.has_fill(pal.playhead), "a ready segment gets no danger tint");
+    h.realtime = vec![(0.0, 2.0, false, false)]; // effect-free -- no tint
+    h.frame(vec![]);
+    assert!(!h.has_fill(pal.playhead), "an effect-free segment gets no danger tint");
+    h.realtime = vec![(0.0, 2.0, false, true)]; // heavy AND not ready -- tint
+    h.frame(vec![]);
+    assert!(h.has_fill(pal.playhead), "a heavy, not-yet-ready segment gets the danger tint");
+}
+
+/// Shift-click arms a seam onto the roller set (a plain click, never a drag, so it claims no chord
+/// from Shift+DRAG's existing RateStretch binding); the next plain edge-drag folds it in and moves
+/// both cuts by the SAME delta, each from its own press-time edge, while an untouched third seam on
+/// the same track (E) stays put.
+#[test]
+fn asymmetric_multi_roller_trim_moves_only_shift_clicked_seams() {
+    let mut h = Harness::new();
+    h.project.tracks[0].clips =
+        vec![Clip::new(101, ClipKind::Video, "A", 0.0, 3.0), Clip::new(102, ClipKind::Video, "E", 5.0, 3.0)];
+    h.project.add_track(TrackKind::Video);
+    let v2 = h.project.video_tracks()[1];
+    h.project.tracks[v2].clips.push(Clip::new(103, ClipKind::Video, "D", 1.0, 3.0));
+    h.frame(vec![]);
+
+    let lanes = h.state.lanes_rect;
+    let v1_row_top = lanes.top() + h.project.tracks[v2].height; // V2 draws above V1
+    let a_end_x = h.state.x_at(3.0);
+    h.press_m(pos2(a_end_x - 2.0, v1_row_top + 30.0), Modifiers::SHIFT);
+    h.release_m(pos2(a_end_x - 2.0, v1_row_top + 30.0), Modifiers::SHIFT);
+    h.frame(vec![]);
+    assert_eq!(h.state.rollers, vec![(101, false)], "Shift-click armed A's end edge");
+
+    let d_start_x = h.state.x_at(1.0);
+    let from = pos2(d_start_x + 2.0, lanes.top() + 30.0);
+    let to = from - vec2(20.0, 0.0); // 0.5 s left at zoom 40
+    assert!(h.drag(from, to));
+
+    assert!((h.project.tracks[v2].clips[0].start - 0.5).abs() < 0.05, "D's start moved by the drag delta");
+    let a_after = h.project.tracks[0].clips.iter().find(|c| c.id == 101).unwrap();
+    assert!((a_after.end() - 2.5).abs() < 0.05, "A's end moved by the SAME delta, from its own edge");
+    let e_after = h.project.tracks[0].clips.iter().find(|c| c.id == 102).unwrap();
+    assert_eq!(e_after.start, 5.0, "an untouched seam on the same track stays put");
+    assert!(h.state.rollers.is_empty(), "the roller set is consumed once the drag starts");
+}
+
+#[test]
+fn pacing_spans_boundary_is_not_flagged() {
+    let mut p = Project::new();
+    // exactly at the thresholds -- the condition is strict (< / >), so neither is flagged
+    let at_short = Clip::new(1, ClipKind::Video, "s", 0.0, 1.5);
+    let at_long = Clip::new(2, ClipKind::Video, "l", 2.0, 20.0);
+    p.tracks[0].clips = vec![at_short, at_long];
+    assert!(pacing_spans(&p, (1.5, 20.0)).is_empty(), "clips exactly at the boundary are not flagged");
+}
+
+#[test]
+fn header_rename_blank_name_is_refused() {
+    let mut h = Harness::new();
+    h.state.track_rename = Some((0, "   ".into())); // blank after trim -- rename_track refuses it
+    h.frame(vec![Event::Key {
+        key: egui::Key::Enter,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    }]);
+    assert_eq!(h.project.tracks[0].name, "V1", "refused rename leaves the name untouched");
+    assert_eq!(h.undos, 0, "a refused op pushes no undo");
+}
+
+#[test]
+fn asymmetric_roller_shift_click_toggles_off() {
+    let mut h = Harness::new();
+    let lanes = h.state.lanes_rect;
+    let x_end = h.state.x_at(10.0);
+    let pos = pos2(x_end - 2.0, lanes.top() + 30.0);
+    h.press_m(pos, Modifiers::SHIFT);
+    h.release_m(pos, Modifiers::SHIFT);
+    h.frame(vec![]);
+    assert_eq!(h.state.rollers.len(), 1, "first Shift-click arms the seam");
+    h.press_m(pos, Modifiers::SHIFT);
+    h.release_m(pos, Modifiers::SHIFT);
+    h.frame(vec![]);
+    assert!(h.state.rollers.is_empty(), "a second Shift-click on the same seam removes it");
 }

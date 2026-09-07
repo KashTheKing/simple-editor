@@ -115,6 +115,8 @@ mod tools_registry_tests;
 mod tools_source;
 mod tools_subtitles;
 mod tools_timeline;
+// ---- ws:pro-timeline ----
+mod tools_timeline_pro;
 // ---- ws:transcript-captions ----
 mod tools_transcript;
 mod tools_trim;
@@ -414,6 +416,9 @@ pub struct App {
     /// Background whisper / tracking / TTS jobs started outside the Subtitles pane (clip menu, MCP),
     /// the clip-menu model download and the "View transcript" window — see transcript_ctl.rs.
     transcript: transcript_ctl::TranscriptState,
+    // ---- ws:pro-timeline ----
+    /// Ctrl+F Find window state (open/closed, query buffer).
+    find: crate::ui::find_ui::FindState,
 }
 
 // ---- ws:canvas-handles-monitor ----
@@ -834,6 +839,8 @@ impl App {
             offline_scan_at: None,
             // ---- ws:transcript-captions ----
             transcript: transcript_ctl::TranscriptState::default(),
+            // ---- ws:pro-timeline ----
+            find: crate::ui::find_ui::FindState::default(),
         };
         if let Some(reason) = settings_bad {
             app.toast(format!("Settings file was corrupt (saved as settings.json.bad): {reason}"));
@@ -1388,6 +1395,7 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     tools_transcript::TOOLS,
     // ---- ws:pro-monitor ----
     // ---- ws:pro-timeline ----
+    tools_timeline_pro::TOOLS,
     // ---- ws:text-titles ----
     // ---- ws:docs-refresh ----
 ];
@@ -1425,6 +1433,7 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     transcript_ctl::act,
     // ---- ws:pro-monitor ----
     // ---- ws:pro-timeline ----
+    tools_timeline_pro::act,
     // ---- ws:text-titles ----
     // ---- ws:docs-refresh ----
 ];
@@ -1494,6 +1503,7 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     transcript_ctl::window,
     // ---- ws:pro-monitor ----
     // ---- ws:pro-timeline ----
+    tools_timeline_pro::window,
     // ---- ws:text-titles ----
     // ---- ws:docs-refresh ----
 ];

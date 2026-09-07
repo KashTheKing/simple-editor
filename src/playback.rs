@@ -1577,8 +1577,8 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
                 // unchanged fast path: byte-identical to the pre-rate-loop code at the default rate
                 if guarded(&mut pool, |pool| mixer.mix(&project, mixed_until, pool, &mut block)) {
                     lock(&ring).extend(block.iter().copied()); // a panicked block: underrun instead
-                    // ---- ws:audio-dsp-automation ----
-                    // hand the post-fader bus blocks to the UI thread's meters/LUFS (App::sync_buses)
+                                                               // ---- ws:audio-dsp-automation ----
+                                                               // hand the post-fader bus blocks to the UI thread's meters/LUFS (App::sync_buses)
                     mixer.graph().publish(&METER_FEED);
                 }
                 mixed_until += BLOCK as f64 / SAMPLE_RATE as f64;
@@ -1962,6 +1962,20 @@ mod tests {
         );
     }
 
+    /// ws:pro-timeline — consumer-side pin: `Project::move_track`'s real same-index-different-id swap
+    /// (not a hand-rolled one) hits the same guard `track_id_reorder_full_clears` (above) pins; this
+    /// does not re-test `move_track`'s own swap logic, that lives with trim-model.
+    #[test]
+    fn move_track_forces_full_clear() {
+        let path = media::ffpipe::tests::test_mp4();
+        let asset = media::probe(&path, Backend::Auto).unwrap();
+        let mut project = Project::from_media(asset);
+        project.add_track(TrackKind::Video);
+        let mut reordered = project.clone();
+        assert!(reordered.move_track(0, false), "adjacent swap must succeed with two video tracks");
+        assert_eq!(video_dirty_spans(&project, &reordered), None, "Project::move_track's swap must force a full clear");
+    }
+
     #[test]
     fn clock_rate_and_loop_wrap() {
         // rate=2.0, no loop: advances at ~2x wall-clock
@@ -2100,7 +2114,11 @@ mod tests {
         p.seek(3.5); // big forward jump while still playing — an intentional scrub, not a stall
         sleep(Duration::from_millis(300)); // let post-seek frames publish
         eprintln!("DEBUG dropped_frames={} time={} playing={}", p.dropped_frames(), p.time(), p.is_playing());
-        assert!(p.dropped_frames() < 5, "seek-while-playing must not inflate dropped_frames, got {}", p.dropped_frames());
+        assert!(
+            p.dropped_frames() < 5,
+            "seek-while-playing must not inflate dropped_frames, got {}",
+            p.dropped_frames()
+        );
     }
 
     /// Arming Loop In->Out while the playhead sits outside the range must seek to `a` first — otherwise

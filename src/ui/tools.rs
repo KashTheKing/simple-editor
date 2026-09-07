@@ -293,6 +293,11 @@ pub(crate) enum Glyph {
     Transcript,
     // ---- ws:pro-monitor ----
     // ---- ws:pro-timeline ----
+    /// A filled square with a thin ring — the track-header colour swatch. Named `Swatch`, not
+    /// `Palette`, to avoid colliding with the pervasive `use crate::theme::Palette;`.
+    Swatch,
+    /// Three stacked bars of differing width — the view-preset combo / overview toggle.
+    Rows,
     // ---- ws:text-titles ----
     // ---- ws:docs-refresh ----
 }
@@ -424,6 +429,8 @@ impl Glyph {
         Glyph::Transcript,
         // ---- ws:pro-monitor ----
         // ---- ws:pro-timeline ----
+        Glyph::Swatch,
+        Glyph::Rows,
         // ---- ws:text-titles ----
         // ---- ws:docs-refresh ----
     ];
@@ -559,6 +566,8 @@ impl Glyph {
             Glyph::Transcript => "transcript",
             // ---- ws:pro-monitor ----
             // ---- ws:pro-timeline ----
+            Glyph::Swatch => "swatch",
+            Glyph::Rows => "rows",
             // ---- ws:text-titles ----
             // ---- ws:docs-refresh ----
         }
@@ -1967,8 +1976,19 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
             p.line_segment([c + egui::vec2(0.5, 0.0), c + egui::vec2(4.5, 0.0)], Stroke::new(1.6, dim));
             p.line_segment([c + egui::vec2(-6.5, 4.5), c + egui::vec2(2.0, 4.5)], Stroke::new(1.6, dim));
         } // ---- ws:pro-monitor ----
-          // ---- ws:pro-timeline ----
-          // ---- ws:text-titles ----
+        // ---- ws:pro-timeline ----
+        // swatch: a filled square with a thin ring — the track-header colour button
+        Glyph::Swatch => {
+            let r = egui::Rect::from_center_size(c, egui::vec2(11.0, 11.0));
+            p.rect_filled(r, CornerRadius::same(2), fg);
+            p.rect_stroke(r, CornerRadius::same(2), stroke, StrokeKind::Inside);
+        }
+        // rows: three stacked horizontal bars of differing width
+        Glyph::Rows => {
+            for (dy, w) in [(-4.5_f32, 11.0_f32), (0.0, 7.0), (4.5, 9.0)] {
+                p.line_segment([c + egui::vec2(-w / 2.0, dy), c + egui::vec2(w / 2.0, dy)], Stroke::new(2.0, fg));
+            }
+        } // ---- ws:text-titles ----
           // ---- ws:docs-refresh ----
     }
 }
