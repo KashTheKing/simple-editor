@@ -232,6 +232,16 @@ actions! {
     // ---- ws:layout-modes-onboarding ----
     // ---- ws:media-library ----
     // ---- ws:source-monitor ----
+    // F: free (F11 fullscreen, Ctrl+Shift+F export frame); Ctrl+Shift+R: free (Ctrl+R retime,
+    // Shift+R freeze, Ctrl+Alt+R voiceover). The rest are Source-pane buttons / palette only.
+    MatchFrame => "match_frame", "Match Frame", sc(NONE, Key::F);
+    RevealInLibrary => "reveal_in_library", "Reveal in Library", sc(CTRL_SHIFT, Key::R);
+    AppendAtEnd => "append_at_end", "Append at End", None;
+    RippleOverwrite => "ripple_overwrite", "Ripple Overwrite", None;
+    CloseUp => "close_up", "Close Up", None;
+    PlaceOnTop => "place_on_top", "Place on Top", None;
+    SourceTape => "source_tape", "Source Tape", None;
+    ToggleSource => "toggle_source", "Show / Hide Source Monitor", None;
     // ---- ws:timeline-trim-gestures ----
     // ---- ws:transcript-captions ----
     // ---- ws:pro-monitor ----

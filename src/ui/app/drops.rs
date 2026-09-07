@@ -38,7 +38,11 @@ impl App {
             }
             let track = self.timeline.track_at(p.y, &self.project);
             let vt = track.filter(|&i| self.project.tracks[i].kind == TrackKind::Video);
-            self.insert_at(ids, t, vt);
+            // ---- ws:source-monitor ----
+            // the drop-modifier table: Ctrl = Splice, Alt = Overwrite (replace edit on a clip body),
+            // Shift = Place on Top, none = Place
+            let mode = DropMode::from_modifiers(ctx.input(|i| i.modifiers));
+            self.place_assets(&ids, t, vt, mode);
             self.after_edit();
         } else if on_moodboard {
             // snapshot after the import (which already pushed its own undo step if any file was fresh —

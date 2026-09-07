@@ -32,6 +32,8 @@ pub mod preview;
 pub mod retime;
 pub mod settings_ui;
 pub mod shader_ui;
+// ---- ws:source-monitor ----
+pub mod source_ui;
 pub mod subtitles_ui;
 pub mod timeline;
 pub mod tools;

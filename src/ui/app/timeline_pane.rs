@@ -63,12 +63,13 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
             },
         )
     };
+    // ws:source-monitor: any press on the timeline (a clip select as much as a seek) means "the
+    // timeline is the transport now" — Space/JKL/I/O come back here from the Source monitor
+    // (was: drop the library preview on seek).
+    if resp.seeked || source_pane::pressed_in(ui) {
+        app.source_focus = false;
+    }
     if resp.seeked {
-        // clicking the timeline means "play the timeline" — drop any library asset
-        // preview so it stops owning the Preview pane and the transport
-        app.lib_preview = None;
-        app.lib_preview_tex = None;
-        app.lib_preview_live = None;
         app.player.pause();
         app.player.seek(app.playhead);
     }
@@ -79,7 +80,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
         for (path, t, track) in resp.dropped_files {
             let ids = app.import_files(&[path]);
             let vt = track.filter(|&i| app.project.tracks[i].kind == TrackKind::Video);
-            app.insert_at(ids, t, vt);
+            app.place_assets(&ids, t, vt, DropMode::Place);
         }
         app.after_edit();
     }

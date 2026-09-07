@@ -69,6 +69,8 @@ const OP_TOOLS: &[(&str, &str)] = &[
     ("unnest", "timeline.unnest"),
     ("replace_clip", "timeline.replace"),
     ("magnetic_move", "timeline.magnetic_move"),
+    // ---- ws:source-monitor ----
+    ("subclip_from_marks", "source.subclip"),
 ];
 
 /// (Project op fn name, why it has no MCP tool yet). Every entry is a real, deliberate gap — either a
