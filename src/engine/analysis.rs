@@ -264,13 +264,19 @@ pub fn duck(
     let mut windows: Vec<(f64, f64)> = Vec::new();
     for &id in dialogue {
         let Some(c) = project.clip(id) else { continue };
+        if c.reverse || c.freeze.is_some() {
+            continue;
+        }
         let (start, src_in, duration, speed) = (c.start, c.src_in, c.duration, c.speed);
         let Some(peaks) = peaks_of(project, c.asset) else { continue };
         let segs = autocut::loud_segments(&peaks, src_in, duration * speed, &AutoCutParams::default());
         let (_, loud) = autocut::to_timeline(&segs, start, src_in, duration, speed, true);
         for (a, b) in loud {
             // into the music clip's local time
-            windows.push(((a - m_start).max(0.0), (b - m_start).min(m_dur)));
+            let (a, b) = ((a - m_start).max(0.0), (b - m_start).min(m_dur));
+            if b > a {
+                windows.push((a, b));
+            }
         }
     }
     if windows.is_empty() {
@@ -342,6 +348,9 @@ pub fn detect_beat_markers(
     let mut all_onsets = Vec::new();
     for &clip_id in targets {
         let Some(c) = project.clip(clip_id).cloned() else { continue };
+        if c.reverse || c.freeze.is_some() {
+            continue;
+        }
         let Some(peaks) = peaks_of(project, c.asset) else { continue };
         let found = onsets(&peaks, c.src_in, c.src_in + c.duration * c.speed, refractory_s, sensitivity);
         for &t_src in &found {
@@ -368,6 +377,9 @@ pub fn split_beats(
     let mut cuts = 0usize;
     for &clip_id in targets {
         let Some(c) = project.clip(clip_id).cloned() else { continue };
+        if c.reverse || c.freeze.is_some() {
+            continue;
+        }
         let Some(peaks) = peaks_of(project, c.asset) else { continue };
         let found = onsets(&peaks, c.src_in, c.src_in + c.duration * c.speed, refractory_s, sensitivity);
         // `group` grows with each split's new right-half piece (mirrors Project::auto_cut) — a fixed
@@ -391,6 +403,9 @@ pub fn split_beats(
 pub fn scene_cut_markers(project: &mut Project, clip: Id, cuts_src: &[f64]) -> Vec<Id> {
     let mut ids = Vec::new();
     let Some(c) = project.clip(clip).cloned() else { return ids };
+    if c.reverse || c.freeze.is_some() {
+        return ids;
+    }
     for &t_src in cuts_src {
         if let Some(id) = project.add_clip_marker(clip, to_clip_local(t_src, &c), "Scene cut") {
             ids.push(id);
@@ -403,6 +418,9 @@ pub fn scene_cut_markers(project: &mut Project, clip: Id, cuts_src: &[f64]) -> V
 /// Shared by the Scene cuts section's "Split" button and `media.scene_cuts`'s `split` path.
 pub fn split_scene_cuts(project: &mut Project, clip: Id, cuts_src: &[f64]) -> usize {
     let Some(c) = project.clip(clip).cloned() else { return 0 };
+    if c.reverse || c.freeze.is_some() {
+        return 0;
+    }
     // see split_beats' comment: `group` must grow with each split's new piece.
     let mut group = project.expand_links(&[clip]);
     let mut cuts = 0usize;
@@ -712,5 +730,56 @@ mod tests {
         let cuts = split_scene_cuts(&mut project, clip, &[1.5, 3.5]);
         assert_eq!(cuts, 2);
         assert!(project.tracks[0].clips.len() >= 3, "two cuts make (up to) three pieces");
+    }
+
+    /// `to_clip_local`/`to_timeline_t` assume a forward src mapping (`src_in + l`); a reverse or frozen
+    /// clip's real mapping is different (see `Clip::src_time`), so `detect_beat_markers` must skip such
+    /// clips entirely rather than mirror-flip the onsets onto the wrong clip-local times — same guard
+    /// `detect_silence` (tools_audio.rs) already applies before calling into this module.
+    #[test]
+    fn detect_beat_markers_skips_reverse_and_frozen_clips() {
+        let clicks = [1.5, 2.5, 3.5, 4.5];
+        let peaks = peaks_with_clicks(&clicks, 10.0);
+
+        let (mut project, clip) = beat_setup();
+        project.clip_mut(clip).unwrap().reverse = true;
+        let (ids, bpm) = detect_beat_markers(&mut project, &[clip], 0.1, 1.6, &mut |_p, _asset| {
+            Some(Arc::new(Peaks { min: peaks.min.clone(), max: peaks.max.clone() }))
+        });
+        assert!(ids.is_empty(), "reverse clip must be skipped, not mirror-flipped: {ids:?}");
+        assert!(bpm.is_none());
+
+        let (mut project, clip) = beat_setup();
+        project.clip_mut(clip).unwrap().freeze = Some(1.0);
+        let (ids, bpm) = detect_beat_markers(&mut project, &[clip], 0.1, 1.6, &mut |_p, _asset| {
+            Some(Arc::new(Peaks { min: peaks.min.clone(), max: peaks.max.clone() }))
+        });
+        assert!(ids.is_empty(), "frozen clip must be skipped: {ids:?}");
+        assert!(bpm.is_none());
+    }
+
+    /// Each loud-segment endpoint is clamped independently against the music clip's range; a segment
+    /// entirely outside `[m_start, m_start+m_dur]` must never seed an inverted (a > b) window into the
+    /// volume curve.
+    #[test]
+    fn duck_skips_window_when_dialogue_loud_segment_is_outside_music_range() {
+        let mut project = Project::default();
+        let mut music = test_clip(0.0, 0.0, 2.0, 1.0);
+        music.id = 1;
+        music.asset = 1;
+        music.volume = Animated::new(0.8);
+        let mut dlg = test_clip(10.0, 0.0, 2.0, 1.0); // timeline [10,12], entirely past music's [0,2]
+        dlg.id = 2;
+        dlg.asset = 2;
+        let mut track = crate::model::Track::new(1, crate::model::TrackKind::Audio, "t");
+        track.clips = vec![music, dlg];
+        project.tracks = vec![track];
+
+        let peaks = peaks_with_loud_ranges(&[(0.5, 1.5)], 3.0);
+        let written = duck(&mut project, 1, &[2], -12.0, 0.2, &mut |_p, _asset| {
+            Some(Arc::new(Peaks { min: peaks.min.clone(), max: peaks.max.clone() }))
+        });
+        assert_eq!(written, 0, "out-of-range loud segment must not seed an inverted window");
+        assert!(!project.clip(1).unwrap().volume.is_animated());
     }
 }
