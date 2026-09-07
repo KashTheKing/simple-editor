@@ -25,8 +25,11 @@
 //! the CPU half of BlobTrack — it runs anywhere, so the tracked centroid can drive properties even
 //! without a GL context.
 
+use crate::engine::gpu::FrameStats;
+use crate::engine::lut;
 use crate::media::Frame;
-use crate::model::{Effect, EffectKind};
+use crate::model::{Clip, Effect, EffectKind, Project};
+use std::borrow::Cow;
 
 /// A pixel-sized parameter (project px) as whole image px at `scale`, floored at `min`. A non-zero
 /// request never rounds down to nothing, so a small radius still shows in the small preview canvas
@@ -51,8 +54,63 @@ pub fn gpu_only(kind: EffectKind) -> bool {
             | EffectKind::EdgeGlow
             | EffectKind::BlobTrack
             | EffectKind::Vhs
+            | EffectKind::FrameBlend
             | EffectKind::Shader
     )
+}
+
+/// Master (`Asset.effects`) prepended ahead of `clip.effects` at render time — the single choke point
+/// every apply_effects() call site (compose.rs) and gpu.rs's chain use, so CPU and GPU agree on what
+/// "the clip's effects" means. `Cow::Borrowed` when the asset has none (zero-alloc hot path — most
+/// clips' assets never set master effects). Sole owner of this fn and the master/source-clip effects
+/// capability crate-wide; no later workstream re-declares it.
+pub fn effects_for<'a>(project: &'a Project, clip: &'a Clip) -> Cow<'a, [Effect]> {
+    let asset_fx = project.asset(clip.asset).map(|a| a.effects.as_slice()).unwrap_or(&[]);
+    if asset_fx.is_empty() {
+        return Cow::Borrowed(&clip.effects);
+    }
+    let mut fx = Vec::with_capacity(asset_fx.len() + clip.effects.len());
+    fx.extend_from_slice(asset_fx);
+    fx.extend_from_slice(&clip.effects);
+    Cow::Owned(fx)
+}
+
+/// Auto colour correction from a `frame_stats` snapshot: percentile black/white -> an editable `Levels`
+/// effect, exposure toward mid-grey -> an editable `Color` effect (brightness only — `Color` has no
+/// per-channel gain to do a literal grey-world white balance with; `color.primaries`'s RGB gain knobs
+/// are the tool for that, out of this one-tool-one-effect-pair's scope). A near-flat frame (nothing to
+/// stretch, already well exposed) is deliberately left at identity rather than blown out to an extreme
+/// contrast stretch — the common "solid test card" edge case.
+pub fn auto_color(stats: &FrameStats) -> (Effect, Effect) {
+    let mut levels = Effect::new(EffectKind::Levels);
+    let p1 = (stats.p1[0] + stats.p1[1] + stats.p1[2]) / 3.0;
+    let p99 = (stats.p99[0] + stats.p99[1] + stats.p99[2]) / 3.0;
+    if (p99 - p1) > 0.02 {
+        levels.params[0].value = p1.clamp(0.0, 0.4) as f64;
+        levels.params[1].value = p99.clamp(0.6, 1.0) as f64;
+    }
+    let mut color = Effect::new(EffectKind::Color);
+    let avg = (stats.mean[0] + stats.mean[1] + stats.mean[2]) / 3.0;
+    let delta = (0.5 - avg).clamp(-0.15, 0.15);
+    if delta.abs() > 0.03 {
+        color.params[0].value = delta as f64;
+    }
+    (levels, color)
+}
+
+/// Match `src`'s histogram toward `dst`'s reference as an editable `Curves` effect: each channel's
+/// three knots shift by the channel-mean delta (clamped so they stay monotone across the whole ±0.3
+/// range), leaving the master curve untouched (a per-channel match, not a global grade).
+pub fn match_curves(src: &FrameStats, dst: &FrameStats) -> Effect {
+    let mut e = Effect::new(EffectKind::Curves);
+    for c in 0..3 {
+        let delta = (dst.mean[c] - src.mean[c]).clamp(-0.3, 0.3) as f64;
+        let base_i = 3 + c * 3; // R starts at param index 3, G at 6, B at 9 (see P_CURVES)
+        e.params[base_i].value = (0.25 + delta * 0.5).clamp(0.05, 0.45);
+        e.params[base_i + 1].value = (0.5 + delta).clamp(0.1, 0.9);
+        e.params[base_i + 2].value = (0.75 + delta * 0.5).clamp(0.55, 0.95);
+    }
+    e
 }
 
 /// Apply one effect in place at clip-local time `t`. `scratch` is a reusable buffer.
@@ -131,6 +189,13 @@ pub fn apply(effect: &Effect, t: f64, scale: f32, img: &mut Frame, scratch: &mut
             e(7) as f32,
         ),
         EffectKind::RecDot => rec_dot(img, t, scale, e(0), e(1), e(2), e(3) >= 0.5, e(4)),
+        EffectKind::Primaries => {
+            primaries(img, [e(0), e(1), e(2)], [e(3), e(4), e(5)], [e(6), e(7), e(8)], e(9), e(10))
+        }
+        EffectKind::Qualifier => {
+            qualifier(img, e(0) as f32, e(1) as f32, e(2) as f32, e(3) as f32, e(4) as f32, e(5) as f32, e(6) as f32)
+        }
+        EffectKind::Lut => lut_effect(img, &effect.lut, e(0) as f32),
         // geometric — handled by the compositor's placement (see `wobble`)
         EffectKind::Wobble | EffectKind::Plane3d => {}
         // GPU-only kinds returned above; listed so a new kind is a compile error, not a silent no-op
@@ -139,6 +204,7 @@ pub fn apply(effect: &Effect, t: f64, scale: f32, img: &mut Frame, scratch: &mut
         | EffectKind::EdgeGlow
         | EffectKind::BlobTrack
         | EffectKind::Vhs
+        | EffectKind::FrameBlend
         | EffectKind::Shader => {}
     }
 }
@@ -594,6 +660,71 @@ fn levels(img: &mut Frame, inb: f64, inw: f64, gamma: f64, outb: f64, outw: f64)
     let g = gamma.max(0.01);
     let lut = lut_from(|x| outb + ((x - inb) / span).clamp(0.0, 1.0).powf(1.0 / g) * (outw - outb));
     apply_lut(img, &lut);
+}
+
+/// Lift/Gamma/Gain per channel (`pow(clamp(v*gain+lift,0,1), 1/gamma)`, reusing `lut_from`/`apply_lut`)
+/// then a cheap temp/tint post-pass shifting R/B (warmth) and G (tint) — the exact maths
+/// `shaders::PRIMARIES` runs on the GPU (same 0.0015 scale, worked out in 0..1 space there vs 0..255
+/// here), so preview and export agree. All-default (lift 0, gamma 1, gain 1, temp/tint 0) is the identity.
+fn primaries(img: &mut Frame, lift: [f64; 3], gamma: [f64; 3], gain: [f64; 3], temp: f64, tint: f64) {
+    let mut luts = [[0u8; 256]; 3];
+    for c in 0..3 {
+        let g = gamma[c].max(0.01);
+        luts[c] = lut_from(|v| (v * gain[c].max(0.0) + lift[c]).clamp(0.0, 1.0).powf(1.0 / g));
+    }
+    let (dr, db, dg) = (temp * 0.0015 * 255.0, temp * 0.0015 * 255.0, tint * 0.0015 * 255.0);
+    for px in img.rgba.chunks_exact_mut(4) {
+        let r = luts[0][px[0] as usize] as f64 + dr;
+        let g = luts[1][px[1] as usize] as f64 + dg;
+        let b = luts[2][px[2] as usize] as f64 - db;
+        px[0] = r.clamp(0.0, 255.0) as u8;
+        px[1] = g.clamp(0.0, 255.0) as u8;
+        px[2] = b.clamp(0.0, 255.0) as u8;
+    }
+}
+
+/// HSL-band secondary key: hue distance (turns->degrees) + a saturation/luminance band each fall off
+/// over `softness`, multiplied into alpha; RGB passes through untouched (a matte, like ChromaKey's
+/// show-mask mode). Mirrors `shaders::QUALIFIER`'s GPU maths exactly (same smoothstep-ratio formulas).
+#[allow(clippy::too_many_arguments)]
+fn qualifier(
+    img: &mut Frame,
+    hue: f32,
+    hue_width: f32,
+    sat_min: f32,
+    sat_max: f32,
+    lum_min: f32,
+    lum_max: f32,
+    softness: f32,
+) {
+    let soft = softness.max(0.001);
+    for px in img.rgba.chunks_exact_mut(4) {
+        let (h, s, l) = rgb_to_hsl(px[0] as f32 / 255.0, px[1] as f32 / 255.0, px[2] as f32 / 255.0);
+        let hue_deg = h * 360.0;
+        let dh = ((hue_deg - hue + 180.0).rem_euclid(360.0) - 180.0).abs();
+        let hue_a = 1.0 - smoothstep((dh - hue_width) / (soft * 60.0));
+        let sat_a = smoothstep((s - (sat_min - soft)) / soft) * (1.0 - smoothstep((s - sat_max) / soft));
+        let lum_a = smoothstep((l - (lum_min - soft)) / soft) * (1.0 - smoothstep((l - lum_max) / soft));
+        let a = (hue_a * sat_a * lum_a).clamp(0.0, 1.0);
+        px[3] = (px[3] as f32 * a) as u8;
+    }
+}
+
+/// `.cube` LUT lookup via `engine::lut`, mixed with the source by `amount` (Intensity). Identity no-op
+/// when `path` is empty or fails to parse/load (a still-being-typed path, or a file that moved).
+fn lut_effect(img: &mut Frame, path: &str, amount: f32) {
+    if path.is_empty() || amount <= 0.0 {
+        return;
+    }
+    let Ok(l) = lut::load(path) else { return };
+    let amount = amount.clamp(0.0, 1.0);
+    for px in img.rgba.chunks_exact_mut(4) {
+        let rgb = [px[0] as f32 / 255.0, px[1] as f32 / 255.0, px[2] as f32 / 255.0];
+        let out = lut::sample_trilinear(&l, rgb);
+        for c in 0..3 {
+            px[c] = ((rgb[c] + (out[c] - rgb[c]) * amount).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+        }
+    }
 }
 
 /// Monotone cubic (Fritsch–Carlson) through (0,0) (0.25,a) (0.5,b) (0.75,c) (1,1) — the exact curve
@@ -1299,7 +1430,8 @@ mod tests {
 
     #[test]
     fn gpu_only_kinds_are_still_no_ops() {
-        for k in [K::Vhs, K::MotionBlur, K::EdgeGlow, K::JpegCompress, K::BlobTrack, K::Shader] {
+        for k in [K::Vhs, K::MotionBlur, K::EdgeGlow, K::JpegCompress, K::BlobTrack, K::FrameBlend, K::Shader] {
+            assert!(gpu_only(k), "{k:?}");
             let mut img = noisy(8, 8);
             let before = img.rgba.clone();
             let mut e = Effect::new(k);
@@ -1309,5 +1441,152 @@ mod tests {
             apply(&e, 0.0, 1.0, &mut img, &mut Frame::default());
             assert_eq!(img.rgba, before, "{k:?} must leave the CPU path alone");
         }
+    }
+
+    // ---- ws:color-engine ----
+
+    fn asset_with_effects(id: crate::model::Id, fx: Vec<Effect>) -> crate::model::Asset {
+        crate::model::Asset {
+            id,
+            path: format!("C:/asset-{id}.mp4"),
+            kind: crate::model::ClipKind::Video,
+            duration: 5.0,
+            width: 1280,
+            height: 720,
+            fps: 30.0,
+            audio_streams: Vec::new(),
+            codec: String::new(),
+            folder: String::new(),
+            tags: Vec::new(),
+            label: 0,
+            description: String::new(),
+            rel_path: None,
+            parent: None,
+            range: None,
+            effects: fx,
+        }
+    }
+
+    #[test]
+    fn primaries_neutral_is_identity() {
+        let mut img = noisy(8, 8);
+        let before = img.rgba.clone();
+        apply(&Effect::new(K::Primaries), 0.0, 1.0, &mut img, &mut Frame::default());
+        assert_eq!(img.rgba, before, "default lift/gamma/gain/temp/tint must be a no-op");
+    }
+
+    #[test]
+    fn qualifier_selects_hue_band() {
+        // pure red (hue 0) and pure green (hue 120); qualify a narrow band centred on red
+        let mut img = Frame::new(2, 1);
+        img.rgba.copy_from_slice(&[255, 0, 0, 255, 0, 255, 0, 255]);
+        run(K::Qualifier, &[0.0, 20.0, 0.2, 1.0, 0.1, 0.9, 0.05], &mut img);
+        assert!(img.rgba[3] > 200, "in-band pixel should stay near-opaque: {}", img.rgba[3]);
+        assert!(img.rgba[7] < 20, "out-of-band pixel should be near-transparent: {}", img.rgba[7]);
+        // RGB itself passes through unchanged (a matte, not a colour change)
+        assert_eq!(&img.rgba[..3], &[255, 0, 0]);
+    }
+
+    /// A freshly-added Qualifier (defaults: Hue Width at its max, Sat/Lum spanning 0..1) must be an
+    /// identity, not a keyer that blanks the frame — regression pin for the bug the selftest's
+    /// `effects/round3` step caught (every EffectKind::ALL default must leave every pixel's alpha > 0).
+    #[test]
+    fn qualifier_default_is_identity() {
+        let mut img = noisy(8, 8);
+        let before = img.rgba.clone();
+        apply(&Effect::new(K::Qualifier), 0.0, 1.0, &mut img, &mut Frame::default());
+        assert!(img.rgba.chunks_exact(4).all(|p| p[3] > 0), "default Qualifier zeroed some alpha");
+        assert_eq!(img.rgba, before, "default Qualifier must be a true no-op");
+    }
+
+    #[test]
+    fn lut_cpu_applies_a_known_cube() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("se_effects_lut_test_{}.cube", std::process::id()));
+        // an 'invert' cube: identity minus 1 at every corner
+        std::fs::write(
+            &path,
+            "LUT_3D_SIZE 2\n\
+             1.0 1.0 1.0\n0.0 1.0 1.0\n1.0 0.0 1.0\n0.0 0.0 1.0\n\
+             1.0 1.0 0.0\n0.0 1.0 0.0\n1.0 0.0 0.0\n0.0 0.0 0.0\n",
+        )
+        .unwrap();
+        let p = path.to_string_lossy().into_owned();
+        let mut e = Effect::new(K::Lut);
+        e.lut = p.clone();
+        // Intensity 1.0: fully inverted
+        let mut img = flat(1, 1, [200, 50, 10, 255]);
+        run_effect(&e, &mut img);
+        assert_eq!(&img.rgba[..3], &[55, 205, 245], "{:?}", &img.rgba[..3]);
+        // Intensity 0.0: unchanged
+        e.params[0].value = 0.0;
+        let mut img2 = flat(1, 1, [200, 50, 10, 255]);
+        run_effect(&e, &mut img2);
+        assert_eq!(&img2.rgba[..3], &[200, 50, 10]);
+        std::fs::remove_file(&path).ok();
+
+        fn run_effect(e: &Effect, img: &mut Frame) {
+            apply(e, 0.0, 1.0, img, &mut Frame::default());
+        }
+    }
+
+    #[test]
+    fn effects_for_borrows_when_asset_has_no_effects() {
+        let asset = asset_with_effects(1, Vec::new());
+        let mut project = crate::model::Project::new();
+        let aid = project.add_asset(asset);
+        let cid = project.insert_asset_clips(aid, 0.0, None)[0];
+        {
+            let c = project.clip_mut(cid).unwrap();
+            c.effects.push(Effect::new(K::Blur));
+        }
+        let clip = project.clip(cid).unwrap();
+        let out = effects_for(&project, clip);
+        assert!(matches!(out, Cow::Borrowed(_)), "no asset effects -> borrowed, zero-alloc");
+        assert_eq!(out.len(), 1);
+
+        // now give the asset master effects: the clip's own effects come after them, in order
+        let asset2 = asset_with_effects(2, vec![Effect::new(K::Vignette), Effect::new(K::Grayscale)]);
+        let mut project2 = crate::model::Project::new();
+        let aid2 = project2.add_asset(asset2);
+        let cid2 = project2.insert_asset_clips(aid2, 0.0, None)[0];
+        {
+            let c = project2.clip_mut(cid2).unwrap();
+            c.effects.push(Effect::new(K::Blur));
+        }
+        let clip2 = project2.clip(cid2).unwrap();
+        let out2 = effects_for(&project2, clip2);
+        assert!(matches!(out2, Cow::Owned(_)));
+        assert_eq!(out2.iter().map(|e| e.kind).collect::<Vec<_>>(), vec![K::Vignette, K::Grayscale, K::Blur]);
+    }
+
+    #[test]
+    fn auto_color_neutralises_grey_card() {
+        // a flat mid-grey card: no dynamic range to stretch, exposure already centred
+        let flat_stats = crate::engine::gpu::compute_stats(&flat_rgba(128, 8, 8), 8, 8);
+        let (levels, color) = auto_color(&flat_stats);
+        assert!((levels.params[0].value - 0.0).abs() < 1e-6, "in-black stays at identity: {}", levels.params[0].value);
+        assert!((levels.params[1].value - 1.0).abs() < 1e-6, "in-white stays at identity: {}", levels.params[1].value);
+        assert!((color.params[0].value - 0.0).abs() < 1e-6, "brightness stays at identity: {}", color.params[0].value);
+    }
+
+    #[test]
+    fn match_curves_moves_histogram_toward_reference() {
+        let src_stats = crate::engine::gpu::compute_stats(&flat_rgba(80, 8, 8), 8, 8);
+        let dst_stats = crate::engine::gpu::compute_stats(&flat_rgba(160, 8, 8), 8, 8);
+        let curve = match_curves(&src_stats, &dst_stats);
+        assert_eq!(curve.kind, K::Curves);
+        let mut img = flat(4, 4, [80, 80, 80, 255]);
+        apply(&curve, 0.0, 1.0, &mut img, &mut Frame::default());
+        let out_mean = img.rgba.chunks_exact(4).map(|p| p[0] as f64).sum::<f64>() / 16.0;
+        assert!(out_mean > 80.0 + 5.0, "output mean {out_mean} did not move toward the brighter reference");
+    }
+
+    fn flat_rgba(v: u8, w: u32, h: u32) -> Vec<u8> {
+        let mut out = vec![0u8; (w * h * 4) as usize];
+        for px in out.chunks_exact_mut(4) {
+            px.copy_from_slice(&[v, v, v, 255]);
+        }
+        out
     }
 }

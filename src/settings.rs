@@ -276,6 +276,9 @@ pub struct Settings {
     // ---- ws:audio-analysis ----
     // ---- ws:audio-dsp-automation ----
     // ---- ws:color-engine ----
+    /// User-browsable folders scanned for `.cube` files by a later LUT-browser UI (inspector-gallery,
+    /// wave 2) — this workstream only stores the setting, no UI reads it yet.
+    pub lut_dirs: Vec<String>,
     // ---- ws:command-palette ----
     // ---- ws:forgiveness ----
     /// Warn (toast, never block) when opening a project whose `.lock` sidecar shows another instance
@@ -373,6 +376,7 @@ impl Default for Settings {
             // ---- ws:audio-analysis ----
             // ---- ws:audio-dsp-automation ----
             // ---- ws:color-engine ----
+            lut_dirs: Vec::new(),
             // ---- ws:command-palette ----
             // ---- ws:forgiveness ----
             lock_warn: true,

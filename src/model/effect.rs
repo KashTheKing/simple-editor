@@ -31,6 +31,17 @@ pub enum EffectKind {
     RecDot,
     // --- round 4 ---
     ColorReplace,
+    // ---- ws:color-engine ----
+    /// Lift/Gamma/Gain colour wheels + temperature/tint (the professional grading primitive).
+    Primaries,
+    /// HSL-band key -> alpha, for scopes/qualifier-driven secondary grades (no RGB change, matte only).
+    Qualifier,
+    /// A `.cube` 3D LUT (`Effect.lut` = file path), mixed in by its Intensity param.
+    Lut,
+    /// GPU-only: blends the current frame with a shutter-window neighbour (`Effect.params[0]` = Amount).
+    /// Distinct from `MotionBlur` (which averages several intra-frame samples): this blends *between*
+    /// two decoded frames, so it needs exactly the same prev/next samples `needs_motion()` already wires.
+    FrameBlend,
     /// A user-written GLSL fragment shader (source in `Effect.shader`, up to 8 generic knobs).
     Shader,
 }
@@ -49,7 +60,7 @@ pub(crate) const fn ps(name: &'static str, default: f64, min: f64, max: f64) -> 
 }
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 25] = [
+    pub const ALL: [EffectKind; 29] = [
         EffectKind::Blur,
         EffectKind::MotionBlur,
         EffectKind::Pixelate,
@@ -74,6 +85,10 @@ impl EffectKind {
         EffectKind::Wobble,
         EffectKind::BlobTrack,
         EffectKind::RecDot,
+        EffectKind::Primaries,
+        EffectKind::Qualifier,
+        EffectKind::Lut,
+        EffectKind::FrameBlend,
         EffectKind::Shader,
     ];
     /// Catalogue grouping for the effects panel.
@@ -81,9 +96,12 @@ impl EffectKind {
         use EffectKind::*;
         match self {
             Color | Curves | Levels | HueShift | Tint | Grayscale | Invert | Threshold => "Adjustments",
-            Blur | MotionBlur | Sharpen | Pixelate | JpegCompress | Vhs | EdgeGlow | Vignette | RecDot => "Stylize",
+            Blur | MotionBlur | FrameBlend | Sharpen | Pixelate | JpegCompress | Vhs | EdgeGlow | Vignette | RecDot => {
+                "Stylize"
+            }
             ChromaKey | ColorReplace | Crop | BlobTrack => "Keying & Matte",
             Flip | Plane3d | Wobble => "Transform",
+            Primaries | Qualifier | Lut => "Color",
             Shader => "Custom",
         }
     }
@@ -97,7 +115,7 @@ impl EffectKind {
         match self {
             Blur | Pixelate | Tint | Color | Vignette | Sharpen | Invert | Grayscale | Flip | Crop | Wobble
             | ChromaKey | Curves | Levels | HueShift | JpegCompress | MotionBlur | Plane3d | EdgeGlow | Threshold
-            | BlobTrack | Vhs | RecDot | ColorReplace | Shader => false,
+            | BlobTrack | Vhs | RecDot | ColorReplace | Primaries | Qualifier | Lut | FrameBlend | Shader => false,
         }
     }
     pub fn name(self) -> &'static str {
@@ -126,6 +144,10 @@ impl EffectKind {
             EffectKind::BlobTrack => "Blob Tracking",
             EffectKind::Vhs => "VHS",
             EffectKind::RecDot => "Security Camera REC",
+            EffectKind::Primaries => "Primaries",
+            EffectKind::Qualifier => "Qualifier",
+            EffectKind::Lut => "LUT",
+            EffectKind::FrameBlend => "Frame Blend",
             EffectKind::Shader => "Custom Shader",
         }
     }
@@ -156,6 +178,10 @@ impl EffectKind {
             EffectKind::BlobTrack => P_BLOBTRACK,
             EffectKind::Vhs => P_VHS,
             EffectKind::RecDot => P_RECDOT,
+            EffectKind::Primaries => P_PRIMARIES,
+            EffectKind::Qualifier => P_QUALIFIER,
+            EffectKind::Lut => P_LUT,
+            EffectKind::FrameBlend => P_FRAME_BLEND,
             EffectKind::Shader => P_SHADER,
         }
     }
@@ -177,7 +203,7 @@ impl EffectKind {
     }
     /// Effects whose output depends on neighbouring frames (the renderer must supply them).
     pub fn needs_motion(self) -> bool {
-        self == EffectKind::MotionBlur
+        matches!(self, EffectKind::MotionBlur | EffectKind::FrameBlend)
     }
     /// Effects the compositor applies by moving the layer instead of touching pixels.
     pub fn is_geometric(self) -> bool {
@@ -310,6 +336,38 @@ const P_RECDOT: &[ParamSpec] = &[
     ps("Timecode", 1.0, 0.0, 1.0),
     ps("Margin", 40.0, 0.0, 500.0),
 ];
+/// Lift/Gamma/Gain per channel + temperature/tint. 11 of the 12 `PARAM_NAMES` (gpu.rs) slots — a
+/// separate per-channel Offset (redundant with Lift) is deliberately dropped to fit.
+const P_PRIMARIES: &[ParamSpec] = &[
+    ps("Lift R", 0.0, -1.0, 1.0),
+    ps("Lift G", 0.0, -1.0, 1.0),
+    ps("Lift B", 0.0, -1.0, 1.0),
+    ps("Gamma R", 1.0, 0.1, 5.0),
+    ps("Gamma G", 1.0, 0.1, 5.0),
+    ps("Gamma B", 1.0, 0.1, 5.0),
+    ps("Gain R", 1.0, 0.0, 3.0),
+    ps("Gain G", 1.0, 0.0, 3.0),
+    ps("Gain B", 1.0, 0.0, 3.0),
+    ps("Temp", 0.0, -100.0, 100.0),
+    ps("Tint", 0.0, -100.0, 100.0),
+];
+/// HSL-band secondary key: hue centre/width (`Hue Width` is the half-width in degrees, so its max of
+/// 180 covers the whole hue circle), saturation and luminance bands, edge softness. Defaults are wide
+/// open (Hue Width at its max, Sat/Lum spanning the full 0..1) so a freshly-added Qualifier matches
+/// every pixel (identity, alpha unchanged) instead of keying the frame out until narrowed via
+/// `color.qualifier` or the (later, inspector-gallery) UI — same non-destructive-by-default spirit as
+/// every other effect here.
+const P_QUALIFIER: &[ParamSpec] = &[
+    ps("Hue", 120.0, 0.0, 360.0),
+    ps("Hue Width", 180.0, 0.0, 180.0),
+    ps("Sat Min", 0.0, 0.0, 1.0),
+    ps("Sat Max", 1.0, 0.0, 1.0),
+    ps("Lum Min", 0.0, 0.0, 1.0),
+    ps("Lum Max", 1.0, 0.0, 1.0),
+    ps("Softness", 0.15, 0.0, 1.0),
+];
+const P_LUT: &[ParamSpec] = &[ps("Intensity", 1.0, 0.0, 1.0)];
+const P_FRAME_BLEND: &[ParamSpec] = &[ps("Amount", 0.5, 0.0, 1.0)];
 const P_SHADER: &[ParamSpec] = &[
     ps("u1", 0.0, -10.0, 10.0),
     ps("u2", 0.0, -10.0, 10.0),
@@ -450,6 +508,9 @@ pub struct Effect {
     /// `EffectKind::Shader` only: the GLSL fragment shader source.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub shader: String,
+    /// `EffectKind::Lut` only: the `.cube` file path (set via `clip.add_lut`, never a compiled-in default).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub lut: String,
     /// Clip-local second the effect switches on (CapCut-style window inside the clip).
     #[serde(default)]
     pub start: f64,
@@ -467,6 +528,7 @@ impl Effect {
             params: kind.params().iter().map(|p| Animated::new(p.default)).collect(),
             mask: None,
             shader: if kind == EffectKind::Shader { DEFAULT_SHADER.to_string() } else { String::new() },
+            lut: String::new(),
             start: 0.0,
             len: 0.0,
         }
