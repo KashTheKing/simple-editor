@@ -13,21 +13,227 @@
 //! The Polygon *shape* tool is SVG-style instead: each click appends a vertex (the path is drawn live),
 //! a click back on a placed vertex (which is where a double-click's second press lands) or Enter closes
 //! it into a shape, and re-selecting that shape with the Select tool puts a drag handle on every point.
+//!
+//! ---- ws:canvas-handles-monitor ----
+//! The selection outline of a single asset-backed clip carries handles: corners scale uniformly
+//! (`clip.scale`), edge midpoints scale one axis (`scale_x` / `scale_y`), a knob above the top edge
+//! rotates (Shift snaps to 15°), and with the context menu's "Crop Handles" on the edge handles crop
+//! instead (one find-or-append `EffectKind::Crop`, fractions via `Animated::set_at`). Two or more
+//! selected clips show one union box and move together (no handles). A drag-to-move snaps to the
+//! canvas centre / edges / thirds / other clips with guide lines (`ui::guides::canvas_snap`, gated by
+//! Settings.canvas_snap). Ctrl+wheel zooms and middle-drag pans the viewer (`PreviewState.view`, never
+//! project data; `Action::ViewerFit` resets). The timecode label is click-to-edit
+//! (`ui::parse_timecode`). `PreviewState.mask_target` routes the mask tool's drag at the clip's own mask
+//! or one of its effects' masks.
 
-use crate::engine::compose::placement;
+use crate::engine::compose::{placement, Placement};
 use crate::hotkeys::Action;
 use crate::media::Frame;
 use crate::model::{
-    BackgroundMode, ClipKind, Id, Mask, MaskShape, Project, ShapeKind, ShapeStyle, Stroke as ModelStroke,
+    BackgroundMode, Clip, ClipKind, Effect, EffectKind, Id, Mask, MaskShape, Project, ShapeKind, ShapeStyle,
+    Stroke as ModelStroke,
 };
 use crate::theme::Palette;
-use crate::ui::timecode;
-use crate::ui::tools::{glyph_text_button, Dir, Glyph, Tool};
-use eframe::egui::{self, pos2, vec2, Color32, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, TextureOptions, Vec2};
+use crate::ui::guides::{canvas_snap, paint_canvas_guides};
+use crate::ui::tools::{draw_glyph, glyph_text_button, Dir, Glyph, Tool};
+use crate::ui::{parse_timecode, timecode};
+use eframe::egui::{
+    self, pos2, vec2, Color32, CursorIcon, PointerButton, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, TextureOptions,
+    Vec2,
+};
 use std::sync::Arc;
 
 /// Preview render scales offered by the quality selector.
 pub const QUALITIES: [u32; 4] = [100, 75, 50, 25];
+
+// ---- ws:canvas-handles-monitor ----
+
+/// Grab radius of a handle, in points.
+const HIT: f32 = 8.0;
+/// How far above the top edge the rotate knob sits, in points.
+const KNOB_OFFSET: f32 = 18.0;
+/// Canvas-snap magnet, in points.
+const SNAP_PX: f32 = 8.0;
+/// Viewer zoom range (1 = fit).
+const ZOOM_RANGE: (f32, f32) = (0.25, 8.0);
+
+/// Which handle on the selection outline owns the active drag. `u8` indexes TL/TR/BR/BL for corners
+/// and top/right/bottom/left for edges and crop handles.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Handle {
+    Corner(u8),
+    Edge(u8),
+    Rotate,
+    Crop(u8),
+}
+
+/// Which mask the mask tool's canvas drag (`tool_drag`) writes to: the clip's own, or one of its
+/// effects'. Default = the clip's own mask, exactly today's behaviour.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum MaskTarget {
+    #[default]
+    Clip,
+    Effect(usize),
+}
+
+/// The selection outline's geometry on screen — one rotated rect plus its handle positions.
+#[derive(Clone, Copy)]
+struct Outline {
+    /// Screen centre and the rotation's (sin, cos).
+    o: Pos2,
+    sn: f32,
+    cs: f32,
+    /// Unrotated half size on screen (the full, uncropped layer).
+    half: Vec2,
+    /// Corners TL/TR/BR/BL; edge midpoints T/R/B/L (of the crop ring in crop mode); the rotate knob.
+    corners: [Pos2; 4],
+    edges: [Pos2; 4],
+    knob: Pos2,
+}
+
+impl Outline {
+    /// `crop` = (left, right, top, bottom) fractions when crop handles are wanted: the edge handles then
+    /// sit on the cropped inner rect instead of the outline.
+    fn new(p: &Placement, to_screen: impl Fn(f32, f32) -> Pos2, crop: Option<[f32; 4]>) -> Self {
+        let o = to_screen(p.cx, p.cy);
+        // screen points per canvas px (aspect is preserved, so one factor serves both axes)
+        let k = (to_screen(p.cx + 1.0, p.cy).x - o.x).abs().max(1e-4);
+        let half = vec2(p.w / 2.0 * k, p.h / 2.0 * k);
+        let (sn, cs) = p.rot.to_radians().sin_cos();
+        let at = |x: f32, y: f32| pos2(o.x + x * cs - y * sn, o.y + x * sn + y * cs);
+        let (hw, hh) = (half.x, half.y);
+        let [l, r, t, b] = crop.unwrap_or([0.0; 4]);
+        let (x0, x1, y0, y1) = (-hw + 2.0 * hw * l, hw - 2.0 * hw * r, -hh + 2.0 * hh * t, hh - 2.0 * hh * b);
+        let (mx, my) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+        Self {
+            o,
+            sn,
+            cs,
+            half,
+            corners: [at(-hw, -hh), at(hw, -hh), at(hw, hh), at(-hw, hh)],
+            edges: [at(mx, y0), at(x1, my), at(mx, y1), at(x0, my)],
+            knob: at(0.0, -hh - KNOB_OFFSET),
+        }
+    }
+    /// Screen point -> the layer's own unrotated frame (screen units from the centre).
+    fn local(&self, p: Pos2) -> Vec2 {
+        let d = p - self.o;
+        vec2(d.x * self.cs + d.y * self.sn, -d.x * self.sn + d.y * self.cs)
+    }
+    fn inside(&self, p: Pos2) -> bool {
+        let l = self.local(p);
+        l.x.abs() <= self.half.x && l.y.abs() <= self.half.y
+    }
+    /// Which handle `p` is over, if any. Crop mode turns the edge handles into crop handles — the two
+    /// would otherwise sit on the same spot at zero crop.
+    fn hit(&self, p: Pos2, crop_mode: bool) -> Option<Handle> {
+        if (p - self.knob).length() <= HIT {
+            return Some(Handle::Rotate);
+        }
+        if let Some(i) = self.corners.iter().position(|q| (p - *q).length() <= HIT) {
+            return Some(Handle::Corner(i as u8));
+        }
+        let i = self.edges.iter().position(|q| (p - *q).length() <= HIT)? as u8;
+        Some(if crop_mode { Handle::Crop(i) } else { Handle::Edge(i) })
+    }
+}
+
+/// Snapshot taken at `drag_started` so every frame's value is a ratio / angle / fraction from a fixed
+/// origin, never an accumulation of per-frame deltas.
+struct HandleDrag {
+    handle: Handle,
+    id: Id,
+    /// The outline as it was at the press.
+    ol: Outline,
+    press: Pos2,
+    /// (scale, scale_x, scale_y, rotation) at the press.
+    start: (f64, f64, f64, f64),
+}
+
+/// Single choke point for viewer zoom / pan: scale the fitted letterbox about its centre, then pan.
+pub(crate) fn apply_view(lb: Rect, (zoom, pan): (f32, Vec2)) -> Rect {
+    Rect::from_center_size(lb.center() + pan, lb.size() * zoom)
+}
+
+/// The clip's `EffectKind::Crop` entry, appended when missing (same find-or-append shape as
+/// ToggleEffect / tools_color's `set_effect`). Shared with the `clip.crop` / `timeline.reframe` tools.
+pub(crate) fn crop_effect(clip: &mut Clip) -> &mut Effect {
+    let i = clip.effects.iter().position(|e| e.kind == EffectKind::Crop).unwrap_or_else(|| {
+        clip.effects.push(Effect::new(EffectKind::Crop));
+        clip.effects.len() - 1
+    });
+    &mut clip.effects[i]
+}
+
+/// Current (left, right, top, bottom) crop fractions of a clip at clip-local `lt`, if it has a Crop.
+fn crop_fractions(clip: &Clip, lt: f64) -> Option<[f32; 4]> {
+    let e = clip.effects.iter().find(|e| e.kind == EffectKind::Crop)?;
+    let v = |i: usize| e.params.get(i).map(|a| a.at(lt) as f32).unwrap_or(0.0);
+    Some([v(0), v(1), v(2), v(3)])
+}
+
+/// Apply one frame of a handle drag: the pointer at `now` against the press snapshot writes exactly one
+/// property (scale / scale_x / scale_y / rotation / one crop fraction) at clip-local `lt`. False when
+/// the clip is gone.
+fn handle_apply(d: &HandleDrag, now: Pos2, shift: bool, project: &mut Project, lt: f64) -> bool {
+    let Some(cl) = project.clip_mut(d.id) else { return false };
+    match d.handle {
+        Handle::Corner(_) => {
+            let ratio = (now - d.ol.o).length() / (d.press - d.ol.o).length().max(1.0);
+            cl.scale.set_at(lt, (d.start.0 * ratio as f64).max(0.01));
+        }
+        Handle::Edge(i) => {
+            let (l, l0) = (d.ol.local(now), d.ol.local(d.press));
+            if i % 2 == 1 {
+                let ratio = l.x.abs() / l0.x.abs().max(1.0);
+                cl.scale_x.set_at(lt, (d.start.1 * ratio as f64).max(0.01));
+            } else {
+                let ratio = l.y.abs() / l0.y.abs().max(1.0);
+                cl.scale_y.set_at(lt, (d.start.2 * ratio as f64).max(0.01));
+            }
+        }
+        Handle::Rotate => {
+            let (a, a0) = (now - d.ol.o, d.press - d.ol.o);
+            let mut deg = d.start.3 + (a.y.atan2(a.x) - a0.y.atan2(a0.x)).to_degrees() as f64;
+            if shift {
+                deg = (deg / 15.0).round() * 15.0;
+            }
+            cl.rotation.set_at(lt, deg);
+        }
+        Handle::Crop(i) => {
+            let l = d.ol.local(now);
+            let (hw, hh) = (d.ol.half.x.max(1.0), d.ol.half.y.max(1.0));
+            // P_CROP order is Left, Right, Top, Bottom; handles are T/R/B/L
+            let (idx, frac) = match i {
+                0 => (2, (l.y + hh) / (2.0 * hh)),
+                1 => (1, (hw - l.x) / (2.0 * hw)),
+                2 => (3, (hh - l.y) / (2.0 * hh)),
+                _ => (0, (l.x + hw) / (2.0 * hw)),
+            };
+            crop_effect(cl).params[idx].set_at(lt, frac.clamp(0.0, 0.5) as f64);
+        }
+    }
+    true
+}
+
+/// The mask slot a mask-tool drag writes: the clip's own, or one effect's (`None` when the clip / effect
+/// index is gone — the gesture is then a no-op with no undo entry, like a mask drag over an audio clip).
+fn mask_slot_of(project: &mut Project, clip: Option<Id>, target: MaskTarget) -> Option<&mut Option<Mask>> {
+    let cl = project.clip_mut(clip?)?;
+    match target {
+        MaskTarget::Clip => Some(&mut cl.mask),
+        MaskTarget::Effect(i) => cl.effects.get_mut(i).map(|e| &mut e.mask),
+    }
+}
+
+/// Axis-aligned half size (project px) of a clip's placed layer — the moving box `canvas_snap` snaps.
+fn half_size(project: &Project, id: Id, playhead: f64) -> Option<(f32, f32)> {
+    let cl = project.clip(id)?;
+    let a = project.asset(cl.asset)?;
+    let p = placement(project, cl, playhead, (a.width, a.height), project.width, project.height, true);
+    let (x0, y0, x1, y1) = p.bounds();
+    Some(((x1 - x0) / 2.0, (y1 - y0) / 2.0))
+}
 
 /// A click-drag with a non-Select tool.
 struct ToolDrag {
@@ -41,8 +247,9 @@ struct ToolDrag {
 
 pub struct PreviewState {
     pub texture: Option<egui::TextureHandle>,
-    /// Active overlay drag: clip (x, y) at drag start and the accumulated pointer delta (points).
-    drag: Option<(f64, f64, Vec2)>,
+    /// Active drag-to-move: every moved clip's (id, x, y) at drag start and the accumulated pointer
+    /// delta (points). One entry for a single clip, one per clip for a group move.
+    drag: Option<(Vec<(Id, f64, f64)>, Vec2)>,
     /// Active tool drag (shape / draw / mask).
     tool_drag: Option<ToolDrag>,
     /// Polygon tool: vertices placed so far, project px relative to the canvas centre.
@@ -54,6 +261,20 @@ pub struct PreviewState {
     /// Content rect of the transport row last frame — it is centred against the panel using its own
     /// measured width, so the first frame is left-aligned and every later one is centred.
     transport: Rect,
+    // ---- ws:canvas-handles-monitor ----
+    /// Active transform / crop handle drag.
+    handle: Option<HandleDrag>,
+    /// Context menu "Crop Handles": the edge handles crop (one Crop effect) instead of scaling.
+    pub(crate) crop_mode: bool,
+    /// Which mask the mask tool's drag writes (`clip.mask_target` / the context menu).
+    pub(crate) mask_target: MaskTarget,
+    /// Viewer (zoom, pan): Ctrl+wheel / middle-drag; 1.0 / ZERO = fit. Never project data.
+    pub(crate) view: (f32, Vec2),
+    /// The video area last frame (one-frame-stale, like `TimelineState.lanes_rect`) — the drop target
+    /// `app::drops` checks for "dropped onto the monitor".
+    pub(crate) canvas_rect: Rect,
+    /// The timecode label's text while it is being edited (click-to-edit).
+    tc_edit: Option<String>,
 }
 
 impl Default for PreviewState {
@@ -66,6 +287,12 @@ impl Default for PreviewState {
             point_drag: None,
             moved_at: None,
             transport: Rect::ZERO,
+            handle: None,
+            crop_mode: false,
+            mask_target: MaskTarget::Clip,
+            view: (1.0, Vec2::ZERO),
+            canvas_rect: Rect::NOTHING,
+            tc_edit: None,
         }
     }
 }
@@ -104,6 +331,16 @@ pub struct PreviewCtx<'a> {
     pub tracker: Option<(f32, f32, f32, f32)>,
     /// Social-guide overlay to draw over the video (settings.guide).
     pub guide: Option<crate::ui::guides::Guide>,
+    // ---- ws:canvas-handles-monitor ----
+    /// Settings.canvas_snap: snap a drag-to-move to the canvas centre / edges / thirds / other clips.
+    pub canvas_snap: bool,
+    /// The monitor's alt render (an effect / transition hover, `app::monitor`) — painted instead of
+    /// the live frame while Some, so a hover preview never touches the project or the player.
+    pub alt_texture: Option<(egui::TextureId, [u32; 2])>,
+    /// settings.use_proxies, for the transport's proxy toggle.
+    pub use_proxies: bool,
+    /// `Player::dropped_frames`, shown as a small transport badge when non-zero.
+    pub dropped: u64,
 }
 
 #[derive(Default)]
@@ -135,6 +372,9 @@ pub struct PreviewResponse {
     pub set_tracker: Option<(f32, f32)>,
     /// The user picked a social guide from the transport button (Some(None) = off).
     pub set_guide: Option<Option<crate::ui::guides::Guide>>,
+    // ---- ws:canvas-handles-monitor ----
+    /// The context menu toggled canvas snapping — the app stores it in Settings.canvas_snap.
+    pub set_canvas_snap: Option<bool>,
 }
 
 pub fn show(ui: &mut egui::Ui, state: &mut PreviewState, mut c: PreviewCtx<'_>) -> PreviewResponse {
@@ -220,6 +460,13 @@ fn transport(ui: &mut egui::Ui, state: &mut PreviewState, c: &PreviewCtx<'_>, r:
     } else {
         0.0
     };
+    // ---- ws:canvas-handles-monitor ----
+    // `b` below captures `r.actions` by mutable reference for the whole closure (it's used again as
+    // late as the Fullscreen button); a second direct touch of `r.actions` — or a reborrow of all of
+    // `*r` (`timecode_label` used to take `r: &mut PreviewResponse`) — would conflict with that live
+    // borrow. Both new bits of state go through fresh locals instead and land on `r` after the closure.
+    let mut tc_seek = None;
+    let mut toggle_proxy = false;
     let row = ui
         .horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
@@ -244,7 +491,7 @@ fn transport(ui: &mut egui::Ui, state: &mut PreviewState, c: &PreviewCtx<'_>, r:
             b(ui, Some(Glyph::Skip(Dir::Right)), "Next cut", Action::NextCut);
             b(ui, Some(Glyph::Jump(Dir::Right)), "Go to end", Action::GoEnd);
             ui.add_space(8.0);
-            ui.monospace(format!("{} / {}", timecode(c.playhead, fps), timecode(c.project.duration(), fps)));
+            tc_seek = timecode_label(ui, state, c, fps);
             ui.add_space(8.0);
             b(ui, None, "In", Action::MarkIn);
             b(ui, None, "Out", Action::MarkOut);
@@ -281,6 +528,13 @@ fn transport(ui: &mut egui::Ui, state: &mut PreviewState, c: &PreviewCtx<'_>, r:
             {
                 r.set_movie_mode = Some(!c.movie_mode);
             }
+            // ---- ws:canvas-handles-monitor ----: proxy toggle + dropped-frame badge
+            if ui.selectable_label(c.use_proxies, "Proxy").on_hover_text("Play low-res proxies in the preview").clicked() {
+                toggle_proxy = true;
+            }
+            if c.dropped > 0 {
+                ui.weak(format!("{} dropped", c.dropped)).on_hover_text("Frames dropped during playback");
+            }
             // social-guide overlay picker
             let gr = crate::ui::tools::icon_button(
                 ui,
@@ -307,6 +561,47 @@ fn transport(ui: &mut egui::Ui, state: &mut PreviewState, c: &PreviewCtx<'_>, r:
         })
         .response;
     state.transport = Rect::from_min_max(pos2(row.rect.left() + pad, row.rect.top()), row.rect.max);
+    // ---- ws:canvas-handles-monitor ----: applied after `b`'s borrow of `r.actions` has ended
+    if let Some(t) = tc_seek {
+        r.seek = Some(t);
+    }
+    if toggle_proxy {
+        r.actions.push(Action::ToggleProxies);
+    }
+}
+
+// ---- ws:canvas-handles-monitor ----
+/// The "playhead / duration" label: a click turns it into a text field; Enter parses it with
+/// `parse_timecode` (hh:mm:ss:ff, mm:ss, +N / -N frames, +1.5s) and returns the seek target; Esc or
+/// clicking away drops the edit. Returns a value instead of writing `r.seek` directly — the caller's
+/// `b` closure already holds `r.actions` borrowed for longer than this call site (see `transport`'s
+/// comment above its `row` binding).
+fn timecode_label(ui: &mut egui::Ui, state: &mut PreviewState, c: &PreviewCtx<'_>, fps: f64) -> Option<f64> {
+    let mut seek = None;
+    let mut close = false;
+    if let Some(text) = state.tc_edit.as_mut() {
+        let te = ui.add(egui::TextEdit::singleline(text).desired_width(100.0).font(egui::TextStyle::Monospace));
+        if te.lost_focus() {
+            if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                seek = parse_timecode(text, fps, c.playhead);
+            }
+            close = true;
+        } else if !te.has_focus() {
+            te.request_focus();
+        }
+    } else {
+        let text = format!("{} / {}", timecode(c.playhead, fps), timecode(c.project.duration(), fps));
+        let lbl = ui
+            .add(egui::Label::new(egui::RichText::new(text).monospace()).sense(Sense::click()))
+            .on_hover_text("Click to type a time: hh:mm:ss:ff, mm:ss, +N / -N frames, +1.5s / -2s");
+        if lbl.clicked() {
+            state.tc_edit = Some(timecode(c.playhead, fps));
+        }
+    }
+    if close {
+        state.tc_edit = None;
+    }
+    seek
 }
 
 /// Keep `v`'s direction while forcing at least `min` of length, so a zero-length drag still makes a
@@ -506,14 +801,17 @@ fn tool_drag(
     }
 
     // a mask shapes pixels: an audio clip has none, so the mask tool finds no target on one and the
-    // gesture is a no-op (no mask, and no undo entry for an edit that never happened)
-    let mask_target = c.selection.iter().copied().find(|&id| c.project.clip(id).is_some_and(|cl| cl.is_visual()));
+    // gesture is a no-op (no mask, and no undo entry for an edit that never happened).
+    // ws:canvas-handles-monitor: which of that clip's masks is written (its own, or one effect's) is
+    // `state.mask_target`'s call — see `mask_slot_of`.
+    let mask_clip = c.selection.iter().copied().find(|&id| c.project.clip(id).is_some_and(|cl| cl.is_visual()));
+    let mask_target = state.mask_target;
 
     if resp.drag_started() {
         if let Some(p) = resp.interact_pointer_pos() {
             let t0 = ui.input(|i| i.time);
             state.tool_drag = Some(ToolDrag { from: p, t0, points: Vec::new() });
-            if matches!(tool, Tool::Mask(_)) && mask_target.is_some() {
+            if matches!(tool, Tool::Mask(_)) && mask_slot_of(c.project, mask_clip, mask_target).is_some() {
                 (c.undo)(c.project);
             }
         }
@@ -534,8 +832,8 @@ fn tool_drag(
             Tool::Mask(shape) => {
                 let (x0, y0) = to_proj(d.from);
                 let (x1, y1) = to_proj(now);
-                if let Some(clip) = mask_target.and_then(|id| c.project.clip_mut(id)) {
-                    let m = clip.mask.get_or_insert_with(|| Mask::new(shape));
+                if let Some(slot) = mask_slot_of(c.project, mask_clip, mask_target) {
+                    let m = slot.get_or_insert_with(|| Mask::new(shape));
                     m.shape = shape;
                     m.cx.value = ((x0 + x1) / 2.0) as f64;
                     m.cy.value = ((y0 + y1) / 2.0) as f64;
@@ -626,8 +924,42 @@ fn tool_drag(
 /// but as a `context_menu` submenu since the background has no dedicated toolbar button. Edits
 /// `project.preview_bg` through the same undo-once-per-gesture/`edited`-flag convention every other
 /// project-level edit in this file uses (e.g. the drag-to-move handling below).
-fn background_menu(resp: &egui::Response, c: &mut PreviewCtx<'_>, r: &mut PreviewResponse) {
+/// ws:canvas-handles-monitor: also hosts the "Crop Handles" / "Snap to canvas" toggles, "Fit Viewer"
+/// and the "Mask target" picker (the clip's own mask or one of its effects' — UI-only state).
+fn background_menu(resp: &egui::Response, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r: &mut PreviewResponse) {
+    // the selected clip's effect stack, for the mask-target picker
+    let fx: Vec<&'static str> = c
+        .selection
+        .iter()
+        .find_map(|&id| c.project.clip(id).filter(|cl| cl.is_visual()))
+        .map(|cl| cl.effects.iter().map(|e| e.kind.name()).collect())
+        .unwrap_or_default();
     resp.context_menu(|ui| {
+        ui.checkbox(&mut state.crop_mode, "Crop Handles")
+            .on_hover_text("Edge handles crop the clip (one Crop effect) instead of scaling it");
+        let mut snap = c.canvas_snap;
+        if ui.checkbox(&mut snap, "Snap to canvas").changed() {
+            r.set_canvas_snap = Some(snap);
+        }
+        if ui.button("Fit Viewer").clicked() {
+            r.actions.push(Action::ViewerFit);
+            ui.close();
+        }
+        if !fx.is_empty() {
+            ui.menu_button("Mask target", |ui| {
+                if ui.radio(state.mask_target == MaskTarget::Clip, "Clip mask").clicked() {
+                    state.mask_target = MaskTarget::Clip;
+                    ui.close();
+                }
+                for (i, name) in fx.iter().enumerate() {
+                    if ui.radio(state.mask_target == MaskTarget::Effect(i), format!("{}: {name}", i + 1)).clicked() {
+                        state.mask_target = MaskTarget::Effect(i);
+                        ui.close();
+                    }
+                }
+            });
+        }
+        ui.separator();
         ui.menu_button("Background", |ui| {
             let mut pick = |ui: &mut egui::Ui, label: &str, v: BackgroundMode| {
                 if ui.radio(c.project.preview_bg == v, label).clicked() {
@@ -665,13 +997,27 @@ fn background_menu(resp: &egui::Response, c: &mut PreviewCtx<'_>, r: &mut Previe
 
 fn video(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r: &mut PreviewResponse) {
     let (rect, resp) = ui.allocate_exact_size(ui.available_size_before_wrap(), Sense::click_and_drag());
-    background_menu(&resp, c, r);
+    background_menu(&resp, state, c, r);
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, Color32::BLACK);
     let ppp = ui.pixels_per_point();
     let aspect = c.project.width.max(1) as f32 / c.project.height.max(1) as f32;
-    let lb = letterbox(rect, aspect, ppp);
-    let (cw, ch) = ((lb.width() * ppp).round().max(16.0) as u32, (lb.height() * ppp).round().max(16.0) as u32);
+    let fit = letterbox(rect, aspect, ppp);
+    // ---- ws:canvas-handles-monitor ----
+    // viewer zoom (Ctrl+wheel / pinch) and pan (middle-drag): `state.view` only, never project data,
+    // and never the render size — the zoom magnifies the same texture. No Tool::Zoom.
+    if resp.hovered() {
+        let z = ui.input(|i| i.zoom_delta());
+        if z != 1.0 {
+            state.view.0 = (state.view.0 * z).clamp(ZOOM_RANGE.0, ZOOM_RANGE.1);
+        }
+    }
+    if resp.dragged_by(PointerButton::Middle) {
+        state.view.1 += resp.drag_delta();
+    }
+    let lb = apply_view(fit, state.view);
+    state.canvas_rect = rect;
+    let (cw, ch) = ((fit.width() * ppp).round().max(16.0) as u32, (fit.height() * ppp).round().max(16.0) as u32);
     r.canvas = (cw, ch);
 
     // social-guide overlay: painted on the Foreground layer so it sits over the video, the selection
@@ -696,11 +1042,22 @@ fn video(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r:
             }
         }
     }
-    // the GPU renderer's own texture wins: nothing is read back or re-uploaded
-    if let Some((id, _)) = c.gpu_texture {
-        painter.image(id, lb, Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)), Color32::WHITE);
+    // ws:canvas-handles-monitor: a pending hover preview (alt render) stands in for the live frame;
+    // otherwise the GPU renderer's own texture wins: nothing is read back or re-uploaded
+    let uv = Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0));
+    if let Some((id, _)) = c.alt_texture {
+        painter.image(id, lb, uv, Color32::WHITE);
+        painter.text(
+            lb.right_top() + vec2(-6.0, 6.0),
+            egui::Align2::RIGHT_TOP,
+            "preview",
+            egui::TextStyle::Small.resolve(ui.style()),
+            c.palette.accent,
+        );
+    } else if let Some((id, _)) = c.gpu_texture {
+        painter.image(id, lb, uv, Color32::WHITE);
     } else if let Some(t) = &state.texture {
-        painter.image(t.id(), lb, Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)), Color32::WHITE);
+        painter.image(t.id(), lb, uv, Color32::WHITE);
     }
     // buffering: the clock is held while the read-ahead refills — say so over the video
     if c.buffering {
@@ -759,89 +1116,214 @@ fn video(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r:
         }
     }
 
-    // selection overlay + drag-to-move
-    let Some(clip) = c
+    // ---- ws:canvas-handles-monitor ----
+    // selection overlay: one outline with handles for a single visual clip, a union box for two or
+    // more (no handles); drag-to-move (with canvas snap) for both
+    let sel: Vec<Id> = c
         .selection
         .iter()
-        .filter_map(|&id| c.project.clip(id))
-        .find(|cl| cl.is_visual() && cl.enabled && cl.contains(c.playhead))
-    else {
+        .copied()
+        .filter(|&id| c.project.clip(id).is_some_and(|cl| cl.is_visual() && cl.enabled && cl.contains(c.playhead)))
+        .collect();
+    let Some(&id) = sel.first() else {
         state.drag = None;
+        state.handle = None;
         return;
     };
-    let id = clip.id;
-    let lt = clip.local(c.playhead);
     let to_screen =
         |x: f32, y: f32| pos2(lb.min.x + x / cw as f32 * lb.width(), lb.min.y + y / ch as f32 * lb.height());
     let stroke = Stroke::new(1.5, c.palette.selection);
-    if clip.kind == ClipKind::Text {
-        let p = placement(c.project, clip, c.playhead, (1, 1), cw, ch, false);
-        let o = to_screen(p.cx, p.cy);
-        painter.line_segment([o - vec2(6.0, 0.0), o + vec2(6.0, 0.0)], stroke);
-        painter.line_segment([o - vec2(0.0, 6.0), o + vec2(0.0, 6.0)], stroke);
-    } else if let Some(a) = c.project.asset(clip.asset) {
-        let p = placement(c.project, clip, c.playhead, (a.width, a.height), cw, ch, true);
-        let (s, co) = p.rot.to_radians().sin_cos();
-        let (hw, hh) = (p.w / 2.0, p.h / 2.0);
-        let pts = [(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)]
-            .iter()
-            .map(|&(x, y)| to_screen(p.cx + x * co - y * s, p.cy + x * s + y * co))
-            .collect();
-        painter.add(Shape::closed_line(pts, stroke));
-    }
-
-    // explicit polygon vertices: outline + one grab handle each, in the shape's own rotated/scaled frame
-    let poly: Vec<(f32, f32)> =
-        clip.shape.as_ref().and_then(|s| s.poly_points()).map(|p| p.to_vec()).unwrap_or_default();
-    let frame = (!poly.is_empty()).then(|| {
-        let p = placement(c.project, clip, c.playhead, (1, 1), cw, ch, false);
-        let (sn, cs) = p.rot.to_radians().sin_cos();
-        // project px -> screen points, through the clip's scale
-        let k = clip.scale.at(lt) as f32 * lb.width() / c.project.width.max(1) as f32;
-        (to_screen(p.cx, p.cy), sn, cs, if k.is_finite() && k.abs() > 1e-4 { k } else { 1e-4 })
-    });
     // the grab is decided by where the press began, not by where the pointer has dragged to
     let press = ui.input(|i| i.pointer.press_origin());
-    let mut hit = None;
-    if let Some((o, sn, cs, k)) = frame {
-        let scr: Vec<Pos2> =
-            poly.iter().map(|&(x, y)| pos2(o.x + (x * cs - y * sn) * k, o.y + (x * sn + y * cs) * k)).collect();
-        painter.add(Shape::closed_line(scr.clone(), stroke));
-        for (i, q) in scr.iter().enumerate() {
-            painter.circle_filled(*q, 3.5, c.palette.selection);
-            if press.is_some_and(|pp| (pp - *q).length() <= 7.0) {
-                hit = Some(i);
+    let hover = resp.hover_pos();
+    let group = sel.len() >= 2;
+    let mut ol: Option<Outline> = None;
+    // explicit polygon vertices (single selection): their screen frame and the vertex under the press
+    let mut frame = None;
+    let mut poly_hit = None;
+    if group {
+        let mut bb: Option<Rect> = None;
+        for &sid in &sel {
+            let Some(cl) = c.project.clip(sid) else { continue };
+            let Some(a) = c.project.asset(cl.asset) else { continue };
+            let p = placement(c.project, cl, c.playhead, (a.width, a.height), cw, ch, true);
+            let (x0, y0, x1, y1) = p.bounds();
+            let rr = Rect::from_min_max(to_screen(x0, y0), to_screen(x1, y1));
+            bb = Some(bb.map_or(rr, |u| u.union(rr)));
+        }
+        if let Some(bb) = bb {
+            painter.rect_stroke(bb, 0.0, stroke, StrokeKind::Middle);
+            if hover.is_some_and(|p| bb.contains(p)) {
+                ui.ctx().set_cursor_icon(CursorIcon::Move);
+            }
+        }
+    } else {
+        let clip = c.project.clip(id).unwrap();
+        let lt = clip.local(c.playhead);
+        if clip.kind == ClipKind::Text {
+            let p = placement(c.project, clip, c.playhead, (1, 1), cw, ch, false);
+            let o = to_screen(p.cx, p.cy);
+            painter.line_segment([o - vec2(6.0, 0.0), o + vec2(6.0, 0.0)], stroke);
+            painter.line_segment([o - vec2(0.0, 6.0), o + vec2(0.0, 6.0)], stroke);
+        } else if let Some(a) = c.project.asset(clip.asset) {
+            let p = placement(c.project, clip, c.playhead, (a.width, a.height), cw, ch, true);
+            let crop = state.crop_mode.then(|| crop_fractions(clip, lt).unwrap_or([0.0; 4]));
+            let mut o = Outline::new(&p, to_screen, crop);
+            // keep the knob grabbable when the video fills the pane's height
+            o.knob = o.knob.clamp(rect.min + vec2(6.0, 6.0), rect.max - vec2(6.0, 6.0));
+            painter.add(Shape::closed_line(o.corners.to_vec(), stroke));
+            let sq = |q: Pos2| Rect::from_center_size(q, vec2(7.0, 7.0));
+            for q in o.corners {
+                painter.rect_filled(sq(q), 1.0, c.palette.selection);
+            }
+            if state.crop_mode {
+                // the crop ring: the visible part of the layer, with a handle mid-edge
+                let ring: Vec<Pos2> = [(0usize, 3usize), (0, 1), (2, 1), (2, 3)]
+                    .iter()
+                    .map(|&(ey, ex)| {
+                        let (ly, lx) = (o.local(o.edges[ey]).y, o.local(o.edges[ex]).x);
+                        pos2(o.o.x + lx * o.cs - ly * o.sn, o.o.y + lx * o.sn + ly * o.cs)
+                    })
+                    .collect();
+                painter.add(Shape::closed_line(ring, Stroke::new(1.0, c.palette.accent)));
+                for q in o.edges {
+                    painter.rect_stroke(sq(q), 1.0, Stroke::new(1.5, c.palette.accent), StrokeKind::Middle);
+                }
+            } else {
+                for q in o.edges {
+                    painter.rect_filled(sq(q), 1.0, c.palette.selection);
+                }
+            }
+            painter.line_segment([o.edges[0], o.knob], Stroke::new(1.0, c.palette.selection));
+            painter.circle_filled(o.knob, 4.0, c.palette.selection);
+            ol = Some(o);
+        }
+
+        // explicit polygon vertices: outline + one grab handle each, in the shape's own rotated/scaled frame
+        let poly: Vec<(f32, f32)> =
+            clip.shape.as_ref().and_then(|s| s.poly_points()).map(|p| p.to_vec()).unwrap_or_default();
+        frame = (!poly.is_empty()).then(|| {
+            let p = placement(c.project, clip, c.playhead, (1, 1), cw, ch, false);
+            let (sn, cs) = p.rot.to_radians().sin_cos();
+            // project px -> screen points, through the clip's scale
+            let k = clip.scale.at(lt) as f32 * lb.width() / c.project.width.max(1) as f32;
+            (to_screen(p.cx, p.cy), sn, cs, if k.is_finite() && k.abs() > 1e-4 { k } else { 1e-4 })
+        });
+        if let Some((o, sn, cs, k)) = frame {
+            let scr: Vec<Pos2> =
+                poly.iter().map(|&(x, y)| pos2(o.x + (x * cs - y * sn) * k, o.y + (x * sn + y * cs) * k)).collect();
+            painter.add(Shape::closed_line(scr.clone(), stroke));
+            for (i, q) in scr.iter().enumerate() {
+                painter.circle_filled(*q, 3.5, c.palette.selection);
+                if press.is_some_and(|pp| (pp - *q).length() <= 7.0) {
+                    poly_hit = Some(i);
+                }
             }
         }
     }
 
-    if resp.drag_started() {
-        (c.undo)(c.project);
-        state.point_drag = hit;
-        state.drag = hit.is_none().then(|| (clip.x.at(lt), clip.y.at(lt), Vec2::ZERO));
+    // hover feedback: a resize / grab cursor over a handle, a crop / rotate glyph at the pointer
+    if let (Some(o), Some(hp)) = (&ol, hover) {
+        if !ui.input(|i| i.pointer.any_down()) {
+            let glyph_at = |g: Glyph| {
+                draw_glyph(&painter, Rect::from_center_size(hp + vec2(16.0, 14.0), vec2(16.0, 16.0)), g, c.palette.text)
+            };
+            match o.hit(hp, state.crop_mode) {
+                Some(Handle::Rotate) => {
+                    ui.ctx().set_cursor_icon(CursorIcon::Grab);
+                    glyph_at(Glyph::Rotate);
+                }
+                Some(Handle::Crop(_)) => {
+                    ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
+                    glyph_at(Glyph::Crop);
+                }
+                Some(Handle::Corner(i)) => ui.ctx().set_cursor_icon(if i % 2 == 0 {
+                    CursorIcon::ResizeNwSe
+                } else {
+                    CursorIcon::ResizeNeSw
+                }),
+                Some(Handle::Edge(i)) => ui.ctx().set_cursor_icon(if i % 2 == 0 {
+                    CursorIcon::ResizeVertical
+                } else {
+                    CursorIcon::ResizeHorizontal
+                }),
+                None if o.inside(hp) => ui.ctx().set_cursor_icon(CursorIcon::Move),
+                None => {}
+            }
+        }
     }
-    if resp.dragged() {
-        if let (Some(i), Some((o, sn, cs, k)), Some(pp)) = (state.point_drag, frame, resp.interact_pointer_pos()) {
+
+    let handle_hit = match (&ol, press) {
+        (Some(o), Some(pp)) => o.hit(pp, state.crop_mode),
+        _ => None,
+    };
+    if resp.drag_started_by(PointerButton::Primary) {
+        (c.undo)(c.project);
+        state.handle = None;
+        state.point_drag = None;
+        state.drag = None;
+        if let (Some(h), Some(o), Some(pp), Some(cl)) = (handle_hit, ol, press, c.project.clip(id)) {
+            let lt = cl.local(c.playhead);
+            let start = (cl.scale.at(lt), cl.scale_x.at(lt), cl.scale_y.at(lt), cl.rotation.at(lt));
+            state.handle = Some(HandleDrag { handle: h, id, ol: o, press: pp, start });
+        } else if poly_hit.is_some() {
+            state.point_drag = poly_hit;
+        } else {
+            let clips = sel
+                .iter()
+                .filter_map(|&sid| {
+                    let cl = c.project.clip(sid)?;
+                    let lt = cl.local(c.playhead);
+                    Some((sid, cl.x.at(lt), cl.y.at(lt)))
+                })
+                .collect();
+            state.drag = Some((clips, Vec2::ZERO));
+        }
+    }
+    if resp.dragged_by(PointerButton::Primary) {
+        let now = resp.interact_pointer_pos().or_else(|| ui.input(|i| i.pointer.latest_pos()));
+        if let (Some(d), Some(now)) = (&state.handle, now) {
+            let shift = ui.input(|i| i.modifiers.shift);
+            let lt = c.project.clip(d.id).map(|cl| cl.local(c.playhead)).unwrap_or(0.0);
+            if handle_apply(d, now, shift, c.project, lt) {
+                r.edited = true;
+            }
+        } else if let (Some(i), Some((o, sn, cs, k)), Some(pp)) = (state.point_drag, frame, now) {
             // pointer -> the shape's own frame (undo the rotation and scale the handles were drawn with)
             let (dx, dy) = ((pp.x - o.x) / k, (pp.y - o.y) / k);
             if let Some(p) = c.project.clip_mut(id).and_then(|cl| cl.shape.as_mut()).and_then(|s| s.points.get_mut(i)) {
                 *p = (dx * cs + dy * sn, -dx * sn + dy * cs);
                 r.edited = true;
             }
-        } else if let Some((x0, y0, acc)) = &mut state.drag {
+        } else if let Some((clips, acc)) = &mut state.drag {
             *acc += resp.drag_delta();
             let k = c.project.width as f32 / lb.width(); // project px per point
-            let (nx, ny) = (*x0 + (acc.x * k) as f64, *y0 + (acc.y * k) as f64);
-            if let Some(cl) = c.project.clip_mut(id) {
-                cl.x.set_at(lt, nx);
-                cl.y.set_at(lt, ny);
-                r.edited = true;
+            let (mut dx, mut dy) = (acc.x * k, acc.y * k);
+            // canvas snap on the single moving clip (a group would snap onto its own members —
+            // ponytail: skipped for groups; snap the union box if that ever matters)
+            let mut guides = Vec::new();
+            if let (false, Some(&(sid, x0, y0))) = (group, clips.first()) {
+                if let Some(half) = half_size(c.project, sid, c.playhead) {
+                    let cand = (x0 as f32 + dx, y0 as f32 + dy);
+                    let ((sx, sy), g) = canvas_snap(c.canvas_snap, c.project, sid, c.playhead, cand, half, SNAP_PX * k);
+                    (dx, dy, guides) = (sx - x0 as f32, sy - y0 as f32, g);
+                }
             }
+            for &(sid, x0, y0) in clips.iter() {
+                if let Some(cl) = c.project.clip_mut(sid) {
+                    let lt = cl.local(c.playhead);
+                    cl.x.set_at(lt, x0 + dx as f64);
+                    cl.y.set_at(lt, y0 + dy as f64);
+                }
+            }
+            r.edited = true;
+            paint_canvas_guides(&painter, &guides, lb, (c.project.width, c.project.height), c.palette);
         }
     }
     if resp.drag_stopped() {
         state.drag = None;
         state.point_drag = None;
+        state.handle = None;
     }
 }
 
@@ -997,11 +1479,64 @@ mod tests {
                             proxy: None,
                             tracker: None,
                             guide: None,
+                            canvas_snap: false,
+                            alt_texture: None,
+                            use_proxies: false,
+                            dropped: 0,
                         },
                     );
                 });
             });
             out
+        }
+        // ---- ws:canvas-handles-monitor ----
+        /// A 1280x720 video asset on clip 7 (16:9, so it fills the 1920x1080 canvas exactly) and a
+        /// taller panel with black bars above the video, so the outline, its handles AND the rotate
+        /// knob above the top edge all land inside the video widget. Two frames settle the layout.
+        fn with_asset(&mut self) {
+            use crate::model::Asset;
+            let a = self.project.add_asset(Asset {
+                id: 0,
+                path: "C:/x.mp4".into(),
+                kind: ClipKind::Video,
+                duration: 4.0,
+                width: 1280,
+                height: 720,
+                fps: 30.0,
+                audio_streams: Vec::new(),
+                codec: String::new(),
+                folder: String::new(),
+                tags: Vec::new(),
+                label: 0,
+                description: String::new(),
+                rel_path: None,
+                parent: None,
+                range: None,
+                effects: Vec::new(),
+            });
+            self.project.clip_mut(7).unwrap().asset = a;
+            self.panel = Rect::from_min_size(Pos2::ZERO, vec2(700.0, 620.0));
+            self.frame(vec![]);
+            self.frame(vec![]);
+        }
+        /// The letterbox the video is painted in (the fit rect at zoom 1, pan 0).
+        fn lb(&self) -> Rect {
+            letterbox(self.state.canvas_rect, 16.0 / 9.0, 1.0)
+        }
+        /// A middle-button drag (viewer pan).
+        fn middle_drag(&mut self, from: Pos2, to: Pos2) {
+            let btn = |pos, pressed| Event::PointerButton {
+                pos,
+                button: PointerButton::Middle,
+                pressed,
+                modifiers: Modifiers::NONE,
+            };
+            self.frame(vec![Event::PointerMoved(from)]);
+            self.frame(vec![btn(from, true)]);
+            for i in 1..=4 {
+                self.frame(vec![Event::PointerMoved(from + (to - from) * (i as f32 / 4.0))]);
+            }
+            self.frame(vec![btn(to, false)]);
         }
         fn click(&mut self, at: Pos2) -> PreviewResponse {
             self.frame(vec![Event::PointerMoved(at)]);
@@ -1359,5 +1894,208 @@ mod tests {
         let out = h.drag(pos2(300.0, 150.0), pos2(360.0, 190.0));
         // no asset → no outline, but the drag path still runs; either way nothing panics
         let _ = out;
+    }
+
+    // ---- ws:canvas-handles-monitor ----
+
+    fn xform(h: &H) -> (f64, f64, f64, f64, f64, f64) {
+        let c = h.project.clip(7).unwrap();
+        (c.scale.value, c.scale_x.value, c.scale_y.value, c.rotation.value, c.x.value, c.y.value)
+    }
+
+    #[test]
+    fn corner_handle_scales_uniformly_with_one_undo() {
+        let mut h = H::new();
+        h.with_asset();
+        let lb = h.lb();
+        let out = h.drag(lb.right_bottom(), lb.right_bottom() + vec2(40.0, 22.5));
+        assert!(out.edited);
+        let (s, sx, sy, rot, x, y) = xform(&h);
+        assert!(s > 1.05, "a corner drag away from the centre scales up: {s}");
+        assert_eq!((sx, sy, rot), (1.0, 1.0, 0.0), "corner = uniform scale only");
+        assert_eq!((x, y), (0.0, 0.0), "the centre never moves");
+        assert_eq!(h.undos, 1, "one undo per gesture");
+    }
+
+    #[test]
+    fn edge_handle_writes_independent_scale_axis() {
+        let mut h = H::new();
+        h.with_asset();
+        let lb = h.lb();
+        let right = pos2(lb.right(), lb.center().y);
+        h.drag(right, right + vec2(60.0, 0.0));
+        let (s, sx, sy, ..) = xform(&h);
+        assert!(sx > 1.05, "right edge writes scale_x: {sx}");
+        assert_eq!((s, sy), (1.0, 1.0), "…and nothing else");
+        let mut h = H::new();
+        h.with_asset();
+        let lb = h.lb();
+        let top = pos2(lb.center().x, lb.top());
+        h.drag(top, top - vec2(0.0, 40.0));
+        let (s, sx, sy, ..) = xform(&h);
+        assert!(sy > 1.05, "top edge writes scale_y: {sy}");
+        assert_eq!((s, sx), (1.0, 1.0), "…and nothing else");
+    }
+
+    #[test]
+    fn rotate_handle_snaps_to_15_degrees_with_shift() {
+        // the knob sits KNOB_OFFSET above the top edge; the drag target is that point swung 40° about
+        // the centre (screen y grows downwards, so the maths below is a plain 2-D rotation)
+        let target = |lb: Rect, deg: f32| {
+            let o = lb.center();
+            let arm = lb.height() / 2.0 + KNOB_OFFSET;
+            let (s, c) = deg.to_radians().sin_cos();
+            pos2(o.x + arm * s, o.y - arm * c)
+        };
+        let mut h = H::new();
+        h.with_asset();
+        let lb = h.lb();
+        let knob = pos2(lb.center().x, lb.top() - KNOB_OFFSET);
+        h.drag(knob, target(lb, 40.0));
+        let (s, sx, sy, rot, ..) = xform(&h);
+        assert!((rot - 40.0).abs() < 1.5, "continuous rotation follows the pointer: {rot}");
+        assert_eq!((s, sx, sy), (1.0, 1.0, 1.0), "rotate never scales");
+        assert_eq!(h.undos, 1);
+        let mut h = H::new();
+        h.with_asset();
+        let lb = h.lb();
+        let knob = pos2(lb.center().x, lb.top() - KNOB_OFFSET);
+        h.drag_mod(knob, target(lb, 40.0), Modifiers::SHIFT);
+        let rot = h.project.clip(7).unwrap().rotation.value;
+        assert_eq!(rot, 45.0, "Shift snaps to the nearest 15°");
+    }
+
+    #[test]
+    fn crop_handle_appends_exactly_one_crop_effect() {
+        let mut h = H::new();
+        h.with_asset();
+        h.state.crop_mode = true;
+        let lb = h.lb();
+        // right edge inwards by 120 px, then the top edge (now on the cropped ring, 60 px left of
+        // centre) downwards by 60 px
+        let right = pos2(lb.right(), lb.center().y);
+        h.drag(right, right - vec2(120.0, 0.0));
+        let top = pos2(lb.center().x - 60.0, lb.top());
+        h.drag(top, top + vec2(0.0, 60.0));
+        let c = h.project.clip(7).unwrap();
+        let crops: Vec<&Effect> = c.effects.iter().filter(|e| e.kind == EffectKind::Crop).collect();
+        assert_eq!(c.effects.len(), 1, "two crop drags, one effect: {:?}", c.effects.iter().map(|e| e.kind).collect::<Vec<_>>());
+        let e = crops[0];
+        let (right_f, top_f) = (e.params[1].value, e.params[2].value);
+        assert!((right_f - 120.0 / lb.width() as f64).abs() < 0.01, "Right fraction {right_f}");
+        assert!((top_f - 60.0 / lb.height() as f64).abs() < 0.01, "Top fraction {top_f}");
+        assert_eq!((e.params[0].value, e.params[3].value), (0.0, 0.0), "untouched sides stay 0");
+        assert_eq!(xform(&h).1, 1.0, "crop never scales");
+        assert_eq!(h.undos, 2, "one undo per drag");
+    }
+
+    #[test]
+    fn crop_mode_off_never_touches_effects() {
+        let mut h = H::new();
+        h.with_asset();
+        assert!(!h.state.crop_mode, "off by default");
+        let lb = h.lb();
+        let right = pos2(lb.right(), lb.center().y);
+        h.drag(right, right + vec2(60.0, 0.0));
+        let c = h.project.clip(7).unwrap();
+        assert!(c.effects.is_empty(), "no Crop effect without the toggle");
+        assert!(c.scale_x.value > 1.05, "the edge handle scaled instead");
+    }
+
+    #[test]
+    fn mask_drag_targets_the_selected_effect_mask() {
+        let mut h = H::new();
+        h.project.clip_mut(7).unwrap().effects.push(Effect::new(EffectKind::ALL[0]));
+        h.state.mask_target = MaskTarget::Effect(0);
+        h.tool = Tool::Mask(MaskShape::Ellipse);
+        h.frame(vec![]);
+        let out = h.drag(pos2(240.0, 140.0), pos2(420.0, 260.0));
+        assert!(out.mask_edit);
+        let c = h.project.clip(7).unwrap();
+        assert!(c.effects[0].mask.is_some(), "the effect's mask was written");
+        assert!(c.mask.is_none(), "the clip's own mask is untouched");
+        assert_eq!(h.undos, 1);
+        // a stale effect index is a no-op, not a panic and not an undo entry
+        let mut h = H::new();
+        h.state.mask_target = MaskTarget::Effect(3);
+        h.tool = Tool::Mask(MaskShape::Ellipse);
+        h.frame(vec![]);
+        let out = h.drag(pos2(240.0, 140.0), pos2(420.0, 260.0));
+        assert!(!out.mask_edit);
+        assert!(h.project.clip(7).unwrap().mask.is_none());
+        assert_eq!(h.undos, 0);
+    }
+
+    /// Regression guard for the rewired mask block: with `mask_target` left at its default the
+    /// gesture still writes `clip.mask` exactly as before this workstream.
+    #[test]
+    fn mask_drag_defaults_to_clip_mask_unchanged() {
+        let mut h = H::new();
+        assert_eq!(h.state.mask_target, MaskTarget::Clip);
+        h.project.clip_mut(7).unwrap().effects.push(Effect::new(EffectKind::ALL[0]));
+        h.tool = Tool::Mask(MaskShape::Rect);
+        h.frame(vec![]);
+        let out = h.drag(pos2(240.0, 140.0), pos2(420.0, 260.0));
+        assert!(out.mask_edit);
+        let c = h.project.clip(7).unwrap();
+        let m = c.mask.as_ref().expect("clip mask written");
+        assert_eq!(m.shape, MaskShape::Rect);
+        assert!(m.rx.value > 1.0 && m.ry.value > 1.0);
+        assert!(c.effects[0].mask.is_none(), "the effect's mask is untouched");
+        assert_eq!(h.undos, 1);
+    }
+
+    #[test]
+    fn group_selection_shows_union_box_and_moves_every_clip() {
+        let mut h = H::new();
+        h.with_asset();
+        let a = h.project.clip(7).unwrap().asset;
+        let mut c8 = Clip::new(8, ClipKind::Video, "w", 0.0, 4.0);
+        c8.asset = a;
+        h.project.tracks[0].clips.push(c8);
+        h.selection = vec![7, 8];
+        h.frame(vec![]);
+        let lb = h.lb();
+        // a press exactly on what would be the BR corner handle: a group has no handles, so it moves
+        h.drag(lb.right_bottom() - vec2(1.0, 1.0), lb.right_bottom() + vec2(39.0, 19.0));
+        let k = 1920.0 / lb.width() as f64;
+        for id in [7, 8] {
+            let c = h.project.clip(id).unwrap();
+            assert!((c.x.value - 40.0 * k).abs() < 1.0 && (c.y.value - 20.0 * k).abs() < 1.0, "clip {id} moved: {:?}", (c.x.value, c.y.value));
+            assert_eq!((c.scale.value, c.scale_x.value, c.rotation.value), (1.0, 1.0, 0.0), "no handle on a group");
+        }
+        assert_eq!(h.undos, 1, "one undo for the whole group move");
+    }
+
+    #[test]
+    fn zoom_and_pan_never_edit_the_project() {
+        let mut h = H::new();
+        h.with_asset();
+        let before = h.project.to_json();
+        let lb = h.lb();
+        h.frame(vec![Event::PointerMoved(lb.center()), Event::Zoom(1.5)]);
+        assert!((h.state.view.0 - 1.5).abs() < 1e-4, "Ctrl+wheel / pinch zooms: {:?}", h.state.view);
+        h.middle_drag(lb.center(), lb.center() + vec2(30.0, 10.0));
+        assert!(h.state.view.1.length() > 20.0, "middle-drag pans: {:?}", h.state.view);
+        assert_eq!(h.project.to_json(), before, "the project is untouched");
+        assert_eq!(h.undos, 0, "no undo entry");
+        // Fit Viewer is the reset (see monitor::act) — apply_view at (1, 0) is the plain letterbox
+        assert_eq!(apply_view(lb, (1.0, Vec2::ZERO)), lb);
+        let z = apply_view(lb, (2.0, vec2(5.0, 0.0)));
+        assert_eq!(z.size(), lb.size() * 2.0);
+        assert_eq!(z.center(), lb.center() + vec2(5.0, 0.0));
+    }
+
+    /// Idle frames with the handles (and crop ring) on screen request no repaint — the "idle CPU 0%"
+    /// gate the selftest checks for the plain pane.
+    #[test]
+    fn assert_no_idle_repaint_with_handles_and_crop_ring() {
+        let mut h = H::new();
+        h.with_asset();
+        h.state.crop_mode = true;
+        for _ in 0..5 {
+            h.frame(vec![]);
+        }
+        assert!(!h.ctx.has_requested_repaint(), "idle frame with handles shown requested a repaint");
     }
 }

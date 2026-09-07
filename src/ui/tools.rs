@@ -247,6 +247,10 @@ pub(crate) enum Glyph {
     SlipCursor,
     // ---- ws:trim-model ----
     // ---- ws:canvas-handles-monitor ----
+    /// Two overlapping L-shaped crop marks — painted at the pointer over a crop handle.
+    Crop,
+    /// A three-quarter circular arrow — painted at the pointer over the rotate knob.
+    Rotate,
     // ---- ws:export-deliver ----
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
@@ -364,6 +368,8 @@ impl Glyph {
         Glyph::SlipCursor,
         // ---- ws:trim-model ----
         // ---- ws:canvas-handles-monitor ----
+        Glyph::Crop,
+        Glyph::Rotate,
         // ---- ws:export-deliver ----
         // ---- ws:inspector-gallery ----
         // ---- ws:layout-modes-onboarding ----
@@ -483,6 +489,8 @@ impl Glyph {
             Glyph::SlipCursor => "slip-cursor",
             // ---- ws:trim-model ----
             // ---- ws:canvas-handles-monitor ----
+            Glyph::Crop => "crop",
+            Glyph::Rotate => "rotate",
             // ---- ws:export-deliver ----
             // ---- ws:inspector-gallery ----
             // ---- ws:layout-modes-onboarding ----
@@ -1700,10 +1708,37 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
             let dir = egui::vec2(1.0, 1.0).normalized();
             p.line_segment([ring + dir * 4.0, ring + dir * 8.0], Stroke::new(1.8, fg));
         } // ---- ws:forgiveness ----
-          // ---- ws:player-rate-loop ----
-          // ---- ws:trim-model ----
-          // ---- ws:canvas-handles-monitor ----
-          // ---- ws:export-deliver ----
+        // ---- ws:player-rate-loop ----
+        // ---- ws:trim-model ----
+        // ---- ws:canvas-handles-monitor ----
+        // crop marks: two L corners (top-right and bottom-left) overlapping into a frame
+        Glyph::Crop => {
+            p.add(egui::Shape::line(
+                vec![c + egui::vec2(-7.0, -3.0), c + egui::vec2(3.0, -3.0), c + egui::vec2(3.0, 7.0)],
+                stroke,
+            ));
+            p.add(egui::Shape::line(
+                vec![c + egui::vec2(-3.0, -7.0), c + egui::vec2(-3.0, 3.0), c + egui::vec2(7.0, 3.0)],
+                stroke,
+            ));
+        }
+        // rotate: a three-quarter arc ending in an arrowhead
+        Glyph::Rotate => {
+            let pts: Vec<egui::Pos2> = (0..=18)
+                .map(|i| {
+                    let a = -std::f32::consts::FRAC_PI_2 + i as f32 / 18.0 * (std::f32::consts::TAU * 0.75);
+                    c + egui::vec2(a.cos(), a.sin()) * 5.0
+                })
+                .collect();
+            let end = pts[pts.len() - 1];
+            p.add(egui::Shape::line(pts, stroke));
+            p.add(egui::Shape::convex_polygon(
+                vec![end + egui::vec2(0.0, -3.5), end + egui::vec2(2.5, 0.5), end + egui::vec2(-2.5, 0.5)],
+                fg,
+                Stroke::NONE,
+            ));
+        }
+        // ---- ws:export-deliver ----
           // ---- ws:inspector-gallery ----
           // ---- ws:layout-modes-onboarding ----
         // pushpin: a filled head over a wider bar, with a needle dropping from the bar's middle

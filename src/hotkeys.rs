@@ -227,6 +227,10 @@ actions! {
     ToggleTrackRipple => "toggle_track_ripple", "Toggle Ripple (Sync) on Track", None;
     ToggleTrackMagnetic => "toggle_track_magnetic", "Toggle Magnetic Track", None;
     // ---- ws:canvas-handles-monitor ----
+    // Unbound by design (Shift+Z is the timeline's Zoom to Fit): palette / menu / ui.action only.
+    AutoReframe => "auto_reframe", "Auto Reframe (follow tracked point)", None;
+    ToggleProxies => "toggle_proxies", "Use Proxies", None;
+    ViewerFit => "viewer_fit", "Fit Viewer", None;
     // ---- ws:export-deliver ----
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----

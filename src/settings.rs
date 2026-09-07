@@ -310,6 +310,10 @@ pub struct Settings {
     pub snap_markers: bool,
     // ---- ws:trim-model ----
     // ---- ws:canvas-handles-monitor ----
+    /// Let an effect / transition / look hover (or `preview.hover`) drive the monitor's alt render.
+    pub hover_preview: bool,
+    /// Canvas centre / edge / third / other-clip snapping while dragging a clip on the preview.
+    pub canvas_snap: bool,
     // ---- ws:export-deliver ----
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
@@ -419,6 +423,8 @@ impl Default for Settings {
             snap_markers: true,
             // ---- ws:trim-model ----
             // ---- ws:canvas-handles-monitor ----
+            hover_preview: true,
+            canvas_snap: true,
             // ---- ws:export-deliver ----
             // ---- ws:inspector-gallery ----
             // ---- ws:layout-modes-onboarding ----
@@ -644,6 +650,18 @@ mod tests {
         let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(back.audio_scrub, s.audio_scrub);
         assert_eq!(back.preroll_secs, s.preroll_secs);
+    }
+
+    // ---- ws:canvas-handles-monitor ----
+    #[test]
+    fn hover_preview_and_canvas_snap_round_trip() {
+        let old: Settings = serde_json::from_str("{}").unwrap();
+        assert!(old.hover_preview && old.canvas_snap, "both default on");
+        let mut s = Settings::default();
+        s.hover_preview = false;
+        s.canvas_snap = false;
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert!(!back.hover_preview && !back.canvas_snap);
     }
 
     #[test]
