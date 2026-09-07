@@ -91,14 +91,20 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
             )
         };
         // ---- ws:pro-monitor ----
-        if let (Some(rgb), Some((id, target))) = (resp.picked, app.monitor.pick_armed.take()) {
-            let before = app.project.to_json();
-            match tools_monitor::write_picked_color(app, id, target, rgb) {
-                Ok(()) => {
-                    app.push_undo_labeled(before, "Eyedropper");
-                    app.after_edit();
+        // `pick_armed` is only consumed on an actual click (`resp.picked` is `Some`) — armed once by the
+        // Color panel's Eyedropper button, it must survive every frame the user hasn't clicked yet
+        // (moving the mouse from the panel to the canvas takes more than one frame). Checking
+        // `resp.picked` first, THEN `.take()`-ing, keeps it armed across every frame nothing was clicked.
+        if let Some(rgb) = resp.picked {
+            if let Some((id, target)) = app.monitor.pick_armed.take() {
+                let before = app.project.to_json();
+                match tools_monitor::write_picked_color(app, id, target, rgb) {
+                    Ok(()) => {
+                        app.push_undo_labeled(before, "Eyedropper");
+                        app.after_edit();
+                    }
+                    Err(e) => app.toast(e),
                 }
-                Err(e) => app.toast(e),
             }
         }
         let (cw, ch) = preview_canvas(resp.canvas, app.settings.preview_quality);

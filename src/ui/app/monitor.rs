@@ -395,21 +395,31 @@ pub(crate) fn monitor_tick(app: &mut App, ctx: &egui::Context) {
     if let Some(id) = crate::ui::inspector::take_pending_eyedrop() {
         app.monitor.pick_armed = Some((id, crate::ui::preview::PickTarget::Chroma));
     }
-    let rate = app.player.rate();
+    // ws:pro-monitor review fix: `Player::pause()` never resets `clock.rate` to 0 (only `play()` sets it
+    // to 1.0, `set_rate` rejects 0.0 outright — see playback.rs), so the raw `rate()` reads whatever the
+    // last shuttle speed was even after a real Stop, and defaults to 1.0 at startup regardless of playing
+    // state. Every other call site (playback_ctl.rs, source_ctl.rs) gates it behind `is_playing()` for
+    // exactly this reason; without the same gate here the "shuttle stopped" (nonzero -> zero) transition
+    // `dyn_trim_should_commit` watches for is essentially unreachable.
+    let rate = if app.player.is_playing() { app.player.rate() } else { 0.0 };
     let trim_view_armable = app.settings.trim_view && app.timeline.edit_point.is_some();
     if dyn_trim_should_arm(rate, trim_view_armable) {
         app.monitor.dyn_trim_armed = true;
     }
-    if dyn_trim_should_commit(app.monitor.dyn_trim_armed, app.monitor.last_rate, rate) {
+    // never commit while an export is running — export owns project consistency/GPU capacity, matching
+    // the trim-view decode's own export pause below (`trim_view_wants_requests`).
+    if app.export.is_none() && dyn_trim_should_commit(app.monitor.dyn_trim_armed, app.monitor.last_rate, rate) {
         commit_dynamic_trim(app);
         app.monitor.dyn_trim_armed = false;
     }
     app.monitor.last_rate = rate;
 
-    // Scopes: gate the GPU's readback to only while the window is actually open — an idle preview with
-    // Scopes closed pays nothing extra (matches color-engine's own "only when wanted" contract).
+    // Scopes: gate the GPU's readback to only while the window is actually open OR the eyedropper is
+    // armed — `write_picked_color`/`color.pick` both read `gpu.stats()`, which `maybe_readback_stats`
+    // leaves untouched (None, or a stale frame) whenever `stats_wanted` is false, so without this an
+    // eyedropper pick made with Scopes closed reads stale/absent stats.
     if let Some(gpu) = app.gpu.as_mut() {
-        gpu.set_stats_wanted(app.monitor.scopes_open);
+        gpu.set_stats_wanted(app.monitor.scopes_open || app.monitor.pick_armed.is_some());
     }
 
     // Trim view: refresh the outgoing/incoming decode slots. Paused during export (no new requests);

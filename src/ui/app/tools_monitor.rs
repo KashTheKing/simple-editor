@@ -526,4 +526,61 @@ mod tests {
         assert_eq!(current_angle(&p, clip_id, 6.0), Some(1), "after the switch point: angle 1");
         assert_eq!(current_angle(&p, clip_id, 1.0), Some(0), "before the switch point: still angle 0");
     }
+
+    /// ws:pro-monitor review gap — `commit_dynamic_trim` (monitor.rs; the JKL-shuttle-stop implicit
+    /// commit) and this file's own `"timeline.dynamic_trim"` MCP tool are two independent call sites that
+    /// both boil down to `Project::extend_edit(&ep, to)`, but each derives `to` its own way: the implicit
+    /// commit uses the raw playhead where the shuttle stopped (`let to = app.playhead;`), the explicit
+    /// tool uses `edit_point.t + dt` (`let to = ep.t + dt;`). Neither call site is directly testable here
+    /// (both need a live `&mut App` — see `tools_registry_tests.rs`'s "no headless App" note), so this
+    /// pins the two derivations at the level they actually share: given equivalent args (a shuttle stop
+    /// exactly `dt` seconds past the edit point == `playhead`), both formulas must land on the same `to`
+    /// and therefore compose the identical `extend_edit` call and result.
+    #[test]
+    fn dynamic_trim_mcp_tool_matches_the_implicit_composition() {
+        let mut base = Project::new();
+        let aid = base.add_asset(crate::model::Asset {
+            id: 900,
+            path: "C:/x.mp4".into(),
+            kind: ClipKind::Video,
+            duration: 20.0,
+            width: 1920,
+            height: 1080,
+            fps: 30.0,
+            audio_streams: Vec::new(),
+            codec: String::new(),
+            folder: String::new(),
+            tags: Vec::new(),
+            label: 0,
+            description: String::new(),
+            rel_path: None,
+            parent: None,
+            range: None,
+            effects: Vec::new(),
+        });
+        let cid = base.new_id();
+        let mut c = Clip::new(cid, ClipKind::Video, "v", 0.0, 3.0);
+        c.asset = aid;
+        base.tracks[0].clips.push(c);
+        let ep0 = EditPoint { track: 0, t: 3.0, side: Side::Left };
+
+        // `commit_dynamic_trim`'s own derivation: `to = app.playhead` directly.
+        let playhead = 4.0;
+        let mut via_commit = base.clone();
+        assert!(via_commit.extend_edit(&ep0, playhead), "the implicit commit's own extend_edit call");
+
+        // `"timeline.dynamic_trim"`'s own derivation (this file's `run`): `ep = { side, ..ep0 }; to = ep.t + dt`.
+        let dt = playhead - ep0.t; // an equivalent shuttle-stop distance expressed as the tool's own arg
+        let ep = EditPoint { side: Side::Left, ..ep0 };
+        let to = ep.t + dt;
+        let mut via_tool = base.clone();
+        assert!(via_tool.extend_edit(&ep, to), "the MCP tool's own extend_edit call");
+
+        assert_eq!(to, playhead, "equivalent args (dt == playhead - edit_point.t) must derive the same `to`");
+        assert_eq!(
+            via_commit.to_json(),
+            via_tool.to_json(),
+            "the implicit commit and the explicit MCP tool must compose the identical extend_edit call/result"
+        );
+    }
 }
