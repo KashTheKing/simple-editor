@@ -21,7 +21,7 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
             true
         }
         // ToggleLayoutMode / ShowWelcome: declared exclusively in hotkeys.rs by this workstream (see its
-        // doc comment there) but deliberately NOT handled here — both fall through App::act's `_ => {}`
+        // doc comment there) but deliberately NOT handled here - both fall through App::act's `_ => {}`
         // catch-all, inert until ws:layout-modes-onboarding (wave 2) adds its own ACT_HANDLERS arm.
         _ => false,
     }
@@ -42,7 +42,7 @@ pub(super) fn windows(app: &mut App, ctx: &egui::Context) {
         }
     };
     if let Some(cmd) = palette::show(ctx, &mut app.cmd_palette, &rows) {
-        // read BEFORE anything else touches cmd_palette — `palette::show`'s doc comment guarantees this
+        // read BEFORE anything else touches cmd_palette - `palette::show`'s doc comment guarantees this
         // is still the just-submitted arg form for exactly this Command::Tool result, nothing else's.
         let arg_form = app.cmd_palette.arg_form.take();
         remember_recent(app, &cmd);
@@ -51,8 +51,8 @@ pub(super) fn windows(app: &mut App, ctx: &egui::Context) {
 }
 
 /// 1 Hz FRAME_HOOK: refresh the script-metadata cache, poll every script's own `@hotkey` (pressing it
-/// runs the script directly, without opening the Scripts menu — an acceptance criterion of this ws),
-/// and fire the one `@on` event this ws can reach from a file it owns (`selection_changed` — see
+/// runs the script directly, without opening the Scripts menu - an acceptance criterion of this ws),
+/// and fire the one `@on` event this ws can reach from a file it owns (`selection_changed` - see
 /// `fire_hook`'s doc comment for why the other five events aren't wired here).
 pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
     refresh_if_stale(&mut app.script_meta_cache);
@@ -154,7 +154,7 @@ fn dispatch(app: &mut App, cmd: Command, arg_form: Option<(&'static str, Vec<(St
 }
 
 impl App {
-    /// Cached `scripting::list()` + `scripting::meta()` for every script — refreshed here if stale
+    /// Cached `scripting::list()` + `scripting::meta()` for every script - refreshed here if stale
     /// (`tick`'s 1 Hz FRAME_HOOK already keeps it warm while the app is running, so this rarely does
     /// real filesystem work) instead of every call site re-parsing every script's header on its own.
     pub(crate) fn script_metas(&mut self) -> &[ScriptMeta] {
@@ -163,16 +163,16 @@ impl App {
     }
 
     /// Run every script whose `-- @on` list contains `event`, passing `payload` as Luau's `editor.event`
-    /// — re-entrancy guarded (`self.hook_running`; a hook that itself triggers another `fire_hook` call,
+    /// - re-entrancy guarded (`self.hook_running`; a hook that itself triggers another `fire_hook` call,
     /// directly or via a tool it runs, is a no-op instead of recursing) and per-script budget-limited
-    /// (`ScriptMeta::budget`, default 250 ms — see `scripting::DEFAULT_HOOK_BUDGET`). A script whose run
+    /// (`ScriptMeta::budget`, default 250 ms - see `scripting::DEFAULT_HOOK_BUDGET`). A script whose run
     /// overruns its budget is disabled for the rest of the session (`self.disabled_hooks`) with exactly
     /// one toast; every other error is logged, not surfaced (a silently-erroring hook must not spam
     /// toasts on every ordinary UI event it's subscribed to).
     ///
     /// // ponytail: this ws implements `fire_hook` itself (and the `scripts.run` MCP tool calls it via
     /// `event`, so it IS exercised end-to-end) but does not wire the six real call sites the plan names
-    /// (selection_changed/import/export_done/project_open/project_save/marker_added) — every one of
+    /// (selection_changed/import/export_done/project_open/project_save/marker_added) - every one of
     /// them lives in a file this ws does not own this wave (files.rs is forgiveness's; selection/import/
     /// export/marker code lives in actions.rs/panes.rs/library.rs/markers_ui.rs, none in this ws's Files
     /// table). Wiring them is a small, safe follow-up once landed: one `app.fire_hook("name", payload)`
@@ -216,7 +216,7 @@ impl App {
 }
 
 /// Which of `metas` should fire for `event`: not currently disabled, and only when no hook is already
-/// running (the re-entrancy guard). Pure and App-free on purpose — see `fire_hook_targets_matching_
+/// running (the re-entrancy guard). Pure and App-free on purpose - see `fire_hook_targets_matching_
 /// scripts_guards_reentrancy_and_skips_disabled` below; there is no headless `App` harness in this crate
 /// (`App::new` needs a real `eframe::CreationContext`), so `App::fire_hook` itself stays untested
 /// directly, same as `App::enabled`/`App::run_rollback` elsewhere in `ui::app`.
@@ -233,7 +233,7 @@ fn hooks_for_event<'a>(
 }
 
 /// `scripting::run_hook`'s interrupt error text (see `setup_vm`'s `mlua::Error::runtime(format!(...))`)
-/// — matched by substring rather than a typed error so `scripting.rs` doesn't need an error enum just
+/// - matched by substring rather than a typed error so `scripting.rs` doesn't need an error enum just
 /// for this one caller to distinguish "ran out of time" from every other script failure.
 fn is_budget_error(e: &str) -> bool {
     e.contains("took too long")

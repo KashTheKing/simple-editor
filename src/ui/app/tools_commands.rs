@@ -1,13 +1,13 @@
 //! ---- ws:command-palette ----
 //! The 9 MCP tools this workstream owns: `ui.palette`, `hotkeys.get`/`set`/`preset`, `ui.zoom_factor`,
-//! `scripts.list`/`run`, `settings.get`/`set`. Registered once in `TOOL_TABLES` — see mod.rs.
+//! `scripts.list`/`run`, `settings.get`/`set`. Registered once in `TOOL_TABLES` - see mod.rs.
 
 use super::tools_helpers::*;
 use super::*;
 use crate::mcp::tools::{ToolDef, ToolKind, ToolOutcome};
 use crate::ui::palette;
 
-/// Scalar `Settings` fields the palette/scripts/MCP may read or write via `settings.get`/`set` —
+/// Scalar `Settings` fields the palette/scripts/MCP may read or write via `settings.get`/`set` -
 /// deliberately small (a stringly-typed round-trip through JSON scalars, no nested structures): this is
 /// a scripting convenience, not a settings-migration tool. Extend when a genuinely useful field shows up.
 const SCALAR_WHITELIST: &[&str] = &[

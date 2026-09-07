@@ -3,9 +3,9 @@
 //! std-only: no dependency, matches goals.md's dependency budget.
 //!
 //! File shape read: `LUT_3D_SIZE N` then N^3 "r g b" rows, red changing fastest (the format's own
-//! convention) — so the rows are stored in the file's own order and `sample_trilinear`'s index math
+//! convention) - so the rows are stored in the file's own order and `sample_trilinear`'s index math
 //! (`r + g*N + b*N*N`) matches it without any reshuffling. `TITLE`/`DOMAIN_MIN`/`DOMAIN_MAX`/comment
-//! lines are ignored (ponytail: DOMAIN_MIN/MAX support — a non-default input domain — is rare in
+//! lines are ignored (ponytail: DOMAIN_MIN/MAX support - a non-default input domain - is rare in
 //! practice; add remapping here if a real-world .cube ever needs it).
 
 use std::collections::HashMap;
@@ -89,7 +89,7 @@ pub fn sample_trilinear(lut: &Lut3d, rgb: [f32; 3]) -> [f32; 3] {
 static CACHE: OnceLock<Mutex<HashMap<String, Arc<Lut3d>>>> = OnceLock::new();
 
 /// Read + parse `path` once, cached by path for the life of the process.
-/// ponytail: no mtime invalidation — re-run `clip.add_lut` (or restart) to pick up an edited `.cube`.
+/// ponytail: no mtime invalidation - re-run `clip.add_lut` (or restart) to pick up an edited `.cube`.
 pub fn load(path: &str) -> Result<Arc<Lut3d>, String> {
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     if let Some(l) = cache.lock().unwrap().get(path) {
@@ -105,7 +105,7 @@ pub fn load(path: &str) -> Result<Arc<Lut3d>, String> {
 mod tests {
     use super::*;
 
-    /// LUT_3D_SIZE 2, corners mapped to themselves — trilinear interpolation of a truly linear function
+    /// LUT_3D_SIZE 2, corners mapped to themselves - trilinear interpolation of a truly linear function
     /// reproduces it exactly at any point.
     const IDENTITY_2: &str = "LUT_3D_SIZE 2\n\
         0.0 0.0 0.0\n1.0 0.0 0.0\n0.0 1.0 0.0\n1.0 1.0 0.0\n\

@@ -8,7 +8,7 @@ impl App {
         }
         if guarded(|| self.draw_pane_inner(ui, pane)).is_none() {
             self.failed_panes.push(pane);
-            self.toast(format!("{} failed to draw — the pane is disabled for this session", pane.title()));
+            self.toast(format!("{} failed to draw - the pane is disabled for this session", pane.title()));
         }
     }
 
@@ -65,7 +65,7 @@ impl App {
                         .inner
                 };
                 if let Some(i) = resp.mask_for {
-                    // ponytail: the viewport's mask tool edits clip.mask, not the effect's own mask —
+                    // ponytail: the viewport's mask tool edits clip.mask, not the effect's own mask -
                     // targeting an effect index is a preview.rs change, not an app one.
                     let shape = self
                         .selection
@@ -199,7 +199,7 @@ impl App {
                     self.place_assets(&resp.add_to_timeline, self.playhead, None, DropMode::Place);
                     self.after_edit();
                 }
-                // Import button / dragged-in linked-folder files: import, then board them — same
+                // Import button / dragged-in linked-folder files: import, then board them - same
                 // two-steps-when-fresh/one-when-not undo shape as the OS-file-drop path in handle_drops
                 if !resp.import_paths.is_empty() {
                     let ids = self.import_files(&resp.import_paths);
@@ -218,7 +218,7 @@ impl App {
                 }
             }
             Pane::History => {
-                // deleting entries mutates the undo stack directly, not the project — no undo/push_undo
+                // deleting entries mutates the undo stack directly, not the project - no undo/push_undo
                 // of its own (history bookkeeping isn't itself a project edit).
                 let resp = {
                     let App { history, undo, project, .. } = self;
@@ -243,7 +243,7 @@ impl App {
                 };
                 // ---- ws:audio-analysis ----
                 // Every marker this pane creates (silence "Mark instead", Detect Beats, Scene cuts'
-                // "Mark instead") fires marker_added exactly once per id — same shared fn the
+                // "Mark instead") fires marker_added exactly once per id - same shared fn the
                 // Action/MCP-tool entry points use, so this never drifts from them.
                 self.fire_markers_added(&marked);
                 if changed {
@@ -369,7 +369,7 @@ impl App {
                 }
             }
             // ---- ws:registries-schema-hooks ----
-            // Pane::Source has no dedicated drawer yet — source-monitor (wave 2) is the first
+            // Pane::Source has no dedicated drawer yet - source-monitor (wave 2) is the first
             // PANE_DRAWERS entry (tried above) and turns this into its real two-up source monitor.
             #[allow(unreachable_patterns)]
             _ => {
@@ -379,7 +379,7 @@ impl App {
     }
 
     /// Hand the saved curve/motion presets (built-ins first) to the curve editor. Called on start and
-    /// whenever the lists change — never per frame.
+    /// whenever the lists change - never per frame.
     pub(super) fn refresh_presets(&self) {
         curves::set_available_presets(self.settings.curve_presets.clone());
         let motions: Vec<crate::settings::MotionPreset> = crate::engine::presets::builtin_motions()
@@ -394,8 +394,8 @@ impl App {
 #[cfg(test)]
 mod tests {
     /// Structural (source-scan): this crate has no headless App-construction path anywhere (see
-    /// tools_registry_tests.rs's doc comment for why), so — the same technique files.rs's own
-    /// App-level tests already use — this checks both wiring sites directly instead of driving a
+    /// tools_registry_tests.rs's doc comment for why), so - the same technique files.rs's own
+    /// App-level tests already use - this checks both wiring sites directly instead of driving a
     /// live App through the Library and Subtitles panes.
     #[test]
     fn panes_wires_toast_undo_for_library_and_subtitles() {

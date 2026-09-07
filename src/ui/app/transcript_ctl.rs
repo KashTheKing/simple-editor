@@ -7,7 +7,7 @@
 //! window (`ui::transcript_ui::window`).
 //!
 //! Every job started here carries an OUTER `Progress` that only completes once its result is in the
-//! project — so an MCP `transcribe.run`/`media.transcribe`/`tracking.run`/`tts.speak` reply
+//! project - so an MCP `transcribe.run`/`media.transcribe`/`tracking.run`/`tts.speak` reply
 //! (`poll_mcp` replies when the job's `Progress` is done) never lands before `media.transcript` /
 //! `clip.get` can see the words / keyframes.
 
@@ -55,14 +55,14 @@ pub(super) struct TranscriptState {
     tts: Vec<TtsRun>,
     /// A model download started from the clip menu / palette; `Some(clip)` = transcribe it when done.
     download: Option<(Arc<Progress>, Option<Id>)>,
-    /// `tts::voices()` running on a thread (a second of powershell — never on the UI thread, never
+    /// `tts::voices()` running on a thread (a second of powershell - never on the UI thread, never
     /// at startup: only once the Speech panel is first opened).
     voices_rx: Option<Receiver<Vec<String>>>,
     pub(super) window: transcript_ui::TranscriptWindow,
 }
 
 /// The clip the menu/palette actions target: the first selected clip with footage, else the first
-/// selected clip at all (a right-click selects the clip under the pointer first — timeline/mod.rs).
+/// selected clip at all (a right-click selects the clip under the pointer first - timeline/mod.rs).
 fn first_clip(app: &App) -> Option<Id> {
     app.selection
         .iter()
@@ -71,9 +71,9 @@ fn first_clip(app: &App) -> Option<Id> {
         .copied()
 }
 
-/// "tiny.en" out of "tiny.en — fastest".
+/// "tiny.en" out of "tiny.en - fastest".
 fn short_model(name: &str) -> &str {
-    name.split(" —").next().unwrap_or(name)
+    name.split(" - ").next().unwrap_or(name)
 }
 
 fn progress_toast(app: &mut App, msg: impl Into<String>, p: &Arc<Progress>) {
@@ -82,7 +82,7 @@ fn progress_toast(app: &mut App, msg: impl Into<String>, p: &Arc<Progress>) {
     app.push_toast(t);
 }
 
-/// Transcribe `clip` now, or — with no model yet — offer the download first (a non-blocking confirm
+/// Transcribe `clip` now, or - with no model yet - offer the download first (a non-blocking confirm
 /// naming the exact size; the clip is transcribed as soon as the model lands). Never silently fetches.
 fn transcribe_or_offer(app: &mut App, clip: Id) {
     if transcribe::exe().is_none() {
@@ -96,13 +96,13 @@ fn transcribe_or_offer(app: &mut App, clip: Id) {
     let (name, file, mb) = app.subtitles_ui.transcribe.model();
     if !transcribe::have_model(file) {
         if app.transcript.download.as_ref().is_some_and(|(p, _)| !p.is_done()) {
-            app.toast("The whisper model is still downloading — the clip is transcribed when it lands");
+            app.toast("The whisper model is still downloading - the clip is transcribed when it lands");
             return;
         }
         confirm::ask_app(
             "Get captions",
             format!(
-                "Transcribing needs the whisper model {} — download {mb} MB once from huggingface.co into {}?\n\
+                "Transcribing needs the whisper model {} - download {mb} MB once from huggingface.co into {}?\n\
                  The clip is transcribed as soon as it lands.",
                 short_model(name),
                 transcribe::models_dir().display()
@@ -140,7 +140,7 @@ fn export_dialog(app: &mut App) {
         return;
     };
     let Some(words) = app.project.transcript(clip).map(|t| t.words.clone()) else {
-        app.toast("No transcript yet — right-click the clip ▸ Transcript ▸ Transcribe… first");
+        app.toast("No transcript yet - right-click the clip ▸ Transcript ▸ Transcribe… first");
         return;
     };
     let name = transcript_ui::clip_label(&app.project, clip);
@@ -169,7 +169,7 @@ fn remove_fillers_action(app: &mut App) {
         .or_else(|| first_clip(app))
         .filter(|&c| app.project.transcript(c).is_some());
     let Some(clip) = clip else {
-        app.toast("No transcript to clean — transcribe a clip first");
+        app.toast("No transcript to clean - transcribe a clip first");
         return;
     };
     let words = app.project.transcript(clip).map(|t| t.words.clone()).unwrap_or_default();
@@ -189,7 +189,7 @@ fn remove_fillers_action(app: &mut App) {
         app.push_undo_labeled(before, "Mark Fillers");
         app.fire_markers_added(&ids);
         app.after_edit();
-        app.toast(format!("Marked {} filler(s) — Remove Filler Words again to cut them", ids.len()));
+        app.toast(format!("Marked {} filler(s) - Remove Filler Words again to cut them", ids.len()));
         return;
     }
     for id in marks {
@@ -198,7 +198,7 @@ fn remove_fillers_action(app: &mut App) {
     let n = app.project.cut_word_ranges(clip, &ranges);
     if n == 0 {
         app.run_rollback(before);
-        app.toast("Nothing cut — the track is locked, or the clip has a speed ramp");
+        app.toast("Nothing cut - the track is locked, or the clip has a speed ramp");
         return;
     }
     app.push_undo_labeled(before, "Remove Fillers");
@@ -239,13 +239,13 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
             true
         }
         Action::GetCaptions => {
-            // the button itself lives in the Subtitles pane and names the size — surface it there
+            // the button itself lives in the Subtitles pane and names the size - surface it there
             // rather than fetching from a palette row that can't show the MB before the click
             app.subtitles_ui.transcribe.open = true;
             app.surface(Pane::Subtitles);
             let (name, file, mb) = app.subtitles_ui.transcribe.model();
             if transcribe::have_model(file) {
-                app.toast(format!("whisper {} is already downloaded — select a clip and Transcribe", short_model(name)));
+                app.toast(format!("whisper {} is already downloaded - select a clip and Transcribe", short_model(name)));
             } else {
                 app.toast(format!("Subtitles ▸ Transcribe ▸ \"Get captions\" downloads whisper {} ({mb} MB) once", short_model(name)));
             }
@@ -322,7 +322,7 @@ impl App {
         let points: Arc<Mutex<Vec<(f32, f32, f32)>>> = Arc::new(Mutex::new(Vec::new()));
         let sink = points.clone();
         // ponytail: busy-poll the channel-based TrackJob at a short interval instead of restructuring
-        // it around Progress — smallest diff that presents the uniform Job contract.
+        // it around Progress - smallest diff that presents the uniform Job contract.
         let inner = export::spawn_job("tracking", move |prog| {
             loop {
                 if prog.is_cancelled() {
@@ -429,7 +429,7 @@ fn finish_tts(app: &mut App, run: TtsRun) {
         return;
     }
     // a small local WAV: probe it right here (synchronously, like open_media) so the clip ids are
-    // final and the link below survives — an async import's later `adopt` would re-create them
+    // final and the link below survives - an async import's later `adopt` would re-create them
     let asset = match media::probe(&run.out.to_string_lossy(), app.backend()) {
         Ok(a) => a,
         Err(e) => {
@@ -609,7 +609,7 @@ mod tests {
 
     #[test]
     fn short_model_name() {
-        assert_eq!(short_model("tiny.en — fastest"), "tiny.en");
+        assert_eq!(short_model("tiny.en - fastest"), "tiny.en");
         assert_eq!(short_model("base"), "base");
     }
 }

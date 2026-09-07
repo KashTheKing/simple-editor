@@ -54,7 +54,7 @@ pub struct WaveformCache {
     state: Arc<Mutex<State>>,
 }
 
-/// ponytail: 64-bit hash as the map key so the per-frame lookup allocates nothing — collisions are astronomically unlikely.
+/// ponytail: 64-bit hash as the map key so the per-frame lookup allocates nothing - collisions are astronomically unlikely.
 fn mem_key(path: &str, stream: usize) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     (path, stream).hash(&mut h);
@@ -86,7 +86,7 @@ impl WaveformCache {
             let (state, ctx, backend, path) = (self.state.clone(), self.ctx.clone(), self.backend, path.to_string());
             std::thread::spawn(move || {
                 // ponytail: a decoder panic must leave the key resolved (as empty peaks, same as a file
-                // that won't open) — otherwise it stays pending forever and callers wait for good.
+                // that won't open) - otherwise it stays pending forever and callers wait for good.
                 let peaks =
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| load_or_compute(&path, stream, backend)))
                         .unwrap_or_else(|_| Peaks { min: Vec::new(), max: Vec::new() });
@@ -155,7 +155,7 @@ pub(crate) fn compute_peaks(source: &mut dyn AudioSource, duration: f64) -> Peak
     loop {
         let t = frame as f64 / SAMPLE_RATE as f64;
         if t > 24.0 * 3600.0 {
-            break; // ponytail: hard cap — never spin forever on a broken source
+            break; // ponytail: hard cap - never spin forever on a broken source
         }
         source.read_at(t, &mut buf);
         if t >= duration && buf.iter().all(|&x| x == 0.0) {

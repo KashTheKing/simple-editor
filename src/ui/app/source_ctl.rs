@@ -3,7 +3,7 @@
 //! Source Tape, Show/Hide Source, and transport-focus routing (Space/K/step/Home/End/I/O/Alt+X drive
 //! the source player while it holds focus; J/L do the same via `playback_ctl`'s one-line hand-off).
 //! The edits themselves are plain fns over `Project` (testable without a live `App`) composed from
-//! trim-model's ranged ops — `splice_in`/`extract_range`/`overwrite_asset`/`replace_clip` are called
+//! trim-model's ranged ops - `splice_in`/`extract_range`/`overwrite_asset`/`replace_clip` are called
 //! directly, never through a second MCP tool name.
 
 use super::edit_ops::{place, DropMode};
@@ -28,7 +28,7 @@ pub(crate) fn mark_out(st: &mut SourceState, t: f64) {
 }
 
 /// Match Frame: the clip (`clip`, else the first under `playhead`, visual clips first) and the source
-/// time it shows at `playhead` — `Clip::src_time` (speed/reverse/freeze applied), clamped to the asset.
+/// time it shows at `playhead` - `Clip::src_time` (speed/reverse/freeze applied), clamped to the asset.
 pub(crate) fn match_frame_target(project: &Project, clip: Option<Id>, playhead: f64) -> Option<(Id, f64)> {
     let id = clip.or_else(|| {
         let at = project.clips_at(playhead);
@@ -92,7 +92,7 @@ pub(crate) fn ripple_overwrite(
 }
 
 /// Close Up: close the gap under `t` on `track` only (`[previous clip's end, next clip's start)`),
-/// pulling that one track's later clips left — never the other tracks. Returns the closed gap.
+/// pulling that one track's later clips left - never the other tracks. Returns the closed gap.
 pub(crate) fn close_up(project: &mut Project, track: usize, t: f64) -> Option<(f64, f64)> {
     let tr = project.tracks.get(track)?;
     if tr.clips.iter().any(|c| c.contains(t)) {
@@ -108,7 +108,7 @@ pub(crate) fn close_up(project: &mut Project, track: usize, t: f64) -> Option<(f
 }
 
 /// The nearest timeline cut to `playhead` within `thr` seconds, as a signed offset (cut − playhead)
-/// — the smart-edit row's "which cut will this land on" readout. Pure read, recomputed per frame.
+/// - the smart-edit row's "which cut will this land on" readout. Pure read, recomputed per frame.
 pub(crate) fn smart_indicator(project: &Project, playhead: f64, thr: f64) -> Option<f64> {
     project
         .cut_points()
@@ -120,7 +120,7 @@ pub(crate) fn smart_indicator(project: &Project, playhead: f64, thr: f64) -> Opt
 
 /// Source Tape: `assets` (library ids, in bin order) laid end to end on V1/A1 of a fresh project at
 /// the parent's format. Second value = each asset's start offset (the cut ticks). Unknown ids are
-/// skipped — the caller filters first so its own order list stays aligned.
+/// skipped - the caller filters first so its own order list stays aligned.
 pub(crate) fn source_tape(assets: &[Id], project: &Project) -> (Project, Vec<f64>) {
     let mut p = Project::new();
     p.name = "Source Tape".into();
@@ -167,7 +167,7 @@ impl App {
     }
 
     /// Insert the open source's marked range: `place|splice|overwrite|top|append` at `at` (default:
-    /// the playhead). Project-only — the caller owns the undo step (`edit` here, the Mutate wrapper
+    /// the playhead). Project-only - the caller owns the undo step (`edit` here, the Mutate wrapper
     /// for the MCP tool).
     pub(crate) fn source_insert(
         &mut self,
@@ -398,7 +398,7 @@ mod tests {
         }
     }
 
-    /// A clip trimmed mid-asset (src_in 3 s at t=0..4) — Match Frame must land at src_in + local
+    /// A clip trimmed mid-asset (src_in 3 s at t=0..4) - Match Frame must land at src_in + local
     /// time, not 0, and pick the asset the clip actually uses.
     #[test]
     fn match_frame_seeks_source_time() {

@@ -1,14 +1,14 @@
 //! Audio mixer: sums every audible audio clip at timeline time t into interleaved stereo f32.
 //! Used by playback (real-time, block by block) and export (offline to WAV).
 //! Handles speed/reverse (linear resampling), freeze (silence), volume/pan/fades (gains lerped across
-//! each block), transitions (gain crossfades with virtual clip extension — on video tracks too, so a
+//! each block), transitions (gain crossfades with virtual clip extension - on video tracks too, so a
 //! transition between Sequence clips crossfades their audio with the picture) and Sequence clips on
 //! video tracks (their timeline mixed recursively, depth ≤ 8).
 //!
 //! Routing: when the project has buses, every top-level clip's contribution lands in
 //! `Project::bus_of(track, clip)` instead of straight in the output, then `BusGraph` flushes the buses
 //! leaves-first (filters → gain/pan/mono → sum into the output bus) with Main summing into `out`.
-//! Bus mute/solo mirrors track mute/solo — any solo among the buses silences the un-soloed ones, except
+//! Bus mute/solo mirrors track mute/solo - any solo among the buses silences the un-soloed ones, except
 //! Main, which is the master everything sums through. Projects with no buses (the default) skip all of
 //! that and mix straight into `out`.
 
@@ -55,7 +55,7 @@ impl Dest<'_> {
 struct Scratch(Vec<Vec<f32>>);
 
 impl Scratch {
-    /// Take pool buffer `i`, zeroed and sized to `len` (capacity kept — grows once).
+    /// Take pool buffer `i`, zeroed and sized to `len` (capacity kept - grows once).
     fn take(&mut self, i: usize, len: usize) -> Vec<f32> {
         if self.0.len() <= i {
             self.0.resize_with(i + 1, Vec::new);
@@ -83,7 +83,7 @@ impl Mixer {
         Self::default()
     }
 
-    /// The bus graph as of the last `mix` — the mixer panel reads its meters from here.
+    /// The bus graph as of the last `mix` - the mixer panel reads its meters from here.
     pub fn graph(&self) -> &BusGraph {
         &self.graph
     }
@@ -144,7 +144,7 @@ fn mix_tracks(
         // ---- ws:registries-schema-hooks ----
         // ---- ws:audio-dsp-automation ----
         // Track volume automation, sampled once at the block start and held for the block.
-        // ponytail: not lerped across the block like clip gain — a keyed ramp steps every ≈21 ms;
+        // ponytail: not lerped across the block like clip gain - a keyed ramp steps every ≈21 ms;
         // sample it at both block ends in `resample_add` if the steps ever become audible.
         let tg = track.volume.at(t) as f32;
         match track.kind {
@@ -237,7 +237,7 @@ fn mix_audio_clip(
 
 /// One Sequence clip on a video track: recursively mix its sequence's tracks at source rate into a
 /// scratch buffer, then treat that buffer exactly like clip source audio (resample + gains).
-/// Nested tracks keep their own mute/solo but not their own buses — the whole sub-mix goes to the
+/// Nested tracks keep their own mute/solo but not their own buses - the whole sub-mix goes to the
 /// bus of the Sequence clip that hosts it.
 #[allow(clippy::too_many_arguments)]
 fn mix_seq_clip(
@@ -276,7 +276,7 @@ fn active_in(tracks: &[Track], i: usize) -> bool {
 }
 
 /// The (still valid) transitions whose window this clip plays in (windows clamped to the cut's clips,
-/// so an over-long transition cannot drag a clip past its neighbours — same rule as the compositor).
+/// so an over-long transition cannot drag a clip past its neighbours - same rule as the compositor).
 fn clip_transitions<'a>(track: &'a Track, clip: &Clip) -> Ext<'a> {
     let mut ext = [None, None];
     for tr in &track.transitions {
@@ -338,7 +338,7 @@ fn read_block(src: &mut dyn AudioSource, s0: f64, buf: &mut [f32]) {
 
 /// Linearly resample `buf` (m source frames read at the clip's source time for `t0`) into `out`
 /// (n frames) and add with gains lerped across the block.
-/// ponytail: gains (volume keys, fades, transition ease) are sampled at the block ends and lerped —
+/// ponytail: gains (volume keys, fades, transition ease) are sampled at the block ends and lerped -
 /// exact for linear ramps, ≤ one block of shape error otherwise; split at kinks if it matters. Both
 /// callers use 1024-frame blocks (≈21 ms: `playback::BLOCK` and `export::MIX_BLOCK`), so playback and
 /// export shape a fade identically.
@@ -389,7 +389,7 @@ mod tests {
     }
 
     // ---- ws:audio-dsp-automation ----
-    /// A real 440 Hz tone at amplitude `.0` — unlike `Const`, this has AC content, so K-weighted LUFS
+    /// A real 440 Hz tone at amplitude `.0` - unlike `Const`, this has AC content, so K-weighted LUFS
     /// (which high-passes out DC) reads something other than silence for it.
     struct Sine(f32);
     impl AudioSource for Sine {
@@ -569,13 +569,13 @@ mod tests {
 
     /// The meter data path end to end: a mixed block's post-fader bus output reaches a UI-side graph
     /// through `BusMeterFeed` with a non-zero peak and a finite LUFS reading (what `App::sync_buses`
-    /// does every frame; `App` itself can't be built headless — see tools_registry_tests.rs).
+    /// does every frame; `App` itself can't be built headless - see tools_registry_tests.rs).
     #[test]
     fn mixer_meters_reflect_live_playback() {
         use crate::engine::mixer_fx::{BusGraph, BusMeterFeed};
         let mut p = project();
         let main = p.main_bus();
-        // a real tone, not the shared `pool()`'s DC `Const` — K-weighting high-passes DC out to silence
+        // a real tone, not the shared `pool()`'s DC `Const` - K-weighting high-passes DC out to silence
         // (correctly: a DC offset has no loudness), which would make the LUFS assertions below bogus.
         let mut pool = DecoderPool::new(Backend::Ffmpeg);
         pool.insert_audio("Z:\\nope\\fake.wav", 0, Box::new(Sine(0.5)));

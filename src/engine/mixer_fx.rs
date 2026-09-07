@@ -5,7 +5,7 @@
 //! (`Project::bus_of`), each bus runs its filter chain, then gain/pan/mono, then sums into its output bus.
 //! Interleaved stereo f32 @ 48 kHz, processed in place, block-continuous.
 //!
-//! Filters (`model::FilterKind`): Eq (5-band RBJ: low shelf, three peaks, high shelf — `EQ_BANDS` maps
+//! Filters (`model::FilterKind`): Eq (5-band RBJ: low shelf, three peaks, high shelf - `EQ_BANDS` maps
 //! bands to parameter indices), HighPass/LowPass (RBJ),
 //! Reverb (Freeverb comb+allpass), Echo (delay line + feedback, optional ping-pong), Distortion (soft clip
 //! + tone), Compressor (peak detector, attack/release, makeup), NoiseGate, Noise (white/pink/tone), Gain.
@@ -13,8 +13,8 @@
 //! Parameters: every `AudioFilter` param is an `Animated` read **once per block** at the block-start
 //! timeline time `t` (`AudioFilter::at(i, t)`). Coefficients / delay lengths / thresholds are recomputed
 //! from those values and held constant for the block, so automation steps at block boundaries
-//! (≤ ~100 ms). The two params where a step is audible as a click — the Gain filter's gain and the Noise
-//! filter's level — are ramped linearly from the previous block's value across the block. All buffers
+//! (≤ ~100 ms). The two params where a step is audible as a click - the Gain filter's gain and the Noise
+//! filter's level - are ramped linearly from the previous block's value across the block. All buffers
 //! (delay lines, comb/allpass memories, bus scratch) are sized at construction / first block, so steady
 //! state allocates nothing.
 
@@ -104,7 +104,7 @@ pub fn response_db(c: &[f32; 5], freq: f32, sr: f32) -> f32 {
 
 /// The EQ's five bands, low to high, as `(shape, gain param, freq param, Q param)`. The first seven
 /// `F_EQ` slots keep the meaning the 3-band EQ gave them, so projects saved before the extra peaks
-/// still load — hence the scattered indices.
+/// still load - hence the scattered indices.
 pub const EQ_BANDS: [(Band, usize, usize, usize); 5] = [
     (Band::LowShelf, 0, 1, 7),
     (Band::Peak, 9, 10, 11),
@@ -114,7 +114,7 @@ pub const EQ_BANDS: [(Band, usize, usize, usize); 5] = [
 ];
 
 /// The bands an EQ / pass filter is made of at time `t`, as `(band, freq, q, gain_db)`.
-/// Empty for every other kind — the UI draws a response curve exactly when this is non-empty.
+/// Empty for every other kind - the UI draws a response curve exactly when this is non-empty.
 pub fn filter_bands(f: &AudioFilter, t: f64) -> Vec<(Band, f32, f32, f32)> {
     let p = |i: usize| f.at(i, t) as f32;
     match f.kind {
@@ -306,7 +306,7 @@ enum Dsp {
 /// Notch width of each De-hum harmonic (Q, clamped to `coeffs`'s ceiling): a deep RBJ peaking cut's
 /// skirt is wider than its Q alone suggests (the -3 dB point moves outward as the center-dB gets more
 /// negative), so this sits at the max Q `coeffs` allows to keep a 50 Hz notch from also biting 60 Hz
-/// mains (and vice versa) — measured <5 dB loss 10 Hz off-center at the default 40 dB depth.
+/// mains (and vice versa) - measured <5 dB loss 10 Hz off-center at the default 40 dB depth.
 /// ponytail: a Peak EQ at a deeply negative gain stands in for a true RBJ notch; dedicated notch
 /// coefficients if the attenuation ever falls short.
 const DEHUM_Q: f32 = 20.0;
@@ -348,7 +348,7 @@ impl FilterState {
         Self { kind: f.kind, sr, dsp }
     }
 
-    /// The kind this state was built for — the graph rebuilds when the user changes a slot's filter.
+    /// The kind this state was built for - the graph rebuilds when the user changes a slot's filter.
     pub fn kind(&self) -> FilterKind {
         self.kind
     }
@@ -578,7 +578,7 @@ const LUFS_MAX_BLOCKS: usize = 36_000;
 
 /// K-weighted loudness meter: momentary (400 ms) and gated integrated, in LUFS.
 /// ponytail: BS.1770-shaped (K-weighting, 400 ms blocks, -70 LUFS absolute + -10 LU relative gate)
-/// but not calibrated against a reference — labelled "LUFS (approx)" in the UI. Fed at UI rate from
+/// but not calibrated against a reference - labelled "LUFS (approx)" in the UI. Fed at UI rate from
 /// `BusMeterFeed`, never from the realtime mix.
 #[derive(Clone, Default)]
 pub struct Lufs {
@@ -668,7 +668,7 @@ fn lufs(ms: f32) -> f32 {
 // ---------- repair chains ----------
 
 /// Essential-Sound-style one-click chains: `(preset id, bus label, filters with param overrides)`.
-/// `Project::apply_repair` builds a bus from one and routes clips through it — fully editable in the
+/// `Project::apply_repair` builds a bus from one and routes clips through it - fully editable in the
 /// Mixer afterwards, never an opaque one-shot.
 pub const REPAIR_PRESETS: &[(&str, &str, &[(FilterKind, &[(&str, f32)])])] = &[
     (
@@ -715,7 +715,7 @@ pub fn repair_chain(preset: &str) -> Option<(&'static str, Vec<AudioFilter>)> {
 /// Queued post-fader blocks the playback thread hands to the UI thread's `BusGraph` (`App.buses`), so
 /// the mixer pane's meters and LUFS read real audio instead of a never-flushed graph.
 /// ponytail: a mutex around two small queues (overwrite-oldest at `FEED_CAP`), not a lock-free SPSC
-/// ring — the audio thread already takes a mutex per block for its output ring; a real lock-free
+/// ring - the audio thread already takes a mutex per block for its output ring; a real lock-free
 /// queue if contention ever shows in a profile.
 pub struct BusMeterFeed {
     q: Mutex<(VecDeque<(Id, Vec<f32>)>, Vec<Vec<f32>>)>,
@@ -778,7 +778,7 @@ struct Slot {
     id: Id,
     /// Resolved output bus; `id` itself means terminal (Main / a broken cycle's root).
     dest: Id,
-    /// Hops to Main — the evaluation order is this, descending.
+    /// Hops to Main - the evaluation order is this, descending.
     depth: u32,
     audible: bool,
     buf: Vec<f32>,
@@ -960,7 +960,7 @@ impl BusGraph {
 
     // ---- ws:audio-dsp-automation ----
     /// Hand every bus's post-fader block of the mix just finished to `feed` (audio thread, after
-    /// `Mixer::mix`). Nothing is published for a project without buses — the graph never ran.
+    /// `Mixer::mix`). Nothing is published for a project without buses - the graph never ran.
     pub fn publish(&self, feed: &BusMeterFeed) {
         if !self.have_main {
             return;
@@ -1166,7 +1166,7 @@ mod tests {
         let ratio = thru_rms(&filt(FilterKind::Eq, &[(9, 12.0)]), 400.0) / thru_rms(&flat, 400.0);
         assert!((ratio - 4.0).abs() < 0.5, "+12 dB at 400 Hz ≈ ×4, got ×{ratio}");
         // shelves take a Q now (0.707 = the slope-1 shelf they were pinned to): it reshapes the knee
-        // — a resonant shelf dips on the far side of the corner — without touching the plateau
+        // - a resonant shelf dips on the far side of the corner - without touching the plateau
         let tight = filt(FilterKind::Eq, &[(0, 12.0), (7, 2.0)]);
         let wide = filt(FilterKind::Eq, &[(0, 12.0), (7, 0.4)]);
         let (t, w) = (filter_response_db(&tight, 0.0, 240.0), filter_response_db(&wide, 0.0, 240.0));

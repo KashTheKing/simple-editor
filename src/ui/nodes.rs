@@ -1,16 +1,16 @@
 //! Node editor: the selected clip's effect chain as a graph you can wire up.
 //!
 //! Canvas with pan (middle-drag / scroll) and zoom (Ctrl+Scroll), plus a properties panel on the right
-//! showing **every** parameter of the picked node — that panel is the only place several kinds (Blend,
+//! showing **every** parameter of the picked node - that panel is the only place several kinds (Blend,
 //! Matte, Mask, Color, Clip, Random, …) can be edited at all. Each node is a rounded box: title
 //! (`NodeKind::title`), an enable checkbox, labelled input ports on the left, one output port on the
 //! right, and the first couple of parameters inline. An effect's ports are its picture (port 0) then one
 //! per parameter, so a Number / Random / Math chain can drive any knob; a wired knob greys out in the
 //! panel. Drag from a port to another to connect (`NodeGraph::connect` refuses cycles); drag a wire off a
 //! port to disconnect; right-click a node for Delete / Duplicate / Add mask / **Replace** (swap in any
-//! other kind, or retarget an Asset — connections that still fit are kept); right-click the canvas for
+//! other kind, or retarget an Asset - connections that still fit are kept); right-click the canvas for
 //! the "Add node" menu (every `EffectKind` grouped by `category()`, the graph nodes, the value nodes, then
-//! one entry per project asset — an Asset node needs a real id, so it is picked there).
+//! one entry per project asset - an Asset node needs a real id, so it is picked there).
 //! Ctrl+click adds/removes a node, a primary drag over empty canvas rubber-bands a group (Shift adds),
 //! dragging any picked node moves the whole selection, Delete removes it and Ctrl+C / Ctrl+V duplicates
 //! it (edges *between* the copied nodes come along; wires to the outside are dropped). Effects and
@@ -18,7 +18,7 @@
 //! empty canvas becomes an Asset node, and dropped *on* a node it replaces that node's value.
 //! A clip without a graph gets a "Build a node graph from it" button rather than one being made for it:
 //! `ensure_graph` converts the linear stack only when asked, and from then on the renderer evaluates the
-//! graph and ignores `clip.effects` — far too much to do to a clip just because this pane is docked.
+//! graph and ignores `clip.effects` - far too much to do to a clip just because this pane is docked.
 //! Every mutation calls `undo` once per gesture.
 
 use crate::model::{
@@ -137,7 +137,7 @@ pub fn show(
         return out;
     }
     // Converting the linear stack is a real edit, not a side effect of drawing: from here on the
-    // renderer evaluates the graph and ignores clip.effects. So the user has to ask for it — merely
+    // renderer evaluates the graph and ignores clip.effects. So the user has to ask for it - merely
     // selecting a clip while this pane happens to be docked must not take its effect list away.
     if project.clip(clip_id).is_some_and(|c| c.graph.is_none()) {
         let mut make = false;
@@ -519,7 +519,7 @@ pub fn show(
             DragPayload::Transition(k) => Some(transition_node(*k)),
             // media from the library: the canvas takes it as a source node
             DragPayload::Asset(id) => Some(NodeKind::Asset(*id)),
-            // ponytail: a bare path would have to be probed and imported first — drop it on the
+            // ponytail: a bare path would have to be probed and imported first - drop it on the
             // timeline or the library, then drag the asset here
             _ => None,
         };
@@ -589,7 +589,7 @@ pub fn show(
 
 /// The nearest node to a transition: a cross fade / push / wipe is a two-input mix at any one instant,
 /// and a dip to colour is that colour.
-// ponytail: Combine holds the mix but not a wipe's geometry — give the graph a real Transition node if
+// ponytail: Combine holds the mix but not a wipe's geometry - give the graph a real Transition node if
 // anyone needs to animate one there.
 fn transition_node(kind: TransitionKind) -> NodeKind {
     match kind {
@@ -708,7 +708,7 @@ fn apply(project: &mut Project, clip: Id, act: Act, selected: &mut Vec<Id>) -> b
             }
             None => false,
         },
-        // refused when it would close a loop — the graph is left exactly as it was
+        // refused when it would close a loop - the graph is left exactly as it was
         Act::Connect(from, to, port) => g.connect(from, to, port),
         Act::Disconnect(to, port) => {
             let had = g.input_of(to, port).is_some();
@@ -773,7 +773,7 @@ fn add_menu(
             ("Matte", NodeKind::Matte { invert: false, use_alpha: false }),
             ("Mask", NodeKind::Mask(Mask::default())),
             ("Color", NodeKind::Color([0, 0, 0, 255])),
-            // ponytail: a fresh Clip node points at nothing — the properties panel picks the source
+            // ponytail: a fresh Clip node points at nothing - the properties panel picks the source
             ("Clip", NodeKind::Clip(0)),
             ("Input", NodeKind::Input),
         ] {
@@ -858,7 +858,7 @@ fn node_panel(
             ui.weak("b straight over a");
         }
         NodeKind::Select => {
-            ui.weak("cond >= 0.5 picks a, else b — works on pictures and on numbers");
+            ui.weak("cond >= 0.5 picks a, else b - works on pictures and on numbers");
         }
         NodeKind::Color(c) => {
             ui.horizontal(|ui| {
@@ -925,7 +925,7 @@ fn node_panel(
                 e.add(&ui.add(egui::DragValue::new(&mut a.value).speed(0.01)));
             });
             if a.is_animated() {
-                ui.weak(format!("{} keyframes — {:.3} now", a.keys.len(), a.at(lt)));
+                ui.weak(format!("{} keyframes - {:.3} now", a.keys.len(), a.at(lt)));
             }
         }
         NodeKind::Bool(b) => {
@@ -994,7 +994,7 @@ fn node_panel(
     }
 }
 
-/// Combo over (id, name) pairs — the Clip and Asset nodes' whole editor.
+/// Combo over (id, name) pairs - the Clip and Asset nodes' whole editor.
 fn pick(ui: &mut egui::Ui, e: &mut Edits, label: &str, id: &mut Id, items: &[(Id, String)]) {
     let cur = items.iter().find(|(i, _)| i == id).map(|(_, n)| n.clone()).unwrap_or_else(|| "(none)".into());
     egui::ComboBox::from_label(label).selected_text(cur).show_ui(ui, |ui| {
@@ -1191,7 +1191,7 @@ fn paint_node(
     p.rect_filled(head, cr, if n.enabled { palette.header } else { palette.bg });
     let border = if selected { Stroke::new(2.0, palette.accent) } else { Stroke::new(1.0, palette.border) };
     p.rect_stroke(r, cr, border, StrokeKind::Inside);
-    // the logic nodes carry numbers, not pictures — the accent title says so at a glance
+    // the logic nodes carry numbers, not pictures - the accent title says so at a glance
     let title_color = match (n.enabled, n.kind.is_value()) {
         (false, _) => palette.text_dim,
         (true, true) => palette.accent,
@@ -1354,7 +1354,7 @@ mod tests {
             self.frame_m(vec![Event::PointerButton { pos, button, pressed: false, modifiers }], modifiers);
             self.frame_m(vec![], modifiers);
         }
-        /// Click a node's title bar (its middle is an inline parameter widget) — Ctrl to add it to /
+        /// Click a node's title bar (its middle is an inline parameter widget) - Ctrl to add it to /
         /// drop it from the selection.
         fn click_node(&mut self, id: Id, modifiers: Modifiers) {
             let r = self.node_rect(id);

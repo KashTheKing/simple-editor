@@ -24,7 +24,7 @@ pub(super) fn cache_bytes() -> u64 {
 
 /// `Action::ClearCaches` / the Performance-tab button / the `caches.clear` MCP tool. Order matters:
 /// release the decoders' file handles first (they hold the proxy/source files open on Windows),
-/// THEN drop the in-memory caches, THEN delete on disk — anything still locked (a background worker
+/// THEN drop the in-memory caches, THEN delete on disk - anything still locked (a background worker
 /// mid-write) is simply left for the next start's cleanup.
 pub(super) fn clear(app: &mut App) {
     let freed = cache_bytes();
@@ -35,7 +35,7 @@ pub(super) fn clear(app: &mut App) {
     std::thread::spawn(move || {
         let _ = std::fs::remove_dir_all(&dir);
     });
-    app.toast(format!("Cleared caches — {:.1} MB freed", freed as f64 / 1e6));
+    app.toast(format!("Cleared caches - {:.1} MB freed", freed as f64 / 1e6));
 }
 
 #[cfg(test)]

@@ -3,7 +3,7 @@
 //! Reassign/Keep row when a rebind collides with another action; a keymap-preset combo
 //! (Simple Editor/Premiere/Resolve/Avid); a UI-scale slider. Extracted verbatim from settings_ui.rs (see
 //! mod.rs's module doc for the whole settings window). `capture` was renamed `capture_key` here to avoid
-//! a name clash with capture.rs's `capture_tab` — a local rename only, nothing outside settings_ui.rs
+//! a name clash with capture.rs's `capture_tab` - a local rename only, nothing outside settings_ui.rs
 //! called the old private name.
 //! ---- ws:command-palette ----: search/group headers, the QWERTY map, Reassign/Keep, keymap presets,
 //! the UI-scale slider, and `capture_key`'s honest `conflict_all` (RESERVED-aware) rewrite.
@@ -69,13 +69,13 @@ pub(super) fn hotkeys_tab(
         }
     });
 
-    // inline Reassign/Keep row on conflict — replaces the old silent-auto-unbind behaviour
+    // inline Reassign/Keep row on conflict - replaces the old silent-auto-unbind behaviour
     if let Some((a, ks, other)) = state.pending_conflict.clone() {
         ui.add_space(4.0);
         egui::Frame::group(ui.style()).show(ui, |ui| {
             ui.colored_label(
                 Color32::from_rgb(224, 150, 40),
-                format!("{} already uses {} — rebind {} to it too?", other.label(), Hotkeys::format(&ks), a.label()),
+                format!("{} already uses {} - rebind {} to it too?", other.label(), Hotkeys::format(&ks), a.label()),
             );
             ui.horizontal(|ui| {
                 if ui.button("Reassign").clicked() {
@@ -117,7 +117,7 @@ pub(super) fn hotkeys_tab(
                         if state.rebinding == Some(a) {
                             ui.strong("…");
                         } else if text.is_empty() {
-                            ui.weak("—");
+                            ui.weak(" - ");
                         } else {
                             ui.label(text);
                         }
@@ -243,26 +243,26 @@ fn key_state(hotkeys: &Hotkeys, key: Key) -> KeyState {
     }
 }
 
-/// Every action (any modifier), live script `@hotkey` and reserved use bound to `key` — the QWERTY
+/// Every action (any modifier), live script `@hotkey` and reserved use bound to `key` - the QWERTY
 /// cell's hover text.
 fn uses_of(hotkeys: &Hotkeys, key: Key) -> Vec<String> {
     let mut out: Vec<String> = Action::ALL
         .iter()
         .filter(|&&a| hotkeys.get(a).is_some_and(|ks| ks.logical_key == key))
-        .map(|&a| format!("{} — {}", Hotkeys::format(&hotkeys.get(a).unwrap()), a.label()))
+        .map(|&a| format!("{} - {}", Hotkeys::format(&hotkeys.get(a).unwrap()), a.label()))
         .collect();
     out.extend(
         hotkeys
             .extra()
             .iter()
             .filter(|(_, ks)| ks.logical_key == key)
-            .map(|(name, ks)| format!("{} — script: {name}", Hotkeys::format(ks))),
+            .map(|(name, ks)| format!("{} - script: {name}", Hotkeys::format(ks))),
     );
     out.extend(
         RESERVED
             .iter()
             .filter(|&&(_, _, k)| k == key)
-            .map(|&(name, m, k)| format!("{} — {name}", Hotkeys::format(&KeyboardShortcut::new(m, k)))),
+            .map(|&(name, m, k)| format!("{} - {name}", Hotkeys::format(&KeyboardShortcut::new(m, k)))),
     );
     out
 }
@@ -274,7 +274,7 @@ const QWERTY_ROWS: [&[Key]; 3] = [
 ];
 
 /// The QWERTY map: one rect per letter, filled by `key_state`'s colour, hover shows every chord on
-/// that key (any modifier) plus any reserved use. Purely visual/informational — clicking a cell does
+/// that key (any modifier) plus any reserved use. Purely visual/informational - clicking a cell does
 /// nothing; rebinding still goes through the "Rebind" button + a real key press (real Ctrl/Shift/Alt
 /// chords need modifier keys down, which a click can't express).
 fn draw_qwerty(ui: &mut egui::Ui, hotkeys: &Hotkeys) {
@@ -330,7 +330,7 @@ mod tests {
 
     /// Two headless frames, no input between them: the tab (search box, painted QWERTY grid,
     /// keymap-preset combo, UI-scale slider) reports no change on either call, and the second call
-    /// requests no repaint — same shape as palette.rs's/cheatsheet.rs's `assert_no_idle_repaint_*` tests.
+    /// requests no repaint - same shape as palette.rs's/cheatsheet.rs's `assert_no_idle_repaint_*` tests.
     #[test]
     fn hotkeys_tab_show_headless_no_change() {
         let ctx = egui::Context::default();

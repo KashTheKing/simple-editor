@@ -1,13 +1,13 @@
 //! ---- ws:inspector-gallery ----
 //! Effect-stack ops the UI (`effects_ui.rs`'s local drag-reorder) and MCP (`clip.reorder_effect`/
-//! `clip.effects_bulk`) both call. Pure index operations on `Clip.effects` — neither adds a field to
+//! `clip.effects_bulk`) both call. Pure index operations on `Clip.effects` - neither adds a field to
 //! `struct Effect` (not this workstream's to change; see `plans/ui-overhaul/issues/inspector-gallery.md`'s
 //! risk table on why fold/drag identity uses a synthesized key instead of a real `Effect.id`).
 
 use crate::model::*;
 
 impl Project {
-    /// Move `clip.effects[from]` to index `to` (a remove+insert, not a swap — every effect between the
+    /// Move `clip.effects[from]` to index `to` (a remove+insert, not a swap - every effect between the
     /// two indices shifts by one). `false` and no mutation when the clip is missing or either index is
     /// out of range.
     pub fn reorder_effect(&mut self, clip: Id, from: usize, to: usize) -> bool {

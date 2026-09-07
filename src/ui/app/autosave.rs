@@ -1,12 +1,12 @@
 //! ---- ws:forgiveness ----
 //! Debounced, off-thread autosave with rolling backups. `autosave_tick` is a FRAME_HOOK; the pure
-//! decision core (`tick_pure`/`should_skip`) is split out so it's testable without a live `App` — see
+//! decision core (`tick_pure`/`should_skip`) is split out so it's testable without a live `App` - see
 //! `tools_registry_tests.rs`'s doc comment for why one isn't buildable in `#[test]`.
 //!
 //! deviation from the plan text: the plan's own risk table proposed reusing the "already-serialized
 //! top-of-undo-stack JSON" to avoid a second `to_json()` call. That JSON is the snapshot from BEFORE
 //! the most recent edit (`push_undo_json` snapshots pre-edit, matching every other undo push in this
-//! crate) — reusing it would silently autosave a one-edit-stale project. Autosave only fires once every
+//! crate) - reusing it would silently autosave a one-edit-stale project. Autosave only fires once every
 //! `autosave_secs` (default 30s), so a single extra `to_json()` there is immaterial; this workstream
 //! serializes the LIVE project at fire time instead, which is correct.
 
@@ -39,7 +39,7 @@ fn slug_dir(slug: &str) -> PathBuf {
 /// a temp dir.
 fn write_and_trim(dir: &Path, json: &str) -> Option<PathBuf> {
     std::fs::create_dir_all(dir).ok()?;
-    // seconds resolution: two writes within the same second overwrite each other — acceptable, the
+    // seconds resolution: two writes within the same second overwrite each other - acceptable, the
     // debounce interval is measured in tens of seconds.
     // ponytail: second-resolution filenames, upgrade to a monotonic counter if a sub-second autosave
     // cadence is ever wanted.
@@ -59,7 +59,7 @@ fn write_and_trim(dir: &Path, json: &str) -> Option<PathBuf> {
     Some(path)
 }
 
-/// Deletes every rolling autosave for this project's slug — called after a clean save (there's nothing
+/// Deletes every rolling autosave for this project's slug - called after a clean save (there's nothing
 /// left to recover past the file just written).
 pub(super) fn clear_for(project_path: &Path) {
     let _ = std::fs::remove_dir_all(slug_dir(&project_slug(Some(project_path))));

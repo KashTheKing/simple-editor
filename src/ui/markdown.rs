@@ -1,10 +1,10 @@
-//! A small, in-house Markdown renderer for planner notes and the What's New window — replaces
+//! A small, in-house Markdown renderer for planner notes and the What's New window - replaces
 //! `egui_commonmark` (which pulled in `egui_commonmark_backend`, `egui_extras` and `pulldown-cmark`,
 //! ~2 MB of the release exe) with headings (1-3), bold/italic/code spans, bullet lists, fenced code
 //! blocks, links and `---` rules. No tables/images/blockquotes/numbered lists: planner notes never used
 //! them (see plans/ui-overhaul/issues/size-diet.md).
 //!
-//! ponytail: `show` re-parses `src` on every call — no cache field. Notes are short prose and egui
+//! ponytail: `show` re-parses `src` on every call - no cache field. Notes are short prose and egui
 //! re-lays-out every frame regardless; add a hash-keyed `Vec<Block>` cache only if a note's body ever
 //! gets long enough for re-parsing to measurably matter.
 
@@ -18,7 +18,7 @@ pub enum Span {
     Bold(String),
     Italic(String),
     Code(String),
-    /// (display text, url) — opened via `explorer.exe <url>`, the app's existing link-open pattern.
+    /// (display text, url) - opened via `explorer.exe <url>`, the app's existing link-open pattern.
     Link(String, String),
 }
 
@@ -30,7 +30,7 @@ pub enum Block {
     Paragraph(Vec<Span>),
     /// One entry (already inline-parsed) per bullet.
     BulletList(Vec<Vec<Span>>),
-    /// Fenced code block, verbatim — no inline spans inside it.
+    /// Fenced code block, verbatim - no inline spans inside it.
     Code(String),
     /// `---` / `***` / `___` on a line by itself.
     Rule,
@@ -110,7 +110,7 @@ fn bullet_text(line: &str) -> &str {
     line[2..].trim()
 }
 
-/// `**bold**`, `_italic_`, `` `code` `` and `[text](url)`, scanned left to right with no nesting —
+/// `**bold**`, `_italic_`, `` `code` `` and `[text](url)`, scanned left to right with no nesting -
 /// everything else is plain text. A note body is short prose, not a spec document.
 fn parse_spans(text: &str) -> Vec<Span> {
     let chars: Vec<char> = text.chars().collect();

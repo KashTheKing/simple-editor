@@ -1,6 +1,6 @@
 //! Point / area tracking (the Tracking pane): zero-mean normalised cross-correlation of a template
 //! patch over a search window, frame by frame, producing exactly the `(x, y, t)` point list a
-//! `PathAsset` holds — so a track can be saved as a project path and replayed onto a clip's X/Y
+//! `PathAsset` holds - so a track can be saved as a project path and replayed onto a clip's X/Y
 //! keyframes (`Project::apply_path`).
 //!
 //! The job owns a thread and its own `DecoderPool` (same shape as every other worker here) and streams
@@ -8,7 +8,7 @@
 //! stops on its next send. The UI never blocks.
 //!
 //! ponytail: the clip is tracked in its source frame decoded at project resolution, so the clip's own
-//! transform is ignored — right for the usual full-frame clip. Render through `engine::compose` per
+//! transform is ignored - right for the usual full-frame clip. Render through `engine::compose` per
 //! frame if a scaled / rotated / nested clip ever has to track.
 
 use crate::media::{Backend, DecoderPool, Frame};
@@ -40,9 +40,9 @@ pub fn patch(f: &Frame, cx: i32, cy: i32, hw: i32, hh: i32) -> Vec<f32> {
 
 /// Best zero-mean NCC match for `tpl` (a `patch` of the same half-sizes) within `search` px of
 /// (cx, cy): the matched centre and its score in -1..=1. None when the template or every candidate
-/// window is flat — there is nothing to lock onto, and the caller keeps the previous position.
+/// window is flat - there is nothing to lock onto, and the caller keeps the previous position.
 ///
-/// ponytail: brute-force scan, O(search² · patch) per frame — fine at the sizes the pane offers.
+/// ponytail: brute-force scan, O(search² · patch) per frame - fine at the sizes the pane offers.
 /// Go to a coarse-to-fine image pyramid if a 4K search radius ever needs to be interactive.
 pub fn best_match(f: &Frame, tpl: &[f32], hw: i32, hh: i32, cx: i32, cy: i32, search: i32) -> Option<(i32, i32, f32)> {
     let (tw, th) = (2 * hw + 1, 2 * hh + 1);

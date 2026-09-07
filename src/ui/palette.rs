@@ -3,12 +3,12 @@
 //! EVERY tool (not just arg-free ones), and picking a row builds a tiny arg form from the tool's
 //! `args` docs instead of running it immediately.
 //!
-//! `rows`/`tool_rows` take plain data (a `&Hotkeys`, an `enabled` closure, a script-metadata slice) —
-//! not `&App` — so they're unit-testable directly: there is no headless `App` harness in this crate
+//! `rows`/`tool_rows` take plain data (a `&Hotkeys`, an `enabled` closure, a script-metadata slice) -
+//! not `&App` - so they're unit-testable directly: there is no headless `App` harness in this crate
 //! (`App::new` needs a real `eframe::CreationContext`/GL context; see `tools_registry_tests.rs`'s
 //! App-construction note, and `enabled`/`enabled_for`'s own split for the same reason). `ui::app::
 //! palette_ctl` is the thin, App-owning glue that calls these from a live `App` and dispatches the
-//! `Command` they return — matching how `retime::show`/`capture_ui::show`/every other non-blocking
+//! `Command` they return - matching how `retime::show`/`capture_ui::show`/every other non-blocking
 //! window in this codebase already takes plain fields out of `App` rather than `&App` itself.
 //! ---- ws:command-palette ----
 
@@ -41,7 +41,7 @@ pub struct Row {
 /// Allocation-free, case-insensitive subsequence scorer: every character of `query` must appear in
 /// `text`, in order (not necessarily contiguous). Higher is a better match; matching consecutively
 /// scores a bonus, and the FIRST query character landing right at a word boundary scores a bigger one
-/// (deliberately not every character — see `fuzzy_score_prefers_word_starts`'s regression case: without
+/// (deliberately not every character - see `fuzzy_score_prefers_word_starts`'s regression case: without
 /// this restriction a long label with several word starts, e.g. "Ripple Delete In / Out" against query
 /// "redo", could out-score the near-exact match "Redo" purely by accumulating more word-start bonuses
 /// than a short label has room for). `None` = `query` is not a subsequence of `text` at all (an empty
@@ -89,7 +89,7 @@ fn finish(mut rows: Vec<(u32, Row)>) -> Vec<Row> {
 
 /// The main row set: `Action::ALL` + `Pane::ALL` ("Show X") + arg-free `ToolDef`s + scripts +
 /// `layout::WORKSPACES`, fuzzy-filtered by `query` (empty query = everything, most-recently-used
-/// actions first — `recent`, capped to `Settings.palette_recent`). `enabled` is a closure rather than
+/// actions first - `recent`, capped to `Settings.palette_recent`). `enabled` is a closure rather than
 /// `&App` so this stays unit-testable (see the module doc comment); `App::enabled` is what
 /// `palette_ctl` actually passes.
 pub fn rows(
@@ -193,9 +193,9 @@ pub fn rows(
     finish(rows)
 }
 
-/// `:`-mode rows: every registered tool (not just arg-free ones — see `rows` above), fuzzy-filtered by
+/// `:`-mode rows: every registered tool (not just arg-free ones - see `rows` above), fuzzy-filtered by
 /// `filter` (the text after the `:`). Picking one builds an arg form (`show`, below) instead of running
-/// it immediately — needs no `App` at all, since `mcp::tools::all()` is a free fn over the static
+/// it immediately - needs no `App` at all, since `mcp::tools::all()` is a free fn over the static
 /// `TOOL_TABLES` registry.
 pub fn tool_rows(filter: &str) -> Vec<Row> {
     let mut rows: Vec<(u32, Row)> = Vec::new();
@@ -229,12 +229,12 @@ pub struct PaletteState {
 
 /// Draws the palette window if `state.open`. `rows` is the already-filtered/sorted list for the
 /// current query (built by the caller via `rows`/`tool_rows` above, since which one to call depends on
-/// whether `state.query` starts with `:` — see `palette_ctl::windows`). Returns the chosen `Command` on
-/// Enter/click and closes the window — EXCEPT picking a tool that takes args, which switches to an arg
+/// whether `state.query` starts with `:` - see `palette_ctl::windows`). Returns the chosen `Command` on
+/// Enter/click and closes the window - EXCEPT picking a tool that takes args, which switches to an arg
 /// form instead of returning immediately; submitting that form (Run / Enter) is what finally returns
 /// `Some(Command::Tool(name))`, and leaves `state.arg_form` populated with the typed values so the
 /// caller (`palette_ctl::windows`) can read them (`state.arg_form.take()`) right after this call
-/// returns, before anything else touches `state` — every other way of closing (Escape, the window's own
+/// returns, before anything else touches `state` - every other way of closing (Escape, the window's own
 /// X, Cancel) clears `arg_form` itself. Disables the text-cursor blink while open so an idle palette
 /// costs no repaints (`assert_no_idle_repaint_palette_closed_and_open`).
 pub fn show(ctx: &egui::Context, state: &mut PaletteState, rows: &[Row]) -> Option<Command> {
@@ -368,7 +368,7 @@ pub fn show(ctx: &egui::Context, state: &mut PaletteState, rows: &[Row]) -> Opti
         state.query.clear();
         state.sel = 0;
         if result.is_none() {
-            // a real close/cancel — a successful arg-form submit (`result` = Some(Tool(..))) leaves
+            // a real close/cancel - a successful arg-form submit (`result` = Some(Tool(..))) leaves
             // `arg_form` for the caller to read once, right after this call returns (see doc comment)
             state.arg_form = None;
         }
@@ -458,7 +458,7 @@ mod tests {
         let recent = vec![Action::Undo.id().to_string()];
         let rs = rows(&hk, |_| Ok(()), &[], &recent, "");
         assert!(matches!(&rs[0].cmd, Command::Action(Action::Undo)), "recent action should sort first");
-        // once there's a query, recency stops mattering — plain fuzzy order applies
+        // once there's a query, recency stops mattering - plain fuzzy order applies
         let rs2 = rows(&hk, |_| Ok(()), &[], &recent, "redo");
         assert!(matches!(&rs2[0].cmd, Command::Action(Action::Redo)));
     }
@@ -493,7 +493,7 @@ mod tests {
     }
 
     /// 30 idle frames (no input), palette closed then open: neither state asks for a repaint (the
-    /// text-cursor blink is disabled while open — see `show`'s doc comment).
+    /// text-cursor blink is disabled while open - see `show`'s doc comment).
     #[test]
     fn assert_no_idle_repaint_palette_closed_and_open() {
         let hk = Hotkeys::defaults();

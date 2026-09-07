@@ -322,7 +322,7 @@ pub const TOOLS: &[ToolDef] = &[
     row!("clip.add_effect", ToolKind::Mutate, "Append an effect with optional params {name: value}.", &["clip_id:integer:true:", "kind:string:true:", "params:object:false:"]),
     row!("clip.remove_effect", ToolKind::Mutate, "Remove effect at index.", &["clip_id:integer:true:", "index:integer:true:"]),
     row!("clip.apply_motion", ToolKind::Mutate, "Apply a motion preset (built-in or saved) to a clip.", &["clip_id:integer:true:", "name:string:true:", "scaled:boolean:false:default true"]),
-    row!("style.summary", ToolKind::Read, "Markdown style summary of the project (how it was edited) — for writing style guides.", &[]),
+    row!("style.summary", ToolKind::Read, "Markdown style summary of the project (how it was edited) - for writing style guides.", &[]),
     row!("clip.add_mask", ToolKind::Mutate, "Add a mask to a clip (or to one of its effects with `effect`).", &["clip_id:integer:true:", "shape:string:false:Rect|Ellipse|Polygon|Path (default Ellipse)", "effect:integer:false:effect index; omit for the clip itself"]),
     row!("clip.set_mask", ToolKind::Mutate, "Edit a mask: fields {shape, cx, cy, rx, ry, rotation, feather, expand, opacity, invert, enabled, points:[[x,y],…]} in project pixels relative to the layer centre.", &["clip_id:integer:true:", "fields:object:true:", "effect:integer:false:"]),
     row!("clip.add_node", ToolKind::Mutate, "Add a node to the clip's node graph (created from its effect stack on first use).", &["clip_id:integer:true:", "kind:string:true:an effect name, or Blend|Combine|Merge|Matte|Mask|Color|Text|Input", "x:number:false:", "y:number:false:"]),

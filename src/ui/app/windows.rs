@@ -7,7 +7,7 @@ impl App {
         let mut done = None;
         let mut cancel = false;
         egui::Window::new(title).open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
-            // focus only on the window's first frame — every frame would steal it from the panels behind it
+            // focus only on the window's first frame - every frame would steal it from the panels behind it
             let id = ui.id().with("name");
             let first = ctx.read_response(id).is_none();
             let r = ui.add(egui::TextEdit::singleline(&mut name).id(id));
@@ -99,7 +99,7 @@ impl App {
         // export window
         if self.export_ui.open {
             self.detect_encoders_once();
-            // the export always renders the MAIN timeline — show its size/lossless state, not the open sequence's
+            // the export always renders the MAIN timeline - show its size/lossless state, not the open sequence's
             let main = self.project.editing.is_some().then(|| self.export_project());
             let choice = {
                 let App { project, settings, export_ui: st, encoders, export, .. } = self;
@@ -115,7 +115,7 @@ impl App {
                     // just saves the user a wait
                     if files::refuses_source(&self.project, &c.opts.out_path) {
                         self.toast(
-                            "That file is a source of this project — use Overwrite Original Video (Ctrl+S) instead",
+                            "That file is a source of this project - use Overwrite Original Video (Ctrl+S) instead",
                         );
                     } else {
                         self.export_queue.push_back(c);
@@ -238,7 +238,7 @@ impl App {
                 self.export_frame(c);
             }
         }
-        // GLSL editor — Apply is an effect edit like any other (undo + re-render), and the compile log
+        // GLSL editor - Apply is an effect edit like any other (undo + re-render), and the compile log
         // goes straight back into the window so a rejected shader is never a silent no-op
         if shader_ui::show(ctx, &mut self.shader_ui) {
             if let Some((id, i)) = self.shader_ui.target {
@@ -257,11 +257,11 @@ impl App {
                 }
                 self.shader_ui.error = match self.gpu.as_mut() {
                     Some(g) => g.check_shader(&src).err().unwrap_or_default(),
-                    None => "GPU renderer is off — this shader cannot be compiled or previewed.".into(),
+                    None => "GPU renderer is off - this shader cannot be compiled or previewed.".into(),
                 };
             }
         }
-        // "Paste Attributes" (Ctrl+Alt+V) — one undo step for the whole paste
+        // "Paste Attributes" (Ctrl+Alt+V) - one undo step for the whole paste
         if self.paste_ui.open {
             let name = self.attrs.as_ref().map(|c| c.name.clone()).unwrap_or_default();
             let targets = self.selection.len();
@@ -299,7 +299,7 @@ impl App {
                 self.start_voiceover(o);
             }
         }
-        // imported timeline report — "Use this project" swaps it in
+        // imported timeline report - "Use this project" swaps it in
         if self.import_ui.open {
             let accept = {
                 let App { import_ui: st, palette, .. } = self;
@@ -317,7 +317,7 @@ impl App {
                 });
             }
         }
-        // export / convert progress — non-modal: keep editing while it runs
+        // export / convert progress - non-modal: keep editing while it runs
         if let Some((prog, kind)) = &self.export {
             let prog = prog.clone();
             let title = match kind {

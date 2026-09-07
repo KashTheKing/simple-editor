@@ -1,11 +1,11 @@
 //! Curve (graph) editor for the FIRST selected clip: x = clip-local time over [0, duration], y = value.
 //! Left: a list of the clip's keyframeable properties (`Clip::props_mut` names + "Volume"/"Pan"/"Speed" +
 //! "<effect>: <param>" for effect params) with a colour swatch and a checkbox to show/hide each curve
-//! (auto-scaled per property; the selected property's scale drives the y axis labels). Right: the graph —
+//! (auto-scaled per property; the selected property's scale drives the y axis labels). Right: the graph -
 //! curves drawn with the eased segments (sample `Animated::at` every ~2 px), keys as diamonds (accent when
 //! selected), playhead line (click on the ruler strip seeks → `seeked`), constant (unkeyed) properties
 //! shown as a flat dashed line. Interaction: drag a key horizontally/vertically (time clamped to the clip,
-//! vertical changes the value; undo once at drag start) — the whole selection moves with it, click a key
+//! vertical changes the value; undo once at drag start) - the whole selection moves with it, click a key
 //! to select it, Ctrl+click adds/removes one, dragging empty graph space rubber-bands a group (like the
 //! timeline's clip band), Delete removes the selection and Ctrl+C / Ctrl+V copy it and paste it at the
 //! playhead keeping the relative times, double-click on empty graph area adds a key for the active
@@ -51,7 +51,7 @@ pub fn set_available_motions(v: Vec<MotionPreset>) {
 }
 
 /// ws:text-titles: the Text inspector's own Animation row reads the same builtin+saved motion list
-/// `panes.rs::refresh_presets` already syncs here every time it changes — reusing this thread-local
+/// `panes.rs::refresh_presets` already syncs here every time it changes - reusing this thread-local
 /// hand-off (rather than re-deriving the list, or a second `Settings`-synced copy) since `inspector_text
 /// ::section`'s signature has no `&Settings` param, the same reason its "Text style presets" sub-panel
 /// stayed in inspector.rs.
@@ -65,7 +65,7 @@ pub fn take_pending_motion_preset() -> Option<MotionPreset> {
 }
 
 /// The app hands the current Settings.curve_presets to the panel with this (cheap: only on change or
-/// every frame — the panel just reads names + the selected preset).
+/// every frame - the panel just reads names + the selected preset).
 pub fn set_available_presets(v: Vec<CurvePreset>) {
     AVAILABLE.with(|a| *a.borrow_mut() = v);
 }
@@ -133,7 +133,7 @@ pub struct CurvesState {
     /// The selected keys as they were when the drag started, per property: (prop, keys, selected indices).
     /// The whole gesture is re-derived from this snapshot, so nothing accumulates rounding.
     drag_keys: Vec<(usize, Vec<Keyframe>, Vec<usize>)>,
-    /// Pointer position at drag start — the group moves by the delta from it.
+    /// Pointer position at drag start - the group moves by the delta from it.
     drag_from: Option<Pos2>,
     /// Rubber-band press origin while a band select is in progress.
     band: Option<Pos2>,
@@ -147,7 +147,7 @@ pub struct CurvesState {
     /// The key staged in the "Set Value…" popup: (property, key, staged value). Seeded from the key's
     /// current value; `None` means the popup is closed.
     value_edit: Option<(usize, usize, f64)>,
-    /// What the editor pointed at last frame — a change resets per-target state (selection, frozen
+    /// What the editor pointed at last frame - a change resets per-target state (selection, frozen
     /// ranges, value view), since property indices mean different things on different targets.
     last_target: Option<Target>,
 }
@@ -327,7 +327,7 @@ fn move_group(a: &mut Animated, orig: &[Keyframe], sel: &[usize], dt: f64, dv: f
         })
         .collect();
     v.sort_by(|a, b| a.0.t.total_cmp(&b.0.t));
-    // ponytail: O(n²) collision scan — a property with thousands of keys would notice, nothing else will
+    // ponytail: O(n²) collision scan - a property with thousands of keys would notice, nothing else will
     let moved: Vec<f64> = v.iter().filter(|(_, m)| *m).map(|(k, _)| k.t).collect();
     v.retain(|(k, m)| *m || !moved.iter().any(|t| (t - k.t).abs() < T_EPS));
     a.keys = v.iter().map(|(k, _)| *k).collect();
@@ -402,7 +402,7 @@ fn tick_step(pps: f32) -> f64 {
 }
 
 /// What the curve editor is pointed at. A bus is just another list of `Animated` properties over a time
-/// span, which is all this editor ever needed from a clip — so buses edit exactly like clips here.
+/// span, which is all this editor ever needed from a clip - so buses edit exactly like clips here.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum Target {
     Clip(Id),
@@ -533,7 +533,7 @@ fn add_key_at(
     }
 }
 
-/// Write a staged "Set Value…" edit onto its key. Pure (no undo) — the caller pushes undo once, before
+/// Write a staged "Set Value…" edit onto its key. Pure (no undo) - the caller pushes undo once, before
 /// calling this, per ARCHITECTURE.md's "call it once per gesture, before mutating".
 fn apply_value_edit(project: &mut Project, target: Target, p: usize, k: usize, v: f64) -> bool {
     if let Some(a) = t_mut(project, target, p) {
@@ -545,7 +545,7 @@ fn apply_value_edit(project: &mut Project, target: Target, p: usize, k: usize, v
     false
 }
 
-/// Keys to apply a bulk easing edit to: the current selection plus the right-clicked key, deduplicated —
+/// Keys to apply a bulk easing edit to: the current selection plus the right-clicked key, deduplicated -
 /// a lone right-click (selection empty, or just that one key) reduces to the single-key case.
 fn ease_targets(selected: &[(usize, usize)], menu_key: (usize, usize)) -> Vec<(usize, usize)> {
     let mut v = selected.to_vec();
@@ -555,7 +555,7 @@ fn ease_targets(selected: &[(usize, usize)], menu_key: (usize, usize)) -> Vec<(u
     v
 }
 
-/// Apply one easing to every key in `targets`. Pure (no undo) — same reason as `apply_value_edit`.
+/// Apply one easing to every key in `targets`. Pure (no undo) - same reason as `apply_value_edit`.
 fn apply_ease_to(project: &mut Project, target: Target, targets: &[(usize, usize)], e: Ease) -> bool {
     let mut edited = false;
     for &(p, k) in targets {
@@ -569,7 +569,7 @@ fn apply_ease_to(project: &mut Project, target: Target, targets: &[(usize, usize
     edited
 }
 
-/// The selected keys grouped per property, pruned to properties owning 2+ of them — the set "Blend
+/// The selected keys grouped per property, pruned to properties owning 2+ of them - the set "Blend
 /// Velocity" acts on. Empty = the menu item should be disabled (it would be a silent no-op).
 fn blend_groups(project: &Project, target: Target, selected: &[(usize, usize)]) -> Vec<(usize, Vec<usize>)> {
     let mut by_prop: Vec<(usize, Vec<usize>)> = Vec::new();
@@ -586,11 +586,11 @@ fn blend_groups(project: &Project, target: Target, selected: &[(usize, usize)]) 
     by_prop
 }
 
-/// "Blend Velocity": per property with 2+ selected keys — spaces the selected keys out evenly between
+/// "Blend Velocity": per property with 2+ selected keys - spaces the selected keys out evenly between
 /// the first and last of them (only when they're consecutive in the key list, so re-timing can't jump
 /// them over an unselected key), then sets every segment between consecutive selected keys to
 /// `Ease::EaseInOut`, so the run reads as one smooth stretch. No qualifying property = no-op, no undo.
-// ponytail: a flat EaseInOut per segment, not continuous-tangent bezier handles across the whole run —
+// ponytail: a flat EaseInOut per segment, not continuous-tangent bezier handles across the whole run -
 // true velocity-matched handle spacing is a fancier upgrade if this simple version isn't enough.
 fn blend_velocity(
     project: &mut Project,
@@ -608,7 +608,7 @@ fn blend_velocity(
         let Some(a) = t_mut(project, target, p) else { continue };
         idx.sort_by(|&i, &j| a.keys[i].t.total_cmp(&a.keys[j].t));
         // "automatically space them out": even timing across the run, when it's a contiguous slice of
-        // the key list (an unselected key in the middle pins the timing — only the easing changes then)
+        // the key list (an unselected key in the middle pins the timing - only the easing changes then)
         let contiguous = idx.last().unwrap() - idx[0] + 1 == idx.len();
         if contiguous && idx.len() > 2 {
             let (t0, t1) = (a.keys[idx[0]].t, a.keys[*idx.last().unwrap()].t);
@@ -881,7 +881,7 @@ pub fn show(
         0,
         if sr.hovered() || sr.dragged() { pal.accent } else { pal.border },
     );
-    // one read-only snapshot of every property, so the draw pass never re-borrows the project — and so a
+    // one read-only snapshot of every property, so the draw pass never re-borrows the project - and so a
     // bus and a clip look identical from here down
     let snap: Vec<Animated> = (0..n_props).filter_map(|i| t_ref(project, target, i).cloned()).collect();
     if snap.len() != n_props {
@@ -936,7 +936,7 @@ pub fn show(
     let t_at = |x: f32, sx: f64| sx + ((x - plot.left()) / pps) as f64;
     let sx = state.scroll_x;
     // per-property y scales: live off `snap` when auto_scale is on; otherwise a range frozen the first
-    // time a property is viewed (or last refreshed by "Fit") — see CurvesState::auto_scale/frozen.
+    // time a property is viewed (or last refreshed by "Fit") - see CurvesState::auto_scale/frozen.
     let mut scales: Vec<(f64, f64)> = Vec::with_capacity(n_props);
     for i in 0..n_props {
         let base = if state.auto_scale {
@@ -996,7 +996,7 @@ pub fn show(
         let d = resp.drag_delta();
         state.zoom = pps; // panning fixes the zoom so a still-fitting view doesn't snap back
         state.scroll_x = (state.scroll_x - (d.x / pps) as f64).clamp(-dur, dur);
-        // y_pan is in units of the active property's BASE span — the same one `zoomed()` scales, which
+        // y_pan is in units of the active property's BASE span - the same one `zoomed()` scales, which
         // with auto-scale off is the FROZEN range, not the live y_range (using the live one made the
         // pan crawl by frozen/live once a key was dragged far outside the frozen band)
         let auto = snap.get(state.active).map(y_range).unwrap_or((0.0, 1.0));
@@ -1174,7 +1174,7 @@ pub fn show(
                             let (k1t, k1v) = (a.keys[key + 1].t, a.keys[key + 1].v);
                             let seg_dt = (k1t - k0t).max(1e-9);
                             // ponytail: flat segments use half the visible scale as the value span so the
-                            // handle still drags — exact bezier y is meaningless when v0 == v1.
+                            // handle still drags - exact bezier y is meaningless when v0 == v1.
                             let seg_dv = if (k1v - k0v).abs() > 1e-9 {
                                 k1v - k0v
                             } else {
@@ -1284,7 +1284,7 @@ pub fn show(
     // ---- context menu on a key / right-click adds a key ----
     if resp.secondary_clicked() {
         state.menu_key = pointer.and_then(key_hit);
-        // right-click outside the selection retargets it, like every explorer (timeline.rs convention) —
+        // right-click outside the selection retargets it, like every explorer (timeline.rs convention) -
         // so the bulk Easing/Blend entries act on the key under the cursor, never on a stale selection
         if let Some(mk) = state.menu_key {
             if !state.selected.contains(&mk) {
@@ -1379,7 +1379,7 @@ pub fn show(
     }
 
     // ---- "Set Value…" popup: numeric entry for one key, opened via the context menu or a double-click
-    // directly on an existing key. Non-blocking (plain egui::Window, per ARCHITECTURE.md) — Escape /
+    // directly on an existing key. Non-blocking (plain egui::Window, per ARCHITECTURE.md) - Escape /
     // click-away / Cancel just close it, Enter / Apply commit the staged number.
     if let Some((p, k, mut v)) = state.value_edit {
         let mut open = true;
@@ -1572,7 +1572,7 @@ mod tests {
     }
 
     /// Middle-drag pans the graph on both axes, the same gesture the node editor's canvas already has.
-    /// It must not also trigger a seek, a key drag or a rubber band — those are primary-button gestures.
+    /// It must not also trigger a seek, a key drag or a rubber band - those are primary-button gestures.
     #[test]
     fn middle_drag_pans_without_starting_a_primary_gesture() {
         let mut h = Harness::new();
@@ -1715,7 +1715,7 @@ mod tests {
     #[test]
     fn right_click_on_empty_graph_adds_a_key() {
         let mut h = Harness::new();
-        h.state.active = 0; // Position X — not animated yet
+        h.state.active = 0; // Position X - not animated yet
         h.frame(vec![]);
         assert!(!h.clip().x.is_animated());
         let plot = Rect::from_min_max(pos2(h.state.graph.left(), h.state.graph.top() + RULER_H), h.state.graph.max);
@@ -1798,7 +1798,7 @@ mod tests {
         h.frame(vec![]);
         let v = h.clip().scale.keys[1].v;
         for _ in 0..30 {
-            h.frame(vec![]); // no pointer events at all — the drag is still held
+            h.frame(vec![]); // no pointer events at all - the drag is still held
         }
         let after = h.clip().scale.keys[1].v;
         assert!((after - v).abs() < 1e-6, "value drifted while the pointer was still: {v} -> {after}");
@@ -1874,7 +1874,7 @@ mod tests {
         }]);
         h.frame(vec![]);
         assert_eq!(h.state.menu_key, Some((2, 0)), "right-click should target the key under the pointer");
-        // the menu's easing entries route through MenuAct::SetEase — apply one the same way
+        // the menu's easing entries route through MenuAct::SetEase - apply one the same way
         let mut undos = 0;
         let mut undo = |_: &Project| undos += 1;
         undo(&h.project);
@@ -2023,7 +2023,7 @@ mod tests {
     }
 
     /// With `auto_scale` off (the default), a property's y range is frozen the first time it's viewed and
-    /// survives edits — including a drag that sends its own key to an extreme value — until "Fit"
+    /// survives edits - including a drag that sends its own key to an extreme value - until "Fit"
     /// explicitly re-snapshots it.
     #[test]
     fn auto_scale_off_freezes_ranges_until_fit_refreshes_them() {
@@ -2049,7 +2049,7 @@ mod tests {
         h.frame(vec![]);
         assert_eq!((h.state.y_lo, h.state.y_hi), unrelated_before, "unrelated property's frozen range survived");
 
-        // the dragged property's OWN range also stays frozen at its pre-drag spread until Fit — not
+        // the dragged property's OWN range also stays frozen at its pre-drag spread until Fit - not
         // rescaled to the now-different key value, however slightly it moved
         h.state.active = 2;
         h.frame(vec![]);

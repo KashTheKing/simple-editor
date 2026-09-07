@@ -1,6 +1,6 @@
 //! The application: owns the project, undo stack, settings, player, dockable layout and wires the panels
 //! together. Non-blocking windows (Settings, Retime, Export, Save Template, Save Profile, export/convert
-//! progress) are plain `egui::Window`s — the editor stays usable while they are open. Also executes MCP
+//! progress) are plain `egui::Window`s - the editor stays usable while they are open. Also executes MCP
 //! tool calls against the live project (one undo step per mutating call).
 
 use crate::engine::export::{self, ExportOptions, Progress};
@@ -63,7 +63,7 @@ mod jobs;
 // ---- ws:layout-modes-onboarding ----
 mod layout_ctl;
 // ---- ws:source-monitor ----
-// `lib_preview` is removed here — its one caller (the Library pane's small in-panel preview) was
+// `lib_preview` is removed here - its one caller (the Library pane's small in-panel preview) was
 // replaced by the real Source monitor pane; see `source_pane.rs`.
 mod library_pane;
 mod mcp_exec;
@@ -85,7 +85,7 @@ mod source_pane;
 // every placement call site (drops, library add, recording import, panes) names a DropMode
 pub(crate) use edit_ops::DropMode;
 // ---- ws:inspector-gallery ----: `pub(crate)`, not private, so `ui::gallery` (a sibling of `ui::app`,
-// not a descendant) can name `thumbs::ThumbSource` — gallery.rs owns the actual thumbnail cache
+// not a descendant) can name `thumbs::ThumbSource` - gallery.rs owns the actual thumbnail cache
 // (thread-local, mirroring effects_ui.rs's own `THUMBS`), this module only builds the textures.
 pub(crate) mod thumbs;
 mod timeline_pane;
@@ -180,7 +180,7 @@ pub struct App {
     profile_name: Option<String>,
     fullscreen: bool,
     selection: Vec<Id>,
-    /// Selected transitions (timeline bands) — separate from the clip selection.
+    /// Selected transitions (timeline bands) - separate from the clip selection.
     sel_transitions: Vec<Id>,
     playhead: f64,
     export: Option<(Arc<Progress>, ExportKind)>,
@@ -196,7 +196,7 @@ pub struct App {
     /// Close was requested during an export: cancel it, then re-request the close once it has finished.
     close_after_export: bool,
     was_playing: bool,
-    /// Last title sent to the OS — `send_viewport_cmd` forces a repaint, so only send on change.
+    /// Last title sent to the OS - `send_viewport_cmd` forces a repaint, so only send on change.
     last_title: String,
     palette: Palette,
     /// Newest rendered frame, handed to the preview pane when it draws.
@@ -206,18 +206,18 @@ pub struct App {
     mcp: Option<(mcp::Server, Receiver<mcp::ToolCall>)>,
     mcp_port_running: u16,
     mcp_jobs: Vec<McpJob>,
-    /// Library "Convert To…" jobs: (progress, output path) — polled each frame, imported when done.
+    /// Library "Convert To…" jobs: (progress, output path) - polled each frame, imported when done.
     convert_jobs: Vec<(Arc<Progress>, PathBuf)>,
     /// Asset id + target extension for the Convert To… options window.
     convert_dialog: Option<(Id, String)>,
     /// Compress… window state (None = closed).
     compress: Option<Compress>,
-    /// A working yt-dlp was found — gates the Library's URL import. Detected on a background thread
+    /// A working yt-dlp was found - gates the Library's URL import. Detected on a background thread
     /// (it spawns `yt-dlp --version`) at start-up and again when the setting changes.
     ytdlp_available: Arc<std::sync::atomic::AtomicBool>,
     /// Import-URL window state: (url, audio only).
     url_dialog: Option<(String, bool)>,
-    /// Running URL downloads — polled each frame, imported into the library when they finish.
+    /// Running URL downloads - polled each frame, imported into the library when they finish.
     downloads: Vec<crate::media::ytdlp::Download>,
     /// One receiver per import batch: ffprobe runs on a worker, `poll_probes` adopts the results.
     probes: Vec<Receiver<crate::engine::import::Probed>>,
@@ -240,7 +240,7 @@ pub struct App {
     /// Effect catalogue thumbnails: the egui textures (kept alive while the panel shows them) and the
     /// key set they were built from, so they are re-rendered only when the stock image or size changes.
     /// GPU frame requests from export threads and movie-mode prerender workers (they decode; we composite
-    /// on the GL context) — shared, since both are served identically.
+    /// on the GL context) - shared, since both are served identically.
     gpu_export: (
         std::sync::mpsc::Sender<crate::engine::export::GpuFrameRequest>,
         std::sync::mpsc::Receiver<crate::engine::export::GpuFrameRequest>,
@@ -253,9 +253,9 @@ pub struct App {
     gpu_tex_ids: std::collections::HashMap<eframe::glow::Texture, egui::TextureId>,
     effect_thumbs: Vec<egui::TextureHandle>,
     effect_thumbs_key: Option<(String, u32)>,
-    /// Editor background image: (path, blur radius, texture) — reloaded when either key changes.
+    /// Editor background image: (path, blur radius, texture) - reloaded when either key changes.
     bg_tex: Option<(String, u8, egui::TextureHandle)>,
-    /// The GPU path failed once — do not retry until the setting is switched off and on again.
+    /// The GPU path failed once - do not retry until the setting is switched off and on again.
     gpu_failed: bool,
     /// The frame the GPU rendered last: its buffer is reused once the preview released it.
     gpu_prev: Option<Arc<Frame>>,
@@ -278,7 +278,7 @@ pub struct App {
     was_focused: bool,
     /// Ctrl+Alt+C clipboard for Paste Attributes.
     attrs: Option<Clip>,
-    /// Ctrl+C / Ctrl+X clip clipboard — a template (clips + the assets they use), so paste reuses
+    /// Ctrl+C / Ctrl+X clip clipboard - a template (clips + the assets they use), so paste reuses
     /// `Project::place_clips` and its fresh clip / link ids.
     clipboard: Option<crate::settings::Template>,
     /// Text to hand the OS clipboard at the end of the frame. egui-winit only emits `Event::Paste` when
@@ -299,7 +299,7 @@ pub struct App {
     /// Transport focus: true = Space/JKL/I/O drive the Source monitor (last-clicked transport wins),
     /// false = the timeline, the fallback. See `source_ctl::act`.
     source_focus: bool,
-    /// A queued Source-monitor open (needs the egui ctx a new `Player` takes) — see `source_pane::tick`.
+    /// A queued Source-monitor open (needs the egui ctx a new `Player` takes) - see `source_pane::tick`.
     source_pending: Option<source_pane::Pending>,
     /// Movie mode pre-render cache.
     prerender: PreRender,
@@ -324,23 +324,23 @@ pub struct App {
     // ---- ws:registries-schema-hooks ----
     // ---- ws:canvas-handles-monitor ----
     // deviation (see PR body): retyped from wave-0b's `Option<AltRenderKind>` no-op placeholder to the
-    // real coalescing state (`monitor::AltRenderState`) this workstream builds — anticipated in the
+    // real coalescing state (`monitor::AltRenderState`) this workstream builds - anticipated in the
     // plan's own risk table ("wave-0b's alt_render App-field stub type may not match ... First commit
-    // retypes that one field if needed — isolated, called out in the PR description").
-    /// The monitor's async alt-render pipeline (hover preview of an effect/transition/gallery item) —
+    // retypes that one field if needed - isolated, called out in the PR description").
+    /// The monitor's async alt-render pipeline (hover preview of an effect/transition/gallery item) -
     /// see `monitor.rs`'s doc comment.
     pub(crate) alt_render: monitor::AltRenderState,
     // ---- ws:size-diet ----
-    /// The "What's New" window (whatsnew.rs) is open — set on a version bump, or by `Action::WhatsNew`.
+    /// The "What's New" window (whatsnew.rs) is open - set on a version bump, or by `Action::WhatsNew`.
     pub(crate) whatsnew_open: bool,
     /// winpos's window-rect debounce: (drag/move started at, the rect it saw) while unsettled, `None`
     /// once saved. Owned here so `whatsnew::tick` can thread it into `winpos::tick` every frame.
     pub(crate) winpos_pending: Option<(Instant, [i32; 4])>,
     // ---- ws:forgiveness ----
     // deviation: unlike Settings/Project, this struct had no pre-seeded per-workstream marker section
-    // (only ws:registries-schema-hooks/ws:size-diet above) — adding one here, following the same
+    // (only ws:registries-schema-hooks/ws:size-diet above) - adding one here, following the same
     // pattern, since a future workstream will need the same treatment this struct's other fields got.
-    /// Single-slot Settings snapshot for `Action::UndoSettings` (taken by `settings_snapshot`) —
+    /// Single-slot Settings snapshot for `Action::UndoSettings` (taken by `settings_snapshot`) -
     /// intentionally one slot, not a stack: a second destructive Settings op before the first is undone
     /// silently drops the first offer (see the PR body's deliberate-simplifications note).
     settings_undo: Option<Settings>,
@@ -361,18 +361,18 @@ pub struct App {
     /// Timeline seconds a Play In->Out / Play Around / Play to Out should auto-pause at; cleared once
     /// reached (or if playback stops some other way). See `playback_ctl::tick`.
     play_stop_at: Option<f64>,
-    /// `playhead` as of the last `playback_ctl::tick` — lets the paused-playhead-change scrub fire once
+    /// `playhead` as of the last `playback_ctl::tick` - lets the paused-playhead-change scrub fire once
     /// per change instead of every frame.
     scrub_last_t: f64,
     // ---- ws:command-palette ----
-    /// Ctrl+K palette state. Named `cmd_palette`, not `palette` — `App.palette` is already the live
+    /// Ctrl+K palette state. Named `cmd_palette`, not `palette` - `App.palette` is already the live
     /// theme `Palette` (`self.palette` is read constantly for colours throughout `ui::app`), so reusing
     /// that name for the command palette would shadow/collide with it everywhere.
     cmd_palette: palette::PaletteState,
     /// F1 cheat-sheet overlay open/closed.
     cheat_sheet_open: bool,
     /// `scripting::list()` + `scripting::meta()` for every script, refreshed at 1 Hz by `palette_ctl::
-    /// tick` (re-parsing every script's header on every frame would be silly — see `App::script_metas`).
+    /// tick` (re-parsing every script's header on every frame would be silly - see `App::script_metas`).
     script_meta_cache: (Instant, Vec<scripting::ScriptMeta>),
     /// Re-entrancy guard for `App::fire_hook`: true while a hook is already running, so a hook that
     /// itself calls `editor.tool`/triggers another hook-firing event can't recurse.
@@ -380,12 +380,12 @@ pub struct App {
     /// Scripts disabled for the session after their `@on` hook overran its budget once (one toast, then
     /// silently skipped by `fire_hook` for the rest of the session).
     disabled_hooks: Vec<PathBuf>,
-    /// Selection signature last handed to `fire_hook("selection_changed", ...)` — `palette_ctl::tick`
+    /// Selection signature last handed to `fire_hook("selection_changed", ...)` - `palette_ctl::tick`
     /// compares against `frame::SelSig::of(self)` each frame so the hook fires on any change (clips,
-    /// transitions, subtitle cues OR the edit point — not just `self.selection`), exactly once.
+    /// transitions, subtitle cues OR the edit point - not just `self.selection`), exactly once.
     last_fired_selection: frame::SelSig,
     // ---- ws:layout-modes-onboarding ----
-    /// The first-run welcome wizard while it is open — armed by `boot::run` on a fresh install (no
+    /// The first-run welcome wizard while it is open - armed by `boot::run` on a fresh install (no
     /// file argument, no `--screenshot`), `Action::ShowWelcome` and the `onboarding.reset` tool.
     onboarding: Option<crate::ui::onboarding::Onboarding>,
     /// The home / empty-state cards were dismissed for this session (`ui::home`).
@@ -393,16 +393,16 @@ pub struct App {
     /// The selection `frame::tick` last reacted to, so auto-surface / glow fire once per change.
     sel_sig: frame::SelSig,
     // ---- ws:export-deliver ----
-    // (same per-workstream section shape ws:forgiveness added above — this struct's pre-seeded markers
+    // (same per-workstream section shape ws:forgiveness added above - this struct's pre-seeded markers
     // stop at ws:size-diet, so each later workstream appends its own)
     /// Render queue: exports waiting for the single `export` slot, popped in order by
     /// `tools_export::frame_tick` once it is free (and no bake is running).
     export_queue: std::collections::VecDeque<export_ui::ExportChoice>,
-    /// In-flight bakes (render in place / stabilize / denoise / slow-mo) — at most one, stepped by
+    /// In-flight bakes (render in place / stabilize / denoise / slow-mo) - at most one, stepped by
     /// `tools_export::frame_tick`; drawn by `windows()`'s "Rendering in place" job window.
     bake_jobs: Vec<tools_export::BakeJob>,
     // ---- ws:inspector-gallery ----
-    /// Textures backing the Gallery's Looks/LUTs cards (kept alive while the pane shows them) — the
+    /// Textures backing the Gallery's Looks/LUTs cards (kept alive while the pane shows them) - the
     /// (source, key) -> id/size cache itself is `gallery.rs`'s own thread-local, same convention as
     /// `effects_ui.rs`'s `THUMBS`, so `ui::gallery::show` (a sibling module, not a descendant of
     /// `ui::app`) can read it without needing an `&App` reference.
@@ -413,16 +413,16 @@ pub struct App {
     /// Image-sequence bakes and consolidate copies in flight, polled by `media_sync::tick`.
     media_jobs: Vec<media_sync::MediaJob>,
     /// Next time `media_sync::tick` rescans the assets for missing files (2 s cadence, like proxies).
-    /// The set itself lives in `library.offline` — the one copy `App::asset_status` and the library
+    /// The set itself lives in `library.offline` - the one copy `App::asset_status` and the library
     /// rows both read.
     offline_scan_at: Option<Instant>,
     // ---- ws:transcript-captions ----
     /// Background whisper / tracking / TTS jobs started outside the Subtitles pane (clip menu, MCP),
-    /// the clip-menu model download and the "View transcript" window — see transcript_ctl.rs.
+    /// the clip-menu model download and the "View transcript" window - see transcript_ctl.rs.
     transcript: transcript_ctl::TranscriptState,
     // ---- ws:pro-monitor ----
     /// Dynamic-trim arming, the dual-frame trim view's decode slots, Scopes open/closed and the
-    /// eyedropper's armed (clip, target) — see `monitor.rs`'s `MonitorState` doc comment.
+    /// eyedropper's armed (clip, target) - see `monitor.rs`'s `MonitorState` doc comment.
     monitor: monitor::MonitorState,
     // ---- ws:pro-timeline ----
     /// Ctrl+F Find window state (open/closed, query buffer).
@@ -431,12 +431,12 @@ pub struct App {
 
 // ---- ws:canvas-handles-monitor ----
 // wave-0b's `AltRenderKind` placeholder enum (Hover/TrimView/Scopes/Wipe) is superseded by
-// `monitor::AltRequest` (Effect/Transition/Gallery — pro-monitor, wave 3, adds TrimOut/TrimIn/
+// `monitor::AltRequest` (Effect/Transition/Gallery - pro-monitor, wave 3, adds TrimOut/TrimIn/
 // Compare/Angle to that same enum per the plan) and removed here to avoid two parallel "what should
 // the monitor render" types.
 
 // ---- ws:forgiveness ----
-/// The on-disk cache directory's size — `settings_ui::performance` (a sibling module, not a descendant
+/// The on-disk cache directory's size - `settings_ui::performance` (a sibling module, not a descendant
 /// of `app`, so it can't reach `caches::cache_bytes` directly) reads this for its "Clear Caches" row.
 pub fn caches_bytes_for_ui() -> u64 {
     caches::cache_bytes()
@@ -461,13 +461,13 @@ fn job_window(ctx: &egui::Context, title: &str, jobs: &[(Arc<Progress>, String)]
 }
 
 /// Marker in the undo stack for "a pane was dragged somewhere else". The arrangement itself lives in
-/// `Layout`'s own (much shorter) history — this only keeps Ctrl+Z stepping back in the right order.
+/// `Layout`'s own (much shorter) history - this only keeps Ctrl+Z stepping back in the right order.
 /// ponytail: once the layout history has scrolled past its 20 entries the marker undoes nothing; deepen
 /// the layout stack if that ever bites.
 pub(crate) const LAYOUT_STEP: &str = "\u{0}layout";
 
-/// History panel filter bucket. `Layout` is a pane rearrangement (`LAYOUT_STEP`); everything else —
-/// clip/effect/marker/text/project edits — is `Editing`.
+/// History panel filter bucket. `Layout` is a pane rearrangement (`LAYOUT_STEP`); everything else -
+/// clip/effect/marker/text/project edits - is `Editing`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum HistoryCategory {
     Editing,
@@ -475,14 +475,14 @@ pub(crate) enum HistoryCategory {
 }
 
 /// One entry in the undo/redo stack, doubling as a History panel row. `label` stays EMPTY for project
-/// edits — the History panel derives one lazily from neighbouring snapshots (`describe_change`), which
+/// edits - the History panel derives one lazily from neighbouring snapshots (`describe_change`), which
 /// keeps the per-gesture push free of JSON parses and labels each row with its own edit instead of the
 /// previous one. Only sentinel entries (layout steps) carry a fixed label.
 #[derive(Clone)]
 pub(crate) struct UndoEntry {
     pub json: String,
     pub label: String,
-    /// Seconds since Unix epoch (`SystemTime`, not `Instant` — a History panel needs a real clock to
+    /// Seconds since Unix epoch (`SystemTime`, not `Instant` - a History panel needs a real clock to
     /// group by day and survive across app restarts... though the stack itself is session-only today;
     /// kept as a real timestamp anyway since "session-only" is the smaller, more surprising fact here).
     pub at: f64,
@@ -493,10 +493,10 @@ fn now_secs() -> f64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
 }
 
-/// A short, best-effort description of what changed between two project snapshots — compares a handful
+/// A short, best-effort description of what changed between two project snapshots - compares a handful
 /// of high-signal counts/fields rather than a full structural diff (this is a "quick glance" History
 /// panel label, not a changelog). Falls back to "Project edited" when nothing tracked here differs.
-/// Costs two full `Project::from_json` parses — only the History panel calls it (lazily, cached),
+/// Costs two full `Project::from_json` parses - only the History panel calls it (lazily, cached),
 /// NEVER the per-gesture undo push.
 pub(crate) fn describe_change(old_json: &str, new_json: &str) -> String {
     let (Ok(old), Ok(new)) = (Project::from_json(old_json), Project::from_json(new_json)) else {
@@ -541,7 +541,7 @@ pub(crate) fn describe_change(old_json: &str, new_json: &str) -> String {
     "Project edited".into()
 }
 
-/// Push an undo snapshot (capped) and clear the redo history. Labels are NOT derived here — that cost
+/// Push an undo snapshot (capped) and clear the redo history. Labels are NOT derived here - that cost
 /// (two project parses) belongs to the History panel, lazily; see `UndoEntry::label`.
 fn push_undo_json(undo: &mut Vec<UndoEntry>, redo: &mut Vec<UndoEntry>, json: String) {
     let entry = if json == LAYOUT_STEP {
@@ -574,7 +574,7 @@ fn relocate_assets(project: &mut Project, project_dir: Option<&Path>) -> Vec<Str
 }
 
 /// Run something that may panic (GPU driver, pre-render, a panel widget) without taking the editor
-/// down — same policy as the decoder threads. None = it panicked.
+/// down - same policy as the decoder threads. None = it panicked.
 /// ponytail: the panic message goes to the default hook (stderr); the caller toasts and degrades.
 fn guarded<T>(f: impl FnOnce() -> T) -> Option<T> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).ok()
@@ -602,7 +602,7 @@ fn clamp_canvas(w: u32, h: u32, max_width: u32) -> (u32, u32) {
 
 /// Render size for an image export: downscales are rendered straight at the target (the compositor's
 /// `Scaler` does the filtering), upscales are rendered at project size and enlarged by ffmpeg with the
-/// chosen resize flag — rendering a 4K frame from a 1080p timeline gains nothing but time.
+/// chosen resize flag - rendering a 4K frame from a 1080p timeline gains nothing but time.
 fn frame_render_size(project: (u32, u32), target: (u32, u32)) -> (u32, u32) {
     let (pw, ph) = (project.0.max(16), project.1.max(16));
     let (tw, th) = (target.0.max(16), target.1.max(16));
@@ -613,7 +613,7 @@ fn frame_render_size(project: (u32, u32), target: (u32, u32)) -> (u32, u32) {
     }
 }
 
-// TODO(ui-panels-fx): call these from `effects_ui::set_thumbnail(kind, ...)` once that hook exists —
+// TODO(ui-panels-fx): call these from `effects_ui::set_thumbnail(kind, ...)` once that hook exists -
 // the app renders each kind once on the GPU from this source and hands the result over.
 #[allow(dead_code)]
 /// Cache key of one effect thumbnail: kind, source image and size. Changing the stock image (or the
@@ -860,7 +860,7 @@ impl App {
         app.player.set_project(&app.project);
         if let Some(p) = open {
             app.open_path(&p);
-            // launched from Explorer ("Open with"): behave like a player — full screen, rolling
+            // launched from Explorer ("Open with"): behave like a player - full screen, rolling
             if app.screenshot.is_none() && !app.project.tracks.iter().all(|t| t.clips.is_empty()) {
                 app.fullscreen = true;
                 app.player.play();
@@ -877,10 +877,10 @@ impl App {
     }
 
     // ws:source-monitor: `insert_at` (chain each asset's clips end to end) is now
-    // `place_assets(.., DropMode::Place)` in edit_ops.rs — every former caller names its DropMode.
+    // `place_assets(.., DropMode::Place)` in edit_ops.rs - every former caller names its DropMode.
 
     /// Empty project + one media file: open it as the project (returns empty); otherwise import into the library.
-    /// ponytail: that single file is still probed on this thread — it settles the project format, size
+    /// ponytail: that single file is still probed on this thread - it settles the project format, size
     /// and zoom before anything is drawn; give it a placeholder too if opening ever feels slow.
     fn open_or_import(&mut self, paths: &[PathBuf]) -> Vec<Id> {
         // ---- ws:media-library ----: a frame of a numbered still run bakes as one clip instead
@@ -928,7 +928,7 @@ impl App {
             .as_ref()
             .map(|p| p.file_name().unwrap_or_default().to_string_lossy().into_owned())
             .unwrap_or_else(|| self.project.name.clone());
-        format!("{}{} — Simple Editor", if self.dirty { "*" } else { "" }, name)
+        format!("{}{} - Simple Editor", if self.dirty { "*" } else { "" }, name)
     }
 
     fn seek(&mut self, t: f64) {
@@ -947,7 +947,7 @@ impl App {
         timeline_is_empty(&self.project)
     }
 
-    /// The project with any open sequence closed — exports always render the MAIN timeline.
+    /// The project with any open sequence closed - exports always render the MAIN timeline.
     fn export_project(&self) -> Project {
         let mut p = self.project.clone();
         if p.editing.is_some() {
@@ -960,12 +960,12 @@ impl App {
 
     /// Import media files into the library. Probing spawns ffprobe per file (~100 ms), so each path
     /// lands as a placeholder asset now and `poll_probes` folds in the real metadata a few frames
-    /// later — dropping ten files costs this thread nothing. Returns the asset ids.
+    /// later - dropping ten files costs this thread nothing. Returns the asset ids.
     /// ponytail: an MCP `media.import` reply therefore quotes duration 0 until the probe lands;
     /// blocking the tool call on it is the fix if an agent ever needs the number in the same reply.
     fn import_files(&mut self, paths: &[PathBuf]) -> Vec<Id> {
         // ---- ws:media-library ----: every import path (Ctrl+I, drops, MCP media.import) funnels
-        // through here, so this one gate covers them all — see media_sync::intercept_sequences
+        // through here, so this one gate covers them all - see media_sync::intercept_sequences
         let paths = media_sync::intercept_sequences(self, paths);
         let mut ids = Vec::new();
         let mut fresh: Vec<(Id, String)> = Vec::new();
@@ -1002,7 +1002,7 @@ impl eframe::App for App {
             boot::run(self); // ws:forgiveness: offers crash recovery, if any
         }
         // ws:forgiveness: confirm_discard_then's continuation sets this once the (non-blocking) discard
-        // prompt resolves — the original close was cancelled below to let that prompt run, so re-send it.
+        // prompt resolves - the original close was cancelled below to let that prompt run, so re-send it.
         if std::mem::take(&mut self.pending_close) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
@@ -1071,14 +1071,14 @@ impl eframe::App for App {
             self.playhead = self.player.time();
             self.timeline.ensure_visible(self.playhead);
             // a numeric field left focused before play would see its bound value move every frame and
-            // report changed(), silently recording keyframes at the moving playhead — drop focus once
+            // report changed(), silently recording keyframes at the moving playhead - drop focus once
             // when playback starts (not every frame, so text can still be typed mid-playback)
             if playing && !self.was_playing {
                 ctx.memory_mut(|m| m.stop_text_input());
             }
             ctx.request_repaint_after(Duration::from_millis(16));
         }
-        // a Draw take runs until the video stops or the tool is put away — not one stroke at a time
+        // a Draw take runs until the video stops or the tool is put away - not one stroke at a time
         if self.draw_rec.is_some() && (self.tools.tool != Tool::Draw || (self.was_playing && !playing)) {
             self.tools.recording = false;
             self.toggle_draw_recording(false);
@@ -1144,7 +1144,7 @@ impl eframe::App for App {
                 }
             }
         }
-        // buffering: the render thread fell behind decode — hold the clock (the audio ring flushes
+        // buffering: the render thread fell behind decode - hold the clock (the audio ring flushes
         // with the pause) and show a spinner until the read-ahead refills, instead of letting audio
         // play on over a frozen frame. Same shape as the movie-mode stall above.
         if self.player.is_buffering() {
@@ -1205,7 +1205,7 @@ impl eframe::App for App {
                 self.dirty = true;
             }
             if finished {
-                self.toast("Timer finished — time to stop");
+                self.toast("Timer finished - time to stop");
             }
             if self.planner.timer.running {
                 ctx.request_repaint_after(std::time::Duration::from_millis(200));
@@ -1213,7 +1213,7 @@ impl eframe::App for App {
         }
         // cleared so a frame where the Moodboard tab isn't the one actually drawn (a sibling tab in its
         // group is active instead) can't have next frame's handle_drops match a stale rect from the last
-        // time it *was* drawn — `moodboard_ui::show` sets this back whenever it actually runs
+        // time it *was* drawn - `moodboard_ui::show` sets this back whenever it actually runs
         self.moodboard.content_rect = egui::Rect::NOTHING;
         self.screenshot_tick(ctx);
 
@@ -1244,7 +1244,7 @@ impl eframe::App for App {
 
         // ---- layout ----
         if self.fullscreen {
-            // same pane as the docked preview (it reads self.fullscreen) — no second copy to drift
+            // same pane as the docked preview (it reads self.fullscreen) - no second copy to drift
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
                 .show(ctx, |ui| self.draw_pane(ui, Pane::Preview));
@@ -1272,8 +1272,8 @@ impl eframe::App for App {
                 let cozy = self.settings.ui_look != "sharp";
                 // ---- ws:layout-modes-onboarding ----
                 // Both closures need `self` (draw: mutably; on_viewport: the hotkey table, then
-                // pending_actions), and layout::show calls them strictly one after the other — never
-                // nested — so a RefCell hands the borrow back and forth at runtime, the same shape
+                // pending_actions), and layout::show calls them strictly one after the other - never
+                // nested - so a RefCell hands the borrow back and forth at runtime, the same shape
                 // `App::fire_hook` already uses for its tool-call closure.
                 let cell = std::cell::RefCell::new(&mut *self);
                 let (changed, moved, set_icon) = layout::show(
@@ -1346,7 +1346,7 @@ impl eframe::App for App {
             self.layout_dirty = false;
         }
 
-        // toasts: drawn by feedback::draw, a WINDOW_DRAWER (ws:forgiveness) — this used to be an inline
+        // toasts: drawn by feedback::draw, a WINDOW_DRAWER (ws:forgiveness) - this used to be an inline
         // block here; see windows() -> WINDOW_DRAWERS.
     }
 }
@@ -1357,7 +1357,7 @@ impl eframe::App for App {
 // ----` marker line per workstream (wave-then-name order), so a PR that fills its own line never
 // shares a hunk with another workstream's. See the "Shared-registry protocol" section of
 // plans/ui-overhaul/README.md. Only TOOL_TABLES carries real content this wave (the existing tool
-// groups, flattened for `mcp::tools::all()`); the other four start empty — nothing to migrate yet,
+// groups, flattened for `mcp::tools::all()`); the other four start empty - nothing to migrate yet,
 // since `act()`/`draw_pane_inner()`/`windows()`/`update()` keep every existing arm unchanged and only
 // gained a small prelude loop (or, for `draw_pane_inner`, a trailing catch-all) that tries the
 // registry first.
@@ -1383,7 +1383,7 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     tools_project::TOOLS,
     // ---- ws:player-rate-loop ----
     // already registered above (tools_playback::TOOLS predates the marker system; wave-0a wired it in
-    // directly) — this workstream appends new rows into that same const, not a second registration.
+    // directly) - this workstream appends new rows into that same const, not a second registration.
     // ---- ws:snap-engine ----
     // ---- ws:trim-model ----
     tools_trim::TOOLS,
@@ -1397,7 +1397,7 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     tools_layout::TOOLS,
     // ---- ws:media-library ----
     // already registered above (tools_media::TOOLS predates the marker system; wave-0a wired it in
-    // directly) — this workstream appends its rows into that same const, not a second registration.
+    // directly) - this workstream appends its rows into that same const, not a second registration.
     // ---- ws:source-monitor ----
     tools_source::TOOLS,
     // ---- ws:timeline-trim-gestures ----
@@ -1595,7 +1595,7 @@ impl App {
         }
     }
 
-    /// Bring `pane` to the front — today this is exactly `Layout::reveal` + marking the layout dirty
+    /// Bring `pane` to the front - today this is exactly `Layout::reveal` + marking the layout dirty
     /// so it persists; ws:layout-modes-onboarding (wave 2) makes it pin/mode-aware without touching
     /// call sites (a pinned pane stops auto-surfacing, a Granular-mode layout ignores it entirely).
     #[allow(dead_code)] // unused until ws:layout-modes-onboarding (wave 2)
@@ -1606,7 +1606,7 @@ impl App {
 
     /// Real but partial: only the handful of guards worth centralising this wave (an export already
     /// running, exporting an empty timeline, pasting attributes with nothing copied yet). The ~80
-    /// other `has_sel`/`has_clips` checks stay inline in `menu_bar` — command-palette (wave 1)
+    /// other `has_sel`/`has_clips` checks stay inline in `menu_bar` - command-palette (wave 1)
     /// migrates them here when the palette actually needs to grey out rows. `Err`'s text is the toast
     /// reason a caller (`ui.action`, and `act()`'s own prelude) shows the user.
     pub(crate) fn enabled(&self, a: Action) -> Result<(), &'static str> {
@@ -1615,7 +1615,7 @@ impl App {
         // A second small guard match, not a bigger `enabled_for` signature: `enabled_for` (and its
         // 3-bool call site) is pre-existing wave-0b code with its own test
         // (`tools_registry_tests::action_enabled_toasts_reason`) already pinned to that exact 3-arg
-        // shape — growing it to 6 args would force an edit to a test outside this workstream's owned
+        // shape - growing it to 6 args would force an edit to a test outside this workstream's owned
         // files for guards only this ws's rows table needs. See `enabled_for2`.
         Self::enabled_for2(
             a,
@@ -1641,14 +1641,14 @@ impl App {
         match a {
             Action::Undo if undo_empty => Err("Nothing to undo"),
             Action::Redo if redo_empty => Err("Nothing to redo"),
-            Action::Split if timeline_empty => Err("Nothing to split — the timeline is empty"),
+            Action::Split if timeline_empty => Err("Nothing to split - the timeline is empty"),
             Action::Delete | Action::RippleDelete if no_selection => Err("Select something to delete first"),
             _ => Ok(()),
         }
     }
 
     /// The pure match behind `enabled`, split out so `action_enabled_toasts_reason` can exercise every
-    /// arm directly (plain bools in, no live `App` — see that test's doc comment for why one isn't
+    /// arm directly (plain bools in, no live `App` - see that test's doc comment for why one isn't
     /// buildable here today).
     pub(crate) fn enabled_for(
         a: Action,
@@ -1658,10 +1658,10 @@ impl App {
     ) -> Result<(), &'static str> {
         match a {
             Action::Save | Action::SaveProjectAs | Action::ExportVideo | Action::ExportLossless if export_running => {
-                Err("An export is running — try again when it finishes")
+                Err("An export is running - try again when it finishes")
             }
             Action::ExportVideo | Action::ExportLossless if timeline_empty => {
-                Err("Nothing to export — the timeline is empty")
+                Err("Nothing to export - the timeline is empty")
             }
             Action::PasteAttributes if no_attrs_copied => Err("Copy attributes from a clip first (Ctrl+Alt+C)"),
             _ => Ok(()),
@@ -1671,7 +1671,7 @@ impl App {
     /// Set an undo entry's label directly (mirrors the existing `LAYOUT_STEP` sentinel path), so the
     /// History panel skips `describe_change`'s lazy diff for a labelled edit and shows `label` instead
     /// of "Project edited". Callers push the entry themselves (this only sets the label on the last
-    /// one) — see `push_undo_json`. First real caller: ws:forgiveness (Delete/RippleDelete, History
+    /// one) - see `push_undo_json`. First real caller: ws:forgiveness (Delete/RippleDelete, History
     /// panel restore).
     pub(crate) fn push_undo_labeled(&mut self, before: String, label: &'static str) {
         push_undo_json(&mut self.undo, &mut self.redo, before);
@@ -1681,7 +1681,7 @@ impl App {
     }
 
     // ---- ws:forgiveness ----
-    /// Resolve a queued `confirm::ConfirmAction` on Yes — the two `Project`-touching variants push a
+    /// Resolve a queued `confirm::ConfirmAction` on Yes - the two `Project`-touching variants push a
     /// labeled undo first (mirrors every other project edit); the two `Settings`-touching variants just
     /// save (Settings isn't part of the undo stack). The actual field mutation is the pure
     /// `confirm::apply_to_project`/`apply_to_settings` pair, so it's testable without a live `App`.
@@ -1710,10 +1710,10 @@ impl App {
         }
     }
 
-    /// Single-slot Settings snapshot for `Action::UndoSettings` — call before a destructive Settings
+    /// Single-slot Settings snapshot for `Action::UndoSettings` - call before a destructive Settings
     /// mutation; `label` is reserved for a future toast/undo-entry description (see the
     /// `settings_undo` field's doc comment for why this is one slot, not a stack).
-    /// ponytail: no caller yet this wave (see the PR body) — this workstream builds the primitive
+    /// ponytail: no caller yet this wave (see the PR body) - this workstream builds the primitive
     /// (field + Action::UndoSettings arm + this setter); the first destructive Settings op (e.g. a
     /// future "Reset all hotkeys") calls it.
     #[allow(dead_code, unused_variables)]
@@ -1724,10 +1724,10 @@ impl App {
     /// The one sanctioned funnel for a NEW timed-repaint request (`ctx.request_repaint_after` at a
     /// computed instant rather than a fixed duration). This is not a retroactive migration: 17
     /// pre-existing raw `ctx.request_repaint_after(...)` call sites (app.rs-descended files ~12,
-    /// planner.rs:740, preview.rs:694/709, subtitles_ui.rs:616/741) stay as they are — narrowing the
+    /// planner.rs:740, preview.rs:694/709, subtitles_ui.rs:616/741) stay as they are - narrowing the
     /// idle-CPU-0% principle to "the only path for new code", not an invariant already true of the
     /// whole crate today.
-    /// ponytail: the 17 existing sites are an accepted, un-migrated ceiling — a follow-up cleanup
+    /// ponytail: the 17 existing sites are an accepted, un-migrated ceiling - a follow-up cleanup
     /// (size-diet or its own pass) can fold them into this fn; not a wave-0b blocker.
     ///
     /// First caller: `whatsnew::tick` (size-diet), routing winpos's window-rect debounce through here.
@@ -1740,7 +1740,7 @@ impl App {
     }
 
     // ---- ws:audio-analysis ----
-    /// `marker_added` once per id in `ids` — the one call site every marker-creation path in this
+    /// `marker_added` once per id in `ids` - the one call site every marker-creation path in this
     /// workstream (autocut_ui's silence "Mark instead", Detect Beats/Split at Beats, Scene cuts'
     /// "Mark instead", and their MCP-tool twins) funnels through, so the event fires exactly once
     /// regardless of entry point. See `fire_marker_added_for_each` for the plain, App-free half this
@@ -1751,7 +1751,7 @@ impl App {
 }
 
 /// The pure half of `fire_markers_added`: call `hook("marker_added", {"marker_id": id})` once per id,
-/// in order. Split out so a test can assert "exactly once per marker" without a live `App` — mirrors
+/// in order. Split out so a test can assert "exactly once per marker" without a live `App` - mirrors
 /// `mcp_exec.rs`'s `snapshot_if_mutate`/`rollback_project` split for the identical reason.
 pub(crate) fn fire_marker_added_for_each(ids: &[Id], hook: &mut dyn FnMut(&'static str, Value)) {
     for &id in ids {

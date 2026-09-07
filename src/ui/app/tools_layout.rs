@@ -1,5 +1,5 @@
 //! ---- ws:layout-modes-onboarding ----
-//! MCP tools for layout modes, workspaces, pins, surfacing, maximise and the welcome wizard — each a
+//! MCP tools for layout modes, workspaces, pins, surfacing, maximise and the welcome wizard - each a
 //! thin call into `layout_ctl` / `Layout` / `Settings` (`ToolKind::Ui`: UI state, never the project,
 //! never undo). `ui.action` covers the hotkey-shaped verbs (Workspace1..6 / MaximizePane / TogglePin /
 //! ToggleSource plus the consumed ToggleLayoutMode / ShowWelcome) by id, as for any other Action.
@@ -38,7 +38,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "layout.workspace",
-        desc: "Switch to a named workspace (see layout.list's 'workspaces') — the same undo-preserving \
+        desc: "Switch to a named workspace (see layout.list's 'workspaces') - the same undo-preserving \
                swap as Alt+1..6 / the menu-bar strip.",
         args: &["name:string:true:one of Simple, Edit, Color, Audio, Text, Deliver"],
         kind: ToolKind::Ui,
@@ -69,7 +69,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "layout.surface",
-        desc: "Reveal a pane now, the pin-aware way (result: Shown | Pinned | Hidden | Absent — Pinned/Hidden \
+        desc: "Reveal a pane now, the pin-aware way (result: Shown | Pinned | Hidden | Absent - Pinned/Hidden \
                mean the tab was NOT switched); force=true ignores pins and re-opens a hidden pane like the View menu.",
         args: &["pane:string:true:pane title", "force:boolean:false:ignore pins / hidden state (default false)"],
         kind: ToolKind::Ui,

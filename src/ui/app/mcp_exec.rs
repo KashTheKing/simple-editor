@@ -4,7 +4,7 @@ use crate::mcp::tools::{ToolKind, ToolOutcome};
 
 /// The pure decision half of `App::run_snapshot_if_mutate`: `Some(project.to_json())` iff `kind` is
 /// `ToolKind::Mutate`. Split out so `run_tool_undoable_snapshots_only_mutate` can exercise it against a
-/// bare `Project` — no `App` (and so no live `eframe::CreationContext`) required.
+/// bare `Project` - no `App` (and so no live `eframe::CreationContext`) required.
 pub(super) fn snapshot_if_mutate(project: &Project, kind: ToolKind) -> Option<String> {
     (kind == ToolKind::Mutate).then(|| project.to_json())
 }
@@ -19,9 +19,9 @@ pub(super) fn rollback_project(snap: &str) -> Option<Project> {
 impl App {
     // ---- ws:forgiveness ----
     // deviation: this workstream's own fire_hook stub (scanning scripts for a bare `-- @on <event>`
-    // marker) is superseded by command-palette's real dispatcher (palette_ctl::fire_hook — reentrancy
+    // marker) is superseded by command-palette's real dispatcher (palette_ctl::fire_hook - reentrancy
     // guard, per-hook budget, disable-on-overrun) now that PR #45 has merged; removed to avoid a
-    // duplicate-method conflict. files.rs's project_open/project_save call sites are unaffected — both
+    // duplicate-method conflict. files.rs's project_open/project_save call sites are unaffected - both
     // pass string literals, which resolve to palette_ctl::fire_hook's `&'static str` parameter as-is.
 
     pub(super) fn run_script(&mut self, path: &std::path::Path) {
@@ -38,10 +38,10 @@ impl App {
                 let mut app = app.borrow_mut();
                 // ---- ws:registries-schema-hooks ----
                 // Every tool now runs through its own ToolDef.run (was: the hand-kept run_tool dispatch
-                // chain, still reachable through it — see tools_*.rs's row! macro). ToolKind::Mutate
+                // chain, still reachable through it - see tools_*.rs's row! macro). ToolKind::Mutate
                 // (via run_snapshot_if_mutate) replaces the old hand-kept mutating-tool name-set check;
                 // the snapshot/rollback primitive is shared with handle_tool below, but the undo-PUSH
-                // decision stays here (one entry for the WHOLE script, not per call) — collapsing that
+                // decision stays here (one entry for the WHOLE script, not per call) - collapsing that
                 // onto handle_tool's per-call push would regress run_script's undo count.
                 let Some(def) = mcp::tools::find(tool) else {
                     return Err(format!("unknown tool '{tool}'"));
@@ -88,15 +88,15 @@ impl App {
     // ---- ws:registries-schema-hooks ----
     /// Shared snapshot half of the Mutate rollback shape: `Some(project_json)` when `tool` is a
     /// registered `ToolKind::Mutate` (a project.to_json() snapshot taken before running it), `None`
-    /// otherwise (Read/Job/Ui tools, or an unknown name — `run_tool`'s own "unknown tool" error covers
-    /// that). Callers push undo themselves (`handle_tool` per call, `run_script` per whole script) —
+    /// otherwise (Read/Job/Ui tools, or an unknown name - `run_tool`'s own "unknown tool" error covers
+    /// that). Callers push undo themselves (`handle_tool` per call, `run_script` per whole script) -
     /// this only decides WHETHER to snapshot, not when to push.
     pub(super) fn run_snapshot_if_mutate(&self, def: &mcp::tools::ToolDef) -> Option<String> {
         snapshot_if_mutate(&self.project, def.kind)
     }
 
-    /// Restore `snap` after a Mutate-kind call returned `Err` (some arms mutate before returning Err —
-    /// e.g. subtitles.set, clip.set — so a failed tool must still be a no-op).
+    /// Restore `snap` after a Mutate-kind call returned `Err` (some arms mutate before returning Err -
+    /// e.g. subtitles.set, clip.set - so a failed tool must still be a no-op).
     pub(super) fn run_rollback(&mut self, snap: String) {
         if let Some(p) = rollback_project(&snap) {
             self.project = p;
@@ -136,7 +136,7 @@ impl App {
     }
 
     pub(super) fn poll_mcp(&mut self, ctx: &egui::Context) {
-        // finish blocking jobs (export.video / media.convert) — reply when their thread is done
+        // finish blocking jobs (export.video / media.convert) - reply when their thread is done
         if !self.mcp_jobs.is_empty() {
             let mut i = 0;
             while i < self.mcp_jobs.len() {
@@ -199,7 +199,7 @@ impl App {
     /// above), which already had their own inline snapshot/undo logic before this workstream needed a
     /// THIRD caller: the palette's Enter/arg-form-Run path and the `scripts.run` MCP tool
     /// (`tools_commands.rs`). Same shape as `handle_tool`'s non-`Job` arms (snapshot iff `Mutate`, push
-    /// undo iff the JSON actually changed, `after_edit`, rollback on `Err`) — a small shared wrapper is
+    /// undo iff the JSON actually changed, `after_edit`, rollback on `Err`) - a small shared wrapper is
     /// less code than a third copy of that logic, and a smaller diff than refactoring `handle_tool`/
     /// `run_script` (each has its own reply-channel / per-script-undo shape) around a new abstraction.
     pub(crate) fn run_tool_undoable(&mut self, name: &str, args: &Value) -> Result<Value, String> {
@@ -215,7 +215,7 @@ impl App {
                 }
                 Ok(v)
             }
-            Ok(ToolOutcome::Job(..)) => Err(format!("'{name}' starts a background job — not runnable from here")),
+            Ok(ToolOutcome::Job(..)) => Err(format!("'{name}' starts a background job - not runnable from here")),
             Err(e) => {
                 if let Some(snap) = before {
                     self.run_rollback(snap); // a failed tool is a no-op
@@ -256,7 +256,7 @@ impl App {
                 letterbox: false,
             };
             let mut project = self.export_project();
-            // MCP exports have no background opt-in either — "use_project_bg": true opts in per call
+            // MCP exports have no background opt-in either - "use_project_bg": true opts in per call
             if !arg_bool(args, "use_project_bg").unwrap_or(false) {
                 project.preview_bg = crate::model::BackgroundMode::Black;
             }
@@ -290,7 +290,7 @@ impl App {
     /// Execute one (non-job) MCP tool by name, trying each group's dispatch chain in turn. Kept as a
     /// single, name-only entry point (every `ToolDef.run` in the non-Job tool groups is a thin wrapper
     /// calling into exactly this chain) even though `handle_tool`/`run_script` now go through
-    /// `ToolDef.run` directly for the undo-kind dispatch — a generic "run any tool by name" fn is worth
+    /// `ToolDef.run` directly for the undo-kind dispatch - a generic "run any tool by name" fn is worth
     /// keeping as one definition rather than none.
     #[allow(dead_code)]
     pub(super) fn run_tool(&mut self, name: &str, args: &Value) -> Result<Value, String> {

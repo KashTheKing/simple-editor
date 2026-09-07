@@ -150,7 +150,7 @@ actions! {
     // ---- ws:audio-analysis ----
     // Unbound by design (skeleton keymap): every row below is Mark-instead / editable-result first,
     // reached from the Auto-cut pane's Beats/Loudness/Duck sections or the command palette. AutoDuck
-    // and Normalize are declared here (not a wave-0b stub) — audio-dsp-automation's inspector_audio.rs
+    // and Normalize are declared here (not a wave-0b stub) - audio-dsp-automation's inspector_audio.rs
     // dispatches both and must depend on this workstream landing first.
     DetectBeats => "detect_beats", "Detect Beats → Markers", None;
     SplitAtBeats => "split_at_beats", "Split at Beats", None;
@@ -168,7 +168,7 @@ actions! {
     CheatSheet => "cheat_sheet", "Keyboard Shortcuts overlay", sc(NONE, Key::F1);
     // Owned exclusively by this workstream (see plans/ui-overhaul/issues/command-palette.md's
     // "Actions and hotkeys" table): ws:layout-modes-onboarding (wave 2) consumes these two variants
-    // through its own ACT_HANDLERS/WINDOW_DRAWERS arm but must NEVER redeclare them here — a second
+    // through its own ACT_HANDLERS/WINDOW_DRAWERS arm but must NEVER redeclare them here - a second
     // `actions!` row for either identifier is a duplicate-enum-variant compile error. Both are inert
     // (fall through App::act's `_ => {}` catch-all) until that wave lands the real behaviour.
     ToggleLayoutMode => "toggle_layout_mode", "Layout Mode: Dynamic / Granular", sc(CTRL_SHIFT, Key::G);
@@ -192,7 +192,7 @@ actions! {
     FastReview => "fast_review", "Fast Review", None;
     // ---- ws:snap-engine ----
     // ---- ws:trim-model ----
-    // 25 bound + 6 unbound = 31 (see plans/ui-overhaul/issues/trim-model.md's "Review trail" F7 —
+    // 25 bound + 6 unbound = 31 (see plans/ui-overhaul/issues/trim-model.md's "Review trail" F7 -
     // the plan text's own earlier "22 bound"/"30 total" counts were a stale recount, corrected there).
     SelectEditPoint => "select_edit_point", "Select Nearest Edit Point", sc(NONE, Key::U);
     CycleEditSide => "cycle_edit_side", "Cycle Edit Point Side", sc(SHIFT, Key::U);
@@ -241,7 +241,7 @@ actions! {
     // ---- ws:layout-modes-onboarding ----
     // Alt+1..6 are free (Ctrl+1..0 is the pane-toggle row above); backtick is Premiere's maximise key.
     // ToggleLayoutMode (Ctrl+Shift+G) / ShowWelcome are declared by ws:command-palette above and only
-    // CONSUMED here (`ui::app::layout_ctl::act`) — never redeclare them. TogglePin / ToggleSource are
+    // CONSUMED here (`ui::app::layout_ctl::act`) - never redeclare them. TogglePin / ToggleSource are
     // unbound by design: the tab-bar pin glyph / context menu, and the View menu / palette, own them.
     Workspace1 => "workspace_1", "Workspace 1 (Simple)", sc(ALT, Key::Num1);
     Workspace2 => "workspace_2", "Workspace 2 (Edit)", sc(ALT, Key::Num2);
@@ -252,7 +252,7 @@ actions! {
     MaximizePane => "maximize_pane", "Maximise Pane under Cursor", sc(NONE, Key::Backtick);
     TogglePin => "toggle_pin", "Pin / Unpin Pane under Cursor", None;
     // ToggleSource is declared by ws:source-monitor below (both workstreams needed it; kept there
-    // since that's the pane it actually toggles) — never redeclare it here.
+    // since that's the pane it actually toggles) - never redeclare it here.
     // ---- ws:media-library ----
     // Unbound by design (skeleton keymap): the library's asset menu / toolbar + the palette.
     RelinkMedia => "relink_media", "Relink Media…", None;
@@ -296,7 +296,7 @@ actions! {
     RenameTrack => "rename_track", "Rename Track", None;
     // ---- ws:text-titles ----
     // ---- ws:docs-refresh ----
-    // ---- tool selection (ui::tools) — polled and dispatched there, not through App::act ----
+    // ---- tool selection (ui::tools) - polled and dispatched there, not through App::act ----
     ToolSelect => "tool_select", "Select Tool", sc(NONE, Key::V);
     ToolText => "tool_text", "Text Tool", sc(NONE, Key::T);
     ToolDraw => "tool_draw", "Draw Tool", sc(NONE, Key::D);
@@ -312,10 +312,10 @@ actions! {
 pub struct Hotkeys {
     map: HashMap<Action, Option<KeyboardShortcut>>,
     // ---- ws:command-palette ----
-    /// Non-`Action` bindings shown alongside the table in the conflict UI — currently just live Luau
+    /// Non-`Action` bindings shown alongside the table in the conflict UI - currently just live Luau
     /// `@hotkey` scripts (refreshed at the 1Hz script-meta poll, `ui::app::palette_ctl::tick`), keyed by
     /// the script's display name rather than a path (all the conflict UI needs is a label). Never
-    /// persisted — `to_settings`/`from_settings` only round-trip `Action` bindings.
+    /// persisted - `to_settings`/`from_settings` only round-trip `Action` bindings.
     extra: Vec<(String, KeyboardShortcut)>,
 }
 
@@ -446,13 +446,13 @@ impl Hotkeys {
 }
 
 // ---- ws:command-palette ----
-/// Chords the app hard-codes ahead of, or instead of, the `Action` table — bare `S` (snap toggle,
-/// `ui::tools::handle_snap_hotkey`), `Shift+S` (shape-tool cycle, `ui::tools::handle_hotkeys` — also
+/// Chords the app hard-codes ahead of, or instead of, the `Action` table - bare `S` (snap toggle,
+/// `ui::tools::handle_snap_hotkey`), `Shift+S` (shape-tool cycle, `ui::tools::handle_hotkeys` - also
 /// `AddShape`'s grandfathered default, a documented exception in `reserved_chords_are_free` below),
 /// `Ctrl+Y` (Redo alias, polled directly in `App::update`), `Backspace` (Delete alias, same), `Escape`
 /// (fullscreen exit while `self.fullscreen`), `Tab`/`Shift+Tab` (egui's own focus traversal) and
 /// `Alt+Space` (Windows' system menu). A rebindable UI that let a user pick one of these would silently
-/// lose it to whichever poll runs first — `conflict_all` reports them so the Hotkeys tab can say so.
+/// lose it to whichever poll runs first - `conflict_all` reports them so the Hotkeys tab can say so.
 pub const RESERVED: &'static [(&'static str, Modifiers, Key)] = &[
     ("Toggle snapping (S)", NONE, Key::S),
     ("Cycle shape tool (Shift+S)", SHIFT, Key::S),
@@ -473,7 +473,7 @@ pub enum Claim {
 
 impl Hotkeys {
     /// Every claimant of `ks`: a bound `Action` first (`conflict`), else a `RESERVED` row, else free
-    /// (`None`) — the honest, whole-app view `Settings ▸ Hotkeys`'s rebind UI needs (`conflict` alone
+    /// (`None`) - the honest, whole-app view `Settings ▸ Hotkeys`'s rebind UI needs (`conflict` alone
     /// would let a user "successfully" bind a key that a hard-coded poll would still eat first).
     pub fn conflict_all(&self, ks: KeyboardShortcut) -> Option<Claim> {
         if let Some(a) = self.conflict(ks) {
@@ -488,7 +488,7 @@ impl Hotkeys {
 
 /// Section a hotkey belongs to, for the cheat-sheet overlay and the Settings ▸ Hotkeys group headers.
 /// Hand-maintained rather than folded into the `actions!` macro (a smaller diff, and grouping needs
-/// change far less often than the action list itself — see the issue plan's `// ponytail:` note); the
+/// change far less often than the action list itself - see the issue plan's `// ponytail:` note); the
 /// `_ => "Other"` catch-all keeps a future workstream's new `Action` non-breaking even if nobody
 /// remembers to extend this match.
 pub fn group(a: Action) -> &'static str {
@@ -551,7 +551,7 @@ fn is_late(a: Action) -> bool {
 /// egui-winit swallows the clipboard keys: Ctrl+C / Ctrl+X / Ctrl+V (and Ctrl+Alt+C/V, Shift+Delete,
 /// Ctrl+Insert) arrive as `Event::Copy` / `Cut` / `Paste` with the key event *dropped*, so no shortcut
 /// on those keys can ever match. Put the key events back. The clipboard event no longer says which key
-/// produced it, so the modifiers decide — with Shift down a Cut is Windows' Shift+Delete (Ctrl+Shift+X
+/// produced it, so the modifiers decide - with Shift down a Cut is Windows' Shift+Delete (Ctrl+Shift+X
 /// is nobody's shortcut). Callers skip this while a text field has focus, so text copy/paste is untouched.
 fn restore_clipboard_keys(ctx: &egui::Context) {
     ctx.input_mut(|i| {
@@ -586,7 +586,7 @@ mod tests {
         }
     }
     /// Feed the events egui-winit *actually* delivers for these chords (the raw key event is gone) and
-    /// check the actions still fire — and in the late pass for the clip clipboard, so a hovered curve /
+    /// check the actions still fire - and in the late pass for the clip clipboard, so a hovered curve /
     /// node editor gets first refusal.
     #[test]
     fn clipboard_chords_survive_winit_translation() {
@@ -613,7 +613,7 @@ mod tests {
             assert!(early.is_empty(), "{want:?} must wait for the late pass, got {early:?}");
             assert_eq!(late, vec![want]);
         }
-        // Windows folds Shift+Delete into Cut too — that one is a normal (early) action
+        // Windows folds Shift+Delete into Cut too - that one is a normal (early) action
         let (early, _) = run(egui::Event::Cut, Modifiers::SHIFT);
         assert_eq!(early, vec![Action::RippleDelete]);
     }
@@ -635,7 +635,7 @@ mod tests {
         for &a in Action::ALL {
             let Some(k) = a.default_shortcut() else { continue };
             for &(name, m, key) in RESERVED {
-                // AddShape's default IS Shift+S — a documented, grandfathered exception (see RESERVED's
+                // AddShape's default IS Shift+S - a documented, grandfathered exception (see RESERVED's
                 // doc comment): the shape-tool cycle poll runs first, so the action never actually fires
                 // from the key, but its "default" text still needs somewhere to live for the menu/palette.
                 if a == Action::AddShape && m == SHIFT && key == Key::S {
@@ -674,7 +674,7 @@ mod tests {
     fn no_duplicate_action_declarations_across_wave1_and_wave2() {
         // compile-time proxy for the audit-fixed blocker: this ws is the sole declaration site for
         // ToggleLayoutMode/ShowWelcome (ws:layout-modes-onboarding, wave 2, may only consume them via
-        // ACT_HANDLERS) — a second `actions!` row for either identifier here is a duplicate-variant
+        // ACT_HANDLERS) - a second `actions!` row for either identifier here is a duplicate-variant
         // compile error, so this just pins that today's file has exactly one declaration of each.
         let src = include_str!("hotkeys.rs");
         for name in ["ToggleLayoutMode", "ShowWelcome"] {
@@ -698,7 +698,7 @@ mod tests {
     // ---- ws:layout-modes-onboarding ----
     /// The audit-fix-2 guard from this side: the two shared variants this workstream CONSUMES exist
     /// exactly once crate-wide (declared by command-palette), this workstream's own rows exist exactly
-    /// once each, and their chords are the frozen keymap's (Alt+1..6, backtick, two unbound) — with
+    /// once each, and their chords are the frozen keymap's (Alt+1..6, backtick, two unbound) - with
     /// `no_duplicate_defaults` above still green over the whole table.
     #[test]
     fn no_duplicate_hotkey_rows_for_shared_actions() {
@@ -720,7 +720,7 @@ mod tests {
             (Action::Workspace5, "Alt+5"),
             (Action::Workspace6, "Alt+6"),
             // `Hotkeys::format` uses `Key::name()` (not `symbol_or_name()`), same as every other
-            // punctuation-key action in this table (TrimLeft1's "[" shows as "OpenBracket", etc.) —
+            // punctuation-key action in this table (TrimLeft1's "[" shows as "OpenBracket", etc.) -
             // matching existing behaviour, not a new inconsistency introduced here.
             (Action::MaximizePane, "Backtick"),
             (Action::TogglePin, ""),

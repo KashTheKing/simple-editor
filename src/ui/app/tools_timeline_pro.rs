@@ -1,9 +1,9 @@
 //! ---- ws:pro-timeline ----
 //! Find (Ctrl+F), the overview-strip toggle, and the header inline-rename trigger (ACT_HANDLER: `act`);
-//! the Find window (WINDOW_DRAWER: `window` — the real `App`-touching half of `find_ui`, see that
+//! the Find window (WINDOW_DRAWER: `window` - the real `App`-touching half of `find_ui`, see that
 //! module's doc comment for why it isn't `find_ui::window` directly); and `timeline.find`/
 //! `timeline.view_preset`/`timeline.dupes`/`timeline.pacing`/`timeline.overview` (TOOL_TABLES: `TOOLS`).
-//! Track rename/colour/reorder are NOT tools here — the header UI (`ui::timeline::header`) dispatches
+//! Track rename/colour/reorder are NOT tools here - the header UI (`ui::timeline::header`) dispatches
 //! straight to trim-model's `track.set`/`track.move` via the local `Act` enum inside `timeline::show()`
 //! (no `App` reachable there); see the audit note in the plan's Review trail and this PR's body.
 

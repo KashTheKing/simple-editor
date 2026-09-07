@@ -2,13 +2,13 @@
 //! JKL shuttle ladder, Loop In->Out, Play In->Out/Around/To-Out, Fast Review and Step+-10 (ACT_HANDLER:
 //! `act`), plus the play-range auto-stop and audio-scrub-on-paused-playhead-change hook (FRAME_HOOK:
 //! `tick`, filling the pre-placed `playback_tick` hook). All nine actions land on `Player`'s new
-//! rate/loop/step/scrub API (`src/playback.rs`) — nothing here touches the render/audio threads
+//! rate/loop/step/scrub API (`src/playback.rs`) - nothing here touches the render/audio threads
 //! directly.
 
 use super::*;
 
 /// Pure JKL ladder step: 0 (stopped) or a direction switch -> unit rate; same-direction repeat doubles
-/// the magnitude, capped at 8. `rate` is the CURRENT rate (0.0 when not playing — `act` passes that).
+/// the magnitude, capped at 8. `rate` is the CURRENT rate (0.0 when not playing - `act` passes that).
 pub(super) fn shuttle_rate(rate: f64, back: bool) -> f64 {
     let same_dir = (rate < 0.0) == back && rate != 0.0;
     let mag = if same_dir { (rate.abs() * 2.0).min(8.0) } else { 1.0 };
@@ -46,7 +46,7 @@ fn should_scrub(enabled: bool, playing: bool, last_t: f64, cur_t: f64) -> bool {
     enabled && !playing && (cur_t - last_t).abs() > 1e-9
 }
 
-/// Seek to the range's start, force normal forward playback, and arm `app.play_stop_at` — shared by
+/// Seek to the range's start, force normal forward playback, and arm `app.play_stop_at` - shared by
 /// the three Play* actions below and the `playback.play_range` MCP tool.
 pub(super) fn start_play_range(app: &mut App, mode: &str) {
     let (start, stop) = play_range_target(
@@ -173,7 +173,7 @@ mod tests {
     }
 
     /// `App::new` needs a live `eframe::CreationContext` (see tests.rs's doc comment / the identical
-    /// deviation `tools_registry_tests.rs` already documents) — there is no headless `App` to build
+    /// deviation `tools_registry_tests.rs` already documents) - there is no headless `App` to build
     /// `act`/`tick` against, so this exercises the pure logic they're built from directly instead.
     #[test]
     fn play_range_auto_stops() {

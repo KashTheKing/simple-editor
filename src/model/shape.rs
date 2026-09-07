@@ -188,7 +188,7 @@ pub struct PathAsset {
 }
 
 /// Turn a recorded path into X/Y keyframes spanning `duration` seconds. The recording's own timing is
-/// kept when it has any (the replay keeps its rhythm) and the points are spread evenly otherwise — a
+/// kept when it has any (the replay keeps its rhythm) and the points are spread evenly otherwise - a
 /// polygon has no clock. Key times are always strictly increasing: a still mouse records several points
 /// at one instant, and two keys at the same time would swallow each other (`Animated::key_index_at`).
 pub fn path_to_keys(points: &[(f32, f32, f32)], duration: f64) -> (Animated, Animated) {

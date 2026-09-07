@@ -1,5 +1,5 @@
 //! ---- ws:transcript-captions ----
-//! Text-to-speech through Windows' own System.Speech (SAPI) via a powershell shell-out — no crate, no
+//! Text-to-speech through Windows' own System.Speech (SAPI) via a powershell shell-out - no crate, no
 //! bundled voices: `voices()` lists whatever the OS has installed (OS-tier voices, not neural ones),
 //! `speak_to_wav` writes a WAV the app then imports as a linked asset. Same `export::spawn_job` /
 //! `Progress` shape as `transcribe::download_model`, so the UI shows it like any other job.
@@ -16,7 +16,7 @@ fn ps_quote(s: &str) -> String {
 }
 
 /// The script `speak_to_wav` runs: load System.Speech, pick `voice` (when given), synthesize `text`
-/// straight into `out`. Pure — see `tts_speak_builds_expected_powershell_command`.
+/// straight into `out`. Pure - see `tts_speak_builds_expected_powershell_command`.
 pub fn script(text: &str, voice: Option<&str>, out: &Path) -> String {
     let mut s = String::from(
         "Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; ",
@@ -68,7 +68,7 @@ pub fn speak_to_wav(text: &str, voice: Option<&str>, out: &Path) -> Arc<Progress
     })
 }
 
-/// Installed SAPI voice names, queried once per process (about a second of powershell) — only ever
+/// Installed SAPI voice names, queried once per process (about a second of powershell) - only ever
 /// called when the Speech panel is first opened, never at startup. Empty when powershell or
 /// System.Speech is unavailable; the combo then offers just "(default)".
 pub fn voices() -> &'static [String] {

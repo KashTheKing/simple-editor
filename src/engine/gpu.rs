@@ -4,7 +4,7 @@
 //! effect is a fragment shader here; the CPU path (engine/effects.rs) keeps the older, cheap effects so
 //! the app still runs (degraded) when no GL context exists.
 //!
-//! Threading: GL belongs to the thread that owns the context — the UI thread. So:
+//! Threading: GL belongs to the thread that owns the context - the UI thread. So:
 //!   * preview  → `render_to_texture` during `App::update`, painted straight into the preview pane
 //!                (no CPU readback at all).
 //!   * export   → the export thread posts `RenderRequest`s; the UI thread serves them with `render_frame`
@@ -17,7 +17,7 @@
 //! All textures are RGBA8 with straight alpha, matching `media::Frame`.
 //!
 //! What the caller owes us (`LayerSet`): one decoded frame per visual clip that is on screen at `t`,
-//! keyed by clip id — including both clips of a transition (they are rendered virtually extended past
+//! keyed by clip id - including both clips of a transition (they are rendered virtually extended past
 //! their own bounds), the rendered bitmap of a `Text`/`Shape` clip, the rendered canvas of a nested
 //! `Sequence` clip, and, under `LayerSet::SUBTITLES`, the subtitle bitmap. Anything missing is skipped.
 //! Footage is placed from its asset's native size, so any decode size works; text/shape/subtitle
@@ -48,7 +48,7 @@ pub struct Target {
 #[derive(Default)]
 pub struct Programs {
     map: HashMap<u64, Prog>,
-    /// Keys whose GLSL failed — never retried (and the first log is kept for the UI).
+    /// Keys whose GLSL failed - never retried (and the first log is kept for the UI).
     failed: HashMap<u64, String>,
 }
 
@@ -128,9 +128,9 @@ vec4 effect(vec4 src, vec2 uv) {
 }
 "#;
 /// The `BackgroundMode::Checkerboard` preview/export canvas fill: a fixed 2-tone, 16px-tile pattern in
-/// canvas pixels (`u_res` here is the canvas size, not a layer's — `clear_checker` sets it that way).
+/// canvas pixels (`u_res` here is the canvas size, not a layer's - `clear_checker` sets it that way).
 /// `src`/`tex` are unused (there is nothing under the canvas yet, this runs where `clear()` would).
-// ponytail: fixed tile size / two greys, not user-configurable — promote to real params if a
+// ponytail: fixed tile size / two greys, not user-configurable - promote to real params if a
 // "transparency grid" setting is ever wanted; the shader is already the extension point.
 const CHECKER_BODY: &str = r#"
 vec4 effect(vec4 src, vec2 uv) {
@@ -193,7 +193,7 @@ impl Pool {
     fn put(&mut self, t: Target) {
         self.live = self.live.saturating_sub(1);
         self.free.push(t);
-        // ponytail: FIFO eviction, not true LRU — the oldest entry is the stale size, and resize
+        // ponytail: FIFO eviction, not true LRU - the oldest entry is the stale size, and resize
         // churn is the only thing that grows this. Sort by last use if a real workload thrashes.
         let px = |t: &Target| t.w as usize * t.h as usize;
         let mut total: usize = self.free.iter().map(px).sum();
@@ -223,11 +223,11 @@ pub struct GpuRenderer {
     blank: glow::Texture,
     /// Targets handed to the caller; recycled at the start of the next frame.
     loaned: Vec<Target>,
-    /// What `NodeKind::Text` rasterises with — the app hands over the same one the player and export
+    /// What `NodeKind::Text` rasterises with - the app hands over the same one the player and export
     /// use, so fonts and the glyph cache are shared. None = Text nodes render nothing.
     pub text: Option<Arc<std::sync::Mutex<crate::engine::text::TextRasterizer>>>,
     // ---- ws:color-engine ----
-    /// `TEXTURE_3D` LUT uploads, keyed by `Effect.lut` path (no mtime invalidation — see engine::lut).
+    /// `TEXTURE_3D` LUT uploads, keyed by `Effect.lut` path (no mtime invalidation - see engine::lut).
     lut_textures: HashMap<String, glow::Texture>,
     /// Opt-in gate for `frame_stats`'s readback (default off, so an idle preview never pays for it).
     stats_wanted: bool,
@@ -237,7 +237,7 @@ pub struct GpuRenderer {
 }
 
 impl GpuRenderer {
-    /// Compile the shader set. Err (with the GLSL log) when the driver rejects something — the caller
+    /// Compile the shader set. Err (with the GLSL log) when the driver rejects something - the caller
     /// falls back to the CPU compositor and shows the message once.
     pub fn new(gl: Arc<glow::Context>) -> Result<Self, String> {
         unsafe {
@@ -407,7 +407,7 @@ impl GpuRenderer {
         // ---- ws:color-engine ----
         // Guarded stats readback: ONLY here (the live-preview path App::update actually calls), never
         // render_to_texture (dead code) or the shared render_canvas caller render_frame uses (export /
-        // render.frame / thumbnails) — export speed must never pay for a readback nobody there asked for.
+        // render.frame / thumbnails) - export speed must never pay for a readback nobody there asked for.
         if let Some(canvas) = &canvas {
             self.maybe_readback_stats(canvas, t);
         }
@@ -531,7 +531,7 @@ impl GpuRenderer {
     }
 
     // ---- ws:color-engine ----
-    /// Opt in/out of `frame_stats`'s per-frame readback — off by default, so the idle preview never
+    /// Opt in/out of `frame_stats`'s per-frame readback - off by default, so the idle preview never
     /// pays a `glReadPixels` it did not ask for.
     pub fn set_stats_wanted(&mut self, on: bool) {
         self.stats_wanted = on;
@@ -748,7 +748,7 @@ impl GpuRenderer {
 
     /// Look up (or create + upload) the `TEXTURE_3D` for a `.cube` path, plus the LUT's size (for the
     /// shader's edge-texel-centring maths). `None` when the file fails to load/parse or GL rejects the
-    /// upload — the caller then leaves the effect at its GPU identity (the shader still runs but samples
+    /// upload - the caller then leaves the effect at its GPU identity (the shader still runs but samples
     /// a stale/blank binding harmlessly; the CPU path's own `lut::load` is what actually gates the
     /// visible effect off when a LUT is unusable).
     fn lut_texture(&mut self, path: &str) -> Option<(glow::Texture, u32)> {
@@ -899,7 +899,7 @@ impl GpuRenderer {
     }
 
     /// The neighbouring frames a `needs_motion` effect wants: (prev, next, how many are real).
-    /// `LayerSet::motion` carries whatever the decoder managed to produce — 0, 1 or 2 samples.
+    /// `LayerSet::motion` carries whatever the decoder managed to produce - 0, 1 or 2 samples.
     fn motion_texs(&mut self, id: Id, layers: &LayerSet) -> (glow::Texture, glow::Texture, f32) {
         let (mut before, mut after) = (None, None);
         let (mut bo, mut ao) = (0.0f64, 0.0f64);
@@ -947,7 +947,7 @@ impl GpuRenderer {
         let shape = match mask.shape {
             MaskShape::Rect => 0,
             MaskShape::Ellipse => 1,
-            // ponytail: Path is rasterised as a polygon through its points — the editor densifies
+            // ponytail: Path is rasterised as a polygon through its points - the editor densifies
             // curves, so a real bezier SDF only matters for very sparse paths.
             MaskShape::Polygon | MaskShape::Path => 2,
         };
@@ -1042,7 +1042,7 @@ impl GpuRenderer {
     }
 
     /// Both sides of a transition, per kind (mirrors `compose::render_transition`). Edge transitions
-    /// have one side missing (In: no left, Out: no right): that side is nothing — the black canvas.
+    /// have one side missing (In: no left, Out: no right): that side is nothing - the black canvas.
     #[allow(clippy::too_many_arguments)]
     fn draw_transition(
         &mut self,
@@ -1238,7 +1238,7 @@ impl GpuRenderer {
 
         let tex = self.upload(clip.id, frame);
         let lsize = (frame.width, frame.height);
-        // effect scale: layer px per project px (matches compose::apply_effects' img_scale — footage
+        // effect scale: layer px per project px (matches compose::apply_effects' img_scale - footage
         // is decoded at roughly the placed size, text/shape bitmaps arrive at canvas scale already)
         let img_scale = if contain { s * (lsize.0 as f32 / p.w.max(1e-3)) } else { s };
         let processed = self.run_chain(project, clip, t, project.fps, layers, tex, lsize, img_scale);
@@ -1265,14 +1265,14 @@ impl GpuRenderer {
     }
 
     /// The clip's effect chain (node graph when it has one, else the linear stack, master (Asset)
-    /// effects prepended via `effects_for` — see its doc comment). None = unchanged.
+    /// effects prepended via `effects_for` - see its doc comment). None = unchanged.
     ///
-    /// deviation (see PR body): the node-graph branch does NOT run master effects — a node graph fully
+    /// deviation (see PR body): the node-graph branch does NOT run master effects - a node graph fully
     /// replaces the clip's own effect stack (the entire point of switching to one), and threading
     /// `effects_for`'s prepend through `eval_graph_on`'s per-node dispatch as well would touch its own
     /// GPU-resource-lifetime bookkeeping for a capability (`Asset.effects` on a node-graph clip) nothing
     /// in this issue's manual-test checklist exercises. `eval_graph_on`/`eval_graph` are left unchanged
-    /// (unlike the plan's original text, which asked for a `project` param there too) — `eval_graph` has
+    /// (unlike the plan's original text, which asked for a `project` param there too) - `eval_graph` has
     /// no callers anywhere in the crate besides its own definition (confirmed dead code, same status as
     /// `render_to_texture`), so there is nothing to thread it *to*.
     #[allow(clippy::too_many_arguments)]
@@ -1412,7 +1412,7 @@ impl GpuRenderer {
                             None => self.copy_to(src, size),
                         }
                     }
-                    // Blend / Combine / Merge are all "b onto a" — mode and amount are the only difference
+                    // Blend / Combine / Merge are all "b onto a" - mode and amount are the only difference
                     NodeKind::Blend { .. } | NodeKind::Combine { .. } | NodeKind::Merge => {
                         let (mode, amount) = match &node.kind {
                             NodeKind::Blend { mode, opacity } => (*mode, opacity.at(lt)),
@@ -1473,7 +1473,7 @@ impl GpuRenderer {
     }
 
     /// A Text node: expand the format, rasterise it (shared `TextRasterizer`) and centre it on an
-    /// otherwise transparent canvas. A counter re-rasterises every frame — that is what it is for.
+    /// otherwise transparent canvas. A counter re-rasterises every frame - that is what it is for.
     #[allow(clippy::too_many_arguments)]
     fn text_node(
         &mut self,
@@ -1645,7 +1645,7 @@ pub struct FrameStats {
     pub sample: Vec<[u8; 4]>,
 }
 
-/// Pure CPU histogram/percentile/mean pass over an RGBA8 downsample — no GL context needed, so it is
+/// Pure CPU histogram/percentile/mean pass over an RGBA8 downsample - no GL context needed, so it is
 /// directly unit-testable (`compute_stats_percentiles_on_gradient` below).
 pub fn compute_stats(rgba: &[u8], w: u32, h: u32) -> FrameStats {
     let mut hist = [[0u32; 256]; 3];
@@ -1718,7 +1718,7 @@ pub fn scaler_index(s: Scaler) -> i32 {
     }
 }
 
-/// The solid `clear()` colour for a background mode, or `None` for `Checkerboard` — there is no single
+/// The solid `clear()` colour for a background mode, or `None` for `Checkerboard` - there is no single
 /// colour there, so `render_canvas` draws `CHECKER_BODY` (`clear_checker`) instead.
 fn clear_color(mode: BackgroundMode) -> Option<[f32; 4]> {
     match mode {
@@ -1759,7 +1759,7 @@ pub fn placement_quad(p: &crate::engine::compose::Placement, f: f32, z0: f32) ->
 
 /// Homography mapping the unit square (0,0)(1,0)(1,1)(0,1) onto `q` (Heckbert).
 /// ponytail: copied from `compose::square_to_quad` (private there) so the GPU geometry cannot drift
-/// from the CPU one — make that pair `pub(crate)` and this goes away.
+/// from the CPU one - make that pair `pub(crate)` and this goes away.
 pub fn square_to_quad(q: &[[f32; 2]; 4]) -> [[f32; 3]; 3] {
     let [p0, p1, p2, p3] = *q;
     let (dx1, dy1) = (p1[0] - p2[0], p1[1] - p2[1]);
@@ -1809,7 +1809,7 @@ fn column_major(m: &[[f32; 3]; 3]) -> [f32; 9] {
     [m[0][0], m[1][0], m[2][0], m[0][1], m[1][1], m[2][1], m[0][2], m[1][2], m[2][2]]
 }
 
-/// Cache key of a user shader body — shared by `effect_program`, `check_shader` and `shader_error`
+/// Cache key of a user shader body - shared by `effect_program`, `check_shader` and `shader_error`
 /// so the editor reads the very program the renderer would build.
 fn user_key(src: &str) -> u64 {
     USER_BIT | hash_str(src)
@@ -2046,13 +2046,13 @@ mod tests {
             clear_color(BackgroundMode::Custom([10, 20, 30, 128])),
             Some([10.0 / 255.0, 20.0 / 255.0, 30.0 / 255.0, 128.0 / 255.0])
         );
-        // no single colour represents a checker fill — render_canvas takes the clear_checker() path
+        // no single colour represents a checker fill - render_canvas takes the clear_checker() path
         assert_eq!(clear_color(BackgroundMode::Checkerboard), None);
     }
 
     /// No headless GL context exists in `cargo test` (see this module's doc comment: "headless
     /// (`--selftest`, no GL) -> callers fall back to the CPU compositor"), so an actual rendered-pixel
-    /// smoke test isn't available here; this pins the GLSL source shape instead — it must vary by tile
+    /// smoke test isn't available here; this pins the GLSL source shape instead - it must vary by tile
     /// parity (not collapse to one flat colour under `mod()`) and never sample `tex`, since it runs
     /// where a solid `clear()` would, before any layer is composited under it.
     #[test]
@@ -2143,8 +2143,8 @@ mod tests {
     }
 
     /// The GLSL text of every program the renderer can build (the assembly `ensure`/`effect_program`
-    /// do, without a context). Only a driver can answer whether they link — run that from a windowed
-    /// harness — but a duplicate `main()` or a missing `effect()` is visible from here.
+    /// do, without a context). Only a driver can answer whether they link - run that from a windowed
+    /// harness - but a duplicate `main()` or a missing `effect()` is visible from here.
     #[test]
     fn every_program_source_has_exactly_one_entry_point() {
         let mut sources = vec![

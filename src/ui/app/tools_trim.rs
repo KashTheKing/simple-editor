@@ -3,10 +3,10 @@
 //! the ripple/roll/slip/slide/trim_edges family, splice/overwrite/lift/extract, join/duplicate/
 //! unnest/replace/magnetic_move, and the keyboard-trim `timeline.edit_point`/`timeline.keyframe_nav`
 //! UI-state tools. `timeline.splice`/`overwrite`/`lift`/`extract`/`replace` are the canonical
-//! registrations for these names project-wide (audit fix 3/4 in the plan) — source-monitor's
+//! registrations for these names project-wide (audit fix 3/4 in the plan) - source-monitor's
 //! wave-2 three-point-edit UI must call the underlying `Project::` fns directly, not re-register
 //! them. Every `Mutate` row here relies on `App::handle_tool`/`run_script`'s existing generic
-//! snapshot-before/push-undo-iff-changed wrapper (mcp_exec.rs) — nothing below pushes undo itself.
+//! snapshot-before/push-undo-iff-changed wrapper (mcp_exec.rs) - nothing below pushes undo itself.
 
 use super::tools_helpers::*;
 use super::*;
@@ -317,12 +317,12 @@ macro_rules! row {
 }
 
 pub const TOOLS: &[ToolDef] = &[
-    row!("track.set", ToolKind::Mutate, "Edit one track's flags/name/colour. Colour is [r,g,b] or null (canonical form — no competing colour-index field/tool).", &["index:integer:true:", "locked:boolean:false:", "ripple:boolean:false:", "magnetic:boolean:false:", "name:string:false:", "color:array:false:[r,g,b] or null"]),
+    row!("track.set", ToolKind::Mutate, "Edit one track's flags/name/colour. Colour is [r,g,b] or null (canonical form - no competing colour-index field/tool).", &["index:integer:true:", "locked:boolean:false:", "ripple:boolean:false:", "magnetic:boolean:false:", "name:string:false:", "color:array:false:[r,g,b] or null"]),
     row!("track.move", ToolKind::Mutate, "Reorder a track one slot up/down within its own kind (video tracks / audio tracks stay contiguous).", &["index:integer:true:", "up:boolean:true:"]),
     row!("track.list", ToolKind::Read, "Every track: index, kind, name, locked, ripple, magnetic, color, clip count.", &[]),
     row!("timeline.shift_time", ToolKind::Mutate, "Shift markers (matching the current sequence scope), main-timeline subtitle cues, and in/out at/after `from` by `dt` seconds.", &["from:number:true:", "dt:number:true:", "tracks:array:false:default ripple_tracks()"]),
-    row!("timeline.close_gap", ToolKind::Mutate, "Close the gap under (track, t) — ripple tracks only.", &["track:integer:true:", "t:number:true:"]),
-    row!("timeline.mark", ToolKind::Mutate, "Set in/out to a clip's [start,end) — defaults to the clip under the playhead. Returns {in,out}.", &["clip_id:integer:false:default: clip under playhead"]),
+    row!("timeline.close_gap", ToolKind::Mutate, "Close the gap under (track, t) - ripple tracks only.", &["track:integer:true:", "t:number:true:"]),
+    row!("timeline.mark", ToolKind::Mutate, "Set in/out to a clip's [start,end) - defaults to the clip under the playhead. Returns {in,out}.", &["clip_id:integer:false:default: clip under playhead"]),
     row!("timeline.in_out", ToolKind::Read, "Current in_point/out_point (null if unset).", &[]),
     row!("timeline.ripple_trim", ToolKind::Mutate, "Trim one edge of a clip; ripple=true shifts downstream ripple-tracked clips (end edge) or just carries markers/cues (start edge).", &["clip_id:integer:true:", "start:boolean:true:trim the start edge?", "edge:number:true:new edge time", "ripple:boolean:false:"]),
     row!("timeline.roll", ToolKind::Mutate, "Move a shared cut; total length of the two clips is unchanged.", &["right_clip_id:integer:true:", "cut:number:true:"]),
@@ -330,14 +330,14 @@ pub const TOOLS: &[ToolDef] = &[
     row!("timeline.slide", ToolKind::Mutate, "Move a clip; its immediate neighbours absorb the change.", &["clip_id:integer:true:", "dt:number:true:"]),
     row!("timeline.trim_edges", ToolKind::Mutate, "Asymmetric multi-roller trim: every listed edge moves by the same dt, all-or-nothing.", &["edges:array:true:[[clip_id,is_start], ...]", "dt:number:true:", "ripple:boolean:false:lifts the same-call collision guard"]),
     row!("timeline.extend", ToolKind::Mutate, "Extend an edit point to a time (rolls a shared cut, ripple-trims a single side).", &["track:integer:true:", "t:number:true:the edit point's boundary time", "side:string:true:Left|Right|Both", "to:number:true:"]),
-    row!("timeline.splice", ToolKind::Mutate, "Insert edit: ripple-opens space then places the asset. Canonical registration — source-monitor reuses this, does not re-register.", &["asset_id:integer:true:", "at:number:true:", "track:integer:false:", "in:number:false:source seconds", "out:number:false:"]),
-    row!("timeline.overwrite", ToolKind::Mutate, "Overwrite edit: no ripple. Canonical — source-monitor reuses this, does not re-register.", &["asset_id:integer:true:", "at:number:true:", "track:integer:false:", "in:number:false:", "out:number:false:"]),
-    row!("timeline.lift", ToolKind::Mutate, "Remove a range, leaving a gap. Canonical — source-monitor reuses this, does not re-register.", &["a:number:true:", "b:number:true:", "tracks:array:false:default every track"]),
-    row!("timeline.extract", ToolKind::Mutate, "Remove a range and close the gap (ripple tracks by default). Canonical — source-monitor reuses this, does not re-register.", &["a:number:true:", "b:number:true:", "tracks:array:false:default ripple_tracks()"]),
+    row!("timeline.splice", ToolKind::Mutate, "Insert edit: ripple-opens space then places the asset. Canonical registration - source-monitor reuses this, does not re-register.", &["asset_id:integer:true:", "at:number:true:", "track:integer:false:", "in:number:false:source seconds", "out:number:false:"]),
+    row!("timeline.overwrite", ToolKind::Mutate, "Overwrite edit: no ripple. Canonical - source-monitor reuses this, does not re-register.", &["asset_id:integer:true:", "at:number:true:", "track:integer:false:", "in:number:false:", "out:number:false:"]),
+    row!("timeline.lift", ToolKind::Mutate, "Remove a range, leaving a gap. Canonical - source-monitor reuses this, does not re-register.", &["a:number:true:", "b:number:true:", "tracks:array:false:default every track"]),
+    row!("timeline.extract", ToolKind::Mutate, "Remove a range and close the gap (ripple tracks by default). Canonical - source-monitor reuses this, does not re-register.", &["a:number:true:", "b:number:true:", "tracks:array:false:default ripple_tracks()"]),
     row!("timeline.join", ToolKind::Mutate, "Merge a clip with its right neighbour if contiguous/same asset.", &["clip_id:integer:true:the left clip"]),
     row!("timeline.duplicate", ToolKind::Mutate, "Duplicate clips (default: selection) onto a free track each.", &["clip_ids:array:false:default: selection"]),
     row!("timeline.unnest", ToolKind::Mutate, "Flatten a Sequence clip back onto the timeline at its original positions.", &["clip_id:integer:true:"]),
-    row!("timeline.replace", ToolKind::Mutate, "Swap a clip's asset, keeping duration/effects/transform. Canonical name (supersedes timeline.replace_clip) — source-monitor calls Project::replace_clip directly instead of a second tool.", &["clip_id:integer:true:", "asset_id:integer:true:"]),
+    row!("timeline.replace", ToolKind::Mutate, "Swap a clip's asset, keeping duration/effects/transform. Canonical name (supersedes timeline.replace_clip) - source-monitor calls Project::replace_clip directly instead of a second tool.", &["clip_id:integer:true:", "asset_id:integer:true:"]),
     row!("timeline.magnetic_move", ToolKind::Mutate, "Move clips; a blocked move onto a magnetic track opens space first instead of refusing.", &["clip_ids:array:true:", "dt:number:true:", "dtrack:integer:false:"]),
     row!("timeline.select_forward", ToolKind::Read, "Clip ids from a time forward, or backward.", &["t:number:false:default playhead", "track:integer:false:", "backward:boolean:false:"]),
     row!("timeline.clips_at", ToolKind::Read, "Clip ids covering a time.", &["t:number:false:default playhead"]),

@@ -1,6 +1,6 @@
 //! Proxy media: background all-intra low-res transcodes of imported video, played instead of the
 //! originals in the preview. Every proxy frame is a keyframe (`-g 1`), so seeks, reverse scrubs and
-//! clip-boundary cold opens decode without reference chains — the reason big NLEs feel instant.
+//! clip-boundary cold opens decode without reference chains - the reason big NLEs feel instant.
 //! Proxies live in the cache dir, named by a hash of (source path, mtime, height): a re-exported
 //! source gets a fresh proxy automatically and stale files are just never referenced again.
 //! Export and full-quality one-shot renders never see proxies (their DecoderPools carry no map).
@@ -18,15 +18,15 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 
 /// The proxy build currently running: (source path, fraction 0..1). Owned entirely by the build job
 /// (set on entry, fraction updated from ffmpeg progress, cleared by a drop guard so an error or
-/// panic can never leave a stuck "building" badge). Read from UI leaf code — library rows, the
-/// inspector's Asset block, the preview badge — which has no channel to `App` state; same shape as
+/// panic can never leave a stuck "building" badge). Read from UI leaf code - library rows, the
+/// inspector's Asset block, the preview badge - which has no channel to `App` state; same shape as
 /// `engine::import::is_probing`.
 static BUILDING: Mutex<Option<(String, f32)>> = Mutex::new(None);
 /// Source paths (lowercased) whose proxy is built and in use, as last pushed by `App::sync_proxies`
-/// — pushed in the same breath as the player's proxy map, so badges and playback agree.
+/// - pushed in the same breath as the player's proxy map, so badges and playback agree.
 static READY: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-/// What the proxy pipeline is doing for one asset — drives the per-asset badges.
+/// What the proxy pipeline is doing for one asset - drives the per-asset badges.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum ProxyStatus {
     /// Not video, already at/below proxy height, zero-length, or proxies are off.
@@ -44,7 +44,7 @@ pub fn building() -> Option<(String, f32)> {
 }
 
 /// `App::sync_proxies` publishes which sources currently play from a proxy (call sites: the normal
-/// scan push and the regenerate path — both, or badges lie for up to one 2 s scan).
+/// scan push and the regenerate path - both, or badges lie for up to one 2 s scan).
 pub fn set_ready(sources: Vec<String>) {
     *lock(&READY) = sources.into_iter().map(|s| s.to_ascii_lowercase()).collect();
 }
@@ -111,7 +111,7 @@ pub fn proxy_path(src: &str, height: u32) -> PathBuf {
 }
 
 /// Transcode `src` into its proxy file on a background thread (temp + rename; the destination never
-/// exists half-written). Video only — audio always plays from the original.
+/// exists half-written). Video only - audio always plays from the original.
 pub fn generate(src: String, dst: PathBuf, height: u32) -> Arc<Progress> {
     export::spawn_job("proxy", move |prog| {
         let _badge = BuildingGuard::set(&src); // set + cleared inside the job: no startup race
@@ -158,7 +158,7 @@ fn run(src: &str, dst: &PathBuf, height: u32, prog: &Progress) -> Result<(), Str
 mod tests {
     use super::*;
 
-    /// One test for the whole ladder (BUILDING/READY are process-global statics — keeping every
+    /// One test for the whole ladder (BUILDING/READY are process-global statics - keeping every
     /// assertion in one test avoids parallel-test interference on them).
     #[test]
     fn status_classifies_the_pipeline() {

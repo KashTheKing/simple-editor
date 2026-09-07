@@ -3,7 +3,7 @@
 //! API): `ask`/`ask_app` stage a `Pending` window into a thread-local queue (so a leaf module like
 //! `library.rs`/`subtitles_ui.rs`, which never sees `&mut App`, can still request one), and the `draw`
 //! WINDOW_DRAWER drains that queue into `App.confirm_active` and paints each pending item as a small,
-//! non-modal `egui::Window` — nothing here ever blocks the frame the way the native dialog's blocking
+//! non-modal `egui::Window` - nothing here ever blocks the frame the way the native dialog's blocking
 //! `.show()` call used to.
 //!
 //! Three shapes, one queue:
@@ -12,7 +12,7 @@
 //!    prompt.
 //!  - `ask_app(title, body, on_yes)`: Yes runs the closure, No does nothing. Used by the plain "are you
 //!    sure" sites (drag-drop open, import-timeline accept).
-//!  - `ask_discard` (pub(crate), only `confirm_discard_then` builds one): Save / Discard / Cancel —
+//!  - `ask_discard` (pub(crate), only `confirm_discard_then` builds one): Save / Discard / Cancel -
 //!    Save calls `App::save_project` first and only runs the continuation if it succeeded (matches the
 //!    old blocking dialog's semantics exactly), Discard runs it directly, Cancel does nothing.
 
@@ -21,10 +21,10 @@ use crate::ui::app::App;
 use eframe::egui;
 use std::cell::RefCell;
 
-/// What `ask`'s Yes button does. No variant for "Remove unused assets" — that path is instant +
+/// What `ask`'s Yes button does. No variant for "Remove unused assets" - that path is instant +
 /// Undo-toast, never confirmed (see library.rs). `DeleteTemplate`/`ClearSubtitles`/`Custom` have no
 /// production caller yet this wave (no "Delete template" button exists in library.rs today, verified
-/// by grep — see the PR body's deviations; "Clear all" subtitles went instant+Undo-toast instead, per
+/// by grep - see the PR body's deviations; "Clear all" subtitles went instant+Undo-toast instead, per
 /// the plan's own file-level spec) but are kept, tested and resolvable so a future button/caller is a
 /// one-line addition, and because `confirm_resolves_named_action` is a required test for all four.
 #[allow(dead_code)]
@@ -32,7 +32,7 @@ pub enum ConfirmAction {
     ClearRecent,
     DeleteTemplate(usize),
     ClearSubtitles,
-    /// `(start, end, text)` — the same shape `engine::subtitles::parse` produces; ids are allocated on
+    /// `(start, end, text)` - the same shape `engine::subtitles::parse` produces; ids are allocated on
     /// resolution via `Project::add_cue` (see `apply_to_project`), not carried here.
     ReplaceSubtitles(Vec<(f64, f64, String)>),
     Custom(Box<dyn FnOnce(&mut App)>),
@@ -73,7 +73,7 @@ pub(crate) fn ask_discard(body: impl Into<String>, on_yes: impl FnOnce(&mut App)
 }
 
 /// WINDOW_DRAWER: drains anything staged this frame into `app.confirm_active`, then paints one
-/// non-modal window per pending item. Nothing here waits on input — a window left unanswered simply
+/// non-modal window per pending item. Nothing here waits on input - a window left unanswered simply
 /// stays in the list and is repainted (input-driven, like every other egui window) until answered.
 pub(crate) fn draw(app: &mut App, ctx: &egui::Context) {
     let staged = STAGED.with(|s| std::mem::take(&mut *s.borrow_mut()));
@@ -138,7 +138,7 @@ pub(crate) fn draw(app: &mut App, ctx: &egui::Context) {
     app.confirm_active = pending;
 }
 
-/// The pure half of `App::resolve_confirm` for the two `Project`-mutating actions — split out so
+/// The pure half of `App::resolve_confirm` for the two `Project`-mutating actions - split out so
 /// `confirm_resolves_named_action` can exercise the actual mutation without a live `App` (see
 /// `tools_registry_tests.rs`'s doc comment for why one isn't buildable in `#[test]`). Returns whether
 /// `project` actually changed (both listed actions always do; `Custom`/settings actions never do).
@@ -156,7 +156,7 @@ pub(crate) fn apply_to_project(project: &mut crate::model::Project, action: &Con
     }
 }
 
-/// The pure half of `App::resolve_confirm` for the two `Settings`-mutating actions — see
+/// The pure half of `App::resolve_confirm` for the two `Settings`-mutating actions - see
 /// `apply_to_project`'s doc comment for why this is split out.
 pub(crate) fn apply_to_settings(settings: &mut Settings, action: &ConfirmAction) -> bool {
     match action {
@@ -182,7 +182,7 @@ mod tests {
 
     #[test]
     fn confirm_never_blocks_frame() {
-        // ask()/ask_app() only stage into the thread-local queue — proven by the queue holding exactly
+        // ask()/ask_app() only stage into the thread-local queue - proven by the queue holding exactly
         // what was staged; nothing here calls out to rfd or otherwise waits on the OS.
         STAGED.with(|s| s.borrow_mut().clear()); // isolate from any other test in this thread
         ask("Clear recent", "Remove every recent file?", ConfirmAction::ClearRecent);
@@ -228,7 +228,7 @@ mod tests {
     #[test]
     fn assert_no_idle_repaint_confirm_window_closed() {
         STAGED.with(|s| s.borrow_mut().clear());
-        // with nothing staged, `draw`'s early-return path never reaches a repaint request — checked by
+        // with nothing staged, `draw`'s early-return path never reaches a repaint request - checked by
         // confirming the empty branch's precondition holds (no live App to pass to `draw` itself, per
         // the documented limitation above).
         let staged = STAGED.with(|s| std::mem::take(&mut *s.borrow_mut()));

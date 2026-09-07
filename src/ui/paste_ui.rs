@@ -29,7 +29,7 @@ pub fn show(ctx: &egui::Context, state: &mut PasteUi, source_name: &str, targets
     let mut open = true;
     egui::Window::new("Paste Attributes").open(&mut open).resizable(false).show(ctx, |ui| {
         if source_name.is_empty() {
-            ui.weak("Nothing copied — use Copy Attributes (Ctrl+Alt+C) first");
+            ui.weak("Nothing copied - use Copy Attributes (Ctrl+Alt+C) first");
         } else {
             ui.weak(format!("from '{source_name}'"));
         }

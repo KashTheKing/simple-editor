@@ -72,14 +72,14 @@ macro_rules! row {
 }
 
 pub const TOOLS: &[ToolDef] = &[
-    // media.import self-manages its own undo push (`App::import_files`) — wrapping it in the generic
+    // media.import self-manages its own undo push (`App::import_files`) - wrapping it in the generic
     // Mutate snapshot/rollback would double-push, so it stays Read here just as it was absent from the
     // old hand-kept mutating-tool name list.
     row!("media.import", ToolKind::Read, "Import media files into the library; returns asset ids.", &["paths:array:true:absolute paths"]),
     row!("media.list", ToolKind::Read, "Library assets (id, path, kind, duration, size, tags, label, folder, description, used).", &[]),
     row!("media.set", ToolKind::Mutate, "Edit asset metadata.", &["id:integer:true:", "description:string:false:", "tags:array:false:strings", "label:integer:false:0..8", "folder:string:false:"]),
     // Job-kind: never routed through `dispatch` (they don't mutate the project directly, they write a
-    // file) — `App::handle_tool` starts the job via `start_tool_job` and replies when it finishes.
+    // file) - `App::handle_tool` starts the job via `start_tool_job` and replies when it finishes.
     ToolDef {
         name: "media.convert",
         desc: "Convert a file with ffmpeg (gif/mp4/mov/mkv/webm/mp3/wav…); returns the output path when done (blocks up to 10 min).",
@@ -148,7 +148,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "media.consolidate",
-        desc: "Copy every asset from outside dir (default: the project's own folder) into it and repoint the paths — both halves run here, synchronously, as one undo step.",
+        desc: "Copy every asset from outside dir (default: the project's own folder) into it and repoint the paths - both halves run here, synchronously, as one undo step.",
         args: &["dir:string:false:defaults to the project's folder (the project must be saved)"],
         kind: ToolKind::Mutate,
         run: |app, args| {
@@ -252,7 +252,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "library.columns",
-        desc: "Get/set Settings.library_columns — the cells a list row shows after the name, in order.",
+        desc: "Get/set Settings.library_columns - the cells a list row shows after the name, in order.",
         args: &["columns:array:false:omit to just read; each one of kind|duration|fps|size|label|tags|proxy"],
         // Settings, not Project: Ui (a Mutate row would mark the project dirty for a settings change)
         kind: ToolKind::Ui,
@@ -276,9 +276,9 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "media.batch_convert",
-        desc: "Convert every id with the same options (the scripted batch path — the Convert… window stays single-target); starts one job per asset and returns their output paths at once.",
+        desc: "Convert every id with the same options (the scripted batch path - the Convert… window stays single-target); starts one job per asset and returns their output paths at once.",
         args: &["ids:array:true:asset ids", "ext:string:true:target extension", "width:integer:false:", "height:integer:false:", "scaler:string:false:neighbor|bilinear|bicubic|lanczos"],
-        // Read, not Job: one ToolOutcome::Job carries one handle, and this starts N — the app's own
+        // Read, not Job: one ToolOutcome::Job carries one handle, and this starts N - the app's own
         // convert-job poll imports each result; a script polls media.list for them.
         kind: ToolKind::Read,
         run: |app, args| {

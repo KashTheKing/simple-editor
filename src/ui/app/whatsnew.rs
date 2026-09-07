@@ -1,5 +1,5 @@
 //! ---- ws:size-diet ----
-//! Version-gate + the winpos window-rect debounce (FRAME_HOOK: `tick` — the sole call site that turns
+//! Version-gate + the winpos window-rect debounce (FRAME_HOOK: `tick` - the sole call site that turns
 //! `winpos::tick`'s returned wake `Instant` into `app.animate_until(..)`, so every NEW timed-repaint
 //! request this PR adds stays behind that one sanctioned funnel), the non-blocking "What's New" window
 //! (WINDOW_DRAWER: `window`), its `Action::WhatsNew` (ACT_HANDLER: `act`), and two MCP tools:

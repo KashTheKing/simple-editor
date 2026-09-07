@@ -22,7 +22,7 @@ pub(crate) fn row_top(state: &TimelineState, p: &Project, ti: usize) -> Option<f
     None
 }
 
-/// The clip under a drop at screen `pos` / timeline time `t`, with its lane rect — what an effect or a
+/// The clip under a drop at screen `pos` / timeline time `t`, with its lane rect - what an effect or a
 /// transition dragged out of its panel is aimed at (`app.rs` resolves the same clip from the reported
 /// time + track when the drop actually happens).
 pub(super) fn drop_on_clip<'a>(state: &TimelineState, p: &'a Project, pos: Pos2, t: f64) -> Option<(Rect, &'a Clip)> {
@@ -101,7 +101,7 @@ pub(super) fn draw_waveform(
 }
 
 /// Would the inline mini graph have anything to plot? It draws properties with 2+ keys through the
-/// curve editor's plumbing, so this gates the toggle on exactly that — `has_keys` below is true for a
+/// curve editor's plumbing, so this gates the toggle on exactly that - `has_keys` below is true for a
 /// bare mask/shape too and used to open an empty panel.
 pub(super) fn has_curve_keys(c: &Clip) -> bool {
     (0..crate::ui::curves::prop_count(c)).any(|i| crate::ui::curves::prop_ref(c, i).is_some_and(|a| a.keys.len() >= 2))
@@ -129,7 +129,7 @@ pub(super) fn key_range(state: &TimelineState, clip: Id, prop: usize, a: &crate:
 }
 
 /// Same colour cycle as the Curve Editor's per-property lines (`curves::prop_color`, private to that
-/// file) — duplicated here so this view stays self-contained rather than reaching into curves.rs.
+/// file) - duplicated here so this view stays self-contained rather than reaching into curves.rs.
 pub(super) fn mini_prop_color(pal: &Palette, i: usize) -> Color32 {
     let cycle =
         [pal.clip_video, pal.clip_audio, pal.clip_image, pal.clip_text, pal.clip_sequence, pal.waveform, pal.keyframe];
@@ -138,9 +138,9 @@ pub(super) fn mini_prop_color(pal: &Palette, i: usize) -> Color32 {
 
 /// Compact view-only keyframe graph for one clip: one polyline per animated property with 2+ keys, each
 /// normalized to its own auto-range (`curves::y_range`, the same range the value-lane diamonds use),
-/// dots at each key, dropped in a small panel below the clip. Not editable — that's the Curve Editor
+/// dots at each key, dropped in a small panel below the clip. Not editable - that's the Curve Editor
 /// pane (`ui/curves.rs`); this is a lightweight glance, not a replacement for it.
-/// ponytail: doesn't negotiate space with the row(s) below — it just paints on top, clipped to the lanes.
+/// ponytail: doesn't negotiate space with the row(s) below - it just paints on top, clipped to the lanes.
 pub(super) fn draw_mini_graph(p: &egui::Painter, clip: &Clip, rect: Rect, lanes: Rect, pal: &Palette) {
     let panel = Rect::from_min_max(
         pos2(rect.left(), rect.bottom() + 2.0),
@@ -180,16 +180,16 @@ pub(super) fn draw_mini_graph(p: &egui::Painter, clip: &Clip, rect: Rect, lanes:
 /// `ParamSpec` for effect params), so a value-lane drag cannot write past what a `DragValue` allows.
 /// `None` where nothing enforces one: Position X/Y and Rotation are unbounded everywhere, and Volume is
 /// a gain behind a nonlinear dB slider.
-/// ponytail: same property order as curves.rs — move it next to `prop_ref` if a second caller shows up.
+/// ponytail: same property order as curves.rs - move it next to `prop_ref` if a second caller shows up.
 pub(super) fn prop_range(c: &Clip, i: usize) -> Option<(f64, f64)> {
     let nb = if c.is_visual() { 8 } else { 3 };
     if i < nb {
         return match (c.is_visual(), i) {
             (true, 2) => Some((0.01, 20.0)),              // Scale
-            (true, 3) | (true, 4) => Some((0.01, 20.0)),  // Scale X / Scale Y — same clamp as Scale
+            (true, 3) | (true, 4) => Some((0.01, 20.0)),  // Scale X / Scale Y - same clamp as Scale
             (true, 6) => Some((0.0, 1.0)),                // Opacity
             (false, 1) => Some((-1.0, 1.0)),              // Pan
-            (_, _) if i == nb - 1 => Some((0.01, 100.0)), // Speed — same clamp as Clip::set_speed
+            (_, _) if i == nb - 1 => Some((0.01, 100.0)), // Speed - same clamp as Clip::set_speed
             _ => None,
         };
     }
@@ -283,7 +283,7 @@ pub(super) fn marker_hit(
 }
 
 /// Wave colour of an audio clip: the plain palette green while it has no label, otherwise its own
-/// (already computed) body colour pushed to the opposite end of the brightness scale — the body is
+/// (already computed) body colour pushed to the opposite end of the brightness scale - the body is
 /// painted in that colour, so an unshifted wave would be invisible on it.
 pub(super) fn wave_color(body: Color32, label: u8, pal: &Palette) -> Color32 {
     if label == 0 {
@@ -371,7 +371,7 @@ pub(super) fn draw_filmstrip(
 
 // ---- ws:pro-timeline ----
 
-/// Clip ids sharing (asset, src_in..src_out) — duplicate-source groups; singletons excluded. Keyed on
+/// Clip ids sharing (asset, src_in..src_out) - duplicate-source groups; singletons excluded. Keyed on
 /// millisecond-rounded times so float noise from repeated trims doesn't split an otherwise-identical
 /// group. Exposed (not just used by `paint_dupes`) as the `timeline.dupes` MCP tool's own grouping fn.
 pub(crate) fn dupe_groups(p: &Project) -> Vec<Vec<Id>> {
@@ -403,7 +403,7 @@ pub(crate) fn pacing_spans(p: &Project, thr: (f64, f64)) -> Vec<(Id, f64, f64)> 
 }
 
 /// Colour-bar clips sharing a source range with another clip (dupe detection), a thin strip along each
-/// clip's bottom edge — gated by the caller on `detailed` (the same flag waveform/filmstrip painting
+/// clip's bottom edge - gated by the caller on `detailed` (the same flag waveform/filmstrip painting
 /// uses), reusing the label-colour cycle so groups read as distinct without a new palette field.
 pub(super) fn paint_dupes(pp: &egui::Painter, p: &Project, state: &TimelineState, lanes: Rect) {
     for (gi, group) in dupe_groups(p).iter().enumerate() {
@@ -426,7 +426,7 @@ pub(super) fn paint_dupes(pp: &egui::Painter, p: &Project, state: &TimelineState
     }
 }
 
-/// Ruler tint bands under clips outside `thr` (see `pacing_spans`) — the "boring detector".
+/// Ruler tint bands under clips outside `thr` (see `pacing_spans`) - the "boring detector".
 pub(super) fn paint_pacing(
     pp: &egui::Painter,
     p: &Project,
@@ -445,7 +445,7 @@ pub(super) fn paint_pacing(
 }
 
 /// Realtime-safety tint: a red run under seconds carrying an enabled effect/graph not yet covered by a
-/// `ready` pre-render segment — `(from, to, ready, heavy)` from `PreRender::segments_with_heavy`
+/// `ready` pre-render segment - `(from, to, ready, heavy)` from `PreRender::segments_with_heavy`
 /// (export-deliver), already merged, so this is paint only: no merging, no render request/queue. Reuses
 /// `pal.playhead` (already the theme's red) rather than adding a `danger` field to `Palette`.
 pub(super) fn paint_realtime_bar(
@@ -470,7 +470,7 @@ pub(super) fn paint_realtime_bar(
 }
 
 /// Track/bus volume automation: the `Animated` volume curve as a thin line across the header row,
-/// dB-mapped like the audio clip's own volume line — display-only, no drag gesture (the existing
+/// dB-mapped like the audio clip's own volume line - display-only, no drag gesture (the existing
 /// `Gesture::Volume` hit-zone is scoped to the clip body, not the header row).
 pub(super) fn paint_automation(pp: &egui::Painter, track: &crate::model::Track, row: Rect, pal: &Palette) {
     let stroke = Stroke::new(1.0, pal.accent.gamma_multiply(0.7));

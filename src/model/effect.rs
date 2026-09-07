@@ -105,7 +105,7 @@ impl EffectKind {
             Shader => "Custom",
         }
     }
-    /// Effects that make sense on an audio clip, for the catalogue's audio-aware filtering — an audio
+    /// Effects that make sense on an audio clip, for the catalogue's audio-aware filtering - an audio
     /// clip has no pixels, so every current kind (all pixel/GLSL effects) is false here. Exhaustive on
     /// purpose (see `engine::effects::apply`'s tail) so a future audio kind is a compile-time reminder
     /// to flip it on.
@@ -336,7 +336,7 @@ const P_RECDOT: &[ParamSpec] = &[
     ps("Timecode", 1.0, 0.0, 1.0),
     ps("Margin", 40.0, 0.0, 500.0),
 ];
-/// Lift/Gamma/Gain per channel + temperature/tint. 11 of the 12 `PARAM_NAMES` (gpu.rs) slots — a
+/// Lift/Gamma/Gain per channel + temperature/tint. 11 of the 12 `PARAM_NAMES` (gpu.rs) slots - a
 /// separate per-channel Offset (redundant with Lift) is deliberately dropped to fit.
 const P_PRIMARIES: &[ParamSpec] = &[
     ps("Lift R", 0.0, -1.0, 1.0),
@@ -355,7 +355,7 @@ const P_PRIMARIES: &[ParamSpec] = &[
 /// 180 covers the whole hue circle), saturation and luminance bands, edge softness. Defaults are wide
 /// open (Hue Width at its max, Sat/Lum spanning the full 0..1) so a freshly-added Qualifier matches
 /// every pixel (identity, alpha unchanged) instead of keying the frame out until narrowed via
-/// `color.qualifier` or the (later, inspector-gallery) UI — same non-destructive-by-default spirit as
+/// `color.qualifier` or the (later, inspector-gallery) UI - same non-destructive-by-default spirit as
 /// every other effect here.
 const P_QUALIFIER: &[ParamSpec] = &[
     ps("Hue", 120.0, 0.0, 360.0),
@@ -399,7 +399,7 @@ pub const WOBBLE_MOTIONS: [&str; 5] = ["Sine", "Layered", "Cubic", "Triangle", "
 /// Starting point for `EffectKind::Shader`: `tex` = the layer, `uv` = 0..1, `u_time` = clip-local
 /// seconds, `u1..u8` = the eight knobs, `u_res` = layer size in px. Output goes to `out_color`
 /// (straight alpha, same convention as every other effect).
-pub const DEFAULT_SHADER: &str = r#"// custom effect — edit freely
+pub const DEFAULT_SHADER: &str = r#"// custom effect - edit freely
 vec4 effect(vec4 src, vec2 uv) {
     // u1 = amount, u2 = speed
     float wave = sin(uv.y * 40.0 + u_time * max(u2, 0.0) * 6.28318) * u1 * 0.02;

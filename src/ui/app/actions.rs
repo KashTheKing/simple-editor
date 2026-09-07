@@ -5,7 +5,7 @@ impl App {
     pub(super) fn act(&mut self, a: Action) {
         use Action::*;
         // single source of truth for the centralized guards (export running, empty timeline, no
-        // copied attributes) — mirrors what ui.action already does via App::enabled, so every
+        // copied attributes) - mirrors what ui.action already does via App::enabled, so every
         // dispatch path (hotkey, menu, MCP) gets the identical toasted behavior.
         if let Err(reason) = self.enabled(a) {
             self.toast(reason);
@@ -149,7 +149,7 @@ impl App {
                         self.project.remove_transition(tid);
                     }
                     // ws:timeline-trim-gestures: magnetic-track-aware (a clip on a magnetic track takes
-                    // its own gap with it) — plain delete_clips has no Track.magnetic concept.
+                    // its own gap with it) - plain delete_clips has no Track.magnetic concept.
                     crate::ui::timeline::delete_clips_magnetic(&mut self.project, &ids, a == RippleDelete);
                     self.selection.clear();
                     self.push_undo_labeled(before, if a == RippleDelete { "Ripple delete" } else { "Delete" });
@@ -201,7 +201,7 @@ impl App {
                         self.seek(0.0);
                     } else {
                         // ws:trim-model: ripple_delete_range/ripple_open now take an explicit track
-                        // scope (mechanical signature-follow, not a behaviour change) — ripple_tracks()
+                        // scope (mechanical signature-follow, not a behaviour change) - ripple_tracks()
                         // reproduces the old all-track behaviour on any project where every track is
                         // still ripple==true (today's default), and correctly stops shifting
                         // position-locked secondary tracks once one exists.
@@ -324,7 +324,7 @@ impl App {
                         let snap = self.project.to_json();
                         if a == PasteInsert {
                             // ripple: everything at or after the playhead slides right by the paste's span
-                            // (ws:trim-model: ripple_open now takes an explicit track scope — see the
+                            // (ws:trim-model: ripple_open now takes an explicit track scope - see the
                             // RippleDeleteInOut arm above for why ripple_tracks() is the right default)
                             let span = clips.iter().map(|c| c.start + c.duration).fold(0.0_f64, f64::max);
                             let tracks = self.project.ripple_tracks();
@@ -346,13 +346,13 @@ impl App {
                             self.after_edit();
                         }
                     }
-                    None => self.toast("Nothing copied yet — Ctrl+C copies the selected clips"),
+                    None => self.toast("Nothing copied yet - Ctrl+C copies the selected clips"),
                 }
             }
             AddMarker => {
                 let t = self.playhead;
                 // per the ask, the hotkey attaches the marker to the selected clip when the playhead
-                // is over one — otherwise it stays a plain timeline marker (same as the panel buttons)
+                // is over one - otherwise it stays a plain timeline marker (same as the panel buttons)
                 let on_clip = self
                     .selection
                     .iter()
@@ -406,14 +406,14 @@ impl App {
                     self.layout_dirty = true;
                     self.after_edit();
                 } else if self.project.clip(id).is_some_and(|c| !c.is_visual()) {
-                    self.toast("A mask shapes pixels — an audio clip has none");
+                    self.toast("A mask shapes pixels - an audio clip has none");
                 } else {
                     self.toast("That clip already has a mask");
                 }
             }
             ExportFrame => {
                 if self.timeline_is_empty() {
-                    self.toast("Timeline is empty — nothing to export");
+                    self.toast("Timeline is empty - nothing to export");
                 } else if !self.ffmpeg_missing() {
                     self.frame_ui.open = true;
                 }
@@ -501,7 +501,7 @@ impl App {
                             push_undo_json(&mut self.undo, &mut self.redo, snap);
                             self.selection.clear();
                             self.after_edit();
-                            self.toast(format!("Nested into '{name}' — double-click / open it to edit inside"));
+                            self.toast(format!("Nested into '{name}' - double-click / open it to edit inside"));
                         }
                         None => self.toast("Nothing to nest"),
                     }
@@ -587,7 +587,7 @@ impl App {
             // ---- ws:registries-schema-hooks ----
             // Every current Action variant has an arm above (hence `unreachable_patterns` today); this
             // exists so a future workstream's new variant compiles unhandled-by-default instead of
-            // forcing an edit to every arm above — ACT_HANDLERS (tried first, see the loop above) is
+            // forcing an edit to every arm above - ACT_HANDLERS (tried first, see the loop above) is
             // where that variant's real behavior goes.
             #[allow(unreachable_patterns)]
             _ => {}
@@ -817,7 +817,7 @@ impl App {
             match self.project.unlink_graph(id) {
                 Ok(n) => {
                     self.after_edit();
-                    self.toast(format!("Unlinked — {n} effect layer{}", if n == 1 { "" } else { "s" }));
+                    self.toast(format!("Unlinked - {n} effect layer{}", if n == 1 { "" } else { "s" }));
                 }
                 // nothing changed, so the snapshot above would be a no-op undo entry
                 Err(e) => {
@@ -827,7 +827,7 @@ impl App {
             }
         }
         // ---- ws:inspector-gallery ----
-        // Asset block's "Open in Library" — description/tags/label/folder are edited only in Library's
+        // Asset block's "Open in Library" - description/tags/label/folder are edited only in Library's
         // asset-details box now (see library.rs's doc comment).
         if let Some(id) = inspector::take_open_asset() {
             self.library.selected = Some(id);
@@ -836,7 +836,7 @@ impl App {
             self.layout_dirty = true;
         }
         // Color section's Auto Colour / Match: both need a live GPU-rendered frame, which only App can
-        // produce (color_ui.rs itself only has `&mut Clip`) — reuse color-engine's own tools rather than
+        // produce (color_ui.rs itself only has `&mut Clip`) - reuse color-engine's own tools rather than
         // recomputing FrameStats here.
         if let Some(id) = inspector::take_pending_color_auto() {
             if let Err(e) = self.run_tool_undoable("color.auto", &json!({"clip_id": id})) {
@@ -848,7 +848,7 @@ impl App {
                 self.toast(e);
             }
         }
-        // ponytail: armed but not consumed into an actual pixel sample yet — see color_ui.rs's doc
+        // ponytail: armed but not consumed into an actual pixel sample yet - see color_ui.rs's doc
         // comment. An honest toast beats a click that silently does nothing.
         if inspector::take_pending_eyedrop().is_some() {
             self.toast("Eyedropper: click a point on the preview to sample a colour (not wired yet)");
@@ -871,7 +871,7 @@ impl App {
                     self.library.tab = 0;
                     self.toast(format!("Imported {}", p.file_name().unwrap_or_default().to_string_lossy()));
                 }
-                // cancelling is not a failure — matches finish_export's wording
+                // cancelling is not a failure - matches finish_export's wording
                 (_, Some(_)) if cancelled => self.toast("Download cancelled"),
                 (_, Some(e)) => self.toast(format!("Download failed: {e}")),
                 (None, None) => self.toast("Download finished but produced no file"),
@@ -924,7 +924,7 @@ impl App {
     }
 
     /// "Save from selection": one clip's node graph or effect stack becomes an effect preset, anything
-    /// else (adjustment layers, several clips) becomes a clip template — that is the only flavour that
+    /// else (adjustment layers, several clips) becomes a clip template - that is the only flavour that
     /// can be *placed* rather than applied. Parameterized by explicit `ids` (not `self.selection`
     /// directly) since its only caller now is the `templates.save` MCP tool (whatsnew.rs), which passes
     /// the current selection by default but can be given any id list.
@@ -986,10 +986,10 @@ impl App {
 
     // ---- ws:text-titles ----
     /// Resolve `name` across `builtin_titles()` + `Settings.templates` (unlike `place_template`, which
-    /// only searches the latter — builtins aren't saved, so `place_template` alone can't find them),
+    /// only searches the latter - builtins aren't saved, so `place_template` alone can't find them),
     /// place it at `t`, and return (placed clip ids, [(clip_id, exposed field)]) for the Gallery's
     /// Customize panel. Exposed-field resolution is a positional zip against the pre-place clips'
-    /// `.exposed` (place_clips returns ids in the same order for Text/Shape/Adjustment templates — see
+    /// `.exposed` (place_clips returns ids in the same order for Text/Shape/Adjustment templates - see
     /// model/ops/templates.rs; length-checked defensively rather than assumed).
     pub(super) fn place_title_template(&mut self, name: &str, t: f64) -> Result<(Vec<Id>, Vec<(Id, String)>), String> {
         let tpl = crate::engine::presets::builtin_titles()
@@ -1020,8 +1020,8 @@ impl App {
 #[cfg(test)]
 mod tests {
     /// Structural (source-scan): this crate has no headless App-construction path anywhere (see
-    /// tools_registry_tests.rs's doc comment for why), so — the same technique files.rs's own
-    /// App-level tests already use — this checks the Delete arm's body directly instead of driving
+    /// tools_registry_tests.rs's doc comment for why), so - the same technique files.rs's own
+    /// App-level tests already use - this checks the Delete arm's body directly instead of driving
     /// a live App through `act`.
     #[test]
     fn delete_selected_pushes_undo_toast() {

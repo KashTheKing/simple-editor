@@ -63,7 +63,7 @@ pub struct Asset {
     #[serde(default)]
     pub description: String,
     // ---- ws:registries-schema-hooks ----
-    /// Path relative to the project file, when it was saved with one — kept alongside `path` (the
+    /// Path relative to the project file, when it was saved with one - kept alongside `path` (the
     /// absolute/last-known path) so a moved project directory can be relinked without touching every
     /// clip. Unused this wave (schema only).
     #[serde(default)]
@@ -74,7 +74,7 @@ pub struct Asset {
     /// Set for a subclip: the (in, out) source-time range of `parent` it covers.
     #[serde(default)]
     pub range: Option<(f64, f64)>,
-    /// Master/source-clip effects (rendered by ws:color-engine, wave 1) — apply to every clip using
+    /// Master/source-clip effects (rendered by ws:color-engine, wave 1) - apply to every clip using
     /// this asset, ahead of the clip's own effect stack. Unused this wave (schema only).
     #[serde(default)]
     pub effects: Vec<Effect>,

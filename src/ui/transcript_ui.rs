@@ -1,7 +1,7 @@
 //! ---- ws:transcript-captions ----
 //! The Transcript section of the Subtitles pane (a collapsible section, not a pane): the words of one
-//! transcribed clip as a selectable run — click a word to seek, drag (or Shift+click) to select a
-//! range, Delete / "Cut selected words" to ripple-cut it through `Project::cut_word_ranges` — a
+//! transcribed clip as a selectable run - click a word to seek, drag (or Shift+click) to select a
+//! range, Delete / "Cut selected words" to ripple-cut it through `Project::cut_word_ranges` - a
 //! search box with Prev/Next jumping across EVERY transcribed clip (`transcript_hits`), the editable
 //! filler-word chips with Mark-instead-first ("Mark fillers" drops a range marker per hit; "Remove
 //! fillers" only lights up once marks exist) and a small Speech (TTS) panel. Also the non-blocking
@@ -41,15 +41,15 @@ pub struct TranscriptUiState {
     /// Range markers dropped by "Mark fillers" (taken away again by Remove / Clear marks).
     pub filler_marks: Vec<Id>,
     pub status: String,
-    /// "Transcribe selected clip" — drained by the app.
+    /// "Transcribe selected clip" - drained by the app.
     pub want_transcribe: Option<Id>,
-    /// (text, voice) from the Speech panel's Speak — drained by the app.
+    /// (text, voice) from the Speech panel's Speak - drained by the app.
     pub tts_request: Option<(String, Option<String>)>,
     pub show_tts: bool,
     tts_text: String,
     tts_voice: String,
     /// Installed voices, filled by the app the first time the Speech panel is open (`engine::tts::
-    /// voices()` is a one-second powershell call — never at startup, never here).
+    /// voices()` is a one-second powershell call - never at startup, never here).
     pub tts_voices: Option<Vec<String>>,
 }
 
@@ -69,7 +69,7 @@ pub fn clip_label(project: &Project, clip: Id) -> String {
     }
 }
 
-/// Words `[a, b]` of the shown transcript as ONE timeline span (the pauses between them go too —
+/// Words `[a, b]` of the shown transcript as ONE timeline span (the pauses between them go too -
 /// selecting "um … um" means "this stretch of speech").
 fn span(words: &[(f64, f64, String)], (a, b): (usize, usize)) -> Option<(f64, f64)> {
     Some((words.get(a)?.0, words.get(b)?.1))
@@ -169,7 +169,7 @@ pub fn show(
     });
 
     let Some(clip) = st.clip else {
-        ui.weak("No transcript yet — select a clip and Transcribe (or right-click it ▸ Transcript ▸ Transcribe…).");
+        ui.weak("No transcript yet - select a clip and Transcribe (or right-click it ▸ Transcript ▸ Transcribe…).");
         tts_panel(ui, st);
         return resp;
     };
@@ -188,7 +188,7 @@ pub fn show(
     let mut under: Option<usize> = None;
     let mut any_focus = false;
     if words.len() > MAX_INLINE_WORDS {
-        ui.weak(format!("{} words — too many to lay out inline; use the search box or View transcript.", words.len()));
+        ui.weak(format!("{} words - too many to lay out inline; use the search box or View transcript.", words.len()));
     } else {
         egui::ScrollArea::vertical().id_salt("transcript_words").max_height(170.0).auto_shrink([false, true]).show(
             ui,
@@ -262,7 +262,7 @@ pub fn show(
             ui.weak(&st.status);
         }
     });
-    // Delete while a word has keyboard focus (focus keeps the timeline's own Delete hotkey quiet —
+    // Delete while a word has keyboard focus (focus keeps the timeline's own Delete hotkey quiet -
     // `Hotkeys::poll` yields nothing while `wants_keyboard_input`)
     if any_focus && n_sel > 0 && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Delete)) {
         do_cut = true;
@@ -281,7 +281,7 @@ pub fn show(
                 format!("cut {n_sel} word(s)")
             } else {
                 *project = before;
-                "nothing cut — the track is locked, or the clip has a speed ramp".into()
+                "nothing cut - the track is locked, or the clip has a speed ramp".into()
             };
         }
         st.sel = None;
@@ -290,7 +290,7 @@ pub fn show(
 
     // fillers: Mark-instead first
     ui.horizontal_wrapped(|ui| {
-        ui.label("Fillers").on_hover_text("Words to cut out — case and punctuation don't matter; phrases allowed");
+        ui.label("Fillers").on_hover_text("Words to cut out - case and punctuation don't matter; phrases allowed");
         let mut remove: Option<usize> = None;
         for (i, f) in st.fillers.iter().enumerate() {
             if ui.small_button(format!("{f} ×")).on_hover_text("Remove from the list").clicked() {
@@ -321,7 +321,7 @@ pub fn show(
         ui.weak(format!("{} filler(s) found", ranges.len()));
         if ui
             .add_enabled(!ranges.is_empty(), Button::new("Mark fillers"))
-            .on_hover_text("Drop a range marker on every filler first — look them over, then Remove")
+            .on_hover_text("Drop a range marker on every filler first - look them over, then Remove")
             .clicked()
         {
             once(undone, undo, project);
@@ -353,7 +353,7 @@ pub fn show(
                 format!("removed {} filler(s)", ranges.len())
             } else {
                 *project = before;
-                "nothing cut — the track is locked, or the clip has a speed ramp".into()
+                "nothing cut - the track is locked, or the clip has a speed ramp".into()
             };
             st.sel = None;
         }
@@ -417,7 +417,7 @@ pub struct TranscriptWindow {
 #[derive(Default)]
 pub struct WindowResponse {
     pub seek: Option<f64>,
-    /// "No transcript yet — Transcribe…" was clicked.
+    /// "No transcript yet - Transcribe…" was clicked.
     pub transcribe: bool,
 }
 
@@ -427,7 +427,7 @@ pub fn window(ctx: &egui::Context, st: &mut TranscriptWindow, project: &Project,
         return resp;
     }
     let mut open = true;
-    let title = format!("Transcript — {}", clip_label(project, st.clip));
+    let title = format!("Transcript - {}", clip_label(project, st.clip));
     egui::Window::new(title)
         .id(egui::Id::new("transcript_window"))
         .open(&mut open)
@@ -436,7 +436,7 @@ pub fn window(ctx: &egui::Context, st: &mut TranscriptWindow, project: &Project,
         .show(ctx, |ui| match project.transcript(st.clip) {
             None => {
                 ui.horizontal(|ui| {
-                    ui.label("No transcript yet —");
+                    ui.label("No transcript yet - ");
                     if ui.button("Transcribe…").clicked() {
                         resp.transcribe = true;
                     }
@@ -644,7 +644,7 @@ mod tests {
     }
 
     /// Mark-instead-first: "Mark fillers" drops a range marker per hit and only then does "Remove
-    /// fillers" cut — which also takes the marks away.
+    /// fillers" cut - which also takes the marks away.
     #[test]
     fn fillers_are_marked_then_removed() {
         let (mut p, id) = project();

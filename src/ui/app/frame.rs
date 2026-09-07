@@ -1,15 +1,15 @@
 //! ---- ws:layout-modes-onboarding ----
 //! FRAME_HOOKS entry: once per frame, diff the selection (clips, transitions, subtitle cues and
-//! snap-engine's `TimelineState.edit_point` — its real landed name) into a `SelectionKind`, react to a
+//! snap-engine's `TimelineState.edit_point` - its real landed name) into a `SelectionKind`, react to a
 //! CHANGE exactly once (auto-surface in Dynamic mode, tab glow in Granular / when pinned, the adaptive
-//! tool strip's lead tool), and decay the tab glow list through `App::animate_until` — the one
+//! tool strip's lead tool), and decay the tab glow list through `App::animate_until` - the one
 //! sanctioned timed-repaint funnel, so a fully-decayed glow schedules nothing and the idle-CPU gate
 //! holds.
 //!
 //! The `selection_changed` Luau hook is NOT fired here: command-palette's `palette_ctl::tick` already
-//! fires it once per change of the widened selection signature — `SelSig`, covering clips, transitions,
+//! fires it once per change of the widened selection signature - `SelSig`, covering clips, transitions,
 //! subtitle cues AND the edit point, not just `App.selection` (see its `last_fired_selection`, typed
-//! `SelSig` for exactly this reason) — and a second call site would double-fire every `@on
+//! `SelSig` for exactly this reason) - and a second call site would double-fire every `@on
 //! selection_changed` script. `selection_changed_hook_has_exactly_one_call_site` below pins that.
 
 use super::*;
@@ -73,7 +73,7 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
     }
 }
 
-/// Drop expired glow entries; while any remain, the next wake (a ~25 fps fade — a glow is a cue, not
+/// Drop expired glow entries; while any remain, the next wake (a ~25 fps fade - a glow is a cue, not
 /// an animation worth 60 Hz). `None` = nothing glowing, nothing scheduled.
 pub(super) fn decay_glow(glow: &mut Vec<(Pane, Instant)>, now: Instant) -> Option<Instant> {
     glow.retain(|&(_, at)| now.duration_since(at).as_secs_f32() < GLOW_SECS);
@@ -167,7 +167,7 @@ mod tests {
 
     /// Deviation from the issue's `selection_changed_hook_fires_once_per_change`: the event is fired by
     /// command-palette's `palette_ctl::tick` (one call site, `last_fired_selection` diff), so this
-    /// workstream must NOT add a second one — pinned by counting call sites in the two files.
+    /// workstream must NOT add a second one - pinned by counting call sites in the two files.
     #[test]
     fn selection_changed_hook_has_exactly_one_call_site() {
         let here = include_str!("frame.rs");
@@ -195,7 +195,7 @@ mod tests {
     }
 
     /// `palette_ctl::tick` fires `selection_changed` by comparing `SelSig::of(app)` against
-    /// `App.last_fired_selection` each frame (no headless `App` to call `tick` itself — see this
+    /// `App.last_fired_selection` each frame (no headless `App` to call `tick` itself - see this
     /// module's and `fire_hook`'s doc comments). This exercises that exact predicate for the three
     /// selection kinds the bug report named: selecting a transition, a subtitle cue, or moving the
     /// edit point, all with the clip selection held constant, must each look like a change (so the

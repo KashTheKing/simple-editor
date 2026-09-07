@@ -40,9 +40,9 @@ pub struct TextStyle {
     /// Empty for every project saved before spans existed (`#[serde(default)]` on the struct covers it).
     pub spans: Vec<TextSpan>,
     // ---- ws:registries-schema-hooks ----
-    /// Reveal-in progress (0 = hidden, 1 = fully revealed) — `ws:text-titles` (wave 3) is the sole
+    /// Reveal-in progress (0 = hidden, 1 = fully revealed) - `ws:text-titles` (wave 3) is the sole
     /// consumer, via a t-aware `TextRasterizer`. Defaults to fully revealed (`a1`, NOT `a0`) so a clip
-    /// that never touches this field — every pre-overhaul project, and any brand-new text clip — renders
+    /// that never touches this field - every pre-overhaul project, and any brand-new text clip - renders
     /// its whole string exactly as before; only an explicit reveal < 1 (or a keyframed ramp) hides
     /// anything. `#[serde(default)]` gives the same fully-revealed value to JSON with no `reveal` key.
     #[serde(default = "crate::model::a1")]
@@ -52,7 +52,7 @@ pub struct TextStyle {
     pub wave: Animated,
 }
 
-/// Default for `TextStyle.size` when the JSON key is entirely absent (defensive — every project ever
+/// Default for `TextStyle.size` when the JSON key is entirely absent (defensive - every project ever
 /// saved always wrote `size`, so the realistic back-compat path is `de_scalar_or_animated`'s bare-number
 /// branch below, not this).
 fn text_size_default() -> Animated {
@@ -130,14 +130,14 @@ impl Default for TextStyle {
     }
 }
 
-/// A styled sub-range of `TextStyle::text`, addressed by CHAR index (not byte — `text` may hold
+/// A styled sub-range of `TextStyle::text`, addressed by CHAR index (not byte - `text` may hold
 /// multi-byte UTF-8), half-open `[start, end)`. Only run-level fields are overridable here; `align`,
 /// `line_spacing`, `box_color` and `box_padding` are paragraph-level and stay clip-wide.
 ///
 /// Rendering (`engine::text`) honors `color`, `font`/`size`/`bold`/`italic` (glyph shape) and
 /// `letter_spacing` per span; `outline_width`, `outline_color`, `shadow`, `shadow_color`, `shadow_x`,
 /// `shadow_y`, `shadow_blur` are accepted here for a future pass but currently always draw with the
-/// clip's base style — see the `ponytail:` comment in `engine::text::TextRasterizer::rasterize`.
+/// clip's base style - see the `ponytail:` comment in `engine::text::TextRasterizer::rasterize`.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub struct TextSpan {
@@ -188,7 +188,7 @@ impl TextStyle {
         h.finish()
     }
 
-    /// Drop spans that can never cover a character of `text` and clamp the rest to its char count —
+    /// Drop spans that can never cover a character of `text` and clamp the rest to its char count -
     /// called after any operation that installs spans wholesale (e.g. pasting a style whose ranges
     /// index a different string). The rasterizer already ignores out-of-range spans defensively; this
     /// keeps them out of the saved file so they can't silently resurrect on a later text edit.
@@ -221,9 +221,9 @@ impl TextStyle {
             } else if i >= old_end {
                 (i as isize + delta) as usize
             } else if is_end {
-                p // the styled tail was replaced — keep the surviving head
+                p // the styled tail was replaced - keep the surviving head
             } else {
-                new_end // the styled head was replaced — keep the surviving tail
+                new_end // the styled head was replaced - keep the surviving tail
             }
         };
         for sp in &mut self.spans {
@@ -260,8 +260,8 @@ mod tests {
     use super::*;
 
     /// ws:text-titles back-compat: a `TextStyle` JSON exactly as every project saved before this wave
-    /// wrote it — `size`/`letter_spacing`/`outline_width` as bare numbers, no `reveal`/`wave` keys at
-    /// all — must deserialize to a non-animated `Animated` holding that same value, and `reveal` must
+    /// wrote it - `size`/`letter_spacing`/`outline_width` as bare numbers, no `reveal`/`wave` keys at
+    /// all - must deserialize to a non-animated `Animated` holding that same value, and `reveal` must
     /// default to FULLY REVEALED (1.0, not 0.0) so the text renders exactly as it always did. This is
     /// the manual "open an old project" check from the plan's verification checklist, pinned as a test.
     #[test]
@@ -272,7 +272,7 @@ mod tests {
         assert!(!t.size.is_animated());
         assert_eq!(t.letter_spacing, Animated::new(2.0));
         assert_eq!(t.outline_width, Animated::new(3.0));
-        // no reveal/wave keys in the JSON at all: reveal must default to fully-revealed, not hidden —
+        // no reveal/wave keys in the JSON at all: reveal must default to fully-revealed, not hidden -
         // this is the whole back-compat guarantee once TextRasterizer wires reveal into rendering.
         assert_eq!(t.reveal.value, 1.0);
         assert!(!t.reveal.is_animated());
@@ -281,7 +281,7 @@ mod tests {
     }
 
     /// A `size` written as a full `Animated` object (keyframed) round-trips through
-    /// `de_scalar_or_animated` unchanged — the promotion accepts both JSON shapes, not just bare numbers.
+    /// `de_scalar_or_animated` unchanged - the promotion accepts both JSON shapes, not just bare numbers.
     #[test]
     fn textstyle_animated_object_json_round_trips() {
         let json = r#"{"text":"Hi","size":{"value":10.0,"keys":[{"t":0.0,"v":10.0,"ease":"Linear"},{"t":1.0,"v":80.0,"ease":"Linear"}]}}"#;
@@ -291,7 +291,7 @@ mod tests {
         assert_eq!(t.size.at(1.0), 80.0);
     }
 
-    /// `TextStyle::default()` (every brand-new text clip) is also fully revealed and has no wave —
+    /// `TextStyle::default()` (every brand-new text clip) is also fully revealed and has no wave -
     /// the Animation-preset/Reveal/Wave UI is opt-in, not a surprise on a freshly typed text clip.
     #[test]
     fn textstyle_default_is_fully_revealed_no_wave() {
@@ -301,7 +301,7 @@ mod tests {
         assert_eq!(t.size.value, 72.0);
     }
 
-    /// `cache_key()` changes when `size`/`letter_spacing`/`outline_width`/`reveal`/`wave` change — the
+    /// `cache_key()` changes when `size`/`letter_spacing`/`outline_width`/`reveal`/`wave` change - the
     /// render cache must not serve a stale frame after any of the newly-Animated fields is edited.
     #[test]
     fn cache_key_changes_with_every_promoted_field() {

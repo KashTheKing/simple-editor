@@ -1,7 +1,7 @@
 //! ---- ws:color-engine ----
 //! The 10 colour MCP tools (LUT, Primaries, Qualifier, auto/match, frame stats, Looks, master
 //! effects, bypass) plus the 3 unbound Action handlers (AutoColor/ColorMatch/BypassGrade). Canonical
-//! crate-wide registration point for clip.add_lut/color.auto/color.match/looks.list/looks.apply — a
+//! crate-wide registration point for clip.add_lut/color.auto/color.match/looks.list/looks.apply - a
 //! later workstream (inspector-gallery, source-monitor, pro-monitor) that needs LUT/looks/colour-match/
 //! colour-auto capability calls these fns/tools directly instead of declaring gallery.*/timeline.*
 //! duplicates (see plans/ui-overhaul/issues/color-engine.md's ownership notes).
@@ -26,10 +26,10 @@ fn is_grade_kind(k: EffectKind) -> bool {
     )
 }
 
-/// Toggle `Effect.enabled` on every grade-category effect in `effects` — shared by `clip.bypass` and
+/// Toggle `Effect.enabled` on every grade-category effect in `effects` - shared by `clip.bypass` and
 /// `Action::BypassGrade`. `on`: `Some` forces that state, `None` flips each independently.
 /// ponytail: reuses the existing `enabled` field instead of a separate non-destructive preview-bypass
-/// flag/render path — pro-monitor's later wipe/compare window can add a preview-only bypass without
+/// flag/render path - pro-monitor's later wipe/compare window can add a preview-only bypass without
 /// touching this.
 fn bypass_grade_effects(fx: &mut [Effect], on: Option<bool>) {
     for e in fx.iter_mut().filter(|e| is_grade_kind(e.kind)) {
@@ -54,7 +54,7 @@ fn set_param(e: &mut Effect, i: usize, v: Option<f64>) {
     }
 }
 
-/// Replace the clip's effect of `new.kind` wholesale (or append if it has none yet) — `color.auto`/
+/// Replace the clip's effect of `new.kind` wholesale (or append if it has none yet) - `color.auto`/
 /// `color.match`/`Action::AutoColor`/`Action::ColorMatch` write a fresh Levels/Color/Curves this way so
 /// a repeat call updates in place instead of accumulating duplicates.
 fn upsert_whole(c: &mut Clip, new: Effect) {
@@ -64,7 +64,7 @@ fn upsert_whole(c: &mut Clip, new: Effect) {
     }
 }
 
-/// Render at `t` through the live-preview path (`render_preview_texture` — never `render_frame`, which
+/// Render at `t` through the live-preview path (`render_preview_texture` - never `render_frame`, which
 /// export/thumbnails also call) and read back `gpu.stats()`. None when there's no GPU renderer, decode
 /// timed out, or the render panicked.
 fn stats_at(app: &mut App, t: f64) -> Option<FrameStats> {
@@ -80,7 +80,7 @@ fn stats_at(app: &mut App, t: f64) -> Option<FrameStats> {
 
 fn stats_json(s: &FrameStats) -> Value {
     // ponytail: the raw 256x144 downsample (`FrameStats.sample`) stays in-process only, for a future
-    // eyedropper/scopes consumer (canvas-handles-monitor/pro-monitor) — putting ~37k RGBA samples in a
+    // eyedropper/scopes consumer (canvas-handles-monitor/pro-monitor) - putting ~37k RGBA samples in a
     // JSON-RPC reply would bloat every frame.stats call for no MCP/Luau caller that exists yet.
     json!({
         "p1": s.p1, "p99": s.p99, "mean": s.mean, "sample_w": s.sample_w, "sample_h": s.sample_h,
@@ -88,7 +88,7 @@ fn stats_json(s: &FrameStats) -> Value {
     })
 }
 
-/// Parse `{kind, params}` (same shape `clip.add_effect`'s single-effect parser uses) into an `Effect` —
+/// Parse `{kind, params}` (same shape `clip.add_effect`'s single-effect parser uses) into an `Effect` -
 /// shared by `media.set_effects`' array of them.
 fn parse_effect(item: &Value) -> Result<Effect, String> {
     let kind_s = item.get("kind").and_then(|v| v.as_str()).ok_or("each effect needs a 'kind'")?;
@@ -178,7 +178,7 @@ fn run(app: &mut App, name: &str, args: &Value) -> Result<Value, String> {
         "color.match" => {
             let id = req(arg_u64(args, "clip_id"), "clip_id")?;
             let rid = req(arg_u64(args, "reference_clip_id"), "reference_clip_id")?;
-            // both frames rendered at each clip's own timeline start — a shared time would sample the
+            // both frames rendered at each clip's own timeline start - a shared time would sample the
             // same composited frame for both and compare it to itself.
             let t_src = app.project.clip(id).ok_or("no such clip")?.start;
             let t_ref = app.project.clip(rid).ok_or("no such reference clip")?.start;
@@ -194,8 +194,8 @@ fn run(app: &mut App, name: &str, args: &Value) -> Result<Value, String> {
             Ok(stats_at(app, t).as_ref().map(stats_json).unwrap_or_else(|| json!({})))
         }
         // ---- ws:inspector-gallery ----
-        // Thin wrappers around tools_gallery's `find_look`/`apply_look_by_name` — the same underlying
-        // logic `gallery.list`/`gallery.apply(tab=Looks)` use — so a Look name (builtin OR user-saved)
+        // Thin wrappers around tools_gallery's `find_look`/`apply_look_by_name` - the same underlying
+        // logic `gallery.list`/`gallery.apply(tab=Looks)` use - so a Look name (builtin OR user-saved)
         // resolves and applies identically no matter which tool name is called. `looks.apply` used to
         // only know builtins, so the same name could succeed via `gallery.apply` and fail here.
         "looks.list" => Ok(json!(crate::ui::gallery::card_names(crate::ui::gallery::GalleryTab::Looks, &app.settings))),
@@ -259,7 +259,7 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
                 app.toast("Select at least 2 clips (the last is the reference)");
                 return true;
             }
-            // last-selected is the reference — ponytail-simple, since selection has no order today.
+            // last-selected is the reference - ponytail-simple, since selection has no order today.
             let (targets, reference) = ids.split_at(ids.len() - 1);
             let reference = reference[0];
             let Some(t_ref) = app.project.clip(reference).map(|c| c.start) else { return true };
@@ -372,7 +372,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "looks.list",
-        desc: "Names of every Look: the 12 built-ins plus any user-saved (non-graph) Settings.effect_presets — same list gallery.list(tab=Looks) returns.",
+        desc: "Names of every Look: the 12 built-ins plus any user-saved (non-graph) Settings.effect_presets - same list gallery.list(tab=Looks) returns.",
         args: &[],
         kind: ToolKind::Read,
         run: |a, v| dispatch(a, "looks.list", v).unwrap().map(ToolOutcome::Done),

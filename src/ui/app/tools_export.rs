@@ -71,7 +71,7 @@ pub(crate) enum BakeStage {
 pub(crate) struct BakeJob {
     stage: BakeStage,
     clip_ids: Vec<Id>,
-    /// Earliest selected clip start — timeline time of the rendered file's t=0.
+    /// Earliest selected clip start - timeline time of the rendered file's t=0.
     t0: f64,
     tmp: PathBuf,
     out: PathBuf,
@@ -103,10 +103,10 @@ pub(crate) fn span(project: &Project, ids: &[Id]) -> Option<(f64, f64)> {
     (a.is_finite() && b > a).then_some((a, b))
 }
 
-/// The project with only `ids` left on it, shifted so the earliest clip starts at 0 — what a bake
+/// The project with only `ids` left on it, shifted so the earliest clip starts at 0 - what a bake
 /// renders. Every other clip and every emptied track is dropped; transitions between two kept clips
 /// survive (`tidy` prunes the rest); subtitles/in-out never bake in.
-/// ponytail: a whole-project clone stripped down, not a scoped single-layer compositor mode — correct
+/// ponytail: a whole-project clone stripped down, not a scoped single-layer compositor mode - correct
 /// today, wasteful on huge projects; a scoped render path in Compositor is the upgrade if profiled.
 pub(crate) fn isolated_project(base: &Project, ids: &[Id]) -> Option<Project> {
     let (t0, _) = span(base, ids)?;
@@ -133,11 +133,11 @@ pub(crate) fn bake_refusal(project: &Project, ids: &[Id]) -> Option<String> {
     for &id in ids {
         let Some(c) = project.clip(id) else { return Some(format!("no such clip {id}")) };
         if c.kind == ClipKind::Adjustment {
-            return Some("Adjustment clips can't be baked alone — they only affect what is below them".into());
+            return Some("Adjustment clips can't be baked alone - they only affect what is below them".into());
         }
         if let Some(g) = &c.graph {
             if g.nodes.iter().any(|n| matches!(n.kind, NodeKind::Clip(other) if !ids.contains(&other))) {
-                return Some(format!("'{}' has a node graph reading another clip — select that clip too", c.name));
+                return Some(format!("'{}' has a node graph reading another clip - select that clip too", c.name));
             }
         }
     }
@@ -147,7 +147,7 @@ pub(crate) fn bake_refusal(project: &Project, ids: &[Id]) -> Option<String> {
 /// Point `clip_id` at the baked asset: a fresh clip at the same place/length/link/label/markers, with
 /// effects, graph, mask, transform, speed and fades flattened away (they're in the pixels now) and
 /// `src_in` = where its timeline start falls in the rendered file (scaled by a slow-mo factor).
-/// ponytail: a local, container-agnostic field-set — swap to trim-model's `Project::replace_clip`
+/// ponytail: a local, container-agnostic field-set - swap to trim-model's `Project::replace_clip`
 /// once its link-pair semantics are what a bake needs; one call site.
 pub(crate) fn swap_clip_asset(project: &mut Project, clip_id: Id, new_asset: Id, t0: f64, factor: f64) -> bool {
     let Some(c) = project.clip_mut(clip_id) else { return false };
@@ -164,7 +164,7 @@ pub(crate) fn swap_clip_asset(project: &mut Project, clip_id: Id, new_asset: Id,
     true
 }
 
-/// `<dir>/<stem>.<ext>`, or `<stem>_2.<ext>`, … — never an existing file.
+/// `<dir>/<stem>.<ext>`, or `<stem>_2.<ext>`, … - never an existing file.
 pub(crate) fn unique_path(dir: &Path, stem: &str, ext: &str) -> PathBuf {
     let mut p = dir.join(format!("{stem}.{ext}"));
     let mut n = 2;
@@ -175,7 +175,7 @@ pub(crate) fn unique_path(dir: &Path, stem: &str, ext: &str) -> PathBuf {
     p
 }
 
-/// The next queued job, if the export slot is free — the pure half of `frame_tick`'s drain.
+/// The next queued job, if the export slot is free - the pure half of `frame_tick`'s drain.
 pub(crate) fn next_queued<T>(queue: &mut std::collections::VecDeque<T>, slot_free: bool) -> Option<T> {
     if slot_free {
         queue.pop_front()
@@ -184,7 +184,7 @@ pub(crate) fn next_queued<T>(queue: &mut std::collections::VecDeque<T>, slot_fre
     }
 }
 
-/// Does delivery need the frame loop running? Only while something is queued or baking — an idle
+/// Does delivery need the frame loop running? Only while something is queued or baking - an idle
 /// editor with nothing to do must request no repaint from here.
 pub(crate) fn wants_repaint(queued: usize, baking: usize) -> bool {
     queued > 0 || baking > 0
@@ -199,7 +199,7 @@ pub(crate) fn quick_target(settings: &Settings) -> Result<ExportPresetRef, &'sta
         .export_presets
         .first()
         .map(|p| ExportPresetRef::Preset(p.name.clone()))
-        .ok_or("No export presets — open Export (Ctrl+E) once, or add tiles in settings.json")
+        .ok_or("No export presets - open Export (Ctrl+E) once, or add tiles in settings.json")
 }
 
 /// Build the `ExportChoice` a target describes, plus a short label for the toast. `settings` is
@@ -247,7 +247,7 @@ fn default_out_dir(app: &App) -> PathBuf {
 }
 
 /// Quick Export: re-run `target` (default: `quick_target`) to `path` (default: a fresh file beside the
-/// project). Starts now, or — with an export already running — joins the queue.
+/// project). Starts now, or - with an export already running - joins the queue.
 /// Returns the started job, or None when it was queued (or refused with a toast).
 pub(crate) fn quick_export(
     app: &mut App,
@@ -255,7 +255,7 @@ pub(crate) fn quick_export(
     path: Option<PathBuf>,
 ) -> Result<Option<(Arc<Progress>, PathBuf)>, String> {
     if app.timeline_is_empty() {
-        return Err("Nothing to export — the timeline is empty".into());
+        return Err("Nothing to export - the timeline is empty".into());
     }
     if media::ffpipe::ffmpeg_exe().is_none() {
         return Err("ffmpeg.exe not found".into());
@@ -287,10 +287,10 @@ pub(crate) fn quick_export(
     let (choice, label) = quick_choice(&target, &project, &app.settings, out.clone())?;
     if app.export.is_some() || !app.bake_jobs.is_empty() {
         if files::refuses_source(&app.project, &choice.opts.out_path) {
-            return Err("That file is a source of this project — use Overwrite Original Video (Ctrl+S) instead".into());
+            return Err("That file is a source of this project - use Overwrite Original Video (Ctrl+S) instead".into());
         }
         app.export_queue.push_back(choice);
-        app.toast(format!("Quick Export queued ({label}) — {} waiting", app.export_queue.len()));
+        app.toast(format!("Quick Export queued ({label}) - {} waiting", app.export_queue.len()));
         return Ok(None);
     }
     let prog = app.start_export_choice(choice).ok_or("Export could not start")?;
@@ -305,7 +305,7 @@ pub(crate) fn start_bake(app: &mut App, ids: &[Id], kind: BakeKind) -> Result<(A
         return Err("ffmpeg.exe not found".into());
     }
     if app.export.is_some() || !app.bake_jobs.is_empty() {
-        return Err("An export or bake is already running — try again when it finishes".into());
+        return Err("An export or bake is already running - try again when it finishes".into());
     }
     let ids = app.project.expand_links(ids);
     if ids.is_empty() {
@@ -405,10 +405,10 @@ fn advance_bake(app: &mut App, mut job: BakeJob) {
 }
 
 /// The pure "add the probed asset, point clips at it, roll back if none survived" half of
-/// `finish_bake` — no live `App` needed, so a test can exercise the exact rollback path taken when
+/// `finish_bake` - no live `App` needed, so a test can exercise the exact rollback path taken when
 /// every target clip vanished while the (async, minutes-long) bake was rendering. `add_asset` mutates
 /// `project` immediately; without the rollback here, a bake that finds nothing left to swap onto would
-/// leave that probed asset permanently orphaned in the library — no undo entry, `dirty` never set.
+/// leave that probed asset permanently orphaned in the library - no undo entry, `dirty` never set.
 /// Mirrors `mcp_exec.rs`'s `snapshot_if_mutate`/`rollback_project` split (same "a failed mutate must be
 /// a no-op" idiom used everywhere else in this codebase).
 pub(crate) fn bake_swap(
@@ -430,7 +430,7 @@ pub(crate) fn bake_swap(
     Ok(n)
 }
 
-/// Import the rendered file as an asset and re-point the clips — one labelled undo step.
+/// Import the rendered file as an asset and re-point the clips - one labelled undo step.
 fn finish_bake(app: &mut App, job: &BakeJob) -> Result<usize, String> {
     let asset = media::probe(&job.out.to_string_lossy(), app.backend())?;
     let before = app.project.to_json();
@@ -560,7 +560,7 @@ pub const TOOLS: &[ToolDef] = &[
             "range_in:number:false:seconds",
             "range_out:number:false:seconds",
         ],
-        // Ui, not Mutate (the issue table says Mutate): the queue is App state, not the Project — the
+        // Ui, not Mutate (the issue table says Mutate): the queue is App state, not the Project - the
         // Mutate path's unconditional after_edit would dirty a clean project for no project change.
         kind: ToolKind::Ui,
         run: |app, args| {
@@ -617,7 +617,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "export.slowmo",
-        desc: "Bake the clip(s) through setpts+minterpolate optical-flow slow motion, then swap them onto the result (the clip keeps its length and now shows the first part of the slowed footage — extend its end to reveal the rest).",
+        desc: "Bake the clip(s) through setpts+minterpolate optical-flow slow motion, then swap them onto the result (the clip keeps its length and now shows the first part of the slowed footage - extend its end to reveal the rest).",
         args: &["clip_ids:array:true:", "factor:number:false:speed, default 0.5 (= half speed)"],
         kind: ToolKind::Job,
         run: |app, args| bake_tool(app, args, BakeKind::SlowMo(arg_f64(args, "factor").unwrap_or(0.5))),
@@ -648,7 +648,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "markers.import",
-        desc: "Add project markers from a CSV file (time,name[,note,label] — or markers.export's own header form).",
+        desc: "Add project markers from a CSV file (time,name[,note,label] - or markers.export's own header form).",
         args: &["path:string:true:"],
         kind: ToolKind::Mutate,
         run: |app, args| {
@@ -728,7 +728,7 @@ mod tests {
         assert_eq!(iso.clip(2).unwrap().start, 0.0, "earliest start becomes 0");
         assert_eq!(iso.clip(3).unwrap().start, 1.0);
         assert!((iso.duration() - 3.0).abs() < 1e-9, "duration = the selection's span");
-        assert!(iso.clip(2).unwrap().has_effects(), "effects stay — they're what gets baked");
+        assert!(iso.clip(2).unwrap().has_effects(), "effects stay - they're what gets baked");
         assert!(iso.in_point.is_none() && iso.subtitles.is_empty());
         assert!(isolated_project(&base, &[999]).is_none());
         assert!(base.clip(4).is_some(), "the base project is untouched");
@@ -757,13 +757,13 @@ mod tests {
 
     /// PR #51 review bug: the bake pipeline is async (can take minutes); if every target clip is gone
     /// by the time it finishes (deleted mid-bake, or by an MCP script), `finish_bake` used to call
-    /// `add_asset` (mutating the project) before discovering `n == 0` and returning `Err` — leaving the
+    /// `add_asset` (mutating the project) before discovering `n == 0` and returning `Err` - leaving the
     /// probed asset permanently orphaned with no undo entry and no dirty flag. `bake_swap` must roll
     /// the project all the way back to `before` instead.
     #[test]
     fn finish_bake_rolls_back_the_asset_add_when_every_target_clip_is_gone() {
         // round-trip once first so `next_id` is already at its steady-state (`project()` hand-assigns
-        // clip ids below what `from_json` computes) — otherwise the *real* rollback below (which reparses
+        // clip ids below what `from_json` computes) - otherwise the *real* rollback below (which reparses
         // through `from_json`, same as `finish_bake` does) would legitimately bump `next_id` and the
         // to_json comparison would flag that no-op normalization as a mismatch.
         let mut p = Project::from_json(&project().to_json()).unwrap();
@@ -780,7 +780,7 @@ mod tests {
         assert_eq!(err, Err("the clips are no longer on the timeline".into()));
         assert_eq!(p.assets.len(), before_assets, "the probed asset must not orphan into the library");
         assert_eq!(p.to_json(), before, "the project is rolled back to exactly its pre-swap state");
-        // `finish_bake` only calls `push_undo_labeled`/`after_edit` after `bake_swap`'s `?` succeeds —
+        // `finish_bake` only calls `push_undo_labeled`/`after_edit` after `bake_swap`'s `?` succeeds -
         // structurally unreachable here, so no undo entry and no dirty flag follow from this Err.
     }
 

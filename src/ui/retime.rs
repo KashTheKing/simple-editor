@@ -19,7 +19,7 @@ pub struct RetimeUi {
     pub last_clip: Option<Id>,
     pub note: String,
     // ---- ws:inspector-gallery ----
-    /// "Edit curve" was clicked — `App::windows` reveals `Pane::Curves` and clears this (new wiring; see
+    /// "Edit curve" was clicked - `App::windows` reveals `Pane::Curves` and clears this (new wiring; see
     /// this file's own doc comment on why the existing `reveal(Pane::Curves)` call sites are test-only).
     pub want_curves: bool,
 }

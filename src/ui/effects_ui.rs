@@ -1,8 +1,8 @@
-//! Effects panel. Top: the CATALOGUE as a thumbnail grid — one ~96x54 card per `EffectKind` showing the
+//! Effects panel. Top: the CATALOGUE as a thumbnail grid - one ~96x54 card per `EffectKind` showing the
 //! effect applied to a stock image with its name underneath, grouped by `EffectKind::category()` under
 //! collapsible headers, with a search box. Thumbnails arrive through `set_thumbnail(kind, id, size)`,
 //! which the app calls after rendering them on the GPU; without a GL context a card still shows its name
-//! on a neutral tile (never blank) — an effect with `EffectKind::applies_to_audio()` instead gets a
+//! on a neutral tile (never blank) - an effect with `EffectKind::applies_to_audio()` instead gets a
 //! solid green tile with a music-note glyph, since it has no picture to render. The catalogue is filtered
 //! to what the first selected clip can use (audio clip -> audio effects only, and vice versa); with
 //! nothing selected it shows everything. Clicking a card adds the effect to every eligible selected
@@ -14,13 +14,13 @@
 //! clipping in a narrow panel, and whose body holds its parameters from
 //! `effect.specs()`: a "From … for …" row giving the effect a window inside the clip (0 length = to the
 //! end of it, so an effect covers the whole clip until the user says otherwise), then
-//! label + DragValue (range from ParamSpec, speed ≈ (max-min)/200) — or a CHECKBOX when
-//! `EffectKind::is_bool_param` — + a diamond keyframe toggle at clip-local playhead time
+//! label + DragValue (range from ParamSpec, speed ≈ (max-min)/200) - or a CHECKBOX when
+//! `EffectKind::is_bool_param` - + a diamond keyframe toggle at clip-local playhead time
 //! (Animated::toggle_key / set_at, highlighted when a key exists) + a button to clear them. Tint shows a
 //! colour button bound to R/G/B as well.
 //! An effect with a mask gets the inspector's mask grid inline (shape / position / radius / feather /
 //! invert …) plus a delete button. A clip that renders from a REAL node graph (`Clip::uses_graph`) greys
-//! the stack out — the graph is what the renderer evaluates, so stack edits would be invisible — and
+//! the stack out - the graph is what the renderer evaluates, so stack edits would be invisible - and
 //! offers "Unlink" to get back to the list.
 //! Every change → undo once per gesture (same `edit_start` rule as the inspector).
 
@@ -38,16 +38,16 @@ pub const CARD: (f32, f32) = (96.0, 54.0);
 
 // ---- ws:inspector-gallery ----
 /// Local (non-`DragPayload`) drag identity for one effect-stack row: the dragged row's
-/// `stable_effect_key` at drag-start. Scoped to this file's own stack UI — the shared
+/// `stable_effect_key` at drag-start. Scoped to this file's own stack UI - the shared
 /// `crate::ui::DragPayload` enum (verified `src/ui/mod.rs`) has no slot-identifying variant, which would
 /// be ambiguous when a clip has two same-kind effects.
 struct EffectDragId(String);
 
 /// Synthesized fold/drag identity for the effect at `effects[i]`, since `struct Effect` has no `id`
-/// field (verified, and no upstream workstream adds one — see the plan's risk table): `(kind name,
+/// field (verified, and no upstream workstream adds one - see the plan's risk table): `(kind name,
 /// same-kind rank among the effects BEFORE it in the current stack order)`. Stable across everything
 /// that doesn't change same-kind relative order (enable/disable, param edits, adding/removing a
-/// DIFFERENT kind, reordering this kind relative to other kinds) — the one thing it can't track is two
+/// DIFFERENT kind, reordering this kind relative to other kinds) - the one thing it can't track is two
 /// same-kind effects swapping places with each other, a documented `// ponytail:` ceiling (upgrade path:
 /// a real `Effect.id` in one line, if a later workstream adds the field).
 fn stable_effect_key(effects: &[Effect], i: usize) -> String {
@@ -57,7 +57,7 @@ fn stable_effect_key(effects: &[Effect], i: usize) -> String {
 }
 
 thread_local! {
-    // ponytail: thread_local hand-off because show() can't reach Settings — the app polls
+    // ponytail: thread_local hand-off because show() can't reach Settings - the app polls
     // take_pending_motion() each frame and stores the preset. Upgrade: pass an EffectsState if the
     // signature is ever allowed to grow.
     static PENDING_MOTION: RefCell<Option<MotionPreset>> = const { RefCell::new(None) };
@@ -219,7 +219,7 @@ fn wobble_suffix(name: &str) -> &'static str {
 #[derive(Default)]
 pub struct EffectsResponse {
     pub edited: bool,
-    /// Index (into the first selected clip's stack) of the effect whose mask the user wants to draw —
+    /// Index (into the first selected clip's stack) of the effect whose mask the user wants to draw -
     /// the app switches to the mask tool and points the viewport at it.
     pub mask_for: Option<usize>,
     /// "Node editor" was clicked: the app opens the node pane for the selected clip.
@@ -302,7 +302,7 @@ pub fn show(
     #[cfg(test)]
     test_rects::clear();
 
-    // first selected clip that still exists — drives both the catalogue's audio-aware filter and the
+    // first selected clip that still exists - drives both the catalogue's audio-aware filter and the
     // stack panel below
     let first_id = selection.iter().find(|&&id| project.clip(id).is_some()).copied();
     let audio_sel = first_id.and_then(|id| project.clip(id)).map(|c| c.kind == ClipKind::Audio);
@@ -319,7 +319,7 @@ pub fn show(
         };
         // a clip that renders from a real node graph would show nothing of what is pushed on its linear
         // stack, so those clips are skipped (the stack below is greyed out for the same reason). A bare
-        // Input→Output graph is not one — see Clip::uses_graph.
+        // Input→Output graph is not one - see Clip::uses_graph.
         // each selected clip is checked on its own kind, not just the first (a mixed video+audio
         // selection can still get an eligible effect on every clip it applies to).
         let targets: Vec<Id> = match scope {
@@ -369,7 +369,7 @@ pub fn show(
         }
     });
     if clip.uses_graph() {
-        // gpu::run_chain evaluates the graph and never looks at clip.effects — show the stack, but do
+        // gpu::run_chain evaluates the graph and never looks at clip.effects - show the stack, but do
         // not let the user edit into the void; "Unlink" is the way back to it in one click
         ui.horizontal(|ui| {
             ui.colored_label(palette.text_dim, "Renders from its node graph.");
@@ -384,14 +384,14 @@ pub fn show(
     }
     let n = clip.effects.len();
     let dur = clip.duration;
-    // a mask shapes pixels — an audio clip's filters get no mask controls at all
+    // a mask shapes pixels - an audio clip's filters get no mask controls at all
     let maskable = clip.is_visual();
     let mut remove: Option<usize> = None;
     let mut swap: Option<(usize, usize)> = None;
     let mut drag_move: Option<(usize, usize)> = None;
     let mut copy: Option<usize> = None;
     let mut paste: Option<usize> = None;
-    // (stack index, param name, new absolute value) — propagated to same-kind/same-index siblings when
+    // (stack index, param name, new absolute value) - propagated to same-kind/same-index siblings when
     // more than one clip is selected (bulk edit; absolute overwrite, not a relative delta).
     let mut param_edits: Vec<(usize, String, f64)> = Vec::new();
     let copied_kind = PARAM_CLIP.with(|c| c.borrow().as_ref().map(|e| e.kind));
@@ -400,15 +400,15 @@ pub fn show(
     let keys: Vec<String> = (0..clip.effects.len()).map(|i| stable_effect_key(&clip.effects, i)).collect();
     for (i, fx) in clip.effects.iter_mut().enumerate() {
         // one CollapsingState per effect, keyed by its STABLE key (not stack index `i`) so fold state
-        // (and, via `Settings`-free egui memory, nothing else) survives a reorder — see `stable_effect_key`.
+        // (and, via `Settings`-free egui memory, nothing else) survives a reorder - see `stable_effect_key`.
         let header_id = ui.id().with(("fx_stack", &keys[i]));
         let header_inner = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), header_id, true)
             .show_header(ui, |ui| {
                 // wrapped, not a flat row: a narrow panel stacks the buttons instead of clipping them
                 ui.horizontal_wrapped(|ui| {
-                    // drag handle: a small text glyph, its own Sense::drag widget (not the whole header —
+                    // drag handle: a small text glyph, its own Sense::drag widget (not the whole header -
                     // that would fight the buttons below for clicks). Local payload (EffectDragId), never
-                    // the shared `DragPayload` enum — see this file's module doc comment on why.
+                    // the shared `DragPayload` enum - see this file's module doc comment on why.
                     let (handle_rect, handle) =
                         ui.allocate_exact_size(egui::vec2(12.0, ui.spacing().interact_size.y), egui::Sense::drag());
                     ui.painter().text(
@@ -500,7 +500,7 @@ pub fn show(
                 });
             });
         let (_, header_inner, _) = header_inner.body(|ui| {
-            // when it runs inside the clip — 0 length means "to the end", which is what every effect
+            // when it runs inside the clip - 0 length means "to the end", which is what every effect
             // that predates this row already says
             ui.horizontal(|ui| {
                 ui.label("From");
@@ -578,7 +578,7 @@ pub fn show(
                             }
                             r
                         } else if kind.is_bool_param(j) {
-                            // stored as 0/1 — a checkbox is the honest widget (Flip H/V, "Show mask", …)
+                            // stored as 0/1 - a checkbox is the honest widget (Flip H/V, "Show mask", …)
                             let mut on = v >= 0.5;
                             let r = ui.checkbox(&mut on, "");
                             if r.changed() {
@@ -655,7 +655,7 @@ pub fn show(
         g.click();
     }
     if clip.effects.is_empty() {
-        ui.label("No effects — click a card above to add one");
+        ui.label("No effects - click a card above to add one");
     }
 
     // ---- save the clip's animation as a motion preset ----
@@ -685,7 +685,7 @@ pub fn show(
     // ---- ws:inspector-gallery ----
     // Bulk propagation: a param edit at stack index `i` on the representative clip (`id`, first) is
     // pushed as an absolute value (not a relative delta) onto every OTHER selected clip whose effect at
-    // that same index shares its kind — `Project::bulk_set_effect_params` already skips a mismatch.
+    // that same index shares its kind - `Project::bulk_set_effect_params` already skips a mismatch.
     if !param_edits.is_empty() && selection.len() > 1 {
         let ids: Vec<Id> = std::iter::once(id).chain(selection.iter().copied().filter(|&s| s != id)).collect();
         for (index, name, value) in param_edits {
@@ -733,7 +733,7 @@ mod tests {
             }
         }
         /// One update. egui may run the ui closure twice (multi-pass layout, e.g. the first frame a
-        /// collapsing header appears), so the responses of every pass are folded together — a click
+        /// collapsing header appears), so the responses of every pass are folded together - a click
         /// landing in a discarded pass still mutated the project.
         fn frame(&mut self, events: Vec<Event>) -> bool {
             self.time += 0.05;
@@ -762,7 +762,7 @@ mod tests {
             *last = out;
             edited
         }
-        /// Centre of the first painted text containing `label` — how a popup's entries are found.
+        /// Centre of the first painted text containing `label` - how a popup's entries are found.
         fn text_at(&self, label: &str) -> Option<Pos2> {
             self.shapes.iter().find_map(|c| match &c.shape {
                 egui::epaint::Shape::Text(t) if t.galley.text().contains(label) => {
@@ -990,7 +990,7 @@ mod tests {
         let _ = h.project.add_node(7, crate::model::NodeKind::Effect(Effect::new(EffectKind::Invert)), 0.0, 0.0);
         h.frame(vec![]);
         let r = h.rect("card_Blur");
-        // gpu::run_chain evaluates the graph and never reads clip.effects — the add would be invisible
+        // gpu::run_chain evaluates the graph and never reads clip.effects - the add would be invisible
         assert!(!h.click(r.center()));
         assert!(h.clip().effects.is_empty());
         assert_eq!(h.undos, 0);
@@ -998,7 +998,7 @@ mod tests {
 
     /// The node editor is opt-in. A clip whose graph is the bare Input→Output pass-through `ensure_graph`
     /// makes (e.g. the Nodes pane was once pointed at it) still renders its effect list, so the catalogue
-    /// must keep working on it — this is THE regression that made effects undroppable on footage.
+    /// must keep working on it - this is THE regression that made effects undroppable on footage.
     #[test]
     fn a_bare_graph_does_not_block_the_catalogue() {
         clear_thumbnails();
@@ -1143,7 +1143,7 @@ mod tests {
         h.frame(vec![]); // lay out once so the drop-target row's rect is captured
         let target = h.rect("draghandle1").center();
         // bypass simulating the exact press+move `drag_started` gesture on the source handle (finicky in
-        // a synthetic harness) — inject the payload directly, the same state `dnd_set_drag_payload` would
+        // a synthetic harness) - inject the payload directly, the same state `dnd_set_drag_payload` would
         // have set, then release over the target row.
         egui::DragAndDrop::set_payload(
             &h.ctx,
