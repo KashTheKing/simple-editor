@@ -227,6 +227,10 @@ pub(crate) enum Glyph {
     // ---- ws:audio-dsp-automation ----
     // ---- ws:color-engine ----
     // ---- ws:command-palette ----
+    /// A small key cap grid — the cheat-sheet / Settings ▸ Hotkeys tab.
+    Keyboard,
+    /// A magnifying glass — the palette's own search field / row.
+    Search,
     // ---- ws:forgiveness ----
     // ---- ws:player-rate-loop ----
     // ---- ws:snap-engine ----
@@ -336,6 +340,8 @@ impl Glyph {
         // ---- ws:audio-dsp-automation ----
         // ---- ws:color-engine ----
         // ---- ws:command-palette ----
+        Glyph::Keyboard,
+        Glyph::Search,
         // ---- ws:forgiveness ----
         // ---- ws:player-rate-loop ----
         // ---- ws:snap-engine ----
@@ -449,6 +455,8 @@ impl Glyph {
             // ---- ws:audio-dsp-automation ----
             // ---- ws:color-engine ----
             // ---- ws:command-palette ----
+            Glyph::Keyboard => "keyboard",
+            Glyph::Search => "search",
             // ---- ws:forgiveness ----
             // ---- ws:player-rate-loop ----
             // ---- ws:snap-engine ----
@@ -1591,14 +1599,35 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
                 Stroke::new(1.0, fg),
                 StrokeKind::Inside,
             );
-        } // ---- ws:registries-schema-hooks ----
-          // ---- ws:size-diet ----
-          // ---- ws:split-god-files ----
-          // ---- ws:audio-analysis ----
-          // ---- ws:audio-dsp-automation ----
-          // ---- ws:color-engine ----
-          // ---- ws:command-palette ----
-          // ---- ws:forgiveness ----
+        }
+        // ---- ws:registries-schema-hooks ----
+        // ---- ws:size-diet ----
+        // ---- ws:split-god-files ----
+        // ---- ws:audio-analysis ----
+        // ---- ws:audio-dsp-automation ----
+        // ---- ws:color-engine ----
+        // ---- ws:command-palette ----
+        // rounded keycap outline with a 3x2 grid of small key dots inside
+        Glyph::Keyboard => {
+            p.rect_stroke(
+                egui::Rect::from_center_size(c, egui::vec2(15.0, 10.0)),
+                CornerRadius::same(2),
+                stroke,
+                StrokeKind::Inside,
+            );
+            for row in [-2.5f32, 2.5] {
+                for col in [-5.0f32, 0.0, 5.0] {
+                    p.circle_filled(c + egui::vec2(col, row), 0.8, fg);
+                }
+            }
+        }
+        // magnifying glass: a ring plus a short diagonal handle
+        Glyph::Search => {
+            let ring = c + egui::vec2(-1.5, -1.5);
+            p.circle_stroke(ring, 4.0, stroke);
+            let dir = egui::vec2(1.0, 1.0).normalized();
+            p.line_segment([ring + dir * 4.0, ring + dir * 8.0], Stroke::new(1.8, fg));
+        } // ---- ws:forgiveness ----
           // ---- ws:player-rate-loop ----
           // ---- ws:snap-engine ----
           // ---- ws:trim-model ----

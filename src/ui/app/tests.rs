@@ -498,3 +498,26 @@ fn pre_existing_repaint_sites_unchanged_and_named() {
          update this count AND the tracked-gap note in CHANGELOG.md/goals.md"
     );
 }
+
+// ---- ws:command-palette ----
+/// `App::enabled`'s wave-0b `enabled_for` half already has its own pinned test
+/// (`tools_registry_tests::action_enabled_toasts_reason`) against its own 3-arg shape; this exercises
+/// the second guard match this workstream added (`enabled_for2`) the same way — via the pure fn
+/// directly, since `enabled` itself needs a live `App` (no headless harness — see `App::new`'s doc
+/// comment / the App-construction note in `tools_registry_tests.rs`).
+#[test]
+fn enabled_for2_reports_reason_for_known_disabled_actions() {
+    assert_eq!(App::enabled_for2(Action::Undo, true, false, false, false), Err("Nothing to undo"));
+    assert_eq!(App::enabled_for2(Action::Undo, false, false, false, false), Ok(()));
+    assert_eq!(App::enabled_for2(Action::Redo, false, true, false, false), Err("Nothing to redo"));
+    assert_eq!(
+        App::enabled_for2(Action::Split, false, false, true, false),
+        Err("Nothing to split — the timeline is empty")
+    );
+    for a in [Action::Delete, Action::RippleDelete] {
+        assert_eq!(App::enabled_for2(a, false, false, false, true), Err("Select something to delete first"));
+        assert_eq!(App::enabled_for2(a, false, false, false, false), Ok(()));
+    }
+    // an action this guard doesn't know about is always Ok
+    assert_eq!(App::enabled_for2(Action::CommandPalette, true, true, true, true), Ok(()));
+}

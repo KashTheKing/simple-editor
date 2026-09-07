@@ -25,6 +25,16 @@ use eframe::egui;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+// ---- ws:command-palette ----
+/// Named workspaces the palette's `Command::Workspace` rows list (`plans/ui-overhaul/README.md`'s
+/// "Command type change" decision). The real plan called for this to be a wave-0b stub of exactly one
+/// entry that this workstream only consumes — but the actual registries-schema-hooks landing on `main`
+/// never added it (verified: no `WORKSPACES` identifier anywhere in the tree before this change), so
+/// this workstream creates the one-entry stub itself, matching the plan's intent. The real
+/// Edit/Color/Audio/Text/Deliver/Simple list arrives with ws:layout-modes-onboarding (wave 2) for free —
+/// see palette.rs's `// ponytail:` note.
+pub const WORKSPACES: &[&str] = &["Default"];
+
 /// Icon for a pane's tab / menu entry: the user's Settings → Appearance override first
 /// ("none" = no icon), then the built-in default.
 pub fn pane_icon(icons: &BTreeMap<String, String>, pane: Pane) -> Option<Glyph> {
@@ -1005,7 +1015,7 @@ mod tests {
     fn profile_name_stays_on_one_line() {
         let ctx = egui::Context::default();
         ctx.set_fonts(crate::theme::test_fonts()); // size-diet: no default_fonts feature anymore
-        // a menu ui: top-down justified, as wide as the last frame's content
+                                                   // a menu ui: top-down justified, as wide as the last frame's content
         let frame = |ctx: &egui::Context, w: f32, add: &mut dyn FnMut(&mut egui::Ui) -> f32| {
             let (mut inner, mut width) = (0.0, w);
             let _ = ctx.run(egui::RawInput::default(), |ctx| {
