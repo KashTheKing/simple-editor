@@ -108,8 +108,12 @@ mod tools_registry_tests;
 mod tools_source;
 mod tools_subtitles;
 mod tools_timeline;
+// ---- ws:transcript-captions ----
+mod tools_transcript;
 mod tools_trim;
 mod tools_ui;
+// ---- ws:transcript-captions ----
+mod transcript_ctl;
 mod trim_actions;
 mod whatsnew;
 #[path = "windows.rs"]
@@ -391,6 +395,10 @@ pub struct App {
     /// The set itself lives in `library.offline` — the one copy `App::asset_status` and the library
     /// rows both read.
     offline_scan_at: Option<Instant>,
+    // ---- ws:transcript-captions ----
+    /// Background whisper / tracking / TTS jobs started outside the Subtitles pane (clip menu, MCP),
+    /// the clip-menu model download and the "View transcript" window — see transcript_ctl.rs.
+    transcript: transcript_ctl::TranscriptState,
 }
 
 // ---- ws:canvas-handles-monitor ----
@@ -806,6 +814,8 @@ impl App {
             // ---- ws:media-library ----
             media_jobs: Vec::new(),
             offline_scan_at: None,
+            // ---- ws:transcript-captions ----
+            transcript: transcript_ctl::TranscriptState::default(),
         };
         if let Some(reason) = settings_bad {
             app.toast(format!("Settings file was corrupt (saved as settings.json.bad): {reason}"));
@@ -1356,6 +1366,7 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     tools_source::TOOLS,
     // ---- ws:timeline-trim-gestures ----
     // ---- ws:transcript-captions ----
+    tools_transcript::TOOLS,
     // ---- ws:pro-monitor ----
     // ---- ws:pro-timeline ----
     // ---- ws:text-titles ----
@@ -1392,6 +1403,7 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     source_ctl::act,
     // ---- ws:timeline-trim-gestures ----
     // ---- ws:transcript-captions ----
+    transcript_ctl::act,
     // ---- ws:pro-monitor ----
     // ---- ws:pro-timeline ----
     // ---- ws:text-titles ----
@@ -1427,6 +1439,7 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     source_pane::tick,
     // ---- ws:timeline-trim-gestures ----
     // ---- ws:transcript-captions ----
+    transcript_ctl::tick,
     // ---- ws:pro-monitor ----
     // ---- ws:pro-timeline ----
     // ---- ws:text-titles ----
@@ -1459,6 +1472,7 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:source-monitor ----
     // ---- ws:timeline-trim-gestures ----
     // ---- ws:transcript-captions ----
+    transcript_ctl::window,
     // ---- ws:pro-monitor ----
     // ---- ws:pro-timeline ----
     // ---- ws:text-titles ----

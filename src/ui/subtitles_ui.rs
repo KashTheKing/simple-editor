@@ -22,12 +22,21 @@
 //! marker per flubbed take (described by what was said) and "Cut the duplicates" ripples every take but
 //! the last one out, dragging the cues, the markers and the transcript along with the cut. With no model
 //! and no whisper.exe the section only ever explains what to install.
+//!
+//! ---- ws:transcript-captions ----
+//! A word-timed run also persists its words into `Project.transcripts` (`Project::set_transcript`),
+//! so they survive a reopen and feed the collapsible "Transcript" section (`ui::transcript_ui`:
+//! click = seek, select + Delete = ripple cut through `Project::cut_word_ranges`, filler removal with
+//! Mark-instead first, word search across every transcribed clip). The double-take cutter now goes
+//! through that same `cut_word_ranges`. "Get captions" is the one-click entry: it names the model's
+//! size before any network call and never runs at startup.
 
 use crate::engine::export::Progress;
 use crate::engine::transcribe::{self, Segment};
 use crate::model::{Id, Project};
 use crate::theme::Palette;
 use crate::ui::tools::{glyph_text_button, Glyph};
+use crate::ui::transcript_ui;
 use crate::ui::{edit_start, once};
 use eframe::egui::{self, Button, DragValue, Response, Slider};
 use std::path::PathBuf;
@@ -106,6 +115,28 @@ impl Default for TranscribeState {
     }
 }
 
+// ---- ws:transcript-captions ----
+impl TranscribeState {
+    /// The model the section has picked: `(name, file, MB)` from `transcribe::MODELS`.
+    pub fn model(&self) -> (&'static str, &'static str, u32) {
+        transcribe::MODELS[self.model.min(transcribe::MODELS.len() - 1)]
+    }
+    /// Take over a word-timed transcript produced outside this section (the clip menu's
+    /// "Transcribe…", the `transcribe.run`/`media.transcribe` tools): leaves exactly the state the
+    /// section's own button would, so "Regenerate cues" (replacing `generated`) and the double-take
+    /// list work on it without a second run.
+    pub fn adopt(&mut self, clip: Id, map: (f64, f64), words: Vec<(f64, f64, String)>, generated: Vec<Id>) {
+        self.clip = Some(clip);
+        self.map = map;
+        self.marks.clear();
+        self.generated = generated;
+        self.status.clear();
+        self.segments = transcribe::group_words(&words, &self.group);
+        self.groups = transcribe::duplicate_takes(&self.segments, self.threshold, TAKE_WINDOW);
+        self.raw_words = words;
+    }
+}
+
 #[derive(Default)]
 pub struct SubtitlesState {
     pub selected: Option<crate::model::Id>,
@@ -115,6 +146,10 @@ pub struct SubtitlesState {
     /// Cue whose text field should grab focus (set by "Add at playhead").
     pub focus: Option<Id>,
     pub transcribe: TranscribeState,
+    // ---- ws:transcript-captions ----
+    /// The collapsible Transcript section (mirrors `show_style`; `Action::ToggleTranscript`).
+    pub show_transcript: bool,
+    pub transcript: transcript_ui::TranscriptUiState,
 }
 
 #[derive(Default)]
@@ -197,6 +232,9 @@ pub fn show(
         }
         ui.toggle_value(&mut state.show_style, "Style");
         ui.toggle_value(&mut state.transcribe.open, "Transcribe");
+        // ---- ws:transcript-captions ----
+        ui.toggle_value(&mut state.show_transcript, "Transcript")
+            .on_hover_text("The words of a transcribed clip: click to seek, select + Delete to cut, fillers");
     });
     ui.horizontal_wrapped(|ui| {
         let any = !project.subtitles.is_empty();
@@ -252,6 +290,22 @@ pub fn show(
     if state.transcribe.open {
         ui.separator();
         transcribe_section(ui, &mut state.transcribe, project, selection, &mut undone, undo, &mut resp);
+    }
+    // ---- ws:transcript-captions ----
+    if state.show_transcript {
+        ui.separator();
+        let r = transcript_ui::show(ui, &mut state.transcript, project, playhead, selection, palette, &mut undone, undo);
+        resp.edited |= r.edited;
+        resp.seeked |= r.seeked;
+        if r.cut > 0 {
+            // the section's own words follow the cut (Project.transcripts already did); the
+            // Transcribe section's copy for "Regenerate cues" follows too
+            if let Some(tr) = state.transcribe.clip.and_then(|c| project.transcript(c)) {
+                if !state.transcribe.raw_words.is_empty() {
+                    state.transcribe.raw_words = tr.words.clone();
+                }
+            }
+        }
     }
     ui.separator();
 
@@ -491,27 +545,10 @@ fn style_section(
     }
 }
 
-/// What a run needs: the clip's audio and how its source time maps back onto the timeline.
-struct Target {
-    clip: Id,
-    path: String,
-    src_start: f64,
-    src_dur: f64,
-    /// Timeline seconds of the transcript's zero, and source seconds -> timeline seconds.
-    offset: f64,
-    scale: f64,
-}
-
-/// The first selected clip that has footage behind it.
-///
-/// ponytail: one linear map over the whole clip, so a reversed clip transcribes forwards and a keyframed
-/// speed ramp drifts between its keys. Transcribe per ramp segment if that ever shows.
-fn target(project: &Project, selection: &[Id]) -> Option<Target> {
-    let c = selection.iter().find_map(|&id| project.clip(id))?;
-    let path = project.asset(c.asset).map(|a| a.path.clone()).filter(|p| !p.is_empty())?;
-    let (a, b) = (c.src_time(c.start), c.src_time(c.start + c.duration));
-    let (a, b) = if b > a + 0.05 { (a, b) } else { (c.src_in, c.src_in + c.duration.max(0.1)) };
-    Some(Target { clip: c.id, path, src_start: a, src_dur: b - a, offset: c.start, scale: c.duration / (b - a) })
+/// The first selected clip that has footage behind it — the mapping itself lives in
+/// `transcribe::target_for` (ws:transcript-captions), shared with the clip menu and the MCP tools.
+fn target(project: &Project, selection: &[Id]) -> Option<transcribe::Target> {
+    selection.iter().find_map(|&id| transcribe::target_for(project, id).ok())
 }
 
 /// A marker on every take "Cut the duplicates" would remove, named and described by what was said.
@@ -548,23 +585,28 @@ fn ripple_segment(s: &mut Segment, ranges: &[(f64, f64)]) -> bool {
 
 /// Ripple every take but the last of each group out of the timeline, then drag the cues, our markers and
 /// the transcript along with the cut. Returns how many clips went.
+/// ws:transcript-captions: the cut itself (and the cue/marker/`Project.transcripts` ripple) is
+/// `Project::cut_word_ranges` now — one path shared with filler removal, the Transcript section and MCP.
 fn cut_dups(project: &mut Project, st: &mut TranscribeState) -> usize {
     let ranges = transcribe::dup_ranges(&st.segments, &st.groups);
     let (Some(clip), false) = (st.clip, ranges.is_empty()) else { return 0 };
-    let cuts: Vec<f64> = ranges.iter().flat_map(|&(a, b)| [a, b]).collect();
-    let n = project.auto_cut(&[clip], &cuts, &ranges, true);
     for id in st.marks.drain(..) {
         project.remove_marker(id);
     }
-    project.subtitles.retain_mut(|c| {
-        let Some(a) = transcribe::ripple_time(c.start, &ranges) else { return false };
-        let b = transcribe::ripple_time(c.end, &ranges).unwrap_or(a + (c.end - c.start));
-        (c.start, c.end) = (a, b.max(a + MIN_CUE));
-        true
-    });
-    project.sort_cues();
-    st.segments.retain_mut(|s| ripple_segment(s, &ranges));
+    let ripple = project.track_of(clip).and_then(|ti| project.tracks[ti].ripple).unwrap_or(false);
+    let n = project.cut_word_ranges(clip, &ranges);
+    if n == 0 {
+        return 0;
+    }
+    if ripple {
+        st.segments.retain_mut(|s| ripple_segment(s, &ranges));
+    } else {
+        st.segments.retain(|s| !ranges.iter().any(|&(a, b)| s.start >= a && s.start < b));
+    }
     st.groups = transcribe::duplicate_takes(&st.segments, st.threshold, TAKE_WINDOW);
+    if !st.raw_words.is_empty() {
+        st.raw_words = project.transcript(clip).map(|t| t.words.clone()).unwrap_or_default();
+    }
     n
 }
 
@@ -599,6 +641,34 @@ fn transcribe_section(
     let warn = ui.visuals().warn_fg_color;
 
     let downloading = st.download.as_ref().is_some_and(|p| !p.is_done());
+    if !have {
+        // ws:transcript-captions: the one-click entry point, above the model combo. The opt-in:
+        // nothing is fetched until this button is pressed, and the size is on it — never at startup.
+        match st.download.clone() {
+            Some(p) if !p.is_done() => {
+                ui.add(egui::ProgressBar::new(p.fraction()).show_percentage().text(p.status()));
+                if ui.button("Cancel").clicked() {
+                    p.cancel.store(true, Ordering::SeqCst);
+                }
+                ui.ctx().request_repaint_after(Duration::from_millis(200));
+            }
+            done => {
+                if let Some(e) = done.and_then(|p| p.error()) {
+                    ui.colored_label(warn, e);
+                }
+                let short = name.split(" —").next().unwrap_or(name);
+                if glyph_text_button(ui, Glyph::Subtitles, &format!("Get captions  (download whisper {short}, {mb} MB)"))
+                    .on_hover_text(format!(
+                        "Downloads the {mb} MB model once, from huggingface.co into {}. Nothing else is fetched.",
+                        transcribe::models_dir().display()
+                    ))
+                    .clicked()
+                {
+                    st.download = Some(transcribe::download_model(file));
+                }
+            }
+        }
+    }
     ui.horizontal_wrapped(|ui| {
         ui.label("Model");
         ui.add_enabled_ui(!downloading, |ui| {
@@ -612,27 +682,6 @@ fn transcribe_section(
             ui.weak("downloaded");
         }
     });
-    if !have {
-        // the opt-in: nothing is fetched until this button is pressed, and the size is on it
-        ui.weak(format!("Downloads {mb} MB once, from huggingface.co into {}.", transcribe::models_dir().display()));
-        match st.download.clone() {
-            Some(p) if !p.is_done() => {
-                ui.add(egui::ProgressBar::new(p.fraction()).show_percentage().text(p.status()));
-                if ui.button("Cancel").clicked() {
-                    p.cancel.store(true, Ordering::SeqCst);
-                }
-                ui.ctx().request_repaint_after(Duration::from_millis(200));
-            }
-            done => {
-                if let Some(e) = done.and_then(|p| p.error()) {
-                    ui.colored_label(warn, e);
-                }
-                if ui.button(format!("Download model ({mb} MB)")).clicked() {
-                    st.download = Some(transcribe::download_model(file));
-                }
-            }
-        }
-    }
     if exe.is_none() {
         ui.horizontal_wrapped(|ui| {
             ui.colored_label(warn, transcribe::install_hint());
@@ -756,15 +805,20 @@ fn transcribe_section(
             None => {
                 let mut segs = job.segments();
                 transcribe::retime(&mut segs, st.map.0, st.map.1);
+                once(undone, undo, project);
                 if st.words {
                     // one word per segment: keep the raw words so "Regenerate cues" can regroup them
                     st.raw_words = segs.iter().map(|s| (s.start, s.end, s.text.clone())).collect();
+                    // ws:transcript-captions: and persist them, so they survive a save/reopen and
+                    // feed the Transcript section
+                    if let Some(clip) = st.clip {
+                        project.set_transcript(clip, st.raw_words.clone());
+                    }
                 } else {
                     st.raw_words.clear();
                     st.segments = segs;
                     st.groups = transcribe::duplicate_takes(&st.segments, st.threshold, TAKE_WINDOW);
                 }
-                once(undone, undo, project);
                 let msg = generate(st, project);
                 resp.edited = true;
                 msg

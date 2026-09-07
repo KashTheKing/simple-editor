@@ -566,6 +566,128 @@ pub fn short_label(text: &str, max: usize) -> String {
     s
 }
 
+// ---- ws:transcript-captions ----
+// ---------------------------------------------------------------- fillers, targets, export
+
+/// Default filler list (`Settings.filler_words` seeds from it; the Transcript section edits it).
+pub const FILLER_WORDS: &[&str] = &["um", "uh", "uhh", "like", "you know", "i mean", "sort of", "kind of"];
+
+/// Timeline ranges of every filler word/phrase in `words`, each padded by `pad_ms` on both sides and
+/// merged across `MERGE_GAP` (two "um"s in a row are one cut). Matching is over `normalize()`'d
+/// tokens — case and punctuation do not count, and a multi-word filler ("you know") must appear as
+/// that many consecutive words. Feeds `Project::cut_word_ranges` via Mark-instead.
+///
+/// ponytail: exact-token match, no stemming or ASR-variant handling ("umm" is not "um" unless listed).
+pub fn filler_ranges(words: &[(f64, f64, String)], fillers: &[&str], pad_ms: u32) -> Vec<(f64, f64)> {
+    let pad = pad_ms as f64 / 1000.0;
+    let toks: Vec<Vec<String>> = words.iter().map(|w| normalize(&w.2)).collect();
+    let phrases: Vec<Vec<String>> = fillers.iter().map(|f| normalize(f)).filter(|p| !p.is_empty()).collect();
+    let mut r: Vec<(f64, f64)> = Vec::new();
+    let mut i = 0;
+    while i < words.len() {
+        let mut best = 0usize;
+        for ph in &phrases {
+            let n = ph.len();
+            if n <= best || i + n > words.len() {
+                continue;
+            }
+            let flat: Vec<&String> = toks[i..i + n].iter().flatten().collect();
+            if flat.len() == n && flat.iter().zip(ph).all(|(a, b)| *a == b) {
+                best = n;
+            }
+        }
+        if best == 0 {
+            i += 1;
+            continue;
+        }
+        r.push(((words[i].0 - pad).max(0.0), words[i + best - 1].1 + pad));
+        i += best;
+    }
+    let mut out: Vec<(f64, f64)> = Vec::new();
+    for (a, b) in r {
+        match out.last_mut() {
+            Some(l) if a <= l.1 + MERGE_GAP => l.1 = l.1.max(b),
+            _ => out.push((a, b)),
+        }
+    }
+    out
+}
+
+/// What a run needs: the clip's audio and how its source time maps back onto the timeline.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Target {
+    pub clip: crate::model::Id,
+    pub path: String,
+    pub src_start: f64,
+    pub src_dur: f64,
+    /// Timeline seconds of the transcript's zero, and source seconds -> timeline seconds.
+    pub offset: f64,
+    pub scale: f64,
+}
+
+/// The transcribe target for one clip — shared by the Subtitles pane, the clip menu's "Transcribe…"
+/// and the `transcribe.run`/`media.transcribe` tools so every entry point maps words onto the timeline
+/// the same way. Reversed and frozen clips are refused (the words would land backwards / on a still),
+/// exactly as `engine::analysis` skips them.
+///
+/// ponytail: one linear map over the whole clip, so a keyframed speed ramp drifts between its keys.
+/// Transcribe per ramp segment if that ever shows.
+pub fn target_for(project: &crate::model::Project, clip: crate::model::Id) -> Result<Target, String> {
+    let c = project.clip(clip).ok_or("no such clip")?;
+    let path = project
+        .asset(c.asset)
+        .map(|a| a.path.clone())
+        .filter(|p| !p.is_empty())
+        .ok_or("that clip has no footage to transcribe")?;
+    if c.reverse || c.freeze.is_some() {
+        return Err("reversed and frozen clips can't be transcribed".into());
+    }
+    let src_dur = (c.duration * c.speed).max(0.1);
+    Ok(Target { clip: c.id, path, src_start: c.src_in, src_dur, offset: c.start, scale: c.duration / src_dur })
+}
+
+/// Plain text: one line per sentence (the default `group_words` split).
+pub fn transcript_text(words: &[(f64, f64, String)]) -> String {
+    group_words(words, &GroupOpts::default()).iter().map(|s| s.text.clone()).collect::<Vec<_>>().join("\n")
+}
+
+/// SubRip, grouped into sentences and wrapped exactly like the Subtitles pane's defaults.
+pub fn transcript_srt(words: &[(f64, f64, String)]) -> String {
+    let segs = group_words(words, &GroupOpts::default());
+    let cues: Vec<crate::model::Cue> = to_cues(&segs, 42, 2, 1.0, ("", ""))
+        .into_iter()
+        .enumerate()
+        .map(|(i, (start, end, text))| crate::model::Cue { id: i as crate::model::Id + 1, start, end, text })
+        .collect();
+    crate::engine::subtitles::to_srt(&cues)
+}
+
+/// `{clip_id, words:[{start,end,text}]}`, pretty-printed.
+pub fn transcript_json(clip: crate::model::Id, words: &[(f64, f64, String)]) -> String {
+    let words: Vec<serde_json::Value> =
+        words.iter().map(|w| serde_json::json!({"start": w.0, "end": w.1, "text": w.2})).collect();
+    serde_json::to_string_pretty(&serde_json::json!({"clip_id": clip, "words": words})).unwrap_or_default()
+}
+
+/// Export format by name or file extension ("txt" | "srt" | "json"), anything else = None.
+pub fn export_format(name: &str) -> Option<&'static str> {
+    match name.trim().trim_start_matches('.').to_ascii_lowercase().as_str() {
+        "txt" | "text" => Some("txt"),
+        "srt" => Some("srt"),
+        "json" => Some("json"),
+        _ => None,
+    }
+}
+
+/// The transcript of `clip` rendered as `format` (see `export_format`).
+pub fn export_transcript(format: &str, clip: crate::model::Id, words: &[(f64, f64, String)]) -> String {
+    match format {
+        "srt" => transcript_srt(words),
+        "json" => transcript_json(clip, words),
+        _ => transcript_text(words),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -766,5 +888,59 @@ mod tests {
         assert!(install_hint().contains("whisper-cli.exe"));
         assert_eq!(short_label("a very long transcript line", 6), "a very…");
         assert_eq!(short_label("short", 20), "short");
+    }
+
+    // ---- ws:transcript-captions ----
+    fn words(list: &[(f64, f64, &str)]) -> Vec<(f64, f64, String)> {
+        list.iter().map(|(a, b, w)| (*a, *b, w.to_string())).collect()
+    }
+
+    #[test]
+    fn filler_ranges_pads_and_merges() {
+        let w = words(&[
+            (0.0, 0.3, "So,"),
+            (0.4, 0.6, "Um,"),   // hit: padded to (0.28, 0.72)
+            (0.7, 0.9, "uh"),    // hit within MERGE_GAP of the last: merged into one range
+            (1.0, 1.4, "this"),
+            (1.5, 1.8, "is"),
+            (3.0, 3.2, "you"),   // "you know" is a two-word filler
+            (3.2, 3.5, "know?"),
+            (3.6, 4.0, "great"),
+            (9.0, 9.3, "LIKE."), // case/punctuation-insensitive
+        ]);
+        let r = filler_ranges(&w, FILLER_WORDS, 120);
+        assert_eq!(r.len(), 3, "{r:?}");
+        assert!((r[0].0 - 0.28).abs() < 1e-9 && (r[0].1 - 1.02).abs() < 1e-9, "um+uh merged, padded: {:?}", r[0]);
+        assert!((r[1].0 - 2.88).abs() < 1e-9 && (r[1].1 - 3.62).abs() < 1e-9, "the phrase spans both words: {:?}", r[1]);
+        assert!((r[2].0 - 8.88).abs() < 1e-9, "{:?}", r[2]);
+        // a custom list overrides the default; nothing matches → nothing
+        assert_eq!(filler_ranges(&w, &["great"], 0), vec![(3.6, 4.0)]);
+        assert!(filler_ranges(&w, &["nope"], 100).is_empty());
+        assert!(filler_ranges(&[], FILLER_WORDS, 100).is_empty());
+        // the pad never goes negative
+        let head = words(&[(0.0, 0.2, "um")]);
+        assert_eq!(filler_ranges(&head, FILLER_WORDS, 500), vec![(0.0, 0.7)]);
+    }
+
+    #[test]
+    fn transcript_export_formats() {
+        let w = words(&[(0.0, 0.4, "Hello"), (0.5, 0.9, "there."), (2.0, 2.4, "Bye")]);
+        assert_eq!(transcript_text(&w), "Hello there.\nBye");
+        let srt = transcript_srt(&w);
+        assert!(srt.starts_with("1\n00:00:00,000 --> 00:00:01,000\nHello there.\n\n2\n00:00:02,000"), "{srt}");
+        let back = crate::engine::subtitles::parse(&srt);
+        assert_eq!(back.len(), 2, "the SRT parses back into two cues");
+        let json: serde_json::Value = serde_json::from_str(&transcript_json(7, &w)).expect("valid JSON");
+        assert_eq!(json["clip_id"], 7);
+        assert_eq!(json["words"].as_array().unwrap().len(), 3);
+        assert_eq!(json["words"][1]["text"], "there.");
+        assert_eq!(json["words"][2]["start"], 2.0);
+        assert_eq!(export_format(".SRT"), Some("srt"));
+        assert_eq!(export_format("json"), Some("json"));
+        assert_eq!(export_format("text"), Some("txt"));
+        assert_eq!(export_format("docx"), None);
+        assert_eq!(export_transcript("txt", 7, &w), transcript_text(&w));
+        assert_eq!(export_transcript("json", 7, &w), transcript_json(7, &w));
+        assert!(export_transcript("srt", 7, &[]).is_empty());
     }
 }

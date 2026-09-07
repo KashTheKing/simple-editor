@@ -284,6 +284,9 @@ pub(crate) enum Glyph {
     /// Two chain links — the track header's Ripple (sync) toggle.
     Link,
     // ---- ws:transcript-captions ----
+    /// Three text lines of decreasing width, the middle one's leading word lit (the Transcript
+    /// section / "View transcript" window).
+    Transcript,
     // ---- ws:pro-monitor ----
     // ---- ws:pro-timeline ----
     // ---- ws:text-titles ----
@@ -412,6 +415,7 @@ impl Glyph {
         Glyph::Lock,
         Glyph::Link,
         // ---- ws:transcript-captions ----
+        Glyph::Transcript,
         // ---- ws:pro-monitor ----
         // ---- ws:pro-timeline ----
         // ---- ws:text-titles ----
@@ -544,6 +548,7 @@ impl Glyph {
             Glyph::Lock => "lock",
             Glyph::Link => "link",
             // ---- ws:transcript-captions ----
+            Glyph::Transcript => "transcript",
             // ---- ws:pro-monitor ----
             // ---- ws:pro-timeline ----
             // ---- ws:text-titles ----
@@ -1922,6 +1927,14 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
             }
         }
         // ---- ws:transcript-captions ----
+        // transcript: three text lines of decreasing width; the middle line's leading word is lit
+        Glyph::Transcript => {
+            let dim = fg.gamma_multiply(0.55);
+            p.line_segment([c + egui::vec2(-6.5, -4.5), c + egui::vec2(6.5, -4.5)], Stroke::new(1.6, dim));
+            p.line_segment([c + egui::vec2(-6.5, 0.0), c + egui::vec2(-1.5, 0.0)], Stroke::new(2.4, fg));
+            p.line_segment([c + egui::vec2(0.5, 0.0), c + egui::vec2(4.5, 0.0)], Stroke::new(1.6, dim));
+            p.line_segment([c + egui::vec2(-6.5, 4.5), c + egui::vec2(2.0, 4.5)], Stroke::new(1.6, dim));
+        }
         // ---- ws:pro-monitor ----
           // ---- ws:pro-timeline ----
           // ---- ws:text-titles ----

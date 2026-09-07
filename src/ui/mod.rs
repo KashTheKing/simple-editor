@@ -42,6 +42,8 @@ pub mod subtitles_ui;
 pub mod timeline;
 pub mod tools;
 pub mod tracking_ui;
+// ---- ws:transcript-captions ----
+pub mod transcript_ui;
 pub mod transitions_ui;
 
 use crate::model::{Animated, Id, Mask, MaskShape, Project, LABEL_COLORS};

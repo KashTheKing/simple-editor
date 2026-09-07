@@ -225,9 +225,10 @@ impl Compositor {
         }
         if let Some((cue_text, style)) = crate::engine::subtitles::cue_layer_at(project, t) {
             let sk = style.cache_key();
-            if self.sub_key != sk || self.sub_style.text != cue_text {
-                self.sub_style.clone_from(style);
-                self.sub_style.text = cue_text.to_string();
+            // ws:transcript-captions: `cue_layer_at` returns Cows (owned only on the karaoke path)
+            if self.sub_key != sk || self.sub_style.text != *cue_text {
+                self.sub_style.clone_from(&style);
+                self.sub_style.text = cue_text.into_owned();
                 self.sub_key = sk;
             }
             let s = w as f32 / project.width.max(1) as f32;

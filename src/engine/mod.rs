@@ -22,4 +22,6 @@ pub mod subtitles;
 pub mod text;
 pub mod tracking;
 pub mod transcribe;
+// ---- ws:transcript-captions ----
+pub mod tts;
 pub mod xmeml;

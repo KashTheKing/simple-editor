@@ -80,6 +80,9 @@ const OP_TOOLS: &[(&str, &str)] = &[
     // Documentation only (like forgiveness's rows below): `consolidate_assets_copy` is an associated
     // fn (file I/O, no `&mut self`), so the scan never sees it — it is media.consolidate's copy phase.
     ("consolidate_assets_copy", "media.consolidate"),
+    // ---- ws:transcript-captions ----
+    ("set_transcript", "transcript.set"),
+    ("cut_word_ranges", "transcript.cut_words"),
 ];
 
 /// (Project op fn name, why it has no MCP tool yet). Every entry is a real, deliberate gap — either a

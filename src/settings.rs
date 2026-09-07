@@ -352,6 +352,12 @@ pub struct Settings {
     // ---- ws:source-monitor ----
     // ---- ws:timeline-trim-gestures ----
     // ---- ws:transcript-captions ----
+    /// Filler words/phrases the Transcript section's "Mark / Remove fillers" looks for — matched
+    /// case- and punctuation-insensitively, multi-word phrases allowed. Seeded from
+    /// `engine::transcribe::FILLER_WORDS`; the chip list in the section edits it in place.
+    pub filler_words: Vec<String>,
+    /// Padding (ms) added on both sides of every filler hit before it is cut.
+    pub filler_pad_ms: u32,
     // ---- ws:pro-monitor ----
     // ---- ws:pro-timeline ----
     // ---- ws:text-titles ----
@@ -466,6 +472,8 @@ impl Default for Settings {
             // ---- ws:source-monitor ----
             // ---- ws:timeline-trim-gestures ----
             // ---- ws:transcript-captions ----
+            filler_words: crate::engine::transcribe::FILLER_WORDS.iter().map(|s| s.to_string()).collect(),
+            filler_pad_ms: 120,
             // ---- ws:pro-monitor ----
             // ---- ws:pro-timeline ----
             // ---- ws:text-titles ----

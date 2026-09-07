@@ -10,7 +10,10 @@ mod planner;
 mod queries;
 mod sequences;
 mod shapes;
-mod subtitles;
+// ws:transcript-captions: `transcript_hits` is a free fn (search over `&[Transcript]`, no `Project`
+// method), so — same reasoning as `trim` below — the module is `pub` for `ui::transcript_ui` and
+// `ui::app::tools_transcript` to name it.
+pub mod subtitles;
 mod templates;
 // ws:trim-model: `TrackFlag`/`EditPoint`/`Side` are free-standing types (not `impl Project` methods),
 // so — unlike every other ops file, which never needs a module-path to be usable from outside

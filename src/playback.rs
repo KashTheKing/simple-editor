@@ -1268,8 +1268,9 @@ pub(crate) fn decode_layers(
         }
     }
     if let Some((cue_text, base_style)) = crate::engine::subtitles::cue_layer_at(project, t) {
-        let mut style = base_style.clone();
-        style.text = cue_text.to_string();
+        // ws:transcript-captions: `cue_layer_at` returns Cows (owned only on the karaoke path)
+        let mut style = base_style.into_owned();
+        style.text = cue_text.into_owned();
         let img = text.render(&style, w as f32 / project.width.max(1) as f32);
         if img.width > 1 || img.height > 1 {
             set.layers.push((LayerSet::SUBTITLES, img));
