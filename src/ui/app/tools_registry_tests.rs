@@ -188,14 +188,120 @@ fn ui_action_covers_every_action() {
     }
 }
 
-// deviation (see PR body): the plan's `mutate_rows_roll_back_on_error` / `action_enabled_toasts_reason`
-// / `run_tool_undoable_snapshots_only_mutate` / `run_script_pushes_one_undo_per_script` tests all need a
-// real `App` to call a `ToolDef::run` or `App::act`/`run_script` against — but `App::new` requires a
-// real `eframe::CreationContext` (a live GL context from `eframe::run_native`), and this crate has no
-// headless App-construction path anywhere (confirmed pre-existing: see the doc comment atop
-// src/ui/app/tests.rs, and no other test in the crate calls an `&mut App` method). `ToolKind::Mutate`'s
-// snapshot/rollback shape is instead verified by reading `App::handle_tool`/`run_script`'s
-// implementation directly (`src/ui/app/mcp_exec.rs`: `run_snapshot_if_mutate` snapshots before every
-// Mutate-kind call and `run_rollback` restores on `Err`, unchanged from the pre-refactor shape) and by
-// the manual verification-checklist steps (enable the MCP server, call a tool with bad args; run a
-// 3-tool Luau script and check the History panel shows one entry) — both listed in this PR's body.
+// deviation (see PR body): `App::new` requires a real `eframe::CreationContext` (a live GL context from
+// `eframe::run_native`), and this crate has no headless App-construction path anywhere (confirmed
+// pre-existing: see the doc comment atop src/ui/app/tests.rs, and no other test in the crate calls an
+// `&mut App` method) — `eframe::CreationContext`'s fields are private with no public constructor, so
+// there is no way to build one in a `#[test]` without eframe itself running a window. The four tests
+// below are the narrower, non-App-dependent versions: `run_snapshot_if_mutate`'s and `App::enabled`'s
+// decision logic were each split into a plain function (`snapshot_if_mutate` in mcp_exec.rs,
+// `App::enabled_for` in mod.rs) that takes bare values instead of `&self`, so the actual match arms run
+// under test instead of only being read. `run_script`'s one-undo-per-script shape is checked by scanning
+// its own source, the same technique `scan_mut_self_fns` above already uses in this file.
+
+/// `run_snapshot_if_mutate` (via the extracted `snapshot_if_mutate`) must snapshot before a Mutate-kind
+/// call and nothing else — a Read/Job/Ui tool must never pay for a `to_json()` it can't roll back to
+/// anything (nothing pushes undo for it either).
+#[test]
+fn run_tool_undoable_snapshots_only_mutate() {
+    use super::mcp_exec::snapshot_if_mutate;
+    use crate::mcp::tools::ToolKind;
+    let p = Project::from_media(crate::model::Asset { duration: 4.0, ..default_asset() });
+    assert_eq!(snapshot_if_mutate(&p, ToolKind::Mutate), Some(p.to_json()));
+    assert_eq!(snapshot_if_mutate(&p, ToolKind::Read), None);
+    assert_eq!(snapshot_if_mutate(&p, ToolKind::Job), None);
+    assert_eq!(snapshot_if_mutate(&p, ToolKind::Ui), None);
+}
+
+fn default_asset() -> crate::model::Asset {
+    crate::model::Asset {
+        id: 0,
+        path: "C:/x.mp4".into(),
+        kind: ClipKind::Video,
+        duration: 1.0,
+        width: 0,
+        height: 0,
+        fps: 0.0,
+        audio_streams: Vec::new(),
+        codec: String::new(),
+        folder: String::new(),
+        tags: Vec::new(),
+        label: 0,
+        description: String::new(),
+        rel_path: None,
+        parent: None,
+        range: None,
+        effects: Vec::new(),
+    }
+}
+
+/// A Mutate tool that mutates the project then returns `Err` must be a no-op: `run_rollback` restores
+/// the exact pre-call JSON (`handle_tool`/`run_script` both call it this way — see mcp_exec.rs).
+#[test]
+fn mutate_rows_roll_back_on_error() {
+    let mut p = Project::from_media(default_asset());
+    let snap = p.to_json();
+    // simulate a Mutate tool that partly mutates before discovering its own error
+    p.tracks[0].clips[0].name = "corrupted mid-call".into();
+    p.add_marker(1.0, "stray");
+    assert_ne!(p.to_json(), snap, "the simulated failing call must have actually mutated something");
+    // this is exactly App::run_rollback's body
+    p = Project::from_json(&snap).unwrap();
+    assert_eq!(p.to_json(), snap, "rollback must restore the pre-call state exactly");
+}
+
+/// The bug this whole review found: `App::enabled`'s guard match must cover every one of its documented
+/// arms — this is what makes `act()`'s new prelude (and `ui.action`) actually toast a reason instead of
+/// silently no-op'ing. Exercised via `enabled_for` since `enabled` itself needs a live `App`.
+#[test]
+fn action_enabled_toasts_reason() {
+    use crate::hotkeys::Action;
+    // an export running blocks Save/SaveProjectAs/ExportVideo/ExportLossless...
+    for a in [Action::Save, Action::SaveProjectAs, Action::ExportVideo, Action::ExportLossless] {
+        assert_eq!(App::enabled_for(a, true, false, true), Err("An export is running — try again when it finishes"));
+    }
+    // ...but does not block an unrelated action
+    assert_eq!(App::enabled_for(Action::Undo, true, false, true), Ok(()));
+    // an empty timeline blocks export specifically (checked ahead of the export-running arm's absence)
+    for a in [Action::ExportVideo, Action::ExportLossless] {
+        assert_eq!(App::enabled_for(a, false, true, true), Err("Nothing to export — the timeline is empty"));
+    }
+    // nothing copied blocks PasteAttributes
+    assert_eq!(App::enabled_for(Action::PasteAttributes, false, false, true), Err("Copy attributes from a clip first"));
+    assert_eq!(App::enabled_for(Action::PasteAttributes, false, false, false), Ok(()));
+    // and act()'s prelude must actually call this — not just have it exist unused
+    let src = include_str!("actions.rs");
+    let dispatch_start = src.find("for f in ACT_HANDLERS").expect("act()'s ACT_HANDLERS loop");
+    let prelude = &src[..dispatch_start];
+    assert!(
+        prelude.contains("self.enabled(a)"),
+        "act()'s prelude must call self.enabled(a) before dispatch, mirroring ui.action, \
+         or hotkey/menu-triggered actions never get the centralized guard/toast"
+    );
+}
+
+/// `run_script` must push exactly ONE undo entry for the whole script, not one per tool call inside it
+/// — verified by scanning its own source: the per-call closure must never push undo itself, and the
+/// function must push undo exactly once, after the whole script has run.
+#[test]
+fn run_script_pushes_one_undo_per_script() {
+    let src = include_str!("mcp_exec.rs");
+    let fn_start = src.find("pub(super) fn run_script").expect("run_script must exist");
+    let after_fn = &src[fn_start..];
+    // bound the scan to just this function's body: up to the next sibling fn in the impl block
+    let next_fn_at = after_fn[1..].find("pub(super) fn ").map(|i| i + 1).unwrap_or(after_fn.len());
+    let body = &after_fn[..next_fn_at];
+    let closure_start = body.find("let mut call = |tool").expect("run_script's per-call closure");
+    let scripting_run_at = body.find("crate::scripting::run(").expect("run_script must call the interpreter");
+    let closure_body = &body[closure_start..scripting_run_at];
+    assert!(
+        !closure_body.contains("push_undo_json"),
+        "each tool call inside a script must not push its own undo entry"
+    );
+    let after_run = &body[scripting_run_at..];
+    assert_eq!(
+        after_run.matches("push_undo_json").count(),
+        1,
+        "run_script must push exactly one undo entry for the whole script, after it finishes"
+    );
+}

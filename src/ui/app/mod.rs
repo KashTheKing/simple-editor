@@ -1394,16 +1394,26 @@ impl App {
     /// migrates them here when the palette actually needs to grey out rows. `Err`'s text is the toast
     /// reason a caller (`ui.action`, and `act()`'s own prelude) shows the user.
     pub(crate) fn enabled(&self, a: Action) -> Result<(), &'static str> {
+        Self::enabled_for(a, self.export.is_some(), self.timeline_is_empty(), self.attrs.is_none())
+    }
+
+    /// The pure match behind `enabled`, split out so `action_enabled_toasts_reason` can exercise every
+    /// arm directly (plain bools in, no live `App` — see that test's doc comment for why one isn't
+    /// buildable here today).
+    pub(crate) fn enabled_for(
+        a: Action,
+        export_running: bool,
+        timeline_empty: bool,
+        no_attrs_copied: bool,
+    ) -> Result<(), &'static str> {
         match a {
-            Action::Save | Action::SaveProjectAs | Action::ExportVideo | Action::ExportLossless
-                if self.export.is_some() =>
-            {
+            Action::Save | Action::SaveProjectAs | Action::ExportVideo | Action::ExportLossless if export_running => {
                 Err("An export is running — try again when it finishes")
             }
-            Action::ExportVideo | Action::ExportLossless if self.timeline_is_empty() => {
+            Action::ExportVideo | Action::ExportLossless if timeline_empty => {
                 Err("Nothing to export — the timeline is empty")
             }
-            Action::PasteAttributes if self.attrs.is_none() => Err("Copy attributes from a clip first"),
+            Action::PasteAttributes if no_attrs_copied => Err("Copy attributes from a clip first"),
             _ => Ok(()),
         }
     }

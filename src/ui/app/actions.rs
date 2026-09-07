@@ -4,9 +4,11 @@ use super::*;
 impl App {
     pub(super) fn act(&mut self, a: Action) {
         use Action::*;
-        // an export writes the timeline: block only saving/exporting, keep editing usable
-        if self.export.is_some() && matches!(a, Save | SaveProjectAs | ExportVideo | ExportLossless) {
-            self.toast("An export is running — try again when it finishes");
+        // single source of truth for the centralized guards (export running, empty timeline, no
+        // copied attributes) — mirrors what ui.action already does via App::enabled, so every
+        // dispatch path (hotkey, menu, MCP) gets the identical toasted behavior.
+        if let Err(reason) = self.enabled(a) {
+            self.toast(reason);
             return;
         }
         // ---- ws:registries-schema-hooks ----
@@ -282,9 +284,7 @@ impl App {
                 None => self.toast("Select a clip to copy attributes from"),
             },
             PasteAttributes => {
-                if self.attrs.is_none() {
-                    self.toast("Copy attributes from a clip first (Ctrl+Alt+C)");
-                } else if self.selection.is_empty() {
+                if self.selection.is_empty() {
                     self.toast("Select the clips to paste onto");
                 } else {
                     self.paste_ui.open = true;

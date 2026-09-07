@@ -2,6 +2,13 @@ use super::tools_helpers::*;
 use super::*;
 use crate::mcp::tools::{ToolKind, ToolOutcome};
 
+/// The pure decision half of `App::run_snapshot_if_mutate`: `Some(project.to_json())` iff `kind` is
+/// `ToolKind::Mutate`. Split out so `run_tool_undoable_snapshots_only_mutate` can exercise it against a
+/// bare `Project` — no `App` (and so no live `eframe::CreationContext`) required.
+pub(super) fn snapshot_if_mutate(project: &Project, kind: ToolKind) -> Option<String> {
+    (kind == ToolKind::Mutate).then(|| project.to_json())
+}
+
 impl App {
     pub(super) fn run_script(&mut self, path: &std::path::Path) {
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -71,7 +78,7 @@ impl App {
     /// that). Callers push undo themselves (`handle_tool` per call, `run_script` per whole script) —
     /// this only decides WHETHER to snapshot, not when to push.
     pub(super) fn run_snapshot_if_mutate(&self, def: &mcp::tools::ToolDef) -> Option<String> {
-        (def.kind == ToolKind::Mutate).then(|| self.project.to_json())
+        snapshot_if_mutate(&self.project, def.kind)
     }
 
     /// Restore `snap` after a Mutate-kind call returned `Err` (some arms mutate before returning Err —
