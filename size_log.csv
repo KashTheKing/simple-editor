@@ -1,7 +1,5 @@
 sha,bytes,note
 aaa3fdc,15970816,"baseline pre-size-diet - measured fresh on main at aaa3fdc, supersedes the stale 6b92982/15732736 reading from before #17 registries-schema-hooks landed"
 aaa3fdc,13680128,"size-diet #18: drop egui_commonmark/default_fonts/persistence, deps opt-level=s"
-bc4c19e,10193408,color-engine
-bc4c19e,10193408,color-engine
 bc4c19e,10121728,"true baseline (measured fresh from bc4c19e's committed release profile - this worktree's own copy of size_log.csv predates the size_log.csv correction pushed to main in 0827f9a)"
-bc4c19e,10193408,"color-engine #24: EffectKind::{Lut,Primaries,Qualifier}, .cube parser, builtin_looks/apply_look (real delta vs true baseline: +71,680 B / +70 KB)"
+bc4c19e,10193408,"color-engine #24: EffectKind::{Lut,Primaries,Qualifier,FrameBlend}, .cube parser, builtin_looks/apply_look, frame_stats, master/source-clip effects (real delta vs true baseline: +71,680 B / +70 KB)"
