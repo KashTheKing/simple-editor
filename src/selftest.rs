@@ -468,6 +468,27 @@ pub fn run(args: &[String]) -> i32 {
             });
         }
         check!(!ctx2.has_requested_repaint(), "idle frame with the palette open requested a repaint");
+        // ---- ws:audio-dsp-automation ----: and with the Mixer pane open, a bus selected and a live
+        // LUFS row under its peak meter (plain text — no timed repaint of its own), 30 idle frames
+        // still request nothing.
+        let ctx3 = eframe::egui::Context::default();
+        let mut mp = Project::new();
+        mp.main_bus();
+        let bus = mp.add_bus("Music");
+        let mut ms = crate::ui::mixer_ui::MixerState::default();
+        ms.selected_bus = Some(bus);
+        let mut graph = crate::engine::mixer_fx::BusGraph::new();
+        graph.sync(&mp);
+        graph.ingest(bus, &vec![0.1f32; 2048]);
+        let pal = crate::theme::Palette::new(true, eframe::egui::Color32::WHITE);
+        for _ in 0..30 {
+            let _ = ctx3.run(eframe::egui::RawInput::default(), |ctx| {
+                eframe::egui::CentralPanel::default().show(ctx, |ui| {
+                    let _ = crate::ui::mixer_ui::show(ui, &mut ms, &mut mp, &[], &graph, 0.0, &pal, &mut |_| {});
+                });
+            });
+        }
+        check!(!ctx3.has_requested_repaint(), "idle frame with the Mixer open requested a repaint");
         Ok(())
     });
 

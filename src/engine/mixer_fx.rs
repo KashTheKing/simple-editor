@@ -20,6 +20,8 @@
 
 use crate::media::SAMPLE_RATE;
 use crate::model::{AudioFilter, Bus, FilterKind, Id, Project};
+use std::collections::VecDeque;
+use std::sync::Mutex;
 
 /// Linear amplitude of a dB value.
 pub fn db_to_lin(db: f32) -> f32 {
@@ -281,7 +283,35 @@ enum Dsp {
     Gain {
         prev: f32,
     },
+    // ---- ws:audio-dsp-automation ----
+    /// Three cascaded notches (base, 2×, 3×) × 2 channels, harmonic-major.
+    DeHum(Vec<Biquad>),
+    /// Lookahead brickwall: the signal is delayed `lookahead` frames through `ring` while a linked
+    /// peak envelope (instant attack, timed release) computed from the *undelayed* input drives the gain.
+    Limiter {
+        env: f32,
+        gain: f32,
+        ring: Vec<f32>,
+        pos: usize,
+    },
+    /// High-passed sidechain (one biquad per channel) feeding a linked envelope + gain.
+    DeEsser {
+        hp: [Biquad; 2],
+        env: f32,
+        gain: f32,
+    },
 }
+
+// ---- ws:audio-dsp-automation ----
+/// Notch width of each De-hum harmonic (Q, clamped to `coeffs`'s ceiling): a deep RBJ peaking cut's
+/// skirt is wider than its Q alone suggests (the -3 dB point moves outward as the center-dB gets more
+/// negative), so this sits at the max Q `coeffs` allows to keep a 50 Hz notch from also biting 60 Hz
+/// mains (and vice versa) — measured <5 dB loss 10 Hz off-center at the default 40 dB depth.
+/// ponytail: a Peak EQ at a deeply negative gain stands in for a true RBJ notch; dedicated notch
+/// coefficients if the attenuation ever falls short.
+const DEHUM_Q: f32 = 20.0;
+/// Longest Limiter lookahead the parameter allows, in seconds (`F_LIMITER`'s "Lookahead ms" max).
+const MAX_LOOKAHEAD_S: f32 = 0.02;
 
 /// Per-filter DSP state (biquad histories, delay lines, envelopes).
 pub struct FilterState {
@@ -305,6 +335,15 @@ impl FilterState {
             FilterKind::Compressor | FilterKind::NoiseGate => Dsp::Dyn { env: 0.0, gain: 1.0 },
             FilterKind::Noise => Dsp::Noise { rng: 0x1234_5678, pink: [[0.0; 3]; 2], phase: 0.0, prev: f32::NAN },
             FilterKind::Gain => Dsp::Gain { prev: f32::NAN },
+            // ---- ws:audio-dsp-automation ----
+            FilterKind::DeHum => Dsp::DeHum(vec![Biquad::default(); 3 * 2]),
+            FilterKind::Limiter => Dsp::Limiter {
+                env: 0.0,
+                gain: 1.0,
+                ring: vec![0.0; ((sr * MAX_LOOKAHEAD_S) as usize + 2) * 2],
+                pos: 0,
+            },
+            FilterKind::DeEsser => Dsp::DeEsser { hp: [Biquad::default(); 2], env: 0.0, gain: 1.0 },
         };
         Self { kind: f.kind, sr, dsp }
     }
@@ -465,8 +504,255 @@ impl FilterState {
                     fr[1] *= g;
                 }
             }
+            // ---- ws:audio-dsp-automation ----
+            (Dsp::DeHum(bq), _) => {
+                let base = p(0).clamp(40.0, 70.0);
+                let depth = -p(1).clamp(6.0, 60.0);
+                for (h, b) in bq.chunks_exact_mut(2).enumerate() {
+                    let c = coeffs(Band::Peak, base * (h + 1) as f32, DEHUM_Q, depth, sr);
+                    b[0].c = c;
+                    b[1].c = c;
+                }
+                for fr in buf.chunks_exact_mut(2) {
+                    for b in bq.chunks_exact_mut(2) {
+                        fr[0] = b[0].tick(fr[0]);
+                        fr[1] = b[1].tick(fr[1]);
+                    }
+                }
+            }
+            (Dsp::Limiter { env, gain, ring, pos }, _) => {
+                let ceil = db_to_lin(p(0).clamp(-24.0, 0.0));
+                let cap = ring.len() / 2;
+                let look = ((p(1).clamp(0.0, MAX_LOOKAHEAD_S * 1000.0) * 0.001 * sr) as usize).min(cap - 1);
+                let rl = coef(p(2), sr);
+                for fr in buf.chunks_exact_mut(2) {
+                    // the envelope sees the sample `look` frames before it reaches the output
+                    let peak = fr[0].abs().max(fr[1].abs());
+                    *env = if peak > *env { peak } else { *env + (peak - *env) * rl };
+                    *gain = if *env > ceil { ceil / *env } else { 1.0 };
+                    let rp = (*pos + cap - look) % cap;
+                    let (dl, dr) = (ring[rp * 2], ring[rp * 2 + 1]);
+                    ring[*pos * 2] = fr[0];
+                    ring[*pos * 2 + 1] = fr[1];
+                    *pos = (*pos + 1) % cap;
+                    // the gain does the work; the clamp is the brickwall guarantee for a release that
+                    // outruns the lookahead
+                    fr[0] = (dl * *gain).clamp(-ceil, ceil);
+                    fr[1] = (dr * *gain).clamp(-ceil, ceil);
+                }
+            }
+            (Dsp::DeEsser { hp, env, gain }, _) => {
+                let c = coeffs(Band::HighPass, p(0).clamp(2000.0, 12000.0), 0.707, 0.0, sr);
+                hp[0].c = c;
+                hp[1].c = c;
+                let thr = db_to_lin(p(1).clamp(-60.0, 0.0));
+                let ex = 1.0 - 1.0 / p(2).max(1.0);
+                let (at, rl) = (coef(1.0, sr), coef(50.0, sr));
+                for fr in buf.chunks_exact_mut(2) {
+                    let side = hp[0].tick(fr[0]).abs().max(hp[1].tick(fr[1]).abs());
+                    let c = if side > *env { at } else { rl };
+                    *env += (side - *env) * c;
+                    *gain = if *env > thr { (thr / *env).powf(ex) } else { 1.0 };
+                    fr[0] *= *gain;
+                    fr[1] *= *gain;
+                }
+            }
             _ => {}
         }
+    }
+}
+
+// ---- ws:audio-dsp-automation ----
+
+// ---------- loudness ----------
+
+/// ITU-R BS.1770 K-weighting at 48 kHz (stage 1 high shelf, stage 2 high-pass), normalised
+/// `[b0, b1, b2, a1, a2]`.
+const K_SHELF: [f32; 5] = [1.535_124_9, -2.691_696_2, 1.198_392_8, -1.690_659_3, 0.732_480_8];
+const K_HPF: [f32; 5] = [1.0, -2.0, 1.0, -1.990_047_5, 0.990_072_25];
+/// Gating-block hop: 100 ms sub-blocks, four of which make one 400 ms momentary block (the standard's
+/// 75 % overlap falls out of that for free).
+const LUFS_HOP: usize = SAMPLE_RATE as usize / 10;
+/// Integrated history cap, in 100 ms sub-blocks (one hour).
+const LUFS_MAX_BLOCKS: usize = 36_000;
+
+/// K-weighted loudness meter: momentary (400 ms) and gated integrated, in LUFS.
+/// ponytail: BS.1770-shaped (K-weighting, 400 ms blocks, -70 LUFS absolute + -10 LU relative gate)
+/// but not calibrated against a reference — labelled "LUFS (approx)" in the UI. Fed at UI rate from
+/// `BusMeterFeed`, never from the realtime mix.
+#[derive(Clone, Default)]
+pub struct Lufs {
+    k: [[Biquad; 2]; 2],
+    /// Sum of squares of the K-weighted samples in the current 100 ms sub-block, and its frame count.
+    acc: f32,
+    n: usize,
+    /// Mean square (L + R) per completed 100 ms sub-block, oldest first.
+    blocks: Vec<f32>,
+}
+
+impl Lufs {
+    pub fn new() -> Self {
+        let mut s = Self::default();
+        for ch in &mut s.k {
+            ch[0].c = K_SHELF;
+            ch[1].c = K_HPF;
+        }
+        s
+    }
+    /// One stereo frame.
+    pub fn push(&mut self, l: f32, r: f32) {
+        let (l1, r1) = (self.k[0][0].tick(l), self.k[1][0].tick(r));
+        let (wl, wr) = (self.k[0][1].tick(l1), self.k[1][1].tick(r1));
+        self.acc += wl * wl + wr * wr;
+        self.n += 1;
+        if self.n >= LUFS_HOP {
+            if self.blocks.len() >= LUFS_MAX_BLOCKS {
+                self.blocks.remove(0);
+            }
+            self.blocks.push(self.acc / self.n as f32);
+            self.acc = 0.0;
+            self.n = 0;
+        }
+    }
+    /// Interleaved stereo block.
+    pub fn push_block(&mut self, buf: &[f32]) {
+        for fr in buf.chunks_exact(2) {
+            self.push(fr[0], fr[1]);
+        }
+    }
+    /// Mean square of the 400 ms window ending at sub-block `end` (exclusive).
+    fn window(&self, end: usize) -> f32 {
+        let start = end.saturating_sub(4);
+        let w = &self.blocks[start..end];
+        if w.is_empty() {
+            0.0
+        } else {
+            w.iter().sum::<f32>() / w.len() as f32
+        }
+    }
+    /// Loudness of the last 400 ms; -inf until the first sub-block completes.
+    pub fn momentary(&self) -> f32 {
+        lufs(self.window(self.blocks.len()))
+    }
+    /// Gated loudness since `reset` (absolute gate -70 LUFS, then -10 LU below the ungated mean).
+    pub fn integrated(&self) -> f32 {
+        let blocks: Vec<f32> = (4..=self.blocks.len()).map(|e| self.window(e)).filter(|&m| lufs(m) > -70.0).collect();
+        if blocks.is_empty() {
+            return f32::NEG_INFINITY;
+        }
+        let ungated = blocks.iter().sum::<f32>() / blocks.len() as f32;
+        let gate = lufs(ungated) - 10.0;
+        let kept: Vec<f32> = blocks.into_iter().filter(|&m| lufs(m) > gate).collect();
+        if kept.is_empty() {
+            return f32::NEG_INFINITY;
+        }
+        lufs(kept.iter().sum::<f32>() / kept.len() as f32)
+    }
+    /// Forget the integrated history (a new playback pass); the filters keep their state.
+    pub fn reset(&mut self) {
+        self.blocks.clear();
+        self.acc = 0.0;
+        self.n = 0;
+    }
+}
+
+/// Mean square → LUFS (`-0.691 + 10 log10(Σ)`).
+fn lufs(ms: f32) -> f32 {
+    if ms <= 0.0 {
+        f32::NEG_INFINITY
+    } else {
+        -0.691 + 10.0 * ms.log10()
+    }
+}
+
+// ---------- repair chains ----------
+
+/// Essential-Sound-style one-click chains: `(preset id, bus label, filters with param overrides)`.
+/// `Project::apply_repair` builds a bus from one and routes clips through it — fully editable in the
+/// Mixer afterwards, never an opaque one-shot.
+pub const REPAIR_PRESETS: &[(&str, &str, &[(FilterKind, &[(&str, f32)])])] = &[
+    (
+        "repair",
+        "Repair",
+        &[
+            (FilterKind::HighPass, &[("Frequency", 80.0)]),
+            (FilterKind::DeHum, &[("Base Hz", 60.0)]),
+            (FilterKind::NoiseGate, &[("Threshold dB", -45.0)]),
+            (FilterKind::Compressor, &[("Threshold dB", -18.0), ("Ratio", 4.0)]),
+            (FilterKind::Limiter, &[("Ceiling dB", -3.0)]),
+        ],
+    ),
+    (
+        "clarity",
+        "Clarity",
+        &[
+            (FilterKind::Eq, &[("High-mid gain dB", 3.0), ("High-mid freq", 3000.0)]),
+            (FilterKind::Compressor, &[("Threshold dB", -20.0), ("Ratio", 3.0)]),
+        ],
+    ),
+];
+
+/// One preset's filter chain, params applied.
+pub fn repair_chain(preset: &str) -> Option<(&'static str, Vec<AudioFilter>)> {
+    let (_, label, chain) = REPAIR_PRESETS.iter().find(|(id, ..)| *id == preset)?;
+    let filters = chain
+        .iter()
+        .map(|(kind, over)| {
+            let mut f = AudioFilter::new(*kind);
+            for (name, v) in over.iter() {
+                if let Some(i) = kind.params().iter().position(|s| s.name == *name) {
+                    f.params[i].value = *v as f64;
+                }
+            }
+            f
+        })
+        .collect();
+    Some((label, filters))
+}
+
+// ---------- audio-thread → UI meter feed ----------
+
+/// Queued post-fader blocks the playback thread hands to the UI thread's `BusGraph` (`App.buses`), so
+/// the mixer pane's meters and LUFS read real audio instead of a never-flushed graph.
+/// ponytail: a mutex around two small queues (overwrite-oldest at `FEED_CAP`), not a lock-free SPSC
+/// ring — the audio thread already takes a mutex per block for its output ring; a real lock-free
+/// queue if contention ever shows in a profile.
+pub struct BusMeterFeed {
+    q: Mutex<(VecDeque<(Id, Vec<f32>)>, Vec<Vec<f32>>)>,
+}
+
+/// Blocks kept before the oldest is overwritten (≈ 0.7 s at `playback::BLOCK`).
+const FEED_CAP: usize = 32;
+
+/// The one feed `playback.rs` publishes into and `App::sync_buses` drains.
+pub static METER_FEED: BusMeterFeed = BusMeterFeed::new();
+
+impl BusMeterFeed {
+    pub const fn new() -> Self {
+        Self { q: Mutex::new((VecDeque::new(), Vec::new())) }
+    }
+    /// One bus's interleaved post-fader block. Steady-state alloc-free: buffers cycle between the
+    /// queue and a free list.
+    pub fn push_block(&self, bus: Id, block: &[f32]) {
+        let mut g = self.q.lock().unwrap_or_else(|e| e.into_inner());
+        let (q, free) = &mut *g;
+        let mut v = if q.len() >= FEED_CAP { q.pop_front().map(|(_, v)| v).unwrap_or_default() } else { free.pop().unwrap_or_default() };
+        v.clear();
+        v.extend_from_slice(block);
+        q.push_back((bus, v));
+    }
+    /// Feed every queued block into `buses`' meters/loudness (UI thread).
+    pub fn drain_into(&self, buses: &mut BusGraph) {
+        let mut g = self.q.lock().unwrap_or_else(|e| e.into_inner());
+        let (q, free) = &mut *g;
+        while let Some((bus, v)) = q.pop_front() {
+            buses.ingest(bus, &v);
+            free.push(v);
+        }
+    }
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.q.lock().unwrap().0.len()
     }
 }
 
@@ -498,6 +784,9 @@ struct Slot {
     buf: Vec<f32>,
     states: Vec<FilterState>,
     meter: (f32, f32),
+    // ---- ws:audio-dsp-automation ----
+    /// UI-side only: fed by `ingest` (via `BusMeterFeed`), never by `flush` on the audio thread.
+    lufs: Lufs,
 }
 
 /// Bus routing + per-bus filter state, rebuilt when the bus set changes.
@@ -534,6 +823,7 @@ impl BusGraph {
                     buf: Vec::new(),
                     states: Vec::new(),
                     meter: (0.0, 0.0),
+                    lufs: Lufs::new(),
                 });
             }
         }
@@ -586,6 +876,7 @@ impl BusGraph {
                     buf: Vec::new(),
                     states: Vec::new(),
                     meter: (0.0, 0.0),
+                    lufs: Lufs::new(),
                 });
                 self.slots.len() - 1
             }
@@ -665,6 +956,59 @@ impl BusGraph {
     /// Peak level (L, R) of the last block, for the mixer meters.
     pub fn meter(&self, bus: Id) -> (f32, f32) {
         self.slots.iter().find(|s| s.id == bus).map(|s| s.meter).unwrap_or((0.0, 0.0))
+    }
+
+    // ---- ws:audio-dsp-automation ----
+    /// Hand every bus's post-fader block of the mix just finished to `feed` (audio thread, after
+    /// `Mixer::mix`). Nothing is published for a project without buses — the graph never ran.
+    pub fn publish(&self, feed: &BusMeterFeed) {
+        if !self.have_main {
+            return;
+        }
+        for s in &self.slots {
+            if !s.buf.is_empty() {
+                feed.push_block(s.id, &s.buf);
+            }
+        }
+    }
+    /// UI thread: fold one published post-fader block into the bus's peak meter and loudness. A bus
+    /// the graph does not know yet (project edited since the last `sync`) gets a slot on demand.
+    pub fn ingest(&mut self, bus: Id, block: &[f32]) {
+        let frames = block.len() / 2;
+        if frames == 0 {
+            return;
+        }
+        let i = match self.slots.iter().position(|s| s.id == bus) {
+            Some(i) => i,
+            None => {
+                self.buffer(bus, 0);
+                self.slots.len() - 1
+            }
+        };
+        let mut peak = (0.0f32, 0.0f32);
+        for fr in block.chunks_exact(2) {
+            peak.0 = peak.0.max(fr[0].abs());
+            peak.1 = peak.1.max(fr[1].abs());
+        }
+        let decay = (-(frames as f32) / (0.25 * SAMPLE_RATE as f32)).exp();
+        let s = &mut self.slots[i];
+        s.meter = ((s.meter.0 * decay).max(peak.0), (s.meter.1 * decay).max(peak.1));
+        s.lufs.push_block(block);
+    }
+    /// (momentary, integrated) LUFS of a bus, from the blocks `ingest` has seen; -inf before any.
+    pub fn lufs(&self, bus: Id) -> (f32, f32) {
+        self.slots
+            .iter()
+            .find(|s| s.id == bus)
+            .map(|s| (s.lufs.momentary(), s.lufs.integrated()))
+            .unwrap_or((f32::NEG_INFINITY, f32::NEG_INFINITY))
+    }
+    /// Zero the peak meters and restart the integrated loudness (playback stopped / a new pass).
+    pub fn reset_meters(&mut self) {
+        for s in &mut self.slots {
+            s.meter = (0.0, 0.0);
+            s.lufs.reset();
+        }
     }
 }
 
@@ -1184,5 +1528,176 @@ mod tests {
         g.sync(&p);
         assert_eq!(g.order().len(), 1);
         assert_eq!(g.meter(a), (0.0, 0.0));
+    }
+
+    // ---- ws:audio-dsp-automation ----
+
+    /// Steady-state RMS over the last quarter of a 1 s tone (the narrow hum notches settle slowly).
+    fn thru_rms_long(f: &AudioFilter, hz: f32, amp: f32) -> f32 {
+        let mut st = FilterState::new(f, SR);
+        let mut buf = sine(hz, amp, 48000);
+        st.process(f, 0.0, &mut buf);
+        rms(&buf[buf.len() * 3 / 4..])
+    }
+
+    #[test]
+    fn dehum_attenuates_hum_tone() {
+        let f = AudioFilter::new(FilterKind::DeHum); // 60 Hz, 40 dB
+        let hum = thru_rms_long(&f, 60.0, 0.5);
+        let tone = thru_rms_long(&f, 1000.0, 0.5);
+        let plain = 0.5 / 2f32.sqrt();
+        assert!(lin_to_db(hum / plain) < -20.0, "60 Hz should lose >20 dB, lost {} dB", lin_to_db(hum / plain));
+        assert!(lin_to_db(tone / plain).abs() < 1.0, "1 kHz should be flat, got {} dB", lin_to_db(tone / plain));
+        // harmonics are notched too, and 50 Hz mains moves the whole comb
+        let h2 = thru_rms_long(&f, 120.0, 0.5);
+        assert!(lin_to_db(h2 / plain) < -20.0, "120 Hz: {} dB", lin_to_db(h2 / plain));
+        let f50 = filt(FilterKind::DeHum, &[(0, 50.0)]);
+        let h50 = thru_rms_long(&f50, 50.0, 0.5);
+        assert!(lin_to_db(h50 / plain) < -20.0, "50 Hz: {} dB", lin_to_db(h50 / plain));
+        let sixty_on_50 = thru_rms_long(&f50, 60.0, 0.5);
+        assert!(lin_to_db(sixty_on_50 / plain) > -6.0, "60 Hz through a 50 Hz notch is mostly kept");
+    }
+
+    #[test]
+    fn limiter_caps_output_at_ceiling() {
+        // -6 dB ceiling, 5 ms lookahead: a 0 dBFS sine comes out at exactly the ceiling
+        let f = filt(FilterKind::Limiter, &[(0, -6.0), (1, 5.0), (2, 100.0)]);
+        let mut st = FilterState::new(&f, SR);
+        let mut buf = sine(440.0, 1.0, 48000);
+        st.process(&f, 0.0, &mut buf);
+        let ceil = db_to_lin(-6.0);
+        assert!(buf.iter().all(|s| s.abs() <= ceil + 1e-6), "peak {} over ceiling {ceil}", peak(&buf));
+        let settled = peak(&buf[buf.len() / 2..]);
+        assert!((settled - ceil).abs() < 0.02, "settled peak {settled} vs ceiling {ceil}");
+        // a quiet signal passes untouched (after the lookahead delay)
+        let mut st = FilterState::new(&f, SR);
+        let mut quiet = sine(440.0, 0.1, 48000);
+        st.process(&f, 0.0, &mut quiet);
+        let q = peak(&quiet[quiet.len() / 2..]);
+        assert!((q - 0.1).abs() < 1e-3, "{q}");
+        // the lookahead really delays: an impulse reappears 5 ms (240 frames) later
+        let mut st = FilterState::new(&f, SR);
+        let mut imp = vec![0.0f32; 4800 * 2];
+        imp[0] = 0.25;
+        st.process(&f, 0.0, &mut imp);
+        assert!(imp[0].abs() < 1e-6 && imp[240 * 2] > 0.2, "{} / {}", imp[0], imp[240 * 2]);
+    }
+
+    #[test]
+    fn deesser_reduces_sibilance_band_only() {
+        // sidechain HP at 5 kHz, threshold -24 dB, ratio 4: a -6 dBFS 7 kHz tone is squashed, a 200 Hz
+        // tone at the same level never reaches the detector
+        let f = filt(FilterKind::DeEsser, &[(0, 5000.0), (1, -24.0), (2, 4.0)]);
+        let mut st = FilterState::new(&f, SR);
+        let mut sib = sine(7000.0, db_to_lin(-6.0), 48000);
+        st.process(&f, 0.0, &mut sib);
+        let sib_db = lin_to_db(peak(&sib[sib.len() / 2..]));
+        let mut st = FilterState::new(&f, SR);
+        let mut low = sine(200.0, db_to_lin(-6.0), 48000);
+        st.process(&f, 0.0, &mut low);
+        let low_db = lin_to_db(peak(&low[low.len() / 2..]));
+        assert!((low_db + 6.0).abs() < 0.5, "200 Hz untouched: {low_db} dB");
+        assert!(sib_db < low_db - 6.0, "7 kHz {sib_db} dB should sit well under 200 Hz {low_db} dB");
+    }
+
+    #[test]
+    fn lufs_of_minus_23_dbfs_sine_is_in_range() {
+        // BS.1770: a stereo 1 kHz sine at -23 dBFS per channel reads -23 LUFS (the -0.691 offset
+        // cancels the shelf's 1 kHz gain); one channel alone would read 3 dB lower
+        let mut m = Lufs::new();
+        assert!(m.momentary().is_infinite() && m.integrated().is_infinite(), "silent start is -inf");
+        let buf = sine(1000.0, db_to_lin(-23.0), 48000 * 3);
+        m.push_block(&buf);
+        let (mo, int) = (m.momentary(), m.integrated());
+        assert!((mo + 23.0).abs() < 1.0, "momentary {mo}");
+        assert!((int + 23.0).abs() < 1.0, "integrated {int}");
+        // silence afterwards drops the momentary reading but the gate keeps the integrated one
+        m.push_block(&vec![0.0f32; 48000 * 2]);
+        assert!(m.momentary() < -60.0, "{}", m.momentary());
+        assert!((m.integrated() + 23.0).abs() < 1.0, "gated integrated {}", m.integrated());
+        m.reset();
+        assert!(m.integrated().is_infinite());
+    }
+
+    #[test]
+    fn repair_presets_build_their_chains() {
+        let (label, chain) = repair_chain("repair").expect("repair preset");
+        assert_eq!(label, "Repair");
+        let kinds: Vec<FilterKind> = chain.iter().map(|f| f.kind).collect();
+        assert_eq!(
+            kinds,
+            [FilterKind::HighPass, FilterKind::DeHum, FilterKind::NoiseGate, FilterKind::Compressor, FilterKind::Limiter]
+        );
+        assert_eq!(chain[0].params[0].value, 80.0, "High-pass at 80 Hz");
+        assert_eq!(chain[4].params[0].value, -3.0, "Limiter ceiling -3 dB");
+        let (_, clarity) = repair_chain("clarity").unwrap();
+        assert_eq!(clarity.len(), 2);
+        assert_eq!(clarity[0].params[12].value, 3.0, "High-mid +3 dB");
+        assert!(repair_chain("nope").is_none());
+        // every override names a real parameter of its filter (a typo would silently do nothing)
+        for (_, _, chain) in REPAIR_PRESETS {
+            for (kind, over) in chain.iter() {
+                for (name, _) in over.iter() {
+                    assert!(kind.params().iter().any(|s| s.name == *name), "{kind:?} has no param {name}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn meter_feed_overwrites_oldest_and_drains_into_a_graph() {
+        let feed = BusMeterFeed::new();
+        let mut p = bus_project();
+        let main = p.buses[0].id;
+        let a = p.add_bus("A");
+        for i in 0..(FEED_CAP + 4) {
+            feed.push_block(a, &vec![0.01 * i as f32; 8]);
+        }
+        assert_eq!(feed.len(), FEED_CAP, "the queue is bounded");
+        let mut g = BusGraph::new();
+        g.sync(&p);
+        feed.drain_into(&mut g);
+        assert_eq!(feed.len(), 0);
+        let (l, r) = g.meter(a);
+        let newest = 0.01 * (FEED_CAP + 3) as f32;
+        assert!((l - newest).abs() < 1e-6 && (r - newest).abs() < 1e-6, "{l} {r} vs {newest}");
+        assert_eq!(g.meter(main), (0.0, 0.0), "Main got nothing");
+        // a bus the graph has not synced yet still lands (slot on demand); reset clears everything
+        feed.push_block(999, &[0.5; 8]);
+        feed.drain_into(&mut g);
+        assert_eq!(g.meter(999).0, 0.5);
+        g.reset_meters();
+        assert_eq!(g.meter(a), (0.0, 0.0));
+        assert!(g.lufs(a).1.is_infinite());
+    }
+
+    /// The audio-thread half: after a `flush` pass, `publish` hands every bus's post-fader block to
+    /// the feed (and nothing at all for a project without buses).
+    #[test]
+    fn publish_hands_post_fader_blocks_to_the_feed() {
+        let mut p = bus_project();
+        let main = p.buses[0].id;
+        let a = p.add_bus("A");
+        p.bus_mut(a).unwrap().gain.value = 0.5;
+        let mut g = BusGraph::new();
+        g.sync(&p);
+        g.begin(4);
+        g.buffer(a, 4).fill(1.0);
+        let mut out = vec![0.0f32; 8];
+        for id in g.order() {
+            let bus = p.bus(id).unwrap().clone();
+            g.flush(&bus, 0.0, &mut out);
+        }
+        let feed = BusMeterFeed::new();
+        g.publish(&feed);
+        assert_eq!(feed.len(), 2, "one block per bus");
+        let mut ui = BusGraph::new();
+        ui.sync(&p);
+        feed.drain_into(&mut ui);
+        assert!((ui.meter(a).0 - 0.5).abs() < 1e-6, "A post-fader: {:?}", ui.meter(a));
+        assert!((ui.meter(main).0 - 0.5).abs() < 1e-6, "Main sums A: {:?}", ui.meter(main));
+        let empty = BusGraph::new();
+        empty.publish(&feed);
+        assert_eq!(feed.len(), 0, "an unsynced/bus-less graph publishes nothing");
     }
 }
