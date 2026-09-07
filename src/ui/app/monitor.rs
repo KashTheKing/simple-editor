@@ -51,17 +51,25 @@ pub(crate) enum AltRequest {
     Gallery(String, String),
 }
 
+/// The full coalescing key `wants_new_request` compares: the bare `AltRequest` enum value alone isn't
+/// enough — the same `AltRequest` can resolve to a different clip (selection/playhead moved off the old
+/// target) or a different render time (playback, scrub) without the enum value itself changing, and both
+/// must be treated as a fresh request rather than "already satisfied". `target_clip`'s resolved id plus a
+/// frame-quantized playhead (`quantize_time`) captures that context.
+type AltKey = (AltRequest, Option<Id>, i64);
+
 /// Coalescing one-in-flight alt-render state behind `App.alt_render`.
 pub(crate) struct AltRenderState {
     /// What should be showing right now (set by `preview.hover`, or a future UI hover). `None` = the
     /// live frame — `request(None)` also drops whatever is in flight or ready.
     request: Option<AltRequest>,
-    /// The decode `tick` is waiting on: its `request_layers` id, the request it was for, and the time it
-    /// was decoded at (so the eventual GPU render uses the exact time its layers were decoded for).
-    inflight: Option<(u64, AltRequest, f64)>,
-    /// The request `ready`'s texture currently shows — lets an unchanged `request` skip a redundant
-    /// re-decode every tick while a hover continues.
-    shown: Option<AltRequest>,
+    /// The decode `tick` is waiting on: its `request_layers` id, the resolved key it was for, and the
+    /// time it was decoded at (so the eventual GPU render uses the exact time its layers were decoded
+    /// for).
+    inflight: Option<(u64, AltKey, f64)>,
+    /// The resolved key `ready`'s texture currently shows — lets an unchanged `request` skip a redundant
+    /// re-decode every tick while a hover continues at the same target/time.
+    shown: Option<AltKey>,
     /// The last frame successfully rendered, ready for `preview::show` to paint this frame.
     ready: Option<(egui::TextureId, [u32; 2])>,
     /// Own decoder, spun up lazily on first request — never the live `App.player`, so a hover preview
@@ -103,19 +111,19 @@ pub(crate) fn tick(app: &mut App, ctx: &egui::Context) {
     if app.export.is_some() {
         return; // never render while exporting — export owns the GPU/decode capacity
     }
-    let want = app.alt_render.request.clone();
-    if want.is_none() {
+    let Some(want) = app.alt_render.request.clone() else {
         app.alt_render.inflight = None;
         app.alt_render.shown = None;
         app.alt_render.ready = None;
         return;
-    }
-    if wants_new_request(&want, &app.alt_render.inflight, &app.alt_render.shown) {
-        start_request(app, ctx, want.expect("checked Some above"));
+    };
+    let want_key = alt_key(&app.project, &app.selection, app.playhead, &want);
+    if wants_new_request(&Some(want_key.clone()), &app.alt_render.inflight, &app.alt_render.shown) {
+        start_request(app, ctx, want, want_key);
     }
     let reply = app.alt_render.player.as_ref().and_then(|p| p.take_layers_reply());
     let Some((rid, layers)) = reply else { return };
-    let Some((req, t)) = accept_reply(&app.alt_render.inflight, rid) else { return };
+    let Some((key, t)) = accept_reply(&app.alt_render.inflight, rid) else { return };
     app.alt_render.inflight = None; // consumed either way — a failed render below just leaves `ready` be
     let (w, h) = app.canvas;
     let Some(frame) = app.gpu_frame(&layers, t, w, h) else { return };
@@ -133,30 +141,62 @@ pub(crate) fn tick(app: &mut App, ctx: &egui::Context) {
     };
     app.alt_render.ready = Some((tex.id(), [frame.width, frame.height]));
     app.alt_render.texture = Some(tex);
-    app.alt_render.shown = Some(req);
+    app.alt_render.shown = Some(key);
 }
 
 /// Whether a new decode should be started this tick: `want` is Some and differs from both what's
 /// already in flight and what's already shown — the coalescing rule ("newest wins, no queue") in a form
-/// that needs no live `App` to test.
-fn wants_new_request(
-    want: &Option<AltRequest>,
-    inflight: &Option<(u64, AltRequest, f64)>,
-    shown: &Option<AltRequest>,
-) -> bool {
+/// that needs no live `App` to test. Compared as the full `AltKey` (request + resolved target clip +
+/// quantized playhead), not the bare `AltRequest`, so a `shown` request whose target/time context has
+/// moved on is correctly treated as stale rather than "already satisfied".
+fn wants_new_request(want: &Option<AltKey>, inflight: &Option<(u64, AltKey, f64)>, shown: &Option<AltKey>) -> bool {
     let Some(w) = want else { return false };
-    inflight.as_ref().map(|(_, r, _)| r) != Some(w) && shown.as_ref() != Some(w)
+    inflight.as_ref().map(|(_, k, _)| k) != Some(w) && shown.as_ref() != Some(w)
 }
 
 /// `take_layers_reply`'s id against what's in flight: `None` for a reply superseded by (or older than)
 /// the current request — exactly `request_layers`' own "newest wins" contract, checked on this side too.
-fn accept_reply(inflight: &Option<(u64, AltRequest, f64)>, reply_id: u64) -> Option<(AltRequest, f64)> {
-    inflight.as_ref().filter(|(id, _, _)| *id == reply_id).map(|(_, r, t)| (r.clone(), *t))
+fn accept_reply(inflight: &Option<(u64, AltKey, f64)>, reply_id: u64) -> Option<(AltKey, f64)> {
+    inflight.as_ref().filter(|(id, _, _)| *id == reply_id).map(|(_, k, t)| (k.clone(), *t))
 }
 
-fn start_request(app: &mut App, ctx: &egui::Context, req: AltRequest) {
-    let Some((clone, t)) = alt_project(&app.project, &app.selection, app.playhead, &req) else {
-        app.alt_render.inflight = None;
+/// `req`'s full coalescing key: the request itself, the clip it resolves against right now, and a
+/// frame-quantized playhead. See `AltKey`'s doc comment for why the bare `AltRequest` isn't enough.
+fn alt_key(project: &Project, selection: &[Id], playhead: f64, req: &AltRequest) -> AltKey {
+    (req.clone(), target_clip(project, selection, playhead), quantize_time(playhead))
+}
+
+/// Round the playhead to whole milliseconds: coarse enough that re-reading the same paused playhead
+/// twice still compares equal (no float-noise re-decodes), fine enough that real playback/scrub motion
+/// always lands on a different key.
+fn quantize_time(t: f64) -> i64 {
+    (t * 1000.0).round() as i64
+}
+
+/// Resolves `req` via `alt_project`. On failure (nothing renderable — target clip gone, deselected,
+/// playhead moved off it, or the `Gallery` stub) clears `state.inflight`, `state.shown`, AND
+/// `state.ready`: clearing only `inflight` (the pre-fix behavior) leaves a stale texture from an earlier
+/// successful decode of this same `AltRequest` painting over the live frame indefinitely. Takes no
+/// `App`/`egui::Context` so the exact clearing behavior `start_request` relies on is unit-testable.
+fn resolve_or_clear(
+    project: &Project,
+    selection: &[Id],
+    playhead: f64,
+    req: &AltRequest,
+    state: &mut AltRenderState,
+) -> Option<(Project, f64)> {
+    let resolved = alt_project(project, selection, playhead, req);
+    if resolved.is_none() {
+        state.inflight = None;
+        state.shown = None;
+        state.ready = None;
+    }
+    resolved
+}
+
+fn start_request(app: &mut App, ctx: &egui::Context, req: AltRequest, key: AltKey) {
+    let Some((clone, t)) = resolve_or_clear(&app.project, &app.selection, app.playhead, &req, &mut app.alt_render)
+    else {
         return;
     };
     let max_w = app.canvas.0.max(16);
@@ -164,13 +204,16 @@ fn start_request(app: &mut App, ctx: &egui::Context, req: AltRequest) {
     let player = app.alt_render.player.get_or_insert_with(|| Player::new(ctx.clone(), backend, text));
     player.set_project(&clone);
     let id = player.request_layers(t, max_w);
-    app.alt_render.inflight = Some((id, req, t));
+    app.alt_render.inflight = Some((id, key, t));
 }
 
 /// The selected visual clip a hover request previews against (today's rule — a future consumer with no
 /// selection to lean on can widen this).
 fn target_clip(project: &Project, selection: &[Id], playhead: f64) -> Option<Id> {
-    selection.iter().copied().find(|&id| project.clip(id).is_some_and(|cl| cl.is_visual() && cl.enabled && cl.contains(playhead)))
+    selection
+        .iter()
+        .copied()
+        .find(|&id| project.clip(id).is_some_and(|cl| cl.is_visual() && cl.enabled && cl.contains(playhead)))
 }
 
 /// The hypothetical project + render time a hover request previews: a clone with the requested
@@ -212,7 +255,12 @@ pub(crate) fn invert_points(points: &[(f32, f32, f32)]) -> Vec<(f32, f32, f32)> 
 /// push, no toast: `act` (unbound hotkey/menu/palette) and `timeline.reframe` (MCP, `ToolKind::Mutate`,
 /// auto-wrapped by the generic snapshot-before/push-undo-iff-changed handler) each wrap this their own
 /// way, so it isn't done twice.
-pub(crate) fn reframe(project: &mut Project, tracking: &TrackState, selection: &[Id], want: Option<Id>) -> Result<(), &'static str> {
+pub(crate) fn reframe(
+    project: &mut Project,
+    tracking: &TrackState,
+    selection: &[Id],
+    want: Option<Id>,
+) -> Result<(), &'static str> {
     let (id, points) = tracking
         .tracked(project, selection)
         .ok_or("Auto Reframe needs a tracked point or box first — track one in the Tracking pane")?;
@@ -312,7 +360,11 @@ mod tests {
         let (clone, t) =
             alt_project(&p, &[id], 1.0, &AltRequest::Transition(TransitionKind::CrossFade)).expect("a target exists");
         let c = clone.clip(id).unwrap();
-        assert!((c.start..c.end()).contains(&t), "render time {t} falls inside the clip's own span {:?}", c.start..c.end());
+        assert!(
+            (c.start..c.end()).contains(&t),
+            "render time {t} falls inside the clip's own span {:?}",
+            c.start..c.end()
+        );
         assert_eq!(p.tracks[0].transitions.len(), 0, "the original project gained no transition");
     }
 
@@ -326,20 +378,73 @@ mod tests {
     fn wants_new_request_only_starts_once_per_distinct_request() {
         let a = AltRequest::Effect(EffectKind::Blur);
         let b = AltRequest::Effect(EffectKind::Pixelate);
+        let key_a: AltKey = (a.clone(), Some(1u64), 0i64);
+        let key_b: AltKey = (b.clone(), Some(1u64), 0i64);
         assert!(!wants_new_request(&None, &None, &None), "no request, nothing to start");
-        assert!(wants_new_request(&Some(a.clone()), &None, &None), "a fresh request with nothing in flight or shown");
-        assert!(!wants_new_request(&Some(a.clone()), &Some((1, a.clone(), 0.0)), &None), "already in flight");
-        assert!(!wants_new_request(&Some(a.clone()), &None, &Some(a.clone())), "already shown — no redundant re-decode");
-        assert!(wants_new_request(&Some(b.clone()), &Some((1, a.clone(), 0.0)), &None), "a different request supersedes it");
+        assert!(
+            wants_new_request(&Some(key_a.clone()), &None, &None),
+            "a fresh request with nothing in flight or shown"
+        );
+        assert!(!wants_new_request(&Some(key_a.clone()), &Some((1, key_a.clone(), 0.0)), &None), "already in flight");
+        assert!(
+            !wants_new_request(&Some(key_a.clone()), &None, &Some(key_a.clone())),
+            "already shown — no redundant re-decode"
+        );
+        assert!(
+            wants_new_request(&Some(key_b.clone()), &Some((1, key_a.clone(), 0.0)), &None),
+            "a different request supersedes it"
+        );
+        let key_a_other_clip: AltKey = (a.clone(), Some(2u64), 0i64);
+        assert!(
+            wants_new_request(&Some(key_a.clone()), &None, &Some(key_a_other_clip)),
+            "same request, different resolved target clip is stale, not already-satisfied"
+        );
+        let key_a_later: AltKey = (a.clone(), Some(1u64), 500i64);
+        assert!(
+            wants_new_request(&Some(key_a_later), &None, &Some(key_a)),
+            "same request/target, different quantized playhead is stale, not already-satisfied"
+        );
     }
 
     #[test]
     fn accept_reply_discards_a_mismatched_id() {
-        let req = AltRequest::Effect(EffectKind::Blur);
-        let inflight = Some((2u64, req.clone(), 1.5));
-        assert_eq!(accept_reply(&inflight, 2), Some((req, 1.5)));
+        let key: AltKey = (AltRequest::Effect(EffectKind::Blur), Some(1u64), 0i64);
+        let inflight = Some((2u64, key.clone(), 1.5));
+        assert_eq!(accept_reply(&inflight, 2), Some((key, 1.5)));
         assert_eq!(accept_reply(&inflight, 1), None, "a stale (superseded) request's reply is discarded");
         assert_eq!(accept_reply(&None, 2), None);
+    }
+
+    #[test]
+    fn resolve_or_clear_wipes_shown_and_ready_when_the_target_becomes_unrenderable() {
+        let (p, id) = project_with_clip();
+        let req = AltRequest::Effect(EffectKind::Blur);
+        let mut state = AltRenderState::default();
+        // Simulate an earlier successful decode: `shown`/`ready` populated, nothing in flight.
+        state.shown = Some(alt_key(&p, &[id], 1.0, &req));
+        state.ready = Some((egui::TextureId::Managed(1), [4, 4]));
+        // The playhead moves off the clip: `alt_project` can no longer resolve a target for the SAME
+        // `AltRequest` — this is the bug scenario (selection/playhead/deletion made a shown request
+        // unrenderable).
+        assert!(resolve_or_clear(&p, &[id], 10.0, &req, &mut state).is_none());
+        assert!(state.shown.is_none(), "a stale shown request must not keep being treated as satisfied");
+        assert!(state.ready.is_none(), "a stale texture must not keep painting over the live frame");
+        assert!(state.inflight.is_none());
+    }
+
+    #[test]
+    fn a_shown_requests_key_goes_stale_when_the_playhead_advances_under_it() {
+        let (p, id) = project_with_clip();
+        let req = AltRequest::Effect(EffectKind::Blur);
+        // Shown at t=1.0 (already decoded and painting).
+        let shown = Some(alt_key(&p, &[id], 1.0, &req));
+        // Same `AltRequest`, but the playhead has since moved to t=2.0 while the hover stays active.
+        let want = Some(alt_key(&p, &[id], 2.0, &req));
+        assert!(
+            wants_new_request(&want, &None, &shown),
+            "the widened key must catch a playhead change under an unchanged AltRequest instead of \
+             treating the hover as already-satisfied (frozen preview during playback)"
+        );
     }
 
     #[test]
