@@ -30,3 +30,4 @@ a9d2d99,10684928,"true baseline (measured fresh from a9d2d99s committed release 
 02e2342,11915264,inspector-gallery
 f64147f,11914240,"inspector-gallery #33: collapsible inspector, Color section, effects-stack drag-reorder+bulk-edit, Gallery pane (6 tabs), post-review-fix (3 real bugs found and fixed: fold-state corruption, stale alt-render hover preview, duplicate Looks tool surface); delta vs wave-2-complete baseline (11,748,864 B): +165,376 B/+161.5 KB"
 42c7c67,11994112,pro-monitor
+5e1acfd,11972096,text-titles

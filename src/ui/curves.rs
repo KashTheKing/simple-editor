@@ -50,6 +50,15 @@ pub fn set_available_motions(v: Vec<MotionPreset>) {
     MOTIONS.with(|m| *m.borrow_mut() = v);
 }
 
+/// ws:text-titles: the Text inspector's own Animation row reads the same builtin+saved motion list
+/// `panes.rs::refresh_presets` already syncs here every time it changes — reusing this thread-local
+/// hand-off (rather than re-deriving the list, or a second `Settings`-synced copy) since `inspector_text
+/// ::section`'s signature has no `&Settings` param, the same reason its "Text style presets" sub-panel
+/// stayed in inspector.rs.
+pub fn available_motions() -> Vec<MotionPreset> {
+    MOTIONS.with(|m| m.borrow().clone())
+}
+
 /// A motion preset captured via "Save motion" waiting for the app to store it in Settings.
 pub fn take_pending_motion_preset() -> Option<MotionPreset> {
     PENDING_MOTION.with(|p| p.borrow_mut().take())

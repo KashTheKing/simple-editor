@@ -18,7 +18,7 @@ use crate::engine::text::TextRasterizer;
 use crate::engine::xmeml;
 use crate::media::waveform::WaveformCache;
 use crate::media::{self, ffpipe, Backend, DecoderPool, Frame};
-use crate::model::{BlendMode, Project, TextStyle, TrackKind};
+use crate::model::{Animated, BlendMode, Project, TextStyle, TrackKind};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -177,7 +177,12 @@ pub fn run(args: &[String]) -> i32 {
     step(&mut fails, "compose/text", || {
         let id = project.add_text_clip(1.0, 2.0);
         let c = project.clip_mut(id).ok_or("no text clip")?;
-        c.text = Some(TextStyle { text: "Hi".into(), size: 40.0, outline_width: 2.0, ..TextStyle::default() });
+        c.text = Some(TextStyle {
+            text: "Hi".into(),
+            size: Animated::new(40.0),
+            outline_width: Animated::new(2.0),
+            ..TextStyle::default()
+        });
         comp.render(&project, 1.0, 320, 240, &mut pool, &mut text, &mut frame);
         let white = (60..180)
             .flat_map(|y| (100..220).map(move |x| (x, y)))

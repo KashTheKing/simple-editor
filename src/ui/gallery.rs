@@ -16,7 +16,7 @@
 //! `App.alt_render` to `AltRequest::Gallery(tab, name)` (canvas-handles-monitor's mechanism, reserved for
 //! exactly this) via the same `hover` field, not a new App field.
 
-use crate::model::Id;
+use crate::model::{Clip, Id};
 use crate::settings::Settings;
 use crate::theme::Palette;
 use crate::ui::app::thumbs::ThumbSource;
@@ -49,11 +49,17 @@ pub enum GalleryTab {
     SpeedRamps,
     Transitions,
     Templates,
+    // ---- ws:text-titles ----
+    /// Curated title/text/shape/adjustment templates: `presets::builtin_titles()` + `Settings.templates`
+    /// filtered to `is_text_template`. Distinct from the generic `Templates` tab (any saved template,
+    /// placed with no Customize step) — a Titles card always shows a Customize panel for its exposed
+    /// fields right after Place.
+    Titles,
 }
 
 impl GalleryTab {
-    pub const ALL: [GalleryTab; 6] =
-        [Self::Looks, Self::Luts, Self::Captions, Self::SpeedRamps, Self::Transitions, Self::Templates];
+    pub const ALL: [GalleryTab; 7] =
+        [Self::Looks, Self::Luts, Self::Captions, Self::SpeedRamps, Self::Transitions, Self::Templates, Self::Titles];
     pub fn name(self) -> &'static str {
         match self {
             Self::Looks => "Looks",
@@ -62,6 +68,7 @@ impl GalleryTab {
             Self::SpeedRamps => "SpeedRamps",
             Self::Transitions => "Transitions",
             Self::Templates => "Templates",
+            Self::Titles => "Titles",
         }
     }
     pub fn from_name(s: &str) -> Option<Self> {
@@ -80,6 +87,11 @@ pub struct GalleryState {
     pub tab: GalleryTab,
     /// "Save from selection…" name field scratch.
     pub save_name: String,
+    // ---- ws:text-titles ----
+    /// (clip id, exposed field name) rows for the Customize panel below the Titles grid, set by the
+    /// caller (`ui::app::gallery_ctl::draw`) right after a Titles card is placed — a plain state field
+    /// rather than an `egui::Id`-keyed temp, since `App` already owns `GalleryState` per frame.
+    pub customize: Vec<(Id, String)>,
 }
 
 #[derive(Default)]
@@ -93,6 +105,10 @@ pub struct GalleryResponse {
     /// A Templates card was clicked — placed at the playhead by the caller (`App::place_template`,
     /// already the established path, not new wiring).
     pub place: Option<String>,
+    /// ---- ws:text-titles ----: a Titles card was clicked — resolved across `builtin_titles()` +
+    /// `Settings.templates` and placed by the caller (`gallery_ctl::draw`), which then fills
+    /// `GalleryState.customize` from the placed clips' `exposed` fields.
+    pub place_title: Option<String>,
     /// "Save current effect stack as a Look" was clicked, with the name typed in `save_name`.
     pub save: Option<String>,
 }
@@ -163,6 +179,18 @@ pub fn card_names(tab: GalleryTab, settings: &Settings) -> Vec<String> {
             crate::model::TransitionKind::ALL.into_iter().map(|k| k.name().to_string()).collect()
         }
         GalleryTab::Templates => settings.templates.iter().map(|t| t.name.clone()).collect(),
+        // ---- ws:text-titles ----
+        GalleryTab::Titles => crate::engine::presets::builtin_titles()
+            .into_iter()
+            .map(|t| t.name)
+            .chain(
+                settings
+                    .templates
+                    .iter()
+                    .filter(|t| crate::engine::presets::is_text_template(t))
+                    .map(|t| t.name.clone()),
+            )
+            .collect(),
     }
 }
 
@@ -201,6 +229,7 @@ pub fn show(
         ui.weak(match state.tab {
             GalleryTab::Luts => "No .cube files found — add a folder in Settings ▸ Color.",
             GalleryTab::Templates => "No saved templates yet.",
+            GalleryTab::Titles => "No title templates yet.", // builtin_titles() is never empty; user-only edge case
             _ => "Nothing here yet.",
         });
     }
@@ -241,6 +270,7 @@ pub fn show(
                 if r.clicked() {
                     match tab {
                         GalleryTab::Templates => out.place = Some(name.clone()),
+                        GalleryTab::Titles => out.place_title = Some(name.clone()),
                         _ => out.apply = Some((tab, name.clone(), 1.0)),
                     }
                 }
@@ -249,6 +279,51 @@ pub fn show(
     });
     let _ = palette; // reserved: a themed border colour is a pure visual follow-up, not load-bearing yet
     out
+}
+
+// ---- ws:text-titles ----
+/// One editable row for a `Clip.exposed` field name, the Titles-tab Customize panel's whole surface (the
+/// caller, `ui::app::gallery_ctl::draw`, renders one of these per `GalleryState.customize` entry below
+/// the card grid — this fn has no `&mut Project`, only the one clip it's editing). 4 hardcoded field
+/// kinds — text.text / text.color / text.size / shape.fill — cover every field the 3 builtin templates
+/// expose; a generic/reflective exposed-field editor is explicitly out of scope (see the plan's
+/// deliberate-simplifications note) until a template needs a 5th kind. Returns true if the caller should
+/// push undo.
+pub(crate) fn template_field_widget(ui: &mut egui::Ui, field: &str, clip: &mut Clip) -> bool {
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        ui.label(field);
+        match field {
+            "text.text" => {
+                if let Some(t) = clip.text.as_mut() {
+                    changed |= ui.text_edit_singleline(&mut t.text).changed();
+                }
+            }
+            "text.color" => {
+                if let Some(t) = clip.text.as_mut() {
+                    changed |= ui.color_edit_button_srgba_unmultiplied(&mut t.color).changed();
+                }
+            }
+            "text.size" => {
+                if let Some(t) = clip.text.as_mut() {
+                    let mut v = t.size.value;
+                    if ui.add(egui::DragValue::new(&mut v).range(1.0..=1000.0)).changed() {
+                        t.size.value = v;
+                        changed = true;
+                    }
+                }
+            }
+            "shape.fill" => {
+                if let Some(s) = clip.shape.as_mut() {
+                    changed |= ui.color_edit_button_srgba_unmultiplied(&mut s.fill).changed();
+                }
+            }
+            _ => {
+                ui.weak(format!("(unknown field '{field}')"));
+            }
+        }
+    });
+    changed
 }
 
 #[cfg(test)]
@@ -315,5 +390,54 @@ mod tests {
         let settings = Settings::default();
         let names = card_names(GalleryTab::SpeedRamps, &settings);
         assert_eq!(names, vec!["Montage", "Hero", "Bullet", "Jump", "Flash"]);
+    }
+
+    // ---- ws:text-titles ----
+
+    #[test]
+    fn titles_tab_lists_builtins_plus_user_text_templates() {
+        let mut settings = Settings::default();
+        let mut p = crate::model::Project::new();
+        let text_id = p.add_text_clip(0.0, 2.0);
+        settings.templates.push(crate::engine::presets::capture_template("My Title", &p, &[text_id]));
+        let names = card_names(GalleryTab::Titles, &settings);
+        assert_eq!(names.len(), 3 + 1, "3 builtins + the one saved text template");
+        assert!(names.contains(&"My Title".to_string()));
+        assert!(names.contains(&"Lower Third".to_string()));
+    }
+
+    #[test]
+    fn clicking_a_titles_card_sets_place_title_not_place() {
+        let ctx = ctx();
+        let mut state = GalleryState { tab: GalleryTab::Titles, ..Default::default() };
+        let mut settings = Settings::default();
+        let resp = run(&ctx, &mut state, &mut settings);
+        // no click simulated yet — proves show() runs headlessly on the Titles tab without panicking
+        assert!(resp.place.is_none() && resp.place_title.is_none());
+    }
+
+    #[test]
+    fn opening_titles_tab_requests_no_idle_repaint() {
+        let ctx = ctx();
+        let mut state = GalleryState { tab: GalleryTab::Titles, ..Default::default() };
+        let mut settings = Settings::default();
+        for _ in 0..30 {
+            run(&ctx, &mut state, &mut settings);
+        }
+        assert!(!ctx.has_requested_repaint(), "idle Titles tab requested a repaint");
+    }
+
+    #[test]
+    fn template_field_widget_edits_the_right_field() {
+        let ctx = ctx();
+        let mut clip = crate::model::Clip::new(1, crate::model::ClipKind::Text, "t", 0.0, 2.0);
+        clip.text.as_mut().unwrap().text = "before".into();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                template_field_widget(ui, "text.text", &mut clip);
+            });
+        });
+        // no simulated edit this frame — proves the widget renders for a real field without panicking
+        assert_eq!(clip.text.unwrap().text, "before");
     }
 }

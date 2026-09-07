@@ -983,6 +983,37 @@ impl App {
             None => self.toast(format!("Template '{name}' is corrupted")),
         }
     }
+
+    // ---- ws:text-titles ----
+    /// Resolve `name` across `builtin_titles()` + `Settings.templates` (unlike `place_template`, which
+    /// only searches the latter — builtins aren't saved, so `place_template` alone can't find them),
+    /// place it at `t`, and return (placed clip ids, [(clip_id, exposed field)]) for the Gallery's
+    /// Customize panel. Exposed-field resolution is a positional zip against the pre-place clips'
+    /// `.exposed` (place_clips returns ids in the same order for Text/Shape/Adjustment templates — see
+    /// model/ops/templates.rs; length-checked defensively rather than assumed).
+    pub(super) fn place_title_template(&mut self, name: &str, t: f64) -> Result<(Vec<Id>, Vec<(Id, String)>), String> {
+        let tpl = crate::engine::presets::builtin_titles()
+            .into_iter()
+            .chain(self.settings.templates.iter().cloned())
+            .find(|x| x.name == name)
+            .ok_or_else(|| format!("Title template '{name}' not found"))?;
+        let (clips, assets) = crate::engine::presets::decode_template(&tpl)
+            .ok_or_else(|| format!("Title template '{name}' is corrupted"))?;
+        let exposed_by_index: Vec<Vec<String>> = clips.iter().map(|c| c.exposed.clone()).collect();
+        self.push_undo();
+        let ids = self.project.place_clips(clips, assets, t);
+        self.selection = ids.clone();
+        self.after_edit();
+        let mut customize = Vec::new();
+        if ids.len() == exposed_by_index.len() {
+            for (id, fields) in ids.iter().zip(exposed_by_index.iter()) {
+                for f in fields {
+                    customize.push((*id, f.clone()));
+                }
+            }
+        }
+        Ok((ids, customize))
+    }
 }
 
 // ---- ws:forgiveness ----

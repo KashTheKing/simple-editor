@@ -227,11 +227,19 @@ pub(super) fn apply_clip_fields(clip: &mut Clip, fields: &Value) -> Result<(), S
                 match k.as_str() {
                     "text" => t.text = v.as_str().ok_or("text: string")?.to_string(),
                     "font" => t.font = v.as_str().ok_or("font: string")?.to_string(),
-                    "size" => t.size = v.as_f64().ok_or("size: number")? as f32,
+                    // ws:text-titles: size/outline_width/letter_spacing are now Animated — `clip.set`
+                    // is a discrete "set the value" op, so it clears any keys, same as x/y/scale above.
+                    "size" => {
+                        t.size.keys.clear();
+                        t.size.value = v.as_f64().ok_or("size: number")?;
+                    }
                     "bold" => t.bold = v.as_bool().ok_or("bold: bool")?,
                     "italic" => t.italic = v.as_bool().ok_or("italic: bool")?,
                     "color" => t.color = color_arg(v).ok_or("color: [r,g,b,a]")?,
-                    "outline_width" => t.outline_width = v.as_f64().ok_or("outline_width: number")? as f32,
+                    "outline_width" => {
+                        t.outline_width.keys.clear();
+                        t.outline_width.value = v.as_f64().ok_or("outline_width: number")?;
+                    }
                     "outline_color" => t.outline_color = color_arg(v).ok_or("outline_color: [r,g,b,a]")?,
                     "shadow" => t.shadow = v.as_bool().ok_or("shadow: bool")?,
                     "shadow_color" => t.shadow_color = color_arg(v).ok_or("shadow_color: [r,g,b,a]")?,
@@ -240,7 +248,10 @@ pub(super) fn apply_clip_fields(clip: &mut Clip, fields: &Value) -> Result<(), S
                     "shadow_blur" => t.shadow_blur = v.as_f64().ok_or("shadow_blur: number")? as f32,
                     "align" => t.align = v.as_u64().filter(|&a| a <= 2).ok_or("align: 0..2")? as u8,
                     "line_spacing" => t.line_spacing = v.as_f64().ok_or("line_spacing: number")? as f32,
-                    "letter_spacing" => t.letter_spacing = v.as_f64().ok_or("letter_spacing: number")? as f32,
+                    "letter_spacing" => {
+                        t.letter_spacing.keys.clear();
+                        t.letter_spacing.value = v.as_f64().ok_or("letter_spacing: number")?;
+                    }
                     "box_color" => t.box_color = color_arg(v).ok_or("box_color: [r,g,b,a]")?,
                     "box_padding" => t.box_padding = v.as_f64().ok_or("box_padding: number")? as f32,
                     _ => return Err(format!("unknown clip field '{k}'")),

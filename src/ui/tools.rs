@@ -300,6 +300,8 @@ pub(crate) enum Glyph {
     Grid4,
     // ---- ws:pro-timeline ----
     // ---- ws:text-titles ----
+    /// A small "T" over a horizontal bar — the Gallery's Titles tab button.
+    Titles,
     // ---- ws:docs-refresh ----
 }
 
@@ -434,6 +436,7 @@ impl Glyph {
         Glyph::Grid4,
         // ---- ws:pro-timeline ----
         // ---- ws:text-titles ----
+        Glyph::Titles,
         // ---- ws:docs-refresh ----
     ];
 
@@ -572,6 +575,7 @@ impl Glyph {
             Glyph::Grid4 => "grid4",
             // ---- ws:pro-timeline ----
             // ---- ws:text-titles ----
+            Glyph::Titles => "titles",
             // ---- ws:docs-refresh ----
         }
     }
@@ -2005,9 +2009,18 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
                 let sq = egui::Rect::from_center_size(c + egui::vec2(dx * 4.0, dy * 4.0), egui::vec2(6.0, 6.0));
                 p.rect_stroke(sq, CornerRadius::ZERO, stroke, StrokeKind::Inside);
             }
-        } // ---- ws:pro-timeline ----
-          // ---- ws:text-titles ----
-          // ---- ws:docs-refresh ----
+        }
+        // ---- ws:pro-timeline ----
+        // ---- ws:text-titles ----
+        // titles: a bold "T" over a thin underline bar (a title-card glyph)
+        Glyph::Titles => {
+            let top = c + egui::vec2(0.0, -5.5);
+            p.line_segment([top + egui::vec2(-5.0, 0.0), top + egui::vec2(5.0, 0.0)], Stroke::new(2.2, fg));
+            p.line_segment([top, c + egui::vec2(0.0, 4.0)], Stroke::new(2.2, fg));
+            let dim = fg.gamma_multiply(0.55);
+            p.line_segment([c + egui::vec2(-6.0, 6.5), c + egui::vec2(6.0, 6.5)], Stroke::new(1.6, dim));
+        }
+        // ---- ws:docs-refresh ----
     }
 }
 
