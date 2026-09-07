@@ -128,6 +128,8 @@ struct Harness {
 impl Harness {
     fn new() -> Self {
         let ctx = egui::Context::default();
+    ctx.set_fonts(crate::theme::test_fonts()); // size-diet: no default_fonts feature anymore
+        ctx.set_fonts(crate::theme::test_fonts()); // size-diet: no default_fonts feature anymore
         let mut project = Project::new();
         let aid = project.add_asset(Asset {
             id: 0,
@@ -1250,6 +1252,7 @@ fn audio_clip_menu_swaps_add_mask_for_a_bus() {
     let mut p = Project::new();
     p.add_bus("Music");
     let ctx = egui::Context::default();
+    ctx.set_fonts(crate::theme::test_fonts()); // size-diet: no default_fonts feature anymore
     let mut texts = |audio: bool| -> Vec<String> {
         let (mut act, mut acts, mut edit) = (None, Vec::new(), false);
         let full = ctx.run(
@@ -1317,6 +1320,7 @@ fn shared_effect_kinds_needs_two_clips_with_the_same_kind() {
 fn clip_menu_effects_submenu_only_shows_shared_kinds() {
     let p = Project::new();
     let ctx = egui::Context::default();
+    ctx.set_fonts(crate::theme::test_fonts()); // size-diet: no default_fonts feature anymore
     let mut texts = |shared: &[EffectKind]| -> Vec<String> {
         let (mut act, mut acts, mut edit) = (None, Vec::new(), false);
         let full = ctx.run(

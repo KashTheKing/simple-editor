@@ -443,6 +443,20 @@ pub fn run(args: &[String]) -> i32 {
         Ok(())
     });
 
+    // 10. idle-CPU-0% gate for NEW timed-repaint code (size-diet, wave 0): a blank, idle egui frame
+    // must not ask for a repaint. Smoke-level only — a bare CentralPanel can't exercise the 17
+    // pre-existing raw `request_repaint_after` sites that live inside real panes' own live UI code.
+    step(&mut fails, "idle_repaint", || {
+        let ctx = eframe::egui::Context::default();
+        for _ in 0..3 {
+            let _ = ctx.run(eframe::egui::RawInput::default(), |ctx| {
+                eframe::egui::CentralPanel::default().show(ctx, |_| {});
+            });
+        }
+        check!(!ctx.has_requested_repaint(), "idle frame requested a repaint");
+        Ok(())
+    });
+
     if fails == 0 {
         println!("SELFTEST OK");
         0

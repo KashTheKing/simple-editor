@@ -1004,6 +1004,7 @@ mod tests {
     #[test]
     fn profile_name_stays_on_one_line() {
         let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::test_fonts()); // size-diet: no default_fonts feature anymore
         // a menu ui: top-down justified, as wide as the last frame's content
         let frame = |ctx: &egui::Context, w: f32, add: &mut dyn FnMut(&mut egui::Ui) -> f32| {
             let (mut inner, mut width) = (0.0, w);

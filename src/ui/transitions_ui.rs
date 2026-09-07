@@ -607,8 +607,10 @@ mod tests {
             });
             project.insert_asset_clips(aid, 0.0, Some(0));
             project.insert_asset_clips(aid, 10.0, Some(0));
+            let ctx = egui::Context::default();
+            ctx.set_fonts(crate::theme::test_fonts()); // size-diet: no default_fonts feature anymore
             Self {
-                ctx: egui::Context::default(),
+                ctx,
                 state: TransitionsState::default(),
                 project,
                 selection: Vec::new(),

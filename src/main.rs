@@ -44,8 +44,11 @@ fn main() {
         i += 1;
     }
 
-    let options = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default()
+    // read once to seed the viewport; App::new does its own (cheap) re-read of the same file — not
+    // worth threading a loaded Settings through eframe's boxed FnOnce for this one field.
+    let window_rect = settings::Settings::load().window_rect;
+    let viewport = winpos::apply_rect(
+        eframe::egui::ViewportBuilder::default()
             .with_title("Simple Editor")
             .with_app_id("SimpleEditor")
             .with_inner_size([1400.0, 860.0])
@@ -53,7 +56,13 @@ fn main() {
             // flashes a blank white window at the restored position before we move/paint it
             .with_visible(false)
             .with_min_inner_size([900.0, 560.0]),
-        persist_window: true,
+        window_rect,
+    );
+    let options = eframe::NativeOptions {
+        viewport,
+        // inert either way now that eframe's "persistence" feature is gone — false for clarity, so
+        // this field doesn't read as a live knob it no longer is.
+        persist_window: false,
         ..Default::default()
     };
     if let Err(e) = eframe::run_native(

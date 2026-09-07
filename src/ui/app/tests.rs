@@ -382,18 +382,14 @@ fn write_image_scales_and_writes() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Library-preview transport math: frame-step clamps at both ends of the file, and a scrub-bar
-/// fraction (even one dragged past the bar's edge) maps to a time within the file.
+/// Library-preview frame-step math: clamps at both ends of the file. The scrub-bar fraction-to-time
+/// math (`scrub_time`) moved to `ui/preview.rs` along with the scrub bar itself — see
+/// `preview::tests::scrub_time_clamps_to_bar`.
 #[test]
 fn lib_preview_seek_math() {
     assert_eq!(step_time(1.0, 25.0, true, 4.0), 1.04, "forward steps by 1/fps");
     assert_eq!(step_time(0.02, 25.0, false, 4.0), 0.0, "backward step clamps at 0");
     assert_eq!(step_time(3.99, 25.0, true, 4.0), 4.0, "forward step clamps at the file's duration");
-    assert_eq!(scrub_time(0.0, 4.0), 0.0);
-    assert_eq!(scrub_time(1.0, 4.0), 4.0);
-    assert_eq!(scrub_time(0.5, 4.0), 2.0);
-    assert_eq!(scrub_time(-0.2, 4.0), 0.0, "a drag past the left edge still reads as the start");
-    assert_eq!(scrub_time(1.2, 4.0), 4.0, "a drag past the right edge still reads as the end");
 }
 
 /// Every action is dispatched (`act` matches exhaustively) and every pane can be toggled from
@@ -425,4 +421,58 @@ fn anim_of_props_and_effect_params() {
     let pname = EffectKind::Blur.params()[0].name;
     assert!(anim_of(&mut c, &format!("Blur: {pname}")).is_some());
     assert!(anim_of(&mut c, "Blur: Nope").is_none());
+}
+
+// deviation (see PR body): the plan's `presets_pane_applies_reuse_rows` and
+// `help_changelog_and_templates_save_round_trip` tests both need a live `&mut App` (to draw
+// `Pane::Presets` / to call a `ToolDef::run`), and — as `tools_registry_tests.rs` already documents —
+// there is no headless App-construction path anywhere in this crate (`eframe::CreationContext` has no
+// public constructor). `Pane::Presets`'s new body is `library::reuse_ui` + the same 4 response-field
+// handlers `library_pane.rs` already has for `Pane::Library`, copied verbatim — already covered by
+// `library.rs`'s own `reuse_sections`/`reuse_pick`/`LibraryResponse` tests, which this PR does not touch.
+// `help.changelog`/`templates.save`'s registration (name/kind/args, without invoking `run`) is checked
+// below instead, the same non-App-dependent technique `run_tool_undoable_snapshots_only_mutate` above uses.
+
+/// `help.changelog` and `templates.save` are registered in `TOOL_TABLES` (via `whatsnew::TOOLS`) with
+/// the kind/args the plan specifies — `mcp::tools::find` reads the static registry and needs no `&mut App`.
+#[test]
+fn help_changelog_and_templates_save_are_registered() {
+    use crate::mcp::tools::ToolKind;
+    let help = crate::mcp::tools::find("help.changelog").expect("help.changelog must be registered");
+    assert_eq!(help.kind, ToolKind::Read);
+    assert!(help.args.is_empty());
+    let save = crate::mcp::tools::find("templates.save").expect("templates.save must be registered");
+    assert_eq!(save.kind, ToolKind::Ui);
+    assert!(save.args.iter().any(|a| a.starts_with("name:string:true")), "{:?}", save.args);
+    assert!(save.args.iter().any(|a| a.starts_with("clip_ids:")), "{:?}", save.args);
+}
+
+/// Tripwire: this PR does not migrate the 17 pre-existing raw `ctx.request_repaint_after(...)` call
+/// sites named in CHANGELOG.md/goals.md (most live in files another workstream owns exclusively in a
+/// later wave) — only the NEW code it adds (winpos.rs, whatsnew.rs) routes through `App::animate_until`.
+/// Counts real call lines across the files that had them before this PR (skipping doc-comment text and
+/// `animate_until`'s own internal `ctx.request_repaint_after(dt)` funnel call), so a future edit that
+/// silently adds, removes or migrates one of the 17 is caught here instead of going unnoticed.
+#[test]
+fn pre_existing_repaint_sites_unchanged_and_named() {
+    let files = [
+        include_str!("mod.rs"),
+        include_str!("mcp_exec.rs"),
+        include_str!("lib_preview.rs"),
+        include_str!("jobs.rs"),
+        include_str!("../planner.rs"),
+        include_str!("../preview.rs"),
+        include_str!("../subtitles_ui.rs"),
+    ];
+    let count = files
+        .iter()
+        .flat_map(|f| f.lines())
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .filter(|l| l.contains("request_repaint_after(") && !l.contains("request_repaint_after(dt)"))
+        .count();
+    assert_eq!(
+        count, 17,
+        "the count of pre-existing raw request_repaint_after sites moved — if that was intentional, \
+         update this count AND the tracked-gap note in CHANGELOG.md/goals.md"
+    );
 }

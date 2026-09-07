@@ -150,7 +150,10 @@ pub fn show(ui: &mut egui::Ui, state: &mut PreviewState, mut c: PreviewCtx<'_>) 
                 .show(ui.ctx(), |ui| {
                     egui::Frame::popup(ui.style()).fill(c.palette.panel.gamma_multiply(0.92)).show(ui, |ui| {
                         ui.vertical(|ui| {
-                            scrub_bar(ui, &c, &mut r, state.transport.width().max(320.0));
+                            let width = state.transport.width().max(320.0);
+                            if let Some(t) = scrub_bar(ui, c.project.duration(), c.playhead, c.palette, width) {
+                                r.seek = Some(t);
+                            }
                             transport(ui, state, &c, &mut r);
                         });
                         // hovering the bar keeps it alive past the 2 s fade
@@ -168,7 +171,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut PreviewState, mut c: PreviewCtx<'_>) 
         // the space is always allocated so the video does not jump; the bar itself only appears
         // (and takes clicks) while the pointer is over the pane, like the fullscreen overlay
         if hovered {
-            scrub_bar(ui, &c, &mut r, ui.available_width());
+            if let Some(t) = scrub_bar(ui, c.project.duration(), c.playhead, c.palette, ui.available_width()) {
+                r.seek = Some(t);
+            }
         } else {
             ui.allocate_exact_size(vec2(ui.available_width(), 10.0), egui::Sense::hover());
         }
@@ -177,22 +182,31 @@ pub fn show(ui: &mut egui::Ui, state: &mut PreviewState, mut c: PreviewCtx<'_>) 
     r
 }
 
-/// Progress / scrub bar (same look as the library preview's): fill shows the playhead, click or
-/// drag anywhere on it seeks.
-fn scrub_bar(ui: &mut egui::Ui, c: &PreviewCtx<'_>, r: &mut PreviewResponse, width: f32) {
-    let duration = c.project.duration().max(f64::MIN_POSITIVE);
+/// Progress / scrub bar (same look as the library preview's, which now shares this fn instead of
+/// duplicating the painting): fill shows the playhead, click or drag anywhere on it seeks. Returns the
+/// seek target (seconds) instead of writing into a `PreviewResponse` directly, so the lib-preview
+/// mini-player (which has no `PreviewResponse` of its own) can call it too.
+pub(crate) fn scrub_bar(ui: &mut egui::Ui, duration: f64, playhead: f64, palette: &Palette, width: f32) -> Option<f64> {
+    let duration = duration.max(f64::MIN_POSITIVE);
     let (bar, br) = ui.allocate_exact_size(vec2(width, 10.0), egui::Sense::click_and_drag());
-    ui.painter().rect_filled(bar, 2.0, c.palette.panel);
-    let frac = (c.playhead / duration).clamp(0.0, 1.0) as f32;
+    ui.painter().rect_filled(bar, 2.0, palette.panel);
+    let frac = (playhead / duration).clamp(0.0, 1.0) as f32;
     let filled = Rect::from_min_max(bar.min, pos2(bar.left() + bar.width() * frac, bar.bottom()));
-    ui.painter().rect_filled(filled, 2.0, c.palette.accent);
-    ui.painter().rect_stroke(bar, 2.0, egui::Stroke::new(1.0, c.palette.border), egui::StrokeKind::Inside);
+    ui.painter().rect_filled(filled, 2.0, palette.accent);
+    ui.painter().rect_stroke(bar, 2.0, egui::Stroke::new(1.0, palette.border), egui::StrokeKind::Inside);
     if (br.clicked() || br.dragged()) && bar.width() > 0.0 {
         if let Some(p) = br.interact_pointer_pos() {
-            let f = (((p.x - bar.left()) / bar.width()) as f64).clamp(0.0, 1.0);
-            r.seek = Some(f * duration);
+            let f = ((p.x - bar.left()) / bar.width()) as f64;
+            return Some(scrub_time(f, duration));
         }
     }
+    None
+}
+
+/// Time a scrub-bar click/drag at fractional position `frac` (0..1 across the bar, unclamped so a drag
+/// past either end still reads as 0 or `duration`) seeks to.
+pub(crate) fn scrub_time(frac: f64, duration: f64) -> f64 {
+    frac.clamp(0.0, 1.0) * duration
 }
 
 fn transport(ui: &mut egui::Ui, state: &mut PreviewState, c: &PreviewCtx<'_>, r: &mut PreviewResponse) {
@@ -504,7 +518,7 @@ fn tool_drag(
             }
         }
     }
-    let Some(d) = &mut state.tool_drag else { return !matches!(tool, Tool::Zoom | Tool::Text) };
+    let Some(d) = &mut state.tool_drag else { return !matches!(tool, Tool::Text) };
     let now = resp.interact_pointer_pos().or_else(|| ui.input(|i| i.pointer.latest_pos())).unwrap_or(d.from);
 
     if resp.dragged() {
@@ -886,6 +900,35 @@ mod tests {
             assert!((v * 2.0 - (v * 2.0).round()).abs() < 1e-3, "{v} not pixel aligned");
         }
         assert!(lb.width() <= area.width() + 0.5 && lb.height() <= area.height() + 0.5);
+    }
+
+    /// Moved here from the lib-preview mini-player's identical assertions (`scrub_bar` now shares this
+    /// one implementation instead of duplicating it).
+    #[test]
+    fn scrub_time_clamps_to_bar() {
+        assert_eq!(scrub_time(0.0, 4.0), 0.0);
+        assert_eq!(scrub_time(1.0, 4.0), 4.0);
+        assert_eq!(scrub_time(0.5, 4.0), 2.0);
+        assert_eq!(scrub_time(-0.2, 4.0), 0.0, "past-left clamps to the start");
+        assert_eq!(scrub_time(1.2, 4.0), 4.0, "past-right clamps to the end");
+    }
+
+    /// The tool_drag guard's fallthrough (`let Some(d) = &mut state.tool_drag else { ... }`) no longer
+    /// names the deleted Zoom tool variant — proven at compile time (this whole crate would not build
+    /// if it still did; a text self-scan of this very file can't check for its own search string, so
+    /// the guarantee here is the stronger one) plus a runtime check, same idiom as
+    /// `shape_tool_drag_reports_a_shape_instead_of_moving_the_clip` above: an ordinary non-Select/Text
+    /// tool (Cut, which has no special-cased body of its own) still owns the canvas drag instead of
+    /// moving the clip, so gestures on ordinary tools are unaffected by the removal.
+    #[test]
+    fn no_tool_zoom_references() {
+        let mut h = H::new();
+        h.tool = Tool::Cut;
+        h.frame(vec![]);
+        h.drag(pos2(250.0, 150.0), pos2(400.0, 250.0));
+        let c = h.project.clip(7).unwrap();
+        assert_eq!((c.x.value, c.y.value), (0.0, 0.0), "a non-Select/Text tool never moves the clip");
+        assert_eq!(h.undos, 0, "no clip undo for a non-Select/Text tool's gesture");
     }
 
     struct H {

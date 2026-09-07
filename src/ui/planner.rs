@@ -12,7 +12,7 @@
 //! Notes tab = `Project.notes`, a list of titled markdown entries ("describe your process, ideas, style
 //! while you edit — the style summary / AI tools read this"): one collapsed-by-default
 //! `CollapsingHeader` per note (colour label dot, title field, Edit/Preview toggle, delete), body shown
-//! as rendered markdown (`egui_commonmark`) or, in edit mode, a plain multiline `TextEdit`.
+//! as rendered markdown (`crate::ui::markdown`) or, in edit mode, a plain multiline `TextEdit`.
 //!
 //! Timer tab = a session-scoped stopwatch/countdown (`PlannerState::timer`, not project data): a round
 //! dial (`dial()`), Start/Pause/Reset, and an optional link to one plan item — while running, elapsed
@@ -26,9 +26,8 @@ use crate::model::{ClipKind, Id, PlanItem, Project, LABEL_COLORS};
 use crate::theme::Palette;
 use crate::ui::markers_ui::x_button;
 use crate::ui::tools::{glyph_text_button, Dir, Glyph};
-use crate::ui::{edit_start, label_color, once, DragPayload};
+use crate::ui::{edit_start, label_color, markdown, once, DragPayload};
 use eframe::egui::{self, Response, RichText, TextEdit};
-use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 use std::time::{Duration, Instant};
 
 #[derive(Default)]
@@ -39,7 +38,6 @@ pub struct PlannerState {
     /// Notes tab: which notes (by id) are in edit mode (plain `TextEdit`) rather than markdown preview.
     /// Open/closed state of each note's `CollapsingHeader` is persisted by egui itself, not here.
     pub notes_editing: Vec<Id>,
-    pub md_cache: CommonMarkCache,
     pub timer: TimerState,
 }
 
@@ -669,7 +667,7 @@ fn notes_tab(
                     } else if n.body.trim().is_empty() {
                         ui.weak("(empty — click the pencil to edit)");
                     } else {
-                        CommonMarkViewer::new().show(ui, &mut state.md_cache, &n.body);
+                        markdown::show(ui, &n.body, palette);
                     }
                 });
 
@@ -893,7 +891,7 @@ mod tests {
         assert_eq!(count_items(&p.plan), (0, 2));
     }
 
-    /// Headless: the Notes tab renders both a note's markdown preview (`CommonMarkViewer`) and, once
+    /// Headless: the Notes tab renders both a note's markdown preview (`crate::ui::markdown::show`) and, once
     /// its id is in `notes_editing` (what the pencil/eye button toggles), its plain edit `TextEdit` —
     /// without panicking either way. A bare `RawInput::default()` has no pointer to click with, so the
     /// toggle itself is driven directly through `state`, same as `show_headless` drives tabs.
