@@ -323,6 +323,10 @@ pub struct Settings {
     pub snap_markers: bool,
     // ---- ws:trim-model ----
     // ---- ws:canvas-handles-monitor ----
+    /// Let an effect / transition / look hover (or `preview.hover`) drive the monitor's alt render.
+    pub hover_preview: bool,
+    /// Canvas centre / edge / third / other-clip snapping while dragging a clip on the preview.
+    pub canvas_snap: bool,
     // ---- ws:export-deliver ----
     /// The platform tiles in the Export window (a Vec, not a const table, so they're editable).
     /// Per-field default fn on top of the container-level one: an old settings.json without this key
@@ -337,6 +341,10 @@ pub struct Settings {
     pub loudnorm: bool,
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
+    /// Active workspace name (`ui::layout::WORKSPACES`), lit in the menu-bar strip / View menu.
+    pub workspace: String,
+    /// Show the Open / Import / Templates / Recent cards over an empty project (the home screen).
+    pub home_screen: bool,
     // ---- ws:media-library ----
     // ---- ws:source-monitor ----
     // ---- ws:timeline-trim-gestures ----
@@ -439,12 +447,16 @@ impl Default for Settings {
             snap_markers: true,
             // ---- ws:trim-model ----
             // ---- ws:canvas-handles-monitor ----
+            hover_preview: true,
+            canvas_snap: true,
             // ---- ws:export-deliver ----
             export_presets: crate::engine::export::default_export_presets(),
             last_export: None,
             loudnorm: default_loudnorm(),
             // ---- ws:inspector-gallery ----
             // ---- ws:layout-modes-onboarding ----
+            workspace: "Edit".into(),
+            home_screen: true,
             // ---- ws:media-library ----
             // ---- ws:source-monitor ----
             // ---- ws:timeline-trim-gestures ----
@@ -667,6 +679,18 @@ mod tests {
         assert_eq!(back.preroll_secs, s.preroll_secs);
     }
 
+    // ---- ws:canvas-handles-monitor ----
+    #[test]
+    fn hover_preview_and_canvas_snap_round_trip() {
+        let old: Settings = serde_json::from_str("{}").unwrap();
+        assert!(old.hover_preview && old.canvas_snap, "both default on");
+        let mut s = Settings::default();
+        s.hover_preview = false;
+        s.canvas_snap = false;
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert!(!back.hover_preview && !back.canvas_snap);
+    }
+
     #[test]
     fn theme_file_round_trips() {
         let tf = ThemeFile {
@@ -723,5 +747,22 @@ mod tests {
         assert!(!back.loudnorm);
         assert_eq!(back.export_presets.len(), 1);
         assert_eq!(back.last_export, s.last_export);
+    }
+
+    // ---- ws:layout-modes-onboarding ----
+    #[test]
+    fn layout_mode_settings_round_trip() {
+        let old: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(old.workspace, "Edit", "today's default layout is the Edit workspace");
+        assert!(old.home_screen, "default on");
+        assert_eq!(old.layout_mode, "dynamic");
+        assert!(!old.onboarded, "a settings file without the flag sees the welcome once");
+        let mut s = Settings::default();
+        s.workspace = "Color".into();
+        s.home_screen = false;
+        s.layout_mode = "granular".into();
+        s.onboarded = true;
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!((back.workspace.as_str(), back.home_screen, back.layout_mode.as_str(), back.onboarded), ("Color", false, "granular", true));
     }
 }

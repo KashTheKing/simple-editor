@@ -71,8 +71,11 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
             }
         }
     }
-    if app.selection != app.last_fired_selection {
-        app.last_fired_selection = app.selection.clone();
+    // Widened past a bare `app.selection` diff: `SelSig` also covers transitions, subtitle cues and
+    // the edit point, so selecting one of those (clip selection unchanged) still fires the hook.
+    let sel_sig = frame::SelSig::of(app);
+    if sel_sig != app.last_fired_selection {
+        app.last_fired_selection = sel_sig;
         let ids = app.selection.clone();
         app.fire_hook("selection_changed", json!({"clip_ids": ids}));
     }
@@ -143,7 +146,9 @@ fn dispatch(app: &mut App, cmd: Command, arg_form: Option<(&'static str, Vec<(St
         }
         Command::Script(path) => app.run_script_path = Some(path),
         Command::Workspace(name) => {
-            app.toast(format!("Workspace '{name}' — full switching lands with layout-modes-onboarding"));
+            // ---- ws:layout-modes-onboarding ----
+            // the placeholder toast this arm carried until wave 2: the real switch
+            layout_ctl::switch_workspace(app, name);
         }
     }
 }
@@ -290,5 +295,21 @@ mod tests {
         assert_eq!(recent_id(&Command::Action(Action::Undo)), Some("undo".to_string()));
         assert_eq!(recent_id(&Command::Tool("ui.palette")), Some("tool.ui.palette".to_string()));
         assert_eq!(recent_id(&Command::Workspace("Default")), None);
+    }
+
+    /// Regression pin for the bug where `tick` diffed the bare `app.selection` clip-id vector, so
+    /// selecting a transition/subtitle-cue or moving the edit point (clip selection unchanged) never
+    /// fired `selection_changed` even though panes visibly reacted. No headless `App` exists to call
+    /// `tick` itself (see `fire_hook`'s doc comment), so this pins the fix at the source: `tick` must
+    /// build the widened `SelSig` (clips+transitions+cues+edit_point, see `frame::selection_signature_
+    /// changes_on_every_selection_part` / `selection_changed_predicate_fires_once_for_each_widened_
+    /// kind`) to diff against `last_fired_selection`, not just compare `app.selection` directly.
+    #[test]
+    fn selection_changed_diff_uses_widened_signature() {
+        let here = include_str!("palette_ctl.rs");
+        assert!(
+            here.contains("SelSig::of(app)"),
+            "tick must diff frame::SelSig::of(app) (clips+transitions+cues+edit_point), not bare app.selection"
+        );
     }
 }

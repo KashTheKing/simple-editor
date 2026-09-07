@@ -54,13 +54,19 @@ mod drops;
 mod edit_ops;
 mod feedback;
 mod files;
+// ---- ws:layout-modes-onboarding ----
+mod frame;
 mod gpu;
 mod jobs;
+// ---- ws:layout-modes-onboarding ----
+mod layout_ctl;
 mod lib_preview;
 mod library_pane;
 mod mcp_exec;
 mod media_sync;
 mod menus;
+// ---- ws:canvas-handles-monitor ----
+mod monitor;
 // ---- ws:command-palette ----
 mod palette_ctl;
 mod panes;
@@ -80,8 +86,13 @@ mod tools_commands;
 // ---- ws:export-deliver ----
 mod tools_export;
 mod tools_helpers;
+// ---- ws:layout-modes-onboarding ----
+mod tools_layout;
 mod tools_media;
+mod tools_mixer;
 mod tools_playback;
+// ---- ws:canvas-handles-monitor ----
+mod tools_preview;
 // ---- ws:forgiveness ----
 mod tools_project;
 #[cfg(test)]
@@ -292,10 +303,14 @@ pub struct App {
     /// Panes whose draw panicked: shown as a message instead of taking the whole editor down.
     failed_panes: Vec<Pane>,
     // ---- ws:registries-schema-hooks ----
-    /// Which async GPU preview canvas-handles-monitor (wave 2) should be rendering into, if any —
-    /// no-op placeholder this wave (nothing reads or writes it yet outside its own scaffolding).
-    #[allow(dead_code)]
-    pub(crate) alt_render: Option<AltRenderKind>,
+    // ---- ws:canvas-handles-monitor ----
+    // deviation (see PR body): retyped from wave-0b's `Option<AltRenderKind>` no-op placeholder to the
+    // real coalescing state (`monitor::AltRenderState`) this workstream builds — anticipated in the
+    // plan's own risk table ("wave-0b's alt_render App-field stub type may not match ... First commit
+    // retypes that one field if needed — isolated, called out in the PR description").
+    /// The monitor's async alt-render pipeline (hover preview of an effect/transition/gallery item) —
+    /// see `monitor.rs`'s doc comment.
+    pub(crate) alt_render: monitor::AltRenderState,
     // ---- ws:size-diet ----
     /// The "What's New" window (whatsnew.rs) is open — set on a version bump, or by `Action::WhatsNew`.
     pub(crate) whatsnew_open: bool,
@@ -346,9 +361,18 @@ pub struct App {
     /// Scripts disabled for the session after their `@on` hook overran its budget once (one toast, then
     /// silently skipped by `fire_hook` for the rest of the session).
     disabled_hooks: Vec<PathBuf>,
-    /// Selection last handed to `fire_hook("selection_changed", ...)` — `palette_ctl::tick` compares
-    /// against `self.selection` each frame so the hook fires on an actual change, not every frame.
-    last_fired_selection: Vec<Id>,
+    /// Selection signature last handed to `fire_hook("selection_changed", ...)` — `palette_ctl::tick`
+    /// compares against `frame::SelSig::of(self)` each frame so the hook fires on any change (clips,
+    /// transitions, subtitle cues OR the edit point — not just `self.selection`), exactly once.
+    last_fired_selection: frame::SelSig,
+    // ---- ws:layout-modes-onboarding ----
+    /// The first-run welcome wizard while it is open — armed by `boot::run` on a fresh install (no
+    /// file argument, no `--screenshot`), `Action::ShowWelcome` and the `onboarding.reset` tool.
+    onboarding: Option<crate::ui::onboarding::Onboarding>,
+    /// The home / empty-state cards were dismissed for this session (`ui::home`).
+    home_dismissed: bool,
+    /// The selection `frame::tick` last reacted to, so auto-surface / glow fire once per change.
+    sel_sig: frame::SelSig,
     // ---- ws:export-deliver ----
     // (same per-workstream section shape ws:forgiveness added above — this struct's pre-seeded markers
     // stop at ws:size-diet, so each later workstream appends its own)
@@ -360,17 +384,11 @@ pub struct App {
     bake_jobs: Vec<tools_export::BakeJob>,
 }
 
-/// What an async, off-the-main-preview GPU render is for — hover preview, trim view, scopes, wipe
-/// compare (canvas-handles-monitor / pro-monitor, waves 2-3). A bare placeholder this wave: nothing
-/// attaches `Player::request_layers` to it yet.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
-pub(crate) enum AltRenderKind {
-    Hover,
-    TrimView,
-    Scopes,
-    Wipe,
-}
+// ---- ws:canvas-handles-monitor ----
+// wave-0b's `AltRenderKind` placeholder enum (Hover/TrimView/Scopes/Wipe) is superseded by
+// `monitor::AltRequest` (Effect/Transition/Gallery — pro-monitor, wave 3, adds TrimOut/TrimIn/
+// Compare/Angle to that same enum per the plan) and removed here to avoid two parallel "what should
+// the monitor render" types.
 
 // ---- ws:forgiveness ----
 /// The on-disk cache directory's size — `settings_ui::performance` (a sibling module, not a descendant
@@ -613,14 +631,11 @@ impl App {
                 }
             });
         }
-        // first-run install points the entry at this exe; skip for screenshot/debug runs so they don't re-point it
-        if settings.context_menu
-            && screenshot.is_none()
-            && !cfg!(debug_assertions)
-            && !crate::contextmenu::is_installed()
-        {
-            let _ = crate::contextmenu::install();
-        }
+        // ---- ws:layout-modes-onboarding ----
+        // The Explorer context-menu install that used to run here on every launch (guarded on
+        // settings.context_menu / no --screenshot / release build / not yet installed) now lives in
+        // `boot::run`: a first run arms the welcome wizard, whose opt-in checkbox is the consent that
+        // was missing; later launches keep the same guard, gated on that recorded consent.
         let mut player = Player::new(cc.egui_ctx.clone(), backend, text.clone());
         player.set_cache_bytes(crate::playback::cache_budget_bytes(settings.cache_mb));
         let waveforms = WaveformCache::new(cc.egui_ctx.clone(), backend);
@@ -747,7 +762,7 @@ impl App {
             canvas: (0, 0),
             audio_inputs: None,
             failed_panes: Vec::new(),
-            alt_render: None,
+            alt_render: monitor::AltRenderState::default(),
             whatsnew_open: false,
             winpos_pending: None,
             // ---- ws:forgiveness ----
@@ -768,7 +783,11 @@ impl App {
             ),
             hook_running: false,
             disabled_hooks: Vec::new(),
-            last_fired_selection: Vec::new(),
+            last_fired_selection: frame::SelSig::default(),
+            // ---- ws:layout-modes-onboarding ----
+            onboarding: None,
+            home_dismissed: false,
+            sel_sig: frame::SelSig::default(),
             // ---- ws:export-deliver ----
             export_queue: std::collections::VecDeque::new(),
             bake_jobs: Vec::new(),
@@ -1194,6 +1213,12 @@ impl eframe::App for App {
                 // cloned: the draw closure needs self mutably while the tab renderer reads the icons
                 let icons = self.settings.icon_overrides.clone();
                 let cozy = self.settings.ui_look != "sharp";
+                // ---- ws:layout-modes-onboarding ----
+                // Both closures need `self` (draw: mutably; on_viewport: the hotkey table, then
+                // pending_actions), and layout::show calls them strictly one after the other — never
+                // nested — so a RefCell hands the borrow back and forth at runtime, the same shape
+                // `App::fire_hook` already uses for its tool-call closure.
+                let cell = std::cell::RefCell::new(&mut *self);
                 let (changed, moved, set_icon) = layout::show(
                     ctx,
                     ui,
@@ -1201,11 +1226,15 @@ impl eframe::App for App {
                     &icons,
                     tab_bar,
                     cozy,
-                    &mut |ui, pane| self.draw_pane(ui, pane),
+                    &mut |ui, pane| cell.borrow_mut().draw_pane(ui, pane),
                     // ---- ws:registries-schema-hooks ----
-                    // no-op until ws:layout-modes-onboarding (wave 2) polls hotkeys on the popped
-                    // viewport's own ctx
-                    &mut |_ctx| {},
+                    // filled by ws:layout-modes-onboarding: poll the action table on the popped
+                    // viewport's own ctx, so Space/J/K/L work in a torn-off Preview (each viewport
+                    // has its own input state, so nothing double-fires with the root poll above)
+                    &mut |vctx| {
+                        let acts = layout_ctl::poll_popout(&cell.borrow().hotkeys, vctx);
+                        cell.borrow_mut().pending_actions.extend(acts);
+                    },
                 );
                 self.layout = l;
                 self.layout_dirty |= changed;
@@ -1288,6 +1317,7 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:audio-analysis ----
     tools_audio::TOOLS,
     // ---- ws:audio-dsp-automation ----
+    tools_mixer::TOOLS,
     // ---- ws:color-engine ----
     tools_color::TOOLS,
     // ---- ws:command-palette ----
@@ -1301,10 +1331,12 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:trim-model ----
     tools_trim::TOOLS,
     // ---- ws:canvas-handles-monitor ----
+    tools_preview::TOOLS,
     // ---- ws:export-deliver ----
     tools_export::TOOLS,
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
+    tools_layout::TOOLS,
     // ---- ws:media-library ----
     // ---- ws:source-monitor ----
     // ---- ws:timeline-trim-gestures ----
@@ -1333,10 +1365,12 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     // ---- ws:trim-model ----
     trim_actions::act,
     // ---- ws:canvas-handles-monitor ----
+    monitor::act,
     // ---- ws:export-deliver ----
     tools_export::act,
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
+    layout_ctl::act,
     // ---- ws:media-library ----
     // ---- ws:source-monitor ----
     // ---- ws:timeline-trim-gestures ----
@@ -1353,6 +1387,7 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:split-god-files ----
     // ---- ws:audio-analysis ----
     // ---- ws:audio-dsp-automation ----
+    tools_mixer::sync_buses,
     // ---- ws:color-engine ----
     // ---- ws:command-palette ----
     palette_ctl::tick,
@@ -1363,10 +1398,12 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:snap-engine ----
     // ---- ws:trim-model ----
     // ---- ws:canvas-handles-monitor ----
+    monitor::tick,
     // ---- ws:export-deliver ----
     tools_export::frame_tick,
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
+    frame::tick,
     // ---- ws:media-library ----
     // ---- ws:source-monitor ----
     // ---- ws:timeline-trim-gestures ----
@@ -1397,6 +1434,7 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:export-deliver ----
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
+    layout_ctl::windows,
     // ---- ws:media-library ----
     // ---- ws:source-monitor ----
     // ---- ws:timeline-trim-gestures ----
