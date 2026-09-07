@@ -84,7 +84,9 @@ mod tools_project;
 mod tools_registry_tests;
 mod tools_subtitles;
 mod tools_timeline;
+mod tools_trim;
 mod tools_ui;
+mod trim_actions;
 mod whatsnew;
 #[path = "windows.rs"]
 mod windows_dlg;
@@ -1280,6 +1282,7 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // directly) — this workstream appends new rows into that same const, not a second registration.
     // ---- ws:snap-engine ----
     // ---- ws:trim-model ----
+    tools_trim::TOOLS,
     // ---- ws:canvas-handles-monitor ----
     // ---- ws:export-deliver ----
     // ---- ws:inspector-gallery ----
@@ -1309,6 +1312,7 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     playback_ctl::act,
     // ---- ws:snap-engine ----
     // ---- ws:trim-model ----
+    trim_actions::act,
     // ---- ws:canvas-handles-monitor ----
     // ---- ws:export-deliver ----
     // ---- ws:inspector-gallery ----

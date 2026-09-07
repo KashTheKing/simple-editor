@@ -79,7 +79,7 @@ fn copying_clips_also_writes_the_os_clipboard() {
     assert!(os.contains("clips") || os.contains("start"), "the OS text is the template JSON: {os:.80}");
     // and the ripple that Paste Insert performs opens exactly the span it is given
     let before = p.tracks[0].clips[0].start;
-    p.ripple_open(before, 2.0);
+    p.ripple_open(before, 2.0, &[0]); // ws:trim-model: ripple_open now takes an explicit track scope
     assert!(
         (p.tracks[0].clips[0].start - (before + 2.0)).abs() < 1e-6,
         "ripple_open slides the clip right by the span: {} -> {}",

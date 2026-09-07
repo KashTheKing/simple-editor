@@ -267,23 +267,11 @@ impl TimelineState {
     }
 }
 
-/// Which side of a seam (two abutting clip edges) an `EditPoint` targets — plain click selects `Both`,
-/// Ctrl selects the outgoing (`Left`) side, Alt the incoming (`Right`) side (see `arm.rs`'s Seam zone).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Side {
-    Left,
-    Right,
-    Both,
-}
-
-/// An edit point selected on the timeline (a seam between two abutting clips, or a lone clip edge).
-/// Consumed by trim-model's keyboard trim actions in a different, already-existing file.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct EditPoint {
-    pub track: usize,
-    pub t: f64,
-    pub side: Side,
-}
+// `EditPoint`/`Side` (which side of a seam a click targets — plain=Both, Ctrl=Left/outgoing,
+// Alt=Right/incoming, see `arm.rs`'s Seam zone) live in `model::ops::trim` — trim-model's keyboard
+// actions (`app/trim_actions.rs`) build the same primitives, so this is the one shared type rather
+// than a structurally-identical duplicate.
+pub use crate::model::ops::trim::{EditPoint, Side};
 
 pub struct TimelineCtx<'a> {
     pub project: &'a mut Project,
