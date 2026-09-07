@@ -209,6 +209,26 @@ pub(super) fn clip_menu(
     if ui.button("Save as Template…").clicked() {
         actions.push(Action::SaveTemplate);
     }
+    // ---- ws:transcript-captions ----
+    // Speech → text for this clip (video/audio only): whisper as a background job, the words into
+    // Project.transcripts. Every entry is an unbound Action handled by ui::app::transcript_ctl::act
+    // on the selection — a right-click on an unselected clip selects it first (see the caller).
+    if audio || has_native_size {
+        ui.menu_button("Transcript", |ui| {
+            if ui.button("Transcribe…").on_hover_text("whisper, in the background; downloads the model first if needed").clicked() {
+                actions.push(Action::TranscribeClip);
+                ui.close_menu();
+            }
+            if ui.button("View transcript").clicked() {
+                actions.push(Action::ViewTranscript);
+                ui.close_menu();
+            }
+            if ui.button("Export transcript…").on_hover_text(".txt, .srt or .json").clicked() {
+                actions.push(Action::ExportTranscript);
+                ui.close_menu();
+            }
+        });
+    }
     ui.menu_button("Color Label", |ui| label_menu(ui, labels, act, edit_labels));
     ui.separator();
     if ui.button(if linked { "Unlink" } else { "Link" }).clicked() {

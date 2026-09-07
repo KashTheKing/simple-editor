@@ -86,8 +86,12 @@ mod tools_project;
 mod tools_registry_tests;
 mod tools_subtitles;
 mod tools_timeline;
+// ---- ws:transcript-captions ----
+mod tools_transcript;
 mod tools_trim;
 mod tools_ui;
+// ---- ws:transcript-captions ----
+mod transcript_ctl;
 mod trim_actions;
 mod whatsnew;
 #[path = "windows.rs"]
@@ -347,6 +351,10 @@ pub struct App {
     /// Selection last handed to `fire_hook("selection_changed", ...)` — `palette_ctl::tick` compares
     /// against `self.selection` each frame so the hook fires on an actual change, not every frame.
     last_fired_selection: Vec<Id>,
+    // ---- ws:transcript-captions ----
+    /// Background whisper / tracking / TTS jobs started outside the Subtitles pane (clip menu, MCP),
+    /// the clip-menu model download and the "View transcript" window — see transcript_ctl.rs.
+    transcript: transcript_ctl::TranscriptState,
 }
 
 /// What an async, off-the-main-preview GPU render is for — hover preview, trim view, scopes, wipe
@@ -758,6 +766,8 @@ impl App {
             hook_running: false,
             disabled_hooks: Vec::new(),
             last_fired_selection: Vec::new(),
+            // ---- ws:transcript-captions ----
+            transcript: transcript_ctl::TranscriptState::default(),
         };
         if let Some(reason) = settings_bad {
             app.toast(format!("Settings file was corrupt (saved as settings.json.bad): {reason}"));
@@ -1294,6 +1304,7 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:source-monitor ----
     // ---- ws:timeline-trim-gestures ----
     // ---- ws:transcript-captions ----
+    tools_transcript::TOOLS,
     // ---- ws:pro-monitor ----
     // ---- ws:pro-timeline ----
     // ---- ws:text-titles ----
@@ -1325,6 +1336,7 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     // ---- ws:source-monitor ----
     // ---- ws:timeline-trim-gestures ----
     // ---- ws:transcript-captions ----
+    transcript_ctl::act,
     // ---- ws:pro-monitor ----
     // ---- ws:pro-timeline ----
     // ---- ws:text-titles ----
@@ -1354,6 +1366,7 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:source-monitor ----
     // ---- ws:timeline-trim-gestures ----
     // ---- ws:transcript-captions ----
+    transcript_ctl::tick,
     // ---- ws:pro-monitor ----
     // ---- ws:pro-timeline ----
     // ---- ws:text-titles ----
@@ -1384,6 +1397,7 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:source-monitor ----
     // ---- ws:timeline-trim-gestures ----
     // ---- ws:transcript-captions ----
+    transcript_ctl::window,
     // ---- ws:pro-monitor ----
     // ---- ws:pro-timeline ----
     // ---- ws:text-titles ----

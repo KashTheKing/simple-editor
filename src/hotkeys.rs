@@ -234,6 +234,15 @@ actions! {
     // ---- ws:source-monitor ----
     // ---- ws:timeline-trim-gestures ----
     // ---- ws:transcript-captions ----
+    // Unbound by design (skeleton keymap): reached from the Subtitles pane's buttons, the clip
+    // right-click "Transcript" submenu and the command palette. Every one dispatches through
+    // ui::app::transcript_ctl::act (ACT_HANDLERS).
+    GetCaptions => "get_captions", "Get Captions (download whisper)", None;
+    RemoveFillers => "remove_fillers", "Remove Filler Words", None;
+    ToggleTranscript => "toggle_transcript", "Show / Hide Transcript section", None;
+    TranscribeClip => "transcribe_clip", "Transcribe Selected Clip", None;
+    ViewTranscript => "view_transcript", "View Transcript", None;
+    ExportTranscript => "export_transcript", "Export Transcript…", None;
     // ---- ws:pro-monitor ----
     // ---- ws:pro-timeline ----
     // ---- ws:text-titles ----
