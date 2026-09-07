@@ -112,6 +112,9 @@ fn apply_card(app: &mut App, tab: GalleryTab, name: &str, clip_ids: &[Id], inten
             Ok(json!({"ok": true, "count": n}))
         }
         GalleryTab::Templates => Err("gallery.apply doesn't place Templates — use templates.apply".into()),
+        // ws:text-titles: Titles places positionally too (and needs the exposed-field zip) — use
+        // titles.place, not gallery.apply.
+        GalleryTab::Titles => Err("gallery.apply doesn't place Titles — use titles.place".into()),
     }
 }
 

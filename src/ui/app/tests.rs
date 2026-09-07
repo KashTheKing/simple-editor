@@ -228,7 +228,7 @@ fn clip_fields_apply_and_reject() {
     apply_clip_fields(&mut t, &json!({"text": "hello", "size": 90, "color": [10, 20, 30, 255], "align": 0})).unwrap();
     let ts = t.text.as_ref().unwrap();
     assert_eq!(ts.text, "hello");
-    assert_eq!(ts.size, 90.0);
+    assert_eq!(ts.size.value, 90.0);
     assert_eq!(ts.color, [10, 20, 30, 255]);
     assert_eq!(ts.align, 0);
 }

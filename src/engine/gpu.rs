@@ -1488,7 +1488,7 @@ impl GpuRenderer {
         let rasterizer = self.text.clone()?;
         let mut style = style.clone();
         style.text = crate::model::expand_text(&style.text, t, lt, fps);
-        let img = rasterizer.lock().ok()?.render(&style, scale);
+        let img = rasterizer.lock().ok()?.render(&style, scale, lt);
         let base = self.transparent(size)?;
         if img.is_empty() || (img.width <= 1 && img.height <= 1) {
             return Some(base);

@@ -294,7 +294,8 @@ pub fn show(
     // ---- ws:transcript-captions ----
     if state.show_transcript {
         ui.separator();
-        let r = transcript_ui::show(ui, &mut state.transcript, project, playhead, selection, palette, &mut undone, undo);
+        let r =
+            transcript_ui::show(ui, &mut state.transcript, project, playhead, selection, palette, &mut undone, undo);
         resp.edited |= r.edited;
         resp.seeked |= r.seeked;
         if r.cut > 0 {
@@ -470,7 +471,9 @@ fn style_section(
         });
         ui.end_row();
         ui.label("Size");
-        note(&ui.add(DragValue::new(&mut style.size).range(8.0..=300.0)), &mut start, &mut changed);
+        // ws:text-titles: style.size is now Animated — the project-wide caption style has no
+        // keyframe UI of its own, so this just edits the constant value.
+        note(&ui.add(DragValue::new(&mut style.size.value).range(8.0..=300.0)), &mut start, &mut changed);
         ui.end_row();
         ui.label("Colour");
         note(&ui.color_edit_button_srgba_unmultiplied(&mut style.color), &mut start, &mut changed);
@@ -479,7 +482,7 @@ fn style_section(
         ui.horizontal(|ui| {
             note(&ui.color_edit_button_srgba_unmultiplied(&mut style.outline_color), &mut start, &mut changed);
             note(
-                &ui.add(DragValue::new(&mut style.outline_width).range(0.0..=20.0).speed(0.1)),
+                &ui.add(DragValue::new(&mut style.outline_width.value).range(0.0..=20.0).speed(0.1)),
                 &mut start,
                 &mut changed,
             );
@@ -505,7 +508,7 @@ fn style_section(
         ui.end_row();
         ui.label("Letter spacing");
         note(
-            &ui.add(DragValue::new(&mut style.letter_spacing).range(-5.0..=30.0).speed(0.1)),
+            &ui.add(DragValue::new(&mut style.letter_spacing.value).range(-5.0..=30.0).speed(0.1)),
             &mut start,
             &mut changed,
         );
@@ -657,12 +660,16 @@ fn transcribe_section(
                     ui.colored_label(warn, e);
                 }
                 let short = name.split(" —").next().unwrap_or(name);
-                if glyph_text_button(ui, Glyph::Subtitles, &format!("Get captions  (download whisper {short}, {mb} MB)"))
-                    .on_hover_text(format!(
-                        "Downloads the {mb} MB model once, from huggingface.co into {}. Nothing else is fetched.",
-                        transcribe::models_dir().display()
-                    ))
-                    .clicked()
+                if glyph_text_button(
+                    ui,
+                    Glyph::Subtitles,
+                    &format!("Get captions  (download whisper {short}, {mb} MB)"),
+                )
+                .on_hover_text(format!(
+                    "Downloads the {mb} MB model once, from huggingface.co into {}. Nothing else is fetched.",
+                    transcribe::models_dir().display()
+                ))
+                .clicked()
                 {
                     st.download = Some(transcribe::download_model(file));
                 }

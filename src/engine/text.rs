@@ -1,7 +1,13 @@
 //! Text rasterizer for Text clips: system fonts (fontdb) + ab_glyph. Produces a tight, straight-alpha
 //! RGBA image with fill, outline (dilated coverage), shadow (offset + box blur) and optional background box.
-//! Output is cached by (style.cache_key(), scale bits). `scale` = canvas px per project px, so a 72 px
-//! style at a 960-wide preview of a 1920 project renders at 36 px.
+//! Output is cached by (style.cache_key(), scale bits, reveal bucket). `scale` = canvas px per project px,
+//! so a 72 px style at a 960-wide preview of a 1920 project renders at 36 px.
+//!
+//! ---- ws:text-titles ----
+//! `render`/`rasterize` take a clip-local `t: f64` (seconds) so `TextStyle.size`/`letter_spacing`/
+//! `outline_width` (all `Animated` since this workstream) and the reveal (typewriter) / wave (per-glyph
+//! bob) effects can sample it, mirroring `ShapeRasterizer::render(style, scale, t)` (engine/shapes.rs).
+//! `reveal_bucket` keeps the cache from growing per-frame the way `engine::shapes::reveal_bucket` does.
 
 use crate::media::Frame;
 use crate::model::TextStyle;
@@ -12,9 +18,30 @@ use std::sync::Arc;
 
 /// Largest rendered text image side — keeps silly sizes from allocating gigabytes.
 const MAX_SIDE: u32 = 8192;
+/// Reveal/wave time quantisation for the cache (mirrors engine::shapes::REVEAL_HZ).
+const REVEAL_HZ: f64 = 30.0;
+/// Per-glyph wave oscillation rate (full cycles per second) and phase step between neighbouring glyphs.
+const WAVE_HZ: f64 = 2.0;
+const WAVE_PHASE: f64 = 0.5;
+
+/// Cache-key time quantizer, mirroring `engine::shapes::reveal_bucket`. Returns a constant `0` when
+/// neither `reveal` nor `wave` can change the rendered pixels over time (the common, non-animated case —
+/// the cache behaves exactly as it did before this field existed), otherwise a bounded Hz-quantized
+/// bucket. `wave` is time-dependent even with a plain (non-keyframed) nonzero `value` — the oscillation
+/// itself is `sin(t * WAVE_HZ + …)` in `rasterize`, not something `Animated::at` captures — so `wave` is
+/// "static" only when its value is exactly 0, unlike `reveal` (whose non-animated value is a genuine
+/// constant across every `t`).
+fn reveal_bucket(style: &TextStyle, t: f64) -> u32 {
+    let wave_varies = style.wave.is_animated() || style.wave.value != 0.0;
+    if !style.reveal.is_animated() && !wave_varies {
+        return 0;
+    }
+    let r = if t.is_finite() { t.max(0.0) } else { 0.0 };
+    (r * REVEAL_HZ).min(u32::MAX as f64) as u32
+}
 
 pub struct TextRasterizer {
-    cache: HashMap<(u64, u32), Arc<Frame>>,
+    cache: HashMap<(u64, u32, u32), Arc<Frame>>,
     families: Vec<String>,
     loaded: bool,
     db: Database,
@@ -84,15 +111,15 @@ impl TextRasterizer {
     pub fn families(&self) -> &[String] {
         &self.families
     }
-    /// Render `style` at `scale`. Never fails: unknown fonts fall back to any sans font; empty text
-    /// yields a 1×1 transparent frame.
-    pub fn render(&mut self, style: &TextStyle, scale: f32) -> Arc<Frame> {
-        let key = (style.cache_key(), scale.to_bits());
+    /// Render `style` at `scale` for clip-local time `t` (seconds). Never fails: unknown fonts fall
+    /// back to any sans font; empty text yields a 1×1 transparent frame.
+    pub fn render(&mut self, style: &TextStyle, scale: f32, t: f64) -> Arc<Frame> {
+        let key = (style.cache_key(), scale.to_bits(), reveal_bucket(style, t));
         if let Some(f) = self.cache.get(&key) {
             return f.clone();
         }
         self.load_system_fonts();
-        let frame = Arc::new(self.rasterize(style, scale).unwrap_or_else(|| Frame::new(1, 1)));
+        let frame = Arc::new(self.rasterize(style, scale, t).unwrap_or_else(|| Frame::new(1, 1)));
         if self.cache.len() >= 64 {
             // ponytail: drop-all cache — LRU if text-heavy projects thrash
             self.cache.clear();
@@ -122,8 +149,12 @@ impl TextRasterizer {
             .clone()
     }
 
-    fn rasterize(&mut self, style: &TextStyle, scale: f32) -> Option<Frame> {
-        let px = style.size * scale;
+    fn rasterize(&mut self, style: &TextStyle, scale: f32, t: f64) -> Option<Frame> {
+        // ---- ws:text-titles: sample the now-Animated fields once at this clip-local `t` ----
+        let sz = style.size.at(t) as f32;
+        let ls = style.letter_spacing.at(t) as f32;
+        let ow = style.outline_width.at(t) as f32;
+        let px = sz * scale;
         if style.text.trim().is_empty() || !(px >= 1.0) || !px.is_finite() {
             return None;
         }
@@ -134,6 +165,11 @@ impl TextRasterizer {
         let ps = sf.scale();
         let lh = (sf.ascent() - sf.descent() + sf.line_gap()) * style.line_spacing.max(0.1);
         let n_chars = style.text.chars().count();
+        // typewriter reveal: only glyphs with char_idx < cutoff get outlined below; layout above still
+        // positions the FULL string so already-revealed glyphs never shift as more of it appears.
+        let cutoff = (n_chars as f64 * style.reveal.at(t).clamp(0.0, 1.0)).round() as usize;
+        // per-glyph wave/bob: 0 is the overwhelmingly common case (no oscillation, no per-frame cost).
+        let wv = style.wave.at(t) as f32;
 
         // Spans that change glyph SHAPE (font/size/bold/italic), resolved once per span rather than
         // per char — a text clip has a handful of spans, not hundreds.
@@ -159,7 +195,7 @@ impl TextRasterizer {
                 let fam = s.font.as_deref().unwrap_or(&style.font);
                 let bold = s.bold.unwrap_or(style.bold);
                 let italic = s.italic.unwrap_or(style.italic);
-                let size = s.size.unwrap_or(style.size).max(0.0);
+                let size = s.size.unwrap_or(sz).max(0.0);
                 let opx = (size * scale).max(1.0);
                 let f = self.font_for(fam, bold, italic)?;
                 let upm = f.units_per_em().unwrap_or(f.height_unscaled());
@@ -210,9 +246,7 @@ impl TextRasterizer {
                 glyphs.push(id.with_scale_and_position(ps, point(x, 0.0)));
                 glyph_chars.push(c);
                 glyph_char_idx.push(char_idx);
-                let cls =
-                    span_at(char_idx).and_then(|i| style.spans[i].letter_spacing).unwrap_or(style.letter_spacing)
-                        * scale;
+                let cls = span_at(char_idx).and_then(|i| style.spans[i].letter_spacing).unwrap_or(ls) * scale;
                 x += sf.h_advance(id) + cls;
                 last_ls = cls;
                 prev = Some(id);
@@ -237,11 +271,23 @@ impl TextRasterizer {
                 g.position.y += oy;
             }
         }
+        // per-glyph wave/bob, after line alignment so it offsets the FINAL position.
+        if wv != 0.0 {
+            for (gi, g) in glyphs.iter_mut().enumerate() {
+                let ci = glyph_char_idx[gi];
+                g.position.y += wv * ((t * WAVE_HZ + ci as f64 * WAVE_PHASE).sin() as f32);
+            }
+        }
         // ---- outline glyphs: base shape, unless a span overrides font/size/bold/italic ----
         let mut outlined: Vec<OutlinedGlyph> = Vec::with_capacity(glyphs.len());
         let mut outlined_char: Vec<usize> = Vec::with_capacity(glyphs.len());
         for (gi, g) in glyphs.iter().enumerate() {
             let ci = glyph_char_idx[gi];
+            // typewriter reveal: characters at/after the cutoff are laid out but never outlined, so
+            // they take no space in the compose pass below and the image doesn't reflow as more reveals.
+            if ci >= cutoff {
+                continue;
+            }
             let shape = span_at(ci).and_then(|i| span_shapes[i].as_ref());
             let og = if let Some(sh) = shape {
                 let id = sh.font.glyph_id(glyph_chars[gi]);
@@ -265,7 +311,7 @@ impl TextRasterizer {
             bx1 = bx1.max(b.max.x);
             by1 = by1.max(b.max.y);
         }
-        let r = style.outline_width.max(0.0) * scale;
+        let r = ow.max(0.0) * scale;
         let r = if r < 0.5 { 0.0 } else { r };
         let (shx, shy, blur) = if style.shadow {
             let s = |v: f32| (v * scale).round();
@@ -481,17 +527,27 @@ fn blur_lines(src: &[u8], dst: &mut [u8], lines: usize, len: usize, lstride: usi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::TextSpan;
+    use crate::model::{Animated, Ease, Keyframe, TextSpan};
 
     fn alpha_sum(f: &Frame) -> u64 {
         f.rgba.chunks_exact(4).map(|p| p[3] as u64).sum()
+    }
+
+    /// A style with wide, left-aligned text so 10 distinct glyphs land at 10 distinct char indices —
+    /// shared fixture for the reveal/wave tests below.
+    fn ten_char_style() -> TextStyle {
+        let mut s = TextStyle::default();
+        s.text = "0123456789".into();
+        s.align = 0;
+        s.size = Animated::new(48.0);
+        s
     }
 
     #[test]
     fn renders_default_style_and_caches() {
         let mut tr = TextRasterizer::new();
         let style = TextStyle::default();
-        let a = tr.render(&style, 0.5);
+        let a = tr.render(&style, 0.5, 0.0);
         if tr.families().is_empty() {
             eprintln!("no system fonts — skipping");
             assert_eq!((a.width, a.height), (1, 1));
@@ -501,9 +557,9 @@ mod tests {
         assert!(alpha_sum(&a) > 0);
         // white fill: every covered pixel is white
         assert!(a.rgba.chunks_exact(4).filter(|p| p[3] > 0).all(|p| p[0] == 255 && p[1] == 255 && p[2] == 255));
-        let b = tr.render(&style, 0.5);
+        let b = tr.render(&style, 0.5, 0.0);
         assert!(Arc::ptr_eq(&a, &b), "cache hit expected");
-        let c = tr.render(&style, 1.0);
+        let c = tr.render(&style, 1.0, 0.0);
         assert!(!Arc::ptr_eq(&a, &c));
         assert!(c.width > a.width);
 
@@ -512,14 +568,14 @@ mod tests {
         s2.font = "No Such Font 123".into();
         s2.bold = true;
         s2.italic = true;
-        assert!(alpha_sum(&tr.render(&s2, 0.5)) > 0);
+        assert!(alpha_sum(&tr.render(&s2, 0.5, 0.0)) > 0);
 
         // outline + shadow + box make the image bigger and add non-white pixels
         let mut s3 = style.clone();
-        s3.outline_width = 4.0;
+        s3.outline_width.value = 4.0;
         s3.shadow = true;
         s3.box_color = [0, 0, 255, 255];
-        let d = tr.render(&s3, 0.5);
+        let d = tr.render(&s3, 0.5, 0.0);
         assert!(d.width > a.width && d.height > a.height);
         assert!(d.rgba.chunks_exact(4).any(|p| p[3] > 0 && p[2] == 255 && p[0] == 0));
         assert!(d.rgba.chunks_exact(4).any(|p| p[3] > 0 && p[0] == 0 && p[2] == 0));
@@ -528,7 +584,7 @@ mod tests {
         let mut s4 = style.clone();
         s4.text = "One\nTwo\nThree".into();
         s4.align = 0;
-        let e = tr.render(&s4, 0.5);
+        let e = tr.render(&s4, 0.5, 0.0);
         assert!(e.height > a.height * 2);
     }
 
@@ -547,13 +603,13 @@ mod tests {
             eprintln!("no system fonts — skipping");
             return;
         }
-        let a = tr.render(&base, 0.6);
+        let a = tr.render(&base, 0.6, 0.0);
 
         let mut touched = base.clone();
         touched.spans.push(TextSpan { start: 0, end: 3, color: Some([255, 0, 0, 255]), ..Default::default() });
         touched.spans.clear();
         assert_eq!(touched.cache_key(), base.cache_key(), "empty spans must not change the cache key");
-        let b = tr.render(&touched, 0.6);
+        let b = tr.render(&touched, 0.6, 0.0);
         assert_eq!((a.width, a.height), (b.width, b.height));
         assert_eq!(a.rgba, b.rgba, "unspanned render regressed");
     }
@@ -568,15 +624,15 @@ mod tests {
             eprintln!("no system fonts — skipping");
             return;
         }
-        let a = tr.render(&base, 0.6);
+        let a = tr.render(&base, 0.6, 0.0);
 
         let mut s = base.clone();
         s.spans = vec![
             TextSpan { start: 100, end: 200, color: Some([255, 0, 0, 255]), ..Default::default() }, // past the end
-            TextSpan { start: 3, end: 1, color: Some([0, 255, 0, 255]), ..Default::default() }, // inverted
-            TextSpan { start: 2, end: 2, bold: Some(true), ..Default::default() },              // zero-width
+            TextSpan { start: 3, end: 1, color: Some([0, 255, 0, 255]), ..Default::default() },     // inverted
+            TextSpan { start: 2, end: 2, bold: Some(true), ..Default::default() },                  // zero-width
         ];
-        let b = tr.render(&s, 0.6); // must not panic
+        let b = tr.render(&s, 0.6, 0.0); // must not panic
         assert_eq!((a.width, a.height), (b.width, b.height));
         assert_eq!(a.rgba, b.rgba, "an out-of-range span must be a no-op");
     }
@@ -593,7 +649,7 @@ mod tests {
             eprintln!("no system fonts — skipping");
             return;
         }
-        let baseline = tr.render(&style, 1.0);
+        let baseline = tr.render(&style, 1.0, 0.0);
         let all_white =
             baseline.rgba.chunks_exact(4).filter(|p| p[3] > 0).all(|p| p[0] == 255 && p[1] == 255 && p[2] == 255);
         assert!(all_white);
@@ -606,7 +662,7 @@ mod tests {
             bold: Some(true),
             ..Default::default()
         });
-        let spanned = tr.render(&style, 1.0);
+        let spanned = tr.render(&style, 1.0, 0.0);
         assert_ne!(baseline.rgba, spanned.rgba, "spanned render must differ from the baseline");
         assert!(
             spanned.rgba.chunks_exact(4).any(|p| p[3] > 0 && p[0] > 200 && p[1] < 80 && p[2] < 80),
@@ -639,7 +695,7 @@ mod tests {
         // but render() also pulls in system fonts — either way it must not panic and must cover pixels)
         let mut style = TextStyle::default();
         style.font = "Arial".into();
-        assert!(alpha_sum(&tr.render(&style, 0.5)) > 0);
+        assert!(alpha_sum(&tr.render(&style, 0.5, 0.0)) > 0);
         // a missing path is remembered without error
         tr.load_user_fonts(&["Z:\\nope\\missing-font.ttf".into()]);
         let _ = std::fs::remove_file(&dst);
@@ -650,10 +706,10 @@ mod tests {
         let mut tr = TextRasterizer::new();
         let mut style = TextStyle::default();
         style.text = "  \n ".into();
-        let f = tr.render(&style, 1.0);
+        let f = tr.render(&style, 1.0, 0.0);
         assert_eq!((f.width, f.height, f.rgba[3]), (1, 1, 0));
         style.text = "x".into();
-        assert_eq!(tr.render(&style, 0.0).width, 1);
+        assert_eq!(tr.render(&style, 0.0, 0.0).width, 1);
     }
 
     #[test]
@@ -712,5 +768,90 @@ mod tests {
         assert_eq!(d[(300 * w + 1000) as usize], 255);
         assert_eq!(d[(300 * w + 1550) as usize], 255); // 51 px out
         assert_eq!(d[(300 * w + 1600) as usize], 0); // 101 px out
+    }
+
+    // ---- ws:text-titles ----
+
+    #[test]
+    fn render_cache_stable_for_static_style() {
+        let mut tr = TextRasterizer::new();
+        tr.load_system_fonts();
+        if tr.families().is_empty() {
+            eprintln!("no system fonts — skipping");
+            return;
+        }
+        let style = ten_char_style();
+        let a = tr.render(&style, 0.5, 0.0);
+        let b = tr.render(&style, 0.5, 5.0);
+        assert!(Arc::ptr_eq(&a, &b), "a non-animated style must cache once regardless of t");
+        assert_eq!(tr.cache.len(), 1);
+    }
+
+    #[test]
+    fn render_cache_buckets_animated_reveal() {
+        let mut tr = TextRasterizer::new();
+        tr.load_system_fonts();
+        if tr.families().is_empty() {
+            eprintln!("no system fonts — skipping");
+            return;
+        }
+        let mut style = ten_char_style();
+        style.reveal = Animated {
+            keys: vec![
+                Keyframe { t: 0.0, v: 0.0, ease: Ease::Linear },
+                Keyframe { t: 1.0, v: 1.0, ease: Ease::Linear },
+            ],
+            ..Animated::new(0.0)
+        };
+        let a = tr.render(&style, 1.0, 0.0);
+        let b = tr.render(&style, 1.0, 1.0);
+        assert_ne!(a.rgba, b.rgba, "reveal 0.0 vs 1.0 must render visibly different frames");
+        assert!(tr.cache.len() > 1, "an animated reveal must not collapse to one cache entry");
+        // 100 near-identical t values (same 1/30s bucket) must not each add a cache entry.
+        for i in 0..100 {
+            tr.render(&style, 1.0, 0.5 + i as f64 * 1e-5);
+        }
+        assert!(
+            tr.cache.len() < 10,
+            "near-identical t must share buckets, not grow one entry per call: {}",
+            tr.cache.len()
+        );
+    }
+
+    #[test]
+    fn reveal_cutoff_hides_trailing_chars() {
+        let mut tr = TextRasterizer::new();
+        tr.load_system_fonts();
+        if tr.families().is_empty() {
+            eprintln!("no system fonts — skipping");
+            return;
+        }
+        let mut style = ten_char_style();
+        style.reveal = Animated::new(0.5);
+        let half = tr.rasterize(&style, 1.0, 0.0).expect("renders");
+        style.reveal = Animated::new(1.0);
+        let full = tr.rasterize(&style, 1.0, 0.0).expect("renders");
+        assert!(alpha_sum(&half) > 0, "the first 5 chars must still draw something");
+        assert!(alpha_sum(&half) < alpha_sum(&full), "half-revealed must draw strictly less than fully revealed");
+    }
+
+    #[test]
+    fn wave_offsets_glyph_y_without_changing_glyph_count() {
+        let mut tr = TextRasterizer::new();
+        tr.load_system_fonts();
+        if tr.families().is_empty() {
+            eprintln!("no system fonts — skipping");
+            return;
+        }
+        let mut style = ten_char_style();
+        let flat = tr.rasterize(&style, 1.0, 0.3).expect("renders");
+        style.wave = Animated::new(20.0);
+        let waved = tr.rasterize(&style, 1.0, 0.3).expect("renders");
+        // same glyph "ink" (alpha mass), just moved — not clipped away — so the two frames differ but
+        // carry a comparable amount of coverage (loosely: within 15%, allowing for edge clipping).
+        let (fa, wa) = (alpha_sum(&flat) as f64, alpha_sum(&waved) as f64);
+        assert!(wa > 0.0);
+        assert!((fa - wa).abs() / fa < 0.15, "flat={fa} waved={wa}");
+        assert_ne!(flat.rgba, waved.rgba, "a nonzero wave must move pixels");
     }
 }

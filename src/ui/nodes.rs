@@ -886,7 +886,7 @@ fn node_panel(
         NodeKind::String(s) => {
             e.add(&ui.text_edit_multiline(&mut s.text))
                 .add(&ui.text_edit_singleline(&mut s.font).on_hover_text("Font family"));
-            num(ui, &mut e, "Size", &mut s.size, 4.0..=400.0);
+            anim(ui, &mut e, "Size", &mut s.size); // ws:text-titles: size is now Animated
             ui.horizontal(|ui| {
                 e.add(&ui.checkbox(&mut s.bold, "Bold")).add(&ui.checkbox(&mut s.italic, "Italic"));
             });
@@ -896,7 +896,7 @@ fn node_panel(
                 ui.label("Outline");
                 e.add(&ui.color_edit_button_srgba_unmultiplied(&mut s.outline_color));
             });
-            num(ui, &mut e, "Outline width", &mut s.outline_width, 0.0..=40.0);
+            anim(ui, &mut e, "Outline width", &mut s.outline_width); // ws:text-titles: now Animated
             ui.horizontal(|ui| {
                 e.add(&ui.checkbox(&mut s.shadow, "Shadow"));
                 e.add(&ui.color_edit_button_srgba_unmultiplied(&mut s.shadow_color));
@@ -911,7 +911,7 @@ fn node_panel(
                 }
             });
             num(ui, &mut e, "Line spacing", &mut s.line_spacing, 0.1..=4.0);
-            num(ui, &mut e, "Letter spacing", &mut s.letter_spacing, -20.0..=40.0);
+            anim(ui, &mut e, "Letter spacing", &mut s.letter_spacing); // ws:text-titles: now Animated
             ui.horizontal(|ui| {
                 ui.label("Box");
                 e.add(&ui.color_edit_button_srgba_unmultiplied(&mut s.box_color));

@@ -107,7 +107,8 @@ pub fn karaoke(
             match anim {
                 SubtitleAnim::Highlight(color) => span.color = Some(color),
                 _ => {
-                    span.size = Some(base.size * 1.3);
+                    // ws:text-titles: base.size is now Animated — sample it at this cue's own time.
+                    span.size = Some(base.size.at(t) as f32 * 1.3);
                     span.bold = Some(true);
                 }
             }
@@ -328,7 +329,7 @@ mod tests {
         let s = &style.spans[0];
         assert_eq!((s.start, s.end), (6, 9));
         assert_eq!(s.bold, Some(true));
-        assert!((s.size.unwrap() - p.subtitle_style.size * 1.3).abs() < 1e-3);
+        assert!((s.size.unwrap() as f64 - p.subtitle_style.size.value * 1.3).abs() < 1e-3);
         // Typewriter: only the words spoken so far
         p.subtitle_anim = SubtitleAnim::Typewriter;
         let (text, style) = cue_layer_at(&p, 2.2).unwrap();

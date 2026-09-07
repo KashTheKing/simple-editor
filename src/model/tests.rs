@@ -31,9 +31,9 @@ fn asset(id: Id, dur: f64, streams: usize) -> Asset {
 fn paste_text_style_keeps_destination_wording_content_only_keeps_destination_style() {
     let mut p = Project::new();
     let mut src = Clip::new(1, ClipKind::Text, "src", 0.0, 4.0);
-    src.text = Some(TextStyle { text: "Hello".into(), size: 40.0, bold: true, ..Default::default() });
+    src.text = Some(TextStyle { text: "Hello".into(), size: Animated::new(40.0), bold: true, ..Default::default() });
     let mut dst = Clip::new(2, ClipKind::Text, "dst", 0.0, 4.0);
-    dst.text = Some(TextStyle { text: "World".into(), size: 72.0, bold: false, ..Default::default() });
+    dst.text = Some(TextStyle { text: "World".into(), size: Animated::new(72.0), bold: false, ..Default::default() });
     let dst_id = dst.id;
     p.tracks[0].clips.push(dst);
 
@@ -42,13 +42,13 @@ fn paste_text_style_keeps_destination_wording_content_only_keeps_destination_sty
     assert_eq!(n, 1);
     let t = p.clip(dst_id).unwrap().text.as_ref().unwrap();
     assert_eq!(t.text, "World", "style-only paste must not touch the wording");
-    assert_eq!((t.size, t.bold), (40.0, true), "style fields copy from the source");
+    assert_eq!((t.size.value, t.bold), (40.0, true), "style fields copy from the source");
 
     // content only: destination keeps its (now-updated) style, gains the source's wording
     p.paste_attributes(&src, &[dst_id], AttrSet { text_content: true, ..AttrSet::NONE });
     let t = p.clip(dst_id).unwrap().text.as_ref().unwrap();
     assert_eq!(t.text, "Hello", "content-only paste copies the wording");
-    assert_eq!((t.size, t.bold), (40.0, true), "content-only paste must not touch the style");
+    assert_eq!((t.size.value, t.bold), (40.0, true), "content-only paste must not touch the style");
 }
 
 /// Style-only paste copies the source's spans, whose char ranges index the SOURCE wording — they
@@ -1678,4 +1678,22 @@ fn mark_from_clip_sets_in_out_from_bounds() {
     p.out_point = None;
     assert_eq!(p.mark_from_clip(None, 3.0), Some((2.0, 5.0)), "falls back to the clip under playhead");
     assert_eq!(p.mark_from_clip(None, 100.0), None, "nothing there");
+}
+
+// ---- ws:text-titles ----
+
+/// The Text inspector's Animation-row "Apply" button (`inspector_text::section`) calls
+/// `engine::presets::apply_motion` directly, the exact same fn/args shape as curves.rs:744's motion
+/// preset Apply button (`Some(scaled) => apply_motion(&preset, c, scaled)`) — not curves.rs:762's
+/// PENDING_MOTION thread-local, which is the unrelated "Save motion" button. Since both panels call the
+/// identical function, a Text clip must animate identically no matter which one triggered it.
+#[test]
+fn apply_motion_from_text_inspector_matches_curves_panel() {
+    let preset = crate::engine::presets::builtin_motions().into_iter().find(|m| m.name == "Fade In").unwrap();
+    let mut from_inspector = Clip::new(1, ClipKind::Text, "t1", 0.0, 4.0);
+    let mut from_curves_panel = Clip::new(2, ClipKind::Text, "t2", 0.0, 4.0);
+    crate::engine::presets::apply_motion(&preset, &mut from_inspector, true);
+    crate::engine::presets::apply_motion(&preset, &mut from_curves_panel, true);
+    assert_eq!(from_inspector.opacity, from_curves_panel.opacity, "identical calls, identical keyframes");
+    assert!(from_inspector.opacity.is_animated(), "Fade In must key Opacity on a Text clip too");
 }

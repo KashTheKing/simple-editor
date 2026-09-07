@@ -45,7 +45,7 @@ impl Project {
             }
         };
         // bottom-centred like the burn-in; the box height is estimated as one line of text
-        let y = self.height as f64 / 2.0 - self.subtitle_margin as f64 - self.subtitle_style.size as f64 * 0.75;
+        let y = self.height as f64 / 2.0 - self.subtitle_margin as f64 - self.subtitle_style.size.value * 0.75;
         for cue in &take {
             let mut c =
                 Clip::new(self.new_id(), ClipKind::Text, "Subtitle", cue.start, (cue.end - cue.start).max(MIN_CLIP));
