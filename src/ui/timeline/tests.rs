@@ -222,7 +222,7 @@ impl Harness {
         let mut resp = None;
         let full = ctx.run(input, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                let mut undo = |_: &Project| *undos += 1;
+                let mut undo = |_: &Project, _: &'static str| *undos += 1;
                 resp = Some(show(
                     ui,
                     state,
@@ -241,6 +241,7 @@ impl Harness {
                         keep_ranges: &[],
                         prerender: &[],
                         tool: *tool,
+                        library_selected: None,
                     },
                 ));
             });
@@ -274,6 +275,10 @@ impl Harness {
     fn has_fill(&self, color: Color32) -> bool {
         self.shapes.iter().any(|cs| matches!(&cs.shape, Shape::Rect(r) if r.fill == color))
     }
+    /// Is any line segment (e.g. `hatch()`'s diagonals) painted in this stroke colour?
+    fn has_line(&self, color: Color32) -> bool {
+        self.shapes.iter().any(|cs| matches!(&cs.shape, Shape::LineSegment { stroke, .. } if stroke.color == color))
+    }
     fn press(&mut self, pos: Pos2) -> TimelineResponse {
         self.press_m(pos, Modifiers::NONE)
     }
@@ -302,6 +307,18 @@ impl Harness {
             edited |= self.frame(vec![Event::PointerMoved(p)]).edited;
         }
         edited |= self.release(to).edited;
+        edited |= self.frame(vec![]).edited;
+        edited
+    }
+    /// Like `drag`, but every event (press, each move step, release) carries `mods`.
+    fn drag_m(&mut self, from: Pos2, to: Pos2, mods: Modifiers) -> bool {
+        self.press_m(from, mods);
+        let mut edited = false;
+        for i in 1..=4 {
+            let p = from + (to - from) * (i as f32 / 4.0);
+            edited |= self.frame_m(vec![Event::PointerMoved(p)], mods).edited;
+        }
+        edited |= self.release_m(to, mods).edited;
         edited |= self.frame(vec![]).edited;
         edited
     }
@@ -1387,6 +1404,8 @@ fn audio_clip_menu_swaps_add_mask_for_a_bus() {
                         true,
                         audio,
                         false,
+                        false,
+                        None,
                         None,
                         &mut false,
                         &p.labels,
@@ -1448,8 +1467,8 @@ fn clip_menu_effects_submenu_only_shows_shared_kinds() {
             |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     clip_menu(
-                        ui, 1, false, false, true, false, false, None, &mut false, &p.labels, &p.buses, shared,
-                        &mut act, &mut acts, &mut edit,
+                        ui, 1, false, false, true, false, false, false, None, None, &mut false, &p.labels, &p.buses,
+                        shared, &mut act, &mut acts, &mut edit,
                     )
                 });
             },
@@ -1803,4 +1822,705 @@ fn cue_trim_undo_on_release_not_press() {
     let r4 = h.frame(vec![]);
     assert!(r3.edited || r4.edited, "an actual trim must edit");
     assert_eq!(h.undos, 1);
+}
+
+// ---- ws:timeline-trim-gestures ----
+
+/// Ctrl+edge arms RippleTrim: the live drag only updates the ghost delta (the project is untouched),
+/// and release makes exactly one `ripple_trim` call plus one undo, shifting the downstream clip on the
+/// ripple track by the same amount the edge moved.
+#[test]
+fn ripple_trim_ghosts_during_drag_applies_once_on_release() {
+    let mut h = Harness::new();
+    h.project.tracks[1].clips.clear();
+    h.project.tracks[0].clips.clear();
+    h.project.tracks[0].clips.push(Clip::new(101, ClipKind::Video, "a", 0.0, 5.0));
+    h.project.tracks[0].clips.push(Clip::new(102, ClipKind::Video, "b", 7.0, 3.0)); // gap [5,7)
+    h.frame(vec![]);
+    let lanes = h.state.lanes_rect;
+    let x_end = h.state.x_at(5.0);
+    let from = pos2(x_end - 2.0, lanes.top() + 30.0); // clip a's end-edge zone; no seam nearby
+    h.press_m(from, Modifiers::CTRL);
+    let before = h.project.to_json();
+    h.frame_m(vec![Event::PointerMoved(from + vec2(40.0, 0.0))], Modifiers::CTRL); // +1s
+    assert_eq!(h.project.to_json(), before, "RippleTrim must not touch the model until release");
+    assert!(
+        matches!(&h.state.drag, Some(Drag { g: Gesture::RippleTrim { dt, .. }, .. }) if dt.abs() > 0.5),
+        "the ghost delta must track the drag"
+    );
+    h.release_m(from + vec2(40.0, 0.0), Modifiers::CTRL);
+    h.frame(vec![]);
+    assert_eq!(h.undos, 1, "exactly one undo on release");
+    let a = h.project.clip(101).unwrap();
+    assert!((a.duration - 6.0).abs() < 0.1, "trimmed end by ~1s: duration {}", a.duration);
+    let b = h.project.clip(102).unwrap();
+    assert!((b.start - 8.0).abs() < 0.1, "downstream clip shifted by the same delta, ids/tracks stable: {}", b.start);
+}
+
+/// Alt+edge arms Roll: the shared cut moves, the two clips' combined duration is unchanged, and the
+/// whole gesture is one undo.
+#[test]
+fn roll_moves_cut_keeps_length_one_undo() {
+    let mut h = Harness::new();
+    h.project.tracks[1].clips.clear();
+    h.project.tracks[0].clips.clear();
+    h.project.tracks[0].clips.push(Clip::new(101, ClipKind::Video, "a", 0.0, 5.0));
+    h.project.tracks[0].clips.push(Clip::new(102, ClipKind::Video, "b", 5.0, 5.0)); // abuts at 5.0
+    h.frame(vec![]);
+    let lanes = h.state.lanes_rect;
+    let x_end = h.state.x_at(5.0);
+    // 5px inside clip a's end-edge zone (EDGE_W=6) but outside the seam's own +/-3px click strip
+    let from = pos2(x_end - 5.0, lanes.top() + 30.0);
+    let total0 = h.project.clip(101).unwrap().duration + h.project.clip(102).unwrap().duration;
+    assert!(h.drag_m(from, from + vec2(40.0, 0.0), Modifiers::ALT), "Alt+edge drag must edit");
+    assert_eq!(h.undos, 1, "one undo for the whole roll");
+    let (a, b) = (h.project.clip(101).unwrap(), h.project.clip(102).unwrap());
+    assert!((a.end() - 6.0).abs() < 0.1, "cut moved to ~6.0: {}", a.end());
+    assert_eq!(a.end(), b.start, "clips stay abutting");
+    assert!((a.duration + b.duration - total0).abs() < 1e-6, "combined length unchanged");
+}
+
+/// Alt+body-drag arms Slip: only `src_in` changes, the on-timeline start/duration are fixed.
+#[test]
+fn slip_shifts_src_in_only_rect_fixed() {
+    let mut h = Harness::new();
+    let aid = h.project.assets[0].id; // 10s source
+    h.project.tracks[1].clips.clear();
+    h.project.tracks[0].clips.clear();
+    let mut c = Clip::new(101, ClipKind::Video, "a", 2.0, 4.0);
+    c.asset = aid;
+    c.src_in = 2.0; // room to slip either way: max_in = 10 - 4 = 6
+    h.project.tracks[0].clips.push(c);
+    h.frame(vec![]);
+    let lanes = h.state.lanes_rect;
+    let body = pos2(h.state.x_at(3.0), lanes.top() + 30.0); // inside the body, clear of both edges
+    let (start0, dur0) = (h.project.clip(101).unwrap().start, h.project.clip(101).unwrap().duration);
+    assert!(h.drag_m(body, body + vec2(40.0, 0.0), Modifiers::ALT), "Alt+body drag must edit");
+    assert_eq!(h.undos, 1);
+    let c = h.project.clip(101).unwrap();
+    assert_eq!(c.start, start0, "on-timeline start is fixed");
+    assert_eq!(c.duration, dur0, "on-timeline duration is fixed");
+    assert!((c.src_in - 2.0).abs() > 0.1, "src_in actually moved: {}", c.src_in);
+}
+
+/// A bare Alt+click (no movement) selects only the pressed clip and arms no gesture; an Alt+press
+/// that then crosses the drag threshold arms Slip.
+#[test]
+fn alt_click_selects_single_alt_drag_slips() {
+    let mut h = Harness::new();
+    let lanes = h.state.lanes_rect;
+    let (vid, aud) = (h.video_clip().id, h.audio_clip().id);
+    let p = pos2(lanes.left() + 100.0, lanes.top() + 30.0);
+    h.press_m(p, Modifiers::ALT);
+    assert!(h.state.drag.is_none(), "a bare Alt+click must not arm a gesture before the drag threshold");
+    h.release_m(p, Modifiers::ALT);
+    h.frame(vec![]);
+    assert_eq!(h.selection, vec![vid], "Alt+click selects only the clicked clip, not its link group");
+    assert!(!h.selection.contains(&aud));
+
+    h.press_m(p, Modifiers::ALT);
+    h.frame_m(vec![Event::PointerMoved(p + vec2(20.0, 0.0))], Modifiers::ALT);
+    assert!(
+        matches!(&h.state.drag, Some(Drag { g: Gesture::Slip { .. }, .. })),
+        "Alt+drag past the threshold must arm Slip"
+    );
+    h.release_m(p + vec2(20.0, 0.0), Modifiers::ALT);
+    h.frame(vec![]);
+}
+
+/// AUDIT FIX regression test: the drag-start pre-arm auto-select step ("an unselected clip becomes the
+/// selection, Ctrl adds it") must not replay for the new gesture kinds whose Ctrl bit means something
+/// else now (Slide=Ctrl+Alt, Segment=Ctrl+Shift, RippleTrim=Ctrl+edge) — only for gestures that still
+/// mean plain ctrl-toggle Move/Trim.
+#[test]
+fn pre_arm_ctrl_toggle_skipped_for_new_gesture_kinds() {
+    // each check gets a fresh Harness: Slide/Segment/plain-Move actually commit a live edit on
+    // release (not Esc'd here), so reusing one project across checks would corrupt the geometry the
+    // next check's press position depends on
+    let fresh = || {
+        let mut h = Harness::new();
+        h.project.tracks[1].clips.clear();
+        h.project.tracks[0].clips.clear();
+        h.project.tracks[0].clips.push(Clip::new(101, ClipKind::Video, "a", 0.0, 5.0));
+        h.project.tracks[0].clips.push(Clip::new(102, ClipKind::Video, "b", 5.0, 5.0)); // abuts, for the edge case
+        h.frame(vec![]);
+        h
+    };
+    let ctrl_alt = Modifiers { ctrl: true, alt: true, ..Modifiers::NONE };
+    let ctrl_shift = Modifiers { ctrl: true, shift: true, ..Modifiers::NONE };
+    for (label, mods) in [("Ctrl+Alt (Slide)", ctrl_alt), ("Ctrl+Shift (Segment)", ctrl_shift)] {
+        let mut h = fresh();
+        let body = pos2(h.state.x_at(2.0), h.state.lanes_rect.top() + 30.0);
+        h.press_m(body, mods);
+        h.frame_m(vec![Event::PointerMoved(body + vec2(20.0, 0.0))], mods);
+        assert!(h.selection.is_empty(), "{label}: the old ctrl-toggle-select must not fire on an unselected clip");
+        h.release_m(body + vec2(20.0, 0.0), mods);
+        h.frame(vec![]);
+    }
+    // Ctrl+edge (RippleTrim): same gate, on an edge press this time
+    let mut h = fresh();
+    let lanes = h.state.lanes_rect;
+    let x_end = h.state.x_at(5.0);
+    let edge = pos2(x_end - 5.0, lanes.top() + 30.0);
+    h.press_m(edge, Modifiers::CTRL);
+    h.frame_m(vec![Event::PointerMoved(edge + vec2(20.0, 0.0))], Modifiers::CTRL);
+    assert!(h.selection.is_empty(), "Ctrl+edge (RippleTrim): the old ctrl-toggle-select must not fire either");
+    h.release_m(edge + vec2(20.0, 0.0), Modifiers::CTRL);
+    h.frame(vec![]);
+
+    // sanity: plain Ctrl+body (still means Move-with-ctrl-toggle) DOES still replay the old step
+    let mut h = fresh();
+    let body = pos2(h.state.x_at(2.0), h.state.lanes_rect.top() + 30.0);
+    h.press_m(body, Modifiers::CTRL);
+    h.frame_m(vec![Event::PointerMoved(body + vec2(20.0, 0.0))], Modifiers::CTRL);
+    assert_eq!(h.selection, vec![101], "plain Ctrl (Move) must still replay the old toggle-select step");
+    h.release_m(body + vec2(20.0, 0.0), Modifiers::CTRL);
+    h.frame(vec![]);
+}
+
+/// Ctrl+Shift+body arms Segment: the live drag only updates the ghost delta (the project is
+/// untouched), and release extracts the clip from its old span and splices it in at the new one,
+/// atomically, as one undo.
+#[test]
+fn segment_drag_extracts_and_splices_ghost_then_release() {
+    let mut h = Harness::new();
+    h.project.tracks[1].clips.clear();
+    h.project.tracks[0].clips.clear();
+    h.project.tracks[0].clips.push(Clip::new(101, ClipKind::Video, "a", 0.0, 5.0));
+    h.frame(vec![]);
+    let lanes = h.state.lanes_rect;
+    let body = pos2(h.state.x_at(2.0), lanes.top() + 30.0);
+    let ctrl_shift = Modifiers { ctrl: true, shift: true, ..Modifiers::NONE };
+    h.press_m(body, ctrl_shift);
+    let before = h.project.to_json();
+    h.frame_m(vec![Event::PointerMoved(body + vec2(80.0, 0.0))], ctrl_shift); // +2s
+    assert_eq!(h.project.to_json(), before, "Segment must not touch the model until release");
+    assert!(
+        matches!(&h.state.drag, Some(Drag { g: Gesture::Segment { dt, .. }, .. }) if dt.abs() > 1.5),
+        "the ghost delta tracks the drag"
+    );
+    h.release_m(body + vec2(80.0, 0.0), ctrl_shift);
+    h.frame(vec![]);
+    assert_eq!(h.undos, 1, "one undo for the whole segment move");
+    let c = h.project.clip(101).unwrap();
+    assert!((c.start - 2.0).abs() < 0.1, "clip moved to ~2.0s: {}", c.start);
+    assert!((c.duration - 5.0).abs() < 1e-6, "duration preserved by the extract+splice");
+}
+
+/// If the destination becomes invalid before release (here: the track gets locked mid-drag), the
+/// project matches `before` exactly and no undo is pushed — a half-applied extract must never survive.
+#[test]
+fn segment_drag_invalid_destination_rolls_back() {
+    let mut h = Harness::new();
+    h.project.tracks[1].clips.clear();
+    h.project.tracks[0].clips.clear();
+    h.project.tracks[0].clips.push(Clip::new(101, ClipKind::Video, "a", 0.0, 5.0));
+    h.frame(vec![]);
+    let lanes = h.state.lanes_rect;
+    let body = pos2(h.state.x_at(2.0), lanes.top() + 30.0);
+    let ctrl_shift = Modifiers { ctrl: true, shift: true, ..Modifiers::NONE };
+    h.press_m(body, ctrl_shift);
+    h.frame_m(vec![Event::PointerMoved(body + vec2(80.0, 0.0))], ctrl_shift);
+    let before = h.project.to_json();
+    h.project.tracks[0].locked = true; // the destination track becomes invalid mid-drag
+    h.release_m(body + vec2(80.0, 0.0), ctrl_shift);
+    h.frame(vec![]);
+    assert_eq!(h.project.to_json(), before, "a refused segment move leaves the project exactly as `before`");
+    assert_eq!(h.undos, 0, "a refused segment move pushes no undo");
+}
+
+/// Every one of this workstream's new model ops refuses (no-ops, project untouched) on a locked
+/// track, matching the existing edge/body Trim/Move refusal.
+#[test]
+fn locked_track_refuses_every_new_gesture() {
+    let mut h = Harness::new();
+    h.project.tracks[1].clips.clear();
+    h.project.tracks[0].clips.clear();
+    h.project.tracks[0].locked = true;
+    let aid = h.project.assets[0].id;
+    let mut a = Clip::new(101, ClipKind::Video, "a", 0.0, 4.0);
+    a.asset = aid;
+    a.src_in = 2.0;
+    h.project.tracks[0].clips.push(a);
+    h.project.tracks[0].clips.push(Clip::new(102, ClipKind::Video, "b", 4.0, 4.0)); // abuts, for roll
+    let before = h.project.to_json();
+    assert!(!h.project.roll_edit(102, 5.0), "roll refuses on a locked track");
+    assert!(!h.project.slip(&[101], 1.0), "slip refuses on a locked track");
+    assert!(!h.project.slide(101, 1.0), "slide refuses on a locked track");
+    assert!(!h.project.ripple_trim(101, false, 5.0, true), "ripple trim refuses on a locked track");
+    assert!(
+        !gestures::segment_move(&mut h.project, &[101], &[(0, 0.0, 4.0)], 2.0),
+        "segment move refuses on a locked track"
+    );
+    assert!(!h.project.magnetic_move(&[101], 1.0, 0), "magnetic_move refuses on a locked track");
+    assert_eq!(h.project.to_json(), before, "every refusal leaves the project untouched");
+}
+
+/// On a magnetic track, deleting a clip pulls the rest of that track left to close its own gap
+/// (`gestures::delete_clips_magnetic`, wired to the keyboard Delete action in `ui::app::actions`); a
+/// non-magnetic track keeps the plain leave-a-gap delete. A move blocked by an overlap on a magnetic
+/// track shoves the neighbour out of the way (`Project::magnetic_move`) instead of refusing.
+#[test]
+fn magnetic_track_delete_closes_gap_move_shoves() {
+    let mut h = Harness::new();
+    h.project.tracks[1].clips.clear();
+    h.project.tracks[0].clips.clear();
+    h.project.tracks[0].magnetic = true;
+    h.project.tracks[0].clips.push(Clip::new(301, ClipKind::Video, "a", 0.0, 2.0));
+    h.project.tracks[0].clips.push(Clip::new(302, ClipKind::Video, "b", 2.0, 2.0)); // abuts a
+    gestures::delete_clips_magnetic(&mut h.project, &[301], false);
+    assert_eq!(h.project.tracks[0].clips.len(), 1, "a is gone");
+    assert!(
+        (h.project.tracks[0].clips[0].start).abs() < 1e-6,
+        "b shifted left to close the gap a's removal made: {}",
+        h.project.tracks[0].clips[0].start
+    );
+
+    h.project.tracks[0].clips.clear();
+    h.project.tracks[0].magnetic = false;
+    h.project.tracks[0].clips.push(Clip::new(303, ClipKind::Video, "a", 0.0, 2.0));
+    h.project.tracks[0].clips.push(Clip::new(304, ClipKind::Video, "b", 2.0, 2.0)); // abuts a
+    gestures::delete_clips_magnetic(&mut h.project, &[303], false);
+    assert_eq!(h.project.tracks[0].clips.len(), 1);
+    assert_eq!(h.project.tracks[0].clips[0].start, 2.0, "non-magnetic delete leaves the gap where a used to be");
+
+    h.project.tracks[0].clips.clear();
+    h.project.tracks[0].magnetic = true;
+    h.project.tracks[0].clips.push(Clip::new(305, ClipKind::Video, "a", 0.0, 2.0));
+    h.project.tracks[0].clips.push(Clip::new(306, ClipKind::Video, "b", 2.0, 2.0)); // abuts a
+    assert!(!h.project.move_clips(&[305], 1.9, 0, None), "a plain move refuses the overlap");
+    assert!(h.project.magnetic_move(&[305], 1.9, 0), "magnetic_move shoves b out of the way instead of refusing");
+    assert!((h.project.clip(305).unwrap().start - 1.9).abs() < 1e-6);
+    assert!(h.project.clip(306).unwrap().start >= 3.9, "b was shoved clear: {}", h.project.clip(306).unwrap().start);
+}
+
+/// A plain click on empty lane space selects the gap under it (hatched); Delete closes it via
+/// `close_gap_at`, which only shifts clips on ripple-flagged tracks — a non-ripple track's own gap is
+/// left exactly where it was.
+#[test]
+fn gap_click_selects_and_delete_closes_on_ripple_tracks() {
+    let mut h = Harness::new();
+    h.project.tracks[1].clips.clear();
+    h.project.tracks[0].clips.clear();
+    h.project.tracks[0].ripple = Some(true);
+    h.project.tracks[0].clips.push(Clip::new(101, ClipKind::Video, "a", 0.0, 2.0));
+    h.project.tracks[0].clips.push(Clip::new(102, ClipKind::Video, "b", 5.0, 2.0)); // gap [2,5)
+    h.frame(vec![]);
+    let lanes = h.state.lanes_rect;
+    let gap_pt = pos2(h.state.x_at(3.5), lanes.top() + 30.0);
+    let del = || Event::Key {
+        key: egui::Key::Delete,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    };
+    h.press(gap_pt);
+    h.release(gap_pt);
+    h.frame(vec![]);
+    assert_eq!(h.state.gap_sel, Some((0, 2.0, 5.0)), "a plain click on empty lane space selects the gap");
+    h.frame(vec![del()]);
+    assert_eq!(h.project.tracks[0].clips.len(), 2, "close_gap_at shifts clips, it doesn't remove any");
+    assert!(
+        (h.project.tracks[0].clips[1].start - 2.0).abs() < 1e-6,
+        "Delete closed the gap on the ripple track: b shifted to {}",
+        h.project.tracks[0].clips[1].start
+    );
+    assert!(h.state.gap_sel.is_none(), "the gap selection clears once it's closed");
+
+    h.project.tracks[0].ripple = Some(false);
+    h.project.tracks[0].clips.clear();
+    h.project.tracks[0].clips.push(Clip::new(103, ClipKind::Video, "a", 0.0, 2.0));
+    h.project.tracks[0].clips.push(Clip::new(104, ClipKind::Video, "b", 5.0, 2.0));
+    h.frame(vec![]);
+    h.press(gap_pt);
+    h.release(gap_pt);
+    h.frame(vec![]);
+    assert_eq!(h.state.gap_sel, Some((0, 2.0, 5.0)));
+    h.frame(vec![del()]);
+    assert_eq!(h.project.tracks[0].clips[1].start, 5.0, "a non-ripple track's own gap is left untouched");
+}
+
+/// `drop_mode_for`'s modifier mapping (arm()'s Drop zone) actually reaches the drop: Ctrl splices
+/// (ripple-opens room), Alt overwrites, Shift places on a fresh track on top.
+#[test]
+fn ctrl_drop_inserts_alt_drop_overwrites_shift_places_on_top() {
+    let mut h = Harness::new();
+    let lanes = h.state.lanes_rect;
+    let aid = h.project.assets[0].id;
+    let drop = pos2(lanes.left() + 480.0, lanes.top() + 30.0); // t = 12s, past the 10s clip
+
+    let before_len = h.project.tracks[0].clips.len();
+    h.press(pos2(10.0, 10.0));
+    egui::DragAndDrop::set_payload(&h.ctx, DragPayload::Asset(aid));
+    h.frame(vec![Event::PointerMoved(drop)]);
+    let r = h.release_m(drop, Modifiers::CTRL);
+    assert!(r.edited, "Ctrl-drop must edit");
+    assert_eq!(h.project.tracks[0].clips.len(), before_len + 1, "Ctrl-drop spliced a new clip in");
+
+    h.press(pos2(10.0, 10.0));
+    egui::DragAndDrop::set_payload(&h.ctx, DragPayload::Asset(aid));
+    h.frame(vec![Event::PointerMoved(drop)]);
+    let r = h.release_m(drop, Modifiers::ALT);
+    assert!(r.edited, "Alt-drop (overwrite) must edit");
+
+    let before_tracks = h.project.tracks.len();
+    h.press(pos2(10.0, 10.0));
+    egui::DragAndDrop::set_payload(&h.ctx, DragPayload::Asset(aid));
+    h.frame(vec![Event::PointerMoved(drop)]);
+    let r = h.release_m(drop, Modifiers::SHIFT);
+    assert!(r.edited, "Shift-drop (place on top) must edit");
+    assert!(h.project.tracks.len() > before_tracks, "Shift-drop adds a fresh track");
+}
+
+/// Dropping an audio-only asset over an audio track row lands the clip on that row (was: only a
+/// Video-kind row under the pointer was ever passed through; other rows always got `None`).
+#[test]
+fn audio_drop_infers_pointer_audio_row() {
+    let mut h = Harness::new();
+    let lanes = h.state.lanes_rect;
+    let aid = h.project.add_asset(Asset {
+        id: 0,
+        path: "C:/x.mp3".into(),
+        kind: ClipKind::Audio,
+        duration: 4.0,
+        width: 0,
+        height: 0,
+        fps: 0.0,
+        audio_streams: vec![AudioStreamInfo { channels: 2, sample_rate: 48000, ..Default::default() }],
+        codec: "aac".into(),
+        folder: String::new(),
+        tags: Vec::new(),
+        label: 0,
+        description: String::new(),
+        rel_path: None,
+        parent: None,
+        range: None,
+        effects: Vec::new(),
+    });
+    let a1_y = lanes.top() + h.project.tracks[0].height + 20.0; // inside the A1 row
+    let drop = pos2(lanes.left() + 480.0, a1_y);
+    h.press(pos2(10.0, 10.0));
+    egui::DragAndDrop::set_payload(&h.ctx, DragPayload::Asset(aid));
+    h.frame(vec![Event::PointerMoved(drop)]);
+    let r = h.release(drop);
+    assert!(r.edited);
+    assert_eq!(h.project.tracks[1].clips.len(), 2, "the audio asset landed on the audio row under the pointer");
+}
+
+/// Clicking the header Lock/Ripple toggles flips the corresponding `Track` flag through the undo-free
+/// `track_toggle` deferred field — zero undo growth, unlike every `Act` variant (e.g. Mute/Solo), which
+/// pushes one unconditionally. A locked lane also paints the new hatch treatment.
+#[test]
+fn header_lock_ripple_toggle_zero_undo_and_hatch() {
+    let mut h = Harness::new();
+    let lanes = h.state.lanes_rect;
+    let row_center_y = lanes.top() + h.project.tracks[0].height * 0.5;
+    // button centers, left of the mute/solo pair (see header.rs: sb, mb, rb, lb)
+    let lock_btn = pos2(lanes.left() - 76.0, row_center_y);
+    let ripple_btn = pos2(lanes.left() - 55.0, row_center_y);
+
+    assert!(!h.project.tracks[0].locked);
+    h.press(lock_btn);
+    h.release(lock_btn);
+    h.frame(vec![]);
+    assert!(h.project.tracks[0].locked, "Lock toggled on");
+    assert_eq!(h.undos, 0, "the header Lock toggle must push no undo");
+    let pal = Palette::new(true, Color32::from_rgb(0, 120, 212));
+    assert!(h.has_line(pal.text_dim.gamma_multiply(0.25)), "a locked lane paints the hatch");
+
+    h.press(lock_btn);
+    h.release(lock_btn);
+    h.frame(vec![]);
+    assert!(!h.project.tracks[0].locked, "Lock toggled back off");
+    assert_eq!(h.undos, 0);
+    assert!(!h.has_line(pal.text_dim.gamma_multiply(0.25)), "an unlocked lane paints no hatch");
+
+    let ripple0 = h.project.tracks[0].ripple;
+    h.press(ripple_btn);
+    h.release(ripple_btn);
+    h.frame(vec![]);
+    assert_ne!(h.project.tracks[0].ripple, ripple0, "Ripple toggled");
+    assert_eq!(h.undos, 0, "the header Ripple toggle must push no undo");
+}
+
+/// Esc during any of this workstream's new gestures — the live-mutating ones (Roll) and the
+/// ghost-only, release-applied ones (RippleTrim, Segment) — restores the project exactly and pushes
+/// no undo, same as the pre-existing gestures.
+#[test]
+fn esc_restores_before_zero_undos_for_new_gestures() {
+    let esc = || Event::Key {
+        key: egui::Key::Escape,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    };
+
+    // Roll (live-mutating): Alt+edge
+    let mut h = Harness::new();
+    h.project.tracks[1].clips.clear();
+    h.project.tracks[0].clips.clear();
+    h.project.tracks[0].clips.push(Clip::new(101, ClipKind::Video, "a", 0.0, 5.0));
+    h.project.tracks[0].clips.push(Clip::new(102, ClipKind::Video, "b", 5.0, 5.0));
+    h.frame(vec![]);
+    let lanes = h.state.lanes_rect;
+    let from = pos2(h.state.x_at(5.0) - 5.0, lanes.top() + 30.0);
+    h.press_m(from, Modifiers::ALT);
+    h.frame_m(vec![Event::PointerMoved(from + vec2(40.0, 0.0))], Modifiers::ALT);
+    assert!((h.project.clip(101).unwrap().duration - 5.0).abs() > 0.1, "mid-drag: the roll already moved the cut");
+    h.frame(vec![esc()]);
+    h.release_m(from + vec2(40.0, 0.0), Modifiers::ALT);
+    h.frame(vec![]);
+    assert_eq!(h.project.clip(101).unwrap().duration, 5.0, "Esc restored the pre-roll project");
+    assert!(h.state.drag.is_none());
+    assert_eq!(h.undos, 0);
+
+    // RippleTrim (ghost-only): Ctrl+edge
+    let mut h = Harness::new();
+    h.project.tracks[1].clips.clear();
+    h.project.tracks[0].clips.clear();
+    h.project.tracks[0].clips.push(Clip::new(201, ClipKind::Video, "a", 0.0, 5.0));
+    h.project.tracks[0].clips.push(Clip::new(202, ClipKind::Video, "b", 7.0, 3.0));
+    h.frame(vec![]);
+    let lanes = h.state.lanes_rect;
+    let from = pos2(h.state.x_at(5.0) - 2.0, lanes.top() + 30.0);
+    h.press_m(from, Modifiers::CTRL);
+    h.frame_m(vec![Event::PointerMoved(from + vec2(40.0, 0.0))], Modifiers::CTRL);
+    h.frame(vec![esc()]);
+    h.release_m(from + vec2(40.0, 0.0), Modifiers::CTRL);
+    h.frame(vec![]);
+    assert_eq!(h.project.clip(201).unwrap().duration, 5.0, "Esc restored the pre-trim project");
+    assert_eq!(h.project.clip(202).unwrap().start, 7.0);
+    assert!(h.state.drag.is_none());
+    assert_eq!(h.undos, 0);
+
+    // Segment (ghost-only): Ctrl+Shift+body
+    let mut h = Harness::new();
+    h.project.tracks[1].clips.clear();
+    h.project.tracks[0].clips.clear();
+    h.project.tracks[0].clips.push(Clip::new(301, ClipKind::Video, "a", 0.0, 5.0));
+    h.frame(vec![]);
+    let lanes = h.state.lanes_rect;
+    let body = pos2(h.state.x_at(2.0), lanes.top() + 30.0);
+    let ctrl_shift = Modifiers { ctrl: true, shift: true, ..Modifiers::NONE };
+    h.press_m(body, ctrl_shift);
+    h.frame_m(vec![Event::PointerMoved(body + vec2(80.0, 0.0))], ctrl_shift);
+    h.frame(vec![esc()]);
+    h.release_m(body + vec2(80.0, 0.0), ctrl_shift);
+    h.frame(vec![]);
+    assert_eq!(h.project.clip(301).unwrap().start, 0.0, "Esc restored the pre-segment project");
+    assert!(h.state.drag.is_none());
+    assert_eq!(h.undos, 0);
+}
+
+/// 30 idle frames (no input) with the pointer resting over the header Lock button of a locked (thus
+/// hatched) track must request no repaint.
+#[test]
+fn assert_no_idle_repaint_timeline_header() {
+    let mut h = Harness::new();
+    h.project.tracks[0].locked = true;
+    let lanes = h.state.lanes_rect;
+    let row_center_y = lanes.top() + h.project.tracks[0].height * 0.5;
+    let lock_btn = pos2(lanes.left() - 76.0, row_center_y);
+    h.frame(vec![Event::PointerMoved(lock_btn)]);
+    for _ in 0..30 {
+        h.frame(vec![]);
+    }
+    assert!(
+        !h.ctx.has_requested_repaint(),
+        "idle frame over the header Lock button / hatched lane requested a repaint"
+    );
+}
+
+/// The new clip-menu entries dispatch what they say: "Join Through Edit" pushes the existing
+/// `Action::JoinThroughEdit`; "Replace with Library Selection" is only clickable (dispatches
+/// `Act::ReplaceClip`) when exactly one Library asset is selected.
+#[test]
+fn clip_menu_join_duplicate_replace_unnest_dispatch() {
+    use crate::hotkeys::Action;
+    let p = Project::new();
+    let ctx = egui::Context::default();
+    ctx.set_fonts(crate::theme::test_fonts());
+    let screen_rect = Some(Rect::from_min_size(Pos2::ZERO, vec2(400.0, 1400.0)));
+    let render = |is_seq: bool,
+                  lib_sel: Option<Id>,
+                  act: &mut Option<Act>,
+                  acts: &mut Vec<Action>,
+                  events: Vec<Event>|
+     -> egui::FullOutput {
+        let mut edit = false;
+        ctx.run(RawInput { screen_rect, events, ..Default::default() }, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                clip_menu(
+                    ui,
+                    1,
+                    false,
+                    false,
+                    true,
+                    false,
+                    false,
+                    is_seq,
+                    lib_sel,
+                    None,
+                    &mut false,
+                    &p.labels,
+                    &p.buses,
+                    &[],
+                    act,
+                    acts,
+                    &mut edit,
+                )
+            });
+        })
+    };
+    let text_pos = |full: &egui::FullOutput, label: &str| -> Pos2 {
+        full.shapes
+            .iter()
+            .find_map(|cs| match &cs.shape {
+                Shape::Text(t) if t.galley.text() == label => Some(t.pos),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("'{label}' not painted"))
+    };
+
+    // every new entry is painted
+    let (mut act, mut acts) = (None, Vec::new());
+    let full = render(true, Some(7), &mut act, &mut acts, vec![]);
+    for label in ["Un-nest", "Join Through Edit", "Duplicate", "Replace with Library Selection"] {
+        text_pos(&full, label);
+    }
+
+    // clicking "Join Through Edit" pushes the existing Action (press then release, same ctx so the
+    // widget's click state carries over between frames, matching real usage)
+    let join_pt = text_pos(&full, "Join Through Edit") + vec2(4.0, 4.0);
+    render(
+        true,
+        Some(7),
+        &mut act,
+        &mut acts,
+        vec![
+            Event::PointerMoved(join_pt),
+            Event::PointerButton {
+                pos: join_pt,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            },
+        ],
+    );
+    render(
+        true,
+        Some(7),
+        &mut act,
+        &mut acts,
+        vec![Event::PointerButton {
+            pos: join_pt,
+            button: PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        }],
+    );
+    assert!(acts.contains(&Action::JoinThroughEdit), "'Join Through Edit' must push Action::JoinThroughEdit: {acts:?}");
+
+    // "Replace with Library Selection": disabled (no click-through) when nothing is Library-selected
+    let (mut act_d, mut acts_d) = (None, Vec::new());
+    let full_d = render(true, None, &mut act_d, &mut acts_d, vec![]);
+    let replace_pt = text_pos(&full_d, "Replace with Library Selection") + vec2(4.0, 4.0);
+    render(
+        true,
+        None,
+        &mut act_d,
+        &mut acts_d,
+        vec![
+            Event::PointerMoved(replace_pt),
+            Event::PointerButton {
+                pos: replace_pt,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            },
+        ],
+    );
+    render(
+        true,
+        None,
+        &mut act_d,
+        &mut acts_d,
+        vec![Event::PointerButton {
+            pos: replace_pt,
+            button: PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        }],
+    );
+    assert!(act_d.is_none(), "a disabled 'Replace with Library Selection' must not dispatch");
+
+    // enabled (exactly one Library asset selected): clicking it dispatches Act::ReplaceClip
+    let (mut act_e, mut acts_e) = (None, Vec::new());
+    render(true, Some(7), &mut act_e, &mut acts_e, vec![]);
+    render(
+        true,
+        Some(7),
+        &mut act_e,
+        &mut acts_e,
+        vec![
+            Event::PointerMoved(replace_pt),
+            Event::PointerButton {
+                pos: replace_pt,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            },
+        ],
+    );
+    render(
+        true,
+        Some(7),
+        &mut act_e,
+        &mut acts_e,
+        vec![Event::PointerButton {
+            pos: replace_pt,
+            button: PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        }],
+    );
+    assert!(
+        matches!(act_e, Some(Act::ReplaceClip(1))),
+        "an enabled 'Replace with Library Selection' dispatches Act::ReplaceClip"
+    );
+}
+
+/// Extends `headless_1000_clips_stays_fast`: a live RippleTrim drag (ghost-paint only, zero model
+/// calls per frame) over a 1000-clip timeline stays within the same per-frame budget.
+#[test]
+fn headless_1000_clip_ripple_trim_ghost_stays_fast() {
+    let mut h = Harness::new();
+    h.project = Project::new();
+    for i in 0..1000usize {
+        let mut c = Clip::new(i as Id + 1000, ClipKind::Video, "clip", i as f64 * 2.0, 1.8);
+        c.label = (i % 8) as u8 + 1;
+        h.project.tracks[0].clips.push(c);
+    }
+    h.project.tidy();
+    h.frame(vec![]);
+    let lanes = h.state.lanes_rect;
+    h.state.zoom = 40.0;
+    h.state.scroll_x = 0.0;
+    let x_end = h.state.x_at(1.8); // end edge of the first clip
+    let from = pos2(x_end - 2.0, lanes.top() + 30.0);
+    h.press_m(from, Modifiers::CTRL);
+    h.frame_m(vec![Event::PointerMoved(from + vec2(8.0, 0.0))], Modifiers::CTRL); // crosses the drag threshold
+    assert!(matches!(&h.state.drag, Some(Drag { g: Gesture::RippleTrim { .. }, .. })), "RippleTrim armed");
+    let t0 = std::time::Instant::now();
+    for i in 1..=20 {
+        let p = from + vec2(8.0 + i as f32, 0.0);
+        h.frame_m(vec![Event::PointerMoved(p)], Modifiers::CTRL);
+    }
+    let ms = t0.elapsed().as_secs_f64() * 1000.0 / 20.0;
+    println!("timeline: 1000 clips, live RippleTrim ghost: {ms:.2} ms/frame");
+    assert!(ms < 10.0, "1000-clip RippleTrim ghost frame took {ms:.2} ms");
+    h.release_m(from + vec2(28.0, 0.0), Modifiers::CTRL);
+    h.frame(vec![]);
 }

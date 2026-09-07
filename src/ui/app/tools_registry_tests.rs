@@ -231,6 +231,39 @@ fn tool_names_are_sole_registration() {
     }
 }
 
+// ---- ws:timeline-trim-gestures ----
+/// Every gesture/act this workstream binds to the mouse is a 1:1 use of an already-tooled trim-model
+/// primitive — no new MCP surface. (label, tool name(s) that must resolve in `mcp::tools::all()`);
+/// Segment composes two ops (extract at the source, splice at the destination), so it lists both.
+const GESTURE_TOOL_TWINS: &[(&str, &[&str])] = &[
+    ("Roll", &["timeline.roll"]),
+    ("Slip", &["timeline.slip"]),
+    ("Slide", &["timeline.slide"]),
+    ("RippleTrim", &["timeline.ripple_trim"]),
+    ("MultiRippleTrim", &["timeline.trim_edges"]),
+    ("Segment", &["timeline.extract", "timeline.splice"]),
+    ("MagneticMove", &["timeline.magnetic_move"]),
+    ("CloseGap", &["timeline.close_gap"]),
+    ("JoinThroughEdit", &["timeline.join"]),
+    ("Duplicate", &["timeline.duplicate"]),
+    ("Unnest", &["timeline.unnest"]),
+    ("ReplaceClip", &["timeline.replace"]),
+    ("DropSplice", &["timeline.splice"]),
+    ("DropOverwrite", &["timeline.overwrite"]),
+];
+
+#[test]
+fn gestures_have_tool_twins() {
+    for (label, tools) in GESTURE_TOOL_TWINS {
+        for tool in *tools {
+            assert!(
+                mcp::tools::all().any(|t| t.name == *tool),
+                "{label}'s tool twin '{tool}' is not registered in mcp::tools::all()"
+            );
+        }
+    }
+}
+
 #[test]
 fn ui_action_covers_every_action() {
     for &a in Action::ALL {

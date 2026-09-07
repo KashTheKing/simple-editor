@@ -1,8 +1,11 @@
 //! Track-header cell drawing, extracted from `show()`'s row loop.
 use super::*;
 
-/// Draws one track's header cell (name, mute/solo toggles, add/remove-track context menu).
-/// Returns a deferred `Act` when a toggle or menu item was clicked.
+/// Draws one track's header cell (name, lock/ripple/mute/solo toggles, add/remove-track context menu).
+/// Returns a deferred `Act` when a toggle or menu item was clicked. Lock / Ripple / Magnetic report
+/// through `track_toggle` instead (ws:timeline-trim-gestures): they are undo-free track state, and
+/// every `Act` pushes one undo unconditionally.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn draw_header(
     ui: &mut egui::Ui,
     bp: &egui::Painter,
@@ -15,6 +18,7 @@ pub(super) fn draw_header(
     track: &crate::model::Track,
     ti: usize,
     active: bool,
+    track_toggle: &mut Option<(usize, TrackFlag)>,
 ) -> Option<Act> {
     let mut act: Option<Act> = None;
     // header cell
@@ -24,7 +28,10 @@ pub(super) fn draw_header(
     let bw = vec2(18.0, 16.0);
     let sb = Rect::from_center_size(pos2(hr.right() - 4.0 - bw.x * 0.5, hr.center().y), bw);
     let mb = sb.translate(vec2(-(bw.x + 3.0), 0.0));
-    bp.with_clip_rect(Rect::from_min_max(hr.min, pos2(mb.left() - 2.0, hr.bottom()))).text(
+    // ripple (chain link) and lock (padlock) sit left of the mute/solo pair
+    let rb = mb.translate(vec2(-(bw.x + 3.0), 0.0));
+    let lb = rb.translate(vec2(-(bw.x + 3.0), 0.0));
+    bp.with_clip_rect(Rect::from_min_max(hr.min, pos2(lb.left() - 2.0, hr.bottom()))).text(
         pos2(hr.left() + 6.0, hr.center().y),
         Align2::LEFT_CENTER,
         &track.name,
@@ -45,6 +52,13 @@ pub(super) fn draw_header(
     if toggle_button(ui, bp, sb, tid.with("s"), Cap::Text("S"), track.solo, pal, small) {
         act = Some(Act::Solo(ti));
     }
+    let (locked, ripple, magnetic) = (track.locked, track.ripple.unwrap_or(false), track.magnetic);
+    if toggle_button(ui, bp, lb, tid.with("lock"), Cap::Icon(Glyph::Lock), locked, pal, small) {
+        *track_toggle = Some((ti, TrackFlag::Locked));
+    }
+    if toggle_button(ui, bp, rb, tid.with("ripple"), Cap::Icon(Glyph::Link), ripple, pal, small) {
+        *track_toggle = Some((ti, TrackFlag::Ripple));
+    }
     let (empty, muted, solo) = (track.clips.is_empty(), track.muted, track.solo);
     hresp.context_menu(|ui| {
         if ui.button("Add Video Track").clicked() {
@@ -62,6 +76,22 @@ pub(super) fn draw_header(
         }
         if ui.button(if solo { "Unsolo" } else { "Solo" }).clicked() {
             act = Some(Act::Solo(ti));
+        }
+        ui.separator();
+        // the three trim-model flags as checkboxes (same undo-free path as the header glyphs)
+        let (mut l, mut r, mut m) = (locked, ripple, magnetic);
+        if ui.checkbox(&mut l, "Locked").changed() {
+            *track_toggle = Some((ti, TrackFlag::Locked));
+        }
+        if ui.checkbox(&mut r, "Ripple (sync)").changed() {
+            *track_toggle = Some((ti, TrackFlag::Ripple));
+        }
+        if ui
+            .checkbox(&mut m, "Magnetic Track")
+            .on_hover_text("Gapless: edge drags ripple and Delete closes the gap on this track")
+            .changed()
+        {
+            *track_toggle = Some((ti, TrackFlag::Magnetic));
         }
     });
     act

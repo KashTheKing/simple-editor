@@ -34,12 +34,28 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
             palette,
             tools,
             prerender,
+            library,
             ..
         } = app;
         let tool = tools.tool;
         let prerender_bar =
             if settings.movie_mode { guarded(|| prerender.segments()).unwrap_or_default() } else { vec![] };
-        let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
+        // ws:timeline-trim-gestures: exactly one Library asset selected (the anchor alone counts when
+        // the multi-select set is empty, e.g. straight after an import)
+        let library_selected = match library.sel_ids.as_slice() {
+            [one] => Some(*one),
+            [] => library.selected,
+            _ => None,
+        };
+        // labelled like `App::push_undo_labeled` (which needs `&mut self` — the fields are split here)
+        let mut push = |p: &Project, label: &'static str| {
+            push_undo_json(undo, redo, p.to_json());
+            if !label.is_empty() {
+                if let Some(e) = undo.last_mut() {
+                    e.label = label.to_string();
+                }
+            }
+        };
         timeline::show(
             ui,
             tl,
@@ -60,6 +76,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
                 keep_ranges: if *autocut_shown { &autocut.overlay } else { &[] },
                 prerender: &prerender_bar,
                 tool,
+                library_selected,
             },
         )
     };

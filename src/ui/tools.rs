@@ -246,6 +246,10 @@ pub(crate) enum Glyph {
     // ---- ws:media-library ----
     // ---- ws:source-monitor ----
     // ---- ws:timeline-trim-gestures ----
+    /// A padlock — the track header's Lock toggle.
+    Lock,
+    /// Two chain links — the track header's Ripple (sync) toggle.
+    Link,
     // ---- ws:transcript-captions ----
     // ---- ws:pro-monitor ----
     // ---- ws:pro-timeline ----
@@ -359,6 +363,8 @@ impl Glyph {
         // ---- ws:media-library ----
         // ---- ws:source-monitor ----
         // ---- ws:timeline-trim-gestures ----
+        Glyph::Lock,
+        Glyph::Link,
         // ---- ws:transcript-captions ----
         // ---- ws:pro-monitor ----
         // ---- ws:pro-timeline ----
@@ -476,6 +482,8 @@ impl Glyph {
             // ---- ws:media-library ----
             // ---- ws:source-monitor ----
             // ---- ws:timeline-trim-gestures ----
+            Glyph::Lock => "lock",
+            Glyph::Link => "link",
             // ---- ws:transcript-captions ----
             // ---- ws:pro-monitor ----
             // ---- ws:pro-timeline ----
@@ -1641,12 +1649,12 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
             let head = vec![c + egui::vec2(7.5, 0.0), c + egui::vec2(4.5, -2.2), c + egui::vec2(4.5, 2.2)];
             p.add(egui::Shape::convex_polygon(head, fg, Stroke::NONE));
         } // ---- ws:registries-schema-hooks ----
-          // ---- ws:size-diet ----
-          // ---- ws:split-god-files ----
-          // ---- ws:audio-analysis ----
-          // ---- ws:audio-dsp-automation ----
-          // ---- ws:color-engine ----
-          // ---- ws:command-palette ----
+        // ---- ws:size-diet ----
+        // ---- ws:split-god-files ----
+        // ---- ws:audio-analysis ----
+        // ---- ws:audio-dsp-automation ----
+        // ---- ws:color-engine ----
+        // ---- ws:command-palette ----
         // rounded keycap outline with a 3x2 grid of small key dots inside
         Glyph::Keyboard => {
             p.rect_stroke(
@@ -1668,16 +1676,37 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
             let dir = egui::vec2(1.0, 1.0).normalized();
             p.line_segment([ring + dir * 4.0, ring + dir * 8.0], Stroke::new(1.8, fg));
         } // ---- ws:forgiveness ----
-          // ---- ws:player-rate-loop ----
-          // ---- ws:trim-model ----
-          // ---- ws:canvas-handles-monitor ----
-          // ---- ws:export-deliver ----
-          // ---- ws:inspector-gallery ----
-          // ---- ws:layout-modes-onboarding ----
-          // ---- ws:media-library ----
-          // ---- ws:source-monitor ----
-          // ---- ws:timeline-trim-gestures ----
-          // ---- ws:transcript-captions ----
+        // ---- ws:player-rate-loop ----
+        // ---- ws:trim-model ----
+        // ---- ws:canvas-handles-monitor ----
+        // ---- ws:export-deliver ----
+        // ---- ws:inspector-gallery ----
+        // ---- ws:layout-modes-onboarding ----
+        // ---- ws:media-library ----
+        // ---- ws:source-monitor ----
+        // ---- ws:timeline-trim-gestures ----
+        // padlock: a body with a shackle arc over it
+        Glyph::Lock => {
+            let body = egui::Rect::from_center_size(c + egui::vec2(0.0, 2.5), egui::vec2(10.0, 7.0));
+            p.rect_filled(body, CornerRadius::same(1), fg);
+            let (sc, sr) = (c + egui::vec2(0.0, -1.5), 3.2);
+            let arc: Vec<egui::Pos2> = (0..=10)
+                .map(|i| {
+                    let a = std::f32::consts::PI + std::f32::consts::PI * i as f32 / 10.0;
+                    sc + egui::vec2(a.cos() * sr, a.sin() * sr)
+                })
+                .collect();
+            p.add(egui::Shape::line(arc, stroke));
+            p.line_segment([sc + egui::vec2(-sr, 0.0), sc + egui::vec2(-sr, 1.5)], stroke);
+            p.line_segment([sc + egui::vec2(sr, 0.0), sc + egui::vec2(sr, 1.5)], stroke);
+        }
+        // chain: two overlapping rounded links on a diagonal
+        Glyph::Link => {
+            for d in [-2.2_f32, 2.2] {
+                let link = egui::Rect::from_center_size(c + egui::vec2(d, d), egui::vec2(8.0, 5.0));
+                p.rect_stroke(link, CornerRadius::same(2), stroke, StrokeKind::Inside);
+            }
+        } // ---- ws:transcript-captions ----
           // ---- ws:pro-monitor ----
           // ---- ws:pro-timeline ----
           // ---- ws:text-titles ----
