@@ -1697,3 +1697,33 @@ fn apply_motion_from_text_inspector_matches_curves_panel() {
     assert_eq!(from_inspector.opacity, from_curves_panel.opacity, "identical calls, identical keyframes");
     assert!(from_inspector.opacity.is_animated(), "Fade In must key Opacity on a Text clip too");
 }
+
+/// PR #59 review fix: `inspector_text.rs` offers an "Expression…" link on Size/Outline Width/Letter
+/// Spacing/Reveal/Wave, but until now `Clip::all_animated_mut()`/`all_animated()` — the only thing
+/// `Project::refresh_links()` walks to bake `AnimLink` into `Animated::baked` — never visited
+/// `clip.text`'s fields, so a text-field expression link was silently never applied. Mirrors
+/// `live_links_follow_edits_and_detach_on_manual_change`'s opacity-expression case, but for a Text
+/// clip's `style.size`.
+#[test]
+fn text_field_expression_link_bakes_via_refresh_links() {
+    let mut p = Project::new();
+    let id = p.new_id();
+    let mut c = Clip::new(id, ClipKind::Text, "t", 0.0, 4.0);
+    let style = c.text.as_mut().unwrap();
+    style.size.value = 72.0;
+    style.size.link = AnimLink::Expr("return value + t * 2".into());
+    p.tracks[0].clips.push(c);
+
+    p.refresh_links();
+    let style = p.clip(id).unwrap().text.as_ref().unwrap();
+    assert!(style.size.link_err.is_none(), "{:?}", style.size.link_err);
+    assert!((style.size.at(0.0) - 72.0).abs() < 1e-6);
+    assert!((style.size.at(4.0) - 80.0).abs() < 1e-6, "value + t*2 at t=4 => 80: {:?}", style.size.at(4.0));
+
+    // a broken expression reports instead of animating, and never panics
+    let c = p.clip_mut(id).unwrap();
+    c.text.as_mut().unwrap().size.link = AnimLink::Expr("nonsense(".into());
+    p.refresh_links();
+    let style = p.clip(id).unwrap().text.as_ref().unwrap();
+    assert!(style.size.link_err.is_some());
+}

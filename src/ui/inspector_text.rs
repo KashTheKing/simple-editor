@@ -18,10 +18,10 @@
 //! stays in inspector.rs's `clip_section`, since this fn's signature has no `&mut Settings` param —
 //! `span_draft_at`/`set_span` below are `pub(super)` so that sub-panel can still reach them.
 
-use crate::model::{Id, Project, TextSpan, TextStyle};
+use crate::model::{AnimLink, Animated, Id, Project, TextSpan, TextStyle};
 use crate::settings::TextPreset;
 use crate::theme::Palette;
-use crate::ui::inspector::link_menu;
+use crate::ui::inspector::{link_menu, luau_highlight};
 use crate::ui::{key_buttons, Gesture};
 use eframe::egui::{self, DragValue, Grid, Slider};
 
@@ -108,6 +108,35 @@ pub(super) fn text_preset_fields(ui: &mut egui::Ui, p: &mut TextPreset, fonts: &
         ui.add(DragValue::new(&mut p.letter_spacing).range(-10.0..=50.0).speed(0.1));
         ui.end_row();
     });
+}
+
+/// The editable expression box shown right under a row when its `Animated` field is linked to
+/// `AnimLink::Expr` — same widget/pattern as `inspector_audio::section`'s per-property loop (search
+/// `link_err`/`AnimLink::Expr` there). Must be called from inside the same `Grid` as the row's own
+/// `ui.end_row()` so the columns line up.
+fn expr_edit_row(ui: &mut egui::Ui, a: &mut Animated, g: &mut Gesture) {
+    if let Animated { link: AnimLink::Expr(src), link_err, .. } = a {
+        ui.label("");
+        ui.horizontal(|ui| {
+            let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
+                let mut job = luau_highlight(ui, buf.as_str());
+                job.wrap.max_width = wrap_width;
+                ui.fonts_mut(|f| f.layout_job(job))
+            };
+            g.note(
+                &ui.add(
+                    egui::TextEdit::singleline(src)
+                        .desired_width(150.0)
+                        .hint_text("return value + math.sin(t*4) * 20")
+                        .layouter(&mut layouter),
+                ),
+            );
+            if let Some(e) = link_err {
+                ui.colored_label(ui.visuals().warn_fg_color, "!").on_hover_text(e.clone());
+            }
+        });
+        ui.end_row();
+    }
 }
 
 /// The Text/typography block: multiline body, font/size/colour/outline/shadow/align/spacing/box grid,
@@ -200,6 +229,7 @@ pub(super) fn section(
             g.note(&ui.checkbox(&mut style.italic, "Italic"));
         });
         ui.end_row();
+        expr_edit_row(ui, &mut style.size, &mut g);
         ui.label("Fill");
         g.note(&ui.color_edit_button_srgba_unmultiplied(&mut style.color));
         ui.end_row();
@@ -216,6 +246,7 @@ pub(super) fn section(
             link_menu(ui, "Outline Width", &mut style.outline_width, &path_list, &mut g);
         });
         ui.end_row();
+        expr_edit_row(ui, &mut style.outline_width, &mut g);
         ui.label("Drop shadow");
         ui.horizontal(|ui| {
             g.note(&ui.checkbox(&mut style.shadow, ""));
@@ -251,6 +282,7 @@ pub(super) fn section(
             link_menu(ui, "Letter Spacing", &mut style.letter_spacing, &path_list, &mut g);
         });
         ui.end_row();
+        expr_edit_row(ui, &mut style.letter_spacing, &mut g);
         ui.label("Box");
         ui.horizontal(|ui| {
             g.note(&ui.color_edit_button_srgba_unmultiplied(&mut style.box_color));
@@ -270,6 +302,7 @@ pub(super) fn section(
             link_menu(ui, "Reveal", &mut style.reveal, &path_list, &mut g);
         });
         ui.end_row();
+        expr_edit_row(ui, &mut style.reveal, &mut g);
         ui.label("Wave").on_hover_text("Per-glyph vertical bob amount (project px); 0 = none");
         ui.horizontal(|ui| {
             let mut v = style.wave.at(lt);
@@ -282,6 +315,7 @@ pub(super) fn section(
             link_menu(ui, "Wave", &mut style.wave, &path_list, &mut g);
         });
         ui.end_row();
+        expr_edit_row(ui, &mut style.wave, &mut g);
     });
 
     // ---- ws:text-titles: Animation row — apply a builtin/saved motion preset to the WHOLE clip's
