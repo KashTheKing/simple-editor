@@ -18,13 +18,14 @@ use crate::model::{
     ShapeKind, TrackKind, TransitionKind, MIN_CLIP,
 };
 use crate::playback::Player;
+use crate::scripting;
 use crate::settings::Settings;
 use crate::theme::{self, Palette};
 use crate::ui::layout::{self, Layout, Pane};
 use crate::ui::tools::Tool;
 use crate::ui::{
     autocut_ui, capture_ui, curves, effects_ui, export_ui, frame_ui, history_ui, import_ui, inspector, library,
-    markers_ui, mixer_ui, moodboard_ui, nodes, paste_ui, planner, preview, retime, settings_ui, shader_ui,
+    markers_ui, mixer_ui, moodboard_ui, nodes, palette, paste_ui, planner, preview, retime, settings_ui, shader_ui,
     subtitles_ui, timeline, tools, tracking_ui, transitions_ui, DragPayload,
 };
 use eframe::egui;
@@ -54,6 +55,8 @@ mod library_pane;
 mod mcp_exec;
 mod media_sync;
 mod menus;
+// ---- ws:command-palette ----
+mod palette_ctl;
 mod panes;
 mod playback_ctl;
 mod preview_pane;
@@ -61,6 +64,9 @@ mod thumbs;
 mod timeline_pane;
 mod tools_args;
 mod tools_clip;
+mod tools_color;
+// ---- ws:command-palette ----
+mod tools_commands;
 mod tools_helpers;
 mod tools_media;
 mod tools_playback;
@@ -305,6 +311,25 @@ pub struct App {
     /// `playhead` as of the last `playback_ctl::tick` — lets the paused-playhead-change scrub fire once
     /// per change instead of every frame.
     scrub_last_t: f64,
+    // ---- ws:command-palette ----
+    /// Ctrl+K palette state. Named `cmd_palette`, not `palette` — `App.palette` is already the live
+    /// theme `Palette` (`self.palette` is read constantly for colours throughout `ui::app`), so reusing
+    /// that name for the command palette would shadow/collide with it everywhere.
+    cmd_palette: palette::PaletteState,
+    /// F1 cheat-sheet overlay open/closed.
+    cheat_sheet_open: bool,
+    /// `scripting::list()` + `scripting::meta()` for every script, refreshed at 1 Hz by `palette_ctl::
+    /// tick` (re-parsing every script's header on every frame would be silly — see `App::script_metas`).
+    script_meta_cache: (Instant, Vec<scripting::ScriptMeta>),
+    /// Re-entrancy guard for `App::fire_hook`: true while a hook is already running, so a hook that
+    /// itself calls `editor.tool`/triggers another hook-firing event can't recurse.
+    hook_running: bool,
+    /// Scripts disabled for the session after their `@on` hook overran its budget once (one toast, then
+    /// silently skipped by `fire_hook` for the rest of the session).
+    disabled_hooks: Vec<PathBuf>,
+    /// Selection last handed to `fire_hook("selection_changed", ...)` — `palette_ctl::tick` compares
+    /// against `self.selection` each frame so the hook fires on an actual change, not every frame.
+    last_fired_selection: Vec<Id>,
 }
 
 /// What an async, off-the-main-preview GPU render is for — hover preview, trim view, scopes, wipe
@@ -692,6 +717,17 @@ impl App {
             winpos_pending: None,
             play_stop_at: None,
             scrub_last_t: 0.0,
+            cmd_palette: palette::PaletteState::default(),
+            cheat_sheet_open: false,
+            // already-expired so `palette_ctl::tick`'s 1 Hz refresh runs on the very first frame instead
+            // of leaving the Scripts menu/palette empty of scripts for a whole second after startup
+            script_meta_cache: (
+                Instant::now().checked_sub(Duration::from_secs(2)).unwrap_or_else(Instant::now),
+                Vec::new(),
+            ),
+            hook_running: false,
+            disabled_hooks: Vec::new(),
+            last_fired_selection: Vec::new(),
         };
         app.detect_ytdlp(&cc.egui_ctx);
         app.refresh_presets();
@@ -1230,7 +1266,9 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:audio-analysis ----
     // ---- ws:audio-dsp-automation ----
     // ---- ws:color-engine ----
+    tools_color::TOOLS,
     // ---- ws:command-palette ----
+    tools_commands::TOOLS,
     // ---- ws:forgiveness ----
     // ---- ws:player-rate-loop ----
     // already registered above (tools_playback::TOOLS predates the marker system; wave-0a wired it in
@@ -1258,7 +1296,9 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     // ---- ws:audio-analysis ----
     // ---- ws:audio-dsp-automation ----
     // ---- ws:color-engine ----
+    tools_color::act,
     // ---- ws:command-palette ----
+    palette_ctl::act,
     // ---- ws:forgiveness ----
     // ---- ws:player-rate-loop ----
     playback_ctl::act,
@@ -1286,6 +1326,7 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:audio-dsp-automation ----
     // ---- ws:color-engine ----
     // ---- ws:command-palette ----
+    palette_ctl::tick,
     // ---- ws:forgiveness ----
     // ---- ws:player-rate-loop ----
     playback_ctl::tick,
@@ -1313,6 +1354,7 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:audio-dsp-automation ----
     // ---- ws:color-engine ----
     // ---- ws:command-palette ----
+    palette_ctl::windows,
     // ---- ws:forgiveness ----
     // ---- ws:player-rate-loop ----
     // ---- ws:snap-engine ----
@@ -1415,7 +1457,41 @@ impl App {
     /// migrates them here when the palette actually needs to grey out rows. `Err`'s text is the toast
     /// reason a caller (`ui.action`, and `act()`'s own prelude) shows the user.
     pub(crate) fn enabled(&self, a: Action) -> Result<(), &'static str> {
-        Self::enabled_for(a, self.export.is_some(), self.timeline_is_empty(), self.attrs.is_none())
+        Self::enabled_for(a, self.export.is_some(), self.timeline_is_empty(), self.attrs.is_none())?;
+        // ---- ws:command-palette ----
+        // A second small guard match, not a bigger `enabled_for` signature: `enabled_for` (and its
+        // 3-bool call site) is pre-existing wave-0b code with its own test
+        // (`tools_registry_tests::action_enabled_toasts_reason`) already pinned to that exact 3-arg
+        // shape — growing it to 6 args would force an edit to a test outside this workstream's owned
+        // files for guards only this ws's rows table needs. See `enabled_for2`.
+        Self::enabled_for2(
+            a,
+            self.undo.is_empty(),
+            self.redo.is_empty(),
+            self.timeline_is_empty(),
+            self.selection.is_empty(),
+        )
+    }
+
+    /// ---- ws:command-palette ----
+    /// The pure guards this workstream's palette/menu/hotkey dispatch needs beyond wave-0b's
+    /// `enabled_for`: an empty undo/redo stack, and Delete/RippleDelete with nothing selected. Split
+    /// into its own small match (see `enabled`'s doc comment) rather than growing `enabled_for`'s
+    /// signature.
+    pub(crate) fn enabled_for2(
+        a: Action,
+        undo_empty: bool,
+        redo_empty: bool,
+        timeline_empty: bool,
+        no_selection: bool,
+    ) -> Result<(), &'static str> {
+        match a {
+            Action::Undo if undo_empty => Err("Nothing to undo"),
+            Action::Redo if redo_empty => Err("Nothing to redo"),
+            Action::Split if timeline_empty => Err("Nothing to split — the timeline is empty"),
+            Action::Delete | Action::RippleDelete if no_selection => Err("Select something to delete first"),
+            _ => Ok(()),
+        }
     }
 
     /// The pure match behind `enabled`, split out so `action_enabled_toasts_reason` can exercise every
