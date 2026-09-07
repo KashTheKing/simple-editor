@@ -155,6 +155,40 @@ actions! {
     // ---- ws:player-rate-loop ----
     // ---- ws:snap-engine ----
     // ---- ws:trim-model ----
+    // 25 bound + 6 unbound = 31 (see plans/ui-overhaul/issues/trim-model.md's "Review trail" F7 —
+    // the plan text's own earlier "22 bound"/"30 total" counts were a stale recount, corrected there).
+    SelectEditPoint => "select_edit_point", "Select Nearest Edit Point", sc(NONE, Key::U);
+    CycleEditSide => "cycle_edit_side", "Cycle Edit Point Side", sc(SHIFT, Key::U);
+    TrimLeft1 => "trim_left_1", "Trim Edit -1 Frame", sc(NONE, Key::OpenBracket);
+    TrimRight1 => "trim_right_1", "Trim Edit +1 Frame", sc(NONE, Key::CloseBracket);
+    TrimLeft10 => "trim_left_10", "Trim Edit -10 Frames", sc(CTRL, Key::OpenBracket);
+    TrimRight10 => "trim_right_10", "Trim Edit +10 Frames", sc(CTRL, Key::CloseBracket);
+    ExtendEdit => "extend_edit", "Extend Edit to Playhead", sc(NONE, Key::E);
+    TrimTop => "trim_top", "Trim Start to Playhead (Top)", sc(NONE, Key::Q);
+    TrimTail => "trim_tail", "Trim End to Playhead (Tail)", sc(NONE, Key::W);
+    SlipLeft => "slip_left", "Slip -1 Frame", sc(ALT, Key::Comma);
+    SlipRight => "slip_right", "Slip +1 Frame", sc(ALT, Key::Period);
+    MarkClip => "mark_clip", "Mark Clip (In/Out from clip under playhead)", sc(NONE, Key::X);
+    GoToIn => "go_to_in", "Go to In", sc(SHIFT, Key::I);
+    GoToOut => "go_to_out", "Go to Out", sc(SHIFT, Key::O);
+    JoinThroughEdit => "join_through", "Join Through Edit", sc(CTRL, Key::J);
+    DuplicateClips => "duplicate", "Duplicate Clips", sc(CTRL, Key::D);
+    SelectForward => "select_forward", "Select Forward from Playhead", sc(NONE, Key::A);
+    SelectBackward => "select_backward", "Select Backward from Playhead", sc(SHIFT, Key::A);
+    SelectAtPlayhead => "select_at_playhead", "Select Clips Under Playhead", sc(CTRL_SHIFT, Key::D);
+    PrevKeyframe => "prev_keyframe", "Previous Keyframe", sc(ALT, Key::ArrowLeft);
+    NextKeyframe => "next_keyframe", "Next Keyframe", sc(ALT, Key::ArrowRight);
+    // bare V is ToolSelect (exact-modifier tool poll); Shift+V is a distinct chord and passes through.
+    SpliceInsert => "splice", "Splice (Insert) at Playhead", sc(SHIFT, Key::V);
+    OverwriteAtPlayhead => "overwrite", "Overwrite at Playhead", sc(NONE, Key::B);
+    LiftInOut => "lift", "Lift In->Out", sc(NONE, Key::Semicolon);
+    ExtractInOut => "extract", "Extract In->Out", sc(NONE, Key::Quote);
+    CloseGapAtPlayhead => "close_gap", "Close Gap at Playhead", None;
+    UnnestClip => "unnest", "Un-nest Sequence Clip", None;
+    ReplaceWithLibrarySelection => "replace_clip", "Replace with Library Selection", None;
+    ToggleTrackLock => "toggle_track_lock", "Lock / Unlock Track under Cursor", None;
+    ToggleTrackRipple => "toggle_track_ripple", "Toggle Ripple (Sync) on Track", None;
+    ToggleTrackMagnetic => "toggle_track_magnetic", "Toggle Magnetic Track", None;
     // ---- ws:canvas-handles-monitor ----
     // ---- ws:export-deliver ----
     // ---- ws:inspector-gallery ----

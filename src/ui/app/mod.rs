@@ -67,7 +67,9 @@ mod tools_playback;
 mod tools_registry_tests;
 mod tools_subtitles;
 mod tools_timeline;
+mod tools_trim;
 mod tools_ui;
+mod trim_actions;
 mod whatsnew;
 #[path = "windows.rs"]
 mod windows_dlg;
@@ -297,6 +299,15 @@ pub struct App {
     /// winpos's window-rect debounce: (drag/move started at, the rect it saw) while unsettled, `None`
     /// once saved. Owned here so `whatsnew::tick` can thread it into `winpos::tick` every frame.
     pub(crate) winpos_pending: Option<(Instant, [i32; 4])>,
+    // ---- ws:trim-model ----
+    /// Keyboard-trim edit-point selection (`U` / `Shift+U`), consumed by `trim_actions::act`.
+    /// Deviation from the plan text (noted in the PR body): the plan describes this as
+    /// `TimelineState.edit_point`, but `TimelineState` (timeline/mod.rs) is snap-engine's exclusive
+    /// file this wave and doesn't carry that field yet on a worktree branched from origin/main — this
+    /// workstream is headless/model-only and must not touch it. `EditPoint` itself still lives in
+    /// `model::ops::trim` (this workstream's), so snap-engine's own field, once it lands, is a
+    /// same-type rename/fold of this one rather than a new type.
+    pub(crate) edit_point: Option<crate::model::ops::trim::EditPoint>,
 }
 
 /// What an async, off-the-main-preview GPU render is for — hover preview, trim view, scopes, wipe
@@ -682,6 +693,7 @@ impl App {
             alt_render: None,
             whatsnew_open: false,
             winpos_pending: None,
+            edit_point: None,
         };
         app.detect_ytdlp(&cc.egui_ctx);
         app.refresh_presets();
@@ -1225,6 +1237,7 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:player-rate-loop ----
     // ---- ws:snap-engine ----
     // ---- ws:trim-model ----
+    tools_trim::TOOLS,
     // ---- ws:canvas-handles-monitor ----
     // ---- ws:export-deliver ----
     // ---- ws:inspector-gallery ----
@@ -1251,6 +1264,7 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     // ---- ws:player-rate-loop ----
     // ---- ws:snap-engine ----
     // ---- ws:trim-model ----
+    trim_actions::act,
     // ---- ws:canvas-handles-monitor ----
     // ---- ws:export-deliver ----
     // ---- ws:inspector-gallery ----

@@ -197,7 +197,13 @@ impl App {
                         self.project.trim_to_range(a0, b0);
                         self.seek(0.0);
                     } else {
-                        self.project.ripple_delete_range(a0, b0);
+                        // ws:trim-model: ripple_delete_range/ripple_open now take an explicit track
+                        // scope (mechanical signature-follow, not a behaviour change) — ripple_tracks()
+                        // reproduces the old all-track behaviour on any project where every track is
+                        // still ripple==true (today's default), and correctly stops shifting
+                        // position-locked secondary tracks once one exists.
+                        let tracks = self.project.ripple_tracks();
+                        self.project.ripple_delete_range(a0, b0, &tracks);
                         self.project.in_point = None;
                         self.project.out_point = None;
                         self.seek(a0);
@@ -315,8 +321,11 @@ impl App {
                         let snap = self.project.to_json();
                         if a == PasteInsert {
                             // ripple: everything at or after the playhead slides right by the paste's span
+                            // (ws:trim-model: ripple_open now takes an explicit track scope — see the
+                            // RippleDeleteInOut arm above for why ripple_tracks() is the right default)
                             let span = clips.iter().map(|c| c.start + c.duration).fold(0.0_f64, f64::max);
-                            self.project.ripple_open(self.playhead, span);
+                            let tracks = self.project.ripple_tracks();
+                            self.project.ripple_open(self.playhead, span, &tracks);
                         }
                         if a == PasteAtTop {
                             let kind = clips
