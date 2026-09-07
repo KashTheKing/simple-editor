@@ -230,6 +230,10 @@ pub(crate) enum Glyph {
     // ---- ws:forgiveness ----
     // ---- ws:player-rate-loop ----
     // ---- ws:snap-engine ----
+    /// A curved arrow around a clip edge — the Roll gesture cursor (wave 2 wires the drag itself).
+    RollCursor,
+    /// Filmstrip frames sliding sideways under a fixed rect — the Slip gesture cursor (wave 2).
+    SlipCursor,
     // ---- ws:trim-model ----
     // ---- ws:canvas-handles-monitor ----
     // ---- ws:export-deliver ----
@@ -339,6 +343,8 @@ impl Glyph {
         // ---- ws:forgiveness ----
         // ---- ws:player-rate-loop ----
         // ---- ws:snap-engine ----
+        Glyph::RollCursor,
+        Glyph::SlipCursor,
         // ---- ws:trim-model ----
         // ---- ws:canvas-handles-monitor ----
         // ---- ws:export-deliver ----
@@ -452,6 +458,8 @@ impl Glyph {
             // ---- ws:forgiveness ----
             // ---- ws:player-rate-loop ----
             // ---- ws:snap-engine ----
+            Glyph::RollCursor => "roll-cursor",
+            Glyph::SlipCursor => "slip-cursor",
             // ---- ws:trim-model ----
             // ---- ws:canvas-handles-monitor ----
             // ---- ws:export-deliver ----
@@ -1591,6 +1599,39 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
                 Stroke::new(1.0, fg),
                 StrokeKind::Inside,
             );
+        }
+        // roll: a curved arrow wrapped around a vertical bar (the cut) — rolling the edit point.
+        Glyph::RollCursor => {
+            p.line_segment([c + egui::vec2(0.0, -6.0), c + egui::vec2(0.0, 6.0)], Stroke::new(1.6, fg));
+            let arc: Vec<egui::Pos2> = (0..=10)
+                .map(|i| {
+                    let a = -std::f32::consts::FRAC_PI_2 + std::f32::consts::PI * 1.4 * i as f32 / 10.0;
+                    c + egui::vec2(4.5, 0.0) + egui::vec2(a.cos() * 4.0, a.sin() * 4.0)
+                })
+                .collect();
+            p.add(egui::Shape::closed_line(arc.clone(), stroke));
+            if let (Some(&a), Some(&b)) = (arc.first(), arc.get(1)) {
+                let d = (b - a).normalized();
+                let n = egui::vec2(-d.y, d.x);
+                p.add(egui::Shape::convex_polygon(vec![a + d * 3.0, a - n * 2.5, a + n * 2.5], fg, Stroke::NONE));
+            }
+        }
+        // slip: two filmstrip frames sliding sideways under a fixed bracket.
+        Glyph::SlipCursor => {
+            p.rect_stroke(
+                egui::Rect::from_center_size(c, egui::vec2(13.0, 9.0)),
+                CornerRadius::ZERO,
+                stroke,
+                StrokeKind::Inside,
+            );
+            for dx in [-6.5f32, 0.0, 6.5] {
+                p.line_segment([c + egui::vec2(dx, -6.5), c + egui::vec2(dx, -4.5)], stroke);
+                p.line_segment([c + egui::vec2(dx, 4.5), c + egui::vec2(dx, 6.5)], stroke);
+            }
+            let head = vec![c + egui::vec2(-7.5, 0.0), c + egui::vec2(-4.5, -2.2), c + egui::vec2(-4.5, 2.2)];
+            p.add(egui::Shape::convex_polygon(head, fg, Stroke::NONE));
+            let head = vec![c + egui::vec2(7.5, 0.0), c + egui::vec2(4.5, -2.2), c + egui::vec2(4.5, 2.2)];
+            p.add(egui::Shape::convex_polygon(head, fg, Stroke::NONE));
         } // ---- ws:registries-schema-hooks ----
           // ---- ws:size-diet ----
           // ---- ws:split-god-files ----
@@ -1600,7 +1641,6 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
           // ---- ws:command-palette ----
           // ---- ws:forgiveness ----
           // ---- ws:player-rate-loop ----
-          // ---- ws:snap-engine ----
           // ---- ws:trim-model ----
           // ---- ws:canvas-handles-monitor ----
           // ---- ws:export-deliver ----

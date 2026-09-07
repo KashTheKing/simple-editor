@@ -280,6 +280,10 @@ pub struct Settings {
     // ---- ws:forgiveness ----
     // ---- ws:player-rate-loop ----
     // ---- ws:snap-engine ----
+    /// Markers (project + clip-local) count as timeline snap candidates. No per-field serde
+    /// attribute: `Settings`' container-level `#[serde(default)]` already back-fills old files,
+    /// exactly like the sibling `snap` field.
+    pub snap_markers: bool,
     // ---- ws:trim-model ----
     // ---- ws:canvas-handles-monitor ----
     // ---- ws:export-deliver ----
@@ -374,6 +378,7 @@ impl Default for Settings {
             // ---- ws:forgiveness ----
             // ---- ws:player-rate-loop ----
             // ---- ws:snap-engine ----
+            snap_markers: true,
             // ---- ws:trim-model ----
             // ---- ws:canvas-handles-monitor ----
             // ---- ws:export-deliver ----

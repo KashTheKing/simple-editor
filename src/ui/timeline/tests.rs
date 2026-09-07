@@ -27,6 +27,27 @@ fn snap_targets_exclude_moving_clips() {
 }
 
 #[test]
+fn markers_and_transitions_are_snap_candidates() {
+    use crate::model::TransitionKind;
+    let mut p = Project::new();
+    p.tracks[0].clips.push(Clip::new(7, ClipKind::Video, "a", 0.0, 3.0)); // [0,3)
+    p.tracks[0].clips.push(Clip::new(8, ClipKind::Video, "b", 3.0, 3.0)); // [3,6) abuts clip 7
+    p.add_marker(10.0, "M");
+    p.add_transition(8, TransitionKind::CrossFade, 1.0).expect("abutting clips make a transition");
+    // marker hit: far from playhead/edges, close to the marker at 10.0
+    let mhit = target(&p, 10.1, 0.3, 999.0, &[], &[], None, true);
+    assert_eq!(mhit.map(|(_, k)| k), Some(SnapKind::Marker), "marker must be a candidate");
+    // transition hit: cut at 3.0, half=0.5s -> played-window edges at 2.5 / 3.5; exclude both
+    // clips so their own edges (0, 3, 6) don't shadow the transition-edge tier at 2.55
+    let thit = target(&p, 2.55, 0.3, 999.0, &[7, 8], &[], None, true);
+    assert_eq!(thit.map(|(_, k)| k), Some(SnapKind::TransitionEdge), "transition edge must be a candidate");
+    // snap_markers=false removes the marker hit but not the transition one
+    assert_eq!(target(&p, 10.1, 0.3, 999.0, &[], &[], None, false), None, "marker hit must disappear");
+    let thit2 = target(&p, 2.55, 0.3, 999.0, &[7, 8], &[], None, false);
+    assert_eq!(thit2.map(|(_, k)| k), Some(SnapKind::TransitionEdge), "transition hit must survive");
+}
+
+#[test]
 fn tick_spacing_scales_with_zoom() {
     assert_eq!(tick_step(40.0), (2.0, 0.5));
     assert_eq!(tick_step(2000.0), (0.05, 0.01));
@@ -120,6 +141,7 @@ struct Harness {
     waves: WaveformCache,
     tool: Tool,
     snap: bool,
+    snap_markers: bool,
     time: f64,
     /// Paint list of the last frame (asserting on what was actually drawn).
     shapes: Vec<egui::epaint::ClippedShape>,
@@ -128,7 +150,7 @@ struct Harness {
 impl Harness {
     fn new() -> Self {
         let ctx = egui::Context::default();
-    ctx.set_fonts(crate::theme::test_fonts()); // size-diet: no default_fonts feature anymore
+        ctx.set_fonts(crate::theme::test_fonts()); // size-diet: no default_fonts feature anymore
         ctx.set_fonts(crate::theme::test_fonts()); // size-diet: no default_fonts feature anymore
         let mut project = Project::new();
         let aid = project.add_asset(Asset {
@@ -163,6 +185,7 @@ impl Harness {
             waves,
             tool: Tool::Select,
             snap: false,
+            snap_markers: true,
             time: 0.0,
             shapes: Vec::new(),
         };
@@ -182,7 +205,20 @@ impl Harness {
             ..Default::default()
         };
         let pal = Palette::new(true, Color32::from_rgb(0, 120, 212));
-        let Harness { ctx, state, project, selection, sel_transitions, playhead, undos, waves, tool, snap, .. } = self;
+        let Harness {
+            ctx,
+            state,
+            project,
+            selection,
+            sel_transitions,
+            playhead,
+            undos,
+            waves,
+            tool,
+            snap,
+            snap_markers,
+            ..
+        } = self;
         let mut resp = None;
         let full = ctx.run(input, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
@@ -199,6 +235,7 @@ impl Harness {
                         waveforms: waves,
                         palette: &pal,
                         snap: *snap,
+                        snap_markers: *snap_markers,
                         playing: false,
                         thumbs: None,
                         keep_ranges: &[],
@@ -210,6 +247,15 @@ impl Harness {
         });
         self.shapes = full.shapes;
         resp.unwrap()
+    }
+    /// Advance the synthetic clock well past `max_double_click_delay` (0.3 s) so the next click
+    /// isn't merged into a double-click with the previous one — egui's double-click timer is a
+    /// single global `last_click_time`, not scoped to a widget/position, so two unrelated clicks
+    /// (even on different clips) count as a double-click if the harness's virtual clock hasn't
+    /// moved far enough between them (see agents.md's "double-click timing in synthetic clocks").
+    fn settle(&mut self) {
+        self.time += 1.0;
+        self.frame(vec![]);
     }
     /// Every text painted last frame, with its top-left position.
     fn texts(&self) -> Vec<(String, Pos2)> {
@@ -1178,6 +1224,45 @@ fn headless_alt_click_selects_single_clip() {
     assert_eq!(h.selection, vec![vid], "Alt+click selects only the clicked clip");
 }
 
+/// AUDIT FIX regression test: the modifier table's Body/Shift row ("click = add link group to
+/// selection") had no matching code before this workstream — Shift+click was indistinguishable
+/// from a plain click. Confirms the fix and that Ctrl/plain click paths are unaffected.
+#[test]
+fn shift_click_adds_link_group_without_clearing() {
+    let mut h = Harness::new();
+    h.project.tracks[1].clips.clear();
+    h.project.tracks[0].clips.clear();
+    h.project.tracks[0].clips.push(Clip::new(101, ClipKind::Video, "a", 0.0, 2.0));
+    h.project.tracks[0].clips.push(Clip::new(102, ClipKind::Video, "b", 3.0, 2.0));
+    h.frame(vec![]);
+    let lanes = h.state.lanes_rect;
+    let pa = pos2(h.state.x_at(1.0), lanes.top() + 30.0);
+    let pb = pos2(h.state.x_at(4.0), lanes.top() + 30.0);
+    h.press(pa);
+    h.release(pa);
+    h.frame(vec![]);
+    assert_eq!(h.selection, vec![101], "plain click selects A alone");
+    h.settle(); // clicks on different clips within 0.3s would merge into a double-click
+    h.press_m(pb, Modifiers::SHIFT);
+    h.release_m(pb, Modifiers::SHIFT);
+    h.frame(vec![]);
+    assert_eq!(h.selection, vec![101, 102], "Shift-click adds B without clearing A");
+    h.settle();
+    h.press_m(pb, Modifiers::CTRL);
+    h.release_m(pb, Modifiers::CTRL);
+    h.frame(vec![]);
+    assert_eq!(h.selection, vec![101], "Ctrl-click still toggles B out, unchanged");
+    h.settle();
+    h.press_m(pb, Modifiers::SHIFT);
+    h.release_m(pb, Modifiers::SHIFT);
+    h.frame(vec![]);
+    h.settle();
+    h.press(pa);
+    h.release(pa);
+    h.frame(vec![]);
+    assert_eq!(h.selection, vec![101], "plain click still collapses selection to the clicked clip");
+}
+
 /// Spacer: a lane drag shifts everything starting at or after the press, forward without limit and
 /// backward only as far as the clip in front of the group.
 #[test]
@@ -1438,5 +1523,249 @@ fn headless_video_track_v_toggle_flips_muted() {
     let r = h.release(vb);
     assert!(r.edited || h.frame(vec![]).edited, "V toggle marks edited");
     assert!(h.project.tracks[0].muted, "V toggle flips muted (visibility off)");
+    assert_eq!(h.undos, 1);
+}
+
+// ---- ws:snap-engine ----
+
+/// On a row >= 2x MIN_TRACK_H, the lower half hairline-clicks to split; the upper half (and the
+/// whole clip on a default-height row) still moves on drag.
+#[test]
+fn bottom_zone_click_splits_top_zone_moves() {
+    let mut h = Harness::new();
+    h.project.tracks[0].height = 3.0 * MIN_TRACK_H; // tall enough to split
+    h.project.tracks[1].clips.clear();
+    h.frame(vec![]);
+    let lanes = h.state.lanes_rect;
+    let row_top = lanes.top();
+    let clip = h.video_clip();
+    let (start, end) = (clip.start, clip.end());
+    let before = h.project.tracks[0].clips.len();
+    // bottom half click splits
+    let bx = h.state.x_at((start + end) / 2.0);
+    let by = row_top + h.project.tracks[0].height * 0.75;
+    h.press(pos2(bx, by));
+    h.release(pos2(bx, by));
+    h.frame(vec![]);
+    assert_eq!(h.project.tracks[0].clips.len(), before + 1, "bottom-half click must split the clip");
+    // top half drags the (now-left) clip instead of splitting
+    let ty = row_top + h.project.tracks[0].height * 0.25;
+    let left_start = h.project.tracks[0].clips.iter().map(|c| c.start).fold(f64::INFINITY, f64::min);
+    let tx = h.state.x_at(left_start + 0.1);
+    let edited = h.drag(pos2(tx, ty), pos2(tx + 40.0, ty));
+    assert!(edited, "top-half drag must move, not split");
+}
+
+/// Clicking a seam (two abutting clips' shared edge) selects an `EditPoint`: plain=Both,
+/// Ctrl=Left (outgoing), Alt=Right (incoming). Nothing else on the timeline changes selection.
+#[test]
+fn seam_click_selects_edit_point_sides() {
+    let mut h = Harness::new();
+    h.project.tracks[1].clips.clear();
+    h.project.tracks[0].clips.clear();
+    h.project.tracks[0].clips.push(Clip::new(201, ClipKind::Video, "a", 0.0, 2.0));
+    h.project.tracks[0].clips.push(Clip::new(202, ClipKind::Video, "b", 2.0, 2.0)); // abuts at t=2.0
+    h.frame(vec![]);
+    let lanes = h.state.lanes_rect;
+    let sx = h.state.x_at(2.0);
+    let sy = lanes.top() + 30.0;
+    h.press(pos2(sx, sy));
+    h.release(pos2(sx, sy));
+    h.frame(vec![]);
+    assert_eq!(h.state.edit_point.map(|e| e.side), Some(Side::Both), "plain click selects Both");
+    h.press_m(pos2(sx, sy), Modifiers::CTRL);
+    h.release_m(pos2(sx, sy), Modifiers::CTRL);
+    h.frame(vec![]);
+    assert_eq!(h.state.edit_point.map(|e| e.side), Some(Side::Left), "Ctrl-click selects Left");
+    h.press_m(pos2(sx, sy), Modifiers::ALT);
+    h.release_m(pos2(sx, sy), Modifiers::ALT);
+    h.frame(vec![]);
+    assert_eq!(h.state.edit_point.map(|e| e.side), Some(Side::Right), "Alt-click selects Right");
+}
+
+/// Ruler in/out handles are draggable (snapped), clamp in<=out, and push exactly one undo per
+/// gesture only if the value actually changed.
+#[test]
+fn inout_handles_drag_and_clamp() {
+    let mut h = Harness::new();
+    h.project.in_point = Some(1.0);
+    h.project.out_point = Some(8.0);
+    h.frame(vec![]);
+    let lanes = h.state.lanes_rect;
+    let y = lanes.top() - RULER_H + (RULER_H - 3.0);
+    // drag the in handle past the out point: clamps to out (8.0)
+    let from = pos2(h.state.x_at(1.0), y);
+    let to = pos2(h.state.x_at(20.0), y);
+    let edited = h.drag(from, to);
+    assert!(edited, "in-handle drag edits");
+    assert_eq!(h.undos, 1, "exactly one undo for the whole gesture");
+    assert_eq!(h.project.in_point, Some(8.0), "in clamps to out: {:?}", h.project.in_point);
+    // releasing at the same spot (no movement) pushes no undo
+    let from2 = pos2(h.state.x_at(8.0), y);
+    let edited2 = h.drag(from2, from2);
+    assert!(!edited2, "a released-in-place drag must not edit");
+    assert_eq!(h.undos, 1, "no undo for an unchanged drag");
+}
+
+/// A middle-button drag on the lanes pans scroll_x/scroll_y without starting any Move/band
+/// gesture and without touching the selection.
+#[test]
+fn middle_mouse_pans_without_selecting() {
+    let mut h = Harness::new();
+    let lanes = h.state.lanes_rect;
+    // empty lane space (past the default 10 s clip at zoom 40, i.e. past x=400) so the lanes
+    // background — not a clip body registered on top of it — wins hit-testing here
+    let from = pos2(lanes.left() + 480.0, lanes.top() + 30.0);
+    let to = from - vec2(80.0, 20.0);
+    h.frame_m(vec![Event::PointerMoved(from)], Modifiers::NONE);
+    h.frame_m(
+        vec![Event::PointerButton {
+            pos: from,
+            button: PointerButton::Middle,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        }],
+        Modifiers::NONE,
+    );
+    let sx0 = h.state.scroll_x;
+    h.frame_m(vec![Event::PointerMoved(to)], Modifiers::NONE);
+    h.frame_m(
+        vec![Event::PointerButton {
+            pos: to,
+            button: PointerButton::Middle,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        }],
+        Modifiers::NONE,
+    );
+    assert!(h.state.scroll_x > sx0, "middle drag must pan scroll_x: {sx0} -> {}", h.state.scroll_x);
+    assert!(h.state.drag.is_none(), "middle drag must not start a Move/trim gesture");
+    assert!(h.selection.is_empty(), "middle drag must not select anything");
+}
+
+/// An empty project (zero clips on every track) shows the dashed drop hint; it disappears once
+/// any clip exists.
+#[test]
+fn empty_timeline_shows_hint() {
+    let mut h = Harness::new();
+    h.project.tracks[0].clips.clear();
+    h.project.tracks[1].clips.clear();
+    h.frame(vec![]);
+    assert!(h.painted_text("Drop video").is_some(), "empty timeline must paint the drop hint");
+    h.project.tracks[0].clips.push(Clip::new(301, ClipKind::Video, "a", 0.0, 2.0));
+    h.frame(vec![]);
+    assert!(h.painted_text("Drop video").is_none(), "hint must disappear once a clip exists");
+}
+
+/// Dragging a clip within threshold of a candidate paints exactly one accent-colour guide line at
+/// the candidate's x; dragging with nothing in range paints none.
+#[test]
+fn snap_guide_line_paints_mid_drag() {
+    let mut h = Harness::new();
+    h.snap = true;
+    h.project.tracks[1].clips.clear();
+    h.project.tracks[0].clips.clear();
+    h.project.tracks[0].clips.push(Clip::new(302, ClipKind::Video, "a", 0.0, 2.0)); // reference edge at t=2.0
+    h.project.tracks[0].clips.push(Clip::new(303, ClipKind::Video, "b", 8.0, 2.0)); // clip being dragged
+    h.frame(vec![]);
+    let lanes = h.state.lanes_rect;
+    let y = lanes.top() + 30.0;
+    let from = pos2(h.state.x_at(8.5), y); // press 0.5s into clip 303 (both points stay on the 800pt-wide test screen at zoom 40)
+                                           // drag left so clip 303's start (8 + dx) lands within threshold of clip 302's end (2.0)
+    let to = pos2(h.state.x_at(2.55), y);
+    h.press(from);
+    for i in 1..=3 {
+        let p = from + (to - from) * (i as f32 / 3.0);
+        h.frame(vec![Event::PointerMoved(p)]);
+    }
+    // the guide reflects the PREVIOUS frame's snap result (paint runs before gestures::handle in
+    // show()), so one more frame at the same pointer position lets it catch up
+    h.frame(vec![]);
+    let accent = Palette::new(true, Color32::from_rgb(0, 120, 212)).accent;
+    let has_guide =
+        h.shapes.iter().any(|cs| matches!(&cs.shape, Shape::LineSegment { stroke, .. } if stroke.color == accent));
+    assert!(has_guide, "an accent guide line must paint while snapped mid-drag");
+    h.release(to);
+    h.frame(vec![]);
+
+    // dragging with nothing in range paints no guide line
+    let mut h2 = Harness::new();
+    h2.snap = true;
+    h2.project.tracks[1].clips.clear();
+    h2.project.tracks[0].clips.clear();
+    h2.project.tracks[0].clips.push(Clip::new(304, ClipKind::Video, "c", 0.0, 2.0));
+    h2.project.tracks[0].clips.push(Clip::new(305, ClipKind::Video, "d", 8.0, 2.0));
+    h2.frame(vec![]);
+    let from2 = pos2(h2.state.x_at(8.5), y);
+    let to2 = pos2(h2.state.x_at(5.0), y); // far from every candidate, still on-screen
+    h2.press(from2);
+    for i in 1..=3 {
+        let p = from2 + (to2 - from2) * (i as f32 / 3.0);
+        h2.frame(vec![Event::PointerMoved(p)]);
+    }
+    h2.frame(vec![]);
+    let no_guide =
+        !h2.shapes.iter().any(|cs| matches!(&cs.shape, Shape::LineSegment { stroke, .. } if stroke.color == accent));
+    assert!(no_guide, "no guide line when nothing is within snap threshold");
+    h2.release(to2);
+}
+
+/// Dragging a subtitle cue body and releasing at the press point pushes 0 undos; actually moving
+/// it pushes exactly 1 and the new position is snapped.
+#[test]
+fn cue_body_drag_one_undo_only_if_moved() {
+    use crate::model::Cue;
+    let mut h = Harness::new();
+    h.project.subtitles.push(Cue { id: 401, start: 2.0, end: 4.0, text: "hi".into() });
+    h.frame(vec![]); // relayout: the subtitle lane now has height
+    let lanes = h.state.lanes_rect;
+    let y = lanes.top() - h.state.sub_h * 0.5;
+    let cx = h.state.x_at(3.0); // inside the cue body [2, 4)
+
+    // press and release with no movement at all: click_and_drag() widgets need actual movement to
+    // recognize a drag at all, so this never even opens a CueDrag — the simplest "nothing changed"
+    // case, and it must not edit or undo either.
+    let r = h.press(pos2(cx, y));
+    let r2 = h.release(pos2(cx, y));
+    let r3 = h.frame(vec![]);
+    assert!(!r.edited && !r2.edited && !r3.edited, "a non-moving cue press+release must not edit");
+    assert_eq!(h.undos, 0, "no undo when the cue never moved");
+
+    // now actually move it: exactly one undo
+    h.press(pos2(cx, y));
+    h.frame(vec![Event::PointerMoved(pos2(cx + 80.0, y))]); // +2s at zoom 40
+    let r3 = h.release(pos2(cx + 80.0, y));
+    let r4 = h.frame(vec![]);
+    assert!(r3.edited || r4.edited, "moving the cue body must edit");
+    assert_eq!(h.undos, 1, "exactly one undo for the move gesture");
+    let cue = h.project.subtitles.iter().find(|q| q.id == 401).unwrap();
+    assert!((cue.start - 4.0).abs() < 0.1, "cue moved to ~4.0: {}", cue.start);
+}
+
+/// Trimming a cue edge and releasing without moving it pushes 0 undos (previously pushed 1 at
+/// drag start regardless of whether anything changed).
+#[test]
+fn cue_trim_undo_on_release_not_press() {
+    use crate::model::Cue;
+    let mut h = Harness::new();
+    h.project.subtitles.push(Cue { id: 402, start: 2.0, end: 4.0, text: "hi".into() });
+    h.frame(vec![]);
+    let lanes = h.state.lanes_rect;
+    let y = lanes.top() - h.state.sub_h * 0.5;
+    let ex = h.state.x_at(4.0); // right edge, within the 6 pt trim handle
+                                // the trim handle senses drag-only, so press-then-release-in-place still counts as a drag
+                                // gesture with zero net movement — exactly the case the old code pushed a dead undo for
+    h.press(pos2(ex, y));
+    let r = h.release(pos2(ex, y));
+    let r2 = h.frame(vec![]);
+    assert!(!r.edited && !r2.edited, "an in-place trim release must not edit");
+    assert_eq!(h.undos, 0, "no undo for a released-in-place trim (was 1, pushed at drag start)");
+
+    // an actual trim still pushes exactly one undo, on release
+    h.press(pos2(ex, y));
+    h.frame(vec![Event::PointerMoved(pos2(ex + 40.0, y))]); // +1s
+    let r3 = h.release(pos2(ex + 40.0, y));
+    let r4 = h.frame(vec![]);
+    assert!(r3.edited || r4.edited, "an actual trim must edit");
     assert_eq!(h.undos, 1);
 }
