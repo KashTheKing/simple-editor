@@ -2888,3 +2888,54 @@ fn asymmetric_roller_shift_click_toggles_off() {
     h.frame(vec![]);
     assert!(h.state.rollers.is_empty(), "a second Shift-click on the same seam removes it");
 }
+
+/// Unlike `asymmetric_multi_roller_trim_moves_only_shift_clicked_seams` above (A/E have a 2-second gap
+/// specifically so the click lands on a lone edge handle), A and B here actually TOUCH -- so the seam's
+/// own 6px hit-strip (registered after every clip in the row, winning hit-testing at an exact cut) is
+/// what receives the click. Before the fix, that seam handler only understood Ctrl/Alt (EditPoint
+/// Left/Right) and ignored Shift entirely, so a Shift-click at an abutting seam -- the classic roll-edit
+/// / L-cut scenario this feature exists for -- silently fell through to a plain EditPoint select and
+/// never touched `state.rollers`.
+#[test]
+fn asymmetric_multi_roller_trim_arms_an_abutting_seam() {
+    let mut h = Harness::new();
+    h.project.tracks[0].clips = vec![
+        Clip::new(101, ClipKind::Video, "A", 0.0, 3.0),  // ends 3.0
+        Clip::new(102, ClipKind::Video, "B", 3.0, 2.0),  // starts 3.0 -- abuts A: the seam under test
+        Clip::new(103, ClipKind::Video, "C", 10.0, 2.0), // ends 12.0
+        Clip::new(104, ClipKind::Video, "D", 12.0, 2.0), // starts 12.0 -- an untouched abutting seam
+    ];
+    h.project.add_track(TrackKind::Video);
+    let v2 = h.project.video_tracks()[1];
+    h.project.tracks[v2].clips.push(Clip::new(105, ClipKind::Video, "X", 1.0, 3.0));
+    h.frame(vec![]);
+
+    let lanes = h.state.lanes_rect;
+    let v1_row_top = lanes.top() + h.project.tracks[v2].height; // V2 draws above V1
+
+    let seam_x = h.state.x_at(3.0);
+    let pos = pos2(seam_x, v1_row_top + 30.0);
+    h.press_m(pos, Modifiers::SHIFT);
+    h.release_m(pos, Modifiers::SHIFT);
+    h.frame(vec![]);
+    assert_eq!(h.state.rollers.len(), 2, "Shift-click on an abutting seam arms both sides of the cut");
+    assert!(h.state.rollers.contains(&(101, false)), "A's end edge armed");
+    assert!(h.state.rollers.contains(&(102, true)), "B's start edge armed");
+    assert!(h.state.edit_point.is_none(), "a Shift-click on the seam must not also set a plain EditPoint");
+
+    let x_start_x = h.state.x_at(1.0);
+    let from = pos2(x_start_x + 2.0, lanes.top() + 30.0);
+    let to = from - vec2(20.0, 0.0); // 0.5 s left at zoom 40
+    assert!(h.drag(from, to));
+
+    assert!((h.project.tracks[v2].clips[0].start - 0.5).abs() < 0.05, "X's start moved by the drag delta");
+    let a_after = h.project.tracks[0].clips.iter().find(|c| c.id == 101).unwrap();
+    assert!((a_after.end() - 2.5).abs() < 0.05, "A's end rolled by the SAME delta, from its own edge");
+    let b_after = h.project.tracks[0].clips.iter().find(|c| c.id == 102).unwrap();
+    assert!((b_after.start - 2.5).abs() < 0.05, "B's start rolled by the SAME delta -- still abutting A");
+    let c_after = h.project.tracks[0].clips.iter().find(|c| c.id == 103).unwrap();
+    assert_eq!(c_after.end(), 12.0, "an untouched seam elsewhere on the same track (C/D) stayed put");
+    let d_after = h.project.tracks[0].clips.iter().find(|c| c.id == 104).unwrap();
+    assert_eq!(d_after.start, 12.0, "an untouched seam elsewhere on the same track (C/D) stayed put");
+    assert!(h.state.rollers.is_empty(), "the roller set is consumed once the drag starts");
+}

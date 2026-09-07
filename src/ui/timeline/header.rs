@@ -49,7 +49,8 @@ pub(super) fn draw_header(
 
     // ---- ws:pro-timeline: drag-reorder grip + colour swatch, left of the name (previously-unused
     // strip per the plan's own risk note — bw/sb/mb/rb/lb already reserve the right side) ----
-    let grip = Rect::from_min_max(pos2(hr.left(), hr.top() + 2.0), pos2(hr.left() + 9.0, hr.bottom() - 2.0));
+    let grip =
+        Rect::from_min_max(pos2(hr.left(), hr.top() + 2.0), pos2(hr.left() + 9.0, row.bottom() - HANDLE_H - 1.0));
     let gresp = ui.interact(grip, tid.with("grip"), Sense::drag()).on_hover_cursor(CursorIcon::ResizeVertical);
     for dy in [-3.0_f32, 0.0, 3.0] {
         bp.hline(

@@ -512,9 +512,12 @@ pub(super) fn handle(
                 // edge0 ("trims both cuts by the same delta", not independently re-snapped each).
                 let mut dt = dx;
                 *snapped = None;
+                // ws:pro-timeline: every id in this same multi-roller set, not just the one edge being
+                // tested -- two rollers on directly-abutting clips (a seam roll) must not see each OTHER
+                // as a collision just because neither has been committed to `p` yet this frame.
+                let base_ids: Vec<Id> = ids.iter().map(|&(id, _)| id).collect();
                 if c.snap {
                     if let Some(&e0) = edge0.first() {
-                        let base_ids: Vec<Id> = ids.iter().map(|&(id, _)| id).collect();
                         let mut want0 = p.snap_frame(e0 + dx);
                         if let Some(t) = snap_target(want0, thr, p, *c.playhead, &base_ids) {
                             want0 = t;
@@ -536,7 +539,7 @@ pub(super) fn handle(
                         let md = p.max_clip_duration(&tmp);
                         tmp.trim_end(want, md);
                     }
-                    if !p.tracks[ti].fits(tmp.start, tmp.duration, &[id]) {
+                    if !p.tracks[ti].fits(tmp.start, tmp.duration, &base_ids) {
                         upd.clear();
                         break;
                     }

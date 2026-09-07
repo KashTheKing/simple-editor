@@ -1295,14 +1295,30 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 }
                 let r = ui.interact(sr, id.with(("seam", left.id, right.id)), Sense::click());
                 if r.clicked() {
-                    let side = if mods.ctrl {
-                        Side::Left
-                    } else if mods.alt {
-                        Side::Right
+                    // ws:pro-timeline: Shift-click a seam arms BOTH abutting edges into the asymmetric
+                    // multi-roller trim set (same arm/dearm toggle as the edge-handle loop above, run
+                    // once per side) -- otherwise the seam's own hit-strip (registered after every clip
+                    // so it wins hit-testing at an exact cut) would swallow the click and a Shift-click
+                    // could never arm a roller at the abutting-neighbor seam scenario the feature is for.
+                    if mods.shift {
+                        for (rid, is_start) in [(left.id, false), (right.id, true)] {
+                            match state.rollers.iter().position(|&(rrid, s)| rrid == rid && s == is_start) {
+                                Some(i) => {
+                                    state.rollers.remove(i);
+                                }
+                                None => state.rollers.push((rid, is_start)),
+                            }
+                        }
                     } else {
-                        Side::Both
-                    };
-                    state.edit_point = Some(EditPoint { track: ti, t: left.end(), side });
+                        let side = if mods.ctrl {
+                            Side::Left
+                        } else if mods.alt {
+                            Side::Right
+                        } else {
+                            Side::Both
+                        };
+                        state.edit_point = Some(EditPoint { track: ti, t: left.end(), side });
+                    }
                 }
             }
         }

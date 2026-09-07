@@ -39,8 +39,17 @@ pub(super) fn window(app: &mut App, ctx: &egui::Context) {
     let Some(jump) = find_ui::window(ctx, &mut app.find, &app.project) else { return };
     app.seek(jump.t);
     if let Some(id) = jump.select {
-        app.selection = vec![id];
-        app.sel_transitions.clear();
+        // route by hit kind: `app.selection` is the CLIP selection set, so a Marker/Cue hit must
+        // not land there (it would both fail to highlight and silently clear the clip selection).
+        match jump.kind {
+            find_ui::HitKind::Clip => {
+                app.selection = vec![id];
+                app.sel_transitions.clear();
+            }
+            find_ui::HitKind::Marker => app.timeline.selected_marker = Some(id),
+            find_ui::HitKind::Cue => app.subtitles_ui.selected = Some(id),
+            find_ui::HitKind::Sequence => {}
+        }
     }
     if let Some(pane) = jump.pane {
         app.layout.reveal_auto(pane);

@@ -61,22 +61,24 @@ pub fn find(p: &Project, q: &str) -> Vec<Hit> {
 }
 
 /// Where a chosen `Hit` sends the editor: playhead time, the pane to surface, and what to select.
-/// `select` is `None` for a Cue/Sequence hit — neither has a plain clip/marker `Id` selection concept
-/// on the timeline (a cue selects on the subtitle lane, a sequence isn't "selected", it's opened).
+/// `select` is `None` for a Sequence hit — it isn't "selected", it's opened. `kind` carries the hit's
+/// `HitKind` through so the `App`-touching caller (which owns the several DIFFERENT selection fields —
+/// clip vs. marker vs. cue — this module can't see) knows which one `select`'s id belongs to.
 pub struct Jump {
     pub t: f64,
     pub pane: Option<Pane>,
     pub select: Option<Id>,
+    pub kind: HitKind,
 }
 
 pub fn jump_for(hit: &Hit) -> Jump {
     match hit.kind {
-        HitKind::Clip => Jump { t: hit.t, pane: Some(Pane::Timeline), select: Some(hit.id) },
-        HitKind::Marker => Jump { t: hit.t, pane: Some(Pane::Timeline), select: Some(hit.id) },
-        HitKind::Cue => Jump { t: hit.t, pane: Some(Pane::Subtitles), select: None },
+        HitKind::Clip => Jump { t: hit.t, pane: Some(Pane::Timeline), select: Some(hit.id), kind: hit.kind },
+        HitKind::Marker => Jump { t: hit.t, pane: Some(Pane::Timeline), select: Some(hit.id), kind: hit.kind },
+        HitKind::Cue => Jump { t: hit.t, pane: Some(Pane::Subtitles), select: Some(hit.id), kind: hit.kind },
         // ponytail: sequences live in the Library, not on the timeline — reveal there rather than
         // opening it outright (opening changes the edit context, a bigger action than a Find jump).
-        HitKind::Sequence => Jump { t: 0.0, pane: Some(Pane::Library), select: None },
+        HitKind::Sequence => Jump { t: 0.0, pane: Some(Pane::Library), select: None, kind: hit.kind },
     }
 }
 
@@ -170,15 +172,27 @@ mod tests {
         assert_eq!(j.t, 2.0);
         assert_eq!(j.pane, Some(Pane::Timeline));
         assert_eq!(j.select, Some(1));
+        assert_eq!(j.kind, HitKind::Clip);
+
+        let marker = Hit { kind: HitKind::Marker, id: 2, t: 1.5, text: "x".into() };
+        let j = jump_for(&marker);
+        assert_eq!(j.t, 1.5);
+        assert_eq!(j.pane, Some(Pane::Timeline));
+        // a Marker's id must NOT land in the clip-selection field's `select` -- the caller routes it
+        // to `TimelineState.selected_marker` based on `kind`, never `app.selection`.
+        assert_eq!(j.select, Some(2));
+        assert_eq!(j.kind, HitKind::Marker);
 
         let cue = Hit { kind: HitKind::Cue, id: 3, t: 1.0, text: "x".into() };
         let j = jump_for(&cue);
         assert_eq!(j.pane, Some(Pane::Subtitles));
-        assert_eq!(j.select, None);
+        assert_eq!(j.select, Some(3));
+        assert_eq!(j.kind, HitKind::Cue);
 
         let seq = Hit { kind: HitKind::Sequence, id: 4, t: 0.0, text: "x".into() };
         let j = jump_for(&seq);
         assert_eq!(j.pane, Some(Pane::Library));
         assert_eq!(j.select, None);
+        assert_eq!(j.kind, HitKind::Sequence);
     }
 }
