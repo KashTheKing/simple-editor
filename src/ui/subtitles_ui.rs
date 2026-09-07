@@ -125,6 +125,16 @@ pub struct SubtitlesResponse {
     pub play: bool,
     /// "Open folder" — the app writes the .srt sidecar next to the project and opens it in Explorer.
     pub open_folder: bool,
+    /// ---- ws:forgiveness ----
+    /// "Clear all" ran inline (no confirm dialog) — the app toasts an Undo.
+    pub cleared_subtitles: bool,
+    /// Import parsed cues while the project ALREADY has subtitles: the app queues a non-blocking
+    /// "Replace?" confirm (`ConfirmAction::ReplaceSubtitles`) instead of asking here (this module has
+    /// no `App` to queue one against). `None` when there was nothing to import, or nothing existing to
+    /// ask about (an empty project replaces inline, no prompt needed). Same `(start, end, text)` shape
+    /// `engine::subtitles::parse`/`apply_import` already use — ids are allocated on Yes, via
+    /// `Project::add_cue`, not carried here.
+    pub import_replace_cues: Option<Vec<(f64, f64, String)>>,
 }
 
 /// "Add at playhead": a 2 s cue starting at the playhead.
@@ -132,8 +142,10 @@ fn add_at(project: &mut Project, playhead: f64) -> Id {
     project.add_cue(playhead, playhead + 2.0, "Subtitle")
 }
 
-/// Import parsed cues, replacing or appending.
-fn apply_import(project: &mut Project, cues: &[(f64, f64, String)], replace: bool) {
+/// Import parsed cues, replacing or appending. `pub(crate)`: also called by
+/// `confirm::apply_to_project` (ws:forgiveness) to resolve `ConfirmAction::ReplaceSubtitles` — reused
+/// rather than duplicated so the id-allocation (`Project::add_cue`) stays in one place.
+pub(crate) fn apply_import(project: &mut Project, cues: &[(f64, f64, String)], replace: bool) {
     if replace {
         project.subtitles.clear();
     }
@@ -223,18 +235,14 @@ pub fn show(
             state.checked.retain(|id| project.subtitles.iter().any(|c| c.id == *id));
             resp.edited = true;
         }
-        if ui.add_enabled(any, Button::new("Clear all")).clicked()
-            && rfd::MessageDialog::new()
-                .set_title("Clear subtitles")
-                .set_description(format!("Delete all {} subtitles?", project.subtitles.len()))
-                .set_buttons(rfd::MessageButtons::YesNo)
-                .show()
-                == rfd::MessageDialogResult::Yes
-        {
+        // no confirm dialog: this is already inside the undo-snapshotting `once(...)` helper below, so
+        // it's a normal undoable edit — the app additionally toasts an Undo button (resp.cleared_subtitles).
+        if ui.add_enabled(any, Button::new("Clear all")).clicked() {
             once(&mut undone, undo, project);
             project.subtitles.clear();
             state.checked.clear();
             resp.edited = true;
+            resp.cleared_subtitles = true;
         }
     });
 
@@ -811,7 +819,12 @@ fn transcribe_section(
     }
 }
 
-/// Import an .srt/.vtt via rfd; asks replace (Yes) or append (No) when cues already exist.
+/// Import an .srt/.vtt via rfd. An empty project replaces inline (nothing to lose, no prompt needed);
+/// otherwise the parsed cues are handed back via `resp.import_replace_cues` for the app to confirm a
+/// replace (`ConfirmAction::ReplaceSubtitles`) — this module has no `App` to queue a `confirm::ask`
+/// against directly. deviation from the plan text: "No/append" is now "Cancel discards the import"
+/// (see the PR body) — silently appending data the user just declined to confirm was the more
+/// surprising default of the two.
 fn import_dialog(
     project: &mut Project,
     undone: &mut bool,
@@ -824,16 +837,13 @@ fn import_dialog(
     if cues.is_empty() {
         return;
     }
-    let replace = project.subtitles.is_empty()
-        || rfd::MessageDialog::new()
-            .set_title("Import subtitles")
-            .set_description("Replace the existing subtitles? (No = append)")
-            .set_buttons(rfd::MessageButtons::YesNo)
-            .show()
-            == rfd::MessageDialogResult::Yes;
-    once(undone, undo, project);
-    apply_import(project, &cues, replace);
-    resp.edited = true;
+    if project.subtitles.is_empty() {
+        once(undone, undo, project);
+        apply_import(project, &cues, true);
+        resp.edited = true;
+    } else {
+        resp.import_replace_cues = Some(cues);
+    }
 }
 
 fn export_dialog(project: &Project, vtt: bool) {

@@ -5,7 +5,10 @@
 use crate::settings::Settings;
 use eframe::egui;
 
-pub(super) fn performance(ui: &mut egui::Ui, s: &mut Settings, gpu_name: &str) -> bool {
+/// `clear_caches`: ---- ws:forgiveness ---- — set true when the button below is clicked; the app
+/// (windows.rs) reads it after calling `show`/`performance` and runs `caches::clear`, since this leaf
+/// function has no `&mut App` to call it with directly.
+pub(super) fn performance(ui: &mut egui::Ui, s: &mut Settings, gpu_name: &str, clear_caches: &mut bool) -> bool {
     let mut changed = false;
     egui::Grid::new("perf").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
         ui.label("GPU preview");
@@ -35,6 +38,17 @@ pub(super) fn performance(ui: &mut egui::Ui, s: &mut Settings, gpu_name: &str) -
                 "0 = automatic ({auto} MB here: ¼ of RAM, 512 MB–4 GB). Bigger survives longer 4K \
                  scrubs; decoded source frames use up to another quarter of it."
             ));
+        });
+        ui.end_row();
+
+        // ---- ws:forgiveness ----
+        ui.label("On-disk cache");
+        ui.horizontal(|ui| {
+            let mb = crate::ui::app::caches_bytes_for_ui() as f64 / 1e6;
+            ui.weak(format!("{mb:.1} MB on disk (waveform peaks, thumbnails)"));
+            if ui.button("Clear Caches").clicked() {
+                *clear_caches = true;
+            }
         });
         ui.end_row();
 

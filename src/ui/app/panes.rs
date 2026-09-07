@@ -158,6 +158,18 @@ impl App {
                 if resp.edited {
                     self.after_edit();
                 }
+                // ---- ws:forgiveness ----
+                if resp.cleared_subtitles {
+                    self.toast_undo("Cleared subtitles", Action::Undo);
+                }
+                if let Some(cues) = resp.import_replace_cues {
+                    let n = self.project.subtitles.len();
+                    confirm::ask(
+                        "Import subtitles",
+                        format!("Replace the existing {n} subtitle(s)? (Cancel keeps them and discards this import.)"),
+                        confirm::ConfirmAction::ReplaceSubtitles(cues),
+                    );
+                }
             }
             Pane::Planner => {
                 let resp = {
@@ -206,8 +218,19 @@ impl App {
             Pane::History => {
                 // deleting entries mutates the undo stack directly, not the project — no undo/push_undo
                 // of its own (history bookkeeping isn't itself a project edit).
-                let App { history, undo, project, .. } = self;
-                history_ui::show(ui, history, undo, project);
+                let resp = {
+                    let App { history, undo, project, .. } = self;
+                    history_ui::show(ui, history, undo, project)
+                };
+                // ---- ws:forgiveness ----
+                if let Some(i) = resp.restore {
+                    let live = self.project.to_json();
+                    if let Some((before, restored)) = history_ui::restore_at(&self.undo, i, &live) {
+                        self.project = restored;
+                        self.push_undo_labeled(before, "Restore history entry");
+                        self.after_edit();
+                    }
+                }
             }
             Pane::AutoCut => {
                 self.autocut_drawing = true;
@@ -357,5 +380,33 @@ impl App {
             .chain(self.settings.motion_presets.iter().cloned())
             .collect();
         curves::set_available_motions(motions);
+    }
+}
+
+// ---- ws:forgiveness ----
+#[cfg(test)]
+mod tests {
+    /// Structural (source-scan): this crate has no headless App-construction path anywhere (see
+    /// tools_registry_tests.rs's doc comment for why), so — the same technique files.rs's own
+    /// App-level tests already use — this checks both wiring sites directly instead of driving a
+    /// live App through the Library and Subtitles panes.
+    #[test]
+    fn panes_wires_toast_undo_for_library_and_subtitles() {
+        let subtitles_src = include_str!("panes.rs");
+        let start = subtitles_src.find("if resp.cleared_subtitles {").expect("the cleared_subtitles arm must exist");
+        let after = &subtitles_src[start..];
+        let end = after.find("\n                }").expect("the arm must close");
+        let body = &after[..end];
+        assert_eq!(body.matches("self.toast_undo(").count(), 1, "cleared_subtitles must toast exactly one Undo");
+        assert!(body.contains("Action::Undo"));
+
+        let library_src = include_str!("library_pane.rs");
+        let start =
+            library_src.find("if let Some(n) = resp.removed_unused {").expect("the removed_unused arm must exist");
+        let after = &library_src[start..];
+        let end = after.find("\n    }").expect("the arm must close");
+        let body = &after[..end];
+        assert_eq!(body.matches("app.toast_undo(").count(), 1, "removed_unused must toast exactly one Undo");
+        assert!(body.contains("Action::Undo"));
     }
 }
