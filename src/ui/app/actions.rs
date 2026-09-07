@@ -148,7 +148,9 @@ impl App {
                     for tid in trs {
                         self.project.remove_transition(tid);
                     }
-                    self.project.delete_clips(&ids, a == RippleDelete);
+                    // ws:timeline-trim-gestures: magnetic-track-aware (a clip on a magnetic track takes
+                    // its own gap with it) — plain delete_clips has no Track.magnetic concept.
+                    crate::ui::timeline::delete_clips_magnetic(&mut self.project, &ids, a == RippleDelete);
                     self.selection.clear();
                     self.push_undo_labeled(before, if a == RippleDelete { "Ripple delete" } else { "Delete" });
                     self.after_edit();
@@ -972,7 +974,9 @@ mod tests {
         let body = &after[..end];
 
         assert!(
-            body.contains(r#"self.push_undo_labeled(before, if a == RippleDelete { "Ripple delete" } else { "Delete" })"#),
+            body.contains(
+                r#"self.push_undo_labeled(before, if a == RippleDelete { "Ripple delete" } else { "Delete" })"#
+            ),
             "a plain Delete must label the undo entry 'Delete'"
         );
         assert!(body.contains("self.selection.clear()"), "Delete must clear the selection");

@@ -195,9 +195,9 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                     _ => None,
                 };
                 let ids = if name == "timeline.splice" {
-                    app.project.splice_in(asset_id, at, track, range)
+                    app.project.splice_in(asset_id, at, track, None, range)
                 } else {
-                    app.project.overwrite_asset(asset_id, at, track, range)
+                    app.project.overwrite_asset(asset_id, at, track, None, range)
                 };
                 Ok(json!({"ok": true, "clip_ids": ids}))
             }

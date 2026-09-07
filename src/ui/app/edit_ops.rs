@@ -48,9 +48,24 @@ pub(crate) fn place(
     mode: DropMode,
     range: Option<(f64, f64)>,
 ) -> Vec<Id> {
+    // `track` is one raw index of either kind (see the doc comment above); `splice_in`/`overwrite_asset`
+    // (ws:timeline-trim-gestures) want it split into separate video/audio slots — resolve by the
+    // track's actual kind rather than assuming, since Overwrite intentionally receives whichever kind
+    // is under the pointer (ws:source-monitor's own audio-row fix) while Place/Splice/OnTop only ever
+    // see a video-track index (pre-filtered by the caller).
+    let split_track = |project: &Project, t: Option<usize>| -> (Option<usize>, Option<usize>) {
+        match t.and_then(|ti| project.tracks.get(ti).map(|tr| (ti, tr.kind))) {
+            Some((ti, TrackKind::Audio)) => (None, Some(ti)),
+            Some((ti, _)) => (Some(ti), None),
+            None => (None, None),
+        }
+    };
     match mode {
         DropMode::Place => project.insert_asset_clips_ranged(asset, at, track, None, range),
-        DropMode::Splice => project.splice_in(asset, at, track, range),
+        DropMode::Splice => {
+            let (vt, at_) = split_track(project, track);
+            project.splice_in(asset, at, vt, at_, range)
+        }
         DropMode::Overwrite => {
             let Some(a) = project.asset(asset) else { return Vec::new() };
             // the drop point on a clip body of the target track (given, else the first track of the
@@ -86,7 +101,10 @@ pub(crate) fn place(
                     }
                     done
                 }
-                None => project.overwrite_asset(asset, at, track, range),
+                None => {
+                    let (vt, at_) = split_track(project, track);
+                    project.overwrite_asset(asset, at, vt, at_, range)
+                }
             }
         }
         DropMode::OnTop => {

@@ -1,5 +1,220 @@
 //! Gesture start + live-drag handling, extracted from `show()`.
+//!
+//! ws:timeline-trim-gestures — every body/edge press is routed through `arm()` (the frozen modifier
+//! table, `arm.rs`) and the returned `GestureKind` picks the drag: Move/MagneticMove, Slip, Slide,
+//! Segment on a body; Trim, RippleTrim, Roll, RateStretch, MultiRippleTrim on an edge. Roll/Slip/Slide
+//! edit the live project per frame (they touch at most three clips); RippleTrim/Segment only carry a
+//! delta, `paint_ghost` draws the outcome, and `release` makes the single model call.
 use super::*;
+
+/// Does this gesture keep the pre-existing press-time selection step ("an unselected clip becomes the
+/// selection, Ctrl adds it")? False for the kinds whose Ctrl bit means something else now — Slide
+/// (Ctrl+Alt), Segment (Ctrl+Shift), RippleTrim (Ctrl+edge), MultiRippleTrim (Ctrl+Alt+edge) — so
+/// arming them on an unselected clip no longer also replays the old plain-Ctrl toggle as a side effect.
+pub(super) fn arm_selects(kind: GestureKind) -> bool {
+    !matches!(kind, GestureKind::Slide | GestureKind::Segment | GestureKind::RippleTrim | GestureKind::MultiRippleTrim)
+}
+
+/// The empty-lane gap under `(track, t)`: `[previous clip's end (or 0), next clip's start)`. None when
+/// `t` is inside a clip, past the last clip, or the track doesn't exist.
+pub(super) fn gap_at(p: &Project, ti: usize, t: f64) -> Option<(f64, f64)> {
+    let tr = p.tracks.get(ti)?;
+    if tr.clips.iter().any(|c| c.contains(t)) {
+        return None;
+    }
+    let a = tr.clips.iter().filter(|c| c.end() <= t + ABUT_EPS).map(|c| c.end()).fold(0.0_f64, f64::max);
+    let b = tr.clips.iter().filter(|c| c.start >= t - ABUT_EPS).map(|c| c.start).fold(f64::INFINITY, f64::min);
+    (b.is_finite() && b > a + ABUT_EPS).then_some((a, b))
+}
+
+/// `Project::delete_clips`, except a clip on a magnetic track takes its gap with it — that track only
+/// (`ripple_delete_range` scoped to it), the frozen table's "Track.magnetic → Delete closes the gap on
+/// that track only". Everything else keeps the plain leave-a-gap (or caller-chosen ripple) delete.
+pub(crate) fn delete_clips_magnetic(p: &mut Project, ids: &[Id], ripple: bool) {
+    let mut mag: Vec<(usize, f64, f64)> = Vec::new();
+    let mut rest: Vec<Id> = Vec::new();
+    for &id in ids {
+        match p.find(id) {
+            Some((ti, ci)) if p.tracks[ti].magnetic => {
+                let cl = &p.tracks[ti].clips[ci];
+                mag.push((ti, cl.start, cl.end()));
+            }
+            _ => rest.push(id),
+        }
+    }
+    mag.sort_by(|x, y| y.1.total_cmp(&x.1)); // right to left, so the ranges still to go stay valid
+    for (ti, a, b) in mag {
+        p.ripple_delete_range(a, b, &[ti]);
+    }
+    p.delete_clips(&rest, ripple);
+}
+
+/// Premiere-style insert move, applied once on release: each moved clip is lifted out of its own
+/// track (the gap closes behind it — `ripple_delete_range` on that track only), `ripple_open` makes
+/// room `dt` later and the clip goes back, id intact. False (project untouched) on a locked track;
+/// the caller restores `before` on a false from the middle of the loop.
+/// ponytail: only the moved clips' own tracks ripple, not every ripple track — B-roll elsewhere stays
+/// put; union in `ripple_tracks()` once a range-scoped `close_gap` is public.
+pub(super) fn segment_move(p: &mut Project, ids: &[Id], spans: &[(usize, f64, f64)], dt: f64) -> bool {
+    if dt.abs() < 1e-9 || spans.iter().any(|&(ti, _, _)| p.locked_of(ti)) {
+        return false;
+    }
+    for (&id, &(ti, s, e)) in ids.iter().zip(spans) {
+        let Some(mut cl) = p.clip(id).cloned() else { return false };
+        let len = e - s;
+        if !p.ripple_delete_range(s, e, &[ti]).contains(&id) {
+            return false;
+        }
+        // target in the pre-move layout; past its own old end, closing the gap has already pulled that
+        // content back by `len`
+        let target = s + dt;
+        let dest = if target >= e - ABUT_EPS { target - len } else { target }.max(0.0);
+        p.ripple_open(dest, len, &[ti]);
+        cl.start = dest;
+        p.tracks[ti].clips.push(cl);
+        p.tracks[ti].sort();
+    }
+    p.tidy();
+    true
+}
+
+/// The one model call of a release-applied gesture (RippleTrim / Segment / a blocked magnetic Move).
+/// Returns whether the project changed; a refused ripple/segment puts `d.before` back so a half-applied
+/// linked trim never survives.
+pub(super) fn release(p: &mut Project, d: &Drag, edited: bool) -> bool {
+    match &d.g {
+        Gesture::RippleTrim { ids, start, edge0, dt, multi } => {
+            let ok = if *multi {
+                // ponytail: trim_edges has no downstream shift (all-or-nothing multi-trim); pro-timeline's
+                // asymmetric edit-point set composes ripple_trim per edge when a true ripple is wanted
+                let edges: Vec<(Id, bool)> = ids.iter().map(|&id| (id, *start)).collect();
+                p.trim_edges(&edges, *dt, false)
+            } else {
+                // the pressed clip ripples the ripple tracks; linked clips sharing the edge follow as
+                // plain trims into the room that shift just made (a second ripple would shift twice)
+                ids.iter().enumerate().all(|(i, &id)| p.ripple_trim(id, *start, *edge0 + *dt, i == 0))
+            };
+            if !ok {
+                *p = d.before.clone();
+            }
+            ok
+        }
+        Gesture::Segment { ids, spans, dt } => {
+            let ok = segment_move(p, ids, spans, *dt);
+            if !ok {
+                *p = d.before.clone();
+            }
+            ok
+        }
+        // the plain move stopped short of the pointer on a magnetic track: shove instead of refusing
+        Gesture::Move { magnetic: true, ids, dt, dtrack, want, .. }
+            if (want.0 - dt).abs() > 1e-9 || want.1 != *dtrack =>
+        {
+            p.magnetic_move(ids, want.0 - dt, want.1 - dtrack) || edited
+        }
+        _ => edited,
+    }
+}
+
+impl Gesture {
+    /// History row label for the gestures this workstream added; "" = the pre-existing derived label.
+    pub(super) fn label(&self) -> &'static str {
+        match self {
+            Gesture::Roll { .. } => "Roll edit",
+            Gesture::Slip { .. } => "Slip",
+            Gesture::Slide { .. } => "Slide",
+            Gesture::RippleTrim { multi: true, .. } => "Trim edges",
+            Gesture::RippleTrim { .. } => "Ripple trim",
+            Gesture::Segment { .. } => "Segment move",
+            Gesture::Move { magnetic: true, .. } => "Move clips",
+            _ => "",
+        }
+    }
+}
+
+fn ghost_rect(lp: &egui::Painter, r: Rect, pal: &Palette) {
+    lp.rect_filled(r, 0, pal.accent.gamma_multiply(0.18));
+    lp.rect_stroke(r, 0, Stroke::new(1.0, pal.accent), StrokeKind::Inside);
+}
+
+/// Translucent outline of every clip `off(track, clip)` says will move, drawn that many seconds from
+/// where it is — pure screen-space arithmetic, no model call (the ripple / segment / splice-drop ghosts).
+pub(super) fn paint_offsets(
+    lp: &egui::Painter,
+    state: &TimelineState,
+    pal: &Palette,
+    p: &Project,
+    lanes: Rect,
+    off: impl Fn(usize, &Clip) -> Option<f64>,
+) {
+    let mut tops = vec![None; p.tracks.len()];
+    let mut top = lanes.top() - state.scroll_y;
+    for i in row_order(p) {
+        tops[i] = Some(top);
+        top += p.tracks[i].height;
+    }
+    for (ti, cl) in p.all_clips() {
+        let Some(d) = off(ti, cl).filter(|d| d.abs() > 1e-9) else { continue };
+        let Some(top) = tops[ti] else { continue };
+        let h = p.tracks[ti].height;
+        let r = Rect::from_min_max(
+            pos2(state.x_at(cl.start + d), top + 1.0),
+            pos2(state.x_at(cl.end() + d), top + h - 1.0),
+        )
+        .intersect(lanes);
+        if r.is_positive() {
+            ghost_rect(lp, r, pal);
+        }
+    }
+}
+
+/// Ghost of the live RippleTrim / Segment drag: the trimmed or moved clips at their new extent, plus
+/// every clip the release will shift, offset by exactly what the model call will do to it.
+pub(super) fn paint_ghost(lp: &egui::Painter, state: &TimelineState, pal: &Palette, p: &Project, lanes: Rect) {
+    let Some(Drag { g, .. }) = &state.drag else { return };
+    match g {
+        Gesture::RippleTrim { ids, start, edge0, dt, multi } if dt.abs() > 1e-9 => {
+            for &id in ids {
+                let Some((ti, ci)) = p.find(id) else { continue };
+                let Some(top) = row_top(state, p, ti) else { continue };
+                let cl = &p.tracks[ti].clips[ci];
+                let (s, e) = if *start { (cl.start + dt, cl.end()) } else { (cl.start, cl.end() + dt) };
+                let r = Rect::from_min_max(
+                    pos2(state.x_at(s), top + 1.0),
+                    pos2(state.x_at(e), top + p.tracks[ti].height - 1.0),
+                )
+                .intersect(lanes);
+                if r.is_positive() {
+                    ghost_rect(lp, r, pal);
+                }
+            }
+            // downstream shift: end edge only (a start-edge ripple trim never moves clips), single-clip only
+            if !*multi && !*start {
+                let ripple = p.ripple_tracks();
+                paint_offsets(lp, state, pal, p, lanes, |ti, cl| {
+                    (ripple.contains(&ti) && !ids.contains(&cl.id) && cl.start >= *edge0 - ABUT_EPS).then_some(*dt)
+                });
+            }
+        }
+        Gesture::Segment { ids, spans, dt } if dt.abs() > 1e-9 => {
+            // moved clips land dt later; on each of their tracks the content between the old slot and
+            // the new one flows the other way by the clip's length (see `segment_move`)
+            paint_offsets(lp, state, pal, p, lanes, |ti, cl| {
+                if ids.contains(&cl.id) {
+                    return Some(*dt);
+                }
+                let &(_, s, e) = spans.iter().find(|&&(t, _, _)| t == ti)?;
+                let (len, target) = (e - s, s + dt);
+                if target >= s {
+                    (cl.start >= e - ABUT_EPS && cl.start < target + len - ABUT_EPS).then_some(-len)
+                } else {
+                    (cl.start >= target - ABUT_EPS && cl.start < s - ABUT_EPS).then_some(len)
+                }
+            });
+        }
+        _ => {}
+    }
+}
 
 /// Starts a new drag gesture (if one of the `start_*` options fired this frame) and, while one is
 /// active, applies it to `c.project` for the current pointer position. Mutates `state.drag` and
@@ -25,8 +240,25 @@ pub(super) fn handle(
     let origin = ui.input(|i| i.pointer.press_origin()).or(pointer).unwrap_or(Pos2::ZERO);
     // with the spacer tool every lane press is a gap gesture, clip bodies and edges included
     let spacer = c.tool == Tool::Spacer && (start_spacer || start_move.is_some() || start_trim.is_some());
-    if let Some(cid) = start_move.or(start_trim.map(|(id, _)| id)).filter(|_| !spacer) {
-        if !c.selection.contains(&cid) {
+    // arm(): the frozen modifier table decides what this body/edge press becomes. A locked track arms
+    // nothing at all (every gesture refused, no undo); an undefined modifier combo arms nothing either.
+    let pressed = start_move.or(start_trim.map(|(id, _)| id)).filter(|_| !spacer);
+    let armed = pressed.and_then(|cid| {
+        let ti = c.project.track_of(cid)?;
+        let t = &c.project.tracks[ti];
+        if t.locked {
+            return None;
+        }
+        let flags = TrackFlags { locked: t.locked, ripple: t.ripple.unwrap_or(false), magnetic: t.magnetic };
+        let zone = match (start_move, start_trim) {
+            (None, Some((_, true))) => Zone::EdgeStart,
+            (None, Some((_, false))) => Zone::EdgeEnd,
+            _ => Zone::Body,
+        };
+        arm(mods, zone, flags, c.tool)
+    });
+    if let Some((cid, kind)) = pressed.zip(armed) {
+        if arm_selects(kind) && !c.selection.contains(&cid) {
             if !mods.ctrl {
                 c.selection.clear();
             }
@@ -50,33 +282,85 @@ pub(super) fn handle(
         let room = if room.is_finite() { room.max(0.0) } else { 0.0 };
         state.drag =
             Some(Drag { origin, before: c.project.clone(), g: Gesture::Spacer { ids, dt: 0.0, room }, snapped: None });
-    } else if let Some(cid) = start_move {
-        if let Some(tr) = c.project.track_of(cid) {
-            let ids = c.project.expand_links(c.selection);
-            let orig = ids.iter().map(|&id| c.project.clip(id).map(|cl| cl.start).unwrap_or(0.0)).collect();
-            let kind = c.project.tracks[tr].kind;
-            let g = Gesture::Move { ids, orig, kind, tr, dt: 0.0, dtrack: 0, new_track: false };
-            state.drag = Some(Drag { origin, before: c.project.clone(), g, snapped: None });
-        }
-    } else if let Some((cid, start)) = start_trim {
-        if let Some(clip) = c.project.clip(cid) {
-            let edge = if start { clip.start } else { clip.end() };
-            // linked clips trim together when their edge coincides
-            let ids: Vec<Id> = c
-                .project
-                .linked(cid)
-                .into_iter()
-                .filter(|&id| {
-                    c.project
-                        .clip(id)
-                        .map_or(false, |cl| ((if start { cl.start } else { cl.end() }) - edge).abs() < 1e-6)
-                })
-                .collect();
-            let g = if c.tool == Tool::Stretch {
-                Gesture::Stretch { id: cid, start, edge, src_len: clip.src_len(), changed: false }
-            } else {
-                Gesture::Trim { ids, start, edge, changed: false }
-            };
+    } else if let Some((cid, kind)) = pressed.zip(armed) {
+        let p = &*c.project;
+        let g = if let Some((_, start)) = start_trim.filter(|_| start_move.is_none()) {
+            p.clip(cid).map(|clip| {
+                let edge = if start { clip.start } else { clip.end() };
+                // linked clips trim together when their edge coincides (the pressed clip first)
+                let same_edge = |id: Id| {
+                    p.clip(id).map_or(false, |cl| ((if start { cl.start } else { cl.end() }) - edge).abs() < 1e-6)
+                };
+                let mut ids = vec![cid];
+                ids.extend(p.linked(cid).into_iter().filter(|&id| id != cid && same_edge(id)));
+                let stretch = || Gesture::Stretch { id: cid, start, edge, src_len: clip.src_len(), changed: false };
+                match kind {
+                    GestureKind::RateStretch => stretch(),
+                    GestureKind::RippleTrim => Gesture::RippleTrim { ids, start, edge0: edge, dt: 0.0, multi: false },
+                    GestureKind::MultiRippleTrim => {
+                        let mut ids = p.expand_links(c.selection);
+                        ids.retain(|&id| id != cid);
+                        ids.insert(0, cid);
+                        Gesture::RippleTrim { ids, start, edge0: edge, dt: 0.0, multi: true }
+                    }
+                    GestureKind::Roll => {
+                        let t = &p.tracks[p.track_of(cid).unwrap_or(0)];
+                        let (left, right) = if start {
+                            (t.left_of(clip).map(|l| l.id), Some(cid))
+                        } else {
+                            let r = t.clips.iter().find(|o| o.id != cid && (o.start - clip.end()).abs() < ABUT_EPS);
+                            (Some(cid), r.map(|r| r.id))
+                        };
+                        match left.zip(right) {
+                            Some((left, right)) => Gesture::Roll { left, right, cut0: edge, changed: false },
+                            // no abutting neighbour: the table's fallback is a plain trim
+                            None => Gesture::Trim { ids, start, edge, changed: false },
+                        }
+                    }
+                    _ if c.tool == Tool::Stretch => stretch(),
+                    _ => Gesture::Trim { ids, start, edge, changed: false },
+                }
+            })
+        } else {
+            p.track_of(cid).map(|tr| match kind {
+                GestureKind::Slip => {
+                    let ids = p.linked(cid);
+                    let src0 = ids.iter().map(|&id| p.clip(id).map_or(0.0, |cl| cl.src_in)).collect();
+                    Gesture::Slip { ids, src0, changed: false }
+                }
+                GestureKind::Slide => {
+                    Gesture::Slide { id: cid, start0: p.clip(cid).map_or(0.0, |cl| cl.start), changed: false }
+                }
+                GestureKind::Segment => {
+                    let ids = p.linked(cid);
+                    let spans = ids
+                        .iter()
+                        .filter_map(|&id| {
+                            let (ti, ci) = p.find(id)?;
+                            let cl = &p.tracks[ti].clips[ci];
+                            Some((ti, cl.start, cl.end()))
+                        })
+                        .collect();
+                    Gesture::Segment { ids, spans, dt: 0.0 }
+                }
+                _ => {
+                    let ids = p.expand_links(c.selection);
+                    let orig = ids.iter().map(|&id| p.clip(id).map(|cl| cl.start).unwrap_or(0.0)).collect();
+                    Gesture::Move {
+                        ids,
+                        orig,
+                        kind: p.tracks[tr].kind,
+                        tr,
+                        dt: 0.0,
+                        dtrack: 0,
+                        new_track: false,
+                        magnetic: kind == GestureKind::MagneticMove,
+                        want: (0.0, 0),
+                    }
+                }
+            })
+        };
+        if let Some(g) = g {
             state.drag = Some(Drag { origin, before: c.project.clone(), g, snapped: None });
         }
     } else if let Some(cid) = start_vol {
@@ -143,7 +427,7 @@ pub(super) fn handle(
         let p = &mut *c.project;
         let Drag { g, snapped, .. } = drag;
         match g {
-            Gesture::Move { ids, orig, kind, tr, dt, dtrack, new_track } => {
+            Gesture::Move { ids, orig, kind, tr, dt, dtrack, new_track, want: requested, .. } => {
                 // past the first video row (up) or the last audio row (down): offer a fresh track.
                 // Armed off the painted gutter bands, not the first/last row — those are scrolled away
                 // once the lanes scroll, which used to make the gesture unreachable.
@@ -180,6 +464,7 @@ pub(super) fn handle(
                     (Some(h), Some(o)) => h as i32 - o as i32,
                     _ => *dtrack,
                 };
+                *requested = (want, want_tr);
                 let (ddt, ddtr) = (want - *dt, want_tr - *dtrack);
                 if ddt.abs() > 1e-9 || ddtr != 0 {
                     if p.move_clips(ids, ddt, ddtr, Some(*kind)) {
@@ -259,6 +544,96 @@ pub(super) fn handle(
                         }
                     }
                 }
+            }
+            Gesture::Roll { left, right, cut0, changed } => {
+                let mut want = *cut0 + dx;
+                *snapped = None;
+                if c.snap {
+                    want = p.snap_frame(want);
+                    // the cut's own two clips would pin it where it already is
+                    if let Some(t) = snap_target(want, thr, p, *c.playhead, &[*left, *right]) {
+                        want = t;
+                        *snapped = Some(t);
+                    }
+                }
+                if p.roll_edit(*right, want) {
+                    *changed = true;
+                }
+            }
+            Gesture::Slip { ids, src0, changed } => {
+                // pointer right = content right = an earlier source frame under the fixed left edge;
+                // always from the press-time window, so a clamped clip never drifts off the pointer
+                for (&id, &s0) in ids.iter().zip(src0.iter()) {
+                    let Some(cl) = p.clip(id) else { continue };
+                    let d = -dx * cl.speed;
+                    let want = s0 + if c.snap { p.snap_frame(d) } else { d };
+                    let cur = cl.src_in;
+                    if (want - cur).abs() > 1e-9 && p.slip(&[id], want - cur) {
+                        *changed = true;
+                    }
+                }
+            }
+            Gesture::Slide { id, start0, changed } => {
+                let mut want = *start0 + dx;
+                *snapped = None;
+                let Some((ti, ci)) = p.find(*id) else { return };
+                let cl = &p.tracks[ti].clips[ci];
+                let (cur, dur) = (cl.start, cl.duration);
+                if c.snap {
+                    want = p.snap_frame(want);
+                    // the abutting neighbours share this clip's edges: exclude them or the snap pins it
+                    let t = &p.tracks[ti];
+                    let mut excl = vec![*id];
+                    excl.extend(t.left_of(cl).map(|l| l.id));
+                    excl.extend(
+                        t.clips.iter().find(|o| o.id != *id && (o.start - cl.end()).abs() < ABUT_EPS).map(|r| r.id),
+                    );
+                    let mut best: Option<f64> = None;
+                    for edge in [want, want + dur] {
+                        if let Some(tgt) = snap_target(edge, thr, p, *c.playhead, &excl) {
+                            let adj = tgt - edge;
+                            if best.map_or(true, |b: f64| adj.abs() < b.abs()) {
+                                best = Some(adj);
+                                *snapped = Some(tgt);
+                            }
+                        }
+                    }
+                    want += best.unwrap_or(0.0);
+                }
+                if (want - cur).abs() > 1e-9 && p.slide(*id, want - cur) {
+                    *changed = true;
+                }
+            }
+            Gesture::RippleTrim { ids, start, edge0, dt, .. } => {
+                // ghost only: the model is untouched until release
+                let mut want = *edge0 + dx;
+                *snapped = None;
+                if c.snap {
+                    want = p.snap_frame(want);
+                    if let Some(t) = snap_target(want, thr, p, *c.playhead, ids) {
+                        want = t;
+                        *snapped = Some(t);
+                    }
+                }
+                // keep the ghost where a trim can actually go: this side of the other edge, never < 0
+                if let Some(cl) = ids.first().and_then(|&id| p.clip(id)) {
+                    want = if *start { want.clamp(0.0, cl.end() - MIN_CLIP) } else { want.max(cl.start + MIN_CLIP) };
+                }
+                *dt = want - *edge0;
+            }
+            Gesture::Segment { ids, spans, dt } => {
+                // ghost only: the model is untouched until release
+                let Some(&(_, a, _)) = spans.first() else { return };
+                let mut want = a + dx;
+                *snapped = None;
+                if c.snap {
+                    want = p.snap_frame(want);
+                    if let Some(t) = snap_target(want, thr, p, *c.playhead, ids) {
+                        want = t;
+                        *snapped = Some(t);
+                    }
+                }
+                *dt = want.max(0.0) - a;
             }
             Gesture::Volume { id, changed } => {
                 if let Some((ti, ci)) = p.find(*id) {

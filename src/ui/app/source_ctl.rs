@@ -80,7 +80,15 @@ pub(crate) fn ripple_overwrite(
         }
         None => at,
     };
-    project.splice_in(asset, start, ti, range)
+    // ---- ws:timeline-trim-gestures ----
+    // `splice_in` now wants video/audio slots split out; `ti` above is always the one track that
+    // matches this asset's own kind, so resolve which slot it belongs in by its actual track kind.
+    let (vt, at_) = match ti.and_then(|i| project.tracks.get(i).map(|t| (i, t.kind))) {
+        Some((i, TrackKind::Audio)) => (None, Some(i)),
+        Some((i, _)) => (Some(i), None),
+        None => (None, None),
+    };
+    project.splice_in(asset, start, vt, at_, range)
 }
 
 /// Close Up: close the gap under `t` on `track` only (`[previous clip's end, next clip's start)`),
@@ -161,7 +169,12 @@ impl App {
     /// Insert the open source's marked range: `place|splice|overwrite|top|append` at `at` (default:
     /// the playhead). Project-only — the caller owns the undo step (`edit` here, the Mutate wrapper
     /// for the MCP tool).
-    pub(crate) fn source_insert(&mut self, mode: &str, at: Option<f64>, track: Option<usize>) -> Result<Vec<Id>, String> {
+    pub(crate) fn source_insert(
+        &mut self,
+        mode: &str,
+        at: Option<f64>,
+        track: Option<usize>,
+    ) -> Result<Vec<Id>, String> {
         let (asset, range) = self.three_point()?;
         let at = at.unwrap_or(self.playhead);
         let mode = match mode {

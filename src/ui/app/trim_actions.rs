@@ -249,9 +249,9 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
             let at = app.playhead;
             let label = if a == SpliceInsert { "Splice" } else { "Overwrite" };
             let ids = if a == SpliceInsert {
-                commit(app, label, |p| p.splice_in(asset, at, None, range))
+                commit(app, label, |p| p.splice_in(asset, at, None, None, range))
             } else {
-                commit(app, label, |p| p.overwrite_asset(asset, at, None, range))
+                commit(app, label, |p| p.overwrite_asset(asset, at, None, None, range))
             };
             if !ids.is_empty() {
                 app.selection = ids;

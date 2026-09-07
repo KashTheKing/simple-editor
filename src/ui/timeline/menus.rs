@@ -74,6 +74,10 @@ pub(super) fn clip_menu(
     enabled: bool,
     audio: bool,
     has_native_size: bool,
+    // ws:timeline-trim-gestures: a Sequence clip can be un-nested; the one Library-selected asset (if
+    // exactly one) is what "Replace with Library Selection" swaps in.
+    is_sequence: bool,
+    library_selected: Option<Id>,
     // Some(currently open) when the clip has curves the inline mini graph could plot; None hides the
     // entry. Toggling is UI state, not a project edit, so it reports through `toggle_graph`, not `Act`
     // (every Act pushes an undo step).
@@ -202,6 +206,19 @@ pub(super) fn clip_menu(
     ui.separator();
     if ui.button("Nest into Sequence…").clicked() {
         actions.push(Action::NestSequence);
+    }
+    // ---- ws:timeline-trim-gestures: trim-model verbs (Ctrl+J / Ctrl+D twins, plus two menu-only ones) ----
+    if ui.add_enabled(is_sequence, egui::Button::new("Un-nest")).clicked() {
+        *act = Some(Act::Unnest(clip_id));
+    }
+    if ui.button("Join Through Edit").clicked() {
+        actions.push(Action::JoinThroughEdit);
+    }
+    if ui.button("Duplicate").clicked() {
+        actions.push(Action::DuplicateClips);
+    }
+    if ui.add_enabled(library_selected.is_some(), egui::Button::new("Replace with Library Selection")).clicked() {
+        *act = Some(Act::ReplaceClip(clip_id));
     }
     if ui.button("Convert to Adjustment Layer").clicked() {
         actions.push(Action::AddAdjustment);

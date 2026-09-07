@@ -275,6 +275,10 @@ pub(crate) enum Glyph {
     /// A tape cassette: two reels in a shell — Source Tape.
     Tape,
     // ---- ws:timeline-trim-gestures ----
+    /// A padlock — the track header's Lock toggle.
+    Lock,
+    /// Two chain links — the track header's Ripple (sync) toggle.
+    Link,
     // ---- ws:transcript-captions ----
     // ---- ws:pro-monitor ----
     // ---- ws:pro-timeline ----
@@ -399,6 +403,8 @@ impl Glyph {
         Glyph::SourceRecord,
         Glyph::Tape,
         // ---- ws:timeline-trim-gestures ----
+        Glyph::Lock,
+        Glyph::Link,
         // ---- ws:transcript-captions ----
         // ---- ws:pro-monitor ----
         // ---- ws:pro-timeline ----
@@ -527,6 +533,8 @@ impl Glyph {
             Glyph::SourceRecord => "source-record",
             Glyph::Tape => "tape",
             // ---- ws:timeline-trim-gestures ----
+            Glyph::Lock => "lock",
+            Glyph::Link => "link",
             // ---- ws:transcript-captions ----
             // ---- ws:pro-monitor ----
             // ---- ws:pro-timeline ----
@@ -1866,9 +1874,31 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
             p.circle_stroke(c + egui::vec2(4.0, -1.0), 2.2, stroke);
             p.line_segment([c + egui::vec2(-5.0, 3.5), c + egui::vec2(5.0, 3.5)], stroke);
         }
-          // ---- ws:timeline-trim-gestures ----
-          // ---- ws:transcript-captions ----
-          // ---- ws:pro-monitor ----
+        // ---- ws:timeline-trim-gestures ----
+        // padlock: a body with a shackle arc over it
+        Glyph::Lock => {
+            let body = egui::Rect::from_center_size(c + egui::vec2(0.0, 2.5), egui::vec2(10.0, 7.0));
+            p.rect_filled(body, CornerRadius::same(1), fg);
+            let (sc, sr) = (c + egui::vec2(0.0, -1.5), 3.2);
+            let arc: Vec<egui::Pos2> = (0..=10)
+                .map(|i| {
+                    let a = std::f32::consts::PI + std::f32::consts::PI * i as f32 / 10.0;
+                    sc + egui::vec2(a.cos() * sr, a.sin() * sr)
+                })
+                .collect();
+            p.add(egui::Shape::line(arc, stroke));
+            p.line_segment([sc + egui::vec2(-sr, 0.0), sc + egui::vec2(-sr, 1.5)], stroke);
+            p.line_segment([sc + egui::vec2(sr, 0.0), sc + egui::vec2(sr, 1.5)], stroke);
+        }
+        // chain: two overlapping rounded links on a diagonal
+        Glyph::Link => {
+            for d in [-2.2_f32, 2.2] {
+                let link = egui::Rect::from_center_size(c + egui::vec2(d, d), egui::vec2(8.0, 5.0));
+                p.rect_stroke(link, CornerRadius::same(2), stroke, StrokeKind::Inside);
+            }
+        }
+        // ---- ws:transcript-captions ----
+        // ---- ws:pro-monitor ----
           // ---- ws:pro-timeline ----
           // ---- ws:text-titles ----
           // ---- ws:docs-refresh ----
