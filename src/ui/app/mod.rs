@@ -83,6 +83,8 @@ mod tools_clip;
 mod tools_color;
 // ---- ws:command-palette ----
 mod tools_commands;
+// ---- ws:export-deliver ----
+mod tools_export;
 mod tools_helpers;
 // ---- ws:layout-modes-onboarding ----
 mod tools_layout;
@@ -371,6 +373,15 @@ pub struct App {
     home_dismissed: bool,
     /// The selection `frame::tick` last reacted to, so auto-surface / glow fire once per change.
     sel_sig: frame::SelSig,
+    // ---- ws:export-deliver ----
+    // (same per-workstream section shape ws:forgiveness added above — this struct's pre-seeded markers
+    // stop at ws:size-diet, so each later workstream appends its own)
+    /// Render queue: exports waiting for the single `export` slot, popped in order by
+    /// `tools_export::frame_tick` once it is free (and no bake is running).
+    export_queue: std::collections::VecDeque<export_ui::ExportChoice>,
+    /// In-flight bakes (render in place / stabilize / denoise / slow-mo) — at most one, stepped by
+    /// `tools_export::frame_tick`; drawn by `windows()`'s "Rendering in place" job window.
+    bake_jobs: Vec<tools_export::BakeJob>,
 }
 
 // ---- ws:canvas-handles-monitor ----
@@ -777,6 +788,9 @@ impl App {
             onboarding: None,
             home_dismissed: false,
             sel_sig: frame::SelSig::default(),
+            // ---- ws:export-deliver ----
+            export_queue: std::collections::VecDeque::new(),
+            bake_jobs: Vec::new(),
         };
         if let Some(reason) = settings_bad {
             app.toast(format!("Settings file was corrupt (saved as settings.json.bad): {reason}"));
@@ -1319,6 +1333,7 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:canvas-handles-monitor ----
     tools_preview::TOOLS,
     // ---- ws:export-deliver ----
+    tools_export::TOOLS,
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
     tools_layout::TOOLS,
@@ -1352,6 +1367,7 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     // ---- ws:canvas-handles-monitor ----
     monitor::act,
     // ---- ws:export-deliver ----
+    tools_export::act,
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
     layout_ctl::act,
@@ -1384,6 +1400,7 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:canvas-handles-monitor ----
     monitor::tick,
     // ---- ws:export-deliver ----
+    tools_export::frame_tick,
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
     frame::tick,

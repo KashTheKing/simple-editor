@@ -232,6 +232,11 @@ actions! {
     ToggleProxies => "toggle_proxies", "Use Proxies", None;
     ViewerFit => "viewer_fit", "Fit Viewer", None;
     // ---- ws:export-deliver ----
+    // bare M is AddMarker (ctrl=false) and Ctrl+Shift+M is AddMask, so Ctrl+M is free (exact match).
+    QuickExport => "quick_export", "Quick Export", sc(CTRL, Key::M);
+    RenderSelection => "render_selection", "Render Selection (pre-render)", None;
+    BakeSelection => "bake_selection", "Render in Place (bake to new asset)", None;
+    ExportMarkers => "export_markers", "Export Markers…", None;
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
     // Alt+1..6 are free (Ctrl+1..0 is the pane-toggle row above); backtick is Premiere's maximise key.

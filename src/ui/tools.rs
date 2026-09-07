@@ -254,6 +254,8 @@ pub(crate) enum Glyph {
     /// A three-quarter circular arrow — painted at the pointer over the rotate knob.
     Rotate,
     // ---- ws:export-deliver ----
+    /// Two stacked documents with a small clock in the corner — the render queue.
+    Queue,
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
     /// A pushpin (head, bar, needle) — a tab pinned against auto-surfacing.
@@ -374,6 +376,7 @@ impl Glyph {
         Glyph::Crop,
         Glyph::Rotate,
         // ---- ws:export-deliver ----
+        Glyph::Queue,
         // ---- ws:inspector-gallery ----
         // ---- ws:layout-modes-onboarding ----
         Glyph::Pin,
@@ -496,6 +499,7 @@ impl Glyph {
             Glyph::Crop => "crop",
             Glyph::Rotate => "rotate",
             // ---- ws:export-deliver ----
+            Glyph::Queue => "queue",
             // ---- ws:inspector-gallery ----
             // ---- ws:layout-modes-onboarding ----
             Glyph::Pin => "pin",
@@ -1685,10 +1689,10 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
             let head = vec![c + egui::vec2(7.5, 0.0), c + egui::vec2(4.5, -2.2), c + egui::vec2(4.5, 2.2)];
             p.add(egui::Shape::convex_polygon(head, fg, Stroke::NONE));
         } // ---- ws:registries-schema-hooks ----
-          // ---- ws:size-diet ----
-          // ---- ws:split-god-files ----
-          // ---- ws:audio-analysis ----
-          // ---- ws:audio-dsp-automation ----
+        // ---- ws:size-diet ----
+        // ---- ws:split-god-files ----
+        // ---- ws:audio-analysis ----
+        // ---- ws:audio-dsp-automation ----
         // level meter: three bars rising left to right on a baseline
         Glyph::Meter => {
             for (i, h) in [4.0f32, 8.0, 12.0].into_iter().enumerate() {
@@ -1755,8 +1759,23 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
             ));
         }
         // ---- ws:export-deliver ----
-          // ---- ws:inspector-gallery ----
-          // ---- ws:layout-modes-onboarding ----
+        // queue: two offset document outlines (the stack) with a small clock dial at the corner
+        Glyph::Queue => {
+            for (dx, dy) in [(2.0f32, -2.0f32), (-2.0, 2.0)] {
+                p.rect_stroke(
+                    egui::Rect::from_center_size(c + egui::vec2(dx, dy), egui::vec2(9.0, 11.0)),
+                    CornerRadius::same(1),
+                    stroke,
+                    StrokeKind::Inside,
+                );
+            }
+            let dial = c + egui::vec2(5.5, 5.5);
+            p.circle_stroke(dial, 3.6, stroke);
+            p.line_segment([dial, dial + egui::vec2(0.0, -2.2)], Stroke::new(1.0, fg));
+            p.line_segment([dial, dial + egui::vec2(1.6, 0.0)], Stroke::new(1.0, fg));
+        }
+        // ---- ws:inspector-gallery ----
+        // ---- ws:layout-modes-onboarding ----
         // pushpin: a filled head over a wider bar, with a needle dropping from the bar's middle
         Glyph::Pin => {
             p.rect_filled(egui::Rect::from_min_max(c + egui::vec2(-2.5, -6.5), c + egui::vec2(2.5, -1.5)), 1.0, fg);
