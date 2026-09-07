@@ -138,6 +138,44 @@ impl Outline {
     }
 }
 
+// ---- ws:pro-monitor ----
+/// Grade-compare mode against a bypass (ungraded) render — cycled by `Action::CompareWipe`.
+///
+/// deviation (see PR body / `monitor.rs`'s matching note): `GpuRenderer::render_frame_bypass` does not
+/// exist anywhere in `engine::gpu` (CONFIRMED by reading the source: only `render_frame`/
+/// `render_to_texture`/`render_preview_texture`/`effect_preview` exist) and is not committed in
+/// color-engine's own skeleton deliverables either — the workstream brief's own pre-verified mitigation
+/// applies here. The state machine below is real (cycles Off -> Wipe -> SideBySide -> Off, the wipe
+/// split drags on the video rect, both are unit-tested), but `video()` paints only a "Compare not
+/// available" banner instead of an actual bypass render — see `paint_compare_stub`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum CompareMode {
+    #[default]
+    Off,
+    /// f32 = wipe split, 0..1, dragged on the video rect.
+    Wipe(f32),
+    SideBySide,
+}
+
+impl CompareMode {
+    pub fn cycle(self) -> Self {
+        match self {
+            Self::Off => Self::Wipe(0.5),
+            Self::Wipe(_) => Self::SideBySide,
+            Self::SideBySide => Self::Off,
+        }
+    }
+}
+
+/// What an eyedropper click on the monitor should write: the selected clip's ChromaKey key colour, or
+/// its Qualifier band centre. Set by the (color-engine-owned) eyedropper button in Pane::Color;
+/// consumed by `video()` to enter one-shot pick mode on the next click.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PickTarget {
+    Chroma,
+    Qualifier,
+}
+
 /// Snapshot taken at `drag_started` so every frame's value is a ratio / angle / fraction from a fixed
 /// origin, never an accumulation of per-frame deltas.
 struct HandleDrag {
@@ -275,6 +313,12 @@ pub struct PreviewState {
     pub(crate) canvas_rect: Rect,
     /// The timecode label's text while it is being edited (click-to-edit).
     tc_edit: Option<String>,
+    // ---- ws:pro-monitor ----
+    /// Grade-compare mode (`Action::CompareWipe` cycles it; `preview.compare` MCP tool sets it directly).
+    pub(crate) compare: CompareMode,
+    /// Outgoing/incoming trim-view textures, reused across frames the same way `texture` is.
+    trim_out_tex: Option<egui::TextureHandle>,
+    trim_in_tex: Option<egui::TextureHandle>,
 }
 
 impl Default for PreviewState {
@@ -293,6 +337,9 @@ impl Default for PreviewState {
             view: (1.0, Vec2::ZERO),
             canvas_rect: Rect::NOTHING,
             tc_edit: None,
+            compare: CompareMode::Off,
+            trim_out_tex: None,
+            trim_in_tex: None,
         }
     }
 }
@@ -341,6 +388,17 @@ pub struct PreviewCtx<'a> {
     pub use_proxies: bool,
     /// `Player::dropped_frames`, shown as a small transport badge when non-zero.
     pub dropped: u64,
+    // ---- ws:pro-monitor ----
+    /// The dual-frame trim view's decoded (outgoing, incoming) frames — `Some` only while
+    /// `Settings.trim_view` is on AND an edit point is selected (`monitor::trim_frames`). Painted instead
+    /// of the single live frame when present.
+    pub trim_frames: Option<(Arc<Frame>, Arc<Frame>)>,
+    /// One-shot eyedropper armed by the (color-engine-owned) Pane::Color button; the next click on the
+    /// video samples `stats` and reports it via `PreviewResponse.picked` instead of moving the clip.
+    pub pick_mode: Option<PickTarget>,
+    /// The live frame's cached stats (`App.gpu.stats()`), sampled by the eyedropper. `None` when nothing
+    /// has rendered through the GPU path yet.
+    pub stats: Option<&'a crate::engine::gpu::FrameStats>,
 }
 
 #[derive(Default)]
@@ -375,6 +433,9 @@ pub struct PreviewResponse {
     // ---- ws:canvas-handles-monitor ----
     /// The context menu toggled canvas snapping — the app stores it in Settings.canvas_snap.
     pub set_canvas_snap: Option<bool>,
+    // ---- ws:pro-monitor ----
+    /// The eyedropper (armed via `pick_mode`) sampled this colour from a click on the video.
+    pub picked: Option<[u8; 3]>,
 }
 
 pub fn show(ui: &mut egui::Ui, state: &mut PreviewState, mut c: PreviewCtx<'_>) -> PreviewResponse {
@@ -529,7 +590,11 @@ fn transport(ui: &mut egui::Ui, state: &mut PreviewState, c: &PreviewCtx<'_>, r:
                 r.set_movie_mode = Some(!c.movie_mode);
             }
             // ---- ws:canvas-handles-monitor ----: proxy toggle + dropped-frame badge
-            if ui.selectable_label(c.use_proxies, "Proxy").on_hover_text("Play low-res proxies in the preview").clicked() {
+            if ui
+                .selectable_label(c.use_proxies, "Proxy")
+                .on_hover_text("Play low-res proxies in the preview")
+                .clicked()
+            {
                 toggle_proxy = true;
             }
             if c.dropped > 0 {
@@ -1059,6 +1124,14 @@ fn video(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r:
     } else if let Some(t) = &state.texture {
         painter.image(t.id(), lb, uv, Color32::WHITE);
     }
+    // ---- ws:pro-monitor ----
+    // Trim view: outgoing/incoming frames side by side, painted OVER the live frame just uploaded above
+    // (still uploaded/painted normally so it's there instantly once trim view closes again).
+    if let Some((out_f, in_f)) = &c.trim_frames {
+        paint_trim_view(ui, &painter, lb, state, out_f, in_f, uv);
+    } else if state.compare != CompareMode::Off {
+        paint_compare_stub(ui, &painter, lb, state.compare, c.palette);
+    }
     // buffering: the clock is held while the read-ahead refills — say so over the video
     if c.buffering {
         ui.put(Rect::from_center_size(lb.center(), vec2(32.0, 32.0)), egui::Spinner::new().size(32.0));
@@ -1084,6 +1157,36 @@ fn video(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r:
     }
     state.moved_at = None;
     prerender_badge(ui, &painter, lb, c);
+
+    // ---- ws:pro-monitor ----
+    // Eyedropper: a one-shot armed pick mode owns the next plain click (not a drag) on the video, ahead
+    // of every other gesture below (tool drag, handle drag, clip move) — clicking to sample a colour must
+    // never also move the clip under the cursor.
+    if let Some(target) = c.pick_mode {
+        if resp.clicked() {
+            if let (Some(stats), Some(pos)) = (c.stats, resp.interact_pointer_pos()) {
+                if let Some(rgb) = sample_stats_at(stats, lb, pos) {
+                    r.picked = Some(rgb);
+                }
+            }
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+        } else {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+        }
+        let _ = target; // which effect param to write is decided by the caller (preview_pane.rs)
+        return;
+    }
+
+    // ---- ws:pro-monitor ----
+    // Wipe compare: dragging anywhere on the video updates the split instead of moving the clip.
+    if let CompareMode::Wipe(_) = state.compare {
+        if resp.dragged() {
+            if let Some(pos) = resp.interact_pointer_pos() {
+                state.compare = CompareMode::Wipe(wipe_drag_update(pos.x, lb));
+            }
+        }
+        return;
+    }
 
     // a tool other than Select owns the gesture (draw / mask / shape) — never move the clip then, and
     // never let the polygon tool's closing double-click also toggle fullscreen
@@ -1237,11 +1340,9 @@ fn video(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r:
                     ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
                     glyph_at(Glyph::Crop);
                 }
-                Some(Handle::Corner(i)) => ui.ctx().set_cursor_icon(if i % 2 == 0 {
-                    CursorIcon::ResizeNwSe
-                } else {
-                    CursorIcon::ResizeNeSw
-                }),
+                Some(Handle::Corner(i)) => {
+                    ui.ctx().set_cursor_icon(if i % 2 == 0 { CursorIcon::ResizeNwSe } else { CursorIcon::ResizeNeSw })
+                }
                 Some(Handle::Edge(i)) => ui.ctx().set_cursor_icon(if i % 2 == 0 {
                     CursorIcon::ResizeVertical
                 } else {
@@ -1353,6 +1454,99 @@ fn prerender_badge(ui: &egui::Ui, painter: &egui::Painter, lb: Rect, c: &Preview
     painter.galley(at + pad, galley, c.palette.text);
 }
 
+// ---- ws:pro-monitor ----
+
+/// The dual-frame trim view: `out_f`/`in_f` (outgoing/incoming) side by side, filling `lb`, each
+/// labelled. Textures are reused across frames the same way the main preview texture is.
+fn paint_trim_view(
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    lb: Rect,
+    state: &mut PreviewState,
+    out_f: &Frame,
+    in_f: &Frame,
+    uv: Rect,
+) {
+    painter.rect_filled(lb, 0.0, Color32::BLACK);
+    let halves = [
+        Rect::from_min_max(lb.min, pos2(lb.center().x - 1.0, lb.max.y)),
+        Rect::from_min_max(pos2(lb.center().x + 1.0, lb.min.y), lb.max),
+    ];
+    for (i, (frame, label)) in [(out_f, "Out"), (in_f, "In")].into_iter().enumerate() {
+        let (w, h) = (frame.width as usize, frame.height as usize);
+        if w == 0 || h == 0 || frame.rgba.len() != w * h * 4 {
+            continue;
+        }
+        let img = egui::ColorImage::from_rgba_premultiplied([w, h], &frame.rgba);
+        let slot = if i == 0 { &mut state.trim_out_tex } else { &mut state.trim_in_tex };
+        match slot {
+            Some(t) if t.size() == [w, h] => t.set_partial([0, 0], img, TextureOptions::LINEAR),
+            Some(t) => t.set(img, TextureOptions::LINEAR),
+            None => {
+                *slot = Some(ui.ctx().load_texture(
+                    if i == 0 { "trim_out" } else { "trim_in" },
+                    img,
+                    TextureOptions::LINEAR,
+                ))
+            }
+        }
+        if let Some(t) = slot {
+            painter.image(t.id(), halves[i], uv, Color32::WHITE);
+        }
+        painter.text(
+            halves[i].left_top() + vec2(6.0, 6.0),
+            egui::Align2::LEFT_TOP,
+            label,
+            egui::TextStyle::Small.resolve(ui.style()),
+            Color32::WHITE,
+        );
+    }
+    painter.line_segment(
+        [pos2(lb.center().x, lb.min.y), pos2(lb.center().x, lb.max.y)],
+        Stroke::new(1.0, Color32::from_gray(120)),
+    );
+}
+
+/// Compare-mode stub banner (no bypass render exists — see `CompareMode`'s doc comment). Still paints a
+/// draggable wipe-split line in `Wipe` mode so `compare_wipe_drag_updates_split_x` has something real to
+/// drag, even though nothing visually different renders on either side of it yet.
+fn paint_compare_stub(ui: &egui::Ui, painter: &egui::Painter, lb: Rect, mode: CompareMode, pal: &Palette) {
+    let text = match mode {
+        CompareMode::Wipe(x) => {
+            let split_x = lb.left() + lb.width() * x;
+            painter.line_segment([pos2(split_x, lb.top()), pos2(split_x, lb.bottom())], Stroke::new(2.0, pal.accent));
+            "Wipe Compare — grade bypass not available in this build"
+        }
+        CompareMode::SideBySide => "Side-by-Side Compare — grade bypass not available in this build",
+        CompareMode::Off => return,
+    };
+    let font = egui::TextStyle::Small.resolve(ui.style());
+    let galley = painter.layout_no_wrap(text.to_string(), font, pal.text);
+    let at = pos2(lb.center().x - galley.size().x / 2.0, lb.bottom() - galley.size().y - 28.0);
+    let bg = Rect::from_min_size(at - vec2(6.0, 3.0), galley.size() + vec2(12.0, 6.0));
+    painter.rect_filled(bg, 3.0, pal.header.gamma_multiply(0.92));
+    painter.galley(at, galley, pal.text);
+}
+
+/// Update a Wipe split (0..1) from a drag at `pointer_x`, clamped to the video rect — pure, so the drag
+/// math is testable without simulating a real pointer drag.
+fn wipe_drag_update(pointer_x: f32, lb: Rect) -> f32 {
+    ((pointer_x - lb.left()) / lb.width().max(1.0)).clamp(0.0, 1.0)
+}
+
+/// Eyedropper core math: map a click at `pos` (screen points, inside `lb`) to a pixel in `stats.sample`
+/// and return its RGB. Pure once you have `stats`/`lb`/`pos` — unit-testable without a live click.
+fn sample_stats_at(stats: &crate::engine::gpu::FrameStats, lb: Rect, pos: Pos2) -> Option<[u8; 3]> {
+    if !lb.contains(pos) || stats.sample_w == 0 || stats.sample_h == 0 {
+        return None;
+    }
+    let u = ((pos.x - lb.left()) / lb.width()).clamp(0.0, 0.999999);
+    let v = ((pos.y - lb.top()) / lb.height()).clamp(0.0, 0.999999);
+    let x = (u * stats.sample_w as f32) as u32;
+    let y = (v * stats.sample_h as f32) as u32;
+    stats.sample.get((y * stats.sample_w + x) as usize).map(|&[r, g, b, _]| [r, g, b])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1413,6 +1607,65 @@ mod tests {
         assert_eq!(h.undos, 0, "no clip undo for a non-Select/Text tool's gesture");
     }
 
+    // ---- ws:pro-monitor ----
+
+    fn synthetic_frame(w: u32, h: u32, rgb: [u8; 3]) -> Arc<Frame> {
+        let mut f = Frame::default();
+        f.resize(w, h);
+        for px in f.rgba.chunks_exact_mut(4) {
+            px.copy_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
+        }
+        Arc::new(f)
+    }
+
+    #[test]
+    fn trim_view_paints_two_textures_only_with_edit_point() {
+        let mut h = H::new();
+        h.with_asset();
+        h.frame(vec![]);
+        assert!(h.state.trim_out_tex.is_none() && h.state.trim_in_tex.is_none(), "no trim frames: nothing painted");
+        h.trim_frames = Some((synthetic_frame(4, 4, [255, 0, 0]), synthetic_frame(4, 4, [0, 0, 255])));
+        h.frame(vec![]);
+        assert!(h.state.trim_out_tex.is_some(), "outgoing frame painted a texture");
+        assert!(h.state.trim_in_tex.is_some(), "incoming frame painted a texture");
+    }
+
+    #[test]
+    fn compare_wipe_drag_updates_split_x() {
+        // pure math: clamped 0..1, monotonic with pointer x across the video rect
+        let lb = Rect::from_min_size(Pos2::ZERO, vec2(200.0, 100.0));
+        assert_eq!(wipe_drag_update(0.0, lb), 0.0);
+        assert_eq!(wipe_drag_update(200.0, lb), 1.0);
+        assert_eq!(wipe_drag_update(100.0, lb), 0.5);
+        assert_eq!(wipe_drag_update(-50.0, lb), 0.0, "clamps left of the rect");
+        assert_eq!(wipe_drag_update(9999.0, lb), 1.0, "clamps right of the rect");
+
+        // wired end to end: dragging on the video in Wipe mode moves state.compare's split
+        let mut h = H::new();
+        h.with_asset();
+        h.state.compare = CompareMode::Wipe(0.5);
+        let from = h.panel.center();
+        let to = pos2(h.panel.right() - 5.0, h.panel.center().y);
+        h.drag(from, to);
+        match h.state.compare {
+            CompareMode::Wipe(x) => assert!(x > 0.5, "dragged rightward: split moved right, got {x}"),
+            other => panic!("compare mode changed unexpectedly: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn eyedropper_click_returns_picked_color() {
+        let mut h = H::new();
+        h.with_asset();
+        h.pick_mode = Some(PickTarget::Chroma);
+        h.stats = Some(crate::engine::gpu::compute_stats(&vec![10u8, 20, 30, 255].repeat(4), 2, 2));
+        h.frame(vec![]);
+        let before = h.project.clip(7).unwrap().x.value;
+        let resp = h.click(h.panel.center());
+        assert_eq!(resp.picked, Some([10, 20, 30]), "sampled the synthetic stats' uniform colour");
+        assert_eq!(h.project.clip(7).unwrap().x.value, before, "eyedropper click must not move the clip");
+    }
+
     struct H {
         ctx: egui::Context,
         state: PreviewState,
@@ -1422,6 +1675,10 @@ mod tests {
         undos: usize,
         time: f64,
         panel: Rect,
+        // ---- ws:pro-monitor ----
+        trim_frames: Option<(Arc<Frame>, Arc<Frame>)>,
+        pick_mode: Option<PickTarget>,
+        stats: Option<crate::engine::gpu::FrameStats>,
     }
 
     impl H {
@@ -1437,6 +1694,9 @@ mod tests {
                 undos: 0,
                 time: 0.0,
                 panel: Rect::from_min_size(Pos2::ZERO, vec2(700.0, 460.0)),
+                trim_frames: None,
+                pick_mode: None,
+                stats: None,
             }
         }
         fn frame(&mut self, events: Vec<Event>) -> PreviewResponse {
@@ -1452,7 +1712,7 @@ mod tests {
                 ..Default::default()
             };
             let pal = Palette::new(true, Color32::WHITE);
-            let H { ctx, state, project, selection, tool, undos, .. } = self;
+            let H { ctx, state, project, selection, tool, undos, trim_frames, pick_mode, stats, .. } = self;
             let mut out = PreviewResponse::default();
             let _ = ctx.run(input, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
@@ -1483,6 +1743,9 @@ mod tests {
                             alt_texture: None,
                             use_proxies: false,
                             dropped: 0,
+                            trim_frames: trim_frames.clone(),
+                            pick_mode: *pick_mode,
+                            stats: stats.as_ref(),
                         },
                     );
                 });
@@ -1979,7 +2242,12 @@ mod tests {
         h.drag(top, top + vec2(0.0, 60.0));
         let c = h.project.clip(7).unwrap();
         let crops: Vec<&Effect> = c.effects.iter().filter(|e| e.kind == EffectKind::Crop).collect();
-        assert_eq!(c.effects.len(), 1, "two crop drags, one effect: {:?}", c.effects.iter().map(|e| e.kind).collect::<Vec<_>>());
+        assert_eq!(
+            c.effects.len(),
+            1,
+            "two crop drags, one effect: {:?}",
+            c.effects.iter().map(|e| e.kind).collect::<Vec<_>>()
+        );
         let e = crops[0];
         let (right_f, top_f) = (e.params[1].value, e.params[2].value);
         assert!((right_f - 120.0 / lb.width() as f64).abs() < 0.01, "Right fraction {right_f}");
@@ -2061,7 +2329,11 @@ mod tests {
         let k = 1920.0 / lb.width() as f64;
         for id in [7, 8] {
             let c = h.project.clip(id).unwrap();
-            assert!((c.x.value - 40.0 * k).abs() < 1.0 && (c.y.value - 20.0 * k).abs() < 1.0, "clip {id} moved: {:?}", (c.x.value, c.y.value));
+            assert!(
+                (c.x.value - 40.0 * k).abs() < 1.0 && (c.y.value - 20.0 * k).abs() < 1.0,
+                "clip {id} moved: {:?}",
+                (c.x.value, c.y.value)
+            );
             assert_eq!((c.scale.value, c.scale_x.value, c.rotation.value), (1.0, 1.0, 0.0), "no handle on a group");
         }
         assert_eq!(h.undos, 1, "one undo for the whole group move");

@@ -82,42 +82,9 @@ impl Project {
     /// Split every clip crossing t (or only the given ids). Right halves of a linked group stay linked
     /// to each other under a fresh link id. Returns the new (right-half) ids.
     pub fn split_at(&mut self, t: f64, only: Option<&[Id]>) -> Vec<Id> {
-        let mut new_ids = Vec::new();
-        let mut link_map: std::collections::HashMap<Id, Id> = std::collections::HashMap::new();
-        for ti in 0..self.tracks.len() {
-            let mut added = Vec::new();
-            for ci in 0..self.tracks[ti].clips.len() {
-                let c = &self.tracks[ti].clips[ci];
-                if !c.contains(t) || only.map(|o| !o.contains(&c.id)).unwrap_or(false) {
-                    continue;
-                }
-                let old_link = c.link;
-                let nid = self.new_id();
-                let new_link = if old_link != 0 {
-                    match link_map.get(&old_link) {
-                        Some(&l) => l,
-                        None => {
-                            let l = self.new_id();
-                            link_map.insert(old_link, l);
-                            l
-                        }
-                    }
-                } else {
-                    0
-                };
-                if let Some(mut right) = self.tracks[ti].clips[ci].split(t, nid) {
-                    right.link = new_link;
-                    new_ids.push(right.id);
-                    added.push(right);
-                }
-            }
-            if !added.is_empty() {
-                self.tracks[ti].clips.extend(added);
-                self.tracks[ti].sort();
-            }
-        }
+        let ids = split_tracks_at(&mut self.tracks, t, only, &mut self.next_id);
         self.tidy();
-        new_ids
+        ids
     }
 
     /// Freeze-frame the clips at timeline time t: each clip is split at t and its right part becomes a
@@ -570,5 +537,106 @@ impl Project {
         *self.clip_mut(a).unwrap() = na;
         *self.clip_mut(b).unwrap() = nb;
         true
+    }
+}
+
+// ---- ws:pro-monitor ----
+/// The body of `Project::split_at`, generic over any track vec (not `&mut self`) so
+/// `Project::multicam_switch` (model/ops/multicam.rs) can split a nested `Sequence`'s own `tracks`
+/// field directly, with no `main_stash` swap through `open_sequence`/`close_sequence`. `next_id` is a
+/// `&mut Id` (the counter `Project::new_id` increments) rather than `&mut Project`/a closure, since that
+/// is the one piece of `self` the original body needed. Callers over `self.tracks` (`split_at`) still
+/// call `self.tidy()` themselves afterward; `multicam_switch` doesn't need to (no gaps are created).
+pub(super) fn split_tracks_at(tracks: &mut Vec<Track>, t: f64, only: Option<&[Id]>, next_id: &mut Id) -> Vec<Id> {
+    let mut new_ids = Vec::new();
+    let mut link_map: std::collections::HashMap<Id, Id> = std::collections::HashMap::new();
+    let mut gen_id = || {
+        *next_id += 1;
+        *next_id
+    };
+    for ti in 0..tracks.len() {
+        let mut added = Vec::new();
+        for ci in 0..tracks[ti].clips.len() {
+            let c = &tracks[ti].clips[ci];
+            if !c.contains(t) || only.map(|o| !o.contains(&c.id)).unwrap_or(false) {
+                continue;
+            }
+            let old_link = c.link;
+            let nid = gen_id();
+            let new_link = if old_link != 0 {
+                match link_map.get(&old_link) {
+                    Some(&l) => l,
+                    None => {
+                        let l = gen_id();
+                        link_map.insert(old_link, l);
+                        l
+                    }
+                }
+            } else {
+                0
+            };
+            if let Some(mut right) = tracks[ti].clips[ci].split(t, nid) {
+                right.link = new_link;
+                new_ids.push(right.id);
+                added.push(right);
+            }
+        }
+        if !added.is_empty() {
+            tracks[ti].clips.extend(added);
+            tracks[ti].sort();
+        }
+    }
+    new_ids
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Clip, ClipKind, TrackKind};
+
+    fn clip(id: Id, name: &str, start: f64, dur: f64) -> Clip {
+        Clip::new(id, ClipKind::Video, name, start, dur)
+    }
+
+    /// `Project::split_at` over `self.tracks` must behave identically before and after the extraction —
+    /// pure refactor, pinned against the pre-extraction shape (split a clip in two, right half gets a
+    /// fresh id, linked clips on other tracks split at the same point and share a fresh link id).
+    #[test]
+    fn split_tracks_at_matches_old_split_at_behavior() {
+        let mut p = Project::new();
+        let a = p.new_id();
+        p.tracks[0].clips.push(clip(a, "a", 0.0, 10.0));
+        let b = p.new_id();
+        p.tracks[1].clips.push(clip(b, "b", 0.0, 10.0));
+        p.tracks[0].clips[0].link = 5;
+        p.tracks[1].clips[0].link = 5;
+        let new_ids = p.split_at(4.0, None);
+        assert_eq!(new_ids.len(), 2, "both linked clips split");
+        let left_a = p.clip(a).unwrap();
+        assert_eq!(left_a.duration, 4.0);
+        let right_a = p.tracks[0].clips.iter().find(|c| c.id != a).expect("track 0 has a's right half");
+        assert_eq!(right_a.duration, 6.0);
+        // right halves keep a shared (fresh) link id, distinct from the original 5
+        let right_ids: Vec<Id> =
+            p.tracks.iter().flat_map(|t| &t.clips).map(|c| c.id).filter(|&id| id != a && id != b).collect();
+        assert_eq!(right_ids.len(), 2);
+        let links: Vec<Id> = right_ids.iter().map(|&id| p.clip(id).unwrap().link).collect();
+        assert_eq!(links[0], links[1], "right halves share one fresh link id");
+        assert_ne!(links[0], 5, "not the original link id");
+    }
+
+    /// `only` restricts which clips split — a clip whose id is not in `only` is left whole, matching
+    /// `split_at`'s pre-extraction `only` semantics.
+    #[test]
+    fn split_tracks_at_respects_only() {
+        let mut tracks = vec![Track::new(1, TrackKind::Video, "V1")];
+        let a = 10;
+        let b = 11;
+        tracks[0].clips.push(clip(a, "a", 0.0, 10.0));
+        tracks[0].clips.push(clip(b, "b", 0.0, 10.0)); // deliberately overlapping — only `only` matters here
+        let mut next_id = 100;
+        let ids = split_tracks_at(&mut tracks, 4.0, Some(&[a]), &mut next_id);
+        assert_eq!(ids.len(), 1, "only clip a splits");
+        assert_eq!(tracks[0].clips.iter().filter(|c| c.name == "b").count(), 1, "b stays whole");
     }
 }

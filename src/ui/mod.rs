@@ -30,6 +30,8 @@ pub mod markdown;
 pub mod markers_ui;
 pub mod mixer_ui;
 pub mod moodboard_ui;
+// ---- ws:pro-monitor ----
+pub mod multicam_ui;
 pub mod nodes;
 // ---- ws:layout-modes-onboarding ----
 pub mod onboarding;
@@ -38,6 +40,8 @@ pub mod paste_ui;
 pub mod planner;
 pub mod preview;
 pub mod retime;
+// ---- ws:pro-monitor ----
+pub mod scopes_ui;
 pub mod settings_ui;
 pub mod shader_ui;
 // ---- ws:source-monitor ----

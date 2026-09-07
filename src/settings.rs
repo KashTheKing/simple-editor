@@ -372,6 +372,12 @@ pub struct Settings {
     /// Padding (ms) added on both sides of every filler hit before it is cut.
     pub filler_pad_ms: u32,
     // ---- ws:pro-monitor ----
+    /// Preview shows the dual-frame trim view when an edit point is selected.
+    #[serde(default)]
+    pub trim_view: bool,
+    /// Which Scopes tabs were last open ("Waveform"/"Parade"/"Vectorscope"/"Histogram").
+    #[serde(default)]
+    pub scopes: Vec<String>,
     // ---- ws:pro-timeline ----
     // ---- ws:text-titles ----
     // ---- ws:docs-refresh ----
@@ -491,6 +497,8 @@ impl Default for Settings {
             filler_words: crate::engine::transcribe::FILLER_WORDS.iter().map(|s| s.to_string()).collect(),
             filler_pad_ms: 120,
             // ---- ws:pro-monitor ----
+            trim_view: false,
+            scopes: Vec::new(),
             // ---- ws:pro-timeline ----
             // ---- ws:text-titles ----
             // ---- ws:docs-refresh ----
