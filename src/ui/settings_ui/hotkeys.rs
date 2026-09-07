@@ -323,3 +323,27 @@ fn draw_qwerty(ui: &mut egui::Ui, hotkeys: &Hotkeys) {
         }
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Two headless frames, no input between them: the tab (search box, painted QWERTY grid,
+    /// keymap-preset combo, UI-scale slider) reports no change on either call, and the second call
+    /// requests no repaint — same shape as palette.rs's/cheatsheet.rs's `assert_no_idle_repaint_*` tests.
+    #[test]
+    fn hotkeys_tab_show_headless_no_change() {
+        let ctx = egui::Context::default();
+        let mut hk = Hotkeys::defaults();
+        let mut settings = Settings::default();
+        let mut state = SettingsUi::default();
+        for _ in 0..2 {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    assert!(!hotkeys_tab(ui, &mut state, &mut hk, &mut settings));
+                });
+            });
+        }
+        assert!(!ctx.has_requested_repaint(), "idle hotkeys tab requested a repaint");
+    }
+}
