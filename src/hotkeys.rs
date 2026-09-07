@@ -231,6 +231,10 @@ actions! {
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
     // ---- ws:media-library ----
+    // Unbound by design (skeleton keymap): the library's asset menu / toolbar + the palette.
+    RelinkMedia => "relink_media", "Relink Media…", None;
+    ConsolidateMedia => "consolidate_media", "Consolidate Media…", None;
+    NewSubclip => "new_subclip", "New Subclip from Marks", None;
     // ---- ws:source-monitor ----
     // ---- ws:timeline-trim-gestures ----
     // ---- ws:transcript-captions ----

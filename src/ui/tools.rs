@@ -244,6 +244,10 @@ pub(crate) enum Glyph {
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
     // ---- ws:media-library ----
+    /// A triangle with an exclamation mark — the library's offline-media badge / relink hint.
+    Warning,
+    /// Two overlapping links — a subclip's tie to its parent asset.
+    Chain,
     // ---- ws:source-monitor ----
     // ---- ws:timeline-trim-gestures ----
     // ---- ws:transcript-captions ----
@@ -357,6 +361,8 @@ impl Glyph {
         // ---- ws:inspector-gallery ----
         // ---- ws:layout-modes-onboarding ----
         // ---- ws:media-library ----
+        Glyph::Warning,
+        Glyph::Chain,
         // ---- ws:source-monitor ----
         // ---- ws:timeline-trim-gestures ----
         // ---- ws:transcript-captions ----
@@ -474,6 +480,8 @@ impl Glyph {
             // ---- ws:inspector-gallery ----
             // ---- ws:layout-modes-onboarding ----
             // ---- ws:media-library ----
+            Glyph::Warning => "warning",
+            Glyph::Chain => "chain",
             // ---- ws:source-monitor ----
             // ---- ws:timeline-trim-gestures ----
             // ---- ws:transcript-captions ----
@@ -1641,12 +1649,12 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
             let head = vec![c + egui::vec2(7.5, 0.0), c + egui::vec2(4.5, -2.2), c + egui::vec2(4.5, 2.2)];
             p.add(egui::Shape::convex_polygon(head, fg, Stroke::NONE));
         } // ---- ws:registries-schema-hooks ----
-          // ---- ws:size-diet ----
-          // ---- ws:split-god-files ----
-          // ---- ws:audio-analysis ----
-          // ---- ws:audio-dsp-automation ----
-          // ---- ws:color-engine ----
-          // ---- ws:command-palette ----
+        // ---- ws:size-diet ----
+        // ---- ws:split-god-files ----
+        // ---- ws:audio-analysis ----
+        // ---- ws:audio-dsp-automation ----
+        // ---- ws:color-engine ----
+        // ---- ws:command-palette ----
         // rounded keycap outline with a 3x2 grid of small key dots inside
         Glyph::Keyboard => {
             p.rect_stroke(
@@ -1668,14 +1676,28 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
             let dir = egui::vec2(1.0, 1.0).normalized();
             p.line_segment([ring + dir * 4.0, ring + dir * 8.0], Stroke::new(1.8, fg));
         } // ---- ws:forgiveness ----
-          // ---- ws:player-rate-loop ----
-          // ---- ws:trim-model ----
-          // ---- ws:canvas-handles-monitor ----
-          // ---- ws:export-deliver ----
-          // ---- ws:inspector-gallery ----
-          // ---- ws:layout-modes-onboarding ----
-          // ---- ws:media-library ----
-          // ---- ws:source-monitor ----
+        // ---- ws:player-rate-loop ----
+        // ---- ws:trim-model ----
+        // ---- ws:canvas-handles-monitor ----
+        // ---- ws:export-deliver ----
+        // ---- ws:inspector-gallery ----
+        // ---- ws:layout-modes-onboarding ----
+        // ---- ws:media-library ----
+        // warning: a filled triangle with a bar + dot cut out of it (same shape technique as Flag)
+        Glyph::Warning => {
+            let tri = vec![c + egui::vec2(0.0, -6.5), c + egui::vec2(7.0, 6.0), c + egui::vec2(-7.0, 6.0)];
+            p.add(egui::Shape::convex_polygon(tri, fg, Stroke::NONE));
+            let hole = Color32::from_rgba_unmultiplied(0, 0, 0, 160);
+            p.line_segment([c + egui::vec2(0.0, -2.0), c + egui::vec2(0.0, 2.2)], Stroke::new(1.6, hole));
+            p.circle_filled(c + egui::vec2(0.0, 4.2), 0.9, hole);
+        }
+        // chain: two overlapping rounded links, offset on the diagonal
+        Glyph::Chain => {
+            for d in [-2.2f32, 2.2] {
+                let r = egui::Rect::from_center_size(c + egui::vec2(d, -d), egui::vec2(8.0, 5.0));
+                p.rect_stroke(r, CornerRadius::same(2), stroke, StrokeKind::Inside);
+            }
+        } // ---- ws:source-monitor ----
           // ---- ws:timeline-trim-gestures ----
           // ---- ws:transcript-captions ----
           // ---- ws:pro-monitor ----

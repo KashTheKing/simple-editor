@@ -314,6 +314,9 @@ pub struct Settings {
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
     // ---- ws:media-library ----
+    /// Extra cells a Library list row shows after the name, in order — any of
+    /// `library::COLUMNS` ("kind" | "duration" | "fps" | "size" | "label" | "tags" | "proxy").
+    pub library_columns: Vec<String>,
     // ---- ws:source-monitor ----
     // ---- ws:timeline-trim-gestures ----
     // ---- ws:transcript-captions ----
@@ -419,6 +422,8 @@ impl Default for Settings {
             // ---- ws:inspector-gallery ----
             // ---- ws:layout-modes-onboarding ----
             // ---- ws:media-library ----
+            // "tags" too, so a fresh install's rows look exactly as they did before columns existed
+            library_columns: vec!["kind".into(), "duration".into(), "tags".into()],
             // ---- ws:source-monitor ----
             // ---- ws:timeline-trim-gestures ----
             // ---- ws:transcript-captions ----

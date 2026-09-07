@@ -347,6 +347,13 @@ pub struct App {
     /// Selection last handed to `fire_hook("selection_changed", ...)` — `palette_ctl::tick` compares
     /// against `self.selection` each frame so the hook fires on an actual change, not every frame.
     last_fired_selection: Vec<Id>,
+    // ---- ws:media-library ----
+    /// Image-sequence bakes and consolidate copies in flight, polled by `media_sync::tick`.
+    media_jobs: Vec<media_sync::MediaJob>,
+    /// Next time `media_sync::tick` rescans the assets for missing files (2 s cadence, like proxies).
+    /// The set itself lives in `library.offline` — the one copy `App::asset_status` and the library
+    /// rows both read.
+    offline_scan_at: Option<Instant>,
 }
 
 /// What an async, off-the-main-preview GPU render is for — hover preview, trim view, scopes, wipe
@@ -758,6 +765,9 @@ impl App {
             hook_running: false,
             disabled_hooks: Vec::new(),
             last_fired_selection: Vec::new(),
+            // ---- ws:media-library ----
+            media_jobs: Vec::new(),
+            offline_scan_at: None,
         };
         if let Some(reason) = settings_bad {
             app.toast(format!("Settings file was corrupt (saved as settings.json.bad): {reason}"));
@@ -797,11 +807,13 @@ impl App {
     /// ponytail: that single file is still probed on this thread — it settles the project format, size
     /// and zoom before anything is drawn; give it a placeholder too if opening ever feels slow.
     fn open_or_import(&mut self, paths: &[PathBuf]) -> Vec<Id> {
+        // ---- ws:media-library ----: a frame of a numbered still run bakes as one clip instead
+        let paths = media_sync::intercept_sequences(self, paths);
         if self.project.is_empty() && self.project.assets.is_empty() && paths.len() == 1 {
             self.open_media(&paths[0]);
             return Vec::new();
         }
-        self.import_files(paths)
+        self.import_files(&paths)
     }
 
     /// After any project mutation.
@@ -876,9 +888,12 @@ impl App {
     /// ponytail: an MCP `media.import` reply therefore quotes duration 0 until the probe lands;
     /// blocking the tool call on it is the fix if an agent ever needs the number in the same reply.
     fn import_files(&mut self, paths: &[PathBuf]) -> Vec<Id> {
+        // ---- ws:media-library ----: every import path (Ctrl+I, drops, MCP media.import) funnels
+        // through here, so this one gate covers them all — see media_sync::intercept_sequences
+        let paths = media_sync::intercept_sequences(self, paths);
         let mut ids = Vec::new();
         let mut fresh: Vec<(Id, String)> = Vec::new();
-        for path in paths {
+        for path in &paths {
             let p = path.to_string_lossy().into_owned();
             // a re-import of a file already in the library must not re-probe it: adopting the result
             // would rebuild clips the user has since trimmed
@@ -1291,6 +1306,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
     // ---- ws:media-library ----
+    // already registered above (tools_media::TOOLS predates the marker system; wave-0a wired it in
+    // directly) — this workstream appends its rows into that same const, not a second registration.
     // ---- ws:source-monitor ----
     // ---- ws:timeline-trim-gestures ----
     // ---- ws:transcript-captions ----
@@ -1322,6 +1339,7 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
     // ---- ws:media-library ----
+    media_sync::act,
     // ---- ws:source-monitor ----
     // ---- ws:timeline-trim-gestures ----
     // ---- ws:transcript-captions ----
@@ -1351,6 +1369,7 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
     // ---- ws:media-library ----
+    media_sync::tick,
     // ---- ws:source-monitor ----
     // ---- ws:timeline-trim-gestures ----
     // ---- ws:transcript-captions ----
@@ -1381,6 +1400,7 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
     // ---- ws:media-library ----
+    media_sync::windows,
     // ---- ws:source-monitor ----
     // ---- ws:timeline-trim-gestures ----
     // ---- ws:transcript-captions ----

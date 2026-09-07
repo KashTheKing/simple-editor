@@ -1,4 +1,5 @@
 use crate::model::*;
+use std::path::{Path, PathBuf};
 
 impl Project {
     pub fn new() -> Self {
@@ -146,7 +147,27 @@ impl Project {
         });
         Some(id)
     }
-    /// Removes an asset and every clip using it.
+    // ---- ws:media-library ----
+    /// Foreground half of Consolidate Media: repoint `Asset.path` for every `Ok` copy result (an `Err`
+    /// entry — copy failed — leaves that asset where it was). Returns how many were repointed. The
+    /// caller pushes ONE undo snapshot before calling (`media_sync::tick` / the `media.consolidate`
+    /// tool's Mutate wrapper), so a whole consolidate is a single Ctrl+Z.
+    pub fn apply_consolidate(&mut self, results: &[(Id, PathBuf, Result<(), String>)]) -> usize {
+        let mut n = 0;
+        for (id, dst, r) in results {
+            if r.is_err() {
+                continue;
+            }
+            let dst = dst.to_string_lossy().into_owned();
+            // subclips share their parent's path: repoint every asset on the old path, not just `id`
+            let Some(old) = self.asset(*id).map(|a| a.path.clone()) else { continue };
+            for a in self.assets.iter_mut().filter(|a| a.path == old) {
+                a.path = dst.clone();
+                n += 1;
+            }
+        }
+        n
+    }
     /// Removes an asset and every clip using it — in the live timeline, the stashed main timeline and
     /// every nested sequence (a leftover clip would render black / silent).
     pub fn remove_asset(&mut self, id: Id) {
@@ -198,9 +219,139 @@ impl Project {
     }
 }
 
+// ---- ws:media-library ----
+// Associated fns (no `self`): `ops::assets` is a private module, and these need no Project at all.
+impl Project {
+    /// Background half of Consolidate Media: copy every `(id, path)` into `dir` (keeping the file
+    /// name, uniquified if a different file already holds it) — file I/O only, no `Project` access,
+    /// so it satisfies `engine::export::spawn_job`'s `Send + 'static` bound. Paths already under `dir`
+    /// are reported `Ok` at their existing location without a copy. `apply_consolidate` consumes the
+    /// result on the UI thread.
+    pub fn consolidate_assets_copy(dir: &Path, assets: &[(Id, String)]) -> Vec<(Id, PathBuf, Result<(), String>)> {
+        assets
+            .iter()
+            .map(|(id, src)| {
+                let src = Path::new(src);
+                if Self::path_is_under(src, dir) {
+                    return (*id, src.to_path_buf(), Ok(()));
+                }
+                let Some(name) = src.file_name() else {
+                    return (*id, src.to_path_buf(), Err("no file name".into()));
+                };
+                let mut dst = dir.join(name);
+                // ponytail: same-name collision = a different file of that name is already there;
+                // suffix rather than overwrite (a same-content check would cost a full read of both)
+                let stem = src.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+                let ext = src.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+                let mut n = 2;
+                while dst.exists() {
+                    dst = dir.join(format!("{stem}_{n}{ext}"));
+                    n += 1;
+                }
+                let r = std::fs::copy(src, &dst).map(|_| ()).map_err(|e| format!("{}: {e}", src.display()));
+                (*id, dst, r)
+            })
+            .collect()
+    }
+
+    /// Is `path` directly inside `dir` (case-insensitive, either separator)? Compared textually on
+    /// the parent — a missing file can't be canonicalized, and an offline asset must still be
+    /// reported honestly.
+    pub fn path_is_under(path: &Path, dir: &Path) -> bool {
+        let norm = |p: &Path| p.to_string_lossy().replace('\\', "/").trim_end_matches('/').to_ascii_lowercase();
+        match path.parent() {
+            Some(parent) => norm(parent) == norm(dir),
+            None => false,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- ws:media-library ----
+    #[test]
+    fn add_subclip_gets_its_own_id_not_the_parents() {
+        let mut p = Project::new();
+        let parent = p.add_asset(asset("C:/clip.mp4"));
+        let a = p.add_subclip(parent, 1.0, 2.0, None).unwrap();
+        let b = p.add_subclip(parent, 3.0, 4.0, None).unwrap();
+        assert_ne!(a, b, "two subclips of one parent must not collapse onto one id");
+        assert!(a != parent && b != parent);
+        assert!(p.asset(a).is_some() && p.asset(b).is_some());
+        assert_eq!(p.assets.len(), 3, "the parent stays, both subclips are rows of their own");
+    }
+
+    #[test]
+    fn insert_asset_clips_honours_asset_range() {
+        let mut p = Project::new();
+        let parent = p.add_asset(asset("C:/clip.mp4"));
+        let sub = p.add_subclip(parent, 2.0, 5.0, None).unwrap();
+        let ids = p.insert_asset_clips(sub, 0.0, None);
+        let c = p.clip(ids[0]).unwrap();
+        assert_eq!(c.src_in, 2.0, "a subclip starts where its window starts, not at source 0");
+        assert_eq!(c.duration, 3.0);
+        // the parent itself is unaffected: whole file, from 0
+        let ids = p.insert_asset_clips(parent, 10.0, None);
+        let c = p.clip(ids[0]).unwrap();
+        assert_eq!((c.src_in, c.duration), (0.0, 10.0));
+    }
+
+    #[test]
+    fn consolidate_assets_copy_skips_files_already_under_dir() {
+        let dir = std::env::temp_dir().join(format!("se-consolidate-{}", std::process::id()));
+        let outside = dir.join("outside");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(dir.join("inside.mp4"), b"in").unwrap();
+        std::fs::write(outside.join("far.mp4"), b"far").unwrap();
+        let list = vec![
+            (1, dir.join("inside.mp4").to_string_lossy().into_owned()),
+            (2, outside.join("far.mp4").to_string_lossy().into_owned()),
+            (3, outside.join("gone.mp4").to_string_lossy().into_owned()),
+        ];
+        let r = Project::consolidate_assets_copy(&dir, &list);
+        assert_eq!(r[0].1, dir.join("inside.mp4"), "already inside: reported at its own path");
+        assert!(r[0].2.is_ok());
+        assert_eq!(r[1].1, dir.join("far.mp4"), "copied in under its own name");
+        assert!(r[1].2.is_ok() && dir.join("far.mp4").exists());
+        assert_eq!(std::fs::read(dir.join("far.mp4")).unwrap(), b"far");
+        assert!(r[2].2.is_err(), "a missing source is an Err, not a panic");
+        // a second copy of a different file with the same name gets a suffix, never overwrites
+        let other = dir.join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join("far.mp4"), b"different").unwrap();
+        let r = Project::consolidate_assets_copy(&dir, &[(4, other.join("far.mp4").to_string_lossy().into_owned())]);
+        assert_eq!(r[0].1, dir.join("far_2.mp4"));
+        assert_eq!(std::fs::read(dir.join("far.mp4")).unwrap(), b"far", "the first copy is untouched");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn apply_consolidate_repoints_only_ok_results() {
+        let mut p = Project::new();
+        let a = p.add_asset(asset("Z:/a.mp4"));
+        let b = p.add_asset(asset("Z:/b.mp4"));
+        let sub = p.add_subclip(a, 0.0, 1.0, None).unwrap(); // shares a's path
+        let results = vec![
+            (a, PathBuf::from("C:/proj/a.mp4"), Ok(())),
+            (b, PathBuf::from("C:/proj/b.mp4"), Err("disk full".to_string())),
+        ];
+        // a + its subclip = 2 rows repointed; b untouched
+        assert_eq!(p.apply_consolidate(&results), 2);
+        assert_eq!(p.asset(a).unwrap().path, "C:/proj/a.mp4");
+        assert_eq!(p.asset(sub).unwrap().path, "C:/proj/a.mp4", "a subclip follows its parent's file");
+        assert_eq!(p.asset(b).unwrap().path, "Z:/b.mp4");
+        assert!(
+            Project::path_is_under(Path::new("C:\\Proj\\a.mp4"), Path::new("c:/proj/")),
+            "case/separator-insensitive"
+        );
+        assert!(
+            !Project::path_is_under(Path::new("C:/proj/sub/a.mp4"), Path::new("C:/proj")),
+            "a subfolder is not 'under'"
+        );
+    }
 
     fn asset(path: &str) -> Asset {
         Asset {

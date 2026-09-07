@@ -130,4 +130,52 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
             _ => app.toast("Select another clip to copy this node graph onto"),
         }
     }
+    // ---- ws:media-library ----
+    if !resp.relink.is_empty() {
+        if let Some(dir) = rfd::FileDialog::new().set_title("Relink media: pick the folder").pick_folder() {
+            media_sync::start_relink(app, &resp.relink, &dir);
+        }
+    }
+    if resp.consolidate {
+        media_sync::ask_consolidate(app);
+    }
+    if !resp.new_subclip.is_empty() {
+        // one undo snapshot BEFORE the first row is added, then add_subclip per id — see new_subclips
+        app.new_subclips(&resp.new_subclip);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// New Subclip must push its undo snapshot BEFORE mutating, so one Ctrl+Z restores the exact
+    /// pre-subclip project. `App::new_subclips` needs a live `App` (none is buildable headlessly —
+    /// see tools_registry_tests.rs), so this pins both halves separately: the project-level round
+    /// trip through the same `Project::add_subclip` + JSON snapshot the method uses, and the method's
+    /// own source order (push before the first `add_subclip`, never after).
+    #[test]
+    fn new_subclip_undo_restores_pre_subclip_project() {
+        let mut p = Project::new();
+        let a = p.add_asset(crate::engine::import::placeholder("C:/x.mp4"));
+        p.asset_mut(a).unwrap().duration = 8.0;
+        p.in_point = Some(1.0);
+        p.out_point = Some(3.0);
+        let before = p.to_json();
+        let sub = p.add_subclip(a, 1.0, 3.0, Some("x".into())).unwrap();
+        assert_ne!(p.to_json(), before);
+        assert_eq!(p.asset(sub).unwrap().range, Some((1.0, 3.0)));
+        // Ctrl+Z = restore the snapshot taken before the subclip existed
+        let restored = Project::from_json(&before).unwrap();
+        assert_eq!(restored.to_json(), before);
+        assert!(restored.asset(sub).is_none() && restored.assets.len() == 1);
+
+        let src = include_str!("media_sync.rs");
+        let start = src.find("pub(crate) fn new_subclips").expect("new_subclips exists");
+        let body = &src[start..start + src[start..].find("\n    }\n").unwrap()];
+        let push = body.find("push_undo_labeled").expect("pushes a labelled undo");
+        let add = body.find("add_subclip(").expect("adds subclips");
+        assert!(push < add, "the undo snapshot must be pushed BEFORE the first subclip is added");
+        assert_eq!(body.matches("push_undo").count(), 1, "exactly one undo step for the whole batch");
+    }
 }
