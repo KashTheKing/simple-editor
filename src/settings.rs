@@ -140,6 +140,19 @@ pub struct ProjectTemplate {
     pub fps: f64,
 }
 
+// ---- ws:export-deliver ----
+/// What Quick Export re-runs: a platform tile by name, or the custom size/container the Export
+/// window was last confirmed with (`width`/`height` 0 = project size).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum ExportPresetRef {
+    Preset(String),
+    Custom { ext: String, width: u32, height: u32 },
+}
+
+fn default_loudnorm() -> bool {
+    true
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -310,9 +323,28 @@ pub struct Settings {
     pub snap_markers: bool,
     // ---- ws:trim-model ----
     // ---- ws:canvas-handles-monitor ----
+    /// Let an effect / transition / look hover (or `preview.hover`) drive the monitor's alt render.
+    pub hover_preview: bool,
+    /// Canvas centre / edge / third / other-clip snapping while dragging a clip on the preview.
+    pub canvas_snap: bool,
     // ---- ws:export-deliver ----
+    /// The platform tiles in the Export window (a Vec, not a const table, so they're editable).
+    /// Per-field default fn on top of the container-level one: an old settings.json without this key
+    /// backfills the 4 shipped tiles, never `[]`.
+    #[serde(default = "crate::engine::export::default_export_presets")]
+    pub export_presets: Vec<crate::engine::export::ExportPreset>,
+    /// What the last export used — Quick Export (Ctrl+M) re-runs it without opening the window.
+    pub last_export: Option<ExportPresetRef>,
+    /// Loudness-normalise exports to −14 LUFS (`export::LOUDNORM`). Default on, including for a
+    /// settings.json upgrading from before this key existed (`default_loudnorm`, not bool's false).
+    #[serde(default = "default_loudnorm")]
+    pub loudnorm: bool,
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
+    /// Active workspace name (`ui::layout::WORKSPACES`), lit in the menu-bar strip / View menu.
+    pub workspace: String,
+    /// Show the Open / Import / Templates / Recent cards over an empty project (the home screen).
+    pub home_screen: bool,
     // ---- ws:media-library ----
     /// Extra cells a Library list row shows after the name, in order — any of
     /// `library::COLUMNS` ("kind" | "duration" | "fps" | "size" | "label" | "tags" | "proxy").
@@ -418,9 +450,16 @@ impl Default for Settings {
             snap_markers: true,
             // ---- ws:trim-model ----
             // ---- ws:canvas-handles-monitor ----
+            hover_preview: true,
+            canvas_snap: true,
             // ---- ws:export-deliver ----
+            export_presets: crate::engine::export::default_export_presets(),
+            last_export: None,
+            loudnorm: default_loudnorm(),
             // ---- ws:inspector-gallery ----
             // ---- ws:layout-modes-onboarding ----
+            workspace: "Edit".into(),
+            home_screen: true,
             // ---- ws:media-library ----
             // "tags" too, so a fresh install's rows look exactly as they did before columns existed
             library_columns: vec!["kind".into(), "duration".into(), "tags".into()],
@@ -645,6 +684,18 @@ mod tests {
         assert_eq!(back.preroll_secs, s.preroll_secs);
     }
 
+    // ---- ws:canvas-handles-monitor ----
+    #[test]
+    fn hover_preview_and_canvas_snap_round_trip() {
+        let old: Settings = serde_json::from_str("{}").unwrap();
+        assert!(old.hover_preview && old.canvas_snap, "both default on");
+        let mut s = Settings::default();
+        s.hover_preview = false;
+        s.canvas_snap = false;
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert!(!back.hover_preview && !back.canvas_snap);
+    }
+
     #[test]
     fn theme_file_round_trips() {
         let tf = ThemeFile {
@@ -679,5 +730,44 @@ mod tests {
         assert_eq!(back.ui_scale, s.ui_scale);
         assert_eq!(back.keymap_preset, s.keymap_preset);
         assert_eq!(back.palette_recent, s.palette_recent);
+    }
+
+    // ---- ws:export-deliver ----
+    /// A settings.json from before this workstream (no `export_presets` / `loudnorm` / `last_export`
+    /// keys) backfills the 4 tiles and loudnorm=true — never `[]` / false.
+    #[test]
+    fn settings_backfill_on_upgrade() {
+        let old: Settings = serde_json::from_str(r#"{"crf": 20, "theme": "dark"}"#).unwrap();
+        assert_eq!(old.export_presets, crate::engine::export::default_export_presets());
+        assert_eq!(old.export_presets.len(), 4);
+        assert!(old.loudnorm);
+        assert_eq!(old.last_export, None);
+        assert_eq!(old.crf, 20, "the keys that WERE there still load");
+        // an explicit choice round-trips (a user who turned it off, or edited the tiles, keeps that)
+        let mut s = Settings::default();
+        s.loudnorm = false;
+        s.export_presets.truncate(1);
+        s.last_export = Some(ExportPresetRef::Custom { ext: "webm".into(), width: 640, height: 360 });
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert!(!back.loudnorm);
+        assert_eq!(back.export_presets.len(), 1);
+        assert_eq!(back.last_export, s.last_export);
+    }
+
+    // ---- ws:layout-modes-onboarding ----
+    #[test]
+    fn layout_mode_settings_round_trip() {
+        let old: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(old.workspace, "Edit", "today's default layout is the Edit workspace");
+        assert!(old.home_screen, "default on");
+        assert_eq!(old.layout_mode, "dynamic");
+        assert!(!old.onboarded, "a settings file without the flag sees the welcome once");
+        let mut s = Settings::default();
+        s.workspace = "Color".into();
+        s.home_screen = false;
+        s.layout_mode = "granular".into();
+        s.onboarded = true;
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!((back.workspace.as_str(), back.home_screen, back.layout_mode.as_str(), back.onboarded), ("Color", false, "granular", true));
     }
 }

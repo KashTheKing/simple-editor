@@ -76,6 +76,13 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
     match a {
         Action::ShuttleBack | Action::ShuttleFwd => {
             let back = a == Action::ShuttleBack;
+            // ---- ws:source-monitor ----
+            // J/L follow transport focus like Space does: the Source monitor's player when it holds
+            // it (this handler runs before source_ctl's, so the hand-off lives here).
+            if app.source_active() {
+                app.source_shuttle(back);
+                return true;
+            }
             let cur = if app.player.is_playing() { app.player.rate() } else { 0.0 };
             let new_rate = shuttle_rate(cur, back);
             if !app.player.is_playing() {

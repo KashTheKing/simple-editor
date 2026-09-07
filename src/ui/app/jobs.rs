@@ -115,7 +115,7 @@ impl App {
         match at {
             Some(t) => {
                 self.push_undo();
-                self.insert_at(ids, t, None);
+                self.place_assets(&ids, t, None, DropMode::Place);
                 self.after_edit();
                 self.toast("Voiceover placed on the timeline");
             }

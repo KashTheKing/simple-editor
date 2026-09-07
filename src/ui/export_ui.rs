@@ -6,11 +6,16 @@
 //! (with the keyframe-accuracy note). "Export…" opens the save dialog and returns the options; the window
 //! stays usable while an export runs (progress + cancel are shown by the app). Settings remember the last
 //! scaler/resolution. Returns Some(options) when the user confirmed an export this frame.
+//!
+//! ws:export-deliver: platform preset tiles (`Settings.export_presets`) sit above the old grid, which is
+//! now a collapsed "Advanced" section; an "Export In/Out Range" box binds `project.in_point/out_point`
+//! into `ExportOptions.range` (and greys out the lossless cut); a loudness checkbox drives
+//! `Settings.loudnorm`; "Add to Queue" returns the same choice flagged for the render queue.
 
-use crate::engine::export::{self, ExportOptions};
+use crate::engine::export::{self, ExportOptions, ExportPreset};
 use crate::media::Backend;
 use crate::model::Project;
-use crate::settings::Settings;
+use crate::settings::{ExportPresetRef, Settings};
 use crate::ui::{combo, duration_text, encoder_options, ENCODER_PRESETS};
 use eframe::egui;
 use std::path::Path;
@@ -22,6 +27,15 @@ pub struct ExportUi {
     pub preset: String,
     pub custom: (u32, u32),
     pub lossless: bool,
+    // ---- ws:export-deliver ----
+    /// "Export In/Out Range" checkbox.
+    pub range: bool,
+    /// The platform tile currently applied (by name); cleared when the user edits the size by hand.
+    pub tile: Option<String>,
+    /// Fit-and-pad instead of stretch — set with a tile, cleared with a manual size edit.
+    pub letterbox: bool,
+    /// Container the applied tile asks for ("mp4"); the save dialog's default extension.
+    pub ext: String,
     /// Off by default: exports strip metadata unless the user turns this on.
     pub metadata_on: bool,
     /// Editable `(key, value)` rows, seeded from the project the first time it is turned on.
@@ -40,6 +54,79 @@ pub struct ExportChoice {
     /// exported clone's `preview_bg` to `Black` (the pre-setting behaviour), on keeps it as authored.
     /// Works on both frame sources — `engine::compose` clears to `preview_bg` too (`fill_background`).
     pub use_project_bg: bool,
+    // ---- ws:export-deliver ----
+    /// What Quick Export should re-run next time (stored in `Settings.last_export` when this starts).
+    pub last: ExportPresetRef,
+}
+
+// ---- ws:export-deliver ----
+/// Apply a platform tile: custom size + container + quality + loudness, fit-and-pad on.
+pub fn apply_preset(state: &mut ExportUi, settings: &mut Settings, p: &ExportPreset) {
+    state.tile = Some(p.name.clone());
+    state.preset = "custom".into();
+    state.custom = (p.width.max(16), p.height.max(16));
+    state.letterbox = true;
+    state.ext = p.ext.clone();
+    state.lossless = false;
+    state.pct_cache = None;
+    settings.crf = p.crf;
+    settings.loudnorm = p.loudnorm;
+    settings.export_resolution = format!("{}x{}", p.width, p.height);
+}
+
+/// `ExportOptions.range` for the checkbox state: the project's in/out points (either end defaulting
+/// to the timeline's edge), None when off or degenerate.
+pub fn export_range(project: &Project, on: bool) -> Option<(f64, f64)> {
+    if !on || (project.in_point.is_none() && project.out_point.is_none()) {
+        return None;
+    }
+    let a = project.in_point.unwrap_or(0.0).max(0.0);
+    let b = project.out_point.unwrap_or_else(|| project.duration());
+    (b > a).then_some((a, b))
+}
+
+/// The lossless `-c copy` path cuts whole clips of one source; a range needs a re-encode.
+pub fn lossless_allowed(state: &ExportUi, project: &Project) -> bool {
+    !state.range && export::lossless_segments(project).is_some()
+}
+
+/// Everything `pick_and_build` does after the save dialog — pure, so the range/preset wiring is
+/// testable without one.
+pub fn build_choice(
+    state: &ExportUi,
+    project: &Project,
+    settings: &Settings,
+    out_path: std::path::PathBuf,
+) -> ExportChoice {
+    let size = preset_size(project.width, project.height, &state.preset, state.custom);
+    let ext = out_path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    let last = match &state.tile {
+        Some(name) => ExportPresetRef::Preset(name.clone()),
+        None => {
+            let (width, height) = size.unwrap_or((0, 0));
+            ExportPresetRef::Custom { ext, width, height }
+        }
+    };
+    let lossless = state.lossless && lossless_allowed(state, project);
+    ExportChoice {
+        opts: ExportOptions {
+            out_path,
+            encoder: settings.encoder.clone(),
+            crf: settings.crf,
+            preset: settings.preset.clone(),
+            backend: Backend::parse(&settings.decoder),
+            out_size: size,
+            scaler: settings.export_scaler.clone(),
+            frames: crate::engine::export::FrameSource::Cpu,
+            metadata: if state.metadata_on { state.metadata.clone() } else { Vec::new() },
+            range: export_range(project, state.range),
+            loudnorm: settings.loudnorm,
+            letterbox: state.letterbox && state.tile.is_some(),
+        },
+        lossless,
+        use_project_bg: state.use_project_bg,
+        last,
+    }
 }
 
 const RES_PRESETS: [(&str, &str); 6] = [
@@ -96,7 +183,7 @@ pub fn show(
     settings: &mut Settings,
     encoders: &[String],
     exporting: bool,
-) -> Option<ExportChoice> {
+) -> Option<(ExportChoice, bool)> {
     if !state.open {
         return None;
     }
@@ -106,76 +193,115 @@ pub fn show(
     let mut out = None;
     let mut open = state.open;
     egui::Window::new("Export").open(&mut open).resizable(false).default_width(300.0).show(ctx, |ui| {
-        let mut out_size = (project.width, project.height);
-        egui::Grid::new("export_opts").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-            ui.label("Resolution");
-            let mut changed = combo(ui, "export_res", &mut state.preset, &RES_PRESETS, None);
-            ui.end_row();
-            if state.preset == "custom" {
-                ui.label("Size");
+        // ---- ws:export-deliver: platform tiles (the beginner surface; everything else is Advanced) ----
+        let presets = settings.export_presets.clone();
+        ui.horizontal_wrapped(|ui| {
+            for p in &presets {
+                let on = state.tile.as_deref() == Some(p.name.as_str());
+                let text = format!("{}\n{}×{}", p.name, p.width, p.height);
+                let r = ui.selectable_label(on, text).on_hover_text(format!(
+                    "{} · CRF {}{}\nFits the picture inside (black bars, never stretched).",
+                    p.ext,
+                    p.crf,
+                    if p.loudnorm { " · −14 LUFS" } else { "" }
+                ));
+                if r.clicked() {
+                    apply_preset(state, settings, p);
+                }
+            }
+        });
+        if presets.is_empty() {
+            ui.weak("No platform presets — add some to settings.json's export_presets.");
+        }
+        ui.add_space(2.0);
+
+        let mut changed = false;
+        egui::CollapsingHeader::new("Advanced").default_open(false).show(ui, |ui| {
+            egui::Grid::new("export_opts").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+                ui.label("Resolution");
+                changed |= combo(ui, "export_res", &mut state.preset, &RES_PRESETS, None);
+                ui.end_row();
+                if state.preset == "custom" {
+                    ui.label("Size");
+                    ui.horizontal(|ui| {
+                        let (mut w, mut h) = state.custom;
+                        changed |= ui.add(egui::DragValue::new(&mut w).range(16..=8192)).changed();
+                        ui.label("×");
+                        changed |= ui.add(egui::DragValue::new(&mut h).range(16..=8192)).changed();
+                        state.custom = (w, h);
+                    });
+                    ui.end_row();
+                }
+                let size = preset_size(project.width, project.height, &state.preset, state.custom);
+                ui.label("Output");
+                let (w, h) = size.unwrap_or((project.width, project.height));
+                ui.weak(format!("{w}×{h}"));
+                ui.end_row();
+
+                ui.label("Scaler");
                 ui.horizontal(|ui| {
-                    let (mut w, mut h) = state.custom;
-                    changed |= ui.add(egui::DragValue::new(&mut w).range(16..=8192)).changed();
-                    ui.label("×");
-                    changed |= ui.add(egui::DragValue::new(&mut h).range(16..=8192)).changed();
-                    state.custom = (w, h);
+                    combo(ui, "export_scaler", &mut settings.export_scaler, &SCALERS, None);
+                    if size.is_none() {
+                        ui.weak("(same size)");
+                    }
                 });
                 ui.end_row();
-            }
-            let size = preset_size(project.width, project.height, &state.preset, state.custom);
-            ui.label("Output");
-            let (w, h) = size.unwrap_or((project.width, project.height));
-            out_size = (w, h);
-            ui.weak(format!("{w}×{h}"));
-            ui.end_row();
-            if changed {
-                settings.export_resolution =
-                    if state.preset == "project" { "project".into() } else { format!("{w}x{h}") };
-            }
 
-            ui.label("Scaler");
-            ui.horizontal(|ui| {
-                combo(ui, "export_scaler", &mut settings.export_scaler, &SCALERS, None);
-                if size.is_none() {
-                    ui.weak("(same size)");
-                }
+                ui.label("Encoder");
+                let opts: Vec<(&str, &str)> = std::iter::once(("auto", "auto"))
+                    .chain(encoder_options(encoders).into_iter().map(|e| (e, e)))
+                    .collect();
+                combo(ui, "export_encoder", &mut settings.encoder, &opts, None);
+                ui.end_row();
+
+                ui.label("Quality");
+                // the shown percent is cached per stored CRF: 101 slider positions quantize onto 52 CRF
+                // values, so recomputing from CRF every frame snapped a typed "85" back to 84
+                let mut pct = match state.pct_cache {
+                    Some((c, p)) if c == settings.crf => p,
+                    _ => export::quality_percent_from_crf(settings.crf),
+                };
+                ui.add(egui::Slider::new(&mut pct, 0..=100).suffix("%"));
+                settings.crf = export::crf_from_quality_percent(pct);
+                state.pct_cache = Some((settings.crf, pct));
+                ui.end_row();
+
+                ui.label("Preset");
+                let opts: Vec<(&str, &str)> = ENCODER_PRESETS.iter().map(|p| (*p, *p)).collect();
+                combo(ui, "export_preset", &mut settings.preset, &opts, None);
+                ui.end_row();
             });
-            ui.end_row();
-
-            ui.label("Encoder");
-            let opts: Vec<(&str, &str)> = std::iter::once(("auto", "auto"))
-                .chain(encoder_options(encoders).into_iter().map(|e| (e, e)))
-                .collect();
-            combo(ui, "export_encoder", &mut settings.encoder, &opts, None);
-            ui.end_row();
-
-            ui.label("Quality");
-            // the shown percent is cached per stored CRF: 101 slider positions quantize onto 52 CRF
-            // values, so recomputing from CRF every frame snapped a typed "85" back to 84
-            let mut pct = match state.pct_cache {
-                Some((c, p)) if c == settings.crf => p,
-                _ => export::quality_percent_from_crf(settings.crf),
-            };
-            ui.add(egui::Slider::new(&mut pct, 0..=100).suffix("%"));
-            settings.crf = export::crf_from_quality_percent(pct);
-            state.pct_cache = Some((settings.crf, pct));
-            ui.end_row();
-
-            ui.label("Preset");
-            let opts: Vec<(&str, &str)> = ENCODER_PRESETS.iter().map(|p| (*p, *p)).collect();
-            combo(ui, "export_preset", &mut settings.preset, &opts, None);
-            ui.end_row();
         });
+        let size = preset_size(project.width, project.height, &state.preset, state.custom);
+        let out_size = size.unwrap_or((project.width, project.height));
+        if changed {
+            // a hand-edited size is no longer "the tile": plain stretch, like every custom export before
+            state.tile = None;
+            state.letterbox = false;
+            let (w, h) = out_size;
+            settings.export_resolution = if state.preset == "project" { "project".into() } else { format!("{w}x{h}") };
+        }
+
+        // ---- ws:export-deliver: range ----
+        let has_range = project.in_point.is_some() || project.out_point.is_some();
+        if !has_range {
+            state.range = false;
+        }
+        ui.add_enabled(has_range, egui::Checkbox::new(&mut state.range, "Export In/Out Range"))
+            .on_disabled_hover_text("Set In/Out points on the timeline first (I / O)")
+            .on_hover_text("Only the part between the In and Out points is written.");
+        let range = export_range(project, state.range);
+        let export_dur = range.map(|(a, b)| b - a).unwrap_or_else(|| project.duration());
 
         // meaningless for a lossless cut (-c copy ignores quality entirely)
         if !state.lossless {
             let (w, h) = out_size;
-            let est_bytes = export::estimate_export_bytes(w, h, project.fps, project.duration(), settings.crf);
+            let est_bytes = export::estimate_export_bytes(w, h, project.fps, export_dur, settings.crf);
             ui.weak(format!(
                 "~{} ({w}×{h} · {:.0} fps · {})",
                 format_bytes(est_bytes),
                 project.fps,
-                duration_text(project.duration())
+                duration_text(export_dur)
             ))
             .on_hover_text("Estimated — actual size depends on the footage (and audio-only formats ignore it).");
             let pct = export::quality_percent_from_crf(settings.crf);
@@ -226,7 +352,12 @@ pub fn show(
         ui.add_space(2.0);
 
         if export::lossless_segments(project).is_some() {
-            ui.checkbox(&mut state.lossless, "Fast lossless cut (-c copy)");
+            // ws:export-deliver: a range needs a re-encode, so the -c copy path greys out while it's on
+            if state.range {
+                state.lossless = false;
+            }
+            ui.add_enabled(!state.range, egui::Checkbox::new(&mut state.lossless, "Fast lossless cut (-c copy)"))
+                .on_disabled_hover_text("Not with a range: cuts on keyframes can't honour In/Out points");
             if state.lossless {
                 ui.weak("Instant, no re-encode; cuts snap to keyframes (may shift up to a few frames).");
             }
@@ -238,6 +369,9 @@ pub fn show(
                  export instead of black. Checkerboard bakes as literal grey squares, not real \
                  transparency — that needs an alpha-capable codec this checkbox does not add.",
         );
+        // ws:export-deliver
+        ui.checkbox(&mut settings.loudnorm, "Normalize loudness (−14 LUFS)")
+            .on_hover_text("ffmpeg loudnorm, the level YouTube/Spotify play back at. Skipped when there is no audio.");
         ui.weak("Audio extensions (mp3, wav, m4a, flac) export audio only; gif has no audio.");
         if settings.gpu || settings.preview_quality < 100 {
             // Settings ▸ Performance only changes what you watch, never what is written
@@ -249,7 +383,18 @@ pub fn show(
             if ui.add_enabled(can, egui::Button::new("Export…")).clicked() {
                 settings.save();
                 if let Some(choice) = pick_and_build(state, project, settings) {
-                    out = Some(choice);
+                    out = Some((choice, false));
+                }
+            }
+            // ws:export-deliver: queue while one runs (the queue drains in order, one at a time)
+            if ui
+                .add_enabled(!project.is_empty(), egui::Button::new("Add to Queue"))
+                .on_hover_text("Pick a file now; it renders after whatever is running or queued.")
+                .clicked()
+            {
+                settings.save();
+                if let Some(choice) = pick_and_build(state, project, settings) {
+                    out = Some((choice, true));
                 }
             }
             if exporting {
@@ -297,6 +442,9 @@ fn pick_and_build(state: &ExportUi, project: &Project, settings: &Settings) -> O
             .add_filter(format!("{} (same container)", ext.to_uppercase()), &[ext.as_str()])
             .set_file_name(format!("{}_cut.{ext}", project.name));
     } else {
+        // ws:export-deliver: a tile's container and name lead the filter list
+        let ext = if state.tile.is_some() && !state.ext.is_empty() { state.ext.as_str() } else { "mp4" };
+        let suffix = state.tile.as_deref().map(slug).unwrap_or_else(|| "edit".into());
         d = d
             .add_filter("MP4 video", &["mp4"])
             .add_filter("MOV video", &["mov"])
@@ -309,27 +457,26 @@ fn pick_and_build(state: &ExportUi, project: &Project, settings: &Settings) -> O
             .add_filter("M4A audio", &["m4a"])
             .add_filter("FLAC audio", &["flac"])
             .add_filter("Any (by extension)", &["*"])
-            .set_file_name(format!("{}_edit.mp4", project.name));
+            .set_file_name(format!("{}_{suffix}.{ext}", project.name));
     }
     if let Some(dir) = project.source_video.as_ref().and_then(|p| Path::new(p).parent()) {
         d = d.set_directory(dir);
     }
     let out_path = d.save_file()?;
-    Some(ExportChoice {
-        opts: ExportOptions {
-            out_path,
-            encoder: settings.encoder.clone(),
-            crf: settings.crf,
-            preset: settings.preset.clone(),
-            backend: Backend::parse(&settings.decoder),
-            out_size: preset_size(project.width, project.height, &state.preset, state.custom),
-            scaler: settings.export_scaler.clone(),
-            frames: crate::engine::export::FrameSource::Cpu,
-            metadata: if state.metadata_on { state.metadata.clone() } else { Vec::new() },
-        },
-        lossless: state.lossless,
-        use_project_bg: state.use_project_bg,
-    })
+    Some(build_choice(state, project, settings, out_path))
+}
+
+/// "Shorts / Reels / TikTok" → "shorts-reels-tiktok": a tile name as a file-name suffix.
+pub fn slug(name: &str) -> String {
+    let mut s = String::new();
+    for ch in name.chars() {
+        if ch.is_alphanumeric() {
+            s.push(ch.to_ascii_lowercase());
+        } else if !s.ends_with('-') && !s.is_empty() {
+            s.push('-');
+        }
+    }
+    s.trim_end_matches('-').to_string()
 }
 
 #[cfg(test)]
@@ -381,5 +528,76 @@ mod tests {
         }
         assert!(state.open);
         assert_eq!(state.preset, "project");
+    }
+
+    // ---- ws:export-deliver ----
+    fn ranged_project() -> Project {
+        let mut p = Project::new();
+        p.width = 1920;
+        p.height = 1080;
+        p.tracks[0].clips.push(crate::model::Clip::new(1, crate::model::ClipKind::Video, "v", 0.0, 8.0));
+        p.in_point = Some(1.0);
+        p.out_point = Some(3.0);
+        p
+    }
+
+    /// The 4 tiles + the collapsed Advanced grid + the range box lay out across 2 headless frames,
+    /// and a tile click's effect (`apply_preset`) lands in state + settings.
+    #[test]
+    fn show_headless_with_preset_tiles() {
+        let project = ranged_project();
+        let mut settings = Settings::default();
+        assert_eq!(settings.export_presets.len(), 4);
+        let mut state = ExportUi { open: true, ..Default::default() };
+        let ctx = egui::Context::default();
+        for _ in 0..2 {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                assert!(show(ctx, &mut state, &project, &mut settings, &["libx264".into()], false).is_none());
+            });
+        }
+        assert!(state.open);
+        let shorts = settings.export_presets[2].clone();
+        apply_preset(&mut state, &mut settings, &shorts);
+        assert_eq!(state.custom, (1080, 1920));
+        assert_eq!(state.preset, "custom");
+        assert!(state.letterbox);
+        assert_eq!(settings.crf, 20);
+        assert_eq!(state.tile.as_deref(), Some("Shorts / Reels / TikTok"));
+        let c = build_choice(&state, &project, &settings, "x.mp4".into());
+        assert_eq!(c.opts.out_size, Some((1080, 1920)));
+        assert!(c.opts.letterbox, "a tile fits-and-pads instead of stretching");
+        assert_eq!(c.last, ExportPresetRef::Preset(shorts.name));
+        assert_eq!(slug("Shorts / Reels / TikTok"), "shorts-reels-tiktok");
+    }
+
+    #[test]
+    fn range_checkbox_sets_opts_range_and_disables_lossless() {
+        let project = ranged_project();
+        let settings = Settings::default();
+        let mut state = ExportUi { open: true, range: true, lossless: true, ..Default::default() };
+        let c = build_choice(&state, &project, &settings, "x.mp4".into());
+        assert_eq!(c.opts.range, Some((1.0, 3.0)));
+        assert!(!c.lossless, "a range export is never a -c copy");
+        assert!(!lossless_allowed(&state, &project));
+        assert_eq!(c.last, ExportPresetRef::Custom { ext: "mp4".into(), width: 0, height: 0 });
+        state.range = false;
+        assert_eq!(build_choice(&state, &project, &settings, "x.mp4".into()).opts.range, None);
+        // without in/out points the box is inert even if set
+        let plain = Project::new();
+        assert_eq!(export_range(&plain, true), None);
+        // in only → to the end; a degenerate order → None
+        let mut p = ranged_project();
+        p.out_point = None;
+        assert_eq!(export_range(&p, true), Some((1.0, 8.0)));
+        p.out_point = Some(0.5);
+        assert_eq!(export_range(&p, true), None);
+        // and the window itself un-ticks lossless while the range box is on
+        let mut settings = Settings::default();
+        let mut st = ExportUi { open: true, range: true, lossless: true, ..Default::default() };
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            let _ = show(ctx, &mut st, &project, &mut settings, &[], false);
+        });
+        assert!(st.range && !st.lossless);
     }
 }

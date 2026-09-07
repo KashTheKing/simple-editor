@@ -21,11 +21,29 @@
 use crate::engine::mixer_fx::{db_to_lin, filter_bands, filter_response_db, lin_to_db, BusGraph, EQ_BANDS};
 use crate::model::{Animated, AudioFilter, Bus, FilterKind, Id, Project, TrackKind};
 use crate::theme::Palette;
-use crate::ui::tools::{glyph_text_button, icon_button, Dir, Glyph};
+use crate::ui::tools::{glyph_label, glyph_text_button, icon_button, Dir, Glyph};
 use crate::ui::Gesture;
 use eframe::egui::{
-    self, pos2, vec2, Align2, Button, ComboBox, DragValue, FontId, Grid, Rect, Sense, Stroke, TextEdit,
+    self, pos2, vec2, Align2, Button, ComboBox, DragValue, FontId, Grid, Rect, RichText, Sense, Stroke, TextEdit,
 };
+use std::cell::RefCell;
+
+// ---- ws:audio-dsp-automation ----
+thread_local! {
+    /// Bus the inspector's Repair / Open-in-Mixer asked this pane to select (the inspector.rs
+    /// PENDING_ACTION idiom: set from one pane, taken by another on its next frame).
+    static FOCUS_BUS: RefCell<Option<Id>> = const { RefCell::new(None) };
+}
+
+/// Pre-select `id` the next time the Mixer pane draws. Only selects — it does not surface the pane
+/// (layout-modes-onboarding's `App::surface`, wave 2).
+pub fn request_focus_bus(id: Id) {
+    FOCUS_BUS.with(|p| *p.borrow_mut() = Some(id));
+}
+
+pub(crate) fn take_focus_bus() -> Option<Id> {
+    FOCUS_BUS.with(|p| p.borrow_mut().take())
+}
 
 /// Channel-strip width in points.
 const STRIP_W: f32 = 210.0;
@@ -109,6 +127,10 @@ pub fn show(
     // is nothing to route to. Creating it is not a user edit, so it takes no undo entry.
     project.main_bus();
     let mut list = project.buses.clone();
+    // ---- ws:audio-dsp-automation ----
+    if let Some(id) = take_focus_bus().filter(|id| list.iter().any(|b| b.id == *id)) {
+        state.selected_bus = Some(id);
+    }
     let names: Vec<(Id, String)> = list.iter().map(|b| (b.id, b.name.clone())).collect();
     let main = list.first().map(|b| b.id).unwrap_or(0);
     let feeds = feeds(project, &list, main);
@@ -138,6 +160,7 @@ pub fn show(
                 let is_main = list[i].id == main;
                 let id = list[i].id;
                 let meter = buses.meter(id);
+                let lufs = buses.lufs(id);
                 let sel = state.selected_bus == Some(id);
                 let feed = feeds.iter().find(|(b, _)| *b == id).map(|(_, s)| s.clone()).unwrap_or_default();
                 ui.push_id(("strip", id), |ui| {
@@ -150,7 +173,7 @@ pub fn show(
                                 .id_salt(("strip_scroll", id))
                                 .auto_shrink([false, false])
                                 .show(ui, |ui| {
-                                    let s = Strip { is_main, meter, feed: &feed, time };
+                                    let s = Strip { is_main, meter, lufs, feed: &feed, time };
                                     strip(ui, &mut list[i], s, &names, palette, state, &mut g, &mut ed, n);
                                 });
                         });
@@ -220,6 +243,8 @@ pub fn show(
 struct Strip<'a> {
     is_main: bool,
     meter: (f32, f32),
+    /// (momentary, integrated) LUFS from `BusGraph::lufs` — -inf until playback has published a block.
+    lufs: (f32, f32),
     /// Tracks and buses that sum into this one, comma-joined.
     feed: &'a str,
     /// Playhead, in timeline seconds: every parameter is read and written there.
@@ -317,6 +342,7 @@ fn strip(
     }
 
     meter(ui, s.meter, palette);
+    lufs_row(ui, s.lufs, palette, n);
 
     ui.horizontal(|ui| {
         let mut db = lin_to_db(bus.gain.at(s.time) as f32).max(-60.0);
@@ -395,6 +421,25 @@ fn meter(ui: &mut egui::Ui, lr: (f32, f32), palette: &Palette) {
         p.rect_filled(bar, 0.0, if db > -1.0 { palette.playhead } else { palette.waveform });
     }
     p.rect_stroke(rect, 0.0, Stroke::new(1.0, palette.border), egui::StrokeKind::Inside);
+}
+
+// ---- ws:audio-dsp-automation ----
+/// "LUFS -14.2 · int -15.0 (approx)" under the peak meter, from the blocks `App::sync_buses` drained
+/// this frame; a dash before any audio has played. Plain text: no repaint request of its own, so an
+/// open, idle Mixer stays at 0 % CPU.
+fn lufs_row(ui: &mut egui::Ui, (momentary, integrated): (f32, f32), palette: &Palette, n: usize) {
+    let _ = n;
+    let fmt = |v: f32| if v.is_finite() { format!("{v:.1}") } else { "—".to_string() };
+    let r = ui
+        .horizontal(|ui| {
+            glyph_label(ui, Glyph::Meter, palette.text_dim);
+            ui.label(RichText::new(format!("LUFS {} · int {} (approx)", fmt(momentary), fmt(integrated))).small())
+        })
+        .response
+        .on_hover_text("K-weighted loudness (BS.1770-shaped, uncalibrated): 400 ms momentary · gated integrated");
+    #[cfg(test)]
+    test_rects::push(format!("lufs{n}"), r.rect);
+    let _ = r;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -999,5 +1044,51 @@ mod tests {
         assert!(!h.frame(vec![]));
         assert!(h.click_named("add_bus"), "the first click creates Main + a bus");
         assert_eq!(h.project.buses.len(), 2);
+    }
+
+    // ---- ws:audio-dsp-automation ----
+
+    /// The LUFS row draws under every strip's peak meter, reads what the graph was fed, and — with the
+    /// Mixer open and a bus selected — 30 idle frames never ask for a repaint (idle-CPU-0% gate).
+    #[test]
+    fn lufs_row_reads_the_graph_and_stays_idle() {
+        let mut h = Harness::new();
+        let music = h.project.buses[1].id;
+        h.state.selected_bus = Some(music);
+        assert!(!h.frame(vec![]));
+        assert!(test_rects::get("lufs0").is_some() && test_rects::get("lufs1").is_some(), "one row per strip");
+        // feed half a second of a -23 dBFS tone into Music: the row now has a number to show
+        let amp = db_to_lin(-23.0);
+        let block: Vec<f32> = (0..2048).map(|i| amp * (i as f32 * 0.13).sin()).collect();
+        for _ in 0..24 {
+            h.graph.ingest(music, &block);
+        }
+        let (mo, int) = h.graph.lufs(music);
+        assert!(mo.is_finite() && int.is_finite(), "{mo} {int}");
+        for _ in 0..30 {
+            assert!(!h.frame(vec![]), "drawing the meter row is not an edit");
+        }
+        assert!(!h.ctx.has_requested_repaint(), "an idle Mixer with a live LUFS row must not spin");
+        assert_eq!(h.undos, 0);
+    }
+
+    /// `request_focus_bus` (the inspector's Repair / Open in Mixer) pre-selects that strip on the next
+    /// draw, and an id the project no longer has is ignored rather than selecting nothing.
+    #[test]
+    fn request_focus_bus_preselects_a_strip() {
+        let mut h = Harness::new();
+        let music = h.project.buses[1].id;
+        assert_eq!(h.state.selected_bus, None);
+        request_focus_bus(music);
+        h.frame(vec![]);
+        assert_eq!(h.state.selected_bus, Some(music));
+        assert_eq!(take_focus_bus(), None, "consumed by the draw");
+        request_focus_bus(999);
+        h.frame(vec![]);
+        assert_eq!(h.state.selected_bus, Some(music), "an unknown bus leaves the selection alone");
+        // the '+ Filter' combo lists the new kinds through FilterKind::ALL — no per-kind UI code
+        h.project.bus_mut(music).unwrap().filters.push(AudioFilter::new(FilterKind::DeEsser));
+        h.frame(vec![]);
+        assert!(test_rects::get("p1_0_2").is_some(), "De-esser's third param (Ratio) is drawn");
     }
 }

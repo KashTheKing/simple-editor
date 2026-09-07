@@ -63,6 +63,110 @@ pub struct ExportOptions {
     /// Container metadata to write, as `(key, value)`. Empty = strip everything (`-map_metadata -1`),
     /// which is the default: exports carry no title/encoder/creation-time unless asked for.
     pub metadata: Vec<(String, String)>,
+    // ---- ws:export-deliver ----
+    /// Timeline seconds `[a, b)` to render instead of the whole project (the Export window's
+    /// "Export In/Out Range" box, `export.queue`'s range_in/range_out). None = everything.
+    pub range: Option<(f64, f64)>,
+    /// Append `-af loudnorm` (EBU R128, −14 LUFS / −1 dBTP — what YouTube/Spotify normalise to) when
+    /// the export carries audio.
+    pub loudnorm: bool,
+    /// Fit-and-pad (pillar/letterbox with black bars) instead of stretching when `out_size`'s aspect
+    /// differs from the project's. Only the platform-preset tiles set this; a hand-typed custom size
+    /// keeps the plain stretch it always had.
+    pub letterbox: bool,
+}
+
+// ---- ws:export-deliver ----
+/// One platform export tile ("YouTube 1080p", "Shorts 9:16", …): a target size + container +
+/// quality. Stored in `Settings.export_presets` (a plain Vec, so users can edit/remove tiles).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ExportPreset {
+    pub name: String,
+    pub ext: String,
+    pub width: u32,
+    pub height: u32,
+    pub crf: u32,
+    pub loudnorm: bool,
+}
+
+/// The 4 shipped tiles — also the serde field default for `Settings.export_presets`, so a
+/// settings.json from before this field existed backfills the same tiles a fresh install gets.
+pub fn default_export_presets() -> Vec<ExportPreset> {
+    let p = |name: &str, width, height, crf| ExportPreset {
+        name: name.into(),
+        ext: "mp4".into(),
+        width,
+        height,
+        crf,
+        loudnorm: true,
+    };
+    vec![
+        p("YouTube 1080p", 1920, 1080, 18),
+        p("YouTube 4K", 3840, 2160, 18),
+        p("Shorts / Reels / TikTok", 1080, 1920, 20),
+        p("Instagram 1:1", 1080, 1080, 20),
+    ]
+}
+
+/// ffmpeg's EBU R128 normaliser at the streaming-platform target. Fixed on purpose (see the issue's
+/// deliberate simplifications): a user-tunable target is a Settings field away if ever asked for.
+pub const LOUDNORM: &str = "loudnorm=I=-14:TP=-1:LRA=11";
+
+/// The `-vf` scale chain for an export of `src` px rendered to `out` px: the plain
+/// `scale=W:H:flags=<scaler>` every export used before, or — when `letterbox` and the aspects differ —
+/// fit inside then pad with black bars so a 16:9 project lands in a 9:16 Shorts frame un-stretched.
+/// Empty when `out == src` (nothing to scale).
+pub fn scale_vf(src: (u32, u32), out: (u32, u32), scaler: &str, letterbox: bool) -> String {
+    if out == src {
+        return String::new();
+    }
+    let (ow, oh) = out;
+    let flags = if scaler.is_empty() { "bicubic" } else { scaler };
+    let same_aspect = (src.0 as u64 * oh as u64) == (src.1 as u64 * ow as u64);
+    if letterbox && !same_aspect {
+        format!(
+            "scale={ow}:{oh}:force_original_aspect_ratio=decrease:flags={flags},pad={ow}:{oh}:(ow-iw)/2:(oh-ih)/2:color=black"
+        )
+    } else {
+        format!("scale={ow}:{oh}:flags={flags}")
+    }
+}
+
+/// The `(-vf, -af)` filter strings for an export's ffmpeg command (empty = omit the flag). Pure so
+/// the loudnorm / letterbox / even-size rules are testable without spawning ffmpeg. `audio` = the
+/// export carries a mixed WAV; `args` = the codec args (`pix_fmt` decides the even-size pad).
+fn output_filters(opts: &ExportOptions, project: (u32, u32), audio: bool, args: &[String]) -> (String, String) {
+    let scale = opts.out_size.filter(|&s| s != project);
+    let mut vf = match scale {
+        Some(out) => scale_vf(project, out, &opts.scaler, opts.letterbox),
+        None => String::new(),
+    };
+    let (fw, fh) = scale.unwrap_or(project);
+    if (fw % 2 == 1 || fh % 2 == 1) && args.iter().any(|a| a == "yuv420p" || a == "nv12") {
+        if !vf.is_empty() {
+            vf.push(',');
+        }
+        vf.push_str("pad=ceil(iw/2)*2:ceil(ih/2)*2");
+    }
+    let af = if opts.loudnorm && audio { LOUDNORM.to_string() } else { String::new() };
+    (vf, af)
+}
+
+/// `(start, duration, frame count)` an export renders: the whole project, or `range` clamped into it.
+/// Err when nothing is left to render.
+fn frame_plan(project_dur: f64, fps: f64, range: Option<(f64, f64)>) -> Result<(f64, f64, u64), String> {
+    if project_dur <= 0.0 {
+        return Err("Project is empty".into());
+    }
+    let (start, end) = match range {
+        Some((a, b)) => (a.max(0.0).min(project_dur), b.min(project_dur)),
+        None => (0.0, project_dur),
+    };
+    let dur = end - start;
+    if dur <= 0.0 {
+        return Err("Export range is empty".into());
+    }
+    Ok((start, dur, (dur * fps).ceil().max(1.0) as u64))
 }
 
 pub struct Progress {
@@ -71,6 +175,8 @@ pub struct Progress {
     error: Mutex<Option<String>>,
     pub cancel: AtomicBool,
     done: AtomicBool,
+    // ---- ws:export-deliver ----
+    started: std::time::Instant,
 }
 
 impl Progress {
@@ -81,7 +187,21 @@ impl Progress {
             error: Mutex::new(None),
             cancel: AtomicBool::new(false),
             done: AtomicBool::new(false),
+            started: std::time::Instant::now(),
         })
+    }
+    // ---- ws:export-deliver ----
+    /// Time since the job started.
+    pub fn elapsed(&self) -> Duration {
+        self.started.elapsed()
+    }
+    /// Remaining time, extrapolated linearly from the fraction done; None below 1 % (nothing to
+    /// extrapolate from yet) or once finished.
+    pub fn eta(&self) -> Option<Duration> {
+        if self.is_done() {
+            return None;
+        }
+        eta_from(self.elapsed(), self.fraction())
     }
     pub fn set(&self, fraction: f32, status: impl Into<String>) {
         *self.fraction.lock().unwrap() = fraction;
@@ -106,6 +226,16 @@ impl Progress {
     pub fn error(&self) -> Option<String> {
         self.error.lock().unwrap().clone()
     }
+}
+
+// ---- ws:export-deliver ----
+/// `elapsed * (1/fraction - 1)`: the pure half of `Progress::eta`, so the curve is testable on a fixed
+/// clock. None below 1 %.
+pub fn eta_from(elapsed: Duration, fraction: f32) -> Option<Duration> {
+    if !(fraction >= 0.01) || fraction >= 1.0 {
+        return None;
+    }
+    Some(elapsed.mul_f64((1.0 / fraction as f64 - 1.0).max(0.0)))
 }
 
 pub(crate) const CANCELLED: &str = "cancelled";
@@ -158,11 +288,9 @@ fn run_export(
     let tmp = temp_output(&opts.out_path);
     let audio_only = AUDIO_EXTS.contains(&ext.as_str());
     let is_gif = ext == "gif";
-    let dur = project.duration();
-    if dur <= 0.0 {
-        return Err("Project is empty".into());
-    }
     let fps = project.fps.max(1.0);
+    // ws:export-deliver: a range export renders [start, start+dur) instead of the whole timeline
+    let (start, dur, n) = frame_plan(project.duration(), fps, opts.range)?;
     let (w, h) = (project.width.max(1), project.height.max(1));
     let mut pool = DecoderPool::new(opts.backend);
 
@@ -172,7 +300,7 @@ fn run_export(
             .audio_tracks()
             .into_iter()
             .any(|i| project.active(i) && project.tracks[i].clips.iter().any(|c| c.enabled));
-    let wav = if has_audio { Some(mix_to_wav(project, &mut pool, prog, dur)?) } else { None };
+    let wav = if has_audio { Some(mix_to_wav(project, &mut pool, prog, start, dur)?) } else { None };
     if audio_only && wav.is_none() {
         return Err("Nothing to export: no audio clips".into());
     }
@@ -194,23 +322,12 @@ fn run_export(
         }
     }
     let args = codec_args(&ext, &opts.encoder, opts.crf, &opts.preset, &detect_encoders());
-    if !audio_only {
-        let scale = opts.out_size.filter(|&s| s != (w, h));
-        let mut vf = String::new();
-        if let Some((sw, sh)) = scale {
-            let flags = if opts.scaler.is_empty() { "bicubic" } else { &opts.scaler };
-            vf = format!("scale={sw}:{sh}:flags={flags}");
-        }
-        let (fw, fh) = scale.unwrap_or((w, h));
-        if (fw % 2 == 1 || fh % 2 == 1) && args.iter().any(|a| a == "yuv420p" || a == "nv12") {
-            if !vf.is_empty() {
-                vf.push(',');
-            }
-            vf.push_str("pad=ceil(iw/2)*2:ceil(ih/2)*2");
-        }
-        if !vf.is_empty() {
-            cmd.args(["-vf", &vf]);
-        }
+    let (vf, af) = output_filters(opts, (w, h), wav.is_some(), &args);
+    if !audio_only && !vf.is_empty() {
+        cmd.args(["-vf", &vf]);
+    }
+    if !af.is_empty() {
+        cmd.args(["-af", &af]);
     }
     cmd.args(&args);
     // nothing is inherited from the inputs; only what the user typed is written
@@ -231,7 +348,6 @@ fn run_export(
     // 3. frames
     let mut stdin = child.stdin.take();
     if let Some(pipe) = stdin.as_mut() {
-        let n = (dur * fps).ceil().max(1.0) as u64;
         let mut frame = Frame::new(w, h);
         let mut comp = Compositor::new();
         // GPU path: decode here (off the UI thread), composite there (the GL context lives on the UI
@@ -245,7 +361,7 @@ fn run_export(
             if prog.is_cancelled() {
                 break;
             }
-            let t = i as f64 / fps;
+            let t = start + i as f64 / fps;
             let mut done = false;
             if let Some((tx, scratch)) = gpu.as_mut() {
                 match scratch.render(project, t, w, h, tx, &text) {
@@ -267,7 +383,8 @@ fn run_export(
             if pipe.write_all(&frame.rgba).is_err() {
                 break; // ffmpeg died — its stderr tells why
             }
-            prog.set(0.1 + 0.9 * (i + 1) as f32 / n as f32, format!("Encoding {t:.1} / {dur:.1} s{gaps}"));
+            let end = start + dur;
+            prog.set(0.1 + 0.9 * (i + 1) as f32 / n as f32, format!("Encoding {t:.1} / {end:.1} s{gaps}"));
         }
     } else {
         prog.set(0.5, "Encoding audio…");
@@ -364,8 +481,14 @@ fn cpu_gaps(project: &Project) -> String {
     }
 }
 
-/// Mix the whole timeline into a temp WAV (f32 stereo 48 kHz). Progress 0..0.1.
-fn mix_to_wav(project: &Project, pool: &mut DecoderPool, prog: &Progress, dur: f64) -> Result<TempFile, String> {
+/// Mix `dur` seconds of timeline from `start` into a temp WAV (f32 stereo 48 kHz). Progress 0..0.1.
+fn mix_to_wav(
+    project: &Project,
+    pool: &mut DecoderPool,
+    prog: &Progress,
+    start: f64,
+    dur: f64,
+) -> Result<TempFile, String> {
     static N: AtomicU32 = AtomicU32::new(0);
     let tmp = TempFile(std::env::temp_dir().join(format!(
         "simple-editor-mix-{}-{}.wav",
@@ -384,7 +507,7 @@ fn mix_to_wav(project: &Project, pool: &mut DecoderPool, prog: &Progress, dur: f
             return Err(CANCELLED.into());
         }
         let n = (total - done).min(MIX_BLOCK as u64) as usize;
-        mixer.mix(project, done as f64 / SAMPLE_RATE as f64, pool, &mut buf[..n * 2]);
+        mixer.mix(project, start + done as f64 / SAMPLE_RATE as f64, pool, &mut buf[..n * 2]);
         for (b, s) in bytes.chunks_exact_mut(4).zip(&buf[..n * 2]) {
             b.copy_from_slice(&s.to_le_bytes());
         }
@@ -1153,6 +1276,9 @@ pub(crate) mod tests {
             scaler: "bicubic".into(),
             frames: FrameSource::Cpu,
             metadata: Vec::new(),
+            range: None,
+            loudnorm: false,
+            letterbox: false,
         };
         let text = Arc::new(Mutex::new(TextRasterizer::new()));
         assert_eq!(wait_done(&start_export(p, opts, text)), None);
@@ -1186,6 +1312,9 @@ pub(crate) mod tests {
             scaler: "bicubic".into(),
             frames: FrameSource::Cpu,
             metadata: Vec::new(),
+            range: None,
+            loudnorm: false,
+            letterbox: false,
         };
         let text = Arc::new(Mutex::new(TextRasterizer::new()));
         let prog = start_export(p.clone(), opts.clone(), text.clone());
@@ -1204,5 +1333,103 @@ pub(crate) mod tests {
         assert_eq!(std::fs::read(&cancel).unwrap(), b"keep");
         assert!(!dir.join(".cancel.simple-editor-tmp.mp4").exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- ws:export-deliver ----
+    fn opts_for(out: PathBuf) -> ExportOptions {
+        ExportOptions {
+            out_path: out,
+            encoder: "auto".into(),
+            crf: 23,
+            preset: "ultrafast".into(),
+            backend: Backend::Auto,
+            out_size: None,
+            scaler: "bicubic".into(),
+            frames: FrameSource::Cpu,
+            metadata: Vec::new(),
+            range: None,
+            loudnorm: false,
+            letterbox: false,
+        }
+    }
+
+    /// `n` comes from the range, not `project.duration()`; the real run (ffmpeg permitting) lands at
+    /// the range's length.
+    #[test]
+    fn range_export_frame_count() {
+        assert_eq!(frame_plan(4.0, 30.0, Some((1.0, 3.0))).unwrap(), (1.0, 2.0, 60));
+        assert_eq!(frame_plan(4.0, 30.0, None).unwrap(), (0.0, 4.0, 120));
+        // clamped into the project, and an empty/inverted range is an error, not a zero-frame file
+        assert_eq!(frame_plan(4.0, 30.0, Some((3.0, 9.0))).unwrap(), (3.0, 1.0, 30));
+        assert!(frame_plan(4.0, 30.0, Some((3.0, 1.0))).is_err());
+        assert!(frame_plan(0.0, 30.0, None).is_err());
+
+        let dir = temp_dir("range");
+        let Some(src) = gen_media(&dir) else {
+            eprintln!("ffmpeg missing — skipped");
+            return;
+        };
+        let p = Project::from_media(asset(&src.to_string_lossy(), 2));
+        let out = dir.join("range.mp4");
+        let opts = ExportOptions { range: Some((1.0, 3.0)), ..opts_for(out.clone()) };
+        let text = Arc::new(Mutex::new(TextRasterizer::new()));
+        assert_eq!(wait_done(&start_export(p, opts, text)), None);
+        let d = probe_duration(&out).expect("probe");
+        assert!((d - 2.0).abs() < 0.1, "duration {d}, expected the 2 s range");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn letterbox_pads_mismatched_aspect_preset() {
+        let s = scale_vf((1920, 1080), (1080, 1920), "lanczos", true);
+        assert!(s.contains("force_original_aspect_ratio=decrease"), "{s}");
+        assert!(s.contains("pad=1080:1920"), "{s}");
+        // letterbox off, or a matching aspect: the plain scale every export used before
+        assert_eq!(scale_vf((1920, 1080), (1080, 1920), "lanczos", false), "scale=1080:1920:flags=lanczos");
+        assert_eq!(scale_vf((1920, 1080), (1280, 720), "lanczos", true), "scale=1280:720:flags=lanczos");
+        assert_eq!(scale_vf((1920, 1080), (1920, 1080), "lanczos", true), "");
+        assert_eq!(scale_vf((320, 240), (160, 120), "", false), "scale=160:120:flags=bicubic");
+    }
+
+    #[test]
+    fn loudnorm_appends_af_filter_only_with_audio() {
+        let args = codec_args("mp4", "auto", 23, "medium", &[]);
+        let on = ExportOptions { loudnorm: true, ..opts_for("x.mp4".into()) };
+        let (vf, af) = output_filters(&on, (320, 240), true, &args);
+        assert_eq!(af, LOUDNORM);
+        assert_eq!(vf, "", "no scale, even size: no -vf at all");
+        // a silent / video-only project gets no -af
+        assert_eq!(output_filters(&on, (320, 240), false, &args).1, "");
+        // and off reproduces the pre-change filters byte for byte
+        let off = ExportOptions { out_size: Some((160, 120)), ..opts_for("x.mp4".into()) };
+        assert_eq!(
+            output_filters(&off, (320, 240), true, &args),
+            ("scale=160:120:flags=bicubic".into(), String::new())
+        );
+        // the odd-size guard still chains after the scale
+        let odd = ExportOptions { out_size: Some((161, 121)), ..opts_for("x.mp4".into()) };
+        assert_eq!(
+            output_filters(&odd, (320, 240), false, &args).0,
+            "scale=161:121:flags=bicubic,pad=ceil(iw/2)*2:ceil(ih/2)*2"
+        );
+    }
+
+    #[test]
+    fn eta_is_none_at_start_and_decreasing() {
+        let elapsed = Duration::from_secs(10);
+        assert_eq!(eta_from(elapsed, 0.0), None);
+        assert_eq!(eta_from(elapsed, 0.005), None, "below 1 % there is nothing to extrapolate from");
+        let e1 = eta_from(elapsed, 0.25).unwrap();
+        let e2 = eta_from(elapsed, 0.5).unwrap();
+        assert_eq!(e1, Duration::from_secs(30), "25 % done after 10 s → 30 s left");
+        assert_eq!(e2, Duration::from_secs(10));
+        assert!(e1 > e2, "more done, less left");
+        assert_eq!(eta_from(elapsed, 1.0), None);
+        let p = Progress::new();
+        assert_eq!(p.eta(), None, "a fresh job has no ETA");
+        p.set(0.5, "half");
+        assert!(p.eta().is_some());
+        p.finish(None);
+        assert_eq!(p.eta(), None, "a finished job has no ETA");
     }
 }

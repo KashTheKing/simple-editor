@@ -86,12 +86,9 @@ impl App {
                 }
             }
             PlayPause => {
-                // a library asset preview owns the Preview pane while it's open, so space controls
-                // its player instead of the timeline's — otherwise pressing play while looking at a
-                // library asset would silently start the timeline playing behind it
-                if let Some(lp) = self.lib_preview.as_mut() {
-                    lp.player.toggle();
-                } else if self.buffer_stall {
+                // (ws:source-monitor: while the Source monitor holds transport focus, Space reaches
+                // source_ctl::act first and never gets here)
+                if self.buffer_stall {
                     self.buffer_stall = false; // buffering held the clock: space means "stop waiting"
                 } else {
                     if !self.player.is_playing() && self.playhead >= self.project.duration() - 1e-6 {
@@ -151,7 +148,9 @@ impl App {
                     for tid in trs {
                         self.project.remove_transition(tid);
                     }
-                    self.project.delete_clips(&ids, a == RippleDelete);
+                    // ws:timeline-trim-gestures: magnetic-track-aware (a clip on a magnetic track takes
+                    // its own gap with it) — plain delete_clips has no Track.magnetic concept.
+                    crate::ui::timeline::delete_clips_magnetic(&mut self.project, &ids, a == RippleDelete);
                     self.selection.clear();
                     self.push_undo_labeled(before, if a == RippleDelete { "Ripple delete" } else { "Delete" });
                     self.after_edit();
@@ -975,7 +974,9 @@ mod tests {
         let body = &after[..end];
 
         assert!(
-            body.contains(r#"self.push_undo_labeled(before, if a == RippleDelete { "Ripple delete" } else { "Delete" })"#),
+            body.contains(
+                r#"self.push_undo_labeled(before, if a == RippleDelete { "Ripple delete" } else { "Delete" })"#
+            ),
             "a plain Delete must label the undo entry 'Delete'"
         );
         assert!(body.contains("self.selection.clear()"), "Delete must clear the selection");

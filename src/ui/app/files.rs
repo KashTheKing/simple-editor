@@ -222,6 +222,10 @@ impl App {
             scaler: self.settings.export_scaler.clone(),
             frames: self.export_frames(),
             metadata: Vec::new(),
+            // ---- ws:export-deliver ----
+            range: None,
+            loudnorm: self.settings.loudnorm,
+            letterbox: false,
         }
     }
 
@@ -231,25 +235,43 @@ impl App {
         }
     }
 
-    /// Open the (non-blocking) Export window.
+    /// Open the (non-blocking) Export window — after a non-blocking preflight when media used on the
+    /// timeline is offline (a missing file renders black; say so before the save dialog, not after).
     pub(super) fn act_export(&mut self) {
         if self.ffmpeg_missing() || self.timeline_is_empty() {
             return;
         }
         self.detect_encoders_once();
-        self.export_ui.open = true;
+        // ---- ws:export-deliver ----
+        let offline = offline_assets(&self.project);
+        if offline.is_empty() {
+            self.export_ui.open = true;
+        } else {
+            let list = offline.iter().take(5).map(|p| format!("  {p}")).collect::<Vec<_>>().join("\n");
+            let more =
+                if offline.len() > 5 { format!("\n  … and {} more", offline.len() - 5) } else { String::new() };
+            confirm::ask_app(
+                "Missing media",
+                format!(
+                    "{} file(s) used on the timeline can't be found — they export as black/silence:\n{list}{more}\n\nExport anyway?",
+                    offline.len()
+                ),
+                |app| app.export_ui.open = true,
+            );
+        }
     }
 
-    /// The Export window confirmed: start the export (options include the chosen output path).
-    pub(super) fn start_export_choice(&mut self, choice: export_ui::ExportChoice) {
+    /// The Export window confirmed (or the queue popped, or Quick Export fired): start the export.
+    /// Returns the job, or None when it was refused with a toast (slot busy, ffmpeg missing, empty
+    /// timeline, or the path is a project source — re-checked HERE, at pop time, not only at enqueue).
+    pub(super) fn start_export_choice(&mut self, choice: export_ui::ExportChoice) -> Option<Arc<Progress>> {
         if self.export.is_some() || self.ffmpeg_missing() || self.timeline_is_empty() {
-            return;
+            return None;
         }
         // writing over a file the player/decoders are reading from is the Overwrite path's job (release + reopen)
-        let out_c = std::fs::canonicalize(&choice.opts.out_path).ok();
-        if out_c.is_some() && self.project.assets.iter().any(|a| std::fs::canonicalize(&a.path).ok() == out_c) {
+        if refuses_source(&self.project, &choice.opts.out_path) {
             self.toast("That file is a source of this project — use Overwrite Original Video (Ctrl+S) instead");
-            return;
+            return None;
         }
         self.player.pause();
         let path = choice.opts.out_path.clone();
@@ -265,12 +287,20 @@ impl App {
         } else {
             export::start_export(project, choice.opts, self.text.clone())
         };
-        self.export = Some((prog, ExportKind::File { path }));
+        self.export = Some((prog.clone(), ExportKind::File { path }));
+        // ---- ws:export-deliver ----
+        self.settings.last_export = Some(choice.last); // what Ctrl+M re-runs next time
         self.settings.save(); // the window remembers resolution/scaler in settings
+        Some(prog)
     }
 
     pub(super) fn act_export_lossless(&mut self) {
         if self.export.is_some() || self.ffmpeg_missing() {
+            return;
+        }
+        // ---- ws:export-deliver ----
+        if self.export_ui.range {
+            self.toast("Lossless cut can't honour In/Out points — untick Export In/Out Range first");
             return;
         }
         let project = self.export_project();
@@ -405,19 +435,37 @@ impl App {
 
     pub(super) fn finish_export(&mut self) {
         let Some((prog, kind)) = self.export.take() else { return };
+        // ---- ws:export-deliver ----
+        // `-- @on export_done` scripts hear every outcome (path + ok), success or not
+        let hook_path = match &kind {
+            ExportKind::File { path } => path.clone(),
+            ExportKind::Overwrite { original, .. } => original.clone(),
+        };
         if let Some(e) = prog.error() {
             if let ExportKind::Overwrite { temp, .. } = &kind {
                 let _ = std::fs::remove_file(temp);
             }
             if prog.is_cancelled() {
                 self.toast("Export cancelled");
+                self.export_queue.clear(); // a cancel means "stop", not "start the next one"
             } else {
-                self.toast(format!("Export failed: {e}"));
+                self.push_toast(feedback::Toast::new(format!("Export failed: {e}")).kind(feedback::ToastKind::Error));
             }
+            self.fire_hook("export_done", json!({"path": hook_path.to_string_lossy(), "ok": false}));
             return;
         }
+        self.fire_hook("export_done", json!({"path": hook_path.to_string_lossy(), "ok": true}));
         match kind {
-            ExportKind::File { path } => self.toast_with_folder("Export finished", path),
+            ExportKind::File { path } => {
+                let took = crate::ui::duration_text(prog.elapsed().as_secs_f64());
+                let queued = self.export_queue.len();
+                let msg = if queued > 0 {
+                    format!("Export finished in {took} — {queued} more queued")
+                } else {
+                    format!("Export finished in {took}")
+                };
+                self.push_toast(feedback::Toast::with_folder(msg, path).kind(feedback::ToastKind::Success));
+            }
             ExportKind::Overwrite { original, temp } => {
                 self.player.release_files();
                 // the thumbnail worker holds a decoder (ffmpeg child) on the source — drop it while we retry
@@ -537,6 +585,8 @@ impl App {
             scaler: self.settings.export_scaler.clone(),
             gif_fps: 15,
             target_bytes: None,
+            vf_extra: None,
+            af_extra: None,
         };
         self.toast(format!("Converting to {ext}…"));
         self.convert_jobs.push((crate::engine::convert::start_convert(opts), out));
@@ -637,10 +687,32 @@ impl App {
             scaler: self.settings.export_scaler.clone(),
             gif_fps: 15,
             target_bytes: c.by_size.then(|| (c.target_mb * 1e6) as u64),
+            vf_extra: None,
+            af_extra: None,
         };
         self.toast("Compressing\u{2026}");
         self.convert_jobs.push((crate::engine::convert::start_convert(opts), out));
     }
+}
+
+// ---- ws:export-deliver ----
+/// Is `out` one of the project's own source files? (Canonicalised, so `..`/case/drive-letter forms
+/// still match.) Writing over a file the player and decoders are reading is the Overwrite path's job
+/// — the queue re-runs this at pop time via `start_export_choice`, not only when a job is added.
+pub(super) fn refuses_source(project: &Project, out: &Path) -> bool {
+    let Ok(out_c) = std::fs::canonicalize(out) else { return false };
+    project.assets.iter().any(|a| std::fs::canonicalize(&a.path).is_ok_and(|p| p == out_c))
+}
+
+/// Paths of assets used on the timeline whose file is missing — the export preflight list.
+fn offline_assets(project: &Project) -> Vec<String> {
+    let used = project.used_assets();
+    project
+        .assets
+        .iter()
+        .filter(|a| used.contains(&a.id) && !Path::new(&a.path).exists())
+        .map(|a| a.path.clone())
+        .collect()
 }
 
 // ---- ws:forgiveness ----
@@ -695,5 +767,25 @@ mod tests {
         // the crate-wide grep for the removed blocking-dialog API (see the PR body's verification
         // checklist) covers the "never blocks" property globally; not duplicated here as a literal
         // string, since that string would itself trip that same grep.
+    }
+
+    // ---- ws:export-deliver ----
+    /// The moved `export_opts()` literal (app.rs:1461 before split-god-files) sets the three new
+    /// fields explicitly — `range: None`, `letterbox: false`, and loudnorm from Settings — so a plain
+    /// export's ffmpeg line is what it was (the byte comparison itself lives in
+    /// `engine::export::tests::loudnorm_appends_af_filter_only_with_audio`: loudnorm off ⇒ no `-af`,
+    /// letterbox off ⇒ the old plain `scale=`). Same source-scan technique as the two tests above.
+    #[test]
+    fn moved_option_literals_compile_with_new_fields() {
+        let src = include_str!("files.rs");
+        let body = fn_body(src, "pub(super) fn export_opts(");
+        for field in ["range: None", "loudnorm: self.settings.loudnorm", "letterbox: false"] {
+            assert!(body.contains(field), "export_opts must set `{field}` explicitly");
+        }
+        // finish_export fires export_done exactly twice (the failure return and the success path) and
+        // never anywhere else in this file
+        assert_eq!(src.matches("fire_hook(\"export_done\"").count(), 2);
+        let finish = fn_body(src, "pub(super) fn finish_export(");
+        assert_eq!(finish.matches("fire_hook(\"export_done\"").count(), 2);
     }
 }

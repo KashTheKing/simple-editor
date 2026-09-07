@@ -69,6 +69,12 @@ const OP_TOOLS: &[(&str, &str)] = &[
     ("unnest", "timeline.unnest"),
     ("replace_clip", "timeline.replace"),
     ("magnetic_move", "timeline.magnetic_move"),
+    // ---- ws:audio-dsp-automation ----
+    ("apply_repair", "audio.repair"),
+    // ---- ws:canvas-handles-monitor ----
+    ("fit_clip_to_screen", "clip.fit"),
+    // ---- ws:source-monitor ----
+    ("subclip_from_marks", "source.subclip"),
     // ---- ws:media-library ----
     ("apply_consolidate", "media.consolidate"),
     // Documentation only (like forgiveness's rows below): `consolidate_assets_copy` is an associated
@@ -106,7 +112,6 @@ const OP_INTERNAL: &[(&str, &str)] = &[
     ("add_path", "Draw-tool / motion-path capture is UI-only, no MCP tool"),
     ("apply_path", "Draw-tool / motion-path capture is UI-only, no MCP tool"),
     ("link_path", "Draw-tool / motion-path capture is UI-only, no MCP tool"),
-    ("fit_clip_to_screen", "viewer 'Fit' is a UI action, not an MCP tool"),
     ("refresh_links", "internal per-frame live-link rebake, not a user edit"),
     ("plan_item_mut", "accessor; edits go through plan.set"),
     ("add_note", "notes.set writes note[0] directly; no tool adds further titled notes yet"),
@@ -233,6 +238,39 @@ fn tool_names_are_sole_registration() {
     for name in ["clip.add_lut", "color.auto", "color.match", "looks.list", "looks.apply"] {
         let count = mcp::tools::all().filter(|t| t.name == name).count();
         assert_eq!(count, 1, "'{name}' must be registered exactly once in TOOL_TABLES, found {count}");
+    }
+}
+
+// ---- ws:timeline-trim-gestures ----
+/// Every gesture/act this workstream binds to the mouse is a 1:1 use of an already-tooled trim-model
+/// primitive — no new MCP surface. (label, tool name(s) that must resolve in `mcp::tools::all()`);
+/// Segment composes two ops (extract at the source, splice at the destination), so it lists both.
+const GESTURE_TOOL_TWINS: &[(&str, &[&str])] = &[
+    ("Roll", &["timeline.roll"]),
+    ("Slip", &["timeline.slip"]),
+    ("Slide", &["timeline.slide"]),
+    ("RippleTrim", &["timeline.ripple_trim"]),
+    ("MultiRippleTrim", &["timeline.trim_edges"]),
+    ("Segment", &["timeline.extract", "timeline.splice"]),
+    ("MagneticMove", &["timeline.magnetic_move"]),
+    ("CloseGap", &["timeline.close_gap"]),
+    ("JoinThroughEdit", &["timeline.join"]),
+    ("Duplicate", &["timeline.duplicate"]),
+    ("Unnest", &["timeline.unnest"]),
+    ("ReplaceClip", &["timeline.replace"]),
+    ("DropSplice", &["timeline.splice"]),
+    ("DropOverwrite", &["timeline.overwrite"]),
+];
+
+#[test]
+fn gestures_have_tool_twins() {
+    for (label, tools) in GESTURE_TOOL_TWINS {
+        for tool in *tools {
+            assert!(
+                mcp::tools::all().any(|t| t.name == *tool),
+                "{label}'s tool twin '{tool}' is not registered in mcp::tools::all()"
+            );
+        }
     }
 }
 

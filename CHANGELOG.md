@@ -2,6 +2,37 @@
 
 ## unreleased
 
+### Source monitor (issue #32, source-monitor)
+- `Pane::Source` is real: the old library preview (`lib_preview.rs`, deleted — it used to hijack the
+  Preview pane) is now a dockable Source monitor (`ui/source_ui.rs` + `ui/app/source_pane.rs`) with its
+  own `Player`, I/O marks (ticks + band on the shared `preview::scrub_bar`), a Source/Record focus
+  button, a three-point / smart-edit button row (Splice, Overwrite, Append at End, Ripple Overwrite,
+  Close Up, Place on Top + a nearest-cut readout), Subclip-from-marks and Source Tape (the bin laid end
+  to end in a transient project — never touches the real project or its undo stack).
+- Transport focus: Space/J/K/L/I/O/Home/End drive whichever of Source or Timeline was clicked last
+  (the timeline is the fallback; a press on the Preview or Timeline pane hands focus back). The two
+  players never run at once — starting the timeline pauses the source.
+- `App::insert_at` is gone: every placement (drops, library "Add", voiceover/recording import,
+  three-point edits) routes through `edit_ops::place`/`place_many` with an explicit `DropMode` —
+  drop modifiers are live (none = Place, Ctrl = Splice, Alt = Overwrite, Shift = Place on Top), and
+  an Alt-drop landing on a clip body is a Replace edit (`Project::replace_clip`: duration/effects/
+  transform kept, linked audio swapped too), elsewhere a plain overwrite.
+- New actions: Match Frame (F), Reveal in Library (Ctrl+Shift+R); Append at End / Ripple Overwrite /
+  Close Up / Place on Top / Source Tape / Show-Hide Source Monitor (palette + Source pane buttons).
+  `Project::subclip_from_marks`. MCP: `source.open/mark/get/focus/tape/insert/subclip`,
+  `timeline.place`, `timeline.match_frame`, `timeline.smart_edit` (splice/overwrite/lift/extract/replace
+  stay on trim-model's existing `timeline.*` tools — nothing re-registered).
+- Tripwire count update: `pre_existing_repaint_sites_unchanged_and_named` drops from 16 to 15 —
+  `lib_preview.rs`'s one raw `request_repaint_after` (the buffering spinner's 50 ms poll) is deleted with
+  the file; `source_pane.rs` routes the same poll through `App::animate_until`, so this is a genuine
+  migration of one of the tracked sites, not a relocation.
+- Verification aid: `--screenshot` with `SE_SCREENSHOT_SOURCE=1` opens the project's first asset in the
+  Source monitor with marks set before the shot (like `SE_SCREENSHOT_DELAY`).
+- Deferred to same-day follow-ups per the plan's ownership notes: the `library.rs` edit (Source Tape
+  filter toggle; Enter/double-click loads into Source) lands after media-library (#34); the timeline
+  clip context-menu rows (Match Frame / Reveal in Library / Replace with Library Selection) after the
+  wave-2 timeline owner merges — both verbs are already reachable by hotkey and palette.
+
 ### Forgiveness (issue #21)
 - Toasts gained a kind (info/success/warn/error), an optional Undo button and an optional progress
   bar; `App::toast`/`toast_with_folder` (122 existing call sites) compile unchanged. Delete/Ripple

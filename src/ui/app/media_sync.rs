@@ -154,7 +154,7 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
         let nav = library::keyboard(&mut app.library, ctx);
         if !nav.add_to_timeline.is_empty() {
             app.push_undo();
-            app.insert_at(nav.add_to_timeline, app.playhead, None);
+            app.place_assets(&nav.add_to_timeline, app.playhead, None, DropMode::Place);
             app.after_edit();
         }
         if !nav.remove.is_empty() {

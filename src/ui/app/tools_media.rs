@@ -306,6 +306,8 @@ pub const TOOLS: &[ToolDef] = &[
                     scaler: scaler.clone(),
                     gif_fps: 15,
                     target_bytes: None,
+                    vf_extra: None,
+                    af_extra: None,
                 };
                 app.convert_jobs.push((crate::engine::convert::start_convert(opts), out.clone()));
                 outputs.push(json!({"id": id, "path": out.to_string_lossy()}));
