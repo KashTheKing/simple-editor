@@ -1413,7 +1413,7 @@ impl App {
             Action::ExportVideo | Action::ExportLossless if timeline_empty => {
                 Err("Nothing to export — the timeline is empty")
             }
-            Action::PasteAttributes if no_attrs_copied => Err("Copy attributes from a clip first"),
+            Action::PasteAttributes if no_attrs_copied => Err("Copy attributes from a clip first (Ctrl+Alt+C)"),
             _ => Ok(()),
         }
     }

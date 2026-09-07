@@ -9,6 +9,13 @@ pub(super) fn snapshot_if_mutate(project: &Project, kind: ToolKind) -> Option<St
     (kind == ToolKind::Mutate).then(|| project.to_json())
 }
 
+/// The pure half of `App::run_rollback`: parses `snap` back into a `Project`, or `None` if it fails to
+/// parse. Split out (mirrors `snapshot_if_mutate` above) so a test can exercise the actual restore logic
+/// `run_rollback` runs, instead of re-implementing `Project::from_json` inline.
+pub(super) fn rollback_project(snap: &str) -> Option<Project> {
+    Project::from_json(snap).ok()
+}
+
 impl App {
     pub(super) fn run_script(&mut self, path: &std::path::Path) {
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -84,7 +91,7 @@ impl App {
     /// Restore `snap` after a Mutate-kind call returned `Err` (some arms mutate before returning Err —
     /// e.g. subtitles.set, clip.set — so a failed tool must still be a no-op).
     pub(super) fn run_rollback(&mut self, snap: String) {
-        if let Ok(p) = Project::from_json(&snap) {
+        if let Some(p) = rollback_project(&snap) {
             self.project = p;
         }
     }

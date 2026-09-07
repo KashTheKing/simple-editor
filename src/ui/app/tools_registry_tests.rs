@@ -236,18 +236,29 @@ fn default_asset() -> crate::model::Asset {
 }
 
 /// A Mutate tool that mutates the project then returns `Err` must be a no-op: `run_rollback` restores
-/// the exact pre-call JSON (`handle_tool`/`run_script` both call it this way — see mcp_exec.rs).
+/// the exact pre-call JSON (`handle_tool`/`run_script` both call it this way — see mcp_exec.rs). Full
+/// `App::run_rollback` needs a live `App` (see the App-construction deviation noted above), so this picks
+/// real `ToolKind::Mutate` rows out of the registry via `mcp::tools::all()` and exercises the actual
+/// `snapshot_if_mutate` + `rollback_project` pair `run_rollback` is built from (rather than
+/// re-implementing `Project::from_json` inline) — a bug in either (e.g. dropping the restore) fails this.
 #[test]
 fn mutate_rows_roll_back_on_error() {
-    let mut p = Project::from_media(default_asset());
-    let snap = p.to_json();
-    // simulate a Mutate tool that partly mutates before discovering its own error
-    p.tracks[0].clips[0].name = "corrupted mid-call".into();
-    p.add_marker(1.0, "stray");
-    assert_ne!(p.to_json(), snap, "the simulated failing call must have actually mutated something");
-    // this is exactly App::run_rollback's body
-    p = Project::from_json(&snap).unwrap();
-    assert_eq!(p.to_json(), snap, "rollback must restore the pre-call state exactly");
+    use super::mcp_exec::{rollback_project, snapshot_if_mutate};
+    use crate::mcp::tools::ToolKind;
+    let mutate_names: Vec<&str> =
+        mcp::tools::all().filter(|d| d.kind == ToolKind::Mutate).map(|d| d.name).take(2).collect();
+    assert_eq!(mutate_names.len(), 2, "expected at least 2 ToolKind::Mutate rows in the registry");
+    for name in mutate_names {
+        let mut p = Project::from_media(default_asset());
+        let snap = snapshot_if_mutate(&p, ToolKind::Mutate).expect("Mutate kind always snapshots");
+        // simulate `name`'s tool partly mutating the project before discovering its own error
+        p.tracks[0].clips[0].name = format!("corrupted mid-call by {name}");
+        p.add_marker(1.0, "stray");
+        assert_ne!(p.to_json(), snap, "the simulated failing call must have actually mutated something");
+        // this is exactly App::run_rollback's real body, via the same pure fn it calls
+        p = rollback_project(&snap).unwrap();
+        assert_eq!(p.to_json(), snap, "rollback must restore the pre-call state exactly for '{name}'");
+    }
 }
 
 /// The bug this whole review found: `App::enabled`'s guard match must cover every one of its documented
@@ -267,7 +278,10 @@ fn action_enabled_toasts_reason() {
         assert_eq!(App::enabled_for(a, false, true, true), Err("Nothing to export — the timeline is empty"));
     }
     // nothing copied blocks PasteAttributes
-    assert_eq!(App::enabled_for(Action::PasteAttributes, false, false, true), Err("Copy attributes from a clip first"));
+    assert_eq!(
+        App::enabled_for(Action::PasteAttributes, false, false, true),
+        Err("Copy attributes from a clip first (Ctrl+Alt+C)")
+    );
     assert_eq!(App::enabled_for(Action::PasteAttributes, false, false, false), Ok(()));
     // and act()'s prelude must actually call this — not just have it exist unused
     let src = include_str!("actions.rs");

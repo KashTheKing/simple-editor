@@ -224,6 +224,10 @@ mod tests {
         }
     }
 
+    // deviation (see PR body): this only exercises `Project::add_subclip` directly. The issue's Tests
+    // table for this row also names "the media.subclip MCP tool round-trips to the same result", but
+    // that half is untested here — same App-construction limitation as the other App-dependent tests
+    // (see tools_registry_tests.rs), just not called out there as a deviation until now.
     #[test]
     fn add_subclip_creates_ranged_asset() {
         let mut p = Project::new();
