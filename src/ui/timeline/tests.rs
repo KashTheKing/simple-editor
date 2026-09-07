@@ -924,6 +924,41 @@ fn headless_marker_click_seek_and_drag() {
 }
 
 #[test]
+fn headless_marker_click_wins_over_split_body_bottom_zone() {
+    // Risks table (plans/ui-overhaul/issues/snap-engine.md): splitting the clip body interact into
+    // top/bottom sub-rects could steal hit-test priority from the marker-flag rects, which are
+    // deliberately registered AFTER both body halves so small flags win. headless_marker_click_seek_
+    // and_drag only ever uses a default-height (non-split) track, so it never exercises a row where
+    // the new bottom-zone hairline actually coexists with a marker. Use a tall/split track here.
+    let mut h = Harness::new();
+    h.project.tracks[0].height = 2.0 * MIN_TRACK_H + 8.0; // >= 2x MIN_TRACK_H triggers split_body
+    h.frame(vec![]);
+    let rt = row_top(&h.state, &h.project, 0).unwrap();
+    let th = h.project.tracks[0].height;
+    let cid = h.video_clip().id;
+    let mid = h.project.add_clip_marker(cid, 1.0, "beat").unwrap();
+    h.frame(vec![]);
+
+    // click on the marker's own flag, up in the row's top zone: must still select the marker, not
+    // be read as a plain body click or a split.
+    let mp = pos2(h.state.x_at(1.0) + 1.0, rt + 4.0);
+    h.press(mp);
+    h.release(mp);
+    h.frame(vec![]);
+    assert_eq!(h.state.selected_marker, Some(mid), "marker flag still wins a click on a split-body row");
+    assert_eq!(h.project.tracks[0].clips.len(), 1, "the marker click must not also be read as a split");
+
+    // sanity: the bottom-zone hairline the marker "wins over" really is live on this row - a plain
+    // click lower in the body (away from the marker, clear of the HANDLE_H resize strip at the very
+    // bottom edge) still splits, proving this test actually exercises the split_body code path.
+    let sp = pos2(h.state.x_at(3.0) + 1.0, rt + th * 0.7);
+    h.press(sp);
+    h.release(sp);
+    h.frame(vec![]);
+    assert_eq!(h.project.tracks[0].clips.len(), 2, "bottom-zone hairline click still splits away from the marker");
+}
+
+#[test]
 fn headless_clip_colour_and_menu_come_from_project_labels() {
     let mut h = Harness::new();
     h.project.labels.clear();
