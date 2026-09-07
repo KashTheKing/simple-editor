@@ -1924,10 +1924,10 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 // still ignores `DropMode`; fold these arms into it once that lands.
                 match kind {
                     GestureKind::DropSplice => {
-                        p.splice_in(aid, t, vt, None);
+                        p.splice_in(aid, t, vt, at, None);
                     }
                     GestureKind::DropOverwrite => {
-                        p.overwrite_asset(aid, t, vt, None);
+                        p.overwrite_asset(aid, t, vt, at, None);
                     }
                     GestureKind::DropPlaceOnTop => {
                         let (vt, at) = if p.asset(aid).is_some_and(|a| a.has_video()) {

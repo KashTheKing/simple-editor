@@ -2208,6 +2208,55 @@ fn audio_drop_infers_pointer_audio_row() {
     assert_eq!(h.project.tracks[1].clips.len(), 2, "the audio asset landed on the audio row under the pointer");
 }
 
+/// Ctrl-splice and Alt-overwrite must honour the audio row under the pointer too, not just the
+/// no-modifier default drop above (was: `Act::DropAsset`'s Splice/Overwrite arms called
+/// `splice_in`/`overwrite_asset` with only a video-track hint, so an audio-only asset always landed
+/// on the model's default audio track regardless of which row it was dropped on).
+#[test]
+fn ctrl_splice_and_alt_overwrite_drop_onto_pointer_audio_row() {
+    let mut h = Harness::new();
+    let lanes = h.state.lanes_rect;
+    let a2 = h.project.add_track(TrackKind::Audio); // non-default audio track, A1 already exists
+    let aid = h.project.add_asset(Asset {
+        id: 0,
+        path: "C:/y.mp3".into(),
+        kind: ClipKind::Audio,
+        duration: 4.0,
+        width: 0,
+        height: 0,
+        fps: 0.0,
+        audio_streams: vec![AudioStreamInfo { channels: 2, sample_rate: 48000, ..Default::default() }],
+        codec: "aac".into(),
+        folder: String::new(),
+        tags: Vec::new(),
+        label: 0,
+        description: String::new(),
+        rel_path: None,
+        parent: None,
+        range: None,
+        effects: Vec::new(),
+    });
+    let a2_top = row_top(&h.state, &h.project, a2).unwrap();
+    let drop = pos2(lanes.left() + 480.0, a2_top + 20.0); // inside the A2 row
+
+    h.press(pos2(10.0, 10.0));
+    egui::DragAndDrop::set_payload(&h.ctx, DragPayload::Asset(aid));
+    h.frame(vec![Event::PointerMoved(drop)]);
+    let r = h.release_m(drop, Modifiers::CTRL);
+    assert!(r.edited, "Ctrl-drop (splice) must edit");
+    assert_eq!(h.project.tracks[a2].clips.len(), 1, "splice landed on A2, the row under the pointer");
+    assert_eq!(h.project.tracks[1].clips.len(), 1, "A1 (the model's default audio track) is untouched");
+
+    h.project.tracks[a2].clips.clear();
+    h.press(pos2(10.0, 10.0));
+    egui::DragAndDrop::set_payload(&h.ctx, DragPayload::Asset(aid));
+    h.frame(vec![Event::PointerMoved(drop)]);
+    let r = h.release_m(drop, Modifiers::ALT);
+    assert!(r.edited, "Alt-drop (overwrite) must edit");
+    assert_eq!(h.project.tracks[a2].clips.len(), 1, "overwrite landed on A2, the row under the pointer");
+    assert_eq!(h.project.tracks[1].clips.len(), 1, "A1 (the model's default audio track) is untouched");
+}
+
 /// Clicking the header Lock/Ripple toggles flips the corresponding `Track` flag through the undo-free
 /// `track_toggle` deferred field — zero undo growth, unlike every `Act` variant (e.g. Mute/Solo), which
 /// pushes one unconditionally. A locked lane also paints the new hatch treatment.
