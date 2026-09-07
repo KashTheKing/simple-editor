@@ -8,3 +8,4 @@ bc4c19e,10250752,"command-palette #20: Ctrl+K palette, keymap presets, cheat she
 bc4c19e,10121728,"true baseline (measured fresh from bc4c19e's committed release profile - this worktree's own copy of size_log.csv predates the size_log.csv correction pushed to main in 0827f9a)"
 bc4c19e,10193408,"color-engine #24: EffectKind::{Lut,Primaries,Qualifier,FrameBlend}, .cube parser, builtin_looks/apply_look, frame_stats, master/source-clip effects (real delta vs true baseline: +71,680 B / +70 KB)"
 bc4c19e,10121728,"correction: PR #41's own reported 13,680,128 predates a background process that kept editing after the review - the merged commit actually also includes the main-crate opt-level=s step (not skipped as PR #41 said); retroactively validated here: headless_1000_clips_stays_fast 0.93ms (<<10ms gate), bench_4k_preview completes cleanly (29.0ms/frame 720p, 74.7ms/frame native 4K), no crash/regression observed"
+9d92749,10231808,snap-engine

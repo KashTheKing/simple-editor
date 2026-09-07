@@ -1,6 +1,23 @@
 //! Subtitle-cue lane: the burned-in cues drawn as small clips above the video rows.
 use super::*;
 
+/// What a `CueDrag` is doing. `Move`'s `grab` is the time offset from the press point to the cue's
+/// start, captured once at drag start, so the cue doesn't jump to re-center under the pointer.
+pub(super) enum CueOp {
+    Trim { right: bool },
+    Move { grab: f64 },
+}
+
+/// Active subtitle-cue gesture (trim or move), both snapped and undo-on-release-if-changed — fixes the
+/// previous edge-trim behaviour of pushing undo at drag *start* (a no-op drag used to leave a dead undo
+/// entry).
+pub(super) struct CueDrag {
+    id: Id,
+    op: CueOp,
+    before: Project,
+    changed: bool,
+}
+
 /// Draws and handles interaction for the subtitle-cue lane. Mutates `c.project`/`state`/`out`
 /// directly rather than returning an `Act` — none of its gestures go through the deferred-apply path.
 #[allow(clippy::too_many_arguments)]
@@ -91,7 +108,7 @@ pub(super) fn draw(
             }
             let rect =
                 Rect::from_min_max(pos2(xa, subs_lane.top() + 2.0), pos2(xb.max(xa + 2.0), subs_lane.bottom() - 2.0));
-            let r = ui.interact(rect.intersect(subs_lane), id.with(("sub", cue.id)), Sense::click());
+            let r = ui.interact(rect.intersect(subs_lane), id.with(("sub", cue.id)), Sense::click_and_drag());
             let sel = state.sub_sel.contains(&cue.id);
             let a = if sel {
                 0.7
@@ -123,6 +140,16 @@ pub(super) fn draw(
                     out.seeked = true;
                 }
             }
+            if r.drag_started_by(egui::PointerButton::Primary) && state.cue_drag.is_none() {
+                // the press *origin*, not the current (already-moved) pointer position — by the
+                // frame a click_and_drag() widget first reports drag_started, the pointer has
+                // already travelled past the click threshold, so interact_pointer_pos() here would
+                // capture the wrong (post-move) grab offset.
+                let press_x = ui.input(|i| i.pointer.press_origin()).map(|p| p.x);
+                let grab = press_x.map(|x| state.time_at(x)).unwrap_or(cue.start) - cue.start;
+                state.cue_drag =
+                    Some(CueDrag { id: cue.id, op: CueOp::Move { grab }, before: c.project.clone(), changed: false });
+            }
             // trim handles on both edges, like a clip's
             for right in [false, true] {
                 let er = Rect::from_center_size(
@@ -132,9 +159,13 @@ pub(super) fn draw(
                 let e = ui
                     .interact(er.intersect(subs_lane), id.with(("sub_e", cue.id, right)), Sense::drag())
                     .on_hover_cursor(CursorIcon::ResizeHorizontal);
-                if e.drag_started_by(egui::PointerButton::Primary) {
-                    (c.undo)(c.project);
-                    state.sub_trim = Some((cue.id, right));
+                if e.drag_started_by(egui::PointerButton::Primary) && state.cue_drag.is_none() {
+                    state.cue_drag = Some(CueDrag {
+                        id: cue.id,
+                        op: CueOp::Trim { right },
+                        before: c.project.clone(),
+                        changed: false,
+                    });
                 }
             }
             // right-click outside the selection retargets it, like every explorer
@@ -170,22 +201,56 @@ pub(super) fn draw(
                 }
             });
         }
-        // active edge drag: follow the pointer while held, sort on release
-        if let Some((tid, right)) = state.sub_trim {
+        // active cue gesture (trim or move): snapped every frame, undo pushed on release only if
+        // something actually changed — fixes the previous undo-at-drag-start bug (a released-in-place
+        // drag used to leave a dead undo entry).
+        if let Some(mut drag) = state.cue_drag.take() {
             if primary_down {
-                if let (Some(p), Some(q)) = (pointer, c.project.subtitles.iter_mut().find(|q| q.id == tid)) {
-                    let t = state.time_at(p.x).max(0.0);
-                    if right {
-                        q.end = t.max(q.start + 0.1);
-                    } else {
-                        q.start = t.clamp(0.0, q.end - 0.1);
+                if let Some(p) = pointer {
+                    let raw_t = state.time_at(p.x).max(0.0);
+                    let thr = snap_thr(state.zoom, c.project.fps);
+                    let snap_hit = c
+                        .snap
+                        .then(|| snap::target(c.project, raw_t, thr, *c.playhead, &[], &[], None, c.snap_markers))
+                        .flatten();
+                    let t = snap_hit.map(|(x, _)| x).unwrap_or(raw_t);
+                    if let Some(q) = c.project.subtitles.iter_mut().find(|q| q.id == drag.id) {
+                        match drag.op {
+                            CueOp::Trim { right } => {
+                                if right {
+                                    let nv = t.max(q.start + 0.1);
+                                    if (q.end - nv).abs() > 1e-9 {
+                                        q.end = nv;
+                                        drag.changed = true;
+                                    }
+                                } else {
+                                    let nv = t.clamp(0.0, q.end - 0.1);
+                                    if (q.start - nv).abs() > 1e-9 {
+                                        q.start = nv;
+                                        drag.changed = true;
+                                    }
+                                }
+                            }
+                            CueOp::Move { grab } => {
+                                let dur = q.end - q.start;
+                                let want_start = (t - grab).max(0.0);
+                                if (q.start - want_start).abs() > 1e-9 {
+                                    q.start = want_start;
+                                    q.end = want_start + dur;
+                                    drag.changed = true;
+                                }
+                            }
+                        }
                     }
                     out.edited = true;
                 }
-            } else {
-                state.sub_trim = None;
+                state.cue_drag = Some(drag);
+            } else if drag.changed {
+                (c.undo)(&drag.before);
                 c.project.sort_cues();
                 out.edited = true;
+            } else {
+                c.project.sort_cues();
             }
         }
         if let Some(a) = sub_act {
