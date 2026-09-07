@@ -1,3 +1,4 @@
 sha,bytes,note
 aaa3fdc,15970816,"baseline pre-size-diet - measured fresh on main at aaa3fdc, supersedes the stale 6b92982/15732736 reading from before #17 registries-schema-hooks landed"
 aaa3fdc,13680128,"size-diet #18: drop egui_commonmark/default_fonts/persistence, deps opt-level=s"
+bc4c19e,10156032,player-rate-loop

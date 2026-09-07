@@ -55,6 +55,7 @@ mod mcp_exec;
 mod media_sync;
 mod menus;
 mod panes;
+mod playback_ctl;
 mod preview_pane;
 mod thumbs;
 mod timeline_pane;
@@ -297,6 +298,13 @@ pub struct App {
     /// winpos's window-rect debounce: (drag/move started at, the rect it saw) while unsettled, `None`
     /// once saved. Owned here so `whatsnew::tick` can thread it into `winpos::tick` every frame.
     pub(crate) winpos_pending: Option<(Instant, [i32; 4])>,
+    // ---- ws:player-rate-loop ----
+    /// Timeline seconds a Play In->Out / Play Around / Play to Out should auto-pause at; cleared once
+    /// reached (or if playback stops some other way). See `playback_ctl::tick`.
+    play_stop_at: Option<f64>,
+    /// `playhead` as of the last `playback_ctl::tick` — lets the paused-playhead-change scrub fire once
+    /// per change instead of every frame.
+    scrub_last_t: f64,
 }
 
 /// What an async, off-the-main-preview GPU render is for — hover preview, trim view, scopes, wipe
@@ -682,6 +690,8 @@ impl App {
             alt_render: None,
             whatsnew_open: false,
             winpos_pending: None,
+            play_stop_at: None,
+            scrub_last_t: 0.0,
         };
         app.detect_ytdlp(&cc.egui_ctx);
         app.refresh_presets();
@@ -1223,6 +1233,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:command-palette ----
     // ---- ws:forgiveness ----
     // ---- ws:player-rate-loop ----
+    // already registered above (tools_playback::TOOLS predates the marker system; wave-0a wired it in
+    // directly) — this workstream appends new rows into that same const, not a second registration.
     // ---- ws:snap-engine ----
     // ---- ws:trim-model ----
     // ---- ws:canvas-handles-monitor ----
@@ -1249,6 +1261,7 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     // ---- ws:command-palette ----
     // ---- ws:forgiveness ----
     // ---- ws:player-rate-loop ----
+    playback_ctl::act,
     // ---- ws:snap-engine ----
     // ---- ws:trim-model ----
     // ---- ws:canvas-handles-monitor ----
@@ -1275,6 +1288,7 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:command-palette ----
     // ---- ws:forgiveness ----
     // ---- ws:player-rate-loop ----
+    playback_ctl::tick,
     // ---- ws:snap-engine ----
     // ---- ws:trim-model ----
     // ---- ws:canvas-handles-monitor ----

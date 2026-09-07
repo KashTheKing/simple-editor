@@ -1,3 +1,4 @@
+use super::playback_ctl;
 use super::thumbs::*;
 use super::tools_helpers::*;
 use super::*;
@@ -103,6 +104,74 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                 write_image(&frame, &opts)?;
                 Ok(json!({"ok": true, "path": out.to_string_lossy(), "width": w, "height": h}))
             }
+            // ---- ws:player-rate-loop ----
+            "playback.rate" => {
+                let rate = req(arg_f64(args, "rate"), "rate")?;
+                if rate == 0.0 {
+                    return Err("rate must not be 0 (use playback.pause)".into());
+                }
+                let rate = rate.clamp(-8.0, 8.0);
+                if !app.player.is_playing() {
+                    app.player.play();
+                }
+                app.player.set_rate(rate);
+                Ok(json!({"ok": true, "rate": app.player.rate()}))
+            }
+            "playback.step" => {
+                let frames = req(arg_f64(args, "frames"), "frames")?.round() as i64;
+                app.player.step(frames, app.project.fps);
+                app.playhead = app.player.time();
+                Ok(json!({"ok": true, "t": app.playhead}))
+            }
+            "playback.loop" => {
+                let on = req(arg_bool(args, "on"), "on")?;
+                if on {
+                    let a = arg_f64(args, "in").or(app.project.in_point).unwrap_or(0.0);
+                    let b = arg_f64(args, "out").or(app.project.out_point).unwrap_or(app.project.duration());
+                    if b <= a {
+                        return Err("'out' must be after 'in'".into());
+                    }
+                    app.player.set_loop(Some((a, b)));
+                } else {
+                    app.player.set_loop(None);
+                }
+                Ok(json!({"ok": true, "loop_range": app.player.loop_range()}))
+            }
+            "playback.play_range" => {
+                let mode = req(arg_str(args, "mode"), "mode")?;
+                if !matches!(mode, "in_out" | "around" | "to_out") {
+                    return Err("mode must be 'in_out' | 'around' | 'to_out'".into());
+                }
+                playback_ctl::start_play_range(app, mode);
+                Ok(json!({"ok": true}))
+            }
+            "playback.scrub" => {
+                let t = req(arg_f64(args, "t"), "t")?;
+                if app.player.is_playing() {
+                    return Err("scrub only works while paused".into());
+                }
+                app.player.scrub(t);
+                Ok(json!({"ok": true}))
+            }
+            "playback.status" => Ok(json!({
+                "rate": app.player.rate(),
+                "dropped_frames": app.player.dropped_frames(),
+                "buffering": app.player.is_buffering(),
+                "loop_range": app.player.loop_range(),
+            })),
+            "render.layers_async" => {
+                let t = req(arg_f64(args, "t"), "t")?;
+                let max_w = arg_u64(args, "max_w").map(|w| w as u32).unwrap_or(640).clamp(16, 3840);
+                let id = app.player.request_layers(t, max_w);
+                Ok(json!({"ok": true, "id": id}))
+            }
+            "render.poll_layers" => {
+                let id = req(arg_u64(args, "id"), "id")?;
+                match app.player.take_layers_reply() {
+                    Some((rid, set)) if rid == id => Ok(json!({"ready": true, "layers": set.layers.len()})),
+                    _ => Ok(json!({"ready": false})),
+                }
+            }
             _ => unreachable!(),
         }
     }
@@ -162,5 +231,54 @@ pub const TOOLS: &[ToolDef] = &[
             "quality:integer:false:1..100 for JPG/WebP",
             "resize:string:false:neighbor|bilinear|bicubic|lanczos"
         ]
+    ),
+    // ---- ws:player-rate-loop ----
+    row!(
+        "playback.rate",
+        ToolKind::Ui,
+        "Set shuttle/playback rate (starts playing if paused); -8..8, 0 rejected (use playback.pause).",
+        &["rate:number:true:playback speed, -8..8"]
+    ),
+    row!(
+        "playback.step",
+        ToolKind::Ui,
+        "Step the playhead by N frames (negative = back); pauses first.",
+        &["frames:integer:true:signed frame count"]
+    ),
+    row!(
+        "playback.loop",
+        ToolKind::Ui,
+        "Enable/disable Loop In->Out playback.",
+        &[
+            "on:boolean:true:",
+            "in:number:false:defaults to Project.in_point",
+            "out:number:false:defaults to Project.out_point"
+        ]
+    ),
+    row!(
+        "playback.play_range",
+        ToolKind::Ui,
+        "Play In->Out, Play Around Playhead, or Play to Out, auto-stopping at the target.",
+        &["mode:string:true:'in_out' | 'around' | 'to_out'"]
+    ),
+    row!(
+        "playback.scrub",
+        ToolKind::Ui,
+        "Emit one BLOCK (~21ms) of audio at t without moving the clock (paused only).",
+        &["t:number:true:timeline seconds"]
+    ),
+    row!("playback.status", ToolKind::Read, "Current rate, dropped-frame count, buffering flag, and loop range.", &[]),
+    row!(
+        "render.layers_async",
+        ToolKind::Ui,
+        "Queue a non-blocking one-shot layer decode; returns a request id.",
+        &["t:number:true:", "max_w:integer:false:default 640"]
+    ),
+    row!(
+        "render.poll_layers",
+        ToolKind::Read,
+        "Poll for the async layer-decode reply (not ready until it matches the given id, or it was \
+         superseded by a newer request).",
+        &["id:integer:true:id returned by render.layers_async"]
     ),
 ];

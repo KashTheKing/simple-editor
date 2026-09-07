@@ -153,6 +153,16 @@ actions! {
     // ---- ws:command-palette ----
     // ---- ws:forgiveness ----
     // ---- ws:player-rate-loop ----
+    ShuttleBack => "shuttle_back", "Shuttle Reverse", sc(NONE, Key::J);
+    ShuttleFwd => "shuttle_fwd", "Shuttle Forward", sc(NONE, Key::L);
+    LoopInOut => "loop_in_out", "Loop In→Out", sc(CTRL_SHIFT, Key::L);
+    PlayInOut => "play_in_out", "Play In→Out", sc(CTRL_SHIFT, Key::Space);
+    PlayAround => "play_around", "Play Around Playhead", sc(NONE, Key::Slash);
+    PlayToOut => "play_to_out", "Play to Out", sc(CTRL, Key::Space);
+    StepBack10 => "step_back_10", "Step Back 10 Frames", sc(SHIFT, Key::ArrowLeft);
+    StepFwd10 => "step_fwd_10", "Step Forward 10 Frames", sc(SHIFT, Key::ArrowRight);
+    // Unbound by design: no free chord in the skeleton keymap (transport menu / palette only).
+    FastReview => "fast_review", "Fast Review", None;
     // ---- ws:snap-engine ----
     // ---- ws:trim-model ----
     // ---- ws:canvas-handles-monitor ----
