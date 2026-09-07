@@ -150,9 +150,32 @@ actions! {
     // ---- ws:audio-analysis ----
     // ---- ws:audio-dsp-automation ----
     // ---- ws:color-engine ----
+    // Unbound by design: no free chord in the skeleton keymap (per the plan's Actions/hotkeys table).
+    AutoColor => "auto_color", "Auto Colour", None;
+    ColorMatch => "color_match", "Colour Match to Reference", None;
+    BypassGrade => "bypass_grade", "Bypass Grade", None;
     // ---- ws:command-palette ----
+    CommandPalette => "command_palette", "Command Palette", sc(CTRL, Key::K);
+    CheatSheet => "cheat_sheet", "Keyboard Shortcuts overlay", sc(NONE, Key::F1);
+    // Owned exclusively by this workstream (see plans/ui-overhaul/issues/command-palette.md's
+    // "Actions and hotkeys" table): ws:layout-modes-onboarding (wave 2) consumes these two variants
+    // through its own ACT_HANDLERS/WINDOW_DRAWERS arm but must NEVER redeclare them here — a second
+    // `actions!` row for either identifier is a duplicate-enum-variant compile error. Both are inert
+    // (fall through App::act's `_ => {}` catch-all) until that wave lands the real behaviour.
+    ToggleLayoutMode => "toggle_layout_mode", "Layout Mode: Dynamic / Granular", sc(CTRL_SHIFT, Key::G);
+    ShowWelcome => "show_welcome", "Show Welcome Again", None;
     // ---- ws:forgiveness ----
     // ---- ws:player-rate-loop ----
+    ShuttleBack => "shuttle_back", "Shuttle Reverse", sc(NONE, Key::J);
+    ShuttleFwd => "shuttle_fwd", "Shuttle Forward", sc(NONE, Key::L);
+    LoopInOut => "loop_in_out", "Loop In→Out", sc(CTRL_SHIFT, Key::L);
+    PlayInOut => "play_in_out", "Play In→Out", sc(CTRL_SHIFT, Key::Space);
+    PlayAround => "play_around", "Play Around Playhead", sc(NONE, Key::Slash);
+    PlayToOut => "play_to_out", "Play to Out", sc(CTRL, Key::Space);
+    StepBack10 => "step_back_10", "Step Back 10 Frames", sc(SHIFT, Key::ArrowLeft);
+    StepFwd10 => "step_fwd_10", "Step Forward 10 Frames", sc(SHIFT, Key::ArrowRight);
+    // Unbound by design: no free chord in the skeleton keymap (transport menu / palette only).
+    FastReview => "fast_review", "Fast Review", None;
     // ---- ws:snap-engine ----
     // ---- ws:trim-model ----
     // 25 bound + 6 unbound = 31 (see plans/ui-overhaul/issues/trim-model.md's "Review trail" F7 —
@@ -216,11 +239,24 @@ actions! {
 
 pub struct Hotkeys {
     map: HashMap<Action, Option<KeyboardShortcut>>,
+    // ---- ws:command-palette ----
+    /// Non-`Action` bindings shown alongside the table in the conflict UI — currently just live Luau
+    /// `@hotkey` scripts (refreshed at the 1Hz script-meta poll, `ui::app::palette_ctl::tick`), keyed by
+    /// the script's display name rather than a path (all the conflict UI needs is a label). Never
+    /// persisted — `to_settings`/`from_settings` only round-trip `Action` bindings.
+    extra: Vec<(String, KeyboardShortcut)>,
 }
 
 impl Hotkeys {
     pub fn defaults() -> Self {
-        Self { map: Action::ALL.iter().map(|&a| (a, a.default_shortcut())).collect() }
+        Self { map: Action::ALL.iter().map(|&a| (a, a.default_shortcut())).collect(), extra: Vec::new() }
+    }
+    // ---- ws:command-palette ----
+    pub fn set_extra(&mut self, extra: Vec<(String, KeyboardShortcut)>) {
+        self.extra = extra;
+    }
+    pub fn extra(&self) -> &[(String, KeyboardShortcut)] {
+        &self.extra
     }
     pub fn from_settings(s: &Settings) -> Self {
         let mut h = Self::defaults();
@@ -337,6 +373,101 @@ impl Hotkeys {
     }
 }
 
+// ---- ws:command-palette ----
+/// Chords the app hard-codes ahead of, or instead of, the `Action` table — bare `S` (snap toggle,
+/// `ui::tools::handle_snap_hotkey`), `Shift+S` (shape-tool cycle, `ui::tools::handle_hotkeys` — also
+/// `AddShape`'s grandfathered default, a documented exception in `reserved_chords_are_free` below),
+/// `Ctrl+Y` (Redo alias, polled directly in `App::update`), `Backspace` (Delete alias, same), `Escape`
+/// (fullscreen exit while `self.fullscreen`), `Tab`/`Shift+Tab` (egui's own focus traversal) and
+/// `Alt+Space` (Windows' system menu). A rebindable UI that let a user pick one of these would silently
+/// lose it to whichever poll runs first — `conflict_all` reports them so the Hotkeys tab can say so.
+pub const RESERVED: &'static [(&'static str, Modifiers, Key)] = &[
+    ("Toggle snapping (S)", NONE, Key::S),
+    ("Cycle shape tool (Shift+S)", SHIFT, Key::S),
+    ("Redo (Ctrl+Y alias)", CTRL, Key::Y),
+    ("Delete (Backspace alias)", NONE, Key::Backspace),
+    ("Exit fullscreen (Esc)", NONE, Key::Escape),
+    ("Focus next (Tab)", NONE, Key::Tab),
+    ("Focus previous (Shift+Tab)", SHIFT, Key::Tab),
+    ("Windows system menu (Alt+Space)", ALT, Key::Space),
+];
+
+/// Who already claims a chord: a bound `Action`, or one of the hard-coded `RESERVED` rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Claim {
+    Action(Action),
+    Fixed(&'static str),
+}
+
+impl Hotkeys {
+    /// Every claimant of `ks`: a bound `Action` first (`conflict`), else a `RESERVED` row, else free
+    /// (`None`) — the honest, whole-app view `Settings ▸ Hotkeys`'s rebind UI needs (`conflict` alone
+    /// would let a user "successfully" bind a key that a hard-coded poll would still eat first).
+    pub fn conflict_all(&self, ks: KeyboardShortcut) -> Option<Claim> {
+        if let Some(a) = self.conflict(ks) {
+            return Some(Claim::Action(a));
+        }
+        RESERVED
+            .iter()
+            .find(|&&(_, m, k)| canon(&KeyboardShortcut::new(m, k)) == canon(&ks))
+            .map(|&(name, ..)| Claim::Fixed(name))
+    }
+}
+
+/// Section a hotkey belongs to, for the cheat-sheet overlay and the Settings ▸ Hotkeys group headers.
+/// Hand-maintained rather than folded into the `actions!` macro (a smaller diff, and grouping needs
+/// change far less often than the action list itself — see the issue plan's `// ponytail:` note); the
+/// `_ => "Other"` catch-all keeps a future workstream's new `Action` non-breaking even if nobody
+/// remembers to extend this match.
+pub fn group(a: Action) -> &'static str {
+    use Action::*;
+    match a {
+        NewProject | OpenFile | OpenProject | Save | SaveProjectAs | ExportVideo | ExportLossless | ExportXml
+        | ImportMedia | ImportTimeline | ExportFrame | ScreenCapture | Voiceover => "File",
+        Undo | Redo | CopyClips | CutClips | PasteClips | PasteInPlace | PasteInsert | PasteAtTop | SelectAll
+        | Deselect | CopyAttributes | PasteAttributes | Delete | RippleDelete | NudgeLeft | NudgeRight => "Edit",
+        PlayPause | Stop | StepBack | StepForward | GoStart | GoEnd | PrevCut | NextCut => "Playback",
+        Split
+        | MarkIn
+        | MarkOut
+        | ClearInOut
+        | TrimToInOut
+        | RippleDeleteInOut
+        | LinkToggle
+        | ToggleEnabled
+        | AddTransition
+        | AddLastTransition
+        | AddTransitionEnd
+        | Retime
+        | FreezeFrame
+        | NestSequence
+        | OpenParentSequence
+        | SaveTemplate
+        | ApplyFlow
+        | AddContainer
+        | ReplaceContainerMedia
+        | MakeContainer
+        | UnmakeContainer
+        | AddVideoTrack
+        | AddAudioTrack
+        | ZoomIn
+        | ZoomOut
+        | ZoomFit
+        | ToggleSnap => "Timeline",
+        AddText | AddShape | AddAdjustment | AddMask | AddSubtitle | AddMarker => "Insert",
+        ToggleLibrary | ToggleInspector | ToggleEffects | ToggleTransitions | ToggleCurves | ToggleSubtitles
+        | TogglePlanner | ToggleMarkers | ToggleNodes | ToggleMixer | ToggleTools => "Panels",
+        ToolSelect | ToolText | ToolDraw | ToolMask | ToolMarker | ToolCut | ToolStretch | ToolSpacer => "Tools",
+        CommandPalette | CheatSheet | ToggleLayoutMode | ShowWelcome | Fullscreen | Settings | AutoCut | MovieMode
+        | WhatsNew => "General",
+        // every current variant has an arm above (same `unreachable_patterns` situation as act()'s own
+        // prelude match in ui/app/actions.rs); kept so a future workstream's new Action compiles into
+        // "Other" by default instead of forcing an edit here.
+        #[allow(unreachable_patterns)]
+        _ => "Other",
+    }
+}
+
 /// Actions the curve and node editors also claim while the pointer is over them, so the timeline only
 /// gets them if no pane wanted them. Delete is here for the same reason the clipboard keys are: the early
 /// pass runs BEFORE any pane is drawn, so a global Delete would eat the key and remove the selected CLIPS
@@ -422,6 +553,73 @@ mod tests {
             if let Some(k) = a.default_shortcut() {
                 assert!(seen.insert(Hotkeys::format(&k)), "duplicate default {}", Hotkeys::format(&k));
             }
+        }
+    }
+
+    // ---- ws:command-palette ----
+
+    #[test]
+    fn reserved_chords_are_free() {
+        for &a in Action::ALL {
+            let Some(k) = a.default_shortcut() else { continue };
+            for &(name, m, key) in RESERVED {
+                // AddShape's default IS Shift+S — a documented, grandfathered exception (see RESERVED's
+                // doc comment): the shape-tool cycle poll runs first, so the action never actually fires
+                // from the key, but its "default" text still needs somewhere to live for the menu/palette.
+                if a == Action::AddShape && m == SHIFT && key == Key::S {
+                    continue;
+                }
+                assert!(
+                    canon(&k) != canon(&KeyboardShortcut::new(m, key)),
+                    "{:?}'s default {} collides with the reserved chord '{name}'",
+                    a,
+                    Hotkeys::format(&k)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn conflict_all_sees_reserved_and_actions() {
+        let h = Hotkeys::defaults();
+        assert_eq!(h.conflict_all(KeyboardShortcut::new(NONE, Key::S)), Some(Claim::Fixed("Toggle snapping (S)")));
+        assert_eq!(h.conflict_all(KeyboardShortcut::new(CTRL, Key::Y)), Some(Claim::Fixed("Redo (Ctrl+Y alias)")));
+        assert_eq!(
+            h.conflict_all(KeyboardShortcut::new(NONE, Key::Backspace)),
+            Some(Claim::Fixed("Delete (Backspace alias)"))
+        );
+        assert_eq!(
+            h.conflict_all(KeyboardShortcut::new(NONE, Key::Escape)),
+            Some(Claim::Fixed("Exit fullscreen (Esc)"))
+        );
+        // a bound action's own chord resolves to Claim::Action, checked ahead of RESERVED
+        assert_eq!(h.conflict_all(KeyboardShortcut::new(CTRL, Key::Z)), Some(Claim::Action(Action::Undo)));
+        // a genuinely free chord is neither
+        assert_eq!(h.conflict_all(KeyboardShortcut::new(CTRL_ALT, Key::F9)), None);
+    }
+
+    #[test]
+    fn no_duplicate_action_declarations_across_wave1_and_wave2() {
+        // compile-time proxy for the audit-fixed blocker: this ws is the sole declaration site for
+        // ToggleLayoutMode/ShowWelcome (ws:layout-modes-onboarding, wave 2, may only consume them via
+        // ACT_HANDLERS) — a second `actions!` row for either identifier here is a duplicate-variant
+        // compile error, so this just pins that today's file has exactly one declaration of each.
+        let src = include_str!("hotkeys.rs");
+        for name in ["ToggleLayoutMode", "ShowWelcome"] {
+            let decl = format!("{name} =>");
+            assert_eq!(
+                src.matches(decl.as_str()).count(),
+                1,
+                "{name} must be declared exactly once in hotkeys.rs (found {})",
+                src.matches(decl.as_str()).count()
+            );
+        }
+    }
+
+    #[test]
+    fn group_covers_every_action() {
+        for &a in Action::ALL {
+            assert_ne!(group(a), "", "{a:?} has no group");
         }
     }
 }

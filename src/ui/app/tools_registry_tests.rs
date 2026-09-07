@@ -209,6 +209,20 @@ fn every_edit_op_has_a_tool() {
     }
 }
 
+// ---- ws:color-engine ----
+/// clip.add_lut/color.auto/color.match/looks.list/looks.apply are declared canonical/sole-registration
+/// crate-wide (see plans/ui-overhaul/issues/color-engine.md) — a later-wave workstream (inspector-
+/// gallery, source-monitor) re-declaring one under a different-args duplicate must fail here (and
+/// tool_names_unique_and_namespaced would also catch an exact-name collision, but a same-purpose tool
+/// under a *different* name would slip past that test, not this one's fixed-name list).
+#[test]
+fn tool_names_are_sole_registration() {
+    for name in ["clip.add_lut", "color.auto", "color.match", "looks.list", "looks.apply"] {
+        let count = mcp::tools::all().filter(|t| t.name == name).count();
+        assert_eq!(count, 1, "'{name}' must be registered exactly once in TOOL_TABLES, found {count}");
+    }
+}
+
 #[test]
 fn ui_action_covers_every_action() {
     for &a in Action::ALL {

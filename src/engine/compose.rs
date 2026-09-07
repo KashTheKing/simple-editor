@@ -424,7 +424,7 @@ impl Compositor {
                 // No layer of its own: the effect stack re-runs over everything already on the canvas
                 // (mirrors gpu.rs, which likewise ignores placement, opacity and `clip.mask` here).
                 let mut p = placement_w(pw, clip, t, (w, h), w, h, false);
-                apply_effects(clip, lt, s, s, out, &mut self.fx, &mut self.pre, &mut self.cov, &mut p);
+                apply_effects(project, clip, lt, s, s, out, &mut self.fx, &mut self.pre, &mut self.cov, &mut p);
             }
             ClipKind::Video | ClipKind::Image => {
                 if clip.is_empty_container() {
@@ -488,6 +488,7 @@ impl Compositor {
                 }
                 let img_scale = s * (dw as f32 / p.w.max(1e-3));
                 apply_effects(
+                    project,
                     clip,
                     lt,
                     s,
@@ -544,7 +545,18 @@ impl Compositor {
                 let mut nested = std::mem::take(&mut self.seq[depth]);
                 self.render_tracks(project, seq_tracks, qw, st, dw, dh, pool, text, &mut nested, depth + 1);
                 let img_scale = s * (dw as f32 / p.w.max(1e-3));
-                apply_effects(clip, lt, s, img_scale, &mut nested, &mut self.fx, &mut self.pre, &mut self.cov, &mut p);
+                apply_effects(
+                    project,
+                    clip,
+                    lt,
+                    s,
+                    img_scale,
+                    &mut nested,
+                    &mut self.fx,
+                    &mut self.pre,
+                    &mut self.cov,
+                    &mut p,
+                );
                 fade_to(&mut nested, extra.color, extra.fade);
                 p.cx += extra.dx;
                 p.cy += extra.dy;
@@ -578,10 +590,10 @@ impl Compositor {
         let mut p = placement_w(pw, clip, t, native, w, h, false);
         // a fade also needs the copy path — fade_to writes into the layer, and the cached bitmap is
         // shared with the rasteriser's cache
-        if clip.effects.iter().any(|e| e.on_at(lt)) || extra.fade > 0.0 {
+        if effects::effects_for(project, clip).iter().any(|e| e.on_at(lt)) || extra.fade > 0.0 {
             self.src.resize(img.width, img.height);
             self.src.rgba.copy_from_slice(&img.rgba);
-            apply_effects(clip, lt, s, s, &mut self.src, &mut self.fx, &mut self.pre, &mut self.cov, &mut p);
+            apply_effects(project, clip, lt, s, s, &mut self.src, &mut self.fx, &mut self.pre, &mut self.cov, &mut p);
             fade_to(&mut self.src, extra.color, extra.fade);
             p.cx += extra.dx;
             p.cy += extra.dy;
@@ -606,11 +618,13 @@ fn dir_vec(direction: u8, w: u32, h: u32) -> (f32, f32) {
     }
 }
 
-/// Run the clip's effect stack on the layer image; geometric effects (Wobble) move `p` instead.
-/// `s` = canvas px per project px; `img_scale` = layer-image px per project px. A masked effect is
-/// mixed back over the pre-effect image by the mask's coverage (as `shaders.rs::apply_mask` does).
+/// Run the clip's effect stack on the layer image (master `Asset.effects` prepended via `effects_for`,
+/// see its doc comment); geometric effects (Wobble) move `p` instead. `s` = canvas px per project px;
+/// `img_scale` = layer-image px per project px. A masked effect is mixed back over the pre-effect image
+/// by the mask's coverage (as `shaders.rs::apply_mask` does).
 #[allow(clippy::too_many_arguments)]
 fn apply_effects(
+    project: &Project,
     clip: &Clip,
     lt: f64,
     s: f32,
@@ -621,7 +635,7 @@ fn apply_effects(
     cov: &mut Vec<u8>,
     p: &mut Placement,
 ) {
-    for e in &clip.effects {
+    for e in effects::effects_for(project, clip).iter() {
         if !e.on_at(lt) {
             continue;
         }

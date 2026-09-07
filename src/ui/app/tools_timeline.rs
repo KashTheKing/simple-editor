@@ -257,10 +257,103 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                 }
                 Ok(json!({"ok": true, "clips": clips, "tracks": tracks, "missing_media": missing, "report": md}))
             }
+            // ---- ws:snap-engine ----
+            "timeline.snap_get" => Ok(json!({"enabled": app.settings.snap})),
+            "timeline.snap_set" => {
+                app.settings.snap = req(arg_bool(args, "enabled"), "enabled")?;
+                Ok(json!({"ok": true, "enabled": app.settings.snap}))
+            }
+            "timeline.snap_query" => {
+                let t = req(arg_f64(args, "t"), "t")?;
+                let exclude = arg_ids(args, "exclude_ids").unwrap_or_default();
+                let thr = crate::ui::timeline::snap_thr(app.timeline.zoom, app.project.fps);
+                let hit = crate::ui::timeline::target(
+                    &app.project,
+                    t,
+                    thr,
+                    app.playhead,
+                    &exclude,
+                    &app.selection,
+                    None,
+                    app.settings.snap_markers,
+                );
+                Ok(match hit {
+                    Some((x, kind)) => json!({"t": x, "kind": format!("{kind:?}")}),
+                    None => json!({"t": Value::Null, "kind": Value::Null}),
+                })
+            }
+            "timeline.zones" => {
+                let x = req(arg_f64(args, "x"), "x")? as f32;
+                let y = req(arg_f64(args, "y"), "y")? as f32;
+                Ok(json!({"zone": format!("{:?}", timeline_zone_at(app, x, y))}))
+            }
+            "timeline.set_in_out" => {
+                let (snap_on, zoom, ph) = (app.settings.snap, app.timeline.zoom, app.playhead);
+                let mut changed = false;
+                if let Some(v) = arg_f64(args, "in") {
+                    let v = crate::ui::timeline::snap_time(v.max(0.0), snap_on, zoom, &app.project, ph, &[]);
+                    let v = v.min(app.project.out_point.unwrap_or(f64::INFINITY));
+                    if app.project.in_point != Some(v) {
+                        app.project.in_point = Some(v);
+                        changed = true;
+                    }
+                }
+                if let Some(v) = arg_f64(args, "out") {
+                    let v = crate::ui::timeline::snap_time(v.max(0.0), snap_on, zoom, &app.project, ph, &[]);
+                    let v = v.max(app.project.in_point.unwrap_or(0.0));
+                    if app.project.out_point != Some(v) {
+                        app.project.out_point = Some(v);
+                        changed = true;
+                    }
+                }
+                Ok(json!({"ok": true, "changed": changed, "in": app.project.in_point, "out": app.project.out_point}))
+            }
             _ => unreachable!(),
         }
     }
     Some(run(app, name, args))
+}
+
+// ---- ws:snap-engine ----
+/// Debug hit-test for `timeline.zones`: which `arm::Zone` a screen point would land on, approximated
+/// from the timeline's current layout state (no live egui frame available to an MCP caller). Ruler
+/// (including the in/out handles), lane gaps, clip bodies (top/bottom split on tall rows), edges and
+/// seams are covered; Drop/Fade/VolumeLine/Key/Marker/TransitionEdge need an active drag/dnd payload
+/// and are not reachable from this static point-in-time query.
+fn timeline_zone_at(app: &App, x: f32, y: f32) -> crate::ui::timeline::Zone {
+    use crate::ui::timeline::Zone;
+    let state = &app.timeline;
+    if y < state.lanes_rect.top() {
+        return Zone::RulerInOut;
+    }
+    let Some(ti) = state.track_at(y, &app.project) else { return Zone::Lane };
+    let track = &app.project.tracks[ti];
+    let t = state.time_at(x);
+    const EDGE_PX_PAD: f32 = 6.0; // matches EDGE_W's on-screen 6 px, converted per-call via zoom
+    let edge_thr = (EDGE_PX_PAD / state.zoom.max(0.01)) as f64;
+    let mut ordered: Vec<&crate::model::Clip> = track.clips.iter().collect();
+    ordered.sort_by(|a, b| a.start.total_cmp(&b.start));
+    for w in ordered.windows(2) {
+        if (w[0].end() - w[1].start).abs() < crate::model::ABUT_EPS && (t - w[0].end()).abs() * state.zoom as f64 <= 3.0
+        {
+            return Zone::Seam;
+        }
+    }
+    for cl in &track.clips {
+        if !cl.contains(t) {
+            continue;
+        }
+        if (t - cl.start).abs() <= edge_thr {
+            return Zone::EdgeStart;
+        }
+        if (t - cl.end()).abs() <= edge_thr {
+            return Zone::EdgeEnd;
+        }
+        let row_top = crate::ui::timeline::row_top(state, &app.project, ti).unwrap_or(0.0);
+        let split = track.height >= 2.0 * crate::ui::timeline::MIN_TRACK_H;
+        return if split && y >= row_top + track.height / 2.0 { Zone::BodyBottom } else { Zone::Body };
+    }
+    Zone::Lane
 }
 
 // ---- ws:registries-schema-hooks ----
@@ -298,4 +391,10 @@ pub const TOOLS: &[ToolDef] = &[
     row!("timeline.auto_cut", ToolKind::Mutate, "Silence-based auto-cut of audio clips (+ linked video).", &["clip_ids:array:true:", "threshold_db:number:false:default -35", "min_silence:number:false:", "min_speech:number:false:", "padding:number:false:", "keep_quiet:boolean:false:", "ripple:boolean:false:default true"]),
     row!("timeline.nest", ToolKind::Mutate, "Nest clips into a new sequence; returns the sequence id.", &["clip_ids:array:true:", "name:string:false:"]),
     row!("timeline.import", ToolKind::Read, "Import a timeline from another editor (FCP7 XML, EDL, .prproj); returns the report and opens it in the app (replace=true swaps the project in).", &["path:string:true:", "replace:boolean:false:"]),
+    // ---- ws:snap-engine ----
+    row!("timeline.snap_get", ToolKind::Read, "Current snapping-enabled state.", &[]),
+    row!("timeline.snap_set", ToolKind::Ui, "Toggle snapping (mirrors the bare-S hotkey); not project data, no undo.", &["enabled:boolean:true:turn snapping on/off"]),
+    row!("timeline.snap_query", ToolKind::Read, "Runs the tiered snap engine (playhead > cursor > selected edge > adjacent edge > marker > transition edge > in/out > 0) and returns the hit and its tier.", &["t:number:true:pointer time to test", "exclude_ids:array:false:clip ids to exclude from candidates"]),
+    row!("timeline.zones", ToolKind::Read, "Debug hit-test: which arm.rs Zone a point would land on (Body/BodyBottom/Edge/Seam/Lane/RulerInOut/...).", &["x:number:true:screen x", "y:number:true:screen y"]),
+    row!("timeline.set_in_out", ToolKind::Mutate, "Sets in/out, snapped, clamped in<=out; one undo pushed only if changed.", &["in:number:false:new in point (seconds)", "out:number:false:new out point (seconds)"]),
 ];

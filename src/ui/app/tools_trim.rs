@@ -265,7 +265,7 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
             }
             "timeline.edit_point" => {
                 if arg_bool(args, "clear").unwrap_or(false) {
-                    app.edit_point = None;
+                    app.timeline.edit_point = None;
                     return Ok(json!({"ok": true}));
                 }
                 if let (Some(track), Some(t)) = (arg_u64(args, "track"), arg_f64(args, "t")) {
@@ -275,9 +275,9 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                             app.project.nearest_edit_point(t, Some(track as usize)).ok_or("no edit point near there")?
                         }
                     };
-                    app.edit_point = Some(ep);
+                    app.timeline.edit_point = Some(ep);
                 }
-                Ok(match app.edit_point {
+                Ok(match app.timeline.edit_point {
                     Some(ep) => json!({"track": ep.track, "t": ep.t, "side": side_name(ep.side)}),
                     None => Value::Null,
                 })

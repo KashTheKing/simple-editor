@@ -9,6 +9,11 @@ use super::*;
 use crate::model::ops::tracks::TrackFlag;
 use crate::model::ops::trim::{EditPoint, Side};
 
+// deviation (post-review reconciliation with snap-engine's PR #46): edit-point selection now lives on
+// `App::timeline.edit_point` (`TimelineState`, snap-engine's), not a separate `App::edit_point` field —
+// `crate::ui::timeline::EditPoint`/`Side` are `pub use` re-exports of these same model types, so no
+// conversion is needed at the `app.timeline.edit_point` call sites below.
+
 /// Anything `commit` can read as "did the op actually do something" — a refused op (locked track,
 /// no room, nothing selected) must push no undo entry.
 trait Changed {
@@ -50,11 +55,11 @@ fn commit<T: Changed>(app: &mut App, label: &'static str, f: impl FnOnce(&mut Pr
 /// repeated presses keep nudging the same cut. ponytail: with no edit point selected (no `U` yet) this
 /// is a no-op rather than guessing which edge of the current selection to trim — press `U` first.
 fn nudge_edit_point(app: &mut App, label: &'static str, frames: f64) -> bool {
-    let Some(ep) = app.edit_point else { return false };
+    let Some(ep) = app.timeline.edit_point else { return false };
     let to = (ep.t + frames * app.project.frame_dur()).max(0.0);
     let changed = commit(app, label, |p| p.extend_edit(&ep, to));
     if changed {
-        app.edit_point = Some(EditPoint { t: to, ..ep });
+        app.timeline.edit_point = Some(EditPoint { t: to, ..ep });
     }
     changed
 }
@@ -121,11 +126,11 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
             // stands in for "hovered track" (the timeline UI hands a real hovered track once
             // snap-engine/timeline-trim-gestures wire the gesture up).
             let track = app.selection.first().and_then(|&id| app.project.track_of(id));
-            app.edit_point = app.project.nearest_edit_point(app.playhead, track);
+            app.timeline.edit_point = app.project.nearest_edit_point(app.playhead, track);
             true
         }
         CycleEditSide => {
-            if let Some(ep) = &mut app.edit_point {
+            if let Some(ep) = &mut app.timeline.edit_point {
                 ep.side = match ep.side {
                     Side::Both => Side::Left,
                     Side::Left => Side::Right,
@@ -151,10 +156,10 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
             true
         }
         ExtendEdit => {
-            if let Some(ep) = app.edit_point {
+            if let Some(ep) = app.timeline.edit_point {
                 let to = app.playhead;
                 if commit(app, "Extend edit", |p| p.extend_edit(&ep, to)) {
-                    app.edit_point = Some(EditPoint { t: to, ..ep });
+                    app.timeline.edit_point = Some(EditPoint { t: to, ..ep });
                 }
             }
             true
