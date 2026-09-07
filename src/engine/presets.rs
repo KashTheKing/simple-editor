@@ -200,6 +200,122 @@ pub fn apply_effects(preset: &EffectPreset, project: &mut Project, clip: Id) -> 
     true
 }
 
+// ---- ws:color-engine ----
+/// One built-in Look: a name plus a small effect recipe (kind, tweaked param values by name).
+struct LookDef {
+    name: &'static str,
+    effects: &'static [(EffectKind, &'static [(&'static str, f64)])],
+}
+
+/// Build one effect of `kind` with the named params overridden (unknown names are ignored — a typo here
+/// would otherwise silently no-op instead of failing loudly at the one call site that builds all 12).
+fn look_effect(kind: EffectKind, params: &[(&str, f64)]) -> Effect {
+    let mut e = Effect::new(kind);
+    for &(name, v) in params {
+        if let Some(i) = kind.params().iter().position(|p| p.name == name) {
+            e.params[i].value = v;
+        }
+    }
+    e
+}
+
+/// 12 built-in Looks, each a couple of tweaked `Primaries`/`Curves`/`Vignette` instances reusing the
+/// existing `EffectPreset{name,json}` shape and `apply_effects()` verbatim (same machinery
+/// `clip.apply_motion`/templates already use). First and sole declaration of `builtin_looks`/
+/// `apply_look` in this file — later workstreams (inspector-gallery's Gallery ▸ Looks tab) reuse these
+/// two fns unchanged rather than adding their own Looks-apply logic.
+pub fn builtin_looks() -> Vec<EffectPreset> {
+    const LOOKS: &[LookDef] = &[
+        LookDef {
+            name: "Teal-Orange",
+            effects: &[
+                (EffectKind::Primaries, &[("Lift B", 0.04), ("Gain R", 1.12), ("Gain B", 0.88), ("Temp", 18.0)]),
+                (EffectKind::Vignette, &[("Strength", 0.35)]),
+            ],
+        },
+        LookDef {
+            name: "Vintage",
+            effects: &[
+                (EffectKind::Primaries, &[("Lift R", 0.05), ("Lift G", 0.03), ("Gain B", 0.85), ("Temp", 10.0)]),
+                (EffectKind::Curves, &[("Master 1/4", 0.3), ("Master 3/4", 0.7)]),
+            ],
+        },
+        LookDef { name: "Cool", effects: &[(EffectKind::Primaries, &[("Temp", -30.0), ("Gain B", 1.1)])] },
+        LookDef { name: "Warm", effects: &[(EffectKind::Primaries, &[("Temp", 30.0), ("Gain R", 1.1)])] },
+        LookDef {
+            name: "B&W Film",
+            effects: &[
+                (EffectKind::Grayscale, &[("Amount", 1.0)]),
+                (EffectKind::Curves, &[("Master 1/4", 0.2), ("Master 3/4", 0.82)]),
+                (EffectKind::Vignette, &[("Strength", 0.3)]),
+            ],
+        },
+        LookDef {
+            name: "Bleach",
+            effects: &[
+                (EffectKind::Curves, &[("Master 1/4", 0.32), ("Master 3/4", 0.72)]),
+                (EffectKind::Primaries, &[("Gain R", 0.95), ("Gain G", 0.95), ("Gain B", 0.95)]),
+            ],
+        },
+        LookDef {
+            name: "Matte",
+            effects: &[(EffectKind::Primaries, &[("Lift R", 0.08), ("Lift G", 0.08), ("Lift B", 0.08)])],
+        },
+        LookDef { name: "Punchy", effects: &[(EffectKind::Curves, &[("Master 1/4", 0.18), ("Master 3/4", 0.85)])] },
+        LookDef {
+            name: "Pastel",
+            effects: &[(
+                EffectKind::Primaries,
+                &[("Lift R", 0.1), ("Lift G", 0.1), ("Lift B", 0.1), ("Gain R", 0.9), ("Gain G", 0.9), ("Gain B", 0.9)],
+            )],
+        },
+        LookDef {
+            name: "Noir",
+            effects: &[
+                (EffectKind::Grayscale, &[("Amount", 1.0)]),
+                (EffectKind::Vignette, &[("Strength", 0.55), ("Radius", 0.6)]),
+            ],
+        },
+        LookDef {
+            name: "Sunset",
+            effects: &[(EffectKind::Primaries, &[("Gain R", 1.15), ("Gain B", 0.85), ("Temp", 20.0), ("Tint", 10.0)])],
+        },
+        LookDef {
+            name: "Clean",
+            effects: &[(EffectKind::Primaries, &[("Gain R", 1.02), ("Gain G", 1.02), ("Gain B", 1.02)])],
+        },
+    ];
+    LOOKS
+        .iter()
+        .map(|l| {
+            let fx: Vec<Effect> = l.effects.iter().map(|&(k, p)| look_effect(k, p)).collect();
+            EffectPreset { name: l.name.into(), json: serde_json::to_string(&fx).unwrap_or_default() }
+        })
+        .collect()
+}
+
+/// Apply a built-in (or saved) Look to a clip, replacing its effect stack (`apply_effects`'s existing
+/// template-apply semantics — see its own doc comment on why a manual effect the user already added is
+/// lost), then mixing every param of the newly-set effects toward `kind.params()[i].default` by
+/// `1 - intensity` (only the base `.value` — keyframes, which a Look never sets, are untouched).
+/// `intensity` 0.0 is therefore exactly identity, `1.0` is the Look unmodified.
+pub fn apply_look(preset: &EffectPreset, project: &mut Project, clip: Id, intensity: f32) -> bool {
+    if !apply_effects(preset, project, clip) {
+        return false;
+    }
+    let f = intensity.clamp(0.0, 1.0) as f64;
+    if let Some(c) = project.clip_mut(clip) {
+        for e in &mut c.effects {
+            let specs = e.kind.params();
+            for (i, anim) in e.params.iter_mut().enumerate() {
+                let default = specs.get(i).map(|s| s.default).unwrap_or(anim.value);
+                anim.value = default + (anim.value - default) * f;
+            }
+        }
+    }
+    true
+}
+
 /// True when a template holds nothing but adjustment layers — the Presets pane gives those their own
 /// section. ponytail: decodes the JSON per frame the list is drawn; templates are a handful of small
 /// blobs, memoise if that stops being true.
@@ -464,6 +580,49 @@ mod tests {
         let a = q.add_adjustment_clip(0.0, 2.0);
         assert!(is_adjustment_template(&capture_template("Adj", &q, &[a])));
         assert!(!is_adjustment_template(&capture_template("Clip", &q, &[qid])));
+    }
+
+    // ---- ws:color-engine ----
+    #[test]
+    fn builtin_looks_all_parse_and_apply() {
+        let looks = builtin_looks();
+        assert_eq!(looks.len(), 12);
+        for look in &looks {
+            assert!(serde_json::from_str::<Vec<Effect>>(&look.json).is_ok(), "{}: bad json", look.name);
+            let mut p = Project::from_media(asset(0, 5.0, 0));
+            let id = p.all_clips().next().unwrap().1.id;
+            let before = p.clip(id).unwrap().effects.clone();
+            assert!(apply_look(look, &mut p, id, 1.0), "{}: intensity 1.0", look.name);
+            assert_ne!(p.clip(id).unwrap().effects, before, "{}: applying a look must change something", look.name);
+
+            let mut p2 = Project::from_media(asset(1, 5.0, 0));
+            let id2 = p2.all_clips().next().unwrap().1.id;
+            let before2 = p2.clip(id2).unwrap().effects.clone();
+            assert!(apply_look(look, &mut p2, id2, 0.0), "{}: intensity 0.0", look.name);
+            assert_ne!(p2.clip(id2).unwrap().effects, before2, "{}: even at 0.0 the kinds/count change", look.name);
+        }
+    }
+
+    #[test]
+    fn apply_look_intensity_zero_is_a_no_op_on_defaults() {
+        for look in builtin_looks() {
+            let mut p = Project::from_media(asset(0, 5.0, 0));
+            let id = p.all_clips().next().unwrap().1.id;
+            assert!(apply_look(&look, &mut p, id, 0.0));
+            for e in &p.clip(id).unwrap().effects {
+                for (i, spec) in e.kind.params().iter().enumerate() {
+                    let v = e.params[i].value;
+                    assert!(
+                        (v - spec.default).abs() < 1e-9,
+                        "{}: {} param {} = {v}, want default {}",
+                        look.name,
+                        e.kind.name(),
+                        spec.name,
+                        spec.default
+                    );
+                }
+            }
+        }
     }
 
     #[test]

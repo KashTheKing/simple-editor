@@ -159,6 +159,10 @@ pub fn body(kind: crate::model::EffectKind) -> Option<&'static str> {
         K::BlobTrack => BLOB_TRACK,
         K::Vhs => VHS,
         K::RecDot => REC_DOT,
+        K::Primaries => PRIMARIES,
+        K::Qualifier => QUALIFIER,
+        K::Lut => LUT,
+        K::FrameBlend => FRAME_BLEND,
         // Wobble / Plane3d move the layer (see engine::effects::wobble / plane3d_matrix);
         // Shader is wrapped by `user_shader` instead.
         K::Wobble | K::Plane3d | K::Shader => return None,
@@ -1193,6 +1197,115 @@ void main() {
 }
 "#;
 
+/// Lift/Gamma/Gain colour wheels (`pow(clamp(src*gain+lift,0,1), 1/gamma)`) then a cheap temp/tint post
+/// shift (R/B for warmth, G for tint) — mirrors `engine::effects::apply`'s CPU arm exactly (same 0.0015
+/// scale factor) for GPU/CPU parity. Declares p8..p10 itself: 11 params (p0-p10) overflow `PRELUDE`'s
+/// p0..p7.
+const PRIMARIES: &str = r#"
+uniform float p8;
+uniform float p9;
+uniform float p10;
+void main() {
+    vec2 uv = gl_FragCoord.xy / u_res;
+    vec4 src = texture(tex, uv);
+    vec3 lift = vec3(p0, p1, p2);
+    vec3 gamma = max(vec3(p3, p4, p5), vec3(0.01));
+    vec3 gain = max(vec3(p6, p7, p8), vec3(0.0));
+    vec3 c = pow(clamp(src.rgb * gain + lift, 0.0, 1.0), 1.0 / gamma);
+    c.r = clamp(c.r + p9 * 0.0015, 0.0, 1.0);
+    c.b = clamp(c.b - p9 * 0.0015, 0.0, 1.0);
+    c.g = clamp(c.g + p10 * 0.0015, 0.0, 1.0);
+    vec4 res = vec4(c, src.a);
+    float m = u_has_mask > 0.5 ? texture(u_mask, uv).r : 1.0;
+    out_color = mix(src, res, m);
+}
+"#;
+
+/// HSL-band secondary key: hue centre (p0, degrees) + width (p1), saturation band (p2..p3), luminance
+/// band (p4..p5), edge softness (p6) -> alpha; RGB passed through untouched (a matte, like ChromaKey's
+/// show-mask mode). Mirrors `engine::effects::qualifier`'s CPU maths exactly for GPU/CPU parity.
+const QUALIFIER: &str = r#"
+vec3 fx_rgb2hsl(vec3 c) {
+    float mx = max(c.r, max(c.g, c.b));
+    float mn = min(c.r, min(c.g, c.b));
+    float l = (mx + mn) * 0.5;
+    float h = 0.0;
+    float s = 0.0;
+    float d = mx - mn;
+    if (d > 1e-5) {
+        s = d / max(1.0 - abs(2.0 * l - 1.0), 1e-5);
+        if (mx == c.r) {
+            h = mod((c.g - c.b) / d, 6.0);
+        } else if (mx == c.g) {
+            h = (c.b - c.r) / d + 2.0;
+        } else {
+            h = (c.r - c.g) / d + 4.0;
+        }
+        h /= 6.0;
+    }
+    return vec3(h, s, l);
+}
+void main() {
+    vec2 uv = gl_FragCoord.xy / u_res;
+    vec4 src = texture(tex, uv);
+    vec3 hsl = fx_rgb2hsl(clamp(src.rgb, 0.0, 1.0));
+    float hue_deg = hsl.x * 360.0;
+    float dh = abs(mod(hue_deg - p0 + 180.0, 360.0) - 180.0);
+    float soft = max(p6, 0.001);
+    float hue_a = 1.0 - smoothstep(p1, p1 + soft * 60.0, dh);
+    float sat_a = smoothstep(p2 - soft, p2, hsl.y) * (1.0 - smoothstep(p3, p3 + soft, hsl.y));
+    float lum_a = smoothstep(p4 - soft, p4, hsl.z) * (1.0 - smoothstep(p5, p5 + soft, hsl.z));
+    float a = hue_a * sat_a * lum_a;
+    vec4 res = vec4(src.rgb, src.a * a);
+    float m = u_has_mask > 0.5 ? texture(u_mask, uv).r : 1.0;
+    out_color = mix(src, res, m);
+}
+"#;
+
+/// `.cube` 3D LUT lookup (`u_lut3d`, uploaded/bound by `gpu.rs` from `engine::lut::load`), trilinear via
+/// the fixed-function `sampler3D` filter, mixed with the source by Intensity (p0). Identity when no LUT
+/// is bound (`u_lut_n` stays whatever gpu.rs last set — the CPU path's own empty-path check is what
+/// actually skips the effect; this body just does its one texture lookup either way).
+const LUT: &str = r#"
+uniform sampler3D u_lut3d;
+uniform float u_lut_n;
+void main() {
+    vec2 uv = gl_FragCoord.xy / u_res;
+    vec4 src = texture(tex, uv);
+    vec3 c = clamp(src.rgb, 0.0, 1.0);
+    float n = max(u_lut_n, 2.0);
+    vec3 sampled = texture(u_lut3d, c * ((n - 1.0) / n) + (0.5 / n)).rgb;
+    vec4 res = vec4(mix(src.rgb, sampled, clamp(p0, 0.0, 1.0)), src.a);
+    float m = u_has_mask > 0.5 ? texture(u_mask, uv).r : 1.0;
+    out_color = mix(src, res, m);
+}
+"#;
+
+/// Shutter-window blend between the current frame and one decoded neighbour (mirrors `MOTION_BLUR`'s
+/// u_prev/u_next/u_frames pattern, gpu.rs binds them the same way since both report `needs_motion()`).
+/// 1 param: Amount (p0). No CPU fallback (`gpu_only`) — a no-neighbour frame (u_frames == 0) is simply
+/// the source unchanged, never a guessed direction.
+///
+/// Extra uniforms gpu.rs must bind (this kind reports `EffectKind::needs_motion()`):
+///   sampler2D u_prev / u_next  the layer one frame before / after
+///   float     u_frames         how many of those are real: 0, 1 (prev only) or 2
+const FRAME_BLEND: &str = r#"
+uniform sampler2D u_prev;
+uniform sampler2D u_next;
+uniform float u_frames;
+void main() {
+    vec2 uv = gl_FragCoord.xy / u_res;
+    vec4 src = texture(tex, uv);
+    vec4 res = src;
+    if (u_frames > 0.5) {
+        vec4 next = u_frames > 1.5 ? texture(u_next, uv) : texture(u_prev, uv);
+        res = mix(src, next, clamp(p0, 0.0, 1.0));
+    }
+    float m = u_has_mask > 0.5 ? texture(u_mask, uv).r : 1.0;
+    out_color = mix(src, res, m);
+}
+"#;
+
 #[cfg(test)]
 mod shader_body_tests {
     use super::*;
@@ -1248,7 +1361,7 @@ mod shader_body_tests {
             let want = !matches!(k, K::Wobble | K::Plane3d | K::Shader);
             assert_eq!(has, want, "{:?}", k);
         }
-        assert_eq!(bodies().len(), 22);
+        assert_eq!(bodies().len(), 26);
     }
 
     #[test]
@@ -1327,8 +1440,11 @@ mod shader_body_tests {
         assert_eq!(declared(MOTION_BLUR), ["u_prev", "u_next", "u_frames", "u_motion"]);
         assert_eq!(declared(BLOB_TRACK), ["u_blob"]);
         assert_eq!(declared(CURVES), ["p8", "p9", "p10", "p11"]);
+        assert_eq!(declared(PRIMARIES), ["p8", "p9", "p10"]);
+        assert_eq!(declared(LUT), ["u_lut3d", "u_lut_n"]);
+        assert_eq!(declared(FRAME_BLEND), ["u_prev", "u_next", "u_frames"]);
         for (_, src) in bodies() {
-            if src != MOTION_BLUR && src != BLOB_TRACK && src != CURVES {
+            if ![MOTION_BLUR, BLOB_TRACK, CURVES, PRIMARIES, LUT, FRAME_BLEND].contains(&src) {
                 assert!(declared(src).is_empty(), "undocumented extra uniform in {:?}", declared(src));
             }
         }

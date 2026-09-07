@@ -91,6 +91,8 @@ const UNIFORMS: &[&str] = &[
     "u_next",
     "u_frames",
     "u_motion",
+    "u_lut3d",
+    "u_lut_n",
     "m_shape",
     "m_center",
     "m_radius",
@@ -145,6 +147,7 @@ const U_DST: u32 = 2;
 const U_B: u32 = 3;
 const U_PREV: u32 = 4;
 const U_NEXT: u32 = 5;
+const U_LUT3D: u32 = 6;
 
 /// Texture-cache keys for the neighbouring frames of a motion-blurred clip. Clip ids are small
 /// counters (`Project::new_id`), so the top bits are free to tag a variant of the same clip.
@@ -223,6 +226,14 @@ pub struct GpuRenderer {
     /// What `NodeKind::Text` rasterises with — the app hands over the same one the player and export
     /// use, so fonts and the glyph cache are shared. None = Text nodes render nothing.
     pub text: Option<Arc<std::sync::Mutex<crate::engine::text::TextRasterizer>>>,
+    // ---- ws:color-engine ----
+    /// `TEXTURE_3D` LUT uploads, keyed by `Effect.lut` path (no mtime invalidation — see engine::lut).
+    lut_textures: HashMap<String, glow::Texture>,
+    /// Opt-in gate for `frame_stats`'s readback (default off, so an idle preview never pays for it).
+    stats_wanted: bool,
+    /// The last computed `FrameStats` and the playhead time it was sampled at, so a repeated call at the
+    /// same time (the common "MCP asked twice") does not re-render/re-read anything.
+    last_stats: Option<(f64, FrameStats)>,
 }
 
 impl GpuRenderer {
@@ -256,6 +267,9 @@ impl GpuRenderer {
                 blank,
                 loaned: Vec::new(),
                 text: None,
+                lut_textures: HashMap::new(),
+                stats_wanted: false,
+                last_stats: None,
             };
             // The composite program is the one nothing works without: fail loudly here instead of
             // silently rendering black later.
@@ -390,6 +404,13 @@ impl GpuRenderer {
         self.reclaim();
         let host = self.host_fbo();
         let canvas = self.render_canvas(project, t, w, h, layers);
+        // ---- ws:color-engine ----
+        // Guarded stats readback: ONLY here (the live-preview path App::update actually calls), never
+        // render_to_texture (dead code) or the shared render_canvas caller render_frame uses (export /
+        // render.frame / thumbnails) — export speed must never pay for a readback nobody there asked for.
+        if let Some(canvas) = &canvas {
+            self.maybe_readback_stats(canvas, t);
+        }
         self.restore(host);
         let canvas = canvas?;
         let out = (canvas.tex, canvas.w, canvas.h);
@@ -507,6 +528,18 @@ impl GpuRenderer {
 
     pub fn scaler_supported(&self, _s: Scaler) -> bool {
         true
+    }
+
+    // ---- ws:color-engine ----
+    /// Opt in/out of `frame_stats`'s per-frame readback — off by default, so the idle preview never
+    /// pays a `glReadPixels` it did not ask for.
+    pub fn set_stats_wanted(&mut self, on: bool) {
+        self.stats_wanted = on;
+    }
+    /// The most recently computed `frame_stats` snapshot (whichever time `render_preview_texture` last
+    /// sampled while `stats_wanted` was on), if any.
+    pub fn stats(&self) -> Option<&FrameStats> {
+        self.last_stats.as_ref().map(|(_, s)| s)
     }
 
     /// The GLSL log of the last program that failed to compile, if any.
@@ -679,6 +712,84 @@ impl GpuRenderer {
         self.link(key, &src).ok().map(|_| key)
     }
 
+    // ---- ws:color-engine ----
+    /// If a caller has asked for `frame_stats` (`set_stats_wanted(true)`) and hasn't already sampled
+    /// this exact playhead time, downsample `canvas` to 256x144 and compute `FrameStats` from it.
+    fn maybe_readback_stats(&mut self, canvas: &Target, t: f64) {
+        if !self.stats_wanted {
+            return;
+        }
+        if let Some((last_t, _)) = &self.last_stats {
+            if (*last_t - t).abs() < 1e-9 {
+                return;
+            }
+        }
+        const SW: u32 = 256;
+        const SH: u32 = 144;
+        let Some(small) = self.copy_to(canvas.tex, (SW, SH)) else { return };
+        let gl = self.gl.clone();
+        let mut buf = vec![0u8; (SW * SH * 4) as usize];
+        unsafe {
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(small.fbo));
+            gl.pixel_store_i32(glow::PACK_ALIGNMENT, 1);
+            gl.read_pixels(
+                0,
+                0,
+                SW as i32,
+                SH as i32,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelPackData::Slice(Some(&mut buf)),
+            );
+        }
+        self.pool.put(small);
+        self.last_stats = Some((t, compute_stats(&buf, SW, SH)));
+    }
+
+    /// Look up (or create + upload) the `TEXTURE_3D` for a `.cube` path, plus the LUT's size (for the
+    /// shader's edge-texel-centring maths). `None` when the file fails to load/parse or GL rejects the
+    /// upload — the caller then leaves the effect at its GPU identity (the shader still runs but samples
+    /// a stale/blank binding harmlessly; the CPU path's own `lut::load` is what actually gates the
+    /// visible effect off when a LUT is unusable).
+    fn lut_texture(&mut self, path: &str) -> Option<(glow::Texture, u32)> {
+        let lut = crate::engine::lut::load(path).ok()?;
+        if let Some(&tex) = self.lut_textures.get(path) {
+            return Some((tex, lut.size));
+        }
+        let gl = self.gl.clone();
+        let n = lut.size as i32;
+        let mut data = Vec::with_capacity(lut.data.len() * 3);
+        for c in &lut.data {
+            for v in c {
+                data.push((v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+            }
+        }
+        unsafe {
+            let tex = gl.create_texture().ok()?;
+            gl.bind_texture(glow::TEXTURE_3D, Some(tex));
+            gl.tex_parameter_i32(glow::TEXTURE_3D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
+            gl.tex_parameter_i32(glow::TEXTURE_3D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
+            gl.tex_parameter_i32(glow::TEXTURE_3D, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
+            gl.tex_parameter_i32(glow::TEXTURE_3D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
+            gl.tex_parameter_i32(glow::TEXTURE_3D, glow::TEXTURE_WRAP_R, glow::CLAMP_TO_EDGE as i32);
+            gl.tex_image_3d(
+                glow::TEXTURE_3D,
+                0,
+                glow::RGB8 as i32,
+                n,
+                n,
+                n,
+                0,
+                glow::RGB,
+                glow::UNSIGNED_BYTE,
+                glow::PixelUnpackData::Slice(Some(&data)),
+            );
+            gl.bind_texture(glow::TEXTURE_3D, None);
+            self.lut_textures.insert(path.to_string(), tex);
+            Some((tex, lut.size))
+        }
+    }
+
     /// Bind `prog`, point the fixed sampler units at `tex`/`mask`, size uniforms, and draw the triangle.
     fn draw(&self, key: u64, dst: &Target, tex: glow::Texture, mask: Option<glow::Texture>, set: impl Fn(&Prog)) {
         let Some(prog) = self.programs.map.get(&key) else { return };
@@ -740,6 +851,9 @@ impl GpuRenderer {
         }
         // uniforms persist on a cached program, so a motion kind must set these every draw
         let motion = effect.kind.needs_motion().then(|| motion.unwrap_or((self.blank, self.blank, 0.0)));
+        // ---- ws:color-engine ----
+        let lut_bind =
+            (effect.kind == EffectKind::Lut && !effect.lut.is_empty()).then(|| self.lut_texture(&effect.lut)).flatten();
         self.draw(key, &dst, src, mask, |prog| unsafe {
             gl.uniform_2_f32(prog.uni.get("u_res"), size.0 as f32, size.1 as f32);
             gl.uniform_1_f32(prog.uni.get("u_time"), t as f32);
@@ -763,6 +877,12 @@ impl GpuRenderer {
                 // zero area = "nothing matched", which the shader reads as "draw no crosshair"
                 let (cx, cy, area) = blob.unwrap_or((0.5, 0.5, 0.0));
                 gl.uniform_3_f32(prog.uni.get("u_blob"), cx as f32, cy as f32, area as f32);
+            }
+            if let Some((lt, n)) = lut_bind {
+                gl.active_texture(glow::TEXTURE0 + U_LUT3D);
+                gl.bind_texture(glow::TEXTURE_3D, Some(lt));
+                gl.uniform_1_i32(prog.uni.get("u_lut3d"), U_LUT3D as i32);
+                gl.uniform_1_f32(prog.uni.get("u_lut_n"), n as f32);
             }
         });
         Some(dst)
@@ -1071,7 +1191,7 @@ impl GpuRenderer {
 
         if clip.kind == ClipKind::Adjustment {
             // re-process everything already on the canvas
-            let Some(out) = self.run_chain(clip, t, project.fps, layers, canvas.tex, (cw, ch), s) else {
+            let Some(out) = self.run_chain(project, clip, t, project.fps, layers, canvas.tex, (cw, ch), s) else {
                 return canvas;
             };
             self.pool.put(canvas);
@@ -1090,7 +1210,8 @@ impl GpuRenderer {
         }
         // geometric effects move the layer instead of touching pixels
         let (mut focal, mut z0) = (cw as f32, 0.0f32);
-        for e in clip.effects.iter().filter(|e| e.on_at(lt) && e.kind.is_geometric()) {
+        let chain_fx = crate::engine::effects::effects_for(project, clip);
+        for e in chain_fx.iter().filter(|e| e.on_at(lt) && e.kind.is_geometric()) {
             match e.kind {
                 EffectKind::Wobble => {
                     let (dx, dy, roll, yaw, pitch) = crate::engine::effects::wobble(e, lt);
@@ -1120,7 +1241,7 @@ impl GpuRenderer {
         // effect scale: layer px per project px (matches compose::apply_effects' img_scale — footage
         // is decoded at roughly the placed size, text/shape bitmaps arrive at canvas scale already)
         let img_scale = if contain { s * (lsize.0 as f32 / p.w.max(1e-3)) } else { s };
-        let processed = self.run_chain(clip, t, project.fps, layers, tex, lsize, img_scale);
+        let processed = self.run_chain(project, clip, t, project.fps, layers, tex, lsize, img_scale);
         let (src, size, own) = match &processed {
             Some(target) => (target.tex, (target.w, target.h), true),
             None => (tex, lsize, false),
@@ -1143,10 +1264,21 @@ impl GpuRenderer {
         out
     }
 
-    /// The clip's effect chain (node graph when it has one, else the linear stack). None = unchanged.
+    /// The clip's effect chain (node graph when it has one, else the linear stack, master (Asset)
+    /// effects prepended via `effects_for` — see its doc comment). None = unchanged.
+    ///
+    /// deviation (see PR body): the node-graph branch does NOT run master effects — a node graph fully
+    /// replaces the clip's own effect stack (the entire point of switching to one), and threading
+    /// `effects_for`'s prepend through `eval_graph_on`'s per-node dispatch as well would touch its own
+    /// GPU-resource-lifetime bookkeeping for a capability (`Asset.effects` on a node-graph clip) nothing
+    /// in this issue's manual-test checklist exercises. `eval_graph_on`/`eval_graph` are left unchanged
+    /// (unlike the plan's original text, which asked for a `project` param there too) — `eval_graph` has
+    /// no callers anywhere in the crate besides its own definition (confirmed dead code, same status as
+    /// `render_to_texture`), so there is nothing to thread it *to*.
     #[allow(clippy::too_many_arguments)]
     fn run_chain(
         &mut self,
+        project: &Project,
         clip: &Clip,
         t: f64,
         fps: f64,
@@ -1160,7 +1292,7 @@ impl GpuRenderer {
             return self.eval_graph_on(g, clip, t, fps, layers, Some(src), size, scale);
         }
         let mut cur: Option<Target> = None;
-        for e in &clip.effects {
+        for e in crate::engine::effects::effects_for(project, clip).iter() {
             if !e.on_at(lt) || e.kind.is_geometric() {
                 continue;
             }
@@ -1420,6 +1552,9 @@ impl Drop for GpuRenderer {
             for (_, t) in self.textures.drain() {
                 gl.delete_texture(t.tex);
             }
+            for (_, t) in self.lut_textures.drain() {
+                gl.delete_texture(t);
+            }
             for t in self.loaned.drain(..).chain(self.pool.free.drain(..)) {
                 gl.delete_framebuffer(t.fbo);
                 gl.delete_texture(t.tex);
@@ -1491,6 +1626,58 @@ impl LayerSet {
     pub fn get(&self, id: crate::model::Id) -> Option<&Arc<Frame>> {
         self.layers.iter().find(|(i, _)| *i == id).map(|(_, f)| f)
     }
+}
+
+// ---- ws:color-engine ----
+/// Histogram/percentile/mean snapshot of a downsampled frame, for `frame.stats`/`color.auto`/
+/// `color.match`. `sample` is the raw downsample itself (`sample_w`x`sample_h`, RGBA) for a future
+/// eyedropper/scopes consumer (`canvas-handles-monitor`/`pro-monitor`, out of this workstream's scope).
+#[derive(Clone, Debug)]
+pub struct FrameStats {
+    pub hist: [[u32; 256]; 3],
+    pub luma: [u32; 256],
+    /// 1st / 99th percentile per channel, normalised 0..1.
+    pub p1: [f32; 3],
+    pub p99: [f32; 3],
+    pub mean: [f32; 3],
+    pub sample_w: u32,
+    pub sample_h: u32,
+    pub sample: Vec<[u8; 4]>,
+}
+
+/// Pure CPU histogram/percentile/mean pass over an RGBA8 downsample — no GL context needed, so it is
+/// directly unit-testable (`compute_stats_percentiles_on_gradient` below).
+pub fn compute_stats(rgba: &[u8], w: u32, h: u32) -> FrameStats {
+    let mut hist = [[0u32; 256]; 3];
+    let mut luma = [0u32; 256];
+    let mut sum = [0u64; 3];
+    let n = (w as usize) * (h as usize);
+    let mut sample = Vec::with_capacity(n);
+    for px in rgba.chunks_exact(4).take(n) {
+        for c in 0..3 {
+            hist[c][px[c] as usize] += 1;
+            sum[c] += px[c] as u64;
+        }
+        let l = ((px[0] as u32 * 54 + px[1] as u32 * 183 + px[2] as u32 * 19) >> 8).min(255);
+        luma[l as usize] += 1;
+        sample.push([px[0], px[1], px[2], px[3]]);
+    }
+    let nf = (n.max(1)) as f64;
+    let mean = std::array::from_fn(|c| (sum[c] as f64 / nf / 255.0) as f32);
+    let percentile = |h: &[u32; 256], p: f64| -> f32 {
+        let target = ((nf * p).round() as u32).max(1);
+        let mut acc = 0u32;
+        for (v, &count) in h.iter().enumerate() {
+            acc += count;
+            if acc >= target {
+                return v as f32 / 255.0;
+            }
+        }
+        1.0
+    };
+    let p1 = std::array::from_fn(|c| percentile(&hist[c], 0.01));
+    let p99 = std::array::from_fn(|c| percentile(&hist[c], 0.99));
+    FrameStats { hist, luma, p1, p99, mean, sample_w: w, sample_h: h, sample }
 }
 
 // ---------------- pure helpers (tested without a GL context) ----------------
@@ -1807,6 +1994,33 @@ mod tests {
             let want = BlendMode::ALL[n].name().replace(' ', "");
             assert_eq!(name, want, "GLSL branch {n} is {name}, enum says {want}");
         }
+    }
+
+    // ---- ws:color-engine ----
+    #[test]
+    fn compute_stats_percentiles_on_gradient() {
+        // 256x1 horizontal gradient: pixel x has value x in every channel, so the histogram is exactly
+        // one count per bucket 0..255 and the percentiles land near the extremes.
+        let mut rgba = vec![0u8; 256 * 4];
+        for (x, px) in rgba.chunks_exact_mut(4).enumerate() {
+            let v = x as u8;
+            px.copy_from_slice(&[v, v, v, 255]);
+        }
+        let stats = compute_stats(&rgba, 256, 1);
+        for c in 0..3 {
+            assert!(stats.p1[c] < 0.03, "p1[{c}] = {} should be near 0", stats.p1[c]);
+            assert!(stats.p99[c] > 0.95, "p99[{c}] = {} should be near 255", stats.p99[c]);
+            let sum: u32 = stats.hist[c].iter().sum();
+            assert_eq!(sum, 256, "hist[{c}] must sum to w*h");
+        }
+        assert_eq!(stats.sample.len(), 256);
+        assert_eq!((stats.sample_w, stats.sample_h), (256, 1));
+        // a flat frame: p1 == p99 == mean, and every count lands in one bucket
+        let flat = vec![128u8, 128, 128, 255].repeat(9); // 3x3
+        let fs = compute_stats(&flat, 3, 3);
+        assert_eq!(fs.hist[0][128], 9);
+        assert!((fs.p1[0] - fs.p99[0]).abs() < 1e-6);
+        assert!((fs.mean[0] - 128.0 / 255.0).abs() < 0.01);
     }
 
     #[test]
