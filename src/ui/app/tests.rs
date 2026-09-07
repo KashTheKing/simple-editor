@@ -504,6 +504,27 @@ fn pre_existing_repaint_sites_unchanged_and_named() {
     );
 }
 
+// ---- ws:export-deliver ----
+/// `tools_export::frame_tick` asks for a repaint only while something is queued or baking — with
+/// `export` None and both lists empty it must request nothing over any number of frames (the
+/// idle-CPU-0% principle). No headless `App` exists (see the note atop this file), so this pins the
+/// pure decision `frame_tick` gates its `animate_until` on, plus its "nothing to pop" half.
+#[test]
+fn assert_no_idle_repaint_export_idle() {
+    use super::tools_export::{next_queued, wants_repaint};
+    for _ in 0..30 {
+        assert!(!wants_repaint(0, 0), "idle delivery must not repaint");
+    }
+    assert!(wants_repaint(1, 0) && wants_repaint(0, 1));
+    let mut empty: std::collections::VecDeque<u8> = std::collections::VecDeque::new();
+    assert_eq!(next_queued(&mut empty, true), None, "an empty queue pops nothing, so nothing starts");
+    // and the four delivery actions resolve through ui.action's id round-trip like every other Action
+    for a in [Action::QuickExport, Action::RenderSelection, Action::BakeSelection, Action::ExportMarkers] {
+        assert_eq!(Action::from_id(a.id()), Some(a));
+    }
+    assert_eq!(crate::hotkeys::Hotkeys::defaults().text(Action::QuickExport), "Ctrl+M");
+}
+
 // ---- ws:command-palette ----
 /// `App::enabled`'s wave-0b `enabled_for` half already has its own pinned test
 /// (`tools_registry_tests::action_enabled_toasts_reason`) against its own 3-arg shape; this exercises

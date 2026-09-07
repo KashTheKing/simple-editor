@@ -406,6 +406,39 @@ impl PreRender {
         out
     }
 
+    // ---- ws:export-deliver ----
+    /// `segments()` plus a realtime-safety flag per run: `(from, to, ready, heavy)`, heavy = some
+    /// enabled clip on an active video track overlapping that second has effects or a node graph
+    /// (the seconds a live preview may drop frames on). Data only — painting it on the ruler is
+    /// wave-3 pro-timeline's job.
+    #[allow(dead_code)] // unused until ws:pro-timeline (wave 3) paints the realtime-safety tint
+    pub fn segments_with_heavy(&self, project: &Project) -> Vec<(f64, f64, bool, bool)> {
+        let heavy_at = |s: f64, e: f64| {
+            project.tracks.iter().enumerate().any(|(ti, t)| {
+                t.kind == TrackKind::Video
+                    && project.active(ti)
+                    && t.clips
+                        .iter()
+                        .any(|c| c.enabled && c.start < e && c.end() > s && (c.has_effects() || c.graph.is_some()))
+            })
+        };
+        let mut out: Vec<(f64, f64, bool, bool)> = Vec::new();
+        for (from, to, ready) in self.segments() {
+            // split each ready-run per second so heavy spans stay exact, then re-merge by both flags
+            let mut s = from;
+            while s < to {
+                let e = (s + 1.0).min(to);
+                let heavy = heavy_at(s, e);
+                match out.last_mut() {
+                    Some(l) if l.2 == ready && l.3 == heavy && (l.1 - s).abs() < 1e-9 => l.1 = e,
+                    _ => out.push((s, e, ready, heavy)),
+                }
+                s = e;
+            }
+        }
+        out
+    }
+
     pub fn clear(&mut self) {
         self.generation.fetch_add(1, Ordering::Relaxed);
         self.ranges.clear();
@@ -566,6 +599,34 @@ mod tests {
         // 0 ready, 1 dirty, 2 pending, 3 ready, 4 pending
         assert_eq!(pr.segments(), vec![(0.0, 1.0, true), (1.0, 3.0, false), (3.0, 4.0, true), (4.0, 5.0, false)]);
         assert!(PreRender::new().segments().is_empty());
+    }
+
+    // ---- ws:export-deliver ----
+    /// A clip with an effect makes the seconds it covers heavy; a plain cut stays light.
+    #[test]
+    fn segments_with_heavy_flags_effect_spans() {
+        let mut p = Project::new();
+        p.tracks[0].clips.push(Clip::new(1, ClipKind::Video, "plain", 0.0, 2.0));
+        let mut fx = Clip::new(2, ClipKind::Video, "blurred", 2.0, 2.0);
+        fx.effects.push(crate::model::Effect::new(EffectKind::Blur));
+        p.tracks[0].clips.push(fx);
+        let mut pr = PreRender::new();
+        pr.ranges = vec![(0.0, 5.0)];
+        pr.done = vec![(0, 1), (1, 1), (2, 1), (3, 1), (4, 1)];
+        let segs = pr.segments_with_heavy(&p);
+        assert_eq!(segs, vec![(0.0, 2.0, true, false), (2.0, 4.0, true, true), (4.0, 5.0, true, false)]);
+        // a disabled effect clip is not heavy; a node graph is
+        p.tracks[0].clips[1].enabled = false;
+        assert!(pr.segments_with_heavy(&p).iter().all(|s| !s.3));
+        p.tracks[0].clips[1].enabled = true;
+        p.tracks[0].clips[1].effects.clear();
+        let mut next = 100u64;
+        p.tracks[0].clips[1].graph = Some(crate::model::NodeGraph::from_effects(&[], &mut || {
+            next += 1;
+            next
+        }));
+        assert!(pr.segments_with_heavy(&p).iter().any(|s| s.3));
+        assert!(PreRender::new().segments_with_heavy(&p).is_empty());
     }
 
     /// Write a whole cache file at once (the renderer streams it; the tests do not need to).

@@ -140,6 +140,19 @@ pub struct ProjectTemplate {
     pub fps: f64,
 }
 
+// ---- ws:export-deliver ----
+/// What Quick Export re-runs: a platform tile by name, or the custom size/container the Export
+/// window was last confirmed with (`width`/`height` 0 = project size).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum ExportPresetRef {
+    Preset(String),
+    Custom { ext: String, width: u32, height: u32 },
+}
+
+fn default_loudnorm() -> bool {
+    true
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -311,6 +324,17 @@ pub struct Settings {
     // ---- ws:trim-model ----
     // ---- ws:canvas-handles-monitor ----
     // ---- ws:export-deliver ----
+    /// The platform tiles in the Export window (a Vec, not a const table, so they're editable).
+    /// Per-field default fn on top of the container-level one: an old settings.json without this key
+    /// backfills the 4 shipped tiles, never `[]`.
+    #[serde(default = "crate::engine::export::default_export_presets")]
+    pub export_presets: Vec<crate::engine::export::ExportPreset>,
+    /// What the last export used — Quick Export (Ctrl+M) re-runs it without opening the window.
+    pub last_export: Option<ExportPresetRef>,
+    /// Loudness-normalise exports to −14 LUFS (`export::LOUDNORM`). Default on, including for a
+    /// settings.json upgrading from before this key existed (`default_loudnorm`, not bool's false).
+    #[serde(default = "default_loudnorm")]
+    pub loudnorm: bool,
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
     // ---- ws:media-library ----
@@ -416,6 +440,9 @@ impl Default for Settings {
             // ---- ws:trim-model ----
             // ---- ws:canvas-handles-monitor ----
             // ---- ws:export-deliver ----
+            export_presets: crate::engine::export::default_export_presets(),
+            last_export: None,
+            loudnorm: default_loudnorm(),
             // ---- ws:inspector-gallery ----
             // ---- ws:layout-modes-onboarding ----
             // ---- ws:media-library ----
@@ -674,5 +701,27 @@ mod tests {
         assert_eq!(back.ui_scale, s.ui_scale);
         assert_eq!(back.keymap_preset, s.keymap_preset);
         assert_eq!(back.palette_recent, s.palette_recent);
+    }
+
+    // ---- ws:export-deliver ----
+    /// A settings.json from before this workstream (no `export_presets` / `loudnorm` / `last_export`
+    /// keys) backfills the 4 tiles and loudnorm=true — never `[]` / false.
+    #[test]
+    fn settings_backfill_on_upgrade() {
+        let old: Settings = serde_json::from_str(r#"{"crf": 20, "theme": "dark"}"#).unwrap();
+        assert_eq!(old.export_presets, crate::engine::export::default_export_presets());
+        assert_eq!(old.export_presets.len(), 4);
+        assert!(old.loudnorm);
+        assert_eq!(old.last_export, None);
+        assert_eq!(old.crf, 20, "the keys that WERE there still load");
+        // an explicit choice round-trips (a user who turned it off, or edited the tiles, keeps that)
+        let mut s = Settings::default();
+        s.loudnorm = false;
+        s.export_presets.truncate(1);
+        s.last_export = Some(ExportPresetRef::Custom { ext: "webm".into(), width: 640, height: 360 });
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert!(!back.loudnorm);
+        assert_eq!(back.export_presets.len(), 1);
+        assert_eq!(back.last_export, s.last_export);
     }
 }

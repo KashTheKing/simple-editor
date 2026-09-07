@@ -241,6 +241,8 @@ pub(crate) enum Glyph {
     // ---- ws:trim-model ----
     // ---- ws:canvas-handles-monitor ----
     // ---- ws:export-deliver ----
+    /// Two stacked documents with a small clock in the corner — the render queue.
+    Queue,
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
     // ---- ws:media-library ----
@@ -354,6 +356,7 @@ impl Glyph {
         // ---- ws:trim-model ----
         // ---- ws:canvas-handles-monitor ----
         // ---- ws:export-deliver ----
+        Glyph::Queue,
         // ---- ws:inspector-gallery ----
         // ---- ws:layout-modes-onboarding ----
         // ---- ws:media-library ----
@@ -471,6 +474,7 @@ impl Glyph {
             // ---- ws:trim-model ----
             // ---- ws:canvas-handles-monitor ----
             // ---- ws:export-deliver ----
+            Glyph::Queue => "queue",
             // ---- ws:inspector-gallery ----
             // ---- ws:layout-modes-onboarding ----
             // ---- ws:media-library ----
@@ -1641,12 +1645,12 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
             let head = vec![c + egui::vec2(7.5, 0.0), c + egui::vec2(4.5, -2.2), c + egui::vec2(4.5, 2.2)];
             p.add(egui::Shape::convex_polygon(head, fg, Stroke::NONE));
         } // ---- ws:registries-schema-hooks ----
-          // ---- ws:size-diet ----
-          // ---- ws:split-god-files ----
-          // ---- ws:audio-analysis ----
-          // ---- ws:audio-dsp-automation ----
-          // ---- ws:color-engine ----
-          // ---- ws:command-palette ----
+        // ---- ws:size-diet ----
+        // ---- ws:split-god-files ----
+        // ---- ws:audio-analysis ----
+        // ---- ws:audio-dsp-automation ----
+        // ---- ws:color-engine ----
+        // ---- ws:command-palette ----
         // rounded keycap outline with a 3x2 grid of small key dots inside
         Glyph::Keyboard => {
             p.rect_stroke(
@@ -1668,11 +1672,25 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
             let dir = egui::vec2(1.0, 1.0).normalized();
             p.line_segment([ring + dir * 4.0, ring + dir * 8.0], Stroke::new(1.8, fg));
         } // ---- ws:forgiveness ----
-          // ---- ws:player-rate-loop ----
-          // ---- ws:trim-model ----
-          // ---- ws:canvas-handles-monitor ----
-          // ---- ws:export-deliver ----
-          // ---- ws:inspector-gallery ----
+        // ---- ws:player-rate-loop ----
+        // ---- ws:trim-model ----
+        // ---- ws:canvas-handles-monitor ----
+        // ---- ws:export-deliver ----
+        // queue: two offset document outlines (the stack) with a small clock dial at the corner
+        Glyph::Queue => {
+            for (dx, dy) in [(2.0f32, -2.0f32), (-2.0, 2.0)] {
+                p.rect_stroke(
+                    egui::Rect::from_center_size(c + egui::vec2(dx, dy), egui::vec2(9.0, 11.0)),
+                    CornerRadius::same(1),
+                    stroke,
+                    StrokeKind::Inside,
+                );
+            }
+            let dial = c + egui::vec2(5.5, 5.5);
+            p.circle_stroke(dial, 3.6, stroke);
+            p.line_segment([dial, dial + egui::vec2(0.0, -2.2)], Stroke::new(1.0, fg));
+            p.line_segment([dial, dial + egui::vec2(1.6, 0.0)], Stroke::new(1.0, fg));
+        } // ---- ws:inspector-gallery ----
           // ---- ws:layout-modes-onboarding ----
           // ---- ws:media-library ----
           // ---- ws:source-monitor ----

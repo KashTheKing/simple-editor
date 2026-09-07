@@ -228,6 +228,11 @@ actions! {
     ToggleTrackMagnetic => "toggle_track_magnetic", "Toggle Magnetic Track", None;
     // ---- ws:canvas-handles-monitor ----
     // ---- ws:export-deliver ----
+    // bare M is AddMarker (ctrl=false) and Ctrl+Shift+M is AddMask, so Ctrl+M is free (exact match).
+    QuickExport => "quick_export", "Quick Export", sc(CTRL, Key::M);
+    RenderSelection => "render_selection", "Render Selection (pre-render)", None;
+    BakeSelection => "bake_selection", "Render in Place (bake to new asset)", None;
+    ExportMarkers => "export_markers", "Export Markers…", None;
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
     // ---- ws:media-library ----
