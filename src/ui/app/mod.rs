@@ -87,6 +87,7 @@ mod tools_helpers;
 // ---- ws:layout-modes-onboarding ----
 mod tools_layout;
 mod tools_media;
+mod tools_mixer;
 mod tools_playback;
 // ---- ws:canvas-handles-monitor ----
 mod tools_preview;
@@ -1302,6 +1303,7 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:audio-analysis ----
     tools_audio::TOOLS,
     // ---- ws:audio-dsp-automation ----
+    tools_mixer::TOOLS,
     // ---- ws:color-engine ----
     tools_color::TOOLS,
     // ---- ws:command-palette ----
@@ -1369,6 +1371,7 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:split-god-files ----
     // ---- ws:audio-analysis ----
     // ---- ws:audio-dsp-automation ----
+    tools_mixer::sync_buses,
     // ---- ws:color-engine ----
     // ---- ws:command-palette ----
     palette_ctl::tick,

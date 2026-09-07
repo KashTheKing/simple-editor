@@ -9,9 +9,10 @@
 //! manages its own clone-edit-writeback + diff-propagate cycle directly against `project`, so it can
 //! be dropped into inspector.rs at a single call site with a stable signature.
 
-use crate::model::{AnimLink, Animated, BlendMode, ClipKind, Id, Project};
+use crate::hotkeys::Action;
+use crate::model::{AnimLink, Animated, AudioRole, BlendMode, ClipKind, Id, Project};
 use crate::theme::Palette;
-use crate::ui::inspector::{link_menu, luau_highlight};
+use crate::ui::inspector::{link_menu, luau_highlight, mark, set_pending_action};
 use crate::ui::{key_buttons, Gesture};
 use eframe::egui::{self, DragValue, Slider};
 
@@ -203,6 +204,83 @@ pub(super) fn section(
         }
     }
 
+    // ---- ws:audio-dsp-automation ----
+    // Essential-Sound block, right under the primary Volume/Pan/Fades and before the generic effects
+    // list: Role tag, one-click Repair/Clarity chains (a visible, editable Mixer bus), a jump to that
+    // bus, and the Duck/Normalize actions audio-analysis owns.
+    if orig.kind == ClipKind::Audio {
+        changed |= essential_sound(ui, project, ids, &orig, undo);
+    }
+
+    changed
+}
+
+// ---- ws:audio-dsp-automation ----
+/// Role combo + Repair / Clarity / Open in Mixer + Duck / Normalize for the selected audio clips.
+/// Repair/Clarity mutate `project` directly (bus + routing), so they snapshot `undo` themselves —
+/// exactly once per click. Returns true when the project changed.
+fn essential_sound(
+    ui: &mut egui::Ui,
+    project: &mut Project,
+    ids: &[Id],
+    orig: &crate::model::Clip,
+    undo: &mut dyn FnMut(&Project),
+) -> bool {
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        ui.label("Role");
+        let mut role = orig.audio_role;
+        let mut rg = Gesture::default();
+        let r = egui::ComboBox::from_id_salt("audio_role").selected_text(role.name()).width(110.0).show_ui(ui, |ui| {
+            for r in AudioRole::ALL {
+                rg.note(&ui.selectable_value(&mut role, r, r.name()));
+            }
+        });
+        mark(ui, "audio_role", &r.response);
+        if rg.changed {
+            undo(project);
+            for &id in ids {
+                if let Some(c) = project.clip_mut(id) {
+                    c.audio_role = role;
+                }
+            }
+            changed = true;
+        }
+    });
+    ui.horizontal(|ui| {
+        for (label, preset, tip) in [
+            ("Repair", "repair", "High-pass · De-hum · Gate · Compressor · Limiter on a new Mixer bus"),
+            ("Clarity", "clarity", "Presence EQ · gentle Compressor on a new Mixer bus"),
+        ] {
+            let r = ui.small_button(label).on_hover_text(tip);
+            mark(ui, &format!("audio_{preset}"), &r);
+            if r.clicked() {
+                undo(project);
+                let bus = project.apply_repair(ids, preset);
+                crate::ui::mixer_ui::request_focus_bus(bus);
+                changed = true;
+            }
+        }
+        let r = ui.small_button("Open in Mixer").on_hover_text("Select this clip's bus in the Mixer pane");
+        mark(ui, "audio_open_mixer", &r);
+        if r.clicked() {
+            let track = project.track_of(orig.id).unwrap_or(0);
+            let bus = project.bus_of(track, orig);
+            crate::ui::mixer_ui::request_focus_bus(bus);
+        }
+    });
+    ui.horizontal(|ui| {
+        for (label, action, tip) in [
+            ("Duck", Action::AutoDuck, "Duck music under dialogue (Auto-cut pane's Duck picks)"),
+            ("Normalize", Action::Normalize, "Normalize the selected clips' gain"),
+        ] {
+            let r = ui.small_button(label).on_hover_text(tip);
+            mark(ui, &format!("audio_{}", label.to_lowercase()), &r);
+            if r.clicked() {
+                set_pending_action(action);
+            }
+        }
+    });
     changed
 }
 
@@ -263,5 +341,105 @@ mod tests {
         for g in [0.002, 0.1, 0.5, 1.0, 2.0, 3.98] {
             assert!((db_to_gain(gain_to_db(g)) - g).abs() < 1e-9, "{g}");
         }
+    }
+
+    // ---- ws:audio-dsp-automation ----
+
+    /// Headless `section()` over one audio clip: draw frames, click a marked widget by its recorded rect.
+    struct Harness {
+        ctx: egui::Context,
+        project: Project,
+        ids: Vec<Id>,
+        undos: usize,
+        time: f64,
+    }
+
+    impl Harness {
+        fn new() -> Self {
+            let mut project = Project::new();
+            let ai = project.audio_tracks()[0];
+            project.tracks[ai].clips.push(crate::model::Clip::new(7, ClipKind::Audio, "a", 0.0, 4.0));
+            Self { ctx: egui::Context::default(), project, ids: vec![7], undos: 0, time: 0.0 }
+        }
+        fn frame(&mut self, events: Vec<egui::Event>) -> bool {
+            self.time += 0.05;
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 800.0))),
+                time: Some(self.time),
+                events,
+                ..Default::default()
+            };
+            let pal = Palette::new(true, egui::Color32::WHITE);
+            let Harness { ctx, project, ids, undos, .. } = self;
+            let mut changed = false;
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let mut undo = |_: &Project| *undos += 1;
+                    changed = section(ui, project, ids, 0.0, &pal, &mut undo);
+                });
+            });
+            changed
+        }
+        fn click(&mut self, name: &str) -> bool {
+            self.frame(vec![]);
+            let r = self
+                .ctx
+                .data(|d| d.get_temp::<egui::Rect>(egui::Id::new(("insp", name.to_string()))))
+                .unwrap_or_else(|| panic!("no widget rect for {name}"));
+            let pos = r.center();
+            let press = |pressed| egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            let mut e = self.frame(vec![egui::Event::PointerMoved(pos)]);
+            e |= self.frame(vec![press(true)]);
+            e |= self.frame(vec![press(false)]);
+            e
+        }
+    }
+
+    #[test]
+    fn repair_button_pushes_exactly_one_undo() {
+        let mut h = Harness::new();
+        assert!(!h.frame(vec![]), "drawing is not an edit");
+        assert_eq!(h.undos, 0);
+        assert!(h.click("audio_repair"), "Repair reports a project change");
+        assert_eq!(h.undos, 1, "exactly one undo entry per Repair click");
+        assert_eq!(h.project.buses.len(), 2, "Main + Repair");
+        let bus = h.project.buses[1].id;
+        assert_eq!(h.project.buses[1].name, "Repair");
+        assert_eq!(h.project.clip(7).unwrap().bus, bus, "the clip is routed through it");
+        assert_eq!(crate::ui::mixer_ui::take_focus_bus(), Some(bus), "and the Mixer is asked to select it");
+        // a second click reuses the bus and still costs exactly one more undo
+        assert!(h.click("audio_repair"));
+        assert_eq!(h.undos, 2);
+        assert_eq!(h.project.buses.len(), 2);
+        // Open in Mixer only hands the bus over — no project change, no undo
+        assert!(!h.click("audio_open_mixer"));
+        assert_eq!(h.undos, 2);
+        assert_eq!(crate::ui::mixer_ui::take_focus_bus(), Some(bus));
+        // Clarity is its own bus
+        assert!(h.click("audio_clarity"));
+        assert_eq!(h.undos, 3);
+        assert_eq!(h.project.buses.len(), 3);
+        assert_eq!(h.project.clip(7).unwrap().bus, h.project.buses[2].id);
+    }
+
+    /// Duck / Normalize dispatch audio-analysis's Actions through the inspector's pending-action
+    /// hand-off, and never touch the project themselves.
+    #[test]
+    fn duck_and_normalize_dispatch_actions() {
+        let mut h = Harness::new();
+        assert!(!h.click("audio_duck"));
+        assert_eq!(crate::ui::inspector::take_pending_action(), Some(Action::AutoDuck));
+        assert!(!h.click("audio_normalize"));
+        assert_eq!(crate::ui::inspector::take_pending_action(), Some(Action::Normalize));
+        assert_eq!(h.undos, 0);
+        assert!(h.project.buses.is_empty());
+        // the Role combo is drawn for an audio clip (its popup is exercised via the audio.role tool)
+        h.frame(vec![]);
+        assert!(h.ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(("insp", "audio_role".to_string())))).is_some());
     }
 }

@@ -69,6 +69,8 @@ const OP_TOOLS: &[(&str, &str)] = &[
     ("unnest", "timeline.unnest"),
     ("replace_clip", "timeline.replace"),
     ("magnetic_move", "timeline.magnetic_move"),
+    // ---- ws:audio-dsp-automation ----
+    ("apply_repair", "audio.repair"),
     // ---- ws:canvas-handles-monitor ----
     ("fit_clip_to_screen", "clip.fit"),
 ];

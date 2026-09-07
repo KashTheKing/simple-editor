@@ -232,6 +232,8 @@ pub(crate) enum Glyph {
     // ---- ws:split-god-files ----
     // ---- ws:audio-analysis ----
     // ---- ws:audio-dsp-automation ----
+    /// Three vertical bars of increasing height — the mixer's level / LUFS meter row.
+    Meter,
     // ---- ws:color-engine ----
     // ---- ws:command-palette ----
     /// A small key cap grid — the cheat-sheet / Settings ▸ Hotkeys tab.
@@ -357,6 +359,7 @@ impl Glyph {
         // ---- ws:split-god-files ----
         // ---- ws:audio-analysis ----
         // ---- ws:audio-dsp-automation ----
+        Glyph::Meter,
         // ---- ws:color-engine ----
         // ---- ws:command-palette ----
         Glyph::Keyboard,
@@ -478,6 +481,7 @@ impl Glyph {
             // ---- ws:split-god-files ----
             // ---- ws:audio-analysis ----
             // ---- ws:audio-dsp-automation ----
+            Glyph::Meter => "meter",
             // ---- ws:color-engine ----
             // ---- ws:command-palette ----
             Glyph::Keyboard => "keyboard",
@@ -1685,8 +1689,20 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
           // ---- ws:split-god-files ----
           // ---- ws:audio-analysis ----
           // ---- ws:audio-dsp-automation ----
-          // ---- ws:color-engine ----
-          // ---- ws:command-palette ----
+        // level meter: three bars rising left to right on a baseline
+        Glyph::Meter => {
+            for (i, h) in [4.0f32, 8.0, 12.0].into_iter().enumerate() {
+                let x = c.x - 5.0 + i as f32 * 5.0;
+                p.rect_filled(
+                    egui::Rect::from_min_max(egui::pos2(x - 1.5, c.y + 6.0 - h), egui::pos2(x + 1.5, c.y + 6.0)),
+                    CornerRadius::ZERO,
+                    fg,
+                );
+            }
+            p.line_segment([c + egui::vec2(-7.5, 6.5), c + egui::vec2(7.5, 6.5)], stroke);
+        }
+        // ---- ws:color-engine ----
+        // ---- ws:command-palette ----
         // rounded keycap outline with a 3x2 grid of small key dots inside
         Glyph::Keyboard => {
             p.rect_stroke(
