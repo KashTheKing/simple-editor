@@ -269,13 +269,18 @@ pub fn show(
     }
     if do_cut {
         if let Some(range) = st.sel.and_then(|s| span(&words, s)) {
-            once(undone, undo, project);
+            // snapshot-then-rollback (mirrors transcript_ctl::remove_fillers_action): only a real cut
+            // earns an undo entry, so a no-op (locked track, speed ramp, empty range) neither pushes a
+            // spurious undo step nor destroys the redo stack.
+            let before = project.clone();
             let n = project.cut_word_ranges(clip, &[range]);
             st.status = if n > 0 {
+                once(undone, undo, &before);
                 resp.edited = true;
                 resp.cut = n_sel;
                 format!("cut {n_sel} word(s)")
             } else {
+                *project = before;
                 "nothing cut — the track is locked, or the clip has a speed ramp".into()
             };
         }
@@ -333,16 +338,21 @@ pub fn show(
             .on_hover_text("Ripple-cut every marked filler (Mark fillers first)")
             .clicked()
         {
-            once(undone, undo, project);
+            // snapshot-then-rollback (mirrors transcript_ctl::remove_fillers_action): if the cut turns
+            // out to be a no-op, restore the project so the marks removed just above come back too,
+            // instead of leaving them gone with no way back.
+            let before = project.clone();
             for id in st.filler_marks.drain(..) {
                 project.remove_marker(id);
             }
             let n = project.cut_word_ranges(clip, &ranges);
             st.status = if n > 0 {
+                once(undone, undo, &before);
                 resp.edited = true;
                 resp.cut = ranges.len();
                 format!("removed {} filler(s)", ranges.len())
             } else {
+                *project = before;
                 "nothing cut — the track is locked, or the clip has a speed ramp".into()
             };
             st.sel = None;

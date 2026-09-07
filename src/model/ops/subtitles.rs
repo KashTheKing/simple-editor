@@ -144,7 +144,7 @@ impl Project {
                 true
             });
             self.sort_markers();
-            for tr in &mut self.transcripts {
+            for tr in self.transcripts.iter_mut().filter(|t| t.clip == clip) {
                 tr.words.retain_mut(|w| match (ripple_time(w.0, &merged), ripple_time(w.1, &merged)) {
                     (Some(x), Some(y)) => {
                         (w.0, w.1) = (x, y.max(x));
@@ -155,7 +155,7 @@ impl Project {
             }
         } else {
             // nothing moved: only the words that sat inside a removed span are gone
-            for tr in &mut self.transcripts {
+            for tr in self.transcripts.iter_mut().filter(|t| t.clip == clip) {
                 tr.words.retain(|w| !merged.iter().any(|&(a, b)| w.0 >= a && w.0 < b));
             }
         }
@@ -302,6 +302,46 @@ mod tests {
         let tr = p.transcript(id).unwrap();
         assert_eq!(tr.words.len(), 2, "the word inside the gap is gone");
         assert!((tr.words[1].0 - 2.0).abs() < 1e-6, "the later word stayed put");
+    }
+
+    /// Regression: two transcribed clips on different tracks, only one of which is cut. Even though
+    /// their word timestamps numerically overlap (both clips start at 0), cutting one must not touch
+    /// the other's transcript — the loops in `cut_word_ranges` must scope to the clip being cut.
+    #[test]
+    fn cut_word_ranges_does_not_touch_other_clips_transcripts() {
+        let (mut p, id1) = clip_project();
+        let aid2 = p.add_asset(Asset {
+            id: 0,
+            path: "C:/other.mp4".into(),
+            kind: ClipKind::Video,
+            duration: 10.0,
+            width: 320,
+            height: 240,
+            fps: 30.0,
+            audio_streams: vec![AudioStreamInfo { channels: 2, sample_rate: 48000, ..Default::default() }],
+            codec: String::new(),
+            folder: String::new(),
+            tags: Vec::new(),
+            label: 0,
+            description: String::new(),
+            rel_path: None,
+            parent: None,
+            range: None,
+            effects: Vec::new(),
+        });
+        // lands on a fresh track since track 0 is already occupied at [0,10) by clip 1
+        let id2 = p.insert_asset_clips(aid2, 0.0, None)[0];
+
+        p.set_transcript(id1, words(&[(1.0, 1.5, "um"), (2.0, 2.5, "two")]));
+        p.set_transcript(id2, words(&[(1.0, 1.5, "um"), (2.0, 2.5, "two")]));
+
+        let n = p.cut_word_ranges(id1, &[(1.0, 1.5)]);
+        assert!(n > 0, "cut happened");
+        let tr1 = p.transcript(id1).expect("clip 1 transcript kept");
+        assert_eq!(tr1.words.len(), 1, "the cut word is gone from clip 1: {:?}", tr1.words);
+        let tr2 = p.transcript(id2).expect("clip 2 transcript untouched");
+        assert_eq!(tr2.words.len(), 2, "clip 2's words survive even though the timestamps overlap: {:?}", tr2.words);
+        assert!((tr2.words[0].0 - 1.0).abs() < 1e-6, "clip 2's words weren't shifted either: {:?}", tr2.words);
     }
 
     #[test]
