@@ -28,6 +28,47 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
     if let Some(name) = resp.place {
         app.place_template(&name, app.playhead);
     }
+    // ---- ws:text-titles ----
+    if let Some(name) = resp.place_title {
+        match app.place_title_template(&name, app.playhead) {
+            Ok((_, customize)) => {
+                app.gallery.customize = customize;
+                if app.gallery.customize.is_empty() {
+                    app.toast(format!("Placed \"{name}\" (nothing to customize)"));
+                }
+            }
+            Err(e) => app.toast(e),
+        }
+    }
+    if !app.gallery.customize.is_empty() {
+        ui.separator();
+        ui.strong("Customize");
+        // Edit CLONES first, never the live project while drawing, so undo can snapshot before any
+        // write-back — this file's established clone-edit-writeback convention (inspector_*.rs). At
+        // most one row's widget reports `changed()` per frame in practice (egui processes one input
+        // interaction per frame), so writing each changed clone straight back is safe; two customize
+        // rows editing the SAME clip in the exact same frame — ponytail: theoretically possible, not
+        // reachable from a mouse/keyboard, upgrade path is a per-clip merge if that ever changes.
+        let rows = app.gallery.customize.clone();
+        let mut edits: Vec<(Id, Clip)> = Vec::new();
+        for (cid, field) in &rows {
+            if let Some(orig) = app.project.clip(*cid) {
+                let mut clone = orig.clone();
+                if gallery::template_field_widget(ui, field, &mut clone) {
+                    edits.push((*cid, clone));
+                }
+            }
+        }
+        if !edits.is_empty() {
+            app.push_undo();
+            for (cid, clone) in edits {
+                if let Some(c) = app.project.clip_mut(cid) {
+                    *c = clone;
+                }
+            }
+            app.after_edit();
+        }
+    }
     if let Some(name) = resp.save {
         // "Save from selection" (Looks tab only, gated in gallery.rs): capture the first selected
         // visual clip's effect stack as a reusable EffectPreset — same shape/route

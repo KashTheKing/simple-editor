@@ -115,6 +115,8 @@ mod tools_registry_tests;
 mod tools_source;
 mod tools_subtitles;
 mod tools_timeline;
+// ---- ws:text-titles ----
+mod tools_titles;
 // ---- ws:transcript-captions ----
 mod tools_transcript;
 mod tools_trim;
@@ -1389,6 +1391,7 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:pro-monitor ----
     // ---- ws:pro-timeline ----
     // ---- ws:text-titles ----
+    tools_titles::TOOLS,
     // ---- ws:docs-refresh ----
 ];
 

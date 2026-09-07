@@ -321,6 +321,13 @@ impl Clip {
             v.push(&mut sh.w);
             v.push(&mut sh.h);
         }
+        if let Some(t) = &mut self.text {
+            v.push(&mut t.size);
+            v.push(&mut t.letter_spacing);
+            v.push(&mut t.outline_width);
+            v.push(&mut t.reveal);
+            v.push(&mut t.wave);
+        }
         v
     }
     pub fn all_animated(&self) -> Vec<&Animated> {
@@ -340,6 +347,13 @@ impl Clip {
         if let Some(sh) = &self.shape {
             v.push(&sh.w);
             v.push(&sh.h);
+        }
+        if let Some(t) = &self.text {
+            v.push(&t.size);
+            v.push(&t.letter_spacing);
+            v.push(&t.outline_width);
+            v.push(&t.reveal);
+            v.push(&t.wave);
         }
         v
     }

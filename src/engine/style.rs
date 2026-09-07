@@ -43,15 +43,15 @@ fn hex(c: [u8; 4]) -> String {
 
 /// One-line description of a text style ("\"Segoe UI\" 72 px #FFFFFF, bold, outline 3 px #000000, shadow").
 fn text_desc(ts: &TextStyle) -> String {
-    let mut d = format!("\"{}\" {} px {}", ts.font, num(ts.size as f64), hex(ts.color));
+    let mut d = format!("\"{}\" {} px {}", ts.font, num(ts.size.value), hex(ts.color));
     if ts.bold {
         d.push_str(", bold");
     }
     if ts.italic {
         d.push_str(", italic");
     }
-    if ts.outline_width > 0.0 {
-        let _ = write!(d, ", outline {} px {}", num(ts.outline_width as f64), hex(ts.outline_color));
+    if ts.outline_width.value > 0.0 {
+        let _ = write!(d, ", outline {} px {}", num(ts.outline_width.value), hex(ts.outline_color));
     }
     if ts.shadow {
         d.push_str(", shadow");
@@ -423,7 +423,7 @@ mod tests {
                                           // a node graph on the other half: Input -> Threshold -> Output, counted with the stack effects
         p.add_node(right, NodeKind::Effect(Effect::new(EffectKind::Threshold)), 160.0, 0.0);
         let txt = p.add_text_clip(1.0, 2.0);
-        p.clip_mut(txt).unwrap().text.as_mut().unwrap().outline_width = 3.0;
+        p.clip_mut(txt).unwrap().text.as_mut().unwrap().outline_width.value = 3.0;
         let a = p.tracks[2].clips[0].id; // audio left half (text clip pushed V onto a new track? no: audio tracks after video)
         let a = if p.clip(a).map(|c| c.kind) == Some(ClipKind::Audio) { a } else { p.tracks[1].clips[0].id };
         p.clip_mut(a).unwrap().fade_in = 0.5;

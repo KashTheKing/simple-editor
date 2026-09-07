@@ -232,7 +232,9 @@ impl Compositor {
                 self.sub_key = sk;
             }
             let s = w as f32 / project.width.max(1) as f32;
-            let img = text.render(&self.sub_style, s);
+            // ---- ws:text-titles ----: t here is the top-level render() timeline time, not clip-local —
+            // subtitles have no clip to be local to, and the burnt-in style has no reveal/wave UI anyway.
+            let img = text.render(&self.sub_style, s, t);
             if img.width > 1 || img.height > 1 {
                 let sv = h as f32 / project.height.max(1) as f32;
                 let p = Placement {
@@ -436,14 +438,14 @@ impl Compositor {
                     };
                     let style = crate::model::TextStyle {
                         text: label_text,
-                        size: 32.0,
+                        size: crate::model::Animated::new(32.0),
                         color: [220, 220, 220, 255],
                         box_color: [40, 40, 40, 220],
                         box_padding: 16.0,
                         align: 1,
                         ..Default::default()
                     };
-                    let img = text.render(&style, s);
+                    let img = text.render(&style, s, lt);
                     if img.width > 1 || img.height > 1 {
                         let native = (img.width, img.height);
                         self.draw_bitmap(project, pw, clip, &img, native, t, w, h, out, extra, opacity);
@@ -508,7 +510,7 @@ impl Compositor {
             }
             ClipKind::Text => {
                 let Some(style) = &clip.text else { return };
-                let img = text.render(style, s);
+                let img = text.render(style, s, lt);
                 let native = (img.width, img.height);
                 self.draw_bitmap(project, pw, clip, &img, native, t, w, h, out, extra, opacity);
             }

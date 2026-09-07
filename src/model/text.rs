@@ -1,5 +1,6 @@
 use crate::model::*;
 use serde::{Deserialize, Serialize};
+use std::hash::{Hash, Hasher};
 
 /// Text clip styling. Sizes are in project pixels (at project resolution).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -7,11 +8,18 @@ use serde::{Deserialize, Serialize};
 pub struct TextStyle {
     pub text: String,
     pub font: String,
-    pub size: f32,
+    /// Em size in project px. Promoted from a plain `f32` (ws:text-titles, wave 3) so it can be
+    /// keyframed like `clip.x`/`clip.scale`; `de_scalar_or_animated` accepts both the old bare-number
+    /// JSON (`"size": 72.0`) and a full `Animated` object, so every project saved before this change
+    /// still loads with an identical (non-animated) value.
+    #[serde(default = "text_size_default", deserialize_with = "de_scalar_or_animated")]
+    pub size: Animated,
     pub bold: bool,
     pub italic: bool,
     pub color: [u8; 4],
-    pub outline_width: f32,
+    /// Outline stroke width in project px. Same promotion/back-compat story as `size`.
+    #[serde(default = "crate::model::a0", deserialize_with = "de_scalar_or_animated")]
+    pub outline_width: Animated,
     pub outline_color: [u8; 4],
     pub shadow: bool,
     pub shadow_color: [u8; 4],
@@ -21,7 +29,9 @@ pub struct TextStyle {
     /// 0 = left, 1 = center, 2 = right
     pub align: u8,
     pub line_spacing: f32,
-    pub letter_spacing: f32,
+    /// Extra advance per glyph in project px. Same promotion/back-compat story as `size`.
+    #[serde(default = "crate::model::a0", deserialize_with = "de_scalar_or_animated")]
+    pub letter_spacing: Animated,
     /// Background box behind the text; alpha 0 = none.
     pub box_color: [u8; 4],
     pub box_padding: f32,
@@ -30,15 +40,66 @@ pub struct TextStyle {
     /// Empty for every project saved before spans existed (`#[serde(default)]` on the struct covers it).
     pub spans: Vec<TextSpan>,
     // ---- ws:registries-schema-hooks ----
-    /// Reveal-in progress (0 = hidden, 1 = fully revealed), driven by a t-aware `TextRasterizer` once
-    /// ws:text-titles (wave 3) wires it. `#[serde(default)]` no-ops it to a constant 0 for every clip
-    /// saved before this field existed. Does NOT replace `size`/`letter_spacing`/`outline_width` —
-    /// those stay plain `f32` this wave (see the workstream's review trail).
-    #[serde(default = "crate::model::a0")]
+    /// Reveal-in progress (0 = hidden, 1 = fully revealed) — `ws:text-titles` (wave 3) is the sole
+    /// consumer, via a t-aware `TextRasterizer`. Defaults to fully revealed (`a1`, NOT `a0`) so a clip
+    /// that never touches this field — every pre-overhaul project, and any brand-new text clip — renders
+    /// its whole string exactly as before; only an explicit reveal < 1 (or a keyframed ramp) hides
+    /// anything. `#[serde(default)]` gives the same fully-revealed value to JSON with no `reveal` key.
+    #[serde(default = "crate::model::a1")]
     pub reveal: Animated,
-    /// Per-character wave/wobble amount (0 = none), same consumer as `reveal`.
+    /// Per-character wave/wobble amount (0 = none, project px), same consumer as `reveal`.
     #[serde(default = "crate::model::a0")]
     pub wave: Animated,
+}
+
+/// Default for `TextStyle.size` when the JSON key is entirely absent (defensive — every project ever
+/// saved always wrote `size`, so the realistic back-compat path is `de_scalar_or_animated`'s bare-number
+/// branch below, not this).
+fn text_size_default() -> Animated {
+    Animated::new(72.0)
+}
+
+/// Accepts either a bare JSON number (every project saved before this promotion: `"size": 72.0`) or a
+/// full `Animated` object, so `TextStyle.size`/`letter_spacing`/`outline_width` can be promoted to
+/// keyframeable properties without corrupting a single existing `.sedit` file.
+fn de_scalar_or_animated<'de, D>(deserializer: D) -> Result<Animated, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum ScalarOrAnimated {
+        Scalar(f64),
+        Full(Animated),
+    }
+    Ok(match ScalarOrAnimated::deserialize(deserializer)? {
+        ScalarOrAnimated::Scalar(v) => Animated::new(v),
+        ScalarOrAnimated::Full(a) => a,
+    })
+}
+
+/// Hash an `Animated` property into a `cache_key()` (value + every keyframe, sign included), mirroring
+/// `ShapeStyle::cache_key()`'s `w`/`h` handling verbatim (model/shape.rs) since `Ease` isn't `Hash`
+/// (`Bezier` carries `f32` handles).
+fn hash_animated(h: &mut impl Hasher, a: &Animated) {
+    a.value.to_bits().hash(h);
+    a.keys.len().hash(h);
+    for k in &a.keys {
+        (k.t.to_bits(), k.v.to_bits()).hash(h);
+        match k.ease {
+            Ease::Linear => 0u8.hash(h),
+            Ease::EaseIn => 1u8.hash(h),
+            Ease::EaseOut => 2u8.hash(h),
+            Ease::EaseInOut => 3u8.hash(h),
+            Ease::Hold => 4u8.hash(h),
+            Ease::Bezier { x1, y1, x2, y2 } => {
+                5u8.hash(h);
+                for f in [x1, y1, x2, y2] {
+                    f.to_bits().hash(h);
+                }
+            }
+        }
+    }
 }
 
 impl Default for TextStyle {
@@ -46,11 +107,11 @@ impl Default for TextStyle {
         Self {
             text: "Text".into(),
             font: "Segoe UI".into(),
-            size: 72.0,
+            size: text_size_default(),
             bold: false,
             italic: false,
             color: [255, 255, 255, 255],
-            outline_width: 0.0,
+            outline_width: a0(),
             outline_color: [0, 0, 0, 255],
             shadow: false,
             shadow_color: [0, 0, 0, 160],
@@ -59,11 +120,11 @@ impl Default for TextStyle {
             shadow_blur: 2.0,
             align: 1,
             line_spacing: 1.0,
-            letter_spacing: 0.0,
+            letter_spacing: a0(),
             box_color: [0, 0, 0, 0],
             box_padding: 8.0,
             spans: Vec::new(),
-            reveal: a0(),
+            reveal: a1(),
             wave: a0(),
         }
     }
@@ -100,24 +161,18 @@ pub struct TextSpan {
 impl TextStyle {
     /// Default look for burnt-in subtitles.
     pub fn subtitle_default() -> Self {
-        Self { text: String::new(), size: 48.0, outline_width: 3.0, ..Self::default() }
+        Self { text: String::new(), size: Animated::new(48.0), outline_width: Animated::new(3.0), ..Self::default() }
     }
     /// Stable hash of every field (for render caches).
     pub fn cache_key(&self) -> u64 {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         self.text.hash(&mut h);
         self.font.hash(&mut h);
-        for f in [
-            self.size,
-            self.outline_width,
-            self.shadow_x,
-            self.shadow_y,
-            self.shadow_blur,
-            self.line_spacing,
-            self.letter_spacing,
-            self.box_padding,
-        ] {
+        for f in [self.shadow_x, self.shadow_y, self.shadow_blur, self.line_spacing, self.box_padding] {
             f.to_bits().hash(&mut h);
+        }
+        for a in [&self.size, &self.outline_width, &self.letter_spacing, &self.reveal, &self.wave] {
+            hash_animated(&mut h, a);
         }
         (self.bold, self.italic, self.shadow, self.align).hash(&mut h);
         (self.color, self.outline_color, self.shadow_color, self.box_color).hash(&mut h);
@@ -204,19 +259,70 @@ impl TextStyle {
 mod tests {
     use super::*;
 
-    /// A `TextStyle` JSON with no `reveal`/`wave` fields (every clip saved before this workstream)
-    /// deserializes both as a no-op constant `0`, and the existing scalar fields are untouched.
+    /// ws:text-titles back-compat: a `TextStyle` JSON exactly as every project saved before this wave
+    /// wrote it — `size`/`letter_spacing`/`outline_width` as bare numbers, no `reveal`/`wave` keys at
+    /// all — must deserialize to a non-animated `Animated` holding that same value, and `reveal` must
+    /// default to FULLY REVEALED (1.0, not 0.0) so the text renders exactly as it always did. This is
+    /// the manual "open an old project" check from the plan's verification checklist, pinned as a test.
     #[test]
-    fn textstyle_reveal_wave_default_and_scalars_unchanged() {
+    fn textstyle_bare_number_json_is_back_compat_and_fully_revealed() {
         let json = r#"{"text":"Hi","size":40.0,"letter_spacing":2.0,"outline_width":3.0}"#;
         let t: TextStyle = serde_json::from_str(json).unwrap();
-        assert_eq!(t.reveal.value, 0.0);
+        assert_eq!(t.size, Animated::new(40.0));
+        assert!(!t.size.is_animated());
+        assert_eq!(t.letter_spacing, Animated::new(2.0));
+        assert_eq!(t.outline_width, Animated::new(3.0));
+        // no reveal/wave keys in the JSON at all: reveal must default to fully-revealed, not hidden —
+        // this is the whole back-compat guarantee once TextRasterizer wires reveal into rendering.
+        assert_eq!(t.reveal.value, 1.0);
         assert!(!t.reveal.is_animated());
         assert_eq!(t.wave.value, 0.0);
         assert!(!t.wave.is_animated());
-        // still plain f32 scalars, unmigrated this wave
-        assert_eq!(t.size, 40.0);
-        assert_eq!(t.letter_spacing, 2.0);
-        assert_eq!(t.outline_width, 3.0);
+    }
+
+    /// A `size` written as a full `Animated` object (keyframed) round-trips through
+    /// `de_scalar_or_animated` unchanged — the promotion accepts both JSON shapes, not just bare numbers.
+    #[test]
+    fn textstyle_animated_object_json_round_trips() {
+        let json = r#"{"text":"Hi","size":{"value":10.0,"keys":[{"t":0.0,"v":10.0,"ease":"Linear"},{"t":1.0,"v":80.0,"ease":"Linear"}]}}"#;
+        let t: TextStyle = serde_json::from_str(json).unwrap();
+        assert!(t.size.is_animated());
+        assert_eq!(t.size.at(0.0), 10.0);
+        assert_eq!(t.size.at(1.0), 80.0);
+    }
+
+    /// `TextStyle::default()` (every brand-new text clip) is also fully revealed and has no wave —
+    /// the Animation-preset/Reveal/Wave UI is opt-in, not a surprise on a freshly typed text clip.
+    #[test]
+    fn textstyle_default_is_fully_revealed_no_wave() {
+        let t = TextStyle::default();
+        assert_eq!(t.reveal.value, 1.0);
+        assert_eq!(t.wave.value, 0.0);
+        assert_eq!(t.size.value, 72.0);
+    }
+
+    /// `cache_key()` changes when `size`/`letter_spacing`/`outline_width`/`reveal`/`wave` change — the
+    /// render cache must not serve a stale frame after any of the newly-Animated fields is edited.
+    #[test]
+    fn cache_key_changes_with_every_promoted_field() {
+        let base = TextStyle::default();
+        let mut a = base.clone();
+        a.size.value = 100.0;
+        assert_ne!(base.cache_key(), a.cache_key(), "size");
+        let mut b = base.clone();
+        b.letter_spacing.value = 5.0;
+        assert_ne!(base.cache_key(), b.cache_key(), "letter_spacing");
+        let mut c = base.clone();
+        c.outline_width.value = 5.0;
+        assert_ne!(base.cache_key(), c.cache_key(), "outline_width");
+        let mut d = base.clone();
+        d.reveal.value = 0.5;
+        assert_ne!(base.cache_key(), d.cache_key(), "reveal");
+        let mut e = base.clone();
+        e.wave.value = 5.0;
+        assert_ne!(base.cache_key(), e.cache_key(), "wave");
+        let mut f = base.clone();
+        f.size.keys.push(Keyframe { t: 1.0, v: 200.0, ease: Ease::Linear });
+        assert_ne!(base.cache_key(), f.cache_key(), "adding a keyframe");
     }
 }

@@ -1271,7 +1271,9 @@ pub(crate) fn decode_layers(
         // ws:transcript-captions: `cue_layer_at` returns Cows (owned only on the karaoke path)
         let mut style = base_style.into_owned();
         style.text = cue_text.into_owned();
-        let img = text.render(&style, w as f32 / project.width.max(1) as f32);
+        // ---- ws:text-titles ----: `t` here is decode_layers' own timeline time (subtitles have no
+        // clip-local time of their own — see compose.rs's identical call for the same reasoning).
+        let img = text.render(&style, w as f32 / project.width.max(1) as f32, t);
         if img.width > 1 || img.height > 1 {
             set.layers.push((LayerSet::SUBTITLES, img));
         }
@@ -1326,14 +1328,14 @@ fn layer_for(
                 };
                 let style = crate::model::TextStyle {
                     text: label_text,
-                    size: 32.0,
+                    size: crate::model::Animated::new(32.0),
                     color: [220, 220, 220, 255],
                     box_color: [40, 40, 40, 220],
                     box_padding: 16.0,
                     align: 1,
                     ..Default::default()
                 };
-                let img = text.render(&style, s);
+                let img = text.render(&style, s, clip.local(t));
                 if img.width > 1 || img.height > 1 {
                     set.layers.push((clip.id, img));
                 }
@@ -1367,7 +1369,7 @@ fn layer_for(
         }
         ClipKind::Text => {
             let Some(style) = &clip.text else { return };
-            let img = text.render(style, s);
+            let img = text.render(style, s, clip.local(t));
             if img.width > 1 || img.height > 1 {
                 set.layers.push((clip.id, img));
             }
@@ -1577,8 +1579,8 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
                 // unchanged fast path: byte-identical to the pre-rate-loop code at the default rate
                 if guarded(&mut pool, |pool| mixer.mix(&project, mixed_until, pool, &mut block)) {
                     lock(&ring).extend(block.iter().copied()); // a panicked block: underrun instead
-                    // ---- ws:audio-dsp-automation ----
-                    // hand the post-fader bus blocks to the UI thread's meters/LUFS (App::sync_buses)
+                                                               // ---- ws:audio-dsp-automation ----
+                                                               // hand the post-fader bus blocks to the UI thread's meters/LUFS (App::sync_buses)
                     mixer.graph().publish(&METER_FEED);
                 }
                 mixed_until += BLOCK as f64 / SAMPLE_RATE as f64;
@@ -2100,7 +2102,11 @@ mod tests {
         p.seek(3.5); // big forward jump while still playing — an intentional scrub, not a stall
         sleep(Duration::from_millis(300)); // let post-seek frames publish
         eprintln!("DEBUG dropped_frames={} time={} playing={}", p.dropped_frames(), p.time(), p.is_playing());
-        assert!(p.dropped_frames() < 5, "seek-while-playing must not inflate dropped_frames, got {}", p.dropped_frames());
+        assert!(
+            p.dropped_frames() < 5,
+            "seek-while-playing must not inflate dropped_frames, got {}",
+            p.dropped_frames()
+        );
     }
 
     /// Arming Loop In->Out while the playhead sits outside the range must seek to `a` first — otherwise
