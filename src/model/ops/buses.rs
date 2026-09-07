@@ -66,6 +66,9 @@ impl Project {
     /// nothing changed) so the inspector can pre-select it in the Mixer.
     pub fn apply_repair(&mut self, ids: &[Id], preset: &str) -> Id {
         let Some((label, chain)) = crate::engine::mixer_fx::repair_chain(preset) else { return 0 };
+        if ids.is_empty() {
+            return 0;
+        }
         let bus = match self.buses.iter().find(|b| b.name == label).map(|b| b.id) {
             Some(id) => id,
             None => {
@@ -123,5 +126,15 @@ mod tests {
         let before = p.to_json();
         assert_eq!(p.apply_repair(&[7], "nope"), 0);
         assert_eq!(p.to_json(), before);
+    }
+
+    #[test]
+    fn apply_repair_with_no_ids_creates_no_bus() {
+        let mut p = Project::new();
+        assert!(p.buses.is_empty());
+        let before = p.to_json();
+        assert_eq!(p.apply_repair(&[], "repair"), 0);
+        assert!(p.buses.is_empty(), "no phantom bus for an empty clip list");
+        assert_eq!(p.to_json(), before, "project must be untouched");
     }
 }

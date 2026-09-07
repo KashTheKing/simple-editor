@@ -530,10 +530,10 @@ impl FilterState {
                     let peak = fr[0].abs().max(fr[1].abs());
                     *env = if peak > *env { peak } else { *env + (peak - *env) * rl };
                     *gain = if *env > ceil { ceil / *env } else { 1.0 };
-                    let rp = (*pos + cap - look) % cap;
-                    let (dl, dr) = (ring[rp * 2], ring[rp * 2 + 1]);
                     ring[*pos * 2] = fr[0];
                     ring[*pos * 2 + 1] = fr[1];
+                    let rp = (*pos + cap - look) % cap;
+                    let (dl, dr) = (ring[rp * 2], ring[rp * 2 + 1]);
                     *pos = (*pos + 1) % cap;
                     // the gain does the work; the clamp is the brickwall guarantee for a release that
                     // outruns the lookahead
@@ -1581,6 +1581,20 @@ mod tests {
         imp[0] = 0.25;
         st.process(&f, 0.0, &mut imp);
         assert!(imp[0].abs() < 1e-6 && imp[240 * 2] > 0.2, "{} / {}", imp[0], imp[240 * 2]);
+    }
+
+    #[test]
+    fn limiter_zero_lookahead_has_no_delay() {
+        // 0 ms lookahead (the slider's minimum): an impulse below the ceiling must come out in the
+        // SAME frame it went in, not delayed like the 5 ms case above (regression for a ring buffer
+        // that read before it wrote, which gave 0 ms the ring's full ~20 ms capacity as delay instead).
+        let f = filt(FilterKind::Limiter, &[(0, -6.0), (1, 0.0), (2, 100.0)]);
+        let mut st = FilterState::new(&f, SR);
+        let mut imp = vec![0.0f32; 480 * 2];
+        imp[0] = 0.25;
+        st.process(&f, 0.0, &mut imp);
+        assert!((imp[0] - 0.25).abs() < 1e-6, "zero lookahead should pass the impulse through undelayed: {}", imp[0]);
+        assert!(imp[2..].iter().all(|s| s.abs() < 1e-6), "no energy should leak into later frames");
     }
 
     #[test]
