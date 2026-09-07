@@ -499,8 +499,17 @@ impl Player {
     pub fn rate(&self) -> f64 {
         lock(&self.shared.clock).rate
     }
-    /// Enable (`Some((in, out))`) or disable (`None`) Loop In->Out.
+    /// Enable (`Some((in, out))`) or disable (`None`) Loop In->Out. If the playhead is currently outside
+    /// the new range, seeks to `in` first — otherwise `Clock::now`'s wrap math would land the next tick
+    /// at an unpredictable point inside the range (a modulo of however far past `out` playback had
+    /// drifted) instead of a clean loop start.
     pub fn set_loop(&mut self, range: Option<(f64, f64)>) {
+        if let Some((a, b)) = range {
+            let t = self.time();
+            if t < a || t >= b {
+                self.seek(a);
+            }
+        }
         {
             lock(&self.shared.clock).loop_range = range;
         }
@@ -649,7 +658,14 @@ fn render_thread(
                     }
                     project = new;
                 }
-                Cmd::Seek | Cmd::Play | Cmd::Pause => dirty = true,
+                Cmd::Seek => {
+                    dirty = true;
+                    // a seek can jump the timeline index by any amount, including while still playing
+                    // (Player::seek keeps playing from `t`) — without this, dropped_delta(last_pub, idx,
+                    // rate) reads the whole jump as decode falling behind, not an intentional skip.
+                    last_pub = -1;
+                }
+                Cmd::Play | Cmd::Pause => dirty = true,
                 Cmd::Canvas => {
                     dirty = true;
                     clear_caches!(); // cached entries are the old canvas size
@@ -2056,6 +2072,50 @@ mod tests {
         assert_eq!(dropped_delta(-1, 5, 1.0), 0, "no prior publish");
         assert_eq!(dropped_delta(10, 9, -1.0), 0, "exact reverse stride");
         assert!(dropped_delta(10, 3, -1.0) > 0, "real reverse stall");
+    }
+
+    /// A scrub-while-playing (a `seek()` call arriving mid-playback, same as dragging the playhead
+    /// without pausing) must not be miscounted as dropped frames: `Cmd::Seek` has to reset `last_pub`
+    /// just like `clear_caches!`/`evict_spans!` do, or the huge intentional index jump reads as a
+    /// decode stall.
+    #[test]
+    fn seek_while_playing_does_not_inflate_dropped_frames() {
+        let path = media::ffpipe::tests::test_mp4();
+        let asset = media::probe(&path, Backend::Auto).unwrap();
+        let project = Project::from_media(asset);
+        let mut p =
+            Player::new(eframe::egui::Context::default(), Backend::Auto, Arc::new(Mutex::new(TextRasterizer::new())));
+        p.set_project(&project);
+        p.set_canvas(320, 240, 1280);
+        p.seek(0.0);
+        p.play();
+        sleep(Duration::from_millis(150)); // let a few frames publish near t=0 so last_pub advances
+        p.seek(3.5); // big forward jump while still playing — an intentional scrub, not a stall
+        sleep(Duration::from_millis(300)); // let post-seek frames publish
+        eprintln!("DEBUG dropped_frames={} time={} playing={}", p.dropped_frames(), p.time(), p.is_playing());
+        assert!(p.dropped_frames() < 5, "seek-while-playing must not inflate dropped_frames, got {}", p.dropped_frames());
+    }
+
+    /// Arming Loop In->Out while the playhead sits outside the range must seek to `a` first — otherwise
+    /// `Clock::now`'s wrap math lands the next tick at an unpredictable point inside the range instead of
+    /// a clean loop start. Already being inside the range must leave the playhead alone.
+    #[test]
+    fn set_loop_seeks_into_range_only_when_outside() {
+        let path = media::ffpipe::tests::test_mp4();
+        let asset = media::probe(&path, Backend::Auto).unwrap();
+        let project = Project::from_media(asset);
+        let mut p =
+            Player::new(eframe::egui::Context::default(), Backend::Auto, Arc::new(Mutex::new(TextRasterizer::new())));
+        p.set_project(&project);
+
+        p.seek(3.9); // outside [0.5, 1.5)
+        p.set_loop(Some((0.5, 1.5)));
+        assert_eq!(p.time(), 0.5, "arming a loop while outside its range must seek to `in`");
+
+        p.set_loop(None);
+        p.seek(1.0); // inside [0.5, 1.5)
+        p.set_loop(Some((0.5, 1.5)));
+        assert_eq!(p.time(), 1.0, "arming a loop while already inside its range must not move the playhead");
     }
 
     /// While paused, `scrub` mixes audio without ever moving the clock.
