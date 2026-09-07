@@ -2,8 +2,8 @@
 
 ## beta-0.3.0
 
-The full UI/UX overhaul (`plans/ui-overhaul/`): 22 feature workstreams across waves 1-3 plus the
-three wave-0 refactor PRs, closed out by this wave-4 docs pass (issue #38). This section folds what
+The full UI/UX overhaul (`plans/ui-overhaul/`): 19 feature workstreams across waves 1-3 plus the
+three wave-0 refactor PRs (22 total), closed out by this wave-4 docs pass (issue #38). This section folds what
 used to be a separate `## unreleased` heading (PRs #12/#14, plus issues #16/#18/#21/#29/#32, kept
 verbatim below) together with one new terse paragraph per remaining workstream area. Release exe at
 wave-3-complete: **12,167,168 B (11.60 MB)**, sha `86c1793` — see `size_log.csv` and goals.md's

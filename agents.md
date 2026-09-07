@@ -85,7 +85,7 @@ default to this for small tasks — it's for genuinely large, module-spanning wo
 
 ### Concurrent worktree protocol
 
-The UI/UX overhaul (`plans/ui-overhaul/`) is the reference example: 23 workstreams across 4 waves,
+The UI/UX overhaul (`plans/ui-overhaul/`) is the reference example: 23 workstreams across 5 waves,
 each its own git worktree, merged without ever sharing a hunk. The shape any future multi-workstream
 plan should copy:
 

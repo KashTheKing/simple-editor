@@ -11,7 +11,7 @@ trades size/deps/speed for a feature, or before designing a UI panel.
   (15,970,816 B, sha `aaa3fdc`, measured fresh on main — supersedes any older, smaller reading from
   before `egui_commonmark` landed). Post-size-diet (issue #18, corrected once the main-crate
   `opt-level="s"` gate was confirmed kept, not reverted): **9.65 MB** (10,121,728 B, sha `bc4c19e`),
-  a measured delta of **-5.58 MB**. Wave 1-3 feature work (23 workstreams) then added size back: the
+  a measured delta of **-5.58 MB**. Wave 1-3 feature work (19 workstreams) then added size back: the
   final measured exe at wave-3-complete is **11.60 MB** (12,167,168 B, sha `86c1793` — see
   `size_log.csv`'s last row and ARCHITECTURE.md's header). Any change that grows the binary should
   say by how much.
@@ -50,6 +50,10 @@ Pulled forward from CHANGELOG.md — mark new completions here as they land.
   (9 files), zero behaviour change; five dispatch registries (`TOOL_TABLES`/`ACT_HANDLERS`/
   `FRAME_HOOKS`/`WINDOW_DRAWERS`/`PANE_DRAWERS`) + marker-section protocol let 23 workstreams add
   files without ever sharing a merge hunk. See ARCHITECTURE.md's "Registries" section.
+- [x] **Binary size diet** (issue #18, size-diet): release exe cut from 15.23 MB to 9.65 MB
+  (-5.58 MB measured) — an in-house Markdown renderer (`src/ui/markdown.rs`) replacing
+  `egui_commonmark`, main-crate `opt-level="s"` kept and validated against
+  `bench_4k_preview`/`headless_1000_clips_stays_fast`. See "Core goals" above and `size_log.csv`.
 - [x] **Command palette & scripting** (issue #20, command-palette): `Ctrl+K` palette over every
   Action/Pane/arg-free ToolDef/script/workspace, `F1` cheat sheet, Avid/Premiere/Resolve keymap
   presets, Luau `-- @on <event>` script-hook headers.
@@ -101,11 +105,11 @@ Pulled forward from CHANGELOG.md — mark new completions here as they land.
   correcting an earlier PR-body report that mistakenly said the main-crate `opt-level="s"` gate was
   skipped — `size_log.csv`'s `bc4c19e` row confirms it was kept, validated against
   `bench_4k_preview`/`headless_1000_clips_stays_fast`). Wave 1-3 feature work added back 2,045,440 B
-  (+1.95 MB) across 23 workstreams, landing at 11.60 MB — still over the ~10 MB target. No
+  (+1.95 MB) across 19 workstreams, landing at 11.60 MB — still over the ~10 MB target. No
   `chore/se-engine-split` follow-up was needed since the opt-level gate held; getting back under
   ~10 MB stays an open goal, to be traded off against future feature work, not addressed by
   docs-refresh (docs-only, Δ exe ≈ 0 KB).
-- [x] **UI/UX overhaul** — 23 workstreams in 4 waves, planned 2026-09-04 in
+- [x] **UI/UX overhaul** — 23 workstreams in 5 waves, planned 2026-09-04 in
   [plans/ui-overhaul/README.md](plans/ui-overhaul/README.md) (one issue-ready file per workstream
   under `plans/ui-overhaul/issues/`; GitHub issues #16–#38, labels `ui-overhaul` + `wave-N`). Waves
   0-3 (all 22 non-docs workstreams) are merged into main; wave 4 (docs-refresh, #38, this PR) is the

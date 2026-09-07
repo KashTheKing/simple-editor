@@ -467,8 +467,10 @@ pane costs all of the following — do every step, in this order, before calling
 2. Give it a `glyph()` (`Glyph` enum + `ALL` + `draw_glyph` in `src/ui/tools.rs`) and a `title()`.
 3. Every preset builder must place it or explicitly leave it for `stack_unplaced` to tab-stack behind
    an existing pane (never silently missing from a saved layout).
-4. A toggle `Action` (View menu + palette) or a `ToolDef` — `every_pane_has_a_toggle_action_or_tool`
-   fails the build otherwise.
+4. A toggle `Action` (View menu + palette) or a `ToolDef` so the pane can be shown/hidden — this is
+   a manual convention, not enforced by a structural test (no `every_pane_has_a_toggle_action_or_tool`
+   or equivalent exists; `tools_registry_tests.rs`'s `every_edit_op_has_a_tool` covers `Project` op ↔
+   tool coverage, not pane toggles) — check it by eye.
 5. A `PANE_DRAWERS` entry (own marker section) in `src/ui/app/mod.rs`, or a direct arm in
    `draw_pane_inner`'s match if you're the pane's original 0a owner.
 6. An `assert_no_idle_repaint`-style test (see "Size & idle-CPU gates" below) — every existing pane's
