@@ -56,6 +56,8 @@ mod feedback;
 mod files;
 // ---- ws:layout-modes-onboarding ----
 mod frame;
+// ---- ws:inspector-gallery ----
+mod gallery_ctl;
 mod gpu;
 mod jobs;
 // ---- ws:layout-modes-onboarding ----
@@ -82,7 +84,10 @@ mod source_ctl;
 mod source_pane;
 // every placement call site (drops, library add, recording import, panes) names a DropMode
 pub(crate) use edit_ops::DropMode;
-mod thumbs;
+// ---- ws:inspector-gallery ----: `pub(crate)`, not private, so `ui::gallery` (a sibling of `ui::app`,
+// not a descendant) can name `thumbs::ThumbSource` — gallery.rs owns the actual thumbnail cache
+// (thread-local, mirroring effects_ui.rs's own `THUMBS`), this module only builds the textures.
+pub(crate) mod thumbs;
 mod timeline_pane;
 mod tools_args;
 mod tools_audio;
@@ -92,6 +97,8 @@ mod tools_color;
 mod tools_commands;
 // ---- ws:export-deliver ----
 mod tools_export;
+// ---- ws:inspector-gallery ----
+mod tools_gallery;
 mod tools_helpers;
 // ---- ws:layout-modes-onboarding ----
 mod tools_layout;
@@ -388,6 +395,14 @@ pub struct App {
     /// In-flight bakes (render in place / stabilize / denoise / slow-mo) — at most one, stepped by
     /// `tools_export::frame_tick`; drawn by `windows()`'s "Rendering in place" job window.
     bake_jobs: Vec<tools_export::BakeJob>,
+    // ---- ws:inspector-gallery ----
+    /// Textures backing the Gallery's Looks/LUTs cards (kept alive while the pane shows them) — the
+    /// (source, key) -> id/size cache itself is `gallery.rs`'s own thread-local, same convention as
+    /// `effects_ui.rs`'s `THUMBS`, so `ui::gallery::show` (a sibling module, not a descendant of
+    /// `ui::app`) can read it without needing an `&App` reference.
+    gallery_textures: Vec<egui::TextureHandle>,
+    /// Gallery pane state (open tab, save-from-selection scratch).
+    gallery: crate::ui::gallery::GalleryState,
     // ---- ws:media-library ----
     /// Image-sequence bakes and consolidate copies in flight, polled by `media_sync::tick`.
     media_jobs: Vec<media_sync::MediaJob>,
@@ -811,6 +826,9 @@ impl App {
             // ---- ws:export-deliver ----
             export_queue: std::collections::VecDeque::new(),
             bake_jobs: Vec::new(),
+            // ---- ws:inspector-gallery ----
+            gallery_textures: Vec::new(),
+            gallery: crate::ui::gallery::GalleryState::default(),
             // ---- ws:media-library ----
             media_jobs: Vec::new(),
             offline_scan_at: None,
@@ -1357,6 +1375,7 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:export-deliver ----
     tools_export::TOOLS,
     // ---- ws:inspector-gallery ----
+    tools_gallery::TOOLS,
     // ---- ws:layout-modes-onboarding ----
     tools_layout::TOOLS,
     // ---- ws:media-library ----
@@ -1494,6 +1513,7 @@ pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
     // ---- ws:canvas-handles-monitor ----
     // ---- ws:export-deliver ----
     // ---- ws:inspector-gallery ----
+    gallery_ctl::draw,
     // ---- ws:layout-modes-onboarding ----
     // ---- ws:media-library ----
     // ---- ws:source-monitor ----

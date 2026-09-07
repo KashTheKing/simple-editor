@@ -104,7 +104,7 @@ impl App {
                 }
             }
             Pane::Transitions => {
-                let changed = {
+                let resp = {
                     let App {
                         project,
                         selection,
@@ -119,9 +119,11 @@ impl App {
                     let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
                     transitions_ui::show(ui, st, project, selection, sel_transitions, *playhead, palette, &mut push)
                 };
-                if changed {
+                if resp.edited {
                     self.after_edit();
                 }
+                // ---- ws:inspector-gallery ----
+                self.alt_render.request(resp.hover.map(monitor::AltRequest::Transition));
             }
             Pane::Curves => {
                 let resp = {

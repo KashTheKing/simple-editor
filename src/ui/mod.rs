@@ -6,11 +6,15 @@ pub mod app;
 pub mod autocut_ui;
 pub mod capture_ui;
 pub mod cheatsheet;
+// ---- ws:inspector-gallery ----
+pub mod color_ui;
 pub mod confirm;
 pub mod curves;
 pub mod effects_ui;
 pub mod export_ui;
 pub mod frame_ui;
+// ---- ws:inspector-gallery ----
+pub mod gallery;
 pub mod guides;
 pub mod heartbeat;
 pub mod history_ui;
@@ -213,6 +217,29 @@ pub(crate) fn drag_intent(ui: &egui::Ui) -> bool {
                 _ => false,
             }
     })
+}
+
+// ---- ws:inspector-gallery ----
+/// True once the pointer has sat over `response` for at least `ms` milliseconds (false, and the timer
+/// reset, the instant it leaves). Shared by the effects/transitions catalogues and the Gallery cards so
+/// a quick mouse pass-over doesn't spam `App.alt_render` with a decode it'll immediately discard.
+/// Requests a repaint for the remaining time so the threshold fires even if the pointer stays still.
+pub(crate) fn hover_after(ui: &egui::Ui, id: egui::Id, response: &Response, ms: f64) -> bool {
+    let now = ui.input(|i| i.time);
+    // `contains_pointer`, not `hovered`: same reasoning egui's own `dnd_hover_payload` gives (`hovered`
+    // is false while ANY widget is being dragged, and can also miss a plain container `Response`).
+    if !response.contains_pointer() {
+        ui.ctx().data_mut(|d| d.remove::<f64>(id));
+        return false;
+    }
+    let started = ui.ctx().data_mut(|d| *d.get_temp_mut_or_insert_with(id, || now));
+    let elapsed_ms = (now - started) * 1000.0;
+    if elapsed_ms >= ms {
+        true
+    } else {
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(((ms - elapsed_ms) / 1000.0).max(0.0)));
+        false
+    }
 }
 
 /// An item that is clickable and right-clickable first and a drag-and-drop source second: the payload

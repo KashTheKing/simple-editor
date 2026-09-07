@@ -3,6 +3,8 @@ mod attrs;
 mod autocut;
 mod buses;
 mod editing;
+// ---- ws:inspector-gallery ----
+mod effects;
 mod graph;
 mod markers;
 mod paths;

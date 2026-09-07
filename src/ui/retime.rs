@@ -5,6 +5,7 @@
 //! (shows a note when the new length collides with a neighbour and nothing changed). Shows the resulting
 //! duration live. Undo once per applied change. Returns true when the project changed.
 
+use crate::engine::presets::{apply_curve, builtin_speed_ramps};
 use crate::model::{Id, Project};
 use crate::ui::duration_text;
 use eframe::egui;
@@ -17,6 +18,55 @@ pub struct RetimeUi {
     pub reverse: bool,
     pub last_clip: Option<Id>,
     pub note: String,
+    // ---- ws:inspector-gallery ----
+    /// "Edit curve" was clicked — `App::windows` reveals `Pane::Curves` and clears this (new wiring; see
+    /// this file's own doc comment on why the existing `reveal(Pane::Curves)` call sites are test-only).
+    pub want_curves: bool,
+}
+
+/// Painted-polyline preset buttons (Montage/Hero/Bullet/Jump/Flash); returns the clicked preset's index
+/// into `presets` for the caller to apply via `apply_curve`.
+pub fn speed_ramp_row(ui: &mut egui::Ui, presets: &[crate::settings::CurvePreset]) -> Option<usize> {
+    let mut clicked = None;
+    ui.horizontal(|ui| {
+        for (i, p) in presets.iter().enumerate() {
+            let (rect, r) = ui.allocate_exact_size(egui::vec2(48.0, 36.0), egui::Sense::click());
+            let plot = egui::Rect::from_min_max(rect.min + egui::vec2(2.0, 2.0), rect.max - egui::vec2(2.0, 12.0));
+            let painter = ui.painter();
+            let stroke = egui::Stroke::new(1.2, ui.visuals().text_color());
+            let peak = p.keys.iter().map(|k| k.v).fold(1.0f64, f64::max).max(1.0);
+            let pts: Vec<egui::Pos2> = p
+                .keys
+                .iter()
+                .map(|k| {
+                    let x = plot.left() + (k.t as f32) * plot.width();
+                    let y = plot.bottom() - ((k.v / peak).clamp(0.0, 1.0) as f32) * plot.height();
+                    egui::pos2(x, y)
+                })
+                .collect();
+            if pts.len() >= 2 {
+                painter.add(egui::Shape::line(pts, stroke));
+            }
+            painter.text(
+                rect.center_bottom(),
+                egui::Align2::CENTER_BOTTOM,
+                &p.name,
+                egui::FontId::proportional(9.0),
+                ui.visuals().text_color(),
+            );
+            painter.rect_stroke(
+                rect,
+                2.0,
+                egui::Stroke::new(1.0, ui.visuals().weak_text_color()),
+                egui::StrokeKind::Inside,
+            );
+            let r = r.on_hover_text(format!("{} speed ramp", p.name));
+            if r.clicked() {
+                clicked = Some(i);
+            }
+        }
+    });
+    clicked
 }
 
 const NO_ROOM: &str = "No room: the new length would collide with a neighbouring clip.";
@@ -112,6 +162,27 @@ pub fn show(
                 }
             }
         });
+        // ---- ws:inspector-gallery ----
+        ui.separator();
+        ui.label("Speed ramp presets");
+        let ramps = builtin_speed_ramps();
+        if let Some(i) = speed_ramp_row(ui, &ramps) {
+            let pre = project.clone();
+            let mut any = false;
+            for &id in selection {
+                if let Some(c) = project.clip_mut(id) {
+                    apply_curve(&ramps[i], &mut c.speed_curve, c.duration, false);
+                    any = true;
+                }
+            }
+            if any {
+                undo(&pre);
+                changed = true;
+            }
+        }
+        if ui.button("Edit curve").on_hover_text("Open the Curves pane on this clip's Speed property").clicked() {
+            state.want_curves = true;
+        }
         ui.checkbox(&mut state.reverse, "Reverse");
         let new_dur =
             if clip.freeze.is_some() { clip.duration } else { clip.src_len() / (state.percent / 100.0).max(0.0001) };
@@ -250,5 +321,34 @@ mod tests {
                 assert!((state.percent - 100.0).abs() < 1e-9);
             }
         }
+    }
+
+    // ---- ws:inspector-gallery ----
+    #[test]
+    fn speed_ramp_row_returns_the_clicked_index() {
+        let ramps = builtin_speed_ramps();
+        let ctx = egui::Context::default();
+        let mut clicked = None;
+        // first pass: lay out and find the second card's rect (Hero)
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                clicked = speed_ramp_row(ui, &ramps);
+            });
+        });
+        assert_eq!(clicked, None, "no click yet on a synthetic first pass");
+    }
+
+    #[test]
+    fn applying_a_ramp_writes_speed_curve_with_one_undo() {
+        let (mut p, id) = project_10s();
+        let ramps = builtin_speed_ramps();
+        let hero = ramps.iter().position(|r| r.name == "Hero").unwrap();
+        let mut undos = 0;
+        let pre = p.clone();
+        apply_curve(&ramps[hero], &mut p.clip_mut(id).unwrap().speed_curve, 10.0, false);
+        let mut undo = |_: &Project| undos += 1;
+        undo(&pre);
+        assert_eq!(undos, 1);
+        assert!(p.clip(id).unwrap().speed_curve.is_animated());
     }
 }

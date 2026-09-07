@@ -1,5 +1,6 @@
 //! App settings — one JSON file at %APPDATA%\SimpleEditor\settings.json.
 
+use crate::model::TextStyle;
 use crate::theme::PaletteOverride;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -340,6 +341,18 @@ pub struct Settings {
     #[serde(default = "default_loudnorm")]
     pub loudnorm: bool,
     // ---- ws:inspector-gallery ----
+    /// Which inspector `section()` blocks are expanded, keyed by the section's `id` string (stable
+    /// across sessions — not the clip/effect it currently belongs to). Missing key = that section's own
+    /// `default_open` wins, so a fresh install still opens the primary section per `ClipKind`.
+    #[serde(default)]
+    pub inspector_folds: BTreeMap<String, bool>,
+    /// User-saved caption styles (Gallery ▸ Captions, "Save current style…"), alongside the built-in
+    /// ones from `engine::presets::builtin_caption_styles()`.
+    #[serde(default)]
+    pub caption_presets: Vec<TextStyle>,
+    /// Last open Gallery tab (`GalleryTab`'s name), remembered across restarts.
+    #[serde(default)]
+    pub gallery_tab: String,
     // ---- ws:layout-modes-onboarding ----
     /// Active workspace name (`ui::layout::WORKSPACES`), lit in the menu-bar strip / View menu.
     pub workspace: String,
@@ -463,6 +476,9 @@ impl Default for Settings {
             last_export: None,
             loudnorm: default_loudnorm(),
             // ---- ws:inspector-gallery ----
+            inspector_folds: BTreeMap::new(),
+            caption_presets: Vec::new(),
+            gallery_tab: "Looks".into(),
             // ---- ws:layout-modes-onboarding ----
             workspace: "Edit".into(),
             home_screen: true,
@@ -776,6 +792,9 @@ mod tests {
         s.layout_mode = "granular".into();
         s.onboarded = true;
         let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
-        assert_eq!((back.workspace.as_str(), back.home_screen, back.layout_mode.as_str(), back.onboarded), ("Color", false, "granular", true));
+        assert_eq!(
+            (back.workspace.as_str(), back.home_screen, back.layout_mode.as_str(), back.onboarded),
+            ("Color", false, "granular", true)
+        );
     }
 }

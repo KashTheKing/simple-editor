@@ -83,6 +83,9 @@ const OP_TOOLS: &[(&str, &str)] = &[
     // ---- ws:transcript-captions ----
     ("set_transcript", "transcript.set"),
     ("cut_word_ranges", "transcript.cut_words"),
+    // ---- ws:inspector-gallery ----
+    ("reorder_effect", "clip.reorder_effect"),
+    ("bulk_set_effect_params", "clip.effects_bulk"),
 ];
 
 /// (Project op fn name, why it has no MCP tool yet). Every entry is a real, deliberate gap — either a
@@ -155,6 +158,7 @@ const OP_FILES: &[&str] = &[
     include_str!("../../model/ops/autocut.rs"),
     include_str!("../../model/ops/buses.rs"),
     include_str!("../../model/ops/editing.rs"),
+    include_str!("../../model/ops/effects.rs"),
     include_str!("../../model/ops/graph.rs"),
     include_str!("../../model/ops/markers.rs"),
     include_str!("../../model/ops/paths.rs"),

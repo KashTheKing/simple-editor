@@ -3,7 +3,7 @@
 //! duration when applied) or as absolute seconds (kept as saved).
 
 use crate::model::{
-    Animated, Asset, Clip, ClipKind, Ease, Effect, EffectKind, Id, Keyframe, NodeGraph, Project, MIN_CLIP,
+    Animated, Asset, Clip, ClipKind, Ease, Effect, EffectKind, Id, Keyframe, NodeGraph, Project, TextStyle, MIN_CLIP,
 };
 use crate::settings::{CurvePreset, EffectPreset, MotionPreset, Template};
 use std::collections::HashMap;
@@ -326,6 +326,77 @@ pub fn is_adjustment_template(t: &Template) -> bool {
 /// True when a template holds at least one container clip.
 pub fn is_container_template(t: &Template) -> bool {
     decode_template(t).is_some_and(|(c, _)| c.iter().any(|c| c.container))
+}
+
+// ---- ws:inspector-gallery ----
+/// One normalised (0..1 clip-relative) speed-ramp curve for `builtin_speed_ramps`.
+fn ramp(name: &str, points: &[(f64, f64)]) -> CurvePreset {
+    let keys = points.iter().map(|&(t, v)| Keyframe { t, v, ease: Ease::EaseInOut }).collect();
+    CurvePreset { name: name.into(), keys, absolute: false }
+}
+
+/// 5 built-in speed-ramp presets, fed straight into `apply_curve(preset, &mut clip.speed_curve, dur,
+/// false)` — normalised keys are stretched to the clip's actual duration on apply. Values are speed
+/// multipliers (1.0 = normal), matching `Clip::speed_curve`'s existing convention.
+pub fn builtin_speed_ramps() -> Vec<CurvePreset> {
+    vec![
+        // quick alternating up-tempo cuts
+        ramp("Montage", &[(0.0, 1.0), (0.15, 2.5), (0.3, 1.0), (0.6, 3.0), (0.75, 1.0), (1.0, 1.5)]),
+        // slow-motion highlight in the middle third
+        ramp("Hero", &[(0.0, 1.0), (0.35, 1.0), (0.5, 0.25), (0.65, 1.0), (1.0, 1.0)]),
+        // extreme "bullet time" dip
+        ramp("Bullet", &[(0.0, 1.0), (0.45, 1.0), (0.5, 0.05), (0.55, 1.0), (1.0, 1.0)]),
+        // sudden speed jump near the end (a hard cut in perceived pace, not the length)
+        ramp("Jump", &[(0.0, 1.0), (0.7, 1.0), (0.72, 4.0), (1.0, 4.0)]),
+        // brief fast flash-forward
+        ramp("Flash", &[(0.0, 1.0), (0.4, 1.0), (0.5, 6.0), (0.6, 1.0), (1.0, 1.0)]),
+    ]
+}
+
+fn caption(name: &str, f: impl FnOnce(&mut TextStyle)) -> TextStyle {
+    let mut t = TextStyle { text: name.into(), ..Default::default() };
+    f(&mut t);
+    t
+}
+
+/// 8 built-in caption styles, settable onto `Project.subtitle_style` via `subtitles.style_preset`.
+pub fn builtin_caption_styles() -> Vec<TextStyle> {
+    vec![
+        caption("Classic", |_| {}),
+        caption("Bold Outline", |t| {
+            t.bold = true;
+            t.outline_width = 3.0;
+        }),
+        caption("Boxed", |t| {
+            t.box_color = [0, 0, 0, 200];
+            t.box_padding = 8.0;
+        }),
+        caption("Yellow Pop", |t| {
+            t.color = [255, 220, 0, 255];
+            t.bold = true;
+            t.outline_width = 2.0;
+        }),
+        caption("Soft Shadow", |t| {
+            t.shadow = true;
+            t.shadow_blur = 4.0;
+            t.shadow_x = 1.0;
+            t.shadow_y = 2.0;
+        }),
+        caption("Minimal", |t| {
+            t.outline_width = 0.0;
+            t.size = 32.0;
+        }),
+        caption("Big Impact", |t| {
+            t.bold = true;
+            t.size = 56.0;
+            t.outline_width = 4.0;
+        }),
+        caption("Karaoke", |t| {
+            t.color = [255, 255, 255, 255];
+            t.outline_color = [0, 120, 255, 255];
+            t.outline_width = 3.0;
+        }),
+    ]
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -737,5 +808,37 @@ mod tests {
         assert!(ac.is_empty_container());
         assert_eq!(vc.container_label, "Intro");
         assert_eq!(vc.link, ac.link);
+    }
+
+    // ---- ws:inspector-gallery ----
+    #[test]
+    fn speed_ramps_are_named_and_start_end_near_normal() {
+        let ramps = builtin_speed_ramps();
+        assert_eq!(ramps.len(), 5);
+        let names: Vec<&str> = ramps.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["Montage", "Hero", "Bullet", "Jump", "Flash"]);
+        for r in &ramps {
+            assert!(!r.absolute, "{}: normalised, so it scales to any clip duration", r.name);
+            assert!(r.keys.first().unwrap().t == 0.0 && r.keys.last().unwrap().t == 1.0);
+        }
+    }
+
+    #[test]
+    fn speed_ramp_scales_to_clip_duration() {
+        let hero = builtin_speed_ramps().into_iter().find(|r| r.name == "Hero").unwrap();
+        let mut anim = Animated::new(1.0);
+        apply_curve(&hero, &mut anim, 10.0, false);
+        // normalised t=0.5 scales to 5.0s on a 10s clip
+        assert!(anim.keys.iter().any(|k| (k.t - 5.0).abs() < 1e-9));
+    }
+
+    #[test]
+    fn caption_styles_are_named_and_distinct() {
+        let styles = builtin_caption_styles();
+        assert_eq!(styles.len(), 8);
+        let mut names: Vec<&str> = styles.iter().map(|s| s.text.as_str()).collect();
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), 8, "every style has a unique name");
     }
 }

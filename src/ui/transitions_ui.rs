@@ -307,6 +307,17 @@ fn direction_row(ui: &mut egui::Ui, dir: &mut u8, g: &mut Gesture) {
     }
 }
 
+// ---- ws:inspector-gallery ----
+/// Authored here (wave 0's registries-schema-hooks did not land it — verified on merged main before
+/// writing this, per the plan's own risk note): `EffectsResponse` already carries a real `hover: Option`
+/// wave-0 stub, but `transitions_ui::show` returned a plain `bool` until now. `hover` is the catalogue
+/// card the pointer has sat on for >=150ms, for `App.alt_render`'s `AltRequest::Transition` preview.
+#[derive(Default)]
+pub struct TransitionsResponse {
+    pub edited: bool,
+    pub hover: Option<TransitionKind>,
+}
+
 pub fn show(
     ui: &mut egui::Ui,
     state: &mut TransitionsState,
@@ -316,10 +327,11 @@ pub fn show(
     _playhead: f64,
     palette: &Palette,
     undo: &mut dyn FnMut(&Project),
-) -> bool {
+) -> TransitionsResponse {
     #[cfg(test)]
     test_rects::clear();
     let mut changed = false;
+    let mut hover = None;
     let mut g = Gesture::default();
 
     // ---- bulk edit of the transitions selected on the timeline ----
@@ -385,6 +397,9 @@ pub fn show(
             let r = transition_card(ui, k, state, palette, state.kind == i);
             #[cfg(test)]
             test_rects::push(format!("card_{}", k.name()), r.rect);
+            if crate::ui::hover_after(ui, r.id, &r, 150.0) {
+                hover = Some(k);
+            }
             if r.clicked() {
                 pick = Some(i);
             }
@@ -426,7 +441,7 @@ pub fn show(
     // ---- add at the cuts around every selected clip ----
     let Some(&sel) = ids.first() else {
         ui.label("Select a clip");
-        return false;
+        return TransitionsResponse { edited: false, hover };
     };
     ui.horizontal(|ui| {
         let hint = |any: bool, cut: &str, edge: &str| if any { cut.to_string() } else { edge.to_string() };
@@ -563,7 +578,7 @@ pub fn show(
         }
         changed = true;
     }
-    changed
+    TransitionsResponse { edited: changed, hover }
 }
 
 #[cfg(test)]
@@ -633,7 +648,7 @@ mod tests {
             let full = ctx.run(input, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut undo = |_: &Project| *undos += 1;
-                    changed |= show(ui, state, project, selection, &[], 0.0, &pal, &mut undo);
+                    changed |= show(ui, state, project, selection, &[], 0.0, &pal, &mut undo).edited;
                 });
             });
             *shapes = full.shapes;

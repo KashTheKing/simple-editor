@@ -89,6 +89,12 @@ impl App {
             if changed {
                 self.after_edit();
             }
+            // ---- ws:inspector-gallery ----
+            if self.retime.want_curves {
+                self.retime.want_curves = false;
+                self.layout.reveal(Pane::Curves);
+                self.layout_dirty = true;
+            }
         }
         // export window
         if self.export_ui.open {
