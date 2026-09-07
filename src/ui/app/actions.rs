@@ -26,8 +26,7 @@ impl App {
                     self.set_project(Project::new(), None);
                 }
             }
-            ToolSelect | ToolText | ToolDraw | ToolMask | ToolMarker | ToolCut | ToolStretch | ToolZoom
-            | ToolSpacer => {
+            ToolSelect | ToolText | ToolDraw | ToolMask | ToolMarker | ToolCut | ToolStretch | ToolSpacer => {
                 // normally already consumed by tools::handle_hotkeys before this table is polled; this
                 // arm only fires for a caller that dispatches the action directly (scripting/MCP).
                 if let Some(t) = tools::tool_for_action(a, self.tools.tool) {
@@ -872,11 +871,13 @@ impl App {
         self.seek(t);
     }
 
-    /// "Save from selection" in the Presets pane: one clip's node graph or effect stack becomes an
-    /// effect preset, anything else (adjustment layers, several clips) becomes a clip template — that is
-    /// the only flavour that can be *placed* rather than applied.
-    pub(super) fn save_preset(&mut self, name: &str) {
-        let fx = match self.selection.as_slice() {
+    /// "Save from selection": one clip's node graph or effect stack becomes an effect preset, anything
+    /// else (adjustment layers, several clips) becomes a clip template — that is the only flavour that
+    /// can be *placed* rather than applied. Parameterized by explicit `ids` (not `self.selection`
+    /// directly) since its only caller now is the `templates.save` MCP tool (whatsnew.rs), which passes
+    /// the current selection by default but can be given any id list.
+    pub(crate) fn save_preset(&mut self, name: &str, ids: &[Id]) {
+        let fx = match ids {
             [id] => self
                 .project
                 .clip(*id)
@@ -887,10 +888,10 @@ impl App {
         if let Some(p) = fx {
             self.settings.effect_presets.retain(|x| x.name != name);
             self.settings.effect_presets.push(p);
-        } else if self.selection.is_empty() {
+        } else if ids.is_empty() {
             return self.toast("Select a clip first");
         } else {
-            let t = crate::engine::presets::capture_template(name, &self.project, &self.selection);
+            let t = crate::engine::presets::capture_template(name, &self.project, ids);
             self.settings.templates.retain(|x| x.name != name);
             self.settings.templates.push(t);
         }

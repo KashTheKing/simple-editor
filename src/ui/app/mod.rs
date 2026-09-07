@@ -24,7 +24,7 @@ use crate::ui::layout::{self, Layout, Pane};
 use crate::ui::tools::Tool;
 use crate::ui::{
     autocut_ui, capture_ui, curves, effects_ui, export_ui, frame_ui, history_ui, import_ui, inspector, library,
-    markers_ui, mixer_ui, moodboard_ui, nodes, paste_ui, planner, presets_ui, preview, retime, settings_ui, shader_ui,
+    markers_ui, mixer_ui, moodboard_ui, nodes, paste_ui, planner, preview, retime, settings_ui, shader_ui,
     subtitles_ui, timeline, tools, tracking_ui, transitions_ui, DragPayload,
 };
 use eframe::egui;
@@ -68,6 +68,7 @@ mod tools_registry_tests;
 mod tools_subtitles;
 mod tools_timeline;
 mod tools_ui;
+mod whatsnew;
 #[path = "windows.rs"]
 mod windows_dlg;
 
@@ -141,7 +142,6 @@ pub struct App {
     planner: planner::PlannerState,
     moodboard: moodboard_ui::MoodboardState,
     history: history_ui::HistoryState,
-    presets: presets_ui::PresetsState,
     autocut: autocut_ui::AutoCutState,
     tracking: tracking_ui::TrackState,
     retime: retime::RetimeUi,
@@ -291,6 +291,12 @@ pub struct App {
     /// no-op placeholder this wave (nothing reads or writes it yet outside its own scaffolding).
     #[allow(dead_code)]
     pub(crate) alt_render: Option<AltRenderKind>,
+    // ---- ws:size-diet ----
+    /// The "What's New" window (whatsnew.rs) is open — set on a version bump, or by `Action::WhatsNew`.
+    pub(crate) whatsnew_open: bool,
+    /// winpos's window-rect debounce: (drag/move started at, the rect it saw) while unsettled, `None`
+    /// once saved. Owned here so `whatsnew::tick` can thread it into `winpos::tick` every frame.
+    pub(crate) winpos_pending: Option<(Instant, [i32; 4])>,
 }
 
 /// What an async, off-the-main-preview GPU render is for — hover preview, trim view, scopes, wipe
@@ -592,7 +598,6 @@ impl App {
             planner: planner::PlannerState::default(),
             moodboard: moodboard_ui::MoodboardState::default(),
             history: history_ui::HistoryState::default(),
-            presets: presets_ui::PresetsState::default(),
             autocut: autocut_ui::AutoCutState::default(),
             tracking: tracking_ui::TrackState::default(),
             retime: retime::RetimeUi::default(),
@@ -675,6 +680,8 @@ impl App {
             audio_inputs: None,
             failed_panes: Vec::new(),
             alt_render: None,
+            whatsnew_open: false,
+            winpos_pending: None,
         };
         app.detect_ytdlp(&cc.egui_ctx);
         app.refresh_presets();
@@ -1208,7 +1215,7 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     tools_subtitles::TOOLS,
     tools_ui::TOOLS,
     // ---- ws:registries-schema-hooks ----
-    // ---- ws:size-diet ----
+    whatsnew::TOOLS,
     // ---- ws:split-god-files ----
     // ---- ws:audio-analysis ----
     // ---- ws:audio-dsp-automation ----
@@ -1234,7 +1241,7 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     // ---- ws:registries-schema-hooks ----
-    // ---- ws:size-diet ----
+    whatsnew::act,
     // ---- ws:split-god-files ----
     // ---- ws:audio-analysis ----
     // ---- ws:audio-dsp-automation ----
@@ -1260,7 +1267,7 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
 
 pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:registries-schema-hooks ----
-    // ---- ws:size-diet ----
+    whatsnew::tick,
     // ---- ws:split-god-files ----
     // ---- ws:audio-analysis ----
     // ---- ws:audio-dsp-automation ----
@@ -1286,7 +1293,7 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
 
 pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:registries-schema-hooks ----
-    // ---- ws:size-diet ----
+    whatsnew::window,
     // ---- ws:split-god-files ----
     // ---- ws:audio-analysis ----
     // ---- ws:audio-dsp-automation ----
@@ -1438,7 +1445,8 @@ impl App {
     /// whole crate today.
     /// ponytail: the 17 existing sites are an accepted, un-migrated ceiling — a follow-up cleanup
     /// (size-diet or its own pass) can fold them into this fn; not a wave-0b blocker.
-    #[allow(dead_code)] // unused this wave — new timed-repaint code in a later workstream calls this
+    ///
+    /// First caller: `whatsnew::tick` (size-diet), routing winpos's window-rect debounce through here.
     pub(crate) fn animate_until(&mut self, ctx: &egui::Context, at: Instant) {
         if let Some(dt) = at.checked_duration_since(Instant::now()) {
             ctx.request_repaint_after(dt);

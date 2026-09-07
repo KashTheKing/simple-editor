@@ -27,7 +27,6 @@ pub enum Tool {
     Shape(ShapeKind),
     Draw,
     Mask(MaskShape),
-    Zoom,
     /// Razor: click a clip in the timeline to split it there.
     Cut,
     /// Click the timeline to drop a project marker.
@@ -475,7 +474,7 @@ impl Glyph {
     }
 }
 
-const STRIP: [(Tool, Glyph, &str); 16] = [
+const STRIP: [(Tool, Glyph, &str); 15] = [
     (Tool::Select, Glyph::Cursor, "Select"),
     (Tool::Cut, Glyph::Razor, "Cut"),
     (Tool::Marker, Glyph::Flag, "Marker"),
@@ -491,11 +490,10 @@ const STRIP: [(Tool, Glyph, &str); 16] = [
     (Tool::Shape(ShapeKind::Arrow), Glyph::Arrow, "Arrow"),
     (Tool::Draw, Glyph::Pencil, "Draw"),
     (Tool::Mask(MaskShape::Rect), Glyph::Mask, "Mask"),
-    (Tool::Zoom, Glyph::Zoom, "Zoom"),
 ];
 
 /// The `Action` that switches to `tool`, if it has one (the shape tools cycle on Shift+S / `Action::
-/// AddShape` instead, and Zoom/Spacer have no key of their own). Shared by `tool_hotkey` (tooltip text)
+/// AddShape` instead, and Spacer has no key of its own). Shared by `tool_hotkey` (tooltip text)
 /// and `handle_hotkeys` (polling which one fired).
 fn tool_action(tool: Tool) -> Option<Action> {
     match tool {
@@ -506,7 +504,6 @@ fn tool_action(tool: Tool) -> Option<Action> {
         Tool::Marker => Some(Action::ToolMarker),
         Tool::Cut => Some(Action::ToolCut),
         Tool::Stretch => Some(Action::ToolStretch),
-        Tool::Zoom => Some(Action::ToolZoom),
         Tool::Spacer => Some(Action::ToolSpacer),
         Tool::Shape(_) => None, // the 7 shapes cycle on one key (Shift+S), not one action each
     }
@@ -559,13 +556,12 @@ pub fn tool_for_action(action: Action, cur: Tool) -> Option<Tool> {
         Action::ToolMarker => Tool::Marker,
         Action::ToolCut => Tool::Cut,
         Action::ToolStretch => Tool::Stretch,
-        Action::ToolZoom => Tool::Zoom,
         Action::ToolSpacer => Tool::Spacer,
         _ => return None,
     })
 }
 
-const TOOL_ACTIONS: [Action; 9] = [
+const TOOL_ACTIONS: [Action; 8] = [
     Action::ToolSelect,
     Action::ToolText,
     Action::ToolDraw,
@@ -573,7 +569,6 @@ const TOOL_ACTIONS: [Action; 9] = [
     Action::ToolMarker,
     Action::ToolCut,
     Action::ToolStretch,
-    Action::ToolZoom,
     Action::ToolSpacer,
 ];
 
@@ -807,7 +802,7 @@ fn style_controls(ui: &mut egui::Ui, state: &mut ToolsState, palette: &Palette) 
                 changed = true;
             }
         }
-        Tool::Text | Tool::Select | Tool::Zoom | Tool::Cut | Tool::Marker | Tool::Stretch | Tool::Spacer => {}
+        Tool::Text | Tool::Select | Tool::Cut | Tool::Marker | Tool::Stretch | Tool::Spacer => {}
     }
     changed
 }
@@ -1695,8 +1690,13 @@ mod tests {
 
     impl Harness {
         fn new() -> Self {
+            let ctx = egui::Context::default();
+            // size-diet: dropping eframe's `default_fonts` feature left a bare Context with no glyphs
+            // at all, and this strip's tooltips/label sizing (button hit-rects measured across clicks)
+            // need real metrics — see theme::test_fonts.
+            ctx.set_fonts(crate::theme::test_fonts());
             let mut h = Self {
-                ctx: egui::Context::default(),
+                ctx,
                 state: ToolsState::default(),
                 snap: false,
                 hotkeys: Hotkeys::defaults(),
@@ -1766,6 +1766,9 @@ mod tests {
     /// Tessellated vertices produced by `paint`, on a throwaway context.
     fn painted(paint: impl Fn(&egui::Painter, Rect)) -> usize {
         let ctx = egui::Context::default();
+        // size-diet: `Glyph::Letter` paints a real character via the font system, which needs a real
+        // font loaded now that eframe's `default_fonts` feature is gone — see theme::test_fonts.
+        ctx.set_fonts(crate::theme::test_fonts());
         let input = || egui::RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 100.0))),
             ..Default::default()
@@ -1819,8 +1822,8 @@ mod tests {
         assert!(h.changed, "a switch is reported as a change");
         h.click("Draw");
         assert_eq!(h.state.tool, Tool::Draw);
-        h.click("Zoom");
-        assert_eq!(h.state.tool, Tool::Zoom);
+        h.click("Mask");
+        assert_eq!(h.state.tool, Tool::Mask(MaskShape::Rect));
         h.click("Select");
         assert_eq!(h.state.tool, Tool::Select);
     }
@@ -1972,7 +1975,6 @@ mod tests {
         assert_eq!(tool_hotkey(&hk, Tool::Marker).as_deref(), Some("Shift+M"), "bare M is Add Marker's key");
         assert_eq!(tool_hotkey(&hk, Tool::Cut).as_deref(), Some("C"));
         assert_eq!(tool_hotkey(&hk, Tool::Stretch).as_deref(), Some("R"));
-        assert_eq!(tool_hotkey(&hk, Tool::Zoom), None);
     }
 
     #[test]

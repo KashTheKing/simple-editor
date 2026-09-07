@@ -283,16 +283,61 @@ fn visuals(dark: bool, ov: &PaletteOverride, cozy: bool) -> Visuals {
     v
 }
 
-/// egui's bundled fonts with the Windows UI font (Segoe UI) in front, so text matches the OS.
+/// Ordered filename candidates for each family — first one present in `%WINDIR%\Fonts` wins. Segoe UI /
+/// Consolas ship on every supported Windows 10/11 SKU; Tahoma/Arial and Courier New/Lucida Console are
+/// there as a defensive fallback, not because either is expected to be needed.
+const SANS_CANDIDATES: [&str; 3] = ["segoeui.ttf", "tahoma.ttf", "arial.ttf"];
+const MONO_CANDIDATES: [&str; 3] = ["consola.ttf", "cour.ttf", "lucon.ttf"];
+
+/// Bytes of the first candidate filename found in `dir`, or `None` if none of them exist there.
+fn find_font(dir: &std::path::Path, candidates: &[&str]) -> Option<Vec<u8>> {
+    candidates.iter().find_map(|name| std::fs::read(dir.join(name)).ok())
+}
+
+/// Last-resort fallback when NONE of a family's named candidates exist (never expected on a real
+/// Windows 10/11 install) — whatever `fontdb` finds on the system, so the family is never left with
+/// zero fonts (egui panics the moment it needs to lay out text in an empty `FontFamily`).
+fn fontdb_fallback() -> Option<Vec<u8>> {
+    let mut db = fontdb::Database::new();
+    db.load_system_fonts();
+    let id = db.faces().next()?.id;
+    let mut out = None;
+    db.with_face_data(id, |data, _| out = Some(data.to_vec()));
+    out
+}
+
+/// Register the first font found for `family` (by `key`) into `defs`, trying `find_font` then
+/// `fontdb_fallback`. A family that finds nothing at all (should not happen) is simply left as egui's
+/// `FontDefinitions::empty()` set it — empty — since there is nothing real to hand it.
+fn add_family(defs: &mut egui::FontDefinitions, dir: &std::path::Path, family: egui::FontFamily, key: &str, candidates: &[&str]) {
+    if let Some(bytes) = find_font(dir, candidates).or_else(fontdb_fallback) {
+        defs.font_data.insert(key.into(), std::sync::Arc::new(egui::FontData::from_owned(bytes)));
+        defs.families.entry(family).or_default().insert(0, key.into());
+    }
+}
+
+/// Segoe UI + Consolas read straight from disk instead of the ~1.4 MB of Hack/NotoEmoji/Ubuntu-Light/
+/// emoji-icon TTFs eframe's `default_fonts` feature used to embed (now dropped from Cargo.toml).
+/// `FontDefinitions::empty()`, not `::default()` — the two only differ when that Cargo feature happens
+/// to be enabled, and starting from `empty()` stays correct even if a future dependency re-enables it.
 fn fonts() -> egui::FontDefinitions {
-    let mut f = egui::FontDefinitions::default();
+    let mut f = egui::FontDefinitions::empty();
     let dir =
         std::path::PathBuf::from(std::env::var_os("WINDIR").unwrap_or_else(|| r"C:\Windows".into())).join("Fonts");
-    if let Ok(bytes) = std::fs::read(dir.join("segoeui.ttf")) {
-        f.font_data.insert("Segoe UI".into(), std::sync::Arc::new(egui::FontData::from_owned(bytes)));
-        f.families.entry(egui::FontFamily::Proportional).or_default().insert(0, "Segoe UI".into());
-    }
+    add_family(&mut f, &dir, egui::FontFamily::Proportional, "Segoe UI", &SANS_CANDIDATES);
+    add_family(&mut f, &dir, egui::FontFamily::Monospace, "Consolas", &MONO_CANDIDATES);
     f
+}
+
+/// Real fonts for a headless test `egui::Context`. Dropping eframe's `default_fonts` feature
+/// (size-diet) means `egui::FontDefinitions::default()` is now empty crate-wide, so a bare
+/// `egui::Context::default()` that never calls `set_fonts` has NO glyphs at all — harmless for tests
+/// that only check state, but a handful of existing headless UI tests measure real text/button metrics
+/// (tooltips, `Glyph::Letter`, wrapped labels) and need real ones. `#[cfg(test)]`: adds nothing to the
+/// release binary, the whole point of dropping the embedded fonts in the first place.
+#[cfg(test)]
+pub(crate) fn test_fonts() -> egui::FontDefinitions {
+    fonts()
 }
 
 /// Apply the theme preference ("system" | "dark" | "light"), palette override, and look
@@ -509,5 +554,29 @@ mod tests {
         assert!(preset("Nonexistent").is_none());
         // Charcoal Dark = stock: no colour overrides.
         assert_eq!(preset("Charcoal Dark").unwrap().background, None);
+    }
+
+    /// The ordered-candidate lookup for both families must find a usable font even when the primary
+    /// (Segoe UI / Consolas) file is missing — exercised against a temp dir standing in for
+    /// `%WINDIR%\Fonts` with only a fallback name present.
+    #[test]
+    fn fonts_never_empty_family() {
+        let dir = std::env::temp_dir().join(format!("se-fonts-test-{}-{:?}", std::process::id(), std::thread::current().id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // primary names (segoeui.ttf / consola.ttf) are absent; only a fallback is present
+        std::fs::write(dir.join("arial.ttf"), b"stand-in bytes").unwrap();
+        std::fs::write(dir.join("lucon.ttf"), b"stand-in bytes").unwrap();
+        assert!(find_font(&dir, &SANS_CANDIDATES).is_some(), "arial.ttf fallback must be found");
+        assert!(find_font(&dir, &MONO_CANDIDATES).is_some(), "lucon.ttf fallback must be found");
+        // an empty directory finds nothing named — the caller falls through to fontdb_fallback, which
+        // this test does not exercise (it depends on the real machine's installed fonts)
+        assert!(find_font(&dir, &["definitely-does-not-exist.ttf"]).is_none());
+        let mut defs = egui::FontDefinitions::empty();
+        add_family(&mut defs, &dir, egui::FontFamily::Proportional, "Segoe UI", &SANS_CANDIDATES);
+        add_family(&mut defs, &dir, egui::FontFamily::Monospace, "Consolas", &MONO_CANDIDATES);
+        assert!(!defs.families[&egui::FontFamily::Proportional].is_empty(), "Proportional must not be empty");
+        assert!(!defs.families[&egui::FontFamily::Monospace].is_empty(), "Monospace must not be empty");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -267,19 +267,61 @@ impl App {
                 }
             }
             Pane::Presets => {
-                let has_sel = !self.selection.is_empty();
-                let resp = presets_ui::show(ui, &mut self.presets, &mut self.settings, has_sel);
-                if let Some(i) = resp.apply {
+                // presets_ui.rs is deleted (verified-dead per the architecture's "Pane::Presets fate"
+                // decision): this draws the same reuse rows as Library's Recent tab (Effects/Node
+                // graphs/Adjustment layers, click-to-apply/place) until wave-2 inspector-gallery replaces
+                // it with the Gallery pane. Save-from-selection/rename/delete are gone from this pane;
+                // saving is still reachable via the templates.save MCP tool, place/apply via reuse_ui +
+                // templates.list/apply (documented interim state, not a bug).
+                let mut resp = library::LibraryResponse::default();
+                library::reuse_ui(ui, 0, 0, 1.0, &self.project, &self.settings, &self.palette, &mut resp);
+                // same 4 blocks Pane::Library already applies for these fields (library_pane.rs), copied
+                // verbatim so the two panes' reuse rows behave identically.
+                if let Some(kind) = resp.add_effect {
+                    let targets: Vec<Id> = self
+                        .selection
+                        .iter()
+                        .copied()
+                        .filter(|&id| self.project.clip(id).is_some_and(|c| c.is_visual() && !c.uses_graph()))
+                        .collect();
+                    if targets.is_empty() {
+                        self.toast("Select a clip first");
+                    } else {
+                        self.push_undo();
+                        for id in targets {
+                            if let Some(c) = self.project.clip_mut(id) {
+                                c.effects.push(Effect::new(kind));
+                            }
+                        }
+                        self.after_edit();
+                    }
+                }
+                if let Some(i) = resp.apply_preset {
                     self.apply_effect_preset(i);
                 }
-                for name in resp.place {
+                if let Some(from) = resp.copy_graph {
+                    let graph = self.project.clip(from).and_then(|c| c.graph.clone());
+                    let targets: Vec<Id> = self
+                        .selection
+                        .iter()
+                        .copied()
+                        .filter(|&id| id != from && self.project.clip(id).is_some_and(|c| c.is_visual()))
+                        .collect();
+                    match graph {
+                        Some(g) if !targets.is_empty() => {
+                            self.push_undo();
+                            for id in targets {
+                                if let Some(c) = self.project.clip_mut(id) {
+                                    c.graph = Some(g.clone());
+                                }
+                            }
+                            self.after_edit();
+                        }
+                        _ => self.toast("Select another clip to copy this node graph onto"),
+                    }
+                }
+                for name in resp.place_template {
                     self.place_template(&name, self.playhead);
-                }
-                if let Some(name) = resp.save {
-                    self.save_preset(&name);
-                }
-                if resp.settings_changed {
-                    self.settings.save();
                 }
             }
             Pane::Markers => {

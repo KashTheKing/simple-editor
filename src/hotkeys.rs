@@ -142,6 +142,10 @@ actions! {
     UnmakeContainer => "unmake_container", "Remove Container", None;
     // ---- ws:registries-schema-hooks ----
     // ---- ws:size-diet ----
+    // Unbound by design: no free chord in the skeleton keymap. Opened by the What's New WINDOW_DRAWER
+    // on a version bump, `ui.action("whats_new")`, or a later Help-menu entry (command-palette owns
+    // menus.rs).
+    WhatsNew => "whats_new", "What's New", None;
     // ---- ws:split-god-files ----
     // ---- ws:audio-analysis ----
     // ---- ws:audio-dsp-automation ----
@@ -173,8 +177,6 @@ actions! {
     ToolMarker => "tool_marker", "Marker Tool", sc(SHIFT, Key::M);
     ToolCut => "tool_cut", "Cut Tool (Razor)", sc(NONE, Key::C);
     ToolStretch => "tool_stretch", "Stretch Tool", sc(NONE, Key::R);
-    // unbound by default (no free letters left that make sense) — rebindable like every other tool
-    ToolZoom => "tool_zoom", "Zoom Tool", None;
     ToolSpacer => "tool_spacer", "Spacer Tool", None;
 }
 

@@ -23,9 +23,11 @@
 //! switch (`LibraryState.view`) and the zoom (`LibraryState.zoom`, the +/- buttons and Ctrl+Scroll) that
 //! scales both gallery tiles and row thumbnails. A search or a filter flattens "Imported" into its hits,
 //! the way an explorer shows search results.
-//! Under the tree, the Imported tab also lists what the project can reuse: its sequences (drag
-//! `DragPayload::Sequence`, double-click opens), saved templates, and the effects / node graphs /
-//! adjustment layers already in use or saved in settings.json.
+//! Under the tree, the Imported tab also lists what the project can reuse: the effects / node graphs /
+//! adjustment layers already in use or saved in settings.json (`reuse_ui`, also drawn by `Pane::Presets`).
+//! Standalone Sequences/Templates sub-lists were removed (size-diet, verified dead — a Sequence clip is
+//! entered from the timeline, not browsed here; saved templates place/apply through `reuse_ui` and the
+//! `templates.save`/`templates.list`/`templates.apply` MCP tools).
 
 use crate::media::proxy::ProxyStatus;
 use crate::media::thumbs::ThumbCache;
@@ -2139,140 +2141,10 @@ enum RecOp {
 
 const CLEAR_RECENT: &str = "Clear the whole recent list? Pins, labels and tags are lost (no undo).";
 
-fn sequences_section(
-    ui: &mut egui::Ui,
-    state: &mut LibraryState,
-    project: &Project,
-    palette: &Palette,
-    resp: &mut LibraryResponse,
-    ops: &mut Vec<LibOp>,
-    op_start: &mut bool,
-) {
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        ui.strong("Sequences");
-        if ui.small_button("New sequence…").clicked() {
-            ops.push(LibOp::SeqNew);
-            *op_start = true;
-        }
-    });
-    for s in &project.sequences {
-        if state.rename_seq.as_ref().is_some_and(|(id, _)| *id == s.id) {
-            let (_, buf) = state.rename_seq.as_mut().unwrap();
-            let mut done = None;
-            ui.horizontal(|ui| {
-                glyph(ui, Glyph::FilmStrip, palette);
-                done = inline_edit(ui, buf);
-            });
-            if let Some(name) = done {
-                if !name.is_empty() {
-                    ops.push(LibOp::SeqRename(s.id, name));
-                    *op_start = true;
-                }
-                state.rename_seq = None;
-            }
-            continue;
-        }
-        let (r, _) = row(ui, egui::Id::new(("seq", s.id)), DragPayload::Sequence(s.id), false, None, |ui| {
-            glyph(ui, Glyph::FilmStrip, palette);
-            ui.label(&s.name);
-            ui.weak(duration_text(project.sequence_duration(s.id)));
-        });
-        if r.double_clicked() {
-            resp.open_sequence = Some(s.id);
-        }
-        r.context_menu(|ui| {
-            if ui.button("Open").clicked() {
-                resp.open_sequence = Some(s.id);
-                ui.close();
-            }
-            if ui.button("Rename").clicked() {
-                state.rename_seq = Some((s.id, s.name.clone()));
-                ui.close();
-            }
-            if ui.button("Delete").clicked() {
-                ops.push(LibOp::SeqDelete(s.id));
-                *op_start = true;
-                ui.close();
-            }
-        });
-    }
-    if project.sequences.is_empty() {
-        ui.weak("(none — nest clips or \"New sequence…\")");
-    }
-}
-
 /// A painted icon the size of a text label, for the rows that are not files.
 fn glyph(ui: &mut egui::Ui, g: Glyph, palette: &Palette) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(18.0, 14.0), egui::Sense::hover());
     draw_glyph(ui.painter(), rect, g, palette.text_dim);
-}
-
-fn templates_section(
-    ui: &mut egui::Ui,
-    state: &mut LibraryState,
-    settings: &mut Settings,
-    palette: &Palette,
-    resp: &mut LibraryResponse,
-) {
-    if settings.templates.is_empty() {
-        return;
-    }
-    ui.add_space(4.0);
-    ui.strong("Templates");
-    let mut rename: Option<(usize, String)> = None;
-    let mut delete: Option<usize> = None;
-    for i in 0..settings.templates.len() {
-        if state.rename_template.as_ref().is_some_and(|(j, _)| *j == i) {
-            let (_, buf) = state.rename_template.as_mut().unwrap();
-            let mut done = None;
-            ui.horizontal(|ui| {
-                glyph(ui, Glyph::Layers, palette);
-                done = inline_edit(ui, buf);
-            });
-            if let Some(name) = done {
-                if !name.is_empty() {
-                    rename = Some((i, name));
-                }
-                state.rename_template = None;
-            }
-            continue;
-        }
-        let name = settings.templates[i].name.clone();
-        let (r, place) =
-            row(ui, egui::Id::new(("template", i)), DragPayload::Template(name.clone()), false, Some("Place"), |ui| {
-                glyph(ui, Glyph::Layers, palette);
-                ui.label(&name);
-            });
-        if place || r.double_clicked() {
-            resp.place_template.push(name.clone());
-        }
-        r.context_menu(|ui| {
-            if ui.button("Place at playhead").clicked() {
-                resp.place_template.push(name.clone());
-                ui.close();
-            }
-            if ui.button("Rename").clicked() {
-                state.rename_template = Some((i, name.clone()));
-                ui.close();
-            }
-            if ui.button("Delete").clicked() {
-                delete = Some(i);
-                ui.close();
-            }
-        });
-    }
-    if let Some((i, name)) = rename {
-        settings.templates[i].name = name;
-        resp.settings_changed = true;
-    }
-    if let Some(i) = delete {
-        // saved templates live in settings.json — no undo, so ask first
-        if confirm("Delete template", &format!("Delete the saved template \"{}\"?", settings.templates[i].name)) {
-            settings.templates.remove(i);
-            resp.settings_changed = true;
-        }
-    }
 }
 
 /// One reusable thing the project already holds.
@@ -2355,8 +2227,10 @@ fn reuse_pick(item: &Reuse, name: &str, resp: &mut LibraryResponse) {
     }
 }
 
-/// The reusable sections under the tree, in whichever view the toolbar selected.
-fn reuse_ui(
+/// The reusable sections under the tree, in whichever view the toolbar selected. `pub(crate)`: also
+/// drawn by `Pane::Presets` (`ui/app/panes.rs`), which repoints to this instead of its own deleted
+/// `presets_ui.rs` list.
+pub(crate) fn reuse_ui(
     ui: &mut egui::Ui,
     view: u8,
     kind_filter: u8,
@@ -2613,6 +2487,7 @@ mod tests {
         assert_eq!(fallback_glyph(ext_class("a.png")), Glyph::Camera);
         assert_eq!(fallback_glyph(ext_class("a.sedit")), Glyph::Layers);
         let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::test_fonts()); // size-diet: no default_fonts feature anymore
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 // no cache at all: every kind still gets its object
@@ -2664,6 +2539,7 @@ mod tests {
     #[test]
     fn rows_keep_a_constant_width() {
         let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::test_fonts()); // size-diet: no default_fonts feature anymore
         let mut widths = Vec::new();
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
@@ -2689,6 +2565,7 @@ mod tests {
     #[test]
     fn inline_edit_commits_on_focus_loss() {
         let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::test_fonts()); // size-diet: no default_fonts feature anymore
         let mut buf = "Footage".to_string();
         let mut out = None;
         // focus is moved inside the pass: done between passes it counts as "had focus last frame"
@@ -2722,6 +2599,7 @@ mod tests {
         let mut settings = Settings::default();
         let palette = Palette::new(true, egui::Color32::WHITE);
         let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::test_fonts()); // size-diet: no default_fonts feature anymore
         let mut state = LibraryState { search: "one".into(), ..Default::default() };
         let mut search_rect = egui::Rect::NOTHING;
         for _ in 0..2 {
@@ -2777,6 +2655,7 @@ mod tests {
         let mut settings = Settings::default();
         let palette = Palette::new(true, egui::Color32::WHITE);
         let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::test_fonts()); // size-diet: no default_fonts feature anymore
         let mut cache = ThumbCache::new(ctx.clone(), crate::media::Backend::Ffmpeg);
         let mut state = LibraryState::default();
         for _ in 0..2 {
@@ -2809,6 +2688,7 @@ mod tests {
             let mut settings = Settings::default();
             let palette = Palette::new(true, egui::Color32::WHITE);
             let ctx = egui::Context::default();
+            ctx.set_fonts(crate::theme::test_fonts()); // size-diet: no default_fonts feature anymore
             let mut state = LibraryState::default();
             let mut seen = false;
             let mut asked = false;
@@ -2842,26 +2722,25 @@ mod tests {
     }
 
     /// The trailing action button must stay inside the pane at any width (it used to be pushed off the
-    /// right edge once the path/tag labels were long).
+    /// right edge once the path/tag labels were long). Was exercised through the now-deleted
+    /// `templates_section`; calls `row()` — the shared primitive it used — directly instead, preserving
+    /// the same regression coverage.
     #[test]
     fn action_button_stays_inside_the_pane() {
-        let mut settings = Settings::default();
-        settings.templates.push(crate::settings::Template {
-            name: "a template with a name that keeps going and going".into(),
-            json: "{}".into(),
-        });
-        let palette = Palette::new(true, egui::Color32::WHITE);
+        let long_name = "a template with a name that keeps going and going".to_string();
         let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::test_fonts()); // size-diet: no default_fonts feature anymore
         for w in [180.0_f32, 260.0, 420.0] {
-            let mut state = LibraryState::default();
             let (mut right, mut pane_right) = (f32::NAN, f32::NAN);
             let _ = ctx.run(egui::RawInput::default(), |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let pane = egui::Rect::from_min_size(ui.max_rect().min, egui::vec2(w, 600.0));
                     pane_right = pane.right();
                     ui.scope_builder(egui::UiBuilder::new().max_rect(pane), |ui| {
-                        let mut resp = LibraryResponse::default();
-                        templates_section(ui, &mut state, &mut settings, &palette, &mut resp);
+                        let id = egui::Id::new(("template", 0));
+                        row(ui, id, DragPayload::Template(long_name.clone()), false, Some("Place"), |ui| {
+                            ui.label(&long_name);
+                        });
                         right = ui.ctx().data(|d| d.get_temp(egui::Id::new("row_btn_right")).unwrap_or(f32::NAN));
                     });
                 });
@@ -2876,6 +2755,7 @@ mod tests {
     fn tile_button_stays_inside_the_tile() {
         let palette = Palette::new(true, egui::Color32::WHITE);
         let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::test_fonts()); // size-diet: no default_fonts feature anymore
         let long_name = "a very long asset name that keeps going and going and going.mp4";
         let (mut tile_left, mut btn_right) = (f32::NAN, f32::NAN);
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
@@ -2948,6 +2828,7 @@ mod tests {
         settings.templates.push(crate::settings::Template { name: "Intro pack".into(), json: "{}".into() });
         let palette = Palette::new(true, egui::Color32::WHITE);
         let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::test_fonts()); // size-diet: no default_fonts feature anymore
         for tab in [0, 1] {
             let mut state = LibraryState { tab, selected: Some(project.assets[1].id), ..Default::default() };
             for _ in 0..2 {
@@ -2988,6 +2869,7 @@ mod tests {
         let mut settings = Settings::default();
         let palette = Palette::new(true, egui::Color32::WHITE);
         let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::test_fonts()); // size-diet: no default_fonts feature anymore
         let mut state = LibraryState { tab: 1, ..Default::default() };
         let mut run = |state: &mut LibraryState, project: &mut Project, click: Option<egui::Pos2>| {
             let mut input = egui::RawInput {
@@ -3048,6 +2930,7 @@ mod tests {
         let mut settings = Settings::default();
         let palette = Palette::new(true, egui::Color32::WHITE);
         let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::test_fonts()); // size-diet: no default_fonts feature anymore
         let mut state = LibraryState::default();
         let mut drawn = |state: &mut LibraryState, project: &mut Project, label: &str| {
             let input = egui::RawInput {
@@ -3080,6 +2963,7 @@ mod tests {
         let mut settings = Settings::default();
         let palette = Palette::new(true, egui::Color32::WHITE);
         let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::test_fonts()); // size-diet: no default_fonts feature anymore
         let mut state =
             LibraryState { sel_ids: vec![a, b], selected: Some(a), seen_selected: Some(a), ..Default::default() };
         let mut at = egui::Pos2::ZERO;
@@ -3115,6 +2999,7 @@ mod tests {
         let mut settings = Settings::default();
         let palette = Palette::new(true, egui::Color32::WHITE);
         let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::test_fonts()); // size-diet: no default_fonts feature anymore
         let mut state = LibraryState { zoom: 99.0, ..Default::default() };
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
@@ -3142,6 +3027,7 @@ mod tests {
     #[test]
     fn gallery_wraps_into_a_grid() {
         let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::test_fonts()); // size-diet: no default_fonts feature anymore
         let mut ys = Vec::new();
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
@@ -3198,6 +3084,7 @@ mod tests {
 
         let palette = Palette::new(true, egui::Color32::WHITE);
         let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::test_fonts()); // size-diet: no default_fonts feature anymore
         for view in [0, 1] {
             let mut state = LibraryState { view, ..Default::default() };
             let mut titles = Vec::new();

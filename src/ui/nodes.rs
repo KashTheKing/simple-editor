@@ -1291,8 +1291,10 @@ mod tests {
             project.insert_asset_clips(aid, 0.0, None);
             let clip = project.tracks[0].clips[0].id;
             project.ensure_graph(clip); // the pane no longer builds one just by being open
+            let ctx = egui::Context::default();
+            ctx.set_fonts(crate::theme::test_fonts()); // size-diet: no default_fonts feature anymore
             let mut h = Self {
-                ctx: egui::Context::default(),
+                ctx,
                 state: NodesState::default(),
                 project,
                 selection: vec![clip],

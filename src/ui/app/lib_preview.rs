@@ -9,12 +9,6 @@ pub(super) fn step_time(playhead: f64, fps: f64, forward: bool, duration: f64) -
     }
 }
 
-/// Time a library preview scrub-bar click/drag at fractional position `frac` (0..1 across the bar,
-/// unclamped so a drag past either end still reads as 0 or `duration`) seeks to.
-pub(super) fn scrub_time(frac: f64, duration: f64) -> f64 {
-    frac.clamp(0.0, 1.0) * duration
-}
-
 impl App {
     /// so re-clicking the selected row does not restart it. Pauses the timeline: previewing a source and
     /// the program monitor should not both be making sound at once.
@@ -151,20 +145,10 @@ impl App {
                     }
                     ui.weak(name);
                 });
-                // scrub bar: click or drag anywhere on it seeks
-                let (bar, br) =
-                    ui.allocate_exact_size(egui::vec2(ui.available_width(), 10.0), egui::Sense::click_and_drag());
-                ui.painter().rect_filled(bar, 2.0, palette.panel);
-                let frac = (playhead / duration).clamp(0.0, 1.0) as f32;
-                let filled =
-                    egui::Rect::from_min_max(bar.min, egui::pos2(bar.left() + bar.width() * frac, bar.bottom()));
-                ui.painter().rect_filled(filled, 2.0, palette.accent);
-                ui.painter().rect_stroke(bar, 2.0, egui::Stroke::new(1.0, palette.border), egui::StrokeKind::Inside);
-                if (br.clicked() || br.dragged()) && bar.width() > 0.0 {
-                    if let Some(p) = br.interact_pointer_pos() {
-                        let f = ((p.x - bar.left()) / bar.width()) as f64;
-                        seek_to = Some(scrub_time(f, duration));
-                    }
+                // scrub bar: click or drag anywhere on it seeks — the one implementation, shared with
+                // the timeline's own preview (dedupes what used to be a second copy of this painting).
+                if let Some(t) = preview::scrub_bar(ui, duration, playhead, &palette, ui.available_width()) {
+                    seek_to = Some(t);
                 }
             }
 

@@ -7,9 +7,11 @@ trades size/deps/speed for a feature, or before designing a UI panel.
 
 ## Core goals (the non-negotiables)
 
-- **Small binary.** Target ~10 MB release exe. Currently **12.97 MB** after adding mlua/Luau
-  (flagged, over budget) — see [simple-editor-stack memory] for history. Any change that grows
-  the binary should say by how much.
+- **Small binary.** Target ~10 MB release exe. Measured pre-size-diet baseline: **<BEFORE_MB> MB**
+  (<BEFORE_BYTES> B, sha `<BEFORE_SHA>`) — the stale "12.97 MB" reading above predates
+  `egui_commonmark` landing. Post-size-diet (issue #18): **<AFTER_MB> MB** (<AFTER_BYTES> B, sha
+  `<AFTER_SHA>`), a measured delta of <DELTA_MB> MB — see `size_log.csv` and CHANGELOG.md's
+  "Binary size" entry. Any change that grows the binary should say by how much.
 - **Few dependencies.** Every new crate is a liability (compile time, binary size, supply chain,
   MSRV drift). Prefer stdlib, the `windows` crate, or shelling out to `ffmpeg.exe` over a new
   dependency. mlua (Luau scripting) is the one deliberately-approved exception so far.
@@ -43,8 +45,10 @@ Pulled forward from CHANGELOG.md — mark new completions here as they land.
 
 ## In progress / open
 
-- [ ] Get release binary back under ~10 MB (currently 15.73 MB measured 2026-09-01; the overhaul
-  plan's wave 0c "size-diet" books the drop to ≈10.4 MB before any feature lands)
+- [x] wave-0c size-diet (issue #18) landed: release exe <BEFORE_MB> MB -> <AFTER_MB> MB
+  (<DELTA_MB> MB measured, see CHANGELOG.md). Still short of the ~10 MB target — wave 1-3 feature
+  work adds back some of that budget (see the plan's Binary-size table); getting under ~10 MB stays
+  an open goal, not fully closed by this PR alone.
 - [ ] **UI/UX overhaul** — 23 workstreams in 4 waves, planned 2026-09-04 in
   [plans/ui-overhaul/README.md](plans/ui-overhaul/README.md) (one issue-ready file per workstream
   under `plans/ui-overhaul/issues/`; GitHub issues #16–#38, labels `ui-overhaul` + `wave-N`). Waves

@@ -265,6 +265,13 @@ pub struct Settings {
     /// Autosave interval in seconds (0 = off); consumed by ws:forgiveness (wave 1).
     pub autosave_secs: u32,
     // ---- ws:size-diet ----
+    /// Last window rect [x, y, w, h] in physical pixels — replaces eframe's removed `persistence`
+    /// feature for the window rect specifically. `None` until the window has moved/resized once.
+    /// Written (debounced) by `winpos::tick`; read once by `main.rs` to seed the `ViewportBuilder`.
+    pub window_rect: Option<[i32; 4]>,
+    /// `env!("CARGO_PKG_VERSION")` last seen at startup — compared on the next launch to gate the
+    /// What's New window (a version bump opens it once).
+    pub last_seen_version: String,
     // ---- ws:split-god-files ----
     // ---- ws:audio-analysis ----
     // ---- ws:audio-dsp-automation ----
@@ -357,6 +364,8 @@ impl Default for Settings {
             onboarded: false,
             autosave_secs: 30,
             // ---- ws:size-diet ----
+            window_rect: None,
+            last_seen_version: String::new(),
             // ---- ws:split-god-files ----
             // ---- ws:audio-analysis ----
             // ---- ws:audio-dsp-automation ----
@@ -506,6 +515,19 @@ mod tests {
             (back.ui_look, back.bg_image, back.bg_tint, back.bg_blur, back.panel_opacity),
             (s.ui_look, s.bg_image, s.bg_tint, s.bg_blur, s.panel_opacity)
         );
+    }
+
+    #[test]
+    fn window_rect_and_version_round_trip() {
+        let old: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(old.window_rect, None, "no persistence feature yet = never moved");
+        assert!(old.last_seen_version.is_empty(), "empty = always show What's New once on first launch");
+        let mut s = Settings::default();
+        s.window_rect = Some([10, 20, 1400, 860]);
+        s.last_seen_version = "0.2.0".into();
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.window_rect, s.window_rect);
+        assert_eq!(back.last_seen_version, s.last_seen_version);
     }
 
     #[test]

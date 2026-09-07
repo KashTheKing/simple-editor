@@ -648,8 +648,10 @@ mod tests {
         fn new() -> Self {
             let mut project = Project::new();
             project.tracks[0].clips.push(Clip::new(7, ClipKind::Video, "v", 0.0, 4.0));
+            let ctx = egui::Context::default();
+            ctx.set_fonts(crate::theme::test_fonts()); // size-diet: no default_fonts feature anymore
             Self {
-                ctx: egui::Context::default(),
+                ctx,
                 project,
                 selection: vec![7],
                 undos: 0,

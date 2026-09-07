@@ -2,6 +2,48 @@
 
 ## unreleased
 
+### Binary size (issue #18, size-diet)
+- Dropped `egui_commonmark` (+ `egui_commonmark_backend`, `egui_extras`, `pulldown-cmark`) for a small
+  in-house `ui::markdown` (~250 lines: headings, bold/italic/code spans, bullet lists, fenced code,
+  links, `---` rules) — used by the Planner's Notes tab and the new "What's New" window.
+- Dropped eframe's `default_fonts` feature (the embedded Hack/NotoEmoji/Ubuntu-Light/emoji-icon TTFs);
+  `theme::fonts` now loads Segoe UI + Consolas straight from `%WINDIR%\Fonts`, falling back through
+  Tahoma/Arial and Courier New/Lucida Console, and finally to `fontdb`'s system-font scan if none of
+  those exist (never expected on Windows 10/11). Every headless UI test that builds a bare
+  `egui::Context` now seeds it with `theme::test_fonts()` (`#[cfg(test)]`, zero release-binary cost) —
+  without the Cargo feature, `egui::FontDefinitions::default()` is empty crate-wide, and several
+  existing tests measure real text/button metrics.
+- Dropped eframe's `persistence` feature (`ron`/`home`/egui's own memory serde); the window rect now
+  lives in `Settings::window_rect`, written by a 500ms-debounced `winpos::tick` and seeded once at
+  launch (`winpos::apply_rect`) from `main.rs`. Tradeoff: egui's own CollapsingHeader/scroll-position
+  memory (e.g. the Planner's fold state) no longer survives a restart — accepted for wave 0, not
+  rebuilt here (inspector fold state moves to `Settings` explicitly in wave-2 inspector-gallery).
+- `[profile.release.package."*"] opt-level = "s"` for dependencies. <MAIN_CRATE_OPT_LEVEL_NOTE>
+- Deleted verified-dead/duplicate code: `Tool::Zoom` (an unbound, always-no-op tool, including its
+  `tool_drag` guard reference in `preview.rs`), `src/ui/presets_ui.rs` (270 lines — `Pane::Presets` now
+  draws `library::reuse_ui`'s Effects/Node-graph/Adjustment-layer rows, the same ones `Pane::Library`'s
+  Recent tab already used; Save-from-selection/rename/delete are gone from the UI until wave-2
+  inspector-gallery's Gallery pane, restored meanwhile via the new `templates.save` MCP tool),
+  `library.rs`'s `sequences_section` (zero call sites) and `templates_section` (test-only call site;
+  its regression coverage moved to call `row()` directly), and the lib-preview mini-player's duplicated
+  scrub-bar painting (now calls the one `preview::scrub_bar`, which returns a seek target instead of
+  writing into `PreviewResponse` directly).
+- New MCP tools: `help.changelog` (current version + this file's text, backing the What's New window)
+  and `templates.save` (saves the given, or currently selected, clips as a reusable effect chain / node
+  graph / clip template — keeps presets_ui.rs's deleted "Save from selection" capability scriptable).
+- `scripts/size.ps1` (+ `size_log.csv`, `merge=union`) builds release and logs `<sha>,<bytes>,<note>`;
+  `/se-verify` now runs it instead of a manual build-and-eyeball, and fails the pass on an unexplained
+  >64 KB size growth. `--selftest` gained an `idle_repaint` step (a bare, idle egui frame requests no
+  repaint) — smoke-level only, it cannot exercise the 17 pre-existing raw `ctx.request_repaint_after`
+  call sites inside real panes' own live UI code (app.rs-descended files, `planner.rs`, `preview.rs`,
+  `subtitles_ui.rs`) — those are a known, separately-tracked gap (`chore/migrate-repaint-timers`,
+  unscheduled), not migrated by this PR. `App::animate_until` (added by #17/registries-schema-hooks) is
+  therefore accurately the sanctioned path for **new** timed-repaint code from wave 0 onward, not yet a
+  codebase-wide invariant — `winpos.rs`'s window-rect debounce and `whatsnew.rs`'s version-gate tick are
+  its first two callers.
+- Measured release exe: baseline `<BEFORE_SHA>` <BEFORE_BYTES> B (<BEFORE_MB> MB) -> `<AFTER_SHA>`
+  <AFTER_BYTES> B (<AFTER_MB> MB), a delta of <DELTA_BYTES> B (<DELTA_MB> MB). See `size_log.csv`.
+
 ### Refactor (issue #16)
 - Split the five largest files by responsibility, zero behaviour change: `model.rs` (6.1K lines) into
   `src/model/*.rs` (data types) + `src/model/ops/*.rs` (edit operations), `ui/app.rs` (6.8K lines)
