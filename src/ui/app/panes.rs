@@ -211,11 +211,16 @@ impl App {
             }
             Pane::AutoCut => {
                 self.autocut_drawing = true;
-                let changed = {
-                    let App { project, selection, undo, redo, autocut: st, waveforms, palette, .. } = self;
+                let (changed, marked) = {
+                    let App { project, selection, undo, redo, autocut: st, waveforms, settings, palette, .. } = self;
                     let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
-                    autocut_ui::show(ui, st, project, selection, waveforms, palette, &mut push)
+                    autocut_ui::show(ui, st, project, selection, waveforms, settings, palette, &mut push)
                 };
+                // ---- ws:audio-analysis ----
+                // Every marker this pane creates (silence "Mark instead", Detect Beats, Scene cuts'
+                // "Mark instead") fires marker_added exactly once per id — same shared fn the
+                // Action/MCP-tool entry points use, so this never drifts from them.
+                self.fire_markers_added(&marked);
                 if changed {
                     self.after_edit();
                 }

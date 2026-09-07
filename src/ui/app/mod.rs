@@ -44,6 +44,7 @@ const MEDIA_EXTS: &[&str] = &[
 ];
 
 mod actions;
+mod audio_actions;
 mod drops;
 mod edit_ops;
 mod files;
@@ -59,6 +60,7 @@ mod preview_pane;
 mod thumbs;
 mod timeline_pane;
 mod tools_args;
+mod tools_audio;
 mod tools_clip;
 mod tools_helpers;
 mod tools_media;
@@ -297,6 +299,15 @@ pub struct App {
     /// winpos's window-rect debounce: (drag/move started at, the rect it saw) while unsettled, `None`
     /// once saved. Owned here so `whatsnew::tick` can thread it into `winpos::tick` every frame.
     pub(crate) winpos_pending: Option<(Instant, [i32; 4])>,
+    // ---- ws:audio-analysis ----
+    /// Every `fire_hook` call this session, in order — a test-observable seam. `App::new` needs a real
+    /// `eframe::CreationContext` (no headless App-construction path exists anywhere in this crate — see
+    /// `tools_registry_tests.rs`'s App-construction deviation note), so a live `App` can't be built
+    /// inside a `#[test]`; `fire_hook`'s own tests read this instead of a mocked dispatcher. Dispatching
+    /// to `-- @on <event>` Luau scripts is command-palette's wave-1 job — until it lands this Vec is the
+    /// entire behaviour of `fire_hook`, which is otherwise unimplemented against the plan's claim that
+    /// it's a pre-seeded wave-0b stub (verified absent via grep — deviation noted in the PR body).
+    pub(crate) hook_calls: Vec<(String, Value)>,
 }
 
 /// What an async, off-the-main-preview GPU render is for — hover preview, trim view, scopes, wipe
@@ -682,6 +693,7 @@ impl App {
             alt_render: None,
             whatsnew_open: false,
             winpos_pending: None,
+            hook_calls: Vec::new(),
         };
         app.detect_ytdlp(&cc.egui_ctx);
         app.refresh_presets();
@@ -1218,6 +1230,7 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     whatsnew::TOOLS,
     // ---- ws:split-god-files ----
     // ---- ws:audio-analysis ----
+    tools_audio::TOOLS,
     // ---- ws:audio-dsp-automation ----
     // ---- ws:color-engine ----
     // ---- ws:command-palette ----
@@ -1244,6 +1257,7 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     whatsnew::act,
     // ---- ws:split-god-files ----
     // ---- ws:audio-analysis ----
+    audio_actions::act,
     // ---- ws:audio-dsp-automation ----
     // ---- ws:color-engine ----
     // ---- ws:command-palette ----
@@ -1453,6 +1467,33 @@ impl App {
         } else {
             ctx.request_repaint();
         }
+    }
+
+    // ---- ws:audio-analysis ----
+    /// Fire a Luau `-- @on <event>` hook. Real dispatch (running registered scripts) is
+    /// command-palette's wave-1 job; this workstream only adds call sites for its own `marker_added`
+    /// event, per plans/ui-overhaul/README.md's mcp_parity section. Until that runtime lands this only
+    /// records the call (see `hook_calls`'s doc comment for why: no live `App` is buildable in a test).
+    pub(crate) fn fire_hook(&mut self, event: &str, payload: Value) {
+        self.hook_calls.push((event.to_string(), payload));
+    }
+
+    /// `marker_added` once per id in `ids` — the one call site every marker-creation path in this
+    /// workstream (autocut_ui's silence "Mark instead", Detect Beats/Split at Beats, Scene cuts'
+    /// "Mark instead", and their MCP-tool twins) funnels through, so the event fires exactly once
+    /// regardless of entry point. See `fire_marker_added_for_each` for the plain, App-free half this
+    /// delegates to (and that a test exercises directly).
+    pub(crate) fn fire_markers_added(&mut self, ids: &[Id]) {
+        fire_marker_added_for_each(ids, &mut |event, payload| self.fire_hook(event, payload));
+    }
+}
+
+/// The pure half of `fire_markers_added`: call `hook("marker_added", {"marker_id": id})` once per id,
+/// in order. Split out so a test can assert "exactly once per marker" without a live `App` — mirrors
+/// `mcp_exec.rs`'s `snapshot_if_mutate`/`rollback_project` split for the identical reason.
+pub(crate) fn fire_marker_added_for_each(ids: &[Id], hook: &mut dyn FnMut(&str, Value)) {
+    for &id in ids {
+        hook("marker_added", json!({"marker_id": id}));
     }
 }
 

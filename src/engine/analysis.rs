@@ -324,6 +324,98 @@ pub fn scene_cuts(path: &std::path::Path, thr: f32) -> Result<Vec<f64>, String> 
     Ok(parse_showinfo_pts(&String::from_utf8_lossy(&out.stderr)))
 }
 
+/// Detect onsets on every clip in `targets` and add one clip marker per onset (converted through
+/// `to_clip_local` so it lands correctly on a trimmed/retimed clip). Shared by the Beats section
+/// button, `Action::DetectBeats` and `audio.beats`'s `as_markers` path so the three call sites never
+/// derive the onset-to-marker math differently — each fires `marker_added` itself over the returned
+/// ids (this fn stays App-free: `App`'s fields aren't reachable from `ui::autocut_ui`, see the
+/// audio-analysis PR's deviation note). Returns (marker ids written, combined BPM across every
+/// target's onsets — `None` if fewer than 4 total).
+pub fn detect_beat_markers(
+    project: &mut Project,
+    targets: &[Id],
+    refractory_s: f64,
+    sensitivity: f32,
+    peaks_of: &mut dyn FnMut(&Project, Id) -> Option<Arc<Peaks>>,
+) -> (Vec<Id>, Option<f64>) {
+    let mut ids = Vec::new();
+    let mut all_onsets = Vec::new();
+    for &clip_id in targets {
+        let Some(c) = project.clip(clip_id).cloned() else { continue };
+        let Some(peaks) = peaks_of(project, c.asset) else { continue };
+        let found = onsets(&peaks, c.src_in, c.src_in + c.duration * c.speed, refractory_s, sensitivity);
+        for &t_src in &found {
+            if let Some(id) = project.add_clip_marker(clip_id, to_clip_local(t_src, &c), "Beat") {
+                ids.push(id);
+            }
+        }
+        all_onsets.extend(found);
+    }
+    all_onsets.sort_by(f64::total_cmp);
+    (ids, bpm(&all_onsets))
+}
+
+/// Detect onsets on every clip in `targets` and split at each one (timeline time via `to_timeline_t`),
+/// restricted to that clip's own link group so a beat on one clip never cuts an unrelated clip.
+/// Returns the number of cuts made. Same sharing rationale as `detect_beat_markers`.
+pub fn split_beats(
+    project: &mut Project,
+    targets: &[Id],
+    refractory_s: f64,
+    sensitivity: f32,
+    peaks_of: &mut dyn FnMut(&Project, Id) -> Option<Arc<Peaks>>,
+) -> usize {
+    let mut cuts = 0usize;
+    for &clip_id in targets {
+        let Some(c) = project.clip(clip_id).cloned() else { continue };
+        let Some(peaks) = peaks_of(project, c.asset) else { continue };
+        let found = onsets(&peaks, c.src_in, c.src_in + c.duration * c.speed, refractory_s, sensitivity);
+        // `group` grows with each split's new right-half piece (mirrors Project::auto_cut) — a fixed
+        // restrict set would only ever cut the ORIGINAL clip, missing every onset past the first cut.
+        let mut group = project.expand_links(&[clip_id]);
+        for t_src in found {
+            let new = project.split_at(to_timeline_t(t_src, &c), Some(&group));
+            if !new.is_empty() {
+                cuts += 1;
+                group.extend(new);
+            }
+        }
+    }
+    cuts
+}
+
+/// Add one point marker (duration 0) per detected scene-cut time (SOURCE seconds), converting through
+/// `to_clip_local`. Shared by the Scene cuts section's "Mark instead" button and `media.scene_cuts`'s
+/// `as_markers` path. A scene change is an instant, not a range, so this goes through
+/// `Project::add_clip_marker` directly rather than `mark_ranges`.
+pub fn scene_cut_markers(project: &mut Project, clip: Id, cuts_src: &[f64]) -> Vec<Id> {
+    let mut ids = Vec::new();
+    let Some(c) = project.clip(clip).cloned() else { return ids };
+    for &t_src in cuts_src {
+        if let Some(id) = project.add_clip_marker(clip, to_clip_local(t_src, &c), "Scene cut") {
+            ids.push(id);
+        }
+    }
+    ids
+}
+
+/// Split `clip` at each detected scene-cut time (SOURCE seconds), converting through `to_timeline_t`.
+/// Shared by the Scene cuts section's "Split" button and `media.scene_cuts`'s `split` path.
+pub fn split_scene_cuts(project: &mut Project, clip: Id, cuts_src: &[f64]) -> usize {
+    let Some(c) = project.clip(clip).cloned() else { return 0 };
+    // see split_beats' comment: `group` must grow with each split's new piece.
+    let mut group = project.expand_links(&[clip]);
+    let mut cuts = 0usize;
+    for &t_src in cuts_src {
+        let new = project.split_at(to_timeline_t(t_src, &c), Some(&group));
+        if !new.is_empty() {
+            cuts += 1;
+            group.extend(new);
+        }
+    }
+    cuts
+}
+
 fn parse_showinfo_pts(stderr: &str) -> Vec<f64> {
     let mut out = Vec::new();
     for line in stderr.lines() {
@@ -548,5 +640,77 @@ mod tests {
         assert_eq!(parse_showinfo_pts(sample), vec![0.5, 1.25]);
         assert!(parse_showinfo_pts("").is_empty());
         assert!(parse_showinfo_pts("no matches here").is_empty());
+    }
+
+    /// One audio clip (trimmed + retimed: src_in=1.0, speed=2.0, start=5.0) with clicks at source
+    /// times 1.5/2.5/3.5/4.5s -> onsets land at clip-local (0.25, 0.75, 1.25, 1.75)s, i.e.
+    /// to_clip_local(t_src, clip).
+    fn beat_setup() -> (Project, Id) {
+        let mut project = Project::default();
+        let mut c = test_clip(5.0, 1.0, 5.0, 2.0);
+        c.id = 1;
+        c.asset = 1;
+        c.kind = crate::model::ClipKind::Audio;
+        let mut track = crate::model::Track::new(1, crate::model::TrackKind::Audio, "t");
+        track.clips = vec![c];
+        project.tracks = vec![track];
+        (project, 1)
+    }
+
+    #[test]
+    fn detect_beat_markers_converts_to_clip_local_and_returns_bpm() {
+        let (mut project, clip) = beat_setup();
+        let clicks = [1.5, 2.5, 3.5, 4.5];
+        let peaks = peaks_with_clicks(&clicks, 10.0);
+        let (ids, bpm) = detect_beat_markers(&mut project, &[clip], 0.1, 1.6, &mut |_p, _asset| {
+            Some(Arc::new(Peaks { min: peaks.min.clone(), max: peaks.max.clone() }))
+        });
+        assert_eq!(ids.len(), 4, "{ids:?}");
+        let c = project.clip(clip).unwrap();
+        let mut got: Vec<f64> = c.markers.iter().map(|m| m.t).collect();
+        got.sort_by(f64::total_cmp);
+        for (g, t_src) in got.iter().zip(clicks) {
+            let want = to_clip_local(t_src, c);
+            assert!((g - want).abs() < 0.03, "{g} vs {want}");
+        }
+        assert!(bpm.is_some(), "4 evenly-spaced onsets should read a BPM");
+    }
+
+    #[test]
+    fn split_beats_cuts_only_the_target_clips_link_group() {
+        let (mut project, clip) = beat_setup();
+        // an unrelated clip on another track must never be touched by this clip's beats
+        let mut other = crate::model::Track::new(2, crate::model::TrackKind::Video, "v");
+        other.clips.push(crate::model::Clip::new(99, crate::model::ClipKind::Video, "solo", 0.0, 20.0));
+        project.tracks.push(other);
+        let clicks = [1.5, 2.5, 3.5, 4.5];
+        let peaks = peaks_with_clicks(&clicks, 10.0);
+        let cuts = split_beats(&mut project, &[clip], 0.1, 1.6, &mut |_p, _asset| {
+            Some(Arc::new(Peaks { min: peaks.min.clone(), max: peaks.max.clone() }))
+        });
+        assert_eq!(cuts, 4, "one cut per onset");
+        assert_eq!(project.tracks[1].clips.len(), 1, "the unrelated clip was never split");
+        assert!(project.tracks[0].clips.len() > 1, "the target clip was split");
+    }
+
+    #[test]
+    fn scene_cut_markers_adds_point_markers_at_converted_times() {
+        let (mut project, clip) = beat_setup();
+        let ids = scene_cut_markers(&mut project, clip, &[1.5, 3.5]);
+        assert_eq!(ids.len(), 2);
+        let c = project.clip(clip).unwrap();
+        for m in &c.markers {
+            assert_eq!(m.duration, 0.0, "a scene cut is a point marker, not a range");
+        }
+        let want0 = to_clip_local(1.5, c);
+        assert!(c.markers.iter().any(|m| (m.t - want0).abs() < 1e-9));
+    }
+
+    #[test]
+    fn split_scene_cuts_splits_at_converted_timeline_times() {
+        let (mut project, clip) = beat_setup();
+        let cuts = split_scene_cuts(&mut project, clip, &[1.5, 3.5]);
+        assert_eq!(cuts, 2);
+        assert!(project.tracks[0].clips.len() >= 3, "two cuts make (up to) three pieces");
     }
 }

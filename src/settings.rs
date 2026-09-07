@@ -274,6 +274,12 @@ pub struct Settings {
     pub last_seen_version: String,
     // ---- ws:split-god-files ----
     // ---- ws:audio-analysis ----
+    /// Default ducking depth in dB, editable per-call in the Duck section / `audio.duck`'s `depth_db`.
+    pub duck_depth_db: f32,
+    /// Default fade length (ms) either side of a duck window.
+    pub duck_ramp_ms: u32,
+    /// Onset sensitivity: local-mean multiplier an envelope bucket must exceed to count as a beat.
+    pub beat_thr: f32,
     // ---- ws:audio-dsp-automation ----
     // ---- ws:color-engine ----
     // ---- ws:command-palette ----
@@ -368,6 +374,9 @@ impl Default for Settings {
             last_seen_version: String::new(),
             // ---- ws:split-god-files ----
             // ---- ws:audio-analysis ----
+            duck_depth_db: -12.0,
+            duck_ramp_ms: 200,
+            beat_thr: 1.6,
             // ---- ws:audio-dsp-automation ----
             // ---- ws:color-engine ----
             // ---- ws:command-palette ----
