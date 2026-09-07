@@ -143,6 +143,10 @@ impl Harness {
             tags: Vec::new(),
             label: 0,
             description: String::new(),
+            rel_path: None,
+            parent: None,
+            range: None,
+            effects: Vec::new(),
         });
         project.insert_asset_clips(aid, 0.0, None);
         let waves = WaveformCache::new(ctx.clone(), Backend::Ffmpeg);
@@ -1362,6 +1366,10 @@ fn transform_menu_bulk_stretches_selection_with_one_undo() {
         tags: Vec::new(),
         label: 0,
         description: String::new(),
+        rel_path: None,
+        parent: None,
+        range: None,
+        effects: Vec::new(),
     });
     let id2 = h.project.insert_asset_clips(aid2, 11.0, Some(0))[0];
     let id1 = h.video_clip().id;

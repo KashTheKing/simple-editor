@@ -206,6 +206,11 @@ pub struct EffectsResponse {
     pub open_nodes: bool,
     /// Index of the `EffectKind::Shader` effect whose GLSL the user wants to edit (app opens the window).
     pub edit_shader: Option<usize>,
+    // ---- ws:registries-schema-hooks ----
+    /// Index of the catalogue card the pointer is hovering, for a future async GPU hover preview
+    /// (ws:inspector-gallery, wave 2, via `App::alt_render`). Unread this wave.
+    #[allow(dead_code)]
+    pub hover: Option<usize>,
 }
 
 /// Which clips a catalogue pick lands on: a click (and the first menu entry) means the selection, the

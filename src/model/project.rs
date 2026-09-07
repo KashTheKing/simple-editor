@@ -55,10 +55,70 @@ pub struct Project {
     /// Saved drawing / polygon outlines, reusable as motion paths (see `PathAsset`).
     pub paths: Vec<PathAsset>,
     pub(crate) next_id: Id,
+    // ---- ws:registries-schema-hooks ----
+    /// Per-clip word timing (timeline seconds) for the transcript panel / word-range cuts; filled by
+    /// ws:transcript-captions (wave 2). Empty until then.
+    #[serde(default)]
+    pub transcripts: Vec<Transcript>,
+    /// How generated captions animate (karaoke-style highlight/pop/typewriter); consumed by
+    /// ws:transcript-captions (wave 2).
+    #[serde(default)]
+    pub subtitle_anim: SubtitleAnim,
+    /// Saved library search filters ("Smart Bins"); consumed by ws:media-library (wave 2).
+    #[serde(default)]
+    pub smart_bins: Vec<SmartBin>,
+    // ---- ws:size-diet ----
+    // ---- ws:split-god-files ----
+    // ---- ws:audio-analysis ----
+    // ---- ws:audio-dsp-automation ----
+    // ---- ws:color-engine ----
+    // ---- ws:command-palette ----
+    // ---- ws:forgiveness ----
+    // ---- ws:player-rate-loop ----
+    // ---- ws:snap-engine ----
+    // ---- ws:trim-model ----
+    // ---- ws:canvas-handles-monitor ----
+    // ---- ws:export-deliver ----
+    // ---- ws:inspector-gallery ----
+    // ---- ws:layout-modes-onboarding ----
+    // ---- ws:media-library ----
+    // ---- ws:source-monitor ----
+    // ---- ws:timeline-trim-gestures ----
+    // ---- ws:transcript-captions ----
+    // ---- ws:pro-monitor ----
+    // ---- ws:pro-timeline ----
+    // ---- ws:text-titles ----
+    // ---- ws:docs-refresh ----
 }
 
 impl Default for Project {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Per-clip word timing (timeline seconds) captured by a transcription pass — `words` is
+/// `(start, end, text)` triples in timeline time, so a cut range maps straight onto clip trims.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct Transcript {
+    pub clip: Id,
+    #[serde(default)]
+    pub words: Vec<(f64, f64, String)>,
+}
+
+/// How a generated caption's current word is drawn as the playhead crosses it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SubtitleAnim {
+    #[default]
+    None,
+    Highlight([u8; 4]),
+    PopWord,
+    Typewriter,
+}
+
+/// A saved library search ("Smart Bin"): a name and the query text that reproduces it.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct SmartBin {
+    pub name: String,
+    pub query: String,
 }

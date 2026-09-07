@@ -300,3 +300,41 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
     }
     Some(run(app, name, args))
 }
+
+// ---- ws:registries-schema-hooks ----
+use crate::mcp::tools::{ToolDef, ToolKind, ToolOutcome};
+
+macro_rules! row {
+    ($name:literal, $kind:expr, $desc:literal, $args:expr) => {
+        ToolDef {
+            name: $name,
+            desc: $desc,
+            args: $args,
+            kind: $kind,
+            run: |a, v| dispatch(a, $name, v).unwrap().map(ToolOutcome::Done),
+        }
+    };
+}
+
+pub const TOOLS: &[ToolDef] = &[
+    row!("clip.set", ToolKind::Mutate, "Set clip fields: name, enabled, label, speed, reverse, freeze (source time or null), blend, fade_in, fade_out, and constant values of properties (x, y, scale, rotation, opacity, volume, pan); text clips: text style fields (text, font, size, color [r,g,b,a], outline_width, …).", &["clip_id:integer:true:", "fields:object:true:"]),
+    row!("clip.keyframe", ToolKind::Mutate, "Set (or remove with remove=true) a keyframe of a property at clip-local time t.", &["clip_id:integer:true:", "property:string:true:", "t:number:true:", "value:number:false:", "ease:string:false:Linear|EaseIn|EaseOut|EaseInOut|Hold|cubic-bezier(x1,y1,x2,y2)", "remove:boolean:false:"]),
+    row!("clip.add_effect", ToolKind::Mutate, "Append an effect with optional params {name: value}.", &["clip_id:integer:true:", "kind:string:true:", "params:object:false:"]),
+    row!("clip.remove_effect", ToolKind::Mutate, "Remove effect at index.", &["clip_id:integer:true:", "index:integer:true:"]),
+    row!("clip.apply_motion", ToolKind::Mutate, "Apply a motion preset (built-in or saved) to a clip.", &["clip_id:integer:true:", "name:string:true:", "scaled:boolean:false:default true"]),
+    row!("style.summary", ToolKind::Read, "Markdown style summary of the project (how it was edited) — for writing style guides.", &[]),
+    row!("clip.add_mask", ToolKind::Mutate, "Add a mask to a clip (or to one of its effects with `effect`).", &["clip_id:integer:true:", "shape:string:false:Rect|Ellipse|Polygon|Path (default Ellipse)", "effect:integer:false:effect index; omit for the clip itself"]),
+    row!("clip.set_mask", ToolKind::Mutate, "Edit a mask: fields {shape, cx, cy, rx, ry, rotation, feather, expand, opacity, invert, enabled, points:[[x,y],…]} in project pixels relative to the layer centre.", &["clip_id:integer:true:", "fields:object:true:", "effect:integer:false:"]),
+    row!("clip.add_node", ToolKind::Mutate, "Add a node to the clip's node graph (created from its effect stack on first use).", &["clip_id:integer:true:", "kind:string:true:an effect name, or Blend|Combine|Merge|Matte|Mask|Color|Text|Input", "x:number:false:", "y:number:false:"]),
+    row!("clip.connect_nodes", ToolKind::Mutate, "Wire one node's output into another node's input port (cycles are refused).", &["clip_id:integer:true:", "from:integer:true:", "to:integer:true:", "port:integer:false:default 0"]),
+    row!("audio.buses", ToolKind::Read, "Mixer buses (id, name, gain, pan, mute/solo/mono, output, filters).", &[]),
+    row!("audio.add_bus", ToolKind::Mutate, "Create a bus (it feeds Main until routed elsewhere).", &["name:string:false:"]),
+    row!("audio.add_filter", ToolKind::Mutate, "Add a filter to a bus with optional params {name: value}.", &["bus:integer:true:", "kind:string:true:Eq|HighPass|LowPass|Reverb|Echo|Distortion|Compressor|NoiseGate|Noise|Gain", "params:object:false:"]),
+    row!("audio.route", ToolKind::Mutate, "Send a clip, a track or a bus into a bus (bus 0 = Main / inherit).", &["bus:integer:true:destination bus", "clip_id:integer:false:", "track:integer:false:track index", "from_bus:integer:false:"]),
+    row!("shapes.add", ToolKind::Mutate, "Add a vector shape clip.", &["kind:string:false:Rect|Ellipse|Triangle|Polygon|Star|Line|Arrow|Draw", "at:number:true:", "duration:number:false:default 5", "fill:array:false:[r,g,b,a]", "stroke:array:false:[r,g,b,a]", "stroke_width:number:false:", "sides:integer:false:", "width:number:false:project px", "height:number:false:project px"]),
+    row!("container.add", ToolKind::Mutate, "Add a container clip pair (video slot + audio slot) at a time.", &["at:number:true:timeline seconds", "duration:number:false:default 5", "label:string:false:slot label"]),
+    row!("container.replace", ToolKind::Mutate, "Replace media in a container clip (effects, transforms, keyframes preserved).", &["clip_id:integer:true:", "asset_id:integer:true:", "pair:boolean:false:also replace linked audio container"]),
+    row!("container.make", ToolKind::Mutate, "Convert clips to containers (slots).", &["clip_ids:array:true:"]),
+    row!("container.unmake", ToolKind::Mutate, "Remove container flag from clips.", &["clip_ids:array:true:"]),
+    row!("container.list", ToolKind::Read, "List all container clips on the timeline.", &[]),
+];

@@ -29,6 +29,16 @@ pub struct TextStyle {
     /// fields above for just that range; every field left `None` keeps inheriting this clip's style.
     /// Empty for every project saved before spans existed (`#[serde(default)]` on the struct covers it).
     pub spans: Vec<TextSpan>,
+    // ---- ws:registries-schema-hooks ----
+    /// Reveal-in progress (0 = hidden, 1 = fully revealed), driven by a t-aware `TextRasterizer` once
+    /// ws:text-titles (wave 3) wires it. `#[serde(default)]` no-ops it to a constant 0 for every clip
+    /// saved before this field existed. Does NOT replace `size`/`letter_spacing`/`outline_width` —
+    /// those stay plain `f32` this wave (see the workstream's review trail).
+    #[serde(default = "crate::model::a0")]
+    pub reveal: Animated,
+    /// Per-character wave/wobble amount (0 = none), same consumer as `reveal`.
+    #[serde(default = "crate::model::a0")]
+    pub wave: Animated,
 }
 
 impl Default for TextStyle {
@@ -53,6 +63,8 @@ impl Default for TextStyle {
             box_color: [0, 0, 0, 0],
             box_padding: 8.0,
             spans: Vec::new(),
+            reveal: a0(),
+            wave: a0(),
         }
     }
 }
@@ -185,5 +197,26 @@ impl TextStyle {
         }
         self.spans.extend(split_tails);
         self.spans.retain(|s| s.start < s.end);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `TextStyle` JSON with no `reveal`/`wave` fields (every clip saved before this workstream)
+    /// deserializes both as a no-op constant `0`, and the existing scalar fields are untouched.
+    #[test]
+    fn textstyle_reveal_wave_default_and_scalars_unchanged() {
+        let json = r#"{"text":"Hi","size":40.0,"letter_spacing":2.0,"outline_width":3.0}"#;
+        let t: TextStyle = serde_json::from_str(json).unwrap();
+        assert_eq!(t.reveal.value, 0.0);
+        assert!(!t.reveal.is_animated());
+        assert_eq!(t.wave.value, 0.0);
+        assert!(!t.wave.is_animated());
+        // still plain f32 scalars, unmigrated this wave
+        assert_eq!(t.size, 40.0);
+        assert_eq!(t.letter_spacing, 2.0);
+        assert_eq!(t.outline_width, 3.0);
     }
 }

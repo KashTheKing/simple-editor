@@ -88,7 +88,7 @@ impl App {
 
     pub(super) fn view_menu(&mut self, ui: &mut egui::Ui, out: &mut Vec<Action>) {
         use Action::*;
-        const PANES: [(Pane, Option<Action>); 18] = [
+        const PANES: [(Pane, Option<Action>); 19] = [
             (Pane::Preview, None),
             (Pane::Timeline, None),
             (Pane::Tools, Some(ToggleTools)),
@@ -107,6 +107,8 @@ impl App {
             (Pane::Tracking, None),
             (Pane::Moodboard, None),
             (Pane::History, None),
+            // ---- ws:registries-schema-hooks ----
+            (Pane::Source, None),
         ];
         for (pane, action) in PANES {
             let mut v = self.layout.is_visible(pane);
@@ -135,7 +137,7 @@ impl App {
         }
         ui.separator();
         ui.menu_button("Pop out", |ui| {
-            for pane in Pane::ALL {
+            for &pane in Pane::ALL {
                 if ui.button(pane.title()).clicked() {
                     ui.close();
                     self.layout.popout(pane);

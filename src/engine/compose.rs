@@ -223,31 +223,27 @@ impl Compositor {
         if w == 0 || h == 0 {
             return;
         }
-        if project.show_subtitles {
-            if let Some(cue) = project.cue_at(t) {
-                if !cue.text.trim().is_empty() {
-                    let sk = project.subtitle_style.cache_key();
-                    if self.sub_key != sk || self.sub_style.text != cue.text {
-                        self.sub_style.clone_from(&project.subtitle_style);
-                        self.sub_style.text.clone_from(&cue.text);
-                        self.sub_key = sk;
-                    }
-                    let s = w as f32 / project.width.max(1) as f32;
-                    let img = text.render(&self.sub_style, s);
-                    if img.width > 1 || img.height > 1 {
-                        let sv = h as f32 / project.height.max(1) as f32;
-                        let p = Placement {
-                            cx: w as f32 / 2.0,
-                            cy: h as f32 - project.subtitle_margin * sv - img.height as f32 / 2.0,
-                            w: img.width as f32,
-                            h: img.height as f32,
-                            rot: 0.0,
-                            yaw: 0.0,
-                            pitch: 0.0,
-                        };
-                        draw_layer(out, &img, p, BlendMode::Normal, 1.0, Scaler::Bilinear, &mut self.layer);
-                    }
-                }
+        if let Some((cue_text, style)) = crate::engine::subtitles::cue_layer_at(project, t) {
+            let sk = style.cache_key();
+            if self.sub_key != sk || self.sub_style.text != cue_text {
+                self.sub_style.clone_from(style);
+                self.sub_style.text = cue_text.to_string();
+                self.sub_key = sk;
+            }
+            let s = w as f32 / project.width.max(1) as f32;
+            let img = text.render(&self.sub_style, s);
+            if img.width > 1 || img.height > 1 {
+                let sv = h as f32 / project.height.max(1) as f32;
+                let p = Placement {
+                    cx: w as f32 / 2.0,
+                    cy: h as f32 - project.subtitle_margin * sv - img.height as f32 / 2.0,
+                    w: img.width as f32,
+                    h: img.height as f32,
+                    rot: 0.0,
+                    yaw: 0.0,
+                    pitch: 0.0,
+                };
+                draw_layer(out, &img, p, BlendMode::Normal, 1.0, Scaler::Bilinear, &mut self.layer);
             }
         }
     }
@@ -1299,6 +1295,10 @@ mod tests {
             tags: Vec::new(),
             label: 0,
             description: String::new(),
+            rel_path: None,
+            parent: None,
+            range: None,
+            effects: Vec::new(),
         }
     }
 

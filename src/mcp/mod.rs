@@ -339,8 +339,11 @@ fn call_tool(name: &str, args: Value, tx: &Sender<ToolCall>, ctx: &egui::Context
     let (reply, rx) = mpsc::channel();
     tx.send(ToolCall { name: name.to_string(), args, reply }).map_err(|_| "editor is shutting down".to_string())?;
     ctx.request_repaint();
-    let timeout = match name {
-        "export.video" | "media.convert" => Duration::from_secs(30 * 60),
+    // ---- ws:registries-schema-hooks ----
+    // ToolKind::Job replaces the old name-matched list: any tool the registry marks as a background
+    // job (export/convert today) gets the long timeout, whatever module registers it.
+    let timeout = match tools::find(name).map(|t| t.kind) {
+        Some(tools::ToolKind::Job) => Duration::from_secs(30 * 60),
         _ => Duration::from_secs(60),
     };
     rx.recv_timeout(timeout).map_err(|_| format!("{name}: timed out"))?
@@ -512,11 +515,13 @@ mod tests {
         assert_eq!(st, 200);
         assert!(v["result"].is_object());
 
-        // tools/list: one entry per TOOLS row, with schemas
+        // tools/list: one entry per registered ToolDef, with schemas (relaxed from a byte-identical
+        // tuple-order string to set-equality — see the workstream's review trail: splitting the old
+        // 64-row tuple across 5 grouped files doesn't reconstruct the original interleaved order)
         let (st, v) = post(&mut s, r#"{"jsonrpc":"2.0","id":3,"method":"tools/list"}"#);
         assert_eq!(st, 200);
         let list = v["result"]["tools"].as_array().unwrap();
-        assert_eq!(list.len(), tools::TOOLS.len());
+        assert_eq!(list.len(), tools::all().count());
         let summary = list.iter().find(|t| t["name"] == "project.summary").unwrap();
         assert_eq!(summary["inputSchema"]["type"], "object");
 

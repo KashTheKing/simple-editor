@@ -471,6 +471,10 @@ mod tests {
             tags: Vec::new(),
             label: 0,
             description: String::new(),
+            rel_path: None,
+            parent: None,
+            range: None,
+            effects: Vec::new(),
         }
     }
 

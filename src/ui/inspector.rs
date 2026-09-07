@@ -1374,6 +1374,10 @@ mod tests {
             tags: Vec::new(),
             label: 0,
             description: String::new(),
+            rel_path: None,
+            parent: None,
+            range: None,
+            effects: Vec::new(),
         };
         let mut p = Project::from_media(a);
         let aid = p.assets[0].id;
@@ -1684,6 +1688,10 @@ mod tests {
                 tags: Vec::new(),
                 label: 0,
                 description: String::new(),
+                rel_path: None,
+                parent: None,
+                range: None,
+                effects: Vec::new(),
             });
             let vi = p.tracks.iter().position(|t| t.kind == crate::model::TrackKind::Video).unwrap();
             let mut c = Clip::new(500, ClipKind::Video, "v", 0.0, 5.0);
@@ -2005,6 +2013,10 @@ mod tests {
             tags: vec!["x".into()],
             label: 2,
             description: "d".into(),
+            rel_path: None,
+            parent: None,
+            range: None,
+            effects: Vec::new(),
         };
         let mut p = Project::from_media(a);
         let vid = p.tracks[0].clips[0].id;

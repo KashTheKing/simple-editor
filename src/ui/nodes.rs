@@ -1283,6 +1283,10 @@ mod tests {
                 tags: Vec::new(),
                 label: 0,
                 description: String::new(),
+                rel_path: None,
+                parent: None,
+                range: None,
+                effects: Vec::new(),
             });
             project.insert_asset_clips(aid, 0.0, None);
             let clip = project.tracks[0].clips[0].id;

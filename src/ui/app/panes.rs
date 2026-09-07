@@ -13,6 +13,14 @@ impl App {
     }
 
     pub(super) fn draw_pane_inner(&mut self, ui: &mut egui::Ui, pane: Pane) {
+        // ---- ws:registries-schema-hooks ----
+        // A new Pane gets its own PANE_DRAWERS entry instead of an arm in this match (which every
+        // wave-2+ workstream would otherwise share). Nothing is registered yet, so this is a no-op.
+        for f in PANE_DRAWERS {
+            if f(self, ui, pane) {
+                return;
+            }
+        }
         match pane {
             Pane::Preview => preview_pane::draw(self, ui),
             Pane::Timeline => timeline_pane::draw(self, ui),
@@ -287,6 +295,13 @@ impl App {
                 if resp.edited {
                     self.after_edit();
                 }
+            }
+            // ---- ws:registries-schema-hooks ----
+            // Pane::Source has no dedicated drawer yet — source-monitor (wave 2) is the first
+            // PANE_DRAWERS entry (tried above) and turns this into its real two-up source monitor.
+            #[allow(unreachable_patterns)]
+            _ => {
+                ui.weak(format!("{} isn't wired up yet.", pane.title()));
             }
         }
     }

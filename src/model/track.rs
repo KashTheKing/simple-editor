@@ -21,6 +21,29 @@ pub struct Track {
     /// Audio tracks: the bus every clip feeds unless the clip overrides it (0 = Main).
     #[serde(default)]
     pub bus: Id,
+    // ---- ws:registries-schema-hooks ----
+    /// Edits on this track are refused (trim-model, wave 1).
+    #[serde(default)]
+    pub locked: bool,
+    /// Deleting/trimming shoves downstream clips on this track to close the gap. `None` only right
+    /// after a bare `Track::new` — every real construction site resolves it via `default_ripple`
+    /// before the track is used, so a project session never sees `None`; `from_json` resolves it too
+    /// for tracks loaded from disk.
+    #[serde(default)]
+    pub ripple: Option<bool>,
+    /// Gapless (magnetic) track: a plain edge-drag ripples and Delete closes the gap (trim-model/
+    /// timeline-trim-gestures, wave 1/2).
+    #[serde(default)]
+    pub magnetic: bool,
+    /// Header swatch colour; `None` = the theme default. Sole definition (pro-timeline, wave 3,
+    /// consumes this field rather than redeclaring it).
+    #[serde(default)]
+    pub color: Option<[u8; 3]>,
+    /// Track-level gain multiplier (1 = unity); sampled by the mixer once audio-dsp-automation
+    /// (wave 1) wires it in — see `engine::mixer::mix_tracks`. Defaults to unity because `Animated`
+    /// has no `Default` impl in this crate (a bare `#[serde(default)]` would not compile).
+    #[serde(default = "crate::model::a1")]
+    pub volume: Animated,
 }
 
 impl Track {
@@ -35,7 +58,19 @@ impl Track {
             clips: Vec::new(),
             transitions: Vec::new(),
             bus: 0,
+            locked: false,
+            ripple: None,
+            magnetic: false,
+            color: None,
+            volume: crate::model::a1(),
         }
+    }
+    /// The one resolver every Track-construction site calls so `ripple` is never left `None` outside
+    /// a bare `Track::new` for more than the current statement: the first track of a kind defaults to
+    /// ripple-on (V1/A1 stay in sync with edits by default), every later track of that kind defaults
+    /// to position-locked (secondary tracks — B-roll, music, SFX — never silently desync).
+    pub(crate) fn default_ripple(_kind: TrackKind, index_within_kind: usize) -> Option<bool> {
+        Some(index_within_kind == 0)
     }
     pub fn sort(&mut self) {
         self.clips.sort_by(|a, b| a.start.total_cmp(&b.start));
@@ -78,5 +113,51 @@ impl Track {
         let keep: Vec<Id> =
             self.transitions.iter().filter(|t| self.transition_clips(t).is_some()).map(|t| t.id).collect();
         self.transitions.retain(|t| keep.contains(&t.id));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn track_volume_defaults_to_unity() {
+        // no `volume` field at all — an older project, or one hand-edited
+        let t: Track = serde_json::from_str(r#"{"id":1,"name":"V1","kind":"Video"}"#).unwrap();
+        assert_eq!(t.volume.value, 1.0, "missing volume must default to unity, not silence");
+        assert!(!t.volume.is_animated());
+        assert_eq!(t.ripple, None, "bare Track::new / a fresh deserialize: not yet resolved");
+        assert!(!t.locked && !t.magnetic && t.color.is_none());
+    }
+
+    /// Every real Track-construction path resolves `ripple` immediately — not just on a save/reload
+    /// round-trip through `Project::from_json` (see `io::tests::ripple_resolves_on_load` for that path).
+    #[test]
+    fn ripple_resolves_at_every_construction_site() {
+        // Project::new -> add_track: V1/A1 are each the first-of-kind
+        let mut p = Project::new();
+        assert_eq!(p.tracks[0].ripple, Some(true), "V1");
+        assert_eq!(p.tracks[1].ripple, Some(true), "A1");
+        // video tracks stay before audio tracks, so the new V2 lands at index 1, not at the end
+        p.add_track(TrackKind::Video);
+        assert_eq!(p.video_tracks().len(), 2);
+        let v2 = p.video_tracks()[1];
+        assert_eq!(p.tracks[v2].ripple, Some(false), "V2 (second video track)");
+
+        // new_sequence: V1/A1 are each the first (only) track of their kind in a fresh sequence
+        let seq_id = p.new_sequence("Seq", 1920, 1080, 30.0);
+        let seq = p.sequence(seq_id).unwrap();
+        assert!(seq.tracks.iter().all(|t| t.ripple.is_some()), "sequence V1/A1");
+
+        // the auto-created "Subtitles" video track (cues_to_text_clips)
+        let cue_id = p.new_id();
+        p.subtitles.push(Cue { id: cue_id, start: 0.0, end: 1.0, text: "hi".into() });
+        p.cues_to_text_clips(None);
+        let sub = p.tracks.iter().find(|t| t.name == "Subtitles").expect("Subtitles track created");
+        assert!(sub.ripple.is_some(), "Subtitles auto-track");
+
+        // the XML/EDL import "ensure track" helper (engine::import::track_slot) calls
+        // Project::add_track for any track it needs, so it inherits the resolution above for free —
+        // pinned by `import::tests` exercising a real import, not duplicated here.
     }
 }

@@ -1012,14 +1012,12 @@ pub(crate) fn decode_layers(
             }
         }
     }
-    if project.show_subtitles {
-        if let Some(cue) = project.cue_at(t).filter(|c| !c.text.trim().is_empty()) {
-            let mut style = project.subtitle_style.clone();
-            style.text.clone_from(&cue.text);
-            let img = text.render(&style, w as f32 / project.width.max(1) as f32);
-            if img.width > 1 || img.height > 1 {
-                set.layers.push((LayerSet::SUBTITLES, img));
-            }
+    if let Some((cue_text, base_style)) = crate::engine::subtitles::cue_layer_at(project, t) {
+        let mut style = base_style.clone();
+        style.text = cue_text.to_string();
+        let img = text.render(&style, w as f32 / project.width.max(1) as f32);
+        if img.width > 1 || img.height > 1 {
+            set.layers.push((LayerSet::SUBTITLES, img));
         }
     }
     set
@@ -1603,6 +1601,24 @@ mod tests {
         let mut g = project.clone();
         g.width += 2;
         assert_eq!(video_dirty_spans(&project, &g), None);
+    }
+
+    /// ws:registries-schema-hooks — the new Track flags/fields never widen to a full clear: nothing
+    /// reads them yet (mixer volume-sampling and the trim primitives land in later waves), so a diff
+    /// on them alone must still return a bounded (possibly empty) span list, never `None`.
+    #[test]
+    fn flags_do_not_dirty_video() {
+        let path = media::ffpipe::tests::test_mp4();
+        let asset = media::probe(&path, Backend::Auto).unwrap();
+        let project = Project::from_media(asset);
+        let mut f = project.clone();
+        let vt = f.tracks.iter_mut().find(|t| t.kind == TrackKind::Video).unwrap();
+        vt.locked = true;
+        vt.ripple = Some(false);
+        vt.magnetic = true;
+        vt.color = Some([200, 60, 60]);
+        vt.volume = crate::model::Animated::new(0.5);
+        assert!(video_dirty_spans(&project, &f).is_some(), "track flags/volume must not force a full clear");
     }
 
     /// GPU mode: the render thread publishes decoded layers instead of a composited frame, and going

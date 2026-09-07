@@ -92,3 +92,43 @@ changes live.
   test-harness pitfalls above.
 - Don't silently drop the proxy/DXVA/cache perf work's invariants (e.g. selective cache
   invalidation tests exist on purpose — see ARCHITECTURE.md and the stack memory).
+
+## Registry protocol (UI/UX overhaul, wave 0b+)
+
+The 23-workstream UI/UX overhaul (`plans/ui-overhaul/`) needs concurrent worktrees to add code
+without ever sharing a merge hunk. `refactor/registries-schema-hooks` (wave 0b) landed the
+mechanism; every later workstream follows it.
+
+**The 23 workstreams, in the fixed wave-then-name order every shared table uses:**
+
+wave 0: `registries-schema-hooks`, `size-diet`, `split-god-files` — wave 1: `audio-analysis`,
+`audio-dsp-automation`, `color-engine`, `command-palette`, `forgiveness`, `player-rate-loop`,
+`snap-engine`, `trim-model` — wave 2: `canvas-handles-monitor`, `export-deliver`,
+`inspector-gallery`, `layout-modes-onboarding`, `media-library`, `source-monitor`,
+`timeline-trim-gestures`, `transcript-captions` — wave 3: `pro-monitor`, `pro-timeline`,
+`text-titles` — wave 4: `docs-refresh`.
+
+**The five dispatch registries** (`src/ui/app/mod.rs`): `TOOL_TABLES` (`&[&[ToolDef]]`,
+flattened by `mcp::tools::all()` for `tools/list`/`editor.tools()`/the palette),
+`ACT_HANDLERS` (`&[fn(&mut App, Action) -> bool]`, tried before `act()`'s match — first `true`
+wins), `FRAME_HOOKS`/`WINDOW_DRAWERS` (`&[fn(&mut App, &egui::Context)]`, polled once per frame /
+inside `windows()`), `PANE_DRAWERS` (`&[fn(&mut App, &mut egui::Ui, Pane) -> bool]`, tried before
+`draw_pane_inner()`'s match). Each is pre-seeded with 23 `// ---- ws:<name> ----` comment-only
+marker lines in the order above — landing your feature means replacing YOUR line with a real
+entry (e.g. `tools_<ws>::TOOLS,`), never touching a neighbour's line. `hotkeys.rs`'s `actions!`
+macro body, `ui/tools.rs`'s `Glyph` enum/`ALL`/`name()`/`draw_glyph()` (3 of its 5 call sites —
+`from_name` is generic over `ALL` and needs no per-variant arm), and `Settings`'s struct +
+`Default` impl carry the same 23 markers.
+
+**Tool registry:** every MCP tool is a `ToolDef { name, desc, args, kind: ToolKind, run }` living
+beside its handler in a `ui::app::tools_<group>.rs` file (a `pub const TOOLS: &[ToolDef]` row per
+tool, registered once in `TOOL_TABLES`). `ToolKind::Mutate` replaces per-caller
+snapshot/undo bookkeeping — a Project mutator only needs a `pub fn(&mut self)` plus a `ToolDef`
+row; `tools_registry_tests::every_edit_op_has_a_tool` fails the build if a new
+`src/model/ops/*.rs` fn has neither a `ToolDef` row nor a recorded `OP_INTERNAL` reason.
+
+**Rules for every future PR:** edit only your own marker line/section in each shared table —
+never another workstream's line, never a file this wave's plan names as another workstream's
+exclusive owner. A PR that adds an `Action` variant, a `Gesture` kind, a `Pane`, or a
+`pub fn(&mut self)` on `Project` must add a matching `ToolDef` row in the same PR. Run
+`scripts/size.ps1 -Note <ws>` (once size-diet lands it) and put `size: ±N KB` in the PR body.

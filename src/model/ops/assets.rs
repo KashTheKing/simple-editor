@@ -3,7 +3,7 @@ use crate::model::*;
 impl Project {
     pub fn new() -> Self {
         let mut p = Self {
-            version: 1,
+            version: Project::VERSION,
             name: "Untitled".into(),
             width: 1920,
             height: 1080,
@@ -34,6 +34,32 @@ impl Project {
             moodboard: Vec::new(),
             paths: Vec::new(),
             next_id: 0,
+            // ---- ws:registries-schema-hooks ----
+            transcripts: Vec::new(),
+            subtitle_anim: SubtitleAnim::default(),
+            smart_bins: Vec::new(),
+            // ---- ws:size-diet ----
+            // ---- ws:split-god-files ----
+            // ---- ws:audio-analysis ----
+            // ---- ws:audio-dsp-automation ----
+            // ---- ws:color-engine ----
+            // ---- ws:command-palette ----
+            // ---- ws:forgiveness ----
+            // ---- ws:player-rate-loop ----
+            // ---- ws:snap-engine ----
+            // ---- ws:trim-model ----
+            // ---- ws:canvas-handles-monitor ----
+            // ---- ws:export-deliver ----
+            // ---- ws:inspector-gallery ----
+            // ---- ws:layout-modes-onboarding ----
+            // ---- ws:media-library ----
+            // ---- ws:source-monitor ----
+            // ---- ws:timeline-trim-gestures ----
+            // ---- ws:transcript-captions ----
+            // ---- ws:pro-monitor ----
+            // ---- ws:pro-timeline ----
+            // ---- ws:text-titles ----
+            // ---- ws:docs-refresh ----
         };
         p.add_track(TrackKind::Video);
         p.add_track(TrackKind::Audio);
@@ -87,6 +113,39 @@ impl Project {
         self.assets.push(a);
         id
     }
+    // ---- ws:registries-schema-hooks ----
+    /// Creates a subclip: a new library asset covering `[in_t, out_t)` of `parent`'s source. Copies
+    /// `kind`/`path`/`width`/`height`/`fps` from the parent so it decodes like any other asset; `range`
+    /// records the window it was cut from. None if `parent` doesn't exist or the range is empty/invalid.
+    pub fn add_subclip(&mut self, parent: Id, in_t: f64, out_t: f64, name: Option<String>) -> Option<Id> {
+        if !(in_t.is_finite() && out_t.is_finite() && out_t > in_t) {
+            return None;
+        }
+        let p = self.asset(parent)?.clone(); // owned copy: `new_id` below needs `&mut self`
+        let id = self.new_id();
+        self.assets.push(Asset {
+            id,
+            path: p.path,
+            kind: p.kind,
+            duration: out_t - in_t,
+            width: p.width,
+            height: p.height,
+            fps: p.fps,
+            audio_streams: p.audio_streams,
+            codec: p.codec,
+            folder: p.folder,
+            tags: Vec::new(),
+            label: 0,
+            // subclips are never de-duplicated by path (add_asset's usual rule), so the name lives in
+            // `description` — the library has no separate display-name field for assets
+            description: name.unwrap_or_default(),
+            rel_path: None,
+            parent: Some(parent),
+            range: Some((in_t, out_t)),
+            effects: Vec::new(),
+        });
+        Some(id)
+    }
     /// Removes an asset and every clip using it.
     /// Removes an asset and every clip using it — in the live timeline, the stashed main timeline and
     /// every nested sequence (a leftover clip would render black / silent).
@@ -136,5 +195,52 @@ impl Project {
                 a.folder.clear();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn asset(path: &str) -> Asset {
+        Asset {
+            id: 0,
+            path: path.into(),
+            kind: ClipKind::Video,
+            duration: 10.0,
+            width: 1280,
+            height: 720,
+            fps: 30.0,
+            audio_streams: Vec::new(),
+            codec: "h264".into(),
+            folder: String::new(),
+            tags: Vec::new(),
+            label: 0,
+            description: String::new(),
+            rel_path: None,
+            parent: None,
+            range: None,
+            effects: Vec::new(),
+        }
+    }
+
+    // deviation (see PR body): this only exercises `Project::add_subclip` directly. The issue's Tests
+    // table for this row also names "the media.subclip MCP tool round-trips to the same result", but
+    // that half is untested here — same App-construction limitation as the other App-dependent tests
+    // (see tools_registry_tests.rs), just not called out there as a deviation until now.
+    #[test]
+    fn add_subclip_creates_ranged_asset() {
+        let mut p = Project::new();
+        let parent = p.add_asset(asset("C:/clip.mp4"));
+        let sub = p.add_subclip(parent, 2.0, 5.0, Some("Best take".into())).unwrap();
+        let a = p.asset(sub).unwrap();
+        assert_eq!(a.parent, Some(parent));
+        assert_eq!(a.range, Some((2.0, 5.0)));
+        assert_eq!(a.duration, 3.0);
+        assert_eq!(a.description, "Best take");
+        assert_eq!(a.path, "C:/clip.mp4"); // decodes like any other asset
+                                           // an out-of-order/degenerate range is refused
+        assert!(p.add_subclip(parent, 5.0, 2.0, None).is_none());
+        assert!(p.add_subclip(999, 0.0, 1.0, None).is_none(), "unknown parent");
     }
 }
