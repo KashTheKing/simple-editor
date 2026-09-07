@@ -36,6 +36,26 @@ use std::collections::HashMap;
 /// Card size of one catalogue thumbnail (the name is drawn under it).
 pub const CARD: (f32, f32) = (96.0, 54.0);
 
+// ---- ws:inspector-gallery ----
+/// Local (non-`DragPayload`) drag identity for one effect-stack row: the dragged row's
+/// `stable_effect_key` at drag-start. Scoped to this file's own stack UI — the shared
+/// `crate::ui::DragPayload` enum (verified `src/ui/mod.rs`) has no slot-identifying variant, which would
+/// be ambiguous when a clip has two same-kind effects.
+struct EffectDragId(String);
+
+/// Synthesized fold/drag identity for the effect at `effects[i]`, since `struct Effect` has no `id`
+/// field (verified, and no upstream workstream adds one — see the plan's risk table): `(kind name,
+/// same-kind rank among the effects BEFORE it in the current stack order)`. Stable across everything
+/// that doesn't change same-kind relative order (enable/disable, param edits, adding/removing a
+/// DIFFERENT kind, reordering this kind relative to other kinds) — the one thing it can't track is two
+/// same-kind effects swapping places with each other, a documented `// ponytail:` ceiling (upgrade path:
+/// a real `Effect.id` in one line, if a later workstream adds the field).
+fn stable_effect_key(effects: &[Effect], i: usize) -> String {
+    let kind = effects[i].kind;
+    let rank = effects[..i].iter().filter(|e| e.kind == kind).count();
+    format!("{kind:?}#{rank}")
+}
+
 thread_local! {
     // ponytail: thread_local hand-off because show() can't reach Settings — the app polls
     // take_pending_motion() each frame and stores the preset. Upgrade: pass an EffectsState if the
@@ -368,19 +388,40 @@ pub fn show(
     let maskable = clip.is_visual();
     let mut remove: Option<usize> = None;
     let mut swap: Option<(usize, usize)> = None;
+    let mut drag_move: Option<(usize, usize)> = None;
     let mut copy: Option<usize> = None;
     let mut paste: Option<usize> = None;
+    // (stack index, param name, new absolute value) — propagated to same-kind/same-index siblings when
+    // more than one clip is selected (bulk edit; absolute overwrite, not a relative delta).
+    let mut param_edits: Vec<(usize, String, f64)> = Vec::new();
     let copied_kind = PARAM_CLIP.with(|c| c.borrow().as_ref().map(|e| e.kind));
+    // stable per-row identity (see `stable_effect_key`'s doc comment) computed once for the whole stack,
+    // so the drag payload and the drop target agree on the same keys within one frame.
+    let keys: Vec<String> = (0..clip.effects.len()).map(|i| stable_effect_key(&clip.effects, i)).collect();
     for (i, fx) in clip.effects.iter_mut().enumerate() {
-        // one CollapsingState per effect (state keyed by stack index, same convention as the "fx_params"
-        // / "fx_mask" grids below) so each effect can be folded independently; `show_header` puts the
-        // toggle arrow ahead of custom, interactive header content instead of a plain text label, which
-        // is what lets the enabled checkbox / delete / reorder buttons stay reachable without expanding.
-        let header_id = ui.id().with(("fx_stack", i));
-        egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), header_id, true)
+        // one CollapsingState per effect, keyed by its STABLE key (not stack index `i`) so fold state
+        // (and, via `Settings`-free egui memory, nothing else) survives a reorder — see `stable_effect_key`.
+        let header_id = ui.id().with(("fx_stack", &keys[i]));
+        let header_inner = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), header_id, true)
             .show_header(ui, |ui| {
                 // wrapped, not a flat row: a narrow panel stacks the buttons instead of clipping them
                 ui.horizontal_wrapped(|ui| {
+                    // drag handle: a small text glyph, its own Sense::drag widget (not the whole header —
+                    // that would fight the buttons below for clicks). Local payload (EffectDragId), never
+                    // the shared `DragPayload` enum — see this file's module doc comment on why.
+                    let (handle_rect, handle) =
+                        ui.allocate_exact_size(egui::vec2(12.0, ui.spacing().interact_size.y), egui::Sense::drag());
+                    ui.painter().text(
+                        handle_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "::",
+                        egui::FontId::monospace(11.0),
+                        ui.visuals().weak_text_color(),
+                    );
+                    handle.dnd_set_drag_payload(EffectDragId(keys[i].clone()));
+                    let _handle = handle.on_hover_text("Drag to reorder");
+                    #[cfg(test)]
+                    test_rects::push(format!("draghandle{i}"), _handle.rect);
                     g.note(&ui.checkbox(&mut fx.enabled, ""));
                     ui.label(fx.kind.name());
                     let masked = fx.mask.is_some();
@@ -457,118 +498,131 @@ pub fn show(
                         test_rects::push(format!("del{i}"), del.rect);
                     }
                 });
-            })
-            .body(|ui| {
-                // when it runs inside the clip — 0 length means "to the end", which is what every effect
-                // that predates this row already says
-                ui.horizontal(|ui| {
-                    ui.label("From");
-                    let r = ui.add(
-                        DragValue::new(&mut fx.start)
+            });
+        let (_, header_inner, _) = header_inner.body(|ui| {
+            // when it runs inside the clip — 0 length means "to the end", which is what every effect
+            // that predates this row already says
+            ui.horizontal(|ui| {
+                ui.label("From");
+                let r = ui.add(
+                    DragValue::new(&mut fx.start)
+                        .range(0.0..=dur)
+                        .clamp_existing_to_range(false)
+                        .speed(dur / 200.0)
+                        .suffix(" s"),
+                );
+                #[cfg(test)]
+                test_rects::push(format!("fxstart{i}"), r.rect);
+                g.note(&r);
+                ui.label("for");
+                let r = ui
+                    .add(
+                        DragValue::new(&mut fx.len)
                             .range(0.0..=dur)
                             .clamp_existing_to_range(false)
                             .speed(dur / 200.0)
                             .suffix(" s"),
-                    );
-                    #[cfg(test)]
-                    test_rects::push(format!("fxstart{i}"), r.rect);
-                    g.note(&r);
-                    ui.label("for");
-                    let r = ui
-                        .add(
-                            DragValue::new(&mut fx.len)
-                                .range(0.0..=dur)
-                                .clamp_existing_to_range(false)
-                                .speed(dur / 200.0)
-                                .suffix(" s"),
-                        )
-                        .on_hover_text("0 = to the end of the clip");
-                    #[cfg(test)]
-                    test_rects::push(format!("fxlen{i}"), r.rect);
-                    g.note(&r);
-                    if fx.len <= 0.0 {
-                        ui.weak("(rest of the clip)");
+                    )
+                    .on_hover_text("0 = to the end of the clip");
+                #[cfg(test)]
+                test_rects::push(format!("fxlen{i}"), r.rect);
+                g.note(&r);
+                if fx.len <= 0.0 {
+                    ui.weak("(rest of the clip)");
+                }
+            });
+            if fx.kind == EffectKind::Tint && fx.params.len() >= 3 {
+                ui.horizontal(|ui| {
+                    ui.label("Colour");
+                    let mut rgb = [fx.params[0].at(lt) as u8, fx.params[1].at(lt) as u8, fx.params[2].at(lt) as u8];
+                    let r = ui.color_edit_button_srgb(&mut rgb);
+                    if r.changed() {
+                        for (a, v) in fx.params.iter_mut().zip(rgb) {
+                            a.set_at(lt, v as f64);
+                        }
                     }
+                    g.note(&r);
                 });
-                if fx.kind == EffectKind::Tint && fx.params.len() >= 3 {
+            }
+            // the effect's own mask: same grid as the inspector's clip mask, so it can be shaped
+            // without the viewport (the mask tool only ever edits clip.mask)
+            if let Some(m) = fx.mask.as_mut().filter(|_| maskable) {
+                let _r = ui.scope(|ui| mask_grid(ui, m, lt, palette, &mut g, egui::Id::new(("fx_mask", i)))).response;
+                #[cfg(test)]
+                test_rects::push(format!("maskgrid{i}"), _r.rect);
+            }
+            let kind = fx.kind;
+            Grid::new(("fx_params", i)).num_columns(2).show(ui, |ui| {
+                for (j, spec) in kind.params().iter().enumerate() {
+                    let Some(a) = fx.params.get_mut(j) else { continue };
+                    ui.label(spec.name);
                     ui.horizontal(|ui| {
-                        ui.label("Colour");
-                        let mut rgb = [fx.params[0].at(lt) as u8, fx.params[1].at(lt) as u8, fx.params[2].at(lt) as u8];
-                        let r = ui.color_edit_button_srgb(&mut rgb);
-                        if r.changed() {
-                            for (a, v) in fx.params.iter_mut().zip(rgb) {
-                                a.set_at(lt, v as f64);
+                        let mut v = a.at(lt);
+                        let r = if kind == EffectKind::Wobble && spec.name == "Motion" {
+                            // a named waveform reads better than 0..4 (Sine / Layered / Cubic / …)
+                            let names = crate::model::WOBBLE_MOTIONS;
+                            let cur = (v.round().clamp(0.0, (names.len() - 1) as f64)) as usize;
+                            let mut sel = cur;
+                            let inner = egui::ComboBox::from_id_salt(("wobble_motion", i))
+                                .selected_text(names[cur])
+                                .width(96.0)
+                                .show_ui(ui, |ui| {
+                                    for (k, n) in names.iter().enumerate() {
+                                        ui.selectable_value(&mut sel, k, *n);
+                                    }
+                                });
+                            let mut r = inner.response;
+                            if sel != cur {
+                                v = sel as f64;
+                                r.mark_changed();
                             }
+                            r
+                        } else if kind.is_bool_param(j) {
+                            // stored as 0/1 — a checkbox is the honest widget (Flip H/V, "Show mask", …)
+                            let mut on = v >= 0.5;
+                            let r = ui.checkbox(&mut on, "");
+                            if r.changed() {
+                                v = if on { 1.0 } else { 0.0 };
+                            }
+                            r
+                        } else {
+                            // clamp_existing_to_range(false): clamping an out-of-range stored value
+                            // reports `changed()`, which would fake an edit just by drawing the panel.
+                            let mut dv = DragValue::new(&mut v)
+                                .range(spec.min..=spec.max)
+                                .clamp_existing_to_range(false)
+                                .speed((spec.max - spec.min) / 200.0);
+                            if kind == EffectKind::Wobble {
+                                dv = dv.suffix(wobble_suffix(spec.name));
+                            }
+                            ui.add(dv)
+                        };
+                        #[cfg(test)]
+                        test_rects::push(format!("param{i}_{j}"), r.rect);
+                        if r.changed() {
+                            a.set_at(lt, v);
+                            param_edits.push((i, spec.name.to_string(), v));
                         }
                         g.note(&r);
+                        key_buttons(ui, a, lt, palette, &mut g, (i, j));
                     });
+                    ui.end_row();
                 }
-                // the effect's own mask: same grid as the inspector's clip mask, so it can be shaped
-                // without the viewport (the mask tool only ever edits clip.mask)
-                if let Some(m) = fx.mask.as_mut().filter(|_| maskable) {
-                    let _r =
-                        ui.scope(|ui| mask_grid(ui, m, lt, palette, &mut g, egui::Id::new(("fx_mask", i)))).response;
-                    #[cfg(test)]
-                    test_rects::push(format!("maskgrid{i}"), _r.rect);
-                }
-                let kind = fx.kind;
-                Grid::new(("fx_params", i)).num_columns(2).show(ui, |ui| {
-                    for (j, spec) in kind.params().iter().enumerate() {
-                        let Some(a) = fx.params.get_mut(j) else { continue };
-                        ui.label(spec.name);
-                        ui.horizontal(|ui| {
-                            let mut v = a.at(lt);
-                            let r = if kind == EffectKind::Wobble && spec.name == "Motion" {
-                                // a named waveform reads better than 0..4 (Sine / Layered / Cubic / …)
-                                let names = crate::model::WOBBLE_MOTIONS;
-                                let cur = (v.round().clamp(0.0, (names.len() - 1) as f64)) as usize;
-                                let mut sel = cur;
-                                let inner = egui::ComboBox::from_id_salt(("wobble_motion", i))
-                                    .selected_text(names[cur])
-                                    .width(96.0)
-                                    .show_ui(ui, |ui| {
-                                        for (k, n) in names.iter().enumerate() {
-                                            ui.selectable_value(&mut sel, k, *n);
-                                        }
-                                    });
-                                let mut r = inner.response;
-                                if sel != cur {
-                                    v = sel as f64;
-                                    r.mark_changed();
-                                }
-                                r
-                            } else if kind.is_bool_param(j) {
-                                // stored as 0/1 — a checkbox is the honest widget (Flip H/V, "Show mask", …)
-                                let mut on = v >= 0.5;
-                                let r = ui.checkbox(&mut on, "");
-                                if r.changed() {
-                                    v = if on { 1.0 } else { 0.0 };
-                                }
-                                r
-                            } else {
-                                // clamp_existing_to_range(false): clamping an out-of-range stored value
-                                // reports `changed()`, which would fake an edit just by drawing the panel.
-                                let mut dv = DragValue::new(&mut v)
-                                    .range(spec.min..=spec.max)
-                                    .clamp_existing_to_range(false)
-                                    .speed((spec.max - spec.min) / 200.0);
-                                if kind == EffectKind::Wobble {
-                                    dv = dv.suffix(wobble_suffix(spec.name));
-                                }
-                                ui.add(dv)
-                            };
-                            #[cfg(test)]
-                            test_rects::push(format!("param{i}_{j}"), r.rect);
-                            if r.changed() {
-                                a.set_at(lt, v);
-                            }
-                            g.note(&r);
-                            key_buttons(ui, a, lt, palette, &mut g, (i, j));
-                        });
-                        ui.end_row();
-                    }
-                });
             });
+        });
+        // >=150ms hover on the header row wires the wave-0 `EffectsResponse.hover` stub (real async GPU
+        // preview via `App.alt_render` lands where the caller wires `EffectsResponse`, not here).
+        if crate::ui::hover_after(ui, header_id, &header_inner.response, 150.0) {
+            out.hover = Some(i);
+        }
+        // drop target: did a drag payload (this same stack's grip handle) land on this row this frame?
+        if let Some(payload) = header_inner.response.dnd_release_payload::<EffectDragId>() {
+            if let Some(from) = keys.iter().position(|k| *k == payload.0) {
+                if from != i {
+                    drag_move = Some((from, i));
+                }
+            }
+        }
     }
     if let Some(i) = copy {
         PARAM_CLIP.with(|c| *c.borrow_mut() = clip.effects.get(i).cloned());
@@ -586,6 +640,11 @@ pub fn show(
     }
     if let Some((a, b)) = swap {
         clip.effects.swap(a, b);
+        g.click();
+    }
+    if let Some((from, to)) = drag_move {
+        let e = clip.effects.remove(from);
+        clip.effects.insert(to, e);
         g.click();
     }
     if let Some(i) = remove {
@@ -621,6 +680,18 @@ pub fn show(
     if g.changed {
         if let Some(c) = project.clip_mut(id) {
             *c = clip;
+        }
+    }
+    // ---- ws:inspector-gallery ----
+    // Bulk propagation: a param edit at stack index `i` on the representative clip (`id`, first) is
+    // pushed as an absolute value (not a relative delta) onto every OTHER selected clip whose effect at
+    // that same index shares its kind — `Project::bulk_set_effect_params` already skips a mismatch.
+    if !param_edits.is_empty() && selection.len() > 1 {
+        let ids: Vec<Id> = std::iter::once(id).chain(selection.iter().copied().filter(|&s| s != id)).collect();
+        for (index, name, value) in param_edits {
+            let mut params = std::collections::HashMap::new();
+            params.insert(name, value);
+            project.bulk_set_effect_params(&ids, index, &params);
         }
     }
     out.edited |= g.changed;
@@ -683,6 +754,7 @@ mod tests {
                     out.edited |= r.edited;
                     out.open_nodes |= r.open_nodes;
                     out.mask_for = r.mask_for.or(out.mask_for);
+                    out.hover = r.hover.or(out.hover);
                 });
             });
             *shapes = full.shapes;
@@ -1044,5 +1116,66 @@ mod tests {
         PENDING_MOTION.with(|s| *s.borrow_mut() = Some(MotionPreset { name: "m".into(), props: Vec::new() }));
         assert_eq!(take_pending_motion().map(|m| m.name), Some("m".into()));
         assert!(take_pending_motion().is_none());
+    }
+
+    // ---- ws:inspector-gallery ----
+    #[test]
+    fn stable_effect_key_is_kind_and_same_kind_rank() {
+        let fx = vec![Effect::new(EffectKind::Blur), Effect::new(EffectKind::Vignette), Effect::new(EffectKind::Blur)];
+        assert_eq!(stable_effect_key(&fx, 0), "Blur#0");
+        assert_eq!(stable_effect_key(&fx, 1), "Vignette#0");
+        assert_eq!(stable_effect_key(&fx, 2), "Blur#1", "second Blur in the stack ranks #1 among same-kind");
+    }
+
+    #[test]
+    fn fold_state_keyed_by_kind_survives_a_reorder() {
+        // a single Blur's key never depends on its position, so folding it and moving OTHER effects
+        // around it must not lose its own fold association.
+        let before = vec![Effect::new(EffectKind::Blur), Effect::new(EffectKind::Vignette)];
+        let after = vec![Effect::new(EffectKind::Vignette), Effect::new(EffectKind::Blur)];
+        assert_eq!(stable_effect_key(&before, 0), stable_effect_key(&after, 1));
+    }
+
+    #[test]
+    fn stack_reorder_via_local_drag_payload_moves_and_is_one_undo() {
+        let mut h = Harness::new();
+        h.project.tracks[0].clips[0].effects = vec![Effect::new(EffectKind::Blur), Effect::new(EffectKind::Vignette)];
+        h.frame(vec![]); // lay out once so the drop-target row's rect is captured
+        let target = h.rect("draghandle1").center();
+        // bypass simulating the exact press+move `drag_started` gesture on the source handle (finicky in
+        // a synthetic harness) — inject the payload directly, the same state `dnd_set_drag_payload` would
+        // have set, then release over the target row.
+        egui::DragAndDrop::set_payload(
+            &h.ctx,
+            EffectDragId(stable_effect_key(&h.project.tracks[0].clips[0].effects, 0)),
+        );
+        h.frame(vec![
+            Event::PointerMoved(target),
+            Event::PointerButton {
+                pos: target,
+                button: PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            },
+        ]);
+        let kinds: Vec<EffectKind> = h.clip().effects.iter().map(|e| e.kind).collect();
+        assert_eq!(kinds, [EffectKind::Vignette, EffectKind::Blur], "dropping row 0 onto row 1 moves it there");
+        assert_eq!(h.undos, 1);
+    }
+
+    #[test]
+    fn hover_after_150ms_wires_the_hover_stub() {
+        let mut h = Harness::new();
+        h.project.tracks[0].clips[0].effects = vec![Effect::new(EffectKind::Blur)];
+        h.frame(vec![]);
+        let over = h.rect("draghandle0").center();
+        // first hovered frame: elapsed time is ~0, below the 150ms threshold
+        h.frame(vec![Event::PointerMoved(over)]);
+        assert_eq!(h.last.hover, None);
+        // advance real time past the threshold (Harness::frame bumps `self.time` by 50ms/frame)
+        for _ in 0..4 {
+            h.frame(vec![Event::PointerMoved(over)]);
+        }
+        assert_eq!(h.last.hover, Some(0));
     }
 }

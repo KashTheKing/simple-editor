@@ -9,7 +9,7 @@
 use super::tools_args::Args;
 use super::tools_helpers::*;
 use super::*;
-use crate::engine::{effects, gpu::FrameStats, lut, presets};
+use crate::engine::{effects, gpu::FrameStats, lut};
 use crate::mcp::tools::{ToolDef, ToolKind, ToolOutcome};
 
 /// Every colour-grade-category `EffectKind` `clip.bypass`/`Action::BypassGrade` toggle.
@@ -193,19 +193,17 @@ fn run(app: &mut App, name: &str, args: &Value) -> Result<Value, String> {
             let t = Args(args).t_or_playhead("t", app);
             Ok(stats_at(app, t).as_ref().map(stats_json).unwrap_or_else(|| json!({})))
         }
-        "looks.list" => Ok(json!(presets::builtin_looks().iter().map(|p| p.name.clone()).collect::<Vec<_>>())),
+        // ---- ws:inspector-gallery ----
+        // Thin wrappers around tools_gallery's `find_look`/`apply_look_by_name` — the same underlying
+        // logic `gallery.list`/`gallery.apply(tab=Looks)` use — so a Look name (builtin OR user-saved)
+        // resolves and applies identically no matter which tool name is called. `looks.apply` used to
+        // only know builtins, so the same name could succeed via `gallery.apply` and fail here.
+        "looks.list" => Ok(json!(crate::ui::gallery::card_names(crate::ui::gallery::GalleryTab::Looks, &app.settings))),
         "looks.apply" => {
             let id = req(arg_u64(args, "clip_id"), "clip_id")?;
             let name = req(arg_str(args, "name"), "name")?;
             let intensity = arg_f64(args, "intensity").unwrap_or(1.0) as f32;
-            let preset = presets::builtin_looks()
-                .into_iter()
-                .find(|p| p.name.eq_ignore_ascii_case(name))
-                .ok_or_else(|| format!("no such Look '{name}'"))?;
-            if !presets::apply_look(&preset, &mut app.project, id, intensity) {
-                return Err("no such clip".into());
-            }
-            Ok(json!({"ok": true}))
+            super::tools_gallery::apply_look_by_name(&mut app.project, &app.settings, name, &[id], intensity)
         }
         "media.set_effects" => {
             let id = req(arg_u64(args, "asset_id"), "asset_id")?;
@@ -374,14 +372,14 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "looks.list",
-        desc: "Names of the 12 built-in Looks.",
+        desc: "Names of every Look: the 12 built-ins plus any user-saved (non-graph) Settings.effect_presets — same list gallery.list(tab=Looks) returns.",
         args: &[],
         kind: ToolKind::Read,
         run: |a, v| dispatch(a, "looks.list", v).unwrap().map(ToolOutcome::Done),
     },
     ToolDef {
         name: "looks.apply",
-        desc: "Apply a built-in Look to a clip, replacing its effect stack, scaled by intensity (0 = no-op, 1 = the Look unmodified).",
+        desc: "Apply a Look (built-in or user-saved) to a clip, replacing its effect stack, scaled by intensity (0 = no-op, 1 = the Look unmodified). Same resolution/result as gallery.apply(tab=Looks) for the same name.",
         args: &["clip_id:integer:true:", "name:string:true:", "intensity:number:false:default 1.0"],
         kind: ToolKind::Mutate,
         run: |a, v| dispatch(a, "looks.apply", v).unwrap().map(ToolOutcome::Done),

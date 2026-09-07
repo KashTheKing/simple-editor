@@ -826,6 +826,33 @@ impl App {
                 }
             }
         }
+        // ---- ws:inspector-gallery ----
+        // Asset block's "Open in Library" — description/tags/label/folder are edited only in Library's
+        // asset-details box now (see library.rs's doc comment).
+        if let Some(id) = inspector::take_open_asset() {
+            self.library.selected = Some(id);
+            self.library.sel_ids = vec![id];
+            self.layout.reveal(Pane::Library);
+            self.layout_dirty = true;
+        }
+        // Color section's Auto Colour / Match: both need a live GPU-rendered frame, which only App can
+        // produce (color_ui.rs itself only has `&mut Clip`) — reuse color-engine's own tools rather than
+        // recomputing FrameStats here.
+        if let Some(id) = inspector::take_pending_color_auto() {
+            if let Err(e) = self.run_tool_undoable("color.auto", &json!({"clip_id": id})) {
+                self.toast(e);
+            }
+        }
+        if let Some((id, rid)) = inspector::take_pending_color_match() {
+            if let Err(e) = self.run_tool_undoable("color.match", &json!({"clip_id": id, "reference_clip_id": rid})) {
+                self.toast(e);
+            }
+        }
+        // ponytail: armed but not consumed into an actual pixel sample yet — see color_ui.rs's doc
+        // comment. An honest toast beats a click that silently does nothing.
+        if inspector::take_pending_eyedrop().is_some() {
+            self.toast("Eyedropper: click a point on the preview to sample a colour (not wired yet)");
+        }
         // URL downloads: import the finished file, report failures
         let mut fetched: Vec<(Option<PathBuf>, Option<String>, bool)> = Vec::new();
         self.downloads.retain(|d| {

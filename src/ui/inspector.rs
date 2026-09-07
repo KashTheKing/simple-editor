@@ -34,6 +34,7 @@ use crate::ui::markers_ui::x_button;
 use crate::ui::{edit_start, key_buttons, mask_grid, timecode, Gesture};
 use eframe::egui::{self, DragValue, Grid, Response, RichText};
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 
 /// Test-only: remember a widget rect so headless tests can click the real button.
 #[cfg(test)]
@@ -103,6 +104,70 @@ pub fn take_open_sequence() -> Option<Id> {
 /// through the same `Action` dispatch the menus and hotkeys use.
 pub fn take_pending_action() -> Option<Action> {
     PENDING_ACTION.with(|p| p.borrow_mut().take())
+}
+
+// ---- ws:inspector-gallery ----
+thread_local! {
+    /// Asset the user asked to jump to via the collapsed Asset block's "Open in Library" link.
+    static OPEN_ASSET: RefCell<Option<Id>> = const { RefCell::new(None) };
+    /// Color section "Auto Colour" click: needs a live GPU-rendered frame (`FrameStats`), which only
+    /// `App` can produce — `App::poll_panels` drains this into `run_tool_undoable("color.auto", …)`.
+    static PENDING_COLOR_AUTO: RefCell<Option<Id>> = const { RefCell::new(None) };
+    /// Color section "Match" click: (clip, reference clip) — same App-only reason as above.
+    static PENDING_COLOR_MATCH: RefCell<Option<(Id, Id)>> = const { RefCell::new(None) };
+    /// Color section "Eyedropper" click. ponytail: armed here, but nothing samples a pixel from it yet
+    /// (that needs a canvas click handler in `preview.rs`, owned by canvas-handles-monitor) —
+    /// `App::poll_panels` still drains it and toasts an honest "not wired yet".
+    static PENDING_EYEDROP: RefCell<Option<Id>> = const { RefCell::new(None) };
+}
+
+/// Asset the user asked to open in the Library pane (its own asset-details box is the only place
+/// description/tags/label/folder are edited today — see `library.rs`'s doc comment).
+pub fn take_open_asset() -> Option<Id> {
+    OPEN_ASSET.with(|p| p.borrow_mut().take())
+}
+
+pub fn take_pending_color_auto() -> Option<Id> {
+    PENDING_COLOR_AUTO.with(|p| p.borrow_mut().take())
+}
+
+pub fn take_pending_color_match() -> Option<(Id, Id)> {
+    PENDING_COLOR_MATCH.with(|p| p.borrow_mut().take())
+}
+
+pub fn take_pending_eyedrop() -> Option<Id> {
+    PENDING_EYEDROP.with(|p| p.borrow_mut().take())
+}
+
+/// A collapsible inspector block: `CollapsingState` keyed by `id` (stable across a clip/effect/kind
+/// change, so `Settings.inspector_folds` remembers "Effects is open" independent of which clip is
+/// selected), `default_open` used only the first time `id` is ever seen (no `folds` entry yet — after
+/// that, the user's own last choice always wins over `default_open`, even across a restart, since
+/// `folds` mirrors straight into `Settings.inspector_folds`). `header` draws extra header-row content
+/// (buttons, a summary label) after `title`; `body` draws the section's contents when expanded.
+pub(crate) fn section(
+    ui: &mut egui::Ui,
+    id: &str,
+    title: &str,
+    default_open: bool,
+    folds: &mut BTreeMap<String, bool>,
+    header: impl FnOnce(&mut egui::Ui),
+    body: impl FnOnce(&mut egui::Ui),
+) {
+    let open_default = folds.get(id).copied().unwrap_or(default_open);
+    let cid = egui::Id::new(("insp_section", id));
+    let state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), cid, open_default);
+    let header_resp = state.show_header(ui, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.strong(title);
+            header(ui);
+        });
+    });
+    let now_open = header_resp.is_open();
+    header_resp.body(|ui| body(ui));
+    if now_open != open_default {
+        folds.insert(id.to_string(), now_open);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -557,10 +622,6 @@ fn clip_section(
     let mut edit_labels: bool = ui.ctx().data(|d| d.get_temp(labels_open_id).unwrap_or(false));
     let mut label_ops: Vec<LabelOp> = Vec::new();
     let mut path_op: Option<PathOp> = None;
-    // asset-details gesture/scratch (zone 2, but read back at commit time outside any wrap)
-    let mut ga = Gesture::default();
-    let mut asset_desc: Option<String> = None;
-    let mut asset_tags: Option<Vec<String>> = None;
     let multi = n_selected > 1;
 
     if multi {
@@ -679,7 +740,11 @@ fn clip_section(
                     s.push_str(", freeze frame");
                 }
                 ui.label(s);
-                ui.weak("Retime… Ctrl+R");
+                let r = ui.small_button("Retime… Ctrl+R");
+                mark(ui, "retime", &r);
+                if r.clicked() {
+                    PENDING_ACTION.with(|p| *p.borrow_mut() = Some(Action::Retime));
+                }
             });
             ui.end_row();
         }
@@ -697,22 +762,72 @@ fn clip_section(
     let mut text_changed = false;
     let mut bus_changed = false;
     ui.add_enabled_ui(!multi, |ui| {
+        // primary-first: the section a beginner needs most for this ClipKind starts expanded, the rest
+        // start collapsed the first time they're ever seen (after that, the user's own fold choice wins).
+        let primary_effects = matches!(clip.kind, ClipKind::Video | ClipKind::Image | ClipKind::Audio);
         if !clip.effects.is_empty() {
             ui.separator();
-            ui.strong("Effects");
             let mut rm: Option<usize> = None;
-            for (i, e) in clip.effects.iter_mut().enumerate() {
-                ui.horizontal(|ui| {
-                    g.note(&ui.checkbox(&mut e.enabled, e.kind.name()));
-                    if crate::ui::markers_ui::x_button(ui).on_hover_text("Remove this effect").clicked() {
-                        rm = Some(i);
+            // Two independently-remembered fold keys, not one shared "effects" — `default_open` only
+            // takes effect the FIRST time a `CollapsingState`/`folds` id is ever seen (see `section`'s
+            // doc comment). A single "effects" id shared between primary (Video/Image/Audio) and
+            // secondary (Text/Shape/Sequence) clips let a secondary clip's closed-by-default fold get
+            // "stuck" and then silently overwrite the primary default the next time a primary clip's
+            // Effects section was shown, permanently defaulting it closed for every clip kind.
+            section(
+                ui,
+                if primary_effects { "effects_primary" } else { "effects_secondary" },
+                "Effects",
+                primary_effects,
+                &mut settings.inspector_folds,
+                |_ui| {},
+                |ui| {
+                    for (i, e) in clip.effects.iter_mut().enumerate() {
+                        ui.horizontal(|ui| {
+                            g.note(&ui.checkbox(&mut e.enabled, e.kind.name()));
+                            if crate::ui::markers_ui::x_button(ui).on_hover_text("Remove this effect").clicked() {
+                                rm = Some(i);
+                            }
+                        });
                     }
-                });
-            }
+                },
+            );
             if let Some(i) = rm {
                 clip.effects.remove(i);
                 g.click();
             }
+        }
+
+        // Color: Primaries/Curves/Levels/HueShift/Vignette, added lazily on first touch — audio has
+        // nothing to grade.
+        if clip.is_visual() {
+            ui.separator();
+            let others: Vec<(Id, String)> = clip_ids
+                .iter()
+                .copied()
+                .filter(|&i| i != id)
+                .filter_map(|i| project.clip(i).map(|c| (i, c.name.clone())))
+                .collect();
+            section(
+                ui,
+                "color",
+                "Color",
+                false,
+                &mut settings.inspector_folds,
+                |_ui| {},
+                |ui| {
+                    let resp = crate::ui::color_ui::show(ui, &mut clip, &others, palette, &mut g);
+                    if resp.auto {
+                        PENDING_COLOR_AUTO.with(|p| *p.borrow_mut() = Some(id));
+                    }
+                    if let Some(rid) = resp.match_ref {
+                        PENDING_COLOR_MATCH.with(|p| *p.borrow_mut() = Some((id, rid)));
+                    }
+                    if resp.eyedrop {
+                        PENDING_EYEDROP.with(|p| *p.borrow_mut() = Some(id));
+                    }
+                },
+            );
         }
 
         let transitions: Vec<String> = project
@@ -722,67 +837,80 @@ fn clip_section(
             .collect();
         if !transitions.is_empty() {
             ui.separator();
-            ui.strong("Transitions");
-            for t in &transitions {
-                ui.weak(t);
-            }
+            section(
+                ui,
+                "transitions",
+                "Transitions",
+                false,
+                &mut settings.inspector_folds,
+                |_ui| {},
+                |ui| {
+                    for t in &transitions {
+                        ui.weak(t);
+                    }
+                },
+            );
         }
 
         if clip.kind == ClipKind::Sequence {
             ui.separator();
-            ui.strong("Sequence");
             let name = project.sequence(clip.sequence).map(|s| s.name.clone()).unwrap_or_else(|| "(missing)".into());
-            ui.horizontal(|ui| {
-                ui.label(name);
-                if ui.button("Open sequence").clicked() {
-                    OPEN_SEQUENCE.with(|p| *p.borrow_mut() = Some(clip.sequence));
-                }
-            });
+            section(
+                ui,
+                "sequence",
+                "Sequence",
+                true,
+                &mut settings.inspector_folds,
+                |_ui| {},
+                |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(name);
+                        if ui.button("Open sequence").clicked() {
+                            OPEN_SEQUENCE.with(|p| *p.borrow_mut() = Some(clip.sequence));
+                        }
+                    });
+                },
+            );
         }
 
-        // asset details (description / tags live on the asset, not the clip)
+        // asset details: a status line + "Open in Library" — description/tags/label/folder are edited
+        // ONLY in Library's asset-details box now (see library.rs's doc comment); this used to duplicate
+        // those editors inline, which is why `asset_desc`/`asset_tags`/`ga` below no longer get written.
         if clip.uses_asset() {
             if let Some(a) = project.asset(clip.asset) {
                 ui.separator();
-                ui.strong("Asset");
-                ui.add(egui::Label::new(RichText::new(a.name()).weak()).truncate()).on_hover_text(&a.path);
-                ui.weak(format!("Used in: {} clips", asset_use_count(project, a.id)));
-                // where this asset sits in the proxy pipeline (playback smoothness at 4K depends on it)
-                match crate::media::proxy::status(a, settings.use_proxies, settings.proxy_height) {
-                    crate::media::proxy::ProxyStatus::Ready => {
-                        ui.weak("Proxy: ready (preview plays the low-res proxy)");
-                    }
-                    crate::media::proxy::ProxyStatus::Building(f) => {
-                        ui.weak(format!("Proxy: building — {:.0} %", f * 100.0));
-                    }
-                    crate::media::proxy::ProxyStatus::Queued => {
-                        ui.weak("Proxy: queued (builds run one at a time)");
-                    }
-                    crate::media::proxy::ProxyStatus::NotNeeded => {}
-                }
-                let mut desc = a.description.clone();
-                let r = ui.add(egui::TextEdit::multiline(&mut desc).desired_rows(2).hint_text("description"));
-                if r.changed() {
-                    asset_desc = Some(desc);
-                }
-                ga.note_text(&r);
-                // The raw text is kept so a comma survives typing; it is stored with the tags it produced and
-                // dropped again as soon as the asset's tags were changed elsewhere (library details box).
-                let tags_id = egui::Id::new(("asset_tags", a.id));
-                let mut buf = ui
-                    .ctx()
-                    .data_mut(|d| d.get_temp::<(String, Vec<String>)>(tags_id))
-                    .filter(|(_, src)| *src == a.tags)
-                    .map(|(b, _)| b)
-                    .unwrap_or_else(|| a.tags.join(", "));
-                let r = ui.add(egui::TextEdit::singleline(&mut buf).hint_text("tags, comma, separated"));
-                if r.changed() {
-                    let tags: Vec<String> =
-                        buf.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
-                    ui.ctx().data_mut(|d| d.insert_temp(tags_id, (buf, tags.clone())));
-                    asset_tags = Some(tags);
-                }
-                ga.note_text(&r);
+                section(
+                    ui,
+                    "asset",
+                    "Asset",
+                    false,
+                    &mut settings.inspector_folds,
+                    |_ui| {},
+                    |ui| {
+                        ui.add(egui::Label::new(RichText::new(a.name()).weak()).truncate()).on_hover_text(&a.path);
+                        ui.weak(format!("Used in: {} clips", asset_use_count(project, a.id)));
+                        // where this asset sits in the proxy pipeline (playback smoothness at 4K depends on it)
+                        match crate::media::proxy::status(a, settings.use_proxies, settings.proxy_height) {
+                            crate::media::proxy::ProxyStatus::Ready => {
+                                ui.weak("Proxy: ready (preview plays the low-res proxy)");
+                            }
+                            crate::media::proxy::ProxyStatus::Building(f) => {
+                                ui.weak(format!("Proxy: building — {:.0} %", f * 100.0));
+                            }
+                            crate::media::proxy::ProxyStatus::Queued => {
+                                ui.weak("Proxy: queued (builds run one at a time)");
+                            }
+                            crate::media::proxy::ProxyStatus::NotNeeded => {}
+                        }
+                        let r = ui
+                            .button("Open in Library")
+                            .on_hover_text("Edit description, tags, label and folder there");
+                        mark(ui, "open_asset", &r);
+                        if r.clicked() {
+                            OPEN_ASSET.with(|p| *p.borrow_mut() = Some(a.id));
+                        }
+                    },
+                );
             }
         }
 
@@ -920,113 +1048,150 @@ fn clip_section(
             ui.weak("Adjustment layer — its effects apply to everything below it on the timeline.");
         }
 
-        // node graph
+        // node graph — the buttons live in the header row (reachable without expanding), no fold body
         ui.separator();
-        ui.horizontal(|ui| {
-            ui.strong("Nodes");
-            let has = clip.graph.is_some();
-            let r = ui.button("Open node editor").on_hover_text(if has {
-                "Edit the node graph"
-            } else {
-                "Convert this clip's effect stack to nodes"
-            });
-            mark(ui, "open_nodes", &r);
-            if r.clicked() {
-                OPEN_NODES.with(|p| *p.borrow_mut() = Some(id));
-            }
-            if has {
-                let n = clip.graph.as_ref().map(|gr| gr.nodes.len()).unwrap_or(0);
-                ui.weak(format!("{n} nodes"));
-                let r = ui.button("Unlink").on_hover_text("Back to a plain effect list (a simple chain only)");
-                mark(ui, "unlink_nodes", &r);
+        section(
+            ui,
+            "nodes",
+            "Nodes",
+            false,
+            &mut settings.inspector_folds,
+            |ui| {
+                let has = clip.graph.is_some();
+                let r = ui.button("Open node editor").on_hover_text(if has {
+                    "Edit the node graph"
+                } else {
+                    "Convert this clip's effect stack to nodes"
+                });
+                mark(ui, "open_nodes", &r);
                 if r.clicked() {
-                    UNLINK_NODES.with(|p| *p.borrow_mut() = Some(id));
+                    OPEN_NODES.with(|p| *p.borrow_mut() = Some(id));
                 }
-            }
-        });
+                if has {
+                    let n = clip.graph.as_ref().map(|gr| gr.nodes.len()).unwrap_or(0);
+                    ui.weak(format!("{n} nodes"));
+                    let r = ui.button("Unlink").on_hover_text("Back to a plain effect list (a simple chain only)");
+                    mark(ui, "unlink_nodes", &r);
+                    if r.clicked() {
+                        UNLINK_NODES.with(|p| *p.borrow_mut() = Some(id));
+                    }
+                }
+            },
+            |_ui| {},
+        );
 
-        // mask — a mask shapes pixels, so an audio clip gets no mask UI at all (not even a dead button)
+        // mask — a mask shapes pixels, so an audio clip gets no mask UI at all (not even a dead button).
+        // The header/body closures below can't both hold `&mut clip`/`&mut g` at once (they coexist as
+        // sibling arguments to `section`), so the header only reports intent through plain local flags
+        // and every actual mutation happens after the call, same trick the Nodes block above avoids by
+        // simply not needing one.
         if clip.is_visual() {
             ui.separator();
-            ui.horizontal(|ui| {
-                ui.strong("Mask");
-                if clip.mask.is_none() {
-                    let r = ui.button("Add mask");
-                    mark(ui, "add_mask", &r);
-                    if r.clicked() {
-                        clip.mask = Some(Mask::default());
-                        g.click();
+            let has_mask = clip.mask.is_some();
+            let mut add_mask = false;
+            let mut edit_mask_click = false;
+            let mut remove_mask = false;
+            section(
+                ui,
+                "mask",
+                "Mask",
+                false,
+                &mut settings.inspector_folds,
+                |ui| {
+                    if !has_mask {
+                        let r = ui.button("Add mask");
+                        mark(ui, "add_mask", &r);
+                        add_mask = r.clicked();
+                    } else {
+                        let r = ui.button("Edit in viewport").on_hover_text("Drag the mask over the preview");
+                        mark(ui, "edit_mask", &r);
+                        edit_mask_click = r.clicked();
+                        if x_button(ui).on_hover_text("Remove mask").clicked() {
+                            remove_mask = true;
+                        }
                     }
-                } else {
-                    let r = ui.button("Edit in viewport").on_hover_text("Drag the mask over the preview");
-                    mark(ui, "edit_mask", &r);
-                    if r.clicked() {
-                        EDIT_MASK.with(|p| *p.borrow_mut() = Some(id));
+                },
+                |ui| {
+                    if let Some(m) = &mut clip.mask {
+                        mask_grid(ui, m, lt, palette, &mut g, egui::Id::new("inspector_mask"));
                     }
-                    if x_button(ui).on_hover_text("Remove mask").clicked() {
-                        clip.mask = None;
-                        g.click();
-                    }
-                }
-            });
-            if let Some(m) = &mut clip.mask {
-                mask_grid(ui, m, lt, palette, &mut g, egui::Id::new("inspector_mask"));
+                },
+            );
+            if add_mask {
+                clip.mask = Some(Mask::default());
+                g.click();
+            }
+            if edit_mask_click {
+                EDIT_MASK.with(|p| *p.borrow_mut() = Some(id));
+            }
+            if remove_mask {
+                clip.mask = None;
+                g.click();
             }
         }
 
         // shape style
         if let Some(sh) = &mut clip.shape {
             ui.separator();
-            ui.strong("Shape");
-            Grid::new("inspector_shape").num_columns(2).show(ui, |ui| {
-                ui.label("Kind");
-                egui::ComboBox::from_id_salt("shape_kind").selected_text(sh.kind.name()).show_ui(ui, |ui| {
-                    for k in ShapeKind::ALL {
-                        g.note(&ui.selectable_value(&mut sh.kind, k, k.name()));
-                    }
-                });
-                ui.end_row();
-                ui.label("Fill");
-                g.note(&ui.color_edit_button_srgba_unmultiplied(&mut sh.fill));
-                ui.end_row();
-                ui.label("Stroke");
-                ui.horizontal(|ui| {
-                    g.note(&ui.color_edit_button_srgba_unmultiplied(&mut sh.stroke));
-                    g.note(&ui.add(DragValue::new(&mut sh.stroke_width).range(0.0..=200.0).speed(0.2)));
-                });
-                ui.end_row();
-                ui.label("Sides");
-                g.note(&ui.add(DragValue::new(&mut sh.sides).range(3..=64)));
-                ui.end_row();
-                ui.label("Corner");
-                g.note(&ui.add(DragValue::new(&mut sh.corner).range(0.0..=500.0).speed(0.5)));
-                ui.end_row();
-                for label in ["Width", "Height"] {
-                    ui.label(label);
-                    ui.horizontal(|ui| {
-                        let a: &mut Animated = if label == "Width" { &mut sh.w } else { &mut sh.h };
-                        let mut v = a.at(lt);
-                        let r = ui.add(DragValue::new(&mut v).range(1.0..=20000.0).speed(1.0));
-                        if r.changed() {
-                            a.set_at(lt, v);
+            section(
+                ui,
+                "shape",
+                "Shape",
+                false,
+                &mut settings.inspector_folds,
+                |_ui| {},
+                |ui| {
+                    Grid::new("inspector_shape").num_columns(2).show(ui, |ui| {
+                        ui.label("Kind");
+                        egui::ComboBox::from_id_salt("shape_kind").selected_text(sh.kind.name()).show_ui(ui, |ui| {
+                            for k in ShapeKind::ALL {
+                                g.note(&ui.selectable_value(&mut sh.kind, k, k.name()));
+                            }
+                        });
+                        ui.end_row();
+                        ui.label("Fill");
+                        g.note(&ui.color_edit_button_srgba_unmultiplied(&mut sh.fill));
+                        ui.end_row();
+                        ui.label("Stroke");
+                        ui.horizontal(|ui| {
+                            g.note(&ui.color_edit_button_srgba_unmultiplied(&mut sh.stroke));
+                            g.note(&ui.add(DragValue::new(&mut sh.stroke_width).range(0.0..=200.0).speed(0.2)));
+                        });
+                        ui.end_row();
+                        ui.label("Sides");
+                        g.note(&ui.add(DragValue::new(&mut sh.sides).range(3..=64)));
+                        ui.end_row();
+                        ui.label("Corner");
+                        g.note(&ui.add(DragValue::new(&mut sh.corner).range(0.0..=500.0).speed(0.5)));
+                        ui.end_row();
+                        for label in ["Width", "Height"] {
+                            ui.label(label);
+                            ui.horizontal(|ui| {
+                                let a: &mut Animated = if label == "Width" { &mut sh.w } else { &mut sh.h };
+                                let mut v = a.at(lt);
+                                let r = ui.add(DragValue::new(&mut v).range(1.0..=20000.0).speed(1.0));
+                                if r.changed() {
+                                    a.set_at(lt, v);
+                                }
+                                g.note(&r);
+                                key_buttons(ui, a, lt, palette, &mut g);
+                            });
+                            ui.end_row();
                         }
-                        g.note(&r);
-                        key_buttons(ui, a, lt, palette, &mut g);
+                        if sh.kind == ShapeKind::Draw {
+                            ui.label("Draw rate");
+                            ui.horizontal(|ui| {
+                                g.note(&ui.add(DragValue::new(&mut sh.draw_rate).range(0.0..=8.0).speed(0.05)));
+                                ui.weak(format!("{} strokes · {:.1} s", sh.strokes.len(), sh.draw_duration()));
+                            });
+                            ui.end_row();
+                            ui.label("Page");
+                            g.note(&ui.color_edit_button_srgba_unmultiplied(&mut sh.page));
+                            ui.end_row();
+                        }
                     });
-                    ui.end_row();
-                }
-                if sh.kind == ShapeKind::Draw {
-                    ui.label("Draw rate");
-                    ui.horizontal(|ui| {
-                        g.note(&ui.add(DragValue::new(&mut sh.draw_rate).range(0.0..=8.0).speed(0.05)));
-                        ui.weak(format!("{} strokes · {:.1} s", sh.strokes.len(), sh.draw_duration()));
-                    });
-                    ui.end_row();
-                    ui.label("Page");
-                    g.note(&ui.color_edit_button_srgba_unmultiplied(&mut sh.page));
-                    ui.end_row();
-                }
-            });
+                },
+            );
         } else if clip.kind == ClipKind::Shape {
             ui.separator();
             if ui.button("Add shape style").clicked() {
@@ -1043,29 +1208,37 @@ fn clip_section(
         let paths: Vec<(Id, String)> = project.paths.iter().map(|p| (p.id, p.name.clone())).collect();
         if outline || !paths.is_empty() {
             ui.separator();
-            ui.horizontal(|ui| {
-                ui.strong("Path");
-                if outline {
-                    let r =
-                        ui.small_button("Save").on_hover_text("Keep this outline in the project as a reusable path");
-                    mark(ui, "save_path", &r);
-                    if r.clicked() {
-                        path_op = Some(PathOp::Save);
+            section(
+                ui,
+                "path",
+                "Path",
+                false,
+                &mut settings.inspector_folds,
+                |ui| {
+                    if outline {
+                        let r = ui
+                            .small_button("Save")
+                            .on_hover_text("Keep this outline in the project as a reusable path");
+                        mark(ui, "save_path", &r);
+                        if r.clicked() {
+                            path_op = Some(PathOp::Save);
+                        }
                     }
-                }
-                if !paths.is_empty() {
-                    egui::ComboBox::from_id_salt("clip_path").selected_text("Animate X/Y").width(130.0).show_ui(
-                        ui,
-                        |ui| {
-                            for (pid, name) in &paths {
-                                if ui.selectable_label(false, name).clicked() {
-                                    path_op = Some(PathOp::Apply(*pid));
+                    if !paths.is_empty() {
+                        egui::ComboBox::from_id_salt("clip_path").selected_text("Animate X/Y").width(130.0).show_ui(
+                            ui,
+                            |ui| {
+                                for (pid, name) in &paths {
+                                    if ui.selectable_label(false, name).clicked() {
+                                        path_op = Some(PathOp::Apply(*pid));
+                                    }
                                 }
-                            }
-                        },
-                    );
-                }
-            });
+                            },
+                        );
+                    }
+                },
+                |_ui| {},
+            );
         }
 
         // audio bus override (see inspector_audio::bus_section's doc comment for why this call site
@@ -1073,75 +1246,101 @@ fn clip_section(
         // like audio_changed/text_changed above, so it only needs folding into the final return.
         bus_changed = crate::ui::inspector_audio::bus_section(ui, project, id, clip.kind, undo);
 
-        // clip markers
+        // clip markers (add button lives in the fold body, not the header — it needs the same `&mut
+        // clip`/`&mut g` the list below does, and a header/body pair can't both hold that at once, same
+        // as the Mask block above)
         ui.separator();
-        ui.horizontal(|ui| {
-            ui.strong("Markers");
-            let r = ui.small_button("+ at playhead");
-            mark(ui, "add_marker", &r);
-            if r.clicked() {
-                let t = lt.clamp(0.0, clip.duration);
-                let mid = project.new_id();
-                clip.markers.push(crate::model::Marker { id: mid, t, ..Default::default() });
-                clip.markers.sort_by(|a, b| a.t.total_cmp(&b.t));
-                g.click();
-            }
-        });
-        let mut rm_marker: Option<usize> = None;
-        for (i, m) in clip.markers.iter_mut().enumerate() {
-            ui.horizontal(|ui| {
-                let r = ui.add(DragValue::new(&mut m.t).range(0.0..=1e6).speed(0.05).suffix(" s").fixed_decimals(2));
-                g.note(&r);
-                let w = (ui.available_width() - 30.0).max(50.0);
-                let r = ui.add(egui::TextEdit::singleline(&mut m.name).desired_width(w).hint_text("marker"));
-                g.note_text(&r);
-                if x_button(ui).on_hover_text("Delete marker").clicked() {
-                    rm_marker = Some(i);
+        section(
+            ui,
+            "markers",
+            "Markers",
+            true,
+            &mut settings.inspector_folds,
+            |_ui| {},
+            |ui| {
+                let r = ui.small_button("+ at playhead");
+                mark(ui, "add_marker", &r);
+                if r.clicked() {
+                    let t = lt.clamp(0.0, clip.duration);
+                    let mid = project.new_id();
+                    clip.markers.push(crate::model::Marker { id: mid, t, ..Default::default() });
+                    clip.markers.sort_by(|a, b| a.t.total_cmp(&b.t));
+                    g.click();
                 }
-            });
-        }
-        if let Some(i) = rm_marker {
-            clip.markers.remove(i);
-            g.click();
-        }
-        if clip.markers.is_empty() {
-            ui.weak("No clip markers");
-        }
+                let mut rm_marker: Option<usize> = None;
+                for (i, m) in clip.markers.iter_mut().enumerate() {
+                    ui.horizontal(|ui| {
+                        let r = ui
+                            .add(DragValue::new(&mut m.t).range(0.0..=1e6).speed(0.05).suffix(" s").fixed_decimals(2));
+                        g.note(&r);
+                        let w = (ui.available_width() - 30.0).max(50.0);
+                        let r = ui.add(egui::TextEdit::singleline(&mut m.name).desired_width(w).hint_text("marker"));
+                        g.note_text(&r);
+                        if x_button(ui).on_hover_text("Delete marker").clicked() {
+                            rm_marker = Some(i);
+                        }
+                    });
+                }
+                if let Some(i) = rm_marker {
+                    clip.markers.remove(i);
+                    g.click();
+                }
+                if clip.markers.is_empty() {
+                    ui.weak("No clip markers");
+                }
+            },
+        );
     }); // end zone 2 (add_enabled_ui)
 
     // compact labels editor (labels live on the project, not the clip) — project-wide, so it stays
     // interactive regardless of how many clips are selected (see the doc comment above zone 2).
     if edit_labels {
         ui.separator();
-        ui.horizontal(|ui| {
-            ui.strong("Labels");
-            if ui.small_button("Add").clicked() {
-                label_ops.push(LabelOp::Add);
-            }
-            if ui.small_button("Done").clicked() {
-                edit_labels = false;
-            }
-        });
-        for (i, l) in labels.iter().enumerate() {
-            ui.horizontal(|ui| {
-                let mut color = l.color;
-                if ui.color_edit_button_srgb(&mut color).changed() {
-                    label_ops.push(LabelOp::Color(i, color));
+        // everything in the body (not the header): "Add"/"Done" and the per-label rows below both push
+        // into `label_ops`, and a header/body pair can't both hold that mutably at once (same reasoning
+        // as the Markers block above).
+        let mut done = false;
+        section(
+            ui,
+            "labels",
+            "Labels",
+            true,
+            &mut settings.inspector_folds,
+            |_ui| {},
+            |ui| {
+                ui.horizontal(|ui| {
+                    if ui.small_button("Add").clicked() {
+                        label_ops.push(LabelOp::Add);
+                    }
+                    if ui.small_button("Done").clicked() {
+                        done = true;
+                    }
+                });
+                for (i, l) in labels.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        let mut color = l.color;
+                        if ui.color_edit_button_srgb(&mut color).changed() {
+                            label_ops.push(LabelOp::Color(i, color));
+                        }
+                        let mut name = l.name.clone();
+                        let w = (ui.available_width() - 30.0).max(50.0);
+                        if ui.add(egui::TextEdit::singleline(&mut name).desired_width(w)).changed() {
+                            label_ops.push(LabelOp::Rename(i, name));
+                        }
+                        if x_button(ui).on_hover_text("Remove label").clicked() {
+                            label_ops.push(LabelOp::Remove(i));
+                        }
+                    });
                 }
-                let mut name = l.name.clone();
-                let w = (ui.available_width() - 30.0).max(50.0);
-                if ui.add(egui::TextEdit::singleline(&mut name).desired_width(w)).changed() {
-                    label_ops.push(LabelOp::Rename(i, name));
-                }
-                if x_button(ui).on_hover_text("Remove label").clicked() {
-                    label_ops.push(LabelOp::Remove(i));
-                }
-            });
+            },
+        );
+        if done {
+            edit_labels = false;
         }
     }
     ui.ctx().data_mut(|d| d.insert_temp(labels_open_id, edit_labels));
 
-    if g.start || ga.start || !label_ops.is_empty() || path_op.is_some() {
+    if g.start || !label_ops.is_empty() || path_op.is_some() {
         undo(project);
     }
     if g.changed {
@@ -1177,16 +1376,6 @@ fn clip_section(
             }
         }
     }
-    if ga.changed {
-        if let Some(a) = project.asset_mut(clip.asset) {
-            if let Some(d) = asset_desc {
-                a.description = d;
-            }
-            if let Some(t) = asset_tags {
-                a.tags = t;
-            }
-        }
-    }
     let labels_changed = !label_ops.is_empty();
     for op in label_ops {
         match op {
@@ -1218,7 +1407,7 @@ fn clip_section(
         }
         None => {}
     }
-    g.changed || ga.changed || labels_changed || path_op.is_some() || audio_changed || text_changed || bus_changed
+    g.changed || labels_changed || path_op.is_some() || audio_changed || text_changed || bus_changed
 }
 
 const LUAU_KEYWORDS: &[&str] = &[
@@ -2001,6 +2190,145 @@ mod tests {
         p.clip_mut(cid).unwrap().label = idx;
         p.remove_label(idx);
         assert_eq!(p.clip(cid).unwrap().label, 0, "the clip falls back to no label");
+    }
+
+    /// The clip-section "Retime… Ctrl+R" button pushes the same `Action::Retime` the hotkey/menu use.
+    #[test]
+    fn retime_button_pushes_action() {
+        let mut p = Project::new();
+        let vi = p.tracks.iter().position(|t| t.kind == crate::model::TrackKind::Video).unwrap();
+        let c = Clip::new(500, ClipKind::Video, "v", 0.0, 3.0);
+        let id = c.id;
+        p.tracks[vi].clips.push(c);
+        let palette = Palette::new(true, egui::Color32::WHITE);
+        let fonts: Vec<String> = Vec::new();
+        let mut settings = Settings::default();
+        let ctx = egui::Context::default();
+        let mut frame = |events: Vec<egui::Event>, p: &mut Project, settings: &mut Settings| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 900.0))),
+                events,
+                ..Default::default()
+            };
+            let mut undo = |_: &Project| {};
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    show(ui, p, &[id], &[], 1.0, &fonts, &palette, settings, &mut undo);
+                });
+            });
+        };
+        let _ = take_pending_action(); // clear any leftover from an earlier test
+        frame(vec![], &mut p, &mut settings); // layout, records the retime button rect
+        let r = ctx
+            .data(|d| d.get_temp::<egui::Rect>(egui::Id::new(("insp", "retime".to_string()))))
+            .expect("no widget rect for retime");
+        let pos = r.center();
+        frame(vec![egui::Event::PointerMoved(pos)], &mut p, &mut settings);
+        frame(
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            &mut p,
+            &mut settings,
+        );
+        frame(
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            &mut p,
+            &mut settings,
+        );
+        assert_eq!(take_pending_action(), Some(Action::Retime));
+    }
+
+    /// The Effects section's `default_open` varies by ClipKind (Video/Image/Audio clips start open,
+    /// everything else starts closed — see `clip_section`'s `primary_effects`). Before the fix, both
+    /// kinds shared one `"effects"` fold id/key: viewing a non-primary clip's (closed) Effects section
+    /// FIRST permanently corrupted the primary default — the next primary clip's Effects section would
+    /// read back the stale closed state and re-persist it, closing Effects for every clip kind forever.
+    #[test]
+    fn sections_default_open_primary_per_kind() {
+        let mut p = Project::new();
+        let mut text = Clip::new(500, ClipKind::Text, "t", 0.0, 3.0);
+        text.effects.push(crate::model::Effect::new(crate::model::EffectKind::Blur));
+        let text_id = text.id;
+        p.tracks[0].clips.push(text);
+
+        let vi = p.tracks.iter().position(|t| t.kind == crate::model::TrackKind::Video).unwrap();
+        let mut vid = Clip::new(501, ClipKind::Video, "v", 4.0, 3.0);
+        vid.effects.push(crate::model::Effect::new(crate::model::EffectKind::Blur));
+        let vid_id = vid.id;
+        p.tracks[vi].clips.push(vid);
+
+        let palette = Palette::new(true, egui::Color32::WHITE);
+        let ctx = egui::Context::default();
+        let mut settings = Settings::default();
+        let mut undo = |_: &Project| {};
+
+        // View the Text clip's Effects section first — not primary for Text, so it defaults CLOSED.
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                show(ui, &mut p, &[text_id], &[], 1.0, &[], &palette, &mut settings, &mut undo);
+            });
+        });
+
+        // Then view the Video clip's Effects section — primary for Video, must default OPEN, not
+        // inherit the Text clip's closed state (the bug: both used to share one "effects" fold id).
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                show(ui, &mut p, &[vid_id], &[], 1.0, &[], &palette, &mut settings, &mut undo);
+            });
+        });
+
+        let primary_id = egui::Id::new(("insp_section", "effects_primary"));
+        let state = egui::collapsing_header::CollapsingState::load(&ctx, primary_id)
+            .expect("the primary Effects section's CollapsingState exists after being shown");
+        assert!(state.is_open(), "Video's Effects section must default open, not the Text clip's closed default");
+    }
+
+    /// A fold toggle (the real write path in `section()`: the persisted `CollapsingState` disagreeing
+    /// with `folds`' remembered default) survives a `Settings` JSON round-trip — the same serialize/
+    /// deserialize `Settings::save`/`load` do (see `settings.rs`'s own round-trip tests for the pattern).
+    #[test]
+    fn fold_state_persists_in_settings() {
+        let ctx = egui::Context::default();
+        let mut folds: BTreeMap<String, bool> = BTreeMap::new();
+        // First draw: "color" has never been seen before, defaults closed — no entry written yet.
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                section(ui, "color", "Color", false, &mut folds, |_| {}, |_| {});
+            });
+        });
+        assert!(!folds.contains_key("color"), "an untouched fold writes no entry");
+
+        // Flip it open — exactly what clicking the header does — then redraw so `section()` notices
+        // `now_open != open_default` and records it.
+        let cid = egui::Id::new(("insp_section", "color"));
+        let mut state =
+            egui::collapsing_header::CollapsingState::load(&ctx, cid).expect("state exists after the first draw");
+        state.set_open(true);
+        state.store(&ctx);
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                section(ui, "color", "Color", false, &mut folds, |_| {}, |_| {});
+            });
+        });
+        assert_eq!(folds.get("color"), Some(&true), "the toggle must be written into the folds map");
+
+        let mut settings = Settings::default();
+        settings.inspector_folds = folds;
+        let restored: Settings = serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(
+            restored.inspector_folds.get("color"),
+            Some(&true),
+            "the fold state must survive a Settings JSON round-trip"
+        );
     }
 
     /// Headless: sections for effects / retime / audio fades lay out without panicking.

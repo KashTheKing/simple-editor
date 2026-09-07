@@ -257,6 +257,10 @@ pub(crate) enum Glyph {
     /// Two stacked documents with a small clock in the corner — the render queue.
     Queue,
     // ---- ws:inspector-gallery ----
+    /// A ring with three spoke handles — the Color section's Primaries wheels.
+    Wheel,
+    /// A filmstrip-corner tile with a diagonal split — a LUT card / the LUT browser.
+    Lut,
     // ---- ws:layout-modes-onboarding ----
     /// A pushpin (head, bar, needle) — a tab pinned against auto-surfacing.
     Pin,
@@ -399,6 +403,8 @@ impl Glyph {
         // ---- ws:export-deliver ----
         Glyph::Queue,
         // ---- ws:inspector-gallery ----
+        Glyph::Wheel,
+        Glyph::Lut,
         // ---- ws:layout-modes-onboarding ----
         Glyph::Pin,
         Glyph::Maximize,
@@ -532,6 +538,8 @@ impl Glyph {
             // ---- ws:export-deliver ----
             Glyph::Queue => "queue",
             // ---- ws:inspector-gallery ----
+            Glyph::Wheel => "wheel",
+            Glyph::Lut => "lut",
             // ---- ws:layout-modes-onboarding ----
             Glyph::Pin => "pin",
             Glyph::Maximize => "maximize",
@@ -1816,6 +1824,26 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
             p.line_segment([dial, dial + egui::vec2(1.6, 0.0)], Stroke::new(1.0, fg));
         }
         // ---- ws:inspector-gallery ----
+        // colour wheel: a ring with three short spoke handles (lift/gamma/gain), like a grading control
+        Glyph::Wheel => {
+            p.circle_stroke(c, r, stroke);
+            for a in [0.0f32, 2.0 * std::f32::consts::FRAC_PI_3, 4.0 * std::f32::consts::FRAC_PI_3] {
+                let dir = egui::vec2(a.cos(), a.sin());
+                p.line_segment([c + dir * (r - 3.0), c + dir * (r + 1.5)], stroke);
+            }
+            p.circle_filled(c, 1.6, fg);
+        }
+        // LUT card: a small tile with a diagonal split, one half darker — a before/after swatch
+        Glyph::Lut => {
+            let rect = egui::Rect::from_center_size(c, egui::vec2(11.0, 11.0));
+            p.rect_stroke(rect, 1.0, stroke, StrokeKind::Inside);
+            p.line_segment([rect.left_bottom(), rect.right_top()], stroke);
+            p.rect_filled(
+                egui::Rect::from_min_max(rect.left_top(), rect.left_top() + egui::vec2(11.0, 11.0) / 2.0),
+                0.0,
+                fg.gamma_multiply(0.35),
+            );
+        }
         // ---- ws:layout-modes-onboarding ----
         // pushpin: a filled head over a wider bar, with a needle dropping from the bar's middle
         Glyph::Pin => {
@@ -1864,7 +1892,11 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
         // close up: two blocks with arrows pointing at the gap between them
         Glyph::CloseUp => {
             for (x0, x1) in [(-8.0f32, -4.0f32), (4.0, 8.0)] {
-                p.rect_filled(egui::Rect::from_min_max(c + egui::vec2(x0, -3.0), c + egui::vec2(x1, 3.0)), CornerRadius::ZERO, fg);
+                p.rect_filled(
+                    egui::Rect::from_min_max(c + egui::vec2(x0, -3.0), c + egui::vec2(x1, 3.0)),
+                    CornerRadius::ZERO,
+                    fg,
+                );
             }
             p.add(egui::Shape::convex_polygon(tri(c + egui::vec2(-1.5, 0.0), Dir::Right, 2.4, 2.4), fg, Stroke::NONE));
             p.add(egui::Shape::convex_polygon(tri(c + egui::vec2(1.5, 0.0), Dir::Left, 2.4, 2.4), fg, Stroke::NONE));
@@ -1934,8 +1966,7 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
             p.line_segment([c + egui::vec2(-6.5, 0.0), c + egui::vec2(-1.5, 0.0)], Stroke::new(2.4, fg));
             p.line_segment([c + egui::vec2(0.5, 0.0), c + egui::vec2(4.5, 0.0)], Stroke::new(1.6, dim));
             p.line_segment([c + egui::vec2(-6.5, 4.5), c + egui::vec2(2.0, 4.5)], Stroke::new(1.6, dim));
-        }
-        // ---- ws:pro-monitor ----
+        } // ---- ws:pro-monitor ----
           // ---- ws:pro-timeline ----
           // ---- ws:text-titles ----
           // ---- ws:docs-refresh ----
