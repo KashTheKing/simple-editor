@@ -61,6 +61,8 @@ mod library_pane;
 mod mcp_exec;
 mod media_sync;
 mod menus;
+// ---- ws:canvas-handles-monitor ----
+mod monitor;
 // ---- ws:command-palette ----
 mod palette_ctl;
 mod panes;
@@ -80,6 +82,8 @@ mod tools_commands;
 mod tools_helpers;
 mod tools_media;
 mod tools_playback;
+// ---- ws:canvas-handles-monitor ----
+mod tools_preview;
 // ---- ws:forgiveness ----
 mod tools_project;
 #[cfg(test)]
@@ -290,10 +294,14 @@ pub struct App {
     /// Panes whose draw panicked: shown as a message instead of taking the whole editor down.
     failed_panes: Vec<Pane>,
     // ---- ws:registries-schema-hooks ----
-    /// Which async GPU preview canvas-handles-monitor (wave 2) should be rendering into, if any —
-    /// no-op placeholder this wave (nothing reads or writes it yet outside its own scaffolding).
-    #[allow(dead_code)]
-    pub(crate) alt_render: Option<AltRenderKind>,
+    // ---- ws:canvas-handles-monitor ----
+    // deviation (see PR body): retyped from wave-0b's `Option<AltRenderKind>` no-op placeholder to the
+    // real coalescing state (`monitor::AltRenderState`) this workstream builds — anticipated in the
+    // plan's own risk table ("wave-0b's alt_render App-field stub type may not match ... First commit
+    // retypes that one field if needed — isolated, called out in the PR description").
+    /// The monitor's async alt-render pipeline (hover preview of an effect/transition/gallery item) —
+    /// see `monitor.rs`'s doc comment.
+    pub(crate) alt_render: monitor::AltRenderState,
     // ---- ws:size-diet ----
     /// The "What's New" window (whatsnew.rs) is open — set on a version bump, or by `Action::WhatsNew`.
     pub(crate) whatsnew_open: bool,
@@ -349,17 +357,11 @@ pub struct App {
     last_fired_selection: Vec<Id>,
 }
 
-/// What an async, off-the-main-preview GPU render is for — hover preview, trim view, scopes, wipe
-/// compare (canvas-handles-monitor / pro-monitor, waves 2-3). A bare placeholder this wave: nothing
-/// attaches `Player::request_layers` to it yet.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
-pub(crate) enum AltRenderKind {
-    Hover,
-    TrimView,
-    Scopes,
-    Wipe,
-}
+// ---- ws:canvas-handles-monitor ----
+// wave-0b's `AltRenderKind` placeholder enum (Hover/TrimView/Scopes/Wipe) is superseded by
+// `monitor::AltRequest` (Effect/Transition/Gallery — pro-monitor, wave 3, adds TrimOut/TrimIn/
+// Compare/Angle to that same enum per the plan) and removed here to avoid two parallel "what should
+// the monitor render" types.
 
 // ---- ws:forgiveness ----
 /// The on-disk cache directory's size — `settings_ui::performance` (a sibling module, not a descendant
@@ -736,7 +738,7 @@ impl App {
             canvas: (0, 0),
             audio_inputs: None,
             failed_panes: Vec::new(),
-            alt_render: None,
+            alt_render: monitor::AltRenderState::default(),
             whatsnew_open: false,
             winpos_pending: None,
             // ---- ws:forgiveness ----
@@ -1287,6 +1289,7 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:trim-model ----
     tools_trim::TOOLS,
     // ---- ws:canvas-handles-monitor ----
+    tools_preview::TOOLS,
     // ---- ws:export-deliver ----
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
@@ -1318,6 +1321,7 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     // ---- ws:trim-model ----
     trim_actions::act,
     // ---- ws:canvas-handles-monitor ----
+    monitor::act,
     // ---- ws:export-deliver ----
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
@@ -1347,6 +1351,7 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:snap-engine ----
     // ---- ws:trim-model ----
     // ---- ws:canvas-handles-monitor ----
+    monitor::tick,
     // ---- ws:export-deliver ----
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
