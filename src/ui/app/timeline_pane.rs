@@ -1,21 +1,30 @@
 use super::*;
 
+// ws:pro-timeline: the in-widget sequence tab strip (timeline::show(), painted above its own ruler)
+// now carries the Main/<sequence name> breadcrumb this file used to draw externally — removed here
+// rather than kept alongside a near-duplicate (delete before add; see the PR body).
+
 pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
-    // sequence breadcrumb: a thin strip above the timeline while editing a nested sequence
-    if let Some(seq) = app.project.editing {
-        let name = app.project.sequence(seq).map(|s| s.name.clone()).unwrap_or_default();
-        ui.horizontal(|ui| {
-            let back = crate::ui::tools::glyph_text_button(
-                ui,
-                crate::ui::tools::Glyph::Tri(crate::ui::tools::Dir::Left),
-                "Back",
-            );
-            if back.on_hover_text("Back to the main timeline (Alt+Up)").clicked() {
-                app.pending_actions.push(Action::OpenParentSequence);
-            }
-            ui.label(format!("Main > {name}"));
-        });
-    }
+    // ---- ws:pro-timeline: view-preset combo + overview toggle ----
+    ui.horizontal(|ui| {
+        let views_len = app.settings.timeline_views.len();
+        if views_len > 0 {
+            let idx = app.timeline.view_idx.min(views_len - 1);
+            egui::ComboBox::from_id_salt("tl_view_preset")
+                .selected_text(app.settings.timeline_views[idx].name.clone())
+                .show_ui(ui, |ui| {
+                    for i in 0..views_len {
+                        let name = app.settings.timeline_views[i].name.clone();
+                        ui.selectable_value(&mut app.timeline.view_idx, i, name);
+                    }
+                });
+        }
+        let on = app.settings.overview;
+        let label = if on { "Overview: On" } else { "Overview" };
+        if crate::ui::tools::glyph_text_button(ui, crate::ui::tools::Glyph::Rows, label).clicked() {
+            app.settings.overview = !on;
+        }
+    });
     let resp = {
         let App {
             project,
@@ -40,6 +49,25 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
         let tool = tools.tool;
         let prerender_bar =
             if settings.movie_mode { guarded(|| prerender.segments()).unwrap_or_default() } else { vec![] };
+        // ws:pro-timeline: realtime-safety segments for paint_realtime_bar (already merged by
+        // export-deliver's segments_with_heavy -- no re-derivation of Clip::has_effects spans here)
+        let realtime_bar = if settings.movie_mode {
+            guarded(|| prerender.segments_with_heavy(&*project)).unwrap_or_default()
+        } else {
+            vec![]
+        };
+        // ws:pro-timeline: resolved active TimelineView (falls back to "everything on" if the user has
+        // cleared Settings.timeline_views down to nothing)
+        let fallback_view = crate::settings::TimelineView {
+            name: String::new(),
+            waves: true,
+            thumbs: true,
+            keys: true,
+            clip_text: true,
+            row_h: 64.0,
+        };
+        let view_idx = tl.view_idx.min(settings.timeline_views.len().saturating_sub(1));
+        let view = settings.timeline_views.get(view_idx).unwrap_or(&fallback_view);
         // ws:timeline-trim-gestures: exactly one Library asset selected (the anchor alone counts when
         // the multi-select set is empty, e.g. straight after an import)
         let library_selected = match library.sel_ids.as_slice() {
@@ -77,6 +105,10 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
                 prerender: &prerender_bar,
                 tool,
                 library_selected,
+                view,
+                overview: settings.overview,
+                boring_thr: settings.boring_thr,
+                realtime: &realtime_bar,
             },
         )
     };

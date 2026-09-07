@@ -299,6 +299,11 @@ pub(crate) enum Glyph {
     /// A 2x2 grid of squares — the multicam angle-grid window.
     Grid4,
     // ---- ws:pro-timeline ----
+    /// A filled square with a thin ring — the track-header colour swatch. Named `Swatch`, not
+    /// `Palette`, to avoid colliding with the pervasive `use crate::theme::Palette;`.
+    Swatch,
+    /// Three stacked bars of differing width — the view-preset combo / overview toggle.
+    Rows,
     // ---- ws:text-titles ----
     /// A small "T" over a horizontal bar — the Gallery's Titles tab button.
     Titles,
@@ -435,6 +440,8 @@ impl Glyph {
         Glyph::Scope,
         Glyph::Grid4,
         // ---- ws:pro-timeline ----
+        Glyph::Swatch,
+        Glyph::Rows,
         // ---- ws:text-titles ----
         Glyph::Titles,
         // ---- ws:docs-refresh ----
@@ -574,6 +581,8 @@ impl Glyph {
             Glyph::Scope => "scope",
             Glyph::Grid4 => "grid4",
             // ---- ws:pro-timeline ----
+            Glyph::Swatch => "swatch",
+            Glyph::Rows => "rows",
             // ---- ws:text-titles ----
             Glyph::Titles => "titles",
             // ---- ws:docs-refresh ----
@@ -2011,6 +2020,18 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
             }
         }
         // ---- ws:pro-timeline ----
+        // swatch: a filled square with a thin ring — the track-header colour button
+        Glyph::Swatch => {
+            let r = egui::Rect::from_center_size(c, egui::vec2(11.0, 11.0));
+            p.rect_filled(r, CornerRadius::same(2), fg);
+            p.rect_stroke(r, CornerRadius::same(2), stroke, StrokeKind::Inside);
+        }
+        // rows: three stacked horizontal bars of differing width
+        Glyph::Rows => {
+            for (dy, w) in [(-4.5_f32, 11.0_f32), (0.0, 7.0), (4.5, 9.0)] {
+                p.line_segment([c + egui::vec2(-w / 2.0, dy), c + egui::vec2(w / 2.0, dy)], Stroke::new(2.0, fg));
+            }
+        }
         // ---- ws:text-titles ----
         // titles: a bold "T" over a thin underline bar (a title-card glyph)
         Glyph::Titles => {

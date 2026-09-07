@@ -12,6 +12,8 @@ pub mod confirm;
 pub mod curves;
 pub mod effects_ui;
 pub mod export_ui;
+// ---- ws:pro-timeline ----
+pub mod find_ui;
 pub mod frame_ui;
 // ---- ws:inspector-gallery ----
 pub mod gallery;

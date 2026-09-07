@@ -232,7 +232,11 @@ pub(super) fn clip_menu(
     // on the selection — a right-click on an unselected clip selects it first (see the caller).
     if audio || has_native_size {
         ui.menu_button("Transcript", |ui| {
-            if ui.button("Transcribe…").on_hover_text("whisper, in the background; downloads the model first if needed").clicked() {
+            if ui
+                .button("Transcribe…")
+                .on_hover_text("whisper, in the background; downloads the model first if needed")
+                .clicked()
+            {
                 actions.push(Action::TranscribeClip);
                 ui.close_menu();
             }
@@ -247,6 +251,14 @@ pub(super) fn clip_menu(
         });
     }
     ui.menu_button("Color Label", |ui| label_menu(ui, labels, act, edit_labels));
+    ui.separator();
+    // ---- ws:pro-timeline: source-monitor's existing Actions, dispatch only ----
+    if ui.button("Match Frame").clicked() {
+        actions.push(Action::MatchFrame);
+    }
+    if ui.button("Reveal in Library").clicked() {
+        actions.push(Action::RevealInLibrary);
+    }
     ui.separator();
     if ui.button(if linked { "Unlink" } else { "Link" }).clicked() {
         *act = Some(Act::Link);

@@ -368,3 +368,130 @@ pub(super) fn draw_filmstrip(
         n += 1.0;
     }
 }
+
+// ---- ws:pro-timeline ----
+
+/// Clip ids sharing (asset, src_in..src_out) — duplicate-source groups; singletons excluded. Keyed on
+/// millisecond-rounded times so float noise from repeated trims doesn't split an otherwise-identical
+/// group. Exposed (not just used by `paint_dupes`) as the `timeline.dupes` MCP tool's own grouping fn.
+pub(crate) fn dupe_groups(p: &Project) -> Vec<Vec<Id>> {
+    let mut keyed: Vec<((Id, i64, i64), Id)> = Vec::new();
+    for (_, c) in p.all_clips() {
+        if c.asset == 0 {
+            continue;
+        }
+        let key = (c.asset, (c.src_in * 1000.0).round() as i64, ((c.src_in + c.src_len()) * 1000.0).round() as i64);
+        keyed.push((key, c.id));
+    }
+    let mut groups: Vec<((Id, i64, i64), Vec<Id>)> = Vec::new();
+    for (key, id) in keyed {
+        match groups.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, ids)) => ids.push(id),
+            None => groups.push((key, vec![id])),
+        }
+    }
+    groups.into_iter().filter(|(_, ids)| ids.len() >= 2).map(|(_, ids)| ids).collect()
+}
+
+/// Clips outside the (short_s, long_s) pacing thresholds: (clip id, start, end). Clips strictly inside
+/// the range are not flagged. Exposed as the `timeline.pacing` MCP tool's own classification fn.
+pub(crate) fn pacing_spans(p: &Project, thr: (f64, f64)) -> Vec<(Id, f64, f64)> {
+    p.all_clips()
+        .filter(|(_, c)| c.duration < thr.0 || c.duration > thr.1)
+        .map(|(_, c)| (c.id, c.start, c.end()))
+        .collect()
+}
+
+/// Colour-bar clips sharing a source range with another clip (dupe detection), a thin strip along each
+/// clip's bottom edge — gated by the caller on `detailed` (the same flag waveform/filmstrip painting
+/// uses), reusing the label-colour cycle so groups read as distinct without a new palette field.
+pub(super) fn paint_dupes(pp: &egui::Painter, p: &Project, state: &TimelineState, lanes: Rect) {
+    for (gi, group) in dupe_groups(p).iter().enumerate() {
+        let (_, [r, g, b]) = crate::model::LABEL_COLORS[gi % crate::model::LABEL_COLORS.len()];
+        let color = Color32::from_rgb(r, g, b);
+        for &id in group {
+            let Some((ti, ci)) = p.find(id) else { continue };
+            let Some(top) = row_top(state, p, ti) else { continue };
+            let cl = &p.tracks[ti].clips[ci];
+            let h = p.tracks[ti].height;
+            let r = Rect::from_min_max(
+                pos2(state.x_at(cl.start), top + h - 4.0),
+                pos2(state.x_at(cl.end()), top + h - 1.0),
+            )
+            .intersect(lanes);
+            if r.is_positive() {
+                pp.rect_filled(r, 0, color);
+            }
+        }
+    }
+}
+
+/// Ruler tint bands under clips outside `thr` (see `pacing_spans`) — the "boring detector".
+pub(super) fn paint_pacing(
+    pp: &egui::Painter,
+    p: &Project,
+    state: &TimelineState,
+    ruler: Rect,
+    thr: (f32, f32),
+    pal: &Palette,
+) {
+    for (_, a, b) in pacing_spans(p, (thr.0 as f64, thr.1 as f64)) {
+        let seg =
+            Rect::from_min_max(pos2(state.x_at(a), ruler.top()), pos2(state.x_at(b), ruler.bottom())).intersect(ruler);
+        if seg.is_positive() {
+            pp.rect_filled(seg, 0, pal.text_dim.gamma_multiply(0.18));
+        }
+    }
+}
+
+/// Realtime-safety tint: a red run under seconds carrying an enabled effect/graph not yet covered by a
+/// `ready` pre-render segment — `(from, to, ready, heavy)` from `PreRender::segments_with_heavy`
+/// (export-deliver), already merged, so this is paint only: no merging, no render request/queue. Reuses
+/// `pal.playhead` (already the theme's red) rather than adding a `danger` field to `Palette`.
+pub(super) fn paint_realtime_bar(
+    pp: &egui::Painter,
+    state: &TimelineState,
+    ruler: Rect,
+    realtime: &[(f64, f64, bool, bool)],
+    pal: &Palette,
+) {
+    for &(a, b, ready, heavy) in realtime {
+        if !heavy || ready {
+            continue;
+        }
+        let seg = Rect::from_min_max(
+            pos2(state.x_at(a).max(ruler.left()), ruler.top() + 3.0),
+            pos2(state.x_at(b), ruler.top() + 6.0),
+        );
+        if seg.is_positive() {
+            pp.rect_filled(seg, 0, pal.playhead);
+        }
+    }
+}
+
+/// Track/bus volume automation: the `Animated` volume curve as a thin line across the header row,
+/// dB-mapped like the audio clip's own volume line — display-only, no drag gesture (the existing
+/// `Gesture::Volume` hit-zone is scoped to the clip body, not the header row).
+pub(super) fn paint_automation(pp: &egui::Painter, track: &crate::model::Track, row: Rect, pal: &Palette) {
+    let stroke = Stroke::new(1.0, pal.accent.gamma_multiply(0.7));
+    if track.volume.is_animated() {
+        let t0 = track.volume.keys.first().map(|k| k.t).unwrap_or(0.0);
+        let t1 = track.volume.keys.last().map(|k| k.t).unwrap_or(1.0);
+        let span = (t1 - t0).max(1e-6);
+        let mut last: Option<Pos2> = None;
+        let mut x = row.left();
+        while x <= row.right() {
+            let f = ((x - row.left()) / row.width().max(1.0)) as f64;
+            let y = row.bottom() - db_frac(gain_db(track.volume.at(t0 + f * span) as f32)) * row.height();
+            let pnt = pos2(x, y);
+            if let Some(l) = last {
+                pp.line_segment([l, pnt], stroke);
+            }
+            last = Some(pnt);
+            x += 4.0;
+        }
+    } else {
+        let y = row.bottom() - db_frac(gain_db(track.volume.value as f32)) * row.height();
+        pp.hline(row.x_range(), y, stroke);
+    }
+}

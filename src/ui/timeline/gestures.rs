@@ -15,6 +15,29 @@ pub(super) fn arm_selects(kind: GestureKind) -> bool {
     !matches!(kind, GestureKind::Slide | GestureKind::Segment | GestureKind::RippleTrim | GestureKind::MultiRippleTrim)
 }
 
+/// ws:pro-timeline — asymmetric multi-roller trim: `ids`/`start` is the pressed clip (+ same-edge
+/// linked clips, unchanged from before this workstream); `rollers` is `TimelineState.rollers`, seams
+/// Shift-clicked onto the roller set before the drag started (possibly other clips, other tracks,
+/// either side). Each roller keeps its OWN press-time edge (`edge0`), so a live drag applies the same
+/// delta to every roller from its own edge rather than assuming one shared edge value.
+fn build_trim(p: &Project, ids: &[Id], start: bool, rollers: &[(Id, bool)]) -> Gesture {
+    let mut set: Vec<(Id, bool)> = ids.iter().map(|&id| (id, start)).collect();
+    for &(rid, rstart) in rollers {
+        if !set.iter().any(|&(id, s)| id == rid && s == rstart) {
+            set.push((rid, rstart));
+        }
+    }
+    let mut fids = Vec::with_capacity(set.len());
+    let mut edge0 = Vec::with_capacity(set.len());
+    for (id, s) in set {
+        if let Some(cl) = p.clip(id) {
+            fids.push((id, s));
+            edge0.push(if s { cl.start } else { cl.end() });
+        }
+    }
+    Gesture::Trim { ids: fids, edge0, changed: false }
+}
+
 /// The empty-lane gap under `(track, t)`: `[previous clip's end (or 0), next clip's start)`. None when
 /// `t` is inside a clip, past the last clip, or the track doesn't exist.
 pub(super) fn gap_at(p: &Project, ti: usize, t: f64) -> Option<(f64, f64)> {
@@ -314,11 +337,11 @@ pub(super) fn handle(
                         match left.zip(right) {
                             Some((left, right)) => Gesture::Roll { left, right, cut0: edge, changed: false },
                             // no abutting neighbour: the table's fallback is a plain trim
-                            None => Gesture::Trim { ids, start, edge, changed: false },
+                            None => build_trim(p, &ids, start, &state.rollers),
                         }
                     }
                     _ if c.tool == Tool::Stretch => stretch(),
-                    _ => Gesture::Trim { ids, start, edge, changed: false },
+                    _ => build_trim(p, &ids, start, &state.rollers),
                 }
             })
         } else {
@@ -361,6 +384,10 @@ pub(super) fn handle(
             })
         };
         if let Some(g) = g {
+            // ws:pro-timeline: a Trim gesture just consumed the pending roller set (build_trim folded
+            // it in above); any other gesture kind starting on an edge/body drops it too, rather than
+            // leaving stale seams armed for an unrelated later trim.
+            state.rollers.clear();
             state.drag = Some(Drag { origin, before: c.project.clone(), g, snapped: None });
         }
     } else if let Some(cid) = start_vol {
@@ -479,29 +506,40 @@ pub(super) fn handle(
                     }
                 }
             }
-            Gesture::Trim { ids, start, edge, changed } => {
-                let mut want = *edge + dx;
+            Gesture::Trim { ids, edge0, changed } => {
+                // ws:pro-timeline — asymmetric multi-roller: snap the FIRST roller's delta (its own
+                // press-time edge + dx), then apply that SAME delta to every roller from ITS OWN
+                // edge0 ("trims both cuts by the same delta", not independently re-snapped each).
+                let mut dt = dx;
                 *snapped = None;
+                // ws:pro-timeline: every id in this same multi-roller set, not just the one edge being
+                // tested -- two rollers on directly-abutting clips (a seam roll) must not see each OTHER
+                // as a collision just because neither has been committed to `p` yet this frame.
+                let base_ids: Vec<Id> = ids.iter().map(|&(id, _)| id).collect();
                 if c.snap {
-                    want = p.snap_frame(want);
-                    if let Some(t) = snap_target(want, thr, p, *c.playhead, ids) {
-                        want = t;
-                        *snapped = Some(t);
+                    if let Some(&e0) = edge0.first() {
+                        let mut want0 = p.snap_frame(e0 + dx);
+                        if let Some(t) = snap_target(want0, thr, p, *c.playhead, &base_ids) {
+                            want0 = t;
+                            *snapped = Some(t);
+                        }
+                        dt = want0 - e0;
                     }
                 }
-                // all-or-nothing (like move_clips): linked clips keep identical extents when one is blocked
+                // all-or-nothing (like move_clips): linked/rolled clips keep identical extents when one is blocked
                 let mut upd = Vec::with_capacity(ids.len());
-                for &id in ids.iter() {
+                for (&(id, start), &e0) in ids.iter().zip(edge0.iter()) {
                     let Some((ti, ci)) = p.find(id) else { continue };
                     let mut tmp = p.tracks[ti].clips[ci].clone();
-                    if *start {
+                    let want = e0 + dt;
+                    if start {
                         let hr = p.head_room(&tmp);
                         tmp.trim_start(want, hr);
                     } else {
                         let md = p.max_clip_duration(&tmp);
                         tmp.trim_end(want, md);
                     }
-                    if !p.tracks[ti].fits(tmp.start, tmp.duration, &[id]) {
+                    if !p.tracks[ti].fits(tmp.start, tmp.duration, &base_ids) {
                         upd.clear();
                         break;
                     }
@@ -791,5 +829,50 @@ pub(super) fn handle(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Clip, ClipKind, Project, TrackKind};
+
+    #[test]
+    fn build_trim_folds_rollers_with_their_own_edges() {
+        let mut p = Project::new();
+        p.tracks[0].clips = vec![Clip::new(201, ClipKind::Video, "a", 0.0, 3.0)];
+        p.add_track(TrackKind::Video);
+        let v2 = p.video_tracks()[1];
+        p.tracks[v2].clips.push(Clip::new(202, ClipKind::Video, "d", 1.0, 3.0));
+        // pressed: D's start edge (true); roller set: A's end edge (false) -- asymmetric (mixed sides)
+        let g = build_trim(&p, &[202], true, &[(201, false)]);
+        let Gesture::Trim { ids, edge0, .. } = g else { panic!("build_trim must return a Gesture::Trim") };
+        assert_eq!(ids.len(), 2);
+        let d_i = ids.iter().position(|&(id, _)| id == 202).expect("D in the roller set");
+        let a_i = ids.iter().position(|&(id, _)| id == 201).expect("A in the roller set");
+        assert_eq!(ids[d_i], (202, true));
+        assert_eq!(ids[a_i], (201, false));
+        assert_eq!(edge0[d_i], 1.0, "D's own press-time start");
+        assert_eq!(edge0[a_i], 3.0, "A's own press-time end");
+    }
+
+    #[test]
+    fn build_trim_drops_a_roller_whose_clip_no_longer_exists() {
+        let mut p = Project::new();
+        p.tracks[0].clips = vec![Clip::new(201, ClipKind::Video, "a", 0.0, 3.0)];
+        let g = build_trim(&p, &[201], false, &[(9999, true)]); // 9999 doesn't exist
+        let Gesture::Trim { ids, edge0, .. } = g else { panic!("build_trim must return a Gesture::Trim") };
+        assert_eq!(ids, vec![(201, false)]);
+        assert_eq!(edge0, vec![3.0]);
+    }
+
+    #[test]
+    fn build_trim_dedupes_a_roller_matching_the_pressed_edge() {
+        let mut p = Project::new();
+        p.tracks[0].clips = vec![Clip::new(201, ClipKind::Video, "a", 0.0, 3.0)];
+        // the roller set already names the pressed clip/side -- must not appear twice
+        let g = build_trim(&p, &[201], false, &[(201, false)]);
+        let Gesture::Trim { ids, .. } = g else { panic!("build_trim must return a Gesture::Trim") };
+        assert_eq!(ids, vec![(201, false)]);
     }
 }

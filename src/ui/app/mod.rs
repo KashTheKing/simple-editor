@@ -117,6 +117,8 @@ mod tools_registry_tests;
 mod tools_source;
 mod tools_subtitles;
 mod tools_timeline;
+// ---- ws:pro-timeline ----
+mod tools_timeline_pro;
 // ---- ws:text-titles ----
 mod tools_titles;
 // ---- ws:transcript-captions ----
@@ -422,6 +424,9 @@ pub struct App {
     /// Dynamic-trim arming, the dual-frame trim view's decode slots, Scopes open/closed and the
     /// eyedropper's armed (clip, target) — see `monitor.rs`'s `MonitorState` doc comment.
     monitor: monitor::MonitorState,
+    // ---- ws:pro-timeline ----
+    /// Ctrl+F Find window state (open/closed, query buffer).
+    find: crate::ui::find_ui::FindState,
 }
 
 // ---- ws:canvas-handles-monitor ----
@@ -844,6 +849,8 @@ impl App {
             transcript: transcript_ctl::TranscriptState::default(),
             // ---- ws:pro-monitor ----
             monitor: monitor::MonitorState::default(),
+            // ---- ws:pro-timeline ----
+            find: crate::ui::find_ui::FindState::default(),
         };
         if let Some(reason) = settings_bad {
             app.toast(format!("Settings file was corrupt (saved as settings.json.bad): {reason}"));
@@ -1399,6 +1406,7 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:pro-monitor ----
     tools_monitor::TOOLS,
     // ---- ws:pro-timeline ----
+    tools_timeline_pro::TOOLS,
     // ---- ws:text-titles ----
     tools_titles::TOOLS,
     // ---- ws:docs-refresh ----
@@ -1438,6 +1446,7 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     // ---- ws:pro-monitor ----
     tools_monitor::act,
     // ---- ws:pro-timeline ----
+    tools_timeline_pro::act,
     // ---- ws:text-titles ----
     // ---- ws:docs-refresh ----
 ];
@@ -1510,6 +1519,7 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     tools_monitor::window_scopes,
     tools_monitor::window_multicam,
     // ---- ws:pro-timeline ----
+    tools_timeline_pro::window,
     // ---- ws:text-titles ----
     // ---- ws:docs-refresh ----
 ];

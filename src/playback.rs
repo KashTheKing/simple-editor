@@ -1964,6 +1964,20 @@ mod tests {
         );
     }
 
+    /// ws:pro-timeline — consumer-side pin: `Project::move_track`'s real same-index-different-id swap
+    /// (not a hand-rolled one) hits the same guard `track_id_reorder_full_clears` (above) pins; this
+    /// does not re-test `move_track`'s own swap logic, that lives with trim-model.
+    #[test]
+    fn move_track_forces_full_clear() {
+        let path = media::ffpipe::tests::test_mp4();
+        let asset = media::probe(&path, Backend::Auto).unwrap();
+        let mut project = Project::from_media(asset);
+        project.add_track(TrackKind::Video);
+        let mut reordered = project.clone();
+        assert!(reordered.move_track(0, false), "adjacent swap must succeed with two video tracks");
+        assert_eq!(video_dirty_spans(&project, &reordered), None, "Project::move_track's swap must force a full clear");
+    }
+
     /// ws:pro-monitor review gap — `multicam_switch` (model/ops/multicam.rs) mutates the nested
     /// sequence's tracks via `Project.sequences`, never via `Project.tracks` directly. `video_dirty_spans`
     /// already treats any `old.sequences != new.sequences` diff as unbounded (`None`, full clear) —

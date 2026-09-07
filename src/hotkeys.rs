@@ -289,6 +289,11 @@ actions! {
     NextAngle => "next_angle", "Next Angle at Playhead", None;
     PrevAngle => "prev_angle", "Previous Angle at Playhead", None;
     // ---- ws:pro-timeline ----
+    // Ctrl+F: free (Ctrl+Shift+F is ExportFrame, bare F is MatchFrame). ToggleOverview/RenameTrack
+    // unbound by design (toolbar button / header double-click / palette only).
+    Find => "find", "Find…", sc(CTRL, Key::F);
+    ToggleOverview => "toggle_overview", "Toggle Overview Strip", None;
+    RenameTrack => "rename_track", "Rename Track", None;
     // ---- ws:text-titles ----
     // ---- ws:docs-refresh ----
     // ---- tool selection (ui::tools) — polled and dispatched there, not through App::act ----

@@ -154,6 +154,24 @@ fn default_loudnorm() -> bool {
     true
 }
 
+// ---- ws:pro-timeline ----
+/// Named timeline view preset (toolbar combo, `Rows` glyph): which paint passes run and the row
+/// height newly added tracks pick up. `Settings.timeline_views` holds the user's saved presets,
+/// `TimelineState.view_idx` (ui/timeline/mod.rs) the active one.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct TimelineView {
+    pub name: String,
+    pub waves: bool,
+    pub thumbs: bool,
+    pub keys: bool,
+    pub clip_text: bool,
+    pub row_h: f32,
+}
+
+fn default_boring_thr() -> (f32, f32) {
+    (1.5, 20.0)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -379,6 +397,17 @@ pub struct Settings {
     #[serde(default)]
     pub scopes: Vec<String>,
     // ---- ws:pro-timeline ----
+    /// Saved timeline view presets (toolbar combo). Bare default (missing key on an old
+    /// settings.json) = empty, not the two builtins below — only a genuinely fresh install
+    /// (`Default::default()`) seeds them, matching `export_presets`' own migration note.
+    #[serde(default)]
+    pub timeline_views: Vec<TimelineView>,
+    /// (short_s, long_s): clips shorter than `.0` or longer than `.1` get a pacing tint on the ruler.
+    #[serde(default = "default_boring_thr")]
+    pub boring_thr: (f32, f32),
+    /// Inline overview minimap strip above the ruler.
+    #[serde(default)]
+    pub overview: bool,
     // ---- ws:text-titles ----
     // ---- ws:docs-refresh ----
 }
@@ -500,6 +529,26 @@ impl Default for Settings {
             trim_view: false,
             scopes: Vec::new(),
             // ---- ws:pro-timeline ----
+            timeline_views: vec![
+                TimelineView {
+                    name: "Detailed".into(),
+                    waves: true,
+                    thumbs: true,
+                    keys: true,
+                    clip_text: true,
+                    row_h: 64.0,
+                },
+                TimelineView {
+                    name: "Compact".into(),
+                    waves: false,
+                    thumbs: false,
+                    keys: false,
+                    clip_text: true,
+                    row_h: 32.0,
+                },
+            ],
+            boring_thr: default_boring_thr(),
+            overview: false,
             // ---- ws:text-titles ----
             // ---- ws:docs-refresh ----
         }
