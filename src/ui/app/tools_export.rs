@@ -404,16 +404,37 @@ fn advance_bake(app: &mut App, mut job: BakeJob) {
     }
 }
 
+/// The pure "add the probed asset, point clips at it, roll back if none survived" half of
+/// `finish_bake` — no live `App` needed, so a test can exercise the exact rollback path taken when
+/// every target clip vanished while the (async, minutes-long) bake was rendering. `add_asset` mutates
+/// `project` immediately; without the rollback here, a bake that finds nothing left to swap onto would
+/// leave that probed asset permanently orphaned in the library — no undo entry, `dirty` never set.
+/// Mirrors `mcp_exec.rs`'s `snapshot_if_mutate`/`rollback_project` split (same "a failed mutate must be
+/// a no-op" idiom used everywhere else in this codebase).
+pub(crate) fn bake_swap(
+    project: &mut Project,
+    before: &str,
+    clip_ids: &[Id],
+    asset: crate::model::Asset,
+    t0: f64,
+    factor: f64,
+) -> Result<usize, String> {
+    let aid = project.add_asset(asset);
+    let n = clip_ids.iter().filter(|&&id| swap_clip_asset(project, id, aid, t0, factor)).count();
+    if n == 0 {
+        if let Some(p) = super::mcp_exec::rollback_project(before) {
+            *project = p;
+        }
+        return Err("the clips are no longer on the timeline".into());
+    }
+    Ok(n)
+}
+
 /// Import the rendered file as an asset and re-point the clips — one labelled undo step.
 fn finish_bake(app: &mut App, job: &BakeJob) -> Result<usize, String> {
     let asset = media::probe(&job.out.to_string_lossy(), app.backend())?;
     let before = app.project.to_json();
-    let aid = app.project.add_asset(asset);
-    let factor = job.kind.factor();
-    let n = job.clip_ids.iter().filter(|&&id| swap_clip_asset(&mut app.project, id, aid, job.t0, factor)).count();
-    if n == 0 {
-        return Err("the clips are no longer on the timeline".into());
-    }
+    let n = bake_swap(&mut app.project, &before, &job.clip_ids, asset, job.t0, job.kind.factor())?;
     app.push_undo_labeled(before, job.label);
     app.after_edit();
     Ok(n)
@@ -732,6 +753,35 @@ mod tests {
         assert_eq!(p.clip(3).unwrap().src_in, 2.0);
         assert!(!swap_clip_asset(&mut p, 999, aid, 0.0, 1.0));
         assert!(p.asset(7).is_some(), "the original asset is kept");
+    }
+
+    /// PR #51 review bug: the bake pipeline is async (can take minutes); if every target clip is gone
+    /// by the time it finishes (deleted mid-bake, or by an MCP script), `finish_bake` used to call
+    /// `add_asset` (mutating the project) before discovering `n == 0` and returning `Err` — leaving the
+    /// probed asset permanently orphaned with no undo entry and no dirty flag. `bake_swap` must roll
+    /// the project all the way back to `before` instead.
+    #[test]
+    fn finish_bake_rolls_back_the_asset_add_when_every_target_clip_is_gone() {
+        // round-trip once first so `next_id` is already at its steady-state (`project()` hand-assigns
+        // clip ids below what `from_json` computes) — otherwise the *real* rollback below (which reparses
+        // through `from_json`, same as `finish_bake` does) would legitimately bump `next_id` and the
+        // to_json comparison would flag that no-op normalization as a mismatch.
+        let mut p = Project::from_json(&project().to_json()).unwrap();
+        let before_assets = p.assets.len();
+        // clips 2 and 3 (this bake's targets) vanish from the timeline before the bake's swap runs
+        for t in &mut p.tracks {
+            t.clips.retain(|c| c.id != 2 && c.id != 3);
+        }
+        let before = p.to_json(); // exactly what `finish_bake` would snapshot at this point
+        let baked = asset(0, "C:/baked.mp4");
+
+        let err = bake_swap(&mut p, &before, &[2, 3], baked, 2.0, 1.0);
+
+        assert_eq!(err, Err("the clips are no longer on the timeline".into()));
+        assert_eq!(p.assets.len(), before_assets, "the probed asset must not orphan into the library");
+        assert_eq!(p.to_json(), before, "the project is rolled back to exactly its pre-swap state");
+        // `finish_bake` only calls `push_undo_labeled`/`after_edit` after `bake_swap`'s `?` succeeds —
+        // structurally unreachable here, so no undo entry and no dirty flag follow from this Err.
     }
 
     #[test]
