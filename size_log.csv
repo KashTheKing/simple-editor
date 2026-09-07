@@ -33,3 +33,4 @@ f64147f,11914240,"inspector-gallery #33: collapsible inspector, Color section, e
 42c7c67,11994112,pro-monitor
 5e1acfd,11972096,text-titles
 86c1793,12167168,"wave-3 complete: pro-monitor+text-titles+pro-timeline (#35,36,37), post-review-fix (6 real bugs found across 3 review passes and fixed before merge); delta vs wave-2-complete+inspector-gallery baseline (11,914,240 B): +252,928 B/+247.0 KB"
+423f977,12167168,docs-refresh #38: docs-only workstream, no Rust source changed, confirms final exe size at wave-3-complete baseline

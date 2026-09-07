@@ -7,6 +7,23 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
 
 ---
 
+- **docs-refresh (2026-09-07), cross-cutting gotchas from the whole overhaul:** Luau's io/os/ffi
+  sandbox means `editor.log()` only ever renders as a 5-10s auto-expiring toast
+  (`ui/app/palette_ctl.rs`'s `fire_hook`, `app.rs`-descended toast draw) with no copy button —
+  script-generated docs must be transcribed via `curl` on `tools/list`, never by reading toast
+  output. Alt-render requests must check `self.export.is_some()` before firing (UI thread also
+  services export's `GpuFrameRequest`s — the two must not fight over the GL context). Registry
+  marker-section hunks never got a real union conflict in practice because `.rs` files were
+  deliberately excluded from `.gitattributes merge=union` (only `size_log.csv`/`CHANGELOG.md` are).
+  All six planned `-- @on` hook events (`selection_changed`, `import`, `export_done`,
+  `project_open`, `project_save`, `marker_added`) do have real `fire_hook` call sites as of
+  wave-3-complete — verified by grep against the merged tree, not assumed; see
+  ARCHITECTURE.md's "Registries" section and `docs/customizing.md` for the owning file:line of
+  each. `Settings.mcp_enabled` defaults to `false` and `PowerShell`'s `Set-Content -Encoding utf8`
+  writes a UTF-8 BOM on Windows PowerShell 5.1 — a hand-written `settings.json` with a BOM gets
+  silently quarantined to `settings.json.bad` on boot (parse failure), so MCP never starts; use
+  `[System.IO.File]::WriteAllText(path, json, [System.Text.UTF8Encoding]::new($false))` instead.
+
 - **UI/UX overhaul plan (2026-09-04):** lives in `plans/ui-overhaul/` — `README.md` is the master
   plan (thesis, decided keymap, frozen modifier table, registry protocol, size plan, waves),
   `issues/<workstream>.md` are issue-ready bodies for `/se-implement`. Rules an implementer must not
