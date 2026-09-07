@@ -10,6 +10,7 @@ pub mod effects;
 pub mod export;
 pub mod gpu;
 pub mod import;
+pub mod lut;
 pub mod mixer;
 pub mod mixer_fx;
 pub mod prerender;

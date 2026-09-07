@@ -62,6 +62,7 @@ mod timeline_pane;
 mod tools_args;
 mod tools_audio;
 mod tools_clip;
+mod tools_color;
 mod tools_helpers;
 mod tools_media;
 mod tools_playback;
@@ -1233,6 +1234,7 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     tools_audio::TOOLS,
     // ---- ws:audio-dsp-automation ----
     // ---- ws:color-engine ----
+    tools_color::TOOLS,
     // ---- ws:command-palette ----
     // ---- ws:forgiveness ----
     // ---- ws:player-rate-loop ----
@@ -1260,6 +1262,7 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     audio_actions::act,
     // ---- ws:audio-dsp-automation ----
     // ---- ws:color-engine ----
+    tools_color::act,
     // ---- ws:command-palette ----
     // ---- ws:forgiveness ----
     // ---- ws:player-rate-loop ----

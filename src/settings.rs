@@ -282,6 +282,9 @@ pub struct Settings {
     pub beat_thr: f32,
     // ---- ws:audio-dsp-automation ----
     // ---- ws:color-engine ----
+    /// User-browsable folders scanned for `.cube` files by a later LUT-browser UI (inspector-gallery,
+    /// wave 2) — this workstream only stores the setting, no UI reads it yet.
+    pub lut_dirs: Vec<String>,
     // ---- ws:command-palette ----
     // ---- ws:forgiveness ----
     // ---- ws:player-rate-loop ----
@@ -379,6 +382,7 @@ impl Default for Settings {
             beat_thr: 1.6,
             // ---- ws:audio-dsp-automation ----
             // ---- ws:color-engine ----
+            lut_dirs: Vec::new(),
             // ---- ws:command-palette ----
             // ---- ws:forgiveness ----
             // ---- ws:player-rate-loop ----
