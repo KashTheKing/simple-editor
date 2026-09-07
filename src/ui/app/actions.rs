@@ -949,3 +949,30 @@ impl App {
         }
     }
 }
+
+// ---- ws:forgiveness ----
+#[cfg(test)]
+mod tests {
+    /// Structural (source-scan): this crate has no headless App-construction path anywhere (see
+    /// tools_registry_tests.rs's doc comment for why), so — the same technique files.rs's own
+    /// App-level tests already use — this checks the Delete arm's body directly instead of driving
+    /// a live App through `act`.
+    #[test]
+    fn delete_selected_pushes_undo_toast() {
+        let src = include_str!("actions.rs");
+        let start = src.find("Delete | RippleDelete => {").expect("the Delete arm must exist");
+        let after = &src[start..];
+        let end = after.find("\n            SelectAll =>").expect("SelectAll must follow the Delete arm");
+        let body = &after[..end];
+
+        assert!(
+            body.contains(r#"self.push_undo_labeled(before, if a == RippleDelete { "Ripple delete" } else { "Delete" })"#),
+            "a plain Delete must label the undo entry 'Delete'"
+        );
+        assert!(body.contains("self.selection.clear()"), "Delete must clear the selection");
+        assert!(
+            body.contains(r#"self.toast_undo(format!("Deleted {n} clip{s}"), Action::Undo)"#),
+            "Delete must toast a button whose action is Action::Undo, so clicking it restores the clips"
+        );
+    }
+}

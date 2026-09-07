@@ -80,6 +80,14 @@ pub(super) fn general(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Setting
             ui.weak("px");
         });
         ui.end_row();
+
+        // ---- ws:forgiveness ----
+        ui.label("Autosave interval");
+        ui.horizontal(|ui| {
+            changed |= ui.add(egui::DragValue::new(&mut s.autosave_secs).range(0..=3600).speed(1)).changed();
+            ui.weak(if s.autosave_secs == 0 { "off" } else { "s" });
+        });
+        ui.end_row();
     });
     ui.add_space(6.0);
     changed |= ui.checkbox(&mut s.snap, "Snapping in the timeline").changed();

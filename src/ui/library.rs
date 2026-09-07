@@ -2976,6 +2976,45 @@ mod tests {
         assert_eq!(removed, vec![a, b], "Remove takes the whole selection");
     }
 
+    /// Remove Unused has no confirm step (unlike Clear recent, above it): one click removes every
+    /// asset unused by a sequence or a template, in the same frame, and the response carries the
+    /// count so the app can toast an Undo.
+    #[test]
+    fn remove_unused_is_instant_and_undoable() {
+        let mut project = Project::new();
+        project.add_asset(asset(0, ClipKind::Video, 5.0)); // never placed anywhere: unused
+        let mut settings = Settings::default();
+        let palette = Palette::new(true, egui::Color32::WHITE);
+        let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::test_fonts()); // size-diet: no default_fonts feature anymore
+        let mut state = LibraryState::default(); // tab 0 = Imported, where Remove Unused lives
+        let mut at = egui::Pos2::ZERO;
+        let mut removed_unused = None;
+        for frame in 0..2 {
+            let mut input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(500.0, 900.0))),
+                ..Default::default()
+            };
+            if frame == 1 {
+                assert_ne!(at, egui::Pos2::ZERO, "the toolbar must show a Remove unused button");
+                click_at(&mut input, at);
+            }
+            let out = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let mut undo = |_: &Project| {};
+                    let r = show(ui, &mut state, &mut project, &mut settings, None, None, &palette, false, &mut undo);
+                    removed_unused = r.removed_unused;
+                });
+            });
+            if let Some(rect) = text_rect(&out.shapes, "Remove unused (1)") {
+                at = rect.center();
+            }
+        }
+        // a single click, one frame: removed_unused is already set, no confirm window in between
+        assert_eq!(removed_unused, Some(1));
+        assert!(project.assets.is_empty(), "the unused asset is removed immediately");
+    }
+
     /// The zoom scales both views and is clamped; a fresh state reads as 1.
     #[test]
     fn zoom_scales_and_clamps() {

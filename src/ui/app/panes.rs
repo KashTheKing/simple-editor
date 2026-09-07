@@ -382,3 +382,31 @@ impl App {
         curves::set_available_motions(motions);
     }
 }
+
+// ---- ws:forgiveness ----
+#[cfg(test)]
+mod tests {
+    /// Structural (source-scan): this crate has no headless App-construction path anywhere (see
+    /// tools_registry_tests.rs's doc comment for why), so — the same technique files.rs's own
+    /// App-level tests already use — this checks both wiring sites directly instead of driving a
+    /// live App through the Library and Subtitles panes.
+    #[test]
+    fn panes_wires_toast_undo_for_library_and_subtitles() {
+        let subtitles_src = include_str!("panes.rs");
+        let start = subtitles_src.find("if resp.cleared_subtitles {").expect("the cleared_subtitles arm must exist");
+        let after = &subtitles_src[start..];
+        let end = after.find("\n                }").expect("the arm must close");
+        let body = &after[..end];
+        assert_eq!(body.matches("self.toast_undo(").count(), 1, "cleared_subtitles must toast exactly one Undo");
+        assert!(body.contains("Action::Undo"));
+
+        let library_src = include_str!("library_pane.rs");
+        let start =
+            library_src.find("if let Some(n) = resp.removed_unused {").expect("the removed_unused arm must exist");
+        let after = &library_src[start..];
+        let end = after.find("\n    }").expect("the arm must close");
+        let body = &after[..end];
+        assert_eq!(body.matches("app.toast_undo(").count(), 1, "removed_unused must toast exactly one Undo");
+        assert!(body.contains("Action::Undo"));
+    }
+}
