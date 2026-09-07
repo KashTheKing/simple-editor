@@ -296,7 +296,6 @@ pub struct App {
     /// winpos's window-rect debounce: (drag/move started at, the rect it saw) while unsettled, `None`
     /// once saved. Owned here so `whatsnew::tick` can thread it into `winpos::tick` every frame.
     pub(crate) winpos_pending: Option<(Instant, [i32; 4])>,
-<<<<<<< HEAD
     // ---- ws:forgiveness ----
     // deviation: unlike Settings/Project, this struct had no pre-seeded per-workstream marker section
     // (only ws:registries-schema-hooks/ws:size-diet above) — adding one here, following the same
