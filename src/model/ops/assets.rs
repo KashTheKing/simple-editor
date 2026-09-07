@@ -103,6 +103,16 @@ impl Project {
     pub fn asset_by_path(&self, path: &str) -> Option<&Asset> {
         self.assets.iter().find(|a| a.path.eq_ignore_ascii_case(path))
     }
+    // ---- ws:source-monitor ----
+    /// Resolve an asset for the Source monitor / Match Frame: prefers an exact `id` when the caller
+    /// already knows it, else the first row matching `path`. Path-only lookup always returns the
+    /// FIRST asset row with that path — the parent, when the real target is a subclip, since
+    /// `add_subclip` copies the parent's `path` verbatim and appends the subclip after it — so an id
+    /// must win whenever one is known; path-matching is only the fallback for a file with no known
+    /// id (e.g. drag-and-drop from outside the project).
+    pub fn asset_for_source(&self, id: Option<Id>, path: &str) -> Option<&Asset> {
+        id.and_then(|i| self.asset(i)).or_else(|| self.assets.iter().find(|a| a.path == path))
+    }
     /// Adds an asset (de-duplicated by path) and returns its id.
     pub fn add_asset(&mut self, mut a: Asset) -> Id {
         if let Some(e) = self.asset_by_path(&a.path) {
@@ -272,5 +282,31 @@ mod tests {
         assert_eq!(p.asset(named).unwrap().description, "Take 2");
         assert!(p.subclip_from_marks(parent, 4.0, 1.5, None).is_none(), "inverted marks refused");
         assert!(p.subclip_from_marks(999, 0.0, 1.0, None).is_none(), "unknown parent");
+    }
+
+    // ---- ws:source-monitor ----
+    // deviation (see PR body): the real bug lived in `App::source_open_now` (Match Frame / `source.open`
+    // resolving the wrong asset for a subclip), but `App` needs a real `eframe::CreationContext` and has
+    // no headless test harness (same App-construction limitation as `tools_registry_tests.rs` and the
+    // `add_subclip` test above), so this exercises `asset_for_source` directly — the exact lookup
+    // `source_open_now` now calls to resolve `SourceState.asset`.
+    /// A subclip shares its parent's `path` and is appended after it in `Project::assets`, so a
+    /// path-only lookup (id unknown) always finds the parent — opening the subclip by its own asset id
+    /// must resolve to the subclip itself, not the parent sharing its path.
+    #[test]
+    fn asset_for_source_prefers_id_over_first_path_match() {
+        let mut p = Project::new();
+        let parent = p.add_asset(asset("C:/clip.mp4"));
+        let sub = p.add_subclip(parent, 2.0, 5.0, None).unwrap();
+        let path = p.asset(parent).unwrap().path.clone();
+        assert_eq!(p.asset(sub).unwrap().path, path, "subclip shares the parent's path");
+        // no id known (e.g. a bare path with no library match yet) -> the first row with that path
+        assert_eq!(p.asset_for_source(None, &path).map(|a| a.id), Some(parent));
+        // the subclip's own id -> the subclip itself, not the parent
+        assert_eq!(p.asset_for_source(Some(sub), &path).map(|a| a.id), Some(sub));
+        // the parent's own id still resolves to the parent
+        assert_eq!(p.asset_for_source(Some(parent), &path).map(|a| a.id), Some(parent));
+        // an unknown id falls back to the path match rather than resolving to nothing
+        assert_eq!(p.asset_for_source(Some(999), &path).map(|a| a.id), Some(parent));
     }
 }

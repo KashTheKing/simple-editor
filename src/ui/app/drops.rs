@@ -37,12 +37,21 @@ impl App {
                 t = self.project.snap_frame(t);
             }
             let track = self.timeline.track_at(p.y, &self.project);
-            let vt = track.filter(|&i| self.project.tracks[i].kind == TrackKind::Video);
             // ---- ws:source-monitor ----
             // the drop-modifier table: Ctrl = Splice, Alt = Overwrite (replace edit on a clip body),
             // Shift = Place on Top, none = Place
             let mode = DropMode::from_modifiers(ctx.input(|i| i.modifiers));
-            self.place_assets(&ids, t, vt, mode);
+            // Overwrite resolves/falls back for itself by the dropped asset's own kind (see
+            // `place()`'s Overwrite branch), so it gets the raw track under the pointer even when
+            // it's an audio lane — nulling it here (like Place/Splice, which expect a video-track
+            // index and resolve the audio track separately) made an Alt-drop of an audio-only asset
+            // always land on the first audio track instead of the one under the pointer.
+            let track_arg = if mode == DropMode::Overwrite {
+                track
+            } else {
+                track.filter(|&i| self.project.tracks[i].kind == TrackKind::Video)
+            };
+            self.place_assets(&ids, t, track_arg, mode);
             self.after_edit();
         } else if on_moodboard {
             // snapshot after the import (which already pushed its own undo step if any file was fresh —

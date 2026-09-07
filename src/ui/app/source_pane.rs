@@ -11,25 +11,38 @@ use crate::ui::source_ui::{self, SourceCtx, SourceState, Tape};
 /// stores, so callers without one (library click, Match Frame, the `source.*` MCP tools) park the
 /// request here and the next frame's hook fulfils it.
 pub(super) enum Pending {
-    File { path: PathBuf, seek: Option<f64> },
+    /// `id` is the resolved library asset (when known) — carried through so `source_open_now` can
+    /// look it up by id instead of by path alone, which always finds the FIRST asset row with that
+    /// path (the parent, when the real target is a subclip sharing the parent's path).
+    File {
+        path: PathBuf,
+        seek: Option<f64>,
+        id: Option<Id>,
+    },
     Tape(Vec<Id>),
 }
 
 impl App {
-    /// Load `path` into the Source monitor next frame (and seek to `seek` seconds once open). Takes
-    /// transport focus, so Space/JKL/I/O drive it — the same "you just picked a clip to look at" rule
-    /// the old library preview had — and surfaces the pane unless that would hide the Library.
-    pub(crate) fn open_in_source(&mut self, path: PathBuf, seek: Option<f64>) {
-        self.source_pending = Some(Pending::File { path, seek });
+    fn queue_source_open(&mut self, path: PathBuf, seek: Option<f64>, id: Option<Id>) {
+        self.source_pending = Some(Pending::File { path, seek, id });
         self.source_focus = true;
         self.surface_source();
+    }
+
+    /// Load `path` into the Source monitor next frame (and seek to `seek` seconds once open). Takes
+    /// transport focus, so Space/JKL/I/O drive it — the same "you just picked a clip to look at" rule
+    /// the old library preview had — and surfaces the pane unless that would hide the Library. No
+    /// known asset id (e.g. drag-and-drop from outside the project) — `open_asset_in_source` carries
+    /// one when the caller has it.
+    pub(crate) fn open_in_source(&mut self, path: PathBuf, seek: Option<f64>) {
+        self.queue_source_open(path, seek, None);
     }
 
     /// Same, by library asset id. False = no such asset.
     pub(crate) fn open_asset_in_source(&mut self, asset: Id, seek: Option<f64>) -> bool {
         match self.project.asset(asset) {
             Some(a) => {
-                self.open_in_source(PathBuf::from(&a.path), seek);
+                self.queue_source_open(PathBuf::from(&a.path), seek, Some(asset));
                 true
             }
             None => false,
@@ -63,20 +76,29 @@ impl App {
         }
     }
 
-    /// Open `path` now (needs `ctx` for the Player). Re-opening the current file only seeks. Pauses
-    /// the timeline: previewing a source and the program monitor should not both be making sound.
-    fn source_open_now(&mut self, ctx: &egui::Context, path: PathBuf, seek: Option<f64>) {
+    /// Open `path` now (needs `ctx` for the Player). Re-opening the current file only seeks — unless
+    /// `id` names a different asset than what's already open (a subclip shares its parent's `path`,
+    /// so a path-only match would wrongly treat opening one after the other as "already open").
+    /// Pauses the timeline: previewing a source and the program monitor should not both be making
+    /// sound.
+    fn source_open_now(&mut self, ctx: &egui::Context, path: PathBuf, seek: Option<f64>, id: Option<Id>) {
         self.player.pause();
-        if self.source.as_ref().is_some_and(|s| s.path == path && s.tape.is_none()) {
+        let same = self
+            .source
+            .as_ref()
+            .is_some_and(|s| s.path == path && s.tape.is_none() && id.map_or(true, |i| s.asset == Some(i)));
+        if same {
             if let (Some(t), Some(s)) = (seek, self.source.as_mut()) {
                 s.player.seek(t.clamp(0.0, s.duration));
             }
             return;
         }
         // an asset the project already knows carries its probed duration; anything else (a Global/
-        // Recent file never imported) is probed on the spot — one ffprobe call for metadata only
+        // Recent file never imported) is probed on the spot — one ffprobe call for metadata only.
+        // `id` (when known) wins over the path match, which always finds the FIRST asset row with
+        // that path — the parent, when the real target is a subclip (see `asset_for_source`).
         let path_s = path.to_string_lossy().into_owned();
-        let (asset, id) = match self.project.assets.iter().find(|a| a.path == path_s) {
+        let (asset, id) = match self.project.asset_for_source(id, &path_s) {
             Some(a) => (a.clone(), Some(a.id)),
             None => match crate::media::probe(&path_s, self.backend()) {
                 Ok(a) => (a, None),
@@ -107,7 +129,7 @@ impl App {
         };
         if self.source.is_none() {
             let Some(path) = self.project.asset(first).map(|a| PathBuf::from(&a.path)) else { return };
-            self.source_open_now(ctx, path, Some(0.0));
+            self.source_open_now(ctx, path, Some(0.0), Some(first));
         }
         let (project, offsets) = source_ctl::source_tape(&ids, &self.project);
         let own = self.source_own_project();
@@ -122,7 +144,8 @@ impl App {
     /// private to library.rs, media-library's file this wave) — the same-day library.rs follow-up
     /// exposes the filtered order; until then "selection, else everything" is the bin.
     fn tape_default_ids(&self) -> Vec<Id> {
-        let sel: Vec<Id> = self.library.sel_ids.iter().copied().filter(|&id| self.project.asset(id).is_some()).collect();
+        let sel: Vec<Id> =
+            self.library.sel_ids.iter().copied().filter(|&id| self.project.asset(id).is_some()).collect();
         if !sel.is_empty() {
             return sel;
         }
@@ -151,7 +174,9 @@ impl App {
                 match self.source_tex.as_mut() {
                     Some(t) if t.size() == [w, h] => t.set_partial([0, 0], img, egui::TextureOptions::LINEAR),
                     Some(t) => t.set(img, egui::TextureOptions::LINEAR),
-                    None => self.source_tex = Some(ctx.load_texture("source_monitor", img, egui::TextureOptions::LINEAR)),
+                    None => {
+                        self.source_tex = Some(ctx.load_texture("source_monitor", img, egui::TextureOptions::LINEAR))
+                    }
                 }
             }
         }
@@ -175,8 +200,8 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
     // `--screenshot` + SE_SCREENSHOT_SOURCE=1: open the project's first asset here with marks set, so
     // the pane can be eyeballed the way SE_SCREENSHOT_DELAY lets thumbnails warm up (verification only).
     if app.screenshot.is_some() && app.source.is_none() && std::env::var_os("SE_SCREENSHOT_SOURCE").is_some() {
-        if let Some(path) = app.project.assets.first().map(|a| PathBuf::from(&a.path)) {
-            app.source_open_now(ctx, path, Some(1.0));
+        if let Some((path, id)) = app.project.assets.first().map(|a| (PathBuf::from(&a.path), a.id)) {
+            app.source_open_now(ctx, path, Some(1.0), Some(id));
             if let Some(s) = app.source.as_mut() {
                 (s.src_in, s.src_out) = (Some(0.5), Some(s.duration * 0.6));
             }
@@ -185,7 +210,7 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
         }
     }
     match app.source_pending.take() {
-        Some(Pending::File { path, seek }) => app.source_open_now(ctx, path, seek),
+        Some(Pending::File { path, seek, id }) => app.source_open_now(ctx, path, seek, id),
         Some(Pending::Tape(ids)) => app.source_tape_now(ctx, ids),
         None => {}
     }
@@ -206,7 +231,11 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
         ui.weak("Click a clip in the Library to open it here — or press F on a timeline clip (Match Frame).");
         return true;
     }
-    let smart = source_ctl::smart_indicator(&app.project, app.playhead, source_ctl::SMART_PX / app.timeline.zoom.max(1.0) as f64);
+    let smart = source_ctl::smart_indicator(
+        &app.project,
+        app.playhead,
+        source_ctl::SMART_PX / app.timeline.zoom.max(1.0) as f64,
+    );
     let focused = app.source_active();
     let resp = {
         let live = app.source_live;
@@ -215,7 +244,15 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
         source_ui::show(
             ui,
             st,
-            SourceCtx { palette, settings, thumbs: Some(thumbs), waveforms: Some(waveforms), frame: live, focused, smart },
+            SourceCtx {
+                palette,
+                settings,
+                thumbs: Some(thumbs),
+                waveforms: Some(waveforms),
+                frame: live,
+                focused,
+                smart,
+            },
         )
     };
     if resp.toggle_focus {

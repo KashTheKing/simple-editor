@@ -75,6 +75,12 @@ pub(crate) fn place(
                         let Some(c) = project.clip(cid) else { continue };
                         let fits = if c.kind == ClipKind::Audio { has_audio } else { has_video };
                         if fits && project.replace_clip(cid, asset) {
+                            // `replace_clip` always zeroes `src_in` — a three-point edit's marked
+                            // in-point (`range`) must still apply on this clip-body-hit path, same
+                            // as the gap-hit `overwrite_asset` path below already honours it.
+                            if let Some(c) = project.clip_mut(cid) {
+                                c.src_in = range.map(|r| r.0).unwrap_or(0.0);
+                            }
                             done.push(cid);
                         }
                     }
@@ -97,7 +103,13 @@ pub(crate) fn place(
 /// The old `App::insert_at` loop verbatim over `place`: each asset lands at `at`, then `at` advances
 /// to that asset's first new clip's end — a library multi-select or a multi-stream import chains end
 /// to end. Every former `insert_at` call site routes here.
-pub(crate) fn place_many(project: &mut Project, ids: &[Id], mut at: f64, track: Option<usize>, mode: DropMode) -> Vec<Id> {
+pub(crate) fn place_many(
+    project: &mut Project,
+    ids: &[Id],
+    mut at: f64,
+    track: Option<usize>,
+    mode: DropMode,
+) -> Vec<Id> {
     let mut out = Vec::new();
     for &id in ids {
         let new = place(project, id, at, track, mode, None);
@@ -145,6 +157,29 @@ mod tests {
             height: 240,
             fps: 25.0,
             audio_streams: (0..streams).map(|i| AudioStreamInfo { index: i, ..Default::default() }).collect(),
+            codec: String::new(),
+            folder: String::new(),
+            tags: Vec::new(),
+            label: 0,
+            description: String::new(),
+            rel_path: None,
+            parent: None,
+            range: None,
+            effects: Vec::new(),
+        }
+    }
+
+    /// An audio-only asset (no video track), for Overwrite-onto-an-audio-track regression coverage.
+    fn audio_asset(path: &str, dur: f64) -> Asset {
+        Asset {
+            id: 0,
+            path: path.into(),
+            kind: ClipKind::Audio,
+            duration: dur,
+            width: 0,
+            height: 0,
+            fps: 0.0,
+            audio_streams: vec![AudioStreamInfo::default()],
             codec: String::new(),
             folder: String::new(),
             tags: Vec::new(),
@@ -238,6 +273,41 @@ mod tests {
         let c = p.clip(ids[0]).unwrap();
         assert_eq!((c.start, c.duration), (12.0, 1.0));
         assert_eq!(p.tracks[0].clips.len(), 2);
+    }
+
+    /// Regression: a three-point Overwrite on a clip body must apply the marked in-point, not just
+    /// keep `replace_clip`'s hardcoded `src_in = 0.0`.
+    #[test]
+    fn place_asset_overwrite_on_clip_body_applies_marked_range() {
+        let mut p = Project::from_media(asset("C:/a.mp4", 10.0, 1)); // V1 + A1, linked
+        let target = p.tracks[0].clips[0].id;
+        let b = p.add_asset(asset("C:/b.mp4", 8.0, 1));
+        let ids = place(&mut p, b, 4.0, None, DropMode::Overwrite, Some((2.5, 6.0)));
+        assert_eq!(ids.len(), 2, "both linked clips swapped");
+        let c = p.clip(target).unwrap();
+        assert_eq!(c.asset, b);
+        assert_eq!(c.duration, 10.0, "duration still kept (a Replace edit, not a resize)");
+        assert_eq!(c.src_in, 2.5, "the marked in-point, not 0.0");
+    }
+
+    /// Regression: an Alt-drop (Overwrite) on an audio-only asset must land on the audio track the
+    /// pointer is actually over, not always fall back to the first audio track (A1).
+    #[test]
+    fn place_asset_overwrite_targets_track_under_pointer_not_first_audio_track() {
+        let mut p = Project::new(); // V1 (0), A1 (1)
+        let a2 = p.add_track(TrackKind::Audio); // A2 (2) — not the first audio track
+        let base = p.add_asset(audio_asset("C:/base.wav", 5.0));
+        let placed = p.insert_asset_clips_ranged(base, 0.0, None, Some(a2), None);
+        let target = placed[0];
+        assert_eq!(p.track_of(target), Some(a2), "test setup: a clip body sits on A2");
+        let repl = p.add_asset(audio_asset("C:/repl.wav", 5.0));
+        // `drops.rs` must pass A2 (the raw track under the pointer) through for Overwrite instead of
+        // nulling it because it isn't a video track — `place()` itself already honours whatever
+        // track it's given.
+        let out = place(&mut p, repl, 1.0, Some(a2), DropMode::Overwrite, None);
+        assert_eq!(out, vec![target]);
+        assert_eq!(p.track_of(target), Some(a2), "landed on A2, not A1");
+        assert_eq!(p.clip(target).unwrap().asset, repl);
     }
 
     #[test]
