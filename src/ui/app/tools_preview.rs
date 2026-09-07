@@ -130,7 +130,7 @@ pub const TOOLS: &[ToolDef] = &[
         run: |app, args| {
             let ids = req(arg_ids(args, "asset_ids"), "asset_ids")?;
             let playhead = app.playhead;
-            app.insert_at(ids, playhead, None);
+            app.place_assets(&ids, playhead, None, DropMode::Place);
             Ok(ToolOutcome::Done(json!({"ok": true})))
         },
     },

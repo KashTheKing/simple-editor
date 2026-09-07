@@ -73,6 +73,8 @@ const OP_TOOLS: &[(&str, &str)] = &[
     ("apply_repair", "audio.repair"),
     // ---- ws:canvas-handles-monitor ----
     ("fit_clip_to_screen", "clip.fit"),
+    // ---- ws:source-monitor ----
+    ("subclip_from_marks", "source.subclip"),
 ];
 
 /// (Project op fn name, why it has no MCP tool yet). Every entry is a real, deliberate gap — either a

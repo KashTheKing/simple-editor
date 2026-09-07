@@ -11,7 +11,12 @@ pub(super) enum DropTarget {
     Library,
 }
 
-pub(super) fn drop_target(pos: Option<egui::Pos2>, timeline: egui::Rect, monitor: egui::Rect, moodboard: egui::Rect) -> DropTarget {
+pub(super) fn drop_target(
+    pos: Option<egui::Pos2>,
+    timeline: egui::Rect,
+    monitor: egui::Rect,
+    moodboard: egui::Rect,
+) -> DropTarget {
     match pos {
         Some(p) if timeline.contains(p) => DropTarget::Timeline,
         Some(p) if monitor.contains(p) => DropTarget::Monitor,
@@ -56,14 +61,28 @@ impl App {
                     t = self.project.snap_frame(t);
                 }
                 let track = self.timeline.track_at(p.y, &self.project);
-                let vt = track.filter(|&i| self.project.tracks[i].kind == TrackKind::Video);
-                self.insert_at(ids, t, vt);
+                // ---- ws:source-monitor ----
+                // the drop-modifier table: Ctrl = Splice, Alt = Overwrite (replace edit on a clip body),
+                // Shift = Place on Top, none = Place
+                let mode = DropMode::from_modifiers(ctx.input(|i| i.modifiers));
+                // Overwrite resolves/falls back for itself by the dropped asset's own kind (see
+                // `place()`'s Overwrite branch), so it gets the raw track under the pointer even when
+                // it's an audio lane — nulling it here (like Place/Splice, which expect a video-track
+                // index and resolve the audio track separately) made an Alt-drop of an audio-only asset
+                // always land on the first audio track instead of the one under the pointer.
+                let track_arg = if mode == DropMode::Overwrite {
+                    track
+                } else {
+                    track.filter(|&i| self.project.tracks[i].kind == TrackKind::Video)
+                };
+                self.place_assets(&ids, t, track_arg, mode);
                 self.after_edit();
             }
             // ws:canvas-handles-monitor: onto the monitor = "put it here, now" — a free video track at
-            // the playhead, through the same insert_at a timeline drop uses
+            // the playhead, through the same place_assets a timeline drop uses (DropMode::Place is
+            // insert_at's old plain-drop behavior, its replacement per ws:source-monitor)
             DropTarget::Monitor => {
-                self.insert_at(ids, self.playhead, None);
+                self.place_assets(&ids, self.playhead, None, DropMode::Place);
                 self.after_edit();
             }
             DropTarget::Moodboard => {
@@ -94,7 +113,7 @@ mod tests {
     use super::*;
     use egui::{pos2, vec2, Rect};
 
-    /// The monitor branch is `drop_target(..) == Monitor` + `insert_at(ids, playhead, None)`: the
+    /// The monitor branch is `drop_target(..) == Monitor` + `place_assets(ids, playhead, None, Place)`: the
     /// target decision and the placement it makes are each checked here (no headless `App` exists to
     /// drive `handle_drops` itself — see the App-construction note in tools_registry_tests.rs).
     #[test]

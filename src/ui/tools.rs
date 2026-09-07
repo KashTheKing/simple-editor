@@ -264,6 +264,16 @@ pub(crate) enum Glyph {
     Maximize,
     // ---- ws:media-library ----
     // ---- ws:source-monitor ----
+    /// A bar with a block landing after its end — smart edit "Append at End".
+    Append,
+    /// Two blocks with arrows pulling them together — smart edit "Close Up" (close the gap).
+    CloseUp,
+    /// A block floating above a bar with an up arrow — smart edit "Place on Top" (new track above).
+    PlaceOnTop,
+    /// A viewfinder rect with a record dot — the Source/Record monitor toggle.
+    SourceRecord,
+    /// A tape cassette: two reels in a shell — Source Tape.
+    Tape,
     // ---- ws:timeline-trim-gestures ----
     // ---- ws:transcript-captions ----
     // ---- ws:pro-monitor ----
@@ -383,6 +393,11 @@ impl Glyph {
         Glyph::Maximize,
         // ---- ws:media-library ----
         // ---- ws:source-monitor ----
+        Glyph::Append,
+        Glyph::CloseUp,
+        Glyph::PlaceOnTop,
+        Glyph::SourceRecord,
+        Glyph::Tape,
         // ---- ws:timeline-trim-gestures ----
         // ---- ws:transcript-captions ----
         // ---- ws:pro-monitor ----
@@ -506,6 +521,11 @@ impl Glyph {
             Glyph::Maximize => "maximize",
             // ---- ws:media-library ----
             // ---- ws:source-monitor ----
+            Glyph::Append => "append",
+            Glyph::CloseUp => "close-up",
+            Glyph::PlaceOnTop => "place-on-top",
+            Glyph::SourceRecord => "source-record",
+            Glyph::Tape => "tape",
             // ---- ws:timeline-trim-gestures ----
             // ---- ws:transcript-captions ----
             // ---- ws:pro-monitor ----
@@ -1792,6 +1812,60 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
             }
         } // ---- ws:media-library ----
           // ---- ws:source-monitor ----
+        // append: a lane bar, then a block dropped just past its end with a right arrow above
+        Glyph::Append => {
+            p.line_segment([c + egui::vec2(-8.0, 2.0), c + egui::vec2(1.0, 2.0)], Stroke::new(2.0, fg));
+            p.rect_stroke(
+                egui::Rect::from_min_max(c + egui::vec2(3.0, -2.0), c + egui::vec2(8.0, 6.0)),
+                CornerRadius::ZERO,
+                stroke,
+                StrokeKind::Inside,
+            );
+            p.line_segment([c + egui::vec2(-3.0, -5.0), c + egui::vec2(3.0, -5.0)], stroke);
+            p.add(egui::Shape::convex_polygon(tri(c + egui::vec2(4.0, -5.0), Dir::Right, 2.4, 2.0), fg, Stroke::NONE));
+        }
+        // close up: two blocks with arrows pointing at the gap between them
+        Glyph::CloseUp => {
+            for (x0, x1) in [(-8.0f32, -4.0f32), (4.0, 8.0)] {
+                p.rect_filled(egui::Rect::from_min_max(c + egui::vec2(x0, -3.0), c + egui::vec2(x1, 3.0)), CornerRadius::ZERO, fg);
+            }
+            p.add(egui::Shape::convex_polygon(tri(c + egui::vec2(-1.5, 0.0), Dir::Right, 2.4, 2.4), fg, Stroke::NONE));
+            p.add(egui::Shape::convex_polygon(tri(c + egui::vec2(1.5, 0.0), Dir::Left, 2.4, 2.4), fg, Stroke::NONE));
+        }
+        // place on top: a lane bar with a block hovering above it and an up arrow beside
+        Glyph::PlaceOnTop => {
+            p.line_segment([c + egui::vec2(-8.0, 5.0), c + egui::vec2(8.0, 5.0)], Stroke::new(2.0, fg));
+            p.rect_stroke(
+                egui::Rect::from_min_max(c + egui::vec2(-6.0, -6.0), c + egui::vec2(2.0, 0.0)),
+                CornerRadius::ZERO,
+                stroke,
+                StrokeKind::Inside,
+            );
+            p.line_segment([c + egui::vec2(6.0, 2.0), c + egui::vec2(6.0, -4.0)], stroke);
+            p.add(egui::Shape::convex_polygon(tri(c + egui::vec2(6.0, -5.5), Dir::Up, 2.0, 2.4), fg, Stroke::NONE));
+        }
+        // source/record: a viewfinder rect with a record dot in it
+        Glyph::SourceRecord => {
+            p.rect_stroke(
+                egui::Rect::from_center_size(c, egui::vec2(15.0, 11.0)),
+                CornerRadius::same(1),
+                stroke,
+                StrokeKind::Inside,
+            );
+            p.circle_filled(c, 2.6, fg);
+        }
+        // tape: a cassette shell with two reel rings and a window line under them
+        Glyph::Tape => {
+            p.rect_stroke(
+                egui::Rect::from_center_size(c, egui::vec2(16.0, 11.0)),
+                CornerRadius::same(2),
+                stroke,
+                StrokeKind::Inside,
+            );
+            p.circle_stroke(c + egui::vec2(-4.0, -1.0), 2.2, stroke);
+            p.circle_stroke(c + egui::vec2(4.0, -1.0), 2.2, stroke);
+            p.line_segment([c + egui::vec2(-5.0, 3.5), c + egui::vec2(5.0, 3.5)], stroke);
+        }
           // ---- ws:timeline-trim-gestures ----
           // ---- ws:transcript-captions ----
           // ---- ws:pro-monitor ----

@@ -251,9 +251,20 @@ actions! {
     Workspace6 => "workspace_6", "Workspace 6 (Deliver)", sc(ALT, Key::Num6);
     MaximizePane => "maximize_pane", "Maximise Pane under Cursor", sc(NONE, Key::Backtick);
     TogglePin => "toggle_pin", "Pin / Unpin Pane under Cursor", None;
-    ToggleSource => "toggle_source", "Show / Hide Source Monitor", None;
+    // ToggleSource is declared by ws:source-monitor below (both workstreams needed it; kept there
+    // since that's the pane it actually toggles) — never redeclare it here.
     // ---- ws:media-library ----
     // ---- ws:source-monitor ----
+    // F: free (F11 fullscreen, Ctrl+Shift+F export frame); Ctrl+Shift+R: free (Ctrl+R retime,
+    // Shift+R freeze, Ctrl+Alt+R voiceover). The rest are Source-pane buttons / palette only.
+    MatchFrame => "match_frame", "Match Frame", sc(NONE, Key::F);
+    RevealInLibrary => "reveal_in_library", "Reveal in Library", sc(CTRL_SHIFT, Key::R);
+    AppendAtEnd => "append_at_end", "Append at End", None;
+    RippleOverwrite => "ripple_overwrite", "Ripple Overwrite", None;
+    CloseUp => "close_up", "Close Up", None;
+    PlaceOnTop => "place_on_top", "Place on Top", None;
+    SourceTape => "source_tape", "Source Tape", None;
+    ToggleSource => "toggle_source", "Show / Hide Source Monitor", None;
     // ---- ws:timeline-trim-gestures ----
     // ---- ws:transcript-captions ----
     // ---- ws:pro-monitor ----
@@ -667,15 +678,9 @@ mod tests {
     #[test]
     fn no_duplicate_hotkey_rows_for_shared_actions() {
         let src = include_str!("hotkeys.rs");
-        for name in [
-            "ToggleLayoutMode",
-            "ShowWelcome",
-            "Workspace1",
-            "Workspace6",
-            "MaximizePane",
-            "TogglePin",
-            "ToggleSource",
-        ] {
+        for name in
+            ["ToggleLayoutMode", "ShowWelcome", "Workspace1", "Workspace6", "MaximizePane", "TogglePin", "ToggleSource"]
+        {
             let decl = format!("{name} =>");
             assert_eq!(src.matches(decl.as_str()).count(), 1, "{name} must be declared exactly once");
         }
@@ -701,6 +706,9 @@ mod tests {
         // the frozen keymap's own reasoning: Alt+N must not fire the Ctrl+N pane toggles, and vice versa
         assert_eq!(h.conflict(KeyboardShortcut::new(ALT, Key::Num1)), Some(Action::Workspace1));
         assert_eq!(h.conflict(KeyboardShortcut::new(CTRL, Key::Num1)), Some(Action::ToggleLibrary));
-        assert_eq!(h.conflict_all(KeyboardShortcut::new(NONE, Key::Backtick)), Some(Claim::Action(Action::MaximizePane)));
+        assert_eq!(
+            h.conflict_all(KeyboardShortcut::new(NONE, Key::Backtick)),
+            Some(Claim::Action(Action::MaximizePane))
+        );
     }
 }

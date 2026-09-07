@@ -86,12 +86,9 @@ impl App {
                 }
             }
             PlayPause => {
-                // a library asset preview owns the Preview pane while it's open, so space controls
-                // its player instead of the timeline's — otherwise pressing play while looking at a
-                // library asset would silently start the timeline playing behind it
-                if let Some(lp) = self.lib_preview.as_mut() {
-                    lp.player.toggle();
-                } else if self.buffer_stall {
+                // (ws:source-monitor: while the Source monitor holds transport focus, Space reaches
+                // source_ctl::act first and never gets here)
+                if self.buffer_stall {
                     self.buffer_stall = false; // buffering held the clock: space means "stop waiting"
                 } else {
                     if !self.player.is_playing() && self.playhead >= self.project.duration() - 1e-6 {

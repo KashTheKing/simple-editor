@@ -1,9 +1,15 @@
 use super::*;
 
 pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
-    if app.lib_preview.is_some() {
-        app.draw_lib_preview(ui);
-    } else {
+    // ws:source-monitor: the library-preview override that used to gate this block (`if
+    // app.lib_preview.is_some() { draw_lib_preview } else { .. }`) is gone — Pane::Source owns the
+    // source player now. The block itself is left un-dedented so canvas-handles-monitor's concurrent
+    // edits to this file merge cleanly. A press on the program monitor hands transport focus
+    // (Space/JKL/I/O) back to the timeline, exactly like a press on the timeline itself.
+    if source_pane::pressed_in(ui) {
+        app.source_focus = false;
+    }
+    {
         let frame = app.pending_frame.take();
         let proxy_busy = app.proxy_job.as_ref().map(|(_, _, p)| p.fraction());
         let resp = {

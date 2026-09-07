@@ -60,7 +60,9 @@ mod gpu;
 mod jobs;
 // ---- ws:layout-modes-onboarding ----
 mod layout_ctl;
-mod lib_preview;
+// ---- ws:source-monitor ----
+// `lib_preview` is removed here — its one caller (the Library pane's small in-panel preview) was
+// replaced by the real Source monitor pane; see `source_pane.rs`.
 mod library_pane;
 mod mcp_exec;
 mod media_sync;
@@ -75,6 +77,11 @@ mod preview_pane;
 // ---- ws:forgiveness ----
 // pub(crate): main.rs calls recovery::install_panic_hook() before eframe::run_native.
 pub(crate) mod recovery;
+// ---- ws:source-monitor ----
+mod source_ctl;
+mod source_pane;
+// every placement call site (drops, library add, recording import, panes) names a DropMode
+pub(crate) use edit_ops::DropMode;
 mod thumbs;
 mod timeline_pane;
 mod tools_args;
@@ -97,6 +104,8 @@ mod tools_preview;
 mod tools_project;
 #[cfg(test)]
 mod tools_registry_tests;
+// ---- ws:source-monitor ----
+mod tools_source;
 mod tools_subtitles;
 mod tools_timeline;
 mod tools_trim;
@@ -116,19 +125,6 @@ struct McpJob {
     prog: Arc<Progress>,
     reply: Sender<Result<Value, String>>,
     out: PathBuf,
-}
-
-/// The library's own preview player: a file, its own decoder/audio pipeline, and the duration/fps a
-/// transport needs (an asset's own probed values, since this project is a synthetic single-clip one).
-struct LibPreview {
-    path: PathBuf,
-    player: Player,
-    duration: f64,
-    fps: f64,
-    has_video: bool,
-    /// A still image: no transport, no timecode, no scrub bar — just the picture.
-    is_image: bool,
-    heartbeat: crate::ui::heartbeat::Heartbeat,
 }
 
 pub struct App {
@@ -273,15 +269,21 @@ pub struct App {
     /// event either way), so a Ctrl+V after an internal-only copy produced NO event at all and could
     /// never be bound. Copying clips therefore also writes them out as text.
     os_clipboard: Option<String>,
-    /// The library's own preview: a player of its own so it never disturbs the program monitor or the
-    /// timeline playhead, and the texture the pane paints this frame. While it is Some, the Preview
-    /// pane shows this instead of the timeline (see `draw_lib_preview`).
-    lib_preview: Option<LibPreview>,
-    lib_preview_tex: Option<egui::TextureHandle>,
+    // ---- ws:source-monitor ----
+    /// The Source monitor (`Pane::Source`, replaces the old `lib_preview` Preview-pane takeover): a
+    /// player of its own so it never disturbs the program monitor or the timeline playhead, and the
+    /// texture the pane paints this frame.
+    source: Option<crate::ui::source_ui::SourceState>,
+    source_tex: Option<egui::TextureHandle>,
     /// This update's uploaded frame, computed once (`Player::take_frame` consumes the buffered frame, so
     /// pulling it twice in one update would starve whichever call came second). Both the library pane's
-    /// own preview box and the viewport override read this same value.
-    lib_preview_live: Option<library::PreviewFrame>,
+    /// own preview box and the Source pane read this same value.
+    source_live: Option<library::PreviewFrame>,
+    /// Transport focus: true = Space/JKL/I/O drive the Source monitor (last-clicked transport wins),
+    /// false = the timeline, the fallback. See `source_ctl::act`.
+    source_focus: bool,
+    /// A queued Source-monitor open (needs the egui ctx a new `Player` takes) — see `source_pane::tick`.
+    source_pending: Option<source_pane::Pending>,
     /// Movie mode pre-render cache.
     prerender: PreRender,
     /// Movie mode paused the clock because the frame under the playhead was not rendered yet.
@@ -749,9 +751,12 @@ impl App {
             attrs: None,
             clipboard: None,
             os_clipboard: None,
-            lib_preview: None,
-            lib_preview_live: None,
-            lib_preview_tex: None,
+            // ---- ws:source-monitor ----
+            source: None,
+            source_live: None,
+            source_tex: None,
+            source_focus: false,
+            source_pending: None,
             prerender: PreRender::new(),
             movie_stall: false,
             buffer_stall: false,
@@ -816,15 +821,8 @@ impl App {
         push_undo_json(&mut self.undo, &mut self.redo, self.project.to_json());
     }
 
-    /// Insert each asset's clips at `t` (video on `vt` if given), chaining them end to end.
-    fn insert_at(&mut self, ids: Vec<Id>, mut t: f64, vt: Option<usize>) {
-        for id in ids {
-            let new = self.project.insert_asset_clips(id, t, vt);
-            if let Some(c) = new.first().and_then(|c| self.project.clip(*c)) {
-                t = c.end();
-            }
-        }
-    }
+    // ws:source-monitor: `insert_at` (chain each asset's clips end to end) is now
+    // `place_assets(.., DropMode::Place)` in edit_ops.rs — every former caller names its DropMode.
 
     /// Empty project + one media file: open it as the project (returns empty); otherwise import into the library.
     /// ponytail: that single file is still probed on this thread — it settles the project format, size
@@ -974,7 +972,6 @@ impl eframe::App for App {
         }
         self.poll_panels();
         self.poll_probes(ctx);
-        self.lib_preview_live = self.lib_preview_frame(ctx);
         self.build_effect_thumbnails(ctx);
         if self.serve_gpu_exports() || self.export.is_some() {
             // a GPU export needs this thread to keep coming back to serve its frames
@@ -1339,6 +1336,7 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     tools_layout::TOOLS,
     // ---- ws:media-library ----
     // ---- ws:source-monitor ----
+    tools_source::TOOLS,
     // ---- ws:timeline-trim-gestures ----
     // ---- ws:transcript-captions ----
     // ---- ws:pro-monitor ----
@@ -1373,6 +1371,7 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     layout_ctl::act,
     // ---- ws:media-library ----
     // ---- ws:source-monitor ----
+    source_ctl::act,
     // ---- ws:timeline-trim-gestures ----
     // ---- ws:transcript-captions ----
     // ---- ws:pro-monitor ----
@@ -1406,6 +1405,7 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     frame::tick,
     // ---- ws:media-library ----
     // ---- ws:source-monitor ----
+    source_pane::tick,
     // ---- ws:timeline-trim-gestures ----
     // ---- ws:transcript-captions ----
     // ---- ws:pro-monitor ----
@@ -1463,6 +1463,7 @@ pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
     // ---- ws:layout-modes-onboarding ----
     // ---- ws:media-library ----
     // ---- ws:source-monitor ----
+    source_pane::draw,
     // ---- ws:timeline-trim-gestures ----
     // ---- ws:transcript-captions ----
     // ---- ws:pro-monitor ----
