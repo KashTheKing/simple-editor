@@ -150,6 +150,10 @@ actions! {
     // ---- ws:audio-analysis ----
     // ---- ws:audio-dsp-automation ----
     // ---- ws:color-engine ----
+    // Unbound by design: no free chord in the skeleton keymap (per the plan's Actions/hotkeys table).
+    AutoColor => "auto_color", "Auto Colour", None;
+    ColorMatch => "color_match", "Colour Match to Reference", None;
+    BypassGrade => "bypass_grade", "Bypass Grade", None;
     // ---- ws:command-palette ----
     CommandPalette => "command_palette", "Command Palette", sc(CTRL, Key::K);
     CheatSheet => "cheat_sheet", "Keyboard Shortcuts overlay", sc(NONE, Key::F1);

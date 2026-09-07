@@ -276,6 +276,9 @@ pub struct Settings {
     // ---- ws:audio-analysis ----
     // ---- ws:audio-dsp-automation ----
     // ---- ws:color-engine ----
+    /// User-browsable folders scanned for `.cube` files by a later LUT-browser UI (inspector-gallery,
+    /// wave 2) — this workstream only stores the setting, no UI reads it yet.
+    pub lut_dirs: Vec<String>,
     // ---- ws:command-palette ----
     /// UI zoom factor (`ctx.set_zoom_factor`); the Hotkeys tab's scale slider.
     pub ui_scale: f32,
@@ -377,6 +380,7 @@ impl Default for Settings {
             // ---- ws:audio-analysis ----
             // ---- ws:audio-dsp-automation ----
             // ---- ws:color-engine ----
+            lut_dirs: Vec::new(),
             // ---- ws:command-palette ----
             ui_scale: 1.0,
             keymap_preset: "Simple Editor".into(),

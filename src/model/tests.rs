@@ -693,6 +693,48 @@ fn no_effect_kind_applies_to_audio_yet() {
     assert!(EffectKind::ALL.iter().all(|k| !k.applies_to_audio()));
 }
 
+// ---- ws:color-engine ----
+// deviation (see PR body): the plan named `src/model/effect.rs (tests mod)` as the home for these —
+// post split-god-files, model-level tests are centralized in this file (`#[cfg(test)] mod tests;` in
+// model/mod.rs, `use super::*;`), and effect.rs itself has no `#[cfg(test)] mod tests` of its own (see
+// `no_effect_kind_applies_to_audio_yet` just above, already living here for the same reason).
+
+/// `EffectKind::ALL` grows to 29 with the 4 new kinds inserted before `Shader`; every dispatch fn stays
+/// total (compiles) for every kind; `needs_motion()` is true for exactly `MotionBlur`/`FrameBlend`.
+#[test]
+fn effect_kind_all_has_29_entries_in_declared_order() {
+    assert_eq!(EffectKind::ALL.len(), 29);
+    let shader_i = EffectKind::ALL.iter().position(|&k| k == EffectKind::Shader).unwrap();
+    for k in [EffectKind::Primaries, EffectKind::Qualifier, EffectKind::Lut, EffectKind::FrameBlend] {
+        let i = EffectKind::ALL.iter().position(|&x| x == k).unwrap();
+        assert!(i < shader_i, "{k:?} must sit before Shader in ALL");
+    }
+    for k in EffectKind::ALL {
+        let _ = (k.category(), k.applies_to_audio(), k.params(), k.name()); // total (compiles + runs)
+    }
+    for k in EffectKind::ALL {
+        let want = matches!(k, EffectKind::MotionBlur | EffectKind::FrameBlend);
+        assert_eq!(k.needs_motion(), want, "{k:?}");
+    }
+}
+
+/// Documents the PARAM_NAMES budget explicitly (gpu.rs's fixed p0..p11 uniform slots): Primaries'
+/// natural 12 knobs drop a redundant per-channel Offset to fit in 11, with one to spare.
+#[test]
+fn primaries_param_count_fits_param_names() {
+    assert!(EffectKind::Primaries.params().len() <= 12);
+}
+
+/// Regression pin for the `needs_motion()` fix: without `FrameBlend` here, `gpu.rs`'s run_effect/
+/// run_chain/eval_graph_on and playback.rs's motion-sample decode all silently stay MotionBlur-only and
+/// FrameBlend renders through the shader's always-zero-`u_frames` fallback.
+#[test]
+fn needs_motion_gates_frame_blend() {
+    assert!(EffectKind::FrameBlend.needs_motion());
+    assert!(EffectKind::MotionBlur.needs_motion());
+    assert!(!EffectKind::Primaries.needs_motion());
+}
+
 #[test]
 fn subtitles_and_folders() {
     let mut p = Project::new();

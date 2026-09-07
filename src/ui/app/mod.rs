@@ -63,6 +63,7 @@ mod thumbs;
 mod timeline_pane;
 mod tools_args;
 mod tools_clip;
+mod tools_color;
 // ---- ws:command-palette ----
 mod tools_commands;
 mod tools_helpers;
@@ -1255,6 +1256,7 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:audio-analysis ----
     // ---- ws:audio-dsp-automation ----
     // ---- ws:color-engine ----
+    tools_color::TOOLS,
     // ---- ws:command-palette ----
     tools_commands::TOOLS,
     // ---- ws:forgiveness ----
@@ -1282,6 +1284,7 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     // ---- ws:audio-analysis ----
     // ---- ws:audio-dsp-automation ----
     // ---- ws:color-engine ----
+    tools_color::act,
     // ---- ws:command-palette ----
     palette_ctl::act,
     // ---- ws:forgiveness ----
