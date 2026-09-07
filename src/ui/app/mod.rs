@@ -104,6 +104,8 @@ mod tools_helpers;
 mod tools_layout;
 mod tools_media;
 mod tools_mixer;
+// ---- ws:pro-monitor ----
+mod tools_monitor;
 mod tools_playback;
 // ---- ws:canvas-handles-monitor ----
 mod tools_preview;
@@ -416,6 +418,10 @@ pub struct App {
     /// Background whisper / tracking / TTS jobs started outside the Subtitles pane (clip menu, MCP),
     /// the clip-menu model download and the "View transcript" window — see transcript_ctl.rs.
     transcript: transcript_ctl::TranscriptState,
+    // ---- ws:pro-monitor ----
+    /// Dynamic-trim arming, the dual-frame trim view's decode slots, Scopes open/closed and the
+    /// eyedropper's armed (clip, target) — see `monitor.rs`'s `MonitorState` doc comment.
+    monitor: monitor::MonitorState,
 }
 
 // ---- ws:canvas-handles-monitor ----
@@ -836,6 +842,8 @@ impl App {
             offline_scan_at: None,
             // ---- ws:transcript-captions ----
             transcript: transcript_ctl::TranscriptState::default(),
+            // ---- ws:pro-monitor ----
+            monitor: monitor::MonitorState::default(),
         };
         if let Some(reason) = settings_bad {
             app.toast(format!("Settings file was corrupt (saved as settings.json.bad): {reason}"));
@@ -1389,6 +1397,7 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:transcript-captions ----
     tools_transcript::TOOLS,
     // ---- ws:pro-monitor ----
+    tools_monitor::TOOLS,
     // ---- ws:pro-timeline ----
     // ---- ws:text-titles ----
     tools_titles::TOOLS,
@@ -1427,6 +1436,7 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     // ---- ws:transcript-captions ----
     transcript_ctl::act,
     // ---- ws:pro-monitor ----
+    tools_monitor::act,
     // ---- ws:pro-timeline ----
     // ---- ws:text-titles ----
     // ---- ws:docs-refresh ----
@@ -1463,6 +1473,7 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:transcript-captions ----
     transcript_ctl::tick,
     // ---- ws:pro-monitor ----
+    monitor::monitor_tick,
     // ---- ws:pro-timeline ----
     // ---- ws:text-titles ----
     // ---- ws:docs-refresh ----
@@ -1496,6 +1507,8 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:transcript-captions ----
     transcript_ctl::window,
     // ---- ws:pro-monitor ----
+    tools_monitor::window_scopes,
+    tools_monitor::window_multicam,
     // ---- ws:pro-timeline ----
     // ---- ws:text-titles ----
     // ---- ws:docs-refresh ----

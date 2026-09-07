@@ -7,6 +7,8 @@ mod editing;
 mod effects;
 mod graph;
 mod markers;
+// ---- ws:pro-monitor ----
+mod multicam;
 mod paths;
 mod planner;
 mod queries;

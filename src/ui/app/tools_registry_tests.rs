@@ -86,6 +86,9 @@ const OP_TOOLS: &[(&str, &str)] = &[
     // ---- ws:inspector-gallery ----
     ("reorder_effect", "clip.reorder_effect"),
     ("bulk_set_effect_params", "clip.effects_bulk"),
+    // ---- ws:pro-monitor ----
+    ("multicam_make", "multicam.create"),
+    ("multicam_switch", "multicam.switch"),
 ];
 
 /// (Project op fn name, why it has no MCP tool yet). Every entry is a real, deliberate gap — either a
@@ -161,6 +164,8 @@ const OP_FILES: &[&str] = &[
     include_str!("../../model/ops/effects.rs"),
     include_str!("../../model/ops/graph.rs"),
     include_str!("../../model/ops/markers.rs"),
+    // ---- ws:pro-monitor ----
+    include_str!("../../model/ops/multicam.rs"),
     include_str!("../../model/ops/paths.rs"),
     include_str!("../../model/ops/planner.rs"),
     include_str!("../../model/ops/queries.rs"),

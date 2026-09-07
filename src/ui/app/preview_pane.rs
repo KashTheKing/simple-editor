@@ -1,4 +1,6 @@
 use super::*;
+// ---- ws:pro-monitor ----
+use super::tools_monitor;
 
 pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
     // ws:source-monitor: the library-preview override that used to gate this block (`if
@@ -12,6 +14,17 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
     {
         let frame = app.pending_frame.take();
         let proxy_busy = app.proxy_job.as_ref().map(|(_, _, p)| p.fraction());
+        // ---- ws:pro-monitor ----
+        // Computed against the whole `App` before the field-destructure below (which borrows `monitor`/
+        // `gpu` disjointly) — both need methods (`monitor::trim_frames`, `GpuRenderer::stats`), not just
+        // a field, so they can't live inside that destructure without re-borrowing all of `app`.
+        let trim_frames = super::monitor::trim_frames(app);
+        let trim_frames = match trim_frames {
+            (Some(o), Some(i)) => Some((o, i)),
+            _ => None,
+        };
+        let stats = app.gpu.as_ref().and_then(|g| g.stats());
+        let pick_mode = app.monitor.pick_armed.map(|(_, t)| t);
         let resp = {
             let App {
                 project,
@@ -70,9 +83,30 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
                     alt_texture: export.is_none().then(|| alt_render.texture()).flatten(),
                     use_proxies: settings.use_proxies,
                     dropped: player.dropped_frames(),
+                    // ---- ws:pro-monitor ----
+                    trim_frames: trim_frames.clone(),
+                    pick_mode,
+                    stats,
                 },
             )
         };
+        // ---- ws:pro-monitor ----
+        // `pick_armed` is only consumed on an actual click (`resp.picked` is `Some`) — armed once by the
+        // Color panel's Eyedropper button, it must survive every frame the user hasn't clicked yet
+        // (moving the mouse from the panel to the canvas takes more than one frame). Checking
+        // `resp.picked` first, THEN `.take()`-ing, keeps it armed across every frame nothing was clicked.
+        if let Some(rgb) = resp.picked {
+            if let Some((id, target)) = app.monitor.pick_armed.take() {
+                let before = app.project.to_json();
+                match tools_monitor::write_picked_color(app, id, target, rgb) {
+                    Ok(()) => {
+                        app.push_undo_labeled(before, "Eyedropper");
+                        app.after_edit();
+                    }
+                    Err(e) => app.toast(e),
+                }
+            }
+        }
         let (cw, ch) = preview_canvas(resp.canvas, app.settings.preview_quality);
         app.player.set_canvas(cw, ch, app.settings.preview_max_width);
         // same clamp the player applies, so the GPU renders at the aspect the player decodes at
