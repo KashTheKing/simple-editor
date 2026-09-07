@@ -99,10 +99,30 @@ impl App {
                 let App { project, settings, export_ui: st, encoders, export, .. } = self;
                 export_ui::show(ctx, st, main.as_ref().unwrap_or(project), settings, encoders, export.is_some())
             };
-            if let Some(c) = choice {
-                self.start_export_choice(c);
+            // ---- ws:export-deliver ----
+            match choice {
+                Some((c, false)) => {
+                    self.start_export_choice(c);
+                }
+                Some((c, true)) => {
+                    // the source-overwrite refusal runs again at pop time (start_export_choice); here it
+                    // just saves the user a wait
+                    if files::refuses_source(&self.project, &c.opts.out_path) {
+                        self.toast(
+                            "That file is a source of this project — use Overwrite Original Video (Ctrl+S) instead",
+                        );
+                    } else {
+                        self.export_queue.push_back(c);
+                        let n = self.export_queue.len();
+                        self.toast(format!("Added to the render queue ({n} waiting)"));
+                    }
+                }
+                None => {}
             }
         }
+        // ---- ws:export-deliver: bakes (render in place / stabilize / denoise / slow-mo) ----
+        let bakes: Vec<(Arc<Progress>, String)> = self.bake_jobs.iter().map(|j| (j.progress(), j.title())).collect();
+        job_window(ctx, "Rendering in place", &bakes);
         // save template / save layout profile
         if let Some(name) = Self::name_window(ctx, "Save Template", &mut self.template_name) {
             let t = crate::engine::presets::capture_template(&name, &self.project, &self.selection);
@@ -306,8 +326,21 @@ impl App {
                     ui.set_width(360.0);
                     ui.add(egui::ProgressBar::new(prog.fraction()).show_percentage());
                     ui.label(prog.status());
-                    if ui.button("Cancel").clicked() {
+                    // ---- ws:export-deliver ----
+                    let elapsed = crate::ui::duration_text(prog.elapsed().as_secs_f64());
+                    match prog.eta() {
+                        Some(eta) => {
+                            ui.weak(format!("{elapsed} elapsed · ETA {}", crate::ui::duration_text(eta.as_secs_f64())))
+                        }
+                        None => ui.weak(format!("{elapsed} elapsed")),
+                    };
+                    let queued = self.export_queue.len();
+                    if queued > 0 {
+                        ui.weak(format!("{queued} more queued"));
+                    }
+                    if ui.button(if queued > 0 { "Cancel all" } else { "Cancel" }).clicked() {
                         prog.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+                        self.export_queue.clear();
                     }
                 });
         }

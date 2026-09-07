@@ -246,7 +246,7 @@ pub(super) fn draw(
                 }
                 state.cue_drag = Some(drag);
             } else if drag.changed {
-                (c.undo)(&drag.before);
+                (c.undo)(&drag.before, "");
                 c.project.sort_cues();
                 out.edited = true;
             } else {
@@ -254,7 +254,7 @@ pub(super) fn draw(
             }
         }
         if let Some(a) = sub_act {
-            (c.undo)(c.project);
+            (c.undo)(c.project, "");
             match a {
                 SubAct::Convert(ids) => {
                     c.project.cues_to_text_clips(Some(&ids));

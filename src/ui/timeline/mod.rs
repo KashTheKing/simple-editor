@@ -42,7 +42,10 @@
 
 use crate::media::thumbs::ThumbCache;
 use crate::media::waveform::{Peaks, WaveformCache};
-use crate::model::{Asset, Clip, ClipKind, Ease, EffectKind, Id, Label, Project, TrackKind, TransitionKind, ABUT_EPS};
+use crate::model::ops::tracks::TrackFlag;
+use crate::model::{
+    Asset, Clip, ClipKind, Ease, EffectKind, Id, Label, Project, TrackKind, TransitionKind, ABUT_EPS, MIN_CLIP,
+};
 use crate::theme::Palette;
 use crate::ui::tools::{draw_glyph, Glyph, Tool};
 
@@ -148,6 +151,10 @@ pub struct TimelineState {
     /// Edit point selected by a seam click (`Zone::Seam` in `arm.rs`) — consumed by trim-model's
     /// keyboard trim actions (U / Shift+U / extend / etc.) in a different, already-existing file.
     pub edit_point: Option<EditPoint>,
+    /// ws:timeline-trim-gestures — empty-lane gap picked by a plain click: (track, from, to). Painted
+    /// hatched; Delete closes it (`Project::close_gap_at`, ripple tracks only). Dropped by any clip
+    /// click / band / Esc, and whenever it stops being a gap.
+    pub gap_sel: Option<(usize, f64, f64)>,
 }
 
 impl Default for TimelineState {
@@ -170,6 +177,7 @@ impl Default for TimelineState {
             cue_drag: None,
             mini_graph_open: Vec::new(),
             edit_point: None,
+            gap_sel: None,
         }
     }
 }
@@ -280,8 +288,9 @@ pub struct TimelineCtx<'a> {
     /// kind of thing deselects the other, Ctrl adds within its own kind.
     pub sel_transitions: &'a mut Vec<Id>,
     pub playhead: &'a mut f64,
-    /// Call with the project *before* mutating it (once per gesture) — pushes an undo snapshot.
-    pub undo: &'a mut dyn FnMut(&Project),
+    /// Call with the project *before* mutating it (once per gesture) — pushes an undo snapshot. The
+    /// label names the History row ("Ripple trim", "Roll edit", …); "" keeps the derived label.
+    pub undo: &'a mut dyn FnMut(&Project, &'static str),
     pub waveforms: &'a mut WaveformCache,
     pub palette: &'a Palette,
     pub snap: bool,
@@ -299,6 +308,9 @@ pub struct TimelineCtx<'a> {
     /// Active tool strip tool. Cut splits a clicked clip, Marker drops a marker, Stretch retimes an
     /// edge drag instead of trimming it; everything else behaves as Select.
     pub tool: crate::ui::tools::Tool,
+    /// ws:timeline-trim-gestures — the one asset selected in the Library (None when zero or 2+ are):
+    /// gates the clip menu's "Replace with Library Selection".
+    pub library_selected: Option<Id>,
 }
 
 #[derive(Default)]
@@ -336,8 +348,20 @@ struct Drag {
 enum Gesture {
     /// Move `ids` (selection + links). `orig` = start time of each id at drag start; `tr` = track of the pressed
     /// clip; `dt`/`dtrack` = applied so far. `new_track` = the pointer is past the first/last row of `kind`,
-    /// so releasing here adds a track and drops the clips on it.
-    Move { ids: Vec<Id>, orig: Vec<f64>, kind: TrackKind, tr: usize, dt: f64, dtrack: i32, new_track: bool },
+    /// so releasing here adds a track and drops the clips on it. `magnetic` (the pressed track's flag):
+    /// a blocked move is retried once on release through `Project::magnetic_move`, which shoves the
+    /// neighbours instead of refusing; `want` = the last requested (dt, dtrack) even when refused.
+    Move {
+        ids: Vec<Id>,
+        orig: Vec<f64>,
+        kind: TrackKind,
+        tr: usize,
+        dt: f64,
+        dtrack: i32,
+        new_track: bool,
+        magnetic: bool,
+        want: (f64, i32),
+    },
     /// Trim the start (`start`) or end edge of `ids`; `edge` = edge time at drag start.
     Trim { ids: Vec<Id>, start: bool, edge: f64, changed: bool },
     /// Rate-stretch one clip by dragging an edge: the source window (`src_len` source seconds) is kept
@@ -361,6 +385,29 @@ enum Gesture {
     /// Drag a ruler in/out handle (`out` = the out point, else the in point); snapped, clamped so
     /// in <= out.
     InOut { out: bool, changed: bool },
+    // ---- ws:timeline-trim-gestures: arm()-routed trims. Roll/Slip/Slide touch <= 3 clips and edit
+    // the live project per frame like Trim; RippleTrim/Segment only carry a delta and ghost-paint,
+    // the single model call happens on release (a live ripple would evict every downstream span
+    // per frame on a long timeline). ----
+    /// Alt+edge: move the shared cut between `left` and `right` (`Project::roll_edit`); `cut0` = the
+    /// cut at press.
+    Roll { left: Id, right: Id, cut0: f64, changed: bool },
+    /// Alt+body: slide the source window under a fixed rect (`Project::slip`); `src0` = each id's
+    /// `src_in` at press, so a clamped clip never drifts from the pointer.
+    Slip { ids: Vec<Id>, src0: Vec<f64>, changed: bool },
+    /// Ctrl+Alt+body: move one clip while its abutting neighbours absorb the change
+    /// (`Project::slide`); `start0` = its start at press.
+    Slide { id: Id, start0: f64, changed: bool },
+    /// Ctrl+edge (or a plain edge on a magnetic track): trim `ids`' `start` edge from `edge0` by `dt`
+    /// and shift everything downstream on the ripple tracks — ghost only until release, then one
+    /// `Project::ripple_trim` per id (the first ripples, linked followers plain-trim into the room it
+    /// made). `multi` (Ctrl+Alt+edge) = the selection's same-side edges via `Project::trim_edges`
+    /// instead: all-or-nothing, no downstream shift.
+    RippleTrim { ids: Vec<Id>, start: bool, edge0: f64, dt: f64, multi: bool },
+    /// Ctrl+Shift+body: Premiere-style insert move of the pressed clip's link group. `spans` = each
+    /// id's (track, start, end) at press; on release each is extracted from its own track and
+    /// re-inserted `dt` later (`gestures::segment_move`). Ghost only until then.
+    Segment { ids: Vec<Id>, spans: Vec<(usize, f64, f64)>, dt: f64 },
 }
 
 /// Deferred project mutation (collected while the project is borrowed for drawing).
@@ -373,7 +420,17 @@ enum Act {
     RemoveTrack(usize),
     Mute(usize),
     Solo(usize),
-    DropAsset(Id, f64, Option<usize>),
+    /// A library asset dropped at (time, track under the pointer); the `GestureKind` is `arm()`'s
+    /// Drop-zone row for the modifiers held at release (Ctrl = splice, Alt = overwrite, Shift = place
+    /// on a new track on top, else the plain free placement). ws:timeline-trim-gestures.
+    DropAsset(Id, f64, Option<usize>, GestureKind),
+    /// ws:timeline-trim-gestures — Delete with a gap selected: `Project::close_gap_at(track, t)`.
+    CloseGap(usize, f64),
+    /// ws:timeline-trim-gestures — clip menu "Un-nest": `Project::unnest`.
+    Unnest(Id),
+    /// ws:timeline-trim-gestures — clip menu "Replace with Library Selection": `Project::replace_clip`
+    /// with `TimelineCtx::library_selected`.
+    ReplaceClip(Id),
     /// Colour label for the selection (0 = none / inherit asset).
     Label(u8),
     /// Copy the selection's effective labels onto their assets.
@@ -433,11 +490,16 @@ mod snap;
 #[cfg(test)]
 mod tests;
 
-// `arm`/`GestureKind`/`TrackFlags` and `SnapKind` are registry-protocol surface: not called from this
-// wave's own code (arm() is tested but only wave-2/3 wire most of its results into real drags; SnapKind
-// is consumed by timeline.snap_query in tools_timeline.rs, a sibling module, not by mod.rs itself).
+// `arm()` is the single source of truth for what a press becomes (gestures.rs routes every body/edge/
+// lane/drop press through it — ws:timeline-trim-gestures); SnapKind is consumed by timeline.snap_query
+// in tools_timeline.rs, a sibling module, not by mod.rs itself.
 #[allow(unused_imports)]
 pub(crate) use arm::{arm, GestureKind, TrackFlags, Zone};
+use gestures::gap_at;
+// ws:timeline-trim-gestures — App-level Delete/RippleDelete (actions.rs) routes through this too, so
+// the keyboard shortcut respects a magnetic track's "Delete closes the gap" rule the same as the clip
+// context menu's Act::Delete does.
+pub(crate) use gestures::delete_clips_magnetic;
 use menus::{clip_menu, label_menu, shared_effect_kinds, transition_ease_menu, transition_kind_menu};
 pub(crate) use paint::row_top;
 use paint::*;
@@ -477,8 +539,15 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     // Esc aborts the gesture: put the project back as it was at press time and drop the band.
     if escape {
         state.band = None;
+        state.gap_sel = None;
         if let Some(d) = state.drag.take() {
             *c.project = d.before;
+        }
+    }
+    // a selected gap only lives while it still is one (an edit, undo or project swap can fill it)
+    if let Some((ti, a, b)) = state.gap_sel {
+        if gap_at(c.project, ti, (a + b) * 0.5) != Some((a, b)) {
+            state.gap_sel = None;
         }
     }
 
@@ -574,6 +643,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     let mut start_trans: Option<(usize, Id)> = None;
     let mut start_marker: Option<(Id, Option<Id>)> = None;
     let mut resize: Option<(usize, f32)> = None;
+    // header Lock/Ripple/Magnetic toggles: deferred like `resize`, applied after the Act match with no
+    // undo push (every Act pushes one unconditionally) — ws:timeline-trim-gestures
+    let mut track_toggle: Option<(usize, TrackFlag)> = None;
     let mut divider_y: Option<f32> = None;
     // track-resize handle rects, collected as they're laid out below so the rubber-band-start check
     // (near the end of this function) can tell a resize press from an empty-lane press
@@ -610,8 +682,24 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
 
         let tid = id.with(track.id);
         let active = c.project.active(ti);
-        if let Some(a) = header::draw_header(ui, &bp, header, row, id, &pal, &font, &small, track, ti, active) {
+        if let Some(a) =
+            header::draw_header(ui, &bp, header, row, id, &pal, &font, &small, track, ti, active, &mut track_toggle)
+        {
             act = Some(a);
+        }
+        // ws:timeline-trim-gestures — a locked lane reads as "hands off": hatched under its clips
+        if track.locked {
+            hatch(&lp, row.intersect(lanes), pal.text_dim.gamma_multiply(0.25));
+        }
+        // and the selected gap (see `gap_sel`) is hatched in the accent so Delete's target is obvious
+        if let Some((_, ga, gb)) = state.gap_sel.filter(|&(gti, _, _)| gti == ti) {
+            let gr =
+                Rect::from_min_max(pos2(state.x_at(ga), row.top() + 1.0), pos2(state.x_at(gb), row.bottom() - 1.0))
+                    .intersect(lanes);
+            if gr.is_positive() {
+                hatch(&lp.with_clip_rect(gr), gr, pal.accent.gamma_multiply(0.6));
+                lp.rect_stroke(gr, 0, Stroke::new(1.0, pal.accent), StrokeKind::Inside);
+            }
         }
 
         // clips
@@ -913,6 +1001,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 (clip.link != 0, clip.enabled, clip.kind == ClipKind::Audio, clip.container);
             let has_native = c.project.clip_native_size(clip).is_some();
             let graph_open = has_curve_keys(clip).then(|| state.mini_graph_open.contains(&clip.id));
+            let is_seq = clip.kind == ClipKind::Sequence;
+            let lib_sel = c.library_selected;
             let mut toggle_graph = false;
             let mut rclick = br.secondary_clicked();
             br.context_menu(|ui| {
@@ -924,6 +1014,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     enabled,
                     aud,
                     has_native,
+                    is_seq,
+                    lib_sel,
                     graph_open,
                     &mut toggle_graph,
                     labels,
@@ -985,6 +1077,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                             enabled,
                             aud,
                             has_native,
+                            is_seq,
+                            lib_sel,
                             None, // edge-handle menu: skip the mini-graph entry, body right-click has it
                             &mut false,
                             labels,
@@ -1252,6 +1346,19 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         }
     }
 
+    // ---- ws:timeline-trim-gestures: ghost of the release-applied trims + the roll/slip cursor glyphs ----
+    gestures::paint_ghost(&lp, state, &pal, c.project, lanes);
+    if let (Some(pos), Some(g)) = (
+        pointer,
+        match &state.drag {
+            Some(Drag { g: Gesture::Roll { .. }, .. }) => Some(Glyph::RollCursor),
+            Some(Drag { g: Gesture::Slip { .. }, .. }) => Some(Glyph::SlipCursor),
+            _ => None,
+        },
+    ) {
+        draw_glyph(&lp, Rect::from_center_size(pos + vec2(14.0, 14.0), vec2(16.0, 16.0)), g, pal.accent);
+    }
+
     // ---- empty-timeline hint (ws:snap-engine) ----
     if c.project.tracks.iter().all(|t| t.clips.is_empty()) {
         let hint = lanes.shrink(24.0);
@@ -1402,7 +1509,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             });
         }
         if r.secondary_clicked() {
-            (c.undo)(c.project);
+            (c.undo)(c.project, "");
             if is_out {
                 c.project.out_point = None;
             } else {
@@ -1479,10 +1586,28 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 let t = snap_time(state.time_at(pp.x), c.snap, state.zoom, c.project, *c.playhead, &[]);
                 act = Some(Act::AddMarker(t.max(0.0)));
             }
-            _ => {
+            (_, pp) => {
                 c.selection.clear();
                 c.sel_transitions.clear();
+                // a plain click on a real gap selects it (arm()'s Lane row; Shift = band-add, not a gap)
+                state.gap_sel = pp
+                    .filter(|_| arm(mods, Zone::Lane, TrackFlags::default(), c.tool) == Some(GestureKind::GapSelect))
+                    .and_then(|pp| {
+                        let ti = state.track_at(pp.y, c.project)?;
+                        let (a, b) = gap_at(c.project, ti, state.time_at(pp.x))?;
+                        Some((ti, a, b))
+                    });
             }
+        }
+    }
+    // Delete with a gap selected closes it (ripple tracks only — `close_gap_at`'s own scope). Consumed
+    // here so the app's late Delete poll doesn't also fire; curves.rs claims Delete the same way.
+    // ponytail: Backspace (the app's Delete alias) and a hidden Timeline pane fall through to the app's
+    // clip delete — route this through an ACT_HANDLERS entry if either ever matters.
+    if let Some((ti, a, b)) = state.gap_sel {
+        if !ui.ctx().wants_keyboard_input() && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Delete))
+        {
+            act = Some(Act::CloseGap(ti, (a + b) * 0.5));
         }
     }
     // middle-mouse pan (ws:snap-engine): drags the lanes without starting a gesture or selection.
@@ -1572,13 +1697,23 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     lp.rect_filled(ghost, 0, pal.selection.gamma_multiply(0.3));
                     lp.rect_stroke(ghost, 0, Stroke::new(1.0, pal.selection), StrokeKind::Inside);
                 }
+                // Ctrl held = splice: show the gap it will open on the ripple tracks (ws:timeline-trim-gestures)
+                if arm(mods, Zone::Drop, TrackFlags::default(), c.tool) == Some(GestureKind::DropSplice) {
+                    let ripple = c.project.ripple_tracks();
+                    gestures::paint_offsets(&lp, state, &pal, c.project, lanes, |ti, cl| {
+                        (ripple.contains(&ti) && cl.start >= t - ABUT_EPS).then_some(dur)
+                    });
+                }
             }
         }
         if let Some(payload) = lanes_resp.dnd_release_payload::<DragPayload>() {
             let t = drop_t(state, c.project);
             let ti = state.track_at(pos.y, c.project);
             match &*payload {
-                DragPayload::Asset(aid) => act = Some(Act::DropAsset(*aid, t, ti)),
+                DragPayload::Asset(aid) => {
+                    let kind = arm(mods, Zone::Drop, TrackFlags::default(), c.tool).unwrap_or(GestureKind::DropDefault);
+                    act = Some(Act::DropAsset(*aid, t, ti, kind));
+                }
                 DragPayload::Path(p) => out.dropped_files.push((PathBuf::from(p), t, ti)),
                 other => out.dropped_other.push((other.clone(), t, ti)),
             }
@@ -1669,6 +1804,21 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         let t = &mut c.project.tracks[ti];
         t.height = (t.height + dy).clamp(MIN_TRACK_H, MAX_TRACK_H);
     }
+    if let Some((ti, flag)) = track_toggle {
+        // ponytail: lock/ripple/magnetic are organisational track state, not an edit of the cut — no
+        // undo entry (the palette's Action::ToggleTrack* twins push a labelled one), but they are
+        // saved with the project, so it is marked dirty. Flags never widen video_dirty_spans to a full
+        // clear (playback's flags_do_not_dirty_video pins it).
+        if let Some(t) = c.project.tracks.get(ti) {
+            let on = match flag {
+                TrackFlag::Locked => t.locked,
+                TrackFlag::Ripple => t.ripple.unwrap_or(false),
+                TrackFlag::Magnetic => t.magnetic,
+            };
+            c.project.set_track_flag(ti, flag, !on);
+            out.edited = true;
+        }
+    }
     if let Some(tid) = trans_click {
         // transitions select like clips: click replaces, Ctrl toggles; the clip selection makes way
         if mods.ctrl {
@@ -1684,6 +1834,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         }
     }
     if let Some(cid) = click {
+        state.gap_sel = None;
         if !mods.ctrl && !mods.shift {
             c.sel_transitions.clear();
         }
@@ -1714,7 +1865,15 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     }
     if let Some(a) = act {
         let p = &mut *c.project;
-        (c.undo)(p);
+        // the trim-model ops below can refuse (locked track, no gap, not a sequence): those snapshot
+        // first and only push undo if they actually changed something; every other Act pushes up front
+        let refusable = matches!(a, Act::CloseGap(..) | Act::Unnest(_) | Act::ReplaceClip(_));
+        let before = refusable.then(|| p.clone());
+        let mut changed = true;
+        let mut label: &'static str = "";
+        if !refusable {
+            (c.undo)(p, "");
+        }
         let ids = p.expand_links(c.selection);
         match a {
             Act::SplitAt(t) => {
@@ -1724,8 +1883,25 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 p.split_at(*c.playhead, Some(&ids));
             }
             Act::Delete(ripple) => {
-                p.delete_clips(&ids, ripple);
+                gestures::delete_clips_magnetic(p, &ids, ripple);
                 c.selection.clear();
+            }
+            Act::CloseGap(ti, t) => {
+                label = "Close gap";
+                changed = p.close_gap_at(ti, t);
+                state.gap_sel = None;
+            }
+            Act::Unnest(cid) => {
+                label = "Un-nest sequence";
+                let new_ids = p.unnest(cid);
+                changed = !new_ids.is_empty();
+                if changed {
+                    *c.selection = new_ids;
+                }
+            }
+            Act::ReplaceClip(cid) => {
+                label = "Replace clip";
+                changed = c.library_selected.is_some_and(|aid| p.replace_clip(cid, aid));
             }
             Act::Link => p.toggle_link(&ids),
             Act::Enable(on) => p.set_enabled(c.selection, on),
@@ -1735,9 +1911,36 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             Act::RemoveTrack(ti) => p.remove_track(ti),
             Act::Mute(ti) => p.tracks[ti].muted = !p.tracks[ti].muted,
             Act::Solo(ti) => p.tracks[ti].solo = !p.tracks[ti].solo,
-            Act::DropAsset(aid, t, ti) => {
-                let vt = ti.filter(|&i| p.tracks[i].kind == TrackKind::Video);
-                p.insert_asset_clips(aid, t, vt);
+            Act::DropAsset(aid, t, ti, kind) => {
+                // the row under the pointer is honoured for whichever kind it is: a video row places
+                // the video part there, an audio row the (first) audio stream (was: video rows only)
+                let (vt, at) = match ti.map(|i| (i, p.tracks[i].kind)) {
+                    Some((i, TrackKind::Video)) => (Some(i), None),
+                    Some((i, TrackKind::Audio)) => (None, Some(i)),
+                    None => (None, None),
+                };
+                // ponytail: the trim-model primitives are called directly rather than through
+                // `App::place_asset` — edit_ops.rs is source-monitor's file this wave and its stub
+                // still ignores `DropMode`; fold these arms into it once that lands.
+                match kind {
+                    GestureKind::DropSplice => {
+                        p.splice_in(aid, t, vt, at, None);
+                    }
+                    GestureKind::DropOverwrite => {
+                        p.overwrite_asset(aid, t, vt, at, None);
+                    }
+                    GestureKind::DropPlaceOnTop => {
+                        let (vt, at) = if p.asset(aid).is_some_and(|a| a.has_video()) {
+                            (Some(p.add_track(TrackKind::Video)), None)
+                        } else {
+                            (None, Some(p.add_track(TrackKind::Audio)))
+                        };
+                        p.insert_asset_clips_ranged(aid, t, vt, at, None);
+                    }
+                    _ => {
+                        p.insert_asset_clips_ranged(aid, t, vt, at, None);
+                    }
+                }
             }
             Act::Label(l) => {
                 for id in &ids {
@@ -1862,7 +2065,12 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 }
             }
         }
-        out.edited = true;
+        if let Some(b) = before {
+            if changed {
+                (c.undo)(&b, label);
+            }
+        }
+        out.edited |= changed;
     }
     state.rename = rename;
     if let Some(t) = seek_marker {
@@ -1924,7 +2132,11 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 | Gesture::Keys { changed, .. }
                 | Gesture::TransDur { changed, .. }
                 | Gesture::Marker { changed, .. }
-                | Gesture::InOut { changed, .. } => *changed,
+                | Gesture::InOut { changed, .. }
+                | Gesture::Roll { changed, .. }
+                | Gesture::Slip { changed, .. }
+                | Gesture::Slide { changed, .. } => *changed,
+                Gesture::RippleTrim { dt, .. } | Gesture::Segment { dt, .. } => dt.abs() > 1e-9,
             };
             // released over the gutter: add a track at the far end and drop the clips of that kind on it
             if let Gesture::Move { ids, kind, new_track: true, .. } = &d.g {
@@ -1939,8 +2151,12 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     _ => p.remove_track(ti),
                 }
             }
+            // ws:timeline-trim-gestures — the release-applied gestures make their one model call here
+            if edited || matches!(&d.g, Gesture::Move { magnetic: true, .. }) {
+                edited = gestures::release(c.project, &d, edited);
+            }
             if edited {
-                (c.undo)(&d.before);
+                (c.undo)(&d.before, d.g.label());
                 out.edited = true;
             }
         }

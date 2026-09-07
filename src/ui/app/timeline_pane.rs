@@ -34,12 +34,28 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
             palette,
             tools,
             prerender,
+            library,
             ..
         } = app;
         let tool = tools.tool;
         let prerender_bar =
             if settings.movie_mode { guarded(|| prerender.segments()).unwrap_or_default() } else { vec![] };
-        let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
+        // ws:timeline-trim-gestures: exactly one Library asset selected (the anchor alone counts when
+        // the multi-select set is empty, e.g. straight after an import)
+        let library_selected = match library.sel_ids.as_slice() {
+            [one] => Some(*one),
+            [] => library.selected,
+            _ => None,
+        };
+        // labelled like `App::push_undo_labeled` (which needs `&mut self` — the fields are split here)
+        let mut push = |p: &Project, label: &'static str| {
+            push_undo_json(undo, redo, p.to_json());
+            if !label.is_empty() {
+                if let Some(e) = undo.last_mut() {
+                    e.label = label.to_string();
+                }
+            }
+        };
         timeline::show(
             ui,
             tl,
@@ -60,15 +76,17 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
                 keep_ranges: if *autocut_shown { &autocut.overlay } else { &[] },
                 prerender: &prerender_bar,
                 tool,
+                library_selected,
             },
         )
     };
+    // ws:source-monitor: any press on the timeline (a clip select as much as a seek) means "the
+    // timeline is the transport now" — Space/JKL/I/O come back here from the Source monitor
+    // (was: drop the library preview on seek).
+    if resp.seeked || source_pane::pressed_in(ui) {
+        app.source_focus = false;
+    }
     if resp.seeked {
-        // clicking the timeline means "play the timeline" — drop any library asset
-        // preview so it stops owning the Preview pane and the transport
-        app.lib_preview = None;
-        app.lib_preview_tex = None;
-        app.lib_preview_live = None;
         app.player.pause();
         app.player.seek(app.playhead);
     }
@@ -79,7 +97,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
         for (path, t, track) in resp.dropped_files {
             let ids = app.import_files(&[path]);
             let vt = track.filter(|&i| app.project.tracks[i].kind == TrackKind::Video);
-            app.insert_at(ids, t, vt);
+            app.place_assets(&ids, t, vt, DropMode::Place);
         }
         app.after_edit();
     }

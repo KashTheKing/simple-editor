@@ -1315,7 +1315,7 @@ fn splice_in_is_linear_on_1000_clips() {
     let last_start_before = p.clip(last).unwrap().start;
 
     let start = std::time::Instant::now();
-    let new_ids = p.splice_in(aid, 1.0, Some(0), None);
+    let new_ids = p.splice_in(aid, 1.0, Some(0), None, None);
     let elapsed = start.elapsed();
 
     assert!(!new_ids.is_empty(), "the asset was placed");
@@ -1337,7 +1337,7 @@ fn overwrite_asset_clears_only_the_overlap() {
     let after = p.new_id();
     p.tracks[0].clips.push(Clip::new(after, ClipKind::Video, "after", 4.0, 2.0)); // [4,6)
 
-    let ids = p.overwrite_asset(aid, 2.0, Some(0), None); // places a 2s clip at [2,4)
+    let ids = p.overwrite_asset(aid, 2.0, Some(0), None, None); // places a 2s clip at [2,4)
     assert!(!ids.is_empty());
     assert!(p.clip(inside).is_none(), "fully-inside clip removed");
     assert!((p.clip(before).unwrap().end() - 2.0).abs() < 1e-9, "clip outside the range untouched");
@@ -1550,8 +1550,8 @@ fn locked_track_refuses_every_new_op() {
     refuses!(|p: &mut Project| p.slip(&[a], 1.0));
     refuses!(|p: &mut Project| p.slide(a, 1.0));
     refuses!(|p: &mut Project| p.trim_edges(&[(a, false)], 1.0, false));
-    refuses!(|p: &mut Project| !p.splice_in(aid, 1.0, Some(0), None).is_empty());
-    refuses!(|p: &mut Project| !p.overwrite_asset(aid, 1.0, Some(0), None).is_empty());
+    refuses!(|p: &mut Project| !p.splice_in(aid, 1.0, Some(0), None, None).is_empty());
+    refuses!(|p: &mut Project| !p.overwrite_asset(aid, 1.0, Some(0), None, None).is_empty());
     refuses!(|p: &mut Project| !p.lift_range(0.0, 3.0, Some(&[0][..])).is_empty());
     refuses!(|p: &mut Project| !p.extract_range(0.0, 3.0, Some(&[0][..])).is_empty());
     refuses!(|p: &mut Project| p.join_through(a));

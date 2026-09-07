@@ -207,6 +207,119 @@ fn relink(dir: &Path, path: &str) -> Option<PathBuf> {
     None
 }
 
+// ---- ws:media-library ----
+
+/// A numbered run of stills (`shot_0001.png`, `shot_0002.png`, …) that imports as ONE video asset.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImageSequence {
+    pub dir: PathBuf,
+    /// Display/glob form of the run, e.g. `shot_*.png`.
+    pub pattern: String,
+    pub ext: String,
+    /// Every frame, in numeric order (gaps tolerated — the bake lists files, it never counts).
+    pub frames: Vec<PathBuf>,
+}
+
+/// Still extensions that mean "render output": camera rolls number their jpgs too, and baking three
+/// holiday photos into a 0.1 s video is the wrong surprise, so jpg/webp never count as a sequence.
+const SEQUENCE_EXTS: &[&str] = &["png", "tif", "tiff", "bmp", "tga", "dpx", "exr"];
+
+/// The sequence `path` belongs to: siblings with the same stem prefix + ext whose stem ends in
+/// digits, at least 3 of them (a lone still, or two, is just stills). Sorted by frame number.
+pub fn detect_sequence(path: &Path) -> Option<ImageSequence> {
+    let ext = path.extension()?.to_string_lossy().to_ascii_lowercase();
+    if !SEQUENCE_EXTS.contains(&ext.as_str()) {
+        return None;
+    }
+    let stem = path.file_stem()?.to_string_lossy().into_owned();
+    let digits = stem.chars().rev().take_while(|c| c.is_ascii_digit()).count();
+    if digits == 0 {
+        return None;
+    }
+    let prefix = &stem[..stem.len() - digits];
+    let dir = path.parent()?.to_path_buf();
+    let mut frames: Vec<(u64, PathBuf)> = std::fs::read_dir(&dir)
+        .ok()?
+        .flatten()
+        .filter_map(|e| {
+            let p = e.path();
+            if !p.extension().is_some_and(|x| x.to_string_lossy().eq_ignore_ascii_case(&ext)) {
+                return None;
+            }
+            let s = p.file_stem()?.to_string_lossy().into_owned();
+            let rest = s.strip_prefix(prefix)?;
+            if rest.is_empty() || !rest.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            Some((rest.parse::<u64>().ok()?, p))
+        })
+        .collect();
+    if frames.len() < 3 {
+        return None;
+    }
+    frames.sort_by_key(|(n, _)| *n);
+    Some(ImageSequence {
+        dir,
+        pattern: format!("{prefix}*.{ext}"),
+        ext,
+        frames: frames.into_iter().map(|(_, p)| p).collect(),
+    })
+}
+
+/// Relink a missing file inside a user-picked folder: by file name first (this folder, then one level
+/// of sub-folders — the same rule `relink` applies to an imported timeline), then by duration for a
+/// renamed file: any sibling with the same extension whose container duration is within one frame
+/// of `want_secs`. `want_secs <= 0` (an unprobed placeholder) skips the duration pass.
+/// ponytail: the duration pass runs ffprobe per candidate (~100 ms each) on the calling thread —
+/// bounded by "same extension, one folder + one level", and only ever behind an explicit folder pick.
+pub fn relink_by_duration(dir: &Path, name: &str, want_secs: f64, fps: f64) -> Option<PathBuf> {
+    if let Some(p) = relink(dir, name) {
+        return Some(p);
+    }
+    if want_secs <= 0.0 {
+        return None;
+    }
+    let ext = Path::new(name).extension()?.to_string_lossy().to_ascii_lowercase();
+    let tol = 1.0 / fps.max(1.0);
+    let same_ext = |p: &Path| p.extension().is_some_and(|x| x.to_string_lossy().eq_ignore_ascii_case(&ext));
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    for e in std::fs::read_dir(dir).ok()?.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            if let Ok(sub) = std::fs::read_dir(&p) {
+                candidates.extend(sub.flatten().map(|e| e.path()).filter(|p| p.is_file() && same_ext(p)));
+            }
+        } else if same_ext(&p) {
+            candidates.push(p);
+        }
+    }
+    candidates
+        .into_iter()
+        .find(|p| crate::engine::convert::probe_seconds(p).is_some_and(|d| (d - want_secs).abs() <= tol))
+}
+
+/// Import Report ▸ "Locate missing…": re-resolve every missing asset of the report's project against
+/// `dir` (name, then duration), and rewrite the matching Warning issue + `missing_media` in place so the
+/// visible table and count update without a second import. Returns how many were found.
+pub fn relocate_report(report: &mut ImportReport, dir: &Path) -> usize {
+    let mut found = 0;
+    for a in &mut report.project.assets {
+        if Path::new(&a.path).is_file() {
+            continue;
+        }
+        let Some(p) = relink_by_duration(dir, &a.name(), a.duration, a.fps) else { continue };
+        let old = std::mem::replace(&mut a.path, p.to_string_lossy().into_owned());
+        let needle = format!("media not found: {old}");
+        for i in report.issues.iter_mut().filter(|i| i.level == Level::Warning && i.detail.starts_with(&needle)) {
+            i.level = Level::Ok;
+            i.detail = format!("relinked to {}", a.path);
+        }
+        report.missing_media = report.missing_media.saturating_sub(1);
+        found += 1;
+    }
+    found
+}
+
 /// Ensure the `n`-th track of `kind` exists and return its index.
 fn track_slot(p: &mut Project, kind: TrackKind, n: usize) -> usize {
     loop {
@@ -1432,5 +1545,98 @@ mod tests {
             assert!(rx.recv().unwrap().asset.is_err(), "nothing is at those paths");
         }
         assert!(paths.iter().all(|p| !is_probing(p)));
+    }
+
+    // ---- ws:media-library ----
+
+    #[test]
+    fn detect_sequence_finds_a_numbered_run_and_ignores_a_lone_still() {
+        let dir = std::env::temp_dir().join(format!("se-seq-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // a run with a gap (0003 missing) and a decoy with a different extension
+        for n in [1, 2, 4, 10] {
+            std::fs::write(dir.join(format!("shot_{n:04}.png")), b"x").unwrap();
+        }
+        std::fs::write(dir.join("shot_0005.tif"), b"x").unwrap();
+        std::fs::write(dir.join("lone_0001.png"), b"x").unwrap();
+        std::fs::write(dir.join("pair_01.png"), b"x").unwrap();
+        std::fs::write(dir.join("pair_02.png"), b"x").unwrap();
+        std::fs::write(dir.join("poster.png"), b"x").unwrap();
+        for n in 1..=3 {
+            std::fs::write(dir.join(format!("IMG_{n:04}.jpg")), b"x").unwrap();
+        }
+
+        let seq = detect_sequence(&dir.join("shot_0002.png")).expect("a 4-frame run");
+        assert_eq!(seq.pattern, "shot_*.png");
+        assert_eq!(seq.ext, "png");
+        assert_eq!(seq.dir, dir);
+        let names: Vec<String> = seq.frames.iter().map(|p| p.file_name().unwrap().to_string_lossy().into()).collect();
+        assert_eq!(
+            names,
+            ["shot_0001.png", "shot_0002.png", "shot_0004.png", "shot_0010.png"],
+            "numeric order, gaps ok"
+        );
+        assert!(detect_sequence(&dir.join("lone_0001.png")).is_none(), "one still is a still");
+        assert!(detect_sequence(&dir.join("pair_01.png")).is_none(), "two is not a run");
+        assert!(detect_sequence(&dir.join("poster.png")).is_none(), "no trailing number");
+        assert!(detect_sequence(&dir.join("IMG_0001.jpg")).is_none(), "camera-roll jpgs never count");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn relink_by_duration_matches_within_one_frame() {
+        let src = crate::media::ffpipe::tests::test_mp4(); // 4 s
+        let dir = std::env::temp_dir().join(format!("se-relink-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        // renamed AND moved one level down: only the duration can find it
+        std::fs::copy(&src, dir.join("sub").join("renamed.mp4")).unwrap();
+        let hit = relink_by_duration(&dir, "original.mp4", 4.0 + 0.5 / 30.0, 30.0);
+        assert_eq!(hit, Some(dir.join("sub").join("renamed.mp4")), "half a frame off still matches");
+        assert!(relink_by_duration(&dir, "original.mp4", 6.0, 30.0).is_none(), "two seconds off does not");
+        assert!(relink_by_duration(&dir, "original.mp4", 0.0, 30.0).is_none(), "an unprobed asset never guesses");
+        assert!(relink_by_duration(&dir, "original.wav", 4.0, 30.0).is_none(), "extension must match");
+        // by name wins without probing anything
+        std::fs::write(dir.join("original.mp4"), b"x").unwrap();
+        assert_eq!(relink_by_duration(&dir, "original.mp4", 99.0, 30.0), Some(dir.join("original.mp4")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn relocate_report_updates_issues_and_missing_count() {
+        let dir = std::env::temp_dir().join(format!("se-relocate-report-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.mp4"), b"x").unwrap();
+        let mut p = Project::new();
+        p.add_asset(asset(r"Z:\gone\a.mp4", 0));
+        p.add_asset(asset(r"Z:\gone\b.mp4", 0));
+        let mut r = ImportReport {
+            project: p,
+            issues: vec![
+                Issue {
+                    level: Level::Warning,
+                    subject: "clip 'a.mp4'".into(),
+                    detail: r"media not found: Z:\gone\a.mp4 (relink it in the library)".into(),
+                },
+                Issue {
+                    level: Level::Warning,
+                    subject: "clip 'b.mp4'".into(),
+                    detail: r"media not found: Z:\gone\b.mp4 (relink it in the library)".into(),
+                },
+            ],
+            clips: 2,
+            tracks: 1,
+            missing_media: 2,
+        };
+        assert_eq!(relocate_report(&mut r, &dir), 1);
+        assert_eq!(r.missing_media, 1);
+        assert_eq!(r.project.assets[0].path, dir.join("a.mp4").to_string_lossy());
+        assert_eq!(r.issues[0].level, Level::Ok, "the found file's warning is downgraded in place");
+        assert!(r.issues[0].detail.starts_with("relinked to "));
+        assert_eq!(r.issues[1].level, Level::Warning, "the still-missing one keeps its warning");
+        assert_eq!(r.project.assets[1].path, r"Z:\gone\b.mp4");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

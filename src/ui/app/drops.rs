@@ -1,5 +1,30 @@
 use super::*;
 
+// ---- ws:canvas-handles-monitor ----
+/// Where a file drop landed, from the drop point against last frame's pane rects (all one-frame-stale
+/// — see `MoodboardState::content_rect`'s doc comment). The monitor is checked before the moodboard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum DropTarget {
+    Timeline,
+    Monitor,
+    Moodboard,
+    Library,
+}
+
+pub(super) fn drop_target(
+    pos: Option<egui::Pos2>,
+    timeline: egui::Rect,
+    monitor: egui::Rect,
+    moodboard: egui::Rect,
+) -> DropTarget {
+    match pos {
+        Some(p) if timeline.contains(p) => DropTarget::Timeline,
+        Some(p) if monitor.contains(p) => DropTarget::Monitor,
+        Some(p) if moodboard.contains(p) => DropTarget::Moodboard,
+        _ => DropTarget::Library,
+    }
+}
+
 impl App {
     pub(super) fn handle_drops(&mut self, ctx: &egui::Context) {
         let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().filter_map(|f| f.path.clone()).collect());
@@ -27,35 +52,106 @@ impl App {
         if ids.is_empty() {
             return;
         }
-        let on_timeline = pos.map(|p| self.timeline.lanes_rect.contains(p)).unwrap_or(false);
-        // one-frame-stale, like `lanes_rect` above — see `MoodboardState::content_rect`'s doc comment
-        let on_moodboard = pos.map(|p| self.moodboard.content_rect.contains(p)).unwrap_or(false);
-        if on_timeline {
-            let p = pos.unwrap();
-            let mut t = self.timeline.time_at(p.x).max(0.0);
-            if self.settings.snap {
-                t = self.project.snap_frame(t);
-            }
-            let track = self.timeline.track_at(p.y, &self.project);
-            let vt = track.filter(|&i| self.project.tracks[i].kind == TrackKind::Video);
-            self.insert_at(ids, t, vt);
-            self.after_edit();
-        } else if on_moodboard {
-            // snapshot after the import (which already pushed its own undo step if any file was fresh —
-            // same two-steps-when-fresh/one-when-not pattern as `replace_container_dialog`) so adding the
-            // moodboard entries is still undoable even when every dropped file was already a known asset
-            let snap = self.project.to_json();
-            let mut changed = false;
-            for &id in &ids {
-                changed |= moodboard_ui::moodboard_add(&mut self.project, id);
-            }
-            if changed {
-                push_undo_json(&mut self.undo, &mut self.redo, snap);
+        // one-frame-stale rects, like `lanes_rect` — see `MoodboardState::content_rect`'s doc comment
+        match drop_target(pos, self.timeline.lanes_rect, self.preview.canvas_rect, self.moodboard.content_rect) {
+            DropTarget::Timeline => {
+                let p = pos.unwrap();
+                let mut t = self.timeline.time_at(p.x).max(0.0);
+                if self.settings.snap {
+                    t = self.project.snap_frame(t);
+                }
+                let track = self.timeline.track_at(p.y, &self.project);
+                // ---- ws:source-monitor ----
+                // the drop-modifier table: Ctrl = Splice, Alt = Overwrite (replace edit on a clip body),
+                // Shift = Place on Top, none = Place
+                let mode = DropMode::from_modifiers(ctx.input(|i| i.modifiers));
+                // Overwrite resolves/falls back for itself by the dropped asset's own kind (see
+                // `place()`'s Overwrite branch), so it gets the raw track under the pointer even when
+                // it's an audio lane — nulling it here (like Place/Splice, which expect a video-track
+                // index and resolve the audio track separately) made an Alt-drop of an audio-only asset
+                // always land on the first audio track instead of the one under the pointer.
+                let track_arg = if mode == DropMode::Overwrite {
+                    track
+                } else {
+                    track.filter(|&i| self.project.tracks[i].kind == TrackKind::Video)
+                };
+                self.place_assets(&ids, t, track_arg, mode);
                 self.after_edit();
             }
-        } else {
-            self.library.tab = 0;
-            self.library.selected = ids.last().copied();
+            // ws:canvas-handles-monitor: onto the monitor = "put it here, now" — a free video track at
+            // the playhead, through the same place_assets a timeline drop uses (DropMode::Place is
+            // insert_at's old plain-drop behavior, its replacement per ws:source-monitor)
+            DropTarget::Monitor => {
+                self.place_assets(&ids, self.playhead, None, DropMode::Place);
+                self.after_edit();
+            }
+            DropTarget::Moodboard => {
+                // snapshot after the import (which already pushed its own undo step if any file was fresh —
+                // same two-steps-when-fresh/one-when-not pattern as `replace_container_dialog`) so adding the
+                // moodboard entries is still undoable even when every dropped file was already a known asset
+                let snap = self.project.to_json();
+                let mut changed = false;
+                for &id in &ids {
+                    changed |= moodboard_ui::moodboard_add(&mut self.project, id);
+                }
+                if changed {
+                    push_undo_json(&mut self.undo, &mut self.redo, snap);
+                    self.after_edit();
+                }
+            }
+            DropTarget::Library => {
+                self.library.tab = 0;
+                self.library.selected = ids.last().copied();
+            }
         }
+    }
+}
+
+// ---- ws:canvas-handles-monitor ----
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui::{pos2, vec2, Rect};
+
+    /// The monitor branch is `drop_target(..) == Monitor` + `place_assets(ids, playhead, None, Place)`: the
+    /// target decision and the placement it makes are each checked here (no headless `App` exists to
+    /// drive `handle_drops` itself — see the App-construction note in tools_registry_tests.rs).
+    #[test]
+    fn drop_onto_monitor_places_on_a_free_track_at_playhead() {
+        let timeline = Rect::from_min_size(pos2(0.0, 300.0), vec2(800.0, 200.0));
+        let monitor = Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 300.0));
+        let mood = Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 500.0)); // stacked under both
+        assert_eq!(drop_target(Some(pos2(400.0, 150.0)), timeline, monitor, mood), DropTarget::Monitor);
+        assert_eq!(drop_target(Some(pos2(400.0, 350.0)), timeline, monitor, mood), DropTarget::Timeline);
+        assert_eq!(drop_target(Some(pos2(400.0, 150.0)), timeline, Rect::NOTHING, mood), DropTarget::Moodboard);
+        assert_eq!(drop_target(None, timeline, monitor, mood), DropTarget::Library);
+        assert_eq!(drop_target(Some(pos2(900.0, 900.0)), timeline, monitor, mood), DropTarget::Library);
+        // what the Monitor arm does: V1 is busy at the playhead, so the clip lands on a free video track
+        let mut p = Project::from_media(crate::model::Asset {
+            id: 0,
+            path: "C:/x.mp4".into(),
+            kind: ClipKind::Video,
+            duration: 4.0,
+            width: 320,
+            height: 240,
+            fps: 30.0,
+            audio_streams: Vec::new(),
+            codec: String::new(),
+            folder: String::new(),
+            tags: Vec::new(),
+            label: 0,
+            description: String::new(),
+            rel_path: None,
+            parent: None,
+            range: None,
+            effects: Vec::new(),
+        });
+        let a = p.assets[0].id;
+        let playhead = 1.0;
+        let ids = p.insert_asset_clips(a, playhead, None);
+        let (ti, c) = p.all_clips().find(|(_, c)| c.id == ids[0]).expect("placed");
+        assert_eq!(c.start, playhead, "at the playhead");
+        assert_ne!(ti, 0, "V1 already holds a clip at 1.0, so a free video track took it");
+        assert_eq!(p.tracks[ti].kind, TrackKind::Video);
     }
 }

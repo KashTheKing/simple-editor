@@ -87,6 +87,13 @@ pub(super) fn set_pending_font_import(path: String) {
     PENDING_FONT.with(|p| *p.borrow_mut() = Some(path));
 }
 
+// ---- ws:audio-dsp-automation ----
+/// Set by inspector_audio's Duck / Normalize buttons (PENDING_ACTION is private to this file); the
+/// app drains it with `take_pending_action` exactly like the project-panel buttons above.
+pub(super) fn set_pending_action(a: Action) {
+    PENDING_ACTION.with(|p| *p.borrow_mut() = Some(a));
+}
+
 /// Sequence the user asked to open from the inspector.
 pub fn take_open_sequence() -> Option<Id> {
     OPEN_SEQUENCE.with(|p| p.borrow_mut().take())

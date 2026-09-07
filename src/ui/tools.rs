@@ -53,6 +53,12 @@ pub struct ToolsState {
     /// Draw tool: a take is running — the app plays the video and drops every stroke into one drawing
     /// until this goes back off (see `App::toggle_draw_recording`).
     pub recording: bool,
+    // ---- ws:layout-modes-onboarding ----
+    /// Adaptive strip (Dynamic layout mode only): the tool the current selection most likely wants
+    /// next, moved to the front of the strip by `show`. `None` = the fixed `STRIP` order. Written by
+    /// `ui::app::frame::tick` from the dominant `SelectionKind`; never a user-reorderable toolbar
+    /// (ponytail: one reorder of the const, add per-user ordering only if asked).
+    pub lead: Option<Tool>,
 }
 
 impl Default for ToolsState {
@@ -69,6 +75,7 @@ impl Default for ToolsState {
             draw_rate: 1.0,
             page: [0, 0, 0, 0],
             recording: false,
+            lead: None,
         }
     }
 }
@@ -225,6 +232,8 @@ pub(crate) enum Glyph {
     // ---- ws:split-god-files ----
     // ---- ws:audio-analysis ----
     // ---- ws:audio-dsp-automation ----
+    /// Three vertical bars of increasing height — the mixer's level / LUFS meter row.
+    Meter,
     // ---- ws:color-engine ----
     // ---- ws:command-palette ----
     /// A small key cap grid — the cheat-sheet / Settings ▸ Hotkeys tab.
@@ -240,12 +249,40 @@ pub(crate) enum Glyph {
     SlipCursor,
     // ---- ws:trim-model ----
     // ---- ws:canvas-handles-monitor ----
+    /// Two overlapping L-shaped crop marks — painted at the pointer over a crop handle.
+    Crop,
+    /// A three-quarter circular arrow — painted at the pointer over the rotate knob.
+    Rotate,
     // ---- ws:export-deliver ----
+    /// Two stacked documents with a small clock in the corner — the render queue.
+    Queue,
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
+    /// A pushpin (head, bar, needle) — a tab pinned against auto-surfacing.
+    Pin,
+    /// Four corner arrows pointing outward — maximise a pane to the full tile.
+    Maximize,
     // ---- ws:media-library ----
+    /// A triangle with an exclamation mark — the library's offline-media badge / relink hint.
+    Warning,
+    /// Two overlapping links — a subclip's tie to its parent asset.
+    Chain,
     // ---- ws:source-monitor ----
+    /// A bar with a block landing after its end — smart edit "Append at End".
+    Append,
+    /// Two blocks with arrows pulling them together — smart edit "Close Up" (close the gap).
+    CloseUp,
+    /// A block floating above a bar with an up arrow — smart edit "Place on Top" (new track above).
+    PlaceOnTop,
+    /// A viewfinder rect with a record dot — the Source/Record monitor toggle.
+    SourceRecord,
+    /// A tape cassette: two reels in a shell — Source Tape.
+    Tape,
     // ---- ws:timeline-trim-gestures ----
+    /// A padlock — the track header's Lock toggle.
+    Lock,
+    /// Two chain links — the track header's Ripple (sync) toggle.
+    Link,
     // ---- ws:transcript-captions ----
     /// Three text lines of decreasing width, the middle one's leading word lit (the Transcript
     /// section / "View transcript" window).
@@ -345,6 +382,7 @@ impl Glyph {
         // ---- ws:split-god-files ----
         // ---- ws:audio-analysis ----
         // ---- ws:audio-dsp-automation ----
+        Glyph::Meter,
         // ---- ws:color-engine ----
         // ---- ws:command-palette ----
         Glyph::Keyboard,
@@ -356,12 +394,26 @@ impl Glyph {
         Glyph::SlipCursor,
         // ---- ws:trim-model ----
         // ---- ws:canvas-handles-monitor ----
+        Glyph::Crop,
+        Glyph::Rotate,
         // ---- ws:export-deliver ----
+        Glyph::Queue,
         // ---- ws:inspector-gallery ----
         // ---- ws:layout-modes-onboarding ----
+        Glyph::Pin,
+        Glyph::Maximize,
         // ---- ws:media-library ----
+        Glyph::Warning,
+        Glyph::Chain,
         // ---- ws:source-monitor ----
+        Glyph::Append,
+        Glyph::CloseUp,
+        Glyph::PlaceOnTop,
+        Glyph::SourceRecord,
+        Glyph::Tape,
         // ---- ws:timeline-trim-gestures ----
+        Glyph::Lock,
+        Glyph::Link,
         // ---- ws:transcript-captions ----
         Glyph::Transcript,
         // ---- ws:pro-monitor ----
@@ -463,6 +515,7 @@ impl Glyph {
             // ---- ws:split-god-files ----
             // ---- ws:audio-analysis ----
             // ---- ws:audio-dsp-automation ----
+            Glyph::Meter => "meter",
             // ---- ws:color-engine ----
             // ---- ws:command-palette ----
             Glyph::Keyboard => "keyboard",
@@ -474,12 +527,26 @@ impl Glyph {
             Glyph::SlipCursor => "slip-cursor",
             // ---- ws:trim-model ----
             // ---- ws:canvas-handles-monitor ----
+            Glyph::Crop => "crop",
+            Glyph::Rotate => "rotate",
             // ---- ws:export-deliver ----
+            Glyph::Queue => "queue",
             // ---- ws:inspector-gallery ----
             // ---- ws:layout-modes-onboarding ----
+            Glyph::Pin => "pin",
+            Glyph::Maximize => "maximize",
             // ---- ws:media-library ----
+            Glyph::Warning => "warning",
+            Glyph::Chain => "chain",
             // ---- ws:source-monitor ----
+            Glyph::Append => "append",
+            Glyph::CloseUp => "close-up",
+            Glyph::PlaceOnTop => "place-on-top",
+            Glyph::SourceRecord => "source-record",
+            Glyph::Tape => "tape",
             // ---- ws:timeline-trim-gestures ----
+            Glyph::Lock => "lock",
+            Glyph::Link => "link",
             // ---- ws:transcript-captions ----
             Glyph::Transcript => "transcript",
             // ---- ws:pro-monitor ----
@@ -695,10 +762,13 @@ pub fn show(ui: &mut egui::Ui, state: &mut ToolsState, palette: &Palette, snap: 
     let mut changed = handle_hotkeys(ui.ctx(), hotkeys, state).is_some();
     changed |= handle_snap_hotkey(ui.ctx(), snap);
     let base = ui.id();
+    // ---- ws:layout-modes-onboarding ----
+    // adaptive order: the selection's lead tool (if any) moves to the front, the rest keep STRIP order
+    let order = strip_order(state.lead);
     // wrapped: at a small pane width the strip must fold onto a second row, not clip its last buttons
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
-        for (tool, icon, name) in STRIP {
+        for (tool, icon, name) in order {
             let active = same_tool(tool, state.tool);
             let tip = if matches!(tool, Tool::Shape(_)) {
                 format!("{name} (Shift+S)")
@@ -724,6 +794,20 @@ pub fn show(ui: &mut egui::Ui, state: &mut ToolsState, palette: &Palette, snap: 
         changed |= style_controls(ui, state, palette);
     });
     changed
+}
+
+// ---- ws:layout-modes-onboarding ----
+/// `STRIP` with `lead`'s entry (if it has one) moved to the front — the Dynamic-mode adaptive strip.
+/// Only the order changes: every tool stays, so `strip_lays_out_every_tool` holds for any lead.
+fn strip_order(lead: Option<Tool>) -> Vec<(Tool, Glyph, &'static str)> {
+    let mut order = STRIP.to_vec();
+    if let Some(lead) = lead {
+        if let Some(i) = order.iter().position(|(t, _, _)| same_tool(*t, lead)) {
+            let entry = order.remove(i);
+            order.insert(0, entry);
+        }
+    }
+    order
 }
 
 /// The Mask button lights up for every mask shape (the combo beside it picks one); everything else is
@@ -1646,12 +1730,24 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
             let head = vec![c + egui::vec2(7.5, 0.0), c + egui::vec2(4.5, -2.2), c + egui::vec2(4.5, 2.2)];
             p.add(egui::Shape::convex_polygon(head, fg, Stroke::NONE));
         } // ---- ws:registries-schema-hooks ----
-          // ---- ws:size-diet ----
-          // ---- ws:split-god-files ----
-          // ---- ws:audio-analysis ----
-          // ---- ws:audio-dsp-automation ----
-          // ---- ws:color-engine ----
-          // ---- ws:command-palette ----
+        // ---- ws:size-diet ----
+        // ---- ws:split-god-files ----
+        // ---- ws:audio-analysis ----
+        // ---- ws:audio-dsp-automation ----
+        // level meter: three bars rising left to right on a baseline
+        Glyph::Meter => {
+            for (i, h) in [4.0f32, 8.0, 12.0].into_iter().enumerate() {
+                let x = c.x - 5.0 + i as f32 * 5.0;
+                p.rect_filled(
+                    egui::Rect::from_min_max(egui::pos2(x - 1.5, c.y + 6.0 - h), egui::pos2(x + 1.5, c.y + 6.0)),
+                    CornerRadius::ZERO,
+                    fg,
+                );
+            }
+            p.line_segment([c + egui::vec2(-7.5, 6.5), c + egui::vec2(7.5, 6.5)], stroke);
+        }
+        // ---- ws:color-engine ----
+        // ---- ws:command-palette ----
         // rounded keycap outline with a 3x2 grid of small key dots inside
         Glyph::Keyboard => {
             p.rect_stroke(
@@ -1673,16 +1769,164 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
             let dir = egui::vec2(1.0, 1.0).normalized();
             p.line_segment([ring + dir * 4.0, ring + dir * 8.0], Stroke::new(1.8, fg));
         } // ---- ws:forgiveness ----
-          // ---- ws:player-rate-loop ----
-          // ---- ws:trim-model ----
-          // ---- ws:canvas-handles-monitor ----
-          // ---- ws:export-deliver ----
-          // ---- ws:inspector-gallery ----
-          // ---- ws:layout-modes-onboarding ----
-          // ---- ws:media-library ----
-          // ---- ws:source-monitor ----
-          // ---- ws:timeline-trim-gestures ----
-          // ---- ws:transcript-captions ----
+        // ---- ws:player-rate-loop ----
+        // ---- ws:trim-model ----
+        // ---- ws:canvas-handles-monitor ----
+        // crop marks: two L corners (top-right and bottom-left) overlapping into a frame
+        Glyph::Crop => {
+            p.add(egui::Shape::line(
+                vec![c + egui::vec2(-7.0, -3.0), c + egui::vec2(3.0, -3.0), c + egui::vec2(3.0, 7.0)],
+                stroke,
+            ));
+            p.add(egui::Shape::line(
+                vec![c + egui::vec2(-3.0, -7.0), c + egui::vec2(-3.0, 3.0), c + egui::vec2(7.0, 3.0)],
+                stroke,
+            ));
+        }
+        // rotate: a three-quarter arc ending in an arrowhead
+        Glyph::Rotate => {
+            let pts: Vec<egui::Pos2> = (0..=18)
+                .map(|i| {
+                    let a = -std::f32::consts::FRAC_PI_2 + i as f32 / 18.0 * (std::f32::consts::TAU * 0.75);
+                    c + egui::vec2(a.cos(), a.sin()) * 5.0
+                })
+                .collect();
+            let end = pts[pts.len() - 1];
+            p.add(egui::Shape::line(pts, stroke));
+            p.add(egui::Shape::convex_polygon(
+                vec![end + egui::vec2(0.0, -3.5), end + egui::vec2(2.5, 0.5), end + egui::vec2(-2.5, 0.5)],
+                fg,
+                Stroke::NONE,
+            ));
+        }
+        // ---- ws:export-deliver ----
+        // queue: two offset document outlines (the stack) with a small clock dial at the corner
+        Glyph::Queue => {
+            for (dx, dy) in [(2.0f32, -2.0f32), (-2.0, 2.0)] {
+                p.rect_stroke(
+                    egui::Rect::from_center_size(c + egui::vec2(dx, dy), egui::vec2(9.0, 11.0)),
+                    CornerRadius::same(1),
+                    stroke,
+                    StrokeKind::Inside,
+                );
+            }
+            let dial = c + egui::vec2(5.5, 5.5);
+            p.circle_stroke(dial, 3.6, stroke);
+            p.line_segment([dial, dial + egui::vec2(0.0, -2.2)], Stroke::new(1.0, fg));
+            p.line_segment([dial, dial + egui::vec2(1.6, 0.0)], Stroke::new(1.0, fg));
+        }
+        // ---- ws:inspector-gallery ----
+        // ---- ws:layout-modes-onboarding ----
+        // pushpin: a filled head over a wider bar, with a needle dropping from the bar's middle
+        Glyph::Pin => {
+            p.rect_filled(egui::Rect::from_min_max(c + egui::vec2(-2.5, -6.5), c + egui::vec2(2.5, -1.5)), 1.0, fg);
+            p.line_segment([c + egui::vec2(-5.0, -1.0), c + egui::vec2(5.0, -1.0)], Stroke::new(1.8, fg));
+            p.line_segment([c + egui::vec2(0.0, -1.0), c + egui::vec2(0.0, 6.5)], stroke);
+        }
+        // four corner arrows: a diagonal from near the centre to each corner, capped with an L bracket
+        Glyph::Maximize => {
+            for (sx, sy) in [(-1.0f32, -1.0f32), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+                let tip = c + egui::vec2(sx * r, sy * r);
+                p.line_segment([c + egui::vec2(sx * 1.5, sy * 1.5), tip], stroke);
+                p.line_segment([tip, tip - egui::vec2(sx * 3.5, 0.0)], stroke);
+                p.line_segment([tip, tip - egui::vec2(0.0, sy * 3.5)], stroke);
+            }
+        }
+        // ---- ws:media-library ----
+        // warning: a filled triangle with a bar + dot cut out of it (same shape technique as Flag)
+        Glyph::Warning => {
+            let tri = vec![c + egui::vec2(0.0, -6.5), c + egui::vec2(7.0, 6.0), c + egui::vec2(-7.0, 6.0)];
+            p.add(egui::Shape::convex_polygon(tri, fg, Stroke::NONE));
+            let hole = Color32::from_rgba_unmultiplied(0, 0, 0, 160);
+            p.line_segment([c + egui::vec2(0.0, -2.0), c + egui::vec2(0.0, 2.2)], Stroke::new(1.6, hole));
+            p.circle_filled(c + egui::vec2(0.0, 4.2), 0.9, hole);
+        }
+        // chain: two overlapping rounded links, offset on the diagonal
+        Glyph::Chain => {
+            for d in [-2.2f32, 2.2] {
+                let r = egui::Rect::from_center_size(c + egui::vec2(d, -d), egui::vec2(8.0, 5.0));
+                p.rect_stroke(r, CornerRadius::same(2), stroke, StrokeKind::Inside);
+            }
+        }
+        // ---- ws:source-monitor ----
+        // append: a lane bar, then a block dropped just past its end with a right arrow above
+        Glyph::Append => {
+            p.line_segment([c + egui::vec2(-8.0, 2.0), c + egui::vec2(1.0, 2.0)], Stroke::new(2.0, fg));
+            p.rect_stroke(
+                egui::Rect::from_min_max(c + egui::vec2(3.0, -2.0), c + egui::vec2(8.0, 6.0)),
+                CornerRadius::ZERO,
+                stroke,
+                StrokeKind::Inside,
+            );
+            p.line_segment([c + egui::vec2(-3.0, -5.0), c + egui::vec2(3.0, -5.0)], stroke);
+            p.add(egui::Shape::convex_polygon(tri(c + egui::vec2(4.0, -5.0), Dir::Right, 2.4, 2.0), fg, Stroke::NONE));
+        }
+        // close up: two blocks with arrows pointing at the gap between them
+        Glyph::CloseUp => {
+            for (x0, x1) in [(-8.0f32, -4.0f32), (4.0, 8.0)] {
+                p.rect_filled(egui::Rect::from_min_max(c + egui::vec2(x0, -3.0), c + egui::vec2(x1, 3.0)), CornerRadius::ZERO, fg);
+            }
+            p.add(egui::Shape::convex_polygon(tri(c + egui::vec2(-1.5, 0.0), Dir::Right, 2.4, 2.4), fg, Stroke::NONE));
+            p.add(egui::Shape::convex_polygon(tri(c + egui::vec2(1.5, 0.0), Dir::Left, 2.4, 2.4), fg, Stroke::NONE));
+        }
+        // place on top: a lane bar with a block hovering above it and an up arrow beside
+        Glyph::PlaceOnTop => {
+            p.line_segment([c + egui::vec2(-8.0, 5.0), c + egui::vec2(8.0, 5.0)], Stroke::new(2.0, fg));
+            p.rect_stroke(
+                egui::Rect::from_min_max(c + egui::vec2(-6.0, -6.0), c + egui::vec2(2.0, 0.0)),
+                CornerRadius::ZERO,
+                stroke,
+                StrokeKind::Inside,
+            );
+            p.line_segment([c + egui::vec2(6.0, 2.0), c + egui::vec2(6.0, -4.0)], stroke);
+            p.add(egui::Shape::convex_polygon(tri(c + egui::vec2(6.0, -5.5), Dir::Up, 2.0, 2.4), fg, Stroke::NONE));
+        }
+        // source/record: a viewfinder rect with a record dot in it
+        Glyph::SourceRecord => {
+            p.rect_stroke(
+                egui::Rect::from_center_size(c, egui::vec2(15.0, 11.0)),
+                CornerRadius::same(1),
+                stroke,
+                StrokeKind::Inside,
+            );
+            p.circle_filled(c, 2.6, fg);
+        }
+        // tape: a cassette shell with two reel rings and a window line under them
+        Glyph::Tape => {
+            p.rect_stroke(
+                egui::Rect::from_center_size(c, egui::vec2(16.0, 11.0)),
+                CornerRadius::same(2),
+                stroke,
+                StrokeKind::Inside,
+            );
+            p.circle_stroke(c + egui::vec2(-4.0, -1.0), 2.2, stroke);
+            p.circle_stroke(c + egui::vec2(4.0, -1.0), 2.2, stroke);
+            p.line_segment([c + egui::vec2(-5.0, 3.5), c + egui::vec2(5.0, 3.5)], stroke);
+        }
+        // ---- ws:timeline-trim-gestures ----
+        // padlock: a body with a shackle arc over it
+        Glyph::Lock => {
+            let body = egui::Rect::from_center_size(c + egui::vec2(0.0, 2.5), egui::vec2(10.0, 7.0));
+            p.rect_filled(body, CornerRadius::same(1), fg);
+            let (sc, sr) = (c + egui::vec2(0.0, -1.5), 3.2);
+            let arc: Vec<egui::Pos2> = (0..=10)
+                .map(|i| {
+                    let a = std::f32::consts::PI + std::f32::consts::PI * i as f32 / 10.0;
+                    sc + egui::vec2(a.cos() * sr, a.sin() * sr)
+                })
+                .collect();
+            p.add(egui::Shape::line(arc, stroke));
+            p.line_segment([sc + egui::vec2(-sr, 0.0), sc + egui::vec2(-sr, 1.5)], stroke);
+            p.line_segment([sc + egui::vec2(sr, 0.0), sc + egui::vec2(sr, 1.5)], stroke);
+        }
+        // chain: two overlapping rounded links on a diagonal
+        Glyph::Link => {
+            for d in [-2.2_f32, 2.2] {
+                let link = egui::Rect::from_center_size(c + egui::vec2(d, d), egui::vec2(8.0, 5.0));
+                p.rect_stroke(link, CornerRadius::same(2), stroke, StrokeKind::Inside);
+            }
+        }
+        // ---- ws:transcript-captions ----
         // transcript: three text lines of decreasing width; the middle line's leading word is lit
         Glyph::Transcript => {
             let dim = fg.gamma_multiply(0.55);
@@ -1691,7 +1935,7 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
             p.line_segment([c + egui::vec2(0.5, 0.0), c + egui::vec2(4.5, 0.0)], Stroke::new(1.6, dim));
             p.line_segment([c + egui::vec2(-6.5, 4.5), c + egui::vec2(2.0, 4.5)], Stroke::new(1.6, dim));
         }
-          // ---- ws:pro-monitor ----
+        // ---- ws:pro-monitor ----
           // ---- ws:pro-timeline ----
           // ---- ws:text-titles ----
           // ---- ws:docs-refresh ----
@@ -1891,6 +2135,34 @@ mod tests {
         for (_, _, name) in STRIP {
             let c = h.button(name);
             assert!(c.x > 0.0 && c.x < 900.0, "{name} off-strip at {c:?}");
+        }
+    }
+
+    // ---- ws:layout-modes-onboarding ----
+    /// The adaptive strip only reorders: a lead tool moves to the front, nothing is dropped, and no
+    /// lead means the fixed order.
+    #[test]
+    fn lead_tool_moves_to_the_front_and_keeps_every_tool() {
+        assert_eq!(strip_order(None).len(), STRIP.len());
+        assert_eq!(strip_order(None)[0].0, Tool::Select);
+        let text = strip_order(Some(Tool::Text));
+        assert_eq!(text[0].0, Tool::Text);
+        assert_eq!(text.len(), STRIP.len());
+        assert_eq!(text[1].0, Tool::Select, "the rest keep STRIP order");
+        // a lead the strip has no button for (a specific mask shape resolves via same_tool) is fine
+        let mask = strip_order(Some(Tool::Mask(MaskShape::Path)));
+        assert!(matches!(mask[0].0, Tool::Mask(_)));
+        let mut h = Harness::new();
+        h.state.lead = Some(Tool::Draw);
+        // egui's `read_response` prefers `this_pass`, which after ONE run still holds the pre-change
+        // frame's rects (it only becomes current after a second pass) — an extra settle frame with the
+        // same state is harmless (nothing else changes) and makes the reordered rects readable.
+        h.frame(vec![]);
+        h.frame(vec![]);
+        assert!(h.button("Draw").x < h.button("Select").x, "the lead tool is drawn first");
+        for (_, _, name) in STRIP {
+            let c = h.button(name);
+            assert!(c.x > 0.0 && c.x < 900.0, "{name} off-strip at {c:?} with a lead tool");
         }
     }
 

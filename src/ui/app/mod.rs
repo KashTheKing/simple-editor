@@ -54,13 +54,21 @@ mod drops;
 mod edit_ops;
 mod feedback;
 mod files;
+// ---- ws:layout-modes-onboarding ----
+mod frame;
 mod gpu;
 mod jobs;
-mod lib_preview;
+// ---- ws:layout-modes-onboarding ----
+mod layout_ctl;
+// ---- ws:source-monitor ----
+// `lib_preview` is removed here — its one caller (the Library pane's small in-panel preview) was
+// replaced by the real Source monitor pane; see `source_pane.rs`.
 mod library_pane;
 mod mcp_exec;
 mod media_sync;
 mod menus;
+// ---- ws:canvas-handles-monitor ----
+mod monitor;
 // ---- ws:command-palette ----
 mod palette_ctl;
 mod panes;
@@ -69,6 +77,11 @@ mod preview_pane;
 // ---- ws:forgiveness ----
 // pub(crate): main.rs calls recovery::install_panic_hook() before eframe::run_native.
 pub(crate) mod recovery;
+// ---- ws:source-monitor ----
+mod source_ctl;
+mod source_pane;
+// every placement call site (drops, library add, recording import, panes) names a DropMode
+pub(crate) use edit_ops::DropMode;
 mod thumbs;
 mod timeline_pane;
 mod tools_args;
@@ -77,13 +90,22 @@ mod tools_clip;
 mod tools_color;
 // ---- ws:command-palette ----
 mod tools_commands;
+// ---- ws:export-deliver ----
+mod tools_export;
 mod tools_helpers;
+// ---- ws:layout-modes-onboarding ----
+mod tools_layout;
 mod tools_media;
+mod tools_mixer;
 mod tools_playback;
+// ---- ws:canvas-handles-monitor ----
+mod tools_preview;
 // ---- ws:forgiveness ----
 mod tools_project;
 #[cfg(test)]
 mod tools_registry_tests;
+// ---- ws:source-monitor ----
+mod tools_source;
 mod tools_subtitles;
 mod tools_timeline;
 // ---- ws:transcript-captions ----
@@ -107,19 +129,6 @@ struct McpJob {
     prog: Arc<Progress>,
     reply: Sender<Result<Value, String>>,
     out: PathBuf,
-}
-
-/// The library's own preview player: a file, its own decoder/audio pipeline, and the duration/fps a
-/// transport needs (an asset's own probed values, since this project is a synthetic single-clip one).
-struct LibPreview {
-    path: PathBuf,
-    player: Player,
-    duration: f64,
-    fps: f64,
-    has_video: bool,
-    /// A still image: no transport, no timecode, no scrub bar — just the picture.
-    is_image: bool,
-    heartbeat: crate::ui::heartbeat::Heartbeat,
 }
 
 pub struct App {
@@ -264,15 +273,21 @@ pub struct App {
     /// event either way), so a Ctrl+V after an internal-only copy produced NO event at all and could
     /// never be bound. Copying clips therefore also writes them out as text.
     os_clipboard: Option<String>,
-    /// The library's own preview: a player of its own so it never disturbs the program monitor or the
-    /// timeline playhead, and the texture the pane paints this frame. While it is Some, the Preview
-    /// pane shows this instead of the timeline (see `draw_lib_preview`).
-    lib_preview: Option<LibPreview>,
-    lib_preview_tex: Option<egui::TextureHandle>,
+    // ---- ws:source-monitor ----
+    /// The Source monitor (`Pane::Source`, replaces the old `lib_preview` Preview-pane takeover): a
+    /// player of its own so it never disturbs the program monitor or the timeline playhead, and the
+    /// texture the pane paints this frame.
+    source: Option<crate::ui::source_ui::SourceState>,
+    source_tex: Option<egui::TextureHandle>,
     /// This update's uploaded frame, computed once (`Player::take_frame` consumes the buffered frame, so
     /// pulling it twice in one update would starve whichever call came second). Both the library pane's
-    /// own preview box and the viewport override read this same value.
-    lib_preview_live: Option<library::PreviewFrame>,
+    /// own preview box and the Source pane read this same value.
+    source_live: Option<library::PreviewFrame>,
+    /// Transport focus: true = Space/JKL/I/O drive the Source monitor (last-clicked transport wins),
+    /// false = the timeline, the fallback. See `source_ctl::act`.
+    source_focus: bool,
+    /// A queued Source-monitor open (needs the egui ctx a new `Player` takes) — see `source_pane::tick`.
+    source_pending: Option<source_pane::Pending>,
     /// Movie mode pre-render cache.
     prerender: PreRender,
     /// Movie mode paused the clock because the frame under the playhead was not rendered yet.
@@ -294,10 +309,14 @@ pub struct App {
     /// Panes whose draw panicked: shown as a message instead of taking the whole editor down.
     failed_panes: Vec<Pane>,
     // ---- ws:registries-schema-hooks ----
-    /// Which async GPU preview canvas-handles-monitor (wave 2) should be rendering into, if any —
-    /// no-op placeholder this wave (nothing reads or writes it yet outside its own scaffolding).
-    #[allow(dead_code)]
-    pub(crate) alt_render: Option<AltRenderKind>,
+    // ---- ws:canvas-handles-monitor ----
+    // deviation (see PR body): retyped from wave-0b's `Option<AltRenderKind>` no-op placeholder to the
+    // real coalescing state (`monitor::AltRenderState`) this workstream builds — anticipated in the
+    // plan's own risk table ("wave-0b's alt_render App-field stub type may not match ... First commit
+    // retypes that one field if needed — isolated, called out in the PR description").
+    /// The monitor's async alt-render pipeline (hover preview of an effect/transition/gallery item) —
+    /// see `monitor.rs`'s doc comment.
+    pub(crate) alt_render: monitor::AltRenderState,
     // ---- ws:size-diet ----
     /// The "What's New" window (whatsnew.rs) is open — set on a version bump, or by `Action::WhatsNew`.
     pub(crate) whatsnew_open: bool,
@@ -348,26 +367,45 @@ pub struct App {
     /// Scripts disabled for the session after their `@on` hook overran its budget once (one toast, then
     /// silently skipped by `fire_hook` for the rest of the session).
     disabled_hooks: Vec<PathBuf>,
-    /// Selection last handed to `fire_hook("selection_changed", ...)` — `palette_ctl::tick` compares
-    /// against `self.selection` each frame so the hook fires on an actual change, not every frame.
-    last_fired_selection: Vec<Id>,
+    /// Selection signature last handed to `fire_hook("selection_changed", ...)` — `palette_ctl::tick`
+    /// compares against `frame::SelSig::of(self)` each frame so the hook fires on any change (clips,
+    /// transitions, subtitle cues OR the edit point — not just `self.selection`), exactly once.
+    last_fired_selection: frame::SelSig,
+    // ---- ws:layout-modes-onboarding ----
+    /// The first-run welcome wizard while it is open — armed by `boot::run` on a fresh install (no
+    /// file argument, no `--screenshot`), `Action::ShowWelcome` and the `onboarding.reset` tool.
+    onboarding: Option<crate::ui::onboarding::Onboarding>,
+    /// The home / empty-state cards were dismissed for this session (`ui::home`).
+    home_dismissed: bool,
+    /// The selection `frame::tick` last reacted to, so auto-surface / glow fire once per change.
+    sel_sig: frame::SelSig,
+    // ---- ws:export-deliver ----
+    // (same per-workstream section shape ws:forgiveness added above — this struct's pre-seeded markers
+    // stop at ws:size-diet, so each later workstream appends its own)
+    /// Render queue: exports waiting for the single `export` slot, popped in order by
+    /// `tools_export::frame_tick` once it is free (and no bake is running).
+    export_queue: std::collections::VecDeque<export_ui::ExportChoice>,
+    /// In-flight bakes (render in place / stabilize / denoise / slow-mo) — at most one, stepped by
+    /// `tools_export::frame_tick`; drawn by `windows()`'s "Rendering in place" job window.
+    bake_jobs: Vec<tools_export::BakeJob>,
+    // ---- ws:media-library ----
+    /// Image-sequence bakes and consolidate copies in flight, polled by `media_sync::tick`.
+    media_jobs: Vec<media_sync::MediaJob>,
+    /// Next time `media_sync::tick` rescans the assets for missing files (2 s cadence, like proxies).
+    /// The set itself lives in `library.offline` — the one copy `App::asset_status` and the library
+    /// rows both read.
+    offline_scan_at: Option<Instant>,
     // ---- ws:transcript-captions ----
     /// Background whisper / tracking / TTS jobs started outside the Subtitles pane (clip menu, MCP),
     /// the clip-menu model download and the "View transcript" window — see transcript_ctl.rs.
     transcript: transcript_ctl::TranscriptState,
 }
 
-/// What an async, off-the-main-preview GPU render is for — hover preview, trim view, scopes, wipe
-/// compare (canvas-handles-monitor / pro-monitor, waves 2-3). A bare placeholder this wave: nothing
-/// attaches `Player::request_layers` to it yet.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
-pub(crate) enum AltRenderKind {
-    Hover,
-    TrimView,
-    Scopes,
-    Wipe,
-}
+// ---- ws:canvas-handles-monitor ----
+// wave-0b's `AltRenderKind` placeholder enum (Hover/TrimView/Scopes/Wipe) is superseded by
+// `monitor::AltRequest` (Effect/Transition/Gallery — pro-monitor, wave 3, adds TrimOut/TrimIn/
+// Compare/Angle to that same enum per the plan) and removed here to avoid two parallel "what should
+// the monitor render" types.
 
 // ---- ws:forgiveness ----
 /// The on-disk cache directory's size — `settings_ui::performance` (a sibling module, not a descendant
@@ -610,14 +648,11 @@ impl App {
                 }
             });
         }
-        // first-run install points the entry at this exe; skip for screenshot/debug runs so they don't re-point it
-        if settings.context_menu
-            && screenshot.is_none()
-            && !cfg!(debug_assertions)
-            && !crate::contextmenu::is_installed()
-        {
-            let _ = crate::contextmenu::install();
-        }
+        // ---- ws:layout-modes-onboarding ----
+        // The Explorer context-menu install that used to run here on every launch (guarded on
+        // settings.context_menu / no --screenshot / release build / not yet installed) now lives in
+        // `boot::run`: a first run arms the welcome wizard, whose opt-in checkbox is the consent that
+        // was missing; later launches keep the same guard, gated on that recorded consent.
         let mut player = Player::new(cc.egui_ctx.clone(), backend, text.clone());
         player.set_cache_bytes(crate::playback::cache_budget_bytes(settings.cache_mb));
         let waveforms = WaveformCache::new(cc.egui_ctx.clone(), backend);
@@ -731,9 +766,12 @@ impl App {
             attrs: None,
             clipboard: None,
             os_clipboard: None,
-            lib_preview: None,
-            lib_preview_live: None,
-            lib_preview_tex: None,
+            // ---- ws:source-monitor ----
+            source: None,
+            source_live: None,
+            source_tex: None,
+            source_focus: false,
+            source_pending: None,
             prerender: PreRender::new(),
             movie_stall: false,
             buffer_stall: false,
@@ -744,7 +782,7 @@ impl App {
             canvas: (0, 0),
             audio_inputs: None,
             failed_panes: Vec::new(),
-            alt_render: None,
+            alt_render: monitor::AltRenderState::default(),
             whatsnew_open: false,
             winpos_pending: None,
             // ---- ws:forgiveness ----
@@ -765,7 +803,17 @@ impl App {
             ),
             hook_running: false,
             disabled_hooks: Vec::new(),
-            last_fired_selection: Vec::new(),
+            last_fired_selection: frame::SelSig::default(),
+            // ---- ws:layout-modes-onboarding ----
+            onboarding: None,
+            home_dismissed: false,
+            sel_sig: frame::SelSig::default(),
+            // ---- ws:export-deliver ----
+            export_queue: std::collections::VecDeque::new(),
+            bake_jobs: Vec::new(),
+            // ---- ws:media-library ----
+            media_jobs: Vec::new(),
+            offline_scan_at: None,
             // ---- ws:transcript-captions ----
             transcript: transcript_ctl::TranscriptState::default(),
         };
@@ -793,25 +841,20 @@ impl App {
         push_undo_json(&mut self.undo, &mut self.redo, self.project.to_json());
     }
 
-    /// Insert each asset's clips at `t` (video on `vt` if given), chaining them end to end.
-    fn insert_at(&mut self, ids: Vec<Id>, mut t: f64, vt: Option<usize>) {
-        for id in ids {
-            let new = self.project.insert_asset_clips(id, t, vt);
-            if let Some(c) = new.first().and_then(|c| self.project.clip(*c)) {
-                t = c.end();
-            }
-        }
-    }
+    // ws:source-monitor: `insert_at` (chain each asset's clips end to end) is now
+    // `place_assets(.., DropMode::Place)` in edit_ops.rs — every former caller names its DropMode.
 
     /// Empty project + one media file: open it as the project (returns empty); otherwise import into the library.
     /// ponytail: that single file is still probed on this thread — it settles the project format, size
     /// and zoom before anything is drawn; give it a placeholder too if opening ever feels slow.
     fn open_or_import(&mut self, paths: &[PathBuf]) -> Vec<Id> {
+        // ---- ws:media-library ----: a frame of a numbered still run bakes as one clip instead
+        let paths = media_sync::intercept_sequences(self, paths);
         if self.project.is_empty() && self.project.assets.is_empty() && paths.len() == 1 {
             self.open_media(&paths[0]);
             return Vec::new();
         }
-        self.import_files(paths)
+        self.import_files(&paths)
     }
 
     /// After any project mutation.
@@ -886,9 +929,12 @@ impl App {
     /// ponytail: an MCP `media.import` reply therefore quotes duration 0 until the probe lands;
     /// blocking the tool call on it is the fix if an agent ever needs the number in the same reply.
     fn import_files(&mut self, paths: &[PathBuf]) -> Vec<Id> {
+        // ---- ws:media-library ----: every import path (Ctrl+I, drops, MCP media.import) funnels
+        // through here, so this one gate covers them all — see media_sync::intercept_sequences
+        let paths = media_sync::intercept_sequences(self, paths);
         let mut ids = Vec::new();
         let mut fresh: Vec<(Id, String)> = Vec::new();
-        for path in paths {
+        for path in &paths {
             let p = path.to_string_lossy().into_owned();
             // a re-import of a file already in the library must not re-probe it: adopting the result
             // would rebuild clips the user has since trimmed
@@ -951,7 +997,6 @@ impl eframe::App for App {
         }
         self.poll_panels();
         self.poll_probes(ctx);
-        self.lib_preview_live = self.lib_preview_frame(ctx);
         self.build_effect_thumbnails(ctx);
         if self.serve_gpu_exports() || self.export.is_some() {
             // a GPU export needs this thread to keep coming back to serve its frames
@@ -1190,6 +1235,12 @@ impl eframe::App for App {
                 // cloned: the draw closure needs self mutably while the tab renderer reads the icons
                 let icons = self.settings.icon_overrides.clone();
                 let cozy = self.settings.ui_look != "sharp";
+                // ---- ws:layout-modes-onboarding ----
+                // Both closures need `self` (draw: mutably; on_viewport: the hotkey table, then
+                // pending_actions), and layout::show calls them strictly one after the other — never
+                // nested — so a RefCell hands the borrow back and forth at runtime, the same shape
+                // `App::fire_hook` already uses for its tool-call closure.
+                let cell = std::cell::RefCell::new(&mut *self);
                 let (changed, moved, set_icon) = layout::show(
                     ctx,
                     ui,
@@ -1197,11 +1248,15 @@ impl eframe::App for App {
                     &icons,
                     tab_bar,
                     cozy,
-                    &mut |ui, pane| self.draw_pane(ui, pane),
+                    &mut |ui, pane| cell.borrow_mut().draw_pane(ui, pane),
                     // ---- ws:registries-schema-hooks ----
-                    // no-op until ws:layout-modes-onboarding (wave 2) polls hotkeys on the popped
-                    // viewport's own ctx
-                    &mut |_ctx| {},
+                    // filled by ws:layout-modes-onboarding: poll the action table on the popped
+                    // viewport's own ctx, so Space/J/K/L work in a torn-off Preview (each viewport
+                    // has its own input state, so nothing double-fires with the root poll above)
+                    &mut |vctx| {
+                        let acts = layout_ctl::poll_popout(&cell.borrow().hotkeys, vctx);
+                        cell.borrow_mut().pending_actions.extend(acts);
+                    },
                 );
                 self.layout = l;
                 self.layout_dirty |= changed;
@@ -1284,6 +1339,7 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:audio-analysis ----
     tools_audio::TOOLS,
     // ---- ws:audio-dsp-automation ----
+    tools_mixer::TOOLS,
     // ---- ws:color-engine ----
     tools_color::TOOLS,
     // ---- ws:command-palette ----
@@ -1297,11 +1353,17 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:trim-model ----
     tools_trim::TOOLS,
     // ---- ws:canvas-handles-monitor ----
+    tools_preview::TOOLS,
     // ---- ws:export-deliver ----
+    tools_export::TOOLS,
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
+    tools_layout::TOOLS,
     // ---- ws:media-library ----
+    // already registered above (tools_media::TOOLS predates the marker system; wave-0a wired it in
+    // directly) — this workstream appends its rows into that same const, not a second registration.
     // ---- ws:source-monitor ----
+    tools_source::TOOLS,
     // ---- ws:timeline-trim-gestures ----
     // ---- ws:transcript-captions ----
     tools_transcript::TOOLS,
@@ -1329,11 +1391,16 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     // ---- ws:trim-model ----
     trim_actions::act,
     // ---- ws:canvas-handles-monitor ----
+    monitor::act,
     // ---- ws:export-deliver ----
+    tools_export::act,
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
+    layout_ctl::act,
     // ---- ws:media-library ----
+    media_sync::act,
     // ---- ws:source-monitor ----
+    source_ctl::act,
     // ---- ws:timeline-trim-gestures ----
     // ---- ws:transcript-captions ----
     transcript_ctl::act,
@@ -1349,6 +1416,7 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:split-god-files ----
     // ---- ws:audio-analysis ----
     // ---- ws:audio-dsp-automation ----
+    tools_mixer::sync_buses,
     // ---- ws:color-engine ----
     // ---- ws:command-palette ----
     palette_ctl::tick,
@@ -1359,11 +1427,16 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:snap-engine ----
     // ---- ws:trim-model ----
     // ---- ws:canvas-handles-monitor ----
+    monitor::tick,
     // ---- ws:export-deliver ----
+    tools_export::frame_tick,
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
+    frame::tick,
     // ---- ws:media-library ----
+    media_sync::tick,
     // ---- ws:source-monitor ----
+    source_pane::tick,
     // ---- ws:timeline-trim-gestures ----
     // ---- ws:transcript-captions ----
     transcript_ctl::tick,
@@ -1393,7 +1466,9 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:export-deliver ----
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
+    layout_ctl::windows,
     // ---- ws:media-library ----
+    media_sync::windows,
     // ---- ws:source-monitor ----
     // ---- ws:timeline-trim-gestures ----
     // ---- ws:transcript-captions ----
@@ -1422,6 +1497,7 @@ pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
     // ---- ws:layout-modes-onboarding ----
     // ---- ws:media-library ----
     // ---- ws:source-monitor ----
+    source_pane::draw,
     // ---- ws:timeline-trim-gestures ----
     // ---- ws:transcript-captions ----
     // ---- ws:pro-monitor ----

@@ -179,7 +179,7 @@ impl App {
                 };
                 if !resp.add_to_timeline.is_empty() {
                     self.push_undo();
-                    self.insert_at(resp.add_to_timeline, self.playhead, None);
+                    self.place_assets(&resp.add_to_timeline, self.playhead, None, DropMode::Place);
                     self.after_edit();
                 }
                 if resp.edited {
@@ -194,7 +194,7 @@ impl App {
                 };
                 if !resp.add_to_timeline.is_empty() {
                     self.push_undo();
-                    self.insert_at(resp.add_to_timeline, self.playhead, None);
+                    self.place_assets(&resp.add_to_timeline, self.playhead, None, DropMode::Place);
                     self.after_edit();
                 }
                 // Import button / dragged-in linked-folder files: import, then board them — same

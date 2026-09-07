@@ -27,6 +27,71 @@ pub struct ConvertOptions {
     /// Compression target in bytes. Some = bitrate mode: the video bitrate is derived from the source
     /// duration (minus a fixed audio allowance) and CRF is ignored. None = quality (CRF) mode.
     pub target_bytes: Option<u64>,
+    // ---- ws:export-deliver ----
+    /// Extra video filter(s) chained after the scale (`deshake`, `setpts=…,minterpolate=…`); video
+    /// outputs only.
+    pub vf_extra: Option<String>,
+    /// An `-af` chain (`afftdn`); video and audio outputs.
+    pub af_extra: Option<String>,
+}
+
+// ---- ws:export-deliver ----
+/// The ffmpeg filter a bake runs over its rendered clip(s) before the swap. Every one is a filter
+/// ffmpeg.exe already ships — no new dependency, no NN.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BakeFilter {
+    /// Single-pass `deshake` (not the two-pass vidstab pair — see the issue's simplifications).
+    Stabilize,
+    /// `afftdn` spectral audio denoise.
+    Denoise,
+    /// Optical-flow slow motion: `setpts=(1/factor)*PTS,minterpolate=fps=<fps>:mi_mode=mci`.
+    /// `factor` 0.5 = half speed; `fps` = the rendered file's frame rate (the project's).
+    SlowMo { factor: f64, fps: f64 },
+}
+
+/// The `ConvertOptions` `start_bake_filter` runs — pure, so the filter strings are testable.
+pub fn bake_filter_opts(
+    src: PathBuf,
+    out: PathBuf,
+    filter: &BakeFilter,
+    encoder: String,
+    crf: u32,
+    preset: String,
+) -> ConvertOptions {
+    let (vf_extra, af_extra) = match filter {
+        BakeFilter::Stabilize => (Some("deshake".to_string()), None),
+        BakeFilter::Denoise => (None, Some("afftdn".to_string())),
+        BakeFilter::SlowMo { factor, fps } => {
+            let factor = factor.clamp(0.05, 1.0);
+            (Some(format!("setpts={:.4}*PTS,minterpolate=fps={}:mi_mode=mci", 1.0 / factor, fps.max(1.0))), None)
+        }
+    };
+    ConvertOptions {
+        src,
+        out,
+        encoder,
+        crf,
+        preset,
+        out_size: None,
+        scaler: String::new(),
+        gif_fps: 15,
+        target_bytes: None,
+        vf_extra,
+        af_extra,
+    }
+}
+
+/// Stage 2 of a bake: run `filter` over the rendered `src` into `out` — the same temp-file /
+/// `-progress` / codec plumbing `run_convert` already has, not a second ffmpeg invocation path.
+pub fn start_bake_filter(
+    src: PathBuf,
+    out: PathBuf,
+    filter: BakeFilter,
+    encoder: String,
+    crf: u32,
+    preset: String,
+) -> Arc<Progress> {
+    start_convert(bake_filter_opts(src, out, &filter, encoder, crf, preset))
 }
 
 /// Audio allowance subtracted from a size target, bits per second. Matches `codec_args`' AAC default.
@@ -78,6 +143,9 @@ fn run_convert(opts: &ConvertOptions, prog: &Progress) -> Result<(), String> {
         cmd.args(["-frames:v", "1", "-update", "1"]);
     } else if AUDIO_EXTS.contains(&ext.as_str()) {
         cmd.arg("-vn");
+        if let Some(af) = &opts.af_extra {
+            cmd.args(["-af", af]);
+        }
         cmd.args(codec_args(&ext, &opts.encoder, opts.crf, &opts.preset, &detect_encoders()));
     } else {
         let mut args = codec_args(&ext, &opts.encoder, opts.crf, &opts.preset, &detect_encoders());
@@ -88,6 +156,12 @@ fn run_convert(opts: &ConvertOptions, prog: &Progress) -> Result<(), String> {
             args.extend(["-b:v".into(), b.clone(), "-maxrate".into(), b, "-bufsize".into(), buf]);
         }
         let mut vf = scale.unwrap_or_default();
+        if let Some(extra) = opts.vf_extra.as_deref().filter(|s| !s.is_empty()) {
+            if !vf.is_empty() {
+                vf.push(',');
+            }
+            vf.push_str(extra);
+        }
         if args.iter().any(|a| a == "yuv420p" || a == "nv12") {
             // even-size guard (no-op on even input): the source size is not probed here
             if !vf.is_empty() {
@@ -97,6 +171,9 @@ fn run_convert(opts: &ConvertOptions, prog: &Progress) -> Result<(), String> {
         }
         if !vf.is_empty() {
             cmd.args(["-vf", &vf]);
+        }
+        if let Some(af) = &opts.af_extra {
+            cmd.args(["-af", af]);
         }
         // keep every audio stream — ffmpeg's default stream selection would keep only one
         cmd.args(["-map", "0:v:0?", "-map", "0:a?"]);
@@ -201,7 +278,45 @@ mod tests {
             scaler: "bicubic".into(),
             gif_fps: 12,
             target_bytes: None,
+            vf_extra: None,
+            af_extra: None,
         }
+    }
+
+    // ---- ws:export-deliver ----
+    #[test]
+    fn bake_filters_build_expected_args() {
+        let o =
+            |f: &BakeFilter| bake_filter_opts("in.mp4".into(), "out.mp4".into(), f, "auto".into(), 20, "fast".into());
+        let s = o(&BakeFilter::Stabilize);
+        assert_eq!(s.vf_extra.as_deref(), Some("deshake"));
+        assert_eq!(s.af_extra, None);
+        let d = o(&BakeFilter::Denoise);
+        assert_eq!(d.af_extra.as_deref(), Some("afftdn"));
+        assert_eq!(d.vf_extra, None);
+        let m = o(&BakeFilter::SlowMo { factor: 0.5, fps: 30.0 });
+        let vf = m.vf_extra.unwrap();
+        assert!(vf.contains("setpts=2.0000*PTS"), "{vf}");
+        assert!(vf.contains("minterpolate=fps=30"), "{vf}");
+        assert_eq!((m.encoder.as_str(), m.crf, m.preset.as_str()), ("auto", 20, "fast"));
+
+        let dir = temp_dir("bake");
+        let Some(src) = gen_media(&dir) else {
+            eprintln!("ffmpeg missing — skipped");
+            return;
+        };
+        // the two cheap filters really run end to end through run_convert's plumbing
+        let stab = dir.join("stab.mp4");
+        let prog =
+            start_bake_filter(src.clone(), stab.clone(), BakeFilter::Stabilize, "auto".into(), 30, "ultrafast".into());
+        assert_eq!(wait_done(&prog), None);
+        assert_eq!(probe(&stab, "stream=width,height").lines().next(), Some("320,240"));
+        let den = dir.join("den.mp4");
+        let prog = start_bake_filter(src, den.clone(), BakeFilter::Denoise, "auto".into(), 30, "ultrafast".into());
+        assert_eq!(wait_done(&prog), None);
+        let d: f64 = probe(&den, "format=duration").parse().expect("duration");
+        assert!((d - 4.0).abs() < 0.3, "{d}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn probe(path: &std::path::Path, entries: &str) -> String {

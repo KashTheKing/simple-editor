@@ -289,12 +289,19 @@ impl Project {
     /// Overwrite edit: clears [at, at+dur) on the resolved video/audio track(s) only (split at both
     /// bounds, delete what's fully inside — other tracks are untouched), then places the asset via
     /// `insert_asset_clips_ranged`. No ripple.
-    pub fn overwrite_asset(&mut self, asset: Id, at: f64, track: Option<usize>, range: Option<(f64, f64)>) -> Vec<Id> {
+    pub fn overwrite_asset(
+        &mut self,
+        asset: Id,
+        at: f64,
+        video_track: Option<usize>,
+        audio_track: Option<usize>,
+        range: Option<(f64, f64)>,
+    ) -> Vec<Id> {
         let Some(a) = self.asset(asset).cloned() else { return Vec::new() };
         let dur = clip_span(&a, range);
         let end = at + dur;
-        let vt = track.or_else(|| self.video_tracks().first().copied());
-        let at_track = self.audio_tracks().first().copied();
+        let vt = video_track.or_else(|| self.video_tracks().first().copied());
+        let at_track = audio_track.or_else(|| self.audio_tracks().first().copied());
         let mut targets: Vec<usize> = Vec::new();
         if a.has_video() {
             targets.extend(vt);
@@ -325,15 +332,24 @@ impl Project {
     /// Splice (insert) edit: ripple-opens exactly `dur` seconds at `at` on the ripple tracks, then
     /// places the asset there. O(n): `ripple_open` shifts everything downstream in one pass instead
     /// of the old per-clip `move_clips` walk.
-    pub fn splice_in(&mut self, asset: Id, at: f64, track: Option<usize>, range: Option<(f64, f64)>) -> Vec<Id> {
-        if track.map(|t| self.locked_of(t)).unwrap_or(false) {
+    pub fn splice_in(
+        &mut self,
+        asset: Id,
+        at: f64,
+        video_track: Option<usize>,
+        audio_track: Option<usize>,
+        range: Option<(f64, f64)>,
+    ) -> Vec<Id> {
+        if video_track.map(|t| self.locked_of(t)).unwrap_or(false)
+            || audio_track.map(|t| self.locked_of(t)).unwrap_or(false)
+        {
             return Vec::new();
         }
         let Some(a) = self.asset(asset).cloned() else { return Vec::new() };
         let dur = clip_span(&a, range);
         let tracks = self.ripple_tracks();
         self.ripple_open(at, dur, &tracks);
-        self.insert_asset_clips_ranged(asset, at, track, None, range)
+        self.insert_asset_clips_ranged(asset, at, video_track, audio_track, range)
     }
 
     /// Remove [a, b) on `tracks` (default: every track), leaving a gap — nothing shifts. Locked

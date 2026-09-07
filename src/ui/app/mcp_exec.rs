@@ -249,6 +249,11 @@ impl App {
                 scaler,
                 frames: self.export_frames(),
                 metadata: Vec::new(),
+                // ---- ws:export-deliver ----
+                // explicit, so export.video keeps today's command line byte for byte
+                range: None,
+                loudnorm: false,
+                letterbox: false,
             };
             let mut project = self.export_project();
             // MCP exports have no background opt-in either — "use_project_bg": true opts in per call
@@ -274,6 +279,9 @@ impl App {
                 scaler,
                 gif_fps: 15,
                 target_bytes: arg_u64(args, "target_bytes"),
+                // ---- ws:export-deliver ----
+                vf_extra: None,
+                af_extra: None,
             };
             Ok((crate::engine::convert::start_convert(opts), out))
         }

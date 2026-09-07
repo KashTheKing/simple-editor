@@ -30,6 +30,7 @@
 use crate::engine::compose::{placement, Compositor};
 use crate::engine::gpu::LayerSet;
 use crate::engine::mixer::Mixer;
+use crate::engine::mixer_fx::METER_FEED;
 use crate::engine::shapes::ShapeRasterizer;
 use crate::engine::text::TextRasterizer;
 use crate::media::{Backend, DecoderPool, Frame, SAMPLE_RATE};
@@ -1525,6 +1526,7 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
                         }
                         if running && guarded(&mut pool, |pool| mixer.mix(&project, t, pool, &mut block)) {
                             lock(&ring).extend(block.iter().copied());
+                            mixer.graph().publish(&METER_FEED); // ws:audio-dsp-automation
                         }
                     }
                 }
@@ -1575,6 +1577,9 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
                 // unchanged fast path: byte-identical to the pre-rate-loop code at the default rate
                 if guarded(&mut pool, |pool| mixer.mix(&project, mixed_until, pool, &mut block)) {
                     lock(&ring).extend(block.iter().copied()); // a panicked block: underrun instead
+                    // ---- ws:audio-dsp-automation ----
+                    // hand the post-fader bus blocks to the UI thread's meters/LUFS (App::sync_buses)
+                    mixer.graph().publish(&METER_FEED);
                 }
                 mixed_until += BLOCK as f64 / SAMPLE_RATE as f64;
             } else if rate > 0.0 && rate <= 2.0 {
@@ -1590,6 +1595,7 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
                         block[i * 2 + 1] = buf[si * 2 + 1];
                     }
                     lock(&ring).extend(block.iter().copied());
+                    mixer.graph().publish(&METER_FEED); // ws:audio-dsp-automation
                 }
                 mixed_until += win as f64 / SAMPLE_RATE as f64;
             } else {

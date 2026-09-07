@@ -31,14 +31,19 @@
 
 use crate::media::proxy::ProxyStatus;
 use crate::media::thumbs::ThumbCache;
-use crate::model::{ClipKind, EffectKind, Id, Project};
+use crate::model::{ClipKind, EffectKind, Id, Project, SmartBin};
 use crate::settings::{RecentAsset, Settings};
 use crate::theme::Palette;
 use crate::ui::confirm::{self, ConfirmAction};
 use crate::ui::tools::{draw_glyph, glyph_text_button, icon_button, Glyph};
 use crate::ui::{duration_text, label_color, DragPayload};
 use eframe::egui::{self, RichText};
+use std::collections::HashSet;
 use std::path::PathBuf;
+
+// ---- ws:media-library ----
+/// Every cell a list row can show after the name (`Settings.library_columns` picks and orders them).
+pub(crate) const COLUMNS: &[&str] = &["kind", "duration", "fps", "size", "label", "tags", "proxy"];
 
 #[derive(Default)]
 pub struct LibraryState {
@@ -94,6 +99,17 @@ pub struct LibraryState {
     /// One-level directory listings, keyed by folder path: (entry path, is a folder), folders first,
     /// None = unreadable. Only ever filled for a node the user expanded; dropped on Refresh / unlink.
     pub dirs: Vec<(String, Option<Vec<(String, bool)>>)>,
+    // ---- ws:media-library ----
+    /// Assets whose file is missing on disk — the ONE offline set: `ui::app::media_sync::tick`
+    /// rescans it every 2 s, `App::asset_status` reads it, the rows/tiles/preview badge it. Lives here
+    /// (not serialized) because the rows have no `App` to ask.
+    pub offline: HashSet<Id>,
+    /// The pointer was over the pane last frame — gates the keyboard navigation (`keyboard`).
+    pub hovered: bool,
+    /// Asset rows in the order they were drawn last frame — what Up/Down walk.
+    pub visible: Vec<Id>,
+    /// "Save filter…" name field open (the buffer) — a Smart Bin is born when it commits.
+    pub new_bin: Option<String>,
 }
 
 #[derive(Default)]
@@ -139,6 +155,167 @@ pub struct LibraryResponse {
     /// ---- ws:forgiveness ----
     /// Remove Unused ran (instant, never confirmed) and removed `n` assets — the app toasts an Undo.
     pub removed_unused: Option<usize>,
+    // ---- ws:media-library ----
+    /// Offline assets to relink — the app opens a folder picker, then `media_sync::start_relink`.
+    pub relink: Vec<Id>,
+    /// "Consolidate…" — the app confirms (non-blocking) and starts the copy job.
+    pub consolidate: bool,
+    /// "New subclip" for these assets — the app pushes one undo, then `Project::add_subclip` each.
+    pub new_subclip: Vec<Id>,
+}
+
+// ---- ws:media-library ----
+
+/// What the keyboard asked the app to do with the library selection (see `keyboard` / `nav`).
+#[derive(Default, Debug, PartialEq)]
+pub struct LibraryNav {
+    pub add_to_timeline: Vec<Id>,
+    pub remove: Vec<Id>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum NavKey {
+    Up,
+    Down,
+    /// Enter / Space: add the selection to the timeline at the playhead.
+    Open,
+    Delete,
+}
+
+/// The ids a keyboard action acts on: the whole selection, else the anchor.
+fn nav_targets(state: &LibraryState) -> Vec<Id> {
+    if state.sel_ids.is_empty() {
+        state.selected.into_iter().collect()
+    } else {
+        state.sel_ids.clone()
+    }
+}
+
+/// One keyboard step over `state.visible` (the rows as drawn last frame): Up/Down move the anchor
+/// (and collapse the selection onto it, like a plain click), Open/Delete report the targets.
+pub fn nav(state: &mut LibraryState, key: NavKey) -> LibraryNav {
+    let mut out = LibraryNav::default();
+    match key {
+        NavKey::Up | NavKey::Down => {
+            let n = state.visible.len();
+            if n == 0 {
+                return out;
+            }
+            let cur = state.selected.and_then(|id| state.visible.iter().position(|x| *x == id));
+            let next = match (key, cur) {
+                (NavKey::Down, None) => 0,
+                (NavKey::Down, Some(i)) => (i + 1).min(n - 1),
+                (_, None) => n - 1,
+                (_, Some(i)) => i.saturating_sub(1),
+            };
+            let pick = Pick::Asset(state.visible[next]);
+            state.sel_ids.clear();
+            state.sel_paths.clear();
+            state.add_sel(&pick);
+            state.set_anchor(&pick);
+        }
+        NavKey::Open => out.add_to_timeline = nav_targets(state),
+        NavKey::Delete => {
+            out.remove = nav_targets(state);
+            state.clear_sel();
+        }
+    }
+    out
+}
+
+/// Consume this frame's navigation keys (the caller has already checked the pane is hovered and no
+/// text field wants them) and fold them through `nav`. Runs from a FRAME_HOOK, before `Hotkeys::poll`
+/// would hand ArrowUp/Down/Space/Delete to the timeline.
+pub fn keyboard(state: &mut LibraryState, ctx: &egui::Context) -> LibraryNav {
+    let keys: Vec<NavKey> = ctx.input_mut(|i| {
+        [
+            (egui::Key::ArrowUp, NavKey::Up),
+            (egui::Key::ArrowDown, NavKey::Down),
+            (egui::Key::Enter, NavKey::Open),
+            (egui::Key::Space, NavKey::Open),
+            (egui::Key::Delete, NavKey::Delete),
+        ]
+        .into_iter()
+        .filter(|(k, _)| i.consume_key(egui::Modifiers::NONE, *k))
+        .map(|(_, n)| n)
+        .collect()
+    });
+    let mut out = LibraryNav::default();
+    for k in keys {
+        let r = nav(state, k);
+        out.add_to_timeline.extend(r.add_to_timeline);
+        out.remove.extend(r.remove);
+    }
+    out
+}
+
+/// The current filter as a Smart Bin query: `[kind:N] [label:N] [unused] [q:<search text>]` — the
+/// search text goes last and verbatim, so it can hold anything (even "kind:" or "unused").
+pub fn bin_query(state: &LibraryState) -> String {
+    let mut q = String::new();
+    if state.kind_filter != 0 {
+        q.push_str(&format!("kind:{} ", state.kind_filter));
+    }
+    if state.label_filter != 0 {
+        q.push_str(&format!("label:{} ", state.label_filter));
+    }
+    if state.unused_only {
+        q.push_str("unused ");
+    }
+    let s = state.search.trim();
+    if !s.is_empty() {
+        q.push_str(&format!("q:{s}"));
+    }
+    q.trim().to_string()
+}
+
+/// Apply a Smart Bin query to the filter fields (the inverse of `bin_query`; unknown tokens are ignored).
+pub fn apply_bin(state: &mut LibraryState, query: &str) {
+    state.kind_filter = 0;
+    state.label_filter = 0;
+    state.unused_only = false;
+    state.search.clear();
+    let (head, search) = match query.find("q:") {
+        Some(i) => (&query[..i], &query[i + 2..]),
+        None => (query, ""),
+    };
+    for tok in head.split_whitespace() {
+        if let Some(v) = tok.strip_prefix("kind:") {
+            state.kind_filter = v.parse().unwrap_or(0);
+        } else if let Some(v) = tok.strip_prefix("label:") {
+            state.label_filter = v.parse().unwrap_or(0);
+        } else if tok == "unused" {
+            state.unused_only = true;
+        }
+    }
+    state.search = search.trim().to_string();
+}
+
+/// Is any filter narrowing the list? (what a Smart Bin would save)
+fn filter_active(state: &LibraryState) -> bool {
+    !state.search.trim().is_empty() || state.kind_filter != 0 || state.label_filter != 0 || state.unused_only
+}
+
+/// "1.2 MB" style file size.
+fn size_text(bytes: u64) -> String {
+    let b = bytes as f64;
+    if b >= 1e9 {
+        format!("{:.2} GB", b / 1e9)
+    } else if b >= 1e6 {
+        format!("{:.1} MB", b / 1e6)
+    } else {
+        format!("{:.0} KB", (b / 1e3).max(1.0))
+    }
+}
+
+/// What a row shows as its name: a subclip's own name (its `description`) when it has one, else the
+/// file name — subclips share the parent's path, so the file name alone would repeat it.
+fn display_name(a: &crate::model::Asset) -> String {
+    if a.parent.is_some() && !a.description.is_empty() {
+        a.description.clone()
+    } else {
+        a.name()
+    }
 }
 
 /// (name, colour) of every `Project.labels` entry, snapshotted once per frame.
@@ -172,6 +349,9 @@ enum LibOp {
     SeqRename(Id, String),
     SeqDelete(Id),
     RemoveUnused,
+    // ---- ws:media-library ----
+    SmartBinSave(SmartBin),
+    SmartBinDelete(usize),
 }
 
 /// The frame the app's preview player produced this update, with its pixel size. The preview box paints
@@ -202,6 +382,7 @@ pub fn show(
     let labels: Labels = project.labels.iter().map(|l| (l.name.clone(), l.color)).collect();
     let mut thumbs = thumbs;
     state.zoom = if state.zoom > 0.0 { state.zoom.clamp(ZOOM_MIN, ZOOM_MAX) } else { 1.0 };
+    state.hovered = ui.rect_contains_pointer(ui.max_rect());
     external_select(state);
     state.sel_ids.retain(|id| project.asset(*id).is_some());
     ui.horizontal(|ui| {
@@ -562,8 +743,8 @@ enum Art {
 }
 
 /// The picture of a media file `h` px tall: its cached thumbnail, or the painted fallback for its kind.
-/// ponytail: asking for a thumbnail is what queues the decode, so expanding a folder of 500 clips queues
-/// 500 of them (LIFO, so what you look at wins). Upgrade: only ask for rows inside the viewport.
+/// Asking for a thumbnail is what queues the decode — callers only ask for rows/tiles inside the
+/// viewport (`row_art`, `asset_tile`, `file_tile`), so a 500-clip folder queues what you look at.
 fn file_art(ui: &egui::Ui, thumbs: &mut Option<&mut ThumbCache>, path: &str, h: u32) -> Art {
     // audio (class 2) tries too: a file with embedded cover art decodes one via the same pipeline as
     // any other video stream; one with none just memoises a permanent (cheap) miss like any bad file
@@ -607,11 +788,31 @@ fn paint_art(ui: &egui::Ui, rect: egui::Rect, art: Art, palette: &Palette) {
     }
 }
 
-/// The picture in front of a file row, `h` points tall (16:9 box, so every row lines up).
+/// The picture in front of a file row, `h` points tall (16:9 box, so every row lines up). The rect is
+/// allocated FIRST: a row scrolled out of the viewport paints its glyph without ever asking the cache,
+/// so scrolling a long bin decodes only what is on screen (viewport culling).
 fn row_art(ui: &mut egui::Ui, thumbs: &mut Option<&mut ThumbCache>, path: &str, palette: &Palette, h: f32) {
-    let art = file_art(ui, thumbs, path, (h * 2.0) as u32);
     let (rect, _) = ui.allocate_exact_size(egui::vec2(h * 16.0 / 9.0, h), egui::Sense::hover());
+    let art = if ui.is_rect_visible(rect) {
+        file_art(ui, thumbs, path, (h * 2.0) as u32)
+    } else {
+        Art::Icon(fallback_glyph(ext_class(path)))
+    };
     paint_art(ui, rect, art, palette);
+}
+
+/// Same gate for a gallery tile, whose rect is only known after it is drawn: estimate it from the
+/// cursor (the tile's own top-left) padded by one row height, so a tile straddling the fold still
+/// gets its picture and one fully past it does not decode.
+fn tile_visible(ui: &egui::Ui, w: f32, zoom: f32) -> bool {
+    let pad = ROW_H * zoom;
+    let est = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(w, w * 0.56 + pad)).expand2(egui::vec2(0.0, pad));
+    ui.is_rect_visible(est)
+}
+
+/// Is the row about to be laid out at the cursor inside the viewport? (gates per-row stat calls)
+fn row_visible(ui: &egui::Ui, h: f32) -> bool {
+    ui.is_rect_visible(egui::Rect::from_min_size(ui.cursor().min, egui::vec2(1.0, h)))
 }
 
 /// Gallery cell width and row thumbnail height at zoom 1.
@@ -868,6 +1069,9 @@ fn browser(
         project.assets.iter().filter(|a| !u.contains(&a.id) && !pl.contains(&a.id)).count()
     };
     let mut remove_unused = false;
+    let mut consolidate = false;
+    let mut columns_changed = false;
+    let has_assets = !project.assets.is_empty();
     toolbar(ui, state, labels, palette, |ui, state| {
         if imported {
             let r = glyph_text_button(ui, Glyph::Letter('+'), "New");
@@ -915,6 +1119,30 @@ fn browser(
         {
             remove_unused = true;
         }
+        // ---- ws:media-library ----
+        if imported
+            && ui
+                .add_enabled(has_assets, egui::Button::new("Consolidate…"))
+                .on_hover_text("Copy every file from outside the project folder into it (one Undo step)")
+                .clicked()
+        {
+            consolidate = true;
+        }
+        if state.view == 0 {
+            ui.menu_button("Columns", |ui| {
+                for c in COLUMNS {
+                    let mut on = settings.library_columns.iter().any(|x| x == c);
+                    if ui.checkbox(&mut on, column_title(c)).changed() {
+                        if on {
+                            settings.library_columns.push((*c).to_string());
+                        } else {
+                            settings.library_columns.retain(|x| x != c);
+                        }
+                        columns_changed = true;
+                    }
+                }
+            });
+        }
         egui::ComboBox::from_id_salt("lib_sort")
             .selected_text(["Name", "Duration", "Kind", "Recent"][state.sort.min(3) as usize])
             .width(80.0)
@@ -929,6 +1157,8 @@ fn browser(
         ops.push(LibOp::RemoveUnused);
         op_start = true;
     }
+    resp.consolidate |= consolidate;
+    resp.settings_changed |= columns_changed;
     resp.open_dialog |= resp_open;
     resp.new_adjustment |= new_adj;
     resp.import |= import;
@@ -968,6 +1198,9 @@ fn browser(
     let source = egui::scroll_area::ScrollSource { drag: false, ..Default::default() };
     egui::ScrollArea::vertical().auto_shrink(false).scroll_source(source).show(ui, |ui| {
         zoom_scroll(ui, state);
+        if imported && state.view == 0 && !project.assets.is_empty() {
+            sort_header(ui, state, settings);
+        }
         // filtered + sorted assets; the tree hangs each of them under its own folder
         let mut order: Vec<usize> = (0..project.assets.len())
             .filter(|&i| {
@@ -1011,6 +1244,12 @@ fn browser(
         }
         if let Some((pick, ctrl, shift)) = click.take() {
             apply_click(state, &rows, &pick, ctrl, shift);
+        }
+        // what Up/Down walk next frame: the asset rows in draw order
+        state.visible =
+            rows.iter().filter_map(|(p, _)| if let Pick::Asset(id) = p { Some(*id) } else { None }).collect();
+        if imported && project.assets.is_empty() {
+            empty_state(ui, palette, resp);
         }
         if imported {
             // the project's own reusable items, listed as more files rather than a section below
@@ -1111,10 +1350,104 @@ fn browser(
                         resp.removed_unused = Some(n);
                     }
                 }
+                // ---- ws:media-library ----
+                LibOp::SmartBinSave(b) => {
+                    project.smart_bins.retain(|x| x.name != b.name); // re-saving a name replaces it
+                    project.smart_bins.push(b);
+                }
+                LibOp::SmartBinDelete(i) => {
+                    if i < project.smart_bins.len() {
+                        project.smart_bins.remove(i);
+                    }
+                }
             }
         }
         resp.edited = true;
     }
+}
+
+// ---- ws:media-library ----
+
+fn column_title(c: &str) -> &'static str {
+    match c {
+        "kind" => "Kind",
+        "duration" => "Duration",
+        "fps" => "Fps",
+        "size" => "Size",
+        "label" => "Label",
+        "tags" => "Tags",
+        "proxy" => "Proxy",
+        _ => "?",
+    }
+}
+
+/// Clickable column headers over the list: Name / Kind / Duration drive the same `state.sort` the
+/// toolbar combo shows; the other configured columns are plain captions.
+fn sort_header(ui: &mut egui::Ui, state: &mut LibraryState, settings: &Settings) {
+    ui.horizontal(|ui| {
+        ui.add_space(indent(0) + ARROW);
+        let mut col = |ui: &mut egui::Ui, label: &str, sort: Option<u8>| match sort {
+            Some(s) => {
+                if ui
+                    .selectable_label(state.sort == s, RichText::new(label).small())
+                    .on_hover_text("Sort by this")
+                    .clicked()
+                {
+                    state.sort = s;
+                }
+            }
+            None => {
+                ui.weak(RichText::new(label).small());
+            }
+        };
+        col(ui, "Name", Some(0));
+        for c in &settings.library_columns {
+            let sort = match c.as_str() {
+                "kind" => Some(2),
+                "duration" => Some(1),
+                _ => None,
+            };
+            col(ui, column_title(c), sort);
+        }
+    });
+}
+
+/// A dashed drop target with a prompt — the Imported tab of a project with no media at all.
+fn empty_state(ui: &mut egui::Ui, palette: &Palette, resp: &mut LibraryResponse) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width().max(80.0), 100.0), egui::Sense::hover());
+    let r = rect.shrink(8.0);
+    let stroke = egui::Stroke::new(1.0, palette.text_dim);
+    let corners = [r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom(), r.left_top()];
+    for w in corners.windows(2) {
+        ui.painter().extend(egui::Shape::dashed_line(&[w[0], w[1]], stroke, 6.0, 4.0));
+    }
+    ui.painter().text(
+        r.center() - egui::vec2(0.0, 14.0),
+        egui::Align2::CENTER_CENTER,
+        "Drop video, audio or images here",
+        egui::TextStyle::Body.resolve(ui.style()),
+        palette.text_dim,
+    );
+    let slot = egui::Rect::from_center_size(r.center() + egui::vec2(0.0, 14.0), egui::vec2(110.0, 22.0));
+    if ui.put(slot, egui::Button::new("Import media…")).clicked() {
+        resp.import = true;
+    }
+}
+
+/// Hatched "file not found" slate where the preview picture would be.
+fn paint_offline(ui: &egui::Ui, rect: egui::Rect, palette: &Palette) {
+    let p = ui.painter();
+    p.rect_filled(rect, 2.0, palette.panel);
+    let stroke = egui::Stroke::new(1.0, palette.text_dim.gamma_multiply(0.5));
+    let mut x = rect.left() - rect.height();
+    while x < rect.right() {
+        let a = egui::pos2(x, rect.bottom());
+        let b = egui::pos2(x + rect.height(), rect.top());
+        p.add(egui::Shape::line_segment([a, b], stroke));
+        x += 8.0;
+    }
+    let g = egui::Rect::from_center_size(rect.center(), egui::vec2(24.0, 22.0));
+    draw_glyph(p, g, Glyph::Warning, ui.visuals().warn_fg_color);
 }
 
 /// Ctrl+Scroll (and pinch) over the list scales the thumbnails, like every asset browser.
@@ -1151,6 +1484,13 @@ fn batch_strip(ui: &mut egui::Ui, state: &LibraryState, resp: &mut LibraryRespon
         if !state.sel_ids.is_empty() && ui.small_button("Add to timeline").clicked() {
             resp.add_to_timeline.extend(state.sel_ids.iter().copied());
         }
+        // ---- ws:media-library ----
+        if ui.small_button("New subclip").on_hover_text("A library entry over the In/Out marks").clicked() {
+            resp.new_subclip.extend(state.sel_ids.iter().copied());
+        }
+        if state.sel_ids.iter().any(|id| state.offline.contains(id)) && ui.small_button("Relink…").clicked() {
+            resp.relink.extend(state.sel_ids.iter().filter(|id| state.offline.contains(id)).copied());
+        }
         ui.menu_button("Convert To", |ui| {
             for t in crate::engine::convert::TARGETS {
                 if ui.button(*t).clicked() {
@@ -1159,9 +1499,17 @@ fn batch_strip(ui: &mut egui::Ui, state: &LibraryState, resp: &mut LibraryRespon
                 }
             }
         });
+        // the options window takes one file: a multi-selection goes straight to the quick per-id
+        // path (default options, first target), so "Convert…" never silently drops all but one
         if ui.small_button("Convert…").clicked() {
-            resp.convert_dialog = state.sel_ids.first().copied();
+            if state.sel_ids.len() > 1 {
+                let t = crate::engine::convert::TARGETS[0];
+                resp.convert.extend(state.sel_ids.iter().map(|id| (*id, t.to_string())));
+            } else {
+                resp.convert_dialog = state.sel_ids.first().copied();
+            }
         }
+        // Compress… stays single-target (its window sizes a bitrate for exactly one file)
         if ui.small_button("Compress…").clicked() {
             resp.compress = state.sel_ids.first().copied();
         }
@@ -1277,7 +1625,8 @@ fn preview_panel(
         });
 }
 
-/// Name / path / format, over the picture — shared by both previews.
+/// Name / path / format, over the picture — shared by both previews. `offline` swaps the picture for
+/// a hatched slate (never a black / frozen frame for a file that is not there).
 #[allow(clippy::too_many_arguments)]
 fn preview_head(
     ui: &mut egui::Ui,
@@ -1286,17 +1635,23 @@ fn preview_head(
     palette: &Palette,
     path: &str,
     meta: &str,
+    offline: bool,
     extra: impl FnOnce(&mut egui::Ui),
 ) {
     ui.horizontal(|ui| {
         let h = 84.0;
-        // the live frame wins: asking the thumbnail cache as well would queue a decode per frame
-        let art = match live {
-            Some(f) => Art::Image(f.tex, f.size),
-            None => file_art(ui, thumbs, path, (h * 2.0) as u32),
-        };
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(h * 16.0 / 9.0, h), egui::Sense::hover());
-        paint_art(ui, rect, art, palette);
+        let (rect, r) = ui.allocate_exact_size(egui::vec2(h * 16.0 / 9.0, h), egui::Sense::hover());
+        if offline {
+            paint_offline(ui, rect, palette);
+            r.on_hover_text("File not found — Relink… to point at it again");
+        } else {
+            // the live frame wins: asking the thumbnail cache as well would queue a decode per frame
+            let art = match live {
+                Some(f) => Art::Image(f.tex, f.size),
+                None => file_art(ui, thumbs, path, (h * 2.0) as u32),
+            };
+            paint_art(ui, rect, art, palette);
+        }
         ui.vertical(|ui| {
             ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
             ui.strong(split_path(path).0);
@@ -1337,7 +1692,19 @@ fn asset_preview(
     if !a.audio_streams.is_empty() {
         line.push_str(&format!(" · {} audio", a.audio_streams.len()));
     }
-    preview_head(ui, thumbs, live, palette, &a.path, &line, |ui| {
+    if let Some((s, e)) = a.range {
+        line.push_str(&format!(" · subclip {}–{}", duration_text(s), duration_text(e)));
+    }
+    let offline = state.offline.contains(&a.id);
+    preview_head(ui, thumbs, live, palette, &a.path, &line, offline, |ui| {
+        if offline {
+            ui.horizontal(|ui| {
+                ui.colored_label(ui.visuals().warn_fg_color, "Offline");
+                if ui.small_button("Relink…").clicked() {
+                    resp.relink.push(a.id);
+                }
+            });
+        }
         ui.horizontal(|ui| {
             dot(ui, lbl_color(labels, a.label, palette));
             egui::ComboBox::from_id_salt("asset_label").selected_text(lbl_name(labels, a.label)).show_ui(ui, |ui| {
@@ -1420,7 +1787,7 @@ fn path_preview(
     path: &str,
 ) {
     let meta = kind_tag_for_class(ext_class(path)).to_string();
-    preview_head(ui, thumbs, live, palette, path, &meta, |ui| {
+    preview_head(ui, thumbs, live, palette, path, &meta, false, |ui| {
         if ui.button("Import to project").clicked() {
             resp.open_paths.push(PathBuf::from(path));
         }
@@ -1649,12 +2016,68 @@ impl Tree<'_, '_> {
 
     /// Root 1 — "Imported": the folders and files this project contains.
     fn imported(&mut self, ui: &mut egui::Ui, order: &[usize], flat: bool) {
+        self.smart_bins(ui);
         if flat {
             self.assets(ui, 0, order);
             return;
         }
         let names = folder_tree_names(self.project);
         self.folder(ui, "", 0, &names, order);
+    }
+
+    // ---- ws:media-library ----
+    /// Saved filters above the folder tree: click one to apply it, "Save filter…" to keep the current
+    /// one. Hidden entirely while there are no bins and no filter to save — an empty library stays clean.
+    fn smart_bins(&mut self, ui: &mut egui::Ui) {
+        let bins = self.project.smart_bins.clone();
+        let saving = self.state.new_bin.is_some();
+        if bins.is_empty() && !filter_active(self.state) && !saving {
+            return;
+        }
+        ui.horizontal(|ui| {
+            ui.add_space(indent(0));
+            self.folder_icon(ui, Glyph::Star);
+            ui.weak(RichText::new("Smart Bins").small());
+            if !saving
+                && filter_active(self.state)
+                && ui.small_button("Save filter…").on_hover_text("Keep the current search + chips as a bin").clicked()
+            {
+                self.state.new_bin = Some(String::new());
+            }
+        });
+        for (i, b) in bins.iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.add_space(indent(1) + ARROW);
+                self.folder_icon(ui, Glyph::Search);
+                let r = ui.selectable_label(false, &b.name).on_hover_text(&b.query);
+                if r.clicked() {
+                    apply_bin(self.state, &b.query);
+                }
+                r.context_menu(|ui| {
+                    if ui.button("Delete").clicked() {
+                        self.ops.push(LibOp::SmartBinDelete(i));
+                        *self.op_start = true;
+                        ui.close();
+                    }
+                });
+            });
+        }
+        if saving {
+            let mut done = None;
+            ui.horizontal(|ui| {
+                ui.add_space(indent(1) + ARROW);
+                self.folder_icon(ui, Glyph::Search);
+                done = inline_edit(ui, self.state.new_bin.as_mut().unwrap());
+            });
+            if let Some(name) = done {
+                if !name.is_empty() {
+                    let bin = SmartBin { name, query: bin_query(self.state) };
+                    self.ops.push(LibOp::SmartBinSave(bin));
+                    *self.op_start = true;
+                }
+                self.state.new_bin = None;
+            }
+        }
     }
 
     /// The subfolders of `path` (folders first, like an explorer), then the assets that live in it.
@@ -1731,15 +2154,34 @@ impl Tree<'_, '_> {
         self.assets(ui, depth, &here);
     }
 
-    /// A run of assets, as rows or as gallery tiles (already filtered and sorted by the caller).
+    /// A run of assets, as rows or as gallery tiles (already filtered and sorted by the caller). In
+    /// the list, a subclip sits indented under its parent when both are in the run — recursively, so
+    /// a subclip-of-a-subclip nests under ITS parent instead of never being drawn at all.
     fn assets(&mut self, ui: &mut egui::Ui, depth: usize, list: &[usize]) {
         if self.state.view == 1 {
             let w = TILE * self.state.zoom;
             tile_grid(ui, indent(depth) + ARROW, list, w, |ui, &i| self.asset_tile(ui, i));
         } else {
+            let ids: HashSet<Id> = list.iter().map(|&i| self.project.assets[i].id).collect();
             for &i in list {
-                self.asset_row(ui, depth, i);
+                let a = &self.project.assets[i];
+                if a.parent.is_some_and(|p| ids.contains(&p)) {
+                    continue; // drawn under its parent below, at whatever depth that turns out to be
+                }
+                self.asset_and_kids(ui, depth, list, i);
             }
+        }
+    }
+
+    /// Draw asset row `i`, then every row in `list` that is its child, one level deeper — and so on
+    /// for THEIR children, so nesting isn't capped at one level (a grandchild used to be skipped by
+    /// `assets` above as "drawn under its parent" and then never actually drawn by anyone).
+    fn asset_and_kids(&mut self, ui: &mut egui::Ui, depth: usize, list: &[usize], i: usize) {
+        let id = self.project.assets[i].id;
+        self.asset_row(ui, depth, i);
+        let kids: Vec<usize> = list.iter().copied().filter(|&j| self.project.assets[j].parent == Some(id)).collect();
+        for j in kids {
+            self.asset_and_kids(ui, depth + 1, list, j);
         }
     }
 
@@ -1748,8 +2190,10 @@ impl Tree<'_, '_> {
         let selected = self.state.sel_ids.contains(&a.id);
         let tint = (a.label != 0).then(|| lbl_color(self.labels, a.label, self.palette));
         let used = self.used.contains(&a.id);
+        let offline = self.state.offline.contains(&a.id);
         let pstatus = crate::media::proxy::status(a, self.settings.use_proxies, self.settings.proxy_height);
         let (palette, thumbs, h) = (self.palette, &mut *self.thumbs, ROW_H * self.state.zoom);
+        let (columns, labels) = (&self.settings.library_columns, self.labels);
         let (r, add) = row(
             ui,
             egui::Id::new(("asset", a.id)),
@@ -1763,14 +2207,47 @@ impl Tree<'_, '_> {
                     let (bar, _) = ui.allocate_exact_size(egui::vec2(3.0, h), egui::Sense::hover());
                     ui.painter().rect_filled(bar, 1.0, c);
                 }
+                let visible = row_visible(ui, h);
                 row_art(ui, thumbs, &a.path, palette, h);
-                let mut name = RichText::new(a.name());
+                if a.parent.is_some() {
+                    let (g, gr) = ui.allocate_exact_size(egui::vec2(14.0, 12.0), egui::Sense::hover());
+                    draw_glyph(ui.painter(), g, Glyph::Chain, palette.text_dim);
+                    gr.on_hover_text(format!("Subclip of {}", a.name()));
+                }
+                let mut name = RichText::new(display_name(a));
                 if let Some(c) = tint {
                     name = name.color(c);
                 }
                 ui.label(if selected { name.strong() } else { name });
-                ui.weak(kind_tag(a.kind));
-                ui.weak(dur_cell(a));
+                // the configured columns, in order; tags last (they truncate against the row's edge)
+                for c in columns.iter().filter(|c| c.as_str() != "tags") {
+                    match c.as_str() {
+                        "kind" => ui.weak(kind_tag(a.kind)),
+                        "duration" => ui.weak(dur_cell(a)),
+                        "fps" if a.kind == ClipKind::Video && a.fps > 0.0 => ui.weak(format!("{:.2} fps", a.fps)),
+                        // ponytail: one stat per VISIBLE row per frame; memoise on the asset if a
+                        // network drive ever makes it hitch
+                        "size" if visible => match std::fs::metadata(&a.path) {
+                            Ok(m) => ui.weak(size_text(m.len())),
+                            Err(_) => ui.weak("—"),
+                        },
+                        "label" if a.label != 0 => ui.weak(lbl_name(labels, a.label)),
+                        "proxy" => match pstatus {
+                            ProxyStatus::Ready => ui.weak("proxy"),
+                            ProxyStatus::Queued => ui.weak("proxy queued"),
+                            ProxyStatus::Building(f) => ui.weak(format!("proxy {:.0} %", f * 100.0)),
+                            ProxyStatus::NotNeeded => continue,
+                        },
+                        _ => continue,
+                    };
+                }
+                if offline {
+                    let (g, gr) = ui.allocate_exact_size(egui::vec2(14.0, 12.0), egui::Sense::hover());
+                    draw_glyph(ui.painter(), g, Glyph::Warning, ui.visuals().warn_fg_color);
+                    gr.on_hover_text("File not found — right-click ▸ Relink…");
+                    #[cfg(test)]
+                    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(("lib_offline_badge", a.id)), true));
+                }
                 if used {
                     let (d, _) = ui.allocate_exact_size(egui::vec2(8.0, 12.0), egui::Sense::hover());
                     ui.painter().circle_filled(d.center(), 3.0, palette.accent);
@@ -1794,7 +2271,7 @@ impl Tree<'_, '_> {
                     }
                     _ => {}
                 }
-                if !a.tags.is_empty() {
+                if columns.iter().any(|c| c == "tags") && !a.tags.is_empty() {
                     ui.add(egui::Label::new(RichText::new(a.tags.join(" · ")).weak().small()).truncate());
                 }
             },
@@ -1812,18 +2289,28 @@ impl Tree<'_, '_> {
         let selected = self.state.sel_ids.contains(&a.id);
         let tint = (a.label != 0).then(|| lbl_color(self.labels, a.label, self.palette)).unwrap_or(self.palette.text);
         let w = TILE * self.state.zoom;
-        let art = file_art(ui, self.thumbs, &a.path, (w * 0.56 * 2.0) as u32);
+        let art = if tile_visible(ui, w, self.state.zoom) {
+            file_art(ui, self.thumbs, &a.path, (w * 0.56 * 2.0) as u32)
+        } else {
+            Art::Icon(fallback_glyph(ext_class(&a.path)))
+        };
         let id = egui::Id::new(("tile", a.id));
         let payload = DragPayload::Asset(a.id);
         let button = selected.then_some("Add");
-        let tag = match crate::media::proxy::status(a, self.settings.use_proxies, self.settings.proxy_height) {
+        let mut tag = match crate::media::proxy::status(a, self.settings.use_proxies, self.settings.proxy_height) {
             crate::media::proxy::ProxyStatus::Building(f) => {
                 format!("{} · proxy {:.0} %", kind_tag(a.kind), f * 100.0)
             }
             crate::media::proxy::ProxyStatus::Queued => format!("{} · proxy queued", kind_tag(a.kind)),
             _ => kind_tag(a.kind).to_string(),
         };
-        let (r, add) = tile(ui, id, payload, selected, &tag, &a.name(), tint, self.palette, art, w, button);
+        if a.parent.is_some() {
+            tag.push_str(" · sub");
+        }
+        if self.state.offline.contains(&a.id) {
+            tag.push_str(" · OFFLINE");
+        }
+        let (r, add) = tile(ui, id, payload, selected, &tag, &display_name(a), tint, self.palette, art, w, button);
         let (aid, path) = (a.id, a.path.clone());
         self.hit(ui, &r, Pick::Asset(aid), &path);
         if add || r.double_clicked() {
@@ -1846,9 +2333,21 @@ impl Tree<'_, '_> {
         let a = &self.project.assets[i];
         let (labels, palette) = (self.labels, self.palette);
         let ids = self.menu_targets(a.id);
+        let offline: Vec<Id> = ids.iter().copied().filter(|id| self.state.offline.contains(id)).collect();
         r.context_menu(|ui| {
             if ui.button("Add to timeline at playhead").clicked() {
                 self.resp.add_to_timeline.extend(ids.iter().copied());
+                ui.close();
+            }
+            // ---- ws:media-library ----
+            if !offline.is_empty()
+                && ui.button("Relink…").on_hover_text("Find the missing file(s) in a folder").clicked()
+            {
+                self.resp.relink.extend(offline.iter().copied());
+                ui.close();
+            }
+            if ui.button("New subclip").on_hover_text("A library entry over the In/Out marks").clicked() {
+                self.resp.new_subclip.extend(ids.iter().copied());
                 ui.close();
             }
             if ui.button("Reveal folder").clicked() {
@@ -2060,7 +2559,11 @@ impl Tree<'_, '_> {
         let tint = if recent { self.recent_tint(path) } else { None };
         let class = ext_class(path);
         let w = TILE * self.state.zoom;
-        let art = file_art(ui, self.thumbs, path, (w * 0.56 * 2.0) as u32);
+        let art = if tile_visible(ui, w, self.state.zoom) {
+            file_art(ui, self.thumbs, path, (w * 0.56 * 2.0) as u32)
+        } else {
+            Art::Icon(fallback_glyph(class))
+        };
         let name = split_path(path).0.to_string();
         let id = egui::Id::new(("file_tile", recent, path));
         let payload = DragPayload::Path(path.to_string());
@@ -3148,5 +3651,364 @@ mod tests {
         assert_eq!(resp.copy_graph, Some(adj));
         assert_eq!(resp.place_template, vec!["Grade".to_string()]);
         assert_eq!(reuse_face(&Reuse::Effect(EffectKind::Blur), &project, &settings).0, "Blur");
+    }
+
+    // ---- ws:media-library ----
+
+    fn headless_ctx() -> egui::Context {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::test_fonts());
+        ctx
+    }
+
+    fn tall(h: f32) -> egui::RawInput {
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, h))),
+            ..Default::default()
+        }
+    }
+
+    /// An asset whose file is missing paints the Warning badge in its row (and only that asset).
+    #[test]
+    fn offline_asset_shows_the_warning_badge() {
+        let mut project = Project::new();
+        let gone = project.add_asset(asset(0, ClipKind::Video, 5.0));
+        let mut b = asset(0, ClipKind::Video, 5.0);
+        b.path = r"C:\media\other.mp4".into();
+        let here = project.add_asset(b);
+        let mut settings = Settings::default();
+        let palette = Palette::new(true, egui::Color32::WHITE);
+        let ctx = headless_ctx();
+        let mut state = LibraryState::default();
+        state.offline.insert(gone); // what media_sync::tick fills from Path::exists
+        let _ = ctx.run(tall(900.0), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let mut undo = |_: &Project| {};
+                show(ui, &mut state, &mut project, &mut settings, None, None, &palette, false, &mut undo);
+            });
+        });
+        let badge =
+            |id: Id| ctx.data(|d| d.get_temp::<bool>(egui::Id::new(("lib_offline_badge", id)))).unwrap_or(false);
+        assert!(badge(gone), "the offline row paints its warning");
+        assert!(!badge(here), "a present file has no badge");
+        // the Warning glyph itself paints something (every_glyph_paints_a_picture covers the shape)
+        assert_eq!(Glyph::from_name("warning"), Some(Glyph::Warning));
+    }
+
+    /// Only rows whose rect is inside the viewport ask the thumbnail cache for a picture: a short
+    /// viewport over 200 assets requests a handful; a viewport tall enough for all of them requests all.
+    #[test]
+    fn culling_skips_thumbnail_requests_for_off_screen_rows() {
+        let requests = |height: f32| -> u64 {
+            let mut project = Project::new();
+            for i in 0..200 {
+                let mut a = asset(0, ClipKind::Video, 5.0);
+                a.path = format!(r"C:\media\cull{i}.mp4");
+                project.add_asset(a);
+            }
+            let mut settings = Settings::default();
+            let palette = Palette::new(true, egui::Color32::WHITE);
+            let ctx = headless_ctx();
+            // Mf: a missing file fails on the worker without spawning 200 ffprobe children
+            let mut cache = ThumbCache::new(ctx.clone(), crate::media::Backend::Mf);
+            let mut state = LibraryState::default();
+            for _ in 0..2 {
+                let _ = ctx.run(tall(height), |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let mut undo = |_: &Project| {};
+                        show(
+                            ui,
+                            &mut state,
+                            &mut project,
+                            &mut settings,
+                            Some(&mut cache),
+                            None,
+                            &palette,
+                            false,
+                            &mut undo,
+                        );
+                    });
+                });
+            }
+            cache.request_count.load(std::sync::atomic::Ordering::Relaxed)
+        };
+        let short = requests(520.0);
+        let all = requests(6000.0);
+        assert!(short > 0, "the visible rows still request their pictures");
+        assert!(short < 100, "a short viewport must not request every row: {short} over two frames");
+        assert!(all >= 400, "a viewport that shows every row requests every row: {all} over two frames");
+    }
+
+    /// Arrow keys walk the drawn order, Enter/Space add the selection, Delete removes it.
+    #[test]
+    fn keyboard_nav_moves_selection_and_deletes() {
+        let mut state = LibraryState { visible: vec![10, 20, 30], ..Default::default() };
+        assert_eq!(nav(&mut state, NavKey::Down), LibraryNav::default());
+        assert_eq!((state.selected, state.sel_ids.clone()), (Some(10), vec![10]), "Down with nothing selected: first");
+        nav(&mut state, NavKey::Down);
+        assert_eq!(state.selected, Some(20));
+        nav(&mut state, NavKey::Down);
+        nav(&mut state, NavKey::Down);
+        assert_eq!(state.selected, Some(30), "stops at the end");
+        nav(&mut state, NavKey::Up);
+        assert_eq!((state.selected, state.sel_ids.clone()), (Some(20), vec![20]));
+        let r = nav(&mut state, NavKey::Open);
+        assert_eq!(r.add_to_timeline, vec![20]);
+        state.sel_ids = vec![20, 30]; // a wider selection: Enter/Delete act on all of it
+        assert_eq!(nav(&mut state, NavKey::Open).add_to_timeline, vec![20, 30]);
+        let r = nav(&mut state, NavKey::Delete);
+        assert_eq!(r.remove, vec![20, 30]);
+        assert!(state.sel_ids.is_empty() && state.selected.is_none(), "removed rows leave the selection");
+        // an empty bin ignores the arrows
+        let mut empty = LibraryState::default();
+        nav(&mut empty, NavKey::Up);
+        assert_eq!(empty.selected, None);
+
+        // and the ctx-driven path consumes the real key events (so the timeline never sees them)
+        let ctx = egui::Context::default();
+        let mut state = LibraryState { visible: vec![1, 2], ..Default::default() };
+        let mut input = egui::RawInput::default();
+        for key in [egui::Key::ArrowDown, egui::Key::Enter] {
+            input.events.push(egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            });
+        }
+        let mut got = LibraryNav::default();
+        let _ = ctx.run(input, |ctx| {
+            got = keyboard(&mut state, ctx);
+            assert!(!ctx.input(|i| i.key_pressed(egui::Key::ArrowDown)), "the key was consumed");
+        });
+        assert_eq!(state.selected, Some(1));
+        assert_eq!(got.add_to_timeline, vec![1]);
+    }
+
+    /// A saved bin reproduces the exact filter it was saved from, search text included.
+    #[test]
+    fn smart_bin_save_and_apply_round_trips_filters() {
+        let mut state = LibraryState {
+            search: "sunset kind: unused".into(), // search text may contain the token words
+            kind_filter: 2,
+            label_filter: 3,
+            unused_only: true,
+            ..Default::default()
+        };
+        let q = bin_query(&state);
+        assert_eq!(q, "kind:2 label:3 unused q:sunset kind: unused");
+        let bin = SmartBin { name: "SFX".into(), query: q.clone() };
+        state.search.clear();
+        state.kind_filter = 0;
+        state.label_filter = 0;
+        state.unused_only = false;
+        apply_bin(&mut state, &bin.query);
+        assert_eq!(
+            (state.search.as_str(), state.kind_filter, state.label_filter, state.unused_only),
+            ("sunset kind: unused", 2, 3, true)
+        );
+        // an empty filter round-trips to an empty query, and applying it clears everything
+        apply_bin(&mut state, "");
+        assert!(!filter_active(&state));
+        assert_eq!(bin_query(&state), "");
+        // and the sidebar block: saving through the tree's inline field lands on the project (undo pushed once)
+        let mut project = Project::new();
+        project.add_asset(asset(0, ClipKind::Video, 5.0));
+        let mut settings = Settings::default();
+        let palette = Palette::new(true, egui::Color32::WHITE);
+        let ctx = headless_ctx();
+        let mut state = LibraryState { kind_filter: 1, new_bin: Some("Video only".into()), ..Default::default() };
+        let mut pushes = 0;
+        for steal in [false, false, true] {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                if steal {
+                    ctx.memory_mut(|m| m.request_focus(egui::Id::new("elsewhere")));
+                    // commits the field
+                }
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let mut undo = |_: &Project| pushes += 1;
+                    show(ui, &mut state, &mut project, &mut settings, None, None, &palette, false, &mut undo);
+                });
+            });
+        }
+        assert_eq!(project.smart_bins, vec![SmartBin { name: "Video only".into(), query: "kind:1".into() }]);
+        assert_eq!(pushes, 1);
+        assert!(state.new_bin.is_none());
+    }
+
+    /// With 2+ assets selected, Convert… takes the quick per-id path for all of them; Compress… still
+    /// opens for the first one only (its window sizes one file).
+    #[test]
+    fn batch_strip_multi_select_convert_uses_quick_path_compress_stays_single() {
+        let mut project = Project::new();
+        let a = project.add_asset(asset(0, ClipKind::Video, 5.0));
+        let mut second = asset(0, ClipKind::Video, 5.0);
+        second.path = r"C:\media\two.mp4".into();
+        let b = project.add_asset(second);
+        let mut settings = Settings::default();
+        let palette = Palette::new(true, egui::Color32::WHITE);
+        let ctx = headless_ctx();
+        let mut state =
+            LibraryState { sel_ids: vec![a, b], selected: Some(a), seen_selected: Some(a), ..Default::default() };
+        let mut click = |state: &mut LibraryState, label: &str| -> LibraryResponse {
+            let mut at = egui::Pos2::ZERO;
+            let mut got = LibraryResponse::default();
+            for frame in 0..2 {
+                let mut input = tall(900.0);
+                if frame == 1 {
+                    assert_ne!(at, egui::Pos2::ZERO, "{label} must be drawn");
+                    click_at(&mut input, at);
+                }
+                let out = ctx.run(input, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let mut undo = |_: &Project| {};
+                        got = show(ui, state, &mut project, &mut settings, None, None, &palette, false, &mut undo);
+                    });
+                });
+                if let Some(r) = text_rect(&out.shapes, label) {
+                    at = r.center();
+                }
+            }
+            got
+        };
+        let r = click(&mut state, "Convert…");
+        let t = crate::engine::convert::TARGETS[0].to_string();
+        assert_eq!(r.convert, vec![(a, t.clone()), (b, t)], "every selected id, default target");
+        assert_eq!(r.convert_dialog, None, "no single-target window for a multi-selection");
+        let r = click(&mut state, "Compress…");
+        assert_eq!(r.compress, Some(a), "Compress… stays single-target");
+        assert!(r.convert.is_empty());
+        // and a single selection still gets the options window
+        state.sel_ids = vec![a];
+        let r = click(&mut state, "Convert…");
+        assert_eq!(r.convert_dialog, Some(a));
+        assert!(r.convert.is_empty());
+    }
+
+    /// The idle-CPU-0% gate: a populated, non-searching Library pane (offline badge, a subclip, a
+    /// smart bin, both views) requests no repaint after it has settled.
+    #[test]
+    fn assert_no_idle_repaint_library_pane() {
+        let mut project = Project::new();
+        for i in 0..12 {
+            let mut a = asset(0, ClipKind::Video, 5.0 + i as f64);
+            a.path = format!(r"C:\media\idle{i}.mp4");
+            let id = project.add_asset(a);
+            if i == 3 {
+                project.add_subclip(id, 1.0, 2.0, Some("take".into()));
+            }
+        }
+        project.smart_bins.push(SmartBin { name: "Long".into(), query: "kind:1".into() });
+        let mut settings = Settings::default();
+        let palette = Palette::new(true, egui::Color32::WHITE);
+        for view in [0, 1] {
+            let ctx = headless_ctx();
+            let mut state = LibraryState { view, selected: Some(project.assets[1].id), ..Default::default() };
+            state.offline.insert(project.assets[0].id);
+            for _ in 0..30 {
+                let _ = ctx.run(tall(900.0), |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let mut undo = |_: &Project| panic!("no undo without edits");
+                        show(ui, &mut state, &mut project, &mut settings, None, None, &palette, false, &mut undo);
+                    });
+                });
+            }
+            assert!(!ctx.has_requested_repaint(), "view {view}: an idle library pane requested a repaint");
+        }
+    }
+
+    /// A subclip sits under its parent in the list; an orphan (parent gone) stays at the top level.
+    #[test]
+    fn subclips_nest_under_their_parent() {
+        let mut project = Project::new();
+        let parent = project.add_asset(asset(0, ClipKind::Video, 8.0));
+        let sub = project.add_subclip(parent, 1.0, 2.0, Some("best take".into())).unwrap();
+        let mut orphan = asset(0, ClipKind::Video, 3.0);
+        orphan.path = r"C:\media\orphan.mp4".into();
+        orphan.parent = Some(9999);
+        let orphan = project.add_asset(orphan);
+        let mut settings = Settings::default();
+        let palette = Palette::new(true, egui::Color32::WHITE);
+        let ctx = headless_ctx();
+        let mut state = LibraryState::default();
+        let out = ctx.run(tall(900.0), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let mut undo = |_: &Project| {};
+                show(ui, &mut state, &mut project, &mut settings, None, None, &palette, false, &mut undo);
+            });
+        });
+        assert_eq!(state.visible, vec![parent, sub, orphan], "parent, then its subclip, then the orphan");
+        let p = text_rect(&out.shapes, "file0.mp4").expect("parent row");
+        let s = text_rect(&out.shapes, "best take").expect("the subclip shows its own name");
+        assert!(s.left() > p.left() + 8.0, "the subclip is indented under its parent");
+        assert!(s.top() > p.top());
+    }
+
+    // ---- ws:media-library review fix ----
+    /// A subclip-of-a-subclip (grandchild) used to be skipped entirely: `Tree::assets` only nested one
+    /// level, so a row deferred to its parent (itself deferred) was never drawn by anyone. It must now
+    /// show up in `state.visible` (so keyboard nav reaches it) and sit indented one level deeper than
+    /// its own parent.
+    #[test]
+    fn subclip_of_a_subclip_nests_under_its_parent() {
+        let mut project = Project::new();
+        let master = project.add_asset(asset(0, ClipKind::Video, 100.0));
+        let child = project.add_subclip(master, 10.0, 20.0, Some("child".into())).unwrap();
+        let grandchild = project.add_subclip(child, 2.0, 5.0, Some("grandchild".into())).unwrap();
+        let mut settings = Settings::default();
+        let palette = Palette::new(true, egui::Color32::WHITE);
+        let ctx = headless_ctx();
+        let mut state = LibraryState::default();
+        let out = ctx.run(tall(900.0), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let mut undo = |_: &Project| {};
+                show(ui, &mut state, &mut project, &mut settings, None, None, &palette, false, &mut undo);
+            });
+        });
+        assert_eq!(state.visible, vec![master, child, grandchild], "grandchild must not be dropped");
+        let m = text_rect(&out.shapes, "file0.mp4").expect("master row");
+        let c = text_rect(&out.shapes, "child").expect("the child shows its own name");
+        let g = text_rect(&out.shapes, "grandchild").expect("the grandchild shows its own name");
+        assert!(c.left() > m.left() + 8.0, "the child is indented under the master");
+        assert!(g.left() > c.left() + 8.0, "the grandchild is indented one level deeper than its parent");
+        assert!(g.top() > c.top() && c.top() > m.top());
+    }
+
+    /// 1000 assets in the list stay cheap per frame (no per-row decode, no O(n²) walks) — same
+    /// shape and budget philosophy as `timeline::tests::headless_1000_clips_stays_fast`.
+    #[test]
+    fn headless_1000_assets_stays_fast() {
+        let mut project = Project::new();
+        for i in 0..1000 {
+            let mut a = asset(0, ClipKind::Video, 5.0);
+            a.path = format!(r"C:\media\perf{i:04}.mp4");
+            a.label = (i % 8) as u8 + 1;
+            a.tags = vec!["t".into()];
+            project.add_asset(a);
+        }
+        let mut settings = Settings::default();
+        let palette = Palette::new(true, egui::Color32::WHITE);
+        let ctx = headless_ctx();
+        let mut state = LibraryState::default();
+        let mut frame = |state: &mut LibraryState| {
+            let _ = ctx.run(tall(900.0), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let mut undo = |_: &Project| {};
+                    show(ui, state, &mut project, &mut settings, None, None, &palette, false, &mut undo);
+                });
+            });
+        };
+        frame(&mut state);
+        let t0 = std::time::Instant::now();
+        for _ in 0..10 {
+            frame(&mut state);
+        }
+        let ms = t0.elapsed().as_secs_f64() * 1000.0 / 10.0;
+        println!("library: 1000 assets, list view: {ms:.2} ms/frame");
+        assert_eq!(state.visible.len(), 1000);
+        // ponytail: every row is still laid out (no show_rows virtualisation, the tree is not
+        // uniform); the budget catches per-row decodes / stat calls / quadratic walks, not layout
+        assert!(ms < 40.0, "1000-asset frame took {ms:.2} ms");
     }
 }

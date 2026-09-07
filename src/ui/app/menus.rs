@@ -108,8 +108,43 @@ impl App {
             (Pane::Moodboard, None),
             (Pane::History, None),
             // ---- ws:registries-schema-hooks ----
-            (Pane::Source, None),
+            // ws:layout-modes-onboarding wired the ToggleSource action (unbound) to the row
+            (Pane::Source, Some(ToggleSource)),
         ];
+        // ---- ws:layout-modes-onboarding ----
+        {
+            let dynamic = layout_ctl::is_dynamic(&self.settings);
+            let mode_hint = self.hotkeys.text(ToggleLayoutMode);
+            if ui.radio(dynamic, format!("Dynamic layout   {mode_hint}")).on_hover_text("A selection brings the pane that edits it to the front (pin a tab to opt it out)").clicked() && !dynamic {
+                out.push(ToggleLayoutMode);
+                ui.close();
+            }
+            if ui.radio(!dynamic, "Granular layout").on_hover_text("Panes stay put; the helpful tab only glows").clicked() && dynamic {
+                out.push(ToggleLayoutMode);
+                ui.close();
+            }
+            let active = self.settings.workspace.clone();
+            let mut pick = None;
+            ui.menu_button("Workspace", |ui| {
+                for (i, &name) in layout::WORKSPACES.iter().enumerate() {
+                    let on = name == active;
+                    let r = ui
+                        .horizontal(|ui| {
+                            tools::glyph_label(ui, layout::workspace_glyph(name), ui.visuals().text_color());
+                            ui.radio(on, format!("{name}   Alt+{}", i + 1))
+                        })
+                        .inner;
+                    if r.clicked() && !on {
+                        pick = Some(name);
+                        ui.close();
+                    }
+                }
+            });
+            if let Some(name) = pick {
+                layout_ctl::switch_workspace(self, name);
+            }
+            ui.separator();
+        }
         for (pane, action) in PANES {
             let mut v = self.layout.is_visible(pane);
             let label = match action {
@@ -154,11 +189,9 @@ impl App {
                 ] {
                     if ui.button(name).clicked() {
                         ui.close();
-                        self.layout.push_undo(self.layout.to_json());
-                        let (undo, redo) =
-                            (std::mem::take(&mut self.layout.undo), std::mem::take(&mut self.layout.redo));
-                        self.layout = make();
-                        (self.layout.undo, self.layout.redo) = (undo, redo);
+                        // ws:layout-modes-onboarding: the undo-preserving swap moved into Layout so
+                        // the workspace strip / Alt+1..6 / the wizard reuse it verbatim
+                        self.layout.switch_to(make());
                         self.layout_dirty = true;
                     }
                 }
@@ -249,6 +282,13 @@ impl App {
             out.push(MovieMode);
         }
         self.menu_item(ui, Fullscreen, true, out);
+        // ---- ws:layout-modes-onboarding ----
+        let label = if self.layout.maximized.is_some() { "Restore maximised pane" } else { "Maximise pane under cursor" };
+        let b = egui::Button::new(label).shortcut_text(self.hotkeys.text(MaximizePane));
+        if ui.add(b).clicked() {
+            out.push(MaximizePane);
+            ui.close();
+        }
     }
 
     pub(super) fn menu_bar(&mut self, ui: &mut egui::Ui) -> Vec<Action> {
@@ -486,6 +526,9 @@ impl App {
                     let name = self.project.sequence(seq).map(|s| s.name.as_str()).unwrap_or("?").to_string();
                     ui.label(egui::RichText::new(format!("editing: Main > {name}")).weak());
                 }
+                // ---- ws:layout-modes-onboarding ----
+                ui.separator();
+                layout_ctl::workspace_strip(self, ui);
             });
         });
         out

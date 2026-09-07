@@ -67,6 +67,11 @@ pub struct ThumbCache {
     shared: Arc<(Mutex<Shared>, Condvar)>,
     /// egui textures for ready thumbnails, created lazily by `texture()` (UI thread only).
     textures: HashMap<u64, (egui::TextureHandle, [u32; 2])>,
+    // ---- ws:media-library ----
+    /// Test-only: `texture()` calls so far — the library's viewport-culling test counts requests
+    /// against rows drawn (there is no trait seam here to substitute a mock cache into).
+    #[cfg(test)]
+    pub(crate) request_count: std::sync::atomic::AtomicU64,
 }
 
 impl ThumbCache {
@@ -87,7 +92,12 @@ impl ThumbCache {
         ));
         let s = shared.clone();
         let _ = std::thread::Builder::new().name("thumbs".into()).spawn(move || worker(s, ctx));
-        Self { shared, textures: HashMap::new() }
+        Self {
+            shared,
+            textures: HashMap::new(),
+            #[cfg(test)]
+            request_count: std::sync::atomic::AtomicU64::new(0),
+        }
     }
 
     pub fn set_backend(&mut self, b: Backend) {
@@ -133,6 +143,8 @@ impl ThumbCache {
 
     /// Same as `get` but as an egui texture (created/cached here), with its size in pixels.
     pub fn texture(&mut self, ctx: &egui::Context, path: &str, t: f64, h: u32) -> Option<(egui::TextureId, [u32; 2])> {
+        #[cfg(test)]
+        self.request_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let frame = self.get(path, t, h)?;
         let key = key_of(path, bucket_time(path, t), qh(h));
         if let Some((th, size)) = self.textures.get(&key) {

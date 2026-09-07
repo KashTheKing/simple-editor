@@ -1,5 +1,4 @@
 use super::feedback::Toast;
-use super::lib_preview::*;
 use super::thumbs::*;
 use super::tools_helpers::*;
 use super::*;
@@ -405,15 +404,8 @@ fn write_image_scales_and_writes() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Library-preview frame-step math: clamps at both ends of the file. The scrub-bar fraction-to-time
-/// math (`scrub_time`) moved to `ui/preview.rs` along with the scrub bar itself — see
-/// `preview::tests::scrub_time_clamps_to_bar`.
-#[test]
-fn lib_preview_seek_math() {
-    assert_eq!(step_time(1.0, 25.0, true, 4.0), 1.04, "forward steps by 1/fps");
-    assert_eq!(step_time(0.02, 25.0, false, 4.0), 0.0, "backward step clamps at 0");
-    assert_eq!(step_time(3.99, 25.0, true, 4.0), 4.0, "forward step clamps at the file's duration");
-}
+// ws:source-monitor: `lib_preview_seek_math` moved with `step_time` to `ui::source_ui::tests::
+// source_seek_math` (lib_preview.rs is deleted; Pane::Source owns the source player now).
 
 /// Every action is dispatched (`act` matches exhaustively) and every pane can be toggled from
 /// the View menu; here we only check the round-3 actions still carry their advertised bindings.
@@ -477,15 +469,17 @@ fn help_changelog_and_templates_save_are_registered() {
 /// extraction (feedback.rs) DID relocate mod.rs's one pre-existing site (the toast area's own
 /// `request_repaint_after`) out of this test's scanned files — that call still exists, just outside
 /// the list below now, so the count drops from 17 to 16 (see CHANGELOG.md's forgiveness entry).
+/// ws:source-monitor then deleted lib_preview.rs outright: its one site (the buffering spinner's
+/// 50 ms poll) is a genuine migration — source_pane.rs routes the same poll through
+/// `App::animate_until` — so the count drops again, 16 to 15 (CHANGELOG.md's source-monitor entry).
 /// Counts real call lines across the files that had them before this PR (skipping doc-comment text and
 /// `animate_until`'s own internal `ctx.request_repaint_after(dt)` funnel call), so a future edit that
-/// silently adds, removes or migrates one of the 16 is caught here instead of going unnoticed.
+/// silently adds, removes or migrates one of the 15 is caught here instead of going unnoticed.
 #[test]
 fn pre_existing_repaint_sites_unchanged_and_named() {
     let files = [
         include_str!("mod.rs"),
         include_str!("mcp_exec.rs"),
-        include_str!("lib_preview.rs"),
         include_str!("jobs.rs"),
         include_str!("../planner.rs"),
         include_str!("../preview.rs"),
@@ -498,10 +492,31 @@ fn pre_existing_repaint_sites_unchanged_and_named() {
         .filter(|l| l.contains("request_repaint_after(") && !l.contains("request_repaint_after(dt)"))
         .count();
     assert_eq!(
-        count, 16,
+        count, 15,
         "the count of pre-existing raw request_repaint_after sites moved — if that was intentional, \
          update this count AND the tracked-gap note in CHANGELOG.md/goals.md"
     );
+}
+
+// ---- ws:export-deliver ----
+/// `tools_export::frame_tick` asks for a repaint only while something is queued or baking — with
+/// `export` None and both lists empty it must request nothing over any number of frames (the
+/// idle-CPU-0% principle). No headless `App` exists (see the note atop this file), so this pins the
+/// pure decision `frame_tick` gates its `animate_until` on, plus its "nothing to pop" half.
+#[test]
+fn assert_no_idle_repaint_export_idle() {
+    use super::tools_export::{next_queued, wants_repaint};
+    for _ in 0..30 {
+        assert!(!wants_repaint(0, 0), "idle delivery must not repaint");
+    }
+    assert!(wants_repaint(1, 0) && wants_repaint(0, 1));
+    let mut empty: std::collections::VecDeque<u8> = std::collections::VecDeque::new();
+    assert_eq!(next_queued(&mut empty, true), None, "an empty queue pops nothing, so nothing starts");
+    // and the four delivery actions resolve through ui.action's id round-trip like every other Action
+    for a in [Action::QuickExport, Action::RenderSelection, Action::BakeSelection, Action::ExportMarkers] {
+        assert_eq!(Action::from_id(a.id()), Some(a));
+    }
+    assert_eq!(crate::hotkeys::Hotkeys::defaults().text(Action::QuickExport), "Ctrl+M");
 }
 
 // ---- ws:command-palette ----

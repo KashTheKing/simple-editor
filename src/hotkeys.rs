@@ -227,11 +227,48 @@ actions! {
     ToggleTrackRipple => "toggle_track_ripple", "Toggle Ripple (Sync) on Track", None;
     ToggleTrackMagnetic => "toggle_track_magnetic", "Toggle Magnetic Track", None;
     // ---- ws:canvas-handles-monitor ----
+    // Unbound by design (Shift+Z is the timeline's Zoom to Fit): palette / menu / ui.action only.
+    AutoReframe => "auto_reframe", "Auto Reframe (follow tracked point)", None;
+    ToggleProxies => "toggle_proxies", "Use Proxies", None;
+    ViewerFit => "viewer_fit", "Fit Viewer", None;
     // ---- ws:export-deliver ----
+    // bare M is AddMarker (ctrl=false) and Ctrl+Shift+M is AddMask, so Ctrl+M is free (exact match).
+    QuickExport => "quick_export", "Quick Export", sc(CTRL, Key::M);
+    RenderSelection => "render_selection", "Render Selection (pre-render)", None;
+    BakeSelection => "bake_selection", "Render in Place (bake to new asset)", None;
+    ExportMarkers => "export_markers", "Export Markers…", None;
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
+    // Alt+1..6 are free (Ctrl+1..0 is the pane-toggle row above); backtick is Premiere's maximise key.
+    // ToggleLayoutMode (Ctrl+Shift+G) / ShowWelcome are declared by ws:command-palette above and only
+    // CONSUMED here (`ui::app::layout_ctl::act`) — never redeclare them. TogglePin / ToggleSource are
+    // unbound by design: the tab-bar pin glyph / context menu, and the View menu / palette, own them.
+    Workspace1 => "workspace_1", "Workspace 1 (Simple)", sc(ALT, Key::Num1);
+    Workspace2 => "workspace_2", "Workspace 2 (Edit)", sc(ALT, Key::Num2);
+    Workspace3 => "workspace_3", "Workspace 3 (Color)", sc(ALT, Key::Num3);
+    Workspace4 => "workspace_4", "Workspace 4 (Audio)", sc(ALT, Key::Num4);
+    Workspace5 => "workspace_5", "Workspace 5 (Text)", sc(ALT, Key::Num5);
+    Workspace6 => "workspace_6", "Workspace 6 (Deliver)", sc(ALT, Key::Num6);
+    MaximizePane => "maximize_pane", "Maximise Pane under Cursor", sc(NONE, Key::Backtick);
+    TogglePin => "toggle_pin", "Pin / Unpin Pane under Cursor", None;
+    // ToggleSource is declared by ws:source-monitor below (both workstreams needed it; kept there
+    // since that's the pane it actually toggles) — never redeclare it here.
     // ---- ws:media-library ----
+    // Unbound by design (skeleton keymap): the library's asset menu / toolbar + the palette.
+    RelinkMedia => "relink_media", "Relink Media…", None;
+    ConsolidateMedia => "consolidate_media", "Consolidate Media…", None;
+    NewSubclip => "new_subclip", "New Subclip from Marks", None;
     // ---- ws:source-monitor ----
+    // F: free (F11 fullscreen, Ctrl+Shift+F export frame); Ctrl+Shift+R: free (Ctrl+R retime,
+    // Shift+R freeze, Ctrl+Alt+R voiceover). The rest are Source-pane buttons / palette only.
+    MatchFrame => "match_frame", "Match Frame", sc(NONE, Key::F);
+    RevealInLibrary => "reveal_in_library", "Reveal in Library", sc(CTRL_SHIFT, Key::R);
+    AppendAtEnd => "append_at_end", "Append at End", None;
+    RippleOverwrite => "ripple_overwrite", "Ripple Overwrite", None;
+    CloseUp => "close_up", "Close Up", None;
+    PlaceOnTop => "place_on_top", "Place on Top", None;
+    SourceTape => "source_tape", "Source Tape", None;
+    ToggleSource => "toggle_source", "Show / Hide Source Monitor", None;
     // ---- ws:timeline-trim-gestures ----
     // ---- ws:transcript-captions ----
     // Unbound by design (skeleton keymap): reached from the Subtitles pane's buttons, the clip
@@ -644,5 +681,47 @@ mod tests {
         for &a in Action::ALL {
             assert_ne!(group(a), "", "{a:?} has no group");
         }
+    }
+
+    // ---- ws:layout-modes-onboarding ----
+    /// The audit-fix-2 guard from this side: the two shared variants this workstream CONSUMES exist
+    /// exactly once crate-wide (declared by command-palette), this workstream's own rows exist exactly
+    /// once each, and their chords are the frozen keymap's (Alt+1..6, backtick, two unbound) — with
+    /// `no_duplicate_defaults` above still green over the whole table.
+    #[test]
+    fn no_duplicate_hotkey_rows_for_shared_actions() {
+        let src = include_str!("hotkeys.rs");
+        for name in
+            ["ToggleLayoutMode", "ShowWelcome", "Workspace1", "Workspace6", "MaximizePane", "TogglePin", "ToggleSource"]
+        {
+            let decl = format!("{name} =>");
+            assert_eq!(src.matches(decl.as_str()).count(), 1, "{name} must be declared exactly once");
+        }
+        let h = Hotkeys::defaults();
+        assert_eq!(h.text(Action::ToggleLayoutMode), "Ctrl+Shift+G", "consumed, not redeclared: chord unchanged");
+        assert_eq!(h.text(Action::ShowWelcome), "");
+        for (a, want) in [
+            (Action::Workspace1, "Alt+1"),
+            (Action::Workspace2, "Alt+2"),
+            (Action::Workspace3, "Alt+3"),
+            (Action::Workspace4, "Alt+4"),
+            (Action::Workspace5, "Alt+5"),
+            (Action::Workspace6, "Alt+6"),
+            // `Hotkeys::format` uses `Key::name()` (not `symbol_or_name()`), same as every other
+            // punctuation-key action in this table (TrimLeft1's "[" shows as "OpenBracket", etc.) —
+            // matching existing behaviour, not a new inconsistency introduced here.
+            (Action::MaximizePane, "Backtick"),
+            (Action::TogglePin, ""),
+            (Action::ToggleSource, ""),
+        ] {
+            assert_eq!(h.text(a), want, "{a:?}");
+        }
+        // the frozen keymap's own reasoning: Alt+N must not fire the Ctrl+N pane toggles, and vice versa
+        assert_eq!(h.conflict(KeyboardShortcut::new(ALT, Key::Num1)), Some(Action::Workspace1));
+        assert_eq!(h.conflict(KeyboardShortcut::new(CTRL, Key::Num1)), Some(Action::ToggleLibrary));
+        assert_eq!(
+            h.conflict_all(KeyboardShortcut::new(NONE, Key::Backtick)),
+            Some(Claim::Action(Action::MaximizePane))
+        );
     }
 }

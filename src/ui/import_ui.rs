@@ -21,6 +21,9 @@ pub fn show(ctx: &egui::Context, state: &mut ImportUi, palette: &Palette) -> boo
     let mut accepted = false;
     let mut open = state.open;
     let mut close = false;
+    // ---- ws:media-library ----: "Locate missing…" is applied after `show` returns — `r` borrows
+    // `state.report` for the whole window body, so the mutation can't happen inside the closure.
+    let mut want_locate = false;
     egui::Window::new("Import Report").open(&mut open).default_width(520.0).default_height(360.0).show(ctx, |ui| {
         let Some(r) = &state.report else {
             ui.weak("Nothing imported.");
@@ -57,6 +60,11 @@ pub fn show(ctx: &egui::Context, state: &mut ImportUi, palette: &Palette) -> boo
         });
         ui.separator();
         ui.horizontal(|ui| {
+            if r.missing_media > 0
+                && ui.button("Locate missing…").on_hover_text("Pick the folder the files moved to").clicked()
+            {
+                want_locate = true;
+            }
             if ui.add_enabled(r.clips > 0, egui::Button::new("Use this project")).clicked() {
                 accepted = true;
                 close = true;
@@ -69,6 +77,12 @@ pub fn show(ctx: &egui::Context, state: &mut ImportUi, palette: &Palette) -> boo
             }
         });
     });
+    if want_locate {
+        if let (Some(dir), Some(report)) = (rfd::FileDialog::new().pick_folder(), state.report.as_mut()) {
+            // rewrites report.issues / missing_media in place: the table and count update next frame
+            crate::engine::import::relocate_report(report, &dir);
+        }
+    }
     state.open = open && !close;
     if !state.open && !accepted {
         state.report = None;
