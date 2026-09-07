@@ -17,6 +17,28 @@ fn toast_with_folder_sets_open_path_plain_toast_does_not() {
     assert_eq!(with_folder.open_path, Some(PathBuf::from("C:/out.mp4")));
 }
 
+// ---- ws:audio-analysis ----
+
+/// `mark_instead_fires_marker_added_once_per_marker` (see the audio-analysis PR's tests) against the
+/// real `App` shape: `fire_markers_added`/`fire_hook` need a live `App` (see the App-construction
+/// deviation note above), so this exercises the plain half they're built from — mirrors
+/// `mcp_exec.rs`'s `snapshot_if_mutate`/`rollback_project` split.
+#[test]
+fn fire_marker_added_for_each_fires_once_per_id_in_order() {
+    let ids = [1u64, 2, 3];
+    let mut calls: Vec<(String, Value)> = Vec::new();
+    fire_marker_added_for_each(&ids, &mut |event, payload| calls.push((event.to_string(), payload)));
+    assert_eq!(calls.len(), 3, "exactly once per marker");
+    for (i, (event, payload)) in calls.iter().enumerate() {
+        assert_eq!(event, "marker_added");
+        assert_eq!(payload["marker_id"], json!(ids[i]));
+    }
+    // zero ids -> zero calls (not called "at least once")
+    let mut none: Vec<(String, Value)> = Vec::new();
+    fire_marker_added_for_each(&[], &mut |event, payload| none.push((event.to_string(), payload)));
+    assert!(none.is_empty());
+}
+
 #[test]
 fn box_blur_spreads_and_preserves_flat_areas() {
     // a flat image stays exactly flat

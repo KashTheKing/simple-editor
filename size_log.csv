@@ -1,6 +1,10 @@
 sha,bytes,note
 aaa3fdc,15970816,"baseline pre-size-diet - measured fresh on main at aaa3fdc, supersedes the stale 6b92982/15732736 reading from before #17 registries-schema-hooks landed"
 aaa3fdc,13680128,"size-diet #18: drop egui_commonmark/default_fonts/persistence, deps opt-level=s"
+3368e38,10231808,audio-analysis
+3368e38,10231808,audio-analysis
+bc4c19e,10121728,"true baseline (measured fresh from bc4c19e's committed release profile - this worktree's own copy of size_log.csv predates the size_log.csv correction pushed to main in 0827f9a)"
+3368e38,10231808,"audio-analysis #19: Peaks toolkit (onsets/beats/BPM, peak/RMS/LUFS, speech ranges, xcorr sync offset), AutoDuck/Normalize actions (real delta vs true baseline: +110,080 B / +107.5 KB)"
 fdbfa66,10213376,trim-model
 bc4c19e,10156032,player-rate-loop
 bc4c19e,10250752,command-palette

@@ -1,5 +1,19 @@
 use super::*;
 
+// ---- ws:audio-analysis ----
+/// A `peaks_of` closure over `waveforms`, keyed by ASSET id (stream 0) — the shape
+/// `engine::analysis::normalize`/`match_loudness`/`duck` take. Shared by `tools_audio.rs` and
+/// `audio_actions.rs`. ponytail: a clip picking a non-zero `audio_stream` reads stream 0 here; correct
+/// for the overwhelming single-stream-asset case.
+pub(super) fn asset_peaks(
+    waveforms: &mut crate::media::waveform::WaveformCache,
+) -> impl FnMut(&Project, Id) -> Option<Arc<crate::media::waveform::Peaks>> + '_ {
+    move |project, asset_id| {
+        let path = project.asset(asset_id)?.path.clone();
+        waveforms.get(&path, 0)
+    }
+}
+
 pub(super) fn add_mask(project: &mut Project, clip: Id, shape: MaskShape) -> bool {
     let Some(c) = project.clip_mut(clip).filter(|c| c.is_visual()) else { return false };
     match c.effects.iter_mut().rev().find(|e| e.enabled) {

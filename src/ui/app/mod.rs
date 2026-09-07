@@ -45,6 +45,7 @@ const MEDIA_EXTS: &[&str] = &[
 ];
 
 mod actions;
+mod audio_actions;
 // ---- ws:forgiveness ----
 mod autosave;
 mod boot;
@@ -71,6 +72,7 @@ pub(crate) mod recovery;
 mod thumbs;
 mod timeline_pane;
 mod tools_args;
+mod tools_audio;
 mod tools_clip;
 mod tools_color;
 // ---- ws:command-palette ----
@@ -1270,6 +1272,7 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     whatsnew::TOOLS,
     // ---- ws:split-god-files ----
     // ---- ws:audio-analysis ----
+    tools_audio::TOOLS,
     // ---- ws:audio-dsp-automation ----
     // ---- ws:color-engine ----
     tools_color::TOOLS,
@@ -1302,6 +1305,7 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     whatsnew::act,
     // ---- ws:split-god-files ----
     // ---- ws:audio-analysis ----
+    audio_actions::act,
     // ---- ws:audio-dsp-automation ----
     // ---- ws:color-engine ----
     tools_color::act,
@@ -1597,6 +1601,25 @@ impl App {
         } else {
             ctx.request_repaint();
         }
+    }
+
+    // ---- ws:audio-analysis ----
+    /// `marker_added` once per id in `ids` — the one call site every marker-creation path in this
+    /// workstream (autocut_ui's silence "Mark instead", Detect Beats/Split at Beats, Scene cuts'
+    /// "Mark instead", and their MCP-tool twins) funnels through, so the event fires exactly once
+    /// regardless of entry point. See `fire_marker_added_for_each` for the plain, App-free half this
+    /// delegates to (and that a test exercises directly).
+    pub(crate) fn fire_markers_added(&mut self, ids: &[Id]) {
+        fire_marker_added_for_each(ids, &mut |event, payload| self.fire_hook(event, payload));
+    }
+}
+
+/// The pure half of `fire_markers_added`: call `hook("marker_added", {"marker_id": id})` once per id,
+/// in order. Split out so a test can assert "exactly once per marker" without a live `App` — mirrors
+/// `mcp_exec.rs`'s `snapshot_if_mutate`/`rollback_project` split for the identical reason.
+pub(crate) fn fire_marker_added_for_each(ids: &[Id], hook: &mut dyn FnMut(&'static str, Value)) {
+    for &id in ids {
+        hook("marker_added", json!({"marker_id": id}));
     }
 }
 

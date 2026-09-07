@@ -148,6 +148,15 @@ actions! {
     WhatsNew => "whats_new", "What's New", None;
     // ---- ws:split-god-files ----
     // ---- ws:audio-analysis ----
+    // Unbound by design (skeleton keymap): every row below is Mark-instead / editable-result first,
+    // reached from the Auto-cut pane's Beats/Loudness/Duck sections or the command palette. AutoDuck
+    // and Normalize are declared here (not a wave-0b stub) — audio-dsp-automation's inspector_audio.rs
+    // dispatches both and must depend on this workstream landing first.
+    DetectBeats => "detect_beats", "Detect Beats → Markers", None;
+    SplitAtBeats => "split_at_beats", "Split at Beats", None;
+    AutoDuck => "auto_duck", "Duck Music under Dialogue", None;
+    Normalize => "normalize", "Normalize Selection", None;
+    MatchLoudness => "match_loudness", "Match Loudness across Selection", None;
     // ---- ws:audio-dsp-automation ----
     // ---- ws:color-engine ----
     // Unbound by design: no free chord in the skeleton keymap (per the plan's Actions/hotkeys table).
