@@ -7,9 +7,10 @@
 //! holds.
 //!
 //! The `selection_changed` Luau hook is NOT fired here: command-palette's `palette_ctl::tick` already
-//! fires it once per change of `App.selection` (see its `last_fired_selection`), and a second call
-//! site would double-fire every `@on selection_changed` script. `selection_changed_hook_has_exactly_
-//! one_call_site` below pins that.
+//! fires it once per change of the widened selection signature — `SelSig`, covering clips, transitions,
+//! subtitle cues AND the edit point, not just `App.selection` (see its `last_fired_selection`, typed
+//! `SelSig` for exactly this reason) — and a second call site would double-fire every `@on
+//! selection_changed` script. `selection_changed_hook_has_exactly_one_call_site` below pins that.
 
 use super::*;
 use crate::ui::layout::GLOW_SECS;
@@ -31,7 +32,10 @@ impl SelSig {
             && self.cues == app.timeline.sub_sel
             && self.edit_point == app.timeline.edit_point
     }
-    fn of(app: &App) -> Self {
+    /// `pub(super)`: `palette_ctl::tick` builds one of these each frame to diff against
+    /// `App.last_fired_selection` so `selection_changed` fires on a transition/cue/edit-point-only
+    /// change too, not just a change to `App.selection`.
+    pub(super) fn of(app: &App) -> Self {
         Self {
             clips: app.selection.clone(),
             transitions: app.sel_transitions.clone(),
@@ -145,7 +149,8 @@ mod tests {
         assert!(ctx.has_requested_repaint(), "a live glow must keep the fade going");
 
         // expired: dropped, nothing scheduled, and 30 idle frames request nothing
-        let mut glow = vec![(Pane::Mixer, now - Duration::from_secs(2)), (Pane::Inspector, now - Duration::from_secs(3))];
+        let mut glow =
+            vec![(Pane::Mixer, now - Duration::from_secs(2)), (Pane::Inspector, now - Duration::from_secs(3))];
         let ctx = egui::Context::default();
         for _ in 0..30 {
             let _ = ctx.run(egui::RawInput::default(), |ctx| {
@@ -187,5 +192,33 @@ mod tests {
         assert_ne!(a, c);
         assert_ne!(a, d);
         assert_eq!(a, a.clone());
+    }
+
+    /// `palette_ctl::tick` fires `selection_changed` by comparing `SelSig::of(app)` against
+    /// `App.last_fired_selection` each frame (no headless `App` to call `tick` itself — see this
+    /// module's and `fire_hook`'s doc comments). This exercises that exact predicate for the three
+    /// selection kinds the bug report named: selecting a transition, a subtitle cue, or moving the
+    /// edit point, all with the clip selection held constant, must each look like a change (so the
+    /// hook fires); settling on that same state afterward must look unchanged (so it fires exactly
+    /// once, not every frame).
+    #[test]
+    fn selection_changed_predicate_fires_once_for_each_widened_kind() {
+        let clip_only = SelSig { clips: vec![1], ..Default::default() };
+
+        let transition = SelSig { clips: vec![1], transitions: vec![9], ..Default::default() };
+        assert_ne!(transition, clip_only, "transition-only change (clip selection unchanged) must fire");
+        assert_eq!(transition, transition.clone(), "the same state again must not re-fire");
+
+        let cue = SelSig { clips: vec![1], cues: vec![3], ..Default::default() };
+        assert_ne!(cue, clip_only, "subtitle-cue-only change (clip selection unchanged) must fire");
+        assert_eq!(cue, cue.clone(), "the same state again must not re-fire");
+
+        let edit_point = SelSig {
+            clips: vec![1],
+            edit_point: Some(EditPoint { track: 0, t: 2.0, side: crate::ui::timeline::Side::Both }),
+            ..Default::default()
+        };
+        assert_ne!(edit_point, clip_only, "edit-point-only change (clip selection unchanged) must fire");
+        assert_eq!(edit_point, edit_point.clone(), "the same state again must not re-fire");
     }
 }

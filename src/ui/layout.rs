@@ -398,7 +398,8 @@ impl Layout {
     pub fn simple_layout() -> Self {
         use egui_tiles::{Container, Linear, LinearDir, Tile};
         let mut tiles = egui_tiles::Tiles::default();
-        let library = Self::tabs(&mut tiles, &[Pane::Library, Pane::Effects, Pane::Transitions, Pane::Subtitles, Pane::Presets]);
+        let library =
+            Self::tabs(&mut tiles, &[Pane::Library, Pane::Effects, Pane::Transitions, Pane::Subtitles, Pane::Presets]);
         let preview = tiles.insert_pane(Pane::Preview);
         let tools = tiles.insert_pane(Pane::Tools);
         let mut centre_col = Linear::new(LinearDir::Vertical, vec![preview, tools]);
@@ -481,7 +482,11 @@ impl Layout {
         tiles.insert_new(Tile::Container(Container::Linear(lin)))
     }
     /// The root: `top` over `bottom`, 62 : 38 like every preset.
-    fn rows(tiles: &mut egui_tiles::Tiles<Pane>, top: egui_tiles::TileId, bottom: egui_tiles::TileId) -> egui_tiles::TileId {
+    fn rows(
+        tiles: &mut egui_tiles::Tiles<Pane>,
+        top: egui_tiles::TileId,
+        bottom: egui_tiles::TileId,
+    ) -> egui_tiles::TileId {
         use egui_tiles::{Container, Linear, LinearDir, Tile};
         let mut rows = Linear::new(LinearDir::Vertical, vec![top, bottom]);
         rows.shares.set_share(top, 0.62);
@@ -640,6 +645,7 @@ impl Layout {
         new.undo = std::mem::take(&mut self.undo);
         new.redo = std::mem::take(&mut self.redo);
         new.pinned = std::mem::take(&mut self.pinned);
+        new.popped = std::mem::take(&mut self.popped);
         *self = new;
     }
     /// What `reveal_auto(pane)` would do, without doing it — the shared decision for both layout modes
@@ -1331,6 +1337,18 @@ mod tests {
         l.dock(Pane::Effects);
         assert!(l.popped.is_empty());
         assert!(l.is_visible(Pane::Effects));
+    }
+
+    /// Popped-out floating panes must survive a workspace switch (switch_to) — they're an OS window
+    /// egui only keeps requesting while the pane stays in `Layout.popped`; losing it there closes the
+    /// window out from under the user even though the pane reappears docked in the new workspace.
+    #[test]
+    fn switch_to_keeps_popped_panes() {
+        let mut l = Layout::default_layout();
+        l.popout(Pane::Inspector);
+        assert!(l.popped.contains(&Pane::Inspector));
+        l.switch_to(Layout::simple_layout());
+        assert!(l.popped.contains(&Pane::Inspector), "popped panes must carry over across switch_to");
     }
 
     #[test]

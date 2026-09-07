@@ -350,9 +350,10 @@ pub struct App {
     /// Scripts disabled for the session after their `@on` hook overran its budget once (one toast, then
     /// silently skipped by `fire_hook` for the rest of the session).
     disabled_hooks: Vec<PathBuf>,
-    /// Selection last handed to `fire_hook("selection_changed", ...)` — `palette_ctl::tick` compares
-    /// against `self.selection` each frame so the hook fires on an actual change, not every frame.
-    last_fired_selection: Vec<Id>,
+    /// Selection signature last handed to `fire_hook("selection_changed", ...)` — `palette_ctl::tick`
+    /// compares against `frame::SelSig::of(self)` each frame so the hook fires on any change (clips,
+    /// transitions, subtitle cues OR the edit point — not just `self.selection`), exactly once.
+    last_fired_selection: frame::SelSig,
     // ---- ws:layout-modes-onboarding ----
     /// The first-run welcome wizard while it is open — armed by `boot::run` on a fresh install (no
     /// file argument, no `--screenshot`), `Action::ShowWelcome` and the `onboarding.reset` tool.
@@ -768,7 +769,7 @@ impl App {
             ),
             hook_running: false,
             disabled_hooks: Vec::new(),
-            last_fired_selection: Vec::new(),
+            last_fired_selection: frame::SelSig::default(),
             // ---- ws:layout-modes-onboarding ----
             onboarding: None,
             home_dismissed: false,
