@@ -187,6 +187,37 @@ impl App {
         }
     }
 
+    // ---- ws:command-palette ----
+    /// Run one non-`Job` tool by name outside the MCP/scripting call sites (`handle_tool`/`run_script`
+    /// above), which already had their own inline snapshot/undo logic before this workstream needed a
+    /// THIRD caller: the palette's Enter/arg-form-Run path and the `scripts.run` MCP tool
+    /// (`tools_commands.rs`). Same shape as `handle_tool`'s non-`Job` arms (snapshot iff `Mutate`, push
+    /// undo iff the JSON actually changed, `after_edit`, rollback on `Err`) — a small shared wrapper is
+    /// less code than a third copy of that logic, and a smaller diff than refactoring `handle_tool`/
+    /// `run_script` (each has its own reply-channel / per-script-undo shape) around a new abstraction.
+    pub(crate) fn run_tool_undoable(&mut self, name: &str, args: &Value) -> Result<Value, String> {
+        let def = mcp::tools::find(name).ok_or_else(|| format!("unknown tool '{name}'"))?;
+        let before = self.run_snapshot_if_mutate(def);
+        match (def.run)(self, args) {
+            Ok(ToolOutcome::Done(v)) => {
+                if let Some(snap) = before {
+                    if snap != self.project.to_json() {
+                        push_undo_json(&mut self.undo, &mut self.redo, snap);
+                    }
+                    self.after_edit();
+                }
+                Ok(v)
+            }
+            Ok(ToolOutcome::Job(..)) => Err(format!("'{name}' starts a background job — not runnable from here")),
+            Err(e) => {
+                if let Some(snap) = before {
+                    self.run_rollback(snap); // a failed tool is a no-op
+                }
+                Err(e)
+            }
+        }
+    }
+
     pub(super) fn start_tool_job(&mut self, name: &str, args: &Value) -> Result<(Arc<Progress>, PathBuf), String> {
         if media::ffpipe::ffmpeg_exe().is_none() {
             return Err("ffmpeg.exe not found".into());
