@@ -19,6 +19,16 @@
 use crate::ui::app::{describe_change, HistoryCategory, UndoEntry, LAYOUT_STEP};
 use eframe::egui;
 
+/// ---- ws:forgiveness ----
+#[derive(Default)]
+pub struct HistoryResponse {
+    /// Something was deleted (see the module doc: not itself a project edit, no undo/push_undo).
+    pub changed: bool,
+    /// Index into `undo` whose Restore button was clicked this frame — the app-side handler (Layout
+    /// rows never set this; see `restore_at`) does the actual restore + labeled undo push.
+    pub restore: Option<usize>,
+}
+
 #[derive(Default)]
 pub struct HistoryState {
     pub search: String,
@@ -83,7 +93,8 @@ pub fn show(
     state: &mut HistoryState,
     undo: &mut Vec<UndoEntry>,
     project: &crate::model::Project,
-) -> bool {
+) -> HistoryResponse {
+    let mut resp = HistoryResponse::default();
     let mut changed = false;
 
     // resolve row labels lazily (see the module doc): entry i's row describes snapshot i -> i+1
@@ -209,8 +220,17 @@ pub fn show(
                                 "Layout entries can't be deleted here — each pairs with a snapshot on \
                                  the panel-arrangement undo stack, and removing one would desync it",
                             );
-                        } else if ui.small_button("Delete").clicked() {
-                            delete = Some(i);
+                        } else {
+                            let r = ui
+                                .small_button("Restore")
+                                .on_hover_text("Make this the live project (pushes a new, labeled undo entry)");
+                            mark(ui, &format!("restore_{i}"), &r);
+                            if r.clicked() {
+                                resp.restore = Some(i);
+                            }
+                            if ui.small_button("Delete").clicked() {
+                                delete = Some(i);
+                            }
                         }
                     });
                 })
@@ -227,7 +247,22 @@ pub fn show(
         state.labels.clear(); // the deleted entry's predecessor now describes a different neighbour
         changed = true;
     }
-    changed
+    resp.changed = changed;
+    resp
+}
+
+/// The app-side restore logic (called from `panes.rs`'s `Pane::History` arm) when
+/// `HistoryResponse.restore` is `Some(i)`: `None` when `i` is out of range or points at a
+/// non-restorable (Layout) entry, otherwise `Some((json to push as the pre-restore undo snapshot,
+/// the restored Project))`. Pure so a test can exercise it without a live `App` — see
+/// `tools_registry_tests.rs`'s doc comment for why one isn't buildable in `#[test]`.
+pub fn restore_at(undo: &[UndoEntry], i: usize, live_json: &str) -> Option<(String, crate::model::Project)> {
+    let e = undo.get(i)?;
+    if e.category == HistoryCategory::Layout {
+        return None;
+    }
+    let restored = crate::model::Project::from_json(&e.json).ok()?;
+    Some((live_json.to_string(), restored))
 }
 
 fn time_of_day(at: f64) -> String {
@@ -353,7 +388,7 @@ mod tests {
                 },
                 |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
-                        changed = show(ui, state, undo, project);
+                        changed = show(ui, state, undo, project).changed;
                     });
                 },
             );
@@ -365,6 +400,65 @@ mod tests {
         // a cached label describes the change TO the next entry — deleting reshuffles every
         // neighbour pair, so the whole cache must go (it rebuilds lazily on the next render)
         assert!(h.state.labels.is_empty(), "deleting entries must drop the derived-label cache");
+    }
+
+    // ---- ws:forgiveness ----
+    #[test]
+    fn history_restore_pushes_one_labeled_undo() {
+        let mut h = H::new();
+        h.frame();
+        // clicking Restore sets HistoryResponse.restore = Some(i) for an Editing row
+        let r = h.ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(("hist", "restore_0")))).unwrap();
+        h.frame(); // hover
+        let restore = {
+            let H { ctx, state, undo, project, .. } = &mut h;
+            let mut restore = None;
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 700.0))),
+                    events: vec![
+                        egui::Event::PointerMoved(r.center()),
+                        egui::Event::PointerButton {
+                            pos: r.center(),
+                            button: egui::PointerButton::Primary,
+                            pressed: true,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                        egui::Event::PointerButton {
+                            pos: r.center(),
+                            button: egui::PointerButton::Primary,
+                            pressed: false,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        restore = show(ui, state, undo, project).restore;
+                    });
+                },
+            );
+            restore
+        };
+        assert_eq!(restore, Some(0), "undo[0] ('Added a clip', Editing) Restore button was clicked");
+
+        // the app-side handler (restore_at) then does the actual restore + one labeled undo push
+        let live = "{\"live\":true}".to_string();
+        let (before, restored) = restore_at(&h.undo, 0, &live).expect("index 0 is an Editing row");
+        assert_eq!(before, live, "the pre-restore snapshot pushed as undo is the CURRENT live project");
+        assert_eq!(restored.to_json(), crate::model::Project::from_json(&h.undo[0].json).unwrap().to_json());
+    }
+
+    #[test]
+    fn history_layout_rows_not_restorable() {
+        let mut h = H::new();
+        h.frame();
+        // row 1 (index into `visible`, newest-first) is the Layout entry — no Restore rect marked for it
+        let marked = h.ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(("hist", "restore_1"))));
+        assert!(marked.is_none(), "a Layout row must never render a Restore button");
+        // and the app-side helper refuses it too, even if something upstream ever got this wrong
+        assert!(restore_at(&h.undo, 1, "{}").is_none());
     }
 
     #[test]

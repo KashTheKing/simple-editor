@@ -493,7 +493,11 @@ impl Project {
         if ids.is_empty() || ids.iter().any(|&id| self.track_of(id).map(|ti| self.locked_of(ti)).unwrap_or(true)) {
             return false;
         }
-        if self.move_clips(&ids, dt, dtrack, None) {
+        // `dtrack != 0` cross-track shoving needs move_clips' track_kind filter armed with the moved
+        // clips' own kind — passing None (as an earlier version of this fn did) silently made dtrack a
+        // no-op, since move_clips only changes track when `track_kind == Some(kind)`.
+        let kind = ids.first().and_then(|&id| self.track_of(id)).map(|ti| self.tracks[ti].kind);
+        if self.move_clips(&ids, dt, dtrack, kind) {
             return true;
         }
         let Some(&first) = ids.first() else { return false };
@@ -504,7 +508,7 @@ impl Project {
         let Some(c) = self.clip(first) else { return false };
         let (new_start, span) = ((c.start + dt).max(0.0), c.duration);
         self.ripple_open(new_start, span, &[ti]);
-        self.move_clips(&ids, dt, dtrack, None)
+        self.move_clips(&ids, dt, dtrack, kind)
     }
 }
 

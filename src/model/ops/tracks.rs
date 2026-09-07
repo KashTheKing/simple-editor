@@ -57,6 +57,9 @@ impl Project {
     }
     /// Reorder track `ti` one slot up/down within its own kind (video tracks and audio tracks each
     /// stay contiguous — `add_track`'s invariant). False, unchanged, at a kind boundary.
+    // Safe against the playback cache: video_dirty_spans (playback.rs) treats any Track.id mismatch at
+    // an index as unbounded-dirty (player-rate-loop's track_id_reorder_full_clears), so a reorder here
+    // always forces a full cache clear rather than producing stale spans.
     pub fn move_track(&mut self, ti: usize, up: bool) -> bool {
         let Some(t) = self.tracks.get(ti) else { return false };
         let list = if t.kind == TrackKind::Video { self.video_tracks() } else { self.audio_tracks() };

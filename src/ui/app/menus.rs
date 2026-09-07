@@ -283,9 +283,19 @@ impl App {
                         });
                         if resp.on_hover_text(r).clicked() {
                             ui.close();
-                            if self.confirm_discard() {
-                                self.open_project(Path::new(r));
-                            }
+                            // ---- ws:forgiveness / ws:command-palette conflict note ----
+                            // menus.rs is command-palette's declared exclusive wave-1 file, and
+                            // forgiveness's own plan explicitly leaves this ONE call site to
+                            // command-palette's own diff. But confirm_discard_then (this workstream)
+                            // fully REPLACES confirm_discard() -- it no longer exists anywhere in the
+                            // crate -- so leaving this call unconverted breaks compilation of the
+                            // whole crate, not just a future merge conflict. Converted here as the
+                            // minimum necessary to keep `cargo build`/`cargo test` green on main;
+                            // functionally identical to what command-palette's own plan already says
+                            // it would do, so its PR should rebase onto this as a no-op. See the PR
+                            // body's deviations section.
+                            let path = Path::new(r).to_path_buf();
+                            self.confirm_discard_then(move |app| app.open_project(&path));
                         }
                     }
                     if !recents.is_empty() {

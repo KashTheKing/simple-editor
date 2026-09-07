@@ -1,3 +1,4 @@
+use super::feedback::Toast;
 use super::lib_preview::*;
 use super::thumbs::*;
 use super::tools_helpers::*;
@@ -447,12 +448,16 @@ fn help_changelog_and_templates_save_are_registered() {
     assert!(save.args.iter().any(|a| a.starts_with("clip_ids:")), "{:?}", save.args);
 }
 
-/// Tripwire: this PR does not migrate the 17 pre-existing raw `ctx.request_repaint_after(...)` call
-/// sites named in CHANGELOG.md/goals.md (most live in files another workstream owns exclusively in a
-/// later wave) — only the NEW code it adds (winpos.rs, whatsnew.rs) routes through `App::animate_until`.
+/// Tripwire: this PR does not migrate any of the pre-existing raw `ctx.request_repaint_after(...)`
+/// call sites named in CHANGELOG.md/goals.md (most live in files another workstream owns exclusively
+/// in a later wave) — only NEW code (winpos.rs, whatsnew.rs; ws:forgiveness's own new sites in
+/// autosave.rs use `App::animate_until` too) routes through that funnel. ws:forgiveness's toast
+/// extraction (feedback.rs) DID relocate mod.rs's one pre-existing site (the toast area's own
+/// `request_repaint_after`) out of this test's scanned files — that call still exists, just outside
+/// the list below now, so the count drops from 17 to 16 (see CHANGELOG.md's forgiveness entry).
 /// Counts real call lines across the files that had them before this PR (skipping doc-comment text and
 /// `animate_until`'s own internal `ctx.request_repaint_after(dt)` funnel call), so a future edit that
-/// silently adds, removes or migrates one of the 17 is caught here instead of going unnoticed.
+/// silently adds, removes or migrates one of the 16 is caught here instead of going unnoticed.
 #[test]
 fn pre_existing_repaint_sites_unchanged_and_named() {
     let files = [
@@ -471,7 +476,7 @@ fn pre_existing_repaint_sites_unchanged_and_named() {
         .filter(|l| l.contains("request_repaint_after(") && !l.contains("request_repaint_after(dt)"))
         .count();
     assert_eq!(
-        count, 17,
+        count, 16,
         "the count of pre-existing raw request_repaint_after sites moved — if that was intentional, \
          update this count AND the tracked-gap note in CHANGELOG.md/goals.md"
     );

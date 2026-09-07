@@ -165,6 +165,11 @@ actions! {
     ToggleLayoutMode => "toggle_layout_mode", "Layout Mode: Dynamic / Granular", sc(CTRL_SHIFT, Key::G);
     ShowWelcome => "show_welcome", "Show Welcome Again", None;
     // ---- ws:forgiveness ----
+    // Unbound by design (no free chord in the skeleton keymap): Settings ▸ Performance button /
+    // palette row / toast button only.
+    ClearCaches => "clear_caches", "Clear Caches", None;
+    RestoreBackup => "restore_backup", "Restore Autosave…", None;
+    UndoSettings => "undo_settings", "Undo Settings Change", None;
     // ---- ws:player-rate-loop ----
     ShuttleBack => "shuttle_back", "Shuttle Reverse", sc(NONE, Key::J);
     ShuttleFwd => "shuttle_fwd", "Shuttle Forward", sc(NONE, Key::L);

@@ -1505,6 +1505,21 @@ fn magnetic_move_shoves_on_magnetic_track_else_refuses() {
     assert!((p2.clip(a2).unwrap().start).abs() < 1e-9, "unchanged");
 }
 
+/// Regression: `magnetic_move`'s `dtrack` used to pass `track_kind: None` to `move_clips`, which only
+/// changes track when `track_kind == Some(kind)` — a silent no-op that left the clip on its source
+/// track no matter what `dtrack` said.
+#[test]
+fn magnetic_move_dtrack_actually_changes_track() {
+    let mut p = Project::new();
+    let v2 = p.add_track(TrackKind::Video);
+    p.tracks[v2].magnetic = true;
+    let a = p.new_id();
+    p.tracks[v2].clips.push(Clip::new(a, ClipKind::Video, "a", 0.0, 2.0));
+
+    assert!(p.magnetic_move(&[a], 0.0, -1), "dtrack=-1 should move the clip one video track earlier");
+    assert_eq!(p.track_of(a), Some(0), "clip actually landed on the destination track");
+}
+
 #[test]
 fn locked_track_refuses_every_new_op() {
     let mut base = Project::new();

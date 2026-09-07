@@ -126,6 +126,14 @@ const OP_INTERNAL: &[(&str, &str)] = &[
         "insert_asset_clips_ranged",
         "superseded by splice_in/overwrite_asset, which call it directly — no separate MCP tool",
     ),
+    // ---- ws:forgiveness ----
+    // Documentation only: `scan_mut_self_fns` only scans OP_FILES (src/model/ops/*.rs); none of these
+    // three live there (they live in src/ui/app/*), so the scan can never find or exercise these
+    // entries — they exist purely so a reader of this table isn't left wondering why history.restore/
+    // caches.clear/project.recover (all real MCP tools, see tools_project.rs) have no OP_TOOLS row.
+    ("caches::clear", "lives in src/ui/app/caches.rs, not src/model/ops/*.rs — exempt from this scan"),
+    ("recovery::recover_candidate", "lives in src/ui/app/recovery.rs, not src/model/ops/*.rs — exempt from this scan"),
+    ("history_ui::restore_at", "lives in src/ui/history_ui.rs, not src/model/ops/*.rs — exempt from this scan"),
 ];
 
 const OP_FILES: &[&str] = &[

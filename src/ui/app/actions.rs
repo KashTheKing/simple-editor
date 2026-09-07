@@ -22,9 +22,7 @@ impl App {
         }
         match a {
             NewProject => {
-                if self.confirm_discard() {
-                    self.set_project(Project::new(), None);
-                }
+                self.confirm_discard_then(|app| app.set_project(Project::new(), None));
             }
             ToolSelect | ToolText | ToolDraw | ToolMask | ToolMarker | ToolCut | ToolStretch | ToolSpacer => {
                 // normally already consumed by tools::handle_hotkeys before this table is polled; this
@@ -147,14 +145,20 @@ impl App {
             Delete | RippleDelete => {
                 let ids = self.project.expand_links(&self.selection);
                 let trs = std::mem::take(&mut self.sel_transitions);
+                let n = ids.len();
                 if !ids.is_empty() || !trs.is_empty() {
-                    self.push_undo();
+                    let before = self.project.to_json();
                     for tid in trs {
                         self.project.remove_transition(tid);
                     }
                     self.project.delete_clips(&ids, a == RippleDelete);
                     self.selection.clear();
+                    self.push_undo_labeled(before, if a == RippleDelete { "Ripple delete" } else { "Delete" });
                     self.after_edit();
+                    if n > 0 {
+                        let s = if n == 1 { "" } else { "s" };
+                        self.toast_undo(format!("Deleted {n} clip{s}"), Action::Undo);
+                    }
                 }
             }
             SelectAll => self.selection = self.project.all_clips().map(|(_, c)| c.id).collect(),
@@ -568,6 +572,19 @@ impl App {
                     self.toast("Container removed");
                 }
             }
+            // ---- ws:forgiveness ----
+            // AUDIT NOTE (per this workstream's own risk table): trim-model also lands new Action
+            // variants in this same wave-1 match block. New actions should route through ACT_HANDLERS
+            // per the registry protocol instead of an edit here; if trim-model's PR instead extends
+            // this match too, whichever lands second rebases its ~handful-of-lines diff onto the other.
+            ClearCaches => caches::clear(self),
+            RestoreBackup => self.restore_backup_open = true,
+            UndoSettings => {
+                if let Some(s) = self.settings_undo.take() {
+                    self.settings = s;
+                    self.settings.save();
+                }
+            }
             // ---- ws:registries-schema-hooks ----
             // Every current Action variant has an arm above (hence `unreachable_patterns` today); this
             // exists so a future workstream's new variant compiles unhandled-by-default instead of
@@ -939,5 +956,32 @@ impl App {
             }
             None => self.toast(format!("Template '{name}' is corrupted")),
         }
+    }
+}
+
+// ---- ws:forgiveness ----
+#[cfg(test)]
+mod tests {
+    /// Structural (source-scan): this crate has no headless App-construction path anywhere (see
+    /// tools_registry_tests.rs's doc comment for why), so — the same technique files.rs's own
+    /// App-level tests already use — this checks the Delete arm's body directly instead of driving
+    /// a live App through `act`.
+    #[test]
+    fn delete_selected_pushes_undo_toast() {
+        let src = include_str!("actions.rs");
+        let start = src.find("Delete | RippleDelete => {").expect("the Delete arm must exist");
+        let after = &src[start..];
+        let end = after.find("\n            SelectAll =>").expect("SelectAll must follow the Delete arm");
+        let body = &after[..end];
+
+        assert!(
+            body.contains(r#"self.push_undo_labeled(before, if a == RippleDelete { "Ripple delete" } else { "Delete" })"#),
+            "a plain Delete must label the undo entry 'Delete'"
+        );
+        assert!(body.contains("self.selection.clear()"), "Delete must clear the selection");
+        assert!(
+            body.contains(r#"self.toast_undo(format!("Deleted {n} clip{s}"), Action::Undo)"#),
+            "Delete must toast a button whose action is Action::Undo, so clicking it restores the clips"
+        );
     }
 }
