@@ -115,6 +115,177 @@ fn as_markdown(project: &Project, fps: f64) -> String {
     s
 }
 
+// ---- ws:export-deliver ----
+/// Text formats `export_markers` writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MarkerFmt {
+    /// `time,duration,name,note,label` with a header row; `import_markers_csv` reads it back.
+    Csv,
+    /// `HH:MM:SS Name` per line — paste into a YouTube description. YouTube insists the list starts
+    /// at 00:00:00, so an "Intro" line is prepended when the first marker doesn't.
+    YoutubeChapters,
+}
+
+impl MarkerFmt {
+    pub fn parse(s: &str) -> Option<MarkerFmt> {
+        match s.to_ascii_lowercase().as_str() {
+            "csv" => Some(MarkerFmt::Csv),
+            "youtube_chapters" | "youtube" | "chapters" => Some(MarkerFmt::YoutubeChapters),
+            _ => None,
+        }
+    }
+}
+
+fn csv_field(s: &str) -> String {
+    if s.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
+}
+
+/// Split CSV text into logical records — like `.lines()`, but a `\n`/`\r\n` inside a quoted field
+/// (RFC 4180 allows a literal newline there — `csv_field` emits one for a multi-line note) does not
+/// end the record.
+fn csv_records(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut quoted = false;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => {
+                cur.push(c);
+                if quoted && chars.peek() == Some(&'"') {
+                    cur.push(chars.next().unwrap());
+                } else {
+                    quoted = !quoted;
+                }
+            }
+            '\r' if !quoted => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                out.push(std::mem::take(&mut cur));
+            }
+            '\n' if !quoted => out.push(std::mem::take(&mut cur)),
+            _ => cur.push(c),
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// One CSV record → fields (RFC 4180 quoting: `""` inside quotes is a literal quote).
+fn csv_split(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut quoted = false;
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' if quoted && chars.peek() == Some(&'"') => {
+                cur.push('"');
+                chars.next();
+            }
+            '"' => quoted = !quoted,
+            ',' if !quoted => out.push(std::mem::take(&mut cur)),
+            _ => cur.push(c),
+        }
+    }
+    out.push(cur);
+    out
+}
+
+/// Every marker (project + clip, every sequence) in timeline order as text. `fps` is unused by both
+/// formats today (chapters are whole seconds, CSV keeps float seconds) but kept so a frame-based
+/// format can slot in without changing callers.
+pub fn export_markers(project: &Project, _fps: f64, fmt: MarkerFmt) -> String {
+    let rows = project.markers_in_timeline();
+    let mut s = String::new();
+    match fmt {
+        MarkerFmt::Csv => {
+            s.push_str("time,duration,name,note,label\n");
+            for (id, t, dur, name, label) in rows {
+                let note = project
+                    .markers
+                    .iter()
+                    .chain(project.all_clips().flat_map(|(_, c)| c.markers.iter()))
+                    .find(|m| m.id == id)
+                    .map(|m| m.note.clone())
+                    .unwrap_or_default();
+                s.push_str(&format!("{t:.3},{dur:.3},{},{},{label}\n", csv_field(&name), csv_field(&note)));
+            }
+        }
+        MarkerFmt::YoutubeChapters => {
+            let hms = |t: f64| {
+                let secs = t.max(0.0).round() as u64;
+                format!("{:02}:{:02}:{:02}", secs / 3600, (secs / 60) % 60, secs % 60)
+            };
+            if rows.first().is_none_or(|r| r.1 >= 1.0) {
+                s.push_str("00:00:00 Intro\n");
+            }
+            for (_, t, _, name, _) in rows {
+                let name = if name.is_empty() { "Chapter".to_string() } else { name };
+                s.push_str(&format!("{} {name}\n", hms(t)));
+            }
+        }
+    }
+    s
+}
+
+/// Add project markers from `export_markers(Csv)` text (or any `time,name[,note,label]` /
+/// `time,duration,name[,note,label]` CSV — the header row decides which). Returns the count added;
+/// lines whose first field isn't a number (the header, blanks) are skipped.
+pub fn import_markers_csv(project: &mut Project, csv: &str) -> usize {
+    let records = csv_records(csv);
+    let mut lines = records.iter().map(|s| s.trim()).filter(|l| !l.is_empty());
+    let Some(first) = lines.next() else { return 0 };
+    let header: Vec<String> = csv_split(first).iter().map(|f| f.trim().to_ascii_lowercase()).collect();
+    let has_header = header.first().is_some_and(|h| h.parse::<f64>().is_err());
+    let col = |name: &str, fallback: usize| header.iter().position(|h| h == name).unwrap_or(fallback);
+    let (ti, di, ni, oi, li) = if has_header {
+        (col("time", 0), col("duration", usize::MAX), col("name", 1), col("note", 2), col("label", 3))
+    } else {
+        (0, usize::MAX, 1, 2, 3)
+    };
+    let rows: Vec<&str> = if has_header { lines.collect() } else { std::iter::once(first).chain(lines).collect() };
+    let mut n = 0;
+    for line in rows {
+        let f = csv_split(line);
+        let Some(t) = f.get(ti).and_then(|s| s.trim().parse::<f64>().ok()) else { continue };
+        let name = f.get(ni).map(|s| s.trim().to_string()).unwrap_or_default();
+        let id = project.add_marker(t, name);
+        if let Some(m) = project.marker_mut(id) {
+            m.duration = f.get(di).and_then(|s| s.trim().parse::<f64>().ok()).unwrap_or(0.0).max(0.0);
+            m.note = f.get(oi).map(|s| s.trim().to_string()).unwrap_or_default();
+            m.label = f.get(li).and_then(|s| s.trim().parse::<u8>().ok()).unwrap_or(0);
+        }
+        n += 1;
+    }
+    n
+}
+
+/// Save dialog + write for the Markers toolbar's "Export…" and `Action::ExportMarkers`. Returns the
+/// path written (the caller toasts / opens the folder).
+pub fn export_markers_dialog(project: &Project, fmt: MarkerFmt) -> Result<Option<std::path::PathBuf>, String> {
+    let (filter, ext) = match fmt {
+        MarkerFmt::Csv => ("CSV", "csv"),
+        MarkerFmt::YoutubeChapters => ("Text", "txt"),
+    };
+    let Some(out) = rfd::FileDialog::new()
+        .add_filter(filter, &[ext])
+        .set_file_name(format!("{}_markers.{ext}", project.name))
+        .save_file()
+    else {
+        return Ok(None);
+    };
+    std::fs::write(&out, export_markers(project, project.fps, fmt)).map_err(|e| e.to_string())?;
+    Ok(Some(out))
+}
+
 pub fn show(
     ui: &mut egui::Ui,
     state: &mut MarkersState,
@@ -127,8 +298,7 @@ pub fn show(
     let mut out = MarkersResponse::default();
     let fps = project.fps;
     let labels: Vec<(String, [u8; 3])> = project.labels.iter().map(|l| (l.name.clone(), l.color)).collect();
-    let (mods, pointer, primary_down) =
-        ui.input(|i| (i.modifiers, i.pointer.latest_pos(), i.pointer.primary_down()));
+    let (mods, pointer, primary_down) = ui.input(|i| (i.modifiers, i.pointer.latest_pos(), i.pointer.primary_down()));
 
     let rows = rows(project, state.filter_label);
     state.selected.retain(|id| rows.iter().any(|r| r.id == *id));
@@ -175,6 +345,27 @@ pub fn show(
             });
         if ui.button("Copy as list").on_hover_text("Markdown, for notes and the AI tools").clicked() {
             ui.ctx().copy_text(as_markdown(project, fps));
+        }
+        // ---- ws:export-deliver ----
+        ui.menu_button("Export…", |ui| {
+            for (label, fmt) in [("CSV…", MarkerFmt::Csv), ("YouTube chapters…", MarkerFmt::YoutubeChapters)] {
+                if ui.button(label).clicked() {
+                    ui.close();
+                    // ponytail: the toast lives with the Action (App::act_export_markers); this inline
+                    // path just writes, since a leaf pane has no toast handle
+                    let _ = export_markers_dialog(project, fmt);
+                }
+            }
+        });
+        if ui.button("Import…").on_hover_text("Add markers from a CSV (time,name[,note,label])").clicked() {
+            if let Some(p) = rfd::FileDialog::new().add_filter("CSV", &["csv"]).pick_file() {
+                if let Ok(text) = std::fs::read_to_string(&p) {
+                    undo(project);
+                    if import_markers_csv(project, &text) > 0 {
+                        out.edited = true;
+                    }
+                }
+            }
         }
     });
 
@@ -570,6 +761,56 @@ mod tests {
         assert_eq!(md.lines().count(), 2);
         assert!(md.contains(" a"), "{md}");
         assert!(md.contains("(marker)"), "{md}");
+    }
+
+    // ---- ws:export-deliver ----
+    #[test]
+    fn markers_csv_round_trip() {
+        let mut p = Project::new();
+        p.tracks[0].clips.push(Clip::new(9, ClipKind::Video, "v", 2.0, 4.0));
+        let a = p.add_marker(1.5, "Intro, part \"one\"");
+        p.marker_mut(a).unwrap().note = "line\nbreak".into();
+        p.marker_mut(a).unwrap().label = 2;
+        let b = p.add_marker(4.0, "");
+        p.marker_mut(b).unwrap().duration = 0.5;
+        p.add_clip_marker(9, 1.0, "on clip"); // lands at 3.0
+        let csv = export_markers(&p, 30.0, MarkerFmt::Csv);
+        assert!(csv.starts_with("time,duration,name,note,label\n"), "{csv}");
+        // record count, not `.lines()`: one note is a quoted multi-line field, so it spans 2 physical
+        // lines on its own — `.lines()` would overcount, which is exactly the bug `csv_records` fixes
+        assert_eq!(csv_records(&csv).len(), 4, "{csv}");
+        let mut q = Project::new();
+        assert_eq!(import_markers_csv(&mut q, &csv), 3);
+        let got: Vec<(f64, f64, String, u8)> =
+            q.markers.iter().map(|m| (m.t, m.duration, m.name.clone(), m.label)).collect();
+        assert_eq!(
+            got,
+            vec![
+                (1.5, 0.0, "Intro, part \"one\"".to_string(), 2),
+                (3.0, 0.0, "on clip".to_string(), 0),
+                (4.0, 0.5, String::new(), 0),
+            ]
+        );
+        assert_eq!(q.markers[0].note, "line\nbreak");
+        // a bare `time,name` file (no header) imports too; junk lines are skipped, not fatal
+        let mut r = Project::new();
+        assert_eq!(import_markers_csv(&mut r, "7.25,seven\n\nnot a time,x\n9,nine"), 2);
+        assert_eq!((r.markers[0].t, r.markers[0].name.as_str()), (7.25, "seven"));
+        // chapters: every line starts with HH:MM:SS, the list starts at zero
+        let yt = export_markers(&p, 30.0, MarkerFmt::YoutubeChapters);
+        for l in yt.lines() {
+            let ts = l.split(' ').next().unwrap();
+            assert_eq!(ts.len(), 8, "{l}");
+            assert!(
+                ts.chars().enumerate().all(|(i, c)| if i == 2 || i == 5 { c == ':' } else { c.is_ascii_digit() }),
+                "{l}"
+            );
+        }
+        assert!(yt.starts_with("00:00:00 Intro\n"), "{yt}");
+        assert!(yt.contains("00:00:03 on clip"), "{yt}");
+        assert!(yt.contains("00:00:04 Chapter"), "unnamed markers still get a chapter title: {yt}");
+        assert_eq!(MarkerFmt::parse("youtube_chapters"), Some(MarkerFmt::YoutubeChapters));
+        assert_eq!(MarkerFmt::parse("nope"), None);
     }
 
     #[test]

@@ -237,18 +237,21 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
             true
         }
         SpliceInsert | OverwriteAtPlayhead => {
-            // ponytail: uses the last-selected library asset, not real three-point source marks —
-            // upgrade path: source-monitor (wave 2) supplies real src_in/src_out.
-            let Some(asset) = app.library.selected else {
-                app.toast("Select a library asset first");
+            // ---- ws:source-monitor ----
+            // the upgrade path this arm's original ponytail note named: a clip open in the Source
+            // monitor supplies the real three-point (asset, src_in..src_out); with none open, the
+            // last-selected library asset (whole file) stands in as before.
+            let three_point = app.source.as_ref().and_then(|s| s.three_point(&app.project));
+            let Some((asset, range)) = three_point.or_else(|| app.library.selected.map(|id| (id, None))) else {
+                app.toast("Open a clip in the Source monitor or select a library asset first");
                 return true;
             };
             let at = app.playhead;
             let label = if a == SpliceInsert { "Splice" } else { "Overwrite" };
             let ids = if a == SpliceInsert {
-                commit(app, label, |p| p.splice_in(asset, at, None, None, None))
+                commit(app, label, |p| p.splice_in(asset, at, None, None, range))
             } else {
-                commit(app, label, |p| p.overwrite_asset(asset, at, None, None, None))
+                commit(app, label, |p| p.overwrite_asset(asset, at, None, None, range))
             };
             if !ids.is_empty() {
                 app.selection = ids;

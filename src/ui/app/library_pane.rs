@@ -2,7 +2,7 @@ use super::*;
 
 pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
     let resp = {
-        let live = app.lib_preview_live;
+        let live = app.source_live;
         let App { project, settings, library: lib, ytdlp_available, thumbs, undo, redo, palette, .. } = app;
         let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
         let ytdlp = ytdlp_available.load(std::sync::atomic::Ordering::Relaxed);
@@ -17,13 +17,15 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
     if resp.import {
         app.act_import();
     }
-    // single-clicked in the Library: the file the preview pane should show (source viewer)
+    // ---- ws:source-monitor ----
+    // single-clicked in the Library: load it into the Source monitor (Pane::Source), which owns the
+    // source player now — the library's own preview box keeps painting the same live frame
     if let Some(p) = resp.preview.clone() {
-        app.start_lib_preview(ui.ctx(), p);
+        app.open_in_source(p, None);
     }
     if !resp.add_to_timeline.is_empty() {
         app.push_undo();
-        app.insert_at(resp.add_to_timeline, app.playhead, None);
+        app.place_assets(&resp.add_to_timeline, app.playhead, None, DropMode::Place);
         app.after_edit();
     }
     // both used to sit inside the open_paths branch, so the Library's "New ▸ Adjustment layer"
