@@ -1,10 +1,10 @@
 //! ---- ws:layout-modes-onboarding ----
 //! The central empty state / home screen: an `egui::Area` of Open / Import / Templates / Recent cards
 //! floating over the panes while the project AND the library are empty (`Settings.home_screen`,
-//! dismissable for the session). It never replaces the layout — the timeline, library and preview are
+//! dismissable for the session). It never replaces the layout - the timeline, library and preview are
 //! all still there behind it, so a dropped file works exactly as before and the cards simply vanish
 //! the moment there is something to edit. No `App` in here (see `ui::app::layout_ctl::home_window`
-//! for the glue that turns a `HomeAction` into real actions); text + path cards only — ponytail: no
+//! for the glue that turns a `HomeAction` into real actions); text + path cards only - ponytail: no
 //! project thumbnails until a project manifest stores one.
 
 use crate::settings::Settings;
@@ -14,7 +14,7 @@ use eframe::egui;
 use std::path::Path;
 
 /// What a card asked for. `New(Some(i))` = start from `guides::PRESETS[i]`; `New(None)` = the default
-/// blank 1080p60 project (which is what an empty project already is — the caller just dismisses).
+/// blank 1080p60 project (which is what an empty project already is - the caller just dismisses).
 #[derive(Clone, Debug, PartialEq)]
 pub enum HomeAction {
     Open,
@@ -30,7 +30,7 @@ pub fn visible(settings: &Settings, empty: bool, dismissed: bool) -> bool {
 }
 
 /// Draws the cards when `visible`; `Some(action)` on a click. `empty` = project has no clips AND the
-/// library has no assets (the caller computes it — see `App::project`).
+/// library has no assets (the caller computes it - see `App::project`).
 pub fn show(ctx: &egui::Context, settings: &Settings, empty: bool, dismissed: bool) -> Option<HomeAction> {
     if !visible(settings, empty, dismissed) {
         return None;
@@ -50,7 +50,7 @@ pub fn show(ctx: &egui::Context, settings: &Settings, empty: bool, dismissed: bo
                         }
                     });
                 });
-                ui.weak("Drop video, audio or images anywhere in the window — or start here.");
+                ui.weak("Drop video, audio or images anywhere in the window - or start here.");
                 ui.add_space(6.0);
                 ui.horizontal_wrapped(|ui| {
                     if glyph_text_button(ui, Glyph::Folder, "Open…").on_hover_text("A video or a .sedit project (Ctrl+O)").clicked() {

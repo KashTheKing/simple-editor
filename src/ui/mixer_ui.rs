@@ -2,12 +2,12 @@
 //! (Main last). Everything in a strip scrolls vertically, so a long filter chain stays reachable.
 //!
 //! Strip: name (editable), what feeds it, a stereo peak meter fed by `BusGraph::meter`, a gain fader
-//! (dB), pan knob, Mute (speaker glyph) / Solo / Mono, the output-bus combo, and the filter chain —
+//! (dB), pan knob, Mute (speaker glyph) / Solo / Mono, the output-bus combo, and the filter chain -
 //! each filter as a header row (enable, name, up/down, X) with its parameters below (DragValue per
 //! `FilterKind::params()` + a diamond keyframe toggle); EQ / pass filters also draw a response plot over a
 //! labelled log-frequency grid with one draggable handle per band. "+ Filter" adds from
 //! `FilterKind::ALL`, "+ Bus" creates a bus, X deletes one (never Main; its users fall back to Main).
-//! Routing: every audio track is a row — click it to send it to the selected bus, or pick from its own
+//! Routing: every audio track is a row - click it to send it to the selected bus, or pick from its own
 //! combo (`Track.bus`); the selected clip gets an override combo (`Clip.bus`, "(track)" = inherit).
 //! Undo once per gesture; returns true when the project changed.
 //!
@@ -35,7 +35,7 @@ thread_local! {
     static FOCUS_BUS: RefCell<Option<Id>> = const { RefCell::new(None) };
 }
 
-/// Pre-select `id` the next time the Mixer pane draws. Only selects — it does not surface the pane
+/// Pre-select `id` the next time the Mixer pane draws. Only selects - it does not surface the pane
 /// (layout-modes-onboarding's `App::surface`, wave 2).
 pub fn request_focus_bus(id: Id) {
     FOCUS_BUS.with(|p| *p.borrow_mut() = Some(id));
@@ -121,7 +121,7 @@ pub fn show(
     test_rects::clear();
     let mut g = Gesture::default();
     let mut ed = Edits::default();
-    // ponytail: clone the whole bus list every frame — a handful of buses with a few filters each is
+    // ponytail: clone the whole bus list every frame - a handful of buses with a few filters each is
     // nothing next to a repaint. Upgrade path if it ever shows up: edit in place and snapshot lazily.
     // Main is the one bus that always exists: without it the pane is empty on a fresh project and there
     // is nothing to route to. Creating it is not a user edit, so it takes no undo entry.
@@ -243,7 +243,7 @@ pub fn show(
 struct Strip<'a> {
     is_main: bool,
     meter: (f32, f32),
-    /// (momentary, integrated) LUFS from `BusGraph::lufs` — -inf until playback has published a block.
+    /// (momentary, integrated) LUFS from `BusGraph::lufs` - -inf until playback has published a block.
     lufs: (f32, f32),
     /// Tracks and buses that sum into this one, comma-joined.
     feed: &'a str,
@@ -252,7 +252,7 @@ struct Strip<'a> {
 }
 
 /// Who sums into each bus: the audio tracks routed to it and the buses that send here. Mirrors
-/// `mixer_fx::resolve` — a dangling send lands in Main.
+/// `mixer_fx::resolve` - a dangling send lands in Main.
 /// ponytail: track-level routing only. A single clip's `Clip.bus` override is visible in the routing
 /// list instead; walk `Project::bus_of` over every clip here if that turns out to be confusing.
 fn feeds(project: &Project, list: &[Bus], main: Id) -> Vec<(Id, String)> {
@@ -273,11 +273,11 @@ fn feeds(project: &Project, list: &[Bus], main: Id) -> Vec<(Id, String)> {
 }
 
 /// Diamond keyframe toggle for one parameter at the playhead; right-click clears every key. `at` only has
-/// to be unique inside the strip — the mixer edits a fresh clone of the bus list every frame, so an
+/// to be unique inside the strip - the mixer edits a fresh clone of the bus list every frame, so an
 /// id derived from the `Animated`'s address (`crate::ui::key_buttons`) would not survive a click.
 fn key_button(ui: &mut egui::Ui, a: &mut Animated, t: f64, palette: &Palette, g: &mut Gesture, at: (Id, usize, usize)) {
     let tip = if a.is_animated() {
-        format!("{} keyframes — right-click to clear", a.keys.len())
+        format!("{} keyframes - right-click to clear", a.keys.len())
     } else {
         "Toggle keyframe at playhead".to_string()
     };
@@ -429,7 +429,7 @@ fn meter(ui: &mut egui::Ui, lr: (f32, f32), palette: &Palette) {
 /// open, idle Mixer stays at 0 % CPU.
 fn lufs_row(ui: &mut egui::Ui, (momentary, integrated): (f32, f32), palette: &Palette, n: usize) {
     let _ = n;
-    let fmt = |v: f32| if v.is_finite() { format!("{v:.1}") } else { "—".to_string() };
+    let fmt = |v: f32| if v.is_finite() { format!("{v:.1}") } else { " - ".to_string() };
     let r = ui
         .horizontal(|ui| {
             glyph_label(ui, Glyph::Meter, palette.text_dim);
@@ -702,7 +702,7 @@ fn curve(
     changed
 }
 
-/// One row per audio track — click a track to send it to the selected bus, or pick from its own combo —
+/// One row per audio track - click a track to send it to the selected bus, or pick from its own combo -
 /// plus the `Clip.bus` override of the selected clip.
 #[allow(clippy::too_many_arguments)]
 fn routing(
@@ -801,7 +801,7 @@ mod tests {
         selection: Vec<Id>,
         undos: usize,
         time: f64,
-        /// Timeline playhead handed to `show` — every parameter is read and written there.
+        /// Timeline playhead handed to `show` - every parameter is read and written there.
         playhead: f64,
     }
 
@@ -1048,8 +1048,8 @@ mod tests {
 
     // ---- ws:audio-dsp-automation ----
 
-    /// The LUFS row draws under every strip's peak meter, reads what the graph was fed, and — with the
-    /// Mixer open and a bus selected — 30 idle frames never ask for a repaint (idle-CPU-0% gate).
+    /// The LUFS row draws under every strip's peak meter, reads what the graph was fed, and - with the
+    /// Mixer open and a bus selected - 30 idle frames never ask for a repaint (idle-CPU-0% gate).
     #[test]
     fn lufs_row_reads_the_graph_and_stays_idle() {
         let mut h = Harness::new();
@@ -1086,7 +1086,7 @@ mod tests {
         request_focus_bus(999);
         h.frame(vec![]);
         assert_eq!(h.state.selected_bus, Some(music), "an unknown bus leaves the selection alone");
-        // the '+ Filter' combo lists the new kinds through FilterKind::ALL — no per-kind UI code
+        // the '+ Filter' combo lists the new kinds through FilterKind::ALL - no per-kind UI code
         h.project.bus_mut(music).unwrap().filters.push(AudioFilter::new(FilterKind::DeEsser));
         h.frame(vec![]);
         assert!(test_rects::get("p1_0_2").is_some(), "De-esser's third param (Ratio) is drawn");

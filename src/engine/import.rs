@@ -87,7 +87,7 @@ pub fn import_file(path: &std::path::Path) -> Result<ImportReport, String> {
     let stem = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let mut b = Build::new(dir, &stem);
     if bytes.starts_with(&[0x1f, 0x8b]) {
-        // ponytail: no inflate in-tree (no new crates) — say so instead of failing silently
+        // ponytail: no inflate in-tree (no new crates) - say so instead of failing silently
         b.note(
             Level::Skipped,
             format!("file '{stem}'"),
@@ -103,7 +103,7 @@ pub fn import_file(path: &std::path::Path) -> Result<ImportReport, String> {
         b.note(
             Level::Skipped,
             format!("file '{stem}'"),
-            "This is Final Cut Pro X XML. Only the FCP7 / xmeml interchange format is supported — \
+            "This is Final Cut Pro X XML. Only the FCP7 / xmeml interchange format is supported - \
              re-export as \"Final Cut Pro XML\" (version 4/5) or as an EDL.",
         );
     } else if crate::engine::export::ext_of(path) == "edl" || looks_like_edl(&text) {
@@ -216,7 +216,7 @@ pub struct ImageSequence {
     /// Display/glob form of the run, e.g. `shot_*.png`.
     pub pattern: String,
     pub ext: String,
-    /// Every frame, in numeric order (gaps tolerated — the bake lists files, it never counts).
+    /// Every frame, in numeric order (gaps tolerated - the bake lists files, it never counts).
     pub frames: Vec<PathBuf>,
 }
 
@@ -267,10 +267,10 @@ pub fn detect_sequence(path: &Path) -> Option<ImageSequence> {
 }
 
 /// Relink a missing file inside a user-picked folder: by file name first (this folder, then one level
-/// of sub-folders — the same rule `relink` applies to an imported timeline), then by duration for a
+/// of sub-folders - the same rule `relink` applies to an imported timeline), then by duration for a
 /// renamed file: any sibling with the same extension whose container duration is within one frame
 /// of `want_secs`. `want_secs <= 0` (an unprobed placeholder) skips the duration pass.
-/// ponytail: the duration pass runs ffprobe per candidate (~100 ms each) on the calling thread —
+/// ponytail: the duration pass runs ffprobe per candidate (~100 ms each) on the calling thread -
 /// bounded by "same extension, one folder + one level", and only ever behind an explicit folder pick.
 pub fn relink_by_duration(dir: &Path, name: &str, want_secs: f64, fps: f64) -> Option<PathBuf> {
     if let Some(p) = relink(dir, name) {
@@ -458,7 +458,7 @@ fn read_clipitem(item: &El, kind: TrackKind, ti: usize, fps: f64, files: &mut Ha
         return;
     }
     let Some(file) = item.child("file") else {
-        b.note(Level::Skipped, subject, "no <file> — generators and titles are not interchangeable");
+        b.note(Level::Skipped, subject, "no <file> - generators and titles are not interchangeable");
         return;
     };
     let Some(aid) = asset_of(file, fps, files, &subject, b) else {
@@ -680,7 +680,7 @@ fn read_edl(text: &str, b: &mut Build) {
         let u = l.to_ascii_uppercase();
         u.contains("FCM:") && u.contains("DROP") && !u.contains("NON-DROP") && !u.contains("NON DROP")
     });
-    // ponytail: an EDL carries no frame rate — 30 / 29.97 is the CMX assumption, retime after import
+    // ponytail: an EDL carries no frame rate - 30 / 29.97 is the CMX assumption, retime after import
     let fps = if drop_frame { 30.0 * 1000.0 / 1001.0 } else { 30.0 };
     b.project.fps = fps;
     b.note(
@@ -953,12 +953,12 @@ impl El {
 }
 
 /// Maximum element nesting. `El` drops recursively and `find_all` recurses, so an adversarial file of
-/// 100k nested tags would overflow the (UI-thread) stack — which no `catch_unwind` can catch. Real
+/// 100k nested tags would overflow the (UI-thread) stack - which no `catch_unwind` can catch. Real
 /// FCP7/EDL exports are under 20 deep.
 const MAX_XML_DEPTH: usize = 256;
 
 /// Minimal well-formed-ish XML reader: elements, attributes, text, CDATA; comments / PIs / DOCTYPE are
-/// skipped. Mismatched or missing close tags unwind instead of failing — exported timelines are machine
+/// skipped. Mismatched or missing close tags unwind instead of failing - exported timelines are machine
 /// written, but a truncated one should still give back what it has. Nesting is capped at
 /// `MAX_XML_DEPTH`.
 fn parse_xml(src: &str) -> Result<El, String> {
@@ -1164,7 +1164,7 @@ fn percent_decode(s: &str) -> String {
 
 /// Paths with a probe still out. By path rather than asset id: a probe outlives the project that
 /// started it, and paths are what the library has to hand.
-/// ponytail: linear scan under one lock — an import batch is a handful of files, not a thousand.
+/// ponytail: linear scan under one lock - an import batch is a handful of files, not a thousand.
 static PROBING: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 /// Is this asset still waiting for its metadata? (the library says "Loading…" instead of a duration)
@@ -1264,7 +1264,7 @@ pub fn adopt(project: &mut Project, id: Id, probed: Asset) -> bool {
     }
     // one placement made one clip, but re-placing it can make three (video + its audio streams), so
     // collapse the spots by start or a second adopt would multiply them.
-    // ponytail: two placements of the same asset at the same start collapse into one — they would have
+    // ponytail: two placements of the same asset at the same start collapse into one - they would have
     // to have been dropped in the sub-second the probe was out.
     spots.sort_by(|x, y| x.0.total_cmp(&y.0).then(y.1.is_some().cmp(&x.1.is_some())));
     spots.dedup_by(|x, y| x.0 == y.0);

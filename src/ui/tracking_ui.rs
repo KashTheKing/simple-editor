@@ -1,8 +1,8 @@
 //! Tracking pane (non-blocking): follow a point or a rectangular area through a clip and keep the
 //! result as a reusable project path.
 //!
-//! Pick the clip (the selection by default), place the tracker box — the Preview draws it and drags it
-//! while this pane is on screen — set its size and the search radius, then "Track forward" /
+//! Pick the clip (the selection by default), place the tracker box - the Preview draws it and drags it
+//! while this pane is on screen - set its size and the search radius, then "Track forward" /
 //! "Track backward". `engine::tracking` does the matching on its own thread and this pane shows a
 //! progress bar and repaints; "Cancel" just drops the job. The result saves into `Project.paths`
 //! ("Save as path") and can be dropped straight onto the clip's X/Y keyframes ("Apply to clip"),
@@ -61,7 +61,7 @@ impl TrackState {
 // ---- ws:canvas-handles-monitor ----
 impl TrackState {
     /// The finished track this pane holds, for Auto Reframe: the clip it belongs to (the explicit
-    /// pick, else the first selected visual clip — the pane's own rule) and its points, once at least
+    /// pick, else the first selected visual clip - the pane's own rule) and its points, once at least
     /// two frames were tracked and the worker is done. None = nothing to reframe from.
     pub(crate) fn tracked(&self, project: &Project, selection: &[Id]) -> Option<(Id, &[(f32, f32, f32)])> {
         if self.job.is_some() || self.points.len() < 2 {
@@ -74,7 +74,7 @@ impl TrackState {
 // ---- ws:canvas-handles-monitor ----
 #[cfg(test)]
 impl TrackState {
-    /// A finished track with `points` already in hand — `points`/`job` are private (no live `App`
+    /// A finished track with `points` already in hand - `points`/`job` are private (no live `App`
     /// exists to drive `TrackJob::start` for real in a test; see `app::monitor`'s tests), so
     /// `app::monitor::reframe`'s own tests build one through this instead of the tracking pane's UI.
     pub(crate) fn with_points(points: Vec<(f32, f32, f32)>) -> Self {
@@ -113,7 +113,7 @@ pub fn show(
     ui.strong("Tracking");
     ui.horizontal(|ui| {
         ui.label("Clip");
-        let name = target.and_then(|id| project.clip(id)).map(|c| c.name.clone()).unwrap_or_else(|| "—".into());
+        let name = target.and_then(|id| project.clip(id)).map(|c| c.name.clone()).unwrap_or_else(|| " - ".into());
         ui.monospace(name);
         if ui.add_enabled(!running, Button::new("Use selected")).clicked() {
             state.clip = selection.first().copied();

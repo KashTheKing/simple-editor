@@ -2,11 +2,11 @@
 //! Video scopes: Waveform / Parade / Vectorscope / Histogram over `GpuRenderer::stats()`'s `FrameStats`.
 //!
 //! deviation (see PR body / `monitor.rs`'s matching note): the plan attributes this to a
-//! `gpu.frame_stats()` API that does not exist in `engine::gpu` under that name — CONFIRMED by reading
+//! `gpu.frame_stats()` API that does not exist in `engine::gpu` under that name - CONFIRMED by reading
 //! the source. What DOES exist is `GpuRenderer::{set_stats_wanted, stats}` (already consumed by
 //! `tools_color.rs`'s `color.auto`/`color.match`/`frame.stats`), fed by `render_preview_texture`'s own
 //! internal readback gate. This window is therefore a REAL implementation, not the no-op stub the
-//! orchestrating brief anticipated for the missing-API case — it reads the same `FrameStats` type
+//! orchestrating brief anticipated for the missing-API case - it reads the same `FrameStats` type
 //! color-engine already computes, just via `stats()` instead of a same-named method.
 //!
 //! Each scope's geometry is computed by a pure `*_points`/`*_heights` fn (no `egui` needed, directly
@@ -41,7 +41,7 @@ fn luma01(px: [u8; 4]) -> f32 {
     (px[0] as f32 * 0.2126 + px[1] as f32 * 0.7152 + px[2] as f32 * 0.0722) / 255.0
 }
 
-/// Waveform scatter: (x in 0..1 = column position, y in 0..1 = luma) per downsampled pixel — a classic
+/// Waveform scatter: (x in 0..1 = column position, y in 0..1 = luma) per downsampled pixel - a classic
 /// video waveform monitor reads brightness left-to-right the same way the frame does.
 pub(crate) fn waveform_points(stats: &FrameStats) -> Vec<(f32, f32)> {
     let w = stats.sample_w.max(1);
@@ -62,7 +62,7 @@ pub(crate) fn parade_points(stats: &FrameStats) -> [Vec<(f32, f32)>; 3] {
     out
 }
 
-/// Vectorscope: a simple (B-Y, R-Y) chroma scatter per downsampled pixel, centred at (0, 0) — not
+/// Vectorscope: a simple (B-Y, R-Y) chroma scatter per downsampled pixel, centred at (0, 0) - not
 /// broadcast-calibrated (no I/Q rotation or graticule targets), close enough to spot a colour cast or a
 /// blown-out saturated channel at a glance.
 pub(crate) fn vectorscope_points(stats: &FrameStats) -> Vec<(f32, f32)> {
@@ -77,7 +77,7 @@ pub(crate) fn vectorscope_points(stats: &FrameStats) -> Vec<(f32, f32)> {
         .collect()
 }
 
-/// Normalized (0..1) bar heights for one channel's 256-bucket histogram — the tallest bucket is 1.0.
+/// Normalized (0..1) bar heights for one channel's 256-bucket histogram - the tallest bucket is 1.0.
 pub(crate) fn histogram_heights(hist: &[u32; 256]) -> [f32; 256] {
     let max = (*hist.iter().max().unwrap_or(&0)).max(1) as f32;
     std::array::from_fn(|i| hist[i] as f32 / max)
@@ -148,8 +148,8 @@ pub(crate) fn paint_histogram(p: &egui::Painter, rect: Rect, stats: &FrameStats)
 }
 
 /// The Scopes `egui::Window`: one tab per name in `open` (from `Settings.scopes`), each painting against
-/// `stats` (`None` = nothing rendered yet — an empty placeholder, no panic). Adding/removing tabs writes
-/// back into `open` directly. Requests no repaint of its own — `App::gpu.stats()` only changes when a new
+/// `stats` (`None` = nothing rendered yet - an empty placeholder, no panic). Adding/removing tabs writes
+/// back into `open` directly. Requests no repaint of its own - `App::gpu.stats()` only changes when a new
 /// frame is actually decoded, so an idle preview with Scopes open costs nothing extra per frame.
 pub(crate) fn window(
     ctx: &egui::Context,
@@ -210,7 +210,7 @@ mod tests {
 
     #[test]
     fn waveform_points_map_columns_and_luma() {
-        // 2x1: a black pixel then a white pixel — column 0 -> luma 0, column 1 -> luma ~1
+        // 2x1: a black pixel then a white pixel - column 0 -> luma 0, column 1 -> luma ~1
         let s = stats(vec![[0, 0, 0, 255], [255, 255, 255, 255]], 2, 1);
         let pts = waveform_points(&s);
         assert_eq!(pts.len(), 2);

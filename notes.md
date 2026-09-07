@@ -7,6 +7,16 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
 
 ---
 
+- **em-dash sweep (2026-09-07):** removed every `—` (U+2014) from `src/**/*.rs` (toasts, tool
+  `desc:` strings shown as command-palette tooltips, error messages, doc comments) via a Python
+  regex pass, replaced with `" - "`. Gotcha: on Windows, `open(f, 'w')` (no `newline=''`) silently
+  turns `\n` into `\r\n` on write — even for files that were LF-only going in — which broke
+  `ui::app::library_pane::tests::new_subclip_undo_restores_pre_subclip_project` (it does
+  `include_str!("media_sync.rs")` then `.find("\n    }\n")`, which no longer matched once those
+  bytes became `\r\n`). Always pass `encoding='utf-8', newline=''` on both read and write when
+  bulk-editing `.rs` files in this repo, or `cargo test` fails in a spot that looks unrelated to
+  the actual change.
+
 - **docs-refresh (2026-09-07), cross-cutting gotchas from the whole overhaul:** Luau's io/os/ffi
   sandbox means `editor.log()` only ever renders as a 5-10s auto-expiring toast
   (`ui/app/palette_ctl.rs`'s `fire_hook`, `app.rs`-descended toast draw) with no copy button —

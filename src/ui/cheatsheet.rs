@@ -1,13 +1,13 @@
 //! F1 keyboard-shortcuts overlay: every bound `Action`, grouped by `hotkeys::group`, plus a "Command
 //! Palette (Ctrl+K)" row as a second entry point into the palette. A plain, non-blocking `egui::Window`
-//! (same shape as every other overlay in this crate — Retime, Export, Settings — never modal).
+//! (same shape as every other overlay in this crate - Retime, Export, Settings - never modal).
 //! ---- ws:command-palette ----
 
 use crate::hotkeys::{group, Action, Hotkeys};
 use eframe::egui;
 
 /// Draws the cheat-sheet window while `*open`. Grouped by `hotkeys::group(a)`, unbound actions shown
-/// last within their group with a dim "—" instead of a chord.
+/// last within their group with a dim " - " instead of a chord.
 pub fn show(ctx: &egui::Context, hotkeys: &Hotkeys, open: &mut bool) {
     if !*open {
         return;
@@ -17,7 +17,7 @@ pub fn show(ctx: &egui::Context, hotkeys: &Hotkeys, open: &mut bool) {
         ctx,
         |ui| {
             ui.label(egui::RichText::new("Command Palette (Ctrl+K)").strong());
-            ui.weak("Search every command by name — this cheat sheet is the second way in.");
+            ui.weak("Search every command by name - this cheat sheet is the second way in.");
             ui.separator();
             let mut by_group: Vec<(&'static str, Vec<Action>)> = Vec::new();
             for &a in Action::ALL {
@@ -35,7 +35,7 @@ pub fn show(ctx: &egui::Context, hotkeys: &Hotkeys, open: &mut bool) {
                             ui.label(a.label());
                             let text = hotkeys.text(a);
                             if text.is_empty() {
-                                ui.weak("—");
+                                ui.weak(" - ");
                             } else {
                                 ui.monospace(text);
                             }

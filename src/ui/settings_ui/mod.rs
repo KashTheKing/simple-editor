@@ -39,14 +39,14 @@ pub struct SettingsUi {
     /// (the app restarts the server on every value it sees, and a busy one in between switches it off).
     pub(super) port_edit: Option<u16>,
     /// ---- ws:forgiveness ----
-    /// Performance tab's "Clear Caches" button was clicked this frame — the app (windows.rs) reads and
+    /// Performance tab's "Clear Caches" button was clicked this frame - the app (windows.rs) reads and
     /// resets this after calling `show`, since `performance()` has no `&mut App` to act on directly.
     pub clear_caches: bool,
     // ---- ws:command-palette ----
     /// Hotkeys tab search box text.
     pub(super) hotkeys_search: String,
     /// A rebind collided with another action's chord: (the action being rebound, its new chord, the
-    /// action that already has it) — drives the inline Reassign/Keep row until the user picks one.
+    /// action that already has it) - drives the inline Reassign/Keep row until the user picks one.
     pub(super) pending_conflict: Option<(Action, egui::KeyboardShortcut, Action)>,
 }
 
@@ -77,7 +77,7 @@ impl Status {
             ),
             ytdlp: match crate::media::ytdlp::exe() {
                 Some(p) => format!("yt-dlp: {}", p.display()),
-                None => "yt-dlp: not found — the Library's \"Import URL…\" button is hidden".into(),
+                None => "yt-dlp: not found - the Library's \"Import URL…\" button is hidden".into(),
             },
             ctxmenu: if crate::contextmenu::is_installed() { "(installed)" } else { "(not installed)" },
         }
@@ -110,7 +110,7 @@ pub fn show(
     let mut open = state.open;
     egui::Window::new("Settings")
         .open(&mut open)
-        // "when I open the settings tab, it should be really big" — sized to most of the screen,
+        // "when I open the settings tab, it should be really big" - sized to most of the screen,
         // still resizable/movable like any other non-blocking window
         .default_size([900.0, 700.0])
         .collapsible(false)
@@ -207,7 +207,7 @@ mod tests {
         let _ = ctx.end_pass();
 
         // ---- ws:command-palette ----
-        // Ctrl+Z conflicts with Undo: this no longer silently steals it — it opens the inline
+        // Ctrl+Z conflicts with Undo: this no longer silently steals it - it opens the inline
         // Reassign/Keep row (`pending_conflict`) and leaves both bindings untouched until the user
         // picks one.
         let mut input = egui::RawInput::default();

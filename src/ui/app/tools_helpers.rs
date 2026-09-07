@@ -1,7 +1,7 @@
 use super::*;
 
 // ---- ws:audio-analysis ----
-/// A `peaks_of` closure over `waveforms`, keyed by ASSET id (stream 0) — the shape
+/// A `peaks_of` closure over `waveforms`, keyed by ASSET id (stream 0) - the shape
 /// `engine::analysis::normalize`/`match_loudness`/`duck` take. Shared by `tools_audio.rs` and
 /// `audio_actions.rs`. ponytail: a clip picking a non-zero `audio_stream` reads stream 0 here; correct
 /// for the overwhelming single-stream-asset case.
@@ -101,7 +101,7 @@ pub(super) fn mask_shape(s: &str) -> Result<MaskShape, String> {
 pub(super) fn mask_slot(project: &mut Project, clip: Id, effect: Option<usize>) -> Result<&mut Option<Mask>, String> {
     let c = project.clip_mut(clip).ok_or("no such clip")?;
     if !c.is_visual() {
-        return Err("that clip is audio — a mask shapes pixels, and audio has none".into());
+        return Err("that clip is audio - a mask shapes pixels, and audio has none".into());
     }
     match effect {
         None => Ok(&mut c.mask),
@@ -227,7 +227,7 @@ pub(super) fn apply_clip_fields(clip: &mut Clip, fields: &Value) -> Result<(), S
                 match k.as_str() {
                     "text" => t.text = v.as_str().ok_or("text: string")?.to_string(),
                     "font" => t.font = v.as_str().ok_or("font: string")?.to_string(),
-                    // ws:text-titles: size/outline_width/letter_spacing are now Animated — `clip.set`
+                    // ws:text-titles: size/outline_width/letter_spacing are now Animated - `clip.set`
                     // is a discrete "set the value" op, so it clears any keys, same as x/y/scale above.
                     "size" => {
                         t.size.keys.clear();

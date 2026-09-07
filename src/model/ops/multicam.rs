@@ -2,7 +2,7 @@
 //! Multicam create/switch: `multicam_make` nests a set of angle clips into a `Sequence` (one video
 //! track per angle, offset-compensated so they read in sync), `multicam_switch` splits that nested
 //! `Sequence`'s own tracks at a time and toggles which angle's clips are `enabled` from there onward.
-//! `multicam_switch` deliberately never touches `Project.editing`/`main_stash` — it reaches the nested
+//! `multicam_switch` deliberately never touches `Project.editing`/`main_stash` - it reaches the nested
 //! `Sequence`'s tracks directly via `sequence_mut`, using `split_tracks_at` (extracted from
 //! `Project::split_at` in `editing.rs`) instead of the `open_sequence`/`close_sequence` stash swap: a
 //! swap can leak state if interrupted mid-call (panic, early return), while a direct field mutation
@@ -18,10 +18,10 @@ impl Project {
     /// Nest `ids` (>= 2 asset-backed clips, one per camera angle) into a new `Sequence`, one video track
     /// per angle, offset-compensated first so the angles read frame-aligned once nested: `offsets[i]`
     /// is how far clip `i`'s content leads the sync reference (typically `ids[0]`, e.g. from
-    /// `engine::analysis::xcorr_offset`) — its `start` moves EARLIER by that many seconds
+    /// `engine::analysis::xcorr_offset`) - its `start` moves EARLIER by that many seconds
     /// (`start -= offset`) before `nest_selection` re-bases the group onto the nested sequence's own
     /// t=0. If that would push any clip's shifted start negative, every shifted start is pushed forward
-    /// by the same amount first (relative sync is unaffected — only the group's placement on the timeline
+    /// by the same amount first (relative sync is unaffected - only the group's placement on the timeline
     /// shifts to stay non-negative). `ids.len() != offsets.len()`, fewer than 2 ids, or an unknown id all
     /// return `None` without mutating anything.
     pub fn multicam_make(&mut self, ids: &[Id], offsets: &[f64], name: impl Into<String>) -> Option<Id> {
@@ -114,7 +114,7 @@ mod tests {
 
     /// Three angle clips with offsets `[0, 1.2, -0.4]` nest into a sequence with one video track per
     /// angle; the PAIRWISE difference between each pair of nested (rebased) starts equals the negative
-    /// of the pairwise offset difference — the frame-alignment claim in a form that doesn't depend on
+    /// of the pairwise offset difference - the frame-alignment claim in a form that doesn't depend on
     /// which clip happens to land at the sequence's own t=0.
     #[test]
     fn multicam_make_creates_one_track_per_angle_with_offsets() {
@@ -125,7 +125,7 @@ mod tests {
                 let cid = p.new_id();
                 let mut c = Clip::new(cid, ClipKind::Video, format!("cam{i}"), 5.0, 10.0);
                 c.asset = aid;
-                // each angle on its own source video track (V1 exists already; add V2/V3) — a real
+                // each angle on its own source video track (V1 exists already; add V2/V3) - a real
                 // multicam recording is one camera per track, not stacked on the same one.
                 let ti = if i == 0 { 0 } else { p.add_track(TrackKind::Video) };
                 p.tracks[ti].clips.push(c);
@@ -145,7 +145,7 @@ mod tests {
                 assert!((got - want).abs() < 1e-9, "angle {i} vs {j}: {got} != {want}");
             }
         }
-        // the source (main-timeline) clips are gone — nest_selection moved them, not copied them
+        // the source (main-timeline) clips are gone - nest_selection moved them, not copied them
         assert!(p.tracks[0].clips.is_empty());
     }
 
@@ -174,7 +174,7 @@ mod tests {
         let seq_id = p.clip(clip_id).unwrap().sequence;
         let seq = p.sequence(seq_id).unwrap();
         let video: Vec<&Track> = seq.tracks.iter().filter(|t| t.kind == TrackKind::Video).collect();
-        // clips ENDING before the split point are untouched (still their original enabled=true —
+        // clips ENDING before the split point are untouched (still their original enabled=true -
         // "non-destructive: earlier segments keep their prior enabled state", not forced to a value).
         for tr in &video {
             for c in tr.clips.iter().filter(|c| c.start < 5.0 - 1e-6) {

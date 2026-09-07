@@ -32,11 +32,11 @@
 //! clip colours from `Project.labels`, hatched Adjustment layers with an "adj" badge, and the Add Marker /
 //! Copy & Paste Attributes / Add Mask / Nest / Convert to Adjustment Layer context-menu entries.
 //!
-//! Round 4: right-click quick-changes, additive to the menus above — selected transitions get "Change
+//! Round 4: right-click quick-changes, additive to the menus above - selected transitions get "Change
 //! Type" / "Change Easing" submenus on their band's context menu (absolute-overwrite every selected
 //! transition, one undo for the whole bulk pick), and 2+ selected clips sharing an effect kind get an
 //! "Effects" submenu on the clip context menu to toggle that shared effect on/off across the selection.
-//! Any clip with a native size (video/image/sequence) also gets a "Transform" submenu — "Stretch to
+//! Any clip with a native size (video/image/sequence) also gets a "Transform" submenu - "Stretch to
 //! Screen" / "Fit to Screen" (`Project::fit_clip_to_screen`), applied to every such clip in the
 //! selection as one undo step.
 
@@ -124,7 +124,7 @@ pub struct TimelineState {
     pub scroll_y: f32,
     /// Width of the header column in points.
     pub header_w: f32,
-    /// Content rect (lanes area, excluding header & ruler) from the last frame — used by the app for file drops.
+    /// Content rect (lanes area, excluding header & ruler) from the last frame - used by the app for file drops.
     pub lanes_rect: egui::Rect,
     /// Active move/trim gesture.
     drag: Option<Drag>,
@@ -136,23 +136,23 @@ pub struct TimelineState {
     pub selected_marker: Option<Id>,
     /// Rename buffer for the marker context menu.
     rename: Option<(Id, String)>,
-    /// Track under the last press on the lanes — where Ctrl+V pastes.
+    /// Track under the last press on the lanes - where Ctrl+V pastes.
     /// ponytail: an index, not an id, so removing a track just makes the next paste land on its neighbour.
     pub last_track: Option<usize>,
     /// Subtitle lane height (Alt+scroll over the lane resizes it, like tracks).
     pub sub_h: f32,
-    /// Selected cues on the subtitle lane (band drag / Ctrl+click) — bulk convert/delete targets.
+    /// Selected cues on the subtitle lane (band drag / Ctrl+click) - bulk convert/delete targets.
     pub sub_sel: Vec<Id>,
     /// Band-select in progress on the subtitle lane: press-origin time and "Shift held" (add to selection).
     sub_band: Option<(f64, bool)>,
-    /// Active subtitle-cue gesture (trim or move) — undo pushed on release, only if changed.
+    /// Active subtitle-cue gesture (trim or move) - undo pushed on release, only if changed.
     cue_drag: Option<cue_lane::CueDrag>,
     /// Clip ids whose inline keyframe mini-graph (toggled by the corner icon) is open.
     mini_graph_open: Vec<Id>,
-    /// Edit point selected by a seam click (`Zone::Seam` in `arm.rs`) — consumed by trim-model's
+    /// Edit point selected by a seam click (`Zone::Seam` in `arm.rs`) - consumed by trim-model's
     /// keyboard trim actions (U / Shift+U / extend / etc.) in a different, already-existing file.
     pub edit_point: Option<EditPoint>,
-    /// ws:timeline-trim-gestures — empty-lane gap picked by a plain click: (track, from, to). Painted
+    /// ws:timeline-trim-gestures - empty-lane gap picked by a plain click: (track, from, to). Painted
     /// hatched; Delete closes it (`Project::close_gap_at`, ripple tracks only). Dropped by any clip
     /// click / band / Esc, and whenever it stops being a gap.
     pub gap_sel: Option<(usize, f64, f64)>,
@@ -200,7 +200,7 @@ impl Default for TimelineState {
 /// (adding one when nothing is free); `target` then pulls the group onto the row the user last clicked,
 /// if the whole group fits there.
 /// The paste flavours, shared by every timeline context menu. The app decides whether the clipboard
-/// actually holds anything — a menu that hid itself when empty would just look broken.
+/// actually holds anything - a menu that hid itself when empty would just look broken.
 fn paste_menu(ui: &mut egui::Ui, actions: &mut Vec<crate::hotkeys::Action>) {
     use crate::hotkeys::Action;
     for (label, a) in [
@@ -288,8 +288,8 @@ impl TimelineState {
     }
 }
 
-// `EditPoint`/`Side` (which side of a seam a click targets — plain=Both, Ctrl=Left/outgoing,
-// Alt=Right/incoming, see `arm.rs`'s Seam zone) live in `model::ops::trim` — trim-model's keyboard
+// `EditPoint`/`Side` (which side of a seam a click targets - plain=Both, Ctrl=Left/outgoing,
+// Alt=Right/incoming, see `arm.rs`'s Seam zone) live in `model::ops::trim` - trim-model's keyboard
 // actions (`app/trim_actions.rs`) build the same primitives, so this is the one shared type rather
 // than a structurally-identical duplicate.
 pub use crate::model::ops::trim::{EditPoint, Side};
@@ -297,11 +297,11 @@ pub use crate::model::ops::trim::{EditPoint, Side};
 pub struct TimelineCtx<'a> {
     pub project: &'a mut Project,
     pub selection: &'a mut Vec<Id>,
-    /// Selected transition ids (timeline bands) — separate from the clip selection: clicking one
+    /// Selected transition ids (timeline bands) - separate from the clip selection: clicking one
     /// kind of thing deselects the other, Ctrl adds within its own kind.
     pub sel_transitions: &'a mut Vec<Id>,
     pub playhead: &'a mut f64,
-    /// Call with the project *before* mutating it (once per gesture) — pushes an undo snapshot. The
+    /// Call with the project *before* mutating it (once per gesture) - pushes an undo snapshot. The
     /// label names the History row ("Ripple trim", "Roll edit", …); "" keeps the derived label.
     pub undo: &'a mut dyn FnMut(&Project, &'static str),
     pub waveforms: &'a mut WaveformCache,
@@ -321,12 +321,12 @@ pub struct TimelineCtx<'a> {
     /// Active tool strip tool. Cut splits a clicked clip, Marker drops a marker, Stretch retimes an
     /// edge drag instead of trimming it; everything else behaves as Select.
     pub tool: crate::ui::tools::Tool,
-    /// ws:timeline-trim-gestures — the one asset selected in the Library (None when zero or 2+ are):
+    /// ws:timeline-trim-gestures - the one asset selected in the Library (None when zero or 2+ are):
     /// gates the clip menu's "Replace with Library Selection".
     pub library_selected: Option<Id>,
     // ---- ws:pro-timeline ----
     /// Active `TimelineView` preset (resolved from `Settings.timeline_views[state.view_idx]` by
-    /// `app/timeline_pane.rs`, clamped) — gates the waveform/filmstrip/keyframe/clip-text paint passes.
+    /// `app/timeline_pane.rs`, clamped) - gates the waveform/filmstrip/keyframe/clip-text paint passes.
     pub view: &'a TimelineView,
     /// `Settings.overview`: paint the inline overview minimap strip above the ruler.
     pub overview: bool,
@@ -343,28 +343,28 @@ pub struct TimelineResponse {
     pub edited: bool,
     /// The playhead was moved by the user.
     pub seeked: bool,
-    /// Files dropped via dnd `DragPayload::Path` — (path, timeline time, track index).
+    /// Files dropped via dnd `DragPayload::Path` - (path, timeline time, track index).
     pub dropped_files: Vec<(PathBuf, f64, Option<usize>)>,
-    /// Other dnd payloads (Sequence / Template / Effect / Transition) dropped on the lanes — the app
+    /// Other dnd payloads (Sequence / Template / Effect / Transition) dropped on the lanes - the app
     /// places them; an Effect or a Transition goes onto the clip that contains the reported time.
     pub dropped_other: Vec<(DragPayload, f64, Option<usize>)>,
     /// Actions requested from the timeline's context menus (Retime, AddTransition, FreezeFrame, AutoCut, …).
     pub actions: Vec<crate::hotkeys::Action>,
-    /// Container media replacement request — (clip id, pair mode).
+    /// Container media replacement request - (clip id, pair mode).
     pub replace_container: Option<(Id, bool)>,
-    /// A Sequence clip was double-clicked — the app calls `Project::open_sequence` with this sequence id.
+    /// A Sequence clip was double-clicked - the app calls `Project::open_sequence` with this sequence id.
     pub open_sequence: Option<Id>,
-    /// "Edit labels…" was picked in a clip's colour submenu — the app opens its label editor.
+    /// "Edit labels…" was picked in a clip's colour submenu - the app opens its label editor.
     pub edit_labels: bool,
 }
 
 struct Drag {
     /// Pointer position where the gesture started.
     origin: Pos2,
-    /// Project at gesture start — pushed as the undo snapshot on release, only if something changed.
+    /// Project at gesture start - pushed as the undo snapshot on release, only if something changed.
     before: Project,
     g: Gesture,
-    /// The candidate this gesture is currently snapped to (if any) — paints the accent guide line for
+    /// The candidate this gesture is currently snapped to (if any) - paints the accent guide line for
     /// the whole gesture and disappears once the pointer drifts out of threshold or the gesture ends.
     snapped: Option<f64>,
 }
@@ -386,7 +386,7 @@ enum Gesture {
         magnetic: bool,
         want: (f64, i32),
     },
-    /// Trim one or more edges by the SAME delta, each from its own press-time position — plain
+    /// Trim one or more edges by the SAME delta, each from its own press-time position - plain
     /// single-edge trim is the `ids.len() == 1` case; ws:pro-timeline's asymmetric multi-roller trim
     /// (Shift-click additional seams onto `TimelineState.rollers` first) is the general case. Each
     /// `(Id, bool)` pair is (clip, is-start-edge); `edge0` is that same clip's edge time at drag start.
@@ -426,7 +426,7 @@ enum Gesture {
     /// (`Project::slide`); `start0` = its start at press.
     Slide { id: Id, start0: f64, changed: bool },
     /// Ctrl+edge (or a plain edge on a magnetic track): trim `ids`' `start` edge from `edge0` by `dt`
-    /// and shift everything downstream on the ripple tracks — ghost only until release, then one
+    /// and shift everything downstream on the ripple tracks - ghost only until release, then one
     /// `Project::ripple_trim` per id (the first ripples, linked followers plain-trim into the room it
     /// made). `multi` (Ctrl+Alt+edge) = the selection's same-side edges via `Project::trim_edges`
     /// instead: all-or-nothing, no downstream shift.
@@ -451,11 +451,11 @@ enum Act {
     /// Drop-zone row for the modifiers held at release (Ctrl = splice, Alt = overwrite, Shift = place
     /// on a new track on top, else the plain free placement). ws:timeline-trim-gestures.
     DropAsset(Id, f64, Option<usize>, GestureKind),
-    /// ws:timeline-trim-gestures — Delete with a gap selected: `Project::close_gap_at(track, t)`.
+    /// ws:timeline-trim-gestures - Delete with a gap selected: `Project::close_gap_at(track, t)`.
     CloseGap(usize, f64),
-    /// ws:timeline-trim-gestures — clip menu "Un-nest": `Project::unnest`.
+    /// ws:timeline-trim-gestures - clip menu "Un-nest": `Project::unnest`.
     Unnest(Id),
-    /// ws:timeline-trim-gestures — clip menu "Replace with Library Selection": `Project::replace_clip`
+    /// ws:timeline-trim-gestures - clip menu "Replace with Library Selection": `Project::replace_clip`
     /// with `TimelineCtx::library_selected`.
     ReplaceClip(Id),
     /// Colour label for the selection (0 = none / inherit asset).
@@ -465,12 +465,12 @@ enum Act {
     /// Right-click quick-change: toggle a shared effect kind's enabled state across the selection.
     /// The new state is the opposite of the first selected clip carrying that kind (mirrors the
     /// Inspector's "first sets the baseline" convention, just with nothing to diff since the menu
-    /// only offers one action — toggle — rather than a value picker).
+    /// only offers one action - toggle - rather than a value picker).
     ToggleEffect(EffectKind),
-    /// Right-click quick-change: "Stretch to Screen" on every selected clip with a native size —
+    /// Right-click quick-change: "Stretch to Screen" on every selected clip with a native size -
     /// `Project::fit_clip_to_screen(id, true)`, applied per clip (each against its own native size).
     StretchToScreen,
-    /// Right-click quick-change: "Fit to Screen" on every selected clip with a native size —
+    /// Right-click quick-change: "Fit to Screen" on every selected clip with a native size -
     /// `Project::fit_clip_to_screen(id, false)`.
     FitToScreen,
     /// Set the easing of every property keyed at clip-local time `t`.
@@ -525,12 +525,12 @@ mod snap;
 mod tests;
 
 // `arm()` is the single source of truth for what a press becomes (gestures.rs routes every body/edge/
-// lane/drop press through it — ws:timeline-trim-gestures); SnapKind is consumed by timeline.snap_query
+// lane/drop press through it - ws:timeline-trim-gestures); SnapKind is consumed by timeline.snap_query
 // in tools_timeline.rs, a sibling module, not by mod.rs itself.
 #[allow(unused_imports)]
 pub(crate) use arm::{arm, GestureKind, TrackFlags, Zone};
 use gestures::gap_at;
-// ws:timeline-trim-gestures — App-level Delete/RippleDelete (actions.rs) routes through this too, so
+// ws:timeline-trim-gestures - App-level Delete/RippleDelete (actions.rs) routes through this too, so
 // the keyboard shortcut respects a magnetic track's "Delete closes the gap" rule the same as the clip
 // context menu's Act::Delete does.
 pub(crate) use gestures::delete_clips_magnetic;
@@ -714,7 +714,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         )
         .on_hover_cursor(CursorIcon::ResizeHorizontal);
 
-    // the row under the press is where Ctrl+V pastes — right-click counts, so the context menu's
+    // the row under the press is where Ctrl+V pastes - right-click counts, so the context menu's
     // Paste lands on the row you opened it over
     if ui.input(|i| i.pointer.primary_pressed() || i.pointer.secondary_pressed()) {
         if let Some(ti) = pointer.filter(|p| lanes.contains(*p)).and_then(|p| state.track_at(p.y, c.project)) {
@@ -738,7 +738,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     let mut start_marker: Option<(Id, Option<Id>)> = None;
     let mut resize: Option<(usize, f32)> = None;
     // header Lock/Ripple/Magnetic toggles: deferred like `resize`, applied after the Act match with no
-    // undo push (every Act pushes one unconditionally) — ws:timeline-trim-gestures
+    // undo push (every Act pushes one unconditionally) - ws:timeline-trim-gestures
     let mut track_toggle: Option<(usize, TrackFlag)> = None;
     let mut divider_y: Option<f32> = None;
     // track-resize handle rects, collected as they're laid out below so the rubber-band-start check
@@ -793,14 +793,14 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         ) {
             act = Some(a);
         }
-        // ws:pro-timeline — track/bus volume automation line, audio tracks only (a video track's
+        // ws:pro-timeline - track/bus volume automation line, audio tracks only (a video track's
         // volume stays at the wave-0 default unity gain; painting a flat line for every one would be
         // pure visual noise with nothing to show).
         if track.kind == TrackKind::Audio {
             let hcell = Rect::from_min_max(pos2(header.left(), row.top()), pos2(header.right(), row.bottom()));
             paint_automation(&bp, track, hcell, &pal);
         }
-        // ws:timeline-trim-gestures — a locked lane reads as "hands off": hatched under its clips
+        // ws:timeline-trim-gestures - a locked lane reads as "hands off": hatched under its clips
         if track.locked {
             hatch(&lp, row.intersect(lanes), pal.text_dim.gamma_multiply(0.25));
         }
@@ -840,7 +840,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             if clip.container {
                 lp.rect_stroke(rect, cr, Stroke::new(1.5, pal.accent), StrokeKind::Inside);
             }
-            // sub-pixel clips (zoomed way out): fill only — no text, waveform, diamonds or hit-testing.
+            // sub-pixel clips (zoomed way out): fill only - no text, waveform, diamonds or hit-testing.
             // ponytail: 4 pt is well under the ~18 pt a clip needs for its trim handles, and the rubber
             // band still catches them; give them their own interact if that ever bites.
             let detailed = vis.width() >= 4.0;
@@ -935,7 +935,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 }
             }
             // retime preview: while the Stretch tool drags this clip's edge, show the rate it is landing on
-            // big in the middle — the corner badge is easy to miss mid-drag
+            // big in the middle - the corner badge is easy to miss mid-drag
             if matches!(&state.drag, Some(Drag { g: Gesture::Stretch { id, .. }, .. }) if *id == clip.id) {
                 name_pc.text(
                     vis.center(),
@@ -990,9 +990,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     lp.rect_filled(Rect::from_center_size(pos2(hx, rect.top() + 3.0), vec2(6.0, 6.0)), 0, pal.text);
                 }
             }
-            // keyframe diamonds: on a tall clip in a value lane — 0 % at the bottom, 100 % at the top of the
+            // keyframe diamonds: on a tall clip in a value lane - 0 % at the bottom, 100 % at the top of the
             // range of the first property keyed at that time (the curve editor's auto-range, so both panes
-            // agree) — otherwise in the bottom strip
+            // agree) - otherwise in the bottom strip
             if has_keys(clip) && c.view.keys {
                 let lane = rect.height() >= KEY_LANE_MIN;
                 let props = crate::ui::curves::prop_count(clip);
@@ -1002,7 +1002,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                         continue;
                     }
                     // ponytail: the lane follows the curve editor's property list (transform + effect
-                    // params). Mask / graph / shape keys keep the bottom strip — extend curves::prop_ref
+                    // params). Mask / graph / shape keys keep the bottom strip - extend curves::prop_ref
                     // to them if they ever need a value lane too. Audio volume (prop 0) too: it is drawn
                     // and dragged on the dB scale above, which the linear lane would contradict.
                     let first = if clip.is_visual() { 0 } else { 1 };
@@ -1057,7 +1057,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             let cid = id.with(clip.id);
             // Body top/bottom split (ws:snap-engine): rows >= 2x MIN_TRACK_H get a bottom
             // crosshair/hairline/click-to-split zone; default/short rows keep one whole-body zone
-            // unchanged. Same call-site position as before the split — the later marker_hits
+            // unchanged. Same call-site position as before the split - the later marker_hits
             // registration still wins hit-testing over both halves.
             let split_body = rect.height() >= 2.0 * MIN_TRACK_H;
             let top_vis = if split_body { Rect::from_min_max(vis.min, pos2(vis.right(), vis.center().y)) } else { vis };
@@ -1108,7 +1108,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 if brb.clicked() {
                     // Cut tool splits here exactly as it would on the top half; Marker still drops a
                     // marker anywhere on the body; plain Select clicking the bottom half is the new
-                    // click-to-split gesture — same Act either way for Select/Cut.
+                    // click-to-split gesture - same Act either way for Select/Cut.
                     let (snap_on, zoom, ph) = (c.snap, state.zoom, *c.playhead);
                     let x = ui.input(|i| i.pointer.latest_pos()).unwrap_or(bot_vis.center()).x;
                     let t = snap_time(state.time_at(x), snap_on, zoom, c.project, ph, &[]);
@@ -1187,7 +1187,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                         .on_hover_cursor(CursorIcon::ResizeHorizontal);
                     if r.clicked() {
                         // ws:pro-timeline: Shift-click a seam toggles it into the asymmetric multi-roller
-                        // trim set (Shift+DRAG on an edge is RateStretch per the frozen modifier table —
+                        // trim set (Shift+DRAG on an edge is RateStretch per the frozen modifier table -
                         // a plain click never starts a drag, so this claims no chord).
                         if mods.shift {
                             match state.rollers.iter().position(|&(id, s)| id == clip.id && s == is_start) {
@@ -1248,7 +1248,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             }
             // keyframe mini-graph: once the clip is wide enough on screen to be worth it (same measure
             // as `detailed` above, just a higher bar), a small toggle icon sits in its top-right corner.
-            // Anchored to the VISIBLE right edge (`vis`), not the clip's own — a zoomed-in clip whose
+            // Anchored to the VISIBLE right edge (`vis`), not the clip's own - a zoomed-in clip whose
             // right edge is off-screen used to lose the button entirely, the opposite of "show it when
             // zoomed in". Registered last so it wins hit-testing over the body underneath it.
             if has_curve_keys(clip) && vis.width() >= MINI_GRAPH_MIN_W {
@@ -1277,7 +1277,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
 
         // seams (ws:snap-engine): adjacent same-track clips whose end/start times coincide get a thin
         // 6 pt hit strip straddling the cut; click selects an EditPoint (plain=Both, Ctrl=Left/outgoing,
-        // Alt=Right/incoming — arm.rs's Seam zone). Registered after every clip in this row so it wins
+        // Alt=Right/incoming - arm.rs's Seam zone). Registered after every clip in this row so it wins
         // hit-testing over the (broader) edge-trim handles at the same cut.
         {
             let mut ordered: Vec<&Clip> = track.clips.iter().collect();
@@ -1380,7 +1380,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     }
                     ui.separator();
                     // right-click quick-change: bulk-edits every selected transition (or just this
-                    // one if it wasn't already part of the selection — `sel_transitions` was reset
+                    // one if it wasn't already part of the selection - `sel_transitions` was reset
                     // to just `tr.id` above in that case), same absolute-overwrite as picking a new
                     // value in the Inspector's transition kind/ease combo boxes.
                     ui.menu_button("Change Type", |ui| transition_kind_menu(ui, c.sel_transitions, &mut act));
@@ -1429,7 +1429,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         }
         let clip = c.project.clip(kcid);
         let r = r.on_hover_ui(|ui| {
-            // built only while hovered — a per-frame format! per diamond is not worth it
+            // built only while hovered - a per-frame format! per diamond is not worth it
             match (clip, kprop) {
                 (Some(cl), Some(pi)) => {
                     let v = crate::ui::curves::prop_ref(cl, pi).map(|a| a.at(kt)).unwrap_or(0.0);
@@ -1529,7 +1529,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             lp.text(
                 hint.center(),
                 Align2::CENTER_CENTER,
-                "Drop video, audio or images here — or Ctrl+O",
+                "Drop video, audio or images here - or Ctrl+O",
                 font.clone(),
                 dash,
             );
@@ -1580,7 +1580,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     // ws:pro-timeline: realtime-safety tint just under the pre-render bar (paint only)
     paint_realtime_bar(&rp, state, ruler, c.realtime, &pal);
     // ws:pro-timeline: duplicate-source colour bars (dupe_groups is already O(n), same budget as the
-    // per-clip passes above — no extra `detailed` gate needed, headless_1000_clips_stays_fast covers it)
+    // per-clip passes above - no extra `detailed` gate needed, headless_1000_clips_stays_fast covers it)
     paint_dupes(&lp, c.project, state, lanes);
 
     // ---- ruler ticks ----
@@ -1611,7 +1611,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     painter.hline(ruler.x_range(), ruler.bottom() - 0.5, thin);
     painter.vline(header.right() - 0.5, full.y_range(), thin);
 
-    // ---- project markers on the ruler (only the open sequence's — same filter as markers_ui::rows;
+    // ---- project markers on the ruler (only the open sequence's - same filter as markers_ui::rows;
     // an unfiltered ruler let another timeline's markers be dragged/deleted from the wrong context) ----
     for m in &c.project.markers {
         if m.sequence != c.project.editing {
@@ -1714,7 +1714,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         ));
     }
     // ---- snap guide line: an accent hairline at whatever candidate the active gesture is snapped to
-    // (set last frame by gestures::handle) — one line for the whole gesture, gone once nothing is in
+    // (set last frame by gestures::handle) - one line for the whole gesture, gone once nothing is in
     // range or the gesture ends. Also lit for the dnd asset-drop ghost, painted separately below.
     if let Some(gx) = state.drag.as_ref().and_then(|d| d.snapped).map(|t| state.x_at(t)) {
         if gx >= lanes.left() - 1.0 && gx <= lanes.right() + 1.0 {
@@ -1757,10 +1757,10 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             }
         }
     }
-    // Delete with a gap selected closes it (ripple tracks only — `close_gap_at`'s own scope). Consumed
+    // Delete with a gap selected closes it (ripple tracks only - `close_gap_at`'s own scope). Consumed
     // here so the app's late Delete poll doesn't also fire; curves.rs claims Delete the same way.
     // ponytail: Backspace (the app's Delete alias) and a hidden Timeline pane fall through to the app's
-    // clip delete — route this through an ACT_HANDLERS entry if either ever matters.
+    // clip delete - route this through an ACT_HANDLERS entry if either ever matters.
     if let Some((ti, a, b)) = state.gap_sel {
         if !ui.ctx().wants_keyboard_input() && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Delete))
         {
@@ -1957,12 +1957,12 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
 
     // ---- apply deferred bits ----
     if let Some((ti, dy)) = resize {
-        // ponytail: track height is cosmetic — no undo snapshot, not marked as an edit
+        // ponytail: track height is cosmetic - no undo snapshot, not marked as an edit
         let t = &mut c.project.tracks[ti];
         t.height = (t.height + dy).clamp(MIN_TRACK_H, MAX_TRACK_H);
     }
     if let Some((ti, flag)) = track_toggle {
-        // ponytail: lock/ripple/magnetic are organisational track state, not an edit of the cut — no
+        // ponytail: lock/ripple/magnetic are organisational track state, not an edit of the cut - no
         // undo entry (the palette's Action::ToggleTrack* twins push a labelled one), but they are
         // saved with the project, so it is marked dirty. Flags never widen video_dirty_spans to a full
         // clear (playback's flags_do_not_dirty_video pins it).
@@ -2008,7 +2008,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 }
             }
         } else if mods.shift {
-            // AUDIT FIX (snap-engine, wave 1): additive, distinct from Ctrl's toggle-out — the
+            // AUDIT FIX (snap-engine, wave 1): additive, distinct from Ctrl's toggle-out - the
             // modifier table's Body/Shift row ("click = add link group to selection") had no matching
             // code before this; Shift+click was indistinguishable from a plain click.
             for g in group {
@@ -2085,7 +2085,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     None => (None, None),
                 };
                 // ponytail: the trim-model primitives are called directly rather than through
-                // `App::place_asset` — edit_ops.rs is source-monitor's file this wave and its stub
+                // `App::place_asset` - edit_ops.rs is source-monitor's file this wave and its stub
                 // still ignores `DropMode`; fold these arms into it once that lands.
                 match kind {
                     GestureKind::DropSplice => {
@@ -2230,7 +2230,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 }
             }
             // ---- ws:pro-timeline: header UI dispatches to trim-model's existing ops directly (no
-            // App access inside show(), so App::run_tool_undoable isn't reachable here — the tests
+            // App access inside show(), so App::run_tool_undoable isn't reachable here - the tests
             // below drive this same path headlessly, which a live-App wrapper couldn't be) ----
             Act::RenameTrack(ti, name) => {
                 label = "Rename track";
@@ -2331,7 +2331,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     _ => p.remove_track(ti),
                 }
             }
-            // ws:timeline-trim-gestures — the release-applied gestures make their one model call here
+            // ws:timeline-trim-gestures - the release-applied gestures make their one model call here
             if edited || matches!(&d.g, Gesture::Move { magnetic: true, .. }) {
                 edited = gestures::release(c.project, &d, edited);
             }

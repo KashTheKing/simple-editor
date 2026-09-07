@@ -1,7 +1,7 @@
 //! Thumbnail cache for timeline filmstrips and library previews. Non-blocking: `get`/`texture` return
 //! immediately; misses are queued to ONE worker thread (newest request first, so scrubbing/zooming stays
 //! responsive) that owns a DecoderPool (backend from settings) and decodes `h`-pixel-tall RGBA thumbnails
-//! (aspect kept; images ignore `t`; Sequence clips are not handled here — the timeline draws a label).
+//! (aspect kept; images ignore `t`; Sequence clips are not handled here - the timeline draws a label).
 //! Results are kept in an LRU bounded by both entry count (≤512) and decoded bytes (≤48 MB) and uploaded
 //! lazily as egui textures (`texture`) so panels can paint them directly. `ctx.request_repaint()` when a
 //! thumbnail lands. Key = (path, t rounded to 0.5 s buckets, h rounded up to 16 px); `clear()` forgets
@@ -15,7 +15,7 @@ use std::sync::{Arc, Condvar, Mutex};
 
 /// Max decoded thumbnails kept (failed lookups are memoised separately and never evicted).
 const CAP: usize = 512;
-/// Max decoded bytes kept — a 1080p source 300 px tall is 640 KB per entry, so CAP alone is not a bound.
+/// Max decoded bytes kept - a 1080p source 300 px tall is 640 KB per entry, so CAP alone is not a bound.
 const BUDGET: usize = 48 << 20;
 
 struct Entry {
@@ -41,7 +41,7 @@ struct Shared {
     quit: bool,
 }
 
-/// ponytail: 64-bit hash as the map key so per-frame lookups allocate nothing — collisions are astronomically unlikely.
+/// ponytail: 64-bit hash as the map key so per-frame lookups allocate nothing - collisions are astronomically unlikely.
 fn key_of(path: &str, t: f64, h: u32) -> u64 {
     let mut hs = std::collections::hash_map::DefaultHasher::new();
     (path, (t * 2.0).round() as i64, h).hash(&mut hs);
@@ -68,7 +68,7 @@ pub struct ThumbCache {
     /// egui textures for ready thumbnails, created lazily by `texture()` (UI thread only).
     textures: HashMap<u64, (egui::TextureHandle, [u32; 2])>,
     // ---- ws:media-library ----
-    /// Test-only: `texture()` calls so far — the library's viewport-culling test counts requests
+    /// Test-only: `texture()` calls so far - the library's viewport-culling test counts requests
     /// against rows drawn (there is no trait seam here to substitute a mock cache into).
     #[cfg(test)]
     pub(crate) request_count: std::sync::atomic::AtomicU64,
@@ -181,7 +181,7 @@ impl Drop for ThumbCache {
             st.quit = true;
         }
         self.shared.1.notify_all();
-        // ponytail: no join — a mid-decode worker exits at its next loop; joining could stall the UI.
+        // ponytail: no join - a mid-decode worker exits at its next loop; joining could stall the UI.
     }
 }
 
@@ -219,7 +219,7 @@ fn worker(shared: Arc<(Mutex<Shared>, Condvar)>, ctx: egui::Context) {
             Job::Decode(key, path, t, h, backend, epoch) => {
                 let p = pool.get_or_insert_with(|| DecoderPool::new(backend));
                 p.set_backend(backend); // no-op when unchanged
-                                        // ponytail: a decoder panic must not kill the only thumb worker — memoise it as a failed
+                                        // ponytail: a decoder panic must not kill the only thumb worker - memoise it as a failed
                                         // entry (so it is never retried) and drop the pool so the next job starts on fresh decoders.
                 let frame =
                     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| decode_thumb(p, &path, t, h))) {
@@ -265,7 +265,7 @@ fn decode_thumb(pool: &mut DecoderPool, path: &str, t: f64, h: u32) -> Option<Fr
 
 /// Drop least-recently-used decoded thumbnails beyond CAP entries or BUDGET bytes (failed memos are
 /// exempt: they cost nothing).
-/// ponytail: O(n) min-scan per insert over ≤512 entries on the worker thread — a real LRU list if CAP grows.
+/// ponytail: O(n) min-scan per insert over ≤512 entries on the worker thread - a real LRU list if CAP grows.
 fn evict(st: &mut Shared) {
     let live = |e: &Entry| e.frame.as_ref().map(|f| f.rgba.len());
     let mut bytes: usize = st.ready.values().filter_map(live).sum();

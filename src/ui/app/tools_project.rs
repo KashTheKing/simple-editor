@@ -1,16 +1,16 @@
 //! ---- ws:forgiveness ----
 //! MCP tools for every capability this workstream adds: autosave, recovery, history, caches, toasts
 //! and the confirm queue. `history.restore`/`caches.clear`/`project.recover` live here in
-//! `src/ui/app/*`, not `src/model/ops/*`, so they are exempt from `every_edit_op_has_a_tool`'s scan —
+//! `src/ui/app/*`, not `src/model/ops/*`, so they are exempt from `every_edit_op_has_a_tool`'s scan -
 //! documented directly in `OP_INTERNAL` (tools_registry_tests.rs) rather than a test that scan can
 //! never exercise.
 //!
 //! Kind choices deliberately deviate from the plan's own summary table for two rows: `project.autosave`
 //! and `caches.clear` never touch `Project` (they write to disk / clear side caches), so they are
-//! `ToolKind::Ui`, not `Mutate` — `handle_tool`'s Mutate path calls `App::after_edit` unconditionally
+//! `ToolKind::Ui`, not `Mutate` - `handle_tool`'s Mutate path calls `App::after_edit` unconditionally
 //! whenever `before.is_some()` (see mcp_exec.rs), which would mark a perfectly clean project dirty for
 //! no project change at all. `project.recover` and `history.restore` DO replace the live project, so
-//! they keep `Mutate` (and correctly end up dirty afterward — the recovered/restored state is not what
+//! they keep `Mutate` (and correctly end up dirty afterward - the recovered/restored state is not what
 //! is on disk).
 
 use super::tools_helpers::*;

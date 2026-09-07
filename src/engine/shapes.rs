@@ -90,7 +90,7 @@ impl ShapeRasterizer {
         }
         let frame = Arc::new(self.rasterize(style, s, t, lw, lh, bucket));
         if self.cache.len() >= CACHE_MAX {
-            // ponytail: drop-all cache — LRU if shape-heavy projects thrash
+            // ponytail: drop-all cache - LRU if shape-heavy projects thrash
             self.cache.clear();
         }
         self.cache.insert(key, frame.clone());
@@ -779,7 +779,7 @@ mod tests {
     #[test]
     fn explicit_points_draw_the_polygon() {
         let mut r = ShapeRasterizer::new();
-        // Triangle's outline is exactly [(0,-h), (w,h), (-w,h)] — the same vertices by hand must give
+        // Triangle's outline is exactly [(0,-h), (w,h), (-w,h)] - the same vertices by hand must give
         // the same pixels, not the regular pentagon `sides` asks for
         let regular = style(ShapeKind::Triangle, 50.0, 30.0);
         let mut poly = style(ShapeKind::Polygon, 50.0, 30.0);

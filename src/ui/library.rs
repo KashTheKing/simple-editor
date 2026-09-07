@@ -1,23 +1,23 @@
-//! Left panel: the project browser — Premiere's project panel, in two sub-tabs.
+//! Left panel: the project browser - Premiere's project panel, in two sub-tabs.
 //!
 //! "Imported" is what the project contains, drawn as a real file explorer: nested folders, the assets
 //! under them, a "+ New" button (folder / import / sequence / adjustment layer), rename and delete from
 //! the context menu, and move-by-drag onto a folder row. "Global" browses the disk instead: the recent
 //! files from settings.json plus the folders the user linked, one directory level read per expansion
-//! (never an eager recursive walk — that hangs the UI on a media drive) and only inside a node the user
+//! (never an eager recursive walk - that hangs the UI on a media drive) and only inside a node the user
 //! linked or opened.
 //!
 //! Selection is multi: a click replaces it, Ctrl+click toggles one item, Shift+click takes the range
 //! over the rows in the order they were drawn, and a drag across empty space rubber-bands.
-//! `LibraryState.selected` / `sel_path` are the anchor inside the set — app.rs writes `selected` after
+//! `LibraryState.selected` / `sel_path` are the anchor inside the set - app.rs writes `selected` after
 //! an import, and `show` notices that write and collapses the set onto it. With something selected the
 //! toolbar grows a batch strip (Import, Convert To, Convert…, Compress…, Remove) that routes through the
 //! same `LibraryResponse` fields the per-item menus use, so App needs no new plumbing.
 //!
 //! The bottom of the pane is a dedicated asset preview: a big picture of the anchor, its format line,
-//! and the ONLY place its description, tags, label and folder are edited — never inline in the list.
+//! and the ONLY place its description, tags, label and folder are edited - never inline in the list.
 //! Every file row and tile carries a picture: the cached thumbnail, or a painted glyph while there is
-//! none — a speaker for audio, a film strip for video, a camera for stills, a sheet stack for the rest.
+//! none - a speaker for audio, a film strip for video, a camera for stills, a sheet stack for the rest.
 //! The toolbar works over both tabs: search (name/tags/description/folder), kind chips (All/Video/Audio/
 //! Image/Seq, Short SFX ≤ 10 s, Music > 10 s), label colours, "Unused only", sort, the List/Gallery
 //! switch (`LibraryState.view`) and the zoom (`LibraryState.zoom`, the +/- buttons and Ctrl+Scroll) that
@@ -25,7 +25,7 @@
 //! the way an explorer shows search results.
 //! Under the tree, the Imported tab also lists what the project can reuse: the effects / node graphs /
 //! adjustment layers already in use or saved in settings.json (`reuse_ui`, also drawn by `Pane::Presets`).
-//! Standalone Sequences/Templates sub-lists were removed (size-diet, verified dead — a Sequence clip is
+//! Standalone Sequences/Templates sub-lists were removed (size-diet, verified dead - a Sequence clip is
 //! entered from the timeline, not browsed here; saved templates place/apply through `reuse_ui` and the
 //! `templates.save`/`templates.list`/`templates.apply` MCP tools).
 
@@ -50,14 +50,14 @@ pub struct LibraryState {
     /// 0 = Imported (what the project contains), 1 = Global (recent files + the linked folders).
     pub tab: usize,
     /// Anchor of the selection: the asset a click landed on, and the one the preview box shows.
-    /// app.rs writes it straight after an import — `show` spots that and collapses the set onto it.
+    /// app.rs writes it straight after an import - `show` spots that and collapses the set onto it.
     pub selected: Option<Id>,
     /// Same, for a selected file that is not a project asset.
     pub sel_path: Option<String>,
     /// The whole selection (Ctrl / Shift click, rubber band); the anchor above is one of these.
     pub sel_ids: Vec<Id>,
     pub sel_paths: Vec<String>,
-    /// `selected` as of the end of the last frame — the only way to tell app.rs's write from ours.
+    /// `selected` as of the end of the last frame - the only way to tell app.rs's write from ours.
     pub seen_selected: Option<Id>,
     pub search: String,
     /// 0 All, 1 Video, 2 Audio, 3 Image, 4 Sequences, 5 Short SFX, 6 Music
@@ -71,22 +71,22 @@ pub struct LibraryState {
     pub view: u8,
     /// Thumbnail scale, `ZOOM_MIN..=ZOOM_MAX`. 0 = never set, read as 1.
     pub zoom: f32,
-    /// The folder clicked in the tree — highlighted, and the subtree a search is limited to.
+    /// The folder clicked in the tree - highlighted, and the subtree a search is limited to.
     /// None = all folders, Some("") = root only, Some(name) = that folder (+ subfolders)
     pub folder: Option<String>,
     /// Tree nodes whose open state differs from the default (project folders start open, Recent and
     /// folders on disk start closed). Keys: "recent", "f:<folder>", `dir_key(path)`.
     pub flipped: Vec<String>,
     /// `flipped` from the instant the search box went from empty to non-empty; restored verbatim the
-    /// instant it goes back to empty. `None` while not searching — doubles as that flag, so no separate
+    /// instant it goes back to empty. `None` while not searching - doubles as that flag, so no separate
     /// bool tracks "was searching last frame" (see `sync_search_expand`).
     pub search_flipped: Option<Vec<String>>,
-    /// Keys the CURRENT search has already auto-opened, so each is forced open exactly once — a user
+    /// Keys the CURRENT search has already auto-opened, so each is forced open exactly once - a user
     /// re-collapsing one mid-search must stick, not fight a per-frame re-open. Cleared with the search.
     pub search_opened: Vec<String>,
     /// (folder being renamed, edit buffer = new last segment)
     pub rename_folder: Option<(String, String)>,
-    /// (parent, edit buffer) — "" parent = top level
+    /// (parent, edit buffer) - "" parent = top level
     pub new_folder: Option<(String, String)>,
     /// Tag edit buffer for the previewed asset (avoids the comma being eaten while typing).
     pub tags_for: Option<Id>,
@@ -100,15 +100,15 @@ pub struct LibraryState {
     /// None = unreadable. Only ever filled for a node the user expanded; dropped on Refresh / unlink.
     pub dirs: Vec<(String, Option<Vec<(String, bool)>>)>,
     // ---- ws:media-library ----
-    /// Assets whose file is missing on disk — the ONE offline set: `ui::app::media_sync::tick`
+    /// Assets whose file is missing on disk - the ONE offline set: `ui::app::media_sync::tick`
     /// rescans it every 2 s, `App::asset_status` reads it, the rows/tiles/preview badge it. Lives here
     /// (not serialized) because the rows have no `App` to ask.
     pub offline: HashSet<Id>,
-    /// The pointer was over the pane last frame — gates the keyboard navigation (`keyboard`).
+    /// The pointer was over the pane last frame - gates the keyboard navigation (`keyboard`).
     pub hovered: bool,
-    /// Asset rows in the order they were drawn last frame — what Up/Down walk.
+    /// Asset rows in the order they were drawn last frame - what Up/Down walk.
     pub visible: Vec<Id>,
-    /// "Save filter…" name field open (the buffer) — a Smart Bin is born when it commits.
+    /// "Save filter…" name field open (the buffer) - a Smart Bin is born when it commits.
     pub new_bin: Option<String>,
 }
 
@@ -119,11 +119,11 @@ pub struct LibraryResponse {
     /// Files to import into the library (and select).
     pub open_paths: Vec<PathBuf>,
     pub remove: Vec<Id>,
-    /// The project changed (folders / tags / labels edited) — app pushes undo via `undo` first.
+    /// The project changed (folders / tags / labels edited) - app pushes undo via `undo` first.
     pub edited: bool,
-    /// settings.recent_assets changed (tags / labels / pins / removals) — app saves settings.
+    /// settings.recent_assets changed (tags / labels / pins / removals) - app saves settings.
     pub settings_changed: bool,
-    /// (asset id, target extension) — start a Convert To… with the default options.
+    /// (asset id, target extension) - start a Convert To… with the default options.
     pub convert: Vec<(Id, String)>,
     /// Source paths whose proxy should be rebuilt (the app releases decoders, deletes, rescans).
     pub regen_proxy: Vec<String>,
@@ -137,30 +137,30 @@ pub struct LibraryResponse {
     pub place_template: Vec<String>,
     /// The user asked to import media from a URL (the app opens the Import URL window).
     pub import_url: bool,
-    /// "Edit labels…" was picked in a label menu — the app opens the label editor (Inspector).
+    /// "Edit labels…" was picked in a label menu - the app opens the label editor (Inspector).
     pub edit_labels: bool,
-    /// "New ▸ Adjustment layer" — the app runs `Action::AddAdjustment`.
+    /// "New ▸ Adjustment layer" - the app runs `Action::AddAdjustment`.
     pub new_adjustment: bool,
-    /// "Open…" — the app runs `Action::OpenFile` (its own file dialog / recents handling).
+    /// "Open…" - the app runs `Action::OpenFile` (its own file dialog / recents handling).
     pub open_dialog: bool,
-    /// An effect kind picked in the reuse sections — the app adds it to every selected visual clip.
+    /// An effect kind picked in the reuse sections - the app adds it to every selected visual clip.
     pub add_effect: Option<EffectKind>,
     /// Index into `Settings::effect_presets` to apply to the selection (chain or node graph).
     pub apply_preset: Option<usize>,
     /// Clip whose node graph should be copied onto the selection.
     pub copy_graph: Option<Id>,
-    /// The file the anchor of the selection now points at — the app may show it in the source viewer.
+    /// The file the anchor of the selection now points at - the app may show it in the source viewer.
     /// The library previews it itself either way.
     pub preview: Option<PathBuf>,
     /// ---- ws:forgiveness ----
-    /// Remove Unused ran (instant, never confirmed) and removed `n` assets — the app toasts an Undo.
+    /// Remove Unused ran (instant, never confirmed) and removed `n` assets - the app toasts an Undo.
     pub removed_unused: Option<usize>,
     // ---- ws:media-library ----
-    /// Offline assets to relink — the app opens a folder picker, then `media_sync::start_relink`.
+    /// Offline assets to relink - the app opens a folder picker, then `media_sync::start_relink`.
     pub relink: Vec<Id>,
-    /// "Consolidate…" — the app confirms (non-blocking) and starts the copy job.
+    /// "Consolidate…" - the app confirms (non-blocking) and starts the copy job.
     pub consolidate: bool,
-    /// "New subclip" for these assets — the app pushes one undo, then `Project::add_subclip` each.
+    /// "New subclip" for these assets - the app pushes one undo, then `Project::add_subclip` each.
     pub new_subclip: Vec<Id>,
 }
 
@@ -249,7 +249,7 @@ pub fn keyboard(state: &mut LibraryState, ctx: &egui::Context) -> LibraryNav {
     out
 }
 
-/// The current filter as a Smart Bin query: `[kind:N] [label:N] [unused] [q:<search text>]` — the
+/// The current filter as a Smart Bin query: `[kind:N] [label:N] [unused] [q:<search text>]` - the
 /// search text goes last and verbatim, so it can hold anything (even "kind:" or "unused").
 pub fn bin_query(state: &LibraryState) -> String {
     let mut q = String::new();
@@ -309,7 +309,7 @@ fn size_text(bytes: u64) -> String {
 }
 
 /// What a row shows as its name: a subclip's own name (its `description`) when it has one, else the
-/// file name — subclips share the parent's path, so the file name alone would repeat it.
+/// file name - subclips share the parent's path, so the file name alone would repeat it.
 fn display_name(a: &crate::model::Asset) -> String {
     if a.parent.is_some() && !a.description.is_empty() {
         a.description.clone()
@@ -396,7 +396,7 @@ pub fn show(
 }
 
 /// app.rs sets `selected` on its own after an import or a "reveal in library"; the multi-selection
-/// follows that write (and only that one — our own writes go through `set_anchor`).
+/// follows that write (and only that one - our own writes go through `set_anchor`).
 fn external_select(state: &mut LibraryState) {
     if state.selected == state.seen_selected {
         return;
@@ -490,7 +490,7 @@ fn apply_click(state: &mut LibraryState, rows: &[(Pick, egui::Rect)], pick: &Pic
 }
 
 /// Rubber band over empty space: press, move, and every row the band touches is selected. Derived from
-/// the pointer each frame — no state to keep. A press that landed on a row is left alone: that gesture
+/// the pointer each frame - no state to keep. A press that landed on a row is left alone: that gesture
 /// belongs to the drag-and-drop source.
 fn band_select(ui: &egui::Ui, state: &mut LibraryState, rows: &[(Pick, egui::Rect)], palette: &Palette) {
     let (down, origin, pos) =
@@ -535,7 +535,7 @@ fn kind_tag(k: ClipKind) -> &'static str {
 }
 
 /// Case-insensitive match of the search text against name, tags, description and folder.
-/// A search is about the FILE, so it matches the name and what the user wrote about it — never the
+/// A search is about the FILE, so it matches the name and what the user wrote about it - never the
 /// containing folder. Matching the folder meant searching "pop" returned every file that happened to sit
 /// in a folder called pop, which is the opposite of narrowing.
 fn matches_search(a: &crate::model::Asset, q: &str) -> bool {
@@ -627,13 +627,13 @@ fn delete_sequence(project: &mut Project, id: Id) {
 
 // ---------- files on disk ----------
 
-// ponytail: duplicated from app.rs's private MEDIA_EXTS split by kind — keep in sync by hand.
+// ponytail: duplicated from app.rs's private MEDIA_EXTS split by kind - keep in sync by hand.
 const VIDEO_EXTS: &[&str] =
     &["mp4", "mov", "mkv", "webm", "avi", "m4v", "wmv", "ts", "m2ts", "mts", "flv", "3gp", "mpg", "mpeg", "gif"];
 const AUDIO_EXTS: &[&str] = &["mp3", "wav", "m4a", "aac", "flac", "ogg", "opus", "wma"];
 const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "bmp", "webp", "tif", "tiff"];
 
-/// 1 video, 2 audio, 3 image, 0 unknown — by extension only.
+/// 1 video, 2 audio, 3 image, 0 unknown - by extension only.
 fn ext_class(path: &str) -> u8 {
     let ext = path.rsplit('.').next().unwrap_or("").to_lowercase();
     if VIDEO_EXTS.contains(&ext.as_str()) {
@@ -689,7 +689,7 @@ fn scan_dir(dir: &str) -> Option<Vec<(String, bool)>> {
             (is_dir || ext_class(&p) != 0).then_some((p, is_dir))
         })
         .collect();
-    // folders first, then files — a file explorer, not an alphabetical dump
+    // folders first, then files - a file explorer, not an alphabetical dump
     v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase())));
     Some(v)
 }
@@ -703,7 +703,7 @@ fn kind_tag_for_class(c: u8) -> &'static str {
     }
 }
 
-/// ("file.mp4", "C:\dir") — pure string split on the last path separator.
+/// ("file.mp4", "C:\dir") - pure string split on the last path separator.
 fn split_path(p: &str) -> (&str, &str) {
     match p.rfind(['\\', '/']) {
         Some(i) => (&p[i + 1..], &p[..i]),
@@ -743,7 +743,7 @@ enum Art {
 }
 
 /// The picture of a media file `h` px tall: its cached thumbnail, or the painted fallback for its kind.
-/// Asking for a thumbnail is what queues the decode — callers only ask for rows/tiles inside the
+/// Asking for a thumbnail is what queues the decode - callers only ask for rows/tiles inside the
 /// viewport (`row_art`, `asset_tile`, `file_tile`), so a 500-clip folder queues what you look at.
 fn file_art(ui: &egui::Ui, thumbs: &mut Option<&mut ThumbCache>, path: &str, h: u32) -> Art {
     // audio (class 2) tries too: a file with embedded cover art decodes one via the same pipeline as
@@ -823,7 +823,7 @@ const ZOOM_MAX: f32 = 3.0;
 
 // ---------- shared widgets ----------
 
-/// A filled dot in the label's colour — painted, because ● is tofu in half the shipped fonts.
+/// A filled dot in the label's colour - painted, because ● is tofu in half the shipped fonts.
 fn dot(ui: &mut egui::Ui, color: egui::Color32) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 12.0), egui::Sense::hover());
     ui.painter().circle_filled(rect.center(), 4.0, color);
@@ -917,7 +917,7 @@ fn row(
             ui.painter().set(bg, egui::Shape::rect_filled(rect, 2.0, fill));
         });
         // drag_source senses click_and_drag on one widget, so clicks, double-clicks, right-clicks and
-        // drags all come off this response — no second click-sensing overlay to register.
+        // drags all come off this response - no second click-sensing overlay to register.
         let r = src;
         // Put the button in the reserved slot rather than after the contents: the contents can be wider
         // than their cap, and appending would then push the button off the pane edge.
@@ -939,8 +939,8 @@ fn row(
 
 /// Gallery cell: a picture box with the kind tag in its corner and the name under it. Shared by the
 /// asset gallery and the reuse sections; the caller decides what the click means. An optional trailing
-/// button on the name line reserves its own width first — the gallery analog of `row()`'s reserved
-/// button slot — so a long name truncates before it instead of pushing it past the tile's right edge.
+/// button on the name line reserves its own width first - the gallery analog of `row()`'s reserved
+/// button slot - so a long name truncates before it instead of pushing it past the tile's right edge.
 /// Returns (tile response, button clicked).
 #[allow(clippy::too_many_arguments)]
 fn tile(
@@ -1011,7 +1011,7 @@ fn tile(
 pub(crate) fn inline_edit(ui: &mut egui::Ui, buf: &mut String) -> Option<String> {
     let r = ui.add(egui::TextEdit::singleline(buf).desired_width(120.0));
     // Read the flag before touching focus: request_focus() makes has_focus() true, and lost_focus() is
-    // `had_focus_last_frame && !has_focus` — asking for focus first would make it permanently false.
+    // `had_focus_last_frame && !has_focus` - asking for focus first would make it permanently false.
     if r.lost_focus() {
         if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             return Some(String::new()); // cancel
@@ -1024,7 +1024,7 @@ pub(crate) fn inline_edit(ui: &mut egui::Ui, buf: &mut String) -> Option<String>
     None
 }
 
-/// Duration cell of an asset — "Loading…" while its import probe is still out (see engine::import).
+/// Duration cell of an asset - "Loading…" while its import probe is still out (see engine::import).
 fn dur_cell(a: &crate::model::Asset) -> String {
     if crate::engine::import::is_probing(&a.path) {
         "Loading…".to_string()
@@ -1102,7 +1102,7 @@ fn browser(
         if crate::ui::tools::glyph_text_button(ui, crate::ui::tools::Glyph::FilmReel, "Import…").clicked() {
             import = true;
         }
-        // only when yt-dlp is installed — the whole URL import is optional
+        // only when yt-dlp is installed - the whole URL import is optional
         if ytdlp
             && crate::ui::tools::glyph_text_button(ui, crate::ui::tools::Glyph::ImportArrow, "Import URL…")
                 .on_hover_text("Download media from a link with yt-dlp")
@@ -1113,7 +1113,7 @@ fn browser(
         if !imported && ui.button("Clear recent").clicked() {
             confirm::ask("Clear recent", CLEAR_RECENT, ConfirmAction::ClearRecent);
         }
-        // up here with the rest of the controls: below the tree is reserved for files — instant +
+        // up here with the rest of the controls: below the tree is reserved for files - instant +
         // Undo-toast (panes.rs/library_pane.rs), never confirmed: it's undoable, unlike the two above.
         if imported && ui.add_enabled(unused_n > 0, egui::Button::new(format!("Remove unused ({unused_n})"))).clicked()
         {
@@ -1184,7 +1184,7 @@ fn browser(
     let planned = project.plan_assets();
     // a search or a filter chip flattens "Imported" into its hits, the way an explorer shows search results
     let flat = !state.search.is_empty() || state.kind_filter != 0 || state.label_filter != 0 || state.unused_only;
-    // "Imported" flattens above instead of showing its tree, but "Global" doesn't — open its Recent/
+    // "Imported" flattens above instead of showing its tree, but "Global" doesn't - open its Recent/
     // linked-folder branches down to whatever the search box currently matches.
     sync_search_expand(state, project, settings);
 
@@ -1205,7 +1205,7 @@ fn browser(
         let mut order: Vec<usize> = (0..project.assets.len())
             .filter(|&i| {
                 let a = &project.assets[i];
-                // the folder chosen in the tree only narrows a search — the tree itself shows every folder
+                // the folder chosen in the tree only narrows a search - the tree itself shows every folder
                 (!flat || folder_ok(state.folder.as_deref(), &a.folder))
                     && matches_search(a, &state.search)
                     && matches_kind(a.kind, a.duration, state.kind_filter)
@@ -1412,7 +1412,7 @@ fn sort_header(ui: &mut egui::Ui, state: &mut LibraryState, settings: &Settings)
     });
 }
 
-/// A dashed drop target with a prompt — the Imported tab of a project with no media at all.
+/// A dashed drop target with a prompt - the Imported tab of a project with no media at all.
 fn empty_state(ui: &mut egui::Ui, palette: &Palette, resp: &mut LibraryResponse) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width().max(80.0), 100.0), egui::Sense::hover());
     let r = rect.shrink(8.0);
@@ -1625,7 +1625,7 @@ fn preview_panel(
         });
 }
 
-/// Name / path / format, over the picture — shared by both previews. `offline` swaps the picture for
+/// Name / path / format, over the picture - shared by both previews. `offline` swaps the picture for
 /// a hatched slate (never a black / frozen frame for a file that is not there).
 #[allow(clippy::too_many_arguments)]
 fn preview_head(
@@ -1643,7 +1643,7 @@ fn preview_head(
         let (rect, r) = ui.allocate_exact_size(egui::vec2(h * 16.0 / 9.0, h), egui::Sense::hover());
         if offline {
             paint_offline(ui, rect, palette);
-            r.on_hover_text("File not found — Relink… to point at it again");
+            r.on_hover_text("File not found - Relink… to point at it again");
         } else {
             // the live frame wins: asking the thumbnail cache as well would queue a decode per frame
             let art = match live {
@@ -1850,7 +1850,7 @@ fn dir_key(path: &str) -> String {
     format!("d:{path}")
 }
 
-/// Every directory between `root` and `dir` (both inclusive), each as its `dir_key` — the chain a search
+/// Every directory between `root` and `dir` (both inclusive), each as its `dir_key` - the chain a search
 /// match under `dir` needs opened so it draws without the user expanding each level by hand.
 fn dir_ancestors(root: &str, dir: &str) -> Vec<String> {
     let mut keys = Vec::new();
@@ -1862,7 +1862,7 @@ fn dir_ancestors(root: &str, dir: &str) -> Vec<String> {
         }
         let parent = split_path(&cur).1;
         if parent.is_empty() {
-            break; // malformed path — stop instead of looping forever
+            break; // malformed path - stop instead of looping forever
         }
         cur = parent.to_string();
     }
@@ -1870,9 +1870,9 @@ fn dir_ancestors(root: &str, dir: &str) -> Vec<String> {
 }
 
 /// Auto-expands the Global tab's Recent group and linked-folder branches down to every file that
-/// currently matches the search box (only ever opens — a folder with no match inside it is left exactly
+/// currently matches the search box (only ever opens - a folder with no match inside it is left exactly
 /// as the user had it, open or closed), and restores whatever was open before the search the moment the
-/// box goes back to empty. Reads `state.dirs`, the already-read directory cache, never a fresh scan — a
+/// box goes back to empty. Reads `state.dirs`, the already-read directory cache, never a fresh scan - a
 /// folder nobody has expanded yet can't surface a match here any more than it can draw one.
 fn sync_search_expand(state: &mut LibraryState, project: &Project, settings: &Settings) {
     if state.search.is_empty() {
@@ -1895,7 +1895,7 @@ fn sync_search_expand(state: &mut LibraryState, project: &Project, settings: &Se
         if !entries.iter().any(|(p, is_dir)| !*is_dir && path_matches(p, q, kind)) {
             continue;
         }
-        // longest matching root, and only on a path-separator boundary — a plain starts_with let
+        // longest matching root, and only on a path-separator boundary - a plain starts_with let
         // root C:/media claim C:/mediaXYZ/clips and, with nested linked roots, keyed the wrong chain
         let root = project
             .linked_folders
@@ -1935,7 +1935,7 @@ struct Tree<'a, 'b> {
     resp: &'a mut LibraryResponse,
     ops: &'a mut Vec<LibOp>,
     op_start: &'a mut bool,
-    /// Every selectable row of this frame, in draw order — Shift+click ranges and the band read it.
+    /// Every selectable row of this frame, in draw order - Shift+click ranges and the band read it.
     rows: &'a mut Vec<(Pick, egui::Rect)>,
     /// The click to resolve once every row is known.
     click: &'a mut Option<(Pick, bool, bool)>,
@@ -1987,7 +1987,7 @@ impl Tree<'_, '_> {
         draw_glyph(ui.painter(), rect, g, self.palette.text_dim);
     }
 
-    /// Move what was dropped onto a folder row into that folder — the whole selection when the dragged
+    /// Move what was dropped onto a folder row into that folder - the whole selection when the dragged
     /// asset was part of it, so a marquee of clips moves in one gesture.
     fn drop_asset(&mut self, r: &egui::Response, folder: &str) {
         let Some(p) = r.dnd_release_payload::<DragPayload>() else { return };
@@ -2014,7 +2014,7 @@ impl Tree<'_, '_> {
         }
     }
 
-    /// Root 1 — "Imported": the folders and files this project contains.
+    /// Root 1 - "Imported": the folders and files this project contains.
     fn imported(&mut self, ui: &mut egui::Ui, order: &[usize], flat: bool) {
         self.smart_bins(ui);
         if flat {
@@ -2027,7 +2027,7 @@ impl Tree<'_, '_> {
 
     // ---- ws:media-library ----
     /// Saved filters above the folder tree: click one to apply it, "Save filter…" to keep the current
-    /// one. Hidden entirely while there are no bins and no filter to save — an empty library stays clean.
+    /// one. Hidden entirely while there are no bins and no filter to save - an empty library stays clean.
     fn smart_bins(&mut self, ui: &mut egui::Ui) {
         let bins = self.project.smart_bins.clone();
         let saving = self.state.new_bin.is_some();
@@ -2155,7 +2155,7 @@ impl Tree<'_, '_> {
     }
 
     /// A run of assets, as rows or as gallery tiles (already filtered and sorted by the caller). In
-    /// the list, a subclip sits indented under its parent when both are in the run — recursively, so
+    /// the list, a subclip sits indented under its parent when both are in the run - recursively, so
     /// a subclip-of-a-subclip nests under ITS parent instead of never being drawn at all.
     fn assets(&mut self, ui: &mut egui::Ui, depth: usize, list: &[usize]) {
         if self.state.view == 1 {
@@ -2173,7 +2173,7 @@ impl Tree<'_, '_> {
         }
     }
 
-    /// Draw asset row `i`, then every row in `list` that is its child, one level deeper — and so on
+    /// Draw asset row `i`, then every row in `list` that is its child, one level deeper - and so on
     /// for THEIR children, so nesting isn't capped at one level (a grandchild used to be skipped by
     /// `assets` above as "drawn under its parent" and then never actually drawn by anyone).
     fn asset_and_kids(&mut self, ui: &mut egui::Ui, depth: usize, list: &[usize], i: usize) {
@@ -2229,7 +2229,7 @@ impl Tree<'_, '_> {
                         // network drive ever makes it hitch
                         "size" if visible => match std::fs::metadata(&a.path) {
                             Ok(m) => ui.weak(size_text(m.len())),
-                            Err(_) => ui.weak("—"),
+                            Err(_) => ui.weak(" - "),
                         },
                         "label" if a.label != 0 => ui.weak(lbl_name(labels, a.label)),
                         "proxy" => match pstatus {
@@ -2244,7 +2244,7 @@ impl Tree<'_, '_> {
                 if offline {
                     let (g, gr) = ui.allocate_exact_size(egui::vec2(14.0, 12.0), egui::Sense::hover());
                     draw_glyph(ui.painter(), g, Glyph::Warning, ui.visuals().warn_fg_color);
-                    gr.on_hover_text("File not found — right-click ▸ Relink…");
+                    gr.on_hover_text("File not found - right-click ▸ Relink…");
                     #[cfg(test)]
                     ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(("lib_offline_badge", a.id)), true));
                 }
@@ -2253,7 +2253,7 @@ impl Tree<'_, '_> {
                     ui.painter().circle_filled(d.center(), 3.0, palette.accent);
                     ui.allocate_response(egui::Vec2::ZERO, egui::Sense::hover()).on_hover_text("Used in the timeline");
                 }
-                // proxy pipeline badge — Queued/Building only (Ready is the steady state, no chrome);
+                // proxy pipeline badge - Queued/Building only (Ready is the steady state, no chrome);
                 // before the tags, which are truncated against content_right and could clip it
                 match pstatus {
                     ProxyStatus::Queued | ProxyStatus::Building(_) => {
@@ -2265,7 +2265,7 @@ impl Tree<'_, '_> {
                             palette.text_dim,
                         );
                         gr.on_hover_text(match pstatus {
-                            ProxyStatus::Building(f) => format!("Building proxy — {:.0} %", f * 100.0),
+                            ProxyStatus::Building(f) => format!("Building proxy - {:.0} %", f * 100.0),
                             _ => "Proxy queued (builds run one at a time)".to_string(),
                         });
                     }
@@ -2391,7 +2391,7 @@ impl Tree<'_, '_> {
         });
     }
 
-    /// Root 2 — "Global": Recent, and the folders the user linked, browsed straight from disk.
+    /// Root 2 - "Global": Recent, and the folders the user linked, browsed straight from disk.
     fn global(&mut self, ui: &mut egui::Ui) {
         self.recent(ui, 0);
         let linked: &[String] = &self.project.linked_folders;
@@ -2401,12 +2401,12 @@ impl Tree<'_, '_> {
         if linked.is_empty() {
             ui.horizontal(|ui| {
                 ui.add_space(indent(0) + ARROW);
-                ui.weak("(no linked folders — \"Link folder…\" above)");
+                ui.weak("(no linked folders - \"Link folder…\" above)");
             });
         }
     }
 
-    /// Recent files, from settings.json — everything opened recently, across every project.
+    /// Recent files, from settings.json - everything opened recently, across every project.
     fn recent(&mut self, ui: &mut egui::Ui, depth: usize) {
         let mut open = false;
         ui.horizontal(|ui| {
@@ -2440,7 +2440,7 @@ impl Tree<'_, '_> {
         self.files(ui, depth + 1, &paths, true);
     }
 
-    /// One folder on disk. `root` marks a linked folder — Refresh / Unlink live in its menu.
+    /// One folder on disk. `root` marks a linked folder - Refresh / Unlink live in its menu.
     fn dir(&mut self, ui: &mut egui::Ui, path: &str, depth: usize, root: bool) {
         let key = dir_key(path);
         let name = path.rsplit(['\\', '/']).find(|s| !s.is_empty()).unwrap_or(path).to_string();
@@ -2491,7 +2491,7 @@ impl Tree<'_, '_> {
     }
 
     /// One level of a folder, read the first time the node is expanded and cached until Refresh.
-    /// ponytail: a blocking read_dir on the UI thread, one level per expansion — an eager recursive walk
+    /// ponytail: a blocking read_dir on the UI thread, one level per expansion - an eager recursive walk
     /// of a media drive would hang the editor. Upgrade: scan on a worker + mpsc, like media/waveform.rs.
     fn listing(&mut self, path: &str) -> Option<Vec<(String, bool)>> {
         if let Some((_, v)) = self.state.dirs.iter().find(|(p, _)| p.as_str() == path) {
@@ -2639,7 +2639,7 @@ fn glyph(ui: &mut egui::Ui, g: Glyph, palette: &Palette) {
 enum Reuse {
     /// An effect kind already used somewhere in the project.
     Effect(EffectKind),
-    /// Index into `Settings::effect_presets` — a saved chain or a saved node graph.
+    /// Index into `Settings::effect_presets` - a saved chain or a saved node graph.
     Preset(usize),
     /// A clip that renders from a node graph.
     Graph(Id),
@@ -2649,7 +2649,7 @@ enum Reuse {
 
 /// The reusable sections, read straight off the project and settings.json each frame.
 /// ponytail: linear scans + a JSON decode per template (`is_adjustment_template`), same as the Presets
-/// pane — the lists are short. A dedicated presets store plugs in here as extra `Reuse` items.
+/// pane - the lists are short. A dedicated presets store plugs in here as extra `Reuse` items.
 fn reuse_sections(project: &Project, settings: &Settings) -> Vec<(&'static str, Vec<Reuse>)> {
     let mut kinds: Vec<EffectKind> = Vec::new();
     let mut graphs: Vec<Reuse> = Vec::new();
@@ -2684,7 +2684,7 @@ fn reuse_sections(project: &Project, settings: &Settings) -> Vec<(&'static str, 
 }
 
 /// (name, kind tag, icon, drag payload) of one reusable item.
-/// ponytail: only adjustment layers have a drop target today — the others carry their name as a
+/// ponytail: only adjustment layers have a drop target today - the others carry their name as a
 /// `Template` payload because `row()`/`tile()` are drag sources, and a stray drop just misses.
 fn reuse_face(item: &Reuse, project: &Project, settings: &Settings) -> (String, &'static str, Glyph, DragPayload) {
     let by_name = |name: String, tag, icon| (name.clone(), tag, icon, DragPayload::Template(name));
@@ -2932,7 +2932,7 @@ mod tests {
         recent_remove(&mut s, &mut resp, "a.mp4");
         assert!(resp.settings_changed);
         assert_eq!(s.recent_assets.len(), 1);
-        // "Clear recent" is no longer this module's own synchronous rfd-backed helper — it now goes
+        // "Clear recent" is no longer this module's own synchronous rfd-backed helper - it now goes
         // through confirm::ask(ConfirmAction::ClearRecent) -> confirm::apply_to_settings, covered by
         // confirm.rs's own confirm_resolves_named_action test.
     }
@@ -2966,7 +2966,7 @@ mod tests {
     }
 
     /// Every file gets a picture: the cached thumbnail when there is one, and a painted object when
-    /// there is not — never a font character, which Segoe UI draws as a tofu box.
+    /// there is not - never a font character, which Segoe UI draws as a tofu box.
     #[test]
     fn every_file_kind_has_a_painted_fallback() {
         assert_eq!(fallback_glyph(ext_class("a.mp4")), Glyph::FilmStrip);
@@ -3210,7 +3210,7 @@ mod tests {
 
     /// The trailing action button must stay inside the pane at any width (it used to be pushed off the
     /// right edge once the path/tag labels were long). Was exercised through the now-deleted
-    /// `templates_section`; calls `row()` — the shared primitive it used — directly instead, preserving
+    /// `templates_section`; calls `row()` - the shared primitive it used - directly instead, preserving
     /// the same regression coverage.
     #[test]
     fn action_button_stays_inside_the_pane() {
@@ -3236,7 +3236,7 @@ mod tests {
         }
     }
 
-    /// `tile()`'s trailing button (gallery-view "Add") must stay inside the tile's own width — same
+    /// `tile()`'s trailing button (gallery-view "Add") must stay inside the tile's own width - same
     /// reserved-slot idea as `row()`'s button, so a long name can't push it off the tile's right edge.
     #[test]
     fn tile_button_stays_inside_the_tile() {
@@ -3548,7 +3548,7 @@ mod tests {
     /// The reusable sections under the tree: effects in use, saved presets, node graphs and saved
     /// adjustment layers, each handing the right intent back to the app.
     /// Regression: a gallery must drop to a second row instead of running off to the right forever.
-    /// `horizontal_wrapped` cannot be trusted here on its own — a drag source's size is not known until
+    /// `horizontal_wrapped` cannot be trusted here on its own - a drag source's size is not known until
     /// after its contents are drawn, so the wrap test can pass every time and the row never ends.
     #[test]
     fn gallery_wraps_into_a_grid() {
@@ -3975,7 +3975,7 @@ mod tests {
         assert!(g.top() > c.top() && c.top() > m.top());
     }
 
-    /// 1000 assets in the list stay cheap per frame (no per-row decode, no O(n²) walks) — same
+    /// 1000 assets in the list stay cheap per frame (no per-row decode, no O(n²) walks) - same
     /// shape and budget philosophy as `timeline::tests::headless_1000_clips_stays_fast`.
     #[test]
     fn headless_1000_assets_stays_fast() {

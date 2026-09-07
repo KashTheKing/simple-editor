@@ -12,7 +12,7 @@ impl Project {
         self.paths.push(PathAsset { id, name, points });
         id
     }
-    /// A clip's drawing / polygon outline in canvas coordinates — the clip's own position is folded in,
+    /// A clip's drawing / polygon outline in canvas coordinates - the clip's own position is folded in,
     /// so the path lands where the sketch is on screen.
     pub fn path_from_clip(&self, clip: Id) -> Vec<(f32, f32, f32)> {
         let Some(c) = self.clip(clip) else { return Vec::new() };
@@ -48,7 +48,7 @@ impl Project {
     }
     /// Native (unscaled) pixel size of a clip's own footage: the asset's size for video/image, the
     /// nested sequence's size for a `Sequence` clip. `None` for kinds with no meaningful size (text,
-    /// shape, adjustment, audio) or a footage clip missing its asset/sequence — mirrors
+    /// shape, adjustment, audio) or a footage clip missing its asset/sequence - mirrors
     /// `GpuRenderer::native_size`, minus its decoded-frame fallback.
     pub fn clip_native_size(&self, clip: &Clip) -> Option<(u32, u32)> {
         let wh = match clip.kind {
@@ -62,7 +62,7 @@ impl Project {
         }
     }
     /// Reset a clip's transform to fill the project canvas (any keyframes on x/y/scale/rotation are
-    /// wholesale-replaced — this is a reset, not a tween). `stretch = false` ("Fit to Screen") resets
+    /// wholesale-replaced - this is a reset, not a tween). `stretch = false` ("Fit to Screen") resets
     /// x/y/scale/rotation/scale_x/scale_y to their defaults, which falls back to the engine's default
     /// "contain" placement (letterboxed, native aspect preserved, centred). `stretch = true` ("Stretch to Screen")
     /// additionally sets independent scale_x/scale_y so the footage fills the canvas edge to edge,
@@ -84,7 +84,7 @@ impl Project {
         clip.x = a0();
         clip.y = a0();
         clip.scale = a1();
-        clip.rotation = a0(); // a rotated quad can't fill the canvas — "to screen" implies upright
+        clip.rotation = a0(); // a rotated quad can't fill the canvas - "to screen" implies upright
         clip.scale_x = Animated::new(sx);
         clip.scale_y = Animated::new(sy);
         true

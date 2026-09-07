@@ -6,14 +6,14 @@
 //! deviation (see PR body): the plan's signature threads live per-angle textures
 //! (`textures: &[(usize, egui::TextureId)]`) for <=4 alt-render thumbnails. Building those needs a
 //! dedicated decode pipeline per visible angle (up to 4 extra `Player`s, or a round-robin single decoder)
-//! — real engine work this already-large workstream skips. Angle rows are numbered/named/coloured
+//! - real engine work this already-large workstream skips. Angle rows are numbered/named/coloured
 //! instead (capped at 4, same as the plan's own grid cap): click-to-switch works fully today; live
 //! thumbnails are a follow-up (`// ponytail:` note below).
 
 use crate::theme::Palette;
 use eframe::egui::{self, vec2};
 
-/// ponytail: text/colour rows, no live per-angle video — see this file's top-of-file deviation note.
+/// ponytail: text/colour rows, no live per-angle video - see this file's top-of-file deviation note.
 /// Upgrade path: a round-robin single extra `Player` (like `monitor.rs`'s `TrimSlot`) cycling through
 /// the up-to-4 visible angles, one decode per tick, if the Gallery/UI review wants live previews.
 pub(crate) fn angle_grid(

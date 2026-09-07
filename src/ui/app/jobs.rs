@@ -191,7 +191,7 @@ impl App {
 
     /// Proxy media: keep an all-intra low-res proxy built for every video asset and hand the map to
     /// the player. Rescans every 2 s (a handful of stat calls); one ffmpeg transcode at a time.
-    /// ponytail: no per-asset badge yet — the preview shows one aggregate "Building proxy" line.
+    /// ponytail: no per-asset badge yet - the preview shows one aggregate "Building proxy" line.
     pub(super) fn sync_proxies(&mut self) {
         if let Some((src, _, p)) = &self.proxy_job {
             if !p.is_done() {

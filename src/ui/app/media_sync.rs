@@ -44,7 +44,7 @@ impl AssetStatus {
 impl App {
     /// The single source of truth for "can this asset be used right now": Offline (file missing, per
     /// the last 2 s rescan) > Decoding (import probe still out) > ProxyBuilding(pct) > Ready. An
-    /// unknown id is `Offline` — there is nothing to decode.
+    /// unknown id is `Offline` - there is nothing to decode.
     pub(crate) fn asset_status(&self, asset: Id) -> AssetStatus {
         match self.project.asset(asset) {
             Some(a) => status_of(&self.library.offline, a, self.settings.use_proxies, self.settings.proxy_height),
@@ -55,7 +55,7 @@ impl App {
     /// New Subclip from Marks for every id: ONE labelled undo snapshot pushed BEFORE any row is added
     /// (Ctrl+Z after this restores the pre-subclip project exactly), then `Project::add_subclip` per
     /// id over the timeline In/Out marks clamped to the asset's own length (default 0..duration).
-    /// ponytail: In/Out are timeline marks, not source marks — source-monitor's src_in/src_out
+    /// ponytail: In/Out are timeline marks, not source marks - source-monitor's src_in/src_out
     /// supersede them once that pane lands.
     pub(crate) fn new_subclips(&mut self, ids: &[Id]) -> Vec<Id> {
         let before = self.project.to_json();
@@ -74,7 +74,7 @@ impl App {
         }
         if made.is_empty() {
             self.undo.pop(); // nothing changed: no phantom history row
-            self.toast("No subclip made — set In/Out inside the asset's length first");
+            self.toast("No subclip made - set In/Out inside the asset's length first");
         } else {
             self.after_edit();
             self.library.selected = made.last().copied();
@@ -100,7 +100,7 @@ pub(crate) fn status_of(offline: &HashSet<Id>, a: &Asset, use_proxies: bool, pro
 }
 
 /// Every asset whose file is not on disk right now.
-/// ponytail: one `exists()` per asset on the UI thread every 2 s — the proxy scan already pays the
+/// ponytail: one `exists()` per asset on the UI thread every 2 s - the proxy scan already pays the
 /// same per-asset stat; a worker + channel is the upgrade if a network drive ever makes it hitch.
 pub(crate) fn offline_set(project: &Project) -> HashSet<Id> {
     project.assets.iter().filter(|a| !a.path.is_empty() && !Path::new(&a.path).exists()).map(|a| a.id).collect()
@@ -135,7 +135,7 @@ impl MediaJob {
     }
 }
 
-/// Drain the finished jobs out of `jobs` (each is returned exactly once — the caller applies it, so
+/// Drain the finished jobs out of `jobs` (each is returned exactly once - the caller applies it, so
 /// a completion can never be applied, or its hook fired, twice).
 pub(super) fn take_done(jobs: &mut Vec<MediaJob>) -> Vec<MediaJob> {
     let (done, pending): (Vec<_>, Vec<_>) = std::mem::take(jobs).into_iter().partition(|j| j.progress().is_done());
@@ -149,7 +149,7 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
         app.offline_scan_at = Some(Instant::now() + Duration::from_secs(2));
         refresh_offline(app);
     }
-    // keyboard navigation over the hovered library — before Hotkeys::poll consumes the same keys
+    // keyboard navigation over the hovered library - before Hotkeys::poll consumes the same keys
     if app.library.hovered && !ctx.wants_keyboard_input() {
         let nav = library::keyboard(&mut app.library, ctx);
         if !nav.add_to_timeline.is_empty() {
@@ -233,7 +233,7 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
                 app.library.sel_ids.iter().copied().filter(|id| app.library.offline.contains(id)).collect();
             let ids: Vec<Id> = if sel.is_empty() { app.library.offline.iter().copied().collect() } else { sel };
             if ids.is_empty() {
-                app.toast("No offline media — every file was found");
+                app.toast("No offline media - every file was found");
             } else if let Some(dir) = rfd::FileDialog::new().set_title("Relink media: pick the folder").pick_folder() {
                 start_relink(app, &ids, &dir);
             }
@@ -262,7 +262,7 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
 
 // ---------- relink ----------
 
-/// Repoint `ids` (and every asset sharing their path — subclips) to files found under `dir`, by name
+/// Repoint `ids` (and every asset sharing their path - subclips) to files found under `dir`, by name
 /// then by duration within one frame. Pure over the project; returns (relinked, still missing).
 pub(crate) fn relink_assets(project: &mut Project, ids: &[Id], dir: &Path) -> (Vec<Id>, Vec<Id>) {
     let (mut ok, mut missing) = (Vec::new(), Vec::new());
@@ -306,13 +306,13 @@ pub(super) fn start_relink(app: &mut App, ids: &[Id], dir: &Path) -> (Vec<Id>, V
 
 // ---------- consolidate ----------
 
-/// The project's own folder — Consolidate copies into it, so an unsaved project has nowhere to go.
+/// The project's own folder - Consolidate copies into it, so an unsaved project has nowhere to go.
 pub(super) fn project_dir(app: &App) -> Result<PathBuf, String> {
     app.project_path
         .as_ref()
         .and_then(|p| p.parent())
         .map(Path::to_path_buf)
-        .ok_or_else(|| "Save the project first — media is consolidated into its folder".to_string())
+        .ok_or_else(|| "Save the project first - media is consolidated into its folder".to_string())
 }
 
 /// `(id, path)` of every asset on disk outside `dir`, one entry per distinct path (subclips share
@@ -467,7 +467,7 @@ mod tests {
         }
     }
 
-    /// `asset_status` is a live-`App` method (no headless `App` exists — see tools_registry_tests.rs),
+    /// `asset_status` is a live-`App` method (no headless `App` exists - see tools_registry_tests.rs),
     /// so this pins the pure body it delegates to: the offline set decides Offline, and once the path
     /// exists again the same asset reads Ready.
     #[test]

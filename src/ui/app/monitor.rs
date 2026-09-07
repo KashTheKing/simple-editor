@@ -1,9 +1,9 @@
 //! ---- ws:canvas-handles-monitor ----
 //! The monitor's async alt-render pipeline: `AltRenderState` (behind `App.alt_render`, retyped from
-//! wave-0b's `AltRenderKind` placeholder — see the plan's risk table) coalesces a hover request
-//! (`preview.hover`, or a future UI hover — none exists yet, see `AltRequest::Gallery`'s doc comment)
+//! wave-0b's `AltRenderKind` placeholder - see the plan's risk table) coalesces a hover request
+//! (`preview.hover`, or a future UI hover - none exists yet, see `AltRequest::Gallery`'s doc comment)
 //! into at most one in-flight decode: `tick` (FRAME_HOOK) clones the project, temporarily applies the
-//! requested effect/transition, decodes it on its OWN `Player` (never the live one — same isolation
+//! requested effect/transition, decodes it on its OWN `Player` (never the live one - same isolation
 //! `LibPreview` uses for the library pane) via `Player::request_layers`/`take_layers_reply`
 //! (player-rate-loop's async API), GPU-renders the reply and uploads it as a normal egui texture. The
 //! clone is never written back: a hover preview can never mutate `App.project` or push undo. Alt renders
@@ -13,16 +13,16 @@
 //!
 //! deviation (see PR body): the plan describes `gpu.render_preview_texture`'s zero-copy native GL
 //! texture for the alt-render output, registered via `eframe::Frame::register_native_glow_texture`.
-//! FRAME_HOOKS' signature is `fn(&mut App, &egui::Context)` — no `&mut eframe::Frame` — and widening it
+//! FRAME_HOOKS' signature is `fn(&mut App, &egui::Context)` - no `&mut eframe::Frame` - and widening it
 //! would touch every other workstream's already-merged `tick` fn, outside this workstream's owned
-//! files. `tick` instead reads back the GPU-rendered frame to CPU (`App::gpu_frame` — already the
+//! files. `tick` instead reads back the GPU-rendered frame to CPU (`App::gpu_frame` - already the
 //! established GPU-accurate fallback path, not the forbidden blocking `Player::render_once`) and
 //! uploads it the same way `PreviewState`'s own CPU-frame path does (`ctx.load_texture`). One extra
 //! copy per hover-preview frame; the live preview's own zero-copy path is untouched.
 //!
 //! deviation (see PR body): `App::enabled`/`enabled_for`/`enabled_for2` (app/mod.rs) are pinned to a
 //! 3-/4-bool pure-function shape another workstream's test already depends on, and this file's
-//! app/mod.rs edits are restricted to the registry lines only — so AutoReframe's "no tracked box" guard
+//! app/mod.rs edits are restricted to the registry lines only - so AutoReframe's "no tracked box" guard
 //! lives entirely in `act`/`reframe` below (a toast, not an `App::enabled` Err) rather than the central
 //! `enabled()` dispatch the plan's test row names. `ui.action`'s generic disabled-toast still doesn't
 //! apply to it, but the hotkey is unbound (menu/palette/MCP only) and every one of those paths goes
@@ -31,7 +31,7 @@
 //! deviation (see PR body): every test below that the plan's table describes against a live `&mut App`
 //! (`viewer_fit_resets_view`, `toggle_proxies_flips_setting`, `auto_reframe_with_tracked_box_writes_
 //! apply_path`, the alt-render coalescing/pause/no-mutate tests) is rewritten against the pure logic
-//! `act`/`tick` actually dispatch to — this crate has no headless `App`-construction path anywhere
+//! `act`/`tick` actually dispatch to - this crate has no headless `App`-construction path anywhere
 //! (`eframe::CreationContext` has no public constructor outside `eframe::run_native`; see
 //! tools_registry_tests.rs's own "deviation" comment and drops.rs's `drop_target` doc comment for the
 //! same, pre-existing constraint every other workstream's ACT_HANDLERS tests already work around).
@@ -52,7 +52,7 @@ pub(crate) enum AltRequest {
 }
 
 /// The full coalescing key `wants_new_request` compares: the bare `AltRequest` enum value alone isn't
-/// enough — the same `AltRequest` can resolve to a different clip (selection/playhead moved off the old
+/// enough - the same `AltRequest` can resolve to a different clip (selection/playhead moved off the old
 /// target) or a different render time (playback, scrub) without the enum value itself changing, and both
 /// must be treated as a fresh request rather than "already satisfied". `target_clip`'s resolved id plus a
 /// frame-quantized playhead (`quantize_time`) captures that context.
@@ -61,24 +61,24 @@ type AltKey = (AltRequest, Option<Id>, i64);
 /// Coalescing one-in-flight alt-render state behind `App.alt_render`.
 pub(crate) struct AltRenderState {
     /// What should be showing right now (set by `preview.hover`, or a future UI hover). `None` = the
-    /// live frame — `request(None)` also drops whatever is in flight or ready.
+    /// live frame - `request(None)` also drops whatever is in flight or ready.
     request: Option<AltRequest>,
     /// The decode `tick` is waiting on: its `request_layers` id, the resolved key it was for, and the
     /// time it was decoded at (so the eventual GPU render uses the exact time its layers were decoded
     /// for).
     inflight: Option<(u64, AltKey, f64)>,
-    /// The resolved key `ready`'s texture currently shows — lets an unchanged `request` skip a redundant
+    /// The resolved key `ready`'s texture currently shows - lets an unchanged `request` skip a redundant
     /// re-decode every tick while a hover continues at the same target/time.
     shown: Option<AltKey>,
     /// The last frame successfully rendered, ready for `preview::show` to paint this frame.
     ready: Option<(egui::TextureId, [u32; 2])>,
-    /// Own decoder, spun up lazily on first request — never the live `App.player`, so a hover preview
+    /// Own decoder, spun up lazily on first request - never the live `App.player`, so a hover preview
     /// can't steal frames from (or stall) playback.
     player: Option<Player>,
     /// Upload target, reused across requests (same sub-image-when-same-size convention as
     /// `PreviewState.texture`).
     texture: Option<egui::TextureHandle>,
-    /// Set by `request(Some(...))`, consumed once per `tick` by `clear_if_stale` — see that fn's doc
+    /// Set by `request(Some(...))`, consumed once per `tick` by `clear_if_stale` - see that fn's doc
     /// comment for why this exists (a hover-owning pane that stops being drawn otherwise leaves a
     /// `request` nothing ever clears).
     asserted: bool,
@@ -96,7 +96,7 @@ impl AltRenderState {
         self.ready
     }
     /// Ask the monitor to substitute `req`'s render for the live frame (`None` = back to the live
-    /// frame). Newest wins: a second call before the first resolves simply retargets the same slot —
+    /// frame). Newest wins: a second call before the first resolves simply retargets the same slot -
     /// `tick` never queues more than one decode.
     pub(crate) fn request(&mut self, req: Option<AltRequest>) {
         if req.is_some() {
@@ -105,16 +105,16 @@ impl AltRenderState {
         self.request = req;
     }
     /// Drop `request` if nothing re-asserted it (via `request(Some(...))`) since the last call to this.
-    /// `tick` calls this once, at the top of every frame — BEFORE panes are drawn (see FRAME_HOOKS'
-    /// ordering in `app/mod.rs`) — so the assertion it's checking for is the one made during the
+    /// `tick` calls this once, at the top of every frame - BEFORE panes are drawn (see FRAME_HOOKS'
+    /// ordering in `app/mod.rs`) - so the assertion it's checking for is the one made during the
     /// PREVIOUS frame's pane-draw phase, and it resets the flag so THIS frame's pane-draw phase can
     /// assert fresh for the next tick to check.
     ///
     /// A hover-owning pane's own match arm (`Pane::Transitions` in panes.rs, the Gallery pane's drawer in
-    /// gallery_ctl.rs) is the only thing that calls `request(Some(...))`, and only while it is drawn —
+    /// gallery_ctl.rs) is the only thing that calls `request(Some(...))`, and only while it is drawn -
     /// while the user keeps hovering the same card in a pane that's still on screen, that arm re-asserts
     /// every single frame, so this never fires. But if the user switches away from that pane entirely
-    /// (its match arm no longer runs at all), nothing calls `request` any more — without this, the last
+    /// (its match arm no longer runs at all), nothing calls `request` any more - without this, the last
     /// request it made would otherwise go on being trusted, and painted over the live preview, forever.
     pub(crate) fn clear_if_stale(&mut self) {
         if self.request.is_some() && !std::mem::take(&mut self.asserted) {
@@ -123,7 +123,7 @@ impl AltRenderState {
     }
 }
 
-/// `(1.0, ZERO)` — the fitted letterbox, no zoom or pan. Shared by `ViewerFit` and the `preview.view`
+/// `(1.0, ZERO)` - the fitted letterbox, no zoom or pan. Shared by `ViewerFit` and the `preview.view`
 /// tool's `fit: true` arg so both reset the exact same way.
 pub(crate) fn fit_view() -> (f32, egui::Vec2) {
     (1.0, egui::Vec2::ZERO)
@@ -133,7 +133,7 @@ pub(crate) fn fit_view() -> (f32, egui::Vec2) {
 /// zero-copy-texture deviation.
 pub(crate) fn tick(app: &mut App, ctx: &egui::Context) {
     if app.export.is_some() {
-        return; // never render while exporting — export owns the GPU/decode capacity
+        return; // never render while exporting - export owns the GPU/decode capacity
     }
     app.alt_render.clear_if_stale();
     let Some(want) = app.alt_render.request.clone() else {
@@ -149,7 +149,7 @@ pub(crate) fn tick(app: &mut App, ctx: &egui::Context) {
     let reply = app.alt_render.player.as_ref().and_then(|p| p.take_layers_reply());
     let Some((rid, layers)) = reply else { return };
     let Some((key, t)) = accept_reply(&app.alt_render.inflight, rid) else { return };
-    app.alt_render.inflight = None; // consumed either way — a failed render below just leaves `ready` be
+    app.alt_render.inflight = None; // consumed either way - a failed render below just leaves `ready` be
     let (w, h) = app.canvas;
     let Some(frame) = app.gpu_frame(&layers, t, w, h) else { return };
     let (fw, fh) = (frame.width as usize, frame.height as usize);
@@ -170,7 +170,7 @@ pub(crate) fn tick(app: &mut App, ctx: &egui::Context) {
 }
 
 /// Whether a new decode should be started this tick: `want` is Some and differs from both what's
-/// already in flight and what's already shown — the coalescing rule ("newest wins, no queue") in a form
+/// already in flight and what's already shown - the coalescing rule ("newest wins, no queue") in a form
 /// that needs no live `App` to test. Compared as the full `AltKey` (request + resolved target clip +
 /// quantized playhead), not the bare `AltRequest`, so a `shown` request whose target/time context has
 /// moved on is correctly treated as stale rather than "already satisfied".
@@ -180,7 +180,7 @@ fn wants_new_request(want: &Option<AltKey>, inflight: &Option<(u64, AltKey, f64)
 }
 
 /// `take_layers_reply`'s id against what's in flight: `None` for a reply superseded by (or older than)
-/// the current request — exactly `request_layers`' own "newest wins" contract, checked on this side too.
+/// the current request - exactly `request_layers`' own "newest wins" contract, checked on this side too.
 fn accept_reply(inflight: &Option<(u64, AltKey, f64)>, reply_id: u64) -> Option<(AltKey, f64)> {
     inflight.as_ref().filter(|(id, _, _)| *id == reply_id).map(|(_, k, t)| (k.clone(), *t))
 }
@@ -198,7 +198,7 @@ fn quantize_time(t: f64) -> i64 {
     (t * 1000.0).round() as i64
 }
 
-/// Resolves `req` via `alt_project`. On failure (nothing renderable — target clip gone, deselected,
+/// Resolves `req` via `alt_project`. On failure (nothing renderable - target clip gone, deselected,
 /// playhead moved off it, or the `Gallery` stub) clears `state.inflight`, `state.shown`, AND
 /// `state.ready`: clearing only `inflight` (the pre-fix behavior) leaves a stale texture from an earlier
 /// successful decode of this same `AltRequest` painting over the live frame indefinitely. Takes no
@@ -232,7 +232,7 @@ fn start_request(app: &mut App, ctx: &egui::Context, req: AltRequest, key: AltKe
     app.alt_render.inflight = Some((id, key, t));
 }
 
-/// The selected visual clip a hover request previews against (today's rule — a future consumer with no
+/// The selected visual clip a hover request previews against (today's rule - a future consumer with no
 /// selection to lean on can widen this).
 fn target_clip(project: &Project, selection: &[Id], playhead: f64) -> Option<Id> {
     selection
@@ -242,7 +242,7 @@ fn target_clip(project: &Project, selection: &[Id], playhead: f64) -> Option<Id>
 }
 
 /// The hypothetical project + render time a hover request previews: a clone with the requested
-/// effect/transition applied to the target clip, never written back to `project` — proving this takes
+/// effect/transition applied to the target clip, never written back to `project` - proving this takes
 /// `&Project` (not `&mut`), a hover request structurally cannot mutate the live project or push undo.
 /// `None` when there is nothing to preview against (no selected visual clip, or the `Gallery` stub).
 fn alt_project(project: &Project, selection: &[Id], playhead: f64, req: &AltRequest) -> Option<(Project, f64)> {
@@ -262,21 +262,21 @@ fn alt_project(project: &Project, selection: &[Id], playhead: f64, req: &AltRequ
             };
             Some((p, (end - dur / 2.0).max(start)))
         }
-        // ws:canvas-handles-monitor: reserved for inspector-gallery's gallery.hover — no catalogue data
+        // ws:canvas-handles-monitor: reserved for inspector-gallery's gallery.hover - no catalogue data
         // model exists yet this wave, so there is nothing renderable to build here.
         AltRequest::Gallery(_, _) => None,
     }
 }
 
-/// Auto Reframe moves the CLIP opposite the tracked point/box so the point stays put in frame — the
+/// Auto Reframe moves the CLIP opposite the tracked point/box so the point stays put in frame - the
 /// inverse of the Tracking pane's own "Apply to clip", which makes the clip follow the point.
 pub(crate) fn invert_points(points: &[(f32, f32, f32)]) -> Vec<(f32, f32, f32)> {
     points.iter().map(|&(x, y, t)| (-x, -y, t)).collect()
 }
 
-/// Auto-reframe `want` (or, when `None`, whichever clip the Tracking pane targets — see
+/// Auto-reframe `want` (or, when `None`, whichever clip the Tracking pane targets - see
 /// `TrackState::tracked`) using its EXISTING tracked box only: no motion/saliency fallback exists
-/// in-tree, so absence is an error, never a silently invented heuristic. Pure mutation only — no undo
+/// in-tree, so absence is an error, never a silently invented heuristic. Pure mutation only - no undo
 /// push, no toast: `act` (unbound hotkey/menu/palette) and `timeline.reframe` (MCP, `ToolKind::Mutate`,
 /// auto-wrapped by the generic snapshot-before/push-undo-iff-changed handler) each wrap this their own
 /// way, so it isn't done twice.
@@ -288,7 +288,7 @@ pub(crate) fn reframe(
 ) -> Result<(), &'static str> {
     let (id, points) = tracking
         .tracked(project, selection)
-        .ok_or("Auto Reframe needs a tracked point or box first — track one in the Tracking pane")?;
+        .ok_or("Auto Reframe needs a tracked point or box first - track one in the Tracking pane")?;
     if want.is_some_and(|w| w != id) {
         return Err("the tracked box belongs to a different clip");
     }
@@ -334,22 +334,22 @@ pub(crate) fn act(app: &mut App, a: Action) -> bool {
 //
 // deviation (see PR body): the plan's Files table describes extending THIS file's `AltRequest`/
 // `AltRenderState` (canvas-handles-monitor, above) with `TrimOut`/`TrimIn`/`Compare`/`Angle(u8)`
-// variants. Reading that type closely: it is a SINGLE-slot "newest wins" coalescing channel — exactly
+// variants. Reading that type closely: it is a SINGLE-slot "newest wins" coalescing channel - exactly
 // right for a hover preview (only one thing is ever hovered at a time), but a dual-frame trim view needs
 // TWO frames on screen simultaneously (outgoing + incoming), and widening the single `request`/`inflight`/
 // `shown`/`ready` fields into a multi-slot map would touch the very `clear_if_stale` machinery
-// inspector-gallery's review just fixed a stale-preview bug in — risk this workstream was explicitly told
+// inspector-gallery's review just fixed a stale-preview bug in - risk this workstream was explicitly told
 // to avoid. `TrimSlot`/`trim_tick` below are a separate, smaller two-slot mechanism reusing the same
 // primitives (`Player::request_layers`/`take_layers_reply`, `App::gpu_frame`) but rendering the LIVE
 // project at two real times (no project cloning needed, unlike a hover preview's hypothetical edit).
-// `Compare` stays a state-only stub (`render_frame_bypass` does not exist — see this file's other
+// `Compare` stays a state-only stub (`render_frame_bypass` does not exist - see this file's other
 // deviation note below); the angle grid (`multicam_ui.rs`) drops live per-angle thumbnails in favour of
 // text/colour rows with fully-working click-to-switch, so it needs no third render pipeline here.
 //
 // deviation (see PR body): `render_frame_bypass`/`frame_stats` (color-engine, wave 1) are attributed by
-// the plan but do not exist under those names in `engine::gpu` — CONFIRMED by reading gpu.rs. What DOES
+// the plan but do not exist under those names in `engine::gpu` - CONFIRMED by reading gpu.rs. What DOES
 // exist (and is already consumed by `tools_color.rs`'s `color.auto`/`color.match`/`frame.stats`) is
-// `GpuRenderer::{set_stats_wanted, stats}` fed by `render_preview_texture`'s own internal readback gate —
+// `GpuRenderer::{set_stats_wanted, stats}` fed by `render_preview_texture`'s own internal readback gate -
 // real `FrameStats` data, just under a different name/shape than the plan guessed. Scopes therefore ships
 // FOR REAL below (`scopes_ui.rs`), keyed off `gpu.stats()`; only the wipe/side-by-side Compare feature
 // (which truly has no bypass-render equivalent anywhere in the engine) stays a documented no-op stub.
@@ -377,26 +377,26 @@ pub(crate) struct MonitorState {
     /// caught once, not on every frame the rate happens to read zero.
     last_rate: f64,
     /// Scopes `egui::Window` open/closed (mirrors, but does not replace, `Settings.scopes`'s list of
-    /// which TABS were open — this is just "is the window there at all").
+    /// which TABS were open - this is just "is the window there at all").
     pub(crate) scopes_open: bool,
     /// The dual-frame trim view's own two decode slots (outgoing / incoming).
     trim: TrimView,
     /// (clip id, target) armed by the (color-engine-owned) Color section's Eyedropper button
-    /// (`inspector::take_pending_eyedrop` — that workstream's own doc comment names THIS workstream as
-    /// its intended consumer), consumed by the next click on the monitor. Always targets `Chroma` — the
+    /// (`inspector::take_pending_eyedrop` - that workstream's own doc comment names THIS workstream as
+    /// its intended consumer), consumed by the next click on the monitor. Always targets `Chroma` - the
     /// existing button lives in the general grade section, not a Qualifier-specific one; `Qualifier` is
     /// reachable via the `color.pick` MCP tool's explicit `target` arg.
     pub(crate) pick_armed: Option<(Id, crate::ui::preview::PickTarget)>,
 }
 
 /// FRAME_HOOK: dynamic-trim rate-drop detection, the Scopes readback gate, and the dual-frame trim
-/// view's decode refresh — all paused (or simply not requested) while `app.export.is_some()`.
+/// view's decode refresh - all paused (or simply not requested) while `app.export.is_some()`.
 pub(crate) fn monitor_tick(app: &mut App, ctx: &egui::Context) {
     if let Some(id) = crate::ui::inspector::take_pending_eyedrop() {
         app.monitor.pick_armed = Some((id, crate::ui::preview::PickTarget::Chroma));
     }
     // ws:pro-monitor review fix: `Player::pause()` never resets `clock.rate` to 0 (only `play()` sets it
-    // to 1.0, `set_rate` rejects 0.0 outright — see playback.rs), so the raw `rate()` reads whatever the
+    // to 1.0, `set_rate` rejects 0.0 outright - see playback.rs), so the raw `rate()` reads whatever the
     // last shuttle speed was even after a real Stop, and defaults to 1.0 at startup regardless of playing
     // state. Every other call site (playback_ctl.rs, source_ctl.rs) gates it behind `is_playing()` for
     // exactly this reason; without the same gate here the "shuttle stopped" (nonzero -> zero) transition
@@ -406,7 +406,7 @@ pub(crate) fn monitor_tick(app: &mut App, ctx: &egui::Context) {
     if dyn_trim_should_arm(rate, trim_view_armable) {
         app.monitor.dyn_trim_armed = true;
     }
-    // never commit while an export is running — export owns project consistency/GPU capacity, matching
+    // never commit while an export is running - export owns project consistency/GPU capacity, matching
     // the trim-view decode's own export pause below (`trim_view_wants_requests`).
     if app.export.is_none() && dyn_trim_should_commit(app.monitor.dyn_trim_armed, app.monitor.last_rate, rate) {
         commit_dynamic_trim(app);
@@ -415,7 +415,7 @@ pub(crate) fn monitor_tick(app: &mut App, ctx: &egui::Context) {
     app.monitor.last_rate = rate;
 
     // Scopes: gate the GPU's readback to only while the window is actually open OR the eyedropper is
-    // armed — `write_picked_color`/`color.pick` both read `gpu.stats()`, which `maybe_readback_stats`
+    // armed - `write_picked_color`/`color.pick` both read `gpu.stats()`, which `maybe_readback_stats`
     // leaves untouched (None, or a stale frame) whenever `stats_wanted` is false, so without this an
     // eyedropper pick made with Scopes closed reads stale/absent stats.
     if let Some(gpu) = app.gpu.as_mut() {
@@ -455,7 +455,7 @@ fn trim_view_wants_requests(exporting: bool, trim_view_armable: bool) -> bool {
 }
 
 /// The same ripple/roll composition `timeline.dynamic_trim` (tools_monitor.rs) exposes directly: apply
-/// `extend_edit` (trim-model's own Both=roll / Left,Right=ripple_trim dispatch — see `trim_actions.rs`'s
+/// `extend_edit` (trim-model's own Both=roll / Left,Right=ripple_trim dispatch - see `trim_actions.rs`'s
 /// `ExtendEdit`/`nudge_edit_point`, which this mirrors) from the edit point to the playhead where the
 /// shuttle stopped, one `push_undo_labeled("Dynamic trim")`.
 fn commit_dynamic_trim(app: &mut App) {
@@ -607,7 +607,7 @@ mod tests {
         assert!(!wants_new_request(&Some(key_a.clone()), &Some((1, key_a.clone(), 0.0)), &None), "already in flight");
         assert!(
             !wants_new_request(&Some(key_a.clone()), &None, &Some(key_a.clone())),
-            "already shown — no redundant re-decode"
+            "already shown - no redundant re-decode"
         );
         assert!(
             wants_new_request(&Some(key_b.clone()), &Some((1, key_a.clone(), 0.0)), &None),
@@ -643,7 +643,7 @@ mod tests {
         state.shown = Some(alt_key(&p, &[id], 1.0, &req));
         state.ready = Some((egui::TextureId::Managed(1), [4, 4]));
         // The playhead moves off the clip: `alt_project` can no longer resolve a target for the SAME
-        // `AltRequest` — this is the bug scenario (selection/playhead/deletion made a shown request
+        // `AltRequest` - this is the bug scenario (selection/playhead/deletion made a shown request
         // unrenderable).
         assert!(resolve_or_clear(&p, &[id], 10.0, &req, &mut state).is_none());
         assert!(state.shown.is_none(), "a stale shown request must not keep being treated as satisfied");
@@ -702,11 +702,11 @@ mod tests {
         assert_eq!(fit_view(), (1.0, egui::Vec2::ZERO));
     }
 
-    /// A request that nothing re-asserts across a frame boundary must go stale and clear — the scenario
+    /// A request that nothing re-asserts across a frame boundary must go stale and clear - the scenario
     /// a hover-owning pane produces when the user switches away from it while a hover was still active:
     /// its match arm in panes.rs/gallery_ctl.rs simply doesn't run any more, so nothing ever calls
     /// `request(Some(...))` again. Distinct from `wants_new_request_only_starts_once_per_distinct_request`
-    /// above, which only covers one request being superseded by a DIFFERENT one — never "nobody called
+    /// above, which only covers one request being superseded by a DIFFERENT one - never "nobody called
     /// request at all this frame".
     #[test]
     fn clear_if_stale_drops_a_request_nothing_reasserted() {
@@ -714,33 +714,33 @@ mod tests {
         // Frame N: a pane hovers a transition and asserts the request (mirrors panes.rs's
         // `Pane::Transitions` arm calling `app.alt_render.request(Some(...))` during its pane-draw phase).
         state.request(Some(AltRequest::Transition(TransitionKind::CrossFade)));
-        // Frame N+1's tick runs BEFORE panes are drawn — it sees frame N's assertion, so the request
+        // Frame N+1's tick runs BEFORE panes are drawn - it sees frame N's assertion, so the request
         // survives this check.
         state.clear_if_stale();
         assert!(state.request.is_some(), "an assertion from the previous frame must survive the next tick");
         // The user switches away from the pane: frame N+1's pane-draw phase never calls `request(...)`
-        // for it at all (its match arm doesn't run any more) — nothing reasserts.
+        // for it at all (its match arm doesn't run any more) - nothing reasserts.
         // Frame N+2's tick must now treat the stale leftover request exactly like `request(None)`.
         state.clear_if_stale();
         assert!(state.request.is_none(), "a request nobody reasserted since the last tick must be cleared");
     }
 
-    /// The normal case — the pane stays on screen and the mouse stays on the same card, so its match arm
-    /// calls `request(Some(...))` again every single frame — must never go stale.
+    /// The normal case - the pane stays on screen and the mouse stays on the same card, so its match arm
+    /// calls `request(Some(...))` again every single frame - must never go stale.
     #[test]
     fn clear_if_stale_keeps_a_request_thats_reasserted_every_frame() {
         let mut state = AltRenderState::default();
         for _ in 0..5 {
             state.request(Some(AltRequest::Transition(TransitionKind::CrossFade)));
             state.clear_if_stale();
-            assert!(state.request.is_some(), "reasserted every frame — must never go stale");
+            assert!(state.request.is_some(), "reasserted every frame - must never go stale");
         }
     }
 
     // ---- ws:pro-monitor ----
     // `monitor_tick`/`trim_tick`/`commit_dynamic_trim` all need a live `&mut App` (this crate has no
-    // headless `App`-construction path anywhere — see this file's own top-of-file deviation notes and
-    // `tools_registry_tests.rs`'s matching one), so — same shape as every test above this section —
+    // headless `App`-construction path anywhere - see this file's own top-of-file deviation notes and
+    // `tools_registry_tests.rs`'s matching one), so - same shape as every test above this section -
     // these pin the PURE decision fns `monitor_tick` itself delegates to instead.
 
     #[test]

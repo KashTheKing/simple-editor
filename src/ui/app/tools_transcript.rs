@@ -45,7 +45,7 @@ fn transcript_value(app: &App, clip: Id) -> Value {
         "text": words.iter().map(|w| w.2.as_str()).collect::<Vec<_>>().join(" "),
     });
     if words.is_empty() {
-        v["hint"] = json!("no transcript for this clip yet — run media.transcribe / transcribe.run first");
+        v["hint"] = json!("no transcript for this clip yet - run media.transcribe / transcribe.run first");
     }
     v
 }
@@ -61,7 +61,7 @@ fn clip_from(app: &App, a: &Args) -> Result<Id, String> {
         .all_clips()
         .find(|(_, c)| c.uses_asset() && c.asset == aid && matches!(c.kind, ClipKind::Video | ClipKind::Audio))
         .map(|(_, c)| c.id)
-        .ok_or_else(|| "that asset is not on the timeline — place it first (timeline.add_clip)".into())
+        .ok_or_else(|| "that asset is not on the timeline - place it first (timeline.add_clip)".into())
 }
 
 fn anim_from(kind: &str, color: Option<[u8; 4]>) -> Result<SubtitleAnim, String> {
@@ -74,7 +74,7 @@ fn anim_from(kind: &str, color: Option<[u8; 4]>) -> Result<SubtitleAnim, String>
     })
 }
 
-/// A transcribe job for `clip` (see `App::transcribe_clip`) as a Job outcome — the reply's `path`
+/// A transcribe job for `clip` (see `App::transcribe_clip`) as a Job outcome - the reply's `path`
 /// is empty on purpose: the result is in the project, read it with media.transcript.
 fn transcribe_job(app: &mut App, clip: Id, a: &Args, gen_cues: bool) -> Result<ToolOutcome, String> {
     let prog = app.transcribe_clip(clip, a.str("model"), a.str("language"), gen_cues)?;
@@ -231,7 +231,7 @@ pub const TOOLS: &[ToolDef] = &[
             "clip_id:integer:true:",
             "model:string:false:tiny.en|base.en|small.en|base (default: the Subtitles pane's pick)",
             "language:string:false:auto, en, de, …",
-            "cues:boolean:false:default true — also generate subtitle cues",
+            "cues:boolean:false:default true - also generate subtitle cues",
         ],
         kind: ToolKind::Job,
         run: |app, args| {
@@ -300,7 +300,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "tts.speak",
-        desc: "Windows SAPI text-to-speech (job): writes a WAV and imports it at `at` (default: the playhead), linked to the text clip `clip_id` when given. OS voices only — see the Speech panel for names.",
+        desc: "Windows SAPI text-to-speech (job): writes a WAV and imports it at `at` (default: the playhead), linked to the text clip `clip_id` when given. OS voices only - see the Speech panel for names.",
         args: &[
             "text:string:true:",
             "voice:string:false:installed SAPI voice name",
@@ -322,7 +322,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "media.transcribe",
-        desc: "Transcribe a clip (or the first timeline clip of an asset) with whisper — same job as transcribe.run without generating cues; fills Project.transcripts when done (read with media.transcript).",
+        desc: "Transcribe a clip (or the first timeline clip of an asset) with whisper - same job as transcribe.run without generating cues; fills Project.transcripts when done (read with media.transcript).",
         args: &["clip_id:integer:false:one of clip_id / asset_id", "asset_id:integer:false:", "model:string:false:tiny.en|base.en|small.en|base"],
         kind: ToolKind::Job,
         run: |app, args| {

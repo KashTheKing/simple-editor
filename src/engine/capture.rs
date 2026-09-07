@@ -113,7 +113,7 @@ impl Drop for Capture {
 pub fn start_screen(opts: ScreenCaptureOptions) -> Result<Capture, String> {
     let loopback = if opts.desktop_audio { loopback_device() } else { None };
     if opts.desktop_audio && loopback.is_none() {
-        // ponytail: no WASAPI loopback of our own — a dshow loopback driver is the only route
+        // ponytail: no WASAPI loopback of our own - a dshow loopback driver is the only route
         return Err("No desktop-audio device found. Enable \"Stereo Mix\" in Windows sound settings \
                     (or install a loopback driver), then restart Simple Editor."
             .into());
@@ -153,7 +153,7 @@ fn spawn(out: &std::path::Path, args: Vec<String>, label: &'static str) -> Resul
     let watcher = std::thread::Builder::new().name("capture".into()).spawn(move || {
         p.set(0.0, format!("{label}…"));
         if let Some(out) = stdout {
-            // blocks until ffmpeg exits (or is killed) — no polling loop
+            // blocks until ffmpeg exits (or is killed) - no polling loop
             for line in std::io::BufReader::new(out).lines() {
                 let Ok(line) = line else { break };
                 if let Some(us) = line.strip_prefix("out_time_us=").and_then(|v| v.trim().parse::<f64>().ok()) {
@@ -265,7 +265,7 @@ const LOOPBACK_HINTS: [&str; 10] = [
 /// dshow audio input devices (`ffmpeg -list_devices true -f dshow -i dummy`), cached.
 /// The bool marks devices that look like desktop/loopback capture.
 ///
-/// ponytail: probed once per process — the UI polls this every frame while the recorder/settings
+/// ponytail: probed once per process - the UI polls this every frame while the recorder/settings
 /// windows are open and each probe spawns ffmpeg (~250 ms), so it must not re-run per frame. A device
 /// plugged in (or Stereo Mix enabled) mid-session therefore needs a restart; swap the `OnceLock` for a
 /// `Mutex<Option<_>>` when there is a "Refresh" button next to the device combos to clear it.

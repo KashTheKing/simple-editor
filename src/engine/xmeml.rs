@@ -1,8 +1,8 @@
-//! Final Cut Pro 7 XML (xmeml v5) exporter — the interchange format both Premiere Pro
+//! Final Cut Pro 7 XML (xmeml v5) exporter - the interchange format both Premiere Pro
 //! (File → Import) and DaVinci Resolve (File → Import → Timeline) read.
 //! Video tracks (with clipitems: file path, in/out/start/end in frames, opacity/position if animated)
 //! and audio tracks (one per project audio track, channel-source by stream). Text clips are exported as
-//! a generator-less gap (Premiere/Resolve text isn't interchangeable) — mention it in a comment.
+//! a generator-less gap (Premiere/Resolve text isn't interchangeable) - mention it in a comment.
 //! Paths as `file://localhost/C:/...` pathurls. Timebase = round(fps), NTSC flag when fps is fractional.
 
 use crate::model::{Asset, Clip, ClipKind, Project, TrackKind};
@@ -109,7 +109,7 @@ fn write_file(x: &mut String, asset: &Asset, rate: &str, frames: i64) {
         );
     }
     if !asset.audio_streams.is_empty() {
-        // ponytail: every stream reported as one stereo track — FCP XML has no notion of separate streams
+        // ponytail: every stream reported as one stereo track - FCP XML has no notion of separate streams
         x.push_str("<audio><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics><channelcount>2</channelcount></audio>\n");
     }
     x.push_str("</media>\n</file>\n");
@@ -117,7 +117,7 @@ fn write_file(x: &mut String, asset: &Asset, rate: &str, frames: i64) {
 
 /// Static opacity / basic motion when non-default (keyframes flattened to the clip-start value).
 fn write_filters(x: &mut String, project: &Project, c: &Clip) {
-    // ponytail: animated properties are written as their value at clip start — emit <keyframe>s if needed
+    // ponytail: animated properties are written as their value at clip start - emit <keyframe>s if needed
     if !c.opacity.is_default(1.0) {
         let _ = writeln!(
             x,

@@ -251,7 +251,7 @@ mod tests {
         }
     }
 
-    /// `AudioRole` has exactly one definition in the crate (model/clip.rs) — this module only imports
+    /// `AudioRole` has exactly one definition in the crate (model/clip.rs) - this module only imports
     /// it and adds helpers; a second declaration anywhere under src/ is the duplicate-definition bug
     /// the plan's audit caught. Counts only lines that are themselves a declaration (trimmed line
     /// starts with `enum AudioRole`/`pub enum AudioRole`) rather than any substring match, so this

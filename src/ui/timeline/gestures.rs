@@ -1,6 +1,6 @@
 //! Gesture start + live-drag handling, extracted from `show()`.
 //!
-//! ws:timeline-trim-gestures — every body/edge press is routed through `arm()` (the frozen modifier
+//! ws:timeline-trim-gestures - every body/edge press is routed through `arm()` (the frozen modifier
 //! table, `arm.rs`) and the returned `GestureKind` picks the drag: Move/MagneticMove, Slip, Slide,
 //! Segment on a body; Trim, RippleTrim, Roll, RateStretch, MultiRippleTrim on an edge. Roll/Slip/Slide
 //! edit the live project per frame (they touch at most three clips); RippleTrim/Segment only carry a
@@ -8,14 +8,14 @@
 use super::*;
 
 /// Does this gesture keep the pre-existing press-time selection step ("an unselected clip becomes the
-/// selection, Ctrl adds it")? False for the kinds whose Ctrl bit means something else now — Slide
-/// (Ctrl+Alt), Segment (Ctrl+Shift), RippleTrim (Ctrl+edge), MultiRippleTrim (Ctrl+Alt+edge) — so
+/// selection, Ctrl adds it")? False for the kinds whose Ctrl bit means something else now - Slide
+/// (Ctrl+Alt), Segment (Ctrl+Shift), RippleTrim (Ctrl+edge), MultiRippleTrim (Ctrl+Alt+edge) - so
 /// arming them on an unselected clip no longer also replays the old plain-Ctrl toggle as a side effect.
 pub(super) fn arm_selects(kind: GestureKind) -> bool {
     !matches!(kind, GestureKind::Slide | GestureKind::Segment | GestureKind::RippleTrim | GestureKind::MultiRippleTrim)
 }
 
-/// ws:pro-timeline — asymmetric multi-roller trim: `ids`/`start` is the pressed clip (+ same-edge
+/// ws:pro-timeline - asymmetric multi-roller trim: `ids`/`start` is the pressed clip (+ same-edge
 /// linked clips, unchanged from before this workstream); `rollers` is `TimelineState.rollers`, seams
 /// Shift-clicked onto the roller set before the drag started (possibly other clips, other tracks,
 /// either side). Each roller keeps its OWN press-time edge (`edge0`), so a live drag applies the same
@@ -50,7 +50,7 @@ pub(super) fn gap_at(p: &Project, ti: usize, t: f64) -> Option<(f64, f64)> {
     (b.is_finite() && b > a + ABUT_EPS).then_some((a, b))
 }
 
-/// `Project::delete_clips`, except a clip on a magnetic track takes its gap with it — that track only
+/// `Project::delete_clips`, except a clip on a magnetic track takes its gap with it - that track only
 /// (`ripple_delete_range` scoped to it), the frozen table's "Track.magnetic → Delete closes the gap on
 /// that track only". Everything else keeps the plain leave-a-gap (or caller-chosen ripple) delete.
 pub(crate) fn delete_clips_magnetic(p: &mut Project, ids: &[Id], ripple: bool) {
@@ -73,10 +73,10 @@ pub(crate) fn delete_clips_magnetic(p: &mut Project, ids: &[Id], ripple: bool) {
 }
 
 /// Premiere-style insert move, applied once on release: each moved clip is lifted out of its own
-/// track (the gap closes behind it — `ripple_delete_range` on that track only), `ripple_open` makes
+/// track (the gap closes behind it - `ripple_delete_range` on that track only), `ripple_open` makes
 /// room `dt` later and the clip goes back, id intact. False (project untouched) on a locked track;
 /// the caller restores `before` on a false from the middle of the loop.
-/// ponytail: only the moved clips' own tracks ripple, not every ripple track — B-roll elsewhere stays
+/// ponytail: only the moved clips' own tracks ripple, not every ripple track - B-roll elsewhere stays
 /// put; union in `ripple_tracks()` once a range-scoped `close_gap` is public.
 pub(super) fn segment_move(p: &mut Project, ids: &[Id], spans: &[(usize, f64, f64)], dt: f64) -> bool {
     if dt.abs() < 1e-9 || spans.iter().any(|&(ti, _, _)| p.locked_of(ti)) {
@@ -161,7 +161,7 @@ fn ghost_rect(lp: &egui::Painter, r: Rect, pal: &Palette) {
 }
 
 /// Translucent outline of every clip `off(track, clip)` says will move, drawn that many seconds from
-/// where it is — pure screen-space arithmetic, no model call (the ripple / segment / splice-drop ghosts).
+/// where it is - pure screen-space arithmetic, no model call (the ripple / segment / splice-drop ghosts).
 pub(super) fn paint_offsets(
     lp: &egui::Painter,
     state: &TimelineState,
@@ -456,7 +456,7 @@ pub(super) fn handle(
         match g {
             Gesture::Move { ids, orig, kind, tr, dt, dtrack, new_track, want: requested, .. } => {
                 // past the first video row (up) or the last audio row (down): offer a fresh track.
-                // Armed off the painted gutter bands, not the first/last row — those are scrolled away
+                // Armed off the painted gutter bands, not the first/last row - those are scrolled away
                 // once the lanes scroll, which used to make the gesture unreachable.
                 *new_track = match kind {
                     TrackKind::Video => pos.y < lanes.top() + GUTTER_H,
@@ -507,7 +507,7 @@ pub(super) fn handle(
                 }
             }
             Gesture::Trim { ids, edge0, changed } => {
-                // ws:pro-timeline — asymmetric multi-roller: snap the FIRST roller's delta (its own
+                // ws:pro-timeline - asymmetric multi-roller: snap the FIRST roller's delta (its own
                 // press-time edge + dx), then apply that SAME delta to every roller from ITS OWN
                 // edge0 ("trims both cuts by the same delta", not independently re-snapped each).
                 let mut dt = dx;
@@ -725,7 +725,7 @@ pub(super) fn handle(
                         let inner = (h - 2.0 - 2.0 * KEY_PAD).max(1.0);
                         let f = (((top + h - 1.0 - KEY_PAD) - pos.y) / inner).clamp(0.0, 1.0) as f64;
                         let v = range.0 + f * (range.1 - range.0);
-                        // the lane auto-scales past the property's own bounds (y_range pads by 10 %) —
+                        // the lane auto-scales past the property's own bounds (y_range pads by 10 %) -
                         // clamp the written value the way every DragValue for it does
                         let v = prop_range(&p.tracks[ti].clips[ci], pi).map_or(v, |(lo, hi)| v.clamp(lo, hi));
                         if let Some(a) = crate::ui::curves::prop_mut(&mut p.tracks[ti].clips[ci], pi) {

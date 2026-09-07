@@ -39,7 +39,7 @@ pub struct Clip {
     /// Playback rate (1 = normal, 2 = twice as fast, 0.5 = half speed). Always > 0.
     #[serde(default = "crate::model::one")]
     pub speed: f64,
-    /// Keyframed speed ramp (curve editor). Only consulted while it has keys — the constant `speed`
+    /// Keyframed speed ramp (curve editor). Only consulted while it has keys - the constant `speed`
     /// above still owns the source window and the duration.
     #[serde(default = "crate::model::a1")]
     pub speed_curve: Animated,
@@ -113,7 +113,7 @@ pub struct Clip {
     pub exposed: Vec<String>,
 }
 
-/// Essential-Sound role tag for an audio (or audio-bearing) clip. Sole definition — other
+/// Essential-Sound role tag for an audio (or audio-bearing) clip. Sole definition - other
 /// workstreams (`ws:audio-dsp-automation`) import this rather than redeclaring it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub enum AudioRole {
@@ -239,7 +239,7 @@ impl Clip {
         matches!(self.kind, ClipKind::Video | ClipKind::Image | ClipKind::Audio)
     }
     /// Does the renderer evaluate the node graph instead of the linear effect stack? The node editor is
-    /// opt-in: a bare Input→Output graph says nothing the stack does not, so it never shadows it —
+    /// opt-in: a bare Input→Output graph says nothing the stack does not, so it never shadows it -
     /// otherwise a clip that once had the node pane pointed at it could never take a plain effect again.
     pub fn uses_graph(&self) -> bool {
         self.graph.as_ref().is_some_and(|g| g.nodes.len() > 2)
@@ -357,7 +357,7 @@ impl Clip {
         }
         v
     }
-    /// (label, property) pairs for the inspector — visual ones for visual clips, volume/pan for audio.
+    /// (label, property) pairs for the inspector - visual ones for visual clips, volume/pan for audio.
     pub fn props_mut(&mut self) -> Vec<(&'static str, &mut Animated)> {
         if self.is_visual() {
             vec![

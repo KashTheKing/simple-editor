@@ -1,6 +1,6 @@
 //! Dockable editor layout (egui_tiles): panes can be rearranged by dragging their tabs, split, tabbed,
 //! hidden/shown, popped out into their own OS windows (egui immediate viewports) and saved/loaded as
-//! profiles (JSON — also written to / read from `.sedit-layout` files so profiles can be shared).
+//! profiles (JSON - also written to / read from `.sedit-layout` files so profiles can be shared).
 //!
 //! Default layout (DaVinci-like), two rows of four columns:
 //! top    = [Library | Preview with the Tools strip beneath it | Inspector | tabs(Curves, Nodes, Tracking)]
@@ -29,7 +29,7 @@ use std::time::Instant;
 // ---- ws:command-palette ----
 /// Named workspaces the palette's `Command::Workspace` rows list (`plans/ui-overhaul/README.md`'s
 /// "Command type change" decision). command-palette (wave 1) seeded this as a one-entry stub; the
-/// real list below lands with ws:layout-modes-onboarding (wave 2) — same name and type, so the
+/// real list below lands with ws:layout-modes-onboarding (wave 2) - same name and type, so the
 /// palette's rows became real without touching palette.rs. Order = Alt+1..Alt+6 (`Action::Workspace1`
 /// ..`Workspace6`) and the menu-bar strip, left to right; `workspace_layout` maps a name to its builder.
 pub const WORKSPACES: &[&str] = &["Simple", "Edit", "Color", "Audio", "Text", "Deliver"];
@@ -65,9 +65,9 @@ pub fn workspace_glyph(name: &str) -> Glyph {
 /// or must not, be switched to (pinned sibling, Granular mode). Well under the selftest's idle window.
 pub const GLOW_SECS: f32 = 1.2;
 
-/// What a programmatic, selection-driven reveal attempt did — so the caller can glow the tab instead of
+/// What a programmatic, selection-driven reveal attempt did - so the caller can glow the tab instead of
 /// switching when the user has opted that group out (`Pinned`), skip a pane the user hid with the tab
-/// bar's cross (`Hidden` — auto-surfacing never re-opens a closed pane, that would be exactly the
+/// bar's cross (`Hidden` - auto-surfacing never re-opens a closed pane, that would be exactly the
 /// "panels jumping around" goals.md forbids), or fall through to another candidate (`Absent`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Surfaced {
@@ -111,13 +111,13 @@ pub enum Pane {
     Presets,
     /// Point / area tracking of a clip into a reusable project path.
     Tracking,
-    /// Standalone moodboard (`Project.moodboard`) — gallery/list/slideshow of reference assets, separate
+    /// Standalone moodboard (`Project.moodboard`) - gallery/list/slideshow of reference assets, separate
     /// from the per-task moodboards already on the Planner's items.
     Moodboard,
     /// Undo-stack history, grouped/searchable/filterable, exportable to Markdown.
     History,
     // ---- ws:registries-schema-hooks ----
-    /// Dockable two-up source monitor (player + in/out marks); a placeholder this wave — its real
+    /// Dockable two-up source monitor (player + in/out marks); a placeholder this wave - its real
     /// content lands with ws:source-monitor (wave 2). Tab-stacked hidden behind Library in every
     /// preset (`stack_unplaced`), never in `ROUND3`.
     Source,
@@ -170,7 +170,7 @@ impl Pane {
         // ---- ws:text-titles ----
         // ---- ws:docs-refresh ----
     ];
-    /// Panes added in round 3 — a stored layout without them is from an older version (see `from_json`).
+    /// Panes added in round 3 - a stored layout without them is from an older version (see `from_json`).
     pub const ROUND3: [Pane; 4] = [Pane::Tools, Pane::Nodes, Pane::Mixer, Pane::Markers];
     /// Default icon for this pane (View menu, icon picker). Overridable in Settings → Appearance.
     pub fn glyph(self) -> Glyph {
@@ -236,7 +236,7 @@ pub struct Layout {
     pub redo: Vec<String>,
     // ---- ws:registries-schema-hooks ----
     /// Panes pinned against auto-surfacing (a selection-driven reveal skips them); consumed for real
-    /// by ws:layout-modes-onboarding (wave 2) — see `reveal_auto`.
+    /// by ws:layout-modes-onboarding (wave 2) - see `reveal_auto`.
     #[serde(default)]
     pub pinned: Vec<Pane>,
     // ---- ws:layout-modes-onboarding ----
@@ -245,7 +245,7 @@ pub struct Layout {
     #[serde(default)]
     pub maximized: Option<(Pane, String)>,
     /// The pane whose tile the pointer was over when the tree was last drawn (`show` refreshes it
-    /// every frame) — what "pane under cursor" means for MaximizePane / TogglePin.
+    /// every frame) - what "pane under cursor" means for MaximizePane / TogglePin.
     #[serde(skip)]
     pub hovered: Option<Pane>,
     /// Tabs currently glowing: (pane, when the glow started). Painted by `tab_ui` with an alpha that
@@ -286,7 +286,7 @@ impl Layout {
         let centre = tiles.insert_new(Tile::Container(Container::Linear(centre_col)));
         let library = tiles.insert_pane(Pane::Library);
         let inspector = tiles.insert_pane(Pane::Inspector);
-        // ponytail: Presets / Tracking ride along as trailing tabs of the group they belong with — the
+        // ponytail: Presets / Tracking ride along as trailing tabs of the group they belong with - the
         // requested arrangement does not place them, and a homeless pane is only reachable via the menu
         let graphs = tabs(&mut tiles, &[Pane::Curves, Pane::Nodes, Pane::Tracking]);
         let top = row(&mut tiles, [(library, 0.18), (centre, 0.44), (inspector, 0.2), (graphs, 0.18)]);
@@ -303,7 +303,7 @@ impl Layout {
         Self::stack_unplaced(&mut tiles, notes);
         Self::new(egui_tiles::Tree::new("layout", root, tiles))
     }
-    /// "Colorist": grading front and centre — a big Preview over a wide Curves/Nodes group, Effects
+    /// "Colorist": grading front and centre - a big Preview over a wide Curves/Nodes group, Effects
     /// ready on the left, the cutting panes tucked away as trailing tabs.
     pub fn colorist_layout() -> Self {
         use egui_tiles::{Container, Linear, LinearDir, Tile};
@@ -347,7 +347,7 @@ impl Layout {
         Self::new(egui_tiles::Tree::new("layout", root, tiles))
     }
 
-    /// "Fast-Cut Assembly": maximum monitor and timeline real estate — Library beside a big Preview on
+    /// "Fast-Cut Assembly": maximum monitor and timeline real estate - Library beside a big Preview on
     /// top, the full-width Timeline below, everything else stacked as tabs behind the Library.
     pub fn fastcut_layout() -> Self {
         use egui_tiles::{Container, Linear, LinearDir, Tile};
@@ -392,7 +392,7 @@ impl Layout {
     }
 
     // ---- ws:layout-modes-onboarding ----
-    /// "Simple": the beginner-safe workspace — Library | Preview (with the Tools strip beneath it) |
+    /// "Simple": the beginner-safe workspace - Library | Preview (with the Tools strip beneath it) |
     /// Inspector over a full-width Timeline; every other pane, Source included, tab-stacked behind
     /// Library, so the View menu / a selection can still bring it up.
     pub fn simple_layout() -> Self {
@@ -467,7 +467,7 @@ impl Layout {
         Self::new(egui_tiles::Tree::new("layout", root, tiles))
     }
 
-    /// A tab group of `panes` (the first one active) — the same closure every older builder inlines.
+    /// A tab group of `panes` (the first one active) - the same closure every older builder inlines.
     fn tabs(tiles: &mut egui_tiles::Tiles<Pane>, panes: &[Pane]) -> egui_tiles::TileId {
         let ids: Vec<_> = panes.iter().map(|&p| tiles.insert_pane(p)).collect();
         tiles.insert_tab_tile(ids)
@@ -509,7 +509,7 @@ impl Layout {
     }
     /// Ensure every `Pane::ALL` member absent from `tiles` (a new variant a preset builder never
     /// listed explicitly) ends up tab-stacked behind `anchor`, hidden but reachable from the View
-    /// menu — so a new Pane never needs every preset builder edited, just this one call per builder.
+    /// menu - so a new Pane never needs every preset builder edited, just this one call per builder.
     pub(crate) fn stack_unplaced(tiles: &mut egui_tiles::Tiles<Pane>, anchor: egui_tiles::TileId) {
         for &p in Pane::ALL {
             if tiles.find_pane(&p).is_none() {
@@ -648,7 +648,7 @@ impl Layout {
         new.popped = std::mem::take(&mut self.popped);
         *self = new;
     }
-    /// What `reveal_auto(pane)` would do, without doing it — the shared decision for both layout modes
+    /// What `reveal_auto(pane)` would do, without doing it - the shared decision for both layout modes
     /// (Dynamic switches on `Shown`, Granular only glows) so they can never disagree.
     pub fn can_surface(&self, pane: Pane) -> Surfaced {
         if self.popped.contains(&pane) {
@@ -674,7 +674,7 @@ impl Layout {
     }
     /// Pin-aware reveal for selection-driven surfacing: switches to the pane's tab only when
     /// `can_surface` says `Shown`; never inserts into the root (unlike `reveal`), never re-opens a pane
-    /// the user hid, never moves a pane — it only changes which tab of an existing group is in front.
+    /// the user hid, never moves a pane - it only changes which tab of an existing group is in front.
     pub fn reveal_auto(&mut self, pane: Pane) -> Surfaced {
         let r = self.can_surface(pane);
         if r == Surfaced::Shown {
@@ -743,7 +743,7 @@ impl Layout {
     }
 }
 
-/// How much of its linear parent a tile takes up (None when the parent is a tab bar — a tab has no share).
+/// How much of its linear parent a tile takes up (None when the parent is a tab bar - a tab has no share).
 fn share_fraction(tree: &egui_tiles::Tree<Pane>, id: egui_tiles::TileId) -> Option<f32> {
     let parent = tree.tiles.parent_of(id)?;
     let egui_tiles::Container::Linear(lin) = tree.tiles.get_container(parent)? else { return None };
@@ -766,7 +766,7 @@ fn keep_share_fraction(tree: &mut egui_tiles::Tree<Pane>, id: egui_tiles::TileId
 }
 
 /// One entry of the "Load profile" menu. A menu sizes itself from the previous frame's content, so a
-/// name that wraps makes the menu narrower, which wraps it harder — after a few frames "Editor 1" has
+/// name that wraps makes the menu narrower, which wraps it harder - after a few frames "Editor 1" has
 /// collapsed to "Edito / r 1". Measuring the name pins the width instead of letting it feed back, and
 /// anything past the cap truncates on one line with the whole name on hover.
 pub fn profile_button(ui: &mut egui::Ui, name: &str) -> egui::Response {
@@ -804,7 +804,7 @@ struct Behaviour<'a> {
     maximize: Vec<Pane>,
     /// `Layout.maximized`'s pane, so the tab-bar glyph reads as "restore" while maximised.
     maximized: Option<Pane>,
-    /// Glowing tabs as (pane, alpha 0..1) for this frame — an accent underline that fades out.
+    /// Glowing tabs as (pane, alpha 0..1) for this frame - an accent underline that fades out.
     glow: Vec<(Pane, f32)>,
     /// The pane whose tile the pointer is over (set by `pane_ui`, copied to `Layout.hovered`).
     hovered: Option<Pane>,
@@ -876,7 +876,7 @@ impl egui_tiles::Behavior<Pane> for Behaviour<'_> {
         if ui.is_rect_visible(tab_rect) && !state.is_being_dragged {
             let text_color;
             if self.cozy {
-                // cozy: rounded top corners, no accent outline — the active tab IS the accent,
+                // cozy: rounded top corners, no accent outline - the active tab IS the accent,
                 // inactive tabs only light up on hover
                 let accent = ui.visuals().widgets.active.bg_fill;
                 let r = egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 };
@@ -1026,7 +1026,7 @@ impl egui_tiles::Behavior<Pane> for Behaviour<'_> {
     }
     /// Nine drop squares over the hovered tile instead of egui_tiles' thin outline: the centre one tabs
     /// the pane in, the eight around it split in that direction. egui_tiles still owns the hit test, so a
-    /// corner resolves to whichever of its two edges is nearer — the translucent fill is where it lands.
+    /// corner resolves to whichever of its two edges is nearer - the translucent fill is where it lands.
     fn paint_drag_preview(
         &self,
         visuals: &egui::Visuals,
@@ -1059,8 +1059,8 @@ impl egui_tiles::Behavior<Pane> for Behaviour<'_> {
 
 /// Draw the docked tree into `ui` and every popped pane in its own OS window; `draw(ui, pane)` renders
 /// a pane's content. A popped window that the user closes is docked back automatically.
-/// Returns (layout changed this frame — caller persists it, a pane was dropped somewhere new).
-/// Repair tab containers whose `active` no longer names one of their children — which is what leaves a
+/// Returns (layout changed this frame - caller persists it, a pane was dropped somewhere new).
+/// Repair tab containers whose `active` no longer names one of their children - which is what leaves a
 /// lone tab drawn as inactive after a rearrange, so it has to be clicked before its pane comes back.
 fn activate_orphan_tabs(tree: &mut egui_tiles::Tree<Pane>) {
     let mut fix: Vec<(egui_tiles::TileId, egui_tiles::TileId)> = Vec::new();
@@ -1091,7 +1091,7 @@ pub fn show(
     draw: &mut dyn FnMut(&mut egui::Ui, Pane),
     // ---- ws:registries-schema-hooks ----
     // Polled (no-op today) inside each popped pane's own viewport, so a future workstream
-    // (layout-modes-onboarding, wave 2) can poll hotkeys there — Space/J/K/L are inert in a popped
+    // (layout-modes-onboarding, wave 2) can poll hotkeys there - Space/J/K/L are inert in a popped
     // Preview today because hotkeys are only polled on the root ctx (see `App::update`).
     on_viewport: &mut dyn FnMut(&egui::Context),
 ) -> (bool, bool, Vec<(Pane, Option<String>)>) {
@@ -1193,7 +1193,7 @@ mod tests {
             for &p in Pane::ALL {
                 assert!(l.tree.tiles.find_pane(&p).is_some(), "{p:?} missing from the {name} layout");
                 // ws:registries-schema-hooks: Pane::Source is deliberately a hidden trailing tab
-                // (stack_unplaced) — every OTHER pane stays visible exactly as before.
+                // (stack_unplaced) - every OTHER pane stays visible exactly as before.
                 if p != Pane::Source {
                     assert!(l.is_visible(p), "{p:?} hidden in the {name} layout");
                 } else {
@@ -1339,7 +1339,7 @@ mod tests {
         assert!(l.is_visible(Pane::Effects));
     }
 
-    /// Popped-out floating panes must survive a workspace switch (switch_to) — they're an OS window
+    /// Popped-out floating panes must survive a workspace switch (switch_to) - they're an OS window
     /// egui only keeps requesting while the pane stays in `Layout.popped`; losing it there closes the
     /// window out from under the user even though the pane reappears docked in the new workspace.
     #[test]
@@ -1490,7 +1490,7 @@ mod tests {
         assert!(matches!(l.tree.tiles.get(timeline), Some(egui_tiles::Tile::Pane(Pane::Timeline))));
     }
 
-    /// A pinned active tab blocks selection-driven switching in its group (the sibling glows instead —
+    /// A pinned active tab blocks selection-driven switching in its group (the sibling glows instead -
     /// see `ui::app::frame`), a pinned pane is never switched to, a hidden pane is never re-opened, and
     /// a pane missing from the tree is reported rather than inserted.
     #[test]

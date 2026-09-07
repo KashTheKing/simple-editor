@@ -3,7 +3,7 @@
 //! eframe persists the window rect and its stored position always wins over `ViewportBuilder::position`
 //! (epi_integration applies `WindowSettings::initialize_viewport_builder` last), so without this the app
 //! reopens on whichever monitor it was closed on. At startup we move the window onto the monitor under the
-//! mouse cursor — keeping the persisted size, and keeping the persisted position when it is already on
+//! mouse cursor - keeping the persisted size, and keeping the persisted position when it is already on
 //! that monitor (so a deliberate arrangement is never disturbed).
 
 use crate::settings::Settings;
@@ -47,7 +47,7 @@ fn place(area: RECT, w: i32, h: i32) -> (i32, i32) {
 }
 
 /// Move the window onto the monitor under the cursor (no-op when it is already there, or on any error).
-/// Call once, from `App::new` — before the first frame is painted, so there is no visible jump.
+/// Call once, from `App::new` - before the first frame is painted, so there is no visible jump.
 pub fn place_on_cursor_monitor(handle: &impl HasWindowHandle) {
     let Some(hwnd) = hwnd_of(handle) else { return };
     unsafe {
@@ -71,7 +71,7 @@ pub fn place_on_cursor_monitor(handle: &impl HasWindowHandle) {
     }
 }
 
-/// Seed a `ViewportBuilder`'s position/size from a saved window rect (`Settings::window_rect`), if any —
+/// Seed a `ViewportBuilder`'s position/size from a saved window rect (`Settings::window_rect`), if any -
 /// replaces eframe's removed `persistence` feature for the window rect specifically. `rect` is
 /// `[x, y, w, h]` in physical pixels; a missing/degenerate rect (width or height <= 0) leaves the
 /// builder's own defaults untouched.
@@ -86,7 +86,7 @@ pub fn apply_rect(vb: eframe::egui::ViewportBuilder, rect: Option<[i32; 4]>) -> 
 
 /// Debounced window-rect save, called once a frame: reads the OS-reported outer rect, (re)starts a
 /// 500ms debounce whenever it has moved, and writes `settings.window_rect` + saves once it has settled.
-/// Returns the next wake-up `Instant` while a debounce is still pending, `None` once settled — this fn
+/// Returns the next wake-up `Instant` while a debounce is still pending, `None` once settled - this fn
 /// schedules nothing itself (no `ctx.request_repaint_after` anywhere in it); the caller (`whatsnew::tick`,
 /// which holds `&mut App`) turns a `Some` into `app.animate_until(ctx, at)`, keeping every NEW timed
 /// repaint this PR adds behind that one sanctioned funnel.
@@ -160,7 +160,7 @@ mod tests {
         raw
     }
 
-    /// `winpos::tick` never schedules a repaint itself — see `fn tick`'s own body just above, which has
+    /// `winpos::tick` never schedules a repaint itself - see `fn tick`'s own body just above, which has
     /// no `ctx.request_repaint*` call anywhere in it (verified by the PR's own `grep`, not re-checked
     /// here: a text self-scan of this very file can't search for its own search string). It only ever
     /// returns the wake-up `Instant` and lets the caller (`whatsnew::tick`, which holds `&mut App`)

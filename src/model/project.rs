@@ -28,7 +28,7 @@ pub struct Project {
     pub subtitle_margin: f32,
     pub show_subtitles: bool,
     /// Prepended/appended to a generated cue where a sentence continues across the cue split
-    /// (e.g. "…" / " —"). Applied by "Regenerate cues", not retroactively.
+    /// (e.g. "…" / " - "). Applied by "Regenerate cues", not retroactively.
     pub subtitle_cont_prefix: String,
     pub subtitle_cont_suffix: String,
     /// Compositor resampling quality.
@@ -50,7 +50,7 @@ pub struct Project {
     pub plan: Vec<PlanItem>,
     #[serde(default, deserialize_with = "de_notes")]
     pub notes: Vec<Note>,
-    /// Standalone moodboard (`ui::moodboard_ui`) — separate from the per-task moodboards in `plan`.
+    /// Standalone moodboard (`ui::moodboard_ui`) - separate from the per-task moodboards in `plan`.
     pub moodboard: Vec<MoodItem>,
     /// Saved drawing / polygon outlines, reusable as motion paths (see `PathAsset`).
     pub paths: Vec<PathAsset>,
@@ -97,7 +97,7 @@ impl Default for Project {
     }
 }
 
-/// Per-clip word timing (timeline seconds) captured by a transcription pass — `words` is
+/// Per-clip word timing (timeline seconds) captured by a transcription pass - `words` is
 /// `(start, end, text)` triples in timeline time, so a cut range maps straight onto clip trims.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Transcript {

@@ -273,7 +273,7 @@ impl Harness {
         resp.unwrap()
     }
     /// Advance the synthetic clock well past `max_double_click_delay` (0.3 s) so the next click
-    /// isn't merged into a double-click with the previous one — egui's double-click timer is a
+    /// isn't merged into a double-click with the previous one - egui's double-click timer is a
     /// single global `last_click_time`, not scoped to a widget/position, so two unrelated clicks
     /// (even on different clips) count as a double-click if the harness's virtual clock hasn't
     /// moved far enough between them (see agents.md's "double-click timing in synthetic clocks").
@@ -391,7 +391,7 @@ fn tools_cut_mark_and_stretch() {
 }
 
 /// Snapping is not just for move/trim: the razor, the marker tool and marker drags land on the same
-/// candidates as everything else. In/out points are used as the candidates here — the playhead has a
+/// candidates as everything else. In/out points are used as the candidates here - the playhead has a
 /// grab zone that would eat the clicks.
 #[test]
 fn every_tool_snaps() {
@@ -420,7 +420,7 @@ fn every_tool_snaps() {
     let cut = h.project.tracks[0].clips[1].start;
     assert!((cut - 3.0).abs() < 1e-9, "razor must snap to the in point: {cut}");
 
-    // and dragging the ruler flag snaps too — over to the out point, the only candidate near the drop
+    // and dragging the ruler flag snaps too - over to the out point, the only candidate near the drop
     h.tool = Tool::Select;
     let y = lanes.top() - RULER_H + 4.0;
     assert!(h.drag(pos2(h.state.x_at(3.0) + 1.0, y), pos2(h.state.x_at(5.0) + 5.0, y)), "marker drag edits");
@@ -564,7 +564,7 @@ fn headless_dnd_effect_targets_the_clip_under_the_pointer() {
     let hit = drop_on_clip(&h.state, &h.project, on_clip, 5.0).map(|(_, c)| c.id);
     assert_eq!(hit, Some(h.project.tracks[0].clips[0].id), "the drag highlights that clip");
     let r = h.release(on_clip);
-    assert!(!r.edited, "the timeline changes nothing itself — the app adds the effect");
+    assert!(!r.edited, "the timeline changes nothing itself - the app adds the effect");
     assert_eq!(r.dropped_other.len(), 1);
     let (payload, t, ti) = &r.dropped_other[0];
     assert!(matches!(payload, DragPayload::Effect(EffectKind::Blur)));
@@ -658,7 +658,7 @@ fn headless_volume_line_drag_keys_once_on_animated_clip() {
     let from = pos2(lanes.left() + 40.0, line_y); // t = 1 s at zoom 40
     assert!(h.drag(from, from + vec2(160.0, 12.0)), "volume drag edits");
     let v = &h.audio_clip().volume;
-    // one key at the grab time, edited in place for the rest of the gesture — not one per frame
+    // one key at the grab time, edited in place for the rest of the gesture - not one per frame
     assert_eq!(v.keys.len(), 3, "keys {:?}", v.keys);
     assert!((v.keys[1].t - 1.0).abs() < 1e-6, "key at the grab time, got {:?}", v.keys);
     assert!(v.keys[1].v < 1.0, "grabbed key lowered, got {:?}", v.keys);
@@ -687,7 +687,7 @@ fn headless_mini_graph_toggle_needs_keys_and_width() {
     let mut h = Harness::new();
     let lanes = h.state.lanes_rect;
     let vid = h.video_clip().id;
-    // default zoom (40 px/s) makes the 10 s clip 400 px wide — well past MINI_GRAPH_MIN_W (120)
+    // default zoom (40 px/s) makes the 10 s clip 400 px wide - well past MINI_GRAPH_MIN_W (120)
     let btn_center = |h: &Harness| {
         let right = h.state.x_at(h.video_clip().end());
         let top = lanes.top() + 1.0;
@@ -695,14 +695,14 @@ fn headless_mini_graph_toggle_needs_keys_and_width() {
     };
 
     // no keyframes yet: a click where the icon would sit just selects the clip like anywhere else
-    // on its body — proves nothing is drawn/interactive there regardless of zoom
+    // on its body - proves nothing is drawn/interactive there regardless of zoom
     let p = btn_center(&h);
     h.press(p);
     h.release(p);
     h.frame(vec![]);
     assert!(h.state.mini_graph_open.is_empty(), "no icon without keyframes");
     // the harness's default video clip is linked to an audio clip, so a plain click selects the
-    // whole link group (same as clicking anywhere else on its body) — not just `vid` alone.
+    // whole link group (same as clicking anywhere else on its body) - not just `vid` alone.
     assert!(h.selection.contains(&vid), "click without keys falls through to the clip body");
     h.selection.clear();
 
@@ -1170,7 +1170,7 @@ fn headless_transition_edge_drag_changes_duration() {
     assert!((h.project.tracks[0].clips[1].start - 5.0).abs() < 1e-6);
 }
 
-/// Right-clicking 2+ selected transitions offers "Change Type"/"Change Easing" quick-changes —
+/// Right-clicking 2+ selected transitions offers "Change Type"/"Change Easing" quick-changes -
 /// the timeline's fast path to what the Inspector's `transition_section` already bulk-edits.
 /// Absolute-overwrite (a menu click IS the new value): every selected transition gets the picked
 /// kind, in exactly one undo step for the whole bulk operation.
@@ -1303,7 +1303,7 @@ fn headless_alt_click_selects_single_clip() {
 }
 
 /// AUDIT FIX regression test: the modifier table's Body/Shift row ("click = add link group to
-/// selection") had no matching code before this workstream — Shift+click was indistinguishable
+/// selection") had no matching code before this workstream - Shift+click was indistinguishable
 /// from a plain click. Confirms the fix and that Ctrl/plain click paths are unaffected.
 #[test]
 fn shift_click_adds_link_group_without_clearing() {
@@ -1470,7 +1470,7 @@ fn shared_effect_kinds_needs_two_clips_with_the_same_kind() {
     a.effects.push(Effect::new(EffectKind::Blur)); // duplicate on one clip must still count once
     let mut b = Clip::new(2, ClipKind::Video, "b", 2.0, 2.0);
     b.effects.push(Effect::new(EffectKind::Blur));
-    b.effects.push(Effect::new(EffectKind::Vignette)); // only on b — not shared
+    b.effects.push(Effect::new(EffectKind::Vignette)); // only on b - not shared
     let c = Clip::new(3, ClipKind::Video, "c", 4.0, 2.0); // no effects at all
     p.tracks[0].clips = vec![a, b, c];
     assert_eq!(shared_effect_kinds(&p, &[1, 2]), vec![EffectKind::Blur]);
@@ -1514,8 +1514,8 @@ fn clip_menu_effects_submenu_only_shows_shared_kinds() {
 }
 
 /// Right-clicking 2+ selected video clips offers a "Transform" submenu; "Stretch to Screen" fits
-/// every selected clip with a native size to the project canvas — each against its OWN asset's
-/// native size, not a shared one — in exactly one undo step for the whole bulk operation.
+/// every selected clip with a native size to the project canvas - each against its OWN asset's
+/// native size, not a shared one - in exactly one undo step for the whole bulk operation.
 #[test]
 fn transform_menu_bulk_stretches_selection_with_one_undo() {
     let mut h = Harness::new();
@@ -1553,7 +1553,7 @@ fn transform_menu_bulk_stretches_selection_with_one_undo() {
     h.release(p1);
     // clear egui's double-click window before the second click: two single-clicks on different
     // clips shortly after one another (in wall-clock time, which the harness's `time` field drives)
-    // must not be misread as one double-click on the second clip — that fires the double-click
+    // must not be misread as one double-click on the second clip - that fires the double-click
     // handler's unconditional `selection = [clip]`, stomping the ctrl-click's additive result below.
     h.time += 1.0;
     h.press_m(p2, Modifiers::CTRL);
@@ -1694,7 +1694,7 @@ fn middle_mouse_pans_without_selecting() {
     let mut h = Harness::new();
     let lanes = h.state.lanes_rect;
     // empty lane space (past the default 10 s clip at zoom 40, i.e. past x=400) so the lanes
-    // background — not a clip body registered on top of it — wins hit-testing here
+    // background - not a clip body registered on top of it - wins hit-testing here
     let from = pos2(lanes.left() + 480.0, lanes.top() + 30.0);
     let to = from - vec2(80.0, 20.0);
     h.frame_m(vec![Event::PointerMoved(from)], Modifiers::NONE);
@@ -1803,7 +1803,7 @@ fn cue_body_drag_one_undo_only_if_moved() {
     let cx = h.state.x_at(3.0); // inside the cue body [2, 4)
 
     // press and release with no movement at all: click_and_drag() widgets need actual movement to
-    // recognize a drag at all, so this never even opens a CueDrag — the simplest "nothing changed"
+    // recognize a drag at all, so this never even opens a CueDrag - the simplest "nothing changed"
     // case, and it must not edit or undo either.
     let r = h.press(pos2(cx, y));
     let r2 = h.release(pos2(cx, y));
@@ -1834,7 +1834,7 @@ fn cue_trim_undo_on_release_not_press() {
     let y = lanes.top() - h.state.sub_h * 0.5;
     let ex = h.state.x_at(4.0); // right edge, within the 6 pt trim handle
                                 // the trim handle senses drag-only, so press-then-release-in-place still counts as a drag
-                                // gesture with zero net movement — exactly the case the old code pushed a dead undo for
+                                // gesture with zero net movement - exactly the case the old code pushed a dead undo for
     h.press(pos2(ex, y));
     let r = h.release(pos2(ex, y));
     let r2 = h.frame(vec![]);
@@ -1956,7 +1956,7 @@ fn alt_click_selects_single_alt_drag_slips() {
 
 /// AUDIT FIX regression test: the drag-start pre-arm auto-select step ("an unselected clip becomes the
 /// selection, Ctrl adds it") must not replay for the new gesture kinds whose Ctrl bit means something
-/// else now (Slide=Ctrl+Alt, Segment=Ctrl+Shift, RippleTrim=Ctrl+edge) — only for gestures that still
+/// else now (Slide=Ctrl+Alt, Segment=Ctrl+Shift, RippleTrim=Ctrl+edge) - only for gestures that still
 /// mean plain ctrl-toggle Move/Trim.
 #[test]
 fn pre_arm_ctrl_toggle_skipped_for_new_gesture_kinds() {
@@ -2034,7 +2034,7 @@ fn segment_drag_extracts_and_splices_ghost_then_release() {
 }
 
 /// If the destination becomes invalid before release (here: the track gets locked mid-drag), the
-/// project matches `before` exactly and no undo is pushed — a half-applied extract must never survive.
+/// project matches `before` exactly and no undo is pushed - a half-applied extract must never survive.
 #[test]
 fn segment_drag_invalid_destination_rolls_back() {
     let mut h = Harness::new();
@@ -2121,7 +2121,7 @@ fn magnetic_track_delete_closes_gap_move_shoves() {
 }
 
 /// A plain click on empty lane space selects the gap under it (hatched); Delete closes it via
-/// `close_gap_at`, which only shifts clips on ripple-flagged tracks — a non-ripple track's own gap is
+/// `close_gap_at`, which only shifts clips on ripple-flagged tracks - a non-ripple track's own gap is
 /// left exactly where it was.
 #[test]
 fn gap_click_selects_and_delete_closes_on_ripple_tracks() {
@@ -2284,7 +2284,7 @@ fn ctrl_splice_and_alt_overwrite_drop_onto_pointer_audio_row() {
 }
 
 /// Clicking the header Lock/Ripple toggles flips the corresponding `Track` flag through the undo-free
-/// `track_toggle` deferred field — zero undo growth, unlike every `Act` variant (e.g. Mute/Solo), which
+/// `track_toggle` deferred field - zero undo growth, unlike every `Act` variant (e.g. Mute/Solo), which
 /// pushes one unconditionally. A locked lane also paints the new hatch treatment.
 #[test]
 fn header_lock_ripple_toggle_zero_undo_and_hatch() {
@@ -2319,8 +2319,8 @@ fn header_lock_ripple_toggle_zero_undo_and_hatch() {
     assert_eq!(h.undos, 0, "the header Ripple toggle must push no undo");
 }
 
-/// Esc during any of this workstream's new gestures — the live-mutating ones (Roll) and the
-/// ghost-only, release-applied ones (RippleTrim, Segment) — restores the project exactly and pushes
+/// Esc during any of this workstream's new gestures - the live-mutating ones (Roll) and the
+/// ghost-only, release-applied ones (RippleTrim, Segment) - restores the project exactly and pushes
 /// no undo, same as the pre-existing gestures.
 #[test]
 fn esc_restores_before_zero_undos_for_new_gestures() {

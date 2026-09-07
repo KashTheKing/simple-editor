@@ -1,4 +1,4 @@
-//! App settings — one JSON file at %APPDATA%\SimpleEditor\settings.json.
+//! App settings - one JSON file at %APPDATA%\SimpleEditor\settings.json.
 
 use crate::model::TextStyle;
 use crate::theme::PaletteOverride;
@@ -32,7 +32,7 @@ pub struct LayoutProfile {
     pub json: String,
 }
 
-/// A shareable theme — what "Export theme…" writes to a `.sedit-theme` file and
+/// A shareable theme - what "Export theme…" writes to a `.sedit-theme` file and
 /// "Import theme…" reads back (palette override + look + the base theme pref).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -91,7 +91,7 @@ pub struct EffectPreset {
 }
 
 impl EffectPreset {
-    /// Which of the two it holds — a graph serialises to an object, an effect stack to an array.
+    /// Which of the two it holds - a graph serialises to an object, an effect stack to an array.
     pub fn is_graph(&self) -> bool {
         self.json.trim_start().starts_with('{')
     }
@@ -106,7 +106,7 @@ pub struct Template {
 
 /// A saved text look (font/size/bold/italic/colour/letter-spacing) applied to a whole text clip or to
 /// a selected range within one (as a `crate::model::TextSpan`). Only the fields the rasterizer actually
-/// honours per-span are captured here — outline/shadow stay clip-wide (see `TextSpan`'s doc comment).
+/// honours per-span are captured here - outline/shadow stay clip-wide (see `TextSpan`'s doc comment).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct TextPreset {
     pub name: String,
@@ -212,7 +212,7 @@ pub struct Settings {
     /// Saved layout profiles (also exportable to / importable from `.sedit-layout` files).
     pub layout_profiles: Vec<LayoutProfile>,
     /// Keyframe / motion presets, effect-chain / node-graph presets and clip templates
-    /// (global, reusable across projects — the Presets pane lists all of them).
+    /// (global, reusable across projects - the Presets pane lists all of them).
     pub curve_presets: Vec<CurvePreset>,
     pub motion_presets: Vec<MotionPreset>,
     pub effect_presets: Vec<EffectPreset>,
@@ -297,11 +297,11 @@ pub struct Settings {
     /// Autosave interval in seconds (0 = off); consumed by ws:forgiveness (wave 1).
     pub autosave_secs: u32,
     // ---- ws:size-diet ----
-    /// Last window rect [x, y, w, h] in physical pixels — replaces eframe's removed `persistence`
+    /// Last window rect [x, y, w, h] in physical pixels - replaces eframe's removed `persistence`
     /// feature for the window rect specifically. `None` until the window has moved/resized once.
     /// Written (debounced) by `winpos::tick`; read once by `main.rs` to seed the `ViewportBuilder`.
     pub window_rect: Option<[i32; 4]>,
-    /// `env!("CARGO_PKG_VERSION")` last seen at startup — compared on the next launch to gate the
+    /// `env!("CARGO_PKG_VERSION")` last seen at startup - compared on the next launch to gate the
     /// What's New window (a version bump opens it once).
     pub last_seen_version: String,
     // ---- ws:split-god-files ----
@@ -315,7 +315,7 @@ pub struct Settings {
     // ---- ws:audio-dsp-automation ----
     // ---- ws:color-engine ----
     /// User-browsable folders scanned for `.cube` files by a later LUT-browser UI (inspector-gallery,
-    /// wave 2) — this workstream only stores the setting, no UI reads it yet.
+    /// wave 2) - this workstream only stores the setting, no UI reads it yet.
     pub lut_dirs: Vec<String>,
     // ---- ws:command-palette ----
     /// UI zoom factor (`ctx.set_zoom_factor`); the Hotkeys tab's scale slider.
@@ -323,11 +323,11 @@ pub struct Settings {
     /// Applied keymap preset name (`keymaps::PRESETS`).
     pub keymap_preset: String,
     /// Palette command ids (`Action::id()`, `"pane.<title>"`, a tool name, ...), most-recent-first,
-    /// capped 20 — shown when the palette's query is empty instead of the full unsorted list.
+    /// capped 20 - shown when the palette's query is empty instead of the full unsorted list.
     pub palette_recent: Vec<String>,
     // ---- ws:forgiveness ----
     /// Warn (toast, never block) when opening a project whose `.lock` sidecar shows another instance
-    /// may already have it open. Not a real mutex — see the PR body's risks note.
+    /// may already have it open. Not a real mutex - see the PR body's risks note.
     pub lock_warn: bool,
     // ---- ws:player-rate-loop ----
     /// Emit one BLOCK (~21 ms) of audio on every paused playhead change (scrub feedback); gates
@@ -352,7 +352,7 @@ pub struct Settings {
     /// backfills the 4 shipped tiles, never `[]`.
     #[serde(default = "crate::engine::export::default_export_presets")]
     pub export_presets: Vec<crate::engine::export::ExportPreset>,
-    /// What the last export used — Quick Export (Ctrl+M) re-runs it without opening the window.
+    /// What the last export used - Quick Export (Ctrl+M) re-runs it without opening the window.
     pub last_export: Option<ExportPresetRef>,
     /// Loudness-normalise exports to −14 LUFS (`export::LOUDNORM`). Default on, including for a
     /// settings.json upgrading from before this key existed (`default_loudnorm`, not bool's false).
@@ -360,7 +360,7 @@ pub struct Settings {
     pub loudnorm: bool,
     // ---- ws:inspector-gallery ----
     /// Which inspector `section()` blocks are expanded, keyed by the section's `id` string (stable
-    /// across sessions — not the clip/effect it currently belongs to). Missing key = that section's own
+    /// across sessions - not the clip/effect it currently belongs to). Missing key = that section's own
     /// `default_open` wins, so a fresh install still opens the primary section per `ClipKind`.
     #[serde(default)]
     pub inspector_folds: BTreeMap<String, bool>,
@@ -377,13 +377,13 @@ pub struct Settings {
     /// Show the Open / Import / Templates / Recent cards over an empty project (the home screen).
     pub home_screen: bool,
     // ---- ws:media-library ----
-    /// Extra cells a Library list row shows after the name, in order — any of
+    /// Extra cells a Library list row shows after the name, in order - any of
     /// `library::COLUMNS` ("kind" | "duration" | "fps" | "size" | "label" | "tags" | "proxy").
     pub library_columns: Vec<String>,
     // ---- ws:source-monitor ----
     // ---- ws:timeline-trim-gestures ----
     // ---- ws:transcript-captions ----
-    /// Filler words/phrases the Transcript section's "Mark / Remove fillers" looks for — matched
+    /// Filler words/phrases the Transcript section's "Mark / Remove fillers" looks for - matched
     /// case- and punctuation-insensitively, multi-word phrases allowed. Seeded from
     /// `engine::transcribe::FILLER_WORDS`; the chip list in the section edits it in place.
     pub filler_words: Vec<String>,
@@ -398,7 +398,7 @@ pub struct Settings {
     pub scopes: Vec<String>,
     // ---- ws:pro-timeline ----
     /// Saved timeline view presets (toolbar combo). Bare default (missing key on an old
-    /// settings.json) = empty, not the two builtins below — only a genuinely fresh install
+    /// settings.json) = empty, not the two builtins below - only a genuinely fresh install
     /// (`Default::default()`) seeds them, matching `export_presets`' own migration note.
     #[serde(default)]
     pub timeline_views: Vec<TimelineView>,
@@ -568,7 +568,7 @@ impl Settings {
     }
     /// ---- ws:forgiveness ----
     /// %LOCALAPPDATA%\SimpleEditor\autosave (rolling per-project backups; see `ui::app::autosave`).
-    /// Deliberately under %LOCALAPPDATA%, not the roaming %APPDATA% `dir()` — these can be multi-MB.
+    /// Deliberately under %LOCALAPPDATA%, not the roaming %APPDATA% `dir()` - these can be multi-MB.
     pub fn autosave_dir() -> PathBuf {
         let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(Self::dir);
         base.join("SimpleEditor").join("autosave")
@@ -582,11 +582,11 @@ impl Settings {
     fn load_inner() -> (Self, Option<String>) {
         Self::load_from(&Self::path())
     }
-    /// The actual quarantine logic, over an explicit path — split out so a test can point it at a temp
+    /// The actual quarantine logic, over an explicit path - split out so a test can point it at a temp
     /// file instead of the real %APPDATA%\SimpleEditor\settings.json.
     fn load_from(path: &std::path::Path) -> (Self, Option<String>) {
         let Ok(text) = std::fs::read_to_string(path) else {
-            return (Self::default(), None); // no file yet — first run, not corruption
+            return (Self::default(), None); // no file yet - first run, not corruption
         };
         match serde_json::from_str(&text) {
             Ok(s) => (s, None),
@@ -597,7 +597,7 @@ impl Settings {
             }
         }
     }
-    /// Unchanged signature (`src/engine/transcribe.rs:46` is a real second caller) — now quarantines a
+    /// Unchanged signature (`src/engine/transcribe.rs:46` is a real second caller) - now quarantines a
     /// corrupt file as a side effect of factoring `load_inner` out, for free.
     pub fn load() -> Self {
         Self::load_inner().0
@@ -699,7 +699,7 @@ mod tests {
         assert!(!path.exists(), "the corrupt file must be moved out of the way");
         assert!(bad.exists(), "…to settings.json.bad");
 
-        // a second load (nothing left at `path`) is just a fresh-install default — no re-corruption
+        // a second load (nothing left at `path`) is just a fresh-install default - no re-corruption
         let (s2, reason2) = Settings::load_from(&path);
         assert_eq!(serde_json::to_string(&s2).unwrap(), default_json);
         assert!(reason2.is_none());
@@ -815,7 +815,7 @@ mod tests {
 
     // ---- ws:export-deliver ----
     /// A settings.json from before this workstream (no `export_presets` / `loudnorm` / `last_export`
-    /// keys) backfills the 4 tiles and loudnorm=true — never `[]` / false.
+    /// keys) backfills the 4 tiles and loudnorm=true - never `[]` / false.
     #[test]
     fn settings_backfill_on_upgrade() {
         let old: Settings = serde_json::from_str(r#"{"crf": 20, "theme": "dark"}"#).unwrap();

@@ -48,7 +48,7 @@ pub(super) fn draw_header(
     let lb = rb.translate(vec2(-(bw.x + 3.0), 0.0));
 
     // ---- ws:pro-timeline: drag-reorder grip + colour swatch, left of the name (previously-unused
-    // strip per the plan's own risk note — bw/sb/mb/rb/lb already reserve the right side) ----
+    // strip per the plan's own risk note - bw/sb/mb/rb/lb already reserve the right side) ----
     let grip =
         Rect::from_min_max(pos2(hr.left(), hr.top() + 2.0), pos2(hr.left() + 9.0, row.bottom() - HANDLE_H - 1.0));
     let gresp = ui.interact(grip, tid.with("grip"), Sense::drag()).on_hover_cursor(CursorIcon::ResizeVertical);
@@ -70,7 +70,7 @@ pub(super) fn draw_header(
             };
             if let Some(visual_up) = visual_up {
                 // Video tracks display in REVERSED index order (row_order shows the highest index on
-                // top, so V2 sits above V1) — `Project::move_track`'s `up` walks `video_tracks()` in
+                // top, so V2 sits above V1) - `Project::move_track`'s `up` walks `video_tracks()` in
                 // ascending index order, the opposite of what's on screen. Audio tracks display in
                 // plain ascending order, so their visual direction already matches `move_track`'s.
                 let list_up = if track.kind == TrackKind::Video { !visual_up } else { visual_up };

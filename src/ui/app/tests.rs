@@ -6,7 +6,7 @@ use super::*;
 use crate::model::{Asset, Ease};
 
 /// `App::new` needs a real `eframe::CreationContext` (a GL context), so there is no headless
-/// App harness to build one against here — this tests the same `Toast` construction that
+/// App harness to build one against here - this tests the same `Toast` construction that
 /// `toast`/`toast_with_folder` do (both are one-line wrappers around it).
 #[test]
 fn toast_with_folder_sets_open_path_plain_toast_does_not() {
@@ -20,7 +20,7 @@ fn toast_with_folder_sets_open_path_plain_toast_does_not() {
 
 /// `mark_instead_fires_marker_added_once_per_marker` (see the audio-analysis PR's tests) against the
 /// real `App` shape: `fire_markers_added`/`fire_hook` need a live `App` (see the App-construction
-/// deviation note above), so this exercises the plain half they're built from — mirrors
+/// deviation note above), so this exercises the plain half they're built from - mirrors
 /// `mcp_exec.rs`'s `snapshot_if_mutate`/`rollback_project` split.
 #[test]
 fn fire_marker_added_for_each_fires_once_per_id_in_order() {
@@ -83,7 +83,7 @@ fn asset(path: &str) -> Asset {
 }
 
 /// Ctrl+V was dead because egui-winit only emits `Event::Paste` when the SYSTEM clipboard holds
-/// text, and an internal clip copy never wrote to it — so the chord produced no event at all and no
+/// text, and an internal clip copy never wrote to it - so the chord produced no event at all and no
 /// binding could see it. Copying clips must therefore also queue text for the OS clipboard.
 #[test]
 fn copying_clips_also_writes_the_os_clipboard() {
@@ -239,7 +239,7 @@ fn last_transition_is_remembered_and_reapplied() {
     let mut p = Project::from_media(long_asset("a.mp4"));
     let ids: Vec<Id> = p.split_at(1.0, None);
     let (first, second) = (p.all_clips().next().unwrap().1.id, ids[0]);
-    // the "Add Transition" action's default: cross fade, 1 s — remembered in the panel state
+    // the "Add Transition" action's default: cross fade, 1 s - remembered in the panel state
     let mut st = transitions_ui::TransitionsState::default();
     let add = transitions_ui::add_transitions;
     assert_eq!(add(&mut p, &[second], &mut st, TransitionKind::CrossFade, 1.0, false), 1);
@@ -328,7 +328,7 @@ fn frame_export_and_preview_sizes() {
     assert_eq!(preview_canvas((10, 10), 25), (16, 16));
 }
 
-/// The GPU renders at `self.canvas`, the player decodes at its own clamp — they must agree, or the
+/// The GPU renders at `self.canvas`, the player decodes at its own clamp - they must agree, or the
 /// preview comes out squashed whenever the pane is wider than preview_max_width.
 #[test]
 fn canvas_clamp_keeps_the_aspect_ratio() {
@@ -440,16 +440,16 @@ fn anim_of_props_and_effect_params() {
 
 // deviation (see PR body): the plan's `presets_pane_applies_reuse_rows` and
 // `help_changelog_and_templates_save_round_trip` tests both need a live `&mut App` (to draw
-// `Pane::Presets` / to call a `ToolDef::run`), and — as `tools_registry_tests.rs` already documents —
+// `Pane::Presets` / to call a `ToolDef::run`), and - as `tools_registry_tests.rs` already documents -
 // there is no headless App-construction path anywhere in this crate (`eframe::CreationContext` has no
 // public constructor). `Pane::Presets`'s new body is `library::reuse_ui` + the same 4 response-field
-// handlers `library_pane.rs` already has for `Pane::Library`, copied verbatim — already covered by
+// handlers `library_pane.rs` already has for `Pane::Library`, copied verbatim - already covered by
 // `library.rs`'s own `reuse_sections`/`reuse_pick`/`LibraryResponse` tests, which this PR does not touch.
 // `help.changelog`/`templates.save`'s registration (name/kind/args, without invoking `run`) is checked
 // below instead, the same non-App-dependent technique `run_tool_undoable_snapshots_only_mutate` above uses.
 
 /// `help.changelog` and `templates.save` are registered in `TOOL_TABLES` (via `whatsnew::TOOLS`) with
-/// the kind/args the plan specifies — `mcp::tools::find` reads the static registry and needs no `&mut App`.
+/// the kind/args the plan specifies - `mcp::tools::find` reads the static registry and needs no `&mut App`.
 #[test]
 fn help_changelog_and_templates_save_are_registered() {
     use crate::mcp::tools::ToolKind;
@@ -464,14 +464,14 @@ fn help_changelog_and_templates_save_are_registered() {
 
 /// Tripwire: this PR does not migrate any of the pre-existing raw `ctx.request_repaint_after(...)`
 /// call sites named in CHANGELOG.md/goals.md (most live in files another workstream owns exclusively
-/// in a later wave) — only NEW code (winpos.rs, whatsnew.rs; ws:forgiveness's own new sites in
+/// in a later wave) - only NEW code (winpos.rs, whatsnew.rs; ws:forgiveness's own new sites in
 /// autosave.rs use `App::animate_until` too) routes through that funnel. ws:forgiveness's toast
 /// extraction (feedback.rs) DID relocate mod.rs's one pre-existing site (the toast area's own
-/// `request_repaint_after`) out of this test's scanned files — that call still exists, just outside
+/// `request_repaint_after`) out of this test's scanned files - that call still exists, just outside
 /// the list below now, so the count drops from 17 to 16 (see CHANGELOG.md's forgiveness entry).
 /// ws:source-monitor then deleted lib_preview.rs outright: its one site (the buffering spinner's
-/// 50 ms poll) is a genuine migration — source_pane.rs routes the same poll through
-/// `App::animate_until` — so the count drops again, 16 to 15 (CHANGELOG.md's source-monitor entry).
+/// 50 ms poll) is a genuine migration - source_pane.rs routes the same poll through
+/// `App::animate_until` - so the count drops again, 16 to 15 (CHANGELOG.md's source-monitor entry).
 /// Counts real call lines across the files that had them before this PR (skipping doc-comment text and
 /// `animate_until`'s own internal `ctx.request_repaint_after(dt)` funnel call), so a future edit that
 /// silently adds, removes or migrates one of the 15 is caught here instead of going unnoticed.
@@ -493,13 +493,13 @@ fn pre_existing_repaint_sites_unchanged_and_named() {
         .count();
     assert_eq!(
         count, 15,
-        "the count of pre-existing raw request_repaint_after sites moved — if that was intentional, \
+        "the count of pre-existing raw request_repaint_after sites moved - if that was intentional, \
          update this count AND the tracked-gap note in CHANGELOG.md/goals.md"
     );
 }
 
 // ---- ws:export-deliver ----
-/// `tools_export::frame_tick` asks for a repaint only while something is queued or baking — with
+/// `tools_export::frame_tick` asks for a repaint only while something is queued or baking - with
 /// `export` None and both lists empty it must request nothing over any number of frames (the
 /// idle-CPU-0% principle). No headless `App` exists (see the note atop this file), so this pins the
 /// pure decision `frame_tick` gates its `animate_until` on, plus its "nothing to pop" half.
@@ -522,8 +522,8 @@ fn assert_no_idle_repaint_export_idle() {
 // ---- ws:command-palette ----
 /// `App::enabled`'s wave-0b `enabled_for` half already has its own pinned test
 /// (`tools_registry_tests::action_enabled_toasts_reason`) against its own 3-arg shape; this exercises
-/// the second guard match this workstream added (`enabled_for2`) the same way — via the pure fn
-/// directly, since `enabled` itself needs a live `App` (no headless harness — see `App::new`'s doc
+/// the second guard match this workstream added (`enabled_for2`) the same way - via the pure fn
+/// directly, since `enabled` itself needs a live `App` (no headless harness - see `App::new`'s doc
 /// comment / the App-construction note in `tools_registry_tests.rs`).
 #[test]
 fn enabled_for2_reports_reason_for_known_disabled_actions() {
@@ -532,7 +532,7 @@ fn enabled_for2_reports_reason_for_known_disabled_actions() {
     assert_eq!(App::enabled_for2(Action::Redo, false, true, false, false), Err("Nothing to redo"));
     assert_eq!(
         App::enabled_for2(Action::Split, false, false, true, false),
-        Err("Nothing to split — the timeline is empty")
+        Err("Nothing to split - the timeline is empty")
     );
     for a in [Action::Delete, Action::RippleDelete] {
         assert_eq!(App::enabled_for2(a, false, false, false, true), Err("Select something to delete first"));

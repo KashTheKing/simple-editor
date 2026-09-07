@@ -25,7 +25,7 @@ struct Detection {
     quiet: Vec<(f64, f64)>,
     /// Per-`quiet`-segment toggle: Apply/Mark-instead only act on the `true` entries.
     included: Vec<bool>,
-    /// Cosmetic label for the segment list ("Silence" — the only kind this struct detects).
+    /// Cosmetic label for the segment list ("Silence" - the only kind this struct detects).
     kind: &'static str,
     kept: usize,
     kept_secs: f64,
@@ -104,7 +104,7 @@ impl Default for LoudnessState {
 
 /// "Duck" section state: the two-bucket picker (one music clip, any number of dialogue clips) plus the
 /// depth/ramp DragValues. `depth_db`/`ramp_ms` default to `Settings`'s own defaults (-12 dB / 200 ms);
-/// ponytail: they don't live-reseed from a changed `Settings.duck_depth_db` afterward, only at startup —
+/// ponytail: they don't live-reseed from a changed `Settings.duck_depth_db` afterward, only at startup -
 /// a per-call override, same as the tool args.
 pub struct DuckState {
     pub music: Option<Id>,
@@ -122,9 +122,9 @@ impl Default for DuckState {
 
 /// "Mark instead" for genuine (start,end) ranges (silence auto-cut only): one range `Marker` per
 /// (start,end) via `add_marker`+`marker_mut` (mirrors `subtitles_ui.rs`'s `mark_dups`). No clip
-/// mutation. Returns the created marker ids — callers fire `marker_added` once per id themselves: this
+/// mutation. Returns the created marker ids - callers fire `marker_added` once per id themselves: this
 /// fn stays App-free (App's `project`/`fire_hook` aren't reachable from `ui::autocut_ui`, only from
-/// `ui::app` and its descendants — see the audio-analysis PR's deviation note).
+/// `ui::app` and its descendants - see the audio-analysis PR's deviation note).
 pub(crate) fn mark_ranges(project: &mut Project, ranges: &[(f64, f64)], name_prefix: &str) -> Vec<Id> {
     let mut ids = Vec::with_capacity(ranges.len());
     for (i, &(start, end)) in ranges.iter().enumerate() {
@@ -137,7 +137,7 @@ pub(crate) fn mark_ranges(project: &mut Project, ranges: &[(f64, f64)], name_pre
     ids
 }
 
-/// A `peaks_of` closure over `waveforms`, keyed by ASSET id (stream 0) — the shape
+/// A `peaks_of` closure over `waveforms`, keyed by ASSET id (stream 0) - the shape
 /// `analysis::normalize`/`match_loudness`/`duck` take. ponytail: a clip picking a non-zero
 /// `audio_stream` reads stream 0 here; correct for the overwhelming single-stream-asset case.
 fn asset_peaks(waveforms: &mut WaveformCache) -> impl FnMut(&Project, Id) -> Option<Arc<Peaks>> + '_ {
@@ -172,7 +172,7 @@ pub(crate) fn audio_targets(project: &Project, selection: &[Id]) -> Vec<Id> {
     out
 }
 
-/// Complement of `remove` inside [start, end) — the ranges that survive the cut.
+/// Complement of `remove` inside [start, end) - the ranges that survive the cut.
 fn keep_ranges(start: f64, end: f64, remove: &[(f64, f64)], out: &mut Vec<(f64, f64)>) {
     let mut rs: Vec<(f64, f64)> = remove.to_vec();
     rs.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -192,7 +192,7 @@ fn keep_ranges(start: f64, end: f64, remove: &[(f64, f64)], out: &mut Vec<(f64, 
     }
 }
 
-/// Apply's ripple shifts every later clip left, which invalidates the absolute times cached for them —
+/// Apply's ripple shifts every later clip left, which invalidates the absolute times cached for them -
 /// so applying right-to-left keeps each detection valid until it has been used.
 fn sort_right_to_left(project: &Project, cached: &mut [Detection]) {
     cached.sort_by(|a, b| {
@@ -450,7 +450,7 @@ fn show_silence(
 }
 
 /// Scene cuts section: ffmpeg-detected shot changes on the selected VIDEO clip's source. Detect only
-/// runs the (synchronous — see the engine's own ponytail note) ffmpeg pass; Split/Mark instead reuse the
+/// runs the (synchronous - see the engine's own ponytail note) ffmpeg pass; Split/Mark instead reuse the
 /// last detection's cut times.
 fn scene_cuts_ui(
     ui: &mut egui::Ui,
@@ -808,13 +808,13 @@ mod tests {
         assert!(state.overlay.is_empty());
     }
 
-    /// The 4 new sections (Scene cuts/Beats/Loudness/Duck) must not request a repaint on their own —
+    /// The 4 new sections (Scene cuts/Beats/Loudness/Duck) must not request a repaint on their own -
     /// they only draw text/buttons from already-known state, same idle-CPU-0% contract as every other
     /// pane (see selftest.rs's own `idle_repaint` step; no shared `assert_no_idle_repaint` harness
-    /// helper exists yet in this crate — forgiveness (wave 1) hasn't landed one — so this follows the
+    /// helper exists yet in this crate - forgiveness (wave 1) hasn't landed one - so this follows the
     /// same `ctx.has_requested_repaint()` check selftest.rs itself uses). Checked both CLOSED (the
     /// normal `show()` path, sections collapsed by default) and OPEN (the section fns called directly,
-    /// as `CollapsingHeader` would once expanded — sidesteps depending on egui's undocumented
+    /// as `CollapsingHeader` would once expanded - sidesteps depending on egui's undocumented
     /// persisted-open-state id scheme, which `.id_salt(...)` alone doesn't make predictable here).
     #[test]
     fn show_smoke_new_sections_no_idle_repaint() {

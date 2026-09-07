@@ -1,4 +1,4 @@
-//! Import report window: after `engine::import::import_file`, show what came through and what did not —
+//! Import report window: after `engine::import::import_file`, show what came through and what did not -
 //! a summary line (clips / tracks / missing media), then a scrollable table of `Issue`s grouped by level
 //! (Ok / Warning / Skipped) with the subject and detail. Buttons: "Use this project" (replaces the current
 //! one, with the usual unsaved-changes prompt), "Copy report" (markdown) and Close. Non-modal.
@@ -21,7 +21,7 @@ pub fn show(ctx: &egui::Context, state: &mut ImportUi, palette: &Palette) -> boo
     let mut accepted = false;
     let mut open = state.open;
     let mut close = false;
-    // ---- ws:media-library ----: "Locate missing…" is applied after `show` returns — `r` borrows
+    // ---- ws:media-library ----: "Locate missing…" is applied after `show` returns - `r` borrows
     // `state.report` for the whole window body, so the mutation can't happen inside the closure.
     let mut want_locate = false;
     egui::Window::new("Import Report").open(&mut open).default_width(520.0).default_height(360.0).show(ctx, |ui| {

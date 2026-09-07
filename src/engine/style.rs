@@ -1,4 +1,4 @@
-//! Style summary: a deterministic Markdown description of how a project was edited — statistics an AI (or a
+//! Style summary: a deterministic Markdown description of how a project was edited - statistics an AI (or a
 //! human) can turn into a reusable style guide: format, duration, tracks, cut cadence (count, mean/median
 //! clip length, shortest/longest), transitions used (kinds, durations), effects (kinds + typical params),
 //! text styles (fonts, sizes, colours, outlines/shadows), colour labels, retimes, masks and node graphs,
@@ -27,7 +27,7 @@ fn median(mut v: Vec<f64>) -> f64 {
     }
 }
 
-/// "8", "0.5", "1.25" — up to two decimals, trailing zeros trimmed.
+/// "8", "0.5", "1.25" - up to two decimals, trailing zeros trimmed.
 fn num(v: f64) -> String {
     let s = format!("{v:.2}");
     s.trim_end_matches('0').trim_end_matches('.').to_string()
@@ -105,7 +105,7 @@ pub fn style_summary(project: &Project) -> String {
     }
     let all_clips = || all.iter().flat_map(|t| t.clips.iter());
 
-    let _ = writeln!(s, "# Style Summary — {}\n", p.name);
+    let _ = writeln!(s, "# Style Summary - {}\n", p.name);
 
     // ---- Format ----
     let (w, h, fps) = match (&p.main_stash, p.editing) {
@@ -140,7 +140,7 @@ pub fn style_summary(project: &Project) -> String {
         let (min, max) = lens.iter().fold((f64::MAX, f64::MIN), |(a, b), &v| (a.min(v), b.max(v)));
         let _ = writeln!(
             s,
-            "- {label}: {} clips, {} cuts — length mean {} s, median {} s, min {} s, max {} s",
+            "- {label}: {} clips, {} cuts - length mean {} s, median {} s, min {} s, max {} s",
             lens.len(),
             cuts,
             num(mean),
@@ -162,7 +162,7 @@ pub fn style_summary(project: &Project) -> String {
             all.iter().flat_map(|t| t.transitions.iter()).filter(|x| x.kind == kind).map(|x| x.duration).collect();
         if !durs.is_empty() {
             any = true;
-            let _ = writeln!(s, "- {} ×{} — median {} s", kind.name(), durs.len(), num(median(durs)));
+            let _ = writeln!(s, "- {} ×{} - median {} s", kind.name(), durs.len(), num(median(durs)));
         }
     }
     if !any {
@@ -211,7 +211,7 @@ pub fn style_summary(project: &Project) -> String {
                 }
             })
             .collect();
-        let mut line = format!("- {} ×{} — median {}", kind.name(), instances.len(), params.join(", "));
+        let mut line = format!("- {} ×{} - median {}", kind.name(), instances.len(), params.join(", "));
         let off = instances.iter().filter(|e| !e.enabled).count();
         if off > 0 {
             let _ = write!(line, " ({off} disabled)");
@@ -344,7 +344,7 @@ pub fn style_summary(project: &Project) -> String {
     }
     for sq in &p.sequences {
         let ntracks = p.sequence_tracks(sq.id).map(|t| t.len()).unwrap_or(0);
-        let _ = writeln!(s, "- {} — {} s, {} tracks", sq.name, num(p.sequence_duration(sq.id)), ntracks);
+        let _ = writeln!(s, "- {} - {} s, {} tracks", sq.name, num(p.sequence_duration(sq.id)), ntracks);
     }
     let _ = writeln!(s);
 
@@ -437,21 +437,21 @@ mod tests {
         p.note_mut(nid).unwrap().body = "fast cuts, punchy".into();
         let md = style_summary(&p);
         for h in [
-            "# Style Summary — style-test-0",
+            "# Style Summary - style-test-0",
             "## Format",
             "- 1280×720 @ 30 fps",
             "## Timeline",
             "## Transitions",
-            "- Cross Fade ×2 — median 1 s", // mirrored onto the linked audio cut
+            "- Cross Fade ×2 - median 1 s", // mirrored onto the linked audio cut
             "## Effects",
             "### Stylize",
-            "- Blur ×1 — median Radius 8",
+            "- Blur ×1 - median Radius 8",
             // round-3 kinds read as well as the old ones: bool params as on/off, masks called out
-            "- VHS ×1 — median Noise 0.3, Chroma bleed 0.5, Scanlines 0.4, Tracking jitter 0.2, \
+            "- VHS ×1 - median Noise 0.3, Chroma bleed 0.5, Scanlines 0.4, Tracking jitter 0.2, \
              Head switching 0.3, Sharpen ringing 0.4, Colour bleed only off, Tape wear 0.2 (1 masked)",
             "### Adjustments",
-            "- Threshold ×1 — median Level 0.5, Softness 0.05, Per channel off",
-            "- Color Curves ×1 — median Master 1/4 0.25",
+            "- Threshold ×1 - median Level 0.5, Softness 0.05, Per channel off",
+            "- Color Curves ×1 - median Master 1/4 0.25",
             "## Masks & node graphs",
             "- Clip masks: 1 (1 Rectangle)",
             "- Effect masks: 1 (1 Ellipse)",

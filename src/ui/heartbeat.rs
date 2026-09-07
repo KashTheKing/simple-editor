@@ -1,6 +1,6 @@
 //! A heartbeat-monitor style pulse drawn over the video rect of the library asset preview whenever
 //! it's showing audio with no picture (and no cover art). Pure `egui::Painter` shapes, no textures
-//! or shaders. The trace is a fixed EKG-blip silhouette — it never scrolls sideways, only its spike
+//! or shaders. The trace is a fixed EKG-blip silhouette - it never scrolls sideways, only its spike
 //! height breathes with the current amplitude, read from the same `Peaks` data the timeline waveform
 //! already uses.
 
@@ -40,8 +40,8 @@ impl Heartbeat {
         self.level += (raw - self.level) * (rate * dt).min(1.0);
     }
 
-    /// Paint the blip across `rect` (the black video letterbox) at fixed x positions — only its
-    /// spike height moves, driven by the smoothed level — with a glow built from a few widening,
+    /// Paint the blip across `rect` (the black video letterbox) at fixed x positions - only its
+    /// spike height moves, driven by the smoothed level - with a glow built from a few widening,
     /// fading strokes over the same line.
     pub fn paint(&self, painter: &egui::Painter, rect: egui::Rect, palette: &Palette) {
         let mid_y = rect.center().y;
@@ -58,7 +58,7 @@ impl Heartbeat {
 }
 
 /// Current amplitude: max |peak| over `[t, t + window)` across the given `Peaks` (one per
-/// simultaneous audio clip) — the same `Peaks::range` call the timeline waveform already uses.
+/// simultaneous audio clip) - the same `Peaks::range` call the timeline waveform already uses.
 pub fn amplitude_at(peaks: &[std::sync::Arc<crate::media::waveform::Peaks>], t: f64, window: f64) -> f32 {
     peaks
         .iter()

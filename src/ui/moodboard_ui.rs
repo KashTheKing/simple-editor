@@ -1,5 +1,5 @@
 //! Standalone Moodboard pane (`Project.moodboard`): a project-wide gallery of reference assets with
-//! free-form label tags — separate from the per-task moodboards already on the Planner's items
+//! free-form label tags - separate from the per-task moodboards already on the Planner's items
 //! (`PlanItem::assets`, `ui::planner`).
 //!
 //! Three views, toggled the same way library.rs's List/Gallery buttons work (same Glyph icons): List
@@ -11,7 +11,7 @@
 //! (`DragPayload::Asset`, egui's own drag-and-drop) onto empty pane space adds a `MoodItem` for it
 //! directly; dropping an OS file (from Explorer) is routed here by `App::handle_drops`, which imports it
 //! as a project asset first (deduped by path, the same flow every other import uses) and then calls
-//! `moodboard_add` too — "if it isn't already one" is `moodboard_add`'s own check either way.
+//! `moodboard_add` too - "if it isn't already one" is `moodboard_add`'s own check either way.
 //!
 //! Right-click (or the inline button) on an item: "Add at Playhead" places that asset on the timeline
 //! via `add_to_timeline`, the same plumbing Library and Planner already use
@@ -38,10 +38,10 @@ pub struct MoodboardState {
     pub filter: String,
     slide_index: usize,
     /// In-progress tag edit: (asset id, raw text, undo-pushed-this-gesture). The raw text is the
-    /// buffer the focused field edits — rebuilding it from `labels` every frame normalised away the
+    /// buffer the focused field edits - rebuilding it from `labels` every frame normalised away the
     /// comma the user just typed, which made a second tag untypeable.
     tag_edit: Option<(Id, String, bool)>,
-    /// This pane's content rect as of the last frame it was drawn — `App::handle_drops` checks an OS
+    /// This pane's content rect as of the last frame it was drawn - `App::handle_drops` checks an OS
     /// file drop's cursor position against it before importing, one-frame-stale, the same trick
     /// `TimelineState::lanes_rect` uses. `App::update` resets it to `NOTHING` right after `handle_drops`
     /// runs each frame, so a different tab sharing this pane's screen area (Markers/Planner) is never
@@ -68,7 +68,7 @@ pub struct MoodboardResponse {
     /// Asset ids the user asked to place on the timeline at the playhead.
     pub add_to_timeline: Vec<Id>,
     /// Files to import into the project and then add to the board (the Import button, or a
-    /// linked-folder/recent row dragged in — `DragPayload::Path` — which isn't a project asset yet).
+    /// linked-folder/recent row dragged in - `DragPayload::Path` - which isn't a project asset yet).
     /// The App owns importing, so this pane just reports the paths.
     pub import_paths: Vec<std::path::PathBuf>,
 }
@@ -82,7 +82,7 @@ fn mark(ui: &egui::Ui, name: impl std::fmt::Display, r: &egui::Response) {
 #[cfg(not(test))]
 fn mark(_ui: &egui::Ui, _name: impl std::fmt::Display, _r: &egui::Response) {}
 
-/// Add a `MoodItem` for `asset` if it isn't already on the board. Returns whether it changed anything —
+/// Add a `MoodItem` for `asset` if it isn't already on the board. Returns whether it changed anything -
 /// the one place both drop paths (internal drag here, OS-file-drop-then-import in `App::handle_drops`)
 /// funnel through, so "already a project asset" and "already on the board" are each checked in exactly
 /// one spot.
@@ -106,7 +106,7 @@ fn split_tags(s: &str) -> Vec<String> {
 
 /// Comma-separated tag editor for one item. While focused it edits the session buffer in
 /// `MoodboardState::tag_edit` (see its doc comment), and reports `(new tags, first-change-of-gesture)`
-/// only when the parsed tags actually differ — so undo is pushed once per focus gesture, not once per
+/// only when the parsed tags actually differ - so undo is pushed once per focus gesture, not once per
 /// keystroke, and typing a trailing comma is not an "edit" at all.
 fn tag_field(
     ui: &mut egui::Ui,
@@ -268,7 +268,7 @@ pub fn show(
                     resp.edited = true;
                 }
             }
-            // a linked-folder / recent file dragged in: not a project asset yet — hand it to the App
+            // a linked-folder / recent file dragged in: not a project asset yet - hand it to the App
             // to import-then-add, exactly like an OS file drop (this used to silently no-op)
             DragPayload::Path(path) => resp.import_paths.push(std::path::PathBuf::from(path)),
             _ => {}
@@ -282,7 +282,7 @@ pub fn show(
     if let Some((i, labels, fresh_gesture)) = relabel {
         if project.moodboard.get(i).is_some_and(|m| m.labels != labels) {
             if fresh_gesture {
-                undo(project); // once per focus gesture — tag_field tracks it
+                undo(project); // once per focus gesture - tag_field tracks it
             }
             if let Some(m) = project.moodboard.get_mut(i) {
                 m.labels = labels;
@@ -548,7 +548,7 @@ mod tests {
         assert_eq!(p.moodboard.len(), 1);
     }
 
-    /// The internal-drag and OS-file-drop paths both end up here (see the module doc comment) — this is
+    /// The internal-drag and OS-file-drop paths both end up here (see the module doc comment) - this is
     /// the actual "drop imports and adds" logic; App::handle_drops's own OS-file half is exercised by
     /// hand (a real drag from Explorer isn't something a headless test can simulate).
     #[test]
@@ -578,7 +578,7 @@ mod tests {
         assert_eq!(split_tags(""), Vec::<String>::new());
     }
 
-    /// Clicking "Add at Playhead" in List view reports the asset id — the same `add_to_timeline`
+    /// Clicking "Add at Playhead" in List view reports the asset id - the same `add_to_timeline`
     /// plumbing app.rs already wires up for Library and Planner.
     #[test]
     fn add_at_playhead_headless() {

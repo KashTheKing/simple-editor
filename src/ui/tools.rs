@@ -50,7 +50,7 @@ pub struct ToolsState {
     pub brush_width: f32,
     pub draw_rate: f32,
     pub page: [u8; 4],
-    /// Draw tool: a take is running — the app plays the video and drops every stroke into one drawing
+    /// Draw tool: a take is running - the app plays the video and drops every stroke into one drawing
     /// until this goes back off (see `App::toggle_draw_recording`).
     pub recording: bool,
     // ---- ws:layout-modes-onboarding ----
@@ -132,64 +132,64 @@ pub(crate) enum Glyph {
     SpeakerOff,
     Camera,
     FilmStrip,
-    /// Two patch boxes joined by a cable — a node graph.
+    /// Two patch boxes joined by a cable - a node graph.
     Nodes,
-    /// A stack of sheets — an adjustment layer.
+    /// A stack of sheets - an adjustment layer.
     Layers,
-    /// A shooting target: rings and cross ticks — motion tracking.
+    /// A shooting target: rings and cross ticks - motion tracking.
     Target,
-    /// A horseshoe magnet — the snapping toggle.
+    /// A horseshoe magnet - the snapping toggle.
     Magnet,
-    /// Two posts with a double-headed arrow between them — a gap being widened.
+    /// Two posts with a double-headed arrow between them - a gap being widened.
     Spacer,
-    /// An eighth note — the audio-effects catalogue card (no picture to render for those).
+    /// An eighth note - the audio-effects catalogue card (no picture to render for those).
     MusicNote,
     /// A file-explorer folder: a tab sitting on a body.
     Folder,
     /// A container / slot clip.
     Container,
-    /// Two crossed strokes — close, delete, clear.
+    /// Two crossed strokes - close, delete, clear.
     Cross,
-    /// A filled dot — a colour swatch, a bullet, "in use".
+    /// A filled dot - a colour swatch, a bullet, "in use".
     Dot,
-    /// Two sheets, one behind the other — copy.
+    /// Two sheets, one behind the other - copy.
     Copy,
-    /// A clipboard — paste.
+    /// A clipboard - paste.
     Paste,
-    /// A filled triangle pointing `Dir` — reorder, collapse, step one frame.
+    /// A filled triangle pointing `Dir` - reorder, collapse, step one frame.
     Tri(Dir),
-    /// Two triangles — the previous / next cut.
+    /// Two triangles - the previous / next cut.
     Skip(Dir),
-    /// A triangle backed against a bar — go to the very start / end.
+    /// A triangle backed against a bar - go to the very start / end.
     Jump(Dir),
     Play,
     Pause,
     Stop,
-    /// Four corner brackets — fullscreen.
+    /// Four corner brackets - fullscreen.
     Fullscreen,
-    /// A window with an arrow leaving it — pop this pane out.
+    /// A window with an arrow leaving it - pop this pane out.
     PopOut,
-    /// An arrow into a margin bar — indent (true) / outdent (false).
+    /// An arrow into a margin bar - indent (true) / outdent (false).
     Indent(bool),
-    /// A lane carrying two blocks — a nested sequence.
+    /// A lane carrying two blocks - a nested sequence.
     Sequence,
-    /// A card with a folded corner — a saved clip template.
+    /// A card with a folded corner - a saved clip template.
     Template,
-    /// A six-armed snowflake — a frozen frame.
+    /// A six-armed snowflake - a frozen frame.
     Snowflake,
     /// A movie reel: rim, hub, four spoke holes and a tape tail.
     FilmReel,
-    /// A filled lightning zigzag — effects / performance.
+    /// A filled lightning zigzag - effects / performance.
     Bolt,
-    /// An open tray with an arrow dropping into it — import.
+    /// An open tray with an arrow dropping into it - import.
     ImportArrow,
-    /// The same tray with the arrow rising out — export.
+    /// The same tray with the arrow rising out - export.
     ExportArrow,
-    /// Two overlapping squares with a diagonal across the overlap — a transition.
+    /// Two overlapping squares with a diagonal across the overlap - a transition.
     Transition,
     /// A caption box with two text bars in its lower half.
     Subtitles,
-    /// A cog: ring, eight stubs and a hub — settings.
+    /// A cog: ring, eight stubs and a hub - settings.
     Gear,
     /// Three slider tracks, each with its knob at a different position.
     Sliders,
@@ -197,9 +197,9 @@ pub(crate) enum Glyph {
     Wrench,
     /// A clapperboard: body plus a slanted, hatched top bar.
     Clapperboard,
-    /// Five vertical bars around a midline — an audio waveform.
+    /// Five vertical bars around a midline - an audio waveform.
     Waveform,
-    /// Axes with a rising curve and two square handles — a value curve.
+    /// Axes with a rising curve and two square handles - a value curve.
     CurveIcon,
     /// A clock face with two hands.
     Clock,
@@ -207,105 +207,105 @@ pub(crate) enum Glyph {
     Notepad,
     /// A ribbon with a notched V bottom.
     Bookmark,
-    /// A curved arrow — undo (`Dir::Left`) / redo (`Dir::Right`).
+    /// A curved arrow - undo (`Dir::Left`) / redo (`Dir::Right`).
     UndoArrow(Dir),
     /// A save disk: notched square, shutter and label.
     FloppyDisk,
     /// A console window: '>' prompt and an underscore.
     Terminal,
-    /// A wide 16:9 outline — landscape format.
+    /// A wide 16:9 outline - landscape format.
     Landscape,
-    /// A tall 9:16 outline — portrait / vertical format.
+    /// A tall 9:16 outline - portrait / vertical format.
     Portrait,
-    /// A square outline — 1:1 format.
+    /// A square outline - 1:1 format.
     Square,
-    /// A rounded rectangle with a play triangle — YouTube-style video badge.
+    /// A rounded rectangle with a play triangle - YouTube-style video badge.
     PlayRect,
-    /// A 2x2 grid of rounded squares — a feed / profile grid.
+    /// A 2x2 grid of rounded squares - a feed / profile grid.
     GridIcon,
-    /// Three ruled rows, each with a leading bullet — a row/list view (paired with `GridIcon`).
+    /// Three ruled rows, each with a leading bullet - a row/list view (paired with `GridIcon`).
     ListIcon,
-    /// A frame with corner brackets and a centre tick — the social-guide overlay.
+    /// A frame with corner brackets and a centre tick - the social-guide overlay.
     Guides,
     // ---- ws:registries-schema-hooks ----
     // ---- ws:size-diet ----
     // ---- ws:split-god-files ----
     // ---- ws:audio-analysis ----
     // ---- ws:audio-dsp-automation ----
-    /// Three vertical bars of increasing height — the mixer's level / LUFS meter row.
+    /// Three vertical bars of increasing height - the mixer's level / LUFS meter row.
     Meter,
     // ---- ws:color-engine ----
     // ---- ws:command-palette ----
-    /// A small key cap grid — the cheat-sheet / Settings ▸ Hotkeys tab.
+    /// A small key cap grid - the cheat-sheet / Settings ▸ Hotkeys tab.
     Keyboard,
-    /// A magnifying glass — the palette's own search field / row.
+    /// A magnifying glass - the palette's own search field / row.
     Search,
     // ---- ws:forgiveness ----
     // ---- ws:player-rate-loop ----
     // ---- ws:snap-engine ----
-    /// A curved arrow around a clip edge — the Roll gesture cursor (wave 2 wires the drag itself).
+    /// A curved arrow around a clip edge - the Roll gesture cursor (wave 2 wires the drag itself).
     RollCursor,
-    /// Filmstrip frames sliding sideways under a fixed rect — the Slip gesture cursor (wave 2).
+    /// Filmstrip frames sliding sideways under a fixed rect - the Slip gesture cursor (wave 2).
     SlipCursor,
     // ---- ws:trim-model ----
     // ---- ws:canvas-handles-monitor ----
-    /// Two overlapping L-shaped crop marks — painted at the pointer over a crop handle.
+    /// Two overlapping L-shaped crop marks - painted at the pointer over a crop handle.
     Crop,
-    /// A three-quarter circular arrow — painted at the pointer over the rotate knob.
+    /// A three-quarter circular arrow - painted at the pointer over the rotate knob.
     Rotate,
     // ---- ws:export-deliver ----
-    /// Two stacked documents with a small clock in the corner — the render queue.
+    /// Two stacked documents with a small clock in the corner - the render queue.
     Queue,
     // ---- ws:inspector-gallery ----
-    /// A ring with three spoke handles — the Color section's Primaries wheels.
+    /// A ring with three spoke handles - the Color section's Primaries wheels.
     Wheel,
-    /// A filmstrip-corner tile with a diagonal split — a LUT card / the LUT browser.
+    /// A filmstrip-corner tile with a diagonal split - a LUT card / the LUT browser.
     Lut,
     // ---- ws:layout-modes-onboarding ----
-    /// A pushpin (head, bar, needle) — a tab pinned against auto-surfacing.
+    /// A pushpin (head, bar, needle) - a tab pinned against auto-surfacing.
     Pin,
-    /// Four corner arrows pointing outward — maximise a pane to the full tile.
+    /// Four corner arrows pointing outward - maximise a pane to the full tile.
     Maximize,
     // ---- ws:media-library ----
-    /// A triangle with an exclamation mark — the library's offline-media badge / relink hint.
+    /// A triangle with an exclamation mark - the library's offline-media badge / relink hint.
     Warning,
-    /// Two overlapping links — a subclip's tie to its parent asset.
+    /// Two overlapping links - a subclip's tie to its parent asset.
     Chain,
     // ---- ws:source-monitor ----
-    /// A bar with a block landing after its end — smart edit "Append at End".
+    /// A bar with a block landing after its end - smart edit "Append at End".
     Append,
-    /// Two blocks with arrows pulling them together — smart edit "Close Up" (close the gap).
+    /// Two blocks with arrows pulling them together - smart edit "Close Up" (close the gap).
     CloseUp,
-    /// A block floating above a bar with an up arrow — smart edit "Place on Top" (new track above).
+    /// A block floating above a bar with an up arrow - smart edit "Place on Top" (new track above).
     PlaceOnTop,
-    /// A viewfinder rect with a record dot — the Source/Record monitor toggle.
+    /// A viewfinder rect with a record dot - the Source/Record monitor toggle.
     SourceRecord,
-    /// A tape cassette: two reels in a shell — Source Tape.
+    /// A tape cassette: two reels in a shell - Source Tape.
     Tape,
     // ---- ws:timeline-trim-gestures ----
-    /// A padlock — the track header's Lock toggle.
+    /// A padlock - the track header's Lock toggle.
     Lock,
-    /// Two chain links — the track header's Ripple (sync) toggle.
+    /// Two chain links - the track header's Ripple (sync) toggle.
     Link,
     // ---- ws:transcript-captions ----
     /// Three text lines of decreasing width, the middle one's leading word lit (the Transcript
     /// section / "View transcript" window).
     Transcript,
     // ---- ws:pro-monitor ----
-    /// A vertical split with opposite-shaded halves — the Compare (wipe/side-by-side) toggle.
+    /// A vertical split with opposite-shaded halves - the Compare (wipe/side-by-side) toggle.
     Compare,
-    /// A small oscilloscope trace — the Scopes window toggle.
+    /// A small oscilloscope trace - the Scopes window toggle.
     Scope,
-    /// A 2x2 grid of squares — the multicam angle-grid window.
+    /// A 2x2 grid of squares - the multicam angle-grid window.
     Grid4,
     // ---- ws:pro-timeline ----
-    /// A filled square with a thin ring — the track-header colour swatch. Named `Swatch`, not
+    /// A filled square with a thin ring - the track-header colour swatch. Named `Swatch`, not
     /// `Palette`, to avoid colliding with the pervasive `use crate::theme::Palette;`.
     Swatch,
-    /// Three stacked bars of differing width — the view-preset combo / overview toggle.
+    /// Three stacked bars of differing width - the view-preset combo / overview toggle.
     Rows,
     // ---- ws:text-titles ----
-    /// A small "T" over a horizontal bar — the Gallery's Titles tab button.
+    /// A small "T" over a horizontal bar - the Gallery's Titles tab button.
     Titles,
     // ---- ws:docs-refresh ----
 }
@@ -447,7 +447,7 @@ impl Glyph {
         // ---- ws:docs-refresh ----
     ];
 
-    /// Stable lower-case name of the variant, kept in sync with `from_name` — what a saved icon
+    /// Stable lower-case name of the variant, kept in sync with `from_name` - what a saved icon
     /// choice is stored as. Parameterized variants fold their direction into the name.
     pub fn name(self) -> &'static str {
         match self {
@@ -630,7 +630,7 @@ fn tool_action(tool: Tool) -> Option<Action> {
     }
 }
 
-/// Current (rebindable, via Settings ▸ Hotkeys) shortcut of a tool, formatted for the tooltip — e.g.
+/// Current (rebindable, via Settings ▸ Hotkeys) shortcut of a tool, formatted for the tooltip - e.g.
 /// `"V"`, or `"Ctrl+Alt+K"` if the user remapped it. `None` when the tool has no key or it's unbound.
 pub fn tool_hotkey(hotkeys: &Hotkeys, tool: Tool) -> Option<String> {
     tool_action(tool).and_then(|a| hotkeys.get(a)).map(|ks| Hotkeys::format(&ks))
@@ -640,13 +640,13 @@ pub fn tool_hotkey(hotkeys: &Hotkeys, tool: Tool) -> Option<String> {
 /// variants; the Mask action steps through the mask variants), ignored while a text field has focus.
 /// Bare `S` is snapping's key (see `handle_snap_hotkey`), not a tool switch. Polled here rather than
 /// through the app's main `Hotkeys::poll` / `App::act` because the tool strip, not `App`, owns
-/// `ToolsState` — same reasoning as `handle_snap_hotkey`. Returns the new tool when it changed; the key
+/// `ToolsState` - same reasoning as `handle_snap_hotkey`. Returns the new tool when it changed; the key
 /// is consumed, so calling this twice in a frame is harmless.
 /// The tool a `Action::Tool*` corresponds to, given the currently active tool (only `ToolMask` needs
 /// it, to cycle the mask shape). `None` for any other action. Shared by `handle_hotkeys` below and by
 /// `App::act`'s fallback arm for the rare case one of these actions fires through the general action
 /// table instead of the tool strip's own poll (e.g. invoked via scripting/MCP).
-/// The `ShapeStyle` a new shape clip will actually get from the current tool-strip picks — used by
+/// The `ShapeStyle` a new shape clip will actually get from the current tool-strip picks - used by
 /// BOTH `App::add_shape` (creation) and the preview's live drag preview, so the drawn preview and the
 /// created clip can never drift apart in style.
 pub fn shape_style_from_tools(tools: &ToolsState, kind: ShapeKind) -> ShapeStyle {
@@ -694,7 +694,7 @@ const TOOL_ACTIONS: [Action; 8] = [
 ];
 
 /// Like `InputState::consume_shortcut`, but the pressed modifiers must match EXACTLY
-/// (`Modifiers::matches_exact`) — egui's own matching is "logical" and IGNORES extra Shift/Alt on the
+/// (`Modifiers::matches_exact`) - egui's own matching is "logical" and IGNORES extra Shift/Alt on the
 /// press. This poll runs before the `Hotkeys` action table, so a logical match here would swallow
 /// every `Shift+<letter>` action sharing a tool's base key (it did: Shift+T/D/R and the old Shift+M).
 fn consume_shortcut_exact(i: &mut egui::InputState, ks: &egui::KeyboardShortcut) -> bool {
@@ -719,7 +719,7 @@ pub fn handle_hotkeys(ctx: &egui::Context, hotkeys: &Hotkeys, state: &mut ToolsS
     }
     ctx.input_mut(|i| {
         // ponytail: this also claims hotkeys.rs's default Shift+S (Action::AddShape) before the action
-        // table sees it — same trade-off the tool strip already makes for the tool letters below.
+        // table sees it - same trade-off the tool strip already makes for the tool letters below.
         // AddShape stays reachable from the Insert menu; give it a fresh binding in Settings > Hotkeys if
         // that regresses.
         if consume_shortcut_exact(i, &egui::KeyboardShortcut::new(Modifiers::SHIFT, Key::S)) {
@@ -742,7 +742,7 @@ pub fn handle_hotkeys(ctx: &egui::Context, hotkeys: &Hotkeys, state: &mut ToolsS
     })
 }
 
-/// Bare `S` (no modifiers) toggles snapping — claimed here, ahead of the action table, so it can never
+/// Bare `S` (no modifiers) toggles snapping - claimed here, ahead of the action table, so it can never
 /// race with Shift+S's shape cycle above or with the `N` binding in `hotkeys.rs` (`Action::ToggleSnap`,
 /// still live and unaffected). `*snap` flips in place; the caller persists it. Returns true when it fired.
 pub fn handle_snap_hotkey(ctx: &egui::Context, snap: &mut bool) -> bool {
@@ -788,7 +788,7 @@ fn next_mask(cur: Tool) -> MaskShape {
 }
 
 /// Returns true when the tool, `*snap` or the style changed (the app may want to repaint the preview
-/// overlay). `snap` is `Settings.snap` — owned by the app, not this strip, so it comes in by reference.
+/// overlay). `snap` is `Settings.snap` - owned by the app, not this strip, so it comes in by reference.
 /// `hotkeys` is the app's live binding table (`App.hotkeys`), read-only here: it decides which key each
 /// tool responds to and shows in its tooltip, but only Settings ▸ Hotkeys can change it.
 pub fn show(ui: &mut egui::Ui, state: &mut ToolsState, palette: &Palette, snap: &mut bool, hotkeys: &Hotkeys) -> bool {
@@ -809,7 +809,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut ToolsState, palette: &Palette, snap: 
                 match tool_hotkey(hotkeys, tool) {
                     Some(k) => format!("{name} ({k})"),
                     // the spacer's gesture is not readable from its picture
-                    None if tool == Tool::Spacer => format!("{name} — drag the lanes to open or close a gap"),
+                    None if tool == Tool::Spacer => format!("{name} - drag the lanes to open or close a gap"),
                     None => name.to_string(),
                 }
             };
@@ -830,7 +830,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut ToolsState, palette: &Palette, snap: 
 }
 
 // ---- ws:layout-modes-onboarding ----
-/// `STRIP` with `lead`'s entry (if it has one) moved to the front — the Dynamic-mode adaptive strip.
+/// `STRIP` with `lead`'s entry (if it has one) moved to the front - the Dynamic-mode adaptive strip.
 /// Only the order changes: every tool stays, so `strip_lays_out_every_tool` holds for any lead.
 fn strip_order(lead: Option<Tool>) -> Vec<(Tool, Glyph, &'static str)> {
     let mut order = STRIP.to_vec();
@@ -1272,7 +1272,7 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
                 );
             }
         }
-        // tracking: a shooting target — two rings and four cross ticks
+        // tracking: a shooting target - two rings and four cross ticks
         Glyph::Target => {
             p.circle_stroke(c, r, stroke);
             p.circle_stroke(c, r * 0.4, stroke);
@@ -1320,7 +1320,7 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
                 fg,
             );
         }
-        // paste: a clipboard — a board with its spring clip on top
+        // paste: a clipboard - a board with its spring clip on top
         Glyph::Paste => {
             p.rect_stroke(
                 egui::Rect::from_center_size(c + egui::vec2(0.0, 1.0), egui::vec2(11.0, 12.0)),
@@ -1343,7 +1343,7 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
                 p.add(egui::Shape::convex_polygon(tri(c + u * k, d, 3.4, 4.6), fg, Stroke::NONE));
             }
         }
-        // |◀ / ▶| — the bar sits at the far edge, in the direction of travel
+        // |◀ / ▶| - the bar sits at the far edge, in the direction of travel
         Glyph::Jump(d) => {
             let u = d.unit();
             let n = egui::vec2(-u.y, u.x);
@@ -1705,7 +1705,7 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
                 );
             }
         }
-        // list view: three rows, each a leading bullet and a rule — pairs with GridIcon
+        // list view: three rows, each a leading bullet and a rule - pairs with GridIcon
         Glyph::ListIcon => {
             for dy in [-4.0_f32, 0.0, 4.0] {
                 p.rect_filled(
@@ -1730,7 +1730,7 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
                 StrokeKind::Inside,
             );
         }
-        // roll: a curved arrow wrapped around a vertical bar (the cut) — rolling the edit point.
+        // roll: a curved arrow wrapped around a vertical bar (the cut) - rolling the edit point.
         Glyph::RollCursor => {
             p.line_segment([c + egui::vec2(0.0, -6.0), c + egui::vec2(0.0, 6.0)], Stroke::new(1.6, fg));
             let arc: Vec<egui::Pos2> = (0..=10)
@@ -1858,7 +1858,7 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
             }
             p.circle_filled(c, 1.6, fg);
         }
-        // LUT card: a small tile with a diagonal split, one half darker — a before/after swatch
+        // LUT card: a small tile with a diagonal split, one half darker - a before/after swatch
         Glyph::Lut => {
             let rect = egui::Rect::from_center_size(c, egui::vec2(11.0, 11.0));
             p.rect_stroke(rect, 1.0, stroke, StrokeKind::Inside);
@@ -2020,7 +2020,7 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
             }
         }
         // ---- ws:pro-timeline ----
-        // swatch: a filled square with a thin ring — the track-header colour button
+        // swatch: a filled square with a thin ring - the track-header colour button
         Glyph::Swatch => {
             let r = egui::Rect::from_center_size(c, egui::vec2(11.0, 11.0));
             p.rect_filled(r, CornerRadius::same(2), fg);
@@ -2077,7 +2077,7 @@ pub(crate) fn action_glyph(a: crate::hotkeys::Action) -> Option<Glyph> {
     })
 }
 
-/// Paint `icon` where a plain label would go — no button chrome, no hit area.
+/// Paint `icon` where a plain label would go - no button chrome, no hit area.
 pub(crate) fn glyph_label(ui: &mut egui::Ui, icon: Glyph, color: Color32) -> egui::Response {
     let (rect, r) = ui.allocate_exact_size(egui::vec2(18.0, ui.spacing().interact_size.y), Sense::hover());
     draw_glyph(ui.painter(), rect, icon, color);
@@ -2121,7 +2121,7 @@ mod tests {
             let ctx = egui::Context::default();
             // size-diet: dropping eframe's `default_fonts` feature left a bare Context with no glyphs
             // at all, and this strip's tooltips/label sizing (button hit-rects measured across clicks)
-            // need real metrics — see theme::test_fonts.
+            // need real metrics - see theme::test_fonts.
             ctx.set_fonts(crate::theme::test_fonts());
             let mut h = Self {
                 ctx,
@@ -2188,14 +2188,14 @@ mod tests {
     }
 
     /// Every variant (via `Glyph::ALL`), so a new one cannot be added without deciding what it looks
-    /// like — and without giving it a name for the icon picker.
+    /// like - and without giving it a name for the icon picker.
     const ALL_GLYPHS: &[Glyph] = Glyph::ALL;
 
     /// Tessellated vertices produced by `paint`, on a throwaway context.
     fn painted(paint: impl Fn(&egui::Painter, Rect)) -> usize {
         let ctx = egui::Context::default();
         // size-diet: `Glyph::Letter` paints a real character via the font system, which needs a real
-        // font loaded now that eframe's `default_fonts` feature is gone — see theme::test_fonts.
+        // font loaded now that eframe's `default_fonts` feature is gone - see theme::test_fonts.
         ctx.set_fonts(crate::theme::test_fonts());
         let input = || egui::RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 100.0))),
@@ -2223,7 +2223,7 @@ mod tests {
 
     #[test]
     fn every_glyph_paints_a_picture() {
-        // the point of a Glyph is that nothing is typed — a variant that paints nothing would be a
+        // the point of a Glyph is that nothing is typed - a variant that paints nothing would be a
         // blank button, no better than the tofu box it replaced
         let empty = painted(|_, _| {});
         for g in ALL_GLYPHS {
@@ -2258,7 +2258,7 @@ mod tests {
         let mut h = Harness::new();
         h.state.lead = Some(Tool::Draw);
         // egui's `read_response` prefers `this_pass`, which after ONE run still holds the pre-change
-        // frame's rects (it only becomes current after a second pass) — an extra settle frame with the
+        // frame's rects (it only becomes current after a second pass) - an extra settle frame with the
         // same state is harmless (nothing else changes) and makes the reordered rects readable.
         h.frame(vec![]);
         h.frame(vec![]);
@@ -2338,7 +2338,7 @@ mod tests {
 
     /// Regression: the tool poll must match modifiers EXACTLY. egui's `consume_shortcut` matches
     /// "logically" (extra Shift/Alt ignored), and since this poll runs before the `Hotkeys` table a
-    /// logical match ate every `Shift+<tool letter>` action — Shift+T (Add Text), Shift+D, Shift+R,
+    /// logical match ate every `Shift+<tool letter>` action - Shift+T (Add Text), Shift+D, Shift+R,
     /// and the old Shift+M (Add Marker) all selected tools instead of firing.
     #[test]
     fn shifted_letters_are_left_for_the_action_table() {

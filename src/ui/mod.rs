@@ -1,5 +1,5 @@
 //! egui UI. Dockable layout (ui/layout.rs) of panes: Library, Preview, Inspector, Effects, Transitions,
-//! Subtitles, Timeline, Curves, Planner, Moodboard, Auto-cut, Tracking — DaVinci-like by default, bare
+//! Subtitles, Timeline, Curves, Planner, Moodboard, Auto-cut, Tracking - DaVinci-like by default, bare
 //! Windows-forms styling. Windows (Settings, Retime, Export) never block the editor.
 
 pub mod app;
@@ -136,7 +136,7 @@ pub(crate) fn seed_mask_points(m: &mut Mask) {
 }
 
 /// Mask parameter grid, shared by the Inspector (the clip mask) and the Effects panel (a per-effect
-/// mask): shape, enabled, invert, position/size/rotation, feather, expand, opacity — each keyframable.
+/// mask): shape, enabled, invert, position/size/rotation, feather, expand, opacity - each keyframable.
 pub(crate) fn mask_grid(ui: &mut egui::Ui, m: &mut Mask, lt: f64, palette: &Palette, g: &mut Gesture, salt: egui::Id) {
     Grid::new(salt).num_columns(2).show(ui, |ui| {
         ui.label("Shape");
@@ -196,7 +196,7 @@ pub(crate) fn mask_grid(ui: &mut egui::Ui, m: &mut Mask, lt: f64, palette: &Pale
 pub enum DragPayload {
     /// A library asset id.
     Asset(Id),
-    /// A file path (recent panel, linked folders) — the timeline reports it back as a dropped file.
+    /// A file path (recent panel, linked folders) - the timeline reports it back as a dropped file.
     Path(String),
     /// A nested timeline (Project.sequences) id.
     Sequence(Id),
@@ -213,7 +213,7 @@ const DRAG_SLOP: f32 = 6.0;
 
 /// "The user really means to drag this": the primary button is down and the pointer has moved past
 /// `DRAG_SLOP`. egui also promotes a *stationary* long press to a drag (`is_decidedly_dragging`), and
-/// its `Sense::drag` widgets start dragging on the press of ANY button — which is how a right-click
+/// its `Sense::drag` widgets start dragging on the press of ANY button - which is how a right-click
 /// used to pluck a card out of a panel instead of opening its menu.
 pub(crate) fn drag_intent(ui: &egui::Ui) -> bool {
     ui.input(|i| {
@@ -251,7 +251,7 @@ pub(crate) fn hover_after(ui: &egui::Ui, id: egui::Id, response: &Response, ms: 
 /// An item that is clickable and right-clickable first and a drag-and-drop source second: the payload
 /// is only handed to egui once `drag_intent` holds, and the body is lifted under the cursor from that
 /// moment (the one thing `Ui::dnd_drag_source` is good for). Use this instead of `dnd_drag_source`,
-/// which senses drag only — grab cursor on hover, and a drag on any press.
+/// which senses drag only - grab cursor on hover, and a drag on any press.
 pub(crate) fn drag_source<P: std::any::Any + Send + Sync>(
     ui: &mut egui::Ui,
     id: egui::Id,
@@ -295,7 +295,7 @@ pub fn timecode(t: f64, fps: f64) -> String {
 // ---- ws:canvas-handles-monitor ----
 /// The transport label's click-to-edit parser (and `playhead.set_timecode`): `hh:mm:ss:ff` /
 /// `hh:mm:ss` / `mm:ss` / a bare number of seconds are absolute; `+N` / `-N` are frames from `cur`,
-/// `+1.5s` / `-2s` seconds from `cur`. `None` for anything else — the edit is dropped, the playhead
+/// `+1.5s` / `-2s` seconds from `cur`. `None` for anything else - the edit is dropped, the playhead
 /// stays put. Never negative (a relative step past the start clamps to 0).
 pub(crate) fn parse_timecode(s: &str, fps: f64, cur: f64) -> Option<f64> {
     let s = s.trim();

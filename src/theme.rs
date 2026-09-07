@@ -43,7 +43,7 @@ pub struct Palette {
     pub selection: Color32,
     /// Corner radius for custom-painted widget-like surfaces (buttons, chips, cards).
     pub rounding: f32,
-    /// Corner radius for timeline clips (0 in the sharp look — fully rectangular).
+    /// Corner radius for timeline clips (0 in the sharp look - fully rectangular).
     pub clip_rounding: f32,
 }
 
@@ -144,7 +144,7 @@ pub struct PaletteOverride {
 }
 
 /// `palette(ctx)` layered with a user override. "system" mode (the default, everything `None`) is
-/// exactly `palette(ctx)` — the round-trip the Settings window's "Reset to system" button restores.
+/// exactly `palette(ctx)` - the round-trip the Settings window's "Reset to system" button restores.
 pub fn palette_with(ctx: &egui::Context, ov: &PaletteOverride) -> Palette {
     let dark = match ov.mode.as_str() {
         "light" => false,
@@ -283,7 +283,7 @@ fn visuals(dark: bool, ov: &PaletteOverride, cozy: bool) -> Visuals {
     v
 }
 
-/// Ordered filename candidates for each family — first one present in `%WINDIR%\Fonts` wins. Segoe UI /
+/// Ordered filename candidates for each family - first one present in `%WINDIR%\Fonts` wins. Segoe UI /
 /// Consolas ship on every supported Windows 10/11 SKU; Tahoma/Arial and Courier New/Lucida Console are
 /// there as a defensive fallback, not because either is expected to be needed.
 const SANS_CANDIDATES: [&str; 3] = ["segoeui.ttf", "tahoma.ttf", "arial.ttf"];
@@ -295,7 +295,7 @@ fn find_font(dir: &std::path::Path, candidates: &[&str]) -> Option<Vec<u8>> {
 }
 
 /// Last-resort fallback when NONE of a family's named candidates exist (never expected on a real
-/// Windows 10/11 install) — whatever `fontdb` finds on the system, so the family is never left with
+/// Windows 10/11 install) - whatever `fontdb` finds on the system, so the family is never left with
 /// zero fonts (egui panics the moment it needs to lay out text in an empty `FontFamily`).
 fn fontdb_fallback() -> Option<Vec<u8>> {
     let mut db = fontdb::Database::new();
@@ -308,7 +308,7 @@ fn fontdb_fallback() -> Option<Vec<u8>> {
 
 /// Register the first font found for `family` (by `key`) into `defs`, trying `find_font` then
 /// `fontdb_fallback`. A family that finds nothing at all (should not happen) is simply left as egui's
-/// `FontDefinitions::empty()` set it — empty — since there is nothing real to hand it.
+/// `FontDefinitions::empty()` set it - empty - since there is nothing real to hand it.
 fn add_family(defs: &mut egui::FontDefinitions, dir: &std::path::Path, family: egui::FontFamily, key: &str, candidates: &[&str]) {
     if let Some(bytes) = find_font(dir, candidates).or_else(fontdb_fallback) {
         defs.font_data.insert(key.into(), std::sync::Arc::new(egui::FontData::from_owned(bytes)));
@@ -318,7 +318,7 @@ fn add_family(defs: &mut egui::FontDefinitions, dir: &std::path::Path, family: e
 
 /// Segoe UI + Consolas read straight from disk instead of the ~1.4 MB of Hack/NotoEmoji/Ubuntu-Light/
 /// emoji-icon TTFs eframe's `default_fonts` feature used to embed (now dropped from Cargo.toml).
-/// `FontDefinitions::empty()`, not `::default()` — the two only differ when that Cargo feature happens
+/// `FontDefinitions::empty()`, not `::default()` - the two only differ when that Cargo feature happens
 /// to be enabled, and starting from `empty()` stays correct even if a future dependency re-enables it.
 fn fonts() -> egui::FontDefinitions {
     let mut f = egui::FontDefinitions::empty();
@@ -331,7 +331,7 @@ fn fonts() -> egui::FontDefinitions {
 
 /// Real fonts for a headless test `egui::Context`. Dropping eframe's `default_fonts` feature
 /// (size-diet) means `egui::FontDefinitions::default()` is now empty crate-wide, so a bare
-/// `egui::Context::default()` that never calls `set_fonts` has NO glyphs at all — harmless for tests
+/// `egui::Context::default()` that never calls `set_fonts` has NO glyphs at all - harmless for tests
 /// that only check state, but a handful of existing headless UI tests measure real text/button metrics
 /// (tooltips, `Glyph::Letter`, wrapped labels) and need real ones. `#[cfg(test)]`: adds nothing to the
 /// release binary, the whole point of dropping the embedded fonts in the first place.
@@ -557,7 +557,7 @@ mod tests {
     }
 
     /// The ordered-candidate lookup for both families must find a usable font even when the primary
-    /// (Segoe UI / Consolas) file is missing — exercised against a temp dir standing in for
+    /// (Segoe UI / Consolas) file is missing - exercised against a temp dir standing in for
     /// `%WINDIR%\Fonts` with only a fallback name present.
     #[test]
     fn fonts_never_empty_family() {
@@ -569,7 +569,7 @@ mod tests {
         std::fs::write(dir.join("lucon.ttf"), b"stand-in bytes").unwrap();
         assert!(find_font(&dir, &SANS_CANDIDATES).is_some(), "arial.ttf fallback must be found");
         assert!(find_font(&dir, &MONO_CANDIDATES).is_some(), "lucon.ttf fallback must be found");
-        // an empty directory finds nothing named — the caller falls through to fontdb_fallback, which
+        // an empty directory finds nothing named - the caller falls through to fontdb_fallback, which
         // this test does not exercise (it depends on the real machine's installed fonts)
         assert!(find_font(&dir, &["definitely-does-not-exist.ttf"]).is_none());
         let mut defs = egui::FontDefinitions::empty();

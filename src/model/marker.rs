@@ -16,12 +16,12 @@ pub struct Marker {
     pub note: String,
     /// Index into `Project.labels` + 1 (0 = none).
     pub label: u8,
-    /// Glyph name (`ui::tools::Glyph::name()` / `from_name`) — same string convention as
+    /// Glyph name (`ui::tools::Glyph::name()` / `from_name`) - same string convention as
     /// `Settings.icon_overrides`. Missing on old projects: the container-level `#[serde(default)]`
     /// above pulls it (and `sequence`) from `Marker::default()` below.
     pub icon: String,
     /// Which sequence this marker was created on (`None` = the main timeline). Project-level
-    /// markers only, for scoping `Project.markers` per sequence — clip markers already scope
+    /// markers only, for scoping `Project.markers` per sequence - clip markers already scope
     /// through their clip and ignore this field.
     pub sequence: Option<Id>,
 }

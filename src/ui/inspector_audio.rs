@@ -1,6 +1,6 @@
-//! Clip properties shared by audio and video clips — the generic per-property loop over
+//! Clip properties shared by audio and video clips - the generic per-property loop over
 //! `Clip::props_mut()` (Position X/Y, Scale, Rotation, Opacity for visual clips; Volume, Pan for audio
-//! clips — same widgets, same keyframe/link controls), fade in/out, blend mode, and the audio-bus
+//! clips - same widgets, same keyframe/link controls), fade in/out, blend mode, and the audio-bus
 //! override. Extracted verbatim from `clip_section` in inspector.rs (see its module doc for the whole
 //! inspector); zero behaviour change from the original inline code, split out only to keep
 //! clip_section from growing further.
@@ -166,7 +166,7 @@ pub(super) fn section(
             }
         }
         // Bulk propagation: only the fields that actually changed from `orig`, absolute-overwrite of
-        // the sibling's own value — mirrors clip_section's own enabled/label propagation.
+        // the sibling's own value - mirrors clip_section's own enabled/label propagation.
         if multi {
             let mut orig_probe = orig.clone();
             let mut changed_props: Vec<(&'static str, f64)> = Vec::new();
@@ -217,7 +217,7 @@ pub(super) fn section(
 
 // ---- ws:audio-dsp-automation ----
 /// Role combo + Repair / Clarity / Open in Mixer + Duck / Normalize for the selected audio clips.
-/// Repair/Clarity mutate `project` directly (bus + routing), so they snapshot `undo` themselves —
+/// Repair/Clarity mutate `project` directly (bus + routing), so they snapshot `undo` themselves -
 /// exactly once per click. Returns true when the project changed.
 fn essential_sound(
     ui: &mut egui::Ui,
@@ -284,7 +284,7 @@ fn essential_sound(
     changed
 }
 
-/// Audio bus override — per-clip data. Rendered by `clip_section` at the original position (after the
+/// Audio bus override - per-clip data. Rendered by `clip_section` at the original position (after the
 /// Path section, before Markers, inside its own `add_enabled_ui(!multi, ...)` zone 2) so pulling this
 /// out of `section` above does not visibly reorder the panel.
 pub(super) fn bus_section(
@@ -416,7 +416,7 @@ mod tests {
         assert!(h.click("audio_repair"));
         assert_eq!(h.undos, 2);
         assert_eq!(h.project.buses.len(), 2);
-        // Open in Mixer only hands the bus over — no project change, no undo
+        // Open in Mixer only hands the bus over - no project change, no undo
         assert!(!h.click("audio_open_mixer"));
         assert_eq!(h.undos, 2);
         assert_eq!(crate::ui::mixer_ui::take_focus_bus(), Some(bus));

@@ -26,7 +26,7 @@ pub struct Track {
     #[serde(default)]
     pub locked: bool,
     /// Deleting/trimming shoves downstream clips on this track to close the gap. `None` only right
-    /// after a bare `Track::new` — every real construction site resolves it via `default_ripple`
+    /// after a bare `Track::new` - every real construction site resolves it via `default_ripple`
     /// before the track is used, so a project session never sees `None`; `from_json` resolves it too
     /// for tracks loaded from disk.
     #[serde(default)]
@@ -40,7 +40,7 @@ pub struct Track {
     #[serde(default)]
     pub color: Option<[u8; 3]>,
     /// Track-level gain multiplier (1 = unity); sampled by the mixer once audio-dsp-automation
-    /// (wave 1) wires it in — see `engine::mixer::mix_tracks`. Defaults to unity because `Animated`
+    /// (wave 1) wires it in - see `engine::mixer::mix_tracks`. Defaults to unity because `Animated`
     /// has no `Default` impl in this crate (a bare `#[serde(default)]` would not compile).
     #[serde(default = "crate::model::a1")]
     pub volume: Animated,
@@ -68,7 +68,7 @@ impl Track {
     /// The one resolver every Track-construction site calls so `ripple` is never left `None` outside
     /// a bare `Track::new` for more than the current statement: the first track of a kind defaults to
     /// ripple-on (V1/A1 stay in sync with edits by default), every later track of that kind defaults
-    /// to position-locked (secondary tracks — B-roll, music, SFX — never silently desync).
+    /// to position-locked (secondary tracks - B-roll, music, SFX - never silently desync).
     pub(crate) fn default_ripple(_kind: TrackKind, index_within_kind: usize) -> Option<bool> {
         Some(index_within_kind == 0)
     }
@@ -122,7 +122,7 @@ mod tests {
 
     #[test]
     fn track_volume_defaults_to_unity() {
-        // no `volume` field at all — an older project, or one hand-edited
+        // no `volume` field at all - an older project, or one hand-edited
         let t: Track = serde_json::from_str(r#"{"id":1,"name":"V1","kind":"Video"}"#).unwrap();
         assert_eq!(t.volume.value, 1.0, "missing volume must default to unity, not silence");
         assert!(!t.volume.is_animated());
@@ -130,7 +130,7 @@ mod tests {
         assert!(!t.locked && !t.magnetic && t.color.is_none());
     }
 
-    /// Every real Track-construction path resolves `ripple` immediately — not just on a save/reload
+    /// Every real Track-construction path resolves `ripple` immediately - not just on a save/reload
     /// round-trip through `Project::from_json` (see `io::tests::ripple_resolves_on_load` for that path).
     #[test]
     fn ripple_resolves_at_every_construction_site() {
@@ -157,7 +157,7 @@ mod tests {
         assert!(sub.ripple.is_some(), "Subtitles auto-track");
 
         // the XML/EDL import "ensure track" helper (engine::import::track_slot) calls
-        // Project::add_track for any track it needs, so it inherits the resolution above for free —
+        // Project::add_track for any track it needs, so it inherits the resolution above for free -
         // pinned by `import::tests` exercising a real import, not duplicated here.
     }
 }

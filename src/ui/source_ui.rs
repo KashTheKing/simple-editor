@@ -1,7 +1,7 @@
 //! ---- ws:source-monitor ----
 //! The Source monitor (`Pane::Source`): the old library preview (`App.lib_preview`, deleted) promoted
 //! to a dockable two-up with its own `Player`, in/out marks with ticks on the shared scrub bar, the
-//! three-point-edit / smart-edit button row and Source Tape. Pure UI — `App`-side glue (opening a file,
+//! three-point-edit / smart-edit button row and Source Tape. Pure UI - `App`-side glue (opening a file,
 //! the per-frame texture upload, focus routing, the edits themselves) lives in `ui::app::source_pane`
 //! and `ui::app::source_ctl`; button clicks bubble up through `SourceResponse`, never mutate `App`.
 
@@ -30,7 +30,7 @@ pub struct Tape {
 }
 
 /// The Source monitor's state: a file, its own decoder/audio pipeline, the duration/fps a transport
-/// needs (the asset's own probed values — this player's project is a synthetic single-clip one), the
+/// needs (the asset's own probed values - this player's project is a synthetic single-clip one), the
 /// in/out marks and, while on, the Source Tape. Replaces `LibPreview` 1:1 (same fields) plus marks/tape.
 pub struct SourceState {
     pub player: Player,
@@ -40,7 +40,7 @@ pub struct SourceState {
     pub duration: f64,
     pub fps: f64,
     pub has_video: bool,
-    /// A still image: no transport, no timecode, no scrub bar — just the picture.
+    /// A still image: no transport, no timecode, no scrub bar - just the picture.
     pub is_image: bool,
     pub src_in: Option<f64>,
     pub src_out: Option<f64>,
@@ -66,7 +66,7 @@ impl SourceState {
     }
 
     /// The marked source range, if any mark is set (an unset in = 0, an unset out = the end). None
-    /// when nothing is marked — the same as "the whole clip" to every ranged op.
+    /// when nothing is marked - the same as "the whole clip" to every ranged op.
     pub fn marks(&self) -> Option<(f64, f64)> {
         if self.src_in.is_none() && self.src_out.is_none() {
             return None;
@@ -130,7 +130,7 @@ pub struct SourceCtx<'a> {
     pub waveforms: Option<&'a mut WaveformCache>,
     /// This update's uploaded frame (see `App::source_frame`).
     pub frame: Option<PreviewFrame>,
-    /// Space/JKL/I/O currently route here (last-clicked transport) — painted as an accent outline.
+    /// Space/JKL/I/O currently route here (last-clicked transport) - painted as an accent outline.
     pub focused: bool,
     /// Signed seconds from the record playhead to the nearest timeline cut, within the UI threshold
     /// (`source_ctl::smart_indicator`); None = no cut nearby.
@@ -140,20 +140,20 @@ pub struct SourceCtx<'a> {
 #[derive(Default)]
 pub struct SourceResponse {
     /// Edit verbs the buttons dispatch (Splice/Overwrite/Append/Ripple Overwrite/Close Up/Place on
-    /// Top/Source Tape) — the same `Action`s the hotkeys and palette fire, so every verb has one path.
+    /// Top/Source Tape) - the same `Action`s the hotkeys and palette fire, so every verb has one path.
     pub actions: Vec<Action>,
     pub settings_changed: bool,
     pub close: bool,
     pub seek: Option<f64>,
     pub toggle_play: bool,
     pub stop: bool,
-    /// I / O / clear buttons — applied by the caller regardless of which transport has focus.
+    /// I / O / clear buttons - applied by the caller regardless of which transport has focus.
     pub mark_in: bool,
     pub mark_out: bool,
     pub clear_marks: bool,
     /// "Subclip" button: `Project::subclip_from_marks` on the current marks.
     pub subclip: bool,
-    /// A primary press landed inside the pane this frame — the caller moves transport focus here.
+    /// A primary press landed inside the pane this frame - the caller moves transport focus here.
     pub clicked: bool,
     /// The Source/Record button: flip transport focus (Source <-> timeline) instead.
     pub toggle_focus: bool,

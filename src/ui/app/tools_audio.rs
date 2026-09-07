@@ -14,7 +14,7 @@ use crate::mcp::tools::{ToolDef, ToolKind, ToolOutcome};
 use crate::media::waveform::Peaks;
 use std::sync::Arc;
 
-/// Per-clip (cuts, quiet ranges) via `autocut::loud_segments`/`to_timeline` — the same detection
+/// Per-clip (cuts, quiet ranges) via `autocut::loud_segments`/`to_timeline` - the same detection
 /// `timeline.auto_cut` (tools_timeline.rs) performs, shared here by `autocut.detect` (preview) and
 /// `autocut.mark` ("Mark instead" of Apply) so they never read a segment differently from each other.
 fn detect_silence(
@@ -31,7 +31,7 @@ fn detect_silence(
         }
         let path = app.project.asset(c.asset).ok_or("clip has no asset")?.path.clone();
         let peaks =
-            app.waveforms.get(&path, c.audio_stream).ok_or("waveform still computing — try again in a moment")?;
+            app.waveforms.get(&path, c.audio_stream).ok_or("waveform still computing - try again in a moment")?;
         let segs = autocut::loud_segments(&peaks, c.src_in, c.src_len(), params);
         let (cuts, quiet) = autocut::to_timeline(&segs, c.start, c.src_in, c.duration, c.speed, keep_quiet);
         out.push((id, cuts, quiet));
@@ -162,7 +162,7 @@ pub const TOOLS: &[ToolDef] = &[
             let dry_run = a.bool("dry_run").unwrap_or(false);
             let n = if dry_run {
                 // ponytail: dry-run scales onto a scratch clone instead of adding a bool param to the
-                // pure engine fn — see the workstream's ponytail notes.
+                // pure engine fn - see the workstream's ponytail notes.
                 let mut scratch = app.project.clone();
                 let App { waveforms, .. } = app;
                 analysis::duck(&mut scratch, music, &dialogue, depth_db, ramp_s, &mut asset_peaks(waveforms))
@@ -307,7 +307,7 @@ pub const TOOLS: &[ToolDef] = &[
         desc: "ffmpeg select='gt(scene,T)' shot-change detection over the clip's source. Neither flag: \
                pure detection, returns cut times (source secs). as_markers adds one point marker \
                (duration 0) per cut and fires marker_added; split cuts the clip at each one. \
-               Synchronous (blocks the UI thread for the ffmpeg pass) — documented ceiling.",
+               Synchronous (blocks the UI thread for the ffmpeg pass) - documented ceiling.",
         args: &[
             "clip_id:integer:false:defaults to selection's first video clip",
             "threshold:number:false:default 0.3",
@@ -349,7 +349,7 @@ mod tests {
     use super::*;
 
     /// `every_arg_spec_parses`-style check scoped to just this file's 9 rows, plus a name/kind sanity
-    /// pass — the crate-wide `mutate_rows_roll_back_on_error`/`every_arg_spec_parses` structural tests
+    /// pass - the crate-wide `mutate_rows_roll_back_on_error`/`every_arg_spec_parses` structural tests
     /// (tools_registry_tests.rs / mcp/tools.rs) already exercise these generically over every
     /// `ToolKind::Mutate` row via `mcp::tools::all()`; a live `App` isn't buildable in a test (see the
     /// App-construction deviation note in tools_registry_tests.rs) so this stays at the registry level.

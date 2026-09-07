@@ -175,7 +175,7 @@ pub(super) fn general(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Setting
 }
 
 /// MCP port DragValue. The app restarts the server whenever `settings.mcp_port` changes, so the value is
-/// held in `state.port_edit` while the user drags or types and only written when the gesture ends —
+/// held in `state.port_edit` while the user drags or types and only written when the gesture ends -
 /// otherwise a drag from 7337 to 7400 walks through ~60 ports and one busy port in between turns the
 /// server off. Returns true when the setting changed.
 pub(super) fn port_field(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Settings) -> bool {

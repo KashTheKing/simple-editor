@@ -32,7 +32,7 @@ pub struct ExportUi {
     pub range: bool,
     /// The platform tile currently applied (by name); cleared when the user edits the size by hand.
     pub tile: Option<String>,
-    /// Fit-and-pad instead of stretch — set with a tile, cleared with a manual size edit.
+    /// Fit-and-pad instead of stretch - set with a tile, cleared with a manual size edit.
     pub letterbox: bool,
     /// Container the applied tile asks for ("mp4"); the save dialog's default extension.
     pub ext: String,
@@ -40,9 +40,9 @@ pub struct ExportUi {
     pub metadata_on: bool,
     /// Editable `(key, value)` rows, seeded from the project the first time it is turned on.
     pub metadata: Vec<(String, String)>,
-    /// "Use project background" checkbox — see `ExportChoice::use_project_bg`.
+    /// "Use project background" checkbox - see `ExportChoice::use_project_bg`.
     pub use_project_bg: bool,
-    /// The quality percent as last shown for a given stored CRF — pct→CRF→pct round-trips lose up to
+    /// The quality percent as last shown for a given stored CRF - pct→CRF→pct round-trips lose up to
     /// 2 % (52 CRF steps vs 101 slider positions), so without this a typed "85" snapped back to 84.
     pub pct_cache: Option<(u32, u32)>,
 }
@@ -52,7 +52,7 @@ pub struct ExportChoice {
     pub lossless: bool,
     /// The "Use project background" checkbox. `App::start_export_choice` acts on it: off forces the
     /// exported clone's `preview_bg` to `Black` (the pre-setting behaviour), on keeps it as authored.
-    /// Works on both frame sources — `engine::compose` clears to `preview_bg` too (`fill_background`).
+    /// Works on both frame sources - `engine::compose` clears to `preview_bg` too (`fill_background`).
     pub use_project_bg: bool,
     // ---- ws:export-deliver ----
     /// What Quick Export should re-run next time (stored in `Settings.last_export` when this starts).
@@ -90,7 +90,7 @@ pub fn lossless_allowed(state: &ExportUi, project: &Project) -> bool {
     !state.range && export::lossless_segments(project).is_some()
 }
 
-/// Everything `pick_and_build` does after the save dialog — pure, so the range/preset wiring is
+/// Everything `pick_and_build` does after the save dialog - pure, so the range/preset wiring is
 /// testable without one.
 pub fn build_choice(
     state: &ExportUi,
@@ -166,7 +166,7 @@ fn preset_size(pw: u32, ph: u32, preset: &str, custom: (u32, u32)) -> Option<(u3
     }
 }
 
-/// "58.2 MB" / "1.3 GB" — 1 decimal place, switching to GB at 1000 MB.
+/// "58.2 MB" / "1.3 GB" - 1 decimal place, switching to GB at 1000 MB.
 fn format_bytes(bytes: u64) -> String {
     let mb = bytes as f64 / 1e6;
     if mb >= 1000.0 {
@@ -211,7 +211,7 @@ pub fn show(
             }
         });
         if presets.is_empty() {
-            ui.weak("No platform presets — add some to settings.json's export_presets.");
+            ui.weak("No platform presets - add some to settings.json's export_presets.");
         }
         ui.add_space(2.0);
 
@@ -303,7 +303,7 @@ pub fn show(
                 project.fps,
                 duration_text(export_dur)
             ))
-            .on_hover_text("Estimated — actual size depends on the footage (and audio-only formats ignore it).");
+            .on_hover_text("Estimated - actual size depends on the footage (and audio-only formats ignore it).");
             let pct = export::quality_percent_from_crf(settings.crf);
             // bands anchored so the default (CRF 18 ~ 65 %, visually lossless for x264) does NOT warn
             let warning = match pct {
@@ -317,7 +317,7 @@ pub fn show(
                 ui.colored_label(ui.visuals().warn_fg_color, warning);
             }
             if pct >= 95 {
-                ui.weak("Near-lossless — files will be very large.");
+                ui.weak("Near-lossless - files will be very large.");
             }
         }
 
@@ -367,7 +367,7 @@ pub fn show(
         ui.checkbox(&mut state.use_project_bg, "Use project background").on_hover_text(
             "Bakes the preview's Background setting (see the preview's right-click menu) into the \
                  export instead of black. Checkerboard bakes as literal grey squares, not real \
-                 transparency — that needs an alpha-capable codec this checkbox does not add.",
+                 transparency - that needs an alpha-capable codec this checkbox does not add.",
         );
         // ws:export-deliver
         ui.checkbox(&mut settings.loudnorm, "Normalize loudness (−14 LUFS)")
@@ -404,7 +404,7 @@ pub fn show(
     });
     state.open = open;
     if !open {
-        settings.save(); // the window's options are settings — keep them when it closes without exporting
+        settings.save(); // the window's options are settings - keep them when it closes without exporting
     }
     out
 }

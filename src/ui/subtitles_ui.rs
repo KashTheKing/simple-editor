@@ -7,7 +7,7 @@
 //! seconds (3 decimals, end ≥ start + 0.1, keep the list sorted via Project::sort_cues), a multiline text
 //! field, a play button (seek to the cue and play → `seeked` + `play`), a select checkbox and a delete
 //! one; the cue containing the playhead is highlighted; a "Split at playhead" button on the highlighted
-//! cue. A second toolbar row: "To text clips" (Project::cues_to_text_clips — editable Text clips on a
+//! cue. A second toolbar row: "To text clips" (Project::cues_to_text_clips - editable Text clips on a
 //! "Subtitles" track), "Delete selected", "Delete in range" (the In/Out range) and "Clear all".
 //! "Open folder" → `open_folder`: the app writes the .srt sidecar and opens the folder. Undo once per
 //! gesture (same edit_start rule as the inspector); returns what changed.
@@ -18,7 +18,7 @@
 //! word timings are kept, so "Regenerate cues" rebuilds the cues with new grouping knobs (pause split,
 //! punctuation, max words/chars) without re-transcribing; a `--prompt` field feeds whisper vocabulary
 //! hints. Underneath it,
-//! the double-take detector lists the lines that were said more than once — "Mark on timeline" drops a
+//! the double-take detector lists the lines that were said more than once - "Mark on timeline" drops a
 //! marker per flubbed take (described by what was said) and "Cut the duplicates" ripples every take but
 //! the last one out, dragging the cues, the markers and the transcript along with the cut. With no model
 //! and no whisper.exe the section only ever explains what to install.
@@ -63,9 +63,9 @@ pub struct TranscribeState {
     pub words: bool,
     /// Vocabulary/style hints passed to whisper (`--prompt`).
     pub prompt: String,
-    /// Sentence grouping for word-timed runs (gap, punctuation, max words/chars) — regenerate-time knobs.
+    /// Sentence grouping for word-timed runs (gap, punctuation, max words/chars) - regenerate-time knobs.
     pub group: transcribe::GroupOpts,
-    /// Raw one-word timings of the last word-timed run (timeline seconds) — what "Regenerate" regroups.
+    /// Raw one-word timings of the last word-timed run (timeline seconds) - what "Regenerate" regroups.
     pub raw_words: Vec<(f64, f64, String)>,
     /// Cues added by the last generate, so a regenerate replaces them instead of stacking duplicates.
     pub generated: Vec<Id>,
@@ -83,7 +83,7 @@ pub struct TranscribeState {
     marks: Vec<Id>,
     job: Option<transcribe::Job>,
     download: Option<Arc<Progress>>,
-    /// whisper binary, looked up once (the lookup stats PATH) — "Re-check" after installing it.
+    /// whisper binary, looked up once (the lookup stats PATH) - "Re-check" after installing it.
     exe: Option<Option<PathBuf>>,
 }
 
@@ -158,16 +158,16 @@ pub struct SubtitlesResponse {
     pub seeked: bool,
     /// The cue's play button: seek there and start playback.
     pub play: bool,
-    /// "Open folder" — the app writes the .srt sidecar next to the project and opens it in Explorer.
+    /// "Open folder" - the app writes the .srt sidecar next to the project and opens it in Explorer.
     pub open_folder: bool,
     /// ---- ws:forgiveness ----
-    /// "Clear all" ran inline (no confirm dialog) — the app toasts an Undo.
+    /// "Clear all" ran inline (no confirm dialog) - the app toasts an Undo.
     pub cleared_subtitles: bool,
     /// Import parsed cues while the project ALREADY has subtitles: the app queues a non-blocking
     /// "Replace?" confirm (`ConfirmAction::ReplaceSubtitles`) instead of asking here (this module has
     /// no `App` to queue one against). `None` when there was nothing to import, or nothing existing to
     /// ask about (an empty project replaces inline, no prompt needed). Same `(start, end, text)` shape
-    /// `engine::subtitles::parse`/`apply_import` already use — ids are allocated on Yes, via
+    /// `engine::subtitles::parse`/`apply_import` already use - ids are allocated on Yes, via
     /// `Project::add_cue`, not carried here.
     pub import_replace_cues: Option<Vec<(f64, f64, String)>>,
 }
@@ -178,7 +178,7 @@ fn add_at(project: &mut Project, playhead: f64) -> Id {
 }
 
 /// Import parsed cues, replacing or appending. `pub(crate)`: also called by
-/// `confirm::apply_to_project` (ws:forgiveness) to resolve `ConfirmAction::ReplaceSubtitles` — reused
+/// `confirm::apply_to_project` (ws:forgiveness) to resolve `ConfirmAction::ReplaceSubtitles` - reused
 /// rather than duplicated so the id-allocation (`Project::add_cue`) stays in one place.
 pub(crate) fn apply_import(project: &mut Project, cues: &[(f64, f64, String)], replace: bool) {
     if replace {
@@ -274,7 +274,7 @@ pub fn show(
             resp.edited = true;
         }
         // no confirm dialog: this is already inside the undo-snapshotting `once(...)` helper below, so
-        // it's a normal undoable edit — the app additionally toasts an Undo button (resp.cleared_subtitles).
+        // it's a normal undoable edit - the app additionally toasts an Undo button (resp.cleared_subtitles).
         if ui.add_enabled(any, Button::new("Clear all")).clicked() {
             once(&mut undone, undo, project);
             project.subtitles.clear();
@@ -471,7 +471,7 @@ fn style_section(
         });
         ui.end_row();
         ui.label("Size");
-        // ws:text-titles: style.size is now Animated — the project-wide caption style has no
+        // ws:text-titles: style.size is now Animated - the project-wide caption style has no
         // keyframe UI of its own, so this just edits the constant value.
         note(&ui.add(DragValue::new(&mut style.size.value).range(8.0..=300.0)), &mut start, &mut changed);
         ui.end_row();
@@ -521,7 +521,7 @@ fn style_section(
         ui.end_row();
         ui.label("Continuation").on_hover_text(
             "Added where a sentence is split across cues: the suffix ends the cut-off cue, the prefix \
-             starts the next (e.g. suffix \" —\" for em-dashes). Applied by Transcribe / Regenerate cues.",
+             starts the next (e.g. suffix \" - \" for em-dashes). Applied by Transcribe / Regenerate cues.",
         );
         ui.horizontal(|ui| {
             note(
@@ -548,7 +548,7 @@ fn style_section(
     }
 }
 
-/// The first selected clip that has footage behind it — the mapping itself lives in
+/// The first selected clip that has footage behind it - the mapping itself lives in
 /// `transcribe::target_for` (ws:transcript-captions), shared with the clip menu and the MCP tools.
 fn target(project: &Project, selection: &[Id]) -> Option<transcribe::Target> {
     selection.iter().find_map(|&id| transcribe::target_for(project, id).ok())
@@ -589,7 +589,7 @@ fn ripple_segment(s: &mut Segment, ranges: &[(f64, f64)]) -> bool {
 /// Ripple every take but the last of each group out of the timeline, then drag the cues, our markers and
 /// the transcript along with the cut. Returns how many clips went.
 /// ws:transcript-captions: the cut itself (and the cue/marker/`Project.transcripts` ripple) is
-/// `Project::cut_word_ranges` now — one path shared with filler removal, the Transcript section and MCP.
+/// `Project::cut_word_ranges` now - one path shared with filler removal, the Transcript section and MCP.
 fn cut_dups(project: &mut Project, st: &mut TranscribeState) -> usize {
     let ranges = transcribe::dup_ranges(&st.segments, &st.groups);
     let (Some(clip), false) = (st.clip, ranges.is_empty()) else { return 0 };
@@ -614,7 +614,7 @@ fn cut_dups(project: &mut Project, st: &mut TranscribeState) -> usize {
 }
 
 /// Regroup the raw words (if the last run had word timings) with the current knobs and regenerate the
-/// cues, replacing the previously generated ones. No re-transcription — pure post-processing.
+/// cues, replacing the previously generated ones. No re-transcription - pure post-processing.
 fn generate(st: &mut TranscribeState, project: &mut Project) -> String {
     if !st.raw_words.is_empty() {
         st.segments = transcribe::group_words(&st.raw_words, &st.group);
@@ -646,7 +646,7 @@ fn transcribe_section(
     let downloading = st.download.as_ref().is_some_and(|p| !p.is_done());
     if !have {
         // ws:transcript-captions: the one-click entry point, above the model combo. The opt-in:
-        // nothing is fetched until this button is pressed, and the size is on it — never at startup.
+        // nothing is fetched until this button is pressed, and the size is on it - never at startup.
         match st.download.clone() {
             Some(p) if !p.is_done() => {
                 ui.add(egui::ProgressBar::new(p.fraction()).show_percentage().text(p.status()));
@@ -659,7 +659,7 @@ fn transcribe_section(
                 if let Some(e) = done.and_then(|p| p.error()) {
                     ui.colored_label(warn, e);
                 }
-                let short = name.split(" —").next().unwrap_or(name);
+                let short = name.split(" - ").next().unwrap_or(name);
                 if glyph_text_button(
                     ui,
                     Glyph::Subtitles,
@@ -716,7 +716,7 @@ fn transcribe_section(
         ui.checkbox(&mut st.words, "")
             .on_hover_text("Slower: whisper times every word, so the cues break exactly on speech");
         ui.end_row();
-        ui.label("Prompt").on_hover_text("Names, jargon and punctuation style hints for whisper — not commands");
+        ui.label("Prompt").on_hover_text("Names, jargon and punctuation style hints for whisper - not commands");
         ui.add(egui::TextEdit::singleline(&mut st.prompt).desired_width(220.0).hint_text("vocabulary hints…"));
         ui.end_row();
         if st.words || !st.raw_words.is_empty() {
@@ -766,7 +766,7 @@ fn transcribe_section(
         let can_regen = !running && (!st.segments.is_empty() || !st.raw_words.is_empty());
         if ui
             .add_enabled(can_regen, Button::new("Regenerate cues"))
-            .on_hover_text("Rebuild the cues from the last transcript with the knobs above — no re-transcription")
+            .on_hover_text("Rebuild the cues from the last transcript with the knobs above - no re-transcription")
             .clicked()
         {
             once(undone, undo, project);
@@ -783,7 +783,7 @@ fn transcribe_section(
         st.marks.clear();
         st.status.clear();
         st.raw_words.clear();
-        // a fresh run appends to whatever cues exist — only a Regenerate replaces its own
+        // a fresh run appends to whatever cues exist - only a Regenerate replaces its own
         st.generated.clear();
         st.clip = Some(t.clip);
         st.map = (t.offset, t.scale);
@@ -882,9 +882,9 @@ fn transcribe_section(
 
 /// Import an .srt/.vtt via rfd. An empty project replaces inline (nothing to lose, no prompt needed);
 /// otherwise the parsed cues are handed back via `resp.import_replace_cues` for the app to confirm a
-/// replace (`ConfirmAction::ReplaceSubtitles`) — this module has no `App` to queue a `confirm::ask`
+/// replace (`ConfirmAction::ReplaceSubtitles`) - this module has no `App` to queue a `confirm::ask`
 /// against directly. deviation from the plan text: "No/append" is now "Cancel discards the import"
-/// (see the PR body) — silently appending data the user just declined to confirm was the more
+/// (see the PR body) - silently appending data the user just declined to confirm was the more
 /// surprising default of the two.
 fn import_dialog(
     project: &mut Project,
@@ -971,7 +971,7 @@ mod tests {
         p.add_cue(2.0, 4.0, "b");
         let palette = Palette::new(true, egui::Color32::WHITE);
         let fonts = vec!["Segoe UI".to_string()];
-        // the transcribe section draws too: no model, no whisper.exe, no selection — only its hints
+        // the transcribe section draws too: no model, no whisper.exe, no selection - only its hints
         let mut state = SubtitlesState {
             show_style: true,
             transcribe: TranscribeState { open: true, ..Default::default() },
@@ -1034,7 +1034,7 @@ mod tests {
         assert_eq!(st.segments.len(), 2, "grouped on punctuation");
         let n = p.subtitles.len();
         assert!(p.subtitles.iter().any(|c| c.id == manual));
-        // tighter knobs: every word its own sentence — same word data, no re-transcription
+        // tighter knobs: every word its own sentence - same word data, no re-transcription
         st.group.max_words = 1;
         generate(&mut st, &mut p);
         assert_eq!(st.segments.len(), 3);

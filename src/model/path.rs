@@ -8,7 +8,7 @@ const EXPR_RATE: f64 = 30.0;
 
 /// Evaluate a Luau expression over the clip's duration into linear samples. `t` (clip-local seconds)
 /// and `value` (the property's own keyframed/constant value at that `t`) are in scope; the script must
-/// end with `return <number>`, same as a Luau function body — no implicit-expression wrapping.
+/// end with `return <number>`, same as a Luau function body - no implicit-expression wrapping.
 pub(crate) fn bake_expr(src: &str, base: &Animated, dur: f64) -> Result<Vec<Keyframe>, String> {
     let lua = mlua::Lua::new();
     lua.sandbox(true).map_err(|e| e.to_string())?;

@@ -25,7 +25,7 @@ fn asset(id: Id, dur: f64, streams: usize) -> Asset {
 }
 
 /// `paste_attributes` with only `text_style` set must NOT touch the destination clip's own
-/// wording — the bug the user reported (pasting text attributes used to overwrite the text too,
+/// wording - the bug the user reported (pasting text attributes used to overwrite the text too,
 /// since `AttrSet::text` copied the whole `TextStyle` including its content).
 #[test]
 fn paste_text_style_keeps_destination_wording_content_only_keeps_destination_style() {
@@ -51,7 +51,7 @@ fn paste_text_style_keeps_destination_wording_content_only_keeps_destination_sty
     assert_eq!((t.size.value, t.bold), (40.0, true), "content-only paste must not touch the style");
 }
 
-/// Style-only paste copies the source's spans, whose char ranges index the SOURCE wording — they
+/// Style-only paste copies the source's spans, whose char ranges index the SOURCE wording - they
 /// must be clamped to the destination's (shorter) text instead of dangling in the saved file.
 #[test]
 fn paste_text_style_clamps_spans_to_destination_wording() {
@@ -330,7 +330,7 @@ fn fit_clip_to_screen_resets_defaults_regardless_of_prior_values() {
 
 /// Round-trips "Stretch to Screen" through the real placement formula: native 1280x720 (16:9,
 /// same ratio the `asset()` helper always uses) placed on a 1080x1920 (9:16) canvas is
-/// width-constrained, so the hand-derived scale_y is `native_aspect / canvas_aspect` — and the
+/// width-constrained, so the hand-derived scale_y is `native_aspect / canvas_aspect` - and the
 /// resulting placement must fill the canvas exactly, both axes.
 #[test]
 fn fit_clip_to_screen_stretch_fills_canvas_exactly() {
@@ -398,7 +398,7 @@ fn live_links_follow_edits_and_detach_on_manual_change() {
     p.refresh_links();
     let c = p.clip(id).unwrap();
     assert!((c.x.at(4.0) - 100.0).abs() < 1e-6 && (c.y.at(4.0) - 50.0).abs() < 1e-6);
-    // editing the saved path moves the linked clip too — that's the point of a live link
+    // editing the saved path moves the linked clip too - that's the point of a live link
     p.paths[0].points[1].0 = 200.0;
     p.refresh_links();
     assert!((p.clip(id).unwrap().x.at(4.0) - 200.0).abs() < 1e-6);
@@ -685,7 +685,7 @@ fn background_mode_roundtrips_through_json() {
     }
 }
 
-/// Every current kind is a pixel/GLSL effect — none apply to an audio clip yet (see the doc comment
+/// Every current kind is a pixel/GLSL effect - none apply to an audio clip yet (see the doc comment
 /// on `applies_to_audio`). This pins that so the effects panel's audio filter stays correct rather
 /// than silently drifting if a kind's classification is ever meant to change.
 #[test]
@@ -694,7 +694,7 @@ fn no_effect_kind_applies_to_audio_yet() {
 }
 
 // ---- ws:color-engine ----
-// deviation (see PR body): the plan named `src/model/effect.rs (tests mod)` as the home for these —
+// deviation (see PR body): the plan named `src/model/effect.rs (tests mod)` as the home for these -
 // post split-god-files, model-level tests are centralized in this file (`#[cfg(test)] mod tests;` in
 // model/mod.rs, `use super::*;`), and effect.rs itself has no `#[cfg(test)] mod tests` of its own (see
 // `no_effect_kind_applies_to_audio_yet` just above, already living here for the same reason).
@@ -997,7 +997,7 @@ fn unlink_graph_round_trips_the_effect_stack() {
 }
 
 /// Undo restores the project by parsing a JSON snapshot, and silently does nothing when that parse
-/// fails — so every shape the tools can make must survive a round trip, signs and all.
+/// fails - so every shape the tools can make must survive a round trip, signs and all.
 #[test]
 fn every_shape_kind_round_trips_through_json() {
     let mut p = Project::new();
@@ -1319,7 +1319,7 @@ fn splice_in_is_linear_on_1000_clips() {
     let elapsed = start.elapsed();
 
     assert!(!new_ids.is_empty(), "the asset was placed");
-    assert!(elapsed.as_millis() < 5, "splice_in took {elapsed:?} on 1000 clips — was O(n^2) before this change");
+    assert!(elapsed.as_millis() < 5, "splice_in took {elapsed:?} on 1000 clips - was O(n^2) before this change");
     assert!(
         (p.clip(last).unwrap().start - (last_start_before + 2.0)).abs() < 1e-6,
         "every downstream clip shifted by exactly the inserted span"
@@ -1506,7 +1506,7 @@ fn magnetic_move_shoves_on_magnetic_track_else_refuses() {
 }
 
 /// Regression: `magnetic_move`'s `dtrack` used to pass `track_kind: None` to `move_clips`, which only
-/// changes track when `track_kind == Some(kind)` — a silent no-op that left the clip on its source
+/// changes track when `track_kind == Some(kind)` - a silent no-op that left the clip on its source
 /// track no matter what `dtrack` said.
 #[test]
 fn magnetic_move_dtrack_actually_changes_track() {
@@ -1569,7 +1569,7 @@ fn ripple_tracks_excludes_position_locked_secondaries() {
     p.tracks[0].clips.push(Clip::new(del, ClipKind::Video, "del", 0.0, 5.0));
     let v1_after = p.new_id();
     p.tracks[0].clips.push(Clip::new(v1_after, ClipKind::Video, "after", 5.0, 2.0));
-    // V2 is otherwise empty, so [0,5) is trivially free there too — the old unscoped close_gap would
+    // V2 is otherwise empty, so [0,5) is trivially free there too - the old unscoped close_gap would
     // still have shifted this clip left; the new one must not, since V2 isn't a ripple track.
     let v2_after = p.new_id();
     p.tracks[1].clips.push(Clip::new(v2_after, ClipKind::Video, "after2", 5.0, 2.0));
@@ -1684,7 +1684,7 @@ fn mark_from_clip_sets_in_out_from_bounds() {
 
 /// The Text inspector's Animation-row "Apply" button (`inspector_text::section`) calls
 /// `engine::presets::apply_motion` directly, the exact same fn/args shape as curves.rs:744's motion
-/// preset Apply button (`Some(scaled) => apply_motion(&preset, c, scaled)`) — not curves.rs:762's
+/// preset Apply button (`Some(scaled) => apply_motion(&preset, c, scaled)`) - not curves.rs:762's
 /// PENDING_MOTION thread-local, which is the unrelated "Save motion" button. Since both panels call the
 /// identical function, a Text clip must animate identically no matter which one triggered it.
 #[test]
@@ -1699,8 +1699,8 @@ fn apply_motion_from_text_inspector_matches_curves_panel() {
 }
 
 /// PR #59 review fix: `inspector_text.rs` offers an "Expression…" link on Size/Outline Width/Letter
-/// Spacing/Reveal/Wave, but until now `Clip::all_animated_mut()`/`all_animated()` — the only thing
-/// `Project::refresh_links()` walks to bake `AnimLink` into `Animated::baked` — never visited
+/// Spacing/Reveal/Wave, but until now `Clip::all_animated_mut()`/`all_animated()` - the only thing
+/// `Project::refresh_links()` walks to bake `AnimLink` into `Animated::baked` - never visited
 /// `clip.text`'s fields, so a text-field expression link was silently never applied. Mirrors
 /// `live_links_follow_edits_and_detach_on_manual_change`'s opacity-expression case, but for a Text
 /// clip's `style.size`.

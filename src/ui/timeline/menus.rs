@@ -22,7 +22,7 @@ pub(super) fn label_menu(ui: &mut egui::Ui, labels: &[Label], act: &mut Option<A
 }
 
 /// "Change Type" entries for the transition band's own right-click menu: absolute-overwrite every id
-/// in `sel` to the clicked kind (works for a single selected transition or a bulk one — a menu pick
+/// in `sel` to the clicked kind (works for a single selected transition or a bulk one - a menu pick
 /// is the new value, there's nothing to diff against).
 pub(super) fn transition_kind_menu(ui: &mut egui::Ui, sel: &[Id], act: &mut Option<Act>) {
     for k in TransitionKind::ALL {
@@ -42,7 +42,7 @@ pub(super) fn transition_ease_menu(ui: &mut egui::Ui, sel: &[Id], act: &mut Opti
 }
 
 /// Effect kinds present on 2+ of the given clips (deduped per clip, so a clip carrying two Blurs only
-/// counts once) — what the timeline's multi-clip right-click "Effects" quick-menu offers to toggle.
+/// counts once) - what the timeline's multi-clip right-click "Effects" quick-menu offers to toggle.
 pub(super) fn shared_effect_kinds(p: &Project, ids: &[Id]) -> Vec<EffectKind> {
     if ids.len() < 2 {
         return Vec::new();
@@ -137,7 +137,7 @@ pub(super) fn clip_menu(
     if ui.button("Freeze Frame at Playhead").clicked() {
         actions.push(Action::FreezeFrame);
     }
-    // ponytail: one entry — Action::AddTransition always targets the cut on the selected clip's left.
+    // ponytail: one entry - Action::AddTransition always targets the cut on the selected clip's left.
     // "at End" pushed the same action, so it either duplicated this or toasted "no left neighbour".
     // The Transitions pane covers the right-hand cut (transitions_ui::right_neighbor).
     if ui.button("Add Transition at Start").clicked() {
@@ -184,7 +184,7 @@ pub(super) fn clip_menu(
             }
         });
     }
-    // video/image/sequence only — resets the transform of every selected clip with a native size
+    // video/image/sequence only - resets the transform of every selected clip with a native size
     // (Project::fit_clip_to_screen skips the rest, so this is safe on a mixed selection too).
     if has_native_size {
         ui.menu_button("Transform", |ui| {
@@ -197,7 +197,7 @@ pub(super) fn clip_menu(
         });
     }
     // second way into the inline mini keyframe graph, per the original ask ("if I zoom in on a clip OR
-    // right click it") — the zoomed-in corner icon stays the first
+    // right click it") - the zoomed-in corner icon stays the first
     if let Some(open) = graph_open {
         if ui.button(if open { "Hide Inline Keyframe Graph" } else { "Show Inline Keyframe Graph" }).clicked() {
             *toggle_graph = true;
@@ -229,7 +229,7 @@ pub(super) fn clip_menu(
     // ---- ws:transcript-captions ----
     // Speech → text for this clip (video/audio only): whisper as a background job, the words into
     // Project.transcripts. Every entry is an unbound Action handled by ui::app::transcript_ctl::act
-    // on the selection — a right-click on an unselected clip selects it first (see the caller).
+    // on the selection - a right-click on an unselected clip selects it first (see the caller).
     if audio || has_native_size {
         ui.menu_button("Transcript", |ui| {
             if ui

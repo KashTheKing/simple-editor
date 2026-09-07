@@ -12,7 +12,7 @@ impl App {
     pub(super) fn menu_item(&mut self, ui: &mut egui::Ui, a: Action, enabled: bool, out: &mut Vec<Action>) {
         let text = self.hotkeys.text(a);
         let glyph = self.glyph_for(a);
-        // ponytail: the glyph is painted over a left gutter made of spaces in the label — that keeps
+        // ponytail: the glyph is painted over a left gutter made of spaces in the label - that keeps
         // egui's own menu-button sizing/shortcut layout instead of reimplementing the widget.
         // Gutter must clear the 24px-wide icon box drawn below (starts at +4px); at the 13px menu
         // font a space is ~3px wide, so 5 spaces (~15px) undershot it and the label crowded the icon.

@@ -3,7 +3,7 @@
 //! SplitAtBeats, AutoDuck, Normalize, MatchLoudness): calls the same `engine::analysis` fns the Auto-cut
 //! pane's buttons (autocut_ui.rs) and the MCP tools (tools_audio.rs) call, so no entry point ever
 //! re-derives the onset/duck/normalize math. Beat markers fire `marker_added` via
-//! `App::fire_markers_added` — the same shared fn every other marker-creating call site in this
+//! `App::fire_markers_added` - the same shared fn every other marker-creating call site in this
 //! workstream uses. AutoDuck reads its music/dialogue picks from the Auto-cut pane's Duck section state
 //! (per the plan: "Uses the Duck section state in the Auto-cut pane"); Normalize/MatchLoudness act on
 //! the current clip selection directly.

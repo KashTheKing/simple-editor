@@ -8,7 +8,7 @@ pub(super) enum CueOp {
     Move { grab: f64 },
 }
 
-/// Active subtitle-cue gesture (trim or move), both snapped and undo-on-release-if-changed — fixes the
+/// Active subtitle-cue gesture (trim or move), both snapped and undo-on-release-if-changed - fixes the
 /// previous edge-trim behaviour of pushing undo at drag *start* (a no-op drag used to leave a dead undo
 /// entry).
 pub(super) struct CueDrag {
@@ -19,7 +19,7 @@ pub(super) struct CueDrag {
 }
 
 /// Draws and handles interaction for the subtitle-cue lane. Mutates `c.project`/`state`/`out`
-/// directly rather than returning an `Act` — none of its gestures go through the deferred-apply path.
+/// directly rather than returning an `Act` - none of its gestures go through the deferred-apply path.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn draw(
     ui: &mut egui::Ui,
@@ -141,7 +141,7 @@ pub(super) fn draw(
                 }
             }
             if r.drag_started_by(egui::PointerButton::Primary) && state.cue_drag.is_none() {
-                // the press *origin*, not the current (already-moved) pointer position — by the
+                // the press *origin*, not the current (already-moved) pointer position - by the
                 // frame a click_and_drag() widget first reports drag_started, the pointer has
                 // already travelled past the click threshold, so interact_pointer_pos() here would
                 // capture the wrong (post-move) grab offset.
@@ -202,7 +202,7 @@ pub(super) fn draw(
             });
         }
         // active cue gesture (trim or move): snapped every frame, undo pushed on release only if
-        // something actually changed — fixes the previous undo-at-drag-start bug (a released-in-place
+        // something actually changed - fixes the previous undo-at-drag-start bug (a released-in-place
         // drag used to leave a dead undo entry).
         if let Some(mut drag) = state.cue_drag.take() {
             if primary_down {

@@ -85,8 +85,8 @@ impl LogicOp {
 /// What a node does. `Input` is the clip's own decoded layer; `Output` is what the compositor draws.
 ///
 /// Two kinds of wire run through a graph: pictures (one texture per node, evaluated on the GPU) and
-/// **values** (one number per node, `NodeGraph::eval_values`). Value ports on a picture node — an
-/// effect's parameter ports, a blend's amount — are what let the logic nodes drive the image.
+/// **values** (one number per node, `NodeGraph::eval_values`). Value ports on a picture node - an
+/// effect's parameter ports, a blend's amount - are what let the logic nodes drive the image.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum NodeKind {
     /// The clip's decoded layer (or, in an adjustment clip, everything below it).
@@ -95,7 +95,7 @@ pub enum NodeKind {
     Color([u8; 4]),
     /// Another clip's layer at the same time (compositing across tracks).
     Clip(Id),
-    /// A project asset sampled as a texture — footage that need not be on the timeline at all.
+    /// A project asset sampled as a texture - footage that need not be on the timeline at all.
     Asset(Id),
     Effect(Effect),
     /// Combines two inputs (`a` under `b`) with a blend mode and opacity.
@@ -103,7 +103,7 @@ pub enum NodeKind {
         mode: BlendMode,
         opacity: Animated,
     },
-    /// Same two inputs, mixed in by `factor` (0..1) — "how much of `b`", not its opacity.
+    /// Same two inputs, mixed in by `factor` (0..1) - "how much of `b`", not its opacity.
     Combine {
         mode: BlendMode,
         factor: Animated,
@@ -119,12 +119,12 @@ pub enum NodeKind {
     Mask(Mask),
     /// A string rasterised into the graph. `{frame}`, `{time}` and `{n}` expand at evaluation time,
     /// which is all a frame counter or a running clock needs (see `expand_text`). Called `Text` in
-    /// projects written before it was renamed — the alias keeps those loading.
+    /// projects written before it was renamed - the alias keeps those loading.
     #[serde(alias = "Text")]
     String(TextStyle),
     /// A keyframeable constant: the plain number input, and a grey card at its value as a picture.
     Number(Animated),
-    /// A constant flag — 1.0 or 0.0 downstream.
+    /// A constant flag - 1.0 or 0.0 downstream.
     Bool(bool),
     /// Deterministic noise in `min..max`, hashed from (`seed`, frame): the same project always
     /// renders the same numbers, and every frame gets a different one. A constant is a `Number`.
@@ -139,7 +139,7 @@ pub enum NodeKind {
     Compare(CmpOp),
     /// Boolean logic on two value inputs (`Not` reads only `a`); anything >= 0.5 counts as true.
     Logic(LogicOp),
-    /// `cond ? a : b` — the switch. Works on values *and* on pictures.
+    /// `cond ? a : b` - the switch. Works on values *and* on pictures.
     Select,
     Output,
 }
@@ -228,7 +228,7 @@ impl NodeKind {
     }
 }
 
-/// splitmix64 folded to 0..1 — the `Random` node's whole implementation.
+/// splitmix64 folded to 0..1 - the `Random` node's whole implementation.
 fn hash01(x: u64) -> f64 {
     let mut z = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -238,7 +238,7 @@ fn hash01(x: u64) -> f64 {
 }
 
 /// Expand a text node's format at time `t` (timeline seconds, `lt` clip-local): `{frame}` is the
-/// timeline frame number, `{time}` the timeline clock, `{n}` the frames since the clip started — so a
+/// timeline frame number, `{time}` the timeline clock, `{n}` the frames since the clip started - so a
 /// counter is `{n}` and a clock is `{time}`. Anything else is left alone.
 pub fn expand_text(fmt: &str, t: f64, lt: f64, fps: f64) -> String {
     let fps = if fps.is_finite() && fps > 0.0 { fps } else { 30.0 };
@@ -324,7 +324,7 @@ impl NodeGraph {
         g
     }
     /// The inverse of `from_effects`: the port-0 chain from Output back to Input as a linear stack.
-    /// Err (with a reason for the toast) when the graph is not that shape — anything the output does
+    /// Err (with a reason for the toast) when the graph is not that shape - anything the output does
     /// not read is not part of the picture and is dropped without complaint.
     pub fn to_effects(&self) -> Result<Vec<Effect>, String> {
         let out = self.output().ok_or("it has no Output node")?;
@@ -443,7 +443,7 @@ impl NodeGraph {
     }
     /// The scalar half of the graph at clip-local time `lt`: one number per node, in evaluation
     /// order, so a `Math`/`Compare`/`Select` chain resolves in a single pass. Picture-only nodes
-    /// evaluate to 0. GL-free on purpose — the renderer calls it once per frame and it is what the
+    /// evaluate to 0. GL-free on purpose - the renderer calls it once per frame and it is what the
     /// tests exercise.
     pub fn eval_values(&self, lt: f64, fps: f64) -> std::collections::HashMap<Id, f64> {
         let fps = if fps.is_finite() && fps > 0.0 { fps } else { 30.0 };

@@ -1,14 +1,14 @@
 //! ---- ws:inspector-gallery ----
-//! Inspector Color section: `Primaries` (lift/gamma/gain/temp/tint — labelled "wheels" in the plan;
+//! Inspector Color section: `Primaries` (lift/gamma/gain/temp/tint - labelled "wheels" in the plan;
 //! painted circle+drag wheels are a `// ponytail:` deferral, see below) + the existing
 //! `Curves`/`Levels`/`HueShift`/`Vignette` effect kinds, in a fixed order, each added to `clip.effects`
-//! lazily on first touch (never eagerly — a clip with no grading keeps an empty stack). Auto Colour /
+//! lazily on first touch (never eagerly - a clip with no grading keeps an empty stack). Auto Colour /
 //! Colour Match / add-LUT all reuse color-engine's own logic rather than redefining it: `clip.add_lut`'s
 //! four-line body is inlined here (it needs no GPU stats, and this call site already holds `&mut Clip`
-//! plus the same per-gesture `undo` this whole inspector uses — routing a plain local mutation through
+//! plus the same per-gesture `undo` this whole inspector uses - routing a plain local mutation through
 //! `App::run_tool_undoable` would need a much larger plumbing detour for zero behavioural difference),
 //! while `color.auto`/`color.match` genuinely need a live GPU-rendered frame (`FrameStats`), which only
-//! `App` can produce — those two are armed via a thread-local hand-off (`inspector::take_pending_color_*`,
+//! `App` can produce - those two are armed via a thread-local hand-off (`inspector::take_pending_color_*`,
 //! same idiom as `PENDING_FONT`) that `App::poll_panels` drains into `App::run_tool_undoable("color.auto"
 //! | "color.match", …)`.
 
@@ -18,19 +18,19 @@ use crate::ui::tools::{glyph_label, glyph_text_button, Glyph};
 use crate::ui::Gesture;
 use eframe::egui::{self, DragValue, Grid};
 
-/// Fixed display order — touching one never creates the others.
+/// Fixed display order - touching one never creates the others.
 const ORDER: [EffectKind; 5] =
     [EffectKind::Primaries, EffectKind::Curves, EffectKind::Levels, EffectKind::HueShift, EffectKind::Vignette];
 
 #[derive(Default)]
 pub struct ColorResponse {
-    /// The user clicked "Eyedropper" for this clip — arms a pending sample request. ponytail: nothing
+    /// The user clicked "Eyedropper" for this clip - arms a pending sample request. ponytail: nothing
     /// consumes it into an actual pixel read yet (that needs a canvas click handler in `preview.rs`,
     /// owned by canvas-handles-monitor, not this workstream); `App::poll_panels` still drains it and
     /// toasts an honest "not wired yet" instead of silently swallowing the click.
     pub eyedrop: bool,
     pub auto: bool,
-    /// The user picked a clip from the "Match to" combo and clicked "Match" — its id.
+    /// The user picked a clip from the "Match to" combo and clicked "Match" - its id.
     pub match_ref: Option<Id>,
 }
 
@@ -91,7 +91,7 @@ pub fn show(
             }
         }
         let r = glyph_text_button(ui, Glyph::Zoom, "Eyedropper")
-            .on_hover_text("Pick a colour from the preview (arms the sample — click a point on the canvas)");
+            .on_hover_text("Pick a colour from the preview (arms the sample - click a point on the canvas)");
         if r.clicked() {
             out.eyedrop = true;
         }

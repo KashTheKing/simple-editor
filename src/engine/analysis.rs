@@ -1,10 +1,10 @@
 //! Peaks analysis toolkit: onsets/BPM, peak/RMS levels, cross-correlation offset, normalize/match
-//! loudness, auto-ducking, and ffmpeg scene-cut detection — all pure functions over
+//! loudness, auto-ducking, and ffmpeg scene-cut detection - all pure functions over
 //! media::waveform::Peaks (100 buckets/s), no decoding, no App/UI types. Mirrors autocut.rs's style.
 //!
 //! `onsets()`/`scene_cuts()` return times in SOURCE seconds (same space as autocut::loud_segments,
 //! see autocut.rs:29); every call site that turns one of those into a Marker or a split point must
-//! first convert via `to_clip_local`/`to_timeline_t` — the same (t - src_in)/speed[+start] math
+//! first convert via `to_clip_local`/`to_timeline_t` - the same (t - src_in)/speed[+start] math
 //! autocut::to_timeline already performs (autocut.rs:78-91), centralized here so it's fixed once.
 
 use crate::engine::autocut::{self, AutoCutParams};
@@ -316,7 +316,7 @@ fn seed_key(a: &mut Animated, t: f64, v: f64, count: &mut usize) {
 }
 
 /// ffmpeg `select='gt(scene,thr)',showinfo` shot-change detection over `path`. Synchronous (blocks
-/// the calling thread) — documented ceiling, see the audio-analysis plan's ponytail notes.
+/// the calling thread) - documented ceiling, see the audio-analysis plan's ponytail notes.
 /// Returned times are SOURCE seconds.
 pub fn scene_cuts(path: &std::path::Path, thr: f32) -> Result<Vec<f64>, String> {
     let exe = crate::media::ffpipe::ffmpeg_exe().ok_or("ffmpeg not found")?;
@@ -333,10 +333,10 @@ pub fn scene_cuts(path: &std::path::Path, thr: f32) -> Result<Vec<f64>, String> 
 /// Detect onsets on every clip in `targets` and add one clip marker per onset (converted through
 /// `to_clip_local` so it lands correctly on a trimmed/retimed clip). Shared by the Beats section
 /// button, `Action::DetectBeats` and `audio.beats`'s `as_markers` path so the three call sites never
-/// derive the onset-to-marker math differently — each fires `marker_added` itself over the returned
+/// derive the onset-to-marker math differently - each fires `marker_added` itself over the returned
 /// ids (this fn stays App-free: `App`'s fields aren't reachable from `ui::autocut_ui`, see the
 /// audio-analysis PR's deviation note). Returns (marker ids written, combined BPM across every
-/// target's onsets — `None` if fewer than 4 total).
+/// target's onsets - `None` if fewer than 4 total).
 pub fn detect_beat_markers(
     project: &mut Project,
     targets: &[Id],
@@ -382,7 +382,7 @@ pub fn split_beats(
         }
         let Some(peaks) = peaks_of(project, c.asset) else { continue };
         let found = onsets(&peaks, c.src_in, c.src_in + c.duration * c.speed, refractory_s, sensitivity);
-        // `group` grows with each split's new right-half piece (mirrors Project::auto_cut) — a fixed
+        // `group` grows with each split's new right-half piece (mirrors Project::auto_cut) - a fixed
         // restrict set would only ever cut the ORIGINAL clip, missing every onset past the first cut.
         let mut group = project.expand_links(&[clip_id]);
         for t_src in found {
@@ -734,7 +734,7 @@ mod tests {
 
     /// `to_clip_local`/`to_timeline_t` assume a forward src mapping (`src_in + l`); a reverse or frozen
     /// clip's real mapping is different (see `Clip::src_time`), so `detect_beat_markers` must skip such
-    /// clips entirely rather than mirror-flip the onsets onto the wrong clip-local times — same guard
+    /// clips entirely rather than mirror-flip the onsets onto the wrong clip-local times - same guard
     /// `detect_silence` (tools_audio.rs) already applies before calling into this module.
     #[test]
     fn detect_beat_markers_skips_reverse_and_frozen_clips() {

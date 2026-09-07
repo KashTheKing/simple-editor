@@ -25,7 +25,7 @@ pub enum CanvasGuideKind {
 }
 
 /// One snap line the drag landed on: vertical (`at` = x) or horizontal (`at` = y), in project px
-/// relative to the canvas centre — the same frame as `Clip.x` / `Clip.y`.
+/// relative to the canvas centre - the same frame as `Clip.x` / `Clip.y`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CanvasGuide {
     pub kind: CanvasGuideKind,
@@ -39,7 +39,7 @@ pub struct CanvasGuide {
 /// centre / bottom) lines all count; per axis the closest target within `thr` px wins and returns its
 /// guide, anything farther leaves that axis untouched. `enabled` false (Settings.canvas_snap off) =
 /// the raw candidate and no guides.
-/// ponytail: only asset-backed clips (video / image) are snap targets — text and shape clips have no
+/// ponytail: only asset-backed clips (video / image) are snap targets - text and shape clips have no
 /// native size for `placement`; add `ShapeStyle.w/h` bounds here if snapping to shapes is wanted.
 pub fn canvas_snap(
     enabled: bool,
@@ -183,11 +183,11 @@ pub fn scale_to_tier(w: u32, h: u32, tier: u32) -> (u32, u32) {
 
 #[derive(Clone, Copy, PartialEq)]
 enum ZoneKind {
-    /// Platform UI covers this — translucent red fill.
+    /// Platform UI covers this - translucent red fill.
     Danger,
-    /// Keep critical content inside — solid green outline.
+    /// Keep critical content inside - solid green outline.
     Safe,
-    /// Secondary crop hint (e.g. IG 4:5 grid thumbnail) — dashed outline.
+    /// Secondary crop hint (e.g. IG 4:5 grid thumbnail) - dashed outline.
     Crop,
 }
 

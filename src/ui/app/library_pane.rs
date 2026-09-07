@@ -19,7 +19,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
     }
     // ---- ws:source-monitor ----
     // single-clicked in the Library: load it into the Source monitor (Pane::Source), which owns the
-    // source player now — the library's own preview box keeps painting the same live frame
+    // source player now - the library's own preview box keeps painting the same live frame
     if let Some(p) = resp.preview.clone() {
         app.open_in_source(p, None);
     }
@@ -29,7 +29,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
         app.after_edit();
     }
     // both used to sit inside the open_paths branch, so the Library's "New ▸ Adjustment layer"
-    // and "Open…" only ever fired on a frame that also opened a file — i.e. never
+    // and "Open…" only ever fired on a frame that also opened a file - i.e. never
     if resp.new_adjustment {
         app.pending_actions.push(Action::AddAdjustment);
     }
@@ -52,7 +52,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
     }
     // ---- ws:forgiveness ----
     // "Clear recent" now goes through confirm::ask(ConfirmAction::ClearRecent) -> App::resolve_confirm
-    // directly (library.rs), not this response field — the old clear_recent bool/recent_clear() fn
+    // directly (library.rs), not this response field - the old clear_recent bool/recent_clear() fn
     // were deleted as dead code once that landed.
     if let Some(n) = resp.removed_unused {
         let s = if n == 1 { "" } else { "s" };
@@ -142,7 +142,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
         media_sync::ask_consolidate(app);
     }
     if !resp.new_subclip.is_empty() {
-        // one undo snapshot BEFORE the first row is added, then add_subclip per id — see new_subclips
+        // one undo snapshot BEFORE the first row is added, then add_subclip per id - see new_subclips
         app.new_subclips(&resp.new_subclip);
     }
 }
@@ -152,7 +152,7 @@ mod tests {
     use super::*;
 
     /// New Subclip must push its undo snapshot BEFORE mutating, so one Ctrl+Z restores the exact
-    /// pre-subclip project. `App::new_subclips` needs a live `App` (none is buildable headlessly —
+    /// pre-subclip project. `App::new_subclips` needs a live `App` (none is buildable headlessly -
     /// see tools_registry_tests.rs), so this pins both halves separately: the project-level round
     /// trip through the same `Project::add_subclip` + JSON snapshot the method uses, and the method's
     /// own source order (push before the first `add_subclip`, never after).
