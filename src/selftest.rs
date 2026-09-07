@@ -454,6 +454,20 @@ pub fn run(args: &[String]) -> i32 {
             });
         }
         check!(!ctx.has_requested_repaint(), "idle frame requested a repaint");
+        // ---- ws:command-palette ----: the idle-CPU-0% gate must hold with the Ctrl+K palette open too
+        // (its text-cursor blink is explicitly disabled while open for exactly this reason — see
+        // ui::palette::show's doc comment), not just the default empty frame checked above. More warm-up
+        // frames than the plain-frame check above: `egui::Window`'s own open-fade animation keeps
+        // requesting repaints for its first several frames regardless of app code — 30 settles it, same
+        // as `ui::palette::tests::assert_no_idle_repaint_palette_closed_and_open`.
+        let ctx2 = eframe::egui::Context::default();
+        let mut state = crate::ui::palette::PaletteState { open: true, ..Default::default() };
+        for _ in 0..30 {
+            let _ = ctx2.run(eframe::egui::RawInput::default(), |ctx| {
+                let _ = crate::ui::palette::show(ctx, &mut state, &[]);
+            });
+        }
+        check!(!ctx2.has_requested_repaint(), "idle frame with the palette open requested a repaint");
         Ok(())
     });
 
