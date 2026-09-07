@@ -768,9 +768,15 @@ fn clip_section(
         if !clip.effects.is_empty() {
             ui.separator();
             let mut rm: Option<usize> = None;
+            // Two independently-remembered fold keys, not one shared "effects" — `default_open` only
+            // takes effect the FIRST time a `CollapsingState`/`folds` id is ever seen (see `section`'s
+            // doc comment). A single "effects" id shared between primary (Video/Image/Audio) and
+            // secondary (Text/Shape/Sequence) clips let a secondary clip's closed-by-default fold get
+            // "stuck" and then silently overwrite the primary default the next time a primary clip's
+            // Effects section was shown, permanently defaulting it closed for every clip kind.
             section(
                 ui,
-                "effects",
+                if primary_effects { "effects_primary" } else { "effects_secondary" },
                 "Effects",
                 primary_effects,
                 &mut settings.inspector_folds,
@@ -2184,6 +2190,145 @@ mod tests {
         p.clip_mut(cid).unwrap().label = idx;
         p.remove_label(idx);
         assert_eq!(p.clip(cid).unwrap().label, 0, "the clip falls back to no label");
+    }
+
+    /// The clip-section "Retime… Ctrl+R" button pushes the same `Action::Retime` the hotkey/menu use.
+    #[test]
+    fn retime_button_pushes_action() {
+        let mut p = Project::new();
+        let vi = p.tracks.iter().position(|t| t.kind == crate::model::TrackKind::Video).unwrap();
+        let c = Clip::new(500, ClipKind::Video, "v", 0.0, 3.0);
+        let id = c.id;
+        p.tracks[vi].clips.push(c);
+        let palette = Palette::new(true, egui::Color32::WHITE);
+        let fonts: Vec<String> = Vec::new();
+        let mut settings = Settings::default();
+        let ctx = egui::Context::default();
+        let mut frame = |events: Vec<egui::Event>, p: &mut Project, settings: &mut Settings| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 900.0))),
+                events,
+                ..Default::default()
+            };
+            let mut undo = |_: &Project| {};
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    show(ui, p, &[id], &[], 1.0, &fonts, &palette, settings, &mut undo);
+                });
+            });
+        };
+        let _ = take_pending_action(); // clear any leftover from an earlier test
+        frame(vec![], &mut p, &mut settings); // layout, records the retime button rect
+        let r = ctx
+            .data(|d| d.get_temp::<egui::Rect>(egui::Id::new(("insp", "retime".to_string()))))
+            .expect("no widget rect for retime");
+        let pos = r.center();
+        frame(vec![egui::Event::PointerMoved(pos)], &mut p, &mut settings);
+        frame(
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            &mut p,
+            &mut settings,
+        );
+        frame(
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            &mut p,
+            &mut settings,
+        );
+        assert_eq!(take_pending_action(), Some(Action::Retime));
+    }
+
+    /// The Effects section's `default_open` varies by ClipKind (Video/Image/Audio clips start open,
+    /// everything else starts closed — see `clip_section`'s `primary_effects`). Before the fix, both
+    /// kinds shared one `"effects"` fold id/key: viewing a non-primary clip's (closed) Effects section
+    /// FIRST permanently corrupted the primary default — the next primary clip's Effects section would
+    /// read back the stale closed state and re-persist it, closing Effects for every clip kind forever.
+    #[test]
+    fn sections_default_open_primary_per_kind() {
+        let mut p = Project::new();
+        let mut text = Clip::new(500, ClipKind::Text, "t", 0.0, 3.0);
+        text.effects.push(crate::model::Effect::new(crate::model::EffectKind::Blur));
+        let text_id = text.id;
+        p.tracks[0].clips.push(text);
+
+        let vi = p.tracks.iter().position(|t| t.kind == crate::model::TrackKind::Video).unwrap();
+        let mut vid = Clip::new(501, ClipKind::Video, "v", 4.0, 3.0);
+        vid.effects.push(crate::model::Effect::new(crate::model::EffectKind::Blur));
+        let vid_id = vid.id;
+        p.tracks[vi].clips.push(vid);
+
+        let palette = Palette::new(true, egui::Color32::WHITE);
+        let ctx = egui::Context::default();
+        let mut settings = Settings::default();
+        let mut undo = |_: &Project| {};
+
+        // View the Text clip's Effects section first — not primary for Text, so it defaults CLOSED.
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                show(ui, &mut p, &[text_id], &[], 1.0, &[], &palette, &mut settings, &mut undo);
+            });
+        });
+
+        // Then view the Video clip's Effects section — primary for Video, must default OPEN, not
+        // inherit the Text clip's closed state (the bug: both used to share one "effects" fold id).
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                show(ui, &mut p, &[vid_id], &[], 1.0, &[], &palette, &mut settings, &mut undo);
+            });
+        });
+
+        let primary_id = egui::Id::new(("insp_section", "effects_primary"));
+        let state = egui::collapsing_header::CollapsingState::load(&ctx, primary_id)
+            .expect("the primary Effects section's CollapsingState exists after being shown");
+        assert!(state.is_open(), "Video's Effects section must default open, not the Text clip's closed default");
+    }
+
+    /// A fold toggle (the real write path in `section()`: the persisted `CollapsingState` disagreeing
+    /// with `folds`' remembered default) survives a `Settings` JSON round-trip — the same serialize/
+    /// deserialize `Settings::save`/`load` do (see `settings.rs`'s own round-trip tests for the pattern).
+    #[test]
+    fn fold_state_persists_in_settings() {
+        let ctx = egui::Context::default();
+        let mut folds: BTreeMap<String, bool> = BTreeMap::new();
+        // First draw: "color" has never been seen before, defaults closed — no entry written yet.
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                section(ui, "color", "Color", false, &mut folds, |_| {}, |_| {});
+            });
+        });
+        assert!(!folds.contains_key("color"), "an untouched fold writes no entry");
+
+        // Flip it open — exactly what clicking the header does — then redraw so `section()` notices
+        // `now_open != open_default` and records it.
+        let cid = egui::Id::new(("insp_section", "color"));
+        let mut state =
+            egui::collapsing_header::CollapsingState::load(&ctx, cid).expect("state exists after the first draw");
+        state.set_open(true);
+        state.store(&ctx);
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                section(ui, "color", "Color", false, &mut folds, |_| {}, |_| {});
+            });
+        });
+        assert_eq!(folds.get("color"), Some(&true), "the toggle must be written into the folds map");
+
+        let mut settings = Settings::default();
+        settings.inspector_folds = folds;
+        let restored: Settings = serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(
+            restored.inspector_folds.get("color"),
+            Some(&true),
+            "the fold state must survive a Settings JSON round-trip"
+        );
     }
 
     /// Headless: sections for effects / retime / audio fades lay out without panicking.

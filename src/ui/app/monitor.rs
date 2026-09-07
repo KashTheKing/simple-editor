@@ -78,11 +78,15 @@ pub(crate) struct AltRenderState {
     /// Upload target, reused across requests (same sub-image-when-same-size convention as
     /// `PreviewState.texture`).
     texture: Option<egui::TextureHandle>,
+    /// Set by `request(Some(...))`, consumed once per `tick` by `clear_if_stale` — see that fn's doc
+    /// comment for why this exists (a hover-owning pane that stops being drawn otherwise leaves a
+    /// `request` nothing ever clears).
+    asserted: bool,
 }
 
 impl Default for AltRenderState {
     fn default() -> Self {
-        Self { request: None, inflight: None, shown: None, ready: None, player: None, texture: None }
+        Self { request: None, inflight: None, shown: None, ready: None, player: None, texture: None, asserted: false }
     }
 }
 
@@ -95,7 +99,27 @@ impl AltRenderState {
     /// frame). Newest wins: a second call before the first resolves simply retargets the same slot —
     /// `tick` never queues more than one decode.
     pub(crate) fn request(&mut self, req: Option<AltRequest>) {
+        if req.is_some() {
+            self.asserted = true;
+        }
         self.request = req;
+    }
+    /// Drop `request` if nothing re-asserted it (via `request(Some(...))`) since the last call to this.
+    /// `tick` calls this once, at the top of every frame — BEFORE panes are drawn (see FRAME_HOOKS'
+    /// ordering in `app/mod.rs`) — so the assertion it's checking for is the one made during the
+    /// PREVIOUS frame's pane-draw phase, and it resets the flag so THIS frame's pane-draw phase can
+    /// assert fresh for the next tick to check.
+    ///
+    /// A hover-owning pane's own match arm (`Pane::Transitions` in panes.rs, the Gallery pane's drawer in
+    /// gallery_ctl.rs) is the only thing that calls `request(Some(...))`, and only while it is drawn —
+    /// while the user keeps hovering the same card in a pane that's still on screen, that arm re-asserts
+    /// every single frame, so this never fires. But if the user switches away from that pane entirely
+    /// (its match arm no longer runs at all), nothing calls `request` any more — without this, the last
+    /// request it made would otherwise go on being trusted, and painted over the live preview, forever.
+    pub(crate) fn clear_if_stale(&mut self) {
+        if self.request.is_some() && !std::mem::take(&mut self.asserted) {
+            self.request = None;
+        }
     }
 }
 
@@ -111,6 +135,7 @@ pub(crate) fn tick(app: &mut App, ctx: &egui::Context) {
     if app.export.is_some() {
         return; // never render while exporting — export owns the GPU/decode capacity
     }
+    app.alt_render.clear_if_stale();
     let Some(want) = app.alt_render.request.clone() else {
         app.alt_render.inflight = None;
         app.alt_render.shown = None;
@@ -481,5 +506,40 @@ mod tests {
     #[test]
     fn fit_view_is_no_zoom_no_pan() {
         assert_eq!(fit_view(), (1.0, egui::Vec2::ZERO));
+    }
+
+    /// A request that nothing re-asserts across a frame boundary must go stale and clear — the scenario
+    /// a hover-owning pane produces when the user switches away from it while a hover was still active:
+    /// its match arm in panes.rs/gallery_ctl.rs simply doesn't run any more, so nothing ever calls
+    /// `request(Some(...))` again. Distinct from `wants_new_request_only_starts_once_per_distinct_request`
+    /// above, which only covers one request being superseded by a DIFFERENT one — never "nobody called
+    /// request at all this frame".
+    #[test]
+    fn clear_if_stale_drops_a_request_nothing_reasserted() {
+        let mut state = AltRenderState::default();
+        // Frame N: a pane hovers a transition and asserts the request (mirrors panes.rs's
+        // `Pane::Transitions` arm calling `app.alt_render.request(Some(...))` during its pane-draw phase).
+        state.request(Some(AltRequest::Transition(TransitionKind::CrossFade)));
+        // Frame N+1's tick runs BEFORE panes are drawn — it sees frame N's assertion, so the request
+        // survives this check.
+        state.clear_if_stale();
+        assert!(state.request.is_some(), "an assertion from the previous frame must survive the next tick");
+        // The user switches away from the pane: frame N+1's pane-draw phase never calls `request(...)`
+        // for it at all (its match arm doesn't run any more) — nothing reasserts.
+        // Frame N+2's tick must now treat the stale leftover request exactly like `request(None)`.
+        state.clear_if_stale();
+        assert!(state.request.is_none(), "a request nobody reasserted since the last tick must be cleared");
+    }
+
+    /// The normal case — the pane stays on screen and the mouse stays on the same card, so its match arm
+    /// calls `request(Some(...))` again every single frame — must never go stale.
+    #[test]
+    fn clear_if_stale_keeps_a_request_thats_reasserted_every_frame() {
+        let mut state = AltRenderState::default();
+        for _ in 0..5 {
+            state.request(Some(AltRequest::Transition(TransitionKind::CrossFade)));
+            state.clear_if_stale();
+            assert!(state.request.is_some(), "reasserted every frame — must never go stale");
+        }
     }
 }

@@ -1,7 +1,9 @@
 //! ---- ws:inspector-gallery ----
 //! 7 MCP tools for capabilities this workstream actually adds: gallery.list/apply/hover (the Gallery
-//! pane's tool surface — the SOLE surface for Looks; color-engine's `looks.list`/`looks.apply` cover the
-//! same ground for a bare clip_id/name call but this file never re-registers those names),
+//! pane's tool surface — the canonical resolution for Looks, via `find_look`/`apply_look_by_name` below;
+//! color-engine's `looks.list`/`looks.apply` cover the same ground for a bare clip_id/name call, and are
+//! now thin wrappers around these same two fns — see tools_color.rs — so a Look name resolves/applies
+//! identically no matter which tool name is called, rather than this file re-registering those names),
 //! clip.reorder_effect/clip.effects_bulk (Project::reorder_effect/bulk_set_effect_params),
 //! subtitles.style_preset, inspector.folds. Does NOT register clip.add_lut/color.auto/color.match
 //! (color-engine's) — `tool_names_are_sole_registration` (tools_registry_tests.rs, color-engine's own
@@ -17,26 +19,45 @@ fn done(v: Value) -> Result<ToolOutcome, String> {
     Ok(ToolOutcome::Done(v))
 }
 
+/// Resolve a Look by name across BOTH `builtin_looks()` and non-graph `Settings.effect_presets` — the
+/// single source of truth `gallery.apply(tab=Looks)` and color-engine's `looks.apply` (tools_color.rs, a
+/// thin wrapper around this + `apply_look_by_name` below) both go through, so the same Look name
+/// succeeds or fails identically no matter which tool name is called. Takes `&Settings` rather than
+/// `&App` so it (and `apply_look_by_name`) stay unit-testable without a live App (see this file's own
+/// "deviation" doc comment).
+pub(super) fn find_look(settings: &Settings, name: &str) -> Option<crate::settings::EffectPreset> {
+    crate::engine::presets::builtin_looks()
+        .into_iter()
+        .chain(settings.effect_presets.iter().filter(|p| !p.is_graph()).cloned())
+        .find(|p| p.name.eq_ignore_ascii_case(name))
+}
+
+/// Apply a Look (resolved via `find_look`) to every clip in `clip_ids` at `intensity` — the pure logic
+/// shared by `gallery.apply(tab=Looks)` and color-engine's `looks.apply`.
+pub(super) fn apply_look_by_name(
+    project: &mut Project,
+    settings: &Settings,
+    name: &str,
+    clip_ids: &[Id],
+    intensity: f32,
+) -> Result<Value, String> {
+    let preset = find_look(settings, name).ok_or_else(|| format!("no such Look '{name}'"))?;
+    let mut n = 0;
+    for &id in clip_ids {
+        if crate::engine::presets::apply_look(&preset, project, id, intensity) {
+            n += 1;
+        }
+    }
+    Ok(json!({"ok": true, "count": n}))
+}
+
 /// `gallery.apply`'s per-tab body: Looks/Luts/Captions/SpeedRamps target `clip_ids` (Captions is
 /// project-wide, `clip_ids` ignored), Transitions adds at the cuts around `clip_ids`. Templates are NOT
 /// handled here — `gallery.rs`'s own `GalleryResponse.place` routes those through the existing
 /// `App::place_template`/`templates.apply`, since a template places POSITIONALLY, not per-clip.
 fn apply_card(app: &mut App, tab: GalleryTab, name: &str, clip_ids: &[Id], intensity: f32) -> Result<Value, String> {
     match tab {
-        GalleryTab::Looks => {
-            let preset = crate::engine::presets::builtin_looks()
-                .into_iter()
-                .chain(app.settings.effect_presets.iter().filter(|p| !p.is_graph()).cloned())
-                .find(|p| p.name.eq_ignore_ascii_case(name))
-                .ok_or_else(|| format!("no such Look '{name}'"))?;
-            let mut n = 0;
-            for &id in clip_ids {
-                if crate::engine::presets::apply_look(&preset, &mut app.project, id, intensity) {
-                    n += 1;
-                }
-            }
-            Ok(json!({"ok": true, "count": n}))
-        }
+        GalleryTab::Looks => apply_look_by_name(&mut app.project, &app.settings, name, clip_ids, intensity),
         GalleryTab::Luts => {
             crate::engine::lut::load(name).map_err(|e| format!("bad LUT: {e}"))?;
             let mut n = 0;
@@ -214,10 +235,62 @@ pub const TOOLS: &[ToolDef] = &[
     },
 ];
 
-// deviation (see PR body): no unit tests in this file — every `run` closure and `apply_card` need
+// deviation (see PR body): no unit tests for the `run` closures / `apply_card` itself — every one needs
 // `&mut App`, and (per tools_registry_tests.rs's/monitor.rs's own "deviation" doc comments) this crate
 // has no headless `App`-construction path anywhere. Coverage comes from the crate-wide structural tests
 // (tool_names_unique_and_namespaced, every_arg_spec_parses, tool_names_are_sole_registration,
 // mutate_rows_roll_back_on_error, server_end_to_end) plus `Project::reorder_effect`/
 // `bulk_set_effect_params`'s own unit tests in `src/model/ops/effects.rs`, which is the pure logic these
-// two tools call directly.
+// two tools call directly. `find_look`/`apply_look_by_name` are the one exception — deliberately typed
+// over `&Settings`/`&mut Project` instead of `&mut App` so the Looks resolution both `gallery.apply` and
+// color-engine's `looks.apply` share (see tools_color.rs) gets real unit tests below.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Clip, ClipKind};
+
+    /// A `Vec<Effect>` Look preset, same shape `engine::presets::capture_template` writes for a
+    /// user-saved (non-graph) Look — `EffectPreset::is_graph()` is false for a JSON array.
+    fn user_look(name: &str) -> crate::settings::EffectPreset {
+        let fx = vec![Effect::new(EffectKind::Blur)];
+        crate::settings::EffectPreset { name: name.to_string(), json: serde_json::to_string(&fx).unwrap() }
+    }
+
+    /// The bug this fixes: `looks.apply` used to only search `builtin_looks()`, so a Look saved from the
+    /// Gallery pane (`Settings.effect_presets`) would apply via `gallery.apply(tab=Looks)` but fail via
+    /// `looks.apply` for the exact same name. `find_look` is what both now resolve through.
+    #[test]
+    fn find_look_resolves_both_builtins_and_user_saved_presets() {
+        let mut settings = Settings::default();
+        let builtin_name = crate::engine::presets::builtin_looks()[0].name.clone();
+        assert!(find_look(&settings, &builtin_name).is_some(), "a builtin Look must resolve");
+        assert!(find_look(&settings, "My Custom Look").is_none(), "not saved yet");
+        settings.effect_presets.push(user_look("My Custom Look"));
+        assert!(
+            find_look(&settings, "My Custom Look").is_some(),
+            "a user-saved (non-graph) preset must resolve too — this is exactly what looks.apply used to miss"
+        );
+    }
+
+    /// `apply_look_by_name` is the one function both `gallery.apply(tab=Looks)` (via `apply_card`) and
+    /// color-engine's `looks.apply` call — so a builtin Look name and a user-saved preset name must both
+    /// apply successfully through it, producing identical results regardless of which tool name reaches it.
+    #[test]
+    fn apply_look_by_name_succeeds_for_both_builtin_and_user_saved_names() {
+        let mut p = Project::new();
+        let c = Clip::new(500, ClipKind::Video, "v", 0.0, 3.0);
+        let id = c.id;
+        p.tracks[0].clips.push(c);
+        let mut settings = Settings::default();
+        let builtin_name = crate::engine::presets::builtin_looks()[0].name.clone();
+        settings.effect_presets.push(user_look("My Custom Look"));
+
+        let r1 = apply_look_by_name(&mut p, &settings, &builtin_name, &[id], 1.0).unwrap();
+        assert_eq!(r1, json!({"ok": true, "count": 1}), "a builtin Look applies");
+        let r2 = apply_look_by_name(&mut p, &settings, "My Custom Look", &[id], 1.0).unwrap();
+        assert_eq!(r2, json!({"ok": true, "count": 1}), "a user-saved Look now applies too, not just builtins");
+
+        assert!(apply_look_by_name(&mut p, &settings, "no such look", &[id], 1.0).is_err());
+    }
+}
