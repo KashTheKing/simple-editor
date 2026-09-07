@@ -5,11 +5,16 @@
 //! undo step.
 
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 /// Wall-clock budget for one script run (it executes on the UI thread).
 const BUDGET: Duration = Duration::from_secs(5);
+// ---- ws:command-palette ----
+/// Default wall-clock budget for a `-- @on` hook fired by `App::fire_hook` — much tighter than a
+/// manual `BUDGET` run, since a hook fires from ordinary UI events (selection change, import, ...) and
+/// must never make the editor feel like it hitched. Overridable per script via `@budget_ms`.
+const DEFAULT_HOOK_BUDGET: Duration = Duration::from_millis(250);
 
 pub fn scripts_dir() -> PathBuf {
     crate::settings::Settings::dir().join("scripts")
@@ -40,6 +45,27 @@ local s = editor.tool("project.summary", {})
 editor.log("Project: " .. tostring(s.duration or "?") .. " s, " .. tostring(#(s.tracks or {})) .. " tracks")
 "#;
 
+// ---- ws:command-palette ----
+/// Shared VM bootstrap for `run` and `run_hook`: a sandboxed Lua with a wall-clock interrupt at
+/// `budget` (`run` always passes the fixed 5 s `BUDGET`; a fired `@on` hook passes its own, defaulting
+/// to 250 ms — see `ScriptMeta::budget`/`DEFAULT_HOOK_BUDGET`). Building the `editor` table itself stays
+/// separate in each caller — it borrows that call's own `call`/`logs` (and, for a hook, `event`), which
+/// `Lua::scope`'s lifetime ties to the closure that builds it — so this covers exactly the part that
+/// can't otherwise drift between the two paths.
+fn setup_vm(budget: Duration) -> Result<mlua::Lua, String> {
+    let lua = mlua::Lua::new();
+    lua.sandbox(true).map_err(|e| e.to_string())?;
+    let start = Instant::now();
+    lua.set_interrupt(move |_| {
+        if start.elapsed() > budget {
+            Err(mlua::Error::runtime(format!("script took too long ({} ms budget)", budget.as_millis())))
+        } else {
+            Ok(mlua::VmState::Continue)
+        }
+    });
+    Ok(lua)
+}
+
 /// Run `src` with an `editor` global. `call` executes one tool against the live project and is
 /// invoked re-entrantly from inside the VM; `logs` collects `editor.log` lines for the app to show.
 pub fn run(
@@ -48,16 +74,7 @@ pub fn run(
     call: &mut dyn FnMut(&str, &Value) -> Result<Value, String>,
     logs: &mut Vec<String>,
 ) -> Result<(), String> {
-    let lua = mlua::Lua::new();
-    lua.sandbox(true).map_err(|e| e.to_string())?;
-    let start = Instant::now();
-    lua.set_interrupt(move |_| {
-        if start.elapsed() > BUDGET {
-            Err(mlua::Error::runtime("script took too long (5 s budget)"))
-        } else {
-            Ok(mlua::VmState::Continue)
-        }
-    });
+    let lua = setup_vm(BUDGET)?;
     let call = std::cell::RefCell::new(call);
     let logs = std::cell::RefCell::new(logs);
     lua.scope(|scope| {
@@ -97,6 +114,137 @@ pub fn run(
         lua.load(src).set_name(chunk_name).exec()
     })
     .map_err(|e| e.to_string())
+}
+
+// ---- ws:command-palette ----
+
+/// Run `src` as a fired `-- @on` hook: the same sandbox surface as `run` (`editor.tool`/`editor.tools`/
+/// `editor.log`), plus `editor.event` set to `event` (the hook's payload, as JSON), under its own
+/// `budget` instead of `run`'s fixed 5 s (see `ScriptMeta::budget`). `App::fire_hook` is the only
+/// caller — it supplies the re-entrancy guard and per-session disable-on-overrun policy; this fn just
+/// runs one hook once.
+pub fn run_hook(
+    src: &str,
+    chunk_name: &str,
+    event: &Value,
+    budget: Duration,
+    call: &mut dyn FnMut(&str, &Value) -> Result<Value, String>,
+    logs: &mut Vec<String>,
+) -> Result<(), String> {
+    let lua = setup_vm(budget)?;
+    let call = std::cell::RefCell::new(call);
+    let logs = std::cell::RefCell::new(logs);
+    lua.scope(|scope| {
+        let editor = lua.create_table()?;
+        editor.set(
+            "tool",
+            scope.create_function(|lua, (name, args): (String, Option<mlua::Table>)| {
+                let args = match args {
+                    Some(t) => lua_to_json(mlua::Value::Table(t))?,
+                    None => Value::Object(Default::default()),
+                };
+                let r = (call.borrow_mut())(&name, &args).map_err(mlua::Error::runtime)?;
+                json_to_lua(lua, &r)
+            })?,
+        )?;
+        editor.set(
+            "tools",
+            scope.create_function(|lua, ()| {
+                let t = lua.create_table()?;
+                for (i, def) in crate::mcp::tools::all().enumerate() {
+                    let row = lua.create_table()?;
+                    row.set("name", def.name)?;
+                    row.set("description", def.desc)?;
+                    t.set(i + 1, row)?;
+                }
+                Ok(t)
+            })?,
+        )?;
+        editor.set(
+            "log",
+            scope.create_function(|_, s: String| {
+                logs.borrow_mut().push(s);
+                Ok(())
+            })?,
+        )?;
+        editor.set("event", json_to_lua(&lua, event)?)?;
+        lua.globals().set("editor", editor)?;
+        lua.load(src).set_name(chunk_name).exec()
+    })
+    .map_err(|e| e.to_string())
+}
+
+/// A small, fixed set of icon keywords a script header's `@icon` may name — matches a subset of
+/// `ui::tools::Glyph::name()` strings (chosen without depending on `ui::tools` from this low-level
+/// module: menus.rs resolves the name back into a `Glyph` at draw time). An unknown name comes back
+/// `None` rather than an error — a stale `@icon` in a script file must never break metadata parsing.
+fn known_icon(name: &str) -> Option<&'static str> {
+    const KNOWN: &[&str] = &[
+        "bolt",
+        "terminal",
+        "wrench",
+        "gear",
+        "clock",
+        "magnet",
+        "target",
+        "waveform",
+        "notepad",
+        "bookmark",
+        "film-reel",
+        "clapperboard",
+        "sliders",
+        "search",
+        "keyboard",
+    ];
+    KNOWN.iter().copied().find(|k| *k == name)
+}
+
+/// A script's optional leading `-- @name/@desc/@icon/@hotkey/@on <event>/@budget_ms <ms>` header,
+/// parsed without starting the VM — cheap enough for the Scripts menu / palette / `scripts.list` tool to
+/// call for every script (`App::script_metas` still caches it at 1 Hz rather than every frame).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScriptMeta {
+    pub path: PathBuf,
+    pub name: String,
+    pub desc: String,
+    pub icon: Option<&'static str>,
+    pub hotkey: Option<String>,
+    pub on: Vec<String>,
+    pub budget: Duration,
+}
+
+/// Parse `path`'s header-comment block. A script with no header (or an unreadable file) gets its file
+/// stem as `name` and every other field empty/default. Header parsing stops at the first line that
+/// isn't a recognised `-- @key ...` comment (blank line, real code, or an unknown `@key`).
+pub fn meta(path: &Path) -> ScriptMeta {
+    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let mut m = ScriptMeta {
+        path: path.to_path_buf(),
+        name: stem,
+        desc: String::new(),
+        icon: None,
+        hotkey: None,
+        on: Vec::new(),
+        budget: DEFAULT_HOOK_BUDGET,
+    };
+    let Ok(src) = std::fs::read_to_string(path) else { return m };
+    for line in src.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix("--") else { break };
+        let Some(rest) = rest.trim_start().strip_prefix('@') else { break };
+        let (key, val) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+        let val = val.trim();
+        match key {
+            "name" if !val.is_empty() => m.name = val.to_string(),
+            "desc" => m.desc = val.to_string(),
+            "icon" => m.icon = known_icon(val),
+            "hotkey" => m.hotkey = (!val.is_empty()).then(|| val.to_string()),
+            "on" if !val.is_empty() => m.on.push(val.to_string()),
+            "budget_ms" => m.budget = val.parse().map(Duration::from_millis).unwrap_or(DEFAULT_HOOK_BUDGET),
+            _ => break, // unknown @key ends the header, same as a blank/non-header line
+        }
+    }
+    m
 }
 
 /// Lua value -> JSON. Tables with only positive-integer keys become arrays; everything else an object.
@@ -223,5 +371,59 @@ mod tests {
         // just confirm the catalogue is visible
         let (r, _, _) = run_src(r#"assert(#editor.tools() > 10)"#);
         assert_eq!(r, Ok(()));
+    }
+
+    // ---- ws:command-palette ----
+
+    fn write_temp(name: &str, content: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("se-scripting-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join(name);
+        std::fs::write(&p, content).unwrap();
+        p
+    }
+
+    #[test]
+    fn script_meta_parses_header_comments() {
+        let p = write_temp(
+            "hook.luau",
+            "-- @name My Hook\n-- @desc Does a thing\n-- @icon bolt\n-- @hotkey Ctrl+Shift+H\n\
+             -- @on selection_changed\n-- @on export_done\n-- @budget_ms 500\nlocal x = 1\n",
+        );
+        let m = meta(&p);
+        assert_eq!(m.name, "My Hook");
+        assert_eq!(m.desc, "Does a thing");
+        assert_eq!(m.icon, Some("bolt"));
+        assert_eq!(m.hotkey.as_deref(), Some("Ctrl+Shift+H"));
+        assert_eq!(m.on, vec!["selection_changed".to_string(), "export_done".to_string()]);
+        assert_eq!(m.budget, Duration::from_millis(500));
+
+        let plain = write_temp("plain.luau", "local x = 1\n");
+        let m2 = meta(&plain);
+        assert_eq!(m2.name, "plain");
+        assert!(m2.desc.is_empty() && m2.icon.is_none() && m2.hotkey.is_none() && m2.on.is_empty());
+        assert_eq!(m2.budget, DEFAULT_HOOK_BUDGET);
+
+        // an unknown @icon is dropped, not an error, and doesn't stop the rest of the header parsing
+        let odd = write_temp("odd.luau", "-- @icon not-a-real-glyph\n-- @desc still parsed\nlocal x = 1\n");
+        let m3 = meta(&odd);
+        assert_eq!(m3.icon, None);
+        assert_eq!(m3.desc, "still parsed");
+    }
+
+    #[test]
+    fn run_hook_sets_editor_event_and_uses_its_own_budget() {
+        let mut logs = Vec::new();
+        let mut call = |_: &str, _: &Value| -> Result<Value, String> { Ok(json!({})) };
+        let r = run_hook(
+            r#"assert(editor.event.kind == "selection_changed"); editor.log("ok " .. tostring(#editor.event.ids))"#,
+            "hook",
+            &json!({"kind": "selection_changed", "ids": [1, 2]}),
+            Duration::from_millis(250),
+            &mut call,
+            &mut logs,
+        );
+        assert_eq!(r, Ok(()));
+        assert_eq!(logs, vec!["ok 2".to_string()]);
     }
 }

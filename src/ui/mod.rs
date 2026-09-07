@@ -5,6 +5,7 @@
 pub mod app;
 pub mod autocut_ui;
 pub mod capture_ui;
+pub mod cheatsheet;
 pub mod confirm;
 pub mod curves;
 pub mod effects_ui;
@@ -24,6 +25,7 @@ pub mod markers_ui;
 pub mod mixer_ui;
 pub mod moodboard_ui;
 pub mod nodes;
+pub mod palette;
 pub mod paste_ui;
 pub mod planner;
 pub mod preview;

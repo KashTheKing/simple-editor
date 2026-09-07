@@ -18,24 +18,11 @@ pub(super) fn rollback_project(snap: &str) -> Option<Project> {
 
 impl App {
     // ---- ws:forgiveness ----
-    /// Runs every `.luau` script in the scripts folder whose first few lines contain `-- @on <event>`,
-    /// reusing `run_script`'s existing undo/toast/rollback plumbing verbatim. This workstream owns and
-    /// fires only two events (`project_open`/`project_save`, see files.rs); the other four events named
-    /// in the master plan's mcp_parity section (selection_changed/import/export_done/marker_added) are
-    /// each a one-line addition in a DIFFERENT workstream's own file, not new infrastructure here.
-    /// ponytail: no `editor.event` payload wiring and no per-hook `@budget_ms`/disable-on-overrun yet —
-    /// `scripting::run`'s existing 5s interrupt budget already bounds a runaway hook, and nothing reads
-    /// a hook payload today; add both once `-- @name/@on/@budget_ms` header parsing lands (that
-    /// convention is command-palette's, per the master plan) and a real consumer needs the payload.
-    pub(crate) fn fire_hook(&mut self, event: &str, _payload: Value) {
-        let marker = format!("@on {event}");
-        for path in crate::scripting::list() {
-            let Ok(src) = std::fs::read_to_string(&path) else { continue };
-            if src.lines().take(10).any(|l| l.contains(&marker)) {
-                self.run_script(&path);
-            }
-        }
-    }
+    // deviation: this workstream's own fire_hook stub (scanning scripts for a bare `-- @on <event>`
+    // marker) is superseded by command-palette's real dispatcher (palette_ctl::fire_hook — reentrancy
+    // guard, per-hook budget, disable-on-overrun) now that PR #45 has merged; removed to avoid a
+    // duplicate-method conflict. files.rs's project_open/project_save call sites are unaffected — both
+    // pass string literals, which resolve to palette_ctl::fire_hook's `&'static str` parameter as-is.
 
     pub(super) fn run_script(&mut self, path: &std::path::Path) {
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -203,6 +190,37 @@ impl App {
                     self.run_rollback(snap);
                 }
                 let _ = reply.send(Err(e));
+            }
+        }
+    }
+
+    // ---- ws:command-palette ----
+    /// Run one non-`Job` tool by name outside the MCP/scripting call sites (`handle_tool`/`run_script`
+    /// above), which already had their own inline snapshot/undo logic before this workstream needed a
+    /// THIRD caller: the palette's Enter/arg-form-Run path and the `scripts.run` MCP tool
+    /// (`tools_commands.rs`). Same shape as `handle_tool`'s non-`Job` arms (snapshot iff `Mutate`, push
+    /// undo iff the JSON actually changed, `after_edit`, rollback on `Err`) — a small shared wrapper is
+    /// less code than a third copy of that logic, and a smaller diff than refactoring `handle_tool`/
+    /// `run_script` (each has its own reply-channel / per-script-undo shape) around a new abstraction.
+    pub(crate) fn run_tool_undoable(&mut self, name: &str, args: &Value) -> Result<Value, String> {
+        let def = mcp::tools::find(name).ok_or_else(|| format!("unknown tool '{name}'"))?;
+        let before = self.run_snapshot_if_mutate(def);
+        match (def.run)(self, args) {
+            Ok(ToolOutcome::Done(v)) => {
+                if let Some(snap) = before {
+                    if snap != self.project.to_json() {
+                        push_undo_json(&mut self.undo, &mut self.redo, snap);
+                    }
+                    self.after_edit();
+                }
+                Ok(v)
+            }
+            Ok(ToolOutcome::Job(..)) => Err(format!("'{name}' starts a background job — not runnable from here")),
+            Err(e) => {
+                if let Some(snap) = before {
+                    self.run_rollback(snap); // a failed tool is a no-op
+                }
+                Err(e)
             }
         }
     }

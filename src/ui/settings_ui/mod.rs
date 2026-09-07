@@ -42,6 +42,12 @@ pub struct SettingsUi {
     /// Performance tab's "Clear Caches" button was clicked this frame — the app (windows.rs) reads and
     /// resets this after calling `show`, since `performance()` has no `&mut App` to act on directly.
     pub clear_caches: bool,
+    // ---- ws:command-palette ----
+    /// Hotkeys tab search box text.
+    pub(super) hotkeys_search: String,
+    /// A rebind collided with another action's chord: (the action being rebound, its new chord, the
+    /// action that already has it) — drives the inline Reassign/Keep row until the user picks one.
+    pub(super) pending_conflict: Option<(Action, egui::KeyboardShortcut, Action)>,
 }
 
 pub(super) struct Status {
@@ -123,7 +129,7 @@ pub fn show(
                 1 => performance::performance(ui, settings, gpu_name, &mut state.clear_caches),
                 2 => capture::capture_tab(ui, settings, audio_inputs),
                 3 => capture::export(ui, settings, encoders),
-                4 => hotkeys::hotkeys_tab(ui, state, hotkeys),
+                4 => hotkeys::hotkeys_tab(ui, state, hotkeys, settings),
                 _ => appearance::appearance(ui, settings),
             };
         });
@@ -200,7 +206,10 @@ mod tests {
         assert!(ctx.input(|i| i.events.is_empty()));
         let _ = ctx.end_pass();
 
-        // Ctrl+Z conflicts with Undo: Undo gets unbound and a note is written.
+        // ---- ws:command-palette ----
+        // Ctrl+Z conflicts with Undo: this no longer silently steals it — it opens the inline
+        // Reassign/Keep row (`pending_conflict`) and leaves both bindings untouched until the user
+        // picks one.
         let mut input = egui::RawInput::default();
         input.events.push(Event::Key {
             key: Key::Z,
@@ -211,10 +220,34 @@ mod tests {
         });
         ctx.begin_pass(input);
         st.rebinding = Some(Action::Split);
-        assert!(hotkeys::capture_key(&ctx, &mut st, Action::Split, &mut hk));
+        assert!(!hotkeys::capture_key(&ctx, &mut st, Action::Split, &mut hk), "a conflict must not apply yet");
+        assert_eq!(hk.text(Action::Split), "Ctrl+Shift+B", "unchanged pending the Reassign/Keep decision");
+        assert_eq!(hk.text(Action::Undo), "Ctrl+Z", "unchanged pending the Reassign/Keep decision");
+        let (a, ks, other) = st.pending_conflict.clone().expect("a conflict must open the Reassign/Keep row");
+        assert_eq!((a, other), (Action::Split, Action::Undo));
+        let _ = ctx.end_pass();
+        // "Reassign" (hotkeys_tab's button does exactly this): apply it, clearing the prompt
+        hk.set(a, Some(ks));
+        st.pending_conflict = None;
         assert_eq!(hk.text(Action::Split), "Ctrl+Z");
         assert_eq!(hk.text(Action::Undo), "");
-        assert!(st.note.contains("Undo"));
+
+        // a chord RESERVED hard-codes ahead of the Action table (bare S) is rejected outright, with a
+        // note, not silently accepted
+        let mut input = egui::RawInput::default();
+        input.events.push(Event::Key {
+            key: Key::S,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        });
+        ctx.begin_pass(input);
+        st.rebinding = Some(Action::Split);
+        st.note.clear();
+        assert!(!hotkeys::capture_key(&ctx, &mut st, Action::Split, &mut hk));
+        assert_eq!(hk.text(Action::Split), "Ctrl+Z", "a reserved chord must not be bound");
+        assert!(st.note.contains("reserved"), "{}", st.note);
         let _ = ctx.end_pass();
 
         // Escape cancels without changes; Delete unbinds.

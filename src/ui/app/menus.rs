@@ -422,16 +422,26 @@ impl App {
             });
             ui.menu_button("View", |ui| self.view_menu(ui, &mut out));
             ui.menu_button("Scripts", |ui| {
-                // re-reading the folder on every open IS the refresh mechanism
-                let scripts = crate::scripting::list();
-                for p in &scripts {
-                    let label = p.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    if crate::ui::tools::glyph_text_button(ui, crate::ui::tools::Glyph::Terminal, &label).clicked() {
-                        self.run_script_path = Some(p.clone());
+                // ---- ws:command-palette ----
+                // per-script icon/hotkey/desc from ScriptMeta (was: file-stem-only Terminal-icon rows)
+                for m in self.script_metas().to_vec() {
+                    let glyph = m.icon.and_then(tools::Glyph::from_name).unwrap_or(tools::Glyph::Terminal);
+                    let label = match &m.hotkey {
+                        Some(h) => format!("{}   {h}", m.name),
+                        None => m.name.clone(),
+                    };
+                    let tip = if m.desc.is_empty() { None } else { Some(m.desc.clone()) };
+                    let r = tools::glyph_text_button(ui, glyph, &label);
+                    let r = match &tip {
+                        Some(t) => r.on_hover_text(t),
+                        None => r,
+                    };
+                    if r.clicked() {
+                        self.run_script_path = Some(m.path.clone());
                         ui.close();
                     }
                 }
-                if scripts.is_empty() {
+                if self.script_metas().is_empty() {
                     ui.weak("No scripts yet");
                 }
                 ui.separator();
@@ -451,6 +461,14 @@ impl App {
                     if crate::contextmenu::is_installed() { "installed" } else { "not installed" }
                 ));
                 ui.label("Mouse: Ctrl+Scroll zoom · Shift+Scroll pan · Alt+Scroll track height");
+                ui.separator();
+                // ---- ws:command-palette ----
+                self.menu_item(ui, CommandPalette, true, &mut out);
+                self.menu_item(ui, CheatSheet, true, &mut out);
+                if ui.button("Show welcome again").clicked() {
+                    out.push(ShowWelcome);
+                    ui.close();
+                }
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(

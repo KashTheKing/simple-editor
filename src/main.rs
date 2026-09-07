@@ -8,6 +8,7 @@
 mod contextmenu;
 mod engine;
 mod hotkeys;
+mod keymaps;
 mod mcp;
 mod media;
 mod model;
