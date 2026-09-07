@@ -470,6 +470,75 @@ impl VideoSource for ImageSource {
     }
 }
 
+// ---- ws:media-library ----
+/// Bake a numbered still sequence into one H.264 mp4 at `fps` (blocking — call inside
+/// `engine::export::spawn_job`). Feeds ffmpeg a concat list rather than `-pattern_type glob`: the
+/// Windows ffmpeg builds are compiled without glob support, and a list also tolerates numbering gaps
+/// and arbitrary names for free. Temp + rename, so `out` never exists half-written.
+pub fn bake_sequence(
+    seq: &crate::engine::import::ImageSequence,
+    fps: f64,
+    out: &std::path::Path,
+    prog: &crate::engine::export::Progress,
+) -> Result<(), String> {
+    use crate::engine::export;
+    use std::io::BufRead;
+    let ffmpeg = ffmpeg_exe().ok_or("ffmpeg.exe not found")?;
+    let n = seq.frames.len();
+    if n == 0 {
+        return Err("empty sequence".into());
+    }
+    let fps = if fps > 0.0 { fps } else { 30.0 };
+    // concat demuxer: `file` lines (forward slashes — backslashes are escapes to its parser), each with
+    // its display duration; the last frame is listed twice, the demuxer's documented way to keep it
+    let mut list = String::new();
+    let mut push = |p: &std::path::Path| {
+        let p = p.to_string_lossy().replace('\\', "/").replace('\'', "'\\''");
+        list.push_str(&format!("file '{p}'\nduration {}\n", 1.0 / fps));
+    };
+    for f in &seq.frames {
+        push(f);
+    }
+    push(&seq.frames[n - 1]);
+    let list_path =
+        out.with_file_name(format!(".{}.simple-editor-seq.txt", out.file_stem().unwrap_or_default().to_string_lossy()));
+    std::fs::write(&list_path, list).map_err(|e| format!("sequence list: {e}"))?;
+    struct Rm(PathBuf);
+    impl Drop for Rm {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let _rm = Rm(list_path.clone());
+    let tmp = export::temp_output(out);
+    let mut cmd = command(&ffmpeg);
+    cmd.args(["-y", "-hide_banner", "-loglevel", "error", "-progress", "pipe:1", "-f", "concat", "-safe", "0"]);
+    cmd.arg("-i").arg(&list_path);
+    // even dimensions for yuv420p; -r pins one output frame per still
+    cmd.args(["-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-r", &format!("{fps}")]);
+    cmd.args(["-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-pix_fmt", "yuv420p", "-an"]);
+    cmd.args(["-movflags", "+faststart"]);
+    cmd.arg(&tmp.0);
+    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd.spawn().map_err(|e| format!("ffmpeg: {e}"))?;
+    let tail = export::stderr_tail(&mut child);
+    if let Some(o) = child.stdout.take() {
+        prog.set(0.0, format!("Baking {n} frames…"));
+        for line in std::io::BufReader::new(o).lines() {
+            let Ok(line) = line else { break };
+            if prog.is_cancelled() {
+                let _ = child.kill();
+                break;
+            }
+            if let Some(f) = line.strip_prefix("frame=").and_then(|v| v.trim().parse::<f64>().ok()) {
+                prog.set((f / n as f64).clamp(0.0, 0.99) as f32, format!("Baking {n} frames…"));
+            }
+        }
+    }
+    export::wait_ffmpeg(&mut child, tail, prog)?;
+    tmp.commit(out)
+}
+
 pub fn open_video(path: &str) -> Result<Box<dyn VideoSource>, String> {
     let a = probe(path)?;
     if a.kind == ClipKind::Image {

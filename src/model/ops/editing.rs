@@ -30,6 +30,10 @@ impl Project {
         range: Option<(f64, f64)>,
     ) -> Vec<Id> {
         let Some(asset) = self.asset(asset_id).cloned() else { return Vec::new() };
+        // ---- ws:media-library ----
+        // a subclip (`Asset.range`, wave 0b) places only its own window unless the caller asked for a
+        // narrower one — otherwise every subclip would start at source 0 like its parent
+        let range = range.or(asset.range);
         let (src_in, dur) = match range {
             Some((s, e)) => (s, (e - s).max(MIN_CLIP)),
             None => (0.0, if asset.kind == ClipKind::Image { 5.0 } else { asset.duration.max(MIN_CLIP) }),

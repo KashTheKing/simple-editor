@@ -263,6 +263,10 @@ pub(crate) enum Glyph {
     /// Four corner arrows pointing outward — maximise a pane to the full tile.
     Maximize,
     // ---- ws:media-library ----
+    /// A triangle with an exclamation mark — the library's offline-media badge / relink hint.
+    Warning,
+    /// Two overlapping links — a subclip's tie to its parent asset.
+    Chain,
     // ---- ws:source-monitor ----
     /// A bar with a block landing after its end — smart edit "Append at End".
     Append,
@@ -396,6 +400,8 @@ impl Glyph {
         Glyph::Pin,
         Glyph::Maximize,
         // ---- ws:media-library ----
+        Glyph::Warning,
+        Glyph::Chain,
         // ---- ws:source-monitor ----
         Glyph::Append,
         Glyph::CloseUp,
@@ -526,6 +532,8 @@ impl Glyph {
             Glyph::Pin => "pin",
             Glyph::Maximize => "maximize",
             // ---- ws:media-library ----
+            Glyph::Warning => "warning",
+            Glyph::Chain => "chain",
             // ---- ws:source-monitor ----
             Glyph::Append => "append",
             Glyph::CloseUp => "close-up",
@@ -1818,8 +1826,24 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
                 p.line_segment([tip, tip - egui::vec2(sx * 3.5, 0.0)], stroke);
                 p.line_segment([tip, tip - egui::vec2(0.0, sy * 3.5)], stroke);
             }
-        } // ---- ws:media-library ----
-          // ---- ws:source-monitor ----
+        }
+        // ---- ws:media-library ----
+        // warning: a filled triangle with a bar + dot cut out of it (same shape technique as Flag)
+        Glyph::Warning => {
+            let tri = vec![c + egui::vec2(0.0, -6.5), c + egui::vec2(7.0, 6.0), c + egui::vec2(-7.0, 6.0)];
+            p.add(egui::Shape::convex_polygon(tri, fg, Stroke::NONE));
+            let hole = Color32::from_rgba_unmultiplied(0, 0, 0, 160);
+            p.line_segment([c + egui::vec2(0.0, -2.0), c + egui::vec2(0.0, 2.2)], Stroke::new(1.6, hole));
+            p.circle_filled(c + egui::vec2(0.0, 4.2), 0.9, hole);
+        }
+        // chain: two overlapping rounded links, offset on the diagonal
+        Glyph::Chain => {
+            for d in [-2.2f32, 2.2] {
+                let r = egui::Rect::from_center_size(c + egui::vec2(d, -d), egui::vec2(8.0, 5.0));
+                p.rect_stroke(r, CornerRadius::same(2), stroke, StrokeKind::Inside);
+            }
+        }
+        // ---- ws:source-monitor ----
         // append: a lane bar, then a block dropped just past its end with a right arrow above
         Glyph::Append => {
             p.line_segment([c + egui::vec2(-8.0, 2.0), c + egui::vec2(1.0, 2.0)], Stroke::new(2.0, fg));

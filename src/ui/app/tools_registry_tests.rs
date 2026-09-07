@@ -75,6 +75,11 @@ const OP_TOOLS: &[(&str, &str)] = &[
     ("fit_clip_to_screen", "clip.fit"),
     // ---- ws:source-monitor ----
     ("subclip_from_marks", "source.subclip"),
+    // ---- ws:media-library ----
+    ("apply_consolidate", "media.consolidate"),
+    // Documentation only (like forgiveness's rows below): `consolidate_assets_copy` is an associated
+    // fn (file I/O, no `&mut self`), so the scan never sees it — it is media.consolidate's copy phase.
+    ("consolidate_assets_copy", "media.consolidate"),
 ];
 
 /// (Project op fn name, why it has no MCP tool yet). Every entry is a real, deliberate gap — either a

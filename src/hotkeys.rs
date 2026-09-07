@@ -254,6 +254,10 @@ actions! {
     // ToggleSource is declared by ws:source-monitor below (both workstreams needed it; kept there
     // since that's the pane it actually toggles) — never redeclare it here.
     // ---- ws:media-library ----
+    // Unbound by design (skeleton keymap): the library's asset menu / toolbar + the palette.
+    RelinkMedia => "relink_media", "Relink Media…", None;
+    ConsolidateMedia => "consolidate_media", "Consolidate Media…", None;
+    NewSubclip => "new_subclip", "New Subclip from Marks", None;
     // ---- ws:source-monitor ----
     // F: free (F11 fullscreen, Ctrl+Shift+F export frame); Ctrl+Shift+R: free (Ctrl+R retime,
     // Shift+R freeze, Ctrl+Alt+R voiceover). The rest are Source-pane buttons / palette only.
