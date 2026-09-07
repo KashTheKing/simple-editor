@@ -1,17 +1,29 @@
 //! Text/typography editing extracted from `clip_section` (see inspector.rs's module doc for the whole
 //! inspector): the text body, font/size/colour/outline/shadow/align/spacing/box grid, and per-selection
 //! style overrides (`TextSpan`) via the "Style Selection…"/"Clear Style" buttons and the "Set Text
-//! Style" popup. Zero behaviour change from the original inline code.
+//! Style" popup.
+//!
+//! ---- ws:text-titles ----
+//! `size`/`letter_spacing`/`outline_width` are now `Animated` (schema promotion, this workstream): each
+//! gets the same DragValue + `key_buttons` (keyframe toggle) + `link_menu` (path/expression link) row
+//! shape the clip transform grid uses for Position X (`inspector_audio::section`), plus new Reveal
+//! (typewriter, 0..100%) and Wave (per-glyph bob) rows over the like-named `Animated` fields, and an
+//! Animation row (builtin/saved motion preset combo + Apply, calling `presets::apply_motion` directly —
+//! mirrors curves.rs:744's inline call, not curves.rs:762's unrelated PENDING_MOTION "Save motion"
+//! plumbing). `inspector.rs::clip_section` now calls this fn BEFORE the generic transform grid for a
+//! Text clip (primary-first ordering), which is why `section` takes `playhead` — the transform grid used
+//! to be the thing computing `clip.local(playhead)` first.
 //!
 //! The "Text style presets" sub-panel (save/apply/delete/import/export of `Settings::text_presets`)
 //! stays in inspector.rs's `clip_section`, since this fn's signature has no `&mut Settings` param —
 //! `span_draft_at`/`set_span` below are `pub(super)` so that sub-panel can still reach them.
 
-use crate::model::{Id, Project, TextSpan, TextStyle};
+use crate::model::{AnimLink, Animated, Id, Project, TextSpan, TextStyle};
 use crate::settings::TextPreset;
 use crate::theme::Palette;
-use crate::ui::Gesture;
-use eframe::egui::{self, DragValue, Grid};
+use crate::ui::inspector::{link_menu, luau_highlight};
+use crate::ui::{key_buttons, Gesture};
+use eframe::egui::{self, DragValue, Grid, Slider};
 
 /// Test-only: remember a widget rect so headless tests can click the real button (mirrors
 /// inspector.rs's own `mark`, duplicated here to avoid cross-file plumbing for a test-only shim).
@@ -28,11 +40,14 @@ pub(super) fn span_draft_at(style: &TextStyle, a: usize, b: usize) -> TextPreset
     let base = TextPreset {
         name: String::new(),
         font: style.font.clone(),
-        size: style.size,
+        // ws:text-titles: size/letter_spacing are now Animated — a span override is a plain f32 (spans
+        // don't animate, see the ponytail note on TextSpan promotion), so this seeds from the CURRENT
+        // (base, unkeyed) value only, same as before the promotion for a non-animated style.
+        size: style.size.value as f32,
         bold: style.bold,
         italic: style.italic,
         color: style.color,
-        letter_spacing: style.letter_spacing,
+        letter_spacing: style.letter_spacing.value as f32,
     };
     let Some(s) = style.spans.iter().find(|s| s.start == a && s.end == b) else { return base };
     TextPreset {
@@ -95,6 +110,35 @@ pub(super) fn text_preset_fields(ui: &mut egui::Ui, p: &mut TextPreset, fonts: &
     });
 }
 
+/// The editable expression box shown right under a row when its `Animated` field is linked to
+/// `AnimLink::Expr` — same widget/pattern as `inspector_audio::section`'s per-property loop (search
+/// `link_err`/`AnimLink::Expr` there). Must be called from inside the same `Grid` as the row's own
+/// `ui.end_row()` so the columns line up.
+fn expr_edit_row(ui: &mut egui::Ui, a: &mut Animated, g: &mut Gesture) {
+    if let Animated { link: AnimLink::Expr(src), link_err, .. } = a {
+        ui.label("");
+        ui.horizontal(|ui| {
+            let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
+                let mut job = luau_highlight(ui, buf.as_str());
+                job.wrap.max_width = wrap_width;
+                ui.fonts_mut(|f| f.layout_job(job))
+            };
+            g.note(
+                &ui.add(
+                    egui::TextEdit::singleline(src)
+                        .desired_width(150.0)
+                        .hint_text("return value + math.sin(t*4) * 20")
+                        .layouter(&mut layouter),
+                ),
+            );
+            if let Some(e) = link_err {
+                ui.colored_label(ui.visuals().warn_fg_color, "!").on_hover_text(e.clone());
+            }
+        });
+        ui.end_row();
+    }
+}
+
 /// The Text/typography block: multiline body, font/size/colour/outline/shadow/align/spacing/box grid,
 /// and per-selection style overrides. Returns true if anything changed. No-op (returns false) unless
 /// the representative clip (`ids.first()`) is a Text clip.
@@ -103,11 +147,11 @@ pub(super) fn section(
     ui: &mut egui::Ui,
     project: &mut Project,
     ids: &[Id],
+    playhead: f64,
     fonts: &[String],
     palette: &Palette,
     undo: &mut dyn FnMut(&Project),
 ) -> bool {
-    let _ = palette; // kept for signature parity with inspector_audio::section / future use
     let Some(&id) = ids.first() else {
         return false;
     };
@@ -117,6 +161,10 @@ pub(super) fn section(
     if orig.kind != crate::model::ClipKind::Text {
         return false;
     }
+    // ws:text-titles: size/letter_spacing/outline_width/reveal/wave are Animated now, keyed at the
+    // clip-local playhead exactly like the transform grid's Position X row (inspector_audio::section).
+    let lt = orig.local(playhead);
+    let path_list: Vec<(Id, String)> = project.paths.iter().map(|p| (p.id, p.name.clone())).collect();
     let mut clip = orig.clone();
     let mut g = Gesture::default();
     let style = clip.text.get_or_insert_with(Default::default);
@@ -169,20 +217,36 @@ pub(super) fn section(
         ui.end_row();
         ui.label("Size");
         ui.horizontal(|ui| {
-            g.note(&ui.add(DragValue::new(&mut style.size).range(1.0..=1000.0)));
+            let mut v = style.size.at(lt);
+            let r = ui.add(DragValue::new(&mut v).range(1.0..=1000.0));
+            if r.changed() {
+                style.size.set_at(lt, v);
+            }
+            g.note(&r);
+            key_buttons(ui, &mut style.size, lt, palette, &mut g);
+            link_menu(ui, "Text Size", &mut style.size, &path_list, &mut g);
             g.note(&ui.checkbox(&mut style.bold, "Bold"));
             g.note(&ui.checkbox(&mut style.italic, "Italic"));
         });
         ui.end_row();
+        expr_edit_row(ui, &mut style.size, &mut g);
         ui.label("Fill");
         g.note(&ui.color_edit_button_srgba_unmultiplied(&mut style.color));
         ui.end_row();
         ui.label("Outline");
         ui.horizontal(|ui| {
             g.note(&ui.color_edit_button_srgba_unmultiplied(&mut style.outline_color));
-            g.note(&ui.add(DragValue::new(&mut style.outline_width).range(0.0..=50.0).speed(0.1)));
+            let mut v = style.outline_width.at(lt);
+            let r = ui.add(DragValue::new(&mut v).range(0.0..=50.0).speed(0.1));
+            if r.changed() {
+                style.outline_width.set_at(lt, v);
+            }
+            g.note(&r);
+            key_buttons(ui, &mut style.outline_width, lt, palette, &mut g);
+            link_menu(ui, "Outline Width", &mut style.outline_width, &path_list, &mut g);
         });
         ui.end_row();
+        expr_edit_row(ui, &mut style.outline_width, &mut g);
         ui.label("Drop shadow");
         ui.horizontal(|ui| {
             g.note(&ui.checkbox(&mut style.shadow, ""));
@@ -207,15 +271,86 @@ pub(super) fn section(
         g.note(&ui.add(DragValue::new(&mut style.line_spacing).range(0.5..=3.0).speed(0.01)));
         ui.end_row();
         ui.label("Letter spacing");
-        g.note(&ui.add(DragValue::new(&mut style.letter_spacing).range(-10.0..=50.0).speed(0.1)));
+        ui.horizontal(|ui| {
+            let mut v = style.letter_spacing.at(lt);
+            let r = ui.add(DragValue::new(&mut v).range(-10.0..=50.0).speed(0.1));
+            if r.changed() {
+                style.letter_spacing.set_at(lt, v);
+            }
+            g.note(&r);
+            key_buttons(ui, &mut style.letter_spacing, lt, palette, &mut g);
+            link_menu(ui, "Letter Spacing", &mut style.letter_spacing, &path_list, &mut g);
+        });
         ui.end_row();
+        expr_edit_row(ui, &mut style.letter_spacing, &mut g);
         ui.label("Box");
         ui.horizontal(|ui| {
             g.note(&ui.color_edit_button_srgba_unmultiplied(&mut style.box_color));
             g.note(&ui.add(DragValue::new(&mut style.box_padding).range(0.0..=100.0).speed(0.5)));
         });
         ui.end_row();
+        // ---- ws:text-titles: reveal (typewriter) + wave (per-glyph bob) ----
+        ui.label("Reveal").on_hover_text("Typewriter progress: 0% hides all glyphs, 100% shows them all");
+        ui.horizontal(|ui| {
+            let mut pct = style.reveal.at(lt) * 100.0;
+            let r = ui.add(Slider::new(&mut pct, 0.0..=100.0).suffix(" %").fixed_decimals(0));
+            if r.changed() {
+                style.reveal.set_at(lt, (pct / 100.0).clamp(0.0, 1.0));
+            }
+            g.note(&r);
+            key_buttons(ui, &mut style.reveal, lt, palette, &mut g);
+            link_menu(ui, "Reveal", &mut style.reveal, &path_list, &mut g);
+        });
+        ui.end_row();
+        expr_edit_row(ui, &mut style.reveal, &mut g);
+        ui.label("Wave").on_hover_text("Per-glyph vertical bob amount (project px); 0 = none");
+        ui.horizontal(|ui| {
+            let mut v = style.wave.at(lt);
+            let r = ui.add(DragValue::new(&mut v).range(0.0..=200.0).speed(0.5));
+            if r.changed() {
+                style.wave.set_at(lt, v.max(0.0));
+            }
+            g.note(&r);
+            key_buttons(ui, &mut style.wave, lt, palette, &mut g);
+            link_menu(ui, "Wave", &mut style.wave, &path_list, &mut g);
+        });
+        ui.end_row();
+        expr_edit_row(ui, &mut style.wave, &mut g);
     });
+
+    // ---- ws:text-titles: Animation row — apply a builtin/saved motion preset to the WHOLE clip's
+    // transform (Position/Scale/Rotation/Opacity), mirrors curves.rs:744's inline apply_motion() call
+    // (not curves.rs:762's PENDING_MOTION, which belongs to the unrelated "Save motion" button). No
+    // ACT_HANDLERS entry — this panel already owns `&mut Project` via `undo`/the write-back below.
+    let motions = crate::ui::curves::available_motions();
+    if !motions.is_empty() {
+        let motion_sel_id = egui::Id::new(("inspector_text_motion_sel", id));
+        let mut sel: usize = ui.ctx().data(|d| d.get_temp(motion_sel_id).unwrap_or(0)).min(motions.len() - 1);
+        ui.horizontal(|ui| {
+            ui.label("Animation");
+            egui::ComboBox::from_id_salt("text_motion_preset").selected_text(motions[sel].name.clone()).show_ui(
+                ui,
+                |ui| {
+                    for (i, m) in motions.iter().enumerate() {
+                        ui.selectable_value(&mut sel, i, &m.name);
+                    }
+                },
+            );
+            if ui.small_button("Apply").on_hover_text("Stretch the preset to this clip's length").clicked() {
+                // Applies to the LIVE clip directly (not the local `clip` clone this fn writes back only
+                // `.text` from) — a motion preset keys Position/Scale/Rotation/Opacity, none of which
+                // `section`'s write-back at the bottom touches. `g.changed = true` below is what makes
+                // this fn (and clip_section/inspector::show above it) return true so the caller still
+                // runs its usual after-edit refresh, even though this specific write bypassed `clip`.
+                undo(project);
+                if let Some(c) = project.clip_mut(id) {
+                    crate::engine::presets::apply_motion(&motions[sel], c, true);
+                }
+                g.changed = true;
+            }
+        });
+        ui.ctx().data_mut(|d| d.insert_temp(motion_sel_id, sel));
+    }
 
     // ---- per-selection style override (TextSpan) ----
     // Only the fields the rasterizer actually honours per-span today (see TextSpan's doc comment

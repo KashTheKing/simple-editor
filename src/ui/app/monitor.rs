@@ -328,6 +328,200 @@ pub(crate) fn act(app: &mut App, a: Action) -> bool {
     }
 }
 
+// ============================================================================
+// ---- ws:pro-monitor ----
+// Dynamic (JKL) trim + the dual-frame trim view's own small async render pipeline.
+//
+// deviation (see PR body): the plan's Files table describes extending THIS file's `AltRequest`/
+// `AltRenderState` (canvas-handles-monitor, above) with `TrimOut`/`TrimIn`/`Compare`/`Angle(u8)`
+// variants. Reading that type closely: it is a SINGLE-slot "newest wins" coalescing channel — exactly
+// right for a hover preview (only one thing is ever hovered at a time), but a dual-frame trim view needs
+// TWO frames on screen simultaneously (outgoing + incoming), and widening the single `request`/`inflight`/
+// `shown`/`ready` fields into a multi-slot map would touch the very `clear_if_stale` machinery
+// inspector-gallery's review just fixed a stale-preview bug in — risk this workstream was explicitly told
+// to avoid. `TrimSlot`/`trim_tick` below are a separate, smaller two-slot mechanism reusing the same
+// primitives (`Player::request_layers`/`take_layers_reply`, `App::gpu_frame`) but rendering the LIVE
+// project at two real times (no project cloning needed, unlike a hover preview's hypothetical edit).
+// `Compare` stays a state-only stub (`render_frame_bypass` does not exist — see this file's other
+// deviation note below); the angle grid (`multicam_ui.rs`) drops live per-angle thumbnails in favour of
+// text/colour rows with fully-working click-to-switch, so it needs no third render pipeline here.
+//
+// deviation (see PR body): `render_frame_bypass`/`frame_stats` (color-engine, wave 1) are attributed by
+// the plan but do not exist under those names in `engine::gpu` — CONFIRMED by reading gpu.rs. What DOES
+// exist (and is already consumed by `tools_color.rs`'s `color.auto`/`color.match`/`frame.stats`) is
+// `GpuRenderer::{set_stats_wanted, stats}` fed by `render_preview_texture`'s own internal readback gate —
+// real `FrameStats` data, just under a different name/shape than the plan guessed. Scopes therefore ships
+// FOR REAL below (`scopes_ui.rs`), keyed off `gpu.stats()`; only the wipe/side-by-side Compare feature
+// (which truly has no bypass-render equivalent anywhere in the engine) stays a documented no-op stub.
+#[derive(Default)]
+struct TrimSlot {
+    player: Option<Player>,
+    shown_key: Option<i64>,
+    inflight: Option<(u64, i64)>,
+    frame: Option<Arc<Frame>>,
+}
+
+#[derive(Default)]
+struct TrimView {
+    out: TrimSlot,
+    in_: TrimSlot,
+}
+
+/// App field (`App.monitor`) holding this workstream's per-frame state.
+#[derive(Default)]
+pub(crate) struct MonitorState {
+    /// Set while `Player::rate() != 0` with an edit point selected and trim_view on (a JKL shuttle in
+    /// progress that COULD end in a dynamic trim); consumed (and cleared) on the next zero-rate tick.
+    dyn_trim_armed: bool,
+    /// `Player::rate()` as of the previous tick, so a `4.0 -> 0.0` transition (a shuttle stop) is only
+    /// caught once, not on every frame the rate happens to read zero.
+    last_rate: f64,
+    /// Scopes `egui::Window` open/closed (mirrors, but does not replace, `Settings.scopes`'s list of
+    /// which TABS were open — this is just "is the window there at all").
+    pub(crate) scopes_open: bool,
+    /// The dual-frame trim view's own two decode slots (outgoing / incoming).
+    trim: TrimView,
+    /// (clip id, target) armed by the (color-engine-owned) Color section's Eyedropper button
+    /// (`inspector::take_pending_eyedrop` — that workstream's own doc comment names THIS workstream as
+    /// its intended consumer), consumed by the next click on the monitor. Always targets `Chroma` — the
+    /// existing button lives in the general grade section, not a Qualifier-specific one; `Qualifier` is
+    /// reachable via the `color.pick` MCP tool's explicit `target` arg.
+    pub(crate) pick_armed: Option<(Id, crate::ui::preview::PickTarget)>,
+}
+
+/// FRAME_HOOK: dynamic-trim rate-drop detection, the Scopes readback gate, and the dual-frame trim
+/// view's decode refresh — all paused (or simply not requested) while `app.export.is_some()`.
+pub(crate) fn monitor_tick(app: &mut App, ctx: &egui::Context) {
+    if let Some(id) = crate::ui::inspector::take_pending_eyedrop() {
+        app.monitor.pick_armed = Some((id, crate::ui::preview::PickTarget::Chroma));
+    }
+    // ws:pro-monitor review fix: `Player::pause()` never resets `clock.rate` to 0 (only `play()` sets it
+    // to 1.0, `set_rate` rejects 0.0 outright — see playback.rs), so the raw `rate()` reads whatever the
+    // last shuttle speed was even after a real Stop, and defaults to 1.0 at startup regardless of playing
+    // state. Every other call site (playback_ctl.rs, source_ctl.rs) gates it behind `is_playing()` for
+    // exactly this reason; without the same gate here the "shuttle stopped" (nonzero -> zero) transition
+    // `dyn_trim_should_commit` watches for is essentially unreachable.
+    let rate = if app.player.is_playing() { app.player.rate() } else { 0.0 };
+    let trim_view_armable = app.settings.trim_view && app.timeline.edit_point.is_some();
+    if dyn_trim_should_arm(rate, trim_view_armable) {
+        app.monitor.dyn_trim_armed = true;
+    }
+    // never commit while an export is running — export owns project consistency/GPU capacity, matching
+    // the trim-view decode's own export pause below (`trim_view_wants_requests`).
+    if app.export.is_none() && dyn_trim_should_commit(app.monitor.dyn_trim_armed, app.monitor.last_rate, rate) {
+        commit_dynamic_trim(app);
+        app.monitor.dyn_trim_armed = false;
+    }
+    app.monitor.last_rate = rate;
+
+    // Scopes: gate the GPU's readback to only while the window is actually open OR the eyedropper is
+    // armed — `write_picked_color`/`color.pick` both read `gpu.stats()`, which `maybe_readback_stats`
+    // leaves untouched (None, or a stale frame) whenever `stats_wanted` is false, so without this an
+    // eyedropper pick made with Scopes closed reads stale/absent stats.
+    if let Some(gpu) = app.gpu.as_mut() {
+        gpu.set_stats_wanted(app.monitor.scopes_open || app.monitor.pick_armed.is_some());
+    }
+
+    // Trim view: refresh the outgoing/incoming decode slots. Paused during export (no new requests);
+    // off entirely when trim_view is off or nothing is selected to trim.
+    let want = trim_view_wants_requests(app.export.is_some(), trim_view_armable);
+    let (out_t, in_t) = match app.timeline.edit_point {
+        Some(ep) => {
+            let half = (app.project.frame_dur() * 0.5).max(1e-4);
+            ((ep.t - half).max(0.0), ep.t + half)
+        }
+        None => (0.0, 0.0),
+    };
+    trim_tick(app, ctx, true, want, out_t);
+    trim_tick(app, ctx, false, want, in_t);
+}
+
+/// Pure half of `monitor_tick`'s arm step: a JKL shuttle (nonzero rate) with an edit point selected and
+/// trim_view on arms the next zero-rate tick to commit a dynamic trim.
+fn dyn_trim_should_arm(rate: f64, trim_view_armable: bool) -> bool {
+    rate != 0.0 && trim_view_armable
+}
+
+/// Pure half of `monitor_tick`'s commit step: fires exactly once per `nonzero -> zero` transition while
+/// armed (never on a frame that was already zero last tick, so holding at a stop commits only once).
+fn dyn_trim_should_commit(armed: bool, last_rate: f64, rate: f64) -> bool {
+    armed && rate == 0.0 && last_rate != 0.0
+}
+
+/// Pure half of the trim view's export-pause rule: no new decode requests while exporting, trim_view is
+/// off, or nothing is selected to trim.
+fn trim_view_wants_requests(exporting: bool, trim_view_armable: bool) -> bool {
+    !exporting && trim_view_armable
+}
+
+/// The same ripple/roll composition `timeline.dynamic_trim` (tools_monitor.rs) exposes directly: apply
+/// `extend_edit` (trim-model's own Both=roll / Left,Right=ripple_trim dispatch — see `trim_actions.rs`'s
+/// `ExtendEdit`/`nudge_edit_point`, which this mirrors) from the edit point to the playhead where the
+/// shuttle stopped, one `push_undo_labeled("Dynamic trim")`.
+fn commit_dynamic_trim(app: &mut App) {
+    let Some(ep) = app.timeline.edit_point else { return };
+    let to = app.playhead;
+    let before = app.project.to_json();
+    if app.project.extend_edit(&ep, to) {
+        app.push_undo_labeled(before, "Dynamic trim");
+        app.timeline.edit_point = Some(crate::model::ops::trim::EditPoint { t: to, ..ep });
+        app.after_edit();
+    }
+}
+
+/// Service one `TrimSlot` (see `TrimView`'s doc comment for why this isn't the shared `AltRenderState`):
+/// drop it outright when `want` is false (export running, trim view off, or no edit point), else poll for
+/// a ready reply and start a fresh decode when `t`'s quantized key isn't already shown or in flight.
+fn trim_tick(app: &mut App, ctx: &egui::Context, out: bool, want: bool, t: f64) {
+    if !want {
+        let slot = if out { &mut app.monitor.trim.out } else { &mut app.monitor.trim.in_ };
+        *slot = TrimSlot::default();
+        return;
+    }
+    let key = quantize_time(t);
+    let reply = {
+        let slot = if out { &app.monitor.trim.out } else { &app.monitor.trim.in_ };
+        slot.player.as_ref().and_then(|p| p.take_layers_reply())
+    };
+    if let Some((rid, layers)) = reply {
+        let matches = {
+            let slot = if out { &app.monitor.trim.out } else { &app.monitor.trim.in_ };
+            slot.inflight.map(|(id, _)| id) == Some(rid)
+        };
+        if matches {
+            let (w, h) = app.canvas;
+            let frame = app.gpu_frame(&layers, t, (w / 2).max(16), (h / 2).max(16));
+            let slot = if out { &mut app.monitor.trim.out } else { &mut app.monitor.trim.in_ };
+            slot.inflight = None;
+            if frame.is_some() {
+                slot.frame = frame;
+                slot.shown_key = Some(key);
+            }
+        }
+    }
+    let need = {
+        let slot = if out { &app.monitor.trim.out } else { &app.monitor.trim.in_ };
+        slot.shown_key != Some(key) && slot.inflight.map(|(_, k)| k) != Some(key)
+    };
+    if need {
+        let (backend, text) = (app.backend(), app.text.clone());
+        let ctx = ctx.clone();
+        let max_w = app.canvas.0.max(16);
+        let App { monitor, project, .. } = app;
+        let slot = if out { &mut monitor.trim.out } else { &mut monitor.trim.in_ };
+        let player = slot.player.get_or_insert_with(|| Player::new(ctx, backend, text));
+        player.set_project(project);
+        let id = player.request_layers(t, max_w);
+        slot.inflight = Some((id, key));
+    }
+}
+
+/// The trim view's currently-decoded (outgoing, incoming) frames, for `preview_pane.rs` to hand to
+/// `PreviewCtx`. `None` per side until its first decode lands.
+pub(crate) fn trim_frames(app: &App) -> (Option<Arc<Frame>>, Option<Arc<Frame>>) {
+    (app.monitor.trim.out.frame.clone(), app.monitor.trim.in_.frame.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -541,5 +735,34 @@ mod tests {
             state.clear_if_stale();
             assert!(state.request.is_some(), "reasserted every frame — must never go stale");
         }
+    }
+
+    // ---- ws:pro-monitor ----
+    // `monitor_tick`/`trim_tick`/`commit_dynamic_trim` all need a live `&mut App` (this crate has no
+    // headless `App`-construction path anywhere — see this file's own top-of-file deviation notes and
+    // `tools_registry_tests.rs`'s matching one), so — same shape as every test above this section —
+    // these pin the PURE decision fns `monitor_tick` itself delegates to instead.
+
+    #[test]
+    fn dyn_trim_should_arm_needs_a_shuttle_with_trim_view_armable() {
+        assert!(dyn_trim_should_arm(4.0, true));
+        assert!(dyn_trim_should_arm(-2.0, true), "reverse shuttle (J) also arms it");
+        assert!(!dyn_trim_should_arm(0.0, true), "rate 0 (not shuttling) never arms it");
+        assert!(!dyn_trim_should_arm(4.0, false), "trim_view off or no edit point selected: never arms");
+    }
+
+    #[test]
+    fn dyn_trim_should_commit_fires_once_per_stop() {
+        assert!(dyn_trim_should_commit(true, 4.0, 0.0), "armed, rate just dropped to 0: commit");
+        assert!(!dyn_trim_should_commit(false, 4.0, 0.0), "never armed: no commit");
+        assert!(!dyn_trim_should_commit(true, 0.0, 0.0), "already 0 last tick: already committed, don't re-fire");
+        assert!(!dyn_trim_should_commit(true, 4.0, 2.0), "still shuttling (rate != 0): not a stop yet");
+    }
+
+    #[test]
+    fn trim_view_wants_requests_pauses_during_export() {
+        assert!(trim_view_wants_requests(false, true));
+        assert!(!trim_view_wants_requests(true, true), "an export in flight must issue zero new requests");
+        assert!(!trim_view_wants_requests(false, false), "trim_view off or no edit point: nothing to request");
     }
 }

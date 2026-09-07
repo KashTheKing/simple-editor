@@ -281,6 +281,13 @@ actions! {
     ViewTranscript => "view_transcript", "View Transcript", None;
     ExportTranscript => "export_transcript", "Export Transcript…", None;
     // ---- ws:pro-monitor ----
+    ToggleTrimView => "toggle_trim_view", "Trim View in Preview", None;
+    CompareWipe => "compare_wipe", "Wipe Compare", None;
+    SaveStill => "save_still", "Save Still", None;
+    ToggleScopes => "toggle_scopes", "Show / Hide Scopes", None;
+    MulticamCreate => "multicam_create", "Create Multicam from Selection", None;
+    NextAngle => "next_angle", "Next Angle at Playhead", None;
+    PrevAngle => "prev_angle", "Previous Angle at Playhead", None;
     // ---- ws:pro-timeline ----
     // Ctrl+F: free (Ctrl+Shift+F is ExportFrame, bare F is MatchFrame). ToggleOverview/RenameTrack
     // unbound by design (toolbar button / header double-click / palette only).

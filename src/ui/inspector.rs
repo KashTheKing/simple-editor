@@ -750,6 +750,18 @@ fn clip_section(
         }
     });
 
+    // ---- ws:text-titles: primary-first ordering ----
+    // For a Text clip, typography (Font/Size/Bold/Italic/Animation/Reveal/Wave — inspector_text.rs, which
+    // starts with `ui.strong("Text")`) is what a beginner needs first, so it renders BEFORE the generic
+    // Position/Scale/Rotation/Opacity transform grid below, not after. Wrapped in its own `!multi` gate
+    // (same greying rule as the rest of "zone 2") since it now runs ahead of that block.
+    let mut text_changed = false;
+    if clip.kind == ClipKind::Text {
+        ui.add_enabled_ui(!multi, |ui| {
+            text_changed = crate::ui::inspector_text::section(ui, project, &clip_ids, playhead, fonts, palette, undo);
+        });
+    }
+
     // Properties (Position/Scale/Rotation/Opacity or Volume/Pan), fades and blend — shared by audio and
     // video clips, extracted to inspector_audio.rs. Its own Grid, so it sits just after (not inside) the
     // "Clip" grid above. The audio-bus override itself is rendered separately below, at its original
@@ -759,7 +771,6 @@ fn clip_section(
     // Zone 2: everything below is per-clip data that does not bulk-edit — greyed out and non-interactive
     // while more than one clip is selected, exactly like the Name field above (the labels editor at the
     // very bottom is the one exception: it edits `Project.labels`, not this clip, so it stays live).
-    let mut text_changed = false;
     let mut bus_changed = false;
     ui.add_enabled_ui(!multi, |ui| {
         // primary-first: the section a beginner needs most for this ClipKind starts expanded, the rest
@@ -914,13 +925,13 @@ fn clip_section(
             }
         }
 
-        // Text/typography: multiline body, style grid, per-selection TextSpan overrides — extracted to
-        // inspector_text.rs. Its "Text style presets" sub-panel stays here (needs `&mut Settings`, which
-        // inspector_text::section's mandated signature has no room for), reusing that fn's persisted
+        // Text style presets sub-panel: the primary Text/typography block itself (multiline body, style
+        // grid, per-selection TextSpan overrides, Reveal/Wave, Animation row) now renders ABOVE the
+        // transform grid (ws:text-titles primary-first reorder, see this fn's top) via the SAME
+        // `inspector_text::section` call — not called again here. This sub-panel stays here (needs
+        // `&mut Settings`, which that fn's signature has no room for), reusing its persisted
         // text-selection state (same `("inspector_text_sel", id)` Id) and its `span_draft_at`/`set_span`.
         if clip.kind == ClipKind::Text {
-            text_changed = crate::ui::inspector_text::section(ui, project, &clip_ids, fonts, palette, undo);
-
             let text_sel_id = egui::Id::new(("inspector_text_sel", id));
             let text_sel: Option<(usize, usize)> =
                 ui.ctx().data(|d| d.get_temp::<Option<(usize, usize)>>(text_sel_id)).flatten();
@@ -1019,11 +1030,16 @@ fn clip_section(
                         if let Some(c) = project.clip_mut(id) {
                             let style = c.text.get_or_insert_with(Default::default);
                             style.font = p.font.clone();
-                            style.size = p.size;
+                            // ws:text-titles: size/letter_spacing are now Animated; "Apply to Clip" is a
+                            // one-shot discrete style change, so it sets the constant value and drops
+                            // any existing keys — same rule apply_clip_fields (tools_helpers.rs) follows.
+                            style.size.keys.clear();
+                            style.size.value = p.size as f64;
                             style.bold = p.bold;
                             style.italic = p.italic;
                             style.color = p.color;
-                            style.letter_spacing = p.letter_spacing;
+                            style.letter_spacing.keys.clear();
+                            style.letter_spacing.value = p.letter_spacing as f64;
                         }
                         text_changed = true;
                     }

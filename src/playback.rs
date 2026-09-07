@@ -1271,7 +1271,9 @@ pub(crate) fn decode_layers(
         // ws:transcript-captions: `cue_layer_at` returns Cows (owned only on the karaoke path)
         let mut style = base_style.into_owned();
         style.text = cue_text.into_owned();
-        let img = text.render(&style, w as f32 / project.width.max(1) as f32);
+        // ---- ws:text-titles ----: `t` here is decode_layers' own timeline time (subtitles have no
+        // clip-local time of their own — see compose.rs's identical call for the same reasoning).
+        let img = text.render(&style, w as f32 / project.width.max(1) as f32, t);
         if img.width > 1 || img.height > 1 {
             set.layers.push((LayerSet::SUBTITLES, img));
         }
@@ -1326,14 +1328,14 @@ fn layer_for(
                 };
                 let style = crate::model::TextStyle {
                     text: label_text,
-                    size: 32.0,
+                    size: crate::model::Animated::new(32.0),
                     color: [220, 220, 220, 255],
                     box_color: [40, 40, 40, 220],
                     box_padding: 16.0,
                     align: 1,
                     ..Default::default()
                 };
-                let img = text.render(&style, s);
+                let img = text.render(&style, s, clip.local(t));
                 if img.width > 1 || img.height > 1 {
                     set.layers.push((clip.id, img));
                 }
@@ -1367,7 +1369,7 @@ fn layer_for(
         }
         ClipKind::Text => {
             let Some(style) = &clip.text else { return };
-            let img = text.render(style, s);
+            let img = text.render(style, s, clip.local(t));
             if img.width > 1 || img.height > 1 {
                 set.layers.push((clip.id, img));
             }
@@ -1974,6 +1976,67 @@ mod tests {
         let mut reordered = project.clone();
         assert!(reordered.move_track(0, false), "adjacent swap must succeed with two video tracks");
         assert_eq!(video_dirty_spans(&project, &reordered), None, "Project::move_track's swap must force a full clear");
+    }
+
+    /// ws:pro-monitor review gap — `multicam_switch` (model/ops/multicam.rs) mutates the nested
+    /// sequence's tracks via `Project.sequences`, never via `Project.tracks` directly. `video_dirty_spans`
+    /// already treats any `old.sequences != new.sequences` diff as unbounded (`None`, full clear) —
+    /// checked up front, before the per-track bounded-span logic even runs — so an angle switch already
+    /// forces a full cache clear today. Pinned here (extending this file's existing `video_dirty_spans`
+    /// tests) so that behavior doesn't silently regress if the sequences check above is ever narrowed.
+    #[test]
+    fn multicam_switch_forces_full_cache_clear() {
+        use crate::model::Asset;
+
+        fn asset(id: crate::model::Id, dur: f64) -> Asset {
+            Asset {
+                id,
+                path: format!("C:/cam{id}.mp4"),
+                kind: ClipKind::Video,
+                duration: dur,
+                width: 1920,
+                height: 1080,
+                fps: 30.0,
+                audio_streams: Vec::new(),
+                codec: String::new(),
+                folder: String::new(),
+                tags: Vec::new(),
+                label: 0,
+                description: String::new(),
+                rel_path: None,
+                parent: None,
+                range: None,
+                effects: Vec::new(),
+            }
+        }
+
+        let mut p = Project::new();
+        let ids: Vec<crate::model::Id> = (0..2)
+            .map(|i| {
+                let aid = p.add_asset(asset(200 + i, 20.0));
+                let cid = p.new_id();
+                let mut c = Clip::new(cid, ClipKind::Video, format!("cam{i}"), 0.0, 10.0);
+                c.asset = aid;
+                let ti = if i == 0 { 0 } else { p.add_track(TrackKind::Video) };
+                p.tracks[ti].clips.push(c);
+                cid
+            })
+            .collect();
+        let seq_id = p.multicam_make(&ids, &[0.0, 0.0], "Multicam").unwrap();
+        let clip_id = p.insert_sequence_clip(seq_id, 0.0, None).unwrap();
+
+        let before = p.clone();
+        assert!(p.multicam_switch(clip_id, 5.0, 1), "the switch itself must succeed");
+        assert_ne!(
+            serde_json::to_string(&before.sequences).unwrap(),
+            serde_json::to_string(&p.sequences).unwrap(),
+            "sanity: the switch actually changed the nested sequence"
+        );
+        assert_eq!(
+            video_dirty_spans(&before, &p),
+            None,
+            "an angle switch changes Project.sequences, which video_dirty_spans already treats as unbounded"
+        );
     }
 
     #[test]

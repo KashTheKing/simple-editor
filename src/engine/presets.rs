@@ -328,6 +328,17 @@ pub fn is_container_template(t: &Template) -> bool {
     decode_template(t).is_some_and(|(c, _)| c.iter().any(|c| c.container))
 }
 
+// ---- ws:text-titles ----
+/// True when a template holds ONLY Text/Shape/Adjustment clips — the Gallery Titles tab filter for user
+/// templates. Mirrors `is_adjustment_template`/`is_container_template`; these three kinds are exactly
+/// the ones `Project::place_clips` never `continue`s past (it only skips a clip whose asset didn't remap,
+/// or a dangling `Sequence` — model/ops/templates.rs), so a Titles-tab template always places 1:1.
+pub fn is_text_template(t: &Template) -> bool {
+    decode_template(t).is_some_and(|(c, _)| {
+        !c.is_empty() && c.iter().all(|c| matches!(c.kind, ClipKind::Text | ClipKind::Shape | ClipKind::Adjustment))
+    })
+}
+
 // ---- ws:inspector-gallery ----
 /// One normalised (0..1 clip-relative) speed-ramp curve for `builtin_speed_ramps`.
 fn ramp(name: &str, points: &[(f64, f64)]) -> CurvePreset {
@@ -365,7 +376,7 @@ pub fn builtin_caption_styles() -> Vec<TextStyle> {
         caption("Classic", |_| {}),
         caption("Bold Outline", |t| {
             t.bold = true;
-            t.outline_width = 3.0;
+            t.outline_width.value = 3.0;
         }),
         caption("Boxed", |t| {
             t.box_color = [0, 0, 0, 200];
@@ -374,7 +385,7 @@ pub fn builtin_caption_styles() -> Vec<TextStyle> {
         caption("Yellow Pop", |t| {
             t.color = [255, 220, 0, 255];
             t.bold = true;
-            t.outline_width = 2.0;
+            t.outline_width.value = 2.0;
         }),
         caption("Soft Shadow", |t| {
             t.shadow = true;
@@ -383,18 +394,18 @@ pub fn builtin_caption_styles() -> Vec<TextStyle> {
             t.shadow_y = 2.0;
         }),
         caption("Minimal", |t| {
-            t.outline_width = 0.0;
-            t.size = 32.0;
+            t.outline_width.value = 0.0;
+            t.size.value = 32.0;
         }),
         caption("Big Impact", |t| {
             t.bold = true;
-            t.size = 56.0;
-            t.outline_width = 4.0;
+            t.size.value = 56.0;
+            t.outline_width.value = 4.0;
         }),
         caption("Karaoke", |t| {
             t.color = [255, 255, 255, 255];
             t.outline_color = [0, 120, 255, 255];
-            t.outline_width = 3.0;
+            t.outline_width.value = 3.0;
         }),
     ]
 }
@@ -425,6 +436,84 @@ pub fn capture_template(name: &str, project: &Project, clip_ids: &[crate::model:
 /// Decode a template into (clips, assets) ready for `Project::place_clips`. None on malformed JSON.
 pub fn decode_template(t: &Template) -> Option<(Vec<Clip>, Vec<Asset>)> {
     serde_json::from_str::<TemplateData>(&t.json).ok().map(|d| (d.clips, d.assets))
+}
+
+// ---- ws:text-titles ----
+/// 3 tiny built-in title templates for the Gallery Titles tab, literal Rust-constructed `TemplateData`
+/// (not JSON asset files — each encodes to well under 1 KB) built the same way `capture_template`
+/// assembles a user one. Every clip id is a placeholder (`0`) — `Project::place_clips` assigns fresh ids
+/// on placement, exactly as it does for a captured user template. Each has at least one clip with a
+/// non-empty `exposed` so Placing one always gives the Gallery's Customize panel something to show.
+pub fn builtin_titles() -> Vec<Template> {
+    fn encode(clips: Vec<Clip>) -> String {
+        serde_json::to_string(&TemplateData { clips, assets: Vec::new() }).unwrap_or_default()
+    }
+    let lower_third = {
+        let mut bar = Clip::new(0, ClipKind::Shape, "Bar", 0.0, 4.0);
+        if let Some(s) = bar.shape.as_mut() {
+            s.fill = [15, 15, 20, 210];
+            s.w = Animated::new(420.0);
+            s.h = Animated::new(70.0);
+        }
+        bar.x = Animated::new(-460.0);
+        bar.y = Animated::new(400.0);
+        let mut headline = Clip::new(0, ClipKind::Text, "Headline", 0.0, 4.0);
+        if let Some(t) = headline.text.as_mut() {
+            t.text = "Name Here".into();
+            t.size = Animated::new(36.0);
+            t.align = 0;
+        }
+        headline.x = Animated::new(-440.0);
+        headline.y = Animated::new(400.0);
+        headline.exposed = vec!["text.text".into(), "text.color".into()];
+        vec![bar, headline]
+    };
+    let title_card = {
+        let mut headline = Clip::new(0, ClipKind::Text, "Title", 0.0, 3.0);
+        if let Some(t) = headline.text.as_mut() {
+            t.text = "Your Title Here".into();
+            t.size = Animated::new(96.0);
+            t.bold = true;
+            t.box_color = [0, 0, 0, 160];
+            t.box_padding = 24.0;
+        }
+        headline.exposed = vec!["text.text".into(), "text.color".into(), "text.size".into()];
+        vec![headline]
+    };
+    let caption_box = {
+        let mut cap = Clip::new(0, ClipKind::Text, "Caption", 0.0, 4.0);
+        if let Some(t) = cap.text.as_mut() {
+            t.text = "Caption text".into();
+            t.size = Animated::new(30.0);
+            t.box_color = [0, 0, 0, 180];
+            t.box_padding = 10.0;
+        }
+        cap.y = Animated::new(420.0);
+        cap.exposed = vec!["text.text".into()];
+        vec![cap]
+    };
+    vec![
+        Template { name: "Lower Third".into(), json: encode(lower_third) },
+        Template { name: "Title Card".into(), json: encode(title_card) },
+        Template { name: "Caption Box".into(), json: encode(caption_box) },
+    ]
+}
+
+/// Rewrite `t`'s captured clips, ADDING each `(clip_index, field)` pair's `field` to that clip's
+/// `Clip.exposed` (position within the template's own clip list, not a live id — `clip_index` addresses
+/// `decode_template(t)`'s clip Vec by position). The `templates.expose` MCP tool's entire pure body.
+/// `None` if `t.json` doesn't decode, or any `clip_index` is out of range — no partial rewrite either
+/// way, matching `decode_template`'s own all-or-nothing shape.
+pub fn expose_fields(t: &Template, fields: &[(usize, String)]) -> Option<Template> {
+    let (mut clips, assets) = decode_template(t)?;
+    for (i, field) in fields {
+        let c = clips.get_mut(*i)?;
+        if !c.exposed.iter().any(|e| e == field) {
+            c.exposed.push(field.clone());
+        }
+    }
+    let json = serde_json::to_string(&TemplateData { clips, assets }).ok()?;
+    Some(Template { name: t.name.clone(), json })
 }
 
 #[cfg(test)]
@@ -840,5 +929,36 @@ mod tests {
         names.sort();
         names.dedup();
         assert_eq!(names.len(), 8, "every style has a unique name");
+    }
+
+    // ---- ws:text-titles ----
+
+    #[test]
+    fn builtin_titles_decode_and_are_text_templates() {
+        let titles = builtin_titles();
+        assert_eq!(titles.len(), 3);
+        let mut names: Vec<&str> = titles.iter().map(|t| t.name.as_str()).collect();
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), 3, "every title has a unique name");
+        for t in &titles {
+            let (clips, assets) = decode_template(t).unwrap_or_else(|| panic!("{} failed to decode", t.name));
+            assert!(assets.is_empty(), "{}: titles carry no media assets", t.name);
+            assert!(!clips.is_empty(), "{}: at least one clip", t.name);
+            assert!(is_text_template(t), "{}: must be a Text/Shape/Adjustment-only template", t.name);
+            assert!(
+                clips.iter().any(|c| !c.exposed.is_empty()),
+                "{}: at least one clip exposes a Customize field",
+                t.name
+            );
+        }
+    }
+
+    #[test]
+    fn is_text_template_rejects_video_clips() {
+        let p = Project::from_media(asset(1, 5.0, 1));
+        let vid_id = p.all_clips().find(|(_, c)| c.kind == ClipKind::Video).unwrap().1.id;
+        let vid_template = capture_template("Vid", &p, &[vid_id]);
+        assert!(!is_text_template(&vid_template));
     }
 }

@@ -292,6 +292,12 @@ pub(crate) enum Glyph {
     /// section / "View transcript" window).
     Transcript,
     // ---- ws:pro-monitor ----
+    /// A vertical split with opposite-shaded halves — the Compare (wipe/side-by-side) toggle.
+    Compare,
+    /// A small oscilloscope trace — the Scopes window toggle.
+    Scope,
+    /// A 2x2 grid of squares — the multicam angle-grid window.
+    Grid4,
     // ---- ws:pro-timeline ----
     /// A filled square with a thin ring — the track-header colour swatch. Named `Swatch`, not
     /// `Palette`, to avoid colliding with the pervasive `use crate::theme::Palette;`.
@@ -299,6 +305,8 @@ pub(crate) enum Glyph {
     /// Three stacked bars of differing width — the view-preset combo / overview toggle.
     Rows,
     // ---- ws:text-titles ----
+    /// A small "T" over a horizontal bar — the Gallery's Titles tab button.
+    Titles,
     // ---- ws:docs-refresh ----
 }
 
@@ -428,10 +436,14 @@ impl Glyph {
         // ---- ws:transcript-captions ----
         Glyph::Transcript,
         // ---- ws:pro-monitor ----
+        Glyph::Compare,
+        Glyph::Scope,
+        Glyph::Grid4,
         // ---- ws:pro-timeline ----
         Glyph::Swatch,
         Glyph::Rows,
         // ---- ws:text-titles ----
+        Glyph::Titles,
         // ---- ws:docs-refresh ----
     ];
 
@@ -565,10 +577,14 @@ impl Glyph {
             // ---- ws:transcript-captions ----
             Glyph::Transcript => "transcript",
             // ---- ws:pro-monitor ----
+            Glyph::Compare => "compare",
+            Glyph::Scope => "scope",
+            Glyph::Grid4 => "grid4",
             // ---- ws:pro-timeline ----
             Glyph::Swatch => "swatch",
             Glyph::Rows => "rows",
             // ---- ws:text-titles ----
+            Glyph::Titles => "titles",
             // ---- ws:docs-refresh ----
         }
     }
@@ -1975,7 +1991,34 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
             p.line_segment([c + egui::vec2(-6.5, 0.0), c + egui::vec2(-1.5, 0.0)], Stroke::new(2.4, fg));
             p.line_segment([c + egui::vec2(0.5, 0.0), c + egui::vec2(4.5, 0.0)], Stroke::new(1.6, dim));
             p.line_segment([c + egui::vec2(-6.5, 4.5), c + egui::vec2(2.0, 4.5)], Stroke::new(1.6, dim));
-        } // ---- ws:pro-monitor ----
+        }
+        // ---- ws:pro-monitor ----
+        // compare: a square split diagonally, one half lit
+        Glyph::Compare => {
+            let rect = egui::Rect::from_center_size(c, egui::vec2(12.0, 12.0));
+            p.rect_stroke(rect, CornerRadius::ZERO, stroke, StrokeKind::Inside);
+            let tri = vec![rect.left_bottom(), rect.right_bottom(), rect.right_top()];
+            p.add(egui::Shape::convex_polygon(tri, fg.gamma_multiply(0.55), Stroke::NONE));
+        }
+        // scope: a small oscilloscope trace inside a frame
+        Glyph::Scope => {
+            let rect = egui::Rect::from_center_size(c, egui::vec2(14.0, 10.0));
+            p.rect_stroke(rect, CornerRadius::same(1), stroke, StrokeKind::Inside);
+            let pts = vec![
+                rect.left_center() + egui::vec2(1.0, 2.0),
+                rect.center() + egui::vec2(-3.0, -3.0),
+                rect.center() + egui::vec2(0.0, 2.0),
+                rect.right_center() + egui::vec2(-1.0, -2.0),
+            ];
+            p.add(egui::Shape::line(pts, Stroke::new(1.2, fg)));
+        }
+        // grid4: a 2x2 grid of small squares
+        Glyph::Grid4 => {
+            for (dx, dy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+                let sq = egui::Rect::from_center_size(c + egui::vec2(dx * 4.0, dy * 4.0), egui::vec2(6.0, 6.0));
+                p.rect_stroke(sq, CornerRadius::ZERO, stroke, StrokeKind::Inside);
+            }
+        }
         // ---- ws:pro-timeline ----
         // swatch: a filled square with a thin ring — the track-header colour button
         Glyph::Swatch => {
@@ -1988,8 +2031,17 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
             for (dy, w) in [(-4.5_f32, 11.0_f32), (0.0, 7.0), (4.5, 9.0)] {
                 p.line_segment([c + egui::vec2(-w / 2.0, dy), c + egui::vec2(w / 2.0, dy)], Stroke::new(2.0, fg));
             }
-        } // ---- ws:text-titles ----
-          // ---- ws:docs-refresh ----
+        }
+        // ---- ws:text-titles ----
+        // titles: a bold "T" over a thin underline bar (a title-card glyph)
+        Glyph::Titles => {
+            let top = c + egui::vec2(0.0, -5.5);
+            p.line_segment([top + egui::vec2(-5.0, 0.0), top + egui::vec2(5.0, 0.0)], Stroke::new(2.2, fg));
+            p.line_segment([top, c + egui::vec2(0.0, 4.0)], Stroke::new(2.2, fg));
+            let dim = fg.gamma_multiply(0.55);
+            p.line_segment([c + egui::vec2(-6.0, 6.5), c + egui::vec2(6.0, 6.5)], Stroke::new(1.6, dim));
+        }
+        // ---- ws:docs-refresh ----
     }
 }
 
