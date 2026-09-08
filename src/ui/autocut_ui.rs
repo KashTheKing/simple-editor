@@ -83,9 +83,12 @@ impl Default for SceneCutState {
     }
 }
 
-/// "Beats" section state: BPM readout from the last "Detect Beats".
+/// "Beats" section state: the last "Detect Beats" preview (per-clip onset times, source seconds; no
+/// mutation) plus its BPM readout. "Add Markers"/"Split at Beats" act on this cached preview instead
+/// of re-detecting, mirroring `SceneCutState`'s Detect-then-commit split.
 #[derive(Default)]
 pub struct BeatsState {
+    cuts: Vec<(Id, Vec<f64>)>,
     pub bpm: Option<f64>,
     pub status: String,
 }
@@ -515,9 +518,10 @@ fn scene_cuts_ui(
     }
 }
 
-/// Beats section: onset detection over the current selection's audio target(s), Detect Beats (adds
-/// markers) and Split at Beats. Shares `analysis::detect_beat_markers`/`split_beats` with
-/// `Action::DetectBeats`/`Action::SplitAtBeats` and `audio.beats` so the onset-to-marker math is never
+/// Beats section: "Detect Beats" is a pure preview (onset times + BPM, no mutation, no undo pushed) —
+/// only "Add Markers" / "Split at Beats" write to the project, matching the Silence/Scene-cuts
+/// sections' detect-then-commit shape. Shares `analysis::detect_beats`/`beat_markers`/`split_beats`
+/// with `Action::DetectBeats`/`Action::SplitAtBeats` and `audio.beats` so the onset math is never
 /// re-derived per entry point.
 #[allow(clippy::too_many_arguments)]
 fn beats_ui(
@@ -532,22 +536,27 @@ fn beats_ui(
     marked: &mut Vec<Id>,
 ) {
     let targets = audio_targets(project, selection);
+    if ui.add_enabled(!targets.is_empty(), Button::new("Detect Beats")).clicked() {
+        let (per_clip, bpm) = analysis::detect_beats(project, &targets, 0.25, settings.beat_thr, &mut asset_peaks(waveforms));
+        let total: usize = per_clip.iter().map(|(_, o)| o.len()).sum();
+        state.status = if total == 0 { "No beats found".into() } else { format!("{total} beat(s) detected") };
+        state.bpm = bpm;
+        state.cuts = per_clip;
+    }
+    let ready = state.cuts.iter().any(|(_, o)| !o.is_empty());
     ui.horizontal(|ui| {
-        if ui.add_enabled(!targets.is_empty(), Button::new("Detect Beats")).clicked() {
-            undo(project); // ponytail: pushed even if zero onsets are found (harmless no-op undo)
-            let (ids, bpm) =
-                analysis::detect_beat_markers(project, &targets, 0.25, settings.beat_thr, &mut asset_peaks(waveforms));
-            state.status =
-                if ids.is_empty() { "No beats found".into() } else { format!("{} beat marker(s)", ids.len()) };
+        if ui.add_enabled(ready, Button::new("Add Markers")).clicked() {
+            undo(project);
+            let ids = analysis::beat_markers(project, &state.cuts);
+            state.status = format!("Added {} beat marker(s)", ids.len());
             if !ids.is_empty() {
                 marked.extend(ids);
                 *changed = true;
             }
-            state.bpm = bpm;
         }
-        if ui.add_enabled(!targets.is_empty(), Button::new("Split at Beats")).clicked() {
-            undo(project); // ponytail: same no-op-undo note as Detect Beats above
-            let n = analysis::split_beats(project, &targets, 0.25, settings.beat_thr, &mut asset_peaks(waveforms));
+        if ui.add_enabled(ready, Button::new("Split at Beats")).clicked() {
+            undo(project);
+            let n = analysis::split_beats(project, &state.cuts);
             state.status = format!("Split at {n} beat(s)");
             if n > 0 {
                 *changed = true;

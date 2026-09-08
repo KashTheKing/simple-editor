@@ -112,14 +112,16 @@ pub const TOOLS: &[ToolDef] = &[
             if a.bool("as_markers").unwrap_or(false) {
                 let (marker_ids, bpm) = {
                     let App { project, waveforms, .. } = app;
-                    analysis::detect_beat_markers(project, &ids, refractory, sensitivity, &mut asset_peaks(waveforms))
+                    let (per_clip, bpm) = analysis::detect_beats(project, &ids, refractory, sensitivity, &mut asset_peaks(waveforms));
+                    (analysis::beat_markers(project, &per_clip), bpm)
                 };
                 app.fire_markers_added(&marker_ids);
                 Ok(ToolOutcome::Done(json!({"ok": true, "marker_ids": marker_ids, "bpm": bpm})))
             } else if a.bool("split").unwrap_or(false) {
                 let n = {
                     let App { project, waveforms, .. } = app;
-                    analysis::split_beats(project, &ids, refractory, sensitivity, &mut asset_peaks(waveforms))
+                    let (per_clip, _bpm) = analysis::detect_beats(project, &ids, refractory, sensitivity, &mut asset_peaks(waveforms));
+                    analysis::split_beats(project, &per_clip)
                 };
                 Ok(ToolOutcome::Done(json!({"ok": true, "cuts": n})))
             } else {
