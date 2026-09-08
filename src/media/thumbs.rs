@@ -161,6 +161,19 @@ impl ThumbCache {
         Some((id, size))
     }
 
+    // ---- ws:jobs-panel ----
+    /// Thumbnails queued or decoding. None = the worker holds the lock right now (never waits for it).
+    pub fn queue_len(&self) -> Option<usize> {
+        self.shared.0.try_lock().ok().map(|st| st.queue.len() + st.pending.len())
+    }
+
+    /// Hold the worker-shared lock while `f` runs — pins `queue_len`'s try_lock (jobs_pane tests).
+    #[cfg(test)]
+    pub(crate) fn hold_lock_for_test(&self, f: impl FnOnce()) {
+        let _g = self.shared.0.lock().unwrap();
+        f();
+    }
+
     pub fn clear(&mut self) {
         self.textures.clear();
         if let Ok(mut st) = self.shared.0.lock() {

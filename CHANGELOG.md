@@ -2,6 +2,26 @@
 
 ## beta-0.3.0
 
+### Jobs pane (issue #64)
+A dockable `Pane::Jobs` (View menu / `Ctrl+K` / the new menu-bar queue indicator; hidden by default
+in every preset via `stack_unplaced`, like Source) lists every background task — the export slot and
+render queue, bakes, converts, media/MCP jobs, the proxy build and the proxies still to build, URL
+downloads, whisper/tracking/TTS, recordings, the waveform/thumbnail/pre-render caches, ffprobe — with
+progress/ETA, Cancel where the job honours it (tts/tracking greyed with a tooltip; caches get one
+whole-queue Clear), ▲▼ on the export queue and "Build next" on a queued proxy (`App.proxy_next`, via
+the extracted pure `pick_next_proxy`). It replaces the four ad-hoc floating job windows
+("Converting" / "Downloading" / "Rendering in place" / "Media"; `job_window` is deleted). Finished rows
+stay in a 60 s "Recent" log. `Settings.jobs_auto_reveal` (default on) surfaces the tab through
+`layout_ctl::surface` (Dynamic switches, Granular glows; a hidden tab is never re-opened — the
+indicator covers that). MCP: `jobs.list/cancel/reorder/proxy_next` (`Ui`/`Read`, never undo).
+Worker-shared cache mutexes are read with `try_lock` only (`assert`ed by
+`try_lock_never_blocks_the_snapshot`).
+- Tripwire count update: `pre_existing_repaint_sites_unchanged_and_named` drops from 15 to 14 —
+  `job_window`'s one raw `request_repaint_after` (mod.rs) is deleted with the fn; `jobs_pane::tick`
+  routes the same 150 ms cadence through `App::animate_until`, gated on a Running row and the pane or
+  indicator having drawn that frame.
+- Verification aid: `--screenshot` with `SE_JOBS_PANE=1` surfaces the Jobs tab before the shot.
+
 The full UI/UX overhaul (`plans/ui-overhaul/`): 19 feature workstreams across waves 1-3 plus the
 three wave-0 refactor PRs (22 total), closed out by this wave-4 docs pass (issue #38). This section folds what
 used to be a separate `## unreleased` heading (PRs #12/#14, plus issues #16/#18/#21/#29/#32, kept

@@ -60,6 +60,9 @@ mod frame;
 mod gallery_ctl;
 mod gpu;
 mod jobs;
+// ---- ws:jobs-panel ----
+mod jobs_pane;
+mod tools_jobs;
 // ---- ws:layout-modes-onboarding ----
 mod layout_ctl;
 // ---- ws:source-monitor ----
@@ -424,6 +427,11 @@ pub struct App {
     /// Dynamic-trim arming, the dual-frame trim view's decode slots, Scopes open/closed and the
     /// eyedropper's armed (clip, target) — see `monitor.rs`'s `MonitorState` doc comment.
     monitor: monitor::MonitorState,
+    // ---- ws:jobs-panel ----
+    /// Jobs pane state: the per-frame row snapshot + the recent-finished log (`jobs_pane::tick`).
+    jobs: crate::ui::jobs_ui::JobsState,
+    /// "Build this proxy next" (a source path) — honoured by `jobs::pick_next_proxy`, cleared once it starts.
+    proxy_next: Option<String>,
     // ---- ws:pro-timeline ----
     /// Ctrl+F Find window state (open/closed, query buffer).
     find: crate::ui::find_ui::FindState,
@@ -440,24 +448,6 @@ pub struct App {
 /// of `app`, so it can't reach `caches::cache_bytes` directly) reads this for its "Clear Caches" row.
 pub fn caches_bytes_for_ui() -> u64 {
     caches::cache_bytes()
-}
-
-/// Non-blocking progress window for background jobs (conversions, downloads): one row per job with a
-/// progress bar and Cancel. Draws nothing when there are no jobs.
-fn job_window(ctx: &egui::Context, title: &str, jobs: &[(Arc<Progress>, String)]) {
-    if jobs.is_empty() {
-        return;
-    }
-    egui::Window::new(title).resizable(false).default_width(320.0).show(ctx, |ui| {
-        for (prog, name) in jobs {
-            ui.label(egui::RichText::new(name).small());
-            ui.add(egui::ProgressBar::new(prog.fraction()).show_percentage().text(prog.status()));
-            if ui.button("Cancel").clicked() {
-                prog.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
-            }
-        }
-    });
-    ctx.request_repaint_after(Duration::from_millis(150));
 }
 
 /// Marker in the undo stack for "a pane was dragged somewhere else". The arrangement itself lives in
@@ -849,6 +839,9 @@ impl App {
             transcript: transcript_ctl::TranscriptState::default(),
             // ---- ws:pro-monitor ----
             monitor: monitor::MonitorState::default(),
+            // ---- ws:jobs-panel ----
+            jobs: Default::default(),
+            proxy_next: None,
             // ---- ws:pro-timeline ----
             find: crate::ui::find_ui::FindState::default(),
         };
@@ -1410,6 +1403,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:text-titles ----
     tools_titles::TOOLS,
     // ---- ws:docs-refresh ----
+    // ---- ws:jobs-panel ----
+    tools_jobs::TOOLS,
 ];
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
@@ -1449,6 +1444,8 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     tools_timeline_pro::act,
     // ---- ws:text-titles ----
     // ---- ws:docs-refresh ----
+    // ---- ws:jobs-panel ----
+    jobs_pane::act,
 ];
 
 pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
@@ -1486,6 +1483,8 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:pro-timeline ----
     // ---- ws:text-titles ----
     // ---- ws:docs-refresh ----
+    // ---- ws:jobs-panel ----
+    jobs_pane::tick,
 ];
 
 pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
@@ -1510,7 +1509,7 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:layout-modes-onboarding ----
     layout_ctl::windows,
     // ---- ws:media-library ----
-    media_sync::windows,
+    // (media_sync::windows removed by ws:jobs-panel — its job window lives in the Jobs pane now)
     // ---- ws:source-monitor ----
     // ---- ws:timeline-trim-gestures ----
     // ---- ws:transcript-captions ----
@@ -1550,6 +1549,8 @@ pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
     // ---- ws:pro-timeline ----
     // ---- ws:text-titles ----
     // ---- ws:docs-refresh ----
+    // ---- ws:jobs-panel ----
+    jobs_pane::draw,
 ];
 
 /// The dominant kind of the current selection, for a contextual inspector/palette to key off without

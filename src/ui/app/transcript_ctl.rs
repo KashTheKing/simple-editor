@@ -61,6 +61,20 @@ pub(super) struct TranscriptState {
     pub(super) window: transcript_ui::TranscriptWindow,
 }
 
+// ---- ws:jobs-panel ----
+impl TranscriptState {
+    /// Every running job here as (kind, label, progress) rows for the Jobs pane (read-only).
+    pub(super) fn jobs(&self) -> Vec<super::jobs_pane::ProgJob> {
+        use crate::ui::jobs_ui::JobKind;
+        let mut v = Vec::new();
+        v.extend(self.runs.iter().map(|r| (JobKind::Transcribe, r.label.clone(), r.job.progress.clone())));
+        v.extend(self.tracking.iter().map(|r| (JobKind::Tracking, "Tracking".to_string(), r.inner.clone())));
+        v.extend(self.tts.iter().map(|r| (JobKind::Tts, "Speech".to_string(), r.inner.clone())));
+        v.extend(self.download.iter().map(|(p, _)| (JobKind::ModelDownload, "whisper model".to_string(), p.clone())));
+        v
+    }
+}
+
 /// The clip the menu/palette actions target: the first selected clip with footage, else the first
 /// selected clip at all (a right-click selects the clip under the pointer first — timeline/mod.rs).
 fn first_clip(app: &App) -> Option<Id> {

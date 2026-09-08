@@ -121,6 +121,10 @@ pub enum Pane {
     /// content lands with ws:source-monitor (wave 2). Tab-stacked hidden behind Library in every
     /// preset (`stack_unplaced`), never in `ROUND3`.
     Source,
+    // ---- ws:jobs-panel ----
+    /// Every background job (running / queued / recent) with Cancel and queue reordering. Tab-stacked
+    /// hidden in every preset (`stack_unplaced`, like `Source`), never in `ROUND3`.
+    Jobs,
 }
 
 impl Pane {
@@ -169,6 +173,8 @@ impl Pane {
         // ---- ws:pro-timeline ----
         // ---- ws:text-titles ----
         // ---- ws:docs-refresh ----
+        // ---- ws:jobs-panel ----
+        Pane::Jobs,
     ];
     /// Panes added in round 3 — a stored layout without them is from an older version (see `from_json`).
     pub const ROUND3: [Pane; 4] = [Pane::Tools, Pane::Nodes, Pane::Mixer, Pane::Markers];
@@ -195,6 +201,8 @@ impl Pane {
             Pane::History => Glyph::Hourglass,
             // ws:source-monitor (wave 2) may pick a more specific glyph later.
             Pane::Source => Glyph::Camera,
+            // reuses export-deliver's queue glyph — no new Glyph variant
+            Pane::Jobs => Glyph::Queue,
         }
     }
     pub fn title(self) -> &'static str {
@@ -218,6 +226,7 @@ impl Pane {
             Pane::Moodboard => "Moodboard",
             Pane::History => "History",
             Pane::Source => "Source",
+            Pane::Jobs => "Jobs",
         }
     }
 }
@@ -1199,10 +1208,10 @@ mod tests {
                 assert!(l.tree.tiles.find_pane(&p).is_some(), "{p:?} missing from the {name} layout");
                 // ws:registries-schema-hooks: Pane::Source is deliberately a hidden trailing tab
                 // (stack_unplaced) — every OTHER pane stays visible exactly as before.
-                if p != Pane::Source {
+                if !matches!(p, Pane::Source | Pane::Jobs) {
                     assert!(l.is_visible(p), "{p:?} hidden in the {name} layout");
                 } else {
-                    assert!(!l.is_visible(p), "Pane::Source must land hidden (stack_unplaced) in {name}");
+                    assert!(!l.is_visible(p), "{p:?} must land hidden (stack_unplaced) in {name}");
                 }
             }
         }
@@ -1219,6 +1228,9 @@ mod tests {
         assert_eq!(Pane::ROUND3, [Pane::Tools, Pane::Nodes, Pane::Mixer, Pane::Markers]);
         assert!(Pane::ALL.contains(&Pane::Source));
         assert!(!Pane::ROUND3.contains(&Pane::Source));
+        // ws:jobs-panel: same rule for the second real pane
+        assert!(Pane::ALL.contains(&Pane::Jobs));
+        assert!(!Pane::ROUND3.contains(&Pane::Jobs));
     }
 
     /// The requested default: two rows of four columns, none of them opening unusably small.
@@ -1265,7 +1277,7 @@ mod tests {
                 vec![Pane::Timeline],
                 vec![Pane::Mixer, Pane::AutoCut, Pane::Subtitles],
                 // Pane::Source rides along as a hidden trailing tab here (stack_unplaced)
-                vec![Pane::Markers, Pane::Planner, Pane::Moodboard, Pane::History, Pane::Source],
+                vec![Pane::Markers, Pane::Planner, Pane::Moodboard, Pane::History, Pane::Source, Pane::Jobs],
             ]
         );
         // the Preview column really is vertical (Tools beneath, not beside)
@@ -1478,6 +1490,7 @@ mod tests {
                 assert!(l.is_visible(p), "{p:?} hidden in the {name} workspace");
             }
             assert!(!l.is_visible(Pane::Source), "Source lands hidden (stack_unplaced) in {name}");
+            assert!(!l.is_visible(Pane::Jobs), "Jobs lands hidden (stack_unplaced) in {name}");
             assert!(Layout::from_json(&l.to_json()).is_some(), "{name} does not round-trip");
         }
         assert!(workspace_layout("Nope").is_none());
@@ -1487,7 +1500,7 @@ mod tests {
             assert!(l.is_visible(p) && in_front(&l, p), "{p:?} is not front and centre in Simple");
         }
         let lib = l.tree.tiles.parent_of(l.tree.tiles.find_pane(&Pane::Library).unwrap()).unwrap();
-        for p in [Pane::Effects, Pane::Mixer, Pane::Source, Pane::History] {
+        for p in [Pane::Effects, Pane::Mixer, Pane::Source, Pane::History, Pane::Jobs] {
             let id = l.tree.tiles.find_pane(&p).unwrap();
             assert_eq!(l.tree.tiles.parent_of(id), Some(lib), "{p:?} is not tabbed behind Library in Simple");
         }

@@ -1168,6 +1168,12 @@ fn percent_decode(s: &str) -> String {
 static PROBING: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 /// Is this asset still waiting for its metadata? (the library says "Loading…" instead of a duration)
+// ---- ws:jobs-panel ----
+/// Files whose ffprobe is still running (the Jobs pane's aggregate row).
+pub fn probing_count() -> usize {
+    PROBING.try_lock().map(|v| v.len()).unwrap_or(0)
+}
+
 pub fn is_probing(path: &str) -> bool {
     PROBING.lock().map(|v| v.iter().any(|p| p == path)).unwrap_or(false)
 }

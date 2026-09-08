@@ -74,6 +74,11 @@ impl WaveformCache {
     pub fn clear(&mut self) {
         self.state = Arc::default();
     }
+    // ---- ws:jobs-panel ----
+    /// Peaks still computing. None = a worker holds the lock right now (never waits for it).
+    pub fn pending_count(&self) -> Option<usize> {
+        self.state.try_lock().ok().map(|st| st.pending.len())
+    }
     /// Non-blocking. Returns the peaks if available; otherwise starts computing them in the background
     /// (once) and returns None. Calls `ctx.request_repaint()` when a computation finishes.
     pub fn get(&mut self, path: &str, stream: usize) -> Option<Arc<Peaks>> {

@@ -77,7 +77,7 @@ curl -s -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' -H 'content-type: ap
   http://127.0.0.1:<port>/mcp
 ```
 
-**Verified against a live call at wave-3-complete: 236 tools, exactly matching this table's count.**
+**Verified against a live call at jobs-panel (#64): 240 tools, exactly matching this table's count.**
 `kind` isn't part of the wire response (`mcp::tools::list_json` only serialises
 `name`/`description`/`inputSchema` — see `src/mcp/tools.rs`), so the `Kind` column below is a source
 cross-reference (each tool's own `ToolDef.kind` in its `tools_*.rs` file), not something you'll see
@@ -87,7 +87,7 @@ finishes. Names, args and descriptions below are transcribed directly from the `
 above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expiring bridge (see
 "Luau scripting" above).
 
-**Totals by kind**: 109 Mutate, 69 Read, 45 Ui, 13 Job.
+**Totals by kind**: 109 Mutate, 70 Read, 48 Ui, 13 Job.
 
 **`audio.*`** (13 tools)
 
@@ -223,6 +223,15 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | Tool | Kind | Args | Description |
 |---|---|---|---|
 | `inspector.folds` | Ui | open, section | Set one inspector section's remembered open/closed state (Settings.inspector_folds). No undo — Settings-level, like other UI prefs. |
+
+**`jobs.*`** (4 tools)
+
+| Tool | Kind | Args | Description |
+|---|---|---|---|
+| `jobs.cancel` | Ui | id | Cancel a job by its jobs.list id (sets its cancel flag / drops a queued export / stops a recording); errors for ids that cannot be cancelled. |
+| `jobs.list` | Read | - | Every background job the Jobs pane shows (running / queued), with progress, ETA and whether it can be cancelled or reordered. |
+| `jobs.proxy_next` | Ui | path | Build this source's proxy next (path = the asset path); it must be a video above proxy size without a proxy yet. |
+| `jobs.reorder` | Ui | delta, id | Move a queued export (id 'queue:<i>') by delta positions in the render queue (only the export queue has an order). |
 
 **`labels.*`** (2 tools)
 

@@ -69,16 +69,8 @@ impl App {
                 (false, false) => self.convert_dialog = None,
             }
         }
-        // background conversions / downloads: progress + cancel
-        let convert_jobs: Vec<(Arc<Progress>, String)> = self
-            .convert_jobs
-            .iter()
-            .map(|(p, o)| (p.clone(), o.file_name().unwrap_or_default().to_string_lossy().into_owned()))
-            .collect();
-        job_window(ctx, "Converting", &convert_jobs);
-        let downloads: Vec<(Arc<Progress>, String)> =
-            self.downloads.iter().map(|d| (d.progress.clone(), d.url.clone())).collect();
-        job_window(ctx, "Downloading", &downloads);
+        // ---- ws:jobs-panel ----
+        // conversions / downloads / bakes: the Jobs pane (jobs_pane.rs) replaced the three floating job windows
         // retime (Ctrl+R)
         if self.retime.open {
             let changed = {
@@ -126,9 +118,6 @@ impl App {
                 None => {}
             }
         }
-        // ---- ws:export-deliver: bakes (render in place / stabilize / denoise / slow-mo) ----
-        let bakes: Vec<(Arc<Progress>, String)> = self.bake_jobs.iter().map(|j| (j.progress(), j.title())).collect();
-        job_window(ctx, "Rendering in place", &bakes);
         // save template / save layout profile
         if let Some(name) = Self::name_window(ctx, "Save Template", &mut self.template_name) {
             let t = crate::engine::presets::capture_template(&name, &self.project, &self.selection);
