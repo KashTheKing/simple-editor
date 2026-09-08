@@ -7,6 +7,23 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
 
 ---
 
+- **se-fix (2026-09-07), "line tool snaps to the wrong direction" bug report — already fixed, no
+  code change:** investigated a report that shape drawing doesn't render during the drag and the
+  Line tool snaps to a direction that doesn't match the drag on release. Root cause was real but
+  already fixed by `6d5c6e1` ("fix(shapes): a line keeps the point it was started from",
+  canvas-handles-monitor/pro-monitor era) — `constrain_drag`/`signed_min` in `ui/preview.rs` keep
+  the drag's signed half-extents all the way through `draw_shape_preview` (live rubber band) and
+  `drag_stopped` (final `new_shape`), and `engine::shapes::signed_half` renders Line/Arrow between
+  the same signed corners, so the preview and the final render always agree. `6d5c6e1` is an
+  ancestor of `main`@`00be9b0` (this worktree's base) and is covered by
+  `line_tool_keeps_the_press_as_its_origin`, `a_shape_drag_emits_exactly_one_shape`,
+  `shift_locks_a_line_to_45_degrees` and 4 more in `ui/preview.rs`'s test module — all pass.
+  Cross-checked live against the actually-running `target/release/simple-editor.exe` (built same
+  day from the same commit, confirmed via the MCP co-editing tools): `shapes_add` with a signed
+  negative height rendered in the correct direction via `frame_export`, and `shapes_add` → `undo`
+  cleanly removed the clip with one history entry. If this report recurs, check the reporter's exe
+  build date/hash before re-investigating the drag math — it's solid as of `00be9b0`.
+
 - **tab hover cursor (2026-09-07):** egui_tiles' `Behavior::tab_hover_cursor_icon()` defaults to
   `CursorIcon::Grab`, which Windows renders as the 4-arrow move cursor — misleading for a
   click-to-switch tab (dragging still works, it just doesn't need to announce itself with that
