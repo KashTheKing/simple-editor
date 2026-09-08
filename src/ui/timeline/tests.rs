@@ -991,9 +991,11 @@ fn headless_marker_click_wins_over_split_body_bottom_zone() {
     assert_eq!(h.state.selected_marker, Some(mid), "marker flag still wins a click on a split-body row");
     assert_eq!(h.project.tracks[0].clips.len(), 1, "the marker click must not also be read as a split");
 
-    // sanity: the bottom-zone hairline the marker "wins over" really is live on this row - a plain
-    // click lower in the body (away from the marker, clear of the HANDLE_H resize strip at the very
-    // bottom edge) still splits, proving this test actually exercises the split_body code path.
+    // sanity: the bottom-zone hairline the marker "wins over" really is live on this row - with the
+    // Cut tool active, a plain click lower in the body (away from the marker, clear of the HANDLE_H
+    // resize strip at the very bottom edge) still splits, proving this test actually exercises the
+    // split_body code path.
+    h.tool = Tool::Cut;
     let sp = pos2(h.state.x_at(3.0) + 1.0, rt + th * 0.7);
     h.press(sp);
     h.release(sp);
@@ -1608,8 +1610,8 @@ fn headless_video_track_v_toggle_flips_muted() {
 
 // ---- ws:snap-engine ----
 
-/// On a row >= 2x MIN_TRACK_H, the lower half hairline-clicks to split; the upper half (and the
-/// whole clip on a default-height row) still moves on drag.
+/// On a row >= 2x MIN_TRACK_H with the Cut tool active, the lower half hairline-clicks to split;
+/// the upper half (and the whole clip on a default-height row) still moves on drag.
 #[test]
 fn bottom_zone_click_splits_top_zone_moves() {
     let mut h = Harness::new();
@@ -1621,6 +1623,7 @@ fn bottom_zone_click_splits_top_zone_moves() {
     let clip = h.video_clip();
     let (start, end) = (clip.start, clip.end());
     let before = h.project.tracks[0].clips.len();
+    h.tool = Tool::Cut;
     // bottom half click splits
     let bx = h.state.x_at((start + end) / 2.0);
     let by = row_top + h.project.tracks[0].height * 0.75;

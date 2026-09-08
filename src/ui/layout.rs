@@ -1025,6 +1025,12 @@ impl egui_tiles::Behavior<Pane> for Behaviour<'_> {
     fn simplification_options(&self) -> egui_tiles::SimplificationOptions {
         egui_tiles::SimplificationOptions { all_panes_must_have_tabs: true, ..Default::default() }
     }
+    /// egui_tiles' own default (32.0) lets a split shrink a pane below its tab bar (24.0) plus one row
+    /// of Tools-strip buttons (22.0 tall), clipping them mid-icon. Applies to every pane's min width and
+    /// height, not just Tools, but no pane in this layout wants to go smaller than this anyway.
+    fn min_size(&self) -> f32 {
+        56.0
+    }
     fn on_edit(&mut self, edit_action: egui_tiles::EditAction) {
         self.edited = true;
         self.dropped |= edit_action == egui_tiles::EditAction::TileDropped;
