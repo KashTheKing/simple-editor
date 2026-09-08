@@ -64,6 +64,10 @@ impl BakeKind {
 pub(crate) enum BakeStage {
     Render(Arc<Progress>),
     Filter(Arc<Progress>),
+    // ---- ws:job-completion-hitches ----
+    /// `media::probe` of the finished file on a worker (the ~100 ms ffprobe that used to run on the
+    /// UI thread in `finish_bake`); the result lands in `BakeJob::probed`.
+    Probe(Arc<Progress>),
 }
 
 /// One in-flight bake. Polled by `frame_tick`; `overall` is what an MCP `export.bake` caller waits on
@@ -78,18 +82,22 @@ pub(crate) struct BakeJob {
     kind: BakeKind,
     label: &'static str,
     overall: Arc<Progress>,
+    // ---- ws:job-completion-hitches ----
+    /// The probed output asset, written by the `BakeStage::Probe` worker and taken by `finish_bake`.
+    probed: Arc<std::sync::Mutex<Option<Result<crate::model::Asset, String>>>>,
 }
 
 impl BakeJob {
     pub(crate) fn progress(&self) -> Arc<Progress> {
         match &self.stage {
-            BakeStage::Render(p) | BakeStage::Filter(p) => p.clone(),
+            BakeStage::Render(p) | BakeStage::Filter(p) | BakeStage::Probe(p) => p.clone(),
         }
     }
     pub(crate) fn title(&self) -> String {
         let stage = match self.stage {
             BakeStage::Render(_) => "rendering",
             BakeStage::Filter(_) => "filtering",
+            BakeStage::Probe(_) => "probing",
         };
         format!("{} · {stage} · {}", self.label, self.out.file_name().unwrap_or_default().to_string_lossy())
     }
@@ -346,6 +354,7 @@ pub(crate) fn start_bake(app: &mut App, ids: &[Id], kind: BakeKind) -> Result<(A
         kind,
         label: kind.label(),
         overall: overall.clone(),
+        probed: Arc::default(),
     });
     Ok((overall, out))
 }
@@ -380,8 +389,23 @@ fn advance_bake(app: &mut App, mut job: BakeJob) {
             return;
         }
     }
-    if job.tmp != job.out {
-        let _ = std::fs::remove_file(&job.tmp);
+    if !matches!(job.stage, BakeStage::Probe(_)) {
+        if job.tmp != job.out {
+            let _ = std::fs::remove_file(&job.tmp);
+        }
+        // ---- ws:job-completion-hitches ----
+        // last ffmpeg pass done: probe the file on a worker (spawn_job = catch_unwind, MF objects
+        // created and dropped on that thread — never shared), then come back through frame_tick
+        let (out, backend, probed) = (job.out.to_string_lossy().into_owned(), app.backend(), job.probed.clone());
+        let p = export::spawn_job("bake-probe", move |_| {
+            let r = media::probe(&out, backend);
+            *probed.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+            Ok(())
+        });
+        job.overall.set(0.9, "Probing…");
+        job.stage = BakeStage::Probe(p);
+        app.bake_jobs.push(job);
+        return;
     }
     match finish_bake(app, &job) {
         Ok(n) => {
@@ -430,14 +454,22 @@ pub(crate) fn bake_swap(
     Ok(n)
 }
 
-/// Import the rendered file as an asset and re-point the clips — one labelled undo step.
+/// Import the rendered file as an asset and re-point the clips — one labelled undo step. The asset was
+/// probed by the `BakeStage::Probe` worker; nothing here touches ffprobe (`finish_bake_never_calls_media_probe`).
 fn finish_bake(app: &mut App, job: &BakeJob) -> Result<usize, String> {
-    let asset = media::probe(&job.out.to_string_lossy(), app.backend())?;
+    let asset = take_probed(&job.probed)?;
     let before = app.project.to_json();
     let n = bake_swap(&mut app.project, &before, &job.clip_ids, asset, job.t0, job.kind.factor())?;
     app.push_undo_labeled(before, job.label);
     app.after_edit();
     Ok(n)
+}
+
+/// What the probe worker left behind; `None` (it panicked before writing) reads as a probe error.
+pub(crate) fn take_probed(
+    holder: &std::sync::Mutex<Option<Result<crate::model::Asset, String>>>,
+) -> Result<crate::model::Asset, String> {
+    holder.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap_or_else(|| Err("probe crashed".into()))
 }
 
 /// FRAME_HOOKS: pop the next queued export once the slot is free (re-checking the source-overwrite
@@ -715,6 +747,46 @@ mod tests {
         p.tracks[2].clips.push(c);
         p.tracks[1].clips.push(Clip::new(4, ClipKind::Audio, "music", 0.0, 8.0));
         p
+    }
+
+    // ---- ws:job-completion-hitches ----
+    #[test]
+    fn finish_bake_adopts_a_worker_probed_asset_without_probing_on_the_caller() {
+        let mut p = Project::from_json(&project().to_json()).unwrap();
+        let before = p.to_json();
+        let holder = std::sync::Mutex::new(Some(Ok(asset(0, "C:/baked.mp4"))));
+        let a = take_probed(&holder).expect("the worker's Ok lands as the asset");
+        assert_eq!(a.path, "C:/baked.mp4");
+        assert!(holder.lock().unwrap().is_none(), "taken, not cloned");
+        let n = bake_swap(&mut p, &before, &[2, 3], a, 2.0, 1.0).unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(p.clip(2).unwrap().asset, p.clip(3).unwrap().asset, "both clips now play the baked asset");
+        assert_ne!(p.clip(2).unwrap().asset, 7);
+        // a worker probe error surfaces as the bake's error, before any project mutation
+        let holder = std::sync::Mutex::new(Some(Err::<Asset, _>("ffprobe: boom".to_string())));
+        assert_eq!(take_probed(&holder).unwrap_err(), "ffprobe: boom");
+        // a worker that panicked before writing anything is an error too, not a hang or a bare unwrap
+        assert_eq!(take_probed(&std::sync::Mutex::new(None)).unwrap_err(), "probe crashed");
+    }
+
+    #[test]
+    fn finish_bake_never_calls_media_probe() {
+        let src = include_str!("tools_export.rs");
+        let start = src.find("fn finish_bake(").expect("finish_bake");
+        let end = start
+            + src[start..]
+                .find(
+                    "
+}
+",
+                )
+                .expect("end of fn");
+        let body = &src[start..end];
+        assert!(
+            !body.contains("media::probe("),
+            "finish_bake must adopt the worker-probed asset, not ffprobe on the UI thread:
+{body}"
+        );
     }
 
     #[test]

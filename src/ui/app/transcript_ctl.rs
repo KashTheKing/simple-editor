@@ -42,6 +42,8 @@ struct TrackingRun {
 /// A `tts::speak_to_wav` job; on success the WAV is imported and placed at `at`, linked to `link_to`.
 struct TtsRun {
     inner: Arc<Progress>,
+    /// The WAV, probed on the TTS worker — `finish_tts` adopts it instead of running ffprobe here.
+    probed: tts::ProbedWav,
     out: PathBuf,
     link_to: Option<Id>,
     at: f64,
@@ -128,7 +130,8 @@ pub(super) fn write_transcript(
         Some(f) => transcribe::export_format(f).ok_or_else(|| format!("unknown format '{f}' (txt, srt or json)"))?,
         None => path.extension().and_then(|e| e.to_str()).and_then(transcribe::export_format).unwrap_or("txt"),
     };
-    std::fs::write(path, transcribe::export_transcript(fmt, clip, words)).map_err(|e| format!("{}: {e}", path.display()))?;
+    std::fs::write(path, transcribe::export_transcript(fmt, clip, words))
+        .map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(fmt)
 }
 
@@ -162,12 +165,8 @@ fn export_dialog(app: &mut App) {
 /// `Action::RemoveFillers`, Mark-instead first: the first press drops a range marker per filler (so
 /// the hits can be looked over), the next press cuts them and takes the marks away.
 fn remove_fillers_action(app: &mut App) {
-    let clip = app
-        .subtitles_ui
-        .transcript
-        .clip
-        .or_else(|| first_clip(app))
-        .filter(|&c| app.project.transcript(c).is_some());
+    let clip =
+        app.subtitles_ui.transcript.clip.or_else(|| first_clip(app)).filter(|&c| app.project.transcript(c).is_some());
     let Some(clip) = clip else {
         app.toast("No transcript to clean — transcribe a clip first");
         return;
@@ -245,9 +244,15 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
             app.surface(Pane::Subtitles);
             let (name, file, mb) = app.subtitles_ui.transcribe.model();
             if transcribe::have_model(file) {
-                app.toast(format!("whisper {} is already downloaded — select a clip and Transcribe", short_model(name)));
+                app.toast(format!(
+                    "whisper {} is already downloaded — select a clip and Transcribe",
+                    short_model(name)
+                ));
             } else {
-                app.toast(format!("Subtitles ▸ Transcribe ▸ \"Get captions\" downloads whisper {} ({mb} MB) once", short_model(name)));
+                app.toast(format!(
+                    "Subtitles ▸ Transcribe ▸ \"Get captions\" downloads whisper {} ({mb} MB) once",
+                    short_model(name)
+                ));
             }
             true
         }
@@ -304,7 +309,14 @@ impl App {
         });
         let outer = Progress::new();
         let label = format!("Transcribing {}…", transcript_ui::clip_label(&self.project, clip));
-        self.transcript.runs.push(TranscribeRun { clip, map: (t.offset, t.scale), job, outer: outer.clone(), gen_cues, label });
+        self.transcript.runs.push(TranscribeRun {
+            clip,
+            map: (t.offset, t.scale),
+            job,
+            outer: outer.clone(),
+            gen_cues,
+            label,
+        });
         Ok(outer)
     }
 
@@ -360,9 +372,9 @@ impl App {
             return Err("nothing to say".into());
         }
         let out = Settings::cache_dir().join("tts").join(format!("tts-{}.wav", Settings::now()));
-        let inner = tts::speak_to_wav(text, voice, &out);
+        let (inner, probed) = tts::speak_to_wav(text, voice, &out, self.backend());
         let outer = Progress::new();
-        self.transcript.tts.push(TtsRun { inner, out, link_to, at: at.max(0.0), outer: outer.clone() });
+        self.transcript.tts.push(TtsRun { inner, probed, out, link_to, at: at.max(0.0), outer: outer.clone() });
         Ok(outer)
     }
 }
@@ -414,7 +426,9 @@ fn finish_tracking(app: &mut App, run: TrackingRun) {
         if app.project.apply_path(run.clip, &points) {
             app.push_undo_labeled(before, "Track");
             app.after_edit();
-            app.push_toast(Toast::new(format!("Tracked {} frames onto the clip's X/Y", points.len())).kind(ToastKind::Success));
+            app.push_toast(
+                Toast::new(format!("Tracked {} frames onto the clip's X/Y", points.len())).kind(ToastKind::Success),
+            );
         } else {
             app.toast("Tracking found too few points to write a path");
         }
@@ -428,9 +442,10 @@ fn finish_tts(app: &mut App, run: TtsRun) {
         run.outer.finish(Some(e));
         return;
     }
-    // a small local WAV: probe it right here (synchronously, like open_media) so the clip ids are
-    // final and the link below survives — an async import's later `adopt` would re-create them
-    let asset = match media::probe(&run.out.to_string_lossy(), app.backend()) {
+    // ws:job-completion-hitches: the WAV was probed on the TTS worker; the add/insert/link below still
+    // runs synchronously right here, so the clip ids are final and the link survives — an async import
+    // whose later `adopt` re-creates the clips would break it (`tts_finish_keeps_link_ids_final`)
+    let asset = match super::tools_export::take_probed(&run.probed) {
         Ok(a) => a,
         Err(e) => {
             app.push_toast(Toast::new(format!("Speech WAV unreadable: {e}")).kind(ToastKind::Error));
@@ -439,23 +454,30 @@ fn finish_tts(app: &mut App, run: TtsRun) {
         }
     };
     let before = app.project.to_json();
-    let aid = app.project.add_asset(asset);
-    let new = app.project.insert_asset_clips(aid, run.at, None);
-    if let Some(tc) = run.link_to.filter(|&tc| app.project.clip(tc).is_some()) {
-        let link = match app.project.clip(tc).map(|c| c.link) {
-            Some(l) if l != 0 => l,
-            _ => app.project.new_id(),
-        };
-        for id in new.iter().copied().chain(std::iter::once(tc)) {
-            if let Some(c) = app.project.clip_mut(id) {
-                c.link = link;
-            }
-        }
-    }
+    place_tts(&mut app.project, asset, run.at, run.link_to);
     app.push_undo_labeled(before, "Speak");
     app.after_edit();
     app.toast_with_folder("Speech placed on the timeline", run.out.clone());
     run.outer.finish(None);
+}
+
+/// Add the probed WAV, lay its clips down at `at` and link them to `link_to` (when it still exists) —
+/// all in one synchronous pass so the ids being linked are the ones that stay. Returns the new clips.
+fn place_tts(project: &mut Project, asset: crate::model::Asset, at: f64, link_to: Option<Id>) -> Vec<Id> {
+    let aid = project.add_asset(asset);
+    let new = project.insert_asset_clips(aid, at, None);
+    if let Some(tc) = link_to.filter(|&tc| project.clip(tc).is_some()) {
+        let link = match project.clip(tc).map(|c| c.link) {
+            Some(l) if l != 0 => l,
+            _ => project.new_id(),
+        };
+        for id in new.iter().copied().chain(std::iter::once(tc)) {
+            if let Some(c) = project.clip_mut(id) {
+                c.link = link;
+            }
+        }
+    }
+    new
 }
 
 /// FRAME_HOOK: settings ↔ section sync, the section's app-level requests, and every running job.
@@ -605,6 +627,55 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&odd).unwrap(), "Hello there.");
         assert!(write_transcript(3, &words, &odd, Some("docx")).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- ws:job-completion-hitches ----
+    /// The ids `finish_tts` links are exactly the ones `insert_asset_clips` returned — the whole
+    /// add/insert/link runs in one synchronous pass, so no later `adopt` can re-create them.
+    #[test]
+    fn tts_finish_keeps_link_ids_final() {
+        let mut p = Project::new();
+        p.add_track(TrackKind::Video);
+        let target = Clip::new(p.new_id(), ClipKind::Video, "v", 1.0, 5.0);
+        let tc = target.id;
+        p.tracks[0].clips.push(target);
+        let wav = crate::model::Asset {
+            id: 0,
+            path: "C:/tts.wav".into(),
+            kind: ClipKind::Audio,
+            duration: 2.0,
+            width: 0,
+            height: 0,
+            fps: 0.0,
+            audio_streams: vec![crate::model::AudioStreamInfo::default()],
+            codec: String::new(),
+            folder: String::new(),
+            tags: Vec::new(),
+            label: 0,
+            description: String::new(),
+            rel_path: None,
+            parent: None,
+            range: None,
+            effects: Vec::new(),
+        };
+        let new = place_tts(&mut p, wav, 1.0, Some(tc));
+        assert!(!new.is_empty(), "the WAV landed as at least one clip");
+        let link = p.clip(tc).unwrap().link;
+        assert_ne!(link, 0, "the target got a fresh link id");
+        for id in &new {
+            let c = p.clip(*id).expect("the returned id is a real clip, not one a later adopt rebuilt");
+            assert_eq!(c.link, link);
+            assert_eq!(c.asset, p.assets.last().unwrap().id);
+        }
+        // a target that vanished meanwhile: the clips still land, just unlinked
+        let mut q = Project::new();
+        q.add_track(TrackKind::Video);
+        let wav2 = crate::model::Asset {
+            path: "C:/tts2.wav".into(),
+            ..q.assets.first().cloned().unwrap_or_else(|| p.assets.last().unwrap().clone())
+        };
+        let new2 = place_tts(&mut q, wav2, 0.0, Some(999));
+        assert!(new2.iter().all(|id| q.clip(*id).unwrap().link == 0));
     }
 
     #[test]

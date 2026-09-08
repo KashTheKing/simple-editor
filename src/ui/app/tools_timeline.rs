@@ -244,19 +244,6 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                 let id = app.project.nest_selection(&ids, name).ok_or("nothing to nest")?;
                 Ok(json!({"ok": true, "sequence_id": id}))
             }
-            "timeline.import" => {
-                let path = PathBuf::from(req(arg_str(args, "path"), "path")?);
-                let report = crate::engine::import::import_file(&path)?;
-                let md = report.to_markdown();
-                let (clips, tracks, missing) = (report.clips, report.tracks, report.missing_media);
-                if arg_bool(args, "replace").unwrap_or(false) {
-                    app.set_project(report.project, None);
-                } else {
-                    app.import_ui.report = Some(report);
-                    app.import_ui.open = true;
-                }
-                Ok(json!({"ok": true, "clips": clips, "tracks": tracks, "missing_media": missing, "report": md}))
-            }
             // ---- ws:snap-engine ----
             "timeline.snap_get" => Ok(json!({"enabled": app.settings.snap})),
             "timeline.snap_set" => {
@@ -390,7 +377,29 @@ pub const TOOLS: &[ToolDef] = &[
     row!("timeline.add_transition", ToolKind::Mutate, "Transition at the cut on the left of a clip (a fade-in from nothing when no clip abuts there).", &["right_clip_id:integer:true:", "kind:string:true:CrossFade|FadeToColor|Push|Wipe", "duration:number:false:default 1"]),
     row!("timeline.auto_cut", ToolKind::Mutate, "Silence-based auto-cut of audio clips (+ linked video).", &["clip_ids:array:true:", "threshold_db:number:false:default -35", "min_silence:number:false:", "min_speech:number:false:", "padding:number:false:", "keep_quiet:boolean:false:", "ripple:boolean:false:default true"]),
     row!("timeline.nest", ToolKind::Mutate, "Nest clips into a new sequence; returns the sequence id.", &["clip_ids:array:true:", "name:string:false:"]),
-    row!("timeline.import", ToolKind::Read, "Import a timeline from another editor (FCP7 XML, EDL, .prproj); returns the report and opens it in the app (replace=true swaps the project in).", &["path:string:true:", "replace:boolean:false:"]),
+    // ---- ws:job-completion-hitches ----
+    // a Job, not a Read: `import_file` ffprobes every referenced media file (~100 ms each) — that runs
+    // on a worker now and `poll_timeline_imports` applies the report; the reply lands when it is in.
+    ToolDef {
+        name: "timeline.import",
+        desc: "Import a timeline from another editor (FCP7 XML, EDL, .prproj) on a worker; replies once the report is in and opened in the app (replace=true swaps the project in).",
+        args: &["path:string:true:", "replace:boolean:false:"],
+        kind: ToolKind::Job,
+        run: |app, args| {
+            let path = PathBuf::from(req(arg_str(args, "path"), "path")?);
+            let replace = arg_bool(args, "replace").unwrap_or(false);
+            let holder: Arc<Mutex<Option<crate::engine::import::ImportReport>>> = Arc::default();
+            let (h, p) = (holder.clone(), path.clone());
+            let prog = export::spawn_job("timeline-import", move |prog| {
+                let r = crate::engine::import::import_file(&p)?;
+                prog.set(1.0, format!("{} clip(s), {} track(s), {} missing", r.clips, r.tracks, r.missing_media));
+                *h.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+                Ok(())
+            });
+            app.pending_timeline_imports.push((prog.clone(), holder, replace));
+            Ok(ToolOutcome::Job(prog, path))
+        },
+    },
     // ---- ws:snap-engine ----
     row!("timeline.snap_get", ToolKind::Read, "Current snapping-enabled state.", &[]),
     row!("timeline.snap_set", ToolKind::Ui, "Toggle snapping (mirrors the bare-S hotkey); not project data, no undo.", &["enabled:boolean:true:turn snapping on/off"]),
@@ -398,3 +407,15 @@ pub const TOOLS: &[ToolDef] = &[
     row!("timeline.zones", ToolKind::Read, "Debug hit-test: which arm.rs Zone a point would land on (Body/BodyBottom/Edge/Seam/Lane/RulerInOut/...).", &["x:number:true:screen x", "y:number:true:screen y"]),
     row!("timeline.set_in_out", ToolKind::Mutate, "Sets in/out, snapped, clamped in<=out; one undo pushed only if changed.", &["in:number:false:new in point (seconds)", "out:number:false:new out point (seconds)"]),
 ];
+
+// ---- ws:job-completion-hitches ----
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timeline_import_is_a_job_kind_tool() {
+        let def = TOOLS.iter().find(|d| d.name == "timeline.import").expect("timeline.import ToolDef");
+        assert_eq!(def.kind, ToolKind::Job);
+    }
+}

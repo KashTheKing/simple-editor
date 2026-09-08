@@ -100,17 +100,57 @@ impl App {
         self.import_recording(out, Some(at));
     }
 
-    /// A finished recording: import it and (for a voiceover) drop it on the timeline at `at`.
+    /// A finished recording: import it and (for a voiceover) drop it on the timeline at `at`. ffmpeg
+    /// finalises the container a moment after it is asked to stop, so the file is waited for by
+    /// `poll_recordings` (per frame, up to 3 s) — never with a sleep on this thread.
     pub(super) fn import_recording(&mut self, out: PathBuf, at: Option<f64>) {
-        // ffmpeg finalises the container a moment after it is asked to stop
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while !out.exists() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        if !out.exists() {
-            self.toast(format!("Recording not written: {}", out.display()));
+        self.pending_recordings.push(PendingRecording { out, at, deadline: Instant::now() + Duration::from_secs(3) });
+    }
+
+    // ---- ws:job-completion-hitches ----
+    /// Per frame: import every recording whose file has landed; give up on those past their deadline.
+    pub(super) fn poll_recordings(&mut self, ctx: &egui::Context) {
+        if self.pending_recordings.is_empty() {
             return;
         }
+        let now = Instant::now();
+        let pending = std::mem::take(&mut self.pending_recordings);
+        for r in pending {
+            match recording_step(r.out.exists(), now, r.deadline) {
+                RecordingStep::Wait => self.pending_recordings.push(r),
+                RecordingStep::Import => self.place_recording(r.out, r.at),
+                RecordingStep::GiveUp => self.toast(format!("Recording not written: {}", r.out.display())),
+            }
+        }
+        if !self.pending_recordings.is_empty() {
+            self.animate_until(ctx, Instant::now() + Duration::from_millis(50));
+        }
+    }
+
+    /// Per frame: apply a finished `timeline.import` job's report (the MCP reply follows in
+    /// `poll_mcp`, later this same frame, so a caller's next read sees the project already swapped).
+    pub(super) fn poll_timeline_imports(&mut self, ctx: &egui::Context) {
+        if self.pending_timeline_imports.is_empty() {
+            return;
+        }
+        let pending = std::mem::take(&mut self.pending_timeline_imports);
+        for (prog, holder, replace) in pending {
+            if !prog.is_done() {
+                self.pending_timeline_imports.push((prog, holder, replace));
+                continue;
+            }
+            let Some(report) = holder.lock().unwrap_or_else(|e| e.into_inner()).take() else { continue };
+            if replace {
+                self.set_project(report.project, None);
+            } else {
+                self.import_ui.report = Some(report);
+                self.import_ui.open = true;
+            }
+        }
+        self.animate_until(ctx, Instant::now() + Duration::from_millis(200));
+    }
+
+    fn place_recording(&mut self, out: PathBuf, at: Option<f64>) {
         let ids = self.import_files(&[out.clone()]);
         match at {
             Some(t) => {
@@ -236,5 +276,58 @@ impl App {
                 self.proxy_job = Some((src, dst, job));
             }
         }
+    }
+}
+
+// ---- ws:job-completion-hitches ----
+/// A stopped recording whose container ffmpeg is still finalising — see `App::poll_recordings`.
+pub(super) struct PendingRecording {
+    pub(super) out: PathBuf,
+    /// Voiceover: place it on the timeline here. Screen recording: library only.
+    pub(super) at: Option<f64>,
+    pub(super) deadline: Instant,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RecordingStep {
+    Wait,
+    Import,
+    GiveUp,
+}
+
+/// The per-frame decision for one pending recording, pure so it is testable without a live `App`.
+pub(crate) fn recording_step(exists: bool, now: Instant, deadline: Instant) -> RecordingStep {
+    if exists {
+        RecordingStep::Import
+    } else if now < deadline {
+        RecordingStep::Wait
+    } else {
+        RecordingStep::GiveUp
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recording_step_waits_imports_then_gives_up() {
+        let now = Instant::now();
+        let later = now + Duration::from_secs(3);
+        assert_eq!(recording_step(false, now, later), RecordingStep::Wait);
+        assert_eq!(recording_step(true, now, later), RecordingStep::Import);
+        assert_eq!(recording_step(true, later, now), RecordingStep::Import, "a late file still imports");
+        assert_eq!(recording_step(false, later, later), RecordingStep::GiveUp);
+        assert_eq!(recording_step(false, later + Duration::from_secs(1), later), RecordingStep::GiveUp);
+    }
+
+    #[test]
+    fn import_recording_never_sleeps_on_the_caller() {
+        let src = include_str!("jobs.rs");
+        let start = src.find("fn import_recording(").expect("import_recording");
+        let end = start + src[start..].find("\n    }\n").expect("end of fn");
+        let body = &src[start..end];
+        assert!(!body.contains("thread::sleep"), "import_recording must not block the UI thread:\n{body}");
+        assert!(!body.contains("exists()"), "the file wait belongs to poll_recordings, per frame:\n{body}");
     }
 }
