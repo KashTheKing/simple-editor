@@ -7,6 +7,16 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
 
 ---
 
+- **tab hover cursor (2026-09-07):** egui_tiles' `Behavior::tab_hover_cursor_icon()` defaults to
+  `CursorIcon::Grab`, which Windows renders as the 4-arrow move cursor — misleading for a
+  click-to-switch tab (dragging still works, it just doesn't need to announce itself with that
+  icon). Overridden to `CursorIcon::Default` in `layout.rs`'s `Behaviour` impl. Also: a cursor-only
+  change has no pixel diff a `--screenshot` render would show (it doesn't capture the OS cursor),
+  so that verification step doesn't apply here — tests + `--selftest` are the only signal.
+  Unrelated flakiness hit during verification: `media::thumbs::tests::video_thumbs_colours_aspect_and_cache`
+  times out ("thumb within 3 s") intermittently even on `main`/isolated single-threaded runs —
+  pre-existing, not caused by any of today's changes.
+
 - **popup positioning (2026-09-07):** egui remembers a `Window`'s last dragged position across
   close/reopen (keyed by its `Id`), so `.default_pos(...)` only ever takes effect the *very first*
   time a stable-Id window (e.g. Settings) is shown — reopening it later just restores wherever it
