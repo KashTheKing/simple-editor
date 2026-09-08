@@ -66,3 +66,11 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
   fps grid; animated-scale clips request a new size every frame and never hit (commented ceiling).
   History labels are derived from an entry's NEXT neighbour — any delete must clear the label
   cache (Sonnet review caught this; test pins it).
+
+- **Auto-cut "Beats" section had no detect/commit split:** unlike Silence and Scene cuts (Detect
+  populates a preview; separate Split/Mark instead/Apply buttons commit), the old "Detect Beats"
+  button both detected onsets AND wrote markers in one click — inconsistent with `audio.beats`'s
+  own MCP contract ("with neither flag: pure detection... no mutation"). Split
+  `analysis::detect_beat_markers`/`split_beats` into a pure `detect_beats` (returns per-clip onset
+  times + BPM, no mutation) plus `beat_markers`/`split_beats` (act on the cached preview). UI now
+  has Detect Beats → Add Markers / Split at Beats, matching the other sections' shape.
