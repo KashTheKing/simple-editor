@@ -21,6 +21,9 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
     // single-clicked in the Library: load it into the Source monitor (Pane::Source), which owns the
     // source player now — the library's own preview box keeps painting the same live frame
     if let Some(p) = resp.preview.clone() {
+        app.open_in_source(p, Some(0.0));
+    }
+    if let Some(p) = resp.preview_play.clone() {
         app.open_in_source(p, None);
     }
     if !resp.add_to_timeline.is_empty() {
