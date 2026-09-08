@@ -1009,7 +1009,9 @@ impl eframe::App for App {
         self.palette = theme::palette_with(ctx, &self.settings.palette);
         let cozy_look = self.settings.ui_look != "sharp";
         self.palette.rounding = if cozy_look { 6.0 } else { 2.0 };
-        self.palette.clip_rounding = if cozy_look { 5.0 } else { 0.0 };
+        // bumped from 5 — at typical track heights 5px read as barely-rounded; also see paint_dupes'
+        // corner-matched dupe strip so nothing sharp-edged pokes past the curve
+        self.palette.clip_rounding = if cozy_look { 8.0 } else { 0.0 };
         if !self.settings.bg_image.is_empty() && self.settings.panel_opacity < 255 {
             let a = self.settings.panel_opacity;
             let al = |c: egui::Color32| egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a);

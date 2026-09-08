@@ -7,6 +7,14 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
 
 ---
 
+- **clip corner styling (2026-09-07):** cozy `clip_rounding` bumped 5→8px — 5 read as barely-rounded
+  at typical track heights. Fade in/out handle squares now gate on `rect.width() >= 60.0` so they
+  don't clutter zoomed-out clips; in cozy mode they render as a darker notch
+  (`color.gamma_multiply(0.55)` + small corner radius, Premiere-style "paper edge") instead of a flat
+  white square, so the clip's own rounded corner still reads through. The dupe-source colour strip
+  (`paint_dupes` in `ui/timeline/paint.rs`) now takes `&Palette` and corner-matches its bottom two
+  corners to `clip_rounding` so it doesn't poke square corners past the clip's curve.
+
 - **popup positioning (2026-09-07):** egui remembers a `Window`'s last dragged position across
   close/reopen (keyed by its `Id`), so `.default_pos(...)` only ever takes effect the *very first*
   time a stable-Id window (e.g. Settings) is shown — reopening it later just restores wherever it

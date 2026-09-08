@@ -986,8 +986,21 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 if clip.fade_out > 0.0 {
                     name_pc.line_segment([pos2(fo_x, rect.top()), pos2(rect.right(), rect.bottom())], fs);
                 }
-                for hx in [fi_x, fo_x] {
-                    lp.rect_filled(Rect::from_center_size(pos2(hx, rect.top() + 3.0), vec2(6.0, 6.0)), 0, pal.text);
+                // handles only once there's room to actually grab them — zoomed way out they were
+                // just noise sitting on top of the fill
+                if rect.width() >= 60.0 {
+                    // sharp: plain white square. cozy: a darker "paper corner" notch (like Premiere's
+                    // clip-gain handles) so the rounding on the clip body still reads through it.
+                    let (fill, hcr) = if pal.clip_rounding > 0.0 {
+                        (color.gamma_multiply(0.55), CornerRadius::same(2))
+                    } else {
+                        (Color32::WHITE, CornerRadius::ZERO)
+                    };
+                    for hx in [fi_x, fo_x] {
+                        let hr = Rect::from_center_size(pos2(hx, rect.top() + 3.0), vec2(6.0, 6.0));
+                        lp.rect_filled(hr, hcr, fill);
+                        lp.rect_stroke(hr, hcr, thin, StrokeKind::Inside);
+                    }
                 }
             }
             // keyframe diamonds: on a tall clip in a value lane — 0 % at the bottom, 100 % at the top of the
@@ -1581,7 +1594,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     paint_realtime_bar(&rp, state, ruler, c.realtime, &pal);
     // ws:pro-timeline: duplicate-source colour bars (dupe_groups is already O(n), same budget as the
     // per-clip passes above — no extra `detailed` gate needed, headless_1000_clips_stays_fast covers it)
-    paint_dupes(&lp, c.project, state, lanes);
+    paint_dupes(&lp, c.project, state, lanes, &pal);
 
     // ---- ruler ticks ----
     let (major, minor) = tick_step(state.zoom);

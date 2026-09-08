@@ -405,7 +405,10 @@ pub(crate) fn pacing_spans(p: &Project, thr: (f64, f64)) -> Vec<(Id, f64, f64)> 
 /// Colour-bar clips sharing a source range with another clip (dupe detection), a thin strip along each
 /// clip's bottom edge — gated by the caller on `detailed` (the same flag waveform/filmstrip painting
 /// uses), reusing the label-colour cycle so groups read as distinct without a new palette field.
-pub(super) fn paint_dupes(pp: &egui::Painter, p: &Project, state: &TimelineState, lanes: Rect) {
+pub(super) fn paint_dupes(pp: &egui::Painter, p: &Project, state: &TimelineState, lanes: Rect, pal: &Palette) {
+    // match the clip body's bottom rounding so the strip doesn't poke square corners past the curve
+    // (clamped to the strip's own half-height, or the rounding would just get flattened by the tessellator)
+    let cr = CornerRadius { nw: 0, ne: 0, sw: pal.clip_rounding as u8, se: pal.clip_rounding as u8 };
     for (gi, group) in dupe_groups(p).iter().enumerate() {
         let (_, [r, g, b]) = crate::model::LABEL_COLORS[gi % crate::model::LABEL_COLORS.len()];
         let color = Color32::from_rgb(r, g, b);
@@ -420,7 +423,7 @@ pub(super) fn paint_dupes(pp: &egui::Painter, p: &Project, state: &TimelineState
             )
             .intersect(lanes);
             if r.is_positive() {
-                pp.rect_filled(r, 0, color);
+                pp.rect_filled(r, cr, color);
             }
         }
     }
