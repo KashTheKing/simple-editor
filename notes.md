@@ -23,6 +23,27 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
   negative height rendered in the correct direction via `frame_export`, and `shapes_add` → `undo`
   cleanly removed the clip with one history entry. If this report recurs, check the reporter's exe
   build date/hash before re-investigating the drag math — it's solid as of `00be9b0`.
+
+- **tab hover cursor (2026-09-07):** egui_tiles' `Behavior::tab_hover_cursor_icon()` defaults to
+  `CursorIcon::Grab`, which Windows renders as the 4-arrow move cursor — misleading for a
+  click-to-switch tab (dragging still works, it just doesn't need to announce itself with that
+  icon). Overridden to `CursorIcon::Default` in `layout.rs`'s `Behaviour` impl. Also: a cursor-only
+  change has no pixel diff a `--screenshot` render would show (it doesn't capture the OS cursor),
+  so that verification step doesn't apply here — tests + `--selftest` are the only signal.
+  Unrelated flakiness hit during verification: `media::thumbs::tests::video_thumbs_colours_aspect_and_cache`
+  times out ("thumb within 3 s") intermittently even on `main`/isolated single-threaded runs —
+  pre-existing, not caused by any of today's changes.
+
+- **popup positioning (2026-09-07):** egui remembers a `Window`'s last dragged position across
+  close/reopen (keyed by its `Id`), so `.default_pos(...)` only ever takes effect the *very first*
+  time a stable-Id window (e.g. Settings) is shown — reopening it later just restores wherever it
+  was left, not a fresh click/center point. To reposition on every open, force it for one frame only
+  via `.current_pos(...)` on the frame `open` transitions false→true (tracked with a `prev_open`
+  field), then let normal drag memory take back over. One-shot confirm/discard windows
+  (`ui/confirm.rs`) don't have this problem — their `Id` includes the body text/index so they're
+  fresh every time, and plain `.default_pos()` is enough. Shared click-or-center logic lives in
+  `crate::ui::popup_open_pos`.
+
 - **docs-refresh (2026-09-07), cross-cutting gotchas from the whole overhaul:** Luau's io/os/ffi
   sandbox means `editor.log()` only ever renders as a 5-10s auto-expiring toast
   (`ui/app/palette_ctl.rs`'s `fire_hook`, `app.rs`-descended toast draw) with no copy button —
@@ -62,3 +83,11 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
   fps grid; animated-scale clips request a new size every frame and never hit (commented ceiling).
   History labels are derived from an entry's NEXT neighbour — any delete must clear the label
   cache (Sonnet review caught this; test pins it).
+
+- **Auto-cut "Beats" section had no detect/commit split:** unlike Silence and Scene cuts (Detect
+  populates a preview; separate Split/Mark instead/Apply buttons commit), the old "Detect Beats"
+  button both detected onsets AND wrote markers in one click — inconsistent with `audio.beats`'s
+  own MCP contract ("with neither flag: pure detection... no mutation"). Split
+  `analysis::detect_beat_markers`/`split_beats` into a pure `detect_beats` (returns per-clip onset
+  times + BPM, no mutation) plus `beat_markers`/`split_beats` (act on the cached preview). UI now
+  has Detect Beats → Add Markers / Split at Beats, matching the other sections' shape.

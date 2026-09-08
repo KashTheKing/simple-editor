@@ -932,6 +932,11 @@ impl egui_tiles::Behavior<Pane> for Behaviour<'_> {
         }
         self.on_tab_button(tiles, tile_id, tab_response)
     }
+    /// egui_tiles defaults to `Grab` (Windows renders that as the 4-arrow move cursor) — a tab is
+    /// draggable, but that's not the affordance a click-to-switch tab should advertise.
+    fn tab_hover_cursor_icon(&self) -> egui::CursorIcon {
+        egui::CursorIcon::Default
+    }
     /// Right-click menu on a tab: the tab-bar buttons' actions plus the icon picker.
     fn on_tab_button(
         &mut self,

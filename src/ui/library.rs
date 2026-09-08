@@ -152,6 +152,8 @@ pub struct LibraryResponse {
     /// The file the anchor of the selection now points at — the app may show it in the source viewer.
     /// The library previews it itself either way.
     pub preview: Option<PathBuf>,
+    /// Same, but from a double click — the app plays it immediately instead of loading it paused.
+    pub preview_play: Option<PathBuf>,
     /// ---- ws:forgiveness ----
     /// Remove Unused ran (instant, never confirmed) and removed `n` assets — the app toasts an Undo.
     pub removed_unused: Option<usize>,
@@ -2005,7 +2007,11 @@ impl Tree<'_, '_> {
         if r.clicked() {
             let (ctrl, shift) = ui.input(|i| (i.modifiers.command, i.modifiers.shift));
             if !shift {
-                self.resp.preview = Some(PathBuf::from(path));
+                if r.double_clicked() {
+                    self.resp.preview_play = Some(PathBuf::from(path));
+                } else {
+                    self.resp.preview = Some(PathBuf::from(path));
+                }
             }
             *self.click = Some((pick, ctrl, shift));
         } else if r.secondary_clicked() && !self.state.has(&pick) {
@@ -2278,7 +2284,7 @@ impl Tree<'_, '_> {
         );
         let (id, path) = (a.id, a.path.clone());
         self.hit(ui, &r, Pick::Asset(id), &path);
-        if add || r.double_clicked() {
+        if add {
             self.resp.add_to_timeline.push(id);
         }
         self.asset_menu(&r, i);
@@ -2313,7 +2319,7 @@ impl Tree<'_, '_> {
         let (r, add) = tile(ui, id, payload, selected, &tag, &display_name(a), tint, self.palette, art, w, button);
         let (aid, path) = (a.id, a.path.clone());
         self.hit(ui, &r, Pick::Asset(aid), &path);
-        if add || r.double_clicked() {
+        if add {
             self.resp.add_to_timeline.push(aid);
         }
         self.asset_menu(&r, i);

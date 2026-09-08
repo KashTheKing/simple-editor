@@ -22,9 +22,10 @@ pub fn act(app: &mut App, a: Action) -> bool {
             }
             let before = app.project.to_json();
             let sensitivity = app.settings.beat_thr;
-            let (ids, _bpm) = {
+            let ids = {
                 let App { project, waveforms, .. } = app;
-                analysis::detect_beat_markers(project, &targets, 0.25, sensitivity, &mut asset_peaks(waveforms))
+                let (per_clip, _bpm) = analysis::detect_beats(project, &targets, 0.25, sensitivity, &mut asset_peaks(waveforms));
+                analysis::beat_markers(project, &per_clip)
             };
             if ids.is_empty() {
                 app.toast("No beats found");
@@ -45,7 +46,8 @@ pub fn act(app: &mut App, a: Action) -> bool {
             let sensitivity = app.settings.beat_thr;
             let n = {
                 let App { project, waveforms, .. } = app;
-                analysis::split_beats(project, &targets, 0.25, sensitivity, &mut asset_peaks(waveforms))
+                let (per_clip, _bpm) = analysis::detect_beats(project, &targets, 0.25, sensitivity, &mut asset_peaks(waveforms));
+                analysis::split_beats(project, &per_clip)
             };
             if n == 0 {
                 app.toast("No beats found");

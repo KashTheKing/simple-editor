@@ -42,6 +42,24 @@ Known test-harness gotchas that look like product bugs but aren't (modifier stat
 matching, `cargo fmt` reformatting the whole crate): see the `simple-editor-test-pitfalls`
 memory, or ask — don't re-debug these from scratch.
 
+### Build performance
+
+Clean `cargo build --release` takes ~20 min; a `cargo-timings` run showed **62% of that is one
+step**: the final `simple-editor` crate's codegen/link under `lto = "fat"` + `codegen-units = 1`
+(a deliberate size-diet tradeoff in `[profile.release]`, not a bug — don't "fix" it). `cargo test`
+and plain `cargo build` never hit this: they use the dev profile (no LTO, many codegen units) and
+are fast/incremental. Consequences for how you verify:
+
+- Default to `cargo test` / `cargo build` (dev) for iteration and for step 1-3 of Verification
+  above. Only reach for `--release` when a step explicitly calls for it (perf benches, the size
+  gate) — never as a generic "does it build" check.
+- All worktrees share one `target/` via `.cargo/config.toml` (`target-dir` points at
+  `../simple-editor-shared-target`), so dependency compilation happens once across concurrent
+  worktrees instead of once per worktree. Don't override `CARGO_TARGET_DIR` per-worktree — that
+  defeats this.
+- Test per PR, not batched across a group — `cargo test` is cheap/incremental so there's no real
+  time saved by batching, and batching only delays feedback and makes bisecting harder.
+
 ### Size gate
 
 `scripts/size.ps1 [-Note "<reason>"]`: builds `--release`, appends `<git-sha>,<bytes>,<note>` to
