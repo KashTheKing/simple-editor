@@ -281,6 +281,14 @@ pub(crate) fn drag_source<P: std::any::Any + Send + Sync>(
     r
 }
 
+/// Where a just-opened popup should appear: the click location if a click happened this frame
+/// (button/menu item that opened it), otherwise the screen center (opened automatically — hotkey,
+/// recovery, etc). Pair with `.pivot(egui::Align2::CENTER_CENTER)` so the popup centers on the point.
+pub fn popup_open_pos(ctx: &egui::Context) -> egui::Pos2 {
+    let clicked_at = ctx.input(|i| i.pointer.any_click().then(|| i.pointer.interact_pos()).flatten());
+    clicked_at.unwrap_or_else(|| ctx.content_rect().center())
+}
+
 /// HH:MM:SS:FF timecode.
 pub fn timecode(t: f64, fps: f64) -> String {
     let t = t.max(0.0);
