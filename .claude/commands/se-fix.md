@@ -14,6 +14,8 @@ Task: $ARGUMENTS
 3. If the fix touches a dependency or grows the binary meaningfully, check it against the budget
    in goals.md and say so.
 4. Verify per agents.md's Verification section (`cargo test`, `--selftest`, and a real screenshot
-   for anything UI-visible). Don't declare done on type-checking alone.
+   for anything UI-visible) — all dev-profile, no `--release`. Don't declare done on type-checking
+   alone, and don't reach for `--release` unless the fix is perf-sensitive (see agents.md's "Build
+   performance": it's a ~20min fat-LTO build, only worth it for benches/size gate).
 5. If you had to work around something (toolchain limit, egui quirk, etc.) worth remembering
    later, add a line to notes.md.
