@@ -88,7 +88,7 @@ impl App {
 
     pub(super) fn view_menu(&mut self, ui: &mut egui::Ui, out: &mut Vec<Action>) {
         use Action::*;
-        const PANES: [(Pane, Option<Action>); 19] = [
+        const PANES: [(Pane, Option<Action>); 20] = [
             (Pane::Preview, None),
             (Pane::Timeline, None),
             (Pane::Tools, Some(ToggleTools)),
@@ -110,6 +110,8 @@ impl App {
             // ---- ws:registries-schema-hooks ----
             // ws:layout-modes-onboarding wired the ToggleSource action (unbound) to the row
             (Pane::Source, Some(ToggleSource)),
+            // ---- ws:jobs-panel ----
+            (Pane::Jobs, Some(ToggleJobs)),
         ];
         // ---- ws:layout-modes-onboarding ----
         {
@@ -529,6 +531,8 @@ impl App {
                 // ---- ws:layout-modes-onboarding ----
                 ui.separator();
                 layout_ctl::workspace_strip(self, ui);
+                // ---- ws:jobs-panel ----
+                jobs_pane::indicator(self, ui);
             });
         });
         out

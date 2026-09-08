@@ -212,17 +212,18 @@ impl App {
         let mut want: Option<(String, std::path::PathBuf)> = None;
         if self.settings.use_proxies {
             for a in &self.project.assets {
-                // only real video that out-sizes the proxy: images/audio gain nothing, and neither
-                // does footage already at or below proxy resolution
-                if a.kind != crate::model::ClipKind::Video || a.height <= h || a.duration <= 0.0 {
+                if !proxy_eligible(a, h) {
                     continue;
                 }
                 let dst = crate::media::proxy::proxy_path(&a.path, h);
                 if dst.exists() {
                     map.insert(a.path.clone(), dst.to_string_lossy().into_owned());
-                } else if want.is_none() && std::path::Path::new(&a.path).exists() {
-                    want = Some((a.path.clone(), dst));
                 }
+            }
+            // ---- ws:jobs-panel ----
+            want = pick_next_proxy(&proxy_candidates(&self.project.assets, h), self.proxy_next.as_deref());
+            if want.is_some() {
+                self.proxy_next = None;
             }
         }
         if map != self.proxy_map {
@@ -236,5 +237,52 @@ impl App {
                 self.proxy_job = Some((src, dst, job));
             }
         }
+    }
+}
+
+// ---- ws:jobs-panel ----
+/// Only real video that out-sizes the proxy: images/audio gain nothing, and neither does footage
+/// already at or below proxy resolution.
+fn proxy_eligible(a: &crate::model::Asset, h: u32) -> bool {
+    a.kind == crate::model::ClipKind::Video && a.height > h && a.duration > 0.0
+}
+
+/// Eligible assets whose proxy is not built yet (and whose source is on disk), in library order —
+/// the Jobs pane's "queued proxies" and `pick_next_proxy`'s input.
+pub(super) fn proxy_candidates(assets: &[crate::model::Asset], h: u32) -> Vec<(String, std::path::PathBuf)> {
+    assets
+        .iter()
+        .filter(|a| proxy_eligible(a, h))
+        .filter_map(|a| {
+            let dst = crate::media::proxy::proxy_path(&a.path, h);
+            (!dst.exists() && std::path::Path::new(&a.path).exists()).then(|| (a.path.clone(), dst))
+        })
+        .collect()
+}
+
+/// Which proxy builds next: `want_next` (the Jobs pane's "Build next") when it is still a candidate,
+/// else the first candidate in library order (the pre-pane behaviour).
+pub(crate) fn pick_next_proxy(
+    cands: &[(String, std::path::PathBuf)],
+    want_next: Option<&str>,
+) -> Option<(String, std::path::PathBuf)> {
+    want_next.and_then(|w| cands.iter().find(|(p, _)| p == w)).or(cands.first()).cloned()
+}
+
+#[cfg(test)]
+mod proxy_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn proxy_next_wins_over_library_order() {
+        let c = |p: &str| (p.to_string(), PathBuf::from(format!("{p}.proxy")));
+        let cands = vec![c("a"), c("b")];
+        assert_eq!(pick_next_proxy(&cands, None).unwrap().0, "a", "library order by default");
+        assert_eq!(pick_next_proxy(&cands, Some("b")).unwrap().0, "b", "Build next wins");
+        // b already has a proxy / is missing on disk: `proxy_candidates` never lists it, so the
+        // request falls back to library order instead of building something ineligible
+        assert_eq!(pick_next_proxy(&cands[..1], Some("b")).unwrap().0, "a");
+        assert!(pick_next_proxy(&[], Some("b")).is_none());
     }
 }

@@ -168,6 +168,11 @@ pub struct TimelineView {
     pub row_h: f32,
 }
 
+// ---- ws:jobs-panel ----
+fn default_true() -> bool {
+    true
+}
+
 fn default_boring_thr() -> (f32, f32) {
     (1.5, 20.0)
 }
@@ -410,6 +415,10 @@ pub struct Settings {
     pub overview: bool,
     // ---- ws:text-titles ----
     // ---- ws:docs-refresh ----
+    // ---- ws:jobs-panel ----
+    /// A newly started background job surfaces the Jobs tab (Dynamic layout) or glows it (Granular).
+    #[serde(default = "default_true")]
+    pub jobs_auto_reveal: bool,
 }
 
 impl Default for Settings {
@@ -551,6 +560,8 @@ impl Default for Settings {
             overview: false,
             // ---- ws:text-titles ----
             // ---- ws:docs-refresh ----
+            // ---- ws:jobs-panel ----
+            jobs_auto_reveal: true,
         }
     }
 }
