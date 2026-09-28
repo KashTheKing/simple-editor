@@ -29,6 +29,10 @@ use eframe::egui;
 #[derive(Default)]
 pub struct SettingsUi {
     pub open: bool,
+    /// `open` on the previous frame — lets `show` detect a fresh open (vs. still-open) so it can
+    /// reposition the window at the click/center point each time, instead of only on its very first
+    /// ever appearance (egui otherwise remembers the last dragged position across opens).
+    pub(super) prev_open: bool,
     pub tab: usize,
     pub rebinding: Option<Action>,
     /// Cached ffmpeg / context-menu status (filesystem + registry lookups are not per-frame).
@@ -108,12 +112,19 @@ pub fn show(
         state.status = Some(Status::compute(settings));
     }
     let mut open = state.open;
-    egui::Window::new("Settings")
+    let just_opened = state.open && !state.prev_open;
+    state.prev_open = state.open;
+    let mut window = egui::Window::new("Settings")
         .open(&mut open)
         // "when I open the settings tab, it should be really big" — sized to most of the screen,
         // still resizable/movable like any other non-blocking window
         .default_size([900.0, 700.0])
-        .collapsible(false)
+        .collapsible(false);
+    if just_opened {
+        // appear where it was opened from (click), or centered if opened automatically (hotkey)
+        window = window.current_pos(crate::ui::popup_open_pos(ctx)).pivot(egui::Align2::CENTER_CENTER);
+    }
+    window
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut state.tab, 0, "General");

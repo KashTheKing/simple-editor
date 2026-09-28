@@ -330,21 +330,18 @@ pub fn scene_cuts(path: &std::path::Path, thr: f32) -> Result<Vec<f64>, String> 
     Ok(parse_showinfo_pts(&String::from_utf8_lossy(&out.stderr)))
 }
 
-/// Detect onsets on every clip in `targets` and add one clip marker per onset (converted through
-/// `to_clip_local` so it lands correctly on a trimmed/retimed clip). Shared by the Beats section
-/// button, `Action::DetectBeats` and `audio.beats`'s `as_markers` path so the three call sites never
-/// derive the onset-to-marker math differently — each fires `marker_added` itself over the returned
-/// ids (this fn stays App-free: `App`'s fields aren't reachable from `ui::autocut_ui`, see the
-/// audio-analysis PR's deviation note). Returns (marker ids written, combined BPM across every
-/// target's onsets — `None` if fewer than 4 total).
-pub fn detect_beat_markers(
-    project: &mut Project,
+/// Pure detection: onsets on every clip in `targets` (SOURCE seconds, no mutation). Shared by the
+/// Beats section's "Detect Beats" button and `audio.beats`'s no-flag path, so a preview never has a
+/// side effect — mirrors `audio.beats`' documented "pure detection, no mutation" default. Returns
+/// (per-clip onsets, combined BPM across every target's onsets — `None` if fewer than 4 total).
+pub fn detect_beats(
+    project: &Project,
     targets: &[Id],
     refractory_s: f64,
     sensitivity: f32,
     peaks_of: &mut dyn FnMut(&Project, Id) -> Option<Arc<Peaks>>,
-) -> (Vec<Id>, Option<f64>) {
-    let mut ids = Vec::new();
+) -> (Vec<(Id, Vec<f64>)>, Option<f64>) {
+    let mut per_clip = Vec::new();
     let mut all_onsets = Vec::new();
     for &clip_id in targets {
         let Some(c) = project.clip(clip_id).cloned() else { continue };
@@ -353,39 +350,42 @@ pub fn detect_beat_markers(
         }
         let Some(peaks) = peaks_of(project, c.asset) else { continue };
         let found = onsets(&peaks, c.src_in, c.src_in + c.duration * c.speed, refractory_s, sensitivity);
-        for &t_src in &found {
-            if let Some(id) = project.add_clip_marker(clip_id, to_clip_local(t_src, &c), "Beat") {
+        all_onsets.extend(found.iter().copied());
+        per_clip.push((clip_id, found));
+    }
+    all_onsets.sort_by(f64::total_cmp);
+    (per_clip, bpm(&all_onsets))
+}
+
+/// Add one clip marker per onset in `per_clip` (converted through `to_clip_local` so it lands
+/// correctly on a trimmed/retimed clip) — the explicit commit step after `detect_beats`'s preview.
+/// Shared by the Beats section's "Add Markers" button, `Action::DetectBeats` and `audio.beats`'s
+/// `as_markers` path (this fn stays App-free: `App`'s fields aren't reachable from `ui::autocut_ui`,
+/// see the audio-analysis PR's deviation note). Returns the marker ids written.
+pub fn beat_markers(project: &mut Project, per_clip: &[(Id, Vec<f64>)]) -> Vec<Id> {
+    let mut ids = Vec::new();
+    for (clip_id, found) in per_clip {
+        let Some(c) = project.clip(*clip_id).cloned() else { continue };
+        for &t_src in found {
+            if let Some(id) = project.add_clip_marker(*clip_id, to_clip_local(t_src, &c), "Beat") {
                 ids.push(id);
             }
         }
-        all_onsets.extend(found);
     }
-    all_onsets.sort_by(f64::total_cmp);
-    (ids, bpm(&all_onsets))
+    ids
 }
 
-/// Detect onsets on every clip in `targets` and split at each one (timeline time via `to_timeline_t`),
-/// restricted to that clip's own link group so a beat on one clip never cuts an unrelated clip.
-/// Returns the number of cuts made. Same sharing rationale as `detect_beat_markers`.
-pub fn split_beats(
-    project: &mut Project,
-    targets: &[Id],
-    refractory_s: f64,
-    sensitivity: f32,
-    peaks_of: &mut dyn FnMut(&Project, Id) -> Option<Arc<Peaks>>,
-) -> usize {
+/// Split each clip in `per_clip` at its onsets (timeline time via `to_timeline_t`), restricted to
+/// that clip's own link group so a beat on one clip never cuts an unrelated clip. Returns the number
+/// of cuts made. The explicit commit step after `detect_beats`'s preview.
+pub fn split_beats(project: &mut Project, per_clip: &[(Id, Vec<f64>)]) -> usize {
     let mut cuts = 0usize;
-    for &clip_id in targets {
-        let Some(c) = project.clip(clip_id).cloned() else { continue };
-        if c.reverse || c.freeze.is_some() {
-            continue;
-        }
-        let Some(peaks) = peaks_of(project, c.asset) else { continue };
-        let found = onsets(&peaks, c.src_in, c.src_in + c.duration * c.speed, refractory_s, sensitivity);
+    for (clip_id, found) in per_clip {
+        let Some(c) = project.clip(*clip_id).cloned() else { continue };
         // `group` grows with each split's new right-half piece (mirrors Project::auto_cut) — a fixed
         // restrict set would only ever cut the ORIGINAL clip, missing every onset past the first cut.
-        let mut group = project.expand_links(&[clip_id]);
-        for t_src in found {
+        let mut group = project.expand_links(&[*clip_id]);
+        for &t_src in found {
             let new = project.split_at(to_timeline_t(t_src, &c), Some(&group));
             if !new.is_empty() {
                 cuts += 1;
@@ -680,9 +680,10 @@ mod tests {
         let (mut project, clip) = beat_setup();
         let clicks = [1.5, 2.5, 3.5, 4.5];
         let peaks = peaks_with_clicks(&clicks, 10.0);
-        let (ids, bpm) = detect_beat_markers(&mut project, &[clip], 0.1, 1.6, &mut |_p, _asset| {
+        let (per_clip, bpm) = detect_beats(&project, &[clip], 0.1, 1.6, &mut |_p, _asset| {
             Some(Arc::new(Peaks { min: peaks.min.clone(), max: peaks.max.clone() }))
         });
+        let ids = beat_markers(&mut project, &per_clip);
         assert_eq!(ids.len(), 4, "{ids:?}");
         let c = project.clip(clip).unwrap();
         let mut got: Vec<f64> = c.markers.iter().map(|m| m.t).collect();
@@ -703,9 +704,10 @@ mod tests {
         project.tracks.push(other);
         let clicks = [1.5, 2.5, 3.5, 4.5];
         let peaks = peaks_with_clicks(&clicks, 10.0);
-        let cuts = split_beats(&mut project, &[clip], 0.1, 1.6, &mut |_p, _asset| {
+        let (per_clip, _bpm) = detect_beats(&project, &[clip], 0.1, 1.6, &mut |_p, _asset| {
             Some(Arc::new(Peaks { min: peaks.min.clone(), max: peaks.max.clone() }))
         });
+        let cuts = split_beats(&mut project, &per_clip);
         assert_eq!(cuts, 4, "one cut per onset");
         assert_eq!(project.tracks[1].clips.len(), 1, "the unrelated clip was never split");
         assert!(project.tracks[0].clips.len() > 1, "the target clip was split");
@@ -743,18 +745,18 @@ mod tests {
 
         let (mut project, clip) = beat_setup();
         project.clip_mut(clip).unwrap().reverse = true;
-        let (ids, bpm) = detect_beat_markers(&mut project, &[clip], 0.1, 1.6, &mut |_p, _asset| {
+        let (per_clip, bpm) = detect_beats(&project, &[clip], 0.1, 1.6, &mut |_p, _asset| {
             Some(Arc::new(Peaks { min: peaks.min.clone(), max: peaks.max.clone() }))
         });
-        assert!(ids.is_empty(), "reverse clip must be skipped, not mirror-flipped: {ids:?}");
+        assert!(per_clip.is_empty(), "reverse clip must be skipped, not mirror-flipped: {per_clip:?}");
         assert!(bpm.is_none());
 
         let (mut project, clip) = beat_setup();
         project.clip_mut(clip).unwrap().freeze = Some(1.0);
-        let (ids, bpm) = detect_beat_markers(&mut project, &[clip], 0.1, 1.6, &mut |_p, _asset| {
+        let (per_clip, bpm) = detect_beats(&project, &[clip], 0.1, 1.6, &mut |_p, _asset| {
             Some(Arc::new(Peaks { min: peaks.min.clone(), max: peaks.max.clone() }))
         });
-        assert!(ids.is_empty(), "frozen clip must be skipped: {ids:?}");
+        assert!(per_clip.is_empty(), "frozen clip must be skipped: {per_clip:?}");
         assert!(bpm.is_none());
     }
 
