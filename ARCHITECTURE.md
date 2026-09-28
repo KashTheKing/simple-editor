@@ -157,6 +157,8 @@ src/ui/transcript_ui.rs collapsible Transcript section (word click-to-seek, drag
 src/ui/autocut_ui.rs    auto-cut pane (silence/speech detection, Mark-instead)
 src/ui/tracking_ui.rs   Tracking pane: place a box, track a clip, save the result as a path
 src/ui/scopes_ui.rs     Scopes window (waveform/histogram/vectorscope-style monitor overlay)
+src/ui/jobs_ui.rs       Jobs pane widget (`Pane::Jobs`): JobRow/JobKind/JobState, running/queued/recent groups,
+                        Cancel + ▲▼ + "Build next"; pure, never requests a repaint
 src/ui/multicam_ui.rs   multicam angle grid (`egui::Window`, capped at 4 angles at ¼ size)
 src/ui/find_ui.rs       Find window (search clips/markers/text across the timeline) (pro-timeline)
 src/ui/{retime,export_ui,frame_ui,capture_ui,import_ui,paste_ui,transitions_ui,shader_ui}.rs windows
@@ -179,7 +181,10 @@ src/ui/app/files.rs     open/import/save/export/overwrite/finish_export; fire_ho
 src/ui/app/frame.rs     SelSig (selection-signature helper used by fire_hook("selection_changed", …))
 src/ui/app/gallery_ctl.rs PANE_DRAWERS entry for Pane::Presets -> the Gallery UI
 src/ui/app/gpu.rs       sync_gpu … source_frame: GPU wiring shared by preview/export/alt-render
-src/ui/app/jobs.rs      screen capture, voiceover, import_recording, audio_inputs, probe polling
+src/ui/app/jobs.rs      screen capture, voiceover, import_recording, audio_inputs, probe polling,
+                        proxy_candidates/pick_next_proxy (the Jobs pane's "Build next")
+src/ui/app/jobs_pane.rs Pane::Jobs (jobs-panel): rows() aggregates every job holder on App, tick/draw/
+                        act/apply, the menu-bar indicator; PANE_DRAWERS/FRAME_HOOKS/ACT_HANDLERS entries
 src/ui/app/layout_ctl.rs layout_mode/pin/glow/reveal_auto, WORKSPACES builders, maximize
 src/ui/app/library_pane.rs Pane::Library draw
 src/ui/app/mcp_exec.rs  run_script, sync_mcp/poll_mcp/handle_tool/start_tool_job, run_tool_undoable
@@ -200,7 +205,7 @@ src/ui/app/source_pane.rs Pane::Source draw + FRAME_HOOKS tick (PANE_DRAWERS ent
 src/ui/app/thumbs.rs    build_effect_thumbnails + effect_thumb_* + STOCK + box_blur
 src/ui/app/timeline_pane.rs Pane::Timeline draw
 src/ui/app/tools_args.rs Args<'a>(&'a Value) typed-getter helper (ids_or_selection, t_or_playhead, …)
-src/ui/app/tools_{audio,clip,color,commands,export,gallery,layout,media,mixer,monitor,playback,
+src/ui/app/tools_{audio,clip,color,commands,export,gallery,jobs,layout,media,mixer,monitor,playback,
            preview,project,source,subtitles,timeline,timeline_pro,titles,transcript,trim,ui}.rs
                         one `pub const TOOLS: &[ToolDef]` per tool group, registered in TOOL_TABLES;
                         several use a local `row!(name, kind, desc, args)` macro over the same
@@ -374,7 +379,7 @@ the palette's arg-free/`:` rows: `Mutate` snapshots JSON, runs, pushes one undo 
 changed, rolls back on `Err`; `Read`/`Ui` just run; `Job` polls the existing `McpJob`/`Progress`
 machinery. `tools_registry_tests.rs`'s `every_edit_op_has_a_tool` scans every `src/model/ops/*.rs` for
 `pub fn NAME(&mut self` and fails the build unless `NAME` has a `ToolDef` row or a recorded
-`OP_INTERNAL` reason — **live count at merge time: 236 tools** (13 `Job`, 109 `Mutate`, 69 `Read`, 45
+`OP_INTERNAL` reason — **live count at jobs-panel (#64): 240 tools** (13 `Job`, 109 `Mutate`, 70 `Read`, 48
 `Ui`; see `docs/customizing.md`'s full table, transcribed from a live `tools/list` call, not this
 count alone).
 
@@ -456,7 +461,8 @@ live preview or falling back to the slower CPU compositor. `src/ui/app/monitor.r
 ## New-pane checklist
 
 Exactly **one** new `Pane` variant landed in the whole overhaul: `Pane::Source` (wave 0b,
-pre-declared; filled with real content by `source-monitor` in wave 2). Everything else that looked
+pre-declared; filled with real content by `source-monitor` in wave 2); `Pane::Jobs` (jobs-panel, #64)
+is the second real pane and followed this exact list, reusing `Glyph::Queue` and `stack_unplaced`. Everything else that looked
 pane-shaped in the original design became something cheaper: Color is an inspector section +
 Gallery tabs, Scopes/the multicam angle grid are `egui::Window`s, Transcript is a collapsible section
 inside Subtitles, Titles/Captions are Gallery tabs, the timeline overview is an inline minimap strip,
@@ -571,7 +577,7 @@ hooks (command-palette).
 **Forgiveness** — non-blocking toasts with Undo actions, non-blocking confirm windows (no more
 blocking Yes/No dialogs), debounced autosave with crash recovery, cache-clear/size in Settings, History
 panel restore (forgiveness).
-**AI** — MCP server (toggle in Settings) exposing **236 tools** over `http://127.0.0.1:<port>/mcp`
+**AI** — MCP server (toggle in Settings) exposing **240 tools** over `http://127.0.0.1:<port>/mcp`
 (default port 7337; see `docs/customizing.md` for the full, namespace-grouped table). Luau scripts
 (`src/scripting.rs`, Scripts menu) call the identical tool catalogue in-process via `editor.tool`/
 `editor.tools`/`editor.log` — one API surface for scripts and MCP clients; each script run is a single

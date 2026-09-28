@@ -55,6 +55,8 @@ pub mod tracking_ui;
 // ---- ws:transcript-captions ----
 pub mod transcript_ui;
 pub mod transitions_ui;
+// ---- ws:jobs-panel ----
+pub mod jobs_ui;
 
 use crate::model::{Animated, Id, Mask, MaskShape, Project, LABEL_COLORS};
 use crate::theme::Palette;
