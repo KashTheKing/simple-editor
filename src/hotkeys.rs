@@ -296,7 +296,10 @@ actions! {
     RenameTrack => "rename_track", "Rename Track", None;
     // ---- ws:text-titles ----
     // ---- ws:docs-refresh ----
-    // ---- tool selection (ui::tools) - polled and dispatched there, not through App::act ----
+    // ---- ws:jobs-panel ----
+    // Unbound by design (View menu / palette / the menu-bar indicator), like ToggleScopes/ToggleSource.
+    ToggleJobs => "toggle_jobs", "Show / Hide Jobs", None;
+    // ---- tool selection (ui::tools) — polled and dispatched there, not through App::act ----
     ToolSelect => "tool_select", "Select Tool", sc(NONE, Key::V);
     ToolText => "tool_text", "Text Tool", sc(NONE, Key::T);
     ToolDraw => "tool_draw", "Draw Tool", sc(NONE, Key::D);

@@ -121,6 +121,10 @@ pub enum Pane {
     /// content lands with ws:source-monitor (wave 2). Tab-stacked hidden behind Library in every
     /// preset (`stack_unplaced`), never in `ROUND3`.
     Source,
+    // ---- ws:jobs-panel ----
+    /// Every background job (running / queued / recent) with Cancel and queue reordering. Tab-stacked
+    /// hidden in every preset (`stack_unplaced`, like `Source`), never in `ROUND3`.
+    Jobs,
 }
 
 impl Pane {
@@ -169,6 +173,8 @@ impl Pane {
         // ---- ws:pro-timeline ----
         // ---- ws:text-titles ----
         // ---- ws:docs-refresh ----
+        // ---- ws:jobs-panel ----
+        Pane::Jobs,
     ];
     /// Panes added in round 3 - a stored layout without them is from an older version (see `from_json`).
     pub const ROUND3: [Pane; 4] = [Pane::Tools, Pane::Nodes, Pane::Mixer, Pane::Markers];
@@ -195,6 +201,8 @@ impl Pane {
             Pane::History => Glyph::Hourglass,
             // ws:source-monitor (wave 2) may pick a more specific glyph later.
             Pane::Source => Glyph::Camera,
+            // reuses export-deliver's queue glyph — no new Glyph variant
+            Pane::Jobs => Glyph::Queue,
         }
     }
     pub fn title(self) -> &'static str {
@@ -218,6 +226,7 @@ impl Pane {
             Pane::Moodboard => "Moodboard",
             Pane::History => "History",
             Pane::Source => "Source",
+            Pane::Jobs => "Jobs",
         }
     }
 }
@@ -932,6 +941,11 @@ impl egui_tiles::Behavior<Pane> for Behaviour<'_> {
         }
         self.on_tab_button(tiles, tile_id, tab_response)
     }
+    /// egui_tiles defaults to `Grab` (Windows renders that as the 4-arrow move cursor) — a tab is
+    /// draggable, but that's not the affordance a click-to-switch tab should advertise.
+    fn tab_hover_cursor_icon(&self) -> egui::CursorIcon {
+        egui::CursorIcon::Default
+    }
     /// Right-click menu on a tab: the tab-bar buttons' actions plus the icon picker.
     fn on_tab_button(
         &mut self,
@@ -1019,6 +1033,12 @@ impl egui_tiles::Behavior<Pane> for Behaviour<'_> {
     }
     fn simplification_options(&self) -> egui_tiles::SimplificationOptions {
         egui_tiles::SimplificationOptions { all_panes_must_have_tabs: true, ..Default::default() }
+    }
+    /// egui_tiles' own default (32.0) lets a split shrink a pane below its tab bar (24.0) plus one row
+    /// of Tools-strip buttons (22.0 tall), clipping them mid-icon. Applies to every pane's min width and
+    /// height, not just Tools, but no pane in this layout wants to go smaller than this anyway.
+    fn min_size(&self) -> f32 {
+        56.0
     }
     fn on_edit(&mut self, edit_action: egui_tiles::EditAction) {
         self.edited = true;
@@ -1193,11 +1213,11 @@ mod tests {
             for &p in Pane::ALL {
                 assert!(l.tree.tiles.find_pane(&p).is_some(), "{p:?} missing from the {name} layout");
                 // ws:registries-schema-hooks: Pane::Source is deliberately a hidden trailing tab
-                // (stack_unplaced) - every OTHER pane stays visible exactly as before.
-                if p != Pane::Source {
+                // (stack_unplaced) — every OTHER pane stays visible exactly as before.
+                if !matches!(p, Pane::Source | Pane::Jobs) {
                     assert!(l.is_visible(p), "{p:?} hidden in the {name} layout");
                 } else {
-                    assert!(!l.is_visible(p), "Pane::Source must land hidden (stack_unplaced) in {name}");
+                    assert!(!l.is_visible(p), "{p:?} must land hidden (stack_unplaced) in {name}");
                 }
             }
         }
@@ -1214,6 +1234,9 @@ mod tests {
         assert_eq!(Pane::ROUND3, [Pane::Tools, Pane::Nodes, Pane::Mixer, Pane::Markers]);
         assert!(Pane::ALL.contains(&Pane::Source));
         assert!(!Pane::ROUND3.contains(&Pane::Source));
+        // ws:jobs-panel: same rule for the second real pane
+        assert!(Pane::ALL.contains(&Pane::Jobs));
+        assert!(!Pane::ROUND3.contains(&Pane::Jobs));
     }
 
     /// The requested default: two rows of four columns, none of them opening unusably small.
@@ -1260,7 +1283,7 @@ mod tests {
                 vec![Pane::Timeline],
                 vec![Pane::Mixer, Pane::AutoCut, Pane::Subtitles],
                 // Pane::Source rides along as a hidden trailing tab here (stack_unplaced)
-                vec![Pane::Markers, Pane::Planner, Pane::Moodboard, Pane::History, Pane::Source],
+                vec![Pane::Markers, Pane::Planner, Pane::Moodboard, Pane::History, Pane::Source, Pane::Jobs],
             ]
         );
         // the Preview column really is vertical (Tools beneath, not beside)
@@ -1448,6 +1471,16 @@ mod tests {
     // ---- ws:layout-modes-onboarding ----
 
     /// Is `pane` the active tab of its group (or a lone tile, which counts as "in front")?
+    /// `to_json` as a Value with `tiles.invisible` sorted: egui_tiles stores it as a HashSet, so its
+    /// serialised order varies once more than one tile is hidden.
+    fn layout_value(l: &Layout) -> serde_json::Value {
+        let mut v: serde_json::Value = serde_json::from_str(&l.to_json()).unwrap();
+        if let Some(inv) = v.pointer_mut("/tree/tiles/invisible").and_then(|i| i.as_array_mut()) {
+            inv.sort_by_key(|x| x.as_u64());
+        }
+        v
+    }
+
     fn in_front(l: &Layout, pane: Pane) -> bool {
         let id = l.tree.tiles.find_pane(&pane).unwrap();
         match l.tree.tiles.parent_of(id).and_then(|p| l.tree.tiles.get_container(p)) {
@@ -1473,6 +1506,7 @@ mod tests {
                 assert!(l.is_visible(p), "{p:?} hidden in the {name} workspace");
             }
             assert!(!l.is_visible(Pane::Source), "Source lands hidden (stack_unplaced) in {name}");
+            assert!(!l.is_visible(Pane::Jobs), "Jobs lands hidden (stack_unplaced) in {name}");
             assert!(Layout::from_json(&l.to_json()).is_some(), "{name} does not round-trip");
         }
         assert!(workspace_layout("Nope").is_none());
@@ -1482,7 +1516,7 @@ mod tests {
             assert!(l.is_visible(p) && in_front(&l, p), "{p:?} is not front and centre in Simple");
         }
         let lib = l.tree.tiles.parent_of(l.tree.tiles.find_pane(&Pane::Library).unwrap()).unwrap();
-        for p in [Pane::Effects, Pane::Mixer, Pane::Source, Pane::History] {
+        for p in [Pane::Effects, Pane::Mixer, Pane::Source, Pane::History, Pane::Jobs] {
             let id = l.tree.tiles.find_pane(&p).unwrap();
             assert_eq!(l.tree.tiles.parent_of(id), Some(lib), "{p:?} is not tabbed behind Library in Simple");
         }
@@ -1538,7 +1572,7 @@ mod tests {
     fn maximize_round_trips_tree() {
         let mut l = Layout::default_layout();
         l.toggle_pin(Pane::Inspector);
-        let before: serde_json::Value = serde_json::from_str(&l.to_json()).unwrap();
+        let before: serde_json::Value = layout_value(&l);
         l.maximize(Pane::Effects);
         assert_eq!(l.maximized.as_ref().map(|(p, _)| *p), Some(Pane::Effects));
         assert!(l.is_visible(Pane::Effects) && in_front(&l, Pane::Effects));
@@ -1547,11 +1581,11 @@ mod tests {
             assert!(l.tree.tiles.find_pane(&p).is_some(), "{p:?} dropped from the maximised tree");
         }
         assert!(Layout::from_json(&l.to_json()).is_some(), "a maximised layout must still load after a restart");
-        let during: serde_json::Value = serde_json::from_str(&l.to_json()).unwrap();
+        let during: serde_json::Value = layout_value(&l);
         assert_ne!(during, before);
         l.unmaximize();
         assert!(l.maximized.is_none());
-        let after: serde_json::Value = serde_json::from_str(&l.to_json()).unwrap();
+        let after: serde_json::Value = layout_value(&l);
         assert_eq!(after, before, "unmaximise must restore the pre-maximise tree");
         assert!(l.is_visible(Pane::Timeline) && in_front(&l, Pane::Mixer));
         assert_eq!(l.pinned, vec![Pane::Inspector], "pins survive the trip");
@@ -1562,11 +1596,11 @@ mod tests {
         assert_eq!(l.maximized.as_ref().map(|(p, _)| *p), Some(Pane::Library));
         l.toggle_maximize(Pane::Library);
         assert!(l.maximized.is_none() && l.is_visible(Pane::Timeline));
-        let restored: serde_json::Value = serde_json::from_str(&l.to_json()).unwrap();
+        let restored: serde_json::Value = layout_value(&l);
         assert_eq!(restored, before);
         // unmaximise with nothing maximised is a no-op
         l.unmaximize();
-        assert_eq!(serde_json::from_str::<serde_json::Value>(&l.to_json()).unwrap(), before);
+        assert_eq!(layout_value(&l), before);
     }
 
     #[test]

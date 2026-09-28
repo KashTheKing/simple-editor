@@ -100,17 +100,57 @@ impl App {
         self.import_recording(out, Some(at));
     }
 
-    /// A finished recording: import it and (for a voiceover) drop it on the timeline at `at`.
+    /// A finished recording: import it and (for a voiceover) drop it on the timeline at `at`. ffmpeg
+    /// finalises the container a moment after it is asked to stop, so the file is waited for by
+    /// `poll_recordings` (per frame, up to 3 s) — never with a sleep on this thread.
     pub(super) fn import_recording(&mut self, out: PathBuf, at: Option<f64>) {
-        // ffmpeg finalises the container a moment after it is asked to stop
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while !out.exists() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        if !out.exists() {
-            self.toast(format!("Recording not written: {}", out.display()));
+        self.pending_recordings.push(PendingRecording { out, at, deadline: Instant::now() + Duration::from_secs(3) });
+    }
+
+    // ---- ws:job-completion-hitches ----
+    /// Per frame: import every recording whose file has landed; give up on those past their deadline.
+    pub(super) fn poll_recordings(&mut self, ctx: &egui::Context) {
+        if self.pending_recordings.is_empty() {
             return;
         }
+        let now = Instant::now();
+        let pending = std::mem::take(&mut self.pending_recordings);
+        for r in pending {
+            match recording_step(r.out.exists(), now, r.deadline) {
+                RecordingStep::Wait => self.pending_recordings.push(r),
+                RecordingStep::Import => self.place_recording(r.out, r.at),
+                RecordingStep::GiveUp => self.toast(format!("Recording not written: {}", r.out.display())),
+            }
+        }
+        if !self.pending_recordings.is_empty() {
+            self.animate_until(ctx, Instant::now() + Duration::from_millis(50));
+        }
+    }
+
+    /// Per frame: apply a finished `timeline.import` job's report (the MCP reply follows in
+    /// `poll_mcp`, later this same frame, so a caller's next read sees the project already swapped).
+    pub(super) fn poll_timeline_imports(&mut self, ctx: &egui::Context) {
+        if self.pending_timeline_imports.is_empty() {
+            return;
+        }
+        let pending = std::mem::take(&mut self.pending_timeline_imports);
+        for (prog, holder, replace) in pending {
+            if !prog.is_done() {
+                self.pending_timeline_imports.push((prog, holder, replace));
+                continue;
+            }
+            let Some(report) = holder.lock().unwrap_or_else(|e| e.into_inner()).take() else { continue };
+            if replace {
+                self.set_project(report.project, None);
+            } else {
+                self.import_ui.report = Some(report);
+                self.import_ui.open = true;
+            }
+        }
+        self.animate_until(ctx, Instant::now() + Duration::from_millis(200));
+    }
+
+    fn place_recording(&mut self, out: PathBuf, at: Option<f64>) {
         let ids = self.import_files(&[out.clone()]);
         match at {
             Some(t) => {
@@ -212,17 +252,18 @@ impl App {
         let mut want: Option<(String, std::path::PathBuf)> = None;
         if self.settings.use_proxies {
             for a in &self.project.assets {
-                // only real video that out-sizes the proxy: images/audio gain nothing, and neither
-                // does footage already at or below proxy resolution
-                if a.kind != crate::model::ClipKind::Video || a.height <= h || a.duration <= 0.0 {
+                if !proxy_eligible(a, h) {
                     continue;
                 }
                 let dst = crate::media::proxy::proxy_path(&a.path, h);
                 if dst.exists() {
                     map.insert(a.path.clone(), dst.to_string_lossy().into_owned());
-                } else if want.is_none() && std::path::Path::new(&a.path).exists() {
-                    want = Some((a.path.clone(), dst));
                 }
+            }
+            // ---- ws:jobs-panel ----
+            want = pick_next_proxy(&proxy_candidates(&self.project.assets, h), self.proxy_next.as_deref());
+            if want.is_some() {
+                self.proxy_next = None;
             }
         }
         if map != self.proxy_map {
@@ -236,5 +277,105 @@ impl App {
                 self.proxy_job = Some((src, dst, job));
             }
         }
+    }
+}
+
+// ---- ws:jobs-panel ----
+/// Only real video that out-sizes the proxy: images/audio gain nothing, and neither does footage
+/// already at or below proxy resolution.
+fn proxy_eligible(a: &crate::model::Asset, h: u32) -> bool {
+    a.kind == crate::model::ClipKind::Video && a.height > h && a.duration > 0.0
+}
+
+/// Eligible assets whose proxy is not built yet (and whose source is on disk), in library order —
+/// the Jobs pane's "queued proxies" and `pick_next_proxy`'s input.
+pub(super) fn proxy_candidates(assets: &[crate::model::Asset], h: u32) -> Vec<(String, std::path::PathBuf)> {
+    assets
+        .iter()
+        .filter(|a| proxy_eligible(a, h))
+        .filter_map(|a| {
+            let dst = crate::media::proxy::proxy_path(&a.path, h);
+            (!dst.exists() && std::path::Path::new(&a.path).exists()).then(|| (a.path.clone(), dst))
+        })
+        .collect()
+}
+
+/// Which proxy builds next: `want_next` (the Jobs pane's "Build next") when it is still a candidate,
+/// else the first candidate in library order (the pre-pane behaviour).
+pub(crate) fn pick_next_proxy(
+    cands: &[(String, std::path::PathBuf)],
+    want_next: Option<&str>,
+) -> Option<(String, std::path::PathBuf)> {
+    want_next.and_then(|w| cands.iter().find(|(p, _)| p == w)).or(cands.first()).cloned()
+}
+
+#[cfg(test)]
+mod proxy_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn proxy_next_wins_over_library_order() {
+        let c = |p: &str| (p.to_string(), PathBuf::from(format!("{p}.proxy")));
+        let cands = vec![c("a"), c("b")];
+        assert_eq!(pick_next_proxy(&cands, None).unwrap().0, "a", "library order by default");
+        assert_eq!(pick_next_proxy(&cands, Some("b")).unwrap().0, "b", "Build next wins");
+        // b already has a proxy / is missing on disk: `proxy_candidates` never lists it, so the
+        // request falls back to library order instead of building something ineligible
+        assert_eq!(pick_next_proxy(&cands[..1], Some("b")).unwrap().0, "a");
+        assert!(pick_next_proxy(&[], Some("b")).is_none());
+    }
+}
+
+// ---- ws:job-completion-hitches ----
+/// A stopped recording whose container ffmpeg is still finalising — see `App::poll_recordings`.
+pub(super) struct PendingRecording {
+    pub(super) out: PathBuf,
+    /// Voiceover: place it on the timeline here. Screen recording: library only.
+    pub(super) at: Option<f64>,
+    pub(super) deadline: Instant,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RecordingStep {
+    Wait,
+    Import,
+    GiveUp,
+}
+
+/// The per-frame decision for one pending recording, pure so it is testable without a live `App`.
+pub(crate) fn recording_step(exists: bool, now: Instant, deadline: Instant) -> RecordingStep {
+    if exists {
+        RecordingStep::Import
+    } else if now < deadline {
+        RecordingStep::Wait
+    } else {
+        RecordingStep::GiveUp
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recording_step_waits_imports_then_gives_up() {
+        let now = Instant::now();
+        let later = now + Duration::from_secs(3);
+        assert_eq!(recording_step(false, now, later), RecordingStep::Wait);
+        assert_eq!(recording_step(true, now, later), RecordingStep::Import);
+        assert_eq!(recording_step(true, later, now), RecordingStep::Import, "a late file still imports");
+        assert_eq!(recording_step(false, later, later), RecordingStep::GiveUp);
+        assert_eq!(recording_step(false, later + Duration::from_secs(1), later), RecordingStep::GiveUp);
+    }
+
+    #[test]
+    fn import_recording_never_sleeps_on_the_caller() {
+        let src = include_str!("jobs.rs");
+        let start = src.find("fn import_recording(").expect("import_recording");
+        let end = start + src[start..].find("\n    }\n").expect("end of fn");
+        let body = &src[start..end];
+        assert!(!body.contains("thread::sleep"), "import_recording must not block the UI thread:\n{body}");
+        assert!(!body.contains("exists()"), "the file wait belongs to poll_recordings, per frame:\n{body}");
     }
 }

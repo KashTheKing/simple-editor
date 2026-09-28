@@ -122,12 +122,12 @@ pub(super) enum MediaJob {
 }
 
 impl MediaJob {
-    fn progress(&self) -> &Arc<Progress> {
+    pub(super) fn progress(&self) -> &Arc<Progress> {
         match self {
             MediaJob::Sequence { prog, .. } | MediaJob::Consolidate { prog, .. } => prog,
         }
     }
-    fn label(&self) -> String {
+    pub(super) fn label(&self) -> String {
         match self {
             MediaJob::Sequence { out, .. } => out.file_name().unwrap_or_default().to_string_lossy().into_owned(),
             MediaJob::Consolidate { .. } => "Consolidate media".into(),
@@ -219,11 +219,7 @@ fn finish_consolidate(app: &mut App, prog: &Progress, results: &[(Id, PathBuf, R
     }
 }
 
-/// WINDOW_DRAWER: progress + Cancel for the jobs above (same window every other job uses).
-pub(super) fn windows(app: &mut App, ctx: &egui::Context) {
-    let jobs: Vec<(Arc<Progress>, String)> = app.media_jobs.iter().map(|j| (j.progress().clone(), j.label())).collect();
-    job_window(ctx, "Media", &jobs);
-}
+// ws:jobs-panel: the "Media" job window moved into the Jobs pane (jobs_pane.rs reads `media_jobs`).
 
 /// ACT_HANDLERS entry.
 pub(super) fn act(app: &mut App, a: Action) -> bool {

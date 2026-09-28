@@ -143,7 +143,9 @@ impl App {
                 if self.mcp_jobs[i].prog.is_done() {
                     let j = self.mcp_jobs.remove(i);
                     let r = match j.prog.error() {
-                        None => Ok(json!({"ok": true, "path": j.out.to_string_lossy()})),
+                        // ws:job-completion-hitches: `status` = the worker's last line (timeline.import's
+                        // clip/track/missing counts); "Done" for the older jobs
+                        None => Ok(json!({"ok": true, "path": j.out.to_string_lossy(), "status": j.prog.status()})),
                         Some(e) => Err(e),
                     };
                     let _ = j.reply.send(r);
