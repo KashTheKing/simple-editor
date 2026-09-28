@@ -1074,7 +1074,7 @@ fn browser(
     let mut consolidate = false;
     let mut columns_changed = false;
     let has_assets = !project.assets.is_empty();
-    toolbar(ui, state, labels, palette, |ui, state| {
+    toolbar(ui, state, palette, |ui, state| {
         if imported {
             let r = glyph_text_button(ui, Glyph::Letter('+'), "New");
             egui::Popup::menu(&r).show(|ui| {
@@ -1098,9 +1098,6 @@ fn browser(
         } else if ui.button("Link folder…").clicked() {
             link = true;
         }
-        if crate::ui::tools::glyph_text_button(ui, crate::ui::tools::Glyph::Folder, "Open…").clicked() {
-            resp_open = true;
-        }
         if crate::ui::tools::glyph_text_button(ui, crate::ui::tools::Glyph::FilmReel, "Import…").clicked() {
             import = true;
         }
@@ -1112,47 +1109,91 @@ fn browser(
         {
             import_url = true;
         }
-        if !imported && ui.button("Clear recent").clicked() {
-            confirm::ask("Clear recent", CLEAR_RECENT, ConfirmAction::ClearRecent);
-        }
-        // up here with the rest of the controls: below the tree is reserved for files - instant +
-        // Undo-toast (panes.rs/library_pane.rs), never confirmed: it's undoable, unlike the two above.
-        if imported && ui.add_enabled(unused_n > 0, egui::Button::new(format!("Remove unused ({unused_n})"))).clicked()
-        {
+        // instant + Undo-toast (panes.rs/library_pane.rs), never confirmed: it's undoable. Hidden at 0.
+        if imported && unused_n > 0 && ui.button(format!("Remove unused ({unused_n})")).clicked() {
             remove_unused = true;
         }
-        // ---- ws:media-library ----
-        if imported
-            && ui
-                .add_enabled(has_assets, egui::Button::new("Consolidate…"))
-                .on_hover_text("Copy every file from outside the project folder into it (one Undo step)")
-                .clicked()
-        {
-            consolidate = true;
-        }
-        if state.view == 0 {
-            ui.menu_button("Columns", |ui| {
-                for c in COLUMNS {
-                    let mut on = settings.library_columns.iter().any(|x| x == c);
-                    if ui.checkbox(&mut on, column_title(c)).changed() {
-                        if on {
-                            settings.library_columns.push((*c).to_string());
-                        } else {
-                            settings.library_columns.retain(|x| x != c);
+        // the rarely used verbs, out of the way
+        ui.menu_button("More", |ui| {
+            if ui.button("Open…").clicked() {
+                resp_open = true;
+                ui.close();
+            }
+            // ---- ws:media-library ----
+            if imported
+                && ui
+                    .add_enabled(has_assets, egui::Button::new("Consolidate…"))
+                    .on_hover_text("Copy every file from outside the project folder into it (one Undo step)")
+                    .clicked()
+            {
+                consolidate = true;
+                ui.close();
+            }
+            if !imported && ui.button("Clear recent").clicked() {
+                confirm::ask("Clear recent", CLEAR_RECENT, ConfirmAction::ClearRecent);
+                ui.close();
+            }
+        });
+        // every filter in one menu; the button says how many are on
+        let n_on = (state.kind_filter != 0) as u8 + (state.label_filter != 0) as u8 + state.unused_only as u8;
+        let ftitle = if n_on > 0 { format!("Filter ({n_on})") } else { "Filter".to_string() };
+        ui.menu_button(ftitle, |ui| {
+            ui.weak("Kind");
+            for (i, n) in ["All", "Video", "Audio", "Image", "Seq", "Short SFX", "Music"].iter().enumerate() {
+                ui.radio_value(&mut state.kind_filter, i as u8, *n);
+            }
+            ui.separator();
+            ui.weak("Label");
+            ui.radio_value(&mut state.label_filter, 0, "Any");
+            for i in 1..=labels.len() as u8 {
+                ui.horizontal(|ui| {
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                    ui.painter().circle_filled(rect.center(), 4.5, lbl_color(labels, i, palette));
+                    ui.radio_value(&mut state.label_filter, i, lbl_name(labels, i));
+                });
+            }
+            ui.separator();
+            ui.checkbox(&mut state.unused_only, "Unused only");
+            if n_on > 0 && ui.button("Clear filters").clicked() {
+                state.kind_filter = 0;
+                state.label_filter = 0;
+                state.unused_only = false;
+            }
+        });
+        ui.menu_button("View", |ui| {
+            ui.radio_value(&mut state.view, 0, "List");
+            ui.radio_value(&mut state.view, 1, "Gallery");
+            ui.horizontal(|ui| {
+                ui.label("Size");
+                if ui.small_button("−").clicked() {
+                    state.zoom = (state.zoom / 1.25).clamp(ZOOM_MIN, ZOOM_MAX);
+                }
+                if ui.small_button("+").clicked() {
+                    state.zoom = (state.zoom * 1.25).clamp(ZOOM_MIN, ZOOM_MAX);
+                }
+            });
+            ui.separator();
+            ui.weak("Sort by");
+            for (i, n) in ["Name", "Duration", "Kind", "Recent"].iter().enumerate() {
+                ui.radio_value(&mut sort, i as u8, *n);
+            }
+            if state.view == 0 {
+                ui.separator();
+                ui.menu_button("Columns", |ui| {
+                    for c in COLUMNS {
+                        let mut on = settings.library_columns.iter().any(|x| x == c);
+                        if ui.checkbox(&mut on, column_title(c)).changed() {
+                            if on {
+                                settings.library_columns.push((*c).to_string());
+                            } else {
+                                settings.library_columns.retain(|x| x != c);
+                            }
+                            columns_changed = true;
                         }
-                        columns_changed = true;
                     }
-                }
-            });
-        }
-        egui::ComboBox::from_id_salt("lib_sort")
-            .selected_text(["Name", "Duration", "Kind", "Recent"][state.sort.min(3) as usize])
-            .width(80.0)
-            .show_ui(ui, |ui| {
-                for (i, n) in ["Name", "Duration", "Kind", "Recent"].iter().enumerate() {
-                    ui.selectable_value(&mut sort, i as u8, *n);
-                }
-            });
+                });
+            }
+        });
     });
     state.sort = sort;
     if remove_unused {
@@ -1471,11 +1512,14 @@ fn zoom_scroll(ui: &egui::Ui, state: &mut LibraryState) {
 /// of the selection. Upgrade: queue one job per asset once those windows accept a list.
 fn batch_strip(ui: &mut egui::Ui, state: &LibraryState, resp: &mut LibraryResponse) {
     let n = state.sel_ids.len() + state.sel_paths.len();
-    if n == 0 {
-        return;
-    }
-    ui.horizontal_wrapped(|ui| {
+    // always exactly one row, selected or not: the list under it must never jump
+    ui.horizontal(|ui| {
+        ui.set_min_height(ui.spacing().interact_size.y);
         ui.spacing_mut().item_spacing.x = 3.0;
+        if n == 0 {
+            ui.weak(RichText::new("Click a file to preview it · double-click to play").small());
+            return;
+        }
         ui.weak(RichText::new(format!("{n} selected")).small());
         if !state.sel_paths.is_empty() && ui.small_button("Import").clicked() {
             resp.open_paths.extend(state.sel_paths.iter().map(PathBuf::from));
@@ -1483,41 +1527,47 @@ fn batch_strip(ui: &mut egui::Ui, state: &LibraryState, resp: &mut LibraryRespon
         if state.sel_ids.is_empty() {
             return;
         }
-        if !state.sel_ids.is_empty() && ui.small_button("Add to timeline").clicked() {
+        if ui.small_button("Add to timeline").clicked() {
             resp.add_to_timeline.extend(state.sel_ids.iter().copied());
-        }
-        // ---- ws:media-library ----
-        if ui.small_button("New subclip").on_hover_text("A library entry over the In/Out marks").clicked() {
-            resp.new_subclip.extend(state.sel_ids.iter().copied());
-        }
-        if state.sel_ids.iter().any(|id| state.offline.contains(id)) && ui.small_button("Relink…").clicked() {
-            resp.relink.extend(state.sel_ids.iter().filter(|id| state.offline.contains(id)).copied());
-        }
-        ui.menu_button("Convert To", |ui| {
-            for t in crate::engine::convert::TARGETS {
-                if ui.button(*t).clicked() {
-                    resp.convert.extend(state.sel_ids.iter().map(|id| (*id, (*t).to_string())));
-                    ui.close();
-                }
-            }
-        });
-        // the options window takes one file: a multi-selection goes straight to the quick per-id
-        // path (default options, first target), so "Convert…" never silently drops all but one
-        if ui.small_button("Convert…").clicked() {
-            if state.sel_ids.len() > 1 {
-                let t = crate::engine::convert::TARGETS[0];
-                resp.convert.extend(state.sel_ids.iter().map(|id| (*id, t.to_string())));
-            } else {
-                resp.convert_dialog = state.sel_ids.first().copied();
-            }
-        }
-        // Compress… stays single-target (its window sizes a bitrate for exactly one file)
-        if ui.small_button("Compress…").clicked() {
-            resp.compress = state.sel_ids.first().copied();
         }
         if ui.small_button("Remove from project").clicked() {
             resp.remove.extend(state.sel_ids.iter().copied());
         }
+        ui.menu_button(RichText::new("Actions").small(), |ui| {
+            // ---- ws:media-library ----
+            if ui.button("New subclip").on_hover_text("A library entry over the In/Out marks").clicked() {
+                resp.new_subclip.extend(state.sel_ids.iter().copied());
+                ui.close();
+            }
+            if state.sel_ids.iter().any(|id| state.offline.contains(id)) && ui.button("Relink…").clicked() {
+                resp.relink.extend(state.sel_ids.iter().filter(|id| state.offline.contains(id)).copied());
+                ui.close();
+            }
+            ui.menu_button("Convert To", |ui| {
+                for t in crate::engine::convert::TARGETS {
+                    if ui.button(*t).clicked() {
+                        resp.convert.extend(state.sel_ids.iter().map(|id| (*id, (*t).to_string())));
+                        ui.close();
+                    }
+                }
+            });
+            // the options window takes one file: a multi-selection goes straight to the quick per-id
+            // path (default options, first target), so "Convert…" never silently drops all but one
+            if ui.button("Convert…").clicked() {
+                if state.sel_ids.len() > 1 {
+                    let t = crate::engine::convert::TARGETS[0];
+                    resp.convert.extend(state.sel_ids.iter().map(|id| (*id, t.to_string())));
+                } else {
+                    resp.convert_dialog = state.sel_ids.first().copied();
+                }
+                ui.close();
+            }
+            // Compress… stays single-target (its window sizes a bitrate for exactly one file)
+            if ui.button("Compress…").clicked() {
+                resp.compress = state.sel_ids.first().copied();
+                ui.close();
+            }
+        });
     });
     ui.separator();
 }
@@ -1527,7 +1577,6 @@ fn batch_strip(ui: &mut egui::Ui, state: &LibraryState, resp: &mut LibraryRespon
 fn toolbar(
     ui: &mut egui::Ui,
     state: &mut LibraryState,
-    labels: &Labels,
     palette: &Palette,
     head: impl FnOnce(&mut egui::Ui, &mut LibraryState),
 ) {
@@ -1550,42 +1599,6 @@ fn toolbar(
             if icon_button(ui, palette, id, Glyph::Letter('X'), "Clear search", false).clicked() {
                 state.search.clear();
             }
-        });
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 3.0;
-            ui.weak(RichText::new("View").small());
-            let list_id = egui::Id::new("lib_view_list");
-            if icon_button(ui, palette, list_id, Glyph::ListIcon, "List view", state.view == 0).clicked() {
-                state.view = 0;
-            }
-            let gallery_id = egui::Id::new("lib_view_gallery");
-            if icon_button(ui, palette, gallery_id, Glyph::GridIcon, "Gallery view", state.view == 1).clicked() {
-                state.view = 1;
-            }
-            if icon_button(ui, palette, egui::Id::new("lib_zoom_out"), Glyph::Letter('-'), "Smaller", false).clicked() {
-                state.zoom = (state.zoom / 1.25).clamp(ZOOM_MIN, ZOOM_MAX);
-            }
-            if icon_button(ui, palette, egui::Id::new("lib_zoom_in"), Glyph::Letter('+'), "Bigger", false).clicked() {
-                state.zoom = (state.zoom * 1.25).clamp(ZOOM_MIN, ZOOM_MAX);
-            }
-            ui.separator();
-            ui.weak(RichText::new("Filters").small());
-            for (i, n) in ["All", "Video", "Audio", "Image", "Seq", "Short SFX", "Music"].iter().enumerate() {
-                if ui.selectable_label(state.kind_filter == i as u8, RichText::new(*n).small()).clicked() {
-                    state.kind_filter = i as u8;
-                }
-            }
-            for i in 1..=labels.len() as u8 {
-                let id = egui::Id::new(("lib_label_chip", i));
-                let on = state.label_filter == i;
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
-                let r = ui.interact(rect, id, egui::Sense::click());
-                ui.painter().circle_filled(rect.center(), if on { 6.0 } else { 4.5 }, lbl_color(labels, i, palette));
-                if r.on_hover_text(lbl_name(labels, i)).clicked() {
-                    state.label_filter = if on { 0 } else { i };
-                }
-            }
-            ui.toggle_value(&mut state.unused_only, RichText::new("Unused").small());
         });
     });
     ui.separator();
@@ -2205,7 +2218,7 @@ impl Tree<'_, '_> {
             egui::Id::new(("asset", a.id)),
             DragPayload::Asset(a.id),
             selected,
-            selected.then_some("Add"),
+            None,
             |ui| {
                 ui.add_space(indent(depth) + ARROW);
                 // label tint: a colour bar on the left and the name in the same colour
@@ -2302,7 +2315,7 @@ impl Tree<'_, '_> {
         };
         let id = egui::Id::new(("tile", a.id));
         let payload = DragPayload::Asset(a.id);
-        let button = selected.then_some("Add");
+        let button = None;
         let mut tag = match crate::media::proxy::status(a, self.settings.use_proxies, self.settings.proxy_height) {
             crate::media::proxy::ProxyStatus::Building(f) => {
                 format!("{} · proxy {:.0} %", kind_tag(a.kind), f * 100.0)
@@ -3860,11 +3873,14 @@ mod tests {
         let mut click = |state: &mut LibraryState, label: &str| -> LibraryResponse {
             let mut at = egui::Pos2::ZERO;
             let mut got = LibraryResponse::default();
-            for frame in 0..2 {
+            // frame 1 opens the strip's Actions menu, frame 3 clicks `label` inside it
+            // (a menu shows the frame after its click, hence the idle frame 2)
+            for frame in 0..4 {
                 let mut input = tall(900.0);
-                if frame == 1 {
+                if frame == 1 || frame == 3 {
                     assert_ne!(at, egui::Pos2::ZERO, "{label} must be drawn");
                     click_at(&mut input, at);
+                    at = egui::Pos2::ZERO;
                 }
                 let out = ctx.run(input, |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
@@ -3872,7 +3888,7 @@ mod tests {
                         got = show(ui, state, &mut project, &mut settings, None, None, &palette, false, &mut undo);
                     });
                 });
-                if let Some(r) = text_rect(&out.shapes, label) {
+                if let Some(r) = text_rect(&out.shapes, if frame == 0 { "Actions" } else { label }) {
                     at = r.center();
                 }
             }
