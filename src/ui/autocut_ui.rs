@@ -518,7 +518,7 @@ fn scene_cuts_ui(
     }
 }
 
-/// Beats section: "Detect Beats" is a pure preview (onset times + BPM, no mutation, no undo pushed) —
+/// Beats section: "Detect Beats" is a pure preview (onset times + BPM, no mutation, no undo pushed) -
 /// only "Add Markers" / "Split at Beats" write to the project, matching the Silence/Scene-cuts
 /// sections' detect-then-commit shape. Shares `analysis::detect_beats`/`beat_markers`/`split_beats`
 /// with `Action::DetectBeats`/`Action::SplitAtBeats` and `audio.beats` so the onset math is never

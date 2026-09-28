@@ -430,15 +430,15 @@ pub struct App {
     // ---- ws:jobs-panel ----
     /// Jobs pane state: the per-frame row snapshot + the recent-finished log (`jobs_pane::tick`).
     jobs: crate::ui::jobs_ui::JobsState,
-    /// "Build this proxy next" (a source path) — honoured by `jobs::pick_next_proxy`, cleared once it starts.
+    /// "Build this proxy next" (a source path) - honoured by `jobs::pick_next_proxy`, cleared once it starts.
     proxy_next: Option<String>,
     // ---- ws:pro-timeline ----
     /// Ctrl+F Find window state (open/closed, query buffer).
     find: crate::ui::find_ui::FindState,
     // ---- ws:job-completion-hitches ----
-    /// Stopped recordings waiting for ffmpeg to finalise the file — `jobs::poll_recordings`, per frame.
+    /// Stopped recordings waiting for ffmpeg to finalise the file - `jobs::poll_recordings`, per frame.
     pending_recordings: Vec<jobs::PendingRecording>,
-    /// `timeline.import` jobs (report parsed + media probed on a worker) — `jobs::poll_timeline_imports`
+    /// `timeline.import` jobs (report parsed + media probed on a worker) - `jobs::poll_timeline_imports`
     /// applies each (progress, report, replace) once done.
     pending_timeline_imports: Vec<(Arc<Progress>, Arc<Mutex<Option<crate::engine::import::ImportReport>>>, bool)>,
 }
@@ -1521,7 +1521,7 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:layout-modes-onboarding ----
     layout_ctl::windows,
     // ---- ws:media-library ----
-    // (media_sync::windows removed by ws:jobs-panel — its job window lives in the Jobs pane now)
+    // (media_sync::windows removed by ws:jobs-panel - its job window lives in the Jobs pane now)
     // ---- ws:source-monitor ----
     // ---- ws:timeline-trim-gestures ----
     // ---- ws:transcript-captions ----

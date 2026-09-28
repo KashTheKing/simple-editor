@@ -167,7 +167,7 @@ impl ThumbCache {
         self.shared.0.try_lock().ok().map(|st| st.queue.len() + st.pending.len())
     }
 
-    /// Hold the worker-shared lock while `f` runs — pins `queue_len`'s try_lock (jobs_pane tests).
+    /// Hold the worker-shared lock while `f` runs - pins `queue_len`'s try_lock (jobs_pane tests).
     #[cfg(test)]
     pub(crate) fn hold_lock_for_test(&self, f: impl FnOnce()) {
         let _g = self.shared.0.lock().unwrap();

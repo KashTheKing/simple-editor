@@ -378,7 +378,7 @@ pub const TOOLS: &[ToolDef] = &[
     row!("timeline.auto_cut", ToolKind::Mutate, "Silence-based auto-cut of audio clips (+ linked video).", &["clip_ids:array:true:", "threshold_db:number:false:default -35", "min_silence:number:false:", "min_speech:number:false:", "padding:number:false:", "keep_quiet:boolean:false:", "ripple:boolean:false:default true"]),
     row!("timeline.nest", ToolKind::Mutate, "Nest clips into a new sequence; returns the sequence id.", &["clip_ids:array:true:", "name:string:false:"]),
     // ---- ws:job-completion-hitches ----
-    // a Job, not a Read: `import_file` ffprobes every referenced media file (~100 ms each) — that runs
+    // a Job, not a Read: `import_file` ffprobes every referenced media file (~100 ms each) - that runs
     // on a worker now and `poll_timeline_imports` applies the report; the reply lands when it is in.
     ToolDef {
         name: "timeline.import",

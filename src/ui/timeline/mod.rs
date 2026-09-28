@@ -1108,7 +1108,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 if brb.clicked() {
                     // Cut tool splits here exactly as it would on the top half; Marker still drops a
                     // marker anywhere on the body; plain Select clicking the bottom half is just a
-                    // click-to-select like the top half — it must not cut.
+                    // click-to-select like the top half - it must not cut.
                     let (snap_on, zoom, ph) = (c.snap, state.zoom, *c.playhead);
                     let x = ui.input(|i| i.pointer.latest_pos()).unwrap_or(bot_vis.center()).x;
                     let t = snap_time(state.time_at(x), snap_on, zoom, c.project, ph, &[]);

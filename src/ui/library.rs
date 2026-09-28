@@ -152,7 +152,7 @@ pub struct LibraryResponse {
     /// The file the anchor of the selection now points at - the app may show it in the source viewer.
     /// The library previews it itself either way.
     pub preview: Option<PathBuf>,
-    /// Same, but from a double click — the app plays it immediately instead of loading it paused.
+    /// Same, but from a double click - the app plays it immediately instead of loading it paused.
     pub preview_play: Option<PathBuf>,
     /// ---- ws:forgiveness ----
     /// Remove Unused ran (instant, never confirmed) and removed `n` assets - the app toasts an Undo.

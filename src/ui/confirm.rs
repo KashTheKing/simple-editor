@@ -88,7 +88,7 @@ pub(crate) fn draw(app: &mut App, ctx: &egui::Context) {
         let discard = matches!(pending[i].kind, Kind::Discard(_));
         // Save/Discard/Cancel (close/save project) always centers; other confirmations (Clear
         // recent, etc) appear where the button that triggered them was clicked. Since each of these
-        // windows has a fresh Id (title/body/index), `default_pos` always applies — there's no prior
+        // windows has a fresh Id (title/body/index), `default_pos` always applies - there's no prior
         // layout memory to fight.
         let pos = if discard { ctx.content_rect().center() } else { crate::ui::popup_open_pos(ctx) };
         egui::Window::new(pending[i].title.clone())

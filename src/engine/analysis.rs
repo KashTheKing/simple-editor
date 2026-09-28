@@ -332,8 +332,8 @@ pub fn scene_cuts(path: &std::path::Path, thr: f32) -> Result<Vec<f64>, String> 
 
 /// Pure detection: onsets on every clip in `targets` (SOURCE seconds, no mutation). Shared by the
 /// Beats section's "Detect Beats" button and `audio.beats`'s no-flag path, so a preview never has a
-/// side effect — mirrors `audio.beats`' documented "pure detection, no mutation" default. Returns
-/// (per-clip onsets, combined BPM across every target's onsets — `None` if fewer than 4 total).
+/// side effect - mirrors `audio.beats`' documented "pure detection, no mutation" default. Returns
+/// (per-clip onsets, combined BPM across every target's onsets - `None` if fewer than 4 total).
 pub fn detect_beats(
     project: &Project,
     targets: &[Id],
@@ -358,7 +358,7 @@ pub fn detect_beats(
 }
 
 /// Add one clip marker per onset in `per_clip` (converted through `to_clip_local` so it lands
-/// correctly on a trimmed/retimed clip) — the explicit commit step after `detect_beats`'s preview.
+/// correctly on a trimmed/retimed clip) - the explicit commit step after `detect_beats`'s preview.
 /// Shared by the Beats section's "Add Markers" button, `Action::DetectBeats` and `audio.beats`'s
 /// `as_markers` path (this fn stays App-free: `App`'s fields aren't reachable from `ui::autocut_ui`,
 /// see the audio-analysis PR's deviation note). Returns the marker ids written.
@@ -382,7 +382,7 @@ pub fn split_beats(project: &mut Project, per_clip: &[(Id, Vec<f64>)]) -> usize 
     let mut cuts = 0usize;
     for (clip_id, found) in per_clip {
         let Some(c) = project.clip(*clip_id).cloned() else { continue };
-        // `group` grows with each split's new right-half piece (mirrors Project::auto_cut) — a fixed
+        // `group` grows with each split's new right-half piece (mirrors Project::auto_cut) - a fixed
         // restrict set would only ever cut the ORIGINAL clip, missing every onset past the first cut.
         let mut group = project.expand_links(&[*clip_id]);
         for &t_src in found {

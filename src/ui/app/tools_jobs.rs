@@ -1,7 +1,7 @@
 //! ---- ws:jobs-panel ----
 //! The four `jobs.*` MCP tools over the Jobs pane's snapshot. `Ui`, not `Mutate`, for the same
 //! documented reason as `export.queue` in tools_export.rs: every holder here is `App` state, not the
-//! `Project` — `Mutate`'s snapshot/undo would dirty a clean project for no project change.
+//! `Project` - `Mutate`'s snapshot/undo would dirty a clean project for no project change.
 
 use super::tools_helpers::*;
 use super::*;

@@ -395,7 +395,7 @@ fn advance_bake(app: &mut App, mut job: BakeJob) {
         }
         // ---- ws:job-completion-hitches ----
         // last ffmpeg pass done: probe the file on a worker (spawn_job = catch_unwind, MF objects
-        // created and dropped on that thread — never shared), then come back through frame_tick
+        // created and dropped on that thread - never shared), then come back through frame_tick
         let (out, backend, probed) = (job.out.to_string_lossy().into_owned(), app.backend(), job.probed.clone());
         let p = export::spawn_job("bake-probe", move |_| {
             let r = media::probe(&out, backend);
@@ -454,7 +454,7 @@ pub(crate) fn bake_swap(
     Ok(n)
 }
 
-/// Import the rendered file as an asset and re-point the clips — one labelled undo step. The asset was
+/// Import the rendered file as an asset and re-point the clips - one labelled undo step. The asset was
 /// probed by the `BakeStage::Probe` worker; nothing here touches ffprobe (`finish_bake_never_calls_media_probe`).
 fn finish_bake(app: &mut App, job: &BakeJob) -> Result<usize, String> {
     let asset = take_probed(&job.probed)?;

@@ -470,10 +470,10 @@ fn help_changelog_and_templates_save_are_registered() {
 /// `request_repaint_after`) out of this test's scanned files - that call still exists, just outside
 /// the list below now, so the count drops from 17 to 16 (see CHANGELOG.md's forgiveness entry).
 /// ws:source-monitor then deleted lib_preview.rs outright: its one site (the buffering spinner's
-/// 50 ms poll) is a genuine migration — source_pane.rs routes the same poll through
-/// `App::animate_until` — so the count drops again, 16 to 15 (CHANGELOG.md's source-monitor entry).
+/// 50 ms poll) is a genuine migration - source_pane.rs routes the same poll through
+/// `App::animate_until` - so the count drops again, 16 to 15 (CHANGELOG.md's source-monitor entry).
 /// ws:jobs-panel then deleted `job_window` (mod.rs) outright: its one 150 ms site is a genuine
-/// migration — `jobs_pane::tick` routes the same cadence through `App::animate_until` — so the count
+/// migration - `jobs_pane::tick` routes the same cadence through `App::animate_until` - so the count
 /// drops again, 15 to 14 (CHANGELOG.md's jobs-panel entry).
 /// Counts real call lines across the files that had them before this PR (skipping doc-comment text and
 /// `animate_until`'s own internal `ctx.request_repaint_after(dt)` funnel call), so a future edit that
@@ -496,7 +496,7 @@ fn pre_existing_repaint_sites_unchanged_and_named() {
         .count();
     assert_eq!(
         count, 14,
-        "the count of pre-existing raw request_repaint_after sites moved — if that was intentional, \
+        "the count of pre-existing raw request_repaint_after sites moved - if that was intentional, \
          update this count AND the tracked-gap note in CHANGELOG.md/goals.md"
     );
 }

@@ -102,7 +102,7 @@ impl App {
 
     /// A finished recording: import it and (for a voiceover) drop it on the timeline at `at`. ffmpeg
     /// finalises the container a moment after it is asked to stop, so the file is waited for by
-    /// `poll_recordings` (per frame, up to 3 s) — never with a sleep on this thread.
+    /// `poll_recordings` (per frame, up to 3 s) - never with a sleep on this thread.
     pub(super) fn import_recording(&mut self, out: PathBuf, at: Option<f64>) {
         self.pending_recordings.push(PendingRecording { out, at, deadline: Instant::now() + Duration::from_secs(3) });
     }
@@ -287,7 +287,7 @@ fn proxy_eligible(a: &crate::model::Asset, h: u32) -> bool {
     a.kind == crate::model::ClipKind::Video && a.height > h && a.duration > 0.0
 }
 
-/// Eligible assets whose proxy is not built yet (and whose source is on disk), in library order —
+/// Eligible assets whose proxy is not built yet (and whose source is on disk), in library order -
 /// the Jobs pane's "queued proxies" and `pick_next_proxy`'s input.
 pub(super) fn proxy_candidates(assets: &[crate::model::Asset], h: u32) -> Vec<(String, std::path::PathBuf)> {
     assets
@@ -328,7 +328,7 @@ mod proxy_tests {
 }
 
 // ---- ws:job-completion-hitches ----
-/// A stopped recording whose container ffmpeg is still finalising — see `App::poll_recordings`.
+/// A stopped recording whose container ffmpeg is still finalising - see `App::poll_recordings`.
 pub(super) struct PendingRecording {
     pub(super) out: PathBuf,
     /// Voiceover: place it on the timeline here. Screen recording: library only.

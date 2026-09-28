@@ -29,7 +29,7 @@ use eframe::egui;
 #[derive(Default)]
 pub struct SettingsUi {
     pub open: bool,
-    /// `open` on the previous frame — lets `show` detect a fresh open (vs. still-open) so it can
+    /// `open` on the previous frame - lets `show` detect a fresh open (vs. still-open) so it can
     /// reposition the window at the click/center point each time, instead of only on its very first
     /// ever appearance (egui otherwise remembers the last dragged position across opens).
     pub(super) prev_open: bool,

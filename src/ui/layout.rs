@@ -201,7 +201,7 @@ impl Pane {
             Pane::History => Glyph::Hourglass,
             // ws:source-monitor (wave 2) may pick a more specific glyph later.
             Pane::Source => Glyph::Camera,
-            // reuses export-deliver's queue glyph — no new Glyph variant
+            // reuses export-deliver's queue glyph - no new Glyph variant
             Pane::Jobs => Glyph::Queue,
         }
     }
@@ -941,7 +941,7 @@ impl egui_tiles::Behavior<Pane> for Behaviour<'_> {
         }
         self.on_tab_button(tiles, tile_id, tab_response)
     }
-    /// egui_tiles defaults to `Grab` (Windows renders that as the 4-arrow move cursor) — a tab is
+    /// egui_tiles defaults to `Grab` (Windows renders that as the 4-arrow move cursor) - a tab is
     /// draggable, but that's not the affordance a click-to-switch tab should advertise.
     fn tab_hover_cursor_icon(&self) -> egui::CursorIcon {
         egui::CursorIcon::Default
@@ -1213,7 +1213,7 @@ mod tests {
             for &p in Pane::ALL {
                 assert!(l.tree.tiles.find_pane(&p).is_some(), "{p:?} missing from the {name} layout");
                 // ws:registries-schema-hooks: Pane::Source is deliberately a hidden trailing tab
-                // (stack_unplaced) — every OTHER pane stays visible exactly as before.
+                // (stack_unplaced) - every OTHER pane stays visible exactly as before.
                 if !matches!(p, Pane::Source | Pane::Jobs) {
                     assert!(l.is_visible(p), "{p:?} hidden in the {name} layout");
                 } else {

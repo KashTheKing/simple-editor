@@ -42,7 +42,7 @@ struct TrackingRun {
 /// A `tts::speak_to_wav` job; on success the WAV is imported and placed at `at`, linked to `link_to`.
 struct TtsRun {
     inner: Arc<Progress>,
-    /// The WAV, probed on the TTS worker — `finish_tts` adopts it instead of running ffprobe here.
+    /// The WAV, probed on the TTS worker - `finish_tts` adopts it instead of running ffprobe here.
     probed: tts::ProbedWav,
     out: PathBuf,
     link_to: Option<Id>,
@@ -259,7 +259,7 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
             let (name, file, mb) = app.subtitles_ui.transcribe.model();
             if transcribe::have_model(file) {
                 app.toast(format!(
-                    "whisper {} is already downloaded — select a clip and Transcribe",
+                    "whisper {} is already downloaded - select a clip and Transcribe",
                     short_model(name)
                 ));
             } else {
@@ -457,7 +457,7 @@ fn finish_tts(app: &mut App, run: TtsRun) {
         return;
     }
     // ws:job-completion-hitches: the WAV was probed on the TTS worker; the add/insert/link below still
-    // runs synchronously right here, so the clip ids are final and the link survives — an async import
+    // runs synchronously right here, so the clip ids are final and the link survives - an async import
     // whose later `adopt` re-creates the clips would break it (`tts_finish_keeps_link_ids_final`)
     let asset = match super::tools_export::take_probed(&run.probed) {
         Ok(a) => a,
@@ -475,7 +475,7 @@ fn finish_tts(app: &mut App, run: TtsRun) {
     run.outer.finish(None);
 }
 
-/// Add the probed WAV, lay its clips down at `at` and link them to `link_to` (when it still exists) —
+/// Add the probed WAV, lay its clips down at `at` and link them to `link_to` (when it still exists) -
 /// all in one synchronous pass so the ids being linked are the ones that stay. Returns the new clips.
 fn place_tts(project: &mut Project, asset: crate::model::Asset, at: f64, link_to: Option<Id>) -> Vec<Id> {
     let aid = project.add_asset(asset);
@@ -644,7 +644,7 @@ mod tests {
     }
 
     // ---- ws:job-completion-hitches ----
-    /// The ids `finish_tts` links are exactly the ones `insert_asset_clips` returned — the whole
+    /// The ids `finish_tts` links are exactly the ones `insert_asset_clips` returned - the whole
     /// add/insert/link runs in one synchronous pass, so no later `adopt` can re-create them.
     #[test]
     fn tts_finish_keeps_link_ids_final() {
