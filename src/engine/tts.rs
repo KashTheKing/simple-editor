@@ -5,10 +5,14 @@
 //! `Progress` shape as `transcribe::download_model`, so the UI shows it like any other job.
 
 use crate::engine::export::{self, Progress};
-use crate::media::ffpipe;
+use crate::media::{self, ffpipe, Backend};
+use crate::model::Asset;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
+
+/// Where `speak_to_wav`'s worker leaves the probed WAV (ws:job-completion-hitches).
+pub type ProbedWav = Arc<Mutex<Option<Result<Asset, String>>>>;
 
 /// A PowerShell single-quoted literal (the only escape inside one is a doubled quote).
 fn ps_quote(s: &str) -> String {
@@ -40,9 +44,14 @@ pub fn command(text: &str, voice: Option<&str>, out: &Path) -> Command {
 }
 
 /// Synthesize `text` into the WAV at `out` on a worker thread. `voice` = None uses the system default.
-pub fn speak_to_wav(text: &str, voice: Option<&str>, out: &Path) -> Arc<Progress> {
+/// The same worker probes the finished WAV (`spawn_job` = `catch_unwind`; MF objects live and die on
+/// that thread) and leaves the `Asset` in the returned holder, so the UI-thread completion never
+/// spawns ffprobe (ws:job-completion-hitches).
+pub fn speak_to_wav(text: &str, voice: Option<&str>, out: &Path, backend: Backend) -> (Arc<Progress>, ProbedWav) {
     let (text, voice, out) = (text.to_string(), voice.map(str::to_string), out.to_path_buf());
-    export::spawn_job("tts", move |prog| {
+    let probed: ProbedWav = Arc::default();
+    let holder = probed.clone();
+    let prog = export::spawn_job("tts", move |prog| {
         if text.trim().is_empty() {
             return Err("nothing to say".into());
         }
@@ -63,9 +72,13 @@ pub fn speak_to_wav(text: &str, voice: Option<&str>, out: &Path) -> Arc<Progress
             let _ = std::fs::remove_file(&out);
             return Err("no speech was written (is a SAPI voice installed?)".into());
         }
+        prog.set(0.9, "Probing…");
+        let asset = media::probe(&out.to_string_lossy(), backend);
+        *holder.lock().unwrap_or_else(|e| e.into_inner()) = Some(asset);
         prog.set(1.0, "Done");
         Ok(())
-    })
+    });
+    (prog, probed)
 }
 
 /// Installed SAPI voice names, queried once per process (about a second of powershell) — only ever

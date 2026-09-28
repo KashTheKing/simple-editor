@@ -427,6 +427,12 @@ pub struct App {
     // ---- ws:pro-timeline ----
     /// Ctrl+F Find window state (open/closed, query buffer).
     find: crate::ui::find_ui::FindState,
+    // ---- ws:job-completion-hitches ----
+    /// Stopped recordings waiting for ffmpeg to finalise the file — `jobs::poll_recordings`, per frame.
+    pending_recordings: Vec<jobs::PendingRecording>,
+    /// `timeline.import` jobs (report parsed + media probed on a worker) — `jobs::poll_timeline_imports`
+    /// applies each (progress, report, replace) once done.
+    pending_timeline_imports: Vec<(Arc<Progress>, Arc<Mutex<Option<crate::engine::import::ImportReport>>>, bool)>,
 }
 
 // ---- ws:canvas-handles-monitor ----
@@ -851,6 +857,9 @@ impl App {
             monitor: monitor::MonitorState::default(),
             // ---- ws:pro-timeline ----
             find: crate::ui::find_ui::FindState::default(),
+            // ---- ws:job-completion-hitches ----
+            pending_recordings: Vec::new(),
+            pending_timeline_imports: Vec::new(),
         };
         if let Some(reason) = settings_bad {
             app.toast(format!("Settings file was corrupt (saved as settings.json.bad): {reason}"));
@@ -1032,6 +1041,9 @@ impl eframe::App for App {
         }
         self.poll_panels();
         self.poll_probes(ctx);
+        // ---- ws:job-completion-hitches ----
+        self.poll_recordings(ctx);
+        self.poll_timeline_imports(ctx);
         self.build_effect_thumbnails(ctx);
         if self.serve_gpu_exports() || self.export.is_some() {
             // a GPU export needs this thread to keep coming back to serve its frames
