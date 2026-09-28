@@ -43,7 +43,7 @@ fn find(name: &str) -> Option<PathBuf> {
 }
 
 /// Locate a helper executable: `dir` (when set), then next to our exe (and an `ffmpeg` subfolder),
-/// then PATH. Shared with `media::ytdlp` — not cached, so callers must not run it every frame.
+/// then PATH. Shared with `media::ytdlp` - not cached, so callers must not run it every frame.
 pub(crate) fn find_exe(name: &str, dir: &str) -> Option<PathBuf> {
     find_all_exe(name, dir).into_iter().next()
 }
@@ -240,7 +240,7 @@ fn spawn(args: &[String]) -> Result<(Child, ChildStdout), String> {
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null()) // ponytail: errors dropped — read stderr on a thread if diagnostics matter
+        .stderr(Stdio::null()) // ponytail: errors dropped - read stderr on a thread if diagnostics matter
         .spawn()
         .map_err(|e| format!("ffmpeg: {e}"))?;
     let out = child.stdout.take().ok_or("ffmpeg: no stdout")?;
@@ -270,7 +270,7 @@ struct VideoPipe {
     /// Last delivered frame (index `next-1`), valid when `have` is true.
     cur: Frame,
     have: bool,
-    /// Earliest known end (set when the pipe hits EOF) — avoids respawn storms past the end.
+    /// Earliest known end (set when the pipe hits EOF) - avoids respawn storms past the end.
     end: f64,
     /// `cur` shrunk to `skey` = (frame index, w, h): repeated calls at the same t and size are free.
     scaled: Vec<u8>,
@@ -429,7 +429,7 @@ impl VideoSource for ImageSource {
         }
         if !self.cache.contains_key(&(w, h)) {
             if self.cache.len() >= 8 {
-                self.cache.clear(); // ponytail: bounded cache for animated scale — resize in Rust if it thrashes
+                self.cache.clear(); // ponytail: bounded cache for animated scale - resize in Rust if it thrashes
             }
             let args: Vec<String> = [
                 "-i",
@@ -471,7 +471,7 @@ impl VideoSource for ImageSource {
 }
 
 // ---- ws:media-library ----
-/// Bake a numbered still sequence into one H.264 mp4 at `fps` (blocking — call inside
+/// Bake a numbered still sequence into one H.264 mp4 at `fps` (blocking - call inside
 /// `engine::export::spawn_job`). Feeds ffmpeg a concat list rather than `-pattern_type glob`: the
 /// Windows ffmpeg builds are compiled without glob support, and a list also tolerates numbering gaps
 /// and arbitrary names for free. Temp + rename, so `out` never exists half-written.
@@ -489,7 +489,7 @@ pub fn bake_sequence(
         return Err("empty sequence".into());
     }
     let fps = if fps > 0.0 { fps } else { 30.0 };
-    // concat demuxer: `file` lines (forward slashes — backslashes are escapes to its parser), each with
+    // concat demuxer: `file` lines (forward slashes - backslashes are escapes to its parser), each with
     // its display duration; the last frame is listed twice, the demuxer's documented way to keep it
     let mut list = String::new();
     let mut push = |p: &std::path::Path| {
@@ -650,7 +650,7 @@ impl AudioSource for AudioPipe {
             return;
         }
         // A small step back (the mixer reads one guard frame beyond what it consumes, and resampling
-        // re-reads the block edge) is served from the frames still sitting behind `pos` — respawning
+        // re-reads the block edge) is served from the frames still sitting behind `pos` - respawning
         // ffmpeg for one frame would cost ~50-100 ms per block.
         if self.child.is_some() && want < self.next {
             let back = (self.next - want) as usize;
@@ -726,7 +726,7 @@ pub(crate) mod tests {
     pub(crate) fn test_mp4() -> String {
         static P: OnceLock<String> = OnceLock::new();
         P.get_or_init(|| {
-            // ponytail: per-process dir — `OnceLock` only serialises within one test binary, and two
+            // ponytail: per-process dir - `OnceLock` only serialises within one test binary, and two
             // concurrent `cargo test` runs used to truncate each other's fixture mid-read ("moov atom
             // not found"). Costs one re-encode per run, which the unconditional `-y` already paid.
             let dir = std::env::temp_dir().join(format!("simple-editor-ffpipe-tests-{}", std::process::id()));

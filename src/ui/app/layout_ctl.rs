@@ -5,7 +5,7 @@
 //! `surface`; the menu-bar workspace strip; `poll_popout` (the body wave-0b's `on_viewport` hook in
 //! `layout::show` was pre-placed for, so Space/J/K/L work in a torn-off Preview); and the WINDOW_DRAWERS
 //! glue for the welcome wizard (`ui::onboarding`) and the home screen (`ui::home`), which are App-free
-//! on purpose. Everything here mutates Settings / Layout / UI state only — never the project, so no
+//! on purpose. Everything here mutates Settings / Layout / UI state only - never the project, so no
 //! `push_undo_labeled` anywhere except the one place the wizard applies a starting format to an EMPTY
 //! project (that is a project edit and gets its own labelled undo entry).
 
@@ -14,7 +14,7 @@ use crate::ui::layout::{workspace_glyph, workspace_layout, Surfaced, WORKSPACES}
 use crate::ui::onboarding::{self, Onboarding, Outcome};
 use crate::ui::{home, tools::glyph_text_button};
 
-/// Dynamic (the default) unless Settings say "granular" — one reading for every caller.
+/// Dynamic (the default) unless Settings say "granular" - one reading for every caller.
 pub(super) fn is_dynamic(settings: &Settings) -> bool {
     settings.layout_mode != "granular"
 }
@@ -87,7 +87,7 @@ pub(super) fn set_mode(app: &mut App, dynamic: bool) {
 
 /// Panes a selection kind would like in front, best first: the first one the layout can actually
 /// switch to (or glow) wins. Audio prefers the Mixer but settles for the Inspector's audio section
-/// when the Mixer is stacked away (the Simple workspace); `None`/`Mixed`/`EditPoint` ask for nothing —
+/// when the Mixer is stacked away (the Simple workspace); `None`/`Mixed`/`EditPoint` ask for nothing -
 /// the Timeline is always there and a mixed bag has no single home.
 pub(super) fn panes_for(kind: SelectionKind) -> &'static [Pane] {
     match kind {
@@ -198,7 +198,7 @@ pub(super) fn workspace_strip(app: &mut App, ui: &mut egui::Ui) {
 
 /// The body of wave-0b's pre-placed `on_viewport` hook in `layout::show`: poll the action table on a
 /// popped pane's OWN ctx (each immediate viewport has its own input state, so a keypress in a torn-off
-/// Preview is only ever seen here — never by the root ctx's poll at the top of `App::update` — and
+/// Preview is only ever seen here - never by the root ctx's poll at the top of `App::update` - and
 /// fires exactly once). Early pass only: the late pass exists so a hovered curve/node editor can claim
 /// Delete/copy/paste first, and this hook runs BEFORE the popped pane draws.
 pub(super) fn poll_popout(hotkeys: &Hotkeys, ctx: &egui::Context) -> Vec<Action> {
@@ -230,7 +230,7 @@ fn onboarding_window(app: &mut App, ctx: &egui::Context) {
 }
 
 /// Finish: `onboarding::finish` (mode, workspace, consent flag, the guarded install) plus the two
-/// things only the app can do — apply a starting format to an EMPTY project (one labelled undo entry)
+/// things only the app can do - apply a starting format to an EMPTY project (one labelled undo entry)
 /// and persist.
 fn finish_onboarding(app: &mut App, st: &Onboarding) {
     let allowed = onboarding::install_allowed(cfg!(debug_assertions), crate::contextmenu::is_installed());
@@ -256,7 +256,7 @@ fn finish_onboarding(app: &mut App, st: &Onboarding) {
     app.toast("Welcome! F1 lists every shortcut, Ctrl+K searches every command");
 }
 
-/// Set the project's format from `guides::PRESETS[i]` — only on an empty project (the wizard / home
+/// Set the project's format from `guides::PRESETS[i]` - only on an empty project (the wizard / home
 /// screen both gate on that), as one labelled undo step like the inspector's own format buttons.
 fn apply_format(app: &mut App, i: usize) {
     let Some(p) = crate::ui::guides::PRESETS.get(i) else { return };
@@ -337,7 +337,7 @@ mod tests {
 
     /// A synthetic keydown on a popped viewport's ctx yields exactly one Action from `poll_popout`,
     /// and the same frame's root-style `hotkeys.poll(ctx)` does not emit it again (the event was
-    /// consumed) — so a torn-off Preview's Space/J/K/L never double-fire.
+    /// consumed) - so a torn-off Preview's Space/J/K/L never double-fire.
     #[test]
     fn popout_hotkeys_reach_pending_actions_once() {
         let hk = Hotkeys::defaults();

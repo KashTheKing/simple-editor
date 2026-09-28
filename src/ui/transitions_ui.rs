@@ -1,16 +1,16 @@
 //! Transitions panel. Catalogue: one CARD per `TransitionKind` (same size and frame as an effect card),
-//! previewing the transition half-way over the stock picture the effect thumbnails are rendered from —
+//! previewing the transition half-way over the stock picture the effect thumbnails are rendered from -
 //! the app hands it over with `set_stock`, and without it a card falls back to a neutral named tile.
 //! A card selects the kind, right-clicking it applies the transition straight away (start / end of the
 //! selection, or every cut on its track), and a press-and-move drags `DragPayload::Transition`. Next to
 //! the grid the default duration DragValue (0.1..5 s), a colour button for FadeToColor and a direction
 //! selector for Push/Wipe. "Add at start" / "Add at end" apply it to EVERY selected clip through `add_transitions`,
-//! which is also what the menu, the hotkeys and MCP call — it records the choice in `TransitionsState`,
+//! which is also what the menu, the hotkeys and MCP call - it records the choice in `TransitionsState`,
 //! so Ctrl+T (Action::AddLastTransition) repeats whatever was applied last, whichever path applied it.
 //! A clip with no neighbour on that side gets an EDGE transition (blend from/to nothing) instead of
 //! a cut transition, so lone clips can fade in/out too.
 //! Below: the transitions touching the first selected clip (Project::transitions_of): kind combo,
-//! position combo (Start / End / Last / Next — re-anchors the transition relative to the clip),
+//! position combo (Start / End / Last / Next - re-anchors the transition relative to the clip),
 //! duration, colour/direction/ease editors, remove. Returns true when the project changed (call
 //! `undo` once per gesture first).
 
@@ -36,7 +36,7 @@ pub fn set_stock(tex: egui::TextureHandle) {
 }
 
 pub struct TransitionsState {
-    /// Catalogue settings for the next transition to add — and the memory of the last one added.
+    /// Catalogue settings for the next transition to add - and the memory of the last one added.
     pub duration: f64,
     pub kind: usize,
     pub color: [u8; 4],
@@ -55,7 +55,7 @@ impl Default for TransitionsState {
 }
 
 impl TransitionsState {
-    /// The selected kind — also the one Ctrl+T repeats, because every apply path records here.
+    /// The selected kind - also the one Ctrl+T repeats, because every apply path records here.
     pub fn kind(&self) -> TransitionKind {
         TransitionKind::ALL[self.kind.min(TransitionKind::ALL.len() - 1)]
     }
@@ -83,7 +83,7 @@ fn has_left(project: &Project, id: Id) -> bool {
 /// and direction from `st`, and record the choice in `st`. A clip with no neighbour on that side gets
 /// an edge transition instead (blend from/to nothing). THE funnel: panel, menu, hotkeys and MCP all
 /// come through here (or call `remember`), which is what keeps Ctrl+T on the last transition actually
-/// used. Returns how many were added — a transition always belongs to the clip on the RIGHT of the cut,
+/// used. Returns how many were added - a transition always belongs to the clip on the RIGHT of the cut,
 /// and `Project::add_transition` replaces the one already on that cut, so overlapping selections are fine.
 pub(crate) fn add_transitions(
     project: &mut Project,
@@ -120,7 +120,7 @@ pub(crate) fn add_transitions(
     added
 }
 
-/// Where a transition sits relative to the selected clip — the panel's position selector.
+/// Where a transition sits relative to the selected clip - the panel's position selector.
 #[derive(Clone, Copy, PartialEq)]
 enum Pos {
     /// Edge In: blend from nothing at the clip start.
@@ -298,7 +298,7 @@ fn transition_card(
     let tile = Rect::from_min_size(r.rect.min, vec2(CARD.0, CARD.1));
     let border = if selected || r.hovered() { palette.accent } else { palette.border };
     ui.painter().rect_stroke(tile, 2.0, Stroke::new(if selected { 2.0 } else { 1.0 }, border), StrokeKind::Inside);
-    r.on_hover_text(format!("{} — click to pick, drag onto a cut", kind.name()))
+    r.on_hover_text(format!("{} - click to pick, drag onto a cut", kind.name()))
 }
 
 fn direction_row(ui: &mut egui::Ui, dir: &mut u8, g: &mut Gesture) {
@@ -308,7 +308,7 @@ fn direction_row(ui: &mut egui::Ui, dir: &mut u8, g: &mut Gesture) {
 }
 
 // ---- ws:inspector-gallery ----
-/// Authored here (wave 0's registries-schema-hooks did not land it — verified on merged main before
+/// Authored here (wave 0's registries-schema-hooks did not land it - verified on merged main before
 /// writing this, per the plan's own risk note): `EffectsResponse` already carries a real `hover: Option`
 /// wave-0 stub, but `transitions_ui::show` returned a plain `bool` until now. `hover` is the catalogue
 /// card the pointer has sat on for >=150ms, for `App.alt_render`'s `AltRequest::Transition` preview.
@@ -381,7 +381,7 @@ pub fn show(
         ui.separator();
     }
 
-    // the cuts the selection offers — needed by the cards' quick-action menus, which are drawn first
+    // the cuts the selection offers - needed by the cards' quick-action menus, which are drawn first
     let ids: Vec<Id> = selection.iter().copied().filter(|&id| project.clip(id).is_some()).collect();
     let any_left = ids.iter().any(|&id| has_left(project, id));
     let any_right = ids.iter().any(|&id| right_neighbor(project, id).is_some());
@@ -448,7 +448,7 @@ pub fn show(
         let r = ui.add(Button::new("Add at start")).on_hover_text(hint(
             any_left,
             "Transition into every selected clip",
-            "No cut at the start — the clip blends in from nothing",
+            "No cut at the start - the clip blends in from nothing",
         ));
         #[cfg(test)]
         test_rects::push("add_start".into(), r.rect);
@@ -458,7 +458,7 @@ pub fn show(
         let r = ui.add(Button::new("Add at end")).on_hover_text(hint(
             any_right,
             "Transition out of every selected clip",
-            "No cut at the end — the clip blends out to nothing",
+            "No cut at the end - the clip blends out to nothing",
         ));
         #[cfg(test)]
         test_rects::push("add_end".into(), r.rect);
@@ -654,7 +654,7 @@ mod tests {
             *shapes = full.shapes;
             changed
         }
-        /// Centre of the first painted text containing `label` — how a popup's entries are found.
+        /// Centre of the first painted text containing `label` - how a popup's entries are found.
         fn text_at(&self, label: &str) -> Option<Pos2> {
             self.shapes.iter().find_map(|c| match &c.shape {
                 egui::epaint::Shape::Text(t) if t.galley.text().contains(label) => {
@@ -688,7 +688,7 @@ mod tests {
     #[test]
     fn add_at_start_creates_transition_and_audio_mirror() {
         let mut h = Harness::new();
-        // second video clip (starts at 10) — its cut with the first is at its start
+        // second video clip (starts at 10) - its cut with the first is at its start
         let v2 = h.project.tracks[0].clips[1].id;
         let a2 = h.project.tracks[1].clips[1].id;
         h.selection = vec![v2];
@@ -860,8 +860,8 @@ mod tests {
         assert_eq!(h.undos, 0, "picking a kind is not an edit");
     }
 
-    /// A card is clickable first and a drag source second: a stationary press — even one held long
-    /// past egui's click timeout — arms nothing, and only real pointer travel hands the payload over.
+    /// A card is clickable first and a drag source second: a stationary press - even one held long
+    /// past egui's click timeout - arms nothing, and only real pointer travel hands the payload over.
     #[test]
     fn a_card_only_drags_once_the_pointer_moves() {
         let mut h = Harness::new();

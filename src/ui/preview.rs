@@ -76,7 +76,7 @@ pub(crate) enum MaskTarget {
     Effect(usize),
 }
 
-/// The selection outline's geometry on screen — one rotated rect plus its handle positions.
+/// The selection outline's geometry on screen - one rotated rect plus its handle positions.
 #[derive(Clone, Copy)]
 struct Outline {
     /// Screen centre and the rotation's (sin, cos).
@@ -124,7 +124,7 @@ impl Outline {
         let l = self.local(p);
         l.x.abs() <= self.half.x && l.y.abs() <= self.half.y
     }
-    /// Which handle `p` is over, if any. Crop mode turns the edge handles into crop handles — the two
+    /// Which handle `p` is over, if any. Crop mode turns the edge handles into crop handles - the two
     /// would otherwise sit on the same spot at zero crop.
     fn hit(&self, p: Pos2, crop_mode: bool) -> Option<Handle> {
         if (p - self.knob).length() <= HIT {
@@ -139,15 +139,15 @@ impl Outline {
 }
 
 // ---- ws:pro-monitor ----
-/// Grade-compare mode against a bypass (ungraded) render — cycled by `Action::CompareWipe`.
+/// Grade-compare mode against a bypass (ungraded) render - cycled by `Action::CompareWipe`.
 ///
 /// deviation (see PR body / `monitor.rs`'s matching note): `GpuRenderer::render_frame_bypass` does not
 /// exist anywhere in `engine::gpu` (CONFIRMED by reading the source: only `render_frame`/
 /// `render_to_texture`/`render_preview_texture`/`effect_preview` exist) and is not committed in
-/// color-engine's own skeleton deliverables either — the workstream brief's own pre-verified mitigation
+/// color-engine's own skeleton deliverables either - the workstream brief's own pre-verified mitigation
 /// applies here. The state machine below is real (cycles Off -> Wipe -> SideBySide -> Off, the wipe
 /// split drags on the video rect, both are unit-tested), but `video()` paints only a "Compare not
-/// available" banner instead of an actual bypass render — see `paint_compare_stub`.
+/// available" banner instead of an actual bypass render - see `paint_compare_stub`.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum CompareMode {
     #[default]
@@ -255,7 +255,7 @@ fn handle_apply(d: &HandleDrag, now: Pos2, shift: bool, project: &mut Project, l
 }
 
 /// The mask slot a mask-tool drag writes: the clip's own, or one effect's (`None` when the clip / effect
-/// index is gone — the gesture is then a no-op with no undo entry, like a mask drag over an audio clip).
+/// index is gone - the gesture is then a no-op with no undo entry, like a mask drag over an audio clip).
 fn mask_slot_of(project: &mut Project, clip: Option<Id>, target: MaskTarget) -> Option<&mut Option<Mask>> {
     let cl = project.clip_mut(clip?)?;
     match target {
@@ -264,7 +264,7 @@ fn mask_slot_of(project: &mut Project, clip: Option<Id>, target: MaskTarget) -> 
     }
 }
 
-/// Axis-aligned half size (project px) of a clip's placed layer — the moving box `canvas_snap` snaps.
+/// Axis-aligned half size (project px) of a clip's placed layer - the moving box `canvas_snap` snaps.
 fn half_size(project: &Project, id: Id, playhead: f64) -> Option<(f32, f32)> {
     let cl = project.clip(id)?;
     let a = project.asset(cl.asset)?;
@@ -296,7 +296,7 @@ pub struct PreviewState {
     point_drag: Option<usize>,
     /// Last pointer movement (fullscreen hides the cursor after 2 s of stillness).
     moved_at: Option<std::time::Instant>,
-    /// Content rect of the transport row last frame — it is centred against the panel using its own
+    /// Content rect of the transport row last frame - it is centred against the panel using its own
     /// measured width, so the first frame is left-aligned and every later one is centred.
     transport: Rect,
     // ---- ws:canvas-handles-monitor ----
@@ -308,7 +308,7 @@ pub struct PreviewState {
     pub(crate) mask_target: MaskTarget,
     /// Viewer (zoom, pan): Ctrl+wheel / middle-drag; 1.0 / ZERO = fit. Never project data.
     pub(crate) view: (f32, Vec2),
-    /// The video area last frame (one-frame-stale, like `TimelineState.lanes_rect`) — the drop target
+    /// The video area last frame (one-frame-stale, like `TimelineState.lanes_rect`) - the drop target
     /// `app::drops` checks for "dropped onto the monitor".
     pub(crate) canvas_rect: Rect,
     /// The timecode label's text while it is being edited (click-to-edit).
@@ -355,12 +355,12 @@ pub struct PreviewCtx<'a> {
     pub undo: &'a mut dyn FnMut(&Project),
     /// A newly rendered frame to upload this update (None = keep the current texture).
     pub frame: Option<Arc<Frame>>,
-    /// A texture the GPU renderer already holds, with its pixel size — painted directly, with no
+    /// A texture the GPU renderer already holds, with its pixel size - painted directly, with no
     /// readback and no upload. Takes precedence over `frame`.
     pub gpu_texture: Option<(egui::TextureId, [u32; 2])>,
     /// Active editing tool (`Tool::Select` = drag moves the selected clip).
     pub tool: Tool,
-    /// The style a shape dragged out right now would be created with (tool-strip picks applied) —
+    /// The style a shape dragged out right now would be created with (tool-strip picks applied) -
     /// `Some` only while a shape tool is active. Drives the live preview so it matches the result.
     pub shape_style: Option<ShapeStyle>,
     /// Current preview render scale in percent (settings.preview_quality).
@@ -374,14 +374,14 @@ pub struct PreviewCtx<'a> {
     /// Progress 0..1 of the proxy build in flight (None = no proxy being built).
     pub proxy: Option<f32>,
     /// Tracker box of the Tracking pane (centre + half sizes, project px relative to the canvas
-    /// centre) while that pane is on screen — drawn here and dragged to place the template.
+    /// centre) while that pane is on screen - drawn here and dragged to place the template.
     pub tracker: Option<(f32, f32, f32, f32)>,
     /// Social-guide overlay to draw over the video (settings.guide).
     pub guide: Option<crate::ui::guides::Guide>,
     // ---- ws:canvas-handles-monitor ----
     /// Settings.canvas_snap: snap a drag-to-move to the canvas centre / edges / thirds / other clips.
     pub canvas_snap: bool,
-    /// The monitor's alt render (an effect / transition hover, `app::monitor`) — painted instead of
+    /// The monitor's alt render (an effect / transition hover, `app::monitor`) - painted instead of
     /// the live frame while Some, so a hover preview never touches the project or the player.
     pub alt_texture: Option<(egui::TextureId, [u32; 2])>,
     /// settings.use_proxies, for the transport's proxy toggle.
@@ -389,7 +389,7 @@ pub struct PreviewCtx<'a> {
     /// `Player::dropped_frames`, shown as a small transport badge when non-zero.
     pub dropped: u64,
     // ---- ws:pro-monitor ----
-    /// The dual-frame trim view's decoded (outgoing, incoming) frames — `Some` only while
+    /// The dual-frame trim view's decoded (outgoing, incoming) frames - `Some` only while
     /// `Settings.trim_view` is on AND an edit point is selected (`monitor::trim_frames`). Painted instead
     /// of the single live frame when present.
     pub trim_frames: Option<(Arc<Frame>, Arc<Frame>)>,
@@ -409,7 +409,7 @@ pub struct PreviewResponse {
     pub edited: bool,
     /// Pixel size available for the video image (for Player::set_canvas).
     pub canvas: (u32, u32),
-    /// The user picked another preview quality (percent) — the app stores it in Settings.
+    /// The user picked another preview quality (percent) - the app stores it in Settings.
     pub set_quality: Option<u32>,
     /// The user toggled Movie mode.
     pub set_movie_mode: Option<bool>,
@@ -431,7 +431,7 @@ pub struct PreviewResponse {
     /// The user picked a social guide from the transport button (Some(None) = off).
     pub set_guide: Option<Option<crate::ui::guides::Guide>>,
     // ---- ws:canvas-handles-monitor ----
-    /// The context menu toggled canvas snapping — the app stores it in Settings.canvas_snap.
+    /// The context menu toggled canvas snapping - the app stores it in Settings.canvas_snap.
     pub set_canvas_snap: Option<bool>,
     // ---- ws:pro-monitor ----
     /// The eyedropper (armed via `pick_mode`) sampled this colour from a click on the video.
@@ -513,7 +513,7 @@ pub(crate) fn scrub_time(frac: f64, duration: f64) -> f64 {
 fn transport(ui: &mut egui::Ui, state: &mut PreviewState, c: &PreviewCtx<'_>, r: &mut PreviewResponse) {
     let fps = c.project.fps;
     // centred: pad by half the leftover of last frame's measured width. Skip the pad on an
-    // unmeasured/reset frame (width 0) — padding from a stale zero would overshoot the real content
+    // unmeasured/reset frame (width 0) - padding from a stale zero would overshoot the real content
     // width, wrap the row (see `horizontal_wrapped` below), and corrupt the very measurement next
     // frame's pad depends on, so it would never converge.
     let pad = if state.transport.width() > 0.0 {
@@ -523,8 +523,8 @@ fn transport(ui: &mut egui::Ui, state: &mut PreviewState, c: &PreviewCtx<'_>, r:
     };
     // ---- ws:canvas-handles-monitor ----
     // `b` below captures `r.actions` by mutable reference for the whole closure (it's used again as
-    // late as the Fullscreen button); a second direct touch of `r.actions` — or a reborrow of all of
-    // `*r` (`timecode_label` used to take `r: &mut PreviewResponse`) — would conflict with that live
+    // late as the Fullscreen button); a second direct touch of `r.actions` - or a reborrow of all of
+    // `*r` (`timecode_label` used to take `r: &mut PreviewResponse`) - would conflict with that live
     // borrow. Both new bits of state go through fresh locals instead and land on `r` after the closure.
     let mut tc_seek = None;
     let mut toggle_proxy = false;
@@ -638,7 +638,7 @@ fn transport(ui: &mut egui::Ui, state: &mut PreviewState, c: &PreviewCtx<'_>, r:
 // ---- ws:canvas-handles-monitor ----
 /// The "playhead / duration" label: a click turns it into a text field; Enter parses it with
 /// `parse_timecode` (hh:mm:ss:ff, mm:ss, +N / -N frames, +1.5s) and returns the seek target; Esc or
-/// clicking away drops the edit. Returns a value instead of writing `r.seek` directly — the caller's
+/// clicking away drops the edit. Returns a value instead of writing `r.seek` directly - the caller's
 /// `b` closure already holds `r.actions` borrowed for longer than this call site (see `transport`'s
 /// comment above its `row` binding).
 fn timecode_label(ui: &mut egui::Ui, state: &mut PreviewState, c: &PreviewCtx<'_>, fps: f64) -> Option<f64> {
@@ -707,7 +707,7 @@ fn constrain_drag(kind: ShapeKind, from: Pos2, to: Pos2, modifiers: egui::Modifi
 /// Bounded shapes fill the rectangle between them; a line or arrow runs from one to the other, so it
 /// must not be handed a normalised rect (its corners would point the wrong way down two of the four
 /// diagonals). Painted with `style`'s actual fill/stroke/corner/sides (project px, scaled to screen
-/// points by `inv_k` = screen points per project px — the inverse of `tool_drag`'s `k`) so the live
+/// points by `inv_k` = screen points per project px - the inverse of `tool_drag`'s `k`) so the live
 /// preview looks like the shape `engine::shapes::ShapeRasterizer` will actually render, not a generic
 /// translucent selection outline.
 fn draw_shape_preview(p: &egui::Painter, style: &ShapeStyle, from: Pos2, to: Pos2, k: f32) {
@@ -827,7 +827,7 @@ fn tool_drag(
     if tool == Tool::Shape(ShapeKind::Polygon) {
         let at = resp.interact_pointer_pos();
         // clicking a vertex that is already placed closes the path instead of stacking a duplicate on
-        // top of it — that is where a double-click's second press lands, and egui cannot be asked
+        // top of it - that is where a double-click's second press lands, and egui cannot be asked
         // (quick clicks at different points read as double/triple clicks while you place vertices)
         let on_vertex = at.is_some_and(|p| state.poly.iter().any(|q| (to_screen(q) - p).length() <= 6.0));
         if (resp.clicked() || resp.drag_stopped()) && !on_vertex {
@@ -868,7 +868,7 @@ fn tool_drag(
     // a mask shapes pixels: an audio clip has none, so the mask tool finds no target on one and the
     // gesture is a no-op (no mask, and no undo entry for an edit that never happened).
     // ws:canvas-handles-monitor: which of that clip's masks is written (its own, or one effect's) is
-    // `state.mask_target`'s call — see `mask_slot_of`.
+    // `state.mask_target`'s call - see `mask_slot_of`.
     let mask_clip = c.selection.iter().copied().find(|&id| c.project.clip(id).is_some_and(|cl| cl.is_visual()));
     let mask_target = state.mask_target;
 
@@ -935,7 +935,7 @@ fn tool_drag(
                 let modifiers = ui.input(|i| i.modifiers);
                 let (from, to) = constrain_drag(kind, d.from, now, modifiers);
                 // the real style the clip will be created with (PreviewCtx::shape_style, from the
-                // tool strip's picks) — a red 8-point star previews as a red 8-point star
+                // tool strip's picks) - a red 8-point star previews as a red 8-point star
                 let style = c.shape_style.clone().unwrap_or_else(|| ShapeStyle::new(kind));
                 draw_shape_preview(&p, &style, from, to, k);
             }
@@ -990,7 +990,7 @@ fn tool_drag(
 /// `project.preview_bg` through the same undo-once-per-gesture/`edited`-flag convention every other
 /// project-level edit in this file uses (e.g. the drag-to-move handling below).
 /// ws:canvas-handles-monitor: also hosts the "Crop Handles" / "Snap to canvas" toggles, "Fit Viewer"
-/// and the "Mask target" picker (the clip's own mask or one of its effects' — UI-only state).
+/// and the "Mask target" picker (the clip's own mask or one of its effects' - UI-only state).
 fn background_menu(resp: &egui::Response, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r: &mut PreviewResponse) {
     // the selected clip's effect stack, for the mask-target picker
     let fx: Vec<&'static str> = c
@@ -1070,7 +1070,7 @@ fn video(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r:
     let fit = letterbox(rect, aspect, ppp);
     // ---- ws:canvas-handles-monitor ----
     // viewer zoom (Ctrl+wheel / pinch) and pan (middle-drag): `state.view` only, never project data,
-    // and never the render size — the zoom magnifies the same texture. No Tool::Zoom.
+    // and never the render size - the zoom magnifies the same texture. No Tool::Zoom.
     if resp.hovered() {
         let z = ui.input(|i| i.zoom_delta());
         if z != 1.0 {
@@ -1132,7 +1132,7 @@ fn video(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r:
     } else if state.compare != CompareMode::Off {
         paint_compare_stub(ui, &painter, lb, state.compare, c.palette);
     }
-    // buffering: the clock is held while the read-ahead refills — say so over the video
+    // buffering: the clock is held while the read-ahead refills - say so over the video
     if c.buffering {
         ui.put(Rect::from_center_size(lb.center(), vec2(32.0, 32.0)), egui::Spinner::new().size(32.0));
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
@@ -1160,7 +1160,7 @@ fn video(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r:
 
     // ---- ws:pro-monitor ----
     // Eyedropper: a one-shot armed pick mode owns the next plain click (not a drag) on the video, ahead
-    // of every other gesture below (tool drag, handle drag, clip move) — clicking to sample a colour must
+    // of every other gesture below (tool drag, handle drag, clip move) - clicking to sample a colour must
     // never also move the clip under the cursor.
     if let Some(target) = c.pick_mode {
         if resp.clicked() {
@@ -1188,7 +1188,7 @@ fn video(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r:
         return;
     }
 
-    // a tool other than Select owns the gesture (draw / mask / shape) — never move the clip then, and
+    // a tool other than Select owns the gesture (draw / mask / shape) - never move the clip then, and
     // never let the polygon tool's closing double-click also toggle fullscreen
     if tool_drag(ui, state, c, r, &resp, lb) {
         state.drag = None;
@@ -1200,7 +1200,7 @@ fn video(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r:
 
     // the Tracking pane's box: drawn over the video and dragged to place the template. A press that
     // started inside it owns the gesture, so the clip underneath is not moved as well.
-    // ponytail: the drag centres the box on the pointer instead of keeping the grab offset — keeping it
+    // ponytail: the drag centres the box on the pointer instead of keeping the grab offset - keeping it
     // needs the offset stored in PreviewState, and "put the tracker here" is what the gesture means.
     if let Some((tcx, tcy, thw, thh)) = c.tracker {
         let k = lb.width() / c.project.width.max(1) as f32; // points per project px
@@ -1400,7 +1400,7 @@ fn video(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r:
             *acc += resp.drag_delta();
             let k = c.project.width as f32 / lb.width(); // project px per point
             let (mut dx, mut dy) = (acc.x * k, acc.y * k);
-            // canvas snap on the single moving clip (a group would snap onto its own members —
+            // canvas snap on the single moving clip (a group would snap onto its own members -
             // ponytail: skipped for groups; snap the union box if that ever matters)
             let mut guides = Vec::new();
             if let (false, Some(&(sid, x0, y0))) = (group, clips.first()) {
@@ -1440,7 +1440,7 @@ fn prerender_badge(ui: &egui::Ui, painter: &egui::Painter, lb: Rect, c: &Preview
         // say WHICH file, so the pre-proxy window reads as progress on something, not vague churn
         if let Some((src, _)) = crate::media::proxy::building() {
             if let Some(name) = std::path::Path::new(&src).file_name() {
-                text = format!("{text} — {}", name.to_string_lossy());
+                text = format!("{text} - {}", name.to_string_lossy());
             }
         }
     }
@@ -1507,7 +1507,7 @@ fn paint_trim_view(
     );
 }
 
-/// Compare-mode stub banner (no bypass render exists — see `CompareMode`'s doc comment). Still paints a
+/// Compare-mode stub banner (no bypass render exists - see `CompareMode`'s doc comment). Still paints a
 /// draggable wipe-split line in `Wipe` mode so `compare_wipe_drag_updates_split_x` has something real to
 /// drag, even though nothing visually different renders on either side of it yet.
 fn paint_compare_stub(ui: &egui::Ui, painter: &egui::Painter, lb: Rect, mode: CompareMode, pal: &Palette) {
@@ -1515,9 +1515,9 @@ fn paint_compare_stub(ui: &egui::Ui, painter: &egui::Painter, lb: Rect, mode: Co
         CompareMode::Wipe(x) => {
             let split_x = lb.left() + lb.width() * x;
             painter.line_segment([pos2(split_x, lb.top()), pos2(split_x, lb.bottom())], Stroke::new(2.0, pal.accent));
-            "Wipe Compare — grade bypass not available in this build"
+            "Wipe Compare - grade bypass not available in this build"
         }
-        CompareMode::SideBySide => "Side-by-Side Compare — grade bypass not available in this build",
+        CompareMode::SideBySide => "Side-by-Side Compare - grade bypass not available in this build",
         CompareMode::Off => return,
     };
     let font = egui::TextStyle::Small.resolve(ui.style());
@@ -1528,14 +1528,14 @@ fn paint_compare_stub(ui: &egui::Ui, painter: &egui::Painter, lb: Rect, mode: Co
     painter.galley(at, galley, pal.text);
 }
 
-/// Update a Wipe split (0..1) from a drag at `pointer_x`, clamped to the video rect — pure, so the drag
+/// Update a Wipe split (0..1) from a drag at `pointer_x`, clamped to the video rect - pure, so the drag
 /// math is testable without simulating a real pointer drag.
 fn wipe_drag_update(pointer_x: f32, lb: Rect) -> f32 {
     ((pointer_x - lb.left()) / lb.width().max(1.0)).clamp(0.0, 1.0)
 }
 
 /// Eyedropper core math: map a click at `pos` (screen points, inside `lb`) to a pixel in `stats.sample`
-/// and return its RGB. Pure once you have `stats`/`lb`/`pos` — unit-testable without a live click.
+/// and return its RGB. Pure once you have `stats`/`lb`/`pos` - unit-testable without a live click.
 fn sample_stats_at(stats: &crate::engine::gpu::FrameStats, lb: Rect, pos: Pos2) -> Option<[u8; 3]> {
     if !lb.contains(pos) || stats.sample_w == 0 || stats.sample_h == 0 {
         return None;
@@ -1590,7 +1590,7 @@ mod tests {
     }
 
     /// The tool_drag guard's fallthrough (`let Some(d) = &mut state.tool_drag else { ... }`) no longer
-    /// names the deleted Zoom tool variant — proven at compile time (this whole crate would not build
+    /// names the deleted Zoom tool variant - proven at compile time (this whole crate would not build
     /// if it still did; a text self-scan of this very file can't check for its own search string, so
     /// the guarantee here is the stronger one) plus a runtime check, same idiom as
     /// `shape_tool_drag_reports_a_shape_instead_of_moving_the_clip` above: an ordinary non-Select/Text
@@ -1871,12 +1871,12 @@ mod tests {
     /// The live preview (draw_shape_preview) is exercised for every shape kind by each frame of the
     /// drag; this is the regression coverage for it (its output can't be asserted on pixel-by-pixel like
     /// engine::shapes' rasteriser tests, since it paints straight into an egui::Painter, but a panic
-    /// there — e.g. the arrow head's corner/stroke_width-derived size clamped against a near-zero drag
-    /// length — would fail this test).
+    /// there - e.g. the arrow head's corner/stroke_width-derived size clamped against a near-zero drag
+    /// length - would fail this test).
     #[test]
     fn shape_tool_preview_paints_without_panicking_for_every_kind() {
         // Polygon is click-to-place-vertices (its own branch above, own coverage in
-        // `polygon_tool_places_and_closes_real_points`), not a single drag — skip it here.
+        // `polygon_tool_places_and_closes_real_points`), not a single drag - skip it here.
         for kind in ShapeKind::ALL.into_iter().filter(|&k| k != ShapeKind::Polygon) {
             let mut h = H::new();
             h.tool = Tool::Shape(kind);
@@ -2351,14 +2351,14 @@ mod tests {
         assert!(h.state.view.1.length() > 20.0, "middle-drag pans: {:?}", h.state.view);
         assert_eq!(h.project.to_json(), before, "the project is untouched");
         assert_eq!(h.undos, 0, "no undo entry");
-        // Fit Viewer is the reset (see monitor::act) — apply_view at (1, 0) is the plain letterbox
+        // Fit Viewer is the reset (see monitor::act) - apply_view at (1, 0) is the plain letterbox
         assert_eq!(apply_view(lb, (1.0, Vec2::ZERO)), lb);
         let z = apply_view(lb, (2.0, vec2(5.0, 0.0)));
         assert_eq!(z.size(), lb.size() * 2.0);
         assert_eq!(z.center(), lb.center() + vec2(5.0, 0.0));
     }
 
-    /// Idle frames with the handles (and crop ring) on screen request no repaint — the "idle CPU 0%"
+    /// Idle frames with the handles (and crop ring) on screen request no repaint - the "idle CPU 0%"
     /// gate the selftest checks for the plain pane.
     #[test]
     fn assert_no_idle_repaint_with_handles_and_crop_ring() {

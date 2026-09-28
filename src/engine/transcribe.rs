@@ -3,12 +3,12 @@
 //! Nothing here ships in the exe: no model, no ML crate. The model is downloaded once into
 //! `Settings::cache_dir()\models` (visible progress, size named before the click) and the inference is a
 //! child process, exactly like ffmpeg (`media/ffpipe.rs`) and yt-dlp: locate the exe, run it, parse its
-//! stdout, never block the UI. With neither installed the app is untouched — the pane just says what to
+//! stdout, never block the UI. With neither installed the app is untouched - the pane just says what to
 //! install and where it looked.
 //!
 //! whisper.cpp prints one line per segment, `[00:00:01.000 --> 00:00:02.400]   text`, so the transcript
 //! streams in while it runs and the progress fraction is the last timestamp over the audio length.
-//! `-ml 1 -sow` makes those lines one word each — that is where the word timings come from, regrouped
+//! `-ml 1 -sow` makes those lines one word each - that is where the word timings come from, regrouped
 //! into sentences by `group_words`.
 //!
 //! The subtitle conventions follow the usual auto-subs ones: ~42 characters a line, split on word
@@ -25,10 +25,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 /// Downloadable whisper.cpp models: (name, file, download size in MB).
 pub const MODELS: [(&str, &str, u32); 4] = [
-    ("tiny.en — fastest", "ggml-tiny.en.bin", 75),
-    ("base.en — recommended", "ggml-base.en.bin", 142),
-    ("small.en — best", "ggml-small.en.bin", 466),
-    ("base — any language", "ggml-base.bin", 142),
+    ("tiny.en - fastest", "ggml-tiny.en.bin", 75),
+    ("base.en - recommended", "ggml-base.en.bin", 142),
+    ("small.en - best", "ggml-small.en.bin", 466),
+    ("base - any language", "ggml-base.bin", 142),
 ];
 
 const HOST: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/";
@@ -38,7 +38,7 @@ const MIN_WORDS: usize = 2;
 /// Duplicate ranges closer than this are cut as one.
 const MERGE_GAP: f64 = 0.35;
 
-// ponytail: the settings are read once per process and never written back from the pane — a
+// ponytail: the settings are read once per process and never written back from the pane - a
 // load-modify-save here would race the app's in-memory copy. Edit settings.json to change them.
 fn settings() -> &'static (String, String) {
     static S: OnceLock<(String, String)> = OnceLock::new();
@@ -57,7 +57,7 @@ pub fn default_model() -> usize {
     MODELS.iter().position(|(n, f, _)| *f == want || n.starts_with(want)).unwrap_or(1)
 }
 
-/// `%LOCALAPPDATA%\SimpleEditor\cache\models` — where downloaded models live.
+/// `%LOCALAPPDATA%\SimpleEditor\cache\models` - where downloaded models live.
 pub fn models_dir() -> PathBuf {
     Settings::cache_dir().join("models")
 }
@@ -80,7 +80,7 @@ pub fn have_model(file: &str) -> bool {
     std::fs::metadata(model_path(file)).map(|m| m.len() > 1_000_000).unwrap_or(false)
 }
 
-/// A whisper.cpp binary, or None. `main.exe` is only accepted from a directory we were pointed at —
+/// A whisper.cpp binary, or None. `main.exe` is only accepted from a directory we were pointed at -
 /// a `main.exe` picked up off PATH would be anything at all.
 pub fn exe() -> Option<PathBuf> {
     let dirs = [PathBuf::from(&settings().0), exe_dir()];
@@ -193,7 +193,7 @@ pub struct Options {
     pub language: String,
     /// Ask whisper for one segment per word and regroup here.
     pub words: bool,
-    /// whisper.cpp `--prompt`: vocabulary/style hints (names, jargon, punctuation style). Not commands —
+    /// whisper.cpp `--prompt`: vocabulary/style hints (names, jargon, punctuation style). Not commands -
     /// the model only mimics it, it does not follow instructions.
     pub prompt: String,
 }
@@ -307,7 +307,7 @@ pub fn parse_line(line: &str) -> Option<(f64, f64, String)> {
     let start = crate::engine::subtitles::parse_time(a.trim())?;
     let end = crate::engine::subtitles::parse_time(b.trim())?;
     let text = text.trim();
-    // "[BLANK_AUDIO]", "(silence)", "[MUSIC]" — a whole-line annotation is not speech
+    // "[BLANK_AUDIO]", "(silence)", "[MUSIC]" - a whole-line annotation is not speech
     let noise = text.is_empty()
         || (text.starts_with('[') && text.ends_with(']'))
         || (text.starts_with('(') && text.ends_with(')'));
@@ -317,7 +317,7 @@ pub fn parse_line(line: &str) -> Option<(f64, f64, String)> {
     Some((start, end, text.to_string()))
 }
 
-/// How one-word segments are regrouped into sentences — every knob the "Regenerate" pass turns.
+/// How one-word segments are regrouped into sentences - every knob the "Regenerate" pass turns.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GroupOpts {
     /// A sentence ends once it reaches this many characters.
@@ -407,7 +407,7 @@ fn wrap_words(text: &str, max_chars: usize) -> Vec<Vec<&str>> {
 /// timed by the word timings when there are any and proportionally to the characters otherwise, each
 /// held for at least `min_dur` unless the next cue needs the time. Where a sentence continues across the
 /// cue split, `cont` = (prefix, suffix) marks it: the suffix goes on the cut-off cue, the prefix on its
-/// continuation (e.g. `("…", " —")`).
+/// continuation (e.g. `("…", " - ")`).
 /// ponytail: the marks are added after the wrap, so a marked line can run a few chars past `max_chars`.
 pub fn to_cues(
     segs: &[Segment],
@@ -485,7 +485,7 @@ pub fn similarity(a: &[String], b: &[String]) -> f32 {
     2.0 * prev[b.len()] as f32 / (a.len() + b.len()) as f32
 }
 
-/// Groups of segments that say the same thing again — a flubbed line and its retakes. Each group is in
+/// Groups of segments that say the same thing again - a flubbed line and its retakes. Each group is in
 /// time order with at least two members and the LAST one is the keeper. `window` is how long a silence
 /// may sit between one take and the next.
 ///
@@ -523,7 +523,7 @@ pub fn duplicate_takes(segs: &[Segment], threshold: f32, window: f64) -> Vec<Vec
     out
 }
 
-/// Timeline ranges of every take but the last of each group — what "cut the duplicates" removes.
+/// Timeline ranges of every take but the last of each group - what "cut the duplicates" removes.
 /// Sorted and merged so two duplicates in a row are one cut.
 pub fn dup_ranges(segs: &[Segment], groups: &[Vec<usize>]) -> Vec<(f64, f64)> {
     let mut r: Vec<(f64, f64)> = groups
@@ -543,7 +543,7 @@ pub fn dup_ranges(segs: &[Segment], groups: &[Vec<usize>]) -> Vec<(f64, f64)> {
     out
 }
 
-/// Where `t` ends up after those ranges are rippled out — None when `t` was inside one of them.
+/// Where `t` ends up after those ranges are rippled out - None when `t` was inside one of them.
 /// Used to drag the cues and the transcript along with the cut.
 pub fn ripple_time(t: f64, removed: &[(f64, f64)]) -> Option<f64> {
     let mut shift = 0.0;
@@ -574,7 +574,7 @@ pub const FILLER_WORDS: &[&str] = &["um", "uh", "uhh", "like", "you know", "i me
 
 /// Timeline ranges of every filler word/phrase in `words`, each padded by `pad_ms` on both sides and
 /// merged across `MERGE_GAP` (two "um"s in a row are one cut). Matching is over `normalize()`'d
-/// tokens — case and punctuation do not count, and a multi-word filler ("you know") must appear as
+/// tokens - case and punctuation do not count, and a multi-word filler ("you know") must appear as
 /// that many consecutive words. Feeds `Project::cut_word_ranges` via Mark-instead.
 ///
 /// ponytail: exact-token match, no stemming or ASR-variant handling ("umm" is not "um" unless listed).
@@ -625,7 +625,7 @@ pub struct Target {
     pub scale: f64,
 }
 
-/// The transcribe target for one clip — shared by the Subtitles pane, the clip menu's "Transcribe…"
+/// The transcribe target for one clip - shared by the Subtitles pane, the clip menu's "Transcribe…"
 /// and the `transcribe.run`/`media.transcribe` tools so every entry point maps words onto the timeline
 /// the same way. Reversed and frozen clips are refused (the words would land backwards / on a still),
 /// exactly as `engine::analysis` skips them.
@@ -698,7 +698,7 @@ mod tests {
 
     // ---- ws:forgiveness ----
     /// `Settings::load()` kept its `-> Self` signature specifically so this real second call site
-    /// (line 46, above) keeps compiling and returning a plain `Settings` — the quarantine-on-corrupt
+    /// (line 46, above) keeps compiling and returning a plain `Settings` - the quarantine-on-corrupt
     /// behavior settings.rs's own tests cover is a transparent side effect of factoring `load_inner`
     /// out, invisible from here.
     #[test]
@@ -806,12 +806,12 @@ mod tests {
     #[test]
     fn continuation_marks_only_the_split_edges() {
         let segs = vec![seg(0.0, 6.0, "the quick brown fox jumps over the lazy dog"), seg(7.0, 8.0, "Done.")];
-        let cues = to_cues(&segs, 20, 1, 0.5, ("…", " —"));
+        let cues = to_cues(&segs, 20, 1, 0.5, ("…", " - "));
         let n = cues.len();
         assert!(n >= 3, "{cues:?}");
         // first chunk: suffix only; middle chunks: both; last chunk of the split segment: prefix only
-        assert!(cues[0].2.ends_with(" —") && !cues[0].2.starts_with('…'), "{:?}", cues[0].2);
-        assert!(cues[n - 2].2.starts_with('…') && !cues[n - 2].2.ends_with(" —"), "{:?}", cues[n - 2].2);
+        assert!(cues[0].2.ends_with(" - ") && !cues[0].2.starts_with('…'), "{:?}", cues[0].2);
+        assert!(cues[n - 2].2.starts_with('…') && !cues[n - 2].2.ends_with(" - "), "{:?}", cues[n - 2].2);
         assert_eq!(cues[n - 1].2, "Done.", "an unsplit segment is untouched");
     }
 

@@ -1,7 +1,7 @@
 //! ---- ws:source-monitor ----
 //! MCP tools for the Source monitor (`source.*`) plus the three `timeline.*` verbs this workstream
 //! owns: `timeline.place` (the `DropMode` placement funnel), `timeline.match_frame`,
-//! `timeline.smart_edit`. Splice/overwrite/lift/extract/replace are NOT re-registered here —
+//! `timeline.smart_edit`. Splice/overwrite/lift/extract/replace are NOT re-registered here -
 //! trim-model's `tools_trim.rs` owns `timeline.splice`/`overwrite`/`lift`/`extract`/`replace`; the
 //! UI and the rows below call those `Project::` fns directly (`no_duplicate_tool_names_with_trim_model`
 //! pins it). Every `Mutate` row relies on the generic snapshot/push-undo-iff-changed wrapper.

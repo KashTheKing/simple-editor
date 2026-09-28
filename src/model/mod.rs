@@ -1,4 +1,4 @@
-//! Project data model — the shared contract between UI, engine, playback and export.
+//! Project data model - the shared contract between UI, engine, playback and export.
 //! All times are seconds (f64). Keyframe times are clip-local (seconds from `clip.start`).
 //! Serialized with serde_json as the `.sedit` project format.
 
@@ -200,7 +200,7 @@ impl Ease {
     }
 }
 
-/// y for the x = `f` on the cubic bezier (0,0) (x1,y1) (x2,y2) (1,1) — Newton iterations on the x polynomial.
+/// y for the x = `f` on the cubic bezier (0,0) (x1,y1) (x2,y2) (1,1) - Newton iterations on the x polynomial.
 fn cubic_bezier(f: f64, x1: f64, y1: f64, x2: f64, y2: f64) -> f64 {
     let (x1, x2) = (x1.clamp(0.0, 1.0), x2.clamp(0.0, 1.0));
     let bx = |t: f64| 3.0 * (1.0 - t) * (1.0 - t) * t * x1 + 3.0 * (1.0 - t) * t * t * x2 + t * t * t;
@@ -289,7 +289,7 @@ impl Animated {
         }
         self.base_at(t)
     }
-    /// The keyframed/constant value ignoring any live link — what an expression sees as `v`.
+    /// The keyframed/constant value ignoring any live link - what an expression sees as `v`.
     pub fn base_at(&self, t: f64) -> f64 {
         if self.keys.is_empty() {
             return self.value;
@@ -454,7 +454,7 @@ fn de_notes<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Note>, D::Erro
 
 /// One item on the standalone Moodboard pane (`Project.moodboard`): a project asset plus free-form
 /// label tags. These are plain user-typed words, not indices into `Project.labels` like everything
-/// else that carries a `label` field — the moodboard's filter row is a text/chip filter, not a colour.
+/// else that carries a `label` field - the moodboard's filter row is a text/chip filter, not a colour.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub struct MoodItem {
@@ -480,7 +480,7 @@ pub struct PlanItem {
     pub requirements: Vec<(String, bool)>,
     /// Seconds accumulated by the planner's Timer tab while linked to this item. The timer's own
     /// running state (mode, start time, whether it's live) is session-scoped UI state, not project
-    /// data — it lives in `ui::planner::PlannerState`, not here.
+    /// data - it lives in `ui::planner::PlannerState`, not here.
     pub tracked_seconds: f64,
 }
 
@@ -512,7 +512,7 @@ pub struct AttrSet {
     pub mask: bool,
     pub speed: bool,
     pub audio: bool,
-    /// The text clip's wording (`TextStyle::text`) — separate from `text_style` so pasting a look
+    /// The text clip's wording (`TextStyle::text`) - separate from `text_style` so pasting a look
     /// doesn't overwrite the destination's own words.
     pub text_content: bool,
     /// Every visual text field (font/size/bold/italic/colour/outline/shadow/spacing/align/box/spans)

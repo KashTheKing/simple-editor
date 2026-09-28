@@ -1,7 +1,7 @@
 //! ---- ws:jobs-panel ----
 //! The Jobs pane widget: a pure, headless-testable list of every background task (running / queued /
 //! recently finished) with progress, ETA, Cancel where the job honours it and reorder arrows for the
-//! two queues that actually have an order. No `App` here — `ui::app::jobs_pane` builds the rows and
+//! two queues that actually have an order. No `App` here - `ui::app::jobs_pane` builds the rows and
 //! applies the response. Never requests a repaint itself (the App side owns the 150 ms cadence).
 
 use crate::theme::Palette;
@@ -9,7 +9,7 @@ use eframe::egui;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-/// Stable per-row id (`"<kind>:<index>"`, see `ui::app::jobs_pane::rows_from`) — what Cancel /
+/// Stable per-row id (`"<kind>:<index>"`, see `ui::app::jobs_pane::rows_from`) - what Cancel /
 /// reorder / the `jobs.*` tools address a row by.
 pub type JobId = String;
 
@@ -130,7 +130,7 @@ pub struct JobsState {
     pub show_done: bool,
     /// Last ~20 rows that left their holder, with when they left.
     pub done_log: VecDeque<(JobRow, Instant)>,
-    /// The rows as of the last `note` — the pane, the menu-bar indicator and the `jobs.*` tools all
+    /// The rows as of the last `note` - the pane, the menu-bar indicator and the `jobs.*` tools all
     /// read this one snapshot instead of walking the holders again.
     pub last: Vec<JobRow>,
     /// The pane or the indicator drew during the last frame (gates the repaint cadence).
@@ -240,9 +240,9 @@ pub fn show(ui: &mut egui::Ui, st: &mut JobsState, rows: &[JobRow], pal: &Palett
             for row in recent {
                 ui.horizontal(|ui| {
                     let (glyph, text) = match &row.state {
-                        JobState::Failed(e) => ("✗", format!("{} — {e}", row.label)),
-                        JobState::Cancelled => ("–", format!("{} — cancelled", row.label)),
-                        _ => ("✓", format!("{} — {}", row.label, fmt_dur(row.elapsed))),
+                        JobState::Failed(e) => ("✗", format!("{} - {e}", row.label)),
+                        JobState::Cancelled => ("–", format!("{} - cancelled", row.label)),
+                        _ => ("✓", format!("{} - {}", row.label, fmt_dur(row.elapsed))),
                     };
                     ui.label(glyph);
                     ui.add(egui::Label::new(egui::RichText::new(text).weak()).truncate());

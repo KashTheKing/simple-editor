@@ -4,12 +4,12 @@
 //!  * `probe(path)`      -> Asset with duration, size, fps, every audio stream (language/title if available).
 //!  * `open_video(path)` -> VideoSource producing top-down RGBA8 at the requested size (RGB32 output type +
 //!                          MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING; handle negative stride / bottom-up;
-//!                          scale to (w,h) — either via the reader's output type or a simple resize in Rust).
+//!                          scale to (w,h) - either via the reader's output type or a simple resize in Rust).
 //!  * `open_audio(path, stream)` -> AudioSource producing stereo f32 @ 48 kHz (PCM float output type; stream
 //!                          = Nth audio stream in container order; resample/upmix in Rust if MF refuses).
 //! Seeking: SetCurrentPosition then decode forward until pts >= t. Sequential reads must not seek.
 //! COM: MFStartup / CoInitializeEx per thread (decoders live on the thread that created them; they are `Send`
-//! in the sense that a thread creates and owns them — mark types `unsafe impl Send` if needed, see ARCHITECTURE.md).
+//! in the sense that a thread creates and owns them - mark types `unsafe impl Send` if needed, see ARCHITECTURE.md).
 
 use super::{AudioSource, Frame, VideoSource, CHANNELS, SAMPLE_RATE};
 use crate::model::{Asset, AudioStreamInfo, ClipKind};
@@ -49,7 +49,7 @@ fn hns(t: f64) -> i64 {
 /// Process-wide MFStartup + per-thread COM init. Cheap; called on every open.
 fn init() -> Result<(), String> {
     static MF: OnceLock<Result<(), String>> = OnceLock::new();
-    // ponytail: CoInitializeEx on every open, never CoUninitialize — S_FALSE / RPC_E_CHANGED_MODE are fine,
+    // ponytail: CoInitializeEx on every open, never CoUninitialize - S_FALSE / RPC_E_CHANGED_MODE are fine,
     // the refcount just grows for the process lifetime.
     unsafe {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
@@ -64,7 +64,7 @@ unsafe impl Send for SharedDeviceManager {}
 unsafe impl Sync for SharedDeviceManager {}
 
 /// D3D11 device + DXGI device manager for hardware-accelerated decode (DXVA). Built once per process;
-/// every source reader attaches to the same manager. `None` when the adapter/driver can't do it — callers
+/// every source reader attaches to the same manager. `None` when the adapter/driver can't do it - callers
 /// fall back to the source reader's normal software decode, so this is purely a speed opt-in.
 fn dxgi_device_manager() -> Option<IMFDXGIDeviceManager> {
     static MANAGER: OnceLock<Option<SharedDeviceManager>> = OnceLock::new();
@@ -311,7 +311,7 @@ struct MfVideo {
     reader: IMFSourceReader,
     stream: u32,
     /// True source dimensions (from the first negotiated type, before any decode-size scaling).
-    /// Reported by `size()` — placement/export/asset math must see native size regardless of what
+    /// Reported by `size()` - placement/export/asset math must see native size regardless of what
     /// the decoder is currently asked to output.
     native_w: u32,
     native_h: u32,
@@ -454,21 +454,21 @@ impl MfVideo {
 
     /// Ask MF to decode+scale straight to the requested size instead of always paying for a full
     /// native-resolution decode + copy + Rust rescale. `MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_
-    /// PROCESSING` (set at open) lets the reader's video processor MFT do this — hardware-accelerated
-    /// when DXVA is active — so a 4K source previewed at 1280 wide never copies a 4K (or even half-4K)
+    /// PROCESSING` (set at open) lets the reader's video processor MFT do this - hardware-accelerated
+    /// when DXVA is active - so a 4K source previewed at 1280 wide never copies a 4K (or even half-4K)
     /// frame to system memory at all: the sample that crosses the bus already is preview-sized.
     ///
     /// A renegotiation (`SetCurrentMediaType` mid-stream) costs ~100 ms, so only a *settled* request is
     /// followed: the same size on `STABLE_REQS` consecutive calls. A clip animating its on-screen scale
     /// asks for a different size every call, never settles, and keeps decoding at the last settled size
     /// with the CPU scaler covering the difference. The very first request after open negotiates at
-    /// once — that is the everyday "open a 4K file, preview it small" case, and warm-up frames at
+    /// once - that is the everyday "open a 4K file, preview it small" case, and warm-up frames at
     /// native 4K would cost more than the negotiation.
     fn ensure_decode_size(&mut self, req_w: u32, req_h: u32) {
         if !self.scale_ok || self.native_w < 4 || self.native_h < 4 {
             return;
         }
-        // even-aligned (4:2:0 sources dislike odd output) and capped at native — never upscale in MF
+        // even-aligned (4:2:0 sources dislike odd output) and capped at native - never upscale in MF
         let t = (((req_w + 1) & !1).clamp(2, self.native_w & !1), ((req_h + 1) & !1).clamp(2, self.native_h & !1));
         if t == (self.width, self.height) {
             self.req_last = t;
@@ -611,7 +611,7 @@ impl MfVideo {
             }
             box_down(&self.native, self.width, &self.xs, &self.ys, &mut self.acc, &mut self.scaled);
         } else {
-            // ponytail: bilinear per pixel — the compositor never asks for more than native size.
+            // ponytail: bilinear per pixel - the compositor never asks for more than native size.
             bilinear(&self.native, self.width, self.height, w, h, &mut self.scaled);
         }
         self.svalid = true;
@@ -692,7 +692,7 @@ impl VideoSource for MfVideo {
         }
         self.ensure_decode_size(w, h);
         // +5 ms display-time tolerance: MKV pts are ms-rounded (frame n's pts can land just after n/fps),
-        // raw mp4 pts jitter ±1 hns — without it every other frame repeats when stepping at n/fps.
+        // raw mp4 pts jitter ±1 hns - without it every other frame repeats when stepping at n/fps.
         let tt = hns(t) + 50_000 + self.origin;
         if self.eof_at.is_some_and(|e| tt >= e) {
             return false;
@@ -738,7 +738,7 @@ fn push_audio(src: &[f32], ch: usize, rate: u32, rs: &mut Resamp, fifo: &mut Vec
     if !rs.primed {
         *rs = Resamp { pos: 1.0, last: frame(0), primed: true };
     }
-    // ponytail: linear interpolation — a windowed-sinc resampler if aliasing ever matters.
+    // ponytail: linear interpolation - a windowed-sinc resampler if aliasing ever matters.
     let step = rate as f64 / SAMPLE_RATE as f64;
     let v = |k: usize| if k == 0 { rs.last } else { frame(k - 1) };
     let mut pos = rs.pos;
@@ -774,7 +774,7 @@ struct MfAudio {
     tmp: Vec<f32>,
 }
 
-// SAFETY: see MfVideo — owned and used by one thread at a time.
+// SAFETY: see MfVideo - owned and used by one thread at a time.
 unsafe impl Send for MfAudio {}
 
 pub fn open_audio(path: &str, stream: usize) -> Result<Box<dyn AudioSource>, String> {
@@ -1103,7 +1103,7 @@ mod tests {
     }
 
     /// Where the milliseconds go on a 4K source: `cargo test --release bench_4k_preview -- --ignored --nocapture`.
-    /// Not a regular test (generates a 4K file, timing-only) — run it after touching the decode path.
+    /// Not a regular test (generates a 4K file, timing-only) - run it after touching the decode path.
     #[test]
     #[ignore]
     fn bench_4k_preview() {

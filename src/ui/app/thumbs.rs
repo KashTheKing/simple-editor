@@ -33,7 +33,7 @@ pub(super) fn effect_thumb_source(image: &str, w: u32, h: u32, backend: Backend)
             }
         }
     }
-    // ponytail: nearest rescale — the catalogue asks for exactly STOCK_W x STOCK_H, so it is a plain copy
+    // ponytail: nearest rescale - the catalogue asks for exactly STOCK_W x STOCK_H, so it is a plain copy
     let mut f = Frame::new(w, h);
     for y in 0..h {
         let sy = y * STOCK_H / h;
@@ -130,7 +130,7 @@ pub(super) fn write_image(frame: &Frame, opts: &frame_ui::FrameExport) -> Result
     }
 }
 
-/// Standard base64 (RFC 4648, with padding) — for the `render.frame` PNG data url. Tool path, not hot.
+/// Standard base64 (RFC 4648, with padding) - for the `render.frame` PNG data url. Tool path, not hot.
 pub(super) fn base64(data: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
@@ -187,10 +187,10 @@ impl App {
 
     // ---- ws:inspector-gallery ----
     /// Generalises the loop above to the Gallery's Looks/LUTs cards: same stock picture, same
-    /// GL-context-optional fallback, one texture built per (source, key) — a second call with an
+    /// GL-context-optional fallback, one texture built per (source, key) - a second call with an
     /// already-built key is a no-op, exactly like `effect_thumbs_key`'s early-out. Captions get no GPU
     /// pass (a caption style is text formatting, not a pixel effect) and Templates get none either
-    /// (`// ponytail:` — compositing a placed template needs a synthetic mini-Project render pass, not
+    /// (`// ponytail:` - compositing a placed template needs a synthetic mini-Project render pass, not
     /// convenient yet); both tabs draw a plain name tile instead. Throttled to 2 NEW textures per call
     /// (`App::poll_panels` calls this once/frame while the Gallery pane is visible) so a `Settings.
     /// lut_dirs` folder with many `.cube` files can't stall a frame.
@@ -272,15 +272,15 @@ impl App {
     }
 }
 
-/// A Gallery card's picture source — generalises the effects catalogue's `EffectKind` key to Looks/LUTs
-/// (Captions/Templates draw a plain name tile, no GPU thumbnail — see `build_gallery_thumbnails`'s doc).
+/// A Gallery card's picture source - generalises the effects catalogue's `EffectKind` key to Looks/LUTs
+/// (Captions/Templates draw a plain name tile, no GPU thumbnail - see `build_gallery_thumbnails`'s doc).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum ThumbSource {
     #[allow(dead_code)] // reserved: the effects catalogue keys by bare EffectKind today, not this enum
     Effect(EffectKind),
     Look(usize),
     Lut(std::path::PathBuf),
-    #[allow(dead_code)] // Captions draw a name tile, never a GPU thumbnail — see doc comment above
+    #[allow(dead_code)] // Captions draw a name tile, never a GPU thumbnail - see doc comment above
     Caption(usize),
 }
 

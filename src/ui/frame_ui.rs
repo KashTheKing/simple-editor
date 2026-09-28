@@ -52,7 +52,7 @@ fn size_of(pw: u32, ph: u32, preset: &str, custom: (u32, u32)) -> (u32, u32) {
 }
 
 /// What `settings.frame_resolution` remembers: a preset name, or "WxH" for a custom size (`init` parses
-/// both — storing the literal "custom" would lose the size).
+/// both - storing the literal "custom" would lose the size).
 fn stored_resolution(state: &FrameUi) -> String {
     if state.preset == "custom" {
         format!("{}x{}", state.custom.0, state.custom.1)
@@ -225,7 +225,7 @@ mod tests {
         init(&mut st, &p, &s);
         assert_eq!((st.preset.as_str(), st.custom), ("custom", (800, 600)));
         assert_eq!(st.resize, "bicubic");
-        // every export scaler is offered here too — no silent downgrade to lanczos
+        // every export scaler is offered here too - no silent downgrade to lanczos
         s.export_scaler = "spline".into();
         let mut st = FrameUi::default();
         init(&mut st, &p, &s);

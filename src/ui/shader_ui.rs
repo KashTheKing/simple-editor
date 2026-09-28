@@ -1,19 +1,19 @@
 //! "Shader Editor" window for `EffectKind::Shader`: the GLSL body in a monospace editor, an Apply
 //! button, and the driver's compile log verbatim (selectable, so it can be pasted somewhere) when the
-//! source was rejected. Non-modal — the timeline stays usable while it is open.
+//! source was rejected. Non-modal - the timeline stays usable while it is open.
 //! The window only edits text: the app writes the source back onto the effect, pushes undo and asks
 //! `GpuRenderer::check_shader` for the log, then hands it here through `error`.
 
 use crate::model::{Id, DEFAULT_SHADER};
 use eframe::egui;
 
-/// What `shaders::user_shader` puts in scope — the knobs are invisible otherwise.
-const UNIFORMS: &str = "sampler2D tex — the layer\n\
-vec2 u_res — layer size in pixels\n\
-float u_time — clip-local seconds\n\
-float u_scale — preview scale (multiply pixel-sized amounts by it)\n\
-float p0..p7 — the eight knobs, also named u1..u8\n\
-sampler2D u_mask, int u_has_mask — the effect's mask (applied for you)";
+/// What `shaders::user_shader` puts in scope - the knobs are invisible otherwise.
+const UNIFORMS: &str = "sampler2D tex - the layer\n\
+vec2 u_res - layer size in pixels\n\
+float u_time - clip-local seconds\n\
+float u_scale - preview scale (multiply pixel-sized amounts by it)\n\
+float p0..p7 - the eight knobs, also named u1..u8\n\
+sampler2D u_mask, int u_has_mask - the effect's mask (applied for you)";
 
 #[derive(Default)]
 pub struct ShaderUi {
@@ -46,7 +46,7 @@ pub fn show(ctx: &egui::Context, state: &mut ShaderUi) -> bool {
     let mut open = state.open;
     let mut apply = false;
     egui::Window::new("Shader Editor").open(&mut open).default_width(560.0).show(ctx, |ui| {
-        ui.weak("Define vec4 effect(vec4 src, vec2 uv) — uv is 0..1, colours are straight alpha.");
+        ui.weak("Define vec4 effect(vec4 src, vec2 uv) - uv is 0..1, colours are straight alpha.");
         egui::ScrollArea::vertical().id_salt("shader_src").max_height(280.0).show(ui, |ui| {
             ui.add(
                 egui::TextEdit::multiline(&mut state.src).code_editor().desired_rows(16).desired_width(f32::INFINITY),

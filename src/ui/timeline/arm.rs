@@ -1,13 +1,13 @@
 //! Frozen modifier table (`plans/ui-overhaul/README.md`, "Decided modifier table (timeline gestures)"):
 //! a pure lookup from (press-time modifiers, hit zone, track flags, active tool) to what a drag (or a
 //! zone-specific click) should become. Every table row is a unit test in this file's own `#[cfg(test)]`
-//! module. Most `GestureKind` results are registry-protocol stubs this wave — tested and compiled, but
+//! module. Most `GestureKind` results are registry-protocol stubs this wave - tested and compiled, but
 //! not yet wired into a live drag: timeline-trim-gestures (wave 2) wires Edge's Ctrl/Alt/Shift/Ctrl+Alt
 //! rows and Drop's four rows; pro-timeline (wave 3) wires Seam's Shift (asymmetric multi-roller) row.
 //! This workstream wires only Body's Shift-click selection fix (done directly in mod.rs's click-handling
-//! block, not through `arm()` — that block edits *selection*, not a drag `GestureKind`), BodyBottom's
+//! block, not through `arm()` - that block edits *selection*, not a drag `GestureKind`), BodyBottom's
 //! hairline/click-split, Seam's plain/Ctrl/Alt click → `EditPoint`, RulerInOut's drag, and Lane's
-//! middle-mouse pan (also direct — Pan is button-driven, not modifier-driven, so it is not a real `arm()`
+//! middle-mouse pan (also direct - Pan is button-driven, not modifier-driven, so it is not a real `arm()`
 //! output despite being in the `GestureKind` enum for documentation completeness).
 #![allow(dead_code)] // registry-protocol stub: most rows are tested here but consumed in wave 2/3
 use crate::ui::tools::Tool;
@@ -33,7 +33,7 @@ pub enum Zone {
 }
 
 /// The three per-track flags the table branches on (`Track.locked`/`ripple`/`magnetic`, landed by
-/// registries-schema-hooks). `arm.rs` has no `Project` dependency of its own — the caller reads the
+/// registries-schema-hooks). `arm.rs` has no `Project` dependency of its own - the caller reads the
 /// track and builds this.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TrackFlags {
@@ -44,7 +44,7 @@ pub struct TrackFlags {
 
 /// What a gesture (or zone-specific click) resolves to. Click-only outcomes (`SplitAt`, `SeamBoth`,
 /// `SeamLeft`, `SeamRight`, `SeamAddToSet`, `GapSelect`) and drag outcomes share one enum because a zone
-/// determines which kind of interaction it is (BodyBottom = click, Edge = drag, etc.) — `arm()` itself
+/// determines which kind of interaction it is (BodyBottom = click, Edge = drag, etc.) - `arm()` itself
 /// stays a flat lookup, not a state machine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GestureKind {
@@ -76,7 +76,7 @@ pub enum GestureKind {
 
 /// Pure lookup over the frozen modifier table. `mods` is the press-time (or, for a zone-specific click,
 /// click-time) `egui::Modifiers`. Returns `None` for a (zone, modifier) combination the table leaves
-/// undefined — the caller keeps its own existing/unaffected behaviour in that case (see the Fade /
+/// undefined - the caller keeps its own existing/unaffected behaviour in that case (see the Fade /
 /// VolumeLine / Key / Marker / TransitionEdge zones below, whose row says "existing gestures unchanged").
 pub fn arm(mods: Modifiers, zone: Zone, flags: TrackFlags, tool: Tool) -> Option<GestureKind> {
     // Any non-Select tool keeps its own legacy gesture regardless of zone/modifiers: no new tools ship

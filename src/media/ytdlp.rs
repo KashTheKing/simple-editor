@@ -1,5 +1,5 @@
 //! URL import: download media from a link with `yt-dlp.exe`, the same child-process pattern
-//! `ffpipe.rs` uses for ffmpeg. Entirely optional — `exe()` returns None when yt-dlp is not installed
+//! `ffpipe.rs` uses for ffmpeg. Entirely optional - `exe()` returns None when yt-dlp is not installed
 //! and the Library then hides its "Import URL…" button.
 //!
 //! yt-dlp is driven with `--print after_move:filepath` (prints the final file, and because a later
@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 
 static DIR: Mutex<String> = Mutex::new(String::new());
 // checking every candidate's --version (below) is a handful of process spawns, so the result is cached
-// until set_dir invalidates it — cheap enough at start-up, too slow to redo on every download.
+// until set_dir invalidates it - cheap enough at start-up, too slow to redo on every download.
 static CACHE: Mutex<Option<Option<PathBuf>>> = Mutex::new(None);
 
 /// Set the user-configured yt-dlp directory ("" = app dir, then PATH).
@@ -28,7 +28,7 @@ pub fn set_dir(dir: &str) {
 ///
 /// Each candidate is verified with `--version`, because a PATH entry can hold a broken pip shim (one
 /// left behind by an uninstalled Python exits 1 and prints nothing). Machines with more than one Python
-/// install commonly have several *working* copies at very different ages — yt-dlp ships near-weekly to
+/// install commonly have several *working* copies at very different ages - yt-dlp ships near-weekly to
 /// keep up with site changes, so picking merely the first one found can land on a copy too stale to get
 /// past current extractor/bot-check logic ("Sign in to confirm you're not a bot" and friends). The
 /// version string sorts as "YYYY.MM.DD[.N]", so the newest wins.
@@ -93,17 +93,17 @@ fn parse_percent(line: &str) -> Option<f32> {
 }
 
 /// yt-dlp's own stderr, tacking on an update hint when the message is one it (or YouTube's bot-check)
-/// prints for a stale extractor — these are real yt-dlp errors, not ours, but "install a newer yt-dlp"
+/// prints for a stale extractor - these are real yt-dlp errors, not ours, but "install a newer yt-dlp"
 /// is the actual fix often enough that it is worth saying plainly instead of leaving the user to guess.
 fn annotate_if_outdated(err: &str) -> String {
     if err == export::CANCELLED {
-        return err.to_string(); // not a failure — the caller reports it as a cancel, not an error
+        return err.to_string(); // not a failure - the caller reports it as a cancel, not an error
     }
     let lower = err.to_ascii_lowercase();
     const SIGNS: [&str; 4] =
         ["yt-dlp -u", "confirm you are on the latest version", "sign in to confirm", "please reload"];
     if SIGNS.iter().any(|s| lower.contains(s)) {
-        let hint = "your yt-dlp looks outdated — update it and try again: \
+        let hint = "your yt-dlp looks outdated - update it and try again: \
             yt-dlp -U (or `pip install -U yt-dlp` if it came from pip)";
         format!("{err}\n\n{hint}")
     } else {
@@ -209,7 +209,7 @@ mod tests {
         assert_eq!(annotate_if_outdated(export::CANCELLED), export::CANCELLED);
     }
 
-    /// The whole download path against a LOCAL http server — no third-party site is contacted.
+    /// The whole download path against a LOCAL http server - no third-party site is contacted.
     /// Skips itself when yt-dlp, python or the test media are unavailable, so it is never flaky.
     #[test]
     fn local_http_download() {

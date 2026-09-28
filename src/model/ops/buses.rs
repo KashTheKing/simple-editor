@@ -62,7 +62,7 @@ impl Project {
     // ---- ws:audio-dsp-automation ----
     /// Essential-Sound "Repair"/"Clarity": route `ids` through a bus carrying that preset's filter
     /// chain (`mixer_fx::REPAIR_PRESETS`), creating the bus on first use and reusing it (by label)
-    /// after — the chain stays a plain, editable Mixer bus. Returns the bus id (0 = unknown preset,
+    /// after - the chain stays a plain, editable Mixer bus. Returns the bus id (0 = unknown preset,
     /// nothing changed) so the inspector can pre-select it in the Mixer.
     pub fn apply_repair(&mut self, ids: &[Id], preset: &str) -> Id {
         let Some((label, chain)) = crate::engine::mixer_fx::repair_chain(preset) else { return 0 };

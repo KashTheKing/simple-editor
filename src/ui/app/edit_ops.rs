@@ -7,7 +7,7 @@
 
 use super::*;
 
-/// How a drop/place interacts with what's already on the track — the drop-modifier table's rows
+/// How a drop/place interacts with what's already on the track - the drop-modifier table's rows
 /// (plain = Place, Ctrl = Splice, Alt = Overwrite, Shift = OnTop).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DropMode {
@@ -15,7 +15,7 @@ pub(crate) enum DropMode {
     Place,
     /// Insert edit: ripple tracks open by the clip's length first.
     Splice,
-    /// Overwrite edit; ON A CLIP BODY it is a Replace edit (`Project::replace_clip` — duration,
+    /// Overwrite edit; ON A CLIP BODY it is a Replace edit (`Project::replace_clip` - duration,
     /// effects and transform of the clip under the drop point are kept), elsewhere `overwrite_asset`.
     Overwrite,
     /// On a brand-new track above every existing track of that kind.
@@ -49,7 +49,7 @@ pub(crate) fn place(
     range: Option<(f64, f64)>,
 ) -> Vec<Id> {
     // `track` is one raw index of either kind (see the doc comment above); `splice_in`/`overwrite_asset`
-    // (ws:timeline-trim-gestures) want it split into separate video/audio slots — resolve by the
+    // (ws:timeline-trim-gestures) want it split into separate video/audio slots - resolve by the
     // track's actual kind rather than assuming, since Overwrite intentionally receives whichever kind
     // is under the pointer (ws:source-monitor's own audio-row fix) while Place/Splice/OnTop only ever
     // see a video-track index (pre-filtered by the caller).
@@ -90,7 +90,7 @@ pub(crate) fn place(
                         let Some(c) = project.clip(cid) else { continue };
                         let fits = if c.kind == ClipKind::Audio { has_audio } else { has_video };
                         if fits && project.replace_clip(cid, asset) {
-                            // `replace_clip` always zeroes `src_in` — a three-point edit's marked
+                            // `replace_clip` always zeroes `src_in` - a three-point edit's marked
                             // in-point (`range`) must still apply on this clip-body-hit path, same
                             // as the gap-hit `overwrite_asset` path below already honours it.
                             if let Some(c) = project.clip_mut(cid) {
@@ -119,7 +119,7 @@ pub(crate) fn place(
 }
 
 /// The old `App::insert_at` loop verbatim over `place`: each asset lands at `at`, then `at` advances
-/// to that asset's first new clip's end — a library multi-select or a multi-stream import chains end
+/// to that asset's first new clip's end - a library multi-select or a multi-stream import chains end
 /// to end. Every former `insert_at` call site routes here.
 pub(crate) fn place_many(
     project: &mut Project,
@@ -141,7 +141,7 @@ pub(crate) fn place_many(
 
 impl App {
     /// Single-asset placement (see `place`). `range` = the source in/out a three-point edit carries
-    /// (None = the whole file) — one arg more than the plan's signature, because `source.insert` /
+    /// (None = the whole file) - one arg more than the plan's signature, because `source.insert` /
     /// `timeline.place` have a marked range to pass and a second rangeless entry point would be a
     /// duplicate.
     pub(crate) fn place_asset(
@@ -210,7 +210,7 @@ mod tests {
         }
     }
 
-    /// (track, start, duration, asset, kind) of every clip — the layout a placement produced.
+    /// (track, start, duration, asset, kind) of every clip - the layout a placement produced.
     fn layout(p: &Project) -> Vec<(usize, f64, f64, Id, ClipKind)> {
         p.all_clips().map(|(ti, c)| (ti, c.start, c.duration, c.asset, c.kind)).collect()
     }
@@ -313,14 +313,14 @@ mod tests {
     #[test]
     fn place_asset_overwrite_targets_track_under_pointer_not_first_audio_track() {
         let mut p = Project::new(); // V1 (0), A1 (1)
-        let a2 = p.add_track(TrackKind::Audio); // A2 (2) — not the first audio track
+        let a2 = p.add_track(TrackKind::Audio); // A2 (2) - not the first audio track
         let base = p.add_asset(audio_asset("C:/base.wav", 5.0));
         let placed = p.insert_asset_clips_ranged(base, 0.0, None, Some(a2), None);
         let target = placed[0];
         assert_eq!(p.track_of(target), Some(a2), "test setup: a clip body sits on A2");
         let repl = p.add_asset(audio_asset("C:/repl.wav", 5.0));
         // `drops.rs` must pass A2 (the raw track under the pointer) through for Overwrite instead of
-        // nulling it because it isn't a video track — `place()` itself already honours whatever
+        // nulling it because it isn't a video track - `place()` itself already honours whatever
         // track it's given.
         let out = place(&mut p, repl, 1.0, Some(a2), DropMode::Overwrite, None);
         assert_eq!(out, vec![target]);

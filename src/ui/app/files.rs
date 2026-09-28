@@ -38,7 +38,7 @@ impl App {
         }
     }
 
-    /// `<path>.lock` sidecar: warn-only (never blocks open), always overwritten with the current pid —
+    /// `<path>.lock` sidecar: warn-only (never blocks open), always overwritten with the current pid -
     /// documented ceiling, not a real cross-instance mutex (see the PR body's risks note).
     fn lock_path(path: &Path) -> PathBuf {
         let mut s = path.as_os_str().to_os_string();
@@ -130,7 +130,7 @@ impl App {
     }
 
     /// pub(crate): `confirm::draw`'s Save button (Discard prompt) calls this from outside the `app`
-    /// module — see confirm.rs's module doc.
+    /// module - see confirm.rs's module doc.
     pub(crate) fn save_project(&mut self) -> bool {
         let Some(path) = self.project_path.clone() else { return self.save_project_as() };
         match self.project.save(&path) {
@@ -157,7 +157,7 @@ impl App {
         let dir = match self.project_path.as_ref().and_then(|p| p.parent()) {
             Some(d) => d.join(format!("{} subtitles", self.project.name)),
             None => {
-                self.toast("Save the project first — the subtitle folder lives next to it");
+                self.toast("Save the project first - the subtitle folder lives next to it");
                 return;
             }
         };
@@ -185,14 +185,14 @@ impl App {
 
     /// Ask to save unsaved changes, non-blocking: if the project isn't dirty, `on_yes` runs immediately
     /// (synchronously, same frame); otherwise a Save/Discard/Cancel confirm window is queued and
-    /// `on_yes` runs on a LATER frame once it resolves Save (and the save succeeded) or Discard — never
+    /// `on_yes` runs on a LATER frame once it resolves Save (and the save succeeded) or Discard - never
     /// on Cancel. Replaces the old blocking `confirm_discard() -> bool`.
     pub(crate) fn confirm_discard_then(&mut self, on_yes: impl FnOnce(&mut App) + 'static) {
         if !self.dirty {
             on_yes(self);
             return;
         }
-        // Yes saves a .sedit (the video itself only changes via Save / Overwrite Original Video) — say so
+        // Yes saves a .sedit (the video itself only changes via Save / Overwrite Original Video) - say so
         let msg = if self.project_path.is_some() {
             "Save changes to the project?"
         } else {
@@ -204,7 +204,7 @@ impl App {
     pub(super) fn ffmpeg_missing(&mut self) -> bool {
         if media::ffpipe::ffmpeg_exe().is_none() {
             self.toast(
-                "ffmpeg.exe not found — install FFmpeg (winget install Gyan.FFmpeg) or set its folder in Settings",
+                "ffmpeg.exe not found - install FFmpeg (winget install Gyan.FFmpeg) or set its folder in Settings",
             );
             return true;
         }
@@ -235,7 +235,7 @@ impl App {
         }
     }
 
-    /// Open the (non-blocking) Export window — after a non-blocking preflight when media used on the
+    /// Open the (non-blocking) Export window - after a non-blocking preflight when media used on the
     /// timeline is offline (a missing file renders black; say so before the save dialog, not after).
     pub(super) fn act_export(&mut self) {
         if self.ffmpeg_missing() || self.timeline_is_empty() {
@@ -253,7 +253,7 @@ impl App {
             confirm::ask_app(
                 "Missing media",
                 format!(
-                    "{} file(s) used on the timeline can't be found — they export as black/silence:\n{list}{more}\n\nExport anyway?",
+                    "{} file(s) used on the timeline can't be found - they export as black/silence:\n{list}{more}\n\nExport anyway?",
                     offline.len()
                 ),
                 |app| app.export_ui.open = true,
@@ -263,14 +263,14 @@ impl App {
 
     /// The Export window confirmed (or the queue popped, or Quick Export fired): start the export.
     /// Returns the job, or None when it was refused with a toast (slot busy, ffmpeg missing, empty
-    /// timeline, or the path is a project source — re-checked HERE, at pop time, not only at enqueue).
+    /// timeline, or the path is a project source - re-checked HERE, at pop time, not only at enqueue).
     pub(super) fn start_export_choice(&mut self, choice: export_ui::ExportChoice) -> Option<Arc<Progress>> {
         if self.export.is_some() || self.ffmpeg_missing() || self.timeline_is_empty() {
             return None;
         }
         // writing over a file the player/decoders are reading from is the Overwrite path's job (release + reopen)
         if refuses_source(&self.project, &choice.opts.out_path) {
-            self.toast("That file is a source of this project — use Overwrite Original Video (Ctrl+S) instead");
+            self.toast("That file is a source of this project - use Overwrite Original Video (Ctrl+S) instead");
             return None;
         }
         self.player.pause();
@@ -300,7 +300,7 @@ impl App {
         }
         // ---- ws:export-deliver ----
         if self.export_ui.range {
-            self.toast("Lossless cut can't honour In/Out points — untick Export In/Out Range first");
+            self.toast("Lossless cut can't honour In/Out points - untick Export In/Out Range first");
             return;
         }
         let project = self.export_project();
@@ -335,7 +335,7 @@ impl App {
         };
         match std::fs::write(&out, crate::engine::xmeml::export_xmeml(&self.export_project())) {
             Ok(()) => self.toast_with_folder(
-                "XML exported — import it in Premiere (File > Import) or Resolve (File > Import > Timeline)",
+                "XML exported - import it in Premiere (File > Import) or Resolve (File > Import > Timeline)",
                 out,
             ),
             Err(e) => self.toast(format!("XML export failed: {e}")),
@@ -362,7 +362,7 @@ impl App {
     /// blocking-dialog `.show()` calls.
     pub(super) fn act_overwrite(&mut self) {
         let Some(src) = self.project.source_video.clone() else {
-            self.toast("No source video to overwrite — use Export Video As");
+            self.toast("No source video to overwrite - use Export Video As");
             return;
         };
         if self.export.is_some() {
@@ -370,7 +370,7 @@ impl App {
             return;
         }
         if self.timeline_is_empty() {
-            self.toast("Timeline is empty — nothing to save");
+            self.toast("Timeline is empty - nothing to save");
             return;
         }
         if self.ffmpeg_missing() {
@@ -389,7 +389,7 @@ impl App {
 
     /// Second stage of `act_overwrite`: the new file reloads as a fresh project afterward, so state
     /// that isn't burned into the video (subtitles, planner, notes, sequences, extra media) would be
-    /// silently dropped — offer to save a .sedit first. Same Save/Discard/Cancel shape as
+    /// silently dropped - offer to save a .sedit first. Same Save/Discard/Cancel shape as
     /// `confirm_discard_then`, so it reuses `confirm::ask_discard`.
     fn act_overwrite_offer_save_first(&mut self, src: String) {
         let p = &self.project;
@@ -400,7 +400,7 @@ impl App {
             || p.assets.len() > 1;
         if loses && (self.dirty || self.project_path.is_none()) {
             confirm::ask_discard(
-                "Overwriting reloads the new file as a fresh project — subtitles, planner, notes, \
+                "Overwriting reloads the new file as a fresh project - subtitles, planner, notes, \
                  sequences and imported media are not kept. Save a project file (.sedit) first?",
                 move |app| app.act_overwrite_run(&src),
             );
@@ -420,7 +420,7 @@ impl App {
         ));
         self.player.pause();
         let mut project = self.export_project();
-        // no background checkbox on this path — always render on black, like every export did before
+        // no background checkbox on this path - always render on black, like every export did before
         // `preview_bg` existed (a checkerboard preview aid must never bake into the overwritten original)
         project.preview_bg = crate::model::BackgroundMode::Black;
         // opt-in: a plain cut can be saved instantly with `-c copy` (keyframe-accurate) instead of re-encoding
@@ -460,7 +460,7 @@ impl App {
                 let took = crate::ui::duration_text(prog.elapsed().as_secs_f64());
                 let queued = self.export_queue.len();
                 let msg = if queued > 0 {
-                    format!("Export finished in {took} — {queued} more queued")
+                    format!("Export finished in {took} - {queued} more queued")
                 } else {
                     format!("Export finished in {took}")
                 };
@@ -468,9 +468,9 @@ impl App {
             }
             ExportKind::Overwrite { original, temp } => {
                 self.player.release_files();
-                // the thumbnail worker holds a decoder (ffmpeg child) on the source — drop it while we retry
+                // the thumbnail worker holds a decoder (ffmpeg child) on the source - drop it while we retry
                 self.thumbs.clear();
-                // ponytail: killed ffmpeg children release their file handle a few ms after wait() returns — retry briefly
+                // ponytail: killed ffmpeg children release their file handle a few ms after wait() returns - retry briefly
                 let mut r = std::fs::rename(&temp, &original);
                 let deadline = Instant::now() + Duration::from_millis(500);
                 while r.is_err() && Instant::now() < deadline {
@@ -559,7 +559,7 @@ impl App {
 
     pub(super) fn start_download(&mut self, url: &str, audio_only: bool) {
         if !self.ytdlp_available.load(std::sync::atomic::Ordering::Relaxed) {
-            self.toast("yt-dlp not found — set its folder in Settings");
+            self.toast("yt-dlp not found - set its folder in Settings");
             return;
         }
         let opts = crate::media::ytdlp::DownloadOptions { url: url.to_string(), dir: self.download_dir(), audio_only };
@@ -698,13 +698,13 @@ impl App {
 // ---- ws:export-deliver ----
 /// Is `out` one of the project's own source files? (Canonicalised, so `..`/case/drive-letter forms
 /// still match.) Writing over a file the player and decoders are reading is the Overwrite path's job
-/// — the queue re-runs this at pop time via `start_export_choice`, not only when a job is added.
+/// - the queue re-runs this at pop time via `start_export_choice`, not only when a job is added.
 pub(super) fn refuses_source(project: &Project, out: &Path) -> bool {
     let Ok(out_c) = std::fs::canonicalize(out) else { return false };
     project.assets.iter().any(|a| std::fs::canonicalize(&a.path).is_ok_and(|p| p == out_c))
 }
 
-/// Paths of assets used on the timeline whose file is missing — the export preflight list.
+/// Paths of assets used on the timeline whose file is missing - the export preflight list.
 fn offline_assets(project: &Project) -> Vec<String> {
     let used = project.used_assets();
     project
@@ -718,7 +718,7 @@ fn offline_assets(project: &Project) -> Vec<String> {
 // ---- ws:forgiveness ----
 #[cfg(test)]
 mod tests {
-    /// Structural (source-scan) tests, not App-level ones — this crate has no headless App-construction
+    /// Structural (source-scan) tests, not App-level ones - this crate has no headless App-construction
     /// path anywhere (see tools_registry_tests.rs's doc comment for why), so a check that would
     /// otherwise call `open_project`/`save_project`/`confirm_discard_then` on a live `App` instead
     /// verifies the same fact by scanning each function's own body, the same technique
@@ -726,7 +726,7 @@ mod tests {
     fn fn_body<'a>(src: &'a str, signature: &str) -> &'a str {
         let start = src.find(signature).unwrap_or_else(|| panic!("{signature} must exist"));
         let after = &src[start..];
-        // bound to the next sibling fn at the same indentation (4 spaces) — good enough for this file's
+        // bound to the next sibling fn at the same indentation (4 spaces) - good enough for this file's
         // flat `impl App { fn ... }` shape.
         let next_at = after[signature.len()..].find("\n    fn ").or_else(|| after[signature.len()..].find("\n    pub"));
         match next_at {
@@ -771,7 +771,7 @@ mod tests {
 
     // ---- ws:export-deliver ----
     /// The moved `export_opts()` literal (app.rs:1461 before split-god-files) sets the three new
-    /// fields explicitly — `range: None`, `letterbox: false`, and loudnorm from Settings — so a plain
+    /// fields explicitly - `range: None`, `letterbox: false`, and loudnorm from Settings - so a plain
     /// export's ffmpeg line is what it was (the byte comparison itself lives in
     /// `engine::export::tests::loudnorm_appends_af_filter_only_with_audio`: loudnorm off ⇒ no `-af`,
     /// letterbox off ⇒ the old plain `scale=`). Same source-scan technique as the two tests above.

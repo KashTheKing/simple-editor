@@ -67,7 +67,7 @@ impl Project {
 
     // ---------- markers ----------
     /// Stamped with `self.editing` so the marker only shows on the sequence (or main timeline) it was
-    /// created on — see `markers_ui::rows`.
+    /// created on - see `markers_ui::rows`.
     pub fn add_marker(&mut self, t: f64, name: impl Into<String>) -> Id {
         let id = self.new_id();
         self.markers.push(Marker {
@@ -81,7 +81,7 @@ impl Project {
         id
     }
     /// Move a project-level marker to the nearest clip EDGE (start or end) on the current sequence's
-    /// tracks (`self.tracks`) — a marker just before a clip's end must snap forward to that end, not
+    /// tracks (`self.tracks`) - a marker just before a clip's end must snap forward to that end, not
     /// jump back to the clip's start. No-op if the marker or a clip doesn't exist.
     pub fn snap_marker_to_nearest_clip(&mut self, id: Id) {
         let Some(t) = self.markers.iter().find(|m| m.id == id).map(|m| m.t) else { return };
@@ -113,7 +113,7 @@ impl Project {
         };
         let m = self.markers.remove(pos);
         let Some(c) = self.clip_mut(clip_id) else {
-            self.markers.push(m); // clip vanished mid-lookup (shouldn't happen) — put it back
+            self.markers.push(m); // clip vanished mid-lookup (shouldn't happen) - put it back
             self.sort_markers();
             return false;
         };

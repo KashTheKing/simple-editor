@@ -1,18 +1,18 @@
 //! Markers pane: every marker in timeline order (project markers and clip markers together, via
-//! `rows`), scoped to the sequence currently open (`Project.editing`) — a project-level marker only
+//! `rows`), scoped to the sequence currently open (`Project.editing`) - a project-level marker only
 //! shows on the sequence it was made on; clip markers scope naturally through their clip and are
 //! unaffected. One `egui::CollapsingHeader` per marker (collapsed by default): the header shows the
 //! icon glyph, a dim timecode, the name, "Go" (seek) and delete; expanding it reveals the editable
 //! name/time/duration/note and a small icon picker.
 //!
 //! Multi-select (`state.selected: Vec<Id>`): click a name to select (replacing), Ctrl/Shift+click to
-//! toggle it in/out — same pattern as clip and subtitle-cue selection elsewhere. A mini time strip
+//! toggle it in/out - same pattern as clip and subtitle-cue selection elsewhere. A mini time strip
 //! above the list plots every marker as a tick; dragging over empty strip space rubber-bands a time
 //! range (Shift adds to the selection). With 2+ selected, bulk buttons appear: Delete, "Snap to
 //! Nearest Clip" (project markers only, moves `t` to the nearest clip's start) and "Link to Closest
 //! Clip" (converts a project marker into a clip-local one on the nearest clip). Each bulk op is one
 //! undo for the whole batch. Toolbar: "Add at playhead" (M), "Add on selected clip", filter by label,
-//! "Copy as list" (markdown, handy for the AI tools, unscoped — every marker in the project).
+//! "Copy as list" (markdown, handy for the AI tools, unscoped - every marker in the project).
 
 use crate::model::{Id, Project};
 use crate::theme::Palette;
@@ -21,7 +21,7 @@ use crate::ui::{edit_start, timecode};
 use eframe::egui::{self, DragValue, Response, RichText};
 
 /// Small, non-exhaustive set of glyphs relevant to a marker (the full picker lives in Settings ▸
-/// Appearance ▸ Icons if someone wants an exotic one — this is just the quick picks).
+/// Appearance ▸ Icons if someone wants an exotic one - this is just the quick picks).
 const ICON_CHOICES: &[Glyph] = &[
     Glyph::Flag,
     Glyph::Bookmark,
@@ -83,7 +83,7 @@ struct Row {
 }
 
 /// Every marker in timeline order, project markers filtered to the sequence currently being edited
-/// (clip markers are unaffected — they already scope through their clip).
+/// (clip markers are unaffected - they already scope through their clip).
 fn rows(project: &Project, filter: u8) -> Vec<Row> {
     let mut v: Vec<Row> = project
         .markers
@@ -100,7 +100,7 @@ fn rows(project: &Project, filter: u8) -> Vec<Row> {
     v
 }
 
-/// Markdown list of every marker in timeline order (for notes / the AI tools) — every sequence, not
+/// Markdown list of every marker in timeline order (for notes / the AI tools) - every sequence, not
 /// just the one currently open; this is a project-wide export, not the pane's scoped display.
 fn as_markdown(project: &Project, fps: f64) -> String {
     let mut s = String::new();
@@ -121,7 +121,7 @@ fn as_markdown(project: &Project, fps: f64) -> String {
 pub enum MarkerFmt {
     /// `time,duration,name,note,label` with a header row; `import_markers_csv` reads it back.
     Csv,
-    /// `HH:MM:SS Name` per line — paste into a YouTube description. YouTube insists the list starts
+    /// `HH:MM:SS Name` per line - paste into a YouTube description. YouTube insists the list starts
     /// at 00:00:00, so an "Intro" line is prepended when the first marker doesn't.
     YoutubeChapters,
 }
@@ -144,8 +144,8 @@ fn csv_field(s: &str) -> String {
     }
 }
 
-/// Split CSV text into logical records — like `.lines()`, but a `\n`/`\r\n` inside a quoted field
-/// (RFC 4180 allows a literal newline there — `csv_field` emits one for a multi-line note) does not
+/// Split CSV text into logical records - like `.lines()`, but a `\n`/`\r\n` inside a quoted field
+/// (RFC 4180 allows a literal newline there - `csv_field` emits one for a multi-line note) does not
 /// end the record.
 fn csv_records(text: &str) -> Vec<String> {
     let mut out = Vec::new();
@@ -237,7 +237,7 @@ pub fn export_markers(project: &Project, _fps: f64, fmt: MarkerFmt) -> String {
 }
 
 /// Add project markers from `export_markers(Csv)` text (or any `time,name[,note,label]` /
-/// `time,duration,name[,note,label]` CSV — the header row decides which). Returns the count added;
+/// `time,duration,name[,note,label]` CSV - the header row decides which). Returns the count added;
 /// lines whose first field isn't a number (the header, blanks) are skipped.
 pub fn import_markers_csv(project: &mut Project, csv: &str) -> usize {
     let records = csv_records(csv);
@@ -338,7 +338,7 @@ pub fn show(
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut state.filter_label, 0, "All labels");
                 for (i, (name, [r, g, b])) in labels.iter().enumerate() {
-                    // the name is tinted with its own colour — no swatch character needed
+                    // the name is tinted with its own colour - no swatch character needed
                     let t = RichText::new(name.clone()).color(egui::Color32::from_rgb(*r, *g, *b));
                     ui.selectable_value(&mut state.filter_label, i as u8 + 1, t);
                 }
@@ -409,7 +409,7 @@ pub fn show(
     ui.separator();
 
     if rows.is_empty() {
-        ui.weak("No markers — press M to add one at the playhead");
+        ui.weak("No markers - press M to add one at the playhead");
         return out;
     }
 
@@ -467,7 +467,7 @@ pub fn show(
     let mut remove: Option<Id> = None;
     egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         for row in &rows {
-            // ponytail: edit a clone of the one marker and write it back — lets `undo` snapshot the
+            // ponytail: edit a clone of the one marker and write it back - lets `undo` snapshot the
             // untouched project without holding a mutable borrow across the widgets.
             let Some(mut m) = project.marker_mut(row.id).map(|m| m.clone()) else { continue };
             let selected = state.selected.contains(&row.id);
@@ -512,7 +512,7 @@ pub fn show(
                         if name_r.clicked() {
                             select_hit = true;
                             ctrl_toggle = mods.ctrl || mods.shift;
-                            // "when I click on a marker, it should reposition my playhead" — a plain
+                            // "when I click on a marker, it should reposition my playhead" - a plain
                             // click seeks too (Ctrl/Shift keep pure multi-select, Go stays for hover-time)
                             if !ctrl_toggle {
                                 out.seek = Some(m.t + row.offset);
@@ -651,7 +651,7 @@ mod tests {
             self.frame_mod(events, Modifiers::NONE)
         }
         /// `show()` reads the CURRENT modifier state via `ui.input(|i| i.modifiers)` (the RawInput-level
-        /// field), not each event's own `modifiers` — a click event's embedded modifiers alone (as
+        /// field), not each event's own `modifiers` - a click event's embedded modifiers alone (as
         /// `frame` alone would send) is not enough to make Ctrl/Shift-click register.
         fn frame_mod(&mut self, events: Vec<Event>, modifiers: Modifiers) -> MarkersResponse {
             self.time += 0.05;
@@ -777,7 +777,7 @@ mod tests {
         let csv = export_markers(&p, 30.0, MarkerFmt::Csv);
         assert!(csv.starts_with("time,duration,name,note,label\n"), "{csv}");
         // record count, not `.lines()`: one note is a quoted multi-line field, so it spans 2 physical
-        // lines on its own — `.lines()` would overcount, which is exactly the bug `csv_records` fixes
+        // lines on its own - `.lines()` would overcount, which is exactly the bug `csv_records` fixes
         assert_eq!(csv_records(&csv).len(), 4, "{csv}");
         let mut q = Project::new();
         assert_eq!(import_markers_csv(&mut q, &csv), 3);

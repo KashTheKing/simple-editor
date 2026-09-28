@@ -32,7 +32,7 @@ pub struct GpuFrameRequest {
 pub enum FrameSource {
     /// Composite on this thread with `engine::compose` (no GPU-only effects, no node graphs).
     Cpu,
-    /// Decode here, composite on the UI thread's GL context — identical to what the preview shows.
+    /// Decode here, composite on the UI thread's GL context - identical to what the preview shows.
     Gpu(std::sync::mpsc::Sender<GpuFrameRequest>),
 }
 
@@ -67,7 +67,7 @@ pub struct ExportOptions {
     /// Timeline seconds `[a, b)` to render instead of the whole project (the Export window's
     /// "Export In/Out Range" box, `export.queue`'s range_in/range_out). None = everything.
     pub range: Option<(f64, f64)>,
-    /// Append `-af loudnorm` (EBU R128, −14 LUFS / −1 dBTP — what YouTube/Spotify normalise to) when
+    /// Append `-af loudnorm` (EBU R128, −14 LUFS / −1 dBTP - what YouTube/Spotify normalise to) when
     /// the export carries audio.
     pub loudnorm: bool,
     /// Fit-and-pad (pillar/letterbox with black bars) instead of stretching when `out_size`'s aspect
@@ -89,7 +89,7 @@ pub struct ExportPreset {
     pub loudnorm: bool,
 }
 
-/// The 4 shipped tiles — also the serde field default for `Settings.export_presets`, so a
+/// The 4 shipped tiles - also the serde field default for `Settings.export_presets`, so a
 /// settings.json from before this field existed backfills the same tiles a fresh install gets.
 pub fn default_export_presets() -> Vec<ExportPreset> {
     let p = |name: &str, width, height, crf| ExportPreset {
@@ -113,7 +113,7 @@ pub fn default_export_presets() -> Vec<ExportPreset> {
 pub const LOUDNORM: &str = "loudnorm=I=-14:TP=-1:LRA=11";
 
 /// The `-vf` scale chain for an export of `src` px rendered to `out` px: the plain
-/// `scale=W:H:flags=<scaler>` every export used before, or — when `letterbox` and the aspects differ —
+/// `scale=W:H:flags=<scaler>` every export used before, or - when `letterbox` and the aspects differ -
 /// fit inside then pad with black bars so a 16:9 project lands in a 9:16 Shorts frame un-stretched.
 /// Empty when `out == src` (nothing to scale).
 pub fn scale_vf(src: (u32, u32), out: (u32, u32), scaler: &str, letterbox: bool) -> String {
@@ -241,7 +241,7 @@ pub fn eta_from(elapsed: Duration, fraction: f32) -> Option<Duration> {
 pub(crate) const CANCELLED: &str = "cancelled";
 /// Audio mix block (frames). Same as `playback::BLOCK` on purpose: `mixer::resample_add` samples clip
 /// gains at the block ends and lerps between them, so a longer block here would smear fades, volume
-/// keyframes and audio crossfades shorter than the block — export must ramp like playback does.
+/// keyframes and audio crossfades shorter than the block - export must ramp like playback does.
 const MIX_BLOCK: usize = 1024;
 
 /// Start a full (re-encoding) export on a background thread. Frames are rendered at project size
@@ -381,7 +381,7 @@ fn run_export(
                 comp.render(project, t, w, h, &mut pool, &mut tr, &mut frame);
             }
             if pipe.write_all(&frame.rgba).is_err() {
-                break; // ffmpeg died — its stderr tells why
+                break; // ffmpeg died - its stderr tells why
             }
             let end = start + dur;
             prog.set(0.1 + 0.9 * (i + 1) as f32 / n as f32, format!("Encoding {t:.1} / {end:.1} s{gaps}"));
@@ -450,7 +450,7 @@ impl GpuScratch {
 ///
 /// ponytail: export renders on a background thread with the CPU `Compositor`; the GL context lives on
 /// the UI thread, so GPU-only effect kinds and node graphs are skipped. Naming them in the status beats
-/// dropping them silently — replace this with a real GPU render path (`GpuRenderer::render_frame` fed
+/// dropping them silently - replace this with a real GPU render path (`GpuRenderer::render_frame` fed
 /// from the UI thread) and the note goes away.
 fn cpu_gaps(project: &Project) -> String {
     let mut kinds: Vec<&str> = Vec::new();
@@ -477,7 +477,7 @@ fn cpu_gaps(project: &Project) -> String {
     if parts.is_empty() {
         String::new()
     } else {
-        format!(" — not rendered: {}", parts.join(", "))
+        format!(" - not rendered: {}", parts.join(", "))
     }
 }
 
@@ -522,7 +522,7 @@ fn mix_to_wav(
 
 /// 44-byte RIFF/WAVE header: IEEE float 32-bit, stereo, 48 kHz, `frames` sample frames.
 fn wav_header(frames: u64) -> [u8; 44] {
-    // ponytail: sizes saturate at 4 GB (~3 h); ffmpeg reads to EOF anyway — RF64 if that matters
+    // ponytail: sizes saturate at 4 GB (~3 h); ffmpeg reads to EOF anyway - RF64 if that matters
     let data = (frames * 8).min(u32::MAX as u64 - 36) as u32;
     let mut h = [0u8; 44];
     h[0..4].copy_from_slice(b"RIFF");
@@ -556,7 +556,7 @@ impl Drop for TempFile {
 
 /// Hidden sibling of `out` (same folder, same extension so ffmpeg still picks the muxer by name) that
 /// ffmpeg writes into; it is renamed over `out` only on success, so a cancel or failure never truncates
-/// or deletes an existing destination — or the source, when cutting in place.
+/// or deletes an existing destination - or the source, when cutting in place.
 pub(crate) fn temp_output(out: &Path) -> TempFile {
     let stem = out.file_stem().unwrap_or_default().to_string_lossy();
     let ext = out.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
@@ -675,7 +675,7 @@ pub fn lossless_segments(project: &Project) -> Option<Vec<(f64, f64)>> {
 
 /// Lossless cut: `ffmpeg -ss in -t dur -i src -c copy -avoid_negative_ts make_zero` per segment (with
 /// `-map` dropping muted audio streams), then concat demuxer when there is more than one segment.
-/// Cuts land on keyframes (not frame-accurate) — that's the trade for being instant.
+/// Cuts land on keyframes (not frame-accurate) - that's the trade for being instant.
 pub fn start_lossless_cut(project: Project, out_path: PathBuf) -> Arc<Progress> {
     spawn_job("lossless-cut", move |prog| run_lossless(&project, &out_path, prog))
 }
@@ -862,7 +862,7 @@ pub fn quality_percent_from_crf(crf: u32) -> u32 {
     (100.0 - (crf / 51.0) * 100.0).round().clamp(0.0, 100.0) as u32
 }
 
-/// Rough estimated output size in bytes for the export progress/quality UI — NOT a guarantee, since CRF
+/// Rough estimated output size in bytes for the export progress/quality UI - NOT a guarantee, since CRF
 /// targets a quality level, not a bitrate. Video bitrate is extrapolated from a "reasonable quality" x264
 /// ballpark at CRF 23 (0.1 bits/pixel/frame), scaled by the x264 rule of thumb that every 6 CRF steps
 /// roughly halves/doubles bitrate; audio assumes one ~128kbps AAC-ish stereo track.
@@ -1064,7 +1064,7 @@ pub(crate) mod tests {
         let v = codec_args("mkv", "libaom-av1", 26, "medium", &all);
         assert!(has(&v, "-crf", "32"), "av1 midpoint rescales 26 -> 32: {v:?}");
         let v = codec_args("mp4", "h264_qsv", 0, "medium", &all);
-        assert!(has(&v, "-global_quality", "1"), "qsv 0 means unset — floor at 1: {v:?}");
+        assert!(has(&v, "-global_quality", "1"), "qsv 0 means unset - floor at 1: {v:?}");
         let v = codec_args("mp4", "libx264", 18, "medium", &all);
         assert!(has(&v, "-crf", "18"), "x264 passes through untouched: {v:?}");
     }
@@ -1186,7 +1186,7 @@ pub(crate) mod tests {
     #[test]
     fn wav_header_is_readable() {
         if ffpipe::ffprobe_exe().is_none() {
-            eprintln!("ffprobe missing — skipped");
+            eprintln!("ffprobe missing - skipped");
             return;
         }
         let dir = temp_dir("wav");
@@ -1202,7 +1202,7 @@ pub(crate) mod tests {
     #[test]
     fn detect_encoders_has_x264() {
         if ffpipe::ffmpeg_exe().is_none() {
-            eprintln!("ffmpeg missing — skipped");
+            eprintln!("ffmpeg missing - skipped");
             return;
         }
         let e = detect_encoders();
@@ -1215,7 +1215,7 @@ pub(crate) mod tests {
     fn lossless_cut_real() {
         let dir = temp_dir("cut");
         let Some(src) = gen_media(&dir) else {
-            eprintln!("ffmpeg missing — skipped");
+            eprintln!("ffmpeg missing - skipped");
             return;
         };
         let p = cut_project(&src.to_string_lossy());
@@ -1260,7 +1260,7 @@ pub(crate) mod tests {
     fn scaled_export_real() {
         let dir = temp_dir("scaled");
         let Some(src) = gen_media(&dir) else {
-            eprintln!("ffmpeg missing — skipped");
+            eprintln!("ffmpeg missing - skipped");
             return;
         };
         let p = Project::from_media(asset(&src.to_string_lossy(), 2));
@@ -1297,7 +1297,7 @@ pub(crate) mod tests {
     fn full_export_real() {
         let dir = temp_dir("export");
         let Some(src) = gen_media(&dir) else {
-            eprintln!("ffmpeg missing — skipped");
+            eprintln!("ffmpeg missing - skipped");
             return;
         };
         let p = Project::from_media(asset(&src.to_string_lossy(), 2));
@@ -1366,7 +1366,7 @@ pub(crate) mod tests {
 
         let dir = temp_dir("range");
         let Some(src) = gen_media(&dir) else {
-            eprintln!("ffmpeg missing — skipped");
+            eprintln!("ffmpeg missing - skipped");
             return;
         };
         let p = Project::from_media(asset(&src.to_string_lossy(), 2));

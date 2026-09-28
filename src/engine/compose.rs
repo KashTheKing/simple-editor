@@ -1,26 +1,26 @@
 //! Compositor: renders the timeline at time t into an RGBA canvas. Used by preview (small canvas)
-//! and export (project-size canvas) — same output, so preview == export. The one gap left against the
+//! and export (project-size canvas) - same output, so preview == export. The one gap left against the
 //! GL renderer: node graphs (`Clip.graph`) and the GPU-only effect kinds (`effects::gpu_only`) are not
 //! evaluated here; `export::cpu_gaps` names them in the export progress line.
 //!
 //! Layer order: video tracks bottom→top in `project.tracks` order (V1 first, then V2 drawn over it…).
 //! For each active (`project.active(track)`), enabled, visual clip containing t:
 //!   * Video/Image: `pool.video(asset.path).frame_at(clip.src_time(t), dw, dh, ..)` where (dw,dh) is the
-//!     placement size (clamped to native size, min 1) — decoders scale for us.
+//!     placement size (clamped to native size, min 1) - decoders scale for us.
 //!   * Text / Shape: `text.render(style, canvas_w / project.width)` / `shapes.render(style, s, local_t)`
-//!     (already at canvas scale) — contain=false.
+//!     (already at canvas scale) - contain=false.
 //!   * Sequence: the nested timeline is rendered recursively at `clip.src_time(t)` into its own canvas
 //!     (the sequence's size, fit like a video layer), depth ≤ 8.
-//!   * Adjustment: no layer of its own — the effect stack re-runs over the canvas below it.
+//!   * Adjustment: no layer of its own - the effect stack re-runs over the canvas below it.
 //!   * `clip.effects` run in stack order on the decoded layer (Wobble moves the placement instead:
 //!     dx/dy/roll, and yaw/pitch render through a perspective homography). `Effect.mask` limits an
-//!     effect to its shape (layer space); `Clip.mask` limits the whole layer (canvas space) — both
+//!     effect to its shape (layer space); `Clip.mask` limits the whole layer (canvas space) - both
 //!     mirror `shaders.rs::MASK`.
 //!   * Transform the layer into canvas space per `placement()` (sampling per `project.scaler`;
 //!     straight row copies for the common axis-aligned case), then `blend::composite_row` /
 //!     `blend::composite_rect`.
-//! Transitions render both clips of the cut — extended virtually into the window, which is clamped to
-//! the two clips (`trans_window`) so an over-long one cannot hide the rest of the track — and blend per
+//! Transitions render both clips of the cut - extended virtually into the window, which is clamped to
+//! the two clips (`trans_window`) so an over-long one cannot hide the rest of the track - and blend per
 //! kind. Subtitles (`Project::cue_at`) draw last, bottom-centre.
 //! Background is opaque black. Out-of-view layers are skipped.
 
@@ -56,11 +56,11 @@ fn fill_background(out: &mut Frame, bg: BackgroundMode) {
 
 /// Recursion limit for nested sequences.
 const MAX_DEPTH: usize = 8;
-/// Mask polygon vertex cap — same as the GPU's `m_points[64]`.
+/// Mask polygon vertex cap - same as the GPU's `m_points[64]`.
 const MAX_MASK_POINTS: usize = 64;
 
 /// Where a layer lands on a canvas of (cw, ch) pixels: centre, size and rotation (degrees, clockwise).
-/// `yaw`/`pitch` (degrees) tilt the layer about the vertical/horizontal axis (camera shake) — rendered
+/// `yaw`/`pitch` (degrees) tilt the layer about the vertical/horizontal axis (camera shake) - rendered
 /// through a perspective homography with focal length ≈ canvas width; 0 = flat.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Placement {
@@ -232,7 +232,7 @@ impl Compositor {
                 self.sub_key = sk;
             }
             let s = w as f32 / project.width.max(1) as f32;
-            // ---- ws:text-titles ----: t here is the top-level render() timeline time, not clip-local —
+            // ---- ws:text-titles ----: t here is the top-level render() timeline time, not clip-local -
             // subtitles have no clip to be local to, and the burnt-in style has no reveal/wave UI anyway.
             let img = text.render(&self.sub_style, s, t);
             if img.width > 1 || img.height > 1 {
@@ -252,7 +252,7 @@ impl Compositor {
     }
 
     /// Render a track list onto a fresh opaque canvas cleared to `project.preview_bg` (recursion entry
-    /// for nested sequences — a nested sequence's unfilled area takes the same project background, which
+    /// for nested sequences - a nested sequence's unfilled area takes the same project background, which
     /// matches the GPU path since its sequence layers come from this compositor too).
     /// `pw` = the "project width" the tracks' clips are placed against (project or sequence width).
     #[allow(clippy::too_many_arguments)]
@@ -292,7 +292,7 @@ impl Compositor {
     }
 
     /// Blend the two sides of a transition per kind at progress `tr.progress`. Edge transitions have
-    /// one side missing (In: no left, Out: no right): that side is nothing — the black canvas.
+    /// one side missing (In: no left, Out: no right): that side is nothing - the black canvas.
     #[allow(clippy::too_many_arguments)]
     fn render_transition(
         &mut self,
@@ -387,7 +387,7 @@ impl Compositor {
         }
     }
 
-    /// Render one clip's layer onto `out`. Does NOT check `contains` — transitions render clips
+    /// Render one clip's layer onto `out`. Does NOT check `contains` - transitions render clips
     /// virtually extended past their window (source times are clamped to the asset/sequence).
     #[allow(clippy::too_many_arguments)]
     fn render_clip(
@@ -455,7 +455,7 @@ impl Compositor {
                 let Some(asset) = project.asset(clip.asset) else {
                     return;
                 };
-                // native size first, decoder borrow released — the decode below goes through
+                // native size first, decoder borrow released - the decode below goes through
                 // pool.frame_at (the source-frame cache), which needs the pool borrow back
                 let mut native = (asset.width, asset.height);
                 if native.0 == 0 || native.1 == 0 {
@@ -537,7 +537,7 @@ impl Compositor {
                     return;
                 }
                 // render the nested timeline at the placed size (capped at the sequence's own size,
-                // like a decode request) — draw_layer scales the rest
+                // like a decode request) - draw_layer scales the rest
                 let dw = (p.w.round() as u32).clamp(1, qw);
                 let dh = (p.h.round() as u32).clamp(1, qh);
                 let dur = project.sequence_duration(clip.sequence);
@@ -591,7 +591,7 @@ impl Compositor {
         let lt = clip.local(t);
         let s = w as f32 / pw.max(1) as f32;
         let mut p = placement_w(pw, clip, t, native, w, h, false);
-        // a fade also needs the copy path — fade_to writes into the layer, and the cached bitmap is
+        // a fade also needs the copy path - fade_to writes into the layer, and the cached bitmap is
         // shared with the rasteriser's cache
         if effects::effects_for(project, clip).iter().any(|e| e.on_at(lt)) || extra.fade > 0.0 {
             self.src.resize(img.width, img.height);
@@ -691,7 +691,7 @@ fn clip_mask<'a>(
     Some(&cov[..])
 }
 
-/// Rasterise `mask` into `out` (one coverage byte per pixel of a w×h buffer) — the CPU twin of
+/// Rasterise `mask` into `out` (one coverage byte per pixel of a w×h buffer) - the CPU twin of
 /// `shaders.rs::MASK`, so preview and export agree. `scale` = buffer px per project px, `centre` =
 /// the layer centre in buffer px.
 fn mask_coverage(mask: &Mask, w: u32, h: u32, t: f64, scale: f32, centre: (f32, f32), out: &mut Vec<u8>) {
@@ -725,7 +725,7 @@ fn mask_coverage(mask: &Mask, w: u32, h: u32, t: f64, scale: f32, centre: (f32, 
     let margin = feather + expand.max(0.0) + 1.0;
     let (bx, by) = if mask.shape == MaskShape::Ellipse {
         // the ellipse SDF is scaled by its smaller radius, so its soft edge reaches further out
-        // along the longer axis — grow the box proportionally instead of by a flat margin
+        // along the longer axis - grow the box proportionally instead of by a flat margin
         let k = 1.0 + margin / r.0.min(r.1).max(1e-4);
         (bx * k, by * k)
     } else {
@@ -813,7 +813,7 @@ fn fade_to(img: &mut Frame, color: [u8; 4], f: f32) {
     }
 }
 
-/// Sample `src` at (sx, sy) — already clamped to [0, sw-1]/[0, sh-1] — returning straight RGBA
+/// Sample `src` at (sx, sy) - already clamped to [0, sw-1]/[0, sh-1] - returning straight RGBA
 /// (r, g, b in 0..255, a in 0..255).
 #[inline]
 fn sample(src: &Frame, sx: f32, sy: f32, scaler: Scaler) -> [f32; 4] {
@@ -935,7 +935,7 @@ fn draw_layer_masked(
     let (cw, ch) = (dst.width as i64, dst.height as i64);
     let (sw, sh) = (src.width as i64, src.height as i64);
 
-    // (a) axis-aligned, 1:1 — composite src rows straight onto the canvas at an integer offset.
+    // (a) axis-aligned, 1:1 - composite src rows straight onto the canvas at an integer offset.
     if mask.is_none() && p.rot == 0.0 && (p.w - sw as f32).abs() < 0.5 && (p.h - sh as f32).abs() < 0.5 {
         let ox = (p.cx - sw as f32 / 2.0).round() as i64;
         let oy = (p.cy - sh as f32 / 2.0).round() as i64;
@@ -1033,7 +1033,7 @@ fn draw_layer_perspective(
         let z2 = y * sp + z1 * cp;
         let d = f + z2;
         if d < f * 0.05 {
-            return; // corner (nearly) behind the camera — skip the layer
+            return; // corner (nearly) behind the camera - skip the layer
         }
         let px = f * x1 / d;
         let py = f * y2 / d;
@@ -1319,7 +1319,7 @@ mod tests {
         }
     }
 
-    /// The CPU compositor honours `Project::preview_bg` — it used to hardcode black, so the GPU
+    /// The CPU compositor honours `Project::preview_bg` - it used to hardcode black, so the GPU
     /// preview and every CPU-rendered frame (Export window, fallbacks, nested-sequence layers)
     /// disagreed the moment the background was changed.
     #[test]

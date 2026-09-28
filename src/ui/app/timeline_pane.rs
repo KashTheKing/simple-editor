@@ -1,7 +1,7 @@
 use super::*;
 
 // ws:pro-timeline: the in-widget sequence tab strip (timeline::show(), painted above its own ruler)
-// now carries the Main/<sequence name> breadcrumb this file used to draw externally — removed here
+// now carries the Main/<sequence name> breadcrumb this file used to draw externally - removed here
 // rather than kept alongside a near-duplicate (delete before add; see the PR body).
 
 pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
@@ -75,7 +75,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
             [] => library.selected,
             _ => None,
         };
-        // labelled like `App::push_undo_labeled` (which needs `&mut self` — the fields are split here)
+        // labelled like `App::push_undo_labeled` (which needs `&mut self` - the fields are split here)
         let mut push = |p: &Project, label: &'static str| {
             push_undo_json(undo, redo, p.to_json());
             if !label.is_empty() {
@@ -113,7 +113,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
         )
     };
     // ws:source-monitor: any press on the timeline (a clip select as much as a seek) means "the
-    // timeline is the transport now" — Space/JKL/I/O come back here from the Source monitor
+    // timeline is the transport now" - Space/JKL/I/O come back here from the Source monitor
     // (was: drop the library preview on seek).
     if resp.seeked || source_pane::pressed_in(ui) {
         app.source_focus = false;

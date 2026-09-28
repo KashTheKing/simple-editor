@@ -1,4 +1,4 @@
-//! The MCP tool catalogue — the single source of truth for tool names/arguments. `mcp/mod.rs` serves it
+//! The MCP tool catalogue - the single source of truth for tool names/arguments. `mcp/mod.rs` serves it
 //! (`tools/list` with JSON schemas built from `ARGS`); `ui::app::App` executes calls by `name` with exactly
 //! these arguments (unknown tool → error "unknown tool"). Keep both in sync with this table.
 //!
@@ -9,14 +9,14 @@
 //! ---- ws:registries-schema-hooks ----
 //! Wave-0b: the old 64-row `(name, desc, args)` tuple + the hand-kept `run_tool` match + the old
 //! hand-kept mutating-tool name list are replaced by one `ToolDef` per tool (each still living next to its handler in a `ui::app::tools_*`
-//! module) flattened here through `crate::ui::app::TOOL_TABLES` — see the registry protocol in
+//! module) flattened here through `crate::ui::app::TOOL_TABLES` - see the registry protocol in
 //! `plans/ui-overhaul/README.md`. `all()`/`find()`/`list_json()` below are now generic over that
 //! registry instead of one local array, so `tools/list` and `editor.tools()` need no change when a
 //! later workstream adds its own `tools_<ws>.rs` file and registers it in `TOOL_TABLES`.
 
 use serde_json::{json, Value};
 
-/// What a mutating call does to the undo stack — replaces the old hand-kept mutating-tool name list.
+/// What a mutating call does to the undo stack - replaces the old hand-kept mutating-tool name list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ToolKind {
     /// Reads state; never pushes undo.
@@ -24,14 +24,14 @@ pub enum ToolKind {
     /// Edits the project; the caller snapshots before and pushes undo iff the JSON actually changed.
     Mutate,
     /// Starts a background job (export/convert) and replies when it finishes; never pushes undo here
-    /// (the job's own edits, if any, are none — these tools write a file, not the project).
+    /// (the job's own edits, if any, are none - these tools write a file, not the project).
     Job,
     /// UI-only state (selection, dispatching an Action); never touches the project, never undoes.
     Ui,
 }
 
 /// What a tool's `run` fn returns: either the JSON reply directly, or a background job whose reply is
-/// sent later (the caller polls `Progress` and replies on completion — see `App::handle_tool`).
+/// sent later (the caller polls `Progress` and replies on completion - see `App::handle_tool`).
 pub enum ToolOutcome {
     Done(Value),
     Job(std::sync::Arc<crate::engine::export::Progress>, std::path::PathBuf),
@@ -81,7 +81,7 @@ pub fn input_schema(args: &[&str]) -> Value {
     json!({"type": "object", "properties": props, "required": required})
 }
 
-/// Every effect kind the `clip.add_effect` handler accepts — listed from the model, because a
+/// Every effect kind the `clip.add_effect` handler accepts - listed from the model, because a
 /// hand-written list in the catalogue goes stale the moment an effect is added.
 fn effect_kinds() -> String {
     crate::model::EffectKind::ALL.iter().map(|k| k.name()).collect::<Vec<_>>().join(", ")
@@ -136,7 +136,7 @@ mod tests {
         assert_eq!(list_json().as_array().unwrap().len(), all().count());
     }
 
-    /// Tool names are unique and every one is namespaced ("prefix.verb") — a later workstream adding a
+    /// Tool names are unique and every one is namespaced ("prefix.verb") - a later workstream adding a
     /// duplicate/unnamespaced row is a build failure, not a runtime surprise.
     #[test]
     fn tool_names_unique_and_namespaced() {

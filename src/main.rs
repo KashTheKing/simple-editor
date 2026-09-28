@@ -1,4 +1,4 @@
-//! Simple Editor — a tiny, fast video trimmer/editor for Windows.
+//! Simple Editor - a tiny, fast video trimmer/editor for Windows.
 //! `simple-editor [file]`   open a video/project
 //! `simple-editor --selftest [dir]`   headless engine check
 //! `simple-editor [file] --screenshot out.ppm`   render the UI once and save it (for visual checks)
@@ -46,7 +46,7 @@ fn main() {
         i += 1;
     }
 
-    // read once to seed the viewport; App::new does its own (cheap) re-read of the same file — not
+    // read once to seed the viewport; App::new does its own (cheap) re-read of the same file - not
     // worth threading a loaded Settings through eframe's boxed FnOnce for this one field.
     let window_rect = settings::Settings::load().window_rect;
     let viewport = winpos::apply_rect(
@@ -54,7 +54,7 @@ fn main() {
             .with_title("Simple Editor")
             .with_app_id("SimpleEditor")
             .with_inner_size([1400.0, 860.0])
-            // hidden until the first frame is painted (App::update shows it) — otherwise the OS
+            // hidden until the first frame is painted (App::update shows it) - otherwise the OS
             // flashes a blank white window at the restored position before we move/paint it
             .with_visible(false)
             .with_min_inner_size([900.0, 560.0]),
@@ -62,7 +62,7 @@ fn main() {
     );
     let options = eframe::NativeOptions {
         viewport,
-        // inert either way now that eframe's "persistence" feature is gone — false for clarity, so
+        // inert either way now that eframe's "persistence" feature is gone - false for clarity, so
         // this field doesn't read as a live knob it no longer is.
         persist_window: false,
         ..Default::default()

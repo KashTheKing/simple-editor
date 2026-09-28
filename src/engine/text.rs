@@ -16,7 +16,7 @@ use fontdb::{Database, Family, Query, Style, Weight, ID};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Largest rendered text image side — keeps silly sizes from allocating gigabytes.
+/// Largest rendered text image side - keeps silly sizes from allocating gigabytes.
 const MAX_SIDE: u32 = 8192;
 /// Reveal/wave time quantisation for the cache (mirrors engine::shapes::REVEAL_HZ).
 const REVEAL_HZ: f64 = 30.0;
@@ -25,10 +25,10 @@ const WAVE_HZ: f64 = 2.0;
 const WAVE_PHASE: f64 = 0.5;
 
 /// Cache-key time quantizer, mirroring `engine::shapes::reveal_bucket`. Returns a constant `0` when
-/// neither `reveal` nor `wave` can change the rendered pixels over time (the common, non-animated case —
+/// neither `reveal` nor `wave` can change the rendered pixels over time (the common, non-animated case -
 /// the cache behaves exactly as it did before this field existed), otherwise a bounded Hz-quantized
-/// bucket. `wave` is time-dependent even with a plain (non-keyframed) nonzero `value` — the oscillation
-/// itself is `sin(t * WAVE_HZ + …)` in `rasterize`, not something `Animated::at` captures — so `wave` is
+/// bucket. `wave` is time-dependent even with a plain (non-keyframed) nonzero `value` - the oscillation
+/// itself is `sin(t * WAVE_HZ + …)` in `rasterize`, not something `Animated::at` captures - so `wave` is
 /// "static" only when its value is exactly 0, unlike `reveal` (whose non-animated value is a genuine
 /// constant across every `t`).
 fn reveal_bucket(style: &TextStyle, t: f64) -> u32 {
@@ -85,7 +85,7 @@ impl TextRasterizer {
             if self.user_fonts.iter().any(|q| q == p) {
                 continue;
             }
-            // ponytail: failed paths are remembered and never retried — restart to retry
+            // ponytail: failed paths are remembered and never retried - restart to retry
             self.user_fonts.push(p.clone());
             if self.db.load_font_file(p).is_ok() {
                 added = true;
@@ -121,7 +121,7 @@ impl TextRasterizer {
         self.load_system_fonts();
         let frame = Arc::new(self.rasterize(style, scale, t).unwrap_or_else(|| Frame::new(1, 1)));
         if self.cache.len() >= 64 {
-            // ponytail: drop-all cache — LRU if text-heavy projects thrash
+            // ponytail: drop-all cache - LRU if text-heavy projects thrash
             self.cache.clear();
         }
         self.cache.insert(key, frame.clone());
@@ -172,9 +172,9 @@ impl TextRasterizer {
         let wv = style.wave.at(t) as f32;
 
         // Spans that change glyph SHAPE (font/size/bold/italic), resolved once per span rather than
-        // per char — a text clip has a handful of spans, not hundreds.
+        // per char - a text clip has a handful of spans, not hundreds.
         // ponytail: layout below still advances the cursor using the BASE font's metrics for every
-        // char, even one covered by a shape-changing span — mixing genuinely different advance widths
+        // char, even one covered by a shape-changing span - mixing genuinely different advance widths
         // into the existing single-pass line layout (kerning, line height, alignment) is a real rewrite
         // of this function, not a proportionate one for how far the mouse-selects-a-word feature reaches.
         // A span's glyph is outlined with its own font/size and drawn at the position the base layout
@@ -322,7 +322,7 @@ impl TextRasterizer {
         let has_box = style.box_color[3] > 0;
         let pad = if has_box { style.box_padding.max(0.0) * scale } else { 0.0 };
         let m = (r + shx.abs().max(shy.abs()) + blur * 2.0).max(pad).ceil() as i32 + 1;
-        // ponytail: hard cap on the image size — bigger text just gets clipped
+        // ponytail: hard cap on the image size - bigger text just gets clipped
         let w = ((bx1 - bx0).ceil() as i32 + 2 * m).clamp(1, MAX_SIDE as i32) as u32;
         let h = ((by1 - by0).ceil() as i32 + 2 * m).clamp(1, MAX_SIDE as i32) as u32;
         let (ox, oy) = (m as f32 - bx0, m as f32 - by0);
@@ -533,7 +533,7 @@ mod tests {
         f.rgba.chunks_exact(4).map(|p| p[3] as u64).sum()
     }
 
-    /// A style with wide, left-aligned text so 10 distinct glyphs land at 10 distinct char indices —
+    /// A style with wide, left-aligned text so 10 distinct glyphs land at 10 distinct char indices -
     /// shared fixture for the reveal/wave tests below.
     fn ten_char_style() -> TextStyle {
         let mut s = TextStyle::default();
@@ -549,7 +549,7 @@ mod tests {
         let style = TextStyle::default();
         let a = tr.render(&style, 0.5, 0.0);
         if tr.families().is_empty() {
-            eprintln!("no system fonts — skipping");
+            eprintln!("no system fonts - skipping");
             assert_eq!((a.width, a.height), (1, 1));
             return;
         }
@@ -592,7 +592,7 @@ mod tests {
     /// existed loads as (`#[serde(default)]`), so it must render byte-identical to how this file
     /// rendered before spans existed. `TextStyle::default()` already has `spans: vec![]` and is
     /// exactly what `renders_default_style_and_caches` above pins (dimensions grow with scale, white
-    /// fill, outline/shadow/box growth, multi-line height) — this test adds the direct check: pushing
+    /// fill, outline/shadow/box growth, multi-line height) - this test adds the direct check: pushing
     /// a span onto a style and then clearing it back to empty must not perturb the cache key or a
     /// single output byte, proving the new span bookkeeping is a true no-op when spans is empty.
     #[test]
@@ -600,7 +600,7 @@ mod tests {
         let mut tr = TextRasterizer::new();
         let base = TextStyle::default();
         if tr.families().is_empty() {
-            eprintln!("no system fonts — skipping");
+            eprintln!("no system fonts - skipping");
             return;
         }
         let a = tr.render(&base, 0.6, 0.0);
@@ -615,13 +615,13 @@ mod tests {
     }
 
     /// A span with an out-of-range / inverted / zero-width char range covers no character, so it must
-    /// render identically to having no span at all — and must never panic (no unwrap on span data).
+    /// render identically to having no span at all - and must never panic (no unwrap on span data).
     #[test]
     fn spans_out_of_range_are_ignored_gracefully() {
         let mut tr = TextRasterizer::new();
-        let base = TextStyle::default(); // text: "Text" — 4 chars
+        let base = TextStyle::default(); // text: "Text" - 4 chars
         if tr.families().is_empty() {
-            eprintln!("no system fonts — skipping");
+            eprintln!("no system fonts - skipping");
             return;
         }
         let a = tr.render(&base, 0.6, 0.0);
@@ -638,7 +638,7 @@ mod tests {
     }
 
     /// A span covering part of the text renders visibly different pixels in that range (here: color),
-    /// while the base render stays the baseline — this is the actual per-run override feature.
+    /// while the base render stays the baseline - this is the actual per-run override feature.
     #[test]
     fn span_color_override_is_visible_only_in_its_range() {
         let mut tr = TextRasterizer::new();
@@ -646,7 +646,7 @@ mod tests {
         style.text = "Hello World".into();
         style.align = 0;
         if tr.families().is_empty() {
-            eprintln!("no system fonts — skipping");
+            eprintln!("no system fonts - skipping");
             return;
         }
         let baseline = tr.render(&style, 1.0, 0.0);
@@ -679,7 +679,7 @@ mod tests {
     fn user_font_load_is_idempotent_and_listed() {
         let src = std::path::Path::new("C:\\Windows\\Fonts\\arial.ttf");
         if !src.exists() {
-            eprintln!("no arial.ttf — skipping");
+            eprintln!("no arial.ttf - skipping");
             return;
         }
         let dst = std::env::temp_dir().join(format!("se-userfont-{}.ttf", std::process::id()));
@@ -692,7 +692,7 @@ mod tests {
         tr.load_user_fonts(&paths); // idempotent
         assert_eq!(tr.families().len(), n);
         // renders with the user family (before system fonts are scanned the db has only this file,
-        // but render() also pulls in system fonts — either way it must not panic and must cover pixels)
+        // but render() also pulls in system fonts - either way it must not panic and must cover pixels)
         let mut style = TextStyle::default();
         style.font = "Arial".into();
         assert!(alpha_sum(&tr.render(&style, 0.5, 0.0)) > 0);
@@ -777,7 +777,7 @@ mod tests {
         let mut tr = TextRasterizer::new();
         tr.load_system_fonts();
         if tr.families().is_empty() {
-            eprintln!("no system fonts — skipping");
+            eprintln!("no system fonts - skipping");
             return;
         }
         let style = ten_char_style();
@@ -792,7 +792,7 @@ mod tests {
         let mut tr = TextRasterizer::new();
         tr.load_system_fonts();
         if tr.families().is_empty() {
-            eprintln!("no system fonts — skipping");
+            eprintln!("no system fonts - skipping");
             return;
         }
         let mut style = ten_char_style();
@@ -823,7 +823,7 @@ mod tests {
         let mut tr = TextRasterizer::new();
         tr.load_system_fonts();
         if tr.families().is_empty() {
-            eprintln!("no system fonts — skipping");
+            eprintln!("no system fonts - skipping");
             return;
         }
         let mut style = ten_char_style();
@@ -840,14 +840,14 @@ mod tests {
         let mut tr = TextRasterizer::new();
         tr.load_system_fonts();
         if tr.families().is_empty() {
-            eprintln!("no system fonts — skipping");
+            eprintln!("no system fonts - skipping");
             return;
         }
         let mut style = ten_char_style();
         let flat = tr.rasterize(&style, 1.0, 0.3).expect("renders");
         style.wave = Animated::new(20.0);
         let waved = tr.rasterize(&style, 1.0, 0.3).expect("renders");
-        // same glyph "ink" (alpha mass), just moved — not clipped away — so the two frames differ but
+        // same glyph "ink" (alpha mass), just moved - not clipped away - so the two frames differ but
         // carry a comparable amount of coverage (loosely: within 15%, allowing for edge clipping).
         let (fa, wa) = (alpha_sum(&flat) as f64, alpha_sum(&waved) as f64);
         assert!(wa > 0.0);

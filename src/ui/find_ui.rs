@@ -1,7 +1,7 @@
 //! ---- ws:pro-timeline ----
 //! Ctrl+F Find: substring search over clip names, marker names/notes, subtitle cues and sequence
 //! names. `find()`/`jump_for()` are pure (no `App`), so they're unit-testable; the actual WINDOW_DRAWER
-//! (`App`-shaped, `fn(&mut App, &egui::Context)`) lives in `ui::app::tools_timeline_pro::window` — this
+//! (`App`-shaped, `fn(&mut App, &egui::Context)`) lives in `ui::app::tools_timeline_pro::window` - this
 //! module is a SIBLING of `ui::app` (like `ui::confirm`, `ui::timeline`), so it cannot reach `App`'s
 //! private `playhead`/`player`/`selection`/`layout` fields the way a child module of `ui::app` can (see
 //! the PR body: a deviation from the plan's own "WINDOW_DRAWERS (find_ui::window)" phrasing).
@@ -27,7 +27,7 @@ pub struct Hit {
 }
 
 /// Case-insensitive substring search across clip names, marker names/notes, subtitle cues and sequence
-/// names. Clips/markers/cues are the CURRENT scope only (`Project.tracks` — the main timeline, or
+/// names. Clips/markers/cues are the CURRENT scope only (`Project.tracks` - the main timeline, or
 /// whichever sequence is open via `Project.editing`/the swap in `open_sequence`).
 /// ponytail: a clip buried in an unopened sequence isn't found by name (open that sequence first);
 /// sequences themselves are always searched by name so Find can at least locate them.
@@ -61,9 +61,9 @@ pub fn find(p: &Project, q: &str) -> Vec<Hit> {
 }
 
 /// Where a chosen `Hit` sends the editor: playhead time, the pane to surface, and what to select.
-/// `select` is `None` for a Sequence hit — it isn't "selected", it's opened. `kind` carries the hit's
-/// `HitKind` through so the `App`-touching caller (which owns the several DIFFERENT selection fields —
-/// clip vs. marker vs. cue — this module can't see) knows which one `select`'s id belongs to.
+/// `select` is `None` for a Sequence hit - it isn't "selected", it's opened. `kind` carries the hit's
+/// `HitKind` through so the `App`-touching caller (which owns the several DIFFERENT selection fields -
+/// clip vs. marker vs. cue - this module can't see) knows which one `select`'s id belongs to.
 pub struct Jump {
     pub t: f64,
     pub pane: Option<Pane>,
@@ -76,7 +76,7 @@ pub fn jump_for(hit: &Hit) -> Jump {
         HitKind::Clip => Jump { t: hit.t, pane: Some(Pane::Timeline), select: Some(hit.id), kind: hit.kind },
         HitKind::Marker => Jump { t: hit.t, pane: Some(Pane::Timeline), select: Some(hit.id), kind: hit.kind },
         HitKind::Cue => Jump { t: hit.t, pane: Some(Pane::Subtitles), select: Some(hit.id), kind: hit.kind },
-        // ponytail: sequences live in the Library, not on the timeline — reveal there rather than
+        // ponytail: sequences live in the Library, not on the timeline - reveal there rather than
         // opening it outright (opening changes the edit context, a bigger action than a Find jump).
         HitKind::Sequence => Jump { t: 0.0, pane: Some(Pane::Library), select: None, kind: hit.kind },
     }

@@ -11,7 +11,7 @@ use crate::ui::source_ui::{self, SourceCtx, SourceState, Tape};
 /// stores, so callers without one (library click, Match Frame, the `source.*` MCP tools) park the
 /// request here and the next frame's hook fulfils it.
 pub(super) enum Pending {
-    /// `id` is the resolved library asset (when known) — carried through so `source_open_now` can
+    /// `id` is the resolved library asset (when known) - carried through so `source_open_now` can
     /// look it up by id instead of by path alone, which always finds the FIRST asset row with that
     /// path (the parent, when the real target is a subclip sharing the parent's path).
     File {
@@ -30,9 +30,9 @@ impl App {
     }
 
     /// Load `path` into the Source monitor next frame (and seek to `seek` seconds once open). Takes
-    /// transport focus, so Space/JKL/I/O drive it — the same "you just picked a clip to look at" rule
-    /// the old library preview had — and surfaces the pane unless that would hide the Library. No
-    /// known asset id (e.g. drag-and-drop from outside the project) — `open_asset_in_source` carries
+    /// transport focus, so Space/JKL/I/O drive it - the same "you just picked a clip to look at" rule
+    /// the old library preview had - and surfaces the pane unless that would hide the Library. No
+    /// known asset id (e.g. drag-and-drop from outside the project) - `open_asset_in_source` carries
     /// one when the caller has it.
     pub(crate) fn open_in_source(&mut self, path: PathBuf, seek: Option<f64>) {
         self.queue_source_open(path, seek, None);
@@ -61,9 +61,9 @@ impl App {
         self.source_focus = false;
     }
 
-    /// Reveal `Pane::Source` — except when it is tab-stacked in the Library's own group (the Simple /
+    /// Reveal `Pane::Source` - except when it is tab-stacked in the Library's own group (the Simple /
     /// Fast-cut presets), where surfacing it would hide the very list the user is clicking in.
-    /// ponytail: a same-tab-group check, not a general pin/auto-surface policy — layout-modes-
+    /// ponytail: a same-tab-group check, not a general pin/auto-surface policy - layout-modes-
     /// onboarding's `reveal_auto` (pin-aware) is the upgrade path once it lands.
     fn surface_source(&mut self) {
         let tiles = &self.layout.tree.tiles;
@@ -76,7 +76,7 @@ impl App {
         }
     }
 
-    /// Open `path` now (needs `ctx` for the Player). Re-opening the current file only seeks — unless
+    /// Open `path` now (needs `ctx` for the Player). Re-opening the current file only seeks - unless
     /// `id` names a different asset than what's already open (a subclip shares its parent's `path`,
     /// so a path-only match would wrongly treat opening one after the other as "already open").
     /// Pauses the timeline: previewing a source and the program monitor should not both be making
@@ -94,9 +94,9 @@ impl App {
             return;
         }
         // an asset the project already knows carries its probed duration; anything else (a Global/
-        // Recent file never imported) is probed on the spot — one ffprobe call for metadata only.
+        // Recent file never imported) is probed on the spot - one ffprobe call for metadata only.
         // `id` (when known) wins over the path match, which always finds the FIRST asset row with
-        // that path — the parent, when the real target is a subclip (see `asset_for_source`).
+        // that path - the parent, when the real target is a subclip (see `asset_for_source`).
         let path_s = path.to_string_lossy().into_owned();
         let (asset, id) = match self.project.asset_for_source(id, &path_s) {
             Some(a) => (a.clone(), Some(a.id)),
@@ -141,7 +141,7 @@ impl App {
 
     /// Tape order when none is given: the library's multi-selection, else every media asset.
     /// ponytail: the library's search/kind filter isn't readable from here (its filter helpers are
-    /// private to library.rs, media-library's file this wave) — the same-day library.rs follow-up
+    /// private to library.rs, media-library's file this wave) - the same-day library.rs follow-up
     /// exposes the filtered order; until then "selection, else everything" is the bin.
     fn tape_default_ids(&self) -> Vec<Id> {
         let sel: Vec<Id> =
@@ -188,7 +188,7 @@ impl App {
     }
 }
 
-/// A primary press landed inside this pane's rect this frame — the transport-focus rule's trigger
+/// A primary press landed inside this pane's rect this frame - the transport-focus rule's trigger
 /// (last-clicked transport wins; a press on the Preview or Timeline pane hands focus back there).
 pub(super) fn pressed_in(ui: &egui::Ui) -> bool {
     ui.input(|i| i.pointer.primary_pressed()) && ui.rect_contains_pointer(ui.max_rect())
@@ -228,7 +228,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
         return false;
     }
     if app.source.is_none() {
-        ui.weak("Click a clip in the Library to open it here — or press F on a timeline clip (Match Frame).");
+        ui.weak("Click a clip in the Library to open it here - or press F on a timeline clip (Match Frame).");
         return true;
     }
     let smart = source_ctl::smart_indicator(

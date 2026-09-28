@@ -1,5 +1,5 @@
 //! Auto-cut: find "loud" segments (speech) vs "quiet" ones (ambient) in an audio clip from its waveform
-//! peaks (media::waveform::Peaks, 100 buckets/s) — no extra decoding. Pure functions, unit-tested.
+//! peaks (media::waveform::Peaks, 100 buckets/s) - no extra decoding. Pure functions, unit-tested.
 
 use crate::media::waveform::{Peaks, PEAKS_PER_SEC};
 

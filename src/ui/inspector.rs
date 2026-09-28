@@ -2,10 +2,10 @@
 //! Export Frame buttons, export settings summary). One or more clips selected →
 //! clip name, enabled, colour label, timing (start / duration / source in), retime readout (Ctrl+R), and:
 //!  * multi-selection: Enabled, Label, transform/opacity (or volume/pan), fades and Blend edit every
-//!    selected clip at once (absolute overwrite of whatever changed, diff-against-original — mirrors
+//!    selected clip at once (absolute overwrite of whatever changed, diff-against-original - mirrors
 //!    `transition_section`'s bulk-edit rule); everything else in this file (Name included) is disabled
 //!    and needs a single-clip selection.
-//!  * visual clips: Position X/Y, Scale, Rotation (DragValue), Opacity (0-100% slider) — each row + a
+//!  * visual clips: Position X/Y, Scale, Rotation (DragValue), Opacity (0-100% slider) - each row + a
 //!    diamond keyframe toggle (`Animated::toggle_key(clip.local(playhead))`, highlighted when a key exists at the
 //!    playhead) + "clear keys"; edits go through `Animated::set_at(local_t, v)` so keyframed props get
 //!    keys; Blend mode combo.
@@ -18,7 +18,7 @@
 //!    outline width, drop shadow on/off + x/y/blur, alignment, line/letter spacing, box padding.
 //!  * sequence clips: the sequence's name + "Open sequence" (handed to the app via `take_open_sequence`).
 //!  * round 3: the clip's label from `Project.labels` (plus a compact "Edit labels…" editor), its mask
-//!    (shape, position, radius, rotation, feather, expand, opacity, invert, "Edit in viewport" — the same
+//!    (shape, position, radius, rotation, feather, expand, opacity, invert, "Edit in viewport" - the same
 //!    grid the Effects panel shows under a per-effect mask), "Open node editor", the shape style
 //!    of Shape clips (kind, fill/stroke, width, sides, corner, draw rate, page), clip markers (add /
 //!    remove), an audio bus override, and a note on Adjustment clips.
@@ -51,7 +51,7 @@ thread_local! {
     static EDIT_MASK: RefCell<Option<Id>> = const { RefCell::new(None) };
     static OPEN_NODES: RefCell<Option<Id>> = const { RefCell::new(None) };
     static UNLINK_NODES: RefCell<Option<Id>> = const { RefCell::new(None) };
-    /// Project-panel button (Save / Export… / Export Frame… / edit export settings) — the app runs it
+    /// Project-panel button (Save / Export… / Export Frame… / edit export settings) - the app runs it
     /// through the same Action dispatch the menus use.
     static PENDING_ACTION: RefCell<Option<Action>> = const { RefCell::new(None) };
 }
@@ -61,12 +61,12 @@ pub fn take_unlink_nodes() -> Option<Id> {
     UNLINK_NODES.with(|p| p.borrow_mut().take())
 }
 
-/// Ask for it from elsewhere — the effects panel offers the same escape hatch.
+/// Ask for it from elsewhere - the effects panel offers the same escape hatch.
 pub fn ask_unlink_nodes(id: Id) {
     UNLINK_NODES.with(|p| *p.borrow_mut() = Some(id));
 }
 
-/// Clip whose mask the user wants to draw in the viewport ("Edit in viewport") — the app switches the
+/// Clip whose mask the user wants to draw in the viewport ("Edit in viewport") - the app switches the
 /// active tool to a mask tool and points the preview at this clip.
 pub fn take_edit_mask() -> Option<Id> {
     EDIT_MASK.with(|p| p.borrow_mut().take())
@@ -77,7 +77,7 @@ pub fn take_open_nodes() -> Option<Id> {
     OPEN_NODES.with(|p| p.borrow_mut().take())
 }
 
-/// Font file (.ttf/.otf) the user picked with "Import font…" — the app adds it to settings.user_fonts
+/// Font file (.ttf/.otf) the user picked with "Import font…" - the app adds it to settings.user_fonts
 /// and reloads the text rasterizer.
 pub fn take_pending_font_import() -> Option<String> {
     PENDING_FONT.with(|p| p.borrow_mut().take())
@@ -100,7 +100,7 @@ pub fn take_open_sequence() -> Option<Id> {
     OPEN_SEQUENCE.with(|p| p.borrow_mut().take())
 }
 
-/// Action a project-panel button asked to run (Save / Export… / Export Frame…) — the app pushes it
+/// Action a project-panel button asked to run (Save / Export… / Export Frame…) - the app pushes it
 /// through the same `Action` dispatch the menus and hotkeys use.
 pub fn take_pending_action() -> Option<Action> {
     PENDING_ACTION.with(|p| p.borrow_mut().take())
@@ -111,18 +111,18 @@ thread_local! {
     /// Asset the user asked to jump to via the collapsed Asset block's "Open in Library" link.
     static OPEN_ASSET: RefCell<Option<Id>> = const { RefCell::new(None) };
     /// Color section "Auto Colour" click: needs a live GPU-rendered frame (`FrameStats`), which only
-    /// `App` can produce — `App::poll_panels` drains this into `run_tool_undoable("color.auto", …)`.
+    /// `App` can produce - `App::poll_panels` drains this into `run_tool_undoable("color.auto", …)`.
     static PENDING_COLOR_AUTO: RefCell<Option<Id>> = const { RefCell::new(None) };
-    /// Color section "Match" click: (clip, reference clip) — same App-only reason as above.
+    /// Color section "Match" click: (clip, reference clip) - same App-only reason as above.
     static PENDING_COLOR_MATCH: RefCell<Option<(Id, Id)>> = const { RefCell::new(None) };
     /// Color section "Eyedropper" click. ponytail: armed here, but nothing samples a pixel from it yet
-    /// (that needs a canvas click handler in `preview.rs`, owned by canvas-handles-monitor) —
+    /// (that needs a canvas click handler in `preview.rs`, owned by canvas-handles-monitor) -
     /// `App::poll_panels` still drains it and toasts an honest "not wired yet".
     static PENDING_EYEDROP: RefCell<Option<Id>> = const { RefCell::new(None) };
 }
 
 /// Asset the user asked to open in the Library pane (its own asset-details box is the only place
-/// description/tags/label/folder are edited today — see `library.rs`'s doc comment).
+/// description/tags/label/folder are edited today - see `library.rs`'s doc comment).
 pub fn take_open_asset() -> Option<Id> {
     OPEN_ASSET.with(|p| p.borrow_mut().take())
 }
@@ -141,7 +141,7 @@ pub fn take_pending_eyedrop() -> Option<Id> {
 
 /// A collapsible inspector block: `CollapsingState` keyed by `id` (stable across a clip/effect/kind
 /// change, so `Settings.inspector_folds` remembers "Effects is open" independent of which clip is
-/// selected), `default_open` used only the first time `id` is ever seen (no `folds` entry yet — after
+/// selected), `default_open` used only the first time `id` is ever seen (no `folds` entry yet - after
 /// that, the user's own last choice always wins over `default_open`, even across a restart, since
 /// `folds` mirrors straight into `Settings.inspector_folds`). `header` draws extra header-row content
 /// (buttons, a summary label) after `title`; `body` draws the section's contents when expanded.
@@ -296,7 +296,7 @@ fn project_section(
 ) -> bool {
     let mut edited = false;
     // resolution before any of this frame's Width/Height/preset/quality-tier/template widgets can
-    // touch it — diffed at the bottom to offer the rescale prompt once, regardless of which control
+    // touch it - diffed at the bottom to offer the rescale prompt once, regardless of which control
     // changed it.
     let size_before = (project.width, project.height);
     ui.strong("Project");
@@ -515,7 +515,7 @@ fn project_section(
         settings.export_resolution.clone()
     };
     ui.horizontal_wrapped(|ui| {
-        // same quality unit as the Export window's slider — the raw CRF is what the user asked to
+        // same quality unit as the Export window's slider - the raw CRF is what the user asked to
         // stop having to decode ("a value that I don't know if it's compressing it or not")
         ui.weak(format!(
             "{} · quality {} % · {} · {} · {}",
@@ -545,7 +545,7 @@ fn rescale_prompt_id() -> egui::Id {
     egui::Id::new("inspector_rescale_prompt")
 }
 
-/// "Resize existing media?" — non-blocking (plain egui::Window, never Modal). Armed by
+/// "Resize existing media?" - non-blocking (plain egui::Window, never Modal). Armed by
 /// `project_section` when a control changed the resolution and footage exists; stays open across
 /// frames and selection changes (egui::Id-keyed temp) until answered or closed.
 fn rescale_prompt(ui: &mut egui::Ui, project: &mut Project, undo: &mut dyn FnMut(&Project)) -> bool {
@@ -596,17 +596,17 @@ fn clip_section(
     settings: &mut Settings,
     undo: &mut dyn FnMut(&Project),
 ) -> bool {
-    // Every selected id that is still a live clip. The first is the "representative" — its widgets
-    // drive the section — and edits to the bulk-editable fields below (zone 1) propagate to the rest
+    // Every selected id that is still a live clip. The first is the "representative" - its widgets
+    // drive the section - and edits to the bulk-editable fields below (zone 1) propagate to the rest
     // with diff-against-original, absolute-overwrite semantics (mirrors `transition_section`).
     let clip_ids: Vec<Id> = selection.iter().copied().filter(|&i| project.clip(i).is_some()).collect();
     let n_selected = clip_ids.len();
     let Some(&id) = clip_ids.first() else {
         return false;
     };
-    // ponytail: edit a per-frame clone of the clip and write it back at the end — lets `undo` snapshot the
+    // ponytail: edit a per-frame clone of the clip and write it back at the end - lets `undo` snapshot the
     // untouched project first without borrow gymnastics. Upgrade: per-field scratch copies if it ever shows.
-    // Owned (not borrowed) so it survives the later `project.clip_mut` write-backs — needed to diff the
+    // Owned (not borrowed) so it survives the later `project.clip_mut` write-backs - needed to diff the
     // bulk-editable fields against their pre-edit values for the sibling-propagation pass.
     let Some(orig) = project.clip(id).cloned() else {
         return false;
@@ -627,14 +627,14 @@ fn clip_section(
     if multi {
         ui.label(format!("{n_selected} clips selected"));
         // an honest header for mixed selections: props propagate by matching label, and audio clips
-        // expose Volume/Pan where visual ones expose transform — so a mixed selection only bulk-edits
+        // expose Volume/Pan where visual ones expose transform - so a mixed selection only bulk-edits
         // the clips matching the representative's kind, and the header must say so, not claim "all"
         let same_kind = |i: &Id| project.clip(*i).map(|c| c.is_visual()) == Some(orig.is_visual());
         let matching = clip_ids.iter().filter(|i| same_kind(i)).count();
         if matching < n_selected {
             let (this, other) = if orig.is_visual() { ("video", "audio") } else { ("audio", "video") };
             ui.weak(format!(
-                "Mixed selection — property edits apply to the {matching} {this} clip{}; the {} {other} \
+                "Mixed selection - property edits apply to the {matching} {this} clip{}; the {} {other} \
                  clip{} keep their own (enabled, label and fades still edit all of them).",
                 if matching == 1 { "" } else { "s" },
                 n_selected - matching,
@@ -751,7 +751,7 @@ fn clip_section(
     });
 
     // ---- ws:text-titles: primary-first ordering ----
-    // For a Text clip, typography (Font/Size/Bold/Italic/Animation/Reveal/Wave — inspector_text.rs, which
+    // For a Text clip, typography (Font/Size/Bold/Italic/Animation/Reveal/Wave - inspector_text.rs, which
     // starts with `ui.strong("Text")`) is what a beginner needs first, so it renders BEFORE the generic
     // Position/Scale/Rotation/Opacity transform grid below, not after. Wrapped in its own `!multi` gate
     // (same greying rule as the rest of "zone 2") since it now runs ahead of that block.
@@ -762,13 +762,13 @@ fn clip_section(
         });
     }
 
-    // Properties (Position/Scale/Rotation/Opacity or Volume/Pan), fades and blend — shared by audio and
+    // Properties (Position/Scale/Rotation/Opacity or Volume/Pan), fades and blend - shared by audio and
     // video clips, extracted to inspector_audio.rs. Its own Grid, so it sits just after (not inside) the
     // "Clip" grid above. The audio-bus override itself is rendered separately below, at its original
     // spot after the Path section, so pulling it out doesn't reorder the panel.
     let audio_changed = crate::ui::inspector_audio::section(ui, project, &clip_ids, playhead, palette, undo);
 
-    // Zone 2: everything below is per-clip data that does not bulk-edit — greyed out and non-interactive
+    // Zone 2: everything below is per-clip data that does not bulk-edit - greyed out and non-interactive
     // while more than one clip is selected, exactly like the Name field above (the labels editor at the
     // very bottom is the one exception: it edits `Project.labels`, not this clip, so it stays live).
     let mut bus_changed = false;
@@ -779,7 +779,7 @@ fn clip_section(
         if !clip.effects.is_empty() {
             ui.separator();
             let mut rm: Option<usize> = None;
-            // Two independently-remembered fold keys, not one shared "effects" — `default_open` only
+            // Two independently-remembered fold keys, not one shared "effects" - `default_open` only
             // takes effect the FIRST time a `CollapsingState`/`folds` id is ever seen (see `section`'s
             // doc comment). A single "effects" id shared between primary (Video/Image/Audio) and
             // secondary (Text/Shape/Sequence) clips let a secondary clip's closed-by-default fold get
@@ -809,7 +809,7 @@ fn clip_section(
             }
         }
 
-        // Color: Primaries/Curves/Levels/HueShift/Vignette, added lazily on first touch — audio has
+        // Color: Primaries/Curves/Levels/HueShift/Vignette, added lazily on first touch - audio has
         // nothing to grade.
         if clip.is_visual() {
             ui.separator();
@@ -884,7 +884,7 @@ fn clip_section(
             );
         }
 
-        // asset details: a status line + "Open in Library" — description/tags/label/folder are edited
+        // asset details: a status line + "Open in Library" - description/tags/label/folder are edited
         // ONLY in Library's asset-details box now (see library.rs's doc comment); this used to duplicate
         // those editors inline, which is why `asset_desc`/`asset_tags`/`ga` below no longer get written.
         if clip.uses_asset() {
@@ -906,7 +906,7 @@ fn clip_section(
                                 ui.weak("Proxy: ready (preview plays the low-res proxy)");
                             }
                             crate::media::proxy::ProxyStatus::Building(f) => {
-                                ui.weak(format!("Proxy: building — {:.0} %", f * 100.0));
+                                ui.weak(format!("Proxy: building - {:.0} %", f * 100.0));
                             }
                             crate::media::proxy::ProxyStatus::Queued => {
                                 ui.weak("Proxy: queued (builds run one at a time)");
@@ -928,7 +928,7 @@ fn clip_section(
         // Text style presets sub-panel: the primary Text/typography block itself (multiline body, style
         // grid, per-selection TextSpan overrides, Reveal/Wave, Animation row) now renders ABOVE the
         // transform grid (ws:text-titles primary-first reorder, see this fn's top) via the SAME
-        // `inspector_text::section` call — not called again here. This sub-panel stays here (needs
+        // `inspector_text::section` call - not called again here. This sub-panel stays here (needs
         // `&mut Settings`, which that fn's signature has no room for), reusing its persisted
         // text-selection state (same `("inspector_text_sel", id)` Id) and its `span_draft_at`/`set_span`.
         if clip.kind == ClipKind::Text {
@@ -945,7 +945,7 @@ fn clip_section(
                     let label =
                         if has_sel { "Save selection's style as preset" } else { "Save current style as preset" };
                     if ui.button(label).on_hover_text("Rename it in the list below").clicked() {
-                        // with a selection, capture its EFFECTIVE style (span overrides included) — the
+                        // with a selection, capture its EFFECTIVE style (span overrides included) - the
                         // "I styled this word, save that look" workflow; otherwise the clip style
                         if let Some(style) = project.clip(id).and_then(|c| c.text.clone()) {
                             let name = format!("Text style {}", settings.text_presets.len() + 1);
@@ -987,7 +987,7 @@ fn clip_section(
                                 let _ = std::fs::write(&out, serde_json::to_string_pretty(p).unwrap_or_default());
                             }
                         }
-                        // presets live outside undo — two-click delete (Shift+click skips the confirm)
+                        // presets live outside undo - two-click delete (Shift+click skips the confirm)
                         if armed == Some(i) {
                             if ui.small_button("Sure?").clicked() {
                                 delete = Some(i);
@@ -1032,7 +1032,7 @@ fn clip_section(
                             style.font = p.font.clone();
                             // ws:text-titles: size/letter_spacing are now Animated; "Apply to Clip" is a
                             // one-shot discrete style change, so it sets the constant value and drops
-                            // any existing keys — same rule apply_clip_fields (tools_helpers.rs) follows.
+                            // any existing keys - same rule apply_clip_fields (tools_helpers.rs) follows.
                             style.size.keys.clear();
                             style.size.value = p.size as f64;
                             style.bold = p.bold;
@@ -1061,10 +1061,10 @@ fn clip_section(
         // ---------- round 3 sections ----------
         if clip.kind == ClipKind::Adjustment {
             ui.separator();
-            ui.weak("Adjustment layer — its effects apply to everything below it on the timeline.");
+            ui.weak("Adjustment layer - its effects apply to everything below it on the timeline.");
         }
 
-        // node graph — the buttons live in the header row (reachable without expanding), no fold body
+        // node graph - the buttons live in the header row (reachable without expanding), no fold body
         ui.separator();
         section(
             ui,
@@ -1096,7 +1096,7 @@ fn clip_section(
             |_ui| {},
         );
 
-        // mask — a mask shapes pixels, so an audio clip gets no mask UI at all (not even a dead button).
+        // mask - a mask shapes pixels, so an audio clip gets no mask UI at all (not even a dead button).
         // The header/body closures below can't both hold `&mut clip`/`&mut g` at once (they coexist as
         // sibling arguments to `section`), so the header only reports intent through plain local flags
         // and every actual mutation happens after the call, same trick the Nodes block above avoids by
@@ -1262,7 +1262,7 @@ fn clip_section(
         // like audio_changed/text_changed above, so it only needs folding into the final return.
         bus_changed = crate::ui::inspector_audio::bus_section(ui, project, id, clip.kind, undo);
 
-        // clip markers (add button lives in the fold body, not the header — it needs the same `&mut
+        // clip markers (add button lives in the fold body, not the header - it needs the same `&mut
         // clip`/`&mut g` the list below does, and a header/body pair can't both hold that at once, same
         // as the Mask block above)
         ui.separator();
@@ -1308,7 +1308,7 @@ fn clip_section(
         );
     }); // end zone 2 (add_enabled_ui)
 
-    // compact labels editor (labels live on the project, not the clip) — project-wide, so it stays
+    // compact labels editor (labels live on the project, not the clip) - project-wide, so it stays
     // interactive regardless of how many clips are selected (see the doc comment above zone 2).
     if edit_labels {
         ui.separator();
@@ -1361,7 +1361,7 @@ fn clip_section(
     }
     if g.changed {
         // Targeted field write-back: `clip` only holds this fn's own fields by now (name / enabled /
-        // label / container_label / effects / mask / shape / markers) — properties, fades, blend, bus
+        // label / container_label / effects / mask / shape / markers) - properties, fades, blend, bus
         // and text are owned by inspector_audio::section / inspector_text::section above, which already
         // committed their own edits straight to `project`; overwriting the whole clip here would revert
         // those with this fn's stale pre-edit clone.
@@ -1431,7 +1431,7 @@ const LUAU_KEYWORDS: &[&str] = &[
     "local", "nil", "not", "or", "repeat", "return", "then", "true", "type", "until", "while",
 ];
 
-/// Minimal hand-rolled Luau tokenizer for the expression field — keywords, strings, numbers and
+/// Minimal hand-rolled Luau tokenizer for the expression field - keywords, strings, numbers and
 /// comments get a colour, everything else stays the default text colour. One expression at a time,
 /// so a full syntax-highlighting crate would be a lot of dependency for one line of text.
 pub(super) fn luau_highlight(ui: &egui::Ui, text: &str) -> egui::text::LayoutJob {
@@ -1644,8 +1644,8 @@ mod tests {
         assert_eq!(undos, 1, "no undo without an edit");
     }
 
-    /// The Opacity control is a 0-100% slider that writes straight into `clip.opacity` — the same
-    /// `Animated` field the renderer reads via `props_mut()` — not a second, disconnected property.
+    /// The Opacity control is a 0-100% slider that writes straight into `clip.opacity` - the same
+    /// `Animated` field the renderer reads via `props_mut()` - not a second, disconnected property.
     #[test]
     fn opacity_slider_drives_the_animated_field() {
         let mut p = Project::new();
@@ -1684,7 +1684,7 @@ mod tests {
     }
 
     /// With 2+ clips selected, dragging the representative clip's Opacity slider propagates the new
-    /// ABSOLUTE value to every selected clip — even one whose opacity started at a different value than
+    /// ABSOLUTE value to every selected clip - even one whose opacity started at a different value than
     /// the representative's (diff-against-original, absolute-overwrite: the same rule `transition_section`
     /// uses for bulk-editing transitions, not a relative delta).
     #[test]
@@ -1729,7 +1729,7 @@ mod tests {
         assert_eq!(oa, ob, "the new absolute value propagated to the other selected clip, not a relative delta");
     }
 
-    /// With 2+ clips selected, the Name field (zone 1, but not bulk-editable) is disabled — it needs a
+    /// With 2+ clips selected, the Name field (zone 1, but not bulk-editable) is disabled - it needs a
     /// single-clip selection, unlike the transform/opacity/enabled/label/fade/blend fields around it.
     #[test]
     fn name_field_disabled_when_multiple_clips_selected() {
@@ -1766,7 +1766,7 @@ mod tests {
     }
 
     /// With 2+ clips selected, a zone-2 control (here: "Add mask", per-clip data that does not bulk-edit)
-    /// is disabled — the click lands on the widget rect but registers no edit at all.
+    /// is disabled - the click lands on the widget rect but registers no edit at all.
     #[test]
     fn zone2_controls_disabled_when_multiple_clips_selected() {
         let mut p = Project::new();
@@ -2155,7 +2155,7 @@ mod tests {
         assert_eq!(h.undos, 1, "asking to edit in the viewport is not an edit");
     }
 
-    /// A mask shapes pixels, so an audio clip shows no mask section at all — not even a dead button,
+    /// A mask shapes pixels, so an audio clip shows no mask section at all - not even a dead button,
     /// and not even for a mask a hand-edited project smuggled in.
     #[test]
     fn audio_clips_get_no_mask_section() {
@@ -2264,9 +2264,9 @@ mod tests {
     }
 
     /// The Effects section's `default_open` varies by ClipKind (Video/Image/Audio clips start open,
-    /// everything else starts closed — see `clip_section`'s `primary_effects`). Before the fix, both
+    /// everything else starts closed - see `clip_section`'s `primary_effects`). Before the fix, both
     /// kinds shared one `"effects"` fold id/key: viewing a non-primary clip's (closed) Effects section
-    /// FIRST permanently corrupted the primary default — the next primary clip's Effects section would
+    /// FIRST permanently corrupted the primary default - the next primary clip's Effects section would
     /// read back the stale closed state and re-persist it, closing Effects for every clip kind forever.
     #[test]
     fn sections_default_open_primary_per_kind() {
@@ -2287,14 +2287,14 @@ mod tests {
         let mut settings = Settings::default();
         let mut undo = |_: &Project| {};
 
-        // View the Text clip's Effects section first — not primary for Text, so it defaults CLOSED.
+        // View the Text clip's Effects section first - not primary for Text, so it defaults CLOSED.
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 show(ui, &mut p, &[text_id], &[], 1.0, &[], &palette, &mut settings, &mut undo);
             });
         });
 
-        // Then view the Video clip's Effects section — primary for Video, must default OPEN, not
+        // Then view the Video clip's Effects section - primary for Video, must default OPEN, not
         // inherit the Text clip's closed state (the bug: both used to share one "effects" fold id).
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
@@ -2309,13 +2309,13 @@ mod tests {
     }
 
     /// A fold toggle (the real write path in `section()`: the persisted `CollapsingState` disagreeing
-    /// with `folds`' remembered default) survives a `Settings` JSON round-trip — the same serialize/
+    /// with `folds`' remembered default) survives a `Settings` JSON round-trip - the same serialize/
     /// deserialize `Settings::save`/`load` do (see `settings.rs`'s own round-trip tests for the pattern).
     #[test]
     fn fold_state_persists_in_settings() {
         let ctx = egui::Context::default();
         let mut folds: BTreeMap<String, bool> = BTreeMap::new();
-        // First draw: "color" has never been seen before, defaults closed — no entry written yet.
+        // First draw: "color" has never been seen before, defaults closed - no entry written yet.
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 section(ui, "color", "Color", false, &mut folds, |_| {}, |_| {});
@@ -2323,7 +2323,7 @@ mod tests {
         });
         assert!(!folds.contains_key("color"), "an untouched fold writes no entry");
 
-        // Flip it open — exactly what clicking the header does — then redraw so `section()` notices
+        // Flip it open - exactly what clicking the header does - then redraw so `section()` notices
         // `now_open != open_default` and records it.
         let cid = egui::Id::new(("insp_section", "color"));
         let mut state =

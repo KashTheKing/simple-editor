@@ -2,7 +2,7 @@
 //! Keyboard-only dispatch for edit-point selection, trim ±1/±10 frames, extend/top/tail, slip, mark
 //! clip, go to in/out, splice/overwrite/lift/extract at playhead, join/duplicate/unnest/replace,
 //! select forward/backward/at-playhead, prev/next keyframe, and the placeholder track-flag toggles.
-//! No mouse gestures, no new panes/glyphs — purely `App::act` arms reading existing
+//! No mouse gestures, no new panes/glyphs - purely `App::act` arms reading existing
 //! selection/playhead/`App::edit_point` state and calling the trim-model model ops directly.
 
 use super::*;
@@ -10,11 +10,11 @@ use crate::model::ops::tracks::TrackFlag;
 use crate::model::ops::trim::{EditPoint, Side};
 
 // deviation (post-review reconciliation with snap-engine's PR #46): edit-point selection now lives on
-// `App::timeline.edit_point` (`TimelineState`, snap-engine's), not a separate `App::edit_point` field —
+// `App::timeline.edit_point` (`TimelineState`, snap-engine's), not a separate `App::edit_point` field -
 // `crate::ui::timeline::EditPoint`/`Side` are `pub use` re-exports of these same model types, so no
 // conversion is needed at the `app.timeline.edit_point` call sites below.
 
-/// Anything `commit` can read as "did the op actually do something" — a refused op (locked track,
+/// Anything `commit` can read as "did the op actually do something" - a refused op (locked track,
 /// no room, nothing selected) must push no undo entry.
 trait Changed {
     fn changed(&self) -> bool;
@@ -36,7 +36,7 @@ impl<T> Changed for Option<T> {
 }
 
 /// Snapshot before running `f`, and push one labelled undo entry (+ `after_edit`) iff it changed
-/// anything — the shared shape every mutating arm below uses, mirroring `actions.rs`'s own
+/// anything - the shared shape every mutating arm below uses, mirroring `actions.rs`'s own
 /// snapshot/push-if-changed idiom (see e.g. its `NudgeLeft | NudgeRight` arm) so History reads e.g.
 /// "Ripple trim" instead of the generic "Project edited", and a refused op pushes nothing.
 fn commit<T: Changed>(app: &mut App, label: &'static str, f: impl FnOnce(&mut Project) -> T) -> T {
@@ -50,10 +50,10 @@ fn commit<T: Changed>(app: &mut App, label: &'static str, f: impl FnOnce(&mut Pr
 }
 
 /// `[` / `]` / `Ctrl+[` / `Ctrl+]`: nudge the current edit point by `frames` (signed) frame durations
-/// — implemented as `extend_edit` to `edit_point.t + delta` rather than duplicating its Both(roll) vs
+/// - implemented as `extend_edit` to `edit_point.t + delta` rather than duplicating its Both(roll) vs
 /// Left/Right(ripple_trim) dispatch, and follows the edit point to its new position on success so
 /// repeated presses keep nudging the same cut. ponytail: with no edit point selected (no `U` yet) this
-/// is a no-op rather than guessing which edge of the current selection to trim — press `U` first.
+/// is a no-op rather than guessing which edge of the current selection to trim - press `U` first.
 fn nudge_edit_point(app: &mut App, label: &'static str, frames: f64) -> bool {
     let Some(ep) = app.timeline.edit_point else { return false };
     let to = (ep.t + frames * app.project.frame_dur()).max(0.0);
@@ -65,7 +65,7 @@ fn nudge_edit_point(app: &mut App, label: &'static str, frames: f64) -> bool {
 }
 
 /// `Q` / `W`: ripple-trim the start/end edge of the clip under the playhead (or first selected) to
-/// the playhead, rippling iff its track is magnetic — matches the plain-edge-drag rule everywhere
+/// the playhead, rippling iff its track is magnetic - matches the plain-edge-drag rule everywhere
 /// else (only a magnetic track's plain edits ripple by default).
 fn trim_to_playhead(app: &mut App, label: &'static str, start_edge: bool) -> bool {
     let Some(id) = app.selection.first().copied().or_else(|| app.project.clips_at(app.playhead).first().copied())
@@ -122,7 +122,7 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
     use Action::*;
     match a {
         SelectEditPoint => {
-            // ponytail: no mouse hover state exists headlessly — the first selected clip's track
+            // ponytail: no mouse hover state exists headlessly - the first selected clip's track
             // stands in for "hovered track" (the timeline UI hands a real hovered track once
             // snap-engine/timeline-trim-gestures wire the gesture up).
             let track = app.selection.first().and_then(|&id| app.project.track_of(id));
@@ -274,7 +274,7 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
             true
         }
         CloseGapAtPlayhead => {
-            // ponytail: no gap-selection gesture exists yet — the last track the pointer pressed on
+            // ponytail: no gap-selection gesture exists yet - the last track the pointer pressed on
             // stands in until snap-engine/timeline-trim-gestures' GapSelect state calls
             // `close_gap_at` directly.
             if let Some(ti) = app.timeline.last_track {
@@ -333,19 +333,19 @@ mod tests {
     /// `App::push_undo_labeled`/`after_edit` need a live `App` (see `tools_registry_tests.rs`'s doc
     /// comment on why one isn't buildable in a test), so this pins the structural property instead:
     /// every mutating arm above goes through the shared `commit` helper, never `push_undo_labeled`
-    /// directly — the thing that actually makes "snapshot only if changed" hold for all 20+ arms
+    /// directly - the thing that actually makes "snapshot only if changed" hold for all 20+ arms
     /// instead of relying on each one to get its own snapshot/push pair right.
     #[test]
     fn every_mutation_goes_through_commit() {
         let src = include_str!("trim_actions.rs");
         let fn_start = src.find("pub(super) fn act(").expect("act() must exist");
         let commit_fn_start = src.find("fn commit<T: Changed>").expect("commit() must exist");
-        // bounded to act()'s own body — the trailing #[cfg(test)] mod below (this very test file,
+        // bounded to act()'s own body - the trailing #[cfg(test)] mod below (this very test file,
         // included via include_str!) mentions "push_undo_labeled" in doc comments/assertions, which
         // would otherwise false-positive this scan.
         let test_mod_start = src.find("#[cfg(test)]").expect("this test module must exist");
         let body = &src[fn_start..test_mod_start];
-        // commit() itself is defined earlier in the file and legitimately calls push_undo_labeled —
+        // commit() itself is defined earlier in the file and legitimately calls push_undo_labeled -
         // only act()'s own arms (this slice) must never call it directly.
         assert!(fn_start > commit_fn_start, "commit() must be defined before act()");
         assert!(

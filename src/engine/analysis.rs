@@ -1,10 +1,10 @@
 //! Peaks analysis toolkit: onsets/BPM, peak/RMS levels, cross-correlation offset, normalize/match
-//! loudness, auto-ducking, and ffmpeg scene-cut detection — all pure functions over
+//! loudness, auto-ducking, and ffmpeg scene-cut detection - all pure functions over
 //! media::waveform::Peaks (100 buckets/s), no decoding, no App/UI types. Mirrors autocut.rs's style.
 //!
 //! `onsets()`/`scene_cuts()` return times in SOURCE seconds (same space as autocut::loud_segments,
 //! see autocut.rs:29); every call site that turns one of those into a Marker or a split point must
-//! first convert via `to_clip_local`/`to_timeline_t` — the same (t - src_in)/speed[+start] math
+//! first convert via `to_clip_local`/`to_timeline_t` - the same (t - src_in)/speed[+start] math
 //! autocut::to_timeline already performs (autocut.rs:78-91), centralized here so it's fixed once.
 
 use crate::engine::autocut::{self, AutoCutParams};
@@ -316,7 +316,7 @@ fn seed_key(a: &mut Animated, t: f64, v: f64, count: &mut usize) {
 }
 
 /// ffmpeg `select='gt(scene,thr)',showinfo` shot-change detection over `path`. Synchronous (blocks
-/// the calling thread) — documented ceiling, see the audio-analysis plan's ponytail notes.
+/// the calling thread) - documented ceiling, see the audio-analysis plan's ponytail notes.
 /// Returned times are SOURCE seconds.
 pub fn scene_cuts(path: &std::path::Path, thr: f32) -> Result<Vec<f64>, String> {
     let exe = crate::media::ffpipe::ffmpeg_exe().ok_or("ffmpeg not found")?;
@@ -332,8 +332,8 @@ pub fn scene_cuts(path: &std::path::Path, thr: f32) -> Result<Vec<f64>, String> 
 
 /// Pure detection: onsets on every clip in `targets` (SOURCE seconds, no mutation). Shared by the
 /// Beats section's "Detect Beats" button and `audio.beats`'s no-flag path, so a preview never has a
-/// side effect — mirrors `audio.beats`' documented "pure detection, no mutation" default. Returns
-/// (per-clip onsets, combined BPM across every target's onsets — `None` if fewer than 4 total).
+/// side effect - mirrors `audio.beats`' documented "pure detection, no mutation" default. Returns
+/// (per-clip onsets, combined BPM across every target's onsets - `None` if fewer than 4 total).
 pub fn detect_beats(
     project: &Project,
     targets: &[Id],
@@ -358,7 +358,7 @@ pub fn detect_beats(
 }
 
 /// Add one clip marker per onset in `per_clip` (converted through `to_clip_local` so it lands
-/// correctly on a trimmed/retimed clip) — the explicit commit step after `detect_beats`'s preview.
+/// correctly on a trimmed/retimed clip) - the explicit commit step after `detect_beats`'s preview.
 /// Shared by the Beats section's "Add Markers" button, `Action::DetectBeats` and `audio.beats`'s
 /// `as_markers` path (this fn stays App-free: `App`'s fields aren't reachable from `ui::autocut_ui`,
 /// see the audio-analysis PR's deviation note). Returns the marker ids written.
@@ -382,7 +382,7 @@ pub fn split_beats(project: &mut Project, per_clip: &[(Id, Vec<f64>)]) -> usize 
     let mut cuts = 0usize;
     for (clip_id, found) in per_clip {
         let Some(c) = project.clip(*clip_id).cloned() else { continue };
-        // `group` grows with each split's new right-half piece (mirrors Project::auto_cut) — a fixed
+        // `group` grows with each split's new right-half piece (mirrors Project::auto_cut) - a fixed
         // restrict set would only ever cut the ORIGINAL clip, missing every onset past the first cut.
         let mut group = project.expand_links(&[*clip_id]);
         for &t_src in found {
@@ -736,7 +736,7 @@ mod tests {
 
     /// `to_clip_local`/`to_timeline_t` assume a forward src mapping (`src_in + l`); a reverse or frozen
     /// clip's real mapping is different (see `Clip::src_time`), so `detect_beat_markers` must skip such
-    /// clips entirely rather than mirror-flip the onsets onto the wrong clip-local times — same guard
+    /// clips entirely rather than mirror-flip the onsets onto the wrong clip-local times - same guard
     /// `detect_silence` (tools_audio.rs) already applies before calling into this module.
     #[test]
     fn detect_beat_markers_skips_reverse_and_frozen_clips() {

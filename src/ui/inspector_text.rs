@@ -8,14 +8,14 @@
 //! gets the same DragValue + `key_buttons` (keyframe toggle) + `link_menu` (path/expression link) row
 //! shape the clip transform grid uses for Position X (`inspector_audio::section`), plus new Reveal
 //! (typewriter, 0..100%) and Wave (per-glyph bob) rows over the like-named `Animated` fields, and an
-//! Animation row (builtin/saved motion preset combo + Apply, calling `presets::apply_motion` directly —
+//! Animation row (builtin/saved motion preset combo + Apply, calling `presets::apply_motion` directly -
 //! mirrors curves.rs:744's inline call, not curves.rs:762's unrelated PENDING_MOTION "Save motion"
 //! plumbing). `inspector.rs::clip_section` now calls this fn BEFORE the generic transform grid for a
-//! Text clip (primary-first ordering), which is why `section` takes `playhead` — the transform grid used
+//! Text clip (primary-first ordering), which is why `section` takes `playhead` - the transform grid used
 //! to be the thing computing `clip.local(playhead)` first.
 //!
 //! The "Text style presets" sub-panel (save/apply/delete/import/export of `Settings::text_presets`)
-//! stays in inspector.rs's `clip_section`, since this fn's signature has no `&mut Settings` param —
+//! stays in inspector.rs's `clip_section`, since this fn's signature has no `&mut Settings` param -
 //! `span_draft_at`/`set_span` below are `pub(super)` so that sub-panel can still reach them.
 
 use crate::model::{AnimLink, Animated, Id, Project, TextSpan, TextStyle};
@@ -40,7 +40,7 @@ pub(super) fn span_draft_at(style: &TextStyle, a: usize, b: usize) -> TextPreset
     let base = TextPreset {
         name: String::new(),
         font: style.font.clone(),
-        // ws:text-titles: size/letter_spacing are now Animated — a span override is a plain f32 (spans
+        // ws:text-titles: size/letter_spacing are now Animated - a span override is a plain f32 (spans
         // don't animate, see the ponytail note on TextSpan promotion), so this seeds from the CURRENT
         // (base, unkeyed) value only, same as before the promotion for a non-animated style.
         size: style.size.value as f32,
@@ -63,7 +63,7 @@ pub(super) fn span_draft_at(style: &TextStyle, a: usize, b: usize) -> TextPreset
 
 /// Push (or replace, if one already exists over the exact same range) a fully-overriding `TextSpan`
 /// covering [a, b) with `p`'s fields. Ponytail: a span is always a full override of every field this
-/// editor exposes, not a sparse per-field one — simpler than a per-field "inherit" toggle in the popup,
+/// editor exposes, not a sparse per-field one - simpler than a per-field "inherit" toggle in the popup,
 /// and still correct since it only ever writes the fields the UI let the user see/change.
 pub(super) fn set_span(style: &mut TextStyle, a: usize, b: usize, p: &TextPreset) {
     style.spans.retain(|s| !(s.start == a && s.end == b));
@@ -80,7 +80,7 @@ pub(super) fn set_span(style: &mut TextStyle, a: usize, b: usize, p: &TextPreset
     });
 }
 
-/// The editable fields of a `TextPreset` — shared by the "Set Text Style" popup and (implicitly, same
+/// The editable fields of a `TextPreset` - shared by the "Set Text Style" popup and (implicitly, same
 /// shape) the saved-preset list in clip_section's presets sub-panel.
 pub(super) fn text_preset_fields(ui: &mut egui::Ui, p: &mut TextPreset, fonts: &[String]) {
     Grid::new("text_preset_fields").num_columns(2).show(ui, |ui| {
@@ -111,7 +111,7 @@ pub(super) fn text_preset_fields(ui: &mut egui::Ui, p: &mut TextPreset, fonts: &
 }
 
 /// The editable expression box shown right under a row when its `Animated` field is linked to
-/// `AnimLink::Expr` — same widget/pattern as `inspector_audio::section`'s per-property loop (search
+/// `AnimLink::Expr` - same widget/pattern as `inspector_audio::section`'s per-property loop (search
 /// `link_err`/`AnimLink::Expr` there). Must be called from inside the same `Grid` as the row's own
 /// `ui.end_row()` so the columns line up.
 fn expr_edit_row(ui: &mut egui::Ui, a: &mut Animated, g: &mut Gesture) {
@@ -181,7 +181,7 @@ pub(super) fn section(
             style.remap_spans(&before);
         }
     }
-    // char range of the current selection (empty/collapsed = no selection) — used by "Style
+    // char range of the current selection (empty/collapsed = no selection) - used by "Style
     // Selection…" below to know what a new/edited TextSpan should cover.
     let live_sel: Option<(usize, usize)> = text_out.cursor_range.and_then(|r| {
         let (a, b) = (r.primary.index, r.secondary.index);
@@ -318,10 +318,10 @@ pub(super) fn section(
         expr_edit_row(ui, &mut style.wave, &mut g);
     });
 
-    // ---- ws:text-titles: Animation row — apply a builtin/saved motion preset to the WHOLE clip's
+    // ---- ws:text-titles: Animation row - apply a builtin/saved motion preset to the WHOLE clip's
     // transform (Position/Scale/Rotation/Opacity), mirrors curves.rs:744's inline apply_motion() call
     // (not curves.rs:762's PENDING_MOTION, which belongs to the unrelated "Save motion" button). No
-    // ACT_HANDLERS entry — this panel already owns `&mut Project` via `undo`/the write-back below.
+    // ACT_HANDLERS entry - this panel already owns `&mut Project` via `undo`/the write-back below.
     let motions = crate::ui::curves::available_motions();
     if !motions.is_empty() {
         let motion_sel_id = egui::Id::new(("inspector_text_motion_sel", id));
@@ -338,7 +338,7 @@ pub(super) fn section(
             );
             if ui.small_button("Apply").on_hover_text("Stretch the preset to this clip's length").clicked() {
                 // Applies to the LIVE clip directly (not the local `clip` clone this fn writes back only
-                // `.text` from) — a motion preset keys Position/Scale/Rotation/Opacity, none of which
+                // `.text` from) - a motion preset keys Position/Scale/Rotation/Opacity, none of which
                 // `section`'s write-back at the bottom touches. `g.changed = true` below is what makes
                 // this fn (and clip_section/inspector::show above it) return true so the caller still
                 // runs its usual after-edit refresh, even though this specific write bypassed `clip`.

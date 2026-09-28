@@ -35,8 +35,8 @@ impl Project {
         }
         rm(&mut self.plan, id);
     }
-    /// All asset ids referenced by any moodboard — the per-task planner moodboards and the standalone
-    /// Moodboard pane alike — never counted as "unused".
+    /// All asset ids referenced by any moodboard - the per-task planner moodboards and the standalone
+    /// Moodboard pane alike - never counted as "unused".
     pub fn plan_assets(&self) -> std::collections::HashSet<Id> {
         fn walk(items: &[PlanItem], out: &mut std::collections::HashSet<Id>) {
             for i in items {

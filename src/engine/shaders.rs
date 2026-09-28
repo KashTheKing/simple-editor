@@ -3,7 +3,7 @@
 //! Convention: one full-screen triangle vertex shader (`VERT`) plus a fragment shader per effect built
 //! from `PRELUDE` + the effect body. A **per-effect body** (everything below the divider near the
 //! bottom of this file) is a complete shader: it defines its own `void main()`, samples `tex` and mixes
-//! its result back through the mask itself — see "Rules every body below follows".
+//! its result back through the mask itself - see "Rules every body below follows".
 //!
 //! The `vec4 effect(vec4 src, vec2 uv)` + `MAIN` convention is used only where the caller supplies the
 //! body: `EffectKind::Shader` (via `user_shader`) and gpu.rs's `COPY_BODY` / `MATTE_BODY`. `MAIN`
@@ -20,7 +20,7 @@
 //! Fragment output is `out_color` (straight alpha).
 //!
 //! Textures are uploaded top-down and the vertex shader flips the clip-space Y instead, so `uv.y = 0`
-//! is the top of the image everywhere — in the sampler, in `glReadPixels` output and in egui.
+//! is the top of the image everywhere - in the sampler, in `glReadPixels` output and in egui.
 
 use crate::model::EffectKind;
 
@@ -31,7 +31,7 @@ void main() {
     vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
     v_uv = p;
     // uv.y = 0 lands on GL row 0, so a top-down upload stays top-down in the FBO, in glReadPixels
-    // output and in egui — no flip anywhere.
+    // output and in egui - no flip anywhere.
     gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
 }
 "#;
@@ -118,7 +118,7 @@ vec4 apply_mask(vec4 src, vec4 fx, vec2 uv) { return mix(src, fx, mask_at(uv)); 
 "#;
 
 /// Entry point appended after a `vec4 effect(vec4 src, vec2 uv)` body: sample, run `effect`, mask.
-/// Used by `user_shader` (`EffectKind::Shader`) and gpu.rs's copy/matte programs only — the built-in
+/// Used by `user_shader` (`EffectKind::Shader`) and gpu.rs's copy/matte programs only - the built-in
 /// bodies below write `out_color` themselves.
 pub const MAIN: &str = r#"
 void main() {
@@ -175,12 +175,12 @@ pub fn fragment(kind: EffectKind, user_src: &str) -> Option<String> {
         return Some(user_shader(user_src));
     }
     // No `MAIN` here: a built-in body is already a complete shader. Appending it would define
-    // `main()` twice and call an `effect()` no body declares — the program would not link.
+    // `main()` twice and call an `effect()` no body declares - the program would not link.
     Some(format!("{PRELUDE}\n{}", body(kind)?))
 }
 
 /// Blend modes as a GLSL function (`vec3 blend(int mode, vec3 s, vec3 d)`) mirroring engine::blend.
-/// The int is `BlendMode::ALL`'s index — see `blend_index` in engine/gpu.rs.
+/// The int is `BlendMode::ALL`'s index - see `blend_index` in engine/gpu.rs.
 pub const BLEND: &str = r#"
 float blend_1(int mode, float s, float d) {
     if (mode == 1) { return s * d; }                                    // Multiply
@@ -1198,7 +1198,7 @@ void main() {
 "#;
 
 /// Lift/Gamma/Gain colour wheels (`pow(clamp(src*gain+lift,0,1), 1/gamma)`) then a cheap temp/tint post
-/// shift (R/B for warmth, G for tint) — mirrors `engine::effects::apply`'s CPU arm exactly (same 0.0015
+/// shift (R/B for warmth, G for tint) - mirrors `engine::effects::apply`'s CPU arm exactly (same 0.0015
 /// scale factor) for GPU/CPU parity. Declares p8..p10 itself: 11 params (p0-p10) overflow `PRELUDE`'s
 /// p0..p7.
 const PRIMARIES: &str = r#"
@@ -1264,7 +1264,7 @@ void main() {
 
 /// `.cube` 3D LUT lookup (`u_lut3d`, uploaded/bound by `gpu.rs` from `engine::lut::load`), trilinear via
 /// the fixed-function `sampler3D` filter, mixed with the source by Intensity (p0). Identity when no LUT
-/// is bound (`u_lut_n` stays whatever gpu.rs last set — the CPU path's own empty-path check is what
+/// is bound (`u_lut_n` stays whatever gpu.rs last set - the CPU path's own empty-path check is what
 /// actually skips the effect; this body just does its one texture lookup either way).
 const LUT: &str = r#"
 uniform sampler3D u_lut3d;
@@ -1283,7 +1283,7 @@ void main() {
 
 /// Shutter-window blend between the current frame and one decoded neighbour (mirrors `MOTION_BLUR`'s
 /// u_prev/u_next/u_frames pattern, gpu.rs binds them the same way since both report `needs_motion()`).
-/// 1 param: Amount (p0). No CPU fallback (`gpu_only`) — a no-neighbour frame (u_frames == 0) is simply
+/// 1 param: Amount (p0). No CPU fallback (`gpu_only`) - a no-neighbour frame (u_frames == 0) is simply
 /// the source unchanged, never a guessed direction.
 ///
 /// Extra uniforms gpu.rs must bind (this kind reports `EffectKind::needs_motion()`):

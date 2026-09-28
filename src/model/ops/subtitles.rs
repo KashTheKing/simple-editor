@@ -82,14 +82,14 @@ impl Project {
         }
     }
     /// Ripple-cut timeline `ranges` out of `clip` (its link group goes too), then drag the cues, the
-    /// project markers and EVERY transcript's words along with the cut — the single cut path behind
+    /// project markers and EVERY transcript's words along with the cut - the single cut path behind
     /// the double-take cutter, filler removal, the Transcript section's Delete and the
     /// `transcript.cut_words`/`transcript.remove_fillers` tools. Overlapping/abutting ranges are
     /// merged first; ranges are clamped to the clip. Ripple follows the owning track's `ripple` flag
-    /// (a position-locked track just loses the pieces and nothing downstream moves — same rule as
+    /// (a position-locked track just loses the pieces and nothing downstream moves - same rule as
     /// Delete); a locked track refuses (0). Returns how many clip pieces went.
     ///
-    /// ponytail: refuses (0) on a clip with a keyframed speed ramp — its words sit on one linear
+    /// ponytail: refuses (0) on a clip with a keyframed speed ramp - its words sit on one linear
     /// (offset, scale) map (`engine::transcribe::retime`) and would drift between the keys. Upgrade
     /// path: per-segment retime.
     pub fn cut_word_ranges(&mut self, clip: Id, ranges: &[(f64, f64)]) -> usize {
@@ -170,7 +170,7 @@ impl Project {
 /// matches that many consecutive words). Feeds the Transcript section's search box and
 /// `transcript.search`.
 ///
-/// ponytail: plain substring over `normalize()`'d tokens, no phonetic/fuzzy matching — ScriptSync-lite
+/// ponytail: plain substring over `normalize()`'d tokens, no phonetic/fuzzy matching - ScriptSync-lite
 /// is explicitly skipped project-wide; upgrade path is Needleman-Wunsch alignment if ever asked for.
 pub fn transcript_hits(transcripts: &[Transcript], q: &str) -> Vec<(Id, usize, f64)> {
     use crate::engine::transcribe::normalize;
@@ -306,7 +306,7 @@ mod tests {
 
     /// Regression: two transcribed clips on different tracks, only one of which is cut. Even though
     /// their word timestamps numerically overlap (both clips start at 0), cutting one must not touch
-    /// the other's transcript — the loops in `cut_word_ranges` must scope to the clip being cut.
+    /// the other's transcript - the loops in `cut_word_ranges` must scope to the clip being cut.
     #[test]
     fn cut_word_ranges_does_not_touch_other_clips_transcripts() {
         let (mut p, id1) = clip_project();

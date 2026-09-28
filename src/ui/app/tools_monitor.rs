@@ -1,11 +1,11 @@
 //! ---- ws:pro-monitor ----
 //! The 7 monitor actions (`act`) and 10 MCP tools: trim-view/compare/scopes state flips, save/apply
-//! stills (existing `EffectPreset` storage — zero new storage), multicam create/sync/switch, and the
+//! stills (existing `EffectPreset` storage - zero new storage), multicam create/sync/switch, and the
 //! eyedropper's colour write-back (shared by the UI click path in `preview_pane.rs` and the `color.pick`
 //! tool, so both write the exact same effect param the exact same way).
 //!
 //! deviation: `stats_now` below duplicates `tools_color.rs`'s private `stats_at` (fresh render + GPU
-//! readback at an arbitrary time) almost verbatim — that file isn't in this workstream's Files table, so
+//! readback at an arbitrary time) almost verbatim - that file isn't in this workstream's Files table, so
 //! rather than widen its visibility (`fn stats_at` -> `pub(super)`) this is its own few-line copy. Same
 //! reasoning for `find_or_add`, a near-duplicate of `tools_color.rs`'s private `upsert_effect`.
 
@@ -19,7 +19,7 @@ use crate::model::ops::trim::{EditPoint, Side};
 use crate::ui::preview::{CompareMode, PickTarget};
 
 /// Render at `t` through the live-preview path (never `render_frame`, which export/thumbnails also
-/// call) and read back `gpu.stats()` — see this file's top-of-file deviation note.
+/// call) and read back `gpu.stats()` - see this file's top-of-file deviation note.
 fn stats_now(app: &mut App, t: f64) -> Option<FrameStats> {
     let w = app.project.width.max(16);
     let h = app.project.height.max(16);
@@ -40,7 +40,7 @@ fn find_or_add(c: &mut Clip, kind: EffectKind) -> &mut Effect {
     }
 }
 
-/// Rec.709-ish hue (0..360) of an RGB triple — the Qualifier centre an eyedropper pick writes.
+/// Rec.709-ish hue (0..360) of an RGB triple - the Qualifier centre an eyedropper pick writes.
 fn rgb_hue_degrees(rgb: [u8; 3]) -> f32 {
     let (r, g, b) = (rgb[0] as f32 / 255.0, rgb[1] as f32 / 255.0, rgb[2] as f32 / 255.0);
     let (max, min) = (r.max(g).max(b), r.min(g).min(b));
@@ -63,7 +63,7 @@ fn rgb_hue_degrees(rgb: [u8; 3]) -> f32 {
 }
 
 /// The pure clip-mutation half of `write_picked_color` (find-or-add the effect, write the target's
-/// fields) — split out so it's testable without a live `App`.
+/// fields) - split out so it's testable without a live `App`.
 fn write_picked_color_on_clip(c: &mut Clip, target: PickTarget, rgb: [u8; 3]) {
     match target {
         PickTarget::Chroma => {
@@ -88,9 +88,9 @@ pub(super) fn write_picked_color(app: &mut App, clip_id: Id, target: PickTarget,
 }
 
 /// Cross-correlate `ids[0]`'s waveform against every other clip's (their assets' stream-0 peaks,
-/// `WaveformCache::get` — same "read stream 0" simplification `tools_helpers::asset_peaks` already makes
+/// `WaveformCache::get` - same "read stream 0" simplification `tools_helpers::asset_peaks` already makes
 /// elsewhere in this crate). `ids.len() > 8` is refused up front (ponytail: keeps the pairwise xcorr call
-/// count bounded — see the plan's own deliberate-simplifications note).
+/// count bounded - see the plan's own deliberate-simplifications note).
 fn sync_offsets(app: &mut App, ids: &[Id]) -> Result<Vec<f64>, String> {
     if ids.len() < 2 {
         return Err("need at least 2 clips to sync".into());
@@ -104,7 +104,7 @@ fn sync_offsets(app: &mut App, ids: &[Id]) -> Result<Vec<f64>, String> {
         .collect();
     let paths = paths.ok_or("one or more clips have no asset")?;
     let peaks: Option<Vec<_>> = paths.iter().map(|p| app.waveforms.get(p, 0)).collect();
-    let peaks = peaks.ok_or("waveform not ready yet — try again shortly")?;
+    let peaks = peaks.ok_or("waveform not ready yet - try again shortly")?;
     let mut offsets = vec![0.0];
     for p in &peaks[1..] {
         offsets.push(analysis::xcorr_offset(&peaks[0], p, 120.0).unwrap_or(0.0));
@@ -112,7 +112,7 @@ fn sync_offsets(app: &mut App, ids: &[Id]) -> Result<Vec<f64>, String> {
     Ok(offsets)
 }
 
-/// Which video track (angle index) is currently enabled at `seq_clip`'s local time `t` — `multicam_ui`'s
+/// Which video track (angle index) is currently enabled at `seq_clip`'s local time `t` - `multicam_ui`'s
 /// "current" highlight and `NextAngle`/`PrevAngle`'s starting point. `None` when `seq_clip` isn't a
 /// multicam sequence clip.
 fn current_angle(project: &Project, seq_clip: Id, t: f64) -> Option<usize> {
@@ -190,7 +190,7 @@ fn save_still_named(app: &mut App, clip_id: Option<Id>, name: Option<String>) ->
 }
 
 /// ACT_HANDLERS entry for the 7 unbound actions. `SaveStill`/`CompareWipe`/`ToggleScopes`/
-/// `ToggleTrimView` touch `Settings`/`PreviewState`, never `Project` — no undo. `MulticamCreate`/
+/// `ToggleTrimView` touch `Settings`/`PreviewState`, never `Project` - no undo. `MulticamCreate`/
 /// `NextAngle`/`PrevAngle` call into `model/ops/multicam.rs` with `push_undo_labeled`.
 pub(super) fn act(app: &mut App, a: Action) -> bool {
     match a {
@@ -231,14 +231,14 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
 }
 
 /// WINDOW_DRAWERS entry: the Scopes window, fed by `App.gpu.stats()` (real, not the plan's guessed
-/// `gpu.frame_stats()` name — see `monitor.rs`'s deviation note).
+/// `gpu.frame_stats()` name - see `monitor.rs`'s deviation note).
 pub(super) fn window_scopes(app: &mut App, ctx: &egui::Context) {
     let stats = app.gpu.as_ref().and_then(|g| g.stats());
     let App { monitor, settings, palette, .. } = app;
     crate::ui::scopes_ui::window(ctx, &mut monitor.scopes_open, &mut settings.scopes, stats, palette);
 }
 
-/// WINDOW_DRAWERS entry: the multicam angle grid, auto-shown (no dedicated toggle action — matches
+/// WINDOW_DRAWERS entry: the multicam angle grid, auto-shown (no dedicated toggle action - matches
 /// trim_view's own "auto-shown when applicable" precedent) whenever the targeted clip is a multicam
 /// sequence clip.
 pub(super) fn window_multicam(app: &mut App, ctx: &egui::Context) {
@@ -275,7 +275,7 @@ fn run(app: &mut App, name: &str, args: &Value) -> Result<Value, String> {
             };
             let dt = req(arg_f64(args, "dt"), "dt")?;
             let ep0 =
-                app.timeline.edit_point.ok_or("no edit point selected — call ui.action('select_edit_point') first")?;
+                app.timeline.edit_point.ok_or("no edit point selected - call ui.action('select_edit_point') first")?;
             let ep = EditPoint { side, ..ep0 };
             let to = ep.t + dt;
             if !app.project.extend_edit(&ep, to) {
@@ -320,7 +320,7 @@ fn run(app: &mut App, name: &str, args: &Value) -> Result<Value, String> {
                 return Ok(json!({}));
             };
             // ponytail: the full per-pixel data the visual scopes draw from stays in-process (same
-            // reasoning as `frame.stats`'s own doc comment) — every `kind` gets the same percentile/
+            // reasoning as `frame.stats`'s own doc comment) - every `kind` gets the same percentile/
             // histogram/mean summary; `kind` is echoed for parity with the UI's tabs, not a distinct shape.
             Ok(json!({
                 "kind": kind, "p1": stats.p1, "p99": stats.p99, "mean": stats.mean,
@@ -392,7 +392,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "preview.compare",
-        desc: "Set the monitor's grade-compare mode (state only — no bypass render exists yet, see the PR body).",
+        desc: "Set the monitor's grade-compare mode (state only - no bypass render exists yet, see the PR body).",
         args: &["mode:string:true:off|wipe|side", "x:number:false:wipe split 0..1, default 0.5"],
         kind: ToolKind::Ui,
         run: |a, v| run(a, "preview.compare", v).map(ToolOutcome::Done),
@@ -413,7 +413,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "scopes.read",
-        desc: "Current-frame histogram/percentile/mean statistics (waveform/parade/vectorscope share the same summary — see the tool's own note).",
+        desc: "Current-frame histogram/percentile/mean statistics (waveform/parade/vectorscope share the same summary - see the tool's own note).",
         args: &["kind:string:false:waveform|parade|vectorscope|histogram, default all"],
         kind: ToolKind::Read,
         run: |a, v| run(a, "scopes.read", v).map(ToolOutcome::Done),
@@ -519,7 +519,7 @@ mod tests {
             .collect();
         let seq_id = p.multicam_make(&ids, &[0.0, 0.0], "MC").unwrap();
         let clip_id = p.insert_sequence_clip(seq_id, 0.0, None).unwrap();
-        // before any switch every angle's clip is still enabled (default construction) — the scan finds
+        // before any switch every angle's clip is still enabled (default construction) - the scan finds
         // the first (lowest-ranked) track, angle 0.
         assert_eq!(current_angle(&p, clip_id, 1.0), Some(0));
         assert!(p.multicam_switch(clip_id, 5.0, 1));
@@ -527,12 +527,12 @@ mod tests {
         assert_eq!(current_angle(&p, clip_id, 1.0), Some(0), "before the switch point: still angle 0");
     }
 
-    /// ws:pro-monitor review gap — `commit_dynamic_trim` (monitor.rs; the JKL-shuttle-stop implicit
+    /// ws:pro-monitor review gap - `commit_dynamic_trim` (monitor.rs; the JKL-shuttle-stop implicit
     /// commit) and this file's own `"timeline.dynamic_trim"` MCP tool are two independent call sites that
     /// both boil down to `Project::extend_edit(&ep, to)`, but each derives `to` its own way: the implicit
     /// commit uses the raw playhead where the shuttle stopped (`let to = app.playhead;`), the explicit
     /// tool uses `edit_point.t + dt` (`let to = ep.t + dt;`). Neither call site is directly testable here
-    /// (both need a live `&mut App` — see `tools_registry_tests.rs`'s "no headless App" note), so this
+    /// (both need a live `&mut App` - see `tools_registry_tests.rs`'s "no headless App" note), so this
     /// pins the two derivations at the level they actually share: given equivalent args (a shuttle stop
     /// exactly `dt` seconds past the edit point == `playhead`), both formulas must land on the same `to`
     /// and therefore compose the identical `extend_edit` call and result.

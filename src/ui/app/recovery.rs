@@ -42,7 +42,7 @@ pub(super) fn pick_newest(candidates: &[(PathBuf, SystemTime)], baseline: System
 }
 
 /// The newest autosave strictly newer than `project_path`'s saved mtime (or "now - 1h" for an untitled
-/// project) — `None` when there's nothing worth offering.
+/// project) - `None` when there's nothing worth offering.
 pub fn recover_candidate(project_path: Option<&Path>) -> Option<PathBuf> {
     let baseline = match project_path {
         Some(p) => std::fs::metadata(p).and_then(|m| m.modified()).ok()?,
@@ -87,7 +87,7 @@ pub(super) fn boot(app: &mut App) {
     );
 }
 
-/// WINDOW_DRAWER: `Action::RestoreBackup`'s "Restore Autosave…" window — lists every autosave across
+/// WINDOW_DRAWER: `Action::RestoreBackup`'s "Restore Autosave…" window - lists every autosave across
 /// every project by mtime; picking one loads it via `App::set_project` (after a labeled undo push if
 /// the current project is dirty, so the in-progress edit isn't silently lost).
 pub(super) fn restore_window(app: &mut App, ctx: &egui::Context) {
@@ -105,7 +105,7 @@ pub(super) fn restore_window(app: &mut App, ctx: &egui::Context) {
             for (path, t) in &list {
                 let age = SystemTime::now().duration_since(*t).unwrap_or_default();
                 ui.horizontal(|ui| {
-                    ui.label(format!("{} — {} s ago", path.display(), age.as_secs()));
+                    ui.label(format!("{} - {} s ago", path.display(), age.as_secs()));
                     if ui.small_button("Load").clicked() {
                         pick = Some(path.clone());
                     }

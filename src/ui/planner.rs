@@ -10,12 +10,12 @@
 //! "Clear completed". Undo once per gesture.
 //!
 //! Notes tab = `Project.notes`, a list of titled markdown entries ("describe your process, ideas, style
-//! while you edit — the style summary / AI tools read this"): one collapsed-by-default
+//! while you edit - the style summary / AI tools read this"): one collapsed-by-default
 //! `CollapsingHeader` per note (colour label dot, title field, Edit/Preview toggle, delete), body shown
 //! as rendered markdown (`crate::ui::markdown`) or, in edit mode, a plain multiline `TextEdit`.
 //!
 //! Timer tab = a session-scoped stopwatch/countdown (`PlannerState::timer`, not project data): a round
-//! dial (`dial()`), Start/Pause/Reset, and an optional link to one plan item — while running, elapsed
+//! dial (`dial()`), Start/Pause/Reset, and an optional link to one plan item - while running, elapsed
 //! seconds accumulate into that item's `PlanItem::tracked_seconds` (`timer_tick`, the pure, testable
 //! half of the tab).
 //!
@@ -56,7 +56,7 @@ pub enum TimerMode {
     Countdown,
 }
 
-/// Session-scoped Timer tab state — not project data (a running timer is UI state, like the playhead),
+/// Session-scoped Timer tab state - not project data (a running timer is UI state, like the playhead),
 /// which is why it lives here rather than on `PlanItem`.
 pub struct TimerState {
     pub mode: TimerMode,
@@ -69,7 +69,7 @@ pub struct TimerState {
     pub last_tick: Option<Instant>,
     /// Plan item this timer banks elapsed seconds into (`PlanItem::tracked_seconds`) while running.
     pub linked: Option<Id>,
-    /// A countdown reached zero and hasn't been acknowledged yet (Start/Reset clears it) — drives the
+    /// A countdown reached zero and hasn't been acknowledged yet (Start/Reset clears it) - drives the
     /// dial's flash.
     pub done_flash: bool,
 }
@@ -178,14 +178,14 @@ fn flatten_plan(items: &[PlanItem]) -> Vec<(Id, String)> {
     out
 }
 
-/// mm:ss (rounded to the second — a dial has no room for tenths).
+/// mm:ss (rounded to the second - a dial has no room for tenths).
 fn clock_text(secs: f64) -> String {
     let s = secs.max(0.0).round() as u64;
     format!("{:02}:{:02}", s / 60, s % 60)
 }
 
-/// Advance the timer by wall-clock time since the last call. Called by the App EVERY frame — not from
-/// the Timer tab, which may be a hidden sibling tab — so a countdown still finishes, banks time onto
+/// Advance the timer by wall-clock time since the last call. Called by the App EVERY frame - not from
+/// the Timer tab, which may be a hidden sibling tab - so a countdown still finishes, banks time onto
 /// the linked task, and can notify while any other pane is in front. Returns
 /// `(banked_time_on_a_task, countdown_just_finished)`.
 pub fn tick(state: &mut PlannerState, project: &mut Project) -> (bool, bool) {
@@ -274,7 +274,7 @@ fn color_menu(ui: &mut egui::Ui, current: u8, palette: &Palette) -> Option<u8> {
             ui.close();
         }
         for (i, (name, [r, g, b])) in LABEL_COLORS.iter().enumerate() {
-            // the name carries its own colour — no swatch character needed
+            // the name carries its own colour - no swatch character needed
             let t = RichText::new(*name).color(egui::Color32::from_rgb(*r, *g, *b));
             if ui.button(t).clicked() {
                 picked = Some(i as u8 + 1);
@@ -347,7 +347,7 @@ fn tree_rows(ui: &mut egui::Ui, items: &mut [PlanItem], depth: usize, t: &mut Tr
                 *t.selected = Some(it.id);
             }
         }
-        // a non-empty checklist renders compactly right under its task — no header, just small rows
+        // a non-empty checklist renders compactly right under its task - no header, just small rows
         if !it.requirements.is_empty() {
             let mut rm: Option<usize> = None;
             for (ri, (label, done)) in it.requirements.iter_mut().enumerate() {
@@ -408,7 +408,7 @@ pub fn show(
         ui.label("");
     });
 
-    // ponytail: per-frame deep clone of the task tree, written back on change — keeps `undo` able to
+    // ponytail: per-frame deep clone of the task tree, written back on change - keeps `undo` able to
     // snapshot the untouched project. Upgrade: drive tree_rows from &mut project.plan if a big plan shows.
     let mut plan = project.plan.clone();
     let mut op: Option<Op> = None;
@@ -521,7 +521,7 @@ fn details(
     }
     let mut rm: Option<usize> = None;
     let (frame_r, payload) = ui.dnd_drop_zone::<DragPayload, ()>(egui::Frame::group(ui.style()), |ui| {
-        ui.weak("Moodboard — drop library assets here");
+        ui.weak("Moodboard - drop library assets here");
         for i in 0..it.assets.len() {
             let aid = it.assets[i];
             ui.horizontal(|ui| {
@@ -597,13 +597,13 @@ fn notes_tab(
     });
     ui.separator();
     if project.notes.is_empty() {
-        ui.weak("No notes yet — describe your process, ideas or style. The style summary / AI tools read these.");
+        ui.weak("No notes yet - describe your process, ideas or style. The style summary / AI tools read these.");
     }
     let mut remove: Option<Id> = None;
     egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         for i in 0..project.notes.len() {
             let id = project.notes[i].id;
-            // ponytail: edit a clone and write it back — lets `undo` snapshot the untouched project
+            // ponytail: edit a clone and write it back - lets `undo` snapshot the untouched project
             // without holding a mutable borrow across the widgets (same trick markers_ui.rs uses).
             let mut n = project.notes[i].clone();
             let editing = state.notes_editing.contains(&id);
@@ -660,12 +660,12 @@ fn notes_tab(
                             TextEdit::multiline(&mut n.body)
                                 .desired_width(f32::INFINITY)
                                 .desired_rows(6)
-                                .hint_text("Markdown — **bold**, _italic_, lists, headings…"),
+                                .hint_text("Markdown - **bold**, _italic_, lists, headings…"),
                         );
                         start |= r.gained_focus();
                         changed |= r.changed();
                     } else if n.body.trim().is_empty() {
-                        ui.weak("(empty — click the pencil to edit)");
+                        ui.weak("(empty - click the pencil to edit)");
                     } else {
                         markdown::show(ui, &n.body, palette);
                     }
@@ -866,7 +866,7 @@ mod tests {
     }
 
     /// Headless: Plan and Timer tabs lay out; no edits (and, for the Timer, no tick) reported without
-    /// interaction — a stopped timer touches nothing.
+    /// interaction - a stopped timer touches nothing.
     #[test]
     fn show_headless() {
         let mut p = Project::new();
@@ -892,7 +892,7 @@ mod tests {
     }
 
     /// Headless: the Notes tab renders both a note's markdown preview (`crate::ui::markdown::show`) and, once
-    /// its id is in `notes_editing` (what the pencil/eye button toggles), its plain edit `TextEdit` —
+    /// its id is in `notes_editing` (what the pencil/eye button toggles), its plain edit `TextEdit` -
     /// without panicking either way. A bare `RawInput::default()` has no pointer to click with, so the
     /// toggle itself is driven directly through `state`, same as `show_headless` drives tabs.
     #[test]

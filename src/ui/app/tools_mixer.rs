@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 static WAS_PLAYING: AtomicBool = AtomicBool::new(false);
 
 /// FRAME_HOOKS entry: fold every block the audio thread published since last frame into `App.buses`.
-/// Never requests a repaint — playback already repaints every frame, and a paused editor has nothing
+/// Never requests a repaint - playback already repaints every frame, and a paused editor has nothing
 /// queued (idle-CPU-0% gate).
 pub(super) fn sync_buses(app: &mut App, _ctx: &egui::Context) {
     let playing = app.player.is_playing();
@@ -121,7 +121,7 @@ pub const TOOLS: &[ToolDef] = &[
         kind: ToolKind::Mutate,
         run: |app, args| {
             // ponytail: the same op as the pre-existing `audio.add_filter` under this workstream's
-            // arg names — delegate rather than keep two param parsers in sync.
+            // arg names - delegate rather than keep two param parsers in sync.
             let a = Args(args);
             let mapped = json!({
                 "bus": req(a.id("bus_id"), "bus_id")?,
@@ -209,7 +209,7 @@ mod tests {
 
     /// Every row resolves through the flattened catalogue with a parseable schema (the crate-wide
     /// `every_arg_spec_parses`/`mutate_rows_roll_back_on_error` cover the generic half; a live `App`
-    /// isn't buildable headless — see tools_registry_tests.rs — so the `run` bodies are exercised
+    /// isn't buildable headless - see tools_registry_tests.rs - so the `run` bodies are exercised
     /// through the pure helpers below and `Project::apply_repair`'s own test).
     #[test]
     fn tools_mixer_rows_resolve_and_roundtrip() {

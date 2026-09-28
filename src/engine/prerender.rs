@@ -11,7 +11,7 @@
 //! read and never a whole second of RAM.
 //!
 //! Rendering decodes on the worker thread and, when the GPU renderer is up, composites by round-tripping
-//! layers to the UI thread's GL context through a `GpuFrameRequest` — the same channel `export::GpuScratch`
+//! layers to the UI thread's GL context through a `GpuFrameRequest` - the same channel `export::GpuScratch`
 //! uses, so movie mode gets the identical shaders the preview does. Falls back to the CPU `Compositor`
 //! per-second if the GPU stops answering (renderer died, or it was never on).
 
@@ -32,7 +32,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const MAGIC: &[u8; 4] = b"SEPR";
-// 2: video clips apply fade in/out as opacity — old tiles rendered before that are stale
+// 2: video clips apply fade in/out as opacity - old tiles rendered before that are stale
 const VERSION: u32 = 2;
 const HEADER: u64 = 4 + 4 * 4;
 /// Stop growing the cache past this (raw RGBA is big); the oldest files go first.
@@ -120,7 +120,7 @@ impl Work {
     }
 
     /// One frame through the GPU: decode here, composite on the UI thread, exactly like `export::GpuScratch`.
-    /// None = the renderer died or stopped answering — caller falls back to the CPU compositor.
+    /// None = the renderer died or stopped answering - caller falls back to the CPU compositor.
     fn gpu_render(&mut self, project: &Project, t: f64, w: u32, h: u32, tx: &Sender<GpuFrameRequest>) -> Option<Frame> {
         let layers = crate::playback::decode_layers(
             project,
@@ -260,7 +260,7 @@ impl PreRender {
             return;
         }
         // merged, not appended: `after_edit` re-requests the whole timeline on every single edit, and an
-        // unmerged list makes `segments()` and `progress()` — both drawn every frame — grow without end
+        // unmerged list makes `segments()` and `progress()` - both drawn every frame - grow without end
         self.ranges.push((a, b));
         self.ranges.sort_by(|x, y| x.0.total_cmp(&y.0));
         let mut merged: Vec<(f64, f64)> = Vec::with_capacity(self.ranges.len());
@@ -409,7 +409,7 @@ impl PreRender {
     // ---- ws:export-deliver ----
     /// `segments()` plus a realtime-safety flag per run: `(from, to, ready, heavy)`, heavy = some
     /// enabled clip on an active video track overlapping that second has effects or a node graph
-    /// (the seconds a live preview may drop frames on). Data only — painting it on the ruler is
+    /// (the seconds a live preview may drop frames on). Data only - painting it on the ruler is
     /// wave-3 pro-timeline's job.
     #[allow(dead_code)] // unused until ws:pro-timeline (wave 3) paints the realtime-safety tint
     pub fn segments_with_heavy(&self, project: &Project) -> Vec<(f64, f64, bool, bool)> {
@@ -503,7 +503,7 @@ pub fn key_for(project: &Project, sec: i64) -> u64 {
         }
     }
     if any_sequence {
-        // ponytail: a nested sequence rehashes wholesale — cheap enough, and always correct.
+        // ponytail: a nested sequence rehashes wholesale - cheap enough, and always correct.
         hash_json(&mut h, &project.sequences);
     }
     if project.show_subtitles {
@@ -734,7 +734,7 @@ mod tests {
     }
 
     /// Every edit re-requests the whole timeline. Unmerged, `ranges` grows with the edit count and
-    /// takes `segments()` and `progress()` — drawn every frame — with it, until the UI stalls.
+    /// takes `segments()` and `progress()` - drawn every frame - with it, until the UI stalls.
     #[test]
     fn repeated_requests_merge_into_one_range() {
         let p = project_with_clip();

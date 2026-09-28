@@ -7,7 +7,7 @@ use crate::ui::tools::Glyph;
 use eframe::egui;
 
 /// Mutates `s.palette` directly, so `theme::palette_with` (recomputed every frame in `App::update`)
-/// picks it up immediately — no restart, no extra plumbing.
+/// picks it up immediately - no restart, no extra plumbing.
 pub(super) fn appearance(ui: &mut egui::Ui, s: &mut Settings) -> bool {
     let mut changed = false;
     ui.horizontal(|ui| {
@@ -152,7 +152,7 @@ pub(super) fn appearance(ui: &mut egui::Ui, s: &mut Settings) -> bool {
         ui.weak("A clip's custom label colour (right-click a clip) still wins over these.");
     });
     if tweaked {
-        // editing a colour forks the current theme into "Custom" — the colours stay as a starting point
+        // editing a colour forks the current theme into "Custom" - the colours stay as a starting point
         s.palette.preset = String::new();
         if s.palette.mode.is_empty() || s.palette.mode == "system" {
             s.palette.mode = "custom".into(); // keep following Windows dark/light underneath
@@ -274,7 +274,7 @@ fn icon_row(ui: &mut egui::Ui, s: &mut Settings, key: String, label: &str, defau
 }
 
 /// One overridable colour: checkbox turns the override on/off, the button edits it while on (shown
-/// at `fallback` — today's derived colour — while off, so turning it on starts from what's in effect).
+/// at `fallback` - today's derived colour - while off, so turning it on starts from what's in effect).
 pub(super) fn color_row(ui: &mut egui::Ui, label: &str, ov: &mut Option<[u8; 3]>, fallback: egui::Color32) -> bool {
     let mut changed = false;
     ui.label(label);

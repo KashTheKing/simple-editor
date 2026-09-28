@@ -1,7 +1,7 @@
 //! Per-clip effects (CPU, RGBA8). `apply` runs on the decoded layer image (at its decode size, straight
 //! alpha) in stack order, before placement/blending. Pixel-sized parameters (blur radius, pixel block,
 //! wobble amplitude) are project pixels; `scale` = canvas px per project px converts them.
-//! `Wobble` is geometric: it does not touch pixels — the compositor adds `wobble()` to the placement.
+//! `Wobble` is geometric: it does not touch pixels - the compositor adds `wobble()` to the placement.
 //!
 //! Implementations (all O(pixels), no per-call allocation beyond `scratch`):
 //!  * Blur: 3 passes of a separable box blur ≈ Gaussian (radius*scale px).
@@ -16,13 +16,13 @@
 //!  * Crop: fractions cut from each edge (alpha = 0), with an optional feathered edge.
 //!  * Threshold / Levels / Curves: one 256-entry LUT per channel.
 //!  * HueShift: RGB -> HSL -> RGB per pixel.
-//!  * ChromaKey: Cb/Cr distance to the key colour with spill removal (no edge shrink — that needs
+//!  * ChromaKey: Cb/Cr distance to the key colour with spill removal (no edge shrink - that needs
 //!    neighbourhood taps; the GPU body does it).
 //!  * RecDot: a blinking dot plus a seven-segment HH:MM:SS timecode drawn as rectangles.
 //!
 //! Still GPU-only (engine/shaders.rs has the fragment bodies, the CPU path leaves the layer alone):
 //! Vhs, MotionBlur, EdgeGlow, JpegCompress, the BlobTrack overlay and user Shaders. `track` below is
-//! the CPU half of BlobTrack — it runs anywhere, so the tracked centroid can drive properties even
+//! the CPU half of BlobTrack - it runs anywhere, so the tracked centroid can drive properties even
 //! without a GL context.
 
 use crate::engine::gpu::FrameStats;
@@ -59,9 +59,9 @@ pub fn gpu_only(kind: EffectKind) -> bool {
     )
 }
 
-/// Master (`Asset.effects`) prepended ahead of `clip.effects` at render time — the single choke point
+/// Master (`Asset.effects`) prepended ahead of `clip.effects` at render time - the single choke point
 /// every apply_effects() call site (compose.rs) and gpu.rs's chain use, so CPU and GPU agree on what
-/// "the clip's effects" means. `Cow::Borrowed` when the asset has none (zero-alloc hot path — most
+/// "the clip's effects" means. `Cow::Borrowed` when the asset has none (zero-alloc hot path - most
 /// clips' assets never set master effects). Sole owner of this fn and the master/source-clip effects
 /// capability crate-wide; no later workstream re-declares it.
 pub fn effects_for<'a>(project: &'a Project, clip: &'a Clip) -> Cow<'a, [Effect]> {
@@ -76,11 +76,11 @@ pub fn effects_for<'a>(project: &'a Project, clip: &'a Clip) -> Cow<'a, [Effect]
 }
 
 /// Auto colour correction from a `frame_stats` snapshot: percentile black/white -> an editable `Levels`
-/// effect, exposure toward mid-grey -> an editable `Color` effect (brightness only — `Color` has no
+/// effect, exposure toward mid-grey -> an editable `Color` effect (brightness only - `Color` has no
 /// per-channel gain to do a literal grey-world white balance with; `color.primaries`'s RGB gain knobs
 /// are the tool for that, out of this one-tool-one-effect-pair's scope). A near-flat frame (nothing to
 /// stretch, already well exposed) is deliberately left at identity rather than blown out to an extreme
-/// contrast stretch — the common "solid test card" edge case.
+/// contrast stretch - the common "solid test card" edge case.
 pub fn auto_color(stats: &FrameStats) -> (Effect, Effect) {
     let mut levels = Effect::new(EffectKind::Levels);
     let p1 = (stats.p1[0] + stats.p1[1] + stats.p1[2]) / 3.0;
@@ -196,7 +196,7 @@ pub fn apply(effect: &Effect, t: f64, scale: f32, img: &mut Frame, scratch: &mut
             qualifier(img, e(0) as f32, e(1) as f32, e(2) as f32, e(3) as f32, e(4) as f32, e(5) as f32, e(6) as f32)
         }
         EffectKind::Lut => lut_effect(img, &effect.lut, e(0) as f32),
-        // geometric — handled by the compositor's placement (see `wobble`)
+        // geometric - handled by the compositor's placement (see `wobble`)
         EffectKind::Wobble | EffectKind::Plane3d => {}
         // GPU-only kinds returned above; listed so a new kind is a compile error, not a silent no-op
         EffectKind::JpegCompress
@@ -213,7 +213,7 @@ pub fn apply(effect: &Effect, t: f64, scale: f32, img: &mut Frame, scratch: &mut
 /// (roll, yaw, pitch) in degrees.
 ///
 /// `Wobble` is camera shake: deterministic from the seed, smooth (sum of a few incommensurate sines),
-/// frequency in Hz. `Plane3d` is static — its yaw/pitch/roll go straight to the placement, which the
+/// frequency in Hz. `Plane3d` is static - its yaw/pitch/roll go straight to the placement, which the
 /// CPU compositor already renders as a homography. Distance / field of view / offset Z only exist in
 /// the GPU path; the CPU fallback ignores them.
 pub fn wobble(effect: &Effect, t: f64) -> (f64, f64, f64, f64, f64) {
@@ -265,7 +265,7 @@ fn wobble_wave(method: f64, w: f64, p: f64) -> f64 {
         }
         // stepped random (holds each value for a whole cycle)
         4 => hash(i),
-        // layered sines — the original look, and the default
+        // layered sines - the original look, and the default
         _ => 0.5 * (w + p).sin() + 0.35 * (w * 1.618_034 + p * 2.236).sin() + 0.15 * (w * 2.718_281_8 + p * 3.19).sin(),
     }
 }
@@ -274,7 +274,7 @@ fn wobble_wave(method: f64, w: f64, p: f64) -> f64 {
 /// (cx, cy) in 0..1 layer coordinates plus the matched area as a fraction of the frame. `None` when
 /// nothing matches. `params` is the effect's parameter list (`EffectKind::BlobTrack.params()` order).
 ///
-/// ponytail: centroid of *all* matching pixels, not the largest connected component — upgrade to a
+/// ponytail: centroid of *all* matching pixels, not the largest connected component - upgrade to a
 /// union-find labelling if a second blob of the same colour ever needs to be ignored.
 pub fn track(frame: &Frame, params: &[f64]) -> Option<(f64, f64, f64)> {
     if frame.is_empty() || params.len() < 4 {
@@ -663,7 +663,7 @@ fn levels(img: &mut Frame, inb: f64, inw: f64, gamma: f64, outb: f64, outw: f64)
 }
 
 /// Lift/Gamma/Gain per channel (`pow(clamp(v*gain+lift,0,1), 1/gamma)`, reusing `lut_from`/`apply_lut`)
-/// then a cheap temp/tint post-pass shifting R/B (warmth) and G (tint) — the exact maths
+/// then a cheap temp/tint post-pass shifting R/B (warmth) and G (tint) - the exact maths
 /// `shaders::PRIMARIES` runs on the GPU (same 0.0015 scale, worked out in 0..1 space there vs 0..255
 /// here), so preview and export agree. All-default (lift 0, gamma 1, gain 1, temp/tint 0) is the identity.
 fn primaries(img: &mut Frame, lift: [f64; 3], gamma: [f64; 3], gain: [f64; 3], temp: f64, tint: f64) {
@@ -727,7 +727,7 @@ fn lut_effect(img: &mut Frame, path: &str, amount: f32) {
     }
 }
 
-/// Monotone cubic (Fritsch–Carlson) through (0,0) (0.25,a) (0.5,b) (0.75,c) (1,1) — the exact curve
+/// Monotone cubic (Fritsch–Carlson) through (0,0) (0.25,a) (0.5,b) (0.75,c) (1,1) - the exact curve
 /// `shaders::CURVES` evaluates on the GPU, so preview and export agree.
 pub fn curve_at(x: f64, a: f64, b: f64, c: f64) -> f64 {
     let y = [0.0, a, b, c, 1.0];
@@ -786,7 +786,7 @@ fn to_ycc(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
     (0.299 * r + 0.587 * g + 0.114 * b, -0.168736 * r - 0.331264 * g + 0.5 * b, 0.5 * r - 0.418688 * g - 0.081312 * b)
 }
 
-/// Key out colours near `key` (0..255) by their Cb/Cr distance, with spill removal. No edge shrink —
+/// Key out colours near `key` (0..255) by their Cb/Cr distance, with spill removal. No edge shrink -
 /// that needs neighbourhood taps; `shaders::CHROMA_KEY` does it on the GPU.
 /// Blend every pixel within `tol` of `from` towards `to`, fading out over `tol .. tol + soft`.
 /// Distances are normalised so 1.0 is the full black-to-white diagonal, matching the GPU body.
@@ -992,7 +992,7 @@ mod tests {
         let before = img2.rgba.clone();
         apply(&eff(K::Blur, &[0.0]), 0.0, 1.0, &mut img2, &mut scratch);
         assert_eq!(img2.rgba, before);
-        // a small radius at preview scale still blurs (must not round down to 0 px — preview == export)
+        // a small radius at preview scale still blurs (must not round down to 0 px - preview == export)
         for s in [0.05f32, 0.36, 0.5] {
             let mut small = noisy(16, 16);
             let v0 = variance(&small);
@@ -1488,7 +1488,7 @@ mod tests {
     }
 
     /// A freshly-added Qualifier (defaults: Hue Width at its max, Sat/Lum spanning 0..1) must be an
-    /// identity, not a keyer that blanks the frame — regression pin for the bug the selftest's
+    /// identity, not a keyer that blanks the frame - regression pin for the bug the selftest's
     /// `effects/round3` step caught (every EffectKind::ALL default must leave every pixel's alpha > 0).
     #[test]
     fn qualifier_default_is_identity() {

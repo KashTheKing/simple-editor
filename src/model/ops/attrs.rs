@@ -62,7 +62,7 @@ impl Project {
                     if let Some(content) = content {
                         dst.text = content;
                     }
-                    // the copied spans index the SOURCE's wording — clamp them to the destination's
+                    // the copied spans index the SOURCE's wording - clamp them to the destination's
                     // so no dangling range is saved (it could resurrect on a later text edit)
                     dst.clamp_spans();
                 } else {

@@ -1,11 +1,11 @@
 //! MCP server so AI agents (Claude Code etc.) can co-edit live: Streamable HTTP transport (JSON-RPC 2.0
-//! over HTTP POST /mcp on 127.0.0.1:<port>, no external crates — a tiny HTTP/1.1 parser on std TcpListener),
+//! over HTTP POST /mcp on 127.0.0.1:<port>, no external crates - a tiny HTTP/1.1 parser on std TcpListener),
 //! toggled in Settings. The server thread handles `initialize`, `ping`, `tools/list`, `tools/call`,
 //! `resources/list`, `resources/read` (project json, style summary, notes) and answers JSON
 //! (no SSE stream needed for request/response). Tool calls are forwarded to the UI thread as `ToolCall`s
 //! (the App executes them on the next frame against the live project, with undo, and replies through the
 //! oneshot sender); `ctx.request_repaint()` wakes the UI. Tool definitions (names, descriptions, JSON schemas)
-//! live in `tools.rs` — the App matches on the same names.
+//! live in `tools.rs` - the App matches on the same names.
 //!
 //! Connect from Claude Code:  `claude mcp add --transport http simple-editor http://127.0.0.1:7337/mcp`
 
@@ -272,7 +272,7 @@ fn dispatch(req: &Value, tx: &Sender<ToolCall>, ctx: &egui::Context) -> Option<V
         return Some(rpc_err(id.unwrap_or(Value::Null), -32600, "invalid request".into()));
     }
     if method.starts_with("notifications/") {
-        return None; // e.g. notifications/initialized — acknowledged with 202, no body
+        return None; // e.g. notifications/initialized - acknowledged with 202, no body
     }
     let id = id?; // no id = notification: nothing to answer
     let params = req.get("params").cloned().unwrap_or_else(|| json!({}));
@@ -350,7 +350,7 @@ fn call_tool(name: &str, args: Value, tx: &Sender<ToolCall>, ctx: &egui::Context
 }
 
 // ---------------------------------------------------------------------------
-// PNG (store-only zlib — no deps)
+// PNG (store-only zlib - no deps)
 
 /// Encode an RGBA frame as PNG (store-only zlib) for the `render.frame` tool.
 pub fn png_encode(frame: &crate::media::Frame) -> Vec<u8> {
@@ -516,7 +516,7 @@ mod tests {
         assert!(v["result"].is_object());
 
         // tools/list: one entry per registered ToolDef, with schemas (relaxed from a byte-identical
-        // tuple-order string to set-equality — see the workstream's review trail: splitting the old
+        // tuple-order string to set-equality - see the workstream's review trail: splitting the old
         // 64-row tuple across 5 grouped files doesn't reconstruct the original interleaved order)
         let (st, v) = post(&mut s, r#"{"jsonrpc":"2.0","id":3,"method":"tools/list"}"#);
         assert_eq!(st, 200);

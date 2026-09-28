@@ -1,12 +1,12 @@
 //! ---- ws:trim-model ----
-//! The trim primitive set: `EditPoint`/`Side` (the keyboard-trim selection unit — snap-engine's
+//! The trim primitive set: `EditPoint`/`Side` (the keyboard-trim selection unit - snap-engine's
 //! `TimelineState.edit_point` imports these rather than redefining them) plus every clip-edge/gap
 //! op (ripple/roll/slip/slide, splice/overwrite/lift/extract, join/duplicate/unnest/replace,
 //! magnetic_move). Every op mutates on a clone and applies atomically (stable ids, same track
-//! index, `Transition.id` kept — transitions key off `Clip.id`, never touched here) and honours
+//! index, `Transition.id` kept - transitions key off `Clip.id`, never touched here) and honours
 //! `Project::locked_of`. Ripple ops shift downstream content via the O(n) `close_gap`/
 //! `ripple_delete_range`/`ripple_open` core (editing.rs) and `Project::shift_time` for markers/cues/
-//! in-out — never per-drag-frame; a live gesture (timeline-trim-gestures, wave 2) must ghost-paint
+//! in-out - never per-drag-frame; a live gesture (timeline-trim-gestures, wave 2) must ghost-paint
 //! and apply these on release only.
 
 use crate::model::*;
@@ -33,7 +33,7 @@ pub enum Side {
 impl Project {
     // ---------- trim primitives ----------
 
-    /// Shift every clip (except `exclude`) starting at/after `at`, on `tracks`, by `dt` seconds — no
+    /// Shift every clip (except `exclude`) starting at/after `at`, on `tracks`, by `dt` seconds - no
     /// collision check (the caller has already decided this is a shove, not a move). O(n): one pass
     /// per track.
     fn shift_clips_from(&mut self, at: f64, dt: f64, exclude: Id, tracks: &[usize]) {
@@ -51,12 +51,12 @@ impl Project {
     /// (refuses on a same-track collision, exactly like the timeline's existing edge-drag gesture).
     /// `ripple=true` on the END edge additionally shifts every later clip on ripple tracks by the
     /// same delta `end()` moved (and skips the same-track collision guard, since downstream shifts
-    /// out of the way) — the standard "ripple trim". A START-edge trim never moves `end()`
+    /// out of the way) - the standard "ripple trim". A START-edge trim never moves `end()`
     /// (`Clip::trim_start` keeps the right edge fixed by construction), so there is nothing
     /// downstream to shift; `ripple` there only means "also move markers/cues/in-out with the edge"
-    /// via `shift_time` — the same-track collision guard against the *preceding* clip still applies.
+    /// via `shift_time` - the same-track collision guard against the *preceding* clip still applies.
     /// ponytail: a start-edge ripple trim never shoves the preceding clip out of the way either (that
-    /// is Slide's job) — refuses (no-op) exactly like the plain path when it would collide upstream.
+    /// is Slide's job) - refuses (no-op) exactly like the plain path when it would collide upstream.
     pub fn ripple_trim(&mut self, id: Id, start_edge: bool, new_edge: f64, ripple: bool) -> bool {
         let Some((ti, ci)) = self.find(id) else { return false };
         if self.locked_of(ti) {
@@ -134,7 +134,7 @@ impl Project {
     }
 
     /// Change the source window in place (start/duration untouched, only `src_in` moves), clamped to
-    /// `[0, asset.duration - src_len]` — the occupied source window either direction plays it, so the
+    /// `[0, asset.duration - src_len]` - the occupied source window either direction plays it, so the
     /// bound is the same for a reversed clip as a forward one. Per-clip clamp (not all-or-nothing):
     /// returns true iff at least one clip actually moved.
     pub fn slip(&mut self, ids: &[Id], dsrc: f64) -> bool {
@@ -185,7 +185,7 @@ impl Project {
             let md = self.max_clip_duration(&l);
             l.trim_end(new_start, md);
             if (l.end() - new_start).abs() > EPS {
-                return false; // an asset boundary would leave a gap or overlap — refuse, don't desync
+                return false; // an asset boundary would leave a gap or overlap - refuse, don't desync
             }
             let li = self.tracks[ti].clips.iter().position(|o| o.id == l.id).unwrap();
             self.tracks[ti].clips[li] = l;
@@ -209,7 +209,7 @@ impl Project {
     /// Asymmetric multi-roller trim: every listed `(clip_id, is_start)` edge moves by the same `dt`,
     /// all-or-nothing. `ripple=true` only lifts the same-call collision guard between the listed
     /// edges (so multiple rollers can pass each other); it does not also shove a non-participant
-    /// clip out of the way — call `ripple_trim` per edge for that.
+    /// clip out of the way - call `ripple_trim` per edge for that.
     /// ponytail: no downstream shift for the ripple case here (pro-timeline's asymmetric-trim UI is
     /// expected to compose `ripple_trim` per edge when a true ripple shift across a multi-roller set
     /// is wanted); this keeps the all-or-nothing multi-clip case simple and correctly refusable.
@@ -268,7 +268,7 @@ impl Project {
                 self.roll_edit(right_id, to)
             }
             Side::Left => {
-                // outgoing side: the clip ENDING at this boundary — trim its end edge.
+                // outgoing side: the clip ENDING at this boundary - trim its end edge.
                 let Some(id) = tr.clips.iter().find(|c| (c.end() - ep.t).abs() < ABUT_EPS).map(|c| c.id) else {
                     return false;
                 };
@@ -276,7 +276,7 @@ impl Project {
                 self.ripple_trim(id, false, to, ripple)
             }
             Side::Right => {
-                // incoming side: the clip STARTING at this boundary — trim its start edge.
+                // incoming side: the clip STARTING at this boundary - trim its start edge.
                 let Some(id) = tr.clips.iter().find(|c| (c.start - ep.t).abs() < ABUT_EPS).map(|c| c.id) else {
                     return false;
                 };
@@ -287,7 +287,7 @@ impl Project {
     }
 
     /// Overwrite edit: clears [at, at+dur) on the resolved video/audio track(s) only (split at both
-    /// bounds, delete what's fully inside — other tracks are untouched), then places the asset via
+    /// bounds, delete what's fully inside - other tracks are untouched), then places the asset via
     /// `insert_asset_clips_ranged`. No ripple.
     pub fn overwrite_asset(
         &mut self,
@@ -352,7 +352,7 @@ impl Project {
         self.insert_asset_clips_ranged(asset, at, video_track, audio_track, range)
     }
 
-    /// Remove [a, b) on `tracks` (default: every track), leaving a gap — nothing shifts. Locked
+    /// Remove [a, b) on `tracks` (default: every track), leaving a gap - nothing shifts. Locked
     /// tracks are dropped from the scope (a mixed locked/unlocked set still lifts the unlocked ones).
     pub fn lift_range(&mut self, a: f64, b: f64, tracks: Option<&[usize]>) -> Vec<Id> {
         if b <= a + EPS {
@@ -380,7 +380,7 @@ impl Project {
         ids
     }
 
-    /// Remove [a, b) and close the gap (default: `ripple_tracks()`) — a thin wrapper, not a
+    /// Remove [a, b) and close the gap (default: `ripple_tracks()`) - a thin wrapper, not a
     /// reimplementation of split+delete+close_gap (that's `ripple_delete_range`, editing.rs). Locked
     /// tracks are dropped from the scope first (same rule as `lift_range`).
     pub fn extract_range(&mut self, a: f64, b: f64, tracks: Option<&[usize]>) -> Vec<Id> {
@@ -397,7 +397,7 @@ impl Project {
     }
 
     /// Merge `left` with its right neighbour on the same track when they're the same asset with
-    /// contiguous, non-reversed source time and matching speed — keeps `left`'s id.
+    /// contiguous, non-reversed source time and matching speed - keeps `left`'s id.
     pub fn join_through(&mut self, left: Id) -> bool {
         let Some(ti) = self.track_of(left) else { return false };
         if self.locked_of(ti) {
@@ -459,7 +459,7 @@ impl Project {
 
     /// Flatten a `Sequence` clip back onto the timeline at its original positions (the inverse of
     /// `nest_selection`); refuses (returns empty) if the clip is retimed or its source window doesn't
-    /// start at zero — compositing a nested retime into the flattened children's own starts is a
+    /// start at zero - compositing a nested retime into the flattened children's own starts is a
     /// documented ceiling, not implemented here.
     pub fn unnest(&mut self, clip: Id) -> Vec<Id> {
         let Some((ti, ci)) = self.find(clip) else { return Vec::new() };
@@ -489,7 +489,7 @@ impl Project {
         new_ids
     }
 
-    /// Swap `clip`'s asset (and reset `src_in` to 0) — duration, effects, transform and label are
+    /// Swap `clip`'s asset (and reset `src_in` to 0) - duration, effects, transform and label are
     /// left exactly as they were.
     pub fn replace_clip(&mut self, clip: Id, asset: Id) -> bool {
         let Some(ti) = self.track_of(clip) else { return false };
@@ -510,7 +510,7 @@ impl Project {
             return false;
         }
         // `dtrack != 0` cross-track shoving needs move_clips' track_kind filter armed with the moved
-        // clips' own kind — passing None (as an earlier version of this fn did) silently made dtrack a
+        // clips' own kind - passing None (as an earlier version of this fn did) silently made dtrack a
         // no-op, since move_clips only changes track when `track_kind == Some(kind)`.
         let kind = ids.first().and_then(|&id| self.track_of(id)).map(|ti| self.tracks[ti].kind);
         if self.move_clips(&ids, dt, dtrack, kind) {

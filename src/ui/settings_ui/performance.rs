@@ -5,7 +5,7 @@
 use crate::settings::Settings;
 use eframe::egui;
 
-/// `clear_caches`: ---- ws:forgiveness ---- — set true when the button below is clicked; the app
+/// `clear_caches`: ---- ws:forgiveness ---- - set true when the button below is clicked; the app
 /// (windows.rs) reads it after calling `show`/`performance` and runs `caches::clear`, since this leaf
 /// function has no `&mut App` to call it with directly.
 pub(super) fn performance(ui: &mut egui::Ui, s: &mut Settings, gpu_name: &str, clear_caches: &mut bool) -> bool {
@@ -24,7 +24,7 @@ pub(super) fn performance(ui: &mut egui::Ui, s: &mut Settings, gpu_name: &str, c
             let mut q = s.preview_quality.clamp(25, 100);
             changed |= ui.add(egui::DragValue::new(&mut q).range(25..=100).suffix(" %").speed(1)).changed();
             s.preview_quality = q;
-            ui.weak("of the preview size — lower is faster, the export is unaffected");
+            ui.weak("of the preview size - lower is faster, the export is unaffected");
         });
         ui.end_row();
 
@@ -59,7 +59,7 @@ pub(super) fn performance(ui: &mut egui::Ui, s: &mut Settings, gpu_name: &str, c
                 let mut h = s.proxy_height.clamp(120, 2160);
                 changed |= ui.add(egui::DragValue::new(&mut h).range(120..=2160).suffix(" px").speed(10)).changed();
                 s.proxy_height = h;
-                ui.weak("proxy height — built in the background, exports always use the originals");
+                ui.weak("proxy height - built in the background, exports always use the originals");
             });
         });
         ui.end_row();

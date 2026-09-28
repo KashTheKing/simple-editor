@@ -30,7 +30,7 @@ impl App {
     }
 
     /// Render one catalogue thumbnail per `EffectKind` over the stock image and hand them to the effects
-    /// panel. Runs once per (stock image, size) — the GPU renderer owns the GL context, so this happens on
+    /// panel. Runs once per (stock image, size) - the GPU renderer owns the GL context, so this happens on
     /// the UI thread. Without a GPU the panel keeps its neutral named cards.
     pub(super) fn export_frames(&self) -> crate::engine::export::FrameSource {
         match self.gpu {
@@ -77,11 +77,11 @@ impl App {
         self.effect_thumbs_key = None;
         self.gpu_failed = true;
         self.player.set_gpu(false);
-        self.toast(format!("GPU rendering unavailable ({why}) — using the CPU compositor"));
+        self.toast(format!("GPU rendering unavailable ({why}) - using the CPU compositor"));
     }
 
     /// Render the timeline into a GL texture and register it with egui, so the preview paints the GPU's
-    /// own canvas — no glReadPixels, no re-upload. None when there is no GPU (the caller falls back to
+    /// own canvas - no glReadPixels, no re-upload. None when there is no GPU (the caller falls back to
     /// `gpu_frame`). The texture is only valid for this frame, which is exactly how long it is painted.
     pub(super) fn gpu_preview_texture(
         &mut self,
@@ -144,7 +144,7 @@ impl App {
     }
 
     /// One frame at `t`, `w` px wide, through the same path the preview uses (GPU when it is on, the
-    /// player's compositor otherwise) — export-frame and the MCP tools.
+    /// player's compositor otherwise) - export-frame and the MCP tools.
     pub(super) fn render_frame_now(&mut self, t: f64, w: u32) -> Option<Arc<Frame>> {
         if self.gpu.is_some() {
             let (pw, ph) = (self.project.width.max(16), self.project.height.max(16));
@@ -174,12 +174,12 @@ impl App {
 
     // ---- ws:export-deliver ----
     /// Render Selection / `render.range`: pre-render an explicit `[a, b)` into the movie-mode cache
-    /// without touching the in/out points (or the in/out request already in flight — `PreRender::
+    /// without touching the in/out points (or the in/out request already in flight - `PreRender::
     /// request` merges ranges). Turns movie mode on if it was off, or the cache would never be read.
     pub(crate) fn request_prerender_range(&mut self, a: f64, b: f64) -> Result<(), &'static str> {
         let (a, b) = (a.max(0.0), b.min(self.project.duration()));
         if !(b > a) {
-            return Err("Nothing to render — the range is empty");
+            return Err("Nothing to render - the range is empty");
         }
         self.settings.movie_mode = true;
         let App { prerender, project, .. } = self;

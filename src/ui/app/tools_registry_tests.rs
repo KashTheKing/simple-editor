@@ -1,7 +1,7 @@
 //! ---- ws:registries-schema-hooks ----
 //! Structural parity tests: every `Project` edit op is either scriptable (has an MCP tool) or has a
 //! recorded reason it isn't, and every `Action` resolves through `ui.action`'s id round-trip.
-//! Test-only (`#[cfg(test)] mod tools_registry_tests;` in `mod.rs`) — `OP_TOOLS`/`OP_INTERNAL` exist
+//! Test-only (`#[cfg(test)] mod tools_registry_tests;` in `mod.rs`) - `OP_TOOLS`/`OP_INTERNAL` exist
 //! purely to drive `every_edit_op_has_a_tool`.
 
 #![cfg(test)]
@@ -78,7 +78,7 @@ const OP_TOOLS: &[(&str, &str)] = &[
     // ---- ws:media-library ----
     ("apply_consolidate", "media.consolidate"),
     // Documentation only (like forgiveness's rows below): `consolidate_assets_copy` is an associated
-    // fn (file I/O, no `&mut self`), so the scan never sees it — it is media.consolidate's copy phase.
+    // fn (file I/O, no `&mut self`), so the scan never sees it - it is media.consolidate's copy phase.
     ("consolidate_assets_copy", "media.consolidate"),
     // ---- ws:transcript-captions ----
     ("set_transcript", "transcript.set"),
@@ -91,7 +91,7 @@ const OP_TOOLS: &[(&str, &str)] = &[
     ("multicam_switch", "multicam.switch"),
 ];
 
-/// (Project op fn name, why it has no MCP tool yet). Every entry is a real, deliberate gap — either a
+/// (Project op fn name, why it has no MCP tool yet). Every entry is a real, deliberate gap - either a
 /// pure accessor/internal helper, or a feature that's UI/hotkey-only today (a later workstream may add
 /// the tool; this table just keeps the omission honest instead of silently missing).
 const OP_INTERNAL: &[(&str, &str)] = &[
@@ -112,7 +112,7 @@ const OP_INTERNAL: &[(&str, &str)] = &[
     ("set_enabled", "Action::ToggleEnabled is a hotkey/UI action; clip.set's fields.enabled sets one clip directly"),
     ("toggle_link", "Action::LinkToggle is a hotkey/UI action, not an MCP tool"),
     ("flow_clips", "Action::ApplyFlow is a hotkey/UI action, not an MCP tool"),
-    ("ensure_graph", "internal — called by clip.add_node on first use, not itself exposed"),
+    ("ensure_graph", "internal - called by clip.add_node on first use, not itself exposed"),
     ("unlink_graph", "no MCP tool yet (UI-only)"),
     ("snap_marker_to_nearest_clip", "UI-only marker-drag snapping, not a tool argument"),
     ("link_marker_to_closest_clip", "UI-only marker-drag snapping, not a tool argument"),
@@ -143,16 +143,16 @@ const OP_INTERNAL: &[(&str, &str)] = &[
     // ---- ws:trim-model ----
     (
         "insert_asset_clips_ranged",
-        "superseded by splice_in/overwrite_asset, which call it directly — no separate MCP tool",
+        "superseded by splice_in/overwrite_asset, which call it directly - no separate MCP tool",
     ),
     // ---- ws:forgiveness ----
     // Documentation only: `scan_mut_self_fns` only scans OP_FILES (src/model/ops/*.rs); none of these
     // three live there (they live in src/ui/app/*), so the scan can never find or exercise these
-    // entries — they exist purely so a reader of this table isn't left wondering why history.restore/
+    // entries - they exist purely so a reader of this table isn't left wondering why history.restore/
     // caches.clear/project.recover (all real MCP tools, see tools_project.rs) have no OP_TOOLS row.
-    ("caches::clear", "lives in src/ui/app/caches.rs, not src/model/ops/*.rs — exempt from this scan"),
-    ("recovery::recover_candidate", "lives in src/ui/app/recovery.rs, not src/model/ops/*.rs — exempt from this scan"),
-    ("history_ui::restore_at", "lives in src/ui/history_ui.rs, not src/model/ops/*.rs — exempt from this scan"),
+    ("caches::clear", "lives in src/ui/app/caches.rs, not src/model/ops/*.rs - exempt from this scan"),
+    ("recovery::recover_candidate", "lives in src/ui/app/recovery.rs, not src/model/ops/*.rs - exempt from this scan"),
+    ("history_ui::restore_at", "lives in src/ui/history_ui.rs, not src/model/ops/*.rs - exempt from this scan"),
 ];
 
 const OP_FILES: &[&str] = &[
@@ -181,7 +181,7 @@ const OP_FILES: &[&str] = &[
 /// Every `pub fn NAME(...)` in `src` whose PARAMETER LIST (the balanced-paren span right after the
 /// name, not an arbitrary trailing window) contains `&mut self`. Scoping to the parameter list (rather
 /// than "the next N chars", which the plan's own text suggested) avoids a false positive from the next
-/// function down starting within that window — e.g. `asset(&self, ...)` immediately followed by
+/// function down starting within that window - e.g. `asset(&self, ...)` immediately followed by
 /// `asset_mut(&mut self, ...)` a few dozen characters later.
 fn scan_mut_self_fns(src: &str) -> Vec<String> {
     let mut names = Vec::new();
@@ -227,7 +227,7 @@ fn every_edit_op_has_a_tool() {
             let internal = OP_INTERNAL.iter().any(|(n, _)| *n == name);
             assert!(
                 tool.is_some() || internal,
-                "Project::{name} has neither an OP_TOOLS entry nor an OP_INTERNAL reason — add one"
+                "Project::{name} has neither an OP_TOOLS entry nor an OP_INTERNAL reason - add one"
             );
             if let Some(tool) = tool {
                 assert!(
@@ -241,7 +241,7 @@ fn every_edit_op_has_a_tool() {
 
 // ---- ws:color-engine ----
 /// clip.add_lut/color.auto/color.match/looks.list/looks.apply are declared canonical/sole-registration
-/// crate-wide (see plans/ui-overhaul/issues/color-engine.md) — a later-wave workstream (inspector-
+/// crate-wide (see plans/ui-overhaul/issues/color-engine.md) - a later-wave workstream (inspector-
 /// gallery, source-monitor) re-declaring one under a different-args duplicate must fail here (and
 /// tool_names_unique_and_namespaced would also catch an exact-name collision, but a same-purpose tool
 /// under a *different* name would slip past that test, not this one's fixed-name list).
@@ -255,7 +255,7 @@ fn tool_names_are_sole_registration() {
 
 // ---- ws:timeline-trim-gestures ----
 /// Every gesture/act this workstream binds to the mouse is a 1:1 use of an already-tooled trim-model
-/// primitive — no new MCP surface. (label, tool name(s) that must resolve in `mcp::tools::all()`);
+/// primitive - no new MCP surface. (label, tool name(s) that must resolve in `mcp::tools::all()`);
 /// Segment composes two ops (extract at the source, splice at the destination), so it lists both.
 const GESTURE_TOOL_TWINS: &[(&str, &[&str])] = &[
     ("Roll", &["timeline.roll"]),
@@ -297,7 +297,7 @@ fn ui_action_covers_every_action() {
 // deviation (see PR body): `App::new` requires a real `eframe::CreationContext` (a live GL context from
 // `eframe::run_native`), and this crate has no headless App-construction path anywhere (confirmed
 // pre-existing: see the doc comment atop src/ui/app/tests.rs, and no other test in the crate calls an
-// `&mut App` method) — `eframe::CreationContext`'s fields are private with no public constructor, so
+// `&mut App` method) - `eframe::CreationContext`'s fields are private with no public constructor, so
 // there is no way to build one in a `#[test]` without eframe itself running a window. The four tests
 // below are the narrower, non-App-dependent versions: `run_snapshot_if_mutate`'s and `App::enabled`'s
 // decision logic were each split into a plain function (`snapshot_if_mutate` in mcp_exec.rs,
@@ -306,7 +306,7 @@ fn ui_action_covers_every_action() {
 // its own source, the same technique `scan_mut_self_fns` above already uses in this file.
 
 /// `run_snapshot_if_mutate` (via the extracted `snapshot_if_mutate`) must snapshot before a Mutate-kind
-/// call and nothing else — a Read/Job/Ui tool must never pay for a `to_json()` it can't roll back to
+/// call and nothing else - a Read/Job/Ui tool must never pay for a `to_json()` it can't roll back to
 /// anything (nothing pushes undo for it either).
 #[test]
 fn run_tool_undoable_snapshots_only_mutate() {
@@ -342,11 +342,11 @@ fn default_asset() -> crate::model::Asset {
 }
 
 /// A Mutate tool that mutates the project then returns `Err` must be a no-op: `run_rollback` restores
-/// the exact pre-call JSON (`handle_tool`/`run_script` both call it this way — see mcp_exec.rs). Full
+/// the exact pre-call JSON (`handle_tool`/`run_script` both call it this way - see mcp_exec.rs). Full
 /// `App::run_rollback` needs a live `App` (see the App-construction deviation noted above), so this picks
 /// real `ToolKind::Mutate` rows out of the registry via `mcp::tools::all()` and exercises the actual
 /// `snapshot_if_mutate` + `rollback_project` pair `run_rollback` is built from (rather than
-/// re-implementing `Project::from_json` inline) — a bug in either (e.g. dropping the restore) fails this.
+/// re-implementing `Project::from_json` inline) - a bug in either (e.g. dropping the restore) fails this.
 #[test]
 fn mutate_rows_roll_back_on_error() {
     use super::mcp_exec::{rollback_project, snapshot_if_mutate};
@@ -368,20 +368,20 @@ fn mutate_rows_roll_back_on_error() {
 }
 
 /// The bug this whole review found: `App::enabled`'s guard match must cover every one of its documented
-/// arms — this is what makes `act()`'s new prelude (and `ui.action`) actually toast a reason instead of
+/// arms - this is what makes `act()`'s new prelude (and `ui.action`) actually toast a reason instead of
 /// silently no-op'ing. Exercised via `enabled_for` since `enabled` itself needs a live `App`.
 #[test]
 fn action_enabled_toasts_reason() {
     use crate::hotkeys::Action;
     // an export running blocks Save/SaveProjectAs/ExportVideo/ExportLossless...
     for a in [Action::Save, Action::SaveProjectAs, Action::ExportVideo, Action::ExportLossless] {
-        assert_eq!(App::enabled_for(a, true, false, true), Err("An export is running — try again when it finishes"));
+        assert_eq!(App::enabled_for(a, true, false, true), Err("An export is running - try again when it finishes"));
     }
     // ...but does not block an unrelated action
     assert_eq!(App::enabled_for(Action::Undo, true, false, true), Ok(()));
     // an empty timeline blocks export specifically (checked ahead of the export-running arm's absence)
     for a in [Action::ExportVideo, Action::ExportLossless] {
-        assert_eq!(App::enabled_for(a, false, true, true), Err("Nothing to export — the timeline is empty"));
+        assert_eq!(App::enabled_for(a, false, true, true), Err("Nothing to export - the timeline is empty"));
     }
     // nothing copied blocks PasteAttributes
     assert_eq!(
@@ -389,7 +389,7 @@ fn action_enabled_toasts_reason() {
         Err("Copy attributes from a clip first (Ctrl+Alt+C)")
     );
     assert_eq!(App::enabled_for(Action::PasteAttributes, false, false, false), Ok(()));
-    // and act()'s prelude must actually call this — not just have it exist unused
+    // and act()'s prelude must actually call this - not just have it exist unused
     let src = include_str!("actions.rs");
     let dispatch_start = src.find("for f in ACT_HANDLERS").expect("act()'s ACT_HANDLERS loop");
     let prelude = &src[..dispatch_start];
@@ -401,7 +401,7 @@ fn action_enabled_toasts_reason() {
 }
 
 /// `run_script` must push exactly ONE undo entry for the whole script, not one per tool call inside it
-/// — verified by scanning its own source: the per-call closure must never push undo itself, and the
+/// - verified by scanning its own source: the per-call closure must never push undo itself, and the
 /// function must push undo exactly once, after the whole script has run.
 #[test]
 fn run_script_pushes_one_undo_per_script() {

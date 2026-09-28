@@ -1,10 +1,10 @@
 //! ---- ws:layout-modes-onboarding ----
-//! First-run welcome: a non-blocking `egui::Window` (the editor behind it stays fully usable — drop a
+//! First-run welcome: a non-blocking `egui::Window` (the editor behind it stays fully usable - drop a
 //! file, press Space, whatever) with the four cards `plans/ui-overhaul/README.md`'s "First sessions"
 //! describes: (1) Simple & adaptive (Dynamic) or Classic panels (Granular), (2) ffmpeg status from ONE
 //! probe when the window first draws, never per frame, (3) twelve keys to know with "Show all…"
 //! opening the F1 cheat sheet, (4) a starting format plus an OPT-IN checkbox for the Explorer
-//! "Edit with Simple Editor" entry — the registry is written only from Finish, only when ticked, and
+//! "Edit with Simple Editor" entry - the registry is written only from Finish, only when ticked, and
 //! only under the same guard `App::new` used to apply unconditionally (release build, not already
 //! installed). No `App` in here: `ui::app::layout_ctl` owns the glue (arming, Finish side effects),
 //! so `show`/`finish` are unit-testable like every other window in this crate.
@@ -21,14 +21,14 @@ use eframe::egui;
 pub struct Onboarding {
     /// 0..=3, one card each.
     pub step: u8,
-    /// "dynamic" | "granular" — pre-selected from the current setting (Dynamic on a fresh install).
+    /// "dynamic" | "granular" - pre-selected from the current setting (Dynamic on a fresh install).
     pub mode: String,
     /// Card 4's opt-in. Defaults to `Settings.context_menu` so a plain Finish reproduces the old
     /// behaviour bit-for-bit for a user who never touched the setting.
     pub install_context_menu: bool,
     /// `guides::PRESETS` index picked on card 4; `None` keeps the project's default 1080p60.
     pub template: Option<usize>,
-    /// (found, status text) — probed once by `show` on the card's first draw, never per frame.
+    /// (found, status text) - probed once by `show` on the card's first draw, never per frame.
     ffmpeg: Option<(bool, String)>,
 }
 
@@ -79,7 +79,7 @@ pub fn install_allowed(debug_build: bool, installed: bool) -> bool {
 }
 
 /// Finish: persist the choices, swap in the Simple workspace when Dynamic was picked (Simple+Dynamic
-/// and Classic+Granular are the same choice — Classic keeps whatever layout is there), and call
+/// and Classic+Granular are the same choice - Classic keeps whatever layout is there), and call
 /// `install` iff the box is ticked AND `allowed` (`install_allowed` evaluated by the caller). Returns
 /// whether `install` ran. `Settings.context_menu` records the answer either way, so the Settings tab
 /// and `boot::run`'s consented re-point agree with it.
@@ -106,7 +106,7 @@ fn ffmpeg_status() -> (bool, String) {
 }
 
 /// Draws the wizard while `st` exists. `Some(outcome)` when the user finished, closed or asked for the
-/// cheat sheet — the caller applies it (see `Outcome`). Reads settings only; `finish` mutates.
+/// cheat sheet - the caller applies it (see `Outcome`). Reads settings only; `finish` mutates.
 pub fn show(ctx: &egui::Context, st: &mut Onboarding, settings: &Settings, hotkeys: &Hotkeys) -> Option<Outcome> {
     let mut out = None;
     let mut open = true;
@@ -178,7 +178,7 @@ fn mode_card(ui: &mut egui::Ui, st: &mut Onboarding) {
         ui,
         "granular",
         "Classic panels",
-        "Every panel stays exactly where you put it. A selection only lights up the tab that could help — \
+        "Every panel stays exactly where you put it. A selection only lights up the tab that could help - \
          you switch tabs yourself. Pin any tab to opt it out either way.",
     );
     ui.weak("Change it any time: Ctrl+Shift+G, the View menu, or Settings ▸ General.");
@@ -214,7 +214,7 @@ fn keys_card(ui: &mut egui::Ui, hotkeys: &Hotkeys) -> bool {
                 ui.label(a.label());
                 let text = hotkeys.text(a);
                 if text.is_empty() {
-                    ui.weak("—");
+                    ui.weak(" - ");
                 } else {
                     ui.monospace(text);
                 }
@@ -234,12 +234,12 @@ fn keys_card(ui: &mut egui::Ui, hotkeys: &Hotkeys) -> bool {
 fn template_card(ui: &mut egui::Ui, st: &mut Onboarding, settings: &Settings) {
     ui.heading("Start with a format");
     ui.add_space(4.0);
-    ui.radio_value(&mut st.template, None, "Keep the default — 1920×1080 at 60 fps");
+    ui.radio_value(&mut st.template, None, "Keep the default - 1920×1080 at 60 fps");
     egui::ScrollArea::vertical().max_height(150.0).show(ui, |ui| {
         for (i, p) in PRESETS.iter().enumerate() {
             ui.horizontal(|ui| {
                 glyph_label(ui, p.glyph, ui.visuals().text_color());
-                ui.radio_value(&mut st.template, Some(i), format!("{} — {}×{} at {:.0} fps", p.name, p.w, p.h, p.fps));
+                ui.radio_value(&mut st.template, Some(i), format!("{} - {}×{} at {:.0} fps", p.name, p.w, p.h, p.fps));
             });
         }
     });
@@ -270,7 +270,7 @@ mod tests {
     }
 
     /// `egui_tiles::Tiles::invisible` is an `ahash::HashSet<TileId>`, so its serialized array order
-    /// is not stable across two independently-built `Tiles` (even with identical contents) — sort it
+    /// is not stable across two independently-built `Tiles` (even with identical contents) - sort it
     /// before a structural JSON comparison so the test compares sets, not incidental hash order.
     fn normalize_invisible(v: &mut serde_json::Value) {
         if let Some(arr) = v.get_mut("invisible").and_then(|x| x.as_array_mut()) {

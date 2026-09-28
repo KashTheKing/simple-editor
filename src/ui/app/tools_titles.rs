@@ -1,17 +1,17 @@
 //! ---- ws:text-titles ----
 //! 4 MCP tools for this workstream: `titles.list`/`titles.place` (the Gallery Titles tab's tool
-//! surface — `App::place_title_template`, actions.rs, is the UI-path twin that additionally does its
+//! surface - `App::place_title_template`, actions.rs, is the UI-path twin that additionally does its
 //! own push_undo/selection/after_edit, since `run_tool_undoable` only wraps the tool path), `text.animate`
-//! (apply/merge a motion preset onto a clip, the Text inspector's Animation row's tool twin —
+//! (apply/merge a motion preset onto a clip, the Text inspector's Animation row's tool twin -
 //! `presets::apply_motion`/`merge_motion` directly, same as `inspector_text::section`'s Apply button),
 //! `templates.expose` (rewrite a saved user template's `Clip.exposed`).
 //!
 //! DEVIATION from the plan's MCP table (see PR body): `templates.expose` is `ToolKind::Ui`, not
 //! `Mutate`. `run_tool_undoable`'s snapshot/undo is `self.project.to_json()`-diff based (mcp_exec.rs
-//! `run_snapshot_if_mutate`/`run_rollback`) — it can only ever detect and undo a PROJECT change.
+//! `run_snapshot_if_mutate`/`run_rollback`) - it can only ever detect and undo a PROJECT change.
 //! `templates.expose` rewrites `Settings.templates`, not `Project`, so a `Mutate` kind would silently
 //! push zero undo entries (project JSON never changes) and never roll back a failed partial write
-//! either. `tools_gallery.rs`'s `inspector.folds` — also a `Settings`-only write — is the exact
+//! either. `tools_gallery.rs`'s `inspector.folds` - also a `Settings`-only write - is the exact
 //! precedent this follows: `ToolKind::Ui`, `settings.save()` inline, no undo.
 
 use super::tools_args::Args;
@@ -63,7 +63,7 @@ pub const TOOLS: &[ToolDef] = &[
                 .ok_or_else(|| format!("no title template '{name}'"))?;
             let (clips, assets) =
                 crate::engine::presets::decode_template(&tpl).ok_or("title template is corrupted")?;
-            // positional zip against the PRE-place clips' `.exposed` — verified 1:1 only for
+            // positional zip against the PRE-place clips' `.exposed` - verified 1:1 only for
             // Text/Shape/Adjustment templates (builtin_titles() and is_text_template both guarantee
             // that kind set), length-checked defensively rather than assumed.
             let exposed_by_index: Vec<Vec<String>> = clips.iter().map(|c| c.exposed.clone()).collect();
@@ -81,7 +81,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "text.animate",
-        desc: "Apply a motion preset's keyframes to a clip's Position/Scale/Rotation/Opacity — apply_motion (replace, stretched to the clip's length) or merge_motion (merge, layered on from the playhead) when merge is true. Same call `inspector_text::section`'s Animation-row Apply button makes.",
+        desc: "Apply a motion preset's keyframes to a clip's Position/Scale/Rotation/Opacity - apply_motion (replace, stretched to the clip's length) or merge_motion (merge, layered on from the playhead) when merge is true. Same call `inspector_text::section`'s Animation-row Apply button makes.",
         args: &[
             "clip_id:integer:true:target clip",
             "preset:string:true:a builtin_motions() or Settings.motion_presets name",
@@ -110,7 +110,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "templates.expose",
-        desc: "Rewrite a saved user template's captured clips, setting Clip.exposed on each addressed clip_index (position within the template's own clip list, not a live id). Settings-level (Settings.templates) — see this file's DEVIATION doc comment for why this is ToolKind::Ui, not Mutate.",
+        desc: "Rewrite a saved user template's captured clips, setting Clip.exposed on each addressed clip_index (position within the template's own clip list, not a live id). Settings-level (Settings.templates) - see this file's DEVIATION doc comment for why this is ToolKind::Ui, not Mutate.",
         args: &["name:string:true:a Settings.templates entry", "fields:array:true:[{clip_index:integer, field:string}] to mark exposed"],
         kind: ToolKind::Ui,
         run: |app, args| {
@@ -151,7 +151,7 @@ mod tests {
     }
 
     /// `titles.place` on a 2-clip template with `exposed` on the SECOND clip must resolve to the
-    /// second RETURNED id, not the first — the whole point of the positional zip.
+    /// second RETURNED id, not the first - the whole point of the positional zip.
     #[test]
     fn titles_place_resolves_exposed_to_live_ids() {
         let mut app_project = Project::new();

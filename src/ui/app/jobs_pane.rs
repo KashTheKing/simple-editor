@@ -1,13 +1,13 @@
 //! ---- ws:jobs-panel ----
 //! `Pane::Jobs`'s App side: an AGGREGATOR over the job holders `App` already has (export slot, render
 //! queue, bakes, converts, media/MCP jobs, proxy build, downloads, whisper/tracking/TTS, recordings,
-//! the waveform/thumbnail/pre-render caches, ffprobe) — no new registry, no change to any job-start
+//! the waveform/thumbnail/pre-render caches, ffprobe) - no new registry, no change to any job-start
 //! site. `tick` (FRAME_HOOKS) takes one snapshot per frame into `App.jobs`; `draw` (PANE_DRAWERS),
 //! `indicator` (menu bar) and the `jobs.*` tools read that snapshot; `apply` honours the widget's
 //! response. Worker-shared mutexes are read with `try_lock` only (a busy worker shows "…").
 //!
 //! deviation (see PR body): tests that the plan describes against a live `App` run against the pure
-//! halves instead (`rows_from(&Holders)`, `cancel_core`, `reorder_queue`) — this crate has no
+//! halves instead (`rows_from(&Holders)`, `cancel_core`, `reorder_queue`) - this crate has no
 //! headless `App`-construction path (monitor.rs / tools_registry_tests.rs document the same).
 
 use super::*;
@@ -17,7 +17,7 @@ use std::collections::VecDeque;
 /// A progress-backed job: (kind, label, progress).
 pub(super) type ProgJob = (JobKind, String, Arc<Progress>);
 
-/// Everything `rows_from` needs, gathered from `App` by `holders` — a plain struct so the row logic is
+/// Everything `rows_from` needs, gathered from `App` by `holders` - a plain struct so the row logic is
 /// testable without an `App`.
 #[derive(Default)]
 pub(super) struct Holders {
@@ -166,7 +166,7 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
             app.surface(Pane::Jobs);
         }
     }
-    // queued proxies need a stat per asset — only while the pane is actually shown, every 2 s
+    // queued proxies need a stat per asset - only while the pane is actually shown, every 2 s
     if drew && app.settings.use_proxies {
         let scan = &mut app.jobs.proxy_queued;
         if scan.0.is_none_or(|t| t <= now) {
@@ -185,7 +185,7 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
     let rows = rows(app);
     let fresh = app.jobs.note(rows, now);
     if app.settings.jobs_auto_reveal && fresh.iter().any(|id| !id.starts_with("mcp:")) {
-        // Dynamic: switch the tab (pin-aware); Granular: glow only. Never re-opens a hidden pane —
+        // Dynamic: switch the tab (pin-aware); Granular: glow only. Never re-opens a hidden pane -
         // the menu-bar indicator covers that case (goals.md "panels that jump around").
         layout_ctl::surface(app, Pane::Jobs);
     }
@@ -214,7 +214,7 @@ pub(super) fn indicator(app: &mut App, ui: &mut egui::Ui) {
         return;
     }
     app.jobs.drew = true;
-    let r = ui.add(egui::Button::new(format!("{n}")).small()).on_hover_text("Background jobs — show the Jobs pane");
+    let r = ui.add(egui::Button::new(format!("{n}")).small()).on_hover_text("Background jobs - show the Jobs pane");
     tools::glyph_label(ui, tools::Glyph::Queue, ui.visuals().text_color());
     if r.clicked() {
         app.toggle_pane(Pane::Jobs);
@@ -240,7 +240,7 @@ fn split_id(id: &str) -> Result<(&str, usize), String> {
 }
 
 /// Pure half of Cancel: sets the progress flag / drops the queued export. `Ok(Some(kind))` = a
-/// recording — the caller must stop its `Capture` (that takes `&mut App`).
+/// recording - the caller must stop its `Capture` (that takes `&mut App`).
 pub(super) fn cancel_core<T>(jobs: &[ProgJob], queue: &mut VecDeque<T>, id: &str) -> Result<Option<JobKind>, String> {
     let (k, i) = split_id(id)?;
     if k == JobKind::QueuedExport.name() {

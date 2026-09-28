@@ -2,7 +2,7 @@
 //! Typed MCP argument extraction, wrapping the existing `arg_str`/`arg_f64`/`arg_u64`/`arg_bool`/
 //! `arg_ids`/`req` free fns (`tools_helpers.rs`) verbatim so a future tool's `run` fn stays 3-6 lines.
 //! Nothing in this workstream's own new tools needs the defaulting helpers below yet (`ids_or_selection`/
-//! `t_or_playhead`/`track_or_hovered`) — they exist for wave-1+ tools (e.g. a detection tool that
+//! `t_or_playhead`/`track_or_hovered`) - they exist for wave-1+ tools (e.g. a detection tool that
 //! defaults its target to "whatever's selected").
 
 use super::tools_helpers::{arg_bool, arg_f64, arg_ids, arg_str, arg_u64};
@@ -30,7 +30,7 @@ impl<'a> Args<'a> {
     pub(super) fn bool(&self, k: &str) -> Option<bool> {
         arg_bool(self.0, k)
     }
-    /// Clip ids at `k`, defaulting to the current selection (expanded through links) when omitted —
+    /// Clip ids at `k`, defaulting to the current selection (expanded through links) when omitted -
     /// the "act on whatever's selected" shape most detection/edit tools want.
     pub(super) fn ids_or_selection(&self, k: &str, app: &App) -> Vec<Id> {
         match self.ids(k) {

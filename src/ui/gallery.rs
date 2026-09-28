@@ -1,17 +1,17 @@
 //! ---- ws:inspector-gallery ----
 //! The Gallery pane (`Pane::Presets`'s drawer, replacing size-diet's `library::reuse_ui` placeholder):
-//! six tabs of click-to-apply cards — Looks, LUTs, Captions, Speed Ramps, Transitions, Templates.
+//! six tabs of click-to-apply cards - Looks, LUTs, Captions, Speed Ramps, Transitions, Templates.
 //! Looks/LUTs get real GPU thumbnails (`ui::app::thumbs::build_gallery_thumbnails`, read here through a
-//! thread-local cache — same convention `effects_ui.rs`'s own `THUMBS` uses, since `App` isn't reachable
+//! thread-local cache - same convention `effects_ui.rs`'s own `THUMBS` uses, since `App` isn't reachable
 //! from this sibling module); Captions get a painted colour swatch (cheap, no GPU); Speed
-//! Ramps/Transitions/Templates draw a plain name tile. `// ponytail:` — a fancier preview for those
+//! Ramps/Transitions/Templates draw a plain name tile. `// ponytail:` - a fancier preview for those
 //! three is a pure visual upgrade, not a functional gap (`gallery.list`/`gallery.apply` already cover
 //! every tab; see the plan's own ponytail note about Template cards specifically, extended here to the
 //! other two for the same reason: time-boxed, not a missing capability).
 //!
 //! Looks reuse color-engine's `builtin_looks()`/`apply_look()` unchanged (never redefined here) and are
-//! filtered to `!EffectPreset::is_graph()` — a saved node-graph preset is not a "Look" card. Applying any
-//! card is one undo (`App::run_tool_undoable("gallery.apply", …)`, called by the caller — this file only
+//! filtered to `!EffectPreset::is_graph()` - a saved node-graph preset is not a "Look" card. Applying any
+//! card is one undo (`App::run_tool_undoable("gallery.apply", …)`, called by the caller - this file only
 //! returns intent via `GalleryResponse`, it never touches `Project` itself). Hovering a card >=150ms sets
 //! `App.alt_render` to `AltRequest::Gallery(tab, name)` (canvas-handles-monitor's mechanism, reserved for
 //! exactly this) via the same `hover` field, not a new App field.
@@ -52,7 +52,7 @@ pub enum GalleryTab {
     // ---- ws:text-titles ----
     /// Curated title/text/shape/adjustment templates: `presets::builtin_titles()` + `Settings.templates`
     /// filtered to `is_text_template`. Distinct from the generic `Templates` tab (any saved template,
-    /// placed with no Customize step) — a Titles card always shows a Customize panel for its exposed
+    /// placed with no Customize step) - a Titles card always shows a Customize panel for its exposed
     /// fields right after Place.
     Titles,
 }
@@ -89,23 +89,23 @@ pub struct GalleryState {
     pub save_name: String,
     // ---- ws:text-titles ----
     /// (clip id, exposed field name) rows for the Customize panel below the Titles grid, set by the
-    /// caller (`ui::app::gallery_ctl::draw`) right after a Titles card is placed — a plain state field
+    /// caller (`ui::app::gallery_ctl::draw`) right after a Titles card is placed - a plain state field
     /// rather than an `egui::Id`-keyed temp, since `App` already owns `GalleryState` per frame.
     pub customize: Vec<(Id, String)>,
 }
 
 #[derive(Default)]
 pub struct GalleryResponse {
-    /// (tab, card name, intensity) — Looks/Luts/Captions/SpeedRamps/Transitions; routed through
+    /// (tab, card name, intensity) - Looks/Luts/Captions/SpeedRamps/Transitions; routed through
     /// `App::run_tool_undoable("gallery.apply", …)` by the caller.
     pub apply: Option<(GalleryTab, String, f32)>,
     /// (tab, card name) hovered >=150ms; `None` clears. Templates never hover-preview (no catalogue
-    /// data model to render from without a synthetic mini-Project pass — see the module doc comment).
+    /// data model to render from without a synthetic mini-Project pass - see the module doc comment).
     pub hover: Option<(GalleryTab, String)>,
-    /// A Templates card was clicked — placed at the playhead by the caller (`App::place_template`,
+    /// A Templates card was clicked - placed at the playhead by the caller (`App::place_template`,
     /// already the established path, not new wiring).
     pub place: Option<String>,
-    /// ---- ws:text-titles ----: a Titles card was clicked — resolved across `builtin_titles()` +
+    /// ---- ws:text-titles ----: a Titles card was clicked - resolved across `builtin_titles()` +
     /// `Settings.templates` and placed by the caller (`gallery_ctl::draw`), which then fills
     /// `GalleryState.customize` from the placed clips' `exposed` fields.
     pub place_title: Option<String>,
@@ -113,7 +113,7 @@ pub struct GalleryResponse {
     pub save: Option<String>,
 }
 
-/// One clickable card: `picture` paints the tile's contents (thumbnail / swatch / nothing — the name is
+/// One clickable card: `picture` paints the tile's contents (thumbnail / swatch / nothing - the name is
 /// drawn under it either way). Returns the card's response for hover/click.
 fn card(ui: &mut egui::Ui, name: &str, picture: impl FnOnce(&egui::Painter, Rect)) -> Response {
     let font = egui::TextStyle::Small.resolve(ui.style());
@@ -148,10 +148,10 @@ fn swatch(p: &egui::Painter, tile: Rect, color: [u8; 4], outline: [u8; 4]) {
     p.rect_stroke(tile.shrink(10.0), 3.0, Stroke::new(2.0, o), StrokeKind::Outside);
 }
 
-/// Card names for `tab`, builtins first — the same list `gallery.list` returns, minus JSON wrapping.
+/// Card names for `tab`, builtins first - the same list `gallery.list` returns, minus JSON wrapping.
 /// Looks excludes any `Settings.effect_presets` entry with `is_graph()==true` (a saved node-graph
 /// preset is not a "Look"). `mut Settings` isn't needed here (read-only), but the caller already has
-/// `&Settings`, not `&mut`, for every other tab too — kept uniform.
+/// `&Settings`, not `&mut`, for every other tab too - kept uniform.
 pub fn card_names(tab: GalleryTab, settings: &Settings) -> Vec<String> {
     match tab {
         GalleryTab::Looks => crate::engine::presets::builtin_looks()
@@ -195,7 +195,7 @@ pub fn card_names(tab: GalleryTab, settings: &Settings) -> Vec<String> {
 }
 
 /// The Gallery pane body: tab strip + card grid. `selection` gates whether "Apply" makes sense (an empty
-/// selection still lists cards — Templates/Transitions need no clip selected).
+/// selection still lists cards - Templates/Transitions need no clip selected).
 pub fn show(
     ui: &mut egui::Ui,
     state: &mut GalleryState,
@@ -227,7 +227,7 @@ pub fn show(
     let names = card_names(state.tab, settings);
     if names.is_empty() {
         ui.weak(match state.tab {
-            GalleryTab::Luts => "No .cube files found — add a folder in Settings ▸ Color.",
+            GalleryTab::Luts => "No .cube files found - add a folder in Settings ▸ Color.",
             GalleryTab::Templates => "No saved templates yet.",
             GalleryTab::Titles => "No title templates yet.", // builtin_titles() is never empty; user-only edge case
             _ => "Nothing here yet.",
@@ -284,8 +284,8 @@ pub fn show(
 // ---- ws:text-titles ----
 /// One editable row for a `Clip.exposed` field name, the Titles-tab Customize panel's whole surface (the
 /// caller, `ui::app::gallery_ctl::draw`, renders one of these per `GalleryState.customize` entry below
-/// the card grid — this fn has no `&mut Project`, only the one clip it's editing). 4 hardcoded field
-/// kinds — text.text / text.color / text.size / shape.fill — cover every field the 3 builtin templates
+/// the card grid - this fn has no `&mut Project`, only the one clip it's editing). 4 hardcoded field
+/// kinds - text.text / text.color / text.size / shape.fill - cover every field the 3 builtin templates
 /// expose; a generic/reflective exposed-field editor is explicitly out of scope (see the plan's
 /// deliberate-simplifications note) until a template needs a 5th kind. Returns true if the caller should
 /// push undo.
@@ -372,7 +372,7 @@ mod tests {
         let mut state = GalleryState::default();
         let mut settings = Settings::default();
         let resp = run(&ctx, &mut state, &mut settings);
-        // no click simulated yet — this just proves show() runs headlessly without panicking and lists
+        // no click simulated yet - this just proves show() runs headlessly without panicking and lists
         // the Looks tab by default
         assert!(resp.apply.is_none() && resp.place.is_none());
     }
@@ -412,7 +412,7 @@ mod tests {
         let mut state = GalleryState { tab: GalleryTab::Titles, ..Default::default() };
         let mut settings = Settings::default();
         let resp = run(&ctx, &mut state, &mut settings);
-        // no click simulated yet — proves show() runs headlessly on the Titles tab without panicking
+        // no click simulated yet - proves show() runs headlessly on the Titles tab without panicking
         assert!(resp.place.is_none() && resp.place_title.is_none());
     }
 
@@ -437,7 +437,7 @@ mod tests {
                 template_field_widget(ui, "text.text", &mut clip);
             });
         });
-        // no simulated edit this frame — proves the widget renders for a real field without panicking
+        // no simulated edit this frame - proves the widget renders for a real field without panicking
         assert_eq!(clip.text.unwrap().text, "before");
     }
 }

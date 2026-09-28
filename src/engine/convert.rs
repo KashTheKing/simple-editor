@@ -37,10 +37,10 @@ pub struct ConvertOptions {
 
 // ---- ws:export-deliver ----
 /// The ffmpeg filter a bake runs over its rendered clip(s) before the swap. Every one is a filter
-/// ffmpeg.exe already ships — no new dependency, no NN.
+/// ffmpeg.exe already ships - no new dependency, no NN.
 #[derive(Clone, Debug, PartialEq)]
 pub enum BakeFilter {
-    /// Single-pass `deshake` (not the two-pass vidstab pair — see the issue's simplifications).
+    /// Single-pass `deshake` (not the two-pass vidstab pair - see the issue's simplifications).
     Stabilize,
     /// `afftdn` spectral audio denoise.
     Denoise,
@@ -49,7 +49,7 @@ pub enum BakeFilter {
     SlowMo { factor: f64, fps: f64 },
 }
 
-/// The `ConvertOptions` `start_bake_filter` runs — pure, so the filter strings are testable.
+/// The `ConvertOptions` `start_bake_filter` runs - pure, so the filter strings are testable.
 pub fn bake_filter_opts(
     src: PathBuf,
     out: PathBuf,
@@ -81,7 +81,7 @@ pub fn bake_filter_opts(
     }
 }
 
-/// Stage 2 of a bake: run `filter` over the rendered `src` into `out` — the same temp-file /
+/// Stage 2 of a bake: run `filter` over the rendered `src` into `out` - the same temp-file /
 /// `-progress` / codec plumbing `run_convert` already has, not a second ffmpeg invocation path.
 pub fn start_bake_filter(
     src: PathBuf,
@@ -175,7 +175,7 @@ fn run_convert(opts: &ConvertOptions, prog: &Progress) -> Result<(), String> {
         if let Some(af) = &opts.af_extra {
             cmd.args(["-af", af]);
         }
-        // keep every audio stream — ffmpeg's default stream selection would keep only one
+        // keep every audio stream - ffmpeg's default stream selection would keep only one
         cmd.args(["-map", "0:v:0?", "-map", "0:a?"]);
         cmd.args(args);
     }
@@ -302,7 +302,7 @@ mod tests {
 
         let dir = temp_dir("bake");
         let Some(src) = gen_media(&dir) else {
-            eprintln!("ffmpeg missing — skipped");
+            eprintln!("ffmpeg missing - skipped");
             return;
         };
         // the two cheap filters really run end to end through run_convert's plumbing
@@ -332,7 +332,7 @@ mod tests {
     fn convert_real() {
         let dir = temp_dir("convert");
         let Some(src) = gen_media(&dir) else {
-            eprintln!("ffmpeg missing — skipped");
+            eprintln!("ffmpeg missing - skipped");
             return;
         };
         // → gif (palette chain)

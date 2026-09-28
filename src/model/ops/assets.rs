@@ -107,8 +107,8 @@ impl Project {
     // ---- ws:source-monitor ----
     /// Resolve an asset for the Source monitor / Match Frame: prefers an exact `id` when the caller
     /// already knows it, else the first row matching `path`. Path-only lookup always returns the
-    /// FIRST asset row with that path — the parent, when the real target is a subclip, since
-    /// `add_subclip` copies the parent's `path` verbatim and appends the subclip after it — so an id
+    /// FIRST asset row with that path - the parent, when the real target is a subclip, since
+    /// `add_subclip` copies the parent's `path` verbatim and appends the subclip after it - so an id
     /// must win whenever one is known; path-matching is only the fallback for a file with no known
     /// id (e.g. drag-and-drop from outside the project).
     pub fn asset_for_source(&self, id: Option<Id>, path: &str) -> Option<&Asset> {
@@ -132,7 +132,7 @@ impl Project {
     /// `in_t`/`out_t` are always relative to `parent`'s own window (0..`parent.duration`), same as for
     /// a master asset. When `parent` is itself a subclip, its stored `range` is already an absolute
     /// offset into the shared `path` (this same rule, applied one level up), so composing onto that
-    /// base — rather than storing `in_t`/`out_t` verbatim — is what makes a subclip-of-a-subclip play
+    /// base - rather than storing `in_t`/`out_t` verbatim - is what makes a subclip-of-a-subclip play
     /// the right footage instead of re-reading `path` from its own start.
     pub fn add_subclip(&mut self, parent: Id, in_t: f64, out_t: f64, name: Option<String>) -> Option<Id> {
         if !(in_t.is_finite() && out_t.is_finite() && out_t > in_t) {
@@ -158,7 +158,7 @@ impl Project {
             tags: Vec::new(),
             label: 0,
             // subclips are never de-duplicated by path (add_asset's usual rule), so the name lives in
-            // `description` — the library has no separate display-name field for assets
+            // `description` - the library has no separate display-name field for assets
             description: name.unwrap_or_default(),
             rel_path: None,
             parent: Some(parent),
@@ -169,7 +169,7 @@ impl Project {
     }
     // ---- ws:media-library ----
     /// Foreground half of Consolidate Media: repoint `Asset.path` for every `Ok` copy result (an `Err`
-    /// entry — copy failed — leaves that asset where it was). Returns how many were repointed. The
+    /// entry - copy failed - leaves that asset where it was). Returns how many were repointed. The
     /// caller pushes ONE undo snapshot before calling (`media_sync::tick` / the `media.consolidate`
     /// tool's Mutate wrapper), so a whole consolidate is a single Ctrl+Z.
     pub fn apply_consolidate(&mut self, results: &[(Id, PathBuf, Result<(), String>)]) -> usize {
@@ -199,7 +199,7 @@ impl Project {
         });
         self.add_subclip(asset, in_t, out_t, name)
     }
-    /// Removes an asset and every clip using it — in the live timeline, the stashed main timeline and
+    /// Removes an asset and every clip using it - in the live timeline, the stashed main timeline and
     /// every nested sequence (a leftover clip would render black / silent).
     pub fn remove_asset(&mut self, id: Id) {
         self.assets.retain(|a| a.id != id);
@@ -254,7 +254,7 @@ impl Project {
 // Associated fns (no `self`): `ops::assets` is a private module, and these need no Project at all.
 impl Project {
     /// Background half of Consolidate Media: copy every `(id, path)` into `dir` (keeping the file
-    /// name, uniquified if a different file already holds it) — file I/O only, no `Project` access,
+    /// name, uniquified if a different file already holds it) - file I/O only, no `Project` access,
     /// so it satisfies `engine::export::spawn_job`'s `Send + 'static` bound. Paths already under `dir`
     /// are reported `Ok` at their existing location without a copy. `apply_consolidate` consumes the
     /// result on the UI thread.
@@ -286,7 +286,7 @@ impl Project {
     }
 
     /// Is `path` directly inside `dir` (case-insensitive, either separator)? Compared textually on
-    /// the parent — a missing file can't be canonicalized, and an offline asset must still be
+    /// the parent - a missing file can't be canonicalized, and an offline asset must still be
     /// reported honestly.
     pub fn path_is_under(path: &Path, dir: &Path) -> bool {
         let norm = |p: &Path| p.to_string_lossy().replace('\\', "/").trim_end_matches('/').to_ascii_lowercase();
@@ -408,7 +408,7 @@ mod tests {
 
     // deviation (see PR body): this only exercises `Project::add_subclip` directly. The issue's Tests
     // table for this row also names "the media.subclip MCP tool round-trips to the same result", but
-    // that half is untested here — same App-construction limitation as the other App-dependent tests
+    // that half is untested here - same App-construction limitation as the other App-dependent tests
     // (see tools_registry_tests.rs), just not called out there as a deviation until now.
     #[test]
     fn add_subclip_creates_ranged_asset() {
@@ -429,7 +429,7 @@ mod tests {
     // ---- ws:media-library review fix ----
     /// A subclip of a subclip must compose onto the parent's own absolute window, not read `in_t`/
     /// `out_t` as if they were offsets into the root file: master 0..100, `s1` = 10..20, and a subclip
-    /// of `s1` over its own local 2..5 must land on the root's 12..15 — the exact scenario from the
+    /// of `s1` over its own local 2..5 must land on the root's 12..15 - the exact scenario from the
     /// PR #55 review (marks (2,5) on a subclip of 10..20 must play 12..15, not 2..5).
     #[test]
     fn add_subclip_of_a_subclip_composes_absolute_range() {
@@ -473,10 +473,10 @@ mod tests {
     // deviation (see PR body): the real bug lived in `App::source_open_now` (Match Frame / `source.open`
     // resolving the wrong asset for a subclip), but `App` needs a real `eframe::CreationContext` and has
     // no headless test harness (same App-construction limitation as `tools_registry_tests.rs` and the
-    // `add_subclip` test above), so this exercises `asset_for_source` directly — the exact lookup
+    // `add_subclip` test above), so this exercises `asset_for_source` directly - the exact lookup
     // `source_open_now` now calls to resolve `SourceState.asset`.
     /// A subclip shares its parent's `path` and is appended after it in `Project::assets`, so a
-    /// path-only lookup (id unknown) always finds the parent — opening the subclip by its own asset id
+    /// path-only lookup (id unknown) always finds the parent - opening the subclip by its own asset id
     /// must resolve to the subclip itself, not the parent sharing its path.
     #[test]
     fn asset_for_source_prefers_id_over_first_path_match() {

@@ -1,6 +1,6 @@
 //! Media decoding: a small trait layer over two backends.
-//!  * `mf`     — Windows Media Foundation (native software decode, no external deps, instant seeks). Primary.
-//!  * `ffpipe` — ffmpeg.exe / ffprobe.exe child processes. Universal fallback, images, probing, export.
+//!  * `mf` - Windows Media Foundation (native software decode, no external deps, instant seeks). Primary.
+//!  * `ffpipe` - ffmpeg.exe / ffprobe.exe child processes. Universal fallback, images, probing, export.
 //! Everything produces top-down RGBA8 frames and interleaved stereo f32 audio at SAMPLE_RATE.
 
 pub mod ffpipe;
@@ -144,7 +144,7 @@ pub struct DecoderPool {
     /// source path -> proxy file: preview decode opens the proxy instead of the original. Empty for
     /// export / one-shot pools, which must always read the real footage. Video only.
     proxies: std::collections::HashMap<String, String>,
-    /// Decoded-source-frame LRU used by `frame_at` — see `SourceCache`. Budget 0 (the default)
+    /// Decoded-source-frame LRU used by `frame_at` - see `SourceCache`. Budget 0 (the default)
     /// disables it entirely, so export / thumbnail / prerender / audio pools stay byte-identical
     /// to a pool without one; only the preview render thread turns it on (`Cmd::CacheBudget`).
     source_cache: SourceCache,
@@ -155,7 +155,7 @@ pub struct DecoderPool {
 /// so keys recur bit-exactly on replays; keying by the source path (pre-proxy-resolution) lets a
 /// proxy swap invalidate exactly the entries whose pixels changed. This is what turns a backwards
 /// scrub past the composited cache from an ffmpeg respawn / MF GOP re-decode into a memcpy.
-/// ponytail: no protect window, plain LRU — the composited caches handle read-ahead protection;
+/// ponytail: no protect window, plain LRU - the composited caches handle read-ahead protection;
 /// this one only needs "recently decoded stays".
 #[derive(Default)]
 struct SourceCache {
@@ -192,14 +192,14 @@ impl SourceCache {
         }
         self.bytes += bytes;
         while self.bytes > self.budget {
-            // ponytail: O(n) min scan per eviction, like playback::Cache — n stays small.
+            // ponytail: O(n) min scan per eviction, like playback::Cache - n stays small.
             let Some(k) = self.map.iter().min_by_key(|(_, (t, _))| *t).map(|(k, _)| k.clone()) else { break };
             if let Some((_, old)) = self.map.remove(&k) {
                 self.bytes -= old.rgba.len();
             }
         }
     }
-    /// Drop every entry for one source path (case-insensitive) — a proxy for it appeared/vanished.
+    /// Drop every entry for one source path (case-insensitive) - a proxy for it appeared/vanished.
     fn evict_path(&mut self, path: &str) {
         let p = path.to_ascii_lowercase();
         self.map.retain(|(k, _, _, _), (_, f)| {
@@ -232,7 +232,7 @@ impl DecoderPool {
         }
     }
     /// Swap the proxy map. Returns the SOURCE paths whose mapping actually changed (added, removed
-    /// or re-pointed), and drops only THEIR decoders and cached frames — a proxy finishing for one
+    /// or re-pointed), and drops only THEIR decoders and cached frames - a proxy finishing for one
     /// file must not cost every other file its warm decoder. Audio decoders are untouched: audio
     /// always reads the originals (see `proxies` above).
     pub fn set_proxies(&mut self, map: HashMap<String, String>) -> Vec<String> {
@@ -351,7 +351,7 @@ impl DecoderPool {
     pub fn insert_audio(&mut self, path: &str, stream: usize, a: Box<dyn AudioSource>) {
         self.audios.insert((path.to_string(), stream), (self.tick, Some(a)));
     }
-    /// Drop every decoder (releases file handles — required before overwriting a source file). Also
+    /// Drop every decoder (releases file handles - required before overwriting a source file). Also
     /// forgets failed opens, so they are retried next time.
     pub fn clear(&mut self) {
         self.videos.clear();
@@ -396,7 +396,7 @@ mod tests {
         Box::new(Counting(c.clone()))
     }
 
-    /// `set_proxies` reports exactly the changed sources and drops only their decoders — audio and
+    /// `set_proxies` reports exactly the changed sources and drops only their decoders - audio and
     /// unrelated video decoders survive a proxy landing for some other file.
     #[test]
     fn set_proxies_returns_changed_and_drops_targeted() {
@@ -433,7 +433,7 @@ mod tests {
         pool.insert_video("C:\\v.mp4", fake(&c));
         let mut out = Frame::default();
 
-        // budget 0 (the default): every request decodes — export/thumb pools stay untouched
+        // budget 0 (the default): every request decodes - export/thumb pools stay untouched
         assert!(pool.frame_at("C:\\v.mp4", 1.0, 8, 8, &mut out));
         assert!(pool.frame_at("C:\\v.mp4", 1.0, 8, 8, &mut out));
         assert_eq!(c.load(Ordering::SeqCst), 2, "disabled cache never intercepts");
@@ -446,7 +446,7 @@ mod tests {
         assert!(pool.frame_at("C:\\v.mp4", 2.0, 8, 8, &mut out));
         assert_eq!(c.load(Ordering::SeqCst), 4, "a new time decodes");
 
-        // an 8x8 RGBA frame is 256 bytes: budget 600 holds two — the third insert evicts the LRU
+        // an 8x8 RGBA frame is 256 bytes: budget 600 holds two - the third insert evicts the LRU
         pool.set_source_cache_bytes(600);
         for t in [1.0, 2.0, 3.0] {
             pool.frame_at("C:\\v.mp4", t, 8, 8, &mut out);

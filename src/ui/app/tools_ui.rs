@@ -1,5 +1,5 @@
 //! ---- ws:registries-schema-hooks ----
-//! New this wave: `ui.action`/`ui.actions`/`selection.get`/`selection.set`/`playhead.get` — the bridge
+//! New this wave: `ui.action`/`ui.actions`/`selection.get`/`selection.set`/`playhead.get` - the bridge
 //! an MCP client or a future palette needs to drive the UI itself, not just the project. None of these
 //! touch `Project`, so none push undo (`ui.action` dispatches through the normal `act()` path next
 //! frame, which pushes its own undo exactly as a keypress would).
@@ -63,7 +63,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "selection.set",
-        desc: "Replace the current selection (UI state, not a project edit — no undo).",
+        desc: "Replace the current selection (UI state, not a project edit - no undo).",
         args: &["clip_ids:array:false:", "transition_ids:array:false:"],
         kind: ToolKind::Ui,
         run: |app, args| {

@@ -137,7 +137,7 @@ pub const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "timeline.reframe",
         desc: "Auto-reframe using the clip's EXISTING tracked box only (no auto-detect). Errors cleanly when none exists.",
-        args: &["clip_id:integer:true:", "ratio:string:false:reserved — no anchor field to drive it yet, unused this wave"],
+        args: &["clip_id:integer:true:", "ratio:string:false:reserved - no anchor field to drive it yet, unused this wave"],
         kind: ToolKind::Mutate,
         run: |app, args| {
             let id = req(arg_u64(args, "clip_id"), "clip_id")?;
@@ -149,7 +149,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "playhead.set_timecode",
-        desc: "Parse a timecode/relative string and seek — same parser as the transport label's click-to-edit.",
+        desc: "Parse a timecode/relative string and seek - same parser as the transport label's click-to-edit.",
         args: &["text:string:true:hh:mm:ss:ff | mm:ss | +N | -N | +1.5s"],
         kind: ToolKind::Ui,
         run: |app, args| {

@@ -1,4 +1,4 @@
-//! `simple-editor --selftest [dir]` — headless end-to-end check (debug builds print to the console).
+//! `simple-editor --selftest [dir]` - headless end-to-end check (debug builds print to the console).
 //! Generates synthetic media with ffmpeg (solid colour segments + two sine audio streams), then verifies:
 //! probe → project layout; video decode at known times (colour & seek accuracy) for both backends;
 //! audio decode RMS; compositor (blend/opacity/text layer); mixer; waveform peaks; export (mp4) →
@@ -8,7 +8,7 @@
 //! the mixer's bus graph with a filter, an xmeml export imported back, the pre-render cache and
 //! markers / labels / paste-attributes.
 //!
-//! Every step runs under `catch_unwind`, so a panic in one module is reported (FAIL — or SKIP when the
+//! Every step runs under `catch_unwind`, so a panic in one module is reported (FAIL - or SKIP when the
 //! module is still an unimplemented stub) and the remaining steps still run.
 
 use crate::engine::compose::Compositor;
@@ -277,7 +277,7 @@ pub fn run(args: &[String]) -> i32 {
         Ok(())
     });
 
-    // 7. lossless cut of [1.0, 3.0) — lands on keyframes, so only a loose duration check.
+    // 7. lossless cut of [1.0, 3.0) - lands on keyframes, so only a loose duration check.
     step(&mut fails, "lossless", || {
         let p = trimmed(1.0, 3.0)?;
         let segs = export::lossless_segments(&p).ok_or("lossless_segments returned None for a plain cut")?;
@@ -419,7 +419,7 @@ pub fn run(args: &[String]) -> i32 {
         p.remove_marker(m0);
         check!(p.markers_in_timeline().len() == 2, "remove_marker did not remove one");
         check!(p.marker_mut(m1).is_some(), "the other project marker disappeared");
-        // labels: add, use, remove — users of a removed label fall back to "none"
+        // labels: add, use, remove - users of a removed label fall back to "none"
         let idx = p.add_label("Retake", [10, 20, 30]);
         check!(p.label_name(idx) == "Retake", "label name {}", p.label_name(idx));
         check!(p.label_color(idx) == Some([10, 20, 30]), "label colour");
@@ -452,7 +452,7 @@ pub fn run(args: &[String]) -> i32 {
     });
 
     // 10. idle-CPU-0% gate for NEW timed-repaint code (size-diet, wave 0): a blank, idle egui frame
-    // must not ask for a repaint. Smoke-level only — a bare CentralPanel can't exercise the 17
+    // must not ask for a repaint. Smoke-level only - a bare CentralPanel can't exercise the 17
     // pre-existing raw `request_repaint_after` sites that live inside real panes' own live UI code.
     step(&mut fails, "idle_repaint", || {
         let ctx = eframe::egui::Context::default();
@@ -463,10 +463,10 @@ pub fn run(args: &[String]) -> i32 {
         }
         check!(!ctx.has_requested_repaint(), "idle frame requested a repaint");
         // ---- ws:command-palette ----: the idle-CPU-0% gate must hold with the Ctrl+K palette open too
-        // (its text-cursor blink is explicitly disabled while open for exactly this reason — see
+        // (its text-cursor blink is explicitly disabled while open for exactly this reason - see
         // ui::palette::show's doc comment), not just the default empty frame checked above. More warm-up
         // frames than the plain-frame check above: `egui::Window`'s own open-fade animation keeps
-        // requesting repaints for its first several frames regardless of app code — 30 settles it, same
+        // requesting repaints for its first several frames regardless of app code - 30 settles it, same
         // as `ui::palette::tests::assert_no_idle_repaint_palette_closed_and_open`.
         let ctx2 = eframe::egui::Context::default();
         let mut state = crate::ui::palette::PaletteState { open: true, ..Default::default() };
@@ -477,7 +477,7 @@ pub fn run(args: &[String]) -> i32 {
         }
         check!(!ctx2.has_requested_repaint(), "idle frame with the palette open requested a repaint");
         // ---- ws:audio-dsp-automation ----: and with the Mixer pane open, a bus selected and a live
-        // LUFS row under its peak meter (plain text — no timed repaint of its own), 30 idle frames
+        // LUFS row under its peak meter (plain text - no timed repaint of its own), 30 idle frames
         // still request nothing.
         let ctx3 = eframe::egui::Context::default();
         let mut mp = Project::new();
@@ -510,7 +510,7 @@ pub fn run(args: &[String]) -> i32 {
 }
 
 /// Run one step. A `todo!()` in a module that is not written yet is reported as SKIP (it is a gap, not
-/// a defect); everything else — a returned error or any other panic — is a FAIL.
+/// a defect); everything else - a returned error or any other panic - is a FAIL.
 fn step(fails: &mut u32, name: &str, f: impl FnOnce() -> R) {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
         Ok(Ok(())) => println!("PASS {name}"),

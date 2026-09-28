@@ -1,4 +1,4 @@
-//! Keyframe presets, motion presets and clip templates — capture from clips and apply back.
+//! Keyframe presets, motion presets and clip templates - capture from clips and apply back.
 //! Curve presets store keys normalised to 0..1 of the clip length (stretched to the target clip's
 //! duration when applied) or as absolute seconds (kept as saved).
 
@@ -21,7 +21,7 @@ pub fn capture_curve(name: &str, anim: &Animated, clip_duration: f64, absolute: 
 /// Apply a curve preset to a property: normalised times are stretched to `clip_duration`, absolute
 /// presets keep their seconds. Replaces existing keys.
 /// `scaled` is kept for the callers' "exact" button but is only meaningful for absolute presets, which
-/// ignore the duration anyway — placing a normalised preset's 0..1 times as seconds would crush the
+/// ignore the duration anyway - placing a normalised preset's 0..1 times as seconds would crush the
 /// whole animation into the clip's first second. See `capture_curve`: nothing but tests saves absolute.
 pub fn apply_curve(preset: &CurvePreset, anim: &mut Animated, clip_duration: f64, _scaled: bool) {
     anim.keys = scaled_keys(&preset.keys, preset.absolute, clip_duration);
@@ -65,7 +65,7 @@ fn motion(name: &str, props: &[(&str, &[(f64, f64, Ease)])]) -> MotionPreset {
 
 /// Built-in motion presets (slide in/out from each side, zoom in/out "Ken Burns", pop, fade in/out, spin).
 pub fn builtin_motions() -> Vec<MotionPreset> {
-    // ponytail: slide offsets assume a ~1080p project — a wider clip just starts a bit on-screen.
+    // ponytail: slide offsets assume a ~1080p project - a wider clip just starts a bit on-screen.
     const W: f64 = 1920.0;
     const H: f64 = 1080.0;
     let smooth = Ease::PRESETS[0].1;
@@ -114,7 +114,7 @@ pub fn capture_motion(name: &str, clip: &Clip) -> MotionPreset {
             props.push((label.to_string(), c));
         }
     }
-    // ponytail: duplicate effects of the same kind share a label — the first instance wins on apply.
+    // ponytail: duplicate effects of the same kind share a label - the first instance wins on apply.
     for e in &clip.effects {
         for (i, spec) in e.specs().iter().enumerate() {
             let Some(anim) = e.params.get(i) else { continue };
@@ -165,7 +165,7 @@ pub fn merge_motion(preset: &MotionPreset, clip: &mut Clip, offset: f64) {
 }
 
 /// Snapshot a clip's node graph if it has one, else its effect stack. The JSON's shape is what tells
-/// the two apart afterwards (`EffectPreset::is_graph`) — nothing else has to be stored.
+/// the two apart afterwards (`EffectPreset::is_graph`) - nothing else has to be stored.
 pub fn capture_effects(name: &str, clip: &Clip) -> EffectPreset {
     let json = match clip.graph.as_ref().filter(|_| clip.uses_graph()) {
         Some(g) => serde_json::to_string(g),
@@ -207,7 +207,7 @@ struct LookDef {
     effects: &'static [(EffectKind, &'static [(&'static str, f64)])],
 }
 
-/// Build one effect of `kind` with the named params overridden (unknown names are ignored — a typo here
+/// Build one effect of `kind` with the named params overridden (unknown names are ignored - a typo here
 /// would otherwise silently no-op instead of failing loudly at the one call site that builds all 12).
 fn look_effect(kind: EffectKind, params: &[(&str, f64)]) -> Effect {
     let mut e = Effect::new(kind);
@@ -222,7 +222,7 @@ fn look_effect(kind: EffectKind, params: &[(&str, f64)]) -> Effect {
 /// 12 built-in Looks, each a couple of tweaked `Primaries`/`Curves`/`Vignette` instances reusing the
 /// existing `EffectPreset{name,json}` shape and `apply_effects()` verbatim (same machinery
 /// `clip.apply_motion`/templates already use). First and sole declaration of `builtin_looks`/
-/// `apply_look` in this file — later workstreams (inspector-gallery's Gallery ▸ Looks tab) reuse these
+/// `apply_look` in this file - later workstreams (inspector-gallery's Gallery ▸ Looks tab) reuse these
 /// two fns unchanged rather than adding their own Looks-apply logic.
 pub fn builtin_looks() -> Vec<EffectPreset> {
     const LOOKS: &[LookDef] = &[
@@ -295,9 +295,9 @@ pub fn builtin_looks() -> Vec<EffectPreset> {
 }
 
 /// Apply a built-in (or saved) Look to a clip, replacing its effect stack (`apply_effects`'s existing
-/// template-apply semantics — see its own doc comment on why a manual effect the user already added is
+/// template-apply semantics - see its own doc comment on why a manual effect the user already added is
 /// lost), then mixing every param of the newly-set effects toward `kind.params()[i].default` by
-/// `1 - intensity` (only the base `.value` — keyframes, which a Look never sets, are untouched).
+/// `1 - intensity` (only the base `.value` - keyframes, which a Look never sets, are untouched).
 /// `intensity` 0.0 is therefore exactly identity, `1.0` is the Look unmodified.
 pub fn apply_look(preset: &EffectPreset, project: &mut Project, clip: Id, intensity: f32) -> bool {
     if !apply_effects(preset, project, clip) {
@@ -316,7 +316,7 @@ pub fn apply_look(preset: &EffectPreset, project: &mut Project, clip: Id, intens
     true
 }
 
-/// True when a template holds nothing but adjustment layers — the Presets pane gives those their own
+/// True when a template holds nothing but adjustment layers - the Presets pane gives those their own
 /// section. ponytail: decodes the JSON per frame the list is drawn; templates are a handful of small
 /// blobs, memoise if that stops being true.
 pub fn is_adjustment_template(t: &Template) -> bool {
@@ -329,10 +329,10 @@ pub fn is_container_template(t: &Template) -> bool {
 }
 
 // ---- ws:text-titles ----
-/// True when a template holds ONLY Text/Shape/Adjustment clips — the Gallery Titles tab filter for user
+/// True when a template holds ONLY Text/Shape/Adjustment clips - the Gallery Titles tab filter for user
 /// templates. Mirrors `is_adjustment_template`/`is_container_template`; these three kinds are exactly
 /// the ones `Project::place_clips` never `continue`s past (it only skips a clip whose asset didn't remap,
-/// or a dangling `Sequence` — model/ops/templates.rs), so a Titles-tab template always places 1:1.
+/// or a dangling `Sequence` - model/ops/templates.rs), so a Titles-tab template always places 1:1.
 pub fn is_text_template(t: &Template) -> bool {
     decode_template(t).is_some_and(|(c, _)| {
         !c.is_empty() && c.iter().all(|c| matches!(c.kind, ClipKind::Text | ClipKind::Shape | ClipKind::Adjustment))
@@ -347,7 +347,7 @@ fn ramp(name: &str, points: &[(f64, f64)]) -> CurvePreset {
 }
 
 /// 5 built-in speed-ramp presets, fed straight into `apply_curve(preset, &mut clip.speed_curve, dur,
-/// false)` — normalised keys are stretched to the clip's actual duration on apply. Values are speed
+/// false)` - normalised keys are stretched to the clip's actual duration on apply. Values are speed
 /// multipliers (1.0 = normal), matching `Clip::speed_curve`'s existing convention.
 pub fn builtin_speed_ramps() -> Vec<CurvePreset> {
     vec![
@@ -440,8 +440,8 @@ pub fn decode_template(t: &Template) -> Option<(Vec<Clip>, Vec<Asset>)> {
 
 // ---- ws:text-titles ----
 /// 3 tiny built-in title templates for the Gallery Titles tab, literal Rust-constructed `TemplateData`
-/// (not JSON asset files — each encodes to well under 1 KB) built the same way `capture_template`
-/// assembles a user one. Every clip id is a placeholder (`0`) — `Project::place_clips` assigns fresh ids
+/// (not JSON asset files - each encodes to well under 1 KB) built the same way `capture_template`
+/// assembles a user one. Every clip id is a placeholder (`0`) - `Project::place_clips` assigns fresh ids
 /// on placement, exactly as it does for a captured user template. Each has at least one clip with a
 /// non-empty `exposed` so Placing one always gives the Gallery's Customize panel something to show.
 pub fn builtin_titles() -> Vec<Template> {
@@ -500,9 +500,9 @@ pub fn builtin_titles() -> Vec<Template> {
 }
 
 /// Rewrite `t`'s captured clips, ADDING each `(clip_index, field)` pair's `field` to that clip's
-/// `Clip.exposed` (position within the template's own clip list, not a live id — `clip_index` addresses
+/// `Clip.exposed` (position within the template's own clip list, not a live id - `clip_index` addresses
 /// `decode_template(t)`'s clip Vec by position). The `templates.expose` MCP tool's entire pure body.
-/// `None` if `t.json` doesn't decode, or any `clip_index` is out of range — no partial rewrite either
+/// `None` if `t.json` doesn't decode, or any `clip_index` is out of range - no partial rewrite either
 /// way, matching `decode_template`'s own all-or-nothing shape.
 pub fn expose_fields(t: &Template, fields: &[(usize, String)]) -> Option<Template> {
     let (mut clips, assets) = decode_template(t)?;
@@ -567,7 +567,7 @@ mod tests {
         apply_curve(&p, &mut b, 4.0, true);
         assert!((b.at(2.0) - a.at(1.0)).abs() < 1e-9);
         assert!((b.keys[2].t - 4.0).abs() < 1e-9);
-        // "exact" on a normalised preset still stretches — placing 0..1 as seconds would squash the
+        // "exact" on a normalised preset still stretches - placing 0..1 as seconds would squash the
         // whole animation into the first second of the clip
         apply_curve(&p, &mut b, 4.0, false);
         assert!((b.keys[2].t - 4.0).abs() < 1e-9);

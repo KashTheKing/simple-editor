@@ -67,7 +67,7 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
             "project.save" => {
                 let path = match arg_str(args, "path") {
                     Some(p) => PathBuf::from(p),
-                    None => app.project_path.clone().ok_or("no project file yet — pass a path")?,
+                    None => app.project_path.clone().ok_or("no project file yet - pass a path")?,
                 };
                 app.project.save(&path).map_err(|e| e.to_string())?;
                 app.project_path = Some(path.clone());
@@ -224,7 +224,7 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                     let peaks = app
                         .waveforms
                         .get(&a.path, c.audio_stream)
-                        .ok_or("waveform still computing — try again in a moment")?;
+                        .ok_or("waveform still computing - try again in a moment")?;
                     let segs = loud_segments(&peaks, c.src_in, c.src_len(), &params);
                     let (mut cs, mut rs) = to_timeline(&segs, c.start, c.src_in, c.duration, c.speed, keep_quiet);
                     cuts.append(&mut cs);
@@ -344,7 +344,7 @@ fn timeline_zone_at(app: &App, x: f32, y: f32) -> crate::ui::timeline::Zone {
 }
 
 // ---- ws:registries-schema-hooks ----
-// One `ToolDef` per tool above, wired to `dispatch` by name — bodies untouched. Kind mirrors the old
+// One `ToolDef` per tool above, wired to `dispatch` by name - bodies untouched. Kind mirrors the old
 // hand-kept mutating-tool name list exactly (project.new/open/save self-manage the undo stack via
 // `set_project`/plain file I/O, so they stay `Read` here just as they were absent from that list).
 use crate::mcp::tools::{ToolDef, ToolKind, ToolOutcome};
@@ -362,7 +362,7 @@ macro_rules! row {
 }
 
 pub const TOOLS: &[ToolDef] = &[
-    row!("project.summary", ToolKind::Read, "Project overview: format, duration, tracks, clips per track, assets, sequences, subtitles count, planner progress, notes — and the markdown style summary.", &[]),
+    row!("project.summary", ToolKind::Read, "Project overview: format, duration, tracks, clips per track, assets, sequences, subtitles count, planner progress, notes - and the markdown style summary.", &[]),
     row!("project.get", ToolKind::Read, "Full project JSON (the .sedit document).", &[]),
     row!("project.new", ToolKind::Read, "New empty project (discards unsaved changes).", &["width:integer:false:default 1920", "height:integer:false:default 1080", "fps:number:false:default 30"]),
     row!("project.open", ToolKind::Read, "Open a .sedit project or a media file (creates a project around it).", &["path:string:true:absolute path"]),
@@ -378,7 +378,7 @@ pub const TOOLS: &[ToolDef] = &[
     row!("timeline.auto_cut", ToolKind::Mutate, "Silence-based auto-cut of audio clips (+ linked video).", &["clip_ids:array:true:", "threshold_db:number:false:default -35", "min_silence:number:false:", "min_speech:number:false:", "padding:number:false:", "keep_quiet:boolean:false:", "ripple:boolean:false:default true"]),
     row!("timeline.nest", ToolKind::Mutate, "Nest clips into a new sequence; returns the sequence id.", &["clip_ids:array:true:", "name:string:false:"]),
     // ---- ws:job-completion-hitches ----
-    // a Job, not a Read: `import_file` ffprobes every referenced media file (~100 ms each) — that runs
+    // a Job, not a Read: `import_file` ffprobes every referenced media file (~100 ms each) - that runs
     // on a worker now and `poll_timeline_imports` applies the report; the reply lands when it is in.
     ToolDef {
         name: "timeline.import",

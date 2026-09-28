@@ -20,7 +20,7 @@ impl Project {
         true
     }
     /// Drop a clip's node graph back onto its linear effect stack; returns how many effects landed.
-    /// Err when the graph is more than a chain (the caller toasts it) — nothing is touched then.
+    /// Err when the graph is more than a chain (the caller toasts it) - nothing is touched then.
     /// Drop a clip's node graph entirely, keeping whatever of it can be expressed as an effect chain.
     /// A graph that will not linearise (a branch, a cycle) still goes: "unlink" means the graph is gone
     /// and the clip is back on its effect list, so leaving the nodes in place would be the one outcome

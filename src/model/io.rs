@@ -84,7 +84,7 @@ impl Project {
         // a file with no `ripple` field (or a hand-edited one) never keeps a track at None: resolve
         // through the same per-kind-index rule every construction site uses. Every independent track
         // list gets this (the main `tracks`, each nested sequence's own tracks, and `main_stash`'s
-        // tracks when a sequence was open at save time) — each with its own V1/A1 counters, since a
+        // tracks when a sequence was open at save time) - each with its own V1/A1 counters, since a
         // sequence's V1 is not the main timeline's V1.
         fn resolve_ripple(tracks: &mut [Track]) {
             let (mut vi, mut ai) = (0usize, 0usize);
@@ -109,7 +109,7 @@ impl Project {
         if let Some(st) = &mut p.main_stash {
             resolve_ripple(&mut st.tracks);
         }
-        // an older (or missing/default) version is silently brought forward — every field it lacks
+        // an older (or missing/default) version is silently brought forward - every field it lacks
         // already resolved a default above; a NEWER version is left alone so `newer_than_app` can
         // still tell the caller (a hard downgrade would be the only real data-loss risk, and this
         // never removes fields, only adds them)
@@ -119,11 +119,11 @@ impl Project {
         Ok(p)
     }
     /// The `.sedit` schema version this build writes and reads without a migration. A file saved by a
-    /// newer build (`version > VERSION`) still loads — unknown fields are simply dropped on the next
-    /// save — but the caller should toast a warning (see `newer_than_app`); this is not itself an error.
+    /// newer build (`version > VERSION`) still loads - unknown fields are simply dropped on the next
+    /// save - but the caller should toast a warning (see `newer_than_app`); this is not itself an error.
     pub const VERSION: u32 = 2;
     /// True when `self.version` is newer than this build understands (see `VERSION`). Unused outside
-    /// tests this wave — the caller that toasts it (`App::open_project`) is outside this workstream's
+    /// tests this wave - the caller that toasts it (`App::open_project`) is outside this workstream's
     /// files; this only exposes the bool.
     #[allow(dead_code)]
     pub fn newer_than_app(&self) -> bool {
@@ -168,7 +168,7 @@ mod tests {
 
     /// The same resolution must also reach a nested sequence's own tracks and, when the file was saved
     /// while a sequence was open (so the real main timeline sits in `main_stash`), that stash's tracks
-    /// too — each with its own independent V1/A1 counters. Regression test for a bug where the loop only
+    /// too - each with its own independent V1/A1 counters. Regression test for a bug where the loop only
     /// walked `p.tracks`.
     #[test]
     fn ripple_resolves_on_load_for_sequences_and_main_stash() {

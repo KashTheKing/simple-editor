@@ -4,7 +4,7 @@ use super::tools_monitor;
 
 pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
     // ws:source-monitor: the library-preview override that used to gate this block (`if
-    // app.lib_preview.is_some() { draw_lib_preview } else { .. }`) is gone — Pane::Source owns the
+    // app.lib_preview.is_some() { draw_lib_preview } else { .. }`) is gone - Pane::Source owns the
     // source player now. The block itself is left un-dedented so canvas-handles-monitor's concurrent
     // edits to this file merge cleanly. A press on the program monitor hands transport focus
     // (Space/JKL/I/O) back to the timeline, exactly like a press on the timeline itself.
@@ -16,7 +16,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
         let proxy_busy = app.proxy_job.as_ref().map(|(_, _, p)| p.fraction());
         // ---- ws:pro-monitor ----
         // Computed against the whole `App` before the field-destructure below (which borrows `monitor`/
-        // `gpu` disjointly) — both need methods (`monitor::trim_frames`, `GpuRenderer::stats`), not just
+        // `gpu` disjointly) - both need methods (`monitor::trim_frames`, `GpuRenderer::stats`), not just
         // a field, so they can't live inside that destructure without re-borrowing all of `app`.
         let trim_frames = super::monitor::trim_frames(app);
         let trim_frames = match trim_frames {
@@ -91,7 +91,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
             )
         };
         // ---- ws:pro-monitor ----
-        // `pick_armed` is only consumed on an actual click (`resp.picked` is `Some`) — armed once by the
+        // `pick_armed` is only consumed on an actual click (`resp.picked` is `Some`) - armed once by the
         // Color panel's Eyedropper button, it must survive every frame the user hasn't clicked yet
         // (moving the mouse from the panel to the canvas takes more than one frame). Checking
         // `resp.picked` first, THEN `.take()`-ing, keeps it armed across every frame nothing was clicked.

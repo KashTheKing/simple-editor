@@ -2,7 +2,7 @@
 //!
 //! Screen recorder: output folder, fps, bitrate (or CRF), area (Whole desktop / a Region typed in
 //! desktop pixels), microphone combo (`engine::capture::audio_devices`), desktop audio toggle, cursor
-//! toggle, and "Record when the editor loses focus" (auto start/stop) — the app watches focus and drives
+//! toggle, and "Record when the editor loses focus" (auto start/stop) - the app watches focus and drives
 //! `engine::capture`. While recording: elapsed time, a stop button and a note that the file is imported
 //! into the library when it finishes. Both windows only *ask*: the app owns the running recording (and
 //! its output path) and imports the file itself when it stops.
@@ -24,7 +24,7 @@ pub struct CaptureUi {
     pub screen_open: bool,
     pub voice_open: bool,
     pub elapsed: f64,
-    /// Region in desktop pixels (x, y, w, h) — typed in the window, used in "region" mode.
+    /// Region in desktop pixels (x, y, w, h) - typed in the window, used in "region" mode.
     pub region: Option<(i32, i32, u32, u32)>,
     /// "desktop" | "region"
     pub area: String,
@@ -43,7 +43,7 @@ pub struct CaptureResponse {
     pub stop_screen: bool,
     pub start_voice: bool,
     pub stop_voice: bool,
-    /// Filled together with `start_screen` / `start_voice` — the options the window built.
+    /// Filled together with `start_screen` / `start_voice` - the options the window built.
     pub screen: Option<ScreenCaptureOptions>,
     pub voice: Option<VoiceoverOptions>,
     /// Current "Record when the editor loses focus" state (the app watches focus and drives capture).
@@ -139,7 +139,7 @@ fn screen_window(
                 ui.end_row();
 
                 if state.area == "region" {
-                    // ponytail: typed coordinates, not a drag-to-pick desktop overlay — a fullscreen
+                    // ponytail: typed coordinates, not a drag-to-pick desktop overlay - a fullscreen
                     // transparent viewport is a lot of machinery for four numbers.
                     let (mut x, mut y, mut w, mut h) = state.region.unwrap_or((0, 0, 1280, 720));
                     ui.label("Region");
@@ -161,7 +161,7 @@ fn screen_window(
             });
             ui.add_enabled_ui(has_loopback, |ui| {
                 ui.checkbox(&mut settings.capture_desktop_audio, "Desktop audio").on_disabled_hover_text(
-                    "No loopback input found — enable \"Stereo Mix\" in Windows sound settings.",
+                    "No loopback input found - enable \"Stereo Mix\" in Windows sound settings.",
                 );
             });
             ui.checkbox(&mut settings.capture_cursor, "Record the mouse cursor");
@@ -294,7 +294,7 @@ fn meter(ui: &mut egui::Ui, level: f32, palette: &Palette) {
     p.rect_stroke(rect, 0, egui::Stroke::new(1.0, palette.border), egui::StrokeKind::Inside);
 }
 
-/// "M:SS" — recordings are minutes long, not hours.
+/// "M:SS" - recordings are minutes long, not hours.
 fn clock(secs: f64) -> String {
     let s = secs.max(0.0);
     format!("{}:{:04.1}", (s / 60.0).floor() as u64, s % 60.0)

@@ -2,7 +2,7 @@
 //! Toast notifications: bottom-right, non-blocking, auto-expiring egui::Area (unchanged from the
 //! pre-wave-0a behaviour, just extracted out of `mod.rs` per the split-god-files plan). Extends the
 //! original `msg`/`at`/`open_path` shape with a `kind` (colour), an optional `(label, Action)` button
-//! (Undo etc.) and an optional progress bar — `Toast::new`/`with_folder` keep their old signatures, so
+//! (Undo etc.) and an optional progress bar - `Toast::new`/`with_folder` keep their old signatures, so
 //! every existing `App::toast`/`toast_with_folder` call site compiles unchanged.
 
 use super::*;
@@ -16,7 +16,7 @@ pub(super) enum ToastKind {
 }
 
 /// One toast notification. `open_path` offers an "Open Folder" button for a file (or folder) it just
-/// finished writing; `action` offers a second button (label, Action) — used for Undo today.
+/// finished writing; `action` offers a second button (label, Action) - used for Undo today.
 pub(super) struct Toast {
     pub(super) msg: String,
     pub(super) kind: ToastKind,
@@ -71,10 +71,10 @@ impl App {
         self.push_toast(Toast::with_folder(msg, path));
     }
 
-    /// An Undo-actioned toast (Delete, Remove unused, Clear subtitles, …) — clicking its button appends
+    /// An Undo-actioned toast (Delete, Remove unused, Clear subtitles, …) - clicking its button appends
     /// `Action::Undo` (or whichever undo-style action the caller passes) to `pending_actions`, reusing
     /// the existing undo stack verbatim.
-    /// ponytail: no per-op revert logic — every caller passes `Action::Undo`, which pops the same undo
+    /// ponytail: no per-op revert logic - every caller passes `Action::Undo`, which pops the same undo
     /// stack a Ctrl+Z would. A per-op-specific undo action isn't needed until something can't be undone
     /// that way.
     pub(crate) fn toast_undo(&mut self, msg: impl Into<String>, undo: Action) {
@@ -88,7 +88,7 @@ impl App {
 }
 
 /// A repeat of the same (msg, kind) within its lifetime just refreshes `at` (and adopts the new one's
-/// open_path/action/progress if it has one) instead of stacking a duplicate — useful for a
+/// open_path/action/progress if it has one) instead of stacking a duplicate - useful for a
 /// fast-repeating source like a progress toast or a hammered hotkey. Free function (not a method) so
 /// the dedupe rule itself is testable without a live `App`.
 fn dedupe_push(toasts: &mut Vec<Toast>, mut t: Toast) {
@@ -108,7 +108,7 @@ fn dedupe_push(toasts: &mut Vec<Toast>, mut t: Toast) {
     toasts.push(t);
 }
 
-/// WINDOW_DRAWER: renders every live toast, oldest first, bottom-right — verbatim behaviour from the
+/// WINDOW_DRAWER: renders every live toast, oldest first, bottom-right - verbatim behaviour from the
 /// pre-extraction inline block, plus the kind colour / Undo button / progress bar this workstream adds.
 pub(super) fn draw(app: &mut App, ctx: &egui::Context) {
     app.toasts.retain(|t| {

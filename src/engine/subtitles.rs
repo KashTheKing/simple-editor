@@ -1,4 +1,4 @@
-//! Subtitle file formats: SubRip (.srt) and WebVTT (.vtt) — parse (auto-detected) and write.
+//! Subtitle file formats: SubRip (.srt) and WebVTT (.vtt) - parse (auto-detected) and write.
 //! Basic formatting tags (<i>, <b>, {\an8}, VTT cue settings) are stripped on import; text is kept
 //! as plain lines. Times are seconds.
 
@@ -8,7 +8,7 @@ use std::borrow::Cow;
 // ---- ws:registries-schema-hooks ----
 /// The subtitle cue (if any) drawn at timeline time `t`: the cue's text and the project's subtitle
 /// style, factoring the cue-lookup + empty-text check duplicated between `engine::compose::render`
-/// and `playback`'s layer builder. Borrowed (`Cow::Borrowed`) on the plain path — `compose::render`'s
+/// and `playback`'s layer builder. Borrowed (`Cow::Borrowed`) on the plain path - `compose::render`'s
 /// existing `sub_key` cache guard only clones into its own `sub_style` when the cue actually changes,
 /// and a cloning signature here would defeat that guard on every rendered frame.
 ///
@@ -41,7 +41,7 @@ pub fn cue_layer_at(project: &Project, t: f64) -> Option<(Cow<'_, str>, Cow<'_, 
 // ---- ws:transcript-captions ----
 /// The words a cue was generated from: those of the FIRST transcript with a word starting inside the
 /// cue's span. ponytail (v1 ceiling): `Cue` carries no clip reference and `project.subtitles` is one
-/// flat list, so one active transcript drives karaoke at a time — right for the common case of one
+/// flat list, so one active transcript drives karaoke at a time - right for the common case of one
 /// caption source, wrong only if two transcribed clips' captions overlap on screen simultaneously.
 /// Upgrade path: a `Cue.clip: Option<Id>` field.
 fn active_words(project: &Project, cue: &Cue) -> Option<Vec<(f64, f64, String)>> {
@@ -78,7 +78,7 @@ fn tokens(text: &str) -> Vec<(usize, usize)> {
 /// cue was cut from, in time order); the word containing `t` is the active one. `Highlight(c)`
 /// recolours it, `PopWord` grows it (1.3×, bold), `Typewriter` keeps only the tokens whose word has
 /// started. None = nothing to change (plain path): no active word for Highlight/PopWord, or no
-/// transcript words. A cue's continuation marks ("…"/" —") ride along with the token they are glued
+/// transcript words. A cue's continuation marks ("…"/" - ") ride along with the token they are glued
 /// to; a trailing suffix token past the last word is simply never highlighted.
 pub fn karaoke(
     text: &str,
@@ -107,7 +107,7 @@ pub fn karaoke(
             match anim {
                 SubtitleAnim::Highlight(color) => span.color = Some(color),
                 _ => {
-                    // ws:text-titles: base.size is now Animated — sample it at this cue's own time.
+                    // ws:text-titles: base.size is now Animated - sample it at this cue's own time.
                     span.size = Some(base.size.at(t) as f32 * 1.3);
                     span.bold = Some(true);
                 }
@@ -141,7 +141,7 @@ fn parse_block(block: &[&str], out: &mut Vec<(f64, f64, String)>) {
     let Some(ts) = block.iter().position(|l| l.contains("-->")) else { return };
     let Some((a, b)) = block[ts].split_once("-->") else { return };
     let Some(start) = parse_time(a.trim()) else { return };
-    // VTT cue settings ("align:start position:10%") follow the end time — take the first token
+    // VTT cue settings ("align:start position:10%") follow the end time - take the first token
     let Some(end) = b.trim().split_whitespace().next().and_then(parse_time) else { return };
     if end < start {
         return;
@@ -343,7 +343,7 @@ mod tests {
         assert_eq!(text, "Hello big\nworld");
         assert!(matches!(style, Cow::Borrowed(_)));
         // the karaoke fn itself: a trailing continuation token past the last word is never active
-        let toks = tokens("…one two —");
+        let toks = tokens("…one two - ");
         assert_eq!(toks, vec![(0, 4), (5, 8), (9, 10)]);
         assert!(karaoke("x", &[], 0.0, SubtitleAnim::PopWord, &TextStyle::default()).is_none());
     }

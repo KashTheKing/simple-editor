@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 /// Wall-clock budget for one script run (it executes on the UI thread).
 const BUDGET: Duration = Duration::from_secs(5);
 // ---- ws:command-palette ----
-/// Default wall-clock budget for a `-- @on` hook fired by `App::fire_hook` — much tighter than a
+/// Default wall-clock budget for a `-- @on` hook fired by `App::fire_hook` - much tighter than a
 /// manual `BUDGET` run, since a hook fires from ordinary UI events (selection change, import, ...) and
 /// must never make the editor feel like it hitched. Overridable per script via `@budget_ms`.
 const DEFAULT_HOOK_BUDGET: Duration = Duration::from_millis(250);
@@ -48,9 +48,9 @@ editor.log("Project: " .. tostring(s.duration or "?") .. " s, " .. tostring(#(s.
 // ---- ws:command-palette ----
 /// Shared VM bootstrap for `run` and `run_hook`: a sandboxed Lua with a wall-clock interrupt at
 /// `budget` (`run` always passes the fixed 5 s `BUDGET`; a fired `@on` hook passes its own, defaulting
-/// to 250 ms — see `ScriptMeta::budget`/`DEFAULT_HOOK_BUDGET`). Building the `editor` table itself stays
-/// separate in each caller — it borrows that call's own `call`/`logs` (and, for a hook, `event`), which
-/// `Lua::scope`'s lifetime ties to the closure that builds it — so this covers exactly the part that
+/// to 250 ms - see `ScriptMeta::budget`/`DEFAULT_HOOK_BUDGET`). Building the `editor` table itself stays
+/// separate in each caller - it borrows that call's own `call`/`logs` (and, for a hook, `event`), which
+/// `Lua::scope`'s lifetime ties to the closure that builds it - so this covers exactly the part that
 /// can't otherwise drift between the two paths.
 fn setup_vm(budget: Duration) -> Result<mlua::Lua, String> {
     let lua = mlua::Lua::new();
@@ -121,7 +121,7 @@ pub fn run(
 /// Run `src` as a fired `-- @on` hook: the same sandbox surface as `run` (`editor.tool`/`editor.tools`/
 /// `editor.log`), plus `editor.event` set to `event` (the hook's payload, as JSON), under its own
 /// `budget` instead of `run`'s fixed 5 s (see `ScriptMeta::budget`). `App::fire_hook` is the only
-/// caller — it supplies the re-entrancy guard and per-session disable-on-overrun policy; this fn just
+/// caller - it supplies the re-entrancy guard and per-session disable-on-overrun policy; this fn just
 /// runs one hook once.
 pub fn run_hook(
     src: &str,
@@ -174,10 +174,10 @@ pub fn run_hook(
     .map_err(|e| e.to_string())
 }
 
-/// A small, fixed set of icon keywords a script header's `@icon` may name — matches a subset of
+/// A small, fixed set of icon keywords a script header's `@icon` may name - matches a subset of
 /// `ui::tools::Glyph::name()` strings (chosen without depending on `ui::tools` from this low-level
 /// module: menus.rs resolves the name back into a `Glyph` at draw time). An unknown name comes back
-/// `None` rather than an error — a stale `@icon` in a script file must never break metadata parsing.
+/// `None` rather than an error - a stale `@icon` in a script file must never break metadata parsing.
 fn known_icon(name: &str) -> Option<&'static str> {
     const KNOWN: &[&str] = &[
         "bolt",
@@ -200,7 +200,7 @@ fn known_icon(name: &str) -> Option<&'static str> {
 }
 
 /// A script's optional leading `-- @name/@desc/@icon/@hotkey/@on <event>/@budget_ms <ms>` header,
-/// parsed without starting the VM — cheap enough for the Scripts menu / palette / `scripts.list` tool to
+/// parsed without starting the VM - cheap enough for the Scripts menu / palette / `scripts.list` tool to
 /// call for every script (`App::script_metas` still caches it at 1 Hz rather than every frame).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ScriptMeta {
@@ -351,7 +351,7 @@ mod tests {
         assert_eq!(r, Ok(()));
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, "clip.set");
-        // Luau stores integral doubles as integers: 2.0 may arrive as 2 — same value either way
+        // Luau stores integral doubles as integers: 2.0 may arrive as 2 - same value either way
         assert_eq!(calls[0].1["speed"].as_f64(), Some(2.0));
         assert_eq!(calls[0].1["tags"], json!(["a", "b"]));
         assert_eq!(logs, vec!["done 3"]);

@@ -2,7 +2,7 @@ use super::*;
 
 // ---- ws:canvas-handles-monitor ----
 /// Where a file drop landed, from the drop point against last frame's pane rects (all one-frame-stale
-/// — see `MoodboardState::content_rect`'s doc comment). The monitor is checked before the moodboard.
+/// - see `MoodboardState::content_rect`'s doc comment). The monitor is checked before the moodboard.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum DropTarget {
     Timeline,
@@ -52,7 +52,7 @@ impl App {
         if ids.is_empty() {
             return;
         }
-        // one-frame-stale rects, like `lanes_rect` — see `MoodboardState::content_rect`'s doc comment
+        // one-frame-stale rects, like `lanes_rect` - see `MoodboardState::content_rect`'s doc comment
         match drop_target(pos, self.timeline.lanes_rect, self.preview.canvas_rect, self.moodboard.content_rect) {
             DropTarget::Timeline => {
                 let p = pos.unwrap();
@@ -67,7 +67,7 @@ impl App {
                 let mode = DropMode::from_modifiers(ctx.input(|i| i.modifiers));
                 // Overwrite resolves/falls back for itself by the dropped asset's own kind (see
                 // `place()`'s Overwrite branch), so it gets the raw track under the pointer even when
-                // it's an audio lane — nulling it here (like Place/Splice, which expect a video-track
+                // it's an audio lane - nulling it here (like Place/Splice, which expect a video-track
                 // index and resolve the audio track separately) made an Alt-drop of an audio-only asset
                 // always land on the first audio track instead of the one under the pointer.
                 let track_arg = if mode == DropMode::Overwrite {
@@ -78,7 +78,7 @@ impl App {
                 self.place_assets(&ids, t, track_arg, mode);
                 self.after_edit();
             }
-            // ws:canvas-handles-monitor: onto the monitor = "put it here, now" — a free video track at
+            // ws:canvas-handles-monitor: onto the monitor = "put it here, now" - a free video track at
             // the playhead, through the same place_assets a timeline drop uses (DropMode::Place is
             // insert_at's old plain-drop behavior, its replacement per ws:source-monitor)
             DropTarget::Monitor => {
@@ -86,7 +86,7 @@ impl App {
                 self.after_edit();
             }
             DropTarget::Moodboard => {
-                // snapshot after the import (which already pushed its own undo step if any file was fresh —
+                // snapshot after the import (which already pushed its own undo step if any file was fresh -
                 // same two-steps-when-fresh/one-when-not pattern as `replace_container_dialog`) so adding the
                 // moodboard entries is still undoable even when every dropped file was already a known asset
                 let snap = self.project.to_json();
@@ -115,7 +115,7 @@ mod tests {
 
     /// The monitor branch is `drop_target(..) == Monitor` + `place_assets(ids, playhead, None, Place)`: the
     /// target decision and the placement it makes are each checked here (no headless `App` exists to
-    /// drive `handle_drops` itself — see the App-construction note in tools_registry_tests.rs).
+    /// drive `handle_drops` itself - see the App-construction note in tools_registry_tests.rs).
     #[test]
     fn drop_onto_monitor_places_on_a_free_track_at_playhead() {
         let timeline = Rect::from_min_size(pos2(0.0, 300.0), vec2(800.0, 200.0));

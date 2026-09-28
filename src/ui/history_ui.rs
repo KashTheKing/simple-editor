@@ -1,14 +1,14 @@
 //! History panel: a read-mostly view over the undo stack (`App.undo`, newest last) grouped by day,
-//! searchable by label, filterable by category (Editing vs Layout — see `crate::ui::app::HistoryCategory`),
+//! searchable by label, filterable by category (Editing vs Layout - see `crate::ui::app::HistoryCategory`),
 //! with per-entry and bulk delete, and export of the currently-filtered entries to a Markdown file.
 //! File-system-style: one collapsed-by-default row per entry (mirrors markers_ui.rs/effects_ui.rs's
 //! `CollapsingHeader` convention), grouped under a day heading.
 //!
-//! Deleting an EDITING entry only removes it from the list — every such `UndoEntry` is a complete
+//! Deleting an EDITING entry only removes it from the list - every such `UndoEntry` is a complete
 //! project snapshot (not a delta), so Ctrl+Z just steps past it to the next surviving snapshot.
 //! LAYOUT entries are different: each is a sentinel paired 1:1 with a snapshot on the SEPARATE
 //! `Layout::undo` stack, so deleting one here would desync the pairing and make later layout undos
-//! restore the wrong arrangement — layout rows therefore cannot be deleted from this panel.
+//! restore the wrong arrangement - layout rows therefore cannot be deleted from this panel.
 //!
 //! Labels are derived lazily HERE, not at push time: entry `i` is the project as it was BEFORE edit
 //! `i`, so its row describes the change from `i` to `i+1` (or to the live project for the newest row).
@@ -24,7 +24,7 @@ use eframe::egui;
 pub struct HistoryResponse {
     /// Something was deleted (see the module doc: not itself a project edit, no undo/push_undo).
     pub changed: bool,
-    /// Index into `undo` whose Restore button was clicked this frame — the app-side handler (Layout
+    /// Index into `undo` whose Restore button was clicked this frame - the app-side handler (Layout
     /// rows never set this; see `restore_at`) does the actual restore + labeled undo push.
     pub restore: Option<usize>,
 }
@@ -34,7 +34,7 @@ pub struct HistoryState {
     pub search: String,
     /// None = both categories.
     pub category: Option<HistoryCategory>,
-    /// Lazily-derived row labels, keyed by (at bits, snapshot length) — stable across the stack
+    /// Lazily-derived row labels, keyed by (at bits, snapshot length) - stable across the stack
     /// shifting (cap eviction, deletes, undo/redo moving entries between stacks).
     labels: std::collections::HashMap<(u64, usize), String>,
 }
@@ -49,7 +49,7 @@ fn mark(_ui: &egui::Ui, _name: &str, _r: &egui::Response) {}
 
 /// Local-time offset from UTC in seconds, so day grouping and clock times match the user's wall
 /// clock instead of filing every evening edit under tomorrow's UTC date. Queried once per process
-/// (a DST flip mid-session shifts new rows by an hour — a shrug, not a bug worth polling for).
+/// (a DST flip mid-session shifts new rows by an hour - a shrug, not a bug worth polling for).
 fn local_offset_secs() -> i64 {
     use std::sync::OnceLock;
     static OFF: OnceLock<i64> = OnceLock::new();
@@ -71,7 +71,7 @@ fn day_label(at: f64) -> String {
     let secs = at as i64 + local_offset_secs();
     let days_since_epoch = secs.div_euclid(86400);
     let mut d = days_since_epoch;
-    // civil_from_days (Howard Hinnant's algorithm) — no chrono dependency for one date format.
+    // civil_from_days (Howard Hinnant's algorithm) - no chrono dependency for one date format.
     d += 719468;
     let era = if d >= 0 { d } else { d - 146096 } / 146097;
     let doe = (d - era * 146097) as u64;
@@ -87,7 +87,7 @@ fn day_label(at: f64) -> String {
 
 /// Bool-returning "was anything deleted" so the caller knows to mark the project dirty-ish (deleting
 /// history is itself not a project edit, so it does NOT go through undo/push_undo). `project` is the
-/// LIVE project — the newest row's label describes the edit from its snapshot to this state.
+/// LIVE project - the newest row's label describes the edit from its snapshot to this state.
 pub fn show(
     ui: &mut egui::Ui,
     state: &mut HistoryState,
@@ -148,7 +148,7 @@ pub fn show(
             && (needle.is_empty() || label_of(state, e).to_lowercase().contains(&needle))
     };
     let visible: Vec<usize> = undo.iter().enumerate().filter(|(_, e)| matches(state, e)).map(|(i, _)| i).collect();
-    // layout rows are visible but NOT deletable — each is paired 1:1 with the separate layout undo
+    // layout rows are visible but NOT deletable - each is paired 1:1 with the separate layout undo
     // stack, and removing one desyncs that pairing (see the module doc)
     let deletable: Vec<usize> =
         visible.iter().copied().filter(|&i| undo[i].category != HistoryCategory::Layout).collect();
@@ -167,7 +167,7 @@ pub fn show(
                 i += 1;
                 keep
             });
-            // a cached label describes the change TO the (now different) next entry — recompute all
+            // a cached label describes the change TO the (now different) next entry - recompute all
             state.labels.clear();
             changed = true;
         }
@@ -192,7 +192,7 @@ pub fn show(
     let mut delete: Option<usize> = None;
     let mut last_day: Option<i64> = None;
     egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-        // newest first — `.get` (not indexing) because "Delete filtered" above may have already
+        // newest first - `.get` (not indexing) because "Delete filtered" above may have already
         // shrunk `undo` this same frame, leaving `visible`'s indices stale until the next repaint.
         for &i in visible.iter().rev() {
             let Some(e) = undo.get(i) else { continue };
@@ -201,7 +201,7 @@ pub fn show(
                 ui.strong(day_label(e.at));
                 last_day = Some(d);
             }
-            // keyed by the entry's identity, not the index — the stack shifts on every delete and
+            // keyed by the entry's identity, not the index - the stack shifts on every delete and
             // cap-eviction, and an index key made the expanded row jump to a different entry
             let header_id = ui.id().with(("history_row", e.at.to_bits(), e.json.len()));
             egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), header_id, false)
@@ -217,7 +217,7 @@ pub fn show(
                         ui.label(label_of(state, e));
                         if e.category == HistoryCategory::Layout {
                             ui.weak("(pairs with panel undo)").on_hover_text(
-                                "Layout entries can't be deleted here — each pairs with a snapshot on \
+                                "Layout entries can't be deleted here - each pairs with a snapshot on \
                                  the panel-arrangement undo stack, and removing one would desync it",
                             );
                         } else {
@@ -239,7 +239,7 @@ pub fn show(
                 });
         }
         if visible.is_empty() {
-            ui.weak("No history — make a few edits, or clear the search/filter above");
+            ui.weak("No history - make a few edits, or clear the search/filter above");
         }
     });
     if let Some(i) = delete {
@@ -254,7 +254,7 @@ pub fn show(
 /// The app-side restore logic (called from `panes.rs`'s `Pane::History` arm) when
 /// `HistoryResponse.restore` is `Some(i)`: `None` when `i` is out of range or points at a
 /// non-restorable (Layout) entry, otherwise `Some((json to push as the pre-restore undo snapshot,
-/// the restored Project))`. Pure so a test can exercise it without a live `App` — see
+/// the restored Project))`. Pure so a test can exercise it without a live `App` - see
 /// `tools_registry_tests.rs`'s doc comment for why one isn't buildable in `#[test]`.
 pub fn restore_at(undo: &[UndoEntry], i: usize, live_json: &str) -> Option<(String, crate::model::Project)> {
     let e = undo.get(i)?;
@@ -397,7 +397,7 @@ mod tests {
         assert!(changed);
         assert_eq!(h.undo.len(), 1, "both Editing entries removed, the Layout one survives");
         assert_eq!(h.undo[0].category, HistoryCategory::Layout);
-        // a cached label describes the change TO the next entry — deleting reshuffles every
+        // a cached label describes the change TO the next entry - deleting reshuffles every
         // neighbour pair, so the whole cache must go (it rebuilds lazily on the next render)
         assert!(h.state.labels.is_empty(), "deleting entries must drop the derived-label cache");
     }
@@ -454,7 +454,7 @@ mod tests {
     fn history_layout_rows_not_restorable() {
         let mut h = H::new();
         h.frame();
-        // row 1 (index into `visible`, newest-first) is the Layout entry — no Restore rect marked for it
+        // row 1 (index into `visible`, newest-first) is the Layout entry - no Restore rect marked for it
         let marked = h.ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(("hist", "restore_1"))));
         assert!(marked.is_none(), "a Layout row must never render a Restore button");
         // and the app-side helper refuses it too, even if something upstream ever got this wrong
@@ -473,7 +473,7 @@ mod tests {
     #[test]
     fn day_label_matches_a_known_date() {
         // 2024-01-15 00:00:00 UTC = 1705276800; labels are LOCAL time, so feed a timestamp that is
-        // local midnight of that day (offset cancelled) — this pins both the civil-date math and the
+        // local midnight of that day (offset cancelled) - this pins both the civil-date math and the
         // fact that the offset is actually applied.
         assert_eq!(day_label(1_705_276_800.0 - local_offset_secs() as f64), "2024-01-15");
     }

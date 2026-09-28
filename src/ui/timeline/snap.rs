@@ -6,7 +6,7 @@
 //! gaining markers/transition edges as candidates for free.
 use super::*;
 
-/// Which tier a snap hit came from — surfaced to scripts/tests via `timeline.snap_query` and used
+/// Which tier a snap hit came from - surfaced to scripts/tests via `timeline.snap_query` and used
 /// internally to stop at the first tier with a hit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SnapKind {
@@ -55,12 +55,12 @@ fn transition_edge_candidates(p: &Project) -> impl Iterator<Item = f64> + '_ {
 }
 
 /// Tiered engine: tries playhead, then `cursor` (a caller-supplied secondary reference time, e.g. a
-/// second monitor's own playhead in a later wave — `None` from every call site today), then selected-
+/// second monitor's own playhead in a later wave - `None` from every call site today), then selected-
 /// clip edges, then every other clip's edges (excluding `exclude`), then markers, then transition edges,
 /// then in/out and 0. First tier with a hit inside `thr` wins (nearest candidate within that tier).
 /// `snap_markers` gates the marker tier only (`Settings.snap_markers`); every other tier is always live.
 ///
-/// ponytail: `snap_markers` is an 8th parameter rather than folded into `Project`/`Settings` reads —
+/// ponytail: `snap_markers` is an 8th parameter rather than folded into `Project`/`Settings` reads -
 /// arm.rs and this module stay free of any `Settings` dependency, and the 5 pre-existing gesture call
 /// sites (routed through the 5-arg `snap_target` wrapper below) always pass `true`, matching today's
 /// behaviour of "markers/transitions come for free" rather than needing Settings threaded through every
@@ -115,8 +115,8 @@ pub(crate) fn snap_thr(zoom: f32, fps: f64) -> f64 {
 }
 
 /// Snap target for `t`: 0, playhead, in/out, edges of clips not in `exclude`, markers and transition
-/// edges — within `thr` seconds. Back-compat wrapper over `target()` (selected=&[], cursor=None,
-/// snap_markers=true) — every one of the 11 pre-existing call sites keeps this exact signature.
+/// edges - within `thr` seconds. Back-compat wrapper over `target()` (selected=&[], cursor=None,
+/// snap_markers=true) - every one of the 11 pre-existing call sites keeps this exact signature.
 pub(super) fn snap_target(t: f64, thr: f64, p: &Project, playhead: f64, exclude: &[Id]) -> Option<f64> {
     target(p, t, thr, playhead, exclude, &[], None, true).map(|(x, _)| x)
 }
@@ -133,7 +133,7 @@ pub(crate) fn snap_time(t: f64, on: bool, zoom: f32, p: &Project, playhead: f64,
 }
 
 /// Where the playhead lands when snapping is on: clip edges, markers, transitions, in/out and 0, but
-/// NOT the playhead itself (it would always be the nearest candidate and pin it where it already is) —
+/// NOT the playhead itself (it would always be the nearest candidate and pin it where it already is) -
 /// modelled by passing a playhead tier candidate that can never be within threshold.
 pub(super) fn snap_playhead(t: f64, on: bool, zoom: f32, p: &Project) -> f64 {
     if !on {

@@ -1,6 +1,6 @@
 //! ---- ws:forgiveness ----
 //! First-frame startup hooks. Reuses the EXISTING `window_shown` first-frame gate in
-//! `mod.rs::update` instead of adding a new booted-flag FRAME_HOOK — see the "Deliberate
+//! `mod.rs::update` instead of adding a new booted-flag FRAME_HOOK - see the "Deliberate
 //! simplifications" note in the PR body.
 //!
 //! ---- ws:layout-modes-onboarding ----
@@ -28,7 +28,7 @@ pub(crate) fn run(app: &mut App) {
     first_run(app);
 }
 
-/// Arm the wizard, or apply the consented context-menu re-point — never both, never silently.
+/// Arm the wizard, or apply the consented context-menu re-point - never both, never silently.
 fn first_run(app: &mut App) {
     let opened = app.project_path.is_some() || !app.project.is_empty() || !app.project.assets.is_empty();
     let forced = std::env::var("SE_FIRST_RUN").is_ok_and(|v| v == "1");
@@ -37,7 +37,7 @@ fn first_run(app: &mut App) {
         return;
     }
     // The guard App::new applied on every launch before this wave, verbatim (settings.context_menu,
-    // no --screenshot, release build, not already pointing at this exe) — now additionally behind
+    // no --screenshot, release build, not already pointing at this exe) - now additionally behind
     // settings.onboarded, i.e. the user has been through the wizard (or dismissed it) and the flag
     // records their answer, so no launch ever writes the registry without consent.
     if app.settings.onboarded
@@ -50,9 +50,9 @@ fn first_run(app: &mut App) {
     }
 }
 
-/// Pure decision behind `first_run`: the wizard shows once — never when a file was passed on the
+/// Pure decision behind `first_run`: the wizard shows once - never when a file was passed on the
 /// command line (an Explorer "Open with" launch is a player, not a first run), never for a
-/// `--screenshot` run — unless `SE_FIRST_RUN=1` forces it for a visual check.
+/// `--screenshot` run - unless `SE_FIRST_RUN=1` forces it for a visual check.
 pub(super) fn should_onboard(onboarded: bool, opened: bool, screenshot: bool, forced: bool) -> bool {
     forced || (!onboarded && !opened && !screenshot)
 }

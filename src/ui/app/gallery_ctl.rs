@@ -1,6 +1,6 @@
 //! ---- ws:inspector-gallery ----
 //! PANE_DRAWERS entry for `Pane::Presets` (the Gallery): supersedes size-diet's `library::reuse_ui`
-//! placeholder that still lives inline in `panes.rs`'s `Pane::Presets` match arm — PANE_DRAWERS is tried
+//! placeholder that still lives inline in `panes.rs`'s `Pane::Presets` match arm - PANE_DRAWERS is tried
 //! BEFORE that legacy match (registry protocol, `plans/ui-overhaul/README.md`), so returning `true` here
 //! makes that old arm unreachable dead code by design, not by an edit to a file this workstream doesn't
 //! own. Every mutation is routed through `App::run_tool_undoable("gallery.apply", …)` so the UI path and
@@ -44,10 +44,10 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
         ui.separator();
         ui.strong("Customize");
         // Edit CLONES first, never the live project while drawing, so undo can snapshot before any
-        // write-back — this file's established clone-edit-writeback convention (inspector_*.rs). At
+        // write-back - this file's established clone-edit-writeback convention (inspector_*.rs). At
         // most one row's widget reports `changed()` per frame in practice (egui processes one input
         // interaction per frame), so writing each changed clone straight back is safe; two customize
-        // rows editing the SAME clip in the exact same frame — ponytail: theoretically possible, not
+        // rows editing the SAME clip in the exact same frame - ponytail: theoretically possible, not
         // reachable from a mouse/keyboard, upgrade path is a per-clip merge if that ever changes.
         let rows = app.gallery.customize.clone();
         let mut edits: Vec<(Id, Clip)> = Vec::new();
@@ -71,7 +71,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
     }
     if let Some(name) = resp.save {
         // "Save from selection" (Looks tab only, gated in gallery.rs): capture the first selected
-        // visual clip's effect stack as a reusable EffectPreset — same shape/route
+        // visual clip's effect stack as a reusable EffectPreset - same shape/route
         // `engine::presets::capture_template`'s sibling ops already use for other saved-preset kinds.
         if let Some(c) = app.selection.first().and_then(|&id| app.project.clip(id)) {
             let preset =
