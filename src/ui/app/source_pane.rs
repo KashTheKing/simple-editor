@@ -71,9 +71,17 @@ impl App {
             (Some(s), Some(l)) => tiles.parent_of(s).is_some() && tiles.parent_of(s) == tiles.parent_of(l),
             _ => false,
         };
-        if !same_group {
-            self.surface(Pane::Source);
+        // stacked behind the Library (every preset's `stack_unplaced` puts it there), a click loaded an
+        // invisible player that still swallowed Space/JKL - move it into the Preview's tab group instead
+        if same_group {
+            let tree = &mut self.layout.tree;
+            let s = tree.tiles.find_pane(&Pane::Source);
+            let dest = tree.tiles.find_pane(&Pane::Preview).and_then(|p| tree.tiles.parent_of(p));
+            if let (Some(s), Some(dest)) = (s, dest) {
+                tree.move_tile_to_container(s, dest, usize::MAX, false);
+            }
         }
+        self.surface(Pane::Source);
     }
 
     /// Open `path` now (needs `ctx` for the Player). Re-opening the current file only seeks - unless
