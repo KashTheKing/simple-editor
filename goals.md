@@ -118,6 +118,10 @@ Pulled forward from CHANGELOG.md — mark new completions here as they land.
   `marker_added`) landed real `fire_hook` call sites — verified by grep against the merged tree, not
   assumed from the plan; see ARCHITECTURE.md's "Registries" section and `docs/customizing.md` for
   the owning file:line of each.
+- [ ] **UI simplification + docs site** — planned 2026-09-27 in
+  [plans/simplify/README.md](plans/simplify/README.md): Resolve-style pages (Edit/Color/Audio/Export),
+  one visible home per function with right-click menus everywhere, native Windows icon font, niche
+  panels hidden (not deleted), reported bugs fixed first, then a Docusaurus tutorial site on GitHub Pages.
 - [ ] (add more as they're identified — via `/se-goal` or `/goal`)
 
 ## UX principles
