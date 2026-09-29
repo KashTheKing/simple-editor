@@ -243,7 +243,7 @@ mod tests {
         assert_eq!(hk.text(Action::Split), "Ctrl+Z");
         assert_eq!(hk.text(Action::Undo), "");
 
-        // a chord RESERVED hard-codes ahead of the Action table (bare S) is rejected outright, with a
+        // a chord RESERVED hard-codes ahead of the Action table (Shift+S) is rejected outright, with a
         // note, not silently accepted
         let mut input = egui::RawInput::default();
         input.events.push(Event::Key {
@@ -251,7 +251,7 @@ mod tests {
             physical_key: None,
             pressed: true,
             repeat: false,
-            modifiers: Modifiers::NONE,
+            modifiers: Modifiers::SHIFT,
         });
         ctx.begin_pass(input);
         st.rebinding = Some(Action::Split);
