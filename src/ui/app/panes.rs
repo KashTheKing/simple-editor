@@ -265,19 +265,10 @@ impl App {
                     self.after_edit();
                 }
             }
+            // ---- ws:viewer-surface ----
+            // out of `Pane::ALL` and dropped from stored layouts on load: nothing opens it any more
             Pane::Tools => {
-                let was = self.tools.recording;
-                let snap_was = self.settings.snap;
-                {
-                    let App { tools: st, palette, settings, hotkeys, .. } = self;
-                    tools::show(ui, st, palette, &mut settings.snap, hotkeys);
-                }
-                if self.tools.recording != was {
-                    self.toggle_draw_recording(self.tools.recording);
-                }
-                if self.settings.snap != snap_was {
-                    self.settings.save();
-                }
+                ui.weak("The tools are on the Preview's left edge now.");
             }
             Pane::Nodes => {
                 let resp = {

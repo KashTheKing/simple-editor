@@ -1,7 +1,8 @@
 //! ---- ws:source-monitor ----
 //! The Source monitor (`Pane::Source`): the old library preview (`App.lib_preview`, deleted) promoted
 //! to a dockable two-up with its own `Player`, in/out marks with ticks on the shared scrub bar, the
-//! three-point-edit / smart-edit button row and Source Tape. Pure UI - `App`-side glue (opening a file,
+//! program monitor's transport row plus Insert / Overwrite, and - on the right-click - the marks, the
+//! smart edits, Source Tape and Subclip. Pure UI - `App`-side glue (opening a file,
 //! the per-frame texture upload, focus routing, the edits themselves) lives in `ui::app::source_pane`
 //! and `ui::app::source_ctl`; button clicks bubble up through `SourceResponse`, never mutate `App`.
 
@@ -14,8 +15,8 @@ use crate::settings::Settings;
 use crate::theme::Palette;
 use crate::ui::heartbeat::Heartbeat;
 use crate::ui::library::PreviewFrame;
-use crate::ui::tools::{self, Dir, Glyph};
-use crate::ui::{markers_ui, preview};
+use crate::ui::tools::{self, Glyph};
+use crate::ui::{menu, preview};
 use eframe::egui;
 use std::path::PathBuf;
 
@@ -46,6 +47,8 @@ pub struct SourceState {
     pub src_out: Option<f64>,
     pub tape: Option<Tape>,
     heartbeat: Heartbeat,
+    /// The timecode's text while it is being typed (`preview::timecode_label`).
+    tc_edit: Option<String>,
 }
 
 impl SourceState {
@@ -62,6 +65,7 @@ impl SourceState {
             src_out: None,
             tape: None,
             heartbeat: Heartbeat::default(),
+            tc_edit: None,
         }
     }
 
@@ -139,24 +143,22 @@ pub struct SourceCtx<'a> {
 
 #[derive(Default)]
 pub struct SourceResponse {
-    /// Edit verbs the buttons dispatch (Splice/Overwrite/Append/Ripple Overwrite/Close Up/Place on
-    /// Top/Source Tape) - the same `Action`s the hotkeys and palette fire, so every verb has one path.
+    /// Edit verbs the buttons / right-click dispatch (Splice/Overwrite/Append/Ripple Overwrite/Close
+    /// Up/Place on Top/Source Tape) - the same `Action`s the hotkeys and palette fire: one path each.
     pub actions: Vec<Action>,
     pub settings_changed: bool,
     pub close: bool,
     pub seek: Option<f64>,
     pub toggle_play: bool,
     pub stop: bool,
-    /// I / O / clear buttons - applied by the caller regardless of which transport has focus.
+    /// Right-click Mark In / Out / Clear - applied by the caller regardless of which transport has focus.
     pub mark_in: bool,
     pub mark_out: bool,
     pub clear_marks: bool,
-    /// "Subclip" button: `Project::subclip_from_marks` on the current marks.
+    /// Right-click "New Subclip from Marks": `Project::subclip_from_marks` on the current marks.
     pub subclip: bool,
-    /// A primary press landed inside the pane this frame - the caller moves transport focus here.
+    /// A press (any button) landed inside the pane this frame - the caller moves transport focus here.
     pub clicked: bool,
-    /// The Source/Record button: flip transport focus (Source <-> timeline) instead.
-    pub toggle_focus: bool,
     /// The player is refilling its read-ahead: the caller schedules a poll repaint (`animate_until`).
     pub buffering: bool,
 }
@@ -181,7 +183,10 @@ fn paint_marks(p: &egui::Painter, bar: egui::Rect, duration: f64, st: &SourceSta
     if let Some(tape) = &st.tape {
         for &o in tape.offsets.iter().skip(1) {
             let x = mark_x(bar, duration, o);
-            p.line_segment([egui::pos2(x, bar.top()), egui::pos2(x, bar.bottom())], egui::Stroke::new(1.0, palette.text));
+            p.line_segment(
+                [egui::pos2(x, bar.top()), egui::pos2(x, bar.bottom())],
+                egui::Stroke::new(1.0, palette.text),
+            );
         }
     }
     if let Some((a, b)) = st.marks() {
@@ -201,12 +206,15 @@ fn paint_marks(p: &egui::Painter, bar: egui::Rect, duration: f64, st: &SourceSta
     }
 }
 
-/// Draw the Source monitor: transport, scrub bar with mark ticks, the video, and the edit button row.
-/// Ports `draw_lib_preview`'s transport/scrub/video body; marks, smart edits and tape are additive.
+//// Draw the Source monitor: the video (its file name in the corner), a scrub line with the marks, and
+/// one transport row - the program monitor's (`preview::transport_row`) with Insert and Overwrite on the
+/// right. Marks, the smart edits, Source Tape, Subclip, playback resolution and Close are on the video's
+/// right-click. Ports `draw_lib_preview`'s transport/scrub/video body.
 pub fn show(ui: &mut egui::Ui, st: &mut SourceState, c: SourceCtx<'_>) -> SourceResponse {
     let mut resp = SourceResponse::default();
     let pane_rect = ui.max_rect();
-    resp.clicked = ui.input(|i| i.pointer.primary_pressed()) && ui.rect_contains_pointer(pane_rect);
+    // any press, a right-click too: the monitor clicked last drives Space/JKL/I/O
+    resp.clicked = ui.input(|i| i.pointer.any_pressed()) && ui.rect_contains_pointer(pane_rect);
     let name = match &st.tape {
         Some(t) => format!("Source Tape ({} clips)", t.assets.len()),
         None => st.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
@@ -220,132 +228,40 @@ pub fn show(ui: &mut egui::Ui, st: &mut SourceState, c: SourceCtx<'_>) -> Source
     let is_image = st.is_image;
     resp.buffering = st.player.is_buffering();
     let palette = c.palette;
-    let tc = crate::ui::timecode;
     let SourceCtx { settings, thumbs, waveforms, frame, focused, smart, .. } = c;
 
     ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-        // edit row (bottom): three-point verbs + smart edits + indicator + tape/subclip
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 3.0;
-            let mut b = |ui: &mut egui::Ui, icon: Glyph, hint: &str, a: Action| {
-                if tools::glyph_text_button(ui, icon, "").on_hover_text(hint).clicked() {
-                    resp.actions.push(a);
-                }
-            };
-            b(ui, Glyph::Indent(true), "Splice (insert) the marked range at the playhead (Shift+V)", Action::SpliceInsert);
-            b(ui, Glyph::Indent(false), "Overwrite at the playhead (B)", Action::OverwriteAtPlayhead);
-            ui.separator();
-            b(ui, Glyph::Append, "Append at End", Action::AppendAtEnd);
-            b(ui, Glyph::Skip(Dir::Right), "Ripple Overwrite: replace the clip under the playhead, ripple the rest", Action::RippleOverwrite);
-            b(ui, Glyph::CloseUp, "Close Up: close the gap under the playhead on its track", Action::CloseUp);
-            b(ui, Glyph::PlaceOnTop, "Place on Top: a new track above everything", Action::PlaceOnTop);
-            match smart {
-                Some(d) => {
-                    ui.weak(format!("cut {d:+.2} s")).on_hover_text("Nearest timeline cut to the playhead");
-                }
-                None => {
-                    ui.weak("no cut near");
-                }
-            }
-            ui.separator();
-            let tape_on = st.tape.is_some();
-            let r = tools::glyph_text_button(ui, Glyph::Tape, "")
-                .on_hover_text(if tape_on { "Source Tape: back to the single clip" } else { "Source Tape: play the bin end to end" });
-            if tape_on {
-                ui.painter().rect_stroke(r.rect, 2.0, egui::Stroke::new(1.0, palette.accent), egui::StrokeKind::Inside);
-            }
-            if r.clicked() {
-                resp.actions.push(Action::SourceTape);
-            }
-            if !tape_on && st.asset.is_some() && ui.small_button("Subclip").on_hover_text("New library subclip from the marks").clicked() {
-                resp.subclip = true;
-            }
-        });
-        if is_image {
-            ui.horizontal(|ui| {
-                if markers_ui::x_button(ui).on_hover_text("Close").clicked() {
-                    resp.close = true;
-                }
-                ui.weak(name);
-            });
-        } else {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 2.0;
-                let b = |ui: &mut egui::Ui, icon: Glyph, label: &str| -> bool {
-                    tools::glyph_text_button(ui, icon, "").on_hover_text(label).clicked()
-                };
-                if b(ui, Glyph::Jump(Dir::Left), "Go to start") {
-                    resp.seek = Some(0.0);
-                }
-                if b(ui, Glyph::Tri(Dir::Left), "Step back one frame") {
-                    resp.seek = Some(step_time(playhead, fps, false, duration));
-                }
-                let (pp_icon, pp_label) = if playing { (Glyph::Pause, "Pause") } else { (Glyph::Play, "Play") };
-                if b(ui, pp_icon, pp_label) {
-                    resp.toggle_play = true;
-                }
-                if b(ui, Glyph::Stop, "Stop") {
-                    resp.stop = true;
-                }
-                if b(ui, Glyph::Tri(Dir::Right), "Step forward one frame") {
-                    resp.seek = Some(step_time(playhead, fps, true, duration));
-                }
-                if b(ui, Glyph::Jump(Dir::Right), "Go to end") {
-                    resp.seek = Some(duration);
-                }
-                ui.add_space(6.0);
-                ui.monospace(format!("{} / {}", tc(playhead, fps), tc(duration, fps)));
-                ui.add_space(6.0);
-                if b(ui, Glyph::Letter('I'), "Mark In (I)") {
-                    resp.mark_in = true;
-                }
-                if b(ui, Glyph::Letter('O'), "Mark Out (O)") {
-                    resp.mark_out = true;
-                }
-                let marks = format!(
-                    "{} – {}",
-                    st.src_in.map(|t| tc(t, fps)).unwrap_or_else(|| "·".into()),
-                    st.src_out.map(|t| tc(t, fps)).unwrap_or_else(|| "·".into())
-                );
-                ui.weak(marks);
-                if st.marks().is_some() && markers_ui::x_button(ui).on_hover_text("Clear marks (Alt+X)").clicked() {
-                    resp.clear_marks = true;
-                }
-                ui.add_space(6.0);
-                let cur = preview::QUALITIES.iter().copied().find(|&q| q == settings.preview_quality).unwrap_or(100);
-                egui::ComboBox::from_id_salt("source_quality").selected_text(format!("{cur} %")).width(64.0).show_ui(
-                    ui,
-                    |ui| {
-                        for q in preview::QUALITIES {
-                            if ui.selectable_label(cur == q, format!("{q} %")).clicked() && q != cur {
-                                settings.preview_quality = q;
-                                resp.settings_changed = true;
-                            }
+        if !is_image {
+            let (mut seek, mut edit) = (None, None);
+            let (hit, _) = preview::transport_row(
+                ui,
+                playing,
+                |ui| seek = preview::timecode_label(ui, &mut st.tc_edit, playhead, duration, fps),
+                |ui| {
+                    for (a, g) in [
+                        (Action::OverwriteAtPlayhead, Glyph::Indent(false)),
+                        (Action::SpliceInsert, Glyph::Indent(true)),
+                    ] {
+                        if tools::glyph_text_button(ui, g, "").on_hover_text(preview::tip(a)).clicked() {
+                            edit = Some(a);
                         }
-                    },
-                );
-                ui.add_space(6.0);
-                // Source/Record: which transport Space/JKL/I/O drive (the accent outline says Source)
-                let hint = if focused {
-                    "Source is live: Space/JKL/I/O drive this player. Click to hand them back to the timeline."
-                } else {
-                    "Timeline is live. Click to make Space/JKL/I/O drive this player."
-                };
-                if b(ui, Glyph::SourceRecord, hint) {
-                    resp.toggle_focus = true;
-                }
-                if markers_ui::x_button(ui).on_hover_text("Close the source").clicked() {
-                    resp.close = true;
-                }
-                ui.weak(name);
-            });
-            // scrub bar: the one shared implementation (preview.rs), with the marks painted over it
-            let width = ui.available_width();
-            let scope = ui.scope(|ui| preview::scrub_bar(ui, duration, playhead, palette, width));
-            if let Some(t) = scope.inner {
-                resp.seek = Some(t);
+                    }
+                },
+            );
+            resp.actions.extend(edit);
+            match hit {
+                Some(Action::GoStart) => resp.seek = Some(0.0),
+                Some(Action::StepBack) => resp.seek = Some(step_time(playhead, fps, false, duration)),
+                Some(Action::PlayPause) => resp.toggle_play = true,
+                Some(Action::StepForward) => resp.seek = Some(step_time(playhead, fps, true, duration)),
+                Some(Action::GoEnd) => resp.seek = Some(duration),
+                _ => {}
             }
-            paint_marks(ui.painter(), scope.response.rect, duration, st, palette);
+            resp.seek = seek.or(resp.seek);
+            // scrub line: the one shared implementation (preview.rs), with the marks painted over it
+            let (seek, bar) = preview::scrub_bar(ui, duration, playhead, palette, ui.available_width());
+            resp.seek = seek.or(resp.seek);
+            paint_marks(ui.painter(), bar, duration, st, palette);
         }
 
         // video, filling whatever is left
@@ -355,7 +271,12 @@ pub fn show(ui: &mut egui::Ui, st: &mut SourceState, c: SourceCtx<'_>) -> Source
             Some(f) => {
                 let aspect = f.size[0].max(1) as f32 / f.size[1].max(1) as f32;
                 let lb = preview::letterbox(rect, aspect, ui.pixels_per_point());
-                ui.painter().image(f.tex, lb, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+                ui.painter().image(
+                    f.tex,
+                    lb,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
                 lb
             }
             // no frame yet: the pane's whole rect stands in for the letterbox
@@ -371,11 +292,17 @@ pub fn show(ui: &mut egui::Ui, st: &mut SourceState, c: SourceCtx<'_>) -> Source
         }
         if !has_video {
             // cover art (an audio file's embedded picture) wins over the visualizer when there is one
-            let cover = thumbs.and_then(|t| t.texture(ui.ctx(), &path, 0.0, (rect.height() * ui.pixels_per_point()) as u32));
+            let cover =
+                thumbs.and_then(|t| t.texture(ui.ctx(), &path, 0.0, (rect.height() * ui.pixels_per_point()) as u32));
             if let Some((tex, size)) = cover {
                 let aspect = size[0].max(1) as f32 / size[1].max(1) as f32;
                 let lb = preview::letterbox(rect, aspect, ui.pixels_per_point());
-                ui.painter().image(tex, lb, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+                ui.painter().image(
+                    tex,
+                    lb,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
             } else if settings.audio_visualizer {
                 let amplitude = waveforms
                     .and_then(|w| w.get(&path, 0))
@@ -385,14 +312,57 @@ pub fn show(ui: &mut egui::Ui, st: &mut SourceState, c: SourceCtx<'_>) -> Source
                 st.heartbeat.paint(ui.painter(), rect, palette);
                 ui.ctx().request_repaint();
             }
-            r.context_menu(|ui| {
-                let mut on = settings.audio_visualizer;
-                if ui.checkbox(&mut on, "Audio visualizer").changed() {
-                    settings.audio_visualizer = on;
-                    resp.settings_changed = true;
-                }
-            });
         }
+        // what is open: the file name in the corner, over a dim plate
+        let font = egui::TextStyle::Small.resolve(ui.style());
+        let galley = ui.painter().layout_no_wrap(name, font, palette.text);
+        let plate = egui::Rect::from_min_size(rect.min + egui::vec2(6.0, 6.0), galley.size() + egui::vec2(12.0, 6.0));
+        ui.painter().rect_filled(plate, 3.0, palette.panel.gamma_multiply(0.8));
+        ui.painter().galley(plate.min + egui::vec2(6.0, 3.0), galley, palette.text);
+        r.context_menu(|ui| {
+            if !is_image {
+                for (a, hit) in [
+                    (Action::MarkIn, &mut resp.mark_in),
+                    (Action::MarkOut, &mut resp.mark_out),
+                    (Action::ClearInOut, &mut resp.clear_marks),
+                ] {
+                    *hit |= menu::item(ui, a, true);
+                }
+                ui.separator();
+                // the smart edits place the marked range at the RECORD playhead: say where that is
+                let near = match smart {
+                    Some(d) => format!("Nearest timeline cut: {d:+.2} s"),
+                    None => "No timeline cut near the playhead".into(),
+                };
+                ui.add_enabled_ui(false, |ui| menu::row(ui, None, &near, ""));
+                for a in [Action::AppendAtEnd, Action::RippleOverwrite, Action::CloseUp, Action::PlaceOnTop] {
+                    if menu::item(ui, a, true) {
+                        resp.actions.push(a);
+                    }
+                }
+                ui.separator();
+                let tape_on = st.tape.is_some();
+                let tape = menu::check(ui, tape_on, "Source Tape", &menu::shortcut(Action::SourceTape));
+                if tape.on_hover_text("Play the bin end to end").clicked() {
+                    resp.actions.push(Action::SourceTape);
+                }
+                resp.subclip |= menu::item(ui, Action::NewSubclip, !tape_on && st.asset.is_some());
+                menu::sub(ui, None, "Playback Resolution", |ui| {
+                    for q in preview::QUALITIES {
+                        if menu::check(ui, settings.preview_quality == q, &format!("{q} %"), "").clicked() {
+                            settings.preview_quality = q;
+                            resp.settings_changed = true;
+                        }
+                    }
+                });
+            }
+            if !has_video && menu::check(ui, settings.audio_visualizer, "Audio Visualizer", "").clicked() {
+                settings.audio_visualizer = !settings.audio_visualizer;
+                resp.settings_changed = true;
+            }
+            ui.separator();
+            resp.close |= menu::row(ui, Some(Glyph::Cross), "Close Source", "").clicked();
+        });
         if focused {
             ui.painter().rect_stroke(pane_rect, 0.0, egui::Stroke::new(1.0, palette.accent), egui::StrokeKind::Inside);
         }
@@ -400,7 +370,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut SourceState, c: SourceCtx<'_>) -> Source
     resp
 }
 
-/// Render size for a pane of `canvas` px at `quality` percent (25..100), aspect kept. Same rule as
+// Render size for a pane of `canvas` px at `quality` percent (25..100), aspect kept. Same rule as
 /// the program monitor's (`ui::app::preview_canvas`, private to that module).
 fn preview_canvas(canvas: (u32, u32), quality: u32) -> (u32, u32) {
     if canvas.0 == 0 || canvas.1 == 0 {

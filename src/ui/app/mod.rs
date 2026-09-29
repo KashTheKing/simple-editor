@@ -1502,6 +1502,7 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     // ---- ws:pages ----
     // ---- ws:timeline-surface ----
     // ---- ws:viewer-surface ----
+    preview_pane::act,
     // ---- ws:library-surface ----
     // ---- ws:inspector-surface ----
     // ---- ws:side-panels ----

@@ -271,7 +271,8 @@ pub(super) fn window_multicam(app: &mut App, ctx: &egui::Context) {
     }
     let cur = current_angle(&app.project, id, app.playhead).unwrap_or(0);
     let mut open = true;
-    let clicked = crate::ui::multicam_ui::angle_grid(ctx, &mut open, &angles, cur, &app.palette);
+    let viewer = app.pane_drawn(Pane::Preview).then_some(app.preview.canvas_rect); // ws:viewer-surface
+    let clicked = crate::ui::multicam_ui::angle_grid(ctx, &mut open, &angles, cur, &app.palette, viewer);
     if !open {
         app.monitor.multicam_dismissed = Some(id);
     }

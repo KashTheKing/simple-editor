@@ -1,9 +1,12 @@
 //! Preview panel: the rendered frame (letterboxed, black bars), a selection outline for the selected
 //! visual clip (drag to move = edits clip.x / clip.y at the playhead time via `Animated::set_at`, calling
-//! `undo` once at drag start), and the transport bar, centred under the video:
-//! go-start, prev cut, step back, play/pause, stop, step forward, next cut, go-end (all painted
-//! glyphs, NLE order) plus timecode / duration, In/Out buttons and the
-//! in/out times, a preview-quality selector (100 / 75 / 50 / 25 %) and a Movie mode toggle.
+//! `undo` once at drag start), a thin scrub line under the picture (taller on hover) and ONE transport
+//! row (`transport_row`, shared with the Source monitor): the click-to-type timecode on the left, go to
+//! start / step back / play-pause / step forward / go to end centred, Zoom ▾ and Fullscreen on the right
+//! (plus an amber "N dropped" while frames drop). Everything else - Stop, marks, playback resolution,
+//! proxies, movie mode, social guides, Scopes, background, canvas snap - is on the viewer's right-click
+//! (`viewer_menu`), led by rows for the clip under the pointer. The tool rail (`tools::rail`) floats
+//! over the viewer's left edge, and a shape / draw / mask tool's options in a strip along its top.
 //! In `fullscreen` mode only the video is drawn (no transport, no overlay): Esc / F11 leave it (app).
 //!
 //! When `PreviewCtx.tool` is anything but `Tool::Select`, a click-drag over the video draws instead of
@@ -30,13 +33,13 @@ use crate::engine::compose::{placement, Placement};
 use crate::hotkeys::Action;
 use crate::media::Frame;
 use crate::model::{
-    BackgroundMode, Clip, ClipKind, Effect, EffectKind, Id, Mask, MaskShape, Project, ShapeKind, ShapeStyle,
+    Animated, BackgroundMode, Clip, ClipKind, Effect, EffectKind, Id, Mask, MaskShape, Project, ShapeKind, ShapeStyle,
     Stroke as ModelStroke,
 };
 use crate::theme::Palette;
 use crate::ui::guides::{canvas_snap, paint_canvas_guides};
-use crate::ui::tools::{draw_glyph, glyph_text_button, Dir, Glyph, Tool};
-use crate::ui::{parse_timecode, timecode};
+use crate::ui::tools::{self, draw_glyph, glyph_text_button, Dir, Glyph, Tool, ToolsState};
+use crate::ui::{menu, parse_timecode, timecode};
 use eframe::egui::{
     self, pos2, vec2, Color32, CursorIcon, PointerButton, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, TextureOptions,
     Vec2,
@@ -296,9 +299,17 @@ pub struct PreviewState {
     point_drag: Option<usize>,
     /// Last pointer movement (fullscreen hides the cursor after 2 s of stillness).
     moved_at: Option<std::time::Instant>,
-    /// Content rect of the transport row last frame - it is centred against the panel using its own
-    /// measured width, so the first frame is left-aligned and every later one is centred.
+    /// The transport's centred play buttons, last frame.
     transport: Rect,
+    // ---- ws:viewer-surface ----
+    /// The tool options strip over the viewer's top edge, last frame (presses there stay off the video).
+    options: Rect,
+    /// Width of the fitted picture in physical pixels, last frame - what "100 %" zoom is measured against.
+    fit_px: f32,
+    /// The right-click's position (project px from the canvas centre, for "Add Text Here") and the clips
+    /// its clip rows act on (the clip under the pointer, else the selection's visual clips).
+    menu_at: (f32, f32),
+    menu_clips: Vec<Id>,
     // ---- ws:canvas-handles-monitor ----
     /// Active transform / crop handle drag.
     handle: Option<HandleDrag>,
@@ -331,6 +342,10 @@ impl Default for PreviewState {
             point_drag: None,
             moved_at: None,
             transport: Rect::ZERO,
+            options: Rect::NOTHING,
+            fit_px: 0.0,
+            menu_at: (0.0, 0.0),
+            menu_clips: Vec::new(),
             handle: None,
             crop_mode: false,
             mask_target: MaskTarget::Clip,
@@ -358,11 +373,12 @@ pub struct PreviewCtx<'a> {
     /// A texture the GPU renderer already holds, with its pixel size - painted directly, with no
     /// readback and no upload. Takes precedence over `frame`.
     pub gpu_texture: Option<(egui::TextureId, [u32; 2])>,
-    /// Active editing tool (`Tool::Select` = drag moves the selected clip).
-    pub tool: Tool,
-    /// The style a shape dragged out right now would be created with (tool-strip picks applied) -
-    /// `Some` only while a shape tool is active. Drives the live preview so it matches the result.
-    pub shape_style: Option<ShapeStyle>,
+    /// The editing tools: `tool` decides what a drag does (`Tool::Select` = move the selected clip); the
+    /// rail and the options strip edit it; a shape's live drag preview uses its style picks
+    /// (`tools::shape_style_from_tools`, the same fn that styles the created clip).
+    pub tools: &'a mut ToolsState,
+    /// Draw the tool rail (Show / Hide Tools).
+    pub rail: bool,
     /// Current preview render scale in percent (settings.preview_quality).
     pub quality: u32,
     /// Current movie mode (settings.movie_mode).
@@ -428,7 +444,7 @@ pub struct PreviewResponse {
     pub mask_edit: bool,
     /// The tracker box was dragged to this centre (project px relative to the canvas centre).
     pub set_tracker: Option<(f32, f32)>,
-    /// The user picked a social guide from the transport button (Some(None) = off).
+    /// The user picked a social guide from the right-click (Some(None) = off).
     pub set_guide: Option<Option<crate::ui::guides::Guide>>,
     // ---- ws:canvas-handles-monitor ----
     /// The context menu toggled canvas snapping - the app stores it in Settings.canvas_snap.
@@ -436,6 +452,9 @@ pub struct PreviewResponse {
     // ---- ws:pro-monitor ----
     /// The eyedropper (armed via `pick_mode`) sampled this colour from a click on the video.
     pub picked: Option<[u8; 3]>,
+    // ---- ws:viewer-surface ----
+    /// A right-click landed on this unselected clip: it becomes the selection.
+    pub select: Option<Id>,
 }
 
 pub fn show(ui: &mut egui::Ui, state: &mut PreviewState, mut c: PreviewCtx<'_>) -> PreviewResponse {
@@ -450,11 +469,11 @@ pub fn show(ui: &mut egui::Ui, state: &mut PreviewState, mut c: PreviewCtx<'_>) 
                 .order(egui::Order::Foreground)
                 .show(ui.ctx(), |ui| {
                     egui::Frame::popup(ui.style()).fill(c.palette.panel.gamma_multiply(0.92)).show(ui, |ui| {
+                        ui.set_width(560.0);
                         ui.vertical(|ui| {
-                            let width = state.transport.width().max(320.0);
-                            if let Some(t) = scrub_bar(ui, c.project.duration(), c.playhead, c.palette, width) {
-                                r.seek = Some(t);
-                            }
+                            let (seek, _) =
+                                scrub_bar(ui, c.project.duration(), c.playhead, c.palette, ui.available_width());
+                            r.seek = seek.or(r.seek);
                             transport(ui, state, &c, &mut r);
                         });
                         // hovering the bar keeps it alive past the 2 s fade
@@ -466,42 +485,46 @@ pub fn show(ui: &mut egui::Ui, state: &mut PreviewState, mut c: PreviewCtx<'_>) 
         }
         return r;
     }
-    let hovered = ui.rect_contains_pointer(ui.max_rect());
     ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
         transport(ui, state, &c, &mut r);
-        // the space is always allocated so the video does not jump; the bar itself only appears
-        // (and takes clicks) while the pointer is over the pane, like the fullscreen overlay
-        if hovered {
-            if let Some(t) = scrub_bar(ui, c.project.duration(), c.playhead, c.palette, ui.available_width()) {
-                r.seek = Some(t);
-            }
-        } else {
-            ui.allocate_exact_size(vec2(ui.available_width(), 10.0), egui::Sense::hover());
-        }
+        let (seek, _) = scrub_bar(ui, c.project.duration(), c.playhead, c.palette, ui.available_width());
+        r.seek = seek.or(r.seek);
         video(ui, state, &mut c, &mut r);
     });
+    if c.rail {
+        overlays(ui, state, &mut c);
+    }
     r
 }
 
-/// Progress / scrub bar (same look as the library preview's, which now shares this fn instead of
-/// duplicating the painting): fill shows the playhead, click or drag anywhere on it seeks. Returns the
-/// seek target (seconds) instead of writing into a `PreviewResponse` directly, so the lib-preview
-/// mini-player (which has no `PreviewResponse` of its own) can call it too.
-pub(crate) fn scrub_bar(ui: &mut egui::Ui, duration: f64, playhead: f64, palette: &Palette, width: f32) -> Option<f64> {
+/// Progress / scrub strip under a picture, shared with the Source monitor (which paints its marks over
+/// the returned bar): a thin line at rest, the whole strip while hovered or dragged. A click or drag
+/// anywhere on the strip seeks; returns the seek target (seconds) and the bar as painted.
+pub(crate) fn scrub_bar(
+    ui: &mut egui::Ui,
+    duration: f64,
+    playhead: f64,
+    palette: &Palette,
+    width: f32,
+) -> (Option<f64>, Rect) {
     let duration = duration.max(f64::MIN_POSITIVE);
-    let (bar, br) = ui.allocate_exact_size(vec2(width, 10.0), egui::Sense::click_and_drag());
-    ui.painter().rect_filled(bar, 2.0, palette.panel);
+    let (strip, br) = ui.allocate_exact_size(vec2(width, 10.0), egui::Sense::click_and_drag());
+    let bar = if br.hovered() || br.dragged() {
+        strip.shrink2(vec2(0.0, 1.0))
+    } else {
+        Rect::from_min_size(strip.min, vec2(width, 3.0))
+    };
+    ui.painter().rect_filled(bar, 1.5, palette.border);
     let frac = (playhead / duration).clamp(0.0, 1.0) as f32;
     let filled = Rect::from_min_max(bar.min, pos2(bar.left() + bar.width() * frac, bar.bottom()));
-    ui.painter().rect_filled(filled, 2.0, palette.accent);
-    ui.painter().rect_stroke(bar, 2.0, egui::Stroke::new(1.0, palette.border), egui::StrokeKind::Inside);
-    if (br.clicked() || br.dragged()) && bar.width() > 0.0 {
+    ui.painter().rect_filled(filled, 1.5, palette.accent);
+    if (br.clicked() || br.dragged()) && strip.width() > 0.0 {
         if let Some(p) = br.interact_pointer_pos() {
-            let f = ((p.x - bar.left()) / bar.width()) as f64;
-            return Some(scrub_time(f, duration));
+            let f = ((p.x - strip.left()) / strip.width()) as f64;
+            return (Some(scrub_time(f, duration)), bar);
         }
     }
-    None
+    (None, bar)
 }
 
 /// Time a scrub-bar click/drag at fractional position `frac` (0..1 across the bar, unclamped so a drag
@@ -510,163 +533,236 @@ pub(crate) fn scrub_time(frac: f64, duration: f64) -> f64 {
     frac.clamp(0.0, 1.0) * duration
 }
 
-fn transport(ui: &mut egui::Ui, state: &mut PreviewState, c: &PreviewCtx<'_>, r: &mut PreviewResponse) {
-    let fps = c.project.fps;
-    // centred: pad by half the leftover of last frame's measured width. Skip the pad on an
-    // unmeasured/reset frame (width 0) - padding from a stale zero would overshoot the real content
-    // width, wrap the row (see `horizontal_wrapped` below), and corrupt the very measurement next
-    // frame's pad depends on, so it would never converge.
-    let pad = if state.transport.width() > 0.0 {
-        ((ui.available_width() - state.transport.width()) * 0.5).max(0.0)
-    } else {
-        0.0
-    };
-    // ---- ws:canvas-handles-monitor ----
-    // `b` below captures `r.actions` by mutable reference for the whole closure (it's used again as
-    // late as the Fullscreen button); a second direct touch of `r.actions` - or a reborrow of all of
-    // `*r` (`timecode_label` used to take `r: &mut PreviewResponse`) - would conflict with that live
-    // borrow. Both new bits of state go through fresh locals instead and land on `r` after the closure.
-    let mut tc_seek = None;
-    let mut toggle_proxy = false;
-    let row = ui
-        .horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 2.0;
-            ui.add_space(pad);
-            // `label` is the tooltip for an icon button and the caption for a text one
-            let mut b = |ui: &mut egui::Ui, icon: Option<Glyph>, label: &str, a: Action| {
-                let hit = match icon {
-                    Some(g) => glyph_text_button(ui, g, "").on_hover_text(label),
-                    None => ui.button(label),
-                };
-                if hit.clicked() {
-                    r.actions.push(a);
-                }
-            };
-            b(ui, Some(Glyph::Jump(Dir::Left)), "Go to start", Action::GoStart);
-            b(ui, Some(Glyph::Skip(Dir::Left)), "Previous cut", Action::PrevCut);
-            b(ui, Some(Glyph::Tri(Dir::Left)), "Step back one frame", Action::StepBack);
-            let (pp, pp_tip) = if c.playing { (Glyph::Pause, "Pause") } else { (Glyph::Play, "Play") };
-            b(ui, Some(pp), pp_tip, Action::PlayPause);
-            b(ui, Some(Glyph::Stop), "Stop", Action::Stop);
-            b(ui, Some(Glyph::Tri(Dir::Right)), "Step forward one frame", Action::StepForward);
-            b(ui, Some(Glyph::Skip(Dir::Right)), "Next cut", Action::NextCut);
-            b(ui, Some(Glyph::Jump(Dir::Right)), "Go to end", Action::GoEnd);
-            ui.add_space(8.0);
-            tc_seek = timecode_label(ui, state, c, fps);
-            ui.add_space(8.0);
-            b(ui, None, "In", Action::MarkIn);
-            b(ui, None, "Out", Action::MarkOut);
-            b(ui, None, "Clear", Action::ClearInOut);
-            if c.project.in_point.is_some() || c.project.out_point.is_some() {
-                ui.add_space(4.0);
-                let tc = |t: Option<f64>| t.map(|t| timecode(t, fps)).unwrap_or_else(|| "-".into());
-                ui.monospace(format!("{} → {}", tc(c.project.in_point), tc(c.project.out_point)));
-            }
-            ui.add_space(8.0);
-            let cur = QUALITIES.iter().copied().find(|&q| q == c.quality).unwrap_or(100);
-            egui::ComboBox::from_id_salt("preview_quality")
-                .selected_text(format!("{cur} %"))
-                .width(64.0)
-                .show_ui(ui, |ui| {
-                    for q in QUALITIES {
-                        if ui.selectable_label(cur == q, format!("{q} %")).clicked() && q != cur {
-                            r.set_quality = Some(q);
-                        }
-                    }
-                })
-                .response
-                .on_hover_text("Preview render scale");
-            // film strip: movie mode plays pre-rendered frames
-            if crate::ui::tools::icon_button(
-                ui,
-                c.palette,
-                ui.id().with("movie"),
-                Glyph::FilmStrip,
-                "Movie mode: play pre-rendered full-quality frames",
-                c.movie_mode,
-            )
-            .clicked()
-            {
-                r.set_movie_mode = Some(!c.movie_mode);
-            }
-            // ---- ws:canvas-handles-monitor ----: proxy toggle + dropped-frame badge
-            if ui
-                .selectable_label(c.use_proxies, "Proxy")
-                .on_hover_text("Play low-res proxies in the preview")
-                .clicked()
-            {
-                toggle_proxy = true;
-            }
-            if c.dropped > 0 {
-                ui.weak(format!("{} dropped", c.dropped)).on_hover_text("Frames dropped during playback");
-            }
-            // social-guide overlay picker
-            let gr = crate::ui::tools::icon_button(
-                ui,
-                c.palette,
-                ui.id().with("guide"),
-                Glyph::Guides,
-                "Social guide overlay",
-                c.guide.is_some(),
-            );
-            egui::Popup::menu(&gr).show(|ui| {
-                use crate::ui::guides::Guide;
-                let mut pick = |ui: &mut egui::Ui, label: &str, v: Option<Guide>| {
-                    if ui.radio(c.guide == v, label).clicked() {
-                        r.set_guide = Some(v);
-                        ui.close();
-                    }
-                };
-                pick(ui, "Off", None);
-                for g in Guide::ALL {
-                    pick(ui, g.name(), Some(g));
-                }
-            });
-            b(ui, Some(Glyph::Fullscreen), "Fullscreen", Action::Fullscreen);
-        })
-        .response;
-    state.transport = Rect::from_min_max(pos2(row.rect.left() + pad, row.rect.top()), row.rect.max);
-    // ---- ws:canvas-handles-monitor ----: applied after `b`'s borrow of `r.actions` has ended
-    if let Some(t) = tc_seek {
-        r.seek = Some(t);
+// ---- ws:viewer-surface ----
+/// The transport's play buttons, in the order they sit: go to start, step back, play / pause, step
+/// forward, go to end (previous / next cut stay on Up / Down).
+const PLAY_ROW: [Action; 5] =
+    [Action::GoStart, Action::StepBack, Action::PlayPause, Action::StepForward, Action::GoEnd];
+
+/// A button's tooltip: the action's label and its live shortcut (menu snapshot).
+pub(crate) fn tip(a: Action) -> String {
+    match menu::shortcut(a) {
+        k if k.is_empty() => a.label().to_string(),
+        k => format!("{} ({k})", a.label()),
     }
-    if toggle_proxy {
-        r.actions.push(Action::ToggleProxies);
+}
+
+/// One transport row, shared by the program and Source monitors: `left` hugs the left edge, `right` the
+/// right edge (laid out right to left), and the five play buttons sit centred in the row - pushed right
+/// of `left` when the row is narrow. Returns the clicked play button's Action and the buttons' rect.
+/// ponytail: below ~360 pt the play buttons overlap `right`; wrap the row if monitors get that small.
+pub(crate) fn transport_row(
+    ui: &mut egui::Ui,
+    playing: bool,
+    left: impl FnOnce(&mut egui::Ui),
+    right: impl FnOnce(&mut egui::Ui),
+) -> (Option<Action>, Rect) {
+    let h = 28.0;
+    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
+    let inner = row.shrink2(vec2(6.0, 0.0));
+    let side = |ui: &mut egui::Ui, salt: &str, layout: egui::Layout, add: &mut dyn FnMut(&mut egui::Ui)| {
+        let mut ui = ui.new_child(egui::UiBuilder::new().id_salt(salt).max_rect(inner).layout(layout));
+        ui.spacing_mut().item_spacing.x = 4.0;
+        add(&mut ui);
+        ui.min_rect()
+    };
+    let (mut left, mut right) = (Some(left), Some(right));
+    let l = side(ui, "transport-left", egui::Layout::left_to_right(egui::Align::Center), &mut |ui| {
+        if let Some(f) = left.take() {
+            f(ui);
+        }
+    });
+    let rr = side(ui, "transport-right", egui::Layout::right_to_left(egui::Align::Center), &mut |ui| {
+        if let Some(f) = right.take() {
+            f(ui);
+        }
+    });
+    let gap = 2.0;
+    let bw = 18.0 + ui.spacing().button_padding.x * 2.0; // `glyph_text_button` without text
+    let w = PLAY_ROW.len() as f32 * bw + (PLAY_ROW.len() - 1) as f32 * gap;
+    let cx = row.center().x.min(rr.left() - 12.0 - w / 2.0).max(l.right() + 12.0 + w / 2.0);
+    let group = Rect::from_center_size(pos2(cx, row.center().y), vec2(w, h));
+    let layout = egui::Layout::left_to_right(egui::Align::Center);
+    let mut ui = ui.new_child(egui::UiBuilder::new().id_salt("transport-play").max_rect(group).layout(layout));
+    ui.spacing_mut().item_spacing.x = gap;
+    let mut hit = None;
+    for a in PLAY_ROW {
+        let g = match a {
+            Action::GoStart => Glyph::Jump(Dir::Left),
+            Action::StepBack => Glyph::Tri(Dir::Left),
+            Action::PlayPause if playing => Glyph::Pause,
+            Action::PlayPause => Glyph::Play,
+            Action::StepForward => Glyph::Tri(Dir::Right),
+            _ => Glyph::Jump(Dir::Right),
+        };
+        if glyph_text_button(&mut ui, g, "").on_hover_text(tip(a)).clicked() {
+            hit = Some(a);
+        }
+    }
+    (hit, group)
+}
+
+/// The program monitor's transport: the timecode, the play buttons, Zoom ▾, Fullscreen and - only
+/// while frames drop - an amber "N dropped".
+fn transport(ui: &mut egui::Ui, state: &mut PreviewState, c: &PreviewCtx<'_>, r: &mut PreviewResponse) {
+    let (fps, pw, fit_px) = (c.project.fps, c.project.width, state.fit_px);
+    let (tc_edit, view) = (&mut state.tc_edit, &mut state.view);
+    let (mut seek, mut full) = (None, false);
+    let (hit, group) = transport_row(
+        ui,
+        c.playing,
+        |ui| seek = timecode_label(ui, tc_edit, c.playhead, c.project.duration(), fps),
+        |ui| {
+            full = glyph_text_button(ui, Glyph::Fullscreen, "").on_hover_text(tip(Action::Fullscreen)).clicked();
+            let zr = ui
+                .button(format!("{} ▾", zoom_label(*view, fit_px, pw)))
+                .on_hover_text("Viewer zoom (Ctrl+scroll zooms, middle-drag pans)");
+            // up, like the play buttons' tooltips: below the transport is another pane
+            egui::Popup::menu(&zr).align(egui::RectAlign::TOP_END).show(|ui| zoom_rows(ui, view, fit_px, pw));
+            if c.dropped > 0 {
+                let text =
+                    egui::RichText::new(format!("{} dropped", c.dropped)).small().color(ui.visuals().warn_fg_color);
+                ui.label(text).on_hover_text("Frames dropped during playback");
+            }
+        },
+    );
+    state.transport = group;
+    r.actions.extend(hit);
+    if full {
+        r.actions.push(Action::Fullscreen);
+    }
+    r.seek = seek.or(r.seek);
+}
+
+/// Viewer zoom presets: `None` = Fit, else a percentage of the project's own pixels.
+const ZOOMS: [Option<u32>; 4] = [None, Some(50), Some(100), Some(200)];
+
+fn is_fit(view: (f32, Vec2)) -> bool {
+    (view.0 - 1.0).abs() < 1e-3 && view.1 == Vec2::ZERO
+}
+
+/// A viewer zoom (1 = fit) in % of the project's own pixels, given the fitted picture's width in px.
+fn zoom_pct(zoom: f32, fit_px: f32, project_w: u32) -> f32 {
+    zoom * fit_px / project_w.max(1) as f32 * 100.0
+}
+
+/// The zoom button's caption: "Fit", else the zoom in % of the project's pixels.
+fn zoom_label(view: (f32, Vec2), fit_px: f32, project_w: u32) -> String {
+    if is_fit(view) {
+        "Fit".into()
+    } else {
+        format!("{:.0} %", zoom_pct(view.0, fit_px, project_w))
+    }
+}
+
+/// The Zoom menu's rows (the transport's Zoom ▾ and the right-click's Zoom ▸): Fit, 50, 100, 200 % of
+/// the project's own pixels. `PreviewState.view` only - never project data, never the render size.
+fn zoom_rows(ui: &mut egui::Ui, view: &mut (f32, Vec2), fit_px: f32, project_w: u32) {
+    for z in ZOOMS {
+        let (label, on, keys) = match z {
+            None => ("Fit".to_string(), is_fit(*view), menu::shortcut(Action::ViewerFit)),
+            Some(p) => {
+                let on = !is_fit(*view) && (zoom_pct(view.0, fit_px, project_w) - p as f32).abs() < 0.5;
+                (format!("{p} %"), on, String::new())
+            }
+        };
+        if menu::check(ui, on, &label, &keys).clicked() {
+            let zoom = z.map_or(1.0, |p| p as f32 / 100.0 * project_w as f32 / fit_px.max(1.0));
+            *view = (zoom.clamp(ZOOM_RANGE.0, ZOOM_RANGE.1), Vec2::ZERO);
+        }
     }
 }
 
 // ---- ws:canvas-handles-monitor ----
-/// The "playhead / duration" label: a click turns it into a text field; Enter parses it with
-/// `parse_timecode` (hh:mm:ss:ff, mm:ss, +N / -N frames, +1.5s) and returns the seek target; Esc or
-/// clicking away drops the edit. Returns a value instead of writing `r.seek` directly - the caller's
-/// `b` closure already holds `r.actions` borrowed for longer than this call site (see `transport`'s
-/// comment above its `row` binding).
-fn timecode_label(ui: &mut egui::Ui, state: &mut PreviewState, c: &PreviewCtx<'_>, fps: f64) -> Option<f64> {
+/// The playhead timecode: a click turns it into a text field; Enter parses it with `parse_timecode`
+/// (hh:mm:ss:ff, mm:ss, +N / -N frames, +1.5s) and returns the seek target; Esc or clicking away drops
+/// the edit. `edit` holds the text being typed. Shared with the Source monitor.
+pub(crate) fn timecode_label(
+    ui: &mut egui::Ui,
+    edit: &mut Option<String>,
+    playhead: f64,
+    duration: f64,
+    fps: f64,
+) -> Option<f64> {
     let mut seek = None;
     let mut close = false;
-    if let Some(text) = state.tc_edit.as_mut() {
+    if let Some(text) = edit.as_mut() {
         let te = ui.add(egui::TextEdit::singleline(text).desired_width(100.0).font(egui::TextStyle::Monospace));
         if te.lost_focus() {
             if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                seek = parse_timecode(text, fps, c.playhead);
+                seek = parse_timecode(text, fps, playhead);
             }
             close = true;
         } else if !te.has_focus() {
             te.request_focus();
         }
     } else {
-        let text = format!("{} / {}", timecode(c.playhead, fps), timecode(c.project.duration(), fps));
-        let lbl = ui
-            .add(egui::Label::new(egui::RichText::new(text).monospace()).sense(Sense::click()))
-            .on_hover_text("Click to type a time: hh:mm:ss:ff, mm:ss, +N / -N frames, +1.5s / -2s");
-        if lbl.clicked() {
-            state.tc_edit = Some(timecode(c.playhead, fps));
+        let hint = format!(
+            "Duration {} - click to type a time: hh:mm:ss:ff, mm:ss, +N / -N frames, +1.5s / -2s",
+            timecode(duration, fps)
+        );
+        let text = egui::RichText::new(timecode(playhead, fps)).monospace();
+        if ui.add(egui::Label::new(text).sense(Sense::click())).on_hover_text(hint).clicked() {
+            *edit = Some(timecode(playhead, fps));
         }
     }
     if close {
-        state.tc_edit = None;
+        *edit = None;
     }
     seek
+}
+
+// ---- ws:viewer-surface ----
+/// Over the viewer (not in fullscreen): the tool rail on its left edge and, while a shape / draw / mask
+/// tool is active, that tool's options in a strip along the top edge - for the Mask tool, which mask its
+/// drag writes (the clip's own or one of its effects'), offered when the clip has effects.
+fn overlays(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>) {
+    let area = state.canvas_rect;
+    if !area.is_positive() {
+        return;
+    }
+    let at = area.min + vec2(6.0, 6.0);
+    tools::rail(ui, c.tools, &mut state.crop_mode, c.palette, at);
+    let fx: Vec<&'static str> = c
+        .selection
+        .iter()
+        .find_map(|&id| c.project.clip(id).filter(|cl| cl.is_visual()))
+        .map(|cl| cl.effects.iter().map(|e| e.kind.name()).collect())
+        .unwrap_or_default();
+    let tool = c.tools.tool;
+    let mask = matches!(tool, Tool::Mask(_));
+    if !(matches!(tool, Tool::Shape(_) | Tool::Draw) || mask && !fx.is_empty()) {
+        state.options = Rect::NOTHING;
+        return;
+    }
+    // last frame's box: a press between two controls must not reach the video
+    ui.interact(state.options, egui::Id::new("viewer-options-bg"), Sense::click_and_drag());
+    let bg = ui.painter().add(Shape::Noop);
+    let x0 = at.x + tools::RAIL_W + 6.0;
+    let max = Rect::from_min_max(pos2(x0, at.y), pos2(area.right() - 6.0, at.y + 30.0));
+    let layout = egui::Layout::left_to_right(egui::Align::Center);
+    let mut strip = ui.new_child(egui::UiBuilder::new().id_salt("viewer-options").max_rect(max).layout(layout));
+    strip.spacing_mut().item_spacing.x = 4.0;
+    strip.add_space(8.0);
+    if mask {
+        let name = |t: MaskTarget| match t {
+            MaskTarget::Clip => "Clip".to_string(),
+            MaskTarget::Effect(i) => format!("{}: {}", i + 1, fx.get(i).copied().unwrap_or("?")),
+        };
+        strip.label("Mask on");
+        egui::ComboBox::from_id_salt("mask-target").selected_text(name(state.mask_target)).show_ui(&mut strip, |ui| {
+            ui.selectable_value(&mut state.mask_target, MaskTarget::Clip, name(MaskTarget::Clip));
+            for i in 0..fx.len() {
+                ui.selectable_value(&mut state.mask_target, MaskTarget::Effect(i), name(MaskTarget::Effect(i)));
+            }
+        });
+    } else {
+        tools::style_controls(&mut strip, c.tools, c.palette);
+    }
+    let used = Rect::from_min_max(pos2(x0, at.y), pos2(strip.min_rect().right() + 8.0, at.y + 30.0));
+    let cr = egui::CornerRadius::same(c.palette.rounding as u8 + 2);
+    ui.painter().set(bg, egui::epaint::RectShape::filled(used, cr, c.palette.panel.gamma_multiply(0.85)));
+    state.options = used;
 }
 
 /// Keep `v`'s direction while forcing at least `min` of length, so a zero-length drag still makes a
@@ -812,7 +908,7 @@ fn tool_drag(
     resp: &egui::Response,
     lb: Rect,
 ) -> bool {
-    let tool = c.tool;
+    let tool = c.tools.tool;
     if tool == Tool::Select {
         state.tool_drag = None;
         return false;
@@ -934,9 +1030,9 @@ fn tool_drag(
             Tool::Shape(kind) => {
                 let modifiers = ui.input(|i| i.modifiers);
                 let (from, to) = constrain_drag(kind, d.from, now, modifiers);
-                // the real style the clip will be created with (PreviewCtx::shape_style, from the
-                // tool strip's picks) - a red 8-point star previews as a red 8-point star
-                let style = c.shape_style.clone().unwrap_or_else(|| ShapeStyle::new(kind));
+                // the real style the clip will be created with (the tool options' picks, through the
+                // same fn `App::add_shape` uses) - a red 8-point star previews as a red 8-point star
+                let style = tools::shape_style_from_tools(c.tools, kind);
                 draw_shape_preview(&p, &style, from, to, k);
             }
             // text box outline: no real text is rendered here, just where the box will land
@@ -984,85 +1080,157 @@ fn tool_drag(
     true
 }
 
-/// Right-click "Background" submenu on the video area: Checkerboard / Black / White / Custom (a colour
-/// picker). Mirrors the transport bar's social-guide picker (radio per option, `ui.close()` on pick)
-/// but as a `context_menu` submenu since the background has no dedicated toolbar button. Edits
-/// `project.preview_bg` through the same undo-once-per-gesture/`edited`-flag convention every other
-/// project-level edit in this file uses (e.g. the drag-to-move handling below).
-/// ws:canvas-handles-monitor: also hosts the "Crop Handles" / "Snap to canvas" toggles, "Fit Viewer"
-/// and the "Mask target" picker (the clip's own mask or one of its effects' - UI-only state).
-fn background_menu(resp: &egui::Response, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r: &mut PreviewResponse) {
-    // the selected clip's effect stack, for the mask-target picker
-    let fx: Vec<&'static str> = c
-        .selection
-        .iter()
-        .find_map(|&id| c.project.clip(id).filter(|cl| cl.is_visual()))
-        .map(|cl| cl.effects.iter().map(|e| e.kind.name()).collect())
-        .unwrap_or_default();
+/// ---- ws:viewer-surface ----
+/// The topmost visible video / image / sequence clip at `playhead` whose placed layer covers `p`
+/// (project px from the canvas' top-left) - what a right-click on the viewer lands on. Later tracks draw
+/// on top, so the last hit wins.
+/// ponytail: text / shape clips have no native size to hit-test - they are reached through the selection.
+fn clip_at(project: &Project, playhead: f64, p: (f32, f32)) -> Option<Id> {
+    project.clips_at(playhead).into_iter().rev().find(|&id| {
+        let Some(cl) = project.clip(id).filter(|cl| cl.enabled && cl.is_visual()) else { return false };
+        let Some(native) = project.clip_native_size(cl) else { return false };
+        let (x0, y0, x1, y1) = placement(project, cl, playhead, native, project.width, project.height, true).bounds();
+        (x0..=x1).contains(&p.0) && (y0..=y1).contains(&p.1)
+    })
+}
+
+/// Position, scale and rotation back to their defaults - for a video or image that is the fitted frame
+/// (the same reset `Project::fit_clip_to_screen(id, false)` does, which only takes clips with a native
+/// size; this one takes text and shapes too).
+fn reset_transform(project: &mut Project, id: Id) {
+    if let Some(cl) = project.clip_mut(id) {
+        (cl.x, cl.y, cl.rotation) = (Animated::new(0.0), Animated::new(0.0), Animated::new(0.0));
+        (cl.scale, cl.scale_x, cl.scale_y) = (Animated::new(1.0), Animated::new(1.0), Animated::new(1.0));
+    }
+}
+
+/// Scale a video / image up until it covers the whole frame, aspect kept (the overflow crops): the
+/// fitted placement times the larger ratio of the two aspects.
+fn fill_frame(project: &mut Project, id: Id) {
+    let Some((nw, nh)) = project.clip(id).and_then(|cl| project.clip_native_size(cl)) else { return };
+    let (na, ca) = (nw as f64 / nh as f64, project.width as f64 / project.height.max(1) as f64);
+    if project.fit_clip_to_screen(id, false) {
+        if let Some(cl) = project.clip_mut(id) {
+            cl.scale = Animated::new((na / ca).max(ca / na));
+        }
+    }
+}
+
+/// The viewer's right-click (`state.menu_clips` / `menu_at` are set by the right-click itself): rows for
+/// the clip under the pointer (or the selection) - Reset Transform, Fill / Stretch to Frame, Crop
+/// Handles, Add Mask, Add Text Here - then the viewer's own: Stop and the marks, Zoom ▸, Playback
+/// Resolution ▸, Proxies, Movie Mode, Social Guides ▸, Scopes, Background ▸, Snap to Canvas. Action rows
+/// go through `ui::menu`, so labels, icons and shortcuts match the menu bar.
+fn viewer_menu(resp: &egui::Response, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r: &mut PreviewResponse) {
     resp.context_menu(|ui| {
-        ui.checkbox(&mut state.crop_mode, "Crop Handles")
-            .on_hover_text("Edge handles crop the clip (one Crop effect) instead of scaling it");
-        let mut snap = c.canvas_snap;
-        if ui.checkbox(&mut snap, "Snap to canvas").changed() {
-            r.set_canvas_snap = Some(snap);
-        }
-        if ui.button("Fit Viewer").clicked() {
-            r.actions.push(Action::ViewerFit);
-            ui.close();
-        }
-        if !fx.is_empty() {
-            ui.menu_button("Mask target", |ui| {
-                if ui.radio(state.mask_target == MaskTarget::Clip, "Clip mask").clicked() {
-                    state.mask_target = MaskTarget::Clip;
-                    ui.close();
-                }
-                for (i, name) in fx.iter().enumerate() {
-                    if ui.radio(state.mask_target == MaskTarget::Effect(i), format!("{}: {name}", i + 1)).clicked() {
-                        state.mask_target = MaskTarget::Effect(i);
-                        ui.close();
-                    }
-                }
-            });
-        }
-        ui.separator();
-        ui.menu_button("Background", |ui| {
-            let mut pick = |ui: &mut egui::Ui, label: &str, v: BackgroundMode| {
-                if ui.radio(c.project.preview_bg == v, label).clicked() {
+        menu::scroll(ui, |ui| {
+            if !state.menu_clips.is_empty() {
+                let ids = state.menu_clips.clone();
+                let media =
+                    ids.iter().any(|&id| c.project.clip(id).is_some_and(|cl| c.project.clip_native_size(cl).is_some()));
+                let mut edit = |f: &dyn Fn(&mut Project, Id)| {
                     (c.undo)(c.project);
-                    c.project.preview_bg = v;
+                    for &id in &ids {
+                        f(c.project, id);
+                    }
                     r.edited = true;
-                    ui.close();
+                };
+                let tip = "Position, scale and rotation back to their defaults - a video or image fits the frame";
+                if menu::row(ui, None, "Reset Transform", "").on_hover_text(tip).clicked() {
+                    edit(&reset_transform);
                 }
-            };
-            for mode in BackgroundMode::ALL {
-                pick(ui, mode.name(), mode);
+                ui.add_enabled_ui(media, |ui| {
+                    let tip = "Scale up to cover the whole frame, keeping the aspect (the edges crop)";
+                    if menu::row(ui, None, "Fill Frame", "").on_hover_text(tip).clicked() {
+                        edit(&fill_frame);
+                    }
+                    let tip = "Fill the frame edge to edge, ignoring the aspect";
+                    if menu::row(ui, None, "Stretch to Frame", "").on_hover_text(tip).clicked() {
+                        edit(&|p: &mut Project, id| {
+                            p.fit_clip_to_screen(id, true);
+                        });
+                    }
+                });
+                if menu::check(ui, state.crop_mode, "Crop Handles", "").clicked() {
+                    state.crop_mode = !state.crop_mode;
+                    c.tools.tool = Tool::Select; // the handles sit on the Select tool's outline
+                }
+                menu::action_item(ui, Action::AddMask);
+                if menu::row(ui, Some(Glyph::Letter('T')), "Add Text Here", "").clicked() {
+                    r.new_text = Some((state.menu_at.0, state.menu_at.1, 2.0, 2.0));
+                }
+                ui.separator();
             }
-            let custom = matches!(c.project.preview_bg, BackgroundMode::Custom(_));
-            ui.horizontal(|ui| {
-                if ui.radio(custom, "Custom").clicked() && !custom {
-                    (c.undo)(c.project);
-                    c.project.preview_bg = BackgroundMode::Custom([0, 0, 0, 255]);
-                    r.edited = true;
-                }
-                if let BackgroundMode::Custom(mut rgba) = c.project.preview_bg {
-                    let cr = ui.color_edit_button_srgba_unmultiplied(&mut rgba);
-                    // gate the undo push to once per drag/pick, like every other gesture in this file
-                    if crate::ui::edit_start(&cr) {
-                        (c.undo)(c.project);
-                    }
-                    if cr.changed() {
-                        c.project.preview_bg = BackgroundMode::Custom(rgba);
-                        r.edited = true;
+            for a in [Action::Stop, Action::MarkIn, Action::MarkOut, Action::ClearInOut] {
+                menu::action_item(ui, a);
+            }
+            ui.separator();
+            let (fit_px, pw) = (state.fit_px, c.project.width);
+            menu::sub(ui, Some(Glyph::Zoom), "Zoom", |ui| zoom_rows(ui, &mut state.view, fit_px, pw));
+            menu::sub(ui, None, "Playback Resolution", |ui| {
+                for q in QUALITIES {
+                    if menu::check(ui, c.quality == q, &format!("{q} %"), "").clicked() {
+                        r.set_quality = Some(q);
                     }
                 }
             });
+            if menu::check(ui, c.use_proxies, "Proxies", &menu::shortcut(Action::ToggleProxies)).clicked() {
+                r.actions.push(Action::ToggleProxies);
+            }
+            if menu::check(ui, c.movie_mode, "Movie Mode (pre-render)", &menu::shortcut(Action::MovieMode)).clicked() {
+                r.set_movie_mode = Some(!c.movie_mode);
+            }
+            menu::sub(ui, Some(Glyph::Guides), "Social Guides", |ui| {
+                use crate::ui::guides::Guide;
+                for g in std::iter::once(None).chain(Guide::ALL.map(Some)) {
+                    if menu::check(ui, c.guide == g, g.map_or("Off", |g| g.name()), "").clicked() {
+                        r.set_guide = Some(g);
+                    }
+                }
+            });
+            menu::action_item(ui, Action::ToggleScopes);
+            ui.separator();
+            menu::sub(ui, None, "Background", |ui| background_rows(ui, c, r));
+            if menu::check(ui, c.canvas_snap, "Snap to Canvas", "").clicked() {
+                r.set_canvas_snap = Some(!c.canvas_snap);
+            }
         });
+    });
+}
+
+/// The right-click's Background ▸ rows: every `BackgroundMode`, and Custom with its colour picker. Edits
+/// `project.preview_bg` with one undo per pick / colour drag, like every project edit in this file.
+fn background_rows(ui: &mut egui::Ui, c: &mut PreviewCtx<'_>, r: &mut PreviewResponse) {
+    for mode in BackgroundMode::ALL {
+        if menu::check(ui, c.project.preview_bg == mode, mode.name(), "").clicked() {
+            (c.undo)(c.project);
+            c.project.preview_bg = mode;
+            r.edited = true;
+        }
+    }
+    let custom = matches!(c.project.preview_bg, BackgroundMode::Custom(_));
+    ui.horizontal(|ui| {
+        if menu::check(ui, custom, "Custom", "").clicked() && !custom {
+            (c.undo)(c.project);
+            c.project.preview_bg = BackgroundMode::Custom([0, 0, 0, 255]);
+            r.edited = true;
+        }
+        if let BackgroundMode::Custom(mut rgba) = c.project.preview_bg {
+            let cr = ui.color_edit_button_srgba_unmultiplied(&mut rgba);
+            // gate the undo push to once per drag/pick, like every other gesture in this file
+            if crate::ui::edit_start(&cr) {
+                (c.undo)(c.project);
+            }
+            if cr.changed() {
+                c.project.preview_bg = BackgroundMode::Custom(rgba);
+                r.edited = true;
+            }
+        }
     });
 }
 
 fn video(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r: &mut PreviewResponse) {
     let (rect, resp) = ui.allocate_exact_size(ui.available_size_before_wrap(), Sense::click_and_drag());
-    background_menu(&resp, state, c, r);
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, Color32::BLACK);
     let ppp = ui.pixels_per_point();
@@ -1084,6 +1252,28 @@ fn video(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r:
     state.canvas_rect = rect;
     let (cw, ch) = ((fit.width() * ppp).round().max(16.0) as u32, (fit.height() * ppp).round().max(16.0) as u32);
     r.canvas = (cw, ch);
+    state.fit_px = fit.width() * ppp;
+
+    // ---- ws:viewer-surface ----
+    // a right-click on an unselected clip selects it; the menu's clip rows act on it (else the selection)
+    if resp.secondary_clicked() {
+        if let Some(p) = resp.interact_pointer_pos() {
+            let k = c.project.width as f32 / lb.width().max(1.0); // project px per point
+            let at = ((p.x - lb.min.x) * k, (p.y - lb.min.y) * k);
+            state.menu_at = (at.0 - c.project.width as f32 / 2.0, at.1 - c.project.height as f32 / 2.0);
+            let ph = c.playhead;
+            let on_screen =
+                |id: &Id| c.project.clip(*id).is_some_and(|cl| cl.is_visual() && cl.enabled && cl.contains(ph));
+            state.menu_clips = match clip_at(c.project, ph, at) {
+                Some(id) if !c.selection.contains(&id) => {
+                    r.select = Some(id);
+                    vec![id]
+                }
+                _ => c.selection.iter().copied().filter(on_screen).collect(),
+            };
+        }
+    }
+    viewer_menu(&resp, state, c, r);
 
     // social-guide overlay: painted on the Foreground layer so it sits over the video, the selection
     // outline and the tracker box, in windowed and fullscreen preview alike
@@ -1332,8 +1522,9 @@ fn video(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r:
                 draw_glyph(&painter, Rect::from_center_size(hp + vec2(16.0, 14.0), vec2(16.0, 16.0)), g, c.palette.text)
             };
             match o.hit(hp, state.crop_mode) {
+                // not Grab: Windows draws that as the 4-arrow move cursor
                 Some(Handle::Rotate) => {
-                    ui.ctx().set_cursor_icon(CursorIcon::Grab);
+                    ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
                     glyph_at(Glyph::Rotate);
                 }
                 Some(Handle::Crop(_)) => {
@@ -1428,7 +1619,8 @@ fn video(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r:
     }
 }
 
-/// Small "Pre-rendering NN %" / "Building proxy NN %" badge in the top-left of the video.
+/// Small "Pre-rendering NN %" / "Building proxy NN %" badge in the bottom-left of the video (the tool
+/// rail and its options strip own the top-left, the multicam angles the top-right).
 fn prerender_badge(ui: &egui::Ui, painter: &egui::Painter, lb: Rect, c: &PreviewCtx<'_>) {
     let (p, label) = match (c.prerender, c.proxy) {
         (Some(p), _) => (p, "Pre-rendering"),
@@ -1447,7 +1639,7 @@ fn prerender_badge(ui: &egui::Ui, painter: &egui::Painter, lb: Rect, c: &Preview
     let font = egui::TextStyle::Small.resolve(ui.style());
     let galley = painter.layout_no_wrap(text, font, c.palette.text);
     let pad = vec2(6.0, 3.0);
-    let at = lb.min + vec2(6.0, 6.0);
+    let at = lb.left_bottom() + vec2(6.0, -6.0 - galley.size().y - pad.y * 2.0);
     let bg = Rect::from_min_size(at, galley.size() + pad * 2.0);
     painter.rect_filled(bg, 3.0, c.palette.header.gamma_multiply(0.9));
     painter.rect_stroke(bg, 3.0, Stroke::new(1.0, c.palette.accent), StrokeKind::Inside);
@@ -1494,8 +1686,8 @@ fn paint_trim_view(
             painter.image(t.id(), halves[i], uv, Color32::WHITE);
         }
         painter.text(
-            halves[i].left_top() + vec2(6.0, 6.0),
-            egui::Align2::LEFT_TOP,
+            halves[i].right_top() + vec2(-6.0, 6.0), // the left edge is the tool rail's
+            egui::Align2::RIGHT_TOP,
             label,
             egui::TextStyle::Small.resolve(ui.style()),
             Color32::WHITE,
@@ -1679,6 +1871,10 @@ mod tests {
         trim_frames: Option<(Arc<Frame>, Arc<Frame>)>,
         pick_mode: Option<PickTarget>,
         stats: Option<crate::engine::gpu::FrameStats>,
+        // ---- ws:viewer-surface ----
+        /// Draw the tool rail (off by default, so the older gesture tests keep the whole canvas).
+        rail: bool,
+        use_proxies: bool,
     }
 
     impl H {
@@ -1697,6 +1893,8 @@ mod tests {
                 trim_frames: None,
                 pick_mode: None,
                 stats: None,
+                rail: false,
+                use_proxies: false,
             }
         }
         fn frame(&mut self, events: Vec<Event>) -> PreviewResponse {
@@ -1712,8 +1910,11 @@ mod tests {
                 ..Default::default()
             };
             let pal = Palette::new(true, Color32::WHITE);
-            let H { ctx, state, project, selection, tool, undos, trim_frames, pick_mode, stats, .. } = self;
+            let H {
+                ctx, state, project, selection, tool, undos, trim_frames, pick_mode, stats, rail, use_proxies, ..
+            } = self;
             let mut out = PreviewResponse::default();
+            let mut tools = ToolsState { tool: *tool, ..Default::default() };
             let _ = ctx.run(input, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut undo = |_: &Project| *undos += 1;
@@ -1730,8 +1931,8 @@ mod tests {
                             undo: &mut undo,
                             frame: None,
                             gpu_texture: None,
-                            tool: *tool,
-                            shape_style: None,
+                            tools: &mut tools,
+                            rail: *rail,
                             quality: 100,
                             movie_mode: false,
                             prerender: Some(0.4),
@@ -1741,7 +1942,7 @@ mod tests {
                             guide: None,
                             canvas_snap: false,
                             alt_texture: None,
-                            use_proxies: false,
+                            use_proxies: *use_proxies,
                             dropped: 0,
                             trim_frames: trim_frames.clone(),
                             pick_mode: *pick_mode,
@@ -1750,6 +1951,7 @@ mod tests {
                     );
                 });
             });
+            *tool = tools.tool;
             out
         }
         // ---- ws:canvas-handles-monitor ----
@@ -2369,5 +2571,164 @@ mod tests {
             h.frame(vec![]);
         }
         assert!(!h.ctx.has_requested_repaint(), "idle frame with handles shown requested a repaint");
+    }
+
+    // ---- ws:viewer-surface ----
+
+    impl H {
+        fn rclick(&mut self, at: Pos2) -> PreviewResponse {
+            self.time += 1.0;
+            self.frame(vec![Event::PointerMoved(at)]);
+            let btn = |pressed| Event::PointerButton {
+                pos: at,
+                button: PointerButton::Secondary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            };
+            let a = self.frame(vec![btn(true)]);
+            let mut b = self.frame(vec![btn(false)]);
+            b.select = b.select.or(a.select);
+            b
+        }
+    }
+
+    /// The transport is ONE row under the video: the play buttons centred, the video right above the
+    /// scrub strip - nothing wraps onto a second line (the old row did at ordinary pane widths).
+    #[test]
+    fn transport_is_one_row_under_the_video() {
+        for w in [700.0, 480.0] {
+            let mut h = H::new();
+            h.panel = Rect::from_min_size(Pos2::ZERO, vec2(w, 460.0));
+            h.frame(vec![]);
+            h.frame(vec![]);
+            let row = h.state.transport;
+            assert!(row.height() <= 28.0 && row.bottom() <= h.panel.bottom() + 0.5, "one row at {w}: {row:?}");
+            let video = h.state.canvas_rect;
+            assert!(row.top() - video.bottom() <= 16.5, "only the scrub strip between: {video:?} / {row:?}");
+        }
+    }
+
+    /// The scrub line is always there (the old bar only appeared on hover) and grows under the pointer.
+    #[test]
+    fn scrub_line_is_always_visible_and_taller_on_hover() {
+        let ctx = egui::Context::default();
+        let pal = Palette::new(true, Color32::WHITE);
+        let mut run = |events: Vec<Event>| {
+            let mut bar = Rect::NOTHING;
+            let _ = ctx.run(RawInput { events, ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| bar = scrub_bar(ui, 4.0, 1.0, &pal, 300.0).1);
+            });
+            bar
+        };
+        let rest = run(vec![]);
+        assert_eq!(rest.height(), 3.0, "a thin line at rest: {rest:?}");
+        run(vec![Event::PointerMoved(rest.center())]);
+        let hover = run(vec![Event::PointerMoved(rest.center())]);
+        assert!(hover.height() >= 8.0, "taller under the pointer: {hover:?}");
+    }
+
+    /// Zoom presets are percentages of the project's own pixels: 100 % on a 1920-wide project shown
+    /// 640 px wide is a 3x magnification of the fitted picture, and reads back as "100 %".
+    #[test]
+    fn zoom_presets_measure_project_pixels() {
+        assert!(is_fit((1.0, Vec2::ZERO)) && !is_fit((1.0, vec2(3.0, 0.0))), "panned is not Fit");
+        assert_eq!(zoom_label((1.0, Vec2::ZERO), 640.0, 1920), "Fit");
+        assert_eq!(zoom_label((3.0, Vec2::ZERO), 640.0, 1920), "100 %");
+        assert_eq!(zoom_label((1.5, Vec2::ZERO), 640.0, 1920), "50 %");
+        assert!((zoom_pct(6.0, 640.0, 1920) - 200.0).abs() < 1e-3);
+    }
+
+    /// Right-clicking a clip that isn't selected selects it, and the menu's clip rows act on it; a
+    /// right-click on the black bars keeps the selection.
+    #[test]
+    fn right_click_selects_the_clip_under_the_pointer() {
+        let mut h = H::new();
+        h.with_asset();
+        h.selection.clear();
+        let out = h.rclick(h.lb().center());
+        assert_eq!(out.select, Some(7), "the clip under the pointer becomes the selection");
+        assert_eq!(h.state.menu_clips, vec![7]);
+        let (x, y) = h.state.menu_at;
+        assert!(x.abs() < 2.0 && y.abs() < 2.0, "Add Text Here lands where it was right-clicked: {x}, {y}");
+        h.selection = vec![7];
+        let above = pos2(h.lb().center().x, h.lb().top() - 30.0); // the black bar over the picture
+        let out = h.rclick(above);
+        assert_eq!(out.select, None, "nothing under the pointer: the selection stays");
+        assert_eq!(h.state.menu_clips, vec![7], "...and the clip rows act on it");
+    }
+
+    /// Fill covers the frame with the aspect kept (a 4:3 clip on a 16:9 canvas grows by 16:9 / 4:3);
+    /// Reset puts every transform back, for a text clip too.
+    #[test]
+    fn fill_and_reset_transform() {
+        let mut h = H::new();
+        h.with_asset();
+        h.project.assets[0].width = 320;
+        h.project.assets[0].height = 240;
+        h.project.clip_mut(7).unwrap().rotation.value = 30.0;
+        fill_frame(&mut h.project, 7);
+        let c = h.project.clip(7).unwrap();
+        assert!((c.scale.value - (16.0 / 9.0) / (4.0 / 3.0)).abs() < 1e-9, "scale {}", c.scale.value);
+        assert_eq!((c.rotation.value, c.scale_x.value, c.scale_y.value), (0.0, 1.0, 1.0));
+        let p = placement(&h.project, c, 1.0, (320, 240), 1920, 1080, true);
+        let (x0, y0, x1, y1) = p.bounds();
+        assert!(x0 <= 0.5 && y0 <= 0.5 && x1 >= 1919.5 && y1 >= 1079.5, "covers the canvas: {:?}", p.bounds());
+        let t = h.project.add_text_clip(0.0, 2.0);
+        let c = h.project.clip_mut(t).unwrap();
+        (c.x.value, c.scale.value, c.rotation.value) = (50.0, 2.0, 10.0);
+        reset_transform(&mut h.project, t);
+        let c = h.project.clip(t).unwrap();
+        assert_eq!((c.x.value, c.scale.value, c.rotation.value), (0.0, 1.0, 0.0));
+    }
+
+    /// The tool rail sits over the viewer's left edge and owns its presses: clicking a tool there picks
+    /// it without dragging the clip underneath.
+    #[test]
+    fn rail_click_picks_a_tool_without_touching_the_clip() {
+        let mut h = H::new();
+        h.with_asset();
+        h.rail = true;
+        h.frame(vec![]);
+        let draw = h.ctx.read_response(egui::Id::new(("rail", "Draw"))).expect("the rail is drawn").rect;
+        assert!(h.state.canvas_rect.contains(draw.center()), "inside the viewer: {draw:?}");
+        let before = h.project.to_json();
+        h.drag(draw.center(), draw.center() + vec2(60.0, 20.0));
+        h.click(draw.center());
+        assert_eq!(h.tool, Tool::Draw);
+        assert_eq!(h.project.to_json(), before, "nothing under the rail moved");
+        assert_eq!(h.undos, 0);
+    }
+
+    /// The options strip is only there while a shape or Draw is active (or Mask, on a clip with effects).
+    #[test]
+    fn tool_options_only_for_shape_draw_and_mask() {
+        let mut h = H::new();
+        h.rail = true;
+        for (tool, shown) in
+            [(Tool::Select, false), (Tool::Text, false), (Tool::Draw, true), (Tool::Shape(ShapeKind::Star), true)]
+        {
+            h.tool = tool;
+            h.frame(vec![]);
+            assert_eq!(h.state.options.is_positive(), shown, "{tool:?}");
+        }
+        h.tool = Tool::Mask(MaskShape::Rect);
+        h.frame(vec![]);
+        assert!(!h.state.options.is_positive(), "no effects: nothing to target but the clip's own mask");
+        h.project.clip_mut(7).unwrap().effects.push(Effect::new(EffectKind::ALL[0]));
+        h.frame(vec![]);
+        assert!(h.state.options.is_positive(), "the mask target picker");
+    }
+
+    /// The rail, its options strip and the one-row transport stay idle-CPU-0 %.
+    #[test]
+    fn assert_no_idle_repaint_tool_rail() {
+        let mut h = H::new();
+        h.with_asset();
+        h.rail = true;
+        h.tool = Tool::Draw;
+        for _ in 0..5 {
+            h.frame(vec![]);
+        }
+        assert!(!h.ctx.has_requested_repaint(), "idle frame with the rail and options requested a repaint");
     }
 }

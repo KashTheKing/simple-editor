@@ -197,10 +197,11 @@ impl App {
     }
 }
 
-/// A primary press landed inside this pane's rect this frame - the transport-focus rule's trigger
-/// (last-clicked transport wins; a press on the Preview or Timeline pane hands focus back there).
+/// A press landed inside this pane's rect this frame - the transport-focus rule's trigger (last-clicked
+/// transport wins; a press on the Preview or Timeline pane hands focus back there). Any button: a
+/// right-click there is about that monitor too, so its menu's Mark In / Stop act on it.
 pub(super) fn pressed_in(ui: &egui::Ui) -> bool {
-    ui.input(|i| i.pointer.primary_pressed()) && ui.rect_contains_pointer(ui.max_rect())
+    ui.input(|i| i.pointer.any_pressed()) && ui.rect_contains_pointer(ui.max_rect())
 }
 
 /// FRAME_HOOKS entry: fulfil a queued open, upload this update's frame once, and keep the two players
@@ -264,9 +265,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
             },
         )
     };
-    if resp.toggle_focus {
-        app.source_focus = !focused; // the button's own press also counts as `clicked`: the flip wins
-    } else if resp.clicked {
+    if resp.clicked {
         app.source_focus = true;
     }
     if resp.settings_changed {
@@ -307,4 +306,33 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
         app.close_source();
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---- ws:viewer-surface ----
+    /// Last-clicked transport wins for a right-click too, so the right-click menu's Mark In / Stop act
+    /// on the monitor it was opened on (the old primary-only check left them on the other one).
+    #[test]
+    fn a_right_click_takes_transport_focus_too() {
+        let ctx = egui::Context::default();
+        let at = egui::pos2(50.0, 50.0);
+        let mut run = |button| {
+            let mut hit = false;
+            let events = vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::PointerButton { pos: at, button, pressed: true, modifiers: egui::Modifiers::NONE },
+            ];
+            let _ = ctx.run(egui::RawInput { events, ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| hit = pressed_in(ui));
+            });
+            let up = egui::Event::PointerButton { pos: at, button, pressed: false, modifiers: egui::Modifiers::NONE };
+            let _ = ctx.run(egui::RawInput { events: vec![up], ..Default::default() }, |_| {});
+            hit
+        };
+        assert!(run(egui::PointerButton::Primary));
+        assert!(run(egui::PointerButton::Secondary));
+    }
 }

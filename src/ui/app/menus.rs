@@ -46,16 +46,8 @@ const MAIN_PANES: [Pane; 14] = [
     Pane::Export,
     Pane::Jobs,
 ];
-const MORE_PANES: [Pane; 8] = [
-    Pane::Curves,
-    Pane::Nodes,
-    Pane::Tracking,
-    Pane::Planner,
-    Pane::Moodboard,
-    Pane::History,
-    Pane::AutoCut,
-    Pane::Tools,
-];
+const MORE_PANES: [Pane; 7] =
+    [Pane::Curves, Pane::Nodes, Pane::Tracking, Pane::Planner, Pane::Moodboard, Pane::History, Pane::AutoCut];
 
 /// The Action that toggles a pane: its Window-menu row's shortcut text, and its one palette row.
 pub(super) fn toggle_action(p: Pane) -> Option<Action> {

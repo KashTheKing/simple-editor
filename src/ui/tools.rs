@@ -1,12 +1,12 @@
-//! Tool bar: a thin, movable strip that sits between the viewport and the timeline (its own dockable
-//! pane, so it can also be popped out). One row of icon buttons:
-//!   Select (V) · Cut (C) · Marker (M) · Stretch (R) · Spacer · Text (T) · Rectangle · Ellipse ·
-//!   Triangle · Polygon · Star · Line · Arrow · Draw (D) · Mask (G; rect/ellipse/polygon/path) · Zoom
-//! plus a magnet button that lights up while snapping is on (`Action::ToggleSnap`, S by default),
-//! then, for shape tools, fill and stroke colour buttons and a stroke-width DragValue; for Draw, a
-//! play/record button, the brush colour/width, the playback speed (0.5x / 1x / 2x) and a page toggle.
-//! Every tool-select letter shown above is its default `Action::Tool*` binding (`hotkeys.rs`) and can be
-//! remapped in Settings ▸ Hotkeys; `handle_hotkeys` below polls the live binding, not a hardcoded key.
+//! Editing tools. The viewer's tool rail (`rail`, drawn by `ui::preview` over the Preview's left edge):
+//!   Select (V) · Crop (the canvas crop handles) · Text (T) · Shape ▾ (Shift+S cycles; rect, ellipse,
+//!   triangle, polygon, star, line, arrow) · Draw (D) · Mask ▾ (G cycles; rect/ellipse/polygon/path)
+//! and, while a shape or Draw is active, `style_controls` in a strip along the viewer's top edge: fill
+//! and stroke colours and a stroke width; for Draw, a play/record button, the brush colour/width, the
+//! playback speed (0.5x / 1x / 2x) and a page toggle. The timeline tools (Cut C, Stretch R, Marker
+//! Shift+M, Spacer) are picked from the timeline's toolbar and their keys. Every tool key is its
+//! `Action::Tool*` binding (`hotkeys.rs`), remappable in Settings ▸ Hotkeys; `handle_hotkeys` below polls
+//! the live binding and the rail's tooltips read it from the menu snapshot.
 //!
 //! The active tool changes what a click-drag in the Preview does (see `ui::preview`): Select edits the
 //! selected clip, a shape tool drags out a new Shape clip at the playhead (Shift locks its aspect ratio,
@@ -54,11 +54,16 @@ pub struct ToolsState {
     /// until this goes back off (see `App::toggle_draw_recording`).
     pub recording: bool,
     // ---- ws:layout-modes-onboarding ----
-    /// Adaptive strip (Dynamic layout mode only): the tool the current selection most likely wants
-    /// next, moved to the front of the strip by `show`. `None` = the fixed `STRIP` order. Written by
-    /// `ui::app::frame::tick` from the dominant `SelectionKind`; never a user-reorderable toolbar
-    /// (ponytail: one reorder of the const, add per-user ordering only if asked).
+    /// The tool the current selection most likely wants next (written by `ui::app::frame::tick`). The
+    /// old Tools strip moved it to the front; the viewer's rail keeps a fixed order instead (tools that
+    /// jump around disorient), so nothing reads it any more.
+    /// ponytail: kept for its two writers (frame.rs, layout_ctl.rs) - drop all three together.
+    #[allow(dead_code)]
     pub lead: Option<Tool>,
+    // ---- ws:viewer-surface ----
+    /// The rail's Shape / Mask buttons pick the variant used last (the flyout or Shift+S / G changes it).
+    pub last_shape: ShapeKind,
+    pub last_mask: MaskShape,
 }
 
 impl Default for ToolsState {
@@ -76,6 +81,8 @@ impl Default for ToolsState {
             page: [0, 0, 0, 0],
             recording: false,
             lead: None,
+            last_shape: ShapeKind::Rect,
+            last_mask: MaskShape::Rect,
         }
     }
 }
@@ -712,45 +719,42 @@ impl Glyph {
     }
 }
 
-const STRIP: [(Tool, Glyph, &str); 15] = [
-    (Tool::Select, Glyph::Cursor, "Select"),
-    (Tool::Cut, Glyph::Razor, "Cut"),
-    (Tool::Marker, Glyph::Flag, "Marker"),
-    (Tool::Stretch, Glyph::Speed, "Stretch"),
-    (Tool::Spacer, Glyph::Spacer, "Spacer"),
-    (Tool::Text, Glyph::Letter('T'), "Text"),
-    (Tool::Shape(ShapeKind::Rect), Glyph::Rect, "Rectangle"),
-    (Tool::Shape(ShapeKind::Ellipse), Glyph::Ellipse, "Ellipse"),
-    (Tool::Shape(ShapeKind::Triangle), Glyph::Poly(3), "Triangle"),
-    (Tool::Shape(ShapeKind::Polygon), Glyph::Poly(5), "Polygon"),
-    (Tool::Shape(ShapeKind::Star), Glyph::Star, "Star"),
-    (Tool::Shape(ShapeKind::Line), Glyph::Line, "Line"),
-    (Tool::Shape(ShapeKind::Arrow), Glyph::Arrow, "Arrow"),
-    (Tool::Draw, Glyph::Pencil, "Draw"),
-    (Tool::Mask(MaskShape::Rect), Glyph::Mask, "Mask"),
-];
+// ---- ws:viewer-surface ----
+/// Width of the viewer's tool rail, in points.
+pub(crate) const RAIL_W: f32 = 32.0;
+/// Rail row pitch: a 22 pt `icon_button` plus the gap under it.
+const RAIL_ROW: f32 = 26.0;
 
-/// The `Action` that switches to `tool`, if it has one (the shape tools cycle on Shift+S / `Action::
-/// AddShape` instead, and Spacer has no key of its own). Shared by `tool_hotkey` (tooltip text)
-/// and `handle_hotkeys` (polling which one fired).
-fn tool_action(tool: Tool) -> Option<Action> {
-    match tool {
-        Tool::Select => Some(Action::ToolSelect),
-        Tool::Text => Some(Action::ToolText),
-        Tool::Draw => Some(Action::ToolDraw),
-        Tool::Mask(_) => Some(Action::ToolMask),
-        Tool::Marker => Some(Action::ToolMarker),
-        Tool::Cut => Some(Action::ToolCut),
-        Tool::Stretch => Some(Action::ToolStretch),
-        Tool::Spacer => Some(Action::ToolSpacer),
-        Tool::Shape(_) => None, // the 7 shapes cycle on one key (Shift+S), not one action each
+/// The rail's picture of a shape tool.
+fn shape_glyph(k: ShapeKind) -> Glyph {
+    match k {
+        ShapeKind::Rect => Glyph::Rect,
+        ShapeKind::Ellipse => Glyph::Ellipse,
+        ShapeKind::Triangle => Glyph::Poly(3),
+        ShapeKind::Polygon => Glyph::Poly(5),
+        ShapeKind::Star => Glyph::Star,
+        ShapeKind::Line => Glyph::Line,
+        ShapeKind::Arrow => Glyph::Arrow,
+        ShapeKind::Draw => Glyph::Pencil,
     }
 }
 
-/// Current (rebindable, via Settings ▸ Hotkeys) shortcut of a tool, formatted for the tooltip - e.g.
-/// `"V"`, or `"Ctrl+Alt+K"` if the user remapped it. `None` when the tool has no key or it's unbound.
-pub fn tool_hotkey(hotkeys: &Hotkeys, tool: Tool) -> Option<String> {
-    tool_action(tool).and_then(|a| hotkeys.get(a)).map(|ks| Hotkeys::format(&ks))
+/// The rail's picture of a mask shape.
+fn mask_glyph(m: MaskShape) -> Glyph {
+    match m {
+        MaskShape::Rect => Glyph::Rect,
+        MaskShape::Ellipse => Glyph::Ellipse,
+        MaskShape::Polygon => Glyph::Poly(5),
+        MaskShape::Path => Glyph::Pencil,
+    }
+}
+
+/// "Name (key)" with the live binding from the menu snapshot, or just the name when it is unbound.
+fn with_key(name: &str, a: Action) -> String {
+    match crate::ui::menu::shortcut(a) {
+        k if k.is_empty() => name.to_string(),
+        k => format!("{name} ({k})"),
+    }
 }
 
 /// Tool selection (`Action::Tool*`) and Shift+S switch tools (Shift+S also steps through the shape
@@ -866,72 +870,94 @@ fn next_mask(cur: Tool) -> MaskShape {
     }
 }
 
-/// Returns true when the tool, `*snap` or the style changed (the app may want to repaint the preview
-/// overlay). `snap` is `Settings.snap` - owned by the app, not this strip, so it comes in by reference.
-/// `hotkeys` is the app's live binding table (`App.hotkeys`), read-only here: it decides which key each
-/// tool responds to and shows in its tooltip, but only Settings ▸ Hotkeys can change it.
-pub fn show(ui: &mut egui::Ui, state: &mut ToolsState, palette: &Palette, snap: &mut bool, hotkeys: &Hotkeys) -> bool {
-    let mut changed = handle_hotkeys(ui.ctx(), hotkeys, state).is_some();
-    let base = ui.id();
-    // ---- ws:layout-modes-onboarding ----
-    // adaptive order: the selection's lead tool (if any) moves to the front, the rest keep STRIP order
-    let order = strip_order(state.lead);
-    // wrapped: at a small pane width the strip must fold onto a second row, not clip its last buttons
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing.x = 2.0;
-        for (tool, icon, name) in order {
-            let active = same_tool(tool, state.tool);
-            let tip = if matches!(tool, Tool::Shape(_)) {
-                format!("{name} (Shift+S)")
-            } else {
-                match tool_hotkey(hotkeys, tool) {
-                    Some(k) => format!("{name} ({k})"),
-                    // the spacer's gesture is not readable from its picture
-                    None if tool == Tool::Spacer => format!("{name} - drag the lanes to open or close a gap"),
-                    None => name.to_string(),
-                }
-            };
-            if icon_button(ui, palette, base.with(("tool", name)), icon, &tip, active).clicked() && !active {
-                state.tool = tool;
-                changed = true;
+// ---- ws:viewer-surface ----
+/// The viewer's tool rail: a slim translucent column of icons at `at` (the viewer's top-left). Crop is
+/// a mode of Select (the selection's edge handles crop instead of scaling), so the two light up
+/// exclusively. Shape and Mask pick their last-used variant and open a flyout of the others.
+pub(crate) fn rail(ui: &mut egui::Ui, state: &mut ToolsState, crop: &mut bool, palette: &Palette, at: egui::Pos2) {
+    match state.tool {
+        Tool::Shape(k) if k != ShapeKind::Draw => state.last_shape = k,
+        Tool::Mask(m) => state.last_mask = m,
+        _ => {}
+    }
+    let rect = egui::Rect::from_min_size(at, egui::vec2(RAIL_W, 6.0 * RAIL_ROW + 4.0));
+    // a press between two buttons must not fall through to the video (it would start a drag there)
+    ui.interact(rect, egui::Id::new("rail-bg"), Sense::click_and_drag());
+    ui.painter().rect_filled(rect, CornerRadius::same(palette.rounding as u8 + 2), palette.panel.gamma_multiply(0.85));
+    let layout = egui::Layout::top_down(egui::Align::Center);
+    let mut ui = ui
+        .new_child(egui::UiBuilder::new().id_salt("rail").max_rect(rect.shrink2(egui::vec2(0.0, 4.0))).layout(layout));
+    ui.spacing_mut().item_spacing.y = RAIL_ROW - 22.0;
+    let button = |ui: &mut egui::Ui, g: Glyph, name: &str, tip: &str, on: bool| {
+        icon_button(ui, palette, egui::Id::new(("rail", name)), g, tip, on)
+    };
+    let select = state.tool == Tool::Select;
+    if button(&mut ui, Glyph::Cursor, "Select", &with_key("Select", Action::ToolSelect), select && !*crop).clicked() {
+        state.tool = Tool::Select;
+        *crop = false;
+    }
+    let on = select && *crop;
+    if button(&mut ui, Glyph::Crop, "Crop", "Crop: drag the selected clip's edges", on).clicked() {
+        state.tool = Tool::Select;
+        *crop = !on;
+    }
+    let tip = with_key("Text", Action::ToolText);
+    if button(&mut ui, Glyph::Letter('T'), "Text", &tip, state.tool == Tool::Text).clicked() {
+        state.tool = Tool::Text;
+    }
+    let on = matches!(state.tool, Tool::Shape(k) if k != ShapeKind::Draw);
+    let r = button(&mut ui, shape_glyph(state.last_shape), "Shape", "Shapes (Shift+S cycles)", on);
+    if r.clicked() {
+        state.tool = Tool::Shape(state.last_shape);
+    }
+    flyout(&ui, &r, on, palette, |ui| {
+        for k in SHAPE_CYCLE {
+            if flyout_row(ui, palette, shape_glyph(k), k.name(), state.tool == Tool::Shape(k)) {
+                (state.tool, state.last_shape) = (Tool::Shape(k), k);
             }
         }
-        ui.separator();
-        let snap_tip = hotkeys
-            .get(Action::ToggleSnap)
-            .map_or("Snapping".into(), |k| format!("Snapping ({})", Hotkeys::format(&k)));
-        if icon_button(ui, palette, base.with("snap"), Glyph::Magnet, &snap_tip, *snap).clicked() {
-            *snap = !*snap;
-            changed = true;
-        }
-        ui.separator();
-        changed |= style_controls(ui, state, palette);
     });
-    changed
-}
-
-// ---- ws:layout-modes-onboarding ----
-/// `STRIP` with `lead`'s entry (if it has one) moved to the front - the Dynamic-mode adaptive strip.
-/// Only the order changes: every tool stays, so `strip_lays_out_every_tool` holds for any lead.
-fn strip_order(lead: Option<Tool>) -> Vec<(Tool, Glyph, &'static str)> {
-    let mut order = STRIP.to_vec();
-    if let Some(lead) = lead {
-        if let Some(i) = order.iter().position(|(t, _, _)| same_tool(*t, lead)) {
-            let entry = order.remove(i);
-            order.insert(0, entry);
-        }
+    if button(&mut ui, Glyph::Pencil, "Draw", &with_key("Draw", Action::ToolDraw), state.tool == Tool::Draw).clicked() {
+        state.tool = Tool::Draw;
     }
-    order
+    let on = matches!(state.tool, Tool::Mask(_));
+    let r = button(&mut ui, Glyph::Mask, "Mask", &with_key("Mask", Action::ToolMask), on);
+    if r.clicked() {
+        state.tool = Tool::Mask(state.last_mask);
+    }
+    flyout(&ui, &r, on, palette, |ui| {
+        for m in MaskShape::ALL {
+            if flyout_row(ui, palette, mask_glyph(m), m.name(), state.tool == Tool::Mask(m)) {
+                (state.tool, state.last_mask) = (Tool::Mask(m), m);
+            }
+        }
+    });
 }
 
-/// The Mask button lights up for every mask shape (the combo beside it picks one); everything else is
-/// an exact match.
-fn same_tool(entry: Tool, cur: Tool) -> bool {
-    matches!((entry, cur), (Tool::Mask(_), Tool::Mask(_))) || entry == cur
+/// A rail button's flyout: a corner mark on the button, and a menu to its right that its click opens
+/// (a pick or a click elsewhere closes it).
+fn flyout(ui: &egui::Ui, r: &egui::Response, on: bool, palette: &Palette, add: impl FnOnce(&mut egui::Ui)) {
+    let c = r.rect.right_bottom() - egui::vec2(3.0, 3.0);
+    let fg = if on { on_accent(palette.accent) } else { palette.text_dim };
+    let mark = vec![c, c - egui::vec2(4.0, 0.0), c - egui::vec2(0.0, 4.0)];
+    ui.painter().add(egui::Shape::convex_polygon(mark, fg, Stroke::NONE));
+    egui::Popup::menu(r).align(egui::RectAlign::RIGHT_START).gap(10.0).show(add);
+    // clear of the rail
 }
 
-/// Style controls for the active tool. Returns true when anything changed.
-fn style_controls(ui: &mut egui::Ui, state: &mut ToolsState, palette: &Palette) -> bool {
+/// One flyout row (a `ui::menu` row, so it lines up like every menu); the current pick is outlined.
+fn flyout_row(ui: &mut egui::Ui, palette: &Palette, g: Glyph, name: &str, on: bool) -> bool {
+    let r = crate::ui::menu::row(ui, Some(g), name, "");
+    if on {
+        let cr = CornerRadius::same(palette.rounding as u8);
+        ui.painter().rect_stroke(r.rect, cr, Stroke::new(1.0, palette.accent), StrokeKind::Inside);
+    }
+    r.clicked()
+}
+
+/// Options of the active tool, for the strip along the viewer's top edge (nothing for a tool without
+/// any). Returns true when anything changed.
+pub(crate) fn style_controls(ui: &mut egui::Ui, state: &mut ToolsState, palette: &Palette) -> bool {
     let mut changed = false;
     match state.tool {
         Tool::Shape(kind) => {
@@ -1008,20 +1034,8 @@ fn style_controls(ui: &mut egui::Ui, state: &mut ToolsState, palette: &Palette) 
                 changed |= ui.color_edit_button_srgba_unmultiplied(&mut state.page).changed();
             }
         }
-        Tool::Mask(shape) => {
-            ui.label("Mask");
-            let mut pick = shape;
-            egui::ComboBox::from_id_salt("tool-mask-shape").selected_text(shape.name()).width(90.0).show_ui(ui, |ui| {
-                for m in MaskShape::ALL {
-                    ui.selectable_value(&mut pick, m, m.name());
-                }
-            });
-            if pick != shape {
-                state.tool = Tool::Mask(pick);
-                changed = true;
-            }
-        }
-        Tool::Text | Tool::Select | Tool::Cut | Tool::Marker | Tool::Stretch | Tool::Spacer => {}
+        // the mask shape is picked on the rail's flyout; the preview adds the mask target to the strip
+        Tool::Mask(_) | Tool::Text | Tool::Select | Tool::Cut | Tool::Marker | Tool::Stretch | Tool::Spacer => {}
     }
     changed
 }
@@ -1241,72 +1255,80 @@ mod tests {
     struct Harness {
         ctx: egui::Context,
         state: ToolsState,
-        snap: bool,
+        crop: bool,
         hotkeys: Hotkeys,
-        base: egui::Id,
         time: f64,
-        changed: bool,
+        /// Last frame's painted shapes, to find a flyout row by its text.
+        shapes: Vec<egui::epaint::ClippedShape>,
     }
 
     impl Harness {
         fn new() -> Self {
             let ctx = egui::Context::default();
             // size-diet: dropping eframe's `default_fonts` feature left a bare Context with no glyphs
-            // at all, and this strip's tooltips/label sizing (button hit-rects measured across clicks)
-            // need real metrics - see theme::test_fonts.
+            // at all, and the rail's tooltips / flyout rows need real metrics - see theme::test_fonts.
             ctx.set_fonts(crate::theme::test_fonts());
             let mut h = Self {
                 ctx,
                 state: ToolsState::default(),
-                snap: false,
+                crop: false,
                 hotkeys: Hotkeys::defaults(),
-                base: egui::Id::NULL,
                 time: 0.0,
-                changed: false,
+                shapes: Vec::new(),
             };
             h.frame(vec![]);
             h
         }
+        /// One frame the way `App::update` runs it: the tool keys are polled, then the rail is drawn.
         fn frame(&mut self, events: Vec<Event>) {
             self.time += 0.05;
             let input = egui::RawInput {
-                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 60.0))),
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 300.0))),
                 time: Some(self.time),
                 events,
                 ..Default::default()
             };
             let pal = Palette::new(true, Color32::from_rgb(0, 120, 212));
-            let Harness { ctx, state, snap, hotkeys, base, changed, .. } = self;
-            let _ = ctx.run(input, |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    *base = ui.id();
-                    *changed = show(ui, state, &pal, snap, hotkeys);
-                });
+            let Harness { ctx, state, crop, hotkeys, .. } = self;
+            let out = ctx.run(input, |ctx| {
+                handle_hotkeys(ctx, hotkeys, state);
+                egui::CentralPanel::default().show(ctx, |ui| rail(ui, state, crop, &pal, Pos2::new(10.0, 10.0)));
             });
+            self.shapes = out.shapes;
         }
-        /// Centre of a strip button by its name, from the previous frame's layout.
+        /// Centre of a rail button by its name, from the previous frame's layout.
         fn button(&self, name: &str) -> Pos2 {
             self.ctx
-                .read_response(self.base.with(("tool", name)))
+                .read_response(egui::Id::new(("rail", name)))
                 .unwrap_or_else(|| panic!("no button {name}"))
                 .rect
                 .center()
         }
-        fn click(&mut self, name: &str) {
-            let pos = self.button(name);
+        /// Centre of the painted text `s` (a flyout row), from the previous frame.
+        fn text(&self, s: &str) -> Pos2 {
+            self.shapes
+                .iter()
+                .find_map(|c| match &c.shape {
+                    egui::Shape::Text(t) if t.galley.job.text == s => Some(t.pos + t.galley.rect.center().to_vec2()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("no text {s}"))
+        }
+        fn click_at(&mut self, pos: Pos2) {
+            self.time += 1.0; // separate clicks, never a double-click
             self.frame(vec![Event::PointerMoved(pos)]);
-            self.frame(vec![Event::PointerButton {
+            let press = |pressed| Event::PointerButton {
                 pos,
                 button: egui::PointerButton::Primary,
-                pressed: true,
+                pressed,
                 modifiers: Modifiers::NONE,
-            }]);
-            self.frame(vec![Event::PointerButton {
-                pos,
-                button: egui::PointerButton::Primary,
-                pressed: false,
-                modifiers: Modifiers::NONE,
-            }]);
+            };
+            self.frame(vec![press(true)]);
+            self.frame(vec![press(false)]);
+            self.frame(vec![]); // a flyout opened by the click shows its rows
+        }
+        fn click(&mut self, name: &str) {
+            self.click_at(self.button(name));
         }
         fn key(&mut self, key: Key) {
             self.key_mod(key, Modifiers::NONE);
@@ -1475,82 +1497,90 @@ mod tests {
         eprintln!("glyph sheet: {out}");
     }
 
+    // ---- ws:viewer-surface ----
+    const RAIL: [&str; 6] = ["Select", "Crop", "Text", "Shape", "Draw", "Mask"];
+
+    /// The rail is one slim column: every viewer tool, top to bottom, inside `RAIL_W`.
     #[test]
-    fn strip_lays_out_every_tool() {
+    fn rail_stacks_the_six_viewer_tools() {
         let h = Harness::new();
-        for (_, _, name) in STRIP {
-            let c = h.button(name);
-            assert!(c.x > 0.0 && c.x < 900.0, "{name} off-strip at {c:?}");
+        let at: Vec<Pos2> = RAIL.iter().map(|n| h.button(n)).collect();
+        for (w, n) in at.windows(2).zip(RAIL.iter().skip(1)) {
+            assert!(w[1].y > w[0].y + 20.0, "{n} sits below the one above it: {w:?}");
+            assert!((w[1].x - w[0].x).abs() < 0.5, "{n} is in the same column");
         }
-    }
-
-    // ---- ws:layout-modes-onboarding ----
-    /// The adaptive strip only reorders: a lead tool moves to the front, nothing is dropped, and no
-    /// lead means the fixed order.
-    #[test]
-    fn lead_tool_moves_to_the_front_and_keeps_every_tool() {
-        assert_eq!(strip_order(None).len(), STRIP.len());
-        assert_eq!(strip_order(None)[0].0, Tool::Select);
-        let text = strip_order(Some(Tool::Text));
-        assert_eq!(text[0].0, Tool::Text);
-        assert_eq!(text.len(), STRIP.len());
-        assert_eq!(text[1].0, Tool::Select, "the rest keep STRIP order");
-        // a lead the strip has no button for (a specific mask shape resolves via same_tool) is fine
-        let mask = strip_order(Some(Tool::Mask(MaskShape::Path)));
-        assert!(matches!(mask[0].0, Tool::Mask(_)));
-        let mut h = Harness::new();
-        h.state.lead = Some(Tool::Draw);
-        // egui's `read_response` prefers `this_pass`, which after ONE run still holds the pre-change
-        // frame's rects (it only becomes current after a second pass) - an extra settle frame with the
-        // same state is harmless (nothing else changes) and makes the reordered rects readable.
-        h.frame(vec![]);
-        h.frame(vec![]);
-        assert!(h.button("Draw").x < h.button("Select").x, "the lead tool is drawn first");
-        for (_, _, name) in STRIP {
-            let c = h.button(name);
-            assert!(c.x > 0.0 && c.x < 900.0, "{name} off-strip at {c:?} with a lead tool");
-        }
+        assert!(at.iter().all(|p| p.x > 10.0 && p.x < 10.0 + RAIL_W), "inside the rail: {at:?}");
     }
 
     #[test]
-    fn clicking_switches_the_tool() {
+    fn rail_clicks_switch_tools() {
         let mut h = Harness::new();
         assert_eq!(h.state.tool, Tool::Select);
-        h.click("Ellipse");
-        assert_eq!(h.state.tool, Tool::Shape(ShapeKind::Ellipse));
-        assert!(h.changed, "a switch is reported as a change");
+        h.click("Text");
+        assert_eq!(h.state.tool, Tool::Text);
         h.click("Draw");
         assert_eq!(h.state.tool, Tool::Draw);
         h.click("Mask");
         assert_eq!(h.state.tool, Tool::Mask(MaskShape::Rect));
+        h.click("Shape");
+        assert_eq!(h.state.tool, Tool::Shape(ShapeKind::Rect));
         h.click("Select");
         assert_eq!(h.state.tool, Tool::Select);
     }
 
+    /// Crop is Select with the crop handles on: picking it from any tool lands on Select, a second
+    /// click (or Select) turns the handles back off.
     #[test]
-    fn clicking_the_active_tool_reports_nothing() {
+    fn crop_is_a_mode_of_select() {
         let mut h = Harness::new();
-        h.click("Star");
-        assert_eq!(h.state.tool, Tool::Shape(ShapeKind::Star));
-        h.click("Star");
-        assert!(!h.changed, "re-clicking the active tool is not a change");
-        assert_eq!(h.state.tool, Tool::Shape(ShapeKind::Star));
+        h.click("Draw");
+        h.click("Crop");
+        assert_eq!((h.state.tool, h.crop), (Tool::Select, true));
+        h.click("Crop");
+        assert_eq!((h.state.tool, h.crop), (Tool::Select, false), "a second click turns it off");
+        h.click("Crop");
+        h.click("Select");
+        assert_eq!((h.state.tool, h.crop), (Tool::Select, false), "Select is the plain handles");
+        h.click("Crop");
+        h.click("Text");
+        h.click("Crop");
+        assert!(h.crop && h.state.tool == Tool::Select, "back from another tool: crop on again");
     }
 
+    /// The Shape / Mask buttons pick the variant used last - from the flyout or from the keys.
     #[test]
-    fn mask_button_lights_up_for_every_mask_shape() {
-        assert!(same_tool(Tool::Mask(MaskShape::Rect), Tool::Mask(MaskShape::Path)));
-        assert!(!same_tool(Tool::Mask(MaskShape::Rect), Tool::Select));
-        assert!(!same_tool(Tool::Shape(ShapeKind::Rect), Tool::Shape(ShapeKind::Star)));
+    fn shape_and_mask_buttons_remember_the_last_variant() {
         let mut h = Harness::new();
-        h.state.tool = Tool::Mask(MaskShape::Path);
-        h.frame(vec![]);
+        h.key_mod(Key::S, Modifiers::SHIFT);
+        h.key_mod(Key::S, Modifiers::SHIFT);
+        h.key(Key::V);
+        h.click("Shape");
+        assert_eq!(h.state.tool, Tool::Shape(ShapeKind::Ellipse), "Shift+S left it on Ellipse");
+        // the click opened the flyout: pick Star there
+        h.click_at(h.text("Star"));
+        assert_eq!(h.state.tool, Tool::Shape(ShapeKind::Star));
+        h.key(Key::V);
+        h.click("Shape");
+        assert_eq!(h.state.tool, Tool::Shape(ShapeKind::Star), "the flyout pick is remembered");
+        h.key(Key::G);
+        h.key(Key::G);
+        h.key(Key::V);
         h.click("Mask");
-        assert_eq!(h.state.tool, Tool::Mask(MaskShape::Path), "the active mask shape survives a re-click");
-        h.click("Rectangle");
-        assert_eq!(h.state.tool, Tool::Shape(ShapeKind::Rect));
-        h.click("Mask");
-        assert_eq!(h.state.tool, Tool::Mask(MaskShape::Rect));
+        assert_eq!(h.state.tool, Tool::Mask(MaskShape::Ellipse), "G twice left it on Ellipse");
+        h.click_at(h.text("Path"));
+        assert_eq!(h.state.tool, Tool::Mask(MaskShape::Path));
+    }
+
+    /// Tooltips carry the live binding from the menu snapshot (a rebind shows up there).
+    #[test]
+    fn rail_tooltips_read_the_live_keys() {
+        let hk = Hotkeys::defaults();
+        crate::ui::menu::publish(crate::ui::menu::MenuSnapshot::new(&hk, &Default::default(), |_| Ok(())));
+        assert_eq!(with_key("Select", Action::ToolSelect), "Select (V)");
+        assert_eq!(with_key("Draw", Action::ToolDraw), "Draw (D)");
+        assert_eq!(with_key("Mask", Action::ToolMask), "Mask (G)", "freed from M");
+        assert_eq!(with_key("Spacer", Action::ToolSpacer), "Spacer", "unbound: no key");
+        crate::ui::menu::publish(Default::default());
     }
 
     #[test]
@@ -1598,15 +1628,13 @@ mod tests {
         assert_eq!(h.state.tool, Tool::Select, "bare M is left for Action::AddMarker");
     }
 
-    /// Bare S is `Action::ToggleSnap`'s (rebindable) default now, so the strip leaves it alone entirely.
+    /// Bare S is `Action::ToggleSnap`'s (rebindable) default, so the tool poll leaves it alone.
     #[test]
     fn bare_s_is_left_for_the_snap_action() {
         let mut h = Harness::new();
         h.state.tool = Tool::Draw;
         h.key(Key::S);
-        assert!(!h.snap, "the strip no longer toggles snapping itself");
         assert_eq!(h.state.tool, Tool::Draw, "bare S must not touch the active tool");
-        assert!(!h.changed);
     }
 
     #[test]
@@ -1629,17 +1657,14 @@ mod tests {
             modifiers: Modifiers::CTRL,
         }]);
         assert_eq!(h.state.tool, Tool::Draw, "Ctrl+S must stay the save shortcut");
-        assert!(!h.snap, "Ctrl+S must not toggle snapping either");
     }
 
     #[test]
     fn hotkeys_are_consumed_once() {
-        // `show` handles the keys itself, so a second call in the same frame must be a no-op
+        // the key is consumed, so a second poll in the same frame is a no-op
         let mut state = ToolsState::default();
-        let mut snap = false;
         let ctx = egui::Context::default();
         let input = egui::RawInput {
-            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 60.0))),
             events: vec![Event::Key {
                 key: Key::S,
                 physical_key: None,
@@ -1649,64 +1674,31 @@ mod tests {
             }],
             ..Default::default()
         };
-        let pal = Palette::new(true, Color32::from_rgb(0, 120, 212));
         let hotkeys = Hotkeys::defaults();
         let _ = ctx.run(input, |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                show(ui, &mut state, &pal, &mut snap, &hotkeys);
-                assert!(handle_hotkeys(ui.ctx(), &hotkeys, &mut state).is_none(), "key already consumed");
-            });
+            assert!(handle_hotkeys(ctx, &hotkeys, &mut state).is_some());
+            assert!(handle_hotkeys(ctx, &hotkeys, &mut state).is_none(), "key already consumed");
         });
-        assert_eq!(state.tool, Tool::Shape(ShapeKind::Rect));
-        assert!(!snap, "Shift+S is the shape cycle, not the snap toggle");
-    }
-
-    #[test]
-    fn tool_hotkey_covers_the_documented_keys() {
-        let hk = Hotkeys::defaults();
-        assert_eq!(tool_hotkey(&hk, Tool::Select).as_deref(), Some("V"));
-        assert_eq!(tool_hotkey(&hk, Tool::Text).as_deref(), Some("T"));
-        assert_eq!(tool_hotkey(&hk, Tool::Shape(ShapeKind::Star)), None, "shape tools cycle on Shift+S");
-        assert_eq!(tool_hotkey(&hk, Tool::Draw).as_deref(), Some("D"));
-        assert_eq!(tool_hotkey(&hk, Tool::Mask(MaskShape::Path)).as_deref(), Some("G"), "freed from M");
-        assert_eq!(tool_hotkey(&hk, Tool::Marker).as_deref(), Some("Shift+M"), "bare M is Add Marker's key");
-        assert_eq!(tool_hotkey(&hk, Tool::Cut).as_deref(), Some("C"));
-        assert_eq!(tool_hotkey(&hk, Tool::Stretch).as_deref(), Some("R"));
-    }
-
-    #[test]
-    fn clicking_the_magnet_toggles_snapping() {
-        let mut h = Harness::new();
-        assert!(!h.snap);
-        let pos = h.ctx.read_response(h.base.with("snap")).unwrap().rect.center();
-        h.frame(vec![Event::PointerMoved(pos)]);
-        h.frame(vec![Event::PointerButton {
-            pos,
-            button: egui::PointerButton::Primary,
-            pressed: true,
-            modifiers: Modifiers::NONE,
-        }]);
-        h.frame(vec![Event::PointerButton {
-            pos,
-            button: egui::PointerButton::Primary,
-            pressed: false,
-            modifiers: Modifiers::NONE,
-        }]);
-        assert!(h.snap, "clicking the magnet turns snapping on");
-        assert!(h.changed);
+        assert_eq!(state.tool, Tool::Shape(ShapeKind::Rect), "Shift+S is the shape cycle");
     }
 
     #[test]
     fn every_tool_renders_its_style_controls() {
-        let mut h = Harness::new();
-        let mut tools: Vec<Tool> = STRIP.iter().map(|(t, ..)| *t).collect();
+        let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::test_fonts());
+        let pal = Palette::new(true, Color32::from_rgb(0, 120, 212));
+        let mut tools =
+            vec![Tool::Select, Tool::Text, Tool::Draw, Tool::Cut, Tool::Marker, Tool::Stretch, Tool::Spacer];
+        tools.extend(ShapeKind::ALL.map(Tool::Shape));
         tools.extend(MaskShape::ALL.map(Tool::Mask));
-        tools.push(Tool::Shape(ShapeKind::Draw));
         for t in tools {
-            h.state.tool = t;
-            h.frame(vec![]);
-            assert_eq!(h.state.tool, t, "{t:?} controls must not change the tool on their own");
-            assert!(!h.changed, "{t:?} reports no change when nothing is touched");
+            let mut state = ToolsState { tool: t, ..Default::default() };
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.horizontal(|ui| assert!(!style_controls(ui, &mut state, &pal), "{t:?} reports no change"));
+                });
+            });
+            assert_eq!(state.tool, t, "{t:?} controls must not change the tool on their own");
         }
     }
 }
