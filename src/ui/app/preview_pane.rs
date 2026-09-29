@@ -11,6 +11,9 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
     if source_pane::pressed_in(ui) {
         app.source_focus = false;
     }
+    // ---- ws:viewer-surface ----
+    // the rail's options strip holds the Draw tool's Record button (#87's playback path)
+    let recording = app.tools.recording;
     {
         let frame = app.pending_frame.take();
         let proxy_busy = app.proxy_job.as_ref().map(|(_, _, p)| p.fraction());
@@ -63,11 +66,8 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
                     undo: &mut push,
                     frame,
                     gpu_texture: *gpu_tex,
-                    tool: tools.tool,
-                    shape_style: match tools.tool {
-                        Tool::Shape(k) => Some(tools::shape_style_from_tools(tools, k)),
-                        _ => None,
-                    },
+                    tools,
+                    rail: !settings.tool_rail_hidden,
                     quality: settings.preview_quality,
                     movie_mode: settings.movie_mode,
                     prerender: done,
@@ -152,5 +152,24 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
         if resp.edited {
             app.after_edit();
         }
+        // ---- ws:viewer-surface ----
+        if let Some(id) = resp.select {
+            app.selection = vec![id];
+        }
     }
+    if app.tools.recording != recording {
+        app.toggle_draw_recording(app.tools.recording);
+    }
+}
+
+// ---- ws:viewer-surface ----
+/// ACT_HANDLERS entry: Show / Hide Tools shows or hides the viewer's tool rail (the Tools pane it used
+/// to toggle is gone - its tools live on the rail).
+pub(super) fn act(app: &mut App, a: Action) -> bool {
+    if a != Action::ToggleTools {
+        return false;
+    }
+    app.settings.tool_rail_hidden = !app.settings.tool_rail_hidden;
+    app.settings.save();
+    true
 }

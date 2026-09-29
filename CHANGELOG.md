@@ -2,6 +2,23 @@
 
 ## beta-0.3.0
 
+### Viewer surface (issue #80, simplify wave 1)
+The Tools pane is gone: a slim icon rail floats over the Preview's left edge - Select, Crop (the crop
+handles), Text, Shape ▾ and Mask ▾ (flyouts that remember the last pick), Draw - and a shape / draw
+tool's options (fill, stroke, width, sides; brush, speed, record) sit in a strip along the viewer's
+top edge only while that tool is active (the Mask tool's strip picks which mask its drag writes).
+Show / Hide Tools shows or hides the rail; a saved layout with a Tools tab loads without it. Both
+monitors have ONE transport row: click-to-type timecode, centred go to start / step / play / step /
+go to end, then Zoom ▾ (Fit, 50, 100, 200 % of the project's pixels) and Fullscreen on the Preview,
+Insert and Overwrite on the Source; "N dropped" shows only while frames drop, and a thin scrub line
+is always under the picture (taller on hover). Everything else moved to right-click: on the Preview,
+right-clicking a clip selects it and offers Reset Transform, Fill / Stretch to Frame, Crop Handles,
+Add Mask, Add Text Here, then Stop, Mark In / Out / Clear, Zoom, Playback Resolution, Proxies, Movie
+Mode, Social Guides, Scopes, Background and Snap to Canvas; on the Source, the marks, the smart edits
+(with the nearest-cut readout), Source Tape, New Subclip, Playback Resolution and Close. A right-click
+gives that monitor the transport keys, like a left click. The multicam angles are a compact list in
+the viewer's top-right corner, and the rotate knob no longer shows the 4-arrow move cursor.
+
 ### Keys & actions (issue #84, simplify wave 1)
 Every Action has a real group - File, Edit, Playback, Marking, Trimming, Timeline, Clip, Add, Audio,
 Color, Captions, Viewer, Panels & Pages, Media, Tools, General (`hotkeys::GROUPS`; nothing lands in

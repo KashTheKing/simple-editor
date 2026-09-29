@@ -432,6 +432,8 @@ pub struct Settings {
     pub panels_unlocked: bool,
     // ---- ws:timeline-surface ----
     // ---- ws:viewer-surface ----
+    /// Show / Hide Tools (`Action::ToggleTools`) hid the viewer's tool rail.
+    pub tool_rail_hidden: bool,
     // ---- ws:library-surface ----
     // ---- ws:inspector-surface ----
     // ---- ws:side-panels ----
@@ -585,6 +587,7 @@ impl Default for Settings {
             panels_unlocked: false,
             // ---- ws:timeline-surface ----
             // ---- ws:viewer-surface ----
+            tool_rail_hidden: false,
             // ---- ws:library-surface ----
             // ---- ws:inspector-surface ----
             // ---- ws:side-panels ----

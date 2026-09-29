@@ -138,7 +138,8 @@ impl Pane {
         Pane::Subtitles,
         Pane::Planner,
         Pane::AutoCut,
-        Pane::Tools,
+        // (Tools left with ws:viewer-surface: its tools live on the viewer's rail; a stored tile of it
+        // is dropped on load - `drop_retired`)
         Pane::Nodes,
         Pane::Mixer,
         Pane::Markers,
@@ -409,8 +410,9 @@ impl Layout {
     /// before round 3 knows nothing about Tools / Nodes / Mixer / Markers: rather than dropping four panes
     /// into the root as loose tabs, it is rejected here and the caller resets to the new default.
     pub fn from_json(s: &str) -> Option<Self> {
-        let l: Self = serde_json::from_str(s).ok()?;
+        let mut l: Self = serde_json::from_str(s).ok()?;
         l.tree.root()?;
+        l.drop_retired();
         let has_all = Pane::ROUND3.iter().all(|p| l.tree.tiles.find_pane(p).is_some() || l.popped.contains(p));
         has_all.then_some(l)
     }
@@ -421,6 +423,7 @@ impl Layout {
     pub fn from_json_migrating(s: &str) -> Option<Self> {
         let mut l: Self = serde_json::from_str(s).ok()?;
         l.tree.root()?;
+        l.drop_retired();
         let group = l.tree.tiles.iter().find_map(|(&id, t)| {
             matches!(t, egui_tiles::Tile::Container(egui_tiles::Container::Tabs(_))).then_some(id)
         });
@@ -435,6 +438,16 @@ impl Layout {
             }
         }
         Some(l)
+    }
+    // ---- ws:viewer-surface ----
+    /// A stored layout from before the viewer's tool rail still holds a Tools tab: drop it (and its
+    /// popout / pin), so no page shows a pane the app no longer offers.
+    fn drop_retired(&mut self) {
+        if let Some(id) = self.tree.tiles.find_pane(&Pane::Tools) {
+            self.tree.remove_recursively(id);
+        }
+        self.popped.retain(|&p| p != Pane::Tools);
+        self.pinned.retain(|&p| p != Pane::Tools);
     }
     /// Visible = docked in the tree (and not hidden) or popped out.
     pub fn is_visible(&self, pane: Pane) -> bool {
@@ -1248,7 +1261,7 @@ mod tests {
                 assert!(l.tree.tiles.find_pane(&p).is_some(), "{p:?} missing from the {name} page");
                 assert_eq!(l.is_visible(p), visible.contains(&p), "{p:?} visibility on the {name} page");
             }
-            assert!(!l.is_visible(Tools), "Tools is on no page");
+            assert!(l.tree.tiles.find_pane(&Tools).is_none(), "Tools is on no page");
             assert!(Layout::from_json(&l.to_json()).is_some(), "{name} does not round-trip");
         }
         assert!(page_layout("Nope").is_none());
@@ -1258,7 +1271,7 @@ mod tests {
         let lib = l.tree.tiles.parent_of(l.tree.tiles.find_pane(&Library).unwrap()).unwrap();
         for p in [
             Subtitles, Markers, AutoCut, Planner, Moodboard, History, Tracking, Jobs, Mixer, Curves, Nodes, Scopes,
-            Export, Tools,
+            Export,
         ] {
             let id = l.tree.tiles.find_pane(&p).unwrap();
             assert_eq!(l.tree.tiles.parent_of(id), Some(lib), "{p:?} is not tabbed behind Library on Edit");
@@ -1266,14 +1279,33 @@ mod tests {
         assert!(in_front(&Layout::color_layout(), Nodes) && in_front(&Layout::audio_layout(), Mixer));
     }
 
-    /// Tools left `ROUND3` with the pages; Source / Jobs / Scopes / Export were never in it.
+    /// Tools left `ROUND3` with the pages (and `Pane::ALL` with the tool rail); Source / Jobs / Scopes /
+    /// Export were never in it.
     #[test]
     fn pane_source_not_in_round3() {
         assert_eq!(Pane::ROUND3, [Pane::Nodes, Pane::Mixer, Pane::Markers]);
-        for p in [Pane::Source, Pane::Jobs, Pane::Scopes, Pane::Export, Pane::Tools] {
+        assert!(!Pane::ALL.contains(&Pane::Tools), "the viewer's tool rail replaced the Tools pane");
+        for p in [Pane::Source, Pane::Jobs, Pane::Scopes, Pane::Export] {
             assert!(Pane::ALL.contains(&p), "{p:?} is still a pane");
             assert!(!Pane::ROUND3.contains(&p), "{p:?} must not make a stored layout unloadable");
         }
+    }
+
+    // ---- ws:viewer-surface ----
+    /// A layout saved while the Tools pane existed loads without it - as the auto-restored layout, as a
+    /// profile, docked (even as the front tab) or popped out - and the rest survives.
+    #[test]
+    fn a_stored_tools_tab_is_dropped_on_load() {
+        let mut old = Layout::default_layout();
+        old.add_to(Pane::Tools, old.tree.tiles.parent_of(old.tree.tiles.find_pane(&Pane::Preview).unwrap()).unwrap());
+        assert!(old.is_visible(Pane::Tools) && in_front(&old, Pane::Tools), "the old layout shows it");
+        for l in [Layout::from_json(&old.to_json()).unwrap(), Layout::from_json_migrating(&old.to_json()).unwrap()] {
+            assert!(l.tree.tiles.find_pane(&Pane::Tools).is_none(), "the Tools tab is gone");
+            assert!(l.is_visible(Pane::Preview) && l.is_visible(Pane::Source), "its tab group survives");
+        }
+        let mut popped = Layout::default_layout();
+        popped.popout(Pane::Tools);
+        assert!(!Layout::from_json(&popped.to_json()).unwrap().popped.contains(&Pane::Tools), "and its popout");
     }
 
     /// The Edit page: a top row of three columns over a full-width Timeline, none opening unusably small.
@@ -1607,7 +1639,7 @@ mod tests {
     fn plus_adds_a_hidden_pane_as_the_active_tab() {
         let mut l = Layout::default_layout();
         let offered = addable(&l.tree.tiles, &l.popped);
-        assert!(offered.contains(&Pane::Mixer) && offered.contains(&Pane::Tools));
+        assert!(offered.contains(&Pane::Mixer) && !offered.contains(&Pane::Tools));
         assert!(!offered.contains(&Pane::Timeline) && !offered.contains(&Pane::Source), "on screen already");
         // the first draw wraps every lone pane in a tab group of its own (`all_panes_must_have_tabs`)
         l.tree.simplify(&egui_tiles::SimplificationOptions { all_panes_must_have_tabs: true, ..Default::default() });
