@@ -32,6 +32,19 @@ the palette never showed - are listed only in `:` mode. Rows honour the menus' i
 a disabled row is disabled, and the arrow keys scroll the list. Settings ▸ Hotkeys lines its columns up
 across groups, and hovering a keymap preset lists what it changes. `UndoSettings` is gone (nothing
 ever took the snapshot it restored).
+### Library (issue #81, simplify 1)
+The Library's header is one row: search · Filter ▾ · View ▾ · + Import, with a small "Project |
+Browse" switch under it (was "Imported | Global"). Everything else is a right-click away: on bare
+space (Import, Import from URL, New folder / sequence / adjustment layer, Link folder, Consolidate,
+Remove unused (N), Sort, Columns, Clear recent, Open project), on an asset (Open in Source, Add to
+timeline, Rename a subclip, Info…, Label, New subclip, Relink, Reveal, Regenerate proxy, Convert,
+Compress, Remove - on the whole selection), on the column header (Columns + Sort). The bottom preview
+and the selection strip are gone: a click shows the item in the Source monitor (paused), a
+double-click plays it, and right-click ▸ Info… is where description, tags, label and folder are
+edited. Sequences are listed again: drag one onto the timeline to nest it (with its audio twin),
+double-click to open, right-click to rename or delete. Space over the Library is Play/Pause again
+(it used to add the selection to the timeline; Enter still does); removing assets from the menu
+toasts an Undo like Delete does.
 
 ### Pages (issue #78, simplify 0c)
 The six top-right workspaces are four Resolve-style **pages** — Edit, Color, Audio, Export — in a

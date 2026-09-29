@@ -1,41 +1,47 @@
-//! Left panel: the project browser - Premiere's project panel, in two sub-tabs.
+//! Left panel: the project browser - Premiere's project panel, with a "Project | Browse" switch.
 //!
-//! "Imported" is what the project contains, drawn as a real file explorer: nested folders, the assets
-//! under them, a "+ New" button (folder / import / sequence / adjustment layer), rename and delete from
-//! the context menu, and move-by-drag onto a folder row. "Global" browses the disk instead: the recent
-//! files from settings.json plus the folders the user linked, one directory level read per expansion
-//! (never an eager recursive walk - that hangs the UI on a media drive) and only inside a node the user
-//! linked or opened.
+//! "Project" is what the project contains, drawn as a real file explorer: nested folders, the
+//! sequences and the assets under them, and move-by-drag onto a folder row. "Browse" reads the disk
+//! instead: the recent files from settings.json plus the folders the user linked, one directory level
+//! read per expansion (never an eager recursive walk - that hangs the UI on a media drive) and only
+//! inside a node the user linked or opened.
+//!
+//! ---- ws:library-surface ----
+//! The header is ONE row: search (fills) · Filter ▾ · View ▾ · + Import. Everything else is a
+//! right-click away, built from `ui::menu` rows so labels, icons and shortcuts match the menu bar: the
+//! empty area (import, new folder / sequence / adjustment layer, link folder, remove unused,
+//! consolidate, sort, columns, clear recent), an asset (open in Source, add to timeline, rename a
+//! subclip, Info…, label, subclip, relink, convert, compress, remove), a sequence row (open, add,
+//! rename, delete - drag it onto the timeline to nest it), a folder, a file on disk, the column header
+//! (columns + sort). There is no inline preview: a click shows the item in the Source monitor
+//! (paused), a double-click plays it there, and right-click ▸ Info… is the one window where an
+//! asset's description, tags, label and folder are edited (and a recent file's tags).
 //!
 //! Selection is multi: a click replaces it, Ctrl+click toggles one item, Shift+click takes the range
 //! over the rows in the order they were drawn, and a drag across empty space rubber-bands.
 //! `LibraryState.selected` / `sel_path` are the anchor inside the set - app.rs writes `selected` after
-//! an import, and `show` notices that write and collapses the set onto it. With something selected the
-//! toolbar grows a batch strip (Import, Convert To, Convert…, Compress…, Remove) that routes through the
-//! same `LibraryResponse` fields the per-item menus use, so App needs no new plumbing.
+//! an import, and `show` notices that write and collapses the set onto it. An item's menu acts on the
+//! whole selection when the item is part of it.
 //!
-//! The bottom of the pane is a dedicated asset preview: a big picture of the anchor, its format line,
-//! and the ONLY place its description, tags, label and folder are edited - never inline in the list.
 //! Every file row and tile carries a picture: the cached thumbnail, or a painted glyph while there is
 //! none - a speaker for audio, a film strip for video, a camera for stills, a sheet stack for the rest.
-//! The toolbar works over both tabs: search (name/tags/description/folder), kind chips (All/Video/Audio/
-//! Image/Seq, Short SFX ≤ 10 s, Music > 10 s), label colours, "Unused only", sort, the List/Gallery
-//! switch (`LibraryState.view`) and the zoom (`LibraryState.zoom`, the +/- buttons and Ctrl+Scroll) that
-//! scales both gallery tiles and row thumbnails. A search or a filter flattens "Imported" into its hits,
-//! the way an explorer shows search results.
-//! Under the tree, the Imported tab also lists what the project can reuse: the effects / node graphs /
-//! adjustment layers already in use or saved in settings.json (`reuse_ui`, also drawn by `Pane::Presets`).
-//! Standalone Sequences/Templates sub-lists were removed (size-diet, verified dead - a Sequence clip is
-//! entered from the timeline, not browsed here; saved templates place/apply through `reuse_ui` and the
-//! `templates.save`/`templates.list`/`templates.apply` MCP tools).
+//! Filter ▾ and View ▾ work over both views: search (name/tags/description), kind (All/Video/Audio/
+//! Image/Seq, Short SFX ≤ 10 s, Music > 10 s), label colours, "Unused only", sort, List/Gallery
+//! (`LibraryState.view`) and the zoom (`LibraryState.zoom`, View ▾ Size and Ctrl+Scroll) that scales
+//! both gallery tiles and row thumbnails. A search or a filter flattens "Project" into its hits, the way
+//! an explorer shows search results.
+//! Under the tree, "Project" also lists what the project can reuse: the effects / node graphs /
+//! adjustment layers already in use or saved in settings.json (`reuse_ui`).
 
+use crate::hotkeys::Action;
 use crate::media::proxy::ProxyStatus;
 use crate::media::thumbs::ThumbCache;
 use crate::model::{ClipKind, EffectKind, Id, Project, SmartBin};
 use crate::settings::{RecentAsset, Settings};
 use crate::theme::Palette;
 use crate::ui::confirm::{self, ConfirmAction};
-use crate::ui::tools::{draw_glyph, glyph_text_button, icon_button, Glyph};
+use crate::ui::menu;
+use crate::ui::tools::{draw_glyph, glyph_text_button, Glyph};
 use crate::ui::{duration_text, label_color, DragPayload};
 use eframe::egui::{self, RichText};
 use std::collections::HashSet;
@@ -47,9 +53,9 @@ pub(crate) const COLUMNS: &[&str] = &["kind", "duration", "fps", "size", "label"
 
 #[derive(Default)]
 pub struct LibraryState {
-    /// 0 = Imported (what the project contains), 1 = Global (recent files + the linked folders).
+    /// 0 = Project (what the project contains), 1 = Browse (recent files + the linked folders).
     pub tab: usize,
-    /// Anchor of the selection: the asset a click landed on, and the one the preview box shows.
+    /// Anchor of the selection: the asset a click landed on (and Shift+click ranges from).
     /// app.rs writes it straight after an import - `show` spots that and collapses the set onto it.
     pub selected: Option<Id>,
     /// Same, for a selected file that is not a project asset.
@@ -88,12 +94,16 @@ pub struct LibraryState {
     pub rename_folder: Option<(String, String)>,
     /// (parent, edit buffer) - "" parent = top level
     pub new_folder: Option<(String, String)>,
-    /// Tag edit buffer for the previewed asset (avoids the comma being eaten while typing).
+    /// Tag edit buffer for the asset in the Info window (avoids the comma being eaten while typing).
     pub tags_for: Option<Id>,
     pub tags_buf: String,
+    /// (sequence being renamed, edit buffer)
     pub rename_seq: Option<(Id, String)>,
-    pub rename_template: Option<(usize, String)>,
-    /// Same, for the previewed file on disk (its tags live on its `RecentAsset`).
+    /// (subclip being renamed, edit buffer) - a subclip's name is its `description`.
+    pub rename_asset: Option<(Id, String)>,
+    /// The item right-click ▸ Info… opened (None = the window is closed).
+    info: Option<Pick>,
+    /// Same, for a recent file in the Info window (its tags live on its `RecentAsset`).
     pub recent_tags_for: Option<String>,
     pub recent_tags_buf: String,
     /// One-level directory listings, keyed by folder path: (entry path, is a folder), folders first,
@@ -118,6 +128,7 @@ pub struct LibraryResponse {
     pub add_to_timeline: Vec<Id>,
     /// Files to import into the library (and select).
     pub open_paths: Vec<PathBuf>,
+    /// Assets to remove from the project (the app pushes undo and toasts an Undo).
     pub remove: Vec<Id>,
     /// The project changed (folders / tags / labels edited) - app pushes undo via `undo` first.
     pub edited: bool,
@@ -131,39 +142,34 @@ pub struct LibraryResponse {
     pub convert_dialog: Option<Id>,
     /// Asset for which the app should open the Compress… dialog.
     pub compress: Option<Id>,
-    /// Sequence to open for editing (double-clicked in the Sequences section).
+    /// Sequence to open for editing (a sequence row double-clicked, or its menu ▸ Open).
     pub open_sequence: Option<Id>,
+    // ---- ws:library-surface ----
+    /// A sequence row's menu ▸ Add to timeline: nest it at the playhead.
+    pub add_sequence: Option<Id>,
+    /// A sequence was deleted (its name) - the app toasts an Undo.
+    pub deleted_sequence: Option<String>,
+    /// Show this in the Source monitor: (file, its library asset when it is one, play it). A click
+    /// pauses on the first frame, a double-click plays.
+    pub source: Option<(PathBuf, Option<Id>, bool)>,
     /// Template names to place at the playhead.
     pub place_template: Vec<String>,
     /// The user asked to import media from a URL (the app opens the Import URL window).
     pub import_url: bool,
     /// "Edit labels…" was picked in a label menu - the app opens the label editor (Inspector).
     pub edit_labels: bool,
-    /// "New ▸ Adjustment layer" - the app runs `Action::AddAdjustment`.
-    pub new_adjustment: bool,
-    /// "Open…" - the app runs `Action::OpenFile` (its own file dialog / recents handling).
-    pub open_dialog: bool,
     /// An effect kind picked in the reuse sections - the app adds it to every selected visual clip.
     pub add_effect: Option<EffectKind>,
     /// Index into `Settings::effect_presets` to apply to the selection (chain or node graph).
     pub apply_preset: Option<usize>,
     /// Clip whose node graph should be copied onto the selection.
     pub copy_graph: Option<Id>,
-    /// The file the anchor of the selection now points at - the app may show it in the source viewer.
-    /// The library previews it itself either way.
-    pub preview: Option<PathBuf>,
-    /// Same, but from a double click - the app plays it immediately instead of loading it paused.
-    pub preview_play: Option<PathBuf>,
     /// ---- ws:forgiveness ----
     /// Remove Unused ran (instant, never confirmed) and removed `n` assets - the app toasts an Undo.
     pub removed_unused: Option<usize>,
     // ---- ws:media-library ----
     /// Offline assets to relink - the app opens a folder picker, then `media_sync::start_relink`.
     pub relink: Vec<Id>,
-    /// "Consolidate…" - the app confirms (non-blocking) and starts the copy job.
-    pub consolidate: bool,
-    /// "New subclip" for these assets - the app pushes one undo, then `Project::add_subclip` each.
-    pub new_subclip: Vec<Id>,
 }
 
 // ---- ws:media-library ----
@@ -179,7 +185,7 @@ pub struct LibraryNav {
 pub enum NavKey {
     Up,
     Down,
-    /// Enter / Space: add the selection to the timeline at the playhead.
+    /// Enter: add the selection to the timeline at the playhead.
     Open,
     Delete,
 }
@@ -227,14 +233,14 @@ pub fn nav(state: &mut LibraryState, key: NavKey) -> LibraryNav {
 
 /// Consume this frame's navigation keys (the caller has already checked the pane is hovered and no
 /// text field wants them) and fold them through `nav`. Runs from a FRAME_HOOK, before `Hotkeys::poll`
-/// would hand ArrowUp/Down/Space/Delete to the timeline.
+/// would hand ArrowUp/Down/Enter/Delete to the timeline. Space is left alone: it stays Play/Pause (the
+/// Source monitor's when it holds the clicked item, else the timeline's), never "add to timeline".
 pub fn keyboard(state: &mut LibraryState, ctx: &egui::Context) -> LibraryNav {
     let keys: Vec<NavKey> = ctx.input_mut(|i| {
         [
             (egui::Key::ArrowUp, NavKey::Up),
             (egui::Key::ArrowDown, NavKey::Down),
             (egui::Key::Enter, NavKey::Open),
-            (egui::Key::Space, NavKey::Open),
             (egui::Key::Delete, NavKey::Delete),
         ]
         .into_iter()
@@ -356,8 +362,8 @@ enum LibOp {
     SmartBinDelete(usize),
 }
 
-/// The frame the app's preview player produced this update, with its pixel size. The preview box paints
-/// it instead of the still thumbnail, which is what makes a clicked asset play.
+/// The frame the Source monitor's player produced this update, with its pixel size (`source_ui`
+/// paints it).
 #[derive(Clone, Copy)]
 pub struct PreviewFrame {
     pub tex: egui::TextureId,
@@ -365,9 +371,9 @@ pub struct PreviewFrame {
     pub playing: bool,
 }
 
-/// `thumbs`: the app's ThumbCache, so rows and the preview can show a picture. None (no cache /
-/// headless) draws the painted fallback instead.
-/// `ytdlp` = yt-dlp was found at start-up; the "Import URL…" button only exists when it is installed.
+/// `thumbs`: the app's ThumbCache, so rows and tiles can show a picture. None (no cache / headless)
+/// draws the painted fallback instead.
+/// `ytdlp` = yt-dlp was found at start-up; "Import from URL…" only exists when it is installed.
 #[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut egui::Ui,
@@ -375,7 +381,6 @@ pub fn show(
     project: &mut Project,
     settings: &mut Settings,
     thumbs: Option<&mut ThumbCache>,
-    live: Option<&PreviewFrame>,
     palette: &Palette,
     ytdlp: bool,
     undo: &mut dyn FnMut(&Project),
@@ -387,14 +392,21 @@ pub fn show(
     state.hovered = ui.rect_contains_pointer(ui.max_rect());
     external_select(state);
     state.sel_ids.retain(|id| project.asset(*id).is_some());
-    ui.horizontal(|ui| {
-        ui.selectable_value(&mut state.tab, 0, "Imported");
-        ui.selectable_value(&mut state.tab, 1, "Global");
-    });
-    ui.separator();
-    browser(ui, state, project, settings, &mut thumbs, live, &labels, palette, ytdlp, &mut resp, undo);
+    browser(ui, state, project, settings, &mut thumbs, &labels, palette, ytdlp, &mut resp, undo);
     state.seen_selected = state.selected;
     resp
+}
+
+// ---- ws:library-surface ----
+/// "Project | Browse": what the list shows - the project's own media, or the disk.
+fn scope_switch(ui: &mut egui::Ui, state: &mut LibraryState) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        ui.selectable_value(&mut state.tab, 0, RichText::new("Project").small())
+            .on_hover_text("The media, sequences and folders in this project");
+        ui.selectable_value(&mut state.tab, 1, RichText::new("Browse").small())
+            .on_hover_text("Recent files and the folders you linked, straight from disk");
+    });
 }
 
 /// app.rs sets `selected` on its own after an import or a "reveal in library"; the multi-selection
@@ -419,7 +431,7 @@ impl LibraryState {
         }
     }
 
-    /// The item the preview box shows and Shift-click ranges from.
+    /// The selection anchor: the item Shift-click ranges from.
     fn anchor(&self) -> Option<Pick> {
         match (self.selected, &self.sel_path) {
             (Some(id), _) => Some(Pick::Asset(id)),
@@ -834,7 +846,7 @@ fn dot(ui: &mut egui::Ui, color: egui::Color32) {
 /// "Label ▸" submenu over the project's own labels; returns the pick ("Edit labels…" included).
 fn label_menu(ui: &mut egui::Ui, current: u8, labels: &Labels, palette: &Palette) -> Option<LabelPick> {
     let mut picked = None;
-    ui.menu_button("Label", |ui| {
+    menu::sub(ui, Some(Glyph::Swatch), "Label", |ui| {
         if ui.selectable_label(current == 0, "None").clicked() {
             picked = Some(LabelPick::Set(0));
             ui.close();
@@ -850,9 +862,8 @@ fn label_menu(ui: &mut egui::Ui, current: u8, labels: &Labels, palette: &Palette
             }
         }
         ui.separator();
-        if ui.button("Edit labels…").clicked() {
+        if menu::row(ui, None, "Edit labels…", "").clicked() {
             picked = Some(LabelPick::Edit);
-            ui.close();
         }
     });
     picked
@@ -1038,14 +1049,12 @@ fn dur_cell(a: &crate::model::Asset) -> String {
 // ---------- the browser ----------
 
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 fn browser(
     ui: &mut egui::Ui,
     state: &mut LibraryState,
     project: &mut Project,
     settings: &mut Settings,
     thumbs: &mut Option<&mut ThumbCache>,
-    live: Option<&PreviewFrame>,
     labels: &Labels,
     palette: &Palette,
     ytdlp: bool,
@@ -1055,194 +1064,31 @@ fn browser(
     let mut ops: Vec<LibOp> = Vec::new();
     let mut op_start = false; // true when this frame starts an undo-worthy gesture
     let imported = state.tab == 0;
-
-    let mut import = false;
-    let mut new_folder = false;
-    let mut resp_open = false;
-    let mut sort = state.sort;
-    let mut import_url = false;
-    let mut new_seq = false;
-    let mut new_adj = false;
-    let mut link = false;
-    // ponytail: two extra walks so the toolbar can show the count before `used`/`planned` are built
-    // below; cache them behind a generation counter if a big project ever shows it.
-    let unused_n = {
-        let (u, pl) = (project.used_assets(), project.plan_assets());
-        project.assets.iter().filter(|a| !u.contains(&a.id) && !pl.contains(&a.id)).count()
-    };
-    let mut remove_unused = false;
-    let mut consolidate = false;
     let mut columns_changed = false;
-    let has_assets = !project.assets.is_empty();
-    toolbar(ui, state, palette, |ui, state| {
-        if imported {
-            let r = glyph_text_button(ui, Glyph::Letter('+'), "New");
-            egui::Popup::menu(&r).show(|ui| {
-                if ui.button("Import files…").clicked() {
-                    import = true;
-                    ui.close();
-                }
-                if ui.button("Folder…").clicked() {
-                    new_folder = true;
-                    ui.close();
-                }
-                if ui.button("Sequence").clicked() {
-                    new_seq = true;
-                    ui.close();
-                }
-                if ui.button("Adjustment layer").clicked() {
-                    new_adj = true;
-                    ui.close();
-                }
-            });
-        } else if ui.button("Link folder…").clicked() {
-            link = true;
-        }
-        if crate::ui::tools::glyph_text_button(ui, crate::ui::tools::Glyph::FilmReel, "Import…").clicked() {
-            import = true;
-        }
-        // only when yt-dlp is installed - the whole URL import is optional
-        if ytdlp
-            && crate::ui::tools::glyph_text_button(ui, crate::ui::tools::Glyph::ImportArrow, "Import URL…")
-                .on_hover_text("Download media from a link with yt-dlp")
-                .clicked()
-        {
-            import_url = true;
-        }
-        // instant + Undo-toast (panes.rs/library_pane.rs), never confirmed: it's undoable. Hidden at 0.
-        if imported && unused_n > 0 && ui.button(format!("Remove unused ({unused_n})")).clicked() {
-            remove_unused = true;
-        }
-        // the rarely used verbs, out of the way
-        ui.menu_button("More", |ui| {
-            if ui.button("Open…").clicked() {
-                resp_open = true;
-                ui.close();
-            }
-            // ---- ws:media-library ----
-            if imported
-                && ui
-                    .add_enabled(has_assets, egui::Button::new("Consolidate…"))
-                    .on_hover_text("Copy every file from outside the project folder into it (one Undo step)")
-                    .clicked()
-            {
-                consolidate = true;
-                ui.close();
-            }
-            if !imported && ui.button("Clear recent").clicked() {
-                confirm::ask("Clear recent", CLEAR_RECENT, ConfirmAction::ClearRecent);
-                ui.close();
-            }
-        });
-        // every filter in one menu; the button says how many are on
-        let n_on = (state.kind_filter != 0) as u8 + (state.label_filter != 0) as u8 + state.unused_only as u8;
-        let ftitle = if n_on > 0 { format!("Filter ({n_on})") } else { "Filter".to_string() };
-        ui.menu_button(ftitle, |ui| {
-            ui.weak("Kind");
-            for (i, n) in ["All", "Video", "Audio", "Image", "Seq", "Short SFX", "Music"].iter().enumerate() {
-                ui.radio_value(&mut state.kind_filter, i as u8, *n);
-            }
-            ui.separator();
-            ui.weak("Label");
-            ui.radio_value(&mut state.label_filter, 0, "Any");
-            for i in 1..=labels.len() as u8 {
-                ui.horizontal(|ui| {
-                    let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-                    ui.painter().circle_filled(rect.center(), 4.5, lbl_color(labels, i, palette));
-                    ui.radio_value(&mut state.label_filter, i, lbl_name(labels, i));
-                });
-            }
-            ui.separator();
-            ui.checkbox(&mut state.unused_only, "Unused only");
-            if n_on > 0 && ui.button("Clear filters").clicked() {
-                state.kind_filter = 0;
-                state.label_filter = 0;
-                state.unused_only = false;
-            }
-        });
-        ui.menu_button("View", |ui| {
-            ui.radio_value(&mut state.view, 0, "List");
-            ui.radio_value(&mut state.view, 1, "Gallery");
-            ui.horizontal(|ui| {
-                ui.label("Size");
-                if ui.small_button("−").clicked() {
-                    state.zoom = (state.zoom / 1.25).clamp(ZOOM_MIN, ZOOM_MAX);
-                }
-                if ui.small_button("+").clicked() {
-                    state.zoom = (state.zoom * 1.25).clamp(ZOOM_MIN, ZOOM_MAX);
-                }
-            });
-            ui.separator();
-            ui.weak("Sort by");
-            for (i, n) in ["Name", "Duration", "Kind", "Recent"].iter().enumerate() {
-                ui.radio_value(&mut sort, i as u8, *n);
-            }
-            if state.view == 0 {
-                ui.separator();
-                ui.menu_button("Columns", |ui| {
-                    for c in COLUMNS {
-                        let mut on = settings.library_columns.iter().any(|x| x == c);
-                        if ui.checkbox(&mut on, column_title(c)).changed() {
-                            if on {
-                                settings.library_columns.push((*c).to_string());
-                            } else {
-                                settings.library_columns.retain(|x| x != c);
-                            }
-                            columns_changed = true;
-                        }
-                    }
-                });
-            }
-        });
-    });
-    state.sort = sort;
-    if remove_unused {
-        ops.push(LibOp::RemoveUnused);
-        op_start = true;
-    }
-    resp.consolidate |= consolidate;
-    resp.settings_changed |= columns_changed;
-    resp.open_dialog |= resp_open;
-    resp.new_adjustment |= new_adj;
-    resp.import |= import;
-    resp.import_url |= import_url;
-    if new_seq {
-        ops.push(LibOp::SeqNew);
-        op_start = true;
-    }
-    if new_folder {
-        state.new_folder = Some((state.folder.clone().unwrap_or_default(), String::new()));
-    }
-    if link {
-        if let Some(p) = rfd::FileDialog::new().pick_folder() {
-            ops.push(LibOp::LinkFolder(p.to_string_lossy().into_owned()));
-            op_start = true;
-        }
-    }
-    batch_strip(ui, state, resp);
+    header(ui, state, settings, labels, palette, resp, &mut columns_changed);
 
     // ponytail: both walk every clip / plan item per frame. Upgrade: cache them behind a generation
     // counter bumped by App::after_edit() if a big project ever shows it.
     let used = project.used_assets();
     let planned = project.plan_assets();
-    // a search or a filter chip flattens "Imported" into its hits, the way an explorer shows search results
+    // a search or a filter chip flattens "Project" into its hits, the way an explorer shows search results
     let flat = !state.search.is_empty() || state.kind_filter != 0 || state.label_filter != 0 || state.unused_only;
-    // "Imported" flattens above instead of showing its tree, but "Global" doesn't - open its Recent/
+    // "Project" flattens above instead of showing its tree, but "Browse" doesn't - open its Recent/
     // linked-folder branches down to whatever the search box currently matches.
     sync_search_expand(state, project, settings);
-
-    // the preview owns the bottom of the pane, so it never scrolls away with the list
-    preview_panel(ui, state, project, settings, thumbs, live, labels, palette, resp, &mut ops, &mut op_start);
 
     let mut rows: Vec<(Pick, egui::Rect)> = Vec::new();
     let mut click: Option<(Pick, bool, bool)> = None;
     let mut rec: Option<RecOp> = None;
+    // the empty area's click / right-click, registered BEFORE the list: egui hit-tests the widget added
+    // last, so every row, folder and button drawn below sits on top of it and only bare space reaches it
+    let bg = ui.interact(ui.available_rect_before_wrap(), ui.id().with("lib_empty_area"), egui::Sense::click());
     // no drag-to-scroll: a drag across the list is a rubber band or a drag-and-drop, never a scroll
     let source = egui::scroll_area::ScrollSource { drag: false, ..Default::default() };
     egui::ScrollArea::vertical().auto_shrink(false).scroll_source(source).show(ui, |ui| {
         zoom_scroll(ui, state);
         if imported && state.view == 0 && !project.assets.is_empty() {
-            sort_header(ui, state, settings);
+            columns_changed |= sort_header(ui, state, settings);
         }
         // filtered + sorted assets; the tree hangs each of them under its own folder
         let mut order: Vec<usize> = (0..project.assets.len())
@@ -1253,7 +1099,7 @@ fn browser(
                     && matches_search(a, &state.search)
                     && matches_kind(a.kind, a.duration, state.kind_filter)
                     && (state.label_filter == 0 || a.label == state.label_filter)
-                    // same predicate as "Remove unused" below: moodboard assets are not unused
+                    // same predicate as "Remove unused": moodboard assets are not unused
                     && (!state.unused_only || !(used.contains(&a.id) || planned.contains(&a.id)))
             })
             .collect();
@@ -1298,15 +1144,29 @@ fn browser(
             // the project's own reusable items, listed as more files rather than a section below
             reuse_ui(ui, state.view, state.kind_filter, state.zoom, project, settings, palette, resp);
         }
-
-        // clicking the empty space below the tree drops the selection, and the preview with it
-        let rest = ui.available_size();
-        if rest.y > 1.0 && ui.allocate_response(rest, egui::Sense::click()).clicked() {
-            state.clear_sel();
-            state.folder = None;
-        }
         band_select(ui, state, &rows, palette);
     });
+    // clicking bare space drops the selection (and the folder the tree had narrowed to)
+    if bg.clicked() {
+        state.clear_sel();
+        state.folder = None;
+    }
+    let mut link = false;
+    bg.context_menu(|ui| {
+        // counted only while the menu is open, from the walks the list already did
+        let unused = project.assets.iter().filter(|a| !used.contains(&a.id) && !planned.contains(&a.id)).count();
+        let ctx = EmptyMenu { ytdlp, unused, link: &mut link, columns_changed: &mut columns_changed };
+        empty_menu(ui, state, settings, resp, &mut ops, &mut op_start, ctx);
+    });
+    info_window(ui.ctx(), state, project, settings, labels, palette, resp, &mut ops, &mut op_start);
+    if link {
+        if let Some(p) = rfd::FileDialog::new().pick_folder() {
+            ops.push(LibOp::LinkFolder(p.to_string_lossy().into_owned()));
+            op_start = true;
+            state.tab = 1; // a linked folder is browsed from "Browse" - show it
+        }
+    }
+    resp.settings_changed |= columns_changed;
     match rec {
         Some(RecOp::Pin(path)) => {
             if let Some(r) = settings.recent_assets.iter_mut().find(|r| r.path == path) {
@@ -1386,7 +1246,10 @@ fn browser(
                         s.name = name;
                     }
                 }
-                LibOp::SeqDelete(id) => delete_sequence(project, id),
+                LibOp::SeqDelete(id) => {
+                    resp.deleted_sequence = project.sequences.iter().find(|s| s.id == id).map(|s| s.name.clone());
+                    delete_sequence(project, id);
+                }
                 LibOp::RemoveUnused => {
                     let n = project.remove_unused_assets();
                     if n > 0 {
@@ -1424,38 +1287,69 @@ fn column_title(c: &str) -> &'static str {
     }
 }
 
-/// Clickable column headers over the list: Name / Kind / Duration drive the same `state.sort` the
-/// toolbar combo shows; the other configured columns are plain captions.
-fn sort_header(ui: &mut egui::Ui, state: &mut LibraryState, settings: &Settings) {
+/// Clickable column headers over the list: Name / Kind / Duration drive `state.sort`; the other
+/// configured columns are plain captions. Right-click = the column checkboxes + Sort by. True when the
+/// columns changed (settings.json needs saving).
+fn sort_header(ui: &mut egui::Ui, state: &mut LibraryState, settings: &mut Settings) -> bool {
+    // the whole strip answers the right-click; registered first so the captions keep their own clicks
+    let strip =
+        egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), ui.spacing().interact_size.y));
+    let mut r = ui.interact(strip, ui.id().with("lib_col_header"), egui::Sense::click());
     ui.horizontal(|ui| {
         ui.add_space(indent(0) + ARROW);
-        let mut col = |ui: &mut egui::Ui, label: &str, sort: Option<u8>| match sort {
-            Some(s) => {
-                if ui
-                    .selectable_label(state.sort == s, RichText::new(label).small())
-                    .on_hover_text("Sort by this")
-                    .clicked()
-                {
-                    state.sort = s;
-                }
-            }
-            None => {
-                ui.weak(RichText::new(label).small());
-            }
-        };
-        col(ui, "Name", Some(0));
+        r = r.union(header_cell(ui, state, "Name", Some(0)));
         for c in &settings.library_columns {
             let sort = match c.as_str() {
                 "kind" => Some(2),
                 "duration" => Some(1),
                 _ => None,
             };
-            col(ui, column_title(c), sort);
+            r = r.union(header_cell(ui, state, column_title(c), sort));
         }
     });
+    let mut changed = false;
+    r.context_menu(|ui| {
+        columns_items(ui, settings, &mut changed);
+        ui.separator();
+        ui.weak("Sort by");
+        sort_items(ui, state);
+    });
+    changed
 }
 
-/// A dashed drop target with a prompt - the Imported tab of a project with no media at all.
+/// One column caption: a sort toggle when `sort` names a sort key, else a plain caption.
+fn header_cell(ui: &mut egui::Ui, state: &mut LibraryState, label: &str, sort: Option<u8>) -> egui::Response {
+    let Some(s) = sort else { return ui.weak(RichText::new(label).small()) };
+    let r = ui.selectable_label(state.sort == s, RichText::new(label).small()).on_hover_text("Sort by this");
+    if r.clicked() {
+        state.sort = s;
+    }
+    r
+}
+
+/// The Sort by radios (View ▾, the empty area's Sort ▸, the column header's right-click).
+fn sort_items(ui: &mut egui::Ui, state: &mut LibraryState) {
+    for (i, n) in ["Name", "Duration", "Kind", "Recent"].iter().enumerate() {
+        ui.radio_value(&mut state.sort, i as u8, *n);
+    }
+}
+
+/// A checkbox per list column (View ▾ Columns, the empty area's Columns ▸, the column header).
+fn columns_items(ui: &mut egui::Ui, settings: &mut Settings, changed: &mut bool) {
+    for c in COLUMNS {
+        let mut on = settings.library_columns.iter().any(|x| x == c);
+        if ui.checkbox(&mut on, column_title(c)).changed() {
+            if on {
+                settings.library_columns.push((*c).to_string());
+            } else {
+                settings.library_columns.retain(|x| x != c);
+            }
+            *changed = true;
+        }
+    }
+}
+
+/// A dashed drop target with a prompt - the Project view of a project with no media at all.
 fn empty_state(ui: &mut egui::Ui, palette: &Palette, resp: &mut LibraryResponse) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width().max(80.0), 100.0), egui::Sense::hover());
     let r = rect.shrink(8.0);
@@ -1477,22 +1371,6 @@ fn empty_state(ui: &mut egui::Ui, palette: &Palette, resp: &mut LibraryResponse)
     }
 }
 
-/// Hatched "file not found" slate where the preview picture would be.
-fn paint_offline(ui: &egui::Ui, rect: egui::Rect, palette: &Palette) {
-    let p = ui.painter();
-    p.rect_filled(rect, 2.0, palette.panel);
-    let stroke = egui::Stroke::new(1.0, palette.text_dim.gamma_multiply(0.5));
-    let mut x = rect.left() - rect.height();
-    while x < rect.right() {
-        let a = egui::pos2(x, rect.bottom());
-        let b = egui::pos2(x + rect.height(), rect.top());
-        p.add(egui::Shape::line_segment([a, b], stroke));
-        x += 8.0;
-    }
-    let g = egui::Rect::from_center_size(rect.center(), egui::vec2(24.0, 22.0));
-    draw_glyph(p, g, Glyph::Warning, ui.visuals().warn_fg_color);
-}
-
 /// Ctrl+Scroll (and pinch) over the list scales the thumbnails, like every asset browser.
 fn zoom_scroll(ui: &egui::Ui, state: &mut LibraryState) {
     let hovering = ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| ui.clip_rect().contains(p));
@@ -1506,197 +1384,188 @@ fn zoom_scroll(ui: &egui::Ui, state: &mut LibraryState) {
     }
 }
 
-/// What to do with everything selected. Every button routes through the `LibraryResponse` fields the
-/// per-item menus already use, so App needs no new plumbing.
-/// ponytail: the Convert and Compress windows each take one file, so those two open on the first asset
-/// of the selection. Upgrade: queue one job per asset once those windows accept a list.
-fn batch_strip(ui: &mut egui::Ui, state: &LibraryState, resp: &mut LibraryResponse) {
-    let n = state.sel_ids.len() + state.sel_paths.len();
-    // always exactly one row, selected or not: the list under it must never jump
-    ui.horizontal(|ui| {
-        ui.set_min_height(ui.spacing().interact_size.y);
-        ui.spacing_mut().item_spacing.x = 3.0;
-        if n == 0 {
-            ui.weak(RichText::new("Click a file to preview it · double-click to play").small());
-            return;
-        }
-        ui.weak(RichText::new(format!("{n} selected")).small());
-        if !state.sel_paths.is_empty() && ui.small_button("Import").clicked() {
-            resp.open_paths.extend(state.sel_paths.iter().map(PathBuf::from));
-        }
-        if state.sel_ids.is_empty() {
-            return;
-        }
-        if ui.small_button("Add to timeline").clicked() {
-            resp.add_to_timeline.extend(state.sel_ids.iter().copied());
-        }
-        if ui.small_button("Remove from project").clicked() {
-            resp.remove.extend(state.sel_ids.iter().copied());
-        }
-        ui.menu_button(RichText::new("Actions").small(), |ui| {
-            // ---- ws:media-library ----
-            if ui.button("New subclip").on_hover_text("A library entry over the In/Out marks").clicked() {
-                resp.new_subclip.extend(state.sel_ids.iter().copied());
-                ui.close();
-            }
-            if state.sel_ids.iter().any(|id| state.offline.contains(id)) && ui.button("Relink…").clicked() {
-                resp.relink.extend(state.sel_ids.iter().filter(|id| state.offline.contains(id)).copied());
-                ui.close();
-            }
-            ui.menu_button("Convert To", |ui| {
-                for t in crate::engine::convert::TARGETS {
-                    if ui.button(*t).clicked() {
-                        resp.convert.extend(state.sel_ids.iter().map(|id| (*id, (*t).to_string())));
-                        ui.close();
-                    }
-                }
-            });
-            // the options window takes one file: a multi-selection goes straight to the quick per-id
-            // path (default options, first target), so "Convert…" never silently drops all but one
-            if ui.button("Convert…").clicked() {
-                if state.sel_ids.len() > 1 {
-                    let t = crate::engine::convert::TARGETS[0];
-                    resp.convert.extend(state.sel_ids.iter().map(|id| (*id, t.to_string())));
-                } else {
-                    resp.convert_dialog = state.sel_ids.first().copied();
-                }
-                ui.close();
-            }
-            // Compress… stays single-target (its window sizes a bitrate for exactly one file)
-            if ui.button("Compress…").clicked() {
-                resp.compress = state.sel_ids.first().copied();
-                ui.close();
-            }
-        });
-    });
-    ui.separator();
-}
+// ---- ws:library-surface ----
 
-/// The search + filter toolbar: a framed band in the panel fill with a separator under it, so it never
-/// reads as content. `head` draws the tab-specific leading row (New / Open / Import / sort).
-fn toolbar(
+/// The pane's one header row, in the panel fill so it never reads as content: search (fills what is
+/// left) · Filter ▾ · View ▾ · + Import, then the Project | Browse switch.
+#[allow(clippy::too_many_arguments)]
+fn header(
     ui: &mut egui::Ui,
     state: &mut LibraryState,
+    settings: &mut Settings,
+    labels: &Labels,
     palette: &Palette,
-    head: impl FnOnce(&mut egui::Ui, &mut LibraryState),
+    resp: &mut LibraryResponse,
+    columns_changed: &mut bool,
 ) {
     egui::Frame::new().fill(palette.panel).inner_margin(egui::Margin::symmetric(4, 3)).show(ui, |ui| {
-        // wrapped: a narrow pane must stack the buttons, not push them past the right edge
-        ui.horizontal_wrapped(|ui| head(ui, state));
         ui.horizontal(|ui| {
-            let (mag, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
-            draw_glyph(ui.painter(), mag, Glyph::Zoom, palette.text_dim);
-            let clear_w = 26.0;
-            // TextEdit::desired_width is the *text* width; its frame adds a margin on top, so the row
-            // used to be ~8px wider than the pane and dragged every later widget out with it.
-            let margin = ui.spacing().button_padding.x * 2.0;
-            let w = (ui.available_width() - clear_w - ui.spacing().item_spacing.x - margin).max(24.0);
-            let r = ui.add(egui::TextEdit::singleline(&mut state.search).hint_text("search").desired_width(w));
-            #[cfg(test)]
-            ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("lib_search_rect"), r.rect));
-            let _ = r;
-            let id = egui::Id::new("lib_clear_search");
-            if icon_button(ui, palette, id, Glyph::Letter('X'), "Clear search", false).clicked() {
-                state.search.clear();
-            }
+            ui.spacing_mut().item_spacing.x = 4.0;
+            // right to left, so the buttons keep their size and the search box takes the rest
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let key = menu::shortcut(Action::ImportMedia);
+                let tip = if key.is_empty() {
+                    "Import media files".to_string()
+                } else {
+                    format!("Import media files ({key})")
+                };
+                if glyph_text_button(ui, Glyph::Letter('+'), "Import").on_hover_text(tip).clicked() {
+                    resp.import = true;
+                }
+                ui.menu_button("View ▾", |ui| view_menu(ui, state, settings, columns_changed));
+                // every filter in one menu; the button says how many are on
+                let n_on = (state.kind_filter != 0) as u8 + (state.label_filter != 0) as u8 + state.unused_only as u8;
+                let title = if n_on > 0 { format!("Filter ({n_on}) ▾") } else { "Filter ▾".to_string() };
+                ui.menu_button(title, |ui| filter_menu(ui, state, labels, palette));
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| search_box(ui, state, palette));
+            });
         });
+        // under the row, not in it: at 300 px the row has no width to spare for it (it squeezed the
+        // search box to a few letters and pushed Filter ▾ off the pane)
+        scope_switch(ui, state);
     });
     ui.separator();
 }
 
-// ---------- the preview ----------
-
-/// The dedicated asset preview: the bottom of the pane, and the only place tags / description / label /
-/// folder are edited.
-#[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
-fn preview_panel(
-    ui: &mut egui::Ui,
-    state: &mut LibraryState,
-    project: &Project,
-    settings: &mut Settings,
-    thumbs: &mut Option<&mut ThumbCache>,
-    live: Option<&PreviewFrame>,
-    labels: &Labels,
-    palette: &Palette,
-    resp: &mut LibraryResponse,
-    ops: &mut Vec<LibOp>,
-    op_start: &mut bool,
-) {
-    egui::TopBottomPanel::bottom("lib_preview")
-        .resizable(true)
-        .height_range(48.0..=420.0)
-        .default_height(178.0)
-        .show_inside(ui, |ui| {
-            egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| match state.anchor() {
-                Some(Pick::Asset(id)) if project.asset(id).is_some() => {
-                    asset_preview(ui, state, project, id, thumbs, live, labels, palette, resp, ops, op_start)
-                }
-                Some(Pick::Path(p)) => path_preview(ui, state, settings, thumbs, live, palette, resp, &p),
-                _ => {
-                    ui.weak("Select a file to preview it");
-                }
-            });
-        });
-}
-
-/// Name / path / format, over the picture - shared by both previews. `offline` swaps the picture for
-/// a hatched slate (never a black / frozen frame for a file that is not there).
-#[allow(clippy::too_many_arguments)]
-fn preview_head(
-    ui: &mut egui::Ui,
-    thumbs: &mut Option<&mut ThumbCache>,
-    live: Option<&PreviewFrame>,
-    palette: &Palette,
-    path: &str,
-    meta: &str,
-    offline: bool,
-    extra: impl FnOnce(&mut egui::Ui),
-) {
-    ui.horizontal(|ui| {
-        let h = 84.0;
-        let (rect, r) = ui.allocate_exact_size(egui::vec2(h * 16.0 / 9.0, h), egui::Sense::hover());
-        if offline {
-            paint_offline(ui, rect, palette);
-            r.on_hover_text("File not found - Relink… to point at it again");
-        } else {
-            // the live frame wins: asking the thumbnail cache as well would queue a decode per frame
-            let art = match live {
-                Some(f) => Art::Image(f.tex, f.size),
-                None => file_art(ui, thumbs, path, (h * 2.0) as u32),
-            };
-            paint_art(ui, rect, art, palette);
+/// The search field, as wide as the row allows: the magnifier and the clear ✕ sit inside its frame
+/// (in margins it always keeps, so the text never reflows when the ✕ appears).
+fn search_box(ui: &mut egui::Ui, state: &mut LibraryState, palette: &Palette) {
+    let margin = egui::Margin { left: 22, right: 20, top: 2, bottom: 2 };
+    // desired_width is the *text* width; the margins come on top
+    let w = (ui.available_width() - f32::from(margin.left + margin.right)).max(24.0);
+    let r = ui.add(egui::TextEdit::singleline(&mut state.search).hint_text("Search").margin(margin).desired_width(w));
+    #[cfg(test)]
+    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("lib_search_rect"), r.rect));
+    let mag = egui::Rect::from_min_size(r.rect.left_top() + egui::vec2(3.0, 0.0), egui::vec2(18.0, r.rect.height()));
+    draw_glyph(ui.painter(), mag, Glyph::Zoom, palette.text_dim);
+    if !state.search.is_empty() {
+        let x =
+            egui::Rect::from_center_size(egui::pos2(r.rect.right() - 11.0, r.rect.center().y), egui::vec2(18.0, 18.0));
+        let c = ui.interact(x, egui::Id::new("lib_clear_search"), egui::Sense::click()).on_hover_text("Clear search");
+        draw_glyph(ui.painter(), x, Glyph::Cross, if c.hovered() { palette.text } else { palette.text_dim });
+        if c.clicked() {
+            state.search.clear();
         }
-        ui.vertical(|ui| {
-            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-            ui.strong(split_path(path).0);
-            ui.add(egui::Label::new(RichText::new(path).weak().small()).truncate()).on_hover_text(path);
-            ui.weak(meta);
-            extra(ui);
-        });
-    });
+    }
 }
 
-#[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
-fn asset_preview(
+/// Filter ▾: kind, label colour and "Unused only".
+fn filter_menu(ui: &mut egui::Ui, state: &mut LibraryState, labels: &Labels, palette: &Palette) {
+    ui.weak("Kind");
+    for (i, n) in ["All", "Video", "Audio", "Image", "Seq", "Short SFX", "Music"].iter().enumerate() {
+        ui.radio_value(&mut state.kind_filter, i as u8, *n);
+    }
+    ui.separator();
+    ui.weak("Label");
+    ui.radio_value(&mut state.label_filter, 0, "Any");
+    for i in 1..=labels.len() as u8 {
+        ui.horizontal(|ui| {
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+            ui.painter().circle_filled(rect.center(), 4.5, lbl_color(labels, i, palette));
+            ui.radio_value(&mut state.label_filter, i, lbl_name(labels, i));
+        });
+    }
+    ui.separator();
+    ui.checkbox(&mut state.unused_only, "Unused only");
+    if filter_active(state) && ui.button("Clear filters").clicked() {
+        state.kind_filter = 0;
+        state.label_filter = 0;
+        state.unused_only = false;
+    }
+}
+
+/// View ▾: List / Gallery, the thumbnail size, sort, and the list's columns.
+fn view_menu(ui: &mut egui::Ui, state: &mut LibraryState, settings: &mut Settings, columns_changed: &mut bool) {
+    ui.radio_value(&mut state.view, 0, "List");
+    ui.radio_value(&mut state.view, 1, "Gallery");
+    ui.horizontal(|ui| {
+        ui.label("Size");
+        if ui.small_button("−").clicked() {
+            state.zoom = (state.zoom / 1.25).clamp(ZOOM_MIN, ZOOM_MAX);
+        }
+        if ui.small_button("+").clicked() {
+            state.zoom = (state.zoom * 1.25).clamp(ZOOM_MIN, ZOOM_MAX);
+        }
+    });
+    ui.separator();
+    ui.weak("Sort by");
+    sort_items(ui, state);
+    if state.view == 0 {
+        ui.separator();
+        menu::sub(ui, None, "Columns", |ui| columns_items(ui, settings, columns_changed));
+    }
+}
+
+/// What the empty-area menu needs besides the state it edits.
+struct EmptyMenu<'a> {
+    ytdlp: bool,
+    /// Assets no clip, sequence or moodboard uses ("Remove unused (N)", hidden at 0).
+    unused: usize,
+    /// "Link folder…" was picked - its folder picker runs once the menu has closed.
+    link: &'a mut bool,
+    columns_changed: &'a mut bool,
+}
+
+/// Right-click on the list's bare space: every pane-level verb the header doesn't show. Rows come from
+/// `ui::menu`, so an Action's label, icon and shortcut match the menu bar.
+fn empty_menu(
     ui: &mut egui::Ui,
     state: &mut LibraryState,
-    project: &Project,
-    id: Id,
-    thumbs: &mut Option<&mut ThumbCache>,
-    live: Option<&PreviewFrame>,
-    labels: &Labels,
-    palette: &Palette,
+    settings: &mut Settings,
     resp: &mut LibraryResponse,
     ops: &mut Vec<LibOp>,
     op_start: &mut bool,
+    m: EmptyMenu,
 ) {
-    let Some(a) = project.asset(id) else { return };
-    if state.tags_for != Some(a.id) {
-        state.tags_for = Some(a.id);
-        state.tags_buf = a.tags.join(", ");
+    let project_view = state.tab == 0;
+    menu::action_item(ui, Action::ImportMedia);
+    // only when yt-dlp is installed - the whole URL import is optional
+    if m.ytdlp
+        && menu::row(ui, Some(Glyph::ImportArrow), "Import from URL…", "")
+            .on_hover_text("Download media from a link with yt-dlp")
+            .clicked()
+    {
+        resp.import_url = true;
     }
+    ui.separator();
+    if project_view {
+        if menu::row(ui, Some(Glyph::Folder), "New folder", "").clicked() {
+            state.new_folder = Some((state.folder.clone().unwrap_or_default(), String::new()));
+        }
+        if menu::row(ui, Some(Glyph::Sequence), "New sequence", "").clicked() {
+            ops.push(LibOp::SeqNew);
+            *op_start = true;
+        }
+        menu::action_item(ui, Action::AddAdjustment);
+        ui.separator();
+        menu::sub(ui, None, "Sort", |ui| sort_items(ui, state));
+        if state.view == 0 {
+            menu::sub(ui, None, "Columns", |ui| columns_items(ui, settings, m.columns_changed));
+        }
+        ui.separator();
+    }
+    if menu::row(ui, Some(Glyph::Link), "Link folder…", "").on_hover_text("Browse a folder on disk from here").clicked()
+    {
+        *m.link = true;
+    }
+    if project_view {
+        menu::action_item(ui, Action::ConsolidateMedia);
+        // instant + Undo-toast (library_pane.rs), never confirmed: it's undoable. Hidden at 0.
+        if m.unused > 0 && menu::row(ui, Some(Glyph::Cross), &format!("Remove unused ({})", m.unused), "").clicked() {
+            ops.push(LibOp::RemoveUnused);
+            *op_start = true;
+        }
+    } else if !settings.recent_assets.is_empty() && menu::row(ui, None, "Clear recent", "").clicked() {
+        confirm::ask("Clear recent", CLEAR_RECENT, ConfirmAction::ClearRecent);
+    }
+    ui.separator();
+    menu::action_item(ui, Action::OpenProject);
+}
+
+// ---------- right-click ▸ Info… ----------
+
+/// kind · duration · W×H · fps · audio streams · subclip range.
+fn format_line(a: &crate::model::Asset) -> String {
     let mut line = format!("{} · {}", kind_tag(a.kind), dur_cell(a));
     if a.width > 0 {
         line.push_str(&format!(" · {}×{}", a.width, a.height));
@@ -1710,16 +1579,83 @@ fn asset_preview(
     if let Some((s, e)) = a.range {
         line.push_str(&format!(" · subclip {}–{}", duration_text(s), duration_text(e)));
     }
-    let offline = state.offline.contains(&a.id);
-    preview_head(ui, thumbs, live, palette, &a.path, &line, offline, |ui| {
-        if offline {
-            ui.horizontal(|ui| {
-                ui.colored_label(ui.visuals().warn_fg_color, "Offline");
-                if ui.small_button("Relink…").clicked() {
-                    resp.relink.push(a.id);
-                }
-            });
-        }
+    line
+}
+
+/// The Info… window (item right-click): an asset's format line, path and Relink, and the ONE place
+/// its label, folder, description and tags are edited - or a recent file's tags. The Source monitor
+/// is the picture; this is the paperwork.
+#[allow(clippy::too_many_arguments)]
+fn info_window(
+    ctx: &egui::Context,
+    state: &mut LibraryState,
+    project: &Project,
+    settings: &mut Settings,
+    labels: &Labels,
+    palette: &Palette,
+    resp: &mut LibraryResponse,
+    ops: &mut Vec<LibOp>,
+    op_start: &mut bool,
+) {
+    let Some(pick) = state.info.clone() else { return };
+    let title = match &pick {
+        Pick::Asset(id) => project.asset(*id).map(display_name),
+        Pick::Path(p) => Some(split_path(p).0.to_string()),
+    };
+    let Some(title) = title else {
+        state.info = None; // the asset is gone (removed, undone)
+        return;
+    };
+    let mut open = true;
+    egui::Window::new(title)
+        .id(egui::Id::new(("lib_info", format!("{pick:?}"))))
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .default_pos(crate::ui::popup_open_pos(ctx))
+        .show(ctx, |ui| {
+            ui.set_width(300.0);
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+            match &pick {
+                Pick::Asset(id) => asset_info(ui, state, project, *id, labels, palette, resp, ops, op_start),
+                Pick::Path(p) => path_info(ui, state, settings, resp, p),
+            }
+        });
+    if !open {
+        state.info = None;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn asset_info(
+    ui: &mut egui::Ui,
+    state: &mut LibraryState,
+    project: &Project,
+    id: Id,
+    labels: &Labels,
+    palette: &Palette,
+    resp: &mut LibraryResponse,
+    ops: &mut Vec<LibOp>,
+    op_start: &mut bool,
+) {
+    let Some(a) = project.asset(id) else { return };
+    if state.tags_for != Some(a.id) {
+        state.tags_for = Some(a.id);
+        state.tags_buf = a.tags.join(", ");
+    }
+    ui.weak(format_line(a));
+    ui.add(egui::Label::new(RichText::new(&a.path).weak().small()).truncate()).on_hover_text(&a.path);
+    if state.offline.contains(&a.id) {
+        ui.horizontal(|ui| {
+            ui.colored_label(ui.visuals().warn_fg_color, "File not found");
+            if ui.small_button("Relink…").clicked() {
+                resp.relink.push(a.id);
+            }
+        });
+    }
+    ui.add_space(4.0);
+    egui::Grid::new("lib_info_grid").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
+        ui.label("Label");
         ui.horizontal(|ui| {
             dot(ui, lbl_color(labels, a.label, palette));
             egui::ComboBox::from_id_salt("asset_label").selected_text(lbl_name(labels, a.label)).show_ui(ui, |ui| {
@@ -1746,26 +1682,30 @@ fn asset_preview(
                     ui.close();
                 }
             });
-            let folder_text = if a.folder.is_empty() { "Root" } else { a.folder.as_str() };
-            egui::ComboBox::from_id_salt("asset_folder").selected_text(folder_text).show_ui(ui, |ui| {
-                if ui.selectable_label(a.folder.is_empty(), "Root").clicked() {
-                    ops.push(LibOp::AssetFolder(a.id, String::new()));
+        });
+        ui.end_row();
+        ui.label("Folder");
+        let folder_text = if a.folder.is_empty() { "Root" } else { a.folder.as_str() };
+        egui::ComboBox::from_id_salt("asset_folder").selected_text(folder_text).show_ui(ui, |ui| {
+            if ui.selectable_label(a.folder.is_empty(), "Root").clicked() {
+                ops.push(LibOp::AssetFolder(a.id, String::new()));
+                *op_start = true;
+                ui.close();
+            }
+            for f in project.folder_names() {
+                if ui.selectable_label(a.folder == f, &f).clicked() {
+                    ops.push(LibOp::AssetFolder(a.id, f.clone()));
                     *op_start = true;
                     ui.close();
                 }
-                for f in project.folder_names() {
-                    if ui.selectable_label(a.folder == f, &f).clicked() {
-                        ops.push(LibOp::AssetFolder(a.id, f.clone()));
-                        *op_start = true;
-                        ui.close();
-                    }
-                }
-            });
+            }
         });
+        ui.end_row();
     });
+    ui.add_space(4.0);
     let mut desc = a.description.clone();
     let r = ui.add(
-        egui::TextEdit::multiline(&mut desc).desired_rows(2).desired_width(f32::INFINITY).hint_text("description"),
+        egui::TextEdit::multiline(&mut desc).desired_rows(3).desired_width(f32::INFINITY).hint_text("description"),
     );
     if r.changed() {
         ops.push(LibOp::AssetDesc(a.id, desc));
@@ -1788,25 +1728,20 @@ fn split_tags(s: &str) -> Vec<String> {
     s.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect()
 }
 
-/// Preview of a file that is not in the project yet: import it from here, and edit the tags it carries
+/// Info… for a file that is not in the project: its path, an import button, and the tags it carries
 /// as a recent file (the only place a file outside the project can keep any).
-#[allow(clippy::too_many_arguments)]
-fn path_preview(
+fn path_info(
     ui: &mut egui::Ui,
     state: &mut LibraryState,
     settings: &mut Settings,
-    thumbs: &mut Option<&mut ThumbCache>,
-    live: Option<&PreviewFrame>,
-    palette: &Palette,
     resp: &mut LibraryResponse,
     path: &str,
 ) {
-    let meta = kind_tag_for_class(ext_class(path)).to_string();
-    preview_head(ui, thumbs, live, palette, path, &meta, false, |ui| {
-        if ui.button("Import to project").clicked() {
-            resp.open_paths.push(PathBuf::from(path));
-        }
-    });
+    ui.weak(kind_tag_for_class(ext_class(path)));
+    ui.add(egui::Label::new(RichText::new(path).weak().small()).truncate()).on_hover_text(path);
+    if ui.button("Import to project").clicked() {
+        resp.open_paths.push(PathBuf::from(path));
+    }
     let Some(i) = settings.recent_assets.iter().position(|r| r.path.eq_ignore_ascii_case(path)) else { return };
     if state.recent_tags_for.as_deref() != Some(path) {
         state.recent_tags_for = Some(path.to_string());
@@ -1884,7 +1819,7 @@ fn dir_ancestors(root: &str, dir: &str) -> Vec<String> {
     keys
 }
 
-/// Auto-expands the Global tab's Recent group and linked-folder branches down to every file that
+/// Auto-expands the Browse view's Recent group and linked-folder branches down to every file that
 /// currently matches the search box (only ever opens - a folder with no match inside it is left exactly
 /// as the user had it, open or closed), and restores whatever was open before the search the moment the
 /// box goes back to empty. Reads `state.dirs`, the already-read directory cache, never a fresh scan - a
@@ -2020,11 +1955,9 @@ impl Tree<'_, '_> {
         if r.clicked() {
             let (ctrl, shift) = ui.input(|i| (i.modifiers.command, i.modifiers.shift));
             if !shift {
-                if r.double_clicked() {
-                    self.resp.preview_play = Some(PathBuf::from(path));
-                } else {
-                    self.resp.preview = Some(PathBuf::from(path));
-                }
+                // the Source monitor is the one preview: a click shows the item paused, a double-click plays
+                let id = if let Pick::Asset(id) = pick { Some(id) } else { None };
+                self.resp.source = Some((PathBuf::from(path), id, r.double_clicked()));
             }
             *self.click = Some((pick, ctrl, shift));
         } else if r.secondary_clicked() && !self.state.has(&pick) {
@@ -2033,10 +1966,11 @@ impl Tree<'_, '_> {
         }
     }
 
-    /// Root 1 - "Imported": the folders and files this project contains.
+    /// Root 1 - "Project": the folders, sequences and files this project contains.
     fn imported(&mut self, ui: &mut egui::Ui, order: &[usize], flat: bool) {
         self.smart_bins(ui);
         if flat {
+            self.sequences(ui, 0, true);
             self.assets(ui, 0, order);
             return;
         }
@@ -2073,10 +2007,9 @@ impl Tree<'_, '_> {
                     apply_bin(self.state, &b.query);
                 }
                 r.context_menu(|ui| {
-                    if ui.button("Delete").clicked() {
+                    if menu::row(ui, Some(Glyph::Cross), "Delete", "").clicked() {
                         self.ops.push(LibOp::SmartBinDelete(i));
                         *self.op_start = true;
-                        ui.close();
                     }
                 });
             });
@@ -2122,18 +2055,15 @@ impl Tree<'_, '_> {
                     self.state.folder = Some(child.clone());
                 }
                 r.context_menu(|ui| {
-                    if ui.button("New folder").clicked() {
+                    if menu::row(ui, Some(Glyph::Folder), "New folder", "").clicked() {
                         self.state.new_folder = Some((child.clone(), String::new()));
-                        ui.close();
                     }
-                    if ui.button("Rename").clicked() {
+                    if menu::row(ui, None, "Rename", "").clicked() {
                         self.state.rename_folder = Some((child.clone(), last.clone()));
-                        ui.close();
                     }
-                    if ui.button("Delete").clicked() {
+                    if menu::row(ui, Some(Glyph::Cross), "Delete", "").clicked() {
                         self.ops.push(LibOp::FolderDelete(child.clone()));
                         *self.op_start = true;
-                        ui.close();
                     }
                 });
                 self.drop_asset(&r, child);
@@ -2169,8 +2099,112 @@ impl Tree<'_, '_> {
                 self.state.new_folder = None;
             }
         }
+        if path.is_empty() {
+            self.sequences(ui, depth, false); // sequences live at the root, after the folders
+        }
         let here: Vec<usize> = order.iter().copied().filter(|&i| self.project.assets[i].folder == *path).collect();
         self.assets(ui, depth, &here);
+    }
+
+    // ---- ws:library-surface ----
+    /// The project's sequences, as rows or tiles: drag one onto the timeline to nest it (with its linked
+    /// audio), double-click to open it, right-click for Open / Add to timeline / Rename / Delete.
+    /// `flat` = a search or filter is on: only the "Seq" kind shows them, name-matched.
+    fn sequences(&mut self, ui: &mut egui::Ui, depth: usize, flat: bool) {
+        let st = &*self.state;
+        // ponytail: a sequence has no label and no "used" flag, so those two filters just hide them
+        if flat && (!matches!(st.kind_filter, 0 | 4) || st.label_filter != 0 || st.unused_only) {
+            return;
+        }
+        let q = st.search.to_lowercase();
+        let seqs: Vec<(Id, String)> = self
+            .project
+            .sequences
+            .iter()
+            .filter(|s| s.name.to_lowercase().contains(&q))
+            .map(|s| (s.id, s.name.clone()))
+            .collect();
+        if self.state.view == 1 {
+            let w = TILE * self.state.zoom;
+            tile_grid(ui, indent(depth) + ARROW, &seqs, w, |ui, (id, name)| {
+                let payload = DragPayload::Sequence(*id);
+                let tag = kind_tag(ClipKind::Sequence);
+                let (text, palette) = (self.palette.text, self.palette);
+                let art = Art::Icon(Glyph::Sequence);
+                let (r, _) =
+                    tile(ui, egui::Id::new(("seq_tile", *id)), payload, false, tag, name, text, palette, art, w, None);
+                self.sequence_menu(&r, *id, name);
+            });
+        } else {
+            for (id, name) in &seqs {
+                self.sequence_row(ui, depth, *id, name);
+            }
+        }
+    }
+
+    fn sequence_row(&mut self, ui: &mut egui::Ui, depth: usize, id: Id, name: &str) {
+        if self.state.rename_seq.as_ref().is_some_and(|(s, _)| *s == id) {
+            let mut done = None;
+            ui.horizontal(|ui| {
+                ui.add_space(indent(depth) + ARROW);
+                self.folder_icon(ui, Glyph::Sequence);
+                let (_, buf) = self.state.rename_seq.as_mut().unwrap();
+                done = inline_edit(ui, buf);
+            });
+            if let Some(new) = done {
+                if !new.is_empty() && new != name {
+                    self.ops.push(LibOp::SeqRename(id, new));
+                    *self.op_start = true;
+                }
+                self.state.rename_seq = None;
+            }
+            return;
+        }
+        let (palette, h, columns) = (self.palette, ROW_H * self.state.zoom, &self.settings.library_columns);
+        let dur = duration_text(self.project.sequence_duration(id));
+        let editing = self.project.editing == Some(id);
+        let (r, _) = row(ui, egui::Id::new(("seq", id)), DragPayload::Sequence(id), false, None, |ui| {
+            ui.add_space(indent(depth) + ARROW);
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(h * 16.0 / 9.0, h), egui::Sense::hover());
+            paint_art(ui, rect, Art::Icon(Glyph::Sequence), palette);
+            let text = RichText::new(name);
+            ui.label(if editing { text.strong() } else { text });
+            for c in columns {
+                match c.as_str() {
+                    "kind" => ui.weak(kind_tag(ClipKind::Sequence)),
+                    "duration" => ui.weak(&dur),
+                    _ => continue,
+                };
+            }
+        });
+        self.sequence_menu(&r, id, name);
+    }
+
+    /// Double-click opens a sequence; its right-click menu.
+    fn sequence_menu(&mut self, r: &egui::Response, id: Id, name: &str) {
+        if r.double_clicked() {
+            self.resp.open_sequence = Some(id);
+        }
+        r.context_menu(|ui| {
+            if menu::row(ui, Some(Glyph::Sequence), "Open", "").clicked() {
+                self.resp.open_sequence = Some(id);
+            }
+            if menu::row(ui, Some(Glyph::Append), "Add to timeline at playhead", "").clicked() {
+                self.resp.add_sequence = Some(id);
+            }
+            ui.separator();
+            if menu::row(ui, None, "Rename", "").clicked() {
+                self.state.rename_seq = Some((id, name.to_string()));
+            }
+            if menu::row(ui, Some(Glyph::Cross), "Delete", "")
+                .on_hover_text("Also removes its clips - Undo brings both back")
+                .clicked()
+            {
+                self.ops.push(LibOp::SeqDelete(id));
+                *self.op_start = true;
+            }
+        });
+        r.clone().on_hover_text("Drag onto the timeline to nest it · double-click to open");
     }
 
     /// A run of assets, as rows or as gallery tiles (already filtered and sorted by the caller). In
@@ -2206,6 +2240,26 @@ impl Tree<'_, '_> {
 
     fn asset_row(&mut self, ui: &mut egui::Ui, depth: usize, i: usize) {
         let a = &self.project.assets[i];
+        // ---- ws:library-surface ----
+        // a subclip being renamed: an inline field in place of its row (its name is its description)
+        if self.state.rename_asset.as_ref().is_some_and(|(x, _)| *x == a.id) {
+            let (id, old) = (a.id, a.description.clone());
+            let mut done = None;
+            ui.horizontal(|ui| {
+                ui.add_space(indent(depth) + ARROW);
+                self.folder_icon(ui, Glyph::Chain);
+                let (_, buf) = self.state.rename_asset.as_mut().unwrap();
+                done = inline_edit(ui, buf);
+            });
+            if let Some(new) = done {
+                if !new.is_empty() && new != old {
+                    self.ops.push(LibOp::AssetDesc(id, new));
+                    *self.op_start = true;
+                }
+                self.state.rename_asset = None;
+            }
+            return;
+        }
         let selected = self.state.sel_ids.contains(&a.id);
         let tint = (a.label != 0).then(|| lbl_color(self.labels, a.label, self.palette));
         let used = self.used.contains(&a.id);
@@ -2213,88 +2267,76 @@ impl Tree<'_, '_> {
         let pstatus = crate::media::proxy::status(a, self.settings.use_proxies, self.settings.proxy_height);
         let (palette, thumbs, h) = (self.palette, &mut *self.thumbs, ROW_H * self.state.zoom);
         let (columns, labels) = (&self.settings.library_columns, self.labels);
-        let (r, add) = row(
-            ui,
-            egui::Id::new(("asset", a.id)),
-            DragPayload::Asset(a.id),
-            selected,
-            None,
-            |ui| {
-                ui.add_space(indent(depth) + ARROW);
-                // label tint: a colour bar on the left and the name in the same colour
-                if let Some(c) = tint {
-                    let (bar, _) = ui.allocate_exact_size(egui::vec2(3.0, h), egui::Sense::hover());
-                    ui.painter().rect_filled(bar, 1.0, c);
-                }
-                let visible = row_visible(ui, h);
-                row_art(ui, thumbs, &a.path, palette, h);
-                if a.parent.is_some() {
+        let (r, add) = row(ui, egui::Id::new(("asset", a.id)), DragPayload::Asset(a.id), selected, None, |ui| {
+            ui.add_space(indent(depth) + ARROW);
+            // label tint: a colour bar on the left and the name in the same colour
+            if let Some(c) = tint {
+                let (bar, _) = ui.allocate_exact_size(egui::vec2(3.0, h), egui::Sense::hover());
+                ui.painter().rect_filled(bar, 1.0, c);
+            }
+            let visible = row_visible(ui, h);
+            row_art(ui, thumbs, &a.path, palette, h);
+            if a.parent.is_some() {
+                let (g, gr) = ui.allocate_exact_size(egui::vec2(14.0, 12.0), egui::Sense::hover());
+                draw_glyph(ui.painter(), g, Glyph::Chain, palette.text_dim);
+                gr.on_hover_text(format!("Subclip of {}", a.name()));
+            }
+            let mut name = RichText::new(display_name(a));
+            if let Some(c) = tint {
+                name = name.color(c);
+            }
+            ui.label(if selected { name.strong() } else { name });
+            // the configured columns, in order; tags last (they truncate against the row's edge)
+            for c in columns.iter().filter(|c| c.as_str() != "tags") {
+                match c.as_str() {
+                    "kind" => ui.weak(kind_tag(a.kind)),
+                    "duration" => ui.weak(dur_cell(a)),
+                    "fps" if a.kind == ClipKind::Video && a.fps > 0.0 => ui.weak(format!("{:.2} fps", a.fps)),
+                    // ponytail: one stat per VISIBLE row per frame; memoise on the asset if a
+                    // network drive ever makes it hitch
+                    "size" if visible => match std::fs::metadata(&a.path) {
+                        Ok(m) => ui.weak(size_text(m.len())),
+                        Err(_) => ui.weak(" - "),
+                    },
+                    "label" if a.label != 0 => ui.weak(lbl_name(labels, a.label)),
+                    "proxy" => match pstatus {
+                        ProxyStatus::Ready => ui.weak("proxy"),
+                        ProxyStatus::Queued => ui.weak("proxy queued"),
+                        ProxyStatus::Building(f) => ui.weak(format!("proxy {:.0} %", f * 100.0)),
+                        ProxyStatus::NotNeeded => continue,
+                    },
+                    _ => continue,
+                };
+            }
+            if offline {
+                let (g, gr) = ui.allocate_exact_size(egui::vec2(14.0, 12.0), egui::Sense::hover());
+                draw_glyph(ui.painter(), g, Glyph::Warning, ui.visuals().warn_fg_color);
+                gr.on_hover_text("File not found - right-click ▸ Relink…");
+                #[cfg(test)]
+                ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(("lib_offline_badge", a.id)), true));
+            }
+            if used {
+                let (d, _) = ui.allocate_exact_size(egui::vec2(8.0, 12.0), egui::Sense::hover());
+                ui.painter().circle_filled(d.center(), 3.0, palette.accent);
+                ui.allocate_response(egui::Vec2::ZERO, egui::Sense::hover()).on_hover_text("Used in the timeline");
+            }
+            // proxy pipeline badge - Queued/Building only (Ready is the steady state, no chrome);
+            // before the tags, which are truncated against content_right and could clip it
+            match pstatus {
+                ProxyStatus::Queued | ProxyStatus::Building(_) => {
                     let (g, gr) = ui.allocate_exact_size(egui::vec2(14.0, 12.0), egui::Sense::hover());
-                    draw_glyph(ui.painter(), g, Glyph::Chain, palette.text_dim);
-                    gr.on_hover_text(format!("Subclip of {}", a.name()));
+                    crate::ui::tools::draw_glyph(ui.painter(), g, crate::ui::tools::Glyph::Proxy, palette.text_dim);
+                    gr.on_hover_text(match pstatus {
+                        ProxyStatus::Building(f) => format!("Building proxy - {:.0} %", f * 100.0),
+                        _ => "Proxy queued (builds run one at a time)".to_string(),
+                    });
                 }
-                let mut name = RichText::new(display_name(a));
-                if let Some(c) = tint {
-                    name = name.color(c);
-                }
-                ui.label(if selected { name.strong() } else { name });
-                // the configured columns, in order; tags last (they truncate against the row's edge)
-                for c in columns.iter().filter(|c| c.as_str() != "tags") {
-                    match c.as_str() {
-                        "kind" => ui.weak(kind_tag(a.kind)),
-                        "duration" => ui.weak(dur_cell(a)),
-                        "fps" if a.kind == ClipKind::Video && a.fps > 0.0 => ui.weak(format!("{:.2} fps", a.fps)),
-                        // ponytail: one stat per VISIBLE row per frame; memoise on the asset if a
-                        // network drive ever makes it hitch
-                        "size" if visible => match std::fs::metadata(&a.path) {
-                            Ok(m) => ui.weak(size_text(m.len())),
-                            Err(_) => ui.weak(" - "),
-                        },
-                        "label" if a.label != 0 => ui.weak(lbl_name(labels, a.label)),
-                        "proxy" => match pstatus {
-                            ProxyStatus::Ready => ui.weak("proxy"),
-                            ProxyStatus::Queued => ui.weak("proxy queued"),
-                            ProxyStatus::Building(f) => ui.weak(format!("proxy {:.0} %", f * 100.0)),
-                            ProxyStatus::NotNeeded => continue,
-                        },
-                        _ => continue,
-                    };
-                }
-                if offline {
-                    let (g, gr) = ui.allocate_exact_size(egui::vec2(14.0, 12.0), egui::Sense::hover());
-                    draw_glyph(ui.painter(), g, Glyph::Warning, ui.visuals().warn_fg_color);
-                    gr.on_hover_text("File not found - right-click ▸ Relink…");
-                    #[cfg(test)]
-                    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(("lib_offline_badge", a.id)), true));
-                }
-                if used {
-                    let (d, _) = ui.allocate_exact_size(egui::vec2(8.0, 12.0), egui::Sense::hover());
-                    ui.painter().circle_filled(d.center(), 3.0, palette.accent);
-                    ui.allocate_response(egui::Vec2::ZERO, egui::Sense::hover()).on_hover_text("Used in the timeline");
-                }
-                // proxy pipeline badge - Queued/Building only (Ready is the steady state, no chrome);
-                // before the tags, which are truncated against content_right and could clip it
-                match pstatus {
-                    ProxyStatus::Queued | ProxyStatus::Building(_) => {
-                        let (g, gr) = ui.allocate_exact_size(egui::vec2(14.0, 12.0), egui::Sense::hover());
-                        crate::ui::tools::draw_glyph(
-                            ui.painter(),
-                            g,
-                            crate::ui::tools::Glyph::Proxy,
-                            palette.text_dim,
-                        );
-                        gr.on_hover_text(match pstatus {
-                            ProxyStatus::Building(f) => format!("Building proxy - {:.0} %", f * 100.0),
-                            _ => "Proxy queued (builds run one at a time)".to_string(),
-                        });
-                    }
-                    _ => {}
-                }
-                if columns.iter().any(|c| c == "tags") && !a.tags.is_empty() {
-                    ui.add(egui::Label::new(RichText::new(a.tags.join(" · ")).weak().small()).truncate());
-                }
-            },
-        );
+                _ => {}
+            }
+            if columns.iter().any(|c| c == "tags") && !a.tags.is_empty() {
+                ui.add(egui::Label::new(RichText::new(a.tags.join(" · ")).weak().small()).truncate());
+            }
+        });
         let (id, path) = (a.id, a.path.clone());
         self.hit(ui, &r, Pick::Asset(id), &path);
         if add {
@@ -2348,34 +2390,32 @@ impl Tree<'_, '_> {
         }
     }
 
+    /// An asset's right-click menu; it acts on the whole selection when the asset is part of it.
+    /// ponytail: Convert… with options and Compress… each take one file, so a multi-selection's
+    /// Convert… goes straight to the quick per-id path and Compress… opens on the clicked asset.
     fn asset_menu(&mut self, r: &egui::Response, i: usize) {
         let a = &self.project.assets[i];
         let (labels, palette) = (self.labels, self.palette);
         let ids = self.menu_targets(a.id);
-        let offline: Vec<Id> = ids.iter().copied().filter(|id| self.state.offline.contains(id)).collect();
+        let offline = ids.iter().any(|id| self.state.offline.contains(id));
         r.context_menu(|ui| {
-            if ui.button("Add to timeline at playhead").clicked() {
+            // ---- ws:library-surface ----
+            if menu::row(ui, Some(Glyph::PlayRect), "Open in Source", "").clicked() {
+                self.resp.source = Some((PathBuf::from(&a.path), Some(a.id), false));
+            }
+            if menu::row(ui, Some(Glyph::Append), "Add to timeline at playhead", "Enter").clicked() {
                 self.resp.add_to_timeline.extend(ids.iter().copied());
-                ui.close();
             }
-            // ---- ws:media-library ----
-            if !offline.is_empty()
-                && ui.button("Relink…").on_hover_text("Find the missing file(s) in a folder").clicked()
+            ui.separator();
+            // a subclip's name is its own (its description); a file's name is its file name
+            if a.parent.is_some() && menu::row(ui, None, "Rename", "").clicked() {
+                self.state.rename_asset = Some((a.id, display_name(a)));
+            }
+            if menu::row(ui, Some(Glyph::Notepad), "Info…", "")
+                .on_hover_text("Description, tags, label, folder")
+                .clicked()
             {
-                self.resp.relink.extend(offline.iter().copied());
-                ui.close();
-            }
-            if ui.button("New subclip").on_hover_text("A library entry over the In/Out marks").clicked() {
-                self.resp.new_subclip.extend(ids.iter().copied());
-                ui.close();
-            }
-            if ui.button("Reveal folder").clicked() {
-                let _ = std::process::Command::new("explorer").arg(format!("/select,{}", a.path)).spawn();
-                ui.close();
-            }
-            if a.kind == ClipKind::Video && ui.button("Regenerate proxy").clicked() {
-                self.resp.regen_proxy.push(a.path.clone());
-                ui.close();
+                self.state.info = Some(Pick::Asset(a.id));
             }
             match label_menu(ui, a.label, labels, palette) {
                 Some(LabelPick::Set(l)) => {
@@ -2387,30 +2427,45 @@ impl Tree<'_, '_> {
                 Some(LabelPick::Edit) => self.resp.edit_labels = true,
                 None => {}
             }
-            ui.menu_button("Convert To", |ui| {
+            ui.separator();
+            // ---- ws:media-library ----
+            // both act on the library selection, which this right-click has just made include `a`
+            menu::action_item(ui, Action::NewSubclip);
+            if offline {
+                menu::action_item(ui, Action::RelinkMedia);
+            }
+            if menu::row(ui, Some(Glyph::Folder), "Reveal folder", "").clicked() {
+                let _ = std::process::Command::new("explorer").arg(format!("/select,{}", a.path)).spawn();
+            }
+            if a.kind == ClipKind::Video && menu::row(ui, Some(Glyph::Proxy), "Regenerate proxy", "").clicked() {
+                self.resp.regen_proxy.push(a.path.clone());
+            }
+            menu::sub(ui, None, "Convert To", |ui| {
                 for t in crate::engine::convert::TARGETS {
-                    if ui.button(*t).clicked() {
+                    if menu::row(ui, None, t, "").clicked() {
                         self.resp.convert.extend(ids.iter().map(|id| (*id, (*t).to_string())));
-                        ui.close();
                     }
                 }
             });
-            if ui.button("Convert To… (options)").clicked() {
-                self.resp.convert_dialog = Some(a.id);
-                ui.close();
+            if menu::row(ui, None, "Convert…", "").clicked() {
+                if ids.len() > 1 {
+                    let t = crate::engine::convert::TARGETS[0];
+                    self.resp.convert.extend(ids.iter().map(|id| (*id, t.to_string())));
+                } else {
+                    self.resp.convert_dialog = Some(a.id);
+                }
             }
-            if ui.button("Compress…").clicked() {
+            if menu::row(ui, None, "Compress…", "").clicked() {
                 self.resp.compress = Some(a.id);
-                ui.close();
             }
-            if ui.button("Remove from project").clicked() {
+            ui.separator();
+            if menu::row(ui, Some(Glyph::Cross), "Remove from project", "Delete").clicked() {
                 self.resp.remove.extend(ids.iter().copied());
-                ui.close();
             }
         });
     }
 
-    /// Root 2 - "Global": Recent, and the folders the user linked, browsed straight from disk.
+    /// Root 2 - "Browse": Recent, and the folders the user linked, straight from disk.
     fn global(&mut self, ui: &mut egui::Ui) {
         self.recent(ui, 0);
         let linked: &[String] = &self.project.linked_folders;
@@ -2420,7 +2475,7 @@ impl Tree<'_, '_> {
         if linked.is_empty() {
             ui.horizontal(|ui| {
                 ui.add_space(indent(0) + ARROW);
-                ui.weak("(no linked folders - \"Link folder…\" above)");
+                ui.weak("(no linked folders - right-click ▸ Link folder…)");
             });
         }
     }
@@ -2474,14 +2529,15 @@ impl Tree<'_, '_> {
                 open = !open;
             }
             r.context_menu(|ui| {
-                if ui.button("Refresh").clicked() {
+                if menu::row(ui, None, "Refresh", "").clicked() {
                     self.state.dirs.retain(|(p, _)| !p.starts_with(path));
-                    ui.close();
                 }
-                if root && ui.button("Unlink folder").clicked() {
+                if menu::row(ui, Some(Glyph::Folder), "Reveal folder", "").clicked() {
+                    let _ = std::process::Command::new("explorer").arg(path).spawn();
+                }
+                if root && menu::row(ui, Some(Glyph::Cross), "Unlink folder", "").clicked() {
                     self.ops.push(LibOp::UnlinkFolder(path.to_string()));
                     *self.op_start = true;
-                    ui.close();
                 }
             });
             r.on_hover_text(path);
@@ -2593,8 +2649,8 @@ impl Tree<'_, '_> {
         r.on_hover_text(path);
     }
 
-    /// Select + preview on a single click, import on a double click, plus the file menu (pins, labels
-    /// and the recent list live here now that "Global" is where recent files are shown).
+    /// Select + show in Source on a single click, import (and play) on a double click, plus the file
+    /// menu (pins, labels, tags via Info… and the recent list live here, in "Browse").
     fn file_click(&mut self, ui: &egui::Ui, r: &egui::Response, path: &str, recent: bool) {
         self.hit(ui, r, Pick::Path(path.to_string()), path);
         if r.double_clicked() {
@@ -2610,35 +2666,38 @@ impl Tree<'_, '_> {
             self.settings.recent_assets.iter().find(|r| r.path.eq_ignore_ascii_case(path)).map_or(0, |r| r.label);
         let (labels, palette) = (self.labels, self.palette);
         r.context_menu(|ui| {
-            if ui.button("Add to the project").clicked() {
-                self.resp.open_paths.extend(paths.iter().map(PathBuf::from));
-                ui.close();
+            if menu::row(ui, Some(Glyph::PlayRect), "Open in Source", "").clicked() {
+                self.resp.source = Some((PathBuf::from(path), None, false));
             }
-            if ui.button("Reveal folder").clicked() {
+            if menu::row(ui, Some(Glyph::ImportArrow), "Add to the project", "").clicked() {
+                self.resp.open_paths.extend(paths.iter().map(PathBuf::from));
+            }
+            if menu::row(ui, Some(Glyph::Folder), "Reveal folder", "").clicked() {
                 let _ = std::process::Command::new("explorer").arg(format!("/select,{path}")).spawn();
-                ui.close();
             }
             if !recent {
                 return;
             }
-            if ui.button(if pinned { "Unpin" } else { "Pin" }).clicked() {
+            ui.separator();
+            if menu::row(ui, Some(Glyph::Notepad), "Info…", "").on_hover_text("Tags").clicked() {
+                self.state.info = Some(Pick::Path(path.to_string()));
+            }
+            if menu::check(ui, pinned, "Pinned", "").clicked() {
                 *self.rec = Some(RecOp::Pin(path.to_string()));
-                ui.close();
             }
             match label_menu(ui, label, labels, palette) {
                 Some(LabelPick::Set(l)) => *self.rec = Some(RecOp::Label(path.to_string(), l)),
                 Some(LabelPick::Edit) => self.resp.edit_labels = true,
                 None => {}
             }
-            if ui.button("Remove from recent").clicked() {
+            if menu::row(ui, Some(Glyph::Cross), "Remove from recent", "").clicked() {
                 *self.rec = Some(RecOp::Remove(path.to_string()));
-                ui.close();
             }
         });
     }
 }
 
-// ---------- reusable things (bottom of the Imported tab) ----------
+// ---------- reusable things (bottom of the Project view) ----------
 
 enum RecOp {
     Pin(String),
@@ -3112,7 +3171,7 @@ mod tests {
             let _ = ctx.run(egui::RawInput::default(), |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut undo = |_: &Project| {};
-                    show(ui, &mut state, &mut project, &mut settings, None, None, &palette, true, &mut undo);
+                    show(ui, &mut state, &mut project, &mut settings, None, &palette, true, &mut undo);
                 });
             });
             search_rect = ctx
@@ -3132,7 +3191,7 @@ mod tests {
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 let mut undo = |_: &Project| {};
-                show(ui, &mut state, &mut project, &mut settings, None, None, &palette, true, &mut undo);
+                show(ui, &mut state, &mut project, &mut settings, None, &palette, true, &mut undo);
             });
         });
         assert!(state.search.is_empty());
@@ -3168,63 +3227,12 @@ mod tests {
             let _ = ctx.run(egui::RawInput::default(), |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut undo = |_: &Project| panic!("no undo without edits");
-                    let r = show(
-                        ui,
-                        &mut state,
-                        &mut project,
-                        &mut settings,
-                        Some(&mut cache),
-                        None,
-                        &palette,
-                        true,
-                        &mut undo,
-                    );
+                    let r =
+                        show(ui, &mut state, &mut project, &mut settings, Some(&mut cache), &palette, true, &mut undo);
                     assert!(!r.edited && !r.edit_labels);
                 });
             });
         }
-    }
-
-    /// The "Import URL…" button exists only when yt-dlp was found, and clicking it asks the app to
-    /// open the Import URL window.
-    #[test]
-    fn import_url_button_is_gated_on_ytdlp() {
-        let run = |ytdlp: bool, click: bool| -> (bool, bool) {
-            let mut project = Project::new();
-            let mut settings = Settings::default();
-            let palette = Palette::new(true, egui::Color32::WHITE);
-            let ctx = egui::Context::default();
-            ctx.set_fonts(crate::theme::test_fonts()); // size-diet: no default_fonts feature anymore
-            let mut state = LibraryState::default();
-            let mut seen = false;
-            let mut asked = false;
-            // frame 1 lays the button out, frame 2 can click it at the position it landed on
-            let mut at = egui::Pos2::ZERO;
-            for frame in 0..2 {
-                let mut input = egui::RawInput::default();
-                if click && frame == 1 && at != egui::Pos2::ZERO {
-                    click_at(&mut input, at);
-                }
-                let out = ctx.run(input, |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| {
-                        let mut undo = |_: &Project| {};
-                        let r =
-                            show(ui, &mut state, &mut project, &mut settings, None, None, &palette, ytdlp, &mut undo);
-                        asked |= r.import_url;
-                    });
-                });
-                // find the button by its label among the frame's shapes
-                if let Some(rect) = text_rect(&out.shapes, "Import URL…") {
-                    seen = true;
-                    at = rect.center();
-                }
-            }
-            (seen, asked)
-        };
-        assert_eq!(run(false, false), (false, false), "button must be hidden without yt-dlp");
-        let (seen, asked) = run(true, true);
-        assert!(seen, "button must be shown when yt-dlp is installed");
-        assert!(asked, "clicking it must ask the app to open the Import URL window");
     }
 
     /// The trailing action button must stay inside the pane at any width (it used to be pushed off the
@@ -3341,8 +3349,7 @@ mod tests {
                 let _ = ctx.run(egui::RawInput::default(), |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
                         let mut undo = |_: &Project| panic!("no undo without edits");
-                        let r =
-                            show(ui, &mut state, &mut project, &mut settings, None, None, &palette, true, &mut undo);
+                        let r = show(ui, &mut state, &mut project, &mut settings, None, &palette, true, &mut undo);
                         assert!(!r.import && !r.edited && !r.settings_changed);
                         assert!(r.add_to_timeline.is_empty() && r.open_paths.is_empty() && r.remove.is_empty());
                         assert!(r.convert.is_empty() && r.open_sequence.is_none() && r.place_template.is_empty());
@@ -3358,7 +3365,7 @@ mod tests {
     }
 
     /// Global browses one level at a time: expanding a node reads that directory and nothing else, and
-    /// a single click on a file selects it, previews it, and fills the preview box.
+    /// a single click on a file selects it and shows it in the Source monitor, paused.
     #[test]
     fn linked_folders_are_read_one_level_per_expansion() {
         let root = std::env::temp_dir().join(format!("se_lib_fs_{}", std::process::id()));
@@ -3389,8 +3396,8 @@ mod tests {
             let out = ctx.run(input, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut undo = |_: &Project| {};
-                    let r = show(ui, state, project, &mut settings, None, None, &palette, false, &mut undo);
-                    got = r.preview;
+                    let r = show(ui, state, project, &mut settings, None, &palette, false, &mut undo);
+                    got = r.source;
                 });
             });
             (out.shapes, got)
@@ -3420,121 +3427,11 @@ mod tests {
         let at = text_rect(&shapes, "a.mp4").expect("the file row was drawn").center();
         let (_, previewed) = run(&mut state, &mut project, Some(at));
         let file = std::path::Path::new(&root).join("a.mp4");
-        assert_eq!(previewed.as_deref(), Some(file.as_path()), "a single click previews the file");
+        assert_eq!(previewed, Some((file.clone(), None, false)), "a single click shows the file in Source, paused");
         assert_eq!(state.sel_path.as_deref(), file.to_str());
         assert_eq!(state.sel_paths.len(), 1);
 
         let _ = std::fs::remove_dir_all(&root);
-    }
-
-    /// Tags and description are edited in the preview box and nowhere else, and the box only exists
-    /// while something is selected.
-    #[test]
-    fn the_preview_box_follows_the_selection() {
-        let mut project = Project::new();
-        let id = project.add_asset(asset(0, ClipKind::Video, 5.0));
-        let mut settings = Settings::default();
-        let palette = Palette::new(true, egui::Color32::WHITE);
-        let ctx = egui::Context::default();
-        ctx.set_fonts(crate::theme::test_fonts()); // size-diet: no default_fonts feature anymore
-        let mut state = LibraryState::default();
-        let mut drawn = |state: &mut LibraryState, project: &mut Project, label: &str| {
-            let input = egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 900.0))),
-                ..Default::default()
-            };
-            let out = ctx.run(input, |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    let mut undo = |_: &Project| {};
-                    show(ui, state, project, &mut settings, None, None, &palette, false, &mut undo);
-                });
-            });
-            text_rect(&out.shapes, label).is_some()
-        };
-        assert!(drawn(&mut state, &mut project, "Select a file to preview it"));
-        assert!(!drawn(&mut state, &mut project, "description"), "nothing selected: no editors");
-        state.selected = Some(id);
-        assert!(drawn(&mut state, &mut project, "description"), "selected: the preview box edits it");
-        assert!(drawn(&mut state, &mut project, "tags, comma, separated"));
-        state.clear_sel();
-        assert!(!drawn(&mut state, &mut project, "description"), "clicked away: the box is gone");
-    }
-
-    /// A selection offers the batch operations, and each one reports every selected item.
-    #[test]
-    fn batch_strip_acts_on_the_whole_selection() {
-        let mut project = Project::new();
-        let a = project.add_asset(asset(0, ClipKind::Video, 5.0));
-        let b = project.add_asset(asset(0, ClipKind::Video, 5.0));
-        let mut settings = Settings::default();
-        let palette = Palette::new(true, egui::Color32::WHITE);
-        let ctx = egui::Context::default();
-        ctx.set_fonts(crate::theme::test_fonts()); // size-diet: no default_fonts feature anymore
-        let mut state =
-            LibraryState { sel_ids: vec![a, b], selected: Some(a), seen_selected: Some(a), ..Default::default() };
-        let mut at = egui::Pos2::ZERO;
-        let mut removed = Vec::new();
-        for frame in 0..2 {
-            let mut input = egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(500.0, 900.0))),
-                ..Default::default()
-            };
-            if frame == 1 {
-                assert_ne!(at, egui::Pos2::ZERO, "the batch strip must show a Remove button");
-                click_at(&mut input, at);
-            }
-            let out = ctx.run(input, |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    let mut undo = |_: &Project| {};
-                    let r = show(ui, &mut state, &mut project, &mut settings, None, None, &palette, false, &mut undo);
-                    removed = r.remove.clone();
-                });
-            });
-            assert!(text_rect(&out.shapes, "2 selected").is_some(), "the strip counts the selection");
-            if let Some(rect) = text_rect(&out.shapes, "Remove from project") {
-                at = rect.center();
-            }
-        }
-        assert_eq!(removed, vec![a, b], "Remove takes the whole selection");
-    }
-
-    /// Remove Unused has no confirm step (unlike Clear recent, above it): one click removes every
-    /// asset unused by a sequence or a template, in the same frame, and the response carries the
-    /// count so the app can toast an Undo.
-    #[test]
-    fn remove_unused_is_instant_and_undoable() {
-        let mut project = Project::new();
-        project.add_asset(asset(0, ClipKind::Video, 5.0)); // never placed anywhere: unused
-        let mut settings = Settings::default();
-        let palette = Palette::new(true, egui::Color32::WHITE);
-        let ctx = egui::Context::default();
-        ctx.set_fonts(crate::theme::test_fonts()); // size-diet: no default_fonts feature anymore
-        let mut state = LibraryState::default(); // tab 0 = Imported, where Remove Unused lives
-        let mut at = egui::Pos2::ZERO;
-        let mut removed_unused = None;
-        for frame in 0..2 {
-            let mut input = egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(500.0, 900.0))),
-                ..Default::default()
-            };
-            if frame == 1 {
-                assert_ne!(at, egui::Pos2::ZERO, "the toolbar must show a Remove unused button");
-                click_at(&mut input, at);
-            }
-            let out = ctx.run(input, |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    let mut undo = |_: &Project| {};
-                    let r = show(ui, &mut state, &mut project, &mut settings, None, None, &palette, false, &mut undo);
-                    removed_unused = r.removed_unused;
-                });
-            });
-            if let Some(rect) = text_rect(&out.shapes, "Remove unused (1)") {
-                at = rect.center();
-            }
-        }
-        // a single click, one frame: removed_unused is already set, no confirm window in between
-        assert_eq!(removed_unused, Some(1));
-        assert!(project.assets.is_empty(), "the unused asset is removed immediately");
     }
 
     /// The zoom scales both views and is clamped; a fresh state reads as 1.
@@ -3549,7 +3446,7 @@ mod tests {
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 let mut undo = |_: &Project| {};
-                show(ui, &mut state, &mut project, &mut settings, None, None, &palette, false, &mut undo);
+                show(ui, &mut state, &mut project, &mut settings, None, &palette, false, &mut undo);
             });
         });
         assert_eq!(state.zoom, ZOOM_MAX, "an out-of-range zoom is clamped");
@@ -3557,7 +3454,7 @@ mod tests {
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 let mut undo = |_: &Project| {};
-                show(ui, &mut state, &mut project, &mut settings, None, None, &palette, false, &mut undo);
+                show(ui, &mut state, &mut project, &mut settings, None, &palette, false, &mut undo);
             });
         });
         assert_eq!(state.zoom, 1.0, "a default state reads as 1");
@@ -3641,8 +3538,7 @@ mod tests {
                 let out = ctx.run(input, |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
                         let mut undo = |_: &Project| panic!("no undo without edits");
-                        let r =
-                            show(ui, &mut state, &mut project, &mut settings, None, None, &palette, false, &mut undo);
+                        let r = show(ui, &mut state, &mut project, &mut settings, None, &palette, false, &mut undo);
                         assert!(r.add_effect.is_none() && r.apply_preset.is_none() && r.copy_graph.is_none());
                     });
                 });
@@ -3703,7 +3599,7 @@ mod tests {
         let _ = ctx.run(tall(900.0), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 let mut undo = |_: &Project| {};
-                show(ui, &mut state, &mut project, &mut settings, None, None, &palette, false, &mut undo);
+                show(ui, &mut state, &mut project, &mut settings, None, &palette, false, &mut undo);
             });
         });
         let badge =
@@ -3735,17 +3631,7 @@ mod tests {
                 let _ = ctx.run(tall(height), |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
                         let mut undo = |_: &Project| {};
-                        show(
-                            ui,
-                            &mut state,
-                            &mut project,
-                            &mut settings,
-                            Some(&mut cache),
-                            None,
-                            &palette,
-                            false,
-                            &mut undo,
-                        );
+                        show(ui, &mut state, &mut project, &mut settings, Some(&mut cache), &palette, false, &mut undo);
                     });
                 });
             }
@@ -3758,7 +3644,8 @@ mod tests {
         assert!(all >= 400, "a viewport that shows every row requests every row: {all} over two frames");
     }
 
-    /// Arrow keys walk the drawn order, Enter/Space add the selection, Delete removes it.
+    /// Arrow keys walk the drawn order, Enter adds the selection, Delete removes it - and Space is
+    /// left for Play/Pause (it used to add the selection to the timeline).
     #[test]
     fn keyboard_nav_moves_selection_and_deletes() {
         let mut state = LibraryState { visible: vec![10, 20, 30], ..Default::default() };
@@ -3787,7 +3674,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut state = LibraryState { visible: vec![1, 2], ..Default::default() };
         let mut input = egui::RawInput::default();
-        for key in [egui::Key::ArrowDown, egui::Key::Enter] {
+        for key in [egui::Key::ArrowDown, egui::Key::Enter, egui::Key::Space] {
             input.events.push(egui::Event::Key {
                 key,
                 physical_key: None,
@@ -3800,9 +3687,10 @@ mod tests {
         let _ = ctx.run(input, |ctx| {
             got = keyboard(&mut state, ctx);
             assert!(!ctx.input(|i| i.key_pressed(egui::Key::ArrowDown)), "the key was consumed");
+            assert!(ctx.input(|i| i.key_pressed(egui::Key::Space)), "Space is left for Play/Pause");
         });
         assert_eq!(state.selected, Some(1));
-        assert_eq!(got.add_to_timeline, vec![1]);
+        assert_eq!(got.add_to_timeline, vec![1], "Enter added once; Space added nothing");
     }
 
     /// A saved bin reproduces the exact filter it was saved from, search text included.
@@ -3847,65 +3735,13 @@ mod tests {
                 }
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut undo = |_: &Project| pushes += 1;
-                    show(ui, &mut state, &mut project, &mut settings, None, None, &palette, false, &mut undo);
+                    show(ui, &mut state, &mut project, &mut settings, None, &palette, false, &mut undo);
                 });
             });
         }
         assert_eq!(project.smart_bins, vec![SmartBin { name: "Video only".into(), query: "kind:1".into() }]);
         assert_eq!(pushes, 1);
         assert!(state.new_bin.is_none());
-    }
-
-    /// With 2+ assets selected, Convert… takes the quick per-id path for all of them; Compress… still
-    /// opens for the first one only (its window sizes one file).
-    #[test]
-    fn batch_strip_multi_select_convert_uses_quick_path_compress_stays_single() {
-        let mut project = Project::new();
-        let a = project.add_asset(asset(0, ClipKind::Video, 5.0));
-        let mut second = asset(0, ClipKind::Video, 5.0);
-        second.path = r"C:\media\two.mp4".into();
-        let b = project.add_asset(second);
-        let mut settings = Settings::default();
-        let palette = Palette::new(true, egui::Color32::WHITE);
-        let ctx = headless_ctx();
-        let mut state =
-            LibraryState { sel_ids: vec![a, b], selected: Some(a), seen_selected: Some(a), ..Default::default() };
-        let mut click = |state: &mut LibraryState, label: &str| -> LibraryResponse {
-            let mut at = egui::Pos2::ZERO;
-            let mut got = LibraryResponse::default();
-            // frame 1 opens the strip's Actions menu, frame 3 clicks `label` inside it
-            // (a menu shows the frame after its click, hence the idle frame 2)
-            for frame in 0..4 {
-                let mut input = tall(900.0);
-                if frame == 1 || frame == 3 {
-                    assert_ne!(at, egui::Pos2::ZERO, "{label} must be drawn");
-                    click_at(&mut input, at);
-                    at = egui::Pos2::ZERO;
-                }
-                let out = ctx.run(input, |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| {
-                        let mut undo = |_: &Project| {};
-                        got = show(ui, state, &mut project, &mut settings, None, None, &palette, false, &mut undo);
-                    });
-                });
-                if let Some(r) = text_rect(&out.shapes, if frame == 0 { "Actions" } else { label }) {
-                    at = r.center();
-                }
-            }
-            got
-        };
-        let r = click(&mut state, "Convert…");
-        let t = crate::engine::convert::TARGETS[0].to_string();
-        assert_eq!(r.convert, vec![(a, t.clone()), (b, t)], "every selected id, default target");
-        assert_eq!(r.convert_dialog, None, "no single-target window for a multi-selection");
-        let r = click(&mut state, "Compress…");
-        assert_eq!(r.compress, Some(a), "Compress… stays single-target");
-        assert!(r.convert.is_empty());
-        // and a single selection still gets the options window
-        state.sel_ids = vec![a];
-        let r = click(&mut state, "Convert…");
-        assert_eq!(r.convert_dialog, Some(a));
-        assert!(r.convert.is_empty());
     }
 
     /// The idle-CPU-0% gate: a populated, non-searching Library pane (offline badge, a subclip, a
@@ -3932,7 +3768,7 @@ mod tests {
                 let _ = ctx.run(tall(900.0), |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
                         let mut undo = |_: &Project| panic!("no undo without edits");
-                        show(ui, &mut state, &mut project, &mut settings, None, None, &palette, false, &mut undo);
+                        show(ui, &mut state, &mut project, &mut settings, None, &palette, false, &mut undo);
                     });
                 });
             }
@@ -3957,7 +3793,7 @@ mod tests {
         let out = ctx.run(tall(900.0), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 let mut undo = |_: &Project| {};
-                show(ui, &mut state, &mut project, &mut settings, None, None, &palette, false, &mut undo);
+                show(ui, &mut state, &mut project, &mut settings, None, &palette, false, &mut undo);
             });
         });
         assert_eq!(state.visible, vec![parent, sub, orphan], "parent, then its subclip, then the orphan");
@@ -3985,7 +3821,7 @@ mod tests {
         let out = ctx.run(tall(900.0), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 let mut undo = |_: &Project| {};
-                show(ui, &mut state, &mut project, &mut settings, None, None, &palette, false, &mut undo);
+                show(ui, &mut state, &mut project, &mut settings, None, &palette, false, &mut undo);
             });
         });
         assert_eq!(state.visible, vec![master, child, grandchild], "grandchild must not be dropped");
@@ -4017,7 +3853,7 @@ mod tests {
             let _ = ctx.run(tall(900.0), |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut undo = |_: &Project| {};
-                    show(ui, state, &mut project, &mut settings, None, None, &palette, false, &mut undo);
+                    show(ui, state, &mut project, &mut settings, None, &palette, false, &mut undo);
                 });
             });
         };
@@ -4032,5 +3868,302 @@ mod tests {
         // ponytail: every row is still laid out (no show_rows virtualisation, the tree is not
         // uniform); the budget catches per-row decodes / stat calls / quadratic walks, not layout
         assert!(ms < 40.0, "1000-asset frame took {ms:.2} ms");
+    }
+
+    // ---- ws:library-surface ----
+
+    /// A headless Library pane: one `step` = one frame, 1 s after the last (so two separate clicks are
+    /// never read as a double-click), returning that frame's shapes and response.
+    struct Pane {
+        ctx: egui::Context,
+        size: egui::Vec2,
+        t: f64,
+        ytdlp: bool,
+        undos: usize,
+        palette: Palette,
+    }
+
+    impl Pane {
+        fn new(w: f32, h: f32) -> Self {
+            let palette = Palette::new(true, egui::Color32::WHITE);
+            Pane { ctx: headless_ctx(), size: egui::vec2(w, h), t: 0.0, ytdlp: false, undos: 0, palette }
+        }
+
+        fn step(
+            &mut self,
+            state: &mut LibraryState,
+            project: &mut Project,
+            settings: &mut Settings,
+            events: Vec<egui::Event>,
+        ) -> (Vec<egui::epaint::ClippedShape>, LibraryResponse) {
+            self.t += 1.0;
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, self.size)),
+                time: Some(self.t),
+                events,
+                ..Default::default()
+            };
+            let (mut resp, mut undos) = (LibraryResponse::default(), 0);
+            let (palette, ytdlp) = (&self.palette, self.ytdlp);
+            let out = self.ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let mut undo = |_: &Project| undos += 1;
+                    resp = show(ui, state, project, settings, None, palette, ytdlp, &mut undo);
+                });
+            });
+            self.undos += undos;
+            (out.shapes, resp)
+        }
+    }
+
+    /// Move to `at`, then press + release `button` there.
+    fn press(at: egui::Pos2, button: egui::PointerButton) -> Vec<egui::Event> {
+        let b = |pressed| egui::Event::PointerButton { pos: at, button, pressed, modifiers: Default::default() };
+        vec![egui::Event::PointerMoved(at), b(true), b(false)]
+    }
+
+    fn key(key: egui::Key) -> egui::Event {
+        egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() }
+    }
+
+    /// Right-click `at`, then click the menu row `item`: the response of the frame that clicked it.
+    fn menu_pick(
+        pane: &mut Pane,
+        state: &mut LibraryState,
+        project: &mut Project,
+        settings: &mut Settings,
+        at: egui::Pos2,
+        item: &str,
+    ) -> LibraryResponse {
+        // an idle frame first: hit-testing uses last frame's widget rects, and a menu closed last frame
+        // still covers `at` in them (a real pointer never re-clicks within one frame of a close)
+        pane.step(state, project, settings, vec![]);
+        pane.step(state, project, settings, press(at, egui::PointerButton::Secondary));
+        let (shapes, _) = pane.step(state, project, settings, vec![]);
+        let row = text_rect(&shapes, item).unwrap_or_else(|| {
+            let texts: Vec<String> = shapes
+                .iter()
+                .filter_map(|c| match &c.shape {
+                    egui::epaint::Shape::Text(t) => Some(t.galley.text().to_string()),
+                    _ => None,
+                })
+                .collect();
+            panic!("menu row {item:?} not drawn: {texts:?}")
+        });
+        pane.step(state, project, settings, press(row.center(), egui::PointerButton::Primary)).1
+    }
+
+    /// The header is ONE row, even at 300 px: search, Filter ▾, View ▾ and + Import side by side and
+    /// inside the pane. New ▾, More ▾, Import URL…, the selection strip and the bottom preview are gone.
+    #[test]
+    fn header_is_one_row_that_fits_300px() {
+        let mut project = Project::new();
+        project.add_asset(asset(0, ClipKind::Video, 5.0));
+        let mut settings = Settings::default();
+        let mut state = LibraryState { selected: Some(project.assets[0].id), ..Default::default() };
+        let mut pane = Pane::new(300.0, 600.0);
+        pane.ytdlp = true;
+        pane.step(&mut state, &mut project, &mut settings, vec![]);
+        let (shapes, _) = pane.step(&mut state, &mut project, &mut settings, vec![]);
+        let search = pane.ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("lib_search_rect"))).expect("search");
+        for label in ["Filter ▾", "View ▾", "Import"] {
+            let r = text_rect(&shapes, label).unwrap_or_else(|| panic!("{label} not drawn"));
+            assert!((r.center().y - search.center().y).abs() < 6.0, "{label} is off the search row: {r:?} {search:?}");
+            assert!(r.right() <= 300.0, "{label} runs past the pane edge: {r:?}");
+        }
+        assert!(search.width() > 60.0, "the search box keeps room to type: {search:?}");
+        for gone in ["New", "More", "Import URL", "1 selected", "Click a file", "Select a file", "description"] {
+            assert!(text_rect(&shapes, gone).is_none(), "{gone:?} is still on screen");
+        }
+        assert!(text_rect(&shapes, "Project").is_some() && text_rect(&shapes, "Browse").is_some());
+    }
+
+    /// Right-click on bare space is the pane-level menu: every verb the header lost lives there.
+    #[test]
+    fn empty_area_menu_has_the_pane_verbs() {
+        let mut project = Project::new();
+        project.add_asset(asset(0, ClipKind::Video, 5.0)); // on no timeline: unused
+        let mut settings = Settings::default();
+        let mut state = LibraryState::default();
+        let mut pane = Pane::new(420.0, 900.0);
+        pane.ytdlp = true;
+        pane.step(&mut state, &mut project, &mut settings, vec![]);
+        let bare = egui::pos2(200.0, 800.0);
+        pane.step(&mut state, &mut project, &mut settings, press(bare, egui::PointerButton::Secondary));
+        let (shapes, _) = pane.step(&mut state, &mut project, &mut settings, vec![]);
+        for item in [
+            "Import Media…",
+            "Import from URL…",
+            "New folder",
+            "New sequence",
+            "Add Adjustment Layer",
+            "Sort",
+            "Columns",
+            "Link folder…",
+            "Consolidate Media…",
+            "Remove unused (1)",
+            "Open Project…",
+        ] {
+            assert!(text_rect(&shapes, item).is_some(), "{item:?} missing from the empty-area menu");
+        }
+        // one click on New sequence makes one, in one undo step
+        let at = text_rect(&shapes, "New sequence").unwrap().center();
+        let (_, r) = pane.step(&mut state, &mut project, &mut settings, press(at, egui::PointerButton::Primary));
+        assert_eq!((project.sequences.len(), pane.undos), (1, 1));
+        assert!(r.edited);
+        // Remove unused is instant (no confirm): the count comes back for the app's Undo toast
+        let r = menu_pick(&mut pane, &mut state, &mut project, &mut settings, bare, "Remove unused (1)");
+        assert_eq!(r.removed_unused, Some(1));
+        assert!(project.assets.is_empty());
+        // an Action row queues its Action for App::update, exactly like the menu bar's row
+        let _ = menu::take_queued();
+        menu_pick(&mut pane, &mut state, &mut project, &mut settings, bare, "Import Media…");
+        assert_eq!(menu::take_queued(), vec![Action::ImportMedia]);
+        // no yt-dlp: no URL import; nothing unused: no Remove unused
+        pane.ytdlp = false;
+        pane.step(&mut state, &mut project, &mut settings, press(bare, egui::PointerButton::Secondary));
+        let (shapes, _) = pane.step(&mut state, &mut project, &mut settings, vec![]);
+        assert!(text_rect(&shapes, "Import from URL…").is_none());
+        assert!(text_rect(&shapes, "Remove unused").is_none(), "hidden at 0");
+        pane.step(&mut state, &mut project, &mut settings, vec![key(egui::Key::Escape)]);
+        // Browse: the disk verbs, not the project's
+        state.tab = 1;
+        settings.touch_recent(r"C:\media\old.mp4");
+        pane.step(&mut state, &mut project, &mut settings, press(bare, egui::PointerButton::Secondary));
+        let (shapes, _) = pane.step(&mut state, &mut project, &mut settings, vec![]);
+        assert!(text_rect(&shapes, "Clear recent").is_some() && text_rect(&shapes, "Link folder…").is_some());
+        assert!(text_rect(&shapes, "New sequence").is_none(), "project verbs stay in Project");
+    }
+
+    /// An asset's right-click acts on the whole selection it is part of: Remove takes both, Convert…
+    /// takes the quick path for both, Compress… opens on the clicked one; Open in Source names it.
+    #[test]
+    fn item_menu_acts_on_the_selection() {
+        let mut project = Project::new();
+        let a = project.add_asset(asset(0, ClipKind::Video, 5.0));
+        let mut second = asset(0, ClipKind::Video, 5.0);
+        second.path = r"C:\media\two.mp4".into();
+        let b = project.add_asset(second);
+        let mut settings = Settings::default();
+        let mut state =
+            LibraryState { sel_ids: vec![a, b], selected: Some(a), seen_selected: Some(a), ..Default::default() };
+        let mut pane = Pane::new(420.0, 900.0);
+        let (shapes, _) = pane.step(&mut state, &mut project, &mut settings, vec![]);
+        let at = text_rect(&shapes, "file0.mp4").expect("row a").center();
+        let r = menu_pick(&mut pane, &mut state, &mut project, &mut settings, at, "Convert…");
+        let t = crate::engine::convert::TARGETS[0].to_string();
+        assert_eq!(r.convert, vec![(a, t.clone()), (b, t)], "every selected id, default target");
+        assert_eq!(r.convert_dialog, None, "no single-file window for a multi-selection");
+        let r = menu_pick(&mut pane, &mut state, &mut project, &mut settings, at, "Compress…");
+        assert_eq!(r.compress, Some(a), "Compress… stays single-target");
+        let r = menu_pick(&mut pane, &mut state, &mut project, &mut settings, at, "Open in Source");
+        assert_eq!(r.source, Some((PathBuf::from(r"C:\media\file0.mp4"), Some(a), false)));
+        let r = menu_pick(&mut pane, &mut state, &mut project, &mut settings, at, "Remove from project");
+        assert_eq!(r.remove, vec![a, b], "Remove takes the whole selection");
+        // a single selection's Convert… opens the options window
+        state.sel_ids = vec![a];
+        let r = menu_pick(&mut pane, &mut state, &mut project, &mut settings, at, "Convert…");
+        assert_eq!((r.convert_dialog, r.convert.len()), (Some(a), 0));
+    }
+
+    /// Info… is the one place description and tags are edited now that the bottom preview is gone:
+    /// nothing until it is asked for, one undo per visit to a field, and it closes with its asset.
+    #[test]
+    fn info_window_edits_description_and_tags() {
+        let mut project = Project::new();
+        let id = project.add_asset(asset(0, ClipKind::Video, 5.0));
+        let mut settings = Settings::default();
+        let mut state = LibraryState::default();
+        let mut pane = Pane::new(700.0, 900.0);
+        let (shapes, _) = pane.step(&mut state, &mut project, &mut settings, vec![]);
+        assert!(text_rect(&shapes, "tags, comma, separated").is_none(), "no editor until Info… is asked for");
+        let at = text_rect(&shapes, "file0.mp4").expect("row").center();
+        menu_pick(&mut pane, &mut state, &mut project, &mut settings, at, "Info…");
+        assert_eq!(state.info, Some(Pick::Asset(id)));
+        pane.step(&mut state, &mut project, &mut settings, vec![]);
+        let (shapes, _) = pane.step(&mut state, &mut project, &mut settings, vec![]);
+        assert!(text_rect(&shapes, "description").is_some());
+        let tags = text_rect(&shapes, "tags, comma, separated").expect("tags field").center();
+        pane.step(&mut state, &mut project, &mut settings, press(tags, egui::PointerButton::Primary));
+        pane.step(&mut state, &mut project, &mut settings, vec![egui::Event::Text("drone, dusk".into())]);
+        pane.step(&mut state, &mut project, &mut settings, vec![]);
+        assert_eq!(project.asset(id).unwrap().tags, vec!["drone".to_string(), "dusk".to_string()]);
+        assert_eq!(pane.undos, 1, "one undo per visit to the field, not per keystroke");
+        project.assets.clear(); // removed (or undone away): the window goes with it
+        pane.step(&mut state, &mut project, &mut settings, vec![]);
+        assert_eq!(state.info, None);
+    }
+
+    /// Sequences are rows: drag one to nest it on the timeline (`DragPayload::Sequence` was never built
+    /// before), double-click to open it, and rename / delete it from its right-click.
+    #[test]
+    fn sequence_rows_drag_open_rename_and_delete() {
+        let mut project = Project::new();
+        let seq = project.new_sequence("Intro", 1280, 720, 30.0);
+        let mut settings = Settings::default();
+        let mut state = LibraryState::default();
+        let mut pane = Pane::new(420.0, 900.0);
+        let (shapes, _) = pane.step(&mut state, &mut project, &mut settings, vec![]);
+        let at = text_rect(&shapes, "Intro").expect("the sequence has a row").center();
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        let to = at + egui::vec2(60.0, 0.0);
+        pane.step(&mut state, &mut project, &mut settings, vec![egui::Event::PointerMoved(at), button(at, true)]);
+        pane.step(&mut state, &mut project, &mut settings, vec![egui::Event::PointerMoved(at + egui::vec2(30.0, 0.0))]);
+        pane.step(&mut state, &mut project, &mut settings, vec![egui::Event::PointerMoved(to)]);
+        let payload = egui::DragAndDrop::payload::<DragPayload>(&pane.ctx);
+        assert!(matches!(payload.as_deref(), Some(DragPayload::Sequence(s)) if *s == seq), "{payload:?}");
+        pane.step(&mut state, &mut project, &mut settings, vec![button(to, false)]);
+        // double-click opens it
+        let dbl = [press(at, egui::PointerButton::Primary), press(at, egui::PointerButton::Primary)].concat();
+        let (_, r) = pane.step(&mut state, &mut project, &mut settings, dbl);
+        assert_eq!(r.open_sequence, Some(seq));
+        // Rename: an inline field that commits on Enter, in one undo step
+        let before = pane.undos;
+        menu_pick(&mut pane, &mut state, &mut project, &mut settings, at, "Rename");
+        state.rename_seq.as_mut().expect("renaming").1 = "Opening".into();
+        pane.step(&mut state, &mut project, &mut settings, vec![]);
+        pane.step(&mut state, &mut project, &mut settings, vec![key(egui::Key::Enter)]);
+        pane.step(&mut state, &mut project, &mut settings, vec![]);
+        assert_eq!(project.sequences[0].name, "Opening");
+        assert!(state.rename_seq.is_none());
+        assert_eq!(pane.undos, before + 1);
+        // Delete: gone, and the name comes back for the Undo toast
+        let r = menu_pick(&mut pane, &mut state, &mut project, &mut settings, at, "Delete");
+        assert!(project.sequences.is_empty());
+        assert_eq!(r.deleted_sequence.as_deref(), Some("Opening"));
+    }
+
+    /// The column header's right-click is its Columns menu.
+    #[test]
+    fn column_header_right_click_toggles_columns() {
+        let mut project = Project::new();
+        project.add_asset(asset(0, ClipKind::Video, 5.0));
+        let mut settings = Settings::default();
+        let mut state = LibraryState::default();
+        let mut pane = Pane::new(420.0, 900.0);
+        let (shapes, _) = pane.step(&mut state, &mut project, &mut settings, vec![]);
+        let at = text_rect(&shapes, "Name").expect("column header").center();
+        let r = menu_pick(&mut pane, &mut state, &mut project, &mut settings, at, "Fps");
+        assert!(settings.library_columns.iter().any(|c| c == "fps"));
+        assert!(r.settings_changed);
+    }
+
+    /// The idle-CPU-0% gate for the Info… window.
+    #[test]
+    fn assert_no_idle_repaint_library_info() {
+        let mut project = Project::new();
+        let id = project.add_asset(asset(0, ClipKind::Video, 5.0));
+        let mut settings = Settings::default();
+        let mut state = LibraryState { info: Some(Pick::Asset(id)), ..Default::default() };
+        let mut pane = Pane::new(700.0, 900.0);
+        for _ in 0..30 {
+            pane.step(&mut state, &mut project, &mut settings, vec![]);
+        }
+        assert!(!pane.ctx.has_requested_repaint(), "an idle Info window requested a repaint");
     }
 }
