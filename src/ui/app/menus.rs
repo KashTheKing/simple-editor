@@ -57,8 +57,8 @@ const MORE_PANES: [Pane; 8] = [
     Pane::Tools,
 ];
 
-/// The Action that toggles a pane, for its Window-menu row's shortcut text.
-fn toggle_action(p: Pane) -> Option<Action> {
+/// The Action that toggles a pane: its Window-menu row's shortcut text, and its one palette row.
+pub(super) fn toggle_action(p: Pane) -> Option<Action> {
     use Action::*;
     Some(match p {
         Pane::Library => ToggleLibrary,

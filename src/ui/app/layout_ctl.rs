@@ -352,7 +352,10 @@ fn finish_onboarding(app: &mut App, st: &Onboarding) {
         (true, None) => app.toast("Added 'Edit with Simple Editor' to Explorer's right-click menu"),
         _ => {}
     }
-    let (keys, palette) = (app.hotkeys.text(Action::CheatSheet), app.hotkeys.text(Action::CommandPalette));
+    // the live bindings, or where the Help menu has them if the user unbound one
+    let key =
+        |a: Action| Some(app.hotkeys.text(a)).filter(|k| !k.is_empty()).unwrap_or(format!("Help ▸ {}", a.label()));
+    let (keys, palette) = (key(Action::CheatSheet), key(Action::CommandPalette));
     app.toast(format!("Welcome! {keys} lists every shortcut, {palette} searches every command"));
 }
 

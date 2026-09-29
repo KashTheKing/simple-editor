@@ -65,6 +65,10 @@ mod tests {
             for &(id, chord) in *diff {
                 assert!(Action::from_id(id).is_some(), "preset {name}: unknown action id '{id}'");
                 assert!(seen.insert(chord), "preset {name}: duplicate chord '{chord}' in its own diff table");
+                // a hard-coded key (Shift+S, Ctrl+Y, ...) would eat the chord before the binding saw it
+                let ks = Hotkeys::parse(chord).unwrap_or_else(|| panic!("preset {name}: bad chord '{chord}'"));
+                let fixed = matches!(Hotkeys::defaults().conflict_all(ks), Some(crate::hotkeys::Claim::Fixed(_)));
+                assert!(!fixed, "preset {name}: '{chord}' is a reserved chord");
             }
             let mut hk = Hotkeys::defaults();
             assert!(apply(name, &mut hk).is_ok(), "preset {name} failed to apply");

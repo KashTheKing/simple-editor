@@ -2,6 +2,20 @@
 
 ## beta-0.3.0
 
+### Keys & actions (issue #84, simplify wave 1)
+Every Action has a real group - File, Edit, Playback, Marking, Trimming, Timeline, Clip, Add, Audio,
+Color, Captions, Viewer, Panels & Pages, Media, Tools, General (`hotkeys::GROUPS`; nothing lands in
+"Other" any more) - shared by F1, Settings ▸ Hotkeys and `hotkeys.get`. The F1 sheet is searchable,
+lists bound keys before unbound ones, adds "Keys outside the table" (Shift+S, Ctrl+Y, Backspace, Esc…)
+and a "Mouse" section generated from the timeline's modifier table (`timeline::arm`), and shows the
+palette's live chord instead of a hard-coded Ctrl+K. The command palette has one row per thing: a pane
+with a Show / Hide Action is reached through that Action (wearing the pane's icon), the four pages are
+their page Actions, arg-free tools read as words ("Focus (source)"), and read-only tools - whose reply
+the palette never showed - are listed only in `:` mode. Rows honour the menus' icon overrides, say why
+a disabled row is disabled, and the arrow keys scroll the list. Settings ▸ Hotkeys lines its columns up
+across groups, and hovering a keymap preset lists what it changes. `UndoSettings` is gone (nothing
+ever took the snapshot it restored).
+
 ### Pages (issue #78, simplify 0c)
 The six top-right workspaces are four Resolve-style **pages** — Edit, Color, Audio, Export — in a
 switcher centred in the menu bar (Alt+1..4; right-click a page ▸ Reset page layout). Each page is its

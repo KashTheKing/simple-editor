@@ -345,7 +345,10 @@ impl App {
                             self.after_edit();
                         }
                     }
-                    None => self.toast("Nothing copied yet - Ctrl+C copies the selected clips"),
+                    None => match self.hotkeys.text(CopyClips) {
+                        k if k.is_empty() => self.toast("Nothing copied yet - copy the selected clips first"),
+                        k => self.toast(format!("Nothing copied yet - {k} copies the selected clips")),
+                    },
                 }
             }
             AddMarker => {
@@ -575,12 +578,6 @@ impl App {
             // this match too, whichever lands second rebases its ~handful-of-lines diff onto the other.
             ClearCaches => caches::clear(self),
             RestoreBackup => self.restore_backup_open = true,
-            UndoSettings => {
-                if let Some(s) = self.settings_undo.take() {
-                    self.settings = s;
-                    self.settings.save();
-                }
-            }
             // ---- ws:registries-schema-hooks ----
             // Every current Action variant has an arm above (hence `unreachable_patterns` today); this
             // exists so a future workstream's new variant compiles unhandled-by-default instead of
