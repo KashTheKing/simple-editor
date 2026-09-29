@@ -32,6 +32,7 @@ the palette never showed - are listed only in `:` mode. Rows honour the menus' i
 a disabled row is disabled, and the arrow keys scroll the list. Settings ▸ Hotkeys lines its columns up
 across groups, and hovering a keymap preset lists what it changes. `UndoSettings` is gone (nothing
 ever took the snapshot it restored).
+
 ### Library (issue #81, simplify 1)
 The Library's header is one row: search · Filter ▾ · View ▾ · + Import, with a small "Project |
 Browse" switch under it (was "Imported | Global"). Everything else is a right-click away: on bare
