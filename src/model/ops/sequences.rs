@@ -98,8 +98,13 @@ impl Project {
             self.out_point = st.out_point;
         }
     }
-    /// Place a sequence as a clip at `at` (video track `video_track` preferred). None on cycles / unknown id.
-    pub fn insert_sequence_clip(&mut self, seq: Id, at: f64, video_track: Option<usize>) -> Option<Id> {
+    /// Place a sequence as a clip at `at` (track `track` preferred). Like a media file, a sequence with
+    /// audio becomes a picture clip on a video track plus a linked twin on an audio track: the mixer
+    /// only plays Sequence clips from audio tracks, so the sound mutes, cuts and routes like any audio
+    /// clip. An audio-only sequence gets just the audio clip. Every insert path (library drop, MCP,
+    /// nest, multicam) comes through here. Returns the first clip's id (the video one when there is
+    /// one). None on cycles / unknown id.
+    pub fn insert_sequence_clip(&mut self, seq: Id, at: f64, track: Option<usize>) -> Option<Id> {
         let name = self.sequence(seq)?.name.clone();
         // a sequence can't contain itself: the timeline being edited (or main) must not be inside `seq`
         if let Some(cur) = self.editing {
@@ -108,13 +113,87 @@ impl Project {
             }
         }
         let dur = self.sequence_duration(seq).max(MIN_CLIP);
-        let ti = self.find_free_track(TrackKind::Video, at, dur, video_track);
+        let (video, audio) = self.sequence_halves(seq);
+        let kind = if video { TrackKind::Video } else { TrackKind::Audio };
+        let ti = self.find_free_track(kind, at, dur, track);
         let mut c = Clip::new(self.new_id(), ClipKind::Sequence, name, at, dur);
         c.sequence = seq;
         let id = c.id;
         self.tracks[ti].clips.push(c);
         self.tracks[ti].sort();
+        if video && audio {
+            self.add_audio_twin(id, track);
+        }
         Some(id)
+    }
+    /// Which clips a placed sequence gets: (picture, sound). An empty one still shows as a picture clip.
+    pub(crate) fn sequence_halves(&self, seq: Id) -> (bool, bool) {
+        let has = |k| self.sequence_tracks(seq).is_some_and(|ts| ts.iter().any(|t| t.kind == k && !t.clips.is_empty()));
+        (has(TrackKind::Video) || !has(TrackKind::Audio), has(TrackKind::Audio))
+    }
+    /// Link Sequence clip `id` to a new twin on a free audio track (`prefer` first): same sequence,
+    /// timing, retime and audio settings, none of the picture-only state. Returns the twin's id.
+    /// ponytail: the timeline draws no waveform on it (no asset to read peaks from); sum the nested
+    /// clips' peaks if nested audio ever needs one.
+    fn add_audio_twin(&mut self, id: Id, prefer: Option<usize>) -> Option<Id> {
+        let (ti, ci) = self.find(id)?;
+        if self.tracks[ti].clips[ci].link == 0 {
+            self.tracks[ti].clips[ci].link = self.new_id();
+        }
+        let v = self.tracks[ti].clips[ci].clone();
+        // markers carry ids of their own; effects/mask/graph only shape pixels
+        let a = Clip { id: self.new_id(), effects: Vec::new(), mask: None, graph: None, markers: Vec::new(), ..v };
+        let ai = self.find_free_track(TrackKind::Audio, a.start, a.duration, prefer);
+        let aid = a.id;
+        self.tracks[ai].clips.push(a);
+        self.tracks[ai].sort();
+        Some(aid)
+    }
+    /// v2 -> v3 (`from_json`): Sequence clips used to play their audio from the video track. Give each
+    /// one whose sequence made sound a linked audio twin, in every track list (main, each sequence, the
+    /// stash), so an old project sounds the same under the audio-tracks-only mixer rule.
+    /// ponytail: a transition between two such clips stays picture-only, so their audio now hard-cuts
+    /// there (`add_transition` mirrors new ones onto the twins); mirror old ones here if that bites.
+    pub(crate) fn migrate_sequence_audio(&mut self) {
+        // the v2 rule: any audio-track clip, or a Sequence clip on a video track whose sequence has sound
+        fn loud(p: &Project, seq: Id, depth: u32) -> bool {
+            depth < 32
+                && p.sequence_tracks(seq).is_some_and(|ts| {
+                    ts.iter().any(|t| {
+                        t.clips.iter().any(|c| {
+                            t.kind == TrackKind::Audio
+                                || (c.kind == ClipKind::Sequence && loud(p, c.sequence, depth + 1))
+                        })
+                    })
+                })
+        }
+        // list 0 is `tracks`, 1..=n the sequences', n+1 the stash: swapping one into `tracks` lets
+        // `add_audio_twin` place into it (`loud` is settled first, while nothing is swapped)
+        fn swap(p: &mut Project, i: usize) {
+            let other = if i == 0 {
+                return;
+            } else if i <= p.sequences.len() {
+                &mut p.sequences[i - 1].tracks
+            } else if let Some(st) = &mut p.main_stash {
+                &mut st.tracks
+            } else {
+                return;
+            };
+            std::mem::swap(&mut p.tracks, other);
+        }
+        let loud: Vec<Id> = self.sequences.iter().map(|s| s.id).filter(|&s| loud(self, s, 0)).collect();
+        for i in 0..=self.sequences.len() + self.main_stash.is_some() as usize {
+            swap(self, i);
+            let ids: Vec<Id> = (self.tracks.iter().filter(|t| t.kind == TrackKind::Video))
+                .flat_map(|t| &t.clips)
+                .filter(|c| c.kind == ClipKind::Sequence && loud.contains(&c.sequence))
+                .map(|c| c.id)
+                .collect();
+            for id in ids {
+                self.add_audio_twin(id, None);
+            }
+            swap(self, i);
+        }
     }
     /// Move the selected clips (+ linked) into a new sequence and replace them with one Sequence clip.
     /// Returns the new sequence id.

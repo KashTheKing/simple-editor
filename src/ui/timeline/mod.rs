@@ -1122,8 +1122,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     start_move = Some(clip.id);
                 }
             }
+            // by track, not kind: a nested sequence's audio twin is a Sequence clip on an audio track
             let (linked, enabled, aud, is_cont) =
-                (clip.link != 0, clip.enabled, clip.kind == ClipKind::Audio, clip.container);
+                (clip.link != 0, clip.enabled, track.kind == TrackKind::Audio, clip.container);
             let has_native = c.project.clip_native_size(clip).is_some();
             let graph_open = has_curve_keys(clip).then(|| state.mini_graph_open.contains(&clip.id));
             let is_seq = clip.kind == ClipKind::Sequence;

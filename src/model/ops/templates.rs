@@ -13,7 +13,9 @@ impl Project {
         }
         let mut link_map: std::collections::HashMap<Id, Id> = std::collections::HashMap::new();
         let mut out = Vec::new();
+        let mut pictures: Vec<(Id, Id)> = Vec::new(); // (link, sequence) of Sequence clips placed on video
         for mut c in clips {
+            let old_link = c.link;
             c.id = self.new_id();
             // clip markers carry ids too: a copy that kept them would shadow the original in `marker_mut`
             for i in 0..c.markers.len() {
@@ -39,7 +41,15 @@ impl Project {
                 continue;
             }
             c.start += at;
-            let kind = if c.kind == ClipKind::Audio { TrackKind::Audio } else { TrackKind::Video };
+            // a nested sequence's sound half follows its picture half (captured in track order, video
+            // first) back onto an audio track; an audio-only sequence has no picture half
+            let sound = c.kind == ClipKind::Sequence
+                && ((old_link != 0 && pictures.contains(&(old_link, c.sequence)))
+                    || !self.sequence_halves(c.sequence).0);
+            if c.kind == ClipKind::Sequence && !sound {
+                pictures.push((old_link, c.sequence));
+            }
+            let kind = if c.kind == ClipKind::Audio || sound { TrackKind::Audio } else { TrackKind::Video };
             let ti = self.find_free_track(kind, c.start, c.duration, None);
             out.push(c.id);
             self.tracks[ti].clips.push(c);

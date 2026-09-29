@@ -1455,6 +1455,143 @@ fn unnest_is_inverse_of_nest_selection() {
     assert!(p2.unnest(seq_clip2).is_empty(), "retimed sequence clip refuses to unnest");
 }
 
+/// Sequence clips of `kind`-tracks in `tracks`.
+fn seq_clips(tracks: &[Track], kind: TrackKind) -> Vec<Clip> {
+    let on = tracks.iter().filter(|t| t.kind == kind).flat_map(|t| &t.clips);
+    on.filter(|c| c.kind == ClipKind::Sequence).cloned().collect()
+}
+
+/// A nested sequence with audio lands like a media file: a picture clip on a video track plus a linked
+/// twin on an audio track, where its sound mutes/cuts/routes (the mixer only plays Sequence clips from
+/// audio tracks). Nesting keeps the audio on the main timeline instead of pulling it off the A tracks.
+#[test]
+fn nested_sequence_audio_lands_on_an_audio_track() {
+    let mut p = Project::from_media(asset(0, 10.0, 1));
+    let v = p.tracks[0].clips[0].id;
+    let seq = p.nest_selection(&[v], "N").unwrap();
+    let (sv, sa) = (seq_clips(&p.tracks, TrackKind::Video), seq_clips(&p.tracks, TrackKind::Audio));
+    assert_eq!((sv.len(), sa.len()), (1, 1), "one picture clip + one audio twin");
+    assert!(sv[0].link != 0 && sv[0].link == sa[0].link, "linked like a media file's V + A");
+    assert_eq!((sa[0].sequence, sa[0].start, sa[0].duration), (seq, sv[0].start, sv[0].duration));
+    // the library-drop / MCP path is the same function
+    let id = p.insert_sequence_clip(seq, 20.0, None).unwrap();
+    assert_eq!(p.linked(id).len(), 2);
+    // an audio-only sequence gets only the audio clip, an empty one only the picture clip
+    let mut q = Project::new();
+    let a = q.new_id();
+    q.tracks[1].clips.push(Clip::new(a, ClipKind::Audio, "vo", 1.0, 3.0));
+    q.nest_selection(&[a], "VO").unwrap();
+    assert!(seq_clips(&q.tracks, TrackKind::Video).is_empty());
+    assert_eq!(seq_clips(&q.tracks, TrackKind::Audio).len(), 1);
+    let e = q.new_sequence("E", 1280, 720, 30.0);
+    let id = q.insert_sequence_clip(e, 0.0, None).unwrap();
+    assert_eq!((q.tracks[q.track_of(id).unwrap()].kind, q.linked(id)), (TrackKind::Video, vec![id]));
+}
+
+/// The pair edits like a media file's: a split cuts both halves, and once unlinked the audio half can
+/// be deleted on its own while the picture stays.
+#[test]
+fn nested_sequence_pair_splits_together_and_audio_deletes_alone() {
+    let mut p = Project::from_media(asset(0, 10.0, 1));
+    let v = p.tracks[0].clips[0].id;
+    p.nest_selection(&[v], "N").unwrap();
+    let sv = p.tracks[0].clips[0].id;
+    let pair = p.linked(sv);
+    let right = p.split_at(4.0, Some(&pair));
+    assert_eq!(right.len(), 2, "both halves split");
+    assert_eq!(p.linked(right[0]).len(), 2, "the right halves stay a linked pair");
+    let sa = p.linked(sv).into_iter().find(|&c| c != sv).unwrap();
+    p.toggle_link(&[sv, sa]);
+    p.delete_clips(&[sa], false);
+    assert!(p.clip(sa).is_none() && p.clip(sv).is_some(), "audio gone, picture kept");
+    assert_eq!(p.tracks[1].clips.len(), 1, "only the right half's audio is left");
+}
+
+/// Either half un-nests the whole pair, and the audio comes back once.
+#[test]
+fn unnest_takes_the_audio_twin_along() {
+    for pick_audio in [false, true] {
+        let mut p = Project::from_media(asset(0, 10.0, 1));
+        let v = p.tracks[0].clips[0].id;
+        p.nest_selection(&[v], "N").unwrap();
+        let sv = p.tracks[0].clips[0].id;
+        let pick = if pick_audio { p.linked(sv).into_iter().find(|&c| c != sv).unwrap() } else { sv };
+        assert_eq!(p.unnest(pick).len(), 2, "the video and its audio, once each");
+        assert!(p.all_clips().all(|(_, c)| c.kind != ClipKind::Sequence), "both halves gone");
+        assert_eq!((p.tracks[0].clips.len(), p.tracks[1].clips.len()), (1, 1));
+        assert_eq!(p.tracks[1].clips[0].kind, ClipKind::Audio);
+    }
+}
+
+/// Copy/paste and templates keep clips but not their tracks: a pasted pair must put its sound half back
+/// on an audio track, not stack a second (silent) picture on a video track.
+#[test]
+fn pasted_nested_pair_keeps_its_audio_track() {
+    use crate::engine::presets::{capture_template, decode_template};
+    let mut p = Project::from_media(asset(0, 10.0, 1));
+    let v = p.tracks[0].clips[0].id;
+    p.nest_selection(&[v], "N").unwrap();
+    let ids = p.expand_links(&[p.tracks[1].clips[0].id]); // picked by its audio half
+    let (clips, assets) = decode_template(&capture_template("c", &p, &ids)).unwrap();
+    let new = p.place_clips(clips, assets, 20.0);
+    let kinds: Vec<TrackKind> = new.iter().map(|&id| p.tracks[p.track_of(id).unwrap()].kind).collect();
+    assert_eq!(kinds, vec![TrackKind::Video, TrackKind::Audio]);
+    assert_eq!(p.linked(new[0]).len(), 2, "still a linked pair");
+}
+
+/// v2 played a Sequence clip's audio from the video track. Loading one gives every such clip whose
+/// sequence makes sound (directly or through a nested one) a linked audio twin - on the main timeline,
+/// inside sequences and in the stashed main timeline. A v3 file (which every undo snapshot is) is left
+/// alone, so a twin the user deleted stays deleted.
+#[test]
+fn v2_sequence_clips_get_audio_twins_on_load() {
+    let as_v2 = |p: &Project| {
+        let mut j: serde_json::Value = serde_json::from_str(&p.to_json()).unwrap();
+        j["version"] = 2.into();
+        Project::from_json(&j.to_string()).unwrap()
+    };
+    let v2_clip = |id: Id, seq: Id, start: f64| {
+        let mut c = Clip::new(id, ClipKind::Sequence, "n", start, 2.0);
+        c.sequence = seq;
+        c
+    };
+    // T has sound; S only holds a picture-track clip of T (v2 heard T through it); U is silent
+    let mut p = Project::new();
+    let t = p.new_sequence("T", 1280, 720, 30.0);
+    let s = p.new_sequence("S", 1280, 720, 30.0);
+    let u = p.new_sequence("U", 1280, 720, 30.0);
+    p.sequence_mut(t).unwrap().tracks[1].clips.push(Clip::new(900, ClipKind::Audio, "vo", 0.0, 2.0));
+    p.sequence_mut(u).unwrap().tracks[0].clips.push(Clip::new(901, ClipKind::Video, "pic", 0.0, 2.0));
+    p.sequence_mut(s).unwrap().tracks[0].clips.push(v2_clip(902, t, 0.0));
+    p.tracks[0].clips.push(v2_clip(903, s, 0.0));
+    p.tracks[0].clips.push(v2_clip(904, u, 5.0));
+
+    let q = as_v2(&p);
+    assert_eq!(q.version, Project::VERSION);
+    let twins = seq_clips(&q.tracks, TrackKind::Audio);
+    assert_eq!(twins.len(), 1, "S has sound (through T); U has none");
+    assert_eq!((twins[0].sequence, twins[0].link), (s, q.clip(903).unwrap().link));
+    assert!(twins[0].link != 0 && q.clip(904).unwrap().link == 0);
+    let in_s = seq_clips(&q.sequence(s).unwrap().tracks, TrackKind::Audio);
+    assert_eq!(in_s.len(), 1, "the nested clip of T inside S got its twin too");
+    assert_eq!(in_s[0].sequence, t);
+
+    // saved with a sequence open: the stashed main timeline is migrated too
+    let mut o = p.clone();
+    assert!(o.open_sequence(u));
+    let oq = as_v2(&o);
+    assert_eq!(seq_clips(&oq.main_stash.as_ref().unwrap().tracks, TrackKind::Audio).len(), 1);
+
+    // v3 (a save, an undo snapshot): nothing is added again, and a deleted twin stays deleted
+    let n = q.all_clips().count();
+    assert_eq!(Project::from_json(&q.to_json()).unwrap().all_clips().count(), n);
+    let mut d = q.clone();
+    d.toggle_link(&[903, twins[0].id]);
+    d.delete_clips(&[twins[0].id], false);
+    let back = Project::from_json(&d.to_json()).unwrap();
+    assert!(seq_clips(&back.tracks, TrackKind::Audio).is_empty(), "undo keeps the deleted twin deleted");
+}
+
 #[test]
 fn replace_clip_keeps_duration_effects_transform() {
     let mut p = Project::new();

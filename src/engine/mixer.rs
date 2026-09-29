@@ -1,9 +1,10 @@
 //! Audio mixer: sums every audible audio clip at timeline time t into interleaved stereo f32.
 //! Used by playback (real-time, block by block) and export (offline to WAV).
 //! Handles speed/reverse (linear resampling), freeze (silence), volume/pan/fades (gains lerped across
-//! each block), transitions (gain crossfades with virtual clip extension - on video tracks too, so a
-//! transition between Sequence clips crossfades their audio with the picture) and Sequence clips on
-//! video tracks (their timeline mixed recursively, depth ≤ 8).
+//! each block), transitions (gain crossfades with virtual clip extension) and Sequence clips (their
+//! timeline mixed recursively, depth ≤ 8). Only audio tracks sound: a nested sequence plays from its
+//! Sequence clip on an audio track (the linked video-track twin is picture-only), so it is heard once
+//! and mutes, cuts and routes with that audio track. Export mixes through this same code.
 //!
 //! Routing: when the project has buses, every top-level clip's contribution lands in
 //! `Project::bus_of(track, clip)` instead of straight in the output, then `BusGraph` flushes the buses
@@ -138,7 +139,8 @@ fn mix_tracks(
     let sr = SAMPLE_RATE as f64;
     let t_end = t + frames as f64 / sr;
     for (ti, track) in tracks.iter().enumerate() {
-        if !active_in(tracks, ti) {
+        // video tracks never sound: a Sequence clip there is the picture half of a linked pair
+        if track.kind != TrackKind::Audio || !active_in(tracks, ti) {
             continue;
         }
         // ---- ws:registries-schema-hooks ----
@@ -147,58 +149,35 @@ fn mix_tracks(
         // ponytail: not lerped across the block like clip gain - a keyed ramp steps every ≈21 ms;
         // sample it at both block ends in `resample_add` if the steps ever become audible.
         let tg = track.volume.at(t) as f32;
-        match track.kind {
-            TrackKind::Audio => {
-                for clip in &track.clips {
-                    if !clip.enabled || clip.kind != ClipKind::Audio || clip.freeze.is_some() {
-                        continue;
-                    }
-                    let ext = clip_transitions(track, clip);
-                    let (estart, eend) = play_range(clip, &ext);
-                    if eend <= t || estart >= t_end {
-                        continue;
-                    }
-                    let Some(asset) = project.asset(clip.asset) else {
-                        continue;
-                    };
-                    let i0 = (((estart.max(t) - t) * sr).round() as usize).min(frames);
-                    let i1 = (((eend.min(t_end) - t) * sr).round() as usize).min(frames);
-                    if i1 <= i0 {
-                        continue;
-                    }
-                    let bus = if dest.routed() { project.bus_of(ti, clip) } else { 0 };
-                    let t0 = t + i0 as f64 / sr;
-                    mix_audio_clip(scratch, clip, &ext, t0, &asset.path, pool, dest.slice(bus, i0, i1), depth, tg);
-                }
+        for clip in &track.clips {
+            if !clip.enabled || clip.freeze.is_some() {
+                continue;
             }
-            TrackKind::Video => {
-                for clip in &track.clips {
-                    if !clip.enabled || clip.kind != ClipKind::Sequence || clip.freeze.is_some() || depth >= MAX_DEPTH {
-                        continue;
-                    }
-                    let ext = clip_transitions(track, clip);
-                    let (estart, eend) = play_range(clip, &ext);
-                    if eend <= t || estart >= t_end {
-                        continue;
-                    }
-                    let i0 = (((estart.max(t) - t) * sr).round() as usize).min(frames);
-                    let i1 = (((eend.min(t_end) - t) * sr).round() as usize).min(frames);
-                    if i1 <= i0 || project.sequence_tracks(clip.sequence).is_none() {
-                        continue;
-                    }
-                    let bus = if dest.routed() { project.bus_of(ti, clip) } else { 0 };
-                    mix_seq_clip(
-                        scratch,
-                        project,
-                        clip,
-                        &ext,
-                        t + i0 as f64 / sr,
-                        pool,
-                        dest.slice(bus, i0, i1),
-                        depth,
-                        tg,
-                    );
-                }
+            let ext = clip_transitions(track, clip);
+            let (estart, eend) = play_range(clip, &ext);
+            if eend <= t || estart >= t_end {
+                continue;
+            }
+            let i0 = (((estart.max(t) - t) * sr).round() as usize).min(frames);
+            let i1 = (((eend.min(t_end) - t) * sr).round() as usize).min(frames);
+            if i1 <= i0 {
+                continue;
+            }
+            // an Audio clip reads its asset; a Sequence clip (None) sub-mixes its nested timeline
+            let path = match clip.kind {
+                ClipKind::Audio => match project.asset(clip.asset) {
+                    Some(a) => Some(&a.path),
+                    None => continue,
+                },
+                ClipKind::Sequence if depth < MAX_DEPTH && project.sequence_tracks(clip.sequence).is_some() => None,
+                _ => continue,
+            };
+            let bus = if dest.routed() { project.bus_of(ti, clip) } else { 0 };
+            let t0 = t + i0 as f64 / sr;
+            let out = dest.slice(bus, i0, i1);
+            match path {
+                Some(path) => mix_audio_clip(scratch, clip, &ext, t0, path, pool, out, depth, tg),
+                None => mix_seq_clip(scratch, project, clip, &ext, t0, pool, out, depth, tg),
             }
         }
     }
@@ -235,7 +214,7 @@ fn mix_audio_clip(
     scratch.put(depth * 2, buf);
 }
 
-/// One Sequence clip on a video track: recursively mix its sequence's tracks at source rate into a
+/// One Sequence clip on an audio track: recursively mix its sequence's tracks at source rate into a
 /// scratch buffer, then treat that buffer exactly like clip source audio (resample + gains).
 /// Nested tracks keep their own mute/solo but not their own buses - the whole sub-mix goes to the
 /// bus of the Sequence clip that hosts it.
@@ -517,7 +496,7 @@ mod tests {
         p.main_bus();
         mx.mix(&p, 1.0, &mut pool, &mut out);
         assert!((out[0] - 0.25).abs() < 1e-3, "through buses: {}", out[0]);
-        // a sequence clip on a video track takes the VIDEO track's volume
+        // a sequence clip takes its AUDIO track's volume (an audio-only sequence lands on A1 alone)
         let mut p2 = Project::new();
         let aid = p2.add_asset(audio_asset(0, "Z:\\nope\\fake.wav"));
         let seq = p2.new_sequence("s", 320, 240, 30.0);
@@ -526,11 +505,12 @@ mod tests {
         let s = p2.sequence_mut(seq).unwrap();
         let sai = s.tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
         s.tracks[sai].clips.push(inner);
-        p2.insert_sequence_clip(seq, 0.0, None).expect("placed");
-        let vi = p2.video_tracks()[0];
-        p2.tracks[vi].volume = crate::model::Animated::new(0.5);
+        let sc = p2.insert_sequence_clip(seq, 0.0, None).expect("placed");
+        let ai = p2.track_of(sc).unwrap();
+        assert_eq!(p2.tracks[ai].kind, TrackKind::Audio);
+        p2.tracks[ai].volume = crate::model::Animated::new(0.5);
         mx.mix(&p2, 1.0, &mut pool, &mut out);
-        assert!(out.iter().all(|s| (s - 0.25).abs() < 1e-5), "sequence clip × V1 volume: {}", out[0]);
+        assert!(out.iter().all(|s| (s - 0.25).abs() < 1e-5), "sequence clip × A1 volume: {}", out[0]);
     }
 
     /// A project that never touched `Track.volume` (every track at the `a1()` default, including one
@@ -905,27 +885,26 @@ mod tests {
 
     #[test]
     fn sequence_transition_crossfades_audio() {
-        // Two sequence clips on V1 with a 2 s CrossFade: their audio must dissolve with the picture.
+        // Two sequence pairs (V picture + A sound) back to back with a 2 s CrossFade added on V1:
+        // `add_transition` mirrors it onto the linked audio twins, so the audio dissolves with the picture.
         let mut p = Project::new();
-        let mut seq = Vec::new();
+        let mut v = Vec::new();
         for (i, path) in ["Z:\\nope\\a.wav", "Z:\\nope\\b.wav"].into_iter().enumerate() {
             let asset = p.add_asset(audio_asset(0, path));
             let s = p.new_sequence("s", 320, 240, 30.0);
             let sq = p.sequence_mut(s).unwrap();
-            let sai = sq.tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
             let mut inner = Clip::new(500 + i as crate::model::Id, ClipKind::Audio, "in", 0.0, 10.0);
             inner.asset = asset;
-            sq.tracks[sai].clips.push(inner);
-            seq.push(s);
+            sq.tracks[1].clips.push(inner);
+            sq.tracks[0].clips.push(Clip::new(600 + i as crate::model::Id, ClipKind::Video, "pic", 0.0, 10.0));
+            let vc = p.insert_sequence_clip(s, i as f64 * 5.0, None).expect("placed");
+            for id in p.linked(vc) {
+                let c = p.clip_mut(id).unwrap(); // 5 s each; b plays its [5,10)
+                (c.duration, c.src_in) = (5.0, i as f64 * 5.0);
+            }
+            v.push(vc);
         }
-        let vi = p.video_tracks()[0];
-        for (i, s) in seq.iter().enumerate() {
-            let mut c = Clip::new(1000 + i as crate::model::Id, ClipKind::Sequence, "sc", i as f64 * 5.0, 5.0);
-            c.sequence = *s;
-            c.src_in = i as f64 * 5.0;
-            p.tracks[vi].clips.push(c);
-        }
-        add_transition(&mut p, vi, 1001, 2.0);
+        assert!(p.add_transition(v[1], TransitionKind::CrossFade, 2.0).is_some());
         let mut pool = DecoderPool::new(Backend::Ffmpeg);
         pool.insert_audio("Z:\\nope\\a.wav", 0, Box::new(Const(0.8)));
         pool.insert_audio("Z:\\nope\\b.wav", 0, Box::new(Const(0.4)));
@@ -945,24 +924,30 @@ mod tests {
 
     #[test]
     fn sequence_audio() {
-        // Sequence with a Ramp audio clip [0,4); placed on V1 at t=1.
+        // Sequence with a picture and a Ramp audio clip [0,4); placed at t=1 as a linked V + A pair.
         let mut p = Project::new();
         let aid = p.add_asset(audio_asset(0, "Z:\\nope\\fake.wav"));
         let seq = p.new_sequence("s", 320, 240, 30.0);
         let mut inner = Clip::new(500, ClipKind::Audio, "in", 0.0, 4.0);
         inner.asset = aid;
         let s = p.sequence_mut(seq).unwrap();
-        let sai = s.tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
-        s.tracks[sai].clips.push(inner);
-        let sc = p.insert_sequence_clip(seq, 1.0, None).expect("placed");
+        s.tracks[1].clips.push(inner);
+        s.tracks[0].clips.push(Clip::new(501, ClipKind::Video, "pic", 0.0, 4.0));
+        let sv = p.insert_sequence_clip(seq, 1.0, None).expect("placed");
+        let sc = p.linked(sv).into_iter().find(|&c| c != sv).expect("audio twin");
+        let (vi, ai) = (p.track_of(sv).unwrap(), p.track_of(sc).unwrap());
+        assert_eq!((p.tracks[vi].kind, p.tracks[ai].kind), (TrackKind::Video, TrackKind::Audio));
         let mut pool = DecoderPool::new(Backend::Ffmpeg);
         pool.insert_audio("Z:\\nope\\fake.wav", 0, Box::new(Ramp));
         let mut mx = Mixer::new();
         let mut out = vec![0.0f32; 2 * 480];
-        // t=1.5 → sequence-local 0.5 → ramp value 0.005
+        // t=1.5 → sequence-local 0.5 → ramp value 0.005, heard once (both halves playing would be 0.01)
         mx.mix(&p, 1.5, &mut pool, &mut out);
         assert!((out[0] - 0.005).abs() < 1e-4, "{}", out[0]);
-        // clip volume/pan apply
+        // the picture half's volume means nothing; the audio twin's volume/pan apply
+        p.clip_mut(sv).unwrap().volume.value = 0.0;
+        mx.mix(&p, 1.5, &mut pool, &mut out);
+        assert!((out[0] - 0.005).abs() < 1e-4, "video half's volume: {}", out[0]);
         {
             let c = p.clip_mut(sc).unwrap();
             c.volume.value = 0.5;
@@ -981,16 +966,20 @@ mod tests {
         mx.mix(&p, 1.5, &mut pool, &mut out);
         assert!((out[0] - 0.01).abs() < 1e-4, "{}", out[0]);
         p.clip_mut(sc).unwrap().set_speed(1.0);
-        // before the sequence clip → silence; frozen → silence; hidden video track → silence
+        // before the sequence clip → silence; frozen → silence
         mx.mix(&p, 0.5, &mut pool, &mut out);
         assert!(out.iter().all(|s| *s == 0.0));
         p.clip_mut(sc).unwrap().freeze = Some(1.0);
         mx.mix(&p, 1.5, &mut pool, &mut out);
         assert!(out.iter().all(|s| *s == 0.0));
         p.clip_mut(sc).unwrap().freeze = None;
-        let vi = p.video_tracks()[0];
+        // hiding the video track keeps the sound; muting the audio track silences it
         p.tracks[vi].muted = true;
         mx.mix(&p, 1.5, &mut pool, &mut out);
-        assert!(out.iter().all(|s| *s == 0.0));
+        assert!((out[0] - 0.005).abs() < 1e-4, "hidden V1: {}", out[0]);
+        p.tracks[vi].muted = false;
+        p.tracks[ai].muted = true;
+        mx.mix(&p, 1.5, &mut pool, &mut out);
+        assert!(out.iter().all(|s| *s == 0.0), "muted A1: {}", out[0]);
     }
 }
