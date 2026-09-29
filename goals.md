@@ -122,6 +122,9 @@ Pulled forward from CHANGELOG.md — mark new completions here as they land.
   [plans/simplify/README.md](plans/simplify/README.md): Resolve-style pages (Edit/Color/Audio/Export),
   one visible home per function with right-click menus everywhere, native Windows icon font, niche
   panels hidden (not deleted), reported bugs fixed first, then a Docusaurus tutorial site on GitHub Pages.
+  Wave 0: bugfixes (0a), ui-kit (0b) and pages (0c, issue #78: the four pages, the `+` pane chrome,
+  locked panels, sequence tabs in the Timeline's tab, the Scopes / Export panes, the rebuilt menu bar)
+  have landed.
 - [ ] (add more as they're identified — via `/se-goal` or `/goal`)
 
 ## UX principles
@@ -159,10 +162,16 @@ and "powerful."
 - Let panels that are docked-but-hidden auto-surface their tab on selection instead of jumping
   panels around the screen (avoids disorienting power users' muscle memory).
 - Every panel gets a pin/lock so a user who wants a static layout can opt out of auto-switching
-  per-panel, not just globally.
-- Offer both a "Dynamic Contextual" layout mode and a "Granular Explicit" (classic multi-panel)
-  mode, chosen at first run and toggleable later (this project already leans this way with
-  layout presets — keep extending it, don't regress toward one fixed layout).
+  per-panel, not just globally (right-click a tab ▸ "Stay on this tab").
+- ~~Offer both a "Dynamic Contextual" layout mode and a "Granular Explicit" (classic multi-panel)
+  mode, chosen at first run and toggleable later.~~ **Superseded 2026-09-28 (simplify 0c, pages):**
+  Resolve-style pages (Edit / Color / Audio / Export) replace the first-run mode choice - each page
+  is its own task-shaped layout the user can still rearrange, add panels to (a tab bar's `+`), undock
+  and reset, and each remembers its own arrangement. Panels are locked by default (tabs click,
+  dividers resize; Window ▸ Layout ▸ Unlock panels turns drag-to-redock on). Auto-switching tabs to
+  the selection is a plain setting (Settings ▸ General ▸ "Switch panel tabs to follow the
+  selection", on by default), no longer a named mode in the UI. Don't regress toward one fixed
+  layout.
 
 **Direct manipulation**
 - Prefer dragging on the preview canvas (move/scale/crop/rotate with visible bounding boxes)

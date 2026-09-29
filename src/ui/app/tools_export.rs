@@ -505,6 +505,39 @@ fn selection_span(app: &App) -> Option<(f64, f64)> {
     }
 }
 
+// ---- ws:pages ----
+/// PANE_DRAWERS entry: the Export pane (the Export window's body until ws:pages). Export… starts right
+/// away; Add to Queue joins the render queue (the Jobs pane beside it on the Export page).
+pub(super) fn draw_pane(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
+    if pane != Pane::Export {
+        return false;
+    }
+    app.detect_encoders_once();
+    // the export always renders the MAIN timeline - show its size/lossless state, not the open sequence's
+    let main = app.project.editing.is_some().then(|| app.export_project());
+    let choice = {
+        let App { project, settings, export_ui: st, encoders, export, .. } = app;
+        export_ui::body(ui, st, main.as_ref().unwrap_or(project), settings, encoders, export.is_some())
+    };
+    match choice {
+        Some((c, false)) => {
+            app.start_export_choice(c);
+        }
+        // the source-overwrite refusal runs again at pop time (start_export_choice); here it just saves
+        // the user a wait
+        Some((c, true)) if files::refuses_source(&app.project, &c.opts.out_path) => {
+            app.toast("That file is a source of this project - use Overwrite Original Video (Ctrl+S) instead");
+        }
+        Some((c, true)) => {
+            app.export_queue.push_back(c);
+            let n = app.export_queue.len();
+            app.toast(format!("Added to the render queue ({n} waiting)"));
+        }
+        None => {}
+    }
+    true
+}
+
 pub(super) fn act(app: &mut App, a: Action) -> bool {
     match a {
         Action::QuickExport => {

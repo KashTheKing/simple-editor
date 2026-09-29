@@ -88,22 +88,18 @@ pub(super) fn general(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Setting
             ui.weak(if s.autosave_secs == 0 { "off" } else { "s" });
         });
         ui.end_row();
-
-        // ---- ws:layout-modes-onboarding ----
-        ui.label("Layout mode");
-        ui.horizontal(|ui| {
-            changed |= ui
-                .radio_value(&mut s.layout_mode, "dynamic".into(), "Dynamic")
-                .on_hover_text("A selection brings the pane that edits it to the front; pin any tab to opt it out (Ctrl+Shift+G)")
-                .changed();
-            changed |= ui
-                .radio_value(&mut s.layout_mode, "granular".into(), "Granular")
-                .on_hover_text("Classic: panes stay where you put them, the helpful tab only glows")
-                .changed();
-        });
-        ui.end_row();
     });
     ui.add_space(6.0);
+    // ---- ws:pages ---- (was the Dynamic / Granular layout mode; same field)
+    let mut follow = s.layout_mode != "granular";
+    let r = ui.checkbox(&mut follow, "Switch panel tabs to follow the selection").on_hover_text(
+        "Selecting a clip brings the tab that edits it to the front. Off: tabs stay put and only glow. \
+         Right-click a tab ▸ Stay on this tab to keep one in front either way.",
+    );
+    if r.changed() {
+        s.layout_mode = if follow { "dynamic" } else { "granular" }.into();
+        changed = true;
+    }
     // ---- ws:layout-modes-onboarding ----
     changed |= ui
         .checkbox(&mut s.home_screen, "Show the Open / Import / Templates cards over an empty project (home screen)")

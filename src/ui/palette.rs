@@ -14,7 +14,7 @@
 
 use crate::hotkeys::{Action, Hotkeys};
 use crate::scripting::ScriptMeta;
-use crate::ui::layout::{Pane, WORKSPACES};
+use crate::ui::layout::{Pane, PAGES};
 use crate::ui::tools::{self, Glyph};
 use eframe::egui;
 use std::path::PathBuf;
@@ -88,7 +88,7 @@ fn finish(mut rows: Vec<(u32, Row)>) -> Vec<Row> {
 }
 
 /// The main row set: `Action::ALL` + `Pane::ALL` ("Show X") + arg-free `ToolDef`s + scripts +
-/// `layout::WORKSPACES`, fuzzy-filtered by `query` (empty query = everything, most-recently-used
+/// `layout::PAGES`, fuzzy-filtered by `query` (empty query = everything, most-recently-used
 /// actions first - `recent`, capped to `Settings.palette_recent`). `enabled` is a closure rather than
 /// `&App` so this stays unit-testable (see the module doc comment); `App::enabled` is what
 /// `palette_ctl` actually passes.
@@ -175,7 +175,7 @@ pub fn rows(
             },
         );
     }
-    for &w in WORKSPACES {
+    for &w in PAGES {
         push_scored(
             &mut rows,
             query,

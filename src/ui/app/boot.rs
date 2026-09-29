@@ -9,7 +9,7 @@
 //! `App::new` used to do; an already-onboarded user who left the box ticked keeps the old re-point
 //! behaviour under the exact same guard. Two dev-only env hooks, in the spirit of `SE_SCREENSHOT_DELAY`:
 //! `SE_FIRST_RUN=1` forces the wizard (even with `--screenshot`, for a visual check) and
-//! `SE_LAYOUT=<workspace>` applies a workspace at boot without persisting the name.
+//! `SE_LAYOUT=<page>` (or an old workspace name) switches to that page at boot.
 
 use super::*;
 use crate::ui::onboarding::Onboarding;
@@ -18,12 +18,7 @@ pub(crate) fn run(app: &mut App) {
     recovery::boot(app);
     // ---- ws:layout-modes-onboarding ----
     if let Ok(name) = std::env::var("SE_LAYOUT") {
-        let mut chars = name.trim().chars();
-        let cap = chars.next().map(|c| c.to_uppercase().collect::<String>() + &chars.as_str().to_ascii_lowercase());
-        if let Some(make) = cap.as_deref().and_then(crate::ui::layout::workspace_layout) {
-            app.layout.switch_to(make());
-            app.layout_dirty = true;
-        }
+        layout_ctl::switch_page(app, &name);
     }
     first_run(app);
 }

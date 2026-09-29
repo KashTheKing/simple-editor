@@ -81,9 +81,8 @@ impl App {
                         .and_then(|fx| fx.mask.as_ref())
                         .map(|m| m.shape)
                         .unwrap_or(MaskShape::Ellipse);
+                    // ws:pages: no page shows the Tools pane any more - the viewer paints the mask tool
                     self.tools.tool = Tool::Mask(shape);
-                    self.layout.reveal(Pane::Tools);
-                    self.layout_dirty = true;
                 }
                 if resp.open_nodes {
                     self.layout.reveal(Pane::Nodes);
@@ -300,64 +299,6 @@ impl App {
                     self.after_edit();
                 }
             }
-            Pane::Presets => {
-                // presets_ui.rs is deleted (verified-dead per the architecture's "Pane::Presets fate"
-                // decision): this draws the same reuse rows as Library's Recent tab (Effects/Node
-                // graphs/Adjustment layers, click-to-apply/place) until wave-2 inspector-gallery replaces
-                // it with the Gallery pane. Save-from-selection/rename/delete are gone from this pane;
-                // saving is still reachable via the templates.save MCP tool, place/apply via reuse_ui +
-                // templates.list/apply (documented interim state, not a bug).
-                let mut resp = library::LibraryResponse::default();
-                library::reuse_ui(ui, 0, 0, 1.0, &self.project, &self.settings, &self.palette, &mut resp);
-                // same 4 blocks Pane::Library already applies for these fields (library_pane.rs), copied
-                // verbatim so the two panes' reuse rows behave identically.
-                if let Some(kind) = resp.add_effect {
-                    let targets: Vec<Id> = self
-                        .selection
-                        .iter()
-                        .copied()
-                        .filter(|&id| self.project.clip(id).is_some_and(|c| c.is_visual() && !c.uses_graph()))
-                        .collect();
-                    if targets.is_empty() {
-                        self.toast("Select a clip first");
-                    } else {
-                        self.push_undo();
-                        for id in targets {
-                            if let Some(c) = self.project.clip_mut(id) {
-                                c.effects.push(Effect::new(kind));
-                            }
-                        }
-                        self.after_edit();
-                    }
-                }
-                if let Some(i) = resp.apply_preset {
-                    self.apply_effect_preset(i);
-                }
-                if let Some(from) = resp.copy_graph {
-                    let graph = self.project.clip(from).and_then(|c| c.graph.clone());
-                    let targets: Vec<Id> = self
-                        .selection
-                        .iter()
-                        .copied()
-                        .filter(|&id| id != from && self.project.clip(id).is_some_and(|c| c.is_visual()))
-                        .collect();
-                    match graph {
-                        Some(g) if !targets.is_empty() => {
-                            self.push_undo();
-                            for id in targets {
-                                if let Some(c) = self.project.clip_mut(id) {
-                                    c.graph = Some(g.clone());
-                                }
-                            }
-                            self.after_edit();
-                        }
-                        _ => self.toast("Select another clip to copy this node graph onto"),
-                    }
-                }
-                for name in resp.place_template {
-                    self.place_template(&name, self.playhead);
-                }
-            }
             Pane::Markers => {
                 let resp = {
                     let App { project, selection, playhead, markers: st, palette, undo, redo, .. } = self;
@@ -373,9 +314,8 @@ impl App {
                 }
             }
             // ---- ws:registries-schema-hooks ----
-            // Pane::Source has no dedicated drawer yet - source-monitor (wave 2) is the first
-            // PANE_DRAWERS entry (tried above) and turns this into its real two-up source monitor.
-            #[allow(unreachable_patterns)]
+            // Source / Jobs / the Gallery (Presets) / Scopes / Export are PANE_DRAWERS entries (tried
+            // above); this only shows if one of them is ever unregistered.
             _ => {
                 ui.weak(format!("{} isn't wired up yet.", pane.title()));
             }

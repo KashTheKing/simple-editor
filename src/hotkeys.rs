@@ -171,7 +171,9 @@ actions! {
     // through its own ACT_HANDLERS/WINDOW_DRAWERS arm but must NEVER redeclare them here - a second
     // `actions!` row for either identifier is a duplicate-enum-variant compile error. Both are inert
     // (fall through App::act's `_ => {}` catch-all) until that wave lands the real behaviour.
-    ToggleLayoutMode => "toggle_layout_mode", "Layout Mode: Dynamic / Granular", sc(CTRL_SHIFT, Key::G);
+    // ws:pages: unbound (was Ctrl+Shift+G) - the Dynamic/Granular choice left the UI; this is Settings ▸
+    // General's "Switch panel tabs to follow the selection", flipped from the palette.
+    ToggleLayoutMode => "toggle_layout_mode", "Switch Panel Tabs to Follow the Selection", None;
     ShowWelcome => "show_welcome", "Show Welcome Again", None;
     // ---- ws:forgiveness ----
     // Unbound by design (no free chord in the skeleton keymap): Settings ▸ Performance button /
@@ -239,16 +241,16 @@ actions! {
     ExportMarkers => "export_markers", "Export Markers…", None;
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
-    // Alt+1..6 are free (Ctrl+1..0 is the pane-toggle row above); backtick is Premiere's maximise key.
-    // ToggleLayoutMode (Ctrl+Shift+G) / ShowWelcome are declared by ws:command-palette above and only
-    // CONSUMED here (`ui::app::layout_ctl::act`) - never redeclare them. TogglePin / ToggleSource are
-    // unbound by design: the tab-bar pin glyph / context menu, and the View menu / palette, own them.
-    Workspace1 => "workspace_1", "Workspace 1 (Simple)", sc(ALT, Key::Num1);
-    Workspace2 => "workspace_2", "Workspace 2 (Edit)", sc(ALT, Key::Num2);
-    Workspace3 => "workspace_3", "Workspace 3 (Color)", sc(ALT, Key::Num3);
-    Workspace4 => "workspace_4", "Workspace 4 (Audio)", sc(ALT, Key::Num4);
-    Workspace5 => "workspace_5", "Workspace 5 (Text)", sc(ALT, Key::Num5);
-    Workspace6 => "workspace_6", "Workspace 6 (Deliver)", sc(ALT, Key::Num6);
+    // Alt+1..4 are free (Ctrl+1..0 is the pane-toggle row above); backtick is Premiere's maximise key.
+    // ToggleLayoutMode / ShowWelcome are declared by ws:command-palette above and only CONSUMED here
+    // (`ui::app::layout_ctl::act`) - never redeclare them. TogglePin / ToggleSource are unbound by
+    // design: the tab's right-click ("Stay on this tab") and the Window menu / palette own them.
+    // ws:pages: Workspace1..4 are the four pages (ids kept so rebinds survive; 5 and 6 went with the
+    // Text / Deliver workspaces - `Hotkeys::from_settings` ignores their stale ids).
+    Workspace1 => "workspace_1", "Edit page", sc(ALT, Key::Num1);
+    Workspace2 => "workspace_2", "Color page", sc(ALT, Key::Num2);
+    Workspace3 => "workspace_3", "Audio page", sc(ALT, Key::Num3);
+    Workspace4 => "workspace_4", "Export page", sc(ALT, Key::Num4);
     MaximizePane => "maximize_pane", "Maximise Pane under Cursor", sc(NONE, Key::Backtick);
     TogglePin => "toggle_pin", "Pin / Unpin Pane under Cursor", None;
     // ToggleSource is declared by ws:source-monitor below (both workstreams needed it; kept there
@@ -299,6 +301,15 @@ actions! {
     // ---- ws:jobs-panel ----
     // Unbound by design (View menu / palette / the menu-bar indicator), like ToggleScopes/ToggleSource.
     ToggleJobs => "toggle_jobs", "Show / Hide Jobs", None;
+    // ---- ws:pages ----
+    // Reopens the angle grid a × closed (Clip menu / palette); unbound by design.
+    MulticamAngles => "multicam_angles", "Multicam Angles…", None;
+    // ---- ws:timeline-surface ----
+    // ---- ws:viewer-surface ----
+    // ---- ws:library-surface ----
+    // ---- ws:inspector-surface ----
+    // ---- ws:side-panels ----
+    // ---- ws:keys-actions ----
     // ---- tool selection (ui::tools) - polled and dispatched there, not through App::act ----
     ToolSelect => "tool_select", "Select Tool", sc(NONE, Key::V);
     ToolText => "tool_text", "Text Tool", sc(NONE, Key::T);
@@ -544,6 +555,13 @@ pub fn group(a: Action) -> &'static str {
         ToolSelect | ToolText | ToolDraw | ToolMask | ToolMarker | ToolCut | ToolStretch | ToolSpacer => "Tools",
         CommandPalette | CheatSheet | ToggleLayoutMode | ShowWelcome | Fullscreen | Settings | AutoCut | MovieMode
         | WhatsNew => "General",
+        // ---- ws:pages ----
+        // ---- ws:timeline-surface ----
+        // ---- ws:viewer-surface ----
+        // ---- ws:library-surface ----
+        // ---- ws:inspector-surface ----
+        // ---- ws:side-panels ----
+        // ---- ws:keys-actions ----
         // every current variant has an arm above (same `unreachable_patterns` situation as act()'s own
         // prelude match in ui/app/actions.rs); kept so a future workstream's new Action compiles into
         // "Other" by default instead of forcing an edit here.
@@ -747,27 +765,31 @@ mod tests {
     // ---- ws:layout-modes-onboarding ----
     /// The audit-fix-2 guard from this side: the two shared variants this workstream CONSUMES exist
     /// exactly once crate-wide (declared by command-palette), this workstream's own rows exist exactly
-    /// once each, and their chords are the frozen keymap's (Alt+1..6, backtick, two unbound) - with
-    /// `no_duplicate_defaults` above still green over the whole table.
+    /// once each, and their chords are the keymap's (Alt+1..4 = the pages, backtick, the rest unbound) -
+    /// with `no_duplicate_defaults` above still green over the whole table.
     #[test]
     fn no_duplicate_hotkey_rows_for_shared_actions() {
         let src = include_str!("hotkeys.rs");
         for name in
-            ["ToggleLayoutMode", "ShowWelcome", "Workspace1", "Workspace6", "MaximizePane", "TogglePin", "ToggleSource"]
+            ["ToggleLayoutMode", "ShowWelcome", "Workspace1", "Workspace4", "MaximizePane", "TogglePin", "ToggleSource"]
         {
             let decl = format!("{name} =>");
             assert_eq!(src.matches(decl.as_str()).count(), 1, "{name} must be declared exactly once");
         }
+        assert!(!src.contains(&format!("Workspace{} =>", 5)), "the Text / Deliver workspaces are gone");
         let h = Hotkeys::defaults();
-        assert_eq!(h.text(Action::ToggleLayoutMode), "Ctrl+Shift+G", "consumed, not redeclared: chord unchanged");
+        assert_eq!(h.text(Action::ToggleLayoutMode), "", "ws:pages: the Dynamic/Granular chord left the UI");
         assert_eq!(h.text(Action::ShowWelcome), "");
+        assert_eq!(Action::Workspace4.label(), "Export page");
+        // a settings file that still rebinds workspace_6 loads - the stale id is ignored
+        let mut s = Settings::default();
+        s.hotkeys.insert("workspace_6".into(), "Alt+9".into());
+        assert_eq!(Hotkeys::from_settings(&s).text(Action::Workspace1), "Alt+1");
         for (a, want) in [
             (Action::Workspace1, "Alt+1"),
             (Action::Workspace2, "Alt+2"),
             (Action::Workspace3, "Alt+3"),
             (Action::Workspace4, "Alt+4"),
-            (Action::Workspace5, "Alt+5"),
-            (Action::Workspace6, "Alt+6"),
             // `Hotkeys::format` uses `Key::name()` (not `symbol_or_name()`), same as every other
             // punctuation-key action in this table (TrimLeft1's "[" shows as "OpenBracket", etc.) -
             // matching existing behaviour, not a new inconsistency introduced here.

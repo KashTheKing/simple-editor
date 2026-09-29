@@ -212,7 +212,7 @@ pub struct Settings {
     pub hotkeys: BTreeMap<String, String>,
     pub recent_assets: Vec<RecentAsset>,
     pub recent_projects: Vec<String>,
-    /// Current editor layout as JSON (empty = default layout).
+    /// The current page's editor layout as JSON (empty = that page's default; see `page`).
     pub layout: String,
     /// Saved layout profiles (also exportable to / importable from `.sedit-layout` files).
     pub layout_profiles: Vec<LayoutProfile>,
@@ -293,8 +293,8 @@ pub struct Settings {
     /// Panel/tab background opacity over the background image (255 = opaque, ignored without an image).
     pub panel_opacity: u8,
     // ---- ws:registries-schema-hooks ----
-    /// "dynamic" (contextual, auto-surfacing panels) or "granular" (classic fixed multi-panel);
-    /// consumed by ws:layout-modes-onboarding (wave 2).
+    /// "dynamic" = a selection switches panel tabs to the pane that edits it (Settings ▸ General's
+    /// "Switch panel tabs to follow the selection"), "granular" = tabs stay put and only glow.
     pub layout_mode: String,
     /// The first-run welcome window has been shown (or dismissed) once; consumed by
     /// ws:layout-modes-onboarding (wave 2).
@@ -377,7 +377,9 @@ pub struct Settings {
     #[serde(default)]
     pub gallery_tab: String,
     // ---- ws:layout-modes-onboarding ----
-    /// Active workspace name (`ui::layout::WORKSPACES`), lit in the menu-bar strip / View menu.
+    /// The pre-pages workspace name (Simple / Edit / Color / Audio / Text / Deliver). Read once by
+    /// `layout_ctl::migrate_to_pages` to pick the starting page; never written back.
+    #[serde(skip_serializing)]
     pub workspace: String,
     /// Show the Open / Import / Templates / Recent cards over an empty project (the home screen).
     pub home_screen: bool,
@@ -419,6 +421,21 @@ pub struct Settings {
     /// A newly started background job surfaces the Jobs tab (Dynamic layout) or glows it (Granular).
     #[serde(default = "default_true")]
     pub jobs_auto_reveal: bool,
+    // ---- ws:pages ----
+    /// The page on screen (`ui::layout::PAGES`); `layout` is its tree. Empty = a settings file from
+    /// before pages (or a fresh one): `layout_ctl::migrate_to_pages` fills it in once at startup.
+    pub page: String,
+    /// The other pages' trees as JSON, by page name - the current page's own lives in `layout`.
+    pub page_layouts: BTreeMap<String, String>,
+    /// Window ▸ Layout ▸ Unlock panels: tabs drag to re-dock. Off (the default) a tab only clicks;
+    /// dividers resize and Undock works either way.
+    pub panels_unlocked: bool,
+    // ---- ws:timeline-surface ----
+    // ---- ws:viewer-surface ----
+    // ---- ws:library-surface ----
+    // ---- ws:inspector-surface ----
+    // ---- ws:side-panels ----
+    // ---- ws:keys-actions ----
 }
 
 impl Default for Settings {
@@ -562,6 +579,16 @@ impl Default for Settings {
             // ---- ws:docs-refresh ----
             // ---- ws:jobs-panel ----
             jobs_auto_reveal: true,
+            // ---- ws:pages ----
+            page: String::new(),
+            page_layouts: BTreeMap::new(),
+            panels_unlocked: false,
+            // ---- ws:timeline-surface ----
+            // ---- ws:viewer-surface ----
+            // ---- ws:library-surface ----
+            // ---- ws:inspector-surface ----
+            // ---- ws:side-panels ----
+            // ---- ws:keys-actions ----
         }
     }
 }
@@ -850,19 +877,32 @@ mod tests {
     #[test]
     fn layout_mode_settings_round_trip() {
         let old: Settings = serde_json::from_str("{}").unwrap();
-        assert_eq!(old.workspace, "Edit", "today's default layout is the Edit workspace");
         assert!(old.home_screen, "default on");
         assert_eq!(old.layout_mode, "dynamic");
         assert!(!old.onboarded, "a settings file without the flag sees the welcome once");
         let mut s = Settings::default();
-        s.workspace = "Color".into();
         s.home_screen = false;
         s.layout_mode = "granular".into();
         s.onboarded = true;
         let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
-        assert_eq!(
-            (back.workspace.as_str(), back.home_screen, back.layout_mode.as_str(), back.onboarded),
-            ("Color", false, "granular", true)
-        );
+        assert_eq!((back.home_screen, back.layout_mode.as_str(), back.onboarded), (false, "granular", true));
+    }
+
+    // ---- ws:pages ----
+    /// The pages fields round-trip; the legacy workspace name is read but never written back.
+    #[test]
+    fn page_settings_round_trip() {
+        let old: Settings = serde_json::from_str(r#"{"workspace": "Deliver"}"#).unwrap();
+        assert_eq!((old.page.as_str(), old.workspace.as_str()), ("", "Deliver"), "a pre-pages file");
+        assert!(old.page_layouts.is_empty() && !old.panels_unlocked);
+        let mut s = old;
+        s.page = "Color".into();
+        s.page_layouts.insert("Edit".into(), "{}".into());
+        s.panels_unlocked = true;
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(!json.contains("\"workspace\""), "the legacy name is not written back");
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!((back.page.as_str(), back.panels_unlocked), ("Color", true));
+        assert_eq!(back.page_layouts.get("Edit").map(String::as_str), Some("{}"));
     }
 }

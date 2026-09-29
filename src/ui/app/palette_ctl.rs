@@ -148,7 +148,7 @@ fn dispatch(app: &mut App, cmd: Command, arg_form: Option<(&'static str, Vec<(St
         Command::Workspace(name) => {
             // ---- ws:layout-modes-onboarding ----
             // the placeholder toast this arm carried until wave 2: the real switch
-            layout_ctl::switch_workspace(app, name);
+            layout_ctl::switch_page(app, name);
         }
     }
 }

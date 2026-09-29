@@ -7,6 +7,7 @@
 //! for the glue that turns a `HomeAction` into real actions); text + path cards only - ponytail: no
 //! project thumbnails until a project manifest stores one.
 
+use crate::hotkeys::{Action, Hotkeys};
 use crate::settings::Settings;
 use crate::ui::guides::PRESETS;
 use crate::ui::tools::{glyph_text_button, Glyph};
@@ -31,7 +32,13 @@ pub fn visible(settings: &Settings, empty: bool, dismissed: bool) -> bool {
 
 /// Draws the cards when `visible`; `Some(action)` on a click. `empty` = project has no clips AND the
 /// library has no assets (the caller computes it - see `App::project`).
-pub fn show(ctx: &egui::Context, settings: &Settings, empty: bool, dismissed: bool) -> Option<HomeAction> {
+pub fn show(
+    ctx: &egui::Context,
+    settings: &Settings,
+    hotkeys: &Hotkeys,
+    empty: bool,
+    dismissed: bool,
+) -> Option<HomeAction> {
     if !visible(settings, empty, dismissed) {
         return None;
     }
@@ -53,13 +60,22 @@ pub fn show(ctx: &egui::Context, settings: &Settings, empty: bool, dismissed: bo
                 ui.weak("Drop video, audio or images anywhere in the window - or start here.");
                 ui.add_space(6.0);
                 ui.horizontal_wrapped(|ui| {
-                    if glyph_text_button(ui, Glyph::Folder, "Open…").on_hover_text("A video or a .sedit project (Ctrl+O)").clicked() {
+                    if glyph_text_button(ui, Glyph::Folder, "Open…")
+                        .on_hover_text(format!("A video or a .sedit project ({})", hotkeys.text(Action::OpenFile)))
+                        .clicked()
+                    {
                         out = Some(HomeAction::Open);
                     }
-                    if glyph_text_button(ui, Glyph::ImportArrow, "Import media…").on_hover_text("Into the library (Ctrl+I)").clicked() {
+                    if glyph_text_button(ui, Glyph::ImportArrow, "Import media…")
+                        .on_hover_text(format!("Into the library ({})", hotkeys.text(Action::ImportMedia)))
+                        .clicked()
+                    {
                         out = Some(HomeAction::Import);
                     }
-                    if glyph_text_button(ui, Glyph::Clapperboard, "Blank project").on_hover_text("1920×1080 at 60 fps").clicked() {
+                    if glyph_text_button(ui, Glyph::Clapperboard, "Blank project")
+                        .on_hover_text("1920×1080 at 60 fps")
+                        .clicked()
+                    {
                         out = Some(HomeAction::New(None));
                     }
                 });
@@ -109,19 +125,24 @@ mod tests {
         settings.home_screen = false;
         assert!(!visible(&settings, true, false), "switched off in Settings");
         // and `show` draws nothing at all in those cases (no area, no repaint, no action)
-        for (s, empty, dismissed) in [(&settings, true, false), (&Settings::default(), false, false), (&Settings::default(), true, true)] {
+        for (s, empty, dismissed) in
+            [(&settings, true, false), (&Settings::default(), false, false), (&Settings::default(), true, true)]
+        {
             let _ = ctx.run(egui::RawInput::default(), |ctx| {
-                assert_eq!(show(ctx, s, empty, dismissed), None);
+                assert_eq!(show(ctx, s, &Hotkeys::defaults(), empty, dismissed), None);
                 // egui always has a Background layer even with nothing drawn; check the home area's
                 // own layer specifically rather than the whole (never-empty) visible set.
                 let home_layer = egui::LayerId::new(egui::Order::Middle, egui::Id::new("home_screen"));
-                assert!(!ctx.memory(|m| m.areas().visible_layer_ids().contains(&home_layer)), "the home area must not be laid out");
+                assert!(
+                    !ctx.memory(|m| m.areas().visible_layer_ids().contains(&home_layer)),
+                    "the home area must not be laid out"
+                );
             });
         }
         // visible: draws, no action without a click
         let settings = Settings::default();
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
-            assert_eq!(show(ctx, &settings, true, false), None);
+            assert_eq!(show(ctx, &settings, &Hotkeys::defaults(), true, false), None);
         });
     }
 
@@ -134,7 +155,7 @@ mod tests {
         settings.recent_projects = vec![r"C:\edits\a.sedit".into(), r"C:\edits\b.sedit".into()];
         for _ in 0..30 {
             let _ = ctx.run(egui::RawInput::default(), |ctx| {
-                let _ = show(ctx, &settings, true, false);
+                let _ = show(ctx, &settings, &Hotkeys::defaults(), true, false);
             });
         }
         assert!(!ctx.has_requested_repaint(), "idle home screen requested a repaint");

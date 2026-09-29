@@ -98,31 +98,31 @@ mod tests {
     #[test]
     fn auto_surface_only_in_dynamic_mode() {
         let now = Instant::now();
-        // Granular: Subtitles (behind Mixer in the default layout) glows, Mixer stays in front
-        let mut l = Layout::default_layout();
+        // Granular: Subtitles (behind Mixer on the Audio page) glows, Mixer stays in front
+        let mut l = Layout::audio_layout();
         assert!(in_front(&l, Pane::Mixer));
         assert_eq!(layout_ctl::react(&mut l, false, Pane::Subtitles, now), Surfaced::Pinned);
         assert!(in_front(&l, Pane::Mixer), "Granular must never switch tabs");
         assert_eq!(l.glow.iter().map(|(p, _)| *p).collect::<Vec<_>>(), vec![Pane::Subtitles]);
         // Dynamic: the same change switches, no glow
-        let mut l = Layout::default_layout();
+        let mut l = Layout::audio_layout();
         assert_eq!(layout_ctl::react(&mut l, true, Pane::Subtitles, now), Surfaced::Shown);
         assert!(in_front(&l, Pane::Subtitles));
         assert!(l.glow.is_empty());
         // Dynamic with the active sibling pinned: glow instead of switching
-        let mut l = Layout::default_layout();
+        let mut l = Layout::audio_layout();
         l.set_pinned(Pane::Mixer, true);
         assert_eq!(layout_ctl::react(&mut l, true, Pane::Subtitles, now), Surfaced::Pinned);
         assert!(in_front(&l, Pane::Mixer));
         assert_eq!(l.glow.len(), 1);
         // a hidden / absent pane is reported and glows nothing in either mode
-        let mut l = Layout::default_layout();
-        l.toggle(Pane::Curves);
-        assert_eq!(layout_ctl::react(&mut l, true, Pane::Curves, now), Surfaced::Hidden);
-        assert_eq!(layout_ctl::react(&mut l, false, Pane::Curves, now), Surfaced::Hidden);
+        let mut l = Layout::audio_layout();
+        l.toggle(Pane::Preview);
+        assert_eq!(layout_ctl::react(&mut l, true, Pane::Preview, now), Surfaced::Hidden);
+        assert_eq!(layout_ctl::react(&mut l, false, Pane::Preview, now), Surfaced::Hidden);
         assert!(l.glow.is_empty());
         // re-glowing a pane refreshes its entry rather than duplicating it
-        let mut l = Layout::default_layout();
+        let mut l = Layout::audio_layout();
         layout_ctl::react(&mut l, false, Pane::Subtitles, now);
         layout_ctl::react(&mut l, false, Pane::Subtitles, now + Duration::from_millis(300));
         assert_eq!(l.glow.len(), 1);

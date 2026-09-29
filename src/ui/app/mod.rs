@@ -444,6 +444,13 @@ pub struct App {
     // ---- ws:ui-kit ----
     /// `ui.input` steps waiting for `raw_input_hook` and `ui.screenshot` shots waiting for their image.
     uikit: tools_uikit::UiKit,
+    // ---- ws:pages ----
+    // ---- ws:timeline-surface ----
+    // ---- ws:viewer-surface ----
+    // ---- ws:library-surface ----
+    // ---- ws:inspector-surface ----
+    // ---- ws:side-panels ----
+    // ---- ws:keys-actions ----
 }
 
 // ---- ws:canvas-handles-monitor ----
@@ -660,7 +667,9 @@ impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, open: Option<PathBuf>, screenshot: Option<PathBuf>) -> Self {
         // eframe restores the window rect from the last session, which may be on another monitor
         crate::winpos::place_on_cursor_monitor(cc);
-        let (settings, settings_bad) = Settings::load_reporting();
+        let (mut settings, settings_bad) = Settings::load_reporting();
+        // ---- ws:pages ---- (a pre-pages file keeps its old tree as the "Before update" profile)
+        layout_ctl::migrate_to_pages(&mut settings);
         media::ffpipe::set_dir(&settings.ffmpeg_dir);
         media::ytdlp::set_dir(&settings.ytdlp_dir);
         theme::apply(&cc.egui_ctx, &settings.theme, &settings.palette, &settings.ui_look);
@@ -696,8 +705,8 @@ impl App {
                 unsafe { gl.get_parameter_string(eframe::glow::RENDERER) }
             })
             .unwrap_or_else(|| "no OpenGL context".into());
-        // an old layout profile has no Tools / Nodes / Mixer / Markers pane: reset to the new default
-        let layout = Layout::from_json(&settings.layout).unwrap_or_default();
+        // the current page's tree; an old one without the round-3 panes resets to that page's default
+        let layout = Layout::from_json(&settings.layout).unwrap_or_else(|| layout_ctl::page_default(&settings.page));
         let layout_json = layout.to_json();
         let mut app = Self {
             project: Project::new(),
@@ -857,6 +866,13 @@ impl App {
             pending_timeline_imports: Vec::new(),
             // ---- ws:ui-kit ----
             uikit: Default::default(),
+            // ---- ws:pages ----
+            // ---- ws:timeline-surface ----
+            // ---- ws:viewer-surface ----
+            // ---- ws:library-surface ----
+            // ---- ws:inspector-surface ----
+            // ---- ws:side-panels ----
+            // ---- ws:keys-actions ----
         };
         if let Some(reason) = settings_bad {
             app.toast(format!("Settings file was corrupt (saved as settings.json.bad): {reason}"));
@@ -1238,7 +1254,6 @@ impl eframe::App for App {
         // is polled, so a rebound action can never shadow a tool
         if let Some(t) = tools::handle_hotkeys(ctx, &self.hotkeys, &mut self.tools) {
             self.tools.tool = t;
-            self.layout.reveal(Pane::Tools);
         }
         let mut actions = self.hotkeys.poll(ctx);
         if !ctx.wants_keyboard_input() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Y)) {
@@ -1281,20 +1296,25 @@ impl eframe::App for App {
                 let mut l = std::mem::replace(&mut self.layout, Layout::new(egui_tiles::Tree::empty("layout")));
                 // cloned: the draw closure needs self mutably while the tab renderer reads the icons
                 let icons = self.settings.icon_overrides.clone();
-                let cozy = self.settings.ui_look != "sharp";
+                let chrome = layout::Chrome {
+                    icons: &icons,
+                    tab_bar,
+                    cozy: self.settings.ui_look != "sharp",
+                    // ---- ws:pages ----
+                    editing: self.project.editing.and_then(|id| self.project.sequence(id)).map(|s| s.name.clone()),
+                    unlocked: self.settings.panels_unlocked,
+                };
                 // ---- ws:layout-modes-onboarding ----
                 // Both closures need `self` (draw: mutably; on_viewport: the hotkey table, then
                 // pending_actions), and layout::show calls them strictly one after the other - never
                 // nested - so a RefCell hands the borrow back and forth at runtime, the same shape
                 // `App::fire_hook` already uses for its tool-call closure.
                 let cell = std::cell::RefCell::new(&mut *self);
-                let (changed, moved, set_icon) = layout::show(
+                let shown = layout::show(
                     ctx,
                     ui,
                     &mut l,
-                    &icons,
-                    tab_bar,
-                    cozy,
+                    &chrome,
                     &mut |ui, pane| cell.borrow_mut().draw_pane(ui, pane),
                     // ---- ws:registries-schema-hooks ----
                     // filled by ws:layout-modes-onboarding: poll the action table on the popped
@@ -1306,12 +1326,13 @@ impl eframe::App for App {
                     },
                 );
                 self.layout = l;
-                self.layout_dirty |= changed;
-                if moved {
+                self.layout_dirty |= shown.changed;
+                if shown.moved {
                     push_undo_json(&mut self.undo, &mut self.redo, LAYOUT_STEP.to_owned());
                 }
-                if !set_icon.is_empty() {
-                    for (pane, pick) in set_icon {
+                self.pending_actions.extend(shown.actions);
+                if !shown.set_icon.is_empty() {
+                    for (pane, pick) in shown.set_icon {
                         let key = format!("pane.{}", pane.title());
                         match pick {
                             Some(name) => drop(self.settings.icon_overrides.insert(key, name)),
@@ -1435,6 +1456,13 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     tools_jobs::TOOLS,
     // ---- ws:ui-kit ----
     tools_uikit::TOOLS,
+    // ---- ws:pages ----
+    // ---- ws:timeline-surface ----
+    // ---- ws:viewer-surface ----
+    // ---- ws:library-surface ----
+    // ---- ws:inspector-surface ----
+    // ---- ws:side-panels ----
+    // ---- ws:keys-actions ----
 ];
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
@@ -1476,6 +1504,13 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     // ---- ws:docs-refresh ----
     // ---- ws:jobs-panel ----
     jobs_pane::act,
+    // ---- ws:pages ----
+    // ---- ws:timeline-surface ----
+    // ---- ws:viewer-surface ----
+    // ---- ws:library-surface ----
+    // ---- ws:inspector-surface ----
+    // ---- ws:side-panels ----
+    // ---- ws:keys-actions ----
 ];
 
 pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
@@ -1515,6 +1550,13 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:docs-refresh ----
     // ---- ws:jobs-panel ----
     jobs_pane::tick,
+    // ---- ws:pages ----
+    // ---- ws:timeline-surface ----
+    // ---- ws:viewer-surface ----
+    // ---- ws:library-surface ----
+    // ---- ws:inspector-surface ----
+    // ---- ws:side-panels ----
+    // ---- ws:keys-actions ----
 ];
 
 pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
@@ -1545,12 +1587,19 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:transcript-captions ----
     transcript_ctl::window,
     // ---- ws:pro-monitor ----
-    tools_monitor::window_scopes,
+    // (tools_monitor::window_scopes became the Scopes pane - ws:pages)
     tools_monitor::window_multicam,
     // ---- ws:pro-timeline ----
     tools_timeline_pro::window,
     // ---- ws:text-titles ----
     // ---- ws:docs-refresh ----
+    // ---- ws:pages ----
+    // ---- ws:timeline-surface ----
+    // ---- ws:viewer-surface ----
+    // ---- ws:library-surface ----
+    // ---- ws:inspector-surface ----
+    // ---- ws:side-panels ----
+    // ---- ws:keys-actions ----
 ];
 
 pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
@@ -1581,6 +1630,15 @@ pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
     // ---- ws:docs-refresh ----
     // ---- ws:jobs-panel ----
     jobs_pane::draw,
+    // ---- ws:pages ----
+    tools_monitor::draw_scopes,
+    tools_export::draw_pane,
+    // ---- ws:timeline-surface ----
+    // ---- ws:viewer-surface ----
+    // ---- ws:library-surface ----
+    // ---- ws:inspector-surface ----
+    // ---- ws:side-panels ----
+    // ---- ws:keys-actions ----
 ];
 
 /// The dominant kind of the current selection, for a contextual inspector/palette to key off without
@@ -1626,10 +1684,9 @@ impl App {
         }
     }
 
-    /// Bring `pane` to the front - today this is exactly `Layout::reveal` + marking the layout dirty
-    /// so it persists; ws:layout-modes-onboarding (wave 2) makes it pin/mode-aware without touching
-    /// call sites (a pinned pane stops auto-surfacing, a Granular-mode layout ignores it entirely).
-    #[allow(dead_code)] // unused until ws:layout-modes-onboarding (wave 2)
+    /// Bring `pane` to the front, explicitly (palette "Show X", Ctrl+E's Export pane): `Layout::reveal`
+    /// + marking the layout dirty so it persists. Selection-driven surfacing is the pin/follow-aware
+    /// `layout_ctl::surface`.
     pub(crate) fn surface(&mut self, pane: Pane) {
         self.layout.reveal(pane);
         self.layout_dirty = true;
