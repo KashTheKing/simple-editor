@@ -76,9 +76,9 @@ fn gesture_text(g: GestureKind) -> Option<(&'static str, &'static str)> {
 /// differs. A modifier that changes nothing about the drag (Ctrl/Shift on a clip only change the
 /// selection) is listed once, with the click rows below it.
 fn mouse_rows() -> Vec<(String, String)> {
-    const ZONES: [(Zone, &str); 7] = [
+    // ws:timeline-surface: no BodyBottom row - a clip body is one zone; the Blade tool splits (below)
+    const ZONES: [(Zone, &str); 6] = [
         (Zone::Body, "clip"),
-        (Zone::BodyBottom, "clip's lower half"),
         (Zone::EdgeEnd, "clip edge"),
         (Zone::Seam, "cut"),
         (Zone::Lane, "empty track"),
@@ -115,6 +115,7 @@ fn mouse_rows() -> Vec<(String, String)> {
         ("Add a clip to the selection or take it out", "Ctrl+click clip"),
         ("Add a clip to the selection", "Shift+click clip"),
         ("Select a clip without its linked clips", "Alt+click clip"),
+        ("Split here", "click clip with the Blade tool"),
         ("Pan the timeline", "middle-drag"),
         ("Zoom the timeline", "Ctrl+scroll"),
         ("Scroll the timeline sideways", "Shift+scroll"),

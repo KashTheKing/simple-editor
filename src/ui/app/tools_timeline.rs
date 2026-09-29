@@ -304,7 +304,7 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
 // ---- ws:snap-engine ----
 /// Debug hit-test for `timeline.zones`: which `arm::Zone` a screen point would land on, approximated
 /// from the timeline's current layout state (no live egui frame available to an MCP caller). Ruler
-/// (including the in/out handles), lane gaps, clip bodies (top/bottom split on tall rows), edges and
+/// (including the in/out handles), lane gaps, clip bodies, edges and
 /// seams are covered; Drop/Fade/VolumeLine/Key/Marker/TransitionEdge need an active drag/dnd payload
 /// and are not reachable from this static point-in-time query.
 fn timeline_zone_at(app: &App, x: f32, y: f32) -> crate::ui::timeline::Zone {
@@ -336,9 +336,8 @@ fn timeline_zone_at(app: &App, x: f32, y: f32) -> crate::ui::timeline::Zone {
         if (t - cl.end()).abs() <= edge_thr {
             return Zone::EdgeEnd;
         }
-        let row_top = crate::ui::timeline::row_top(state, &app.project, ti).unwrap_or(0.0);
-        let split = track.height >= 2.0 * crate::ui::timeline::MIN_TRACK_H;
-        return if split && y >= row_top + track.height / 2.0 { Zone::BodyBottom } else { Zone::Body };
+        // one zone since ws:timeline-surface (the Blade tool splits; no bottom-half split zone)
+        return Zone::Body;
     }
     Zone::Lane
 }

@@ -1,7 +1,7 @@
 //! ---- ws:trim-model ----
 //! Keyboard-only dispatch for edit-point selection, trim ±1/±10 frames, extend/top/tail, slip, mark
 //! clip, go to in/out, splice/overwrite/lift/extract at playhead, join/duplicate/unnest/replace,
-//! select forward/backward/at-playhead, prev/next keyframe, and the placeholder track-flag toggles.
+//! select forward/backward/at-playhead, prev/next keyframe, and the track-flag toggles.
 //! No mouse gestures, no new panes/glyphs - purely `App::act` arms reading existing
 //! selection/playhead/`App::edit_point` state and calling the trim-model model ops directly.
 
@@ -105,11 +105,22 @@ fn keyframe_nav(app: &mut App, backward: bool) -> bool {
     true
 }
 
-/// Placeholder target for the three unbound track-flag toggles until timeline-trim-gestures (wave 2)
-/// gives them a real header-glyph target: the first selected clip's track.
+/// The track a track Action targets (ws:timeline-surface): the one under the cursor - the timeline
+/// reports it while it is on screen - else the first selected clip's. `hover` may be stale (a track
+/// removed since), so it is bounds-checked.
+fn track_target(hover: Option<usize>, p: &Project, selection: &[Id]) -> Option<usize> {
+    hover.filter(|&ti| ti < p.tracks.len()).or_else(|| selection.first().and_then(|&id| p.track_of(id)))
+}
+
+/// `track_target` for the live app (also RenameTrack's, in tools_timeline_pro.rs).
+pub(super) fn target_track(app: &App) -> Option<usize> {
+    let hover = app.timeline.hover_track.filter(|_| app.pane_drawn(Pane::Timeline));
+    track_target(hover, &app.project, &app.selection)
+}
+
+/// Lock / Ripple / Magnetic on `target_track`, one labelled undo.
 fn toggle_track_flag(app: &mut App, flag: TrackFlag, label: &'static str) -> bool {
-    let Some(&id) = app.selection.first() else { return false };
-    let Some(ti) = app.project.track_of(id) else { return false };
+    let Some(ti) = target_track(app) else { return false };
     let cur = match flag {
         TrackFlag::Locked => app.project.tracks[ti].locked,
         TrackFlag::Ripple => app.project.tracks[ti].ripple.unwrap_or(false),
@@ -122,10 +133,7 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
     use Action::*;
     match a {
         SelectEditPoint => {
-            // ponytail: no mouse hover state exists headlessly - the first selected clip's track
-            // stands in for "hovered track" (the timeline UI hands a real hovered track once
-            // snap-engine/timeline-trim-gestures wire the gesture up).
-            let track = app.selection.first().and_then(|&id| app.project.track_of(id));
+            let track = target_track(app);
             app.timeline.edit_point = app.project.nearest_edit_point(app.playhead, track);
             true
         }
@@ -258,7 +266,9 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
             }
             true
         }
-        LiftInOut | ExtractInOut => {
+        // ws:timeline-surface: Ripple Delete In/Out is Extract - one code path (actions.rs's old arm
+        // for it is unreachable now; ACT_HANDLERS run first)
+        LiftInOut | ExtractInOut | RippleDeleteInOut => {
             let (Some(a0), Some(b0)) = (app.project.in_point, app.project.out_point) else {
                 app.toast("Set In/Out first");
                 return true;
@@ -328,6 +338,27 @@ mod tests {
         assert!(vec![1u64].changed());
         assert!(!Option::<u64>::None.changed());
         assert!(Some(1u64).changed());
+    }
+
+    /// Track Actions hit the track under the cursor, else the selection's; a stale hover index (the
+    /// track was removed since) falls back instead of panicking.
+    #[test]
+    fn track_actions_target_the_hovered_track_first() {
+        let mut p = Project::new();
+        p.add_track(crate::model::TrackKind::Video);
+        p.tracks[0].clips.push(crate::model::Clip::new(77, crate::model::ClipKind::Video, "c", 0.0, 1.0));
+        assert_eq!(track_target(Some(2), &p, &[77]), Some(2), "the hovered track wins");
+        assert_eq!(track_target(None, &p, &[77]), Some(0), "no hover: the selected clip's track");
+        assert_eq!(track_target(Some(99), &p, &[77]), Some(0), "a stale hover index falls back");
+        assert_eq!(track_target(None, &p, &[]), None);
+    }
+
+    /// Ripple Delete In/Out and Extract are one arm here (claimed before actions.rs's legacy one).
+    #[test]
+    fn ripple_delete_in_out_is_extract() {
+        let src = include_str!("trim_actions.rs");
+        let act = &src[src.find("pub(super) fn act(").unwrap()..src.find("#[cfg(test)]").unwrap()];
+        assert!(act.contains("LiftInOut | ExtractInOut | RippleDeleteInOut =>"));
     }
 
     /// `App::push_undo_labeled`/`after_edit` need a live `App` (see `tools_registry_tests.rs`'s doc

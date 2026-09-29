@@ -156,6 +156,8 @@ struct Harness {
     overview: bool,
     boring_thr: (f32, f32),
     realtime: Vec<(f64, f64, bool, bool)>,
+    // ---- ws:timeline-surface ----
+    views: Vec<TimelineView>,
 }
 
 impl Harness {
@@ -203,6 +205,10 @@ impl Harness {
             overview: false,
             boring_thr: (1.5, 20.0),
             realtime: Vec::new(),
+            views: vec![
+                TimelineView { name: "Detailed".into(), ..DETAILED_VIEW },
+                TimelineView { name: "Compact".into(), waves: false, thumbs: false, keys: false, ..DETAILED_VIEW },
+            ],
         };
         h.frame(vec![]); // layout pass: sets lanes_rect
         h
@@ -236,6 +242,7 @@ impl Harness {
             overview,
             boring_thr,
             realtime,
+            views,
             ..
         } = self;
         let mut resp = None;
@@ -265,6 +272,7 @@ impl Harness {
                         overview: *overview,
                         boring_thr: *boring_thr,
                         realtime,
+                        views,
                     },
                 ));
             });
@@ -350,6 +358,90 @@ impl Harness {
     }
     fn audio_clip(&self) -> &Clip {
         &self.project.tracks[1].clips[0]
+    }
+    /// Right-click at `pos` and let the context menu lay out (ws:timeline-surface).
+    fn rclick(&mut self, pos: Pos2) -> TimelineResponse {
+        let sec = |pressed| Event::PointerButton {
+            pos,
+            button: PointerButton::Secondary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        self.frame(vec![Event::PointerMoved(pos)]);
+        self.frame(vec![sec(true)]);
+        let r = self.frame(vec![sec(false)]);
+        self.frame(vec![]);
+        r
+    }
+    /// Click the painted text `label` (a menu row, or a submenu to open), then settle a frame. Returns
+    /// the release frame's response (a menu row's Act / Action fires there), `edited` OR-ed with the next.
+    fn click_text(&mut self, label: &str) -> TimelineResponse {
+        let p = self.painted_text(label).unwrap_or_else(|| panic!("'{label}' not painted: {:?}", self.texts()))
+            + vec2(4.0, 4.0);
+        self.press(p);
+        let mut r = self.release(p);
+        r.edited |= self.frame(vec![]).edited;
+        r
+    }
+}
+
+/// `draw` in a tall bare panel, with a click-by-label helper - for menu bodies called directly.
+struct MenuProbe {
+    ctx: egui::Context,
+    time: f64,
+    shapes: Vec<egui::epaint::ClippedShape>,
+}
+
+impl MenuProbe {
+    fn new() -> Self {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::test_fonts());
+        Self { ctx, time: 0.0, shapes: Vec::new() }
+    }
+    fn run(&mut self, events: Vec<Event>, draw: &mut dyn FnMut(&mut egui::Ui)) {
+        self.time += 0.05;
+        let input = RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 1400.0))),
+            time: Some(self.time),
+            events,
+            ..Default::default()
+        };
+        self.shapes = self
+            .ctx
+            .run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| draw(ui));
+            })
+            .shapes;
+    }
+    fn texts(&self) -> Vec<String> {
+        self.shapes
+            .iter()
+            .filter_map(|cs| match &cs.shape {
+                Shape::Text(t) if !t.galley.text().is_empty() => Some(t.galley.text().to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+    fn has(&self, label: &str) -> bool {
+        self.texts().iter().any(|t| t == label)
+    }
+    /// Press + release on the painted `label` (opens a submenu, or fires a row).
+    fn click(&mut self, label: &str, draw: &mut dyn FnMut(&mut egui::Ui)) {
+        let pos = self
+            .shapes
+            .iter()
+            .find_map(|cs| match &cs.shape {
+                Shape::Text(t) if t.galley.text() == label => Some(t.pos + vec2(4.0, 4.0)),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("'{label}' not painted: {:?}", self.texts()));
+        let btn =
+            |pressed| Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
+        self.run(vec![Event::PointerMoved(pos)], draw);
+        self.run(vec![btn(true)], draw);
+        self.run(vec![btn(false)], draw);
+        self.run(vec![], draw);
+        self.run(vec![], draw);
     }
 }
 
@@ -966,41 +1058,31 @@ fn headless_marker_click_seek_and_drag() {
     assert!((m.t - 2.0).abs() < 0.05, "clip marker local t {}", m.t);
 }
 
+/// A small marker flag still wins a click over the clip body it sits on (registered after the body),
+/// even with the Blade active; a Blade click elsewhere on the body - low on a tall row too - still cuts.
 #[test]
-fn headless_marker_click_wins_over_split_body_bottom_zone() {
-    // Risks table (plans/ui-overhaul/issues/snap-engine.md): splitting the clip body interact into
-    // top/bottom sub-rects could steal hit-test priority from the marker-flag rects, which are
-    // deliberately registered AFTER both body halves so small flags win. headless_marker_click_seek_
-    // and_drag only ever uses a default-height (non-split) track, so it never exercises a row where
-    // the new bottom-zone hairline actually coexists with a marker. Use a tall/split track here.
+fn headless_marker_click_wins_over_the_blade_body() {
     let mut h = Harness::new();
-    h.project.tracks[0].height = 2.0 * MIN_TRACK_H + 8.0; // >= 2x MIN_TRACK_H triggers split_body
+    h.project.tracks[0].height = 2.0 * MIN_TRACK_H + 8.0;
+    h.tool = Tool::Cut;
     h.frame(vec![]);
     let rt = row_top(&h.state, &h.project, 0).unwrap();
     let th = h.project.tracks[0].height;
     let cid = h.video_clip().id;
     let mid = h.project.add_clip_marker(cid, 1.0, "beat").unwrap();
     h.frame(vec![]);
-
-    // click on the marker's own flag, up in the row's top zone: must still select the marker, not
-    // be read as a plain body click or a split.
     let mp = pos2(h.state.x_at(1.0) + 1.0, rt + 4.0);
     h.press(mp);
     h.release(mp);
     h.frame(vec![]);
-    assert_eq!(h.state.selected_marker, Some(mid), "marker flag still wins a click on a split-body row");
-    assert_eq!(h.project.tracks[0].clips.len(), 1, "the marker click must not also be read as a split");
-
-    // sanity: the bottom-zone hairline the marker "wins over" really is live on this row - with the
-    // Cut tool active, a plain click lower in the body (away from the marker, clear of the HANDLE_H
-    // resize strip at the very bottom edge) still splits, proving this test actually exercises the
-    // split_body code path.
-    h.tool = Tool::Cut;
+    assert_eq!(h.state.selected_marker, Some(mid), "the marker flag wins the click");
+    assert_eq!(h.project.tracks[0].clips.len(), 1, "the marker click must not also cut");
+    h.settle();
     let sp = pos2(h.state.x_at(3.0) + 1.0, rt + th * 0.7);
     h.press(sp);
     h.release(sp);
     h.frame(vec![]);
-    assert_eq!(h.project.tracks[0].clips.len(), 2, "bottom-zone hairline click still splits away from the marker");
+    assert_eq!(h.project.tracks[0].clips.len(), 2, "a Blade click elsewhere on the body cuts");
 }
 
 #[test]
@@ -1416,50 +1498,35 @@ fn waveform_takes_the_clip_label_colour() {
 fn audio_clip_menu_swaps_add_mask_for_a_bus() {
     let mut p = Project::new();
     p.add_bus("Music");
-    let ctx = egui::Context::default();
-    ctx.set_fonts(crate::theme::test_fonts()); // size-diet: no default_fonts feature anymore
-    let mut texts = |audio: bool| -> Vec<String> {
-        let (mut act, mut acts, mut edit) = (None, Vec::new(), false);
-        let full = ctx.run(
-            RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(400.0, 1400.0))), ..Default::default() },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    clip_menu(
-                        ui,
-                        1,
-                        false,
-                        false,
-                        true,
-                        audio,
-                        false,
-                        false,
-                        None,
-                        None,
-                        &mut false,
-                        &p.labels,
-                        &p.buses,
-                        &[],
-                        &mut act,
-                        &mut acts,
-                        &mut edit,
-                    )
-                });
-            },
-        );
-        full.shapes
-            .iter()
-            .filter_map(|cs| match &cs.shape {
-                Shape::Text(t) => Some(t.galley.text().to_string()),
-                _ => None,
-            })
-            .collect()
+    let texts = |audio: bool, open: &str| -> Vec<String> {
+        let m = ClipMenu { audio, ..test_clip_menu(&p.labels, &p.buses, &[]) };
+        let (mut act, mut tg, mut el) = (None, false, false);
+        let mut draw = |ui: &mut egui::Ui| clip_menu(ui, &m, &mut act, &mut tg, &mut el);
+        let mut probe = MenuProbe::new();
+        probe.run(vec![], &mut draw);
+        probe.click(open, &mut draw);
+        probe.texts()
     };
-    let v = texts(false);
-    assert!(v.iter().any(|s| s == "Add Mask"), "video clips keep Add Mask: {v:?}");
-    assert!(!v.iter().any(|s| s == "Bus"), "video clips get no bus routing");
-    let a = texts(true);
-    assert!(!a.iter().any(|s| s == "Add Mask"), "a mask means nothing on audio: {a:?}");
-    assert!(a.iter().any(|s| s == "Bus"), "audio clips get the bus submenu: {a:?}");
+    assert!(texts(false, "Add").iter().any(|s| s == "Add Mask to Selection"), "video clips keep Add Mask");
+    assert!(!texts(true, "Add").iter().any(|s| s == "Add Mask to Selection"), "a mask means nothing on audio");
+    assert!(texts(true, "Audio").iter().any(|s| s == "Bus"), "audio clips get the bus submenu");
+    assert!(!texts(false, "Audio").iter().any(|s| s == "Bus"), "video clips get no bus routing");
+}
+
+/// A `ClipMenu` for a plain video clip (id 1) - tests override the fields they care about.
+fn test_clip_menu<'a>(labels: &'a [Label], buses: &'a [crate::model::Bus], shared: &'a [EffectKind]) -> ClipMenu<'a> {
+    ClipMenu {
+        id: 1,
+        container: false,
+        audio: false,
+        native_size: true,
+        sequence: false,
+        library_selected: None,
+        graph_open: None,
+        labels,
+        buses,
+        shared_effects: shared,
+    }
 }
 
 /// Only an effect kind carried by 2+ of the given clips counts as "shared" (a clip's own duplicate
@@ -1486,28 +1553,13 @@ fn shared_effect_kinds_needs_two_clips_with_the_same_kind() {
 #[test]
 fn clip_menu_effects_submenu_only_shows_shared_kinds() {
     let p = Project::new();
-    let ctx = egui::Context::default();
-    ctx.set_fonts(crate::theme::test_fonts()); // size-diet: no default_fonts feature anymore
-    let mut texts = |shared: &[EffectKind]| -> Vec<String> {
-        let (mut act, mut acts, mut edit) = (None, Vec::new(), false);
-        let full = ctx.run(
-            RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(400.0, 1400.0))), ..Default::default() },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    clip_menu(
-                        ui, 1, false, false, true, false, false, false, None, None, &mut false, &p.labels, &p.buses,
-                        shared, &mut act, &mut acts, &mut edit,
-                    )
-                });
-            },
-        );
-        full.shapes
-            .iter()
-            .filter_map(|cs| match &cs.shape {
-                Shape::Text(t) => Some(t.galley.text().to_string()),
-                _ => None,
-            })
-            .collect()
+    let texts = |shared: &[EffectKind]| -> Vec<String> {
+        let m = test_clip_menu(&p.labels, &p.buses, shared);
+        let (mut act, mut tg, mut el) = (None, false, false);
+        let mut draw = |ui: &mut egui::Ui| clip_menu(ui, &m, &mut act, &mut tg, &mut el);
+        let mut probe = MenuProbe::new();
+        probe.run(vec![], &mut draw);
+        probe.texts()
     };
     let none = texts(&[]);
     assert!(!none.iter().any(|s| s == "Effects"), "no shared kind: no Effects submenu: {none:?}");
@@ -1598,8 +1650,8 @@ fn transform_menu_bulk_stretches_selection_with_one_undo() {
 fn headless_video_track_v_toggle_flips_muted() {
     let mut h = Harness::new();
     let lanes = h.state.lanes_rect;
-    // V1 header row: S button right-aligned (18 wide, 4 in), V button 21 pt left of it
-    let vb = pos2(lanes.left() - 34.0, lanes.top() + h.project.tracks[0].height * 0.5);
+    // V1 header row: the eye is the right-most button (18 wide, 4 in)
+    let vb = pos2(lanes.left() - 13.0, lanes.top() + h.project.tracks[0].height * 0.5);
     assert!(!h.project.tracks[0].muted);
     h.press(vb);
     let r = h.release(vb);
@@ -1610,33 +1662,48 @@ fn headless_video_track_v_toggle_flips_muted() {
 
 // ---- ws:snap-engine ----
 
-/// On a row >= 2x MIN_TRACK_H with the Cut tool active, the lower half hairline-clicks to split;
-/// the upper half (and the whole clip on a default-height row) still moves on drag.
+/// ws:timeline-surface: the clip body is one zone. With Select a click low on a tall row selects (no cut,
+/// no split hairline) and a right-click there opens the clip menu (the old bottom-half split zone had no
+/// menu at all); the Blade cuts anywhere on the body and shows its hairline first.
 #[test]
-fn bottom_zone_click_splits_top_zone_moves() {
+fn clip_body_is_one_zone_blade_cuts_anywhere() {
     let mut h = Harness::new();
-    h.project.tracks[0].height = 3.0 * MIN_TRACK_H; // tall enough to split
-    h.project.tracks[1].clips.clear();
+    h.project.tracks[0].height = 3.0 * MIN_TRACK_H;
+    h.project.tracks[1].clips.clear(); // no audio volume line (also accent) in the paint list
     h.frame(vec![]);
-    let lanes = h.state.lanes_rect;
-    let row_top = lanes.top();
-    let clip = h.video_clip();
-    let (start, end) = (clip.start, clip.end());
-    let before = h.project.tracks[0].clips.len();
+    let pal = Palette::new(true, Color32::from_rgb(0, 120, 212));
+    let top = h.state.lanes_rect.top();
+    let th = h.project.tracks[0].height;
+    let (mid, id) = ((h.video_clip().start + h.video_clip().end()) / 2.0, h.video_clip().id);
+    let low = pos2(h.state.x_at(mid), top + th * 0.75);
+    h.frame(vec![Event::PointerMoved(low)]);
+    assert!(!h.has_line(pal.accent), "Select: no split hairline over the body");
+    h.press(low);
+    h.release(low);
+    h.frame(vec![]);
+    assert_eq!(h.project.tracks[0].clips.len(), 1, "Select never cuts");
+    assert!(h.selection.contains(&id), "a click low on the body selects");
+    h.settle();
+    h.rclick(low);
+    assert!(h.painted_text("Split at Playhead").is_some(), "a right-click low on a tall clip opens its menu");
+    let esc = Event::Key {
+        key: egui::Key::Escape,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    };
+    h.frame(vec![esc]);
+    h.settle();
     h.tool = Tool::Cut;
-    // bottom half click splits
-    let bx = h.state.x_at((start + end) / 2.0);
-    let by = row_top + h.project.tracks[0].height * 0.75;
-    h.press(pos2(bx, by));
-    h.release(pos2(bx, by));
+    let high = pos2(h.state.x_at(mid), top + th * 0.25);
+    h.frame(vec![Event::PointerMoved(high)]);
     h.frame(vec![]);
-    assert_eq!(h.project.tracks[0].clips.len(), before + 1, "bottom-half click must split the clip");
-    // top half drags the (now-left) clip instead of splitting
-    let ty = row_top + h.project.tracks[0].height * 0.25;
-    let left_start = h.project.tracks[0].clips.iter().map(|c| c.start).fold(f64::INFINITY, f64::min);
-    let tx = h.state.x_at(left_start + 0.1);
-    let edited = h.drag(pos2(tx, ty), pos2(tx + 40.0, ty));
-    assert!(edited, "top-half drag must move, not split");
+    assert!(h.has_line(pal.accent), "the Blade shows where it will cut");
+    h.press(high);
+    h.release(high);
+    h.frame(vec![]);
+    assert_eq!(h.project.tracks[0].clips.len(), 2, "the Blade cuts high on the body too");
 }
 
 /// Clicking a seam (two abutting clips' shared edge) selects an `EditPoint`: plain=Both,
@@ -2286,17 +2353,16 @@ fn ctrl_splice_and_alt_overwrite_drop_onto_pointer_audio_row() {
     assert_eq!(h.project.tracks[1].clips.len(), 1, "A1 (the model's default audio track) is untouched");
 }
 
-/// Clicking the header Lock/Ripple toggles flips the corresponding `Track` flag through the undo-free
+/// Header Lock (its glyph) and Ripple (the header's right-click) are undo-free track state via the
 /// `track_toggle` deferred field - zero undo growth, unlike every `Act` variant (e.g. Mute/Solo), which
-/// pushes one unconditionally. A locked lane also paints the new hatch treatment.
+/// pushes one unconditionally. A locked lane also paints the hatch treatment.
 #[test]
 fn header_lock_ripple_toggle_zero_undo_and_hatch() {
     let mut h = Harness::new();
     let lanes = h.state.lanes_rect;
     let row_center_y = lanes.top() + h.project.tracks[0].height * 0.5;
-    // button centers, left of the mute/solo pair (see header.rs: sb, mb, rb, lb)
-    let lock_btn = pos2(lanes.left() - 76.0, row_center_y);
-    let ripple_btn = pos2(lanes.left() - 55.0, row_center_y);
+    // lock sits left of the eye (see header.rs: mb, lb)
+    let lock_btn = pos2(lanes.left() - 34.0, row_center_y);
 
     assert!(!h.project.tracks[0].locked);
     h.press(lock_btn);
@@ -2307,6 +2373,7 @@ fn header_lock_ripple_toggle_zero_undo_and_hatch() {
     let pal = Palette::new(true, Color32::from_rgb(0, 120, 212));
     assert!(h.has_line(pal.text_dim.gamma_multiply(0.25)), "a locked lane paints the hatch");
 
+    h.settle();
     h.press(lock_btn);
     h.release(lock_btn);
     h.frame(vec![]);
@@ -2315,10 +2382,10 @@ fn header_lock_ripple_toggle_zero_undo_and_hatch() {
     assert!(!h.has_line(pal.text_dim.gamma_multiply(0.25)), "an unlocked lane paints no hatch");
 
     let ripple0 = h.project.tracks[0].ripple;
-    h.press(ripple_btn);
-    h.release(ripple_btn);
-    h.frame(vec![]);
-    assert_ne!(h.project.tracks[0].ripple, ripple0, "Ripple toggled");
+    h.settle();
+    h.rclick(pos2(lanes.left() - 100.0, row_center_y));
+    h.click_text("Ripple (Sync)");
+    assert_ne!(h.project.tracks[0].ripple, ripple0, "Ripple toggled from the header menu");
     assert_eq!(h.undos, 0, "the header Ripple toggle must push no undo");
 }
 
@@ -2400,7 +2467,7 @@ fn assert_no_idle_repaint_timeline_header() {
     h.project.tracks[0].locked = true;
     let lanes = h.state.lanes_rect;
     let row_center_y = lanes.top() + h.project.tracks[0].height * 0.5;
-    let lock_btn = pos2(lanes.left() - 76.0, row_center_y);
+    let lock_btn = pos2(lanes.left() - 34.0, row_center_y);
     h.frame(vec![Event::PointerMoved(lock_btn)]);
     for _ in 0..30 {
         h.frame(vec![]);
@@ -2411,163 +2478,41 @@ fn assert_no_idle_repaint_timeline_header() {
     );
 }
 
-/// The new clip-menu entries dispatch what they say: "Join Through Edit" pushes the existing
-/// `Action::JoinThroughEdit`; "Replace with Library Selection" is only clickable (dispatches
-/// `Act::ReplaceClip`) when exactly one Library asset is selected.
+/// The clip menu's rows dispatch what they say: an Action row queues its Action (the menu bar's path -
+/// Split / Delete are those Actions now, not bespoke `Act`s); "Un-nest" and "Replace with Library
+/// Selection" keep the clicked clip's `Act`, and are greyed (no dispatch) when they can't apply.
 #[test]
-fn clip_menu_join_duplicate_replace_unnest_dispatch() {
+fn clip_menu_rows_dispatch_actions_and_acts() {
     use crate::hotkeys::Action;
     let p = Project::new();
-    let ctx = egui::Context::default();
-    ctx.set_fonts(crate::theme::test_fonts());
-    let screen_rect = Some(Rect::from_min_size(Pos2::ZERO, vec2(400.0, 1400.0)));
-    let render = |is_seq: bool,
-                  lib_sel: Option<Id>,
-                  act: &mut Option<Act>,
-                  acts: &mut Vec<Action>,
-                  events: Vec<Event>|
-     -> egui::FullOutput {
-        let mut edit = false;
-        ctx.run(RawInput { screen_rect, events, ..Default::default() }, |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                clip_menu(
-                    ui,
-                    1,
-                    false,
-                    false,
-                    true,
-                    false,
-                    false,
-                    is_seq,
-                    lib_sel,
-                    None,
-                    &mut false,
-                    &p.labels,
-                    &p.buses,
-                    &[],
-                    act,
-                    acts,
-                    &mut edit,
-                )
-            });
-        })
+    let run = |m: &ClipMenu, path: &[&str]| -> (bool, Option<Id>, Vec<Action>) {
+        let (mut act, mut tg, mut el) = (None, false, false);
+        {
+            let mut draw = |ui: &mut egui::Ui| clip_menu(ui, m, &mut act, &mut tg, &mut el);
+            let mut probe = MenuProbe::new();
+            probe.run(vec![], &mut draw);
+            for l in path {
+                probe.click(l, &mut draw);
+            }
+        }
+        let fired = act.is_some();
+        let target = match act {
+            Some(Act::ReplaceClip(id)) | Some(Act::Unnest(id)) => Some(id),
+            _ => None,
+        };
+        (fired, target, crate::ui::menu::take_queued())
     };
-    let text_pos = |full: &egui::FullOutput, label: &str| -> Pos2 {
-        full.shapes
-            .iter()
-            .find_map(|cs| match &cs.shape {
-                Shape::Text(t) if t.galley.text() == label => Some(t.pos),
-                _ => None,
-            })
-            .unwrap_or_else(|| panic!("'{label}' not painted"))
-    };
-
-    // every new entry is painted
-    let (mut act, mut acts) = (None, Vec::new());
-    let full = render(true, Some(7), &mut act, &mut acts, vec![]);
-    for label in ["Un-nest", "Join Through Edit", "Duplicate", "Replace with Library Selection"] {
-        text_pos(&full, label);
-    }
-
-    // clicking "Join Through Edit" pushes the existing Action (press then release, same ctx so the
-    // widget's click state carries over between frames, matching real usage)
-    let join_pt = text_pos(&full, "Join Through Edit") + vec2(4.0, 4.0);
-    render(
-        true,
-        Some(7),
-        &mut act,
-        &mut acts,
-        vec![
-            Event::PointerMoved(join_pt),
-            Event::PointerButton {
-                pos: join_pt,
-                button: PointerButton::Primary,
-                pressed: true,
-                modifiers: Modifiers::NONE,
-            },
-        ],
-    );
-    render(
-        true,
-        Some(7),
-        &mut act,
-        &mut acts,
-        vec![Event::PointerButton {
-            pos: join_pt,
-            button: PointerButton::Primary,
-            pressed: false,
-            modifiers: Modifiers::NONE,
-        }],
-    );
-    assert!(acts.contains(&Action::JoinThroughEdit), "'Join Through Edit' must push Action::JoinThroughEdit: {acts:?}");
-
-    // "Replace with Library Selection": disabled (no click-through) when nothing is Library-selected
-    let (mut act_d, mut acts_d) = (None, Vec::new());
-    let full_d = render(true, None, &mut act_d, &mut acts_d, vec![]);
-    let replace_pt = text_pos(&full_d, "Replace with Library Selection") + vec2(4.0, 4.0);
-    render(
-        true,
-        None,
-        &mut act_d,
-        &mut acts_d,
-        vec![
-            Event::PointerMoved(replace_pt),
-            Event::PointerButton {
-                pos: replace_pt,
-                button: PointerButton::Primary,
-                pressed: true,
-                modifiers: Modifiers::NONE,
-            },
-        ],
-    );
-    render(
-        true,
-        None,
-        &mut act_d,
-        &mut acts_d,
-        vec![Event::PointerButton {
-            pos: replace_pt,
-            button: PointerButton::Primary,
-            pressed: false,
-            modifiers: Modifiers::NONE,
-        }],
-    );
-    assert!(act_d.is_none(), "a disabled 'Replace with Library Selection' must not dispatch");
-
-    // enabled (exactly one Library asset selected): clicking it dispatches Act::ReplaceClip
-    let (mut act_e, mut acts_e) = (None, Vec::new());
-    render(true, Some(7), &mut act_e, &mut acts_e, vec![]);
-    render(
-        true,
-        Some(7),
-        &mut act_e,
-        &mut acts_e,
-        vec![
-            Event::PointerMoved(replace_pt),
-            Event::PointerButton {
-                pos: replace_pt,
-                button: PointerButton::Primary,
-                pressed: true,
-                modifiers: Modifiers::NONE,
-            },
-        ],
-    );
-    render(
-        true,
-        Some(7),
-        &mut act_e,
-        &mut acts_e,
-        vec![Event::PointerButton {
-            pos: replace_pt,
-            button: PointerButton::Primary,
-            pressed: false,
-            modifiers: Modifiers::NONE,
-        }],
-    );
-    assert!(
-        matches!(act_e, Some(Act::ReplaceClip(1))),
-        "an enabled 'Replace with Library Selection' dispatches Act::ReplaceClip"
-    );
+    crate::ui::menu::take_queued();
+    let base = test_clip_menu(&p.labels, &p.buses, &[]);
+    assert_eq!(run(&base, &["Join Through Edit"]).2, vec![Action::JoinThroughEdit]);
+    assert_eq!(run(&base, &["Split at Playhead"]).2, vec![Action::Split]);
+    assert_eq!(run(&base, &["Delete"]).2, vec![Action::Delete]);
+    assert_eq!(run(&base, &["Replace with Library Selection"]), (false, None, vec![]), "greyed: no Library pick");
+    let lib = ClipMenu { library_selected: Some(7), ..test_clip_menu(&p.labels, &p.buses, &[]) };
+    assert_eq!(run(&lib, &["Replace with Library Selection"]), (true, Some(1), vec![]), "the clicked clip's Act");
+    let seq = ClipMenu { sequence: true, ..test_clip_menu(&p.labels, &p.buses, &[]) };
+    assert_eq!(run(&seq, &["Nest", "Un-nest Sequence Clip"]), (true, Some(1), vec![]));
+    assert_eq!(run(&base, &["Nest", "Un-nest Sequence Clip"]), (false, None, vec![]), "only a Sequence clip");
 }
 
 /// Extends `headless_1000_clips_stays_fast`: a live RippleTrim drag (ghost-paint only, zero model
@@ -2623,26 +2568,21 @@ fn header_rename_commits_on_enter() {
     assert!(h.state.track_rename.is_none(), "rename mode closes after commit");
 }
 
+/// The track colour is a stripe down the header's left edge (the old swatch box read as a checkbox),
+/// picked from the header's right-click ▸ Colour.
 #[test]
-fn header_color_swatch_cycles_label_colors() {
+fn header_colour_is_a_left_stripe_picked_from_the_menu() {
     let mut h = Harness::new();
+    let lanes = h.state.lanes_rect;
+    h.rclick(pos2(lanes.left() - 100.0, lanes.top() + 20.0));
+    h.click_text("Colour");
+    let (name, color) = crate::model::LABEL_COLORS[2];
+    h.click_text(name);
     h.frame(vec![]);
-    // egui's CentralPanel adds its own inset around `full`, so the header's own left edge (where the
-    // grip/swatch are anchored) isn't screen x=0 -- derive it from the real laid-out rect instead.
-    let header_left = h.state.lanes_rect.left() - h.state.header_w;
-    let swatch_pos = pos2(header_left + 18.0, h.state.lanes_rect.top() + 32.0);
-    assert_eq!(h.project.tracks[0].color, None);
-    for (i, (_, color)) in crate::model::LABEL_COLORS.iter().enumerate() {
-        h.press(swatch_pos);
-        h.release(swatch_pos);
-        h.frame(vec![]);
-        assert_eq!(h.project.tracks[0].color, Some(*color), "click {i}");
-    }
-    // one more click wraps back to None
-    h.press(swatch_pos);
-    h.release(swatch_pos);
-    h.frame(vec![]);
-    assert_eq!(h.project.tracks[0].color, None, "cycles back to None after all 8 label colours");
+    assert_eq!(h.project.tracks[0].color, Some(color));
+    let [r, g, b] = color;
+    assert!(h.has_fill(Color32::from_rgb(r, g, b)), "the stripe is painted in the track colour");
+    assert_eq!(h.undos, 1);
 }
 
 #[test]
@@ -2701,74 +2641,134 @@ fn overview_strip_paints_only_when_enabled() {
     assert!(resp.seeked, "clicking the overview strip seeks the playhead");
 }
 
+/// The inner "Main" strip is gone (the Timeline pane's own tab carries the sequence), so the ruler sits
+/// at the very top of the widget.
 #[test]
-fn sequence_tab_strip_shows_main_and_open() {
+fn no_inner_sequence_strip() {
     let mut h = Harness::new();
-    h.frame(vec![]);
-    assert!(h.painted_text("Main").is_some(), "Main tab always shown");
-    assert!(h.painted_text("Seq A").is_none());
     let seq_id = h.project.new_sequence("Seq A", 1920, 1080, 30.0);
     assert!(h.project.open_sequence(seq_id));
     h.frame(vec![]);
-    assert!(h.painted_text("Seq A").is_some(), "open-sequence tab shown alongside Main");
-    // egui's CentralPanel insets `full`, so the tab strip's own origin isn't screen (0,0) -- the "Main"
-    // tab text position (painted this frame) is a reliable anchor regardless of that inset.
-    let main_text_pos = h.painted_text("Main").expect("Main tab painted");
-    let main_click = main_text_pos + vec2(10.0, 6.0);
-    h.press(main_click);
-    let resp = h.release(main_click);
-    assert!(
-        resp.actions.contains(&crate::hotkeys::Action::OpenParentSequence),
-        "clicking Main dispatches the existing OpenParentSequence path"
-    );
+    assert!(h.painted_text("Main").is_none() && h.painted_text("Seq A").is_none(), "{:?}", h.texts());
+    let inset = h.state.lanes_rect.left() - h.state.header_w; // CentralPanel's margin, same on every side
+    assert_eq!(h.state.lanes_rect.top(), inset + RULER_H, "nothing above the ruler");
 }
 
-/// `clip_menu` has ~35 rows -- too tall for a right-click popup to lay out fully inside the 400 px
-/// headless screen (egui truncates an over-height menu with a "more" indicator rather than painting
-/// every row), so this calls `clip_menu` directly in a plain, generously-tall panel instead of going
-/// through a real right-click popup.
+/// Match Frame / Reveal in Library are on every clip menu; the menu is grouped into submenus rather than
+/// ~32 flat rows; and the mislabeled "Convert to Adjustment Layer" (it ADDED a new layer) is gone.
 #[test]
-fn clip_menu_always_offers_match_frame_and_reveal() {
-    let ctx = egui::Context::default();
-    ctx.set_fonts(crate::theme::test_fonts());
-    let (mut act, mut actions, mut edit_labels, mut toggle_graph) = (None, Vec::new(), false, false);
-    let (labels, buses, shared_effects): (Vec<Label>, Vec<crate::model::Bus>, Vec<EffectKind>) =
-        (vec![], vec![], vec![]);
-    let input =
-        RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 4000.0))), ..Default::default() };
-    let full = ctx.run(input, |ctx| {
-        egui::CentralPanel::default().show(ctx, |ui| {
-            clip_menu(
-                ui,
-                1,
-                false,
-                false,
-                true,
-                false,
-                false,
-                false,
-                None,
-                None,
-                &mut toggle_graph,
-                &labels,
-                &buses,
-                &shared_effects,
-                &mut act,
-                &mut actions,
-                &mut edit_labels,
-            );
-        });
-    });
-    let texts: Vec<String> = full
-        .shapes
-        .iter()
-        .filter_map(|cs| match &cs.shape {
-            Shape::Text(t) => Some(t.galley.text().to_string()),
-            _ => None,
-        })
-        .collect();
-    assert!(texts.iter().any(|s| s.contains("Match Frame")), "Match Frame row in every clip menu");
-    assert!(texts.iter().any(|s| s.contains("Reveal in Library")), "Reveal in Library row in every clip menu");
+fn clip_menu_is_grouped_without_the_adjustment_row() {
+    let p = Project::new();
+    let m = test_clip_menu(&p.labels, &p.buses, &[]);
+    let (mut act, mut tg, mut el) = (None, false, false);
+    let mut draw = |ui: &mut egui::Ui| clip_menu(ui, &m, &mut act, &mut tg, &mut el);
+    let mut probe = MenuProbe::new();
+    probe.run(vec![], &mut draw);
+    assert!(probe.has("Match Frame") && probe.has("Reveal in Library"), "{:?}", probe.texts());
+    let rows = probe.texts().iter().filter(|t| t.chars().count() > 1).count(); // not the icon glyphs
+    assert!(rows <= 24, "grouped into submenus, not ~32 flat rows: {rows}");
+    assert!(!probe.texts().iter().any(|t| t.contains("Adjustment")));
+    probe.click("Add", &mut draw);
+    assert!(probe.has("Add Transition at Clip End"));
+    assert!(!probe.texts().iter().any(|t| t.contains("Adjustment")), "not under Add ▸ either");
+}
+
+/// The track under the pointer (lane or header) is what the track Actions target; nothing is under the
+/// pointer over the ruler.
+#[test]
+fn hover_track_follows_the_pointer() {
+    let mut h = Harness::new();
+    let lanes = h.state.lanes_rect;
+    let a1_y = lanes.top() + h.project.tracks[0].height + 10.0;
+    h.frame(vec![Event::PointerMoved(pos2(lanes.left() + 50.0, lanes.top() + 10.0))]);
+    assert_eq!(h.state.hover_track, Some(0), "over V1's lane");
+    h.frame(vec![Event::PointerMoved(pos2(lanes.left() - 60.0, a1_y))]);
+    assert_eq!(h.state.hover_track, Some(1), "over A1's header");
+    h.frame(vec![Event::PointerMoved(pos2(lanes.left() + 50.0, lanes.top() - 5.0))]);
+    assert_eq!(h.state.hover_track, None, "the ruler is no track");
+}
+
+/// A header shows Solo only while hovered - or while that track is soloed, so the state never hides.
+#[test]
+fn solo_shows_on_hover_or_while_on() {
+    let mut h = Harness::new();
+    let lanes = h.state.lanes_rect;
+    let solos = |h: &Harness| h.texts().iter().filter(|(t, _)| t == "S").count();
+    let lane = pos2(lanes.right() - 20.0, lanes.top() + 10.0);
+    h.frame(vec![Event::PointerMoved(lane)]);
+    assert_eq!(solos(&h), 0, "no Solo buttons at rest");
+    h.frame(vec![Event::PointerMoved(pos2(lanes.left() - 100.0, lanes.top() + 10.0))]);
+    assert_eq!(solos(&h), 1, "hovering a header shows its Solo");
+    h.project.tracks[1].solo = true;
+    h.frame(vec![Event::PointerMoved(lane)]);
+    assert_eq!(solos(&h), 1, "a soloed track keeps its S without hover");
+}
+
+/// Right-clicking a gap selects it (hatched, like a click) and its menu's Close Gap runs the same
+/// `close_gap_at` Delete does.
+#[test]
+fn gap_right_click_selects_it_and_close_gap_closes_it() {
+    let mut h = Harness::new();
+    h.project.tracks[1].clips.clear();
+    h.project.tracks[0].clips.clear();
+    h.project.tracks[0].ripple = Some(true);
+    h.project.tracks[0].clips.push(Clip::new(401, ClipKind::Video, "a", 0.0, 2.0));
+    h.project.tracks[0].clips.push(Clip::new(402, ClipKind::Video, "b", 5.0, 2.0));
+    h.frame(vec![]);
+    h.rclick(pos2(h.state.x_at(3.5), h.state.lanes_rect.top() + 30.0));
+    assert_eq!(h.state.gap_sel, Some((0, 2.0, 5.0)), "a right-click selects the gap");
+    assert!(h.click_text("Close Gap").edited);
+    assert!((h.project.clip(402).unwrap().start - 2.0).abs() < 1e-6, "the next clip pulled left");
+}
+
+/// A seam's right-click arms that edit point (both sides) and selects its incoming clip, which is what
+/// its two rows act on: Roll to Playhead (ExtendEdit) and Add Transition at Selected Cut.
+#[test]
+fn seam_right_click_arms_the_edit_point_and_offers_roll_and_transition() {
+    use crate::hotkeys::Action;
+    let mut h = Harness::new();
+    h.project.tracks[1].clips.clear();
+    h.project.tracks[0].clips.clear();
+    h.project.tracks[0].clips.push(Clip::new(201, ClipKind::Video, "a", 0.0, 2.0));
+    h.project.tracks[0].clips.push(Clip::new(202, ClipKind::Video, "b", 2.0, 2.0));
+    h.frame(vec![]);
+    let seam = pos2(h.state.x_at(2.0), h.state.lanes_rect.top() + 30.0);
+    h.rclick(seam);
+    assert_eq!(h.state.edit_point.map(|e| (e.t, e.side)), Some((2.0, Side::Both)));
+    assert_eq!(h.selection, vec![202], "the incoming clip: AddTransition's cut is on its left");
+    assert!(h.click_text("Roll Edit to Playhead").actions.contains(&Action::ExtendEdit));
+    h.settle();
+    h.rclick(seam);
+    crate::ui::menu::take_queued();
+    h.click_text("Add Transition at Selected Cut");
+    assert_eq!(crate::ui::menu::take_queued(), vec![Action::AddTransition]);
+}
+
+/// The ruler's View ▸ holds what used to be a toolbar row: the view presets (radio) and the overview.
+#[test]
+fn ruler_view_menu_picks_a_preset_and_toggles_overview() {
+    use crate::hotkeys::Action;
+    let mut h = Harness::new();
+    let ruler = pos2(h.state.lanes_rect.left() + 200.0, h.state.lanes_rect.top() - 10.0);
+    h.rclick(ruler);
+    h.click_text("View");
+    h.click_text("Compact");
+    assert_eq!(h.state.view_idx, 1, "a preset pick switches the view");
+    h.settle();
+    h.rclick(ruler);
+    h.click_text("View");
+    assert!(h.click_text("Overview Strip").actions.contains(&Action::ToggleOverview));
+}
+
+/// The subtitle lane's empty area has its own menu: add a cue at the playhead, or import a file.
+#[test]
+fn subtitle_lane_menu_offers_add_and_import() {
+    let mut h = Harness::new();
+    h.project.add_cue(5.0, 6.0, "hi");
+    h.frame(vec![]);
+    h.rclick(pos2(h.state.x_at(1.0), h.state.lanes_rect.top() - SUB_LANE_H * 0.5));
+    assert!(h.painted_text("Add Subtitle at Playhead").is_some(), "{:?}", h.texts());
+    assert!(h.click_text("Import Subtitles…").import_subtitles);
 }
 
 #[test]

@@ -24,9 +24,8 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
             true
         }
         Action::RenameTrack => {
-            // mirrors trim_actions.rs's toggle_track_flag: no hover state exists headlessly, so the
-            // first selected clip's track stands in for "the track the header double-click would hit".
-            if let Some(ti) = app.selection.first().and_then(|&id| app.project.track_of(id)) {
+            // the track under the cursor, else the selection's (same target as the track-flag toggles)
+            if let Some(ti) = trim_actions::target_track(app) {
                 app.timeline.track_rename = Some((ti, app.project.tracks[ti].name.clone()));
             }
             true

@@ -1,5 +1,6 @@
 //! Subtitle-cue lane: the burned-in cues drawn as small clips above the video rows.
 use super::*;
+use crate::ui::menu;
 
 /// What a `CueDrag` is doing. `Move`'s `grab` is the time offset from the press point to the cue's
 /// start, captured once at drag start, so the cue doesn't jump to re-center under the pointer.
@@ -74,6 +75,13 @@ pub(super) fn draw(
         if lane_resp.clicked() {
             state.sub_sel.clear();
         }
+        // ws:timeline-surface: the lane's own (empty-area) menu
+        lane_resp.context_menu(|ui| {
+            super::menus::acts(ui, &[Some(crate::hotkeys::Action::AddSubtitle)]);
+            if menu::row(ui, Some(Glyph::ImportArrow), "Import Subtitles…", "").clicked() {
+                out.import_subtitles = true;
+            }
+        });
         let band_range = state.sub_band.and_then(|(t0, _)| {
             let p = pointer?;
             let t1 = state.time_at(p.x);
@@ -178,26 +186,30 @@ pub(super) fn draw(
             let cid = cue.id;
             let ph_in = *c.playhead > cue.start + 0.05 && *c.playhead < cue.end - 0.05;
             r.on_hover_text(&cue.text).context_menu(|ui| {
-                if ui.add_enabled(ph_in, egui::Button::new("Split at Playhead")).on_hover_text("Ctrl+B").clicked() {
+                let split = menu::shortcut(crate::hotkeys::Action::Split);
+                if ui
+                    .add_enabled_ui(ph_in, |ui| menu::row(ui, Some(Glyph::Razor), "Split at Playhead", &split))
+                    .inner
+                    .clicked()
+                {
                     sub_act = Some(SubAct::Split(cid));
-                    ui.close();
                 }
-                if ui.button(plural("Convert to Text Clip")).clicked() {
+                if menu::row(ui, Some(Glyph::Letter('T')), &plural("Convert to Text Clip"), "").clicked() {
                     sub_act = Some(SubAct::Convert(targets.clone()));
-                    ui.close();
                 }
-                if ui.button(plural("Delete Cue")).clicked() {
+                if menu::row(ui, Some(Glyph::Cross), &plural("Delete Cue"), "").clicked() {
                     sub_act = Some(SubAct::Delete(targets.clone()));
-                    ui.close();
                 }
                 ui.separator();
-                if ui.add_enabled(inout.is_some(), egui::Button::new("Delete Cues in In/Out Range")).clicked() {
+                if ui
+                    .add_enabled_ui(inout.is_some(), |ui| menu::row(ui, None, "Delete Cues in In/Out Range", ""))
+                    .inner
+                    .clicked()
+                {
                     sub_act = Some(SubAct::Range);
-                    ui.close();
                 }
-                if ui.button("Clear All Subtitles").clicked() {
+                if menu::row(ui, None, "Clear All Subtitles", "").clicked() {
                     sub_act = Some(SubAct::Clear);
-                    ui.close();
                 }
             });
         }
