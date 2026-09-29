@@ -23,7 +23,9 @@ try {
         exit $LASTEXITCODE
     }
 
-    $exe = Join-Path $repoRoot "target\release\simple-editor.exe"
+    # the target dir is shared across worktrees (.cargo/config.toml), so ask cargo where it is
+    $targetDir = (cargo metadata --format-version 1 --no-deps | ConvertFrom-Json).target_directory
+    $exe = Join-Path $targetDir "release\simple-editor.exe"
     if (-not (Test-Path $exe)) {
         Write-Error "release exe not found at $exe"
         exit 1
