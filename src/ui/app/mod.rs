@@ -779,7 +779,8 @@ impl App {
             mixer: mixer_ui::MixerState::default(),
             markers: markers_ui::MarkersState::default(),
             buses: BusGraph::new(),
-            capture_ui: capture_ui::CaptureUi::default(),
+            // takes roll the timeline by default, as they always did
+            capture_ui: capture_ui::CaptureUi { from_playhead: true, ..Default::default() },
             frame_ui: frame_ui::FrameUi::default(),
             shader_ui: shader_ui::ShaderUi::default(),
             import_ui: import_ui::ImportUi::default(),
