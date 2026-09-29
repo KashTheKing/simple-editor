@@ -376,9 +376,6 @@ pub(crate) struct MonitorState {
     /// `Player::rate()` as of the previous tick, so a `4.0 -> 0.0` transition (a shuttle stop) is only
     /// caught once, not on every frame the rate happens to read zero.
     last_rate: f64,
-    /// Scopes `egui::Window` open/closed (mirrors, but does not replace, `Settings.scopes`'s list of
-    /// which TABS were open - this is just "is the window there at all").
-    pub(crate) scopes_open: bool,
     /// The dual-frame trim view's own two decode slots (outgoing / incoming).
     trim: TrimView,
     /// (clip id, target) armed by the (color-engine-owned) Color section's Eyedropper button
@@ -389,6 +386,8 @@ pub(crate) struct MonitorState {
     pub(crate) pick_armed: Option<(Id, crate::ui::preview::PickTarget)>,
     /// The clip whose Multicam Angles window was closed with × - it stays closed for that clip.
     pub(crate) multicam_dismissed: Option<Id>,
+    /// ws:pages: last tick's readback gate, so the Scopes pane coming on screen re-renders once.
+    stats_were_wanted: bool,
 }
 
 /// FRAME_HOOK: dynamic-trim rate-drop detection, the Scopes readback gate, and the dual-frame trim
@@ -416,13 +415,21 @@ pub(crate) fn monitor_tick(app: &mut App, ctx: &egui::Context) {
     }
     app.monitor.last_rate = rate;
 
-    // Scopes: gate the GPU's readback to only while the window is actually open OR the eyedropper is
-    // armed - `write_picked_color`/`color.pick` both read `gpu.stats()`, which `maybe_readback_stats`
-    // leaves untouched (None, or a stale frame) whenever `stats_wanted` is false, so without this an
-    // eyedropper pick made with Scopes closed reads stale/absent stats.
+    // Scopes: gate the GPU's readback to only while the Scopes pane was on screen last frame (ws:pages:
+    // a hidden tab or another page costs nothing) OR the eyedropper is armed - `write_picked_color`/
+    // `color.pick` both read `gpu.stats()`, which `maybe_readback_stats` leaves untouched (None, or a
+    // stale frame) whenever `stats_wanted` is false, so without this an eyedropper pick made with Scopes
+    // closed reads stale/absent stats.
+    let wanted = stats_wanted(app.pane_drawn(Pane::Scopes), app.monitor.pick_armed.is_some());
     if let Some(gpu) = app.gpu.as_mut() {
-        gpu.set_stats_wanted(app.monitor.scopes_open || app.monitor.pick_armed.is_some());
+        gpu.set_stats_wanted(wanted);
     }
+    // stats are only read back from a render made while wanted: when the pane comes on screen over a
+    // paused frame, render that frame again instead of showing "No frame rendered yet" until a scrub
+    if wanted && !app.monitor.stats_were_wanted && !app.player.is_playing() {
+        app.player.seek(app.playhead);
+    }
+    app.monitor.stats_were_wanted = wanted;
 
     // Trim view: refresh the outgoing/incoming decode slots. Paused during export (no new requests);
     // off entirely when trim_view is off or nothing is selected to trim.
@@ -436,6 +443,11 @@ pub(crate) fn monitor_tick(app: &mut App, ctx: &egui::Context) {
     };
     trim_tick(app, ctx, true, want, out_t);
     trim_tick(app, ctx, false, want, in_t);
+}
+
+/// Pure half of the Scopes readback gate: the pane was drawn last frame, or an eyedropper pick waits.
+fn stats_wanted(scopes_drawn: bool, pick_armed: bool) -> bool {
+    scopes_drawn || pick_armed
 }
 
 /// Pure half of `monitor_tick`'s arm step: a JKL shuttle (nonzero rate) with an edit point selected and
@@ -528,6 +540,17 @@ pub(crate) fn trim_frames(app: &App) -> (Option<Arc<Frame>>, Option<Arc<Frame>>)
 mod tests {
     use super::*;
     use crate::model::{Asset, Clip, ClipKind};
+
+    /// ws:pages: the GPU stats readback runs while the Scopes pane was on screen or an eyedropper pick
+    /// waits - a Scopes tab hidden behind another (or on another page) costs nothing.
+    #[test]
+    fn scopes_readback_only_while_the_pane_is_drawn() {
+        assert!(stats_wanted(true, false));
+        assert!(stats_wanted(false, true));
+        assert!(!stats_wanted(false, false));
+        let src = include_str!("monitor.rs");
+        assert!(src.contains("stats_wanted(app.pane_drawn(Pane::Scopes), app.monitor.pick_armed.is_some())"));
+    }
 
     fn project_with_clip() -> (Project, Id) {
         let mut p = Project::new();

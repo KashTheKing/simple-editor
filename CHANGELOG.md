@@ -2,6 +2,27 @@
 
 ## beta-0.3.0
 
+### Pages (issue #78, simplify 0c)
+The six top-right workspaces are four Resolve-style **pages** — Edit, Color, Audio, Export — in a
+switcher centred in the menu bar (Alt+1..4; right-click a page ▸ Reset page layout). Each page is its
+own arrangement and remembers it (`Settings.page` + `Settings.page_layouts`; `Settings.layout` stays
+the page on screen); popped-out windows belong to the page they were popped on, and a switch clears
+the layout history so Ctrl+Z can't put another page's arrangement back. A pre-pages settings file keeps
+its old arrangement as the layout profile "Before update" and starts on the page its workspace maps to
+(Simple/Edit/Text → Edit, Deliver → Export). Tab bars lose their four buttons for one `+` ("Add
+panel": a menu of the panels not on screen, landing as that group's front tab); a tab's right-click
+has Maximise (also double-click / backtick), Undock, Close, "Stay on this tab" (the old pin) and Set
+icon. Panels are locked by default — tabs click, they don't drag (Window ▸ Layout ▸ Unlock panels);
+dividers resize either way. The Timeline's tab is the sequence strip: "Main" plus the open sequence
+with a × (a torn-off Timeline names the sequence in its title). Scopes and Export are panes
+(`Pane::Scopes` reads the GPU stats only while drawn; Ctrl+E opens the Export page, whose Export
+settings pane replaces the Export window). The menu bar is rebuilt (File / Edit / Clip / Timeline /
+Playback / Window / Help) from `ui::menu` rows, niche panels under Window ▸ More; the menu-bar
+timecode, the "editing: Main > X" breadcrumb, the View menu's Dynamic/Granular radios, Ctrl+Shift+G
+and the welcome wizard's layout card are gone — following the selection is Settings ▸ General ▸
+"Switch panel tabs to follow the selection". The Tools pane is on no page (still in Window ▸ More).
+MCP: `layout.page`; `layout.workspace` still takes the old names; `layout.list` lists pages.
+
 ### Panels activate on use (issue #76, part C)
 Opening a panel no longer changes behaviour or data: the Mixer shows a placeholder Main strip instead
 of creating a bus, Auto-cut waits for Detect, the tracker box waits for Tracking ▸ "Place box", the

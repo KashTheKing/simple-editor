@@ -29,7 +29,6 @@ impl App {
                 // arm only fires for a caller that dispatches the action directly (scripting/MCP).
                 if let Some(t) = tools::tool_for_action(a, self.tools.tool) {
                     self.tools.tool = t;
-                    self.layout.reveal(Pane::Tools);
                 }
             }
             OpenFile => self.act_open_file(),
@@ -402,8 +401,6 @@ impl App {
                 if add_mask(&mut self.project, id, shape) {
                     push_undo_json(&mut self.undo, &mut self.redo, snap);
                     self.tools.tool = Tool::Mask(shape);
-                    self.layout.reveal(Pane::Tools);
-                    self.layout_dirty = true;
                     self.after_edit();
                 } else if self.project.clip(id).is_some_and(|c| !c.is_visual()) {
                     self.toast("A mask shapes pixels - an audio clip has none");
@@ -807,8 +804,6 @@ impl App {
                 self.project.clip(id).and_then(|c| c.mask.as_ref()).map(|m| m.shape).unwrap_or(MaskShape::Ellipse);
             self.selection = vec![id];
             self.tools.tool = Tool::Mask(shape);
-            self.layout.reveal(Pane::Tools);
-            self.layout_dirty = true;
         }
         if let Some(id) = inspector::take_open_nodes() {
             self.selection = vec![id];

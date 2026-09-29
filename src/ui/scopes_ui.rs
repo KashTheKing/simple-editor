@@ -147,44 +147,36 @@ pub(crate) fn paint_histogram(p: &egui::Painter, rect: Rect, stats: &FrameStats)
     }
 }
 
-/// The Scopes `egui::Window`: one tab per name in `open` (from `Settings.scopes`), each painting against
-/// `stats` (`None` = nothing rendered yet - an empty placeholder, no panic). Adding/removing tabs writes
-/// back into `open` directly. Requests no repaint of its own - `App::gpu.stats()` only changes when a new
-/// frame is actually decoded, so an idle preview with Scopes open costs nothing extra per frame.
-pub(crate) fn window(
-    ctx: &egui::Context,
-    open: &mut bool,
-    tabs: &mut Vec<String>,
-    stats: Option<&FrameStats>,
-    pal: &Palette,
-) {
-    if !*open {
-        return;
+/// The Scopes pane's body (`Pane::Scopes`, was a floating window): a toggle per scope, remembered in
+/// `tabs` (`Settings.scopes`), each painted against `stats` (`None` = nothing rendered yet - an empty
+/// placeholder, no panic). Requests no repaint of its own - `App::gpu.stats()` only changes when a new
+/// frame is actually decoded, so an idle preview with the Scopes pane open costs nothing extra.
+pub(crate) fn body(ui: &mut egui::Ui, tabs: &mut Vec<String>, stats: Option<&FrameStats>, pal: &Palette) {
+    if tabs.is_empty() {
+        tabs.push(ScopeKind::Waveform.name().to_string());
     }
-    let mut still_open = true;
-    egui::Window::new("Scopes").open(&mut still_open).default_width(360.0).default_height(280.0).show(ctx, |ui| {
-        if tabs.is_empty() {
-            tabs.push(ScopeKind::Waveform.name().to_string());
-        }
-        ui.horizontal(|ui| {
-            for k in ScopeKind::ALL {
-                let on = tabs.iter().any(|t| t == k.name());
-                if ui.selectable_label(on, k.name()).clicked() {
-                    if on {
-                        tabs.retain(|t| t != k.name());
-                    } else {
-                        tabs.push(k.name().to_string());
-                    }
+    ui.horizontal_wrapped(|ui| {
+        for k in ScopeKind::ALL {
+            let on = tabs.iter().any(|t| t == k.name());
+            if ui.selectable_label(on, k.name()).clicked() {
+                if on {
+                    tabs.retain(|t| t != k.name());
+                } else {
+                    tabs.push(k.name().to_string());
                 }
             }
-        });
-        ui.separator();
-        let Some(stats) = stats else {
-            ui.weak("No frame rendered yet");
-            return;
-        };
+        }
+    });
+    ui.separator();
+    let Some(stats) = stats else {
+        ui.weak("No frame rendered yet");
+        return;
+    };
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        // the open scopes share the pane's height, never below a readable 120 px
+        let h = (ui.available_height() / tabs.len().max(1) as f32 - 6.0).max(120.0);
         for name in tabs.iter() {
-            let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 120.0), egui::Sense::hover());
+            let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), egui::Sense::hover());
             let p = ui.painter_at(rect);
             p.rect_filled(rect, 2.0, pal.header.gamma_multiply(0.6));
             match ScopeKind::ALL.iter().find(|k| k.name() == name) {
@@ -197,7 +189,6 @@ pub(crate) fn window(
             ui.add_space(6.0);
         }
     });
-    *open = still_open;
 }
 
 #[cfg(test)]
@@ -264,17 +255,23 @@ mod tests {
         assert!(heights.iter().all(|&h| h == 0.0), "no divide-by-zero when nothing was sampled");
     }
 
+    /// ws:pages: the Scopes pane (all four scopes, then the no-frame placeholder) idles without asking
+    /// for a repaint.
     #[test]
-    fn assert_no_idle_repaint_on_scopes_window() {
+    fn assert_no_idle_repaint_scopes() {
         let ctx = egui::Context::default();
         ctx.set_fonts(crate::theme::test_fonts());
         let pal = Palette::new(true, egui::Color32::WHITE);
         let s = stats(vec![[10, 20, 30, 255]; 4], 2, 2);
-        let mut open = true;
-        let mut tabs = vec![ScopeKind::Waveform.name().to_string(), ScopeKind::Histogram.name().to_string()];
-        for _ in 0..30 {
-            let _ = ctx.run(egui::RawInput::default(), |ctx| window(ctx, &mut open, &mut tabs, Some(&s), &pal));
+        let mut tabs: Vec<String> = ScopeKind::ALL.iter().map(|k| k.name().to_string()).collect();
+        for stats in [Some(&s), None] {
+            for _ in 0..30 {
+                let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| body(ui, &mut tabs, stats, &pal));
+                });
+            }
+            assert!(!ctx.has_requested_repaint(), "an unchanged FrameStats must request no repaint");
         }
-        assert!(!ctx.has_requested_repaint(), "an unchanged FrameStats must request no repaint");
+        assert_eq!(tabs.len(), 4, "drawing never changes which scopes are open");
     }
 }

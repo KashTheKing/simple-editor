@@ -72,28 +72,66 @@ pub fn glyph_for(icons: &BTreeMap<String, String>, a: Action) -> Option<Glyph> {
     }
 }
 
+/// The row every menu entry is: icon gutter, label, shortcut. The gutter is there with or without an
+/// icon, so every label in a menu starts at the same x.
+fn row_ui(ui: &mut egui::Ui, glyph: Option<Glyph>, label: &str, shortcut: &str, enabled: bool) -> egui::Response {
+    let icon_id = ui.id().with(("menu-icon", label));
+    let gutter = egui::Atom::custom(icon_id, egui::vec2(18.0, 16.0));
+    let button = egui::Button::new((gutter, label)).shortcut_text(shortcut);
+    ui.add_enabled_ui(enabled, |ui| {
+        let r = button.atom_ui(ui);
+        if let (Some(g), Some((_, rect))) = (glyph, r.custom_rects().next()) {
+            // this ui's painter already fades for a disabled row
+            tools::draw_glyph(ui.painter(), rect, g, ui.style().interact(&r.response).text_color());
+        }
+        r.response
+    })
+    .inner
+}
+
+// ---- ws:pages ----
+/// A row that isn't an `Action` (a recent file, a pane, a profile, Exit...), drawn exactly like `item`
+/// so a menu mixing both lines up. The menu closes on a click; grey it out with `ui.add_enabled_ui`.
+pub fn row(ui: &mut egui::Ui, glyph: Option<Glyph>, label: &str, shortcut: &str) -> egui::Response {
+    let r = row_ui(ui, glyph, label, shortcut, true);
+    if r.clicked() {
+        ui.close();
+    }
+    r
+}
+
+/// `row` with a tick in the gutter while `on` - a checkable entry (Snapping, Unlock panels, ...).
+pub fn check(ui: &mut egui::Ui, on: bool, label: &str, shortcut: &str) -> egui::Response {
+    row(ui, on.then_some(Glyph::Letter('✓')), label, shortcut)
+}
+
+/// A submenu lined up with `item` / `row` (the same gutter, optional icon); its body scrolls when long.
+pub fn sub<R>(ui: &mut egui::Ui, glyph: Option<Glyph>, label: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> Option<R> {
+    let gutter = egui::Atom::custom(ui.id().with(("menu-sub", label)), egui::vec2(18.0, 16.0));
+    let r = ui.menu_button((gutter, label), |ui| scroll(ui, add));
+    if let Some(g) = glyph {
+        let rect = r.response.rect;
+        let at = egui::pos2(rect.left() + ui.spacing().button_padding.x, rect.center().y - 8.0);
+        let color = ui.style().interact(&r.response).text_color();
+        tools::draw_glyph(ui.painter(), egui::Rect::from_min_size(at, egui::vec2(18.0, 16.0)), g, color);
+    }
+    r.inner
+}
+
+/// The current shortcut text of `a` ("" when unbound), for a row that runs it some other way.
+pub fn shortcut(a: Action) -> String {
+    SNAPSHOT.with(|s| s.borrow().shortcuts.get(&a).map(Hotkeys::format)).unwrap_or_default()
+}
+
 /// One row: icon gutter, label, shortcut; greyed (with the reason on hover) while `App::enabled` says
 /// no or `enabled` is false; right-click picks its icon. True when clicked (the menu closes). Does NOT
-/// queue the action - `App::menu_item` pushes it straight into its own list.
+/// queue the action - the caller runs it (`action_item` is the queueing wrapper).
 pub fn item(ui: &mut egui::Ui, a: Action, enabled: bool) -> bool {
     let (glyph, shortcut, reason) = SNAPSHOT.with(|s| {
         let s = s.borrow();
         (glyph_for(&s.icons, a), s.shortcuts.get(&a).map(Hotkeys::format), s.disabled.get(&a).copied())
     });
-    let icon_id = ui.id().with(("menu-icon", a.id()));
-    // the gutter is there with or without an icon, so every label in a menu starts at the same x
-    let gutter = egui::Atom::custom(icon_id, egui::vec2(18.0, 16.0));
-    let button = egui::Button::new((gutter, a.label())).shortcut_text(shortcut.unwrap_or_default());
-    let r = ui
-        .add_enabled_ui(enabled && reason.is_none(), |ui| {
-            let r = button.atom_ui(ui);
-            if let (Some(g), Some((_, rect))) = (glyph, r.custom_rects().next()) {
-                // this ui's painter already fades for a disabled row
-                tools::draw_glyph(ui.painter(), rect, g, ui.style().interact(&r.response).text_color());
-            }
-            r.response
-        })
-        .inner;
+    let r = row_ui(ui, glyph, a.label(), &shortcut.unwrap_or_default(), enabled && reason.is_none());
     let r = match reason {
         Some(why) => r.on_disabled_hover_text(why),
         None => r,
@@ -112,7 +150,6 @@ pub fn item(ui: &mut egui::Ui, a: Action, enabled: bool) -> bool {
 }
 
 /// `item` for any right-click menu: a click queues `a` for `App::update` to run (next frame).
-#[allow(dead_code)] // wave-1 right-click menus are the callers
 pub fn action_item(ui: &mut egui::Ui, a: Action) -> bool {
     let clicked = item(ui, a, true);
     if clicked {
@@ -140,10 +177,11 @@ pub fn action_menu(ui: &mut egui::Ui, items: &[Option<Action>]) {
 }
 
 /// Cap a menu at 80 % of the window height; the scroll bar only shows when it doesn't fit.
-#[allow(dead_code)] // wave-1 right-click menus are the callers
+/// `min_scrolled_height` too: a popup's first (sizing) pass only offers egui's 400 pt default area,
+/// which would otherwise pin every long menu at 400 pt; a short menu still shrinks to its rows.
 pub fn scroll<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     let max = ui.ctx().content_rect().height() * 0.8;
-    egui::ScrollArea::vertical().max_height(max).show(ui, add).inner
+    egui::ScrollArea::vertical().max_height(max).min_scrolled_height(max).show(ui, add).inner
 }
 
 #[cfg(test)]

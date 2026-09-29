@@ -1,21 +1,28 @@
 //! ---- ws:layout-modes-onboarding ----
-//! MCP tools for layout modes, workspaces, pins, surfacing, maximise and the welcome wizard - each a
-//! thin call into `layout_ctl` / `Layout` / `Settings` (`ToolKind::Ui`: UI state, never the project,
-//! never undo). `ui.action` covers the hotkey-shaped verbs (Workspace1..6 / MaximizePane / TogglePin /
-//! ToggleSource plus the consumed ToggleLayoutMode / ShowWelcome) by id, as for any other Action.
+//! MCP tools for pages, following the selection, pins, surfacing, maximise and the welcome wizard - each
+//! a thin call into `layout_ctl` / `Layout` / `Settings` (`ToolKind::Ui`: UI state, never the project,
+//! never undo). `ui.action` covers the hotkey-shaped verbs (Workspace1..4 = the pages / MaximizePane /
+//! TogglePin / ToggleSource plus the consumed ToggleLayoutMode / ShowWelcome) by id, as for any other
+//! Action.
 
 use super::tools_helpers::*;
 use super::*;
 use crate::mcp::tools::{ToolDef, ToolKind, ToolOutcome};
-use crate::ui::layout::WORKSPACES;
+use crate::ui::layout::PAGES;
+
+/// `layout.page` / `layout.workspace`: a page (or an old workspace name) to switch to.
+fn switch(app: &mut App, name: &str) -> Result<ToolOutcome, String> {
+    let page = crate::ui::layout::page_name(name)
+        .ok_or_else(|| format!("unknown page '{name}' (one of {})", PAGES.join(", ")))?;
+    layout_ctl::switch_page(app, page);
+    Ok(ToolOutcome::Done(json!({"ok": true, "page": page})))
+}
 
 /// A pane by its title, case-insensitively ("inspector", "Auto-cut", …).
 fn pane_by_name(s: &str) -> Result<Pane, String> {
-    Pane::ALL
-        .iter()
-        .copied()
-        .find(|p| p.title().eq_ignore_ascii_case(s.trim()))
-        .ok_or_else(|| format!("unknown pane '{s}' (one of {})", Pane::ALL.iter().map(|p| p.title()).collect::<Vec<_>>().join(", ")))
+    Pane::ALL.iter().copied().find(|p| p.title().eq_ignore_ascii_case(s.trim())).ok_or_else(|| {
+        format!("unknown pane '{s}' (one of {})", Pane::ALL.iter().map(|p| p.title()).collect::<Vec<_>>().join(", "))
+    })
 }
 
 pub const TOOLS: &[ToolDef] = &[
@@ -36,22 +43,22 @@ pub const TOOLS: &[ToolDef] = &[
             Ok(ToolOutcome::Done(json!({"ok": true, "mode": app.settings.layout_mode})))
         },
     },
+    // ---- ws:pages ----
+    ToolDef {
+        name: "layout.page",
+        desc: "Switch to a page (Edit, Color, Audio, Export - see layout.list's 'pages'), the same as Alt+1..4 / \
+               the menu-bar switcher. Each page keeps its own arrangement.",
+        args: &["name:string:true:one of Edit, Color, Audio, Export"],
+        kind: ToolKind::Ui,
+        run: |app, args| switch(app, req(arg_str(args, "name"), "name")?),
+    },
     ToolDef {
         name: "layout.workspace",
-        desc: "Switch to a named workspace (see layout.list's 'workspaces') - the same undo-preserving \
-               swap as Alt+1..6 / the menu-bar strip.",
-        args: &["name:string:true:one of Simple, Edit, Color, Audio, Text, Deliver"],
+        desc: "Old name of layout.page: also accepts the pre-pages workspace names (Simple / Text -> Edit, \
+               Deliver -> Export).",
+        args: &["name:string:true:a page, or one of Simple, Edit, Color, Audio, Text, Deliver"],
         kind: ToolKind::Ui,
-        run: |app, args| {
-            let name = req(arg_str(args, "name"), "name")?;
-            let canonical = WORKSPACES
-                .iter()
-                .copied()
-                .find(|w| w.eq_ignore_ascii_case(name.trim()))
-                .ok_or_else(|| format!("unknown workspace '{name}' (one of {})", WORKSPACES.join(", ")))?;
-            layout_ctl::switch_workspace(app, canonical);
-            Ok(ToolOutcome::Done(json!({"ok": true, "workspace": canonical})))
-        },
+        run: |app, args| switch(app, req(arg_str(args, "name"), "name")?),
     },
     ToolDef {
         name: "layout.pin",
@@ -108,8 +115,8 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "layout.list",
-        desc: "Current layout mode, workspace (and every workspace name), pinned panes, the maximised pane, \
-               and each pane's visibility / popped-out state.",
+        desc: "The current page (and every page name), layout mode, pinned panes, the maximised pane, \
+               whether panels are unlocked, and each pane's visibility / popped-out state.",
         args: &[],
         kind: ToolKind::Read,
         run: |app, _args| {
@@ -126,8 +133,9 @@ pub const TOOLS: &[ToolDef] = &[
                 .collect();
             Ok(ToolOutcome::Done(json!({
                 "mode": if layout_ctl::is_dynamic(&app.settings) { "dynamic" } else { "granular" },
-                "workspace": app.settings.workspace,
-                "workspaces": WORKSPACES,
+                "page": app.settings.page,
+                "pages": PAGES,
+                "unlocked": app.settings.panels_unlocked,
                 "pinned": app.layout.pinned.iter().map(|p| p.title()).collect::<Vec<_>>(),
                 "maximized": app.layout.maximized.as_ref().map(|(p, _)| p.title()),
                 "home_screen": app.settings.home_screen,
@@ -163,7 +171,16 @@ mod tests {
         let mine: Vec<&str> = TOOLS.iter().map(|t| t.name).collect();
         assert_eq!(
             mine,
-            ["layout.mode", "layout.workspace", "layout.pin", "layout.surface", "layout.maximize", "layout.list", "onboarding.reset"]
+            [
+                "layout.mode",
+                "layout.page",
+                "layout.workspace",
+                "layout.pin",
+                "layout.surface",
+                "layout.maximize",
+                "layout.list",
+                "onboarding.reset"
+            ]
         );
         for t in TOOLS {
             assert_eq!(mcp::tools::all().filter(|d| d.name == t.name).count(), 1, "{} registered once", t.name);
@@ -172,25 +189,47 @@ mod tests {
             assert_eq!(schema["type"], "object", "{}", t.name);
             for (_, p) in schema["properties"].as_object().unwrap() {
                 let ty = p["type"].as_str().unwrap();
-                assert!(matches!(ty, "string" | "boolean" | "number" | "integer" | "array" | "object"), "{}: {ty}", t.name);
+                assert!(
+                    matches!(ty, "string" | "boolean" | "number" | "integer" | "array" | "object"),
+                    "{}: {ty}",
+                    t.name
+                );
             }
         }
         let schema = |name: &str| mcp::tools::input_schema(mcp::tools::find(name).unwrap().args);
         assert_eq!(schema("layout.mode")["required"], json!(["mode"]));
         assert_eq!(schema("layout.workspace")["required"], json!(["name"]));
+        assert_eq!(schema("layout.page")["required"], json!(["name"]));
+        // old workspace names still land on a page
+        for (old, page) in [("simple", "Edit"), ("Text", "Edit"), ("deliver", "Export"), ("color", "Color")] {
+            assert_eq!(crate::ui::layout::page_name(old), Some(page), "{old}");
+        }
+        assert_eq!(crate::ui::layout::page_name("Nope"), None);
         assert_eq!(schema("layout.pin")["required"], json!(["pane", "on"]));
         assert_eq!(schema("layout.pin")["properties"]["on"]["type"], "boolean");
         assert_eq!(schema("layout.maximize")["required"], json!([]));
         assert!(mcp::tools::find("layout.list").unwrap().args.is_empty());
         assert_eq!(mcp::tools::find("layout.list").unwrap().kind, ToolKind::Read);
-        assert!(TOOLS.iter().filter(|t| t.name != "layout.list").all(|t| t.kind == ToolKind::Ui), "UI state only, never undo");
+        assert!(
+            TOOLS.iter().filter(|t| t.name != "layout.list").all(|t| t.kind == ToolKind::Ui),
+            "UI state only, never undo"
+        );
         // the hotkey-shaped verbs go through ui.action by id
-        for id in ["workspace_1", "workspace_6", "maximize_pane", "toggle_pin", "toggle_source", "toggle_layout_mode", "show_welcome"] {
+        for id in [
+            "workspace_1",
+            "workspace_4",
+            "maximize_pane",
+            "toggle_pin",
+            "toggle_source",
+            "toggle_layout_mode",
+            "show_welcome",
+        ] {
             assert!(Action::from_id(id).is_some(), "ui.action must resolve {id}");
         }
         // pane names resolve case-insensitively, and a bad one is a clear error
         assert_eq!(pane_by_name("inspector"), Ok(Pane::Inspector));
         assert_eq!(pane_by_name(" Auto-cut "), Ok(Pane::AutoCut));
-        assert!(pane_by_name("Scopes").unwrap_err().contains("unknown pane"));
+        assert_eq!(pane_by_name("scopes"), Ok(Pane::Scopes));
+        assert!(pane_by_name("Nope").unwrap_err().contains("unknown pane"));
     }
 }

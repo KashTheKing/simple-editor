@@ -1,5 +1,5 @@
 //! ---- ws:pro-monitor ----
-//! The 7 monitor actions (`act`) and 10 MCP tools: trim-view/compare/scopes state flips, save/apply
+//! The monitor actions (`act`) and 10 MCP tools: trim-view/compare/scopes state flips, save/apply
 //! stills (existing `EffectPreset` storage - zero new storage), multicam create/sync/switch, and the
 //! eyedropper's colour write-back (shared by the UI click path in `preview_pane.rs` and the `color.pick`
 //! tool, so both write the exact same effect param the exact same way).
@@ -210,8 +210,17 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
             }
             true
         }
+        // ws:pages: the Scopes window became `Pane::Scopes`
         Action::ToggleScopes => {
-            app.monitor.scopes_open = !app.monitor.scopes_open;
+            app.toggle_pane(Pane::Scopes);
+            true
+        }
+        // ws:pages: bring back an angle grid its × closed (and say why when there is none to show)
+        Action::MulticamAngles => {
+            app.monitor.multicam_dismissed = None;
+            if !multicam_available(app) {
+                app.toast("Select a multicam clip (or park the playhead on one) to see its angles");
+            }
             true
         }
         Action::MulticamCreate => {
@@ -230,12 +239,25 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
     }
 }
 
-/// WINDOW_DRAWERS entry: the Scopes window, fed by `App.gpu.stats()` (real, not the plan's guessed
-/// `gpu.frame_stats()` name - see `monitor.rs`'s deviation note).
-pub(super) fn window_scopes(app: &mut App, ctx: &egui::Context) {
+/// PANE_DRAWERS entry (ws:pages; was the Scopes window): fed by `App.gpu.stats()` (real, not the plan's
+/// guessed `gpu.frame_stats()` name - see `monitor.rs`'s deviation note), which `monitor_tick` only
+/// keeps reading back while this pane was drawn last frame.
+pub(super) fn draw_scopes(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
+    if pane != Pane::Scopes {
+        return false;
+    }
     let stats = app.gpu.as_ref().and_then(|g| g.stats());
-    let App { monitor, settings, palette, .. } = app;
-    crate::ui::scopes_ui::window(ctx, &mut monitor.scopes_open, &mut settings.scopes, stats, palette);
+    let open = app.settings.scopes.clone();
+    crate::ui::scopes_ui::body(ui, &mut app.settings.scopes, stats, &app.palette);
+    if app.settings.scopes != open {
+        app.settings.save();
+    }
+    true
+}
+
+/// The clip under the Multicam Angles window has 2+ angles (Clip ▸ Multicam angles… greys out otherwise).
+pub(super) fn multicam_available(app: &App) -> bool {
+    targeted_clip(app).is_some_and(|id| app.project.multicam_angles(id).len() >= 2)
 }
 
 /// WINDOW_DRAWERS entry: the multicam angle grid, auto-shown (no dedicated toggle action - matches
