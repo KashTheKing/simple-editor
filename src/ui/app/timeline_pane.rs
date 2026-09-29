@@ -1,30 +1,79 @@
 use super::*;
+use crate::ui::menu;
+use crate::ui::tools::{icon_button, Glyph, Tool};
 
-// ws:pro-timeline: the in-widget sequence tab strip (timeline::show(), painted above its own ruler)
-// now carries the Main/<sequence name> breadcrumb this file used to draw externally - removed here
-// rather than kept alongside a near-duplicate (delete before add; see the PR body).
+// The sequence tabs live in the Timeline pane's own tab (ws:pages); view presets and the overview
+// strip are in the ruler's right-click ▸ View (ws:timeline-surface).
+
+/// "Name (key)", or just the name while the action is unbound.
+fn tip(name: &str, a: Action) -> String {
+    match menu::shortcut(a) {
+        k if k.is_empty() => name.to_string(),
+        k => format!("{name} ({k})"),
+    }
+}
+
+/// The Timeline's one toolbar row: Select · Blade · Rate stretch, Snap, and zoom on the right. Returns
+/// the Actions its buttons ask for; the zoom slider edits `zoom` (px/s) in place.
+fn toolbar(ui: &mut egui::Ui, pal: &crate::theme::Palette, tool: Tool, snap: bool, zoom: &mut f32) -> Vec<Action> {
+    let mut out = Vec::new();
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        for (t, a, g, name) in [
+            (Tool::Select, Action::ToolSelect, Glyph::Cursor, "Select"),
+            (Tool::Cut, Action::ToolCut, Glyph::Razor, "Blade"),
+            (Tool::Stretch, Action::ToolStretch, Glyph::Speed, "Rate Stretch"),
+        ] {
+            if icon_button(ui, pal, ui.id().with(("tl_tool", name)), g, &tip(name, a), tool == t).clicked() {
+                out.push(a);
+            }
+        }
+        ui.add_space(8.0);
+        if icon_button(ui, pal, ui.id().with("tl_snap"), Glyph::Magnet, &tip("Snapping", Action::ToggleSnap), snap)
+            .clicked()
+        {
+            out.push(Action::ToggleSnap);
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.add_space(4.0);
+            if icon_button(
+                ui,
+                pal,
+                ui.id().with("tl_fit"),
+                Glyph::Maximize,
+                &tip("Zoom to Fit", Action::ZoomFit),
+                false,
+            )
+            .clicked()
+            {
+                out.push(Action::ZoomFit);
+            }
+            let zin = tip("Zoom In", Action::ZoomIn);
+            if icon_button(ui, pal, ui.id().with("tl_zin"), Glyph::Letter('+'), &zin, false).clicked() {
+                out.push(Action::ZoomIn);
+            }
+            ui.spacing_mut().slider_width = 110.0;
+            ui.add(egui::Slider::new(zoom, 0.5..=2000.0).logarithmic(true).show_value(false)).on_hover_text("Zoom");
+            let zout = tip("Zoom Out", Action::ZoomOut);
+            if icon_button(ui, pal, ui.id().with("tl_zout"), Glyph::Letter('−'), &zout, false).clicked() {
+                out.push(Action::ZoomOut);
+            }
+        });
+    });
+    out
+}
 
 pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
-    // ---- ws:pro-timeline: view-preset combo + overview toggle ----
-    ui.horizontal(|ui| {
-        let views_len = app.settings.timeline_views.len();
-        if views_len > 0 {
-            let idx = app.timeline.view_idx.min(views_len - 1);
-            egui::ComboBox::from_id_salt("tl_view_preset")
-                .selected_text(app.settings.timeline_views[idx].name.clone())
-                .show_ui(ui, |ui| {
-                    for i in 0..views_len {
-                        let name = app.settings.timeline_views[i].name.clone();
-                        ui.selectable_value(&mut app.timeline.view_idx, i, name);
-                    }
-                });
-        }
-        let on = app.settings.overview;
-        let label = if on { "Overview: On" } else { "Overview" };
-        if crate::ui::tools::glyph_text_button(ui, crate::ui::tools::Glyph::Rows, label).clicked() {
-            app.settings.overview = !on;
-        }
-    });
+    // ---- ws:timeline-surface: one toolbar row ----
+    let mut zoom = app.timeline.zoom;
+    let acts = toolbar(ui, &app.palette, app.tools.tool, app.settings.snap, &mut zoom);
+    app.pending_actions.extend(acts);
+    if zoom != app.timeline.zoom {
+        // the slider zooms around the playhead while it is on screen, like Ctrl+wheel around the pointer
+        let ph = app.timeline.x_at(app.playhead);
+        let anchor = app.timeline.lanes_rect.x_range().contains(ph).then_some(ph);
+        app.timeline.zoom_by(zoom / app.timeline.zoom, anchor);
+    }
     let autocut_shown = app.pane_drawn(Pane::AutoCut);
     let resp = {
         let App {
@@ -109,6 +158,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
                 overview: settings.overview,
                 boring_thr: settings.boring_thr,
                 realtime: &realtime_bar,
+                views: &settings.timeline_views,
             },
         )
     };
@@ -199,5 +249,79 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
     if let Some((cid, pair)) = resp.replace_container {
         app.replace_container_dialog(cid, pair);
     }
+    if resp.import_subtitles {
+        import_subtitles(app);
+    }
     app.pending_actions.extend(resp.actions);
+}
+
+/// Subtitle lane ▸ Import Subtitles…: the Subtitles pane's import (same parser, same replace-or-keep
+/// confirm), from the lane itself.
+/// ponytail: a second copy of `subtitles_ui`'s private dialog - fold both into one Action if a third
+/// caller shows up.
+fn import_subtitles(app: &mut App) {
+    let Some(path) = rfd::FileDialog::new().add_filter("Subtitles", &["srt", "vtt"]).pick_file() else { return };
+    let cues = std::fs::read_to_string(&path).map(|t| crate::engine::subtitles::parse(&t)).unwrap_or_default();
+    if cues.is_empty() {
+        app.toast("No subtitles found in that file");
+    } else if app.project.subtitles.is_empty() {
+        app.push_undo();
+        subtitles_ui::apply_import(&mut app.project, &cues, true);
+        app.after_edit();
+    } else {
+        let n = app.project.subtitles.len();
+        confirm::ask(
+            "Import subtitles",
+            format!("Replace the existing {n} subtitle(s)? (Cancel keeps them and discards this import.)"),
+            confirm::ConfirmAction::ReplaceSubtitles(cues),
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The toolbar's buttons ask for the same Actions the tool / snap / zoom keys run.
+    #[test]
+    fn toolbar_buttons_push_their_actions() {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::test_fonts());
+        let pal = crate::theme::Palette::new(true, egui::Color32::from_rgb(0, 120, 212));
+        let mut zoom = 40.0;
+        let t = std::cell::Cell::new(0.0);
+        let mut frame = |events: Vec<egui::Event>| -> Vec<Action> {
+            t.set(t.get() + 0.05);
+            let mut out = Vec::new();
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 100.0))),
+                time: Some(t.get()),
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| out = toolbar(ui, &pal, Tool::Select, true, &mut zoom));
+            });
+            out
+        };
+        let mut click = |pos: egui::Pos2| -> Vec<Action> {
+            let btn = |pressed| egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            t.set(t.get() + 1.0); // clicks well apart, so none merge into a double-click
+            frame(vec![egui::Event::PointerMoved(pos)]);
+            frame(vec![btn(true)]);
+            frame(vec![btn(false)])
+        };
+        // 24 x 22 icon buttons, 2 pt apart, from the panel's 8 pt margin: Select, Blade, Rate Stretch
+        assert_eq!(click(egui::pos2(8.0 + 26.0 + 12.0, 19.0)), vec![Action::ToolCut]);
+        assert_eq!(click(egui::pos2(8.0 + 52.0 + 12.0, 19.0)), vec![Action::ToolStretch]);
+        // then an 8 pt gap and the magnet
+        assert_eq!(click(egui::pos2(8.0 + 78.0 + 8.0 + 12.0, 19.0)), vec![Action::ToggleSnap]);
+        // right-aligned from the 792 pt edge, 4 pt in: Zoom to Fit
+        assert_eq!(click(egui::pos2(792.0 - 4.0 - 12.0, 19.0)), vec![Action::ZoomFit]);
+    }
 }

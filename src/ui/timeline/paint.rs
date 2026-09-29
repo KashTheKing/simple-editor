@@ -53,6 +53,7 @@ pub(super) fn tick_label(t: f64, major: f64) -> String {
     }
 }
 
+/// A flat icon toggle: lit (accent) while `on`, a frame only under the pointer.
 pub(super) fn toggle_button(
     ui: &egui::Ui,
     p: &egui::Painter,
@@ -62,18 +63,21 @@ pub(super) fn toggle_button(
     on: bool,
     pal: &Palette,
     font: &FontId,
-) -> bool {
+) -> egui::Response {
     let r = ui.interact(rect, id, Sense::click());
-    let fill = if on { pal.accent } else { pal.panel };
-    let stroke = if r.hovered() { pal.accent } else { pal.border };
-    p.rect(rect, CornerRadius::same(2), fill, Stroke::new(1.0, stroke), StrokeKind::Inside);
+    if on {
+        p.rect_filled(rect, CornerRadius::same(2), pal.accent);
+    } else if r.hovered() {
+        p.rect_stroke(rect, CornerRadius::same(2), Stroke::new(1.0, pal.border), StrokeKind::Inside);
+    }
+    let fg = if on || r.hovered() { pal.text } else { pal.text_dim };
     match label {
-        Cap::Icon(g) => draw_glyph(p, rect, g, pal.text),
+        Cap::Icon(g) => draw_glyph(p, rect, g, fg),
         Cap::Text(t) => {
-            p.text(rect.center(), Align2::CENTER_CENTER, t, font.clone(), pal.text);
+            p.text(rect.center(), Align2::CENTER_CENTER, t, font.clone(), fg);
         }
     }
-    r.clicked()
+    r
 }
 
 /// One vertical min..max line per point column over the visible part of an audio clip.
@@ -224,7 +228,7 @@ pub(super) fn flag(p: &egui::Painter, x: f32, top: f32, bottom: f32, color: Colo
 }
 
 /// Shared marker interaction (ruler flags and clip flags): click selects, double-click seeks, drag moves,
-/// right-click = Rename / Delete / Set label.
+/// right-click = Rename / Delete / Label.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn marker_hit(
     r: egui::Response,
@@ -266,15 +270,15 @@ pub(super) fn marker_hit(
                 }
             }
         });
-        if ui.button("Delete").clicked() {
+        if menu::row(ui, Some(Glyph::Cross), "Delete Marker", "").clicked() {
             *act = Some(Act::DelMarker(m.id));
         }
-        ui.menu_button("Set label", |ui| {
-            if ui.button("None").clicked() {
+        menu::sub(ui, Some(Glyph::Swatch), "Label", |ui| {
+            if menu::row(ui, None, "None", "").clicked() {
                 *act = Some(Act::MarkerLabel(m.id, 0));
             }
             for (i, l) in labels.iter().enumerate() {
-                if ui.button(&l.name).clicked() {
+                if super::menus::swatch_row(ui, &l.name, l.color).clicked() {
                     *act = Some(Act::MarkerLabel(m.id, i as u8 + 1));
                 }
             }

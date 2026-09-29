@@ -28,9 +28,9 @@
 //! selection as one undo step), drag past the top video / bottom audio row to drop onto a freshly created
 //! track (gutter preview, Esc cancels the gesture), keyframe diamonds in a value lane on tall clips (y =
 //! value, x = time, tooltip, one undo per gesture), project markers on the ruler and clip markers inside
-//! clips (click selects, double-click seeks, drag moves, right-click = Rename / Delete / Set label),
+//! clips (click selects, double-click seeks, drag moves, right-click = Rename / Delete / Label),
 //! clip colours from `Project.labels`, hatched Adjustment layers with an "adj" badge, and the Add Marker /
-//! Copy & Paste Attributes / Add Mask / Nest / Convert to Adjustment Layer context-menu entries.
+//! Copy & Paste Attributes / Add Mask / Nest context-menu entries.
 //!
 //! Round 4: right-click quick-changes, additive to the menus above - selected transitions get "Change
 //! Type" / "Change Easing" submenus on their band's context menu (absolute-overwrite every selected
@@ -48,6 +48,7 @@ use crate::model::{
 };
 use crate::settings::TimelineView;
 use crate::theme::Palette;
+use crate::ui::menu;
 use crate::ui::tools::{draw_glyph, Glyph, Tool};
 
 /// What a header toggle paints: a picture, or a plain character.
@@ -165,6 +166,10 @@ pub struct TimelineState {
     /// Asymmetric multi-roller trim: edges armed by a Shift-click on a seam, consumed (and cleared) the
     /// next time a plain edge-drag starts a `Gesture::Trim`.
     rollers: Vec<(Id, bool)>,
+    // ---- ws:timeline-surface ----
+    /// Track under the pointer this frame (lanes or header; None anywhere else, or while a popup
+    /// covers it) - the "track under cursor" the track Actions target (`trim_actions::target_track`).
+    pub hover_track: Option<usize>,
 }
 
 impl Default for TimelineState {
@@ -191,6 +196,7 @@ impl Default for TimelineState {
             track_rename: None,
             view_idx: 0,
             rollers: Vec::new(),
+            hover_track: None,
         }
     }
 }
@@ -199,23 +205,6 @@ impl Default for TimelineState {
 /// fresh clip / link / marker ids. `Project::place_clips` picks the first track of each kind with room
 /// (adding one when nothing is free); `target` then pulls the group onto the row the user last clicked,
 /// if the whole group fits there.
-/// The paste flavours, shared by every timeline context menu. The app decides whether the clipboard
-/// actually holds anything - a menu that hid itself when empty would just look broken.
-fn paste_menu(ui: &mut egui::Ui, actions: &mut Vec<crate::hotkeys::Action>) {
-    use crate::hotkeys::Action;
-    for (label, a) in [
-        ("Paste", Action::PasteClips),
-        ("Paste Insert", Action::PasteInsert),
-        ("Paste At Top", Action::PasteAtTop),
-        ("Paste In Place", Action::PasteInPlace),
-    ] {
-        if ui.button(label).clicked() {
-            actions.push(a);
-            ui.close();
-        }
-    }
-}
-
 pub fn paste_clips(p: &mut Project, clips: Vec<Clip>, assets: Vec<Asset>, at: f64, target: Option<usize>) -> Vec<Id> {
     let ids = p.place_clips(clips, assets, at);
     if let Some(ti) = target.filter(|&i| i < p.tracks.len()) {
@@ -335,6 +324,9 @@ pub struct TimelineCtx<'a> {
     /// Movie-mode pre-render coverage plus a realtime-safety flag per run: `(from, to, ready, heavy)`
     /// from `PreRender::segments_with_heavy` (export-deliver). Empty = movie mode off.
     pub realtime: &'a [(f64, f64, bool, bool)],
+    // ---- ws:timeline-surface ----
+    /// Every `Settings.timeline_views` preset, for the ruler's View ▸ menu (`view` is the active one).
+    pub views: &'a [TimelineView],
 }
 
 #[derive(Default)]
@@ -356,6 +348,8 @@ pub struct TimelineResponse {
     pub open_sequence: Option<Id>,
     /// "Edit labels…" was picked in a clip's colour submenu - the app opens its label editor.
     pub edit_labels: bool,
+    /// "Import Subtitles…" from the subtitle lane's right-click - the app runs the file dialog.
+    pub import_subtitles: bool,
 }
 
 struct Drag {
@@ -437,13 +431,10 @@ enum Gesture {
     Segment { ids: Vec<Id>, spans: Vec<(usize, f64, f64)>, dt: f64 },
 }
 
-/// Deferred project mutation (collected while the project is borrowed for drawing).
+/// Deferred project mutation (collected while the project is borrowed for drawing). Only for what an
+/// `Action` can't express - a clicked id, time or track (ws:timeline-surface: Split / Delete / Link /
+/// Enable / Add Track / container make-unmake push their Action instead, one code path each).
 enum Act {
-    Split,
-    Delete(bool),
-    Link,
-    Enable(bool),
-    AddTrack(TrackKind),
     RemoveTrack(usize),
     Mute(usize),
     Solo(usize),
@@ -499,12 +490,6 @@ enum Act {
     ReplaceContainerMedia(Id),
     /// Replace media of a container clip and linked audio.
     ReplaceContainerPair(Id),
-    /// Convert selection to containers.
-    MakeContainer,
-    /// Remove container flag from selection.
-    UnmakeContainer,
-    /// Rename a container's slot label.
-    RenameContainer(Id, String),
     // ---- ws:pro-timeline ----
     /// Header inline rename commit -> `Project::rename_track` (trim-model).
     RenameTrack(usize, String),
@@ -530,11 +515,11 @@ mod tests;
 #[allow(unused_imports)]
 pub(crate) use arm::{arm, GestureKind, TrackFlags, Zone};
 use gestures::gap_at;
-// ws:timeline-trim-gestures - App-level Delete/RippleDelete (actions.rs) routes through this too, so
-// the keyboard shortcut respects a magnetic track's "Delete closes the gap" rule the same as the clip
-// context menu's Act::Delete does.
+// ws:timeline-trim-gestures - App-level Delete/RippleDelete (actions.rs) routes through this, so the
+// key and the clip menu (which pushes that Action) respect a magnetic track's "Delete closes the gap".
 pub(crate) use gestures::delete_clips_magnetic;
-use menus::{clip_menu, label_menu, shared_effect_kinds, transition_ease_menu, transition_kind_menu};
+#[allow(unused_imports)] // label_menu: called directly by the test module
+use menus::{clip_menu, key_menu, label_menu, paste_menu, shared_effect_kinds, transition_menu, ClipMenu};
 pub(crate) use paint::row_top;
 // ---- ws:pro-timeline ---- pure grouping/classification fns, reused by tools_timeline_pro.rs's
 // `timeline.dupes`/`timeline.pacing` MCP tools (a sibling module tree, so `pub(crate)` re-export here).
@@ -556,10 +541,10 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     let id = ui.id().with("timeline");
     let content_h: f32 = c.project.tracks.iter().map(|t| t.height).sum();
     let sub_h = if c.project.subtitles.is_empty() { 0.0 } else { state.sub_h };
-    // ---- ws:pro-timeline: sequence tab strip (always) + inline overview minimap (Settings.overview) ----
-    let seq_tab_h: f32 = 20.0;
+    // ---- ws:pro-timeline: inline overview minimap (Settings.overview). ws:timeline-surface: the
+    // sequence tab strip that sat above it is gone - the Timeline pane's own tab carries the sequence. ----
     let overview_h: f32 = if c.overview { 28.0 } else { 0.0 };
-    let top_strip_h = seq_tab_h + overview_h;
+    let top_strip_h = overview_h;
     let vbar_w = if content_h > full.height() - top_strip_h - RULER_H - sub_h - HBAR_H { VBAR_W } else { 0.0 };
     let ruler = Rect::from_min_max(
         pos2(full.left() + state.header_w, full.top() + top_strip_h),
@@ -579,6 +564,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     }
     let (mods, pointer, primary_down, escape) =
         ui.input(|i| (i.modifiers, i.pointer.latest_pos(), i.pointer.primary_down(), i.key_pressed(egui::Key::Escape)));
+    // `rect_contains_pointer` respects layers: a popup or window over the rows is not "the cursor on a track"
+    state.hover_track =
+        if ui.rect_contains_pointer(body) { pointer.and_then(|p| state.track_at(p.y, c.project)) } else { None };
     // Esc aborts the gesture: put the project back as it was at press time and drop the band.
     if escape {
         state.band = None;
@@ -631,36 +619,11 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     painter.rect_filled(full, 0, pal.bg);
     painter.rect_filled(Rect::from_min_max(full.min, pos2(header.right(), full.bottom())), 0, pal.header);
     painter.rect_filled(ruler, 0, pal.header);
-    // ---- ws:pro-timeline: sequence tab strip: Main (+ the open sequence's name) -- drawn after the
-    // background fills above (which cover the whole `full` rect) so it isn't painted over ----
-    {
-        let tp = painter.with_clip_rect(Rect::from_min_max(full.min, pos2(full.right(), full.top() + seq_tab_h)));
-        let strip = Rect::from_min_max(pos2(full.left(), full.top()), pos2(full.right(), full.top() + seq_tab_h));
-        tp.rect_filled(strip, 0, pal.header);
-        let main_active = c.project.editing.is_none();
-        let main_r = Rect::from_min_size(pos2(strip.left() + 4.0, strip.top() + 2.0), vec2(52.0, seq_tab_h - 4.0));
-        let main_resp = ui.interact(main_r, id.with("tab_main"), Sense::click());
-        tp.rect_filled(
-            main_r,
-            CornerRadius::same(3),
-            if main_active { pal.accent.gamma_multiply(0.35) } else { pal.panel },
-        );
-        tp.text(main_r.center(), Align2::CENTER_CENTER, "Main", small.clone(), pal.text);
-        if main_resp.clicked() && !main_active {
-            out.actions.push(crate::hotkeys::Action::OpenParentSequence);
-        }
-        if let Some(seq) = c.project.editing.and_then(|sid| c.project.sequence(sid)) {
-            let w = (seq.name.len() as f32 * 6.5 + 16.0).max(50.0);
-            let r = Rect::from_min_size(pos2(main_r.right() + 4.0, strip.top() + 2.0), vec2(w, seq_tab_h - 4.0));
-            tp.rect_filled(r, CornerRadius::same(3), pal.accent.gamma_multiply(0.35));
-            tp.text(r.center(), Align2::CENTER_CENTER, &seq.name, small.clone(), pal.text);
-        }
-    }
     // ---- inline overview minimap (Settings.overview): fit-to-window clip strip, click/drag scrubs ----
     if c.overview {
         let ov = Rect::from_min_max(
-            pos2(full.left() + state.header_w, full.top() + seq_tab_h),
-            pos2(full.right(), full.top() + seq_tab_h + overview_h),
+            pos2(full.left() + state.header_w, full.top()),
+            pos2(full.right(), full.top() + overview_h),
         );
         let op = painter.with_clip_rect(ov);
         op.rect_filled(ov, 0, pal.header);
@@ -1055,13 +1018,17 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
 
             // interaction: body, then volume line, then edges, then fade handles on top
             let cid = id.with(clip.id);
-            // Body top/bottom split (ws:snap-engine): rows >= 2x MIN_TRACK_H get a bottom
-            // crosshair/hairline/click-to-split zone; default/short rows keep one whole-body zone
-            // unchanged. Same call-site position as before the split - the later marker_hits
-            // registration still wins hit-testing over both halves.
-            let split_body = rect.height() >= 2.0 * MIN_TRACK_H;
-            let top_vis = if split_body { Rect::from_min_max(vis.min, pos2(vis.right(), vis.center().y)) } else { vis };
-            let br = ui.interact(top_vis, cid, Sense::click_and_drag());
+            // ws:timeline-surface: the body is one zone (the old bottom-half split zone is gone - the
+            // Blade is on the toolbar now); with the Blade active a hairline shows where a click cuts.
+            // The later marker_hits registration still wins hit-testing over it.
+            let br = ui.interact(vis, cid, Sense::click_and_drag());
+            if c.tool == Tool::Cut {
+                let br = br.clone().on_hover_cursor(CursorIcon::Crosshair);
+                if let Some(pos) = pointer.filter(|_| br.hovered()) {
+                    let t = snap_time(state.time_at(pos.x), c.snap, state.zoom, c.project, *c.playhead, &[]);
+                    lp.vline(state.x_at(t).clamp(vis.left(), vis.right()), vis.y_range(), Stroke::new(1.0, pal.accent));
+                }
+            }
             if br.clicked() {
                 // razor / marker tools act where the pointer is instead of selecting
                 let (snap_on, zoom, ph) = (c.snap, state.zoom, *c.playhead);
@@ -1092,66 +1059,22 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             if br.drag_started_by(egui::PointerButton::Primary) {
                 start_move = Some(clip.id);
             }
-            if split_body {
-                let bot_vis = Rect::from_min_max(pos2(vis.left(), vis.center().y), vis.max);
-                let brb = ui
-                    .interact(bot_vis, cid.with("bottom"), Sense::click_and_drag())
-                    .on_hover_cursor(CursorIcon::Crosshair);
-                if brb.hovered() {
-                    if let Some(pos) = pointer {
-                        let (snap_on, zoom, ph) = (c.snap, state.zoom, *c.playhead);
-                        let t = snap_time(state.time_at(pos.x), snap_on, zoom, c.project, ph, &[]);
-                        let hx = state.x_at(t).clamp(bot_vis.left(), bot_vis.right());
-                        lp.vline(hx, bot_vis.y_range(), Stroke::new(1.0, pal.accent));
-                    }
-                }
-                if brb.clicked() {
-                    // Cut tool splits here exactly as it would on the top half; Marker still drops a
-                    // marker anywhere on the body; plain Select clicking the bottom half is just a
-                    // click-to-select like the top half - it must not cut.
-                    let (snap_on, zoom, ph) = (c.snap, state.zoom, *c.playhead);
-                    let x = ui.input(|i| i.pointer.latest_pos()).unwrap_or(bot_vis.center()).x;
-                    let t = snap_time(state.time_at(x), snap_on, zoom, c.project, ph, &[]);
-                    match c.tool {
-                        Tool::Marker => act = Some(Act::AddMarker(t.max(0.0))),
-                        Tool::Cut => act = Some(Act::SplitAt(t)),
-                        _ => click = Some(clip.id),
-                    }
-                }
-                if brb.drag_started_by(egui::PointerButton::Primary) {
-                    start_move = Some(clip.id);
-                }
-            }
-            // by track, not kind: a nested sequence's audio twin is a Sequence clip on an audio track
-            let (linked, enabled, aud, is_cont) =
-                (clip.link != 0, clip.enabled, track.kind == TrackKind::Audio, clip.container);
-            let has_native = c.project.clip_native_size(clip).is_some();
-            let graph_open = has_curve_keys(clip).then(|| state.mini_graph_open.contains(&clip.id));
-            let is_seq = clip.kind == ClipKind::Sequence;
-            let lib_sel = c.library_selected;
+            let cm = ClipMenu {
+                id: clip.id,
+                container: clip.container,
+                // by track, not kind: a nested sequence's audio twin is a Sequence clip on an audio track
+                audio: track.kind == TrackKind::Audio,
+                native_size: c.project.clip_native_size(clip).is_some(),
+                sequence: clip.kind == ClipKind::Sequence,
+                library_selected: c.library_selected,
+                graph_open: has_curve_keys(clip).then(|| state.mini_graph_open.contains(&clip.id)),
+                labels,
+                buses,
+                shared_effects: &shared_effects,
+            };
             let mut toggle_graph = false;
             let mut rclick = br.secondary_clicked();
-            br.context_menu(|ui| {
-                clip_menu(
-                    ui,
-                    clip.id,
-                    is_cont,
-                    linked,
-                    enabled,
-                    aud,
-                    has_native,
-                    is_seq,
-                    lib_sel,
-                    graph_open,
-                    &mut toggle_graph,
-                    labels,
-                    buses,
-                    &shared_effects,
-                    &mut act,
-                    &mut out.actions,
-                    &mut out.edit_labels,
-                )
-            });
+            br.context_menu(|ui| clip_menu(ui, &cm, &mut act, &mut toggle_graph, &mut out.edit_labels));
             if toggle_graph {
                 match state.mini_graph_open.iter().position(|&x| x == clip.id) {
                     Some(i) => {
@@ -1206,27 +1129,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                         start_trim = Some((clip.id, is_start));
                     }
                     rclick |= r.secondary_clicked();
-                    r.context_menu(|ui| {
-                        clip_menu(
-                            ui,
-                            clip.id,
-                            is_cont,
-                            linked,
-                            enabled,
-                            aud,
-                            has_native,
-                            is_seq,
-                            lib_sel,
-                            None, // edge-handle menu: skip the mini-graph entry, body right-click has it
-                            &mut false,
-                            labels,
-                            buses,
-                            &shared_effects,
-                            &mut act,
-                            &mut out.actions,
-                            &mut out.edit_labels,
-                        )
-                    });
+                    r.context_menu(|ui| clip_menu(ui, &cm, &mut act, &mut false, &mut out.edit_labels));
                 }
             }
             if clip.kind != ClipKind::Adjustment {
@@ -1244,9 +1147,10 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     }
                 }
             }
+            // the menu's Actions run on the selection: a right-click retargets it, like a click would
             if rclick && !selected {
-                c.selection.clear();
-                c.selection.push(clip.id);
+                *c.selection = c.project.expand_links(&[clip.id]);
+                c.sel_transitions.clear();
             }
             // keyframe mini-graph: once the clip is wide enough on screen to be worth it (same measure
             // as `detailed` above, just a higher bar), a small toggle icon sits in its top-right corner.
@@ -1262,7 +1166,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 if btn.is_positive() {
                     let open = state.mini_graph_open.contains(&clip.id);
                     let clicked =
-                        toggle_button(ui, &lp, btn, cid.with("mg"), Cap::Icon(Glyph::Diamond), open, &pal, &small);
+                        toggle_button(ui, &lp, btn, cid.with("mg"), Cap::Icon(Glyph::Diamond), open, &pal, &small)
+                            .clicked();
                     if clicked {
                         if open {
                             state.mini_graph_open.retain(|&x| x != clip.id);
@@ -1322,6 +1227,20 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                         state.edit_point = Some(EditPoint { track: ti, t: left.end(), side });
                     }
                 }
+                // ws:timeline-surface: right-click = this edit point (both sides) with its incoming clip
+                // selected, which is exactly what the two Actions below act on
+                if r.secondary_clicked() {
+                    state.edit_point = Some(EditPoint { track: ti, t: left.end(), side: Side::Both });
+                    *c.selection = vec![right.id];
+                    c.sel_transitions.clear();
+                }
+                r.context_menu(|ui| {
+                    let roll = menu::shortcut(crate::hotkeys::Action::ExtendEdit);
+                    if menu::row(ui, Some(Glyph::RollCursor), "Roll Edit to Playhead", &roll).clicked() {
+                        out.actions.push(crate::hotkeys::Action::ExtendEdit);
+                    }
+                    menus::acts(ui, &[Some(crate::hotkeys::Action::AddTransition)]);
+                });
             }
         }
 
@@ -1366,28 +1285,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     c.sel_transitions.push(tr.id);
                     c.selection.clear();
                 }
-                br.context_menu(|ui| {
-                    let many = selected && c.sel_transitions.len() > 1;
-                    let label = if many {
-                        format!("Remove {} Selected Transitions", c.sel_transitions.len())
-                    } else {
-                        "Remove Transition".into()
-                    };
-                    if ui.button(label).clicked() {
-                        act = Some(if many {
-                            Act::RemoveTransitions(c.sel_transitions.clone())
-                        } else {
-                            Act::RemoveTransition(tr.id)
-                        });
-                    }
-                    ui.separator();
-                    // right-click quick-change: bulk-edits every selected transition (or just this
-                    // one if it wasn't already part of the selection - `sel_transitions` was reset
-                    // to just `tr.id` above in that case), same absolute-overwrite as picking a new
-                    // value in the Inspector's transition kind/ease combo boxes.
-                    ui.menu_button("Change Type", |ui| transition_kind_menu(ui, c.sel_transitions, &mut act));
-                    ui.menu_button("Change Easing", |ui| transition_ease_menu(ui, c.sel_transitions, &mut act));
-                });
+                // bulk-edits every selected transition (or just this one if it wasn't already part of
+                // the selection - `sel_transitions` was reset to just `tr.id` above in that case)
+                br.context_menu(|ui| transition_menu(ui, tr, c.sel_transitions, &mut act));
             }
             for (er, salt) in [
                 (Rect::from_min_max(band.min, pos2(band.left() + EDGE_W, band.bottom())), "a"),
@@ -1403,11 +1303,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 if r.drag_started_by(egui::PointerButton::Primary) {
                     start_trans = Some((ti, tr.id));
                 }
-                r.context_menu(|ui| {
-                    if ui.button("Remove Transition").clicked() {
-                        act = Some(Act::RemoveTransition(tr.id));
-                    }
-                });
+                // the band's own menu, for just this transition
+                r.context_menu(|ui| transition_menu(ui, tr, &[tr.id], &mut act));
             }
         }
 
@@ -1443,22 +1340,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 _ => {}
             }
         });
-        r.context_menu(|ui| {
-            for e in Ease::ALL {
-                if ui.button(e.name()).clicked() {
-                    act = Some(Act::SetEase(kcid, kt, e));
-                }
-            }
-            for (name, e) in Ease::PRESETS {
-                if ui.button(name).clicked() {
-                    act = Some(Act::SetEase(kcid, kt, e));
-                }
-            }
-            ui.separator();
-            if ui.button("Delete keyframe(s)").clicked() {
-                act = Some(Act::DelKeys(kcid, kt));
-            }
-        });
+        r.context_menu(|ui| key_menu(ui, kcid, kt, &mut act));
     }
 
     // clip markers, on top of the clip bodies
@@ -1528,13 +1410,13 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     lp.add(s);
                 }
             }
-            lp.text(
-                hint.center(),
-                Align2::CENTER_CENTER,
-                "Drop video, audio or images here - or Ctrl+O",
-                font.clone(),
-                dash,
-            );
+            let open = menu::shortcut(crate::hotkeys::Action::OpenFile);
+            let text = if open.is_empty() {
+                "Drop video, audio or images here".to_string()
+            } else {
+                format!("Drop video, audio or images here - or {open}")
+            };
+            lp.text(hint.center(), Align2::CENTER_CENTER, text, font.clone(), dash);
         }
     }
 
@@ -1677,14 +1559,33 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             out.edited = true;
         }
     }
-    let ph_now = *c.playhead;
+    // ws:timeline-surface: marks, paste, and the view options that used to be a toolbar row
+    let (view_idx, nested) = (state.view_idx, c.project.editing.is_some());
+    let mut pick_view = None;
     ruler_resp.context_menu(|ui| {
-        if ui.button("Add Marker at Playhead").clicked() {
-            act = Some(Act::AddMarker(ph_now));
+        use crate::hotkeys::Action::*;
+        menus::acts(ui, &[Some(AddMarker), None, Some(MarkIn), Some(MarkOut), Some(ClearInOut), None]);
+        paste_menu(ui);
+        menu::sub(ui, Some(Glyph::Rows), "View", |ui| {
+            for (i, v) in c.views.iter().enumerate() {
+                if menu::check(ui, i == view_idx.min(c.views.len() - 1), &v.name, "").clicked() {
+                    pick_view = Some(i);
+                }
+            }
+            if !c.views.is_empty() {
+                ui.separator();
+            }
+            if menu::check(ui, c.overview, "Overview Strip", &menu::shortcut(ToggleOverview)).clicked() {
+                out.actions.push(ToggleOverview);
+            }
+        });
+        if nested {
+            menus::acts(ui, &[None, Some(OpenParentSequence)]);
         }
-        ui.separator();
-        paste_menu(ui, &mut out.actions);
     });
+    if let Some(i) = pick_view {
+        state.view_idx = i;
+    }
 
     cue_lane::draw(
         ui,
@@ -1792,15 +1693,26 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             }
         }
     }
+    // ws:timeline-surface: a right-click in a gap selects it (hatched, like a click) and its menu offers
+    // Close Gap - the same `close_gap_at` Delete runs on a selected gap
+    if lanes_resp.secondary_clicked() {
+        state.gap_sel = lanes_resp.interact_pointer_pos().and_then(|pp| {
+            let ti = state.track_at(pp.y, c.project)?;
+            let (a, b) = gap_at(c.project, ti, state.time_at(pp.x))?;
+            Some((ti, a, b))
+        });
+    }
+    let gap = state.gap_sel;
     lanes_resp.context_menu(|ui| {
-        paste_menu(ui, &mut out.actions);
-        ui.separator();
-        if ui.button("Add Video Track").clicked() {
-            act = Some(Act::AddTrack(TrackKind::Video));
+        use crate::hotkeys::Action::*;
+        if let Some((ti, a, b)) = gap {
+            if menu::row(ui, Some(Glyph::Cross), "Close Gap", &menu::shortcut(Delete)).clicked() {
+                act = Some(Act::CloseGap(ti, (a + b) * 0.5));
+            }
+            ui.separator();
         }
-        if ui.button("Add Audio Track").clicked() {
-            act = Some(Act::AddTrack(TrackKind::Audio));
-        }
+        paste_menu(ui);
+        menus::acts(ui, &[None, Some(AddVideoTrack), Some(AddAudioTrack)]);
     });
     if let Some(pos) = pointer {
         let (snap_on, ph) = (c.snap, *c.playhead);
@@ -2046,13 +1958,6 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             Act::SplitAt(t) => {
                 p.split_at(t, None);
             }
-            Act::Split => {
-                p.split_at(*c.playhead, Some(&ids));
-            }
-            Act::Delete(ripple) => {
-                gestures::delete_clips_magnetic(p, &ids, ripple);
-                c.selection.clear();
-            }
             Act::CloseGap(ti, t) => {
                 label = "Close gap";
                 changed = p.close_gap_at(ti, t);
@@ -2069,11 +1974,6 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             Act::ReplaceClip(cid) => {
                 label = "Replace clip";
                 changed = c.library_selected.is_some_and(|aid| p.replace_clip(cid, aid));
-            }
-            Act::Link => p.toggle_link(&ids),
-            Act::Enable(on) => p.set_enabled(c.selection, on),
-            Act::AddTrack(kind) => {
-                p.add_track(kind);
             }
             Act::RemoveTrack(ti) => p.remove_track(ti),
             Act::Mute(ti) => p.tracks[ti].muted = !p.tracks[ti].muted,
@@ -2219,17 +2119,6 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             }
             Act::ReplaceContainerPair(cid) => {
                 out.replace_container = Some((cid, true));
-            }
-            Act::MakeContainer => {
-                p.make_container(&ids);
-            }
-            Act::UnmakeContainer => {
-                p.unmake_container(&ids);
-            }
-            Act::RenameContainer(cid, name) => {
-                if let Some(cl) = p.clip_mut(cid) {
-                    cl.container_label = name;
-                }
             }
             // ---- ws:pro-timeline: header UI dispatches to trim-model's existing ops directly (no
             // App access inside show(), so App::run_tool_undoable isn't reachable here - the tests
