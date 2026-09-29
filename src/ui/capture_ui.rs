@@ -32,8 +32,9 @@ pub struct CaptureUi {
     pub level: f32,
     /// Roll playback while recording the voiceover, so the take lines up with the timeline.
     pub from_playhead: bool,
-    /// Timeline time the current voiceover take started at.
-    pub voice_start: Option<f64>,
+    /// The last voiceover take: the timeline time it was started from, and its file. Retake removes its
+    /// clips and records again from there.
+    pub last_take: Option<(f64, PathBuf)>,
 }
 
 /// What the app should do this frame.
@@ -266,7 +267,7 @@ fn voice_window(
                     r.start_voice = true;
                     settings.save();
                 }
-                if state.voice_start.is_some() && ui.button("Retake").clicked() {
+                if state.last_take.is_some() && ui.add_enabled(can, egui::Button::new("Retake")).clicked() {
                     r.retake = true;
                     r.start_voice = true;
                     r.voice = Some(voice_options(settings));

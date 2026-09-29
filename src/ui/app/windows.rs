@@ -285,7 +285,10 @@ impl App {
                 self.start_screen_capture(o);
             }
             if let Some(o) = resp.voice.filter(|_| resp.start_voice) {
-                self.start_voiceover(o);
+                if resp.retake {
+                    self.drop_last_take();
+                }
+                self.start_voiceover(o, self.capture_ui.from_playhead);
             }
         }
         // imported timeline report - "Use this project" swaps it in

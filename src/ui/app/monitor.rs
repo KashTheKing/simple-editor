@@ -387,6 +387,8 @@ pub(crate) struct MonitorState {
     /// existing button lives in the general grade section, not a Qualifier-specific one; `Qualifier` is
     /// reachable via the `color.pick` MCP tool's explicit `target` arg.
     pub(crate) pick_armed: Option<(Id, crate::ui::preview::PickTarget)>,
+    /// The clip whose Multicam Angles window was closed with × - it stays closed for that clip.
+    pub(crate) multicam_dismissed: Option<Id>,
 }
 
 /// FRAME_HOOK: dynamic-trim rate-drop detection, the Scopes readback gate, and the dual-frame trim

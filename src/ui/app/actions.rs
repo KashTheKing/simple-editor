@@ -653,7 +653,10 @@ impl App {
             let id = self.add_shape(ShapeKind::Draw, None);
             self.draw_rec = Some((id, self.playhead));
             if !self.player.is_playing() {
-                self.pending_actions.push(Action::PlayPause);
+                // the timeline player directly: a queued PlayPause goes to a focused Source monitor instead,
+                // and rewinds to 0 at the end while the take is anchored at the playhead
+                self.seek(self.playhead);
+                self.player.roll();
             }
             return;
         }
