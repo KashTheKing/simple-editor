@@ -2,6 +2,16 @@
 
 ## beta-0.3.0
 
+### Panels activate on use (issue #76, part C)
+Opening a panel no longer changes behaviour or data: the Mixer shows a placeholder Main strip instead
+of creating a bus, Auto-cut waits for Detect, the tracker box waits for Tracking ▸ "Place box", the
+Subtitles Transcribe button runs through `App::transcribe_clip` (finished by `transcript_ctl::tick`
+even when the pane is closed), and a hidden Source monitor no longer keeps Space/JKL
+(`App::pane_drawn`, the set of panes drawn last frame). Auto-cut, Tracking, Transitions, the Settings
+tabs, the Export window and the Subtitles sections now scroll.
+- Tripwire count update: `pre_existing_repaint_sites_unchanged_and_named` drops from 14 to 13 - the
+  Subtitles section's own transcribe-job poll is deleted with the job.
+
 ### Jobs pane (issue #64)
 A dockable `Pane::Jobs` (View menu / `Ctrl+K` / the new menu-bar queue indicator; hidden by default
 in every preset via `stack_unplaced`, like Source) lists every background task — the export slot and
