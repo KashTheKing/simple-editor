@@ -272,9 +272,10 @@ pub struct App {
     shader_ui: shader_ui::ShaderUi,
     import_ui: import_ui::ImportUi,
     paste_ui: paste_ui::PasteUi,
-    /// Running screen recording / voiceover (voiceover remembers the timeline time it started at).
+    /// Running screen recording / voiceover (voiceover remembers the timeline time it started at, and
+    /// whether playback was rolling under it).
     screen_rec: Option<(crate::engine::capture::Capture, PathBuf)>,
-    voice_rec: Option<(crate::engine::capture::Capture, PathBuf, f64)>,
+    voice_rec: Option<(crate::engine::capture::Capture, PathBuf, (f64, bool))>,
     /// Running Draw take: the drawing every stroke joins, and the timeline time it started at.
     draw_rec: Option<(Id, f64)>,
     /// Viewport focus last frame (record-on-blur watches this).

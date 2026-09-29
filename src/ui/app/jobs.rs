@@ -73,7 +73,9 @@ impl App {
         self.import_recording(out, None);
     }
 
-    pub(super) fn start_voiceover(&mut self, opts: crate::engine::capture::VoiceoverOptions) {
+    /// Record a voiceover take at the playhead. `from_playhead` rolls the timeline under it (from the
+    /// playhead, never rewinding to 0 at the end), so what you say lines up with what you hear.
+    pub(super) fn start_voiceover(&mut self, opts: crate::engine::capture::VoiceoverOptions, from_playhead: bool) {
         if self.voice_rec.is_some() || self.ffmpeg_missing() {
             return;
         }
@@ -83,8 +85,11 @@ impl App {
         }
         match guarded(|| crate::engine::capture::start_voiceover(opts)) {
             Some(Ok(c)) => {
-                self.voice_rec = Some((c, out, self.playhead));
-                self.player.play(); // the take lines up with what you hear
+                if from_playhead {
+                    self.seek(self.playhead);
+                    self.player.roll();
+                }
+                self.voice_rec = Some((c, out, (self.playhead, self.player.is_playing())));
             }
             Some(Err(e)) => self.toast(format!("Voiceover failed: {e}")),
             None => self.toast("Voiceover recording is not available in this build"),
@@ -92,12 +97,28 @@ impl App {
     }
 
     pub(super) fn stop_voiceover(&mut self) {
-        let Some((c, out, at)) = self.voice_rec.take() else { return };
+        let Some((c, out, (at, rolling))) = self.voice_rec.take() else { return };
+        let lead = c.lead_in();
         self.player.pause();
         if guarded(move || c.stop()).is_none() {
             return;
         }
-        self.import_recording(out, Some(at));
+        self.capture_ui.last_take = Some((at, out.clone()));
+        self.import_recording(out, Some(take_placement(at, rolling, lead)));
+    }
+
+    /// Retake: throw the last voiceover take away (its clips in one undo step; one still being finalised
+    /// is never placed) and park the playhead where it started, so the next take records from there.
+    pub(super) fn drop_last_take(&mut self) {
+        let Some((at, out)) = self.capture_ui.last_take.take() else { return };
+        self.pending_recordings.retain(|r| r.out != out);
+        let ids = take_clips(&self.project, &out);
+        if !ids.is_empty() {
+            self.push_undo();
+            self.project.delete_clips(&ids, false);
+            self.after_edit();
+        }
+        self.seek(at);
     }
 
     /// A finished recording: import it and (for a voiceover) drop it on the timeline at `at`. ffmpeg
@@ -343,6 +364,23 @@ pub(super) enum RecordingStep {
     GiveUp,
 }
 
+/// Where a voiceover take lands: the playhead it started from, plus ffmpeg's device-open lead-in when
+/// the timeline was rolling under it (sample 0 was captured that much later). A still timeline has no
+/// lead-in to make up for.
+pub(crate) fn take_placement(at: f64, rolling: bool, lead_in: f64) -> f64 {
+    if rolling {
+        at + lead_in
+    } else {
+        at
+    }
+}
+
+/// The timeline clips cut from the recording at `out` (a voiceover take, for Retake).
+pub(crate) fn take_clips(project: &Project, out: &std::path::Path) -> Vec<Id> {
+    let Some(aid) = project.asset_by_path(&out.to_string_lossy()).map(|a| a.id) else { return Vec::new() };
+    project.all_clips().filter(|(_, c)| c.asset == aid).map(|(_, c)| c.id).collect()
+}
+
 /// The per-frame decision for one pending recording, pure so it is testable without a live `App`.
 pub(crate) fn recording_step(exists: bool, now: Instant, deadline: Instant) -> RecordingStep {
     if exists {
@@ -367,6 +405,36 @@ mod tests {
         assert_eq!(recording_step(true, later, now), RecordingStep::Import, "a late file still imports");
         assert_eq!(recording_step(false, later, later), RecordingStep::GiveUp);
         assert_eq!(recording_step(false, later + Duration::from_secs(1), later), RecordingStep::GiveUp);
+    }
+
+    #[test]
+    fn a_take_lands_after_the_lead_in_only_under_rolling_playback() {
+        assert_eq!(take_placement(4.0, true, 0.8), 4.8, "from the playhead: sample 0 was heard 0.8 s in");
+        assert_eq!(take_placement(4.0, false, 0.8), 4.0, "a still timeline: the take starts at the playhead");
+    }
+
+    #[test]
+    fn retake_removes_only_the_last_takes_clips() {
+        let mut p = Project::new();
+        let take = PathBuf::from("C:/rec/voice-2.wav");
+        let earlier = p.add_asset(crate::engine::import::placeholder("C:/rec/voice-1.wav"));
+        let last = p.add_asset(crate::engine::import::placeholder(&take.to_string_lossy()));
+        let ti = p.add_track(TrackKind::Audio);
+        let ids: Vec<Id> = [earlier, last]
+            .into_iter()
+            .enumerate()
+            .map(|(i, a)| {
+                let id = p.new_id();
+                let mut c = Clip::new(id, ClipKind::Audio, "vo", i as f64 * 5.0, 3.0);
+                c.asset = a;
+                p.tracks[ti].clips.push(c);
+                id
+            })
+            .collect();
+        assert_eq!(take_clips(&p, &take), vec![ids[1]]);
+        p.delete_clips(&take_clips(&p, &take), false);
+        assert!(take_clips(&p, &take).is_empty() && p.clip(ids[0]).is_some(), "the earlier take stays");
+        assert!(take_clips(&p, Path::new("C:/rec/gone.wav")).is_empty());
     }
 
     #[test]

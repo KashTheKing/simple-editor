@@ -382,10 +382,18 @@ impl Player {
         }
     }
     pub fn play(&mut self) {
+        self.start(true)
+    }
+    /// `play()` without its restart from 0 at the end: a recording take (voiceover, Draw) is placed at
+    /// the playhead, so the timeline rolls from there - at the very end it just stays put.
+    pub fn roll(&mut self) {
+        self.start(false)
+    }
+    fn start(&mut self, rewind: bool) {
         {
             let mut c = lock(&self.shared.clock);
             let t = c.now();
-            c.base_t = if t >= c.duration - 1e-6 { 0.0 } else { t };
+            c.base_t = if rewind && t >= c.duration - 1e-6 { 0.0 } else { t };
             c.base_at = Instant::now();
             c.playing = true;
             // ws:player-rate-loop: Play always resumes forward at 1x, regardless of a prior shuttle
@@ -1729,6 +1737,14 @@ mod tests {
         p.play();
         let t = p.time();
         assert!(t < 0.2, "rewound: {t}");
+        p.pause();
+        // ...but a recording's roll() never does: its take is placed at the playhead
+        p.seek(dur);
+        p.roll();
+        assert!((p.time() - dur).abs() < 1e-6 && !p.is_playing(), "roll at the end stays put: {}", p.time());
+        p.seek(1.0);
+        p.roll();
+        assert!(p.is_playing() && p.time() >= 1.0, "roll mid-timeline plays from the playhead: {}", p.time());
         p.pause();
 
         let start = Instant::now();

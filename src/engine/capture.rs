@@ -5,8 +5,9 @@
 //! loopback dshow device (see `audio_devices`). `auto_on_blur` (settings) starts the recorder when the
 //! editor loses focus and stops when it regains focus, so another app can be recorded hands-free.
 //!
-//! Voiceover: `ffmpeg -f dshow -i audio="<device>" -ac N -ar 48000 out.wav`, started/stopped from the
-//! voiceover panel while playback continues; the file is imported and placed at the record start time.
+//! Voiceover: `ffmpeg -f dshow -audio_buffer_size 50 -i audio="<device>" -ac N -ar 48000 out.wav`,
+//! started/stopped from the voiceover panel while playback continues; the file is imported and placed at
+//! the record start time (plus `Capture::lead_in` when playback rolled under it).
 //!
 //! Both report through `engine::export::Progress` and stop cleanly (ffmpeg gets `q` on stdin, so the
 //! container is finalised).
@@ -16,9 +17,9 @@ use crate::media::ffpipe;
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug)]
 pub struct ScreenCaptureOptions {
@@ -72,6 +73,8 @@ pub struct Capture {
     /// Kept open for the whole recording: ffmpeg only accepts `q` while its stdin is a live pipe.
     stdin: Option<ChildStdin>,
     start: Instant,
+    /// µs from `start` to the first captured sample, from ffmpeg's progress (`u64::MAX` until it reports).
+    lead_us: Arc<AtomicU64>,
     /// Set by `stop`: the watcher then treats any exit status as success and `drop` must not kill.
     graceful: Arc<AtomicBool>,
 }
@@ -93,6 +96,15 @@ impl Capture {
     /// Seconds recorded so far.
     pub fn elapsed(&self) -> f64 {
         self.start.elapsed().as_secs_f64()
+    }
+    /// Seconds from the process start to the first captured sample: opening a dshow device takes a
+    /// while (~0.8 s measured for a USB mic), so a take recorded under rolling playback lands this
+    /// much later on the timeline. 0 until ffmpeg's first progress report (~0.5 s in).
+    pub fn lead_in(&self) -> f64 {
+        match self.lead_us.load(Ordering::Relaxed) {
+            u64::MAX => 0.0,
+            us => us as f64 / 1e6,
+        }
     }
 }
 
@@ -148,8 +160,9 @@ fn spawn(out: &std::path::Path, args: Vec<String>, label: &'static str) -> Resul
     let progress = Progress::new();
     let graceful = Arc::new(AtomicBool::new(false));
     let shared = Arc::new(Mutex::new(Some(child)));
+    let (start, lead_us) = (Instant::now(), Arc::new(AtomicU64::new(u64::MAX)));
 
-    let (p, g, c) = (progress.clone(), graceful.clone(), shared.clone());
+    let (p, g, c, l) = (progress.clone(), graceful.clone(), shared.clone(), lead_us.clone());
     let watcher = std::thread::Builder::new().name("capture".into()).spawn(move || {
         p.set(0.0, format!("{label}…"));
         if let Some(out) = stdout {
@@ -158,6 +171,9 @@ fn spawn(out: &std::path::Path, args: Vec<String>, label: &'static str) -> Resul
                 let Ok(line) = line else { break };
                 if let Some(us) = line.strip_prefix("out_time_us=").and_then(|v| v.trim().parse::<f64>().ok()) {
                     p.set(0.0, format!("{label} {:.1} s", (us / 1e6).max(0.0)));
+                    if let Some(lead) = lead_estimate(start.elapsed(), us) {
+                        l.fetch_min(lead, Ordering::Relaxed);
+                    }
                 }
             }
         }
@@ -183,7 +199,14 @@ fn spawn(out: &std::path::Path, args: Vec<String>, label: &'static str) -> Resul
         }
         return Err(format!("could not start the capture thread: {e}"));
     }
-    Ok(Capture { progress, child: shared, stdin, start: Instant::now(), graceful })
+    Ok(Capture { progress, child: shared, stdin, start, lead_us, graceful })
+}
+
+/// When sample 0 was captured, in µs after spawn: wall time elapsed minus media time written. A report
+/// that lands between two device buffers overshoots by the wait for the next one, so callers keep the
+/// smallest estimate. None before anything was written.
+pub(crate) fn lead_estimate(elapsed: Duration, out_time_us: f64) -> Option<u64> {
+    (out_time_us > 0.0).then(|| (elapsed.as_micros() as f64 - out_time_us).max(0.0) as u64)
 }
 
 fn s(v: impl Into<String>) -> String {
@@ -241,7 +264,9 @@ pub(crate) fn screen_args(o: &ScreenCaptureOptions, loopback: Option<&str>) -> V
 pub(crate) fn voice_args(o: &VoiceoverOptions) -> Vec<String> {
     let mut a: Vec<String> =
         ["-y", "-hide_banner", "-loglevel", "error", "-progress", "pipe:1"].iter().map(|x| s(*x)).collect();
-    a.extend([s("-f"), s("dshow"), s("-i"), format!("audio={}", o.device.trim())]);
+    // 50 ms device buffers instead of dshow's default 500 ms: progress then trails the capture by at most
+    // one small buffer, which keeps `Capture::lead_in` within ~50 ms (measured: 0.76-0.80 s vs 0.80-0.86 s)
+    a.extend([s("-f"), s("dshow"), s("-audio_buffer_size"), s("50"), s("-i"), format!("audio={}", o.device.trim())]);
     a.extend([s("-ac"), o.channels.clamp(1, 2).to_string()]);
     a.extend([s("-ar"), if o.sample_rate == 0 { s("48000") } else { o.sample_rate.to_string() }]);
     a.push(o.out.to_string_lossy().into_owned());
@@ -456,10 +481,18 @@ Error opening input file dummy.
     fn voice_args_wav() {
         let o = VoiceoverOptions { out: PathBuf::from(r"C:\rec\vo.wav"), device: " Mic ".into(), ..Default::default() };
         let j = joined(&voice_args(&o));
-        assert!(j.contains("-f dshow -i audio=Mic"), "device name is trimmed: {j}");
+        assert!(j.contains("-f dshow -audio_buffer_size 50 -i audio=Mic"), "device name is trimmed: {j}");
         assert!(j.contains("-ac 1 -ar 48000") && j.ends_with(r"C:\rec\vo.wav"), "{j}");
         let clamped = voice_args(&VoiceoverOptions { channels: 7, sample_rate: 0, ..o });
         assert!(joined(&clamped).contains("-ac 2 -ar 48000"), "channels are clamped to stereo");
+    }
+
+    #[test]
+    fn lead_in_is_wall_time_minus_media_time() {
+        let ms = Duration::from_millis;
+        assert_eq!(lead_estimate(ms(1300), 500_000.0), Some(800_000), "0.5 s written 1.3 s after spawn");
+        assert_eq!(lead_estimate(ms(200), 500_000.0), Some(0), "never negative");
+        assert_eq!(lead_estimate(ms(900), 0.0), None, "nothing written yet says nothing");
     }
 
     /// Hardware check (`cargo test -- --ignored capture_records`): records the desktop for ~2 s and

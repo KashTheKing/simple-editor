@@ -239,17 +239,20 @@ pub(super) fn window_scopes(app: &mut App, ctx: &egui::Context) {
 }
 
 /// WINDOW_DRAWERS entry: the multicam angle grid, auto-shown (no dedicated toggle action - matches
-/// trim_view's own "auto-shown when applicable" precedent) whenever the targeted clip is a multicam
-/// sequence clip.
+/// trim_view's own "auto-shown when applicable" precedent) while the targeted clip is a multicam clip,
+/// until its × is clicked.
 pub(super) fn window_multicam(app: &mut App, ctx: &egui::Context) {
     let Some(id) = targeted_clip(app) else { return };
     let angles = app.project.multicam_angles(id);
-    if angles.is_empty() {
+    if !multicam_window_shown(angles.len(), id, app.monitor.multicam_dismissed) {
         return;
     }
     let cur = current_angle(&app.project, id, app.playhead).unwrap_or(0);
     let mut open = true;
     let clicked = crate::ui::multicam_ui::angle_grid(ctx, &mut open, &angles, cur, &app.palette);
+    if !open {
+        app.monitor.multicam_dismissed = Some(id);
+    }
     if let Some(angle) = clicked {
         let before = app.project.to_json();
         if app.project.multicam_switch(id, app.playhead, angle) {
@@ -257,6 +260,12 @@ pub(super) fn window_multicam(app: &mut App, ctx: &egui::Context) {
             app.after_edit();
         }
     }
+}
+
+/// A plain nested sequence lists its single video track as "angle 1", so it takes 2+ angles to be a
+/// multicam clip; × keeps the window closed for that clip.
+fn multicam_window_shown(angles: usize, clip: Id, dismissed: Option<Id>) -> bool {
+    angles >= 2 && dismissed != Some(clip)
 }
 
 fn run(app: &mut App, name: &str, args: &Value) -> Result<Value, String> {
@@ -483,6 +492,15 @@ mod tests {
         write_picked_color_on_clip(c, PickTarget::Qualifier, [0, 255, 0]);
         let e = c.effects.iter().find(|e| e.kind == EffectKind::Qualifier).unwrap();
         assert!((e.params[0].value - 120.0).abs() < 0.5, "qualifier centre = green's hue");
+    }
+
+    #[test]
+    fn multicam_window_needs_two_angles_and_stays_dismissed() {
+        assert!(!multicam_window_shown(0, 7, None), "not a sequence clip");
+        assert!(!multicam_window_shown(1, 7, None), "a plain nested sequence is not multicam");
+        assert!(multicam_window_shown(2, 7, None));
+        assert!(!multicam_window_shown(2, 7, Some(7)), "× keeps it closed for that clip");
+        assert!(multicam_window_shown(3, 8, Some(7)), "another multicam clip still shows it");
     }
 
     #[test]
