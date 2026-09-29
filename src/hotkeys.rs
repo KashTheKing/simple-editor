@@ -180,7 +180,8 @@ actions! {
     // palette row / toast button only.
     ClearCaches => "clear_caches", "Clear Caches", None;
     RestoreBackup => "restore_backup", "Restore Autosave…", None;
-    UndoSettings => "undo_settings", "Undo Settings Change", None;
+    // ws:keys-actions: UndoSettings ("Undo Settings Change") went - nothing ever took the snapshot it
+    // restored, and restoring Settings properly means re-applying theme/decoder/cache/hotkeys too.
     // ---- ws:player-rate-loop ----
     ShuttleBack => "shuttle_back", "Shuttle Reverse", sc(NONE, Key::J);
     ShuttleFwd => "shuttle_fwd", "Shuttle Forward", sc(NONE, Key::L);
@@ -477,14 +478,15 @@ pub fn consume_exact(i: &mut egui::InputState, ks: &KeyboardShortcut) -> bool {
 /// (fullscreen exit while `self.fullscreen`), `Tab`/`Shift+Tab` (egui's own focus traversal) and
 /// `Alt+Space` (Windows' system menu). A rebindable UI that let a user pick one of these would silently
 /// lose it to whichever poll runs first - `conflict_all` reports them so the Hotkeys tab can say so.
+/// The F1 cheat sheet lists these as "Keys outside the table", so the names say what the key does.
 pub const RESERVED: &'static [(&'static str, Modifiers, Key)] = &[
-    ("Cycle shape tool (Shift+S)", SHIFT, Key::S),
-    ("Redo (Ctrl+Y alias)", CTRL, Key::Y),
-    ("Delete (Backspace alias)", NONE, Key::Backspace),
-    ("Exit fullscreen (Esc)", NONE, Key::Escape),
-    ("Focus next (Tab)", NONE, Key::Tab),
-    ("Focus previous (Shift+Tab)", SHIFT, Key::Tab),
-    ("Windows system menu (Alt+Space)", ALT, Key::Space),
+    ("Cycle shape tool", SHIFT, Key::S),
+    ("Redo (alias)", CTRL, Key::Y),
+    ("Delete (alias)", NONE, Key::Backspace),
+    ("Exit fullscreen", NONE, Key::Escape),
+    ("Next field", NONE, Key::Tab),
+    ("Previous field", SHIFT, Key::Tab),
+    ("Windows system menu", ALT, Key::Space),
 ];
 
 /// Who already claims a chord: a bound `Action`, or one of the hard-coded `RESERVED` rows.
@@ -509,52 +511,68 @@ impl Hotkeys {
     }
 }
 
-/// Section a hotkey belongs to, for the cheat-sheet overlay and the Settings ▸ Hotkeys group headers.
-/// Hand-maintained rather than folded into the `actions!` macro (a smaller diff, and grouping needs
-/// change far less often than the action list itself - see the issue plan's `// ponytail:` note); the
-/// `_ => "Other"` catch-all keeps a future workstream's new `Action` non-breaking even if nobody
-/// remembers to extend this match.
+/// `group()`'s sections in the order F1 and Settings ▸ Hotkeys show them: the menu bar's order, then
+/// the rest.
+pub const GROUPS: &[&str] = &[
+    "File",
+    "Edit",
+    "Playback",
+    "Marking",
+    "Trimming",
+    "Timeline",
+    "Clip",
+    "Add",
+    "Audio",
+    "Color",
+    "Captions",
+    "Viewer",
+    "Panels & Pages",
+    "Media",
+    "Tools",
+    "General",
+];
+
+/// Section an Action belongs to (one of `GROUPS`), for the F1 cheat sheet, Settings ▸ Hotkeys and the
+/// `hotkeys.get` tool. Every Action has an arm; `group_covers_every_action` fails when a new one lands in
+/// the `_ => "Other"` fallback, which is only there so a new variant still compiles.
 pub fn group(a: Action) -> &'static str {
     use Action::*;
     match a {
-        NewProject | OpenFile | OpenProject | Save | SaveProjectAs | ExportVideo | ExportLossless | ExportXml
-        | ImportMedia | ImportTimeline | ExportFrame | ScreenCapture | Voiceover => "File",
-        Undo | Redo | CopyClips | CutClips | PasteClips | PasteInPlace | PasteInsert | PasteAtTop | SelectAll
-        | Deselect | CopyAttributes | PasteAttributes | Delete | RippleDelete | NudgeLeft | NudgeRight => "Edit",
-        PlayPause | Stop | StepBack | StepForward | GoStart | GoEnd | PrevCut | NextCut => "Playback",
-        Split
-        | MarkIn
-        | MarkOut
-        | ClearInOut
-        | TrimToInOut
-        | RippleDeleteInOut
-        | LinkToggle
-        | ToggleEnabled
-        | AddTransition
-        | AddLastTransition
-        | AddTransitionEnd
-        | Retime
-        | FreezeFrame
-        | NestSequence
-        | OpenParentSequence
-        | SaveTemplate
-        | ApplyFlow
-        | AddContainer
-        | ReplaceContainerMedia
-        | MakeContainer
-        | UnmakeContainer
-        | AddVideoTrack
-        | AddAudioTrack
-        | ZoomIn
-        | ZoomOut
-        | ZoomFit
-        | ToggleSnap => "Timeline",
-        AddText | AddShape | AddAdjustment | AddMask | AddSubtitle | AddMarker => "Insert",
-        ToggleLibrary | ToggleInspector | ToggleEffects | ToggleTransitions | ToggleCurves | ToggleSubtitles
-        | TogglePlanner | ToggleMarkers | ToggleNodes | ToggleMixer | ToggleTools => "Panels",
+        NewProject | OpenFile | OpenProject | Save | SaveProjectAs | ImportMedia | ImportTimeline | ExportVideo
+        | QuickExport | ExportLossless | ExportXml | ExportFrame | ExportMarkers | ScreenCapture | Voiceover
+        | RestoreBackup | Settings => "File",
+        Undo | Redo | CutClips | CopyClips | PasteClips | PasteInsert | PasteAtTop | PasteInPlace | CopyAttributes
+        | PasteAttributes | Delete | RippleDelete | SelectAll | Deselect | SelectForward | SelectBackward
+        | SelectAtPlayhead | Find => "Edit",
+        PlayPause | Stop | ShuttleBack | ShuttleFwd | PlayInOut | LoopInOut | PlayAround | PlayToOut | FastReview
+        | StepBack | StepForward | StepBack10 | StepFwd10 | PrevCut | NextCut | GoStart | GoEnd | PrevKeyframe
+        | NextKeyframe | Fullscreen | MovieMode | ToggleProxies => "Playback",
+        MarkIn | MarkOut | MarkClip | ClearInOut | GoToIn | GoToOut | AddMarker => "Marking",
+        SelectEditPoint | CycleEditSide | TrimLeft1 | TrimRight1 | TrimLeft10 | TrimRight10 | ExtendEdit | TrimTop
+        | TrimTail | SlipLeft | SlipRight | ToggleTrimView => "Trimming",
+        LiftInOut | ExtractInOut | TrimToInOut | RippleDeleteInOut | CloseGapAtPlayhead | JoinThroughEdit
+        | SpliceInsert | OverwriteAtPlayhead | ZoomIn | ZoomOut | ZoomFit | ToggleSnap | ToggleOverview
+        | AddVideoTrack | AddAudioTrack | RenameTrack | ToggleTrackLock | ToggleTrackRipple | ToggleTrackMagnetic
+        | OpenParentSequence | RenderSelection | BakeSelection => "Timeline",
+        Split | DuplicateClips | ToggleEnabled | LinkToggle | NudgeLeft | NudgeRight | Retime | FreezeFrame
+        | AddTransition | AddLastTransition | AddTransitionEnd | ApplyFlow | AutoReframe | SaveTemplate => "Clip",
+        NestSequence | UnnestClip | MakeContainer | UnmakeContainer | ReplaceContainerMedia => "Clip",
+        MulticamCreate | MulticamAngles | NextAngle | PrevAngle | MatchFrame | RevealInLibrary => "Clip",
+        ReplaceWithLibrarySelection => "Clip",
+        AddText | AddShape | AddAdjustment | AddMask | AddSubtitle | AddContainer => "Add",
+        AutoCut | DetectBeats | SplitAtBeats | AutoDuck | Normalize | MatchLoudness => "Audio",
+        AutoColor | ColorMatch | BypassGrade | CompareWipe | SaveStill => "Color",
+        GetCaptions | TranscribeClip | ViewTranscript => "Captions",
+        ToggleTranscript | RemoveFillers | ExportTranscript => "Captions",
+        ViewerFit | AppendAtEnd | RippleOverwrite | CloseUp | PlaceOnTop | SourceTape => "Viewer",
+        // (a shared variant never sits right before `=>`: `no_duplicate_*` count "Name =>" in this file)
+        Workspace1 | Workspace2 | Workspace3 | Workspace4 | MaximizePane | TogglePin | ToggleLayoutMode
+        | ToggleLibrary | ToggleInspector | ToggleEffects | ToggleTransitions | ToggleCurves | ToggleSubtitles
+        | TogglePlanner | ToggleMarkers | ToggleNodes | ToggleMixer | ToggleTools | ToggleSource | ToggleJobs
+        | ToggleScopes => "Panels & Pages",
+        RelinkMedia | ConsolidateMedia | NewSubclip => "Media",
         ToolSelect | ToolText | ToolDraw | ToolMask | ToolMarker | ToolCut | ToolStretch | ToolSpacer => "Tools",
-        CommandPalette | CheatSheet | ToggleLayoutMode | ShowWelcome | Fullscreen | Settings | AutoCut | MovieMode
-        | WhatsNew => "General",
+        CommandPalette | CheatSheet | ShowWelcome | WhatsNew | ClearCaches => "General",
         // ---- ws:pages ----
         // ---- ws:timeline-surface ----
         // ---- ws:viewer-surface ----
@@ -562,12 +580,25 @@ pub fn group(a: Action) -> &'static str {
         // ---- ws:inspector-surface ----
         // ---- ws:side-panels ----
         // ---- ws:keys-actions ----
-        // every current variant has an arm above (same `unreachable_patterns` situation as act()'s own
-        // prelude match in ui/app/actions.rs); kept so a future workstream's new Action compiles into
-        // "Other" by default instead of forcing an edit here.
+        // unreachable today (every variant has an arm above); a new variant compiles into "Other" and
+        // `group_covers_every_action` names it.
         #[allow(unreachable_patterns)]
         _ => "Other",
     }
+}
+
+/// Every Action by `group`, sections in `GROUPS` order (an unknown group last), actions in table order.
+pub fn grouped() -> Vec<(&'static str, Vec<Action>)> {
+    let mut out: Vec<(&'static str, Vec<Action>)> = Vec::new();
+    for &a in Action::ALL {
+        let g = group(a);
+        match out.iter_mut().find(|(name, _)| *name == g) {
+            Some((_, v)) => v.push(a),
+            None => out.push((g, vec![a])),
+        }
+    }
+    out.sort_by_key(|(g, _)| GROUPS.iter().position(|x| x == g).unwrap_or(usize::MAX));
+    out
 }
 
 /// Actions the curve and node editors also claim while the pointer is over them, so the timeline only
@@ -718,19 +749,10 @@ mod tests {
         // bare S is a normal, rebindable binding now; N is free
         assert_eq!(h.conflict_all(KeyboardShortcut::new(NONE, Key::S)), Some(Claim::Action(Action::ToggleSnap)));
         assert_eq!(h.conflict_all(KeyboardShortcut::new(NONE, Key::N)), None);
-        assert_eq!(
-            h.conflict_all(KeyboardShortcut::new(SHIFT, Key::S)),
-            Some(Claim::Fixed("Cycle shape tool (Shift+S)"))
-        );
-        assert_eq!(h.conflict_all(KeyboardShortcut::new(CTRL, Key::Y)), Some(Claim::Fixed("Redo (Ctrl+Y alias)")));
-        assert_eq!(
-            h.conflict_all(KeyboardShortcut::new(NONE, Key::Backspace)),
-            Some(Claim::Fixed("Delete (Backspace alias)"))
-        );
-        assert_eq!(
-            h.conflict_all(KeyboardShortcut::new(NONE, Key::Escape)),
-            Some(Claim::Fixed("Exit fullscreen (Esc)"))
-        );
+        assert_eq!(h.conflict_all(KeyboardShortcut::new(SHIFT, Key::S)), Some(Claim::Fixed("Cycle shape tool")));
+        assert_eq!(h.conflict_all(KeyboardShortcut::new(CTRL, Key::Y)), Some(Claim::Fixed("Redo (alias)")));
+        assert_eq!(h.conflict_all(KeyboardShortcut::new(NONE, Key::Backspace)), Some(Claim::Fixed("Delete (alias)")));
+        assert_eq!(h.conflict_all(KeyboardShortcut::new(NONE, Key::Escape)), Some(Claim::Fixed("Exit fullscreen")));
         // a bound action's own chord resolves to Claim::Action, checked ahead of RESERVED
         assert_eq!(h.conflict_all(KeyboardShortcut::new(CTRL, Key::Z)), Some(Claim::Action(Action::Undo)));
         // a genuinely free chord is neither
@@ -755,11 +777,15 @@ mod tests {
         }
     }
 
+    /// Every Action has a real section (none falls into "Other"), and every section has something in it.
     #[test]
     fn group_covers_every_action() {
         for &a in Action::ALL {
-            assert_ne!(group(a), "", "{a:?} has no group");
+            assert!(GROUPS.contains(&group(a)), "{a:?} is in '{}', not one of GROUPS - give it an arm", group(a));
         }
+        let g = grouped();
+        assert_eq!(g.iter().map(|(name, _)| *name).collect::<Vec<_>>(), GROUPS, "every group used, in GROUPS order");
+        assert_eq!(g.iter().map(|(_, v)| v.len()).sum::<usize>(), Action::ALL.len());
     }
 
     // ---- ws:layout-modes-onboarding ----

@@ -106,12 +106,13 @@ pub(super) fn general(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Setting
         .changed();
     changed |= ui.checkbox(&mut s.snap, "Snapping in the timeline").changed();
     changed |= ui.checkbox(&mut s.confirm_overwrite, "Confirm before overwriting files").changed();
-    changed |= ui
-        .checkbox(
-            &mut s.lossless_save,
-            "Save (Ctrl+S) uses the instant lossless cut when the project is a plain cut (cuts snap to keyframes)",
-        )
-        .changed();
+    let save = match crate::ui::menu::shortcut(crate::hotkeys::Action::Save) {
+        k if k.is_empty() => "Save".to_string(),
+        k => format!("Save ({k})"),
+    };
+    let lossless =
+        format!("{save} uses the instant lossless cut when the project is a plain cut (cuts snap to keyframes)");
+    changed |= ui.checkbox(&mut s.lossless_save, lossless).changed();
     ui.horizontal(|ui| {
         changed |= ui
             .checkbox(&mut s.context_menu, "Add 'Edit with Simple Editor' to the right-click menu of video files")

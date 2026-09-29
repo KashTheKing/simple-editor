@@ -9,7 +9,7 @@
 //! the UI-scale slider, and `capture_key`'s honest `conflict_all` (RESERVED-aware) rewrite.
 
 use super::SettingsUi;
-use crate::hotkeys::{group, Action, Claim, Hotkeys, RESERVED};
+use crate::hotkeys::{grouped, Action, Claim, Hotkeys, RESERVED};
 use crate::keymaps;
 use crate::settings::Settings;
 use eframe::egui::{self, Color32, Event, Key, KeyboardShortcut, Modifiers};
@@ -37,8 +37,9 @@ pub(super) fn hotkeys_tab(
         ui.label("Keymap preset");
         let before = settings.keymap_preset.clone();
         egui::ComboBox::from_id_salt("keymap_preset").selected_text(&settings.keymap_preset).show_ui(ui, |ui| {
-            for (name, _) in keymaps::PRESETS {
-                ui.selectable_value(&mut settings.keymap_preset, name.to_string(), *name);
+            for (name, diff) in keymaps::PRESETS {
+                let r = ui.selectable_value(&mut settings.keymap_preset, name.to_string(), *name);
+                r.on_hover_text(preset_summary(diff));
             }
         });
         if settings.keymap_preset != before {
@@ -94,23 +95,26 @@ pub(super) fn hotkeys_tab(
 
     ui.add_space(4.0);
     let filter = state.hotkeys_search.to_ascii_lowercase();
-    let mut by_group: Vec<(&'static str, Vec<Action>)> = Vec::new();
-    for &a in Action::ALL {
-        if !filter.is_empty() && !a.label().to_ascii_lowercase().contains(&filter) && !a.id().contains(&filter) {
-            continue;
-        }
-        let g = group(a);
-        match by_group.iter_mut().find(|(name, _)| *name == g) {
-            Some((_, v)) => v.push(a),
-            None => by_group.push((g, vec![a])),
-        }
+    let mut by_group = grouped();
+    for (_, actions) in &mut by_group {
+        actions.retain(|a| {
+            filter.is_empty() || a.label().to_ascii_lowercase().contains(&filter) || a.id().contains(&filter)
+        });
     }
+    by_group.retain(|(_, actions)| !actions.is_empty());
     egui::ScrollArea::vertical().max_height((ui.available_height() - 40.0).max(0.0)).auto_shrink([false, true]).show(
         ui,
         |ui| {
-            for (name, actions) in &by_group {
-                ui.strong(*name);
-                egui::Grid::new(("hotkeys", name)).num_columns(4).striped(true).spacing([12.0, 4.0]).show(ui, |ui| {
+            // one grid for every group, so the chord / Rebind / Reset columns line up all the way down
+            egui::Grid::new("hotkeys").num_columns(4).striped(true).spacing([12.0, 4.0]).show(ui, |ui| {
+                for (i, (name, actions)) in by_group.iter().enumerate() {
+                    ui.vertical(|ui| {
+                        if i > 0 {
+                            ui.add_space(8.0);
+                        }
+                        ui.strong(*name);
+                    });
+                    ui.end_row();
                     for &a in actions {
                         ui.label(a.label());
                         let text = hotkeys.text(a);
@@ -133,9 +137,8 @@ pub(super) fn hotkeys_tab(
                         }
                         ui.end_row();
                     }
-                });
-                ui.add_space(6.0);
-            }
+                }
+            });
             if by_group.is_empty() {
                 ui.weak("No actions match the search.");
             }
@@ -155,7 +158,9 @@ pub(super) fn hotkeys_tab(
     } else if !state.note.is_empty() {
         ui.label(&state.note);
     }
-    ui.weak("Mouse: Ctrl+Scroll zoom, Shift+Scroll pan, Alt+Scroll track height (fixed).");
+    let sheet = hotkeys.text(Action::CheatSheet);
+    let sheet = if sheet.is_empty() { format!("Help ▸ {}", Action::CheatSheet.label()) } else { sheet };
+    ui.weak(format!("Mouse gestures and the few fixed keys are listed in the shortcuts overlay ({sheet})."));
     changed
 }
 
@@ -193,7 +198,7 @@ pub(super) fn capture_key(ctx: &egui::Context, state: &mut SettingsUi, a: Action
                     match hotkeys.conflict_all(ks) {
                         Some(Claim::Fixed(name)) => {
                             state.note =
-                                format!("{} is reserved by {name} and can't be rebound.", Hotkeys::format(&ks));
+                                format!("{} is reserved for {name} and can't be rebound.", Hotkeys::format(&ks));
                         }
                         Some(Claim::Action(other)) if other != a => {
                             state.pending_conflict = Some((a, ks, other));
@@ -209,6 +214,19 @@ pub(super) fn capture_key(ctx: &egui::Context, state: &mut SettingsUi, a: Action
         i.events.retain(|e| !matches!(e, Event::Key { .. } | Event::Text(_)));
     });
     changed
+}
+
+/// A keymap preset combo row's hover: what it changes against the shipped defaults.
+fn preset_summary(diff: &[(&str, &str)]) -> String {
+    if diff.is_empty() {
+        return "The shipped defaults".into();
+    }
+    let rows: Vec<String> =
+        diff.iter().filter_map(|&(id, chord)| Action::from_id(id).map(|a| format!("{}: {chord}", a.label()))).collect();
+    rows.join(
+        "
+",
+    )
 }
 
 /// Bare-key (no-modifier) binding state used to colour the QWERTY map.

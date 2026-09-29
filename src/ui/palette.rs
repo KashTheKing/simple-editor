@@ -1,20 +1,20 @@
-//! Ctrl+K command palette: fuzzy search over every `Action`, `Pane` ("Show X"), arg-free `ToolDef`,
-//! Luau script and workspace, in one list. A `:` prefix switches to "tool mode": fuzzy search over
-//! EVERY tool (not just arg-free ones), and picking a row builds a tiny arg form from the tool's
-//! `args` docs instead of running it immediately.
+//! Ctrl+K command palette: fuzzy search over every `Action`, the panes no Action toggles ("Show X"),
+//! arg-free tools that change something, and Luau scripts, in one list - one row per thing (a pane's
+//! row is its Show / Hide Action; the pages are the Edit/Color/Audio/Export page Actions). A `:` prefix
+//! switches to "tool mode": fuzzy search over EVERY tool by its raw name, and picking a row builds a
+//! tiny arg form from the tool's `args` docs instead of running it immediately.
 //!
-//! `rows`/`tool_rows` take plain data (a `&Hotkeys`, an `enabled` closure, a script-metadata slice) -
+//! `rows`/`tool_rows` take plain data (a `MenuSnapshot`, a pane->Action fn, a script-metadata slice) -
 //! not `&App` - so they're unit-testable directly: there is no headless `App` harness in this crate
-//! (`App::new` needs a real `eframe::CreationContext`/GL context; see `tools_registry_tests.rs`'s
-//! App-construction note, and `enabled`/`enabled_for`'s own split for the same reason). `ui::app::
-//! palette_ctl` is the thin, App-owning glue that calls these from a live `App` and dispatches the
-//! `Command` they return - matching how `retime::show`/`capture_ui::show`/every other non-blocking
-//! window in this codebase already takes plain fields out of `App` rather than `&App` itself.
+//! (`App::new` needs a real `eframe::CreationContext`/GL context). `ui::app::palette_ctl` is the thin,
+//! App-owning glue that calls these from a live `App` and dispatches the `Command` they return.
 //! ---- ws:command-palette ----
 
 use crate::hotkeys::{Action, Hotkeys};
+use crate::mcp::tools::ToolKind;
 use crate::scripting::ScriptMeta;
-use crate::ui::layout::{Pane, PAGES};
+use crate::ui::layout::{pane_icon, Pane};
+use crate::ui::menu::{self, MenuSnapshot};
 use crate::ui::tools::{self, Glyph};
 use eframe::egui;
 use std::path::PathBuf;
@@ -26,7 +26,6 @@ pub enum Command {
     Pane(Pane),
     Tool(&'static str),
     Script(PathBuf),
-    Workspace(&'static str),
 }
 
 pub struct Row {
@@ -35,7 +34,22 @@ pub struct Row {
     pub shortcut: String,
     pub glyph: Option<Glyph>,
     pub enabled: bool,
+    /// Why a disabled row is disabled (shown on the row), or what a tool does (on hover).
     pub reason: Option<&'static str>,
+}
+
+/// "timeline.close_gap" -> "Close gap (timeline)".
+pub fn tool_label(name: &str) -> String {
+    let (group, verb) = name.split_once('.').unwrap_or(("", name));
+    let mut verb = verb.replace('_', " ");
+    if let Some(c) = verb.get(..1) {
+        verb.replace_range(..1, &c.to_uppercase());
+    }
+    if group.is_empty() {
+        verb
+    } else {
+        format!("{verb} ({group})")
+    }
 }
 
 /// Allocation-free, case-insensitive subsequence scorer: every character of `query` must appear in
@@ -87,14 +101,14 @@ fn finish(mut rows: Vec<(u32, Row)>) -> Vec<Row> {
     rows.into_iter().map(|(_, r)| r).collect()
 }
 
-/// The main row set: `Action::ALL` + `Pane::ALL` ("Show X") + arg-free `ToolDef`s + scripts +
-/// `layout::PAGES`, fuzzy-filtered by `query` (empty query = everything, most-recently-used
-/// actions first - `recent`, capped to `Settings.palette_recent`). `enabled` is a closure rather than
-/// `&App` so this stays unit-testable (see the module doc comment); `App::enabled` is what
-/// `palette_ctl` actually passes.
+/// The main row set: `Action::ALL` + a "Show X" row for each pane `toggle_of` has no Action for +
+/// arg-free tools that act (a `Read` tool's reply would be dropped here; `:` mode lists those) +
+/// scripts, fuzzy-filtered by `query` (empty query = everything, most-recently-used actions first -
+/// `recent`, capped to `Settings.palette_recent`). Shortcut text, icons (overrides included) and
+/// disabled reasons come from `snap`, the same `ui::menu` snapshot every menu row reads.
 pub fn rows(
-    hotkeys: &Hotkeys,
-    enabled: impl Fn(Action) -> Result<(), &'static str>,
+    snap: &MenuSnapshot,
+    toggle_of: impl Fn(Pane) -> Option<Action>,
     scripts: &[ScriptMeta],
     recent: &[String],
     query: &str,
@@ -113,23 +127,26 @@ pub fn rows(
         let label = a.label();
         let Some(mut s) = fuzzy_score(query, label) else { continue };
         s += boost(a.id());
-        let (ok, reason) = match enabled(a) {
-            Ok(()) => (true, None),
-            Err(r) => (false, Some(r)),
+        let reason = snap.disabled.get(&a).copied();
+        // a pane's Show / Hide row wears the pane's icon, unless the user picked one for the action
+        let pane = Pane::ALL.iter().copied().find(|&p| toggle_of(p) == Some(a));
+        let glyph = match (menu::glyph_for(&snap.icons, a), pane) {
+            (None, Some(p)) if !snap.icons.contains_key(&format!("action.{}", a.id())) => pane_icon(&snap.icons, p),
+            (g, _) => g,
         };
         rows.push((
             s,
             Row {
                 cmd: Command::Action(a),
                 label: label.to_string(),
-                shortcut: hotkeys.text(a),
-                glyph: crate::ui::tools::action_glyph(a),
-                enabled: ok,
+                shortcut: snap.shortcuts.get(&a).map(Hotkeys::format).unwrap_or_default(),
+                glyph,
+                enabled: reason.is_none(),
                 reason,
             },
         ));
     }
-    for &p in Pane::ALL {
+    for &p in Pane::ALL.iter().filter(|&&p| toggle_of(p).is_none()) {
         let label = format!("Show {}", p.title());
         push_scored(
             &mut rows,
@@ -139,26 +156,28 @@ pub fn rows(
                 cmd: Command::Pane(p),
                 label: label.clone(),
                 shortcut: String::new(),
-                glyph: Some(p.glyph()),
+                glyph: pane_icon(&snap.icons, p),
                 enabled: true,
                 reason: None,
             },
         );
     }
-    for t in crate::mcp::tools::all().filter(|t| t.args.is_empty()) {
-        push_scored(
-            &mut rows,
-            query,
-            t.name,
+    for t in crate::mcp::tools::all().filter(|t| t.args.is_empty() && matches!(t.kind, ToolKind::Mutate | ToolKind::Ui))
+    {
+        let label = tool_label(t.name);
+        // the raw name still matches, for someone who knows it from MCP / Luau
+        let Some(s) = fuzzy_score(query, &label).or_else(|| fuzzy_score(query, t.name)) else { continue };
+        rows.push((
+            s,
             Row {
                 cmd: Command::Tool(t.name),
-                label: t.name.to_string(),
+                label,
                 shortcut: String::new(),
                 glyph: Some(Glyph::Terminal),
                 enabled: true,
                 reason: Some(t.desc),
             },
-        );
+        ));
     }
     for sm in scripts {
         push_scored(
@@ -170,21 +189,6 @@ pub fn rows(
                 label: sm.name.clone(),
                 shortcut: sm.hotkey.clone().unwrap_or_default(),
                 glyph: sm.icon.and_then(Glyph::from_name).or(Some(Glyph::Terminal)),
-                enabled: true,
-                reason: None,
-            },
-        );
-    }
-    for &w in PAGES {
-        push_scored(
-            &mut rows,
-            query,
-            w,
-            Row {
-                cmd: Command::Workspace(w),
-                label: w.to_string(),
-                shortcut: String::new(),
-                glyph: None,
                 enabled: true,
                 reason: None,
             },
@@ -304,42 +308,48 @@ pub fn show(ctx: &egui::Context, state: &mut PaletteState, rows: &[Row]) -> Opti
                 state.sel = 0;
             }
             state.sel = state.sel.min(rows.len().saturating_sub(1));
-            ui.input(|i| {
+            let moved = ui.input(|i| {
+                let before = state.sel;
                 if i.key_pressed(egui::Key::ArrowDown) {
                     state.sel = (state.sel + 1).min(rows.len().saturating_sub(1));
                 }
                 if i.key_pressed(egui::Key::ArrowUp) {
                     state.sel = state.sel.saturating_sub(1);
                 }
+                state.sel != before
             });
             let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
-            egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+            egui::ScrollArea::vertical().max_height(360.0).auto_shrink([false, true]).show(ui, |ui| {
                 for (i, row) in rows.iter().enumerate() {
-                    let text = if row.shortcut.is_empty() {
-                        row.label.clone()
-                    } else {
-                        format!("{}   {}", row.label, row.shortcut)
+                    // the menu rows' shape: icon gutter, label, shortcut on the right; a disabled row
+                    // says why right there (a hover tip never shows for keyboard use)
+                    let right = match (row.enabled, row.reason) {
+                        (false, Some(why)) if row.shortcut.is_empty() => why.to_string(),
+                        (false, Some(why)) => format!("{why}  ·  {}", row.shortcut),
+                        _ => row.shortcut.clone(),
                     };
-                    let picked = ui
-                        .horizontal(|ui| {
-                            let (icon_rect, _) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
-                            if let Some(g) = row.glyph {
-                                let fg = if row.enabled {
-                                    ui.visuals().text_color()
-                                } else {
-                                    ui.visuals().weak_text_color()
-                                };
-                                tools::draw_glyph(ui.painter(), icon_rect, g, fg);
+                    let gutter = egui::Atom::custom(ui.id().with(("palette-icon", i)), egui::vec2(18.0, 16.0));
+                    let button = egui::Button::selectable(i == state.sel, (gutter, row.label.as_str()))
+                        .shortcut_text(right)
+                        .min_size(egui::vec2(ui.available_width(), 0.0));
+                    let resp = ui
+                        .add_enabled_ui(row.enabled, |ui| {
+                            let r = button.atom_ui(ui);
+                            if let (Some(g), Some((_, rect))) = (row.glyph, r.custom_rects().next()) {
+                                let fg = ui.style().interact(&r.response).text_color();
+                                tools::draw_glyph(ui.painter(), rect, g, fg);
                             }
-                            let resp = ui.add_enabled(row.enabled, egui::Button::selectable(i == state.sel, text));
-                            let resp = match row.reason {
-                                Some(r) => resp.on_hover_text(r),
-                                None => resp,
-                            };
-                            resp.clicked()
+                            r.response
                         })
-                        .inner
-                        || (enter && i == state.sel);
+                        .inner;
+                    if moved && i == state.sel {
+                        resp.scroll_to_me(None);
+                    }
+                    let resp = match row.reason {
+                        Some(r) if row.enabled => resp.on_hover_text(r),
+                        _ => resp,
+                    };
+                    let picked = resp.clicked() || (enter && i == state.sel);
                     if picked && row.enabled {
                         if let Command::Tool(name) = &row.cmd {
                             if let Some(def) = crate::mcp::tools::find(name) {
@@ -412,29 +422,70 @@ mod tests {
         }
     }
 
+    fn snap(enabled: impl Fn(Action) -> Result<(), &'static str>) -> MenuSnapshot {
+        MenuSnapshot::new(&Hotkeys::defaults(), &Default::default(), enabled)
+    }
+
+    /// The test's own pane -> toggle Action map (the app's is `menus::toggle_action`, pinned in
+    /// `palette_ctl`'s tests).
+    fn toggles(p: Pane) -> Option<Action> {
+        (p == Pane::Library).then_some(Action::ToggleLibrary)
+    }
+
     #[test]
-    fn palette_lists_every_action_pane_and_arg_free_tool() {
-        let hk = Hotkeys::defaults();
+    fn palette_lists_every_action_and_one_row_per_pane() {
         let scripts = vec![dummy_script("my_script")];
-        let all = rows(&hk, |_| Ok(()), &scripts, &[], "");
+        let all = rows(&snap(|_| Ok(())), toggles, &scripts, &[], "");
         for &a in Action::ALL {
             assert!(all.iter().any(|r| matches!(&r.cmd, Command::Action(x) if *x == a)), "missing Action {a:?}");
         }
-        for &p in Pane::ALL {
-            assert!(all.iter().any(|r| matches!(&r.cmd, Command::Pane(x) if *x == p)), "missing Pane {p:?}");
-        }
+        // Library is reached through its Show / Hide Action (wearing the pane's icon), not a second row
+        assert!(!all.iter().any(|r| r.cmd == Command::Pane(Pane::Library)));
+        let lib = all.iter().find(|r| r.cmd == Command::Action(Action::ToggleLibrary)).unwrap();
+        assert_eq!(lib.glyph, Some(Pane::Library.glyph()));
+        assert!(all.iter().any(|r| r.cmd == Command::Pane(Pane::Timeline)), "a pane with no Action keeps Show X");
+        // the pages are their Actions, once each
+        let pages: Vec<_> = all.iter().filter(|r| r.label.ends_with(" page")).map(|r| r.label.as_str()).collect();
+        assert_eq!(pages.len(), 4, "{pages:?}");
+        // arg-free tools that act are listed under a readable name; a Read tool (its reply would be
+        // dropped) and an arg-taking tool only show up in ':' mode
         for t in crate::mcp::tools::all().filter(|t| t.args.is_empty()) {
-            assert!(
-                all.iter().any(|r| matches!(&r.cmd, Command::Tool(n) if *n == t.name)),
-                "missing arg-free tool {}",
-                t.name
-            );
+            let listed = all.iter().any(|r| r.cmd == Command::Tool(t.name));
+            assert_eq!(listed, matches!(t.kind, ToolKind::Mutate | ToolKind::Ui), "{}", t.name);
         }
-        // an arg-taking tool is NOT in the main list (it only shows up via tool_rows' ':' mode)
+        assert!(!all.iter().any(|r| matches!(&r.cmd, Command::Tool(_)) && r.label.contains('.')), "raw tool name");
         let has_args = crate::mcp::tools::all().find(|t| !t.args.is_empty()).expect("at least one tool takes args");
-        assert!(!all.iter().any(|r| matches!(&r.cmd, Command::Tool(n) if *n == has_args.name)));
+        assert!(!all.iter().any(|r| r.cmd == Command::Tool(has_args.name)));
         assert!(all.iter().any(|r| matches!(&r.cmd, Command::Script(p) if p.ends_with("my_script.luau"))));
-        assert!(all.iter().any(|r| matches!(&r.cmd, Command::Workspace(_))));
+    }
+
+    #[test]
+    fn tool_names_read_as_words() {
+        assert_eq!(tool_label("timeline.close_gap"), "Close gap (timeline)");
+        assert_eq!(tool_label("playback.play"), "Play (playback)");
+        assert_eq!(tool_label("undo"), "Undo");
+        // the raw name still finds it
+        let s = snap(|_| Ok(()));
+        let t = crate::mcp::tools::all()
+            .find(|t| t.args.is_empty() && t.kind == ToolKind::Ui)
+            .expect("an arg-free Ui tool");
+        assert!(rows(&s, toggles, &[], &[], t.name).iter().any(|r| r.cmd == Command::Tool(t.name)), "{}", t.name);
+    }
+
+    /// Settings ▸ Appearance ▸ Icons applies here too, exactly as in the menus.
+    #[test]
+    fn icon_overrides_are_honoured() {
+        let mut icons = std::collections::BTreeMap::new();
+        icons.insert("action.undo".to_string(), "none".to_string());
+        icons.insert("action.toggle_library".to_string(), "none".to_string());
+        icons.insert("action.redo".to_string(), Glyph::Flag.name().to_string());
+        let s = MenuSnapshot::new(&Hotkeys::defaults(), &icons, |_| Ok(()));
+        let all = rows(&s, toggles, &[], &[], "");
+        let glyph = |a: Action| all.iter().find(|r| r.cmd == Command::Action(a)).unwrap().glyph;
+        assert_eq!(glyph(Action::Undo), None);
+        assert_eq!(glyph(Action::ToggleLibrary), None, "'none' beats the pane-icon fallback");
+        assert_eq!(glyph(Action::Redo), Some(Glyph::Flag));
+        assert_eq!(glyph(Action::Save), tools::action_glyph(Action::Save));
     }
 
     #[test]
@@ -445,8 +496,8 @@ mod tests {
 
     #[test]
     fn disabled_action_carries_its_reason() {
-        let hk = Hotkeys::defaults();
-        let rs = rows(&hk, |a| if a == Action::Undo { Err("Nothing to undo") } else { Ok(()) }, &[], &[], "undo");
+        let s = snap(|a| if a == Action::Undo { Err("Nothing to undo") } else { Ok(()) });
+        let rs = rows(&s, toggles, &[], &[], "undo");
         let row = rs.iter().find(|r| matches!(&r.cmd, Command::Action(Action::Undo))).unwrap();
         assert!(!row.enabled);
         assert_eq!(row.reason, Some("Nothing to undo"));
@@ -454,12 +505,12 @@ mod tests {
 
     #[test]
     fn recent_boosts_ordering_only_when_query_empty() {
-        let hk = Hotkeys::defaults();
+        let s = snap(|_| Ok(()));
         let recent = vec![Action::Undo.id().to_string()];
-        let rs = rows(&hk, |_| Ok(()), &[], &recent, "");
+        let rs = rows(&s, toggles, &[], &recent, "");
         assert!(matches!(&rs[0].cmd, Command::Action(Action::Undo)), "recent action should sort first");
         // once there's a query, recency stops mattering - plain fuzzy order applies
-        let rs2 = rows(&hk, |_| Ok(()), &[], &recent, "redo");
+        let rs2 = rows(&s, toggles, &[], &recent, "redo");
         assert!(matches!(&rs2[0].cmd, Command::Action(Action::Redo)));
     }
 
@@ -467,8 +518,7 @@ mod tests {
     #[test]
     fn palette_enter_pushes_one_command_and_closes() {
         let ctx = egui::Context::default();
-        let hk = Hotkeys::defaults();
-        let rs = rows(&hk, |_| Ok(()), &[], &[], "undo");
+        let rs = rows(&snap(|_| Ok(())), toggles, &[], &[], "undo");
         let undo_i = rs.iter().position(|r| matches!(&r.cmd, Command::Action(Action::Undo))).expect("Undo row present");
         let mut state = PaletteState { open: true, query: "undo".into(), sel: undo_i, ..Default::default() };
         let mut result = None;
@@ -496,12 +546,12 @@ mod tests {
     /// text-cursor blink is disabled while open - see `show`'s doc comment).
     #[test]
     fn assert_no_idle_repaint_palette_closed_and_open() {
-        let hk = Hotkeys::defaults();
+        let s = snap(|_| Ok(()));
         for open in [false, true] {
             let ctx = egui::Context::default();
             let mut state = PaletteState { open, ..Default::default() };
             for _ in 0..30 {
-                let rs = rows(&hk, |_| Ok(()), &[], &[], &state.query);
+                let rs = rows(&s, toggles, &[], &[], &state.query);
                 let _ = ctx.run(egui::RawInput::default(), |ctx| {
                     let _ = show(ctx, &mut state, &rs);
                 });

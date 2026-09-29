@@ -8,6 +8,7 @@
 use super::*;
 use crate::scripting::ScriptMeta;
 use crate::ui::cheatsheet;
+use crate::ui::menu::MenuSnapshot;
 use crate::ui::palette::{self, Command};
 
 pub(super) fn act(app: &mut App, a: Action) -> bool {
@@ -36,10 +37,7 @@ pub(super) fn windows(app: &mut App, ctx: &egui::Context) {
     let query = app.cmd_palette.query.clone();
     let rows = match query.strip_prefix(':') {
         Some(rest) => palette::tool_rows(rest.trim_start()),
-        None => {
-            let recent = app.settings.palette_recent.clone();
-            palette::rows(&app.hotkeys, |a| app.enabled(a), &app.script_meta_cache.1, &recent, &query)
-        }
+        None => palette_rows(app, &query),
     };
     if let Some(cmd) = palette::show(ctx, &mut app.cmd_palette, &rows) {
         // read BEFORE anything else touches cmd_palette - `palette::show`'s doc comment guarantees this
@@ -81,6 +79,15 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
     }
 }
 
+/// The palette's main rows for `query`, as the window and the `ui.palette` tool both list them: the
+/// live `ui::menu` snapshot (shortcuts, icon overrides, disabled reasons) and the Window menu's own
+/// pane -> Show / Hide Action map, so each pane gets one row.
+pub(super) fn palette_rows(app: &mut App, query: &str) -> Vec<palette::Row> {
+    refresh_if_stale(&mut app.script_meta_cache);
+    let snap = MenuSnapshot::new(&app.hotkeys, &app.settings.icon_overrides, |a| app.enabled(a));
+    palette::rows(&snap, menus::toggle_action, &app.script_meta_cache.1, &app.settings.palette_recent, query)
+}
+
 fn refresh_if_stale(cache: &mut (Instant, Vec<ScriptMeta>)) {
     if cache.0.elapsed() < Duration::from_secs(1) {
         return;
@@ -119,7 +126,6 @@ fn recent_id(cmd: &Command) -> Option<String> {
         Command::Pane(p) => format!("pane.{}", p.title()),
         Command::Tool(name) => format!("tool.{name}"),
         Command::Script(path) => format!("script.{}", path.to_string_lossy()),
-        Command::Workspace(_) => return None, // the wave-0b/self-authored stub isn't worth remembering
     })
 }
 
@@ -145,11 +151,6 @@ fn dispatch(app: &mut App, cmd: Command, arg_form: Option<(&'static str, Vec<(St
             }
         }
         Command::Script(path) => app.run_script_path = Some(path),
-        Command::Workspace(name) => {
-            // ---- ws:layout-modes-onboarding ----
-            // the placeholder toast this arm carried until wave 2: the real switch
-            layout_ctl::switch_page(app, name);
-        }
     }
 }
 
@@ -294,7 +295,23 @@ mod tests {
     fn recent_id_namespaces_non_action_commands() {
         assert_eq!(recent_id(&Command::Action(Action::Undo)), Some("undo".to_string()));
         assert_eq!(recent_id(&Command::Tool("ui.palette")), Some("tool.ui.palette".to_string()));
-        assert_eq!(recent_id(&Command::Workspace("Default")), None);
+    }
+
+    /// With the app's real pane -> Action map, every pane is reached by exactly one palette row: its
+    /// Show / Hide Action, or a "Show X" row when it has none.
+    #[test]
+    fn palette_has_one_row_per_pane() {
+        let snap = MenuSnapshot::new(&Hotkeys::defaults(), &Default::default(), |_| Ok(()));
+        let rows = palette::rows(&snap, menus::toggle_action, &[], &[], "");
+        for &p in crate::ui::layout::Pane::ALL {
+            let n = rows
+                .iter()
+                .filter(|r| {
+                    r.cmd == Command::Pane(p) || menus::toggle_action(p).is_some_and(|a| r.cmd == Command::Action(a))
+                })
+                .count();
+            assert_eq!(n, 1, "{p:?} has {n} palette rows");
+        }
     }
 
     /// Regression pin for the bug where `tick` diffed the bare `app.selection` clip-id vector, so

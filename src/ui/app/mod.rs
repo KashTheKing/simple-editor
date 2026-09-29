@@ -343,10 +343,6 @@ pub struct App {
     // deviation: unlike Settings/Project, this struct had no pre-seeded per-workstream marker section
     // (only ws:registries-schema-hooks/ws:size-diet above) - adding one here, following the same
     // pattern, since a future workstream will need the same treatment this struct's other fields got.
-    /// Single-slot Settings snapshot for `Action::UndoSettings` (taken by `settings_snapshot`) -
-    /// intentionally one slot, not a stack: a second destructive Settings op before the first is undone
-    /// silently drops the first offer (see the PR body's deliberate-simplifications note).
-    settings_undo: Option<Settings>,
     /// Non-blocking confirm windows queued by `crate::ui::confirm::ask`/`ask_app`/`ask_discard`,
     /// drained from the thread-local staging queue and drawn by `confirm::draw` (a WINDOW_DRAWER).
     /// `pub(crate)`: `confirm::draw` lives in a SIBLING module (`crate::ui::confirm`, not a descendant
@@ -821,7 +817,6 @@ impl App {
             whatsnew_open: false,
             winpos_pending: None,
             // ---- ws:forgiveness ----
-            settings_undo: None,
             confirm_active: Vec::new(),
             pending_close: false,
             autosave: autosave::AutosaveState::default(),
@@ -1803,17 +1798,6 @@ impl App {
             }
             confirm::ConfirmAction::Custom(f) => f(self),
         }
-    }
-
-    /// Single-slot Settings snapshot for `Action::UndoSettings` - call before a destructive Settings
-    /// mutation; `label` is reserved for a future toast/undo-entry description (see the
-    /// `settings_undo` field's doc comment for why this is one slot, not a stack).
-    /// ponytail: no caller yet this wave (see the PR body) - this workstream builds the primitive
-    /// (field + Action::UndoSettings arm + this setter); the first destructive Settings op (e.g. a
-    /// future "Reset all hotkeys") calls it.
-    #[allow(dead_code, unused_variables)]
-    pub(crate) fn settings_snapshot(&mut self, label: &'static str) {
-        self.settings_undo = Some(self.settings.clone());
     }
 
     /// The one sanctioned funnel for a NEW timed-repaint request (`ctx.request_repaint_after` at a

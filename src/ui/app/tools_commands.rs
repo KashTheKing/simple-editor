@@ -80,21 +80,17 @@ fn command_kind(cmd: &palette::Command) -> &'static str {
         palette::Command::Pane(_) => "pane",
         palette::Command::Tool(_) => "tool",
         palette::Command::Script(_) => "script",
-        palette::Command::Workspace(_) => "workspace",
     }
 }
 
 pub const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "ui.palette",
-        desc: "List palette rows (Actions, Panes, arg-free Tools, Scripts, Workspaces), optionally fuzzy-filtered by 'query'.",
+        desc: "List palette rows (Actions, Panes, arg-free Tools, Scripts), optionally fuzzy-filtered by 'query'.",
         args: &["query:string:false:filter text"],
         kind: ToolKind::Read,
         run: |app, args| {
-            let query = arg_str(args, "query").unwrap_or("");
-            let recent = app.settings.palette_recent.clone();
-            let scripts = app.script_metas().to_vec();
-            let rows = palette::rows(&app.hotkeys, |a| app.enabled(a), &scripts, &recent, query);
+            let rows = palette_ctl::palette_rows(app, arg_str(args, "query").unwrap_or(""));
             let list: Vec<Value> = rows
                 .iter()
                 .map(|r| {
