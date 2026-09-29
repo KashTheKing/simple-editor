@@ -324,6 +324,24 @@ pub fn show(
     project: &mut Project,
     selection: &[Id],
     sel_transitions: &[Id],
+    playhead: f64,
+    palette: &Palette,
+    undo: &mut dyn FnMut(&Project),
+) -> TransitionsResponse {
+    // the catalogue plus the selected cut's settings outgrow a short pane
+    egui::ScrollArea::vertical()
+        .id_salt("transitions_pane")
+        .auto_shrink([false, false])
+        .show(ui, |ui| body(ui, state, project, selection, sel_transitions, playhead, palette, undo))
+        .inner
+}
+
+fn body(
+    ui: &mut egui::Ui,
+    state: &mut TransitionsState,
+    project: &mut Project,
+    selection: &[Id],
+    sel_transitions: &[Id],
     _playhead: f64,
     palette: &Palette,
     undo: &mut dyn FnMut(&Project),

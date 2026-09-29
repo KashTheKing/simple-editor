@@ -49,9 +49,10 @@ impl App {
         }
     }
 
-    /// Space/JKL/I/O route to the Source monitor: it holds transport focus and has something open.
+    /// Space/JKL/I/O route to the Source monitor: it holds transport focus, has something open and is
+    /// on screen (a Source tab stacked behind another one must not swallow the timeline's keys).
     pub(crate) fn source_active(&self) -> bool {
-        self.source_focus && self.source.is_some()
+        self.source_focus && self.source.is_some() && self.pane_drawn(Pane::Source)
     }
 
     pub(crate) fn close_source(&mut self) {

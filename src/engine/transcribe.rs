@@ -20,7 +20,6 @@ use crate::settings::Settings;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// Downloadable whisper.cpp models: (name, file, download size in MB).
@@ -207,9 +206,6 @@ pub struct Job {
 impl Job {
     pub fn segments(&self) -> Vec<Segment> {
         self.out.lock().unwrap_or_else(|e| e.into_inner()).clone()
-    }
-    pub fn cancel(&self) {
-        self.progress.cancel.store(true, Ordering::SeqCst);
     }
 }
 

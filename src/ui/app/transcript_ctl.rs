@@ -1,10 +1,10 @@
 //! ---- ws:transcript-captions ----
 //! App-level glue for transcripts: the ACT_HANDLERS arm for the six unbound Actions (clip menu
 //! "Transcript ▸ Transcribe… / View transcript / Export transcript…", Get captions, Remove fillers,
-//! Toggle transcript), the FRAME_HOOK that runs whisper / tracking / TTS jobs started outside the
-//! Subtitles pane's own button (progress toasts via `feedback::Toast`, results applied on the UI
-//! thread as ONE labeled undo step), and the WINDOW_DRAWER for the non-blocking "View transcript"
-//! window (`ui::transcript_ui::window`).
+//! Toggle transcript), the FRAME_HOOK that runs whisper / tracking / TTS jobs - the Subtitles pane's
+//! Transcribe button included, so its result lands whether or not the pane is still drawn (progress
+//! toasts via `feedback::Toast`, results applied on the UI thread as ONE labeled undo step), and the
+//! WINDOW_DRAWER for the non-blocking "View transcript" window (`ui::transcript_ui::window`).
 //!
 //! Every job started here carries an OUTER `Progress` that only completes once its result is in the
 //! project - so an MCP `transcribe.run`/`media.transcribe`/`tracking.run`/`tts.speak` reply
@@ -18,8 +18,8 @@ use crate::engine::transcribe::{self, Options};
 use crate::engine::tts;
 use crate::ui::{confirm, transcript_ui};
 
-/// A whisper run started from the clip menu / an MCP tool (the pane's own runs live in
-/// `TranscribeState`): the raw job, the source → timeline map, whether to also generate cues.
+/// A whisper run (clip menu, Subtitles pane, MCP tool): the raw job, the source → timeline map,
+/// whether to also generate cues.
 struct TranscribeRun {
     clip: Id,
     map: (f64, f64),
@@ -510,7 +510,9 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
             st.filler_pad_ms = app.settings.filler_pad_ms;
         }
     }
-    if let Some(clip) = app.subtitles_ui.transcript.want_transcribe.take() {
+    // the Transcript section's "Transcribe selected clip" and the Transcribe section's button
+    let wants = [app.subtitles_ui.transcript.want_transcribe.take(), app.subtitles_ui.transcribe.want.take()];
+    for clip in wants.into_iter().flatten() {
         transcribe_or_offer(app, clip);
     }
     if let Some((text, voice)) = app.subtitles_ui.transcript.tts_request.take() {

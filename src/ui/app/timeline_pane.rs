@@ -25,6 +25,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
             app.settings.overview = !on;
         }
     });
+    let autocut_shown = app.pane_drawn(Pane::AutoCut);
     let resp = {
         let App {
             project,
@@ -36,7 +37,6 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
             waveforms,
             thumbs,
             autocut,
-            autocut_shown,
             timeline: tl,
             settings,
             player,
@@ -101,7 +101,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
                 thumbs: Some(thumbs),
                 // only while the Auto-cut pane is on screen: a stale overlay would keep
                 // shading the timeline after the pane is hidden or a new project is opened
-                keep_ranges: if *autocut_shown { &autocut.overlay } else { &[] },
+                keep_ranges: if autocut_shown { &autocut.overlay } else { &[] },
                 prerender: &prerender_bar,
                 tool,
                 library_selected,
