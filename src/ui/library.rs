@@ -2280,7 +2280,7 @@ impl Tree<'_, '_> {
                         crate::ui::tools::draw_glyph(
                             ui.painter(),
                             g,
-                            crate::ui::tools::Glyph::Hourglass,
+                            crate::ui::tools::Glyph::Proxy,
                             palette.text_dim,
                         );
                         gr.on_hover_text(match pstatus {
@@ -2431,7 +2431,7 @@ impl Tree<'_, '_> {
         ui.horizontal(|ui| {
             ui.add_space(indent(depth));
             open = self.arrow(ui, "recent", false, true);
-            self.folder_icon(ui, Glyph::Hourglass);
+            self.folder_icon(ui, Glyph::Clock);
             let r = ui.selectable_label(false, "Recent").on_hover_text("Files opened recently, across every project");
             if r.clicked() {
                 self.flip("recent");

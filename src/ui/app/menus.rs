@@ -2,52 +2,12 @@ use super::thumbs::*;
 use super::*;
 
 impl App {
-    pub(super) fn glyph_for(&self, a: Action) -> Option<tools::Glyph> {
-        if let Some(name) = self.settings.icon_overrides.get(&format!("action.{}", a.id())) {
-            return if name == "none" { None } else { tools::Glyph::from_name(name) };
-        }
-        tools::action_glyph(a)
-    }
-
-    pub(super) fn menu_item(&mut self, ui: &mut egui::Ui, a: Action, enabled: bool, out: &mut Vec<Action>) {
-        let text = self.hotkeys.text(a);
-        let glyph = self.glyph_for(a);
-        // ponytail: the glyph is painted over a left gutter made of spaces in the label - that keeps
-        // egui's own menu-button sizing/shortcut layout instead of reimplementing the widget.
-        // Gutter must clear the 24px-wide icon box drawn below (starts at +4px); at the 13px menu
-        // font a space is ~3px wide, so 5 spaces (~15px) undershot it and the label crowded the icon.
-        let label = match glyph {
-            Some(_) => format!("         {}", a.label()),
-            None => a.label().to_string(),
-        };
-        let b = egui::Button::new(label).shortcut_text(text);
-        let r = ui.add_enabled(enabled, b);
-        if let Some(g) = glyph {
-            let rect = egui::Rect::from_min_size(
-                egui::pos2(r.rect.min.x + 4.0, r.rect.center().y - 11.0),
-                egui::vec2(24.0, 22.0),
-            );
-            let fg = if enabled { ui.visuals().text_color() } else { ui.visuals().weak_text_color() };
-            tools::draw_glyph(ui.painter(), rect, g, fg);
-        }
-        // right-click any menu action: pick its icon in place (same picker as the tab context menu)
-        let mut set: Option<Option<String>> = None;
-        r.context_menu(|ui| {
-            if let Some(pick) = layout::icon_menu(ui) {
-                set = Some(pick);
-            }
-        });
-        if let Some(pick) = set {
-            let key = format!("action.{}", a.id());
-            match pick {
-                Some(name) => drop(self.settings.icon_overrides.insert(key, name)),
-                None => drop(self.settings.icon_overrides.remove(&key)),
-            }
-            self.settings.save();
-        }
-        if r.clicked() {
+    /// A menu-bar row through the shared `ui::menu` helper (icon, shortcut, `App::enabled` greying, icon
+    /// picker), so the menu bar and every right-click menu look identical; `enabled` is this menu's own
+    /// guard on top.
+    pub(super) fn menu_item(&self, ui: &mut egui::Ui, a: Action, enabled: bool, out: &mut Vec<Action>) {
+        if crate::ui::menu::item(ui, a, enabled) {
             out.push(a);
-            ui.close();
         }
     }
 

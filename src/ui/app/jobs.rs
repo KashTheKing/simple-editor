@@ -213,14 +213,14 @@ impl App {
 
     // ---------------- UI pieces ----------------
 
-    /// Icon shown next to a menu action: the user's pick from Settings → Appearance → Icons wins,
-    /// then the built-in defaults below. Abstract actions stay text-only.
+    /// `--screenshot <out.ppm>`: save the first rendered frame and exit.
     pub(super) fn screenshot_tick(&mut self, ctx: &egui::Context) {
         let Some(path) = self.screenshot.clone() else { return };
         // save when the screenshot event arrives
         let img = ctx.input(|i| {
             i.events.iter().find_map(|e| match e {
-                egui::Event::Screenshot { image, .. } => Some(image.clone()),
+                // untagged only: a tagged one is an MCP `ui.screenshot` (tools_uikit.rs), not ours
+                egui::Event::Screenshot { image, user_data, .. } if user_data.data.is_none() => Some(image.clone()),
                 _ => None,
             })
         });

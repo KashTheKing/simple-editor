@@ -2,6 +2,7 @@
 //! `simple-editor [file]`   open a video/project
 //! `simple-editor --selftest [dir]`   headless engine check
 //! `simple-editor [file] --screenshot out.ppm`   render the UI once and save it (for visual checks)
+//! `--size 1600x900`   start with this window inner size in points (reproducible screenshots)
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -30,11 +31,16 @@ fn main() {
     }
     let mut screenshot: Option<PathBuf> = None;
     let mut open: Option<PathBuf> = None;
+    let mut size: Option<[f32; 2]> = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--screenshot" => {
                 screenshot = args.get(i + 1).map(PathBuf::from);
+                i += 1;
+            }
+            "--size" => {
+                size = args.get(i + 1).and_then(|s| parse_size(s));
                 i += 1;
             }
             // absolute: the path is stored in the project/recents and must survive a different cwd
@@ -49,7 +55,7 @@ fn main() {
     // read once to seed the viewport; App::new does its own (cheap) re-read of the same file - not
     // worth threading a loaded Settings through eframe's boxed FnOnce for this one field.
     let window_rect = settings::Settings::load().window_rect;
-    let viewport = winpos::apply_rect(
+    let mut viewport = winpos::apply_rect(
         eframe::egui::ViewportBuilder::default()
             .with_title("Simple Editor")
             .with_app_id("SimpleEditor")
@@ -60,6 +66,9 @@ fn main() {
             .with_min_inner_size([900.0, 560.0]),
         window_rect,
     );
+    if let Some(s) = size {
+        viewport = viewport.with_inner_size(s);
+    }
     let options = eframe::NativeOptions {
         viewport,
         // inert either way now that eframe's "persistence" feature is gone - false for clarity, so
@@ -74,5 +83,21 @@ fn main() {
     ) {
         eprintln!("failed to start: {e}");
         std::process::exit(1);
+    }
+}
+
+/// `--size WxH` ("1600x900") -> inner size in points.
+fn parse_size(s: &str) -> Option<[f32; 2]> {
+    let (w, h) = s.split_once(['x', 'X'])?;
+    Some([w.trim().parse().ok()?, h.trim().parse().ok()?])
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn size_flag_parses() {
+        assert_eq!(super::parse_size("1600x900"), Some([1600.0, 900.0]));
+        assert_eq!(super::parse_size("800X600"), Some([800.0, 600.0]));
+        assert_eq!(super::parse_size("big"), None);
     }
 }

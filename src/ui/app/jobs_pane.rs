@@ -57,7 +57,8 @@ pub(super) fn progress_jobs(app: &App) -> Vec<ProgJob> {
     for j in &app.media_jobs {
         v.push((JobKind::Media, j.label(), j.progress().clone()));
     }
-    for j in &app.mcp_jobs {
+    // ws:ui-kit: ui.screenshot / ui.input are automation, not jobs (see UiKit::owns)
+    for j in app.mcp_jobs.iter().filter(|j| !app.uikit.owns(&j.prog)) {
         v.push((JobKind::Mcp, format!("MCP · {}", file_name(&j.out)), j.prog.clone()));
     }
     if let Some((src, _, p)) = &app.proxy_job {

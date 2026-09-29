@@ -128,6 +128,8 @@ mod tools_titles;
 mod tools_transcript;
 mod tools_trim;
 mod tools_ui;
+// ---- ws:ui-kit ----
+mod tools_uikit;
 // ---- ws:transcript-captions ----
 mod transcript_ctl;
 mod trim_actions;
@@ -439,6 +441,9 @@ pub struct App {
     /// `timeline.import` jobs (report parsed + media probed on a worker) - `jobs::poll_timeline_imports`
     /// applies each (progress, report, replace) once done.
     pending_timeline_imports: Vec<(Arc<Progress>, Arc<Mutex<Option<crate::engine::import::ImportReport>>>, bool)>,
+    // ---- ws:ui-kit ----
+    /// `ui.input` steps waiting for `raw_input_hook` and `ui.screenshot` shots waiting for their image.
+    uikit: tools_uikit::UiKit,
 }
 
 // ---- ws:canvas-handles-monitor ----
@@ -850,6 +855,8 @@ impl App {
             // ---- ws:job-completion-hitches ----
             pending_recordings: Vec::new(),
             pending_timeline_imports: Vec::new(),
+            // ---- ws:ui-kit ----
+            uikit: Default::default(),
         };
         if let Some(reason) = settings_bad {
             app.toast(format!("Settings file was corrupt (saved as settings.json.bad): {reason}"));
@@ -1029,6 +1036,8 @@ impl eframe::App for App {
         for f in FRAME_HOOKS {
             f(self, ctx);
         }
+        // ---- ws:ui-kit ----: this frame's ui::menu snapshot, last frame's menu clicks, ui.screenshot images
+        tools_uikit::frame(self, ctx);
         self.poll_panels();
         self.poll_probes(ctx);
         // ---- ws:job-completion-hitches ----
@@ -1355,6 +1364,12 @@ impl eframe::App for App {
         // toasts: drawn by feedback::draw, a WINDOW_DRAWER (ws:forgiveness) - this used to be an inline
         // block here; see windows() -> WINDOW_DRAWERS.
     }
+
+    // ---- ws:ui-kit ----
+    /// `ui.input`: one queued synthetic step per frame (see tools_uikit.rs).
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        tools_uikit::input_hook(self, ctx, raw_input);
+    }
 }
 
 // =====================================================================================
@@ -1418,6 +1433,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:docs-refresh ----
     // ---- ws:jobs-panel ----
     tools_jobs::TOOLS,
+    // ---- ws:ui-kit ----
+    tools_uikit::TOOLS,
 ];
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
