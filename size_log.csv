@@ -36,3 +36,4 @@ f64147f,11914240,"inspector-gallery #33: collapsible inspector, Color section, e
 423f977,12167168,docs-refresh #38: docs-only workstream, no Rust source changed, confirms final exe size at wave-3-complete baseline
 c0a7b45,12231680,jobs-panel #64: Pane::Jobs aggregator + 4 jobs.* tools, job_window deleted
 9cfb65f,12203008,job-completion-hitches
+51738cb,12442624,"simplify wave 0 (#86 keys, #87 recording, #88 seq audio, #89 panels, #90 ui-kit native icons): +17,408 B vs pre-wave-0 main 0898096 (12,425,216 B, measured the same day); the +239,616 B vs the row above is against a side-branch measurement"
