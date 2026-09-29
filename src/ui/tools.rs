@@ -2,7 +2,7 @@
 //! pane, so it can also be popped out). One row of icon buttons:
 //!   Select (V) · Cut (C) · Marker (M) · Stretch (R) · Spacer · Text (T) · Rectangle · Ellipse ·
 //!   Triangle · Polygon · Star · Line · Arrow · Draw (D) · Mask (G; rect/ellipse/polygon/path) · Zoom
-//! plus a magnet button that lights up while snapping is on (S, or Settings.snap's own `N` shortcut),
+//! plus a magnet button that lights up while snapping is on (`Action::ToggleSnap`, S by default),
 //! then, for shape tools, fill and stroke colour buttons and a stroke-width DragValue; for Draw, a
 //! play/record button, the brush colour/width, the playback speed (0.5x / 1x / 2x) and a page toggle.
 //! Every tool-select letter shown above is its default `Action::Tool*` binding (`hotkeys.rs`) and can be
@@ -638,10 +638,9 @@ pub fn tool_hotkey(hotkeys: &Hotkeys, tool: Tool) -> Option<String> {
 
 /// Tool selection (`Action::Tool*`) and Shift+S switch tools (Shift+S also steps through the shape
 /// variants; the Mask action steps through the mask variants), ignored while a text field has focus.
-/// Bare `S` is snapping's key (see `handle_snap_hotkey`), not a tool switch. Polled here rather than
-/// through the app's main `Hotkeys::poll` / `App::act` because the tool strip, not `App`, owns
-/// `ToolsState` - same reasoning as `handle_snap_hotkey`. Returns the new tool when it changed; the key
-/// is consumed, so calling this twice in a frame is harmless.
+/// Bare `S` is `Action::ToggleSnap`'s default, not a tool switch. Polled here rather than through the
+/// app's main `Hotkeys::poll` / `App::act` because the tool strip, not `App`, owns `ToolsState`. Returns
+/// the new tool when it changed; the key is consumed, so calling this twice in a frame is harmless.
 /// The tool a `Action::Tool*` corresponds to, given the currently active tool (only `ToolMask` needs
 /// it, to cycle the mask shape). `None` for any other action. Shared by `handle_hotkeys` below and by
 /// `App::act`'s fallback arm for the rare case one of these actions fires through the general action
@@ -693,36 +692,13 @@ const TOOL_ACTIONS: [Action; 8] = [
     Action::ToolSpacer,
 ];
 
-/// Like `InputState::consume_shortcut`, but the pressed modifiers must match EXACTLY
-/// (`Modifiers::matches_exact`) - egui's own matching is "logical" and IGNORES extra Shift/Alt on the
-/// press. This poll runs before the `Hotkeys` action table, so a logical match here would swallow
-/// every `Shift+<letter>` action sharing a tool's base key (it did: Shift+T/D/R and the old Shift+M).
-fn consume_shortcut_exact(i: &mut egui::InputState, ks: &egui::KeyboardShortcut) -> bool {
-    let mut hit = false;
-    i.events.retain(|e| {
-        if !hit {
-            if let egui::Event::Key { key, modifiers, pressed: true, .. } = e {
-                if *key == ks.logical_key && modifiers.matches_exact(ks.modifiers) {
-                    hit = true;
-                    return false;
-                }
-            }
-        }
-        true
-    });
-    hit
-}
-
 pub fn handle_hotkeys(ctx: &egui::Context, hotkeys: &Hotkeys, state: &mut ToolsState) -> Option<Tool> {
     if ctx.wants_keyboard_input() {
         return None;
     }
     ctx.input_mut(|i| {
-        // ponytail: this also claims hotkeys.rs's default Shift+S (Action::AddShape) before the action
-        // table sees it - same trade-off the tool strip already makes for the tool letters below.
-        // AddShape stays reachable from the Insert menu; give it a fresh binding in Settings > Hotkeys if
-        // that regresses.
-        if consume_shortcut_exact(i, &egui::KeyboardShortcut::new(Modifiers::SHIFT, Key::S)) {
+        // Shift+S is RESERVED for this cycle (hotkeys.rs); Add Shape itself is unbound by default
+        if crate::hotkeys::consume_exact(i, &egui::KeyboardShortcut::new(Modifiers::SHIFT, Key::S)) {
             let next = Tool::Shape(next_shape(state.tool));
             state.tool = next;
             return Some(next);
@@ -731,7 +707,7 @@ pub fn handle_hotkeys(ctx: &egui::Context, hotkeys: &Hotkeys, state: &mut ToolsS
         // Ctrl+C, and one on Shift+C never fires from Ctrl+Shift+C.
         for action in TOOL_ACTIONS {
             let tool = tool_for_action(action, state.tool).unwrap();
-            if hotkeys.get(action).is_some_and(|ks| consume_shortcut_exact(i, &ks)) {
+            if hotkeys.get(action).is_some_and(|ks| crate::hotkeys::consume_exact(i, &ks)) {
                 return (tool != state.tool).then(|| {
                     state.tool = tool;
                     tool
@@ -740,20 +716,6 @@ pub fn handle_hotkeys(ctx: &egui::Context, hotkeys: &Hotkeys, state: &mut ToolsS
         }
         None
     })
-}
-
-/// Bare `S` (no modifiers) toggles snapping - claimed here, ahead of the action table, so it can never
-/// race with Shift+S's shape cycle above or with the `N` binding in `hotkeys.rs` (`Action::ToggleSnap`,
-/// still live and unaffected). `*snap` flips in place; the caller persists it. Returns true when it fired.
-pub fn handle_snap_hotkey(ctx: &egui::Context, snap: &mut bool) -> bool {
-    if ctx.wants_keyboard_input() {
-        return false;
-    }
-    let pressed = ctx.input_mut(|i| i.modifiers.is_none() && i.consume_key(Modifiers::NONE, Key::S));
-    if pressed {
-        *snap = !*snap;
-    }
-    pressed
 }
 
 /// The shape tools in strip order (Draw has its own key, so it is not part of the S cycle).
@@ -793,7 +755,6 @@ fn next_mask(cur: Tool) -> MaskShape {
 /// tool responds to and shows in its tooltip, but only Settings ▸ Hotkeys can change it.
 pub fn show(ui: &mut egui::Ui, state: &mut ToolsState, palette: &Palette, snap: &mut bool, hotkeys: &Hotkeys) -> bool {
     let mut changed = handle_hotkeys(ui.ctx(), hotkeys, state).is_some();
-    changed |= handle_snap_hotkey(ui.ctx(), snap);
     let base = ui.id();
     // ---- ws:layout-modes-onboarding ----
     // adaptive order: the selection's lead tool (if any) moves to the front, the rest keep STRIP order
@@ -819,7 +780,10 @@ pub fn show(ui: &mut egui::Ui, state: &mut ToolsState, palette: &Palette, snap: 
             }
         }
         ui.separator();
-        if icon_button(ui, palette, base.with("snap"), Glyph::Magnet, "Snapping (S)", *snap).clicked() {
+        let snap_tip = hotkeys
+            .get(Action::ToggleSnap)
+            .map_or("Snapping".into(), |k| format!("Snapping ({})", Hotkeys::format(&k)));
+        if icon_button(ui, palette, base.with("snap"), Glyph::Magnet, &snap_tip, *snap).clicked() {
             *snap = !*snap;
             changed = true;
         }
@@ -2355,17 +2319,15 @@ mod tests {
         assert_eq!(h.state.tool, Tool::Select, "bare M is left for Action::AddMarker");
     }
 
+    /// Bare S is `Action::ToggleSnap`'s (rebindable) default now, so the strip leaves it alone entirely.
     #[test]
-    fn bare_s_toggles_snapping_not_the_tool() {
+    fn bare_s_is_left_for_the_snap_action() {
         let mut h = Harness::new();
         h.state.tool = Tool::Draw;
-        assert!(!h.snap);
         h.key(Key::S);
-        assert!(h.snap, "bare S toggles snapping");
+        assert!(!h.snap, "the strip no longer toggles snapping itself");
         assert_eq!(h.state.tool, Tool::Draw, "bare S must not touch the active tool");
-        assert!(h.changed);
-        h.key(Key::S);
-        assert!(!h.snap, "S toggles back off");
+        assert!(!h.changed);
     }
 
     #[test]

@@ -544,3 +544,22 @@ fn enabled_for2_reports_reason_for_known_disabled_actions() {
     // an action this guard doesn't know about is always Ok
     assert_eq!(App::enabled_for2(Action::CommandPalette, true, true, true, true), Ok(()));
 }
+
+/// Clicking a transition clears the clip selection, so Delete's guard must count `sel_transitions` too.
+/// Source scan: `enabled` itself needs a live `App` (see above).
+#[test]
+fn delete_is_enabled_with_only_a_transition_selected() {
+    let src = include_str!("mod.rs");
+    let body = &src[src.find("fn enabled(&self").unwrap()..src.find("fn enabled_for2(").unwrap()];
+    assert!(body.contains("self.selection.is_empty() && self.sel_transitions.is_empty()"), "{body}");
+}
+
+/// Backspace aliases Delete only where no pane owns Delete itself (curves, nodes, the transcript).
+#[test]
+fn backspace_is_delete_except_over_panes_that_own_delete() {
+    for p in [Pane::Curves, Pane::Nodes, Pane::Subtitles] {
+        assert!(!App::backspace_is_delete(Some(p)), "{p:?}");
+    }
+    assert!(App::backspace_is_delete(Some(Pane::Timeline)));
+    assert!(App::backspace_is_delete(None));
+}

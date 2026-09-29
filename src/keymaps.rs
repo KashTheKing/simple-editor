@@ -14,8 +14,27 @@ use crate::hotkeys::{Action, Hotkeys};
 /// applying it is exactly `Hotkeys::reset_all()`.
 pub const PRESETS: &[(&str, &[(&str, &str)])] = &[
     ("Simple Editor", &[]),
-    ("Premiere", &[("split", "Ctrl+K"), ("command_palette", "Ctrl+Shift+P"), ("export", "Ctrl+M")]),
-    ("Resolve", &[("split", "B"), ("command_palette", "Ctrl+Space"), ("toggle_transitions", "Ctrl+Shift+T")]),
+    // an action a row displaces gets a free chord of its own (`every_preset_keeps_every_default_bound`)
+    (
+        "Premiere",
+        &[
+            ("split", "Ctrl+K"),
+            ("command_palette", "Ctrl+Shift+P"),
+            ("export", "Ctrl+M"),
+            ("quick_export", "Ctrl+Alt+M"),
+        ],
+    ),
+    (
+        "Resolve",
+        &[
+            ("split", "B"),
+            ("command_palette", "Ctrl+Space"),
+            ("toggle_transitions", "Ctrl+Shift+T"),
+            ("overwrite", "Shift+B"),
+            ("play_to_out", "Alt+Slash"),
+            ("add_transition", "Alt+T"),
+        ],
+    ),
     ("Avid", &[("command_palette", "Ctrl+Alt+K"), ("split", "Ctrl+Shift+B")]),
 ];
 
@@ -49,6 +68,18 @@ mod tests {
             }
             let mut hk = Hotkeys::defaults();
             assert!(apply(name, &mut hk).is_ok(), "preset {name} failed to apply");
+        }
+    }
+
+    /// `Hotkeys::set` unbinds whoever held a chord, so a preset row that steals one must re-home the loser.
+    #[test]
+    fn every_preset_keeps_every_default_bound() {
+        for (name, _) in PRESETS {
+            let mut hk = Hotkeys::defaults();
+            apply(name, &mut hk).unwrap();
+            for &a in Action::ALL {
+                assert!(a.default_shortcut().is_none() || hk.get(a).is_some(), "preset {name} leaves {a:?} unbound");
+            }
         }
     }
 

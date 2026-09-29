@@ -1,10 +1,9 @@
 //! Keyboard shortcuts: a fixed list of actions, default bindings, user overrides (stored in Settings),
 //! and per-frame polling. Tool selection (the `Action::Tool*` entries below) lives here too, fully
-//! rebindable; `ui::tools::handle_hotkeys` polls its own binding for each one with EXACT modifier
-//! matching (its poll runs before this table, and egui's logical matching would let a bare tool letter
-//! swallow every Shift+<letter> action on the same key) and sets the active tool directly, since the
-//! tool strip owns that state. Only bare S (the snap toggle) and Shift+S (cycling the shape tools,
-//! still riding on `AddShape`'s default below) stay hardcoded in `ui::tools`, ahead of everything here.
+//! rebindable; `ui::tools::handle_hotkeys` polls its own binding for each one and sets the active tool
+//! directly, since the tool strip owns that state. Every poll matches modifiers EXACTLY (`consume_exact`),
+//! so K never fires from Shift+K. Only Shift+S (cycling the shape tools) stays hardcoded in `ui::tools`,
+//! ahead of everything here.
 //! Mouse modifiers (Ctrl+Scroll zoom, Alt+Scroll track height, Shift+Scroll pan) are fixed and not part
 //! of this table.
 
@@ -88,7 +87,7 @@ actions! {
     ToggleEnabled => "toggle_enabled", "Enable / Disable Clip", sc(SHIFT, Key::D);
     NudgeLeft => "nudge_left", "Nudge Left 1 Frame", sc(NONE, Key::Comma);
     NudgeRight => "nudge_right", "Nudge Right 1 Frame", sc(NONE, Key::Period);
-    ToggleSnap => "snap", "Toggle Snapping", sc(NONE, Key::N);
+    ToggleSnap => "snap", "Toggle Snapping", sc(NONE, Key::S);
     AddVideoTrack => "add_video_track", "Add Video Track", None;
     AddAudioTrack => "add_audio_track", "Add Audio Track", None;
     ToggleLibrary => "toggle_library", "Show / Hide Library", sc(CTRL, Key::Num1);
@@ -120,7 +119,8 @@ actions! {
     ToggleNodes => "toggle_nodes", "Show / Hide Node Editor", sc(CTRL, Key::Num9);
     ToggleMixer => "toggle_mixer", "Show / Hide Mixer", sc(CTRL, Key::Num0);
     ToggleTools => "toggle_tools", "Show / Hide Tools", None;
-    AddShape => "add_shape", "Add Shape", sc(SHIFT, Key::S);
+    // unbound: Shift+S is the shape-tool cycle (`ui::tools::handle_hotkeys`, RESERVED below)
+    AddShape => "add_shape", "Add Shape", None;
     AddAdjustment => "add_adjustment", "Add Adjustment Layer", sc(CTRL_ALT, Key::L);
     AddMask => "add_mask", "Add Mask to Selection", sc(CTRL_SHIFT, Key::M);
     ExportFrame => "export_frame", "Export Frame…", sc(CTRL_SHIFT, Key::F);
@@ -428,19 +428,12 @@ impl Hotkeys {
         if !late {
             restore_clipboard_keys(ctx);
         }
-        // consume_shortcut ignores *extra* shift/alt, so walking the table in declaration order would
-        // let Ctrl+Shift+Z fire plain Undo: try the most specific binding first.
-        let mut order: Vec<Action> = Action::ALL.iter().copied().filter(|&a| is_late(a) == late).collect();
-        order.sort_by_key(|&a| {
-            std::cmp::Reverse(self.get(a).map_or(0u8, |k| k.modifiers.shift as u8 + k.modifiers.alt as u8))
-        });
+        // exact matching: a chord fits at most one binding, so declaration order is as good as any
         let mut out = Vec::new();
         ctx.input_mut(|i| {
-            for a in order {
-                if let Some(ks) = self.get(a) {
-                    if i.consume_shortcut(&ks) {
-                        out.push(a);
-                    }
+            for &a in Action::ALL.iter().filter(|&&a| is_late(a) == late) {
+                if self.get(a).is_some_and(|ks| consume_exact(i, &ks)) {
+                    out.push(a);
                 }
             }
         });
@@ -448,16 +441,32 @@ impl Hotkeys {
     }
 }
 
+/// Like `InputState::consume_shortcut`, but the pressed modifiers must equal the binding's
+/// (`Modifiers::matches_exact`). egui's own matching is "logical" and ignores EXTRA Shift/Alt, which made
+/// Shift+K fire Stop and Alt+E fire Extend Edit. Shifted punctuation is already a different logical key
+/// (Shift+[ arrives as `{`), so nothing bound on it changes.
+/// ponytail: a layout that needs Shift to type a bound key (German `/` = Shift+7) must rebind it -
+/// ignore Shift for keys whose logical key differs from the physical one if that ever matters.
+pub fn consume_exact(i: &mut egui::InputState, ks: &KeyboardShortcut) -> bool {
+    let mut hit = false;
+    i.events.retain(|e| {
+        let m = !hit
+            && matches!(e, egui::Event::Key { key, modifiers, pressed: true, .. }
+                if *key == ks.logical_key && modifiers.matches_exact(ks.modifiers));
+        hit |= m;
+        !m
+    });
+    hit
+}
+
 // ---- ws:command-palette ----
-/// Chords the app hard-codes ahead of, or instead of, the `Action` table - bare `S` (snap toggle,
-/// `ui::tools::handle_snap_hotkey`), `Shift+S` (shape-tool cycle, `ui::tools::handle_hotkeys` - also
-/// `AddShape`'s grandfathered default, a documented exception in `reserved_chords_are_free` below),
-/// `Ctrl+Y` (Redo alias, polled directly in `App::update`), `Backspace` (Delete alias, same), `Escape`
+/// Chords the app hard-codes ahead of, or instead of, the `Action` table - `Shift+S` (shape-tool cycle,
+/// `ui::tools::handle_hotkeys`), `Ctrl+Y` (Redo alias, polled directly in `App::update`), `Backspace`
+/// (Delete alias, same, except over the panes that own Delete - `App::backspace_is_delete`), `Escape`
 /// (fullscreen exit while `self.fullscreen`), `Tab`/`Shift+Tab` (egui's own focus traversal) and
 /// `Alt+Space` (Windows' system menu). A rebindable UI that let a user pick one of these would silently
 /// lose it to whichever poll runs first - `conflict_all` reports them so the Hotkeys tab can say so.
 pub const RESERVED: &'static [(&'static str, Modifiers, Key)] = &[
-    ("Toggle snapping (S)", NONE, Key::S),
     ("Cycle shape tool (Shift+S)", SHIFT, Key::S),
     ("Redo (Ctrl+Y alias)", CTRL, Key::Y),
     ("Delete (Backspace alias)", NONE, Key::Backspace),
@@ -544,11 +553,12 @@ pub fn group(a: Action) -> &'static str {
 }
 
 /// Actions the curve and node editors also claim while the pointer is over them, so the timeline only
-/// gets them if no pane wanted them. Delete is here for the same reason the clipboard keys are: the early
-/// pass runs BEFORE any pane is drawn, so a global Delete would eat the key and remove the selected CLIPS
-/// while the user was deleting keyframes or nodes.
+/// gets them if no pane wanted them. Delete (and the node editor's Ctrl+D) are here for the same reason
+/// the clipboard keys are: the early pass runs BEFORE any pane is drawn, so a global Delete would eat the
+/// key and remove the selected CLIPS while the user was deleting keyframes or nodes.
 fn is_late(a: Action) -> bool {
-    matches!(a, Action::CopyClips | Action::CutClips | Action::PasteClips | Action::PasteInPlace | Action::Delete)
+    use Action::*;
+    matches!(a, CopyClips | CutClips | PasteClips | PasteInPlace | Delete | DuplicateClips)
 }
 
 /// egui-winit swallows the clipboard keys: Ctrl+C / Ctrl+X / Ctrl+V (and Ctrl+Alt+C/V, Shift+Delete,
@@ -621,6 +631,42 @@ mod tests {
         assert_eq!(early, vec![Action::RippleDelete]);
     }
 
+    /// A pressed chord fires only the binding whose modifiers equal the pressed ones (egui's logical
+    /// matching let Shift+K Stop, Alt+E Extend Edit and Shift+C pick the Cut tool).
+    #[test]
+    fn bindings_match_modifiers_exactly() {
+        let h = Hotkeys::defaults();
+        let press = |key: Key, m: Modifiers| {
+            let ctx = egui::Context::default();
+            let ev = egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: m };
+            let raw = egui::RawInput { modifiers: m, events: vec![ev], ..Default::default() };
+            let (mut early, mut late) = (Vec::new(), Vec::new());
+            ctx.run(raw, |ctx| {
+                early = h.poll(ctx);
+                late = h.poll_late(ctx);
+            });
+            (early, late)
+        };
+        let ctrl = Modifiers { ctrl: true, command: true, ..NONE };
+        for (key, m, want) in [
+            (Key::K, NONE, vec![Action::Stop]),
+            (Key::K, SHIFT, vec![]),
+            (Key::E, ALT, vec![]),
+            (Key::F, SHIFT, vec![]),
+            (Key::C, SHIFT, vec![]),
+            (Key::S, NONE, vec![Action::ToggleSnap]),
+            (Key::N, NONE, vec![]),
+            (Key::Z, ctrl, vec![Action::Undo]),
+            (Key::Z, Modifiers { shift: true, ..ctrl }, vec![Action::Redo]),
+            (Key::ArrowLeft, SHIFT, vec![Action::StepBack10]),
+            (Key::ArrowLeft, NONE, vec![Action::StepBack]),
+        ] {
+            assert_eq!(press(key, m).0, want, "{key:?} with {m:?}");
+        }
+        // Ctrl+D waits for the late pass, so a hovered node editor duplicates its nodes instead
+        assert_eq!(press(Key::D, ctrl), (vec![], vec![Action::DuplicateClips]));
+    }
+
     #[test]
     fn no_duplicate_defaults() {
         let mut seen = std::collections::HashSet::new();
@@ -638,12 +684,6 @@ mod tests {
         for &a in Action::ALL {
             let Some(k) = a.default_shortcut() else { continue };
             for &(name, m, key) in RESERVED {
-                // AddShape's default IS Shift+S - a documented, grandfathered exception (see RESERVED's
-                // doc comment): the shape-tool cycle poll runs first, so the action never actually fires
-                // from the key, but its "default" text still needs somewhere to live for the menu/palette.
-                if a == Action::AddShape && m == SHIFT && key == Key::S {
-                    continue;
-                }
                 assert!(
                     canon(&k) != canon(&KeyboardShortcut::new(m, key)),
                     "{:?}'s default {} collides with the reserved chord '{name}'",
@@ -657,7 +697,13 @@ mod tests {
     #[test]
     fn conflict_all_sees_reserved_and_actions() {
         let h = Hotkeys::defaults();
-        assert_eq!(h.conflict_all(KeyboardShortcut::new(NONE, Key::S)), Some(Claim::Fixed("Toggle snapping (S)")));
+        // bare S is a normal, rebindable binding now; N is free
+        assert_eq!(h.conflict_all(KeyboardShortcut::new(NONE, Key::S)), Some(Claim::Action(Action::ToggleSnap)));
+        assert_eq!(h.conflict_all(KeyboardShortcut::new(NONE, Key::N)), None);
+        assert_eq!(
+            h.conflict_all(KeyboardShortcut::new(SHIFT, Key::S)),
+            Some(Claim::Fixed("Cycle shape tool (Shift+S)"))
+        );
         assert_eq!(h.conflict_all(KeyboardShortcut::new(CTRL, Key::Y)), Some(Claim::Fixed("Redo (Ctrl+Y alias)")));
         assert_eq!(
             h.conflict_all(KeyboardShortcut::new(NONE, Key::Backspace)),

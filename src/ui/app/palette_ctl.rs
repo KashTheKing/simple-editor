@@ -64,7 +64,7 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
         .collect();
     app.hotkeys.set_extra(extra.clone());
     if !ctx.wants_keyboard_input() {
-        let hit = ctx.input_mut(|i| extra.iter().find(|pair| i.consume_shortcut(&pair.1)).cloned());
+        let hit = ctx.input_mut(|i| extra.iter().find(|pair| crate::hotkeys::consume_exact(i, &pair.1)).cloned());
         if let Some((name, _)) = hit {
             if let Some(m) = app.script_meta_cache.1.iter().find(|m| m.name == name) {
                 app.run_script_path = Some(m.path.clone());

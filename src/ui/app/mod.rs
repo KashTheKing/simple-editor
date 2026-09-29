@@ -1223,15 +1223,11 @@ impl eframe::App for App {
         self.screenshot_tick(ctx);
 
         // hotkeys
-        // the tool strip claims the bare letters (V/T/D/M, Shift+S) before the action table is polled, so
-        // a rebound action can never shadow a tool
+        // the tool strip claims its tool keys (V/T/D/G/C/R, Shift+M, Shift+S) before the action table
+        // is polled, so a rebound action can never shadow a tool
         if let Some(t) = tools::handle_hotkeys(ctx, &self.hotkeys, &mut self.tools) {
             self.tools.tool = t;
             self.layout.reveal(Pane::Tools);
-        }
-        // bare S is snapping's own key, claimed the same way (see tools::handle_snap_hotkey)
-        if tools::handle_snap_hotkey(ctx, &mut self.settings.snap) {
-            self.settings.save();
         }
         let mut actions = self.hotkeys.poll(ctx);
         if !ctx.wants_keyboard_input() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Y)) {
@@ -1319,7 +1315,10 @@ impl eframe::App for App {
         // clipboard and Delete last: the curve and node editors claim those while the pointer is over
         // them, and only what they leave behind should reach the timeline
         actions.extend(self.hotkeys.poll_late(ctx));
-        if !ctx.wants_keyboard_input() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace))
+        let bksp = egui::KeyboardShortcut::new(egui::Modifiers::NONE, egui::Key::Backspace);
+        if !ctx.wants_keyboard_input()
+            && Self::backspace_is_delete(self.layout.hovered)
+            && ctx.input_mut(|i| crate::hotkeys::consume_exact(i, &bksp))
         {
             actions.push(Action::Delete);
         }
@@ -1635,8 +1634,15 @@ impl App {
             self.undo.is_empty(),
             self.redo.is_empty(),
             self.timeline_is_empty(),
-            self.selection.is_empty(),
+            // a clicked transition clears the clip selection; Delete removes `sel_transitions` too
+            self.selection.is_empty() && self.sel_transitions.is_empty(),
         )
+    }
+
+    /// Backspace is Delete's alias, except over the panes whose own Delete handling (keyframes, nodes,
+    /// transcript words) would otherwise lose it to the timeline's clip delete.
+    pub(crate) fn backspace_is_delete(hovered: Option<Pane>) -> bool {
+        !matches!(hovered, Some(Pane::Curves | Pane::Nodes | Pane::Subtitles))
     }
 
     /// ---- ws:command-palette ----

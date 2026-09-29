@@ -161,7 +161,7 @@ pub(super) fn hotkeys_tab(
 
 /// While rebinding: take the first key press this frame, bind/unbind/cancel, and swallow all key/text
 /// events so nothing else reacts to them. Returns true if a binding changed. A chord already claimed by
-/// a `RESERVED` row (bare `S`, `Ctrl+Y`, ...) is rejected outright (a note explains why); a chord
+/// a `RESERVED` row (`Shift+S`, `Ctrl+Y`, ...) is rejected outright (a note explains why); a chord
 /// already bound to another `Action` opens the Reassign/Keep row (`state.pending_conflict`) instead of
 /// silently stealing it.
 pub(super) fn capture_key(ctx: &egui::Context, state: &mut SettingsUi, a: Action, hotkeys: &mut Hotkeys) -> bool {
