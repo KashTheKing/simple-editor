@@ -2,11 +2,10 @@ use super::*;
 
 pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
     let resp = {
-        let live = app.source_live;
         let App { project, settings, library: lib, ytdlp_available, thumbs, undo, redo, palette, .. } = app;
         let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
         let ytdlp = ytdlp_available.load(std::sync::atomic::Ordering::Relaxed);
-        library::show(ui, lib, project, settings, Some(thumbs), live.as_ref(), palette, ytdlp, &mut push)
+        library::show(ui, lib, project, settings, Some(thumbs), palette, ytdlp, &mut push)
     };
     if resp.edited {
         app.after_edit();
@@ -18,26 +17,32 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
         app.act_import();
     }
     // ---- ws:source-monitor ----
-    // single-clicked in the Library: load it into the Source monitor (Pane::Source), which owns the
-    // source player now - the library's own preview box keeps painting the same live frame
-    if let Some(p) = resp.preview.clone() {
-        app.open_in_source(p, Some(0.0));
+    // ---- ws:library-surface ----
+    // clicked in the Library: the Source monitor (Pane::Source) is the one preview - paused on the
+    // first frame, or playing for a double-click. By asset id when there is one: a subclip shares its
+    // parent's path, so a path alone would open the parent.
+    if let Some((path, id, play)) = resp.source.clone() {
+        let seek = if play { None } else { Some(0.0) };
+        if !id.is_some_and(|id| app.open_asset_in_source(id, seek)) {
+            app.open_in_source(path, seek);
+        }
     }
-    if let Some(p) = resp.preview_play.clone() {
-        app.open_in_source(p, None);
+    if let Some(id) = resp.add_sequence {
+        let snap = app.project.to_json();
+        if app.project.insert_sequence_clip(id, app.playhead, None).is_none() {
+            app.toast("A sequence can't contain itself");
+        } else {
+            push_undo_json(&mut app.undo, &mut app.redo, snap);
+            app.after_edit();
+        }
+    }
+    if let Some(name) = resp.deleted_sequence {
+        app.toast_undo(format!("Deleted sequence \"{name}\""), Action::Undo);
     }
     if !resp.add_to_timeline.is_empty() {
         app.push_undo();
         app.place_assets(&resp.add_to_timeline, app.playhead, None, DropMode::Place);
         app.after_edit();
-    }
-    // both used to sit inside the open_paths branch, so the Library's "New ▸ Adjustment layer"
-    // and "Open…" only ever fired on a frame that also opened a file - i.e. never
-    if resp.new_adjustment {
-        app.pending_actions.push(Action::AddAdjustment);
-    }
-    if resp.open_dialog {
-        app.pending_actions.push(Action::OpenFile);
     }
     if !resp.open_paths.is_empty() {
         let ids = app.open_or_import(&resp.open_paths);
@@ -48,10 +53,13 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
     }
     if !resp.remove.is_empty() {
         app.push_undo();
+        let n = resp.remove.len();
         for id in resp.remove {
             app.project.remove_asset(id);
         }
         app.after_edit();
+        let s = if n == 1 { "" } else { "s" };
+        app.toast_undo(format!("Removed {n} asset{s}"), Action::Undo);
     }
     // ---- ws:forgiveness ----
     // "Clear recent" now goes through confirm::ask(ConfirmAction::ClearRecent) -> App::resolve_confirm
@@ -140,13 +148,6 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
         if let Some(dir) = rfd::FileDialog::new().set_title("Relink media: pick the folder").pick_folder() {
             media_sync::start_relink(app, &resp.relink, &dir);
         }
-    }
-    if resp.consolidate {
-        media_sync::ask_consolidate(app);
-    }
-    if !resp.new_subclip.is_empty() {
-        // one undo snapshot BEFORE the first row is added, then add_subclip per id - see new_subclips
-        app.new_subclips(&resp.new_subclip);
     }
 }
 
