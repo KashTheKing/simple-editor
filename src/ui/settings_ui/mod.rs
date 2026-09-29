@@ -124,26 +124,29 @@ pub fn show(
         // appear where it was opened from (click), or centered if opened automatically (hotkey)
         window = window.current_pos(crate::ui::popup_open_pos(ctx)).pivot(egui::Align2::CENTER_CENTER);
     }
-    window
-        .show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut state.tab, 0, "General");
-                ui.selectable_value(&mut state.tab, 1, "Performance");
-                ui.selectable_value(&mut state.tab, 2, "Capture");
-                ui.selectable_value(&mut state.tab, 3, "Export");
-                ui.selectable_value(&mut state.tab, 4, "Hotkeys");
-                ui.selectable_value(&mut state.tab, 5, "Appearance");
-            });
-            ui.separator();
-            changed = match state.tab {
+    window.show(ctx, |ui| {
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut state.tab, 0, "General");
+            ui.selectable_value(&mut state.tab, 1, "Performance");
+            ui.selectable_value(&mut state.tab, 2, "Capture");
+            ui.selectable_value(&mut state.tab, 3, "Export");
+            ui.selectable_value(&mut state.tab, 4, "Hotkeys");
+            ui.selectable_value(&mut state.tab, 5, "Appearance");
+        });
+        ui.separator();
+        // the tab row stays put; a tab taller than the window scrolls
+        let body = egui::ScrollArea::vertical().id_salt(("settings_body", state.tab)).auto_shrink([false, false]);
+        changed = body
+            .show(ui, |ui| match state.tab {
                 0 => general::general(ui, state, settings, mcp_status),
                 1 => performance::performance(ui, settings, gpu_name, &mut state.clear_caches),
                 2 => capture::capture_tab(ui, settings, audio_inputs),
                 3 => capture::export(ui, settings, encoders),
                 4 => hotkeys::hotkeys_tab(ui, state, hotkeys, settings),
                 _ => appearance::appearance(ui, settings),
-            };
-        });
+            })
+            .inner;
+    });
     state.open = open;
     if !open {
         state.rebinding = None;

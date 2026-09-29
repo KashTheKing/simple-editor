@@ -37,7 +37,8 @@ pub struct AutoCutState {
     pub ripple: bool,
     /// Timeline ranges to keep (shaded by the timeline), recomputed each frame from the selection.
     pub overlay: Vec<(f64, f64)>,
-    /// False after "Clear": detection (and the overlay) pauses until a control changes or "Detect".
+    /// Off until "Detect" (or a control changes), and again after "Clear": opening the pane must not
+    /// start decoding waveforms or shade the timeline.
     pub active: bool,
     /// Result of the last Apply / Split, shown as a status line.
     pub status: String,
@@ -56,7 +57,7 @@ impl Default for AutoCutState {
             keep_quiet: false,
             ripple: true,
             overlay: Vec::new(),
-            active: true,
+            active: false,
             status: String::new(),
             cache_key: 0,
             cached: Vec::new(),
@@ -205,6 +206,23 @@ fn sort_right_to_left(project: &Project, cached: &mut [Detection]) {
 }
 
 pub fn show(
+    ui: &mut egui::Ui,
+    state: &mut AutoCutState,
+    project: &mut Project,
+    selection: &[Id],
+    waveforms: &mut WaveformCache,
+    settings: &Settings,
+    palette: &Palette,
+    undo: &mut dyn FnMut(&Project),
+) -> (bool, Vec<Id>) {
+    egui::ScrollArea::vertical()
+        .id_salt("autocut_pane")
+        .auto_shrink([false, false])
+        .show(ui, |ui| body(ui, state, project, selection, waveforms, settings, palette, undo))
+        .inner
+}
+
+fn body(
     ui: &mut egui::Ui,
     state: &mut AutoCutState,
     project: &mut Project,
@@ -791,7 +809,14 @@ mod tests {
         let settings = Settings::default();
         let pal = Palette::new(true, Color32::WHITE);
         let mut undos = 0;
-        for selection in [vec![], vec![aud]] {
+        let before = project.to_json();
+        // opening the pane (even with an audio clip selected) detects nothing until "Detect"
+        for (selection, detect) in [(vec![], false), (vec![aud], false), (vec![aud], true)] {
+            if detect {
+                assert!(!state.active && state.cache_key == 0, "no detection ran before Detect");
+                assert_eq!(project.to_json(), before, "opening Auto-cut must not touch the project");
+                state.active = true; // what the Detect button does
+            }
             for _ in 0..3 {
                 let _ = ctx.run(
                     RawInput {
@@ -812,6 +837,7 @@ mod tests {
             }
         }
         assert_eq!(undos, 0);
+        assert_ne!(state.cache_key, 0, "after Detect the detection runs");
         // missing file → the cache resolves to empty peaks → no detections, no overlay
         assert!(state.cached.is_empty());
         assert!(state.overlay.is_empty());

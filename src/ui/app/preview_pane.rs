@@ -25,6 +25,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
         };
         let stats = app.gpu.as_ref().and_then(|g| g.stats());
         let pick_mode = app.monitor.pick_armed.map(|(_, t)| t);
+        let tracker = app.tracking.preview_box().filter(|_| app.pane_drawn(Pane::Tracking));
         let resp = {
             let App {
                 project,
@@ -40,8 +41,6 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
                 settings,
                 prerender,
                 gpu_tex,
-                tracking,
-                tracking_shown,
                 // ---- ws:canvas-handles-monitor ----
                 alt_render,
                 export,
@@ -74,7 +73,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
                     prerender: done,
                     buffering: player.is_buffering(),
                     proxy: proxy_busy,
-                    tracker: tracking_shown.then(|| tracking.box_rect()),
+                    tracker,
                     guide: settings.guide,
                     // ---- ws:canvas-handles-monitor ----
                     canvas_snap: settings.canvas_snap,

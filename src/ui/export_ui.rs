@@ -192,214 +192,220 @@ pub fn show(
     }
     let mut out = None;
     let mut open = state.open;
+    // the window never grows past the screen, so on a small one its body (Advanced open) scrolls
+    let max_h = ctx.content_rect().height() - 100.0;
     egui::Window::new("Export").open(&mut open).resizable(false).default_width(300.0).show(ctx, |ui| {
-        // ---- ws:export-deliver: platform tiles (the beginner surface; everything else is Advanced) ----
-        let presets = settings.export_presets.clone();
-        ui.horizontal_wrapped(|ui| {
-            for p in &presets {
-                let on = state.tile.as_deref() == Some(p.name.as_str());
-                let text = format!("{}\n{}×{}", p.name, p.width, p.height);
-                let r = ui.selectable_label(on, text).on_hover_text(format!(
-                    "{} · CRF {}{}\nFits the picture inside (black bars, never stretched).",
-                    p.ext,
-                    p.crf,
-                    if p.loudnorm { " · −14 LUFS" } else { "" }
-                ));
-                if r.clicked() {
-                    apply_preset(state, settings, p);
+        egui::ScrollArea::vertical().id_salt("export_body").max_height(max_h).show(ui, |ui| {
+            // ---- ws:export-deliver: platform tiles (the beginner surface; everything else is Advanced) ----
+            let presets = settings.export_presets.clone();
+            ui.horizontal_wrapped(|ui| {
+                for p in &presets {
+                    let on = state.tile.as_deref() == Some(p.name.as_str());
+                    let text = format!("{}\n{}×{}", p.name, p.width, p.height);
+                    let r = ui.selectable_label(on, text).on_hover_text(format!(
+                        "{} · CRF {}{}\nFits the picture inside (black bars, never stretched).",
+                        p.ext,
+                        p.crf,
+                        if p.loudnorm { " · −14 LUFS" } else { "" }
+                    ));
+                    if r.clicked() {
+                        apply_preset(state, settings, p);
+                    }
                 }
+            });
+            if presets.is_empty() {
+                ui.weak("No platform presets - add some to settings.json's export_presets.");
             }
-        });
-        if presets.is_empty() {
-            ui.weak("No platform presets - add some to settings.json's export_presets.");
-        }
-        ui.add_space(2.0);
+            ui.add_space(2.0);
 
-        let mut changed = false;
-        egui::CollapsingHeader::new("Advanced").default_open(false).show(ui, |ui| {
-            egui::Grid::new("export_opts").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-                ui.label("Resolution");
-                changed |= combo(ui, "export_res", &mut state.preset, &RES_PRESETS, None);
-                ui.end_row();
-                if state.preset == "custom" {
-                    ui.label("Size");
+            let mut changed = false;
+            egui::CollapsingHeader::new("Advanced").default_open(false).show(ui, |ui| {
+                egui::Grid::new("export_opts").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+                    ui.label("Resolution");
+                    changed |= combo(ui, "export_res", &mut state.preset, &RES_PRESETS, None);
+                    ui.end_row();
+                    if state.preset == "custom" {
+                        ui.label("Size");
+                        ui.horizontal(|ui| {
+                            let (mut w, mut h) = state.custom;
+                            changed |= ui.add(egui::DragValue::new(&mut w).range(16..=8192)).changed();
+                            ui.label("×");
+                            changed |= ui.add(egui::DragValue::new(&mut h).range(16..=8192)).changed();
+                            state.custom = (w, h);
+                        });
+                        ui.end_row();
+                    }
+                    let size = preset_size(project.width, project.height, &state.preset, state.custom);
+                    ui.label("Output");
+                    let (w, h) = size.unwrap_or((project.width, project.height));
+                    ui.weak(format!("{w}×{h}"));
+                    ui.end_row();
+
+                    ui.label("Scaler");
                     ui.horizontal(|ui| {
-                        let (mut w, mut h) = state.custom;
-                        changed |= ui.add(egui::DragValue::new(&mut w).range(16..=8192)).changed();
-                        ui.label("×");
-                        changed |= ui.add(egui::DragValue::new(&mut h).range(16..=8192)).changed();
-                        state.custom = (w, h);
+                        combo(ui, "export_scaler", &mut settings.export_scaler, &SCALERS, None);
+                        if size.is_none() {
+                            ui.weak("(same size)");
+                        }
                     });
                     ui.end_row();
-                }
-                let size = preset_size(project.width, project.height, &state.preset, state.custom);
-                ui.label("Output");
-                let (w, h) = size.unwrap_or((project.width, project.height));
-                ui.weak(format!("{w}×{h}"));
-                ui.end_row();
 
-                ui.label("Scaler");
-                ui.horizontal(|ui| {
-                    combo(ui, "export_scaler", &mut settings.export_scaler, &SCALERS, None);
-                    if size.is_none() {
-                        ui.weak("(same size)");
-                    }
+                    ui.label("Encoder");
+                    let opts: Vec<(&str, &str)> = std::iter::once(("auto", "auto"))
+                        .chain(encoder_options(encoders).into_iter().map(|e| (e, e)))
+                        .collect();
+                    combo(ui, "export_encoder", &mut settings.encoder, &opts, None);
+                    ui.end_row();
+
+                    ui.label("Quality");
+                    // the shown percent is cached per stored CRF: 101 slider positions quantize onto 52 CRF
+                    // values, so recomputing from CRF every frame snapped a typed "85" back to 84
+                    let mut pct = match state.pct_cache {
+                        Some((c, p)) if c == settings.crf => p,
+                        _ => export::quality_percent_from_crf(settings.crf),
+                    };
+                    ui.add(egui::Slider::new(&mut pct, 0..=100).suffix("%"));
+                    settings.crf = export::crf_from_quality_percent(pct);
+                    state.pct_cache = Some((settings.crf, pct));
+                    ui.end_row();
+
+                    ui.label("Preset");
+                    let opts: Vec<(&str, &str)> = ENCODER_PRESETS.iter().map(|p| (*p, *p)).collect();
+                    combo(ui, "export_preset", &mut settings.preset, &opts, None);
+                    ui.end_row();
                 });
-                ui.end_row();
-
-                ui.label("Encoder");
-                let opts: Vec<(&str, &str)> = std::iter::once(("auto", "auto"))
-                    .chain(encoder_options(encoders).into_iter().map(|e| (e, e)))
-                    .collect();
-                combo(ui, "export_encoder", &mut settings.encoder, &opts, None);
-                ui.end_row();
-
-                ui.label("Quality");
-                // the shown percent is cached per stored CRF: 101 slider positions quantize onto 52 CRF
-                // values, so recomputing from CRF every frame snapped a typed "85" back to 84
-                let mut pct = match state.pct_cache {
-                    Some((c, p)) if c == settings.crf => p,
-                    _ => export::quality_percent_from_crf(settings.crf),
-                };
-                ui.add(egui::Slider::new(&mut pct, 0..=100).suffix("%"));
-                settings.crf = export::crf_from_quality_percent(pct);
-                state.pct_cache = Some((settings.crf, pct));
-                ui.end_row();
-
-                ui.label("Preset");
-                let opts: Vec<(&str, &str)> = ENCODER_PRESETS.iter().map(|p| (*p, *p)).collect();
-                combo(ui, "export_preset", &mut settings.preset, &opts, None);
-                ui.end_row();
             });
-        });
-        let size = preset_size(project.width, project.height, &state.preset, state.custom);
-        let out_size = size.unwrap_or((project.width, project.height));
-        if changed {
-            // a hand-edited size is no longer "the tile": plain stretch, like every custom export before
-            state.tile = None;
-            state.letterbox = false;
-            let (w, h) = out_size;
-            settings.export_resolution = if state.preset == "project" { "project".into() } else { format!("{w}x{h}") };
-        }
+            let size = preset_size(project.width, project.height, &state.preset, state.custom);
+            let out_size = size.unwrap_or((project.width, project.height));
+            if changed {
+                // a hand-edited size is no longer "the tile": plain stretch, like every custom export before
+                state.tile = None;
+                state.letterbox = false;
+                let (w, h) = out_size;
+                settings.export_resolution =
+                    if state.preset == "project" { "project".into() } else { format!("{w}x{h}") };
+            }
 
-        // ---- ws:export-deliver: range ----
-        let has_range = project.in_point.is_some() || project.out_point.is_some();
-        if !has_range {
-            state.range = false;
-        }
-        ui.add_enabled(has_range, egui::Checkbox::new(&mut state.range, "Export In/Out Range"))
-            .on_disabled_hover_text("Set In/Out points on the timeline first (I / O)")
-            .on_hover_text("Only the part between the In and Out points is written.");
-        let range = export_range(project, state.range);
-        let export_dur = range.map(|(a, b)| b - a).unwrap_or_else(|| project.duration());
+            // ---- ws:export-deliver: range ----
+            let has_range = project.in_point.is_some() || project.out_point.is_some();
+            if !has_range {
+                state.range = false;
+            }
+            ui.add_enabled(has_range, egui::Checkbox::new(&mut state.range, "Export In/Out Range"))
+                .on_disabled_hover_text("Set In/Out points on the timeline first (I / O)")
+                .on_hover_text("Only the part between the In and Out points is written.");
+            let range = export_range(project, state.range);
+            let export_dur = range.map(|(a, b)| b - a).unwrap_or_else(|| project.duration());
 
-        // meaningless for a lossless cut (-c copy ignores quality entirely)
-        if !state.lossless {
-            let (w, h) = out_size;
-            let est_bytes = export::estimate_export_bytes(w, h, project.fps, export_dur, settings.crf);
-            ui.weak(format!(
-                "~{} ({w}×{h} · {:.0} fps · {})",
-                format_bytes(est_bytes),
-                project.fps,
-                duration_text(export_dur)
-            ))
-            .on_hover_text("Estimated - actual size depends on the footage (and audio-only formats ignore it).");
-            let pct = export::quality_percent_from_crf(settings.crf);
-            // bands anchored so the default (CRF 18 ~ 65 %, visually lossless for x264) does NOT warn
-            let warning = match pct {
-                65..=100 => "",
-                45..=64 => "Quality will be reduced slightly.",
-                25..=44 => "Quality will be reduced a medium amount.",
-                10..=24 => "Quality will be reduced a large amount.",
-                _ => "The video will barely be recognizable at this compression level.",
-            };
-            if !warning.is_empty() {
-                ui.colored_label(ui.visuals().warn_fg_color, warning);
+            // meaningless for a lossless cut (-c copy ignores quality entirely)
+            if !state.lossless {
+                let (w, h) = out_size;
+                let est_bytes = export::estimate_export_bytes(w, h, project.fps, export_dur, settings.crf);
+                ui.weak(format!(
+                    "~{} ({w}×{h} · {:.0} fps · {})",
+                    format_bytes(est_bytes),
+                    project.fps,
+                    duration_text(export_dur)
+                ))
+                .on_hover_text("Estimated - actual size depends on the footage (and audio-only formats ignore it).");
+                let pct = export::quality_percent_from_crf(settings.crf);
+                // bands anchored so the default (CRF 18 ~ 65 %, visually lossless for x264) does NOT warn
+                let warning = match pct {
+                    65..=100 => "",
+                    45..=64 => "Quality will be reduced slightly.",
+                    25..=44 => "Quality will be reduced a medium amount.",
+                    10..=24 => "Quality will be reduced a large amount.",
+                    _ => "The video will barely be recognizable at this compression level.",
+                };
+                if !warning.is_empty() {
+                    ui.colored_label(ui.visuals().warn_fg_color, warning);
+                }
+                if pct >= 95 {
+                    ui.weak("Near-lossless - files will be very large.");
+                }
             }
-            if pct >= 95 {
-                ui.weak("Near-lossless - files will be very large.");
-            }
-        }
 
-        ui.add_space(2.0);
-        if ui.checkbox(&mut state.metadata_on, "Write metadata").changed() && state.metadata.is_empty() {
-            state.metadata = vec![
-                ("title".into(), project.name.clone()),
-                ("artist".into(), String::new()),
-                ("comment".into(), String::new()),
-            ];
-        }
-        if state.metadata_on {
-            let mut drop: Option<usize> = None;
-            for (i, (k, v)) in state.metadata.iter_mut().enumerate() {
-                ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(k).desired_width(70.0).hint_text("key"));
-                    ui.add(egui::TextEdit::singleline(v).desired_width(140.0).hint_text("value"));
-                    if ui.small_button("\u{2715}").on_hover_text("Remove").clicked() {
-                        drop = Some(i);
-                    }
-                });
+            ui.add_space(2.0);
+            if ui.checkbox(&mut state.metadata_on, "Write metadata").changed() && state.metadata.is_empty() {
+                state.metadata = vec![
+                    ("title".into(), project.name.clone()),
+                    ("artist".into(), String::new()),
+                    ("comment".into(), String::new()),
+                ];
             }
-            if let Some(i) = drop {
-                state.metadata.remove(i);
+            if state.metadata_on {
+                let mut drop: Option<usize> = None;
+                for (i, (k, v)) in state.metadata.iter_mut().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.add(egui::TextEdit::singleline(k).desired_width(70.0).hint_text("key"));
+                        ui.add(egui::TextEdit::singleline(v).desired_width(140.0).hint_text("value"));
+                        if ui.small_button("\u{2715}").on_hover_text("Remove").clicked() {
+                            drop = Some(i);
+                        }
+                    });
+                }
+                if let Some(i) = drop {
+                    state.metadata.remove(i);
+                }
+                if ui.small_button("+ field").clicked() {
+                    state.metadata.push((String::new(), String::new()));
+                }
+            } else {
+                ui.weak("No title, encoder or creation time is written.");
             }
-            if ui.small_button("+ field").clicked() {
-                state.metadata.push((String::new(), String::new()));
-            }
-        } else {
-            ui.weak("No title, encoder or creation time is written.");
-        }
-        ui.add_space(2.0);
+            ui.add_space(2.0);
 
-        if export::lossless_segments(project).is_some() {
-            // ws:export-deliver: a range needs a re-encode, so the -c copy path greys out while it's on
-            if state.range {
+            if export::lossless_segments(project).is_some() {
+                // ws:export-deliver: a range needs a re-encode, so the -c copy path greys out while it's on
+                if state.range {
+                    state.lossless = false;
+                }
+                ui.add_enabled(!state.range, egui::Checkbox::new(&mut state.lossless, "Fast lossless cut (-c copy)"))
+                    .on_disabled_hover_text("Not with a range: cuts on keyframes can't honour In/Out points");
+                if state.lossless {
+                    ui.weak("Instant, no re-encode; cuts snap to keyframes (may shift up to a few frames).");
+                }
+            } else {
                 state.lossless = false;
             }
-            ui.add_enabled(!state.range, egui::Checkbox::new(&mut state.lossless, "Fast lossless cut (-c copy)"))
-                .on_disabled_hover_text("Not with a range: cuts on keyframes can't honour In/Out points");
-            if state.lossless {
-                ui.weak("Instant, no re-encode; cuts snap to keyframes (may shift up to a few frames).");
-            }
-        } else {
-            state.lossless = false;
-        }
-        ui.checkbox(&mut state.use_project_bg, "Use project background").on_hover_text(
-            "Bakes the preview's Background setting (see the preview's right-click menu) into the \
+            ui.checkbox(&mut state.use_project_bg, "Use project background").on_hover_text(
+                "Bakes the preview's Background setting (see the preview's right-click menu) into the \
                  export instead of black. Checkerboard bakes as literal grey squares, not real \
                  transparency - that needs an alpha-capable codec this checkbox does not add.",
-        );
-        // ws:export-deliver
-        ui.checkbox(&mut settings.loudnorm, "Normalize loudness (−14 LUFS)")
-            .on_hover_text("ffmpeg loudnorm, the level YouTube/Spotify play back at. Skipped when there is no audio.");
-        ui.weak("Audio extensions (mp3, wav, m4a, flac) export audio only; gif has no audio.");
-        if settings.gpu || settings.preview_quality < 100 {
-            // Settings ▸ Performance only changes what you watch, never what is written
-            ui.weak("GPU preview and preview quality do not change the exported picture.");
-        }
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            let can = !exporting && !project.is_empty();
-            if ui.add_enabled(can, egui::Button::new("Export…")).clicked() {
-                settings.save();
-                if let Some(choice) = pick_and_build(state, project, settings) {
-                    out = Some((choice, false));
+            );
+            // ws:export-deliver
+            ui.checkbox(&mut settings.loudnorm, "Normalize loudness (−14 LUFS)").on_hover_text(
+                "ffmpeg loudnorm, the level YouTube/Spotify play back at. Skipped when there is no audio.",
+            );
+            ui.weak("Audio extensions (mp3, wav, m4a, flac) export audio only; gif has no audio.");
+            if settings.gpu || settings.preview_quality < 100 {
+                // Settings ▸ Performance only changes what you watch, never what is written
+                ui.weak("GPU preview and preview quality do not change the exported picture.");
+            }
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                let can = !exporting && !project.is_empty();
+                if ui.add_enabled(can, egui::Button::new("Export…")).clicked() {
+                    settings.save();
+                    if let Some(choice) = pick_and_build(state, project, settings) {
+                        out = Some((choice, false));
+                    }
                 }
-            }
-            // ws:export-deliver: queue while one runs (the queue drains in order, one at a time)
-            if ui
-                .add_enabled(!project.is_empty(), egui::Button::new("Add to Queue"))
-                .on_hover_text("Pick a file now; it renders after whatever is running or queued.")
-                .clicked()
-            {
-                settings.save();
-                if let Some(choice) = pick_and_build(state, project, settings) {
-                    out = Some((choice, true));
+                // ws:export-deliver: queue while one runs (the queue drains in order, one at a time)
+                if ui
+                    .add_enabled(!project.is_empty(), egui::Button::new("Add to Queue"))
+                    .on_hover_text("Pick a file now; it renders after whatever is running or queued.")
+                    .clicked()
+                {
+                    settings.save();
+                    if let Some(choice) = pick_and_build(state, project, settings) {
+                        out = Some((choice, true));
+                    }
                 }
-            }
-            if exporting {
-                ui.weak("export running…");
-            }
+                if exporting {
+                    ui.weak("export running…");
+                }
+            });
         });
     });
     state.open = open;

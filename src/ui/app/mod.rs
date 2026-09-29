@@ -224,14 +224,11 @@ pub struct App {
     downloads: Vec<crate::media::ytdlp::Download>,
     /// One receiver per import batch: ffprobe runs on a worker, `poll_probes` adopts the results.
     probes: Vec<Receiver<crate::engine::import::Probed>>,
-    /// Was the Auto-cut pane drawn last frame? (its keep-range shading is only valid while it is open).
-    /// `autocut_drawing` accumulates this frame; the timeline reads `autocut_shown` so the shading does
-    /// not depend on which pane the tile tree draws first.
-    autocut_shown: bool,
-    autocut_drawing: bool,
-    /// Same trick for the Tracking pane: the preview only draws its box while the pane is on screen.
-    tracking_shown: bool,
-    tracking_drawing: bool,
+    /// Panes drawn last frame (`pane_drawn`) and the ones drawn so far this frame. A pane's side
+    /// effects (Auto-cut's timeline shading, the tracker box, the Source monitor's Space/JKL) apply only
+    /// while it is on screen, and last frame's set keeps that independent of the tile tree's draw order.
+    panes_shown: Vec<Pane>,
+    panes_drawing: Vec<Pane>,
     /// Fonts already handed to the rasterizer (so we only reload when the list grows).
     loaded_fonts: usize,
     // ---------------- round 3 ----------------
@@ -758,10 +755,8 @@ impl App {
             url_dialog: None,
             downloads: Vec::new(),
             probes: Vec::new(),
-            autocut_shown: false,
-            autocut_drawing: false,
-            tracking_shown: false,
-            tracking_drawing: false,
+            panes_shown: Vec::new(),
+            panes_drawing: Vec::new(),
             loaded_fonts: 0,
             gl,
             gpu_name,
@@ -1044,11 +1039,16 @@ impl eframe::App for App {
             // a GPU export needs this thread to keep coming back to serve its frames
             ctx.request_repaint();
         }
-        // carry last frame's "the Auto-cut pane was on screen" into this frame's timeline drawing
-        self.autocut_shown = self.autocut_drawing;
-        self.autocut_drawing = false;
-        self.tracking_shown = self.tracking_drawing;
-        self.tracking_drawing = false;
+        // carry last frame's drawn panes into this frame; a Source monitor that went off screen gives
+        // transport focus back to the timeline (a click in it takes it again)
+        let source_was = self.pane_drawn(Pane::Source);
+        std::mem::swap(&mut self.panes_shown, &mut self.panes_drawing);
+        self.panes_drawing.clear();
+        if source_was && !self.pane_drawn(Pane::Source) {
+            self.source_focus = false;
+        }
+        // the tracking job runs whether or not its pane is on screen
+        self.tracking.poll(ctx);
 
         // close handling: confirm unsaved changes
         if ctx.input(|i| i.viewport().close_requested()) && !self.close_confirmed {

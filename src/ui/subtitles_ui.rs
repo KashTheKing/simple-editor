@@ -13,8 +13,9 @@
 //! gesture (same edit_start rule as the inspector); returns what changed.
 //!
 //! The "Transcribe" section drives `engine::transcribe`: pick a whisper.cpp model (its download size is
-//! named before the click and the download shows a progress bar), transcribe the selected clip's audio on
-//! a worker thread, and turn the transcript into cues ("Transcribe & generate subtitles"). The raw
+//! named before the click and the download shows a progress bar), and "Transcribe & generate subtitles"
+//! hands the selected clip to the app (`want`), whose `transcribe_clip` job finishes into cues whether or
+//! not this pane is still open (`transcript_ctl::tick`). Opening the section starts nothing. The raw
 //! word timings are kept, so "Regenerate cues" rebuilds the cues with new grouping knobs (pause split,
 //! punctuation, max words/chars) without re-transcribing; a `--prompt` field feeds whisper vocabulary
 //! hints. Underneath it,
@@ -60,7 +61,8 @@ pub struct TranscribeState {
     /// Wrapped lines per cue, joined with newlines (1 = one-liners, 2 = the usual two-line subs).
     pub lines: usize,
     pub min_dur: f64,
-    pub words: bool,
+    /// "Transcribe & generate subtitles" was pressed for this clip - drained by `transcript_ctl::tick`.
+    pub want: Option<Id>,
     /// Vocabulary/style hints passed to whisper (`--prompt`).
     pub prompt: String,
     /// Sentence grouping for word-timed runs (gap, punctuation, max words/chars) - regenerate-time knobs.
@@ -81,7 +83,6 @@ pub struct TranscribeState {
     map: (f64, f64),
     /// Markers dropped by "Mark on timeline", so a re-mark or a cut can take them away again.
     marks: Vec<Id>,
-    job: Option<transcribe::Job>,
     download: Option<Arc<Progress>>,
     /// whisper binary, looked up once (the lookup stats PATH) - "Re-check" after installing it.
     exe: Option<Option<PathBuf>>,
@@ -96,7 +97,7 @@ impl Default for TranscribeState {
             max_chars: 42,
             lines: 1,
             min_dur: 1.0,
-            words: false,
+            want: None,
             prompt: String::new(),
             group: transcribe::GroupOpts::default(),
             raw_words: Vec::new(),
@@ -108,7 +109,6 @@ impl Default for TranscribeState {
             clip: None,
             map: (0.0, 1.0),
             marks: Vec::new(),
-            job: None,
             download: None,
             exe: None,
         }
@@ -284,38 +284,47 @@ pub fn show(
         }
     });
 
-    if state.show_style {
-        style_section(ui, project, fonts, &mut undone, undo, &mut resp);
-    }
-    if state.transcribe.open {
-        ui.separator();
-        transcribe_section(ui, &mut state.transcribe, project, selection, &mut undone, undo, &mut resp);
-    }
-    // ---- ws:transcript-captions ----
-    if state.show_transcript {
-        ui.separator();
-        let r =
-            transcript_ui::show(ui, &mut state.transcript, project, playhead, selection, palette, &mut undone, undo);
-        resp.edited |= r.edited;
-        resp.seeked |= r.seeked;
-        if r.cut > 0 {
-            // the section's own words follow the cut (Project.transcripts already did); the
-            // Transcribe section's copy for "Regenerate cues" follows too
-            if let Some(tr) = state.transcribe.clip.and_then(|c| project.transcript(c)) {
-                if !state.transcribe.raw_words.is_empty() {
-                    state.transcribe.raw_words = tr.words.clone();
-                }
-            }
-        }
-    }
-    ui.separator();
-
     let mut resort = false;
     let mut del: Option<Id> = None;
     let mut split: Option<Id> = None;
     let mut convert: Option<Id> = None;
     let (shift, primary_down) = ui.input(|i| (i.modifiers.shift, i.pointer.primary_down()));
-    egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+    // the open sections scroll with the cue list: stacked above its own scroll area they squeezed it
+    // to nothing
+    egui::ScrollArea::vertical().id_salt("subtitles_body").auto_shrink(false).show(ui, |ui| {
+        if state.show_style {
+            style_section(ui, project, fonts, &mut undone, undo, &mut resp);
+        }
+        if state.transcribe.open {
+            ui.separator();
+            transcribe_section(ui, &mut state.transcribe, project, selection, &mut undone, undo, &mut resp);
+        }
+        // ---- ws:transcript-captions ----
+        if state.show_transcript {
+            ui.separator();
+            let r = transcript_ui::show(
+                ui,
+                &mut state.transcript,
+                project,
+                playhead,
+                selection,
+                palette,
+                &mut undone,
+                undo,
+            );
+            resp.edited |= r.edited;
+            resp.seeked |= r.seeked;
+            if r.cut > 0 {
+                // the section's own words follow the cut (Project.transcripts already did); the
+                // Transcribe section's copy for "Regenerate cues" follows too
+                if let Some(tr) = state.transcribe.clip.and_then(|c| project.transcript(c)) {
+                    if !state.transcribe.raw_words.is_empty() {
+                        state.transcribe.raw_words = tr.words.clone();
+                    }
+                }
+            }
+        }
+        ui.separator();
         for i in 0..project.subtitles.len() {
             let (id, start, end) = {
                 let c = &project.subtitles[i];
@@ -712,58 +721,51 @@ fn transcribe_section(
         ui.label("Min duration");
         ui.add(DragValue::new(&mut st.min_dur).range(0.3..=5.0).speed(0.05).suffix(" s"));
         ui.end_row();
-        ui.label("Word timings");
-        ui.checkbox(&mut st.words, "")
-            .on_hover_text("Slower: whisper times every word, so the cues break exactly on speech");
-        ui.end_row();
         ui.label("Prompt").on_hover_text("Names, jargon and punctuation style hints for whisper - not commands");
         ui.add(egui::TextEdit::singleline(&mut st.prompt).desired_width(220.0).hint_text("vocabulary hints…"));
         ui.end_row();
-        if st.words || !st.raw_words.is_empty() {
-            ui.label("Pause split");
-            ui.add(DragValue::new(&mut st.group.max_gap).range(0.1..=5.0).speed(0.05).suffix(" s"))
-                .on_hover_text("A silence longer than this starts a new sentence");
-            ui.end_row();
-            ui.label("Break on");
-            ui.add(egui::TextEdit::singleline(&mut st.group.punct).desired_width(60.0).hint_text("none"))
-                .on_hover_text("A word ending with any of these characters ends the sentence");
-            ui.end_row();
-            ui.label("Max words");
-            let mut mw = st.group.max_words;
-            if ui
-                .add(DragValue::new(&mut mw).range(0..=40).custom_formatter(|v, _| {
-                    if v < 1.0 {
-                        "off".into()
-                    } else {
-                        format!("{v:.0}")
-                    }
-                }))
-                .on_hover_text("Cap a sentence at this many words (0 = no cap)")
-                .changed()
-            {
-                st.group.max_words = mw;
-            }
-            ui.end_row();
-            ui.label("Sentence chars");
-            ui.add(DragValue::new(&mut st.group.max_chars).range(30..=300).suffix(" chars"))
-                .on_hover_text("A sentence never grows past this many characters");
-            ui.end_row();
+        // every run is word-timed (`App::transcribe_clip`), so the grouping knobs always apply
+        ui.label("Pause split");
+        ui.add(DragValue::new(&mut st.group.max_gap).range(0.1..=5.0).speed(0.05).suffix(" s"))
+            .on_hover_text("A silence longer than this starts a new sentence");
+        ui.end_row();
+        ui.label("Break on");
+        ui.add(egui::TextEdit::singleline(&mut st.group.punct).desired_width(60.0).hint_text("none"))
+            .on_hover_text("A word ending with any of these characters ends the sentence");
+        ui.end_row();
+        ui.label("Max words");
+        let mut mw = st.group.max_words;
+        if ui
+            .add(DragValue::new(&mut mw).range(0..=40).custom_formatter(|v, _| {
+                if v < 1.0 {
+                    "off".into()
+                } else {
+                    format!("{v:.0}")
+                }
+            }))
+            .on_hover_text("Cap a sentence at this many words (0 = no cap)")
+            .changed()
+        {
+            st.group.max_words = mw;
         }
+        ui.end_row();
+        ui.label("Sentence chars");
+        ui.add(DragValue::new(&mut st.group.max_chars).range(30..=300).suffix(" chars"))
+            .on_hover_text("A sentence never grows past this many characters");
+        ui.end_row();
     });
 
     let tgt = target(project, selection);
-    let running = st.job.as_ref().is_some_and(|j| !j.progress.is_done());
-    let mut go = false;
     ui.horizontal_wrapped(|ui| {
-        ui.add_enabled_ui(have && exe.is_some() && tgt.is_some() && !running, |ui| {
-            go = glyph_text_button(ui, Glyph::Mic, "Transcribe & generate subtitles").clicked();
-        });
-        if running && ui.button("Cancel").clicked() {
-            if let Some(j) = &st.job {
-                j.cancel();
+        ui.add_enabled_ui(have && exe.is_some() && tgt.is_some(), |ui| {
+            if glyph_text_button(ui, Glyph::Mic, "Transcribe & generate subtitles")
+                .on_hover_text("Runs in the background (see the Jobs pane) - the cues land even if this pane is closed")
+                .clicked()
+            {
+                st.want = tgt.as_ref().map(|t| t.clip);
             }
-        }
-        let can_regen = !running && (!st.segments.is_empty() || !st.raw_words.is_empty());
+        });
+        let can_regen = !st.segments.is_empty() || !st.raw_words.is_empty();
         if ui
             .add_enabled(can_regen, Button::new("Regenerate cues"))
             .on_hover_text("Rebuild the cues from the last transcript with the knobs above - no re-transcription")
@@ -777,61 +779,6 @@ fn transcribe_section(
             ui.weak("Select a clip to transcribe.");
         }
     });
-    if let (true, Some(t)) = (go, &tgt) {
-        st.segments.clear();
-        st.groups.clear();
-        st.marks.clear();
-        st.status.clear();
-        st.raw_words.clear();
-        // a fresh run appends to whatever cues exist - only a Regenerate replaces its own
-        st.generated.clear();
-        st.clip = Some(t.clip);
-        st.map = (t.offset, t.scale);
-        st.job = Some(transcribe::start(transcribe::Options {
-            path: t.path.clone(),
-            src_start: t.src_start,
-            src_duration: t.src_dur,
-            model: file.to_string(),
-            language: st.language.clone(),
-            words: st.words,
-            prompt: st.prompt.clone(),
-        }));
-    }
-
-    let done = st.job.as_ref().is_some_and(|j| j.progress.is_done());
-    if let Some(j) = &st.job {
-        ui.add(egui::ProgressBar::new(j.progress.fraction()).show_percentage().text(j.progress.status()));
-        if !done {
-            ui.ctx().request_repaint_after(Duration::from_millis(150));
-        }
-    }
-    if done {
-        let job = st.job.take().expect("done implies a job");
-        st.status = match job.progress.error() {
-            Some(e) => e,
-            None => {
-                let mut segs = job.segments();
-                transcribe::retime(&mut segs, st.map.0, st.map.1);
-                once(undone, undo, project);
-                if st.words {
-                    // one word per segment: keep the raw words so "Regenerate cues" can regroup them
-                    st.raw_words = segs.iter().map(|s| (s.start, s.end, s.text.clone())).collect();
-                    // ws:transcript-captions: and persist them, so they survive a save/reopen and
-                    // feed the Transcript section
-                    if let Some(clip) = st.clip {
-                        project.set_transcript(clip, st.raw_words.clone());
-                    }
-                } else {
-                    st.raw_words.clear();
-                    st.segments = segs;
-                    st.groups = transcribe::duplicate_takes(&st.segments, st.threshold, TAKE_WINDOW);
-                }
-                let msg = generate(st, project);
-                resp.edited = true;
-                msg
-            }
-        };
-    }
     if !st.status.is_empty() {
         ui.weak(&st.status);
     }
@@ -963,33 +910,37 @@ mod tests {
         assert_eq!(p.subtitles.len(), 2);
     }
 
-    /// Headless: panel lays out with cues and reports nothing without interaction.
+    /// Headless: panel lays out with cues and every section open, reports nothing without interaction,
+    /// leaves the project alone, starts no job and asks for no repaint (assert_no_idle_repaint).
     #[test]
-    fn show_headless() {
-        let mut p = Project::new();
+    fn assert_no_idle_repaint_subtitles_all_sections_open() {
+        let (mut p, clip) = clip_project(1.0);
         p.add_cue(0.0, 1.0, "a");
         p.add_cue(2.0, 4.0, "b");
+        let before = p.to_json();
         let palette = Palette::new(true, egui::Color32::WHITE);
         let fonts = vec!["Segoe UI".to_string()];
-        // the transcribe section draws too: no model, no whisper.exe, no selection - only its hints
+        // the transcribe section draws too, with a clip selected - only its hints, nothing started
         let mut state = SubtitlesState {
             show_style: true,
+            show_transcript: true,
             transcribe: TranscribeState { open: true, ..Default::default() },
             ..Default::default()
         };
         let mut playhead = 2.5; // inside cue "b" → highlighted row with Split button
         let ctx = egui::Context::default();
-        for _ in 0..2 {
+        for _ in 0..30 {
             let _ = ctx.run(egui::RawInput::default(), |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut undo = |_: &Project| panic!("no undo without edits");
-                    let r = show(ui, &mut state, &mut p, &mut playhead, &[], &fonts, &palette, &mut undo);
+                    let r = show(ui, &mut state, &mut p, &mut playhead, &[clip], &fonts, &palette, &mut undo);
                     assert!(!r.edited && !r.seeked);
                 });
             });
         }
-        assert_eq!(p.subtitles.len(), 2);
-        assert!(state.transcribe.job.is_none() && state.transcribe.segments.is_empty());
+        assert_eq!(p.to_json(), before);
+        assert!(state.transcribe.want.is_none() && state.transcribe.segments.is_empty());
+        assert!(!ctx.has_requested_repaint(), "an idle Subtitles pane must not spin");
     }
 
     /// A clip with an asset, on V1 + A1, running 0..10 s of the source.

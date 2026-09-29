@@ -6,10 +6,16 @@ impl App {
             ui.weak(format!("{} is unavailable in this build.", pane.title()));
             return;
         }
+        self.panes_drawing.push(pane);
         if guarded(|| self.draw_pane_inner(ui, pane)).is_none() {
             self.failed_panes.push(pane);
             self.toast(format!("{} failed to draw - the pane is disabled for this session", pane.title()));
         }
+    }
+
+    /// Was `pane` on screen last frame? Panels act only while they are (`App.panes_shown`).
+    pub(crate) fn pane_drawn(&self, pane: Pane) -> bool {
+        self.panes_shown.contains(&pane)
     }
 
     pub(super) fn draw_pane_inner(&mut self, ui: &mut egui::Ui, pane: Pane) {
@@ -235,7 +241,6 @@ impl App {
                 }
             }
             Pane::AutoCut => {
-                self.autocut_drawing = true;
                 let (changed, marked) = {
                     let App { project, selection, undo, redo, autocut: st, waveforms, settings, palette, .. } = self;
                     let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
@@ -251,7 +256,6 @@ impl App {
                 }
             }
             Pane::Tracking => {
-                self.tracking_drawing = true;
                 let backend = self.backend();
                 let changed = {
                     let App { project, selection, undo, redo, tracking: st, palette, .. } = self;
@@ -415,5 +419,19 @@ mod tests {
         let body = &after[..end];
         assert_eq!(body.matches("app.toast_undo(").count(), 1, "removed_unused must toast exactly one Undo");
         assert!(body.contains("Action::Undo"));
+    }
+
+    /// Structural, same reason as above: Space/JKL reach the Source monitor only while it was drawn
+    /// last frame, and the pane going off screen hands transport focus back to the timeline.
+    #[test]
+    fn source_transport_needs_the_pane_on_screen() {
+        let src = include_str!("source_pane.rs");
+        let body = &src[src.find("fn source_active").expect("source_active exists")..];
+        let body = &body[..body.find("\n    }").expect("the fn closes")];
+        assert!(body.contains("self.pane_drawn(Pane::Source)"), "a hidden Source tab must not take the keys");
+        let update = include_str!("mod.rs");
+        assert!(update.contains("if source_was && !self.pane_drawn(Pane::Source) {"));
+        let draw = include_str!("panes.rs");
+        assert!(draw.contains("self.panes_drawing.push(pane);"), "draw_pane records what it drew");
     }
 }

@@ -123,10 +123,14 @@ pub fn show(
     let mut ed = Edits::default();
     // ponytail: clone the whole bus list every frame - a handful of buses with a few filters each is
     // nothing next to a repaint. Upgrade path if it ever shows up: edit in place and snapshot lazily.
-    // Main is the one bus that always exists: without it the pane is empty on a fresh project and there
-    // is nothing to route to. Creating it is not a user edit, so it takes no undo entry.
-    project.main_bus();
+    // Main is the one bus that always exists, but opening the pane must not create it (that would switch
+    // the engine to the bus graph and dirty the project). A placeholder with the id `main_bus` will hand
+    // out stands in until the first edit makes it real, in the write-back below.
+    let placeholder = project.buses.is_empty();
     let mut list = project.buses.clone();
+    if placeholder {
+        list.push(Bus { id: project.next_id + 1, name: "Main".into(), ..Default::default() });
+    }
     // ---- ws:audio-dsp-automation ----
     if let Some(id) = take_focus_bus().filter(|id| list.iter().any(|b| b.id == *id)) {
         state.selected_bus = Some(id);
@@ -213,6 +217,9 @@ pub fn show(
         undo(project);
     }
     if g.changed {
+        if placeholder {
+            project.main_bus(); // claims the id the placeholder used
+        }
         project.buses = list;
         if ed.add_bus {
             let n = project.buses.len();
@@ -1041,9 +1048,20 @@ mod tests {
         let mut h = Harness::new();
         h.project.buses.clear();
         h.project.tracks.iter_mut().for_each(|t| t.bus = 0);
+        let before = h.project.to_json();
         assert!(!h.frame(vec![]));
-        assert!(h.click_named("add_bus"), "the first click creates Main + a bus");
+        assert!(!h.frame(vec![]));
+        assert_eq!(h.project.to_json(), before, "opening the Mixer must not create Main");
+        assert!(!h.ctx.has_requested_repaint(), "an idle bus-less Mixer must not spin");
+        assert!(test_rects::get("m0").is_some(), "a placeholder Main strip is drawn");
+        assert!(h.click_named("m0"), "muting the placeholder is an edit");
+        assert_eq!(h.project.buses.len(), 1, "the edit makes Main real");
+        assert!(h.project.buses[0].muted);
+        let main = h.project.buses[0].id;
+        assert!(h.click_named("add_bus"));
         assert_eq!(h.project.buses.len(), 2);
+        assert_eq!(h.project.buses[1].output, main);
+        assert_ne!(h.project.buses[1].id, main);
     }
 
     // ---- ws:audio-dsp-automation ----

@@ -211,7 +211,9 @@ pub(super) fn appearance(ui: &mut egui::Ui, s: &mut Settings) -> bool {
     ui.add_space(8.0);
     ui.collapsing("Icons", |ui| {
         ui.weak("Pick the glyph shown for each pane and menu action ('None' removes it, 'Default' restores).");
-        egui::ScrollArea::vertical().max_height((ui.available_height() - 40.0).max(0.0)).show(ui, |ui| {
+        // a fixed height: this sits inside the Settings body's own scroll area, where the space left
+        // over (`available_height`) is often nothing and the list collapsed to a sliver
+        egui::ScrollArea::vertical().id_salt("icons_list").max_height(300.0).show(ui, |ui| {
             egui::Grid::new("icons_panes").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
                 for &p in crate::ui::layout::Pane::ALL {
                     changed |= icon_row(ui, s, format!("pane.{}", p.title()), p.title(), Some(p.glyph()));
