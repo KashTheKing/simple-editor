@@ -198,7 +198,7 @@ impl Pane {
             Pane::Presets => Glyph::Bookmark,
             Pane::Tracking => Glyph::Target,
             Pane::Moodboard => Glyph::GridIcon,
-            Pane::History => Glyph::Hourglass,
+            Pane::History => Glyph::History,
             // ws:source-monitor (wave 2) may pick a more specific glyph later.
             Pane::Source => Glyph::Camera,
             // reuses export-deliver's queue glyph - no new Glyph variant
@@ -261,6 +261,11 @@ pub struct Layout {
     /// fades over `GLOW_SECS`; decayed by `ui::app::frame::tick`.
     #[serde(skip)]
     pub glow: Vec<(Pane, Instant)>,
+    // ---- ws:ui-kit ----
+    /// Where each docked pane was last drawn, its tab bar included (`show` refreshes it every frame) -
+    /// what `ui.screenshot {pane}` crops to.
+    #[serde(skip)]
+    pub rects: Vec<(Pane, egui::Rect)>,
 }
 
 impl Default for Layout {
@@ -514,6 +519,7 @@ impl Layout {
             maximized: None,
             hovered: None,
             glow: Vec::new(),
+            rects: Vec::new(),
         }
     }
     /// Ensure every `Pane::ALL` member absent from `tiles` (a new variant a preset builder never
@@ -817,6 +823,10 @@ struct Behaviour<'a> {
     glow: Vec<(Pane, f32)>,
     /// The pane whose tile the pointer is over (set by `pane_ui`, copied to `Layout.hovered`).
     hovered: Option<Pane>,
+    // ---- ws:ui-kit ----
+    /// Every pane's content rect and every tab bar's rect drawn this frame (see `show`).
+    panes: Vec<(Pane, egui::Rect)>,
+    tab_bars: Vec<egui::Rect>,
 }
 
 /// The "Set Icon" submenu shared by tab and toolbar-button context menus: Default / None / every glyph.
@@ -852,6 +862,7 @@ impl egui_tiles::Behavior<Pane> for Behaviour<'_> {
         if ui.rect_contains_pointer(ui.max_rect()) {
             self.hovered = Some(*pane);
         }
+        self.panes.push((*pane, ui.max_rect()));
         (self.draw)(ui, *pane);
         egui_tiles::UiResponse::None
     }
@@ -998,6 +1009,7 @@ impl egui_tiles::Behavior<Pane> for Behaviour<'_> {
         tabs: &egui_tiles::Tabs,
         _scroll_offset: &mut f32,
     ) {
+        self.tab_bars.push(ui.max_rect()); // ws:ui-kit: the whole bar - see `grab_cursor_fix`
         let Some(&pane) = tabs.active.and_then(|id| tiles.get_pane(&id)) else { return };
         if glyph_text_button(ui, Glyph::Cross, "").on_hover_text("Hide (View menu shows it again)").clicked() {
             self.hide.push(pane);
@@ -1077,6 +1089,22 @@ impl egui_tiles::Behavior<Pane> for Behaviour<'_> {
     }
 }
 
+// ---- ws:ui-kit ----
+/// The cursor to put back over a tab bar, if any. ponytail: egui_tiles 0.14.1 hard-codes
+/// `CursorIcon::Grab` on the empty strip of every non-root tab bar (`container/tabs.rs:269-276`,
+/// `Behavior` can't override it) and Windows draws Grab as the 4-arrow move cursor. `set_cursor_icon`
+/// is last-write-wins, so after `tree.ui()` a Grab over a tab bar with nothing dragged goes back to
+/// Default - delete this once an egui_tiles bump makes that cursor a `Behavior` hook.
+fn grab_cursor_fix(
+    cur: egui::CursorIcon,
+    pointer: Option<egui::Pos2>,
+    tab_bars: &[egui::Rect],
+    dragging: bool,
+) -> Option<egui::CursorIcon> {
+    let over_bar = pointer.is_some_and(|p| tab_bars.iter().any(|r| r.contains(p)));
+    (cur == egui::CursorIcon::Grab && over_bar && !dragging).then_some(egui::CursorIcon::Default)
+}
+
 /// Draw the docked tree into `ui` and every popped pane in its own OS window; `draw(ui, pane)` renders
 /// a pane's content. A popped window that the user closes is docked back automatically.
 /// Returns (layout changed this frame - caller persists it, a pane was dropped somewhere new).
@@ -1141,8 +1169,24 @@ pub fn show(
         maximized: layout.maximized.as_ref().map(|(p, _)| *p),
         glow,
         hovered: None,
+        panes: Vec::new(),
+        tab_bars: Vec::new(),
     };
     layout.tree.ui(&mut beh, ui);
+    // ---- ws:ui-kit ----
+    let cursor = ctx.output(|o| o.cursor_icon);
+    let pointer = ctx.pointer_hover_pos();
+    if let Some(c) = grab_cursor_fix(cursor, pointer, &beh.tab_bars, ctx.dragged_id().is_some()) {
+        ctx.set_cursor_icon(c);
+    }
+    layout.rects = std::mem::take(&mut beh.panes)
+        .into_iter()
+        .map(|(p, r)| {
+            let bar =
+                beh.tab_bars.iter().find(|b| (b.bottom() - r.top()).abs() < 2.0 && r.x_range().contains(b.center().x));
+            (p, bar.map_or(r, |b| b.union(r)))
+        })
+        .collect();
     // ---- ws:layout-modes-onboarding ----
     layout.hovered = beh.hovered;
     let mut changed = false;
@@ -1202,6 +1246,19 @@ pub fn show(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- ws:ui-kit ----
+    #[test]
+    fn grab_over_a_tab_bar_becomes_default() {
+        use egui::{pos2, CursorIcon as C, Rect};
+        let bars = [Rect::from_min_max(pos2(0.0, 0.0), pos2(200.0, 24.0))];
+        let on = Some(pos2(150.0, 10.0));
+        assert_eq!(grab_cursor_fix(C::Grab, on, &bars, false), Some(C::Default), "the empty strip");
+        assert_eq!(grab_cursor_fix(C::Grab, on, &bars, true), None, "leave a drag alone");
+        assert_eq!(grab_cursor_fix(C::Grab, Some(pos2(150.0, 40.0)), &bars, false), None, "a pane's own Grab");
+        assert_eq!(grab_cursor_fix(C::PointingHand, on, &bars, false), None, "only Grab is replaced");
+        assert_eq!(grab_cursor_fix(C::Grab, None, &bars, false), None);
+    }
 
     #[test]
     fn default_layout_contains_every_pane() {

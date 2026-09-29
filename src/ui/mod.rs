@@ -30,6 +30,8 @@ pub mod layout;
 pub mod library;
 pub mod markdown;
 pub mod markers_ui;
+// ---- ws:ui-kit ----
+pub mod menu;
 pub mod mixer_ui;
 pub mod moodboard_ui;
 // ---- ws:pro-monitor ----

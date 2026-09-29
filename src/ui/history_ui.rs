@@ -209,7 +209,7 @@ pub fn show(
                     ui.horizontal_wrapped(|ui| {
                         let icon = match e.category {
                             HistoryCategory::Layout => crate::ui::tools::Glyph::GridIcon,
-                            HistoryCategory::Editing => crate::ui::tools::Glyph::Hourglass,
+                            HistoryCategory::Editing => crate::ui::tools::Glyph::History,
                         };
                         let (r, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
                         crate::ui::tools::draw_glyph(ui.painter(), r, icon, ui.visuals().text_color());

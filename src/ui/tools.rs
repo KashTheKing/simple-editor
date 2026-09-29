@@ -89,23 +89,10 @@ pub(crate) enum Dir {
     Right,
 }
 
-impl Dir {
-    /// Unit vector along the pointing direction (y grows downward, as everywhere in egui).
-    fn unit(self) -> egui::Vec2 {
-        match self {
-            Dir::Up => egui::vec2(0.0, -1.0),
-            Dir::Down => egui::vec2(0.0, 1.0),
-            Dir::Left => egui::vec2(-1.0, 0.0),
-            Dir::Right => egui::vec2(1.0, 0.0),
-        }
-    }
-}
-
-/// The strip, left to right: (tool, icon, name). `Tool::Mask` stands for whichever mask shape is
-/// selected (the combo next to it picks one), the shape tools each get their own button.
-/// What `icon_button` draws. Painted with the painter, not typed: nearly every obvious character
-/// (polygon, pencil, half-disc, magnifier, close, play, reorder arrows) is missing from Segoe UI and
-/// egui's bundled fonts and came out as a tofu box.
+/// What `icon_button` draws: a symbol from Windows' own icon font (`Glyph::icon`, painted in
+/// `theme::icons()` - Segoe Fluent Icons / Segoe MDL2 Assets, 0 bytes in the exe). The few with no
+/// fitting symbol (`draw_glyph`'s vector arms) are painted with the painter instead. Variant names are
+/// persisted (`Settings.icon_overrides`), so a variant is never removed - near-duplicates share a char.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Glyph {
     Cursor,
@@ -308,6 +295,13 @@ pub(crate) enum Glyph {
     /// A small "T" over a horizontal bar - the Gallery's Titles tab button.
     Titles,
     // ---- ws:docs-refresh ----
+    // ---- ws:ui-kit ----
+    /// A stopwatch - the rate-stretch tool / Retime (was the overloaded `Hourglass`).
+    Speed,
+    /// A clock with a back arrow - the History pane and its rows.
+    History,
+    /// Two chasing arrows - a proxy being built.
+    Proxy,
 }
 
 impl Glyph {
@@ -445,6 +439,10 @@ impl Glyph {
         // ---- ws:text-titles ----
         Glyph::Titles,
         // ---- ws:docs-refresh ----
+        // ---- ws:ui-kit ----
+        Glyph::Speed,
+        Glyph::History,
+        Glyph::Proxy,
     ];
 
     /// Stable lower-case name of the variant, kept in sync with `from_name` - what a saved icon
@@ -586,6 +584,10 @@ impl Glyph {
             // ---- ws:text-titles ----
             Glyph::Titles => "titles",
             // ---- ws:docs-refresh ----
+            // ---- ws:ui-kit ----
+            Glyph::Speed => "speed",
+            Glyph::History => "history",
+            Glyph::Proxy => "proxy",
         }
     }
 
@@ -593,13 +595,128 @@ impl Glyph {
     pub fn from_name(s: &str) -> Option<Glyph> {
         Self::ALL.iter().copied().find(|g| g.name() == s)
     }
+
+    /// This glyph's symbol in Windows' icon font (Segoe Fluent Icons / Segoe MDL2 Assets codepoints,
+    /// every one present in both). `None` = painted as a vector by `draw_glyph` instead.
+    pub fn icon(self) -> Option<char> {
+        let cp: u32 = match self {
+            Glyph::Cursor => 0xE8B0,               // Click
+            Glyph::Rect | Glyph::Square => 0xE739, // Checkbox (an empty square)
+            Glyph::Ellipse => 0xEA3A,              // CircleRing
+            Glyph::Star => 0xE734,                 // FavoriteStar
+            Glyph::Line => 0xF7AF,                 // a thin diagonal stroke
+            Glyph::Arrow => 0xE72A,                // Forward
+            Glyph::Pencil => 0xE70F,               // Edit
+            Glyph::Mask => 0xF16A,                 // a dotted ellipse: a marquee, not "contrast"
+            Glyph::Zoom => 0xE71E,                 // Zoom
+            Glyph::Razor => 0xE8C6,                // Cut
+            Glyph::Flag => 0xE7C1,                 // Flag
+            Glyph::Hourglass => 0xE916,            // Stopwatch
+            Glyph::Eye => 0xE890,                  // View
+            Glyph::EyeOff => 0xED1A,               // Hide
+            Glyph::Diamond => 0xE82C,              // a filled diamond
+            Glyph::Record => 0xE91F,               // a filled circle (painted red)
+            Glyph::Dot => 0xECCC,                  // a smaller filled dot
+            Glyph::Mic => 0xE720,                  // Microphone
+            Glyph::Headphone => 0xE7F6,            // Headphone
+            Glyph::SpeakerOn => 0xE767,            // Volume
+            Glyph::SpeakerOff => 0xE74F,           // Mute
+            Glyph::Camera => 0xE722,               // Camera
+            Glyph::FilmStrip => 0xE8B2,            // Movies
+            Glyph::Nodes => 0xF22C,                // a node network
+            Glyph::Layers => 0xE81E,               // MapLayers
+            Glyph::Target => 0xF272,               // a bullseye
+            Glyph::MusicNote => 0xEC4F,            // MusicNote
+            Glyph::Folder => 0xE8B7,               // Folder
+            Glyph::Container => 0xE7B8,            // Package
+            Glyph::Cross => 0xE711,                // Cancel
+            Glyph::Copy => 0xE8C8,                 // Copy
+            Glyph::Paste => 0xE77F,                // Paste
+            Glyph::Tri(Dir::Up) => 0xEDDB,         // filled caret triangles
+            Glyph::Tri(Dir::Down) => 0xEDDC,
+            Glyph::Tri(Dir::Left) => 0xEDD9,
+            Glyph::Tri(Dir::Right) => 0xEDDA,
+            Glyph::Skip(Dir::Left | Dir::Up) => 0xE627, // rewind
+            Glyph::Skip(_) => 0xE628,                   // fast forward
+            Glyph::Jump(Dir::Left | Dir::Up) => 0xF8AC, // previous (filled)
+            Glyph::Jump(_) => 0xF8AD,                   // next (filled)
+            Glyph::Play => 0xF5B0,                      // PlaySolid
+            Glyph::Pause => 0xF8AE,                     // a filled pause
+            Glyph::Stop => 0xE978,                      // a filled square
+            Glyph::Fullscreen => 0xE740,                // FullScreen
+            Glyph::PopOut => 0xE8A7,                    // OpenInNewWindow
+            Glyph::Indent(true) => 0xE291,              // IncreaseIndent
+            Glyph::Indent(false) => 0xE290,             // DecreaseIndent
+            Glyph::Sequence => 0xF57B,                  // a lane carrying two blocks
+            Glyph::Template => 0xE7C3,                  // Page
+            Glyph::Snowflake => 0xEA38,                 // an asterisk snowflake
+            Glyph::FilmReel => 0xE714,                  // Video
+            Glyph::Bolt => 0xE945,                      // LightningBolt
+            Glyph::ImportArrow => 0xE8B5,               // Import
+            Glyph::ExportArrow => 0xEDE1,               // Export
+            Glyph::Transition => 0xEF1F,                // two overlapping squares
+            Glyph::Subtitles => 0xE7F0,                 // CC
+            Glyph::Gear => 0xE713,                      // Settings
+            Glyph::Sliders => 0xE9E9,                   // Equalizer
+            Glyph::Wrench => 0xE90F,                    // Repair
+            Glyph::Clapperboard => 0xE7F4,              // TVMonitor
+            Glyph::Waveform => 0xF61F,                  // an audio waveform
+            Glyph::CurveIcon => 0xEAFC,                 // a rising line graph
+            Glyph::Clock => 0xE823,                     // Recent
+            Glyph::Notepad => 0xE70B,                   // QuickNote
+            Glyph::Bookmark => 0xE728,                  // FavoriteList
+            Glyph::UndoArrow(Dir::Left) => 0xE7A7,      // Undo
+            Glyph::UndoArrow(_) => 0xE7A6,              // Redo
+            Glyph::FloppyDisk => 0xE74E,                // Save
+            Glyph::Terminal => 0xE756,                  // CommandPrompt
+            Glyph::Landscape => 0xF5A1,                 // a wide device outline
+            Glyph::Portrait => 0xF59E,                  // a tall device outline
+            Glyph::PlayRect => 0xE786,                  // Slideshow
+            Glyph::GridIcon => 0xF0E2,                  // GridView
+            Glyph::ListIcon => 0xE8FD,                  // BulletedList
+            Glyph::Guides => 0xE9A6,                    // corner brackets
+            Glyph::Meter => 0xE908,                     // rising bars
+            Glyph::Keyboard => 0xE765,                  // KeyboardClassic
+            Glyph::Search => 0xE721,                    // Search
+            Glyph::Crop => 0xE7A8,                      // Crop
+            Glyph::Rotate => 0xE7AD,                    // Rotate
+            Glyph::Queue => 0xEE93,                     // a window with a clock badge
+            Glyph::Wheel => 0xE790,                     // Color
+            Glyph::Lut => 0xE793,                       // Light (brightness + contrast)
+            Glyph::Pin => 0xE718,                       // Pin - a real pushpin
+            Glyph::Maximize => 0xE1D9,                  // outward arrows
+            Glyph::Warning => 0xE7BA,                   // Warning
+            Glyph::Chain | Glyph::Link => 0xE71B,       // Link
+            Glyph::Append => 0xE140,                    // an arrow into a box
+            Glyph::CloseUp => 0xE73F,                   // BackToWindow (inward arrows)
+            Glyph::PlaceOnTop => 0xE11C,                // an arrow up to a bar
+            Glyph::SourceRecord => 0xE8AB,              // Switch
+            Glyph::Tape => 0xE77C,                      // a cassette
+            Glyph::Lock => 0xE72E,                      // Lock
+            Glyph::Transcript => 0xE8BD,                // Message (a speech bubble of text)
+            Glyph::Compare => 0xE746,                   // a half-filled square
+            Glyph::Scope => 0xE9D9,                     // Diagnostic (a trace in a box)
+            Glyph::Grid4 => 0xE8A9,                     // ViewAll
+            Glyph::Swatch => 0xF354,                    // a filled palette
+            Glyph::Rows => 0xE8E4,                      // AlignLeft
+            Glyph::Titles => 0xE8D2,                    // Font
+            Glyph::Speed => 0xE916,                     // Stopwatch (SpeedHigh's gauge is illegible at 14 px)
+            Glyph::History => 0xE81C,                   // History
+            Glyph::Proxy => 0xE895,                     // Sync
+            // no symbol fits (a snapping magnet, a gap being pushed open, the trim cursors, an n-gon):
+            // `draw_glyph` paints these; Letter is plain text
+            Glyph::Letter(_) | Glyph::Poly(_) | Glyph::Magnet | Glyph::Spacer => return None,
+            Glyph::RollCursor | Glyph::SlipCursor => return None,
+        };
+        char::from_u32(cp)
+    }
 }
 
 const STRIP: [(Tool, Glyph, &str); 15] = [
     (Tool::Select, Glyph::Cursor, "Select"),
     (Tool::Cut, Glyph::Razor, "Cut"),
     (Tool::Marker, Glyph::Flag, "Marker"),
-    (Tool::Stretch, Glyph::Hourglass, "Stretch"),
+    (Tool::Stretch, Glyph::Speed, "Stretch"),
     (Tool::Spacer, Glyph::Spacer, "Spacer"),
     (Tool::Text, Glyph::Letter('T'), "Text"),
     (Tool::Shape(ShapeKind::Rect), Glyph::Rect, "Rectangle"),
@@ -909,9 +1026,8 @@ fn style_controls(ui: &mut egui::Ui, state: &mut ToolsState, palette: &Palette) 
     changed
 }
 
-/// A button showing `icon` and then `text`. Used wherever a control needs a real-world picture rather
-/// than a symbol character (half of those render as tofu boxes in Segoe UI). An empty `text` gives a
-/// bare icon button, centred.
+/// A button showing `icon` and then `text`. An empty `text` gives a bare icon button, centred.
+/// Signature frozen after ui-kit (wave-1 workstreams call it).
 pub(crate) fn glyph_text_button(ui: &mut egui::Ui, icon: Glyph, text: &str) -> egui::Response {
     let font = egui::TextStyle::Button.resolve(ui.style());
     let galley = ui.painter().layout_no_wrap(text.to_owned(), font, Color32::PLACEHOLDER);
@@ -954,110 +1070,40 @@ pub(crate) fn icon_button(
     r.on_hover_text(tip)
 }
 
-/// Paint one tool glyph inside `rect` (a 24x22 button) in `fg`.
+/// Icon-font size `draw_glyph` paints at: the same ~13 px footprint the old vector glyphs had.
+pub(crate) const ICON_PX: f32 = 14.0;
+
+/// Paint one tool glyph centred in `rect` (a 24x22 button) in `fg`: its icon-font symbol, or the
+/// vector drawing for the few with none (`Glyph::icon`).
 pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Color32) {
     let c = rect.center();
+    if let Some(ch) = g.icon() {
+        // Record is the one glyph with a colour of its own
+        let fg = if g == Glyph::Record { Color32::from_rgb(220, 60, 60) } else { fg };
+        // a context `theme::apply` never ran on (a bare test harness) has no icon family, and egui
+        // panics on an unbound family - fall back to the default one there
+        let icons = crate::theme::icons();
+        let family = match p.fonts(|f| f.definitions().families.contains_key(&icons)) {
+            true => icons,
+            false => egui::FontFamily::Proportional,
+        };
+        p.text(c, Align2::CENTER_CENTER, ch, FontId::new(ICON_PX, family), fg);
+        return;
+    }
     let r = 6.0; // half-extent of the drawn icon
     let stroke = Stroke::new(1.4, fg);
-    let poly = |n: u32, rot: f32, rad: f32| -> Vec<egui::Pos2> {
-        (0..n)
-            .map(|i| {
-                let a = rot + std::f32::consts::TAU * i as f32 / n as f32;
-                c + egui::vec2(a.cos() * rad, a.sin() * rad)
-            })
-            .collect()
-    };
-    // isoceles triangle centred on `ctr`, `depth` from base to tip along `d`, `half` across the base
-    let tri = |ctr: egui::Pos2, d: Dir, depth: f32, half: f32| -> Vec<egui::Pos2> {
-        let u = d.unit();
-        let n = egui::vec2(-u.y, u.x);
-        vec![ctr + u * depth, ctr - u * depth + n * half, ctr - u * depth - n * half]
-    };
     match g {
         Glyph::Letter(ch) => {
             p.text(c, Align2::CENTER_CENTER, ch, FontId::proportional(13.0), fg);
         }
-        // a classic arrow cursor
-        Glyph::Cursor => {
-            let pts = vec![
-                c + egui::vec2(-3.5, -6.5),
-                c + egui::vec2(-3.5, 5.5),
-                c + egui::vec2(-0.5, 2.5),
-                c + egui::vec2(1.5, 6.5),
-                c + egui::vec2(3.5, 5.5),
-                c + egui::vec2(1.5, 1.8),
-                c + egui::vec2(5.0, 1.5),
-            ];
-            p.add(egui::Shape::convex_polygon(pts, fg, Stroke::NONE));
-        }
-        Glyph::Rect => {
-            p.rect_stroke(
-                egui::Rect::from_center_size(c, egui::vec2(12.0, 9.0)),
-                CornerRadius::ZERO,
-                stroke,
-                StrokeKind::Inside,
-            );
-        }
-        Glyph::Ellipse => {
-            p.circle_stroke(c, r, stroke);
-        }
         Glyph::Poly(n) => {
-            let pts = poly(n, -std::f32::consts::FRAC_PI_2, r);
-            p.add(egui::Shape::closed_line(pts, stroke));
-        }
-        Glyph::Star => {
-            let outer = poly(5, -std::f32::consts::FRAC_PI_2, r);
-            let inner = poly(5, -std::f32::consts::FRAC_PI_2 + std::f32::consts::TAU / 10.0, r * 0.45);
-            let mut pts = Vec::with_capacity(10);
-            for i in 0..5 {
-                pts.push(outer[i]);
-                pts.push(inner[i]);
-            }
-            p.add(egui::Shape::closed_line(pts, stroke));
-        }
-        Glyph::Line => {
-            p.line_segment([c + egui::vec2(-6.0, 5.0), c + egui::vec2(6.0, -5.0)], stroke);
-        }
-        Glyph::Arrow => {
-            p.line_segment([c + egui::vec2(-6.0, 0.0), c + egui::vec2(4.0, 0.0)], stroke);
-            let head = vec![c + egui::vec2(6.5, 0.0), c + egui::vec2(2.5, -3.2), c + egui::vec2(2.5, 3.2)];
-            p.add(egui::Shape::convex_polygon(head, fg, Stroke::NONE));
-        }
-        // pencil: a slanted body with a tip at the bottom-left
-        Glyph::Pencil => {
-            let body = vec![
-                c + egui::vec2(1.0, -6.0),
-                c + egui::vec2(5.5, -1.5),
-                c + egui::vec2(-2.0, 6.0),
-                c + egui::vec2(-6.0, 6.5),
-                c + egui::vec2(-5.5, 2.5),
-            ];
-            p.add(egui::Shape::convex_polygon(body, fg, Stroke::NONE));
-        }
-        // mask: a circle whose left half is filled (matte in / matte out)
-        Glyph::Mask => {
-            p.circle_stroke(c, r, stroke);
-            let half: Vec<egui::Pos2> = (0..=12)
+            let pts = (0..n)
                 .map(|i| {
-                    let a = std::f32::consts::FRAC_PI_2 + std::f32::consts::PI * i as f32 / 12.0;
+                    let a = -std::f32::consts::FRAC_PI_2 + std::f32::consts::TAU * i as f32 / n as f32;
                     c + egui::vec2(a.cos() * r, a.sin() * r)
                 })
                 .collect();
-            p.add(egui::Shape::convex_polygon(half, fg, Stroke::NONE));
-        }
-        Glyph::Zoom => {
-            p.circle_stroke(c + egui::vec2(-1.0, -1.0), 4.5, stroke);
-            p.line_segment([c + egui::vec2(2.2, 2.2), c + egui::vec2(6.0, 6.0)], Stroke::new(1.8, fg));
-        }
-        // razor blade: a rectangular blade with a toothed cutting edge along the bottom
-        Glyph::Razor => {
-            let body = egui::Rect::from_center_size(c + egui::vec2(0.0, -2.0), egui::vec2(12.0, 6.0));
-            p.rect_stroke(body, CornerRadius::same(1), stroke, StrokeKind::Inside);
-            p.line_segment([c + egui::vec2(-6.0, 1.5), c + egui::vec2(6.0, 1.5)], Stroke::new(2.0, fg));
-            for i in 0..4 {
-                let x = -4.5 + i as f32 * 3.0;
-                p.line_segment([c + egui::vec2(x, 1.5), c + egui::vec2(x, 5.0)], Stroke::new(1.0, fg));
-            }
+            p.add(egui::Shape::closed_line(pts, stroke));
         }
         // spacer: two posts with a double-headed arrow pushing them apart
         Glyph::Spacer => {
@@ -1068,151 +1114,6 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
             for (tip, back) in [(-5.5f32, -2.0f32), (5.5, 2.0)] {
                 let head = vec![c + egui::vec2(tip, 0.0), c + egui::vec2(back, -3.0), c + egui::vec2(back, 3.0)];
                 p.add(egui::Shape::convex_polygon(head, fg, Stroke::NONE));
-            }
-        }
-        // pennant on a pole
-        Glyph::Flag => {
-            p.line_segment([c + egui::vec2(-4.0, -6.5), c + egui::vec2(-4.0, 6.5)], Stroke::new(1.6, fg));
-            let cloth = vec![c + egui::vec2(-4.0, -6.0), c + egui::vec2(5.5, -3.0), c + egui::vec2(-4.0, 0.0)];
-            p.add(egui::Shape::convex_polygon(cloth, fg, Stroke::NONE));
-        }
-        // hourglass: two triangles meeting at the waist, between two plates
-        Glyph::Hourglass => {
-            p.line_segment([c + egui::vec2(-5.0, -6.5), c + egui::vec2(5.0, -6.5)], stroke);
-            p.line_segment([c + egui::vec2(-5.0, 6.5), c + egui::vec2(5.0, 6.5)], stroke);
-            p.add(egui::Shape::convex_polygon(
-                vec![c + egui::vec2(-4.5, -6.0), c + egui::vec2(4.5, -6.0), c],
-                fg,
-                Stroke::NONE,
-            ));
-            p.add(egui::Shape::convex_polygon(
-                vec![c + egui::vec2(-4.5, 6.0), c + egui::vec2(4.5, 6.0), c],
-                fg,
-                Stroke::NONE,
-            ));
-        }
-        // eye: two lids and a pupil (crossed out when hidden)
-        Glyph::Eye | Glyph::EyeOff => {
-            let lid = |up: f32| -> Vec<egui::Pos2> {
-                (0..=16)
-                    .map(|i| {
-                        let x = -7.0 + i as f32 * 14.0 / 16.0;
-                        let k: f32 = 1.0 - (x / 7.0) * (x / 7.0);
-                        c + egui::vec2(x, up * 4.2 * k.max(0.0))
-                    })
-                    .collect()
-            };
-            p.add(egui::Shape::line(lid(-1.0), stroke));
-            p.add(egui::Shape::line(lid(1.0), stroke));
-            p.circle_filled(c, 2.2, fg);
-            if g == Glyph::EyeOff {
-                p.line_segment([c + egui::vec2(-6.5, -6.0), c + egui::vec2(6.5, 6.0)], Stroke::new(1.8, fg));
-            }
-        }
-        Glyph::Diamond => {
-            let pts = vec![
-                c + egui::vec2(0.0, -5.5),
-                c + egui::vec2(4.5, 0.0),
-                c + egui::vec2(0.0, 5.5),
-                c + egui::vec2(-4.5, 0.0),
-            ];
-            p.add(egui::Shape::convex_polygon(pts, fg, Stroke::NONE));
-        }
-        Glyph::Record => {
-            p.circle_filled(c, 5.5, Color32::from_rgb(220, 60, 60));
-        }
-        // microphone: a capsule on a stand
-        Glyph::Mic => {
-            p.rect_filled(
-                egui::Rect::from_center_size(c + egui::vec2(0.0, -2.5), egui::vec2(5.0, 8.0)),
-                CornerRadius::same(2),
-                fg,
-            );
-            p.line_segment([c + egui::vec2(0.0, 3.0), c + egui::vec2(0.0, 6.0)], Stroke::new(1.6, fg));
-            p.line_segment([c + egui::vec2(-3.5, 6.0), c + egui::vec2(3.5, 6.0)], Stroke::new(1.6, fg));
-        }
-        // headphones: a headband over two ear cups
-        Glyph::Headphone => {
-            let band: Vec<egui::Pos2> = (0..=16)
-                .map(|i| {
-                    let a = std::f32::consts::PI + std::f32::consts::PI * i as f32 / 16.0;
-                    c + egui::vec2(a.cos() * 6.0, a.sin() * 6.0 + 1.0)
-                })
-                .collect();
-            p.add(egui::Shape::line(band, stroke));
-            for x in [-6.0, 6.0] {
-                p.rect_filled(
-                    egui::Rect::from_center_size(c + egui::vec2(x, 3.0), egui::vec2(3.5, 6.0)),
-                    CornerRadius::same(1),
-                    fg,
-                );
-            }
-        }
-        // speaker cone, with sound waves or crossed out
-        Glyph::SpeakerOn | Glyph::SpeakerOff => {
-            let cone = vec![
-                c + egui::vec2(-6.0, -2.0),
-                c + egui::vec2(-3.0, -2.0),
-                c + egui::vec2(0.5, -5.5),
-                c + egui::vec2(0.5, 5.5),
-                c + egui::vec2(-3.0, 2.0),
-                c + egui::vec2(-6.0, 2.0),
-            ];
-            p.add(egui::Shape::convex_polygon(cone, fg, Stroke::NONE));
-            if g == Glyph::SpeakerOn {
-                for (i, rad) in [3.0_f32, 5.5].iter().enumerate() {
-                    let arc: Vec<egui::Pos2> = (0..=10)
-                        .map(|k| {
-                            let a = -std::f32::consts::FRAC_PI_3 + 2.0 * std::f32::consts::FRAC_PI_3 * k as f32 / 10.0;
-                            c + egui::vec2(1.5 + a.cos() * rad, a.sin() * rad)
-                        })
-                        .collect();
-                    p.add(egui::Shape::line(arc, Stroke::new(1.3 - i as f32 * 0.2, fg)));
-                }
-            } else {
-                p.line_segment([c + egui::vec2(2.5, -3.5), c + egui::vec2(6.5, 3.5)], Stroke::new(1.6, fg));
-                p.line_segment([c + egui::vec2(6.5, -3.5), c + egui::vec2(2.5, 3.5)], Stroke::new(1.6, fg));
-            }
-        }
-        // stills camera: body, lens and a viewfinder bump
-        Glyph::Camera => {
-            let body = egui::Rect::from_center_size(c + egui::vec2(0.0, 1.0), egui::vec2(13.0, 9.0));
-            p.rect_stroke(body, CornerRadius::same(1), stroke, StrokeKind::Inside);
-            p.rect_filled(
-                egui::Rect::from_center_size(c + egui::vec2(-2.0, -4.5), egui::vec2(5.0, 2.5)),
-                CornerRadius::same(1),
-                fg,
-            );
-            p.circle_stroke(c + egui::vec2(0.0, 1.0), 3.0, stroke);
-        }
-        // film strip: a frame with sprocket holes down both edges
-        Glyph::FilmStrip => {
-            let body = egui::Rect::from_center_size(c, egui::vec2(13.0, 11.0));
-            p.rect_stroke(body, CornerRadius::same(1), stroke, StrokeKind::Inside);
-            for i in 0..3 {
-                let y = -3.5 + i as f32 * 3.5;
-                for x in [-4.8_f32, 4.8] {
-                    p.rect_filled(
-                        egui::Rect::from_center_size(c + egui::vec2(x, y), egui::vec2(2.2, 2.0)),
-                        CornerRadius::ZERO,
-                        fg,
-                    );
-                }
-            }
-        }
-        // node graph: two patch boxes with a cable between them
-        Glyph::Nodes => {
-            let a = egui::Rect::from_center_size(c + egui::vec2(-3.5, -3.5), egui::vec2(7.0, 5.0));
-            let b = egui::Rect::from_center_size(c + egui::vec2(3.5, 3.5), egui::vec2(7.0, 5.0));
-            p.line_segment([a.right_center(), b.left_center()], stroke);
-            p.rect_stroke(a, CornerRadius::same(1), stroke, StrokeKind::Inside);
-            p.rect_stroke(b, CornerRadius::same(1), stroke, StrokeKind::Inside);
-        }
-        // adjustment layer: a stack of sheets
-        Glyph::Layers => {
-            for dy in [-4.0_f32, 0.0, 4.0] {
-                let sheet = egui::Rect::from_center_size(c + egui::vec2(0.0, dy), egui::vec2(12.0, 3.0));
-                p.rect_stroke(sheet, CornerRadius::same(1), stroke, StrokeKind::Inside);
             }
         }
         // horseshoe magnet: a U-shaped body with a pole cap on each leg tip
@@ -1235,464 +1136,6 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
                     fg,
                 );
             }
-        }
-        // tracking: a shooting target - two rings and four cross ticks
-        Glyph::Target => {
-            p.circle_stroke(c, r, stroke);
-            p.circle_stroke(c, r * 0.4, stroke);
-            for (dx, dy) in [(1.0_f32, 0.0_f32), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
-                p.line_segment(
-                    [c + egui::vec2(dx * r, dy * r), c + egui::vec2(dx * (r + 2.5), dy * (r + 2.5))],
-                    stroke,
-                );
-            }
-        }
-        // eighth note: filled notehead, a stem and a flag
-        Glyph::MusicNote => {
-            let head = c + egui::vec2(-2.5, 3.5);
-            p.circle_filled(head, 2.6, fg);
-            let stem_top = c + egui::vec2(2.0, -6.0);
-            p.line_segment([head + egui::vec2(2.4, -0.5), stem_top], Stroke::new(1.6, fg));
-            let flag = vec![stem_top, stem_top + egui::vec2(4.0, 1.5), stem_top + egui::vec2(0.5, 4.5)];
-            p.add(egui::Shape::convex_polygon(flag, fg, Stroke::NONE));
-        }
-        Glyph::Folder => {
-            let body = egui::Rect::from_center_size(c + egui::vec2(0.0, 1.5), egui::vec2(12.0, 8.0));
-            let tab = egui::Rect::from_min_size(body.left_top() - egui::vec2(0.0, 2.5), egui::vec2(5.0, 2.5));
-            p.rect_stroke(tab, CornerRadius::ZERO, stroke, StrokeKind::Inside);
-            p.rect_stroke(body, CornerRadius::ZERO, stroke, StrokeKind::Inside);
-        }
-        Glyph::Cross => {
-            let s = Stroke::new(1.7, fg);
-            p.line_segment([c + egui::vec2(-4.2, -4.2), c + egui::vec2(4.2, 4.2)], s);
-            p.line_segment([c + egui::vec2(4.2, -4.2), c + egui::vec2(-4.2, 4.2)], s);
-        }
-        Glyph::Dot => {
-            p.circle_filled(c, 3.6, fg);
-        }
-        // copy: the sheet you are taking, with its original still behind it
-        Glyph::Copy => {
-            p.rect_stroke(
-                egui::Rect::from_min_size(c + egui::vec2(-6.0, -6.5), egui::vec2(8.0, 10.0)),
-                CornerRadius::same(1),
-                stroke,
-                StrokeKind::Inside,
-            );
-            p.rect_filled(
-                egui::Rect::from_min_size(c + egui::vec2(-2.0, -3.0), egui::vec2(8.0, 10.0)),
-                CornerRadius::same(1),
-                fg,
-            );
-        }
-        // paste: a clipboard - a board with its spring clip on top
-        Glyph::Paste => {
-            p.rect_stroke(
-                egui::Rect::from_center_size(c + egui::vec2(0.0, 1.0), egui::vec2(11.0, 12.0)),
-                CornerRadius::same(1),
-                stroke,
-                StrokeKind::Inside,
-            );
-            p.rect_filled(
-                egui::Rect::from_center_size(c + egui::vec2(0.0, -5.0), egui::vec2(6.5, 3.5)),
-                CornerRadius::same(1),
-                fg,
-            );
-        }
-        Glyph::Tri(d) => {
-            p.add(egui::Shape::convex_polygon(tri(c, d, 4.0, 4.2), fg, Stroke::NONE));
-        }
-        Glyph::Skip(d) => {
-            let u = d.unit();
-            for k in [-3.4, 3.4] {
-                p.add(egui::Shape::convex_polygon(tri(c + u * k, d, 3.4, 4.6), fg, Stroke::NONE));
-            }
-        }
-        // |◀ / ▶| - the bar sits at the far edge, in the direction of travel
-        Glyph::Jump(d) => {
-            let u = d.unit();
-            let n = egui::vec2(-u.y, u.x);
-            p.line_segment([c + u * 5.5 - n * 5.0, c + u * 5.5 + n * 5.0], Stroke::new(2.0, fg));
-            p.add(egui::Shape::convex_polygon(tri(c - u * 1.5, d, 3.8, 5.0), fg, Stroke::NONE));
-        }
-        Glyph::Play => {
-            p.add(egui::Shape::convex_polygon(tri(c + egui::vec2(0.8, 0.0), Dir::Right, 5.5, 6.0), fg, Stroke::NONE));
-        }
-        Glyph::Pause => {
-            for x in [-3.0_f32, 3.0] {
-                p.rect_filled(
-                    egui::Rect::from_center_size(c + egui::vec2(x, 0.0), egui::vec2(3.0, 11.0)),
-                    CornerRadius::ZERO,
-                    fg,
-                );
-            }
-        }
-        Glyph::Stop => {
-            p.rect_filled(egui::Rect::from_center_size(c, egui::vec2(10.0, 10.0)), CornerRadius::same(1), fg);
-        }
-        // fullscreen: four corner brackets pointing outwards
-        Glyph::Fullscreen => {
-            for (sx, sy) in [(-1.0_f32, -1.0_f32), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
-                let corner = c + egui::vec2(sx * 6.5, sy * 5.5);
-                p.line_segment([corner, corner - egui::vec2(sx * 4.0, 0.0)], stroke);
-                p.line_segment([corner, corner - egui::vec2(0.0, sy * 3.5)], stroke);
-            }
-        }
-        // pop out: a window frame with an arrow leaving through its top-right corner
-        Glyph::PopOut => {
-            p.rect_stroke(
-                egui::Rect::from_center_size(c + egui::vec2(-1.0, 1.5), egui::vec2(11.0, 10.0)),
-                CornerRadius::same(1),
-                stroke,
-                StrokeKind::Inside,
-            );
-            p.line_segment([c + egui::vec2(0.0, -1.0), c + egui::vec2(6.0, -6.0)], stroke);
-            p.add(egui::Shape::convex_polygon(
-                vec![c + egui::vec2(6.5, -6.5), c + egui::vec2(1.5, -6.0), c + egui::vec2(6.0, -1.5)],
-                fg,
-                Stroke::NONE,
-            ));
-        }
-        // indent / outdent: an arrow shoved against the margin it moves towards
-        Glyph::Indent(inward) => {
-            let d = if inward { Dir::Right } else { Dir::Left };
-            let u = d.unit();
-            p.line_segment([c + u * 6.0 + egui::vec2(0.0, -5.5), c + u * 6.0 + egui::vec2(0.0, 5.5)], stroke);
-            p.line_segment([c - u * 6.0, c + u * 1.0], stroke);
-            p.add(egui::Shape::convex_polygon(tri(c + u * 2.5, d, 2.5, 3.2), fg, Stroke::NONE));
-        }
-        // nested sequence: two clip blocks standing on a timeline lane
-        Glyph::Sequence => {
-            p.line_segment([c + egui::vec2(-6.5, 5.5), c + egui::vec2(6.5, 5.5)], stroke);
-            for (x, h) in [(-6.0_f32, 9.0_f32), (0.5, 6.0)] {
-                p.rect_filled(
-                    egui::Rect::from_min_size(c + egui::vec2(x, 4.0 - h), egui::vec2(5.5, h)),
-                    CornerRadius::same(1),
-                    fg,
-                );
-            }
-        }
-        // container / slot: a frame box with an inner block
-        Glyph::Container => {
-            let outer = egui::Rect::from_center_size(c, egui::vec2(12.0, 10.0));
-            let inner = egui::Rect::from_center_size(c, egui::vec2(6.0, 4.5));
-            p.rect_stroke(outer, CornerRadius::same(1), stroke, StrokeKind::Inside);
-            p.rect_filled(inner, CornerRadius::ZERO, fg);
-        }
-        // template: a card with its top-right corner folded over
-        Glyph::Template => {
-            let fold = 4.0;
-            let (l, t, rr, b) = (c.x - 5.0, c.y - 6.0, c.x + 5.0, c.y + 6.0);
-            p.add(egui::Shape::closed_line(
-                vec![
-                    egui::pos2(l, t),
-                    egui::pos2(rr - fold, t),
-                    egui::pos2(rr, t + fold),
-                    egui::pos2(rr, b),
-                    egui::pos2(l, b),
-                ],
-                stroke,
-            ));
-            p.add(egui::Shape::line(
-                vec![egui::pos2(rr - fold, t), egui::pos2(rr - fold, t + fold), egui::pos2(rr, t + fold)],
-                stroke,
-            ));
-        }
-        // snowflake: three crossed arms, each with a pair of barbs
-        Glyph::Snowflake => {
-            let thin = Stroke::new(1.0, fg);
-            for i in 0..3 {
-                let a = std::f32::consts::FRAC_PI_2 + std::f32::consts::PI * i as f32 / 3.0;
-                let arm = egui::vec2(a.cos(), a.sin());
-                p.line_segment([c - arm * 6.5, c + arm * 6.5], thin);
-                let barb = egui::vec2(-arm.y, arm.x);
-                for s in [-1.0_f32, 1.0] {
-                    let tip = c + arm * (6.5 * s);
-                    p.line_segment([tip, tip - arm * 2.4 * s + barb * 1.8], thin);
-                    p.line_segment([tip, tip - arm * 2.4 * s - barb * 1.8], thin);
-                }
-            }
-        }
-        // movie reel: rim, hub, four spoke holes and a tape tail leaving bottom-right
-        Glyph::FilmReel => {
-            p.circle_stroke(c, r, stroke);
-            p.circle_filled(c, 1.2, fg);
-            for i in 0..4 {
-                let a = std::f32::consts::FRAC_PI_2 * i as f32;
-                p.circle_stroke(c + egui::vec2(a.cos(), a.sin()) * (r * 0.55), 1.3, Stroke::new(1.0, fg));
-            }
-            p.line_segment([c + egui::vec2(4.2, 4.2), c + egui::vec2(8.0, 6.0)], stroke);
-        }
-        // lightning bolt: a filled zigzag
-        Glyph::Bolt => {
-            let pts = vec![
-                c + egui::vec2(1.5, -6.5),
-                c + egui::vec2(-3.5, 1.0),
-                c + egui::vec2(-0.5, 1.0),
-                c + egui::vec2(-1.5, 6.5),
-                c + egui::vec2(3.5, -1.0),
-                c + egui::vec2(0.5, -1.0),
-            ];
-            p.add(egui::Shape::closed_line(pts.clone(), Stroke::new(1.0, fg)));
-            p.add(egui::Shape::convex_polygon(pts, fg, Stroke::NONE)); // concave, but close enough at 12px
-        }
-        // import / export: an open tray with an arrow dropping in or rising out
-        Glyph::ImportArrow | Glyph::ExportArrow => {
-            p.add(egui::Shape::line(
-                vec![
-                    c + egui::vec2(-6.0, 2.0),
-                    c + egui::vec2(-6.0, 6.0),
-                    c + egui::vec2(6.0, 6.0),
-                    c + egui::vec2(6.0, 2.0),
-                ],
-                stroke,
-            ));
-            let d = if g == Glyph::ImportArrow { Dir::Down } else { Dir::Up };
-            let tip_y = if g == Glyph::ImportArrow { 3.0 } else { -6.5 };
-            let tail_y = if g == Glyph::ImportArrow { -6.5 } else { 3.0 };
-            p.line_segment([c + egui::vec2(0.0, tail_y), c + egui::vec2(0.0, tip_y)], stroke);
-            p.add(egui::Shape::convex_polygon(tri(c + egui::vec2(0.0, tip_y), d, 2.8, 3.2), fg, Stroke::NONE));
-        }
-        // transition: two overlapping frames with a diagonal cut across the overlap
-        Glyph::Transition => {
-            let a = egui::Rect::from_center_size(c + egui::vec2(-2.5, -2.0), egui::vec2(9.0, 8.0));
-            let b = egui::Rect::from_center_size(c + egui::vec2(2.5, 2.0), egui::vec2(9.0, 8.0));
-            p.rect_stroke(a, CornerRadius::ZERO, stroke, StrokeKind::Inside);
-            p.rect_stroke(b, CornerRadius::ZERO, stroke, StrokeKind::Inside);
-            p.line_segment([a.left_bottom() + egui::vec2(2.0, 0.0), a.right_top() + egui::vec2(0.0, 2.0)], stroke);
-        }
-        // subtitles: a caption box with two text bars in its lower half
-        Glyph::Subtitles => {
-            p.rect_stroke(
-                egui::Rect::from_center_size(c, egui::vec2(13.0, 10.0)),
-                CornerRadius::same(2),
-                stroke,
-                StrokeKind::Inside,
-            );
-            p.line_segment([c + egui::vec2(-4.5, 1.0), c + egui::vec2(2.5, 1.0)], Stroke::new(1.6, fg));
-            p.line_segment([c + egui::vec2(-4.5, 3.2), c + egui::vec2(4.5, 3.2)], Stroke::new(1.6, fg));
-        }
-        // gear: a ring with eight tooth stubs and a hub
-        Glyph::Gear => {
-            p.circle_stroke(c, 4.2, stroke);
-            p.circle_filled(c, 1.4, fg);
-            for i in 0..8 {
-                let a = std::f32::consts::FRAC_PI_4 * i as f32;
-                let u = egui::vec2(a.cos(), a.sin());
-                p.line_segment([c + u * 4.2, c + u * 6.5], stroke);
-            }
-        }
-        // sliders: three tracks, each with its knob somewhere else
-        Glyph::Sliders => {
-            for (i, kx) in [(-1.0_f32, -2.5_f32), (0.0, 3.0), (1.0, -0.5)] {
-                let y = i * 4.5;
-                p.line_segment([c + egui::vec2(-6.5, y), c + egui::vec2(6.5, y)], stroke);
-                p.circle_filled(c + egui::vec2(kx, y), 1.8, fg);
-            }
-        }
-        // wrench: an open jaw (circle with a notch) and a diagonal handle
-        Glyph::Wrench => {
-            let jaw = c + egui::vec2(-3.5, -3.5);
-            p.circle_stroke(jaw, 3.0, stroke);
-            // notch: paint over the rim towards the top-left, opening the jaw
-            p.line_segment([jaw, jaw + egui::vec2(-3.5, -3.5)], Stroke::new(2.6, fg));
-            p.line_segment([jaw + egui::vec2(2.0, 2.0), c + egui::vec2(6.0, 6.0)], Stroke::new(2.2, fg));
-        }
-        // clapperboard: the body and a slanted top bar with two hatch strokes
-        Glyph::Clapperboard => {
-            let body = egui::Rect::from_center_size(c + egui::vec2(0.0, 2.0), egui::vec2(13.0, 7.5));
-            p.rect_stroke(body, CornerRadius::same(1), stroke, StrokeKind::Inside);
-            p.add(egui::Shape::closed_line(
-                vec![
-                    body.left_top(),
-                    body.left_top() + egui::vec2(1.0, -3.8),
-                    body.right_top() + egui::vec2(0.0, -2.8),
-                    body.right_top(),
-                ],
-                stroke,
-            ));
-            for x in [-2.5_f32, 2.0] {
-                p.line_segment([c + egui::vec2(x, -1.7), c + egui::vec2(x + 2.0, -4.8)], Stroke::new(1.0, fg));
-            }
-        }
-        // waveform: five bars mirrored about the midline
-        Glyph::Waveform => {
-            for (i, h) in [3.0_f32, 6.0, 4.0, 6.5, 2.5].iter().enumerate() {
-                let x = -6.0 + i as f32 * 3.0;
-                p.line_segment([c + egui::vec2(x, -h / 2.0), c + egui::vec2(x, h / 2.0)], Stroke::new(1.8, fg));
-            }
-        }
-        // value curve: L axes, an easing curve and two square handles
-        Glyph::CurveIcon => {
-            let o = c + egui::vec2(-6.0, 6.0);
-            p.line_segment([o, o + egui::vec2(0.0, -12.0)], stroke);
-            p.line_segment([o, o + egui::vec2(12.0, 0.0)], stroke);
-            p.add(egui::Shape::line(
-                vec![
-                    o + egui::vec2(1.0, -1.0),
-                    o + egui::vec2(5.0, -2.5),
-                    o + egui::vec2(8.0, -6.5),
-                    o + egui::vec2(11.0, -11.0),
-                ],
-                stroke,
-            ));
-            for d in [egui::vec2(5.0, -2.5), egui::vec2(8.0, -6.5)] {
-                p.rect_filled(egui::Rect::from_center_size(o + d, egui::vec2(2.4, 2.4)), CornerRadius::ZERO, fg);
-            }
-        }
-        Glyph::Clock => {
-            p.circle_stroke(c, r, stroke);
-            p.line_segment([c, c + egui::vec2(0.0, -4.0)], stroke);
-            p.line_segment([c, c + egui::vec2(3.0, 1.5)], stroke);
-        }
-        Glyph::Notepad => {
-            p.rect_stroke(
-                egui::Rect::from_center_size(c, egui::vec2(10.0, 12.0)),
-                CornerRadius::same(1),
-                stroke,
-                StrokeKind::Inside,
-            );
-            for dy in [-3.0_f32, 0.0, 3.0] {
-                p.line_segment([c + egui::vec2(-3.0, dy), c + egui::vec2(3.0, dy)], Stroke::new(1.0, fg));
-            }
-        }
-        // bookmark: a ribbon whose bottom edge is notched into a V
-        Glyph::Bookmark => {
-            p.add(egui::Shape::closed_line(
-                vec![
-                    c + egui::vec2(-3.5, -6.5),
-                    c + egui::vec2(3.5, -6.5),
-                    c + egui::vec2(3.5, 6.5),
-                    c + egui::vec2(0.0, 3.0),
-                    c + egui::vec2(-3.5, 6.5),
-                ],
-                stroke,
-            ));
-        }
-        // undo / redo: an arc curving over the top, arrowhead at the `Dir::Left` / `Dir::Right` end
-        Glyph::UndoArrow(d) => {
-            let sx = if d == Dir::Left { 1.0 } else { -1.0 };
-            let arc: Vec<egui::Pos2> = (0..=8)
-                .map(|i| {
-                    let a = std::f32::consts::PI + std::f32::consts::PI * 0.85 * i as f32 / 8.0;
-                    c + egui::vec2(a.cos() * 5.0 * sx, a.sin() * 5.0 + 1.5)
-                })
-                .collect();
-            let tip = arc[0];
-            p.add(egui::Shape::line(arc, stroke));
-            p.add(egui::Shape::convex_polygon(
-                vec![
-                    tip + egui::vec2(-2.5 * sx, 0.5),
-                    tip + egui::vec2(2.0 * sx, -1.5),
-                    tip + egui::vec2(1.5 * sx, 3.0),
-                ],
-                fg,
-                Stroke::NONE,
-            ));
-        }
-        // floppy disk: a square with its top-right corner cut, a shutter and a label
-        Glyph::FloppyDisk => {
-            let (l, t, rr, b) = (c.x - 6.0, c.y - 6.0, c.x + 6.0, c.y + 6.0);
-            p.add(egui::Shape::closed_line(
-                vec![
-                    egui::pos2(l, t),
-                    egui::pos2(rr - 2.5, t),
-                    egui::pos2(rr, t + 2.5),
-                    egui::pos2(rr, b),
-                    egui::pos2(l, b),
-                ],
-                stroke,
-            ));
-            p.rect_filled(
-                egui::Rect::from_min_size(egui::pos2(l + 2.5, t + 0.7), egui::vec2(5.5, 3.0)),
-                CornerRadius::ZERO,
-                fg,
-            );
-            p.rect_stroke(
-                egui::Rect::from_min_size(egui::pos2(l + 2.0, b - 4.5), egui::vec2(8.0, 3.8)),
-                CornerRadius::ZERO,
-                Stroke::new(1.0, fg),
-                StrokeKind::Inside,
-            );
-        }
-        // terminal: a window with a '>' prompt and an underscore cursor
-        Glyph::Terminal => {
-            p.rect_stroke(
-                egui::Rect::from_center_size(c, egui::vec2(13.0, 10.0)),
-                CornerRadius::same(1),
-                stroke,
-                StrokeKind::Inside,
-            );
-            p.line_segment([c + egui::vec2(-4.5, -2.5), c + egui::vec2(-2.0, 0.0)], stroke);
-            p.line_segment([c + egui::vec2(-2.0, 0.0), c + egui::vec2(-4.5, 2.5)], stroke);
-            p.line_segment([c + egui::vec2(0.0, 2.5), c + egui::vec2(3.5, 2.5)], stroke);
-        }
-        Glyph::Landscape => {
-            p.rect_stroke(
-                egui::Rect::from_center_size(c, egui::vec2(14.0, 8.0)),
-                CornerRadius::same(1),
-                stroke,
-                StrokeKind::Inside,
-            );
-        }
-        Glyph::Portrait => {
-            p.rect_stroke(
-                egui::Rect::from_center_size(c, egui::vec2(8.0, 14.0)),
-                CornerRadius::same(1),
-                stroke,
-                StrokeKind::Inside,
-            );
-        }
-        Glyph::Square => {
-            p.rect_stroke(
-                egui::Rect::from_center_size(c, egui::vec2(11.0, 11.0)),
-                CornerRadius::same(1),
-                stroke,
-                StrokeKind::Inside,
-            );
-        }
-        Glyph::PlayRect => {
-            p.rect_stroke(
-                egui::Rect::from_center_size(c, egui::vec2(14.0, 10.0)),
-                CornerRadius::same(3),
-                stroke,
-                StrokeKind::Inside,
-            );
-            p.add(egui::Shape::convex_polygon(tri(c, Dir::Right, 2.6, 2.4), fg, Stroke::NONE));
-        }
-        Glyph::GridIcon => {
-            for (dx, dy) in [(-3.5, -3.5), (3.5, -3.5), (-3.5, 3.5), (3.5, 3.5)] {
-                p.rect_stroke(
-                    egui::Rect::from_center_size(c + egui::vec2(dx, dy), egui::vec2(5.5, 5.5)),
-                    CornerRadius::same(1),
-                    stroke,
-                    StrokeKind::Inside,
-                );
-            }
-        }
-        // list view: three rows, each a leading bullet and a rule - pairs with GridIcon
-        Glyph::ListIcon => {
-            for dy in [-4.0_f32, 0.0, 4.0] {
-                p.rect_filled(
-                    egui::Rect::from_center_size(c + egui::vec2(-5.5, dy), egui::vec2(2.2, 2.2)),
-                    CornerRadius::ZERO,
-                    fg,
-                );
-                p.line_segment([c + egui::vec2(-2.0, dy), c + egui::vec2(6.5, dy)], stroke);
-            }
-        }
-        // four corner brackets around a small safe-zone rect
-        Glyph::Guides => {
-            for (sx, sy) in [(-1.0f32, -1.0f32), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
-                let corner = c + egui::vec2(sx * 7.0, sy * 6.0);
-                p.line_segment([corner, corner - egui::vec2(sx * 4.0, 0.0)], stroke);
-                p.line_segment([corner, corner - egui::vec2(0.0, sy * 4.0)], stroke);
-            }
-            p.rect_stroke(
-                egui::Rect::from_center_size(c, egui::vec2(7.0, 6.0)),
-                CornerRadius::ZERO,
-                Stroke::new(1.0, fg),
-                StrokeKind::Inside,
-            );
         }
         // roll: a curved arrow wrapped around a vertical bar (the cut) - rolling the edit point.
         Glyph::RollCursor => {
@@ -1726,286 +1169,8 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
             p.add(egui::Shape::convex_polygon(head, fg, Stroke::NONE));
             let head = vec![c + egui::vec2(7.5, 0.0), c + egui::vec2(4.5, -2.2), c + egui::vec2(4.5, 2.2)];
             p.add(egui::Shape::convex_polygon(head, fg, Stroke::NONE));
-        } // ---- ws:registries-schema-hooks ----
-        // ---- ws:size-diet ----
-        // ---- ws:split-god-files ----
-        // ---- ws:audio-analysis ----
-        // ---- ws:audio-dsp-automation ----
-        // level meter: three bars rising left to right on a baseline
-        Glyph::Meter => {
-            for (i, h) in [4.0f32, 8.0, 12.0].into_iter().enumerate() {
-                let x = c.x - 5.0 + i as f32 * 5.0;
-                p.rect_filled(
-                    egui::Rect::from_min_max(egui::pos2(x - 1.5, c.y + 6.0 - h), egui::pos2(x + 1.5, c.y + 6.0)),
-                    CornerRadius::ZERO,
-                    fg,
-                );
-            }
-            p.line_segment([c + egui::vec2(-7.5, 6.5), c + egui::vec2(7.5, 6.5)], stroke);
         }
-        // ---- ws:color-engine ----
-        // ---- ws:command-palette ----
-        // rounded keycap outline with a 3x2 grid of small key dots inside
-        Glyph::Keyboard => {
-            p.rect_stroke(
-                egui::Rect::from_center_size(c, egui::vec2(15.0, 10.0)),
-                CornerRadius::same(2),
-                stroke,
-                StrokeKind::Inside,
-            );
-            for row in [-2.5f32, 2.5] {
-                for col in [-5.0f32, 0.0, 5.0] {
-                    p.circle_filled(c + egui::vec2(col, row), 0.8, fg);
-                }
-            }
-        }
-        // magnifying glass: a ring plus a short diagonal handle
-        Glyph::Search => {
-            let ring = c + egui::vec2(-1.5, -1.5);
-            p.circle_stroke(ring, 4.0, stroke);
-            let dir = egui::vec2(1.0, 1.0).normalized();
-            p.line_segment([ring + dir * 4.0, ring + dir * 8.0], Stroke::new(1.8, fg));
-        } // ---- ws:forgiveness ----
-        // ---- ws:player-rate-loop ----
-        // ---- ws:trim-model ----
-        // ---- ws:canvas-handles-monitor ----
-        // crop marks: two L corners (top-right and bottom-left) overlapping into a frame
-        Glyph::Crop => {
-            p.add(egui::Shape::line(
-                vec![c + egui::vec2(-7.0, -3.0), c + egui::vec2(3.0, -3.0), c + egui::vec2(3.0, 7.0)],
-                stroke,
-            ));
-            p.add(egui::Shape::line(
-                vec![c + egui::vec2(-3.0, -7.0), c + egui::vec2(-3.0, 3.0), c + egui::vec2(7.0, 3.0)],
-                stroke,
-            ));
-        }
-        // rotate: a three-quarter arc ending in an arrowhead
-        Glyph::Rotate => {
-            let pts: Vec<egui::Pos2> = (0..=18)
-                .map(|i| {
-                    let a = -std::f32::consts::FRAC_PI_2 + i as f32 / 18.0 * (std::f32::consts::TAU * 0.75);
-                    c + egui::vec2(a.cos(), a.sin()) * 5.0
-                })
-                .collect();
-            let end = pts[pts.len() - 1];
-            p.add(egui::Shape::line(pts, stroke));
-            p.add(egui::Shape::convex_polygon(
-                vec![end + egui::vec2(0.0, -3.5), end + egui::vec2(2.5, 0.5), end + egui::vec2(-2.5, 0.5)],
-                fg,
-                Stroke::NONE,
-            ));
-        }
-        // ---- ws:export-deliver ----
-        // queue: two offset document outlines (the stack) with a small clock dial at the corner
-        Glyph::Queue => {
-            for (dx, dy) in [(2.0f32, -2.0f32), (-2.0, 2.0)] {
-                p.rect_stroke(
-                    egui::Rect::from_center_size(c + egui::vec2(dx, dy), egui::vec2(9.0, 11.0)),
-                    CornerRadius::same(1),
-                    stroke,
-                    StrokeKind::Inside,
-                );
-            }
-            let dial = c + egui::vec2(5.5, 5.5);
-            p.circle_stroke(dial, 3.6, stroke);
-            p.line_segment([dial, dial + egui::vec2(0.0, -2.2)], Stroke::new(1.0, fg));
-            p.line_segment([dial, dial + egui::vec2(1.6, 0.0)], Stroke::new(1.0, fg));
-        }
-        // ---- ws:inspector-gallery ----
-        // colour wheel: a ring with three short spoke handles (lift/gamma/gain), like a grading control
-        Glyph::Wheel => {
-            p.circle_stroke(c, r, stroke);
-            for a in [0.0f32, 2.0 * std::f32::consts::FRAC_PI_3, 4.0 * std::f32::consts::FRAC_PI_3] {
-                let dir = egui::vec2(a.cos(), a.sin());
-                p.line_segment([c + dir * (r - 3.0), c + dir * (r + 1.5)], stroke);
-            }
-            p.circle_filled(c, 1.6, fg);
-        }
-        // LUT card: a small tile with a diagonal split, one half darker - a before/after swatch
-        Glyph::Lut => {
-            let rect = egui::Rect::from_center_size(c, egui::vec2(11.0, 11.0));
-            p.rect_stroke(rect, 1.0, stroke, StrokeKind::Inside);
-            p.line_segment([rect.left_bottom(), rect.right_top()], stroke);
-            p.rect_filled(
-                egui::Rect::from_min_max(rect.left_top(), rect.left_top() + egui::vec2(11.0, 11.0) / 2.0),
-                0.0,
-                fg.gamma_multiply(0.35),
-            );
-        }
-        // ---- ws:layout-modes-onboarding ----
-        // pushpin: a filled head over a wider bar, with a needle dropping from the bar's middle
-        Glyph::Pin => {
-            p.rect_filled(egui::Rect::from_min_max(c + egui::vec2(-2.5, -6.5), c + egui::vec2(2.5, -1.5)), 1.0, fg);
-            p.line_segment([c + egui::vec2(-5.0, -1.0), c + egui::vec2(5.0, -1.0)], Stroke::new(1.8, fg));
-            p.line_segment([c + egui::vec2(0.0, -1.0), c + egui::vec2(0.0, 6.5)], stroke);
-        }
-        // four corner arrows: a diagonal from near the centre to each corner, capped with an L bracket
-        Glyph::Maximize => {
-            for (sx, sy) in [(-1.0f32, -1.0f32), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
-                let tip = c + egui::vec2(sx * r, sy * r);
-                p.line_segment([c + egui::vec2(sx * 1.5, sy * 1.5), tip], stroke);
-                p.line_segment([tip, tip - egui::vec2(sx * 3.5, 0.0)], stroke);
-                p.line_segment([tip, tip - egui::vec2(0.0, sy * 3.5)], stroke);
-            }
-        }
-        // ---- ws:media-library ----
-        // warning: a filled triangle with a bar + dot cut out of it (same shape technique as Flag)
-        Glyph::Warning => {
-            let tri = vec![c + egui::vec2(0.0, -6.5), c + egui::vec2(7.0, 6.0), c + egui::vec2(-7.0, 6.0)];
-            p.add(egui::Shape::convex_polygon(tri, fg, Stroke::NONE));
-            let hole = Color32::from_rgba_unmultiplied(0, 0, 0, 160);
-            p.line_segment([c + egui::vec2(0.0, -2.0), c + egui::vec2(0.0, 2.2)], Stroke::new(1.6, hole));
-            p.circle_filled(c + egui::vec2(0.0, 4.2), 0.9, hole);
-        }
-        // chain: two overlapping rounded links, offset on the diagonal
-        Glyph::Chain => {
-            for d in [-2.2f32, 2.2] {
-                let r = egui::Rect::from_center_size(c + egui::vec2(d, -d), egui::vec2(8.0, 5.0));
-                p.rect_stroke(r, CornerRadius::same(2), stroke, StrokeKind::Inside);
-            }
-        }
-        // ---- ws:source-monitor ----
-        // append: a lane bar, then a block dropped just past its end with a right arrow above
-        Glyph::Append => {
-            p.line_segment([c + egui::vec2(-8.0, 2.0), c + egui::vec2(1.0, 2.0)], Stroke::new(2.0, fg));
-            p.rect_stroke(
-                egui::Rect::from_min_max(c + egui::vec2(3.0, -2.0), c + egui::vec2(8.0, 6.0)),
-                CornerRadius::ZERO,
-                stroke,
-                StrokeKind::Inside,
-            );
-            p.line_segment([c + egui::vec2(-3.0, -5.0), c + egui::vec2(3.0, -5.0)], stroke);
-            p.add(egui::Shape::convex_polygon(tri(c + egui::vec2(4.0, -5.0), Dir::Right, 2.4, 2.0), fg, Stroke::NONE));
-        }
-        // close up: two blocks with arrows pointing at the gap between them
-        Glyph::CloseUp => {
-            for (x0, x1) in [(-8.0f32, -4.0f32), (4.0, 8.0)] {
-                p.rect_filled(
-                    egui::Rect::from_min_max(c + egui::vec2(x0, -3.0), c + egui::vec2(x1, 3.0)),
-                    CornerRadius::ZERO,
-                    fg,
-                );
-            }
-            p.add(egui::Shape::convex_polygon(tri(c + egui::vec2(-1.5, 0.0), Dir::Right, 2.4, 2.4), fg, Stroke::NONE));
-            p.add(egui::Shape::convex_polygon(tri(c + egui::vec2(1.5, 0.0), Dir::Left, 2.4, 2.4), fg, Stroke::NONE));
-        }
-        // place on top: a lane bar with a block hovering above it and an up arrow beside
-        Glyph::PlaceOnTop => {
-            p.line_segment([c + egui::vec2(-8.0, 5.0), c + egui::vec2(8.0, 5.0)], Stroke::new(2.0, fg));
-            p.rect_stroke(
-                egui::Rect::from_min_max(c + egui::vec2(-6.0, -6.0), c + egui::vec2(2.0, 0.0)),
-                CornerRadius::ZERO,
-                stroke,
-                StrokeKind::Inside,
-            );
-            p.line_segment([c + egui::vec2(6.0, 2.0), c + egui::vec2(6.0, -4.0)], stroke);
-            p.add(egui::Shape::convex_polygon(tri(c + egui::vec2(6.0, -5.5), Dir::Up, 2.0, 2.4), fg, Stroke::NONE));
-        }
-        // source/record: a viewfinder rect with a record dot in it
-        Glyph::SourceRecord => {
-            p.rect_stroke(
-                egui::Rect::from_center_size(c, egui::vec2(15.0, 11.0)),
-                CornerRadius::same(1),
-                stroke,
-                StrokeKind::Inside,
-            );
-            p.circle_filled(c, 2.6, fg);
-        }
-        // tape: a cassette shell with two reel rings and a window line under them
-        Glyph::Tape => {
-            p.rect_stroke(
-                egui::Rect::from_center_size(c, egui::vec2(16.0, 11.0)),
-                CornerRadius::same(2),
-                stroke,
-                StrokeKind::Inside,
-            );
-            p.circle_stroke(c + egui::vec2(-4.0, -1.0), 2.2, stroke);
-            p.circle_stroke(c + egui::vec2(4.0, -1.0), 2.2, stroke);
-            p.line_segment([c + egui::vec2(-5.0, 3.5), c + egui::vec2(5.0, 3.5)], stroke);
-        }
-        // ---- ws:timeline-trim-gestures ----
-        // padlock: a body with a shackle arc over it
-        Glyph::Lock => {
-            let body = egui::Rect::from_center_size(c + egui::vec2(0.0, 2.5), egui::vec2(10.0, 7.0));
-            p.rect_filled(body, CornerRadius::same(1), fg);
-            let (sc, sr) = (c + egui::vec2(0.0, -1.5), 3.2);
-            let arc: Vec<egui::Pos2> = (0..=10)
-                .map(|i| {
-                    let a = std::f32::consts::PI + std::f32::consts::PI * i as f32 / 10.0;
-                    sc + egui::vec2(a.cos() * sr, a.sin() * sr)
-                })
-                .collect();
-            p.add(egui::Shape::line(arc, stroke));
-            p.line_segment([sc + egui::vec2(-sr, 0.0), sc + egui::vec2(-sr, 1.5)], stroke);
-            p.line_segment([sc + egui::vec2(sr, 0.0), sc + egui::vec2(sr, 1.5)], stroke);
-        }
-        // chain: two overlapping rounded links on a diagonal
-        Glyph::Link => {
-            for d in [-2.2_f32, 2.2] {
-                let link = egui::Rect::from_center_size(c + egui::vec2(d, d), egui::vec2(8.0, 5.0));
-                p.rect_stroke(link, CornerRadius::same(2), stroke, StrokeKind::Inside);
-            }
-        }
-        // ---- ws:transcript-captions ----
-        // transcript: three text lines of decreasing width; the middle line's leading word is lit
-        Glyph::Transcript => {
-            let dim = fg.gamma_multiply(0.55);
-            p.line_segment([c + egui::vec2(-6.5, -4.5), c + egui::vec2(6.5, -4.5)], Stroke::new(1.6, dim));
-            p.line_segment([c + egui::vec2(-6.5, 0.0), c + egui::vec2(-1.5, 0.0)], Stroke::new(2.4, fg));
-            p.line_segment([c + egui::vec2(0.5, 0.0), c + egui::vec2(4.5, 0.0)], Stroke::new(1.6, dim));
-            p.line_segment([c + egui::vec2(-6.5, 4.5), c + egui::vec2(2.0, 4.5)], Stroke::new(1.6, dim));
-        }
-        // ---- ws:pro-monitor ----
-        // compare: a square split diagonally, one half lit
-        Glyph::Compare => {
-            let rect = egui::Rect::from_center_size(c, egui::vec2(12.0, 12.0));
-            p.rect_stroke(rect, CornerRadius::ZERO, stroke, StrokeKind::Inside);
-            let tri = vec![rect.left_bottom(), rect.right_bottom(), rect.right_top()];
-            p.add(egui::Shape::convex_polygon(tri, fg.gamma_multiply(0.55), Stroke::NONE));
-        }
-        // scope: a small oscilloscope trace inside a frame
-        Glyph::Scope => {
-            let rect = egui::Rect::from_center_size(c, egui::vec2(14.0, 10.0));
-            p.rect_stroke(rect, CornerRadius::same(1), stroke, StrokeKind::Inside);
-            let pts = vec![
-                rect.left_center() + egui::vec2(1.0, 2.0),
-                rect.center() + egui::vec2(-3.0, -3.0),
-                rect.center() + egui::vec2(0.0, 2.0),
-                rect.right_center() + egui::vec2(-1.0, -2.0),
-            ];
-            p.add(egui::Shape::line(pts, Stroke::new(1.2, fg)));
-        }
-        // grid4: a 2x2 grid of small squares
-        Glyph::Grid4 => {
-            for (dx, dy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
-                let sq = egui::Rect::from_center_size(c + egui::vec2(dx * 4.0, dy * 4.0), egui::vec2(6.0, 6.0));
-                p.rect_stroke(sq, CornerRadius::ZERO, stroke, StrokeKind::Inside);
-            }
-        }
-        // ---- ws:pro-timeline ----
-        // swatch: a filled square with a thin ring - the track-header colour button
-        Glyph::Swatch => {
-            let r = egui::Rect::from_center_size(c, egui::vec2(11.0, 11.0));
-            p.rect_filled(r, CornerRadius::same(2), fg);
-            p.rect_stroke(r, CornerRadius::same(2), stroke, StrokeKind::Inside);
-        }
-        // rows: three stacked horizontal bars of differing width
-        Glyph::Rows => {
-            for (dy, w) in [(-4.5_f32, 11.0_f32), (0.0, 7.0), (4.5, 9.0)] {
-                p.line_segment([c + egui::vec2(-w / 2.0, dy), c + egui::vec2(w / 2.0, dy)], Stroke::new(2.0, fg));
-            }
-        }
-        // ---- ws:text-titles ----
-        // titles: a bold "T" over a thin underline bar (a title-card glyph)
-        Glyph::Titles => {
-            let top = c + egui::vec2(0.0, -5.5);
-            p.line_segment([top + egui::vec2(-5.0, 0.0), top + egui::vec2(5.0, 0.0)], Stroke::new(2.2, fg));
-            p.line_segment([top, c + egui::vec2(0.0, 4.0)], Stroke::new(2.2, fg));
-            let dim = fg.gamma_multiply(0.55);
-            p.line_segment([c + egui::vec2(-6.0, 6.5), c + egui::vec2(6.0, 6.5)], Stroke::new(1.6, dim));
-        }
-        // ---- ws:docs-refresh ----
+        _ => {} // every other glyph has an icon (`every_glyph_paints_a_picture` holds that)
     }
 }
 
@@ -2014,11 +1179,14 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
 pub(crate) fn action_glyph(a: crate::hotkeys::Action) -> Option<Glyph> {
     use crate::hotkeys::Action::*;
     Some(match a {
-        NewProject => Glyph::Clapperboard,
+        NewProject => Glyph::Template,
         OpenFile | OpenProject => Glyph::Folder,
         Save | SaveProjectAs => Glyph::FloppyDisk,
         ExportVideo | ExportLossless | ExportXml => Glyph::ExportArrow,
-        ImportMedia => Glyph::FilmReel,
+        ImportMedia => Glyph::ImportArrow,
+        CopyClips => Glyph::Copy,
+        CutClips => Glyph::Razor,
+        PasteClips => Glyph::Paste,
         Settings => Glyph::Gear,
         Undo => Glyph::UndoArrow(Dir::Left),
         Redo => Glyph::UndoArrow(Dir::Right),
@@ -2027,7 +1195,7 @@ pub(crate) fn action_glyph(a: crate::hotkeys::Action) -> Option<Glyph> {
         Split => Glyph::Razor,
         AddText => Glyph::Letter('T'),
         AddMarker => Glyph::Flag,
-        Retime => Glyph::Clock,
+        Retime => Glyph::Speed,
         Fullscreen => Glyph::Fullscreen,
         ScreenCapture => Glyph::Camera,
         ToolSelect => Glyph::Cursor,
@@ -2036,7 +1204,7 @@ pub(crate) fn action_glyph(a: crate::hotkeys::Action) -> Option<Glyph> {
         ToolMask => Glyph::Mask,
         ToolMarker => Glyph::Flag,
         ToolCut => Glyph::Razor,
-        ToolStretch => Glyph::Hourglass,
+        ToolStretch => Glyph::Speed,
         _ => return None,
     })
 }
@@ -2187,13 +1355,124 @@ mod tests {
 
     #[test]
     fn every_glyph_paints_a_picture() {
-        // the point of a Glyph is that nothing is typed - a variant that paints nothing would be a
-        // blank button, no better than the tofu box it replaced
+        // a variant that paints nothing (no icon and no vector arm) would be a blank button
         let empty = painted(|_, _| {});
         for g in ALL_GLYPHS {
             let n = painted(|p, rect| draw_glyph(p, rect, *g, Color32::WHITE));
             assert!(n > empty, "{g:?} painted nothing ({n} vs {empty} vertices)");
         }
+    }
+
+    // ---- ws:ui-kit ----
+    /// Every `Glyph::icon` codepoint is in BOTH Windows icon fonts (Segoe Fluent Icons on 11, Segoe
+    /// MDL2 Assets on 10) - a missing one falls through to Segoe UI's tofu box. A font that isn't
+    /// installed on this machine is skipped, not failed.
+    #[test]
+    fn every_icon_exists_in_both_fonts() {
+        let dir = std::path::PathBuf::from(std::env::var_os("WINDIR").unwrap_or_else(|| r"C:\Windows".into()));
+        let mut checked = 0;
+        for file in ["SegoeIcons.ttf", "segmdl2.ttf"] {
+            let Ok(bytes) = std::fs::read(dir.join("Fonts").join(file)) else { continue };
+            let mut defs = egui::FontDefinitions::empty();
+            defs.font_data.insert(file.into(), std::sync::Arc::new(egui::FontData::from_owned(bytes)));
+            defs.families.insert(egui::FontFamily::Proportional, vec![file.into()]);
+            let ctx = egui::Context::default();
+            ctx.set_fonts(defs);
+            let _ = ctx.run(egui::RawInput::default(), |_| {});
+            for g in Glyph::ALL {
+                let Some(c) = g.icon() else { continue };
+                let ok = ctx.fonts_mut(|f| f.has_glyph(&FontId::proportional(ICON_PX), c));
+                assert!(ok, "{g:?} -> U+{:04X} is missing from {file}", c as u32);
+                checked += 1;
+            }
+        }
+        assert!(checked > 0, "neither icon font is installed");
+    }
+
+    /// Not a check: `SE_GLYPH_SHEET=<out.png> cargo test glyph_sheet -- --ignored` paints every glyph
+    /// (its 24x22 button box outlined, name beside it) through egui's own tessellator and font atlas
+    /// into a PNG at 2x, for eyeballing size/alignment after an icon change.
+    #[test]
+    #[ignore]
+    fn glyph_sheet() {
+        let (cols, cell, ppp) = (4, Vec2::new(170.0, 26.0), 2.0);
+        let size = Vec2::new(cols as f32 * cell.x, Glyph::ALL.len().div_ceil(cols) as f32 * cell.y);
+        let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::test_fonts());
+        let mut atlas = egui::ColorImage::new([1, 1], vec![Color32::WHITE]);
+        let mut shapes = Vec::new();
+        for _ in 0..3 {
+            let mut input =
+                egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)), ..Default::default() };
+            input.viewports.entry(egui::ViewportId::ROOT).or_default().native_pixels_per_point = Some(ppp);
+            let out = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().frame(egui::Frame::NONE.fill(Color32::from_gray(32))).show(ctx, |ui| {
+                    for (i, g) in Glyph::ALL.iter().enumerate() {
+                        let o = Pos2::new((i % cols) as f32 * cell.x + 2.0, (i / cols) as f32 * cell.y + 2.0);
+                        let r = Rect::from_min_size(o, Vec2::new(24.0, 22.0));
+                        ui.painter().rect_stroke(r, 0.0, Stroke::new(0.5, Color32::from_gray(90)), StrokeKind::Inside);
+                        draw_glyph(ui.painter(), r, *g, Color32::WHITE);
+                        let at = r.right_center() + Vec2::new(6.0, 0.0);
+                        ui.painter().text(at, Align2::LEFT_CENTER, g.name(), FontId::proportional(12.0), Color32::GRAY);
+                    }
+                });
+            });
+            for (_, d) in out.textures_delta.set.iter().filter(|(id, _)| *id == egui::TextureId::default()) {
+                let egui::ImageData::Color(img) = &d.image;
+                match d.pos {
+                    None => atlas = (**img).clone(),
+                    Some([x0, y0]) => {
+                        for (i, px) in img.pixels.iter().enumerate() {
+                            atlas[(x0 + i % img.size[0], y0 + i / img.size[0])] = *px;
+                        }
+                    }
+                }
+            }
+            shapes = out.shapes;
+        }
+        // ponytail: nearest-texel, no clip rects - enough to judge glyphs, not a general renderer
+        let (w, h) = ((size.x * ppp) as usize, (size.y * ppp) as usize);
+        let mut buf = vec![[0f32; 4]; w * h];
+        let f = |c: Color32| c.to_array().map(|v| v as f32 / 255.0);
+        for prim in ctx.tessellate(shapes, ppp) {
+            let egui::epaint::Primitive::Mesh(m) = prim.primitive else { continue };
+            for t in m.indices.chunks_exact(3) {
+                let v = [0, 1, 2].map(|k| m.vertices[t[k] as usize]);
+                let p = v.map(|v| v.pos * ppp);
+                let area = (p[1] - p[0]).x * (p[2] - p[0]).y - (p[1] - p[0]).y * (p[2] - p[0]).x;
+                if area.abs() < 1e-6 {
+                    continue;
+                }
+                let (lo, hi) = (p[0].min(p[1]).min(p[2]), p[0].max(p[1]).max(p[2]));
+                for y in (lo.y.floor().max(0.0) as usize)..(hi.y.ceil() as usize).min(h) {
+                    for x in (lo.x.floor().max(0.0) as usize)..(hi.x.ceil() as usize).min(w) {
+                        let q = Pos2::new(x as f32 + 0.5, y as f32 + 0.5);
+                        let e = |a: Pos2, b: Pos2| ((b - a).x * (q - a).y - (b - a).y * (q - a).x) / area;
+                        let l = [e(p[1], p[2]), e(p[2], p[0]), e(p[0], p[1])];
+                        if l.iter().any(|&l| l < 0.0) {
+                            continue;
+                        }
+                        let uv = v[0].uv.to_vec2() * l[0] + v[1].uv.to_vec2() * l[1] + v[2].uv.to_vec2() * l[2];
+                        let [aw, ah] = atlas.size;
+                        let texel = atlas
+                            [(((uv.x * aw as f32) as usize).min(aw - 1), ((uv.y * ah as f32) as usize).min(ah - 1))];
+                        let (tx, c) = (f(texel), [0, 1, 2].map(|k| f(v[k].color)));
+                        let src: [f32; 4] =
+                            std::array::from_fn(|i| (c[0][i] * l[0] + c[1][i] * l[1] + c[2][i] * l[2]) * tx[i]);
+                        let dst = &mut buf[y * w + x];
+                        *dst = std::array::from_fn(|i| src[i] + dst[i] * (1.0 - src[3]));
+                    }
+                }
+            }
+        }
+        let rgba = buf
+            .iter()
+            .flat_map(|p| [p[0], p[1], p[2], 1.0].map(|v| (v * 255.0).round().clamp(0.0, 255.0) as u8))
+            .collect();
+        let frame = crate::media::Frame { width: w as u32, height: h as u32, pts: 0.0, rgba };
+        let out = std::env::var("SE_GLYPH_SHEET").unwrap_or_else(|_| "glyph-sheet.png".into());
+        std::fs::write(&out, crate::mcp::png_encode(&frame)).unwrap();
+        eprintln!("glyph sheet: {out}");
     }
 
     #[test]

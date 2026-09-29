@@ -288,6 +288,17 @@ fn visuals(dark: bool, ov: &PaletteOverride, cozy: bool) -> Visuals {
 /// there as a defensive fallback, not because either is expected to be needed.
 const SANS_CANDIDATES: [&str; 3] = ["segoeui.ttf", "tahoma.ttf", "arial.ttf"];
 const MONO_CANDIDATES: [&str; 3] = ["consola.ttf", "cour.ttf", "lucon.ttf"];
+/// Windows' own icon font: Segoe Fluent Icons (Windows 11), else Segoe MDL2 Assets (Windows 10). Every
+/// codepoint `Glyph::icon` maps to exists in both (see `tools::tests::every_icon_exists_in_both_fonts`).
+const ICON_CANDIDATES: [&str; 2] = ["SegoeIcons.ttf", "segmdl2.ttf"];
+
+/// The font family `Glyph::icon` characters are painted in: the icon font, then Segoe UI - egui panics
+/// laying out text in a family with no fonts, so an install without either icon font still gets one.
+pub fn icons() -> egui::FontFamily {
+    static ICONS: std::sync::LazyLock<egui::FontFamily> =
+        std::sync::LazyLock::new(|| egui::FontFamily::Name("icons".into()));
+    ICONS.clone()
+}
 
 /// Bytes of the first candidate filename found in `dir`, or `None` if none of them exist there.
 fn find_font(dir: &std::path::Path, candidates: &[&str]) -> Option<Vec<u8>> {
@@ -326,6 +337,19 @@ fn fonts() -> egui::FontDefinitions {
         std::path::PathBuf::from(std::env::var_os("WINDIR").unwrap_or_else(|| r"C:\Windows".into())).join("Fonts");
     add_family(&mut f, &dir, egui::FontFamily::Proportional, "Segoe UI", &SANS_CANDIDATES);
     add_family(&mut f, &dir, egui::FontFamily::Monospace, "Consolas", &MONO_CANDIDATES);
+    // Segoe UI Symbol behind Segoe UI, so text symbols (∿ ✕ ◀ ▶ ◆) render instead of tofu
+    if let Some(bytes) = find_font(&dir, &["seguisym.ttf"]) {
+        f.font_data.insert("Segoe UI Symbol".into(), std::sync::Arc::new(egui::FontData::from_owned(bytes)));
+        f.families.entry(egui::FontFamily::Proportional).or_default().push("Segoe UI Symbol".into());
+    }
+    let chain = f.families.entry(icons()).or_default();
+    if let Some(bytes) = find_font(&dir, &ICON_CANDIDATES) {
+        f.font_data.insert("Segoe Icons".into(), std::sync::Arc::new(egui::FontData::from_owned(bytes)));
+        chain.push("Segoe Icons".into());
+    }
+    if f.font_data.contains_key("Segoe UI") {
+        chain.push("Segoe UI".into());
+    }
     f
 }
 
@@ -578,5 +602,7 @@ mod tests {
         assert!(!defs.families[&egui::FontFamily::Proportional].is_empty(), "Proportional must not be empty");
         assert!(!defs.families[&egui::FontFamily::Monospace].is_empty(), "Monospace must not be empty");
         let _ = std::fs::remove_dir_all(&dir);
+        // the icon family always ends in Segoe UI, whether or not an icon font is installed
+        assert_eq!(fonts().families[&icons()].last().map(String::as_str), Some("Segoe UI"));
     }
 }
