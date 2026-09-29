@@ -109,6 +109,9 @@ impl Project {
         if let Some(st) = &mut p.main_stash {
             resolve_ripple(&mut st.tracks);
         }
+        if p.version < 3 {
+            p.migrate_sequence_audio();
+        }
         // an older (or missing/default) version is silently brought forward - every field it lacks
         // already resolved a default above; a NEWER version is left alone so `newer_than_app` can
         // still tell the caller (a hard downgrade would be the only real data-loss risk, and this
@@ -121,7 +124,9 @@ impl Project {
     /// The `.sedit` schema version this build writes and reads without a migration. A file saved by a
     /// newer build (`version > VERSION`) still loads - unknown fields are simply dropped on the next
     /// save - but the caller should toast a warning (see `newer_than_app`); this is not itself an error.
-    pub const VERSION: u32 = 2;
+    /// v3: a nested sequence's sound plays from a linked Sequence clip on an audio track, not from the
+    /// video track (`migrate_sequence_audio`). Undo snapshots are v3, so a deleted twin stays deleted.
+    pub const VERSION: u32 = 3;
     /// True when `self.version` is newer than this build understands (see `VERSION`). Unused outside
     /// tests this wave - the caller that toasts it (`App::open_project`) is outside this workstream's
     /// files; this only exposes the bool.

@@ -10,7 +10,7 @@
 //! be dropped into inspector.rs at a single call site with a stable signature.
 
 use crate::hotkeys::Action;
-use crate::model::{AnimLink, Animated, AudioRole, BlendMode, ClipKind, Id, Project};
+use crate::model::{AnimLink, Animated, AudioRole, BlendMode, Clip, ClipKind, Id, Project, TrackKind};
 use crate::theme::Palette;
 use crate::ui::inspector::{link_menu, luau_highlight, mark, set_pending_action};
 use crate::ui::{key_buttons, Gesture};
@@ -29,6 +29,21 @@ pub(super) fn db_to_gain(db: f64) -> f64 {
         0.0
     } else {
         10f64.powf(db / 20.0)
+    }
+}
+
+/// True for a clip on an audio track - which also covers a nested sequence's audio twin, a Sequence
+/// clip that `Clip::is_visual()` (by kind) would call visual.
+fn on_audio_track(project: &Project, id: Id) -> bool {
+    project.track_of(id).is_some_and(|t| project.tracks[t].kind == TrackKind::Audio)
+}
+
+/// `Clip::props_mut`, except anything on an audio track gets Volume/Pan (see `on_audio_track`).
+fn props(c: &mut Clip, audio: bool) -> Vec<(&'static str, &mut Animated)> {
+    if audio {
+        vec![("Volume", &mut c.volume), ("Pan", &mut c.pan)]
+    } else {
+        c.props_mut()
     }
 }
 
@@ -52,12 +67,13 @@ pub(super) fn section(
     };
     let mut clip = orig.clone();
     let multi = ids.len() > 1;
+    let audio = on_audio_track(project, id);
     let lt = clip.local(playhead);
     let mut g = Gesture::default();
     let path_list: Vec<(Id, String)> = project.paths.iter().map(|p| (p.id, p.name.clone())).collect();
 
     egui::Grid::new("inspector_clip_props").num_columns(2).show(ui, |ui| {
-        for (label, a) in clip.props_mut() {
+        for (label, a) in props(&mut clip, audio) {
             ui.label(label);
             let linked = !a.link.is_none();
             ui.horizontal(|ui| {
@@ -135,7 +151,7 @@ pub(super) fn section(
             g.note(&ui.add(DragValue::new(&mut clip.fade_out).range(0.0..=dur).speed(0.05).suffix(" s")));
             ui.end_row();
         }
-        if clip.is_visual() {
+        if clip.is_visual() && !audio {
             ui.label("Blend");
             egui::ComboBox::from_id_salt("blend").selected_text(clip.blend.name()).show_ui(ui, |ui| {
                 for b in BlendMode::ALL {
@@ -154,12 +170,12 @@ pub(super) fn section(
         changed = true;
         // props: copy each Animated back onto the project's clip by label (same set, same order)
         let edited_props: Vec<(&'static str, Animated)> =
-            clip.props_mut().into_iter().map(|(l, a)| (l, a.clone())).collect();
+            props(&mut clip, audio).into_iter().map(|(l, a)| (l, a.clone())).collect();
         if let Some(c) = project.clip_mut(id) {
             c.fade_in = clip.fade_in;
             c.fade_out = clip.fade_out;
             c.blend = clip.blend;
-            for (c_label, c_a) in c.props_mut() {
+            for (c_label, c_a) in props(c, audio) {
                 if let Some((_, src)) = edited_props.iter().find(|(l, _)| *l == c_label) {
                     *c_a = src.clone();
                 }
@@ -170,7 +186,7 @@ pub(super) fn section(
         if multi {
             let mut orig_probe = orig.clone();
             let mut changed_props: Vec<(&'static str, f64)> = Vec::new();
-            for ((label, a), (_, oa)) in clip.props_mut().into_iter().zip(orig_probe.props_mut()) {
+            for ((label, a), (_, oa)) in props(&mut clip, audio).into_iter().zip(props(&mut orig_probe, audio)) {
                 let v = a.at(lt);
                 if v != oa.at(lt) {
                     changed_props.push((label, v));
@@ -180,8 +196,9 @@ pub(super) fn section(
                 if sid == id {
                     continue;
                 }
+                let s_audio = on_audio_track(project, sid);
                 let Some(s) = project.clip_mut(sid) else { continue };
-                if clip.blend != orig.blend && s.is_visual() {
+                if clip.blend != orig.blend && s.is_visual() && !s_audio {
                     s.blend = clip.blend;
                 }
                 if clip.fade_in != orig.fade_in {
@@ -193,7 +210,7 @@ pub(super) fn section(
                 if !changed_props.is_empty() {
                     let slt = s.local(playhead).clamp(0.0, s.duration);
                     for (label, v) in &changed_props {
-                        for (slabel, sa) in s.props_mut() {
+                        for (slabel, sa) in props(s, s_audio) {
                             if slabel == *label && sa.link.is_none() {
                                 sa.set_at(slt, *v);
                             }
@@ -294,7 +311,7 @@ pub(super) fn bus_section(
     kind: ClipKind,
     undo: &mut dyn FnMut(&Project),
 ) -> bool {
-    if kind != ClipKind::Audio && kind != ClipKind::Video {
+    if kind != ClipKind::Audio && kind != ClipKind::Video && !on_audio_track(project, id) {
         return false;
     }
     let Some(clip) = project.clip(id) else { return false };
@@ -425,6 +442,18 @@ mod tests {
         assert_eq!(h.undos, 3);
         assert_eq!(h.project.buses.len(), 3);
         assert_eq!(h.project.clip(7).unwrap().bus, h.project.buses[2].id);
+    }
+
+    /// A nested sequence's audio twin is a Sequence clip (visual by kind) on an audio track: it gets the
+    /// Volume/Pan controls, not Position/Scale/Opacity.
+    #[test]
+    fn sequence_audio_twin_gets_volume_and_pan() {
+        let mut h = Harness::new();
+        let ai = h.project.audio_tracks()[0];
+        h.project.tracks[ai].clips[0].kind = ClipKind::Sequence;
+        h.frame(vec![]);
+        assert!(h.ctx.data(|d| d.get_temp::<egui::Id>(egui::Id::new("test_pan_slider"))).is_some());
+        assert!(h.ctx.data(|d| d.get_temp::<egui::Id>(egui::Id::new("test_opacity_slider"))).is_none());
     }
 
     /// Duck / Normalize dispatch audio-analysis's Actions through the inspector's pending-action

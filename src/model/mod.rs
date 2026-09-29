@@ -26,8 +26,9 @@ pub enum ClipKind {
     Image,
     Text,
     Audio,
-    /// A nested timeline (`Project.sequences`) used as footage; `clip.sequence` is its id. Lives on video
-    /// tracks; carries the sequence's audio too (the mixer walks video tracks for these).
+    /// A nested timeline (`Project.sequences`) used as footage; `clip.sequence` is its id. Like a media
+    /// file it sits on a video track (picture) plus a linked twin on an audio track (sound - the mixer
+    /// only plays Sequence clips from audio tracks); see `Project::insert_sequence_clip`.
     Sequence,
     /// A vector shape or a recorded drawing (`Clip.shape`).
     Shape,

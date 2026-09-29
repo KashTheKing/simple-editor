@@ -125,7 +125,7 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                     Ok(json!({"ok": true, "clip_ids": ids}))
                 } else if let Some(sid) = arg_u64(args, "sequence_id") {
                     let id = app.project.insert_sequence_clip(sid, at, track).ok_or("no such sequence (or cycle)")?;
-                    Ok(json!({"ok": true, "clip_ids": [id]}))
+                    Ok(json!({"ok": true, "clip_ids": app.project.linked(id)})) // + its audio twin
                 } else if let Some(text) = arg_str(args, "text") {
                     let dur = arg_f64(args, "duration").unwrap_or(5.0).max(0.1);
                     let id = app.project.add_text_clip(at, dur);

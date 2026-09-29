@@ -458,22 +458,32 @@ impl Project {
     }
 
     /// Flatten a `Sequence` clip back onto the timeline at its original positions (the inverse of
-    /// `nest_selection`); refuses (returns empty) if the clip is retimed or its source window doesn't
-    /// start at zero - compositing a nested retime into the flattened children's own starts is a
-    /// documented ceiling, not implemented here.
+    /// `nest_selection`). Either half of a nested pair works: its linked twin comes out too, and each
+    /// half flattens only its own track kind (picture from the video one, sound from the audio one), so
+    /// the audio lands once. Refuses (returns empty) if any of them is locked, retimed or its source
+    /// window doesn't start at zero - compositing a nested retime into the flattened children's own
+    /// starts is a documented ceiling, not implemented here.
     pub fn unnest(&mut self, clip: Id) -> Vec<Id> {
-        let Some((ti, ci)) = self.find(clip) else { return Vec::new() };
-        if self.locked_of(ti) {
+        let Some(c) = self.clip(clip).cloned() else { return Vec::new() };
+        if c.kind != ClipKind::Sequence {
             return Vec::new();
         }
-        let c = self.tracks[ti].clips[ci].clone();
-        if c.kind != ClipKind::Sequence || (c.speed - 1.0).abs() > EPS || c.src_in.abs() > EPS {
-            return Vec::new();
+        let mut pair: Vec<(Id, TrackKind)> = Vec::new();
+        for id in self.linked(clip) {
+            let Some((ti, ci)) = self.find(id) else { continue };
+            let o = &self.tracks[ti].clips[ci];
+            if o.kind != ClipKind::Sequence || o.sequence != c.sequence {
+                continue;
+            }
+            if self.locked_of(ti) || (o.speed - 1.0).abs() > EPS || o.src_in.abs() > EPS {
+                return Vec::new();
+            }
+            pair.push((id, self.tracks[ti].kind));
         }
         let Some(seq) = self.sequence(c.sequence).cloned() else { return Vec::new() };
-        self.tracks[ti].clips.remove(ci);
+        self.delete_clips(&pair.iter().map(|p| p.0).collect::<Vec<_>>(), false);
         let mut new_ids = Vec::new();
-        for st in &seq.tracks {
+        for st in seq.tracks.iter().filter(|st| pair.iter().any(|p| p.1 == st.kind)) {
             let kind = st.kind;
             for sc in &st.clips {
                 let mut nc = sc.clone();
