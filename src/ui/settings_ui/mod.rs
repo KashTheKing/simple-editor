@@ -81,7 +81,7 @@ impl Status {
             ),
             ytdlp: match crate::media::ytdlp::exe() {
                 Some(p) => format!("yt-dlp: {}", p.display()),
-                None => "yt-dlp: not found - the Library's \"Import URL…\" button is hidden".into(),
+                None => "yt-dlp: not found - Library right-click ▸ \"Import from URL…\" is hidden".into(),
             },
             ctxmenu: if crate::contextmenu::is_installed() { "(installed)" } else { "(not installed)" },
         }

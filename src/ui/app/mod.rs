@@ -296,8 +296,7 @@ pub struct App {
     source: Option<crate::ui::source_ui::SourceState>,
     source_tex: Option<egui::TextureHandle>,
     /// This update's uploaded frame, computed once (`Player::take_frame` consumes the buffered frame, so
-    /// pulling it twice in one update would starve whichever call came second). Both the library pane's
-    /// own preview box and the Source pane read this same value.
+    /// pulling it twice in one update would starve whichever call came second). The Source pane reads it.
     source_live: Option<library::PreviewFrame>,
     /// Transport focus: true = Space/JKL/I/O drive the Source monitor (last-clicked transport wins),
     /// false = the timeline, the fallback. See `source_ctl::act`.

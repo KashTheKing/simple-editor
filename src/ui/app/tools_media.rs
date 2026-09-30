@@ -228,7 +228,7 @@ pub const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "library.select",
         desc: "Set the library selection (asset ids and/or file paths); omit both to clear it.",
-        args: &["ids:array:false:asset ids", "paths:array:false:files on disk (Global tab)"],
+        args: &["ids:array:false:asset ids", "paths:array:false:files on disk (Browse view)"],
         kind: ToolKind::Ui,
         run: |app, args| {
             let ids: Vec<Id> = arg_ids(args, "ids")

@@ -64,8 +64,6 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
     if !app.sel_sig.matches(app) {
         app.sel_sig = SelSig::of(app);
         let kind = selection_kind_of(app);
-        let dynamic = layout_ctl::is_dynamic(&app.settings);
-        app.tools.lead = if dynamic { layout_ctl::lead_tool(kind) } else { None };
         layout_ctl::surface_for_kind(app, kind);
     }
     if let Some(at) = decay_glow(&mut app.layout.glow, Instant::now()) {

@@ -363,10 +363,6 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
             app.toggle_source_tape();
             true
         }
-        ToggleSource => {
-            app.toggle_pane(Pane::Source);
-            true
-        }
         _ => false,
     }
 }

@@ -190,26 +190,14 @@ impl App {
                     self.after_edit();
                 }
             }
-            TrimToInOut | RippleDeleteInOut => {
+            // Ripple Delete In/Out is Extract's twin: `trim_actions::act` claims it before this match
+            TrimToInOut => {
                 let a0 = self.project.in_point.unwrap_or(0.0);
                 let b0 = self.project.out_point.unwrap_or(self.project.duration());
                 if b0 > a0 {
                     self.push_undo();
-                    if a == TrimToInOut {
-                        self.project.trim_to_range(a0, b0);
-                        self.seek(0.0);
-                    } else {
-                        // ws:trim-model: ripple_delete_range/ripple_open now take an explicit track
-                        // scope (mechanical signature-follow, not a behaviour change) - ripple_tracks()
-                        // reproduces the old all-track behaviour on any project where every track is
-                        // still ripple==true (today's default), and correctly stops shifting
-                        // position-locked secondary tracks once one exists.
-                        let tracks = self.project.ripple_tracks();
-                        self.project.ripple_delete_range(a0, b0, &tracks);
-                        self.project.in_point = None;
-                        self.project.out_point = None;
-                        self.seek(a0);
-                    }
+                    self.project.trim_to_range(a0, b0);
+                    self.seek(0.0);
                     self.after_edit();
                 }
             }
@@ -323,8 +311,8 @@ impl App {
                         let snap = self.project.to_json();
                         if a == PasteInsert {
                             // ripple: everything at or after the playhead slides right by the paste's span
-                            // (ws:trim-model: ripple_open now takes an explicit track scope - see the
-                            // RippleDeleteInOut arm above for why ripple_tracks() is the right default)
+                            // (ws:trim-model: ripple_open takes an explicit track scope; ripple_tracks()
+                            // keeps position-locked secondary tracks where they are)
                             let span = clips.iter().map(|c| c.start + c.duration).fold(0.0_f64, f64::max);
                             let tracks = self.project.ripple_tracks();
                             self.project.ripple_open(self.playhead, span, &tracks);
