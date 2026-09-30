@@ -15,6 +15,13 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetCursorPos, GetWindowRect, SetWindowPos, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER,
 };
 
+/// `SE_BACKGROUND=1`: automation runs (screenshots, docs, agents) open where the saved `window_rect`
+/// says and never take focus - no move to the cursor's monitor, no activation. Interactive launches
+/// are unaffected.
+pub fn background() -> bool {
+    std::env::var_os("SE_BACKGROUND").is_some_and(|v| v != "0")
+}
+
 /// How long a window rect must sit still before it's worth a settings.json write.
 const DEBOUNCE: Duration = Duration::from_millis(500);
 
@@ -119,6 +126,17 @@ mod tests {
 
     fn r(left: i32, top: i32, right: i32, bottom: i32) -> RECT {
         RECT { left, top, right, bottom }
+    }
+
+    #[test]
+    fn background_reads_the_env_var() {
+        // only App::new / main read it, never another test, so flipping it here is safe
+        std::env::set_var("SE_BACKGROUND", "1");
+        assert!(background());
+        std::env::set_var("SE_BACKGROUND", "0");
+        assert!(!background());
+        std::env::remove_var("SE_BACKGROUND");
+        assert!(!background());
     }
 
     #[test]

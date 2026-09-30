@@ -3,6 +3,7 @@
 //! `simple-editor --selftest [dir]`   headless engine check
 //! `simple-editor [file] --screenshot out.ppm`   render the UI once and save it (for visual checks)
 //! `--size 1600x900`   start with this window inner size in points (reproducible screenshots)
+//! `SE_BACKGROUND=1`   (env) open at the saved window rect without taking focus - for automation
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -68,6 +69,9 @@ fn main() {
     );
     if let Some(s) = size {
         viewport = viewport.with_inner_size(s);
+    }
+    if winpos::background() {
+        viewport = viewport.with_active(false); // shown with SW_SHOWNOACTIVATE
     }
     let options = eframe::NativeOptions {
         viewport,

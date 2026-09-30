@@ -661,7 +661,10 @@ fn converted_path(src: &Path, ext: &str) -> PathBuf {
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, open: Option<PathBuf>, screenshot: Option<PathBuf>) -> Self {
         // eframe restores the window rect from the last session, which may be on another monitor
-        crate::winpos::place_on_cursor_monitor(cc);
+        // (automation runs stay where their saved rect puts them - see winpos::background)
+        if !crate::winpos::background() {
+            crate::winpos::place_on_cursor_monitor(cc);
+        }
         let (mut settings, settings_bad) = Settings::load_reporting();
         // ---- ws:pages ---- (a pre-pages file keeps its old tree as the "Before update" profile)
         layout_ctl::migrate_to_pages(&mut settings);
@@ -1013,7 +1016,9 @@ impl eframe::App for App {
         if !self.window_shown {
             // viewport commands apply after this frame is painted, so no white flash
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            if !crate::winpos::background() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            }
             self.window_shown = true;
             boot::run(self); // ws:forgiveness: offers crash recovery, if any
         }
