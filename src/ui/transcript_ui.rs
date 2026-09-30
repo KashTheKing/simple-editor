@@ -1,21 +1,25 @@
 //! ---- ws:transcript-captions ----
-//! The Transcript section of the Subtitles pane (a collapsible section, not a pane): the words of one
-//! transcribed clip as a selectable run - click a word to seek, drag (or Shift+click) to select a
-//! range, Delete / "Cut selected words" to ripple-cut it through `Project::cut_word_ranges` - a
-//! search box with Prev/Next jumping across EVERY transcribed clip (`transcript_hits`), the editable
-//! filler-word chips with Mark-instead-first ("Mark fillers" drops a range marker per hit; "Remove
-//! fillers" only lights up once marks exist) and a small Speech (TTS) panel. Also the non-blocking
-//! "View transcript" `egui::Window` the clip menu opens.
+//! The Transcript tab of the Subtitles pane (a tab, not a pane): the words of one transcribed clip as a
+//! selectable run - click a word to seek, drag (or Shift+click) to select a range, Delete (or the
+//! right-click / ⋯ "Cut selected words") ripple-cuts it through `Project::cut_word_ranges`. One header
+//! row: the pane's Cues | Transcript switch, a find field with ◀ ▶ jumping across EVERY transcribed clip
+//! (`transcript_hits`) and a ⋯ menu - Clip ▸ (which transcript to show), Transcribe selected clip,
+//! filler removal with Mark-instead first ("Mark fillers" drops a range marker per hit; "Remove
+//! fillers" only lights up once marks exist), the editable filler-word chips, "Speak text…" (TTS) and
+//! Export transcript. Also the
+//! non-blocking "View transcript" `egui::Window` the clip menu opens.
 //!
 //! This module has no `App`: app-level requests (start a transcription, speak a line) are left in
 //! `TranscriptUiState` and drained by `ui::app::transcript_ctl::tick`; edits go through the same
 //! `once(undone, undo, project)` rule as the rest of the Subtitles pane.
 
 use crate::engine::transcribe;
+use crate::hotkeys::Action;
 use crate::model::ops::subtitles::transcript_hits;
 use crate::model::{Id, Project};
 use crate::theme::Palette;
-use crate::ui::{duration_text, once};
+use crate::ui::tools::Glyph;
+use crate::ui::{duration_text, menu, once};
 use eframe::egui::{self, Button, DragValue, RichText, TextEdit};
 
 /// Word count above which the section stops laying out every word (a long interview would cost a
@@ -46,6 +50,8 @@ pub struct TranscriptUiState {
     /// (text, voice) from the Speech panel's Speak - drained by the app.
     pub tts_request: Option<(String, Option<String>)>,
     pub show_tts: bool,
+    /// ⋯ ▸ Edit filler words…: the chip editor is shown.
+    show_fillers: bool,
     tts_text: String,
     tts_voice: String,
     /// Installed voices, filled by the app the first time the Speech panel is open (`engine::tts::
@@ -80,8 +86,7 @@ fn span(words: &[(f64, f64, String)], (a, b): (usize, usize)) -> Option<(f64, f6
 pub fn mark_ranges(project: &mut Project, words: &[(f64, f64, String)], ranges: &[(f64, f64)]) -> Vec<Id> {
     let mut ids = Vec::new();
     for &(a, b) in ranges {
-        let said: Vec<&str> =
-            words.iter().filter(|w| w.0 >= a - 1e-6 && w.0 < b).map(|w| w.2.as_str()).collect();
+        let said: Vec<&str> = words.iter().filter(|w| w.0 >= a - 1e-6 && w.0 < b).map(|w| w.2.as_str()).collect();
         let text = said.join(" ");
         let id = project.add_marker(a, transcribe::short_label(&text, 28));
         if let Some(m) = project.marker_mut(id) {
@@ -93,9 +98,13 @@ pub fn mark_ranges(project: &mut Project, words: &[(f64, f64, String)], ranges: 
     ids
 }
 
+/// The Transcript tab. `lead` draws at the start of its one header row (the pane's Cues | Transcript
+/// switch), followed by the find field with ◀ ▶ and the ⋯ menu (clip, transcribe, cut, fillers,
+/// speech). Below it: the fillers editor / speech line while toggled on, then the words.
 #[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut egui::Ui,
+    lead: &mut dyn FnMut(&mut egui::Ui),
     st: &mut TranscriptUiState,
     project: &mut Project,
     playhead: &mut f64,
@@ -107,78 +116,147 @@ pub fn show(
     let mut resp = TranscriptResponse::default();
     let ph = *playhead;
     // which transcript: the shown one while it exists, else the selection's, else the first
-    let existing: Vec<Id> =
-        project.transcripts.iter().map(|t| t.clip).filter(|&c| project.clip(c).is_some()).collect();
+    let existing: Vec<Id> = project.transcripts.iter().map(|t| t.clip).filter(|&c| project.clip(c).is_some()).collect();
     if st.clip.is_none_or(|c| !existing.contains(&c)) {
         st.clip = selection.iter().find(|id| existing.contains(id)).copied().or(existing.first().copied());
         st.sel = None;
         st.anchor = None;
     }
-    ui.horizontal_wrapped(|ui| {
-        ui.label("Clip");
-        let current = st.clip.map(|c| clip_label(project, c)).unwrap_or_else(|| "none transcribed".into());
-        egui::ComboBox::from_id_salt("transcript_clip").selected_text(current).show_ui(ui, |ui| {
-            for &c in &existing {
-                if ui.selectable_value(&mut st.clip, Some(c), clip_label(project, c)).changed() {
-                    st.sel = None;
-                    st.anchor = None;
-                }
-            }
-        });
-        if let Some(&sel) = selection.first() {
-            if !existing.contains(&sel) && project.clip(sel).is_some_and(|c| c.uses_asset()) {
-                if ui.small_button("Transcribe selected clip").clicked() {
-                    st.want_transcribe = Some(sel);
-                }
-            }
-        }
-        if let Some(n) = st.clip.and_then(|c| project.transcript(c)).map(|t| t.words.len()) {
-            ui.weak(format!("{n} words"));
-        }
-    });
-
-    // search across every transcript
-    ui.horizontal(|ui| {
-        let r = ui.add(TextEdit::singleline(&mut st.query).desired_width(150.0).hint_text("Find a word…"));
-        let hits = if st.query.trim().is_empty() { Vec::new() } else { transcript_hits(&project.transcripts, &st.query) };
-        let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-        let mut jump: Option<usize> = None;
-        if r.changed() {
-            st.hit = 0;
-        }
-        ui.add_enabled_ui(!hits.is_empty(), |ui| {
-            if ui.small_button("◀").on_hover_text("Previous hit").clicked() {
-                jump = Some((st.hit + hits.len().max(1) - 1) % hits.len().max(1));
-            }
-            if ui.small_button("▶").on_hover_text("Next hit").clicked() || (enter && !hits.is_empty()) {
-                jump = Some(if r.changed() || enter { st.hit } else { (st.hit + 1) % hits.len().max(1) });
-            }
-        });
-        if !st.query.trim().is_empty() {
-            ui.weak(format!("{} hit(s)", hits.len()));
-        }
-        if let Some(j) = jump.filter(|&j| j < hits.len()) {
-            let (clip, i, t) = hits[j];
-            st.hit = j;
-            st.clip = Some(clip);
-            st.sel = Some((i, i));
-            st.anchor = Some(i);
-            *playhead = t;
-            resp.seeked = true;
-        }
-    });
-
-    let Some(clip) = st.clip else {
-        ui.weak("No transcript yet - select a clip and Transcribe (or right-click it ▸ Transcript ▸ Transcribe…).");
-        tts_panel(ui, st);
-        return resp;
-    };
-    let words: Vec<(f64, f64, String)> = project.transcript(clip).map(|t| t.words.clone()).unwrap_or_default();
+    let words: Vec<(f64, f64, String)> =
+        st.clip.and_then(|c| project.transcript(c)).map(|t| t.words.clone()).unwrap_or_default();
     if let Some((a, b)) = st.sel {
         if b >= words.len() || a > b {
             st.sel = None;
         }
     }
+    let n_sel = st.sel.map_or(0, |(a, b)| b - a + 1);
+    let fillers: Vec<&str> = st.fillers.iter().map(String::as_str).collect();
+    let ranges = transcribe::filler_ranges(&words, &fillers, st.filler_pad_ms);
+    let untranscribed = selection
+        .first()
+        .copied()
+        .filter(|&c| !existing.contains(&c) && project.clip(c).is_some_and(|c| c.uses_asset()));
+    let mut do_cut = false;
+    let mut mark = false;
+    let mut remove = false;
+    let mut clear_marks = false;
+
+    // ---- the one header row ----
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0; // a ~350 pt side pane
+        lead(ui);
+        ui.add_space(6.0);
+        // ⋯ first, on the right, so the find field can take whatever is left
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.menu_button("⋯", |ui| {
+                // which transcript the tab shows (it follows the selection until picked here)
+                if !existing.is_empty() {
+                    menu::sub(ui, None, "Clip", |ui| {
+                        for &c in &existing {
+                            if menu::check(ui, st.clip == Some(c), &clip_label(project, c), "").clicked() {
+                                st.clip = Some(c);
+                                st.sel = None;
+                                st.anchor = None;
+                            }
+                        }
+                    });
+                }
+                if let Some(c) = untranscribed {
+                    if menu::row(ui, Some(Glyph::Mic), "Transcribe selected clip", "").clicked() {
+                        st.want_transcribe = Some(c);
+                    }
+                    ui.separator();
+                }
+                let r = ui.add_enabled_ui(n_sel > 0, |ui| {
+                    menu::row(ui, Some(Glyph::Razor), &format!("Cut selected words ({n_sel})"), "")
+                });
+                do_cut |= r
+                    .inner
+                    .on_hover_text(
+                        "Ripple-cut the selected stretch of speech; cues, markers and the transcript follow (Delete)",
+                    )
+                    .clicked();
+                ui.separator();
+                let r = ui.add_enabled_ui(!ranges.is_empty(), |ui| {
+                    menu::row(ui, None, &format!("Mark fillers ({})", ranges.len()), "")
+                });
+                mark |= r
+                    .inner
+                    .on_hover_text("Drop a range marker on every filler first - look them over, then Remove")
+                    .clicked();
+                let can_remove = !st.filler_marks.is_empty() && !ranges.is_empty();
+                let r = ui.add_enabled_ui(can_remove, |ui| menu::row(ui, None, "Remove fillers", ""));
+                remove |= r.inner.on_hover_text("Ripple-cut every marked filler (Mark fillers first)").clicked();
+                let r =
+                    ui.add_enabled_ui(!st.filler_marks.is_empty(), |ui| menu::row(ui, None, "Clear filler marks", ""));
+                clear_marks |= r.inner.clicked();
+                if menu::check(ui, st.show_fillers, "Edit filler words…", "").clicked() {
+                    st.show_fillers = !st.show_fillers;
+                }
+                ui.separator();
+                let r = menu::check(ui, st.show_tts, "Speak text…", "")
+                    .on_hover_text("Windows' own voices, via System.Speech");
+                if r.clicked() {
+                    st.show_tts = !st.show_tts;
+                }
+                menu::action_item(ui, Action::ExportTranscript);
+            })
+            .response
+            .on_hover_text(match st.clip {
+                Some(c) => format!("More - showing {} ({} words)", clip_label(project, c), words.len()),
+                None => "More".to_string(),
+            });
+            // search across every transcript
+            let hits =
+                if st.query.trim().is_empty() { Vec::new() } else { transcript_hits(&project.transcripts, &st.query) };
+            let mut jump: Option<usize> = None;
+            ui.add_enabled_ui(!hits.is_empty(), |ui| {
+                if ui.small_button("▶").on_hover_text("Next hit").clicked() {
+                    jump = Some((st.hit + 1) % hits.len().max(1));
+                }
+                if ui.small_button("◀").on_hover_text("Previous hit").clicked() {
+                    jump = Some((st.hit + hits.len().max(1) - 1) % hits.len().max(1));
+                }
+            });
+            let hint = if st.query.trim().is_empty() {
+                "Find a word…".to_string()
+            } else {
+                format!("{} hit(s)", hits.len())
+            };
+            let w = ui.available_width().max(60.0);
+            let r = ui.add(TextEdit::singleline(&mut st.query).desired_width(w).hint_text(hint));
+            let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if r.changed() {
+                st.hit = 0;
+            }
+            if enter && !hits.is_empty() {
+                jump = Some(st.hit.min(hits.len() - 1));
+            }
+            if let Some(j) = jump.filter(|&j| j < hits.len()) {
+                let (clip, i, t) = hits[j];
+                st.hit = j;
+                st.clip = Some(clip);
+                st.sel = Some((i, i));
+                st.anchor = Some(i);
+                *playhead = t;
+                resp.seeked = true;
+            }
+        });
+    });
+    if !st.status.is_empty() {
+        ui.weak(&st.status);
+    }
+    if st.show_fillers {
+        fillers_editor(ui, st);
+    }
+    if st.show_tts {
+        tts_panel(ui, st);
+    }
+
+    let Some(clip) = st.clip else {
+        ui.weak("No transcript yet - select a clip, then ⋯ ▸ Transcribe selected clip.");
+        return resp;
+    };
 
     // the word run
     let shift = ui.input(|i| i.modifiers.shift);
@@ -190,15 +268,20 @@ pub fn show(
     if words.len() > MAX_INLINE_WORDS {
         ui.weak(format!("{} words - too many to lay out inline; use the search box or View transcript.", words.len()));
     } else {
-        egui::ScrollArea::vertical().id_salt("transcript_words").max_height(170.0).auto_shrink([false, true]).show(
-            ui,
-            |ui| {
+        egui::ScrollArea::vertical().id_salt("transcript_words").auto_shrink([false, false]).show(ui, |ui| {
+            // the whole run senses clicks under the words: right-click anywhere for the word menu
+            let area = ui.scope_builder(egui::UiBuilder::new().sense(egui::Sense::click()), |ui| {
+                let mut all: Option<egui::Response> = None;
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing.x = 3.0;
                     for (i, w) in words.iter().enumerate() {
                         let selected = st.sel.is_some_and(|(a, b)| i >= a && i <= b);
                         let active = ph >= w.0 && ph < w.1;
-                        let text = if active { RichText::new(&w.2).color(palette.accent).strong() } else { RichText::new(&w.2) };
+                        let text = if active {
+                            RichText::new(&w.2).color(palette.accent).strong()
+                        } else {
+                            RichText::new(&w.2)
+                        };
                         let r = ui.selectable_label(selected, text);
                         if r.contains_pointer() {
                             under = Some(i);
@@ -210,12 +293,35 @@ pub fn show(
                             clicked = Some(i);
                             r.request_focus();
                         }
+                        if r.secondary_clicked() && !selected {
+                            st.sel = Some((i, i));
+                            st.anchor = Some(i);
+                        }
                         any_focus |= r.has_focus();
-                        r.on_hover_text(format!("{} – {}", duration_text(w.0), duration_text(w.1)));
+                        let r = r.on_hover_text(format!("{} – {}", duration_text(w.0), duration_text(w.1)));
+                        all = Some(match all.take() {
+                            Some(a) => a.union(r),
+                            None => r,
+                        });
                     }
                 });
-            },
-        );
+                all
+            });
+            let menu_r = match area.inner {
+                Some(words_r) => area.response.union(words_r),
+                None => area.response,
+            };
+            menu_r.context_menu(|ui| {
+                let n = st.sel.map_or(0, |(a, b)| b - a + 1);
+                let r = ui.add_enabled_ui(n > 0, |ui| {
+                    menu::row(ui, Some(Glyph::Razor), &format!("Cut selected words ({n})"), "")
+                });
+                do_cut |= r.inner.clicked();
+                if ui.add_enabled_ui(n > 0, |ui| menu::row(ui, None, "Deselect", "")).inner.clicked() {
+                    st.sel = None;
+                }
+            });
+        });
     }
     // press starts a range at the anchor, holding the button over other words extends it
     if let Some(i) = pressed {
@@ -245,29 +351,13 @@ pub fn show(
             }
         }
     }
-    let n_sel = st.sel.map_or(0, |(a, b)| b - a + 1);
-    let mut do_cut = false;
-    ui.horizontal_wrapped(|ui| {
-        if ui
-            .add_enabled(n_sel > 0, Button::new(format!("Cut selected words ({n_sel})")))
-            .on_hover_text("Ripple-cut the selected stretch of speech; cues, markers and the transcript follow (Delete)")
-            .clicked()
-        {
-            do_cut = true;
-        }
-        if n_sel > 0 && ui.small_button("Deselect").clicked() {
-            st.sel = None;
-        }
-        if !st.status.is_empty() {
-            ui.weak(&st.status);
-        }
-    });
     // Delete while a word has keyboard focus (focus keeps the timeline's own Delete hotkey quiet -
     // `Hotkeys::poll` yields nothing while `wants_keyboard_input`)
-    if any_focus && n_sel > 0 && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Delete)) {
+    if any_focus && st.sel.is_some() && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Delete)) {
         do_cut = true;
     }
     if do_cut {
+        let n_sel = st.sel.map_or(0, |(a, b)| b - a + 1);
         if let Some(range) = st.sel.and_then(|s| span(&words, s)) {
             // snapshot-then-rollback (mirrors transcript_ctl::remove_fillers_action): only a real cut
             // earns an undo entry, so a no-op (locked track, speed ramp, empty range) neither pushes a
@@ -289,11 +379,52 @@ pub fn show(
     }
 
     // fillers: Mark-instead first
+    if mark {
+        once(undone, undo, project);
+        for id in st.filler_marks.drain(..) {
+            project.remove_marker(id);
+        }
+        st.filler_marks = mark_ranges(project, &words, &ranges);
+        st.status = format!("marked {} filler(s)", st.filler_marks.len());
+        resp.edited = true;
+    }
+    if remove {
+        // snapshot-then-rollback (mirrors transcript_ctl::remove_fillers_action): if the cut turns
+        // out to be a no-op, restore the project so the marks removed just above come back too,
+        // instead of leaving them gone with no way back.
+        let before = project.clone();
+        for id in st.filler_marks.drain(..) {
+            project.remove_marker(id);
+        }
+        let n = project.cut_word_ranges(clip, &ranges);
+        st.status = if n > 0 {
+            once(undone, undo, &before);
+            resp.edited = true;
+            resp.cut = ranges.len();
+            format!("removed {} filler(s)", ranges.len())
+        } else {
+            *project = before;
+            "nothing cut - the track is locked, or the clip has a speed ramp".into()
+        };
+        st.sel = None;
+    }
+    if clear_marks {
+        once(undone, undo, project);
+        for id in st.filler_marks.drain(..) {
+            project.remove_marker(id);
+        }
+        resp.edited = true;
+    }
+    resp
+}
+
+/// ⋯ ▸ Edit filler words…: the chips (click one to drop it), an add field and the cut padding.
+fn fillers_editor(ui: &mut egui::Ui, st: &mut TranscriptUiState) {
     ui.horizontal_wrapped(|ui| {
         ui.label("Fillers").on_hover_text("Words to cut out - case and punctuation don't matter; phrases allowed");
         let mut remove: Option<usize> = None;
         for (i, f) in st.fillers.iter().enumerate() {
-            if ui.small_button(format!("{f} ×")).on_hover_text("Remove from the list").clicked() {
+            if ui.small_button(format!("{f} ✕")).on_hover_text("Remove from the list").clicked() {
                 remove = Some(i);
             }
         }
@@ -315,67 +446,11 @@ pub fn show(
             st.fillers_dirty = true;
         }
     });
-    let fillers: Vec<&str> = st.fillers.iter().map(String::as_str).collect();
-    let ranges = transcribe::filler_ranges(&words, &fillers, st.filler_pad_ms);
-    ui.horizontal_wrapped(|ui| {
-        ui.weak(format!("{} filler(s) found", ranges.len()));
-        if ui
-            .add_enabled(!ranges.is_empty(), Button::new("Mark fillers"))
-            .on_hover_text("Drop a range marker on every filler first - look them over, then Remove")
-            .clicked()
-        {
-            once(undone, undo, project);
-            for id in st.filler_marks.drain(..) {
-                project.remove_marker(id);
-            }
-            st.filler_marks = mark_ranges(project, &words, &ranges);
-            st.status = format!("marked {} filler(s)", st.filler_marks.len());
-            resp.edited = true;
-        }
-        let can_remove = !st.filler_marks.is_empty() && !ranges.is_empty();
-        if ui
-            .add_enabled(can_remove, Button::new("Remove fillers"))
-            .on_hover_text("Ripple-cut every marked filler (Mark fillers first)")
-            .clicked()
-        {
-            // snapshot-then-rollback (mirrors transcript_ctl::remove_fillers_action): if the cut turns
-            // out to be a no-op, restore the project so the marks removed just above come back too,
-            // instead of leaving them gone with no way back.
-            let before = project.clone();
-            for id in st.filler_marks.drain(..) {
-                project.remove_marker(id);
-            }
-            let n = project.cut_word_ranges(clip, &ranges);
-            st.status = if n > 0 {
-                once(undone, undo, &before);
-                resp.edited = true;
-                resp.cut = ranges.len();
-                format!("removed {} filler(s)", ranges.len())
-            } else {
-                *project = before;
-                "nothing cut - the track is locked, or the clip has a speed ramp".into()
-            };
-            st.sel = None;
-        }
-        if !st.filler_marks.is_empty() && ui.small_button("Clear marks").clicked() {
-            once(undone, undo, project);
-            for id in st.filler_marks.drain(..) {
-                project.remove_marker(id);
-            }
-            resp.edited = true;
-        }
-    });
-    tts_panel(ui, st);
-    resp
 }
 
-/// Speech (TTS): a line of text, an installed SAPI voice, Speak → the app synthesizes a WAV and
+/// ⋯ ▸ Speak text…: a line of text, an installed SAPI voice, Speak → the app synthesizes a WAV and
 /// places it at the playhead (linked to the selected text clip, if any).
 fn tts_panel(ui: &mut egui::Ui, st: &mut TranscriptUiState) {
-    ui.toggle_value(&mut st.show_tts, "Speech (TTS)").on_hover_text("Windows' own voices, via System.Speech");
-    if !st.show_tts {
-        return;
-    }
     ui.horizontal_wrapped(|ui| {
         ui.add(TextEdit::singleline(&mut st.tts_text).desired_width(220.0).hint_text("Text to speak…"));
         let shown = if st.tts_voice.is_empty() { "(default voice)".to_string() } else { st.tts_voice.clone() };
@@ -456,21 +531,26 @@ pub fn window(ctx: &egui::Context, st: &mut TranscriptWindow, project: &Project,
                     .map(|(i, _)| i)
                     .collect();
                 let row_h = ui.spacing().interact_size.y;
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, row_h, rows.len(), |ui, range| {
-                    for &i in &rows[range] {
-                        let w = &tr.words[i];
-                        ui.horizontal(|ui| {
-                            let active = playhead >= w.0 && playhead < w.1;
-                            if ui.small_button(duration_text(w.0)).on_hover_text("Seek here").clicked() {
-                                resp.seek = Some(w.0);
-                            }
-                            let text = if active { RichText::new(&w.2).strong() } else { RichText::new(&w.2) };
-                            if ui.add(egui::Label::new(text).sense(egui::Sense::click())).clicked() {
-                                resp.seek = Some(w.0);
-                            }
-                        });
-                    }
-                });
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(
+                    ui,
+                    row_h,
+                    rows.len(),
+                    |ui, range| {
+                        for &i in &rows[range] {
+                            let w = &tr.words[i];
+                            ui.horizontal(|ui| {
+                                let active = playhead >= w.0 && playhead < w.1;
+                                if ui.small_button(duration_text(w.0)).on_hover_text("Seek here").clicked() {
+                                    resp.seek = Some(w.0);
+                                }
+                                let text = if active { RichText::new(&w.2).strong() } else { RichText::new(&w.2) };
+                                if ui.add(egui::Label::new(text).sense(egui::Sense::click())).clicked() {
+                                    resp.seek = Some(w.0);
+                                }
+                            });
+                        }
+                    },
+                );
             }
         });
     if !open {
@@ -483,7 +563,7 @@ pub fn window(ctx: &egui::Context, st: &mut TranscriptWindow, project: &Project,
 mod tests {
     use super::*;
     use crate::model::{Asset, AudioStreamInfo, ClipKind};
-    use eframe::egui::{Event, Modifiers, PointerButton, Pos2, RawInput, Rect, Shape, vec2};
+    use eframe::egui::{vec2, Event, Modifiers, PointerButton, Pos2, RawInput, Rect, Shape};
 
     fn words(list: &[(f64, f64, &str)]) -> Vec<(f64, f64, String)> {
         list.iter().map(|(a, b, w)| (*a, *b, w.to_string())).collect()
@@ -545,7 +625,8 @@ mod tests {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut undone = false;
                     let mut undo = |_: &Project| panic!("no undo without edits");
-                    let r = show(ui, &mut st, &mut p, &mut playhead, &[id], &palette, &mut undone, &mut undo);
+                    let r =
+                        show(ui, &mut |_| {}, &mut st, &mut p, &mut playhead, &[id], &palette, &mut undone, &mut undo);
                     assert!(!r.edited && !r.seeked && r.cut == 0);
                 });
             });
@@ -600,17 +681,18 @@ mod tests {
         let ctx = egui::Context::default();
         ctx.set_fonts(crate::theme::test_fonts());
         let mut undos = 0usize;
-        let mut run = |events: Vec<Event>, st: &mut TranscriptUiState, p: &mut Project, playhead: &mut f64, undos: &mut usize| {
-            let mut resp = TranscriptResponse::default();
-            let full = ctx.run(RawInput { events, ..screen() }, |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    let mut undone = false;
-                    let mut undo = |_: &Project| *undos += 1;
-                    resp = show(ui, st, p, playhead, &[id], &palette, &mut undone, &mut undo);
+        let mut run =
+            |events: Vec<Event>, st: &mut TranscriptUiState, p: &mut Project, playhead: &mut f64, undos: &mut usize| {
+                let mut resp = TranscriptResponse::default();
+                let full = ctx.run(RawInput { events, ..screen() }, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let mut undone = false;
+                        let mut undo = |_: &Project| *undos += 1;
+                        resp = show(ui, &mut |_| {}, st, p, playhead, &[id], &palette, &mut undone, &mut undo);
+                    });
                 });
-            });
-            (resp, full)
-        };
+                (resp, full)
+            };
         // find where "um" was painted
         let (_, full) = run(vec![], &mut st, &mut p, &mut playhead, &mut undos);
         let pos = full
@@ -624,7 +706,12 @@ mod tests {
         let click = pos + vec2(3.0, 4.0);
         let mut seeked = false;
         for pressed in [true, false] {
-            let ev = Event::PointerButton { pos: click, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
+            let ev = Event::PointerButton {
+                pos: click,
+                button: PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            };
             let (r, _) = run(vec![ev], &mut st, &mut p, &mut playhead, &mut undos);
             seeked |= r.seeked;
         }
@@ -632,7 +719,13 @@ mod tests {
         assert!((playhead - 1.0).abs() < 1e-9, "to the word's start: {playhead}");
         assert_eq!(st.sel, Some((1, 1)));
         // Delete: the word (and its 0.4 s) leave the clip, the transcript follows
-        let key = |pressed| Event::Key { key: egui::Key::Delete, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE };
+        let key = |pressed| Event::Key {
+            key: egui::Key::Delete,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
         let (r, _) = run(vec![key(true), key(false)], &mut st, &mut p, &mut playhead, &mut undos);
         assert!(r.edited && r.cut == 1, "cut: {} edited: {}", r.cut, r.edited);
         assert_eq!(undos, 1, "one undo step");

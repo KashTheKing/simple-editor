@@ -1,6 +1,7 @@
 //! ---- ws:inspector-gallery ----
 //! The Gallery pane (`Pane::Presets`'s drawer, replacing size-diet's `library::reuse_ui` placeholder):
-//! six tabs of click-to-apply cards - Looks, LUTs, Captions, Speed Ramps, Transitions, Templates.
+//! tabs of click-to-apply cards - Looks, LUTs, Captions, Speed Ramps, Templates, Titles (the Transitions
+//! tab is list/apply-only over MCP: the Transitions pane is that catalogue's one home).
 //! Looks/LUTs get real GPU thumbnails (`ui::app::thumbs::build_gallery_thumbnails`, read here through a
 //! thread-local cache - same convention `effects_ui.rs`'s own `THUMBS` uses, since `App` isn't reachable
 //! from this sibling module); Captions get a painted colour swatch (cheap, no GPU); Speed
@@ -21,6 +22,7 @@ use crate::settings::Settings;
 use crate::theme::Palette;
 use crate::ui::app::thumbs::ThumbSource;
 use crate::ui::effects_ui::CARD;
+use crate::ui::menu;
 use eframe::egui::{self, Color32, Rect, Response, Sense, Stroke, StrokeKind};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -76,7 +78,7 @@ impl GalleryTab {
     }
     fn label(self) -> &'static str {
         match self {
-            Self::SpeedRamps => "Speed Ramps",
+            Self::SpeedRamps => "Speed", // short, so every tab fits a ~350 pt pane
             other => other.name(),
         }
     }
@@ -85,8 +87,8 @@ impl GalleryTab {
 #[derive(Default)]
 pub struct GalleryState {
     pub tab: GalleryTab,
-    /// "Save from selection…" name field scratch.
-    pub save_name: String,
+    /// The "Save look from selection…" name prompt: `Some` while it is open (the typed name so far).
+    pub save_name: Option<String>,
     // ---- ws:text-titles ----
     /// (clip id, exposed field name) rows for the Customize panel below the Titles grid, set by the
     /// caller (`ui::app::gallery_ctl::draw`) right after a Titles card is placed - a plain state field
@@ -109,8 +111,9 @@ pub struct GalleryResponse {
     /// `Settings.templates` and placed by the caller (`gallery_ctl::draw`), which then fills
     /// `GalleryState.customize` from the placed clips' `exposed` fields.
     pub place_title: Option<String>,
-    /// "Save current effect stack as a Look" was clicked, with the name typed in `save_name`.
-    pub save: Option<String>,
+    /// ws:text-titles: Customize-panel rows edited this frame, as edited clones of the placed clips -
+    /// written back by the caller with one undo.
+    pub customized: Vec<(Id, Clip)>,
 }
 
 /// One clickable card: `picture` paints the tile's contents (thumbnail / swatch / nothing - the name is
@@ -194,36 +197,37 @@ pub fn card_names(tab: GalleryTab, settings: &Settings) -> Vec<String> {
     }
 }
 
-/// The Gallery pane body: tab strip + card grid. `selection` gates whether "Apply" makes sense (an empty
-/// selection still lists cards - Templates/Transitions need no clip selected).
+/// The Gallery pane: the tab strip (pinned), then the card grid and - after a Titles card was placed -
+/// its Customize rows, scrolling together. A card click applies it (Templates / Titles place at the
+/// playhead); its right-click offers the same, and the viewer previews the card while that menu is open.
+/// Right-click empty space for "Save look from selection…". Transitions have their own pane, so the
+/// Transitions tab is not drawn (it stays a `gallery.list` / `gallery.apply` tab for MCP and scripts).
 pub fn show(
     ui: &mut egui::Ui,
     state: &mut GalleryState,
     settings: &mut Settings,
+    project: &crate::model::Project,
     selection: &[Id],
     palette: &Palette,
 ) -> GalleryResponse {
     let mut out = GalleryResponse::default();
-    ui.horizontal_wrapped(|ui| {
-        for tab in GalleryTab::ALL {
-            if ui.selectable_label(state.tab == tab, tab.label()).clicked() {
-                state.tab = tab;
-                settings.gallery_tab = tab.name().to_string();
-            }
-        }
-    });
-    ui.separator();
-    if state.tab == GalleryTab::Looks && !selection.is_empty() {
+    let bg = crate::ui::markers_ui::menu_area(ui);
+    if state.tab == GalleryTab::Transitions {
+        state.tab = GalleryTab::Looks;
+    }
+    // one row that scrolls sideways when the pane is narrower than the tabs
+    egui::ScrollArea::horizontal().id_salt("gallery_tabs").show(ui, |ui| {
         ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut state.save_name).hint_text("name").desired_width(120.0));
-            if ui.add_enabled(!state.save_name.trim().is_empty(), egui::Button::new("Save from selection…")).clicked()
-            {
-                out.save = Some(state.save_name.trim().to_string());
-                state.save_name.clear();
+            ui.spacing_mut().item_spacing.x = 4.0;
+            for tab in GalleryTab::ALL.into_iter().filter(|&t| t != GalleryTab::Transitions) {
+                if ui.selectable_label(state.tab == tab, tab.label()).clicked() {
+                    state.tab = tab;
+                    settings.gallery_tab = tab.name().to_string();
+                }
             }
         });
-        ui.separator();
-    }
+    });
+    ui.separator();
     let names = card_names(state.tab, settings);
     if names.is_empty() {
         ui.weak(match state.tab {
@@ -233,7 +237,7 @@ pub fn show(
             _ => "Nothing here yet.",
         });
     }
-    egui::ScrollArea::vertical().show(ui, |ui| {
+    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         ui.horizontal_wrapped(|ui| {
             for name in &names {
                 let tab = state.tab;
@@ -264,10 +268,27 @@ pub fn show(
                     }
                     _ => card(ui, name, |_, _| {}),
                 };
+                #[cfg(test)]
+                ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(("gallery_card", name.as_str())), r.rect));
                 if crate::ui::hover_after(ui, r.id, &r, 150.0) {
                     out.hover = Some((tab, name.clone()));
                 }
-                if r.clicked() {
+                let mut go = r.clicked();
+                let menu = r.context_menu(|ui| {
+                    let (label, needs_clip) = match tab {
+                        GalleryTab::Templates | GalleryTab::Titles => ("Place at playhead", false),
+                        GalleryTab::Captions => ("Apply to every caption", false),
+                        _ => ("Apply to selection", true),
+                    };
+                    let ok = !needs_clip || !selection.is_empty();
+                    let r = ui.add_enabled_ui(ok, |ui| menu::row(ui, None, label, "")).inner;
+                    go |= r.on_disabled_hover_text("Select a clip first").clicked();
+                });
+                // Preview: the viewer shows the card for as long as its menu is open (hover does the same)
+                if menu.is_some() && !matches!(tab, GalleryTab::Templates | GalleryTab::Titles) {
+                    out.hover = Some((tab, name.clone()));
+                }
+                if go {
                     match tab {
                         GalleryTab::Templates => out.place = Some(name.clone()),
                         GalleryTab::Titles => out.place_title = Some(name.clone()),
@@ -276,6 +297,27 @@ pub fn show(
                 }
             }
         });
+        // ---- ws:text-titles ----: the placed title's exposed fields, right under the cards
+        if !state.customize.is_empty() {
+            ui.separator();
+            ui.strong("Customize");
+            // edit CLONES, never the live project while drawing, so the caller's undo can snapshot first
+            for (cid, field) in &state.customize {
+                if let Some(orig) = project.clip(*cid) {
+                    let mut clone = orig.clone();
+                    if template_field_widget(ui, field, &mut clone) {
+                        out.customized.push((*cid, clone));
+                    }
+                }
+            }
+        }
+    });
+    bg.context_menu(|ui| {
+        let r =
+            ui.add_enabled_ui(!selection.is_empty(), |ui| menu::row(ui, None, "Save look from selection…", "")).inner;
+        if r.on_disabled_hover_text("Select a clip whose effects to save").clicked() {
+            state.save_name = Some(String::new());
+        }
     });
     let _ = palette; // reserved: a themed border colour is a pure visual follow-up, not load-bearing yet
     out
@@ -342,7 +384,7 @@ mod tests {
         let mut out = GalleryResponse::default();
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                out = show(ui, state, settings, &[7], &palette);
+                out = show(ui, state, settings, &crate::model::Project::new(), &[7], &palette);
             });
         });
         out

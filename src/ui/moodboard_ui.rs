@@ -13,17 +13,16 @@
 //! as a project asset first (deduped by path, the same flow every other import uses) and then calls
 //! `moodboard_add` too - "if it isn't already one" is `moodboard_add`'s own check either way.
 //!
-//! Right-click (or the inline button) on an item: "Add at Playhead" places that asset on the timeline
-//! via `add_to_timeline`, the same plumbing Library and Planner already use
-//! (`Project::insert_asset_clips`). `Project::plan_assets()` already protects every `MoodItem.asset`
+//! Right-click an item (a row, a tile or the slide) for "Add at Playhead", which places that asset on the
+//! timeline via `add_to_timeline` - the same plumbing Library and Planner already use
+//! (`Project::insert_asset_clips`) - and "Remove from moodboard"; right-click empty space to Import…. `Project::plan_assets()` already protects every `MoodItem.asset`
 //! from "Remove unused assets" (see model.rs).
 
 use crate::media::thumbs::ThumbCache;
 use crate::model::{ClipKind, Id, MoodItem, Project};
 use crate::theme::Palette;
-use crate::ui::markers_ui::x_button;
 use crate::ui::tools::{draw_glyph, icon_button, Dir, Glyph};
-use crate::ui::DragPayload;
+use crate::ui::{menu, DragPayload};
 use eframe::egui::{self, RichText, TextEdit};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -148,6 +147,23 @@ fn tag_field(
     out
 }
 
+/// An item's right-click: the two verbs every view shares.
+fn item_menu(r: &egui::Response, asset: Id, i: usize, resp: &mut MoodboardResponse, remove: &mut Option<usize>) {
+    r.context_menu(|ui| {
+        if menu::row(ui, None, "Add at Playhead", "").clicked() {
+            resp.add_to_timeline.push(asset);
+        }
+        if menu::row(ui, Some(Glyph::Cross), "Remove from moodboard", "").clicked() {
+            *remove = Some(i);
+        }
+    });
+}
+
+/// `add` inside a Ui that senses clicks under its widgets - a right-click anywhere on it opens the menu.
+fn clickable(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) -> egui::Response {
+    ui.scope_builder(egui::UiBuilder::new().sense(egui::Sense::click()), add).response
+}
+
 const TILE: f32 = 110.0;
 const THUMB: f32 = 40.0;
 
@@ -182,6 +198,7 @@ pub fn show(
     undo: &mut dyn FnMut(&Project),
 ) -> MoodboardResponse {
     let mut resp = MoodboardResponse::default();
+    let bg = crate::ui::markers_ui::menu_area(ui);
 
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 3.0;
@@ -256,6 +273,13 @@ pub fn show(
     });
     let _ = frame_r;
     state.content_rect = content_rect;
+    bg.context_menu(|ui| {
+        if menu::row(ui, Some(Glyph::ImportArrow), "Import…", "").clicked() {
+            if let Some(files) = rfd::FileDialog::new().pick_files() {
+                resp.import_paths.extend(files);
+            }
+        }
+    });
 
     if let Some(p) = payload {
         match &*p {
@@ -308,35 +332,17 @@ fn list(
     for &i in visible {
         let asset_id = project.moodboard[i].asset;
         let Some(a) = project.asset(asset_id) else { continue };
-        let row = ui
-            .horizontal(|ui| {
+        let row = clickable(ui, |ui| {
+            ui.horizontal(|ui| {
                 asset_thumb(ui, project, thumbs, asset_id, THUMB, palette);
                 ui.label(a.name());
                 if let Some((tags, fresh)) = tag_field(ui, tag_edit, asset_id, &project.moodboard[i].labels, 140.0) {
                     *relabel = Some((i, tags, fresh));
                 }
-                let add_r = ui.small_button("Add at Playhead");
-                mark(ui, format!("add_{asset_id}"), &add_r);
-                if add_r.clicked() {
-                    resp.add_to_timeline.push(asset_id);
-                }
-                let rm_r = x_button(ui);
-                mark(ui, format!("rm_{asset_id}"), &rm_r);
-                if rm_r.on_hover_text("Remove from moodboard").clicked() {
-                    *remove = Some(i);
-                }
-            })
-            .response;
-        row.context_menu(|ui| {
-            if ui.button("Add at Playhead").clicked() {
-                resp.add_to_timeline.push(asset_id);
-                ui.close();
-            }
-            if ui.button("Remove from moodboard").clicked() {
-                *remove = Some(i);
-                ui.close();
-            }
+            });
         });
+        mark(ui, format!("item_{asset_id}"), &row);
+        item_menu(&row, asset_id, i, resp, remove);
     }
 }
 
@@ -354,8 +360,8 @@ fn gallery(
             let asset_id = project.moodboard[i].asset;
             let labels = project.moodboard[i].labels.join(", ");
             let Some(a) = project.asset(asset_id) else { continue };
-            let tile = ui
-                .group(|ui| {
+            let tile = clickable(ui, |ui| {
+                ui.group(|ui| {
                     ui.set_width(TILE);
                     ui.vertical(|ui| {
                         asset_thumb(ui, project, thumbs, asset_id, TILE - 12.0, palette);
@@ -363,31 +369,11 @@ fn gallery(
                         if !labels.is_empty() {
                             ui.add(egui::Label::new(RichText::new(labels).weak().small()).truncate());
                         }
-                        ui.horizontal(|ui| {
-                            let add_r = ui.small_button("+").on_hover_text("Add at Playhead");
-                            mark(ui, format!("add_{asset_id}"), &add_r);
-                            if add_r.clicked() {
-                                resp.add_to_timeline.push(asset_id);
-                            }
-                            let rm_r = x_button(ui);
-                            mark(ui, format!("rm_{asset_id}"), &rm_r);
-                            if rm_r.on_hover_text("Remove from moodboard").clicked() {
-                                *remove = Some(i);
-                            }
-                        });
                     });
-                })
-                .response;
-            tile.context_menu(|ui| {
-                if ui.button("Add at Playhead").clicked() {
-                    resp.add_to_timeline.push(asset_id);
-                    ui.close();
-                }
-                if ui.button("Remove from moodboard").clicked() {
-                    *remove = Some(i);
-                    ui.close();
-                }
+                });
             });
+            mark(ui, format!("item_{asset_id}"), &tile);
+            item_menu(&tile, asset_id, i, resp, remove);
         }
     });
 }
@@ -424,27 +410,21 @@ fn slideshow(
             state.slide_index = (state.slide_index + 1) % visible.len();
         }
     });
-    ui.vertical_centered(|ui| {
-        asset_thumb(ui, project, thumbs, asset_id, 220.0, palette);
-        if let Some(a) = project.asset(asset_id) {
-            ui.label(a.name());
-        }
+    let slide = clickable(ui, |ui| {
+        ui.vertical_centered(|ui| {
+            asset_thumb(ui, project, thumbs, asset_id, 220.0, palette);
+            if let Some(a) = project.asset(asset_id) {
+                ui.label(a.name());
+            }
+        });
     });
+    mark(ui, format!("item_{asset_id}"), &slide);
+    item_menu(&slide, asset_id, i, resp, remove);
     if let Some((tags, fresh)) =
         tag_field(ui, &mut state.tag_edit, asset_id, &project.moodboard[i].labels, f32::INFINITY)
     {
         *relabel = Some((i, tags, fresh));
     }
-    ui.horizontal(|ui| {
-        let add_r = ui.button("Add at Playhead");
-        mark(ui, "slide_add", &add_r);
-        if add_r.clicked() {
-            resp.add_to_timeline.push(asset_id);
-        }
-        if ui.button("Remove from moodboard").clicked() {
-            *remove = Some(i);
-        }
-    });
 }
 
 #[cfg(test)]
@@ -484,35 +464,53 @@ mod tests {
         project: Project,
         thumbs: ThumbCache,
         undos: usize,
+        shapes: Vec<egui::epaint::ClippedShape>,
+        time: f64,
     }
 
     impl H {
         fn new() -> Self {
             let ctx = egui::Context::default();
+            ctx.set_fonts(crate::theme::test_fonts()); // real glyph sizes, so popup entries land where drawn
             Self {
                 thumbs: ThumbCache::new(ctx.clone(), crate::media::Backend::Auto),
                 ctx,
                 state: MoodboardState::default(),
                 project: Project::new(),
                 undos: 0,
+                shapes: Vec::new(),
+                time: 0.0,
             }
         }
         fn frame(&mut self, events: Vec<egui::Event>) -> MoodboardResponse {
+            self.time += 0.05;
             let input = egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(520.0, 600.0))),
+                time: Some(self.time),
                 events,
                 ..Default::default()
             };
             let pal = Palette::new(true, egui::Color32::WHITE);
-            let H { ctx, state, project, thumbs, undos } = self;
+            let H { ctx, state, project, thumbs, undos, shapes, .. } = self;
             let mut out = MoodboardResponse::default();
-            let _ = ctx.run(input, |ctx| {
+            let full = ctx.run(input, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut undo = |_: &Project| *undos += 1;
                     out = show(ui, state, project, thumbs, &pal, &mut undo);
                 });
             });
+            *shapes = full.shapes;
             out
+        }
+        /// Centre of the first painted text equal to `label` - how a popup's entries are found.
+        fn text_at(&self, label: &str) -> egui::Pos2 {
+            self.shapes
+                .iter()
+                .find_map(|c| match &c.shape {
+                    egui::epaint::Shape::Text(t) if t.galley.text() == label => Some(t.visual_bounding_rect().center()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("nothing painted reads '{label}'"))
         }
         fn rect(&self, name: &str) -> egui::Rect {
             self.ctx
@@ -578,18 +576,33 @@ mod tests {
         assert_eq!(split_tags(""), Vec::<String>::new());
     }
 
-    /// Clicking "Add at Playhead" in List view reports the asset id - the same `add_to_timeline`
-    /// plumbing app.rs already wires up for Library and Planner.
+    /// Right-click an item ▸ "Add at Playhead" reports the asset id - the same `add_to_timeline`
+    /// plumbing app.rs already wires up for Library and Planner - in every view.
     #[test]
     fn add_at_playhead_headless() {
         let mut h = H::new();
         let aid = h.project.add_asset(asset(1, ClipKind::Video));
         moodboard_add(&mut h.project, aid);
-        h.state.view = View::List;
-        h.frame(vec![]);
-        let add = h.rect(&format!("add_{aid}"));
-        let out = h.click(add.center());
-        assert_eq!(out.add_to_timeline, vec![aid]);
+        for view in [View::List, View::Gallery, View::Slideshow] {
+            h.state.view = view;
+            h.frame(vec![]);
+            let item = h.rect(&format!("item_{aid}")).left_top() + egui::vec2(4.0, 4.0);
+            h.time += 1.0; // its own gesture, never half of a double-click
+            h.frame(vec![egui::Event::PointerMoved(item)]);
+            for pressed in [true, false] {
+                h.frame(vec![egui::Event::PointerButton {
+                    pos: item,
+                    button: egui::PointerButton::Secondary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }]);
+            }
+            h.frame(vec![]);
+            let entry = h.text_at("Add at Playhead");
+            h.time += 1.0;
+            let out = h.click(entry);
+            assert_eq!(out.add_to_timeline, vec![aid], "{}", view as u8);
+        }
     }
 
     /// Headless: every view (List, Gallery, Slideshow) lays out a mixed video/audio board without

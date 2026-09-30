@@ -1,8 +1,9 @@
 //! Tracking pane (non-blocking): follow a point or a rectangular area through a clip and keep the
 //! result as a reusable project path.
 //!
-//! Pick the clip (the selection by default), place the tracker box - "Place box" puts it on the Preview
-//! to drag while this pane is on screen - set its size and the search radius, then "Track forward" /
+//! Pick the clip (the selection by default; right-click ▸ "Use selected clip" pins the current one), place
+//! the tracker box - "Place box" puts it on the Preview to drag while this pane is on screen - set its
+//! size and the search radius, then "Track forward" /
 //! "Track backward". `engine::tracking` does the matching on its own thread, which the app polls every
 //! frame (`TrackState::poll`, so a hidden tab never stalls it), and this pane shows a progress bar;
 //! "Cancel" just drops the job. The result saves into `Project.paths`
@@ -119,11 +120,25 @@ pub fn show(
     palette: &Palette,
     undo: &mut dyn FnMut(&Project),
 ) -> bool {
-    egui::ScrollArea::vertical()
+    let bg = crate::ui::markers_ui::menu_area(ui);
+    let changed = egui::ScrollArea::vertical()
         .id_salt("tracking_pane")
         .auto_shrink([false, false])
         .show(ui, |ui| body(ui, state, project, selection, backend, palette, undo))
-        .inner
+        .inner;
+    bg.context_menu(|ui| {
+        let ok = state.job.is_none() && !selection.is_empty();
+        let r = ui.add_enabled_ui(ok, |ui| crate::ui::menu::row(ui, None, "Use selected clip", "")).inner;
+        if r.on_hover_text("Track the selected clip even after the selection moves on").clicked() {
+            state.clip = selection.first().copied();
+        }
+        let r =
+            ui.add_enabled_ui(state.clip.is_some(), |ui| crate::ui::menu::row(ui, None, "Follow the selection", ""));
+        if r.inner.clicked() {
+            state.clip = None;
+        }
+    });
+    changed
 }
 
 fn body(
@@ -139,14 +154,14 @@ fn body(
     let running = state.job.is_some();
     let target = target(project, state, selection);
 
-    ui.strong("Tracking");
     ui.horizontal(|ui| {
         ui.label("Clip");
         let name = target.and_then(|id| project.clip(id)).map(|c| c.name.clone()).unwrap_or_else(|| " - ".into());
-        ui.monospace(name);
-        if ui.add_enabled(!running, Button::new("Use selected")).clicked() {
-            state.clip = selection.first().copied();
-        }
+        ui.monospace(name).on_hover_text(if state.clip.is_some() {
+            "Pinned - right-click ▸ Follow the selection"
+        } else {
+            "Follows the selection - right-click ▸ Use selected clip to pin it"
+        });
         ui.toggle_value(&mut state.placing, "Place box")
             .on_hover_text("Show the tracker box on the Preview - drag it onto the feature to follow");
     });

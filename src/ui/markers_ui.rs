@@ -1,23 +1,26 @@
 //! Markers pane: every marker in timeline order (project markers and clip markers together, via
 //! `rows`), scoped to the sequence currently open (`Project.editing`) - a project-level marker only
 //! shows on the sequence it was made on; clip markers scope naturally through their clip and are
-//! unaffected. One `egui::CollapsingHeader` per marker (collapsed by default): the header shows the
-//! icon glyph, a dim timecode, the name, "Go" (seek) and delete; expanding it reveals the editable
-//! name/time/duration/note and a small icon picker.
+//! unaffected. One header row: the label filter and a search over names and notes.
 //!
-//! Multi-select (`state.selected: Vec<Id>`): click a name to select (replacing), Ctrl/Shift+click to
+//! One `CollapsingState` row per marker (collapsed by default): the icon glyph, its label colour, a dim
+//! timecode and the name - clicking the row selects it AND seeks there; expanding it reveals the editable
+//! name/time/duration/note and a small icon picker. Everything else is one right-click away:
+//! - a row: Rename, Label ▸, Snap to nearest clip, Link to closest clip, Delete - on every selected
+//!   marker when the row is part of the selection (one undo for the batch), else on that row alone;
+//! - empty space: Add at playhead (M), Add on selected clip, Copy as list (markdown, every marker in the
+//!   project - handy for notes and the AI tools), Export ▸ (CSV, YouTube chapters), Import….
+//!
+//! Multi-select (`state.selected: Vec<Id>`): click a row to select (replacing), Ctrl/Shift+click to
 //! toggle it in/out - same pattern as clip and subtitle-cue selection elsewhere. A mini time strip
 //! above the list plots every marker as a tick; dragging over empty strip space rubber-bands a time
-//! range (Shift adds to the selection). With 2+ selected, bulk buttons appear: Delete, "Snap to
-//! Nearest Clip" (project markers only, moves `t` to the nearest clip's start) and "Link to Closest
-//! Clip" (converts a project marker into a clip-local one on the nearest clip). Each bulk op is one
-//! undo for the whole batch. Toolbar: "Add at playhead" (M), "Add on selected clip", filter by label,
-//! "Copy as list" (markdown, handy for the AI tools, unscoped - every marker in the project).
+//! range (Shift adds to the selection).
 
+use crate::hotkeys::Action;
 use crate::model::{Id, Project};
 use crate::theme::Palette;
 use crate::ui::tools::Glyph;
-use crate::ui::{edit_start, timecode};
+use crate::ui::{edit_start, menu, timecode};
 use eframe::egui::{self, DragValue, Response, RichText};
 
 /// Small, non-exhaustive set of glyphs relevant to a marker (the full picker lives in Settings ▸
@@ -42,8 +45,21 @@ pub struct MarkersState {
     pub selected: Vec<Id>,
     /// 0 = every label.
     pub filter_label: u8,
+    /// Header search: case-insensitive, over names and notes.
+    pub query: String,
     /// Drag-select band in progress on the mini time strip: (press time in seconds, "Shift held").
     band: Option<(f64, bool)>,
+    /// Right-click ▸ Rename: open this row and focus its name field (cleared once focused).
+    rename: Option<Id>,
+}
+
+/// A row's right-click verbs, applied to the row's targets after the list is drawn (one undo).
+#[derive(Clone, Copy, PartialEq)]
+enum RowOp {
+    Label(u8),
+    Snap,
+    Link,
+    Delete,
 }
 
 #[derive(Default)]
@@ -62,6 +78,15 @@ pub(crate) fn x_button(ui: &mut egui::Ui) -> Response {
         crate::ui::tools::draw_glyph(ui.painter(), r.rect, Glyph::Cross, c);
     }
     r
+}
+
+/// A side pane's empty space as its right-click target: registered before anything is drawn, so every
+/// row and widget sits on top of it and only truly empty space reaches it. Labels stop being
+/// text-selectable in the pane too - a selectable label under the pointer would take the right-click
+/// that should open its row's (or the pane's) menu.
+pub(crate) fn menu_area(ui: &mut egui::Ui) -> Response {
+    ui.style_mut().interaction.selectable_labels = false;
+    ui.interact(ui.max_rect(), ui.id().with("pane_menu_area"), egui::Sense::click())
 }
 
 /// Test-only: remember a widget rect so headless tests can click the real button.
@@ -83,16 +108,22 @@ struct Row {
 }
 
 /// Every marker in timeline order, project markers filtered to the sequence currently being edited
-/// (clip markers are unaffected - they already scope through their clip).
-fn rows(project: &Project, filter: u8) -> Vec<Row> {
+/// (clip markers are unaffected - they already scope through their clip), then by label (0 = any) and
+/// by `query` (case-insensitive, name or note; empty = all).
+fn rows(project: &Project, filter: u8, query: &str) -> Vec<Row> {
+    let q = query.trim().to_lowercase();
+    let keep = |m: &crate::model::Marker| {
+        (filter == 0 || m.label == filter)
+            && (q.is_empty() || m.name.to_lowercase().contains(&q) || m.note.to_lowercase().contains(&q))
+    };
     let mut v: Vec<Row> = project
         .markers
         .iter()
-        .filter(|m| (filter == 0 || m.label == filter) && m.sequence == project.editing)
+        .filter(|m| keep(m) && m.sequence == project.editing)
         .map(|m| Row { id: m.id, abs_t: m.t, offset: 0.0, clip: None })
         .collect();
     for (_, c) in project.all_clips() {
-        for m in c.markers.iter().filter(|m| filter == 0 || m.label == filter) {
+        for m in c.markers.iter().filter(|m| keep(m)) {
             v.push(Row { id: m.id, abs_t: c.start + m.t, offset: c.start, clip: Some(c.id) });
         }
     }
@@ -299,35 +330,14 @@ pub fn show(
     let fps = project.fps;
     let labels: Vec<(String, [u8; 3])> = project.labels.iter().map(|l| (l.name.clone(), l.color)).collect();
     let (mods, pointer, primary_down) = ui.input(|i| (i.modifiers, i.pointer.latest_pos(), i.pointer.primary_down()));
+    let bg = menu_area(ui);
 
-    let rows = rows(project, state.filter_label);
+    let rows = rows(project, state.filter_label, &state.query);
     state.selected.retain(|id| rows.iter().any(|r| r.id == *id));
-
-    // ---- toolbar ----
     let sel_clip = selection.iter().copied().find(|&id| project.clip(id).is_some());
-    ui.horizontal_wrapped(|ui| {
-        let r = ui.button("Add at playhead").on_hover_text("M");
-        mark(ui, "add", &r);
-        if r.clicked() {
-            undo(project);
-            state.selected = vec![project.add_marker(playhead, "")];
-            out.edited = true;
-        }
-        let on_clip = sel_clip.is_some();
-        if ui
-            .add_enabled(on_clip, egui::Button::new("Add on selected clip"))
-            .on_disabled_hover_text("Select a clip first")
-            .clicked()
-        {
-            if let Some(cid) = sel_clip {
-                let local = project.clip(cid).map(|c| (playhead - c.start).clamp(0.0, c.duration)).unwrap_or(0.0);
-                undo(project);
-                if let Some(id) = project.add_clip_marker(cid, local, "") {
-                    state.selected = vec![id];
-                }
-                out.edited = true;
-            }
-        }
+
+    // ---- the one header row: label filter · search ----
+    ui.horizontal(|ui| {
         egui::ComboBox::from_id_salt("marker_filter")
             .selected_text(if state.filter_label == 0 {
                 "All labels".to_string()
@@ -343,197 +353,156 @@ pub fn show(
                     ui.selectable_value(&mut state.filter_label, i as u8 + 1, t);
                 }
             });
-        if ui.button("Copy as list").on_hover_text("Markdown, for notes and the AI tools").clicked() {
-            ui.ctx().copy_text(as_markdown(project, fps));
-        }
-        // ---- ws:export-deliver ----
-        ui.menu_button("Export…", |ui| {
-            for (label, fmt) in [("CSV…", MarkerFmt::Csv), ("YouTube chapters…", MarkerFmt::YoutubeChapters)] {
-                if ui.button(label).clicked() {
-                    ui.close();
-                    // ponytail: the toast lives with the Action (App::act_export_markers); this inline
-                    // path just writes, since a leaf pane has no toast handle
-                    let _ = export_markers_dialog(project, fmt);
-                }
-            }
+        let w = ui.available_width();
+        ui.add(egui::TextEdit::singleline(&mut state.query).hint_text("Search markers").desired_width(w));
+    });
+    ui.separator();
+
+    let mut row_op: Option<(RowOp, Vec<Id>)> = None;
+    if rows.is_empty() {
+        let key = menu::shortcut(Action::AddMarker);
+        let none_at_all = project.markers.is_empty() && state.query.is_empty() && state.filter_label == 0;
+        ui.weak(match (none_at_all, key.is_empty()) {
+            (false, _) => "No markers match".to_string(),
+            (true, true) => "No markers - right-click to add one at the playhead".to_string(),
+            (true, false) => format!("No markers - press {key} to add one at the playhead"),
         });
-        if ui.button("Import…").on_hover_text("Add markers from a CSV (time,name[,note,label])").clicked() {
-            if let Some(p) = rfd::FileDialog::new().add_filter("CSV", &["csv"]).pick_file() {
-                if let Ok(text) = std::fs::read_to_string(&p) {
-                    undo(project);
-                    if import_markers_csv(project, &text) > 0 {
-                        out.edited = true;
+    } else {
+        // ---- mini time strip: a tick per marker, drag to rubber-band a time range ----
+        let strip_h = 20.0;
+        let span = rows.iter().map(|r| r.abs_t).fold(project.duration().max(1.0), f64::max);
+        let (strip_rect, strip_resp) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), strip_h), egui::Sense::click_and_drag());
+        let x_at = |t: f64| strip_rect.left() + ((t / span).clamp(0.0, 1.0) as f32) * strip_rect.width();
+        let t_at = |x: f32| ((x - strip_rect.left()) / strip_rect.width()).clamp(0.0, 1.0) as f64 * span;
+        let painter = ui.painter().clone();
+        painter.rect_filled(strip_rect, 2.0, palette.header);
+
+        if strip_resp.drag_started_by(egui::PointerButton::Primary) {
+            if let Some(o) = strip_resp.interact_pointer_pos() {
+                state.band = Some((t_at(o.x), mods.shift));
+            }
+        }
+        if strip_resp.clicked() {
+            state.selected.clear();
+        }
+        let band_range = state.band.and_then(|(t0, _)| {
+            let t1 = t_at(pointer?.x);
+            Some((t0.min(t1), t0.max(t1)))
+        });
+        if let Some((a, b)) = band_range {
+            painter.rect_filled(
+                egui::Rect::from_x_y_ranges(x_at(a)..=x_at(b), strip_rect.y_range()),
+                0.0,
+                palette.selection.gamma_multiply(0.25),
+            );
+        }
+        if state.band.is_some() && !primary_down {
+            let (_, add) = state.band.take().expect("checked above");
+            if let Some((a, b)) = band_range {
+                let hit: Vec<Id> = rows.iter().filter(|r| r.abs_t >= a && r.abs_t <= b).map(|r| r.id).collect();
+                if !add {
+                    state.selected.clear();
+                }
+                for h in hit {
+                    if !state.selected.contains(&h) {
+                        state.selected.push(h);
                     }
                 }
             }
         }
-    });
-
-    // ---- bulk ops on the multi-selection ----
-    ui.horizontal_wrapped(|ui| {
-        let n = state.selected.len();
-        ui.label(if n > 0 { format!("{n} selected") } else { String::new() });
-        let enabled = n >= 1; // bulk ops are also the ONLY route to snap/link a single marker
-        let del = ui.add_enabled(enabled, egui::Button::new("Delete"));
-        mark(ui, "bulk_delete", &del);
-        if del.clicked() {
-            undo(project);
-            for id in std::mem::take(&mut state.selected) {
-                project.remove_marker(id);
-            }
-            out.edited = true;
-        }
-        let snap = ui
-            .add_enabled(enabled, egui::Button::new("Snap to Nearest Clip"))
-            .on_hover_text("Move each selected timeline marker to its nearest clip edge (start or end)");
-        mark(ui, "bulk_snap", &snap);
-        if snap.clicked() {
-            undo(project);
-            for id in state.selected.clone() {
-                project.snap_marker_to_nearest_clip(id);
-            }
-            out.edited = true;
-        }
-        let link = ui
-            .add_enabled(enabled, egui::Button::new("Link to Closest Clip"))
-            .on_hover_text("Turn each selected timeline marker into a marker on its nearest clip");
-        mark(ui, "bulk_link", &link);
-        if link.clicked() {
-            undo(project);
-            for id in state.selected.clone() {
-                project.link_marker_to_closest_clip(id);
-            }
-            out.edited = true;
-        }
-    });
-    ui.separator();
-
-    if rows.is_empty() {
-        ui.weak("No markers - press M to add one at the playhead");
-        return out;
-    }
-
-    // ---- mini time strip: a tick per marker, drag to rubber-band a time range ----
-    let strip_h = 20.0;
-    let span = rows.iter().map(|r| r.abs_t).fold(project.duration().max(1.0), f64::max);
-    let (strip_rect, strip_resp) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), strip_h), egui::Sense::click_and_drag());
-    let x_at = |t: f64| strip_rect.left() + ((t / span).clamp(0.0, 1.0) as f32) * strip_rect.width();
-    let t_at = |x: f32| ((x - strip_rect.left()) / strip_rect.width()).clamp(0.0, 1.0) as f64 * span;
-    let painter = ui.painter().clone();
-    painter.rect_filled(strip_rect, 2.0, palette.header);
-
-    if strip_resp.drag_started_by(egui::PointerButton::Primary) {
-        if let Some(o) = strip_resp.interact_pointer_pos() {
-            state.band = Some((t_at(o.x), mods.shift));
-        }
-    }
-    if strip_resp.clicked() {
-        state.selected.clear();
-    }
-    let band_range = state.band.and_then(|(t0, _)| {
-        let t1 = t_at(pointer?.x);
-        Some((t0.min(t1), t0.max(t1)))
-    });
-    if let Some((a, b)) = band_range {
-        painter.rect_filled(
-            egui::Rect::from_x_y_ranges(x_at(a)..=x_at(b), strip_rect.y_range()),
-            0.0,
-            palette.selection.gamma_multiply(0.25),
-        );
-    }
-    if state.band.is_some() && !primary_down {
-        let (_, add) = state.band.take().expect("checked above");
-        if let Some((a, b)) = band_range {
-            let hit: Vec<Id> = rows.iter().filter(|r| r.abs_t >= a && r.abs_t <= b).map(|r| r.id).collect();
-            if !add {
-                state.selected.clear();
-            }
-            for h in hit {
-                if !state.selected.contains(&h) {
-                    state.selected.push(h);
-                }
-            }
-        }
-    }
-    for row in &rows {
-        let x = x_at(row.abs_t);
-        let sel = state.selected.contains(&row.id);
-        let c = if sel { palette.accent } else { palette.text_dim };
-        painter.circle_filled(egui::pos2(x, strip_rect.center().y), if sel { 3.5 } else { 2.5 }, c);
-    }
-    ui.add_space(2.0);
-
-    let mut remove: Option<Id> = None;
-    egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         for row in &rows {
-            // ponytail: edit a clone of the one marker and write it back - lets `undo` snapshot the
-            // untouched project without holding a mutable borrow across the widgets.
-            let Some(mut m) = project.marker_mut(row.id).map(|m| m.clone()) else { continue };
-            let selected = state.selected.contains(&row.id);
-            let (mut start, mut changed) = (false, false);
-            let mut ctrl_toggle = false;
-            let mut select_hit = false;
+            let x = x_at(row.abs_t);
+            let sel = state.selected.contains(&row.id);
+            let c = if sel { palette.accent } else { palette.text_dim };
+            painter.circle_filled(egui::pos2(x, strip_rect.center().y), if sel { 3.5 } else { 2.5 }, c);
+        }
+        ui.add_space(2.0);
 
-            let header_id = ui.id().with(("marker_row", row.id));
-            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), header_id, false)
-                .show_header(ui, |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        let (icon_rect, _) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
-                        crate::ui::tools::draw_glyph(ui.painter(), icon_rect, marker_glyph(&m.icon), palette.text);
+        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+            for row in &rows {
+                // ponytail: edit a clone of the one marker and write it back - lets `undo` snapshot the
+                // untouched project without holding a mutable borrow across the widgets.
+                let Some(mut m) = project.marker_mut(row.id).map(|m| m.clone()) else { continue };
+                let selected = state.selected.contains(&row.id);
+                let (mut start, mut changed) = (false, false);
+                let mut hit: Option<bool> = None; // Some(ctrl/shift toggle) when the row was clicked
 
-                        let color = match project.label_color(m.label) {
-                            Some([r, g, b]) => egui::Color32::from_rgb(r, g, b),
-                            None => palette.text_dim,
-                        };
-                        let dot = ui.add(crate::ui::tools::color_chip(color, false, palette));
-                        dot.context_menu(|ui| {
-                            if ui.selectable_label(m.label == 0, "None").clicked() {
-                                m.label = 0;
-                                start = true;
-                                changed = true;
-                                ui.close();
+                let header_id = ui.id().with(("marker_row", row.id));
+                let mut cs =
+                    egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), header_id, false);
+                if state.rename == Some(row.id) {
+                    cs.set_open(true);
+                }
+                cs.show_header(ui, |ui| {
+                    // the whole row senses clicks under its widgets: click = select + seek, right-click = menu
+                    let row_r = ui.scope_builder(egui::UiBuilder::new().sense(egui::Sense::click()), |ui| {
+                        ui.horizontal(|ui| {
+                            let (icon, _) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
+                            crate::ui::tools::draw_glyph(ui.painter(), icon, marker_glyph(&m.icon), palette.text);
+                            let color = match project.label_color(m.label) {
+                                Some([r, g, b]) => egui::Color32::from_rgb(r, g, b),
+                                None => palette.text_dim,
+                            };
+                            let (dot, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                            ui.painter().circle_filled(dot.center(), 5.0, color);
+                            ui.weak(timecode(row.abs_t, fps));
+                            let text = if m.name.is_empty() { "(marker)".to_string() } else { m.name.clone() };
+                            ui.selectable_label(selected, text)
+                        })
+                        .inner
+                    });
+                    let name_r = row_r.inner;
+                    mark(ui, format_args!("name{}", row.id), &name_r);
+                    let r = row_r.response.union(name_r);
+                    if r.clicked() {
+                        hit = Some(mods.ctrl || mods.shift);
+                    }
+                    if r.secondary_clicked() && !selected {
+                        state.selected = vec![row.id];
+                    }
+                    r.context_menu(|ui| {
+                        let targets =
+                            if state.selected.contains(&row.id) { state.selected.clone() } else { vec![row.id] };
+                        let n = targets.len();
+                        if n == 1 && menu::row(ui, None, "Rename", "").clicked() {
+                            state.rename = Some(row.id);
+                        }
+                        menu::sub(ui, None, "Label", |ui| {
+                            if menu::check(ui, m.label == 0, "None", "").clicked() {
+                                row_op = Some((RowOp::Label(0), targets.clone()));
                             }
                             for (i, (name, [r, g, b])) in labels.iter().enumerate() {
                                 let t = RichText::new(name.clone()).color(egui::Color32::from_rgb(*r, *g, *b));
                                 if ui.selectable_label(m.label == i as u8 + 1, t).clicked() {
-                                    m.label = i as u8 + 1;
-                                    start = true;
-                                    changed = true;
+                                    row_op = Some((RowOp::Label(i as u8 + 1), targets.clone()));
                                     ui.close();
                                 }
                             }
                         });
-
-                        ui.weak(timecode(row.abs_t, fps));
-                        let label_text = if m.name.is_empty() { "(marker)".to_string() } else { m.name.clone() };
-                        let name_r = ui.selectable_label(selected, label_text);
-                        mark(ui, format_args!("name{}", row.id), &name_r);
-                        if name_r.clicked() {
-                            select_hit = true;
-                            ctrl_toggle = mods.ctrl || mods.shift;
-                            // "when I click on a marker, it should reposition my playhead" - a plain
-                            // click seeks too (Ctrl/Shift keep pure multi-select, Go stays for hover-time)
-                            if !ctrl_toggle {
-                                out.seek = Some(m.t + row.offset);
-                            }
+                        let r = menu::row(ui, None, "Snap to nearest clip", "")
+                            .on_hover_text("Move each timeline marker to its nearest clip edge (start or end)");
+                        if r.clicked() {
+                            row_op = Some((RowOp::Snap, targets.clone()));
                         }
-
-                        let go = ui.small_button("Go").on_hover_text(timecode(row.abs_t, fps));
-                        mark(ui, format_args!("go{}", row.id), &go);
-                        if go.clicked() {
-                            state.selected = vec![row.id];
-                            out.seek = Some(m.t + row.offset);
+                        let r = menu::row(ui, None, "Link to closest clip", "")
+                            .on_hover_text("Turn each timeline marker into a marker on its nearest clip");
+                        if r.clicked() {
+                            row_op = Some((RowOp::Link, targets.clone()));
                         }
-                        let del = x_button(ui).on_hover_text("Delete marker");
-                        mark(ui, format_args!("del{}", row.id), &del);
-                        if del.clicked() {
-                            remove = Some(row.id);
+                        ui.separator();
+                        let label = if n > 1 { format!("Delete {n} markers") } else { "Delete".into() };
+                        if menu::row(ui, Some(Glyph::Cross), &label, "").clicked() {
+                            row_op = Some((RowOp::Delete, targets.clone()));
                         }
                     });
                 })
                 .body(|ui| {
                     let r = ui.add(egui::TextEdit::singleline(&mut m.name).hint_text("marker"));
+                    if state.rename == Some(row.id) {
+                        r.request_focus();
+                        state.rename = None;
+                    }
                     start |= r.gained_focus();
                     changed |= r.changed();
                     ui.horizontal(|ui| {
@@ -580,40 +549,97 @@ pub fn show(
                     });
                 });
 
-            if select_hit {
-                if ctrl_toggle {
-                    if selected {
-                        state.selected.retain(|id| *id != row.id);
-                    } else {
-                        state.selected.push(row.id);
+                match hit {
+                    Some(true) if selected => state.selected.retain(|id| *id != row.id),
+                    Some(true) => state.selected.push(row.id),
+                    Some(false) => {
+                        // "when I click on a marker, it should reposition my playhead"
+                        state.selected = vec![row.id];
+                        out.seek = Some(m.t + row.offset);
                     }
-                } else {
-                    state.selected = vec![row.id];
+                    None => {}
                 }
-            }
 
-            if start {
-                undo(project);
-            }
-            if changed {
-                if row.clip.is_some() {
-                    // clip markers stay inside their clip
-                    if let Some(c) = row.clip.and_then(|cid| project.clip(cid)) {
-                        m.t = m.t.clamp(0.0, c.duration);
-                    }
+                if start {
+                    undo(project);
                 }
-                if let Some(dst) = project.marker_mut(row.id) {
-                    *dst = m;
+                if changed {
+                    if row.clip.is_some() {
+                        // clip markers stay inside their clip
+                        if let Some(c) = row.clip.and_then(|cid| project.clip(cid)) {
+                            m.t = m.t.clamp(0.0, c.duration);
+                        }
+                    }
+                    if let Some(dst) = project.marker_mut(row.id) {
+                        *dst = m;
+                    }
+                    out.edited = true;
+                }
+            }
+        });
+    }
+
+    // ---- empty space: the pane's verbs ----
+    bg.context_menu(|ui| {
+        menu::action_item(ui, Action::AddMarker);
+        let r = ui.add_enabled_ui(sel_clip.is_some(), |ui| menu::row(ui, None, "Add on selected clip", "")).inner;
+        if r.on_disabled_hover_text("Select a clip first").clicked() {
+            if let Some(cid) = sel_clip {
+                let local = project.clip(cid).map(|c| (playhead - c.start).clamp(0.0, c.duration)).unwrap_or(0.0);
+                undo(project);
+                if let Some(id) = project.add_clip_marker(cid, local, "") {
+                    state.selected = vec![id];
                 }
                 out.edited = true;
             }
         }
+        ui.separator();
+        if menu::row(ui, None, "Copy as list", "").on_hover_text("Markdown, for notes and the AI tools").clicked() {
+            ui.ctx().copy_text(as_markdown(project, fps));
+        }
+        // ---- ws:export-deliver ----
+        menu::sub(ui, Some(Glyph::ExportArrow), "Export", |ui| {
+            for (label, fmt) in [("CSV…", MarkerFmt::Csv), ("YouTube chapters…", MarkerFmt::YoutubeChapters)] {
+                if menu::row(ui, None, label, "").clicked() {
+                    // ponytail: the toast lives with the Action (App::act_export_markers); this inline
+                    // path just writes, since a leaf pane has no toast handle
+                    let _ = export_markers_dialog(project, fmt);
+                }
+            }
+        });
+        let r = menu::row(ui, Some(Glyph::ImportArrow), "Import…", "")
+            .on_hover_text("Add markers from a CSV (time,name[,note,label])");
+        if r.clicked() {
+            if let Some(p) = rfd::FileDialog::new().add_filter("CSV", &["csv"]).pick_file() {
+                if let Ok(text) = std::fs::read_to_string(&p) {
+                    undo(project);
+                    if import_markers_csv(project, &text) > 0 {
+                        out.edited = true;
+                    }
+                }
+            }
+        }
     });
 
-    if let Some(id) = remove {
+    if let Some((op, ids)) = row_op {
         undo(project);
-        project.remove_marker(id);
-        state.selected.retain(|s| *s != id);
+        for &id in &ids {
+            match op {
+                RowOp::Label(l) => {
+                    if let Some(m) = project.marker_mut(id) {
+                        m.label = l;
+                    }
+                }
+                RowOp::Snap => project.snap_marker_to_nearest_clip(id),
+                RowOp::Link => {
+                    project.link_marker_to_closest_clip(id);
+                }
+                RowOp::Delete => project.remove_marker(id),
+            }
+        }
+        if op == RowOp::Delete {
+            state.selected.retain(|s| !ids.contains(s));
+        }
         out.edited = true;
     }
     out
@@ -632,19 +658,23 @@ mod tests {
         selection: Vec<Id>,
         undos: usize,
         time: f64,
+        shapes: Vec<egui::epaint::ClippedShape>,
     }
 
     impl H {
         fn new() -> Self {
             let mut project = Project::new();
             project.tracks[0].clips.push(Clip::new(9, ClipKind::Video, "v", 2.0, 4.0));
+            let ctx = egui::Context::default();
+            ctx.set_fonts(crate::theme::test_fonts()); // real glyph sizes, so popup entries land where drawn
             Self {
-                ctx: egui::Context::default(),
+                ctx,
                 project,
                 state: MarkersState::default(),
                 selection: vec![9],
                 undos: 0,
                 time: 0.0,
+                shapes: Vec::new(),
             }
         }
         fn frame(&mut self, events: Vec<Event>) -> MarkersResponse {
@@ -663,15 +693,39 @@ mod tests {
                 ..Default::default()
             };
             let pal = Palette::new(true, Color32::WHITE);
-            let H { ctx, project, state, selection, undos, .. } = self;
+            let H { ctx, project, state, selection, undos, shapes, .. } = self;
             let mut out = MarkersResponse::default();
-            let _ = ctx.run(input, |ctx| {
+            let full = ctx.run(input, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut undo = |_: &Project| *undos += 1;
                     out = show(ui, state, project, selection, 3.0, &pal, &mut undo);
                 });
             });
+            *shapes = full.shapes;
             out
+        }
+        /// Centre of the first painted text equal to `label` - how a popup's entries are found.
+        fn text_at(&self, label: &str) -> Option<Pos2> {
+            self.shapes.iter().find_map(|c| match &c.shape {
+                egui::epaint::Shape::Text(t) if t.galley.text() == label => Some(t.visual_bounding_rect().center()),
+                _ => None,
+            })
+        }
+        /// Right-click `at`, then click the menu entry `label`.
+        fn menu(&mut self, at: Pos2, label: &str) -> MarkersResponse {
+            self.frame(vec![Event::PointerMoved(at)]);
+            for pressed in [true, false] {
+                self.frame(vec![Event::PointerButton {
+                    pos: at,
+                    button: PointerButton::Secondary,
+                    pressed,
+                    modifiers: Modifiers::NONE,
+                }]);
+            }
+            self.frame(vec![]);
+            let item = self.text_at(label).unwrap_or_else(|| panic!("no '{label}' in the menu"));
+            self.time += 1.0; // a separate gesture, not a double-click
+            self.click(item)
         }
         fn rect(&self, name: &str) -> Rect {
             self.ctx
@@ -700,28 +754,52 @@ mod tests {
     }
 
     #[test]
-    fn add_seek_and_delete() {
+    fn click_seeks_and_row_menu_deletes() {
         let mut h = H::new();
+        let id = h.project.add_marker(1.25, "a");
         h.frame(vec![]);
-        let add = h.rect("add");
-        h.click(add.center());
-        assert_eq!(h.project.markers.len(), 1, "Add at playhead adds a marker");
-        assert_eq!(h.project.markers[0].t, 3.0);
-        assert_eq!(h.undos, 1, "one undo per gesture");
-
-        let id = h.project.markers[0].id;
-        h.frame(vec![]);
-        let go = h.rect(&format!("go{id}"));
-        let out = h.click(go.center());
-        assert_eq!(out.seek, Some(3.0), "Go seeks to the marker time");
+        let out = h.click(h.rect(&format!("name{id}")).center());
+        assert_eq!(out.seek, Some(1.25), "clicking a row seeks to the marker (no Go button needed)");
         assert_eq!(h.state.selected, vec![id]);
+        assert_eq!(h.undos, 0, "selecting is not an edit");
 
-        h.frame(vec![]);
-        let del = h.rect(&format!("del{id}"));
-        h.click(del.center());
-        assert!(h.project.markers.is_empty(), "the X removes the marker");
-        assert_eq!(h.undos, 2, "delete is one more undo");
+        h.time += 1.0;
+        let at = h.rect(&format!("name{id}")).center();
+        let out = h.menu(at, "Delete");
+        assert!(out.edited && h.project.markers.is_empty(), "right-click ▸ Delete removes it");
+        assert_eq!(h.undos, 1, "delete is one undo");
         assert!(h.state.selected.is_empty());
+    }
+
+    /// Empty space ▸ "Add on selected clip" drops a clip marker at the playhead; "Add at playhead" is
+    /// the M Action itself, queued through the shared menu helper.
+    #[test]
+    fn empty_space_menu_adds_markers() {
+        let mut h = H::new(); // clip 9 at 2..6 is selected, the playhead is at 3
+        h.frame(vec![]);
+        let empty = Pos2::new(260.0, 500.0);
+        let out = h.menu(empty, "Add on selected clip");
+        assert!(out.edited);
+        let c = h.project.clip(9).unwrap();
+        assert_eq!(c.markers.len(), 1);
+        assert!((c.markers[0].t - 1.0).abs() < 1e-9, "clip-local 1 s = timeline 3 s");
+        assert_eq!(h.undos, 1);
+        let _ = menu::take_queued();
+        h.time += 1.0;
+        h.menu(empty, Action::AddMarker.label());
+        assert_eq!(menu::take_queued(), vec![Action::AddMarker], "Add at playhead runs the M Action");
+    }
+
+    #[test]
+    fn search_filters_by_name_and_note() {
+        let mut p = Project::new();
+        p.add_marker(1.0, "Intro");
+        let b = p.add_marker(2.0, "Hook");
+        p.marker_mut(b).unwrap().note = "the big reveal".into();
+        assert_eq!(rows(&p, 0, "intro").len(), 1, "case-insensitive name match");
+        assert_eq!(rows(&p, 0, "REVEAL").iter().map(|r| r.id).collect::<Vec<_>>(), vec![b], "notes count");
+        assert!(rows(&p, 0, "nothing like it").is_empty());
+        assert_eq!(rows(&p, 0, "  ").len(), 2, "blank = everything");
     }
 
     #[test]
@@ -730,15 +808,15 @@ mod tests {
         p.tracks[0].clips.push(Clip::new(9, ClipKind::Video, "v", 2.0, 4.0));
         p.add_marker(3.0, "project");
         p.add_clip_marker(9, 1.0, "on clip");
-        let r = rows(&p, 0);
+        let r = rows(&p, 0, "");
         assert_eq!(r.len(), 2);
         assert!(r.iter().all(|x| x.abs_t == 3.0), "both land at 3 s");
         let clip_row = r.iter().find(|x| x.clip.is_some()).expect("clip marker");
         assert_eq!(clip_row.offset, 2.0, "clip markers carry their clip start");
         p.markers[0].label = 2;
-        assert_eq!(rows(&p, 2).len(), 1);
-        assert_eq!(rows(&p, 1).len(), 0);
-        assert_eq!(rows(&p, 0).len(), 2);
+        assert_eq!(rows(&p, 2, "").len(), 1);
+        assert_eq!(rows(&p, 1, "").len(), 0);
+        assert_eq!(rows(&p, 0, "").len(), 2);
     }
 
     #[test]
@@ -747,9 +825,9 @@ mod tests {
         p.add_marker(1.0, "main"); // editing == None
         p.editing = Some(42);
         p.add_marker(2.0, "other seq");
-        assert_eq!(rows(&p, 0).len(), 1, "only the marker made on the current sequence shows");
+        assert_eq!(rows(&p, 0, "").len(), 1, "only the marker made on the current sequence shows");
         p.editing = None;
-        assert_eq!(rows(&p, 0).len(), 1, "back on main, the other sequence's marker is hidden");
+        assert_eq!(rows(&p, 0, "").len(), 1, "back on main, the other sequence's marker is hidden");
     }
 
     #[test]
@@ -844,31 +922,46 @@ mod tests {
     }
 
     #[test]
-    fn bulk_delete_removes_all_selected_with_one_undo() {
+    fn row_menu_deletes_the_whole_selection_with_one_undo() {
         let mut h = H::new();
         let a = h.project.add_marker(1.0, "a");
         let b = h.project.add_marker(2.0, "b");
         h.state.selected = vec![a, b];
         h.frame(vec![]);
-        let btn = h.rect("bulk_delete");
-        h.click(btn.center());
+        let at = h.rect(&format!("name{b}")).center();
+        h.menu(at, "Delete 2 markers");
         assert!(h.project.markers.is_empty(), "both selected markers are removed");
         assert_eq!(h.undos, 1, "one undo for the whole batch");
         assert!(h.state.selected.is_empty());
     }
 
     #[test]
-    fn bulk_snap_moves_every_selected_marker_with_one_undo() {
+    fn row_menu_snaps_every_selected_marker_with_one_undo() {
         let mut h = H::new();
         h.project.tracks[0].clips.push(Clip::new(10, ClipKind::Video, "c2", 20.0, 2.0));
         let a = h.project.add_marker(1.0, "a"); // nearer clip 9 (start 2.0)
         let b = h.project.add_marker(19.0, "b"); // nearer clip 10 (start 20.0)
+        let lone = h.project.add_marker(12.0, "lone");
         h.state.selected = vec![a, b];
         h.frame(vec![]);
-        let btn = h.rect("bulk_snap");
-        h.click(btn.center());
+        let at = h.rect(&format!("name{a}")).center();
+        h.menu(at, "Snap to nearest clip");
         assert_eq!(h.project.marker_mut(a).unwrap().t, 2.0);
         assert_eq!(h.project.marker_mut(b).unwrap().t, 20.0);
+        assert_eq!(h.project.marker_mut(lone).unwrap().t, 12.0, "an unselected marker stays put");
         assert_eq!(h.undos, 1, "one undo for the whole batch");
+    }
+
+    /// Right-clicking a row outside the selection acts on that row alone (and selects it).
+    #[test]
+    fn row_menu_on_an_unselected_row_targets_just_it() {
+        let mut h = H::new();
+        let a = h.project.add_marker(1.0, "a");
+        let b = h.project.add_marker(2.0, "b");
+        h.state.selected = vec![a];
+        h.frame(vec![]);
+        let at = h.rect(&format!("name{b}")).center();
+        h.menu(at, "Delete");
+        assert_eq!(h.project.markers.iter().map(|m| m.id).collect::<Vec<_>>(), vec![a]);
     }
 }

@@ -1,18 +1,21 @@
-//! Planner pane: tabs "Plan", "Notes" and "Timer".
-//! Plan = a nested to-do tree (Project.plan): each row = checkbox (done), editable title, colour label dot
-//! (click → LABEL_COLORS menu), a collapse triangle, a done/total progress fraction when it has children,
-//! "+" add sub-task, delete, reorder among siblings, indent/outdent; a non-empty `requirements` checklist
-//! renders compactly underneath. A selected item's details panel shows its notes (multiline), its
-//! requirements (checkbox + label + delete, "Add requirement") and its moodboard: the asset ids in
-//! `assets` as rows (name, kind tag, thumbnail via ThumbCache if available, per-asset note in `asset_notes`,
-//! "Add to timeline", delete); assets are added by dropping library items (DragPayload::Asset) onto the item or
-//! onto the moodboard area. Progress bar "done/total" at the top; "Add task" at the top level;
-//! "Clear completed". Undo once per gesture.
+//! Planner pane: tabs "Plan", "Notes" and "Timer", on one header row with the tab's primary verb
+//! (the progress bar and "+ Add task" / "+ Add note").
+//! Plan = a nested to-do tree (Project.plan): each row = a collapse triangle, checkbox (done), colour
+//! label dot (click → LABEL_COLORS menu), editable title and a done/total fraction when it has children;
+//! its right-click adds a sub-task, moves it among its siblings, indents/outdents or deletes it. A
+//! non-empty `requirements` checklist renders compactly underneath (right-click one to remove it). A
+//! selected item's details panel shows its notes (multiline), its requirements (checkbox + label,
+//! "Add requirement"; right-click removes) and its moodboard: the asset ids in `assets` as rows (name,
+//! kind tag, thumbnail via ThumbCache if available, per-asset note in `asset_notes`; right-click adds it to
+//! the timeline or removes it); assets are added by dropping library items (DragPayload::Asset) onto the
+//! item or onto the moodboard area. Right-click empty space: Add task, Clear completed. Undo once per
+//! gesture.
 //!
 //! Notes tab = `Project.notes`, a list of titled markdown entries ("describe your process, ideas, style
 //! while you edit - the style summary / AI tools read this"): one collapsed-by-default
-//! `CollapsingHeader` per note (colour label dot, title field, Edit/Preview toggle, delete), body shown
-//! as rendered markdown (`crate::ui::markdown`) or, in edit mode, a plain multiline `TextEdit`.
+//! `CollapsingHeader` per note (colour label dot, title field; right-click toggles Edit/Preview or
+//! deletes it), body shown as rendered markdown (`crate::ui::markdown`) or, in edit mode, a plain
+//! multiline `TextEdit`.
 //!
 //! Timer tab = a session-scoped stopwatch/countdown (`PlannerState::timer`, not project data): a round
 //! dial (`dial()`), Start/Pause/Reset, and an optional link to one plan item - while running, elapsed
@@ -24,9 +27,8 @@
 use crate::media::thumbs::ThumbCache;
 use crate::model::{ClipKind, Id, PlanItem, Project, LABEL_COLORS};
 use crate::theme::Palette;
-use crate::ui::markers_ui::x_button;
 use crate::ui::tools::{glyph_text_button, Dir, Glyph};
-use crate::ui::{edit_start, label_color, markdown, once, DragPayload};
+use crate::ui::{edit_start, label_color, markdown, menu, once, DragPayload};
 use eframe::egui::{self, Response, RichText, TextEdit};
 use std::time::{Duration, Instant};
 
@@ -39,6 +41,8 @@ pub struct PlannerState {
     /// Open/closed state of each note's `CollapsingHeader` is persisted by egui itself, not here.
     pub notes_editing: Vec<Id>,
     pub timer: TimerState,
+    /// Task whose title is being typed into and already has its undo step for this visit.
+    typing: Option<Id>,
 }
 
 #[derive(Default)]
@@ -242,6 +246,7 @@ enum Op {
 struct TreeUi<'a> {
     collapsed: &'a mut Vec<Id>,
     selected: &'a mut Option<Id>,
+    typing: &'a mut Option<Id>,
     op: &'a mut Option<Op>,
     start: bool,
     changed: bool,
@@ -251,11 +256,6 @@ struct TreeUi<'a> {
 impl TreeUi<'_> {
     fn note(&mut self, r: &Response) {
         self.start |= edit_start(r);
-        self.changed |= r.changed();
-    }
-    /// Text fields: one undo entry per visit to the field, not per keystroke.
-    fn note_text(&mut self, r: &Response) {
-        self.start |= r.gained_focus();
         self.changed |= r.changed();
     }
     fn click(&mut self) {
@@ -288,8 +288,9 @@ fn color_menu(ui: &mut egui::Ui, current: u8, palette: &Palette) -> Option<u8> {
 fn tree_rows(ui: &mut egui::Ui, items: &mut [PlanItem], depth: usize, t: &mut TreeUi) {
     for it in items {
         let closed = t.collapsed.contains(&it.id);
-        let row = ui
-            .horizontal(|ui| {
+        // the row senses clicks under its widgets, so a right-click anywhere on it opens its menu
+        let row = ui.scope_builder(egui::UiBuilder::new().sense(egui::Sense::click()), |ui| {
+            ui.horizontal(|ui| {
                 ui.add_space(depth as f32 * 14.0);
                 if it.children.is_empty() {
                     ui.add_space(18.0);
@@ -306,37 +307,51 @@ fn tree_rows(ui: &mut egui::Ui, items: &mut [PlanItem], depth: usize, t: &mut Tr
                     it.color = c;
                     t.click();
                 }
-                let w = (ui.available_width() - 150.0).max(60.0);
+                let w = (ui.available_width() - 40.0).max(60.0);
                 let r = ui.add(TextEdit::singleline(&mut it.title).desired_width(w).hint_text("task"));
                 if r.has_focus() {
                     *t.selected = Some(it.id);
                 }
-                t.note_text(&r);
+                // one undo step per visit, taken at the first keystroke - not on focus, which a
+                // right-click (the row's menu) also gives the field
+                if r.changed() && *t.typing != Some(it.id) {
+                    t.start = true;
+                    *t.typing = Some(it.id);
+                }
+                t.changed |= r.changed();
+                if r.lost_focus() && *t.typing == Some(it.id) {
+                    *t.typing = None;
+                }
+                #[cfg(test)]
+                ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(("plan_row", it.id)), r.rect));
                 if !it.children.is_empty() {
                     let (d, total) = count_items(&it.children);
                     ui.weak(format!("{d}/{total}"));
                 }
-                let mut op = |o: Op| *t.op = Some(o);
-                if ui.small_button("+").on_hover_text("Add sub-task").clicked() {
-                    op(Op::Add(Some(it.id)));
-                }
-                if glyph_text_button(ui, Glyph::Tri(Dir::Up), "").on_hover_text("Move up").clicked() {
-                    op(Op::Up(it.id));
-                }
-                if glyph_text_button(ui, Glyph::Tri(Dir::Down), "").on_hover_text("Move down").clicked() {
-                    op(Op::Down(it.id));
-                }
-                if glyph_text_button(ui, Glyph::Indent(false), "").on_hover_text("Outdent").clicked() {
-                    op(Op::Out(it.id));
-                }
-                if glyph_text_button(ui, Glyph::Indent(true), "").on_hover_text("Indent").clicked() {
-                    op(Op::In(it.id));
-                }
-                if x_button(ui).on_hover_text("Delete task").clicked() {
-                    op(Op::Remove(it.id));
-                }
+                r
             })
-            .response;
+            .inner
+        });
+        let row = row.response.union(row.inner);
+        let id = it.id;
+        row.context_menu(|ui| {
+            let rows = [
+                (Glyph::Dot, "Add sub-task", Op::Add(Some(id))),
+                (Glyph::Tri(Dir::Up), "Move up", Op::Up(id)),
+                (Glyph::Tri(Dir::Down), "Move down", Op::Down(id)),
+                (Glyph::Indent(true), "Indent", Op::In(id)),
+                (Glyph::Indent(false), "Outdent", Op::Out(id)),
+            ];
+            for (g, label, op) in rows {
+                if menu::row(ui, Some(g), label, "").clicked() {
+                    *t.op = Some(op);
+                }
+            }
+            ui.separator();
+            if menu::row(ui, Some(Glyph::Cross), "Delete task", "").clicked() {
+                *t.op = Some(Op::Remove(id));
+            }
+        });
         // drop a library asset onto the row → moodboard
         if let Some(p) = row.dnd_release_payload::<DragPayload>() {
             if let DragPayload::Asset(aid) = *p {
@@ -351,12 +366,16 @@ fn tree_rows(ui: &mut egui::Ui, items: &mut [PlanItem], depth: usize, t: &mut Tr
         if !it.requirements.is_empty() {
             let mut rm: Option<usize> = None;
             for (ri, (label, done)) in it.requirements.iter_mut().enumerate() {
-                ui.horizontal(|ui| {
+                let r = ui.horizontal(|ui| {
                     ui.add_space(depth as f32 * 14.0 + 36.0);
                     let r = ui.checkbox(done, "");
                     t.note(&r);
-                    ui.label(RichText::new(label.as_str()).small().weak());
-                    if x_button(ui).on_hover_text("Remove requirement").clicked() {
+                    r.union(ui.add(
+                        egui::Label::new(RichText::new(label.as_str()).small().weak()).sense(egui::Sense::click()),
+                    ))
+                });
+                r.inner.context_menu(|ui| {
+                    if menu::row(ui, Some(Glyph::Cross), "Remove requirement", "").clicked() {
                         rm = Some(ri);
                     }
                 });
@@ -382,31 +401,38 @@ pub fn show(
 ) -> PlannerResponse {
     let mut resp = PlannerResponse::default();
     let mut undone = false;
+    let bg = crate::ui::markers_ui::menu_area(ui);
+    let (done, total) = count_items(&project.plan);
+    let mut add_task = false;
+    let mut add_note = false;
+    // one header row: the tabs, then the open tab's own verb
     ui.horizontal(|ui| {
         ui.selectable_value(&mut state.tab, 0, "Plan");
         ui.selectable_value(&mut state.tab, 1, "Notes");
         ui.selectable_value(&mut state.tab, 2, "Timer");
+        ui.separator();
+        match state.tab {
+            0 => {
+                add_task = ui.button("+ Add task").clicked();
+                if total > 0 {
+                    let bar = egui::ProgressBar::new(done as f32 / total as f32).text(format!("{done}/{total} done"));
+                    ui.add(bar.desired_width(ui.available_width()));
+                }
+            }
+            1 => add_note = ui.button("+ Add note").clicked(),
+            _ => {}
+        }
     });
     ui.separator();
 
     if state.tab == 1 {
-        notes_tab(ui, state, project, palette, undo, &mut resp);
+        notes_tab(ui, state, project, palette, undo, &mut resp, add_note);
         return resp;
     }
     if state.tab == 2 {
         timer_tab(ui, state, project, palette, &mut resp);
         return resp;
     }
-
-    let (done, total) = count_items(&project.plan);
-    ui.horizontal(|ui| {
-        if total > 0 {
-            ui.add(
-                egui::ProgressBar::new(done as f32 / total as f32).desired_width(120.0).text(format!("{done}/{total}")),
-            );
-        }
-        ui.label("");
-    });
 
     // ponytail: per-frame deep clone of the task tree, written back on change - keeps `undo` able to
     // snapshot the untouched project. Upgrade: drive tree_rows from &mut project.plan if a big plan shows.
@@ -415,19 +441,15 @@ pub fn show(
     let mut t = TreeUi {
         collapsed: &mut state.collapsed,
         selected: &mut state.selected,
+        typing: &mut state.typing,
         op: &mut op,
         start: false,
         changed: false,
         palette,
     };
-    ui.horizontal(|ui| {
-        if ui.button("Add task").clicked() {
-            *t.op = Some(Op::Add(None));
-        }
-        if done > 0 && ui.button("Clear completed").clicked() {
-            *t.op = Some(Op::ClearDone);
-        }
-    });
+    if add_task {
+        *t.op = Some(Op::Add(None));
+    }
     egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         tree_rows(ui, &mut plan, 0, &mut t);
         if let Some(sel) = *t.selected {
@@ -437,6 +459,15 @@ pub fn show(
         }
     });
 
+    bg.context_menu(|ui| {
+        if menu::row(ui, None, "Add task", "").clicked() {
+            *t.op = Some(Op::Add(None));
+        }
+        let r = ui.add_enabled_ui(done > 0, |ui| menu::row(ui, None, "Clear completed", "")).inner;
+        if r.on_disabled_hover_text("Nothing is ticked off yet").clicked() {
+            *t.op = Some(Op::ClearDone);
+        }
+    });
     if t.start {
         once(&mut undone, undo, project);
     }
@@ -493,14 +524,17 @@ fn details(
     ui.weak("Requirements");
     let mut rm_req: Option<usize> = None;
     for (ri, (label, done)) in it.requirements.iter_mut().enumerate() {
-        ui.horizontal(|ui| {
+        let row = ui.horizontal(|ui| {
             let r = ui.checkbox(done, "");
             start |= edit_start(&r);
             changed |= r.changed();
-            let r = ui.add(TextEdit::singleline(label).desired_width(f32::INFINITY));
-            start |= r.gained_focus();
-            changed |= r.changed();
-            if x_button(ui).on_hover_text("Remove requirement").clicked() {
+            let t = ui.add(TextEdit::singleline(label).desired_width(f32::INFINITY));
+            start |= t.gained_focus();
+            changed |= t.changed();
+            r.union(t)
+        });
+        row.response.union(row.inner).context_menu(|ui| {
+            if menu::row(ui, Some(Glyph::Cross), "Remove requirement", "").clicked() {
                 rm_req = Some(ri);
             }
         });
@@ -524,28 +558,32 @@ fn details(
         ui.weak("Moodboard - drop library assets here");
         for i in 0..it.assets.len() {
             let aid = it.assets[i];
-            ui.horizontal(|ui| {
-                let Some(a) = project.asset(aid) else {
-                    ui.weak("(missing asset)");
-                    return;
-                };
-                if a.has_video() {
-                    if let Some((tex, [w, h])) = thumbs.texture(ui.ctx(), &a.path, 0.0, 40) {
-                        let size = egui::vec2(w as f32, h as f32);
-                        ui.add(egui::Image::new(egui::load::SizedTexture::new(tex, size)));
+            let row = ui.scope_builder(egui::UiBuilder::new().sense(egui::Sense::click()), |ui| {
+                ui.horizontal(|ui| {
+                    let Some(a) = project.asset(aid) else {
+                        ui.weak("(missing asset)");
+                        return;
+                    };
+                    if a.has_video() {
+                        if let Some((tex, [w, h])) = thumbs.texture(ui.ctx(), &a.path, 0.0, 40) {
+                            let size = egui::vec2(w as f32, h as f32);
+                            ui.add(egui::Image::new(egui::load::SizedTexture::new(tex, size)));
+                        }
                     }
-                }
-                ui.label(a.name());
-                ui.weak(match a.kind {
-                    ClipKind::Video => "V",
-                    ClipKind::Audio => "A",
-                    ClipKind::Image => "I",
-                    _ => "?",
+                    ui.label(a.name());
+                    ui.weak(match a.kind {
+                        ClipKind::Video => "V",
+                        ClipKind::Audio => "A",
+                        ClipKind::Image => "I",
+                        _ => "?",
+                    });
                 });
-                if ui.small_button("Add to timeline").clicked() {
+            });
+            row.response.context_menu(|ui| {
+                if menu::row(ui, None, "Add to timeline", "").on_hover_text("At the playhead").clicked() {
                     resp.add_to_timeline.push(aid);
                 }
-                if x_button(ui).on_hover_text("Remove from moodboard").clicked() {
+                if menu::row(ui, Some(Glyph::Cross), "Remove from moodboard", "").clicked() {
                     rm = Some(i);
                 }
             });
@@ -584,18 +622,16 @@ fn notes_tab(
     palette: &Palette,
     undo: &mut dyn FnMut(&Project),
     resp: &mut PlannerResponse,
+    add: bool,
 ) {
     let mut undone = false;
     let labels: Vec<(String, [u8; 3])> = project.labels.iter().map(|l| (l.name.clone(), l.color)).collect();
-    ui.horizontal(|ui| {
-        if ui.button("Add note").clicked() {
-            once(&mut undone, undo, project);
-            let id = project.add_note("");
-            state.notes_editing.push(id);
-            resp.edited = true;
-        }
-    });
-    ui.separator();
+    if add {
+        once(&mut undone, undo, project);
+        let id = project.add_note("");
+        state.notes_editing.push(id);
+        resp.edited = true;
+    }
     if project.notes.is_empty() {
         ui.weak("No notes yet - describe your process, ideas or style. The style summary / AI tools read these.");
     }
@@ -638,24 +674,29 @@ fn notes_tab(
                                 }
                             }
                         });
-                        let w = (ui.available_width() - 90.0).max(60.0);
-                        let r = ui.add(TextEdit::singleline(&mut n.title).desired_width(w).hint_text("(untitled)"));
-                        start |= r.gained_focus();
-                        changed |= r.changed();
-                        let icon = if editing { Glyph::Eye } else { Glyph::Pencil };
-                        if glyph_text_button(ui, icon, "")
-                            .on_hover_text(if editing { "Preview" } else { "Edit" })
-                            .clicked()
-                        {
-                            toggle_edit = true;
-                        }
-                        if x_button(ui).on_hover_text("Delete note").clicked() {
-                            del = true;
-                        }
+                        // the title is edited in the body (Edit mode), so a right-click here never
+                        // focuses a field just to open the menu
+                        let title = if n.title.is_empty() { "(untitled)" } else { n.title.as_str() };
+                        let r = ui.add(egui::Label::new(title).truncate().sense(egui::Sense::click()));
+                        #[cfg(test)]
+                        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(("note_title", id)), r.rect));
+                        r.context_menu(|ui| {
+                            let (icon, label) = if editing { (Glyph::Eye, "Preview") } else { (Glyph::Pencil, "Edit") };
+                            if menu::row(ui, Some(icon), label, "").clicked() {
+                                toggle_edit = true;
+                            }
+                            if menu::row(ui, Some(Glyph::Cross), "Delete note", "").clicked() {
+                                del = true;
+                            }
+                        });
                     });
                 })
                 .body(|ui| {
                     if editing {
+                        let r =
+                            ui.add(TextEdit::singleline(&mut n.title).desired_width(f32::INFINITY).hint_text("title"));
+                        start |= r.gained_focus();
+                        changed |= r.changed();
                         let r = ui.add(
                             TextEdit::multiline(&mut n.body)
                                 .desired_width(f32::INFINITY)
@@ -665,7 +706,7 @@ fn notes_tab(
                         start |= r.gained_focus();
                         changed |= r.changed();
                     } else if n.body.trim().is_empty() {
-                        ui.weak("(empty - click the pencil to edit)");
+                        ui.weak("(empty - right-click the title ▸ Edit)");
                     } else {
                         markdown::show(ui, &n.body, palette);
                     }
@@ -917,6 +958,76 @@ mod tests {
                 });
             });
         }
+    }
+
+    /// Right-click `at` in a fresh Plan tab, then click the menu entry `label`; true if it edited.
+    fn plan_menu(p: &mut Project, at: impl Fn(&egui::Context) -> egui::Pos2, label: &str) -> (bool, usize) {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::test_fonts());
+        let mut thumbs = ThumbCache::new(ctx.clone(), crate::media::Backend::Auto);
+        let palette = Palette::new(true, egui::Color32::WHITE);
+        let mut state = PlannerState::default();
+        let (mut edited, mut undos, mut time) = (false, 0, 0.0);
+        let mut run = |events: Vec<egui::Event>, p: &mut Project, time: &mut f64| {
+            *time += 0.05;
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(500.0, 500.0))),
+                time: Some(*time),
+                events,
+                ..Default::default()
+            };
+            let full = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let mut undo = |_: &Project| undos += 1;
+                    edited |= show(ui, &mut state, p, &mut thumbs, &palette, &mut undo).edited;
+                });
+            });
+            full.shapes
+        };
+        run(vec![], p, &mut time);
+        let pos = at(&ctx);
+        let press = |pos, button, pressed| {
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton { pos, button, pressed, modifiers: egui::Modifiers::NONE },
+            ]
+        };
+        run(press(pos, egui::PointerButton::Secondary, true), p, &mut time);
+        run(press(pos, egui::PointerButton::Secondary, false), p, &mut time);
+        let shapes = run(vec![], p, &mut time);
+        let item = shapes
+            .iter()
+            .find_map(|c| match &c.shape {
+                egui::epaint::Shape::Text(t) if t.galley.text() == label => Some(t.visual_bounding_rect().center()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no '{label}' in the menu"));
+        time += 1.0;
+        run(press(item, egui::PointerButton::Primary, true), p, &mut time);
+        run(press(item, egui::PointerButton::Primary, false), p, &mut time);
+        drop(run);
+        (edited, undos)
+    }
+
+    /// The row's inline +/▲/▼/indent/✕ buttons moved to its right-click; empty space holds the pane verbs.
+    #[test]
+    fn task_and_pane_menus() {
+        let mut p = Project::new();
+        let a = p.plan_add(None, "Intro");
+        let b = p.plan_add(None, "Outro");
+        let row = |ctx: &egui::Context| {
+            ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(("plan_row", b)))).expect("row drawn").center()
+        };
+        assert_eq!(plan_menu(&mut p, row, "Move up"), (true, 1));
+        assert_eq!(p.plan.iter().map(|i| i.id).collect::<Vec<_>>(), vec![b, a]);
+        plan_menu(&mut p, row, "Indent");
+        assert_eq!(p.plan.len(), 2, "the first sibling has nothing to indent under - it stays put");
+        assert_eq!(plan_menu(&mut p, row, "Delete task"), (true, 1));
+        assert_eq!(p.plan.iter().map(|i| i.id).collect::<Vec<_>>(), vec![a]);
+        p.plan_item_mut(a).unwrap().done = true;
+        let empty = |_: &egui::Context| egui::pos2(250.0, 450.0);
+        assert_eq!(plan_menu(&mut p, empty, "Clear completed"), (true, 1));
+        assert!(p.plan.is_empty());
     }
 
     #[test]

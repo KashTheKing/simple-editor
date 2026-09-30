@@ -14,9 +14,10 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
         return false;
     }
     app.build_gallery_thumbnails(ui.ctx());
+    // one scroll area (inside `gallery::show`, under the pinned tab strip) - no outer one around it
     let resp = {
-        let App { gallery: st, settings, selection, palette, .. } = app;
-        egui::ScrollArea::vertical().show(ui, |ui| gallery::show(ui, st, settings, selection, palette)).inner
+        let App { gallery: st, settings, project, selection, palette, .. } = app;
+        gallery::show(ui, st, settings, project, selection, palette)
     };
     if let Some((tab, name, intensity)) = resp.apply {
         let ids = app.project.expand_links(&app.selection);
@@ -40,39 +41,20 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
             Err(e) => app.toast(e),
         }
     }
-    if !app.gallery.customize.is_empty() {
-        ui.separator();
-        ui.strong("Customize");
-        // Edit CLONES first, never the live project while drawing, so undo can snapshot before any
-        // write-back - this file's established clone-edit-writeback convention (inspector_*.rs). At
-        // most one row's widget reports `changed()` per frame in practice (egui processes one input
-        // interaction per frame), so writing each changed clone straight back is safe; two customize
-        // rows editing the SAME clip in the exact same frame - ponytail: theoretically possible, not
-        // reachable from a mouse/keyboard, upgrade path is a per-clip merge if that ever changes.
-        let rows = app.gallery.customize.clone();
-        let mut edits: Vec<(Id, Clip)> = Vec::new();
-        for (cid, field) in &rows {
-            if let Some(orig) = app.project.clip(*cid) {
-                let mut clone = orig.clone();
-                if gallery::template_field_widget(ui, field, &mut clone) {
-                    edits.push((*cid, clone));
-                }
+    // the Customize rows edit clones (at most one changes per frame from a mouse/keyboard): one undo,
+    // then write each back
+    if !resp.customized.is_empty() {
+        app.push_undo();
+        for (cid, clone) in resp.customized {
+            if let Some(c) = app.project.clip_mut(cid) {
+                *c = clone;
             }
         }
-        if !edits.is_empty() {
-            app.push_undo();
-            for (cid, clone) in edits {
-                if let Some(c) = app.project.clip_mut(cid) {
-                    *c = clone;
-                }
-            }
-            app.after_edit();
-        }
+        app.after_edit();
     }
-    if let Some(name) = resp.save {
-        // "Save from selection" (Looks tab only, gated in gallery.rs): capture the first selected
-        // visual clip's effect stack as a reusable EffectPreset - same shape/route
-        // `engine::presets::capture_template`'s sibling ops already use for other saved-preset kinds.
+    // "Save look from selection…" (the pane's right-click): capture the first selected clip's effect
+    // stack as a reusable EffectPreset - same shape `engine::presets::capture_template`'s siblings use
+    if let Some(name) = App::name_window(ui.ctx(), "Save look from selection", &mut app.gallery.save_name) {
         if let Some(c) = app.selection.first().and_then(|&id| app.project.clip(id)) {
             let preset =
                 crate::settings::EffectPreset { name, json: serde_json::to_string(&c.effects).unwrap_or_default() };

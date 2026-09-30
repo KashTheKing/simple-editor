@@ -1,15 +1,17 @@
-//! Mixer pane: the routing list (which track feeds which bus) on top, one channel strip per bus below
-//! (Main last). Everything in a strip scrolls vertically, so a long filter chain stays reachable.
+//! Mixer pane: one channel strip per bus (Main first) and a trailing slim `+` strip that adds a bus;
+//! the routing list (which track feeds which bus) sits above them while it is shown. Everything in a
+//! strip scrolls vertically, so a long filter chain stays reachable.
 //!
-//! Strip: name (editable), what feeds it, a stereo peak meter fed by `BusGraph::meter`, a gain fader
-//! (dB), pan knob, Mute (speaker glyph) / Solo / Mono, the output-bus combo, and the filter chain -
-//! each filter as a header row (enable, name, up/down, X) with its parameters below (DragValue per
-//! `FilterKind::params()` + a diamond keyframe toggle); EQ / pass filters also draw a response plot over a
-//! labelled log-frequency grid with one draggable handle per band. "+ Filter" adds from
-//! `FilterKind::ALL`, "+ Bus" creates a bus, X deletes one (never Main; its users fall back to Main).
-//! Routing: every audio track is a row - click it to send it to the selected bus, or pick from its own
-//! combo (`Track.bus`); the selected clip gets an override combo (`Clip.bus`, "(track)" = inherit).
-//! Undo once per gesture; returns true when the project changed.
+//! Strip: the name (hover names what feeds it; double-click renames), a stereo peak meter fed by
+//! `BusGraph::meter` with its LUFS readout, a gain fader (dB), pan, Mute (speaker glyph) and Solo - each
+//! parameter with its ◆ keyframe toggle (right-click the diamond clears the keys). Then the compact
+//! filter list: one row per filter (enable, name - click it for the response curve and the parameter
+//! grid; its right-click opens it in its own window, moves it or removes it). Everything else is on the
+//! strip's right-click: Rename, Mono, Output ▸, Add filter ▸ (`FilterKind::ALL`), Show routing, Delete
+//! (never Main; its users fall back to Main). Right-click empty space for Add bus / Show routing.
+//! Routing: every audio track is a row - click it to send it to the selected bus (click a strip to
+//! select one), or pick from its own combo (`Track.bus`); the selected clip gets an override combo
+//! (`Clip.bus`, "(track)" = inherit). Undo once per gesture; returns true when the project changed.
 //!
 //! Every parameter (bus gain/pan and each filter param) is an `Animated` read and written at the
 //! playhead: `set_at` moves the constant while the parameter is unkeyed and upserts a keyframe once it
@@ -21,8 +23,8 @@
 use crate::engine::mixer_fx::{db_to_lin, filter_bands, filter_response_db, lin_to_db, BusGraph, EQ_BANDS};
 use crate::model::{Animated, AudioFilter, Bus, FilterKind, Id, Project, TrackKind};
 use crate::theme::Palette;
-use crate::ui::tools::{glyph_label, glyph_text_button, icon_button, Dir, Glyph};
-use crate::ui::Gesture;
+use crate::ui::tools::{glyph_label, icon_button, Dir, Glyph};
+use crate::ui::{menu, Gesture};
 use eframe::egui::{
     self, pos2, vec2, Align2, Button, ComboBox, DragValue, FontId, Grid, Rect, RichText, Sense, Stroke, TextEdit,
 };
@@ -71,8 +73,10 @@ pub struct MixerState {
     /// Filters the user pulled out into their own window, as (bus, filter index). Kept in the pane's
     /// state so the windows survive a repaint, and dropped when the filter goes.
     pub popped: Vec<(Id, usize)>,
-    /// Show the clip/track routing section.
+    /// Show the clip/track routing section (the pane's / a strip's right-click ▸ Show routing).
     pub show_routing: bool,
+    /// Strip whose name is being edited (right-click ▸ Rename, or double-click the name).
+    renaming: Option<Id>,
     /// Band being dragged on a response plot, as (bus, filter index, band index). Latched for the whole
     /// drag: with five bands the nearest one changes under the pointer and the grab would hop.
     drag: Option<(Id, usize, usize)>,
@@ -121,6 +125,7 @@ pub fn show(
     test_rects::clear();
     let mut g = Gesture::default();
     let mut ed = Edits::default();
+    let bg = crate::ui::markers_ui::menu_area(ui);
     // ponytail: clone the whole bus list every frame - a handful of buses with a few filters each is
     // nothing next to a repaint. Upgrade path if it ever shows up: edit in place and snapshot lazily.
     // Main is the one bus that always exists, but opening the pane must not create it (that would switch
@@ -139,30 +144,18 @@ pub fn show(
     let main = list.first().map(|b| b.id).unwrap_or(0);
     let feeds = feeds(project, &list, main);
 
-    ui.horizontal(|ui| {
-        let r = crate::ui::tools::glyph_text_button(ui, Glyph::Headphone, "+ Bus");
-        #[cfg(test)]
-        test_rects::push("add_bus".into(), r.rect);
-        if r.clicked() {
-            ed.add_bus = true;
-            g.click();
-        }
-        ui.checkbox(&mut state.show_routing, "Routing");
-    });
-    // routing above the strips: the strips claim the rest of the pane for their own scrollbars
+    // routing above the strips (right-click ▸ Show routing): the strips claim the rest of the pane
     if state.show_routing {
-        ui.separator();
         routing(ui, project, selection, &names, main, state, &mut g, &mut ed);
+        ui.separator();
     }
-    ui.separator();
 
     // Main first: it is the master, and every other bus is read as feeding into it.
-    let order: Vec<usize> = (0..list.len()).collect();
     egui::ScrollArea::horizontal().id_salt("mixer_strips").show(ui, |ui| {
         ui.horizontal_top(|ui| {
-            for (n, &i) in order.iter().enumerate() {
-                let is_main = list[i].id == main;
-                let id = list[i].id;
+            for n in 0..list.len() {
+                let is_main = list[n].id == main;
+                let id = list[n].id;
                 let meter = buses.meter(id);
                 let lufs = buses.lufs(id);
                 let sel = state.selected_bus == Some(id);
@@ -171,19 +164,40 @@ pub fn show(
                     let size = vec2(STRIP_W, ui.available_height());
                     ui.allocate_ui_with_layout(size, egui::Layout::top_down(egui::Align::Min), |ui| {
                         ui.set_width(STRIP_W);
-                        let stroke = if sel { Stroke::new(1.0, palette.accent) } else { Stroke::NONE };
-                        egui::Frame::new().stroke(stroke).inner_margin(2.0).show(ui, |ui| {
-                            egui::ScrollArea::vertical()
-                                .id_salt(("strip_scroll", id))
-                                .auto_shrink([false, false])
-                                .show(ui, |ui| {
-                                    let s = Strip { is_main, meter, lufs, feed: &feed, time };
-                                    strip(ui, &mut list[i], s, &names, palette, state, &mut g, &mut ed, n);
+                        // the strip senses clicks under its widgets: click selects the bus, right-click
+                        // opens its menu
+                        let r = ui
+                            .scope_builder(egui::UiBuilder::new().sense(Sense::click()), |ui| {
+                                let stroke = if sel { Stroke::new(1.0, palette.accent) } else { Stroke::NONE };
+                                egui::Frame::new().stroke(stroke).inner_margin(2.0).show(ui, |ui| {
+                                    egui::ScrollArea::vertical()
+                                        .id_salt(("strip_scroll", id))
+                                        .auto_shrink([false, false])
+                                        .show(ui, |ui| {
+                                            let s = Strip { meter, lufs, feed: &feed, time };
+                                            strip(ui, &mut list[n], s, palette, state, &mut g, n);
+                                        });
                                 });
-                        });
+                            })
+                            .response;
+                        #[cfg(test)]
+                        test_rects::push(format!("strip{n}"), r.rect);
+                        if r.clicked() {
+                            state.selected_bus = Some(id);
+                        }
+                        r.context_menu(|ui| strip_menu(ui, &mut list[n], is_main, &names, state, &mut g, &mut ed));
                     });
                 });
                 ui.separator();
+            }
+            // the trailing slim strip: one more bus
+            let h = ui.available_height().max(60.0);
+            let r = ui.add(Button::new("+").min_size(vec2(26.0, h))).on_hover_text("Add a bus");
+            #[cfg(test)]
+            test_rects::push("add_bus".into(), r.rect);
+            if r.clicked() {
+                ed.add_bus = true;
+                g.click();
             }
         });
     });
@@ -212,6 +226,16 @@ pub fn show(
         }
     }
     state.popped = still;
+
+    bg.context_menu(|ui| {
+        if menu::row(ui, Some(Glyph::Headphone), "Add bus", "").clicked() {
+            ed.add_bus = true;
+            g.click();
+        }
+        if menu::check(ui, state.show_routing, "Show routing", "").clicked() {
+            state.show_routing = !state.show_routing;
+        }
+    });
 
     if g.start {
         undo(project);
@@ -246,9 +270,68 @@ pub fn show(
     g.changed
 }
 
+/// A strip's right-click: everything a strip does beyond name / meter / fader / pan / M / S.
+fn strip_menu(
+    ui: &mut egui::Ui,
+    bus: &mut Bus,
+    is_main: bool,
+    names: &[(Id, String)],
+    state: &mut MixerState,
+    g: &mut Gesture,
+    ed: &mut Edits,
+) {
+    if menu::row(ui, Some(Glyph::Pencil), "Rename", "").clicked() {
+        state.renaming = Some(bus.id);
+    }
+    if menu::check(ui, bus.mono, "Mono", "").on_hover_text("Fold to mono").clicked() {
+        bus.mono = !bus.mono;
+        g.click();
+    }
+    if !is_main {
+        menu::sub(ui, None, "Output", |ui| {
+            // no self-send; a longer loop is broken back to Main by the graph anyway
+            for (id, name) in names.iter().filter(|(id, _)| *id != bus.id) {
+                if menu::check(ui, bus.output == *id, name, "").clicked() && bus.output != *id {
+                    bus.output = *id;
+                    g.click();
+                }
+            }
+        });
+    }
+    menu::sub(ui, None, "Add filter", |ui| {
+        for kind in FilterKind::ALL {
+            if menu::row(ui, None, kind.name(), "").clicked() {
+                bus.filters.push(AudioFilter::new(kind));
+                // a new filter opens, so its controls are right there
+                let i = bus.filters.len() - 1;
+                let mut cs =
+                    egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), fx_id(bus.id, i), true);
+                cs.set_open(true);
+                cs.store(ui.ctx());
+                g.click();
+            }
+        }
+    });
+    ui.separator();
+    if menu::check(ui, state.show_routing, "Show routing", "").clicked() {
+        state.show_routing = !state.show_routing;
+    }
+    if !is_main {
+        ui.separator();
+        if menu::row(ui, Some(Glyph::Cross), "Delete bus", "").clicked() {
+            ed.remove = Some(bus.id);
+            g.click();
+        }
+    }
+}
+
+/// The open/closed memory of one filter's row in a strip.
+fn fx_id(bus: Id, i: usize) -> egui::Id {
+    egui::Id::new(("mixfx", bus, i))
+}
+
 /// What one strip needs to know about its bus beyond the `Bus` itself.
 struct Strip<'a> {
-    is_main: bool,
     meter: (f32, f32),
     /// (momentary, integrated) LUFS from `BusGraph::lufs` - -inf until playback has published a block.
     lufs: (f32, f32),
@@ -306,46 +389,40 @@ fn key_button(ui: &mut egui::Ui, a: &mut Animated, t: f64, palette: &Palette, g:
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+/// One strip: name, meter (+ LUFS), fader, pan, M / S, then the compact filter list. Rename, mono,
+/// output, add-filter and delete live on the strip's right-click (`strip_menu`).
 fn strip(
     ui: &mut egui::Ui,
     bus: &mut Bus,
     s: Strip,
-    names: &[(Id, String)],
     palette: &Palette,
     state: &mut MixerState,
     g: &mut Gesture,
-    ed: &mut Edits,
     n: usize,
 ) {
     let _ = n; // only the test rect registry uses the strip index
-    ui.horizontal(|ui| {
-        let r = ui.add(TextEdit::singleline(&mut bus.name).desired_width(STRIP_W - 46.0));
-        g.note(&r);
+    if state.renaming == Some(bus.id) {
+        let r = ui.add(TextEdit::singleline(&mut bus.name).desired_width(STRIP_W - 12.0));
+        if !r.has_focus() && !r.lost_focus() {
+            r.request_focus();
+        }
+        g.note_text(&r);
+        if r.lost_focus() {
+            state.renaming = None;
+        }
+    } else {
+        let feed = if s.feed.is_empty() { "Nothing routed here" } else { s.feed };
+        let r = ui
+            .add(egui::Label::new(RichText::new(&bus.name).strong()).truncate().sense(Sense::click()))
+            .on_hover_text(format!("Fed by: {feed}"));
+        #[cfg(test)]
+        test_rects::push(format!("name{n}"), r.rect);
         if r.clicked() {
             state.selected_bus = Some(bus.id);
         }
-        let del = ui.add_enabled_ui(!s.is_main, crate::ui::markers_ui::x_button).inner;
-        #[cfg(test)]
-        test_rects::push(format!("del_bus{n}"), del.rect);
-        if del.clicked() {
-            ed.remove = Some(bus.id);
-            g.click();
+        if r.double_clicked() {
+            state.renaming = Some(bus.id);
         }
-    });
-
-    let feed = if s.feed.is_empty() { "nothing routed here" } else { s.feed };
-    let r = ui
-        .add(
-            egui::Label::new(egui::RichText::new(feed).small().color(palette.text_dim))
-                .truncate()
-                .sense(Sense::click()),
-        )
-        .on_hover_text(if s.feed.is_empty() { "No track or bus feeds this bus" } else { s.feed });
-    #[cfg(test)]
-    test_rects::push(format!("feed{n}"), r.rect);
-    if r.clicked() {
-        state.selected_bus = Some(bus.id);
     }
 
     meter(ui, s.meter, palette);
@@ -353,7 +430,8 @@ fn strip(
 
     ui.horizontal(|ui| {
         let mut db = lin_to_db(bus.gain.at(s.time) as f32).max(-60.0);
-        let r = ui.add(DragValue::new(&mut db).range(-60.0..=12.0).speed(0.2).suffix(" dB").fixed_decimals(1));
+        ui.spacing_mut().slider_width = STRIP_W - 96.0;
+        let r = ui.add(egui::Slider::new(&mut db, -60.0..=12.0).suffix(" dB").fixed_decimals(1)).on_hover_text("Gain");
         #[cfg(test)]
         test_rects::push(format!("gain{n}"), r.rect);
         if r.changed() {
@@ -361,6 +439,8 @@ fn strip(
         }
         g.note(&r);
         key_button(ui, &mut bus.gain, s.time, palette, g, (bus.id, usize::MAX, 0));
+    });
+    ui.horizontal(|ui| {
         let mut pan = bus.pan.at(s.time);
         let r = ui.add(DragValue::new(&mut pan).range(-1.0..=1.0).speed(0.01).prefix("pan ").fixed_decimals(2));
         if r.changed() {
@@ -368,9 +448,6 @@ fn strip(
         }
         g.note(&r);
         key_button(ui, &mut bus.pan, s.time, palette, g, (bus.id, usize::MAX, 1));
-    });
-
-    ui.horizontal(|ui| {
         let icon = if bus.muted { Glyph::SpeakerOff } else { Glyph::SpeakerOn };
         let r = icon_button(ui, palette, ui.id().with(("mute", bus.id)), icon, "Mute", bus.muted);
         #[cfg(test)]
@@ -379,35 +456,14 @@ fn strip(
             bus.muted = !bus.muted;
             g.click();
         }
-        for (label, flag, hint) in [("S", &mut bus.solo, "Solo"), ("Mono", &mut bus.mono, "Fold to mono")] {
-            let r = ui.add(Button::new(label).small().selected(*flag)).on_hover_text(hint);
-            #[cfg(test)]
-            test_rects::push(format!("{}{n}", label.to_lowercase()), r.rect);
-            if r.clicked() {
-                *flag = !*flag;
-                g.click();
-            }
+        let r = ui.add(Button::new("S").small().selected(bus.solo)).on_hover_text("Solo");
+        #[cfg(test)]
+        test_rects::push(format!("s{n}"), r.rect);
+        if r.clicked() {
+            bus.solo = !bus.solo;
+            g.click();
         }
     });
-
-    if !s.is_main {
-        ui.horizontal(|ui| {
-            ui.label("→");
-            let cur = names.iter().find(|(id, _)| *id == bus.output).map(|(_, n)| n.as_str()).unwrap_or("Main");
-            ComboBox::from_id_salt(("out", bus.id)).selected_text(cur).width(STRIP_W - 34.0).show_ui(ui, |ui| {
-                for (id, name) in names {
-                    // no self-send; a longer loop is broken back to Main by the graph anyway
-                    if *id == bus.id {
-                        continue;
-                    }
-                    if ui.selectable_label(bus.output == *id, name).clicked() && bus.output != *id {
-                        bus.output = *id;
-                        g.click();
-                    }
-                }
-            });
-        });
-    }
 
     filters(ui, bus, s.time, palette, state, g, n);
 }
@@ -526,6 +582,9 @@ fn filter_body(
     });
 }
 
+/// The compact filter list: one collapsible row per filter (enable box + name; click the name to show
+/// its curve and parameters). The row's right-click opens it in its own window, moves it up / down or
+/// removes it; "Add filter ▸" is on the strip's right-click.
 fn filters(
     ui: &mut egui::Ui,
     bus: &mut Bus,
@@ -541,38 +600,49 @@ fn filters(
     let mut remove: Option<usize> = None;
     let mut swap: Option<(usize, usize)> = None;
     let mut pop: Option<usize> = None;
+    if count > 0 {
+        ui.separator();
+    }
     for (i, f) in bus.filters.iter_mut().enumerate() {
         // a project saved before the kind grew a parameter is short: top it up from the spec table
         f.fill_params();
-        ui.horizontal(|ui| {
-            g.note(&ui.checkbox(&mut f.enabled, ""));
-            // on the left: the right-hand group is already full at STRIP_W and a fourth button there
-            // gets clipped out of the strip
-            let po = glyph_text_button(ui, Glyph::PopOut, "").on_hover_text("Open in its own window");
+        let mut toggle = false;
+        let cs = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), fx_id(bus_id, i), false);
+        cs.show_header(ui, |ui| {
+            g.note(&ui.checkbox(&mut f.enabled, "").on_hover_text("Enable"));
+            let r = ui.add(egui::Label::new(f.kind.name()).sense(Sense::click()));
             #[cfg(test)]
-            test_rects::push(format!("popfx{n}_{i}"), po.rect);
-            if po.clicked() {
-                pop = Some(i);
-            }
-            ui.label(f.kind.name());
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let del = crate::ui::markers_ui::x_button(ui).on_hover_text("Remove this filter");
-                #[cfg(test)]
-                test_rects::push(format!("delfx{n}_{i}"), del.rect);
-                if del.clicked() {
-                    remove = Some(i);
+            test_rects::push(format!("fxrow{n}_{i}"), r.rect);
+            toggle = r.clicked();
+            r.context_menu(|ui| {
+                if menu::row(ui, Some(Glyph::PopOut), "Open in its own window", "").clicked() {
+                    pop = Some(i);
                 }
-                let down = |ui: &mut egui::Ui| glyph_text_button(ui, Glyph::Tri(Dir::Down), "");
-                if ui.add_enabled_ui(i + 1 < count, down).inner.on_hover_text("Move down").clicked() {
-                    swap = Some((i, i + 1));
-                }
-                let up = |ui: &mut egui::Ui| glyph_text_button(ui, Glyph::Tri(Dir::Up), "");
-                if ui.add_enabled_ui(i > 0, up).inner.on_hover_text("Move up").clicked() {
+                if ui
+                    .add_enabled_ui(i > 0, |ui| menu::row(ui, Some(Glyph::Tri(Dir::Up)), "Move up", ""))
+                    .inner
+                    .clicked()
+                {
                     swap = Some((i, i - 1));
                 }
+                let down = |ui: &mut egui::Ui| menu::row(ui, Some(Glyph::Tri(Dir::Down)), "Move down", "");
+                if ui.add_enabled_ui(i + 1 < count, down).inner.clicked() {
+                    swap = Some((i, i + 1));
+                }
+                ui.separator();
+                if menu::row(ui, Some(Glyph::Cross), "Remove", "").clicked() {
+                    remove = Some(i);
+                }
             });
-        });
-        filter_body(ui, f, bus_id, i, time, palette, state, g, n);
+        })
+        .body(|ui| filter_body(ui, f, bus_id, i, time, palette, state, g, n));
+        if toggle {
+            // after `body` stored its own state, or this would be overwritten
+            let mut cs =
+                egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), fx_id(bus_id, i), false);
+            cs.toggle(ui);
+            cs.store(ui.ctx());
+        }
     }
     if let Some((a, b)) = swap {
         bus.filters.swap(a, b);
@@ -585,18 +655,6 @@ fn filters(
     }
     if let Some(i) = remove {
         bus.filters.remove(i);
-        g.click();
-    }
-    let mut add: Option<FilterKind> = None;
-    ComboBox::from_id_salt(("addfx", bus.id)).selected_text("+ Filter").width(STRIP_W - 16.0).show_ui(ui, |ui| {
-        for kind in FilterKind::ALL {
-            if ui.selectable_label(false, kind.name()).clicked() {
-                add = Some(kind);
-            }
-        }
-    });
-    if let Some(kind) = add {
-        bus.filters.push(AudioFilter::new(kind));
         g.click();
     }
 }
@@ -734,7 +792,7 @@ fn routing(
 
     ui.label(match target {
         Some(id) => format!("Click a track to send it to “{}”", label(id)),
-        None => "Click a bus strip's name to pick where tracks go".to_string(),
+        None => "Click a strip to pick where tracks go".to_string(),
     });
     egui::ScrollArea::vertical().id_salt("mixer_routing_scroll").max_height(96.0).show(ui, |ui| {
         Grid::new("mixer_routing").num_columns(2).show(ui, |ui| {
@@ -747,7 +805,7 @@ fn routing(
                     .on_hover_text(match target {
                         Some(id) if id != cur => format!("Send this track to “{}”", label(id)),
                         Some(_) => "Already on the selected bus".to_string(),
-                        None => "Select a bus first (click its name in a strip)".to_string(),
+                        None => "Select a bus first (click its strip)".to_string(),
                     });
                 #[cfg(test)]
                 test_rects::push(format!("track{row}"), r.rect);
@@ -810,6 +868,7 @@ mod tests {
         time: f64,
         /// Timeline playhead handed to `show` - every parameter is read and written there.
         playhead: f64,
+        shapes: Vec<egui::epaint::ClippedShape>,
     }
 
     impl Harness {
@@ -822,8 +881,10 @@ mod tests {
             project.tracks[ai].bus = music;
             let mut graph = BusGraph::new();
             graph.sync(&project);
+            let ctx = egui::Context::default();
+            ctx.set_fonts(crate::theme::test_fonts()); // real glyph sizes, so popup entries land where drawn
             Self {
-                ctx: egui::Context::default(),
+                ctx,
                 project,
                 state: MixerState { show_routing: true, ..Default::default() },
                 graph,
@@ -831,6 +892,7 @@ mod tests {
                 undos: 0,
                 time: 0.0,
                 playhead: 0.0,
+                shapes: Vec::new(),
             }
         }
         fn frame(&mut self, events: Vec<Event>) -> bool {
@@ -842,16 +904,65 @@ mod tests {
                 ..Default::default()
             };
             let pal = Palette::new(true, Color32::WHITE);
-            let Harness { ctx, project, state, graph, selection, undos, playhead, .. } = self;
+            let Harness { ctx, project, state, graph, selection, undos, playhead, shapes, .. } = self;
             let playhead = *playhead;
             let mut edited = false;
-            let _ = ctx.run(input, |ctx| {
+            let full = ctx.run(input, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut undo = |_: &Project| *undos += 1;
                     edited |= show(ui, state, project, selection, graph, playhead, &pal, &mut undo);
                 });
             });
+            *shapes = full.shapes;
             edited
+        }
+        /// Centre of the first painted text equal to `label` - how a popup's entries are found.
+        fn text_at(&self, label: &str) -> Option<Pos2> {
+            self.shapes.iter().find_map(|c| match &c.shape {
+                egui::epaint::Shape::Text(t) if t.galley.text() == label => Some(t.visual_bounding_rect().center()),
+                _ => None,
+            })
+        }
+        /// Right-click `at`; true if the menu then shows `label`.
+        fn open_menu(&mut self, at: Pos2, label: &str) -> bool {
+            self.frame(vec![Event::PointerMoved(at)]);
+            for pressed in [true, false] {
+                self.frame(vec![Event::PointerButton {
+                    pos: at,
+                    button: PointerButton::Secondary,
+                    pressed,
+                    modifiers: Modifiers::NONE,
+                }]);
+            }
+            self.frame(vec![]);
+            self.text_at(label).is_some()
+        }
+        /// Right-click `at`, then click the entries of `path` in turn (a submenu, then its row).
+        fn menu(&mut self, at: Pos2, path: &[&str]) -> bool {
+            assert!(self.open_menu(at, path[0]), "no '{}' in the menu", path[0]);
+            let mut edited = false;
+            for label in path {
+                self.frame(vec![]);
+                let item = self.text_at(label).unwrap_or_else(|| panic!("no '{label}' in the menu"));
+                self.time += 1.0; // a separate gesture, not a double-click
+                edited |= self.click(item);
+            }
+            edited
+        }
+        /// Somewhere in strip `n` below its widgets - the strip's own right-click area.
+        fn strip_blank(&mut self, n: usize) -> Pos2 {
+            self.frame(vec![]);
+            let r = test_rects::get(&format!("strip{n}")).expect("strip drawn");
+            r.center_bottom() - vec2(0.0, 30.0)
+        }
+        /// Open filter `i`'s row on `bus` - collapsed by default, like clicking its name.
+        fn open_fx(&mut self, bus: Id, i: usize) {
+            let mut cs =
+                egui::collapsing_header::CollapsingState::load_with_default_open(&self.ctx, fx_id(bus, i), false);
+            cs.set_open(true);
+            cs.store(&self.ctx);
+            self.frame(vec![]);
+            self.frame(vec![]); // the open animation needs a frame before the body draws
         }
         fn click(&mut self, pos: Pos2) -> bool {
             self.frame(vec![Event::PointerMoved(pos)]);
@@ -912,12 +1023,19 @@ mod tests {
     #[test]
     fn add_and_remove_a_bus() {
         let mut h = Harness::new();
-        assert!(h.click_named("add_bus"));
+        assert!(h.click_named("add_bus"), "the trailing + strip adds a bus");
         assert_eq!(h.project.buses.len(), 3);
         assert_eq!(h.undos, 1);
-        // strip 1 is the first non-Main bus; deleting it drops back to two
-        assert!(h.click_named("del_bus1"));
+        // strip 1 is the first non-Main bus; its right-click deletes it, back to two
+        let at = h.strip_blank(1);
+        assert!(h.menu(at, &["Delete bus"]));
         assert_eq!(h.project.buses.len(), 2);
+        // right-clicking empty pane space adds one too
+        h.frame(vec![]);
+        let add = test_rects::get("add_bus").unwrap();
+        let blank = add.right_center() + vec2(60.0, 0.0);
+        assert!(h.menu(blank, &["Add bus"]));
+        assert_eq!(h.project.buses.len(), 3);
     }
 
     #[test]
@@ -927,13 +1045,35 @@ mod tests {
         assert!(h.project.buses[1].muted, "strip 1 is the Music bus");
         assert!(h.click_named("s1"));
         assert!(h.project.buses[1].solo);
-        assert!(h.click_named("mono1"));
+        let at = h.strip_blank(1);
+        assert!(h.menu(at, &["Mono"]), "Mono lives on the strip's right-click");
         assert!(h.project.buses[1].mono);
         assert_eq!(h.undos, 3);
-        // Main can never be deleted
-        let del_main = test_rects::get("del_bus0").expect("Main delete button");
-        h.click(del_main.center());
-        assert_eq!(h.project.buses.len(), 2);
+        // Main can never be deleted: its menu has no Delete entry
+        h.frame(vec![Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        }]);
+        let at = h.strip_blank(0);
+        assert!(h.open_menu(at, "Rename"), "Main's menu is open");
+        assert!(h.text_at("Delete bus").is_none(), "Main can never be deleted");
+        assert!(h.text_at("Output").is_none(), "Main has nowhere to send to");
+    }
+
+    /// The strip's right-click ▸ Add filter ▸ <kind> appends it, opened so its controls show.
+    #[test]
+    fn add_filter_from_the_strip_menu() {
+        let mut h = Harness::new();
+        let at = h.strip_blank(1);
+        assert!(h.menu(at, &["Add filter", "Gain"]));
+        assert_eq!(h.project.buses[1].filters.len(), 1);
+        assert_eq!(h.project.buses[1].filters[0].kind, FilterKind::Gain);
+        h.frame(vec![]);
+        h.frame(vec![]);
+        assert!(test_rects::get("p1_0_0").is_some(), "a freshly added filter opens with its parameters");
     }
 
     #[test]
@@ -941,15 +1081,16 @@ mod tests {
         let mut h = Harness::new();
         let music = h.project.buses[1].id;
         h.project.bus_mut(music).unwrap().filters.push(AudioFilter::new(FilterKind::Gain));
-        h.frame(vec![]);
+        h.open_fx(music, 0);
         // the Gain filter has one param row; drag it
         let rect = test_rects::get("p1_0_0").expect("gain param");
         let changed = h.drag(rect.center(), vec2(40.0, 0.0));
         assert!(changed, "dragging the DragValue edits the project");
         assert!(h.project.buses[1].filters[0].params[0].value > 0.0);
         assert!(h.undos >= 1);
-        // and it can be removed again
-        assert!(h.click_named("delfx1_0"));
+        // and it can be removed again, from the filter row's right-click
+        let row = test_rects::get("fxrow1_0").expect("filter row").center();
+        assert!(h.menu(row, &["Remove"]));
         assert!(h.project.buses[1].filters.is_empty());
     }
 
@@ -961,9 +1102,9 @@ mod tests {
         let music = h.project.buses[1].id;
         h.project.bus_mut(music).unwrap().filters.push(AudioFilter::new(FilterKind::Gain));
         h.frame(vec![]);
-        // click() reports whether the project changed, and popping a filter out is not a project edit
-        let r = test_rects::get("popfx1_0").expect("the pop-out button is registered");
-        h.click(r.center());
+        // popping a filter out is not a project edit
+        let row = test_rects::get("fxrow1_0").expect("filter row").center();
+        assert!(!h.menu(row, &["Open in its own window"]));
         assert_eq!(h.state.popped, vec![(music, 0)], "the filter is floating");
         h.frame(vec![]);
         // the floating copy draws the same parameter row, so the id is registered twice this frame
@@ -979,7 +1120,7 @@ mod tests {
         let mut h = Harness::new();
         let music = h.project.buses[1].id;
         h.project.bus_mut(music).unwrap().filters.push(AudioFilter::new(FilterKind::Eq));
-        h.frame(vec![]);
+        h.open_fx(music, 0);
         // grab the low shelf's handle: x is its frequency on the log axis, y its 0 dB gain
         let plot = test_rects::get("curve1_0").expect("response plot");
         let x = plot.left() + (120.0f32 / 20.0).log10() / 3.0 * plot.width();
@@ -997,7 +1138,7 @@ mod tests {
         let mut h = Harness::new();
         let music = h.project.buses[1].id;
         h.project.bus_mut(music).unwrap().filters.push(AudioFilter::new(FilterKind::Gain));
-        h.frame(vec![]);
+        h.open_fx(music, 0);
         assert!(h.click_named(&format!("kf{music}_0_0")), "◆ keyframes the parameter");
         assert_eq!(h.project.buses[1].filters[0].params[0].keys.len(), 1);
         // at another playhead the drag upserts a key instead of moving the constant
@@ -1104,9 +1245,9 @@ mod tests {
         request_focus_bus(999);
         h.frame(vec![]);
         assert_eq!(h.state.selected_bus, Some(music), "an unknown bus leaves the selection alone");
-        // the '+ Filter' combo lists the new kinds through FilterKind::ALL - no per-kind UI code
+        // Add filter ▸ lists the new kinds through FilterKind::ALL - no per-kind UI code
         h.project.bus_mut(music).unwrap().filters.push(AudioFilter::new(FilterKind::DeEsser));
-        h.frame(vec![]);
+        h.open_fx(music, 0);
         assert!(test_rects::get("p1_0_2").is_some(), "De-esser's third param (Ratio) is drawn");
     }
 }

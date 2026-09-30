@@ -247,6 +247,7 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
             true
         }
         Action::ToggleTranscript => {
+            // flips the Subtitles pane between its Cues and Transcript tabs
             app.subtitles_ui.show_transcript = !app.subtitles_ui.show_transcript;
             app.surface(Pane::Subtitles);
             true
@@ -255,6 +256,7 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
             // the button itself lives in the Subtitles pane and names the size - surface it there
             // rather than fetching from a palette row that can't show the MB before the click
             app.subtitles_ui.transcribe.open = true;
+            app.subtitles_ui.show_transcript = false; // the Transcribe section is on the Cues tab
             app.surface(Pane::Subtitles);
             let (name, file, mb) = app.subtitles_ui.transcribe.model();
             if transcribe::have_model(file) {
@@ -264,7 +266,7 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
                 ));
             } else {
                 app.toast(format!(
-                    "Subtitles ▸ Transcribe ▸ \"Get captions\" downloads whisper {} ({mb} MB) once",
+                    "Subtitles ▸ Transcribe… ▸ \"Get captions\" downloads whisper {} ({mb} MB) once",
                     short_model(name)
                 ));
             }
