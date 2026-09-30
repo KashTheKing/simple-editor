@@ -5,7 +5,7 @@
 //!
 //! ---- ws:text-titles ----
 //! `size`/`letter_spacing`/`outline_width` are now `Animated` (schema promotion, this workstream): each
-//! gets the same DragValue + `key_buttons` (keyframe toggle) + `link_menu` (path/expression link) row
+//! gets the same DragValue + `key_buttons` (the ◆, right-click for keys and path/expression links) row
 //! shape the clip transform grid uses for Position X (`inspector_audio::section`), plus new Reveal
 //! (typewriter, 0..100%) and Wave (per-glyph bob) rows over the like-named `Animated` fields, and an
 //! Animation row (builtin/saved motion preset combo + Apply, calling `presets::apply_motion` directly -
@@ -21,8 +21,8 @@
 use crate::model::{AnimLink, Animated, Id, Project, TextSpan, TextStyle};
 use crate::settings::TextPreset;
 use crate::theme::Palette;
-use crate::ui::inspector::{link_menu, luau_highlight};
-use crate::ui::{key_buttons, Gesture};
+use crate::ui::inspector::luau_highlight;
+use crate::ui::{key_buttons, key_menu, Gesture};
 use eframe::egui::{self, DragValue, Grid, Slider};
 
 /// Test-only: remember a widget rect so headless tests can click the real button (mirrors
@@ -164,13 +164,10 @@ pub(super) fn section(
     // ws:text-titles: size/letter_spacing/outline_width/reveal/wave are Animated now, keyed at the
     // clip-local playhead exactly like the transform grid's Position X row (inspector_audio::section).
     let lt = orig.local(playhead);
-    let path_list: Vec<(Id, String)> = project.paths.iter().map(|p| (p.id, p.name.clone())).collect();
     let mut clip = orig.clone();
     let mut g = Gesture::default();
     let style = clip.text.get_or_insert_with(Default::default);
 
-    ui.separator();
-    ui.strong("Text");
     // snapshot the wording so per-word spans can follow the characters they style across this
     // frame's edit (typing before a styled word used to shift the styling onto the wrong chars)
     let text_before = (!style.spans.is_empty()).then(|| style.text.clone());
@@ -223,8 +220,8 @@ pub(super) fn section(
                 style.size.set_at(lt, v);
             }
             g.note(&r);
-            key_buttons(ui, &mut style.size, lt, palette, &mut g);
-            link_menu(ui, "Text Size", &mut style.size, &path_list, &mut g);
+            r.context_menu(|ui| key_menu(ui, &mut style.size, lt, &mut g, "Text Size", &[]));
+            key_buttons(ui, &mut style.size, lt, palette, &mut g, "Text Size", &[]);
             g.note(&ui.checkbox(&mut style.bold, "Bold"));
             g.note(&ui.checkbox(&mut style.italic, "Italic"));
         });
@@ -242,8 +239,8 @@ pub(super) fn section(
                 style.outline_width.set_at(lt, v);
             }
             g.note(&r);
-            key_buttons(ui, &mut style.outline_width, lt, palette, &mut g);
-            link_menu(ui, "Outline Width", &mut style.outline_width, &path_list, &mut g);
+            r.context_menu(|ui| key_menu(ui, &mut style.outline_width, lt, &mut g, "Outline Width", &[]));
+            key_buttons(ui, &mut style.outline_width, lt, palette, &mut g, "Outline Width", &[]);
         });
         ui.end_row();
         expr_edit_row(ui, &mut style.outline_width, &mut g);
@@ -278,8 +275,8 @@ pub(super) fn section(
                 style.letter_spacing.set_at(lt, v);
             }
             g.note(&r);
-            key_buttons(ui, &mut style.letter_spacing, lt, palette, &mut g);
-            link_menu(ui, "Letter Spacing", &mut style.letter_spacing, &path_list, &mut g);
+            r.context_menu(|ui| key_menu(ui, &mut style.letter_spacing, lt, &mut g, "Letter Spacing", &[]));
+            key_buttons(ui, &mut style.letter_spacing, lt, palette, &mut g, "Letter Spacing", &[]);
         });
         ui.end_row();
         expr_edit_row(ui, &mut style.letter_spacing, &mut g);
@@ -298,8 +295,8 @@ pub(super) fn section(
                 style.reveal.set_at(lt, (pct / 100.0).clamp(0.0, 1.0));
             }
             g.note(&r);
-            key_buttons(ui, &mut style.reveal, lt, palette, &mut g);
-            link_menu(ui, "Reveal", &mut style.reveal, &path_list, &mut g);
+            r.context_menu(|ui| key_menu(ui, &mut style.reveal, lt, &mut g, "Reveal", &[]));
+            key_buttons(ui, &mut style.reveal, lt, palette, &mut g, "Reveal", &[]);
         });
         ui.end_row();
         expr_edit_row(ui, &mut style.reveal, &mut g);
@@ -311,8 +308,8 @@ pub(super) fn section(
                 style.wave.set_at(lt, v.max(0.0));
             }
             g.note(&r);
-            key_buttons(ui, &mut style.wave, lt, palette, &mut g);
-            link_menu(ui, "Wave", &mut style.wave, &path_list, &mut g);
+            r.context_menu(|ui| key_menu(ui, &mut style.wave, lt, &mut g, "Wave", &[]));
+            key_buttons(ui, &mut style.wave, lt, palette, &mut g, "Wave", &[]);
         });
         ui.end_row();
         expr_edit_row(ui, &mut style.wave, &mut g);

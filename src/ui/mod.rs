@@ -60,7 +60,7 @@ pub mod transitions_ui;
 // ---- ws:jobs-panel ----
 pub mod jobs_ui;
 
-use crate::model::{Animated, Id, Mask, MaskShape, Project, LABEL_COLORS};
+use crate::model::{AnimLink, Animated, Id, Mask, MaskShape, Project, LABEL_COLORS};
 use crate::theme::Palette;
 use eframe::egui::{self, DragValue, Grid, Response};
 
@@ -102,28 +102,112 @@ pub(crate) fn once(flag: &mut bool, undo: &mut dyn FnMut(&Project), p: &Project)
     }
 }
 
-/// Diamond keyframe toggle at the clip-local playhead + a "keys" clear button once it is animated.
-pub(crate) fn key_buttons(ui: &mut egui::Ui, a: &mut Animated, lt: f64, palette: &Palette, g: &mut Gesture) {
-    let id = ui.id().with(("kf", a as *const _ as usize));
-    if crate::ui::tools::icon_button(
-        ui,
-        palette,
-        id,
-        crate::ui::tools::Glyph::Diamond,
-        "Toggle keyframe at playhead",
-        a.has_key_at(lt),
-    )
-    .clicked()
-    {
+thread_local! {
+    /// Previous / Next key picked from a keyframe menu: the clip-local time to jump to. Only the caller
+    /// knows the clip, so the inspector turns it into a timeline seek (`take_key_seek`).
+    static KEY_SEEK: std::cell::Cell<Option<f64>> = const { std::cell::Cell::new(None) };
+}
+
+/// Clip-local time a keyframe menu's Previous / Next key asked to jump to, since the last call.
+pub(crate) fn take_key_seek() -> Option<f64> {
+    KEY_SEEK.with(|s| s.take())
+}
+
+/// The one keyframe control of every property row (Inspector, Effects stack, masks, shapes): a ◆ that
+/// toggles a key at the clip-local playhead `lt` - filled when a key sits here, outlined when the
+/// property is animated elsewhere, faint when it isn't; a ∿ while a live link drives it. Right-click it
+/// (or the value - see `key_menu`) for everything else. `label` names the property, and is its id.
+pub(crate) fn key_buttons(
+    ui: &mut egui::Ui,
+    a: &mut Animated,
+    lt: f64,
+    palette: &Palette,
+    g: &mut Gesture,
+    label: &str,
+    paths: &[(Id, String)],
+) -> Response {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
+    let r = ui.interact(rect, ui.id().with(("kf", label)), egui::Sense::click());
+    let here = a.has_key_at(lt);
+    let color = if a.is_animated() || !a.link.is_none() { palette.accent } else { palette.text_dim };
+    let color = if r.hovered() { palette.text } else { color };
+    let p = ui.painter();
+    if a.link.is_none() {
+        let (c, h) = (rect.center(), 5.0);
+        let pts = vec![c - egui::vec2(0.0, h), c + egui::vec2(h, 0.0), c + egui::vec2(0.0, h), c - egui::vec2(h, 0.0)];
+        let fill = if here { color } else { egui::Color32::TRANSPARENT };
+        p.add(egui::Shape::convex_polygon(pts, fill, egui::Stroke::new(1.3, color)));
+    } else {
+        p.text(rect.center(), egui::Align2::CENTER_CENTER, "∿", egui::FontId::proportional(15.0), color);
+    }
+    let tip = match &a.link {
+        AnimLink::PathX(_) | AnimLink::PathY(_) => "Following a path - right-click to unlink",
+        AnimLink::Expr(_) => "Driven by an expression - right-click to unlink",
+        AnimLink::None if here => "Remove the keyframe at the playhead (right-click: more)",
+        AnimLink::None => "Add a keyframe at the playhead (right-click: more)",
+    };
+    let r = r.on_hover_text(tip);
+    if r.clicked() {
         a.toggle_key(lt);
         g.click();
     }
-    if a.is_animated() {
-        if crate::ui::tools::glyph_text_button(ui, crate::ui::tools::Glyph::Cross, "keys").clicked() {
-            a.clear_keys(lt);
-            g.click();
+    r.context_menu(|ui| key_menu(ui, a, lt, g, label, paths));
+    r
+}
+
+/// The keyframe right-click menu, shared by the ◆ and the value next to it: Previous / Next key (a seek,
+/// see `take_key_seek`), Clear keyframes, and the live links - a saved path (Position X/Y only) or a
+/// Luau expression, AE-style. A manual edit elsewhere breaks a link (`Animated::set_at`).
+pub(crate) fn key_menu(
+    ui: &mut egui::Ui,
+    a: &mut Animated,
+    lt: f64,
+    g: &mut Gesture,
+    label: &str,
+    paths: &[(Id, String)],
+) {
+    use crate::ui::menu;
+    use crate::ui::tools::{Dir, Glyph};
+    const EPS: f64 = 1e-4;
+    let prev = a.keys.iter().rev().find(|k| k.t < lt - EPS).map(|k| k.t);
+    let next = a.keys.iter().find(|k| k.t > lt + EPS).map(|k| k.t);
+    for (t, glyph, text) in
+        [(prev, Glyph::Jump(Dir::Left), "Previous key"), (next, Glyph::Jump(Dir::Right), "Next key")]
+    {
+        if ui.add_enabled_ui(t.is_some(), |ui| menu::row(ui, Some(glyph), text, "")).inner.clicked() {
+            KEY_SEEK.with(|s| s.set(t));
+            ui.ctx().request_repaint();
         }
-        ui.label(format!("{} keys", a.keys.len()));
+    }
+    let animated = a.is_animated();
+    if ui.add_enabled_ui(animated, |ui| menu::row(ui, Some(Glyph::Cross), "Clear keyframes", "")).inner.clicked() {
+        a.clear_keys(lt);
+        g.click();
+    }
+    ui.separator();
+    let axis_x = label == "Position X";
+    if axis_x || label == "Position Y" {
+        menu::sub(ui, Some(Glyph::Link), "Link to path", |ui| {
+            if paths.is_empty() {
+                ui.weak("No saved paths - save one from a shape's Path section");
+            }
+            for (pid, name) in paths {
+                if menu::row(ui, None, name, "").clicked() {
+                    a.unlink();
+                    a.link = if axis_x { AnimLink::PathX(*pid) } else { AnimLink::PathY(*pid) };
+                    g.click();
+                }
+            }
+        });
+    }
+    if !matches!(a.link, AnimLink::Expr(_)) && menu::row(ui, None, "Link to expression…", "").clicked() {
+        a.unlink();
+        a.link = AnimLink::Expr("return value".into());
+        g.click();
+    }
+    if !a.link.is_none() && menu::row(ui, None, "Unlink", "").clicked() {
+        a.unlink();
+        g.click();
     }
 }
 
@@ -188,7 +272,8 @@ pub(crate) fn mask_grid(ui: &mut egui::Ui, m: &mut Mask, lt: f64, palette: &Pale
                     a.set_at(lt, v);
                 }
                 g.note(&r);
-                key_buttons(ui, a, lt, palette, g);
+                r.context_menu(|ui| key_menu(ui, a, lt, g, label, &[]));
+                key_buttons(ui, a, lt, palette, g, label, &[]);
             });
             ui.end_row();
         }

@@ -743,13 +743,7 @@ impl App {
         self.after_edit();
     }
     pub(super) fn poll_panels(&mut self) {
-        // saved presets from the effects / curves panels
-        if let Some(m) = effects_ui::take_pending_motion() {
-            self.settings.motion_presets.retain(|p| p.name != m.name);
-            self.settings.motion_presets.push(m);
-            self.settings.save();
-            self.toast("Motion preset saved");
-        }
+        // saved presets from the curves panel
         if let Some(m) = curves::take_pending_motion_preset() {
             self.settings.motion_presets.retain(|p| p.name != m.name);
             self.settings.motion_presets.push(m);
@@ -779,9 +773,6 @@ impl App {
                 self.fonts = t.families().to_vec();
                 self.loaded_fonts = fonts.len();
             }
-        }
-        if let Some(id) = inspector::take_open_sequence() {
-            self.enter_sequence(id);
         }
         // "Edit in viewport" / "Open node editor" from the inspector
         if let Some(id) = inspector::take_edit_mask() {

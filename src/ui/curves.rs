@@ -13,7 +13,9 @@
 //! key → easing menu (Ease::ALL, applied to the whole selection when 2+ keys are selected), "Set Value…"
 //! (numeric entry for that key), "Blend Velocity" (2+ selected keys in one property: smooths the segments
 //! between them) and Delete; Ctrl+Scroll zooms the time axis, Shift+Scroll pans, plain Scroll zooms the
-//! value axis around the pointer and "Fit" frames every key. The "Auto scale" toggle (off by default)
+//! value axis around the pointer and "Fit" frames every key. The header is one row - target ▾ (the
+//! selected clip or a bus) · Motion ▾ (applies a motion preset on pick) · ⋯ (motion exact / merge /
+//! save, curve presets apply / save, Flow →, Auto scale, Fit). "Auto scale" (off by default)
 //! controls whether each property's value-axis range live-rescales from its current keys or stays frozen
 //! (per `CurvesState::frozen`) until "Fit" refreshes it, so editing a key doesn't lurch the whole graph's
 //! scale. Bezier velocity handles: a Bezier segment (or any segment whose left key is
@@ -22,6 +24,7 @@
 use crate::model::{Animated, Clip, Ease, Id, Keyframe, Project};
 use crate::settings::{CurvePreset, MotionPreset};
 use crate::theme::Palette;
+use crate::ui::menu;
 use eframe::egui::{self, pos2, vec2, Align2, Color32, Pos2, Rect, Sense, Shape, Stroke};
 use std::cell::RefCell;
 
@@ -139,9 +142,10 @@ pub struct CurvesState {
     band: Option<Pos2>,
     /// Copied keys as (property, key) with times relative to the earliest of them.
     clipboard: Vec<(usize, Keyframe)>,
+    /// The name typed for "Save motion…" / "Save curve preset…" (⋯ menu), and which of the two is
+    /// being named (`Some(true)` = motion) while its inline row shows.
     preset_name: String,
-    preset_sel: usize,
-    motion_sel: usize,
+    naming: Option<bool>,
     /// Key under the open context menu.
     menu_key: Option<(usize, usize)>,
     /// The key staged in the "Set Value…" popup: (property, key, staged value). Seeded from the key's
@@ -178,8 +182,7 @@ impl Default for CurvesState {
             band: None,
             clipboard: Vec::new(),
             preset_name: String::new(),
-            preset_sel: 0,
-            motion_sel: 0,
+            naming: None,
             menu_key: None,
             value_edit: None,
             last_target: None,
@@ -623,6 +626,27 @@ fn blend_velocity(
     }
 }
 
+/// How a motion preset lands on the clip: stretched to it, at its own timing, or merged in from the
+/// playhead (keeping the keys already there).
+#[derive(Clone, Copy)]
+enum MotionOp {
+    Scaled,
+    Exact,
+    Merge,
+}
+
+/// A pick from the header's Motion ▾ / ⋯ menus (or the naming row), run once the target is known.
+enum HeaderAct {
+    Motion(usize, MotionOp),
+    /// (curve preset index, scaled) onto the selected property
+    Curve(usize, bool),
+    SaveMotion(String),
+    SaveCurve(String),
+    Flow,
+    AutoScale,
+    Fit,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut egui::Ui,
@@ -648,8 +672,18 @@ pub fn show(
         }
     }
     state.seen_mixer_bus = mixer_bus;
+    // ---- header: ONE row - target ▾ · Motion ▾ (applies on pick) · ⋯ (everything else) ----
+    let target = match state.target_bus {
+        Some(b) => Some(Target::Bus(b)),
+        None => selection.iter().find(|&&id| project.clip(id).is_some()).map(|&id| Target::Clip(id)),
+    };
+    // motion presets and Flow act on a CLIP's own transform, so a bus target has nothing for them to do
+    let is_clip = matches!(target, Some(Target::Clip(_)));
+    let motions: Vec<String> = MOTIONS.with(|m| m.borrow().iter().map(|p| p.name.clone()).collect());
+    let curves: Vec<String> = AVAILABLE.with(|a| a.borrow().iter().map(|p| p.name.clone()).collect());
+    let flow = if is_clip { flow_pair(project, selection) } else { None };
+    let mut act: Option<HeaderAct> = None;
     ui.horizontal(|ui| {
-        ui.label("Curves for");
         let buses: Vec<(Id, String)> = project.buses.iter().map(|b| (b.id, b.name.clone())).collect();
         let text = match state.target_bus.and_then(|id| buses.iter().find(|(b, _)| *b == id)) {
             Some((_, n)) => format!("Bus: {n}"),
@@ -661,16 +695,94 @@ pub fn show(
                 ui.selectable_value(&mut state.target_bus, Some(id), format!("Bus: {name}"));
             }
         });
-    });
-    let target = match state.target_bus {
-        Some(b) => Target::Bus(b),
-        None => match selection.iter().find(|&&id| project.clip(id).is_some()) {
-            Some(&id) => Target::Clip(id),
-            None => {
-                ui.label("Select a clip, or pick a bus above");
-                return out;
+        ui.add_enabled_ui(is_clip && !motions.is_empty(), |ui| {
+            ui.menu_button("Motion ▾", |ui| {
+                for (i, n) in motions.iter().enumerate() {
+                    let r = menu::row(ui, None, n, "").on_hover_text("Stretch the preset to this clip's length");
+                    if r.clicked() {
+                        act = Some(HeaderAct::Motion(i, MotionOp::Scaled));
+                    }
+                }
+            })
+            .response
+            .on_hover_text("Apply a motion preset to the clip")
+            .on_disabled_hover_text("Select a clip");
+        });
+        // everything else
+        let r = ui.menu_button("⋯", |ui| {
+            ui.add_enabled_ui(is_clip, |ui| {
+                for (label, op) in
+                    [("Apply motion exact", MotionOp::Exact), ("Merge motion at playhead", MotionOp::Merge)]
+                {
+                    menu::sub(ui, None, label, |ui| {
+                        for (i, n) in motions.iter().enumerate() {
+                            if menu::row(ui, None, n, "").clicked() {
+                                act = Some(HeaderAct::Motion(i, op));
+                            }
+                        }
+                    });
+                }
+                if menu::row(ui, None, "Save motion…", "").clicked() {
+                    state.naming = Some(true);
+                }
+            });
+            ui.separator();
+            ui.add_enabled_ui(is_clip && !curves.is_empty(), |ui| {
+                for (label, scaled) in [("Apply curve scaled", true), ("Apply curve exact", false)] {
+                    menu::sub(ui, None, label, |ui| {
+                        for (i, n) in curves.iter().enumerate() {
+                            if menu::row(ui, None, n, "").on_hover_text("To the selected property").clicked() {
+                                act = Some(HeaderAct::Curve(i, scaled));
+                            }
+                        }
+                    });
+                }
+            });
+            if menu::row(ui, None, "Save curve preset…", "").clicked() {
+                state.naming = Some(false);
             }
-        },
+            ui.separator();
+            let r = ui.add_enabled_ui(flow.is_some(), |ui| menu::row(ui, None, "Flow →", "")).inner;
+            if r.on_hover_text("Continue the first clip's motion into the second")
+                .on_disabled_hover_text("Select exactly two abutting clips")
+                .clicked()
+            {
+                act = Some(HeaderAct::Flow);
+            }
+            ui.separator();
+            let tip = "Live-rescale each property's value axis to its current keyframes. Off (default) freezes \
+                       each property's range until you pick Fit, so dragging a key to an extreme value doesn't \
+                       make the whole graph's scale jump.";
+            if menu::check(ui, state.auto_scale, "Auto scale", "").on_hover_text(tip).clicked() {
+                act = Some(HeaderAct::AutoScale);
+            }
+            let tip = "Frame every keyframe (Ctrl+Scroll zooms time, Scroll zooms values)";
+            if menu::row(ui, None, "Fit", "").on_hover_text(tip).clicked() {
+                act = Some(HeaderAct::Fit);
+            }
+        });
+        r.response.on_hover_text("Presets, Flow, Auto scale, Fit");
+    });
+    // "Save motion…" / "Save curve preset…": one inline name row until saved or cancelled
+    if let Some(motion) = state.naming {
+        ui.horizontal(|ui| {
+            let r = ui.add(egui::TextEdit::singleline(&mut state.preset_name).hint_text("Name").desired_width(140.0));
+            let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            let name = state.preset_name.trim().to_string();
+            let label = if motion { "Save motion" } else { "Save curve preset" };
+            if ui.add_enabled(!name.is_empty(), egui::Button::new(label)).clicked() || (enter && !name.is_empty()) {
+                act = Some(if motion { HeaderAct::SaveMotion(name) } else { HeaderAct::SaveCurve(name) });
+                state.naming = None;
+                state.preset_name.clear();
+            }
+            if ui.button("Cancel").clicked() {
+                state.naming = None;
+            }
+        });
+    }
+    let Some(target) = target else {
+        ui.label("Select a clip, or pick a bus above");
+        return out;
     };
     // per-target view/selection state must not leak across targets: property INDEX i on clip A is a
     // different property on clip B, so stale frozen ranges showed B's keys off-screen and stale key
@@ -713,151 +825,73 @@ pub fn show(
         }
     }
 
-    // ---- motion presets (every animated property of the clip at once) ----
-    // motion presets and Flow act on a CLIP's own transform, so a bus target has nothing for them to do
-    let is_clip = matches!(target, Target::Clip(_));
-    ui.add_enabled_ui(is_clip, |ui| {
-        ui.horizontal(|ui| {
-            let motions: Vec<String> = MOTIONS.with(|m| m.borrow().iter().map(|p| p.name.clone()).collect());
-            ui.label("Motion");
-            if motions.is_empty() {
-                ui.weak("(none)");
-            } else {
-                state.motion_sel = state.motion_sel.min(motions.len() - 1);
-                egui::ComboBox::from_id_salt("motion_preset").selected_text(motions[state.motion_sel].clone()).show_ui(
-                    ui,
-                    |ui| {
-                        for (i, n) in motions.iter().enumerate() {
-                            ui.selectable_value(&mut state.motion_sel, i, n);
+    // ---- run the header's pick ----
+    let mut want_fit = false;
+    match act {
+        Some(HeaderAct::Motion(i, op)) => {
+            let preset = MOTIONS.with(|m| m.borrow().get(i).cloned());
+            if let Some(preset) = preset {
+                undo(project);
+                let ph = *playhead;
+                if let Some(c) = project.clip_mut(id) {
+                    match op {
+                        MotionOp::Scaled => crate::engine::presets::apply_motion(&preset, c, true),
+                        MotionOp::Exact => crate::engine::presets::apply_motion(&preset, c, false),
+                        MotionOp::Merge => {
+                            let off = c.local(ph).clamp(0.0, c.duration);
+                            crate::engine::presets::merge_motion(&preset, c, off);
                         }
-                    },
-                );
-                let mut apply: Option<bool> = None; // Some(scaled)
-                if ui.small_button("Apply").on_hover_text("Stretch the preset to this clip's length").clicked() {
-                    apply = Some(true);
+                    }
+                    out.edited = true;
                 }
-                if ui.small_button("Apply exact").on_hover_text("Keep the preset's own timing").clicked() {
-                    apply = Some(false);
-                }
-                let merge = ui
-                    .small_button("Merge")
-                    .on_hover_text("Add the preset's keys from the playhead on, keeping what is already there")
-                    .clicked();
-                if apply.is_some() || merge {
-                    let preset = MOTIONS.with(|m| m.borrow().get(state.motion_sel).cloned());
-                    if let Some(preset) = preset {
-                        undo(project);
-                        let ph = *playhead;
-                        if let Some(c) = project.clip_mut(id) {
-                            match apply {
-                                Some(scaled) => crate::engine::presets::apply_motion(&preset, c, scaled),
-                                None => {
-                                    let off = c.local(ph).clamp(0.0, c.duration);
-                                    crate::engine::presets::merge_motion(&preset, c, off);
-                                }
-                            }
-                            out.edited = true;
-                        }
+            }
+        }
+        Some(HeaderAct::Curve(i, scaled)) => {
+            let preset = AVAILABLE.with(|a| a.borrow().get(i).cloned());
+            if let Some(preset) = preset {
+                undo(project);
+                if let Some(c) = project.clip_mut(id) {
+                    let dur = c.duration;
+                    if let Some(a) = prop_mut(c, state.active) {
+                        crate::engine::presets::apply_curve(&preset, a, dur, scaled);
+                        out.edited = true;
                     }
                 }
             }
-            let can_save = !state.preset_name.trim().is_empty() && is_clip;
-            if ui
-                .add_enabled(can_save, egui::Button::new("Save motion"))
-                .on_hover_text("Save every animated property of this clip under the name on the left")
-                .clicked()
-            {
-                if let Some(c) = project.clip(id) {
-                    PENDING_MOTION.with(|s| {
-                        *s.borrow_mut() = Some(crate::engine::presets::capture_motion(state.preset_name.trim(), c))
-                    });
-                    state.preset_name.clear();
-                }
+        }
+        Some(HeaderAct::SaveMotion(name)) => {
+            if let Some(c) = project.clip(id) {
+                PENDING_MOTION.with(|s| *s.borrow_mut() = Some(crate::engine::presets::capture_motion(&name, c)));
             }
-        });
-    });
-
-    // ---- presets + flow row ----
-    let mut want_fit = false;
-    ui.horizontal(|ui| {
-        ui.add(egui::TextEdit::singleline(&mut state.preset_name).hint_text("Preset name").desired_width(90.0));
-        let can_save = !state.preset_name.trim().is_empty();
-        if ui.add_enabled(can_save, egui::Button::new("Save curve preset")).clicked() {
+        }
+        Some(HeaderAct::SaveCurve(name)) => {
             if let Some(a) = t_ref(project, target, state.active) {
                 let dur = t_span(project, target).1;
-                if let Some(p) = crate::engine::presets::capture_curve(state.preset_name.trim(), a, dur, false) {
+                if let Some(p) = crate::engine::presets::capture_curve(&name, a, dur, false) {
                     PENDING.with(|s| *s.borrow_mut() = Some(p));
-                    state.preset_name.clear();
                 }
             }
         }
-        let names: Vec<String> = AVAILABLE.with(|a| a.borrow().iter().map(|p| p.name.clone()).collect());
-        if !names.is_empty() {
-            state.preset_sel = state.preset_sel.min(names.len() - 1);
-            egui::ComboBox::from_id_salt("curve_preset").selected_text(names[state.preset_sel].clone()).show_ui(
-                ui,
-                |ui| {
-                    for (i, n) in names.iter().enumerate() {
-                        ui.selectable_value(&mut state.preset_sel, i, n);
-                    }
-                },
-            );
-            let mut apply: Option<bool> = None; // Some(scaled)
-            if ui.small_button("Apply exact").clicked() {
-                apply = Some(false);
-            }
-            if ui.small_button("Apply scaled").clicked() {
-                apply = Some(true);
-            }
-            if let Some(scaled) = apply {
-                let preset = AVAILABLE.with(|a| a.borrow().get(state.preset_sel).cloned());
-                if let Some(preset) = preset {
-                    undo(project);
-                    if let Some(c) = project.clip_mut(id) {
-                        let dur = c.duration;
-                        if let Some(a) = prop_mut(c, state.active) {
-                            crate::engine::presets::apply_curve(&preset, a, dur, scaled);
-                            out.edited = true;
-                        }
-                    }
-                }
-            }
-        }
-        let flow = if is_clip { flow_pair(project, selection) } else { None };
-        if ui
-            .add_enabled(flow.is_some(), egui::Button::new("Flow →"))
-            .on_hover_text("Continue the first clip's motion into the second")
-            .on_disabled_hover_text("Select exactly two abutting clips")
-            .clicked()
-        {
+        Some(HeaderAct::Flow) => {
             if let Some((a, b)) = flow {
                 undo(project);
                 out.edited |= project.flow_clips(a, b);
             }
         }
-        if ui
-            .checkbox(&mut state.auto_scale, "Auto scale")
-            .on_hover_text(
-                "Live-rescale each property's value axis to its current keyframes. Off (default) freezes \
-                 each property's range until you click Fit, so dragging a key to an extreme value doesn't \
-                 make the whole graph's scale jump.",
-            )
-            .changed()
-            && state.auto_scale
-        {
-            state.frozen.clear(); // nothing left to freeze once scaling is live again
+        Some(HeaderAct::AutoScale) => {
+            state.auto_scale = !state.auto_scale;
+            if state.auto_scale {
+                state.frozen.clear(); // nothing left to freeze once scaling is live again
+            }
         }
-        if ui
-            .small_button("Fit")
-            .on_hover_text("Frame every keyframe (Ctrl+Scroll zooms time, Scroll zooms values)")
-            .clicked()
-        {
+        Some(HeaderAct::Fit) => {
             want_fit = true;
             if !state.auto_scale {
                 state.frozen.clear(); // the explicit, on-demand re-snapshot while scaling isn't live
             }
         }
-    });
+        None => {}
+    }
 
     // ---- layout: property list | graph ----
     let avail = ui.available_rect_before_wrap();

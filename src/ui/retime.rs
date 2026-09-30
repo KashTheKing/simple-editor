@@ -1,4 +1,5 @@
-//! Retime window (Ctrl+R): speed / reverse / freeze for the selected clips (linked clips follow).
+//! Retime window (Action::Retime - Clip ▸ Speed / Retime…, or right-click the Inspector's Speed): speed /
+//! reverse / freeze for the selected clips (linked clips follow).
 //! egui::Window "Speed / Retime": speed as a percent DragValue (1..10000 %, 100 = normal) + preset buttons
 //! (25 % 50 % 100 % 200 % 400 %), "Reverse" checkbox, "Freeze frame at playhead" button
 //! (Project::freeze_at(playhead, selection)) and "Unfreeze" (clear `freeze`), "Apply" → Project::set_speed

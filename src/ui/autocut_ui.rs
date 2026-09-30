@@ -1,11 +1,13 @@
-//! Auto-cut pane (non-blocking; the timeline stays usable while it is open). Works on the selected audio
-//! clips (a selected video clip uses its linked audio). Controls: threshold (dBFS slider -80..0),
-//! min silence, min speech, padding (DragValues), "Keep: loud parts / quiet parts" toggle, "Ripple (close
-//! gaps)" checkbox. It shows the detected segments live (count + total kept seconds) and publishes them to
-//! `overlay` (timeline time ranges to KEEP, per selected clip) so the timeline can shade them; buttons:
-//! "Split only" (cuts at the boundaries, removes nothing), "Apply" (Project::auto_cut with the cuts and the
-//! quiet ranges; linked video follows), "Clear". Peaks come from WaveformCache (None while computing →
-//! "analysing…"); detection uses engine::autocut. Undo once per Apply/Split. Returns what changed.
+//! Auto-cut pane (non-blocking; the timeline stays usable while it is open - opened from Timeline ▸
+//! Auto ▸ and a clip's right-click, not shown by default). Works on the selected audio clips (a selected
+//! video clip uses its linked audio). One header row: Detect (Clear once detecting) · Keep loud / Keep
+//! quiet · Ripple (close gaps); then threshold (dBFS slider -80..0), min silence, min speech, padding.
+//! It shows the detected segments live (count + total kept seconds) and publishes them to `overlay`
+//! (timeline time ranges to KEEP, per selected clip) so the timeline can shade them; buttons: "Split
+//! only" (cuts at the boundaries, removes nothing), "Apply" (Project::auto_cut with the cuts and the
+//! quiet ranges; linked video follows), "Mark instead". Peaks come from WaveformCache (None while
+//! computing → "analysing…"); detection uses engine::autocut. Undo once per Apply/Split. Returns what
+//! changed.
 
 use crate::engine::analysis::{self, NormMode};
 use crate::engine::autocut::{self, AutoCutParams};
@@ -234,8 +236,29 @@ fn body(
 ) -> (bool, Vec<Id>) {
     let mut changed = false;
     let mut marked: Vec<Id> = Vec::new();
-    ui.strong("Auto-cut");
+    let targets = audio_targets(project, selection);
     let mut tweaked = false;
+    // header: ONE row - the primary verb (Detect, or Clear once detecting) · what to keep · ripple
+    ui.horizontal(|ui| {
+        if state.active {
+            if ui.button("Clear").on_hover_text("Stop detecting and clear the timeline shading").clicked() {
+                clear_detection(state);
+            }
+        } else {
+            let r = ui
+                .add_enabled(!targets.is_empty(), Button::new("Detect"))
+                .on_hover_text("Find the silences in the selected clips")
+                .on_disabled_hover_text("Select an audio clip (or a video clip with linked audio)");
+            if r.clicked() {
+                state.active = true;
+            }
+        }
+        ui.separator();
+        tweaked |= ui.selectable_value(&mut state.keep_quiet, false, "Keep loud").changed();
+        tweaked |= ui.selectable_value(&mut state.keep_quiet, true, "Keep quiet").changed();
+        ui.separator();
+        ui.checkbox(&mut state.ripple, "Ripple").on_hover_text("Close the gaps the cut leaves");
+    });
     egui::Grid::new("autocut_params").num_columns(2).show(ui, |ui| {
         ui.label("Threshold");
         tweaked |= ui.add(Slider::new(&mut state.params.threshold_db, -80.0..=0.0).suffix(" dBFS")).changed();
@@ -252,33 +275,20 @@ fn body(
         tweaked |=
             ui.add(DragValue::new(&mut state.params.padding).range(0.0..=5.0).speed(0.01).suffix(" s")).changed();
         ui.end_row();
-        ui.label("Keep");
-        ui.horizontal(|ui| {
-            tweaked |= ui.selectable_value(&mut state.keep_quiet, false, "Loud parts").changed();
-            tweaked |= ui.selectable_value(&mut state.keep_quiet, true, "Quiet parts").changed();
-        });
-        ui.end_row();
     });
-    ui.checkbox(&mut state.ripple, "Ripple (close gaps)");
     if tweaked {
         state.active = true;
     }
 
-    let targets = audio_targets(project, selection);
     if targets.is_empty() {
-        ui.label("Select an audio clip (or a video clip with linked audio)");
+        ui.weak("Select an audio clip (or a video clip with linked audio)");
         state.overlay.clear();
         state.cached.clear();
         state.cache_key = 0;
-    } else if !state.active {
-        if ui.button("Detect").clicked() {
-            state.active = true;
-        }
-        if !state.status.is_empty() {
-            ui.label(state.status.clone());
-        }
-    } else {
+    } else if state.active {
         show_silence(ui, state, project, &targets, waveforms, undo, &mut changed, &mut marked);
+    } else if !state.status.is_empty() {
+        ui.label(state.status.clone());
     }
 
     ui.separator();
@@ -298,9 +308,17 @@ fn body(
     (changed, marked)
 }
 
+/// Header "Clear": back to not detecting - no shading, no cached segments.
+fn clear_detection(state: &mut AutoCutState) {
+    state.active = false;
+    state.overlay.clear();
+    state.cached.clear();
+    state.cache_key = 0;
+}
+
 /// The existing silence-detection flow (threshold/min-silence/min-speech/padding already drawn by the
-/// caller): cached per-clip detections, per-segment include toggles, Split only / Apply / Mark instead /
-/// Clear. Split out of `show` so the new Scene cuts/Beats/Loudness/Duck sections don't inflate one
+/// caller): cached per-clip detections, per-segment include toggles, Split only / Apply / Mark instead
+/// (Clear is the header's). Split out of `show` so the new Scene cuts/Beats/Loudness/Duck sections don't inflate one
 /// already-large function.
 #[allow(clippy::too_many_arguments)]
 fn show_silence(
@@ -401,7 +419,6 @@ fn show_silence(
     let ready = state.cached.iter().any(|d| !d.cuts.is_empty() || !d.quiet.is_empty());
     let mut act: Option<bool> = None; // Some(apply)
     let mut mark = false;
-    let mut clear = false;
     ui.horizontal(|ui| {
         if ui
             .add_enabled(ready, Button::new("Split only"))
@@ -419,9 +436,6 @@ fn show_silence(
             .clicked()
         {
             mark = true;
-        }
-        if ui.button("Clear").clicked() {
-            clear = true;
         }
     });
     if let Some(apply) = act {
@@ -458,12 +472,6 @@ fn show_silence(
             marked.extend(ids);
             *changed = true;
         }
-    }
-    if clear {
-        state.active = false;
-        state.overlay.clear();
-        state.cached.clear();
-        state.cache_key = 0;
     }
     if !state.status.is_empty() {
         ui.label(state.status.clone());
@@ -555,7 +563,8 @@ fn beats_ui(
 ) {
     let targets = audio_targets(project, selection);
     if ui.add_enabled(!targets.is_empty(), Button::new("Detect Beats")).clicked() {
-        let (per_clip, bpm) = analysis::detect_beats(project, &targets, 0.25, settings.beat_thr, &mut asset_peaks(waveforms));
+        let (per_clip, bpm) =
+            analysis::detect_beats(project, &targets, 0.25, settings.beat_thr, &mut asset_peaks(waveforms));
         let total: usize = per_clip.iter().map(|(_, o)| o.len()).sum();
         state.status = if total == 0 { "No beats found".into() } else { format!("{total} beat(s) detected") };
         state.bpm = bpm;
