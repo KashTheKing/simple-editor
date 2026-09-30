@@ -719,6 +719,39 @@ fn kind_tag_for_class(c: u8) -> &'static str {
 }
 
 /// ("file.mp4", "C:\dir") - pure string split on the last path separator.
+/// Desktop, Downloads, Documents, Videos, Pictures, Music - the Media Browser's built-in roots, from
+/// the known-folder API (so a OneDrive-redirected Documents resolves), else %USERPROFILE%\<name>.
+/// Only the ones that exist; resolved once per run.
+fn known_folders() -> &'static [(&'static str, String)] {
+    static DIRS: std::sync::OnceLock<Vec<(&'static str, String)>> = std::sync::OnceLock::new();
+    DIRS.get_or_init(|| {
+        use windows::Win32::UI::Shell::{self as sh, KNOWN_FOLDER_FLAG};
+        let ids = [
+            (sh::FOLDERID_Desktop, "Desktop"),
+            (sh::FOLDERID_Downloads, "Downloads"),
+            (sh::FOLDERID_Documents, "Documents"),
+            (sh::FOLDERID_Videos, "Videos"),
+            (sh::FOLDERID_Pictures, "Pictures"),
+            (sh::FOLDERID_Music, "Music"),
+        ];
+        let home = std::env::var("USERPROFILE").unwrap_or_default();
+        ids.iter()
+            .filter_map(|(id, name)| {
+                // SAFETY: plain Win32 call; the returned buffer is freed right after it is copied
+                let known = unsafe {
+                    sh::SHGetKnownFolderPath(id, KNOWN_FOLDER_FLAG(0), None).ok().map(|p| {
+                        let s = p.to_string().ok();
+                        windows::Win32::System::Com::CoTaskMemFree(Some(p.0 as _));
+                        s
+                    })
+                };
+                let path = known.flatten().unwrap_or_else(|| format!(r"{home}\{name}"));
+                std::path::Path::new(&path).is_dir().then_some((*name, path))
+            })
+            .collect()
+    })
+}
+
 fn split_path(p: &str) -> (&str, &str) {
     match p.rfind(['\\', '/']) {
         Some(i) => (&p[i + 1..], &p[..i]),
@@ -1848,6 +1881,7 @@ fn sync_search_expand(state: &mut LibraryState, project: &Project, settings: &Se
         let root = project
             .linked_folders
             .iter()
+            .chain(known_folders().iter().map(|(_, p)| p))
             .filter(|r| {
                 dir == r.as_str()
                     || (dir.len() > r.len()
@@ -2472,10 +2506,14 @@ impl Tree<'_, '_> {
 
     /// Root 2 - "Browse": Recent, and the folders the user linked, straight from disk.
     fn global(&mut self, ui: &mut egui::Ui) {
+        // the user's standard folders: always there, browsable, never unlinked (not in settings)
+        for (name, folder) in known_folders() {
+            self.dir(ui, folder, 0, false, Some(name));
+        }
         self.recent(ui, 0);
         let linked: &[String] = &self.project.linked_folders;
         for folder in linked {
-            self.dir(ui, folder, 0, true);
+            self.dir(ui, folder, 0, true, None);
         }
         if linked.is_empty() {
             ui.horizontal(|ui| {
@@ -2519,10 +2557,12 @@ impl Tree<'_, '_> {
         self.files(ui, depth + 1, &paths, true);
     }
 
-    /// One folder on disk. `root` marks a linked folder - Refresh / Unlink live in its menu.
-    fn dir(&mut self, ui: &mut egui::Ui, path: &str, depth: usize, root: bool) {
+    /// One folder on disk. `root` marks a linked folder - Refresh / Unlink live in its menu. `label`
+    /// overrides the folder's own name (a built-in root redirected elsewhere still reads "Videos").
+    fn dir(&mut self, ui: &mut egui::Ui, path: &str, depth: usize, root: bool, label: Option<&str>) {
         let key = dir_key(path);
-        let name = path.rsplit(['\\', '/']).find(|s| !s.is_empty()).unwrap_or(path).to_string();
+        let own = path.rsplit(['\\', '/']).find(|s| !s.is_empty()).unwrap_or(path);
+        let name = label.unwrap_or(own).to_string();
         let mut open = false;
         ui.horizontal(|ui| {
             ui.add_space(indent(depth));
@@ -2564,7 +2604,7 @@ impl Tree<'_, '_> {
             });
         }
         for (p, _) in entries.iter().filter(|(_, d)| *d) {
-            self.dir(ui, p, depth + 1, false);
+            self.dir(ui, p, depth + 1, false, None);
         }
         let files: Vec<String> = entries.into_iter().filter(|(_, d)| !*d).map(|(p, _)| p).collect();
         self.files(ui, depth + 1, &files, false);
@@ -3779,6 +3819,28 @@ mod tests {
             }
             assert!(!ctx.has_requested_repaint(), "view {view}: an idle library pane requested a repaint");
         }
+    }
+
+    /// The Media Browser lists the user's standard folders first, each one that exists, with no Unlink.
+    #[test]
+    fn media_browser_lists_known_folders() {
+        let dirs = known_folders();
+        assert!(dirs.iter().all(|(_, d)| std::path::Path::new(d).is_dir()), "{dirs:?}");
+        if dirs.is_empty() {
+            return; // a profile with none of them (CI) - nothing to draw
+        }
+        let mut project = Project::new();
+        let mut settings = Settings::default();
+        let mut state = LibraryState::media_browser();
+        let mut pane = Pane::new(420.0, 900.0);
+        let (shapes, _) = pane.step(&mut state, &mut project, &mut settings, vec![]);
+        let first = dirs[0].0; // the standard name, even when the folder is redirected
+        let (top, recent) =
+            (text_rect(&shapes, first).expect("known folder drawn"), text_rect(&shapes, "Recent").unwrap());
+        assert!(top.top() < recent.top(), "known folders sit above Recent");
+        pane.step(&mut state, &mut project, &mut settings, press(top.center(), egui::PointerButton::Secondary));
+        let (shapes, _) = pane.step(&mut state, &mut project, &mut settings, vec![]);
+        assert!(text_rect(&shapes, "Reveal folder").is_some() && text_rect(&shapes, "Unlink folder").is_none());
     }
 
     /// Same gate for the Media Browser pane (`tab` 1): recent files, a linked folder, both views.
