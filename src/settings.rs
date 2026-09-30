@@ -282,6 +282,9 @@ pub struct Settings {
     pub audio_visualizer: bool,
     /// Social-guide overlay drawn over the preview (None = off). A view preference, not project data.
     pub guide: Option<crate::ui::guides::Guide>,
+    /// "Maintain Aspect Ratio": draw each guide at its platform's own aspect (TikTok 9:16 even on a
+    /// 16:9 project), dimming what the platform crops. Off = stretched over the whole video.
+    pub guides_keep_aspect: bool,
     /// User-saved project formats, applied from the inspector's Presets section.
     pub project_templates: Vec<ProjectTemplate>,
     /// UI look: "cozy" (rounded corners, soft button borders) or "sharp" (the old flat look).
@@ -538,6 +541,7 @@ impl Default for Settings {
             // ---- ws:canvas-handles-monitor ----
             hover_preview: true,
             canvas_snap: true,
+            guides_keep_aspect: true,
             // ---- ws:export-deliver ----
             export_presets: crate::engine::export::default_export_presets(),
             last_export: None,

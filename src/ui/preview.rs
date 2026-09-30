@@ -394,6 +394,8 @@ pub struct PreviewCtx<'a> {
     pub tracker: Option<(f32, f32, f32, f32)>,
     /// Social-guide overlay to draw over the video (settings.guide).
     pub guide: Option<crate::ui::guides::Guide>,
+    /// Settings.guides_keep_aspect: draw the guide at its platform's aspect, not stretched.
+    pub guides_keep_aspect: bool,
     // ---- ws:canvas-handles-monitor ----
     /// Settings.canvas_snap: snap a drag-to-move to the canvas centre / edges / thirds / other clips.
     pub canvas_snap: bool,
@@ -446,6 +448,8 @@ pub struct PreviewResponse {
     pub set_tracker: Option<(f32, f32)>,
     /// The user picked a social guide from the right-click (Some(None) = off).
     pub set_guide: Option<Option<crate::ui::guides::Guide>>,
+    /// The context menu toggled "Maintain Aspect Ratio" (Settings.guides_keep_aspect).
+    pub set_guides_keep_aspect: Option<bool>,
     // ---- ws:canvas-handles-monitor ----
     /// The context menu toggled canvas snapping - the app stores it in Settings.canvas_snap.
     pub set_canvas_snap: Option<bool>,
@@ -1187,6 +1191,10 @@ fn viewer_menu(resp: &egui::Response, state: &mut PreviewState, c: &mut PreviewC
                         r.set_guide = Some(g);
                     }
                 }
+                ui.separator();
+                if menu::check(ui, c.guides_keep_aspect, "Maintain Aspect Ratio", "").clicked() {
+                    r.set_guides_keep_aspect = Some(!c.guides_keep_aspect);
+                }
             });
             menu::action_item(ui, Action::ToggleScopes);
             ui.separator();
@@ -1282,7 +1290,7 @@ fn video(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r:
             .ctx()
             .layer_painter(egui::LayerId::new(egui::Order::Foreground, ui.id().with("social_guide")))
             .with_clip_rect(rect);
-        crate::ui::guides::draw_guide(&gp, lb, g, c.palette);
+        crate::ui::guides::draw_guide(&gp, lb, g, c.guides_keep_aspect, c.palette);
     }
 
     if let Some(f) = &c.frame {
@@ -1940,6 +1948,7 @@ mod tests {
                             proxy: None,
                             tracker: None,
                             guide: None,
+                            guides_keep_aspect: true,
                             canvas_snap: false,
                             alt_texture: None,
                             use_proxies: *use_proxies,
