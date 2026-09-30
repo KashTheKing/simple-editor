@@ -164,6 +164,9 @@ changes live.
 - Don't add a dependency to save a few lines of code — see goals.md's dependency budget.
 - Don't run bare `cargo fmt` and commit the result — it reformats the whole crate (pre-existing
   drift). Format only the files you touched, or diff-check before committing.
+- Don't call egui's `.context_menu(|ui| …)` / `ui.menu_button(…)` directly - use `ui::menu::context` /
+  `button` / `sub`. egui compiles its popup code once per body closure (~30 KB of exe each; see the
+  size-recovery note in notes.md), and a test fails on direct calls.
 - Don't claim a UI change works without actually rendering it (screenshot or live app).
 - Don't treat a failing headless UI test as a product bug before checking the known
   test-harness pitfalls above.
