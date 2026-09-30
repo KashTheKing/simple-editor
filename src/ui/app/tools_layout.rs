@@ -117,7 +117,8 @@ pub const TOOLS: &[ToolDef] = &[
         name: "layout.list",
         desc: "The current page (and every page name), layout mode, pinned panes, the maximised pane, \
                whether panels are locked, which pages have a saved default, and each pane's visibility / \
-               popped-out state.",
+               popped-out state and on-screen rect ([x0, y0, x1, y1] in points, tab bar included; null when \
+               not drawn).",
         args: &[],
         kind: ToolKind::Read,
         run: |app, _args| {
@@ -129,6 +130,8 @@ pub const TOOLS: &[ToolDef] = &[
                         "visible": app.layout.is_visible(p),
                         "popped": app.layout.popped.contains(&p),
                         "pinned": app.layout.pinned.contains(&p),
+                        // where ui.input aims, and what scripts/docs-shots.ps1 crops to
+                        "rect": app.layout.rects.iter().find(|(q, _)| *q == p).map(|(_, r)| [r.min.x, r.min.y, r.max.x, r.max.y]),
                     })
                 })
                 .collect();

@@ -1,0 +1,89 @@
+---
+title: Inspector & keyframes
+description: Change a clip's position, size, opacity, speed and more, and animate any of it with keyframes.
+---
+
+![The Inspector with a video clip selected](/img/tutorial/inspector-clip.png)
+
+The **Inspector** shows the settings of whatever you selected. It's in the top-right corner of every page
+(<kbd>Ctrl+2</kbd> shows or hides it).
+
+## What it shows
+
+- **Nothing selected**: the **project**: its **Name**, **Format** (YouTube, TikTok, Square 1:1… or a format
+  you saved), **Resolution**, **Frame rate** and **Background**. Right-click the **Project** title to save
+  the current format as a template, or delete one you saved.
+- **A clip**: its settings (below).
+- **Several clips**: the settings they share (transform, opacity, blend, fades, enabled, label). Changing
+  one changes all of them.
+- **A transition** (click its band on the timeline): its kind, duration, easing, and colour or direction
+  where they apply.
+
+## A clip's settings
+
+At the top is one row: the **label dot** (click it to pick a colour label), the clip's **name** (click to
+rename) and an **eye** that switches the clip off and on. Under it, one grey line says which track it's
+on, where it starts and how long it is.
+
+Below that, the settings are in sections. Only the one you most likely need starts open; click any
+section's title to open or close it, and **right-click a title** for that section's extra commands.
+
+| Section | What's in it |
+|---|---|
+| **Text** (text clips) | The text, font (**Import font…** adds your own), size, bold, italic, fill, outline, shadow, alignment, spacing, a background box, **Reveal** (typewriter) and **Wave**, and **Animation** presets |
+| **Transform** | Position X / Y, **Scale** (click the chain to scale X and Y separately), Rotation |
+| **Opacity & blend** | Opacity, blend mode (Multiply, Screen, Overlay…), fade in and out |
+| **Audio** (clips on an audio track) | Volume, pan, fades, **Role** and **Bus**. Right-click the title for Repair, Clarity, Open in Mixer, Duck Music under Dialogue and Normalize Selection ([Audio](audio.mdx#clip-audio)) |
+| **Speed** | Speed %, Reverse and Freeze. Right-click for **Speed / Retime…** (<kbd>Ctrl+R</kbd>) and **Freeze Frame at Playhead** |
+| **Color** | The grading controls ([Color](color.mdx#the-color-section)) |
+| **Effects** | The clip's effect stack ([Effects](effects.mdx#the-effect-stack)). Right-click the title to open it in the node editor |
+| **Shape**, **Mask**, **Path** | A shape's fill, stroke and size; the clip's mask (right-click: Add mask, Edit in viewport, Remove mask); saving the clip's motion as a path |
+| **Asset** | The file behind the clip and how often it's used |
+
+The section that starts open depends on the clip and the page: **Color** on the Color page, **Audio** for
+anything on an audio track, **Text** for text, **Shape** for shapes, **Effects** for adjustment layers,
+and **Transform** for everything else.
+
+Drag a number left or right to change it, or click it to type a value. Dragging the clip in the
+[Preview](viewer.mdx#move-scale-rotate-and-crop) changes the same values.
+
+![The Inspector with a text clip selected](/img/tutorial/inspector-text.png)
+
+## Keyframes
+
+![Keyframes on a title clip](/img/tutorial/keyframes.png)
+
+Any value with a **◆** next to it can be animated. To make something change over time:
+
+1. Move the playhead to where the change should start and click **◆**. The value there becomes a
+   keyframe.
+2. Move the playhead to where it should end and change the value. Once a property has a keyframe, every
+   change adds or updates a keyframe at the playhead.
+3. Play it back. The value glides between keyframes.
+
+The ◆ shows where you are: **filled** when there's a keyframe at the playhead (click it to remove that
+keyframe), **outlined** when the value is animated but not keyed right here, and **faint** when it isn't
+animated at all.
+
+![Right-click a keyframe button](/img/tutorial/keyframe-menu.png)
+
+**Right-click the ◆ (or the value)** for:
+
+- **Previous key** / **Next key**: jump the playhead to this property's keyframes.
+- **Clear keyframes**: remove all of them, keeping the value at the playhead.
+- **Link to path ▸** (Position X / Y): follow a path you saved from a shape's **Path** section or from
+  motion tracking.
+- **Link to expression…**: drive the value with a small Luau formula, like
+  `return value + math.sin(t*4) * 20` for a wobble. `t` is the time in seconds from the clip's start and
+  `value` is what the property would be without the expression. The formula has to end with `return` and a
+  number.
+- **Unlink**: back to normal. Editing a linked value by hand unlinks it too. A linked value shows **∿**
+  instead of ◆.
+
+<kbd>Alt+Left</kbd> / <kbd>Alt+Right</kbd> jump to the previous / next keyframe of the selected clip, over
+all its properties.
+
+Keyframes also show as small diamonds on the clip in the timeline. Drag them to change their timing, and
+right-click one for **Easing** (Linear, Ease In, Ease Out, Hold, Overshoot…) or **Delete Keyframe**. For
+full control over the curves, open the **Curves** panel (<kbd>Ctrl+5</kbd>), which draws every animated
+value of the selected clip as a graph you can edit ([Advanced](advanced.mdx#curves)).

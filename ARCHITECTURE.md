@@ -116,7 +116,12 @@ src/mcp/tools.rs        ToolDef/ToolKind/ToolOutcome + `all()`/`find()`/`list_js
 
 src/ui/mod.rs           shared UI types/helpers (DragPayload, label_name, duration_text, …)
 src/ui/layout.rs        egui_tiles docking, pop-out viewports (`on_viewport` hook), layout profiles,
-                        `Pane` enum (`ALL`/`ROUND3`/`glyph`/`title`), `stack_unplaced`
+                        `Pane` enum (`ALL`/`ROUND3`/`glyph`/`title`), `stack_unplaced`; the pages
+                        (`PAGES` = Media/Cut/Edit/Color/Audio/Export, one builder each), tab chrome (`+`, tab
+                        right-click, locked vs unlocked tabs), `rects` = where each pane was drawn
+src/ui/menu.rs          ui::menu - the ONE helper every menu uses (`action_item`/`action_menu`/`item`/
+                        `row`/`check`/`sub`/`scroll`): labels, icons, shortcut text and disabled reasons
+                        come from a per-frame `MenuSnapshot`; clicked Actions queue for `App::update`
 src/ui/palette.rs       Ctrl+K command palette widget: `Command{Action,Pane,Tool,Script,Workspace}`
 src/ui/cheatsheet.rs    F1 keyboard-shortcuts overlay (second palette entry point)
 src/ui/home.rs          welcome wizard + home screen (first-run layout-mode choice)
@@ -185,7 +190,10 @@ src/ui/app/jobs.rs      screen capture, voiceover, import_recording, audio_input
                         proxy_candidates/pick_next_proxy (the Jobs pane's "Build next")
 src/ui/app/jobs_pane.rs Pane::Jobs (jobs-panel): rows() aggregates every job holder on App, tick/draw/
                         act/apply, the menu-bar indicator; PANE_DRAWERS/FRAME_HOOKS/ACT_HANDLERS entries
-src/ui/app/layout_ctl.rs layout_mode/pin/glow/reveal_auto, WORKSPACES builders, maximize
+src/ui/app/layout_ctl.rs pin/glow/reveal_auto, page switching (each page keeps its own tree in
+                        `Settings.page_layouts`), reset page, maximize
+src/ui/app/tools_uikit.rs UI automation over MCP: `ui.screenshot {path, pane?}`, `ui.input {events}`
+                        (synthetic clicks/keys played one step per frame); publishes the menu snapshot
 src/ui/app/library_pane.rs Pane::Library draw
 src/ui/app/mcp_exec.rs  run_script, sync_mcp/poll_mcp/handle_tool/start_tool_job, run_tool_undoable
                         (the single Mutate/Read/Job/Ui wrapper for MCP + scripts + palette)
@@ -508,6 +516,18 @@ shared harness fn; copy the pattern from an existing one rather than looking for
 un-migrated ceiling, not a codebase-wide invariant yet. `--selftest` has its own `idle_repaint` step
 (a bare idle frame after opening a clip requests no repaint) as a smoke-level, not exhaustive, check.
 
+## Docs site & UI automation
+
+`website/` is the Docusaurus user guide published to https://kashtheking.github.io/simple-editor/ by
+`.github/workflows/docs.yml` (push to `main` touching `website/**`). Its screenshots are generated, not
+hand-made: `scripts/docs-shots.ps1` builds the app, makes demo media and a demo project over MCP, then for
+each row of its `$Shots` table launches the app with `--screenshot <ppm>`, drives it over MCP (`layout.page`,
+`selection.set`, `ui.action`, `ui.input`; `layout.list` reports each pane's rect for clicks and crops) and
+creates the `SE_SCREENSHOT_WHEN` file, which makes `screenshot_tick` (`ui/app/jobs.rs`) capture that frame.
+One launch per shot because a live `ui.screenshot` reads back black frames while Windows is locked; the
+`--screenshot` path doesn't. `website/docs/shortcuts.md` is written by `simple-editor --dump-hotkeys <path>`
+(`cheatsheet::markdown`, the F1 sheet with the default keymap). Re-run both after a UI change.
+
 ## Feature inventory (implemented and tested)
 
 **Editing** — open any video/gif/image/audio; trim, split (Ctrl+B), ripple delete, drag/move, tiered
@@ -609,7 +629,8 @@ overrides them.
 ```
 cargo test                                  # unit + headless widget tests
 cargo run -- --selftest                     # real media through decoders, engine, export
-cargo run -- <video> --screenshot out.ppm   # renders the UI; SE_SCREENSHOT_DELAY=<s> to warm caches
+cargo run -- <video> --screenshot out.ppm   # renders the UI; SE_SCREENSHOT_DELAY=<s> to warm caches,
+                                            # SE_SCREENSHOT_WHEN=<file> to shoot once that file exists
 ```
 Convert the screenshot with `ffmpeg -i out.ppm out.png` and actually look at it. Run
 `scripts/size.ps1 [-Note <name>]` whenever the change adds code or a dependency (see "Size & idle-CPU

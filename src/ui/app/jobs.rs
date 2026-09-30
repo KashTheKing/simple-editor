@@ -236,12 +236,15 @@ impl App {
             return;
         }
         // shoot as soon as the first rendered frame is on screen (or after the timeout when nothing renders).
-        // SE_SCREENSHOT_DELAY=<seconds> waits instead, for checks that need caches (thumbnails) warmed up.
+        // SE_SCREENSHOT_DELAY=<seconds> waits instead, for checks that need caches (thumbnails) warmed up;
+        // SE_SCREENSHOT_WHEN=<file> waits until that file exists, so a script can drive the UI over MCP first
+        // (scripts/docs-shots.ps1 - unlike a live ui.screenshot, this path still captures while Windows is locked).
         let elapsed = self.started.elapsed().as_secs_f32();
         let delay: Option<f32> = std::env::var("SE_SCREENSHOT_DELAY").ok().and_then(|v| v.parse().ok());
-        let ready = match delay {
-            Some(d) => elapsed > d,
-            None => self.first_frame_at.is_some() || elapsed > 2.5,
+        let ready = match (std::env::var_os("SE_SCREENSHOT_WHEN"), delay) {
+            (Some(f), _) => std::path::Path::new(&f).exists(),
+            (None, Some(d)) => elapsed > d,
+            (None, None) => self.first_frame_at.is_some() || elapsed > 2.5,
         };
         if !self.screenshot_requested && ready {
             self.screenshot_requested = true;

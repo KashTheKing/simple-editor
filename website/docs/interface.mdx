@@ -1,0 +1,160 @@
+---
+title: The interface
+description: Pages, panels, tabs, the menu bar, and how to rearrange, undock and reset them.
+---
+
+![The Edit page](/img/tutorial/edit-page.png)
+
+The window has three parts: the **menu bar** at the top, with the **page buttons** in its middle, and
+the **panels** below it. Each panel sits in a group with tabs along its top.
+
+## Pages
+
+Pages are ready-made arrangements of panels for one kind of work, in the same order as Resolve's pages.
+Switch with the buttons in the middle of the menu bar, **Window ▸ Pages**, or <kbd>Alt+1</kbd>–<kbd>Alt+6</kbd>.
+The **Inspector** is in the top-right corner of every page.
+
+| Page | Key | What's on it |
+|---|---|---|
+| **Media** | <kbd>Alt+1</kbd> | Library · Source · Inspector, full height. Bringing in, sorting and watching media. |
+| **Cut** | <kbd>Alt+2</kbd> | Library · Source / Preview · Inspector on top, the Timeline below. Quick cutting. |
+| **Edit** | <kbd>Alt+3</kbd> | Library (with Effects, Transitions, Gallery) · Source / Preview · Inspector, the Timeline below. The page the app opens on. |
+| **Color** | <kbd>Alt+4</kbd> | Gallery (Looks, LUTs) · Preview · Inspector, a thin Timeline, then Nodes / Curves · Scopes. |
+| **Audio** | <kbd>Alt+5</kbd> | A small Preview · Mixer / Subtitles · Inspector, with a tall Timeline for audio tracks. |
+| **Export** | <kbd>Alt+6</kbd> | Export settings · Preview · Inspector over Jobs (the render queue), with the Timeline below. |
+
+![The Media page](/img/tutorial/page-media.png)
+
+![The Cut page](/img/tutorial/page-cut.png)
+
+![The Color page](/img/tutorial/page-color.png)
+
+![The Audio page](/img/tutorial/page-audio.png)
+
+![The Export page](/img/tutorial/page-export.png)
+
+Every page remembers its own arrangement. Changing the Color page never touches the Edit page.
+
+**Make an arrangement the page's default** with **Window ▸ Layout ▸ Save as This Page's Default**. Then:
+
+- **Reset Page Layout** (in **Window ▸ Layout**, or right-click the page's button) goes back to your
+  default, or to the built-in one if you haven't saved one. <kbd>Ctrl+Z</kbd> undoes it.
+- **Reset to Built-in Layout** goes back to the page as it came with the app.
+
+![Right-click a page button](/img/tutorial/page-menu.png)
+
+## Panels
+
+| Panel | What it's for |
+|---|---|
+| **Library** | Your imported media, sequences and folders ([Library](library.mdx)) |
+| **Source** | Watch a clip from the Library and mark the part you want ([Source monitor](library.mdx#the-source-monitor)) |
+| **Preview** | The program monitor: what your edit looks like ([Viewer](viewer.mdx)) |
+| **Timeline** | Where you arrange and cut clips ([Timeline](timeline.mdx)) |
+| **Inspector** | Settings of whatever is selected ([Inspector](inspector.mdx)) |
+| **Effects**, **Transitions**, **Gallery** | Things to add to clips ([Effects, transitions & titles](effects.mdx)) |
+| **Mixer**, **Subtitles** | Audio levels and buses ([Audio](audio.mdx)); captions ([Captions](captions.mdx)) |
+| **Scopes**, **Nodes**, **Curves** | Color tools ([Color](color.mdx)); Curves is also the keyframe graph |
+| **Export**, **Jobs** | Export settings and the render queue ([Export](export.mdx)) |
+| **Markers**, **Auto-cut**, **Tracking**, **Planner**, **Moodboard**, **History** | Extra tools, hidden until you open them ([Advanced](advanced.mdx)) |
+
+**To open a panel that isn't showing**, use any of these:
+
+- Click the **+** at the right end of a tab bar. It lists every panel that isn't on screen and adds the
+  one you pick to that group.
+- Tick it in the **Window** menu. The less common ones are under **Window ▸ More**.
+- Press its shortcut, like <kbd>Ctrl+1</kbd> for the Library (see [shortcuts](shortcuts.md#panels--pages)).
+- Type its name into the command palette (<kbd>Ctrl+K</kbd>).
+
+![The + button lists hidden panels](/img/tutorial/add-panel-menu.png)
+
+### Right-click a tab
+
+![Right-click a tab](/img/tutorial/tab-menu.png)
+
+- **Maximise panel** fills the window with that panel. Do it again (it now says **Restore panel**) to
+  go back. Double-clicking a tab does the same, and so does <kbd>`</kbd> (the key left of 1) with the
+  mouse over a panel.
+- **Undock** moves the panel into its own window, for example onto a second monitor. Keyboard
+  shortcuts keep working there. Close that window to dock the panel back where it was.
+- **Close** hides the panel. The Window menu brings it back.
+- **Stay on this tab** stops the group from switching away from this tab when you select something (see
+  below). A pinned tab shows a pin.
+- **Set Icon** changes the tab's icon.
+
+### Moving and resizing panels
+
+Drag the gaps between panels to resize them.
+
+**Drag a tab** to move its panel: nine drop squares appear over the panel under the pointer. Drop on the
+middle one to add it as a tab there, or on an outer one to split the space in that direction.
+<kbd>Ctrl+Z</kbd> undoes a move. Once you like your layout, **Window ▸ Layout ▸ Lock Panels** stops a stray
+drag from moving anything (tabs still switch, and the gaps still resize).
+
+Undocked windows open where you last left them, at the same size.
+
+### Saving layouts
+
+**Window ▸ Layout** also has **Save Profile…**, **Load Profile**, **Export Profile to File…** and
+**Import Profile from File…** (a `.sedit-layout` file), to keep arrangements you like, switch between
+them on any page, or share them.
+
+![The Window menu with Layout open](/img/tutorial/window-menu.png)
+
+### Panels that follow your selection
+
+When you select something, the group that edits it comes to the front: a video or text clip shows the
+**Inspector**, an audio clip the **Mixer**, a transition **Transitions**, a subtitle **Subtitles**. If
+you'd rather have panels stay put, turn off **Settings ▸ General ▸ Switch panel tabs to follow the
+selection**, or pin a single tab with **Stay on this tab**. With it off, the tab that would have
+switched glows briefly instead.
+
+## The menu bar
+
+| Menu | What's in it |
+|---|---|
+| **File** | New, open, recent projects, save, **Import ▸**, **Export ▸**, **Record ▸** (voiceover, screen), Settings |
+| **Edit** | Undo and redo, cut / copy / paste (with **Paste Special ▸**), delete, ripple delete, select, **Find…** |
+| **Clip** | Split, duplicate, enable, link, speed, freeze frame, **Add ▸** (text, shape, adjustment layer, mask, subtitle), **Transition ▸**, nest, multicam, match frame |
+| **Timeline** | **Mark ▸** In and Out, lift and extract, **Trim ▸**, markers, **Auto ▸** (auto-cut, beats, fillers, ducking, loudness, auto colour), **Tracks ▸**, zoom, snapping |
+| **Playback** | Play, J / K / L, loops, stepping, jumping to cuts, proxies, playback resolution, fullscreen |
+| **Window** | Pages, every panel, social guides, **Layout ▸** (lock, save and reset layouts), maximise |
+| **Help** | This tutorial (**Tutorial & Docs**), the keyboard shortcut list, the command palette, what's new |
+
+Every menu item shows its shortcut, and right-clicking one lets you give it a different icon.
+
+## Find any command: Ctrl+K
+
+![The command palette](/img/tutorial/palette.png)
+
+Press <kbd>Ctrl+K</kbd> and start typing. The **command palette** searches every command, every panel
+("Show Mixer"), and your scripts. <kbd>Enter</kbd> runs the highlighted row; greyed-out rows say why
+they can't run right now. With nothing typed, your recent commands come first.
+
+Some commands live only here, for example **Restore Autosave…**, **Fast Review** and **Trim View in
+Preview**.
+
+## See every shortcut: F1
+
+![The keyboard shortcuts window](/img/tutorial/cheatsheet.png)
+
+<kbd>F1</kbd> opens **Keyboard Shortcuts**: every command by group with its key, the keys that can't
+be changed, and all the timeline's mouse gestures. Type in its search box to filter. The same list is
+on the [keyboard shortcuts](shortcuts.md) page.
+
+## Settings
+
+![Settings, Hotkeys tab](/img/tutorial/settings-hotkeys.png)
+
+**File ▸ Settings…** (<kbd>Ctrl+Comma</kbd>) has six tabs:
+
+- **General**: theme, where FFmpeg and yt-dlp are, autosave, snapping, the "follow the selection" and
+  home-card switches, the Explorer right-click entry, fonts, and the MCP server for AI co-editing.
+- **Performance**: GPU preview, preview quality, the playback cache, proxies, movie mode.
+- **Capture**: screen recording and voiceover inputs.
+- **Export**: default encoder, quality and speed preset.
+- **Hotkeys**: rebind any command. Click **Rebind**, press the keys (<kbd>Esc</kbd> cancels,
+  <kbd>Backspace</kbd> unbinds). A **Keymap preset** switches to Premiere, Resolve or Avid style keys,
+  and the keyboard map shows what's taken.
+- **Appearance**: Cozy (rounded) or Sharp look, 25+ built-in themes, your own colours, clip colours, a
+  background image, and icons. Themes can be exported and imported as `.sedit-theme` files.

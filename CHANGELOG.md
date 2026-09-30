@@ -2,6 +2,18 @@
 
 ## beta-0.3.0
 
+### Docs site (issue #85, simplify wave 2)
+A tutorial for every part of the app now lives at https://kashtheking.github.io/simple-editor/ (Help ▸
+Tutorial & Docs): getting started, the interface and pages, the Library and Source monitor, the viewer,
+the timeline (with the full mouse-modifier table), the Inspector and keyframes, effects / transitions /
+titles, captions, the Media / Cut / Edit / Color / Audio / Export pages, a right-click reference for every surface, the
+keyboard shortcuts, advanced tools, and scripting & MCP. It's a Docusaurus site in `website/`, deployed to
+GitHub Pages by `.github/workflows/docs.yml`. Every screenshot comes from the real app:
+`scripts/docs-shots.ps1` builds a demo project and drives the app over MCP, one launch per shot, and
+`simple-editor --dump-hotkeys` writes the shortcuts page from the F1 sheet. `layout.list` now reports
+where each panel is on screen, and `SE_SCREENSHOT_WHEN=<file>` makes a `--screenshot` run wait for that
+file instead of a fixed delay.
+
 ### Media and Cut pages, Inspector top right, unlocked panels
 Six pages now, in Resolve's order: **Media** (Library · Source · Inspector, three full-height columns,
 no Timeline) and **Cut** (Library · Source | Preview · Inspector over the Timeline) join Edit, Color,

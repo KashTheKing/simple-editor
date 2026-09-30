@@ -1,0 +1,138 @@
+---
+title: Scripting & MCP
+description: Automate Simple Editor with Luau scripts and hooks, let an AI assistant edit with you over MCP, and share keymaps, themes and layouts.
+---
+
+![Window ▸ Scripts, with the starter script](/img/tutorial/scripts-menu.png)
+
+Simple Editor exposes one catalogue of about 240 **tools** (things like `timeline.split`, `clip.set`,
+`export.video`). The same tools power Luau scripts inside the app and the **MCP server** that lets an AI
+assistant, or your own program, edit the project you have open. Every change goes through the normal undo
+history, so you can always <kbd>Ctrl+Z</kbd> it.
+
+## Luau scripts
+
+Scripts are `.luau` files in `%APPDATA%\SimpleEditor\scripts`. The folder, with a starter `example.luau`,
+is created the first time the app looks for scripts; **Window ▸ Scripts ▸ Open Scripts Folder** opens it.
+Run a script from **Window ▸ Scripts** or the command palette (<kbd>Ctrl+K</kbd>), give it a hotkey, or run it
+over MCP (`scripts.run`).
+
+```lua
+-- @name Clip count
+-- @desc Shows how long the project is and how many tracks it has
+-- @icon bolt
+-- @hotkey Ctrl+Shift+H
+local s = editor.tool("project.summary", {})
+editor.log("Project: " .. tostring(s.duration) .. " s, " .. tostring(#s.tracks) .. " tracks")
+```
+
+A script sees one table, `editor`:
+
+| Function | What it does |
+|---|---|
+| `editor.tool(name, args)` | Calls any tool from the catalogue and returns its result |
+| `editor.tools()` | Lists every tool as `{name, description}` |
+| `editor.log(text)` | Shows a short message (it disappears after a few seconds) |
+| `editor.event` | In a hook (below): what happened, as a table |
+
+Scripts run sandboxed: there is no `io`, `os` or file access, only `editor`. A script gets 5 seconds.
+
+**The header** is a block of `-- @key value` lines at the top: `@name`, `@desc`, `@icon` (one of `bolt`,
+`terminal`, `wrench`, `gear`, `clock`, `magnet`, `target`, `waveform`, `notepad`, `bookmark`,
+`film-reel`, `clapperboard`, `sliders`, `search`, `keyboard`), `@hotkey`, `@on` and `@budget_ms`.
+
+### Hooks: run a script when something happens
+
+Add one or more `-- @on <event>` lines and the script runs by itself:
+
+| Event | When | `editor.event` |
+|---|---|---|
+| `selection_changed` | The selection changes (clips, a transition, a subtitle or an edit point) | `{clip_ids}` |
+| `import` | An image sequence finished importing | `{asset_id, path, frames}` |
+| `export_done` | An export finished, or failed | `{path, ok}` |
+| `project_open` | A project was opened | `{path}` |
+| `project_save` | The project was saved | `{path}` |
+| `marker_added` | A marker was added, once per marker | `{marker_id}` |
+
+A hook has 250 ms (change it with `-- @budget_ms 500`). A hook that runs over is switched off for the
+rest of the session, with one message, so a slow script can never make the editor stutter.
+
+## The MCP server: edit together with an AI
+
+Simple Editor has a built-in [MCP](https://modelcontextprotocol.io) server, so an AI assistant such as
+Claude can see and change the project you have open, while you watch.
+
+1. **Settings ▸ General**: tick **MCP server (AI co-editing)**. The port is 7337 unless you change it, and
+   the address is shown: `http://127.0.0.1:7337/mcp`. It only listens on your own PC.
+2. For Claude Code, click **Copy Claude Code command** and run what it copied:
+
+   ```
+   claude mcp add --transport http simple-editor http://127.0.0.1:7337/mcp
+   ```
+
+3. Ask away: "cut the silences out of the second clip", "add a title that says…", "export this for
+   TikTok".
+
+Any other program can use it too: it's JSON-RPC 2.0 over HTTP.
+
+```bash
+# list every tool, with its arguments
+curl -s -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' http://127.0.0.1:7337/mcp
+
+# call one
+curl -s -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"timeline.split","arguments":{"t":12.5}}}' \
+  http://127.0.0.1:7337/mcp
+```
+
+### What the tools cover
+
+Tools are grouped by the first part of their name. The biggest groups:
+
+| Group | For example |
+|---|---|
+| `timeline.*` | add, move, trim, split, delete, ripple, roll, slip, slide, nest, splice, overwrite, lift, extract, In/Out, snapping |
+| `clip.*` | set properties, keyframes, effects, masks, LUTs, node graphs, motion presets |
+| `media.*`, `library.*` | import, list, relink, consolidate, subclips, smart bins, convert |
+| `audio.*`, `mixer.*`, `bus.*`, `track.*` | buses, routing, filters, ducking, loudness, beats, track settings |
+| `export.*`, `frame.*`, `render.*` | export with presets, the queue, quick export, frames, bakes |
+| `subtitles.*`, `transcript.*`, `transcribe.*` | captions, word-level transcripts, filler removal |
+| `playback.*`, `source.*`, `preview.*` | the transport, the Source monitor, the viewer |
+| `project.*`, `markers.*`, `history.*`, `plan.*` | the project file, markers, undo history, the planner |
+| `layout.*`, `ui.*`, `hotkeys.*`, `settings.*` | pages and panels, actions, shortcuts, settings |
+
+`tools/list` always has the full, current list with every argument. The
+[customizing guide](https://github.com/KashTheKing/simple-editor/blob/main/docs/customizing.md) in the
+repository has a table of all of them.
+
+### Automating the UI itself
+
+A few tools drive the interface rather than the project, which is how this site's screenshots are made
+(`scripts/docs-shots.ps1` in the repository):
+
+- `ui.action {id}` runs any menu command by its id (`ui.actions` lists them).
+- `ui.input {events}` clicks, right-clicks, types and scrolls, at points in the window.
+- `ui.screenshot {path, pane?}` saves the window, or one panel, as a PNG.
+- `layout.page`, `layout.surface`, `layout.list` switch pages, bring panels forward and report where
+  each panel is on screen.
+
+## Keymaps, themes and layouts
+
+- **Keymaps**: **Settings ▸ Hotkeys** rebinds any command, and its **Keymap preset** switches everything
+  back to the defaults plus a few changes:
+
+  | Preset | Changes from the defaults |
+  |---|---|
+  | Premiere | Split at Playhead <kbd>Ctrl+K</kbd>, command palette <kbd>Ctrl+Shift+P</kbd>, Export <kbd>Ctrl+M</kbd>, Quick Export <kbd>Ctrl+Alt+M</kbd> |
+  | Resolve | Split at Playhead <kbd>B</kbd>, command palette <kbd>Ctrl+Space</kbd>, Transitions panel <kbd>Ctrl+Shift+T</kbd>, Overwrite <kbd>Shift+B</kbd>, Play to Out <kbd>Alt+/</kbd>, Add Transition <kbd>Alt+T</kbd> |
+  | Avid | Command palette <kbd>Ctrl+Alt+K</kbd>, Split at Playhead <kbd>Ctrl+Shift+B</kbd> |
+
+  Scripts can do the same with `hotkeys.set` and `hotkeys.preset`.
+- **Themes**: **Settings ▸ Appearance** has 25+ built-in themes, a Cozy or Sharp look and your own
+  colours. **Export theme…** saves a `.sedit-theme` file to share; **Import theme…** loads one.
+- **Layouts**: **Window ▸ Layout ▸ Export Profile to File…** saves your panel arrangement as a
+  `.sedit-layout` file; **Import Profile from File…** loads one.
+- **Icons**: right-click any menu item or tab ▸ **Set Icon** to change its icon.
+
+Settings live in `%APPDATA%\SimpleEditor\settings.json`, autosaves and caches in
+`%LOCALAPPDATA%\SimpleEditor`.

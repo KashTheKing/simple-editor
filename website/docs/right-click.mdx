@@ -1,0 +1,122 @@
+---
+title: Right-click reference
+description: Every right-click menu in Simple Editor, surface by surface.
+---
+
+![Right-click a timeline clip](/img/tutorial/timeline-clip-menu.png)
+
+Simple Editor keeps its panels clean by putting the less common commands in right-click menus: right-click
+the thing you want to change. Menu items show their shortcut on the right, and greyed-out items say why
+when you hover them. "▸" opens a submenu.
+
+## Window and panels
+
+| Right-click | Menu |
+|---|---|
+| A **page button** (Edit, Color…) | Reset Page Layout · Reset to Built-in Layout |
+| A panel's **tab** | Maximise panel · Undock · Close · Stay on this tab · Set Icon ▸ |
+| Any **menu item** | Set Icon ▸ (give that command a different icon) |
+| A project in **File ▸ Open Recent** | Remove from recent |
+
+## Library
+
+![Right-click a Library item](/img/tutorial/library-item-menu.png)
+
+| Right-click | Menu |
+|---|---|
+| **An item** | Open in Source · Add to timeline at playhead · Rename (subclips) · Info… · Label ▸ · New Subclip from Marks · Relink Media… (missing files) · Reveal folder · Regenerate proxy (video) · Convert To ▸ · Convert… · Compress… · Remove from project |
+| **An empty spot** | Import Media… · Import from URL… (with yt-dlp) · New folder · New sequence · Add Adjustment Layer · Sort ▸ · Columns ▸ · Link folder… · Consolidate Media… · Remove unused · Open Project… |
+| **A folder** | New folder · Rename · Delete |
+| **A sequence** | Open · Add to timeline at playhead · Rename · Delete |
+| **A Smart Bin** | Delete |
+| **The column header** (List view) | Kind · Duration · Fps · Size · Label · Tags · Proxy · Sort by |
+| **A file in Browse** | Open in Source · Add to the project · Reveal folder, and for recent files Info… · Pinned · Label ▸ · Remove from recent |
+| **A folder in Browse** | Refresh · Reveal folder · Unlink folder |
+
+## Source and Preview
+
+![Right-click the Preview](/img/tutorial/viewer-menu.png)
+
+| Right-click | Menu |
+|---|---|
+| **The Source monitor** | Mark In · Mark Out · Clear In / Out · Append at End · Ripple Overwrite · Close Up · Place on Top · Source Tape · New Subclip from Marks · Playback Resolution ▸ · Audio Visualizer (audio files) · Close Source |
+| **The Preview**, on a clip | Reset Transform · Fill Frame · Stretch to Frame · Crop Handles · Add Mask to Selection · Add Text Here, then everything below |
+| **The Preview**, anywhere | Stop · Mark In · Mark Out · Clear In / Out · Zoom ▸ · Playback Resolution ▸ · Proxies · Movie Mode (pre-render) · Social Guides ▸ · Show / Hide Scopes · Background ▸ · Snap to Canvas |
+
+## Timeline
+
+| Right-click | Menu |
+|---|---|
+| **A clip** | Cut Clips · Copy Clips · Paste Clips at Playhead · Attributes ▸ · Delete · Ripple Delete · Split at Playhead · Join Through Edit · Duplicate Clips · Enable / Disable Clip · Link / Unlink · Speed ▸ · Transform ▸ · Effects ▸ (several clips) · Add ▸ · Audio ▸ · Nest ▸ · Transcript ▸ · Label ▸ · Inline Keyframe Graph · Match Frame · Reveal in Library · Replace with Library Selection · Save Selection as Template… |
+| **A gap** or empty track space | Close Gap (in a gap) · Paste ▸ · Add Video Track · Add Audio Track |
+| **A cut** between two clips | Roll Edit to Playhead · Add Transition at Selected Cut |
+| **A transition** | Remove Transition · Change Type ▸ · Change Easing ▸ · Move To ▸ (Start of Clip, End of Clip, Cut with Previous Clip, Cut with Next Clip) |
+| **A keyframe** diamond | Easing ▸ · Delete Keyframe |
+| **The ruler** | Add Marker at Playhead · Mark In · Mark Out · Clear In / Out · Paste ▸ · View ▸ (Detailed, Compact, Overview Strip) · Back to Parent Timeline (inside a sequence) |
+| **An In or Out mark** on the ruler | Clears that mark |
+| **A marker** | Name · Delete Marker · Label ▸ |
+| **A track header** | Add Video Track · Add Audio Track · Remove Track · Hidden / Muted · Solo · Locked · Ripple (Sync) · Magnetic Track · Rename… · Colour ▸ · Move Track Up · Move Track Down |
+| **A subtitle** in the subtitle lane | Split at Playhead · Convert to Text Clip · Delete Cue · Delete Cues in In/Out Range · Clear All Subtitles |
+| **The empty subtitle lane** | Add Subtitle at Playhead · Import Subtitles… |
+
+The clip menu's submenus:
+
+- **Speed ▸** Speed / Retime… · Freeze Frame at Playhead
+- **Transform ▸** Stretch to Screen · Fit to Screen
+- **Add ▸** Add Marker at Playhead · Add Transition at Selected Cut · Add Transition at Clip End · Add Mask to Selection
+- **Audio ▸** Bus ▸ · Normalize Selection · Match Loudness across Selection · Duck Music under Dialogue · Detect Beats → Markers · Split at Beats · Auto-cut (silence) Panel
+- **Nest ▸** Nest Selection into a New Sequence · Un-nest Sequence Clip · Convert to Container (or Container ▸ on a container clip)
+- **Transcript ▸** Transcribe Selected Clip · View Transcript · Export Transcript…
+- **Label ▸** None · the labels · Apply Label to Asset · Edit Labels…
+
+![Right-click a track header](/img/tutorial/timeline-track-menu.png)
+
+![Right-click a transition](/img/tutorial/timeline-transition-menu.png)
+
+![Right-click a cut](/img/tutorial/timeline-seam-menu.png)
+
+![Right-click a gap](/img/tutorial/timeline-gap-menu.png)
+
+## Inspector
+
+![Right-click a keyframe button](/img/tutorial/keyframe-menu.png)
+
+| Right-click | Menu |
+|---|---|
+| **A ◆ keyframe button**, or the value next to it | Previous key · Next key · Clear keyframes · Link to path ▸ (Position X / Y) · Link to expression… · Unlink |
+| **The Project title** (nothing selected) | Save format as template… · Delete saved format ▸ |
+| **The Audio section's title** | Repair · Clarity · Open in Mixer · Duck Music under Dialogue · Normalize Selection |
+| **The Speed section's title**, or the speed | Speed / Retime… · Freeze Frame at Playhead |
+| **The Effects section's title** | Open in Node editor · Unlink node graph (when the clip has one) |
+| **An effect** in the Effects section | Add mask / Edit mask · Remove mask · Edit shader… (Custom Shader) · Copy parameters · Paste parameters · Move up · Move down · Open in Node editor · Remove |
+| **The Mask section's title** | Add mask · Edit in viewport · Remove mask |
+
+Clicking the colour dot next to a clip's name (a left click) opens its label menu: None, the labels, and
+Edit labels….
+
+## Effects and other panels
+
+| Right-click | Menu |
+|---|---|
+| **An effect card** | Add to selected clip(s) · Add to all clips on this track |
+| **A transition card** | Add at start of selected clip(s) · Add at end of selected clip(s) · Add at every cut on this track |
+| **A Gallery card** | Apply to selection · Apply to every caption (Captions) · Place at playhead (Templates, Titles) |
+| **An empty spot in the Gallery** | Save look from selection… |
+| **A Mixer strip** | Rename · Mono · Output ▸ · Add filter ▸ · Show routing · Delete bus (Main has no Output or Delete) |
+| **A Mixer filter** | Open in its own window · Move up · Move down · Remove |
+| **An empty spot in the Mixer** | Add bus · Show routing |
+| **A Mixer ◆** (keyed) | Remove all keyframes |
+| **A subtitle** in the Subtitles panel | Play cue · Split at playhead · Convert to text clip · Delete |
+| **An empty spot in the subtitle list** (same as **⋯**) | Import… · Export SRT… · Export VTT… · Open folder · Burn in · To text clips · Delete in range · Clear all |
+| **Selected words** in the Transcript tab | Cut selected words · Deselect |
+| **A marker** in the Markers panel | Rename · Label ▸ · Snap to nearest clip · Link to closest clip · Delete |
+| **An empty spot in the Markers panel** | Add Marker at Playhead · Add on selected clip · Copy as list · Export ▸ (CSV, YouTube chapters) · Import… |
+| **A task** in the Planner | Add sub-task · Move up · Move down · Indent · Outdent · Delete task |
+| **An empty spot in the Planner** | Add task · Clear completed |
+| **A Moodboard item** | Add at Playhead · Remove from moodboard |
+| **An entry in History** | Restore · Delete |
+| **An empty spot in History** | Delete listed entries · Export listed to Markdown… |
+| **The Tracking panel** | Use selected clip · Follow the selection |
+| **A keyframe in Curves** | Easing ▸ · Set Value… · Blend Velocity (several keys) · Delete |
+| **The Nodes canvas** | Add a node: every effect, plus Graph ▸, Value ▸ and Asset nodes |
+| **A node** | Delete · Duplicate · Add mask · Move along ▸ · Replace ▸ |

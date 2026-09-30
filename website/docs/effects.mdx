@@ -1,0 +1,95 @@
+---
+title: Effects, transitions & titles
+description: Add effects and transitions, apply looks and presets from the Gallery, and make titles.
+---
+
+![The Effects panel](/img/tutorial/effects.png)
+
+The **Effects**, **Transitions** and **Gallery** panels sit next to the Library on the Edit page. Each is
+a catalogue of cards: pick one and apply it to the selected clips. What a clip already has is edited in
+the [Inspector](inspector.mdx).
+
+## Effects
+
+1. Select one or more clips on the timeline.
+2. Open **Effects** (<kbd>Ctrl+3</kbd>) and **click a card**. It's added to every selected clip.
+
+You can also **drag a card onto a clip** on the timeline, or right-click a card ▸ **Add to selected
+clip(s)** / **Add to all clips on this track**. Type in the search box to find one.
+
+The catalogue has blur, motion blur, pixelate, VHS, glow, vignette, sharpen, chroma key (green screen),
+colour replace, crop, levels, curves, hue and saturation, black & white, flip, 3D plane, camera shake,
+LUTs and a **Custom Shader** you write yourself in GLSL.
+
+### The effect stack
+
+![A clip's effects in the Inspector, with an effect's right-click menu](/img/tutorial/inspector-effects.png)
+
+A clip's effects are listed in the Inspector's **Effects** section, top to bottom in the order they're
+applied. Each row is a grip, a checkbox and the effect's name:
+
+- The checkbox turns an effect off without removing it.
+- Drag the grip to change the order.
+- Click the name to show or hide its settings. Every setting has a **◆** to
+  [animate](inspector.mdx#keyframes) it.
+- **Right-click the name** for **Add mask** (limit the effect to a shape you draw on the Preview), **Remove
+  mask**, **Edit shader…** (Custom Shader), **Copy parameters** / **Paste parameters** (to another clip with
+  the same effect), **Move up** / **Move down**, **Open in Node editor** and **Remove**.
+
+**Adjustment layers** (**Clip ▸ Add ▸ Add Adjustment Layer**, <kbd>Ctrl+Alt+L</kbd>) are empty clips whose
+effects apply to everything below them on the timeline, for as long as the layer lasts.
+
+## Transitions
+
+![The Transitions panel](/img/tutorial/transitions.png)
+
+A transition blends one clip into the next at a cut. There are four: **Cross Fade**, **Fade to Color**,
+**Push** and **Wipe**. The row above the cards sets the **Duration** of the next one you add (1 second to
+start with), plus its colour (Fade to Color) or the direction it comes **From** (Push, Wipe).
+
+- **Drag a card onto a cut** on the timeline. Drop on the right half of a clip for its end, the left half
+  for its start.
+- Or select clips and **right-click a card** ▸ **Add at start of selected clip(s)**, **Add at end of selected
+  clip(s)** or **Add at every cut on this track**. At the start or end of the timeline, you get a fade from
+  or to black.
+- Or click a cut and press <kbd>Ctrl+Shift+T</kbd> (**Add Transition at Selected Cut**) for a one-second
+  Cross Fade. <kbd>Ctrl+T</kbd> adds the last one you used again. Both are in **Clip ▸ Transition** too.
+
+Hovering a card previews it in the Preview, when the selected clip is under the playhead.
+
+**To change a transition**, click its band on the timeline: the [Inspector](inspector.mdx) shows its kind,
+duration and easing. Drag the band's edges to make it longer, or right-click it ▸ **Change Type**,
+**Change Easing**, **Move To** (the clip's start or end, or the cut with the previous or next clip; the
+transition keeps its settings) or **Remove Transition**.
+
+## The Gallery
+
+![The Gallery panel](/img/tutorial/gallery.png)
+
+The **Gallery** holds ready-made presets, one tab each. Click a card to apply it to the selected clips, or
+right-click it (**Apply to selection**, **Apply to every caption**, **Place at playhead**) to see it in the
+Preview first:
+
+| Tab | What a click does |
+|---|---|
+| **Looks** | A colour grade. It **replaces** the clip's effects. To keep your own, select a graded clip and right-click an empty spot ▸ **Save look from selection…** |
+| **Luts** | Adds a `.cube` LUT from your LUT folders |
+| **Captions** | Sets the style of all subtitles (Classic, Bold Outline, Boxed, Karaoke…) |
+| **Speed** | Gives the clip a speed ramp (Montage, Hero, Bullet, Jump, Flash) |
+| **Templates** | Places a clip template you saved at the playhead (**Clip ▸ Save Selection as Template…**) |
+| **Titles** | Places a title (below) |
+
+## Titles and text
+
+![A title clip in the Preview and the Inspector](/img/tutorial/inspector-text.png)
+
+- **A quick text**: **Clip ▸ Add ▸ Add Text Clip** (<kbd>Shift+T</kbd>) puts a 5-second text clip at the
+  playhead. Or pick the **Text** tool (<kbd>T</kbd>) and drag on the Preview, or right-click the Preview
+  ▸ **Add Text Here**.
+- **A designed title**: **Gallery ▸ Titles** has **Lower Third**, **Title Card** and **Caption Box**.
+  Click one to place it; a **Customize** box under the cards lets you change its text and colours.
+- Type the words, pick the font and style in the [Inspector](inspector.mdx), and drag the text on the
+  Preview to place it.
+- To animate it, use the Inspector's **Animation** presets (Slide, Zoom, Pop, Fade, Spin), the **Reveal**
+  and **Wave** sliders, or your own [keyframes](inspector.mdx#keyframes).
+- Save a style you like with the Inspector's **Text style presets** and apply it to other text clips.

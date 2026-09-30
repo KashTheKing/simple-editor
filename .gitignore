@@ -7,3 +7,8 @@ target/
 
 # per-agent worktree build dirs
 target*/
+
+# docs site (website/)
+website/node_modules/
+website/build/
+website/.docusaurus/

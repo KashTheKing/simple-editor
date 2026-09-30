@@ -1,0 +1,109 @@
+---
+title: Advanced tools
+description: Auto-cut, beats and scene cuts, markers, multicam, motion tracking, curves, templates, and the planner.
+---
+
+![The Auto-cut panel](/img/tutorial/autocut.png)
+
+These tools are hidden until you need them, so they don't clutter the screen. Open any of them from the
+**Window** menu (most are under **Window ▸ More**), the **+** on a tab bar, or <kbd>Ctrl+K</kbd>.
+
+## Auto-cut: remove silences
+
+**Auto-cut** (**Timeline ▸ Auto ▸ Auto-cut (silence) Panel**, <kbd>Ctrl+Alt+A</kbd>) finds the quiet parts of
+the selected clips and cuts them out, which is great for talking-head videos.
+
+1. Select the clips (video with sound, or audio).
+2. Set the **Threshold** (how quiet counts as silence), **Min silence**, **Min speech** and **Padding**
+   (how much to keep around each cut).
+3. Click **Detect**. The panel lists the parts it would keep and remove; untick any you want to keep.
+4. **Apply** cuts the silences and closes the gaps (untick **Ripple** to leave gaps). **Split only** just
+   cuts, and **Mark instead** only drops markers so you can check first.
+
+The same panel has three more sections:
+
+- **Scene cuts**: finds the camera cuts in a video clip. **Split** cuts at each, or **Mark instead**.
+- **Beats**: **Detect Beats** finds the beat in music and shows the BPM; then **Add Markers** or **Split at
+  Beats**, to cut your video to the music.
+- **Loudness** and **Duck**: see the [Audio page](audio.mdx#ducking-and-loudness).
+
+## Markers
+
+![The Markers panel](/img/tutorial/markers.png)
+
+The **Markers** panel (<kbd>Ctrl+8</kbd>) lists every marker in order. Click one to jump to it; filter by
+label or search names and notes in the header.
+
+- **Right-click a marker** to **Rename** it, give it a **Label**, **Snap to nearest clip**, **Link to closest
+  clip** or **Delete** it. With several selected, it acts on all of them.
+- **Right-click an empty spot** to **Add Marker at Playhead**, **Add on selected clip**, **Copy as list** (for
+  YouTube chapters in a description), **Export** as CSV or YouTube chapters, or **Import…** a CSV.
+
+## Multicam
+
+Filmed the same moment with several cameras? Select the clips (2 to 8) and choose **Clip ▸ Create
+Multicam from Selection**. They're lined up by their sound and put into one multicam clip. Play it, and
+click an angle in the **Angles** list in the Preview's corner to cut to that camera at the playhead.
+**Next Angle at Playhead** and **Previous Angle at Playhead** can be bound to keys in Settings ▸ Hotkeys.
+
+## Motion tracking
+
+![The Tracking panel](/img/tutorial/tracking.png)
+
+**Tracking** follows something that moves, so a title or a blur can stick to it.
+
+1. Select the clip, then right-click the Tracking panel ▸ **Use selected clip** (or tick **Follow the
+   selection** there).
+2. Turn on **Place box** and drag the box over the thing to follow in the Preview.
+3. Click **Track forward** (or **Track backward**).
+4. **Save as path** keeps the motion as a path that any clip's position can [follow](inspector.mdx#keyframes),
+   or **Apply to clip** writes it as keyframes.
+
+## Curves
+
+The **Curves** panel (<kbd>Ctrl+5</kbd>) is the graph editor for [keyframes](inspector.mdx#keyframes). It
+shows every animated value of the selected clip as a curve.
+
+![The Curves panel](/img/tutorial/curves.png)
+
+- Tick the values to show on the left.
+- Double-click empty space to add a key; drag keys and their handles to shape the motion.
+- Drag a box to select several keys; <kbd>Delete</kbd>, <kbd>Ctrl+C</kbd> and <kbd>Ctrl+V</kbd> work on them.
+- Right-click a key for **Easing**, **Set Value…** or **Blend Velocity**.
+- <kbd>Ctrl</kbd>+scroll zooms time, scroll zooms values.
+- **Motion ▾** applies a motion preset (Slide In, Pop, Spin… or your own), stretched to the clip. The
+  **⋯** menu saves the clip's animation as a preset (**Save motion…**), applies or saves curve presets, and
+  has **Flow →**, **Auto scale** and **Fit**.
+
+## Templates and containers
+
+- **Clip ▸ Save Selection as Template…** saves the selected clips (with their effects and animation) as a
+  template. It shows up in **Gallery ▸ Templates**; click it to place it at the playhead.
+- A **container** clip is a slot whose media you can swap while keeping its effects and position: make one
+  with right-click ▸ **Nest ▸ Convert to Container**, then **Replace Container Media…**.
+
+## Speed
+
+- **Speed / Retime…** (<kbd>Ctrl+R</kbd>) sets a clip's speed (25 % to 400 % presets, or any percentage) and
+  can play it in reverse. For a speed that changes over time, use a ramp from **Gallery ▸ Speed Ramps**.
+- **Freeze Frame at Playhead** (<kbd>Shift+R</kbd>) holds one frame.
+- **Flow Motion Between Selected Clips** (Clip menu, two clips that touch) makes animation carry on smoothly
+  across the cut: the second clip's moves pick up at the speed the first one's ended.
+- **Render in Place** (**Timeline** menu) bakes a heavy clip into a new video file, and **Render Selection**
+  pre-renders it for smooth playback.
+
+## Planner, Moodboard and History
+
+![The Planner](/img/tutorial/planner.png)
+
+- **Planner** (<kbd>Ctrl+7</kbd>): a to-do list for the project (**Plan**), free notes (**Notes**) and a
+  stopwatch or countdown that can log time against a task (**Timer**). It's saved in the project. **+ Add
+  task** adds one; right-click a task to add a sub-task, move, indent or delete it, and an empty spot to
+  **Clear completed**.
+- **Moodboard**: drop reference images and clips onto it, tag them, and flip through them as a slideshow.
+  Right-click an item to add it at the playhead or remove it.
+- **History**: every change you made, by day, searchable. Right-click an entry to **Restore** the project to
+  that point (as a new undo step, so you can change your mind) or delete it; right-click an empty spot to
+  export the list to Markdown.
+- **Find…** (<kbd>Ctrl+F</kbd>) searches clip names, markers, subtitles and sequences and jumps to what you
+  pick.

@@ -1,0 +1,74 @@
+---
+title: Audio page
+description: Levels, buses and filters in the Mixer, ducking and loudness, and recording a voiceover.
+---
+
+![The Audio page](/img/tutorial/page-audio.png)
+
+The **Audio** page (<kbd>Alt+5</kbd>) has a small Preview, the **Mixer** (with **Subtitles** behind it), the
+Inspector, and a tall timeline so audio waveforms are easy to read.
+
+## Clip audio
+
+Select an audio clip (or a video clip's sound) and the Inspector's **Audio** section shows:
+
+- **Volume** (−60 to +12 dB) and **Pan**, each with a **◆** to [keyframe](inspector.mdx#keyframes) it, and
+  **Fade in** / **Fade out**.
+- **Role**: tag it Dialogue, Music, SFX or Ambience.
+- **Bus**: which Mixer bus the clip plays through.
+
+Right-click the **Audio** title for one-click fixes: **Repair** adds a clean-up chain (high-pass, de-hum,
+noise gate, compressor, limiter) and **Clarity** a presence boost, both on a new Mixer bus so you can
+adjust them; **Open in Mixer**; and **Duck Music under Dialogue** and **Normalize Selection** (below).
+
+## The Mixer
+
+![The Mixer](/img/tutorial/mixer.png)
+
+The **Mixer** (<kbd>Ctrl+0</kbd>) has one strip per **bus**. Every track feeds **Main** until you route it
+somewhere else. Each strip has its name, a level meter with a loudness readout (LUFS), the **gain** fader,
+**pan**, **M** (mute) and **S** (solo). The ◆ next to gain and pan keyframes them; right-click a ◆ to clear
+its keyframes.
+
+- **Add a bus** with the slim **+** strip on the right (or right-click an empty spot ▸ **Add bus**).
+- **Right-click a strip** for **Rename** (or double-click the name), **Mono**, **Output** (which bus it feeds),
+  **Add filter** (EQ, high-pass, low-pass, reverb, echo, distortion, compressor, noise gate, noise, gain,
+  de-hum, limiter, de-esser), **Show routing** and **Delete bus**.
+- A bus's **filters** are listed under it: the checkbox switches one off, a click on its name shows its
+  settings (EQs and filters draw their curve). Right-click a filter to open it in its own window, move it
+  up or down, or remove it.
+
+**To route tracks to a bus**: right-click ▸ **Show routing**, click the bus's strip, then click the tracks
+that should go to it. A single clip can also go to its own bus, from the Inspector's **Bus** menu or the
+clip's right-click ▸ **Audio ▸ Bus**.
+
+## Ducking and loudness
+
+- **Duck Music under Dialogue** lowers the music wherever someone speaks. First open **Window ▸ More ▸
+  Auto-cut**, select the clips, and in its **Duck** section mark which clip is the **Music** and which are
+  **Dialogue**; set the depth and ramp, then **Apply Ducking**. After that the menu command uses the same choice.
+- **Normalize Selection** raises or lowers each selected clip so its loudest peak is at −1 dB.
+- **Match Loudness across Selection** evens out several clips so they sound equally loud.
+
+All three are under **Timeline ▸ Auto** and the clip's right-click ▸ **Audio**. Clips with keyframed volume
+are left alone. The Auto-cut panel's **Loudness** section shows each clip's peak and RMS level and lets
+you pick your own target.
+
+Every export is also loudness-normalised to −14 LUFS by default, the level YouTube and most platforms
+use (turn it off on the [Export page](export.mdx)).
+
+## Record a voiceover
+
+![The Voiceover window](/img/tutorial/voiceover.png)
+
+1. Put the playhead where the voiceover should start.
+2. **File ▸ Record ▸ Record Voiceover…** (<kbd>Ctrl+Alt+R</kbd>).
+3. Pick your microphone under **Input**, and **Mono** or **Stereo**.
+4. Leave **Record from the playhead** ticked: the video plays while you talk, so you can time your words.
+5. Click **Record**, speak, then **Stop**. The take lands on the timeline at the start point.
+
+Didn't like it? **Retake** removes the last take and records again from the same spot. Recording needs
+FFmpeg.
+
+**File ▸ Record ▸ Screen Recording…** records your desktop (or a region of it), optionally with your
+microphone, desktop sound and mouse cursor. Screen recordings go into the Library.

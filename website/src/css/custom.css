@@ -1,0 +1,56 @@
+/* Simple Editor's own look: neutral dark greys and the teal accent the app draws its selection,
+   playhead and active page in (see the screenshots). Light mode keeps the same accent. */
+:root {
+  --ifm-color-primary: #008c96;
+  --ifm-color-primary-dark: #007e87;
+  --ifm-color-primary-darker: #00777f;
+  --ifm-color-primary-darkest: #006269;
+  --ifm-color-primary-light: #009aa5;
+  --ifm-color-primary-lighter: #00a1ad;
+  --ifm-color-primary-lightest: #00b6c3;
+  --ifm-code-font-size: 92%;
+  --ifm-font-family-base: 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.08);
+}
+
+[data-theme='dark'] {
+  --ifm-color-primary: #00b7c3;
+  --ifm-color-primary-dark: #00a5b0;
+  --ifm-color-primary-darker: #009ca6;
+  --ifm-color-primary-darkest: #008089;
+  --ifm-color-primary-light: #00c9d6;
+  --ifm-color-primary-lighter: #00d2e0;
+  --ifm-color-primary-lightest: #16e6f4;
+  --ifm-background-color: #1b1b1b;
+  --ifm-background-surface-color: #262626;
+  --ifm-navbar-background-color: #262626;
+  --ifm-footer-background-color: #1b1b1b;
+  --ifm-toc-border-color: #333;
+  --ifm-color-emphasis-200: #333;
+  --ifm-code-background: #2e2e2e;
+  --ifm-table-stripe-background: rgba(255, 255, 255, 0.03);
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
+}
+
+[data-theme='dark'] .footer--dark {
+  --ifm-footer-background-color: #1b1b1b;
+  border-top: 1px solid #333;
+}
+
+/* Screenshots: a thin frame so dark UI doesn't melt into the dark page, never wider than the column. */
+.markdown img {
+  display: block;
+  max-width: 100%;
+  margin: 0.5rem 0 1.25rem;
+  border: 1px solid var(--ifm-color-emphasis-300);
+  border-radius: 6px;
+}
+
+kbd {
+  font-size: 85%;
+  white-space: nowrap;
+}
+
+.markdown table {
+  font-size: 0.93rem;
+}

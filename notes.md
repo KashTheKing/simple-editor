@@ -7,6 +7,32 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
 
 ---
 
+- **docs-site (2026-09-29), screenshot pipeline gotchas (`scripts/docs-shots.ps1`):** a live
+  `ui.screenshot` and the `--screenshot` CLI path use the very same eframe readback (glow
+  `read_screen_rgba` right after painting, `ViewportCommand::Screenshot`), yet the live one read back
+  black / stale frames while the Windows session was locked in wave 1 and the CLI one didn't - so the
+  difference is environmental (most likely: a window created while locked renders fine, one that was on
+  screen when the lock came doesn't), not a code path to fix; an agent can't lock the session to prove
+  it. The pipeline therefore launches the app once per shot with `--screenshot` and the new
+  `SE_SCREENSHOT_WHEN=<file>` (shoot once the file exists), drives it over MCP, then touches the file.
+  Other traps it handles: the startup toasts ("GPU preview: …", "MCP server at …") live 5 s, so a shot
+  waits until 5.5 s after launch; `media.import` replies before the probe lands, and `timeline.add_clip`
+  on an unprobed asset makes a zero-length clip (wait for `media.list` durations); a killed run leaves an
+  autosave AND a `<project>.sedit.lock` (the next launch would show "Recover unsaved project?" or a
+  "may already be open" toast), and the app writes pages/layout back into settings.json, so the profile
+  is reset before every launch; the shared target dir's exe may be another worktree's build (the script
+  checks it contains `SE_SCREENSHOT_WHEN`; keep a copy of your build and pass `-FromExe <copy>` to skip
+  cargo); and something maximised the test window mid-run once (the
+  script compares the PPM's aspect with 1600x900 and retries). Coordinates for clicks are panel-relative
+  (`layout.list` now reports each pane's `rect`), so a layout change mostly means re-running, not
+  re-measuring. Found on the way: a reveal from inside a pane's draw is lost (`self.layout` is a
+  placeholder `Layout` during `layout::show`), so a Library click loads the Source monitor but doesn't
+  bring its tab forward; `source.open` over MCP does. And never `rustfmt src/main.rs` - it follows the
+  `mod` tree and reformats the whole crate, like bare `cargo fmt`. Every launch sets `SE_BACKGROUND=1` and
+  writes `"window_rect": [-2520, 112, 1600, 900]` into the scratch settings.json (the script's
+  `-WindowRect`), so the windows open on the maintainer's second monitor without taking focus - fifty
+  launches in a row used to jump in front of whatever the user was doing.
+
 - **se-fix (2026-09-07), "line tool snaps to the wrong direction" bug report — already fixed, no
   code change:** investigated a report that shape drawing doesn't render during the drag and the
   Line tool snaps to a direction that doesn't match the drag on release. Root cause was real but
