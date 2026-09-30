@@ -2,6 +2,21 @@
 
 ## beta-0.3.0
 
+### Media and Cut pages, Inspector top right, unlocked panels
+Six pages now, in Resolve's order: **Media** (Library · Source · Inspector, three full-height columns,
+no Timeline) and **Cut** (Library · Source | Preview · Inspector over the Timeline) join Edit, Color,
+Audio and Export on Alt+1..6 (Media, Cut, Edit, Color, Audio, Export - a rebind saved under a page
+Action's id now names the page in that slot). A first run still opens on Edit. The Inspector is the
+top-right tile of every page's default: Color puts it where Scopes was (Scopes moves beside Nodes |
+Curves at the bottom) and Export stacks it over Jobs; pages you already arranged keep their trees.
+Panels are unlocked by default - drag a tab to re-dock it - and Window ▸ Layout ▸ Lock panels makes
+tabs click-only (`Settings.panels_locked` replaces `panels_unlocked`, so everyone starts unlocked).
+Window ▸ Layout ▸ Save as this page's default stores the arrangement on screen
+(`Settings.page_defaults`); Reset page layout (also a page's right-click) comes back to it, and Reset
+to built-in layout to the page's own. Undocked windows reopen where you left them
+(`Layout.popped_rects`, saved once a moved window is still). MCP: `layout.page` takes the new names,
+`layout.list` reports `locked` and `page_defaults`.
+
 ### Viewer surface (issue #80, simplify wave 1)
 The Tools pane is gone: a slim icon rail floats over the Preview's left edge - Select, Crop (the crop
 handles), Text, Shape ▾ and Mask ▾ (flyouts that remember the last pick), Draw - and a shape / draw

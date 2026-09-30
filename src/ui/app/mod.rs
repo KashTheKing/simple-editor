@@ -1296,7 +1296,7 @@ impl eframe::App for App {
                     cozy: self.settings.ui_look != "sharp",
                     // ---- ws:pages ----
                     editing: self.project.editing.and_then(|id| self.project.sequence(id)).map(|s| s.name.clone()),
-                    unlocked: self.settings.panels_unlocked,
+                    locked: self.settings.panels_locked,
                 };
                 // ---- ws:layout-modes-onboarding ----
                 // Both closures need `self` (draw: mutably; on_viewport: the hotkey table, then

@@ -242,16 +242,18 @@ actions! {
     ExportMarkers => "export_markers", "Export Markers…", None;
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
-    // Alt+1..4 are free (Ctrl+1..0 is the pane-toggle row above); backtick is Premiere's maximise key.
+    // Alt+1..6 are free (Ctrl+1..0 is the pane-toggle row above); backtick is Premiere's maximise key.
     // ToggleLayoutMode / ShowWelcome are declared by ws:command-palette above and only CONSUMED here
     // (`ui::app::layout_ctl::act`) - never redeclare them. TogglePin / ToggleSource are unbound by
     // design: the tab's right-click ("Stay on this tab") and the Window menu / palette own them.
-    // ws:pages: Workspace1..4 are the four pages (ids kept so rebinds survive; 5 and 6 went with the
-    // Text / Deliver workspaces - `Hotkeys::from_settings` ignores their stale ids).
-    Workspace1 => "workspace_1", "Edit page", sc(ALT, Key::Num1);
-    Workspace2 => "workspace_2", "Color page", sc(ALT, Key::Num2);
-    Workspace3 => "workspace_3", "Audio page", sc(ALT, Key::Num3);
-    Workspace4 => "workspace_4", "Export page", sc(ALT, Key::Num4);
+    // ws:pages: Workspace1..6 are the six pages in Resolve's order (`layout::PAGES`). A rebind stored
+    // under an id now names the page in that slot (workspace_1 was Edit before Media and Cut came).
+    Workspace1 => "workspace_1", "Media page", sc(ALT, Key::Num1);
+    Workspace2 => "workspace_2", "Cut page", sc(ALT, Key::Num2);
+    Workspace3 => "workspace_3", "Edit page", sc(ALT, Key::Num3);
+    Workspace4 => "workspace_4", "Color page", sc(ALT, Key::Num4);
+    Workspace5 => "workspace_5", "Audio page", sc(ALT, Key::Num5);
+    Workspace6 => "workspace_6", "Export page", sc(ALT, Key::Num6);
     MaximizePane => "maximize_pane", "Maximise Pane under Cursor", sc(NONE, Key::Backtick);
     TogglePin => "toggle_pin", "Pin / Unpin Pane under Cursor", None;
     // ToggleSource is declared by ws:source-monitor below (both workstreams needed it; kept there
@@ -566,10 +568,10 @@ pub fn group(a: Action) -> &'static str {
         ToggleTranscript | RemoveFillers | ExportTranscript => "Captions",
         ViewerFit | AppendAtEnd | RippleOverwrite | CloseUp | PlaceOnTop | SourceTape => "Viewer",
         // (a shared variant never sits right before `=>`: `no_duplicate_*` count "Name =>" in this file)
-        Workspace1 | Workspace2 | Workspace3 | Workspace4 | MaximizePane | TogglePin | ToggleLayoutMode
-        | ToggleLibrary | ToggleInspector | ToggleEffects | ToggleTransitions | ToggleCurves | ToggleSubtitles
-        | TogglePlanner | ToggleMarkers | ToggleNodes | ToggleMixer | ToggleTools | ToggleSource | ToggleJobs
-        | ToggleScopes => "Panels & Pages",
+        Workspace1 | Workspace2 | Workspace3 | Workspace4 | Workspace5 | Workspace6 | MaximizePane | TogglePin
+        | ToggleLayoutMode | ToggleLibrary | ToggleInspector | ToggleEffects | ToggleTransitions | ToggleCurves
+        | ToggleSubtitles | TogglePlanner | ToggleMarkers | ToggleNodes | ToggleMixer | ToggleTools | ToggleSource
+        | ToggleJobs | ToggleScopes => "Panels & Pages",
         RelinkMedia | ConsolidateMedia | NewSubclip => "Media",
         ToolSelect | ToolText | ToolDraw | ToolMask | ToolMarker | ToolCut | ToolStretch | ToolSpacer => "Tools",
         CommandPalette | CheatSheet | ShowWelcome | WhatsNew | ClearCaches => "General",
@@ -791,31 +793,40 @@ mod tests {
     // ---- ws:layout-modes-onboarding ----
     /// The audit-fix-2 guard from this side: the two shared variants this workstream CONSUMES exist
     /// exactly once crate-wide (declared by command-palette), this workstream's own rows exist exactly
-    /// once each, and their chords are the keymap's (Alt+1..4 = the pages, backtick, the rest unbound) -
+    /// once each, and their chords are the keymap's (Alt+1..6 = the pages, backtick, the rest unbound) -
     /// with `no_duplicate_defaults` above still green over the whole table.
     #[test]
     fn no_duplicate_hotkey_rows_for_shared_actions() {
         let src = include_str!("hotkeys.rs");
         for name in
-            ["ToggleLayoutMode", "ShowWelcome", "Workspace1", "Workspace4", "MaximizePane", "TogglePin", "ToggleSource"]
+            ["ToggleLayoutMode", "ShowWelcome", "Workspace1", "Workspace6", "MaximizePane", "TogglePin", "ToggleSource"]
         {
             let decl = format!("{name} =>");
             assert_eq!(src.matches(decl.as_str()).count(), 1, "{name} must be declared exactly once");
         }
-        assert!(!src.contains(&format!("Workspace{} =>", 5)), "the Text / Deliver workspaces are gone");
+        assert!(!src.contains(&format!("Workspace{} =>", 7)), "six pages, six page Actions");
         let h = Hotkeys::defaults();
         assert_eq!(h.text(Action::ToggleLayoutMode), "", "ws:pages: the Dynamic/Granular chord left the UI");
         assert_eq!(h.text(Action::ShowWelcome), "");
-        assert_eq!(Action::Workspace4.label(), "Export page");
-        // a settings file that still rebinds workspace_6 loads - the stale id is ignored
+        use Action::{Workspace1, Workspace2, Workspace3, Workspace4, Workspace5, Workspace6};
+        let labels = [Workspace1, Workspace2, Workspace3, Workspace4, Workspace5, Workspace6].map(|a| a.label());
+        assert_eq!(labels.map(|l| l.trim_end_matches(" page")), crate::ui::layout::PAGES, "Alt+N is the Nth page");
+        // an unknown id in a settings file is ignored; a known one rebinds the page in that slot
         let mut s = Settings::default();
-        s.hotkeys.insert("workspace_6".into(), "Alt+9".into());
-        assert_eq!(Hotkeys::from_settings(&s).text(Action::Workspace1), "Alt+1");
+        s.hotkeys.insert("workspace_9".into(), "Alt+9".into());
+        s.hotkeys.insert("workspace_6".into(), "Alt+0".into());
+        let rebound = Hotkeys::from_settings(&s);
+        assert_eq!(
+            (rebound.text(Action::Workspace1), rebound.text(Action::Workspace6)),
+            ("Alt+1".into(), "Alt+0".into())
+        );
         for (a, want) in [
             (Action::Workspace1, "Alt+1"),
             (Action::Workspace2, "Alt+2"),
             (Action::Workspace3, "Alt+3"),
             (Action::Workspace4, "Alt+4"),
+            (Action::Workspace5, "Alt+5"),
+            (Action::Workspace6, "Alt+6"),
             // `Hotkeys::format` uses `Key::name()` (not `symbol_or_name()`), same as every other
             // punctuation-key action in this table (TrimLeft1's "[" shows as "OpenBracket", etc.) -
             // matching existing behaviour, not a new inconsistency introduced here.

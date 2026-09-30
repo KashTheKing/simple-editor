@@ -1,7 +1,7 @@
 //! ---- ws:layout-modes-onboarding ----
 //! MCP tools for pages, following the selection, pins, surfacing, maximise and the welcome wizard - each
 //! a thin call into `layout_ctl` / `Layout` / `Settings` (`ToolKind::Ui`: UI state, never the project,
-//! never undo). `ui.action` covers the hotkey-shaped verbs (Workspace1..4 = the pages / MaximizePane /
+//! never undo). `ui.action` covers the hotkey-shaped verbs (Workspace1..6 = the pages / MaximizePane /
 //! TogglePin / ToggleSource plus the consumed ToggleLayoutMode / ShowWelcome) by id, as for any other
 //! Action.
 
@@ -46,9 +46,9 @@ pub const TOOLS: &[ToolDef] = &[
     // ---- ws:pages ----
     ToolDef {
         name: "layout.page",
-        desc: "Switch to a page (Edit, Color, Audio, Export - see layout.list's 'pages'), the same as Alt+1..4 / \
-               the menu-bar switcher. Each page keeps its own arrangement.",
-        args: &["name:string:true:one of Edit, Color, Audio, Export"],
+        desc: "Switch to a page (Media, Cut, Edit, Color, Audio, Export - see layout.list's 'pages'), the same as \
+               Alt+1..6 / the menu-bar switcher. Each page keeps its own arrangement.",
+        args: &["name:string:true:one of Media, Cut, Edit, Color, Audio, Export"],
         kind: ToolKind::Ui,
         run: |app, args| switch(app, req(arg_str(args, "name"), "name")?),
     },
@@ -116,7 +116,8 @@ pub const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "layout.list",
         desc: "The current page (and every page name), layout mode, pinned panes, the maximised pane, \
-               whether panels are unlocked, and each pane's visibility / popped-out state.",
+               whether panels are locked, which pages have a saved default, and each pane's visibility / \
+               popped-out state.",
         args: &[],
         kind: ToolKind::Read,
         run: |app, _args| {
@@ -135,7 +136,8 @@ pub const TOOLS: &[ToolDef] = &[
                 "mode": if layout_ctl::is_dynamic(&app.settings) { "dynamic" } else { "granular" },
                 "page": app.settings.page,
                 "pages": PAGES,
-                "unlocked": app.settings.panels_unlocked,
+                "locked": app.settings.panels_locked,
+                "page_defaults": app.settings.page_defaults.keys().collect::<Vec<_>>(),
                 "pinned": app.layout.pinned.iter().map(|p| p.title()).collect::<Vec<_>>(),
                 "maximized": app.layout.maximized.as_ref().map(|(p, _)| p.title()),
                 "home_screen": app.settings.home_screen,
@@ -201,7 +203,9 @@ mod tests {
         assert_eq!(schema("layout.workspace")["required"], json!(["name"]));
         assert_eq!(schema("layout.page")["required"], json!(["name"]));
         // old workspace names still land on a page
-        for (old, page) in [("simple", "Edit"), ("Text", "Edit"), ("deliver", "Export"), ("color", "Color")] {
+        for (old, page) in
+            [("simple", "Edit"), ("Text", "Edit"), ("deliver", "Export"), ("color", "Color"), ("cut", "Cut")]
+        {
             assert_eq!(crate::ui::layout::page_name(old), Some(page), "{old}");
         }
         assert_eq!(crate::ui::layout::page_name("Nope"), None);
@@ -217,7 +221,7 @@ mod tests {
         // the hotkey-shaped verbs go through ui.action by id
         for id in [
             "workspace_1",
-            "workspace_4",
+            "workspace_6",
             "maximize_pane",
             "toggle_pin",
             "toggle_source",

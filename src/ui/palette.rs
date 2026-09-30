@@ -1,6 +1,6 @@
 //! Ctrl+K command palette: fuzzy search over every `Action`, the panes no Action toggles ("Show X"),
 //! arg-free tools that change something, and Luau scripts, in one list - one row per thing (a pane's
-//! row is its Show / Hide Action; the pages are the Edit/Color/Audio/Export page Actions). A `:` prefix
+//! row is its Show / Hide Action; the pages are the six page Actions, Media to Export). A `:` prefix
 //! switches to "tool mode": fuzzy search over EVERY tool by its raw name, and picking a row builds a
 //! tiny arg form from the tool's `args` docs instead of running it immediately.
 //!
@@ -446,7 +446,7 @@ mod tests {
         assert!(all.iter().any(|r| r.cmd == Command::Pane(Pane::Timeline)), "a pane with no Action keeps Show X");
         // the pages are their Actions, once each
         let pages: Vec<_> = all.iter().filter(|r| r.label.ends_with(" page")).map(|r| r.label.as_str()).collect();
-        assert_eq!(pages.len(), 4, "{pages:?}");
+        assert_eq!(pages.len(), crate::ui::layout::PAGES.len(), "{pages:?}");
         // arg-free tools that act are listed under a readable name; a Read tool (its reply would be
         // dropped) and an arg-taking tool only show up in ':' mode
         for t in crate::mcp::tools::all().filter(|t| t.args.is_empty()) {

@@ -1,5 +1,5 @@
 //! ---- ws:layout-modes-onboarding ----
-//! Layout control: the ACT_HANDLERS entry for the page actions (Workspace1..4) / MaximizePane /
+//! Layout control: the ACT_HANDLERS entry for the page actions (Workspace1..6) / MaximizePane /
 //! TogglePin / ToggleSource plus the two variants command-palette declared for us to consume
 //! (ToggleLayoutMode, ShowWelcome); the pin/follow-aware `surface`; `poll_popout` (the body wave-0b's
 //! `on_viewport` hook in `layout::show` was pre-placed for, so Space/J/K/L work in a torn-off Preview);
@@ -7,8 +7,9 @@
 //! (`ui::home`), which are App-free on purpose.
 //!
 //! ---- ws:pages ----
-//! The pages: `switch_page` (stash this page's tree, bring the other one back), `reset_page`, the
-//! menu-bar `page_switcher`, and the one-time `migrate_to_pages` of a pre-pages settings file.
+//! The pages: `switch_page` (stash this page's tree, bring the other one back), `reset_page` and
+//! `save_page_default`, the menu-bar `page_switcher`, and the one-time `migrate_to_pages` of a
+//! pre-pages settings file.
 //! Everything here mutates Settings / Layout / UI state only - never the project, so no
 //! `push_undo_labeled` anywhere except the one place the wizard applies a starting format to an EMPTY
 //! project (that is a project edit and gets its own labelled undo entry).
@@ -21,14 +22,23 @@ use crate::ui::{home, menu};
 /// The name the pre-pages arrangement is kept under (Window ▸ Layout ▸ Load profile).
 pub(super) const BEFORE_UPDATE: &str = "Before update";
 
+/// Why "Reset to Built-in Layout" is greyed: without a saved default, Reset Page Layout already is that.
+pub(super) const NO_SAVED_DEFAULT: &str = "Same as Reset Page Layout until you save a default for this page";
+
 /// Panel tabs follow the selection unless Settings say "granular" - one reading for every caller.
 pub(super) fn is_dynamic(settings: &Settings) -> bool {
     settings.layout_mode != "granular"
 }
 
-/// The page actions, in `PAGES` order (Alt+1..4).
-pub(super) const PAGE_ACTIONS: [Action; 4] =
-    [Action::Workspace1, Action::Workspace2, Action::Workspace3, Action::Workspace4];
+/// The page actions, in `PAGES` order (Alt+1..6).
+pub(super) const PAGE_ACTIONS: [Action; 6] = [
+    Action::Workspace1,
+    Action::Workspace2,
+    Action::Workspace3,
+    Action::Workspace4,
+    Action::Workspace5,
+    Action::Workspace6,
+];
 
 pub(super) fn act(app: &mut App, a: Action) -> bool {
     if let Some(i) = PAGE_ACTIONS.iter().position(|&p| p == a) {
@@ -156,9 +166,25 @@ pub(super) fn surface_for_kind(app: &mut App, kind: SelectionKind) {
 
 // ---- ws:pages ----
 
-/// A page's default arrangement (the Edit page's for a name that isn't one).
+/// A page's built-in arrangement (the Edit page's for a name that isn't one).
 pub(super) fn page_default(page: &str) -> Layout {
     page_layout(page).unwrap_or(Layout::default_layout)()
+}
+
+/// Where a page starts (a first visit, Reset page layout): the default the user saved for it, else its
+/// built-in one. A saved default loads like a profile (`from_json_migrating`), so panes added since
+/// ride hidden instead of making it unloadable.
+pub(super) fn page_start(settings: &Settings, page: &str) -> Layout {
+    let saved = settings.page_defaults.get(page).and_then(|j| Layout::from_json_migrating(j));
+    saved.unwrap_or_else(|| page_default(page))
+}
+
+/// Window ▸ Layout ▸ Save as this page's default: the arrangement on screen (restored first if a panel
+/// is maximised) becomes what the page resets to.
+pub(super) fn save_page_default(settings: &mut Settings, layout: &Layout) {
+    let mut l = layout.clone();
+    l.unmaximize();
+    settings.page_defaults.insert(settings.page.clone(), l.to_json());
 }
 
 /// One-time move to pages, before the layout loads: a settings file from before them (no `page`)
@@ -198,7 +224,7 @@ pub(super) fn swap_page(
         settings.page_layouts.insert(old, layout.to_json());
     }
     let stored = settings.page_layouts.remove(page);
-    *layout = stored.as_deref().and_then(Layout::from_json).unwrap_or_else(|| page_default(page));
+    *layout = stored.as_deref().and_then(Layout::from_json).unwrap_or_else(|| page_start(settings, page));
     settings.layout = layout.to_json();
     undo.retain(|e| e.json != LAYOUT_STEP);
     redo.retain(|e| e.json != LAYOUT_STEP);
@@ -220,23 +246,27 @@ pub(super) fn switch_page(app: &mut App, name: &str) -> bool {
     true
 }
 
-/// Back to `page`'s default arrangement. The page on screen resets as one undoable layout step; another
-/// page just forgets its stored tree.
-pub(super) fn reset_page(app: &mut App, page: &'static str) {
+/// Back to `page`'s starting arrangement (`page_start`), or with `builtin` its built-in one even when a
+/// default is saved. The page on screen resets as one undoable layout step; another page gets it as its
+/// stored tree for the next visit.
+pub(super) fn reset_page(app: &mut App, page: &'static str, builtin: bool) {
+    let saved = !builtin && app.settings.page_defaults.contains_key(page);
+    let fresh = if builtin { page_default(page) } else { page_start(&app.settings, page) };
     if app.settings.page == page {
         let before = app.layout.to_json();
-        app.layout.reset(page_layout(page).unwrap_or(Layout::default_layout));
+        app.layout.reset(fresh);
         app.layout.push_undo(before);
         push_undo_json(&mut app.undo, &mut app.redo, LAYOUT_STEP.to_owned());
         app.layout_dirty = true;
-    } else if app.settings.page_layouts.remove(page).is_some() {
+    } else {
+        app.settings.page_layouts.insert(page.into(), fresh.to_json());
         app.settings.save();
     }
-    app.toast(format!("{page} page: back to its default layout"));
+    app.toast(format!("{page} page: back to its {} layout", if saved { "saved default" } else { "built-in" }));
 }
 
 /// The menu bar's page switcher: one text button per page, centred in the bar, the page on screen
-/// filled with the accent. Right-click a page to reset its layout.
+/// filled with the accent. Right-click a page to reset its layout (to its saved default or built-in).
 pub(super) fn page_switcher(app: &mut App, ui: &mut egui::Ui) {
     let font = egui::TextStyle::Button.resolve(ui.style());
     let pad = ui.spacing().button_padding.x * 2.0 + 16.0;
@@ -270,9 +300,14 @@ pub(super) fn page_switcher(app: &mut App, ui: &mut egui::Ui) {
                 if r.clicked() && !on {
                     pick = Some(page);
                 }
+                let saved = app.settings.page_defaults.contains_key(page);
                 r.context_menu(|ui| {
-                    if menu::row(ui, None, "Reset page layout", "").clicked() {
-                        reset = Some(page);
+                    if menu::row(ui, None, "Reset Page Layout", "").clicked() {
+                        reset = Some((page, false));
+                    }
+                    let builtin = ui.add_enabled_ui(saved, |ui| menu::row(ui, None, "Reset to Built-in Layout", ""));
+                    if builtin.inner.on_disabled_hover_text(NO_SAVED_DEFAULT).clicked() {
+                        reset = Some((page, true));
                     }
                 });
             }
@@ -281,8 +316,8 @@ pub(super) fn page_switcher(app: &mut App, ui: &mut egui::Ui) {
     if let Some(page) = pick {
         switch_page(app, page);
     }
-    if let Some(page) = reset {
-        reset_page(app, page);
+    if let Some((page, builtin)) = reset {
+        reset_page(app, page, builtin);
     }
 }
 
@@ -491,21 +526,21 @@ mod tests {
         l.toggle(Pane::Inspector);
         l.popout(Pane::Library);
         let edited = tree_value(&l);
-        for &other in &PAGES[1..] {
+        for &other in PAGES.iter().filter(|&&p| p != "Edit") {
             assert!(swap_page(&mut l, &mut s, &mut undo, &mut redo, other));
             assert_eq!(s.page, other);
             assert_eq!(tree_value(&l), tree_value(&page_default(other)), "{other} starts from its default");
             assert!(l.popped.is_empty(), "Edit's popped window stays with Edit");
             assert_eq!(s.layout, l.to_json(), "Settings.layout is the page on screen");
             assert!(s.page_layouts.contains_key("Edit") && !s.page_layouts.contains_key(other));
-            // an edit on this page too, to prove it survives the next hop
-            l.toggle(Pane::Timeline);
+            // an edit on this page too (the Inspector is on every page), to prove it survives the next hop
+            l.toggle(Pane::Inspector);
             assert!(swap_page(&mut l, &mut s, &mut undo, &mut redo, "Edit"));
             assert_eq!(tree_value(&l), edited, "Edit's own edits are back after visiting {other}");
             assert_eq!(l.popped, vec![Pane::Library]);
             assert!(swap_page(&mut l, &mut s, &mut undo, &mut redo, other));
-            assert!(!l.is_visible(Pane::Timeline), "{other}'s edit survived too");
-            l.toggle(Pane::Timeline);
+            assert!(!l.is_visible(Pane::Inspector), "{other}'s edit survived too");
+            l.toggle(Pane::Inspector);
             assert!(swap_page(&mut l, &mut s, &mut undo, &mut redo, "Edit"));
         }
         assert!(!swap_page(&mut l, &mut s, &mut undo, &mut redo, "Edit"), "already there");
@@ -534,6 +569,60 @@ mod tests {
         assert_eq!(undo.len(), 1, "the project edit stays undoable");
         assert!(!l.undo() && !l.redo(), "no layout history crossed the switch");
         assert_eq!(tree_value(&l), tree_value(&Layout::audio_layout()));
+    }
+
+    /// Save as this page's default: a first visit and Reset page layout start from it (restored first if
+    /// saved while maximised), the other pages keep their built-in one, and a default that no longer
+    /// parses falls back to the built-in one instead of an empty page.
+    #[test]
+    fn a_saved_page_default_is_where_the_page_starts() {
+        let mut s = Settings { page: "Cut".into(), ..Default::default() };
+        let mut l = Layout::cut_layout();
+        l.toggle(Pane::Inspector);
+        let mine = tree_value(&l);
+        l.maximize(Pane::Timeline);
+        save_page_default(&mut s, &l);
+        assert_eq!(tree_value(&page_start(&s, "Cut")), mine, "the arrangement under the maximised panel");
+        assert!(page_start(&s, "Cut").maximized.is_none());
+        assert_eq!(tree_value(&page_start(&s, "Media")), tree_value(&Layout::media_layout()), "no default saved");
+        // a first visit (nothing stored for Cut) starts from the saved default
+        let (mut undo, mut redo) = (Vec::new(), Vec::new());
+        let mut l = Layout::default_layout();
+        s.page = "Edit".into();
+        swap_page(&mut l, &mut s, &mut undo, &mut redo, "Cut");
+        assert_eq!(tree_value(&l), mine);
+        s.page_defaults.insert("Cut".into(), "not json".into());
+        assert_eq!(tree_value(&page_start(&s, "Cut")), tree_value(&Layout::cut_layout()));
+    }
+
+    /// Everything a page arrangement is survives a restart - the Settings file written and read back:
+    /// the page on screen (maximised, with an undocked window's rect), the other pages' trees and the
+    /// saved defaults.
+    #[test]
+    fn page_layouts_survive_a_restart() {
+        let mut s = Settings { page: "Media".into(), ..Default::default() };
+        let (mut undo, mut redo) = (Vec::new(), Vec::new());
+        let mut l = Layout::media_layout();
+        l.toggle(Pane::Source);
+        swap_page(&mut l, &mut s, &mut undo, &mut redo, "Color");
+        l.popout(Pane::Scopes);
+        l.set_popped_rect(Pane::Scopes, [40.0, 50.0, 700.0, 400.0]);
+        l.maximize(Pane::Preview);
+        s.layout = l.to_json();
+        save_page_default(&mut s, &Layout::export_layout());
+        let back: Settings = serde_json::from_str(&serde_json::to_string_pretty(&s).unwrap()).unwrap();
+        assert_eq!(back.page, "Color");
+        let mut now = Layout::from_json(&back.layout).expect("the page on screen loads");
+        assert_eq!(now.maximized.as_ref().map(|(p, _)| *p), Some(Pane::Preview), "still maximised");
+        assert_eq!(
+            (now.popped.clone(), now.popped_rects.clone()),
+            (vec![Pane::Scopes], vec![(Pane::Scopes, [40.0, 50.0, 700.0, 400.0])])
+        );
+        now.unmaximize();
+        assert!(now.is_visible(Pane::Timeline), "and restores to the real arrangement");
+        let media = Layout::from_json(&back.page_layouts["Media"]).expect("the stashed Media page loads");
+        assert!(!media.is_visible(Pane::Source), "with its edit");
+        assert_eq!(tree_value(&page_start(&back, "Color")), tree_value(&Layout::export_layout()));
     }
 
     /// A settings file from before pages keeps its arrangement as the "Before update" profile and
