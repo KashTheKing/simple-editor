@@ -166,6 +166,9 @@ pub struct App {
     /// Last layout JSON written to settings (persist only on change, debounced to gesture end).
     layout_json: String,
     layout_dirty: bool,
+    /// Panes asked to surface while `layout::show` had the real layout swapped out (a pane's draw -
+    /// e.g. a Library click opening the Source); applied right after it is put back.
+    deferred_surface: Vec<Pane>,
     timeline: timeline::TimelineState,
     preview: preview::PreviewState,
     library: library::LibraryState,
@@ -722,6 +725,7 @@ impl App {
             layout,
             layout_json,
             layout_dirty: false,
+            deferred_surface: Vec::new(),
             timeline: timeline::TimelineState::default(),
             preview: preview::PreviewState::default(),
             library: library::LibraryState::default(),
@@ -1326,6 +1330,13 @@ impl eframe::App for App {
                 );
                 self.layout = l;
                 self.layout_dirty |= shown.changed;
+                for pane in std::mem::take(&mut self.deferred_surface) {
+                    if pane == Pane::Source {
+                        self.surface_source();
+                    } else {
+                        self.surface(pane);
+                    }
+                }
                 if shown.moved {
                     push_undo_json(&mut self.undo, &mut self.redo, LAYOUT_STEP.to_owned());
                 }
@@ -1687,7 +1698,17 @@ impl App {
     /// Bring `pane` to the front, explicitly (palette "Show X", Ctrl+E's Export pane): `Layout::reveal`
     /// + marking the layout dirty so it persists. Selection-driven surfacing is the pin/follow-aware
     /// `layout_ctl::surface`.
+    /// True while `layout::show` runs: `self.layout` is an empty placeholder then (the real tree is
+    /// borrowed by the draw), so a reveal would be lost when the real one is put back.
+    fn layout_swapped_out(&self) -> bool {
+        self.layout.tree.root.is_none()
+    }
+
     pub(crate) fn surface(&mut self, pane: Pane) {
+        if self.layout_swapped_out() {
+            self.deferred_surface.push(pane);
+            return;
+        }
         self.layout.reveal(pane);
         self.layout_dirty = true;
     }

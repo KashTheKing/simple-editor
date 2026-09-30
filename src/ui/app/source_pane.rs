@@ -66,7 +66,12 @@ impl App {
     /// Fast-cut presets), where surfacing it would hide the very list the user is clicking in.
     /// ponytail: a same-tab-group check, not a general pin/auto-surface policy - layout-modes-
     /// onboarding's `reveal_auto` (pin-aware) is the upgrade path once it lands.
-    fn surface_source(&mut self) {
+    pub(super) fn surface_source(&mut self) {
+        // a Library click lands here mid-draw, with the real layout swapped out: do it after the draw
+        if self.layout.tree.root.is_none() {
+            self.deferred_surface.push(Pane::Source);
+            return;
+        }
         let tiles = &self.layout.tree.tiles;
         let same_group = match (tiles.find_pane(&Pane::Source), tiles.find_pane(&Pane::Library)) {
             (Some(s), Some(l)) => tiles.parent_of(s).is_some() && tiles.parent_of(s) == tiles.parent_of(l),
