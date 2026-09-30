@@ -115,7 +115,7 @@ pub(super) fn draw_header(
 
     let (locked, ripple, magnetic) = (track.locked, track.ripple.unwrap_or(false), track.magnetic);
     let (empty, muted, solo) = (track.clips.is_empty(), track.muted, track.solo);
-    hresp.context_menu(|ui| {
+    menu::context(&hresp, |ui| {
         super::menus::acts(ui, &[Some(Action::AddVideoTrack), Some(Action::AddAudioTrack)]);
         let rm = ui.add_enabled_ui(empty, |ui| menu::row(ui, Some(Glyph::Cross), "Remove Track", "")).inner;
         if rm.on_disabled_hover_text("Only an empty track can be removed").clicked() {

@@ -3,6 +3,7 @@
 //! settings_ui.rs (see mod.rs's module doc for the whole settings window).
 
 use crate::settings::Settings;
+use crate::ui::menu;
 use crate::ui::tools::Glyph;
 use eframe::egui;
 
@@ -245,7 +246,7 @@ fn icon_row(ui: &mut egui::Ui, s: &mut Settings, key: String, label: &str, defau
             }
             None => ui.add_space(18.0),
         }
-        ui.menu_button("Change", |ui| {
+        menu::button(ui, "Change", |ui| {
             ui.set_max_width(260.0);
             ui.horizontal_wrapped(|ui| {
                 for g in Glyph::ALL {

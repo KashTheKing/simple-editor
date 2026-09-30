@@ -259,7 +259,7 @@ pub(super) fn marker_hit(
     let r = r.on_hover_ui(|ui| {
         ui.label(if m.name.is_empty() { "(unnamed marker)" } else { m.name.as_str() });
     });
-    r.context_menu(|ui| {
+    menu::context(&r, |ui| {
         ui.horizontal(|ui| {
             ui.label("Name");
             if let Some((_, buf)) = rename.as_mut().filter(|(rid, _)| *rid == m.id) {

@@ -274,7 +274,7 @@ pub fn show(
                     out.hover = Some((tab, name.clone()));
                 }
                 let mut go = r.clicked();
-                let menu = r.context_menu(|ui| {
+                let menu = menu::context(&r, |ui| {
                     let (label, needs_clip) = match tab {
                         GalleryTab::Templates | GalleryTab::Titles => ("Place at playhead", false),
                         GalleryTab::Captions => ("Apply to every caption", false),
@@ -312,7 +312,7 @@ pub fn show(
             }
         }
     });
-    bg.context_menu(|ui| {
+    menu::context(&bg, |ui| {
         let r =
             ui.add_enabled_ui(!selection.is_empty(), |ui| menu::row(ui, None, "Save look from selection…", "")).inner;
         if r.on_disabled_hover_text("Select a clip whose effects to save").clicked() {

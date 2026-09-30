@@ -22,7 +22,7 @@ use crate::model::{AnimLink, Animated, Id, Project, TextSpan, TextStyle};
 use crate::settings::TextPreset;
 use crate::theme::Palette;
 use crate::ui::inspector::luau_highlight;
-use crate::ui::{key_buttons, key_menu, Gesture};
+use crate::ui::{key_buttons, key_menu, menu, Gesture};
 use eframe::egui::{self, DragValue, Grid, Slider};
 
 /// Test-only: remember a widget rect so headless tests can click the real button (mirrors
@@ -220,7 +220,7 @@ pub(super) fn section(
                 style.size.set_at(lt, v);
             }
             g.note(&r);
-            r.context_menu(|ui| key_menu(ui, &mut style.size, lt, &mut g, "Text Size", &[]));
+            menu::context(&r, |ui| key_menu(ui, &mut style.size, lt, &mut g, "Text Size", &[]));
             key_buttons(ui, &mut style.size, lt, palette, &mut g, "Text Size", &[]);
             g.note(&ui.checkbox(&mut style.bold, "Bold"));
             g.note(&ui.checkbox(&mut style.italic, "Italic"));
@@ -239,7 +239,7 @@ pub(super) fn section(
                 style.outline_width.set_at(lt, v);
             }
             g.note(&r);
-            r.context_menu(|ui| key_menu(ui, &mut style.outline_width, lt, &mut g, "Outline Width", &[]));
+            menu::context(&r, |ui| key_menu(ui, &mut style.outline_width, lt, &mut g, "Outline Width", &[]));
             key_buttons(ui, &mut style.outline_width, lt, palette, &mut g, "Outline Width", &[]);
         });
         ui.end_row();
@@ -275,7 +275,7 @@ pub(super) fn section(
                 style.letter_spacing.set_at(lt, v);
             }
             g.note(&r);
-            r.context_menu(|ui| key_menu(ui, &mut style.letter_spacing, lt, &mut g, "Letter Spacing", &[]));
+            menu::context(&r, |ui| key_menu(ui, &mut style.letter_spacing, lt, &mut g, "Letter Spacing", &[]));
             key_buttons(ui, &mut style.letter_spacing, lt, palette, &mut g, "Letter Spacing", &[]);
         });
         ui.end_row();
@@ -295,7 +295,7 @@ pub(super) fn section(
                 style.reveal.set_at(lt, (pct / 100.0).clamp(0.0, 1.0));
             }
             g.note(&r);
-            r.context_menu(|ui| key_menu(ui, &mut style.reveal, lt, &mut g, "Reveal", &[]));
+            menu::context(&r, |ui| key_menu(ui, &mut style.reveal, lt, &mut g, "Reveal", &[]));
             key_buttons(ui, &mut style.reveal, lt, palette, &mut g, "Reveal", &[]);
         });
         ui.end_row();
@@ -308,7 +308,7 @@ pub(super) fn section(
                 style.wave.set_at(lt, v.max(0.0));
             }
             g.note(&r);
-            r.context_menu(|ui| key_menu(ui, &mut style.wave, lt, &mut g, "Wave", &[]));
+            menu::context(&r, |ui| key_menu(ui, &mut style.wave, lt, &mut g, "Wave", &[]));
             key_buttons(ui, &mut style.wave, lt, palette, &mut g, "Wave", &[]);
         });
         ui.end_row();

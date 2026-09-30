@@ -149,7 +149,7 @@ fn tag_field(
 
 /// An item's right-click: the two verbs every view shares.
 fn item_menu(r: &egui::Response, asset: Id, i: usize, resp: &mut MoodboardResponse, remove: &mut Option<usize>) {
-    r.context_menu(|ui| {
+    menu::context(&r, |ui| {
         if menu::row(ui, None, "Add at Playhead", "").clicked() {
             resp.add_to_timeline.push(asset);
         }
@@ -273,7 +273,7 @@ pub fn show(
     });
     let _ = frame_r;
     state.content_rect = content_rect;
-    bg.context_menu(|ui| {
+    menu::context(&bg, |ui| {
         if menu::row(ui, Some(Glyph::ImportArrow), "Import…", "").clicked() {
             if let Some(files) = rfd::FileDialog::new().pick_files() {
                 resp.import_paths.extend(files);

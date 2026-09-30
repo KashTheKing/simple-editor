@@ -461,7 +461,7 @@ pub fn show(
                     if r.secondary_clicked() && !selected {
                         state.selected = vec![row.id];
                     }
-                    r.context_menu(|ui| {
+                    menu::context(&r, |ui| {
                         let targets =
                             if state.selected.contains(&row.id) { state.selected.clone() } else { vec![row.id] };
                         let n = targets.len();
@@ -580,7 +580,7 @@ pub fn show(
     }
 
     // ---- empty space: the pane's verbs ----
-    bg.context_menu(|ui| {
+    menu::context(&bg, |ui| {
         menu::action_item(ui, Action::AddMarker);
         let r = ui.add_enabled_ui(sel_clip.is_some(), |ui| menu::row(ui, None, "Add on selected clip", "")).inner;
         if r.on_disabled_hover_text("Select a clip first").clicked() {

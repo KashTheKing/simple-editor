@@ -1122,7 +1122,7 @@ fn fill_frame(project: &mut Project, id: Id) {
 /// Resolution ▸, Proxies, Movie Mode, Social Guides ▸, Scopes, Background ▸, Snap to Canvas. Action rows
 /// go through `ui::menu`, so labels, icons and shortcuts match the menu bar.
 fn viewer_menu(resp: &egui::Response, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r: &mut PreviewResponse) {
-    resp.context_menu(|ui| {
+    menu::context(&resp, |ui| {
         menu::scroll(ui, |ui| {
             if !state.menu_clips.is_empty() {
                 let ids = state.menu_clips.clone();

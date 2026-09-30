@@ -696,7 +696,7 @@ pub fn show(
             }
         });
         ui.add_enabled_ui(is_clip && !motions.is_empty(), |ui| {
-            ui.menu_button("Motion ▾", |ui| {
+            menu::button(ui, "Motion ▾", |ui| {
                 for (i, n) in motions.iter().enumerate() {
                     let r = menu::row(ui, None, n, "").on_hover_text("Stretch the preset to this clip's length");
                     if r.clicked() {
@@ -709,7 +709,7 @@ pub fn show(
             .on_disabled_hover_text("Select a clip");
         });
         // everything else
-        let r = ui.menu_button("⋯", |ui| {
+        let r = menu::button(ui, "⋯", |ui| {
             ui.add_enabled_ui(is_clip, |ui| {
                 for (label, op) in
                     [("Apply motion exact", MotionOp::Exact), ("Merge motion at playhead", MotionOp::Merge)]
@@ -1348,8 +1348,8 @@ pub fn show(
         // 2+ selected keys turns "Easing" into a bulk edit and offers "Blend Velocity"; a single (or no)
         // selection keeps today's single-key menu.
         let sel_multi = state.selected.len() >= 2;
-        resp.context_menu(|ui| {
-            ui.menu_button("Easing", |ui| {
+        menu::context(&resp, |ui| {
+            menu::button(ui, "Easing", |ui| {
                 for e in Ease::ALL {
                     if ui.button(e.name()).clicked() {
                         act = Some(MenuAct::SetEase(e));

@@ -295,7 +295,7 @@ pub fn show(
                     pick = Some(i);
                 }
                 // a quick action also picks the kind, so Ctrl+T repeats what the menu just applied
-                r.context_menu(|ui| {
+                menu::context(&r, |ui| {
                     let rows = [
                         ("Add at start of selected clip(s)", Some(false)),
                         ("Add at end of selected clip(s)", Some(true)),

@@ -110,13 +110,13 @@ impl App {
     pub(super) fn menu_bar(&mut self, ui: &mut egui::Ui) -> Vec<Action> {
         let mut out = Vec::new();
         egui::MenuBar::new().ui(ui, |ui| {
-            ui.menu_button("File", |ui| menu::scroll(ui, |ui| self.file_menu(ui)));
-            ui.menu_button("Edit", |ui| menu::scroll(ui, |ui| self.edit_menu(ui)));
-            ui.menu_button("Clip", |ui| menu::scroll(ui, |ui| self.clip_menu(ui)));
-            ui.menu_button("Timeline", |ui| menu::scroll(ui, |ui| self.timeline_menu(ui, &mut out)));
-            ui.menu_button("Playback", |ui| menu::scroll(ui, |ui| self.playback_menu(ui, &mut out)));
-            ui.menu_button("Window", |ui| menu::scroll(ui, |ui| self.window_menu(ui)));
-            ui.menu_button("Help", |ui| self.help_menu(ui));
+            menu::button(ui, "File", |ui| menu::scroll(ui, |ui| self.file_menu(ui)));
+            menu::button(ui, "Edit", |ui| menu::scroll(ui, |ui| self.edit_menu(ui)));
+            menu::button(ui, "Clip", |ui| menu::scroll(ui, |ui| self.clip_menu(ui)));
+            menu::button(ui, "Timeline", |ui| menu::scroll(ui, |ui| self.timeline_menu(ui, &mut out)));
+            menu::button(ui, "Playback", |ui| menu::scroll(ui, |ui| self.playback_menu(ui, &mut out)));
+            menu::button(ui, "Window", |ui| menu::scroll(ui, |ui| self.window_menu(ui)));
+            menu::button(ui, "Help", |ui| self.help_menu(ui));
             layout_ctl::page_switcher(self, ui);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // ---- ws:jobs-panel ----
@@ -177,7 +177,7 @@ impl App {
                 let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| r.clone());
                 let folder = p.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
                 let resp = menu::row(ui, None, &name, &folder);
-                resp.context_menu(|ui| {
+                menu::context(&resp, |ui| {
                     if menu::row(ui, Some(tools::Glyph::Cross), "Remove from recent", "").clicked() {
                         forget = Some(Some(r.clone()));
                     }

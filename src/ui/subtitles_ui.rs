@@ -255,7 +255,7 @@ pub fn show(
             .on_hover_text("Speech to text: model, language and the cue grouping, then the double-take finder");
         // right-aligned, so ⋯ is never the one a narrow pane cuts off
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.menu_button("⋯", |ui| more_menu(ui, state, project, &mut undone, undo, &mut resp))
+            menu::button(ui, "⋯", |ui| more_menu(ui, state, project, &mut undone, undo, &mut resp))
                 .response
                 .on_hover_text("More");
             let arrow = if state.show_style { "▴" } else { "▾" };
@@ -376,7 +376,7 @@ pub fn show(
                 state.checked = std::iter::once(id).collect();
                 state.selected = Some(id);
             }
-            menu_r.context_menu(|ui| {
+            menu::context(&menu_r, |ui| {
                 let targets: Vec<Id> =
                     if state.checked.contains(&id) { state.checked.iter().copied().collect() } else { vec![id] };
                 let n = targets.len();
@@ -411,7 +411,7 @@ pub fn show(
             ui.weak("No subtitles. \"+ Add\" one at the playhead, or right-click to import an .srt / .vtt file.");
         }
     });
-    bg.context_menu(|ui| more_menu(ui, state, project, &mut undone, undo, &mut resp));
+    menu::context(&bg, |ui| more_menu(ui, state, project, &mut undone, undo, &mut resp));
 
     match row_op {
         Some((CueOp::Play, _)) | None => {}

@@ -1076,7 +1076,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             };
             let mut toggle_graph = false;
             let mut rclick = br.secondary_clicked();
-            br.context_menu(|ui| clip_menu(ui, &cm, &mut act, &mut toggle_graph, &mut out.edit_labels));
+            menu::context(&br, |ui| clip_menu(ui, &cm, &mut act, &mut toggle_graph, &mut out.edit_labels));
             if toggle_graph {
                 match state.mini_graph_open.iter().position(|&x| x == clip.id) {
                     Some(i) => {
@@ -1131,7 +1131,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                         start_trim = Some((clip.id, is_start));
                     }
                     rclick |= r.secondary_clicked();
-                    r.context_menu(|ui| clip_menu(ui, &cm, &mut act, &mut false, &mut out.edit_labels));
+                    menu::context(&r, |ui| clip_menu(ui, &cm, &mut act, &mut false, &mut out.edit_labels));
                 }
             }
             if clip.kind != ClipKind::Adjustment {
@@ -1236,7 +1236,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     *c.selection = vec![right.id];
                     c.sel_transitions.clear();
                 }
-                r.context_menu(|ui| {
+                menu::context(&r, |ui| {
                     let roll = menu::shortcut(crate::hotkeys::Action::ExtendEdit);
                     if menu::row(ui, Some(Glyph::RollCursor), "Roll Edit to Playhead", &roll).clicked() {
                         out.actions.push(crate::hotkeys::Action::ExtendEdit);
@@ -1289,7 +1289,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 }
                 // bulk-edits every selected transition (or just this one if it wasn't already part of
                 // the selection - `sel_transitions` was reset to just `tr.id` above in that case)
-                br.context_menu(|ui| transition_menu(ui, tr, c.sel_transitions, &mut act));
+                menu::context(&br, |ui| transition_menu(ui, tr, c.sel_transitions, &mut act));
             }
             for (er, salt) in [
                 (Rect::from_min_max(band.min, pos2(band.left() + EDGE_W, band.bottom())), "a"),
@@ -1306,7 +1306,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     start_trans = Some((ti, tr.id));
                 }
                 // the band's own menu, for just this transition
-                r.context_menu(|ui| transition_menu(ui, tr, &[tr.id], &mut act));
+                menu::context(&r, |ui| transition_menu(ui, tr, &[tr.id], &mut act));
             }
         }
 
@@ -1342,7 +1342,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 _ => {}
             }
         });
-        r.context_menu(|ui| key_menu(ui, kcid, kt, &mut act));
+        menu::context(&r, |ui| key_menu(ui, kcid, kt, &mut act));
     }
 
     // clip markers, on top of the clip bodies
@@ -1564,7 +1564,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     // ws:timeline-surface: marks, paste, and the view options that used to be a toolbar row
     let (view_idx, nested) = (state.view_idx, c.project.editing.is_some());
     let mut pick_view = None;
-    ruler_resp.context_menu(|ui| {
+    menu::context(&ruler_resp, |ui| {
         use crate::hotkeys::Action::*;
         menus::acts(ui, &[Some(AddMarker), None, Some(MarkIn), Some(MarkOut), Some(ClearInOut), None]);
         paste_menu(ui);
@@ -1705,7 +1705,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         });
     }
     let gap = state.gap_sel;
-    lanes_resp.context_menu(|ui| {
+    menu::context(&lanes_resp, |ui| {
         use crate::hotkeys::Action::*;
         if let Some((ti, a, b)) = gap {
             if menu::row(ui, Some(Glyph::Cross), "Close Gap", &menu::shortcut(Delete)).clicked() {

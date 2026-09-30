@@ -101,7 +101,7 @@ fn prop_row(
         g.note(&r);
         #[cfg(test)]
         mark(ui, &format!("val_{label}"), &r);
-        r.context_menu(|ui| key_menu(ui, a, lt, g, label, paths));
+        menu::context(&r, |ui| key_menu(ui, a, lt, g, label, paths));
         let _kf = key_buttons(ui, a, lt, palette, g, label, paths);
         #[cfg(test)]
         mark(ui, &format!("kf_{label}"), &_kf);

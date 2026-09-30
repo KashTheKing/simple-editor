@@ -76,7 +76,7 @@ pub(super) fn draw(
             state.sub_sel.clear();
         }
         // ws:timeline-surface: the lane's own (empty-area) menu
-        lane_resp.context_menu(|ui| {
+        menu::context(&lane_resp, |ui| {
             super::menus::acts(ui, &[Some(crate::hotkeys::Action::AddSubtitle)]);
             if menu::row(ui, Some(Glyph::ImportArrow), "Import Subtitles…", "").clicked() {
                 out.import_subtitles = true;
@@ -185,7 +185,7 @@ pub(super) fn draw(
             let plural = |what: &str| if n > 1 { format!("{what} ({n})") } else { what.to_string() };
             let cid = cue.id;
             let ph_in = *c.playhead > cue.start + 0.05 && *c.playhead < cue.end - 0.05;
-            r.on_hover_text(&cue.text).context_menu(|ui| {
+            menu::context(&r.on_hover_text(&cue.text), |ui| {
                 let split = menu::shortcut(crate::hotkeys::Action::Split);
                 if ui
                     .add_enabled_ui(ph_in, |ui| menu::row(ui, Some(Glyph::Razor), "Split at Playhead", &split))

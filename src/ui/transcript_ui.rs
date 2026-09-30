@@ -148,7 +148,7 @@ pub fn show(
         ui.add_space(6.0);
         // ⋯ first, on the right, so the find field can take whatever is left
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.menu_button("⋯", |ui| {
+            menu::button(ui, "⋯", |ui| {
                 // which transcript the tab shows (it follows the selection until picked here)
                 if !existing.is_empty() {
                     menu::sub(ui, None, "Clip", |ui| {
@@ -311,7 +311,7 @@ pub fn show(
                 Some(words_r) => area.response.union(words_r),
                 None => area.response,
             };
-            menu_r.context_menu(|ui| {
+            menu::context(&menu_r, |ui| {
                 let n = st.sel.map_or(0, |(a, b)| b - a + 1);
                 let r = ui.add_enabled_ui(n > 0, |ui| {
                     menu::row(ui, Some(Glyph::Razor), &format!("Cut selected words ({n})"), "")

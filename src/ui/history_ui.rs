@@ -183,7 +183,7 @@ pub fn show(
                 .response
                 .on_hover_text(format!("{} bytes of project state - right-click to restore or delete", e.json.len()));
             mark(ui, &format!("row_{i}"), &row);
-            row.context_menu(|ui| {
+            menu::context(&row, |ui| {
                 // Layout entries pair 1:1 with the panel-arrangement undo stack: neither restorable
                 // (they are not project states) nor deletable (it would desync that pairing)
                 let why = "Layout entries pair with the panel-arrangement undo stack";
@@ -204,7 +204,7 @@ pub fn show(
             ui.weak("No history - make a few edits, or clear the search/filter above");
         }
     });
-    bg.context_menu(|ui| {
+    menu::context(&bg, |ui| {
         let r = ui
             .add_enabled_ui(!deletable.is_empty(), |ui| menu::row(ui, Some(Glyph::Cross), "Delete listed entries", ""));
         let r = r.inner.on_hover_text(

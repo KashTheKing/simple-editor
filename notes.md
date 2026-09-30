@@ -7,6 +7,23 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
 
 ---
 
+- **size-recovery (2026-09-29): an egui menu cost ~30 KB of exe per call site.** The simplify wave
+  grew the release exe 12.44 -> 14.54 MB with ~2k source lines and no new deps. `cargo llvm-lines
+  --bin simple-editor` (dev build, a few minutes) showed `egui::containers::popup::Popup::show` as the
+  crate's #1 item (243 copies, 5.9 % of all IR); `cargo bloat --release -n 0 --message-format json`
+  put `Ui::menu_button` at 76 instances x ~32 KB = 2.49 MB. egui 0.33 boxes the body closure for
+  Window / ScrollArea / ComboBox / panels / CollapsingHeader (`show_dyn`), but NOT for `Popup::show`,
+  `SubMenu::show`, `MenuButton::ui` or `Response::context_menu`, so each `.context_menu(|ui| …)`,
+  `ui.menu_button(…)` and generic `menu::sub` call site compiled its own copy, and opt-level "s" +
+  fat LTO can't merge copies that differ only by the inlined body. Fix: `ui::menu::{context, button,
+  sub, scroll}` pass the body through one `&mut dyn FnMut` (`erased`) - 14,536,192 -> 10,797,568 B
+  (-3.57 MB, 1.6 MB under wave 0), pixels and bench_4k_preview unchanged. Rule: never call
+  `.context_menu(` / `.menu_button(` directly (`menus_go_through_the_erased_wrappers` fails if you do);
+  before wrapping another egui container that takes `impl FnOnce(&mut Ui)` with no `show_dyn`
+  inside, check `cargo llvm-lines` for its copy count. cargo-bloat forces `strip=false` +
+  `debug=true` on MSVC, so its first run rebuilds every dependency (~20 min, separate artifacts);
+  its exe size matched the real one within 4 KB.
+
 - **docs-site (2026-09-29), screenshot pipeline gotchas (`scripts/docs-shots.ps1`):** a live
   `ui.screenshot` and the `--screenshot` CLI path use the very same eframe readback (glow
   `read_screen_rgba` right after painting, `ViewportCommand::Screenshot`), yet the live one read back
