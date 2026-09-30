@@ -13,8 +13,8 @@ use crate::model::{Asset, ClipKind, Id, Project, MIN_CLIP};
 use crate::playback::Player;
 use crate::settings::Settings;
 use crate::theme::Palette;
-use crate::ui::heartbeat::Heartbeat;
 use crate::ui::library::PreviewFrame;
+use crate::ui::spiky_ball::SpikyBall;
 use crate::ui::tools::{self, Glyph};
 use crate::ui::{menu, preview};
 use eframe::egui;
@@ -46,7 +46,7 @@ pub struct SourceState {
     pub src_in: Option<f64>,
     pub src_out: Option<f64>,
     pub tape: Option<Tape>,
-    heartbeat: Heartbeat,
+    ball: SpikyBall,
     /// The timecode's text while it is being typed (`preview::timecode_label`).
     tc_edit: Option<String>,
 }
@@ -64,7 +64,7 @@ impl SourceState {
             src_in: None,
             src_out: None,
             tape: None,
-            heartbeat: Heartbeat::default(),
+            ball: SpikyBall::default(),
             tc_edit: None,
         }
     }
@@ -304,13 +304,14 @@ pub fn show(ui: &mut egui::Ui, st: &mut SourceState, c: SourceCtx<'_>) -> Source
                     egui::Color32::WHITE,
                 );
             } else if settings.audio_visualizer {
-                let amplitude = waveforms
-                    .and_then(|w| w.get(&path, 0))
-                    .map(|p| crate::ui::heartbeat::amplitude_at(&[p], playhead, 1.0 / 30.0))
-                    .unwrap_or(0.0);
-                st.heartbeat.update(amplitude, ui.input(|i| i.stable_dt));
-                st.heartbeat.paint(ui.painter(), rect, palette);
-                ui.ctx().request_repaint();
+                // animate only while playing: paused, the ball holds still and asks for no repaints
+                if playing {
+                    if let Some(p) = waveforms.and_then(|w| w.get(&path, 0)) {
+                        st.ball.update(&crate::ui::spiky_ball::spikes(&p, playhead), ui.input(|i| i.stable_dt));
+                    }
+                    ui.ctx().request_repaint();
+                }
+                st.ball.paint(ui.painter(), rect, palette);
             }
         }
         // what is open: the file name in the corner, over a dim plate
@@ -444,9 +445,24 @@ mod tests {
     #[test]
     fn assert_no_idle_repaint_source_pane() {
         let ctx = egui::Context::default();
-        let mut st = state(&ctx);
+        let mut audio = asset(4.0);
+        audio.kind = ClipKind::Audio;
+        audio.width = 0;
+        audio.height = 0;
+        let audio_st = SourceState::new(ctx_player(&ctx), &audio, PathBuf::from("C:/x.wav"), Some(2));
+        assert!(!audio_st.has_video, "the audio state draws the spiky ball");
+        for mut st in [state(&ctx), audio_st] {
+            idle_frames(&mut st);
+        }
+    }
+
+    fn ctx_player(ctx: &egui::Context) -> Player {
+        Player::new(ctx.clone(), Backend::Auto, Arc::new(Mutex::new(TextRasterizer::new())))
+    }
+
+    fn idle_frames(st: &mut SourceState) {
         let mut settings = Settings::default();
-        let palette = crate::theme::palette_with(&ctx, &settings.palette);
+        let palette = crate::theme::palette_with(&egui::Context::default(), &settings.palette);
         let ctx2 = egui::Context::default(); // the pane's own ctx: the Player's ctx is a different one
         for focused in [false, true] {
             for _ in 0..30 {
@@ -461,7 +477,7 @@ mod tests {
                             focused,
                             smart: Some(0.25),
                         };
-                        let r = show(ui, &mut st, c);
+                        let r = show(ui, st, c);
                         assert!(r.actions.is_empty() && !r.close && r.seek.is_none());
                     });
                 });

@@ -18,7 +18,7 @@ pub mod frame_ui;
 // ---- ws:inspector-gallery ----
 pub mod gallery;
 pub mod guides;
-pub mod heartbeat;
+pub mod spiky_ball;
 pub mod history_ui;
 // ---- ws:layout-modes-onboarding ----
 pub mod home;
