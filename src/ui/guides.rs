@@ -1,6 +1,7 @@
 //! Aspect-ratio / platform presets for the project inspector, and the "social guide" overlay drawn
 //! over the preview: each platform's UI danger zones, safe-zone outline and mock UI silhouettes,
-//! all as fractions of the video rect so they fit any project resolution.
+//! drawn in a rect of the platform's own aspect inside the video rect (or stretched over it, per
+//! Settings.guides_keep_aspect).
 
 use crate::engine::compose::placement;
 use crate::model::{Id, Project};
@@ -346,6 +347,19 @@ mod tests {
     }
 
     #[test]
+    fn guide_rect_keeps_platform_aspect() {
+        let lb = Rect::from_min_size(pos2(10.0, 20.0), vec2(1600.0, 900.0)); // 16:9
+        let r = guide_rect(lb, Guide::TikTok, true);
+        assert_eq!(r.height(), 900.0, "9:16 fills the full height");
+        assert!((r.width() - 900.0 * 9.0 / 16.0).abs() < 0.01);
+        assert_eq!(r.center(), lb.center(), "centred");
+        assert_eq!(guide_rect(lb, Guide::YouTube, true), lb, "same aspect = whole rect");
+        let post = guide_rect(lb, Guide::IgPost, true);
+        assert!((post.width() / post.height() - 0.8).abs() < 0.001, "IG post is 4:5");
+        assert_eq!(guide_rect(lb, Guide::TikTok, false), lb, "unchecked = stretched");
+    }
+
+    #[test]
     fn canvas_snap_off_returns_no_guides() {
         let p = snap_project();
         let ((x, y), g) = canvas_snap(false, &p, 1, 1.0, (4.0, -3.0), (50.0, 50.0), 8.0);
@@ -359,7 +373,31 @@ const DANGER_EDGE: Color32 = Color32::from_rgba_premultiplied(90, 24, 24, 100);
 const SAFE: Color32 = Color32::from_rgb(80, 220, 120);
 const UI: Color32 = Color32::from_rgba_premultiplied(190, 190, 190, 200);
 
-pub fn draw_guide(p: &egui::Painter, lb: Rect, g: Guide, _pal: &Palette) {
+/// Where guide `g` is drawn inside the video rect `lb`: `keep` (Settings.guides_keep_aspect) = the
+/// largest rect of the platform's own aspect (`spec`'s base size), centred; off = stretched over `lb`.
+pub fn guide_rect(lb: Rect, g: Guide, keep: bool) -> Rect {
+    if !keep {
+        return lb;
+    }
+    let ((bw, bh), _) = spec(g);
+    let s = (lb.width() / bw).min(lb.height() / bh);
+    Rect::from_center_size(lb.center(), vec2(bw * s, bh * s))
+}
+
+pub fn draw_guide(p: &egui::Painter, video: Rect, g: Guide, keep: bool, _pal: &Palette) {
+    let lb = guide_rect(video, g, keep);
+    // dim what the platform crops away (the video outside the guide's own aspect)
+    let dim = Color32::from_black_alpha(150);
+    for r in [
+        Rect::from_min_max(video.min, pos2(video.max.x, lb.min.y)),
+        Rect::from_min_max(pos2(video.min.x, lb.max.y), video.max),
+        Rect::from_min_max(pos2(video.min.x, lb.min.y), pos2(lb.min.x, lb.max.y)),
+        Rect::from_min_max(pos2(lb.max.x, lb.min.y), pos2(video.max.x, lb.max.y)),
+    ] {
+        if r.width() > 0.5 && r.height() > 0.5 {
+            p.rect_filled(r, 0.0, dim);
+        }
+    }
     let ((bw, bh), zones) = spec(g);
     let to = |x: f32, y: f32| pos2(lb.min.x + x / bw * lb.width(), lb.min.y + y / bh * lb.height());
     let rect = |zone: &Zone| Rect::from_min_max(to(zone.x0, zone.y0), to(zone.x1, zone.y1));

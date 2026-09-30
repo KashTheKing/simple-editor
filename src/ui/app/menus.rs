@@ -346,6 +346,11 @@ impl App {
                     self.settings.save();
                 }
             }
+            ui.separator();
+            if menu::check(ui, self.settings.guides_keep_aspect, "Maintain Aspect Ratio", "").clicked() {
+                self.settings.guides_keep_aspect ^= true;
+                self.settings.save();
+            }
         });
         menu::sub(ui, None, "Layout", |ui| self.layout_menu(ui));
         acts(ui, &[Some(Action::MaximizePane)]);
