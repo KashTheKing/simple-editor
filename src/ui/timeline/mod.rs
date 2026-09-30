@@ -821,15 +821,35 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 continue;
             }
             // ws:pro-timeline: the active TimelineView preset gates waveform/filmstrip/keyframe/text
-            if clip.kind == ClipKind::Audio && c.view.waves {
-                if let Some(asset) = c.project.asset(clip.asset) {
-                    if let Some(peaks) = c.waveforms.get(&asset.path, clip.audio_stream) {
-                        draw_waveform(&lp, &peaks, clip, vis.shrink(1.0), state, wave_color(color, clip_label, &pal));
-                    }
+            let seq_audio = clip.kind == ClipKind::Sequence && track.kind == TrackKind::Audio;
+            if (clip.kind == ClipKind::Audio || seq_audio) && c.view.waves {
+                let peaks = if seq_audio {
+                    c.waveforms.sequence(c.project, clip.sequence)
+                } else {
+                    c.project.asset(clip.asset).and_then(|a| c.waveforms.get(&a.path, clip.audio_stream))
+                };
+                if let Some(peaks) = peaks {
+                    draw_waveform(&lp, &peaks, clip, vis.shrink(1.0), state, wave_color(color, clip_label, &pal));
                 }
-            } else if matches!(clip.kind, ClipKind::Video | ClipKind::Image) && c.view.thumbs {
-                if let (Some(th), Some(asset)) = (c.thumbs.as_deref_mut(), c.project.asset(clip.asset)) {
-                    draw_filmstrip(&lp, ui.ctx(), state, clip, asset, rect, vis.shrink(1.0), th);
+            } else if matches!(clip.kind, ClipKind::Video | ClipKind::Image | ClipKind::Sequence) && c.view.thumbs {
+                let p: &Project = c.project;
+                let path_at = |t: f64| {
+                    let (a, t) = if clip.kind == ClipKind::Sequence {
+                        p.sequence_picture_at(clip.sequence, t)?
+                    } else {
+                        (clip.asset, t)
+                    };
+                    Some((p.asset(a)?.path.as_str(), t))
+                };
+                let aspect = if clip.kind == ClipKind::Sequence {
+                    p.width as f32 / p.height.max(1) as f32
+                } else {
+                    p.asset(clip.asset)
+                        .filter(|a| a.height > 0)
+                        .map_or(16.0 / 9.0, |a| a.width as f32 / a.height as f32)
+                };
+                if let Some(th) = c.thumbs.as_deref_mut() {
+                    draw_filmstrip(&lp, ui.ctx(), state, clip, aspect, &path_at, rect, vis.shrink(1.0), th);
                 }
             }
             let name_pc = lp.with_clip_rect(vis.shrink(1.0));

@@ -336,12 +336,14 @@ pub(super) fn gain_db(g: f32) -> f32 {
 
 /// Filmstrip of source-time thumbnails across a video/image clip. Non-blocking: misses are queued in the
 /// ThumbCache worker and painted on a later frame.
-pub(super) fn draw_filmstrip(
+pub(super) fn draw_filmstrip<'a>(
     p: &egui::Painter,
     ectx: &egui::Context,
     state: &TimelineState,
     clip: &Clip,
-    asset: &Asset,
+    aspect: f32,
+    // clip source time -> (file, time in it); a Sequence clip resolves each slot to a nested clip
+    src: &dyn Fn(f64) -> Option<(&'a str, f64)>,
     rect: Rect,
     vis: Rect,
     thumbs: &mut ThumbCache,
@@ -354,7 +356,6 @@ pub(super) fn draw_filmstrip(
     // ponytail: 16 px decode buckets, so a track-height drag reuses thumbs instead of queueing a fresh
     // set (new cache key + new t grid) every frame. Ceiling: <5 % horizontal squash from the rounding.
     let hq = (((h as u32 + 8) / 16) * 16).max(16);
-    let aspect = if asset.height > 0 { asset.width as f32 / asset.height as f32 } else { 16.0 / 9.0 };
     let step = (hq as f32 * aspect).max(80.0);
     let pc = p.with_clip_rect(vis);
     let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
@@ -365,7 +366,7 @@ pub(super) fn draw_filmstrip(
             break;
         }
         let t = clip.src_time(state.time_at(x)).max(0.0);
-        if let Some((tex, [tw, th])) = thumbs.texture(ectx, &asset.path, t, hq) {
+        if let Some((tex, [tw, th])) = src(t).and_then(|(path, t)| thumbs.texture(ectx, path, t, hq)) {
             let w = h * tw as f32 / th.max(1) as f32;
             pc.image(tex, Rect::from_min_size(pos2(x, rect.top() + band), vec2(w.min(step), h)), uv, Color32::WHITE);
         }
