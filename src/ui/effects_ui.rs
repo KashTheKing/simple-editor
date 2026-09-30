@@ -237,7 +237,7 @@ fn catalogue(ui: &mut egui::Ui, palette: &Palette, audio: Option<bool>) -> Optio
                     if r.clicked() {
                         add = Some((kind, Scope::Selection));
                     }
-                    r.context_menu(|ui| {
+                    menu::context(&r, |ui| {
                         ui.add_enabled_ui(has_sel, |ui| {
                             if menu::row(ui, None, "Add to selected clip(s)", "").clicked() {
                                 add = Some((kind, Scope::Selection));
@@ -498,7 +498,7 @@ pub fn stack(
                             param_edits.push((i, spec.name.to_string(), v));
                         }
                         g.note(&r);
-                        r.context_menu(|ui| key_menu(ui, a, lt, &mut g, spec.name, &[]));
+                        menu::context(&r, |ui| key_menu(ui, a, lt, &mut g, spec.name, &[]));
                         let _kf = key_buttons(ui, a, lt, palette, &mut g, spec.name, &[]);
                         #[cfg(test)]
                         test_rects::push(format!("kf{i}_{j}"), _kf.rect);
@@ -518,7 +518,7 @@ pub fn stack(
         }
         let masked = fx.mask.is_some();
         let kind = fx.kind;
-        name_r.context_menu(|ui| {
+        menu::context(&name_r, |ui| {
             use crate::ui::tools::{Dir, Glyph};
             let mut pick = |ui: &mut egui::Ui, on: bool, glyph: Option<Glyph>, label: &str, c: RowCmd| {
                 if ui.add_enabled_ui(on, |ui| menu::row(ui, glyph, label, "")).inner.clicked() {

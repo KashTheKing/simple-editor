@@ -185,7 +185,7 @@ pub fn show(
                         if r.clicked() {
                             state.selected_bus = Some(id);
                         }
-                        r.context_menu(|ui| strip_menu(ui, &mut list[n], is_main, &names, state, &mut g, &mut ed));
+                        menu::context(&r, |ui| strip_menu(ui, &mut list[n], is_main, &names, state, &mut g, &mut ed));
                     });
                 });
                 ui.separator();
@@ -227,7 +227,7 @@ pub fn show(
     }
     state.popped = still;
 
-    bg.context_menu(|ui| {
+    menu::context(&bg, |ui| {
         if menu::row(ui, Some(Glyph::Headphone), "Add bus", "").clicked() {
             ed.add_bus = true;
             g.click();
@@ -379,7 +379,7 @@ fn key_button(ui: &mut egui::Ui, a: &mut Animated, t: f64, palette: &Palette, g:
         g.click();
     }
     if a.is_animated() {
-        r.context_menu(|ui| {
+        menu::context(&r, |ui| {
             if ui.button("Remove all keyframes").clicked() {
                 a.clear_keys(t);
                 g.click();
@@ -614,7 +614,7 @@ fn filters(
             #[cfg(test)]
             test_rects::push(format!("fxrow{n}_{i}"), r.rect);
             toggle = r.clicked();
-            r.context_menu(|ui| {
+            menu::context(&r, |ui| {
                 if menu::row(ui, Some(Glyph::PopOut), "Open in its own window", "").clicked() {
                     pop = Some(i);
                 }

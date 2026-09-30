@@ -319,7 +319,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut SourceState, c: SourceCtx<'_>) -> Source
         let plate = egui::Rect::from_min_size(rect.min + egui::vec2(6.0, 6.0), galley.size() + egui::vec2(12.0, 6.0));
         ui.painter().rect_filled(plate, 3.0, palette.panel.gamma_multiply(0.8));
         ui.painter().galley(plate.min + egui::vec2(6.0, 3.0), galley, palette.text);
-        r.context_menu(|ui| {
+        menu::context(&r, |ui| {
             if !is_image {
                 for (a, hit) in [
                     (Action::MarkIn, &mut resp.mark_in),

@@ -1011,7 +1011,7 @@ impl egui_tiles::Behavior<Pane> for Behaviour<'_> {
         button_response: egui::Response,
     ) -> egui::Response {
         let Some(&pane) = tiles.get_pane(&tile_id) else { return button_response };
-        button_response.context_menu(|ui| {
+        menu::context(&button_response, |ui| {
             // ---- ws:pages ----
             let max = if self.maximized == Some(pane) { "Restore panel" } else { "Maximise panel" };
             if menu::row(ui, Some(Glyph::Maximize), max, &menu::shortcut(Action::MaximizePane)).clicked() {
@@ -1062,7 +1062,7 @@ impl egui_tiles::Behavior<Pane> for Behaviour<'_> {
         }
         let hidden = addable(tiles, &self.popped);
         let r = ui.add_enabled_ui(!hidden.is_empty(), |ui| {
-            ui.menu_button("+", |ui| {
+            menu::button(ui, "+", |ui| {
                 menu::scroll(ui, |ui| {
                     for p in hidden {
                         if menu::row(ui, pane_icon(self.chrome.icons, p), p.title(), "").clicked() {

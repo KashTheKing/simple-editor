@@ -334,7 +334,7 @@ fn tree_rows(ui: &mut egui::Ui, items: &mut [PlanItem], depth: usize, t: &mut Tr
         });
         let row = row.response.union(row.inner);
         let id = it.id;
-        row.context_menu(|ui| {
+        menu::context(&row, |ui| {
             let rows = [
                 (Glyph::Dot, "Add sub-task", Op::Add(Some(id))),
                 (Glyph::Tri(Dir::Up), "Move up", Op::Up(id)),
@@ -374,7 +374,7 @@ fn tree_rows(ui: &mut egui::Ui, items: &mut [PlanItem], depth: usize, t: &mut Tr
                         egui::Label::new(RichText::new(label.as_str()).small().weak()).sense(egui::Sense::click()),
                     ))
                 });
-                r.inner.context_menu(|ui| {
+                menu::context(&r.inner, |ui| {
                     if menu::row(ui, Some(Glyph::Cross), "Remove requirement", "").clicked() {
                         rm = Some(ri);
                     }
@@ -459,7 +459,7 @@ pub fn show(
         }
     });
 
-    bg.context_menu(|ui| {
+    menu::context(&bg, |ui| {
         if menu::row(ui, None, "Add task", "").clicked() {
             *t.op = Some(Op::Add(None));
         }
@@ -533,7 +533,7 @@ fn details(
             changed |= t.changed();
             r.union(t)
         });
-        row.response.union(row.inner).context_menu(|ui| {
+        menu::context(&row.response.union(row.inner), |ui| {
             if menu::row(ui, Some(Glyph::Cross), "Remove requirement", "").clicked() {
                 rm_req = Some(ri);
             }
@@ -579,7 +579,7 @@ fn details(
                     });
                 });
             });
-            row.response.context_menu(|ui| {
+            menu::context(&row.response, |ui| {
                 if menu::row(ui, None, "Add to timeline", "").on_hover_text("At the playhead").clicked() {
                     resp.add_to_timeline.push(aid);
                 }
@@ -657,7 +657,7 @@ fn notes_tab(
                             .map(|(_, [r, g, b])| egui::Color32::from_rgb(*r, *g, *b))
                             .unwrap_or(palette.text_dim);
                         let dot = ui.add(crate::ui::tools::color_chip(color, false, palette));
-                        dot.context_menu(|ui| {
+                        menu::context(&dot, |ui| {
                             if ui.selectable_label(n.label == 0, "None").clicked() {
                                 n.label = 0;
                                 start = true;
@@ -680,7 +680,7 @@ fn notes_tab(
                         let r = ui.add(egui::Label::new(title).truncate().sense(egui::Sense::click()));
                         #[cfg(test)]
                         ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(("note_title", id)), r.rect));
-                        r.context_menu(|ui| {
+                        menu::context(&r, |ui| {
                             let (icon, label) = if editing { (Glyph::Eye, "Preview") } else { (Glyph::Pencil, "Edit") };
                             if menu::row(ui, Some(icon), label, "").clicked() {
                                 toggle_edit = true;

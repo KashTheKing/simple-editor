@@ -178,7 +178,7 @@ pub(crate) fn section(
         }
     }
     if let Some(m) = menu {
-        title_r.context_menu(|ui| m(ui));
+        menu::context(&title_r, |ui| m(ui));
     }
     if now_open != open_default {
         folds.insert(id.to_string(), now_open);
@@ -381,7 +381,7 @@ fn project_section(
         })
         .inner;
     mark(ui, "project_title", &title);
-    title.on_hover_text("Right-click: save this format, delete saved ones").context_menu(|ui| {
+    menu::context(&title.on_hover_text("Right-click: save this format, delete saved ones"), |ui| {
         if menu::row(ui, Some(Glyph::Template), "Save format as template…", "").clicked() {
             naming = Some(String::new());
         }
@@ -890,7 +890,7 @@ fn clip_section(
                 let r = ui.add(DragValue::new(&mut pct).range(1.0..=10000.0).suffix(" %").speed(1.0));
                 mark(ui, "speed", &r);
                 sg.note(&r);
-                r.on_hover_text("Right-click: Retime…, Freeze frame").context_menu(retime_menu);
+                menu::context(&r.on_hover_text("Right-click: Retime…, Freeze frame"), retime_menu);
                 ui.end_row();
                 ui.label("Reverse");
                 sg.note(&ui.checkbox(&mut reverse, ""));
@@ -1010,7 +1010,7 @@ fn clip_section(
                                     a.set_at(lt, v);
                                 }
                                 g.note(&r);
-                                r.context_menu(|ui| key_menu(ui, a, lt, &mut g, label, &[]));
+                                menu::context(&r, |ui| key_menu(ui, a, lt, &mut g, label, &[]));
                                 key_buttons(ui, a, lt, palette, &mut g, label, &[]);
                             });
                             ui.end_row();

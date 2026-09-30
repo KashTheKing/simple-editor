@@ -1152,7 +1152,7 @@ fn browser(
         state.folder = None;
     }
     let mut link = false;
-    bg.context_menu(|ui| {
+    menu::context(&bg, |ui| {
         // counted only while the menu is open, from the walks the list already did
         let unused = project.assets.iter().filter(|a| !used.contains(&a.id) && !planned.contains(&a.id)).count();
         let ctx = EmptyMenu { ytdlp, unused, link: &mut link, columns_changed: &mut columns_changed };
@@ -1308,7 +1308,7 @@ fn sort_header(ui: &mut egui::Ui, state: &mut LibraryState, settings: &mut Setti
         }
     });
     let mut changed = false;
-    r.context_menu(|ui| {
+    menu::context(&r, |ui| {
         columns_items(ui, settings, &mut changed);
         ui.separator();
         ui.weak("Sort by");
@@ -1412,11 +1412,11 @@ fn header(
                 if glyph_text_button(ui, Glyph::Letter('+'), "Import").on_hover_text(tip).clicked() {
                     resp.import = true;
                 }
-                ui.menu_button("View ▾", |ui| view_menu(ui, state, settings, columns_changed));
+                menu::button(ui, "View ▾", |ui| view_menu(ui, state, settings, columns_changed));
                 // every filter in one menu; the button says how many are on
                 let n_on = (state.kind_filter != 0) as u8 + (state.label_filter != 0) as u8 + state.unused_only as u8;
                 let title = if n_on > 0 { format!("Filter ({n_on}) ▾") } else { "Filter ▾".to_string() };
-                ui.menu_button(title, |ui| filter_menu(ui, state, labels, palette));
+                menu::button(ui, title, |ui| filter_menu(ui, state, labels, palette));
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| search_box(ui, state, palette));
             });
         });
@@ -2006,7 +2006,7 @@ impl Tree<'_, '_> {
                 if r.clicked() {
                     apply_bin(self.state, &b.query);
                 }
-                r.context_menu(|ui| {
+                menu::context(&r, |ui| {
                     if menu::row(ui, Some(Glyph::Cross), "Delete", "").clicked() {
                         self.ops.push(LibOp::SmartBinDelete(i));
                         *self.op_start = true;
@@ -2054,7 +2054,7 @@ impl Tree<'_, '_> {
                 if r.clicked() {
                     self.state.folder = Some(child.clone());
                 }
-                r.context_menu(|ui| {
+                menu::context(&r, |ui| {
                     if menu::row(ui, Some(Glyph::Folder), "New folder", "").clicked() {
                         self.state.new_folder = Some((child.clone(), String::new()));
                     }
@@ -2185,7 +2185,7 @@ impl Tree<'_, '_> {
         if r.double_clicked() {
             self.resp.open_sequence = Some(id);
         }
-        r.context_menu(|ui| {
+        menu::context(&r, |ui| {
             if menu::row(ui, Some(Glyph::Sequence), "Open", "").clicked() {
                 self.resp.open_sequence = Some(id);
             }
@@ -2398,7 +2398,7 @@ impl Tree<'_, '_> {
         let (labels, palette) = (self.labels, self.palette);
         let ids = self.menu_targets(a.id);
         let offline = ids.iter().any(|id| self.state.offline.contains(id));
-        r.context_menu(|ui| {
+        menu::context(&r, |ui| {
             // ---- ws:library-surface ----
             if menu::row(ui, Some(Glyph::PlayRect), "Open in Source", "").clicked() {
                 self.resp.source = Some((PathBuf::from(&a.path), Some(a.id), false));
@@ -2528,7 +2528,7 @@ impl Tree<'_, '_> {
                 self.flip(&key);
                 open = !open;
             }
-            r.context_menu(|ui| {
+            menu::context(&r, |ui| {
                 if menu::row(ui, None, "Refresh", "").clicked() {
                     self.state.dirs.retain(|(p, _)| !p.starts_with(path));
                 }
@@ -2665,7 +2665,7 @@ impl Tree<'_, '_> {
         let label =
             self.settings.recent_assets.iter().find(|r| r.path.eq_ignore_ascii_case(path)).map_or(0, |r| r.label);
         let (labels, palette) = (self.labels, self.palette);
-        r.context_menu(|ui| {
+        menu::context(&r, |ui| {
             if menu::row(ui, Some(Glyph::PlayRect), "Open in Source", "").clicked() {
                 self.resp.source = Some((PathBuf::from(path), None, false));
             }

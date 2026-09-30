@@ -105,17 +105,55 @@ pub fn check(ui: &mut egui::Ui, on: bool, label: &str, shortcut: &str) -> egui::
     row(ui, on.then_some(Glyph::Letter('✓')), label, shortcut)
 }
 
+// egui's popups (`Popup::show`, `SubMenu::show`, `MenuButton::ui`) are generic over the body closure
+// and never box it, so every `.context_menu(|ui| …)` / `ui.menu_button(…, |ui| …)` call site compiled
+// its own ~30 KB copy of them (~150 menus = 3.7 MB of exe after the simplify wave). `context`,
+// `button`, `sub` and `scroll` pass the body through `erased`'s one `&mut dyn FnMut` instead, so
+// egui's side is compiled once. Call these, never `.context_menu` / `.menu_button` directly.
+
+/// Run `add` (at most once) through the non-generic `run`; returns `run`'s result and `add`'s.
+fn erased<R, T>(
+    add: impl FnOnce(&mut egui::Ui) -> R,
+    run: impl FnOnce(&mut dyn FnMut(&mut egui::Ui)) -> T,
+) -> (T, Option<R>) {
+    let (mut add, mut out) = (Some(add), None);
+    let t = run(&mut |ui| out = add.take().map(|f| f(ui)));
+    (t, out)
+}
+
 /// A submenu lined up with `item` / `row` (the same gutter, optional icon); its body scrolls when long.
 pub fn sub<R>(ui: &mut egui::Ui, glyph: Option<Glyph>, label: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> Option<R> {
+    erased(add, |add| sub_dyn(ui, glyph, label, add)).1
+}
+
+fn sub_dyn(ui: &mut egui::Ui, glyph: Option<Glyph>, label: &str, add: &mut dyn FnMut(&mut egui::Ui)) {
     let gutter = egui::Atom::custom(ui.id().with(("menu-sub", label)), egui::vec2(18.0, 16.0));
-    let r = ui.menu_button((gutter, label), |ui| scroll(ui, add));
+    let r = ui.menu_button((gutter, label), |ui| scroll_dyn(ui, add));
     if let Some(g) = glyph {
         let rect = r.response.rect;
         let at = egui::pos2(rect.left() + ui.spacing().button_padding.x, rect.center().y - 8.0);
         let color = ui.style().interact(&r.response).text_color();
         tools::draw_glyph(ui.painter(), egui::Rect::from_min_size(at, egui::vec2(18.0, 16.0)), g, color);
     }
-    r.inner
+}
+
+/// `response.context_menu(add)`; `Some` on the frames the menu is open.
+pub fn context<R>(response: &egui::Response, add: impl FnOnce(&mut egui::Ui) -> R) -> Option<R> {
+    erased(add, |add| {
+        response.context_menu(add);
+    })
+    .1
+}
+
+/// `ui.menu_button(atoms, add)`: a top-level menu button (a submenu when already inside a menu).
+pub fn button<'a, R>(
+    ui: &mut egui::Ui,
+    atoms: impl egui::IntoAtoms<'a>,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<Option<R>> {
+    let atoms = atoms.into_atoms();
+    let (response, inner) = erased(add, |add| ui.menu_button(atoms, add).response);
+    egui::InnerResponse::new(inner, response)
 }
 
 /// The current shortcut text of `a` ("" when unbound), for a row that runs it some other way.
@@ -136,7 +174,7 @@ pub fn item(ui: &mut egui::Ui, a: Action, enabled: bool) -> bool {
         Some(why) => r.on_disabled_hover_text(why),
         None => r,
     };
-    r.context_menu(|ui| {
+    context(&r, |ui| {
         if let Some(pick) = crate::ui::layout::icon_menu(ui) {
             ICON_PICKS.with(|q| q.borrow_mut().push((format!("action.{}", a.id()), pick)));
             ui.ctx().request_repaint();
@@ -180,8 +218,12 @@ pub fn action_menu(ui: &mut egui::Ui, items: &[Option<Action>]) {
 /// `min_scrolled_height` too: a popup's first (sizing) pass only offers egui's 400 pt default area,
 /// which would otherwise pin every long menu at 400 pt; a short menu still shrinks to its rows.
 pub fn scroll<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    erased(add, |add| scroll_dyn(ui, add)).1.expect("a scroll area always shows its body")
+}
+
+fn scroll_dyn(ui: &mut egui::Ui, add: &mut dyn FnMut(&mut egui::Ui)) {
     let max = ui.ctx().content_rect().height() * 0.8;
-    egui::ScrollArea::vertical().max_height(max).min_scrolled_height(max).show(ui, add).inner
+    egui::ScrollArea::vertical().max_height(max).min_scrolled_height(max).show(ui, add);
 }
 
 #[cfg(test)]
@@ -225,6 +267,29 @@ mod tests {
         frame(vec![press(true)], 0.2);
         frame(vec![press(false)], 0.3);
         take_queued()
+    }
+
+    /// Size guard: egui compiles its popup machinery once per body closure (~30 KB of release exe per
+    /// call site), so every menu goes through `context` / `button` / `sub` above.
+    #[test]
+    fn menus_go_through_the_erased_wrappers() {
+        fn scan(dir: &std::path::Path, bad: &mut Vec<String>) {
+            for e in std::fs::read_dir(dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    scan(&p, bad);
+                } else if p.extension().is_some_and(|x| x == "rs") && !p.ends_with("ui/menu.rs") {
+                    for (i, line) in std::fs::read_to_string(&p).unwrap_or_default().lines().enumerate() {
+                        if line.contains(".context_menu(") || line.contains(".menu_button(") {
+                            bad.push(format!("{}:{}", p.display(), i + 1));
+                        }
+                    }
+                }
+            }
+        }
+        let mut bad = Vec::new();
+        scan(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut bad);
+        assert!(bad.is_empty(), "use ui::menu::context / button / sub instead: {bad:#?}");
     }
 
     #[test]

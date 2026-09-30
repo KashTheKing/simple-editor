@@ -301,7 +301,7 @@ pub(super) fn page_switcher(app: &mut App, ui: &mut egui::Ui) {
                     pick = Some(page);
                 }
                 let saved = app.settings.page_defaults.contains_key(page);
-                r.context_menu(|ui| {
+                menu::context(&r, |ui| {
                     if menu::row(ui, None, "Reset Page Layout", "").clicked() {
                         reset = Some((page, false));
                     }

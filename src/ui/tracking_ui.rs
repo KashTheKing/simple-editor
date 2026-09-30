@@ -14,6 +14,7 @@ use crate::engine::tracking::TrackJob;
 use crate::media::Backend;
 use crate::model::{Id, Project};
 use crate::theme::Palette;
+use crate::ui::menu;
 use crate::ui::tools::{glyph_text_button, Glyph};
 use eframe::egui::{self, Button, DragValue};
 
@@ -126,7 +127,7 @@ pub fn show(
         .auto_shrink([false, false])
         .show(ui, |ui| body(ui, state, project, selection, backend, palette, undo))
         .inner;
-    bg.context_menu(|ui| {
+    menu::context(&bg, |ui| {
         let ok = state.job.is_none() && !selection.is_empty();
         let r = ui.add_enabled_ui(ok, |ui| crate::ui::menu::row(ui, None, "Use selected clip", "")).inner;
         if r.on_hover_text("Track the selected clip even after the selection moves on").clicked() {

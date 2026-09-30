@@ -151,7 +151,7 @@ pub(crate) fn key_buttons(
         a.toggle_key(lt);
         g.click();
     }
-    r.context_menu(|ui| key_menu(ui, a, lt, g, label, paths));
+    menu::context(&r, |ui| key_menu(ui, a, lt, g, label, paths));
     r
 }
 
@@ -272,7 +272,7 @@ pub(crate) fn mask_grid(ui: &mut egui::Ui, m: &mut Mask, lt: f64, palette: &Pale
                     a.set_at(lt, v);
                 }
                 g.note(&r);
-                r.context_menu(|ui| key_menu(ui, a, lt, g, label, &[]));
+                menu::context(&r, |ui| key_menu(ui, a, lt, g, label, &[]));
                 key_buttons(ui, a, lt, palette, g, label, &[]);
             });
             ui.end_row();

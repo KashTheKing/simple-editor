@@ -26,7 +26,7 @@ use crate::model::{
     NodeKind, Project, TextStyle as TextProps, TransitionKind,
 };
 use crate::theme::Palette;
-use crate::ui::DragPayload;
+use crate::ui::{menu, DragPayload};
 use eframe::egui;
 use egui::{
     pos2, vec2, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, TextStyle, UiBuilder,
@@ -445,7 +445,7 @@ pub fn show(
         let is_output = n.kind == NodeKind::Output;
         let (id, kind) = (n.id, n.kind.clone());
         let (nx, ny) = (n.x, n.y);
-        nr.context_menu(|ui| {
+        menu::context(&nr, |ui| {
             if !state.selection.contains(&id) {
                 state.selection = vec![id];
             }
@@ -475,7 +475,7 @@ pub fn show(
             }
             // swap the node's value (another asset) or the node itself for any other kind
             if !is_output {
-                ui.menu_button("Replace", |ui| {
+                menu::button(ui, "Replace", |ui| {
                     add_menu(ui, base.with("rep"), (nx, ny), Some(id), &assets, &mut acts, &mut needs_undo)
                 });
             }
@@ -536,7 +536,7 @@ pub fn show(
         state.menu_at = Some((g.x, g.y));
     }
     let at = state.menu_at.unwrap_or((40.0, 40.0));
-    resp.context_menu(|ui| add_menu(ui, base, at, None, &assets, &mut acts, &mut needs_undo));
+    menu::context(&resp, |ui| add_menu(ui, base, at, None, &assets, &mut acts, &mut needs_undo));
 
     // Delete / Ctrl+D / Ctrl+C / Ctrl+V on the selection (the menu's actions, from the keyboard)
     if !ui.ctx().wants_keyboard_input() && pointer.is_some() {
