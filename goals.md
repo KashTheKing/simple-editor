@@ -119,7 +119,7 @@ Pulled forward from CHANGELOG.md — mark new completions here as they land.
   assumed from the plan; see ARCHITECTURE.md's "Registries" section and `docs/customizing.md` for
   the owning file:line of each.
 - [ ] **UI simplification + docs site** — planned 2026-09-27 in
-  [plans/simplify/README.md](plans/simplify/README.md): Resolve-style pages (Edit/Color/Audio/Export),
+  [plans/simplify/README.md](plans/simplify/README.md): Resolve-style pages (Media/Cut/Edit/Color/Audio/Export),
   one visible home per function with right-click menus everywhere, native Windows icon font, niche
   panels hidden (not deleted), reported bugs fixed first, then a Docusaurus tutorial site on GitHub Pages.
   Wave 0: bugfixes (0a), ui-kit (0b) and pages (0c, issue #78: the four pages, the `+` pane chrome,
@@ -165,10 +165,12 @@ and "powerful."
   per-panel, not just globally (right-click a tab ▸ "Stay on this tab").
 - ~~Offer both a "Dynamic Contextual" layout mode and a "Granular Explicit" (classic multi-panel)
   mode, chosen at first run and toggleable later.~~ **Superseded 2026-09-28 (simplify 0c, pages):**
-  Resolve-style pages (Edit / Color / Audio / Export) replace the first-run mode choice - each page
-  is its own task-shaped layout the user can still rearrange, add panels to (a tab bar's `+`), undock
-  and reset, and each remembers its own arrangement. Panels are locked by default (tabs click,
-  dividers resize; Window ▸ Layout ▸ Unlock panels turns drag-to-redock on). Auto-switching tabs to
+  Resolve-style pages (Media / Cut / Edit / Color / Audio / Export since 2026-09-29) replace the
+  first-run mode choice - each page is its own task-shaped layout the user can still rearrange, add
+  panels to (a tab bar's `+`), undock and reset, and each remembers its own arrangement (and can save
+  it as that page's default; undocked windows reopen where they were). **The Inspector is the
+  top-right tile on every page's default.** Panels are unlocked by default (drag a tab to re-dock;
+  Window ▸ Layout ▸ Lock panels makes tabs click-only; dividers resize either way). Auto-switching tabs to
   the selection is a plain setting (Settings ▸ General ▸ "Switch panel tabs to follow the
   selection", on by default), no longer a named mode in the UI. Don't regress toward one fixed
   layout.

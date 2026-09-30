@@ -57,7 +57,7 @@ Then a Docusaurus docs site on GitHub Pages with a screenshot tutorial of every 
 ## Target screens
 
 ```
-┌ File Edit Clip Timeline Playback Window Help ───── [ Edit | Color | Audio | Export ] ─────────┐
+┌ File Edit Clip Timeline Playback Window Help ─ [ Media | Cut | Edit | Color | Audio | Export ] ┐
 │ Library │ Effects │ Transitions │ Gallery  + │ Source │ Preview               + │ Inspector   + │
 │ [search…] [Filter▾] [View▾] [+ Import]      │ ┃↖┃                              │ ● Clip name ◉ │
 │  media list / grid                          │ ┃⌗┃      viewer                  │ V1 · 0:00 · 52s│
@@ -70,18 +70,25 @@ Then a Docusaurus docs site on GitHub Pages with a screenshot tutorial of every 
 │ A1 🔒 🔊 │ ▂▃▅ audio ▅▃▂                                                                        │
 └──────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
+Six pages in Resolve's order (Alt+1..6); **the Inspector is the top-right tile on every page's
+default** (added 2026-09-29 with Media and Cut):
+- **Media:** Library | Source | Inspector, three full-height columns (import & organise; no Timeline).
+- **Cut:** Library | Source · Preview | Inspector on top; Timeline below (fast assembly).
 - **Edit:** as above. Hidden tabs behind Library: Subtitles, Markers, Auto-cut, Planner, Moodboard,
   History, Tracking, Jobs.
-- **Color:** Gallery (Looks/LUTs) | Preview | Scopes on top; a thin Timeline; Inspector (Color
-  section first) | Nodes · Curves on the bottom.
+- **Color:** Gallery (Looks/LUTs) | Preview | Inspector on top; a thin Timeline; Nodes · Curves |
+  Scopes on the bottom.
 - **Audio:** small Preview | Mixer · Subtitles | Inspector (Audio section first) on top; Timeline
   with tall audio tracks below.
-- **Export:** Export settings | Preview | Jobs (render queue) on top; Timeline with In/Out below.
-- Each page remembers its own arrangement; right-click a page tab to reset it.
+- **Export:** Export settings | Preview | Inspector over Jobs (render queue) on top; Timeline with
+  In/Out below.
+- Each page remembers its own arrangement; right-click a page tab to reset it. Window ▸ Layout ▸
+  Save as this page's default makes the current arrangement what Reset comes back to; undocked
+  windows reopen where they were.
 - Pane header: tabs plus one small **`+`** (add a hidden panel to this group). Tab right-click:
   Maximise (`` ` `` or double-click), Undock, Close, "Stay on this tab" (today's pin), Set icon ▸.
-- Panels are locked by default (tabs click, they don't drag); Window ▸ Layout ▸ **Unlock panels**
-  turns drag-to-redock on. Undock always works from the tab's right-click.
+- Panels are unlocked by default (drag a tab to re-dock it; changed 2026-09-29); Window ▸ Layout ▸
+  **Lock panels** makes tabs click-only. Undock always works from the tab's right-click.
 
 ## Pre-flight (main tree, serial, needs your OK)
 

@@ -375,17 +375,33 @@ impl App {
         }
     }
 
-    /// Window ▸ Layout ▸: Unlock panels, Reset page, and the layout profiles.
+    /// Window ▸ Layout ▸: Lock panels, this page's reset / saved default, and the layout profiles (which
+    /// load onto the page on screen).
     fn layout_menu(&mut self, ui: &mut egui::Ui) {
-        let unlock = menu::check(ui, self.settings.panels_unlocked, "Unlock Panels", "")
-            .on_hover_text("Drag tabs to re-dock them. Locked, a tab only clicks; dividers resize either way.");
-        if unlock.clicked() {
-            self.settings.panels_unlocked = !self.settings.panels_unlocked;
+        let lock = menu::check(ui, self.settings.panels_locked, "Lock Panels", "")
+            .on_hover_text("Tabs only click. Unlocked, drag a tab to re-dock it; dividers resize either way.");
+        if lock.clicked() {
+            self.settings.panels_locked = !self.settings.panels_locked;
             self.settings.save();
         }
+        ui.separator();
         let page = layout::page_name(&self.settings.page).unwrap_or("Edit");
-        if menu::row(ui, None, "Reset Page Layout", "").clicked() {
-            layout_ctl::reset_page(self, page);
+        let saved = self.settings.page_defaults.contains_key(page);
+        let hint =
+            if saved { "Back to the default you saved for this page" } else { "Back to this page's built-in layout" };
+        if menu::row(ui, None, "Reset Page Layout", "").on_hover_text(hint).clicked() {
+            layout_ctl::reset_page(self, page, false);
+        }
+        let builtin = ui.add_enabled_ui(saved, |ui| menu::row(ui, None, "Reset to Built-in Layout", "")).inner;
+        if builtin.on_disabled_hover_text(layout_ctl::NO_SAVED_DEFAULT).clicked() {
+            layout_ctl::reset_page(self, page, true);
+        }
+        let save = menu::row(ui, None, "Save as This Page's Default", "")
+            .on_hover_text("Reset Page Layout comes back to this arrangement");
+        if save.clicked() {
+            layout_ctl::save_page_default(&mut self.settings, &self.layout);
+            self.settings.save();
+            self.toast(format!("Saved as the {page} page's default"));
         }
         ui.separator();
         if menu::row(ui, None, "Save Profile…", "").clicked() {

@@ -1,13 +1,14 @@
-//! Dockable editor layout (egui_tiles), one tree per page (`PAGES`: Edit / Color / Audio / Export, the
-//! Resolve-style switcher in the menu bar). Panes can be split, tabbed, hidden/shown, popped out into
-//! their own OS windows (egui immediate viewports) and saved/loaded as profiles (JSON - also written to /
-//! read from `.sedit-layout` files so profiles can be shared). Every builder ends with `stack_unplaced`,
+//! Dockable editor layout (egui_tiles), one tree per page (`PAGES`: Media / Cut / Edit / Color / Audio /
+//! Export, the Resolve-style switcher in the menu bar); every page's default puts the Inspector top
+//! right. Panes can be split, tabbed, hidden/shown, popped out into their own OS windows (egui immediate
+//! viewports, which reopen where they were) and saved/loaded as profiles (JSON - also written to / read
+//! from `.sedit-layout` files so profiles can be shared). Every builder ends with `stack_unplaced`,
 //! so every pane exists in every page, hidden behind one group until the Window menu or a tab bar's `+`
 //! brings it in. Hidden panes stay in the tree (egui_tiles visibility), so they come back where they were.
 //!
-//! Panels are locked by default: a tab click switches, a drag does nothing (`Chrome::unlocked` turns
-//! drag-to-redock on); split dividers resize either way and Undock always works from a tab's
-//! right-click. An unlocked drag paints nine drop squares over the tile under the cursor (centre =
+//! Panels are unlocked by default: a tab drags to re-dock (`Chrome::locked`, Window ▸ Layout ▸ Lock
+//! panels, makes a tab click-only); split dividers resize either way and Undock always works from a
+//! tab's right-click. A drag paints nine drop squares over the tile under the cursor (centre =
 //! tabify, the eight around it = split), the dropped pane keeps the fraction of its parent it had, and
 //! the move goes onto a small undo stack of its own so Ctrl+Z puts it back.
 //!
@@ -23,14 +24,16 @@ use std::collections::BTreeMap;
 use std::time::Instant;
 
 // ---- ws:pages ----
-/// The pages, left to right in the menu-bar switcher and Alt+1..4 (`Action::Workspace1..4`, ids kept
-/// so rebinds survive). Each page keeps its own tree (`Settings.layout` = the current one,
-/// `Settings.page_layouts` the others); `page_layout` maps a name to its default builder.
-pub const PAGES: &[&str] = &["Edit", "Color", "Audio", "Export"];
+/// The pages in Resolve's order, left to right in the menu-bar switcher and Alt+1..6
+/// (`Action::Workspace1..6`). Each page keeps its own tree (`Settings.layout` = the current one,
+/// `Settings.page_layouts` the others); `page_layout` maps a name to its built-in builder.
+pub const PAGES: &[&str] = &["Media", "Cut", "Edit", "Color", "Audio", "Export"];
 
-/// The default builder behind a `PAGES` name (`None` for a name that isn't one).
+/// The built-in builder behind a `PAGES` name (`None` for a name that isn't one).
 pub fn page_layout(name: &str) -> Option<fn() -> Layout> {
     Some(match name {
+        "Media" => Layout::media_layout,
+        "Cut" => Layout::cut_layout,
         "Edit" => Layout::default_layout,
         "Color" => Layout::color_layout,
         "Audio" => Layout::audio_layout,
@@ -278,7 +281,23 @@ pub struct Layout {
     /// tab bar to it, since a group with more tabs than fit would otherwise hide the tab it switched to.
     #[serde(skip)]
     pub scroll_to: Option<Pane>,
+    /// Where each undocked pane's window was last: `[x, y, w, h]` in points - the outer position (what
+    /// `ViewportBuilder::with_position` takes) and the inner size (`with_inner_size`). Kept after the
+    /// pane docks, so undocking it again puts the window back where it was.
+    #[serde(default)]
+    pub popped_rects: Vec<(Pane, [f32; 4])>,
+    /// Popped panes whose window is already open this session: the saved rect goes to the builder only
+    /// on the frame a window opens, so egui never moves a window the user is dragging.
+    #[serde(skip)]
+    opened: Vec<Pane>,
+    /// When a popped window last moved or resized: its rect is persisted once it has been still for
+    /// `RECT_SETTLE`, not on every frame of the drag.
+    #[serde(skip)]
+    rect_moved: Option<Instant>,
 }
+
+/// How long a popped window must sit still before its new rect is persisted (see `Layout::rect_moved`).
+const RECT_SETTLE: std::time::Duration = std::time::Duration::from_millis(500);
 
 impl Default for Layout {
     fn default() -> Self {
@@ -287,36 +306,62 @@ impl Default for Layout {
 }
 
 impl Layout {
+    /// The Media page (import & organise): three full-height columns, [Library] · [Source] · [Inspector].
+    /// No Timeline - it rides hidden behind Library with every other pane.
+    pub fn media_layout() -> Self {
+        let mut tiles = egui_tiles::Tiles::default();
+        let t = &mut tiles;
+        let library = Self::tabs(t, &[Pane::Library], 0);
+        let source = t.insert_pane(Pane::Source);
+        let inspector = t.insert_pane(Pane::Inspector);
+        let row = [(library, 0.36), (source, 0.4), (inspector, 0.24)];
+        let root = Self::linear(t, egui_tiles::LinearDir::Horizontal, &row);
+        Self::stack_unplaced(t, library);
+        Self::new(egui_tiles::Tree::new("layout", root, tiles))
+    }
+
+    /// The Cut page (fast assembly): [Library] · [Source | Preview] · [Inspector] over the Timeline.
+    pub fn cut_layout() -> Self {
+        Self::viewer_over_timeline(&[Pane::Library], [0.25, 0.5, 0.25])
+    }
+
     /// The Edit page: [Library | Effects | Transitions | Gallery] · [Source | Preview] · [Inspector] over
     /// a full-width Timeline; every other pane rides hidden behind Library.
     pub fn default_layout() -> Self {
+        let library = [Pane::Library, Pane::Effects, Pane::Transitions, Pane::Presets];
+        Self::viewer_over_timeline(&library, [0.22, 0.5, 0.28])
+    }
+
+    /// Cut and Edit: [`library` as tabs] · [Source | Preview] · [Inspector] (`shares` of the row) over a
+    /// full-width Timeline, every other pane hidden behind the first group.
+    fn viewer_over_timeline(library: &[Pane], shares: [f32; 3]) -> Self {
         use egui_tiles::LinearDir::{Horizontal, Vertical};
         let mut tiles = egui_tiles::Tiles::default();
         let t = &mut tiles;
-        let library = Self::tabs(t, &[Pane::Library, Pane::Effects, Pane::Transitions, Pane::Presets], 0);
+        let library = Self::tabs(t, library, 0);
         let viewer = Self::tabs(t, &[Pane::Source, Pane::Preview], 1);
         let inspector = t.insert_pane(Pane::Inspector);
-        let top = Self::linear(t, Horizontal, &[(library, 0.22), (viewer, 0.5), (inspector, 0.28)]);
+        let top = Self::linear(t, Horizontal, &[(library, shares[0]), (viewer, shares[1]), (inspector, shares[2])]);
         let timeline = t.insert_pane(Pane::Timeline);
         let root = Self::linear(t, Vertical, &[(top, 0.6), (timeline, 0.4)]);
         Self::stack_unplaced(t, library);
         Self::new(egui_tiles::Tree::new("layout", root, tiles))
     }
 
-    /// The Color page: [Gallery] · [Preview] · [Scopes] over a thin Timeline, [Inspector] · [Nodes |
-    /// Curves] at the bottom.
+    /// The Color page: [Gallery] · [Preview] · [Inspector] over a thin Timeline, [Nodes | Curves] ·
+    /// [Scopes] at the bottom.
     pub fn color_layout() -> Self {
         use egui_tiles::LinearDir::{Horizontal, Vertical};
         let mut tiles = egui_tiles::Tiles::default();
         let t = &mut tiles;
         let gallery = Self::tabs(t, &[Pane::Presets], 0);
         let preview = t.insert_pane(Pane::Preview);
-        let scopes = t.insert_pane(Pane::Scopes);
-        let top = Self::linear(t, Horizontal, &[(gallery, 0.22), (preview, 0.5), (scopes, 0.28)]);
-        let timeline = t.insert_pane(Pane::Timeline);
         let inspector = t.insert_pane(Pane::Inspector);
+        let top = Self::linear(t, Horizontal, &[(gallery, 0.22), (preview, 0.5), (inspector, 0.28)]);
+        let timeline = t.insert_pane(Pane::Timeline);
         let grade = Self::tabs(t, &[Pane::Nodes, Pane::Curves], 0);
-        let bottom = Self::linear(t, Horizontal, &[(inspector, 0.5), (grade, 0.5)]);
+        let scopes = t.insert_pane(Pane::Scopes);
+        let bottom = Self::linear(t, Horizontal, &[(grade, 0.6), (scopes, 0.4)]);
         let root = Self::linear(t, Vertical, &[(top, 0.55), (timeline, 0.18), (bottom, 0.27)]);
         Self::stack_unplaced(t, gallery);
         Self::new(egui_tiles::Tree::new("layout", root, tiles))
@@ -337,15 +382,18 @@ impl Layout {
         Self::new(egui_tiles::Tree::new("layout", root, tiles))
     }
 
-    /// The Export page: [Export settings] · [Preview] · [Jobs, the render queue] over the Timeline.
+    /// The Export page: [Export settings] · [Preview] · [Inspector over Jobs, the render queue] over the
+    /// Timeline.
     pub fn export_layout() -> Self {
         use egui_tiles::LinearDir::{Horizontal, Vertical};
         let mut tiles = egui_tiles::Tiles::default();
         let t = &mut tiles;
         let export = Self::tabs(t, &[Pane::Export], 0);
         let preview = t.insert_pane(Pane::Preview);
+        let inspector = t.insert_pane(Pane::Inspector);
         let jobs = t.insert_pane(Pane::Jobs);
-        let top = Self::linear(t, Horizontal, &[(export, 0.3), (preview, 0.45), (jobs, 0.25)]);
+        let side = Self::linear(t, Vertical, &[(inspector, 0.55), (jobs, 0.45)]);
+        let top = Self::linear(t, Horizontal, &[(export, 0.3), (preview, 0.45), (side, 0.25)]);
         let timeline = t.insert_pane(Pane::Timeline);
         let root = Self::linear(t, Vertical, &[(top, 0.6), (timeline, 0.4)]);
         Self::stack_unplaced(t, export);
@@ -387,6 +435,9 @@ impl Layout {
             glow: Vec::new(),
             rects: Vec::new(),
             scroll_to: None,
+            popped_rects: Vec::new(),
+            opened: Vec::new(),
+            rect_moved: None,
         }
     }
     /// Ensure every `Pane::ALL` member absent from `tiles` (a new variant a page builder never
@@ -502,11 +553,25 @@ impl Layout {
         self.popped.retain(|&p| p != pane);
         self.reveal(pane);
     }
-    /// Back to `make`'s default arrangement (a page's builder); the layout's own history stays.
-    pub fn reset(&mut self, make: fn() -> Layout) {
+    /// Back to `fresh` (a page's starting arrangement); the layout's own history stays.
+    pub fn reset(&mut self, fresh: Layout) {
         let (undo, redo) = (std::mem::take(&mut self.undo), std::mem::take(&mut self.redo));
-        *self = make();
+        *self = fresh;
         (self.undo, self.redo) = (undo, redo);
+    }
+    /// Record where `pane`'s window is (`[x, y, w, h]`, see `popped_rects`); true when that moved it.
+    pub fn set_popped_rect(&mut self, pane: Pane, rect: [f32; 4]) -> bool {
+        match self.popped_rects.iter_mut().find(|(p, _)| *p == pane) {
+            Some((_, r)) if *r == rect => false,
+            Some((_, r)) => {
+                *r = rect;
+                true
+            }
+            None => {
+                self.popped_rects.push((pane, rect));
+                true
+            }
+        }
     }
     // ---- ws:pages ----
     /// A tab bar's `+`: show `pane` as a tab of the tab group `group`, in front - moved there from
@@ -703,8 +768,8 @@ pub struct Chrome<'a> {
     // ---- ws:pages ----
     /// The sequence being edited (`project.editing`'s name): the Timeline's tab shows it beside "Main".
     pub editing: Option<String>,
-    /// `Settings.panels_unlocked`: tabs drag to re-dock. Locked (the default) a tab only clicks.
-    pub unlocked: bool,
+    /// `Settings.panels_locked`: a tab only clicks. Unlocked (the default) it drags to re-dock.
+    pub locked: bool,
 }
 
 /// What one frame of `show` changed, for the app to apply and persist.
@@ -832,8 +897,8 @@ impl egui_tiles::Behavior<Pane> for Behaviour<'_> {
         let (icon_w, gap) = if glyph.is_some() { (16.0, 4.0) } else { (0.0, 0.0) };
         let width = galley.size().x + icon_w + gap + pin_w + seq_w + 2.0 * x_margin;
         let (_, tab_rect) = ui.allocate_space(egui::vec2(width, ui.available_height()));
-        // locked (the default) a tab only clicks: no drag starts, so nothing re-docks by accident
-        let sense = if self.chrome.unlocked { egui::Sense::click_and_drag() } else { egui::Sense::click() };
+        // locked, a tab only clicks: no drag starts, so nothing re-docks by accident
+        let sense = if self.chrome.locked { egui::Sense::click() } else { egui::Sense::click_and_drag() };
         let tab_response = ui.interact(tab_rect, id, sense).on_hover_cursor(self.tab_hover_cursor_icon());
         if pane.is_some() && pane == self.scroll_to {
             ui.scroll_to_rect(tab_rect, None);
@@ -1142,7 +1207,7 @@ pub fn show(
     // by its tab bar's strip - egui hands a press on a click-only tab to the draggable strip behind it
     // (`container/tabs.rs:269`, no `Behavior` hook). Drop that drag the frame it starts, before egui_tiles
     // can preview or land it.
-    if !chrome.unlocked && layout.tree.dragged_id(ctx).is_some() {
+    if chrome.locked && layout.tree.dragged_id(ctx).is_some() {
         ctx.stop_dragging();
     }
     // ---- ws:ui-kit ----
@@ -1200,23 +1265,51 @@ pub fn show(
     }
     let (set_icon, actions) = (beh.set_icon, beh.actions);
     let mut to_dock: Vec<Pane> = Vec::new();
-    for &pane in &layout.popped {
+    let mut placed: Vec<(Pane, [f32; 4])> = Vec::new();
+    layout.opened.retain(|p| layout.popped.contains(p));
+    for pane in layout.popped.clone() {
         // a torn-off Timeline names the sequence it shows, since its tab bar stayed behind
         let title = match (&chrome.editing, pane) {
             (Some(seq), Pane::Timeline) => format!("Timeline - {seq}"),
             _ => pane.title().to_string(),
         };
-        ctx.show_viewport_immediate(
-            egui::ViewportId::from_hash_of(("pane", pane)),
-            egui::ViewportBuilder::default().with_title(title).with_inner_size([800.0, 500.0]),
-            |ctx, _class| {
-                if ctx.input(|i| i.viewport().close_requested()) {
-                    to_dock.push(pane);
-                }
-                on_viewport(ctx);
-                egui::CentralPanel::default().show(ctx, |ui| draw(ui, pane));
-            },
-        );
+        let mut builder = egui::ViewportBuilder::default().with_title(title);
+        // where the user left it, on the frame the window opens only: a builder that changes while the
+        // window is open is a move / resize command, and would fight the user's own drag.
+        // ponytail: a rect on a monitor since unplugged opens off-screen - clamp to the monitors if that bites
+        if !layout.opened.contains(&pane) {
+            layout.opened.push(pane);
+            builder = match layout.popped_rects.iter().find(|(p, _)| *p == pane) {
+                Some(&(_, [x, y, w, h])) => builder.with_position([x, y]).with_inner_size([w, h]),
+                None => builder.with_inner_size([800.0, 500.0]),
+            };
+        }
+        ctx.show_viewport_immediate(egui::ViewportId::from_hash_of(("pane", pane)), builder, |ctx, _class| {
+            let info = ctx.input(|i| i.viewport().clone());
+            if info.close_requested() {
+                to_dock.push(pane);
+            }
+            if let (Some(outer), Some(inner)) = (info.outer_rect, info.inner_rect) {
+                placed.push((pane, [outer.min.x, outer.min.y, inner.width(), inner.height()]));
+            }
+            on_viewport(ctx);
+            egui::CentralPanel::default().show(ctx, |ui| draw(ui, pane));
+        });
+    }
+    for (pane, rect) in placed {
+        if layout.set_popped_rect(pane, rect) {
+            layout.rect_moved = Some(now);
+        }
+    }
+    // persist a moved window once it is still (a drag moves it every frame)
+    if let Some(at) = layout.rect_moved {
+        let still = now.duration_since(at);
+        if still >= RECT_SETTLE {
+            layout.rect_moved = None;
+            changed = true;
+        } else {
+            ctx.request_repaint_after(RECT_SETTLE - still);
+        }
     }
     for p in to_dock {
         layout.dock(p);
@@ -1248,13 +1341,15 @@ mod tests {
     #[test]
     fn every_page_contains_every_pane() {
         use Pane::*;
-        let shown: [(&str, &[Pane]); 4] = [
+        let shown: [(&str, &[Pane]); 6] = [
+            ("Media", &[Library, Source, Inspector]),
+            ("Cut", &[Library, Source, Preview, Inspector, Timeline]),
             ("Edit", &[Library, Effects, Transitions, Presets, Source, Preview, Inspector, Timeline]),
-            ("Color", &[Presets, Preview, Scopes, Timeline, Inspector, Nodes, Curves]),
+            ("Color", &[Presets, Preview, Inspector, Timeline, Nodes, Curves, Scopes]),
             ("Audio", &[Preview, Mixer, Subtitles, Inspector, Timeline]),
-            ("Export", &[Export, Preview, Jobs, Timeline]),
+            ("Export", &[Export, Preview, Inspector, Jobs, Timeline]),
         ];
-        assert_eq!(PAGES, shown.map(|(p, _)| p), "Alt+1..4 map onto the four pages in this order");
+        assert_eq!(PAGES, shown.map(|(p, _)| p), "Alt+1..6 map onto the six pages in Resolve's order");
         for (name, visible) in shown {
             let l = page_layout(name).unwrap_or_else(|| panic!("no builder for page {name}"))();
             for &p in Pane::ALL {
@@ -1277,6 +1372,41 @@ mod tests {
             assert_eq!(l.tree.tiles.parent_of(id), Some(lib), "{p:?} is not tabbed behind Library on Edit");
         }
         assert!(in_front(&Layout::color_layout(), Nodes) && in_front(&Layout::audio_layout(), Mixer));
+        assert!(in_front(&Layout::cut_layout(), Preview) && !in_front(&Layout::cut_layout(), Source));
+    }
+
+    /// The Inspector is the top-right tile of every page's default: walk the tree from the root taking
+    /// the top-most child of a column, the right-most child of a row and the front tab of a group - as
+    /// built, and as drawn (the first draw wraps every lone pane in a tab group of its own).
+    #[test]
+    fn inspector_is_top_right_on_every_page() {
+        fn top_right(l: &Layout) -> Option<Pane> {
+            use egui_tiles::{Container, LinearDir, Tile};
+            let tiles = &l.tree.tiles;
+            let mut id = l.tree.root()?;
+            loop {
+                id = match tiles.get(id)? {
+                    Tile::Pane(p) => return Some(*p),
+                    Tile::Container(Container::Linear(lin)) => {
+                        let mut shown = lin.children.iter().copied().filter(|&k| tiles.is_visible(k));
+                        if lin.dir == LinearDir::Horizontal {
+                            shown.last()?
+                        } else {
+                            shown.next()?
+                        }
+                    }
+                    Tile::Container(Container::Tabs(tabs)) => tabs.active?,
+                    Tile::Container(Container::Grid(_)) => return None,
+                };
+            }
+        }
+        for &name in PAGES {
+            let mut l = page_layout(name).unwrap()();
+            assert_eq!(top_right(&l), Some(Pane::Inspector), "{name} as built");
+            l.tree
+                .simplify(&egui_tiles::SimplificationOptions { all_panes_must_have_tabs: true, ..Default::default() });
+            assert_eq!(top_right(&l), Some(Pane::Inspector), "{name} as drawn");
+        }
     }
 
     /// Tools left `ROUND3` with the pages (and `Pane::ALL` with the tool rail); Source / Jobs / Scopes /
@@ -1690,7 +1820,7 @@ mod tests {
         ctx.set_fonts(crate::theme::test_fonts());
         let icons = BTreeMap::new();
         let mut chrome =
-            Chrome { icons: &icons, tab_bar: None, cozy: true, editing: Some("Sequence 1".into()), unlocked: false };
+            Chrome { icons: &icons, tab_bar: None, cozy: true, editing: Some("Sequence 1".into()), locked: false };
         let mut l = Layout::default_layout();
         let mut t = 0.0;
         for _ in 0..2 {
@@ -1715,38 +1845,67 @@ mod tests {
         assert!(ctx.read_response(tab.with("seq_close")).is_none(), "no sequence open: just \"Main\"");
     }
 
-    /// Locked (the default), pressing a tab and moving drags nothing - neither the tab nor, through the
-    /// tab bar behind it, its whole group - and the tree is untouched; unlocked, the same gesture drags
-    /// the tab.
+    /// Unlocked (the default), dragging a tab onto another tile re-docks it there as one undoable move;
+    /// locked, the same gesture drags nothing - neither the tab nor, through the tab bar behind it, its
+    /// whole group - and the tree is untouched.
     #[test]
     fn locked_tabs_do_not_drag_unlocked_do() {
-        for unlocked in [false, true] {
+        for locked in [false, true] {
             let ctx = egui::Context::default();
             ctx.set_fonts(crate::theme::test_fonts());
             let icons = BTreeMap::new();
-            let chrome = Chrome { icons: &icons, tab_bar: None, cozy: true, editing: None, unlocked };
+            let chrome = Chrome { icons: &icons, tab_bar: None, cozy: true, editing: None, locked };
             let mut l = Layout::default_layout();
             frame(&ctx, &mut l, &chrome, vec![], 0.0);
             frame(&ctx, &mut l, &chrome, vec![], 0.1);
             let before = layout_value(&l);
+            let library_group = |l: &Layout| l.tree.tiles.parent_of(l.tree.tiles.find_pane(&Pane::Library).unwrap());
             let effects = l.tree.tiles.find_pane(&Pane::Effects).unwrap();
+            assert_eq!(l.tree.tiles.parent_of(effects), library_group(&l));
             let at = ctx.read_response(effects.egui_id(l.tree.id())).expect("the Effects tab").rect.center();
+            // down into the middle of the Timeline (the bottom 40 % of the 800 px window)
+            let to = |i: i32| at + egui::vec2(0.0, 120.0 * i as f32);
             let mut t = 0.2;
-            let mut dragged = false;
+            let (mut dragged, mut moved) = (false, false);
             for ev in [egui::Event::PointerMoved(at), button(at, true)]
                 .into_iter()
-                .chain((1..6).map(|i| egui::Event::PointerMoved(at + egui::vec2(0.0, 30.0 * i as f32))))
+                .chain((1..6).map(|i| egui::Event::PointerMoved(to(i))))
+                .chain([button(to(5), false)])
             {
-                frame(&ctx, &mut l, &chrome, vec![ev], t);
+                moved |= frame(&ctx, &mut l, &chrome, vec![ev], t).moved;
                 // (egui_tiles' own `dragged_id` also reports a drag stopped this very pass - ask egui)
                 dragged |= ctx.dragged_id().is_some();
                 t += 0.05;
             }
-            assert_eq!(dragged, unlocked, "unlocked={unlocked}: a tab drag");
-            if !unlocked {
-                frame(&ctx, &mut l, &chrome, vec![button(at + egui::vec2(0.0, 150.0), false)], t);
+            assert_eq!(dragged, !locked, "locked={locked}: a tab drag");
+            if locked {
+                assert!(!moved);
                 assert_eq!(layout_value(&l), before, "a locked layout never re-docks");
+            } else {
+                let effects = l.tree.tiles.find_pane(&Pane::Effects).unwrap();
+                assert_ne!(l.tree.tiles.parent_of(effects), library_group(&l), "Effects left Library's group");
+                assert!(moved && l.undo(), "the re-dock is one undoable move");
+                assert_eq!(layout_value(&l), before, "and undoing it puts the tab back");
             }
         }
+    }
+
+    /// Where an undocked window sat survives a save / load (and a dock + undock: the rect is kept), and
+    /// setting the same rect again reports no move, so an unmoved window never re-persists the layout.
+    #[test]
+    fn popped_rects_round_trip() {
+        let mut l = Layout::default_layout();
+        l.popout(Pane::Mixer);
+        assert!(l.set_popped_rect(Pane::Mixer, [120.0, 80.0, 640.0, 360.0]));
+        assert!(!l.set_popped_rect(Pane::Mixer, [120.0, 80.0, 640.0, 360.0]), "unchanged");
+        assert!(l.set_popped_rect(Pane::Mixer, [130.0, 80.0, 640.0, 360.0]), "moved");
+        l.dock(Pane::Mixer);
+        let r = Layout::from_json(&l.to_json()).expect("roundtrip");
+        assert_eq!(r.popped_rects, vec![(Pane::Mixer, [130.0, 80.0, 640.0, 360.0])]);
+        assert!(r.popped.is_empty());
+        // a layout stored before this field existed still loads, with no rects
+        let mut v: serde_json::Value = serde_json::from_str(&l.to_json()).unwrap();
+        v.as_object_mut().unwrap().remove("popped_rects");
+        assert!(Layout::from_json(&v.to_string()).unwrap().popped_rects.is_empty());
     }
 }

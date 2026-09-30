@@ -427,9 +427,13 @@ pub struct Settings {
     pub page: String,
     /// The other pages' trees as JSON, by page name - the current page's own lives in `layout`.
     pub page_layouts: BTreeMap<String, String>,
-    /// Window ▸ Layout ▸ Unlock panels: tabs drag to re-dock. Off (the default) a tab only clicks;
-    /// dividers resize and Undock works either way.
-    pub panels_unlocked: bool,
+    /// Window ▸ Layout ▸ Lock panels: a tab only clicks. Off (the default) a tab drags to re-dock;
+    /// dividers resize and Undock works either way. (Replaced 0c's `panels_unlocked`, so a settings file
+    /// from the locked-by-default build starts unlocked too.)
+    pub panels_locked: bool,
+    /// Window ▸ Layout ▸ Save as this page's default: a page's own starting tree (Layout JSON) by page
+    /// name - what Reset page layout and a first visit come back to instead of the built-in one.
+    pub page_defaults: BTreeMap<String, String>,
     // ---- ws:timeline-surface ----
     // ---- ws:viewer-surface ----
     /// Show / Hide Tools (`Action::ToggleTools`) hid the viewer's tool rail.
@@ -584,7 +588,8 @@ impl Default for Settings {
             // ---- ws:pages ----
             page: String::new(),
             page_layouts: BTreeMap::new(),
-            panels_unlocked: false,
+            panels_locked: false,
+            page_defaults: BTreeMap::new(),
             // ---- ws:timeline-surface ----
             // ---- ws:viewer-surface ----
             tool_rail_hidden: false,
@@ -897,15 +902,20 @@ mod tests {
     fn page_settings_round_trip() {
         let old: Settings = serde_json::from_str(r#"{"workspace": "Deliver"}"#).unwrap();
         assert_eq!((old.page.as_str(), old.workspace.as_str()), ("", "Deliver"), "a pre-pages file");
-        assert!(old.page_layouts.is_empty() && !old.panels_unlocked);
+        assert!(old.page_layouts.is_empty() && old.page_defaults.is_empty() && !old.panels_locked);
+        // the locked-by-default build's opt-in is ignored: everyone starts unlocked
+        let locked_build: Settings = serde_json::from_str(r#"{"panels_unlocked": false}"#).unwrap();
+        assert!(!locked_build.panels_locked);
         let mut s = old;
         s.page = "Color".into();
         s.page_layouts.insert("Edit".into(), "{}".into());
-        s.panels_unlocked = true;
+        s.page_defaults.insert("Cut".into(), "[]".into());
+        s.panels_locked = true;
         let json = serde_json::to_string(&s).unwrap();
         assert!(!json.contains("\"workspace\""), "the legacy name is not written back");
         let back: Settings = serde_json::from_str(&json).unwrap();
-        assert_eq!((back.page.as_str(), back.panels_unlocked), ("Color", true));
+        assert_eq!((back.page.as_str(), back.panels_locked), ("Color", true));
         assert_eq!(back.page_layouts.get("Edit").map(String::as_str), Some("{}"));
+        assert_eq!(back.page_defaults.get("Cut").map(String::as_str), Some("[]"));
     }
 }
