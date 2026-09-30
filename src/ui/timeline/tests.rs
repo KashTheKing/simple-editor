@@ -2942,3 +2942,62 @@ fn asymmetric_multi_roller_trim_arms_an_abutting_seam() {
     assert_eq!(d_after.start, 12.0, "an untouched seam elsewhere on the same track (C/D) stayed put");
     assert!(h.state.rollers.is_empty(), "the roller set is consumed once the drag starts");
 }
+
+/// "Move To" re-anchors a transition around its clip and keeps its settings; a position with no cut
+/// to sit on changes nothing. (The Transitions pane's Position combo, before it went catalogue-only.)
+#[test]
+fn move_transition_keeps_settings_and_refuses_missing_cuts() {
+    use super::menus::{move_transition, TransPos};
+    use crate::model::{TransitionEdge, TransitionKind};
+    let mut h = Harness::new();
+    h.project.split_at(4.0, None);
+    h.project.split_at(7.0, None);
+    let (c1, c2) = (h.project.tracks[0].clips[0].id, h.project.tracks[0].clips[1].id);
+    let tid = h.project.add_transition(c2, TransitionKind::Wipe, 1.0).unwrap();
+    if let Some(t) = h.project.transition_mut(tid) {
+        (t.color, t.direction) = ([9, 9, 9, 255], 2);
+    }
+    let only = |p: &Project| p.tracks[0].transitions.clone();
+    // cut before c2 -> end of c2 (fade out), settings carried over
+    assert!(move_transition(&mut h.project, tid, TransPos::End));
+    let t = &only(&h.project)[0];
+    assert_eq!(
+        (t.right, t.edge, t.kind, t.color, t.direction),
+        (c2, TransitionEdge::Out, TransitionKind::Wipe, [9, 9, 9, 255], 2)
+    );
+    // -> the cut with the next clip belongs to that next clip
+    let tid = t.id;
+    assert!(move_transition(&mut h.project, tid, TransPos::Next));
+    let t = &only(&h.project)[0];
+    assert_eq!((t.edge, t.right), (TransitionEdge::Cut, h.project.tracks[0].clips[2].id));
+    assert_eq!(only(&h.project).len(), 1, "moved, not copied");
+    // c1 has no previous clip: refused, nothing removed
+    let tid = h.project.add_edge_transition(c1, TransitionKind::CrossFade, 1.0, false).unwrap();
+    assert!(!move_transition(&mut h.project, tid, TransPos::Previous));
+    assert!(only(&h.project).iter().any(|t| t.id == tid && t.edge == TransitionEdge::In));
+}
+
+/// The transition band's right-click has "Move To" for a single transition; picking a position moves
+/// it (one edit), and the bulk menu for several doesn't offer it.
+#[test]
+fn transition_menu_move_to_moves_one_transition() {
+    use crate::model::TransitionEdge;
+    let mut h = Harness::new();
+    let lanes = h.state.lanes_rect;
+    h.project.split_at(4.0, None);
+    let c2 = h.project.tracks[0].clips[1].id;
+    h.project.add_transition(c2, TransitionKind::CrossFade, 1.0).unwrap();
+    h.frame(vec![]);
+    let band = pos2(h.state.x_at(4.0), lanes.top() + 30.0);
+    h.rclick(band);
+    h.frame(vec![]);
+    let move_to = h.painted_text("Move To").expect("Move To submenu painted") + vec2(4.0, 4.0);
+    h.press(move_to);
+    h.release(move_to);
+    let end = h.painted_text("End of Clip (fade out)").expect("positions listed") + vec2(4.0, 4.0);
+    h.press(end);
+    let r = h.release(end);
+    assert!(r.edited, "picking a position edits the project");
+    let t = &h.project.tracks[0].transitions[0];
+    assert_eq!((t.right, t.edge), (c2, TransitionEdge::Out));
+}
