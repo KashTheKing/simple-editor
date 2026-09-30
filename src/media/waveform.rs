@@ -3,6 +3,7 @@
 //! (key = hash of path + file size + mtime + stream). `PEAKS_PER_SEC` buckets of mono (min, max).
 
 use super::{AudioSource, Backend, SAMPLE_RATE};
+use crate::model::{ClipKind, Id, Project, TrackKind};
 use crate::settings::Settings;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -52,6 +53,8 @@ pub struct WaveformCache {
     backend: Backend,
     ctx: eframe::egui::Context,
     state: Arc<Mutex<State>>,
+    /// Mixed peaks per nested sequence, with the `seq_hash` they were built from.
+    seqs: HashMap<Id, (u64, Arc<Peaks>)>,
 }
 
 /// ponytail: 64-bit hash as the map key so the per-frame lookup allocates nothing - collisions are astronomically unlikely.
@@ -63,7 +66,7 @@ fn mem_key(path: &str, stream: usize) -> u64 {
 
 impl WaveformCache {
     pub fn new(ctx: eframe::egui::Context, backend: Backend) -> Self {
-        Self { backend, ctx, state: Arc::default() }
+        Self { backend, ctx, state: Arc::default(), seqs: HashMap::new() }
     }
     pub fn set_backend(&mut self, b: Backend) {
         self.backend = b;
@@ -73,6 +76,7 @@ impl WaveformCache {
     /// stale peaks; unchanged files just reload from the len+mtime-keyed disk cache.
     pub fn clear(&mut self) {
         self.state = Arc::default();
+        self.seqs.clear();
     }
     // ---- ws:jobs-panel ----
     /// Peaks still computing. None = a worker holds the lock right now (never waits for it).
@@ -104,6 +108,84 @@ impl WaveformCache {
         }
         None
     }
+}
+
+impl WaveformCache {
+    /// Peaks of a nested sequence on its own timeline: its audio clips' peaks mapped through their clip
+    /// times, overlaps merged by envelope. Rebuilt only when the sequence's audio clips change (hash check per paint);
+    /// None while any source's peaks are still computing (`get` repaints when they land).
+    pub fn sequence(&mut self, p: &Project, seq: Id) -> Option<Arc<Peaks>> {
+        let h = seq_hash(p, seq, 0);
+        if let Some((k, pk)) = self.seqs.get(&seq) {
+            if *k == h {
+                return Some(pk.clone());
+            }
+        }
+        let pk = Arc::new(mix_sequence(p, seq, 0, &mut |path, s| self.get(path, s))?);
+        self.seqs.insert(seq, (h, pk.clone()));
+        Some(pk)
+    }
+}
+
+/// Audible clips of a sequence: enabled, on unmuted audio tracks.
+fn audible(p: &Project, seq: Id) -> impl Iterator<Item = &crate::model::Clip> {
+    p.sequence_tracks(seq)
+        .unwrap_or(&[])
+        .iter()
+        .filter(|t| t.kind == TrackKind::Audio && !t.muted)
+        .flat_map(|t| t.clips.iter().filter(|c| c.enabled))
+}
+
+fn seq_hash(p: &Project, seq: Id, depth: u32) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for c in audible(p, seq).filter(|_| depth < 32) {
+        (c.id, c.asset, c.audio_stream, c.reverse).hash(&mut h);
+        for f in [c.start, c.duration, c.src_in, c.speed, c.freeze.unwrap_or(-1.0)] {
+            f.to_bits().hash(&mut h);
+        }
+        if c.kind == ClipKind::Sequence {
+            seq_hash(p, c.sequence, depth + 1).hash(&mut h);
+        }
+    }
+    h.finish()
+}
+
+/// Envelope of every audible clip's (min, max) per output bucket (max, not a sum: stacked full-scale
+/// tracks would clip to a solid bar). `get` supplies an asset's
+/// peaks (None = not ready, which makes the whole mix None).
+/// ponytail: ignores volume/fades/speed ramps - the envelope shape is what the eye needs.
+pub(crate) fn mix_sequence(
+    p: &Project,
+    seq: Id,
+    depth: u32,
+    get: &mut dyn FnMut(&str, usize) -> Option<Arc<Peaks>>,
+) -> Option<Peaks> {
+    let end = audible(p, seq).map(|c| c.end()).fold(0.0, f64::max);
+    let n = (end * PEAKS_PER_SEC as f64).ceil() as usize;
+    let mut out = Peaks { min: vec![0.0; n], max: vec![0.0; n] };
+    let dt = 1.0 / PEAKS_PER_SEC as f64;
+    for c in audible(p, seq) {
+        if c.freeze.is_some() {
+            continue; // a freeze frame is silent
+        }
+        let src = match c.kind {
+            ClipKind::Sequence if depth < 32 => mix_sequence(p, c.sequence, depth + 1, get).map(Arc::new),
+            _ => match p.asset(c.asset) {
+                Some(a) => get(&a.path, c.audio_stream),
+                None => continue, // offline: silent, not "still loading"
+            },
+        }?;
+        let i0 = (c.start * PEAKS_PER_SEC as f64).floor().max(0.0) as usize;
+        let i1 = ((c.end() * PEAKS_PER_SEC as f64).ceil() as usize).min(n);
+        for i in i0..i1 {
+            let t = i as f64 * dt;
+            let (a, b) = (c.src_time(t), c.src_time(t + dt));
+            let (lo, hi) = src.range(a.min(b), a.max(b));
+            out.min[i] = out.min[i].min(lo);
+            out.max[i] = out.max[i].max(hi);
+        }
+    }
+    Some(out)
 }
 
 fn cache_file(path: &str, stream: usize) -> Option<std::path::PathBuf> {

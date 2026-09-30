@@ -1864,3 +1864,61 @@ fn text_field_expression_link_bakes_via_refresh_links() {
     let style = p.clip(id).unwrap().text.as_ref().unwrap();
     assert!(style.size.link_err.is_some());
 }
+
+/// A Sequence clip's filmstrip source: top-most visible picture clip at that nested time, mapped to
+/// its source time; hidden tracks, disabled clips and gaps fall through.
+#[test]
+fn sequence_picture_at_picks_top_visible_clip() {
+    let mut p = Project::new();
+    let (x, y) = (p.add_asset(asset(10, 60.0, 0)), p.add_asset(asset(11, 60.0, 0)));
+    let s = p.new_sequence("S", 1280, 720, 30.0);
+    let mut lo = Clip::new(p.new_id(), ClipKind::Video, "lo", 0.0, 10.0);
+    lo.asset = x;
+    lo.src_in = 5.0;
+    let mut hi = Clip::new(p.new_id(), ClipKind::Video, "hi", 2.0, 2.0);
+    hi.asset = y;
+    hi.speed = 2.0;
+    let seq = p.sequence_mut(s).unwrap();
+    seq.tracks[0].clips.push(lo);
+    let mut v2 = Track::new(99, TrackKind::Video, "V2");
+    v2.clips.push(hi);
+    seq.tracks.insert(1, v2);
+    assert_eq!(p.sequence_picture_at(s, 1.0), Some((x, 6.0)));
+    assert_eq!(p.sequence_picture_at(s, 3.0), Some((y, 2.0)), "top track wins, speed maps");
+    assert_eq!(p.sequence_picture_at(s, 20.0), None);
+    p.sequence_mut(s).unwrap().tracks[1].muted = true;
+    assert_eq!(p.sequence_picture_at(s, 3.0), Some((x, 8.0)), "hidden track falls through");
+}
+
+/// Nested-sequence waveform: each audio clip's peaks land at its timeline position (src_in and
+/// speed applied), overlaps merge by envelope, and a source still loading makes the whole mix wait.
+#[test]
+fn sequence_peaks_map_clip_times_and_merge() {
+    use crate::media::waveform::{mix_sequence, Peaks, PEAKS_PER_SEC};
+    let mut p = Project::new();
+    let x = p.add_asset(asset(10, 60.0, 1));
+    let s = p.new_sequence("S", 1280, 720, 30.0);
+    // source: bucket i has max = i/1000 (a ramp), so positions are readable
+    let n = 60 * PEAKS_PER_SEC as usize;
+    let src = std::sync::Arc::new(Peaks { min: vec![-0.5; n], max: (0..n).map(|i| i as f32 / 1000.0).collect() });
+    let mut a = Clip::new(p.new_id(), ClipKind::Audio, "a", 1.0, 2.0);
+    a.asset = x;
+    a.src_in = 3.0;
+    let mut b = Clip::new(p.new_id(), ClipKind::Audio, "b", 2.0, 1.0);
+    b.asset = x;
+    let at = p.sequence(s).unwrap().tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
+    let seq = p.sequence_mut(s).unwrap();
+    seq.tracks[at].clips.push(a);
+    let mut a2 = Track::new(98, TrackKind::Audio, "A2");
+    a2.clips.push(b);
+    seq.tracks.push(a2);
+    let m = mix_sequence(&p, s, 0, &mut |_, _| Some(src.clone())).unwrap();
+    assert_eq!(m.len(), 300);
+    assert_eq!((m.min[50], m.max[50]), (0.0, 0.0), "silence before the first clip");
+    // t=1.5 -> a's source 3.5 s = bucket 350
+    assert!((m.max[150] - 0.35).abs() < 2e-3, "{}", m.max[150]);
+    // t=2.5: a at 4.5 s (0.45) over b at 0.5 s (0.05)
+    assert!((m.max[250] - 0.45).abs() < 2e-3, "{}", m.max[250]);
+    assert_eq!(m.min[250], -0.5);
+    assert!(mix_sequence(&p, s, 0, &mut |_, _| None).is_none(), "loading source -> no mix yet");
+}

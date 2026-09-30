@@ -131,10 +131,26 @@ impl Project {
         let has = |k| self.sequence_tracks(seq).is_some_and(|ts| ts.iter().any(|t| t.kind == k && !t.clips.is_empty()));
         (has(TrackKind::Video) || !has(TrackKind::Audio), has(TrackKind::Audio))
     }
+    /// What a Sequence clip's filmstrip shows at nested time `t`: the top-most visible video/image clip
+    /// there (through nested sequences), as (asset, source time) for the shared thumbnail cache.
+    /// ponytail: one layer, no compositing/effects/transitions - a real nested render if thumbs must match.
+    pub(crate) fn sequence_picture_at(&self, seq: Id, t: f64) -> Option<(Id, f64)> {
+        fn at(p: &Project, seq: Id, t: f64, depth: u32) -> Option<(Id, f64)> {
+            let ts = p.sequence_tracks(seq).filter(|_| depth < 32)?;
+            ts.iter().rev().filter(|tr| tr.kind == TrackKind::Video && !tr.muted).find_map(|tr| {
+                let c = tr.clips.iter().find(|c| c.enabled && c.contains(t))?;
+                match c.kind {
+                    ClipKind::Video | ClipKind::Image if c.asset != 0 => Some((c.asset, c.src_time(t).max(0.0))),
+                    ClipKind::Sequence => at(p, c.sequence, c.src_time(t), depth + 1),
+                    _ => None,
+                }
+            })
+        }
+        at(self, seq, t, 0)
+    }
     /// Link Sequence clip `id` to a new twin on a free audio track (`prefer` first): same sequence,
     /// timing, retime and audio settings, none of the picture-only state. Returns the twin's id.
-    /// ponytail: the timeline draws no waveform on it (no asset to read peaks from); sum the nested
-    /// clips' peaks if nested audio ever needs one.
+    /// Its waveform is the nested audio clips' peaks merged (`WaveformCache::sequence`).
     fn add_audio_twin(&mut self, id: Id, prefer: Option<usize>) -> Option<Id> {
         let (ti, ci) = self.find(id)?;
         if self.tracks[ti].clips[ci].link == 0 {
