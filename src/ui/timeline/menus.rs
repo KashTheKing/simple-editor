@@ -78,6 +78,77 @@ pub(super) fn transition_menu(ui: &mut egui::Ui, tr: &crate::model::Transition, 
             }
         }
     });
+    if !many {
+        menu::sub(ui, None, "Move To", |ui| {
+            for pos in TransPos::ALL {
+                let here = TransPos::of(tr) == pos;
+                if menu::check(ui, here, pos.name(), "").clicked() && !here {
+                    *act = Some(Act::MoveTransition(tr.id, pos));
+                }
+            }
+        });
+    }
+}
+
+/// Where a transition sits relative to the clip it belongs to (`Transition.right`) - the "Move To"
+/// submenu. Moving keeps kind, length, colour, direction and easing.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(super) enum TransPos {
+    /// Edge In: the clip blends in from nothing.
+    Start,
+    /// Edge Out: the clip blends out to nothing.
+    End,
+    /// On the cut with the previous clip.
+    Previous,
+    /// On the cut with the next clip.
+    Next,
+}
+
+impl TransPos {
+    const ALL: [TransPos; 4] = [TransPos::Start, TransPos::End, TransPos::Previous, TransPos::Next];
+    fn name(self) -> &'static str {
+        match self {
+            TransPos::Start => "Start of Clip (fade in)",
+            TransPos::End => "End of Clip (fade out)",
+            TransPos::Previous => "Cut with Previous Clip",
+            TransPos::Next => "Cut with Next Clip",
+        }
+    }
+    fn of(tr: &crate::model::Transition) -> TransPos {
+        match tr.edge {
+            crate::model::TransitionEdge::In => TransPos::Start,
+            crate::model::TransitionEdge::Out => TransPos::End,
+            crate::model::TransitionEdge::Cut => TransPos::Previous,
+        }
+    }
+}
+
+/// Re-anchor transition `tid` at `pos` relative to its clip, keeping its settings. False (and nothing
+/// changed) when that position has no cut to sit on. The Transitions pane had this as a Position combo
+/// before it became catalogue-only.
+pub(super) fn move_transition(p: &mut Project, tid: Id, pos: TransPos) -> bool {
+    let Some(old) = p.tracks.iter().flat_map(|t| &t.transitions).find(|t| t.id == tid).cloned() else {
+        return false;
+    };
+    let clip = old.right;
+    let target = match pos {
+        TransPos::Next => crate::ui::transitions_ui::right_neighbor(p, clip),
+        TransPos::Previous => {
+            p.track_of(clip).zip(p.clip(clip)).and_then(|(ti, c)| p.tracks[ti].left_of(c).map(|_| clip))
+        }
+        _ => Some(clip),
+    };
+    let Some(target) = target else { return false };
+    p.remove_transition(tid);
+    let nid = match pos {
+        TransPos::Start => p.add_edge_transition(target, old.kind, old.duration, false),
+        TransPos::End => p.add_edge_transition(target, old.kind, old.duration, true),
+        TransPos::Previous | TransPos::Next => p.add_transition(target, old.kind, old.duration),
+    };
+    if let Some(t) = nid.and_then(|nid| p.transition_mut(nid)) {
+        (t.color, t.direction, t.ease) = (old.color, old.direction, old.ease);
+    }
+    nid.is_some()
 }
 
 /// A keyframe diamond: Easing ▸ (the named eases, then the curve presets), Delete.

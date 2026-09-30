@@ -477,6 +477,8 @@ enum Act {
     /// Right-click quick-change: absolute-overwrite every listed transition's ease (see
     /// `SetTransitionsKind`).
     SetTransitionsEase(Vec<Id>, Ease),
+    /// Re-anchor one transition relative to its clip (`menus::TransPos`), keeping its settings.
+    MoveTransition(Id, menus::TransPos),
     /// Add a project marker at this timeline time.
     AddMarker(f64),
     /// Razor tool: split every clip crossing this timeline time.
@@ -2069,6 +2071,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 }
             }
             Act::RemoveTransition(tid) => p.remove_transition(tid),
+            Act::MoveTransition(tid, pos) => {
+                menus::move_transition(p, tid, pos);
+            }
             Act::RemoveTransitions(tids) => {
                 for tid in tids {
                     p.remove_transition(tid);
