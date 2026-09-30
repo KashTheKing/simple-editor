@@ -255,11 +255,10 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
     app.pending_actions.extend(resp.actions);
 }
 
-/// Subtitle lane ▸ Import Subtitles…: the Subtitles pane's import (same parser, same replace-or-keep
-/// confirm), from the lane itself.
-/// ponytail: a second copy of `subtitles_ui`'s private dialog - fold both into one Action if a third
-/// caller shows up.
-fn import_subtitles(app: &mut App) {
+/// Import Subtitles…: the one import path, for the subtitle lane's right-click and the Subtitles pane's ⋯
+/// menu alike - pick an .srt/.vtt, parse it, then replace inline (an empty project has nothing to lose)
+/// or ask before replacing (Cancel keeps the existing cues and discards the import).
+pub(super) fn import_subtitles(app: &mut App) {
     let Some(path) = rfd::FileDialog::new().add_filter("Subtitles", &["srt", "vtt"]).pick_file() else { return };
     let cues = std::fs::read_to_string(&path).map(|t| crate::engine::subtitles::parse(&t)).unwrap_or_default();
     if cues.is_empty() {

@@ -1,8 +1,8 @@
-//! History panel: a read-mostly view over the undo stack (`App.undo`, newest last) grouped by day,
-//! searchable by label, filterable by category (Editing vs Layout - see `crate::ui::app::HistoryCategory`),
-//! with per-entry and bulk delete, and export of the currently-filtered entries to a Markdown file.
-//! File-system-style: one collapsed-by-default row per entry (mirrors markers_ui.rs/effects_ui.rs's
-//! `CollapsingHeader` convention), grouped under a day heading.
+//! History panel: a read-mostly view over the undo stack (`App.undo`, newest last) grouped by day. One
+//! header row: a label search, the category filter (All / Editing / Layout - see
+//! `crate::ui::app::HistoryCategory`) and the entry count. One row per entry under its day heading (icon,
+//! time, label); its right-click restores or deletes it, and right-clicking empty space deletes every
+//! listed entry or exports them to a Markdown file.
 //!
 //! Deleting an EDITING entry only removes it from the list - every such `UndoEntry` is a complete
 //! project snapshot (not a delta), so Ctrl+Z just steps past it to the next surviving snapshot.
@@ -17,6 +17,8 @@
 //! entry (cached).
 
 use crate::ui::app::{describe_change, HistoryCategory, UndoEntry, LAYOUT_STEP};
+use crate::ui::menu;
+use crate::ui::tools::Glyph;
 use eframe::egui;
 
 /// ---- ws:forgiveness ----
@@ -39,7 +41,7 @@ pub struct HistoryState {
     labels: std::collections::HashMap<(u64, usize), String>,
 }
 
-/// Test-only: remember a widget rect so headless tests can click the real button.
+/// Test-only: remember a widget rect so headless tests can click the real row.
 #[cfg(test)]
 fn mark(ui: &egui::Ui, name: &str, r: &egui::Response) {
     ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(("hist", name.to_string())), r.rect));
@@ -129,19 +131,7 @@ pub fn show(
             state.labels.get(&key(e)).cloned().unwrap_or_else(|| "Project edited".into())
         }
     };
-    ui.horizontal(|ui| {
-        ui.label("Search");
-        ui.add(egui::TextEdit::singleline(&mut state.search).desired_width(160.0));
-        if !state.search.is_empty() && ui.small_button("x").clicked() {
-            state.search.clear();
-        }
-    });
-    ui.horizontal(|ui| {
-        ui.selectable_value(&mut state.category, None, "All");
-        ui.selectable_value(&mut state.category, Some(HistoryCategory::Editing), "Editing");
-        ui.selectable_value(&mut state.category, Some(HistoryCategory::Layout), "Layout");
-    });
-
+    let bg = crate::ui::markers_ui::menu_area(ui);
     let needle = state.search.to_lowercase();
     let matches = |state: &HistoryState, e: &UndoEntry| {
         (state.category.is_none() || state.category == Some(e.category))
@@ -153,27 +143,78 @@ pub fn show(
     let deletable: Vec<usize> =
         visible.iter().copied().filter(|&i| undo[i].category != HistoryCategory::Layout).collect();
 
+    // the one header row: search · category · count
     ui.horizontal(|ui| {
-        ui.label(format!("{} entr{}", visible.len(), if visible.len() == 1 { "y" } else { "ies" }));
-        let r = ui.add_enabled(!deletable.is_empty(), egui::Button::new("Delete filtered")).on_hover_text(
+        ui.selectable_value(&mut state.category, None, "All");
+        ui.selectable_value(&mut state.category, Some(HistoryCategory::Editing), "Editing");
+        ui.selectable_value(&mut state.category, Some(HistoryCategory::Layout), "Layout");
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.weak(format!("{} entr{}", visible.len(), if visible.len() == 1 { "y" } else { "ies" }));
+            let w = ui.available_width();
+            ui.add(egui::TextEdit::singleline(&mut state.search).hint_text("Search history").desired_width(w));
+        });
+    });
+    ui.separator();
+
+    let mut delete: Option<usize> = None;
+    let mut delete_listed = false;
+    let mut last_day: Option<i64> = None;
+    egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+        // newest first
+        for &i in visible.iter().rev() {
+            let Some(e) = undo.get(i) else { continue };
+            let d = day_of(e.at);
+            if last_day != Some(d) {
+                ui.strong(day_label(e.at));
+                last_day = Some(d);
+            }
+            let layout = e.category == HistoryCategory::Layout;
+            let row = ui
+                .scope_builder(egui::UiBuilder::new().sense(egui::Sense::click()), |ui| {
+                    ui.horizontal(|ui| {
+                        let icon =
+                            if layout { crate::ui::tools::Glyph::GridIcon } else { crate::ui::tools::Glyph::History };
+                        let (r, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+                        crate::ui::tools::draw_glyph(ui.painter(), r, icon, ui.visuals().text_color());
+                        ui.weak(time_of_day(e.at));
+                        ui.label(label_of(state, e));
+                    });
+                })
+                .response
+                .on_hover_text(format!("{} bytes of project state - right-click to restore or delete", e.json.len()));
+            mark(ui, &format!("row_{i}"), &row);
+            row.context_menu(|ui| {
+                // Layout entries pair 1:1 with the panel-arrangement undo stack: neither restorable
+                // (they are not project states) nor deletable (it would desync that pairing)
+                let why = "Layout entries pair with the panel-arrangement undo stack";
+                let r = ui.add_enabled_ui(!layout, |ui| menu::row(ui, Some(Glyph::History), "Restore", "")).inner;
+                if r.on_hover_text("Make this the live project (pushes a new, labeled undo entry)")
+                    .on_disabled_hover_text(why)
+                    .clicked()
+                {
+                    resp.restore = Some(i);
+                }
+                let r = ui.add_enabled_ui(!layout, |ui| menu::row(ui, Some(Glyph::Cross), "Delete", "")).inner;
+                if r.on_disabled_hover_text(why).clicked() {
+                    delete = Some(i);
+                }
+            });
+        }
+        if visible.is_empty() {
+            ui.weak("No history - make a few edits, or clear the search/filter above");
+        }
+    });
+    bg.context_menu(|ui| {
+        let r = ui
+            .add_enabled_ui(!deletable.is_empty(), |ui| menu::row(ui, Some(Glyph::Cross), "Delete listed entries", ""));
+        let r = r.inner.on_hover_text(
             "Removes the listed Editing entries (Layout entries pair with the panel-undo stack and stay)",
         );
-        mark(ui, "delete_filtered", &r);
-        if r.clicked() {
-            let victims: std::collections::HashSet<usize> = deletable.iter().copied().collect();
-            let mut i = 0;
-            undo.retain(|_| {
-                let keep = !victims.contains(&i);
-                i += 1;
-                keep
-            });
-            // a cached label describes the change TO the (now different) next entry - recompute all
-            state.labels.clear();
-            changed = true;
-        }
-        let r = ui.add_enabled(!visible.is_empty(), egui::Button::new("Export filtered to Markdown…"));
-        mark(ui, "export", &r);
-        if r.clicked() {
+        delete_listed = r.clicked();
+        let r = ui.add_enabled_ui(!visible.is_empty(), |ui| {
+            menu::row(ui, Some(Glyph::ExportArrow), "Export listed to Markdown…", "")
+        });
+        if r.inner.clicked() {
             if let Some(out) =
                 rfd::FileDialog::new().add_filter("Markdown", &["md"]).set_file_name("history.md").save_file()
             {
@@ -187,62 +228,18 @@ pub fn show(
             }
         }
     });
-
-    ui.separator();
-    let mut delete: Option<usize> = None;
-    let mut last_day: Option<i64> = None;
-    egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-        // newest first - `.get` (not indexing) because "Delete filtered" above may have already
-        // shrunk `undo` this same frame, leaving `visible`'s indices stale until the next repaint.
-        for &i in visible.iter().rev() {
-            let Some(e) = undo.get(i) else { continue };
-            let d = day_of(e.at);
-            if last_day != Some(d) {
-                ui.strong(day_label(e.at));
-                last_day = Some(d);
-            }
-            // keyed by the entry's identity, not the index - the stack shifts on every delete and
-            // cap-eviction, and an index key made the expanded row jump to a different entry
-            let header_id = ui.id().with(("history_row", e.at.to_bits(), e.json.len()));
-            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), header_id, false)
-                .show_header(ui, |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        let icon = match e.category {
-                            HistoryCategory::Layout => crate::ui::tools::Glyph::GridIcon,
-                            HistoryCategory::Editing => crate::ui::tools::Glyph::History,
-                        };
-                        let (r, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
-                        crate::ui::tools::draw_glyph(ui.painter(), r, icon, ui.visuals().text_color());
-                        ui.weak(time_of_day(e.at));
-                        ui.label(label_of(state, e));
-                        if e.category == HistoryCategory::Layout {
-                            ui.weak("(pairs with panel undo)").on_hover_text(
-                                "Layout entries can't be deleted here - each pairs with a snapshot on \
-                                 the panel-arrangement undo stack, and removing one would desync it",
-                            );
-                        } else {
-                            let r = ui
-                                .small_button("Restore")
-                                .on_hover_text("Make this the live project (pushes a new, labeled undo entry)");
-                            mark(ui, &format!("restore_{i}"), &r);
-                            if r.clicked() {
-                                resp.restore = Some(i);
-                            }
-                            if ui.small_button("Delete").clicked() {
-                                delete = Some(i);
-                            }
-                        }
-                    });
-                })
-                .body(|ui| {
-                    ui.weak(format!("{} bytes of project state", e.json.len()));
-                });
-        }
-        if visible.is_empty() {
-            ui.weak("No history - make a few edits, or clear the search/filter above");
-        }
-    });
-    if let Some(i) = delete {
+    if delete_listed {
+        let victims: std::collections::HashSet<usize> = deletable.iter().copied().collect();
+        let mut i = 0;
+        undo.retain(|_| {
+            let keep = !victims.contains(&i);
+            i += 1;
+            keep
+        });
+        // a cached label describes the change TO the (now different) next entry - recompute all
+        state.labels.clear();
+        changed = true;
+    } else if let Some(i) = delete {
         undo.remove(i);
         state.labels.clear(); // the deleted entry's predecessor now describes a different neighbour
         changed = true;
@@ -312,13 +309,9 @@ mod tests {
                 entry("Rearranged panels", HistoryCategory::Layout, 1_000_100.0),
                 entry("Edited effects", HistoryCategory::Editing, 1_000_200.0),
             ];
-            Self {
-                ctx: egui::Context::default(),
-                state: HistoryState::default(),
-                undo,
-                project: crate::model::Project::new(),
-                time: 0.0,
-            }
+            let ctx = egui::Context::default();
+            ctx.set_fonts(crate::theme::test_fonts()); // real glyph sizes, so popup entries land where drawn
+            Self { ctx, state: HistoryState::default(), undo, project: crate::model::Project::new(), time: 0.0 }
         }
         fn frame(&mut self) {
             self.time += 0.05;
@@ -356,45 +349,85 @@ mod tests {
         assert_eq!(n, 1);
     }
 
+    impl H {
+        /// Right-click `at`, then click the menu entry `label`; returns the click frame's response.
+        fn menu(&mut self, at: egui::Pos2, label: &str) -> HistoryResponse {
+            let mut out = HistoryResponse::default();
+            let mut shapes = Vec::new();
+            let steps: Vec<(egui::Pos2, egui::PointerButton, bool)> =
+                vec![(at, egui::PointerButton::Secondary, true), (at, egui::PointerButton::Secondary, false)];
+            for (pos, button, pressed) in steps {
+                self.step(
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton { pos, button, pressed, modifiers: egui::Modifiers::NONE },
+                    ],
+                    &mut shapes,
+                    &mut out,
+                );
+            }
+            self.step(vec![], &mut shapes, &mut out);
+            let item = shapes
+                .iter()
+                .find_map(|c| match &c.shape {
+                    egui::epaint::Shape::Text(t) if t.galley.text() == label => Some(t.visual_bounding_rect().center()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| {
+                    let texts: Vec<String> = shapes
+                        .iter()
+                        .filter_map(|c| match &c.shape {
+                            egui::epaint::Shape::Text(t) => Some(t.galley.text().to_string()),
+                            _ => None,
+                        })
+                        .collect();
+                    panic!("no '{label}' in the menu: {texts:?}")
+                });
+            self.time += 1.0;
+            let mut got = HistoryResponse::default();
+            for pressed in [true, false] {
+                let ev = egui::Event::PointerButton {
+                    pos: item,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                };
+                self.step(vec![egui::Event::PointerMoved(item), ev], &mut shapes, &mut got);
+            }
+            got
+        }
+        fn step(
+            &mut self,
+            events: Vec<egui::Event>,
+            shapes: &mut Vec<egui::epaint::ClippedShape>,
+            out: &mut HistoryResponse,
+        ) {
+            self.time += 0.05;
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 700.0))),
+                time: Some(self.time),
+                events,
+                ..Default::default()
+            };
+            let H { ctx, state, undo, project, .. } = self;
+            let full = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let r = show(ui, state, undo, project);
+                    out.changed |= r.changed;
+                    out.restore = out.restore.or(r.restore);
+                });
+            });
+            *shapes = full.shapes;
+        }
+    }
+
     #[test]
     fn delete_filtered_removes_only_matching_entries() {
         let mut h = H::new();
         h.state.category = Some(HistoryCategory::Editing);
         h.frame();
-        let r = h.ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(("hist", "delete_filtered")))).unwrap();
-        h.frame(); // hover
-        let changed = {
-            let H { ctx, state, undo, project, .. } = &mut h;
-            let mut changed = false;
-            let _ = ctx.run(
-                egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 700.0))),
-                    events: vec![
-                        egui::Event::PointerMoved(r.center()),
-                        egui::Event::PointerButton {
-                            pos: r.center(),
-                            button: egui::PointerButton::Primary,
-                            pressed: true,
-                            modifiers: egui::Modifiers::NONE,
-                        },
-                        egui::Event::PointerButton {
-                            pos: r.center(),
-                            button: egui::PointerButton::Primary,
-                            pressed: false,
-                            modifiers: egui::Modifiers::NONE,
-                        },
-                    ],
-                    ..Default::default()
-                },
-                |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| {
-                        changed = show(ui, state, undo, project).changed;
-                    });
-                },
-            );
-            changed
-        };
-        assert!(changed);
+        let out = h.menu(egui::pos2(200.0, 650.0), "Delete listed entries");
+        assert!(out.changed);
         assert_eq!(h.undo.len(), 1, "both Editing entries removed, the Layout one survives");
         assert_eq!(h.undo[0].category, HistoryCategory::Layout);
         // a cached label describes the change TO the next entry - deleting reshuffles every
@@ -407,41 +440,10 @@ mod tests {
     fn history_restore_pushes_one_labeled_undo() {
         let mut h = H::new();
         h.frame();
-        // clicking Restore sets HistoryResponse.restore = Some(i) for an Editing row
-        let r = h.ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(("hist", "restore_0")))).unwrap();
-        h.frame(); // hover
-        let restore = {
-            let H { ctx, state, undo, project, .. } = &mut h;
-            let mut restore = None;
-            let _ = ctx.run(
-                egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 700.0))),
-                    events: vec![
-                        egui::Event::PointerMoved(r.center()),
-                        egui::Event::PointerButton {
-                            pos: r.center(),
-                            button: egui::PointerButton::Primary,
-                            pressed: true,
-                            modifiers: egui::Modifiers::NONE,
-                        },
-                        egui::Event::PointerButton {
-                            pos: r.center(),
-                            button: egui::PointerButton::Primary,
-                            pressed: false,
-                            modifiers: egui::Modifiers::NONE,
-                        },
-                    ],
-                    ..Default::default()
-                },
-                |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| {
-                        restore = show(ui, state, undo, project).restore;
-                    });
-                },
-            );
-            restore
-        };
-        assert_eq!(restore, Some(0), "undo[0] ('Added a clip', Editing) Restore button was clicked");
+        // right-click ▸ Restore sets HistoryResponse.restore = Some(i) for an Editing row
+        let r = h.ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(("hist", "row_0")))).unwrap();
+        let restore = h.menu(r.center(), "Restore").restore;
+        assert_eq!(restore, Some(0), "undo[0] ('Added a clip', Editing) was restored from its row menu");
 
         // the app-side handler (restore_at) then does the actual restore + one labeled undo push
         let live = "{\"live\":true}".to_string();
@@ -450,13 +452,26 @@ mod tests {
         assert_eq!(restored.to_json(), crate::model::Project::from_json(&h.undo[0].json).unwrap().to_json());
     }
 
+    /// A single row's right-click ▸ Delete removes just that entry.
+    #[test]
+    fn row_menu_deletes_one_entry() {
+        let mut h = H::new();
+        h.frame();
+        let r = h.ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(("hist", "row_2")))).unwrap();
+        assert!(h.menu(r.center(), "Delete").changed);
+        let labels: Vec<&str> = h.undo.iter().map(|e| e.label.as_str()).collect();
+        assert_eq!(labels, vec!["Added a clip", "Rearranged panels"]);
+    }
+
     #[test]
     fn history_layout_rows_not_restorable() {
         let mut h = H::new();
         h.frame();
-        // row 1 (index into `visible`, newest-first) is the Layout entry - no Restore rect marked for it
-        let marked = h.ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(("hist", "restore_1"))));
-        assert!(marked.is_none(), "a Layout row must never render a Restore button");
+        // undo[1] is the Layout entry: its menu's Restore is greyed out, so clicking it restores nothing
+        let r = h.ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(("hist", "row_1")))).unwrap();
+        let out = h.menu(r.center(), "Restore");
+        assert_eq!(out.restore, None, "a Layout row can never be restored");
+        assert_eq!(h.undo.len(), 3);
         // and the app-side helper refuses it too, even if something upstream ever got this wrong
         assert!(restore_at(&h.undo, 1, "{}").is_none());
     }

@@ -108,19 +108,9 @@ impl App {
             }
             Pane::Transitions => {
                 let resp = {
-                    let App {
-                        project,
-                        selection,
-                        sel_transitions,
-                        playhead,
-                        undo,
-                        redo,
-                        transitions_ui: st,
-                        palette,
-                        ..
-                    } = self;
+                    let App { project, selection, undo, redo, transitions_ui: st, palette, .. } = self;
                     let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
-                    transitions_ui::show(ui, st, project, selection, sel_transitions, *playhead, palette, &mut push)
+                    transitions_ui::show(ui, st, project, selection, palette, &mut push)
                 };
                 if resp.edited {
                     self.after_edit();
@@ -167,13 +157,8 @@ impl App {
                 if resp.cleared_subtitles {
                     self.toast_undo("Cleared subtitles", Action::Undo);
                 }
-                if let Some(cues) = resp.import_replace_cues {
-                    let n = self.project.subtitles.len();
-                    confirm::ask(
-                        "Import subtitles",
-                        format!("Replace the existing {n} subtitle(s)? (Cancel keeps them and discards this import.)"),
-                        confirm::ConfirmAction::ReplaceSubtitles(cues),
-                    );
+                if resp.import {
+                    timeline_pane::import_subtitles(self);
                 }
             }
             Pane::Planner => {

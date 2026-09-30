@@ -1,16 +1,18 @@
-//! Subtitles panel. Toolbar: "Add at playhead" (cue [playhead, playhead+2 s) with the text "Subtitle",
-//! selected + text field focused), "Import…" (rfd: srt/vtt → engine::subtitles::parse → replace or append
-//! after a yes/no), "Export SRT…" / "Export VTT…" (engine::subtitles::to_srt/to_vtt), "Burn in" checkbox
-//! (project.show_subtitles), and a "Style" collapsing section (font combo from `fonts`, size, colour,
-//! outline width/colour, background box colour, margin from bottom = project.subtitle_margin).
-//! Below: the cue list (egui::Grid / ScrollArea): start and end as editable timecode-ish DragValues in
-//! seconds (3 decimals, end ≥ start + 0.1, keep the list sorted via Project::sort_cues), a multiline text
-//! field, a play button (seek to the cue and play → `seeked` + `play`), a select checkbox and a delete
-//! one; the cue containing the playhead is highlighted; a "Split at playhead" button on the highlighted
-//! cue. A second toolbar row: "To text clips" (Project::cues_to_text_clips - editable Text clips on a
-//! "Subtitles" track), "Delete selected", "Delete in range" (the In/Out range) and "Clear all".
-//! "Open folder" → `open_folder`: the app writes the .srt sidecar and opens the folder. Undo once per
-//! gesture (same edit_start rule as the inspector); returns what changed.
+//! Subtitles panel. Two tabs - Cues and Transcript - and one header row each. The Cues row: "+ Add" (cue
+//! [playhead, playhead+2 s) with the text "Subtitle", selected + text field focused), "Transcribe…" and
+//! "Style ▾" (each opens its section above the cues) and ⋯ (also the cue list's empty-space right-click):
+//! Import… (the app's one import path, shared with the timeline's subtitle lane), Export SRT… /
+//! Export VTT… (engine::subtitles::to_srt/to_vtt), Open folder (the app writes the .srt sidecar and
+//! opens the folder), Burn in (project.show_subtitles), To text clips (Project::cues_to_text_clips -
+//! editable Text clips on a "Subtitles" track), Delete in range (the In/Out range) and Clear all.
+//! The Style section: font combo from `fonts`, size, colour, outline width/colour, background box
+//! colour, margin from bottom = project.subtitle_margin.
+//! Below: the cue list - one row per cue: start and end as editable DragValues in seconds (3 decimals,
+//! end ≥ start + 0.1, keep the list sorted via Project::sort_cues) and the text; the cue containing the
+//! playhead is highlighted. Click a row to select it and seek there (Ctrl/Shift+click toggles it in the
+//! multi-selection, Shift+drag sweeps rows in); its right-click: Play cue (→ `seeked` + `play`), Split at
+//! playhead, Convert to text clip(s), Delete - on every selected cue when the row is part of the
+//! selection. Undo once per gesture (same edit_start rule as the inspector); returns what changed.
 //!
 //! The "Transcribe" section drives `engine::transcribe`: pick a whisper.cpp model (its download size is
 //! named before the click and the download shows a progress bar), and "Transcribe & generate subtitles"
@@ -26,7 +28,7 @@
 //!
 //! ---- ws:transcript-captions ----
 //! A word-timed run also persists its words into `Project.transcripts` (`Project::set_transcript`),
-//! so they survive a reopen and feed the collapsible "Transcript" section (`ui::transcript_ui`:
+//! so they survive a reopen and feed the Transcript tab (`ui::transcript_ui`:
 //! click = seek, select + Delete = ripple cut through `Project::cut_word_ranges`, filler removal with
 //! Mark-instead first, word search across every transcribed clip). The double-take cutter now goes
 //! through that same `cut_word_ranges`. "Get captions" is the one-click entry: it names the model's
@@ -34,12 +36,13 @@
 
 use crate::engine::export::Progress;
 use crate::engine::transcribe::{self, Segment};
+use crate::hotkeys::Action;
 use crate::model::{Id, Project};
 use crate::theme::Palette;
 use crate::ui::tools::{glyph_text_button, Glyph};
 use crate::ui::transcript_ui;
-use crate::ui::{edit_start, once};
-use eframe::egui::{self, Button, DragValue, Response, Slider};
+use crate::ui::{edit_start, menu, once};
+use eframe::egui::{self, Button, DragValue, Response, Sense, Slider};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -140,14 +143,16 @@ impl TranscribeState {
 #[derive(Default)]
 pub struct SubtitlesState {
     pub selected: Option<crate::model::Id>,
-    /// Multi-selected cues (the row checkboxes) for "Delete selected".
+    /// Multi-selected cues (Ctrl/Shift+click, Shift+drag): what a row's right-click acts on.
     pub checked: std::collections::HashSet<Id>,
     pub show_style: bool,
-    /// Cue whose text field should grab focus (set by "Add at playhead").
+    /// Cue whose text field should grab focus (set by "+ Add").
     pub focus: Option<Id>,
+    /// Cue whose text is being typed into and already has its undo step for this visit.
+    typing: Option<Id>,
     pub transcribe: TranscribeState,
     // ---- ws:transcript-captions ----
-    /// The collapsible Transcript section (mirrors `show_style`; `Action::ToggleTranscript`).
+    /// The Transcript tab is showing instead of the cues (`Action::ToggleTranscript` flips it).
     pub show_transcript: bool,
     pub transcript: transcript_ui::TranscriptUiState,
 }
@@ -156,23 +161,19 @@ pub struct SubtitlesState {
 pub struct SubtitlesResponse {
     pub edited: bool,
     pub seeked: bool,
-    /// The cue's play button: seek there and start playback.
+    /// A cue's right-click ▸ Play cue: seek there and start playback.
     pub play: bool,
     /// "Open folder" - the app writes the .srt sidecar next to the project and opens it in Explorer.
     pub open_folder: bool,
     /// ---- ws:forgiveness ----
     /// "Clear all" ran inline (no confirm dialog) - the app toasts an Undo.
     pub cleared_subtitles: bool,
-    /// Import parsed cues while the project ALREADY has subtitles: the app queues a non-blocking
-    /// "Replace?" confirm (`ConfirmAction::ReplaceSubtitles`) instead of asking here (this module has
-    /// no `App` to queue one against). `None` when there was nothing to import, or nothing existing to
-    /// ask about (an empty project replaces inline, no prompt needed). Same `(start, end, text)` shape
-    /// `engine::subtitles::parse`/`apply_import` already use - ids are allocated on Yes, via
-    /// `Project::add_cue`, not carried here.
-    pub import_replace_cues: Option<Vec<(f64, f64, String)>>,
+    /// ⋯ ▸ Import…: the app runs the one import path the timeline's subtitle lane uses too
+    /// (`timeline_pane::import_subtitles` - file dialog, parse, replace-or-confirm).
+    pub import: bool,
 }
 
-/// "Add at playhead": a 2 s cue starting at the playhead.
+/// "+ Add": a 2 s cue starting at the playhead.
 fn add_at(project: &mut Project, playhead: f64) -> Id {
     project.add_cue(playhead, playhead + 2.0, "Subtitle")
 }
@@ -189,6 +190,12 @@ pub(crate) fn apply_import(project: &mut Project, cues: &[(f64, f64, String)], r
     }
 }
 
+/// The pane's two tabs, drawn at the start of whichever header row is showing.
+fn tabs(ui: &mut egui::Ui, transcript: &mut bool) {
+    ui.selectable_value(transcript, false, "Cues");
+    ui.selectable_value(transcript, true, "Transcript");
+}
+
 pub fn show(
     ui: &mut egui::Ui,
     state: &mut SubtitlesState,
@@ -201,257 +208,331 @@ pub fn show(
 ) -> SubtitlesResponse {
     let mut resp = SubtitlesResponse::default();
     let mut undone = false;
-    let ph = *playhead;
 
-    ui.horizontal_wrapped(|ui| {
-        if ui.button("Add at playhead").clicked() {
+    // ---- ws:transcript-captions ---- the Transcript tab (`Action::ToggleTranscript` flips to it)
+    if state.show_transcript {
+        // a selectable word label would take the right-click meant for the word menu
+        ui.style_mut().interaction.selectable_labels = false;
+        let SubtitlesState { show_transcript, transcript, .. } = state;
+        let mut lead = |ui: &mut egui::Ui| tabs(ui, show_transcript);
+        let r =
+            transcript_ui::show(ui, &mut lead, transcript, project, playhead, selection, palette, &mut undone, undo);
+        resp.edited |= r.edited;
+        resp.seeked |= r.seeked;
+        if r.cut > 0 {
+            // the tab's own words follow the cut (Project.transcripts already did); the Transcribe
+            // section's copy for "Regenerate cues" follows too
+            if let Some(tr) = state.transcribe.clip.and_then(|c| project.transcript(c)) {
+                if !state.transcribe.raw_words.is_empty() {
+                    state.transcribe.raw_words = tr.words.clone();
+                }
+            }
+        }
+        return resp;
+    }
+
+    let ph = *playhead;
+    let bg = crate::ui::markers_ui::menu_area(ui);
+    // ---- the one header row: Cues | Transcript · + Add · Transcribe… · Style ▾ · ⋯ ----
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0; // six controls in a ~350 pt side pane
+        tabs(ui, &mut state.show_transcript);
+        ui.add_space(6.0);
+        let key = menu::shortcut(Action::AddSubtitle);
+        let tip = if key.is_empty() {
+            "Add a cue at the playhead".to_string()
+        } else {
+            format!("Add a cue at the playhead ({key})")
+        };
+        if ui.button("+ Add").on_hover_text(tip).clicked() {
             once(&mut undone, undo, project);
             let id = add_at(project, ph);
             state.selected = Some(id);
             state.focus = Some(id);
             resp.edited = true;
         }
-        if crate::ui::tools::glyph_text_button(ui, crate::ui::tools::Glyph::ImportArrow, "Import…").clicked() {
-            import_dialog(project, &mut undone, undo, &mut resp);
-        }
-        if crate::ui::tools::glyph_text_button(ui, crate::ui::tools::Glyph::ExportArrow, "Export SRT…").clicked() {
-            export_dialog(project, false);
-        }
-        if crate::ui::tools::glyph_text_button(ui, crate::ui::tools::Glyph::ExportArrow, "Export VTT…").clicked() {
-            export_dialog(project, true);
-        }
-        if ui.button("Open folder").on_hover_text("Open the project's subtitle folder in Explorer").clicked() {
-            resp.open_folder = true;
-        }
-        let mut burn = project.show_subtitles;
-        let r = ui.checkbox(&mut burn, "Burn in");
-        if r.changed() {
-            once(&mut undone, undo, project);
-            project.show_subtitles = burn;
-            resp.edited = true;
-        }
-        ui.toggle_value(&mut state.show_style, "Style");
-        ui.toggle_value(&mut state.transcribe.open, "Transcribe");
-        // ---- ws:transcript-captions ----
-        ui.toggle_value(&mut state.show_transcript, "Transcript")
-            .on_hover_text("The words of a transcribed clip: click to seek, select + Delete to cut, fillers");
-    });
-    ui.horizontal_wrapped(|ui| {
-        let any = !project.subtitles.is_empty();
-        let sel = state.checked.len();
-        let label = if sel > 0 { format!("To text clips ({sel})") } else { "To text clips".into() };
-        if ui
-            .add_enabled(any, Button::new(label))
-            .on_hover_text("Turn the selected cues (or all of them) into editable Text clips on a \"Subtitles\" track")
-            .clicked()
-        {
-            once(&mut undone, undo, project);
-            let only: Vec<Id> = state.checked.iter().copied().collect();
-            let n = project.cues_to_text_clips(if only.is_empty() { None } else { Some(&only) });
-            state.checked.clear();
-            resp.edited = n > 0;
-        }
-        let n = state.checked.len();
-        if ui.add_enabled(n > 0, Button::new(format!("Delete selected ({n})"))).clicked() {
-            once(&mut undone, undo, project);
-            project.subtitles.retain(|c| !state.checked.contains(&c.id));
-            state.checked.clear();
-            resp.edited = true;
-        }
-        let range = match (project.in_point, project.out_point) {
-            (Some(a), Some(b)) if b > a => Some((a, b)),
-            _ => None,
-        };
-        if ui
-            .add_enabled(any && range.is_some(), Button::new("Delete in range"))
-            .on_hover_text("Delete every cue that overlaps the In/Out range (set with I and O)")
-            .clicked()
-        {
-            let (a, b) = range.expect("button enabled only with a range");
-            once(&mut undone, undo, project);
-            project.subtitles.retain(|c| c.end <= a || c.start >= b);
-            state.checked.retain(|id| project.subtitles.iter().any(|c| c.id == *id));
-            resp.edited = true;
-        }
-        // no confirm dialog: this is already inside the undo-snapshotting `once(...)` helper below, so
-        // it's a normal undoable edit - the app additionally toasts an Undo button (resp.cleared_subtitles).
-        if ui.add_enabled(any, Button::new("Clear all")).clicked() {
-            once(&mut undone, undo, project);
-            project.subtitles.clear();
-            state.checked.clear();
-            resp.edited = true;
-            resp.cleared_subtitles = true;
-        }
+        ui.toggle_value(&mut state.transcribe.open, "Transcribe…")
+            .on_hover_text("Speech to text: model, language and the cue grouping, then the double-take finder");
+        // right-aligned, so ⋯ is never the one a narrow pane cuts off
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.menu_button("⋯", |ui| more_menu(ui, state, project, &mut undone, undo, &mut resp))
+                .response
+                .on_hover_text("More");
+            let arrow = if state.show_style { "▴" } else { "▾" };
+            ui.toggle_value(&mut state.show_style, format!("Style {arrow}"))
+                .on_hover_text("The caption look: font, size, colours, box");
+        });
     });
 
     let mut resort = false;
-    let mut del: Option<Id> = None;
-    let mut split: Option<Id> = None;
-    let mut convert: Option<Id> = None;
-    let (shift, primary_down) = ui.input(|i| (i.modifiers.shift, i.pointer.primary_down()));
+    let mut row_op: Option<(CueOp, Vec<Id>)> = None;
+    let (mods, primary_down) = ui.input(|i| (i.modifiers, i.pointer.primary_down()));
     // the open sections scroll with the cue list: stacked above its own scroll area they squeezed it
     // to nothing
     egui::ScrollArea::vertical().id_salt("subtitles_body").auto_shrink(false).show(ui, |ui| {
         if state.show_style {
             style_section(ui, project, fonts, &mut undone, undo, &mut resp);
+            ui.separator();
         }
         if state.transcribe.open {
-            ui.separator();
             transcribe_section(ui, &mut state.transcribe, project, selection, &mut undone, undo, &mut resp);
-        }
-        // ---- ws:transcript-captions ----
-        if state.show_transcript {
             ui.separator();
-            let r = transcript_ui::show(
-                ui,
-                &mut state.transcript,
-                project,
-                playhead,
-                selection,
-                palette,
-                &mut undone,
-                undo,
-            );
-            resp.edited |= r.edited;
-            resp.seeked |= r.seeked;
-            if r.cut > 0 {
-                // the section's own words follow the cut (Project.transcripts already did); the
-                // Transcribe section's copy for "Regenerate cues" follows too
-                if let Some(tr) = state.transcribe.clip.and_then(|c| project.transcript(c)) {
-                    if !state.transcribe.raw_words.is_empty() {
-                        state.transcribe.raw_words = tr.words.clone();
-                    }
-                }
-            }
         }
-        ui.separator();
         for i in 0..project.subtitles.len() {
             let (id, start, end) = {
                 let c = &project.subtitles[i];
                 (c.id, c.start, c.end)
             };
             let active = ph >= start && ph < end;
+            let picked = state.checked.contains(&id) || state.selected == Some(id);
             let fill = if active {
                 palette.selection.gamma_multiply(0.25)
-            } else if state.selected == Some(id) {
+            } else if picked {
                 palette.selection.gamma_multiply(0.12)
             } else {
                 egui::Color32::TRANSPARENT
             };
-            let row_rect = egui::Frame::new()
-                .fill(fill)
-                .inner_margin(2.0)
-                .show(ui, |ui| {
+            let row = egui::Frame::new().fill(fill).inner_margin(2.0).show(ui, |ui| {
+                // the row senses clicks under its fields: click = select + seek, right-click = its menu
+                ui.scope_builder(egui::UiBuilder::new().sense(Sense::click()), |ui| {
                     ui.horizontal(|ui| {
-                        let mut on = state.checked.contains(&id);
-                        if ui.checkbox(&mut on, "").on_hover_text("Select for \"Delete selected\"").changed() {
-                            if on {
-                                state.checked.insert(id);
-                            } else {
-                                state.checked.remove(&id);
-                            }
-                        }
                         let mut v = start;
-                        let r =
+                        let s =
                             ui.add(DragValue::new(&mut v).range(0.0..=(end - MIN_CUE)).speed(0.05).fixed_decimals(3));
-                        if edit_start(&r) {
+                        if edit_start(&s) {
                             once(&mut undone, undo, project);
                         }
-                        if r.changed() {
+                        if s.changed() {
                             project.subtitles[i].start = v.clamp(0.0, end - MIN_CUE);
                             resp.edited = true;
                         }
-                        if r.drag_stopped() || (r.changed() && !r.dragged()) {
+                        if s.drag_stopped() || (s.changed() && !s.dragged()) {
                             resort = true;
                         }
                         let mut v = end;
-                        let r = ui.add(
+                        let e = ui.add(
                             DragValue::new(&mut v).range((start + MIN_CUE)..=86400.0).speed(0.05).fixed_decimals(3),
                         );
-                        if edit_start(&r) {
+                        if edit_start(&e) {
                             once(&mut undone, undo, project);
                         }
-                        if r.changed() {
+                        if e.changed() {
                             project.subtitles[i].end = v.max(start + MIN_CUE);
                             resp.edited = true;
                         }
-                        if glyph_text_button(ui, Glyph::Play, "").on_hover_text("Play from this cue").clicked() {
-                            *playhead = start;
+                        let mut text = project.subtitles[i].text.clone();
+                        let t =
+                            ui.add(egui::TextEdit::multiline(&mut text).desired_rows(1).desired_width(f32::INFINITY));
+                        // One undo entry per visit to the field, taken at its first keystroke (not on focus:
+                        // a right-click focuses the field too, and must not leave an empty undo step).
+                        // "+ Add" focuses the new cue itself and has already pushed one.
+                        if state.focus == Some(id) {
+                            t.request_focus();
+                            state.focus = None;
+                            state.typing = Some(id);
+                        }
+                        if t.changed() && state.typing != Some(id) {
+                            once(&mut undone, undo, project);
+                            state.typing = Some(id);
+                        }
+                        if t.lost_focus() && state.typing == Some(id) {
+                            state.typing = None;
+                        }
+                        if t.has_focus() {
                             state.selected = Some(id);
-                            resp.seeked = true;
-                            resp.play = true;
                         }
-                        if active && ph > start + 0.05 && ph < end - 0.05 && ui.small_button("Split").clicked() {
-                            split = Some(id);
+                        if t.changed() {
+                            project.subtitles[i].text = text;
+                            resp.edited = true;
                         }
-                        if ui.small_button("T").on_hover_text("Convert to an editable Text clip").clicked() {
-                            convert = Some(id);
-                        }
-                        if crate::ui::markers_ui::x_button(ui).on_hover_text("Delete this cue").clicked() {
-                            del = Some(id);
-                        }
-                    });
-                    let mut text = project.subtitles[i].text.clone();
-                    let r = ui.add(egui::TextEdit::multiline(&mut text).desired_rows(1).desired_width(f32::INFINITY));
-                    // One undo entry per visit to the field, not per keystroke. "Add at playhead" focuses the
-                    // new cue itself and has already pushed one, so that focus does not push another.
-                    if state.focus == Some(id) {
-                        r.request_focus();
-                        state.focus = None;
-                    } else if r.gained_focus() {
-                        once(&mut undone, undo, project);
-                    }
-                    if r.has_focus() {
-                        state.selected = Some(id);
-                    }
-                    if r.changed() {
-                        project.subtitles[i].text = text;
-                        resp.edited = true;
-                    }
+                        #[cfg(test)]
+                        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(("cue_text", id)), t.rect));
+                        (t.clicked(), s.union(e).union(t))
+                    })
+                    .inner
                 })
-                .response
-                .rect;
+            });
+            let scope = row.inner;
+            let (text_clicked, fields) = scope.inner;
+            let bg_r = scope.response;
+            // Ctrl/Shift+click toggles a cue in the multi-selection; a plain click picks just it
+            let toggle = mods.ctrl || mods.shift;
+            if bg_r.clicked() || text_clicked {
+                if toggle {
+                    if !state.checked.remove(&id) {
+                        state.checked.insert(id);
+                    }
+                } else {
+                    state.checked = std::iter::once(id).collect();
+                    state.selected = Some(id);
+                }
+            }
+            if bg_r.clicked() && !toggle {
+                *playhead = start;
+                resp.seeked = true;
+            }
+            let menu_r = bg_r.union(fields);
+            if menu_r.secondary_clicked() && !state.checked.contains(&id) {
+                state.checked = std::iter::once(id).collect();
+                state.selected = Some(id);
+            }
+            menu_r.context_menu(|ui| {
+                let targets: Vec<Id> =
+                    if state.checked.contains(&id) { state.checked.iter().copied().collect() } else { vec![id] };
+                let n = targets.len();
+                if menu::row(ui, Some(Glyph::Play), "Play cue", "").clicked() {
+                    row_op = Some((CueOp::Play, vec![id]));
+                }
+                let inside = ph > start + 0.05 && ph < end - 0.05;
+                let r =
+                    ui.add_enabled_ui(inside, |ui| menu::row(ui, Some(Glyph::Razor), "Split at playhead", "")).inner;
+                if r.on_disabled_hover_text("Put the playhead inside this cue").clicked() {
+                    row_op = Some((CueOp::Split, vec![id]));
+                }
+                let label = if n > 1 { format!("Convert {n} to text clips") } else { "Convert to text clip".into() };
+                if menu::row(ui, Some(Glyph::Letter('T')), &label, "")
+                    .on_hover_text("Editable Text clips on a \"Subtitles\" track")
+                    .clicked()
+                {
+                    row_op = Some((CueOp::ToText, targets.clone()));
+                }
+                ui.separator();
+                let label = if n > 1 { format!("Delete {n} cues") } else { "Delete".into() };
+                if menu::row(ui, Some(Glyph::Cross), &label, "").clicked() {
+                    row_op = Some((CueOp::Delete, targets.clone()));
+                }
+            });
             // Shift+drag over rows sweeps them into the selection (plain drags still edit the widgets)
-            if shift && primary_down && ui.rect_contains_pointer(row_rect) {
+            if mods.shift && primary_down && ui.rect_contains_pointer(row.response.rect) {
                 state.checked.insert(id);
             }
         }
         if project.subtitles.is_empty() {
-            ui.weak("No subtitles. \"Add at playhead\" or import an .srt / .vtt file.");
+            ui.weak("No subtitles. \"+ Add\" one at the playhead, or right-click to import an .srt / .vtt file.");
         }
     });
+    bg.context_menu(|ui| more_menu(ui, state, project, &mut undone, undo, &mut resp));
 
-    if let Some(id) = convert {
-        once(&mut undone, undo, project);
-        project.cues_to_text_clips(Some(&[id]));
-        state.checked.remove(&id);
-        resp.edited = true;
+    match row_op {
+        Some((CueOp::Play, _)) | None => {}
+        Some(_) => once(&mut undone, undo, project),
     }
-    if let Some(id) = del {
-        once(&mut undone, undo, project);
-        project.remove_cue(id);
-        state.checked.remove(&id);
-        if state.selected == Some(id) {
-            state.selected = None;
-        }
-        resp.edited = true;
-    }
-    if let Some(id) = split {
-        if let Some(c) = project.subtitles.iter_mut().find(|c| c.id == id) {
-            let (end, text) = (c.end, c.text.clone());
-            once(&mut undone, undo, project);
-            if let Some(c) = project.subtitles.iter_mut().find(|c| c.id == id) {
-                c.end = ph;
+    match row_op {
+        Some((CueOp::Play, ids)) => {
+            if let Some(c) = ids.first().and_then(|id| project.subtitles.iter().find(|c| c.id == *id)) {
+                *playhead = c.start;
+                state.selected = Some(c.id);
+                resp.seeked = true;
+                resp.play = true;
             }
-            let nid = project.add_cue(ph, end, text);
-            state.selected = Some(nid);
+        }
+        Some((CueOp::Split, ids)) => {
+            if let Some(&id) = ids.first() {
+                if let Some(c) = project.subtitles.iter_mut().find(|c| c.id == id) {
+                    let (end, text) = (c.end, c.text.clone());
+                    c.end = ph;
+                    let nid = project.add_cue(ph, end, text);
+                    state.selected = Some(nid);
+                    resp.edited = true;
+                }
+            }
+        }
+        Some((CueOp::ToText, ids)) => {
+            project.cues_to_text_clips(Some(&ids));
+            state.checked.retain(|c| !ids.contains(c));
             resp.edited = true;
         }
+        Some((CueOp::Delete, ids)) => {
+            for &id in &ids {
+                project.remove_cue(id);
+            }
+            state.checked.retain(|c| !ids.contains(c));
+            if state.selected.is_some_and(|s| ids.contains(&s)) {
+                state.selected = None;
+            }
+            resp.edited = true;
+        }
+        None => {}
     }
     if resort {
         project.sort_cues();
     }
     resp
+}
+
+/// A cue row's right-click verbs, applied after the list is drawn.
+enum CueOp {
+    Play,
+    Split,
+    ToText,
+    Delete,
+}
+
+/// The pane's ⋯ menu, also the cue list's empty-space right-click: files, burn-in and the bulk verbs.
+fn more_menu(
+    ui: &mut egui::Ui,
+    state: &mut SubtitlesState,
+    project: &mut Project,
+    undone: &mut bool,
+    undo: &mut dyn FnMut(&Project),
+    resp: &mut SubtitlesResponse,
+) {
+    let any = !project.subtitles.is_empty();
+    if menu::row(ui, Some(Glyph::ImportArrow), "Import…", "").clicked() {
+        resp.import = true;
+    }
+    for (label, vtt) in [("Export SRT…", false), ("Export VTT…", true)] {
+        if ui.add_enabled_ui(any, |ui| menu::row(ui, Some(Glyph::ExportArrow), label, "")).inner.clicked() {
+            export_dialog(project, vtt);
+        }
+    }
+    let r = menu::row(ui, Some(Glyph::Folder), "Open folder", "")
+        .on_hover_text("Open the project's subtitle folder in Explorer");
+    if r.clicked() {
+        resp.open_folder = true;
+    }
+    ui.separator();
+    let r = menu::check(ui, project.show_subtitles, "Burn in", "")
+        .on_hover_text("Draw the cues onto the picture (and into exports)");
+    if r.clicked() {
+        once(undone, undo, project);
+        project.show_subtitles = !project.show_subtitles;
+        resp.edited = true;
+    }
+    let sel = state.checked.len();
+    let label = if sel > 0 { format!("To text clips ({sel})") } else { "To text clips".into() };
+    let r = ui.add_enabled_ui(any, |ui| menu::row(ui, Some(Glyph::Letter('T')), &label, "")).inner;
+    if r.on_hover_text("Turn the selected cues (or all of them) into editable Text clips on a \"Subtitles\" track")
+        .clicked()
+    {
+        once(undone, undo, project);
+        let only: Vec<Id> = state.checked.iter().copied().collect();
+        let n = project.cues_to_text_clips(if only.is_empty() { None } else { Some(&only) });
+        state.checked.clear();
+        resp.edited = n > 0;
+    }
+    let range = match (project.in_point, project.out_point) {
+        (Some(a), Some(b)) if b > a => Some((a, b)),
+        _ => None,
+    };
+    let r = ui.add_enabled_ui(any && range.is_some(), |ui| menu::row(ui, None, "Delete in range", "")).inner;
+    if r.on_hover_text("Delete every cue that overlaps the In/Out range").clicked() {
+        if let Some((a, b)) = range {
+            once(undone, undo, project);
+            project.subtitles.retain(|c| c.end <= a || c.start >= b);
+            state.checked.retain(|id| project.subtitles.iter().any(|c| c.id == *id));
+            resp.edited = true;
+        }
+    }
+    // no confirm dialog: `once(...)` makes it a normal undoable edit - the app additionally toasts an
+    // Undo button (resp.cleared_subtitles)
+    if ui.add_enabled_ui(any, |ui| menu::row(ui, Some(Glyph::Cross), "Clear all", "")).inner.clicked() {
+        once(undone, undo, project);
+        project.subtitles.clear();
+        state.checked.clear();
+        resp.edited = true;
+        resp.cleared_subtitles = true;
+    }
 }
 
 fn style_section(
@@ -827,33 +908,6 @@ fn transcribe_section(
     }
 }
 
-/// Import an .srt/.vtt via rfd. An empty project replaces inline (nothing to lose, no prompt needed);
-/// otherwise the parsed cues are handed back via `resp.import_replace_cues` for the app to confirm a
-/// replace (`ConfirmAction::ReplaceSubtitles`) - this module has no `App` to queue a `confirm::ask`
-/// against directly. deviation from the plan text: "No/append" is now "Cancel discards the import"
-/// (see the PR body) - silently appending data the user just declined to confirm was the more
-/// surprising default of the two.
-fn import_dialog(
-    project: &mut Project,
-    undone: &mut bool,
-    undo: &mut dyn FnMut(&Project),
-    resp: &mut SubtitlesResponse,
-) {
-    let Some(path) = rfd::FileDialog::new().add_filter("Subtitles", &["srt", "vtt"]).pick_file() else { return };
-    let Ok(text) = std::fs::read_to_string(&path) else { return };
-    let cues = crate::engine::subtitles::parse(&text);
-    if cues.is_empty() {
-        return;
-    }
-    if project.subtitles.is_empty() {
-        once(undone, undo, project);
-        apply_import(project, &cues, true);
-        resp.edited = true;
-    } else {
-        resp.import_replace_cues = Some(cues);
-    }
-}
-
 fn export_dialog(project: &Project, vtt: bool) {
     if project.subtitles.is_empty() {
         return;
@@ -873,6 +927,159 @@ fn export_dialog(project: &Project, vtt: bool) {
 mod tests {
     use super::*;
     use crate::model::{Asset, AudioStreamInfo, ClipKind};
+    use eframe::egui::{Event, Modifiers, PointerButton, Pos2, RawInput, Rect};
+
+    /// Headless pane: real fonts, so popup entries land where they are painted.
+    struct H {
+        ctx: egui::Context,
+        state: SubtitlesState,
+        project: Project,
+        playhead: f64,
+        undos: usize,
+        time: f64,
+        shapes: Vec<egui::epaint::ClippedShape>,
+        resp: SubtitlesResponse,
+    }
+
+    impl H {
+        fn new() -> Self {
+            let ctx = egui::Context::default();
+            ctx.set_fonts(crate::theme::test_fonts());
+            let mut project = Project::new();
+            project.add_cue(0.0, 1.0, "a");
+            project.add_cue(2.0, 3.0, "b");
+            project.add_cue(4.0, 5.0, "c");
+            let resp = SubtitlesResponse::default();
+            Self {
+                ctx,
+                state: SubtitlesState::default(),
+                project,
+                playhead: 0.5,
+                undos: 0,
+                time: 0.0,
+                shapes: vec![],
+                resp,
+            }
+        }
+        fn id(&self, text: &str) -> Id {
+            self.project.subtitles.iter().find(|c| c.text == text).expect("cue").id
+        }
+        fn frame_mod(&mut self, events: Vec<Event>, modifiers: Modifiers) {
+            self.time += 0.05;
+            let input = RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(600.0, 500.0))),
+                time: Some(self.time),
+                modifiers,
+                events,
+                ..Default::default()
+            };
+            let pal = Palette::new(true, egui::Color32::WHITE);
+            let H { ctx, state, project, playhead, undos, shapes, resp, .. } = self;
+            let full = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let mut undo = |_: &Project| *undos += 1;
+                    let r = show(ui, state, project, playhead, &[], &[], &pal, &mut undo);
+                    resp.edited |= r.edited;
+                    resp.seeked |= r.seeked;
+                    resp.play |= r.play;
+                    resp.cleared_subtitles |= r.cleared_subtitles;
+                });
+            });
+            *shapes = full.shapes;
+        }
+        fn frame(&mut self, events: Vec<Event>) {
+            self.frame_mod(events, Modifiers::NONE);
+        }
+        fn press(&mut self, at: Pos2, button: PointerButton, modifiers: Modifiers) {
+            self.time += 1.0; // every press is its own gesture, never half of a double-click
+            self.frame_mod(vec![Event::PointerMoved(at)], modifiers);
+            for pressed in [true, false] {
+                self.frame_mod(vec![Event::PointerButton { pos: at, button, pressed, modifiers }], modifiers);
+            }
+            self.frame(vec![]);
+        }
+        fn text_at(&self, label: &str) -> Pos2 {
+            self.shapes
+                .iter()
+                .find_map(|c| match &c.shape {
+                    egui::epaint::Shape::Text(t) if t.galley.text() == label => Some(t.visual_bounding_rect().center()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("nothing painted reads '{label}'"))
+        }
+        fn cue_text(&self, id: Id) -> Pos2 {
+            self.ctx.data(|d| d.get_temp::<Rect>(egui::Id::new(("cue_text", id)))).expect("cue row drawn").center()
+        }
+    }
+
+    /// Right-click ▸ Delete acts on every selected cue when the row is part of the selection - one undo.
+    #[test]
+    fn cue_row_menu_deletes_the_selection_with_one_undo() {
+        let mut h = H::new();
+        let (a, b) = (h.id("a"), h.id("b"));
+        h.state.checked = [a, b].into_iter().collect();
+        h.frame(vec![]);
+        let at = h.cue_text(b);
+        h.press(at, PointerButton::Secondary, Modifiers::NONE);
+        let item = h.text_at("Delete 2 cues");
+        h.press(item, PointerButton::Primary, Modifiers::NONE);
+        let left: Vec<&str> = h.project.subtitles.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(left, vec!["c"]);
+        assert_eq!(h.undos, 1);
+        assert!(h.state.checked.is_empty());
+    }
+
+    /// Right-click ▸ Play cue seeks to the cue and asks for playback - the old ▶ button's job. The
+    /// right-click focuses the text field under it, which must not leave an empty undo step behind.
+    #[test]
+    fn cue_row_menu_plays_the_cue() {
+        let mut h = H::new();
+        let b = h.id("b");
+        h.frame(vec![]);
+        let at = h.cue_text(b);
+        h.press(at, PointerButton::Secondary, Modifiers::NONE);
+        let item = h.text_at("Play cue");
+        h.press(item, PointerButton::Primary, Modifiers::NONE);
+        assert!(h.resp.seeked && h.resp.play);
+        assert_eq!(h.playhead, 2.0);
+        assert_eq!(h.undos, 0, "playing is not an edit");
+        // typing into the (now focused) field is: one undo step for the whole visit
+        let at = h.cue_text(b);
+        h.press(at, PointerButton::Primary, Modifiers::NONE);
+        for ch in ["x", "y"] {
+            h.frame(vec![Event::Text(ch.into())]);
+        }
+        assert_eq!(h.project.subtitles.iter().find(|c| c.id == b).unwrap().text, "bxy");
+        assert_eq!(h.undos, 1, "one undo per visit, taken at the first keystroke");
+    }
+
+    /// A click picks one cue, Ctrl+click adds another - the multi-selection the row menu acts on.
+    #[test]
+    fn clicks_pick_and_ctrl_clicks_add_cues() {
+        let mut h = H::new();
+        let (b, c) = (h.id("b"), h.id("c"));
+        h.frame(vec![]);
+        let at = h.cue_text(b);
+        h.press(at, PointerButton::Primary, Modifiers::NONE);
+        assert_eq!(h.state.checked, [b].into_iter().collect());
+        let at = h.cue_text(c);
+        h.press(at, PointerButton::Primary, Modifiers::CTRL);
+        assert_eq!(h.state.checked, [b, c].into_iter().collect());
+    }
+
+    /// The header's ⋯ holds the bulk verbs: Clear all is one undoable edit the app toasts an Undo for.
+    #[test]
+    fn more_menu_clears_all() {
+        let mut h = H::new();
+        h.frame(vec![]);
+        let dots = h.text_at("⋯");
+        h.press(dots, PointerButton::Primary, Modifiers::NONE);
+        let item = h.text_at("Clear all");
+        h.press(item, PointerButton::Primary, Modifiers::NONE);
+        assert!(h.project.subtitles.is_empty());
+        assert!(h.resp.cleared_subtitles);
+        assert_eq!(h.undos, 1);
+    }
 
     #[test]
     fn add_at_creates_cue_at_playhead() {
@@ -927,9 +1134,10 @@ mod tests {
             transcribe: TranscribeState { open: true, ..Default::default() },
             ..Default::default()
         };
-        let mut playhead = 2.5; // inside cue "b" → highlighted row with Split button
+        let mut playhead = 2.5; // inside cue "b" → highlighted row
         let ctx = egui::Context::default();
-        for _ in 0..30 {
+        for i in 0..60 {
+            state.show_transcript = i >= 30; // both tabs
             let _ = ctx.run(egui::RawInput::default(), |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut undo = |_: &Project| panic!("no undo without edits");
