@@ -518,7 +518,7 @@ un-migrated ceiling, not a codebase-wide invariant yet. `--selftest` has its own
 
 ## Docs site & UI automation
 
-`website/` is the Docusaurus user guide published to https://kashtheking.github.io/simple-editor/ by
+`website/` is the Docusaurus user guide published to https://kashtheking.com/simple-editor/guide/ by
 `.github/workflows/docs.yml` (push to `main` touching `website/**`). Its screenshots are generated, not
 hand-made: `scripts/docs-shots.ps1` builds the app, makes demo media and a demo project over MCP, then for
 each row of its `$Shots` table launches the app with `--screenshot <ppm>`, drives it over MCP (`layout.page`,
