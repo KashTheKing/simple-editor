@@ -99,7 +99,12 @@ pub fn show(
                 for r in settings.recent_projects.iter().take(5) {
                     let p = Path::new(r);
                     let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| r.clone());
-                    let folder = p.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
+                    // just the folder's own name: a full path pushes the file name out of the row (it's in the tooltip)
+                    let folder = p
+                        .parent()
+                        .and_then(|d| d.file_name())
+                        .map(|d| d.to_string_lossy().into_owned())
+                        .unwrap_or_default();
                     let b = egui::Button::new(name).shortcut_text(folder).wrap_mode(egui::TextWrapMode::Truncate);
                     if ui.add(b).on_hover_text(r).clicked() {
                         out = Some(HomeAction::OpenRecent(r.clone()));

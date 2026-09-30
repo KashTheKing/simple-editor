@@ -41,6 +41,11 @@ fn work_area(p: POINT) -> Option<RECT> {
     }
 }
 
+/// The rect can't sit inside the work area as a normal window.
+fn too_big(area: RECT, w: i32, h: i32) -> bool {
+    w >= area.right - area.left || h >= area.bottom - area.top
+}
+
 fn contains(r: RECT, p: POINT) -> bool {
     p.x >= r.left && p.x < r.right && p.y >= r.top && p.y < r.bottom
 }
@@ -85,6 +90,12 @@ pub fn place_on_cursor_monitor(handle: &impl HasWindowHandle) {
 pub fn apply_rect(vb: eframe::egui::ViewportBuilder, rect: Option<[i32; 4]>) -> eframe::egui::ViewportBuilder {
     match rect {
         Some([x, y, w, h]) if w > 0 && h > 0 => {
+            // a maximized window's saved rect overhangs the work area (taskbar, borders); restored as a
+            // normal window it would hide its bottom (transports) and right edge off-screen
+            let area = work_area(POINT { x: x + w / 2, y: y + h / 2 });
+            if area.is_some_and(|a| too_big(a, w, h)) {
+                return vb.with_maximized(true);
+            }
             vb.with_position([x as f32, y as f32]).with_inner_size([w as f32, h as f32])
         }
         _ => vb,
@@ -137,6 +148,13 @@ mod tests {
         assert!(!background());
         std::env::remove_var("SE_BACKGROUND");
         assert!(!background());
+    }
+
+    #[test]
+    fn a_maximized_sized_rect_is_too_big() {
+        let area = r(0, 0, 2560, 1392); // 2560x1440 minus the taskbar
+        assert!(too_big(area, 2576, 1479), "the saved rect of a maximized window");
+        assert!(!too_big(area, 1400, 860));
     }
 
     #[test]
