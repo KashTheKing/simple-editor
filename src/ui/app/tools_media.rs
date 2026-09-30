@@ -227,8 +227,8 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "library.select",
-        desc: "Set the library selection (asset ids and/or file paths); omit both to clear it.",
-        args: &["ids:array:false:asset ids", "paths:array:false:files on disk (Browse view)"],
+        desc: "Set the Library selection (asset ids) and the Media Browser selection (file paths); omit both to clear them.",
+        args: &["ids:array:false:asset ids", "paths:array:false:files on disk (selected in the Media Browser pane)"],
         kind: ToolKind::Ui,
         run: |app, args| {
             let ids: Vec<Id> = arg_ids(args, "ids")
@@ -241,13 +241,17 @@ pub const TOOLS: &[ToolDef] = &[
                 .and_then(|v| v.as_array())
                 .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
                 .unwrap_or_default();
+            // ids select in the Library, paths in the Media Browser (each pane owns its selection)
             let lib = &mut app.library;
             lib.selected = ids.last().copied();
-            lib.sel_path = if ids.is_empty() { paths.last().cloned() } else { None };
+            lib.sel_path = None;
             lib.seen_selected = lib.selected; // our own write: don't let show() collapse it again
             lib.sel_ids = ids;
-            lib.sel_paths = paths;
-            Ok(ToolOutcome::Done(json!({"ok": true, "ids": app.library.sel_ids, "paths": app.library.sel_paths})))
+            lib.sel_paths = Vec::new();
+            let mb = &mut app.media_browser;
+            mb.sel_path = paths.last().cloned();
+            mb.sel_paths = paths;
+            Ok(ToolOutcome::Done(json!({"ok": true, "ids": app.library.sel_ids, "paths": app.media_browser.sel_paths})))
         },
     },
     ToolDef {

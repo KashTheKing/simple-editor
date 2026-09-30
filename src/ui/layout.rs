@@ -135,6 +135,9 @@ pub enum Pane {
     /// The export settings (platform tiles + Advanced; was the Export window) - the Export page's
     /// left column. Ctrl+E switches to that page.
     Export,
+    /// Recent files, linked folders and the disk (was the Library's "Browse" view) - under the Library
+    /// on the Media page, hidden elsewhere.
+    MediaBrowser,
 }
 
 impl Pane {
@@ -189,6 +192,7 @@ impl Pane {
         // ---- ws:pages ----
         Pane::Scopes,
         Pane::Export,
+        Pane::MediaBrowser,
     ];
     /// Panes added in round 3 - a stored layout without them is from an older version (see `from_json`).
     /// Tools left this list with the pages (no page places it; the viewer's tool rail replaces it).
@@ -220,6 +224,7 @@ impl Pane {
             Pane::Jobs => Glyph::Queue,
             Pane::Scopes => Glyph::Scope,
             Pane::Export => Glyph::ExportArrow,
+            Pane::MediaBrowser => Glyph::Link,
         }
     }
     pub fn title(self) -> &'static str {
@@ -247,6 +252,7 @@ impl Pane {
             Pane::Jobs => "Jobs",
             Pane::Scopes => "Scopes",
             Pane::Export => "Export",
+            Pane::MediaBrowser => "Media Browser",
         }
     }
 }
@@ -316,15 +322,17 @@ impl Default for Layout {
 }
 
 impl Layout {
-    /// The Media page (import & organise): three full-height columns, [Library] · [Source] · [Inspector].
-    /// No Timeline - it rides hidden behind Library with every other pane.
+    /// The Media page (import & organise): three full-height columns, [Library over Media Browser] ·
+    /// [Source] · [Inspector]. No Timeline - it rides hidden behind Library with every other pane.
     pub fn media_layout() -> Self {
         let mut tiles = egui_tiles::Tiles::default();
         let t = &mut tiles;
         let library = Self::tabs(t, &[Pane::Library], 0);
+        let browser = Self::tabs(t, &[Pane::MediaBrowser], 0);
+        let left = Self::linear(t, egui_tiles::LinearDir::Vertical, &[(library, 0.5), (browser, 0.5)]);
         let source = t.insert_pane(Pane::Source);
         let inspector = t.insert_pane(Pane::Inspector);
-        let row = [(library, 0.36), (source, 0.4), (inspector, 0.24)];
+        let row = [(left, 0.36), (source, 0.4), (inspector, 0.24)];
         let root = Self::linear(t, egui_tiles::LinearDir::Horizontal, &row);
         Self::stack_unplaced(t, library);
         Self::new(egui_tiles::Tree::new("layout", root, tiles))
@@ -1360,7 +1368,7 @@ mod tests {
     fn every_page_contains_every_pane() {
         use Pane::*;
         let shown: [(&str, &[Pane]); 6] = [
-            ("Media", &[Library, Source, Inspector]),
+            ("Media", &[Library, MediaBrowser, Source, Inspector]),
             ("Cut", &[Library, Source, Preview, Inspector, Timeline]),
             ("Edit", &[Library, Effects, Transitions, Presets, Source, Preview, Inspector, Timeline]),
             ("Color", &[Presets, Preview, Inspector, Timeline, Nodes, Curves, Scopes]),
@@ -1378,6 +1386,10 @@ mod tests {
             assert!(Layout::from_json(&l.to_json()).is_some(), "{name} does not round-trip");
         }
         assert!(page_layout("Nope").is_none());
+        // Media: Library over the Media Browser, half each, in the left column
+        let l = Layout::media_layout();
+        let col = |p| l.tree.tiles.parent_of(l.tree.tiles.parent_of(l.tree.tiles.find_pane(&p).unwrap()).unwrap());
+        assert_eq!(col(Library), col(MediaBrowser), "Library and Media Browser share the left column");
         // Edit: Preview is the front tab of [Source | Preview]; the hidden panes sit behind Library
         let l = Layout::default_layout();
         assert!(in_front(&l, Preview) && !in_front(&l, Source) && in_front(&l, Library));
@@ -1433,7 +1445,7 @@ mod tests {
     fn pane_source_not_in_round3() {
         assert_eq!(Pane::ROUND3, [Pane::Nodes, Pane::Mixer, Pane::Markers]);
         assert!(!Pane::ALL.contains(&Pane::Tools), "the viewer's tool rail replaced the Tools pane");
-        for p in [Pane::Source, Pane::Jobs, Pane::Scopes, Pane::Export] {
+        for p in [Pane::Source, Pane::Jobs, Pane::Scopes, Pane::Export, Pane::MediaBrowser] {
             assert!(Pane::ALL.contains(&p), "{p:?} is still a pane");
             assert!(!Pane::ROUND3.contains(&p), "{p:?} must not make a stored layout unloadable");
         }

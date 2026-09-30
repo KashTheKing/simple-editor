@@ -172,6 +172,9 @@ pub struct App {
     timeline: timeline::TimelineState,
     preview: preview::PreviewState,
     library: library::LibraryState,
+    /// The Media Browser pane's own state (search, selection, expanded folders): the same list code in
+    /// its disk view (`tab` 1).
+    media_browser: library::LibraryState,
     settings_ui: settings_ui::SettingsUi,
     transitions_ui: transitions_ui::TransitionsState,
     curves: curves::CurvesState,
@@ -729,6 +732,7 @@ impl App {
             timeline: timeline::TimelineState::default(),
             preview: preview::PreviewState::default(),
             library: library::LibraryState::default(),
+            media_browser: library::LibraryState::media_browser(),
             settings_ui: settings_ui::SettingsUi::default(),
             transitions_ui: transitions_ui::TransitionsState::default(),
             curves: curves::CurvesState::default(),

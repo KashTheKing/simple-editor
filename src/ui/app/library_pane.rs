@@ -1,8 +1,10 @@
 use super::*;
 
-pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
+/// `browser`: draw the Media Browser pane (its own state, the disk view) instead of the Library.
+pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, browser: bool) {
     let resp = {
-        let App { project, settings, library: lib, ytdlp_available, thumbs, undo, redo, palette, .. } = app;
+        let App { project, settings, library, media_browser, ytdlp_available, thumbs, undo, redo, palette, .. } = app;
+        let lib = if browser { media_browser } else { library };
         let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
         let ytdlp = ytdlp_available.load(std::sync::atomic::Ordering::Relaxed);
         library::show(ui, lib, project, settings, Some(thumbs), palette, ytdlp, &mut push)
@@ -15,6 +17,9 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
     }
     if resp.import {
         app.act_import();
+    }
+    if resp.show_browser {
+        app.layout.reveal(Pane::MediaBrowser);
     }
     // ---- ws:source-monitor ----
     // ---- ws:library-surface ----
