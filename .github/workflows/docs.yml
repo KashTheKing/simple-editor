@@ -1,6 +1,6 @@
 # Builds the docs site (website/, Docusaurus) and publishes it to GitHub Pages:
-# https://kashtheking.github.io/simple-editor/
-# One-time setup in the repo: Settings > Pages > Source: GitHub Actions.
+# https://kashtheking.com/simple-editor/guide/ (the guide/ folder of the gh-pages branch;
+# the landing page and Rust docs on that branch are left alone).
 name: Docs
 
 on:
@@ -10,20 +10,15 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
 concurrency:
   group: pages
   cancel-in-progress: false
 
 jobs:
-  build:
+  deploy:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: website
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -31,18 +26,14 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: website/package-lock.json
-      - run: npm ci
-      - run: npm run build
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: website/build
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
+      - run: npm ci && npm run build
+        working-directory: website
+      - name: Publish to gh-pages/guide
+        run: |
+          git fetch origin gh-pages
+          git worktree add ../pages origin/gh-pages
+          rm -rf ../pages/guide && cp -r website/build ../pages/guide
+          cd ../pages
+          git config user.name github-actions && git config user.email github-actions@users.noreply.github.com
+          git add -A guide && git commit -m "docs: publish guide from ${GITHUB_SHA::7}" || exit 0
+          git push origin HEAD:gh-pages

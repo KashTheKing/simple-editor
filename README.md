@@ -2,7 +2,7 @@
 
 ![Simple Editor](docs/images/screenshot.png)
 
-**[Documentation & tutorial](https://kashtheking.github.io/simple-editor/)**: a guide to every part of
+**[Documentation & tutorial](https://kashtheking.com/simple-editor/guide/)**: a guide to every part of
 the app, with screenshots. New to editing? Start there.
 
 The fastest video editor on Windows. Free. One tiny exe, no install, no subscription, no BS.
@@ -79,7 +79,7 @@ video in Explorer for an "Edit with Simple Editor" option too.
 
 Every shortcut is rebindable in Settings. Pick a page (Media, Cut, Edit, Color, Audio, Export) for the job at hand,
 add panels with a tab bar's `+`, pop any panel into its own window (right-click its tab), and save your
-own layouts. See the [tutorial](https://kashtheking.github.io/simple-editor/) for the rest.
+own layouts. See the [tutorial](https://kashtheking.com/simple-editor/guide/) for the rest.
 
 ## Test
 

@@ -73,7 +73,7 @@ pub(super) fn toggle_action(p: Pane) -> Option<Action> {
 }
 
 /// Where Help ▸ Tutorial & docs goes (the Docusaurus site, wave 2 of plans/simplify).
-const DOCS_URL: &str = "https://kashtheking.github.io/simple-editor/";
+const DOCS_URL: &str = "https://kashtheking.com/simple-editor/guide/";
 
 impl App {
     /// (Re)load the editor background image texture when the path or blur setting changed.
