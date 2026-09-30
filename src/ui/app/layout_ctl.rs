@@ -240,6 +240,7 @@ pub(super) fn switch_page(app: &mut App, name: &str) -> bool {
     };
     let App { layout, settings, undo, redo, .. } = app;
     if swap_page(layout, settings, undo, redo, page) {
+        app.tools.tool = layout::page_tool(page);
         app.layout_json = app.settings.layout.clone();
         app.settings.save();
     }

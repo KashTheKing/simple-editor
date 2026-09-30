@@ -16,6 +16,7 @@ use crate::ui::onboarding::Onboarding;
 
 pub(crate) fn run(app: &mut App) {
     recovery::boot(app);
+    app.tools.tool = layout::page_tool(&app.settings.page);
     // ---- ws:layout-modes-onboarding ----
     if let Ok(name) = std::env::var("SE_LAYOUT") {
         layout_ctl::switch_page(app, &name);

@@ -63,6 +63,8 @@ pub struct LibraryState {
     /// The whole selection (Ctrl / Shift click, rubber band); the anchor above is one of these.
     pub sel_ids: Vec<Id>,
     pub sel_paths: Vec<String>,
+    /// A sequence picked with a single click (double-click opens it); exclusive with the rows above.
+    pub sel_seq: Option<Id>,
     /// `selected` as of the end of the last frame - the only way to tell app.rs's write from ours.
     pub seen_selected: Option<Id>,
     pub search: String,
@@ -471,6 +473,7 @@ impl LibraryState {
         self.selected = None;
         self.sel_path = None;
         self.seen_selected = None;
+        self.sel_seq = None;
     }
 }
 
@@ -478,6 +481,7 @@ impl LibraryState {
 /// Plain replaces the selection, Ctrl toggles one item, Shift takes the range from the anchor (which
 /// stays put, so a second Shift+click re-ranges from the same place, like every file explorer).
 fn apply_click(state: &mut LibraryState, rows: &[(Pick, egui::Rect)], pick: &Pick, ctrl: bool, shift: bool) {
+    state.sel_seq = None;
     let at = |p: &Pick| rows.iter().position(|(q, _)| q == p);
     if shift {
         if let (Some(i), Some(j)) = (state.anchor().as_ref().and_then(&at), at(pick)) {
@@ -2131,8 +2135,9 @@ impl Tree<'_, '_> {
                 let tag = kind_tag(ClipKind::Sequence);
                 let (text, palette) = (self.palette.text, self.palette);
                 let art = Art::Icon(Glyph::Sequence);
+                let sel = self.state.sel_seq == Some(*id);
                 let (r, _) =
-                    tile(ui, egui::Id::new(("seq_tile", *id)), payload, false, tag, name, text, palette, art, w, None);
+                    tile(ui, egui::Id::new(("seq_tile", *id)), payload, sel, tag, name, text, palette, art, w, None);
                 self.sequence_menu(&r, *id, name);
             });
         } else {
@@ -2163,7 +2168,8 @@ impl Tree<'_, '_> {
         let (palette, h, columns) = (self.palette, ROW_H * self.state.zoom, &self.settings.library_columns);
         let dur = duration_text(self.project.sequence_duration(id));
         let editing = self.project.editing == Some(id);
-        let (r, _) = row(ui, egui::Id::new(("seq", id)), DragPayload::Sequence(id), false, None, |ui| {
+        let sel = self.state.sel_seq == Some(id);
+        let (r, _) = row(ui, egui::Id::new(("seq", id)), DragPayload::Sequence(id), sel, None, |ui| {
             ui.add_space(indent(depth) + ARROW);
             let (rect, _) = ui.allocate_exact_size(egui::vec2(h * 16.0 / 9.0, h), egui::Sense::hover());
             paint_art(ui, rect, Art::Icon(Glyph::Sequence), palette);
@@ -2180,8 +2186,13 @@ impl Tree<'_, '_> {
         self.sequence_menu(&r, id, name);
     }
 
-    /// Double-click opens a sequence; its right-click menu.
+    /// A click selects a sequence, a double-click opens it; its right-click menu.
+    // ponytail: the Source monitor plays files only, so a selected sequence previews nothing there
     fn sequence_menu(&mut self, r: &egui::Response, id: Id, name: &str) {
+        if r.clicked() {
+            self.state.clear_sel();
+            self.state.sel_seq = Some(id);
+        }
         if r.double_clicked() {
             self.resp.open_sequence = Some(id);
         }
@@ -4118,6 +4129,11 @@ mod tests {
         let payload = egui::DragAndDrop::payload::<DragPayload>(&pane.ctx);
         assert!(matches!(payload.as_deref(), Some(DragPayload::Sequence(s)) if *s == seq), "{payload:?}");
         pane.step(&mut state, &mut project, &mut settings, vec![button(to, false)]);
+        // one click selects it without opening it
+        pane.t += 1.0;
+        let (_, r) = pane.step(&mut state, &mut project, &mut settings, press(at, egui::PointerButton::Primary));
+        assert_eq!((state.sel_seq, r.open_sequence), (Some(seq), None));
+        pane.t += 1.0;
         // double-click opens it
         let dbl = [press(at, egui::PointerButton::Primary), press(at, egui::PointerButton::Primary)].concat();
         let (_, r) = pane.step(&mut state, &mut project, &mut settings, dbl);

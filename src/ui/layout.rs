@@ -42,6 +42,16 @@ pub fn page_layout(name: &str) -> Option<fn() -> Layout> {
     })
 }
 
+/// The tool a page opens with: the Cut page cuts, every other page selects.
+pub fn page_tool(page: &str) -> crate::ui::tools::Tool {
+    use crate::ui::tools::Tool;
+    if page == "Cut" {
+        Tool::Cut
+    } else {
+        Tool::Select
+    }
+}
+
 /// A page by name, case-insensitively, including the six pre-pages workspace names (Simple / Text ->
 /// Edit, Deliver -> Export) so old scripts, `layout.workspace` calls and settings files keep working.
 pub fn page_name(name: &str) -> Option<&'static str> {
@@ -1323,6 +1333,14 @@ mod tests {
     use super::*;
 
     // ---- ws:ui-kit ----
+    /// Each page opens with its tool: Cut cuts, the rest select.
+    #[test]
+    fn pages_open_with_their_default_tool() {
+        use crate::ui::tools::Tool;
+        let want = [Tool::Select, Tool::Cut, Tool::Select, Tool::Select, Tool::Select, Tool::Select];
+        assert_eq!(PAGES.iter().map(|p| page_tool(p)).collect::<Vec<_>>(), want);
+    }
+
     #[test]
     fn grab_over_a_tab_bar_becomes_default() {
         use egui::{pos2, CursorIcon as C, Rect};
