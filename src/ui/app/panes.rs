@@ -30,7 +30,8 @@ impl App {
         match pane {
             Pane::Preview => preview_pane::draw(self, ui),
             Pane::Timeline => timeline_pane::draw(self, ui),
-            Pane::Library => library_pane::draw(self, ui),
+            Pane::Library => library_pane::draw(self, ui, false),
+            Pane::MediaBrowser => library_pane::draw(self, ui, true),
             Pane::Inspector => {
                 let changed = {
                     let App {

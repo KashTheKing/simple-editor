@@ -1,4 +1,5 @@
-//! Left panel: the project browser - Premiere's project panel, with a "Project | Browse" switch.
+//! Left panel: the project browser - Premiere's project panel. The same code draws two panes: Library
+//! (`tab` 0) and Media Browser (`tab` 1, `Pane::MediaBrowser`), each with its own `LibraryState`.
 //!
 //! "Project" is what the project contains, drawn as a real file explorer: nested folders, the
 //! sequences and the assets under them, and move-by-drag onto a folder row. "Browse" reads the disk
@@ -53,7 +54,8 @@ pub(crate) const COLUMNS: &[&str] = &["kind", "duration", "fps", "size", "label"
 
 #[derive(Default)]
 pub struct LibraryState {
-    /// 0 = Project (what the project contains), 1 = Browse (recent files + the linked folders).
+    /// 0 = Library (what the project contains), 1 = Media Browser (recent files + the linked folders).
+    /// Fixed per pane: App keeps one state for each.
     pub tab: usize,
     /// Anchor of the selection: the asset a click landed on (and Shift+click ranges from).
     /// app.rs writes it straight after an import - `show` spots that and collapses the set onto it.
@@ -127,6 +129,8 @@ pub struct LibraryState {
 #[derive(Default)]
 pub struct LibraryResponse {
     pub import: bool,
+    /// A folder was just linked: bring the Media Browser pane (where linked folders live) forward.
+    pub show_browser: bool,
     pub add_to_timeline: Vec<Id>,
     /// Files to import into the library (and select).
     pub open_paths: Vec<PathBuf>,
@@ -399,18 +403,6 @@ pub fn show(
     resp
 }
 
-// ---- ws:library-surface ----
-/// "Project | Browse": what the list shows - the project's own media, or the disk.
-fn scope_switch(ui: &mut egui::Ui, state: &mut LibraryState) {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 0.0;
-        ui.selectable_value(&mut state.tab, 0, RichText::new("Project").small())
-            .on_hover_text("The media, sequences and folders in this project");
-        ui.selectable_value(&mut state.tab, 1, RichText::new("Browse").small())
-            .on_hover_text("Recent files and the folders you linked, straight from disk");
-    });
-}
-
 /// app.rs sets `selected` on its own after an import or a "reveal in library"; the multi-selection
 /// follows that write (and only that one - our own writes go through `set_anchor`).
 fn external_select(state: &mut LibraryState) {
@@ -426,6 +418,11 @@ fn external_select(state: &mut LibraryState) {
 }
 
 impl LibraryState {
+    /// The Media Browser pane's state: the disk view.
+    pub fn media_browser() -> Self {
+        Self { tab: 1, ..Default::default() }
+    }
+
     fn has(&self, p: &Pick) -> bool {
         match p {
             Pick::Asset(id) => self.sel_ids.contains(id),
@@ -1167,7 +1164,7 @@ fn browser(
         if let Some(p) = rfd::FileDialog::new().pick_folder() {
             ops.push(LibOp::LinkFolder(p.to_string_lossy().into_owned()));
             op_start = true;
-            state.tab = 1; // a linked folder is browsed from "Browse" - show it
+            resp.show_browser = true; // a linked folder is browsed from the Media Browser - show it
         }
     }
     resp.settings_changed |= columns_changed;
@@ -1391,7 +1388,7 @@ fn zoom_scroll(ui: &egui::Ui, state: &mut LibraryState) {
 // ---- ws:library-surface ----
 
 /// The pane's one header row, in the panel fill so it never reads as content: search (fills what is
-/// left) · Filter ▾ · View ▾ · + Import, then the Project | Browse switch.
+/// left) · Filter ▾ · View ▾ · + Import.
 #[allow(clippy::too_many_arguments)]
 fn header(
     ui: &mut egui::Ui,
@@ -1424,9 +1421,6 @@ fn header(
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| search_box(ui, state, palette));
             });
         });
-        // under the row, not in it: at 300 px the row has no width to spare for it (it squeezed the
-        // search box to a few letters and pushed Filter ▾ off the pane)
-        scope_switch(ui, state);
     });
     ui.separator();
 }
@@ -3787,6 +3781,28 @@ mod tests {
         }
     }
 
+    /// Same gate for the Media Browser pane (`tab` 1): recent files, a linked folder, both views.
+    #[test]
+    fn assert_no_idle_repaint_media_browser() {
+        let mut project = Project::new();
+        let mut settings = Settings::default();
+        settings.touch_recent(r"C:\media\idle.mp4");
+        let palette = Palette::new(true, egui::Color32::WHITE);
+        for view in [0, 1] {
+            let ctx = headless_ctx();
+            let mut state = LibraryState { tab: 1, view, ..Default::default() };
+            for _ in 0..30 {
+                let _ = ctx.run(tall(900.0), |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let mut undo = |_: &Project| panic!("no undo without edits");
+                        show(ui, &mut state, &mut project, &mut settings, None, &palette, false, &mut undo);
+                    });
+                });
+            }
+            assert!(!ctx.has_requested_repaint(), "view {view}: an idle media browser requested a repaint");
+        }
+    }
+
     /// A subclip sits under its parent in the list; an orphan (parent gone) stays at the top level.
     #[test]
     fn subclips_nest_under_their_parent() {
@@ -3986,7 +4002,7 @@ mod tests {
         for gone in ["New", "More", "Import URL", "1 selected", "Click a file", "Select a file", "description"] {
             assert!(text_rect(&shapes, gone).is_none(), "{gone:?} is still on screen");
         }
-        assert!(text_rect(&shapes, "Project").is_some() && text_rect(&shapes, "Browse").is_some());
+        assert!(text_rect(&shapes, "Browse").is_none(), "the Browse view is its own pane now");
     }
 
     /// Right-click on bare space is the pane-level menu: every verb the header lost lives there.
