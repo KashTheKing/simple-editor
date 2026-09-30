@@ -1,0 +1,54 @@
+---
+title: Export page
+description: Export a video for YouTube, Shorts, TikTok or Instagram, queue several exports, and the quick ways out.
+---
+
+![The Export page](/img/tutorial/page-export.png)
+
+**File ▸ Export ▸ Export Video As…** (<kbd>Ctrl+E</kbd>) takes you to the **Export** page (<kbd>Alt+6</kbd>):
+the export settings on the left, the Preview in the middle, and the Inspector over the **Jobs** list (the
+render queue) on the right. Export needs FFmpeg.
+
+## Export a video
+
+![The Export panel](/img/tutorial/export-panel.png)
+
+1. Click a **platform tile**: **YouTube 1080p**, **YouTube 4K**, **Shorts / Reels / TikTok** (1080×1920)
+   or **Instagram 1:1**. The picture is fitted inside that size with black bars, never stretched.
+2. Optional: tick **Export In/Out Range** to export only the part between your In and Out marks.
+3. Click **Export…**, pick a name and a format (MP4, MOV, MKV, WebM, AVI, GIF, or MP3 / WAV / M4A / FLAC
+   for sound only), and save.
+
+The export runs in the background with a progress bar and time left in the **Jobs** list, so you can keep
+working. **Add to Queue** picks a file name now and renders it after whatever is already running; the
+**Jobs** list shows the order, and ▲ / ▼ change it. **Cancel** stops an export; cancelling the running
+one also empties the queue.
+
+The line under the settings estimates the file size and warns if the quality is very low or very high.
+
+### Advanced
+
+Open **Advanced** for the **Resolution** (project size, 720p, 1080p, 1440p, 4K or custom), the
+**Scaler**, the **Encoder** (including NVIDIA, Intel and AMD hardware encoders if your graphics driver has
+them), the **Quality** and the encoder **Preset**. The frame rate is the project's.
+
+Also on the panel:
+
+- **Normalize loudness (−14 LUFS)**, on by default: evens out the loudness for YouTube and friends.
+- **Write metadata**: title and other tags in the file.
+- **Use project background**.
+- **Fast lossless cut (-c copy)**: only when the timeline is a plain cut of one video. Instant, no quality
+  loss, but cuts snap to the video's keyframes.
+
+## Quick ways out
+
+| Command | What it does |
+|---|---|
+| **Quick Export** (<kbd>Ctrl+M</kbd>) | Exports the whole timeline again with the settings of your last export, next to the project file (or the video you opened), without asking |
+| **Export Frame…** (<kbd>Ctrl+Shift+F</kbd>) | Saves the frame at the playhead as PNG, JPG or WebP, at the project size or larger |
+| **Fast Lossless Cut…** (<kbd>Ctrl+Alt+E</kbd>) | Cuts a single video without re-encoding it |
+| **Export Premiere / Resolve XML…** (<kbd>Ctrl+Shift+E</kbd>) | A timeline file you can open in Premiere Pro or DaVinci Resolve |
+| **Export Markers…** | Your markers as a CSV file (the Markers panel can also export YouTube chapters) |
+| **Overwrite Original Video…** | For a project opened from one video: replaces that file with your edit (asks first) |
+
+All of these are in **File ▸ Export**.

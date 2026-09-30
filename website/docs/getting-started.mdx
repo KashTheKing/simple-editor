@@ -1,0 +1,117 @@
+---
+title: Getting started
+slug: /
+description: Download Simple Editor, open your first video, and save your project.
+---
+
+![Simple Editor with a project open on the Edit page](/img/tutorial/edit-page.png)
+
+Simple Editor is a video editor for Windows that comes as one small `.exe`. Every page of this guide
+starts with a screenshot of the real app, taken by a script, so what you see here is what you get.
+
+- **New to video editing?** Read the pages in order: the [interface](interface.mdx), then
+  [importing](library.mdx), the [viewer](viewer.mdx) and the [timeline](timeline.mdx). That's enough to
+  cut a video and [export](export.mdx) it.
+- **Coming from Premiere, Resolve or CapCut?** Skim [Coming from another editor](#coming-from-another-editor)
+  below, then keep the [keyboard shortcuts](shortcuts.md) and the [right-click reference](right-click.mdx)
+  open.
+
+## Download and run
+
+1. Download `simple-editor.exe` from the
+   [latest release](https://github.com/KashTheKing/simple-editor/releases/latest).
+2. Put it in any folder and double-click it. There is no installer.
+3. Install **FFmpeg**, which Simple Editor uses to export and to read some formats:
+   `winget install Gyan.FFmpeg` (or `choco install ffmpeg`). Playback works without it, export doesn't.
+   If FFmpeg isn't on your `PATH`, put `ffmpeg.exe` and `ffprobe.exe` next to `simple-editor.exe`, or
+   point **Settings ▸ General ▸ ffmpeg folder** at them.
+
+## The first launch
+
+![The welcome window](/img/tutorial/welcome.png)
+
+The first time you start the app, a **Welcome to Simple Editor** window walks you through three short
+cards. Use **Next** and **Back**, then **Finish**:
+
+1. **ffmpeg** tells you whether FFmpeg was found.
+2. **Twelve keys to know**: play, shuttle, mark In and Out, split, trim, the command palette, undo and
+   save. **Show all…** opens the full shortcut list.
+3. **Start with a format**: keep 1920×1080, or pick YouTube, YouTube Shorts, TikTok, Instagram Reels and
+   so on. The checkbox below adds **Edit with Simple Editor** to Explorer's right-click menu for videos.
+
+You can bring the window back any time with **Help ▸ Show Welcome Again**.
+
+## Open or import your media
+
+![The home card on an empty project](/img/tutorial/home.png)
+
+An empty project shows a small home card. Its buttons do the same as the menus:
+
+- **Open…** (<kbd>Ctrl+O</kbd>, **File ▸ Open Video / Media…**) opens a video, or a `.sedit` project.
+  Opening a video starts a new project built around it.
+- **Import media…** (<kbd>Ctrl+I</kbd>) adds files to the [Library](library.mdx) without touching the
+  timeline.
+- **Blank project** starts an empty 1920×1080, 60 fps project; a button under **Start from a format**
+  starts one in that format instead. **Recent projects** lists your last five.
+- The **×** hides the card for this session.
+
+You can also **drag files from Explorer** onto the window. Where you drop them matters:
+
+| Drop on | What happens |
+|---|---|
+| The timeline | The clip is placed where you let go (hold <kbd>Ctrl</kbd> to insert, <kbd>Alt</kbd> to overwrite) |
+| The Preview | The clip is placed at the playhead, on a free video track |
+| Anywhere else | The file is imported into the Library |
+
+Simple Editor reads video (mp4, mov, mkv, webm, avi, m4v, wmv, ts, m2ts, mts, flv, 3gp, mpg, mpeg,
+gif), audio (mp3, wav, m4a, aac, flac, ogg, opus, wma) and images (png, jpg, jpeg, bmp, webp, tif,
+tiff).
+
+:::tip Opening a video from Explorer
+Right-click a video in Explorer ▸ **Edit with Simple Editor** (on Windows 11 it's under **Show more
+options**). A video opened this way starts playing in a full-window player. Press <kbd>Esc</kbd> to get
+to the editor.
+:::
+
+## Save your work
+
+1. **File ▸ Save Project As…** (<kbd>Ctrl+Shift+S</kbd>) saves the project as a `.sedit` file. A `*` in
+   the window title means there are unsaved changes.
+2. After that, **File ▸ Save** (<kbd>Ctrl+S</kbd>) saves to the same file.
+
+:::caution Ctrl+S on an opened video
+If you opened a single video and haven't saved a project yet, <kbd>Ctrl+S</kbd> offers to **overwrite
+the original video** with your edit. It asks first. Use **Save Project As…** if you want to keep the
+original.
+:::
+
+You don't lose work if the app or Windows crashes:
+
+- **Autosave** writes a copy of your project every 30 seconds while it has unsaved changes. Change
+  the interval in **Settings ▸ General ▸ Autosave interval** (0 turns it off).
+- After a crash, the next start asks **Recover unsaved project?**. Click **Yes** to load it.
+- Older autosaves are listed by **Restore Autosave…** in the command palette (<kbd>Ctrl+K</kbd>).
+- Almost everything can be undone with <kbd>Ctrl+Z</kbd> and redone with <kbd>Ctrl+Shift+Z</kbd>
+  (or <kbd>Ctrl+Y</kbd>). Deleting something shows a message with an **Undo** button too.
+
+## Coming from another editor
+
+Most of what you know carries over. The main differences:
+
+| You know it as | In Simple Editor |
+|---|---|
+| Resolve's pages | The **Media / Cut / Edit / Color / Audio / Export** buttons in the middle of the menu bar (<kbd>Alt+1</kbd>–<kbd>Alt+6</kbd>) |
+| Razor / add edit | **Split at Playhead** <kbd>Ctrl+B</kbd>, or the **Blade** tool <kbd>C</kbd> |
+| Ripple delete | <kbd>Shift+Delete</kbd> |
+| Search every command | The **command palette**, <kbd>Ctrl+K</kbd> |
+| Your old keyboard layout | **Settings ▸ Hotkeys ▸ Keymap preset**: Premiere, Resolve or Avid |
+| Source monitor, Insert / Overwrite | The **Source** tab next to Preview; <kbd>Shift+V</kbd> inserts, <kbd>B</kbd> overwrites |
+| Compound clip / nest | **Clip ▸ Nest Selection into a New Sequence** (<kbd>Alt+N</kbd>) |
+| Adjustment layer | **Clip ▸ Add ▸ Add Adjustment Layer** (<kbd>Ctrl+Alt+L</kbd>) |
+| Rate stretch | The **Rate stretch** tool <kbd>R</kbd>, or <kbd>Shift</kbd>+drag a clip edge |
+
+Two defaults that catch people out: <kbd>B</kbd> is **Overwrite**, not the razor, and
+<kbd>Ctrl+K</kbd> is the command palette, not "add edit". The Premiere preset moves split back to
+<kbd>Ctrl+K</kbd>.
+
+Next: [the interface](interface.mdx).

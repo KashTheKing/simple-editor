@@ -1,0 +1,96 @@
+---
+title: Viewer & playback
+description: Play your edit, mark In and Out, and move, scale, crop, draw and add text right on the picture.
+---
+
+![The Preview with a clip selected](/img/tutorial/viewer.png)
+
+The **Preview** shows your edit at the playhead. It's also where you move and resize things: drag on
+the picture instead of typing numbers.
+
+## Play and move around
+
+The row under the picture has, from left to right: the **timecode**, the transport buttons (**Go to
+Start**, **Step Back 1 Frame**, **Play / Pause**, **Step Forward 1 Frame**, **Go to End**), the
+**zoom** menu (**Fit**, 50 %, 100 %, 200 %) and **fullscreen**. Above it, a thin scrub bar grows when you
+hover it; click or drag it to jump.
+
+**Click the timecode to type a time**: `1:30`, `00:01:30:12`, `+10` (frames) or `-2s` all work.
+<kbd>Enter</kbd> jumps there, <kbd>Esc</kbd> cancels.
+
+| To… | Press |
+|---|---|
+| Play / pause | <kbd>Space</kbd> |
+| Play backwards / forwards, faster each press (1×, 2×, 4×, 8×) | <kbd>J</kbd> / <kbd>L</kbd> |
+| Stop | <kbd>K</kbd> |
+| Step one frame | <kbd>Left</kbd> / <kbd>Right</kbd> (<kbd>Shift</kbd>: 10 frames) |
+| Jump to the previous / next cut | <kbd>Up</kbd> / <kbd>Down</kbd> |
+| Jump to the start / end | <kbd>Home</kbd> / <kbd>End</kbd> |
+| Mark In / Out | <kbd>I</kbd> / <kbd>O</kbd> |
+| Clear In and Out | <kbd>Alt+X</kbd> |
+| Go to In / Out | <kbd>Shift+I</kbd> / <kbd>Shift+O</kbd> |
+| Play In to Out, or loop it | <kbd>Ctrl+Shift+Space</kbd> / <kbd>Ctrl+Shift+L</kbd> |
+| Play a couple of seconds around the playhead | <kbd>/</kbd> |
+| Fullscreen | <kbd>F11</kbd> or double-click the picture; <kbd>Esc</kbd> leaves |
+
+In and Out marks show on the timeline's ruler. They're used by Lift, Extract, Loop, and by export if you
+tick **Export In/Out Range**.
+
+<kbd>Ctrl</kbd>+scroll zooms the picture, dragging with the middle mouse button pans it, and **Fit**
+resets.
+
+## The tool rail
+
+![The Shape tool's menu and options bar](/img/tutorial/viewer-shapes.png)
+
+The column of buttons at the top-left of the picture picks what a drag on the picture does:
+
+| Tool | Key | Drag on the picture to… |
+|---|---|---|
+| **Select** | <kbd>V</kbd> | Move the selected clip, and use its handles (below) |
+| **Crop** | | Drag the selected clip's edges to crop it |
+| **Text** | <kbd>T</kbd> | Add a text clip there (5 seconds long, at the playhead) |
+| **Shape** | <kbd>Shift+S</kbd> cycles | Draw a rectangle, ellipse, triangle, polygon, star, line or arrow. Click the button to pick one |
+| **Draw** | <kbd>D</kbd> | Draw strokes by hand; the record button draws while the video plays |
+| **Mask** | <kbd>G</kbd> | Draw a mask on the selected clip: rectangle, ellipse, polygon or path |
+
+While a shape or draw tool is on, an **options bar** along the top sets the fill, stroke, stroke
+width, corner radius, number of sides or brush. Hold <kbd>Shift</kbd> while drawing a shape to keep
+its proportions (lines snap to 45°), and <kbd>Alt</kbd> to draw it out from the centre. For a polygon,
+click each corner and press <kbd>Enter</kbd> (or click the first point) to close it.
+
+## Move, scale, rotate and crop
+
+Select a clip on the timeline and it gets a box with handles in the Preview (with the **Select** tool):
+
+- **Drag inside** the picture to move it.
+- **Drag a corner** to scale it evenly; **drag an edge's middle** to stretch it one way.
+- **Drag the knob above the top edge** to rotate it. Hold <kbd>Shift</kbd> to snap to 15° steps.
+- Turn on **Crop Handles** (right-click ▸ Crop Handles, or the **Crop** tool) and the edge handles crop
+  instead.
+
+While you drag, the clip **snaps** to the centre, edges and thirds of the frame and to other clips,
+with a guide line to show it. Turn that off with right-click ▸ **Snap to Canvas**. For exact numbers,
+use the [Inspector](inspector.mdx). If the clip is animated, a drag sets a keyframe at the playhead.
+
+## Right-click the picture
+
+![Right-click the picture](/img/tutorial/viewer-menu.png)
+
+Right-clicking a clip selects it. Then, for that clip: **Reset Transform**, **Fill Frame**, **Stretch to
+Frame**, **Crop Handles**, **Add Mask to Selection** and **Add Text Here**. Always there:
+
+- **Stop**, **Mark In**, **Mark Out**, **Clear In / Out**.
+- **Zoom** and **Playback Resolution** (100 % down to 25 %: lower is smoother on a slow PC).
+- **Proxies**: play light-weight copies of big video files. On by default; they're built in the
+  background and never used for export.
+- **Movie Mode (pre-render)**: render ahead so heavy effects play smoothly.
+- **Social Guides**: safe-area outlines for TikTok, Instagram Reels, YouTube Shorts and more.
+- **Show / Hide Scopes**, **Background** (checkerboard, black, white or a colour) and **Snap to Canvas**.
+
+## Multicam angles
+
+When the selected clip (or the clip under the playhead) is a multicam clip, an **Angles** list appears
+in the Preview's top-right corner. Click an angle to cut to it at the playhead. Make a multicam clip
+from two or more clips of the same moment with **Clip ▸ Create Multicam from Selection**; they're
+synced by their sound. Close the list with its ×, and bring it back with **Clip ▸ Multicam Angles…**.

@@ -1,0 +1,159 @@
+---
+title: Timeline
+description: Cut, trim, move and snap clips; tracks, sequences, nesting and markers.
+---
+
+![The timeline](/img/tutorial/timeline.png)
+
+The **Timeline** is where your edit lives: video tracks (V1, V2…) on top, audio tracks (A1, A2…)
+below, time running left to right, and the red **playhead** marking the frame the Preview shows.
+
+## The toolbar
+
+One row above the tracks:
+
+- **Tools**: **Select** (<kbd>V</kbd>), **Blade** (<kbd>C</kbd>) and **Rate stretch** (<kbd>R</kbd>).
+- **Snapping** (the magnet, <kbd>S</kbd>).
+- On the right: zoom out, the zoom slider, zoom in, and **Zoom to Fit** (<kbd>Shift+Z</kbd>).
+
+Scroll to move up and down, <kbd>Shift</kbd>+scroll to move sideways, <kbd>Ctrl</kbd>+scroll to zoom,
+and drag with the middle mouse button to pan. Click or drag on the ruler to move the playhead.
+
+## Select
+
+- **Click** a clip to select it. Its linked audio or video comes with it; <kbd>Alt</kbd>+click takes just
+  the one clip.
+- <kbd>Ctrl</kbd>+click adds or removes a clip, <kbd>Shift</kbd>+click adds one.
+- **Drag across empty track space** to select everything in the box (<kbd>Shift</kbd>+drag adds to the
+  selection).
+- **Click an empty gap** between clips to select the gap; <kbd>Delete</kbd> then closes it.
+- <kbd>Ctrl+A</kbd> selects everything, <kbd>A</kbd> / <kbd>Shift+A</kbd> everything after / before the
+  playhead.
+- **Link / Unlink** (<kbd>Ctrl+L</kbd>) ties clips together or splits a video from its sound.
+
+## Cut
+
+- **Split at Playhead** (<kbd>Ctrl+B</kbd>) cuts the selected clips at the playhead. With nothing
+  selected it cuts everything under the playhead.
+- The **Blade** tool (<kbd>C</kbd>): click a clip to cut there. It cuts every track at that time; a thin
+  line shows where while you hover.
+
+![The Blade tool](/img/tutorial/timeline-blade.png)
+
+To remove clips:
+
+| Press | What happens |
+|---|---|
+| <kbd>Delete</kbd> (or <kbd>Backspace</kbd>) | Removes the clip and leaves a gap |
+| <kbd>Shift+Delete</kbd> | **Ripple Delete**: removes it and closes the gap, pulling everything after it left |
+| <kbd>;</kbd> with In and Out marked | **Lift**: removes that time range from every track, leaving a gap |
+| <kbd>'</kbd> with In and Out marked | **Extract**: removes the range and closes the gap |
+
+Right-click a gap ▸ **Close Gap**, or select it and press <kbd>Delete</kbd>, to close a gap you left.
+
+## Move
+
+Drag a clip to move it. It won't land on top of another clip (if it would overlap, it stays where it
+was). Drag it above the top video track or below the bottom audio track to create a new track.
+
+## Trim
+
+Drag the **edge** of a clip to make it shorter or longer. Hold a key while you drag for the pro
+versions of the same move:
+
+| Hold | Drag a clip's **body** | Drag a clip's **edge** |
+|---|---|---|
+| nothing | **Move** | **Trim** (leaves a gap, or eats into one) |
+| <kbd>Ctrl</kbd> | Move | **Ripple trim**: later clips follow, so no gap opens |
+| <kbd>Alt</kbd> | **Slip**: the content slides inside the clip, the clip stays put | **Roll**: moves the cut between two clips, both change length |
+| <kbd>Shift</kbd> | Move | **Rate stretch**: changes the clip's speed so it fits the new length |
+| <kbd>Ctrl+Alt</kbd> | **Slide**: moves the clip, its neighbours shrink or grow to make room | Trims the same edge of every selected clip by the same amount |
+| <kbd>Ctrl+Shift</kbd> | **Insert-move**: lifts the clip out (closing its gap) and pushes it in where you drop | |
+
+When you drag something in from the Library, the keys mean: nothing = place it on a free track,
+<kbd>Ctrl</kbd> = insert (later clips move right), <kbd>Alt</kbd> = overwrite, <kbd>Shift</kbd> = on a new
+track on top.
+
+A **magnetic** track (see [tracks](#tracks)) closes gaps for you: a plain edge drag ripples and moving a
+clip pushes its neighbours. <kbd>Esc</kbd> during a drag cancels it. <kbd>F1</kbd> lists every gesture.
+
+### Trimming with the keyboard
+
+1. Put the playhead near a cut and press <kbd>U</kbd> (**Select Nearest Edit Point**). Clicking right on
+   a cut does the same; <kbd>Ctrl</kbd>+click picks the outgoing side, <kbd>Alt</kbd>+click the incoming
+   side.
+2. <kbd>Shift+U</kbd> cycles between both sides (a roll), the left side and the right side.
+3. <kbd>[</kbd> / <kbd>]</kbd> trim one frame, <kbd>Ctrl+[</kbd> / <kbd>Ctrl+]</kbd> ten frames.
+   <kbd>E</kbd> extends the edit to the playhead.
+
+Also handy: <kbd>Q</kbd> / <kbd>W</kbd> trim the clip's start / end to the playhead,
+<kbd>Alt+,</kbd> / <kbd>Alt+.</kbd> slip it by a frame, and <kbd>,</kbd> / <kbd>.</kbd> nudge it a frame.
+All of these are also under **Timeline ▸ Trim**.
+
+## Snapping
+
+With **snapping** on (the magnet, <kbd>S</kbd>), whatever you drag snaps to, in this order: the
+playhead, the edges of the selected clips, other clip edges, markers, transitions, and the In and Out
+marks. A vertical guide line shows the snap point **before** you let go. Zoom in and the pull gets
+weaker, so frame-exact moves don't fight the magnet.
+
+## Tracks
+
+![Right-click a track header](/img/tutorial/timeline-track-menu.png)
+
+Each track's header shows its name, a **lock**, and an **eye** (video) or **speaker** (audio). An **S**
+for solo appears when you hover the header. Double-click the name to rename it; drag the colour stripe on
+the left edge to reorder tracks; drag the bottom edge of a track (or <kbd>Alt</kbd>+scroll over it) to
+make it taller.
+
+Right-click a header for:
+
+- **Add Video Track**, **Add Audio Track**, **Remove Track** (only an empty one).
+- **Hidden** / **Muted**, and **Solo**.
+- **Locked**: nothing on the track can be moved or trimmed.
+- **Ripple (Sync)**: this track moves along when you ripple-delete, insert or extract on another track.
+  On for V1 and A1 by default.
+- **Magnetic Track**: no gaps on this track; edge drags ripple and <kbd>Delete</kbd> closes the gap.
+- **Rename…**, **Colour**, **Move Track Up** / **Down**.
+
+## Right-click menus
+
+![Right-click a clip](/img/tutorial/timeline-clip-menu.png)
+
+**Right-click a clip** for cut, copy, paste, delete and **Split at Playhead**, plus grouped submenus:
+**Speed** (retime, freeze frame), **Transform**, **Add** (marker, transition, mask), **Audio** (bus,
+normalize, ducking, beats), **Nest**, **Transcript**, **Label**, then **Match Frame**, **Reveal in
+Library** and **Save Selection as Template…**.
+
+Other spots have their own menus: the **ruler** (markers, In / Out, paste, view options), a **gap**
+(Close Gap, paste, add tracks), a **cut** between two clips (roll, add a transition), a **transition**
+(remove, change type or easing, move it to another cut), a **marker** (rename, delete, label) and the **subtitle lane**. They're
+all in the [right-click reference](right-click.mdx#timeline).
+
+![Right-click the ruler](/img/tutorial/timeline-ruler-menu.png)
+
+## Sequences and nesting
+
+A **sequence** is a timeline inside your timeline, like a compound clip.
+
+1. Select some clips and press <kbd>Alt+N</kbd> (**Clip ▸ Nest Selection into a New Sequence**). They're
+   replaced by one sequence clip, with its sound on an audio track.
+2. **Double-click** the sequence clip to edit inside it. The Timeline's tab now reads **Main** plus the
+   sequence's name with an ×.
+3. Click **Main** or the × (or press <kbd>Alt+Up</kbd>) to go back.
+
+![Editing inside a sequence](/img/tutorial/timeline-nested.png)
+
+**Un-nest Sequence Clip** (in the clip's right-click ▸ **Nest** menu) puts the clips back. New empty
+sequences come from the Library: right-click an empty spot ▸ **New sequence**. Sequences are listed in
+the Library; drag one onto the timeline to use it again.
+
+## Markers
+
+- Press <kbd>M</kbd> to add a marker at the playhead. If a selected clip is under the playhead, the marker
+  sticks to that clip; otherwise it goes on the ruler.
+- Drag a marker to move it, double-click it to jump there, right-click it to rename, delete or colour it.
+- The **Markers** panel (<kbd>Ctrl+8</kbd>) lists them all; click one to jump to it. See
+  [Advanced](advanced.mdx#markers).
+
+![Right-click a marker](/img/tutorial/timeline-marker-menu.png)

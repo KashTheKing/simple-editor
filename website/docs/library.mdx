@@ -1,0 +1,125 @@
+---
+title: Library & importing
+description: Import media, organise it, and pick the part of a clip you want with the Source monitor.
+---
+
+![The Library](/img/tutorial/library.png)
+
+The **Library** holds everything in your project: video, audio, images, sequences and folders. It's
+on the left of the Edit page (<kbd>Ctrl+1</kbd> shows or hides it).
+
+## Import media
+
+- Click **+ Import** in the Library's header, or press <kbd>Ctrl+I</kbd>, and pick files.
+- Or drag files from Explorer onto the Library.
+- **Right-click an empty spot ▸ Import from URL…** downloads a video from YouTube, TikTok, X, Vimeo or a
+  direct link. This needs [yt-dlp](https://github.com/yt-dlp/yt-dlp) (`winget install yt-dlp.yt-dlp`);
+  the item only appears once it's found. **File ▸ Import ▸ From URL…** does the same.
+- **Image sequences**: import one numbered frame (png, tif, bmp, tga, dpx or exr with at least three
+  numbered siblings) and Simple Editor turns the whole sequence into one clip.
+- **Timelines from other editors**: **File ▸ Import ▸ Import Timeline (Premiere / Resolve XML, EDL)…**.
+
+Importing doesn't copy or change your files: the project points at them where they are. A dot next to an
+item means it's used in the timeline.
+
+## Find things
+
+The header is one row:
+
+- **Search** filters by name, description and tags.
+- **Filter ▾** narrows by kind (Video, Audio, Image, Seq, Short SFX, Music), by label, or to
+  **Unused only**. The button shows how many filters are on; **Clear filters** turns them off.
+- **View ▾** switches between **List** and **Gallery**, changes the thumbnail **Size**, sets the sort
+  order, and (in List view) picks the **Columns**. <kbd>Ctrl</kbd>+scroll also resizes thumbnails.
+- **Project | Browse** under the header switches between your project's media and **Browse**, which shows
+  your recent files and any folders you've linked (right-click ▸ **Link folder…**). Double-click a file in
+  Browse to add it to the project.
+
+With a search or filter on, **Save filter…** keeps it as a **Smart Bin** you can click later.
+
+## Use a clip
+
+- **Click** an item to open it in the **Source** monitor (the tab next to Preview), paused on its first
+  frame.
+- **Drag** it onto the timeline to place it. Hold <kbd>Ctrl</kbd> while dropping to insert it (later clips
+  move right), <kbd>Alt</kbd> to overwrite what's there, or <kbd>Shift</kbd> to put it on a new track on
+  top.
+- Press <kbd>Enter</kbd> (with the mouse over the Library) to add the selected items at the playhead.
+- Double-click a **sequence** to open it for editing.
+
+Select several items with <kbd>Ctrl</kbd>+click, <kbd>Shift</kbd>+click, or by dragging a box across
+empty space. <kbd>Up</kbd> / <kbd>Down</kbd> move the selection and <kbd>Delete</kbd> removes it from the
+project (with Undo).
+
+## Right-click menus
+
+![Right-click an item](/img/tutorial/library-item-menu.png)
+
+**Right-click an item** for **Open in Source**, **Add to timeline at playhead**, **Info…** (description,
+tags, label and folder), **Label**, **New Subclip from Marks**, **Reveal folder**, **Regenerate proxy**,
+**Convert To** (mp4, mov, gif, mp3, wav, png and more), **Convert…**, **Compress…** and **Remove from
+project**. If the file is missing you also get **Relink Media…**.
+
+![Right-click an empty spot](/img/tutorial/library-empty-menu.png)
+
+**Right-click an empty spot** for **Import Media…**, **Import from URL…**, **New folder**, **New
+sequence**, **Add Adjustment Layer**, **Sort**, **Columns**, **Link folder…**, **Consolidate Media…**,
+**Remove unused**, and **Open Project…**.
+
+Folders, sequences and Smart Bins have their own small menus (rename, delete). See the
+[right-click reference](right-click.mdx#library) for all of them.
+
+## Organise
+
+- **Folders**: right-click an empty spot ▸ **New folder**, then drag items onto it. Right-click a folder to
+  rename or delete it.
+- **Labels**: right-click ▸ **Label** gives an item a colour. **Edit labels…** renames them.
+- **Info…** holds a description and comma-separated tags, which the search box also looks in.
+- **Missing files** show a warning icon. Right-click ▸ **Relink Media…** and pick the folder they moved
+  to; files are matched by name, then by length.
+- **Consolidate Media…** (right-click an empty spot) copies every file the project uses into the
+  project's folder, so you can move or archive it. Save the project first.
+- **Remove unused** removes everything the timeline doesn't use.
+
+## The Source monitor
+
+![The Source monitor with In and Out marked](/img/tutorial/source.png)
+
+The **Source** monitor plays one clip on its own, so you can pick the part you want before it goes
+into your edit. It has its own playhead and its own In and Out marks.
+
+1. Click a clip in the Library. It opens in the **Source** tab, next to Preview.
+2. Play it with <kbd>Space</kbd> or <kbd>J</kbd> / <kbd>K</kbd> / <kbd>L</kbd>, and press <kbd>I</kbd>
+   and <kbd>O</kbd> to mark the part you want. The marked part is shaded on the scrub bar.
+3. Put the timeline's playhead where the clip should go, then press **Insert** (<kbd>Shift+V</kbd>, later
+   clips move right) or **Overwrite** (<kbd>B</kbd>, replaces what's there). They're the two buttons at
+   the right of the Source's transport.
+
+The keys go to whichever monitor you used last: click the Source to drive it, click the Preview or the
+timeline to go back. The Source shows an accent outline while it has the keys.
+
+![Right-click the Source monitor](/img/tutorial/source-menu.png)
+
+**Right-click the Source** for more ways to place the marked part:
+
+- **Append at End** puts it after the last clip.
+- **Ripple Overwrite** replaces the clip under the playhead and moves later clips by the difference.
+- **Close Up** closes the gap under the playhead on one track.
+- **Place on Top** puts it on a new track above everything.
+- **Source Tape** plays the selected Library items (or all of them) back to back, so you can shop for
+  shots.
+- **New Subclip from Marks** saves the marked part as a new Library item.
+- **Close Source** empties it.
+
+**Match Frame** (<kbd>F</kbd>) does the opposite trip: it opens the clip under the timeline's playhead in
+the Source, on the same frame. **Reveal in Library** (<kbd>Ctrl+Shift+R</kbd>) selects its file in the
+Library.
+
+## Subclips
+
+A subclip is a named part of a longer file, listed under its parent in the Library.
+
+- From the Source: mark In and Out, then right-click ▸ **New Subclip from Marks**.
+- From the Library: right-click an item ▸ **New Subclip from Marks** uses the **timeline's** In and Out.
+
+Right-click a subclip ▸ **Rename** to name it.

@@ -1,0 +1,87 @@
+---
+title: Captions & transcript
+description: Add subtitles by hand or transcribe them automatically, style them, burn them in or export them, and edit by text.
+---
+
+![The Subtitles panel](/img/tutorial/subtitles.png)
+
+Subtitles live in the **Subtitles** panel (<kbd>Ctrl+6</kbd>; it's next to the Mixer on the Audio page).
+Once a project has subtitles, they also show as a **Subtitles** lane at the top of the timeline.
+
+## Add subtitles by hand
+
+1. Move the playhead to where a line should appear.
+2. Click **+ Add** (or press <kbd>Alt+S</kbd>). A two-second subtitle appears, ready to type in.
+3. Type the text. Change the start and end times in its row, or drag it in the timeline's subtitle lane
+   (drag the middle to move it, the edges to change its length).
+
+Click a row to select it and jump to it; <kbd>Ctrl</kbd>+click or <kbd>Shift</kbd>+drag selects more.
+**Right-click a row** for **Play cue**, **Split at playhead** (when the playhead is inside it), **Convert
+to text clip** (an editable, animatable text clip) and **Delete**; they act on every selected subtitle.
+
+## Transcribe automatically
+
+Simple Editor writes subtitles for you with [whisper.cpp](https://github.com/ggml-org/whisper.cpp), which
+runs on your own PC.
+
+1. **Get whisper.cpp once**: download a release from its GitHub page and put `whisper-cli.exe` in
+   `%LOCALAPPDATA%\SimpleEditor\cache\whisper`, next to `simple-editor.exe`, or anywhere on your `PATH`.
+   Click **Re-check** in the panel afterwards.
+2. Click **Transcribe…** in the Subtitles panel to open its options. Pick a **Model**: `base.en` is a good
+   start, `tiny.en` is fastest, `small.en` most accurate, and `base` understands other languages. The
+   first time, **Get captions** downloads it (75–466 MB, once).
+3. Select the clip with the speech on the timeline.
+4. Click **Transcribe & generate subtitles**. It runs in the background; the subtitles appear when it's
+   done, even if you close the panel.
+
+You can also right-click a clip ▸ **Transcript ▸ Transcribe Selected Clip**, or use **Timeline ▸ Auto ▸
+Transcribe Selected Clip**.
+
+The options set how lines are broken: **Line length**, **Lines per cue**, **Min duration**, **Pause
+split**, **Max words** and so on. Changed your mind? **Regenerate cues** rebuilds the subtitles from the
+same transcription without running it again. The transcription also finds **double takes** (a sentence
+said twice); mark them on the timeline or cut the extra ones.
+
+## Style
+
+Click **Style ▾** for the font, size, colour, outline, background box, margin, alignment, spacing and
+shadow of every subtitle. The **Gallery ▸ Captions** tab has ready-made styles (Bold Outline, Boxed,
+Yellow Pop, Karaoke…) that you apply with one click.
+
+## Burn in or export
+
+The **⋯** menu (also on a right-click in the empty part of the list) has:
+
+- **Import…** reads an `.srt` or `.vtt` file.
+- **Export SRT…** / **Export VTT…** save the subtitles as a file for YouTube or a video player, and **Open
+  folder** writes one next to your project and shows it.
+- **Burn in** draws the subtitles into the picture, in the Preview and in every export.
+- **To text clips** turns subtitles into text clips on a "Subtitles" track, so you can style and animate
+  each one.
+- **Delete in range** removes the subtitles between the In and Out marks; **Clear all** removes all of
+  them (with Undo).
+
+## Edit by text: the transcript
+
+The Subtitles panel's **Transcript** tab shows the words of a transcribed clip.
+
+- **Click a word** to jump there.
+- **Drag across words** (or <kbd>Shift</kbd>+click) to select them, then press <kbd>Delete</kbd> (or
+  right-click ▸ **Cut selected words**) to cut that part out of the video. Subtitles and markers move along.
+- The find box searches every transcribed clip; ◀ ▶ step through the hits.
+- The **⋯** menu picks the **Clip**, transcribes the selected clip, and handles **fillers**: **Mark
+  fillers** puts a marker on every *um*, *uh*, *like*, *you know*… so you can check them, **Remove fillers**
+  then cuts them all, and **Edit filler words…** changes the list and the padding kept around each cut.
+- **Speak text…** (also in ⋯) reads text aloud with a Windows voice and places it at the playhead, and
+  **Export Transcript…** saves the words as a file.
+
+**Timeline ▸ Auto ▸ Remove Filler Words** does the same as Mark fillers, and Remove fillers the second time.
+
+## The subtitle lane
+
+![Right-click a subtitle in the timeline](/img/tutorial/timeline-cue-menu.png)
+
+In the timeline's **Subtitles** lane, click a subtitle to jump to it, drag it to move it and drag its
+edges to change its length. Right-click one for **Split at Playhead**, **Convert to Text Clip**, **Delete
+Cue**, **Delete Cues in In/Out Range** and **Clear All Subtitles**; right-click an empty part of the lane
+to add one or import a file.

@@ -1,0 +1,73 @@
+---
+title: Color page
+description: Grade your clips with the Color section, Looks, LUTs, Scopes, and the node editor.
+---
+
+![The Color page](/img/tutorial/page-color.png)
+
+The **Color** page (<kbd>Alt+4</kbd>) puts everything for grading in one place: the **Gallery** with Looks
+and LUTs on the left, a big **Preview**, the **Inspector** on the right (with its **Color** section open),
+a thin timeline, and **Nodes** / **Curves** next to the **Scopes** at the bottom.
+
+## Quick fixes
+
+Select a clip, then:
+
+- **Auto Colour** (in the Inspector's **Color** section, or **Timeline ▸ Auto ▸ Auto Colour**) samples
+  the frame at the playhead and evens out its levels and colour.
+- **Colour Match to Reference** (**Timeline ▸ Auto**) makes clips look like another one. Select the clips
+  to fix, then the one to match **last**.
+- A **Look** from **Gallery ▸ Looks** (Teal-Orange, Vintage, B&W Film, Matte, Noir…) applies a whole
+  grade in one click. It **replaces** the clip's existing effects, so apply it first and tweak after.
+
+## The Color section
+
+![The Color section of the Inspector](/img/tutorial/color-inspector.png)
+
+The Inspector's **Color** section has the grading controls, as numbers you drag:
+
+| Group | Controls |
+|---|---|
+| **Primaries** | Lift (shadows), Gamma (midtones) and Gain (highlights) for red, green and blue, plus Temp and Tint |
+| **Color Curves** | Four points for the master curve and for red, green and blue |
+| **Levels** | Input black and white, gamma, output black and white |
+| **Hue / Saturation** | Hue, saturation and lightness |
+| **Vignette** | Radius, softness and strength |
+
+Each group is added to the clip's effect stack the first time you touch it, so you can switch it off or
+reorder it like any [effect](effects.mdx#effects). **Add LUT…** loads a `.cube` file.
+
+To grade many clips at once, grade one, then right-click it ▸ **Attributes ▸ Copy Attributes**
+(<kbd>Ctrl+Alt+C</kbd>), select the others and **Paste Attributes…** (<kbd>Ctrl+Alt+V</kbd>). Or put an
+[adjustment layer](effects.mdx#effects) over them.
+
+## LUTs
+
+- **Add LUT…** in the Color section loads any `.cube` file onto the selected clip.
+- **Gallery ▸ Luts** lists the `.cube` files in your LUT folders; click one to apply it.
+
+## Scopes
+
+![Scopes](/img/tutorial/scopes.png)
+
+**Scopes** show the frame at the playhead as numbers instead of pictures, so you can trust them more than
+your screen. Turn on any mix of **Waveform** (brightness across the picture), **Parade** (the same, per
+colour), **Vectorscope** (hue and saturation) and **Histogram**. Open them on any page from the Preview's
+right-click menu ▸ **Show / Hide Scopes**.
+
+## Nodes
+
+The **Nodes** panel (<kbd>Ctrl+9</kbd>) shows a clip's effects as a graph, for grades and composites that a
+straight list can't do. Select a clip and click **Build a node graph from it**; its effects become nodes.
+
+- Right-click the canvas to add a node: any effect, plus blend, merge, matte, mask, colour and math
+  nodes.
+- Drag from one node's output to another's input to connect them.
+- Right-click a node to delete, duplicate or replace it, or to add a mask.
+- Scroll or middle-drag to move around, <kbd>Ctrl</kbd>+scroll to zoom.
+
+## Curves
+
+The **Curves** panel is the keyframe graph editor (it isn't a colour curve): it draws every
+[animated value](inspector.mdx#keyframes) of the selected clip as a curve. See
+[Advanced](advanced.mdx#curves).

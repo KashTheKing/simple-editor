@@ -3,6 +3,7 @@
 //! `simple-editor --selftest [dir]`   headless engine check
 //! `simple-editor [file] --screenshot out.ppm`   render the UI once and save it (for visual checks)
 //! `--size 1600x900`   start with this window inner size in points (reproducible screenshots)
+//! `simple-editor --dump-hotkeys out.md`   write the shortcut list (F1) as Markdown for the docs site
 //! `SE_BACKGROUND=1`   (env) open at the saved window rect without taking focus - for automation
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -29,6 +30,14 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(|s| s.as_str()) == Some("--selftest") {
         std::process::exit(selftest::run(&args[1..]));
+    }
+    if let (Some("--dump-hotkeys"), Some(out)) = (args.first().map(|s| s.as_str()), args.get(1)) {
+        let md = ui::cheatsheet::markdown(&hotkeys::Hotkeys::defaults());
+        if let Err(e) = std::fs::write(out, md) {
+            eprintln!("{out}: {e}");
+            std::process::exit(1);
+        }
+        return;
     }
     let mut screenshot: Option<PathBuf> = None;
     let mut open: Option<PathBuf> = None;

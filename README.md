@@ -2,6 +2,9 @@
 
 ![Simple Editor](docs/images/screenshot.png)
 
+**[Documentation & tutorial](https://kashtheking.github.io/simple-editor/)**: a guide to every part of
+the app, with screenshots. New to editing? Start there.
+
 The fastest video editor on Windows. Free. One tiny exe, no install, no subscription, no BS.
 
 Simple Editor is built to take on DaVinci Resolve, Premiere Pro, and CapCut, and win on speed,
@@ -55,9 +58,10 @@ ramping, transitions, blend modes), Simple Editor also has:
 These stay off until you install their tool. Nothing gets downloaded without you asking.
 
 - **URL import** (YouTube/TikTok/X): install [yt-dlp](https://github.com/yt-dlp/yt-dlp)
-  (`winget install yt-dlp.yt-dlp`). The Import URL button shows up once it's found.
-- **AI transcription/subtitles**: install [whisper.cpp](https://github.com/ggml-org/whisper.cpp) and
-  point Settings at it. The app downloads the model for you the first time you use it.
+  (`winget install yt-dlp.yt-dlp`). File ▸ Import ▸ From URL… works once it's found.
+- **AI transcription/subtitles**: put `whisper-cli.exe` from
+  [whisper.cpp](https://github.com/ggml-org/whisper.cpp) in `%LOCALAPPDATA%\SimpleEditor\cache\whisper`
+  or on your PATH. The app downloads the model for you the first time you use it.
 - **Hardware export** (NVENC/QSV/AMF): just needs the matching GPU driver, shows up automatically.
 
 ## Build from source
@@ -73,8 +77,9 @@ Output: `target\release\simple-editor.exe`. Needs Rust 1.88+.
 Double-click the exe, or `simple-editor.exe video.mp4` to open a file straight away. Right-click any
 video in Explorer for an "Edit with Simple Editor" option too.
 
-Every shortcut is rebindable in Settings. The default layout is drag-and-drop customizable, pop any
-panel into its own window, save your own layouts.
+Every shortcut is rebindable in Settings. Pick a page (Media, Cut, Edit, Color, Audio, Export) for the job at hand,
+add panels with a tab bar's `+`, pop any panel into its own window (right-click its tab), and save your
+own layouts. See the [tutorial](https://kashtheking.github.io/simple-editor/) for the rest.
 
 ## Test
 
@@ -83,3 +88,10 @@ cargo test
 ```
 
 See `CHANGELOG.md` for what's new and `ARCHITECTURE.md` for how it's built.
+
+## Docs site
+
+The tutorial is a [Docusaurus](https://docusaurus.io) site in `website/`, published to GitHub Pages
+whenever `website/` changes on `main`. Preview it with `cd website`, `npm ci`, `npm start`. Its
+screenshots come from the real app: re-run `scripts/docs-shots.ps1` after a UI change, and
+`simple-editor --dump-hotkeys website/docs/shortcuts.md` after a keymap change.
