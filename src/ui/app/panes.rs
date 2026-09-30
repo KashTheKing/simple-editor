@@ -59,24 +59,18 @@ impl App {
                 if let Some(a) = inspector::take_pending_action() {
                     self.pending_actions.push(a);
                 }
-            }
-            Pane::Effects => {
-                let resp = {
-                    let App { project, selection, playhead, undo, redo, palette, .. } = self;
-                    let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
-                    // the always-open catalogue is taller than the pane: without this the per-clip
-                    // effect stack under it is unreachable
-                    egui::ScrollArea::vertical()
-                        .show(ui, |ui| effects_ui::show(ui, project, selection, *playhead, palette, &mut push))
-                        .inner
-                };
-                if let Some(i) = resp.mask_for {
+                // a keyframe menu's Previous / Next key
+                if let Some(t) = inspector::take_pending_seek() {
+                    self.player.pause();
+                    self.seek(t);
+                }
+                // the Effects section's stack (effects_ui::stack): an effect's own mask, a shader's GLSL
+                if let Some((id, i)) = inspector::take_effect_mask() {
                     // ponytail: the viewport's mask tool edits clip.mask, not the effect's own mask -
                     // targeting an effect index is a preview.rs change, not an app one.
                     let shape = self
-                        .selection
-                        .first()
-                        .and_then(|&id| self.project.clip(id))
+                        .project
+                        .clip(id)
                         .and_then(|c| c.effects.get(i))
                         .and_then(|fx| fx.mask.as_ref())
                         .map(|m| m.shape)
@@ -84,13 +78,7 @@ impl App {
                     // ws:pages: no page shows the Tools pane any more - the viewer paints the mask tool
                     self.tools.tool = Tool::Mask(shape);
                 }
-                if resp.open_nodes {
-                    self.layout.reveal(Pane::Nodes);
-                    self.layout_dirty = true;
-                }
-                if let Some(i) = resp.edit_shader {
-                    // same clip the panel showed the stack of
-                    let id = self.selection.iter().copied().find(|&id| self.project.clip(id).is_some()).unwrap_or(0);
+                if let Some((id, i)) = inspector::take_edit_shader() {
                     let src = self
                         .project
                         .clip(id)
@@ -104,6 +92,16 @@ impl App {
                         self.shader_ui.error = known.unwrap_or_default().to_string();
                     }
                 }
+            }
+            // ---- ws:inspector-surface: the catalogue only - the applied stack lives in the Inspector ----
+            Pane::Effects => {
+                let resp = {
+                    let App { project, selection, undo, redo, palette, .. } = self;
+                    let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
+                    egui::ScrollArea::vertical()
+                        .show(ui, |ui| effects_ui::show(ui, project, selection, palette, &mut push))
+                        .inner
+                };
                 if resp.edited {
                     self.after_edit();
                 }

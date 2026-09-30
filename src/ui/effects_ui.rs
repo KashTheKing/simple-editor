@@ -1,35 +1,30 @@
-//! Effects panel. Top: the CATALOGUE as a thumbnail grid - one ~96x54 card per `EffectKind` showing the
+//! Effects: the catalogue PANE and the applied STACK the Inspector's Effects section draws.
+//! Pane (`show`): a search box over a thumbnail grid - one ~96x54 card per `EffectKind` showing the
 //! effect applied to a stock image with its name underneath, grouped by `EffectKind::category()` under
-//! collapsible headers, with a search box. Thumbnails arrive through `set_thumbnail(kind, id, size)`,
-//! which the app calls after rendering them on the GPU; without a GL context a card still shows its name
-//! on a neutral tile (never blank) - an effect with `EffectKind::applies_to_audio()` instead gets a
-//! solid green tile with a music-note glyph, since it has no picture to render. The catalogue is filtered
-//! to what the first selected clip can use (audio clip -> audio effects only, and vice versa); with
-//! nothing selected it shows everything. Clicking a card adds the effect to every eligible selected
-//! clip, right-clicking opens its quick actions (selected clips / every clip on the track), and only a
-//! deliberate press-and-move makes it a `DragPayload::Effect` drag source (`ui::drag_source`).
-//! Below: the FIRST selected clip's effect stack, in order: each effect is its own `CollapsingHeader`
-//! (default open, independently foldable) whose header row (enabled checkbox, name, mask button, "Edit
-//! shader…" for a custom shader, copy/paste params, painted reorder and remove buttons) wraps instead of
-//! clipping in a narrow panel, and whose body holds its parameters from
-//! `effect.specs()`: a "From … for …" row giving the effect a window inside the clip (0 length = to the
-//! end of it, so an effect covers the whole clip until the user says otherwise), then
-//! label + DragValue (range from ParamSpec, speed ≈ (max-min)/200) - or a CHECKBOX when
-//! `EffectKind::is_bool_param` - + a diamond keyframe toggle at clip-local playhead time
-//! (Animated::toggle_key / set_at, highlighted when a key exists) + a button to clear them. Tint shows a
-//! colour button bound to R/G/B as well.
+//! collapsible headers. Thumbnails arrive through `set_thumbnail(kind, id, size)`, which the app calls
+//! after rendering them on the GPU; without a GL context a card still shows its name on a neutral tile
+//! (never blank) - an effect with `EffectKind::applies_to_audio()` instead gets a solid green tile with a
+//! music-note glyph, since it has no picture to render. The catalogue is filtered to what the first
+//! selected clip can use (audio clip -> audio effects only, and vice versa); with nothing selected it
+//! shows everything. Clicking a card adds the effect to every eligible selected clip, right-clicking
+//! opens its quick actions (selected clips / every clip on the track), and only a deliberate
+//! press-and-move makes it a `DragPayload::Effect` drag source (`ui::drag_source`).
+//! Stack (`stack`, the Inspector's Effects section - the one place it is edited): the FIRST selected
+//! clip's effects in order, one row each - drag handle · enable · name (click folds its parameters) -
+//! with Add/Edit mask, Remove mask, Edit shader…, Copy / Paste parameters, Move up / down, Open in Node
+//! editor and Remove on the row's right-click. A row's body holds a "From … for …" window inside the
+//! clip (0 length = to the end of it), then label + DragValue (range from ParamSpec, speed ≈
+//! (max-min)/200) - or a CHECKBOX when `EffectKind::is_bool_param` - + the shared ◆ keyframe control
+//! (`ui::key_buttons`, right-click for keys and links). Tint shows a colour button bound to R/G/B too.
 //! An effect with a mask gets the inspector's mask grid inline (shape / position / radius / feather /
-//! invert …) plus a delete button. A clip that renders from a REAL node graph (`Clip::uses_graph`) greys
-//! the stack out - the graph is what the renderer evaluates, so stack edits would be invisible - and
-//! offers "Unlink" to get back to the list.
+//! invert …). A clip that renders from a REAL node graph (`Clip::uses_graph`) greys the stack out - the
+//! graph is what the renderer evaluates, so stack edits would be invisible.
 //! Every change → undo once per gesture (same `edit_start` rule as the inspector).
 
-use crate::model::{Animated, ClipKind, Effect, EffectKind, Id, Mask, Project};
-use crate::settings::MotionPreset;
+use crate::model::{ClipKind, Effect, EffectKind, Id, Mask, Project};
 use crate::theme::Palette;
-use crate::ui::tools::{glyph_text_button, Dir, Glyph};
-use crate::ui::{mask_grid, DragPayload, Gesture};
-use eframe::egui::{self, Button, DragValue, Grid, Response, StrokeKind};
+use crate::ui::{key_buttons, key_menu, mask_grid, menu, DragPayload, Gesture};
+use eframe::egui::{self, DragValue, Grid, Response, StrokeKind};
 use std::cell::RefCell;
 use std::collections::HashMap;
 
@@ -57,19 +52,10 @@ fn stable_effect_key(effects: &[Effect], i: usize) -> String {
 }
 
 thread_local! {
-    // ponytail: thread_local hand-off because show() can't reach Settings - the app polls
-    // take_pending_motion() each frame and stores the preset. Upgrade: pass an EffectsState if the
-    // signature is ever allowed to grow.
-    static PENDING_MOTION: RefCell<Option<MotionPreset>> = const { RefCell::new(None) };
     /// GPU-rendered catalogue thumbnails, uploaded by the app (empty without a GL context).
     static THUMBS: RefCell<HashMap<EffectKind, (egui::TextureId, [u32; 2])>> = RefCell::new(HashMap::new());
     /// One effect's parameters on the panel's private clipboard (Copy / Paste on the stack rows).
     static PARAM_CLIP: RefCell<Option<Effect>> = const { RefCell::new(None) };
-}
-
-/// A motion preset captured via "Save as motion preset…" waiting for the app to store it in Settings.
-pub fn take_pending_motion() -> Option<MotionPreset> {
-    PENDING_MOTION.with(|p| p.borrow_mut().take())
 }
 
 /// The app hands a rendered catalogue thumbnail to the panel (texture must stay alive while shown).
@@ -123,43 +109,48 @@ fn effect_card(ui: &mut egui::Ui, kind: EffectKind, palette: &Palette) -> Respon
     let font = egui::TextStyle::Small.resolve(ui.style());
     let name_h = ui.text_style_height(&egui::TextStyle::Small);
     let id = ui.id().with(("fx_card", kind));
-    let r = crate::ui::drag_source(ui, id, DragPayload::Effect(kind), |ui| {
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(CARD.0, CARD.1 + name_h + 2.0), egui::Sense::hover());
-        let tile = egui::Rect::from_min_size(rect.min, egui::vec2(CARD.0, CARD.1));
-        let p = ui.painter();
-        if kind.applies_to_audio() {
-            // no picture to render for an audio effect: a solid tile + note reads at a glance
-            p.rect_filled(tile, 2.0, palette.clip_audio);
-            crate::ui::tools::draw_glyph(p, tile, crate::ui::tools::Glyph::MusicNote, egui::Color32::WHITE);
-        } else {
-            match thumbnail(kind) {
-                Some((tex, _)) => {
-                    p.image(
-                        tex,
-                        tile,
-                        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-                        egui::Color32::WHITE,
-                    );
-                }
-                None => {
-                    // no GL / not rendered yet: a neutral tile that still names the effect
-                    p.rect_filled(tile, 2.0, palette.header);
-                    let g = p.layout(kind.name().to_string(), font.clone(), palette.text_dim, CARD.0 - 8.0);
-                    p.galley(tile.center() - g.size() / 2.0, g, palette.text_dim);
+    // claimed through `allocate_ui` first: `drag_source` draws into a `scope`, which takes whatever is
+    // left of the row instead of wrapping - a narrow pane used to run the cards off its right edge
+    let size = egui::vec2(CARD.0, CARD.1 + name_h + 2.0);
+    let r = ui.allocate_ui(size, |ui| {
+        crate::ui::drag_source(ui, id, DragPayload::Effect(kind), |ui| {
+            let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+            let tile = egui::Rect::from_min_size(rect.min, egui::vec2(CARD.0, CARD.1));
+            let p = ui.painter();
+            if kind.applies_to_audio() {
+                // no picture to render for an audio effect: a solid tile + note reads at a glance
+                p.rect_filled(tile, 2.0, palette.clip_audio);
+                crate::ui::tools::draw_glyph(p, tile, crate::ui::tools::Glyph::MusicNote, egui::Color32::WHITE);
+            } else {
+                match thumbnail(kind) {
+                    Some((tex, _)) => {
+                        p.image(
+                            tex,
+                            tile,
+                            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                            egui::Color32::WHITE,
+                        );
+                    }
+                    None => {
+                        // no GL / not rendered yet: a neutral tile that still names the effect
+                        p.rect_filled(tile, 2.0, palette.header);
+                        let g = p.layout(kind.name().to_string(), font.clone(), palette.text_dim, CARD.0 - 8.0);
+                        p.galley(tile.center() - g.size() / 2.0, g, palette.text_dim);
+                    }
                 }
             }
-        }
-        let border = if ui.rect_contains_pointer(tile) { palette.accent } else { palette.border };
-        p.rect_stroke(tile, 2.0, egui::Stroke::new(1.0, border), StrokeKind::Inside);
-        let label = p.layout_no_wrap(kind.name().to_string(), font, palette.text);
-        let lx = (rect.left() + (CARD.0 - label.size().x) / 2.0).max(rect.left());
-        p.with_clip_rect(egui::Rect::from_min_max(egui::pos2(rect.left(), tile.bottom()), rect.max)).galley(
-            egui::pos2(lx, tile.bottom() + 2.0),
-            label,
-            palette.text,
-        );
+            let border = if ui.rect_contains_pointer(tile) { palette.accent } else { palette.border };
+            p.rect_stroke(tile, 2.0, egui::Stroke::new(1.0, border), StrokeKind::Inside);
+            let label = p.layout_no_wrap(kind.name().to_string(), font, palette.text);
+            let lx = (rect.left() + (CARD.0 - label.size().x) / 2.0).max(rect.left());
+            p.with_clip_rect(egui::Rect::from_min_max(egui::pos2(rect.left(), tile.bottom()), rect.max)).galley(
+                egui::pos2(lx, tile.bottom() + 2.0),
+                label,
+                palette.text,
+            );
+        })
     });
-    r.on_hover_text(format!("{} · {}", kind.name(), kind.category()))
+    r.inner.on_hover_text(format!("{} · {}", kind.name(), kind.category()))
 }
 
 /// Test-only registry of widget rects so headless tests can click real widgets without pixel-guessing.
@@ -181,31 +172,6 @@ pub(crate) mod test_rects {
     }
 }
 
-fn key_buttons(ui: &mut egui::Ui, a: &mut Animated, lt: f64, palette: &Palette, g: &mut Gesture, _at: (usize, usize)) {
-    let r = crate::ui::tools::icon_button(
-        ui,
-        palette,
-        ui.id().with(("kf", _at)),
-        crate::ui::tools::Glyph::Diamond,
-        "Toggle keyframe at playhead",
-        a.has_key_at(lt),
-    );
-    #[cfg(test)]
-    test_rects::push(format!("kf{}_{}", _at.0, _at.1), r.rect);
-    if r.clicked() {
-        a.toggle_key(lt);
-        g.click();
-    }
-    if a.is_animated()
-        && crate::ui::tools::glyph_text_button(ui, crate::ui::tools::Glyph::Cross, "keys")
-            .on_hover_text("Remove all keyframes")
-            .clicked()
-    {
-        a.clear_keys(lt);
-        g.click();
-    }
-}
-
 /// Unit suffix for a wobble parameter.
 fn wobble_suffix(name: &str) -> &'static str {
     match name {
@@ -222,12 +188,12 @@ pub struct EffectsResponse {
     /// Index (into the first selected clip's stack) of the effect whose mask the user wants to draw -
     /// the app switches to the mask tool and points the viewport at it.
     pub mask_for: Option<usize>,
-    /// "Node editor" was clicked: the app opens the node pane for the selected clip.
+    /// "Open in Node editor" was picked: the app opens the node pane for the selected clip.
     pub open_nodes: bool,
     /// Index of the `EffectKind::Shader` effect whose GLSL the user wants to edit (app opens the window).
     pub edit_shader: Option<usize>,
     // ---- ws:registries-schema-hooks ----
-    /// Index of the catalogue card the pointer is hovering, for a future async GPU hover preview
+    /// Index of the stack row the pointer is hovering, for a future async GPU hover preview
     /// (ws:inspector-gallery, wave 2, via `App::alt_render`). Unread this wave.
     #[allow(dead_code)]
     pub hover: Option<usize>,
@@ -249,9 +215,8 @@ fn catalogue(ui: &mut egui::Ui, palette: &Palette, audio: Option<bool>) -> Optio
     let search_id = ui.id().with("fx_search");
     let mut q: String = ui.ctx().data_mut(|d| d.get_temp(search_id).unwrap_or_default());
     ui.horizontal(|ui| {
-        ui.strong("Effects");
         crate::ui::tools::glyph_label(ui, crate::ui::tools::Glyph::Zoom, palette.text_dim);
-        ui.add(egui::TextEdit::singleline(&mut q).hint_text("search").desired_width(f32::INFINITY));
+        ui.add(egui::TextEdit::singleline(&mut q).hint_text("Search effects").desired_width(f32::INFINITY));
     });
     let hits: Vec<EffectKind> =
         EffectKind::ALL.into_iter().filter(|&k| matches(k, &q) && fits_selection(k, audio)).collect();
@@ -273,14 +238,14 @@ fn catalogue(ui: &mut egui::Ui, palette: &Palette, audio: Option<bool>) -> Optio
                         add = Some((kind, Scope::Selection));
                     }
                     r.context_menu(|ui| {
-                        if ui.add_enabled(has_sel, Button::new("Add to selected clip(s)")).clicked() {
-                            add = Some((kind, Scope::Selection));
-                            ui.close();
-                        }
-                        if ui.add_enabled(has_sel, Button::new("Add to all clips on this track")).clicked() {
-                            add = Some((kind, Scope::Track));
-                            ui.close();
-                        }
+                        ui.add_enabled_ui(has_sel, |ui| {
+                            if menu::row(ui, None, "Add to selected clip(s)", "").clicked() {
+                                add = Some((kind, Scope::Selection));
+                            }
+                            if menu::row(ui, None, "Add to all clips on this track", "").clicked() {
+                                add = Some((kind, Scope::Track));
+                            }
+                        });
                     });
                 }
             });
@@ -290,7 +255,74 @@ fn catalogue(ui: &mut egui::Ui, palette: &Palette, audio: Option<bool>) -> Optio
     add
 }
 
+/// The Effects PANE: the catalogue only. A card click adds the effect to every eligible selected clip;
+/// the applied stack is edited in the Inspector's Effects section (`stack`).
 pub fn show(
+    ui: &mut egui::Ui,
+    project: &mut Project,
+    selection: &[Id],
+    palette: &Palette,
+    undo: &mut dyn FnMut(&Project),
+) -> EffectsResponse {
+    let mut out = EffectsResponse::default();
+    #[cfg(test)]
+    test_rects::clear();
+    // first selected clip that still exists - drives the catalogue's audio-aware filter
+    let first_id = selection.iter().find(|&&id| project.clip(id).is_some()).copied();
+    let audio_sel = first_id.and_then(|id| project.clip(id)).map(|c| c.kind == ClipKind::Audio);
+    let Some((kind, scope)) = catalogue(ui, palette, audio_sel) else { return out };
+    // "all clips on this track" = the track the first selected clip sits on
+    let track: Vec<Id> = match scope {
+        Scope::Selection => Vec::new(),
+        Scope::Track => first_id
+            .and_then(|id| project.track_of(id))
+            .map(|ti| project.tracks[ti].clips.iter().map(|c| c.id).collect())
+            .unwrap_or_default(),
+    };
+    // a clip that renders from a real node graph would show nothing of what is pushed on its linear
+    // stack, so those clips are skipped (the stack is greyed out for the same reason). A bare
+    // Input→Output graph is not one - see Clip::uses_graph.
+    // each selected clip is checked on its own kind, not just the first (a mixed video+audio
+    // selection can still get an eligible effect on every clip it applies to).
+    let targets: Vec<Id> = match scope {
+        Scope::Selection => selection,
+        Scope::Track => track.as_slice(),
+    }
+    .iter()
+    .copied()
+    .filter(|&id| {
+        let Some(c) = project.clip(id) else { return false };
+        (c.kind == ClipKind::Audio) == kind.applies_to_audio() && !c.uses_graph()
+    })
+    .collect();
+    if !targets.is_empty() {
+        undo(project);
+        for id in targets {
+            if let Some(c) = project.clip_mut(id) {
+                c.effects.push(Effect::new(kind));
+            }
+        }
+        out.edited = true;
+    }
+    out
+}
+
+/// A stack row's right-click pick, applied once the rows are drawn.
+#[derive(Clone, Copy, PartialEq)]
+enum RowCmd {
+    AddMask,
+    RemoveMask,
+    Copy,
+    Paste,
+    Move(usize),
+    Remove,
+}
+
+/// The applied effect stack of the first selected clip - drawn inside the Inspector's Effects section,
+/// the one place it is edited. One row per effect: drag handle · enable · name (click to fold the
+/// parameters); everything else is on the row's right-click. Parameter edits bulk-apply to the other
+/// selected clips' same-index, same-kind effect.
+pub fn stack(
     ui: &mut egui::Ui,
     project: &mut Project,
     selection: &[Id],
@@ -299,98 +331,26 @@ pub fn show(
     undo: &mut dyn FnMut(&Project),
 ) -> EffectsResponse {
     let mut out = EffectsResponse::default();
-    #[cfg(test)]
-    test_rects::clear();
-
-    // first selected clip that still exists - drives both the catalogue's audio-aware filter and the
-    // stack panel below
-    let first_id = selection.iter().find(|&&id| project.clip(id).is_some()).copied();
-    let audio_sel = first_id.and_then(|id| project.clip(id)).map(|c| c.kind == ClipKind::Audio);
-
-    // ---- catalogue ----
-    if let Some((kind, scope)) = catalogue(ui, palette, audio_sel) {
-        // "all clips on this track" = the track the first selected clip sits on
-        let track: Vec<Id> = match scope {
-            Scope::Selection => Vec::new(),
-            Scope::Track => first_id
-                .and_then(|id| project.track_of(id))
-                .map(|ti| project.tracks[ti].clips.iter().map(|c| c.id).collect())
-                .unwrap_or_default(),
-        };
-        // a clip that renders from a real node graph would show nothing of what is pushed on its linear
-        // stack, so those clips are skipped (the stack below is greyed out for the same reason). A bare
-        // Input→Output graph is not one - see Clip::uses_graph.
-        // each selected clip is checked on its own kind, not just the first (a mixed video+audio
-        // selection can still get an eligible effect on every clip it applies to).
-        let targets: Vec<Id> = match scope {
-            Scope::Selection => selection,
-            Scope::Track => track.as_slice(),
-        }
-        .iter()
-        .copied()
-        .filter(|&id| {
-            let Some(c) = project.clip(id) else { return false };
-            (c.kind == ClipKind::Audio) == kind.applies_to_audio() && !c.uses_graph()
-        })
-        .collect();
-        if !targets.is_empty() {
-            undo(project);
-            for id in targets {
-                if let Some(c) = project.clip_mut(id) {
-                    c.effects.push(Effect::new(kind));
-                }
-            }
-            out.edited = true;
-        }
-    }
-
-    // ---- stack of the first selected clip ----
-    let Some(id) = first_id else {
-        ui.separator();
-        ui.label("Select a clip");
-        return out;
-    };
+    let Some(id) = selection.iter().find(|&&id| project.clip(id).is_some()).copied() else { return out };
     // ponytail: edit a per-frame clone and write back (inspector pattern) so `undo` can snapshot first.
-    let orig = project.clip(id).cloned();
-    let Some(mut clip) = orig else { return out };
+    let Some(mut clip) = project.clip(id).cloned() else { return out };
     // clamped: the playhead can sit off the clip, and keys written outside [0, duration] are invisible
     // in every editor yet still make the param "animated" forever (mixer.rs clamps the same way).
     let lt = clip.local(playhead).clamp(0.0, clip.duration);
     let mut g = Gesture::default();
 
-    ui.separator();
-    ui.horizontal(|ui| {
-        ui.strong(clip.name.clone());
-        let nodes = ui.small_button("Node editor").on_hover_text("Edit this clip's chain as a graph");
-        #[cfg(test)]
-        test_rects::push("nodes".into(), nodes.rect);
-        if nodes.clicked() {
-            out.open_nodes = true;
-        }
-    });
     if clip.uses_graph() {
         // gpu::run_chain evaluates the graph and never looks at clip.effects - show the stack, but do
-        // not let the user edit into the void; "Unlink" is the way back to it in one click
-        ui.horizontal(|ui| {
-            ui.colored_label(palette.text_dim, "Renders from its node graph.");
-            let r = ui.small_button("Unlink").on_hover_text("Back to this plain effect list (a simple chain only)");
-            #[cfg(test)]
-            test_rects::push("unlink".into(), r.rect);
-            if r.clicked() {
-                crate::ui::inspector::ask_unlink_nodes(id);
-            }
-        });
+        // not let the user edit into the void; the section's right-click unlinks it in one click
+        ui.colored_label(palette.text_dim, "Renders from its node graph - right-click Effects to unlink.");
         ui.disable();
     }
     let n = clip.effects.len();
     let dur = clip.duration;
     // a mask shapes pixels - an audio clip's filters get no mask controls at all
     let maskable = clip.is_visual();
-    let mut remove: Option<usize> = None;
-    let mut swap: Option<(usize, usize)> = None;
+    let mut cmd: Option<(usize, RowCmd)> = None;
     let mut drag_move: Option<(usize, usize)> = None;
-    let mut copy: Option<usize> = None;
-    let mut paste: Option<usize> = None;
     // (stack index, param name, new absolute value) - propagated to same-kind/same-index siblings when
     // more than one clip is selected (bulk edit; absolute overwrite, not a relative delta).
     let mut param_edits: Vec<(usize, String, f64)> = Vec::new();
@@ -402,104 +362,38 @@ pub fn show(
         // one CollapsingState per effect, keyed by its STABLE key (not stack index `i`) so fold state
         // (and, via `Settings`-free egui memory, nothing else) survives a reorder - see `stable_effect_key`.
         let header_id = ui.id().with(("fx_stack", &keys[i]));
-        let header_inner = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), header_id, true)
+        let header = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), header_id, true)
             .show_header(ui, |ui| {
-                // wrapped, not a flat row: a narrow panel stacks the buttons instead of clipping them
-                ui.horizontal_wrapped(|ui| {
-                    // drag handle: a small text glyph, its own Sense::drag widget (not the whole header -
-                    // that would fight the buttons below for clicks). Local payload (EffectDragId), never
-                    // the shared `DragPayload` enum - see this file's module doc comment on why.
-                    let (handle_rect, handle) =
-                        ui.allocate_exact_size(egui::vec2(12.0, ui.spacing().interact_size.y), egui::Sense::drag());
-                    ui.painter().text(
-                        handle_rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        "::",
-                        egui::FontId::monospace(11.0),
-                        ui.visuals().weak_text_color(),
-                    );
-                    handle.dnd_set_drag_payload(EffectDragId(keys[i].clone()));
-                    let _handle = handle.on_hover_text("Drag to reorder");
-                    #[cfg(test)]
-                    test_rects::push(format!("draghandle{i}"), _handle.rect);
-                    g.note(&ui.checkbox(&mut fx.enabled, ""));
-                    ui.label(fx.kind.name());
-                    let masked = fx.mask.is_some();
-                    if maskable {
-                        let mask = ui
-                            .add(Button::new(if masked { "Edit mask" } else { "Add mask" }).small())
-                            .on_hover_text("Limit this effect to a shape (drawn in the viewport)");
-                        #[cfg(test)]
-                        test_rects::push(format!("mask{i}"), mask.rect);
-                        if mask.clicked() {
-                            if !masked {
-                                fx.mask = Some(Mask::default());
-                                g.click();
-                            }
-                            out.mask_for = Some(i);
-                        }
-                        if masked {
-                            let rm = crate::ui::markers_ui::x_button(ui).on_hover_text("Remove this mask");
-                            #[cfg(test)]
-                            test_rects::push(format!("maskx{i}"), rm.rect);
-                            if rm.clicked() {
-                                fx.mask = None;
-                                g.click();
-                            }
-                        }
-                    }
-                    if fx.kind == EffectKind::Shader {
-                        let ed = ui.add(Button::new("Edit shader…").small()).on_hover_text("Edit this effect's GLSL");
-                        #[cfg(test)]
-                        test_rects::push(format!("shader{i}"), ed.rect);
-                        if ed.clicked() {
-                            out.edit_shader = Some(i);
-                        }
-                    }
-                    let cp = glyph_text_button(ui, Glyph::Copy, "").on_hover_text("Copy these parameters");
-                    #[cfg(test)]
-                    test_rects::push(format!("copy{i}"), cp.rect);
-                    if cp.clicked() {
-                        copy = Some(i);
-                    }
-                    let can_paste = copied_kind == Some(fx.kind);
-                    let pt = ui
-                        .add_enabled_ui(can_paste, |ui| glyph_text_button(ui, Glyph::Paste, ""))
-                        .inner
-                        .on_hover_text("Paste copied parameters")
-                        .on_disabled_hover_text("Copy the same kind of effect first");
-                    #[cfg(test)]
-                    test_rects::push(format!("paste{i}"), pt.rect);
-                    if pt.clicked() {
-                        paste = Some(i);
-                    }
-                    let up = ui
-                        .add_enabled_ui(i > 0, |ui| glyph_text_button(ui, Glyph::Tri(Dir::Up), ""))
-                        .inner
-                        .on_hover_text("Move up");
-                    if up.clicked() {
-                        swap = Some((i, i - 1));
-                    }
-                    let down = ui
-                        .add_enabled_ui(i + 1 < n, |ui| glyph_text_button(ui, Glyph::Tri(Dir::Down), ""))
-                        .inner
-                        .on_hover_text("Move down");
-                    if down.clicked() {
-                        swap = Some((i, i + 1));
-                    }
-                    let del = crate::ui::markers_ui::x_button(ui).on_hover_text("Remove this effect");
-                    if del.clicked() {
-                        remove = Some(i);
-                    }
-                    #[cfg(test)]
-                    {
-                        test_rects::push(format!("up{i}"), up.rect);
-                        test_rects::push(format!("down{i}"), down.rect);
-                        test_rects::push(format!("del{i}"), del.rect);
-                    }
-                });
+                // drag handle: a small grip, its own Sense::drag widget (not the whole row - that would
+                // fight the checkbox and the name for clicks). Local payload (EffectDragId), never the
+                // shared `DragPayload` enum - see this file's module doc comment on why.
+                let (handle_rect, handle) =
+                    ui.allocate_exact_size(egui::vec2(12.0, ui.spacing().interact_size.y), egui::Sense::drag());
+                ui.painter().text(
+                    handle_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "⠿",
+                    egui::FontId::proportional(13.0),
+                    ui.visuals().weak_text_color(),
+                );
+                handle.dnd_set_drag_payload(EffectDragId(keys[i].clone()));
+                let _handle = handle.on_hover_cursor(egui::CursorIcon::Grab).on_hover_text("Drag to reorder");
+                #[cfg(test)]
+                test_rects::push(format!("draghandle{i}"), _handle.rect);
+                g.note(&ui.checkbox(&mut fx.enabled, "").on_hover_text("Enabled"));
+                // the name fills the rest of the row: a click folds the parameters, a right-click has the rest
+                let h = ui.spacing().interact_size.y;
+                let (rect, r) = ui.allocate_exact_size(egui::vec2(ui.available_width(), h), egui::Sense::click());
+                let mut name = fx.kind.name().to_string();
+                if fx.mask.is_some() && maskable {
+                    name.push_str("  · masked");
+                }
+                let color = if fx.enabled { ui.visuals().text_color() } else { ui.visuals().weak_text_color() };
+                let font = egui::TextStyle::Body.resolve(ui.style());
+                ui.painter().text(rect.left_center(), egui::Align2::LEFT_CENTER, name, font, color);
+                r
             });
-        let (_, header_inner, _) = header_inner.body(|ui| {
+        let (_, header_r, _) = header.body(|ui| {
             // when it runs inside the clip - 0 length means "to the end", which is what every effect
             // that predates this row already says
             ui.horizontal(|ui| {
@@ -604,19 +498,59 @@ pub fn show(
                             param_edits.push((i, spec.name.to_string(), v));
                         }
                         g.note(&r);
-                        key_buttons(ui, a, lt, palette, &mut g, (i, j));
+                        r.context_menu(|ui| key_menu(ui, a, lt, &mut g, spec.name, &[]));
+                        let _kf = key_buttons(ui, a, lt, palette, &mut g, spec.name, &[]);
+                        #[cfg(test)]
+                        test_rects::push(format!("kf{i}_{j}"), _kf.rect);
                     });
                     ui.end_row();
                 }
             });
         });
-        // >=150ms hover on the header row wires the wave-0 `EffectsResponse.hover` stub (real async GPU
+        let (row_r, name_r) = (header_r.response, header_r.inner);
+        #[cfg(test)]
+        test_rects::push(format!("row{i}"), name_r.rect);
+        if name_r.clicked() {
+            if let Some(mut st) = egui::collapsing_header::CollapsingState::load(ui.ctx(), header_id) {
+                st.toggle(ui);
+                st.store(ui.ctx());
+            }
+        }
+        let masked = fx.mask.is_some();
+        let kind = fx.kind;
+        name_r.context_menu(|ui| {
+            use crate::ui::tools::{Dir, Glyph};
+            let mut pick = |ui: &mut egui::Ui, on: bool, glyph: Option<Glyph>, label: &str, c: RowCmd| {
+                if ui.add_enabled_ui(on, |ui| menu::row(ui, glyph, label, "")).inner.clicked() {
+                    cmd = Some((i, c));
+                }
+            };
+            if maskable {
+                pick(ui, true, Some(Glyph::Mask), if masked { "Edit mask" } else { "Add mask" }, RowCmd::AddMask);
+                pick(ui, masked, None, "Remove mask", RowCmd::RemoveMask);
+            }
+            if kind == EffectKind::Shader && menu::row(ui, Some(Glyph::Pencil), "Edit shader…", "").clicked() {
+                out.edit_shader = Some(i);
+            }
+            ui.separator();
+            pick(ui, true, Some(Glyph::Copy), "Copy parameters", RowCmd::Copy);
+            pick(ui, copied_kind == Some(kind), Some(Glyph::Paste), "Paste parameters", RowCmd::Paste);
+            ui.separator();
+            pick(ui, i > 0, Some(Glyph::Tri(Dir::Up)), "Move up", RowCmd::Move(i.wrapping_sub(1)));
+            pick(ui, i + 1 < n, Some(Glyph::Tri(Dir::Down)), "Move down", RowCmd::Move(i + 1));
+            if menu::row(ui, Some(Glyph::Nodes), "Open in Node editor", "").clicked() {
+                out.open_nodes = true;
+            }
+            ui.separator();
+            pick(ui, true, Some(Glyph::Cross), "Remove", RowCmd::Remove);
+        });
+        // >=150ms hover on the row wires the wave-0 `EffectsResponse.hover` stub (real async GPU
         // preview via `App.alt_render` lands where the caller wires `EffectsResponse`, not here).
-        if crate::ui::hover_after(ui, header_id, &header_inner.response, 150.0) {
+        if crate::ui::hover_after(ui, header_id, &row_r, 150.0) {
             out.hover = Some(i);
         }
         // drop target: did a drag payload (this same stack's grip handle) land on this row this frame?
-        if let Some(payload) = header_inner.response.dnd_release_payload::<EffectDragId>() {
+        if let Some(payload) = row_r.dnd_release_payload::<EffectDragId>() {
             if let Some(from) = keys.iter().position(|k| *k == payload.0) {
                 if from != i {
                     drag_move = Some((from, i));
@@ -624,54 +558,51 @@ pub fn show(
             }
         }
     }
-    if let Some(i) = copy {
-        PARAM_CLIP.with(|c| *c.borrow_mut() = clip.effects.get(i).cloned());
-    }
-    if let Some(i) = paste {
-        let src = PARAM_CLIP.with(|c| c.borrow().clone());
-        if let (Some(src), Some(dst)) = (src, clip.effects.get_mut(i)) {
-            if src.kind == dst.kind {
-                dst.params = src.params.clone();
-                dst.shader = src.shader.clone();
-                dst.mask = src.mask.clone();
+    match cmd {
+        Some((i, RowCmd::AddMask)) => {
+            if let Some(fx) = clip.effects.get_mut(i) {
+                if fx.mask.is_none() {
+                    fx.mask = Some(Mask::default());
+                    g.click();
+                }
+                out.mask_for = Some(i);
+            }
+        }
+        Some((i, RowCmd::RemoveMask)) => {
+            if let Some(fx) = clip.effects.get_mut(i) {
+                fx.mask = None;
                 g.click();
             }
         }
-    }
-    if let Some((a, b)) = swap {
-        clip.effects.swap(a, b);
-        g.click();
+        Some((i, RowCmd::Copy)) => PARAM_CLIP.with(|c| *c.borrow_mut() = clip.effects.get(i).cloned()),
+        Some((i, RowCmd::Paste)) => {
+            let src = PARAM_CLIP.with(|c| c.borrow().clone());
+            if let (Some(src), Some(dst)) = (src, clip.effects.get_mut(i)) {
+                if src.kind == dst.kind {
+                    dst.params = src.params.clone();
+                    dst.shader = src.shader.clone();
+                    dst.mask = src.mask.clone();
+                    g.click();
+                }
+            }
+        }
+        Some((i, RowCmd::Move(j))) if j < n => {
+            clip.effects.swap(i, j);
+            g.click();
+        }
+        Some((i, RowCmd::Remove)) if i < n => {
+            clip.effects.remove(i);
+            g.click();
+        }
+        _ => {}
     }
     if let Some((from, to)) = drag_move {
         let e = clip.effects.remove(from);
         clip.effects.insert(to, e);
         g.click();
     }
-    if let Some(i) = remove {
-        clip.effects.remove(i);
-        if out.mask_for == Some(i) {
-            out.mask_for = None;
-        }
-        g.click();
-    }
     if clip.effects.is_empty() {
-        ui.label("No effects - click a card above to add one");
-    }
-
-    // ---- save the clip's animation as a motion preset ----
-    if clip.all_animated().iter().any(|a| a.is_animated()) {
-        ui.separator();
-        ui.horizontal(|ui| {
-            let name_id = ui.id().with("motion_name");
-            let mut name: String = ui.ctx().data_mut(|d| d.get_temp(name_id).unwrap_or_default());
-            ui.add(egui::TextEdit::singleline(&mut name).hint_text("Preset name").desired_width(120.0));
-            if ui.add_enabled(!name.trim().is_empty(), Button::new("Save as motion preset")).clicked() {
-                let p = crate::engine::presets::capture_motion(name.trim(), &clip);
-                PENDING_MOTION.with(|s| *s.borrow_mut() = Some(p));
-                name.clear();
-            }
-            ui.ctx().data_mut(|d| d.insert_temp(name_id, name));
-        });
+        ui.weak("No effects - pick one in the Effects panel.");
     }
 
     if g.start {
@@ -679,7 +610,7 @@ pub fn show(
     }
     if g.changed {
         if let Some(c) = project.clip_mut(id) {
-            *c = clip;
+            c.effects = clip.effects;
         }
     }
     // ---- ws:inspector-gallery ----
@@ -738,7 +669,7 @@ mod tests {
         fn frame(&mut self, events: Vec<Event>) -> bool {
             self.time += 0.05;
             let input = RawInput {
-                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(500.0, 900.0))),
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 900.0))),
                 time: Some(self.time),
                 events,
                 ..Default::default()
@@ -748,9 +679,19 @@ mod tests {
             let playhead = *playhead;
             let mut out = EffectsResponse::default();
             let full = ctx.run(input, |ctx| {
+                let mut undo = |_: &Project| *undos += 1;
+                // the pane (catalogue) and the Inspector's Effects section (the stack), side by side as
+                // the app draws them - two panes, so one's width never leaks into the other's layout
+                let mut r = egui::SidePanel::left("fx_pane")
+                    .exact_width(500.0)
+                    .show(ctx, |ui| show(ui, project, selection, &pal, &mut undo))
+                    .inner;
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    let mut undo = |_: &Project| *undos += 1;
-                    let r = show(ui, project, selection, playhead, &pal, &mut undo);
+                    let s = stack(ui, project, selection, playhead, &pal, &mut undo);
+                    r.edited |= s.edited;
+                    r.open_nodes |= s.open_nodes;
+                    r.mask_for = s.mask_for;
+                    r.hover = s.hover;
                     out.edited |= r.edited;
                     out.open_nodes |= r.open_nodes;
                     out.mask_for = r.mask_for.or(out.mask_for);
@@ -770,6 +711,24 @@ mod tests {
                 }
                 _ => None,
             })
+        }
+        /// Centre of the painted text that reads exactly `label`.
+        fn text_eq(&self, label: &str) -> Option<Pos2> {
+            self.shapes.iter().rev().find_map(|c| match &c.shape {
+                egui::epaint::Shape::Text(t) if t.galley.text() == label => Some(t.visual_bounding_rect().center()),
+                _ => None,
+            })
+        }
+        /// Right-click stack row `i`, let its menu draw, and click `item`. True if anything was edited.
+        fn row_menu(&mut self, i: usize, item: &str) -> bool {
+            let at = self.rect(&format!("row{i}")).center();
+            let mut e = self.frame(vec![Event::PointerMoved(at)]);
+            e |= self.button(at, PointerButton::Secondary, true);
+            e |= self.button(at, PointerButton::Secondary, false);
+            e |= self.frame(vec![]);
+            let pos = self.text_eq(item).unwrap_or_else(|| panic!("no menu row '{item}'"));
+            self.time += 1.0;
+            e | self.click(pos)
         }
         fn button(&mut self, pos: Pos2, button: PointerButton, pressed: bool) -> bool {
             self.frame(vec![Event::PointerButton { pos, button, pressed, modifiers: Modifiers::NONE }])
@@ -871,8 +830,7 @@ mod tests {
             c.effects.push(Effect::new(EffectKind::Invert));
         }
         h.frame(vec![]);
-        let r = h.rect("down0");
-        assert!(h.click(r.center()));
+        assert!(h.row_menu(0, "Move down"));
         assert_eq!(h.clip().effects[0].kind, EffectKind::Invert);
         assert_eq!(h.clip().effects[1].kind, EffectKind::Blur);
         assert_eq!(h.undos, 1);
@@ -883,8 +841,7 @@ mod tests {
         let mut h = Harness::new();
         h.project.tracks[0].clips[0].effects.push(Effect::new(EffectKind::Blur));
         h.frame(vec![]);
-        let r = h.rect("del0");
-        assert!(h.click(r.center()));
+        assert!(h.row_menu(0, "Remove"));
         assert!(h.clip().effects.is_empty());
         assert_eq!(h.undos, 1);
     }
@@ -941,28 +898,26 @@ mod tests {
         let mut h = Harness::new();
         h.project.tracks[0].clips[0].effects.push(Effect::new(EffectKind::Blur));
         h.frame(vec![]);
-        let r = h.rect("mask0");
-        h.click(r.center());
+        h.row_menu(0, "Add mask");
         assert_eq!(h.last.mask_for, Some(0), "the app is told which effect to mask");
         assert!(h.clip().effects[0].mask.is_some(), "a mask was created");
         assert_eq!(h.undos, 1);
     }
 
     #[test]
-    fn a_masked_effect_gets_the_mask_grid_and_a_remove_button() {
+    fn a_masked_effect_gets_the_mask_grid_and_a_remove_item() {
         let mut h = Harness::new();
         let mut fx = Effect::new(EffectKind::Blur);
         fx.mask = Some(Mask::default());
         h.project.tracks[0].clips[0].effects.push(fx);
         h.frame(vec![]);
         assert!(h.rect("maskgrid0").height() > 0.0, "the mask parameters are on the panel, not viewport-only");
-        let r = h.rect("maskx0");
-        assert!(h.click(r.center()), "✕ drops the mask");
+        assert!(h.row_menu(0, "Remove mask"), "the row menu drops the mask");
         assert!(h.clip().effects[0].mask.is_none());
         assert_eq!(h.undos, 1);
     }
 
-    /// A mask shapes pixels: an audio clip's stack gets no mask button and no mask grid, even when a
+    /// A mask shapes pixels: an audio clip's stack gets no mask menu rows and no mask grid, even when a
     /// mask reached it (Paste Attributes, a hand-edited project).
     #[test]
     fn audio_clips_get_no_effect_mask_controls() {
@@ -975,10 +930,15 @@ mod tests {
             c.effects.push(fx);
         }
         h.frame(vec![]);
-        assert!(test_rects::get("del0").is_some(), "the row itself still renders");
-        assert!(test_rects::get("mask0").is_none(), "no Add/Edit mask button");
-        assert!(test_rects::get("maskx0").is_none(), "no mask remove button");
+        assert!(test_rects::get("row0").is_some(), "the row itself still renders");
         assert!(test_rects::get("maskgrid0").is_none(), "no mask parameters");
+        let at = h.rect("row0").center();
+        h.frame(vec![Event::PointerMoved(at)]);
+        h.button(at, PointerButton::Secondary, true);
+        h.button(at, PointerButton::Secondary, false);
+        h.frame(vec![]);
+        assert!(h.text_eq("Copy parameters").is_some(), "the row menu is open");
+        assert!(h.text_eq("Edit mask").is_none() && h.text_eq("Remove mask").is_none(), "no mask rows");
         assert_eq!(h.last.mask_for, None);
     }
 
@@ -1045,11 +1005,11 @@ mod tests {
     }
 
     #[test]
-    fn node_editor_button_sets_the_flag() {
+    fn node_editor_row_sets_the_flag() {
         let mut h = Harness::new();
+        h.project.tracks[0].clips[0].effects.push(Effect::new(EffectKind::Blur));
         h.frame(vec![]);
-        let r = h.rect("nodes");
-        h.click(r.center());
+        h.row_menu(0, "Open in Node editor");
         assert!(h.last.open_nodes);
         assert_eq!(h.undos, 0, "opening the node editor is not an edit");
     }
@@ -1066,12 +1026,10 @@ mod tests {
             c.effects.push(Effect::new(EffectKind::Blur));
         }
         h.frame(vec![]);
-        let cp = h.rect("copy0");
-        h.click(cp.center());
+        h.row_menu(0, "Copy parameters");
         assert_eq!(h.undos, 0, "copying is not an edit");
         h.frame(vec![]);
-        let pt = h.rect("paste1");
-        h.click(pt.center());
+        h.row_menu(1, "Paste parameters");
         assert_eq!(h.clip().effects[1].params[0].value, 42.0, "parameters pasted");
         assert_eq!(h.undos, 1, "pasting is one undo");
         PARAM_CLIP.with(|c| *c.borrow_mut() = None);
@@ -1110,12 +1068,21 @@ mod tests {
         assert!(test_rects::get("card_Blur").is_none(), "a pixel effect must not be offered for an audio clip");
     }
 
+    /// The Effects PANE is the catalogue only: the applied stack is edited in the Inspector's Effects
+    /// section (`stack`), so the pane draws no stack rows even for a clip that has effects.
     #[test]
-    fn pending_motion_handoff() {
-        assert!(take_pending_motion().is_none());
-        PENDING_MOTION.with(|s| *s.borrow_mut() = Some(MotionPreset { name: "m".into(), props: Vec::new() }));
-        assert_eq!(take_pending_motion().map(|m| m.name), Some("m".into()));
-        assert!(take_pending_motion().is_none());
+    fn the_pane_is_catalogue_only() {
+        let mut h = Harness::new();
+        h.project.tracks[0].clips[0].effects.push(Effect::new(EffectKind::Blur));
+        let pal = Palette::new(true, Color32::WHITE);
+        let _ = h.ctx.run(RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let mut undo = |_: &Project| {};
+                show(ui, &mut h.project, &[7], &pal, &mut undo);
+            });
+        });
+        assert!(test_rects::get("card_Blur").is_some(), "the catalogue is there");
+        assert!(test_rects::get("row0").is_none(), "no stack rows in the pane");
     }
 
     // ---- ws:inspector-gallery ----
