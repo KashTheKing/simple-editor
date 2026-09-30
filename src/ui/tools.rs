@@ -54,12 +54,6 @@ pub struct ToolsState {
     /// until this goes back off (see `App::toggle_draw_recording`).
     pub recording: bool,
     // ---- ws:layout-modes-onboarding ----
-    /// The tool the current selection most likely wants next (written by `ui::app::frame::tick`). The
-    /// old Tools strip moved it to the front; the viewer's rail keeps a fixed order instead (tools that
-    /// jump around disorient), so nothing reads it any more.
-    /// ponytail: kept for its two writers (frame.rs, layout_ctl.rs) - drop all three together.
-    #[allow(dead_code)]
-    pub lead: Option<Tool>,
     // ---- ws:viewer-surface ----
     /// The rail's Shape / Mask buttons pick the variant used last (the flyout or Shift+S / G changes it).
     pub last_shape: ShapeKind,
@@ -80,7 +74,6 @@ impl Default for ToolsState {
             draw_rate: 1.0,
             page: [0, 0, 0, 0],
             recording: false,
-            lead: None,
             last_shape: ShapeKind::Rect,
             last_mask: MaskShape::Rect,
         }

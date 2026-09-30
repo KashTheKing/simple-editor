@@ -92,7 +92,6 @@ pub(super) fn set_mode(app: &mut App, dynamic: bool) {
     app.settings.layout_mode = if dynamic { "dynamic" } else { "granular" }.into();
     app.settings.save();
     let kind = frame::selection_kind_of(app);
-    app.tools.lead = if dynamic { lead_tool(kind) } else { None };
     surface_for_kind(app, kind);
 }
 
@@ -111,19 +110,6 @@ pub(super) fn panes_for(kind: SelectionKind) -> &'static [Pane] {
         SelectionKind::Transition => &[Pane::Transitions, Pane::Inspector],
         SelectionKind::Cue => &[Pane::Subtitles],
         SelectionKind::None | SelectionKind::Mixed | SelectionKind::EditPoint => &[],
-    }
-}
-
-/// The tool the adaptive strip moves to the front for a selection kind (`None` = the fixed order): text
-/// edits want the Text tool, shapes a shape tool, an edit point the razor.
-pub(super) fn lead_tool(kind: SelectionKind) -> Option<crate::ui::tools::Tool> {
-    use crate::ui::tools::Tool;
-    match kind {
-        SelectionKind::Text | SelectionKind::Cue => Some(Tool::Text),
-        SelectionKind::Shape => Some(Tool::Shape(crate::model::ShapeKind::Rect)),
-        SelectionKind::Adjustment => Some(Tool::Mask(MaskShape::Rect)),
-        SelectionKind::EditPoint => Some(Tool::Cut),
-        _ => None,
     }
 }
 
@@ -430,12 +416,6 @@ mod tests {
         let now = Instant::now();
         assert_eq!(react(&mut edit, true, Pane::Mixer, now), Surfaced::Hidden, "Mixer is stacked hidden on Edit");
         assert_eq!(react(&mut edit, true, Pane::Inspector, now), Surfaced::Shown);
-        // the adaptive strip's lead tool
-        use crate::ui::tools::Tool;
-        assert_eq!(lead_tool(SelectionKind::Text), Some(Tool::Text));
-        assert_eq!(lead_tool(SelectionKind::EditPoint), Some(Tool::Cut));
-        assert_eq!(lead_tool(SelectionKind::Video), None);
-        assert_eq!(lead_tool(SelectionKind::None), None);
     }
 
     /// A synthetic keydown on a popped viewport's ctx yields exactly one Action from `poll_popout`,
