@@ -165,7 +165,7 @@ function Reset-Profile {
     $dir = Join-Path $Prof 'SimpleEditor'
     New-Item -ItemType Directory -Force $dir | Out-Null
     $json = '{"mcp_enabled": true, "mcp_port": ' + $Port + ', "onboarded": true, "last_seen_version": "' + $Version +
-        '", "theme": "dark", "palette": {"accent": [0, 183, 195]}, "bg_image": "", "window_rect": [' +
+        '", "theme": "dark", "palette": {"mode":"dark","background":[13,17,23],"panel":[22,27,34],"header":[33,38,45],"border":[48,54,61],"text":[230,237,243],"text_dim":[139,148,158]}, "bg_image": "", "window_rect": [' +
         ($WindowRect -join ', ') + ']}'
     [IO.File]::WriteAllText((Join-Path $dir 'settings.json'), $json, (New-Object Text.UTF8Encoding $false))
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue (Join-Path $Prof 'SimpleEditor\autosave')
