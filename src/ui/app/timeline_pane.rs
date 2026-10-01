@@ -220,6 +220,12 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
                     None => app.toast(format!("Drop {name} on a clip")),
                 }
             }
+            // a library multi-selection: back to back in selection order (files are imported first)
+            DragPayload::Assets(ids) => app.add_in_order(ids, &[], t, library::PlaceAt::Playhead, false),
+            DragPayload::Paths(ps) => {
+                let paths: Vec<PathBuf> = ps.iter().map(PathBuf::from).collect();
+                app.add_in_order(Vec::new(), &paths, t, library::PlaceAt::Playhead, false)
+            }
             // dropped onto a clip that can actually take this kind (see effects_ui's own
             // click-to-add gate); a miss says so rather than swallowing the gesture
             DragPayload::Effect(kind) => {

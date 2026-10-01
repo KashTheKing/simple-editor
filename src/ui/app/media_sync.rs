@@ -169,6 +169,10 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
             app.toast_undo(format!("Removed {n} asset{s}"), Action::Undo);
         }
     }
+    // the Media Browser only takes Ctrl+A (its rows are files, not assets: nothing to nav/remove)
+    if app.media_browser.hovered && !ctx.wants_keyboard_input() {
+        let _ = library::keyboard(&mut app.media_browser, ctx);
+    }
     for job in take_done(&mut app.media_jobs) {
         match job {
             MediaJob::Sequence { prog, out, frames } => finish_sequence(app, &prog, out, frames),

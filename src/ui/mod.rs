@@ -321,6 +321,10 @@ pub(crate) fn mask_grid(ui: &mut egui::Ui, m: &mut Mask, lt: f64, palette: &Pale
 pub enum DragPayload {
     /// A library asset id.
     Asset(Id),
+    /// A multi-selection of library assets, in selection order - dropped back to back.
+    Assets(Vec<Id>),
+    /// A multi-selection of files on disk, in selection order - imported, then dropped back to back.
+    Paths(Vec<String>),
     /// A file path (recent panel, linked folders) - the timeline reports it back as a dropped file.
     Path(String),
     /// A nested timeline (Project.sequences) id.

@@ -32,31 +32,35 @@ The header is one row:
 - **View ▾** switches between **List** and **Gallery**, changes the thumbnail **Size**, sets the sort
   order, and (in List view) picks the **Columns**. <kbd>Ctrl</kbd>+scroll also resizes thumbnails.
 - **Project | Browse** under the header switches between your project's media and **Browse**, which shows
-  your recent files and any folders you've linked (right-click ▸ **Link folder…**). Double-click a file in
-  Browse to add it to the project.
+  your recent files and any folders you've linked (right-click ▸ **Link folder…**). Double-click a file there
+  to play it in Source; right-click ▸ **Add to the project** imports it.
 
 With a search or filter on, **Save filter…** keeps it as a **Smart Bin** you can click later.
 
 ## Use a clip
 
-- **Click** an item to open it in the **Source** monitor (the tab next to Preview), paused on its first
-  frame.
+- **Click** an item to select it. **Double-click** it to open it in the **Source** monitor (the tab
+  next to Preview).
 - **Drag** it onto the timeline to place it. Hold <kbd>Ctrl</kbd> while dropping to insert it (later clips
   move right), <kbd>Alt</kbd> to overwrite what's there, or <kbd>Shift</kbd> to put it on a new track on
   top.
 - Press <kbd>Enter</kbd> (with the mouse over the Library) to add the selected items at the playhead.
 - Double-click a **sequence** to open it for editing.
 
-Select several items with <kbd>Ctrl</kbd>+click, <kbd>Shift</kbd>+click, or by dragging a box across
-empty space. <kbd>Up</kbd> / <kbd>Down</kbd> move the selection and <kbd>Delete</kbd> removes it from the
+Select several items with <kbd>Ctrl</kbd>+click, <kbd>Shift</kbd>+click, <kbd>Ctrl+A</kbd>, or by
+dragging a box across empty space. Folders select the same way (double-click one to open it). The
+selection remembers the order you clicked: adding or dragging it puts the clips back to back in that
+order. <kbd>Up</kbd> / <kbd>Down</kbd> move the selection and <kbd>Delete</kbd> removes it from the
 project (with Undo).
 
 ## Right-click menus
 
 ![Right-click an item](/img/tutorial/library-item-menu.png)
 
-**Right-click an item** for **Open in Source**, **Add to timeline at playhead**, **Info…** (description,
-tags, label and folder), **Label**, **New Subclip from Marks**, **Reveal folder**, **Regenerate proxy**,
+**Right-click an item** (it acts on every selected item) for **Open in Source**, **Add to timeline at
+playhead**, **Append at sequence end**, **Insert** / **Overwrite at playhead**, **New sequence from
+selection**, **Info…** (description, tags, label and folder), **Label**, **Move to folder**, **New
+Subclip from Marks**, **Reveal in Explorer**, **Proxies**,
 **Convert To** (mp4, mov, gif, mp3, wav, png and more), **Convert…**, **Compress…** and **Remove from
 project**. If the file is missing you also get **Relink Media…**.
 
@@ -88,7 +92,7 @@ Folders, sequences and Smart Bins have their own small menus (rename, delete). S
 The **Source** monitor plays one clip on its own, so you can pick the part you want before it goes
 into your edit. It has its own playhead and its own In and Out marks.
 
-1. Click a clip in the Library. It opens in the **Source** tab, next to Preview.
+1. Double-click a clip in the Library. It opens in the **Source** tab, next to Preview.
 2. Play it with <kbd>Space</kbd> or <kbd>J</kbd> / <kbd>K</kbd> / <kbd>L</kbd>, and press <kbd>I</kbd>
    and <kbd>O</kbd> to mark the part you want. The marked part is shaded on the scrub bar.
 3. Put the timeline's playhead where the clip should go, then press **Insert** (<kbd>Shift+V</kbd>, later
