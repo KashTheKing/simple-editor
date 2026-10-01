@@ -23,6 +23,16 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
             app.settings.overview = !app.settings.overview;
             true
         }
+        Action::ToggleShowVideoTracks | Action::ToggleShowAudioTracks => {
+            let video = a == Action::ToggleShowVideoTracks;
+            let (v, au) = app.settings.track_kinds();
+            if app.settings.set_track_kind(video, !if video { v } else { au }) {
+                app.settings.save();
+            } else {
+                app.toast("At least one kind of track stays visible");
+            }
+            true
+        }
         Action::RenameTrack => {
             // the track under the cursor, else the selection's (same target as the track-flag toggles)
             if let Some(ti) = trim_actions::target_track(app) {
@@ -143,6 +153,21 @@ pub const TOOLS: &[ToolDef] = &[
         run: |app, args| {
             app.settings.overview = arg_bool(args, "enabled").unwrap_or(!app.settings.overview);
             Ok(ToolOutcome::Done(json!({"ok": true, "enabled": app.settings.overview})))
+        },
+    },
+    ToolDef {
+        name: "timeline.track_kinds",
+        desc: "Show/hide video or audio track rows on the current page's timeline (view only; refuses hiding both).",
+        args: &["video:boolean:false:show video rows", "audio:boolean:false:show audio rows"],
+        kind: ToolKind::Ui,
+        run: |app, args| {
+            let (v, a) = app.settings.track_kinds();
+            let (v, a) = (arg_bool(args, "video").unwrap_or(v), arg_bool(args, "audio").unwrap_or(a));
+            if !(v || a) {
+                return Err("at least one kind of track must stay visible".into());
+            }
+            app.settings.track_kinds.insert(app.settings.page.clone(), (v, a));
+            Ok(ToolOutcome::Done(json!({"ok": true, "video": v, "audio": a})))
         },
     },
 ];

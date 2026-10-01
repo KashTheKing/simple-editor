@@ -39,8 +39,8 @@ Keys are written the way the app writes them: `OpenBracket` is `[`, `Semicolon` 
 |---|---|
 | Undo | <kbd>Ctrl+Z</kbd> |
 | Redo | <kbd>Ctrl+Shift+Z</kbd> |
-| Delete | <kbd>Delete</kbd> |
-| Ripple Delete | <kbd>Shift+Delete</kbd> |
+| Delete (Leave Gap) | <kbd>Backspace</kbd> |
+| Ripple Delete | <kbd>Delete</kbd> |
 | Select All | <kbd>Ctrl+A</kbd> |
 | Deselect All | <kbd>Ctrl+Shift+A</kbd> |
 | Copy Attributes | <kbd>Ctrl+Alt+C</kbd> |
@@ -289,7 +289,6 @@ Keys are written the way the app writes them: `OpenBracket` is `[`, `Semicolon` 
 |---|---|
 | Cycle shape tool | <kbd>Shift+S</kbd> |
 | Redo (alias) | <kbd>Ctrl+Y</kbd> |
-| Delete (alias) | <kbd>Backspace</kbd> |
 | Exit fullscreen | <kbd>Escape</kbd> |
 | Next field | <kbd>Tab</kbd> |
 | Previous field | <kbd>Shift+Tab</kbd> |

@@ -197,6 +197,16 @@ pub fn action_item(ui: &mut egui::Ui, a: Action) -> bool {
     clicked
 }
 
+/// `check` for a toggle Action: its label and shortcut, a tick while `on`; a click queues `a`.
+pub fn check_action(ui: &mut egui::Ui, on: bool, a: Action) -> bool {
+    let clicked = check(ui, on, a.label(), &shortcut(a)).clicked();
+    if clicked {
+        QUEUE.with(|q| q.borrow_mut().push(a));
+        ui.ctx().request_repaint();
+    }
+    clicked
+}
+
 /// A whole menu body from Actions, `None` = separator. Long menus scroll instead of running off-screen.
 #[allow(dead_code)] // wave-1 right-click menus are the callers
 pub fn action_menu(ui: &mut egui::Ui, items: &[Option<Action>]) {

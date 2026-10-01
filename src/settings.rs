@@ -206,6 +206,8 @@ pub struct Settings {
     /// Preview is rendered at most this wide (pixels) to keep CPU low.
     pub preview_max_width: u32,
     pub snap: bool,
+    /// Magnetic timeline (CapCut-style): every edit packs each track's clips so no gap is left.
+    pub auto_close_gaps: bool,
     pub show_library: bool,
     pub show_inspector: bool,
     /// Action id -> shortcut text ("Ctrl+Shift+B"); only non-default bindings are stored. "" = unbound.
@@ -428,6 +430,8 @@ pub struct Settings {
     /// The page on screen (`ui::layout::PAGES`); `layout` is its tree. Empty = a settings file from
     /// before pages (or a fresh one): `layout_ctl::migrate_to_pages` fills it in once at startup.
     pub page: String,
+    /// Per page: (show video tracks, show audio tracks) on the timeline. Missing = `track_kinds`' default.
+    pub track_kinds: BTreeMap<String, (bool, bool)>,
     /// The other pages' trees as JSON, by page name - the current page's own lives in `layout`.
     pub page_layouts: BTreeMap<String, String>,
     /// Window ▸ Layout ▸ Lock panels: a tab only clicks. Off (the default) a tab drags to re-dock;
@@ -463,6 +467,7 @@ impl Default for Settings {
             decoder: "auto".into(),
             preview_max_width: 1280,
             snap: true,
+            auto_close_gaps: false,
             show_library: true,
             show_inspector: true,
             hotkeys: BTreeMap::new(),
@@ -591,6 +596,7 @@ impl Default for Settings {
             jobs_auto_reveal: true,
             // ---- ws:pages ----
             page: String::new(),
+            track_kinds: BTreeMap::new(),
             page_layouts: BTreeMap::new(),
             panels_locked: false,
             page_defaults: BTreeMap::new(),
@@ -606,6 +612,22 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// This page's (show video, show audio) timeline rows: the Audio page hides video by default.
+    pub fn track_kinds(&self) -> (bool, bool) {
+        self.track_kinds.get(&self.page).copied().unwrap_or((self.page != "Audio", true))
+    }
+
+    /// Show or hide one track kind on this page. False (nothing changes) if it would hide both kinds.
+    pub fn set_track_kind(&mut self, video: bool, show: bool) -> bool {
+        let (mut v, mut a) = self.track_kinds();
+        *(if video { &mut v } else { &mut a }) = show;
+        if !(v || a) {
+            return false;
+        }
+        self.track_kinds.insert(self.page.clone(), (v, a));
+        true
+    }
+
     /// %APPDATA%\SimpleEditor
     pub fn dir() -> PathBuf {
         let base = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
@@ -817,9 +839,27 @@ mod tests {
 
     // ---- ws:canvas-handles-monitor ----
     #[test]
+    fn track_kinds_default_per_page_and_never_both_hidden() {
+        let mut s = Settings::default();
+        for (page, want) in [("Edit", (true, true)), ("Color", (true, true)), ("Audio", (false, true))] {
+            s.page = page.into();
+            assert_eq!(s.track_kinds(), want, "{page}");
+        }
+        assert!(!s.set_track_kind(false, false), "Audio page: hiding audio too would hide both");
+        assert_eq!(s.track_kinds(), (false, true));
+        assert!(s.set_track_kind(true, true) && s.set_track_kind(false, false));
+        assert_eq!(s.track_kinds(), (true, false));
+        s.page = "Edit".into();
+        assert_eq!(s.track_kinds(), (true, true), "per page: Audio's choice stays on Audio");
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.track_kinds.get("Audio"), Some(&(true, false)));
+    }
+
+    #[test]
     fn hover_preview_and_canvas_snap_round_trip() {
         let old: Settings = serde_json::from_str("{}").unwrap();
         assert!(old.hover_preview && old.canvas_snap, "both default on");
+        assert!(old.snap && !old.auto_close_gaps, "snapping on, auto close gaps off by default");
         let mut s = Settings::default();
         s.hover_preview = false;
         s.canvas_snap = false;

@@ -240,6 +240,10 @@ impl App {
                 self.settings.snap = !self.settings.snap;
                 self.settings.save();
             }
+            ToggleAutoCloseGaps => {
+                self.settings.auto_close_gaps = !self.settings.auto_close_gaps;
+                self.settings.save();
+            }
             AddVideoTrack | AddAudioTrack => {
                 self.push_undo();
                 self.project.add_track(if a == AddVideoTrack { TrackKind::Video } else { TrackKind::Audio });

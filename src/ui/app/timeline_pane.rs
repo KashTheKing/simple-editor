@@ -15,7 +15,14 @@ fn tip(name: &str, a: Action) -> String {
 
 /// The Timeline's one toolbar row: Select · Blade · Rate stretch, Snap, and zoom on the right. Returns
 /// the Actions its buttons ask for; the zoom slider edits `zoom` (px/s) in place.
-fn toolbar(ui: &mut egui::Ui, pal: &crate::theme::Palette, tool: Tool, snap: bool, zoom: &mut f32) -> Vec<Action> {
+fn toolbar(
+    ui: &mut egui::Ui,
+    pal: &crate::theme::Palette,
+    tool: Tool,
+    snap: (bool, bool),
+    zoom: &mut f32,
+) -> Vec<Action> {
+    let (snap, gaps) = snap;
     let mut out = Vec::new();
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
@@ -33,6 +40,10 @@ fn toolbar(ui: &mut egui::Ui, pal: &crate::theme::Palette, tool: Tool, snap: boo
             .clicked()
         {
             out.push(Action::ToggleSnap);
+        }
+        let gtip = tip("Auto Close Gaps", Action::ToggleAutoCloseGaps);
+        if icon_button(ui, pal, ui.id().with("tl_gaps"), Glyph::Spacer, &gtip, gaps).clicked() {
+            out.push(Action::ToggleAutoCloseGaps);
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(4.0);
@@ -66,7 +77,7 @@ fn toolbar(ui: &mut egui::Ui, pal: &crate::theme::Palette, tool: Tool, snap: boo
 pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
     // ---- ws:timeline-surface: one toolbar row ----
     let mut zoom = app.timeline.zoom;
-    let acts = toolbar(ui, &app.palette, app.tools.tool, app.settings.snap, &mut zoom);
+    let acts = toolbar(ui, &app.palette, app.tools.tool, (app.settings.snap, app.settings.auto_close_gaps), &mut zoom);
     app.pending_actions.extend(acts);
     if zoom != app.timeline.zoom {
         // the slider zooms around the playhead while it is on screen, like Ctrl+wheel around the pointer
@@ -74,6 +85,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
         let anchor = app.timeline.lanes_rect.x_range().contains(ph).then_some(ph);
         app.timeline.zoom_by(zoom / app.timeline.zoom, anchor);
     }
+    app.timeline.show_kinds = app.settings.track_kinds();
     let autocut_shown = app.pane_drawn(Pane::AutoCut);
     let resp = {
         let App {
@@ -299,7 +311,8 @@ mod tests {
                 ..Default::default()
             };
             let _ = ctx.run(input, |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| out = toolbar(ui, &pal, Tool::Select, true, &mut zoom));
+                egui::CentralPanel::default()
+                    .show(ctx, |ui| out = toolbar(ui, &pal, Tool::Select, (true, false), &mut zoom));
             });
             out
         };
@@ -320,6 +333,7 @@ mod tests {
         assert_eq!(click(egui::pos2(8.0 + 52.0 + 12.0, 19.0)), vec![Action::ToolStretch]);
         // then an 8 pt gap and the magnet
         assert_eq!(click(egui::pos2(8.0 + 78.0 + 8.0 + 12.0, 19.0)), vec![Action::ToggleSnap]);
+        assert_eq!(click(egui::pos2(8.0 + 104.0 + 8.0 + 12.0, 19.0)), vec![Action::ToggleAutoCloseGaps]);
         // right-aligned from the 792 pt edge, 4 pt in: Zoom to Fit
         assert_eq!(click(egui::pos2(792.0 - 4.0 - 12.0, 19.0)), vec![Action::ZoomFit]);
     }

@@ -72,6 +72,21 @@ pub(crate) fn delete_clips_magnetic(p: &mut Project, ids: &[Id], ripple: bool) {
     p.delete_clips(&rest, ripple);
 }
 
+/// "Auto close gaps" (CapCut's magnetic main track, on every unlocked track): pack each track's clips
+/// left from 0 in their current order, so no move or delete ever leaves a gap.
+/// ponytail: tracks pack independently (a linked A/V pair stays in sync only while its tracks hold the
+/// same cuts) and markers stay put - scope it to one "main" track if B-roll layouts ever need gaps.
+pub(crate) fn close_all_gaps(p: &mut Project) {
+    p.tidy();
+    for tr in p.tracks.iter_mut().filter(|t| !t.locked) {
+        let mut t = 0.0;
+        for c in &mut tr.clips {
+            c.start = t;
+            t = c.end();
+        }
+    }
+}
+
 /// Premiere-style insert move, applied once on release: each moved clip is lifted out of its own
 /// track (the gap closes behind it - `ripple_delete_range` on that track only), `ripple_open` makes
 /// room `dt` later and the clip goes back, id intact. False (project untouched) on a locked track;
@@ -172,7 +187,7 @@ pub(super) fn paint_offsets(
 ) {
     let mut tops = vec![None; p.tracks.len()];
     let mut top = lanes.top() - state.scroll_y;
-    for i in row_order(p) {
+    for i in row_order(p, state.show_kinds) {
         tops[i] = Some(top);
         top += p.tracks[i].height;
     }
@@ -434,11 +449,11 @@ pub(super) fn handle(
     let hover_tr = pointer.and_then(|pos| state.track_at(pos.y, c.project));
     // scalar copies + closures so the gesture arms can use geometry while `state.drag` is mutably borrowed
     let (lx, sx, sy, ltop) = (lanes.left(), state.scroll_x, state.scroll_y, lanes.top());
-    let zoom0 = state.zoom;
+    let (zoom0, kinds) = (state.zoom, state.show_kinds);
     let t_at = move |x: f32| sx + ((x - lx) / zoom0) as f64;
     let row_top_of = move |p: &Project, ti: usize| -> Option<f32> {
         let mut top = ltop - sy;
-        for i in row_order(p) {
+        for i in row_order(p, kinds) {
             if i == ti {
                 return Some(top);
             }

@@ -70,8 +70,9 @@ actions! {
     PrevCut => "prev_cut", "Previous Cut", sc(NONE, Key::ArrowUp);
     NextCut => "next_cut", "Next Cut", sc(NONE, Key::ArrowDown);
     Split => "split", "Split at Playhead", sc(CTRL, Key::B);
-    Delete => "delete", "Delete", sc(NONE, Key::Delete);
-    RippleDelete => "ripple_delete", "Ripple Delete", sc(SHIFT, Key::Delete);
+    // Resolve-style: Backspace lifts (leaves the gap), Delete ripple-deletes (closes it)
+    Delete => "delete", "Delete (Leave Gap)", sc(NONE, Key::Backspace);
+    RippleDelete => "ripple_delete", "Ripple Delete", sc(NONE, Key::Delete);
     SelectAll => "select_all", "Select All", sc(CTRL, Key::A);
     Deselect => "deselect", "Deselect All", sc(CTRL_SHIFT, Key::A);
     MarkIn => "mark_in", "Mark In", sc(NONE, Key::I);
@@ -88,6 +89,9 @@ actions! {
     NudgeLeft => "nudge_left", "Nudge Left 1 Frame", sc(NONE, Key::Comma);
     NudgeRight => "nudge_right", "Nudge Right 1 Frame", sc(NONE, Key::Period);
     ToggleSnap => "snap", "Toggle Snapping", sc(NONE, Key::S);
+    ToggleAutoCloseGaps => "auto_close_gaps", "Toggle Auto Close Gaps", None;
+    ToggleShowVideoTracks => "show_video_tracks", "Show Video Tracks", None;
+    ToggleShowAudioTracks => "show_audio_tracks", "Show Audio Tracks", None;
     AddVideoTrack => "add_video_track", "Add Video Track", None;
     AddAudioTrack => "add_audio_track", "Add Audio Track", None;
     ToggleLibrary => "toggle_library", "Show / Hide Library", sc(CTRL, Key::Num1);
@@ -475,8 +479,7 @@ pub fn consume_exact(i: &mut egui::InputState, ks: &KeyboardShortcut) -> bool {
 
 // ---- ws:command-palette ----
 /// Chords the app hard-codes ahead of, or instead of, the `Action` table - `Shift+S` (shape-tool cycle,
-/// `ui::tools::handle_hotkeys`), `Ctrl+Y` (Redo alias, polled directly in `App::update`), `Backspace`
-/// (Delete alias, same, except over the panes that own Delete - `App::backspace_is_delete`), `Escape`
+/// `ui::tools::handle_hotkeys`), `Ctrl+Y` (Redo alias, polled directly in `App::update`), `Escape`
 /// (fullscreen exit while `self.fullscreen`), `Tab`/`Shift+Tab` (egui's own focus traversal) and
 /// `Alt+Space` (Windows' system menu). A rebindable UI that let a user pick one of these would silently
 /// lose it to whichever poll runs first - `conflict_all` reports them so the Hotkeys tab can say so.
@@ -484,7 +487,6 @@ pub fn consume_exact(i: &mut egui::InputState, ks: &KeyboardShortcut) -> bool {
 pub const RESERVED: &'static [(&'static str, Modifiers, Key)] = &[
     ("Cycle shape tool", SHIFT, Key::S),
     ("Redo (alias)", CTRL, Key::Y),
-    ("Delete (alias)", NONE, Key::Backspace),
     ("Exit fullscreen", NONE, Key::Escape),
     ("Next field", NONE, Key::Tab),
     ("Previous field", SHIFT, Key::Tab),
@@ -556,6 +558,7 @@ pub fn group(a: Action) -> &'static str {
         | SpliceInsert | OverwriteAtPlayhead | ZoomIn | ZoomOut | ZoomFit | ToggleSnap | ToggleOverview
         | AddVideoTrack | AddAudioTrack | RenameTrack | ToggleTrackLock | ToggleTrackRipple | ToggleTrackMagnetic
         | OpenParentSequence | RenderSelection | BakeSelection => "Timeline",
+        ToggleAutoCloseGaps | ToggleShowVideoTracks | ToggleShowAudioTracks => "Timeline",
         Split | DuplicateClips | ToggleEnabled | LinkToggle | NudgeLeft | NudgeRight | Retime | FreezeFrame
         | AddTransition | AddLastTransition | AddTransitionEnd | ApplyFlow | AutoReframe | SaveTemplate => "Clip",
         NestSequence | UnnestClip | MakeContainer | UnmakeContainer | ReplaceContainerMedia => "Clip",
@@ -609,7 +612,7 @@ pub fn grouped() -> Vec<(&'static str, Vec<Action>)> {
 /// key and remove the selected CLIPS while the user was deleting keyframes or nodes.
 fn is_late(a: Action) -> bool {
     use Action::*;
-    matches!(a, CopyClips | CutClips | PasteClips | PasteInPlace | Delete | DuplicateClips)
+    matches!(a, CopyClips | CutClips | PasteClips | PasteInPlace | Delete | RippleDelete | DuplicateClips)
 }
 
 /// egui-winit swallows the clipboard keys: Ctrl+C / Ctrl+X / Ctrl+V (and Ctrl+Alt+C/V, Shift+Delete,
@@ -677,9 +680,6 @@ mod tests {
             assert!(early.is_empty(), "{want:?} must wait for the late pass, got {early:?}");
             assert_eq!(late, vec![want]);
         }
-        // Windows folds Shift+Delete into Cut too - that one is a normal (early) action
-        let (early, _) = run(egui::Event::Cut, Modifiers::SHIFT);
-        assert_eq!(early, vec![Action::RippleDelete]);
     }
 
     /// A pressed chord fires only the binding whose modifiers equal the pressed ones (egui's logical
@@ -716,6 +716,9 @@ mod tests {
         }
         // Ctrl+D waits for the late pass, so a hovered node editor duplicates its nodes instead
         assert_eq!(press(Key::D, ctrl), (vec![], vec![Action::DuplicateClips]));
+        // Resolve-style: Delete ripple-deletes, Backspace lifts - both late, so a hovered pane goes first
+        assert_eq!(press(Key::Delete, NONE), (vec![], vec![Action::RippleDelete]));
+        assert_eq!(press(Key::Backspace, NONE), (vec![], vec![Action::Delete]));
     }
 
     #[test]
@@ -753,7 +756,7 @@ mod tests {
         assert_eq!(h.conflict_all(KeyboardShortcut::new(NONE, Key::N)), None);
         assert_eq!(h.conflict_all(KeyboardShortcut::new(SHIFT, Key::S)), Some(Claim::Fixed("Cycle shape tool")));
         assert_eq!(h.conflict_all(KeyboardShortcut::new(CTRL, Key::Y)), Some(Claim::Fixed("Redo (alias)")));
-        assert_eq!(h.conflict_all(KeyboardShortcut::new(NONE, Key::Backspace)), Some(Claim::Fixed("Delete (alias)")));
+        assert_eq!(h.conflict_all(KeyboardShortcut::new(NONE, Key::Backspace)), Some(Claim::Action(Action::Delete)));
         assert_eq!(h.conflict_all(KeyboardShortcut::new(NONE, Key::Escape)), Some(Claim::Fixed("Exit fullscreen")));
         // a bound action's own chord resolves to Claim::Action, checked ahead of RESERVED
         assert_eq!(h.conflict_all(KeyboardShortcut::new(CTRL, Key::Z)), Some(Claim::Action(Action::Undo)));

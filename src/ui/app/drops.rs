@@ -56,10 +56,9 @@ impl App {
         match drop_target(pos, self.timeline.lanes_rect, self.preview.canvas_rect, self.moodboard.content_rect) {
             DropTarget::Timeline => {
                 let p = pos.unwrap();
-                let mut t = self.timeline.time_at(p.x).max(0.0);
-                if self.settings.snap {
-                    t = self.project.snap_frame(t);
-                }
+                let (on, z) = (self.settings.snap, self.timeline.zoom);
+                let t = self.timeline.time_at(p.x).max(0.0);
+                let t = crate::ui::timeline::snap_time(t, on, z, &self.project, self.playhead, &[]).max(0.0);
                 let track = self.timeline.track_at(p.y, &self.project);
                 // ---- ws:source-monitor ----
                 // the drop-modifier table: Ctrl = Splice, Alt = Overwrite (replace edit on a clip body),

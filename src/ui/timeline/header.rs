@@ -27,6 +27,7 @@ pub(super) fn draw_header(
     active: bool,
     track_toggle: &mut Option<(usize, TrackFlag)>,
     track_rename: &mut Option<(usize, String)>,
+    show_kinds: (bool, bool),
 ) -> Option<Act> {
     let mut act: Option<Act> = None;
     let hr = Rect::from_min_max(pos2(header.left(), row.top()), pos2(header.right(), row.bottom()));
@@ -117,6 +118,7 @@ pub(super) fn draw_header(
     let (empty, muted, solo) = (track.clips.is_empty(), track.muted, track.solo);
     menu::context(&hresp, |ui| {
         super::menus::acts(ui, &[Some(Action::AddVideoTrack), Some(Action::AddAudioTrack)]);
+        super::menus::track_kind_checks(ui, show_kinds);
         let rm = ui.add_enabled_ui(empty, |ui| menu::row(ui, Some(Glyph::Cross), "Remove Track", "")).inner;
         if rm.on_disabled_hover_text("Only an empty track can be removed").clicked() {
             act = Some(Act::RemoveTrack(ti));
