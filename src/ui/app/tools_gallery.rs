@@ -115,11 +115,6 @@ fn apply_card(app: &mut App, tab: GalleryTab, name: &str, clip_ids: &[Id], inten
         // ws:text-titles: Titles places positionally too (and needs the exposed-field zip) - use
         // titles.place, not gallery.apply.
         GalleryTab::Titles => Err("gallery.apply doesn't place Titles - use titles.place".into()),
-        // ws:keyframe-blocks: at the playhead, like keyblocks.apply
-        GalleryTab::Animate => {
-            let n = super::tools_keyblocks::apply_block(app, name, clip_ids, Some(app.playhead), None)?;
-            Ok(json!({"ok": true, "count": n}))
-        }
     }
 }
 

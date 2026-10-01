@@ -1542,7 +1542,11 @@ pub fn show(
         for (k, key) in a.keys.iter().enumerate() {
             let c = pos2(x_at(key.t, sx), y_at(key.v, scales[p]));
             let fill = if state.selected.contains(&(p, k)) { pal.accent } else { color };
-            plot_painter.add(crate::ui::tools::diamond(c, 4.0, fill, Stroke::new(1.0, pal.text)));
+            plot_painter.add(Shape::convex_polygon(
+                vec![pos2(c.x, c.y - 4.0), pos2(c.x + 4.0, c.y), pos2(c.x, c.y + 4.0), pos2(c.x - 4.0, c.y)],
+                fill,
+                Stroke::new(1.0, pal.text),
+            ));
         }
     }
     // rubber band in progress

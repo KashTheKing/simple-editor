@@ -57,23 +57,11 @@ pub enum GalleryTab {
     /// placed with no Customize step) - a Titles card always shows a Customize panel for its exposed
     /// fields right after Place.
     Titles,
-    // ---- ws:keyframe-blocks ----
-    /// Keyframe blocks (`model::builtin_blocks()` + `Settings.key_blocks`): click = apply at the playhead
-    /// to the selection (chaining after a block the playhead is inside), drag onto a clip = apply there.
-    Animate,
 }
 
 impl GalleryTab {
-    pub const ALL: [GalleryTab; 8] = [
-        Self::Animate,
-        Self::Looks,
-        Self::Luts,
-        Self::Captions,
-        Self::SpeedRamps,
-        Self::Transitions,
-        Self::Templates,
-        Self::Titles,
-    ];
+    pub const ALL: [GalleryTab; 7] =
+        [Self::Looks, Self::Luts, Self::Captions, Self::SpeedRamps, Self::Transitions, Self::Templates, Self::Titles];
     pub fn name(self) -> &'static str {
         match self {
             Self::Looks => "Looks",
@@ -83,7 +71,6 @@ impl GalleryTab {
             Self::Transitions => "Transitions",
             Self::Templates => "Templates",
             Self::Titles => "Titles",
-            Self::Animate => "Animate",
         }
     }
     pub fn from_name(s: &str) -> Option<Self> {
@@ -107,8 +94,6 @@ pub struct GalleryState {
     /// caller (`ui::app::gallery_ctl::draw`) right after a Titles card is placed - a plain state field
     /// rather than an `egui::Id`-keyed temp, since `App` already owns `GalleryState` per frame.
     pub customize: Vec<(Id, String)>,
-    /// ws:keyframe-blocks: the "Save keyframe block from selection…" name prompt.
-    pub save_block: Option<String>,
 }
 
 #[derive(Default)]
@@ -129,8 +114,6 @@ pub struct GalleryResponse {
     /// ws:text-titles: Customize-panel rows edited this frame, as edited clones of the placed clips -
     /// written back by the caller with one undo.
     pub customized: Vec<(Id, Clip)>,
-    /// ws:keyframe-blocks: forget this saved block (Animate card menu).
-    pub forget_block: Option<String>,
 }
 
 /// One clickable card: `picture` paints the tile's contents (thumbnail / swatch / nothing - the name is
@@ -211,44 +194,6 @@ pub fn card_names(tab: GalleryTab, settings: &Settings) -> Vec<String> {
                     .map(|t| t.name.clone()),
             )
             .collect(),
-        GalleryTab::Animate => crate::model::builtin_blocks()
-            .into_iter()
-            .map(|b| b.name)
-            .chain(settings.key_blocks.iter().map(|b| b.name.clone()))
-            .collect(),
-    }
-}
-
-/// An Animate card's picture: each animated property's curve over the block, normalised to the tile,
-/// in the block's bar colour (the one its timeline bar uses).
-fn block_picture(p: &egui::Painter, tile: Rect, b: &crate::model::KeyBlock) {
-    let [r, g, bl] = crate::model::block_color(&b.name);
-    let col = Color32::from_rgb(r, g, bl);
-    let mut c = Clip::new(0, crate::model::ClipKind::Video, "", 0.0, 1.0);
-    b.write(&mut c, 0.0, 1.0, 1.0, 1.0);
-    let area = tile.shrink(8.0);
-    for tr in &b.tracks {
-        // volume blocks skip a video clip - preview them on an audio one
-        let mut ca;
-        let src = if tr.prop == "volume" {
-            ca = Clip::new(0, crate::model::ClipKind::Audio, "", 0.0, 1.0);
-            b.write(&mut ca, 0.0, 1.0, 1.0, 1.0);
-            &ca
-        } else {
-            &c
-        };
-        let Some(a) = crate::model::prop_ref(src, &tr.prop) else { continue };
-        let v: Vec<f64> = (0..=32).map(|i| a.at(i as f64 / 32.0)).collect();
-        let (lo, hi) = v.iter().fold((f64::MAX, f64::MIN), |(l, h), &x| (l.min(x), h.max(x)));
-        let pts = v
-            .iter()
-            .enumerate()
-            .map(|(i, &x)| {
-                let fy = if hi - lo > 1e-9 { ((x - lo) / (hi - lo)) as f32 } else { 0.5 };
-                egui::pos2(area.left() + area.width() * i as f32 / 32.0, area.bottom() - fy * area.height())
-            })
-            .collect();
-        p.add(egui::Shape::line(pts, Stroke::new(1.5, col)));
     }
 }
 
@@ -321,23 +266,11 @@ pub fn show(
                             }
                         })
                     }
-                    GalleryTab::Animate => {
-                        let b = crate::model::find_block(&settings.key_blocks, name);
-                        let payload = crate::ui::DragPayload::KeyBlock(name.clone());
-                        crate::ui::drag_source(ui, egui::Id::new(("kblock", name.as_str())), payload, |ui| {
-                            card(ui, name, |p, t| {
-                                if let Some(b) = &b {
-                                    block_picture(p, t, b);
-                                }
-                            });
-                        })
-                        .on_hover_text(format!("{name} - click: at the playhead · drag onto a clip"))
-                    }
                     _ => card(ui, name, |_, _| {}),
                 };
                 #[cfg(test)]
                 ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(("gallery_card", name.as_str())), r.rect));
-                if tab != GalleryTab::Animate && crate::ui::hover_after(ui, r.id, &r, 150.0) {
+                if crate::ui::hover_after(ui, r.id, &r, 150.0) {
                     out.hover = Some((tab, name.clone()));
                 }
                 let mut go = r.clicked();
@@ -350,15 +283,9 @@ pub fn show(
                     let ok = !needs_clip || !selection.is_empty();
                     let r = ui.add_enabled_ui(ok, |ui| menu::row(ui, None, label, "")).inner;
                     go |= r.on_disabled_hover_text("Select a clip first").clicked();
-                    if tab == GalleryTab::Animate
-                        && settings.key_blocks.iter().any(|b| &b.name == name)
-                        && menu::row(ui, None, "Forget saved block", "").clicked()
-                    {
-                        out.forget_block = Some(name.clone());
-                    }
                 });
                 // Preview: the viewer shows the card for as long as its menu is open (hover does the same)
-                if menu.is_some() && !matches!(tab, GalleryTab::Templates | GalleryTab::Titles | GalleryTab::Animate) {
+                if menu.is_some() && !matches!(tab, GalleryTab::Templates | GalleryTab::Titles) {
                     out.hover = Some((tab, name.clone()));
                 }
                 if go {
@@ -390,12 +317,6 @@ pub fn show(
             ui.add_enabled_ui(!selection.is_empty(), |ui| menu::row(ui, None, "Save look from selection…", "")).inner;
         if r.on_disabled_hover_text("Select a clip whose effects to save").clicked() {
             state.save_name = Some(String::new());
-        }
-        let r = ui
-            .add_enabled_ui(!selection.is_empty(), |ui| menu::row(ui, None, "Save keyframe block from selection…", ""))
-            .inner;
-        if r.on_disabled_hover_text("Select a clip whose keys to save").clicked() {
-            state.save_block = Some(String::new());
         }
     });
     let _ = palette; // reserved: a themed border colour is a pure visual follow-up, not load-bearing yet
@@ -467,28 +388,6 @@ mod tests {
             });
         });
         out
-    }
-
-    #[test]
-    fn animate_tab_lists_builtin_blocks_then_saved_ones() {
-        let mut settings = Settings::default();
-        let n = crate::model::builtin_blocks().len();
-        settings.key_blocks.push(crate::model::KeyBlock { name: "Mine".into(), dur: 1.0, tracks: vec![] });
-        let names = card_names(GalleryTab::Animate, &settings);
-        assert_eq!(names.len(), n + 1);
-        assert_eq!(names[0], "Fade In");
-        assert_eq!(names.last().unwrap(), "Mine");
-    }
-
-    #[test]
-    fn opening_animate_tab_requests_no_idle_repaint() {
-        let ctx = ctx();
-        let mut state = GalleryState { tab: GalleryTab::Animate, ..Default::default() };
-        let mut settings = Settings::default();
-        for _ in 0..30 {
-            run(&ctx, &mut state, &mut settings);
-        }
-        assert!(!ctx.has_requested_repaint(), "idle Animate tab requested a repaint");
     }
 
     #[test]

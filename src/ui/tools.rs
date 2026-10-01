@@ -35,6 +35,26 @@ pub enum Tool {
     Stretch,
     /// Drag the timeline lanes to open (or close) a gap from the press time onward.
     Spacer,
+    // ---- tools-panel (Premiere's Tools panel; the user asked for these, so the old "no new tools" freeze
+    // is lifted). The trim tools are the Select tool's modifier gestures without the modifier (`arm`).
+    /// Click a clip / lane: select every clip from there to the end (Shift: that track only).
+    TrackForward,
+    /// Same, from the start of the timeline up to the click.
+    TrackBackward,
+    /// Edge drag = ripple trim (Select's Ctrl+edge).
+    Ripple,
+    /// Edge drag = roll the cut (Select's Alt+edge).
+    Rolling,
+    /// Body drag = slip the source (Select's Alt+body).
+    Slip,
+    /// Body drag = slide between neighbours (Select's Ctrl+Alt+body).
+    Slide,
+    /// Drag the timeline to scroll it.
+    Hand,
+    /// Click the timeline to zoom in around the click (Alt: out).
+    Zoom,
+    /// Click a clip on the timeline: a keyframe on its opacity (video) / volume (audio) at that time.
+    Pen,
 }
 
 pub struct ToolsState {
@@ -104,6 +124,7 @@ pub(crate) enum Glyph {
     Line,
     Arrow,
     Pencil,
+    Eyedropper,
     Mask,
     Zoom,
     Razor,
@@ -317,6 +338,7 @@ impl Glyph {
         Glyph::Line,
         Glyph::Arrow,
         Glyph::Pencil,
+        Glyph::Eyedropper,
         Glyph::Mask,
         Glyph::Zoom,
         Glyph::Razor,
@@ -458,6 +480,7 @@ impl Glyph {
             Glyph::Line => "line",
             Glyph::Arrow => "arrow",
             Glyph::Pencil => "pencil",
+            Glyph::Eyedropper => "eyedropper",
             Glyph::Mask => "mask",
             Glyph::Zoom => "zoom",
             Glyph::Razor => "razor",
@@ -607,6 +630,7 @@ impl Glyph {
             Glyph::Line => 0xF7AF,                 // a thin diagonal stroke
             Glyph::Arrow => 0xE72A,                // Forward
             Glyph::Pencil => 0xE70F,               // Edit
+            Glyph::Eyedropper => 0xEF3C,           // Eyedropper
             Glyph::Mask => 0xF16A,                 // a dotted ellipse: a marquee, not "contrast"
             Glyph::Zoom => 0xE71E,                 // Zoom
             Glyph::Razor => 0xE8C6,                // Cut
@@ -614,6 +638,7 @@ impl Glyph {
             Glyph::Hourglass => 0xE916,            // Stopwatch
             Glyph::Eye => 0xE890,                  // View
             Glyph::EyeOff => 0xED1A,               // Hide
+            Glyph::Diamond => 0xE82C,              // a filled diamond
             Glyph::Record => 0xE91F,               // a filled circle (painted red)
             Glyph::Dot => 0xECCC,                  // a smaller filled dot
             Glyph::Mic => 0xE720,                  // Microphone
@@ -705,8 +730,6 @@ impl Glyph {
             // no symbol fits (a snapping magnet, a gap being pushed open, the trim cursors, an n-gon):
             // `draw_glyph` paints these; Letter is plain text
             Glyph::Letter(_) | Glyph::Poly(_) | Glyph::Magnet | Glyph::Spacer => return None,
-            // the icon font's diamond is drawn slanted - paint the same one every keyframe uses
-            Glyph::Diamond => return None,
             Glyph::RollCursor | Glyph::SlipCursor => return None,
         };
         char::from_u32(cp)
@@ -792,11 +815,20 @@ pub fn tool_for_action(action: Action, cur: Tool) -> Option<Tool> {
         Action::ToolCut => Tool::Cut,
         Action::ToolStretch => Tool::Stretch,
         Action::ToolSpacer => Tool::Spacer,
+        Action::ToolTrackForward => Tool::TrackForward,
+        Action::ToolTrackBackward => Tool::TrackBackward,
+        Action::ToolRipple => Tool::Ripple,
+        Action::ToolRolling => Tool::Rolling,
+        Action::ToolSlip => Tool::Slip,
+        Action::ToolSlide => Tool::Slide,
+        Action::ToolPen => Tool::Pen,
+        Action::ToolHand => Tool::Hand,
+        Action::ToolZoom => Tool::Zoom,
         _ => return None,
     })
 }
 
-const TOOL_ACTIONS: [Action; 8] = [
+const TOOL_ACTIONS: [Action; 17] = [
     Action::ToolSelect,
     Action::ToolText,
     Action::ToolDraw,
@@ -805,6 +837,15 @@ const TOOL_ACTIONS: [Action; 8] = [
     Action::ToolCut,
     Action::ToolStretch,
     Action::ToolSpacer,
+    Action::ToolTrackForward,
+    Action::ToolTrackBackward,
+    Action::ToolRipple,
+    Action::ToolRolling,
+    Action::ToolSlip,
+    Action::ToolSlide,
+    Action::ToolPen,
+    Action::ToolHand,
+    Action::ToolZoom,
 ];
 
 pub fn handle_hotkeys(ctx: &egui::Context, hotkeys: &Hotkeys, state: &mut ToolsState) -> Option<Tool> {
@@ -906,7 +947,7 @@ pub(crate) fn rail(ui: &mut egui::Ui, state: &mut ToolsState, crop: &mut bool, p
     }
     flyout(&ui, &r, on, palette, |ui| {
         for k in SHAPE_CYCLE {
-            if flyout_row(ui, palette, shape_glyph(k), k.name(), state.tool == Tool::Shape(k)) {
+            if flyout_row(ui, palette, shape_glyph(k), k.name(), "", state.tool == Tool::Shape(k)) {
                 (state.tool, state.last_shape) = (Tool::Shape(k), k);
             }
         }
@@ -921,11 +962,238 @@ pub(crate) fn rail(ui: &mut egui::Ui, state: &mut ToolsState, crop: &mut bool, p
     }
     flyout(&ui, &r, on, palette, |ui| {
         for m in MaskShape::ALL {
-            if flyout_row(ui, palette, mask_glyph(m), m.name(), state.tool == Tool::Mask(m)) {
+            if flyout_row(ui, palette, mask_glyph(m), m.name(), "", state.tool == Tool::Mask(m)) {
                 (state.tool, state.last_mask) = (Tool::Mask(m), m);
             }
         }
     });
+}
+
+// ---- tools-panel ----
+/// One Tools-panel entry. `tool: None` is Crop (a mode of Select, like the viewer rail's Crop).
+pub(crate) struct PanelTool {
+    /// Persisted in `Settings.hidden_tools`: never rename one.
+    pub id: &'static str,
+    pub name: &'static str,
+    pub glyph: Glyph,
+    pub tool: Option<Tool>,
+    pub key: Option<Action>,
+}
+
+const fn pt(id: &'static str, name: &'static str, glyph: Glyph, tool: Option<Tool>, key: Option<Action>) -> PanelTool {
+    PanelTool { id, name, glyph, tool, key }
+}
+
+/// The timeline's tool groups, left to right: Premiere's (one slot each, showing its active or last-used
+/// member; right-click or a long press opens the group), then ours. Every `Tool` has an entry, so the
+/// active tool is always lit somewhere.
+pub(crate) const PANEL: &[&[PanelTool]] = &[
+    &[pt("select", "Selection", Glyph::Cursor, Some(Tool::Select), Some(Action::ToolSelect))],
+    &[
+        pt(
+            "track_fwd",
+            "Track Select Forward",
+            Glyph::Skip(Dir::Right),
+            Some(Tool::TrackForward),
+            Some(Action::ToolTrackForward),
+        ),
+        pt(
+            "track_back",
+            "Track Select Backward",
+            Glyph::Skip(Dir::Left),
+            Some(Tool::TrackBackward),
+            Some(Action::ToolTrackBackward),
+        ),
+    ],
+    &[
+        pt("ripple", "Ripple Edit", Glyph::Jump(Dir::Right), Some(Tool::Ripple), Some(Action::ToolRipple)),
+        pt("rolling", "Rolling Edit", Glyph::RollCursor, Some(Tool::Rolling), Some(Action::ToolRolling)),
+        pt("stretch", "Rate Stretch", Glyph::Speed, Some(Tool::Stretch), Some(Action::ToolStretch)),
+    ],
+    &[pt("razor", "Razor", Glyph::Razor, Some(Tool::Cut), Some(Action::ToolCut))],
+    &[
+        pt("slip", "Slip", Glyph::SlipCursor, Some(Tool::Slip), Some(Action::ToolSlip)),
+        pt("slide", "Slide", Glyph::Transition, Some(Tool::Slide), Some(Action::ToolSlide)),
+    ],
+    &[pt(
+        "pen",
+        "Pen: click a clip for an opacity / volume keyframe",
+        Glyph::Diamond,
+        Some(Tool::Pen),
+        Some(Action::ToolPen),
+    )],
+    &[
+        pt("hand", "Hand", Glyph::Maximize, Some(Tool::Hand), Some(Action::ToolHand)),
+        pt("zoom", "Zoom (Alt-click zooms out)", Glyph::Zoom, Some(Tool::Zoom), Some(Action::ToolZoom)),
+    ],
+    &[pt("type", "Type", Glyph::Letter('T'), Some(Tool::Text), Some(Action::ToolText))],
+    // ours
+    &[pt("marker", "Marker (drag for a range)", Glyph::Flag, Some(Tool::Marker), Some(Action::ToolMarker))],
+    &[
+        pt("mask_rect", "Rectangle Mask", Glyph::Mask, Some(Tool::Mask(MaskShape::Rect)), Some(Action::ToolMask)),
+        pt("mask_ellipse", "Ellipse Mask", Glyph::Ellipse, Some(Tool::Mask(MaskShape::Ellipse)), None),
+        pt("mask_polygon", "Polygon Mask", Glyph::Poly(5), Some(Tool::Mask(MaskShape::Polygon)), None),
+        pt("mask_path", "Path Mask", Glyph::Pencil, Some(Tool::Mask(MaskShape::Path)), None),
+    ],
+    &[pt("crop", "Crop", Glyph::Crop, None, None)],
+    &[pt("draw", "Draw", Glyph::Pencil, Some(Tool::Draw), Some(Action::ToolDraw))],
+    &[
+        pt("rect", "Rectangle", Glyph::Rect, Some(Tool::Shape(ShapeKind::Rect)), None),
+        pt("ellipse", "Ellipse", Glyph::Ellipse, Some(Tool::Shape(ShapeKind::Ellipse)), None),
+        pt("triangle", "Triangle", Glyph::Poly(3), Some(Tool::Shape(ShapeKind::Triangle)), None),
+        pt("polygon", "Polygon", Glyph::Poly(5), Some(Tool::Shape(ShapeKind::Polygon)), None),
+        pt("star", "Star", Glyph::Star, Some(Tool::Shape(ShapeKind::Star)), None),
+        pt("line", "Line", Glyph::Line, Some(Tool::Shape(ShapeKind::Line)), None),
+        pt("arrow", "Arrow", Glyph::Arrow, Some(Tool::Shape(ShapeKind::Arrow)), None),
+    ],
+    &[pt("spacer", "Spacer", Glyph::Spacer, Some(Tool::Spacer), Some(Action::ToolSpacer))],
+];
+
+/// Where our own groups start (a small gap after Premiere's).
+const PANEL_OURS: usize = 8;
+/// Seconds a press must be held to open a group (Premiere's long press).
+const LONG_PRESS: f64 = 0.4;
+
+fn panel_active(t: &PanelTool, tool: Tool, crop: bool) -> bool {
+    match t.tool {
+        None => tool == Tool::Select && crop,
+        Some(Tool::Select) => tool == Tool::Select && !crop,
+        Some(x) => x == tool,
+    }
+}
+
+fn panel_pick(t: &PanelTool, tool: &mut Tool, crop: &mut bool) {
+    *tool = t.tool.unwrap_or(Tool::Select);
+    *crop = t.tool.is_none();
+}
+
+/// Selection is the fallback tool, so it can't be hidden.
+fn is_hidden(hidden: &[String], t: &PanelTool) -> bool {
+    t.id != "select" && hidden.iter().any(|h| h == t.id)
+}
+
+/// There is always a lit tool: the active one unless it is hidden (just now, or in old settings), else
+/// Selection. Esc also goes back to Selection.
+pub(crate) fn ensure_tool(tool: &mut Tool, crop: &mut bool, hidden: &[String], escape: bool) {
+    let lit = PANEL.iter().flat_map(|g| g.iter()).any(|t| panel_active(t, *tool, *crop) && !is_hidden(hidden, t));
+    if escape || !lit {
+        (*tool, *crop) = (Tool::Select, false);
+    }
+}
+
+/// The rows every group menu ends with: show / hide each tool, re-add a hidden one, reset.
+fn customize_rows(ui: &mut egui::Ui, hidden: &mut Vec<String>) {
+    let mut toggle = None;
+    crate::ui::menu::sub(ui, Some(Glyph::Eye), "Show / hide tools", |ui| {
+        for t in PANEL.iter().flat_map(|g| g.iter()).filter(|t| t.id != "select") {
+            if crate::ui::menu::check(ui, !is_hidden(hidden, t), t.name, "").clicked() {
+                toggle = Some(t.id);
+            }
+        }
+    });
+    let off: Vec<&PanelTool> = PANEL.iter().flat_map(|g| g.iter()).filter(|t| is_hidden(hidden, t)).collect();
+    ui.add_enabled_ui(!off.is_empty(), |ui| {
+        crate::ui::menu::sub(ui, Some(Glyph::Letter('+')), "Add tool", |ui| {
+            for t in off {
+                if crate::ui::menu::row(ui, Some(t.glyph), t.name, "").clicked() {
+                    toggle = Some(t.id);
+                }
+            }
+        });
+    });
+    if crate::ui::menu::row(ui, None, "Reset tools", "").clicked() {
+        hidden.clear();
+    }
+    if let Some(id) = toggle {
+        match hidden.iter().position(|h| h == id) {
+            Some(i) => _ = hidden.remove(i),
+            None => hidden.push(id.to_string()),
+        }
+    }
+}
+
+/// The timeline toolbar's tool groups, in a row. A group's slot shows its active (else last-used) member
+/// with a corner mark; right-click or a long press opens the group plus the customize rows. Returns true
+/// when `hidden` changed (the caller saves Settings).
+pub(crate) fn panel(
+    ui: &mut egui::Ui,
+    tool: &mut Tool,
+    crop: &mut bool,
+    hidden: &mut Vec<String>,
+    palette: &Palette,
+) -> bool {
+    let before = hidden.clone();
+    let escape = !ui.ctx().wants_keyboard_input() && ui.input(|i| i.key_pressed(Key::Escape));
+    ensure_tool(tool, crop, hidden, escape);
+    let now = ui.input(|i| i.time);
+    ui.spacing_mut().item_spacing.x = 2.0;
+    for (gi, group) in PANEL.iter().enumerate() {
+        let shown: Vec<&PanelTool> = group.iter().filter(|t| !is_hidden(hidden, t)).collect();
+        let Some(&first) = shown.first() else { continue };
+        if gi == PANEL_OURS {
+            ui.add_space(6.0);
+        }
+        let last_id = egui::Id::new(("tools-panel-last", gi));
+        let last: &str = ui.data(|d| d.get_temp(last_id)).unwrap_or("");
+        let (cur, cur_crop) = (*tool, *crop);
+        let on = |t: &PanelTool| panel_active(t, cur, cur_crop);
+        let t = shown.iter().copied().find(|t| on(t)).or_else(|| shown.iter().copied().find(|t| t.id == last));
+        let t = t.unwrap_or(first);
+        let tip = t.key.map_or_else(|| t.name.to_string(), |a| with_key(t.name, a));
+        let tip = if shown.len() > 1 { format!("{tip}\nRight-click or hold for the others") } else { tip };
+        let r = icon_button(ui, palette, egui::Id::new(("tools-panel", gi)), t.glyph, &tip, on(t));
+        // a long press opens the group on release (opened mid-press, the release's click would close it)
+        let press_id = egui::Id::new(("tools-panel-press", gi));
+        let pressed_at: Option<f64> = ui.data(|d| d.get_temp(press_id));
+        let down = r.is_pointer_button_down_on();
+        let long = pressed_at.is_some_and(|p| now - p >= LONG_PRESS);
+        if down && pressed_at.is_none() {
+            ui.data_mut(|d| d.insert_temp(press_id, now));
+        }
+        if down {
+            ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(LONG_PRESS));
+        } else if pressed_at.is_some() {
+            ui.data_mut(|d| d.remove::<f64>(press_id));
+        }
+        if r.clicked() && !long {
+            panel_pick(t, tool, crop);
+        }
+        if shown.len() > 1 {
+            let c = r.rect.right_bottom() - egui::vec2(2.0, 2.0);
+            let fg = if on(t) { on_accent(palette.accent) } else { palette.text_dim };
+            let mark = vec![c, c - egui::vec2(4.0, 0.0), c - egui::vec2(0.0, 4.0)];
+            ui.painter().add(egui::Shape::convex_polygon(mark, fg, Stroke::NONE));
+        }
+        let open = r.secondary_clicked() || (long && !down);
+        let cmd = open.then_some(egui::SetOpenCommand::Bool(true));
+        let mut picked = None;
+        let menu = egui::Popup::menu(&r).open_memory(cmd).align(egui::RectAlign::BOTTOM_START).gap(4.0);
+        menu.show(|ui| {
+            if shown.len() > 1 {
+                for &m in &shown {
+                    let key = m.key.map(crate::ui::menu::shortcut).unwrap_or_default();
+                    if flyout_row(ui, palette, m.glyph, m.name, &key, on(m)) {
+                        picked = Some(m);
+                    }
+                }
+                ui.separator();
+            }
+            let hide = format!("Hide {}", t.name);
+            if t.id != "select" && crate::ui::menu::row(ui, Some(Glyph::EyeOff), &hide, "").clicked() {
+                hidden.push(t.id.to_string());
+            }
+            customize_rows(ui, hidden);
+        });
+        if let Some(m) = picked {
+            panel_pick(m, tool, crop);
+        }
+        if let Some(g) = group.iter().find(|g| panel_active(g, *tool, *crop)) {
+            ui.data_mut(|d| d.insert_temp(last_id, g.id));
+        }
+    }
+    // hiding the active tool falls back to Selection this frame, not next
+    ensure_tool(tool, crop, hidden, false);
+    *hidden != before
 }
 
 /// A rail button's flyout: a corner mark on the button, and a menu to its right that its click opens
@@ -940,8 +1208,8 @@ fn flyout(ui: &egui::Ui, r: &egui::Response, on: bool, palette: &Palette, add: i
 }
 
 /// One flyout row (a `ui::menu` row, so it lines up like every menu); the current pick is outlined.
-fn flyout_row(ui: &mut egui::Ui, palette: &Palette, g: Glyph, name: &str, on: bool) -> bool {
-    let r = crate::ui::menu::row(ui, Some(g), name, "");
+fn flyout_row(ui: &mut egui::Ui, palette: &Palette, g: Glyph, name: &str, key: &str, on: bool) -> bool {
+    let r = crate::ui::menu::row(ui, Some(g), name, key);
     if on {
         let cr = CornerRadius::same(palette.rounding as u8);
         ui.painter().rect_stroke(r.rect, cr, Stroke::new(1.0, palette.accent), StrokeKind::Inside);
@@ -1029,7 +1297,7 @@ pub(crate) fn style_controls(ui: &mut egui::Ui, state: &mut ToolsState, palette:
             }
         }
         // the mask shape is picked on the rail's flyout; the preview adds the mask target to the strip
-        Tool::Mask(_) | Tool::Text | Tool::Select | Tool::Cut | Tool::Marker | Tool::Stretch | Tool::Spacer => {}
+        _ => {}
     }
     changed
 }
@@ -1178,23 +1446,8 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
             let head = vec![c + egui::vec2(7.5, 0.0), c + egui::vec2(4.5, -2.2), c + egui::vec2(4.5, 2.2)];
             p.add(egui::Shape::convex_polygon(head, fg, Stroke::NONE));
         }
-        Glyph::Diamond => {
-            p.add(diamond(c, 5.0, fg, Stroke::NONE));
-        }
         _ => {} // every other glyph has an icon (`every_glyph_paints_a_picture` holds that)
     }
-}
-
-/// THE keyframe diamond (Inspector ◆, timeline keys, curve editor, the Diamond glyph): a square turned
-/// 45° with equal half-extents, its centre and size snapped to whole points so the four edges
-/// anti-alias identically instead of leaning (the icon font's glyph did).
-pub(crate) fn diamond(c: egui::Pos2, r: f32, fill: Color32, stroke: Stroke) -> egui::Shape {
-    let (c, r) = (c.round(), r.round().max(1.0));
-    egui::Shape::convex_polygon(
-        vec![c - egui::vec2(0.0, r), c + egui::vec2(r, 0.0), c + egui::vec2(0.0, r), c - egui::vec2(r, 0.0)],
-        fill,
-        stroke,
-    )
 }
 
 /// Built-in icon for a menu action (None = text-only). The user's Settings → Appearance → Icons
@@ -1382,21 +1635,6 @@ mod tests {
                 _ => 0,
             })
             .sum()
-    }
-
-    /// The keyframe diamond is a true square-on-its-corner (equal half-extents, whole-point centre), and
-    /// the Diamond glyph paints that instead of the icon font's slanted one.
-    #[test]
-    fn keyframe_diamond_is_symmetric_and_pixel_snapped() {
-        let egui::Shape::Path(path) = diamond(egui::pos2(10.3, 20.6), 4.4, Color32::WHITE, Stroke::NONE) else {
-            panic!("not a path")
-        };
-        let p = &path.points;
-        assert_eq!(p[0], egui::pos2(10.0, 17.0));
-        assert_eq!(p[1], egui::pos2(14.0, 21.0));
-        assert_eq!(p[2], egui::pos2(10.0, 25.0));
-        assert_eq!(p[3], egui::pos2(6.0, 21.0));
-        assert!(Glyph::Diamond.icon().is_none(), "the icon font's diamond leans");
     }
 
     #[test]
@@ -1724,5 +1962,156 @@ mod tests {
             });
             assert_eq!(state.tool, t, "{t:?} controls must not change the tool on their own");
         }
+    }
+
+    // ---- tools-panel ----
+    /// The toolbar's tool groups alone, one frame at a time.
+    struct PanelHarness {
+        ctx: egui::Context,
+        tool: Tool,
+        crop: bool,
+        hidden: Vec<String>,
+        time: f64,
+        shapes: Vec<egui::epaint::ClippedShape>,
+    }
+
+    impl PanelHarness {
+        fn new(hidden: &[&str]) -> Self {
+            let ctx = egui::Context::default();
+            ctx.set_fonts(crate::theme::test_fonts());
+            let hidden = hidden.iter().map(|s| s.to_string()).collect();
+            let mut h = Self { ctx, tool: Tool::Select, crop: false, hidden, time: 0.0, shapes: Vec::new() };
+            h.frame(vec![]);
+            h
+        }
+        fn frame(&mut self, events: Vec<Event>) {
+            self.time += 0.05;
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 400.0))),
+                time: Some(self.time),
+                events,
+                ..Default::default()
+            };
+            let pal = Palette::new(true, Color32::from_rgb(0, 120, 212));
+            let PanelHarness { ctx, tool, crop, hidden, .. } = self;
+            let out = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| ui.horizontal(|ui| panel(ui, tool, crop, hidden, &pal)));
+            });
+            self.shapes = out.shapes;
+        }
+        fn slot(&self, gi: usize) -> Pos2 {
+            self.ctx.read_response(egui::Id::new(("tools-panel", gi))).expect("slot drawn").rect.center()
+        }
+        fn text(&self, s: &str) -> Option<Pos2> {
+            self.shapes.iter().find_map(|c| match &c.shape {
+                egui::Shape::Text(t) if t.galley.job.text == s => Some(t.pos + t.galley.rect.center().to_vec2()),
+                _ => None,
+            })
+        }
+        fn button(&mut self, pos: Pos2, button: egui::PointerButton, hold: f64) {
+            self.time += 1.0;
+            self.frame(vec![Event::PointerMoved(pos)]);
+            let ev = |pressed| Event::PointerButton { pos, button, pressed, modifiers: Modifiers::NONE };
+            self.frame(vec![ev(true)]);
+            self.time += hold;
+            self.frame(vec![]);
+            self.frame(vec![ev(false)]);
+            self.frame(vec![]);
+        }
+        fn click(&mut self, pos: Pos2) {
+            self.button(pos, egui::PointerButton::Primary, 0.0);
+        }
+    }
+
+    /// Every tool the app can be on has a slot, so the active one is always lit on the toolbar.
+    #[test]
+    fn every_tool_has_a_panel_slot() {
+        let mut tools = vec![
+            Tool::Select,
+            Tool::Text,
+            Tool::Draw,
+            Tool::Cut,
+            Tool::Marker,
+            Tool::Stretch,
+            Tool::Spacer,
+            Tool::TrackForward,
+            Tool::TrackBackward,
+            Tool::Ripple,
+            Tool::Rolling,
+            Tool::Slip,
+            Tool::Slide,
+            Tool::Hand,
+            Tool::Zoom,
+            Tool::Pen,
+        ];
+        tools.extend(SHAPE_CYCLE.map(Tool::Shape));
+        tools.extend(MaskShape::ALL.map(Tool::Mask));
+        for t in tools {
+            let hit = PANEL.iter().flat_map(|g| g.iter()).filter(|e| panel_active(e, t, false)).count();
+            assert_eq!(hit, 1, "{t:?} lights exactly one slot");
+        }
+        let ids: std::collections::HashSet<_> = PANEL.iter().flat_map(|g| g.iter()).map(|e| e.id).collect();
+        assert_eq!(ids.len(), PANEL.iter().map(|g| g.len()).sum::<usize>(), "slot ids are unique (persisted)");
+    }
+
+    /// A tool is always selected: hiding the active one, Esc and old settings that hid it all land on
+    /// Selection, and Selection itself can't be hidden.
+    #[test]
+    fn a_tool_is_always_selected() {
+        let (mut tool, mut crop) = (Tool::Cut, false);
+        ensure_tool(&mut tool, &mut crop, &["razor".into()], false);
+        assert_eq!(tool, Tool::Select, "old settings hid the active tool");
+        let (mut tool, mut crop) = (Tool::Rolling, true);
+        ensure_tool(&mut tool, &mut crop, &[], true);
+        assert_eq!((tool, crop), (Tool::Select, false), "Esc");
+        let (mut tool, mut crop) = (Tool::Select, false);
+        ensure_tool(&mut tool, &mut crop, &["select".into()], false);
+        assert_eq!(tool, Tool::Select, "Selection can't be hidden");
+
+        // live: pick Rolling from the ripple group's right-click flyout, then hide it from the same menu
+        let mut h = PanelHarness::new(&[]);
+        let slot = h.slot(2);
+        h.button(slot, egui::PointerButton::Secondary, 0.0);
+        let row = h.text("Rolling Edit").expect("right-click opens the group");
+        h.click(row);
+        assert_eq!(h.tool, Tool::Rolling);
+        h.button(h.slot(2), egui::PointerButton::Secondary, 0.0);
+        let hide = h.text("Hide Rolling Edit").expect("the group menu offers Hide");
+        h.click(hide);
+        assert!(h.hidden.contains(&"rolling".to_string()));
+        assert_eq!(h.tool, Tool::Select, "hiding the active tool falls back to Selection");
+        // and a key press of Esc on another tool
+        h.tool = Tool::Hand;
+        h.frame(vec![Event::Key {
+            key: Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        }]);
+        assert_eq!(h.tool, Tool::Select, "Esc goes back to Selection");
+    }
+
+    /// A click picks the slot's tool, a long press opens its group instead, and the slot then shows the
+    /// pick.
+    #[test]
+    fn panel_click_and_long_press() {
+        let mut h = PanelHarness::new(&[]);
+        h.click(h.slot(3));
+        assert_eq!(h.tool, Tool::Cut, "Razor slot");
+        let slot = h.slot(4);
+        h.button(slot, egui::PointerButton::Primary, 0.6);
+        assert_eq!(h.tool, Tool::Cut, "a long press does not pick");
+        let row = h.text("Slide").expect("a long press opens the group");
+        h.click(row);
+        assert_eq!(h.tool, Tool::Slide);
+        h.frame(vec![]);
+        assert!(h.text("Slide").is_none(), "the flyout closed");
+        // a hidden group member leaves the flyout; hiding every member drops the slot
+        let mut h = PanelHarness::new(&["hand", "zoom"]);
+        assert!(h.ctx.read_response(egui::Id::new(("tools-panel", 6))).is_none(), "Hand/Zoom slot gone");
+        h.hidden.clear();
+        h.frame(vec![]);
+        assert!(h.ctx.read_response(egui::Id::new(("tools-panel", 6))).is_some(), "Reset brings it back");
     }
 }

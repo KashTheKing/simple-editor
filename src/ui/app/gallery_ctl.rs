@@ -66,21 +66,6 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
             app.toast("Select a clip first");
         }
     }
-    // ---- ws:keyframe-blocks ----
-    if let Some(name) = resp.forget_block {
-        if let Err(e) = app.run_tool("keyblocks.forget", &json!({"name": name})) {
-            app.toast(e);
-        }
-    }
-    if let Some(name) = App::name_window(ui.ctx(), "Save keyframe block", &mut app.gallery.save_block) {
-        match app.selection.first().copied() {
-            Some(id) => match super::tools_keyblocks::save_block(app, id, &name, None, None) {
-                Ok(()) => app.toast(format!("Saved \"{name}\" to Gallery ▸ Animate")),
-                Err(e) => app.toast(e),
-            },
-            None => app.toast("Select a clip first"),
-        }
-    }
     let want = resp.hover.map(|(tab, name)| monitor::AltRequest::Gallery(tab.name().to_string(), name));
     app.alt_render.request(want);
     true

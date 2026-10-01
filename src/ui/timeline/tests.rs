@@ -3054,29 +3054,106 @@ fn hidden_video_rows_are_view_only() {
     assert!(hit.contains(&TrackKind::Audio), "clicked the audio clip (linked video comes along): {hit:?}");
 }
 
-/// ws:keyframe-blocks: an applied block is a bar above the key strip - drag its body to move it (keys
-/// follow), drag its right end to stretch it; each drag is one undo.
+/// tools-panel: each timeline tool the toolbar adds does its job on a click or a drag.
 #[test]
-fn headless_key_block_bar_moves_and_stretches() {
+fn toolbar_tools_act_on_the_timeline() {
     let mut h = Harness::new();
     let lanes = h.state.lanes_rect;
-    let id = h.project.tracks[0].clips[0].id;
-    let spin = crate::model::find_block(&[], "Spin").unwrap();
-    h.project.apply_key_block(id, &spin, Some(1.0), None);
+    let y = lanes.top() + 30.0;
+    let x = |h: &Harness, t: f64| h.state.x_at(t);
+
+    // Marker: a drag lays down a range marker (a click still drops a point, see tools_cut_mark_and_stretch)
+    h.tool = Tool::Marker;
+    h.drag(pos2(x(&h, 2.0), y), pos2(x(&h, 4.0), y));
+    assert_eq!(h.project.markers.len(), 1, "marker drag drops one marker");
+    let m = &h.project.markers[0];
+    assert!((m.t - 2.0).abs() < 0.05 && (m.duration - 2.0).abs() < 0.05, "a 2..4 s range: {} + {}", m.t, m.duration);
+    assert_eq!(h.video_clip().start, 0.0, "and never moves the clip under it");
+
+    // Pen: a click keys the video clip's opacity / the audio clip's volume there
+    h.tool = Tool::Pen;
+    let p = pos2(x(&h, 5.0), y);
+    h.time += 1.0;
+    h.press(p);
+    h.release(p);
     h.frame(vec![]);
-    let bar_y = lanes.top() + h.project.tracks[0].height - 1.0 - 14.0;
-    let from = pos2(h.state.x_at(1.3), bar_y);
-    assert!(h.drag(from, from + vec2(40.0, 0.0)), "bar drag edits");
-    assert_eq!(h.undos, 1);
-    let c = &h.project.tracks[0].clips[0];
-    assert!((c.blocks[0].t - 2.0).abs() < 1.0 / 30.0 + 1e-6, "moved to {}", c.blocks[0].t);
-    assert!((c.rotation.keys[0].t - c.blocks[0].t).abs() < 1e-9, "keys ride along");
-    let end_t = c.blocks[0].end();
+    assert!(h.video_clip().opacity.has_key_at(5.0), "pen keys opacity at the click");
+    let ay = lanes.top() + h.project.tracks[0].height + h.project.tracks[1].height * 0.9; // clear of the volume line
+    let p = pos2(x(&h, 6.0), ay);
+    h.time += 1.0;
+    h.press(p);
+    h.release(p);
     h.frame(vec![]);
-    let end = pos2(h.state.x_at(end_t) - 3.0, bar_y);
-    assert!(h.drag(end, end + vec2(40.0, 0.0)), "edge drag edits");
-    let c = &h.project.tracks[0].clips[0];
-    assert!((c.blocks[0].dur - 1.8).abs() < 1.0 / 30.0 + 1e-6, "stretched to {}", c.blocks[0].dur);
-    assert!((c.rotation.at(c.blocks[0].end()) - 360.0).abs() < 1e-6);
-    assert_eq!(h.undos, 2);
+    assert!(h.audio_clip().volume.has_key_at(6.0), "pen keys volume on an audio clip");
+
+    // Track Select Forward from 3 s: both linked clips (they end after 3 s); Backward from 0.5 s: they
+    // start before it; Shift = that track only
+    h.tool = Tool::TrackForward;
+    h.selection.clear();
+    let p = pos2(x(&h, 3.0), y);
+    h.time += 1.0;
+    h.press(p);
+    h.release(p);
+    h.frame(vec![]);
+    assert_eq!(h.selection.len(), 2, "forward selects every track");
+    h.tool = Tool::TrackBackward;
+    h.selection.clear();
+    h.time += 1.0;
+    h.press_m(p, Modifiers::SHIFT);
+    h.release_m(p, Modifiers::SHIFT);
+    h.frame(vec![]);
+    assert_eq!(h.selection, vec![h.video_clip().id], "Shift: the clicked track only");
+
+    // Zoom: click in, Alt-click out
+    h.tool = Tool::Zoom;
+    let z0 = h.state.zoom;
+    h.time += 1.0;
+    h.press(p);
+    h.release(p);
+    h.frame(vec![]);
+    assert!((h.state.zoom - z0 * 2.0).abs() < 1e-3, "click zooms in: {z0} -> {}", h.state.zoom);
+    h.time += 1.0;
+    h.press_m(p, Modifiers::ALT);
+    h.release_m(p, Modifiers::ALT);
+    h.frame(vec![]);
+    assert!((h.state.zoom - z0).abs() < 1e-3, "Alt-click zooms out: {}", h.state.zoom);
+
+    // Hand: a drag scrolls the lanes and edits nothing
+    h.tool = Tool::Hand;
+    h.state.scroll_x = 5.0;
+    let from = pos2(x(&h, 6.0), y);
+    assert!(!h.drag(from, from + vec2(80.0, 0.0)), "hand edits nothing");
+    assert!(h.state.scroll_x < 5.0, "hand drag scrolls: {}", h.state.scroll_x);
+    assert_eq!(h.video_clip().start, 0.0);
+}
+
+/// tools-panel: the trim tools run the Select tool's modifier gestures on a plain drag.
+#[test]
+fn toolbar_trim_tools_reuse_the_trim_gestures() {
+    // Ripple Edit: dragging the end in pulls the next clip (split at 5 s) along with it
+    let mut h = Harness::new();
+    h.project.split_at(5.0, None);
+    let lanes = h.state.lanes_rect;
+    let y = lanes.top() + 30.0;
+    h.tool = Tool::Ripple;
+    let edge = h.state.x_at(5.0) - 2.0;
+    assert!(h.drag(pos2(edge, y), pos2(edge - 40.0, y)), "ripple trims");
+    let next = &h.project.tracks[0].clips[1];
+    assert!(next.start < 5.0 - 0.5, "ripple pulled the next clip left: {}", next.start);
+
+    // Slip: the body drag moves the source window, not the clip
+    let mut h = Harness::new();
+    h.project.split_at(5.0, None);
+    h.tool = Tool::Slip;
+    let id = h.project.tracks[0].clips[1].id;
+    let src0 = h.project.clip(id).unwrap().src_in;
+    let at = pos2(h.state.x_at(7.0), y);
+    assert!(h.drag(at, at + vec2(40.0, 0.0)), "slip edits");
+    let c = h.project.clip(id).unwrap();
+    assert!(
+        (c.start - 5.0).abs() < 1e-6 && (c.src_in - src0).abs() > 0.1,
+        "slipped in place: {} {}",
+        c.start,
+        c.src_in
+    );
 }

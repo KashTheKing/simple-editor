@@ -53,6 +53,9 @@ pub(super) fn hotkeys_tab(
         }
     });
 
+    ui.horizontal(|ui| changed |= super::import::import_row(ui, state, settings, hotkeys));
+    changed |= super::import::import_window(ui.ctx(), state, settings, hotkeys);
+
     ui.horizontal(|ui| {
         ui.label("UI scale");
         if ui.add(egui::Slider::new(&mut settings.ui_scale, 0.5..=2.5).fixed_decimals(2)).changed() {

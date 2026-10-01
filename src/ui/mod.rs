@@ -18,8 +18,8 @@ pub mod frame_ui;
 // ---- ws:inspector-gallery ----
 pub mod gallery;
 pub mod guides;
-pub mod history_ui;
 pub mod spiky_ball;
+pub mod history_ui;
 // ---- ws:layout-modes-onboarding ----
 pub mod home;
 pub mod import_ui;
@@ -113,17 +113,6 @@ pub(crate) fn take_key_seek() -> Option<f64> {
     KEY_SEEK.with(|s| s.take())
 }
 
-thread_local! {
-    /// ws:keyframe-blocks: a block picked from a keyframe menu's Animate ▸ - only the inspector knows the
-    /// clips and the undo, so it applies it (`take_block_request`).
-    static BLOCK_REQ: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
-}
-
-/// Keyframe block a keyframe menu's Animate ▸ asked for, since the last call.
-pub(crate) fn take_block_request() -> Option<String> {
-    BLOCK_REQ.with(|s| s.borrow_mut().take())
-}
-
 /// The one keyframe control of every property row (Inspector, Effects stack, masks, shapes): a ◆ that
 /// toggles a key at the clip-local playhead `lt` - filled when a key sits here, outlined when the
 /// property is animated elsewhere, faint when it isn't; a ∿ while a live link drives it. Right-click it
@@ -144,8 +133,10 @@ pub(crate) fn key_buttons(
     let color = if r.hovered() { palette.text } else { color };
     let p = ui.painter();
     if a.link.is_none() {
+        let (c, h) = (rect.center(), 5.0);
+        let pts = vec![c - egui::vec2(0.0, h), c + egui::vec2(h, 0.0), c + egui::vec2(0.0, h), c - egui::vec2(h, 0.0)];
         let fill = if here { color } else { egui::Color32::TRANSPARENT };
-        p.add(crate::ui::tools::diamond(rect.center(), 5.0, fill, egui::Stroke::new(1.3, color)));
+        p.add(egui::Shape::convex_polygon(pts, fill, egui::Stroke::new(1.3, color)));
     } else {
         p.text(rect.center(), egui::Align2::CENTER_CENTER, "∿", egui::FontId::proportional(15.0), color);
     }
@@ -175,7 +166,6 @@ pub(crate) fn key_menu(
     label: &str,
     paths: &[(Id, String)],
 ) {
-    use crate::model::Ease;
     use crate::ui::menu;
     use crate::ui::tools::{Dir, Glyph};
     const EPS: f64 = 1e-4;
@@ -194,32 +184,6 @@ pub(crate) fn key_menu(
         a.clear_keys(lt);
         g.click();
     }
-    // ws:keyframe-blocks: ease the key at the playhead (or the segment the playhead is in), or every key
-    let seg = a.keys.iter().rposition(|k| k.t <= lt + EPS);
-    for (text, one) in [("Ease this key", true), ("Ease all keys", false)] {
-        ui.add_enabled_ui(if one { seg.is_some() } else { animated }, |ui| {
-            menu::sub(ui, Some(Glyph::CurveIcon), text, |ui| {
-                for (name, e) in Ease::ALL.iter().map(|e| (e.name(), *e)).chain(Ease::PRESETS) {
-                    if menu::row(ui, None, name, "").clicked() {
-                        match (one, seg) {
-                            (true, Some(i)) => a.keys[i].ease = e,
-                            _ => a.keys.iter_mut().for_each(|k| k.ease = e),
-                        }
-                        g.click();
-                    }
-                }
-            });
-        });
-    }
-    menu::sub(ui, Some(Glyph::Diamond), "Animate", |ui| {
-        ui.weak("Adds a keyframe block at the playhead");
-        for b in crate::model::builtin_blocks() {
-            if menu::row(ui, None, &b.name, "").clicked() {
-                BLOCK_REQ.with(|s| *s.borrow_mut() = Some(b.name));
-                ui.ctx().request_repaint();
-            }
-        }
-    });
     ui.separator();
     let axis_x = label == "Position X";
     if axis_x || label == "Position Y" {
@@ -331,8 +295,6 @@ pub enum DragPayload {
     Effect(crate::model::EffectKind),
     /// A transition from the transitions panel (dropped on a cut or the node canvas).
     Transition(crate::model::TransitionKind),
-    /// A keyframe block (Gallery ▸ Animate) by name - applied to the clip it is dropped on.
-    KeyBlock(String),
 }
 
 /// How far the pointer must travel while held before a click turns into a drag.

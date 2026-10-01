@@ -19,6 +19,7 @@ mod appearance;
 mod capture;
 mod general;
 mod hotkeys;
+mod import;
 mod performance;
 
 use crate::hotkeys::{Action, Hotkeys};
@@ -52,6 +53,9 @@ pub struct SettingsUi {
     /// A rebind collided with another action's chord: (the action being rebound, its new chord, the
     /// action that already has it) - drives the inline Reassign/Keep row until the user picks one.
     pub(super) pending_conflict: Option<(Action, egui::KeyboardShortcut, Action)>,
+    /// Hotkeys ▸ Import from…: the plan being previewed, and what the last Apply overwrote.
+    pub(super) import_plan: Option<crate::keymaps::import::Plan>,
+    pub(super) import_undo: Option<crate::keymaps::import::Snapshot>,
 }
 
 pub(super) struct Status {
