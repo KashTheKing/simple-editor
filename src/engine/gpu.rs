@@ -2187,3 +2187,120 @@ mod tests {
         }
     }
 }
+
+/// Real-driver checks: a legacy WGL context on a hidden window (compatibility profiles accept
+/// `#version 330 core`). Skips, loudly, on a machine with no OpenGL driver.
+#[cfg(test)]
+mod driver_tests {
+    use super::*;
+    use windows::core::{s, PCSTR};
+    use windows::Win32::Graphics::Gdi::GetDC;
+    use windows::Win32::Graphics::OpenGL::*;
+    use windows::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
+    use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExA, WINDOW_EX_STYLE, WS_POPUP};
+
+    fn gl() -> Option<glow::Context> {
+        unsafe {
+            let hwnd =
+                CreateWindowExA(WINDOW_EX_STYLE(0), s!("STATIC"), s!(""), WS_POPUP, 0, 0, 8, 8, None, None, None, None)
+                    .ok()?;
+            let dc = GetDC(Some(hwnd));
+            let pfd = PIXELFORMATDESCRIPTOR {
+                nSize: std::mem::size_of::<PIXELFORMATDESCRIPTOR>() as u16,
+                nVersion: 1,
+                dwFlags: PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER,
+                iPixelType: PFD_TYPE_RGBA,
+                cColorBits: 32,
+                ..Default::default()
+            };
+            SetPixelFormat(dc, ChoosePixelFormat(dc, &pfd), &pfd).ok()?;
+            let rc = wglCreateContext(dc).ok()?;
+            wglMakeCurrent(dc, rc).ok()?;
+            let dll = GetModuleHandleA(s!("opengl32.dll")).ok()?;
+            Some(glow::Context::from_loader_function(|name| {
+                let c = std::ffi::CString::new(name).unwrap();
+                let p = PCSTR(c.as_ptr() as _);
+                match wglGetProcAddress(p) {
+                    Some(f) if f as usize > 3 => f as *const _,
+                    _ => GetProcAddress(dll, p).map_or(std::ptr::null(), |f| f as *const _),
+                }
+            }))
+        }
+    }
+
+    /// Compile + link `user_shader(src)` with the real driver, draw it into a 4x4 target at t = 0 and
+    /// return the top-left pixel.
+    unsafe fn run(gl: &glow::Context, src: &str) -> Result<[u8; 4], String> {
+        let vert = compile(gl, glow::VERTEX_SHADER, shaders::VERT)?;
+        let prog = build(gl, vert, &shaders::user_shader(src))?;
+        let tex = gl.create_texture()?;
+        gl.bind_texture(glow::TEXTURE_2D, Some(tex));
+        tex_params(gl);
+        let px = [255u8, 0, 0, 255].repeat(16);
+        gl.tex_image_2d(
+            glow::TEXTURE_2D,
+            0,
+            glow::RGBA8 as i32,
+            4,
+            4,
+            0,
+            glow::RGBA,
+            glow::UNSIGNED_BYTE,
+            glow::PixelUnpackData::Slice(Some(&px)),
+        );
+        let out = gl.create_texture()?;
+        gl.bind_texture(glow::TEXTURE_2D, Some(out));
+        gl.tex_image_2d(
+            glow::TEXTURE_2D,
+            0,
+            glow::RGBA8 as i32,
+            4,
+            4,
+            0,
+            glow::RGBA,
+            glow::UNSIGNED_BYTE,
+            glow::PixelUnpackData::Slice(None),
+        );
+        let fbo = gl.create_framebuffer()?;
+        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+        gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(out), 0);
+        gl.viewport(0, 0, 4, 4);
+        gl.use_program(Some(prog.p));
+        gl.active_texture(glow::TEXTURE0);
+        gl.bind_texture(glow::TEXTURE_2D, Some(tex));
+        gl.uniform_1_i32(prog.uni.get("tex"), 0);
+        gl.uniform_2_f32(prog.uni.get("u_res"), 4.0, 4.0);
+        let vao = gl.create_vertex_array()?;
+        gl.bind_vertex_array(Some(vao));
+        gl.draw_arrays(glow::TRIANGLES, 0, 3);
+        let mut pix = [0u8; 4];
+        gl.read_pixels(0, 0, 1, 1, glow::RGBA, glow::UNSIGNED_BYTE, glow::PixelPackData::Slice(Some(&mut pix)));
+        Ok(pix)
+    }
+
+    #[test]
+    fn shadertoy_and_effect_shaders_compile_and_render_on_the_real_driver() {
+        let Some(gl) = gl() else {
+            eprintln!("SKIPPED: no OpenGL driver for a hidden WGL context");
+            return;
+        };
+        for (name, src) in crate::ui::shader_ui::EXAMPLES {
+            let px = unsafe { run(&gl, src) }.unwrap_or_else(|e| panic!("{name} failed to build:\n{e}"));
+            assert!(px != [0, 0, 0, 0], "{name} drew nothing");
+        }
+        // a typical shadertoy paste using every common input
+        let toy = r#"
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+    vec2 uv = fragCoord / iResolution.xy;
+    vec2 m = iMouse.xy / iResolution.xy;
+    float f = float(iFrame % 2) * 0.0 + sin(iTime) * 0.0;
+    fragColor = vec4(texture(iChannel0, uv + m).rgb + f, 1.0);
+}
+"#;
+        assert_eq!(unsafe { run(&gl, toy) }.unwrap(), [255, 0, 0, 255], "iChannel0 is the layer");
+        // errors are reported against the user's own line numbers
+        let bad = "void mainImage(out vec4 c, in vec2 p) {\n    c = vec4(nope);\n}\n";
+        let log = unsafe { run(&gl, bad) }.unwrap_err();
+        assert!(log.contains("(2)") || log.contains(":2:"), "error must point at user line 2: {log}");
+    }
+}

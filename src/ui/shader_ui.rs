@@ -8,12 +8,41 @@ use crate::model::{Id, DEFAULT_SHADER};
 use eframe::egui;
 
 /// What `shaders::user_shader` puts in scope - the knobs are invisible otherwise.
-const UNIFORMS: &str = "sampler2D tex - the layer\n\
+const UNIFORMS: &str = "shadertoy: iResolution, iTime, iTimeDelta, iFrame, iChannel0..3 (the layer), iMouse (zero)\n\
+sampler2D tex - the layer\n\
 vec2 u_res - layer size in pixels\n\
 float u_time - clip-local seconds\n\
 float u_scale - preview scale (multiply pixel-sized amounts by it)\n\
 float p0..p7 - the eight knobs, also named u1..u8\n\
 sampler2D u_mask, int u_has_mask - the effect's mask (applied for you)";
+
+/// Starting points for the Examples menu: our `effect()` dialect and two shadertoy-style ones.
+pub const EXAMPLES: [(&str, &str); 3] = [
+    ("Wave (effect)", DEFAULT_SHADER),
+    (
+        "Plasma (shadertoy)",
+        r#"// pasted-from-shadertoy style: no layer input, just time and pixels
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+    vec2 uv = fragCoord / iResolution.xy;
+    vec3 col = 0.5 + 0.5 * cos(iTime + uv.xyx + vec3(0.0, 2.0, 4.0));
+    fragColor = vec4(col, 1.0);
+}
+"#,
+    ),
+    (
+        "RGB split (shadertoy, iChannel0)",
+        r#"// iChannel0 is the clip this effect sits on
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+    vec2 uv = fragCoord / iResolution.xy;
+    vec2 d = vec2(0.006 * sin(iTime * 3.0), 0.0);
+    float r = texture(iChannel0, uv + d).r;
+    vec4 g = texture(iChannel0, uv);
+    float b = texture(iChannel0, uv - d).b;
+    fragColor = vec4(r, g.g, b, g.a);
+}
+"#,
+    ),
+];
 
 #[derive(Default)]
 pub struct ShaderUi {
@@ -46,7 +75,10 @@ pub fn show(ctx: &egui::Context, state: &mut ShaderUi) -> bool {
     let mut open = state.open;
     let mut apply = false;
     egui::Window::new("Shader Editor").open(&mut open).default_width(560.0).show(ctx, |ui| {
-        ui.weak("Define vec4 effect(vec4 src, vec2 uv) - uv is 0..1, colours are straight alpha.");
+        ui.weak(
+            "Paste a shadertoy.com shader (mainImage) as-is, or define vec4 effect(vec4 src, vec2 uv) - \
+             uv is 0..1, colours are straight alpha.",
+        );
         egui::ScrollArea::vertical().id_salt("shader_src").max_height(280.0).show(ui, |ui| {
             ui.add(
                 egui::TextEdit::multiline(&mut state.src).code_editor().desired_rows(16).desired_width(f32::INFINITY),
@@ -57,11 +89,18 @@ pub fn show(ctx: &egui::Context, state: &mut ShaderUi) -> bool {
             if ui.button("Reset").on_hover_text("Back to the default body").clicked() {
                 state.src = DEFAULT_SHADER.to_string();
             }
+            crate::ui::menu::button(ui, "Examples", |ui| {
+                for (name, src) in EXAMPLES {
+                    if ui.button(name).clicked() {
+                        state.src = src.to_string();
+                    }
+                }
+            });
         });
         ui.collapsing("Uniforms", |ui| ui.weak(UNIFORMS));
         if !state.error.is_empty() {
             let red = ui.visuals().error_fg_color;
-            ui.colored_label(red, "GLSL error");
+            ui.colored_label(red, "GLSL error - line numbers count lines of your source");
             egui::ScrollArea::vertical().id_salt("shader_err").max_height(160.0).show(ui, |ui| {
                 // read-only TextEdit: the log stays selectable and verbatim, wrapping and all
                 let mut log = state.error.as_str();
