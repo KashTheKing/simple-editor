@@ -79,11 +79,26 @@ pub enum GestureKind {
 /// undefined - the caller keeps its own existing/unaffected behaviour in that case (see the Fade /
 /// VolumeLine / Key / Marker / TransitionEdge zones below, whose row says "existing gestures unchanged").
 pub fn arm(mods: Modifiers, zone: Zone, flags: TrackFlags, tool: Tool) -> Option<GestureKind> {
-    // Any non-Select tool keeps its own legacy gesture regardless of zone/modifiers: no new tools ship
-    // (Tool::Zoom stays deleted), Cut/Marker/Stretch/Spacer/Draw/Text/Shape/Mask are untouched.
-    if !matches!(tool, Tool::Select) {
-        return Some(GestureKind::LegacyToolGesture);
-    }
+    // tools-panel: Premiere's trim tools are this table's modifier rows with the modifier implied, on the
+    // zone they act on (elsewhere they behave like Select); Hand / Zoom / Track Select / Pen / Marker arm
+    // no drag on a clip or lane (the timeline handles their clicks, the Hand's pan and the Marker's range). Every other non-Select
+    // tool keeps its own legacy gesture regardless of zone/modifiers.
+    let edge = matches!(zone, Zone::EdgeStart | Zone::EdgeEnd);
+    let mods = match tool {
+        Tool::Select => mods,
+        Tool::Ripple if edge => Modifiers::CTRL,
+        Tool::Rolling if edge => Modifiers::ALT,
+        Tool::Slip if zone == Zone::Body => Modifiers::ALT,
+        Tool::Slide if zone == Zone::Body => Modifiers::CTRL.plus(Modifiers::ALT),
+        Tool::Hand | Tool::Zoom | Tool::TrackForward | Tool::TrackBackward | Tool::Pen | Tool::Marker
+            if edge || matches!(zone, Zone::Body | Zone::BodyBottom | Zone::Lane) =>
+        {
+            return None
+        }
+        Tool::Ripple | Tool::Rolling | Tool::Slip | Tool::Slide => mods,
+        Tool::Hand | Tool::Zoom | Tool::TrackForward | Tool::TrackBackward | Tool::Pen | Tool::Marker => mods,
+        _ => return Some(GestureKind::LegacyToolGesture),
+    };
     use GestureKind::*;
     let (ctrl, alt, shift) = (mods.ctrl, mods.alt, mods.shift);
     match zone {
@@ -279,6 +294,20 @@ mod tests {
         for z in [Zone::Body, Zone::EdgeStart, Zone::Lane, Zone::Seam, Zone::Drop] {
             assert_eq!(arm(NONE, z, FLAT, Tool::Cut), Some(GestureKind::LegacyToolGesture));
             assert_eq!(arm(CTRL_ALT, z, FLAT, Tool::Spacer), Some(GestureKind::LegacyToolGesture));
+        }
+    }
+
+    /// tools-panel: each Premiere trim tool is its modifier row without the modifier.
+    #[test]
+    fn premiere_trim_tools_imply_their_modifier() {
+        assert_eq!(arm(NONE, Zone::EdgeEnd, FLAT, Tool::Ripple), Some(GestureKind::RippleTrim));
+        assert_eq!(arm(NONE, Zone::EdgeStart, FLAT, Tool::Rolling), Some(GestureKind::Roll));
+        assert_eq!(arm(NONE, Zone::Body, FLAT, Tool::Slip), Some(GestureKind::Slip));
+        assert_eq!(arm(NONE, Zone::Body, FLAT, Tool::Slide), Some(GestureKind::Slide));
+        assert_eq!(arm(NONE, Zone::Body, FLAT, Tool::Ripple), Some(GestureKind::MoveNoOverlap), "off its zone: Select");
+        for t in [Tool::Hand, Tool::Zoom, Tool::TrackForward, Tool::TrackBackward, Tool::Pen, Tool::Marker] {
+            assert_eq!(arm(NONE, Zone::Body, FLAT, t), None, "{t:?} never drags a clip");
+            assert_eq!(arm(NONE, Zone::Drop, FLAT, t), Some(GestureKind::DropDefault), "{t:?} still drops");
         }
     }
 }
