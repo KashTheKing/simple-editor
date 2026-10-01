@@ -1,9 +1,50 @@
 # Changelog
 
+## 1.0.0
+
+The first major release: a Resolve-style page workflow, a full tutorial site, and a much faster
+editing loop. Everything from beta-0.3.0 below is included.
+
+### Pages & layout
+- Custom pages: add, rename, duplicate, delete and drag to reorder pages; Restore Default Pages brings the built-ins back.
+- Cut page gets a planning group (Planner, Moodboard, Markers, Subtitles); Media page hides the Inspector by default.
+- Closing a panel lets its neighbours expand into the space, on every page.
+- Source and Preview share a tab: opening something in Source shows Source, clicking the timeline shows Preview.
+
+### Color page (Resolve-style)
+- Lift / Gamma / Gain / Offset wheels with master sliders, a clip thumbnail strip, colour curves (Luma/R/G/B) and scopes.
+- One-click keyframes per wheel and "Keyframe grade" for the whole grade; the Inspector edits colour on the Color page.
+
+### Keyframing
+- 29 chainable keyframe blocks (fades, pops, slides, zoom punch, shake, spin, bounce, Ken Burns, typewriter…) in Gallery ▸ Animate; save your own; blocks show as draggable, stretchable bars on clips.
+- Easing presets per key; keyframe diamonds are now perfect diamonds everywhere.
+
+### Timeline & tools
+- Premiere-style tool groups with real timeline tools: Marker (click or drag a range), Track Select Forward/Backward, Ripple, Roll, Slip, Slide, Pen, Hand, Zoom, plus masks, crop, draw and shapes. Hide or add tools from the right-click menu; a tool is always selected.
+- Resolve-style deletion: Delete ripples (closes the gap), Backspace lifts (leaves it). Optional auto close gaps.
+- Show Video / Show Audio tracks toggles; the Audio page shows audio tracks only.
+
+### Library & Media Browser
+- Click selects, double-click opens in Source; Shift / Ctrl multi-select and Ctrl+A; a bulk right-click menu; Add to timeline keeps your click order.
+- Folder rows are full-width; double-click anywhere on a row (arrow, icon or name) expands it.
+
+### Effects & visuals
+- Shadertoy shaders paste in verbatim (mainImage, iTime, iResolution, iChannel0…) with error lines mapped to your source and example shaders.
+- noa-35c3-style audio visualizer that follows a live spectrum of what's playing.
+- Social guides draw only over the video, under menus and other panels.
+
+### Look
+- GitHub Dark is the default theme, with the brand accent #335FFF (no longer the Windows accent). Icon-only eyedropper.
+
+### Other
+- Import shortcuts and preferences from Premiere Pro and DaVinci Resolve (Settings ▸ Hotkeys ▸ Import from…).
+- New project replaces the open one on every path, with a save prompt.
+- Tutorial site at https://kashtheking.com/simple-editor/guide/ with fresh GitHub Dark screenshots.
+
 ## beta-0.3.0
 
 ### Docs site (issue #85, simplify wave 2)
-A tutorial for every part of the app now lives at https://kashtheking.github.io/simple-editor/ (Help ▸
+A tutorial for every part of the app now lives at https://kashtheking.com/simple-editor/guide/ (Help ▸
 Tutorial & Docs): getting started, the interface and pages, the Library and Source monitor, the viewer,
 the timeline (with the full mouse-modifier table), the Inspector and keyframes, effects / transitions /
 titles, captions, the Media / Cut / Edit / Color / Audio / Export pages, a right-click reference for every surface, the
