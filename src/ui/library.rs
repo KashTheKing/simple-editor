@@ -1034,6 +1034,8 @@ fn row(
             // anyway: clip so the spill is never painted over the button.
             ui.set_clip_rect(ui.clip_rect().intersect(egui::Rect::everything_left_of(content_right)));
             ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+            // a selectable label senses clicks itself and eats the row's double-click (it selects a word)
+            ui.style_mut().interaction.selectable_labels = false;
             let bg = ui.painter().add(egui::Shape::Noop);
             ui.horizontal(|ui| {
                 contents(ui);
@@ -2032,27 +2034,18 @@ impl Tree<'_, '_> {
         }
     }
 
-    /// The disclosure triangle at the head of a tree row; returns the node's state after this frame's
-    /// click. Painted, not written: ▸ and ▾ are tofu boxes in Segoe UI.
-    fn arrow(&mut self, ui: &mut egui::Ui, key: &str, dflt: bool, children: bool) -> bool {
-        let open = self.is_open(key, dflt);
-        let (rect, r) = ui.allocate_exact_size(egui::vec2(ARROW, 14.0), egui::Sense::click());
-        if !children {
-            return false;
-        }
+    /// The disclosure triangle at the head of a tree row, painted into `rect` (the row's own slot - the
+    /// row is the only widget, so nothing splits its clicks). Painted, not written: ▸ and ▾ are tofu
+    /// boxes in Segoe UI.
+    fn paint_arrow(&self, ui: &egui::Ui, rect: egui::Rect, open: bool) {
         let c = rect.center();
         let pts = if open {
             vec![c + egui::vec2(-4.0, -2.0), c + egui::vec2(4.0, -2.0), c + egui::vec2(0.0, 3.5)]
         } else {
             vec![c + egui::vec2(-2.0, -4.0), c + egui::vec2(3.5, 0.0), c + egui::vec2(-2.0, 4.0)]
         };
-        let col = if r.hovered() { self.palette.text } else { self.palette.text_dim };
+        let col = if ui.rect_contains_pointer(rect) { self.palette.text } else { self.palette.text_dim };
         ui.painter().add(egui::Shape::convex_polygon(pts, col, egui::Stroke::NONE));
-        if r.clicked() {
-            self.flip(key);
-            return !open;
-        }
-        open
     }
 
     fn folder_icon(&self, ui: &mut egui::Ui, g: Glyph) {
@@ -2274,26 +2267,38 @@ impl Tree<'_, '_> {
     ) -> egui::Response {
         let sel = self.state.has(&pick);
         let (id, palette, zoom) = (egui::Id::new(("folder", key)), self.palette, self.state.zoom);
+        let mut arrow = None;
         let r = if self.state.view == 1 {
             let art = Art::Icon(Glyph::Folder);
             tile(ui, id, (), sel, "Folder", name, palette.text, palette, art, TILE * zoom, None).0
         } else {
+            // ONE widget for the whole row - indent, arrow, icon and name - so a double-click anywhere on
+            // it opens / closes the folder; a click on the arrow's slot toggles instead of selecting
             let h = ROW_H * zoom;
-            ui.horizontal(|ui| {
+            let mut slot = egui::Rect::NOTHING;
+            let r = row(ui, id, (), sel, None, |ui| {
                 ui.add_space(indent(depth));
-                self.arrow(ui, key, dflt, kids);
-                row(ui, id, (), sel, None, |ui| {
-                    let (rect, _) = ui.allocate_exact_size(egui::vec2(h * 16.0 / 9.0, h), egui::Sense::hover());
-                    paint_art(ui, rect, Art::Icon(Glyph::Folder), palette);
-                    ui.label(if sel { RichText::new(name).strong() } else { RichText::new(name) });
-                })
-                .0
+                slot = ui.allocate_exact_size(egui::vec2(ARROW, h), egui::Sense::hover()).0;
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(h * 16.0 / 9.0, h), egui::Sense::hover());
+                paint_art(ui, rect, Art::Icon(Glyph::Folder), palette);
+                ui.label(if sel { RichText::new(name).strong() } else { RichText::new(name) });
             })
-            .inner
+            .0;
+            arrow = kids.then_some(slot);
+            r
         };
-        self.hit(ui, &r, pick, "");
+        let on_arrow = arrow.is_some_and(|a| r.clicked() && r.interact_pointer_pos().is_some_and(|p| a.contains(p)));
+        if on_arrow {
+            self.rows.push((pick, r.rect));
+            self.flip(key);
+        } else {
+            self.hit(ui, &r, pick, "");
+        }
         if r.double_clicked() {
             self.flip(key);
+        }
+        if let Some(a) = arrow {
+            self.paint_arrow(ui, a, self.is_open(key, dflt));
         }
         r
     }
@@ -2719,18 +2724,20 @@ impl Tree<'_, '_> {
     fn recent(&mut self, ui: &mut egui::Ui, depth: usize) {
         let h = ROW_H * self.state.zoom;
         let palette = self.palette;
-        ui.horizontal(|ui| {
+        let mut slot = egui::Rect::NOTHING;
+        let (r, _) = row(ui, egui::Id::new("recent_row"), (), false, None, |ui| {
             ui.add_space(indent(depth));
-            self.arrow(ui, "recent", false, true);
-            let (r, _) = row(ui, egui::Id::new("recent_row"), (), false, None, |ui| {
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(h * 16.0 / 9.0, h), egui::Sense::hover());
-                paint_art(ui, rect, Art::Icon(Glyph::Clock), palette);
-                ui.label("Recent");
-            });
-            if r.on_hover_text("Files opened recently, across every project").clicked() {
-                self.flip("recent");
-            }
+            slot = ui.allocate_exact_size(egui::vec2(ARROW, h), egui::Sense::hover()).0;
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(h * 16.0 / 9.0, h), egui::Sense::hover());
+            paint_art(ui, rect, Art::Icon(Glyph::Clock), palette);
+            ui.label("Recent");
         });
+        // any click toggles; the 2nd click of a double-click is skipped so a double-click still toggles
+        let r = r.on_hover_text("Files opened recently, across every project");
+        if r.clicked() && !r.double_clicked() {
+            self.flip("recent");
+        }
+        self.paint_arrow(ui, slot, self.is_open("recent", false));
         if !self.is_open("recent", false) {
             return;
         }
@@ -3697,6 +3704,66 @@ mod tests {
         assert_eq!(state.sel_paths.len(), 1);
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A folder row is ONE hit target: a double-click on its icon or on its name opens / closes it, and
+    /// a single click on the arrow toggles it (without selecting). Regression: the arrow was its own
+    /// widget and the name a selectable label that swallowed the double-click.
+    #[test]
+    fn folder_row_double_click_anywhere_and_arrow_click_toggle() {
+        let mut project = Project::new();
+        project.add_folder("Footage/Day 1");
+        let mut settings = Settings::default();
+        let palette = Palette::new(true, egui::Color32::WHITE);
+        let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::test_fonts());
+        let mut state = LibraryState::default();
+        let mut t = 0.0;
+        // one frame with `clicks` press+releases at `at`, 0.1 s apart (two = a double-click)
+        let mut run = |state: &mut LibraryState, at: Option<egui::Pos2>, clicks: usize| {
+            let mut shapes = Vec::new();
+            for _ in 0..clicks.max(1) {
+                t += 0.1;
+                let mut input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 800.0))),
+                    time: Some(t),
+                    ..Default::default()
+                };
+                if let (Some(p), true) = (at, clicks > 0) {
+                    click_at(&mut input, p);
+                }
+                shapes = ctx
+                    .run(input, |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            let mut undo = |_: &Project| {};
+                            show(ui, state, &mut project, &mut settings, None, &palette, false, &mut undo);
+                        });
+                    })
+                    .shapes;
+            }
+            t += 2.0; // the next gesture is never part of this one's double-click
+            shapes
+        };
+        let shapes = run(&mut state, None, 0);
+        let name = text_rect(&shapes, "Footage").expect("the folder row was drawn");
+        assert!(text_rect(&shapes, "Day 1").is_some(), "project folders start open");
+        let (label, icon) = (name.center(), egui::pos2(name.left() - 12.0, name.center().y));
+        let arrow = egui::pos2(8.0 + indent(0) + ARROW / 2.0, name.center().y); // panel margin + indent
+                                                                                // the old gap between the arrow widget and the row was dead, and a double-click on the arrow
+                                                                                // flipped it twice (= nothing)
+        let gap = egui::pos2(arrow.x + ARROW / 2.0 + 3.0, name.center().y);
+        for (at, what) in [(icon, "icon"), (label, "name"), (gap, "gap after the arrow"), (arrow, "arrow")] {
+            let shapes = run(&mut state, Some(at), 2);
+            assert!(text_rect(&shapes, "Day 1").is_none(), "double-click on the {what} closes the folder");
+            let shapes = run(&mut state, Some(at), 2);
+            assert!(text_rect(&shapes, "Day 1").is_some(), "double-click on the {what} opens it again");
+        }
+        state.sel_folders.clear();
+        let shapes = run(&mut state, Some(arrow), 1);
+        assert!(text_rect(&shapes, "Day 1").is_none(), "a click on the arrow closes it");
+        assert!(state.sel_folders.is_empty(), "the arrow toggles without selecting");
+        let shapes = run(&mut state, Some(arrow), 1);
+        assert!(text_rect(&shapes, "Day 1").is_some(), "and a second click opens it");
     }
 
     /// The zoom scales both views and is clamped; a fresh state reads as 1.
