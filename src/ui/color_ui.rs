@@ -251,7 +251,7 @@ pub fn grade_panel(ui: &mut egui::Ui, clip: &mut Clip, lt: f64, palette: &Palett
         }
     });
     ui.ctx().data_mut(|d| d.insert_temp(bars_id, bars));
-    let size = ((ui.available_width() - 40.0) / 4.0).clamp(60.0, 170.0);
+    let size = ((ui.available_width() - 40.0) / 4.0).min(ui.available_height() - 50.0).clamp(60.0, 170.0);
     ui.horizontal_top(|ui| {
         for w in 0..4 {
             if bars {
@@ -289,8 +289,8 @@ pub fn show(
                 }
             }
         }
-        let r = glyph_text_button(ui, Glyph::Zoom, "Eyedropper")
-            .on_hover_text("Pick a colour from the preview (arms the sample - click a point on the canvas)");
+        let r = glyph_text_button(ui, Glyph::Eyedropper, "")
+            .on_hover_text("Eyedropper: pick a colour from the preview (click a point on the canvas)");
         if r.clicked() {
             out.eyedrop = true;
         }
@@ -326,6 +326,80 @@ pub fn show(
         param_grid(ui, clip, kind, lt, palette, g);
     }
     out
+}
+
+/// The `Curves` effect's channels as the Color page's custom curves: (tab, first param, line colour).
+/// Each has three movable points at 1/4, 2/4, 3/4 input; 0 and 1 stay pinned.
+const CURVE_CHANNELS: [(&str, usize, [u8; 3]); 4] =
+    [("Luma", 0, [220, 220, 220]), ("R", 3, [235, 80, 80]), ("G", 6, [90, 210, 110]), ("B", 9, [90, 140, 240])];
+
+/// The output value a drag to `y` (0 = top of the graph, 1 = bottom) sets.
+fn curve_y(y: f32) -> f64 {
+    (1.0 - y as f64).clamp(0.0, 1.0)
+}
+
+/// Luma/R/G/B custom curves over the clip's `Curves` effect (created on first drag). Drag a point up or
+/// down; double-click the graph to reset the channel; ◆ keys the channel's three points.
+pub fn color_curves(ui: &mut egui::Ui, clip: &mut Clip, lt: f64, palette: &Palette, g: &mut Gesture) {
+    let ch_id = egui::Id::new("color_curves_ch");
+    let mut ch: usize = ui.ctx().data(|d| d.get_temp(ch_id).unwrap_or(0));
+    let i0 = CURVE_CHANNELS[ch].1;
+    ui.horizontal(|ui| {
+        for (i, (name, ..)) in CURVE_CHANNELS.iter().enumerate() {
+            ui.selectable_value(&mut ch, i, *name);
+        }
+        let e = clip.effects.iter().find(|e| e.kind == EffectKind::Curves);
+        let here = e.is_some_and(|e| (i0..i0 + 3).any(|i| e.params[i].has_key_at(lt)));
+        let animated = e.is_some_and(|e| (i0..i0 + 3).any(|i| e.params[i].is_animated()));
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
+        let r = ui.interact(rect, ui.id().with("curve_kf"), egui::Sense::click());
+        diamond(ui, rect, here, animated || r.hovered(), palette);
+        if r.on_hover_text("Keyframe this curve at the playhead").clicked() {
+            toggle_keys(clip, EffectKind::Curves, i0..i0 + 3, lt);
+            g.click();
+        }
+    });
+    ui.ctx().data_mut(|d| d.insert_temp(ch_id, ch));
+    let (_, i0, rgb) = CURVE_CHANNELS[ch];
+    let side = ui.available_width().min(ui.available_height()).max(60.0);
+    let (rect, r) = ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::click_and_drag());
+    let col = egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+    let defaults = [0.25, 0.5, 0.75];
+    let ys: [f64; 3] = std::array::from_fn(|k| find_value(clip, EffectKind::Curves, i0 + k, defaults[k], lt));
+    let at = |x: f64, y: f64| rect.left_bottom() + egui::vec2(x as f32 * rect.width(), -(y as f32) * rect.height());
+    let p = ui.painter();
+    p.rect_filled(rect, 0.0, palette.bg);
+    for k in 1..4 {
+        let f = k as f32 / 4.0;
+        let x = rect.left() + f * rect.width();
+        let y = rect.top() + f * rect.height();
+        p.line_segment([egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())], (1.0, palette.border));
+        p.line_segment([egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)], (1.0, palette.border));
+    }
+    let pts = [at(0.0, 0.0), at(0.25, ys[0]), at(0.5, ys[1]), at(0.75, ys[2]), at(1.0, 1.0)];
+    p.add(egui::Shape::line(pts.to_vec(), egui::Stroke::new(2.0, col)));
+    for q in &pts[1..4] {
+        p.circle_filled(*q, 4.0, col);
+    }
+    if r.double_clicked() {
+        for k in 0..3 {
+            set_value(clip, EffectKind::Curves, i0 + k, defaults[k], lt);
+        }
+        g.click();
+    } else if let Some(pos) = r.interact_pointer_pos().filter(|_| r.dragged() || r.drag_started()) {
+        // the drag moves the point whose column it started nearest to
+        let k_id = ui.id().with("curve_drag_k");
+        if r.drag_started() {
+            let fx = ((pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
+            let k = ((fx * 4.0 - 1.0).round() as i32).clamp(0, 2) as usize;
+            ui.ctx().data_mut(|d| d.insert_temp(k_id, k));
+            g.start = true;
+        }
+        let k: usize = ui.ctx().data(|d| d.get_temp(k_id).unwrap_or(1));
+        set_value(clip, EffectKind::Curves, i0 + k, curve_y((pos.y - rect.top()) / rect.height()), lt);
+        g.changed = true;
+    }
+    r.on_hover_text("Drag a point up/down; double-click to reset this curve");
 }
 
 #[cfg(test)]
@@ -419,5 +493,27 @@ mod tests {
             assert!(!ctx.has_requested_repaint(), "the Grade pane must not repaint while idle");
         }
         assert!(clip.effects.is_empty(), "drawing the wheels adds nothing");
+    }
+
+    #[test]
+    fn curve_drag_writes_the_curves_effect_at_the_playhead() {
+        let mut clip = Clip::new(1, ClipKind::Video, "c", 0.0, 4.0);
+        // the R channel's middle point, dragged a quarter of the way down from the top
+        set_value(&mut clip, EffectKind::Curves, CURVE_CHANNELS[1].1 + 1, curve_y(0.25), 0.0);
+        assert_eq!(clip.effects[0].kind, EffectKind::Curves);
+        assert_eq!(clip.effects[0].params[4].value, 0.75, "R 2/4 lifted to 0.75");
+        assert_eq!(clip.effects[0].params[1].value, 0.5, "Luma untouched");
+        let ctx = ctx();
+        let palette = Palette::new(true, egui::Color32::WHITE);
+        let mut fresh = Clip::new(2, ClipKind::Video, "d", 0.0, 4.0);
+        for _ in 0..30 {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    color_curves(ui, &mut fresh, 0.0, &palette, &mut Gesture::default());
+                });
+            });
+        }
+        assert!(!ctx.has_requested_repaint(), "assert_no_idle_repaint: colour curves");
+        assert!(fresh.effects.is_empty(), "drawing the curves adds nothing");
     }
 }

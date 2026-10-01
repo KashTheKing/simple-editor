@@ -342,35 +342,50 @@ impl Layout {
         let browser = Self::tabs(t, &[Pane::MediaBrowser], 0);
         let left = Self::linear(t, egui_tiles::LinearDir::Vertical, &[(library, 0.5), (browser, 0.5)]);
         let source = t.insert_pane(Pane::Source);
-        let inspector = t.insert_pane(Pane::Inspector);
+        // in a tab group of its own: simplify's auto-wrap of a lone pane gives the PANE a new id, and the
+        // hidden flag would stay behind on the wrapper's (old) id
+        let inspector = Self::tabs(t, &[Pane::Inspector], 0);
         let row = [(left, 0.36), (source, 0.4), (inspector, 0.24)];
         let root = Self::linear(t, egui_tiles::LinearDir::Horizontal, &row);
         Self::stack_unplaced(t, library);
+        // hidden, not removed: `+` / the Window menu bring it back in its column (Source fills it until then)
+        let id = t.find_pane(&Pane::Inspector).expect("just inserted");
+        t.set_visible(id, false);
         Self::new(egui_tiles::Tree::new("layout", root, tiles))
     }
 
-    /// The Cut page (fast assembly): [Library] · [Source | Preview] · [Inspector] over the Timeline.
+    /// The Cut page (fast assembly and planning): [Library over Planner | Moodboard | Markers | Subtitles]
+    /// · [Source | Preview] · [Inspector] over the Timeline.
     pub fn cut_layout() -> Self {
-        Self::viewer_over_timeline(&[Pane::Library], [0.25, 0.5, 0.25])
+        let plan = [Pane::Planner, Pane::Moodboard, Pane::Markers, Pane::Subtitles];
+        Self::viewer_over_timeline(&[Pane::Library], &plan, [0.25, 0.5, 0.25])
     }
 
     /// The Edit page: [Library | Effects | Transitions | Gallery] · [Source | Preview] · [Inspector] over
     /// a full-width Timeline; every other pane rides hidden behind Library.
     pub fn default_layout() -> Self {
         let library = [Pane::Library, Pane::Effects, Pane::Transitions, Pane::Presets];
-        Self::viewer_over_timeline(&library, [0.22, 0.5, 0.28])
+        Self::viewer_over_timeline(&library, &[], [0.22, 0.5, 0.28])
     }
 
     /// Cut and Edit: [`library` as tabs] · [Source | Preview] · [Inspector] (`shares` of the row) over a
-    /// full-width Timeline, every other pane hidden behind the first group.
-    fn viewer_over_timeline(library: &[Pane], shares: [f32; 3]) -> Self {
+    /// full-width Timeline, every other pane hidden behind the first group. A non-empty `plan` is a second
+    /// tab group under `library`, its first tab in front.
+    fn viewer_over_timeline(library: &[Pane], plan: &[Pane], shares: [f32; 3]) -> Self {
         use egui_tiles::LinearDir::{Horizontal, Vertical};
         let mut tiles = egui_tiles::Tiles::default();
         let t = &mut tiles;
         let library = Self::tabs(t, library, 0);
+        let left = match plan {
+            [] => library,
+            _ => {
+                let plan = Self::tabs(t, plan, 0);
+                Self::linear(t, Vertical, &[(library, 0.5), (plan, 0.5)])
+            }
+        };
         let viewer = Self::tabs(t, &[Pane::Source, Pane::Preview], 1);
         let inspector = t.insert_pane(Pane::Inspector);
-        let top = Self::linear(t, Horizontal, &[(library, shares[0]), (viewer, shares[1]), (inspector, shares[2])]);
+        let top = Self::linear(t, Horizontal, &[(left, shares[0]), (viewer, shares[1]), (inspector, shares[2])]);
         let timeline = t.insert_pane(Pane::Timeline);
         let root = Self::linear(t, Vertical, &[(top, 0.6), (timeline, 0.4)]);
         Self::stack_unplaced(t, library);
@@ -394,7 +409,7 @@ impl Layout {
         let curves = t.insert_pane(Pane::Curves);
         let scopes = t.insert_pane(Pane::Scopes);
         let bottom = Self::linear(t, Horizontal, &[(grade, 0.5), (curves, 0.25), (scopes, 0.25)]);
-        let root = Self::linear(t, Vertical, &[(top, 0.5), (clips, 0.11), (timeline, 0.1), (bottom, 0.29)]);
+        let root = Self::linear(t, Vertical, &[(top, 0.47), (clips, 0.09), (timeline, 0.18), (bottom, 0.26)]);
         Self::stack_unplaced(t, gallery);
         Self::new(egui_tiles::Tree::new("layout", root, tiles))
     }
@@ -531,6 +546,25 @@ impl Layout {
         }
         self.popped.retain(|&p| p != Pane::Tools);
         self.pinned.retain(|&p| p != Pane::Tools);
+    }
+    /// A group (tabs, row, column) is visible iff any child is: closing a group's last tab hides the
+    /// group so its row / column siblings reflow into the space; showing a pane brings its groups back.
+    /// Run before every draw, so every hide / show path (cross, Window menu, `+`, undock) goes through it.
+    pub fn sync_groups(&mut self) {
+        fn walk(tiles: &mut egui_tiles::Tiles<Pane>, id: egui_tiles::TileId) -> bool {
+            let kids = match tiles.get(id) {
+                Some(egui_tiles::Tile::Container(c)) => c.children().copied().collect::<Vec<_>>(),
+                _ => return tiles.is_visible(id),
+            };
+            // every child walked (no short-circuit): nested groups need their own flag set too
+            let shown = kids.into_iter().fold(false, |any, k| walk(tiles, k) | any);
+            tiles.set_visible(id, shown);
+            shown
+        }
+        if let Some(root) = self.tree.root {
+            walk(&mut self.tree.tiles, root);
+            self.tree.tiles.set_visible(root, true);
+        }
     }
     /// Visible = docked in the tree (and not hidden) or popped out.
     pub fn is_visible(&self, pane: Pane) -> bool {
@@ -1233,6 +1267,9 @@ pub fn show(
         actions: Vec::new(),
         scroll_to: layout.scroll_to.take(),
     };
+    // simplify first (tree.ui would, wrapping lone panes in fresh, visible tab groups), then hide empty groups
+    layout.tree.simplify(&egui_tiles::Behavior::simplification_options(&beh));
+    layout.sync_groups();
     layout.tree.ui(&mut beh, ui);
     // ---- ws:pages ----
     // Locked panels never re-dock. Tabs don't sense drags then, but egui_tiles also drags a whole group
@@ -1382,8 +1419,8 @@ mod tests {
     fn every_page_contains_every_pane() {
         use Pane::*;
         let shown: [(&str, &[Pane]); 6] = [
-            ("Media", &[Library, MediaBrowser, Source, Inspector]),
-            ("Cut", &[Library, Source, Preview, Inspector, Timeline]),
+            ("Media", &[Library, MediaBrowser, Source]),
+            ("Cut", &[Library, Planner, Moodboard, Markers, Subtitles, Source, Preview, Inspector, Timeline]),
             ("Edit", &[Library, Effects, Transitions, Presets, Source, Preview, Inspector, Timeline]),
             ("Color", &[Presets, Preview, Inspector, Timeline, Nodes, Curves, Scopes, Grade, Clips]),
             ("Audio", &[Preview, Mixer, Subtitles, Inspector, Timeline]),
@@ -1417,6 +1454,7 @@ mod tests {
         }
         assert!(in_front(&Layout::color_layout(), Nodes) && in_front(&Layout::audio_layout(), Mixer));
         assert!(in_front(&Layout::cut_layout(), Preview) && !in_front(&Layout::cut_layout(), Source));
+        assert!(in_front(&Layout::cut_layout(), Planner), "Cut: Planner fronts the planning group");
     }
 
     /// The Inspector is the top-right tile of every page's default: walk the tree from the root taking
@@ -1444,7 +1482,8 @@ mod tests {
                 };
             }
         }
-        for &name in PAGES {
+        // Media hides its Inspector by default (the `+` / Window menu brings it back, top-right)
+        for &name in PAGES.iter().filter(|&&p| p != "Media") {
             let mut l = page_layout(name).unwrap()();
             assert_eq!(top_right(&l), Some(Pane::Inspector), "{name} as built");
             l.tree
@@ -1835,6 +1874,34 @@ mod tests {
         l.add_to(Pane::Planner, group);
         let planner = l.tree.tiles.find_pane(&Pane::Planner).unwrap();
         assert_eq!(l.tree.tiles.parent_of(planner), Some(group));
+    }
+
+    /// Closing a group's last tab hides the group so its neighbours reflow into the space (no blank gap),
+    /// on every page; showing the pane again brings the group back. Media starts with its Inspector hidden.
+    #[test]
+    fn closing_a_lone_tab_reflows_its_neighbours() {
+        let ctx = egui::Context::default();
+        let icons = BTreeMap::new();
+        let chrome = Chrome { icons: &icons, tab_bar: None, cozy: true, editing: None, locked: false };
+        let width = |l: &Layout, p: Pane| l.rects.iter().find(|(q, _)| *q == p).map(|(_, r)| r.width());
+        let mut l = Layout::media_layout();
+        frame(&ctx, &mut l, &chrome, vec![], 0.0);
+        let wide = width(&l, Pane::Source).unwrap();
+        assert!(width(&l, Pane::Inspector).is_none(), "Media hides its Inspector by default: {:?}", l.rects);
+        l.reveal(Pane::Inspector);
+        frame(&ctx, &mut l, &chrome, vec![], 0.1);
+        let with = width(&l, Pane::Source).unwrap();
+        assert!(width(&l, Pane::Inspector).is_some() && with < wide - 50.0, "{with} vs {wide}");
+        l.toggle(Pane::Inspector); // the tab's Close
+        frame(&ctx, &mut l, &chrome, vec![], 0.2);
+        assert!(width(&l, Pane::Source).unwrap() > with + 50.0, "Source grows into the closed Inspector's space");
+        // the Edit page too: its lone Inspector closes and the viewer group grows
+        let mut l = Layout::default_layout();
+        frame(&ctx, &mut l, &chrome, vec![], 0.3);
+        let before = width(&l, Pane::Preview).unwrap();
+        l.toggle(Pane::Inspector);
+        frame(&ctx, &mut l, &chrome, vec![], 0.4);
+        assert!(width(&l, Pane::Preview).unwrap() > before + 50.0);
     }
 
     /// One frame of `show` in a bare 1200x800 window.

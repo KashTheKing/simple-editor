@@ -445,6 +445,8 @@ pub struct Settings {
     // ---- ws:viewer-surface ----
     /// Show / Hide Tools (`Action::ToggleTools`) hid the viewer's tool rail.
     pub tool_rail_hidden: bool,
+    /// tools-panel: ids (`tools::PANEL`) of the Tools panel entries the user hid (right-click ▸ Hide).
+    pub hidden_tools: Vec<String>,
     // ---- ws:library-surface ----
     // ---- ws:inspector-surface ----
     // ---- ws:side-panels ----
@@ -606,6 +608,7 @@ impl Default for Settings {
             // ---- ws:timeline-surface ----
             // ---- ws:viewer-surface ----
             tool_rail_hidden: false,
+            hidden_tools: Vec::new(),
             // ---- ws:library-surface ----
             // ---- ws:inspector-surface ----
             // ---- ws:side-panels ----

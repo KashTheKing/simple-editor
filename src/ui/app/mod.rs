@@ -1347,6 +1347,8 @@ impl eframe::App for App {
                 for pane in std::mem::take(&mut self.deferred_surface) {
                     if pane == Pane::Source {
                         self.surface_source();
+                    } else if pane == Pane::Preview {
+                        self.layout_dirty |= layout_ctl::show_over(&mut self.layout, Pane::Preview, Pane::Source);
                     } else {
                         self.surface(pane);
                     }

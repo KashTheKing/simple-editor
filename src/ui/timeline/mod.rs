@@ -172,6 +172,8 @@ pub struct TimelineState {
     pub hover_track: Option<usize>,
     /// (video, audio) rows shown - view only, set each frame from `Settings::track_kinds` (per page).
     pub show_kinds: (bool, bool),
+    /// tools-panel: the Marker tool's press time while a drag is out - a range marker on release.
+    marker_from: Option<f64>,
 }
 
 impl Default for TimelineState {
@@ -200,6 +202,7 @@ impl Default for TimelineState {
             rollers: Vec::new(),
             hover_track: None,
             show_kinds: (true, true),
+            marker_from: None,
         }
     }
 }
@@ -490,6 +493,11 @@ enum Act {
     MoveTransition(Id, menus::TransPos),
     /// Add a project marker at this timeline time.
     AddMarker(f64),
+    /// tools-panel: the Marker tool's drag - a range marker (start, duration).
+    AddRangeMarker(f64, f64),
+    /// tools-panel: the Pen tool's click - a keyframe holding the current value on the clip's opacity
+    /// (volume on an audio track) at clip-local time t.
+    PenKey(Id, f64, bool),
     /// Razor tool: split every clip crossing this timeline time.
     SplitAt(f64),
     RenameMarker(Id, String),
@@ -519,6 +527,43 @@ mod paint;
 mod snap;
 #[cfg(test)]
 mod tests;
+
+/// tools-panel: the pointer over the lanes for each tool (None = whatever the widget under it says).
+fn tool_cursor(tool: Tool, alt: bool) -> Option<CursorIcon> {
+    Some(match tool {
+        Tool::TrackForward => CursorIcon::ResizeEast,
+        Tool::TrackBackward => CursorIcon::ResizeWest,
+        Tool::Ripple => CursorIcon::ResizeColumn,
+        Tool::Rolling | Tool::Stretch | Tool::Spacer => CursorIcon::ResizeHorizontal,
+        Tool::Slip => CursorIcon::AllScroll,
+        Tool::Slide => CursorIcon::Move,
+        Tool::Cut | Tool::Marker => CursorIcon::Crosshair,
+        Tool::Pen => CursorIcon::Cell,
+        Tool::Hand => CursorIcon::Grab,
+        Tool::Zoom if alt => CursorIcon::ZoomOut,
+        Tool::Zoom => CursorIcon::ZoomIn,
+        _ => return None,
+    })
+}
+
+/// tools-panel: a Zoom (Alt: out) or Track Select (Shift: that track only) click at `pos`.
+fn tool_click(
+    tool: Tool,
+    state: &mut TimelineState,
+    project: &Project,
+    sel: &mut Vec<Id>,
+    pos: Pos2,
+    mods: egui::Modifiers,
+) {
+    match tool {
+        Tool::Zoom => state.zoom_by(if mods.alt { 0.5 } else { 2.0 }, Some(pos.x)),
+        Tool::TrackForward | Tool::TrackBackward => {
+            let track = if mods.shift { state.track_at(pos.y, project) } else { None };
+            *sel = project.clips_from(state.time_at(pos.x).max(0.0), track, tool == Tool::TrackBackward);
+        }
+        _ => {}
+    }
+}
 
 // `arm()` is the single source of truth for what a press becomes (gestures.rs routes every body/edge/
 // lane/drop press through it - ws:timeline-trim-gestures); SnapKind is consumed by timeline.snap_query
@@ -1090,6 +1135,16 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                         let x = ui.input(|i| i.pointer.latest_pos()).unwrap_or(vis.center()).x;
                         let t = snap_time(state.time_at(x), snap_on, zoom, c.project, ph, &[]);
                         act = Some(Act::AddMarker(t.max(0.0)));
+                    }
+                    Tool::Pen => {
+                        let x = ui.input(|i| i.pointer.latest_pos()).unwrap_or(vis.center()).x;
+                        let lt = clip.local(state.time_at(x)).clamp(0.0, clip.duration);
+                        act = Some(Act::PenKey(clip.id, lt, track.kind == TrackKind::Audio));
+                    }
+                    Tool::Zoom | Tool::TrackForward | Tool::TrackBackward => {
+                        if let Some(p) = br.interact_pointer_pos() {
+                            tool_click(c.tool, state, c.project, c.selection, p, mods);
+                        }
                     }
                     _ => click = Some(clip.id),
                 }
@@ -1724,6 +1779,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 let t = snap_time(state.time_at(pp.x), c.snap, state.zoom, c.project, *c.playhead, &[]);
                 act = Some(Act::AddMarker(t.max(0.0)));
             }
+            (Tool::Zoom | Tool::TrackForward | Tool::TrackBackward, Some(pp)) => {
+                tool_click(c.tool, state, c.project, c.selection, pp, mods);
+            }
             (_, pp) => {
                 c.selection.clear();
                 c.sel_transitions.clear();
@@ -1749,8 +1807,38 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         }
     }
     // middle-mouse pan (ws:snap-engine): drags the lanes without starting a gesture or selection.
-    if state.drag.is_none() && lanes_resp.dragged_by(egui::PointerButton::Middle) {
-        let d = lanes_resp.drag_delta();
+    // tools-panel: the Hand tool pans with the primary button too, from any press inside the lanes
+    let pressed_in_lanes =
+        ui.input(|i| i.pointer.primary_down() && i.pointer.press_origin().is_some_and(|p| lanes.contains(p)));
+    let hand = c.tool == Tool::Hand && pressed_in_lanes;
+    if state.drag.is_none() && ui.rect_contains_pointer(lanes) {
+        if let Some(icon) = if hand { Some(CursorIcon::Grabbing) } else { tool_cursor(c.tool, mods.alt) } {
+            ui.ctx().set_cursor_icon(icon);
+        }
+    }
+    // tools-panel: a Marker-tool drag across the lanes lays down a range marker (a click drops a point)
+    if c.tool != Tool::Marker || !(pressed_in_lanes || state.marker_from.is_some()) {
+        state.marker_from = None;
+    } else if let Some(p) = pointer {
+        let snap_at = |x: f32| snap_time(state.time_at(x), c.snap, state.zoom, c.project, *c.playhead, &[]).max(0.0);
+        let now = snap_at(p.x);
+        let origin_x = ui.input(|i| i.pointer.press_origin()).map_or(p.x, |o| o.x);
+        let from = state.marker_from.unwrap_or_else(|| snap_at(origin_x));
+        state.marker_from = Some(from);
+        let (a, b) = (from.min(now), from.max(now));
+        let wide = (state.x_at(b) - state.x_at(a)).abs() > 4.0;
+        if !primary_down {
+            state.marker_from = None;
+            if wide {
+                act = Some(Act::AddRangeMarker(a, b - a));
+            }
+        } else if wide {
+            let r = Rect::from_x_y_ranges(state.x_at(a)..=state.x_at(b), lanes.y_range());
+            ui.painter().rect_filled(r, 0.0, pal.accent.gamma_multiply(0.2));
+        }
+    }
+    if state.drag.is_none() && (hand || lanes_resp.dragged_by(egui::PointerButton::Middle)) {
+        let d = if hand { ui.input(|i| i.pointer.delta()) } else { lanes_resp.drag_delta() };
         state.scroll_x = (state.scroll_x - (d.x / state.zoom) as f64).max(0.0);
         state.scroll_y = (state.scroll_y - d.y).clamp(0.0, (content_h - lanes.height()).max(0.0));
         state.user_panned = true;
@@ -1766,6 +1854,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         if !on_resize_handle {
             if c.tool == Tool::Spacer {
                 start_spacer = true;
+            } else if matches!(c.tool, Tool::Hand | Tool::Zoom | Tool::TrackForward | Tool::TrackBackward) {
+                // no rubber band: these tools click (or pan) instead
             } else if let Some(o) = lanes_resp.interact_pointer_pos().or(pointer) {
                 state.band = Some((o, mods.shift));
             }
@@ -2184,6 +2274,21 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             Act::AddMarker(t) => {
                 let mid = p.add_marker(t, "Marker");
                 state.selected_marker = Some(mid);
+            }
+            Act::AddRangeMarker(t, d) => {
+                let mid = p.add_marker(t, "Marker");
+                if let Some(m) = p.marker_mut(mid) {
+                    m.duration = d;
+                }
+                state.selected_marker = Some(mid);
+            }
+            Act::PenKey(cid, lt, audio) => {
+                if let Some(cl) = p.clip_mut(cid) {
+                    let a = if audio { &mut cl.volume } else { &mut cl.opacity };
+                    if !a.has_key_at(lt) {
+                        a.toggle_key(lt);
+                    }
+                }
             }
             Act::RenameMarker(mid, name) => {
                 if let Some(m) = p.marker_mut(mid) {
