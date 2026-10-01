@@ -1238,6 +1238,18 @@ fn background_rows(ui: &mut egui::Ui, c: &mut PreviewCtx<'_>, r: &mut PreviewRes
 }
 
 fn video(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r: &mut PreviewResponse) {
+    video_body(ui, state, c, r);
+    // social guide: last, in the preview's own layer, clipped to the video - over the frame, outline and
+    // tracker box, but under every menu, popup, window and other pane (a Foreground layer covered those)
+    if let Some(g) = c.guide {
+        let rect = state.canvas_rect;
+        let aspect = c.project.width.max(1) as f32 / c.project.height.max(1) as f32;
+        let lb = apply_view(letterbox(rect, aspect, ui.pixels_per_point()), state.view);
+        crate::ui::guides::draw_guide(&ui.painter_at(lb.intersect(rect)), lb, g, c.guides_keep_aspect, c.palette);
+    }
+}
+
+fn video_body(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r: &mut PreviewResponse) {
     let (rect, resp) = ui.allocate_exact_size(ui.available_size_before_wrap(), Sense::click_and_drag());
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, Color32::BLACK);
@@ -1282,16 +1294,6 @@ fn video(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r:
         }
     }
     viewer_menu(&resp, state, c, r);
-
-    // social-guide overlay: painted on the Foreground layer so it sits over the video, the selection
-    // outline and the tracker box, in windowed and fullscreen preview alike
-    if let Some(g) = c.guide {
-        let gp = ui
-            .ctx()
-            .layer_painter(egui::LayerId::new(egui::Order::Foreground, ui.id().with("social_guide")))
-            .with_clip_rect(rect);
-        crate::ui::guides::draw_guide(&gp, lb, g, c.guides_keep_aspect, c.palette);
-    }
 
     if let Some(f) = &c.frame {
         let (w, h) = (f.width as usize, f.height as usize);
@@ -1883,6 +1885,9 @@ mod tests {
         /// Draw the tool rail (off by default, so the older gesture tests keep the whole canvas).
         rail: bool,
         use_proxies: bool,
+        guide: Option<crate::ui::guides::Guide>,
+        /// Clip rects of the guide-name chip ("YouTube" text) found in the preview's own layer last frame.
+        guide_chip: Vec<Rect>,
     }
 
     impl H {
@@ -1903,6 +1908,8 @@ mod tests {
                 stats: None,
                 rail: false,
                 use_proxies: false,
+                guide: None,
+                guide_chip: Vec::new(),
             }
         }
         fn frame(&mut self, events: Vec<Event>) -> PreviewResponse {
@@ -1919,7 +1926,20 @@ mod tests {
             };
             let pal = Palette::new(true, Color32::WHITE);
             let H {
-                ctx, state, project, selection, tool, undos, trim_frames, pick_mode, stats, rail, use_proxies, ..
+                ctx,
+                state,
+                project,
+                selection,
+                tool,
+                undos,
+                trim_frames,
+                pick_mode,
+                stats,
+                rail,
+                use_proxies,
+                guide,
+                guide_chip,
+                ..
             } = self;
             let mut out = PreviewResponse::default();
             let mut tools = ToolsState { tool: *tool, ..Default::default() };
@@ -1947,7 +1967,7 @@ mod tests {
                             buffering: false,
                             proxy: None,
                             tracker: None,
-                            guide: None,
+                            guide: *guide,
                             guides_keep_aspect: true,
                             canvas_snap: false,
                             alt_texture: None,
@@ -1958,6 +1978,13 @@ mod tests {
                             stats: stats.as_ref(),
                         },
                     );
+                    let layer = ui.layer_id();
+                    *guide_chip = ctx.graphics(|g| {
+                        let chip = |s: &&egui::epaint::ClippedShape| {
+                            matches!(&s.shape, Shape::Text(t) if t.galley.text() == "YouTube")
+                        };
+                        g.get(layer).map_or(Vec::new(), |l| l.all_entries().filter(chip).map(|s| s.clip_rect).collect())
+                    });
                 });
             });
             *tool = tools.tool;
@@ -2050,6 +2077,18 @@ mod tests {
             out.edited |= edited;
             out
         }
+    }
+
+    #[test]
+    fn social_guide_paints_in_the_preview_layer_clipped_to_the_video() {
+        let mut h = H::new();
+        h.guide = Some(crate::ui::guides::Guide::YouTube);
+        h.frame(vec![]);
+        h.frame(vec![]);
+        let lb = h.lb().intersect(h.state.canvas_rect);
+        // in the preview's own layer (not a Foreground one that menus / popups / other panes sit under)
+        assert_eq!(h.guide_chip.len(), 1, "guide chip painted once, in the preview's layer");
+        assert!(lb.contains_rect(h.guide_chip[0]), "guide clipped to the video {lb:?}: {:?}", h.guide_chip[0]);
     }
 
     #[test]
