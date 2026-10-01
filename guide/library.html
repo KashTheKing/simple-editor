@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="generator" content="Docusaurus v3.10.2">
 <title data-rh="true">Library &amp; importing | Simple Editor</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" property="og:url" content="https://kashtheking.com/simple-editor/guide/library"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Library &amp; importing | Simple Editor"><meta data-rh="true" name="description" content="Import media, organise it, and pick the part of a clip you want with the Source monitor."><meta data-rh="true" property="og:description" content="Import media, organise it, and pick the part of a clip you want with the Source monitor."><link data-rh="true" rel="icon" href="/simple-editor/guide/img/favicon.ico"><link data-rh="true" rel="canonical" href="https://kashtheking.com/simple-editor/guide/library"><link data-rh="true" rel="alternate" href="https://kashtheking.com/simple-editor/guide/library" hreflang="en"><link data-rh="true" rel="alternate" href="https://kashtheking.com/simple-editor/guide/library" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Library & importing","item":"https://kashtheking.com/simple-editor/guide/library"}]}</script><link rel="stylesheet" href="/simple-editor/guide/assets/css/styles.6695d5e5.css">
-<script src="/simple-editor/guide/assets/js/runtime~main.19dee105.js" defer="defer"></script>
+<script src="/simple-editor/guide/assets/js/runtime~main.f1ea9f9c.js" defer="defer"></script>
 <script src="/simple-editor/guide/assets/js/main.6b5c4836.js" defer="defer"></script>
 </head>
 <body>
@@ -36,27 +36,31 @@ item means it&#x27;s used in the timeline.</p>
 <li class=""><strong>View ▾</strong> switches between <strong>List</strong> and <strong>Gallery</strong>, changes the thumbnail <strong>Size</strong>, sets the sort
 order, and (in List view) picks the <strong>Columns</strong>. <kbd>Ctrl</kbd>+scroll also resizes thumbnails.</li>
 <li class=""><strong>Project | Browse</strong> under the header switches between your project&#x27;s media and <strong>Browse</strong>, which shows
-your recent files and any folders you&#x27;ve linked (right-click ▸ <strong>Link folder…</strong>). Double-click a file in
-Browse to add it to the project.</li>
+your recent files and any folders you&#x27;ve linked (right-click ▸ <strong>Link folder…</strong>). Double-click a file there
+to play it in Source; right-click ▸ <strong>Add to the project</strong> imports it.</li>
 </ul>
 <p>With a search or filter on, <strong>Save filter…</strong> keeps it as a <strong>Smart Bin</strong> you can click later.</p>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="use-a-clip">Use a clip<a href="#use-a-clip" class="hash-link" aria-label="Direct link to Use a clip" title="Direct link to Use a clip" translate="no">​</a></h2>
 <ul>
-<li class=""><strong>Click</strong> an item to open it in the <strong>Source</strong> monitor (the tab next to Preview), paused on its first
-frame.</li>
+<li class=""><strong>Click</strong> an item to select it. <strong>Double-click</strong> it to open it in the <strong>Source</strong> monitor (the tab
+next to Preview).</li>
 <li class=""><strong>Drag</strong> it onto the timeline to place it. Hold <kbd>Ctrl</kbd> while dropping to insert it (later clips
 move right), <kbd>Alt</kbd> to overwrite what&#x27;s there, or <kbd>Shift</kbd> to put it on a new track on
 top.</li>
 <li class="">Press <kbd>Enter</kbd> (with the mouse over the Library) to add the selected items at the playhead.</li>
 <li class="">Double-click a <strong>sequence</strong> to open it for editing.</li>
 </ul>
-<p>Select several items with <kbd>Ctrl</kbd>+click, <kbd>Shift</kbd>+click, or by dragging a box across
-empty space. <kbd>Up</kbd> / <kbd>Down</kbd> move the selection and <kbd>Delete</kbd> removes it from the
+<p>Select several items with <kbd>Ctrl</kbd>+click, <kbd>Shift</kbd>+click, <kbd>Ctrl+A</kbd>, or by
+dragging a box across empty space. Folders select the same way (double-click one to open it). The
+selection remembers the order you clicked: adding or dragging it puts the clips back to back in that
+order. <kbd>Up</kbd> / <kbd>Down</kbd> move the selection and <kbd>Delete</kbd> removes it from the
 project (with Undo).</p>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="right-click-menus">Right-click menus<a href="#right-click-menus" class="hash-link" aria-label="Direct link to Right-click menus" title="Direct link to Right-click menus" translate="no">​</a></h2>
 <p><img decoding="async" loading="lazy" alt="Right-click an item" src="/simple-editor/guide/assets/images/library-item-menu-dab484fa6a6e5a4e72f5f315e6bc0867.png" width="348" height="517" class="img_ev3q"></p>
-<p><strong>Right-click an item</strong> for <strong>Open in Source</strong>, <strong>Add to timeline at playhead</strong>, <strong>Info…</strong> (description,
-tags, label and folder), <strong>Label</strong>, <strong>New Subclip from Marks</strong>, <strong>Reveal folder</strong>, <strong>Regenerate proxy</strong>,
+<p><strong>Right-click an item</strong> (it acts on every selected item) for <strong>Open in Source</strong>, <strong>Add to timeline at
+playhead</strong>, <strong>Append at sequence end</strong>, <strong>Insert</strong> / <strong>Overwrite at playhead</strong>, <strong>New sequence from
+selection</strong>, <strong>Info…</strong> (description, tags, label and folder), <strong>Label</strong>, <strong>Move to folder</strong>, <strong>New
+Subclip from Marks</strong>, <strong>Reveal in Explorer</strong>, <strong>Proxies</strong>,
 <strong>Convert To</strong> (mp4, mov, gif, mp3, wav, png and more), <strong>Convert…</strong>, <strong>Compress…</strong> and <strong>Remove from
 project</strong>. If the file is missing you also get <strong>Relink Media…</strong>.</p>
 <p><img decoding="async" loading="lazy" alt="Right-click an empty spot" src="/simple-editor/guide/assets/images/library-empty-menu-634320d139cbd8f6a2210a37add2a9cb.png" width="472" height="675" class="img_ev3q"></p>
@@ -82,7 +86,7 @@ project&#x27;s folder, so you can move or archive it. Save the project first.</l
 <p>The <strong>Source</strong> monitor plays one clip on its own, so you can pick the part you want before it goes
 into your edit. It has its own playhead and its own In and Out marks.</p>
 <ol>
-<li class="">Click a clip in the Library. It opens in the <strong>Source</strong> tab, next to Preview.</li>
+<li class="">Double-click a clip in the Library. It opens in the <strong>Source</strong> tab, next to Preview.</li>
 <li class="">Play it with <kbd>Space</kbd> or <kbd>J</kbd> / <kbd>K</kbd> / <kbd>L</kbd>, and press <kbd>I</kbd>
 and <kbd>O</kbd> to mark the part you want. The marked part is shaded on the scrub bar.</li>
 <li class="">Put the timeline&#x27;s playhead where the clip should go, then press <strong>Insert</strong> (<kbd>Shift+V</kbd>, later
