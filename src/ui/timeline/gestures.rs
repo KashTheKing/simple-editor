@@ -271,6 +271,7 @@ pub(super) fn handle(
     start_vol: Option<Id>,
     start_fade: Option<(Id, bool)>,
     start_key: Option<(Id, f64, Option<usize>)>,
+    start_block: Option<(Id, usize, bool)>,
     start_trans: Option<(usize, Id)>,
     start_marker: Option<(Id, Option<Id>)>,
 ) {
@@ -429,6 +430,14 @@ pub(super) fn handle(
             origin,
             before: c.project.clone(),
             g: Gesture::Keys { id: cid, t: kt, prop, range, changed: false },
+            snapped: None,
+        });
+    } else if let Some((bid, bi, stretch)) = start_block {
+        let (t0, dur0) = c.project.clip(bid).and_then(|cl| cl.blocks.get(bi)).map_or((0.0, 0.0), |b| (b.t, b.dur));
+        state.drag = Some(Drag {
+            origin,
+            before: c.project.clone(),
+            g: Gesture::Block { id: bid, i: bi, stretch, t0, dur0, changed: false },
             snapped: None,
         });
     } else if let Some((tri, tid)) = start_trans {
@@ -753,6 +762,11 @@ pub(super) fn handle(
                         }
                     }
                 }
+            }
+            Gesture::Block { id, i, stretch, t0, dur0, changed } => {
+                let dt = p.snap_frame(dx);
+                let (t, d) = if *stretch { (*t0, *dur0 + dt) } else { (*t0 + dt, *dur0) };
+                *changed |= p.retime_key_block(*id, *i, t, d);
             }
             Gesture::TransDur { track, id, changed } => {
                 // the project can be replaced mid-drag (undo, MCP project.open/sequence.open): index may be stale

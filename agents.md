@@ -53,13 +53,10 @@ are fast/incremental. Consequences for how you verify:
 - Default to `cargo test` / `cargo build` (dev) for iteration and for step 1-3 of Verification
   above. Only reach for `--release` when a step explicitly calls for it (perf benches, the size
   gate) — never as a generic "does it build" check.
-- Make worktrees with `scripts/worktree.sh <name> <branch>`: each worktree gets its OWN `target/`,
-  pre-seeded with hard links to the main tree's compiled dependencies. A change then rebuilds only
-  the `simple-editor` crate, incrementally (~20 s + ~20 s for the whole test suite), with no lock
-  shared between worktrees. (A single shared target dir made every worktree rebuild the whole crate
-  in turn behind one lock: 25-30 min per test run with several agents.) For an existing worktree:
-  `scripts/worktree.sh --seed <path>`. Iterate with `cargo test <module>`; run the full suite once
-  before the PR.
+- All worktrees share one `target/` via `.cargo/config.toml` (`target-dir` points at
+  `../simple-editor-shared-target`), so dependency compilation happens once across concurrent
+  worktrees instead of once per worktree. Don't override `CARGO_TARGET_DIR` per-worktree — that
+  defeats this.
 - Test per PR, not batched across a group — `cargo test` is cheap/incremental so there's no real
   time saved by batching, and batching only delays feedback and makes bisecting harder.
 

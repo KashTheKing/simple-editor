@@ -49,11 +49,6 @@ pub struct SourceState {
     ball: SpikyBall,
     /// The timecode's text while it is being typed (`preview::timecode_label`).
     tc_edit: Option<String>,
-    /// Viewer zoom (1 = fit) and pan, like `PreviewState.view`; `fit_px` = the fitted picture's width.
-    pub(crate) view: (f32, egui::Vec2),
-    fit_px: f32,
-    /// The media's own width in px, for the Zoom ▾ percentages.
-    width: u32,
 }
 
 impl SourceState {
@@ -71,9 +66,6 @@ impl SourceState {
             tape: None,
             ball: SpikyBall::default(),
             tc_edit: None,
-            view: (1.0, egui::Vec2::ZERO),
-            fit_px: 0.0,
-            width: asset.width,
         }
     }
 
@@ -236,7 +228,6 @@ pub fn show(ui: &mut egui::Ui, st: &mut SourceState, c: SourceCtx<'_>) -> Source
     let is_image = st.is_image;
     resp.buffering = st.player.is_buffering();
     let palette = c.palette;
-    let (fit_px, width) = (st.fit_px, st.width);
     let SourceCtx { settings, thumbs, waveforms, frame, focused, smart, .. } = c;
 
     ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
@@ -247,9 +238,6 @@ pub fn show(ui: &mut egui::Ui, st: &mut SourceState, c: SourceCtx<'_>) -> Source
                 playing,
                 |ui| seek = preview::timecode_label(ui, &mut st.tc_edit, playhead, duration, fps),
                 |ui| {
-                    if has_video {
-                        preview::zoom_button(ui, &mut st.view, fit_px, width);
-                    }
                     for (a, g) in [
                         (Action::OverwriteAtPlayhead, Glyph::Indent(false)),
                         (Action::SpliceInsert, Glyph::Indent(true)),
@@ -277,18 +265,15 @@ pub fn show(ui: &mut egui::Ui, st: &mut SourceState, c: SourceCtx<'_>) -> Source
         }
 
         // video, filling whatever is left
-        let (rect, r) = ui.allocate_exact_size(ui.available_size_before_wrap(), egui::Sense::click_and_drag());
+        let (rect, r) = ui.allocate_exact_size(ui.available_size_before_wrap(), egui::Sense::click());
         ui.painter().rect_filled(rect, 0.0, egui::Color32::BLACK);
-        preview::zoom_pan(ui, &r, &mut st.view);
         let lb = match frame {
             Some(f) => {
                 let aspect = f.size[0].max(1) as f32 / f.size[1].max(1) as f32;
                 let lb = preview::letterbox(rect, aspect, ui.pixels_per_point());
-                st.fit_px = lb.width() * ui.pixels_per_point();
-                // zoomed, the same texture is magnified (the render size stays the fitted one)
-                ui.painter_at(rect).image(
+                ui.painter().image(
                     f.tex,
-                    preview::apply_view(lb, st.view),
+                    lb,
                     egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                     egui::Color32::WHITE,
                 );
@@ -376,9 +361,6 @@ pub fn show(ui: &mut egui::Ui, st: &mut SourceState, c: SourceCtx<'_>) -> Source
                 settings.audio_visualizer = !settings.audio_visualizer;
                 resp.settings_changed = true;
             }
-            if has_video {
-                menu::sub(ui, Some(Glyph::Zoom), "Zoom", |ui| preview::zoom_rows(ui, &mut st.view, fit_px, width));
-            }
             ui.separator();
             resp.close |= menu::row(ui, Some(Glyph::Cross), "Close Source", "").clicked();
         });
@@ -387,42 +369,6 @@ pub fn show(ui: &mut egui::Ui, st: &mut SourceState, c: SourceCtx<'_>) -> Source
         }
     });
     resp
-}
-
-/// Nothing open: the Preview's empty canvas - black around a project-aspect letterbox filled with the
-/// project's background (`preview_bg`; the checkerboard in the renderer's 16 px tiles and greys) - with
-/// a hint over it, so the monitor never reads as an empty panel.
-pub fn blank(ui: &mut egui::Ui, aspect: f32, bg: crate::model::BackgroundMode, palette: &Palette) {
-    use crate::model::BackgroundMode as B;
-    let (rect, _) = ui.allocate_exact_size(ui.available_size_before_wrap(), egui::Sense::hover());
-    let p = ui.painter_at(rect);
-    p.rect_filled(rect, 0.0, egui::Color32::BLACK);
-    let lb = preview::letterbox(rect, aspect, ui.pixels_per_point());
-    let grey = |v: u8| egui::Color32::from_gray(v);
-    p.rect_filled(
-        lb,
-        0.0,
-        match bg {
-            B::Checkerboard => grey(153),
-            B::Black => egui::Color32::BLACK,
-            B::White => egui::Color32::WHITE,
-            B::Custom([r, g, b, _]) => egui::Color32::from_rgb(r, g, b),
-        },
-    );
-    if bg == B::Checkerboard {
-        let tile = 16.0 / ui.pixels_per_point();
-        let p = p.with_clip_rect(lb);
-        let (cols, rows) = ((lb.width() / tile).ceil() as i32, (lb.height() / tile).ceil() as i32);
-        for (x, y) in (0..rows).flat_map(|y| (0..cols).map(move |x| (x, y))).filter(|(x, y)| (x + y) % 2 == 1) {
-            let min = lb.min + egui::vec2(x as f32 * tile, y as f32 * tile);
-            p.rect_filled(egui::Rect::from_min_size(min, egui::vec2(tile, tile)), 0.0, grey(204));
-        }
-    }
-    let hint = "Click a clip in the Library to open it here - or press F on a timeline clip (Match Frame).";
-    let galley = p.layout(hint.into(), egui::TextStyle::Body.resolve(ui.style()), palette.text, lb.width() - 24.0);
-    let plate = egui::Rect::from_center_size(lb.center(), galley.size() + egui::vec2(16.0, 10.0));
-    p.rect_filled(plate, 4.0, palette.panel.gamma_multiply(0.85));
-    p.galley(plate.min + egui::vec2(8.0, 5.0), galley, palette.text);
 }
 
 // Render size for a pane of `canvas` px at `quality` percent (25..100), aspect kept. Same rule as
@@ -508,37 +454,6 @@ mod tests {
         for mut st in [state(&ctx), audio_st] {
             idle_frames(&mut st);
         }
-    }
-
-    /// The Source monitor zooms like the Preview (the shared `preview::zoom_pan`): Ctrl+wheel / pinch
-    /// over the picture changes `view`, and its transport carries the same Zoom ▾ caption.
-    #[test]
-    fn source_zooms_like_the_preview() {
-        let ctx = egui::Context::default();
-        let mut st = state(&ctx);
-        let mut settings = Settings::default();
-        let palette = crate::theme::palette_with(&egui::Context::default(), &settings.palette);
-        let ctx2 = egui::Context::default();
-        let mut labels = String::new();
-        for events in [vec![egui::Event::PointerMoved(egui::pos2(300.0, 200.0))], vec![egui::Event::Zoom(1.5)]] {
-            let out = ctx2.run(egui::RawInput { events, ..Default::default() }, |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    let c = SourceCtx {
-                        palette: &palette,
-                        settings: &mut settings,
-                        thumbs: None,
-                        waveforms: None,
-                        frame: None,
-                        focused: false,
-                        smart: None,
-                    };
-                    show(ui, &mut st, c);
-                });
-            });
-            labels = format!("{:?}", out.shapes);
-        }
-        assert!((st.view.0 - 1.5).abs() < 1e-4, "Ctrl+wheel zooms the Source: {:?}", st.view);
-        assert!(labels.contains("▾"), "the transport has the Zoom ▾ button");
     }
 
     fn ctx_player(ctx: &egui::Context) -> Player {

@@ -47,20 +47,6 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
     match pane {
         Pane::Grade => grade(app, ui),
         Pane::Clips => clips(app, ui),
-        // the Color page's Curves are colour curves first; "Keyframes" falls through to the motion graph
-        Pane::Curves if app.settings.page == "Color" => {
-            let id = egui::Id::new("color_page_keyframe_curves");
-            let mut keys: bool = ui.ctx().data(|d| d.get_temp(id).unwrap_or(false));
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut keys, false, "Color curves");
-                ui.selectable_value(&mut keys, true, "Keyframes");
-            });
-            ui.ctx().data_mut(|d| d.insert_temp(id, keys));
-            if keys {
-                return false;
-            }
-            edit_target(app, ui, color_ui::color_curves);
-        }
         _ => return false,
     }
     true
@@ -73,24 +59,13 @@ fn target(app: &App) -> Option<Id> {
 }
 
 fn grade(app: &mut App, ui: &mut egui::Ui) {
-    edit_target(app, ui, |ui, clip, lt, palette, g| {
-        egui::ScrollArea::both().show(ui, |ui| color_ui::grade_panel(ui, clip, lt, palette, g));
-    });
-}
-
-/// Runs `body` on a copy of the graded clip and commits its effects (one undo per gesture).
-fn edit_target(
-    app: &mut App,
-    ui: &mut egui::Ui,
-    body: impl FnOnce(&mut egui::Ui, &mut Clip, f64, &crate::theme::Palette, &mut Gesture),
-) {
     let Some(mut clip) = target(app).and_then(|id| app.project.clip(id).cloned()) else {
         ui.centered_and_justified(|ui| ui.weak("Put the playhead over a video clip to grade it"));
         return;
     };
     let lt = clip.local(app.playhead);
     let mut g = Gesture::default();
-    body(ui, &mut clip, lt, &app.palette, &mut g);
+    egui::ScrollArea::both().show(ui, |ui| color_ui::grade_panel(ui, &mut clip, lt, &app.palette, &mut g));
     if g.start {
         push_undo_json(&mut app.undo, &mut app.redo, app.project.to_json());
     }

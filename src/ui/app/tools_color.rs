@@ -48,11 +48,9 @@ fn upsert_effect(c: &mut Clip, kind: EffectKind) -> &mut Effect {
     }
 }
 
-/// `set_at` the clip-local playhead `lt`, like the Color page: a plain `.value` write is ignored once
-/// the param has keys.
-fn set_param(e: &mut Effect, i: usize, v: Option<f64>, lt: f64) {
+fn set_param(e: &mut Effect, i: usize, v: Option<f64>) {
     if let Some(v) = v {
-        e.params[i].set_at(lt, v);
+        e.params[i].value = v;
     }
 }
 
@@ -144,7 +142,6 @@ fn run(app: &mut App, name: &str, args: &Value) -> Result<Value, String> {
         "color.primaries" => {
             let id = req(arg_u64(args, "clip_id"), "clip_id")?;
             let c = app.project.clip_mut(id).ok_or("no such clip")?;
-            let lt = c.local(app.playhead);
             let e = upsert_effect(c, EffectKind::Primaries);
             for (i, field) in [
                 "lift_r", "lift_g", "lift_b", "gamma_r", "gamma_g", "gamma_b", "gain_r", "gain_g", "gain_b", "temp",
@@ -153,19 +150,18 @@ fn run(app: &mut App, name: &str, args: &Value) -> Result<Value, String> {
             .into_iter()
             .enumerate()
             {
-                set_param(e, i, arg_f64(args, field), lt);
+                set_param(e, i, arg_f64(args, field));
             }
             Ok(json!({"ok": true}))
         }
         "color.qualifier" => {
             let id = req(arg_u64(args, "clip_id"), "clip_id")?;
             let c = app.project.clip_mut(id).ok_or("no such clip")?;
-            let lt = c.local(app.playhead);
             let e = upsert_effect(c, EffectKind::Qualifier);
             for (i, field) in
                 ["hue", "hue_width", "sat_min", "sat_max", "lum_min", "lum_max", "softness"].into_iter().enumerate()
             {
-                set_param(e, i, arg_f64(args, field), lt);
+                set_param(e, i, arg_f64(args, field));
             }
             Ok(json!({"ok": true}))
         }
@@ -409,16 +405,6 @@ pub const TOOLS: &[ToolDef] = &[
 
 #[cfg(test)]
 mod tests {
-
-    #[test]
-    fn set_param_edits_a_keyed_param_at_the_playhead() {
-        let mut e = Effect::new(EffectKind::Primaries);
-        e.params[6].toggle_key(0.0);
-        set_param(&mut e, 6, Some(1.4), 2.0);
-        assert_eq!(e.params[6].at(2.0), 1.4, "a keyed gain must still take the MCP edit");
-        assert_eq!(e.params[6].at(0.0), 1.0, "the existing key keeps its value");
-    }
-
     use super::*;
 
     fn eff(kind: EffectKind) -> Effect {

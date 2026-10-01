@@ -104,6 +104,7 @@ mod tools_export;
 // ---- ws:inspector-gallery ----
 mod tools_gallery;
 mod tools_helpers;
+mod tools_keyblocks;
 // ---- ws:layout-modes-onboarding ----
 mod tools_layout;
 mod tools_media;
@@ -1346,8 +1347,6 @@ impl eframe::App for App {
                 for pane in std::mem::take(&mut self.deferred_surface) {
                     if pane == Pane::Source {
                         self.surface_source();
-                    } else if pane == Pane::Preview {
-                        self.layout_dirty |= layout_ctl::show_over(&mut self.layout, Pane::Preview, Pane::Source);
                     } else {
                         self.surface(pane);
                     }
@@ -1488,6 +1487,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:keys-actions ----
     // ---- ws:color-page ----
     color_page::TOOLS,
+    // ---- ws:keyframe-blocks ----
+    tools_keyblocks::TOOLS,
 ];
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[

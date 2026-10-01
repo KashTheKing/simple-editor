@@ -321,10 +321,7 @@ pub(crate) fn act(app: &mut App, a: Action) -> bool {
             true
         }
         Action::ViewerFit => {
-            match app.source.as_mut().filter(|_| app.source_focus) {
-                Some(src) => src.view = fit_view(),
-                None => app.preview.view = fit_view(),
-            }
+            app.preview.view = fit_view();
             true
         }
         _ => false,

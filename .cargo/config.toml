@@ -1,0 +1,7 @@
+# Shared target dir across the main tree and every `git worktree add ../simple-editor-wt/<name>`
+# checkout, so dependency compilation (~1700s of the ~1970s dep graph, see agents.md's
+# "Build performance" section) happens once instead of once per worktree. Absolute path because
+# worktrees nest at a different depth (../simple-editor-wt/<name>) than the main tree, so a
+# relative path would resolve to a different location per worktree.
+[build]
+target-dir = "D:/Projects/simple-editor-shared-target"

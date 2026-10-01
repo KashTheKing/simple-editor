@@ -1,26 +1,26 @@
 /* Simple Editor's own look: neutral dark greys and the teal accent the app draws its selection,
    playhead and active page in (see the screenshots). Light mode keeps the same accent. */
 :root {
-  --ifm-color-primary: #335fff;
-  --ifm-color-primary-dark: #1a4bff;
-  --ifm-color-primary-darker: #0d41ff;
-  --ifm-color-primary-darkest: #0033e0;
-  --ifm-color-primary-light: #4c73ff;
-  --ifm-color-primary-lighter: #5a7dff;
-  --ifm-color-primary-lightest: #8099ff;
+  --ifm-color-primary: #008c96;
+  --ifm-color-primary-dark: #007e87;
+  --ifm-color-primary-darker: #00777f;
+  --ifm-color-primary-darkest: #006269;
+  --ifm-color-primary-light: #009aa5;
+  --ifm-color-primary-lighter: #00a1ad;
+  --ifm-color-primary-lightest: #00b6c3;
   --ifm-code-font-size: 92%;
   --ifm-font-family-base: 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, sans-serif;
   --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.08);
 }
 
 [data-theme='dark'] {
-  --ifm-color-primary: #5c80ff;
-  --ifm-color-primary-dark: #3d68ff;
-  --ifm-color-primary-darker: #2e5cff;
-  --ifm-color-primary-darkest: #0035f0;
-  --ifm-color-primary-light: #7b98ff;
-  --ifm-color-primary-lighter: #8aa3ff;
-  --ifm-color-primary-lightest: #b3c3ff;
+  --ifm-color-primary: #00b7c3;
+  --ifm-color-primary-dark: #00a5b0;
+  --ifm-color-primary-darker: #009ca6;
+  --ifm-color-primary-darkest: #008089;
+  --ifm-color-primary-light: #00c9d6;
+  --ifm-color-primary-lighter: #00d2e0;
+  --ifm-color-primary-lightest: #16e6f4;
   --ifm-background-color: #1b1b1b;
   --ifm-background-surface-color: #262626;
   --ifm-navbar-background-color: #262626;
