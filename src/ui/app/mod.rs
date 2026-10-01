@@ -104,6 +104,7 @@ mod tools_export;
 // ---- ws:inspector-gallery ----
 mod tools_gallery;
 mod tools_helpers;
+mod tools_keyblocks;
 // ---- ws:layout-modes-onboarding ----
 mod tools_layout;
 mod tools_media;
@@ -1488,6 +1489,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:keys-actions ----
     // ---- ws:color-page ----
     color_page::TOOLS,
+    // ---- ws:keyframe-blocks ----
+    tools_keyblocks::TOOLS,
 ];
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[

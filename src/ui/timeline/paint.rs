@@ -306,11 +306,7 @@ pub(super) fn label_color(p: &Project, idx: u8, fallback: Color32) -> Color32 {
 }
 
 pub(super) fn diamond(c: Pos2, r: f32, color: Color32) -> Shape {
-    Shape::convex_polygon(
-        vec![pos2(c.x, c.y - r), pos2(c.x + r, c.y), pos2(c.x, c.y + r), pos2(c.x - r, c.y)],
-        color,
-        Stroke::NONE,
-    )
+    crate::ui::tools::diamond(c, r, color, Stroke::NONE)
 }
 
 /// dB → fraction of the clip height measured from the bottom. Piecewise linear: -60 dB = 0, 0 dB = 0.7,

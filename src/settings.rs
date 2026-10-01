@@ -451,6 +451,9 @@ pub struct Settings {
     // ---- ws:inspector-surface ----
     // ---- ws:side-panels ----
     // ---- ws:keys-actions ----
+    // ---- ws:keyframe-blocks ----
+    /// Keyframe blocks the user saved from a clip's keys (Gallery ▸ Animate, after the builtins).
+    pub key_blocks: Vec<crate::model::KeyBlock>,
 }
 
 impl Default for Settings {
@@ -610,6 +613,8 @@ impl Default for Settings {
             // ---- ws:inspector-surface ----
             // ---- ws:side-panels ----
             // ---- ws:keys-actions ----
+            // ---- ws:keyframe-blocks ----
+            key_blocks: Vec::new(),
         }
     }
 }

@@ -241,6 +241,15 @@ pub fn show(
         None => project_section(ui, project, settings, undo),
         Some(_) => clip_section(ui, project, selection, playhead, fonts, palette, settings, undo),
     };
+    // ws:keyframe-blocks: a keyframe menu's Animate ▸ - one undo, every selected clip at the playhead
+    let mut edited = edited;
+    if let Some(b) = crate::ui::take_block_request().and_then(|n| crate::model::find_block(&settings.key_blocks, &n)) {
+        undo(project);
+        for &id in selection {
+            let at = project.clip(id).filter(|c| c.contains(playhead)).map(|c| playhead - c.start);
+            edited |= project.apply_key_block(id, &b, at, None).is_some();
+        }
+    }
     // a keyframe menu's Previous / Next key: clip-local → timeline time on the clip it was drawn for
     if let Some(kt) = crate::ui::take_key_seek() {
         if let Some(c) = first.and_then(|id| project.clip(id)) {
@@ -2320,6 +2329,13 @@ mod tests {
         let y = h.rect("val_Position Y").center();
         assert!(h.menu_pick(y, "Link to expression…"));
         assert!(matches!(h.project.clip(h.id).unwrap().y.link, crate::model::AnimLink::Expr(_)));
+        // ws:keyframe-blocks: Animate ▸ applies a block at the playhead with one undo
+        let before = h.undos;
+        crate::ui::BLOCK_REQ.with(|s| *s.borrow_mut() = Some("Spin".into()));
+        h.frame(vec![]);
+        assert!(h.project.clip(h.id).unwrap().rotation.is_animated(), "Spin wrote rotation keys");
+        assert_eq!(h.project.clip(h.id).unwrap().blocks.len(), 1);
+        assert_eq!(h.undos, before + 1);
     }
 
     /// The header is label dot · name · enable: the dot's menu sets the label, the eye switches the

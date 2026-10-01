@@ -203,6 +203,23 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
                 }
             }
             DragPayload::Template(name) => app.place_template(&name, t),
+            // ws:keyframe-blocks: onto the clip under the pointer, starting where it was dropped
+            DragPayload::KeyBlock(name) => {
+                let hit = track
+                    .and_then(|ti| app.project.tracks.get(ti))
+                    .and_then(|tr| tr.clips.iter().find(|c| c.contains(t)))
+                    .map(|c| c.id);
+                match hit {
+                    Some(id) => {
+                        let args = json!({"name": name, "clip_ids": [id], "at": t});
+                        match app.run_tool_undoable("keyblocks.apply", &args) {
+                            Ok(_) => app.toast(format!("{name} applied")),
+                            Err(e) => app.toast(e),
+                        }
+                    }
+                    None => app.toast(format!("Drop {name} on a clip")),
+                }
+            }
             // dropped onto a clip that can actually take this kind (see effects_ui's own
             // click-to-add gate); a miss says so rather than swallowing the gesture
             DragPayload::Effect(kind) => {

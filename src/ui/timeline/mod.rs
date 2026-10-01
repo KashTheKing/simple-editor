@@ -402,6 +402,9 @@ enum Gesture {
     /// vertically = the value of curve-editor property `prop` (value-lane mode only), mapped through the
     /// value `range` captured at press so the diamond does not chase the pointer as the range grows.
     Keys { id: Id, t: f64, prop: Option<usize>, range: (f64, f64), changed: bool },
+    /// ws:keyframe-blocks - drag an applied block's bar (`stretch` = its right edge): re-times block `i`
+    /// of clip `id` from its press-time start/length, carrying its keys (`Project::retime_key_block`).
+    Block { id: Id, i: usize, stretch: bool, t0: f64, dur0: f64, changed: bool },
     /// Drag a transition band edge (duration changes symmetrically around the cut).
     TransDur { track: usize, id: Id, changed: bool },
     /// Drag a marker: project marker (`clip` = None) or clip-local marker.
@@ -474,6 +477,9 @@ enum Act {
     SetEase(Id, f64, Ease),
     /// Delete every keyframe at clip-local time `t`.
     DelKeys(Id, f64),
+    /// ws:keyframe-blocks - re-ease / delete applied block `i` of a clip (its bar's menu).
+    EaseBlock(Id, usize, Ease),
+    DelBlock(Id, usize),
     RemoveTransition(Id),
     RemoveTransitions(Vec<Id>),
     /// Right-click quick-change: absolute-overwrite every listed transition's kind. Unlike
@@ -747,6 +753,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     let mut start_vol: Option<Id> = None;
     let mut start_fade: Option<(Id, bool)> = None;
     let mut start_key: Option<(Id, f64, Option<usize>)> = None;
+    let mut start_block: Option<(Id, usize, bool)> = None;
+    let mut block_hits: Vec<(Id, usize, Rect)> = Vec::new();
     let mut start_trans: Option<(usize, Id)> = None;
     let mut start_marker: Option<(Id, Option<Id>)> = None;
     let mut resize: Option<(usize, f32)> = None;
@@ -1027,6 +1035,20 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             // keyframe diamonds: on a tall clip in a value lane - 0 % at the bottom, 100 % at the top of the
             // range of the first property keyed at that time (the curve editor's auto-range, so both panes
             // agree) - otherwise in the bottom strip
+            // ws:keyframe-blocks: applied blocks as coloured bars just above the keyframe strip
+            if c.view.keys && !clip.blocks.is_empty() && rect.height() >= 24.0 {
+                for (bi, b) in clip.blocks.iter().enumerate() {
+                    let (x0, x1) = (state.x_at(clip.start + b.t), state.x_at(clip.start + b.end()));
+                    if x1 < lanes.left() || x0 > lanes.right() {
+                        continue;
+                    }
+                    let br =
+                        Rect::from_min_max(pos2(x0 + 1.0, rect.bottom() - 17.0), pos2(x1 - 1.0, rect.bottom() - 11.0));
+                    let [r, g, bl] = crate::model::block_color(&b.name);
+                    lp.rect_filled(br, 2, Color32::from_rgb(r, g, bl));
+                    block_hits.push((clip.id, bi, br));
+                }
+            }
             if has_keys(clip) && c.view.keys {
                 let lane = rect.height() >= KEY_LANE_MIN;
                 let props = crate::ui::curves::prop_count(clip);
@@ -1396,6 +1418,34 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             resize = Some((ti, hd.drag_delta().y));
         }
         handle_rects.push(handle);
+    }
+
+    // ws:keyframe-blocks: block bars - body drag moves, the right 5 pt stretch; right-click to re-ease or
+    // delete. Registered before the diamonds so a key sitting on a bar still wins.
+    for &(bcid, bi, br) in &block_hits {
+        let r = ui.interact(br.expand2(vec2(0.0, 2.0)), id.with(("kblock", bcid, bi)), Sense::click_and_drag());
+        let edge = r.hover_pos().or(r.interact_pointer_pos()).is_some_and(|p| p.x > br.right() - 5.0);
+        let r = r.on_hover_cursor(if edge { CursorIcon::ResizeHorizontal } else { CursorIcon::Grab });
+        if r.drag_started_by(egui::PointerButton::Primary) {
+            start_block = Some((bcid, bi, edge));
+        }
+        let name = c.project.clip(bcid).and_then(|cl| cl.blocks.get(bi)).map(|b| (b.name.clone(), b.dur));
+        let r = match name {
+            Some((n, d)) => r.on_hover_text(format!("{n} · {d:.2} s - drag to move, drag the end to stretch")),
+            None => r,
+        };
+        menu::context(&r, |ui| {
+            menu::sub(ui, Some(Glyph::CurveIcon), "Easing", |ui| {
+                for (name, e) in Ease::ALL.iter().map(|e| (e.name(), *e)).chain(Ease::PRESETS) {
+                    if menu::row(ui, None, name, "").clicked() {
+                        act = Some(Act::EaseBlock(bcid, bi, e));
+                    }
+                }
+            });
+            if menu::row(ui, Some(Glyph::Cross), "Delete Block", "").clicked() {
+                act = Some(Act::DelBlock(bcid, bi));
+            }
+        });
     }
 
     // keyframe diamonds: registered after everything in the rows so the small targets win hit-testing
@@ -1860,6 +1910,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 DragPayload::Effect(k) => drop_on_clip(state, c.project, pos, t)
                     .filter(|(_, cl)| (cl.kind == ClipKind::Audio) == k.applies_to_audio())
                     .map(|(r, _)| r),
+                DragPayload::KeyBlock(_) => drop_on_clip(state, c.project, pos, t).map(|(r, _)| r),
                 DragPayload::Transition(_) => drop_on_clip(state, c.project, pos, t).map(|(r, cl)| {
                     // the half you are over picks the cut (same rule the app applies on release)
                     let x = if crate::ui::transitions_ui::drop_at_end(cl, t) { r.right() } else { r.left() };
@@ -1870,7 +1921,10 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             if let Some(hit) = target {
                 lp.rect_filled(hit, 0, pal.selection.gamma_multiply(0.35));
                 lp.rect_stroke(hit, 0, Stroke::new(2.0, pal.selection), StrokeKind::Inside);
-            } else if !matches!(&*payload, DragPayload::Effect(_) | DragPayload::Transition(_)) {
+            } else if !matches!(
+                &*payload,
+                DragPayload::Effect(_) | DragPayload::Transition(_) | DragPayload::KeyBlock(_)
+            ) {
                 let dur = match &*payload {
                     DragPayload::Asset(aid) => {
                         c.project.asset(*aid).map(|a| if a.kind == ClipKind::Image { 5.0 } else { a.duration })
@@ -2178,6 +2232,12 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     }
                 }
             }
+            Act::EaseBlock(cid, i, e) => {
+                p.ease_key_block(cid, i, e);
+            }
+            Act::DelBlock(cid, i) => {
+                p.remove_key_block(cid, i);
+            }
             Act::DelKeys(cid, t) => {
                 if let Some(cl) = p.clip_mut(cid) {
                     for a in cl.all_animated_mut() {
@@ -2299,6 +2359,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         start_vol,
         start_fade,
         start_key,
+        start_block,
         start_trans,
         start_marker,
     );
@@ -2338,6 +2399,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 | Gesture::Volume { changed, .. }
                 | Gesture::Fade { changed, .. }
                 | Gesture::Keys { changed, .. }
+                | Gesture::Block { changed, .. }
                 | Gesture::TransDur { changed, .. }
                 | Gesture::Marker { changed, .. }
                 | Gesture::InOut { changed, .. }

@@ -638,7 +638,6 @@ impl Glyph {
             Glyph::Hourglass => 0xE916,            // Stopwatch
             Glyph::Eye => 0xE890,                  // View
             Glyph::EyeOff => 0xED1A,               // Hide
-            Glyph::Diamond => 0xE82C,              // a filled diamond
             Glyph::Record => 0xE91F,               // a filled circle (painted red)
             Glyph::Dot => 0xECCC,                  // a smaller filled dot
             Glyph::Mic => 0xE720,                  // Microphone
@@ -730,6 +729,8 @@ impl Glyph {
             // no symbol fits (a snapping magnet, a gap being pushed open, the trim cursors, an n-gon):
             // `draw_glyph` paints these; Letter is plain text
             Glyph::Letter(_) | Glyph::Poly(_) | Glyph::Magnet | Glyph::Spacer => return None,
+            // the icon font's diamond is drawn slanted - paint the same one every keyframe uses
+            Glyph::Diamond => return None,
             Glyph::RollCursor | Glyph::SlipCursor => return None,
         };
         char::from_u32(cp)
@@ -1446,8 +1447,23 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
             let head = vec![c + egui::vec2(7.5, 0.0), c + egui::vec2(4.5, -2.2), c + egui::vec2(4.5, 2.2)];
             p.add(egui::Shape::convex_polygon(head, fg, Stroke::NONE));
         }
+        Glyph::Diamond => {
+            p.add(diamond(c, 5.0, fg, Stroke::NONE));
+        }
         _ => {} // every other glyph has an icon (`every_glyph_paints_a_picture` holds that)
     }
+}
+
+/// THE keyframe diamond (Inspector ◆, timeline keys, curve editor, the Diamond glyph): a square turned
+/// 45° with equal half-extents, its centre and size snapped to whole points so the four edges
+/// anti-alias identically instead of leaning (the icon font's glyph did).
+pub(crate) fn diamond(c: egui::Pos2, r: f32, fill: Color32, stroke: Stroke) -> egui::Shape {
+    let (c, r) = (c.round(), r.round().max(1.0));
+    egui::Shape::convex_polygon(
+        vec![c - egui::vec2(0.0, r), c + egui::vec2(r, 0.0), c + egui::vec2(0.0, r), c - egui::vec2(r, 0.0)],
+        fill,
+        stroke,
+    )
 }
 
 /// Built-in icon for a menu action (None = text-only). The user's Settings → Appearance → Icons
@@ -1635,6 +1651,21 @@ mod tests {
                 _ => 0,
             })
             .sum()
+    }
+
+    /// The keyframe diamond is a true square-on-its-corner (equal half-extents, whole-point centre), and
+    /// the Diamond glyph paints that instead of the icon font's slanted one.
+    #[test]
+    fn keyframe_diamond_is_symmetric_and_pixel_snapped() {
+        let egui::Shape::Path(path) = diamond(egui::pos2(10.3, 20.6), 4.4, Color32::WHITE, Stroke::NONE) else {
+            panic!("not a path")
+        };
+        let p = &path.points;
+        assert_eq!(p[0], egui::pos2(10.0, 17.0));
+        assert_eq!(p[1], egui::pos2(14.0, 21.0));
+        assert_eq!(p[2], egui::pos2(10.0, 25.0));
+        assert_eq!(p[3], egui::pos2(6.0, 21.0));
+        assert!(Glyph::Diamond.icon().is_none(), "the icon font's diamond leans");
     }
 
     #[test]

@@ -111,6 +111,9 @@ pub struct Clip {
     /// section (e.g. a nested template's "Headline" text); consumed by ws:text-titles (wave 3).
     #[serde(default)]
     pub exposed: Vec<String>,
+    /// Keyframe blocks applied to this clip (timeline bars over the keys they wrote).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocks: Vec<AppliedBlock>,
 }
 
 /// Essential-Sound role tag for an audio (or audio-bearing) clip. Sole definition - other
@@ -167,6 +170,7 @@ impl Clip {
             markers: Vec::new(),
             audio_role: AudioRole::Unset,
             exposed: Vec::new(),
+            blocks: Vec::new(),
         }
     }
     /// True when this container has no media (asset == 0 for video/image/audio).

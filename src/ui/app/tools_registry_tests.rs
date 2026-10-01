@@ -89,6 +89,11 @@ const OP_TOOLS: &[(&str, &str)] = &[
     // ---- ws:pro-monitor ----
     ("multicam_make", "multicam.create"),
     ("multicam_switch", "multicam.switch"),
+    // ---- ws:keyframe-blocks ----
+    ("apply_key_block", "keyblocks.apply"),
+    ("retime_key_block", "keyblocks.retime"),
+    ("remove_key_block", "keyblocks.remove"),
+    ("ease_key_block", "keyblocks.ease"),
 ];
 
 /// (Project op fn name, why it has no MCP tool yet). Every entry is a real, deliberate gap - either a
@@ -272,6 +277,8 @@ const GESTURE_TOOL_TWINS: &[(&str, &[&str])] = &[
     ("ReplaceClip", &["timeline.replace"]),
     ("DropSplice", &["timeline.splice"]),
     ("DropOverwrite", &["timeline.overwrite"]),
+    // ---- ws:keyframe-blocks ---- (a timeline `Gesture::Block` drag; not an arm()-table GestureKind)
+    ("KeyBlock", &["keyblocks.retime"]),
 ];
 
 #[test]

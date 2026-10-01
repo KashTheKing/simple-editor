@@ -3157,3 +3157,30 @@ fn toolbar_trim_tools_reuse_the_trim_gestures() {
         c.src_in
     );
 }
+
+/// ws:keyframe-blocks: an applied block is a bar above the key strip - drag its body to move it (keys
+/// follow), drag its right end to stretch it; each drag is one undo.
+#[test]
+fn headless_key_block_bar_moves_and_stretches() {
+    let mut h = Harness::new();
+    let lanes = h.state.lanes_rect;
+    let id = h.project.tracks[0].clips[0].id;
+    let spin = crate::model::find_block(&[], "Spin").unwrap();
+    h.project.apply_key_block(id, &spin, Some(1.0), None);
+    h.frame(vec![]);
+    let bar_y = lanes.top() + h.project.tracks[0].height - 1.0 - 14.0;
+    let from = pos2(h.state.x_at(1.3), bar_y);
+    assert!(h.drag(from, from + vec2(40.0, 0.0)), "bar drag edits");
+    assert_eq!(h.undos, 1);
+    let c = &h.project.tracks[0].clips[0];
+    assert!((c.blocks[0].t - 2.0).abs() < 1.0 / 30.0 + 1e-6, "moved to {}", c.blocks[0].t);
+    assert!((c.rotation.keys[0].t - c.blocks[0].t).abs() < 1e-9, "keys ride along");
+    let end_t = c.blocks[0].end();
+    h.frame(vec![]);
+    let end = pos2(h.state.x_at(end_t) - 3.0, bar_y);
+    assert!(h.drag(end, end + vec2(40.0, 0.0)), "edge drag edits");
+    let c = &h.project.tracks[0].clips[0];
+    assert!((c.blocks[0].dur - 1.8).abs() < 1.0 / 30.0 + 1e-6, "stretched to {}", c.blocks[0].dur);
+    assert!((c.rotation.at(c.blocks[0].end()) - 360.0).abs() < 1e-6);
+    assert_eq!(h.undos, 2);
+}
