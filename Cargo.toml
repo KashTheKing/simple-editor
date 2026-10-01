@@ -52,6 +52,13 @@ strip = true
 [profile.release.package."*"]
 opt-level = "s"
 
+# Local "build to my taskbar" profile: same code, thin LTO across all cores. A few MB bigger than
+# `release` but minutes instead of ~20. `cargo build --profile release-fast` -> target/release-fast/.
+[profile.release-fast]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
+
 [profile.dev]
 opt-level = 1
 

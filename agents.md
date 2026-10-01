@@ -63,6 +63,10 @@ are fast/incremental. Consequences for how you verify:
 - Test per PR, not batched across a group — `cargo test` is cheap/incremental so there's no real
   time saved by batching, and batching only delays feedback and makes bisecting harder.
 
+For a local build to try out (the user's taskbar exe), use `cargo build --profile release-fast`
+(thin LTO, all cores: minutes, a few MB bigger) and copy `target/release-fast/simple-editor.exe` over
+`target/release/simple-editor.exe`. Keep `--release` for shipped builds and the size gate.
+
 ### Size gate
 
 `scripts/size.ps1 [-Note "<reason>"]`: builds `--release`, appends `<git-sha>,<bytes>,<note>` to
