@@ -1,6 +1,6 @@
 use super::*;
 use crate::ui::menu;
-use crate::ui::tools::{icon_button, Glyph, Tool};
+use crate::ui::tools::{icon_button, Glyph};
 
 // The sequence tabs live in the Timeline pane's own tab (ws:pages); view presets and the overview
 // strip are in the ruler's right-click ▸ View (ws:timeline-surface).
@@ -13,29 +13,13 @@ fn tip(name: &str, a: Action) -> String {
     }
 }
 
-/// The Timeline's one toolbar row: Select · Blade · Rate stretch, Snap, and zoom on the right. Returns
-/// the Actions its buttons ask for; the zoom slider edits `zoom` (px/s) in place.
-fn toolbar(
-    ui: &mut egui::Ui,
-    pal: &crate::theme::Palette,
-    tool: Tool,
-    snap: (bool, bool),
-    zoom: &mut f32,
-) -> Vec<Action> {
+/// The Timeline toolbar's right part: Snap, Auto Close Gaps, and zoom on the right (`tools::panel`'s
+/// tool groups lead the row). Returns the Actions its buttons ask for; the zoom slider edits `zoom`.
+fn toolbar(ui: &mut egui::Ui, pal: &crate::theme::Palette, snap: (bool, bool), zoom: &mut f32) -> Vec<Action> {
     let (snap, gaps) = snap;
     let mut out = Vec::new();
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
-        for (t, a, g, name) in [
-            (Tool::Select, Action::ToolSelect, Glyph::Cursor, "Select"),
-            (Tool::Cut, Action::ToolCut, Glyph::Razor, "Blade"),
-            (Tool::Stretch, Action::ToolStretch, Glyph::Speed, "Rate Stretch"),
-        ] {
-            if icon_button(ui, pal, ui.id().with(("tl_tool", name)), g, &tip(name, a), tool == t).clicked() {
-                out.push(a);
-            }
-        }
-        ui.add_space(8.0);
         if icon_button(ui, pal, ui.id().with("tl_snap"), Glyph::Magnet, &tip("Snapping", Action::ToggleSnap), snap)
             .clicked()
         {
@@ -77,7 +61,16 @@ fn toolbar(
 pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
     // ---- ws:timeline-surface: one toolbar row ----
     let mut zoom = app.timeline.zoom;
-    let acts = toolbar(ui, &app.palette, app.tools.tool, (app.settings.snap, app.settings.auto_close_gaps), &mut zoom);
+    // tools-panel: the tool groups lead the row, Premiere-style (right-click / long-press a group)
+    let mut acts = Vec::new();
+    ui.horizontal(|ui| {
+        let (tool, crop) = (&mut app.tools.tool, &mut app.preview.crop_mode);
+        if crate::ui::tools::panel(ui, tool, crop, &mut app.settings.hidden_tools, &app.palette) {
+            app.settings.save();
+        }
+        ui.add_space(6.0);
+        acts = toolbar(ui, &app.palette, (app.settings.snap, app.settings.auto_close_gaps), &mut zoom);
+    });
     app.pending_actions.extend(acts);
     if zoom != app.timeline.zoom {
         // the slider zooms around the playhead while it is on screen, like Ctrl+wheel around the pointer
@@ -311,8 +304,7 @@ mod tests {
                 ..Default::default()
             };
             let _ = ctx.run(input, |ctx| {
-                egui::CentralPanel::default()
-                    .show(ctx, |ui| out = toolbar(ui, &pal, Tool::Select, (true, false), &mut zoom));
+                egui::CentralPanel::default().show(ctx, |ui| out = toolbar(ui, &pal, (true, false), &mut zoom));
             });
             out
         };
@@ -328,12 +320,10 @@ mod tests {
             frame(vec![btn(true)]);
             frame(vec![btn(false)])
         };
-        // 24 x 22 icon buttons, 2 pt apart, from the panel's 8 pt margin: Select, Blade, Rate Stretch
-        assert_eq!(click(egui::pos2(8.0 + 26.0 + 12.0, 19.0)), vec![Action::ToolCut]);
-        assert_eq!(click(egui::pos2(8.0 + 52.0 + 12.0, 19.0)), vec![Action::ToolStretch]);
-        // then an 8 pt gap and the magnet
-        assert_eq!(click(egui::pos2(8.0 + 78.0 + 8.0 + 12.0, 19.0)), vec![Action::ToggleSnap]);
-        assert_eq!(click(egui::pos2(8.0 + 104.0 + 8.0 + 12.0, 19.0)), vec![Action::ToggleAutoCloseGaps]);
+        // 24 x 22 icon buttons, 2 pt apart, from the panel's 8 pt margin: the magnet, then Auto Close Gaps
+        // (the tools moved to `tools::panel`, ahead of this part of the row)
+        assert_eq!(click(egui::pos2(8.0 + 12.0, 19.0)), vec![Action::ToggleSnap]);
+        assert_eq!(click(egui::pos2(8.0 + 26.0 + 12.0, 19.0)), vec![Action::ToggleAutoCloseGaps]);
         // right-aligned from the 792 pt edge, 4 pt in: Zoom to Fit
         assert_eq!(click(egui::pos2(792.0 - 4.0 - 12.0, 19.0)), vec![Action::ZoomFit]);
     }

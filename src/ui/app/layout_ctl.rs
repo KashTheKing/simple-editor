@@ -241,6 +241,7 @@ pub(super) fn switch_page(app: &mut App, name: &str) -> bool {
     let App { layout, settings, undo, redo, .. } = app;
     if swap_page(layout, settings, undo, redo, page) {
         app.tools.tool = layout::page_tool(page);
+        app.preview.crop_mode = false; // tools-panel: a page opens on its plain tool, never a leftover Crop
         app.layout_json = app.settings.layout.clone();
         app.settings.save();
     }

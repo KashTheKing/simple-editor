@@ -328,6 +328,17 @@ actions! {
     ToolCut => "tool_cut", "Cut Tool (Razor)", sc(NONE, Key::C);
     ToolStretch => "tool_stretch", "Stretch Tool", sc(NONE, Key::R);
     ToolSpacer => "tool_spacer", "Spacer Tool", None;
+    // tools-panel: Premiere's tool keys where they are free. A / Shift+A (Select Forward / Backward from
+    // playhead), B (Overwrite) and U (Select Edit Point) are taken, so those four tools ship unbound.
+    ToolTrackForward => "tool_track_forward", "Track Select Forward Tool", None;
+    ToolTrackBackward => "tool_track_backward", "Track Select Backward Tool", None;
+    ToolRipple => "tool_ripple", "Ripple Edit Tool", None;
+    ToolRolling => "tool_rolling", "Rolling Edit Tool", sc(NONE, Key::N);
+    ToolSlip => "tool_slip", "Slip Tool", sc(NONE, Key::Y);
+    ToolSlide => "tool_slide", "Slide Tool", None;
+    ToolPen => "tool_pen", "Pen Tool", sc(NONE, Key::P);
+    ToolHand => "tool_hand", "Hand Tool", sc(NONE, Key::H);
+    ToolZoom => "tool_zoom", "Zoom Tool", sc(NONE, Key::Z);
 }
 
 pub struct Hotkeys {
@@ -577,6 +588,8 @@ pub fn group(a: Action) -> &'static str {
         | ToggleJobs | ToggleScopes => "Panels & Pages",
         RelinkMedia | ConsolidateMedia | NewSubclip => "Media",
         ToolSelect | ToolText | ToolDraw | ToolMask | ToolMarker | ToolCut | ToolStretch | ToolSpacer => "Tools",
+        ToolTrackForward | ToolTrackBackward | ToolRipple | ToolRolling | ToolSlip | ToolSlide | ToolPen | ToolHand
+        | ToolZoom => "Tools",
         CommandPalette | CheatSheet | ShowWelcome | WhatsNew | ClearCaches => "General",
         // ---- ws:pages ----
         // ---- ws:timeline-surface ----
@@ -706,7 +719,7 @@ mod tests {
             (Key::F, SHIFT, vec![]),
             (Key::C, SHIFT, vec![]),
             (Key::S, NONE, vec![Action::ToggleSnap]),
-            (Key::N, NONE, vec![]),
+            (Key::N, NONE, vec![Action::ToolRolling]),
             (Key::Z, ctrl, vec![Action::Undo]),
             (Key::Z, Modifiers { shift: true, ..ctrl }, vec![Action::Redo]),
             (Key::ArrowLeft, SHIFT, vec![Action::StepBack10]),
@@ -751,9 +764,9 @@ mod tests {
     #[test]
     fn conflict_all_sees_reserved_and_actions() {
         let h = Hotkeys::defaults();
-        // bare S is a normal, rebindable binding now; N is free
+        // bare S is a normal, rebindable binding now; N is the Rolling Edit tool
         assert_eq!(h.conflict_all(KeyboardShortcut::new(NONE, Key::S)), Some(Claim::Action(Action::ToggleSnap)));
-        assert_eq!(h.conflict_all(KeyboardShortcut::new(NONE, Key::N)), None);
+        assert_eq!(h.conflict_all(KeyboardShortcut::new(NONE, Key::N)), Some(Claim::Action(Action::ToolRolling)));
         assert_eq!(h.conflict_all(KeyboardShortcut::new(SHIFT, Key::S)), Some(Claim::Fixed("Cycle shape tool")));
         assert_eq!(h.conflict_all(KeyboardShortcut::new(CTRL, Key::Y)), Some(Claim::Fixed("Redo (alias)")));
         assert_eq!(h.conflict_all(KeyboardShortcut::new(NONE, Key::Backspace)), Some(Claim::Action(Action::Delete)));
