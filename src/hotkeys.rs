@@ -250,7 +250,7 @@ actions! {
     // ToggleLayoutMode / ShowWelcome are declared by ws:command-palette above and only CONSUMED here
     // (`ui::app::layout_ctl::act`) - never redeclare them. TogglePin / ToggleSource are unbound by
     // design: the tab's right-click ("Stay on this tab") and the Window menu / palette own them.
-    // ws:pages: Workspace1..6 are the six pages in Resolve's order (`layout::PAGES`). A rebind stored
+    // ws:pages: Workspace1..6 are the first six pages of `Settings.pages` (default: `layout::PAGES`). A rebind stored
     // under an id now names the page in that slot (workspace_1 was Edit before Media and Cut came).
     Workspace1 => "workspace_1", "Media page", sc(ALT, Key::Num1);
     Workspace2 => "workspace_2", "Cut page", sc(ALT, Key::Num2);

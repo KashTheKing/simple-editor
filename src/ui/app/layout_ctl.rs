@@ -30,7 +30,7 @@ pub(super) fn is_dynamic(settings: &Settings) -> bool {
     settings.layout_mode != "granular"
 }
 
-/// The page actions, in `PAGES` order (Alt+1..6).
+/// The page actions: Alt+N is the Nth page of `Settings.pages` (the user's order).
 pub(super) const PAGE_ACTIONS: [Action; 6] = [
     Action::Workspace1,
     Action::Workspace2,
@@ -42,7 +42,12 @@ pub(super) const PAGE_ACTIONS: [Action; 6] = [
 
 pub(super) fn act(app: &mut App, a: Action) -> bool {
     if let Some(i) = PAGE_ACTIONS.iter().position(|&p| p == a) {
-        switch_page(app, PAGES[i]);
+        match app.settings.pages.get(i).cloned() {
+            Some(page) => {
+                switch_page(app, &page);
+            }
+            None => app.toast(format!("There is no page {} (right-click the page switcher ▸ New Page…)", i + 1)),
+        }
         return true;
     }
     match a {
@@ -182,9 +187,9 @@ pub(super) fn show_over(layout: &mut Layout, pane: Pane, over: Pane) -> bool {
 
 // ---- ws:pages ----
 
-/// A page's built-in arrangement (the Edit page's for a name that isn't one).
+/// A page's built-in arrangement (the blank one for a custom page).
 pub(super) fn page_default(page: &str) -> Layout {
-    page_layout(page).unwrap_or(Layout::default_layout)()
+    page_layout(page).unwrap_or(Layout::blank_layout)()
 }
 
 /// Where a page starts (a first visit, Reset page layout): the default the user saved for it, else its
@@ -207,16 +212,111 @@ pub(super) fn save_page_default(settings: &mut Settings, layout: &Layout) {
 /// keeps its old arrangement as the layout profile "Before update" and starts on the page its old
 /// workspace maps to, from that page's new default. True when it changed anything.
 pub(super) fn migrate_to_pages(settings: &mut Settings) -> bool {
-    if PAGES.contains(&settings.page.as_str()) {
+    if settings.pages.is_empty() {
+        restore_default_pages(settings); // a hand-edited `"pages": []` - at least one page always exists
+    }
+    if settings.pages.contains(&settings.page) {
         return false;
     }
-    if !settings.layout.is_empty() {
+    if settings.page.is_empty() && !settings.layout.is_empty() {
         let json = std::mem::take(&mut settings.layout);
         settings.layout_profiles.retain(|p| p.name != BEFORE_UPDATE);
         settings.layout_profiles.push(crate::settings::LayoutProfile { name: BEFORE_UPDATE.into(), json });
     }
-    settings.page = page_name(&settings.workspace).unwrap_or("Edit").into();
+    let old = page_name(&settings.workspace).unwrap_or("Edit");
+    settings.page = find_page(settings, old).unwrap_or_else(|| settings.pages[0].clone());
     true
+}
+
+/// A page of `Settings.pages` by name, case-insensitively, or by a pre-pages workspace name (`page_name`).
+pub(super) fn find_page(settings: &Settings, name: &str) -> Option<String> {
+    let hit = |n: &str| settings.pages.iter().find(|p| p.eq_ignore_ascii_case(n.trim())).cloned();
+    hit(name).or_else(|| page_name(name).and_then(hit))
+}
+
+/// A trimmed, non-empty name no other page has (`except` = the page being renamed).
+fn check_name(settings: &Settings, name: &str, except: Option<&str>) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("A page needs a name".into());
+    }
+    let taken = settings.pages.iter().any(|p| p.eq_ignore_ascii_case(name) && Some(p.as_str()) != except);
+    if taken {
+        return Err(format!("There is already a page called '{name}'"));
+    }
+    Ok(name.to_string())
+}
+
+/// `base`, or `base 2`, `base 3`… - the first one no page has yet (Duplicate's "Edit copy").
+pub(super) fn unique_page_name(settings: &Settings, base: &str) -> String {
+    (1..)
+        .map(|i| if i == 1 { base.to_string() } else { format!("{base} {i}") })
+        .find(|n| check_name(settings, n, None).is_ok())
+        .unwrap()
+}
+
+/// Add a page at the end of the switcher. `start` = the arrangement it starts from (and resets to: it
+/// becomes the page's saved default); `None` = blank (or a built-in's own layout, if the name is one).
+pub(super) fn add_page(settings: &mut Settings, name: &str, start: Option<&Layout>) -> Result<String, String> {
+    let name = check_name(settings, name, None)?;
+    if let Some(l) = start {
+        let mut l = l.clone();
+        l.unmaximize();
+        settings.page_defaults.insert(name.clone(), l.to_json());
+    }
+    settings.pages.push(name.clone());
+    Ok(name)
+}
+
+/// Rename a page, carrying its stored tree and saved default along. A renamed built-in keeps its
+/// arrangement as its saved default (the new name has no built-in behind it).
+pub(super) fn rename_page(settings: &mut Settings, old: &str, new: &str) -> Result<String, String> {
+    let new = check_name(settings, new, Some(old))?;
+    let Some(i) = settings.pages.iter().position(|p| p == old) else { return Err(format!("No page called '{old}'")) };
+    settings.pages[i] = new.clone();
+    if let Some(j) = settings.page_layouts.remove(old) {
+        settings.page_layouts.insert(new.clone(), j);
+    }
+    if let Some(k) = settings.track_kinds.remove(old) {
+        settings.track_kinds.insert(new.clone(), k);
+    }
+    let default = settings.page_defaults.remove(old).or_else(|| page_layout(old).map(|b| b().to_json()));
+    if let Some(j) = default {
+        settings.page_defaults.insert(new.clone(), j);
+    }
+    if settings.page == old {
+        settings.page = new.clone();
+    }
+    Ok(new)
+}
+
+/// Remove a page that is not on screen (`App` switches away first). The last page is refused.
+pub(super) fn delete_page(settings: &mut Settings, name: &str) -> Result<(), String> {
+    if settings.pages.len() <= 1 {
+        return Err("At least one page must stay".into());
+    }
+    settings.pages.retain(|p| p != name);
+    settings.page_layouts.remove(name);
+    settings.page_defaults.remove(name);
+    settings.track_kinds.remove(name);
+    Ok(())
+}
+
+/// Move the page at `from` to index `to` (clamped).
+pub(super) fn move_page(settings: &mut Settings, from: usize, to: usize) {
+    if from < settings.pages.len() {
+        let p = settings.pages.remove(from);
+        settings.pages.insert(to.min(settings.pages.len()), p);
+    }
+}
+
+/// Bring back any deleted built-in page, near its usual spot; custom pages stay.
+pub(super) fn restore_default_pages(settings: &mut Settings) {
+    for (i, &p) in PAGES.iter().enumerate() {
+        if !settings.pages.iter().any(|q| q == p) {
+            settings.pages.insert(i.min(settings.pages.len()), p.to_string());
+        }
+    }
 }
 
 /// The pure core of `switch_page`: unmaximise, stash the current tree under the current page, bring
@@ -228,7 +328,7 @@ pub(super) fn swap_page(
     settings: &mut Settings,
     undo: &mut Vec<UndoEntry>,
     redo: &mut Vec<UndoEntry>,
-    page: &'static str,
+    page: &str,
 ) -> bool {
     if settings.page == page {
         return false;
@@ -247,16 +347,15 @@ pub(super) fn swap_page(
     true
 }
 
-/// Switch to a page by name (a `PAGES` name or an old workspace name); unknown names toast and
-/// return false.
+/// Switch to a page by name (see `find_page`); unknown names toast and return false.
 pub(super) fn switch_page(app: &mut App, name: &str) -> bool {
-    let Some(page) = page_name(name) else {
-        app.toast(format!("No page called '{name}' (try {})", PAGES.join(", ")));
+    let Some(page) = find_page(&app.settings, name) else {
+        app.toast(format!("No page called '{name}' (try {})", app.settings.pages.join(", ")));
         return false;
     };
     let App { layout, settings, undo, redo, .. } = app;
-    if swap_page(layout, settings, undo, redo, page) {
-        app.tools.tool = layout::page_tool(page);
+    if swap_page(layout, settings, undo, redo, &page) {
+        app.tools.tool = layout::page_tool(&page);
         app.preview.crop_mode = false; // tools-panel: a page opens on its plain tool, never a leftover Crop
         app.layout_json = app.settings.layout.clone();
         app.settings.save();
@@ -267,7 +366,7 @@ pub(super) fn switch_page(app: &mut App, name: &str) -> bool {
 /// Back to `page`'s starting arrangement (`page_start`), or with `builtin` its built-in one even when a
 /// default is saved. The page on screen resets as one undoable layout step; another page gets it as its
 /// stored tree for the next visit.
-pub(super) fn reset_page(app: &mut App, page: &'static str, builtin: bool) {
+pub(super) fn reset_page(app: &mut App, page: &str, builtin: bool) {
     let saved = !builtin && app.settings.page_defaults.contains_key(page);
     let fresh = if builtin { page_default(page) } else { page_start(&app.settings, page) };
     if app.settings.page == page {
@@ -283,60 +382,229 @@ pub(super) fn reset_page(app: &mut App, page: &'static str, builtin: bool) {
     app.toast(format!("{page} page: back to its {} layout", if saved { "saved default" } else { "built-in" }));
 }
 
-/// The menu bar's page switcher: one text button per page, centred in the bar, the page on screen
-/// filled with the accent. Right-click a page to reset its layout (to its saved default or built-in).
+/// A page's current arrangement: the tree on screen, its stashed one, or where it would start.
+fn page_tree(app: &App, page: &str) -> Layout {
+    if app.settings.page == page {
+        return app.layout.clone();
+    }
+    let stored = app.settings.page_layouts.get(page).and_then(|j| Layout::from_json(j));
+    stored.unwrap_or_else(|| page_start(&app.settings, page))
+}
+
+/// What the switcher's right-click (or a drag) asked for, applied after the buttons draw.
+enum PageOp {
+    Reset(String, bool),
+    Duplicate(String),
+    Delete(String),
+    Move(usize, usize),
+    Restore,
+    /// Open the name dialog: `Some(page)` renames it, `None` makes a new page.
+    Name(Option<String>),
+}
+
+/// The New Page… / Rename… dialog's state, kept in egui memory (only one is ever open).
+#[derive(Clone, Default)]
+struct NameDialog {
+    open: bool,
+    rename: Option<String>,
+    name: String,
+    copy: bool,
+}
+
+fn apply_page_op(app: &mut App, op: PageOp) {
+    let result = match op {
+        PageOp::Reset(page, builtin) => {
+            reset_page(app, &page, builtin);
+            Ok(())
+        }
+        PageOp::Duplicate(page) => {
+            let tree = page_tree(app, &page);
+            let name = unique_page_name(&app.settings, &format!("{page} copy"));
+            add_page(&mut app.settings, &name, Some(&tree)).map(|name| {
+                switch_page(app, &name);
+            })
+        }
+        PageOp::Delete(page) => {
+            // deleting the page on screen switches to its left neighbour (the right one for the first)
+            let i = app.settings.pages.iter().position(|p| *p == page).unwrap_or(0);
+            let next = app.settings.pages.get(if i == 0 { 1 } else { i - 1 }).cloned();
+            if let Some(next) = next.filter(|_| app.settings.page == page) {
+                switch_page(app, &next);
+            }
+            delete_page(&mut app.settings, &page)
+        }
+        PageOp::Move(from, to) => {
+            move_page(&mut app.settings, from, to);
+            Ok(())
+        }
+        PageOp::Restore => {
+            restore_default_pages(&mut app.settings);
+            Ok(())
+        }
+        PageOp::Name(_) => Ok(()),
+    };
+    match result {
+        Ok(()) => app.settings.save(),
+        Err(e) => app.toast(e),
+    }
+}
+
+/// New Page… / Rename…: a small window with the name (and, for a new page, where it starts).
+fn name_dialog(app: &mut App, ctx: &egui::Context, id: egui::Id) {
+    let mut d: NameDialog = ctx.data(|m| m.get_temp(id)).unwrap_or_default();
+    if !d.open {
+        return;
+    }
+    let title = if d.rename.is_some() { "Rename Page" } else { "New Page" };
+    let (mut ok, mut cancel) = (false, false);
+    let window = egui::Window::new(title).collapsible(false).resizable(false);
+    window.anchor(egui::Align2::CENTER_TOP, [0.0, 60.0]).show(ctx, |ui| {
+        let r = ui.text_edit_singleline(&mut d.name);
+        r.request_focus();
+        ok |= r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        cancel |= ui.input(|i| i.key_pressed(egui::Key::Escape));
+        if d.rename.is_none() {
+            ui.radio_value(&mut d.copy, false, "Blank layout");
+            ui.radio_value(&mut d.copy, true, format!("Copy of the {} page", app.settings.page));
+        }
+        ui.horizontal(|ui| {
+            ok |= ui.button(if d.rename.is_some() { "Rename" } else { "Create" }).clicked();
+            cancel |= ui.button("Cancel").clicked();
+        });
+    });
+    if ok {
+        let result = match &d.rename {
+            Some(old) => rename_page(&mut app.settings, old, &d.name).map(|_| ()),
+            None => {
+                let tree = d.copy.then(|| app.layout.clone());
+                add_page(&mut app.settings, &d.name, tree.as_ref()).map(|name| {
+                    switch_page(app, &name);
+                })
+            }
+        };
+        match result {
+            Ok(()) => {
+                app.settings.save();
+                d.open = false;
+            }
+            Err(e) => app.toast(e),
+        }
+    }
+    d.open &= !cancel;
+    ctx.data_mut(|m| m.insert_temp(id, d));
+}
+
+/// The menu bar's page switcher: one text button per page of `Settings.pages`, centred in the bar, the
+/// page on screen filled with the accent. Drag a page to reorder it; right-click for New Page… /
+/// Rename… / Duplicate / Delete / Move / Reset / Restore Default Pages.
 pub(super) fn page_switcher(app: &mut App, ui: &mut egui::Ui) {
+    let pages = app.settings.pages.clone();
     let font = egui::TextStyle::Button.resolve(ui.style());
     let pad = ui.spacing().button_padding.x * 2.0 + 16.0;
-    let widths: Vec<f32> = PAGES
+    let widths: Vec<f32> = pages
         .iter()
         .map(|p| ui.painter().layout_no_wrap(p.to_string(), font.clone(), egui::Color32::PLACEHOLDER).size().x + pad)
         .collect();
     let gap = 2.0;
-    let total = widths.iter().sum::<f32>() + gap * (PAGES.len() - 1) as f32;
+    let total = widths.iter().sum::<f32>() + gap * pages.len().saturating_sub(1) as f32;
     // centred in the whole bar (where the eye expects it), but never over the menus on a narrow window
     let bar = ui.max_rect();
     let left = (bar.center().x - total / 2.0).max(ui.cursor().left() + 8.0);
     let rect = egui::Rect::from_min_size(egui::pos2(left, bar.top()), egui::vec2(total, bar.height()));
-    let (mut pick, mut reset) = (None, None);
+    let (mut pick, mut op) = (None, None);
+    let mut rects = Vec::with_capacity(pages.len());
+    let mut drag: Option<(usize, bool)> = None; // (the page being dragged, released this frame)
     let accent = ui.visuals().selection.bg_fill;
     ui.painter().rect_filled(rect.expand2(egui::vec2(3.0, 0.0)), 5.0, ui.visuals().extreme_bg_color);
     ui.scope_builder(
         egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::left_to_right(egui::Align::Center)),
         |ui| {
             ui.spacing_mut().item_spacing.x = gap;
-            for ((&page, &w), &a) in PAGES.iter().zip(&widths).zip(&PAGE_ACTIONS) {
-                let on = app.settings.page == page;
+            for (i, (page, &w)) in pages.iter().zip(&widths).enumerate() {
+                let on = app.settings.page == *page;
                 let color = if on { crate::ui::tools::on_accent(accent) } else { ui.visuals().text_color() };
                 let mut b = egui::Button::new(egui::RichText::new(page).color(color))
                     .min_size(egui::vec2(w, 0.0))
-                    .frame_when_inactive(on);
+                    .frame_when_inactive(on)
+                    .sense(egui::Sense::click_and_drag());
                 if on {
                     b = b.fill(accent);
                 }
-                let r = ui.add(b).on_hover_text(format!("{page} page   {}", app.hotkeys.text(a)));
+                let key = PAGE_ACTIONS.get(i).map(|&a| app.hotkeys.text(a)).unwrap_or_default();
+                let r = ui.add(b).on_hover_text(format!("{page} page   {key}\nDrag to reorder, right-click for more"));
+                rects.push(r.rect);
                 if r.clicked() && !on {
-                    pick = Some(page);
+                    pick = Some(page.clone());
                 }
-                let saved = app.settings.page_defaults.contains_key(page);
+                if r.dragged() || r.drag_stopped() {
+                    drag = Some((i, r.drag_stopped()));
+                }
+                let saved = app.settings.page_defaults.contains_key(page.as_str());
+                let builtin = PAGES.contains(&page.as_str());
                 menu::context(&r, |ui| {
-                    if menu::row(ui, None, "Reset Page Layout", "").clicked() {
-                        reset = Some((page, false));
+                    if menu::row(ui, None, "New Page…", "").clicked() {
+                        op = Some(PageOp::Name(None));
                     }
-                    let builtin = ui.add_enabled_ui(saved, |ui| menu::row(ui, None, "Reset to Built-in Layout", ""));
-                    if builtin.inner.on_disabled_hover_text(NO_SAVED_DEFAULT).clicked() {
-                        reset = Some((page, true));
+                    if menu::row(ui, None, "Rename…", "").clicked() {
+                        op = Some(PageOp::Name(Some(page.clone())));
+                    }
+                    if menu::row(ui, None, "Duplicate", "").clicked() {
+                        op = Some(PageOp::Duplicate(page.clone()));
+                    }
+                    let del = ui.add_enabled_ui(pages.len() > 1, |ui| menu::row(ui, None, "Delete", ""));
+                    if del.inner.on_disabled_hover_text("At least one page must stay").clicked() {
+                        op = Some(PageOp::Delete(page.clone()));
+                    }
+                    ui.separator();
+                    if ui.add_enabled_ui(i > 0, |ui| menu::row(ui, None, "Move Left", "")).inner.clicked() {
+                        op = Some(PageOp::Move(i, i - 1));
+                    }
+                    let last = i + 1 == pages.len();
+                    if ui.add_enabled_ui(!last, |ui| menu::row(ui, None, "Move Right", "")).inner.clicked() {
+                        op = Some(PageOp::Move(i, i + 1));
+                    }
+                    ui.separator();
+                    if menu::row(ui, None, "Reset Page Layout", "").clicked() {
+                        op = Some(PageOp::Reset(page.clone(), false));
+                    }
+                    let b =
+                        ui.add_enabled_ui(saved && builtin, |ui| menu::row(ui, None, "Reset to Built-in Layout", ""));
+                    if b.inner.on_disabled_hover_text(NO_SAVED_DEFAULT).clicked() {
+                        op = Some(PageOp::Reset(page.clone(), true));
+                    }
+                    let missing = PAGES.iter().any(|p| !pages.iter().any(|q| q == p));
+                    let restore = ui.add_enabled_ui(missing, |ui| menu::row(ui, None, "Restore Default Pages", ""));
+                    if restore.inner.on_disabled_hover_text("All six built-in pages are here").clicked() {
+                        op = Some(PageOp::Restore);
                     }
                 });
             }
         },
     );
+    // drag to reorder: the slot is the gap nearest the pointer; a line marks it while dragging
+    if let (Some((from, released)), Some(x)) = (drag, ui.ctx().pointer_latest_pos().map(|p| p.x)) {
+        let slot = rects.iter().position(|r| x < r.center().x).unwrap_or(rects.len());
+        let to = if slot > from { slot - 1 } else { slot };
+        if released && to != from {
+            op = Some(PageOp::Move(from, to));
+        } else if !released && to != from {
+            let lx = rects.get(slot).map_or(rect.right() + gap, |r| r.left()) - gap / 2.0;
+            ui.painter().vline(lx, rect.y_range(), egui::Stroke::new(2.0, accent));
+        }
+    }
+    let dialog = ui.id().with("page-name-dialog");
+    if let Some(PageOp::Name(rename)) = &op {
+        let name = rename.clone().unwrap_or_else(|| unique_page_name(&app.settings, "New page"));
+        let d = NameDialog { open: true, rename: rename.clone(), name, copy: false };
+        ui.ctx().data_mut(|m| m.insert_temp(dialog, d));
+    }
     if let Some(page) = pick {
-        switch_page(app, page);
+        switch_page(app, &page);
     }
-    if let Some((page, builtin)) = reset {
-        reset_page(app, page, builtin);
+    if let Some(op) = op {
+        apply_page_op(app, op);
     }
+    name_dialog(app, &ui.ctx().clone(), dialog);
 }
 
 /// The body of wave-0b's pre-placed `on_viewport` hook in `layout::show`: poll the action table on a
@@ -693,5 +961,67 @@ mod tests {
         assert!(migrate_to_pages(&mut s));
         assert_eq!(s.page, "Edit");
         assert!(s.layout_profiles.is_empty());
+    }
+
+    /// Custom pages: create (blank or a copy, which is also what it resets to), rename (carrying its
+    /// trees), reorder, delete (the last page is refused), restore the built-ins, and a settings round-trip.
+    #[test]
+    fn custom_pages_create_rename_reorder_delete_persist() {
+        let vis = |l: &Layout| Pane::ALL.iter().filter(|&&p| l.is_visible(p)).copied().collect::<Vec<_>>();
+        let mut s = Settings::default();
+        assert_eq!(s.pages, PAGES);
+        assert_eq!(add_page(&mut s, "  Mine ", None).unwrap(), "Mine");
+        assert!(add_page(&mut s, "mine", None).is_err() && add_page(&mut s, " ", None).is_err());
+        assert_eq!(vis(&page_start(&s, "Mine")), vis(&Layout::blank_layout()), "blank start");
+        add_page(&mut s, "Grade", Some(&Layout::color_layout())).unwrap();
+        assert_eq!(vis(&page_start(&s, "Grade")), vis(&Layout::color_layout()), "a copy resets to itself");
+        assert_eq!(unique_page_name(&s, "Mine"), "Mine 2");
+        // rename carries the stashed tree, and a renamed built-in keeps its arrangement
+        s.page_layouts.insert("Mine".into(), "tree".into());
+        s.track_kinds.insert("Mine".into(), (false, true));
+        rename_page(&mut s, "Mine", "Ours").unwrap();
+        assert!(rename_page(&mut s, "Ours", "grade").is_err(), "taken");
+        assert_eq!(s.page_layouts.get("Ours").map(String::as_str), Some("tree"));
+        assert_eq!(s.track_kinds.get("Ours"), Some(&(false, true)), "track visibility follows the rename");
+        rename_page(&mut s, "Audio", "Sound").unwrap();
+        assert_eq!(vis(&page_start(&s, "Sound")), vis(&Layout::audio_layout()));
+        assert_eq!(find_page(&s, "sound").as_deref(), Some("Sound"));
+        // reorder
+        move_page(&mut s, 7, 0);
+        assert_eq!(s.pages, ["Grade", "Media", "Cut", "Edit", "Color", "Sound", "Export", "Ours"]);
+        // round-trip through the settings file
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.pages, s.pages);
+        // delete down to one page, then the last is refused; Restore brings the built-ins back
+        for p in s.pages.clone().iter().skip(1) {
+            delete_page(&mut s, p).unwrap();
+        }
+        assert!(!s.page_layouts.contains_key("Ours") && !s.page_defaults.contains_key("Sound"));
+        assert!(s.track_kinds.is_empty(), "a deleted page's track visibility goes with it");
+        assert!(delete_page(&mut s, "Grade").is_err(), "at least one page stays");
+        assert_eq!(s.pages, ["Grade"]);
+        restore_default_pages(&mut s);
+        assert_eq!(s.pages, ["Media", "Cut", "Edit", "Color", "Audio", "Export", "Grade"]);
+    }
+
+    /// Old settings: no `pages` = the six built-ins; an emptied list is refilled; a page the list lost
+    /// falls back to the first page.
+    #[test]
+    fn page_list_migrates_and_custom_pages_swap_in() {
+        let vis = |l: &Layout| Pane::ALL.iter().filter(|&&p| l.is_visible(p)).copied().collect::<Vec<_>>();
+        let mut s: Settings = serde_json::from_str(r#"{"page": "Color"}"#).unwrap();
+        assert!(!migrate_to_pages(&mut s) && s.pages == PAGES && s.page == "Color");
+        let mut s: Settings = serde_json::from_str(r#"{"page": "Color", "pages": []}"#).unwrap();
+        migrate_to_pages(&mut s);
+        assert_eq!((s.pages.len(), s.page.as_str()), (6, "Color"));
+        let mut s: Settings = serde_json::from_str(r#"{"page": "Gone", "pages": ["Mine", "Color"]}"#).unwrap();
+        assert!(migrate_to_pages(&mut s));
+        assert_eq!(s.page, "Mine");
+        // a custom page swaps in like a built-in, starting blank
+        let (mut layout, mut undo, mut redo) = (Layout::default_layout(), vec![], vec![]);
+        s.page = "Color".into();
+        assert!(swap_page(&mut layout, &mut s, &mut undo, &mut redo, "Mine"));
+        assert_eq!(vis(&layout), vis(&Layout::blank_layout()));
+        assert!(s.page_layouts.contains_key("Color"));
     }
 }

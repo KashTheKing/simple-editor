@@ -429,6 +429,17 @@ impl Layout {
         Self::new(egui_tiles::Tree::new("layout", root, tiles))
     }
 
+    /// A new custom page's "Blank" start: Preview over the Timeline, every other pane hidden behind it.
+    pub fn blank_layout() -> Self {
+        let mut tiles = egui_tiles::Tiles::default();
+        let t = &mut tiles;
+        let preview = Self::tabs(t, &[Pane::Preview], 0);
+        let timeline = t.insert_pane(Pane::Timeline);
+        let root = Self::linear(t, egui_tiles::LinearDir::Vertical, &[(preview, 0.6), (timeline, 0.4)]);
+        Self::stack_unplaced(t, preview);
+        Self::new(egui_tiles::Tree::new("layout", root, tiles))
+    }
+
     /// The Export page: [Export settings] · [Preview] · [Inspector over Jobs, the render queue] over the
     /// Timeline.
     pub fn export_layout() -> Self {

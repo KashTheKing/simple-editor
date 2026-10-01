@@ -432,6 +432,9 @@ pub struct Settings {
     pub page: String,
     /// Per page: (show video tracks, show audio tracks) on the timeline. Missing = `track_kinds`' default.
     pub track_kinds: BTreeMap<String, (bool, bool)>,
+    /// The pages in switcher order (Alt+1..6 = the first six): built-ins (`ui::layout::PAGES` names)
+    /// and custom ones, any of them deletable. Missing in an older file = the six built-ins.
+    pub pages: Vec<String>,
     /// The other pages' trees as JSON, by page name - the current page's own lives in `layout`.
     pub page_layouts: BTreeMap<String, String>,
     /// Window ▸ Layout ▸ Lock panels: a tab only clicks. Off (the default) a tab drags to re-dock;
@@ -602,6 +605,7 @@ impl Default for Settings {
             // ---- ws:pages ----
             page: String::new(),
             track_kinds: BTreeMap::new(),
+            pages: crate::ui::layout::PAGES.iter().map(|p| p.to_string()).collect(),
             page_layouts: BTreeMap::new(),
             panels_locked: false,
             page_defaults: BTreeMap::new(),
@@ -954,6 +958,7 @@ mod tests {
     fn page_settings_round_trip() {
         let old: Settings = serde_json::from_str(r#"{"workspace": "Deliver"}"#).unwrap();
         assert_eq!((old.page.as_str(), old.workspace.as_str()), ("", "Deliver"), "a pre-pages file");
+        assert_eq!(old.pages, crate::ui::layout::PAGES, "an older file gets the six built-ins");
         assert!(old.page_layouts.is_empty() && old.page_defaults.is_empty() && !old.panels_locked);
         // the locked-by-default build's opt-in is ignored: everyone starts unlocked
         let locked_build: Settings = serde_json::from_str(r#"{"panels_unlocked": false}"#).unwrap();
@@ -963,11 +968,13 @@ mod tests {
         s.page_layouts.insert("Edit".into(), "{}".into());
         s.page_defaults.insert("Cut".into(), "[]".into());
         s.panels_locked = true;
+        s.pages = vec!["Color".into(), "Mine".into()];
         let json = serde_json::to_string(&s).unwrap();
         assert!(!json.contains("\"workspace\""), "the legacy name is not written back");
         let back: Settings = serde_json::from_str(&json).unwrap();
         assert_eq!((back.page.as_str(), back.panels_locked), ("Color", true));
         assert_eq!(back.page_layouts.get("Edit").map(String::as_str), Some("{}"));
         assert_eq!(back.page_defaults.get("Cut").map(String::as_str), Some("[]"));
+        assert_eq!(back.pages, ["Color", "Mine"], "order and custom pages persist");
     }
 }

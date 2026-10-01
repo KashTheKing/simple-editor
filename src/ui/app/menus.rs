@@ -334,8 +334,9 @@ impl App {
 
     fn window_menu(&mut self, ui: &mut egui::Ui) {
         menu::sub(ui, None, "Pages", |ui| {
-            for (&page, &a) in layout::PAGES.iter().zip(&layout_ctl::PAGE_ACTIONS) {
-                if menu::check(ui, self.settings.page == page, a.label(), &menu::shortcut(a)).clicked() {
+            for (i, page) in self.settings.pages.clone().iter().enumerate() {
+                let key = layout_ctl::PAGE_ACTIONS.get(i).map(|&a| menu::shortcut(a)).unwrap_or_default();
+                if menu::check(ui, &self.settings.page == page, &format!("{page} page"), &key).clicked() {
                     layout_ctl::switch_page(self, page);
                 }
             }
@@ -404,14 +405,19 @@ impl App {
             self.settings.save();
         }
         ui.separator();
-        let page = layout::page_name(&self.settings.page).unwrap_or("Edit");
+        let page = self.settings.page.clone();
+        let page = page.as_str();
         let saved = self.settings.page_defaults.contains_key(page);
         let hint =
             if saved { "Back to the default you saved for this page" } else { "Back to this page's built-in layout" };
         if menu::row(ui, None, "Reset Page Layout", "").on_hover_text(hint).clicked() {
             layout_ctl::reset_page(self, page, false);
         }
-        let builtin = ui.add_enabled_ui(saved, |ui| menu::row(ui, None, "Reset to Built-in Layout", "")).inner;
+        let builtin = ui
+            .add_enabled_ui(saved && layout::PAGES.contains(&page), |ui| {
+                menu::row(ui, None, "Reset to Built-in Layout", "")
+            })
+            .inner;
         if builtin.on_disabled_hover_text(layout_ctl::NO_SAVED_DEFAULT).clicked() {
             layout_ctl::reset_page(self, page, true);
         }
