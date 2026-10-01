@@ -14,12 +14,14 @@
 //! consolidate, sort, columns, clear recent), an asset (open in Source, add to timeline, rename a
 //! subclip, Info…, label, subclip, relink, convert, compress, remove), a sequence row (open, add,
 //! rename, delete - drag it onto the timeline to nest it), a folder, a file on disk, the column header
-//! (columns + sort). There is no inline preview: a click shows the item in the Source monitor
-//! (paused), a double-click plays it there, and right-click ▸ Info… is the one window where an
-//! asset's description, tags, label and folder are edited (and a recent file's tags).
+//! (columns + sort). There is no inline preview: a click only selects, a double-click plays the item
+//! in the Source monitor, and right-click ▸ Info… is the one window where an asset's description,
+//! tags, label and folder are edited (and a recent file's tags).
 //!
-//! Selection is multi: a click replaces it, Ctrl+click toggles one item, Shift+click takes the range
-//! over the rows in the order they were drawn, and a drag across empty space rubber-bands.
+//! Selection is multi and ordered: a click replaces it, Ctrl+click toggles one item, Shift+click takes
+//! the range from the anchor, Ctrl+A takes every row, and a drag across empty space rubber-bands.
+//! Folders are rows / cards like files, in the same selection (double-click opens one). The bulk menu
+//! (add / insert / overwrite / new sequence) and a drag of the selection keep its click order.
 //! `LibraryState.selected` / `sel_path` are the anchor inside the set - app.rs writes `selected` after
 //! an import, and `show` notices that write and collapses the set onto it. An item's menu acts on the
 //! whole selection when the item is part of it.
@@ -65,6 +67,8 @@ pub struct LibraryState {
     /// The whole selection (Ctrl / Shift click, rubber band); the anchor above is one of these.
     pub sel_ids: Vec<Id>,
     pub sel_paths: Vec<String>,
+    /// Project folders in the selection (their full "a/b" name).
+    pub sel_folders: Vec<String>,
     /// A sequence picked with a single click (double-click opens it); exclusive with the rows above.
     pub sel_seq: Option<Id>,
     /// `selected` as of the end of the last frame - the only way to tell app.rs's write from ours.
@@ -122,6 +126,8 @@ pub struct LibraryState {
     pub hovered: bool,
     /// Asset rows in the order they were drawn last frame - what Up/Down walk.
     pub visible: Vec<Id>,
+    /// Every selectable row drawn last frame, in draw order - what Ctrl+A selects.
+    all: Vec<Pick>,
     /// "Save filter…" name field open (the buffer) - a Smart Bin is born when it commits.
     pub new_bin: Option<String>,
 }
@@ -131,7 +137,14 @@ pub struct LibraryResponse {
     pub import: bool,
     /// A folder was just linked: bring the Media Browser pane (where linked folders live) forward.
     pub show_browser: bool,
+    /// Assets to put on the timeline, back to back in THIS order (the selection's click order).
     pub add_to_timeline: Vec<Id>,
+    /// Files on disk to import and then place after `add_to_timeline`, in order.
+    pub add_paths: Vec<PathBuf>,
+    /// Where those two land.
+    pub place: PlaceAt,
+    /// Build a new sequence from them (in order) and open it, instead of placing them in this one.
+    pub new_sequence: bool,
     /// Files to import into the library (and select).
     pub open_paths: Vec<PathBuf>,
     /// Assets to remove from the project (the app pushes undo and toasts an Undo).
@@ -176,6 +189,40 @@ pub struct LibraryResponse {
     // ---- ws:media-library ----
     /// Offline assets to relink - the app opens a folder picker, then `media_sync::start_relink`.
     pub relink: Vec<Id>,
+}
+
+/// The bulk menu's placement verbs.
+#[derive(Default, Clone, Copy, Debug, PartialEq)]
+pub enum PlaceAt {
+    #[default]
+    Playhead,
+    /// After the last clip of the open sequence.
+    End,
+    /// Ripple the tracks open at the playhead.
+    Insert,
+    Overwrite,
+}
+
+/// The timeline verbs every bulk menu starts with; true when one was picked (it set `resp.place` /
+/// `new_sequence`) - the caller then fills in the targets.
+fn place_verbs(ui: &mut egui::Ui, resp: &mut LibraryResponse) -> bool {
+    let verbs = [
+        (Some(Glyph::Append), "Add to timeline at playhead", "Enter", PlaceAt::Playhead),
+        (None, "Append at sequence end", "", PlaceAt::End),
+        (None, "Insert at playhead", "", PlaceAt::Insert),
+        (None, "Overwrite at playhead", "", PlaceAt::Overwrite),
+    ];
+    for (g, label, key, at) in verbs {
+        if menu::row(ui, g, label, key).clicked() {
+            resp.place = at;
+            return true;
+        }
+    }
+    if menu::row(ui, Some(Glyph::Sequence), "New sequence from selection", "").clicked() {
+        resp.new_sequence = true;
+        return true;
+    }
+    false
 }
 
 // ---- ws:media-library ----
@@ -223,8 +270,7 @@ pub fn nav(state: &mut LibraryState, key: NavKey) -> LibraryNav {
                 (_, Some(i)) => i.saturating_sub(1),
             };
             let pick = Pick::Asset(state.visible[next]);
-            state.sel_ids.clear();
-            state.sel_paths.clear();
+            state.clear_set();
             state.add_sel(&pick);
             state.set_anchor(&pick);
         }
@@ -238,7 +284,8 @@ pub fn nav(state: &mut LibraryState, key: NavKey) -> LibraryNav {
 }
 
 /// Consume this frame's navigation keys (the caller has already checked the pane is hovered and no
-/// text field wants them) and fold them through `nav`. Runs from a FRAME_HOOK, before `Hotkeys::poll`
+/// text field wants them) and fold them through `nav`. Ctrl+A selects every row (before the timeline's
+/// Select All sees it). Runs from a FRAME_HOOK, before `Hotkeys::poll`
 /// would hand ArrowUp/Down/Enter/Delete to the timeline. Space is left alone: it stays Play/Pause (the
 /// Source monitor's when it holds the clicked item, else the timeline's), never "add to timeline".
 pub fn keyboard(state: &mut LibraryState, ctx: &egui::Context) -> LibraryNav {
@@ -254,6 +301,9 @@ pub fn keyboard(state: &mut LibraryState, ctx: &egui::Context) -> LibraryNav {
         .map(|(_, n)| n)
         .collect()
     });
+    if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::A)) {
+        select_all(state);
+    }
     let mut out = LibraryNav::default();
     for k in keys {
         let r = nav(state, k);
@@ -261,6 +311,28 @@ pub fn keyboard(state: &mut LibraryState, ctx: &egui::Context) -> LibraryNav {
         out.remove.extend(r.remove);
     }
     out
+}
+
+/// What dragging this item carries: the whole selection, in its order, when the item is part of a
+/// multi-selection - else just the item.
+fn drag_payload(st: &LibraryState, pick: Pick) -> DragPayload {
+    match pick {
+        Pick::Asset(id) if st.sel_ids.len() > 1 && st.sel_ids.contains(&id) => DragPayload::Assets(st.sel_ids.clone()),
+        Pick::Asset(id) => DragPayload::Asset(id),
+        Pick::Path(p) if st.sel_paths.len() > 1 && st.sel_paths.contains(&p) => {
+            DragPayload::Paths(st.sel_paths.iter().filter(|p| !std::path::Path::new(p).is_dir()).cloned().collect())
+        }
+
+        Pick::Path(p) | Pick::Folder(p) => DragPayload::Path(p),
+    }
+}
+
+/// Ctrl+A: every row drawn last frame, in display order (the anchor stays where it was).
+fn select_all(state: &mut LibraryState) {
+    state.clear_set();
+    for p in state.all.clone() {
+        state.add_sel(&p);
+    }
 }
 
 /// The current filter as a Smart Bin query: `[kind:N] [label:N] [unused] [q:<search text>]` - the
@@ -341,11 +413,12 @@ enum LabelPick {
     Edit,
 }
 
-/// One selectable thing in the browser: a project asset, or a file on disk.
+/// One selectable thing in the browser: a project asset, a file or folder on disk, or a project folder.
 #[derive(Clone, PartialEq, Debug)]
 enum Pick {
     Asset(Id),
     Path(String),
+    Folder(String),
 }
 
 /// Project mutations collected during the frame, applied after all widgets (one undo per gesture).
@@ -409,8 +482,7 @@ fn external_select(state: &mut LibraryState) {
     if state.selected == state.seen_selected {
         return;
     }
-    state.sel_ids.clear();
-    state.sel_paths.clear();
+    state.clear_set();
     state.sel_path = None;
     if let Some(id) = state.selected {
         state.sel_ids.push(id);
@@ -418,6 +490,13 @@ fn external_select(state: &mut LibraryState) {
 }
 
 impl LibraryState {
+    /// Empty the set, keeping the anchor.
+    fn clear_set(&mut self) {
+        self.sel_ids.clear();
+        self.sel_paths.clear();
+        self.sel_folders.clear();
+    }
+
     /// The Media Browser pane's state: the disk view.
     pub fn media_browser() -> Self {
         Self { tab: 1, ..Default::default() }
@@ -427,6 +506,7 @@ impl LibraryState {
         match p {
             Pick::Asset(id) => self.sel_ids.contains(id),
             Pick::Path(s) => self.sel_paths.iter().any(|x| x == s),
+            Pick::Folder(s) => self.sel_folders.iter().any(|x| x == s),
         }
     }
 
@@ -434,7 +514,7 @@ impl LibraryState {
     fn anchor(&self) -> Option<Pick> {
         match (self.selected, &self.sel_path) {
             (Some(id), _) => Some(Pick::Asset(id)),
-            (None, Some(p)) => Some(Pick::Path(p.clone())),
+            (None, Some(p)) => Some(p.strip_prefix('\0').map_or(Pick::Path(p.clone()), |f| Pick::Folder(f.into()))),
             _ => None,
         }
     }
@@ -443,6 +523,8 @@ impl LibraryState {
         match p {
             Pick::Asset(id) => (self.selected, self.sel_path) = (Some(*id), None),
             Pick::Path(s) => (self.selected, self.sel_path) = (None, Some(s.clone())),
+            // ponytail: a folder anchor rides in sel_path behind a NUL (no path contains one)
+            Pick::Folder(s) => (self.selected, self.sel_path) = (None, Some(format!("\0{s}"))),
         }
         self.seen_selected = self.selected;
     }
@@ -454,6 +536,7 @@ impl LibraryState {
         match p {
             Pick::Asset(id) => self.sel_ids.push(*id),
             Pick::Path(s) => self.sel_paths.push(s.clone()),
+            Pick::Folder(s) => self.sel_folders.push(s.clone()),
         }
     }
 
@@ -461,12 +544,12 @@ impl LibraryState {
         match p {
             Pick::Asset(id) => self.sel_ids.retain(|x| x != id),
             Pick::Path(s) => self.sel_paths.retain(|x| x != s),
+            Pick::Folder(s) => self.sel_folders.retain(|x| x != s),
         }
     }
 
     fn clear_sel(&mut self) {
-        self.sel_ids.clear();
-        self.sel_paths.clear();
+        self.clear_set();
         self.selected = None;
         self.sel_path = None;
         self.seen_selected = None;
@@ -477,13 +560,15 @@ impl LibraryState {
 /// One click on a row/tile, resolved against the rows as they were drawn this frame.
 /// Plain replaces the selection, Ctrl toggles one item, Shift takes the range from the anchor (which
 /// stays put, so a second Shift+click re-ranges from the same place, like every file explorer).
+/// The set is ordered: click order, and a Shift range is the anchor then the rest in display order -
+/// "Add to timeline" places in exactly this order.
 fn apply_click(state: &mut LibraryState, rows: &[(Pick, egui::Rect)], pick: &Pick, ctrl: bool, shift: bool) {
     state.sel_seq = None;
     let at = |p: &Pick| rows.iter().position(|(q, _)| q == p);
     if shift {
-        if let (Some(i), Some(j)) = (state.anchor().as_ref().and_then(&at), at(pick)) {
-            state.sel_ids.clear();
-            state.sel_paths.clear();
+        if let (Some(a), Some(i), Some(j)) = (state.anchor(), state.anchor().as_ref().and_then(&at), at(pick)) {
+            state.clear_set();
+            state.add_sel(&a);
             for (q, _) in &rows[i.min(j)..=i.max(j)] {
                 state.add_sel(q);
             }
@@ -497,8 +582,7 @@ fn apply_click(state: &mut LibraryState, rows: &[(Pick, egui::Rect)], pick: &Pic
             state.add_sel(pick);
         }
     } else {
-        state.sel_ids.clear();
-        state.sel_paths.clear();
+        state.clear_set();
         state.add_sel(pick);
     }
     state.set_anchor(pick);
@@ -526,8 +610,7 @@ fn band_select(ui: &egui::Ui, state: &mut LibraryState, rows: &[(Pick, egui::Rec
         egui::Stroke::new(1.0, palette.selection),
         egui::StrokeKind::Inside,
     );
-    state.sel_ids.clear();
-    state.sel_paths.clear();
+    state.clear_set();
     for (p, r) in rows {
         if band.intersects(*r) {
             state.add_sel(p);
@@ -752,6 +835,11 @@ fn known_folders() -> &'static [(&'static str, String)] {
     })
 }
 
+/// A folder's own name (its last path segment).
+fn dir_name(p: &str) -> &str {
+    p.rsplit(['\\', '/']).find(|s| !s.is_empty()).unwrap_or(p)
+}
+
 fn split_path(p: &str) -> (&str, &str) {
     match p.rfind(['\\', '/']) {
         Some(i) => (&p[i + 1..], &p[..i]),
@@ -924,7 +1012,7 @@ fn lbl_name(labels: &Labels, idx: u8) -> &str {
 fn row(
     ui: &mut egui::Ui,
     id: egui::Id,
-    payload: DragPayload,
+    payload: impl std::any::Any + Send + Sync,
     selected: bool,
     button: Option<&str>,
     contents: impl FnOnce(&mut egui::Ui),
@@ -993,7 +1081,7 @@ fn row(
 fn tile(
     ui: &mut egui::Ui,
     id: egui::Id,
-    payload: DragPayload,
+    payload: impl std::any::Any + Send + Sync,
     selected: bool,
     tag: &str,
     name: &str,
@@ -1171,6 +1259,7 @@ fn browser(
         // what Up/Down walk next frame: the asset rows in draw order
         state.visible =
             rows.iter().filter_map(|(p, _)| if let Pick::Asset(id) = p { Some(*id) } else { None }).collect();
+        state.all = rows.iter().map(|(p, _)| p.clone()).collect();
         if imported && project.assets.is_empty() {
             empty_state(ui, palette, resp);
         }
@@ -1632,6 +1721,7 @@ fn info_window(
     let title = match &pick {
         Pick::Asset(id) => project.asset(*id).map(display_name),
         Pick::Path(p) => Some(split_path(p).0.to_string()),
+        Pick::Folder(_) => None,
     };
     let Some(title) = title else {
         state.info = None; // the asset is gone (removed, undone)
@@ -1650,6 +1740,7 @@ fn info_window(
             match &pick {
                 Pick::Asset(id) => asset_info(ui, state, project, *id, labels, palette, resp, ops, op_start),
                 Pick::Path(p) => path_info(ui, state, settings, resp, p),
+                Pick::Folder(_) => {}
             }
         });
     if !open {
@@ -1973,8 +2064,11 @@ impl Tree<'_, '_> {
     /// asset was part of it, so a marquee of clips moves in one gesture.
     fn drop_asset(&mut self, r: &egui::Response, folder: &str) {
         let Some(p) = r.dnd_release_payload::<DragPayload>() else { return };
-        let DragPayload::Asset(id) = *p else { return };
-        let ids: Vec<Id> = if self.state.sel_ids.contains(&id) { self.state.sel_ids.clone() } else { vec![id] };
+        let ids: Vec<Id> = match &*p {
+            DragPayload::Asset(id) => vec![*id],
+            DragPayload::Assets(ids) => ids.clone(),
+            _ => return,
+        };
         for id in ids {
             self.ops.push(LibOp::AssetFolder(id, folder.to_string()));
         }
@@ -1982,15 +2076,16 @@ impl Tree<'_, '_> {
     }
 
     /// Register a drawn row and route its click (the selection is resolved once every row is known).
+    /// A click only selects; a double-click opens a file in the Source monitor (`path` "" = a folder,
+    /// whose caller opens it instead).
     fn hit(&mut self, ui: &egui::Ui, r: &egui::Response, pick: Pick, path: &str) {
         self.rows.push((pick.clone(), r.rect));
+        if r.double_clicked() && !path.is_empty() {
+            let id = if let Pick::Asset(id) = pick { Some(id) } else { None };
+            self.resp.source = Some((PathBuf::from(path), id, true));
+        }
         if r.clicked() {
             let (ctrl, shift) = ui.input(|i| (i.modifiers.command, i.modifiers.shift));
-            if !shift {
-                // the Source monitor is the one preview: a click shows the item paused, a double-click plays
-                let id = if let Pick::Asset(id) = pick { Some(id) } else { None };
-                self.resp.source = Some((PathBuf::from(path), id, r.double_clicked()));
-            }
             *self.click = Some((pick, ctrl, shift));
         } else if r.secondary_clicked() && !self.state.has(&pick) {
             // right-clicking outside the selection selects that one item first, like every explorer
@@ -2065,52 +2160,26 @@ impl Tree<'_, '_> {
     }
 
     /// The subfolders of `path` (folders first, like an explorer), then the assets that live in it.
+    /// In the gallery the subfolders are cards; an open one's contents follow the grid under its name.
     fn folder(&mut self, ui: &mut egui::Ui, path: &str, depth: usize, names: &[String], order: &[usize]) {
-        for child in names.iter().filter(|n| parent_of(n) == path) {
-            let key = format!("f:{child}");
-            let last = child.rsplit('/').next().unwrap_or(child).to_string();
-            let kids = names.iter().any(|n| parent_of(n) == child.as_str())
-                || order.iter().any(|&i| self.project.assets[i].folder == *child);
-            let mut open = false;
-            let mut renamed: Option<String> = None;
-            ui.horizontal(|ui| {
-                ui.add_space(indent(depth));
-                open = self.arrow(ui, &key, true, kids);
-                self.folder_icon(ui, Glyph::Folder);
-                if self.state.rename_folder.as_ref().is_some_and(|(o, _)| o == child) {
-                    let (_, buf) = self.state.rename_folder.as_mut().unwrap();
-                    renamed = inline_edit(ui, buf);
-                    return;
+        let subs: Vec<String> = names.iter().filter(|n| parent_of(n) == path).cloned().collect();
+        if self.state.view == 1 {
+            let w = TILE * self.state.zoom;
+            let mut open = Vec::new();
+            tile_grid(ui, indent(depth) + ARROW, &subs, w, |ui, child| {
+                if self.folder_head(ui, child, depth, names, order) {
+                    open.push(child.clone());
                 }
-                let r = ui.selectable_label(self.state.folder.as_deref() == Some(child.as_str()), &last);
-                if r.clicked() {
-                    self.state.folder = Some(child.clone());
-                }
-                menu::context(&r, |ui| {
-                    if menu::row(ui, Some(Glyph::Folder), "New folder", "").clicked() {
-                        self.state.new_folder = Some((child.clone(), String::new()));
-                    }
-                    if menu::row(ui, None, "Rename", "").clicked() {
-                        self.state.rename_folder = Some((child.clone(), last.clone()));
-                    }
-                    if menu::row(ui, Some(Glyph::Cross), "Delete", "").clicked() {
-                        self.ops.push(LibOp::FolderDelete(child.clone()));
-                        *self.op_start = true;
-                    }
-                });
-                self.drop_asset(&r, child);
             });
-            if let Some(new_last) = renamed {
-                if !new_last.is_empty() && new_last != last {
-                    let parent = parent_of(child);
-                    let new = if parent.is_empty() { new_last } else { format!("{parent}/{new_last}") };
-                    self.ops.push(LibOp::FolderRename(child.clone(), new));
-                    *self.op_start = true;
-                }
-                self.state.rename_folder = None;
+            for child in open {
+                self.caption(ui, depth, child.rsplit('/').next().unwrap_or(&child));
+                self.folder(ui, &child, depth + 1, names, order);
             }
-            if open {
-                self.folder(ui, child, depth + 1, names, order);
+        } else {
+            for child in &subs {
+                if self.folder_head(ui, child, depth, names, order) {
+                    self.folder(ui, child, depth + 1, names, order);
+                }
             }
         }
         // the "New folder" field appears under the folder it was asked for
@@ -2136,6 +2205,106 @@ impl Tree<'_, '_> {
         }
         let here: Vec<usize> = order.iter().copied().filter(|&i| self.project.assets[i].folder == *path).collect();
         self.assets(ui, depth, &here);
+    }
+
+    /// One project folder's row/card (or its rename field), with its menu and drop target; true = open.
+    fn folder_head(
+        &mut self,
+        ui: &mut egui::Ui,
+        child: &String,
+        depth: usize,
+        names: &[String],
+        order: &[usize],
+    ) -> bool {
+        let key = format!("f:{child}");
+        let last = child.rsplit('/').next().unwrap_or(child).to_string();
+        let kids = names.iter().any(|n| parent_of(n) == child.as_str())
+            || order.iter().any(|&i| self.project.assets[i].folder == *child);
+        if self.state.rename_folder.as_ref().is_some_and(|(o, _)| o == child) {
+            let mut renamed = None;
+            ui.horizontal(|ui| {
+                ui.add_space(indent(depth) + ARROW);
+                self.folder_icon(ui, Glyph::Folder);
+                let (_, buf) = self.state.rename_folder.as_mut().unwrap();
+                renamed = inline_edit(ui, buf);
+            });
+            if let Some(new_last) = renamed {
+                if !new_last.is_empty() && new_last != last {
+                    let parent = parent_of(child);
+                    let new = if parent.is_empty() { new_last } else { format!("{parent}/{new_last}") };
+                    self.ops.push(LibOp::FolderRename(child.clone(), new));
+                    *self.op_start = true;
+                }
+                self.state.rename_folder = None;
+            }
+            return kids && self.is_open(&key, true);
+        }
+        let r = self.folder_item(ui, Pick::Folder(child.clone()), &key, &last, depth, true, kids);
+        if r.clicked() {
+            self.state.folder = Some(child.clone()); // the subtree a search is limited to
+        }
+        menu::context(&r, |ui| {
+            if menu::row(ui, Some(Glyph::Folder), "New folder", "").clicked() {
+                self.state.new_folder = Some((child.clone(), String::new()));
+            }
+            if menu::row(ui, None, "Rename", "").clicked() {
+                self.state.rename_folder = Some((child.clone(), last.clone()));
+            }
+            if menu::row(ui, Some(Glyph::Cross), "Delete", "").clicked() {
+                self.ops.push(LibOp::FolderDelete(child.clone()));
+                *self.op_start = true;
+            }
+        });
+        self.drop_asset(&r, child);
+        kids && self.is_open(&key, true)
+    }
+
+    /// A folder as a full-width row (with its disclosure arrow) or a gallery card, the same size and hit
+    /// area as a file, in the same selection: click selects, double-click opens / closes it.
+    #[allow(clippy::too_many_arguments)]
+    fn folder_item(
+        &mut self,
+        ui: &mut egui::Ui,
+        pick: Pick,
+        key: &str,
+        name: &str,
+        depth: usize,
+        dflt: bool,
+        kids: bool,
+    ) -> egui::Response {
+        let sel = self.state.has(&pick);
+        let (id, palette, zoom) = (egui::Id::new(("folder", key)), self.palette, self.state.zoom);
+        let r = if self.state.view == 1 {
+            let art = Art::Icon(Glyph::Folder);
+            tile(ui, id, (), sel, "Folder", name, palette.text, palette, art, TILE * zoom, None).0
+        } else {
+            let h = ROW_H * zoom;
+            ui.horizontal(|ui| {
+                ui.add_space(indent(depth));
+                self.arrow(ui, key, dflt, kids);
+                row(ui, id, (), sel, None, |ui| {
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(h * 16.0 / 9.0, h), egui::Sense::hover());
+                    paint_art(ui, rect, Art::Icon(Glyph::Folder), palette);
+                    ui.label(if sel { RichText::new(name).strong() } else { RichText::new(name) });
+                })
+                .0
+            })
+            .inner
+        };
+        self.hit(ui, &r, pick, "");
+        if r.double_clicked() {
+            self.flip(key);
+        }
+        r
+    }
+
+    /// The name over an open folder's contents in the gallery (its card is up in the grid).
+    fn caption(&self, ui: &mut egui::Ui, depth: usize, name: &str) {
+        ui.horizontal(|ui| {
+            ui.add_space(indent(depth));
+            self.folder_icon(ui, Glyph::Folder);
+            ui.weak(name);
+        });
     }
 
     // ---- ws:library-surface ----
@@ -2306,7 +2475,8 @@ impl Tree<'_, '_> {
         let pstatus = crate::media::proxy::status(a, self.settings.use_proxies, self.settings.proxy_height);
         let (palette, thumbs, h) = (self.palette, &mut *self.thumbs, ROW_H * self.state.zoom);
         let (columns, labels) = (&self.settings.library_columns, self.labels);
-        let (r, add) = row(ui, egui::Id::new(("asset", a.id)), DragPayload::Asset(a.id), selected, None, |ui| {
+        let payload = drag_payload(self.state, Pick::Asset(a.id));
+        let (r, add) = row(ui, egui::Id::new(("asset", a.id)), payload, selected, None, |ui| {
             ui.add_space(indent(depth) + ARROW);
             // label tint: a colour bar on the left and the name in the same colour
             if let Some(c) = tint {
@@ -2395,7 +2565,7 @@ impl Tree<'_, '_> {
             Art::Icon(fallback_glyph(ext_class(&a.path)))
         };
         let id = egui::Id::new(("tile", a.id));
-        let payload = DragPayload::Asset(a.id);
+        let payload = drag_payload(self.state, Pick::Asset(a.id));
         let button = None;
         let mut tag = match crate::media::proxy::status(a, self.settings.use_proxies, self.settings.proxy_height) {
             crate::media::proxy::ProxyStatus::Building(f) => {
@@ -2437,12 +2607,17 @@ impl Tree<'_, '_> {
         let (labels, palette) = (self.labels, self.palette);
         let ids = self.menu_targets(a.id);
         let offline = ids.iter().any(|id| self.state.offline.contains(id));
+        let first = self.project.asset(ids[0]).unwrap_or(a);
+        let folders = folder_tree_names(self.project);
         menu::context(&r, |ui| {
+            if ids.len() > 1 {
+                ui.weak(format!("{} selected", ids.len()));
+            }
             // ---- ws:library-surface ----
             if menu::row(ui, Some(Glyph::PlayRect), "Open in Source", "").clicked() {
-                self.resp.source = Some((PathBuf::from(&a.path), Some(a.id), false));
+                self.resp.source = Some((PathBuf::from(&first.path), Some(first.id), false));
             }
-            if menu::row(ui, Some(Glyph::Append), "Add to timeline at playhead", "Enter").clicked() {
+            if place_verbs(ui, self.resp) {
                 self.resp.add_to_timeline.extend(ids.iter().copied());
             }
             ui.separator();
@@ -2466,6 +2641,16 @@ impl Tree<'_, '_> {
                 Some(LabelPick::Edit) => self.resp.edit_labels = true,
                 None => {}
             }
+            menu::sub(ui, Some(Glyph::Folder), "Move to folder", |ui| {
+                for f in std::iter::once("").chain(folders.iter().map(String::as_str)) {
+                    if menu::row(ui, None, if f.is_empty() { "(top level)" } else { f }, "").clicked() {
+                        for id in &ids {
+                            self.ops.push(LibOp::AssetFolder(*id, f.to_string()));
+                        }
+                        *self.op_start = true;
+                    }
+                }
+            });
             ui.separator();
             // ---- ws:media-library ----
             // both act on the library selection, which this right-click has just made include `a`
@@ -2473,11 +2658,21 @@ impl Tree<'_, '_> {
             if offline {
                 menu::action_item(ui, Action::RelinkMedia);
             }
-            if menu::row(ui, Some(Glyph::Folder), "Reveal folder", "").clicked() {
-                let _ = std::process::Command::new("explorer").arg(format!("/select,{}", a.path)).spawn();
+            if menu::row(ui, Some(Glyph::Folder), "Reveal in Explorer", "").clicked() {
+                let _ = std::process::Command::new("explorer").arg(format!("/select,{}", first.path)).spawn();
             }
-            if a.kind == ClipKind::Video && menu::row(ui, Some(Glyph::Proxy), "Regenerate proxy", "").clicked() {
-                self.resp.regen_proxy.push(a.path.clone());
+            let videos: Vec<String> = ids
+                .iter()
+                .filter_map(|id| self.project.asset(*id))
+                .filter(|a| a.kind == ClipKind::Video)
+                .map(|a| a.path.clone())
+                .collect();
+            if !videos.is_empty() {
+                menu::sub(ui, Some(Glyph::Proxy), "Proxies", |ui| {
+                    if menu::row(ui, None, "Regenerate proxy", "").clicked() {
+                        self.resp.regen_proxy.extend(videos.iter().cloned());
+                    }
+                });
             }
             menu::sub(ui, None, "Convert To", |ui| {
                 for t in crate::engine::convert::TARGETS {
@@ -2507,14 +2702,11 @@ impl Tree<'_, '_> {
     /// Root 2 - "Browse": Recent, and the folders the user linked, straight from disk.
     fn global(&mut self, ui: &mut egui::Ui) {
         // the user's standard folders: always there, browsable, never unlinked (not in settings)
-        for (name, folder) in known_folders() {
-            self.dir(ui, folder, 0, false, Some(name));
-        }
+        let known: Vec<_> = known_folders().iter().map(|(n, f)| (f.clone(), false, Some(n.to_string()))).collect();
+        self.dirs(ui, &known, 0);
         self.recent(ui, 0);
-        let linked: &[String] = &self.project.linked_folders;
-        for folder in linked {
-            self.dir(ui, folder, 0, true, None);
-        }
+        let linked: Vec<_> = self.project.linked_folders.iter().map(|f| (f.clone(), true, None)).collect();
+        self.dirs(ui, &linked, 0);
         if linked.is_empty() {
             ui.horizontal(|ui| {
                 ui.add_space(indent(0) + ARROW);
@@ -2525,18 +2717,21 @@ impl Tree<'_, '_> {
 
     /// Recent files, from settings.json - everything opened recently, across every project.
     fn recent(&mut self, ui: &mut egui::Ui, depth: usize) {
-        let mut open = false;
+        let h = ROW_H * self.state.zoom;
+        let palette = self.palette;
         ui.horizontal(|ui| {
             ui.add_space(indent(depth));
-            open = self.arrow(ui, "recent", false, true);
-            self.folder_icon(ui, Glyph::Clock);
-            let r = ui.selectable_label(false, "Recent").on_hover_text("Files opened recently, across every project");
-            if r.clicked() {
+            self.arrow(ui, "recent", false, true);
+            let (r, _) = row(ui, egui::Id::new("recent_row"), (), false, None, |ui| {
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(h * 16.0 / 9.0, h), egui::Sense::hover());
+                paint_art(ui, rect, Art::Icon(Glyph::Clock), palette);
+                ui.label("Recent");
+            });
+            if r.on_hover_text("Files opened recently, across every project").clicked() {
                 self.flip("recent");
-                open = !open;
             }
         });
-        if !open {
+        if !self.is_open("recent", false) {
             return;
         }
         let (q, kind, label) = (self.state.search.clone(), self.state.kind_filter, self.state.label_filter);
@@ -2557,57 +2752,73 @@ impl Tree<'_, '_> {
         self.files(ui, depth + 1, &paths, true);
     }
 
-    /// One folder on disk. `root` marks a linked folder - Refresh / Unlink live in its menu. `label`
-    /// overrides the folder's own name (a built-in root redirected elsewhere still reads "Videos").
-    fn dir(&mut self, ui: &mut egui::Ui, path: &str, depth: usize, root: bool, label: Option<&str>) {
-        let key = dir_key(path);
-        let own = path.rsplit(['\\', '/']).find(|s| !s.is_empty()).unwrap_or(path);
-        let name = label.unwrap_or(own).to_string();
-        let mut open = false;
-        ui.horizontal(|ui| {
-            ui.add_space(indent(depth));
-            open = self.arrow(ui, &key, false, true);
-            self.folder_icon(ui, Glyph::Folder);
-            let r = ui.selectable_label(false, &name);
-            if r.clicked() {
-                self.flip(&key);
-                open = !open;
-            }
-            menu::context(&r, |ui| {
-                if menu::row(ui, None, "Refresh", "").clicked() {
-                    self.state.dirs.retain(|(p, _)| !p.starts_with(path));
-                }
-                if menu::row(ui, Some(Glyph::Folder), "Reveal folder", "").clicked() {
-                    let _ = std::process::Command::new("explorer").arg(path).spawn();
-                }
-                if root && menu::row(ui, Some(Glyph::Cross), "Unlink folder", "").clicked() {
-                    self.ops.push(LibOp::UnlinkFolder(path.to_string()));
-                    *self.op_start = true;
+    /// Folders on disk: (path, linked root, display name). Rows in the list; cards in the gallery, with
+    /// each open one's contents following the grid under its name.
+    fn dirs(&mut self, ui: &mut egui::Ui, list: &[(String, bool, Option<String>)], depth: usize) {
+        if self.state.view == 1 {
+            let w = TILE * self.state.zoom;
+            let mut open = Vec::new();
+            tile_grid(ui, indent(depth) + ARROW, list, w, |ui, (p, root, label)| {
+                if self.dir_head(ui, p, depth, *root, label.as_deref()) {
+                    open.push((p.clone(), label.clone()));
                 }
             });
-            r.on_hover_text(path);
-        });
-        if !open {
-            return;
+            for (p, label) in open {
+                self.caption(ui, depth, label.as_deref().unwrap_or(dir_name(&p)));
+                self.dir_body(ui, &p, depth + 1);
+            }
+        } else {
+            for (p, root, label) in list {
+                if self.dir_head(ui, p, depth, *root, label.as_deref()) {
+                    self.dir_body(ui, p, depth + 1);
+                }
+            }
         }
+    }
+
+    /// One folder on disk's row/card and menu; true = open. `root` marks a linked folder - Refresh /
+    /// Unlink live in its menu. `label` overrides the folder's own name (a built-in root redirected
+    /// elsewhere still reads "Videos").
+    fn dir_head(&mut self, ui: &mut egui::Ui, path: &str, depth: usize, root: bool, label: Option<&str>) -> bool {
+        let key = dir_key(path);
+        let name = label.unwrap_or(dir_name(path)).to_string();
+        let r = self.folder_item(ui, Pick::Path(path.to_string()), &key, &name, depth, false, true);
+        menu::context(&r, |ui| {
+            if menu::row(ui, None, "Refresh", "").clicked() {
+                self.state.dirs.retain(|(p, _)| !p.starts_with(path));
+            }
+            if menu::row(ui, Some(Glyph::Folder), "Reveal in Explorer", "").clicked() {
+                let _ = std::process::Command::new("explorer").arg(path).spawn();
+            }
+            if root && menu::row(ui, Some(Glyph::Cross), "Unlink folder", "").clicked() {
+                self.ops.push(LibOp::UnlinkFolder(path.to_string()));
+                *self.op_start = true;
+            }
+        });
+        r.on_hover_text(path);
+        self.is_open(&key, false)
+    }
+
+    /// An open folder on disk: its subfolders, then its files.
+    fn dir_body(&mut self, ui: &mut egui::Ui, path: &str, depth: usize) {
         let Some(entries) = self.listing(path) else {
             ui.horizontal(|ui| {
-                ui.add_space(indent(depth + 1) + ARROW);
+                ui.add_space(indent(depth) + ARROW);
                 ui.weak("(folder unavailable)");
             });
             return;
         };
         if entries.is_empty() {
             ui.horizontal(|ui| {
-                ui.add_space(indent(depth + 1) + ARROW);
+                ui.add_space(indent(depth) + ARROW);
                 ui.weak("(empty)");
             });
         }
-        for (p, _) in entries.iter().filter(|(_, d)| *d) {
-            self.dir(ui, p, depth + 1, false, None);
-        }
+        let subs: Vec<(String, bool, Option<String>)> =
+            entries.iter().filter(|(_, d)| *d).map(|(p, _)| (p.clone(), false, None)).collect();
+        self.dirs(ui, &subs, depth);
         let files: Vec<String> = entries.into_iter().filter(|(_, d)| !*d).map(|(p, _)| p).collect();
-        self.files(ui, depth + 1, &files, false);
+        self.files(ui, depth, &files, false);
     }
 
     /// One level of a folder, read the first time the node is expanded and cached until Refresh.
@@ -2651,7 +2862,8 @@ impl Tree<'_, '_> {
         let (name, dir) = (name.to_string(), dir.to_string());
         let (palette, thumbs, h) = (self.palette, &mut *self.thumbs, ROW_H * self.state.zoom);
         let id = egui::Id::new(("file", depth, recent, path));
-        let (r, _) = row(ui, id, DragPayload::Path(path.to_string()), selected, None, |ui| {
+        let payload = drag_payload(self.state, Pick::Path(path.to_string()));
+        let (r, _) = row(ui, id, payload, selected, None, |ui| {
             ui.add_space(indent(depth) + ARROW);
             if let Some(c) = tint {
                 let (bar, _) = ui.allocate_exact_size(egui::vec2(3.0, h), egui::Sense::hover());
@@ -2686,7 +2898,7 @@ impl Tree<'_, '_> {
         };
         let name = split_path(path).0.to_string();
         let id = egui::Id::new(("file_tile", recent, path));
-        let payload = DragPayload::Path(path.to_string());
+        let payload = drag_payload(self.state, Pick::Path(path.to_string()));
         let tint = tint.unwrap_or(self.palette.text);
         let (r, _) =
             tile(ui, id, payload, selected, kind_tag_for_class(class), &name, tint, self.palette, art, w, None);
@@ -2694,15 +2906,13 @@ impl Tree<'_, '_> {
         r.on_hover_text(path);
     }
 
-    /// Select + show in Source on a single click, import (and play) on a double click, plus the file
-    /// menu (pins, labels, tags via Info… and the recent list live here, in "Browse").
+    /// Select on a single click, play in Source on a double click, plus the file menu (the bulk verbs
+    /// import first; pins, labels, tags via Info… and the recent list live here, in "Browse").
     fn file_click(&mut self, ui: &egui::Ui, r: &egui::Response, path: &str, recent: bool) {
         self.hit(ui, r, Pick::Path(path.to_string()), path);
-        if r.double_clicked() {
-            self.resp.open_paths.push(PathBuf::from(path));
-        }
+        // selected folders ride in sel_paths too - the file verbs skip them
         let paths: Vec<String> = if self.state.sel_paths.iter().any(|p| p == path) {
-            self.state.sel_paths.clone()
+            self.state.sel_paths.iter().filter(|p| !std::path::Path::new(p).is_dir()).cloned().collect()
         } else {
             vec![path.to_string()]
         };
@@ -2710,15 +2920,23 @@ impl Tree<'_, '_> {
         let label =
             self.settings.recent_assets.iter().find(|r| r.path.eq_ignore_ascii_case(path)).map_or(0, |r| r.label);
         let (labels, palette) = (self.labels, self.palette);
+        let first = paths.first().map_or(path, String::as_str);
         menu::context(&r, |ui| {
-            if menu::row(ui, Some(Glyph::PlayRect), "Open in Source", "").clicked() {
-                self.resp.source = Some((PathBuf::from(path), None, false));
+            if paths.len() > 1 {
+                ui.weak(format!("{} selected", paths.len()));
             }
+            if menu::row(ui, Some(Glyph::PlayRect), "Open in Source", "").clicked() {
+                self.resp.source = Some((PathBuf::from(first), None, false));
+            }
+            if place_verbs(ui, self.resp) {
+                self.resp.add_paths.extend(paths.iter().map(PathBuf::from));
+            }
+            ui.separator();
             if menu::row(ui, Some(Glyph::ImportArrow), "Add to the project", "").clicked() {
                 self.resp.open_paths.extend(paths.iter().map(PathBuf::from));
             }
-            if menu::row(ui, Some(Glyph::Folder), "Reveal folder", "").clicked() {
-                let _ = std::process::Command::new("explorer").arg(format!("/select,{path}")).spawn();
+            if menu::row(ui, Some(Glyph::Folder), "Reveal in Explorer", "").clicked() {
+                let _ = std::process::Command::new("explorer").arg(format!("/select,{first}")).spawn();
             }
             if !recent {
                 return;
@@ -3123,9 +3341,11 @@ mod tests {
         assert_eq!(s.sel_ids, vec![1, 3], "ctrl adds");
         apply_click(&mut s, &rows, &Pick::Asset(3), true, false);
         assert_eq!(s.sel_ids, vec![1], "ctrl again removes");
-        // the anchor is item 3 now, so the range runs 2..=3
+        // the anchor is item 3 now, so the range runs 2..=3 - the anchor first, then display order
         apply_click(&mut s, &rows, &Pick::Asset(2), false, true);
-        assert_eq!(s.sel_ids, vec![2, 3]);
+        assert_eq!(s.sel_ids, vec![3, 2]);
+        apply_click(&mut s, &rows, &Pick::Asset(1), false, true);
+        assert_eq!(s.sel_ids, vec![3, 1, 2], "anchor, then the range top to bottom");
         assert_eq!(s.selected, Some(3), "shift leaves the anchor alone");
         apply_click(&mut s, &rows, &Pick::Asset(4), false, false);
         assert_eq!(s.sel_ids, vec![4], "a plain click replaces the whole set");
@@ -3468,11 +3688,11 @@ mod tests {
         let (shapes, _) = run(&mut state, &mut project, None);
         assert_eq!(listed(&state, &sub).map(|v| v.len()), Some(1));
 
-        // a single click on the file selects it and reports it for the preview
+        // a single click on the file only selects it - Source is a double-click
         let at = text_rect(&shapes, "a.mp4").expect("the file row was drawn").center();
         let (_, previewed) = run(&mut state, &mut project, Some(at));
         let file = std::path::Path::new(&root).join("a.mp4");
-        assert_eq!(previewed, Some((file.clone(), None, false)), "a single click shows the file in Source, paused");
+        assert_eq!(previewed, None, "a single click does not open Source");
         assert_eq!(state.sel_path.as_deref(), file.to_str());
         assert_eq!(state.sel_paths.len(), 1);
 
@@ -3840,7 +4060,7 @@ mod tests {
         assert!(top.top() < recent.top(), "known folders sit above Recent");
         pane.step(&mut state, &mut project, &mut settings, press(top.center(), egui::PointerButton::Secondary));
         let (shapes, _) = pane.step(&mut state, &mut project, &mut settings, vec![]);
-        assert!(text_rect(&shapes, "Reveal folder").is_some() && text_rect(&shapes, "Unlink folder").is_none());
+        assert!(text_rect(&shapes, "Reveal in Explorer").is_some() && text_rect(&shapes, "Unlink folder").is_none());
     }
 
     /// Same gate for the Media Browser pane (`tab` 1): recent files, a linked folder, both views.
@@ -3970,12 +4190,15 @@ mod tests {
         ytdlp: bool,
         undos: usize,
         palette: Palette,
+        /// Held modifiers (on RawInput, where egui reads them for clicks).
+        mods: egui::Modifiers,
     }
 
     impl Pane {
         fn new(w: f32, h: f32) -> Self {
             let palette = Palette::new(true, egui::Color32::WHITE);
-            Pane { ctx: headless_ctx(), size: egui::vec2(w, h), t: 0.0, ytdlp: false, undos: 0, palette }
+            let mods = egui::Modifiers::NONE;
+            Pane { ctx: headless_ctx(), size: egui::vec2(w, h), t: 0.0, ytdlp: false, undos: 0, palette, mods }
         }
 
         fn step(
@@ -3990,6 +4213,7 @@ mod tests {
                 screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, self.size)),
                 time: Some(self.t),
                 events,
+                modifiers: self.mods,
                 ..Default::default()
             };
             let (mut resp, mut undos) = (LibraryResponse::default(), 0);
@@ -4153,6 +4377,76 @@ mod tests {
         state.sel_ids = vec![a];
         let r = menu_pick(&mut pane, &mut state, &mut project, &mut settings, at, "Convert…");
         assert_eq!((r.convert_dialog, r.convert.len()), (Some(a), 0));
+    }
+
+    /// A click only selects; a double-click opens Source; Ctrl / Shift build an ordered selection;
+    /// Ctrl+A takes every row; the bulk menu's Add follows the CLICK order, not the display order;
+    /// a multi-selection drags as one ordered payload. Folders are full-width rows in the same selection.
+    #[test]
+    fn clicks_select_and_bulk_add_keeps_the_click_order() {
+        let mut project = Project::new();
+        project.add_folder("Bin");
+        let ids: Vec<Id> = (0..3)
+            .map(|i| {
+                let mut a = asset(0, ClipKind::Video, 5.0);
+                a.path = format!(r"C:\media\clip{i}.mp4");
+                project.add_asset(a)
+            })
+            .collect();
+        let mut settings = Settings::default();
+        let mut state = LibraryState::default();
+        let mut pane = Pane::new(420.0, 900.0);
+        let (shapes, _) = pane.step(&mut state, &mut project, &mut settings, vec![]);
+        let at = |n: usize| text_rect(&shapes, &format!("clip{n}.mp4")).expect("row").center();
+        let primary = egui::PointerButton::Primary;
+        // plain click: selected, Source untouched
+        let (_, r) = pane.step(&mut state, &mut project, &mut settings, press(at(2), primary));
+        assert_eq!((state.sel_ids.clone(), r.source), (vec![ids[2]], None), "a click only selects");
+        // double-click: Source
+        let mut ev = press(at(1), primary);
+        ev.extend(press(at(1), primary));
+        let (_, r) = pane.step(&mut state, &mut project, &mut settings, ev);
+        assert_eq!(r.source.map(|s| s.1), Some(Some(ids[1])), "a double-click opens Source");
+        // click 2, Ctrl+click 0: the click order, not the display order
+        pane.step(&mut state, &mut project, &mut settings, press(at(2), primary));
+        let ctrl = egui::Modifiers::COMMAND;
+        pane.mods = ctrl;
+        pane.step(&mut state, &mut project, &mut settings, press(at(0), primary));
+        pane.mods = egui::Modifiers::NONE;
+        assert_eq!(state.sel_ids, vec![ids[2], ids[0]], "ctrl adds in click order");
+        let r = menu_pick(&mut pane, &mut state, &mut project, &mut settings, at(0), "Add to timeline at playhead");
+        assert_eq!((r.add_to_timeline, r.place), (vec![ids[2], ids[0]], PlaceAt::Playhead), "selection order");
+        let r = menu_pick(&mut pane, &mut state, &mut project, &mut settings, at(2), "Insert at playhead");
+        assert_eq!((r.add_to_timeline.len(), r.place), (2, PlaceAt::Insert));
+        let r = menu_pick(&mut pane, &mut state, &mut project, &mut settings, at(0), "New sequence from selection");
+        assert!(r.new_sequence && r.add_to_timeline == vec![ids[2], ids[0]]);
+        // dragging one of them carries the whole selection, in order
+        let p = drag_payload(&state, Pick::Asset(ids[0]));
+        assert!(matches!(p, DragPayload::Assets(ref v) if *v == vec![ids[2], ids[0]]), "{p:?}");
+        // right-clicking an unselected row selects just it (an idle frame first, as in `menu_pick`)
+        pane.step(&mut state, &mut project, &mut settings, vec![]);
+        pane.step(&mut state, &mut project, &mut settings, press(at(1), egui::PointerButton::Secondary));
+        assert_eq!(state.sel_ids, vec![ids[1]]);
+        pane.step(&mut state, &mut project, &mut settings, vec![key(egui::Key::Escape)]);
+        pane.step(&mut state, &mut project, &mut settings, vec![]);
+        // Shift range from the anchor (1) down to 2
+        pane.mods = egui::Modifiers::SHIFT;
+        pane.step(&mut state, &mut project, &mut settings, press(at(2), primary));
+        pane.mods = egui::Modifiers::NONE;
+        assert_eq!(state.sel_ids, vec![ids[1], ids[2]]);
+        // Ctrl+A: every row, the folder too
+        let ctrl_a =
+            egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: ctrl };
+        let _ = pane.ctx.run(egui::RawInput { events: vec![ctrl_a], modifiers: ctrl, ..Default::default() }, |ctx| {
+            keyboard(&mut state, ctx);
+        });
+        assert_eq!((state.sel_ids.len(), state.sel_folders.clone()), (3, vec!["Bin".to_string()]));
+        // the folder is a full-width row: a click at its far right selects it (and only it)
+        let (shapes, _) = pane.step(&mut state, &mut project, &mut settings, vec![]);
+        let bin = text_rect(&shapes, "Bin").expect("folder row");
+        pane.step(&mut state, &mut project, &mut settings, press(egui::pos2(380.0, bin.center().y), primary));
+        assert_eq!(state.sel_folders, vec!["Bin".to_string()], "the far right of a folder row selects it");
+        assert!(state.sel_ids.is_empty());
     }
 
     /// Info… is the one place description and tags are edited now that the bottom preview is gone:

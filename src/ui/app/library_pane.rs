@@ -44,10 +44,9 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, browser: bool) {
     if let Some(name) = resp.deleted_sequence {
         app.toast_undo(format!("Deleted sequence \"{name}\""), Action::Undo);
     }
-    if !resp.add_to_timeline.is_empty() {
-        app.push_undo();
-        app.place_assets(&resp.add_to_timeline, app.playhead, None, DropMode::Place);
-        app.after_edit();
+    if !resp.add_to_timeline.is_empty() || !resp.add_paths.is_empty() {
+        let at = if resp.place == library::PlaceAt::End { app.project.duration() } else { app.playhead };
+        app.add_in_order(resp.add_to_timeline.clone(), &resp.add_paths, at, resp.place, resp.new_sequence);
     }
     if !resp.open_paths.is_empty() {
         let ids = app.open_or_import(&resp.open_paths);
@@ -153,6 +152,43 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, browser: bool) {
         if let Some(dir) = rfd::FileDialog::new().set_title("Relink media: pick the folder").pick_folder() {
             media_sync::start_relink(app, &resp.relink, &dir);
         }
+    }
+}
+
+impl App {
+    /// Library items onto the timeline back to back in the given order - `ids`, then `paths` imported
+    /// first - at `at` (Insert / Overwrite edits for those verbs), or into a new sequence it opens.
+    pub(super) fn add_in_order(
+        &mut self,
+        mut ids: Vec<Id>,
+        paths: &[PathBuf],
+        at: f64,
+        place: library::PlaceAt,
+        new_seq: bool,
+    ) {
+        if !paths.is_empty() {
+            ids.extend(self.import_files(paths));
+        }
+        if ids.is_empty() {
+            return;
+        }
+        self.push_undo();
+        let at = if new_seq {
+            let n = self.project.sequences.len() + 1;
+            let (w, h, fps) = (self.project.width, self.project.height, self.project.fps);
+            let id = self.project.new_sequence(format!("Sequence {n}"), w, h, fps);
+            self.enter_sequence(id);
+            0.0
+        } else {
+            at
+        };
+        let mode = match place {
+            library::PlaceAt::Insert => DropMode::Splice,
+            library::PlaceAt::Overwrite => DropMode::Overwrite,
+            _ => DropMode::Place,
+        };
+        self.place_assets(&ids, at, None, mode);
+        self.after_edit();
     }
 }
 
