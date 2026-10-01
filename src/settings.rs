@@ -169,6 +169,11 @@ pub struct TimelineView {
 }
 
 // ---- ws:jobs-panel ----
+/// Out of the box: GitHub Dark, keeping the brand accent (#335FFF) rather than GitHub's blue.
+pub fn default_palette() -> PaletteOverride {
+    PaletteOverride { accent: None, ..crate::theme::preset("GitHub Dark").unwrap() }
+}
+
 fn default_true() -> bool {
     true
 }
@@ -513,7 +518,7 @@ impl Default for Settings {
             frame_format: "png".into(),
             frame_quality: 92,
             effect_thumb_image: String::new(),
-            palette: PaletteOverride::default(),
+            palette: default_palette(),
             whisper_dir: String::new(),
             transcribe_model: String::new(),
             audio_visualizer: true,
@@ -793,15 +798,15 @@ mod tests {
 
     #[test]
     fn palette_override_round_trips() {
-        assert_eq!(Settings::default().palette, PaletteOverride::default(), "unset = today's behaviour");
+        assert_eq!(Settings::default().palette, default_palette(), "GitHub Dark out of the box");
         let mut s = Settings::default();
         s.palette.mode = "custom".into();
         s.palette.accent = Some([200, 30, 40]);
         let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(back.palette, s.palette);
-        // an old settings file without the field still loads, back to the default (system, no overrides)
+        // an old settings file without the field still loads, to the default (GitHub Dark)
         let old: Settings = serde_json::from_str("{}").unwrap();
-        assert_eq!(old.palette, PaletteOverride::default());
+        assert_eq!(old.palette, default_palette());
     }
 
     #[test]
