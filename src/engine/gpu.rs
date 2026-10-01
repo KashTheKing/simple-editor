@@ -2231,18 +2231,24 @@ mod driver_tests {
     /// Compile + link `user_shader(src)` with the real driver, draw it into a 4x4 target at t = 0 and
     /// return the top-left pixel.
     unsafe fn run(gl: &glow::Context, src: &str) -> Result<[u8; 4], String> {
+        let px = run_sized(gl, src, 4, 4, 0.0)?;
+        Ok([px[0], px[1], px[2], px[3]])
+    }
+
+    /// The whole `w`x`h` RGBA8 output at clip time `t` (row 0 = uv.y 0 = top of the image).
+    unsafe fn run_sized(gl: &glow::Context, src: &str, w: i32, h: i32, t: f32) -> Result<Vec<u8>, String> {
         let vert = compile(gl, glow::VERTEX_SHADER, shaders::VERT)?;
         let prog = build(gl, vert, &shaders::user_shader(src))?;
         let tex = gl.create_texture()?;
         gl.bind_texture(glow::TEXTURE_2D, Some(tex));
         tex_params(gl);
-        let px = [255u8, 0, 0, 255].repeat(16);
+        let px = [255u8, 0, 0, 255].repeat((w * h) as usize);
         gl.tex_image_2d(
             glow::TEXTURE_2D,
             0,
             glow::RGBA8 as i32,
-            4,
-            4,
+            w,
+            h,
             0,
             glow::RGBA,
             glow::UNSIGNED_BYTE,
@@ -2254,8 +2260,8 @@ mod driver_tests {
             glow::TEXTURE_2D,
             0,
             glow::RGBA8 as i32,
-            4,
-            4,
+            w,
+            h,
             0,
             glow::RGBA,
             glow::UNSIGNED_BYTE,
@@ -2264,17 +2270,18 @@ mod driver_tests {
         let fbo = gl.create_framebuffer()?;
         gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
         gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(out), 0);
-        gl.viewport(0, 0, 4, 4);
+        gl.viewport(0, 0, w, h);
         gl.use_program(Some(prog.p));
         gl.active_texture(glow::TEXTURE0);
         gl.bind_texture(glow::TEXTURE_2D, Some(tex));
         gl.uniform_1_i32(prog.uni.get("tex"), 0);
-        gl.uniform_2_f32(prog.uni.get("u_res"), 4.0, 4.0);
+        gl.uniform_2_f32(prog.uni.get("u_res"), w as f32, h as f32);
+        gl.uniform_1_f32(prog.uni.get("u_time"), t);
         let vao = gl.create_vertex_array()?;
         gl.bind_vertex_array(Some(vao));
         gl.draw_arrays(glow::TRIANGLES, 0, 3);
-        let mut pix = [0u8; 4];
-        gl.read_pixels(0, 0, 1, 1, glow::RGBA, glow::UNSIGNED_BYTE, glow::PixelPackData::Slice(Some(&mut pix)));
+        let mut pix = vec![0u8; (w * h * 4) as usize];
+        gl.read_pixels(0, 0, w, h, glow::RGBA, glow::UNSIGNED_BYTE, glow::PixelPackData::Slice(Some(&mut pix)));
         Ok(pix)
     }
 
@@ -2302,5 +2309,35 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
         let bad = "void mainImage(out vec4 c, in vec2 p) {\n    c = vec4(nope);\n}\n";
         let log = unsafe { run(&gl, bad) }.unwrap_err();
         assert!(log.contains("(2)") || log.contains(":2:"), "error must point at user line 2: {log}");
+    }
+
+    /// Shadertoy's default plasma at a 320x240 layer and at 1920x1080: red falls smoothly and
+    /// monotonically left to right (no bands or steps), and the two sizes agree.
+    #[test]
+    fn plasma_is_a_smooth_gradient_at_any_size() {
+        let Some(gl) = gl() else {
+            eprintln!("SKIPPED: no OpenGL driver for a hidden WGL context");
+            return;
+        };
+        let plasma = crate::ui::shader_ui::EXAMPLES[1].1;
+        let mut reds = Vec::new();
+        for (w, h) in [(320, 240), (1920, 1080)] {
+            let px = unsafe { run_sized(&gl, plasma, w, h, 1.0) }.unwrap();
+            let row = (h / 2 * w * 4) as usize;
+            let r: Vec<i32> = (0..w as usize).map(|x| px[row + x * 4] as i32).collect();
+            assert!(r.windows(2).all(|p| p[1] <= p[0]), "{w}x{h}: red not monotonic: {r:?}");
+            let max_step = r.windows(2).map(|p| p[0] - p[1]).max().unwrap();
+            assert!(max_step <= 2, "{w}x{h}: a {max_step}-level jump is a band, not a gradient");
+            // cos(1 + x) for x in 0..1 -> red ~0.77 -> ~0.29
+            assert!(
+                (r[0] - 197).abs() <= 4 && (r[w as usize - 1] - 74).abs() <= 4,
+                "{w}x{h}: {} .. {}",
+                r[0],
+                r[w as usize - 1]
+            );
+            reds.push((r[0], r[w as usize - 1]));
+        }
+        // texel centres differ by size, so the ends may round one level apart
+        assert!((reds[0].0 - reds[1].0).abs() <= 1 && (reds[0].1 - reds[1].1).abs() <= 1, "{reds:?}");
     }
 }
