@@ -179,6 +179,8 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
     // (was: drop the library preview on seek).
     if resp.seeked || source_pane::pressed_in(ui) {
         app.source_focus = false;
+        // a Source tab stacked with the Preview gives way to it (after the draw: the tree is out)
+        app.deferred_surface.push(Pane::Preview);
     }
     if resp.seeked {
         app.player.pause();
