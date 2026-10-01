@@ -243,7 +243,8 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
         return false;
     }
     if app.source.is_none() {
-        ui.weak("Click a clip in the Library to open it here - or press F on a timeline clip (Match Frame).");
+        let aspect = app.project.width.max(1) as f32 / app.project.height.max(1) as f32;
+        source_ui::blank(ui, aspect, app.project.preview_bg, &app.palette);
         return true;
     }
     let smart = source_ctl::smart_indicator(

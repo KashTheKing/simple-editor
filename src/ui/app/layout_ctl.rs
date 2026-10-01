@@ -164,6 +164,22 @@ pub(super) fn surface_for_kind(app: &mut App, kind: SelectionKind) {
     }
 }
 
+/// Bring `pane`'s tab to the front only when it shares a tab group with `over` (Preview and Source
+/// stacked in one place: a timeline click shows the Preview). Separate groups: nothing. True = switched.
+pub(super) fn show_over(layout: &mut Layout, pane: Pane, over: Pane) -> bool {
+    let tiles = &layout.tree.tiles;
+    let (Some(a), Some(b)) = (tiles.find_pane(&pane), tiles.find_pane(&over)) else { return false };
+    let parent = tiles.parent_of(a);
+    let tabs = parent
+        .and_then(|p| tiles.get(p))
+        .is_some_and(|t| matches!(t, egui_tiles::Tile::Container(c) if c.kind() == egui_tiles::ContainerKind::Tabs));
+    if !tabs || parent != tiles.parent_of(b) {
+        return false;
+    }
+    layout.reveal(pane);
+    true
+}
+
 // ---- ws:pages ----
 
 /// A page's built-in arrangement (the Edit page's for a name that isn't one).
@@ -533,12 +549,13 @@ mod tests {
             assert_eq!(s.layout, l.to_json(), "Settings.layout is the page on screen");
             assert!(s.page_layouts.contains_key("Edit") && !s.page_layouts.contains_key(other));
             // an edit on this page too (the Inspector is on every page), to prove it survives the next hop
+            let shown = l.is_visible(Pane::Inspector); // hidden by default on Media
             l.toggle(Pane::Inspector);
             assert!(swap_page(&mut l, &mut s, &mut undo, &mut redo, "Edit"));
             assert_eq!(tree_value(&l), edited, "Edit's own edits are back after visiting {other}");
             assert_eq!(l.popped, vec![Pane::Library]);
             assert!(swap_page(&mut l, &mut s, &mut undo, &mut redo, other));
-            assert!(!l.is_visible(Pane::Inspector), "{other}'s edit survived too");
+            assert_eq!(l.is_visible(Pane::Inspector), !shown, "{other}'s edit survived too");
             l.toggle(Pane::Inspector);
             assert!(swap_page(&mut l, &mut s, &mut undo, &mut redo, "Edit"));
         }
@@ -592,6 +609,28 @@ mod tests {
         assert_eq!(tree_value(&l), mine);
         s.page_defaults.insert("Cut".into(), "not json".into());
         assert_eq!(tree_value(&page_start(&s, "Cut")), tree_value(&Layout::cut_layout()));
+    }
+
+    /// A timeline click shows the Preview only over a Source tab stacked in the Preview's own group.
+    #[test]
+    fn preview_shows_over_a_stacked_source_only() {
+        let front = |l: &Layout, p: Pane| {
+            let id = l.tree.tiles.find_pane(&p).unwrap();
+            l.tree.active_tiles().contains(&id)
+        };
+        let mut l = Layout::default_layout();
+        l.reveal(Pane::Source);
+        let preview_group = l.tree.tiles.parent_of(l.tree.tiles.find_pane(&Pane::Preview).unwrap());
+        if l.tree.tiles.parent_of(l.tree.tiles.find_pane(&Pane::Source).unwrap()) != preview_group {
+            assert!(!show_over(&mut l, Pane::Preview, Pane::Source), "separate groups: nothing");
+        }
+        // stack them (what `surface_source` does) with the Source in front
+        let s = l.tree.tiles.find_pane(&Pane::Source).unwrap();
+        l.tree.move_tile_to_container(s, preview_group.unwrap(), usize::MAX, false);
+        l.reveal(Pane::Source);
+        assert!(front(&l, Pane::Source) && !front(&l, Pane::Preview));
+        assert!(show_over(&mut l, Pane::Preview, Pane::Source));
+        assert!(front(&l, Pane::Preview) && !front(&l, Pane::Source), "the Preview tab is in front");
     }
 
     /// Everything a page arrangement is survives a restart - the Settings file written and read back:

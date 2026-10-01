@@ -618,11 +618,7 @@ fn transport(ui: &mut egui::Ui, state: &mut PreviewState, c: &PreviewCtx<'_>, r:
         |ui| seek = timecode_label(ui, tc_edit, c.playhead, c.project.duration(), fps),
         |ui| {
             full = glyph_text_button(ui, Glyph::Fullscreen, "").on_hover_text(tip(Action::Fullscreen)).clicked();
-            let zr = ui
-                .button(format!("{} ▾", zoom_label(*view, fit_px, pw)))
-                .on_hover_text("Viewer zoom (Ctrl+scroll zooms, middle-drag pans)");
-            // up, like the play buttons' tooltips: below the transport is another pane
-            egui::Popup::menu(&zr).align(egui::RectAlign::TOP_END).show(|ui| zoom_rows(ui, view, fit_px, pw));
+            zoom_button(ui, view, fit_px, pw);
             if c.dropped > 0 {
                 let text =
                     egui::RichText::new(format!("{} dropped", c.dropped)).small().color(ui.visuals().warn_fg_color);
@@ -659,9 +655,31 @@ fn zoom_label(view: (f32, Vec2), fit_px: f32, project_w: u32) -> String {
     }
 }
 
+/// The transport's Zoom ▾ button and its menu. Shared with the Source monitor (`width` = its media's).
+pub(crate) fn zoom_button(ui: &mut egui::Ui, view: &mut (f32, Vec2), fit_px: f32, width: u32) {
+    let zr = ui
+        .button(format!("{} ▾", zoom_label(*view, fit_px, width)))
+        .on_hover_text("Viewer zoom (Ctrl+scroll zooms, middle-drag pans)");
+    // up, like the play buttons' tooltips: below the transport is another pane
+    egui::Popup::menu(&zr).align(egui::RectAlign::TOP_END).show(|ui| zoom_rows(ui, view, fit_px, width));
+}
+
+/// Ctrl+wheel / pinch zooms and middle-drag pans a viewer's `view` while `resp` is hovered / dragged.
+pub(crate) fn zoom_pan(ui: &egui::Ui, resp: &egui::Response, view: &mut (f32, Vec2)) {
+    if resp.hovered() {
+        let z = ui.input(|i| i.zoom_delta());
+        if z != 1.0 {
+            view.0 = (view.0 * z).clamp(ZOOM_RANGE.0, ZOOM_RANGE.1);
+        }
+    }
+    if resp.dragged_by(PointerButton::Middle) {
+        view.1 += resp.drag_delta();
+    }
+}
+
 /// The Zoom menu's rows (the transport's Zoom ▾ and the right-click's Zoom ▸): Fit, 50, 100, 200 % of
 /// the project's own pixels. `PreviewState.view` only - never project data, never the render size.
-fn zoom_rows(ui: &mut egui::Ui, view: &mut (f32, Vec2), fit_px: f32, project_w: u32) {
+pub(crate) fn zoom_rows(ui: &mut egui::Ui, view: &mut (f32, Vec2), fit_px: f32, project_w: u32) {
     for z in ZOOMS {
         let (label, on, keys) = match z {
             None => ("Fit".to_string(), is_fit(*view), menu::shortcut(Action::ViewerFit)),
@@ -1259,15 +1277,7 @@ fn video_body(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_
     // ---- ws:canvas-handles-monitor ----
     // viewer zoom (Ctrl+wheel / pinch) and pan (middle-drag): `state.view` only, never project data,
     // and never the render size - the zoom magnifies the same texture. No Tool::Zoom.
-    if resp.hovered() {
-        let z = ui.input(|i| i.zoom_delta());
-        if z != 1.0 {
-            state.view.0 = (state.view.0 * z).clamp(ZOOM_RANGE.0, ZOOM_RANGE.1);
-        }
-    }
-    if resp.dragged_by(PointerButton::Middle) {
-        state.view.1 += resp.drag_delta();
-    }
+    zoom_pan(ui, &resp, &mut state.view);
     let lb = apply_view(fit, state.view);
     state.canvas_rect = rect;
     let (cw, ch) = ((fit.width() * ppp).round().max(16.0) as u32, (fit.height() * ppp).round().max(16.0) as u32);
