@@ -291,6 +291,10 @@ impl App {
         if menu::check(ui, self.settings.snap, "Snapping", &menu::shortcut(ToggleSnap)).clicked() {
             out.push(ToggleSnap);
         }
+        let gaps = menu::shortcut(ToggleAutoCloseGaps);
+        if menu::check(ui, self.settings.auto_close_gaps, "Auto Close Gaps", &gaps).clicked() {
+            out.push(ToggleAutoCloseGaps);
+        }
         ui.separator();
         acts(ui, &[Some(RenderSelection)]);
         acts_if(ui, !self.selection.is_empty(), &[Some(BakeSelection)]);

@@ -170,6 +170,8 @@ pub struct TimelineState {
     /// Track under the pointer this frame (lanes or header; None anywhere else, or while a popup
     /// covers it) - the "track under cursor" the track Actions target (`trim_actions::target_track`).
     pub hover_track: Option<usize>,
+    /// (video, audio) rows shown - view only, set each frame from `Settings::track_kinds` (per page).
+    pub show_kinds: (bool, bool),
 }
 
 impl Default for TimelineState {
@@ -197,6 +199,7 @@ impl Default for TimelineState {
             view_idx: 0,
             rollers: Vec::new(),
             hover_track: None,
+            show_kinds: (true, true),
         }
     }
 }
@@ -233,7 +236,7 @@ impl TimelineState {
             return None;
         }
         let mut top = self.lanes_rect.top() - self.scroll_y;
-        for i in row_order(project) {
+        for i in row_order(project, self.show_kinds) {
             let h = project.tracks[i].height;
             if y >= top && y < top + h {
                 return Some(i);
@@ -519,7 +522,7 @@ pub(crate) use arm::{arm, GestureKind, TrackFlags, Zone};
 use gestures::gap_at;
 // ws:timeline-trim-gestures - App-level Delete/RippleDelete (actions.rs) routes through this, so the
 // key and the clip menu (which pushes that Action) respect a magnetic track's "Delete closes the gap".
-pub(crate) use gestures::delete_clips_magnetic;
+pub(crate) use gestures::{close_all_gaps, delete_clips_magnetic};
 #[allow(unused_imports)] // label_menu: called directly by the test module
 use menus::{clip_menu, key_menu, label_menu, paste_menu, shared_effect_kinds, transition_menu, ClipMenu};
 pub(crate) use paint::row_top;
@@ -541,7 +544,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     let full = ui.available_rect_before_wrap();
     ui.allocate_rect(full, Sense::hover());
     let id = ui.id().with("timeline");
-    let content_h: f32 = c.project.tracks.iter().map(|t| t.height).sum();
+    let content_h: f32 = row_order(c.project, state.show_kinds).map(|i| c.project.tracks[i].height).sum();
     let sub_h = if c.project.subtitles.is_empty() { 0.0 } else { state.sub_h };
     // ---- ws:pro-timeline: inline overview minimap (Settings.overview). ws:timeline-surface: the
     // sequence tab strip that sat above it is gone - the Timeline pane's own tab carries the sequence. ----
@@ -727,7 +730,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
 
     // ---- rows ----
     let mut y = lanes.top() - state.scroll_y;
-    for ti in row_order(c.project) {
+    for ti in row_order(c.project, state.show_kinds) {
         let track = &c.project.tracks[ti];
         let row = Rect::from_min_max(pos2(lanes.left(), y), pos2(lanes.right(), y + track.height));
         y += track.height;
@@ -755,6 +758,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             active,
             &mut track_toggle,
             &mut state.track_rename,
+            state.show_kinds,
         ) {
             act = Some(a);
         }
@@ -1600,6 +1604,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             if menu::check(ui, c.overview, "Overview Strip", &menu::shortcut(ToggleOverview)).clicked() {
                 out.actions.push(ToggleOverview);
             }
+            ui.separator();
+            menus::track_kind_checks(ui, state.show_kinds);
         });
         if nested {
             menus::acts(ui, &[None, Some(OpenParentSequence)]);
@@ -1684,7 +1690,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     }
     // Delete with a gap selected closes it (ripple tracks only - `close_gap_at`'s own scope). Consumed
     // here so the app's late Delete poll doesn't also fire; curves.rs claims Delete the same way.
-    // ponytail: Backspace (the app's Delete alias) and a hidden Timeline pane fall through to the app's
+    // ponytail: Backspace (Lift) and a hidden Timeline pane fall through to the app's
     // clip delete - route this through an ACT_HANDLERS entry if either ever matters.
     if let Some((ti, a, b)) = state.gap_sel {
         if !ui.ctx().wants_keyboard_input() && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Delete))
@@ -1724,7 +1730,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             Some((ti, a, b))
         });
     }
-    let gap = state.gap_sel;
+    let (gap, kinds) = (state.gap_sel, state.show_kinds);
     menu::context(&lanes_resp, |ui| {
         use crate::hotkeys::Action::*;
         if let Some((ti, a, b)) = gap {
@@ -1734,7 +1740,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             ui.separator();
         }
         paste_menu(ui);
-        menus::acts(ui, &[None, Some(AddVideoTrack), Some(AddAudioTrack)]);
+        menus::acts(ui, &[None, Some(AddVideoTrack), Some(AddAudioTrack), None]);
+        menus::track_kind_checks(ui, kinds);
     });
     if let Some(pos) = pointer {
         let (snap_on, ph) = (c.snap, *c.playhead);

@@ -20,6 +20,12 @@ pub(super) fn acts(ui: &mut egui::Ui, items: &[Option<Action>]) {
     }
 }
 
+/// Show Video Tracks / Show Audio Tracks (per page; the app refuses hiding the last visible kind).
+pub(super) fn track_kind_checks(ui: &mut egui::Ui, (v, a): (bool, bool)) {
+    menu::check_action(ui, v, Action::ToggleShowVideoTracks);
+    menu::check_action(ui, a, Action::ToggleShowAudioTracks);
+}
+
 /// Paste ▸ - shared by every timeline menu. The app decides whether the clipboard actually holds
 /// anything: a menu that hid itself when empty would just look broken.
 pub(super) fn paste_menu(ui: &mut egui::Ui) {

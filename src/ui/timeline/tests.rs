@@ -81,7 +81,8 @@ fn track_at_maps_rows() {
     let mut s =
         TimelineState { lanes_rect: Rect::from_min_max(pos2(100.0, 200.0), pos2(900.0, 500.0)), ..Default::default() };
     // display order: V2 (70) V1 (50) A1 (40) A2 (60)
-    assert_eq!(row_order(&p).collect::<Vec<_>>(), [1, 0, 2, 3]);
+    assert_eq!(row_order(&p, (true, true)).collect::<Vec<_>>(), [1, 0, 2, 3]);
+    assert_eq!(row_order(&p, (false, true)).collect::<Vec<_>>(), [2, 3], "hidden video rows drop out");
     assert_eq!(s.track_at(210.0, &p), Some(1));
     assert_eq!(s.track_at(269.9, &p), Some(1));
     assert_eq!(s.track_at(270.0, &p), Some(0));
@@ -2506,7 +2507,7 @@ fn clip_menu_rows_dispatch_actions_and_acts() {
     let base = test_clip_menu(&p.labels, &p.buses, &[]);
     assert_eq!(run(&base, &["Join Through Edit"]).2, vec![Action::JoinThroughEdit]);
     assert_eq!(run(&base, &["Split at Playhead"]).2, vec![Action::Split]);
-    assert_eq!(run(&base, &["Delete"]).2, vec![Action::Delete]);
+    assert_eq!(run(&base, &["Delete (Leave Gap)"]).2, vec![Action::Delete]);
     assert_eq!(run(&base, &["Replace with Library Selection"]), (false, None, vec![]), "greyed: no Library pick");
     let lib = ClipMenu { library_selected: Some(7), ..test_clip_menu(&p.labels, &p.buses, &[]) };
     assert_eq!(run(&lib, &["Replace with Library Selection"]), (true, Some(1), vec![]), "the clicked clip's Act");
@@ -3000,4 +3001,55 @@ fn transition_menu_move_to_moves_one_transition() {
     assert!(r.edited, "picking a position edits the project");
     let t = &h.project.tracks[0].transitions[0];
     assert_eq!((t.right, t.edge), (c2, TransitionEdge::Out));
+}
+
+/// Resolve-style delete: RippleDelete (the Delete key) closes the gap, Delete (Backspace) leaves it; and
+/// "Auto close gaps" packs every unlocked track left so a move or lift never leaves a hole.
+#[test]
+fn ripple_delete_closes_gap_lift_leaves_it_and_auto_close_packs() {
+    let mut h = Harness::new();
+    let v = |p: &mut Project| {
+        p.tracks[1].clips.clear();
+        p.tracks[0].clips.clear();
+        p.tracks[0].clips.push(Clip::new(401, ClipKind::Video, "a", 0.0, 2.0));
+        p.tracks[0].clips.push(Clip::new(402, ClipKind::Video, "b", 2.0, 2.0));
+    };
+    v(&mut h.project);
+    gestures::delete_clips_magnetic(&mut h.project, &[401], true);
+    assert_eq!(h.project.clip(402).unwrap().start, 0.0, "ripple delete pulls b left");
+    v(&mut h.project);
+    gestures::delete_clips_magnetic(&mut h.project, &[401], false);
+    assert_eq!(h.project.clip(402).unwrap().start, 2.0, "lift leaves the gap");
+    // auto close gaps: a lifted hole and a moved-away clip both pack back to 0
+    gestures::close_all_gaps(&mut h.project);
+    assert_eq!(h.project.clip(402).unwrap().start, 0.0);
+    h.project.tracks[0].clips.push(Clip::new(403, ClipKind::Video, "c", 7.0, 1.0));
+    gestures::close_all_gaps(&mut h.project);
+    assert_eq!(h.project.clip(403).unwrap().start, 2.0, "c packs up against b");
+    h.project.tracks[0].locked = true;
+    h.project.tracks[0].clips[1].start = 5.0;
+    gestures::close_all_gaps(&mut h.project);
+    assert_eq!(h.project.clip(403).unwrap().start, 5.0, "a locked track is left alone");
+}
+
+/// Hiding a track kind is view-only: the audio rows move up into the lanes, a click there hits the
+/// audio clip (not the hidden video one), and the project itself is untouched.
+#[test]
+fn hidden_video_rows_are_view_only() {
+    let mut h = Harness::new();
+    h.frame(vec![]);
+    let before = h.project.to_json();
+    h.state.show_kinds = (false, true);
+    h.frame(vec![]);
+    let top = h.state.lanes_rect.top() + 5.0;
+    let ti = h.state.track_at(top, &h.project).expect("a row at the top");
+    assert_eq!(h.project.tracks[ti].kind, TrackKind::Audio, "first visible row is audio");
+    assert_eq!(h.project.to_json(), before, "hiding rows never edits the project");
+    let p = pos2(h.state.lanes_rect.left() + 100.0, top + 25.0);
+    h.press(p);
+    h.release(p);
+    h.frame(vec![]);
+    let hit: Vec<_> =
+        h.selection.iter().filter_map(|&id| h.project.find(id)).map(|(t, _)| h.project.tracks[t].kind).collect();
+    assert!(hit.contains(&TrackKind::Audio), "clicked the audio clip (linked video comes along): {hit:?}");
 }

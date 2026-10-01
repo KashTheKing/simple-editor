@@ -2,18 +2,19 @@
 #![allow(dead_code)]
 use super::*;
 
-pub(super) fn row_order(p: &Project) -> impl Iterator<Item = usize> + '_ {
+/// Display order: video top-down then audio, minus a kind the page hides (`TimelineState::show_kinds`).
+pub(super) fn row_order(p: &Project, (v, a): (bool, bool)) -> impl Iterator<Item = usize> + '_ {
     let n = p.tracks.len();
     (0..n)
         .rev()
-        .filter(move |&i| p.tracks[i].kind == TrackKind::Video)
-        .chain((0..n).filter(move |&i| p.tracks[i].kind == TrackKind::Audio))
+        .filter(move |&i| v && p.tracks[i].kind == TrackKind::Video)
+        .chain((0..n).filter(move |&i| a && p.tracks[i].kind == TrackKind::Audio))
 }
 
 /// Top y of track `ti` in display order (absolute points).
 pub(crate) fn row_top(state: &TimelineState, p: &Project, ti: usize) -> Option<f32> {
     let mut top = state.lanes_rect.top() - state.scroll_y;
-    for i in row_order(p) {
+    for i in row_order(p, state.show_kinds) {
         if i == ti {
             return Some(top);
         }

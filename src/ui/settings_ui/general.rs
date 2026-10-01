@@ -105,6 +105,7 @@ pub(super) fn general(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Setting
         .checkbox(&mut s.home_screen, "Show the Open / Import / Templates cards over an empty project (home screen)")
         .changed();
     changed |= ui.checkbox(&mut s.snap, "Snapping in the timeline").changed();
+    changed |= ui.checkbox(&mut s.auto_close_gaps, "Auto close gaps (magnetic timeline)").changed();
     changed |= ui.checkbox(&mut s.confirm_overwrite, "Confirm before overwriting files").changed();
     let save = match crate::ui::menu::shortcut(crate::hotkeys::Action::Save) {
         k if k.is_empty() => "Save".to_string(),

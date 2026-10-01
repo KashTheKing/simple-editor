@@ -923,6 +923,9 @@ impl App {
     /// After any project mutation.
     fn after_edit(&mut self) {
         self.dirty = true;
+        if self.settings.auto_close_gaps {
+            crate::ui::timeline::close_all_gaps(&mut self.project);
+        }
         let p = &self.project;
         self.selection.retain(|id| p.clip(*id).is_some());
         self.player.set_project(&self.project);
@@ -1366,14 +1369,12 @@ impl eframe::App for App {
 
         // clipboard and Delete last: the curve and node editors claim those while the pointer is over
         // them, and only what they leave behind should reach the timeline
-        actions.extend(self.hotkeys.poll_late(ctx));
+        // Backspace (Lift) is swallowed over the panes that own Delete, so it never reaches the clips there
         let bksp = egui::KeyboardShortcut::new(egui::Modifiers::NONE, egui::Key::Backspace);
-        if !ctx.wants_keyboard_input()
-            && Self::backspace_is_delete(self.layout.hovered)
-            && ctx.input_mut(|i| crate::hotkeys::consume_exact(i, &bksp))
-        {
-            actions.push(Action::Delete);
+        if !ctx.wants_keyboard_input() && !Self::backspace_is_delete(self.layout.hovered) {
+            ctx.input_mut(|i| crate::hotkeys::consume_exact(i, &bksp));
         }
+        actions.extend(self.hotkeys.poll_late(ctx));
         if let Some(text) = self.os_clipboard.take() {
             ctx.copy_text(text);
         }
@@ -1752,7 +1753,7 @@ impl App {
         )
     }
 
-    /// Backspace is Delete's alias, except over the panes whose own Delete handling (keyframes, nodes,
+    /// Backspace lifts clips, except over the panes whose own Delete handling (keyframes, nodes,
     /// transcript words) would otherwise lose it to the timeline's clip delete.
     pub(crate) fn backspace_is_delete(hovered: Option<Pane>) -> bool {
         !matches!(hovered, Some(Pane::Curves | Pane::Nodes | Pane::Subtitles))
