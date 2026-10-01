@@ -104,6 +104,7 @@ pub(crate) enum Glyph {
     Line,
     Arrow,
     Pencil,
+    Eyedropper,
     Mask,
     Zoom,
     Razor,
@@ -317,6 +318,7 @@ impl Glyph {
         Glyph::Line,
         Glyph::Arrow,
         Glyph::Pencil,
+        Glyph::Eyedropper,
         Glyph::Mask,
         Glyph::Zoom,
         Glyph::Razor,
@@ -458,6 +460,7 @@ impl Glyph {
             Glyph::Line => "line",
             Glyph::Arrow => "arrow",
             Glyph::Pencil => "pencil",
+            Glyph::Eyedropper => "eyedropper",
             Glyph::Mask => "mask",
             Glyph::Zoom => "zoom",
             Glyph::Razor => "razor",
@@ -607,6 +610,7 @@ impl Glyph {
             Glyph::Line => 0xF7AF,                 // a thin diagonal stroke
             Glyph::Arrow => 0xE72A,                // Forward
             Glyph::Pencil => 0xE70F,               // Edit
+            Glyph::Eyedropper => 0xEF3C,           // Eyedropper
             Glyph::Mask => 0xF16A,                 // a dotted ellipse: a marquee, not "contrast"
             Glyph::Zoom => 0xE71E,                 // Zoom
             Glyph::Razor => 0xE8C6,                // Cut

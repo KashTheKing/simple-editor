@@ -289,8 +289,8 @@ pub fn show(
                 }
             }
         }
-        let r = glyph_text_button(ui, Glyph::Zoom, "Eyedropper")
-            .on_hover_text("Pick a colour from the preview (arms the sample - click a point on the canvas)");
+        let r = glyph_text_button(ui, Glyph::Eyedropper, "")
+            .on_hover_text("Eyedropper: pick a colour from the preview (click a point on the canvas)");
         if r.clicked() {
             out.eyedrop = true;
         }
