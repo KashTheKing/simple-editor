@@ -410,11 +410,8 @@ fn home_window(app: &mut App, ctx: &egui::Context) {
     match action {
         home::HomeAction::Open => app.pending_actions.push(Action::OpenFile),
         home::HomeAction::Import => app.pending_actions.push(Action::ImportMedia),
-        home::HomeAction::New(Some(i)) => {
-            apply_format(app, i);
-            app.home_dismissed = true;
-        }
-        home::HomeAction::New(None) | home::HomeAction::Dismiss => app.home_dismissed = true,
+        home::HomeAction::New(i) => app.new_project(i),
+        home::HomeAction::Dismiss => app.home_dismissed = true,
         home::HomeAction::OpenRecent(path) => {
             let path = PathBuf::from(path);
             app.confirm_discard_then(move |app| app.open_project(&path));

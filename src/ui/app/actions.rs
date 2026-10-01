@@ -21,9 +21,7 @@ impl App {
             }
         }
         match a {
-            NewProject => {
-                self.confirm_discard_then(|app| app.set_project(Project::new(), None));
-            }
+            NewProject => self.new_project(None),
             ToolSelect | ToolText | ToolDraw | ToolMask | ToolMarker | ToolCut | ToolStretch | ToolSpacer => {
                 // normally already consumed by tools::handle_hotkeys before this table is polled; this
                 // arm only fires for a caller that dispatches the action directly (scripting/MCP).

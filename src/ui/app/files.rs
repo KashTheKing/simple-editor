@@ -67,6 +67,23 @@ impl App {
             .add_filter("All files", &["*"])
     }
 
+    /// The one New path (File ▸ New, Ctrl+N, the home cards): ask to save, then replace the current
+    /// project with an empty one in `guides::PRESETS[preset]`'s format (default: `Project::new()`'s).
+    pub(crate) fn new_project(&mut self, preset: Option<usize>) {
+        self.confirm_discard_then(move |app| {
+            let mut p = Project::new();
+            if let Some(f) = preset.and_then(|i| crate::ui::guides::PRESETS.get(i)) {
+                (p.width, p.height, p.fps) = (f.w, f.h, f.fps);
+                if app.settings.guide != f.guide {
+                    app.settings.guide = f.guide;
+                    app.settings.save();
+                }
+            }
+            app.set_project(p, None);
+            app.home_dismissed = true; // an empty project would bring the home cards straight back
+        });
+    }
+
     pub(super) fn act_open_file(&mut self) {
         self.confirm_discard_then(|app| {
             if let Some(p) = Self::media_dialog().pick_file() {
@@ -750,6 +767,20 @@ mod tests {
             1,
             "save_project must fire project_save exactly once on success"
         );
+    }
+
+    /// Every New entry point goes through `new_project` (save prompt + a real replace), and replacing
+    /// the project also closes the old one's Source monitor.
+    #[test]
+    fn every_new_path_replaces_the_project() {
+        let files = include_str!("files.rs");
+        let body = fn_body(files, "pub(crate) fn new_project(");
+        assert!(body.contains("confirm_discard_then(") && body.contains("set_project("));
+        assert!(include_str!("actions.rs").contains("NewProject => self.new_project(None)"));
+        let home = include_str!("layout_ctl.rs");
+        assert!(home.contains("HomeAction::New(i) => app.new_project(i)"), "home cards must make a new project");
+        let set = fn_body(include_str!("mod.rs"), "fn set_project(");
+        assert!(set.contains("self.close_source()"), "the old project's Source clip must not survive");
     }
 
     #[test]

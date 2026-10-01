@@ -942,6 +942,11 @@ impl App {
         self.undo.clear();
         self.redo.clear();
         self.selection.clear();
+        // the old project's Source clip and library picks point at assets that no longer exist
+        self.close_source();
+        let lib = &mut self.library;
+        (lib.selected, lib.sel_seq, lib.seen_selected) = (None, None, None);
+        lib.sel_ids.clear();
         self.playhead = 0.0;
         self.player.pause();
         self.player.set_project(&self.project);
