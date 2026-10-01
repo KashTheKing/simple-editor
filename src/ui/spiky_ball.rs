@@ -1,100 +1,109 @@
-//! A radial "spiky ball" audio visualizer drawn over the Source monitor whenever it's showing audio
-//! with no picture (and no cover art). Pure `egui::Painter` meshes, no textures or shaders. Spike
-//! lengths come from the same `Peaks` data the timeline waveform already uses.
+//! The audio visualizer drawn over the Source monitor whenever it's showing audio with no picture
+//! (and no cover art): a mirrored field of vertical bars receding to a horizon, rows scrolling toward
+//! the viewer, in alternating blue/green bands - the look of Rahix's visualizer2 "noa-35c3" demo,
+//! reimplemented from scratch here (that project is GPL-3.0; no code or shaders are taken from it).
+//! Pure `egui::Painter` meshes, no textures or shaders. Bar heights come from the same `Peaks` data
+//! the timeline waveform already uses. (Module name kept from the spiky-ball visualizer it replaced.)
 
 use crate::media::waveform::{Peaks, PEAKS_PER_SEC};
 use crate::theme::Palette;
 use eframe::egui;
-use std::f32::consts::TAU;
 
-/// Spikes on one side; the other side mirrors them, so the ball has `2 * HALF` spikes.
+/// Bars on one side of the centre gap; the other side mirrors them.
 pub const HALF: usize = 40;
+/// Rows of history between the viewer and the horizon.
+pub const ROWS: usize = 28;
 
-/// Raw spike lengths (0..1) for one half of the ball at time `t`: spike `i` is the |peak| of the
-/// 10 ms `Peaks` bucket `i - HALF/2` buckets away from `t`, so the half spans ~0.56 s of audio
-/// centred on the playhead and neighbouring spikes differ. Deterministic in (peaks, t).
+/// One row of bar heights (0..1) at time `t`: bar `i` is the |peak| of the 10 ms `Peaks` bucket `i`
+/// buckets before `t`, so the newest audio sits by the centre gap and older audio fans outward.
+/// Deterministic in (peaks, t).
 pub fn spikes(peaks: &Peaks, t: f64) -> [f32; HALF] {
     let step = 1.0 / PEAKS_PER_SEC as f64;
     let raw: [f32; HALF] = std::array::from_fn(|i| {
-        let a = t + (i as f64 - (HALF / 2) as f64) * step;
+        let a = t - i as f64 * step;
         if a < 0.0 {
             return 0.0;
         }
         let (lo, hi) = peaks.range(a, a + step);
         lo.abs().max(hi.abs()).clamp(0.0, 1.0)
     });
-    // stretch to the window's loudest bucket (floored, so near-silence stays small): full-length
-    // spikes on any real audio, and the quiet buckets between beats read as short ones
+    // stretch to the row's loudest bucket (floored, so near-silence stays small), like a per-row
+    // normalised spectrum: tall bars on any real audio, short ones between beats
     let top = raw.iter().fold(0.3f32, |m, &s| m.max(s));
     raw.map(|s| (s / top).powi(2))
 }
 
-/// The full ring: `half` then its mirror image, so spike `k` and spike `2*HALF-1-k` are equal.
-pub fn mirrored(half: &[f32; HALF]) -> [f32; 2 * HALF] {
-    std::array::from_fn(|k| if k < HALF { half[k] } else { half[2 * HALF - 1 - k] })
-}
-
-/// Smoothed spikes + loudness + rotation, carried between frames.
+/// The scrolling grid: `rows[0]` is the far (newest) row, carried between frames.
 pub struct SpikyBall {
-    spikes: [f32; HALF],
+    rows: Vec<[f32; HALF]>,
+    live: [f32; HALF],
+    /// 0..1 of a row's depth the grid has slid toward the viewer since the last row was added.
+    scroll: f32,
     level: f32,
-    angle: f32,
 }
 
 impl Default for SpikyBall {
     fn default() -> Self {
-        Self { spikes: [0.0; HALF], level: 0.0, angle: 0.0 }
+        Self { rows: vec![[0.0; HALF]; ROWS], live: [0.0; HALF], scroll: 0.0, level: 0.0 }
     }
 }
 
 impl SpikyBall {
-    /// Ease toward this frame's raw spikes (fast attack, slower decay) and turn slowly.
+    /// Ease the live row toward this frame's heights, slide the grid (faster when loud) and push a
+    /// snapshot of the live row onto the far end each time a whole row has passed.
     pub fn update(&mut self, raw: &[f32; HALF], dt: f32) {
-        // ponytail: fixed attack/decay/spin constants; promote to Settings only if someone asks.
+        // ponytail: fixed attack/decay/speed constants; promote to Settings only if someone asks.
         let ease = |cur: &mut f32, target: f32| {
             let rate = if target > *cur { 25.0 } else { 6.0 };
             *cur += (target - *cur) * (rate * dt).min(1.0);
         };
-        for (s, &r) in self.spikes.iter_mut().zip(raw) {
+        for (s, &r) in self.live.iter_mut().zip(raw) {
             ease(s, r);
         }
-        let loud = raw.iter().sum::<f32>() / HALF as f32;
-        ease(&mut self.level, loud);
-        self.angle = (self.angle + dt * 0.25) % TAU;
+        ease(&mut self.level, raw.iter().sum::<f32>() / HALF as f32);
+        self.scroll += dt * (4.0 + 10.0 * self.level);
+        while self.scroll >= 1.0 {
+            self.scroll -= 1.0;
+            self.rows.pop();
+            self.rows.insert(0, self.live);
+        }
     }
 
-    /// Paint the ball centred in `rect`: a glow, then the spike star as a centre-fan mesh with a
-    /// gradient from solid accent at the ball to faint at the tips, then the pulsing inner ball.
-    pub fn paint(&self, painter: &egui::Painter, rect: egui::Rect, palette: &Palette) {
-        let c = rect.center();
-        let base = rect.width().min(rect.height()) * 0.2;
-        let r0 = base * (1.0 + 0.2 * self.level);
-        let reach = base * 1.3;
-        let ring = mirrored(&self.spikes);
-        let n = ring.len();
-        let dir = |a: f32| egui::vec2(a.cos(), a.sin());
-        // a still ball still looks like a ball: a small static ripple under the live spike lengths
-        let len = |k: usize| 0.08 + 0.06 * ((k as f32 * 6.0 / n as f32) * TAU).sin().abs() + ring[k] * 0.86;
-        let accent = palette.accent;
-        for (scale, alpha) in [(1.3, 0.03), (1.12, 0.06)] {
-            painter.circle_filled(c, (r0 + reach * 0.35) * scale, accent.gamma_multiply(alpha));
-        }
+    /// Paint the field into `rect`: black backdrop, then far-to-near rows of bars (a line from a
+    /// short stub below the floor to the bar's top, with a dot at each end) in perspective.
+    pub fn paint(&self, painter: &egui::Painter, rect: egui::Rect, _palette: &Palette) {
+        painter.rect_filled(rect, 0.0, egui::Color32::BLACK);
+        let painter = painter.with_clip_rect(rect);
+        let horizon = rect.top() + rect.height() * 0.45;
+        let focal = rect.height() * 0.9;
+        let (cam_z, gap, dx, row_d, near) = (0.5, 0.06, 0.07, 0.3, 0.8);
+        // noa's palette: alternating deep blue / green bands, six bars wide
+        let colours = [egui::Color32::from_rgb(30, 140, 215), egui::Color32::from_rgb(35, 190, 100)];
+        let px = (rect.height() / 500.0).max(1.0);
         let mut mesh = egui::Mesh::default();
-        mesh.colored_vertex(c, accent.gamma_multiply(0.9));
-        for k in 0..n {
-            let a = self.angle + k as f32 / n as f32 * TAU;
-            let w = TAU / n as f32 * 0.35; // spike half-width: a sliver of gap between spikes
-            mesh.colored_vertex(c + dir(a - w) * r0, accent.gamma_multiply(0.8));
-            mesh.colored_vertex(c + dir(a) * (r0 + reach * len(k)), accent.gamma_multiply(0.2));
-            mesh.colored_vertex(c + dir(a + w) * r0, accent.gamma_multiply(0.8));
-        }
-        let verts = 3 * n as u32;
-        for v in 1..=verts {
-            mesh.add_triangle(0, v, v % verts + 1);
+        let mut quad = |a: egui::Pos2, b: egui::Pos2, c: egui::Color32| {
+            mesh.add_colored_rect(egui::Rect::from_two_pos(a, b), c);
+        };
+        for (k, row) in self.rows.iter().enumerate() {
+            let depth = near + ((ROWS - k) as f32 - self.scroll) * row_d; // k = 0 is the far row
+            let fade = (1.15 - (depth - near) / (ROWS as f32 * row_d)).clamp(0.0, 1.0);
+            let s = focal / depth;
+            for (i, &v) in row.iter().enumerate() {
+                // the bars nearest the centre gap stand tallest: the "wings" silhouette
+                let v = v * (1.0 - 0.55 * i as f32 / HALF as f32);
+                let col = colours[(i / 6) % 2].gamma_multiply(fade);
+                let top = horizon - (0.04 + 0.4 * v - cam_z) * s;
+                let bot = horizon - (-0.04 - 0.12 * v - cam_z) * s;
+                for side in [-1.0f32, 1.0] {
+                    let x = rect.center().x + side * (gap + i as f32 * dx) * s;
+                    quad(egui::pos2(x - px * 0.5, top), egui::pos2(x + px * 0.5, bot), col.gamma_multiply(0.55));
+                    for y in [top, bot] {
+                        quad(egui::pos2(x - px, y - px), egui::pos2(x + px, y + px), col);
+                    }
+                }
+            }
         }
         painter.add(mesh);
-        painter.circle(c, r0 * 0.92, egui::Color32::BLACK.gamma_multiply(0.55), egui::Stroke::new(1.5, accent));
-        painter.circle_filled(c, r0 * (0.3 + 0.4 * self.level), accent.gamma_multiply(0.35 + 0.5 * self.level));
     }
 }
 
@@ -109,15 +118,13 @@ mod tests {
     }
 
     #[test]
-    fn spikes_deterministic_bounded_symmetric() {
+    fn spikes_deterministic_bounded() {
         let p = peaks();
         let a = spikes(&p, 1.0);
-        assert_eq!(a, spikes(&p, 1.0), "same peaks + time, same spikes");
+        assert_eq!(a, spikes(&p, 1.0), "same peaks + time, same row");
         assert_ne!(a, spikes(&p, 1.3), "moves with time");
         assert!(a.iter().all(|s| (0.0..=1.0).contains(s)));
         assert!(a.windows(2).any(|w| w[0] != w[1]), "neighbours differ");
-        let ring = mirrored(&a);
-        assert!((0..2 * HALF).all(|k| ring[k] == ring[2 * HALF - 1 - k]), "mirror symmetric");
         // before the start / past the end: silent, not a panic
         assert!(spikes(&p, -5.0).iter().all(|&s| s == 0.0));
         assert!(spikes(&p, 99.0).iter().all(|&s| s == 0.0));
@@ -127,13 +134,30 @@ mod tests {
     }
 
     #[test]
-    fn update_eases_and_stays_bounded() {
+    fn rows_scroll_toward_the_viewer() {
         let mut b = SpikyBall::default();
-        for _ in 0..200 {
+        for _ in 0..600 {
             b.update(&[1.0; HALF], 1.0 / 60.0);
         }
-        assert!(b.spikes.iter().all(|&s| s > 0.95 && s <= 1.0) && b.level <= 1.0);
+        assert_eq!(b.rows.len(), ROWS, "history never grows");
+        assert!(b.rows.iter().all(|r| r.iter().all(|&s| s > 0.9 && s <= 1.0)), "loud rows filled the field");
+        assert!((0.0..1.0).contains(&b.scroll));
         b.update(&[0.0; HALF], 1.0 / 60.0);
-        assert!(b.spikes[0] > 0.5, "decays slowly, no snap to zero");
+        assert!(b.live[0] > 0.5, "decays slowly, no snap to zero");
+        // a paused ball (no update) paints without panicking at any size
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            let p = ctx.layer_painter(egui::LayerId::background());
+            b.paint(
+                &p,
+                egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(640.0, 360.0)),
+                &Palette::new(true, egui::Color32::WHITE),
+            );
+            b.paint(
+                &p,
+                egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(0.0, 0.0)),
+                &Palette::new(true, egui::Color32::WHITE),
+            );
+        });
     }
 }

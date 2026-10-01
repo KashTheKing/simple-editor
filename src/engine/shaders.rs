@@ -358,17 +358,62 @@ void main() {
 }
 "#;
 
-/// Wrap a user shader body (`EffectKind::Shader`) so it sees the same prelude and knobs `u1..u8`.
-/// The body must define `vec4 effect(vec4 src, vec2 uv)` (see `model::DEFAULT_SHADER`).
+/// Shadertoy's inputs mapped onto ours, so a shader pasted from shadertoy.com compiles verbatim.
+/// Every channel is the layer. `texture()` is wrapped so shadertoy's bottom-left uv origin samples the
+/// right row of our top-down textures (2-arg sampler2D calls only; that is all shadertoy's
+/// 2D-channel shaders use).
+// ponytail: iMouse/iDate are zero and iFrame assumes 60 fps; feed real values if someone needs them.
+pub const SHADERTOY: &str = r#"
+#define iResolution vec3(u_res, 1.0)
+#define iTime u_time
+#define iTimeDelta (1.0 / 60.0)
+#define iFrameRate 60.0
+#define iFrame int(u_time * 60.0)
+#define iMouse vec4(0.0)
+#define iDate vec4(0.0)
+#define iChannel0 tex
+#define iChannel1 tex
+#define iChannel2 tex
+#define iChannel3 tex
+#define iChannelResolution vec3[4](iResolution, iResolution, iResolution, iResolution)
+vec4 st_texture(sampler2D s, vec2 p) { return texture(s, vec2(p.x, 1.0 - p.y)); }
+#define texture(s, p) st_texture(s, p)
+void mainImage(out vec4 fragColor, in vec2 fragCoord);
+void main() {
+    vec2 uv = v_uv;
+    vec4 c = vec4(0.0, 0.0, 0.0, 1.0);
+    mainImage(c, vec2(uv.x, 1.0 - uv.y) * u_res);
+    out_color = apply_mask(st_texture(tex, vec2(uv.x, 1.0 - uv.y)), c, uv);
+}
+"#;
+
+/// Wrap a user shader (`EffectKind::Shader`) in the prelude and knobs `u1..u8`. Two dialects:
+/// shadertoy's `void mainImage(out vec4, in vec2)` (gets `SHADERTOY`), or our
+/// `vec4 effect(vec4 src, vec2 uv)` (see `model::DEFAULT_SHADER`). `#line 1` before the user text makes
+/// the driver's log count lines in the user's source, not in the assembled program.
 pub fn user_shader(src: &str) -> String {
-    let mut s = String::with_capacity(PRELUDE.len() + src.len() + 512);
+    let toy = src.contains("mainImage");
+    let mut s = String::with_capacity(PRELUDE.len() + SHADERTOY.len() + src.len() + 512);
     s.push_str(PRELUDE);
     for i in 0..8 {
-        s.push_str(&format!("#define u{} p{}\n", i + 1, i));
+        s.push_str(&format!(
+            "#define u{} p{}
+",
+            i + 1,
+            i
+        ));
     }
-    s.push('\n');
+    if toy {
+        s.push_str(SHADERTOY);
+    }
+    s.push_str(
+        "#line 1
+",
+    );
     s.push_str(src);
-    s.push_str(MAIN);
+    if !toy {
+        s.push_str(MAIN);
+    }
     s
 }
 
@@ -494,6 +539,30 @@ mod tests {
         assert_eq!(undeclared_uniforms(&s), Vec::<String>::new());
         // the user body's own uses resolve through the #defines
         assert!(s.contains("u1") && s.contains("u_time"));
+        assert!(
+            s.contains(&format!(
+                "#line 1
+{}",
+                crate::model::DEFAULT_SHADER
+            )),
+            "log lines = user lines"
+        );
+    }
+
+    #[test]
+    fn shadertoy_source_is_wrapped_verbatim() {
+        let src = crate::ui::shader_ui::EXAMPLES[1].1;
+        let s = user_shader(src);
+        assert!(
+            s.contains(&format!(
+                "#line 1
+{src}"
+            )) && s.ends_with(src),
+            "verbatim, nothing after it"
+        );
+        assert_eq!(s.matches("void main()").count(), 1);
+        assert!(!s.contains("effect(src, uv)"), "the effect() entry point is not required");
+        assert!(balanced(&s));
     }
 
     /// The bug this guards: `fragment()` used to append `MAIN` to bodies that already define `main()`,
