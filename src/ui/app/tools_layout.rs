@@ -8,13 +8,12 @@
 use super::tools_helpers::*;
 use super::*;
 use crate::mcp::tools::{ToolDef, ToolKind, ToolOutcome};
-use crate::ui::layout::PAGES;
 
 /// `layout.page` / `layout.workspace`: a page (or an old workspace name) to switch to.
 fn switch(app: &mut App, name: &str) -> Result<ToolOutcome, String> {
-    let page = crate::ui::layout::page_name(name)
-        .ok_or_else(|| format!("unknown page '{name}' (one of {})", PAGES.join(", ")))?;
-    layout_ctl::switch_page(app, page);
+    let page = layout_ctl::find_page(&app.settings, name)
+        .ok_or_else(|| format!("unknown page '{name}' (one of {})", app.settings.pages.join(", ")))?;
+    layout_ctl::switch_page(app, &page);
     Ok(ToolOutcome::Done(json!({"ok": true, "page": page})))
 }
 
@@ -48,7 +47,7 @@ pub const TOOLS: &[ToolDef] = &[
         name: "layout.page",
         desc: "Switch to a page (Media, Cut, Edit, Color, Audio, Export - see layout.list's 'pages'), the same as \
                Alt+1..6 / the menu-bar switcher. Each page keeps its own arrangement.",
-        args: &["name:string:true:one of Media, Cut, Edit, Color, Audio, Export"],
+        args: &["name:string:true:a page name from layout.list's pages"],
         kind: ToolKind::Ui,
         run: |app, args| switch(app, req(arg_str(args, "name"), "name")?),
     },
@@ -138,7 +137,7 @@ pub const TOOLS: &[ToolDef] = &[
             Ok(ToolOutcome::Done(json!({
                 "mode": if layout_ctl::is_dynamic(&app.settings) { "dynamic" } else { "granular" },
                 "page": app.settings.page,
-                "pages": PAGES,
+                "pages": app.settings.pages,
                 "locked": app.settings.panels_locked,
                 "page_defaults": app.settings.page_defaults.keys().collect::<Vec<_>>(),
                 "pinned": app.layout.pinned.iter().map(|p| p.title()).collect::<Vec<_>>(),
