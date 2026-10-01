@@ -394,7 +394,7 @@ impl Layout {
         let curves = t.insert_pane(Pane::Curves);
         let scopes = t.insert_pane(Pane::Scopes);
         let bottom = Self::linear(t, Horizontal, &[(grade, 0.5), (curves, 0.25), (scopes, 0.25)]);
-        let root = Self::linear(t, Vertical, &[(top, 0.5), (clips, 0.11), (timeline, 0.1), (bottom, 0.29)]);
+        let root = Self::linear(t, Vertical, &[(top, 0.47), (clips, 0.09), (timeline, 0.18), (bottom, 0.26)]);
         Self::stack_unplaced(t, gallery);
         Self::new(egui_tiles::Tree::new("layout", root, tiles))
     }
