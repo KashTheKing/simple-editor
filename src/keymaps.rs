@@ -7,8 +7,6 @@
 //! differing diff table per app is).
 //! ---- ws:command-palette ----
 
-pub mod import;
-
 use crate::hotkeys::{Action, Hotkeys};
 
 /// (preset name, [(action id, chord text)]). Chord text parses via `Hotkeys::parse` (the same format

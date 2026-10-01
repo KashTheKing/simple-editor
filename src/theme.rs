@@ -1,14 +1,22 @@
-//! Match the user's Windows theme: light/dark from the registry, brand accent #335FFF.
+//! Match the user's Windows theme: light/dark from the registry, accent colour from DWM.
 //! Bare, flat, Windows-Forms-ish visuals; DaVinci-like layout comes from the panels, not styling.
 
 use eframe::egui::{self, Color32, CornerRadius, Theme, Visuals};
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 
+fn reg_dword(root: winreg::HKEY, path: &str, name: &str) -> Option<u32> {
+    winreg::RegKey::predef(root).open_subkey(path).ok()?.get_value::<u32, _>(name).ok()
+}
 
-/// The app's brand accent (#335FFF). Settings > Appearance can still override it.
-// ponytail: was the Windows DWM accent; a "follow Windows accent" toggle can come back if anyone asks
+/// Windows accent colour (falls back to the default blue).
 pub fn system_accent() -> Color32 {
-    Color32::from_rgb(0x33, 0x5f, 0xff)
+    static ACCENT: OnceLock<Color32> = OnceLock::new();
+    *ACCENT.get_or_init(|| {
+        reg_dword(winreg::enums::HKEY_CURRENT_USER, r"Software\Microsoft\Windows\DWM", "AccentColor")
+            .map(|v| Color32::from_rgb((v & 0xff) as u8, ((v >> 8) & 0xff) as u8, ((v >> 16) & 0xff) as u8))
+            .unwrap_or(Color32::from_rgb(0, 120, 212))
+    })
 }
 
 /// Colours for custom-painted widgets (timeline, preview, waveforms).

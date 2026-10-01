@@ -6,6 +6,7 @@ mod editing;
 // ---- ws:inspector-gallery ----
 mod effects;
 mod graph;
+mod keyblocks;
 mod markers;
 // ---- ws:pro-monitor ----
 mod multicam;

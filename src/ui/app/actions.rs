@@ -22,9 +22,7 @@ impl App {
         }
         match a {
             NewProject => self.new_project(None),
-            ToolSelect | ToolText | ToolDraw | ToolMask | ToolMarker | ToolCut | ToolStretch | ToolSpacer
-            | ToolTrackForward | ToolTrackBackward | ToolRipple | ToolRolling | ToolSlip | ToolSlide | ToolPen
-            | ToolHand | ToolZoom => {
+            ToolSelect | ToolText | ToolDraw | ToolMask | ToolMarker | ToolCut | ToolStretch | ToolSpacer => {
                 // normally already consumed by tools::handle_hotkeys before this table is polled; this
                 // arm only fires for a caller that dispatches the action directly (scripting/MCP).
                 if let Some(t) = tools::tool_for_action(a, self.tools.tool) {
