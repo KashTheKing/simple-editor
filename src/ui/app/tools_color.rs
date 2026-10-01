@@ -145,7 +145,7 @@ fn run(app: &mut App, name: &str, args: &Value) -> Result<Value, String> {
             let e = upsert_effect(c, EffectKind::Primaries);
             for (i, field) in [
                 "lift_r", "lift_g", "lift_b", "gamma_r", "gamma_g", "gamma_b", "gain_r", "gain_g", "gain_b", "temp",
-                "tint",
+                "tint", "offset_r", "offset_g", "offset_b",
             ]
             .into_iter()
             .enumerate()
@@ -315,7 +315,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "color.primaries",
-        desc: "Find-or-create the clip's Primaries (lift/gamma/gain colour wheels + temp/tint) effect and set given fields (unset fields keep their current value).",
+        desc: "Find-or-create the clip's Primaries (lift/gamma/gain/offset colour wheels + temp/tint) effect and set given fields (unset fields keep their current value).",
         args: &[
             "clip_id:integer:true:",
             "lift_r:number:false:",
@@ -329,6 +329,9 @@ pub const TOOLS: &[ToolDef] = &[
             "gain_b:number:false:",
             "temp:number:false:",
             "tint:number:false:",
+            "offset_r:number:false:",
+            "offset_g:number:false:",
+            "offset_b:number:false:",
         ],
         kind: ToolKind::Mutate,
         run: |a, v| dispatch(a, "color.primaries", v).unwrap().map(ToolOutcome::Done),

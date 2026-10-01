@@ -50,6 +50,7 @@ mod audio_actions;
 mod autosave;
 mod boot;
 mod caches;
+mod color_page;
 mod drops;
 mod edit_ops;
 mod feedback;
@@ -1482,6 +1483,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:inspector-surface ----
     // ---- ws:side-panels ----
     // ---- ws:keys-actions ----
+    // ---- ws:color-page ----
+    color_page::TOOLS,
 ];
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
@@ -1577,6 +1580,8 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:inspector-surface ----
     // ---- ws:side-panels ----
     // ---- ws:keys-actions ----
+    // ---- ws:color-page ----
+    color_page::tick,
 ];
 
 pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
@@ -1659,6 +1664,8 @@ pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
     // ---- ws:inspector-surface ----
     // ---- ws:side-panels ----
     // ---- ws:keys-actions ----
+    // ---- ws:color-page ----
+    color_page::draw,
 ];
 
 /// The dominant kind of the current selection, for a contextual inspector/palette to key off without

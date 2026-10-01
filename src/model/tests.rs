@@ -718,11 +718,11 @@ fn effect_kind_all_has_29_entries_in_declared_order() {
     }
 }
 
-/// Documents the PARAM_NAMES budget explicitly (gpu.rs's fixed p0..p11 uniform slots): Primaries'
-/// natural 12 knobs drop a redundant per-channel Offset to fit in 11, with one to spare.
+/// Documents the PARAM_NAMES budget explicitly (gpu.rs's fixed p0..p13 uniform slots): Primaries'
+/// 14 knobs (the Color page's Lift/Gamma/Gain/Offset wheels + temp/tint) fill it exactly.
 #[test]
 fn primaries_param_count_fits_param_names() {
-    assert!(EffectKind::Primaries.params().len() <= 12);
+    assert!(EffectKind::Primaries.params().len() <= 14);
 }
 
 /// Regression pin for the `needs_motion()` fix: without `FrameBlend` here, `gpu.rs`'s run_effect/

@@ -921,7 +921,7 @@ fn clip_section(
             .collect();
         fold(ui, &mut folds, "color", "Color", None, |ui| {
             ui.add_enabled_ui(!multi, |ui| {
-                let resp = crate::ui::color_ui::show(ui, &mut clip, &others, palette, &mut cg);
+                let resp = crate::ui::color_ui::show(ui, &mut clip, &others, lt, palette, &mut cg);
                 if resp.auto {
                     PENDING_COLOR_AUTO.with(|p| *p.borrow_mut() = Some(id));
                 }
