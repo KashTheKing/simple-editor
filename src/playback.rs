@@ -1626,6 +1626,11 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
     }
 }
 
+/// Mono copy of the newest `SCOPE_LEN` samples handed to the output device (what is audible now), for the
+/// Source monitor's audio visualizer. Written by the audio callback, read by the UI.
+pub static SCOPE: Mutex<VecDeque<f32>> = Mutex::new(VecDeque::new());
+pub const SCOPE_LEN: usize = 1024;
+
 /// Default output device as 48 kHz stereo f32; None = no audio (playback still runs off the wall clock).
 fn open_output(ring: Arc<Mutex<VecDeque<f32>>>, dead: Arc<AtomicBool>) -> Option<cpal::Stream> {
     use cpal::traits::{DeviceTrait, HostTrait};
@@ -1641,6 +1646,11 @@ fn open_output(ring: Arc<Mutex<VecDeque<f32>>>, dead: Arc<AtomicBool>) -> Option
                 for s in out.iter_mut() {
                     *s = r.pop_front().unwrap_or(0.0); // zero-fill on underrun
                 }
+                drop(r);
+                let mut scope = lock(&SCOPE);
+                scope.extend(out.chunks_exact(2).map(|c| (c[0] + c[1]) * 0.5));
+                let over = scope.len().saturating_sub(SCOPE_LEN);
+                scope.drain(..over);
             },
             move |e| {
                 eprintln!("audio: {e}");

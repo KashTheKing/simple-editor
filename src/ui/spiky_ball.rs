@@ -2,8 +2,9 @@
 //! (and no cover art): a mirrored field of vertical bars receding to a horizon, rows scrolling toward
 //! the viewer, in alternating blue/green bands - the look of Rahix's visualizer2 "noa-35c3" demo,
 //! reimplemented from scratch here (that project is GPL-3.0; no code or shaders are taken from it).
-//! Pure `egui::Painter` meshes, no textures or shaders. Bar heights come from the same `Peaks` data
-//! the timeline waveform already uses. (Module name kept from the spiky-ball visualizer it replaced.)
+//! Pure `egui::Painter` meshes, no textures or shaders. Bar heights are a small DFT of the audio being
+//! played (`spectrum`), low notes by the centre gap; the waveform `Peaks` envelope is the fallback.
+//! (Module name kept from the spiky-ball visualizer it replaced.)
 
 use crate::media::waveform::{Peaks, PEAKS_PER_SEC};
 use crate::theme::Palette;
@@ -14,10 +15,48 @@ pub const HALF: usize = 40;
 /// Rows of history between the viewer and the horizon.
 pub const ROWS: usize = 28;
 
+/// One row of bar heights (0..1): the spectrum of what the speakers are playing right now
+/// (`playback::SCOPE`) when there is any, else the `Peaks` envelope around `t` (no audio device).
+pub fn spikes(peaks: &Peaks, t: f64) -> [f32; HALF] {
+    let scope: Vec<f32> = crate::playback::SCOPE.lock().map(|s| s.iter().copied().collect()).unwrap_or_default();
+    if scope.len() >= DFT_N && scope.iter().any(|&x| x != 0.0) {
+        return spectrum(&scope[scope.len() - DFT_N..]);
+    }
+    envelope(peaks, t)
+}
+
+/// Samples per DFT (~11 ms at 48 kHz).
+pub const DFT_N: usize = 512;
+
+/// Log-spaced band magnitudes, 60 Hz (bar 0, by the centre gap) to 8 kHz (outermost bar), of 48 kHz
+/// mono `x`: a Hann-windowed naive DFT evaluated at three frequencies per band (the loudest wins), then
+/// normalised to the row's loudest band like `envelope`.
+// ponytail: naive DFT, HALF*3*DFT_N ~ 60k multiply-adds per frame; an FFT only if bars or N grow a lot.
+pub fn spectrum(x: &[f32]) -> [f32; HALF] {
+    let n = x.len().max(1) as f32;
+    let w: Vec<f32> =
+        x.iter().enumerate().map(|(i, &s)| s * (0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / n).cos())).collect();
+    let at = |f: f32| {
+        let k = std::f32::consts::TAU * f / 48_000.0;
+        let (re, im) = w.iter().enumerate().fold((0.0f32, 0.0f32), |(re, im), (i, &s)| {
+            let a = k * i as f32;
+            (re + s * a.cos(), im - s * a.sin())
+        });
+        (re * re + im * im).sqrt() / n
+    };
+    let f = |b: f32| 60.0 * (8000.0f32 / 60.0).powf(b / (HALF - 1) as f32);
+    let raw: [f32; HALF] = std::array::from_fn(|i| {
+        let i = i as f32;
+        [f(i - 0.33), f(i), f(i + 0.33)].into_iter().map(at).fold(0.0, f32::max)
+    });
+    let top = raw.iter().fold(0.02f32, |m, &s| m.max(s));
+    raw.map(|s| (s / top).clamp(0.0, 1.0).sqrt())
+}
+
 /// One row of bar heights (0..1) at time `t`: bar `i` is the |peak| of the 10 ms `Peaks` bucket `i`
 /// buckets before `t`, so the newest audio sits by the centre gap and older audio fans outward.
 /// Deterministic in (peaks, t).
-pub fn spikes(peaks: &Peaks, t: f64) -> [f32; HALF] {
+pub fn envelope(peaks: &Peaks, t: f64) -> [f32; HALF] {
     let step = 1.0 / PEAKS_PER_SEC as f64;
     let raw: [f32; HALF] = std::array::from_fn(|i| {
         let a = t - i as f64 * step;
@@ -118,19 +157,33 @@ mod tests {
     }
 
     #[test]
-    fn spikes_deterministic_bounded() {
+    fn envelope_deterministic_bounded() {
         let p = peaks();
-        let a = spikes(&p, 1.0);
-        assert_eq!(a, spikes(&p, 1.0), "same peaks + time, same row");
-        assert_ne!(a, spikes(&p, 1.3), "moves with time");
+        let a = envelope(&p, 1.0);
+        assert_eq!(a, envelope(&p, 1.0), "same peaks + time, same row");
+        assert_ne!(a, envelope(&p, 1.3), "moves with time");
         assert!(a.iter().all(|s| (0.0..=1.0).contains(s)));
         assert!(a.windows(2).any(|w| w[0] != w[1]), "neighbours differ");
         // before the start / past the end: silent, not a panic
-        assert!(spikes(&p, -5.0).iter().all(|&s| s == 0.0));
-        assert!(spikes(&p, 99.0).iter().all(|&s| s == 0.0));
+        assert!(envelope(&p, -5.0).iter().all(|&s| s == 0.0));
+        assert!(envelope(&p, 99.0).iter().all(|&s| s == 0.0));
         // a clipping file still stays bounded
         let loud = Peaks { min: vec![-3.0; 200], max: vec![3.0; 200] };
-        assert!(spikes(&loud, 1.0).iter().all(|&s| s == 1.0));
+        assert!(envelope(&loud, 1.0).iter().all(|&s| s == 1.0));
+    }
+
+    /// A 200 Hz tone lights the low bars by the centre gap, a 5 kHz one the outer bars.
+    #[test]
+    fn spectrum_follows_pitch() {
+        let tone = |f: f32| -> Vec<f32> {
+            (0..DFT_N).map(|i| (std::f32::consts::TAU * f * i as f32 / 48_000.0).sin() * 0.5).collect()
+        };
+        let peak = |row: [f32; HALF]| row.iter().enumerate().fold(0, |b, (i, &v)| if v > row[b] { i } else { b });
+        let (lo, hi) = (spectrum(&tone(200.0)), spectrum(&tone(5000.0)));
+        assert!(peak(lo) < HALF / 3, "200 Hz peaks at bar {}", peak(lo));
+        assert!(peak(hi) > HALF * 2 / 3, "5 kHz peaks at bar {}", peak(hi));
+        assert!(lo.iter().chain(&hi).all(|v| (0.0..=1.0).contains(v)));
+        assert!(spectrum(&[0.0; DFT_N]).iter().all(|&v| v == 0.0), "silence stays flat");
     }
 
     #[test]
