@@ -350,6 +350,10 @@ const P_PRIMARIES: &[ParamSpec] = &[
     ps("Gain B", 1.0, 0.0, 3.0),
     ps("Temp", 0.0, -100.0, 100.0),
     ps("Tint", 0.0, -100.0, 100.0),
+    // the Color page's Offset wheel: added after gamma (Lift is added before it)
+    ps("Offset R", 0.0, -1.0, 1.0),
+    ps("Offset G", 0.0, -1.0, 1.0),
+    ps("Offset B", 0.0, -1.0, 1.0),
 ];
 /// HSL-band secondary key: hue centre/width (`Hue Width` is the half-width in degrees, so its max of
 /// 180 covers the whole hue circle), saturation and luminance bands, edge softness. Defaults are wide

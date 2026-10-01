@@ -76,6 +76,8 @@ const UNIFORMS: &[&str] = &[
     "p9",
     "p10",
     "p11",
+    "p12",
+    "p13",
     "u_mask",
     "u_has_mask",
     "u_dst",
@@ -1598,7 +1600,8 @@ impl Extra {
 }
 
 /// One name per parameter any effect can have (`Curves` has 12, everything else 8 or fewer).
-const PARAM_NAMES: [&str; 12] = ["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9", "p10", "p11"];
+const PARAM_NAMES: [&str; 14] =
+    ["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9", "p10", "p11", "p12", "p13"];
 
 /// `MASK`'s `m_points` array size.
 pub const MAX_MASK_POINTS: usize = 64;

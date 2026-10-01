@@ -190,7 +190,8 @@ pub fn apply(effect: &Effect, t: f64, scale: f32, img: &mut Frame, scratch: &mut
         ),
         EffectKind::RecDot => rec_dot(img, t, scale, e(0), e(1), e(2), e(3) >= 0.5, e(4)),
         EffectKind::Primaries => {
-            primaries(img, [e(0), e(1), e(2)], [e(3), e(4), e(5)], [e(6), e(7), e(8)], e(9), e(10))
+            let off = [e(11), e(12), e(13)];
+            primaries(img, [e(0), e(1), e(2)], [e(3), e(4), e(5)], [e(6), e(7), e(8)], off, e(9), e(10))
         }
         EffectKind::Qualifier => {
             qualifier(img, e(0) as f32, e(1) as f32, e(2) as f32, e(3) as f32, e(4) as f32, e(5) as f32, e(6) as f32)
@@ -666,11 +667,12 @@ fn levels(img: &mut Frame, inb: f64, inw: f64, gamma: f64, outb: f64, outw: f64)
 /// then a cheap temp/tint post-pass shifting R/B (warmth) and G (tint) - the exact maths
 /// `shaders::PRIMARIES` runs on the GPU (same 0.0015 scale, worked out in 0..1 space there vs 0..255
 /// here), so preview and export agree. All-default (lift 0, gamma 1, gain 1, temp/tint 0) is the identity.
-fn primaries(img: &mut Frame, lift: [f64; 3], gamma: [f64; 3], gain: [f64; 3], temp: f64, tint: f64) {
+fn primaries(img: &mut Frame, lift: [f64; 3], gamma: [f64; 3], gain: [f64; 3], off: [f64; 3], temp: f64, tint: f64) {
     let mut luts = [[0u8; 256]; 3];
     for c in 0..3 {
         let g = gamma[c].max(0.01);
-        luts[c] = lut_from(|v| (v * gain[c].max(0.0) + lift[c]).clamp(0.0, 1.0).powf(1.0 / g));
+        luts[c] =
+            lut_from(|v| ((v * gain[c].max(0.0) + lift[c]).clamp(0.0, 1.0).powf(1.0 / g) + off[c]).clamp(0.0, 1.0));
     }
     let (dr, db, dg) = (temp * 0.0015 * 255.0, temp * 0.0015 * 255.0, tint * 0.0015 * 255.0);
     for px in img.rgba.chunks_exact_mut(4) {

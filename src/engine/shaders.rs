@@ -1205,13 +1205,16 @@ const PRIMARIES: &str = r#"
 uniform float p8;
 uniform float p9;
 uniform float p10;
+uniform float p11;
+uniform float p12;
+uniform float p13;
 void main() {
     vec2 uv = gl_FragCoord.xy / u_res;
     vec4 src = texture(tex, uv);
     vec3 lift = vec3(p0, p1, p2);
     vec3 gamma = max(vec3(p3, p4, p5), vec3(0.01));
     vec3 gain = max(vec3(p6, p7, p8), vec3(0.0));
-    vec3 c = pow(clamp(src.rgb * gain + lift, 0.0, 1.0), 1.0 / gamma);
+    vec3 c = clamp(pow(clamp(src.rgb * gain + lift, 0.0, 1.0), 1.0 / gamma) + vec3(p11, p12, p13), 0.0, 1.0);
     c.r = clamp(c.r + p9 * 0.0015, 0.0, 1.0);
     c.b = clamp(c.b - p9 * 0.0015, 0.0, 1.0);
     c.g = clamp(c.g + p10 * 0.0015, 0.0, 1.0);
@@ -1440,7 +1443,7 @@ mod shader_body_tests {
         assert_eq!(declared(MOTION_BLUR), ["u_prev", "u_next", "u_frames", "u_motion"]);
         assert_eq!(declared(BLOB_TRACK), ["u_blob"]);
         assert_eq!(declared(CURVES), ["p8", "p9", "p10", "p11"]);
-        assert_eq!(declared(PRIMARIES), ["p8", "p9", "p10"]);
+        assert_eq!(declared(PRIMARIES), ["p8", "p9", "p10", "p11", "p12", "p13"]);
         assert_eq!(declared(LUT), ["u_lut3d", "u_lut_n"]);
         assert_eq!(declared(FRAME_BLEND), ["u_prev", "u_next", "u_frames"]);
         for (_, src) in bodies() {

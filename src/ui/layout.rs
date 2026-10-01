@@ -138,6 +138,10 @@ pub enum Pane {
     /// Recent files, linked folders and the disk (was the Library's "Browse" view) - under the Library
     /// on the Media page, hidden elsewhere.
     MediaBrowser,
+    /// The Color page's Lift/Gamma/Gain/Offset wheels (or Primaries bars) with per-wheel keyframes.
+    Grade,
+    /// The Color page's clip thumbnail strip: one card per video clip, click to grade it.
+    Clips,
 }
 
 impl Pane {
@@ -193,6 +197,9 @@ impl Pane {
         Pane::Scopes,
         Pane::Export,
         Pane::MediaBrowser,
+        // ---- ws:color-page ----
+        Pane::Grade,
+        Pane::Clips,
     ];
     /// Panes added in round 3 - a stored layout without them is from an older version (see `from_json`).
     /// Tools left this list with the pages (no page places it; the viewer's tool rail replaces it).
@@ -225,6 +232,8 @@ impl Pane {
             Pane::Scopes => Glyph::Scope,
             Pane::Export => Glyph::ExportArrow,
             Pane::MediaBrowser => Glyph::Link,
+            Pane::Grade => Glyph::Wheel,
+            Pane::Clips => Glyph::FilmStrip,
         }
     }
     pub fn title(self) -> &'static str {
@@ -253,6 +262,8 @@ impl Pane {
             Pane::Scopes => "Scopes",
             Pane::Export => "Export",
             Pane::MediaBrowser => "Media Browser",
+            Pane::Grade => "Color Wheels",
+            Pane::Clips => "Clips",
         }
     }
 }
@@ -366,21 +377,24 @@ impl Layout {
         Self::new(egui_tiles::Tree::new("layout", root, tiles))
     }
 
-    /// The Color page: [Gallery] · [Preview] · [Inspector] over a thin Timeline, [Nodes | Curves] ·
-    /// [Scopes] at the bottom.
+    /// The Color page, laid out like Resolve's: [Gallery] · [Preview] · [Nodes] · [Inspector] on top, the
+    /// Clips strip and a thin Timeline, then [Color Wheels] · [Curves] · [Scopes] along the bottom.
     pub fn color_layout() -> Self {
         use egui_tiles::LinearDir::{Horizontal, Vertical};
         let mut tiles = egui_tiles::Tiles::default();
         let t = &mut tiles;
         let gallery = Self::tabs(t, &[Pane::Presets], 0);
         let preview = t.insert_pane(Pane::Preview);
+        let nodes = t.insert_pane(Pane::Nodes);
         let inspector = t.insert_pane(Pane::Inspector);
-        let top = Self::linear(t, Horizontal, &[(gallery, 0.22), (preview, 0.5), (inspector, 0.28)]);
+        let top = Self::linear(t, Horizontal, &[(gallery, 0.17), (preview, 0.43), (nodes, 0.2), (inspector, 0.2)]);
+        let clips = t.insert_pane(Pane::Clips);
         let timeline = t.insert_pane(Pane::Timeline);
-        let grade = Self::tabs(t, &[Pane::Nodes, Pane::Curves], 0);
+        let grade = t.insert_pane(Pane::Grade);
+        let curves = t.insert_pane(Pane::Curves);
         let scopes = t.insert_pane(Pane::Scopes);
-        let bottom = Self::linear(t, Horizontal, &[(grade, 0.6), (scopes, 0.4)]);
-        let root = Self::linear(t, Vertical, &[(top, 0.55), (timeline, 0.18), (bottom, 0.27)]);
+        let bottom = Self::linear(t, Horizontal, &[(grade, 0.5), (curves, 0.25), (scopes, 0.25)]);
+        let root = Self::linear(t, Vertical, &[(top, 0.5), (clips, 0.11), (timeline, 0.1), (bottom, 0.29)]);
         Self::stack_unplaced(t, gallery);
         Self::new(egui_tiles::Tree::new("layout", root, tiles))
     }
@@ -1371,7 +1385,7 @@ mod tests {
             ("Media", &[Library, MediaBrowser, Source, Inspector]),
             ("Cut", &[Library, Source, Preview, Inspector, Timeline]),
             ("Edit", &[Library, Effects, Transitions, Presets, Source, Preview, Inspector, Timeline]),
-            ("Color", &[Presets, Preview, Inspector, Timeline, Nodes, Curves, Scopes]),
+            ("Color", &[Presets, Preview, Inspector, Timeline, Nodes, Curves, Scopes, Grade, Clips]),
             ("Audio", &[Preview, Mixer, Subtitles, Inspector, Timeline]),
             ("Export", &[Export, Preview, Inspector, Jobs, Timeline]),
         ];
@@ -1445,7 +1459,7 @@ mod tests {
     fn pane_source_not_in_round3() {
         assert_eq!(Pane::ROUND3, [Pane::Nodes, Pane::Mixer, Pane::Markers]);
         assert!(!Pane::ALL.contains(&Pane::Tools), "the viewer's tool rail replaced the Tools pane");
-        for p in [Pane::Source, Pane::Jobs, Pane::Scopes, Pane::Export, Pane::MediaBrowser] {
+        for p in [Pane::Source, Pane::Jobs, Pane::Scopes, Pane::Export, Pane::MediaBrowser, Pane::Grade, Pane::Clips] {
             assert!(Pane::ALL.contains(&p), "{p:?} is still a pane");
             assert!(!Pane::ROUND3.contains(&p), "{p:?} must not make a stored layout unloadable");
         }
