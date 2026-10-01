@@ -199,7 +199,7 @@ mod tests {
         // the new tabs left the settings alone
         assert_eq!(settings.preview_quality, Settings::default().preview_quality);
         assert_eq!(settings.capture_fps, Settings::default().capture_fps);
-        assert_eq!(settings.palette, crate::theme::PaletteOverride::default());
+        assert_eq!(settings.palette, crate::settings::default_palette());
     }
 
     #[test]
