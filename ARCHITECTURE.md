@@ -336,7 +336,10 @@ GL work happens **only on the UI thread** (it owns the context). Everything GPU 
 * **Proxies** (`src/media/proxy.rs`): the app builds all-intra 720p proxies (ffmpeg, one background
   job at a time, hash-of-(path, mtime, height) filenames in the cache dir) and pushes a
   source→proxy map to the player (`Cmd::Proxies` → `DecoderPool::set_proxies`). Only preview pools
-  carry the map; export and one-shot renders always read originals. Per-asset status
+  carry the map; export and one-shot renders always read originals. A source with an alpha channel
+  (`proxy::has_alpha`, one ffprobe per file) gets a stacked proxy `<hash>-a.mp4` - premultiplied
+  colour over the alpha plane, twice as tall - which `proxy::StackedAlpha` (wrapped around the
+  decoder in `media::open_video`) folds back into a straight-alpha frame. Per-asset status
   (`proxy::status`: queued / building N% / ready) shows on library rows, the inspector's Asset block
   and the preview badge.
 * **Rate/loop** (`player-rate-loop`): `Clock.rate` and `Clock.loop_range` parameterise the previously

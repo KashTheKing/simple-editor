@@ -7,6 +7,25 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
 
 ---
 
+- **alpha-proxy (2026-10-06): a `.mov` with alpha previewed on black because its proxy was yuv420p.**
+  Export was always right (it reads the source). Such a source now gets a STACKED proxy, `<hash>-a.mp4`:
+  still all-intra H.264 that Media Foundation reads, twice as tall, premultiplied colour on top and the
+  alpha plane as grey below; `proxy::StackedAlpha` folds it back to straight alpha. Measured on a
+  1080p60 PNG `.mov` with a 720p proxy (release-fast, median): plain proxy 2.5 ms a frame, stacked 7.5 ms
+  (4.6 ms to decode 1280x1440, ~3 ms to fold); decoding the source itself through the ffmpeg pipe is
+  36 ms. `cargo test bench_stacked_alpha_proxy -- --ignored --nocapture`.
+  Gotchas: (1) scale in PREMULTIPLIED space (`premultiply` before `scale`) - scaling straight
+  alpha pulls the black under transparent pixels into every edge; (2) never let the decoder scale a
+  stacked frame: MF's scaler blends the rows either side of the seam, and the top row of the picture
+  turns partly opaque wherever the bottom row is bright (a line across the preview), so `StackedAlpha`
+  always decodes full size and samples it down itself; (3) the alpha half comes back from limited-range
+  H.264 a few levels off 0/255 - snap the ends or opaque areas let the layer below through; (4)
+  `premultiply=inplace=1` needs a planar format (`gbrap`), and `alphaextract` fails if the format
+  negotiated after `scale` lost the alpha - pin `format=gbrap` on both sides; (5) the iterator
+  version of the fold loop cost 4.5 ms in a dev build, the indexed one 1-2. Not done: VP9/HEVC alpha
+  (ffmpeg's native decoders drop it, so export loses it too), and an alpha source at or below proxy
+  height still plays straight from the ffmpeg pipe.
+
 - **preview-perf (2026-10-06): "dropping hundreds of frames, ridiculously slow on stacked layers" was
   five things, none of them the compositor.** Measured on a real 15-track 1080p60 trailer (63 clips,
   mostly PNG stills with keyframed pop-ins over an H.264 clip) at 75 % quality: the 30.9 s timeline
@@ -28,9 +47,8 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
   `opt-level = "s"`, so per-pixel Rust loops (box filters) are 3-5x slower than you would guess -
   measure before adding one to a per-frame path; MF's DXVA readback waits are timer-tick sized, so a
   bare test process (15.6 ms ticks) shows 31/62 ms where the app shows ~10; and heredocs in the
-  agent shell halve backslashes - write helper scripts to a file. Still open: an alpha `.mov` gets a yuv420p proxy
-  like any other video, so its transparency previews as black (export is right); `GpuRenderer`
-  never frees a clip's layer texture.
+  agent shell halve backslashes - write helper scripts to a file. Still open: `GpuRenderer` never frees a clip's
+  layer texture. (The alpha `.mov` previewing on black is fixed - see the entry above.)
 
 - **size-recovery (2026-09-29): an egui menu cost ~30 KB of exe per call site.** The simplify wave
   grew the release exe 12.44 -> 14.54 MB with ~2k source lines and no new deps. `cargo llvm-lines
