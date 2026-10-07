@@ -143,7 +143,8 @@ pub fn open_audio(path: &str, stream: usize, backend: Backend) -> Result<Box<dyn
 pub struct DecoderPool {
     backend: Backend,
     videos: HashMap<String, (u64, Option<Box<dyn VideoSource>>)>,
-    audios: HashMap<(String, usize), (u64, Option<Box<dyn AudioSource>>)>,
+    /// By (path, stream, voice) - see `audio`.
+    audios: HashMap<(String, usize, usize), (u64, Option<Box<dyn AudioSource>>)>,
     /// Use counter for LRU eviction: a long timeline must not accumulate one live MF reader (or
     /// ffmpeg.exe child) per distinct file forever.
     tick: u64,
@@ -379,11 +380,14 @@ impl DecoderPool {
         }
         self.videos.get_mut(path).and_then(|(_, v)| v.as_deref_mut())
     }
-    pub fn audio(&mut self, path: &str, stream: usize) -> Option<&mut (dyn AudioSource + 'static)> {
+    /// `voice` tells apart readers of one stream that play at the same moment (the mixer numbers the
+    /// clips of a block): each reads on sequentially through a decoder of its own. Sharing one, two
+    /// overlapping clips of a file made it seek twice per block.
+    pub fn audio(&mut self, path: &str, stream: usize, voice: usize) -> Option<&mut (dyn AudioSource + 'static)> {
         let b = self.backend;
         self.tick += 1;
         let tick = self.tick;
-        let key = (path.to_string(), stream);
+        let key = (path.to_string(), stream, voice);
         let e = self.audios.entry(key.clone()).or_insert_with(|| (tick, open_audio(path, stream, b).ok()));
         e.0 = tick;
         let hit = e.1.is_some();
@@ -407,7 +411,11 @@ impl DecoderPool {
     }
     #[cfg(test)]
     pub fn insert_audio(&mut self, path: &str, stream: usize, a: Box<dyn AudioSource>) {
-        self.audios.insert((path.to_string(), stream), (self.tick, Some(a)));
+        self.insert_audio_voice(path, stream, 0, a);
+    }
+    #[cfg(test)]
+    pub fn insert_audio_voice(&mut self, path: &str, stream: usize, voice: usize, a: Box<dyn AudioSource>) {
+        self.audios.insert((path.to_string(), stream, voice), (self.tick, Some(a)));
     }
     /// Drop every decoder (releases file handles - required before overwriting a source file). Also
     /// forgets failed opens, so they are retried next time.
@@ -470,7 +478,7 @@ mod tests {
         assert_eq!(pool.set_proxies(m.clone()), vec!["C:\\a.mp4".to_string()]);
         assert!(!pool.has_video("C:\\a.mp4"), "the remapped source's decoder is dropped");
         assert!(pool.has_video("C:\\b.mp4"), "an unrelated decoder survives");
-        assert!(pool.audios.contains_key(&("C:\\a.mp4".to_string(), 0)), "audio always reads originals");
+        assert!(pool.audios.contains_key(&("C:\\a.mp4".to_string(), 0, 0)), "audio always reads originals");
         assert!(pool.set_proxies(m).is_empty(), "an identical map changes nothing");
 
         // re-pointing drops the source, its OLD proxy and its NEW proxy (all possible pool keys)
