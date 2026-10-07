@@ -57,6 +57,12 @@ fn init() -> Result<(), String> {
     MF.get_or_init(|| unsafe { MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET).map_err(err) }).clone()
 }
 
+/// COM on the calling thread, before a reader that another thread opens is handed to it (the
+/// multithreaded apartment lives as long as one thread in it does - `DecoderPool::warm`).
+pub fn init_thread() {
+    let _ = init();
+}
+
 /// `IMFDXGIDeviceManager` is documented as safe to share and call from multiple threads (that's its
 /// purpose: every decoder MFT on every thread opens a handle to the same device through it).
 struct SharedDeviceManager(IMFDXGIDeviceManager);
@@ -99,9 +105,12 @@ fn dxgi_device_manager() -> Option<IMFDXGIDeviceManager> {
 }
 
 /// DXVA pays for itself only on big frames: a hardware decode is a GPU round-trip per frame
-/// (submit, decode, video-process, sync, copy back), which costs more than just software-decoding
-/// anything SD-sized. Attach the D3D manager at 720p and up.
-const DXVA_MIN_PIXELS: u64 = 1280 * 720;
+/// (submit, decode, video-process, sync, copy back), and the copy back is what hurts - measured on
+/// an RTX 2060S, ms per frame decoded for a 720p preview, hardware vs software: 4K 7.0 vs
+/// 9.4, but 1080p 42 vs 7 and a 720p proxy 43 vs 2.4. So: only above 1080p. (This used to start at
+/// 720p - exactly the default proxy height, so every proxy and every 1080p source paid for it;
+/// `bench_4k_preview` and `playback`'s `bench_multilayer_preview` watch either side of the line.)
+const DXVA_MIN_PIXELS: u64 = 2560 * 1440;
 
 fn open_reader(path: &str, dxva: bool) -> Result<IMFSourceReader, String> {
     if super::is_image_path(path) {
@@ -591,6 +600,16 @@ impl MfVideo {
         out.pts = (self.rpts - self.origin) as f64 / HNS;
         if w == self.width && h == self.height {
             out.rgba.copy_from_slice(&self.native);
+            return;
+        }
+        // one pixel short of the decode size is `ensure_decode_size`'s even alignment (a 1200x675
+        // canvas decodes at 1200x676): drop the spare row/column instead of resampling the whole
+        // frame for it, which cost more than the decode did (6.5 ms of a 9 ms 720p frame)
+        let (sw, sh) = (self.width as usize, self.height as usize);
+        if (sw - 1..=sw).contains(&(w as usize)) && (sh - 1..=sh).contains(&(h as usize)) {
+            for (d, s) in out.rgba.chunks_exact_mut(w as usize * 4).zip(self.native.chunks_exact(sw * 4)) {
+                d.copy_from_slice(&s[..w as usize * 4]);
+            }
             return;
         }
         if !(self.svalid && self.sw == w && self.sh == h) {

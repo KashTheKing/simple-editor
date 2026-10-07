@@ -73,6 +73,9 @@ const READ_AHEAD_SECS: f64 = 1.5;
 /// Recently shown frames kept eviction-protected behind the playhead (seconds), so a short
 /// scrub-back replays from the cache.
 const TRAIL_SECS: f64 = 0.5;
+/// Clips on screen within this much of the playhead get their source opened in the background
+/// (`DecoderPool::warm`) - further out than the read-ahead, so the prefetcher finds it open.
+const WARM_SECS: f64 = 3.0;
 /// How far the clock may run past the newest published frame before playback is declared
 /// buffering (the UI pauses the clock and shows a spinner until the cache refills).
 const STALL_BEHIND: f64 = 0.15;
@@ -915,6 +918,8 @@ fn render_thread(
             ctx.request_repaint();
         }
         if playing {
+            // open what the next few seconds bring in, off this thread
+            warm_clips(&project, &mut pool, t, t + WARM_SECS);
             // Pacing window until frame idx+1 is due on the grid: pre-render upcoming frames into the
             // cache, then sleep out whatever is left. A slow prefetch can overrun the window by one
             // render - the same stall the live path would have hit at that frame's due time, just earlier.
@@ -928,6 +933,12 @@ fn render_thread(
                 let denom = if rate >= 0.0 { rate.max(1e-6) } else { rate.min(-1e-6) };
                 let remain = (target_idx as f64 / fps - lock(&shared.clock).now()) / denom;
                 if remain <= 0.0 {
+                    break;
+                }
+                // a command outranks read-ahead: after Pause the clock stands still, `remain` never
+                // runs out, and the whole window would be decoded before a Seek/Play got a look in
+                if let Ok(c) = rx.try_recv() {
+                    pending = Some(c);
                     break;
                 }
                 let (rlo, rhi) = read_ahead_window(idx, read_ahead, last_idx, rate);
@@ -1228,8 +1239,12 @@ fn gpu_cached(
     };
     let set = Arc::new(set);
     if ok {
-        let bytes: usize = set.layers.iter().map(|(_, f)| f.rgba.len()).sum::<usize>()
-            + set.motion.iter().map(|(_, _, f)| f.rgba.len()).sum::<usize>();
+        // a frame shared with the pool's source cache (a still, see `DecoderPool::frame_arc`) is
+        // paid for there: counting it once per index would size the read-ahead as if every frame
+        // of a ten-still stack held ten bitmaps of its own
+        let own = |f: &Arc<Frame>| if Arc::strong_count(f) == 1 { f.rgba.len() } else { 0 };
+        let bytes: usize = set.layers.iter().map(|(_, f)| own(f)).sum::<usize>()
+            + set.motion.iter().map(|(_, _, f)| own(f)).sum::<usize>();
         for old in cache.insert(idx, bytes, set.clone()) {
             recycle(Some(old), spare);
         }
@@ -1257,6 +1272,9 @@ pub(crate) fn decode_layers(
     comp: &mut Compositor,
 ) -> LayerSet {
     let mut set = LayerSet::default();
+    // a cold frame (a scrub onto a stack of stills nothing has shown yet) opens its sources side by
+    // side, not one after the other
+    warm_clips(project, pool, t, t);
     for (ti, track) in project.tracks.iter().enumerate() {
         if track.kind != TrackKind::Video || !project.active(ti) {
             continue;
@@ -1287,6 +1305,23 @@ pub(crate) fn decode_layers(
         }
     }
     set
+}
+
+/// Start opening, in the background (`DecoderPool::warm`), the footage of every clip on screen
+/// anywhere in `lo..=hi` seconds.
+/// ponytail: top-level clips and forward play only - a clip inside a nested sequence, or one a
+/// reverse shuttle is about to reach, still opens on first use.
+fn warm_clips(project: &Project, pool: &mut DecoderPool, lo: f64, hi: f64) {
+    for (ti, track) in project.tracks.iter().enumerate() {
+        if track.kind != TrackKind::Video || !project.active(ti) {
+            continue;
+        }
+        for c in track.clips.iter().filter(|c| c.enabled && c.start <= hi && c.end() > lo) {
+            if let Some(a) = project.asset(c.asset).filter(|_| matches!(c.kind, ClipKind::Video | ClipKind::Image)) {
+                pool.warm(&a.path);
+            }
+        }
+    }
 }
 
 /// One clip's layer: video/images decode, text/shapes rasterise, a nested sequence is composited on the
@@ -1360,6 +1395,9 @@ fn layer_for(
             }
             let dw = (p.w.round().max(1.0) as u32).clamp(1, native.0);
             let dh = (p.h.round().max(1.0) as u32).clamp(1, native.1);
+            // what the decoder really has: the proxy's size when one stands in for the footage
+            let Some((src, still)) = pool.video(&asset.path).map(|d| (d.size(), d.is_still())) else { return };
+            let (dw, dh) = layer_size(src, (dw, dh), still);
             if let Some(f) = decode_one(pool, &asset.path, clip.src_time(t), asset.duration, dw, dh, spare) {
                 set.layers.push((clip.id, f));
             }
@@ -1429,6 +1467,25 @@ fn layer_for(
     }
 }
 
+/// The size a layer is decoded at: the smallest of a few fixed fractions of the decoder's own
+/// size `src` that covers the `need`ed placement (all of `src` when nothing does) - halvings for a
+/// still, eighths for video. The renderer scales a layer to its quad whatever size the bitmap is,
+/// so it need not match the placement pixel for pixel, and must not: a keyframed scale (a pop-in,
+/// a slow zoom) would be a new size on every frame - for a still a new bitmap to shrink, copy and
+/// upload each time instead of one shared frame for the whole move; for video a full-frame CPU
+/// resample on top of every decode (an upscale, 25 ms, once a zoom outgrows a 720p proxy).
+fn layer_size(src: (u32, u32), need: (u32, u32), still: bool) -> (u32, u32) {
+    let covers = |w: u32, h: u32| w >= need.0 && h >= need.1;
+    let (w, h) = if still {
+        let k = (1..32).take_while(|k| covers(src.0 >> k, src.1 >> k)).last().unwrap_or(0);
+        (src.0 >> k, src.1 >> k)
+    } else {
+        let k = (1..8).find(|k| covers(src.0 * k / 8, src.1 * k / 8)).unwrap_or(8);
+        (src.0 * k / 8, src.1 * k / 8)
+    };
+    (w.max(1), h.max(1))
+}
+
 /// One decode into a recycled buffer. None when the decoder or the frame is unavailable.
 fn decode_one(
     pool: &mut DecoderPool,
@@ -1440,13 +1497,9 @@ fn decode_one(
     spare: &mut Vec<Frame>,
 ) -> Option<Arc<Frame>> {
     let st = if src_duration > 0.0 { src_t.clamp(0.0, (src_duration - 1e-4).max(0.0)) } else { src_t.max(0.0) };
-    let mut frame = spare.pop().unwrap_or_default();
-    // through the pool's source-frame cache: a replay/scrub-back is a memcpy, not a decoder seek
-    if !pool.frame_at(path, st, dw, dh, &mut frame) {
-        spare.push(frame);
-        return None;
-    }
-    Some(Arc::new(frame))
+    // through the pool's source-frame cache: a replay/scrub-back is a memcpy, not a decoder seek,
+    // and a still is the very same frame every time
+    pool.frame_arc(path, st, dw, dh, spare)
 }
 
 /// Take the buffers of a layer set nobody uses any more back into the spare pool.
@@ -2417,5 +2470,172 @@ mod tests {
         let mut ran = false;
         assert!(guarded(&mut pool, |_| ran = true));
         assert!(ran);
+    }
+
+    #[test]
+    fn layer_size_steps_instead_of_following_the_placement() {
+        // stills: native halved while it still covers the need
+        assert_eq!(layer_size((1920, 1080), (1200, 675), true), (1920, 1080));
+        assert_eq!(layer_size((1920, 1080), (960, 540), true), (960, 540));
+        assert_eq!(layer_size((1920, 1080), (600, 300), true), (960, 540));
+        assert_eq!(layer_size((128, 128), (1, 1), true), (1, 1), "a pop-in from scale 0");
+        assert_eq!(layer_size((3600, 2632), (3139, 2295), true), (3600, 2632));
+        // video: eighths of what the decoder has, never more than all of it (a zoom past a proxy)
+        assert_eq!(layer_size((1280, 720), (1200, 675), false), (1280, 720));
+        assert_eq!(layer_size((1280, 720), (1290, 726), false), (1280, 720));
+        assert_eq!(layer_size((3840, 2160), (1200, 675), false), (1440, 810));
+        assert_eq!(layer_size((1920, 1080), (1, 1), false), (240, 135));
+        // a whole keyframed move is a handful of sizes, not one per frame
+        let sizes: std::collections::HashSet<_> =
+            (1..=600).map(|w| layer_size((1920, 1080), (w, w * 9 / 16), true)).collect();
+        assert!(sizes.len() <= 11, "{} sizes for one pop-in", sizes.len());
+    }
+
+    /// Counts its decodes; `still` = one picture at every time, like `ffpipe::ImageSource`.
+    struct Fake {
+        n: Arc<std::sync::atomic::AtomicUsize>,
+        size: (u32, u32),
+        still: bool,
+    }
+    impl media::VideoSource for Fake {
+        fn size(&self) -> (u32, u32) {
+            self.size
+        }
+        fn is_still(&self) -> bool {
+            self.still
+        }
+        fn frame_at(&mut self, t: f64, w: u32, h: u32, out: &mut Frame) -> bool {
+            self.n.fetch_add(1, Ordering::SeqCst);
+            out.resize(w, h);
+            out.pts = if self.still { 0.0 } else { t };
+            true
+        }
+    }
+
+    fn fake_asset(kind: &str, path: &str, duration: f64) -> crate::model::Asset {
+        let v = serde_json::json!({"id": 0, "path": path, "kind": kind, "duration": duration, "width": 1920, "height": 1080, "fps": 60.0});
+        serde_json::from_value(v).expect("asset")
+    }
+
+    /// The trailer this was reported on: ten stills popping in on a keyframed scale, over a video
+    /// that zooms, at 60 fps. The stills used to be re-fetched at a new size on every frame (an
+    /// ffmpeg.exe run each) and re-copied and re-uploaded on every frame after that; the video was
+    /// resampled on the CPU for every frame of its zoom.
+    #[test]
+    fn a_stack_of_stills_is_decoded_once_not_once_per_frame() {
+        use crate::model::Keyframe;
+        use std::sync::atomic::AtomicUsize;
+        let key = |t: f64, v: f64| Keyframe { t, v, ease: Default::default() };
+        let mut project = Project::new();
+        (project.width, project.height, project.fps) = (1920, 1080, 60.0);
+        let (stills, video) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let mut pool = DecoderPool::new(Backend::Ffmpeg);
+        pool.set_source_cache_bytes(1 << 30);
+
+        let aid = project.add_asset(fake_asset("Video", "C:\\zoom.mp4", 10.0));
+        let vid = project.insert_asset_clips(aid, 0.0, None)[0];
+        project.clip_mut(vid).unwrap().scale.keys = vec![key(0.0, 1.0), key(2.0, 1.2)];
+        // 1280x720: a proxy standing in for the 1080p asset
+        pool.insert_video("C:\\zoom.mp4", Box::new(Fake { n: video.clone(), size: (1280, 720), still: false }));
+        for i in 0..10 {
+            let path = format!("C:\\still{i}.png");
+            let aid = project.add_asset(fake_asset("Image", &path, 0.0));
+            let id = project.insert_asset_clips(aid, 0.0, None)[0];
+            project.clip_mut(id).unwrap().scale.keys = vec![key(0.0, 0.0), key(0.25, 0.5)];
+            pool.insert_video(&path, Box::new(Fake { n: stills.clone(), size: (1920, 1080), still: true }));
+        }
+
+        let mut spare = Vec::new();
+        let (mut text, mut shapes, mut comp) = (TextRasterizer::new(), ShapeRasterizer::new(), Compositor::new());
+        let mut prev: Option<LayerSet> = None;
+        for f in 0..120 {
+            let t = f as f64 / 60.0;
+            let set = decode_layers(&project, t, 1200, 675, &mut pool, &mut spare, &mut text, &mut shapes, &mut comp);
+            assert_eq!(set.layers.len(), 11, "frame {f}");
+            let v = set.get(vid).unwrap();
+            assert_eq!((v.width, v.height), (1280, 720), "frame {f}: the zoom must not change the decode size");
+            if f == 30 {
+                // the pop-in is over (0.25 s = 15 frames); it cost a few sizes each, not 15
+                let n = stills.load(Ordering::SeqCst);
+                assert!(n <= 10 * 11, "{n} still decodes for ten pop-ins");
+            }
+            if let Some(prev) = prev.as_ref().filter(|_| f > 30) {
+                for (id, cur) in set.layers.iter().filter(|(id, _)| *id != vid) {
+                    // the same Arc = no copy here, and no texture upload in engine::gpu
+                    assert!(Arc::ptr_eq(prev.get(*id).unwrap(), cur), "frame {f}: a still was copied again");
+                }
+            }
+            prev = Some(set);
+        }
+        let n = stills.load(Ordering::SeqCst);
+        assert!(n <= 10 * 11, "{n} still decodes over 120 frames (one per still per frame = 1200)");
+        assert_eq!(video.load(Ordering::SeqCst), 120, "one video decode per frame");
+    }
+
+    /// Frame time of a layered timeline on real decoders: a 720p60 H.264 clip (what a proxy is)
+    /// zooming under three 1080p stills that pop in, into an odd-height canvas.
+    /// `cargo test --release bench_multilayer_preview -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn bench_multilayer_preview() {
+        use crate::model::Keyframe;
+        let dir = std::env::temp_dir().join("se-bench");
+        let _ = std::fs::create_dir_all(&dir);
+        let ffmpeg = |args: &[&str], out: &std::path::Path| {
+            out.exists()
+                || std::process::Command::new("ffmpeg")
+                    .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i"])
+                    .args(args)
+                    .arg(out)
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false)
+        };
+        let mp4 = dir.join("720p60.mp4");
+        let mut ok = ffmpeg(
+            &["testsrc2=size=1280x720:rate=60", "-t", "4", "-c:v", "libx264", "-g", "1", "-pix_fmt", "yuv420p"],
+            &mp4,
+        );
+        let pngs: Vec<_> = (0..3).map(|i| dir.join(format!("still{i}.png"))).collect();
+        for p in &pngs {
+            ok &= ffmpeg(&["testsrc2=size=1920x1080", "-frames:v", "1"], p);
+        }
+        if !ok {
+            eprintln!("ffmpeg missing; skipped");
+            return;
+        }
+        let key = |t: f64, v: f64| Keyframe { t, v, ease: Default::default() };
+        let mut project = Project::new();
+        (project.width, project.height, project.fps) = (1920, 1080, 60.0);
+        let asset = media::probe(&mp4.to_string_lossy(), Backend::Auto).expect("probe mp4");
+        let aid = project.add_asset(asset);
+        let vid = project.insert_asset_clips(aid, 0.0, None)[0];
+        project.clip_mut(vid).unwrap().scale.keys = vec![key(0.0, 1.0), key(4.0, 1.5)];
+        for p in &pngs {
+            let aid = project.add_asset(media::probe(&p.to_string_lossy(), Backend::Auto).expect("probe png"));
+            let id = project.insert_asset_clips(aid, 0.0, None)[0];
+            project.clip_mut(id).unwrap().scale.keys = vec![key(0.5, 0.0), key(1.0, 0.4)];
+        }
+        let mut pool = DecoderPool::new(Backend::Auto);
+        pool.set_source_cache_bytes(1 << 30);
+        let mut spare = Vec::new();
+        let (mut text, mut shapes, mut comp) = (TextRasterizer::new(), ShapeRasterizer::new(), Compositor::new());
+        let mut go = |t: f64| {
+            let t0 = Instant::now();
+            let set = decode_layers(&project, t, 1200, 675, &mut pool, &mut spare, &mut text, &mut shapes, &mut comp);
+            assert_eq!(set.layers.len(), 4);
+            let ms = t0.elapsed().as_secs_f64() * 1e3;
+            recycle(Some(Arc::new(set)), &mut spare);
+            ms
+        };
+        eprintln!("first frame (opens 4 sources): {:.0} ms", go(0.0));
+        let mut ms: Vec<f64> = (1..180).map(|f| go(f as f64 / 60.0)).collect();
+        ms.sort_by(|a, b| a.total_cmp(b));
+        let (avg, p95) = (ms.iter().sum::<f64>() / ms.len() as f64, ms[ms.len() * 95 / 100]);
+        eprintln!("4 layers @1200x675: avg {avg:.2} ms, p95 {p95:.2} ms, max {:.2} ms per frame", ms[ms.len() - 1]);
+        // 16.7 ms is one frame at 60 fps, and decoding is only part of it
+        if !cfg!(debug_assertions) {
+            assert!(avg < 8.0, "avg {avg:.2} ms per frame");
+        }
     }
 }

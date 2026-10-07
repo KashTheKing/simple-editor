@@ -61,6 +61,10 @@ pub trait VideoSource: Send {
     /// Returns false at/after EOF or on error (then `out` is untouched). Must be cheap for sequential
     /// increasing `t` (playback: keep decoding forward); may seek for other jumps.
     fn frame_at(&mut self, t: f64, w: u32, h: u32, out: &mut Frame) -> bool;
+    /// A still image: every `t` is the same picture, so callers may cache one frame per size.
+    fn is_still(&self) -> bool {
+        false
+    }
 }
 
 pub trait AudioSource: Send {
@@ -148,9 +152,12 @@ pub struct DecoderPool {
     /// disables it entirely, so export / thumbnail / prerender / audio pools stay byte-identical
     /// to a pool without one; only the preview render thread turns it on (`Cmd::CacheBudget`).
     source_cache: SourceCache,
+    /// Sources being opened ahead of use on their own threads (`warm`), by resolved path.
+    warming: HashMap<String, std::thread::JoinHandle<Option<Box<dyn VideoSource>>>>,
 }
 
-/// Byte-budgeted LRU of decoded source frames, keyed by (SOURCE path, request time in µs, w, h).
+/// Byte-budgeted LRU of decoded source frames, keyed by (SOURCE path, request time in µs, w, h) -
+/// a still (`VideoSource::is_still`) by `STILL_T`, since its picture is the same at every time.
 /// Callers re-derive the same `f64` time for the same timeline frame (fps grid → src_time → clamp),
 /// so keys recur bit-exactly on replays; keying by the source path (pre-proxy-resolution) lets a
 /// proxy swap invalidate exactly the entries whose pixels changed. This is what turns a backwards
@@ -166,19 +173,26 @@ struct SourceCache {
 }
 
 impl SourceCache {
-    fn key(path: &str, t: f64, w: u32, h: u32) -> (String, i64, u32, u32) {
-        (path.to_ascii_lowercase(), (t * 1e6).round() as i64, w, h)
+    /// The time key of a still: no real request rounds to it.
+    const STILL_T: i64 = i64::MIN;
+    fn us(t: f64) -> i64 {
+        (t * 1e6).round() as i64
     }
-    fn get(&mut self, path: &str, t: f64, w: u32, h: u32) -> Option<Arc<Frame>> {
+    /// The entry for `path` at `us` µs - or its still entry, whatever the time.
+    fn get(&mut self, path: &str, us: i64, w: u32, h: u32) -> Option<Arc<Frame>> {
         if self.budget == 0 {
             return None;
         }
         self.tick += 1;
-        let e = self.map.get_mut(&Self::key(path, t, w, h))?;
+        let mut key = (path.to_ascii_lowercase(), Self::STILL_T, w, h);
+        if !self.map.contains_key(&key) {
+            key.1 = us;
+        }
+        let e = self.map.get_mut(&key)?;
         e.0 = self.tick;
         Some(e.1.clone())
     }
-    fn insert(&mut self, path: &str, t: f64, w: u32, h: u32, f: Arc<Frame>) {
+    fn insert(&mut self, path: &str, us: i64, w: u32, h: u32, f: Arc<Frame>) {
         if self.budget == 0 {
             return;
         }
@@ -187,7 +201,7 @@ impl SourceCache {
         if bytes > self.budget {
             return; // a frame bigger than the whole budget would just evict everything for nothing
         }
-        if let Some((_, old)) = self.map.insert(Self::key(path, t, w, h), (self.tick, f)) {
+        if let Some((_, old)) = self.map.insert((path.to_ascii_lowercase(), us, w, h), (self.tick, f)) {
             self.bytes -= old.rgba.len();
         }
         self.bytes += bytes;
@@ -229,7 +243,24 @@ impl DecoderPool {
             tick: 0,
             proxies: HashMap::new(),
             source_cache: SourceCache::default(),
+            warming: HashMap::new(),
         }
+    }
+    /// Start opening `path` on a thread of its own, unless it is open (or opening) already; `video`
+    /// picks the result up, waiting only for whatever is left. Opening is the slow part of a source
+    /// - ffprobe.exe plus, for a still, the ffmpeg.exe run that decodes it: ~250 ms per PNG, 1 s
+    /// for a 9 MP one - and done on first use it stops every other layer for that long. Playback
+    /// calls this for the clips coming up, and for all of one frame's clips at once.
+    /// ponytail: at most 8 opening at once (each is a process or two); the rest open on first use.
+    pub fn warm(&mut self, path: &str) {
+        let path = self.proxies.get(path).cloned().unwrap_or_else(|| path.to_string());
+        if self.videos.contains_key(&path) || self.warming.len() >= 8 || self.warming.contains_key(&path) {
+            return;
+        }
+        mf::init_thread(); // COM must stay up on the thread that will use the reader
+        let (b, p) = (self.backend, path.clone());
+        let opening = std::thread::spawn(move || open_video(&p, b).ok());
+        self.warming.insert(path, opening);
     }
     /// Swap the proxy map. Returns the SOURCE paths whose mapping actually changed (added, removed
     /// or re-pointed), and drops only THEIR decoders and cached frames - a proxy finishing for one
@@ -255,6 +286,7 @@ impl DecoderPool {
             victims.extend(self.proxies.get(src).cloned());
             victims.extend(map.get(src).cloned());
             self.videos.retain(|k, _| !victims.iter().any(|v| v.eq_ignore_ascii_case(k)));
+            self.warming.retain(|k, _| !victims.iter().any(|v| v.eq_ignore_ascii_case(k)));
             self.source_cache.evict_path(src);
         }
         self.proxies = map;
@@ -279,7 +311,7 @@ impl DecoderPool {
     /// Decode a frame through the source-frame cache: a hit is one memcpy instead of a seek /
     /// ffmpeg respawn. Same contract as `VideoSource::frame_at` (`out` untouched on `false`).
     pub fn frame_at(&mut self, path: &str, t: f64, w: u32, h: u32, out: &mut Frame) -> bool {
-        if let Some(f) = self.source_cache.get(path, t, w, h) {
+        if let Some(f) = self.source_cache.get(path, SourceCache::us(t), w, h) {
             out.resize(f.width, f.height);
             out.rgba.copy_from_slice(&f.rgba);
             out.pts = f.pts;
@@ -289,8 +321,25 @@ impl DecoderPool {
         if !dec.frame_at(t, w, h, out) {
             return false;
         }
-        self.source_cache.insert(path, t, w, h, Arc::new(out.clone()));
+        let us = if dec.is_still() { SourceCache::STILL_T } else { SourceCache::us(t) };
+        self.source_cache.insert(path, us, w, h, Arc::new(out.clone()));
         true
+    }
+    /// `frame_at` that hands out the frame itself (in a buffer from `spare` when it has to decode).
+    /// A cached STILL comes back as the cache's own `Arc`: the same pixels at the same address on
+    /// every frame, so a still on screen costs no copy here and no texture upload in `engine::gpu`
+    /// (which re-uploads a layer only when its pointer/pts change). Video frames stay private
+    /// copies - their buffers are recycled, and nothing would reuse a shared one anyway.
+    pub fn frame_arc(&mut self, path: &str, t: f64, w: u32, h: u32, spare: &mut Vec<Frame>) -> Option<Arc<Frame>> {
+        if let Some(f) = self.source_cache.get(path, SourceCache::STILL_T, w, h) {
+            return Some(f);
+        }
+        let mut frame = spare.pop().unwrap_or_default();
+        if !self.frame_at(path, t, w, h, &mut frame) {
+            spare.push(frame);
+            return None;
+        }
+        Some(Arc::new(frame))
     }
     pub fn set_backend(&mut self, b: Backend) {
         if b != self.backend {
@@ -305,7 +354,14 @@ impl DecoderPool {
         let b = self.backend;
         self.tick += 1;
         let tick = self.tick;
-        let e = self.videos.entry(path.to_string()).or_insert_with(|| (tick, open_video(path, b).ok()));
+        let warming = &mut self.warming;
+        let e = self.videos.entry(path.to_string()).or_insert_with(|| {
+            let v = match warming.remove(path) {
+                Some(opening) => opening.join().ok().flatten(),
+                None => open_video(path, b).ok(),
+            };
+            (tick, v)
+        });
         e.0 = tick;
         let hit = e.1.is_some();
         if hit && self.videos.values().filter(|(_, v)| v.is_some()).count() > POOL_VIDEOS {
@@ -355,6 +411,7 @@ impl DecoderPool {
     /// forgets failed opens, so they are retried next time.
     pub fn clear(&mut self) {
         self.videos.clear();
+        self.warming.clear(); // detached: each finishes its open and drops the result
         self.audios.clear();
         self.source_cache.clear(); // a caller may be about to overwrite a source file
     }
@@ -464,5 +521,63 @@ mod tests {
         pool.insert_video("C:\\v-proxy.mp4", fake(&c));
         pool.frame_at("C:\\v.mp4", 3.0, 8, 8, &mut out);
         assert_eq!(c.load(Ordering::SeqCst), n + 1, "no stale pre-proxy pixels served after the swap");
+    }
+
+    /// A still is one cache entry per size whatever the time, and `frame_arc` hands that entry out:
+    /// the same `Arc` on every frame (no copy, and `engine::gpu` skips the upload). Without a cache
+    /// (export pools) nothing is shared and nothing changes.
+    #[test]
+    fn a_still_is_one_shared_frame_at_every_time() {
+        struct Still(Arc<AtomicUsize>);
+        impl VideoSource for Still {
+            fn size(&self) -> (u32, u32) {
+                (32, 32)
+            }
+            fn is_still(&self) -> bool {
+                true
+            }
+            fn frame_at(&mut self, _t: f64, w: u32, h: u32, out: &mut Frame) -> bool {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                out.resize(w, h);
+                true
+            }
+        }
+        let c = Arc::new(AtomicUsize::new(0));
+        let mut pool = DecoderPool::new(Backend::Ffmpeg);
+        pool.insert_video("C:\\s.png", Box::new(Still(c.clone())));
+        let mut spare = Vec::new();
+        let a = pool.frame_arc("C:\\s.png", 0.1, 8, 8, &mut spare).unwrap();
+        let b = pool.frame_arc("C:\\s.png", 0.2, 8, 8, &mut spare).unwrap();
+        assert!(!Arc::ptr_eq(&a, &b), "no cache: every call is its own decode");
+        assert_eq!(c.load(Ordering::SeqCst), 2);
+
+        pool.set_source_cache_bytes(1 << 20);
+        let first = pool.frame_arc("C:\\s.png", 0.3, 8, 8, &mut spare).unwrap();
+        let a = pool.frame_arc("C:\\s.png", 0.4, 8, 8, &mut spare).unwrap();
+        let b = pool.frame_arc("C:\\s.png", 9.0, 8, 8, &mut spare).unwrap();
+        assert!(Arc::ptr_eq(&a, &b), "one frame for every time");
+        assert_eq!(Arc::strong_count(&first), 1, "the decode that filled the cache stays the caller's own");
+        assert_eq!(c.load(Ordering::SeqCst), 3, "decoded once");
+        // the CPU compositor's copying path reads the same entry
+        let mut out = Frame::default();
+        assert!(pool.frame_at("C:\\s.png", 5.0, 8, 8, &mut out));
+        assert_eq!(c.load(Ordering::SeqCst), 3);
+        // another size is another entry
+        let d = pool.frame_arc("C:\\s.png", 0.4, 4, 4, &mut spare).unwrap();
+        assert_eq!((d.width, c.load(Ordering::SeqCst)), (4, 4));
+    }
+
+    /// `warm` opens in the background and `video` collects the result - no second open.
+    #[test]
+    fn warm_opens_in_the_background_and_video_picks_it_up() {
+        let mut pool = DecoderPool::new(Backend::Ffmpeg);
+        pool.warm("C:\\no-such-file.mp4");
+        assert!(pool.warming.contains_key("C:\\no-such-file.mp4"));
+        pool.warm("C:\\no-such-file.mp4"); // already opening: nothing more
+        assert_eq!(pool.warming.len(), 1);
+        assert!(pool.video("C:\\no-such-file.mp4").is_none(), "a failed open is still a failed open");
+        assert!(pool.warming.is_empty() && pool.videos.contains_key("C:\\no-such-file.mp4"));
+        pool.warm("C:\\no-such-file.mp4"); // known (failed) already: not retried behind the pool's back
+        assert!(pool.warming.is_empty());
     }
 }
