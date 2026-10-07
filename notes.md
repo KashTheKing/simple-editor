@@ -7,6 +7,31 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
 
 ---
 
+- **preview-perf (2026-10-06): "dropping hundreds of frames, ridiculously slow on stacked layers" was
+  five things, none of them the compositor.** Measured on a real 15-track 1080p60 trailer (63 clips,
+  mostly PNG stills with keyframed pop-ins over an H.264 clip) at 75 % quality: the 30.9 s timeline
+  took over 150 s to play and showed 30 % of its frames; after, 31.0 s and 4 dropped. In order of
+  cost: (1) `ffpipe::ImageSource` ran ffmpeg.exe per requested SIZE (~120 ms a run) behind an 8-entry
+  cache - a keyframed scale is a new size every frame, and ten bubbles of ten sizes thrash the cache
+  even when static: 0.5-1.6 s per frame. Now one run at open, smaller sizes shrunk in Rust. (2) DXVA
+  was attached from 720p up, which is exactly the proxy height: the GPU->CPU copy back made a 720p
+  proxy 13-43 ms a frame against 2.4 ms in software (1080p: 42 vs 7; 4K still wins, 7.0 vs 9.4), so
+  a single video layer could not hold 60 fps. Now only above 1080p. (3) the layer decode size
+  followed the placement to the pixel: a zooming clip was CPU-resampled every frame (25 ms once the
+  zoom outgrew its 720p proxy - placement uses the ASSET's size, the decoder has the PROXY's), an odd
+  canvas height cost a 6.5 ms resample for one row, and stills were re-copied and re-uploaded per
+  frame. `playback::layer_size` now asks for stepped fractions of the decoder's real size and the GPU
+  scales; a cached still is one shared `Arc` (`DecoderPool::frame_arc`), so `gpu::upload` skips it.
+  (4) opening a source (ffprobe + ffmpeg, 250 ms per PNG) happened on first use on the render thread;
+  `DecoderPool::warm` opens upcoming clips on their own threads. (5) after Pause the render thread
+  finished its whole read-ahead before looking at a Seek. Gotchas: the app's main crate is
+  `opt-level = "s"`, so per-pixel Rust loops (box filters) are 3-5x slower than you would guess -
+  measure before adding one to a per-frame path; MF's DXVA readback waits are timer-tick sized, so a
+  bare test process (15.6 ms ticks) shows 31/62 ms where the app shows ~10; and heredocs in the
+  agent shell halve backslashes - write helper scripts to a file. Still open: an alpha `.mov` gets a yuv420p proxy
+  like any other video, so its transparency previews as black (export is right); `GpuRenderer`
+  never frees a clip's layer texture.
+
 - **size-recovery (2026-09-29): an egui menu cost ~30 KB of exe per call site.** The simplify wave
   grew the release exe 12.44 -> 14.54 MB with ~2k source lines and no new deps. `cargo llvm-lines
   --bin simple-editor` (dev build, a few minutes) showed `egui::containers::popup::Popup::show` as the

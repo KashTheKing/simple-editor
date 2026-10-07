@@ -390,15 +390,15 @@ fn box_down(src: &[u8], sw: u32, sh: u32, w: u32, h: u32, dst: &mut [u8]) {
         let (y0, y1) = (j * sh / h, (j + 1) * sh / h);
         for (i, d) in drow.chunks_exact_mut(4).enumerate() {
             let (x0, x1) = (i * sw / w, (i + 1) * sw / w);
-            let mut acc = [0u32; 4];
+            let mut acc = [0u64; 4]; // u64: a 33 MP still shrunk to a pixel sums past u32
             for y in y0..y1 {
                 for px in src[(y * sw + x0) * 4..(y * sw + x1) * 4].chunks_exact(4) {
                     for k in 0..4 {
-                        acc[k] += px[k] as u32;
+                        acc[k] += px[k] as u64;
                     }
                 }
             }
-            let n = ((y1 - y0) * (x1 - x0)).max(1) as u32;
+            let n = ((y1 - y0) * (x1 - x0)).max(1) as u64;
             for k in 0..4 {
                 d[k] = (acc[k] / n) as u8;
             }
@@ -412,60 +412,68 @@ impl Drop for VideoPipe {
     }
 }
 
-/// Still image: decoded once per requested size (`-frames:v 1`), `t` ignored.
+/// Still image, `t` ignored. ffmpeg.exe decodes it ONCE, at native size, when it is opened; every
+/// smaller size is shrunk from that in Rust. (It used to ask ffmpeg per size: a clip with a
+/// keyframed scale wants a new size every frame, and ten stills of ten sizes thrashed the 8-entry
+/// cache - each miss a ~120 ms process spawn on the render thread, seconds per frame on a stack.)
+/// ponytail: `native` stays in RAM while the decoder lives (33 MB for a 4K still, pool-capped at
+/// 16 decoders); drop it after an idle spell if photo-heavy projects ever feel that.
 struct ImageSource {
     path: String,
     size: (u32, u32),
+    native: Vec<u8>,
     cache: HashMap<(u32, u32), Vec<u8>>,
+}
+
+/// One ffmpeg.exe run: the still at `path` as top-down RGBA of exactly w x h.
+fn decode_still(path: &str, w: u32, h: u32) -> Option<Vec<u8>> {
+    let size = format!("{w}x{h}");
+    let args =
+        ["-i", path, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", &size, "-an", "-sn", "pipe:1"];
+    let (mut child, mut pipe) = spawn(&args.map(String::from)).ok()?;
+    let mut buf = Vec::with_capacity((w * h * 4) as usize);
+    let ok = pipe.read_to_end(&mut buf).is_ok();
+    let _ = child.wait();
+    (ok && buf.len() == (w * h * 4) as usize).then_some(buf)
+}
+
+impl ImageSource {
+    fn open(path: &str, size: (u32, u32)) -> Result<Self, String> {
+        let native = decode_still(path, size.0, size.1).ok_or("ffmpeg could not decode the image")?;
+        Ok(Self { path: path.to_string(), size, native, cache: HashMap::new() })
+    }
 }
 
 impl VideoSource for ImageSource {
     fn size(&self) -> (u32, u32) {
         self.size
     }
+    fn is_still(&self) -> bool {
+        true
+    }
     fn frame_at(&mut self, _t: f64, w: u32, h: u32, out: &mut Frame) -> bool {
+        let (sw, sh) = self.size;
         if w == 0 || h == 0 {
             return false;
         }
-        if !self.cache.contains_key(&(w, h)) {
+        if (w, h) != (sw, sh) && !self.cache.contains_key(&(w, h)) {
             if self.cache.len() >= 8 {
-                self.cache.clear(); // ponytail: bounded cache for animated scale - resize in Rust if it thrashes
+                self.cache.clear(); // cheap to refill now: a resize, not a process
             }
-            let args: Vec<String> = [
-                "-i",
-                &self.path,
-                "-frames:v",
-                "1",
-                "-f",
-                "rawvideo",
-                "-pix_fmt",
-                "rgba",
-                "-s",
-                &format!("{w}x{h}"),
-                "-an",
-                "-sn",
-                "pipe:1",
-            ]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-            let Ok((mut child, mut pipe)) = spawn(&args) else {
-                return false;
+            let buf = if w <= sw && h <= sh {
+                let mut buf = vec![0; (w * h * 4) as usize];
+                box_down(&self.native, sw, sh, w, h, &mut buf);
+                buf
+            } else {
+                // bigger than the file (thumbnails of small images; the compositor never upscales)
+                let Some(buf) = decode_still(&self.path, w, h) else { return false };
+                buf
             };
-            let mut buf = Vec::with_capacity((w * h * 4) as usize);
-            let ok = pipe.read_to_end(&mut buf).is_ok();
-            let _ = child.wait();
-            if !ok || buf.len() != (w * h * 4) as usize {
-                return false;
-            }
             self.cache.insert((w, h), buf);
         }
-        let Some(rgba) = self.cache.get(&(w, h)) else {
-            return false;
-        };
         out.resize(w, h);
-        out.rgba.copy_from_slice(rgba);
         out.pts = 0.0;
+        out.rgba.copy_from_slice(if (w, h) == (sw, sh) { &self.native } else { &self.cache[&(w, h)] });
         true
     }
 }
@@ -542,7 +550,7 @@ pub fn bake_sequence(
 pub fn open_video(path: &str) -> Result<Box<dyn VideoSource>, String> {
     let a = probe(path)?;
     if a.kind == ClipKind::Image {
-        return Ok(Box::new(ImageSource { path: path.to_string(), size: (a.width, a.height), cache: HashMap::new() }));
+        return Ok(Box::new(ImageSource::open(path, (a.width.max(1), a.height.max(1)))?));
     }
     if a.kind != ClipKind::Video {
         return Err("no video stream".into());
@@ -972,6 +980,24 @@ pub(crate) mod tests {
         assert!((a.duration - 3.0).abs() < 0.2, "{}", a.duration);
         assert_eq!((a.width, a.height), (160, 120));
         assert_eq!(a.audio_streams.len(), 1);
+    }
+
+    /// A still costs one ffmpeg.exe run, when it is opened - not one per size: a keyframed scale asks
+    /// for a new size on every frame. With the file gone, any further run would fail.
+    #[test]
+    fn a_still_is_decoded_once_whatever_sizes_follow() {
+        let p = Path::new(&test_png()).with_file_name("once.png");
+        std::fs::copy(test_png(), &p).unwrap();
+        let mut v = open_video(&p.to_string_lossy()).unwrap();
+        assert!(v.is_still());
+        std::fs::remove_file(&p).unwrap();
+        let mut f = Frame::default();
+        for (w, h) in (1..=48).map(|h| (h * 4 / 3, h)).chain([(64, 48), (1, 1), (64, 1)]) {
+            assert!(v.frame_at(0.0, w, h, &mut f), "{w}x{h}");
+            assert_eq!((f.width, f.height), (w, h));
+            let px = centre(&f);
+            assert!(px[2] > 200 && px[0] < 60 && px[3] == 255, "{w}x{h}: expected blue, got {px:?}");
+        }
     }
 
     /// Size changes on a sequential t progression (keyframed scale) must not respawn ffmpeg: the pipe is
