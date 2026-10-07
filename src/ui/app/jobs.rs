@@ -306,9 +306,13 @@ impl App {
 
 // ---- ws:jobs-panel ----
 /// Only real video that out-sizes the proxy: images/audio gain nothing, and neither does footage
-/// already at or below proxy resolution.
+/// already at or below proxy resolution. Nor, yet, a file still being probed for an alpha channel:
+/// that decides which proxy it gets (`proxy::has_alpha`), and the next scan asks again.
 fn proxy_eligible(a: &crate::model::Asset, h: u32) -> bool {
-    a.kind == crate::model::ClipKind::Video && a.height > h && a.duration > 0.0
+    a.kind == crate::model::ClipKind::Video
+        && a.height > h
+        && a.duration > 0.0
+        && crate::media::proxy::has_alpha(&a.path).is_some()
 }
 
 /// Eligible assets whose proxy is not built yet (and whose source is on disk), in library order -

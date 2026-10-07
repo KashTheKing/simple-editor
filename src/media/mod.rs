@@ -120,11 +120,13 @@ pub fn open_video(path: &str, backend: Backend) -> Result<Box<dyn VideoSource>, 
     if is_image_path(path) {
         return ffpipe::open_video(path);
     }
-    match backend {
+    let v = match backend {
         Backend::Ffmpeg => ffpipe::open_video(path),
         Backend::Mf => mf::open_video(path),
         Backend::Auto => mf::open_video(path).or_else(|e| ffpipe::open_video(path).map_err(|e2| format!("{e}; {e2}"))),
-    }
+    }?;
+    // an alpha source's proxy is colour stacked over alpha: fold it back into one RGBA frame
+    Ok(if proxy::is_stacked(std::path::Path::new(path)) { Box::new(proxy::StackedAlpha::new(v)) } else { v })
 }
 
 pub fn open_audio(path: &str, stream: usize, backend: Backend) -> Result<Box<dyn AudioSource>, String> {
