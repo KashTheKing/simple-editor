@@ -53,7 +53,14 @@ impl Dest<'_> {
 /// Buffer pool, two per recursion depth: [2d] = source-read/resample buffer, [2d+1] = sequence
 /// sub-mix buffer. Grown once per size increase, never freed.
 #[derive(Default)]
-struct Scratch(Vec<Vec<f32>>);
+struct Scratch(Vec<Vec<f32>>, Voices);
+
+/// The (asset, audio stream) of every audio clip mixed so far in this block. A clip's voice is how
+/// many earlier ones read the same stream: clips that sound together each get a decoder of their own
+/// (`DecoderPool::audio`), and a clip alone on its file is voice 0 - cuts of one file share a decoder.
+/// ponytail: a clip that starts under a later-ordered one of the same file takes over its voice, at
+/// one seek each; and the same file imported twice counts as two.
+type Voices = Vec<(Id, usize)>;
 
 impl Scratch {
     /// Take pool buffer `i`, zeroed and sized to `len` (capacity kept - grows once).
@@ -91,7 +98,7 @@ impl Mixer {
 
     /// Mix into `out` (interleaved stereo, frames = out.len()/2) starting at timeline time `t`.
     /// `out` is zeroed first. For each audio track with `project.active(track)`, each enabled clip
-    /// overlapping [t, t + frames/48000): read `pool.audio(asset.path, clip.audio_stream)` at
+    /// overlapping [t, t + frames/48000): read `pool.audio(asset.path, clip.audio_stream, voice)` at
     /// `clip.src_time(..)` for the overlapping sub-range, apply `clip.volume` (ramped linearly from the
     /// value at the block start to the block end), add into the clip's bus. Buses are then flushed in
     /// evaluation order and the result clamped to [-1, 1].
@@ -101,6 +108,7 @@ impl Mixer {
             return;
         }
         let Mixer { scratch, graph, order } = self;
+        scratch.1.clear();
         if project.buses.is_empty() {
             mix_tracks(scratch, project, &project.tracks, t, pool, &mut Dest::Buf(out), 0);
         } else {
@@ -207,7 +215,10 @@ fn mix_audio_clip(
     } else {
         clip.src_time(t0)
     };
-    if let Some(src) = pool.audio(path, clip.audio_stream) {
+    let key = (clip.asset, clip.audio_stream);
+    let voice = scratch.1.iter().filter(|v| **v == key).count();
+    scratch.1.push(key);
+    if let Some(src) = pool.audio(path, clip.audio_stream, voice) {
         read_block(src, s0, &mut buf);
         resample_add(clip, ext, t0, &buf, out, track_gain);
     }
@@ -466,6 +477,47 @@ mod tests {
         mx.mix(&p, 10.0 - 0.0005, &mut pool, &mut out);
         assert!((out[0] - 0.25).abs() < 1e-5);
         assert_eq!(out[95], 0.0);
+    }
+
+    /// Two clips of one file that sound together read through a decoder each, both straight on.
+    /// (Through one shared decoder every block was two seeks - an ffmpeg respawn each on that backend.)
+    #[test]
+    fn overlapping_clips_of_one_file_never_seek() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        /// Counts reads that do not carry on within a frame of where the last one stopped.
+        struct Seq(Arc<AtomicUsize>, Option<f64>);
+        impl AudioSource for Seq {
+            fn duration(&self) -> f64 {
+                10.0
+            }
+            fn read_at(&mut self, t: f64, out: &mut [f32]) {
+                // (the mixer reads one guard frame past each block)
+                if self.1.is_some_and(|next| (t - next).abs() > 1.5 / SAMPLE_RATE as f64) {
+                    self.0.fetch_add(1, Ordering::SeqCst);
+                }
+                self.1 = Some(t + (out.len() / 2 - 1) as f64 / SAMPLE_RATE as f64);
+                out.fill(0.25);
+            }
+        }
+        let mut p = project();
+        let ai = p.audio_tracks()[0];
+        let mut late = p.tracks[ai].clips[0].clone();
+        (late.id, late.start, late.duration) = (999, 1.0, 5.0);
+        let other = p.add_track(TrackKind::Audio);
+        p.tracks[other].clips.push(late);
+        let seeks = Arc::new(AtomicUsize::new(0));
+        let mut pool = DecoderPool::new(Backend::Ffmpeg);
+        for voice in 0..2 {
+            pool.insert_audio_voice("Z:\\nope\\fake.wav", 0, voice, Box::new(Seq(seeks.clone(), None)));
+        }
+        let mut mx = Mixer::new();
+        let mut out = vec![0.0f32; 2048];
+        for block in 0..200 {
+            mx.mix(&p, 1.0 + block as f64 * 1024.0 / SAMPLE_RATE as f64, &mut pool, &mut out);
+            assert!((out[0] - 0.5).abs() < 1e-5, "both clips sound: {}", out[0]);
+        }
+        assert_eq!(seeks.load(Ordering::SeqCst), 0);
     }
 
     // ---- ws:audio-dsp-automation ----

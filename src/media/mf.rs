@@ -729,17 +729,46 @@ impl VideoSource for MfVideo {
 
 // ---------------------------------------------------------------- audio
 
-/// Linear resampler state carried across decoded buffers.
+/// Taps on each side of an output sample in the resampling kernel.
+const RS_HALF: usize = 8;
+/// Kernel phases tabulated between two input frames (lerped between neighbours).
+const RS_PHASES: usize = 64;
+
+/// Resampler state carried across decoded buffers.
 #[derive(Default)]
 struct Resamp {
-    /// Position in "virtual source" frames where index 0 is `last` and 1.. are the buffer's frames.
+    /// Input frames still under the kernel, led by `RS_HALF - 1` frames of history.
+    hist: Vec<[f32; 2]>,
+    /// Where the next output frame falls, in input frames from `hist[0]`.
     pos: f64,
-    last: [f32; 2],
     primed: bool,
 }
 
+/// Hann-windowed sinc, `RS_PHASES + 1` rows of `2 * RS_HALF` taps, each row summing to 1.
+fn rs_kernel() -> &'static [[f32; 2 * RS_HALF]] {
+    static K: OnceLock<Vec<[f32; 2 * RS_HALF]>> = OnceLock::new();
+    K.get_or_init(|| {
+        let row = |p: usize| {
+            let mut k = [0f64; 2 * RS_HALF];
+            for (i, k) in k.iter_mut().enumerate() {
+                // tap i sits on input frame floor(pos) + i - (RS_HALF - 1); x = its distance from pos
+                let x = (i as f64 - (RS_HALF - 1) as f64 - p as f64 / RS_PHASES as f64) * std::f64::consts::PI;
+                let sinc = if x == 0.0 { 1.0 } else { x.sin() / x };
+                *k = sinc * (0.5 + 0.5 * (x / RS_HALF as f64).cos());
+            }
+            let sum: f64 = k.iter().sum();
+            k.map(|v| (v / sum) as f32)
+        };
+        (0..=RS_PHASES).map(row).collect()
+    })
+}
+
 /// Append `src` (interleaved `ch` channels at `rate`) to `fifo` as interleaved stereo @ SAMPLE_RATE.
-/// Mono is duplicated, >2 channels keep L/R. Non-48k input is linearly resampled.
+/// Mono is duplicated, >2 channels keep L/R. Non-48k input goes through a 16-tap windowed sinc (44.1 kHz
+/// MP3 always comes this way - see `audio_reader`): flat within 1 dB to ~16 kHz. A frame is written once
+/// the `RS_HALF` input frames after it have arrived, so the last 0.2 ms of a stream is never written.
+/// ponytail: the kernel is not widened for rates above 48 kHz, which alias as the old linear
+/// interpolation did - scale the cutoff by 48000/rate (and the tap count with it) if that matters.
 fn push_audio(src: &[f32], ch: usize, rate: u32, rs: &mut Resamp, fifo: &mut Vec<f32>) {
     if ch == 0 || src.len() < ch {
         return;
@@ -755,22 +784,28 @@ fn push_audio(src: &[f32], ch: usize, rate: u32, rs: &mut Resamp, fifo: &mut Vec
         return;
     }
     if !rs.primed {
-        *rs = Resamp { pos: 1.0, last: frame(0), primed: true };
+        // the first frame held as lead-in, so output frame 0 lands on input frame 0
+        *rs = Resamp { hist: vec![frame(0); RS_HALF - 1], pos: (RS_HALF - 1) as f64, primed: true };
     }
-    // ponytail: linear interpolation - a windowed-sinc resampler if aliasing ever matters.
+    rs.hist.extend((0..n).map(frame));
     let step = rate as f64 / SAMPLE_RATE as f64;
-    let v = |k: usize| if k == 0 { rs.last } else { frame(k - 1) };
-    let mut pos = rs.pos;
-    while pos < n as f64 {
-        let k = pos as usize;
-        let f = (pos - k as f64) as f32;
-        let (a, b) = (v(k), v(k + 1));
-        fifo.push(a[0] + (b[0] - a[0]) * f);
-        fifo.push(a[1] + (b[1] - a[1]) * f);
-        pos += step;
+    let kernel = rs_kernel();
+    while rs.pos as usize + RS_HALF < rs.hist.len() {
+        let k = rs.pos as usize;
+        let phase = (rs.pos - k as f64) * RS_PHASES as f64;
+        let (p, f) = (phase as usize, phase.fract() as f32);
+        let mut o = [0f32; 2];
+        for (i, s) in rs.hist[k + 1 - RS_HALF..=k + RS_HALF].iter().enumerate() {
+            let c = kernel[p][i] + (kernel[p + 1][i] - kernel[p][i]) * f;
+            o[0] += s[0] * c;
+            o[1] += s[1] * c;
+        }
+        fifo.extend_from_slice(&o);
+        rs.pos += step;
     }
-    rs.pos = pos - n as f64;
-    rs.last = frame(n - 1);
+    let done = (rs.pos as usize).saturating_sub(RS_HALF - 1); // frames no later tap reaches back to
+    rs.hist.drain(..done.min(rs.hist.len()));
+    rs.pos -= done as f64;
 }
 
 struct MfAudio {
@@ -823,7 +858,10 @@ pub fn open_audio(path: &str, stream: usize) -> Result<Box<dyn AudioSource>, Str
         full.SetUINT32(&MF_MT_AUDIO_SAMPLES_PER_SECOND, SAMPLE_RATE).map_err(err)?;
         full.SetUINT32(&MF_MT_AUDIO_BLOCK_ALIGNMENT, 4 * CHANNELS as u32).map_err(err)?;
         full.SetUINT32(&MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 4 * CHANNELS as u32 * SAMPLE_RATE).map_err(err)?;
-        if reader.SetCurrentMediaType(idx, None, &full).is_err() {
+        // MP3 is never converted by MF: with its resampler behind the MP3 decoder, `ReadSample` blocks
+        // forever after about 1 seek in 75 (30 of 2244 seeks into a 44.1 kHz file; 0 of 2244 at the
+        // native rate, and 0 of 2244 for the same stream in an MP4) - an export sat at "Mixing audio…".
+        if sub == MFAudioFormat_MP3 || reader.SetCurrentMediaType(idx, None, &full).is_err() {
             // MF won't convert rate/channels: take native rate/channels as float, convert in Rust.
             let mt = MFCreateMediaType().map_err(err)?;
             mt.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Audio).map_err(err)?;
@@ -1299,18 +1337,67 @@ mod tests {
         push_audio(&[0.5], 1, 48000, &mut Resamp::default(), &mut fifo);
         push_audio(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 6, 48000, &mut Resamp::default(), &mut fifo);
         assert_eq!(fifo, [0.5, 0.5, 1.0, 2.0]);
-        // 24k mono ramp -> 48k: interpolated midpoints, continuous across buffers
+        // 24k mono ramp -> 48k: every frame and every midpoint, continuous across buffers. A frame is
+        // written once the 8 input frames after it are in; the first 8 lean on the held lead-in.
         fifo.clear();
         let mut rs = Resamp::default();
-        push_audio(&[0.0, 2.0, 4.0], 1, 24000, &mut rs, &mut fifo);
-        push_audio(&[6.0, 8.0], 1, 24000, &mut rs, &mut fifo);
+        let ramp: Vec<f32> = (0..40).map(|i| i as f32 * 2.0).collect();
+        push_audio(&ramp[..13], 1, 24000, &mut rs, &mut fifo);
+        push_audio(&ramp[13..], 1, 24000, &mut rs, &mut fifo);
         let l: Vec<f32> = fifo.chunks_exact(2).map(|c| c[0]).collect();
-        // (the last source sample waits for the next buffer: it is only an interpolation endpoint)
-        assert_eq!(l, [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
+        assert_eq!(l.len(), 2 * (40 - 8));
+        for (m, v) in l.iter().enumerate().skip(16) {
+            assert!((v - m as f32).abs() < 1e-3, "frame {m}: {v}");
+        }
         // 96k -> 48k: one out per two in
         fifo.clear();
-        push_audio(&[0.0, 1.0, 2.0, 3.0], 1, 96000, &mut Resamp::default(), &mut fifo);
-        assert_eq!(fifo.len() / 2, 2);
+        push_audio(&ramp, 1, 96000, &mut Resamp::default(), &mut fifo);
+        assert_eq!(fifo.len() / 2, (40 - 8) / 2);
+    }
+
+    /// 44.1 kHz -> 48 kHz keeps a tone a tone: the right phase and level at 1 kHz, and at 15 kHz no
+    /// more than 1 dB down (linear interpolation lost 3.4 dB there and mirrored the tone to 18.9 kHz).
+    #[test]
+    fn push_audio_resamples_44k_cleanly() {
+        for (hz, tol) in [(1000.0, 0.005), (15000.0, 0.06)] {
+            let tone = |i: usize, rate: f64| (std::f64::consts::TAU * hz * i as f64 / rate).sin() as f32 * 0.5;
+            let src: Vec<f32> = (0..8820).map(|i| tone(i, 44100.0)).collect();
+            let (mut rs, mut fifo) = (Resamp::default(), Vec::new());
+            for chunk in src.chunks(1000) {
+                push_audio(chunk, 1, 44100, &mut rs, &mut fifo);
+            }
+            let out: Vec<f32> = fifo.chunks_exact(2).map(|c| c[0]).collect();
+            assert!(out.len() > 9500, "{} frames", out.len());
+            let err = out.iter().enumerate().skip(32).map(|(m, v)| (v - tone(m, 48000.0)).abs()).fold(0.0, f32::max);
+            assert!(err < tol, "{hz} Hz: off by up to {err}");
+        }
+    }
+
+    /// Two clips of one MP3 at different source times seek on every block. MF used to resample MP3
+    /// itself, and then about 1 seek in 75 never came back from `ReadSample` (an export stuck at
+    /// "Mixing audio…"); decoded at its native rate it always does.
+    #[test]
+    fn mp3_survives_a_seek_storm() {
+        let post = ["-vn", "-map", "0:a:0", "-ar", "44100", "-c:a", "libmp3lame"];
+        let Some(p) = derive("seek441.mp3", &[], &post) else {
+            eprintln!("SKIP: no ffmpeg");
+            return;
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut a = open_audio(&p, 0).expect("open_audio");
+            let mut buf = vec![0f32; 1025 * 2];
+            let mut quiet = 0;
+            for k in 0..300 {
+                for t in [1.5, 0.5] {
+                    a.read_at(t + (k % 90) as f64 * 1024.0 / 48000.0, &mut buf);
+                    quiet += (rms(&buf) < 0.1) as u32;
+                }
+            }
+            let _ = tx.send(quiet);
+        });
+        let quiet = rx.recv_timeout(std::time::Duration::from_secs(60)).expect("an MP3 read never returned");
+        assert_eq!(quiet, 0, "blocks that came back silent");
     }
 
     #[test]
