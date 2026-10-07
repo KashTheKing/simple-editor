@@ -333,6 +333,33 @@ GL work happens **only on the UI thread** (it owns the context). Everything GPU 
   dropped so long timelines don't hoard MF readers / ffmpeg children. The preview pool also keeps a
   decoded-source-frame LRU (`DecoderPool::frame_at`, a quarter of the cache budget; 0 = off for every
   other pool) so a scrub-back past the composited cache is a memcpy, not an ffmpeg respawn.
+* **Stills** (preview pool): on `SetProject` the render thread lists every still on the timeline
+  (`playback::stills`: nearest the playhead first, each with the largest size it is ever shown at)
+  and `DecoderPool::set_stills` decodes them in the background, four at a time. A still is kept at
+  the halving of its file that covers that size, plus every halving below (`ffpipe::ImageSource`),
+  as shared `Arc<Frame>`s: a still layer costs the render thread a lookup. They are budgeted by
+  bytes (the source-cache budget), not by the 16-decoder count.
+* **No layer blocks a frame**: around each preview frame the pool has a deadline (`set_deadline`:
+  now while playing, 100 ms when paused). A source that is not open by then is left out, the index
+  is noted as partial (`Player::is_partial`), and when `DecoderPool::collect` sees the source arrive
+  the partial frames are evicted and redone. Export and one-shot renders set no deadline and wait.
+* **Frames ahead**: before a read-ahead decode the render thread puts the next cached frames, with
+  their due times, in `Shared::ahead`; `Player::take_layers` / `take_frame` hand them out by the
+  clock, so a decode that overruns its window costs read-ahead, not frames.
+* **Paused read-ahead**: once a paused playhead has rested 60 ms, the render thread pre-renders the
+  frames around it into the cache (`idle_order`: a scrub's next landing place, then the read-ahead
+  window ahead, then the trail behind), checking the command queue before every decode - Play, a
+  step or the next scrub seek finds its frame cached. While playing, `warm_clips` opens the clips of
+  the next 3 s and decodes each one's first frame on the opening thread (`DecoderPool::warm`), and
+  the timeline's hover time (`Player::hint`) opens what is under the pointer.
+* **Hidden layers**: `decode_layers` skips a clip that `compose::can_show` rules out (opacity 0,
+  wholly off the canvas) and every track under the topmost layer that `compose::covers` the canvas
+  (opaque codec, Normal blend, full opacity, no mask/effect/graph/rotation, frame really decoded);
+  `LayerSet::base` tells `gpu::render_canvas` which tracks to start at. The CPU compositor applies
+  `can_show` only. Both must hold two frames either side of the set's time, since the preview
+  draws a set at the clock's time.
+* **Layer textures** (`engine::gpu`): one per clip, freed least-recently-drawn first past 512 MB
+  (`LAYER_TEX_BYTES`), never one drawn in the last four renders.
 * **Proxies** (`src/media/proxy.rs`): the app builds all-intra 720p proxies (ffmpeg, one background
   job at a time, hash-of-(path, mtime, height) filenames in the cache dir) and pushes a
   source→proxy map to the player (`Cmd::Proxies` → `DecoderPool::set_proxies`). Only preview pools

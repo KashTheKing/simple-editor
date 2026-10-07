@@ -342,7 +342,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `playback.rate` | Ui | rate | Set shuttle/playback rate (starts playing if paused); -8..8, 0 rejected (use playback.pause). |
 | `playback.scrub` | Ui | t | Emit one BLOCK (~21ms) of audio at t without moving the clock (paused only). |
 | `playback.seek` | Read | t | Move the playhead. |
-| `playback.status` | Read | - | Current rate, dropped-frame count, buffering flag, and loop range. |
+| `playback.status` | Read | - | Current rate, time, dropped and published frame counts, longest wait between two frames since the last call (ms), buffering flag, and loop range. |
 | `playback.step` | Ui | frames | Step the playhead by N frames (negative = back); pauses first. |
 
 **`playhead.*`** (2 tools)

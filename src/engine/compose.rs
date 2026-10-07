@@ -123,6 +123,74 @@ fn placement_w(pw: u32, clip: &Clip, t: f64, native: (u32, u32), cw: u32, ch: u3
     }
 }
 
+/// The size a layer is decoded at: the smallest of a few fixed fractions of the decoder's own
+/// size `src` that covers the `need`ed placement (all of `src` when nothing does) - halvings for a
+/// still, eighths for video. The renderer scales a layer to its quad whatever size the bitmap is,
+/// so it need not match the placement pixel for pixel, and must not: a keyframed scale (a pop-in,
+/// a slow zoom) would be a new size on every frame - for a still a new bitmap to shrink, copy and
+/// upload each time instead of one shared frame for the whole move; for video a full-frame CPU
+/// resample on top of every decode (an upscale, 25 ms, once a zoom outgrows a 720p proxy).
+pub fn layer_size(src: (u32, u32), need: (u32, u32), still: bool) -> (u32, u32) {
+    let covers = |w: u32, h: u32| w >= need.0 && h >= need.1;
+    let (w, h) = if still {
+        let k = (1..32).take_while(|k| covers(src.0 >> k, src.1 >> k)).last().unwrap_or(0);
+        (src.0 >> k, src.1 >> k)
+    } else {
+        let k = (1..8).find(|k| covers(src.0 * k / 8, src.1 * k / 8)).unwrap_or(8);
+        (src.0 * k / 8, src.1 * k / 8)
+    };
+    (w.max(1), h.max(1))
+}
+
+/// Can `clip` change a pixel of a (w, h) canvas at `t`? False only when that is certain: its
+/// opacity is 0 (both renderers return before drawing anything, an adjustment layer included), or
+/// its footage lies wholly off the canvas. Such a clip need not be decoded at all.
+/// `pw` = the project (or nested sequence) width its position is given in, as in `placement_w`.
+pub fn can_show(project: &Project, pw: u32, clip: &Clip, t: f64, w: u32, h: u32) -> bool {
+    let lt = clip.local(t);
+    if clip.opacity.at(lt).clamp(0.0, 1.0) * clip.fade_mult(lt) <= 0.0 {
+        return false;
+    }
+    if !matches!(clip.kind, ClipKind::Video | ClipKind::Image) || clip.is_empty_container() {
+        return true;
+    }
+    let Some(asset) = project.asset(clip.asset).filter(|a| a.width > 0 && a.height > 0) else { return true };
+    // an effect that moves the layer, or a node graph, can put pixels where the placement has none
+    if clip.uses_graph() || effects::effects_for(project, clip).iter().any(|e| e.enabled && e.kind.is_geometric()) {
+        return true;
+    }
+    let (x0, y0, x1, y1) = placement_w(pw, clip, t, (asset.width, asset.height), w, h, true).bounds();
+    // a pixel of slack: the edge is feathered half a pixel out. (NaN compares false: shown.)
+    !(x1 < -1.0 || y1 < -1.0 || x0 > w as f32 + 1.0 || y0 > h as f32 + 1.0)
+}
+
+/// Does `clip` replace every pixel of a (w, h) canvas at `t` with its own, so that nothing drawn
+/// before it can be seen? Only when all of this holds - anything else may let the canvas through:
+/// plain footage of a codec that cannot carry alpha, blended Normal at full opacity, no mask, no
+/// effect, no node graph, not rotated, and placed over the whole canvas. The caller must still
+/// see its frame decode (a missing file draws nothing) and keep it out of a transition.
+/// ponytail: a still is never taken for opaque (PNGs carry alpha) - scan its pixels when it is
+/// opened if full-frame photo backdrops turn out to hide a lot.
+pub fn covers(project: &Project, clip: &Clip, t: f64, w: u32, h: u32) -> bool {
+    let lt = clip.local(t);
+    let Some(asset) = project.asset(clip.asset).filter(|a| a.width > 0 && a.height > 0) else { return false };
+    if clip.kind != ClipKind::Video
+        || clip.is_empty_container()
+        || !matches!(asset.codec.as_str(), "h264" | "mpeg4" | "mpeg2video" | "mjpeg")
+        || clip.blend != BlendMode::Normal
+        || clip.mask.as_ref().is_some_and(|m| m.enabled)
+        || clip.uses_graph()
+        || effects::effects_for(project, clip).iter().any(|e| e.enabled)
+        || clip.opacity.at(lt) * clip.fade_mult(lt) < 1.0
+    {
+        return false;
+    }
+    let p = placement(project, clip, t, (asset.width, asset.height), w, h, true);
+    let (x0, y0, x1, y1) = p.bounds();
+    // within a thousandth of a pixel the feathered edge is still full coverage to 8 bits
+    p.rot == 0.0 && x0 <= 1e-3 && y0 <= 1e-3 && x1 >= w as f32 - 1e-3 && y1 >= h as f32 - 1e-3
+}
+
 /// Per-clip render tweaks used by transitions (opacity fade, push offset, fade-to-colour).
 #[derive(Clone, Copy)]
 struct Extra {
@@ -282,8 +350,11 @@ impl Compositor {
                 self.render_transition(project, pw, tr, left, right, t, w, h, pool, text, out, depth);
                 continue;
             }
+            // ponytail: only what `can_show` rules out is skipped here. The GPU path also drops
+            // every track under a layer that covers the canvas (`playback::decode_layers`); doing it
+            // here needs that layer's frame in hand before the tracks below it are drawn.
             for clip in &track.clips {
-                if !clip.enabled || !clip.contains(t) {
+                if !clip.enabled || !clip.contains(t) || !can_show(project, pw, clip, t, w, h) {
                     continue;
                 }
                 self.render_clip(project, pw, clip, t, w, h, pool, text, out, depth, Extra::NONE);
@@ -471,16 +542,18 @@ impl Compositor {
                 if !(p.w.is_finite() && p.h.is_finite()) {
                     return;
                 }
-                // Keyframed scale on an image: decode once at the size the largest key needs (images
-                // always go through ffmpeg, which re-decodes per requested size); draw_layer resizes.
-                let pd = match clip.scale.keys.iter().max_by(|a, b| a.v.total_cmp(&b.v)) {
-                    Some(k) if clip.kind == ClipKind::Image => {
-                        placement_w(pw, clip, clip.start + k.t, native, w, h, true)
-                    }
-                    _ => p,
-                };
-                let dw = (pd.w.round() as u32).clamp(1, native.0);
-                let dh = (pd.h.round() as u32).clamp(1, native.1);
+                let mut dw = (p.w.round() as u32).clamp(1, native.0);
+                let mut dh = (p.h.round() as u32).clamp(1, native.1);
+                // A still is asked for in the same few sizes as on the GPU path (`layer_size`):
+                // its decoder keeps exactly those, so a keyframed scale costs a copy per frame and
+                // `draw_layer` resizes - any other size is a shrink of the whole picture each time.
+                // ponytail: video still asks for the placed size. Its decoder scales while it
+                // converts and `draw_layer` then blits 1:1; stepping would only move that resample
+                // into `draw_layer`'s slower general path.
+                if clip.kind == ClipKind::Image {
+                    let Some(src) = pool.video(&asset.path).map(|d| d.size()) else { return };
+                    (dw, dh) = layer_size(src, (dw, dh), true);
+                }
                 let st = if asset.duration > 0.0 {
                     clip.src_time(t).clamp(0.0, (asset.duration - 1e-4).max(0.0))
                 } else {
@@ -1399,7 +1472,7 @@ mod tests {
     }
 
     #[test]
-    fn keyframed_image_scale_decodes_one_size() {
+    fn keyframed_image_scale_decodes_a_few_sizes() {
         let mut project = Project::new();
         (project.width, project.height, project.fps) = (320, 240, 30.0);
         let mut a = fake_asset();
@@ -1420,10 +1493,10 @@ mod tests {
         for i in 0..5 {
             comp.render(&project, i as f64, 320, 240, &mut pool, &mut text, &mut out);
         }
-        // one decode size for the whole clip (the largest key), yet drawn at the animated size
+        // halvings of the still, a new one only when the move outgrows the last (never the placed
+        // size of each frame: 80, 100, 120, 140, 160 px wide), yet drawn at the animated size
         let s = sizes.lock().unwrap().clone();
-        assert_eq!(s.len(), 5);
-        assert!(s.iter().all(|&x| x == (160, 120)), "{s:?}");
+        assert_eq!(s, [(80, 60), (160, 120), (160, 120), (160, 120), (160, 120)]);
         comp.render(&project, 0.0, 320, 240, &mut pool, &mut text, &mut out);
         assert_eq!(px(&out, 160, 120), [0, 0, 255, 255]);
         assert_eq!(px(&out, 100, 120), [0, 0, 0, 255]); // scale 0.25 -> 80 px wide, centred
@@ -1838,5 +1911,35 @@ mod tests {
         comp.render(&project, 0.37, 64, 48, &mut pool, &mut text, &mut out);
         let corners = [px(&out, 0, 0), px(&out, 63, 0), px(&out, 0, 47), px(&out, 63, 47)];
         assert!(corners.iter().any(|c| *c == [0, 0, 0, 255]), "{corners:?}");
+    }
+
+    /// Hidden work: the CPU compositor does not decode a clip that lies off the canvas or has no
+    /// opacity (`can_show`) - but does when an effect could move it back in.
+    #[test]
+    fn clips_that_cannot_be_seen_are_not_decoded() {
+        use crate::model::{Animated, Effect, EffectKind};
+        let mut project = Project::new();
+        (project.width, project.height, project.fps) = (320, 240, 30.0);
+        let id = project.add_asset(fake_asset());
+        project.insert_asset_clips(id, 0.0, None);
+        let sizes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut pool = DecoderPool::new(Backend::Ffmpeg);
+        pool.insert_video(&project.assets[0].path, Box::new(SizeSpy(sizes.clone())));
+        let (mut comp, mut text, mut out) = (Compositor::new(), TextRasterizer::new(), Frame::default());
+        let mut decodes = |project: &Project| {
+            sizes.lock().unwrap().clear();
+            comp.render(project, 1.0, 320, 240, &mut pool, &mut text, &mut out);
+            sizes.lock().unwrap().len()
+        };
+        assert_eq!(decodes(&project), 1);
+        project.tracks[0].clips[0].x = Animated::new(400.0);
+        assert_eq!(decodes(&project), 0, "wholly off the right edge");
+        project.tracks[0].clips[0].effects.push(Effect::new(EffectKind::Wobble));
+        assert_eq!(decodes(&project), 1, "an effect that moves the layer: no telling");
+        project.tracks[0].clips[0].effects.clear();
+        project.tracks[0].clips[0].x = Animated::new(300.0);
+        assert_eq!(decodes(&project), 1, "20 px of it still on the canvas");
+        project.tracks[0].clips[0].opacity = Animated::new(0.0);
+        assert_eq!(decodes(&project), 0, "opacity 0");
     }
 }

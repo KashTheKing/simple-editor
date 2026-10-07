@@ -1155,7 +1155,8 @@ impl eframe::App for App {
         if let Some(f) = self.player.take_frame() {
             self.pending_frame = Some(f);
         }
-        if self.pending_frame.is_some() && self.first_frame_at.is_none() {
+        // (a frame still missing a layer that is being opened is not the first picture: `--screenshot` waits)
+        if self.pending_frame.is_some() && self.first_frame_at.is_none() && !self.player.is_partial() {
             self.first_frame_at = Some(Instant::now());
             #[cfg(debug_assertions)]
             eprintln!("first frame after {} ms", self.started.elapsed().as_millis());

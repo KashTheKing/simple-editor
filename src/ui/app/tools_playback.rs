@@ -153,12 +153,19 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                 app.player.scrub(t);
                 Ok(json!({"ok": true}))
             }
-            "playback.status" => Ok(json!({
-                "rate": app.player.rate(),
-                "dropped_frames": app.player.dropped_frames(),
-                "buffering": app.player.is_buffering(),
-                "loop_range": app.player.loop_range(),
-            })),
+            "playback.status" => {
+                let (published, worst_gap_ms) = app.player.publish_stats();
+                Ok(json!({
+                    "rate": app.player.rate(),
+                    "playing": app.player.is_playing(),
+                    "time": app.player.time(),
+                    "published_frames": published,
+                    "worst_gap_ms": worst_gap_ms,
+                    "dropped_frames": app.player.dropped_frames(),
+                    "buffering": app.player.is_buffering(),
+                    "loop_range": app.player.loop_range(),
+                }))
+            }
             "render.layers_async" => {
                 let t = req(arg_f64(args, "t"), "t")?;
                 let max_w = arg_u64(args, "max_w").map(|w| w as u32).unwrap_or(640).clamp(16, 3840);
@@ -267,7 +274,7 @@ pub const TOOLS: &[ToolDef] = &[
         "Emit one BLOCK (~21ms) of audio at t without moving the clock (paused only).",
         &["t:number:true:timeline seconds"]
     ),
-    row!("playback.status", ToolKind::Read, "Current rate, dropped-frame count, buffering flag, and loop range.", &[]),
+    row!("playback.status", ToolKind::Read, "Current rate, time, dropped and published frame counts, longest wait between two frames since the last call (ms), buffering flag, and loop range.", &[]),
     row!(
         "render.layers_async",
         ToolKind::Ui,

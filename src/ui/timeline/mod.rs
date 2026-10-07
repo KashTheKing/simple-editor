@@ -170,6 +170,8 @@ pub struct TimelineState {
     /// Track under the pointer this frame (lanes or header; None anywhere else, or while a popup
     /// covers it) - the "track under cursor" the track Actions target (`trim_actions::target_track`).
     pub hover_track: Option<usize>,
+    /// Timeline time under the pointer this frame, by the same rule (`Player::hint` warms it).
+    pub hover_time: Option<f64>,
     /// (video, audio) rows shown - view only, set each frame from `Settings::track_kinds` (per page).
     pub show_kinds: (bool, bool),
     /// tools-panel: the Marker tool's press time while a drag is out - a range marker on release.
@@ -201,6 +203,7 @@ impl Default for TimelineState {
             view_idx: 0,
             rollers: Vec::new(),
             hover_track: None,
+            hover_time: None,
             show_kinds: (true, true),
             marker_from: None,
         }
@@ -623,6 +626,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     // `rect_contains_pointer` respects layers: a popup or window over the rows is not "the cursor on a track"
     state.hover_track =
         if ui.rect_contains_pointer(body) { pointer.and_then(|p| state.track_at(p.y, c.project)) } else { None };
+    state.hover_time = pointer.filter(|_| ui.rect_contains_pointer(body)).map(|p| state.time_at(p.x));
     // Esc aborts the gesture: put the project back as it was at press time and drop the band.
     if escape {
         state.band = None;
