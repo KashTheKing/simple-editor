@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.1.0
+
+### Preview performance
+- A stack of stills over video plays in real time again: each still is decoded once (in the background at project open, capped at the largest size it is shown at) instead of re-running ffmpeg for every new size; the GPU does the scaling.
+- Hardware decoding is only used above 1080p (the GPU-to-CPU copy made 720p proxies several times slower than software decoding).
+- No layer blocks a frame: a source that is not ready is left out and the frame is redone when it arrives; Play and Seek pre-empt read-ahead.
+- Preloading: paused read-ahead around the playhead, scrub prediction, upcoming cuts decoded early, and hovering the timeline opens the footage under the pointer.
+- Memory no longer creeps over long sessions; GPU layer textures are capped at 512 MB. Invisible layers (opacity 0, off-canvas, fully covered) are skipped.
+
+### Fixes
+- Videos with an alpha channel (e.g. PNG / ProRes 4444 `.mov` wipes) keep their transparency in the preview.
+- An export with overlapping MP3 clips no longer hangs at "Mixing audio…"; MP3s are resampled with a higher-quality resampler.
+- Media Browser / Library folder rows are one full-width target: double-click anywhere (arrow, icon or name) expands.
+
+### Look & docs
+- GitHub Dark is the default theme, with the #335FFF accent.
+- The guide's screenshots are retaken in GitHub Dark; `release-fast` build profile for quick local builds.
+
 ## 1.0.0
 
 The first major release: a Resolve-style page workflow, a full tutorial site, and a much faster
