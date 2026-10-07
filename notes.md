@@ -26,6 +26,28 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
   (ffmpeg's native decoders drop it, so export loses it too), and an alpha source at or below proxy
   height still plays straight from the ffmpeg pipe.
 
+- **preview-perf2 (2026-10-07): what #135 left open.** Same trailer. (1) The 16-decoder LRU was the
+  big one: the timeline has 23 stills and 10 videos, so stills were evicted and re-opened (ffprobe
+  340 ms + ffmpeg 150-550 ms each) on every loop - 50-120 dropped frames a pass, hundreds once the
+  cache was full, 9 frames in a 144-seek scrub. Stills are now decoded at project open in the
+  background, kept as a chain of halvings capped at the size they are shown at, and budgeted by
+  bytes. (2) A source that is not open in time is left out of the frame and the frame redone when it
+  arrives (`DecoderPool::set_deadline` / `collect`). Gotcha: `video` can take a finished open in
+  itself, so `collect` must still report it (`arrived`) or the partial frames are never redone - a
+  flaky test found that. (3) Cached frames due during a read-ahead decode are handed to the UI with
+  their times (`Shared::ahead`). (4) Memory: RSS climbed 5.7 -> 6.6 GB over ten loops because cache
+  entries were costed by `len`, and a recycled buffer keeps the capacity of the biggest frame it
+  ever held; costed by capacity it sits flat at 5.8 GB (4 GB cache + 1 GB source cache by design on
+  a 64 GB machine). Windows logs `RADAR_PRE_LEAK_64` for that growth rate; it is a notice, not a
+  kill. (5) Hidden layers: on this project only 0.4 % of decoded pixels were invisible (208
+  opacity-0 layer-frames, 8 off-canvas, nothing under a cover), so culling is correctness-tested
+  but not a speed-up here. (6) A paused playhead now reads ahead once it has rested 60 ms.
+  Measuring gotchas: `Player::seek` moves the clock, so a seek FORWARD ends the pacing window by
+  itself - cause 5 of #135 only reproduces with a seek back; another agent's instance on the same
+  MCP port makes the app save `mcp_enabled: false`; `rustfmt src/ui/app/mod.rs` reformats every
+  child module; and none of the frame counts mean anything while something else has the CPU at
+  100 % (they were taken with a game running - redo them on a quiet machine).
+
 - **preview-perf (2026-10-06): "dropping hundreds of frames, ridiculously slow on stacked layers" was
   five things, none of them the compositor.** Measured on a real 15-track 1080p60 trailer (63 clips,
   mostly PNG stills with keyframed pop-ins over an H.264 clip) at 75 % quality: the 30.9 s timeline

@@ -12,7 +12,13 @@
 //! canvas resize, backend or GPU-mode switch still clears everything - entries can never go stale.
 //! While playing, the pacing gap until the next frame is due is spent pre-rendering upcoming frames
 //! into the cache instead of sleeping, so a decode hiccup lands in the prefetch window and not on a
-//! visible frame.
+//! visible frame - and the cached frames coming due during such a decode are handed to the UI ahead
+//! of time (`Shared::ahead`), to be shown by the clock.
+//!
+//! Nothing slow is waited for on the way to a preview frame. The timeline's stills are decoded in
+//! the background as soon as the project is set (`stills` → `DecoderPool::set_stills`); a source
+//! that is still being opened when a frame needs it is left out of that frame, which is shown
+//! without the layer and redone when the source arrives (`partial`).
 //!
 //! Commands (mpsc from the UI thread): SetProject, Seek, Play, Pause, Canvas, Backend, ClearDecoders(ack),
 //! Quit. The payload (project, clock, canvas) lives in `Shared`, so draining the queue and reading the
@@ -27,13 +33,13 @@
 //! Everything else (clock, pacing, decoder pool, audio) is identical, so falling back to the CPU
 //! compositor is a single `set_gpu(false)`.
 
-use crate::engine::compose::{placement, Compositor};
+use crate::engine::compose::{can_show, covers, layer_size, placement, Compositor};
 use crate::engine::gpu::LayerSet;
 use crate::engine::mixer::Mixer;
 use crate::engine::mixer_fx::METER_FEED;
 use crate::engine::shapes::ShapeRasterizer;
 use crate::engine::text::TextRasterizer;
-use crate::media::{Backend, DecoderPool, Frame, SAMPLE_RATE};
+use crate::media::{Backend, DecoderPool, Frame, StillUse, SAMPLE_RATE};
 use crate::model::{Clip, ClipKind, Project, TrackKind};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -79,6 +85,15 @@ const WARM_SECS: f64 = 3.0;
 /// How far the clock may run past the newest published frame before playback is declared
 /// buffering (the UI pauses the clock and shows a spinner until the cache refills).
 const STALL_BEHIND: f64 = 0.15;
+/// How long a paused frame (a seek, a scrub) waits for a source that is still being opened before
+/// it is shown without that layer, and shown again when the source is there. Playing never waits.
+const PAUSED_WAIT: Duration = Duration::from_millis(100);
+/// How long a paused playhead must rest before the frames around it are pre-rendered: a scrub's
+/// seeks come faster than this, so they never find a read-ahead decode in their way.
+const IDLE_REST: Duration = Duration::from_millis(60);
+/// Frames handed to the UI ahead of their time while the render thread decodes (`Shared::ahead`):
+/// a tenth of a second at 60 fps, more than any one decode should take.
+const AHEAD: i64 = 6;
 /// Recycled frame buffers kept for the CPU compositor (cache evictions feed it).
 const FPOOL_KEEP: usize = 4;
 
@@ -267,7 +282,21 @@ struct Shared {
     dropped: AtomicU64,
     /// Allocator for `request_layers`' request ids.
     next_req: AtomicU64,
+    /// Frames/layer sets published, and the longest wait (µs) between two of them while there was
+    /// something to show - `playback.status` reads both (observability + perf measurements).
+    published: AtomicU64,
+    worst_gap: AtomicU64,
+    /// Cached frames coming due while the render thread is busy decoding read-ahead, each with the
+    /// timeline time it is due at: the UI takes them by the clock (`Player::due`), so one slow
+    /// decode does not hold back frames that were ready all along. Empty outside such a decode.
+    ahead: Mutex<VecDeque<Due>>,
+    /// The newest published frame lacks a layer whose source was not open in time; the whole
+    /// frame follows. Written under the `frame` / `layers` lock it describes.
+    partial: AtomicBool,
 }
+
+/// A frame due at timeline time `.0`: the layers (GPU mode) or the composited frame.
+type Due = (f64, Option<Arc<LayerSet>>, Option<Arc<Frame>>);
 
 /// Poison-tolerant lock: a panicking worker must never take the UI down with it.
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -306,6 +335,8 @@ enum Cmd {
     Scrub(f64),
     /// Render-thread only: decode the layers for `Shared::req` and publish the reply, non-blocking.
     LayersAsync,
+    /// Render-thread only: the pointer is over the timeline at this time - open what is there.
+    Hint(f64),
     Quit,
 }
 
@@ -313,10 +344,22 @@ pub struct Player {
     shared: Arc<Shared>,
     render: Sender<Cmd>,
     audio: Sender<Cmd>,
+    ctx: eframe::egui::Context,
+    /// The quarter second of timeline last sent as a `hint`.
+    hinted: i64,
 }
 
 impl Player {
     pub fn new(ctx: eframe::egui::Context, backend: Backend, text: Arc<Mutex<TextRasterizer>>) -> Self {
+        Self::with_pool(ctx, backend, text, DecoderPool::new(backend))
+    }
+    /// `new` with the render thread's decoder pool handed in (tests inject slow or counting sources).
+    fn with_pool(
+        ctx: eframe::egui::Context,
+        backend: Backend,
+        text: Arc<Mutex<TextRasterizer>>,
+        pool: DecoderPool,
+    ) -> Self {
         let shared = Arc::new(Shared {
             clock: Mutex::new(Clock {
                 playing: false,
@@ -337,15 +380,39 @@ impl Player {
             reply: Mutex::new(None),
             dropped: AtomicU64::new(0),
             next_req: AtomicU64::new(0),
+            published: AtomicU64::new(0),
+            worst_gap: AtomicU64::new(0),
+            partial: AtomicBool::new(false),
+            ahead: Mutex::new(VecDeque::new()),
         });
         let (render, rx) = mpsc::channel();
-        let s = shared.clone();
-        let _ =
-            std::thread::Builder::new().name("render".into()).spawn(move || render_thread(s, rx, ctx, backend, text));
+        let (s, c) = (shared.clone(), ctx.clone());
+        let _ = std::thread::Builder::new().name("render".into()).spawn(move || render_thread(s, rx, c, pool, text));
         let (audio, rx) = mpsc::channel();
         let s = shared.clone();
         let _ = std::thread::Builder::new().name("audio".into()).spawn(move || audio_thread(s, rx, backend));
-        Self { shared, render, audio }
+        Self { shared, render, audio, ctx, hinted: -1 }
+    }
+    /// The newest frame of `Shared::ahead` that the clock has reached, layers or composited as
+    /// asked. Whatever sat in the plain slots is older and goes; the next one still waiting gets
+    /// its own repaint.
+    fn due(&self, layers: bool) -> Option<Due> {
+        let mut ahead = lock(&self.shared.ahead);
+        let (now, rate) = {
+            let mut c = lock(&self.shared.clock);
+            (c.now() + 1e-6, c.rate)
+        };
+        let mut out = None;
+        while ahead.front().is_some_and(|d| d.0 <= now && d.1.is_some() == layers) {
+            out = ahead.pop_front();
+        }
+        if out.is_some() {
+            (*lock(&self.shared.layers), *lock(&self.shared.frame)) = (None, None);
+            if let Some(next) = ahead.front() {
+                self.ctx.request_repaint_after(Duration::from_secs_f64(((next.0 - now) / rate.max(0.1)).max(0.0)));
+            }
+        }
+        out
     }
     fn both(&self, c: Cmd) {
         let _ = self.audio.send(c.clone());
@@ -441,12 +508,26 @@ impl Player {
     }
     /// Newest rendered frame not yet taken (UI uploads it to a texture).
     pub fn take_frame(&mut self) -> Option<Arc<Frame>> {
-        lock(&self.shared.frame).take()
+        self.due(false).and_then(|d| d.2).or_else(|| lock(&self.shared.frame).take())
+    }
+    /// The frame last published is missing a layer whose source was still being opened (a cold
+    /// seek onto a large still): the complete one is on its way.
+    pub fn is_partial(&self) -> bool {
+        self.shared.partial.load(Ordering::Relaxed)
+    }
+    /// `take_frame`, but never a partial one (see `is_partial`).
+    #[cfg(test)]
+    fn take_whole_frame(&mut self) -> Option<Arc<Frame>> {
+        let mut f = lock(&self.shared.frame);
+        if self.is_partial() {
+            return None;
+        }
+        f.take()
     }
     /// GPU mode only: the newest decoded layers not yet taken (the UI renders them with `engine::gpu`).
     /// Always None while the CPU compositor is running.
     pub fn take_layers(&mut self) -> Option<Arc<LayerSet>> {
-        lock(&self.shared.layers).take()
+        self.due(true).and_then(|d| d.1).or_else(|| lock(&self.shared.layers).take())
     }
     /// True while the render thread has fallen behind decode and is refilling its read-ahead.
     /// The UI pauses the clock (audio too) and shows a spinner until this clears.
@@ -547,6 +628,20 @@ impl Player {
     pub fn dropped_frames(&self) -> u64 {
         self.shared.dropped.load(Ordering::Relaxed)
     }
+    /// The pointer is over the timeline at `t`: the sources of the clips there are opened in the
+    /// background, so a click or a scrub onto them finds decoders ready. Cheap to call every frame.
+    pub fn hint(&mut self, t: f64) {
+        let q = (t * 4.0).floor() as i64;
+        if q != std::mem::replace(&mut self.hinted, q) {
+            let _ = self.render.send(Cmd::Hint(t));
+        }
+    }
+    /// (frames published so far, longest wait in ms between two publishes since the last call).
+    /// A wait is only counted while there was something to show: it restarts when the render thread
+    /// wakes from idle.
+    pub fn publish_stats(&self) -> (u64, f64) {
+        (self.shared.published.load(Ordering::Relaxed), self.shared.worst_gap.swap(0, Ordering::Relaxed) as f64 / 1e3)
+    }
     /// Queue a non-blocking one-shot layer decode at `t` (at most `max_w` px wide); returns a request
     /// id. Newest request always wins - an in-flight older request's reply is never surfaced once a
     /// newer one has been queued. Never blocks the caller (unlike `layers_once`).
@@ -584,10 +679,9 @@ fn render_thread(
     shared: Arc<Shared>,
     rx: Receiver<Cmd>,
     ctx: eframe::egui::Context,
-    backend: Backend,
+    mut pool: DecoderPool,
     text: Arc<Mutex<TextRasterizer>>,
 ) {
-    let mut pool = DecoderPool::new(backend);
     let mut comp = Compositor::new();
     let mut shapes = ShapeRasterizer::new();
     let mut project = lock(&shared.project).clone();
@@ -606,6 +700,16 @@ fn render_thread(
     // buffering: the clock outran decode; free-run the prefetcher (even while the UI pauses the
     // clock) until the read-ahead is back, instead of live-rendering straight into every stall
     let mut stall = false;
+    // when the last frame was published, or the thread last woke from idle (`Shared::worst_gap`)
+    let mut mark = Instant::now();
+    // cached indices that went without a layer (its source was not open in time): redone when one arrives
+    let mut partial: Vec<i64> = Vec::new();
+    // the project (or the budget its stills are held under) changed: queue its stills for decoding
+    let mut preload = false;
+    // paused: frames around the playhead may still be uncached (anything may have changed that)
+    let mut idle = false;
+    // the last paused playhead, and how far the one before it was: where a scrub is heading
+    let (mut rested_at, mut heading) = (-1i64, 0i64);
     // clear both caches, recycling their buffers (`drain` so a per-edit clear does not thrash the allocator)
     macro_rules! clear_caches {
         () => {
@@ -615,6 +719,7 @@ fn render_thread(
             for old in lcache.drain() {
                 recycle(Some(old), &mut spare_layers);
             }
+            partial.clear();
             last_pub = -1;
         };
     }
@@ -641,9 +746,31 @@ fn render_thread(
             c.now();
             c.playing
         };
-        if pending.is_none() && !dirty && !playing && !stall {
-            let Ok(c) = rx.recv() else { return }; // idle: block, zero CPU
-            pending = Some(c);
+        // a source finished opening: the frames that went without it are redone, this one first
+        if pool.collect() && !partial.is_empty() {
+            for i in partial.drain(..) {
+                for old in fcache.evict_range(i, i) {
+                    reclaim(old, &mut fpool);
+                }
+                for old in lcache.evict_range(i, i) {
+                    recycle(Some(old), &mut spare_layers);
+                }
+            }
+            dirty = true;
+        }
+        if pending.is_none() && !dirty && !playing && !stall && !idle {
+            // idle: block, zero CPU - looking in now and then only while sources are still opening
+            pending = if pool.busy() {
+                match rx.recv_timeout(Duration::from_millis(10)) {
+                    Ok(c) => Some(c),
+                    Err(RecvTimeoutError::Timeout) => None,
+                    Err(RecvTimeoutError::Disconnected) => return,
+                }
+            } else {
+                let Ok(c) = rx.recv() else { return };
+                Some(c)
+            };
+            mark = Instant::now();
         }
         // drain everything queued; the shared state already holds the latest values
         loop {
@@ -655,10 +782,11 @@ fn render_thread(
                     Err(TryRecvError::Disconnected) => return,
                 },
             };
+            idle = true;
             match c {
                 Cmd::SetProject => {
                     let new = lock(&shared.project).clone();
-                    dirty = true;
+                    (dirty, preload) = (true, true);
                     // evict only the frames the edit can have changed; None = anything could differ
                     match video_dirty_spans(&project, &new) {
                         Some(spans) => {
@@ -721,6 +849,7 @@ fn render_thread(
                     // a quarter of the finished-work budget for decoded source frames (fix for
                     // "reloading the footage" on scrubs - see DecoderPool::frame_at)
                     pool.set_source_cache_bytes(n / 4);
+                    preload = true;
                 }
                 Cmd::ClearDecoders(ack) => {
                     pool.clear();
@@ -749,6 +878,7 @@ fn render_thread(
                 // ---- ws:player-rate-loop ----
                 Cmd::Rate => dirty = true,
                 Cmd::Loop => {} // loop_range is read fresh from Clock each pass
+                Cmd::Hint(t) => warm_clips(&project, &mut pool, t, t),
                 Cmd::LayersAsync => {
                     // non-blocking mirror of LayersOnce: decode the latest request and publish the reply
                     if let Some((id, t, max_w)) = *lock(&shared.req) {
@@ -773,13 +903,16 @@ fn render_thread(
             let t = c.now();
             (c.playing, t, c.canvas, c.duration, c.rate)
         };
-        if !playing && !dirty && !stall {
+        if std::mem::take(&mut preload) {
+            pool.set_stills(stills(&project, t));
+        }
+        if !playing && !dirty && !stall && !idle {
             continue;
         }
         let force = std::mem::take(&mut dirty);
         let fps = project.fps.max(1.0);
         if w == 0 || h == 0 {
-            stall = false;
+            (stall, idle) = (false, false);
             shared.buffering.store(false, Ordering::Relaxed);
             if playing {
                 std::thread::sleep(Duration::from_secs_f64(1.0 / fps)); // nothing to render, keep pace
@@ -813,6 +946,57 @@ fn render_thread(
                 }
             };
         }
+        // Grid index `$i` out of the active cache, or rendered into it: (layers, frame, ok) - one
+        // of the first two, by mode; `ok` false = the decode panicked and the pool was cleared.
+        // A source that is not open within `$wait` is left out (`DecoderPool::deadline`) and the
+        // index noted in `partial`.
+        macro_rules! render_idx {
+            ($i:expr, $wait:expr) => {{
+                let hits = shared.cache_hits.load(Ordering::Relaxed);
+                pool.set_deadline(Some(Instant::now() + $wait));
+                let out = if gpu {
+                    let (set, ok) = gpu_cached(
+                        &mut lcache,
+                        &mut spare_layers,
+                        &project,
+                        $i,
+                        fps,
+                        w,
+                        h,
+                        &mut pool,
+                        &text,
+                        &mut shapes,
+                        &mut comp,
+                        &shared.cache_hits,
+                    );
+                    (Some(set), None, ok)
+                } else {
+                    let (frame, ok) = cpu_cached(
+                        &mut fcache,
+                        &mut fpool,
+                        &project,
+                        $i,
+                        fps,
+                        w,
+                        h,
+                        &mut pool,
+                        &text,
+                        &mut comp,
+                        &shared.cache_hits,
+                    );
+                    (None, Some(frame), ok)
+                };
+                pool.set_deadline(None);
+                let missed = pool.take_missed();
+                if shared.cache_hits.load(Ordering::Relaxed) == hits {
+                    partial.retain(|p| *p != $i); // rendered just now: whole, unless...
+                    if missed {
+                        partial.push($i);
+                    }
+                }
+                out
+            }};
+        }
         // buffering: the clock ran STALL_BEHIND past the newest published frame and the due frame
         // still isn't cached - declare a stall instead of grinding out one late frame at a time.
         // The UI polls is_buffering(), pauses the clock (audio flushes with it) and shows a spinner.
@@ -829,38 +1013,7 @@ fn render_thread(
             // (direction-aware: nearest-to-idx first, stride-sampled at high |rate|)
             let (rlo, rhi) = read_ahead_window(idx, read_ahead, last_idx, rate);
             if let Some(i) = prefetch_order(rlo, rhi, rate).into_iter().find(|i| !cached!(*i)) {
-                let ok = if gpu {
-                    gpu_cached(
-                        &mut lcache,
-                        &mut spare_layers,
-                        &project,
-                        i,
-                        fps,
-                        w,
-                        h,
-                        &mut pool,
-                        &text,
-                        &mut shapes,
-                        &mut comp,
-                        &shared.cache_hits,
-                    )
-                    .1
-                } else {
-                    cpu_cached(
-                        &mut fcache,
-                        &mut fpool,
-                        &project,
-                        i,
-                        fps,
-                        w,
-                        h,
-                        &mut pool,
-                        &text,
-                        &mut comp,
-                        &shared.cache_hits,
-                    )
-                    .1
-                };
+                let ok = render_idx!(i, Duration::ZERO).2;
                 if !ok {
                     stall = false; // a decode panicked and the pool was cleared: give up on this stall
                     shared.buffering.store(false, Ordering::Relaxed);
@@ -878,43 +1031,35 @@ fn render_thread(
             continue; // re-drain commands between decodes; never live-render while buffering
         }
         if force || idx != last_pub {
-            if gpu {
+            // paused, the frame waits a moment for a source that is still opening (a seek onto a
+            // clip nothing has shown yet); playing, never - it goes without, and is redone
+            let wait = if playing { Duration::ZERO } else { PAUSED_WAIT };
+            let began = Instant::now();
+            let (set, frame, _) = render_idx!(idx, wait);
+            let cheap = began.elapsed() < Duration::from_millis(8);
+            let whole = !partial.contains(&idx);
+            if let Some(set) = set {
                 // the UI thread owns the GL context: decode/rasterise here, render there
-                let (set, _) = gpu_cached(
-                    &mut lcache,
-                    &mut spare_layers,
-                    &project,
-                    idx,
-                    fps,
-                    w,
-                    h,
-                    &mut pool,
-                    &text,
-                    &mut shapes,
-                    &mut comp,
-                    &shared.cache_hits,
-                );
-                *lock(&shared.layers) = Some(set);
-            } else {
-                let (frame, _) = cpu_cached(
-                    &mut fcache,
-                    &mut fpool,
-                    &project,
-                    idx,
-                    fps,
-                    w,
-                    h,
-                    &mut pool,
-                    &text,
-                    &mut comp,
-                    &shared.cache_hits,
-                );
-                *lock(&shared.frame) = Some(frame); // replaces an untaken (stale) frame: latest wins
+                let mut slot = lock(&shared.layers);
+                shared.partial.store(!whole, Ordering::Relaxed);
+                *slot = Some(set);
+            }
+            if let Some(frame) = frame {
+                let mut slot = lock(&shared.frame);
+                shared.partial.store(!whole, Ordering::Relaxed);
+                *slot = Some(frame); // replaces an untaken (stale) frame: latest wins
             }
             if playing && last_pub >= 0 {
                 shared.dropped.fetch_add(dropped_delta(last_pub, idx, rate), Ordering::Relaxed);
             }
+            // (no guessing where a scrub goes next over frames that are slow to make: the guess
+            // would be in the way of the seek it is meant to serve)
+            heading = if playing || rested_at < 0 || !cheap { 0 } else { idx - rested_at };
+            rested_at = if playing { -1 } else { idx };
             last_pub = idx;
+            shared.published.fetch_add(1, Ordering::Relaxed);
+            shared.worst_gap.fetch_max(mark.elapsed().as_micros() as u64, Ordering::Relaxed);
+            mark = Instant::now();
             ctx.request_repaint();
         }
         if playing {
@@ -950,44 +1095,88 @@ fn render_thread(
                     std::thread::sleep(Duration::from_secs_f64(remain));
                     break;
                 };
-                let ok = if gpu {
-                    gpu_cached(
-                        &mut lcache,
-                        &mut spare_layers,
-                        &project,
-                        i,
-                        fps,
-                        w,
-                        h,
-                        &mut pool,
-                        &text,
-                        &mut shapes,
-                        &mut comp,
-                        &shared.cache_hits,
-                    )
-                    .1
-                } else {
-                    cpu_cached(
-                        &mut fcache,
-                        &mut fpool,
-                        &project,
-                        i,
-                        fps,
-                        w,
-                        h,
-                        &mut pool,
-                        &text,
-                        &mut comp,
-                        &shared.cache_hits,
-                    )
-                    .1
-                };
+                // This decode can outlast the window (a clip's first frame, a busy machine), and
+                // the frames due meanwhile are in the cache: hand them over with their times, and
+                // the UI shows each when the clock gets there (`Player::due`) - a slow decode then
+                // costs read-ahead, not frames. Whatever it took counts as published.
+                // ponytail: plain forward play only; a shuttle still waits for this thread.
+                let mut handed = 0;
+                if rate == 1.0 {
+                    let mut ahead = lock(&shared.ahead);
+                    for j in idx + 1..=idx + AHEAD {
+                        let due = if gpu { (lcache.get(j), None) } else { (None, fcache.get(j)) };
+                        if due.0.is_none() && due.1.is_none() {
+                            break;
+                        }
+                        ahead.push_back((j as f64 / fps, due.0, due.1));
+                    }
+                    handed = ahead.len();
+                    drop(ahead);
+                    ctx.request_repaint_after(Duration::from_secs_f64(remain));
+                }
+                let ok = render_idx!(i, Duration::ZERO).2;
+                let shown = handed - std::mem::take(&mut *lock(&shared.ahead)).len();
+                if shown > 0 {
+                    last_pub = idx + shown as i64;
+                    shared.published.fetch_add(shown as u64, Ordering::Relaxed);
+                    mark = Instant::now();
+                }
                 if !ok {
                     break; // a decode panicked and the pool was cleared: stop prefetching this window
                 }
             }
+        } else if !stall {
+            // Paused: pre-render what will be asked for next (`idle_order`) into the cache, so that
+            // Play, a step or the scrub under way finds its frame there. It is the lowest work this
+            // thread has: it only starts once the playhead has rested (the guess at a scrub's next
+            // frame apart), stops at the first command - one decode away at most - and stays inside
+            // the read-ahead window, which the cache budget sizes.
+            idle = false;
+            let mut rested = false;
+            for (n, i) in idle_order(idx, heading, read_ahead, trail, last_idx).into_iter().enumerate() {
+                if cached!(i) {
+                    continue;
+                }
+                if rested || (n == 0 && heading != 0) {
+                    if let Ok(c) = rx.try_recv() {
+                        pending = Some(c);
+                        break;
+                    }
+                } else {
+                    match rx.recv_timeout(IDLE_REST) {
+                        Ok(c) => {
+                            (pending, mark) = (Some(c), Instant::now());
+                            break;
+                        }
+                        Err(RecvTimeoutError::Timeout) => rested = true,
+                        Err(RecvTimeoutError::Disconnected) => return,
+                    }
+                }
+                mark = Instant::now(); // a command that comes during this decode waits from here
+                if !render_idx!(i, Duration::ZERO).2 {
+                    break;
+                }
+            }
         }
     }
+}
+
+/// The frames to pre-render around a paused playhead at `idx`, most wanted first: where a scrub
+/// that just moved `heading` frames lands next (a guess: the same step again), then `ahead` frames
+/// in that direction (forward when it stands still - what Play shows), then `behind` the other way.
+fn idle_order(idx: i64, heading: i64, ahead: i64, behind: i64, last_idx: i64) -> Vec<i64> {
+    let dir = if heading < 0 { -1 } else { 1 };
+    let guess = (heading != 0 && heading.abs() <= ahead).then_some(idx + heading);
+    let mut out: Vec<i64> = guess
+        .into_iter()
+        .chain((1..=ahead).map(|k| idx + k * dir))
+        .chain((1..=behind).map(|k| idx - k * dir))
+        .filter(|i| (0..=last_idx).contains(i))
+        .collect();
+    let first = out.first().copied();
+    let mut seen_first = false;
+    out.retain(|i| Some(*i) != first || !std::mem::replace(&mut seen_first, true));
+    out
 }
 
 // ---- ws:player-rate-loop ----
@@ -1204,7 +1393,7 @@ fn cpu_cached(
     let ok = guarded(pool, |pool| comp.render(project, t, w, h, pool, &mut lock(text), &mut frame));
     let frame = Arc::new(frame);
     if ok {
-        for old in cache.insert(idx, frame.rgba.len(), frame.clone()) {
+        for old in cache.insert(idx, frame.rgba.capacity(), frame.clone()) {
             reclaim(old, fpool);
         }
     }
@@ -1241,8 +1430,9 @@ fn gpu_cached(
     if ok {
         // a frame shared with the pool's source cache (a still, see `DecoderPool::frame_arc`) is
         // paid for there: counting it once per index would size the read-ahead as if every frame
-        // of a ten-still stack held ten bitmaps of its own
-        let own = |f: &Arc<Frame>| if Arc::strong_count(f) == 1 { f.rgba.len() } else { 0 };
+        // of a ten-still stack held ten bitmaps of its own. Capacity, not length: a recycled buffer
+        // that once held a full frame still holds that much when a small layer is decoded into it
+        let own = |f: &Arc<Frame>| if Arc::strong_count(f) == 1 { f.rgba.capacity() } else { 0 };
         let bytes: usize = set.layers.iter().map(|(_, f)| own(f)).sum::<usize>()
             + set.motion.iter().map(|(_, _, f)| own(f)).sum::<usize>();
         for old in cache.insert(idx, bytes, set.clone()) {
@@ -1275,8 +1465,40 @@ pub(crate) fn decode_layers(
     // a cold frame (a scrub onto a stack of stills nothing has shown yet) opens its sources side by
     // side, not one after the other
     warm_clips(project, pool, t, t);
-    for (ti, track) in project.tracks.iter().enumerate() {
-        if track.kind != TrackKind::Video || !project.active(ti) {
+    let tracks =
+        || project.tracks.iter().enumerate().filter(|(ti, tr)| tr.kind == TrackKind::Video && project.active(*ti));
+    fn on_screen(tr: &crate::model::Track, t: f64) -> impl Iterator<Item = &Clip> {
+        tr.clips.iter().filter(move |c| c.enabled && c.contains(t))
+    }
+    // Layers nobody can see are not decoded: one whose opacity is 0 or that lies off the canvas
+    // (`can_show`), and every track under the topmost layer that repaints the whole canvas
+    // (`covers`) - once that layer's frame is really here, since a file that fails to decode
+    // covers nothing. An adjustment layer above it still gets the canvas it needs: the cover.
+    // Each must hold two frames either side of `t` as well: the preview draws a set at the clock's
+    // time, not the set's own, and a cover that has just ended (or begun to fade) there would
+    // leave a hole where the layers below it were skipped.
+    // ponytail: a node graph on screen turns all of this off for the frame - its Clip and Asset
+    // nodes may sample layers that are hidden themselves. Follow the references if graph-heavy
+    // timelines need the culling.
+    let cull = !tracks().flat_map(|(_, tr)| on_screen(tr, t)).any(|c| c.graph.is_some());
+    let near = [t - 2.0 * project.frame_dur(), t, t + 2.0 * project.frame_dur()];
+    let covering = |c: &Clip| near.iter().all(|&t| c.contains(t) && covers(project, c, t, w, h));
+    let unseen = |c: &Clip| near.iter().all(|&t| !can_show(project, project.width, c, t, w, h));
+    if cull {
+        for (ti, track) in tracks().collect::<Vec<_>>().into_iter().rev() {
+            if track.transition_at(t).is_some() {
+                continue; // both sides are drawn with a mask or an offset: no cover
+            }
+            let Some(clip) = on_screen(track, t).find(|c| covering(c)) else { continue };
+            layer_for(project, clip, t, w, h, pool, spare, text, shapes, comp, &mut set);
+            if set.get(clip.id).is_some() {
+                set.base = ti;
+                break;
+            }
+        }
+    }
+    for (ti, track) in tracks() {
+        if ti < set.base {
             continue;
         }
         // mirrors gpu::render_canvas / compose::render_tracks: inside a transition window both clips are
@@ -1287,8 +1509,9 @@ pub(crate) fn decode_layers(
             }
             continue;
         }
-        for clip in &track.clips {
-            if clip.enabled && clip.contains(t) {
+        for clip in on_screen(track, t) {
+            // (a cover candidate is in the set already, whether or not it ended up covering)
+            if set.get(clip.id).is_none() && !(cull && unseen(clip)) {
                 layer_for(project, clip, t, w, h, pool, spare, text, shapes, comp, &mut set);
             }
         }
@@ -1318,10 +1541,68 @@ fn warm_clips(project: &Project, pool: &mut DecoderPool, lo: f64, hi: f64) {
         }
         for c in track.clips.iter().filter(|c| c.enabled && c.start <= hi && c.end() > lo) {
             if let Some(a) = project.asset(c.asset).filter(|_| matches!(c.kind, ClipKind::Video | ClipKind::Image)) {
-                pool.warm(&a.path);
+                // the first frame this window shows of it is decoded along with the open
+                pool.warm(&a.path, Some(c.src_time(c.start.max(lo)).max(0.0)));
             }
         }
     }
+}
+
+/// Every still the timeline shows, with its `StillUse` - the file's size and the largest size it
+/// is ever shown at, as the halving of it the layers are decoded from (`layer_size`) - the one the
+/// playhead at `t` reaches first in front, then the rest in timeline order, then what lies behind.
+/// `DecoderPool::set_stills` decodes them in that order and keeps no more of each than this.
+fn stills(project: &Project, t: f64) -> Vec<(String, StillUse)> {
+    use crate::model::NodeKind;
+    // placed by rules of their own, so kept whole: stills inside a nested sequence (its size, then
+    // the sequence clip's), and stills a node graph samples
+    let nested = project.sequences.iter().flat_map(|s| s.tracks.iter()).flat_map(|t| t.clips.iter());
+    let sampled = nested.clone().chain(project.all_clips().map(|(_, c)| c)).flat_map(|c| {
+        c.graph.iter().flat_map(|g| g.nodes.iter()).filter_map(|n| match n.kind {
+            NodeKind::Asset(a) => Some(a),
+            _ => None,
+        })
+    });
+    let whole: Vec<crate::model::Id> = nested.clone().map(|c| c.asset).chain(sampled).collect();
+    let mut out: Vec<(f64, &str, StillUse)> = Vec::new();
+    for (ti, track) in project.tracks.iter().enumerate() {
+        if track.kind != TrackKind::Video || !project.active(ti) {
+            continue;
+        }
+        for c in track.clips.iter().filter(|c| c.enabled && c.kind == ClipKind::Image) {
+            let Some(a) = project.asset(c.asset).filter(|a| a.width > 0 && a.height > 0) else { continue };
+            let size = (a.width, a.height);
+            let need = if whole.contains(&a.id) { size } else { still_need(project, c, size) };
+            let away = if c.end() <= t { project.duration() + t - c.end() } else { (c.start - t).max(0.0) };
+            match out.iter_mut().find(|o| o.1 == a.path) {
+                Some(o) => (o.0, o.2 .1) = (o.0.min(away), (o.2 .1 .0.max(need.0), o.2 .1 .1.max(need.1))),
+                None => out.push((away, &a.path, (size, need))),
+            }
+        }
+    }
+    out.sort_by(|a, b| a.0.total_cmp(&b.0));
+    out.into_iter().map(|(_, p, (size, need))| (p.to_string(), (size, layer_size(size, need, true)))).collect()
+}
+
+/// The largest size, in project pixels and at most `size`, that `clip` ever shows its still at.
+/// All of `size` when the keys cannot tell: a scale driven by a link, a layer moved by an effect.
+fn still_need(project: &Project, clip: &Clip, size: (u32, u32)) -> (u32, u32) {
+    let scales = [&clip.scale, &clip.scale_x, &clip.scale_y];
+    let moved = crate::engine::effects::effects_for(project, clip).iter().any(|e| e.kind.is_geometric());
+    if moved || scales.iter().any(|a| !a.link.is_none()) {
+        return size;
+    }
+    // every key, and a spread of times between them: an overshooting ease peaks off its keys
+    let keys = scales.iter().flat_map(|a| a.keys.iter().map(|k| k.t));
+    let (mut w, mut h) = (1.0f32, 1.0f32);
+    for lt in (0..=32).map(|i| clip.duration * i as f64 / 32.0).chain(keys) {
+        let p = placement(project, clip, clip.start + lt, size, project.width, project.height, true);
+        (w, h) = (w.max(p.w), h.max(p.h));
+    }
+    if !(w.is_finite() && h.is_finite()) {
+        return size;
+    }
+    ((w.ceil() as u32).min(size.0), (h.ceil() as u32).min(size.1))
 }
 
 /// One clip's layer: video/images decode, text/shapes rasterise, a nested sequence is composited on the
@@ -1467,25 +1748,6 @@ fn layer_for(
     }
 }
 
-/// The size a layer is decoded at: the smallest of a few fixed fractions of the decoder's own
-/// size `src` that covers the `need`ed placement (all of `src` when nothing does) - halvings for a
-/// still, eighths for video. The renderer scales a layer to its quad whatever size the bitmap is,
-/// so it need not match the placement pixel for pixel, and must not: a keyframed scale (a pop-in,
-/// a slow zoom) would be a new size on every frame - for a still a new bitmap to shrink, copy and
-/// upload each time instead of one shared frame for the whole move; for video a full-frame CPU
-/// resample on top of every decode (an upscale, 25 ms, once a zoom outgrows a 720p proxy).
-fn layer_size(src: (u32, u32), need: (u32, u32), still: bool) -> (u32, u32) {
-    let covers = |w: u32, h: u32| w >= need.0 && h >= need.1;
-    let (w, h) = if still {
-        let k = (1..32).take_while(|k| covers(src.0 >> k, src.1 >> k)).last().unwrap_or(0);
-        (src.0 >> k, src.1 >> k)
-    } else {
-        let k = (1..8).find(|k| covers(src.0 * k / 8, src.1 * k / 8)).unwrap_or(8);
-        (src.0 * k / 8, src.1 * k / 8)
-    };
-    (w.max(1), h.max(1))
-}
-
 /// One decode into a recycled buffer. None when the decoder or the frame is unavailable.
 fn decode_one(
     pool: &mut DecoderPool,
@@ -1573,7 +1835,7 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
                 }
                 Cmd::RenderOnce(..) | Cmd::LayersOnce(..) => {} // render-thread only
                 // ---- ws:player-rate-loop ----
-                Cmd::Rate | Cmd::Loop | Cmd::LayersAsync => {} // render-thread only
+                Cmd::Rate | Cmd::Loop | Cmd::LayersAsync | Cmd::Hint(_) => {} // render-thread only
                 Cmd::Scrub(t) => {
                     // mixes exactly one BLOCK at `t` into the ring without touching mixed_until - a
                     // paused playhead scrub. Generalizes the lazy open/play path above so a scrub can
@@ -1729,7 +1991,8 @@ mod tests {
     /// Newest frame rendered for exactly `t` at `size` (earlier renders may still be in flight).
     fn wait_frame(p: &mut Player, t: f64, size: (u32, u32)) -> Arc<Frame> {
         for _ in 0..300 {
-            if let Some(f) = p.take_frame() {
+            // (whole: a frame published while its source was still opening is not the picture)
+            if let Some(f) = p.take_whole_frame() {
                 if (f.pts - t).abs() < 1e-6 && (f.width, f.height) == size {
                     return f;
                 }
@@ -2637,5 +2900,359 @@ mod tests {
         if !cfg!(debug_assertions) {
             assert!(avg < 8.0, "avg {avg:.2} ms per frame");
         }
+    }
+
+    /// Fills its frame with one colour, after `wait` (a cold clip, a busy machine).
+    struct Flat([u8; 4], Duration);
+    impl media::VideoSource for Flat {
+        fn size(&self) -> (u32, u32) {
+            (64, 36)
+        }
+        fn frame_at(&mut self, t: f64, w: u32, h: u32, out: &mut Frame) -> bool {
+            sleep(self.1);
+            out.resize(w, h);
+            out.fill(self.0);
+            out.pts = t;
+            true
+        }
+    }
+    const RED: [u8; 4] = [255, 0, 0, 255];
+    const BLUE: [u8; 4] = [0, 0, 255, 255];
+
+    /// A 64x36 timeline of one clip per (kind, path), and a player over `pool`.
+    fn tiny_player(fps: f64, clips: &[(&str, &str)], pool: DecoderPool) -> Player {
+        let mut project = Project::new();
+        (project.width, project.height, project.fps) = (64, 36, fps);
+        for (kind, path) in clips {
+            let aid = project.add_asset(fake_asset(kind, path, 20.0));
+            project.insert_asset_clips(aid, 0.0, None);
+        }
+        let text = Arc::new(Mutex::new(TextRasterizer::new()));
+        let mut p = Player::with_pool(eframe::egui::Context::default(), Backend::Ffmpeg, text, pool);
+        p.set_project(&project);
+        p.set_canvas(64, 36, 1280);
+        p
+    }
+
+    /// Cause 5 of the stacked-layers slowdown: after Pause the clock stands still, the pacing
+    /// window never runs out, and the render thread used to decode its whole read-ahead (here ten
+    /// frames and more of 50 ms) before it looked at the Seek queued behind the Pause.
+    #[test]
+    fn a_seek_is_not_kept_waiting_by_read_ahead() {
+        /// Counts its decodes; 2 ms each until `.0` is set, 50 ms from then on.
+        struct Gated(Arc<AtomicBool>, Arc<AtomicU64>);
+        impl media::VideoSource for Gated {
+            fn size(&self) -> (u32, u32) {
+                (64, 36)
+            }
+            fn frame_at(&mut self, t: f64, w: u32, h: u32, out: &mut Frame) -> bool {
+                self.1.fetch_add(1, Ordering::SeqCst);
+                sleep(Duration::from_millis(if self.0.load(Ordering::SeqCst) { 50 } else { 2 }));
+                out.resize(w, h);
+                out.pts = t;
+                true
+            }
+        }
+        let (slow, decodes) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicU64::new(0)));
+        let mut pool = DecoderPool::new(Backend::Ffmpeg);
+        pool.insert_video("C:\\slow.mp4", Box::new(Gated(slow.clone(), decodes.clone())));
+        // 10 fps: a 100 ms window per frame and 15 frames of read-ahead
+        let mut p = tiny_player(10.0, &[("Video", "C:\\slow.mp4")], pool);
+        p.seek(1.0);
+        wait_frame(&mut p, 1.0, (64, 36));
+        p.play();
+        // the read-ahead is under way, early in a frame's window and far from done: pause right there
+        while decodes.load(Ordering::SeqCst) < 4 {
+            sleep(Duration::from_millis(1));
+        }
+        slow.store(true, Ordering::SeqCst);
+        let start = Instant::now();
+        p.pause();
+        p.seek(0.5); // back: a seek forward moves the clock past the window, which ends it anyway
+        wait_frame(&mut p, 0.5, (64, 36));
+        // the decode in flight and the frame asked for - not the ten and more still to read ahead
+        assert!(start.elapsed() < Duration::from_millis(300), "the seek waited {:?}", start.elapsed());
+    }
+
+    /// A layer whose source is still being opened (a 9 MP still: half a second of ffmpeg.exe)
+    /// does not hold up the frame: the other layers are shown at once, and the whole picture
+    /// follows when the source is there.
+    #[test]
+    fn a_source_still_opening_does_not_hold_up_the_frame() {
+        let mut pool = DecoderPool::new(Backend::Ffmpeg);
+        pool.insert_video("C:\\bg.mp4", Box::new(Flat(RED, Duration::ZERO)));
+        let opening = std::thread::spawn(|| {
+            sleep(Duration::from_millis(700));
+            Some(Box::new(Flat(BLUE, Duration::ZERO)) as Box<dyn media::VideoSource>)
+        });
+        pool.insert_opening("C:\\big.png", opening);
+        let mut p = tiny_player(30.0, &[("Video", "C:\\bg.mp4"), ("Image", "C:\\big.png")], pool);
+        let start = Instant::now();
+        p.seek(1.0);
+        let first = loop {
+            if let Some(f) = p.take_frame().filter(|f| (f.pts - 1.0).abs() < 1e-6) {
+                break f;
+            }
+            assert!(start.elapsed() < Duration::from_millis(500), "nothing shown while one source opens");
+            sleep(Duration::from_millis(2));
+        };
+        assert_eq!(centre(&first), RED, "the layer that is ready, without the one that is not");
+        assert!(p.is_partial());
+        let whole = wait_frame(&mut p, 1.0, (64, 36));
+        assert_eq!(centre(&whole), BLUE, "the whole frame once the source is open");
+        assert!(!p.is_partial() && start.elapsed() >= Duration::from_millis(600));
+        // and it is the whole frame that stays cached
+        let hits = p.cache_hits();
+        p.seek(1.0);
+        assert_eq!(centre(&wait_frame(&mut p, 1.0, (64, 36))), BLUE);
+        assert!(p.cache_hits() > hits);
+    }
+
+    /// Three full-frame clips on three tracks at 1920x1080, bottom to top, each on a counting
+    /// decoder: (project, pool, [clip ids], [decode counts]).
+    #[allow(clippy::type_complexity)]
+    fn three_layers() -> (Project, DecoderPool, [crate::model::Id; 3], [Arc<std::sync::atomic::AtomicUsize>; 3]) {
+        let mut project = Project::new();
+        (project.width, project.height, project.fps) = (1920, 1080, 60.0);
+        let mut pool = DecoderPool::new(Backend::Ffmpeg);
+        let counts: [Arc<std::sync::atomic::AtomicUsize>; 3] = Default::default();
+        let mut ids = [0; 3];
+        for (i, name) in ["below", "cover", "above"].iter().enumerate() {
+            let path = format!("C:\\{name}.mp4");
+            let mut a = fake_asset("Video", &path, 10.0);
+            a.codec = "h264".into();
+            let aid = project.add_asset(a);
+            let ti = if i == 0 { 0 } else { project.add_track(TrackKind::Video) };
+            ids[i] = project.insert_asset_clips(aid, 0.0, Some(ti))[0];
+            pool.insert_video(&path, Box::new(Fake { n: counts[i].clone(), size: (1920, 1080), still: false }));
+        }
+        let track = |id| project.all_clips().find(|(_, c)| c.id == id).unwrap().0;
+        assert!(track(ids[0]) < track(ids[1]) && track(ids[1]) < track(ids[2]), "bottom to top");
+        // the top one is a picture-in-picture: it covers nothing
+        project.clip_mut(ids[2]).unwrap().scale = crate::model::Animated::new(0.5);
+        (project, pool, ids, counts)
+    }
+
+    fn layers_at(project: &Project, pool: &mut DecoderPool, t: f64) -> LayerSet {
+        let (mut text, mut shapes, mut comp) = (TextRasterizer::new(), ShapeRasterizer::new(), Compositor::new());
+        decode_layers(project, t, 1280, 720, pool, &mut Vec::new(), &mut text, &mut shapes, &mut comp)
+    }
+
+    /// Hidden work: a track under a layer that repaints the whole canvas is neither decoded nor
+    /// drawn (`LayerSet::base`) - but only while that is certain. Everything that can let the
+    /// canvas through keeps the layers below.
+    #[test]
+    fn layers_under_an_opaque_full_frame_layer_are_not_decoded() {
+        use crate::model::{Animated, BlendMode, Effect, EffectKind, Mask, MaskShape, NodeGraph, TransitionKind};
+        let (project, mut pool, [lo, mid, hi], [below, cover, above]) = three_layers();
+        let track = |p: &Project, id| p.all_clips().find(|(_, c)| c.id == id).unwrap().0;
+        let set = layers_at(&project, &mut pool, 1.0);
+        assert_eq!(set.base, track(&project, mid), "the tracks under the cover are not drawn");
+        assert!(set.get(lo).is_none() && set.get(mid).is_some() && set.get(hi).is_some());
+        let n = |c: &Arc<std::sync::atomic::AtomicUsize>| c.load(Ordering::SeqCst);
+        assert_eq!((n(&below), n(&cover), n(&above)), (0, 1, 1), "decodes: the covered layer costs nothing");
+
+        // an adjustment layer above the cover re-processes the canvas: the cover is all of it
+        let mut adj = project.clone();
+        let ti = adj.add_track(TrackKind::Video);
+        adj.tracks[ti].clips.push(Clip::new(9001, ClipKind::Adjustment, "Adjustment", 0.0, 5.0));
+        assert_eq!(layers_at(&adj, &mut pool, 1.0).base, track(&project, mid));
+
+        // whatever lets the canvas show through the "cover": everything below is decoded again
+        let cases: Vec<(&str, Box<dyn Fn(&mut Project)>)> = vec![
+            ("blend mode", Box::new(|p| p.clip_mut(mid).unwrap().blend = BlendMode::Screen)),
+            ("opacity", Box::new(|p| p.clip_mut(mid).unwrap().opacity = Animated::new(0.99))),
+            ("fade in", Box::new(|p| p.clip_mut(mid).unwrap().fade_in = 4.0)),
+            ("mask", Box::new(|p| p.clip_mut(mid).unwrap().mask = Some(Mask::new(MaskShape::Ellipse)))),
+            ("effect", Box::new(|p| p.clip_mut(mid).unwrap().effects.push(Effect::new(EffectKind::Blur)))),
+            ("rotation", Box::new(|p| p.clip_mut(mid).unwrap().rotation = Animated::new(3.0))),
+            ("scaled down", Box::new(|p| p.clip_mut(mid).unwrap().scale = Animated::new(0.98))),
+            ("moved", Box::new(|p| p.clip_mut(mid).unwrap().x = Animated::new(4.0))),
+            ("disabled", Box::new(|p| p.clip_mut(mid).unwrap().enabled = false)),
+            (
+                "track hidden",
+                Box::new(|p| {
+                    let ti = p.all_clips().find(|(_, c)| c.id == mid).unwrap().0;
+                    p.tracks[ti].muted = true;
+                }),
+            ),
+            (
+                "alpha source",
+                Box::new(|p| {
+                    let a = p.clip(mid).unwrap().asset;
+                    p.assets.iter_mut().find(|x| x.id == a).unwrap().codec = "png".into();
+                    // an alpha .mov
+                }),
+            ),
+            ("a still", Box::new(|p| p.clip_mut(mid).unwrap().kind = ClipKind::Image)),
+            (
+                "transition",
+                Box::new(|p| {
+                    p.add_edge_transition(mid, TransitionKind::CrossFade, 4.0, false).expect("edge transition");
+                }),
+            ),
+            ("node graph on screen", Box::new(|p| p.clip_mut(hi).unwrap().graph = Some(NodeGraph::default()))),
+        ];
+        for (what, edit) in cases {
+            let mut p = project.clone();
+            edit(&mut p);
+            let before = n(&below);
+            let set = layers_at(&p, &mut pool, 1.0);
+            assert_eq!(set.base, 0, "{what}: nothing may be skipped");
+            assert!(set.get(lo).is_some() && n(&below) == before + 1, "{what}: the layer below must be decoded");
+        }
+        // a cover about to end: the preview may draw this set a frame late, with the cover gone
+        let mut ending = project.clone();
+        ending.clip_mut(mid).unwrap().duration = 1.0 + 1.5 / 60.0;
+        let set = layers_at(&ending, &mut pool, 1.0);
+        assert!(set.base == 0 && set.get(lo).is_some(), "ending within two frames: the layers below are kept");
+        // a cover whose frame does not decode (file gone) covers nothing
+        let mut gone = DecoderPool::new(Backend::Ffmpeg);
+        gone.insert_video("C:\\below.mp4", Box::new(Fake { n: below.clone(), size: (1920, 1080), still: false }));
+        let set = layers_at(&project, &mut gone, 1.0);
+        assert!(set.base == 0 && set.get(lo).is_some() && set.get(mid).is_none());
+    }
+
+    /// Hidden work: a clip at opacity 0, or wholly off the canvas, is not decoded - unless an
+    /// effect can move it back in.
+    #[test]
+    fn clips_that_cannot_be_seen_are_not_decoded() {
+        use crate::model::{Animated, Effect, EffectKind};
+        let (project, mut pool, [_, _, hi], [_, _, above]) = three_layers();
+        let n = || above.load(Ordering::SeqCst);
+        let mut run = |what: &str, shown: bool, edit: &dyn Fn(&mut Clip)| {
+            let mut p = project.clone();
+            edit(p.clip_mut(hi).unwrap());
+            let before = n();
+            let set = layers_at(&p, &mut pool, 1.0);
+            assert_eq!((set.get(hi).is_some(), n() - before), (shown, shown as usize), "{what}");
+        };
+        run("as it is", true, &|_| {});
+        run("opacity 0", false, &|c| c.opacity = Animated::new(0.0));
+        run("opacity 0 now, keyed up within two frames", true, &|c| {
+            let key = |t: f64, v: f64| crate::model::Keyframe { t, v, ease: Default::default() };
+            c.opacity.keys = vec![key(1.0, 0.0), key(1.5, 1.0)];
+        });
+        run("off the right edge", false, &|c| c.x = Animated::new(1500.0));
+        run("off the top", false, &|c| c.y = Animated::new(-900.0));
+        run("one corner still on", true, &|c| (c.x, c.y) = (Animated::new(1400.0), Animated::new(-800.0)));
+        run("off the canvas, rotated back over a corner", true, &|c| {
+            (c.x, c.rotation, c.scale) = (Animated::new(1300.0), Animated::new(45.0), Animated::new(1.0))
+        });
+        run("off the canvas, but an effect moves it", true, &|c| {
+            c.x = Animated::new(1500.0);
+            c.effects.push(Effect::new(EffectKind::Wobble));
+        });
+    }
+
+    /// `stills`: every still of the timeline once, the one the playhead reaches next in front,
+    /// each at the halving of its file that covers the largest size it is ever shown at.
+    #[test]
+    fn stills_are_listed_nearest_first_at_the_size_they_are_shown() {
+        use crate::model::Keyframe;
+        let mut project = Project::new();
+        (project.width, project.height, project.fps) = (1920, 1080, 60.0);
+        let add = |project: &mut Project, name: &str, size: (u32, u32), at: f64| {
+            let mut a = fake_asset("Image", &format!("C:\\{name}.png"), 0.0);
+            (a.width, a.height) = size;
+            let aid = project.add_asset(a);
+            let id = project.insert_asset_clips(aid, at, None)[0];
+            project.clip_mut(id).unwrap().duration = 2.0;
+            id
+        };
+        let big = add(&mut project, "big", (3600, 2632), 20.0);
+        add(&mut project, "small", (640, 560), 5.0);
+        let zoom = add(&mut project, "zoom", (3840, 2160), 0.0);
+        add(&mut project, "big", (3600, 2632), 9.0); // the same file again, sooner
+        project.clip_mut(zoom).unwrap().scale.keys = vec![
+            Keyframe { t: 0.0, v: 1.0, ease: Default::default() },
+            Keyframe { t: 2.0, v: 1.5, ease: Default::default() },
+        ];
+
+        let list = stills(&project, 4.0);
+        let names: Vec<&str> = list.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(names, ["C:\\small.png", "C:\\big.png", "C:\\zoom.png"], "upcoming first, what is behind last");
+        // fitted into 1920x1080 a 3600x2632 still is 1477x1080: half of the file covers that
+        assert_eq!(list[1].1, ((3600, 2632), (1800, 1316)));
+        assert_eq!(list[0].1, ((640, 560), (640, 560)), "never more than the file has");
+        assert_eq!(list[2].1, ((3840, 2160), (3840, 2160)), "a zoom to 150 % needs 2880 px: more than half");
+
+        // shown larger somewhere, the whole file is kept
+        project.clip_mut(big).unwrap().scale = crate::model::Animated::new(2.0);
+        assert_eq!(stills(&project, 4.0)[1].1 .1, (3600, 2632));
+    }
+
+    /// What a paused playhead reads ahead, in order: a scrub's next landing place first, then on
+    /// in its direction (forward when it rests), then a little the other way - inside the timeline.
+    #[test]
+    fn idle_order_follows_the_scrub_then_reads_ahead_then_behind() {
+        assert_eq!(idle_order(10, 0, 4, 2, 100), [11, 12, 13, 14, 9, 8], "at rest: what Play shows, then a step back");
+        assert_eq!(idle_order(10, 3, 4, 2, 100), [13, 11, 12, 14, 9, 8], "scrubbing forward 3 a seek: 13 first");
+        assert_eq!(idle_order(10, -2, 4, 2, 100), [8, 9, 7, 6, 11, 12], "scrubbing back: behind is ahead");
+        assert_eq!(idle_order(10, 50, 4, 2, 100), [11, 12, 13, 14, 9, 8], "a jump is no scrub: no guess");
+        assert_eq!(idle_order(1, -1, 4, 2, 3), [0, 2, 3], "clamped to the timeline");
+        assert_eq!(idle_order(99, 0, 4, 2, 100), [100, 98, 97]);
+    }
+
+    /// Counts its decodes, `.1` ms each.
+    struct Timed(Arc<AtomicU64>, u64);
+    impl media::VideoSource for Timed {
+        fn size(&self) -> (u32, u32) {
+            (64, 36)
+        }
+        fn frame_at(&mut self, t: f64, w: u32, h: u32, out: &mut Frame) -> bool {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            sleep(Duration::from_millis(self.1));
+            out.resize(w, h);
+            out.pts = t;
+            true
+        }
+    }
+
+    /// A paused playhead that has rested gets the frames around it pre-rendered: a step, and the
+    /// first frames of Play, are then cache hits - no decode between the key and the picture.
+    #[test]
+    fn a_resting_playhead_is_read_ahead() {
+        let decodes = Arc::new(AtomicU64::new(0));
+        let mut pool = DecoderPool::new(Backend::Ffmpeg);
+        pool.insert_video("C:\\v.mp4", Box::new(Timed(decodes.clone(), 1)));
+        let mut p = tiny_player(30.0, &[("Video", "C:\\v.mp4")], pool);
+        p.seek(1.0);
+        wait_frame(&mut p, 1.0, (64, 36));
+        assert!(decodes.load(Ordering::SeqCst) <= 2, "nothing is read ahead before the playhead has rested");
+        let start = Instant::now();
+        while decodes.load(Ordering::SeqCst) < 1 + 45 + 15 {
+            assert!(start.elapsed() < Duration::from_secs(5), "{} decodes", decodes.load(Ordering::SeqCst));
+            sleep(Duration::from_millis(5));
+        }
+        sleep(Duration::from_millis(100));
+        let (n, hits) = (decodes.load(Ordering::SeqCst), p.cache_hits());
+        assert_eq!(n, 1 + 45 + 15, "1.5 s ahead and 0.5 s behind, once, then idle");
+        for t in [31.0 / 30.0, 29.0 / 30.0, 40.0 / 30.0] {
+            p.seek(t);
+            wait_frame(&mut p, t, (64, 36));
+        }
+        assert!(p.cache_hits() >= hits + 3, "a step forward, a step back and a short jump are all cached");
+        assert_eq!(decodes.load(Ordering::SeqCst), n, "none of them decoded anything by the time it was shown");
+    }
+
+    /// The read-ahead of a paused playhead gives way to any command at once: a seek waits for the
+    /// one decode in flight, not for the window.
+    #[test]
+    fn idle_read_ahead_is_cancelled_by_a_command() {
+        let decodes = Arc::new(AtomicU64::new(0));
+        let mut pool = DecoderPool::new(Backend::Ffmpeg);
+        pool.insert_video("C:\\v.mp4", Box::new(Timed(decodes.clone(), 40)));
+        let mut p = tiny_player(30.0, &[("Video", "C:\\v.mp4")], pool);
+        p.seek(1.0);
+        wait_frame(&mut p, 1.0, (64, 36));
+        while decodes.load(Ordering::SeqCst) < 3 {
+            sleep(Duration::from_millis(2)); // rested, and reading ahead
+        }
+        let start = Instant::now();
+        p.seek(10.0);
+        wait_frame(&mut p, 10.0, (64, 36));
+        assert!(start.elapsed() < Duration::from_millis(250), "the seek waited {:?}", start.elapsed());
+        assert!(decodes.load(Ordering::SeqCst) <= 6, "the window around the old playhead was dropped");
     }
 }

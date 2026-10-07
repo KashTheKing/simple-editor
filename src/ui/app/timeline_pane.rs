@@ -179,6 +179,10 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
         app.player.pause();
         app.player.seek(app.playhead);
     }
+    // the pointer over the timeline: have the footage under it open before a click or a scrub lands
+    if let Some(t) = app.timeline.hover_time {
+        app.player.hint(t);
+    }
     if resp.edited {
         app.after_edit();
     }

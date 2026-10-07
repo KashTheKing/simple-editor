@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Child, ChildStdout, Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 static DIR: Mutex<String> = Mutex::new(String::new());
 
@@ -412,16 +412,22 @@ impl Drop for VideoPipe {
     }
 }
 
-/// Still image, `t` ignored. ffmpeg.exe decodes it ONCE, at native size, when it is opened; every
-/// smaller size is shrunk from that in Rust. (It used to ask ffmpeg per size: a clip with a
-/// keyframed scale wants a new size every frame, and ten stills of ten sizes thrashed the 8-entry
-/// cache - each miss a ~120 ms process spawn on the render thread, seconds per frame on a stack.)
-/// ponytail: `native` stays in RAM while the decoder lives (33 MB for a 4K still, pool-capped at
-/// 16 decoders); drop it after an idle spell if photo-heavy projects ever feel that.
+/// Still image, `t` ignored. ffmpeg.exe decodes it ONCE when it is opened; every smaller size is
+/// shrunk from that in Rust. (It used to ask ffmpeg per size: a clip with a keyframed scale wants a
+/// new size every frame, and ten stills of ten sizes thrashed the 8-entry cache - each miss a
+/// ~120 ms process spawn on the render thread, seconds per frame on a stack.)
+///
+/// `mips[k]` is the picture at `size >> k`, each halved from the one before; `mips[0]` is all that
+/// is kept of the file. Opened with a `top` size (a preview pool that knows how large the timeline
+/// ever shows it, `DecoderPool::set_stills`) that is where the chain starts instead of the file's
+/// own size, and every level is made right away, on the opening thread: the playback layer only
+/// asks for these sizes (`compose::layer_size`), so on the render thread a still is never more
+/// than a lookup - the first use of a size used to be a 100 ms shrink of a 9 MP picture there.
+/// Without `top` (export, thumbnails) the levels are made when first asked for.
 struct ImageSource {
     path: String,
-    size: (u32, u32),
-    native: Vec<u8>,
+    mips: Vec<Arc<Frame>>,
+    /// Sizes that are no level of the chain (thumbnails, node-graph samples).
     cache: HashMap<(u32, u32), Vec<u8>>,
 }
 
@@ -438,34 +444,67 @@ fn decode_still(path: &str, w: u32, h: u32) -> Option<Vec<u8>> {
 }
 
 impl ImageSource {
-    fn open(path: &str, size: (u32, u32)) -> Result<Self, String> {
-        let native = decode_still(path, size.0, size.1).ok_or("ffmpeg could not decode the image")?;
-        Ok(Self { path: path.to_string(), size, native, cache: HashMap::new() })
+    fn open(path: &str, size: (u32, u32), top: Option<(u32, u32)>) -> Result<Self, String> {
+        let (width, height) = top.unwrap_or(size);
+        let rgba = decode_still(path, width, height).ok_or("ffmpeg could not decode the image")?;
+        let top_level = Arc::new(Frame { width, height, pts: 0.0, rgba });
+        let mut s = Self { path: path.to_string(), mips: vec![top_level], cache: HashMap::new() };
+        while top.is_some() && s.halve() {}
+        Ok(s)
+    }
+    /// Add the next level down. False at 1 x 1.
+    fn halve(&mut self) -> bool {
+        let last = &self.mips[self.mips.len() - 1];
+        let (w, h) = ((last.width >> 1).max(1), (last.height >> 1).max(1));
+        if (w, h) == (last.width, last.height) {
+            return false;
+        }
+        let mut f = Frame::new(w, h);
+        box_down(&last.rgba, last.width, last.height, w, h, &mut f.rgba);
+        self.mips.push(Arc::new(f));
+        true
+    }
+    /// The level of exactly w x h, if that is one.
+    fn mip(&mut self, w: u32, h: u32) -> Option<&Arc<Frame>> {
+        let (sw, sh) = self.size();
+        let k = (0..32).find(|k| ((sw >> k).max(1), (sh >> k).max(1)) == (w, h))?;
+        while self.mips.len() <= k && self.halve() {}
+        self.mips.get(k)
     }
 }
 
 impl VideoSource for ImageSource {
     fn size(&self) -> (u32, u32) {
-        self.size
+        (self.mips[0].width, self.mips[0].height)
     }
     fn is_still(&self) -> bool {
         true
     }
+    fn still(&mut self, w: u32, h: u32) -> Option<Arc<Frame>> {
+        self.mip(w, h).cloned()
+    }
+    fn bytes(&self) -> usize {
+        self.mips.iter().map(|m| m.rgba.len()).sum::<usize>() + self.cache.values().map(Vec::len).sum::<usize>()
+    }
     fn frame_at(&mut self, _t: f64, w: u32, h: u32, out: &mut Frame) -> bool {
-        let (sw, sh) = self.size;
+        let (sw, sh) = self.size();
         if w == 0 || h == 0 {
             return false;
         }
-        if (w, h) != (sw, sh) && !self.cache.contains_key(&(w, h)) {
+        if let Some(m) = self.mip(w, h) {
+            out.copy_from(m);
+            return true;
+        }
+        if !self.cache.contains_key(&(w, h)) {
             if self.cache.len() >= 8 {
                 self.cache.clear(); // cheap to refill now: a resize, not a process
             }
             let buf = if w <= sw && h <= sh {
                 let mut buf = vec![0; (w * h * 4) as usize];
-                box_down(&self.native, sw, sh, w, h, &mut buf);
+                box_down(&self.mips[0].rgba, sw, sh, w, h, &mut buf);
                 buf
             } else {
-                // bigger than the file (thumbnails of small images; the compositor never upscales)
+                // bigger than what is kept (thumbnails of small images; the compositor never upscales)
                 let Some(buf) = decode_still(&self.path, w, h) else { return false };
                 buf
             };
@@ -473,9 +512,15 @@ impl VideoSource for ImageSource {
         }
         out.resize(w, h);
         out.pts = 0.0;
-        out.rgba.copy_from_slice(if (w, h) == (sw, sh) { &self.native } else { &self.cache[&(w, h)] });
+        out.rgba.copy_from_slice(&self.cache[&(w, h)]);
         true
     }
+}
+
+/// A still whose size the caller already knows (`size`, from the project's asset - no ffprobe.exe
+/// run, 340 ms saved per file), kept at `top` and below: see `ImageSource`.
+pub fn open_still(path: &str, size: (u32, u32), top: (u32, u32)) -> Result<Box<dyn VideoSource>, String> {
+    Ok(Box::new(ImageSource::open(path, size, Some(top))?))
 }
 
 // ---- ws:media-library ----
@@ -550,7 +595,7 @@ pub fn bake_sequence(
 pub fn open_video(path: &str) -> Result<Box<dyn VideoSource>, String> {
     let a = probe(path)?;
     if a.kind == ClipKind::Image {
-        return Ok(Box::new(ImageSource::open(path, (a.width.max(1), a.height.max(1)))?));
+        return Ok(Box::new(ImageSource::open(path, (a.width.max(1), a.height.max(1)), None)?));
     }
     if a.kind != ClipKind::Video {
         return Err("no video stream".into());
@@ -770,7 +815,7 @@ pub(crate) mod tests {
         p.to_string_lossy().into_owned()
     }
 
-    fn test_png() -> String {
+    pub(crate) fn test_png() -> String {
         let p = Path::new(&test_mp4()).with_file_name("x.png");
         let st = Command::new("ffmpeg")
             .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "color=blue:s=64x48", "-frames:v", "1"])
@@ -1045,5 +1090,26 @@ pub(crate) mod tests {
         let mut dst = [0u8; 8];
         box_down(&src, 4, 2, 2, 1, &mut dst);
         assert_eq!(dst, [50, 50, 50, 255, 100, 0, 0, 255]);
+    }
+
+    /// Opened with a top size (the preview) a still keeps that size and every halving of it, made
+    /// at open, and hands each out as one shared frame; any other size still works by copy.
+    #[test]
+    fn a_still_opened_at_a_top_size_keeps_its_halvings() {
+        let mut v = open_still(&test_png(), (64, 48), (32, 24)).unwrap();
+        assert_eq!(v.size(), (32, 24));
+        assert_eq!(v.bytes(), (32 * 24 + 16 * 12 + 8 * 6 + 4 * 3 + 2 + 1) * 4, "32x24 down to 1x1");
+        let a = v.still(8, 6).unwrap();
+        assert!(Arc::ptr_eq(&a, &v.still(8, 6).unwrap()), "the same frame every time");
+        let px = centre(&a);
+        assert!(px[2] > 200 && px[0] < 60 && px[3] == 255, "expected blue, got {px:?}");
+        assert!(v.still(20, 15).is_none(), "20x15 is no halving of 32x24");
+        let mut f = Frame::default();
+        assert!(v.frame_at(0.0, 20, 15, &mut f) && (f.width, f.height) == (20, 15) && centre(&f)[2] > 200);
+
+        // at the file's own size (export, thumbnails) a level is made when first asked for
+        let mut v = open_video(&test_png()).unwrap();
+        assert_eq!((v.size(), v.bytes()), ((64, 48), 64 * 48 * 4));
+        assert_eq!(v.still(16, 12).map(|f| (f.width, f.height)), Some((16, 12)));
     }
 }

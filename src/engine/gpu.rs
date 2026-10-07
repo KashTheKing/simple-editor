@@ -162,6 +162,36 @@ struct LayerTex {
     w: u32,
     h: u32,
     rev: (usize, u64),
+    /// `GpuRenderer::renders` when it was last drawn.
+    used: u64,
+}
+
+/// RGBA8 bytes of layer textures kept before the least recently drawn are freed. There is one per
+/// clip that was ever on screen, and nothing else let go of them: a long session over a big
+/// project only ever grew.
+/// ponytail: a constant - half a gigabyte is a hundred 1080p layers. Read the adapter's budget
+/// (DXGI QueryVideoMemoryInfo) if small GPUs need less.
+const LAYER_TEX_BYTES: usize = 512 << 20;
+/// Textures drawn within this many renders are never freed, whatever the budget: the frame on
+/// screen (and a side render or two between two of its frames) would only upload them again.
+const LAYER_TEX_KEEP: u64 = 4;
+
+/// The keys to free so that the rest fits `budget`: least recently drawn first, none drawn at
+/// render `keep` or later.
+fn stale_textures(textures: &HashMap<u64, LayerTex>, budget: usize, keep: u64) -> Vec<u64> {
+    let bytes = |t: &LayerTex| t.w as usize * t.h as usize * 4;
+    let mut total: usize = textures.values().map(bytes).sum();
+    let mut old: Vec<(&u64, &LayerTex)> = textures.iter().filter(|(_, t)| t.used < keep).collect();
+    old.sort_by_key(|(_, t)| t.used);
+    let mut out = Vec::new();
+    for (k, t) in old {
+        if total <= budget {
+            break;
+        }
+        total -= bytes(t);
+        out.push(*k);
+    }
+    out
 }
 
 /// Size-keyed target pool. GL objects are created by the renderer when `take` finds nothing reusable
@@ -221,6 +251,8 @@ pub struct GpuRenderer {
     pool: Pool,
     /// Uploaded layer textures by caller key.
     textures: HashMap<u64, LayerTex>,
+    /// Renders so far (`reclaim` counts) - the clock `LayerTex::used` is read on.
+    renders: u64,
     /// 1×1 white texture, bound where a sampler is unused.
     blank: glow::Texture,
     /// Targets handed to the caller; recycled at the start of the next frame.
@@ -266,6 +298,7 @@ impl GpuRenderer {
                 vert,
                 programs: Programs::default(),
                 textures: HashMap::new(),
+                renders: 0,
                 blank,
                 loaned: Vec::new(),
                 text: None,
@@ -289,9 +322,11 @@ impl GpuRenderer {
         let gl = self.gl.clone();
         let rev = (frame.rgba.as_ptr() as usize, frame.pts.to_bits());
         let (w, h) = (frame.width, frame.height);
+        let used = self.renders;
         unsafe {
             match self.textures.get_mut(&key) {
                 Some(lt) if lt.w == w && lt.h == h => {
+                    lt.used = used;
                     if lt.rev == rev {
                         return lt.tex;
                     }
@@ -329,7 +364,7 @@ impl GpuRenderer {
                 glow::UNSIGNED_BYTE,
                 glow::PixelUnpackData::Slice(Some(&frame.rgba)),
             );
-            self.textures.insert(key, LayerTex { tex, w, h, rev });
+            self.textures.insert(key, LayerTex { tex, w, h, rev, used });
             tex
         }
     }
@@ -593,6 +628,11 @@ impl GpuRenderer {
         // a fence/refcount would be needed if a texture ever outlived its frame.
         for t in std::mem::take(&mut self.loaned) {
             self.pool.put(t);
+        }
+        self.renders += 1;
+        let keep = self.renders.saturating_sub(LAYER_TEX_KEEP);
+        for k in stale_textures(&self.textures, LAYER_TEX_BYTES, keep) {
+            self.invalidate(Some(k));
         }
     }
 
@@ -1020,7 +1060,8 @@ impl GpuRenderer {
             None => self.clear_checker(&canvas),
         }
         for (ti, track) in project.tracks.iter().enumerate() {
-            if track.kind != TrackKind::Video || !project.active(ti) {
+            // tracks under `layers.base` are covered whole by a layer above them: never drawn
+            if track.kind != TrackKind::Video || !project.active(ti) || ti < layers.base {
                 continue;
             }
             if let Some((tr, left, right)) = track.transition_at(t) {
@@ -1620,6 +1661,10 @@ pub struct LayerSet {
     /// the earliest as `u_prev` and the latest as `u_next` (both the same one when only one arrived);
     /// with none at all `u_frames` is 0 and the body falls back to the current frame.
     pub motion: Vec<(crate::model::Id, f64, Arc<Frame>)>,
+    /// Index of the lowest track that can be seen: a layer on it repaints the whole canvas
+    /// (`compose::covers`, its frame in `layers`), so the tracks below were not decoded and are
+    /// not drawn. 0 = draw everything.
+    pub base: usize,
 }
 
 impl LayerSet {
@@ -2339,5 +2384,19 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
         }
         // texel centres differ by size, so the ends may round one level apart
         assert!((reds[0].0 - reds[1].0).abs() <= 1 && (reds[0].1 - reds[1].1).abs() <= 1, "{reds:?}");
+    }
+
+    /// Layer textures are freed least-recently-drawn first once they outgrow the budget - never
+    /// one drawn in the last few renders.
+    #[test]
+    fn layer_textures_over_budget_free_the_least_recently_drawn() {
+        let mut m = HashMap::new();
+        for (key, used) in [(1u64, 1u64), (2, 5), (3, 3), (4, 9)] {
+            let tex = glow::NativeTexture(NonZeroU32::new(key as u32).unwrap());
+            m.insert(key, LayerTex { tex, w: 10, h: 10, rev: (0, 0), used }); // 400 bytes each
+        }
+        assert!(stale_textures(&m, 1600, 10).is_empty(), "within the budget everything stays");
+        assert_eq!(stale_textures(&m, 800, 10), [1, 3], "oldest first, down to the budget");
+        assert_eq!(stale_textures(&m, 0, 5), [1, 3], "what was drawn at render 5 or later stays, whatever the budget");
     }
 }
