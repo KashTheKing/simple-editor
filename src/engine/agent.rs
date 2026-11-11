@@ -6,8 +6,10 @@
 //!   --allowedTools mcp__simple-editor --tools "" [--model M] [--resume S]`, the prompt on stdin (so quotes and
 //!   newlines need no escaping, and `claude.cmd` works through std's batch-file handling), one JSON
 //!   object per stdout line (`parse_line`). A failed `--resume` is retried once without it.
-//! - "custom": a user template with `{prompt}` / `{mcp_url}`, split into argv without a shell
-//!   (`custom_argv`); stdout lines are shown as they come.
+//! - "codex": `codex exec --skip-git-repo-check -c mcp_servers.simple-editor.url="<url>" [-m M] <prompt>`
+//!   (`codex_args`); stdout lines are shown as they come.
+//! - "custom": a user template with `{prompt}` / `{mcp_url}` / `{model}`, split into argv without a
+//!   shell (`custom_argv`); stdout lines are shown as they come.
 //!
 //! The API key (optional) lives in Windows Credential Manager (generic credential
 //! "SimpleEditor/assistant", `key_load` / `key_save` / `key_delete`) and only ever reaches the child's
@@ -41,6 +43,7 @@ pub enum Event {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Backend {
     Claude,
+    Codex,
     Custom,
 }
 
@@ -49,7 +52,7 @@ pub struct Spec {
     pub backend: Backend,
     pub prompt: String,
     pub mcp_url: String,
-    /// claude: `--model`; empty = the CLI's default.
+    /// claude: `--model`, codex: `-m`, custom: `{model}`; empty = the CLI's default.
     pub model: String,
     /// claude: the session to `--resume`.
     pub resume: Option<String>,
@@ -100,7 +103,20 @@ pub fn start(spec: Spec) -> Run {
     let _ = std::thread::Builder::new().name("assistant-agent".into()).spawn(move || {
         let ok = match spec.backend {
             Backend::Claude => run_claude(&spec, &tx, &slot, &stop2),
-            Backend::Custom => run_custom(&spec, &tx, &slot),
+            Backend::Codex => {
+                let args = codex_args(&spec.prompt, &spec.mcp_url, &spec.model);
+                run_lines("codex", &args, &spec, &tx, &slot)
+            }
+            Backend::Custom => {
+                let argv = custom_argv(&spec.command.replace("{model}", spec.model.trim()), &spec.prompt, &spec.mcp_url);
+                match argv.split_first().filter(|(first, _)| !first.is_empty()) {
+                    Some((first, rest)) => run_lines(first, rest, &spec, &tx, &slot),
+                    None => {
+                        let _ = tx.send(Event::Error("No custom command set (Settings ▸ Assistant).".into()));
+                        Some(false)
+                    }
+                }
+            }
         };
         // run_* send their own Done when they reach one; this covers every early return
         if let Some(ok) = ok {
@@ -113,11 +129,32 @@ pub fn start(spec: Spec) -> Run {
 // ---------------------------------------------------------------------------------------------------
 // claude
 
-pub const NOT_FOUND: &str = "Claude Code not found. Install it (`npm install -g @anthropic-ai/claude-code`, or the \
-     native installer), run `claude` once in a terminal to sign in, then try again - or pick another backend in \
-     Settings ▸ Assistant.";
+pub const NOT_FOUND: &str = "The agent's command line (`claude`) wasn't found. Install it (`npm install -g \
+     @anthropic-ai/claude-code`, or the native installer), run `claude` once in a terminal to sign in, then try \
+     again - or pick another agent in the Assistant's header.";
 
-/// The temp MCP config pointing Claude Code at this app's server.
+/// The flag that picks `model` for an agent CLI ("claude": `--model`, "codex": `-m`); nothing when the
+/// model is empty (the CLI's own default) or the agent takes none.
+pub fn model_flag(backend: &str, model: &str) -> Vec<String> {
+    let m = model.trim();
+    match backend {
+        _ if m.is_empty() => Vec::new(),
+        "claude" => vec!["--model".into(), m.into()],
+        "codex" => vec!["-m".into(), m.into()],
+        _ => Vec::new(),
+    }
+}
+
+/// `codex exec`'s argv: this app's MCP server configured for the run, the model, the prompt.
+pub fn codex_args(prompt: &str, mcp_url: &str, model: &str) -> Vec<String> {
+    let mut a: Vec<String> = ["exec", "--skip-git-repo-check", "-c"].iter().map(|s| s.to_string()).collect();
+    a.push(format!("mcp_servers.simple-editor.url=\"{mcp_url}\""));
+    a.extend(model_flag("codex", model));
+    a.push(prompt.to_string());
+    a
+}
+
+/// The temp MCP config pointing the `claude` CLI at this app's server.
 pub fn mcp_config_json(mcp_url: &str) -> String {
     serde_json::json!({"mcpServers": {"simple-editor": {"type": "http", "url": mcp_url}}}).to_string()
 }
@@ -142,9 +179,7 @@ pub fn claude_args(mcp_config: &str, model: &str, resume: Option<&str>) -> Vec<S
     .iter()
     .map(|s| s.to_string())
     .collect();
-    if !model.trim().is_empty() {
-        a.extend(["--model".to_string(), model.trim().to_string()]);
-    }
+    a.extend(model_flag("claude", model));
     if let Some(s) = resume.filter(|s| !s.is_empty()) {
         a.extend(["--resume".to_string(), s.to_string()]);
     }
@@ -321,17 +356,13 @@ pub fn custom_argv(template: &str, prompt: &str, mcp_url: &str) -> Vec<String> {
     words.into_iter().map(|w| w.replace("{mcp_url}", mcp_url).replace("{prompt}", prompt)).collect()
 }
 
-fn run_custom(spec: &Spec, tx: &Sender<Event>, slot: &Mutex<Option<Child>>) -> Option<bool> {
-    let argv = custom_argv(&spec.command, &spec.prompt, &spec.mcp_url);
-    let Some(first) = argv.first().filter(|s| !s.is_empty()) else {
-        let _ = tx.send(Event::Error("No custom command set (Settings ▸ Assistant).".into()));
+/// Run `program args` and show its stdout lines as they come (codex, custom).
+fn run_lines(program: &str, args: &[String], spec: &Spec, tx: &Sender<Event>, slot: &Mutex<Option<Child>>) -> Option<bool> {
+    let Some(exe) = which(program) else {
+        let _ = tx.send(Event::Error(format!("'{program}' not found on PATH")));
         return Some(false);
     };
-    let Some(exe) = which(first) else {
-        let _ = tx.send(Event::Error(format!("'{first}' not found on PATH")));
-        return Some(false);
-    };
-    let r = run_child(&exe, &argv[1..], None, spec.key.as_ref(), slot, &mut |line: &str| {
+    let r = run_child(&exe, args, None, spec.key.as_ref(), slot, &mut |line: &str| {
         if !line.trim().is_empty() {
             let _ = tx.send(Event::Line(line.trim_end().to_string()));
         }
@@ -513,6 +544,17 @@ mod tests {
         );
         let a = claude_args("m.json", " sonnet ", Some("s1"));
         assert_eq!(&a[a.len() - 4..], ["--model", "sonnet", "--resume", "s1"]);
+        // the header's model picker: "Default" is no flag, an alias goes to the agent's own flag
+        assert!(model_flag("claude", "").is_empty() && model_flag("claude", "  ").is_empty());
+        assert_eq!(model_flag("claude", "fable"), ["--model", "fable"]);
+        assert_eq!(model_flag("codex", "gpt-5"), ["-m", "gpt-5"]);
+        assert!(model_flag("external", "x").is_empty());
+        let a = codex_args("cut it", "http://127.0.0.1:7340/mcp", "o3");
+        assert_eq!(
+            a,
+            ["exec", "--skip-git-repo-check", "-c", "mcp_servers.simple-editor.url=\"http://127.0.0.1:7340/mcp\"", "-m", "o3", "cut it"]
+        );
+        assert_eq!(codex_args("p", "u", "").len(), 5, "no model, no -m");
         let cfg: Value = serde_json::from_str(&mcp_config_json("http://127.0.0.1:7340/mcp")).unwrap();
         assert_eq!(cfg["mcpServers"]["simple-editor"]["type"], "http");
         assert_eq!(cfg["mcpServers"]["simple-editor"]["url"], "http://127.0.0.1:7340/mcp");

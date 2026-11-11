@@ -25,7 +25,7 @@ const GROUP_IDLE: Duration = Duration::from_secs(30);
 const FLASH_SECS: f32 = 1.5;
 /// A new comment goes to `assistant.wait` once its note has stopped changing for this long (so a
 /// comment being typed is not sent after its first letter).
-const COMMENT_SETTLE: Duration = Duration::from_millis(1500);
+pub(super) const COMMENT_SETTLE: Duration = Duration::from_millis(1500);
 /// `render.contact_sheet` stops rendering tiles once this much time is used (UI thread).
 const SHEET_BUDGET: Duration = Duration::from_secs(5);
 
@@ -77,10 +77,10 @@ pub(super) struct ContextState {
 
 impl App {
     /// Open an undo group: until `end_group`, Mutate tool calls push no undo entries of their own (each
-    /// still rolls itself back when it fails). `author` "" = "Claude"; an open group is closed first.
+    /// still rolls itself back when it fails). `author` "" = "Assistant"; an open group is closed first.
     pub(crate) fn begin_group(&mut self, label: &str, author: &str) {
         self.end_group();
-        let author = if author.trim().is_empty() { "Claude" } else { author.trim() };
+        let author = if author.trim().is_empty() { "Assistant" } else { author.trim() };
         let label = if label.trim().is_empty() { "Edit" } else { label.trim() };
         self.mcp_ctx.group = Some(UndoGroup {
             label: format!("{author}: {label}"),
@@ -173,7 +173,7 @@ pub(super) fn changed_clips(old: &Project, new: &Project) -> Vec<Id> {
         .collect()
 }
 
-fn max_marker_id(p: &Project) -> Id {
+pub(super) fn max_marker_id(p: &Project) -> Id {
     p.markers
         .iter()
         .map(|m| m.id)
@@ -435,9 +435,14 @@ fn add_comment(app: &mut App, note: &str, author: &str) -> Id {
 }
 
 /// The oldest marker the user (no author) added after `since` with an open, non-empty note that has
-/// stopped changing for `COMMENT_SETTLE`: `({kind: "comment", ...}, id)`.
-fn settled_comment(app: &mut App, since: Id, now: Instant) -> Option<(Value, Id)> {
-    let p = &app.project;
+/// stopped changing for `COMMENT_SETTLE`: `({kind: "comment", ...}, id)`. `slot` is the candidate being
+/// watched settle - one per consumer (`assistant.wait`, the Assistant's "Handle my comments").
+pub(super) fn settled_comment(
+    p: &Project,
+    since: Id,
+    now: Instant,
+    slot: &mut Option<(Id, String, Instant)>,
+) -> Option<(Value, Id)> {
     let (m, off) = p
         .markers
         .iter()
@@ -448,16 +453,16 @@ fn settled_comment(app: &mut App, since: Id, now: Instant) -> Option<(Value, Id)
     let (id, note) = (m.id, m.note.clone());
     let value = json!({"kind": "comment", "marker_id": m.id, "t": off + m.t, "duration": m.duration,
                        "name": m.name, "note": m.note});
-    match &app.mcp_ctx.comment {
+    match slot {
         Some((cid, cnote, at)) if *cid == id && *cnote == note => {
             if now.duration_since(*at) < COMMENT_SETTLE {
                 return None;
             }
-            app.mcp_ctx.comment = None;
+            *slot = None;
             Some((value, id))
         }
         _ => {
-            app.mcp_ctx.comment = Some((id, note, now));
+            *slot = Some((id, note, now));
             None
         }
     }
@@ -482,7 +487,7 @@ fn poll_waits(app: &mut App, now: Instant) {
     let (request, text, comment) = if let Some(text) = app.assistant.pending.pop_front() {
         (json!({"kind": "request", "text": text.clone()}), Some(text), None)
     } else {
-        let Some((v, id)) = settled_comment(app, since, now) else { return };
+        let Some((v, id)) = settled_comment(&app.project, since, now, &mut app.mcp_ctx.comment) else { return };
         (v, None, Some(id))
     };
     let w = app.mcp_ctx.waits.remove(0);
@@ -576,7 +581,7 @@ pub const TOOLS: &[ToolDef] = &[
         name: "edit.begin",
         desc: "Start one undo step for a request: until edit.end every edit joins it, and the user can undo it \
                all at once ('<author>: <label>' in History). Closes by itself after 30 s without calls.",
-        args: &["label:string:true:what the request does, e.g. 'Tighten the intro'", "author:string:false:default Claude"],
+        args: &["label:string:true:what the request does, e.g. 'Tighten the intro'", "author:string:false:default Assistant"],
         kind: ToolKind::Ui,
         run: |app, args| {
             app.begin_group(req(arg_str(args, "label"), "label")?, arg_str(args, "author").unwrap_or(""));
@@ -602,7 +607,7 @@ pub const TOOLS: &[ToolDef] = &[
         args: &[
             "calls:array:true:[{name, args}] in order",
             "label:string:false:undo label (default 'Batch edit')",
-            "author:string:false:default Claude",
+            "author:string:false:default Assistant",
         ],
         kind: ToolKind::Ui,
         run: batch,
@@ -637,14 +642,14 @@ pub const TOOLS: &[ToolDef] = &[
                the playhead - or at t / duration when given. Same as the Add Comment action.",
         args: &[
             "note:string:true:",
-            "author:string:false:default Claude",
+            "author:string:false:default Assistant",
             "t:number:false:timeline seconds",
             "duration:number:false:with t",
         ],
         kind: ToolKind::Mutate,
         run: |app, args| {
             let note = req(arg_str(args, "note"), "note")?.to_string();
-            let id = add_comment(app, &note, arg_str(args, "author").unwrap_or("Claude"));
+            let id = add_comment(app, &note, arg_str(args, "author").unwrap_or("Assistant"));
             if let Some(t) = arg_f64(args, "t") {
                 if let Some(m) = app.project.markers.iter_mut().find(|m| m.id == id) {
                     m.t = t.max(0.0);

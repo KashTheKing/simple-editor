@@ -321,5 +321,7 @@ pub(super) fn clip_menu(
             *act = Some(Act::ReplaceClip(m.id));
         }
         acts(ui, &[None, Some(SaveTemplate)]);
+        // ---- ws:assistant-pane ---- (the right-click already selected the clip)
+        crate::ui::assistant_ui::add_to_assistant_row(ui, crate::ui::assistant_data::Pin::Clips);
     });
 }

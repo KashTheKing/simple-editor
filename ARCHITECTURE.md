@@ -512,23 +512,31 @@ Allow / Always allow this session / Deny window while `Settings.assistant_guard`
 
 ## Assistant (Pro plan, coded 2026-11-10, not yet compiled or measured)
 
-`Pane::Assistant` (`ui/assistant_ui.rs` widget, `ui/app/assistant_ctl.rs` App side, `engine/agent.rs`
-process side). Send turns the MCP server on, attaches `editor.context` (minus the chips the user
-clicked off), opens an undo group named after the prompt and starts the backend:
+`Pane::Assistant` (`ui/assistant_ui.rs` widget, `ui/assistant_data.rs` data + store, `ui/app/assistant_ctl.rs`
+App side, `engine/agent.rs` process side). It rides hidden in the Inspector's tab group on every page
+(`Layout::home_assistant`, also applied to stored layouts). Header: conversation menu, New chat, agent and
+model pickers. Tabs: **Tasks** (the agent writes Luau scripts it hands over with `tasks.add`; the user runs
+them through `App::run_script_src`, one undo step each, a failure stops Run all; "Handle my comments" turns
+settled new comments - `tools_context::settled_comment`, shared with `assistant.wait` - into queued background
+requests that mark their marker done) and **Chat** (bubbles, folded tool lines, Undo / Copy, composer with
+live chips while `Settings.assistant_follow` is on, pinned chips from "Add to Assistant", image attachments
+read by the agent through `assistant.attachment`). A request turns the MCP server on, attaches that context,
+opens an undo group `Assistant: <label>` and starts the backend; one runs at a time, the rest queue:
 
 * **claude**: `claude -p --output-format stream-json --verbose --mcp-config <tmp> --strict-mcp-config
   --allowedTools mcp__simple-editor [--model M] [--resume S]`, prompt on stdin, one JSON event per
-  stdout line; the session id is kept per project path (`Settings.assistant_sessions`), and a failed
-  `--resume` is retried once without it.
-* **custom**: `Settings.assistant_command` split into argv without a shell, `{prompt}` / `{mcp_url}`
-  substituted; the stored key goes in `Settings.assistant_key_env`.
+  stdout line; the session id is kept per conversation, and a failed `--resume` is retried once without it.
+* **codex**: `codex exec --skip-git-repo-check -c mcp_servers.simple-editor.url="<url>" [-m M] <prompt>`.
+* **custom**: `Settings.assistant_command` split into argv without a shell, `{prompt}` / `{mcp_url}` /
+  `{model}` substituted; the stored key goes in `Settings.assistant_key_env`.
 * **external**: nothing is spawned; the request queues in `AssistantState.pending` for `assistant.wait`.
 
-The API key lives only in Windows Credential Manager (generic credential `SimpleEditor/assistant`)
-and the child's environment. When the run ends the group closes and the log offers **Undo all** while
-that entry is still the top of the undo stack. The palette's `>` prefix and `assistant.send` go through
-the same `ask`. Voice (`voice_ctl.rs`) appends dictated text to the prompt (`voice_autosend` sends it).
-
+Conversations (lines, tasks, session, attachments) persist per project in
+`%APPDATA%\SimpleEditor\assistant\<fnv1a(path)|untitled>.json` (attachments as PNG + raw thumbnail files in
+the matching folder), 50 per project, written off the UI thread on change and synchronously on exit. The API
+key lives only in Windows Credential Manager (generic credential `SimpleEditor/assistant`) and the child's
+environment. The palette's `>` prefix and `assistant.send` go through the same `ask`. Voice
+(`voice_ctl.rs`) appends dictated text to the chat prompt (`voice_autosend` sends it).
 ## Gesture model
 
 The timeline's modifier table is frozen in `src/ui/timeline/arm.rs`: a pure lookup

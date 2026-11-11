@@ -7,6 +7,23 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
 
 ---
 
+- **assistant redesign (2026-11-11, after the maintainer tried the first pane):** the pane is a tab
+  beside the Inspector; Tasks (the agent writes a Luau script per described task into a queue of
+  cards: Run / Edit / Save to Scripts, "Handle my comments") and Chat (bubbles, collapsed actions,
+  history per project under `%APPDATA%\SimpleEditorssistant`, pinned context chips, image
+  attachments served to any agent through `assistant.attachment`). No vendor name in the app's own
+  wording. Live-checked over MCP: a described task became a script and ran as one undo step
+  ("Assistant task: ..."); a frame attached from the `+` menu was fetched and described by the agent;
+  history survived a relaunch; "Add to Assistant" is in the clip menu. Gotchas: (1) a row of chips
+  built from `Frame { horizontal { label, x } }` does not wrap inside `horizontal_wrapped` and widens
+  the whole pane (Send got clipped) - a chip is one `Button` now; (2) `Response::has_focus()` is
+  false while the WINDOW has no OS focus, so Enter-to-send cannot be driven through `ui.input` on an
+  `SE_BACKGROUND` window (typing still works: `TextEdit` reads memory focus) - the headless test
+  `enter_sends_from_the_prompt` covers it instead; (3) never `taskkill /IM simple-editor.exe` to free
+  the exe for a rebuild - it closes the maintainer's own running app; kill the test instance by pid.
+  Not live-tested: Codex backend flags, Image file..., "Handle my comments", task Edit / Save to
+  Scripts, the marker / ruler / transcript "Add to Assistant" rows.
+
 - **pro first live run (2026-11-11):** release-fast exe driven over MCP with a scratch profile
   (`APPDATA`/`LOCALAPPDATA` pointed at a temp folder, `SE_BACKGROUND=1`), RTX 2060 SUPER, ffmpeg 7.1.
   Test project: 18 s, 1080p60, two H.264 clips (the first 28 Mbit/s), a PNG on V2, two audio tracks.

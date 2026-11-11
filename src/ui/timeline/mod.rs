@@ -1722,7 +1722,10 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     let mut pick_view = None;
     menu::context(&ruler_resp, |ui| {
         use crate::hotkeys::Action::*;
-        menus::acts(ui, &[Some(AddMarker), None, Some(MarkIn), Some(MarkOut), Some(ClearInOut), None]);
+        menus::acts(ui, &[Some(AddMarker), None, Some(MarkIn), Some(MarkOut), Some(ClearInOut)]);
+        // ---- ws:assistant-pane ----
+        crate::ui::assistant_ui::add_to_assistant_row(ui, crate::ui::assistant_data::Pin::Range);
+        ui.separator();
         paste_menu(ui);
         menu::sub(ui, Some(Glyph::Rows), "View", |ui| {
             for (i, v) in c.views.iter().enumerate() {

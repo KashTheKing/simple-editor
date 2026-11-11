@@ -283,6 +283,8 @@ pub(super) fn marker_hit(
         if menu::row(ui, Some(Glyph::Cross), "Delete Marker", "").clicked() {
             *act = Some(Act::DelMarker(m.id));
         }
+        // ---- ws:assistant-pane ---- (the right-click already selected the marker)
+        crate::ui::assistant_ui::add_to_assistant_row(ui, crate::ui::assistant_data::Pin::Marker);
         menu::sub(ui, Some(Glyph::Swatch), "Label", |ui| {
             if menu::row(ui, None, "None", "").clicked() {
                 *act = Some(Act::MarkerLabel(m.id, 0));

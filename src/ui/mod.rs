@@ -62,6 +62,8 @@ pub mod transitions_ui;
 pub mod jobs_ui;
 // ---- ws:pro-schema ----
 pub mod assistant_ui;
+// ---- ws:assistant-pane ----
+pub mod assistant_data;
 
 use crate::model::{AnimLink, Animated, Id, Mask, MaskShape, Project, LABEL_COLORS};
 use crate::theme::Palette;

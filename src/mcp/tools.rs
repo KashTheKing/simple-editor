@@ -52,7 +52,13 @@ pub fn leaves_project(tool: &str, args: &Value) -> bool {
     tool.starts_with("export.") // export.video / export.quick / export.edl / export.xml / …
         || matches!(
             tool,
-            "project.open" | "project.new" | "settings.set" | "scripts.run" | "media.convert" | "media.batch_convert"
+            "project.open"
+                | "project.new"
+                | "settings.set"
+                | "scripts.run"
+                | "tasks.run"
+                | "media.convert"
+                | "media.batch_convert"
         )
         || (tool == "ui.action" && args.get("id").and_then(Value::as_str).is_some_and(|id| LEAVING_ACTIONS.contains(&id)))
 }

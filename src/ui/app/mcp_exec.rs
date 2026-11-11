@@ -24,12 +24,10 @@ impl App {
     // duplicate-method conflict. files.rs's project_open/project_save call sites are unaffected - both
     // pass string literals, which resolve to palette_ctl::fire_hook's `&'static str` parameter as-is.
 
-    pub(super) fn run_script(&mut self, path: &std::path::Path) {
-        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let src = match std::fs::read_to_string(path) {
-            Ok(s) => s,
-            Err(e) => return self.toast(format!("{name}: {e}")),
-        };
+    /// Run Luau `src` (named `name` in toasts and errors) as ONE undo step - labelled `label` when given
+    /// (ws:assistant-pane: an Assistant task, "Assistant task: <title>") - toasting its log lines and its
+    /// error. Err = the error's first line.
+    pub(super) fn run_script_src(&mut self, src: &str, name: &str, label: Option<&str>) -> Result<(), String> {
         let snap = self.project.to_json();
         let mut logs = Vec::new();
         let result = {
@@ -68,22 +66,39 @@ impl App {
                     }
                 }
             };
-            crate::scripting::run(&src, &name, &mut call, &mut logs)
+            crate::scripting::run(src, name, &mut call, &mut logs)
         };
         if self.project.to_json() != snap {
             push_undo_json(&mut self.undo, &mut self.redo, snap);
+            if let (Some(label), Some(e)) = (label, self.undo.last_mut()) {
+                e.label = label.to_string();
+            }
         }
         for l in &logs {
             self.toast(format!("{name}: {l}"));
         }
         match result {
-            Ok(()) if logs.is_empty() => self.toast(format!("{name}: done")),
-            Ok(()) => {}
+            Ok(()) if logs.is_empty() => {
+                self.toast(format!("{name}: done"));
+                Ok(())
+            }
+            Ok(()) => Ok(()),
             Err(e) => {
                 eprintln!("script {name}: {e}");
                 let line = e.lines().next().unwrap_or("failed").to_string();
                 self.toast(format!("{name}: {line}"));
+                Err(line)
             }
+        }
+    }
+
+    pub(super) fn run_script(&mut self, path: &std::path::Path) {
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        match std::fs::read_to_string(path) {
+            Ok(src) => {
+                let _ = self.run_script_src(&src, &name, None);
+            }
+            Err(e) => self.toast(format!("{name}: {e}")),
         }
     }
 

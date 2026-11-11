@@ -471,7 +471,7 @@ pub struct Settings {
     // `Default for Settings` below, which a field-level attribute would override with "" / false)
     /// Show the performance HUD over the Preview (ws:perf-baseline draws it).
     pub hud: bool,
-    /// Which agent the Assistant pane drives: "claude" (the Claude Code CLI), "custom" (the
+    /// Which agent the Assistant pane drives: "claude" (the `claude` CLI), "codex" (`codex exec`), "custom" (the
     /// `assistant_command` template) or "external" (requests wait for an MCP client's `assistant.wait`).
     pub assistant_backend: String,
     /// The "custom" backend's command line; `{prompt}` and `{mcp_url}` are substituted. Empty = unset.
@@ -504,8 +504,12 @@ pub struct Settings {
     pub assistant_guard: bool,
     /// The environment variable the "custom" backend gets the stored API key in.
     pub assistant_key_env: String,
-    /// Claude Code session id per project path ("" = unsaved project), so follow-ups resume it.
+    /// Agent session id per project path (no longer written: each Assistant conversation keeps its own,
+    /// in the conversation store). Kept so stored settings still load.
     pub assistant_sessions: BTreeMap<String, String>,
+    /// The timeline toolbar's "Assistant follows the selection": the composer attaches the live
+    /// selection / In-Out / playhead (off = only what the user pins).
+    pub assistant_follow: bool,
     // ---- ws:mcp-context ----
     // ---- ws:transcribe-islands ----
     // ---- ws:voice-input ----
@@ -711,6 +715,7 @@ impl Default for Settings {
             assistant_guard: true,
             assistant_key_env: "OPENAI_API_KEY".into(),
             assistant_sessions: BTreeMap::new(),
+            assistant_follow: true,
             // ---- ws:mcp-context ----
             // ---- ws:transcribe-islands ----
             // ---- ws:voice-input ----

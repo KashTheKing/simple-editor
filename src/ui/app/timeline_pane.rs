@@ -13,10 +13,11 @@ fn tip(name: &str, a: Action) -> String {
     }
 }
 
-/// The Timeline toolbar's right part: Snap, Auto Close Gaps, and zoom on the right (`tools::panel`'s
-/// tool groups lead the row). Returns the Actions its buttons ask for; the zoom slider edits `zoom`.
-fn toolbar(ui: &mut egui::Ui, pal: &crate::theme::Palette, snap: (bool, bool), zoom: &mut f32) -> Vec<Action> {
-    let (snap, gaps) = snap;
+/// The Timeline toolbar's right part: Snap, Auto Close Gaps, Assistant follows the selection, and zoom
+/// on the right (`tools::panel`'s tool groups lead the row). Returns the Actions its buttons ask for;
+/// the zoom slider edits `zoom`.
+fn toolbar(ui: &mut egui::Ui, pal: &crate::theme::Palette, snap: (bool, bool, bool), zoom: &mut f32) -> Vec<Action> {
+    let (snap, gaps, follow) = snap;
     let mut out = Vec::new();
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
@@ -28,6 +29,11 @@ fn toolbar(ui: &mut egui::Ui, pal: &crate::theme::Palette, snap: (bool, bool), z
         let gtip = tip("Auto Close Gaps", Action::ToggleAutoCloseGaps);
         if icon_button(ui, pal, ui.id().with("tl_gaps"), Glyph::Spacer, &gtip, gaps).clicked() {
             out.push(Action::ToggleAutoCloseGaps);
+        }
+        // ---- ws:assistant-pane ----
+        let ftip = tip("Assistant follows the selection", Action::ToggleAssistantFollow);
+        if icon_button(ui, pal, ui.id().with("tl_assistant"), Glyph::Assistant, &ftip, follow).clicked() {
+            out.push(Action::ToggleAssistantFollow);
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(4.0);
@@ -69,7 +75,8 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
             app.settings.save();
         }
         ui.add_space(6.0);
-        acts = toolbar(ui, &app.palette, (app.settings.snap, app.settings.auto_close_gaps), &mut zoom);
+        let s = &app.settings;
+        acts = toolbar(ui, &app.palette, (s.snap, s.auto_close_gaps, s.assistant_follow), &mut zoom);
     });
     app.pending_actions.extend(acts);
     if zoom != app.timeline.zoom {
@@ -333,7 +340,7 @@ mod tests {
                 ..Default::default()
             };
             let _ = ctx.run(input, |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| out = toolbar(ui, &pal, (true, false), &mut zoom));
+                egui::CentralPanel::default().show(ctx, |ui| out = toolbar(ui, &pal, (true, false, true), &mut zoom));
             });
             out
         };
@@ -353,6 +360,7 @@ mod tests {
         // (the tools moved to `tools::panel`, ahead of this part of the row)
         assert_eq!(click(egui::pos2(8.0 + 12.0, 19.0)), vec![Action::ToggleSnap]);
         assert_eq!(click(egui::pos2(8.0 + 26.0 + 12.0, 19.0)), vec![Action::ToggleAutoCloseGaps]);
+        assert_eq!(click(egui::pos2(8.0 + 52.0 + 12.0, 19.0)), vec![Action::ToggleAssistantFollow]);
         // right-aligned from the 792 pt edge, 4 pt in: Zoom to Fit
         assert_eq!(click(egui::pos2(792.0 - 4.0 - 12.0, 19.0)), vec![Action::ZoomFit]);
     }

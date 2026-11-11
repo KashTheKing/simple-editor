@@ -1173,6 +1173,7 @@ impl eframe::App for App {
         // the window really closes this frame: answer held / parked MCP calls instead of letting them time out
         if self.close_confirmed && ctx.input(|i| i.viewport().close_requested()) {
             assistant_ctl::deny_held(self, "the app closed");
+            assistant_ctl::save_now(self); // ws:assistant-pane: the conversations, synchronously
             tools_context::end_waits(self, "the app closed");
         }
 

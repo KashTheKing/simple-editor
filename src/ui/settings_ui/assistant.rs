@@ -1,7 +1,7 @@
 //! ---- ws:assistant-pane ----
-//! The Assistant tab: which agent the Assistant pane drives (Claude Code / a custom command / an
-//! external MCP client), its model, the API key (Windows Credential Manager, never settings.json), the
-//! guard on tools that leave the project, and the quick-prompt buttons.
+//! The Assistant tab: which agent the Assistant pane drives (`assistant_data::AGENTS`), its model, the
+//! API key (Windows Credential Manager, never settings.json), the guard on tools that leave the
+//! project, and the quick-prompt buttons. The pane's header has the same agent / model pickers.
 
 use crate::engine::agent;
 use crate::settings::Settings;
@@ -17,11 +17,13 @@ pub(super) fn assistant_tab(ui: &mut egui::Ui, s: &mut Settings) -> bool {
     egui::Grid::new("assistant_settings").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
         ui.label("Agent");
         ui.vertical(|ui| {
-            for (value, label, hint) in [
-                ("claude", "Claude Code", "Runs the `claude` CLI with this editor's tools only (no shell, no files)."),
-                ("custom", "Custom command", "Runs your own command line - Codex or any agent CLI that speaks MCP."),
-                ("external", "External agent", "Requests wait for an MCP client looping on assistant.wait."),
-            ] {
+            for &(value, label) in crate::ui::assistant_data::AGENTS {
+                let hint = match value {
+                    "claude" => "Runs the `claude` CLI with this editor's tools only (no shell, no files).",
+                    "codex" => "Runs `codex exec` with this editor's MCP server (check `codex --help` if it fails).",
+                    "custom" => "Runs your own command line - any agent CLI that speaks MCP.",
+                    _ => "Requests wait for an MCP client looping on assistant.wait.",
+                };
                 changed |= ui.radio_value(&mut s.assistant_backend, value.to_string(), label).on_hover_text(hint).changed();
             }
         });
@@ -33,6 +35,7 @@ pub(super) fn assistant_tab(ui: &mut egui::Ui, s: &mut Settings) -> bool {
                 ui.vertical(|ui| {
                     changed |= ui
                         .add(egui::TextEdit::singleline(&mut s.assistant_model).hint_text("default").desired_width(200.0))
+                        .on_hover_text("default, fable, opus, sonnet, haiku or a full model name")
                         .changed();
                     // the PATH scan runs when the tab opens (no draw last frame) or on "Check again", not per frame
                     let id = ui.id().with("assistant_claude_exe");
@@ -66,9 +69,8 @@ pub(super) fn assistant_tab(ui: &mut egui::Ui, s: &mut Settings) -> bool {
                         )
                         .changed();
                     ui.weak(
-                        "{prompt} and {mcp_url} are filled in; \"double quotes\" group words. No shell runs it. \
-                         Codex example (unverified - check `codex --help`): \
-                         codex exec -c mcp_servers.simple-editor.url={mcp_url} \"{prompt}\"",
+                        "{prompt}, {mcp_url} and {model} are filled in; \"double quotes\" group words. No shell \
+                         runs it.",
                     );
                 });
                 ui.end_row();
@@ -76,6 +78,13 @@ pub(super) fn assistant_tab(ui: &mut egui::Ui, s: &mut Settings) -> bool {
                 changed |= ui
                     .add(egui::TextEdit::singleline(&mut s.assistant_key_env).hint_text("OPENAI_API_KEY").desired_width(200.0))
                     .on_hover_text("The stored API key is passed to your command in this environment variable")
+                    .changed();
+                ui.end_row();
+            }
+            "codex" => {
+                ui.label("Model");
+                changed |= ui
+                    .add(egui::TextEdit::singleline(&mut s.assistant_model).hint_text("default").desired_width(200.0))
                     .changed();
                 ui.end_row();
             }
@@ -158,7 +167,11 @@ fn key_row(ui: &mut egui::Ui, backend: &str) {
                 KEY_STORED.store(1, Ordering::Relaxed);
             }
         });
-        let var = if backend == "claude" { "ANTHROPIC_API_KEY" } else { "the key variable" };
+        let var = match backend {
+            "claude" => "ANTHROPIC_API_KEY",
+            "codex" => "OPENAI_API_KEY",
+            _ => "the key variable",
+        };
         ui.weak(format!(
             "Kept in Windows Credential Manager (\"SimpleEditor/assistant\"), passed to the agent as {var}. \
              Leave empty to use the CLI's own sign-in."

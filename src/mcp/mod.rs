@@ -81,7 +81,9 @@ rolls back only itself (a failed batch rolls back the whole batch).\n\
 5. Check results visually with render.frame{t} or render.contact_sheet{from, to, count} - both return images.\n\
 6. Comments are markers with notes: markers.list returns note/done/author; mark one handled with \
 markers.set{id, done: true}; markers.comment leaves your own.\n\
-7. Live mode: loop on assistant.wait{timeout_s}; it returns the user's next request or new comment with the context.";
+7. Live mode: loop on assistant.wait{timeout_s}; it returns the user's next request or new comment with the context.\n\
+8. Images the user attached to a request: assistant.attachments lists them, assistant.attachment{index} returns one. \
+Asked to write a task: hand a Luau script over with tasks.add{title, code, note} instead of editing - the user runs it.";
 
 /// How long a call the Assistant guard holds (`tools::leaves_project`) waits for the user's Allow;
 /// the approval window refuses to run one held longer than this (its client has given up).

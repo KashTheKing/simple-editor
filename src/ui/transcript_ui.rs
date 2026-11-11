@@ -320,6 +320,10 @@ pub fn show(
                 if ui.add_enabled_ui(n > 0, |ui| menu::row(ui, None, "Deselect", "")).inner.clicked() {
                     st.sel = None;
                 }
+                // ---- ws:assistant-pane ----
+                ui.add_enabled_ui(n > 0, |ui| {
+                    crate::ui::assistant_ui::add_to_assistant_row(ui, crate::ui::assistant_data::Pin::Words)
+                });
             });
         });
     }

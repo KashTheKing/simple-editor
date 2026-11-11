@@ -332,6 +332,11 @@ actions! {
     // ---- ws:interchange ----
     ExportEdl => "export_edl", "Export Avid EDL…", None;
     // ---- ws:assistant-pane ----
+    // Pin the selection (clips, else transcript words, a marker, else In/Out) to the Assistant's next
+    // message, and switch to its Chat. Unbound by design (right-click menus / palette).
+    AssistantAddSelection => "assistant_add_selection", "Add to Assistant", None;
+    // The timeline toolbar's toggle: the composer shows live chips for the selection / In-Out / playhead.
+    ToggleAssistantFollow => "assistant_follow", "Assistant Follows the Selection", None;
     // ---- ws:mcp-context ----
     // A marker over In/Out (else the selected clips, else the playhead) with its note focused - a
     // review comment an agent can read (markers.list) and tick off (markers.set). Unbound by design.
@@ -634,6 +639,8 @@ pub fn group(a: Action) -> &'static str {
         // ---- ws:interchange ----
         ExportEdl => "File",
         // ---- ws:assistant-pane ----
+        AssistantAddSelection => "Panels & Pages",
+        ToggleAssistantFollow => "Panels & Pages",
         // ---- ws:mcp-context ----
         AddComment => "Marking",
         // ---- ws:transcribe-islands ----

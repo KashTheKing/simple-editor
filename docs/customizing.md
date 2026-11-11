@@ -86,8 +86,10 @@ curl -s -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' -H 'content-type: ap
 > `transcribe.run`) are transcribed from the `ToolDef` rows in the source, not from a live
 > `tools/list`. The counts and totals here predate them; re-take them from a live call once it builds.
 > With `Settings.assistant_guard` on (default), `export.*`, `project.open`, `project.new`,
-> `settings.set`, `scripts.run`, `media.convert` and `media.batch_convert` called over MCP wait for the
-> user's Allow (`ui/app/assistant_ctl.rs`, `leaves_project`).
+> `settings.set`, `scripts.run`, `tasks.run`, `media.convert` and `media.batch_convert` called over MCP
+> wait for the user's Allow (`ui/app/assistant_ctl.rs`, `leaves_project`). The Assistant redesign added
+> `assistant.add_selection`, `assistant.attachments`, `assistant.attachment` and the five `tasks.*` tools
+> (also from the source, not a live call).
 `kind` isn't part of the wire response (`mcp::tools::list_json` only serialises
 `name`/`description`/`inputSchema` — see `src/mcp/tools.rs`), so the `Kind` column below is a source
 cross-reference (each tool's own `ToolDef.kind` in its `tools_*.rs` file), not something you'll see
@@ -99,12 +101,15 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 
 **Totals by kind**: 109 Mutate, 70 Read, 48 Ui, 13 Job.
 
-**`assistant.*`** (4 tools)
+**`assistant.*`** (7 tools)
 
 | Tool | Kind | Args | Description |
 |---|---|---|---|
-| `assistant.send` | Ui | prompt | Send a request to the Assistant pane's agent, as if the user typed it (one request at a time). |
-| `assistant.status` | Read | - | The Assistant pane: whether a request is running, the backend, requests waiting for assistant.wait, and the last 20 log lines. |
+| `assistant.add_selection` | Ui | what | Pin a snapshot of the user's selection to the Assistant's next chat message and show the pane (same as right-click ▸ Add to Assistant). what: selection (clips, else transcript words, a marker, else In/Out), clips, words, marker or range. what: default selection. |
+| `assistant.attachment` | Read | index | One image the user attached to the current Assistant request, as an image (PNG). index: 0-based, see assistant.attachments. |
+| `assistant.attachments` | Read | - | The images the user attached to the current Assistant request: [{index, name, width, height}]. assistant.attachment{index} returns one. |
+| `assistant.send` | Ui | prompt | Send a request to the Assistant pane's chat, as if the user typed it (one request at a time). |
+| `assistant.status` | Read | - | The Assistant pane: whether a request is running, the backend, requests waiting (for assistant.wait, and the queue behind the running one), and the last 20 lines of the shown conversation. |
 | `assistant.stop` | Ui | - | Stop the Assistant pane's running request (its edits so far stay, as one undo step). |
 | `assistant.wait` | Job | timeout_s | Block until the user sends a request from the Assistant pane or adds a comment (a marker with a note); returns {request, context}, or {timeout: true}. Loop on it for live mode. timeout_s: default 300, max 1500. |
 
@@ -496,6 +501,19 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `subtitles.import` | Mutate | path | Import .srt/.vtt (replaces). |
 | `subtitles.set` | Mutate | cues | Replace all cues: [{start,end,text}]. |
 | `subtitles.style_preset` | Mutate | name | Set project.subtitle_style from a named caption style (builtin or Settings.caption_presets). |
+
+**`tasks.*`** (5 tools)
+
+The Assistant's Tasks queue (per conversation, saved with it). A task is a Luau script an agent wrote for
+the user to review and run; each run is one undo step labelled `Assistant task: <title>`.
+
+| Tool | Kind | Args | Description |
+|---|---|---|---|
+| `tasks.add` | Ui | code, note, title | Hand a Luau script over to the Assistant's Tasks queue for the user to review and run (it is not run now). title: a few words; note: one line on what it does. |
+| `tasks.list` | Read | - | The Assistant's Tasks queue in order: [{id, title, note, status, error, code}]. |
+| `tasks.remove` | Ui | id | Remove a task from the Assistant's queue. |
+| `tasks.run` | Ui | id | Run one task, or (no id) every Ready task in queue order; each run is one undo step and a failing task stops the queue. |
+| `tasks.set` | Ui | code, id, title | Change a task's title and/or code (new code makes it Ready again). |
 
 **`templates.*`** (4 tools)
 
