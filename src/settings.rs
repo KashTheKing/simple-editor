@@ -516,6 +516,14 @@ pub struct Settings {
     // ---- ws:transcribe-islands ----
     // ---- ws:voice-input ----
     // ---- ws:docs-release ----
+    // ---- ws:html-layer ----
+    // ---- ws:shader-library ----
+    // ---- ws:skills ----
+    // ---- ws:online-library ----
+    /// Where the online library is read from: the URL of the repo's `library/` folder (raw files).
+    pub library_url: String,
+    /// A local folder read INSTEAD of `library_url` when not empty (testing before `library/` is on `main`).
+    pub library_dir: String,
 }
 
 /// ws:assistant-pane: the built-in quick prompts (also what "Reset" restores).
@@ -723,6 +731,12 @@ impl Default for Settings {
             // ---- ws:transcribe-islands ----
             // ---- ws:voice-input ----
             // ---- ws:docs-release ----
+            // ---- ws:html-layer ----
+            // ---- ws:shader-library ----
+            // ---- ws:skills ----
+            // ---- ws:online-library ----
+            library_url: "https://raw.githubusercontent.com/KashTheKing/simple-editor/main/library".into(),
+            library_dir: String::new(),
         }
     }
 }

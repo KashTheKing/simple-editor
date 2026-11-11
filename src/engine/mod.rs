@@ -21,6 +21,10 @@ pub mod mixer;
 pub mod mixer_fx;
 pub mod prerender;
 pub mod presets;
+pub mod html;
+pub mod library;
+pub mod shaderlib;
+pub mod skills;
 pub mod shaders;
 pub mod shapes;
 // ---- ws:export-audio-tracks ----

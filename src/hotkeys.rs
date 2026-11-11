@@ -346,6 +346,10 @@ actions! {
     // Hold to dictate into the Assistant prompt (a tap / the palette toggles). Unbound by design.
     PushToTalk => "push_to_talk", "Push to Talk", None;
     // ---- ws:docs-release ----
+    // ---- ws:html-layer ----
+    // ---- ws:shader-library ----
+    // ---- ws:skills ----
+    // ---- ws:online-library ----
     // ---- tool selection (ui::tools) - polled and dispatched there, not through App::act ----
     ToolSelect => "tool_select", "Select Tool", sc(NONE, Key::V);
     ToolText => "tool_text", "Text Tool", sc(NONE, Key::T);
@@ -647,6 +651,10 @@ pub fn group(a: Action) -> &'static str {
         // ---- ws:voice-input ----
         PushToTalk => "Panels & Pages",
         // ---- ws:docs-release ----
+        // ---- ws:html-layer ----
+        // ---- ws:shader-library ----
+        // ---- ws:skills ----
+        // ---- ws:online-library ----
         // unreachable today (every variant has an arm above); a new variant compiles into "Other" and
         // `group_covers_every_action` names it.
         #[allow(unreachable_patterns)]

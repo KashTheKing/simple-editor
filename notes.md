@@ -7,6 +7,47 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
 
 ---
 
+- **creator-kit spike (2026-11-11): headless Edge can step CSS animations exactly, with alpha. Go.**
+  Edge 157, RTX 2060 SUPER, machine in normal use. A std-only throwaway program (TcpStream WebSocket
+  client, serde_json) started `msedge.exe --headless --remote-debugging-port=0 --user-data-dir=<temp>
+  --host-resolver-rules="MAP * ~NOTFOUND"`, read the port and browser path from
+  `<profile>\DevToolsActivePort`, and drove one tab over the browser socket with flat sessions
+  (`Target.createTarget` + `Target.attachToTarget{flatten:true}`): `Emulation.setDeviceMetricsOverride`,
+  `Emulation.setDefaultBackgroundColorOverride{a:0}`, `Emulation.setScriptExecutionDisabled{true}`,
+  `Page.navigate` to a `file:///` URL, `Page.loadEventFired`, then per frame "set every animation's time"
+  and `Page.captureScreenshot{format:"png", optimizeForSpeed:true}`. PNG bytes went straight down
+  ffmpeg's stdin (`-f image2pipe -framerate F -c:v png -i - -c:v copy out.mov`): PNG-in-MOV, rgba,
+  no re-encode.
+  **Exactness**: a test page (linear `left`, delayed opacity fade, `steps()` on a `::after`, an
+  infinite alternate compositor `transform`, a 50 % white box) rendered 90 frames at 1080p30; a Python
+  check of the decoded `.mov` matched the expected position / alpha of every element on all 90 frames,
+  background alpha 0, the half-transparent box (255,255,255,128) = straight alpha. A `<script>` in the
+  page did not run. Two ways to set the time were tried and gave byte-identical files:
+  (a) `Runtime.evaluate("for(const a of document.getAnimations()){a.pause();a.currentTime=T}")` - runs
+  from the host although page scripts are disabled; (b) no JavaScript at all: `Animation.enable` +
+  `Animation.setPlaybackRate{0}` before the load, ids from `Animation.animationStarted`,
+  `Animation.seekAnimations{ids, currentTime:T}`. **Chosen: (a)** - it always sees every animation
+  (pseudo-elements, delayed ones) and can also ask for the longest `endTime`, so frames after the last
+  animation ends need not be rendered again; (b) depends on having caught every start event. The page
+  itself has no JavaScript either way (stripped by the app and disabled in Edge).
+  **Speed** (ms per frame, seek + screenshot + base64 + pipe): 640x360 ~40, **1080p 52-61** (screenshot
+  is ~48 of it), 4K ~148. Edge start to first frame ~1.3 s cold, so the renderer keeps one Edge alive.
+  Tried and dropped: 2/4/6 windows in parallel (frames identical, 45/34/37 ms a frame, but every extra
+  window costs its own load: no net gain on a 3 s layer; each needs `newWindow:true`, a background tab
+  never answers a screenshot); `--disable-gpu`, `--disable-gpu-vsync --disable-frame-rate-limit`,
+  `--run-all-compositor-stages-before-draw`: none faster. `Target.createTarget` refuses `width`/`height`
+  without `newWindow`. Decode of the result through ffmpeg: PNG-in-MOV 8 ms a 1080p frame, `qtrle` 10
+  (smaller on flat art, 1.8 vs 4.5 MB for the test, but worse on gradients): PNG kept.
+  **Decisions for the engine**: (1) a render writes a NEW content-addressed file
+  (`cache\html\<hash of html + fields + size + fps + duration>.mov`, or `.png` when the page has no
+  animation) and points the asset's `path` at it - Windows cannot rename over a file a decoder has
+  open, the clip only knows the asset id so it keeps its effects / keyframes / position, and undo of a
+  field change finds the old file still there; (2) alpha sources get the stacked proxy at ANY height
+  (the same ffmpeg filter was run on a 640x360 alpha `.mov` at height 360 and gave a correct 640x720
+  colour-over-alpha file) - `proxy_eligible` must stop requiring `height > proxy height` for them and
+  build at `min(proxy height, source height)`; (3) neither `ffpipe::bake_sequence` nor the bake
+  pipeline is used. Spike source: not kept in the repo (the engine's `html` module supersedes it).
+
 - **assistant pickers + history (2026-11-11):** the header has an exact-model menu (ids from
   Anthropic's model table in `assistant_data::CLAUDE_MODELS`, the four family aliases on top, "Other…"
   for anything newer), an effort menu (`--effort low|medium|high|xhigh|max`, Claude Code agent only,

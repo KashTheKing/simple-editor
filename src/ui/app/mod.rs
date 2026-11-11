@@ -143,6 +143,16 @@ mod transcript_ctl;
 mod trim_actions;
 // ---- ws:voice-input ----
 mod voice_ctl;
+// ---- ws:html-layer ----
+mod html_ctl;
+mod tools_html;
+// ---- ws:shader-library ----
+mod tools_shader;
+// ---- ws:skills ----
+mod tools_skills;
+// ---- ws:online-library ----
+mod library_ctl;
+mod tools_library;
 mod whatsnew;
 #[path = "windows.rs"]
 mod windows_dlg;
@@ -489,6 +499,16 @@ pub struct App {
     /// Dictation into the Assistant prompt (recorder + whisper job).
     voice: voice_ctl::VoiceState,
     // ---- ws:docs-release ----
+    // ---- ws:html-layer ----
+    /// HTML layers: the Edge renderer's jobs and the HTML editor window.
+    pub(crate) html: html_ctl::HtmlState,
+    // ---- ws:shader-library ----
+    /// Shader effects / transitions from the library: whatever the UI side needs to keep.
+    pub(crate) shader_lib: tools_shader::ShaderLibState,
+    // ---- ws:skills ----
+    // ---- ws:online-library ----
+    /// The online library: the catalogue, downloads in flight, Gallery state.
+    pub(crate) online: library_ctl::OnlineState,
 }
 
 // ---- ws:canvas-handles-monitor ----
@@ -935,6 +955,13 @@ impl App {
             // ---- ws:voice-input ----
             voice: Default::default(),
             // ---- ws:docs-release ----
+            // ---- ws:html-layer ----
+            html: Default::default(),
+            // ---- ws:shader-library ----
+            shader_lib: Default::default(),
+            // ---- ws:skills ----
+            // ---- ws:online-library ----
+            online: Default::default(),
         };
         if let Some(reason) = settings_bad {
             app.toast(format!("Settings file was corrupt (saved as settings.json.bad): {reason}"));
@@ -1578,6 +1605,14 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:voice-input ----
     voice_ctl::TOOLS,
     // ---- ws:docs-release ----
+    // ---- ws:html-layer ----
+    tools_html::TOOLS,
+    // ---- ws:shader-library ----
+    tools_shader::TOOLS,
+    // ---- ws:skills ----
+    tools_skills::TOOLS,
+    // ---- ws:online-library ----
+    tools_library::TOOLS,
 ];
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
@@ -1646,6 +1681,13 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     // ---- ws:voice-input ----
     voice_ctl::act,
     // ---- ws:docs-release ----
+    // ---- ws:html-layer ----
+    html_ctl::act,
+    // ---- ws:shader-library ----
+    tools_shader::act,
+    // ---- ws:skills ----
+    // ---- ws:online-library ----
+    library_ctl::act,
 ];
 
 pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
@@ -1711,6 +1753,13 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:voice-input ----
     voice_ctl::tick,
     // ---- ws:docs-release ----
+    // ---- ws:html-layer ----
+    html_ctl::tick,
+    // ---- ws:shader-library ----
+    tools_shader::tick,
+    // ---- ws:skills ----
+    // ---- ws:online-library ----
+    library_ctl::tick,
 ];
 
 pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
@@ -1769,6 +1818,13 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:transcribe-islands ----
     // ---- ws:voice-input ----
     // ---- ws:docs-release ----
+    // ---- ws:html-layer ----
+    html_ctl::windows,
+    // ---- ws:shader-library ----
+    tools_shader::windows,
+    // ---- ws:skills ----
+    // ---- ws:online-library ----
+    library_ctl::windows,
 ];
 
 pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
@@ -1825,6 +1881,10 @@ pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
     // ---- ws:transcribe-islands ----
     // ---- ws:voice-input ----
     // ---- ws:docs-release ----
+    // ---- ws:html-layer ----
+    // ---- ws:shader-library ----
+    // ---- ws:skills ----
+    // ---- ws:online-library ----
 ];
 
 /// The dominant kind of the current selection, for a contextual inspector/palette to key off without

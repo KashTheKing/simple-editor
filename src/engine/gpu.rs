@@ -2544,6 +2544,9 @@ mod tests {
 /// Real-driver checks: a legacy WGL context on a hidden window (compatibility profiles accept
 /// `#version 330 core`). Skips, loudly, on a machine with no OpenGL driver.
 #[cfg(test)]
+mod library_tests; // ws:shader-library: every library shader on the real driver
+
+#[cfg(test)]
 mod driver_tests {
     use super::*;
     use windows::core::{s, PCSTR};
@@ -2552,7 +2555,7 @@ mod driver_tests {
     use windows::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
     use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExA, WINDOW_EX_STYLE, WS_POPUP};
 
-    fn gl() -> Option<glow::Context> {
+    pub(super) fn gl() -> Option<glow::Context> {
         unsafe {
             let hwnd =
                 CreateWindowExA(WINDOW_EX_STYLE(0), s!("STATIC"), s!(""), WS_POPUP, 0, 0, 8, 8, None, None, None, None)
