@@ -357,8 +357,9 @@ mod tests {
         p.tracks[a1].clips[0].volume.value = 0.5;
         p.add_marker(2.0, "M & N");
         let x = export_xmeml(&p);
-        assert_eq!(count(&x, "<transitionitem>"), 1, "{x}");
-        assert!(x.contains("<effectid>Cross Dissolve</effectid>"));
+        // one video dissolve, plus the audio cross fade the app mirrors onto each linked audio track
+        assert_eq!(count(&x, "<effectid>Cross Dissolve</effectid>"), 1, "{x}");
+        assert_eq!(count(&x, "<transitionitem>"), 1 + p.audio_tracks().len(), "{x}");
         assert!(x.contains("<effectid>audiolevels</effectid>") && x.contains("<value>0.5</value>"), "{x}");
         assert!(x.contains("<linkclipref>clipitem-1</linkclipref>"), "linked A/V clipitems point at each other");
         assert!(x.contains("<name>M &amp; N</name>\n<in>60</in>\n<out>-1</out>"), "{x}");

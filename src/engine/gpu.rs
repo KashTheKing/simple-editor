@@ -634,7 +634,7 @@ impl GpuRenderer {
         let gl = self.gl.clone();
         let bytes = target.w as usize * target.h as usize * if nv12 { 1 } else { 4 };
         let rb = &mut self.readback;
-        unsafe {
+        let slot = unsafe {
             // drop stale error flags so the check below only sees ours (bounded: a lost context repeats)
             for _ in 0..8 {
                 if gl.get_error() == glow::NO_ERROR {
@@ -677,7 +677,8 @@ impl GpuRenderer {
                 return false;
             }
             rb.next = (slot + 1) % READBACK_RING;
-        }
+            slot
+        };
         rb.pending.push_back(PendingRead { slot, bytes, w: size.0, h: size.1, t });
         true
     }

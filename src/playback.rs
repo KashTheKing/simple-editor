@@ -2925,7 +2925,8 @@ mod tests {
         let (id, frame) = &set.layers[0];
         assert_eq!(*id, project.all_clips().find(|(_, c)| c.is_visual()).unwrap().1.id);
         assert!(set.get(*id).is_some());
-        let c = centre(frame);
+        // a Media Foundation layer is handed to the GPU as BGRX (`Frame::bgrx`); read it as RGBA here
+        let c = centre(&frame.to_rgba());
         assert!(c[0] > 200 && c[1] < 70, "expected red at 0.5 s, got {c:?}");
         assert!(set.motion.is_empty(), "no motion-blur effect → no extra samples");
 

@@ -7,6 +7,17 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
 
 ---
 
+- **pro first compile (2026-11-10, same day, later):** `cargo check --all-targets` found ONE error
+  (`slot` scoped inside an `unsafe` block in `GpuRenderer::pbo_read`); after that `cargo test` was
+  1350 passed / 2 failed, both test expectations (a BGRX layer read as RGBA in
+  `gpu_mode_publishes_layers`; `<transitionitem>` counted without the mirrored audio cross fades),
+  then 1352 passed, and `--selftest` is OK including `export/mp4`, `export/wav` (audio over
+  `tcp://127.0.0.1`), `lossless`, `xmeml`, `prerender`. NOT exercised by either: the GPU export path
+  (request window, PBO readback, NV12) and the BGRX texture upload on a real driver, the
+  hardware-encoder probe and retry, Streams/Stems exports through a real ffmpeg, the Assistant's
+  `claude` spawn and Credential Manager calls, the cpal microphone stream, island transcription.
+  Those need the live app. No perf number has been measured and `scripts/size.ps1` has not run.
+
 - **pro first coding pass (2026-11-10): for whoever compiles `feat/pro` first.** Nothing in it has
   been compiled, run, tested or measured: every Pro workstream (#140-#153) was written by reading only.
   Expect compile errors; the docs (website pages, ARCHITECTURE.md "coded 2026-11-10" blocks,
