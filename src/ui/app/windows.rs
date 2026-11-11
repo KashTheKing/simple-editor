@@ -216,7 +216,7 @@ impl App {
                 let snap = self.project.to_json();
                 let changed = match self.project.clip_mut(id).and_then(|c| c.effects.get_mut(i)) {
                     Some(fx) if fx.kind == EffectKind::Shader && fx.shader != src => {
-                        fx.shader = src.clone();
+                        fx.set_shader(&src); // ws:shader-library: keeps control values by index
                         true
                     }
                     _ => false,

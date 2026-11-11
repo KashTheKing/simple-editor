@@ -104,6 +104,11 @@ const UNIFORMS: &[&str] = &[
     "m_opacity",
     "m_invert",
     "m_count",
+    // ws:shader-library: shader transitions (`shaders::transition_shader`)
+    "u_from",
+    "u_to",
+    "progress",
+    "ratio",
 ];
 
 // Program cache keys. Effects live at EFFECT_BASE + kind index; user shaders at their source hash
@@ -903,6 +908,25 @@ impl GpuRenderer {
         self.link(key, &shaders::user_shader(src))
     }
 
+    // ---- ws:shader-library ----
+    /// Compile + link a shader TRANSITION (`shaders::transition_shader`) once; Err = the driver's log
+    /// (kept, so a failing source is never rebuilt per frame - the renderer then cross-fades).
+    pub fn check_transition(&mut self, src: &str) -> Result<(), String> {
+        let key = transition_key(src);
+        if self.programs.map.contains_key(&key) {
+            return Ok(());
+        }
+        if let Some(e) = self.programs.failed.get(&key) {
+            return Err(e.clone());
+        }
+        self.link(key, &shaders::transition_shader(src))
+    }
+
+    /// The log a shader transition source was rejected with, if it ever was.
+    pub fn transition_error(&self, src: &str) -> Option<&str> {
+        self.programs.failed.get(&transition_key(src)).map(|s| s.as_str())
+    }
+
     // ---------------- internals ----------------
 
     /// The framebuffer eframe/egui had bound when it called us.
@@ -1190,11 +1214,11 @@ impl GpuRenderer {
         let dst = self.acquire(size.0, size.1)?;
         let gl = self.gl.clone();
         let mut params = [0.0f32; PARAM_NAMES.len()];
-        for (i, p) in params.iter_mut().enumerate() {
-            *p = effect.at(i, t) as f32;
+        for (p, v) in params.iter_mut().zip(param_values(effect, t)) {
+            *p = v as f32;
         }
         // uniforms persist on a cached program, so a motion kind must set these every draw
-        let motion = effect.kind.needs_motion().then(|| motion.unwrap_or((self.blank, self.blank, 0.0)));
+        let motion = effect.needs_motion().then(|| motion.unwrap_or((self.blank, self.blank, 0.0)));
         // ---- ws:color-engine ----
         let lut_bind =
             (effect.kind == EffectKind::Lut && !effect.lut.is_empty()).then(|| self.lut_texture(&effect.lut)).flatten();
@@ -1244,7 +1268,27 @@ impl GpuRenderer {
 
     /// The neighbouring frames a `needs_motion` effect wants: (prev, next, how many are real).
     /// `LayerSet::motion` carries whatever the decoder managed to produce - 0, 1 or 2 samples.
-    fn motion_texs(&mut self, id: Id, layers: &LayerSet) -> (glow::Texture, glow::Texture, f32) {
+    /// `shader` (a `// @needs previous` shader effect): `u_prev` is the earliest sample and `u_next`
+    /// the one halfway to the current frame (`library/README.md`); the built-in kinds keep their
+    /// own pairing below.
+    fn motion_texs(&mut self, id: Id, layers: &LayerSet, shader: bool) -> (glow::Texture, glow::Texture, f32) {
+        if shader {
+            let mut s: Vec<(f64, &Arc<Frame>)> =
+                layers.motion.iter().filter(|(c, _, f)| *c == id && !f.is_empty()).map(|(_, o, f)| (*o, f)).collect();
+            s.sort_by(|a, b| a.0.total_cmp(&b.0));
+            return match s.as_slice() {
+                [] => (self.blank, self.blank, 0.0),
+                [(_, p)] => {
+                    let tex = self.upload(id | MOTION_PREV, p);
+                    (tex, tex, 1.0)
+                }
+                [(_, p), (_, n), ..] => {
+                    let prev = self.upload(id | MOTION_PREV, p);
+                    let next = self.upload(id | MOTION_NEXT, n);
+                    (prev, next, 2.0)
+                }
+            };
+        }
         let (mut before, mut after) = (None, None);
         let (mut bo, mut ao) = (0.0f64, 0.0f64);
         for (cid, off, f) in &layers.motion {
@@ -1448,6 +1492,8 @@ impl GpuRenderer {
                 }
                 canvas
             }
+            // ws:shader-library: both sides to their own targets, one two-input program blends them
+            Shader => self.draw_shader_transition(project, tr, left, right, p, t, canvas, layers),
             Wipe => {
                 // on a cut / In edge the incoming clip is limited to the wiped rectangle by a rect
                 // mask; on an Out edge black wipes over the clip, so the clip is drawn masked to the
@@ -1479,6 +1525,68 @@ impl GpuRenderer {
                 out
             }
         }
+    }
+
+    // ---- ws:shader-library ----
+    /// `TransitionKind::Shader`: the outgoing and the incoming clip each drawn (with their effects,
+    /// masks and placement) onto a transparent canvas-sized target - a missing side stays transparent
+    /// - then `shaders::transition_shader` blends the two into a third, which is composited over
+    /// what is already on the canvas. A source that does not compile cross-fades instead (its log is
+    /// `transition_error`).
+    #[allow(clippy::too_many_arguments)]
+    fn draw_shader_transition(
+        &mut self,
+        project: &Project,
+        tr: &crate::model::Transition,
+        left: Option<&Clip>,
+        right: Option<&Clip>,
+        p: f32,
+        t: f64,
+        canvas: Target,
+        layers: &LayerSet,
+    ) -> Target {
+        if self.check_transition(&tr.shader).is_err() {
+            let fade = crate::model::Transition { kind: crate::model::TransitionKind::CrossFade, ..tr.clone() };
+            return self.draw_transition(project, &fade, left, right, p, t, canvas, layers);
+        }
+        let (w, h) = (canvas.w, canvas.h);
+        let side = |me: &mut Self, clip: Option<&Clip>| -> Option<Target> {
+            let target = me.transparent((w, h))?;
+            Some(match clip {
+                Some(c) => me.draw_clip(project, c, t, target, layers, Extra::NONE),
+                None => target,
+            })
+        };
+        let (Some(from), Some(to)) = (side(self, left), side(self, right)) else { return canvas };
+        let Some(dst) = self.acquire(w, h) else {
+            self.pool.put(from);
+            self.pool.put(to);
+            return canvas;
+        };
+        let gl = self.gl.clone();
+        let knobs = tr.shader_params();
+        let scale = w as f32 / project.width.max(1) as f32;
+        let to_tex = to.tex;
+        self.draw(transition_key(&tr.shader), &dst, from.tex, None, |prog| unsafe {
+            gl.uniform_1_i32(prog.uni.get("u_from"), U_TEX as i32);
+            gl.active_texture(glow::TEXTURE0 + U_B);
+            gl.bind_texture(glow::TEXTURE_2D, Some(to_tex));
+            gl.uniform_1_i32(prog.uni.get("u_to"), U_B as i32);
+            gl.uniform_2_f32(prog.uni.get("u_res"), w as f32, h as f32);
+            gl.uniform_1_f32(prog.uni.get("u_scale"), scale);
+            gl.uniform_1_f32(prog.uni.get("u_time"), 0.0);
+            gl.uniform_1_f32(prog.uni.get("progress"), p.clamp(0.0, 1.0));
+            gl.uniform_1_f32(prog.uni.get("ratio"), w as f32 / h.max(1) as f32);
+            for (i, v) in knobs.iter().enumerate() {
+                gl.uniform_1_f32(prog.uni.get(PARAM_NAMES[i]), *v);
+            }
+        });
+        self.pool.put(from);
+        self.pool.put(to);
+        let inv = [[1.0 / w as f32, 0.0, 0.0], [0.0, 1.0 / h as f32, 0.0], [0.0, 0.0, 1.0]];
+        let out = self.composite(canvas, dst.tex, (w, h), inv, BlendMode::Normal, 1.0, Scaler::Nearest, None);
+        self.pool.put(dst);
+        out
     }
 
     /// Mix the whole canvas towards `color` by `f` (FadeToColor).
@@ -1649,7 +1757,7 @@ impl GpuRenderer {
                 .as_ref()
                 .filter(|m| m.enabled)
                 .and_then(|m| self.render_mask(m, size, lt, scale, (size.0 as f32 / 2.0, size.1 as f32 / 2.0)));
-            let motion = e.kind.needs_motion().then(|| self.motion_texs(clip.id, layers));
+            let motion = e.needs_motion().then(|| self.motion_texs(clip.id, layers, e.kind == EffectKind::Shader));
             let blob = self.track_blob(e, clip.id, lt, layers);
             let next = self.run_effect(input, size, e, lt, scale, mask.as_ref().map(|m| m.tex), motion, blob);
             if let Some(m) = mask {
@@ -1747,7 +1855,7 @@ impl GpuRenderer {
                         let mask = e.mask.as_ref().filter(|m| m.enabled).and_then(|m| {
                             self.render_mask(m, size, lt, scale, (size.0 as f32 / 2.0, size.1 as f32 / 2.0))
                         });
-                        let motion = e.kind.needs_motion().then(|| self.motion_texs(clip.id, layers));
+                        let motion = e.needs_motion().then(|| self.motion_texs(clip.id, layers, e.kind == EffectKind::Shader));
                         let blob = self.track_blob(e, clip.id, lt, layers);
                         let r = self.run_effect(src, size, e, lt, scale, mask.as_ref().map(|m| m.tex), motion, blob);
                         if let Some(m) = mask {
@@ -1956,7 +2064,7 @@ pub const MAX_MASK_POINTS: usize = 64;
 
 /// An effect's parameters at time `t`, in `EffectKind::params()` order.
 fn param_values(effect: &Effect, t: f64) -> Vec<f64> {
-    (0..effect.kind.params().len()).map(|i| effect.at(i, t)).collect()
+    (0..effect.specs().len()).map(|i| effect.at(i, t)).collect()
 }
 
 /// Decoded layers for one timeline instant, produced by the player/export thread on the CPU and handed
@@ -2168,6 +2276,11 @@ fn column_major(m: &[[f32; 3]; 3]) -> [f32; 9] {
 /// so the editor reads the very program the renderer would build.
 fn user_key(src: &str) -> u64 {
     USER_BIT | hash_str(src)
+}
+
+/// Cache key of a shader transition source: never the same program as that text as an effect.
+fn transition_key(src: &str) -> u64 {
+    USER_BIT | (hash_str(src) ^ 0x2545_F491_4F6C_DD1D) & !USER_BIT
 }
 
 fn hash_str(s: &str) -> u64 {

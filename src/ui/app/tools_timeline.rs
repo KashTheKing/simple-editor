@@ -105,7 +105,7 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                                     "duration": c.duration, "src_in": c.src_in, "speed": c.speed,
                                     "reverse": c.reverse, "freeze": c.freeze, "enabled": c.enabled,
                                     "label": p.clip_label(c), "link": c.link,
-                                    "effects": c.effects.iter().map(|e| e.kind.name()).collect::<Vec<_>>(),
+                                    "effects": c.effects.iter().map(|e| e.name()).collect::<Vec<_>>(),
                                 })
                             })
                             .collect();

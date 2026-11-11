@@ -144,6 +144,7 @@ mod tests {
             parent: None,
             range: None,
             effects: Vec::new(),
+            html: None,
         });
         let a = p.assets[0].id;
         let playhead = 1.0;

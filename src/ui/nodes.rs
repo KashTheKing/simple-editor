@@ -944,9 +944,10 @@ fn node_panel(
         NodeKind::Compare(op) => op_ui(ui, &mut e, op, &CmpOp::ALL, CmpOp::name),
         NodeKind::Logic(op) => op_ui(ui, &mut e, op, &LogicOp::ALL, LogicOp::name),
         NodeKind::Effect(fx) => {
-            for (i, spec) in fx.kind.params().iter().enumerate() {
+            let specs = fx.specs();
+            for (i, spec) in specs.iter().enumerate() {
                 while fx.params.len() <= i {
-                    let d = fx.kind.params()[fx.params.len()].default;
+                    let d = specs[fx.params.len()].default;
                     fx.params.push(Animated::new(d));
                 }
                 // a value node on port i+1 computes this knob, so the widget stops mattering
@@ -1287,6 +1288,7 @@ mod tests {
                 parent: None,
                 range: None,
                 effects: Vec::new(),
+                html: None,
             });
             project.insert_asset_clips(aid, 0.0, None);
             let clip = project.tracks[0].clips[0].id;

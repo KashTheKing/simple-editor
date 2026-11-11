@@ -51,7 +51,7 @@ Header lines (all `// @key value`, at the top of the file, before any code):
 | `// @desc <text>` | required; one sentence |
 | `// @tags a, b, c` | required; lowercase search words |
 | `// @param <id> <default> <min> <max>` | 0 to 8 controls. `<id>` is a lowercase identifier (`[a-z][a-z0-9_]*`); the Inspector shows it as "Glow Size" for `glow_size`; in the code it is a `float` of that name. Every control is keyframeable. Defaults must give a visible, good-looking result. |
-| `// @needs previous` | optional; the effect also gets earlier frames (below) |
+| `// @needs previous [n]` | optional; the effect also gets earlier frames (below). `n` = how many frames back the earliest one is, 1 to 8 (default 1); the "ghost camera" / echo look wants 3 to 6 |
 | `// @credit <text>` | optional; required for adapted work |
 
 Entry point: `vec4 effect(vec4 src, vec2 uv)`. `src` is the layer's pixel at `uv`; return the new
@@ -67,7 +67,7 @@ In scope:
 | `float u_time` | clip-local seconds (use it for all motion; never assume a frame rate) |
 | `float u_scale` | preview scale: multiply every pixel-sized amount by it so preview and export match |
 | `luma(vec3)`, `hash12(vec2)`, `hash11(float)`, `rgb2hsl(vec3)`, `hsl2rgb(vec3)`, `hue2rgb`, `sample_clamped(sampler2D, vec2)`, `mask_at`, `apply_mask` | helpers that already exist: do not define functions with these names |
-| `sampler2D u_prev`, `sampler2D u_next`, `float u_frames` | only with `@needs previous`: the same layer one frame earlier, the in-between sample, and how many of them are real (0 on the clip's first frame: fall back to `src`) |
+| `sampler2D u_prev`, `sampler2D u_next`, `float u_frames` | only with `@needs previous [n]`: the same layer `n` frames earlier (`u_prev`), `n / 2` frames earlier (`u_next`, the in-between sample), and how many of the two are real (`u_frames` 0, 1 or 2; with 1 both are the same frame). Only footage has earlier frames: on a still, text or nested sequence, in a thumbnail, or when the decoder could not deliver them, `u_frames` is 0 - fall back to `src`. Near the start of the source file the earlier samples are clamped to its first frame. |
 
 Conventions: colours are **straight alpha**, 0..1, not premultiplied; keep `src.a` unless the effect
 is about transparency. `uv` is 0..1 with **y = 0 at the top**. Sampling outside 0..1 clamps to the
@@ -112,6 +112,9 @@ Rules:
   other uniform types (`vec2`, `vec3`, `int`, `bool`, `sampler2D`) become `const`s or float params;
   keep the author and licence in `// @credit Author Name, gl-transitions (MIT)`.
 - On an edge transition (fade a single clip in or out) the missing side is transparent black.
+- Each picture is its clip alone (effects, mask and placement applied) on a transparent frame-sized
+  canvas; the result is laid over the tracks below. On the CPU fallback and in XML / EDL export a
+  shader transition is a cross fade, and so is one whose source does not compile.
 - Either picture may have transparency: return straight alpha.
 
 ## LUTs (`luts/*.cube`)

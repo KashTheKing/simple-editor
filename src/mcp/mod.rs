@@ -83,7 +83,14 @@ rolls back only itself (a failed batch rolls back the whole batch).\n\
 markers.set{id, done: true}; markers.comment leaves your own.\n\
 7. Live mode: loop on assistant.wait{timeout_s}; it returns the user's next request or new comment with the context.\n\
 8. Images the user attached to a request: assistant.attachments lists them, assistant.attachment{index} returns one. \
-Asked to write a task: hand a Luau script over with tasks.add{title, code, note} instead of editing - the user runs it.";
+Asked to write a task: hand a Luau script over with tasks.add{title, code, note} instead of editing - the user runs it.\n\
+HTML layers: for titles, lower thirds, buttons, cards, charts and UI mock-ups, write an HTML + CSS layer (no JavaScript, \
+format in html.create's description) with html.create{html, at, fields} and look at it with html.check{clip, t}.\n\
+Shaders: write a GLSL effect with clip.set_shader{clip, src} (or a transition with transition.set_shader), read the \
+compiler log it returns, and fix the source until ok is true.\n\
+Skills: saved procedures the user runs as /name; skills.list and skills.get{name} read them, and a skill's text is a \
+procedure to follow step by step.
+\nContent library (not the media library): library.list{kind, query} finds ready-made transitions, effects, LUTs, HTML templates and icons; library.apply{id} installs and uses one.";
 
 /// How long a call the Assistant guard holds (`tools::leaves_project`) waits for the user's Allow;
 /// the approval window refuses to run one held longer than this (its client has given up).
@@ -579,7 +586,7 @@ mod tests {
         assert!(v["result"]["capabilities"]["tools"].is_object());
         // ---- ws:mcp-context ----
         let guide = v["result"]["instructions"].as_str().unwrap();
-        assert!(guide.contains("editor.context") && guide.len() < 1500, "{}", guide.len());
+        assert!(guide.contains("editor.context") && guide.len() < 2400, "{}", guide.len());
 
         // notifications/initialized -> 202, empty body
         let (st, v) = post(&mut s, r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#);

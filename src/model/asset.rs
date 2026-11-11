@@ -1,5 +1,6 @@
 use crate::model::*;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
@@ -78,10 +79,40 @@ pub struct Asset {
     /// this asset, ahead of the clip's own effect stack. Unused this wave (schema only).
     #[serde(default)]
     pub effects: Vec<Effect>,
+    // ---- ws:html-layer ----
+    /// An HTML layer / scene: its source and field values live here (the project is self-contained);
+    /// `path` is only the rendered cache file (`engine::html`), re-made whenever it is missing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub html: Option<HtmlSource>,
+}
+
+// ---- ws:html-layer ----
+/// The template behind an HTML asset (`library/README.md`, "HTML layers and scenes").
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct HtmlSource {
+    /// Display name (the template's `<title>` unless the user named it).
+    pub name: String,
+    /// The whole HTML file, CSS included.
+    pub src: String,
+    /// Values for its `se:field`s; a field not listed here uses its default.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub fields: BTreeMap<String, String>,
+    /// Seconds rendered.
+    pub duration: f64,
+}
+
+impl HtmlSource {
+    pub fn field_list(&self) -> Vec<(String, String)> {
+        self.fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+    }
 }
 
 impl Asset {
     pub fn name(&self) -> String {
+        if let Some(h) = self.html.as_ref().filter(|h| !h.name.is_empty()) {
+            return h.name.clone(); // ws:html-layer: the path is a cache hash
+        }
         Path::new(&self.path).file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| self.path.clone())
     }
     pub fn has_video(&self) -> bool {

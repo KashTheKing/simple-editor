@@ -203,6 +203,16 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
     }
     for (payload, t, track) in resp.dropped_other {
         let vt = track.filter(|&i| app.project.tracks[i].kind == TrackKind::Video);
+        // ws:shader-library: a library transition card picks its source, then goes the built-ins' way
+        let payload = match payload {
+            DragPayload::ShaderTransition(src) => {
+                let st = &mut app.transitions_ui;
+                let id = if st.shader == src { st.shader_id.clone() } else { String::new() };
+                st.pick_shader(&id, &src);
+                DragPayload::Transition(crate::model::TransitionKind::Shader)
+            }
+            p => p,
+        };
         match payload {
             DragPayload::Sequence(id) => {
                 let snap = app.project.to_json();

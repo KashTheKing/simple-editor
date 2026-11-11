@@ -172,6 +172,84 @@ pub(crate) mod test_rects {
     }
 }
 
+// ---- ws:shader-library ----
+/// Plain (not keyframed) rows for a shader's header-declared controls - label + a DragValue over the
+/// header's range - inside a 2-column `Grid`. `vals` is grown to `specs.len()` with the defaults.
+/// Shader transitions use it in the Inspector and the Transitions pane.
+pub(crate) fn plain_param_rows(ui: &mut egui::Ui, specs: &[crate::model::ParamSpec], vals: &mut Vec<f64>, g: &mut Gesture) {
+    for (j, s) in specs.iter().enumerate() {
+        if vals.len() <= j {
+            vals.push(s.default);
+        }
+        ui.label(s.name);
+        let dv = DragValue::new(&mut vals[j]).range(s.min..=s.max).clamp_existing_to_range(false);
+        g.note(&ui.add(dv.speed((s.max - s.min) / 200.0)));
+        ui.end_row();
+    }
+}
+
+thread_local! {
+    /// GPU thumbnails of installed library effects, by library id (`App::build_library_effect_thumbs`).
+    static LIB_THUMBS: RefCell<HashMap<String, egui::TextureId>> = RefCell::new(HashMap::new());
+}
+
+/// The app hands over a rendered library-effect thumbnail.
+pub fn set_library_thumbnail(id: &str, texture: egui::TextureId) {
+    LIB_THUMBS.with(|t| t.borrow_mut().insert(id.to_string(), texture));
+}
+
+pub(crate) fn has_library_thumbnail(id: &str) -> bool {
+    LIB_THUMBS.with(|t| t.borrow().contains_key(id))
+}
+
+/// Installed library effects (`library::installed(Kind::Effect)`) as cards after the built-ins; a click
+/// returns the item to add as `Effect::from_shader`.
+fn library_cards(ui: &mut egui::Ui, palette: &Palette, q: &str) -> Option<std::rc::Rc<str>> {
+    let now = ui.input(|i| i.time);
+    let items = crate::ui::transitions_ui::library_items(crate::engine::library::Kind::Effect, now);
+    let q = q.to_lowercase();
+    let hits: Vec<&crate::ui::transitions_ui::LibItem> =
+        items.iter().filter(|i| q.is_empty() || i.name.to_lowercase().contains(&q) || i.tags.contains(&q)).collect();
+    if hits.is_empty() {
+        return None;
+    }
+    let mut add = None;
+    egui::CollapsingHeader::new("Library").id_salt(("fx_cat", "library")).default_open(true).show(ui, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            for item in hits {
+                let font = egui::TextStyle::Small.resolve(ui.style());
+                let name_h = ui.text_style_height(&egui::TextStyle::Small);
+                let (rect, r) = ui.allocate_exact_size(egui::vec2(CARD.0, CARD.1 + name_h + 2.0), egui::Sense::click());
+                let tile = egui::Rect::from_min_size(rect.min, egui::vec2(CARD.0, CARD.1));
+                let p = ui.painter();
+                match LIB_THUMBS.with(|t| t.borrow().get(&item.id).copied()) {
+                    Some(tex) => {
+                        let uv = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0));
+                        p.image(tex, tile, uv, egui::Color32::WHITE);
+                    }
+                    None => {
+                        p.rect_filled(tile, 2.0, palette.header);
+                        let g = p.layout(item.name.clone(), font.clone(), palette.text_dim, CARD.0 - 8.0);
+                        p.galley(tile.center() - g.size() / 2.0, g, palette.text_dim);
+                    }
+                }
+                let border = if r.hovered() { palette.accent } else { palette.border };
+                p.rect_stroke(tile, 2.0, egui::Stroke::new(1.0, border), StrokeKind::Inside);
+                let label = p.layout_no_wrap(item.name.clone(), font, palette.text);
+                let lx = (rect.left() + (CARD.0 - label.size().x) / 2.0).max(rect.left());
+                p.with_clip_rect(egui::Rect::from_min_max(egui::pos2(rect.left(), tile.bottom()), rect.max))
+                    .galley(egui::pos2(lx, tile.bottom() + 2.0), label, palette.text);
+                #[cfg(test)]
+                test_rects::push(format!("card_{}", item.name), r.rect);
+                if r.on_hover_text(format!("{} - {}", item.name, item.desc)).clicked() {
+                    add = Some(item.src.clone());
+                }
+            }
+        });
+    });
+    add
+}
+
 /// Unit suffix for a wobble parameter.
 fn wobble_suffix(name: &str) -> &'static str {
     match name {
@@ -209,7 +287,7 @@ enum Scope {
 
 /// The catalogue grid: search box + collapsible category sections of thumbnail cards, filtered to what
 /// the selected clip (`audio`) can use. Returns the effect a card click or quick-action menu asked for.
-fn catalogue(ui: &mut egui::Ui, palette: &Palette, audio: Option<bool>) -> Option<(EffectKind, Scope)> {
+fn catalogue(ui: &mut egui::Ui, palette: &Palette, audio: Option<bool>) -> Option<(Pick, Scope)> {
     let mut add = None;
     let has_sel = audio.is_some();
     let search_id = ui.id().with("fx_search");
@@ -235,15 +313,15 @@ fn catalogue(ui: &mut egui::Ui, palette: &Palette, audio: Option<bool>) -> Optio
                     #[cfg(test)]
                     test_rects::push(format!("card_{}", kind.name()), r.rect);
                     if r.clicked() {
-                        add = Some((kind, Scope::Selection));
+                        add = Some((Pick::Kind(kind), Scope::Selection));
                     }
                     menu::context(&r, |ui| {
                         ui.add_enabled_ui(has_sel, |ui| {
                             if menu::row(ui, None, "Add to selected clip(s)", "").clicked() {
-                                add = Some((kind, Scope::Selection));
+                                add = Some((Pick::Kind(kind), Scope::Selection));
                             }
                             if menu::row(ui, None, "Add to all clips on this track", "").clicked() {
-                                add = Some((kind, Scope::Track));
+                                add = Some((Pick::Kind(kind), Scope::Track));
                             }
                         });
                     });
@@ -251,8 +329,20 @@ fn catalogue(ui: &mut egui::Ui, palette: &Palette, audio: Option<bool>) -> Optio
             });
         });
     }
+    // ws:shader-library: installed library effects after the built-ins (pixel effects: not for audio)
+    if audio != Some(true) {
+        if let Some(src) = library_cards(ui, palette, &q) {
+            add = Some((Pick::Shader(src), Scope::Selection));
+        }
+    }
     ui.ctx().data_mut(|d| d.insert_temp(search_id, q));
     add
+}
+
+/// What a catalogue card adds: a built-in kind, or a library shader (its source).
+enum Pick {
+    Kind(EffectKind),
+    Shader(std::rc::Rc<str>),
 }
 
 /// The Effects PANE: the catalogue only. A card click adds the effect to every eligible selected clip;
@@ -270,7 +360,11 @@ pub fn show(
     // first selected clip that still exists - drives the catalogue's audio-aware filter
     let first_id = selection.iter().find(|&&id| project.clip(id).is_some()).copied();
     let audio_sel = first_id.and_then(|id| project.clip(id)).map(|c| c.kind == ClipKind::Audio);
-    let Some((kind, scope)) = catalogue(ui, palette, audio_sel) else { return out };
+    let Some((pick, scope)) = catalogue(ui, palette, audio_sel) else { return out };
+    let kind = match &pick {
+        Pick::Kind(k) => *k,
+        Pick::Shader(_) => EffectKind::Shader,
+    };
     // "all clips on this track" = the track the first selected clip sits on
     let track: Vec<Id> = match scope {
         Scope::Selection => Vec::new(),
@@ -299,7 +393,10 @@ pub fn show(
         undo(project);
         for id in targets {
             if let Some(c) = project.clip_mut(id) {
-                c.effects.push(Effect::new(kind));
+                c.effects.push(match &pick {
+                    Pick::Kind(k) => Effect::new(*k),
+                    Pick::Shader(src) => Effect::from_shader(src),
+                });
             }
         }
         out.edited = true;
@@ -384,7 +481,7 @@ pub fn stack(
                 // the name fills the rest of the row: a click folds the parameters, a right-click has the rest
                 let h = ui.spacing().interact_size.y;
                 let (rect, r) = ui.allocate_exact_size(egui::vec2(ui.available_width(), h), egui::Sense::click());
-                let mut name = fx.kind.name().to_string();
+                let mut name = fx.name();
                 if fx.mask.is_some() && maskable {
                     name.push_str("  · masked");
                 }
@@ -446,8 +543,9 @@ pub fn stack(
                 test_rects::push(format!("maskgrid{i}"), _r.rect);
             }
             let kind = fx.kind;
+            let specs = fx.specs();
             Grid::new(("fx_params", i)).num_columns(2).show(ui, |ui| {
-                for (j, spec) in kind.params().iter().enumerate() {
+                for (j, spec) in specs.iter().enumerate() {
                     let Some(a) = fx.params.get_mut(j) else { continue };
                     ui.label(spec.name);
                     ui.horizontal(|ui| {
@@ -644,6 +742,8 @@ mod tests {
         playhead: f64,
         last: EffectsResponse,
         shapes: Vec<egui::epaint::ClippedShape>,
+        /// Screen height (a long catalogue needs more room to stay clickable).
+        screen_h: f32,
     }
 
     impl Harness {
@@ -661,6 +761,7 @@ mod tests {
                 playhead: 1.0,
                 last: EffectsResponse::default(),
                 shapes: Vec::new(),
+                screen_h: 900.0,
             }
         }
         /// One update. egui may run the ui closure twice (multi-pass layout, e.g. the first frame a
@@ -669,7 +770,7 @@ mod tests {
         fn frame(&mut self, events: Vec<Event>) -> bool {
             self.time += 0.05;
             let input = RawInput {
-                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 900.0))),
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1000.0, self.screen_h))),
                 time: Some(self.time),
                 events,
                 ..Default::default()
@@ -1083,6 +1184,43 @@ mod tests {
         });
         assert!(test_rects::get("card_Blur").is_some(), "the catalogue is there");
         assert!(test_rects::get("row0").is_none(), "no stack rows in the pane");
+    }
+
+    // ---- ws:shader-library ----
+    const GLOW: &str = "// @name Test Glow\n// @desc Test.\n// @tags test\n// @param glow_size 0.5 0 2\n\
+                        vec4 effect(vec4 src, vec2 uv) { return src * (1.0 + glow_size); }\n";
+
+    /// An installed library effect is a card after the built-ins; a click adds `Effect::from_shader`,
+    /// whose named control is a slider in the stack.
+    #[test]
+    fn a_library_effect_card_adds_a_named_shader_effect() {
+        clear_thumbnails();
+        crate::ui::transitions_ui::fake_library(crate::engine::library::Kind::Effect, vec![("test-glow", GLOW)]);
+        let mut h = Harness::new();
+        h.screen_h = 2400.0;
+        h.frame(vec![]);
+        let r = h.rect("card_Test Glow");
+        assert!(h.click(r.center()));
+        assert_eq!(h.undos, 1);
+        let fx = &h.clip().effects[0];
+        assert_eq!((fx.kind, fx.name().as_str(), fx.params.len()), (EffectKind::Shader, "Test Glow", 1));
+        h.frame(vec![]);
+        assert!(h.text_eq("Glow Size").is_some(), "the stack labels the control by its header name");
+        crate::ui::transitions_ui::refresh_library();
+    }
+
+    #[test]
+    fn assert_no_idle_repaint_effects_library() {
+        clear_thumbnails();
+        crate::ui::transitions_ui::fake_library(crate::engine::library::Kind::Effect, vec![("test-glow", GLOW)]);
+        let mut h = Harness::new();
+        h.project.tracks[0].clips[0].effects.push(Effect::from_shader(GLOW));
+        for _ in 0..30 {
+            h.frame(vec![]);
+        }
+        assert!(test_rects::get("card_Test Glow").is_some());
+        assert!(!h.ctx.has_requested_repaint(), "the idle Effects pane requested a repaint");
+        crate::ui::transitions_ui::refresh_library();
     }
 
     // ---- ws:inspector-gallery ----

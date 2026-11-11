@@ -258,6 +258,12 @@ fn library_shaders_compile_and_draw_on_the_real_driver() {
                         let refs: Vec<&[u8]> = tiles.iter().map(|t| t.as_slice()).collect();
                         let _ = std::fs::write(std::path::Path::new(d).join(format!("{kind}-{id}.png")), strip(&refs));
                     }
+                    // scripts/library-index.ps1: one picture per shader for the Gallery (a transition
+                    // a little before its middle, where flashes and swipes still show both sides)
+                    if let Some(d) = std::env::var_os("SE_THUMBS") {
+                        let one = if transition { rig.draw(prog.p, &meta, |f| f("progress", 0.4)) } else { tiles[1].clone() };
+                        let _ = std::fs::write(std::path::Path::new(&d).join(format!("{kind}-{id}.png")), strip(&[one.as_slice()]));
+                    }
                     rig.gl.delete_program(prog.p);
                 },
             }
@@ -274,4 +280,60 @@ fn library_shaders_compile_and_draw_on_the_real_driver() {
     }
     println!("{seen} library shaders checked, {} failed", bad.len());
     assert!(bad.is_empty(), "library shaders with problems: {bad:?}");
+}
+
+/// A shader transition through `GpuRenderer`'s real transition path (both clips drawn to their own
+/// targets, `transition_shader` blending them, composited onto the canvas): the outgoing picture at
+/// progress 0, the incoming at 1, a split in between; a source that does not compile cross-fades and
+/// keeps its log.
+#[test]
+fn shader_transition_renders_through_the_real_transition_path() {
+    use crate::model::{BackgroundMode, Clip, ClipKind, Project, TransitionKind};
+    let Some(gl) = gl() else {
+        eprintln!("SKIPPED: no OpenGL driver for a hidden WGL context");
+        return;
+    };
+    let mut r = GpuRenderer::new(Arc::new(gl)).expect("renderer");
+    let (w, h) = (64u32, 36u32);
+    let mut p = Project::new();
+    (p.width, p.height, p.preview_bg) = (w, h, BackgroundMode::Black);
+    p.tracks[0].clips.push(Clip::new(101, ClipKind::Video, "a", 0.0, 2.0));
+    p.tracks[0].clips.push(Clip::new(102, ClipKind::Video, "b", 2.0, 2.0));
+    let tid = p.add_transition(102, TransitionKind::CrossFade, 1.0).expect("a cut"); // window 1.5 .. 2.5
+    // `uv` has y = 0 at the bottom here; x runs left to right as everywhere
+    let split = "// @name Split\n// @param edge 0 -1 1\n\
+                 vec4 transition(vec2 uv) { return uv.x + edge < progress ? getToColor(uv) : getFromColor(uv); }\n";
+    p.transition_mut(tid).unwrap().set_shader(split);
+    let solid = |c: [u8; 4]| {
+        let mut f = Frame::new(w, h);
+        f.fill(c);
+        Arc::new(f)
+    };
+    let (red, blue) = ([255, 0, 0, 255], [0, 0, 255, 255]);
+    let layers = LayerSet { layers: vec![(101, solid(red)), (102, solid(blue))], ..Default::default() };
+    let mut out = Frame::default();
+    let px = |out: &Frame, x: u32| {
+        let i = ((h / 2 * w + x) * 4) as usize;
+        [out.rgba[i], out.rgba[i + 1], out.rgba[i + 2], out.rgba[i + 3]]
+    };
+    let near = |a: [u8; 4], b: [u8; 4]| a.iter().zip(b).all(|(x, y)| (*x as i32 - y as i32).abs() <= 2);
+    r.render_frame(&p, 1.5, w, h, &layers, &mut out);
+    assert!(near(px(&out, 2), red) && near(px(&out, w - 3), red), "progress 0 = the outgoing clip: {:?}", px(&out, 2));
+    r.render_frame(&p, 2.4999, w, h, &layers, &mut out);
+    assert!(near(px(&out, 2), blue) && near(px(&out, w - 3), blue), "progress 1 = the incoming clip");
+    r.render_frame(&p, 2.0, w, h, &layers, &mut out);
+    assert!(near(px(&out, 2), blue) && near(px(&out, w - 3), red), "half way: B on the left, A on the right");
+    // the named control reaches the program: edge 0.6 holds the split back, nothing has arrived yet
+    p.transition_mut(tid).unwrap().params = vec![0.6];
+    r.render_frame(&p, 2.0, w, h, &layers, &mut out);
+    assert!(near(px(&out, w - 3), red) && near(px(&out, 2), red), "edge 0.6: nothing has arrived yet");
+
+    // a broken source: a cross fade instead, and the log is kept
+    let broken = "vec4 transition(vec2 uv) { return nope; }";
+    p.transition_mut(tid).unwrap().set_shader(broken);
+    r.render_frame(&p, 2.0, w, h, &layers, &mut out);
+    let mid = px(&out, w / 2);
+    assert!(near(mid, [128, 0, 127, 255]) || near(mid, [127, 0, 128, 255]), "cross fade at half way: {mid:?}");
+    assert!(r.transition_error(broken).is_some_and(|l| !l.is_empty()), "the compiler log is retrievable");
+    assert!(r.check_transition(split).is_ok());
 }

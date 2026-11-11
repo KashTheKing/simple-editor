@@ -149,6 +149,7 @@ mod tests {
             parent: None,
             range: None,
             effects: Vec::new(),
+            html: None,
         };
         let mut p = Project::from_media(asset);
         // a second audio track holding a copy of the first clip, as Music

@@ -547,9 +547,148 @@ impl Effect {
         self.params
             .get(i)
             .map(|a| a.at(t))
-            .unwrap_or_else(|| self.kind.params().get(i).map(|p| p.default).unwrap_or(0.0))
+            .unwrap_or_else(|| self.specs().get(i).map(|p| p.default).unwrap_or(0.0))
     }
-    pub fn specs(&self) -> &'static [ParamSpec] {
-        self.kind.params()
+    /// The controls in index order. A `Shader` effect's come from its source's `// @param` header
+    /// (`library/README.md`); without one it has the eight anonymous knobs `u1..u8`.
+    pub fn specs(&self) -> std::borrow::Cow<'static, [ParamSpec]> {
+        use std::borrow::Cow;
+        if self.kind != EffectKind::Shader {
+            return Cow::Borrowed(self.kind.params());
+        }
+        let specs = shader_specs(&self.shader);
+        if specs.is_empty() {
+            return Cow::Borrowed(P_SHADER);
+        }
+        Cow::Owned(specs)
+    }
+    /// What the effect stack, the timeline and tools call it: a shader's `// @name`, else the kind's name.
+    pub fn name(&self) -> String {
+        if self.kind == EffectKind::Shader {
+            let n = crate::engine::shaderlib::parse_meta(&self.shader).name;
+            if !n.is_empty() {
+                return n;
+            }
+        }
+        self.kind.name().to_string()
+    }
+    /// A shader effect from a library file (or any source): its controls start at the header's defaults.
+    pub fn from_shader(src: &str) -> Effect {
+        let mut e = Effect::new(EffectKind::Shader);
+        e.params.clear();
+        e.set_shader(src);
+        e
+    }
+    /// Replace a shader effect's source, keeping the existing control values by index and growing /
+    /// trimming to the new source's control count (new ones start at their defaults).
+    pub fn set_shader(&mut self, src: &str) {
+        self.shader = src.to_string();
+        let specs = self.specs();
+        self.params.truncate(specs.len());
+        for s in specs.iter().skip(self.params.len()) {
+            self.params.push(Animated::new(s.default));
+        }
+    }
+    /// Does the renderer have to supply neighbouring frames (`u_prev` / `u_next` / `u_frames`)? The
+    /// built-in motion kinds, and a shader whose header says `// @needs previous`.
+    pub fn needs_motion(&self) -> bool {
+        self.motion_gap() > 0
+    }
+    /// How many frames back the earliest neighbour sample is: 1 for the built-in motion kinds, the
+    /// header's `// @needs previous <n>` for a shader, 0 = no neighbours.
+    pub fn motion_gap(&self) -> u32 {
+        if self.kind == EffectKind::Shader {
+            let m = crate::engine::shaderlib::parse_meta(&self.shader);
+            return if m.needs_previous { m.prev_gap } else { 0 };
+        }
+        u32::from(self.kind.needs_motion())
+    }
+}
+
+/// The named controls a shader source's `// @param` header declares (empty when it declares none):
+/// label "Glow Size" for `glow_size`, the header's default and range. Shared by shader effects and
+/// shader transitions.
+pub fn shader_specs(src: &str) -> Vec<ParamSpec> {
+    let meta = crate::engine::shaderlib::parse_meta(src);
+    let spec = |p: &crate::engine::shaderlib::ShaderParam| ParamSpec {
+        name: intern(crate::engine::shaderlib::label(&p.id)),
+        default: p.default,
+        min: p.min,
+        max: p.max,
+    };
+    meta.params.iter().map(spec).collect()
+}
+
+/// A `&'static` copy of a shader control's label, so `ParamSpec` stays `Copy` for the ~20 readers of
+/// the built-in tables.
+// ponytail: interned labels are never freed - one entry per distinct label ever seen (a few bytes
+// each, bounded by what users type). Make `ParamSpec.name` a `Cow` if that ever matters.
+fn intern(s: String) -> &'static str {
+    use std::sync::{Mutex, OnceLock};
+    static SET: OnceLock<Mutex<std::collections::HashSet<&'static str>>> = OnceLock::new();
+    let mut set = SET.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(&k) = set.get(s.as_str()) {
+        return k;
+    }
+    let k: &'static str = Box::leak(s.into_boxed_str());
+    set.insert(k);
+    k
+}
+
+#[cfg(test)]
+mod shader_tests {
+    use super::*;
+
+    const GLOW: &str = "// @name Glow\n// @param glow_size 0.5 0 2\n// @param amount 1 0 4\n\
+                        vec4 effect(vec4 src, vec2 uv) { return src * (1.0 + glow_size * amount); }\n";
+
+    #[test]
+    fn a_shader_effect_takes_its_controls_and_name_from_its_header() {
+        let e = Effect::from_shader(GLOW);
+        assert_eq!(e.kind, EffectKind::Shader);
+        assert_eq!(e.name(), "Glow");
+        let specs = e.specs();
+        let names: Vec<&str> = specs.iter().map(|s| s.name).collect();
+        assert_eq!(names, ["Glow Size", "Amount"]);
+        assert_eq!((specs[0].default, specs[0].min, specs[0].max), (0.5, 0.0, 2.0));
+        assert_eq!(e.params.iter().map(|a| a.value).collect::<Vec<_>>(), [0.5, 1.0]);
+        assert_eq!(e.at(1, 0.0), 1.0);
+        assert!(!e.needs_motion());
+        // no header: the eight anonymous knobs and the kind's name, exactly as before
+        let plain = Effect::new(EffectKind::Shader);
+        assert_eq!((plain.specs().len(), plain.specs()[0].name, plain.name().as_str()), (8, "u1", "Custom Shader"));
+        // built-in kinds are untouched
+        assert_eq!(Effect::new(EffectKind::Blur).specs()[0].name, "Radius");
+        assert_eq!(Effect::new(EffectKind::Blur).name(), "Blur");
+    }
+
+    /// Editing the source keeps the existing values by index and adds / trims to the new count.
+    #[test]
+    fn editing_the_source_keeps_values_by_index() {
+        let mut e = Effect::from_shader(GLOW);
+        e.params[0].value = 1.5;
+        e.set_shader("// @param a 0.2 0 1\n// @param b 3 0 9\n// @param c 7 0 9\nvec4 effect(vec4 s, vec2 uv) { return s; }");
+        assert_eq!(e.params.iter().map(|a| a.value).collect::<Vec<_>>(), [1.5, 1.0, 7.0]);
+        e.set_shader("// @param a 0.2 0 1\nvec4 effect(vec4 s, vec2 uv) { return s; }");
+        assert_eq!(e.params.len(), 1);
+        e.set_shader("// @needs previous 4\nvec4 effect(vec4 s, vec2 uv) { return s; }");
+        assert_eq!(e.params.len(), 8, "no @param: back to u1..u8");
+        assert!(e.needs_motion());
+        assert_eq!(e.motion_gap(), 4);
+        assert_eq!(Effect::new(EffectKind::MotionBlur).motion_gap(), 1, "built-ins keep one frame");
+        assert_eq!(Effect::new(EffectKind::Blur).motion_gap(), 0);
+    }
+
+    /// An old project's shader effect (no header, eight knobs) loads as it was; a library one keeps
+    /// its source and values through a save.
+    #[test]
+    fn shader_effects_round_trip() {
+        let old = r#"{"kind":"Shader","params":[{"value":0.25}],"shader":"vec4 effect(vec4 s, vec2 uv) { return s; }"}"#;
+        let e: Effect = serde_json::from_str(old).unwrap();
+        assert_eq!((e.params.len(), e.specs().len()), (1, 8), "a missing knob reads its default");
+        assert_eq!((e.at(0, 0.0), e.at(5, 0.0)), (0.25, 0.0));
+        let g = Effect::from_shader(GLOW);
+        let back: Effect = serde_json::from_str(&serde_json::to_string(&g).unwrap()).unwrap();
+        assert_eq!(back, g);
     }
 }

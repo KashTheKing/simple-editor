@@ -64,6 +64,8 @@ pub mod jobs_ui;
 pub mod assistant_ui;
 // ---- ws:assistant-pane ----
 pub mod assistant_data;
+// ---- ws:html-layer ----
+pub mod html_ui;
 
 use crate::model::{AnimLink, Animated, Id, Mask, MaskShape, Project, LABEL_COLORS};
 use crate::theme::Palette;
@@ -340,6 +342,8 @@ pub enum DragPayload {
     Effect(crate::model::EffectKind),
     /// A transition from the transitions panel (dropped on a cut or the node canvas).
     Transition(crate::model::TransitionKind),
+    /// ws:shader-library: a library shader transition (its source) from the transitions panel.
+    ShaderTransition(String),
     /// A keyframe block (Gallery ▸ Animate) by name - applied to the clip it is dropped on.
     KeyBlock(String),
 }

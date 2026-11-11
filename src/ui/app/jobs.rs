@@ -279,7 +279,7 @@ impl App {
                 if !proxy_eligible(a, h) {
                     continue;
                 }
-                let dst = crate::media::proxy::proxy_path(&a.path, h);
+                let dst = crate::media::proxy::proxy_path(&a.path, crate::media::proxy::height_for(a, h));
                 if dst.exists() {
                     map.insert(a.path.clone(), dst.to_string_lossy().into_owned());
                 }
@@ -300,7 +300,9 @@ impl App {
         }
         if let Some((src, dst)) = want {
             if crate::media::ffpipe::ffmpeg_exe().is_some() {
-                let job = crate::media::proxy::generate(src.clone(), dst.clone(), h);
+                // ws:html-layer: an alpha source below the proxy height is built at its own height
+                let ph = self.project.assets.iter().find(|a| a.path == src).map_or(h, |a| crate::media::proxy::height_for(a, h));
+                let job = crate::media::proxy::generate(src.clone(), dst.clone(), ph);
                 self.proxy_job = Some((src, dst, job));
             }
         }
@@ -311,11 +313,9 @@ impl App {
 /// Only real video that out-sizes the proxy: images/audio gain nothing, and neither does footage
 /// already at or below proxy resolution. Nor, yet, a file still being probed for an alpha channel:
 /// that decides which proxy it gets (`proxy::has_alpha`), and the next scan asks again.
+/// ws:html-layer: a source WITH alpha is eligible at any height (`proxy::eligible`).
 fn proxy_eligible(a: &crate::model::Asset, h: u32) -> bool {
-    a.kind == crate::model::ClipKind::Video
-        && a.height > h
-        && a.duration > 0.0
-        && crate::media::proxy::has_alpha(&a.path).is_some()
+    crate::media::proxy::eligible(a, h)
 }
 
 /// Eligible assets whose proxy is not built yet (and whose source is on disk), in library order -
@@ -325,7 +325,7 @@ pub(super) fn proxy_candidates(assets: &[crate::model::Asset], h: u32) -> Vec<(S
         .iter()
         .filter(|a| proxy_eligible(a, h))
         .filter_map(|a| {
-            let dst = crate::media::proxy::proxy_path(&a.path, h);
+            let dst = crate::media::proxy::proxy_path(&a.path, crate::media::proxy::height_for(a, h));
             (!dst.exists() && std::path::Path::new(&a.path).exists()).then(|| (a.path.clone(), dst))
         })
         .collect()

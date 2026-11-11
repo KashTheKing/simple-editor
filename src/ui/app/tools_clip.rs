@@ -61,8 +61,8 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                 let mut effect = crate::model::Effect::new(kind);
                 if let Some(params) = args.get("params").and_then(|v| v.as_object()) {
                     for (pname, pval) in params {
-                        let i = kind
-                            .params()
+                        let i = effect
+                            .specs()
                             .iter()
                             .position(|s| s.name.eq_ignore_ascii_case(pname))
                             .ok_or_else(|| format!("unknown param '{pname}' for {}", kind.name()))?;

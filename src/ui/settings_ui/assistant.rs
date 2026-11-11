@@ -1,7 +1,8 @@
 //! ---- ws:assistant-pane ----
 //! The Assistant tab: which agent the Assistant pane drives (`assistant_data::AGENTS`), its model, the
 //! API key (Windows Credential Manager, never settings.json), the guard on tools that leave the
-//! project, and the quick-prompt buttons. The pane's header has the same agent / model pickers.
+//! project, and a pointer to the skills (ws:skills; they replaced the quick prompts). The pane's header
+//! has the same agent / model pickers.
 
 use crate::engine::agent;
 use crate::settings::Settings;
@@ -99,7 +100,7 @@ pub(super) fn assistant_tab(ui: &mut egui::Ui, s: &mut Settings) -> bool {
 
         ui.label("Guard");
         changed |= ui
-            .checkbox(&mut s.assistant_guard, "Ask before an agent exports, opens a project, changes settings or runs scripts")
+            .checkbox(&mut s.assistant_guard, "Ask before an agent exports, opens a project, changes settings or skills, or runs scripts")
             .on_hover_text("Applies to every MCP client, including UI actions that do the same")
             .changed();
         ui.end_row();
@@ -109,31 +110,13 @@ pub(super) fn assistant_tab(ui: &mut egui::Ui, s: &mut Settings) -> bool {
         ui.end_row();
     });
 
+    // ws:skills: quick prompts are skills now (`assistant_quick` stays only so old files load)
     ui.add_space(8.0);
-    ui.strong("Quick prompts");
-    ui.weak("Buttons in the Assistant pane: a label and the request it sends.");
-    let mut remove = None;
-    for (i, (label, prompt)) in s.assistant_quick.iter_mut().enumerate() {
-        ui.horizontal(|ui| {
-            changed |= ui.add(egui::TextEdit::singleline(label).desired_width(140.0)).changed();
-            changed |= ui.add(egui::TextEdit::singleline(prompt).desired_width(ui.available_width() - 40.0)).changed();
-            if ui.small_button("Remove").clicked() {
-                remove = Some(i);
-            }
-        });
-    }
-    if let Some(i) = remove {
-        s.assistant_quick.remove(i);
-        changed = true;
-    }
-    ui.horizontal(|ui| {
-        if ui.button("Add").clicked() {
-            s.assistant_quick.push(("New prompt".into(), String::new()));
-            changed = true;
-        }
-        if ui.button("Reset to built-ins").clicked() {
-            s.assistant_quick = crate::settings::default_assistant_quick();
-            changed = true;
+    ui.strong("Skills");
+    ui.horizontal_wrapped(|ui| {
+        ui.weak("Saved requests you run in chat as /name. Make, edit and delete them in the Assistant's Skills tab.");
+        if ui.button("Open skills folder").clicked() {
+            crate::engine::skills::open_folder();
         }
     });
     changed

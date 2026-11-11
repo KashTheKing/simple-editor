@@ -519,6 +519,16 @@ pub struct Settings {
     // ---- ws:html-layer ----
     // ---- ws:shader-library ----
     // ---- ws:skills ----
+    /// `assistant_quick` was turned into user skills once (`engine::skills::migrate_in`).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub skills_migrated: bool,
+    /// Library skills whose text the user read and ran: name -> `skills::content_hash` (a changed file
+    /// asks again).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub skills_accepted: BTreeMap<String, String>,
+    /// Skills the user ran, most recent first (the Assistant's chip row).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub skills_recent: Vec<String>,
     // ---- ws:online-library ----
     /// Where the online library is read from: the URL of the repo's `library/` folder (raw files).
     pub library_url: String,
@@ -734,6 +744,9 @@ impl Default for Settings {
             // ---- ws:html-layer ----
             // ---- ws:shader-library ----
             // ---- ws:skills ----
+            skills_migrated: false,
+            skills_accepted: BTreeMap::new(),
+            skills_recent: Vec::new(),
             // ---- ws:online-library ----
             library_url: "https://raw.githubusercontent.com/KashTheKing/simple-editor/main/library".into(),
             library_dir: String::new(),

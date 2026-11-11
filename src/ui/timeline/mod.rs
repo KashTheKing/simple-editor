@@ -1165,8 +1165,11 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             if br.double_clicked() {
                 c.selection.clear();
                 c.selection.push(clip.id);
+                let html = clip.uses_asset() && c.project.asset(clip.asset).is_some_and(|a| a.html.is_some());
                 if clip.kind == ClipKind::Sequence {
                     out.open_sequence = Some(clip.sequence);
+                } else if html {
+                    crate::ui::html_ui::request_edit(ui.ctx(), clip.id); // ws:html-layer: opens the HTML editor
                 } else if let Some(p) = br.interact_pointer_pos() {
                     *c.playhead = snap_playhead(state.time_at(p.x).max(0.0), c.snap, state.zoom, c.project);
                     out.seeked = true;
@@ -1187,6 +1190,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 labels,
                 buses,
                 shared_effects: &shared_effects,
+                // ---- ws:html-layer ----
+                html: clip.uses_asset() && c.project.asset(clip.asset).is_some_and(|a| a.html.is_some()),
             };
             let mut toggle_graph = false;
             let mut rclick = br.secondary_clicked();
@@ -1388,7 +1393,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 lp.with_clip_rect(bvis).text(
                     band.center(),
                     Align2::CENTER_CENTER,
-                    tr.kind.name(),
+                    tr.name(), // ws:shader-library: a shader transition shows its `@name`
                     small.clone(),
                     pal.text,
                 );
@@ -1941,7 +1946,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     .filter(|(_, cl)| (cl.kind == ClipKind::Audio) == k.applies_to_audio())
                     .map(|(r, _)| r),
                 DragPayload::KeyBlock(_) => drop_on_clip(state, c.project, pos, t).map(|(r, _)| r),
-                DragPayload::Transition(_) => drop_on_clip(state, c.project, pos, t).map(|(r, cl)| {
+                DragPayload::Transition(_) | DragPayload::ShaderTransition(_) => drop_on_clip(state, c.project, pos, t).map(|(r, cl)| {
                     // the half you are over picks the cut (same rule the app applies on release)
                     let x = if crate::ui::transitions_ui::drop_at_end(cl, t) { r.right() } else { r.left() };
                     Rect::from_min_max(pos2(x - 6.0, r.top()), pos2(x + 6.0, r.bottom()))
@@ -1953,7 +1958,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 lp.rect_stroke(hit, 0, Stroke::new(2.0, pal.selection), StrokeKind::Inside);
             } else if !matches!(
                 &*payload,
-                DragPayload::Effect(_) | DragPayload::Transition(_) | DragPayload::KeyBlock(_)
+                DragPayload::Effect(_) | DragPayload::Transition(_) | DragPayload::ShaderTransition(_) | DragPayload::KeyBlock(_)
             ) {
                 let dur = match &*payload {
                     DragPayload::Asset(aid) => {

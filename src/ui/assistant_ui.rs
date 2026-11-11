@@ -14,6 +14,7 @@
 pub use super::assistant_data::*;
 use super::menu;
 use super::tools::{draw_glyph, glyph_text_button, Glyph};
+use crate::engine::skills::{self, Skill, Source};
 use crate::theme::Palette;
 use eframe::egui;
 use std::collections::HashMap;
@@ -25,6 +26,59 @@ pub enum Tab {
     Chat,
     /// Every saved conversation of this project.
     History,
+    /// ws:skills: every skill, with Run / Edit / Duplicate / Delete and New skill.
+    Skills,
+}
+
+/// ws:skills: the New / Edit skill window's fields.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SkillDraft {
+    pub name: String,
+    /// "What should it do?" (Write it for me).
+    pub what: String,
+    pub description: String,
+    pub args: String,
+    pub body: String,
+    /// The plain editor is open (always, when editing).
+    pub plain: bool,
+    /// The user skill being edited (a rename removes the old file).
+    pub editing: Option<String>,
+    pub error: String,
+}
+
+impl SkillDraft {
+    pub fn edit(s: &Skill) -> Self {
+        Self {
+            name: s.name.clone(),
+            description: s.description.clone(),
+            args: s.args.clone(),
+            body: s.body.clone(),
+            plain: true,
+            editing: Some(s.name.clone()),
+            ..Default::default()
+        }
+    }
+    /// A copy under a free name, as a new user skill.
+    pub fn copy(s: &Skill, all: &[Skill]) -> Self {
+        let mut name = format!("{}-copy", s.name);
+        let mut n = 2;
+        while all.iter().any(|o| o.name == name) {
+            name = format!("{}-copy-{n}", s.name);
+            n += 1;
+        }
+        Self { name, editing: None, ..Self::edit(s) }
+    }
+}
+
+/// What `skill_window` / the Skills tab ask of the app.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SkillOut {
+    /// "Write it for me": run `/create-skill` with the draft's name and "what".
+    Draft,
+    /// Save the draft as a user skill.
+    Save,
+    /// Delete this user skill (after the app's confirm).
+    Delete(String),
 }
 
 /// Shared state of the Assistant pane (`App.assistant`). `mcp-context` reads `pending`
@@ -65,6 +119,12 @@ pub struct AssistantState {
     pub dirty: bool,
     /// The model picker's "Other…" text field is open.
     pub model_other: bool,
+    /// ws:skills: the highlighted row of the `/` list.
+    pub slash_sel: usize,
+    /// ws:skills: put the prompt's cursor at its end on the next draw (after a completion).
+    pub cursor_end: bool,
+    /// ws:skills: the New / Edit skill window (open while Some).
+    pub skill_draft: Option<SkillDraft>,
     /// Attachment thumbnails by file (None = unreadable), loaded once.
     thumbs: HashMap<std::path::PathBuf, Option<egui::TextureHandle>>,
 }
@@ -134,8 +194,9 @@ pub struct View<'a> {
     /// (key, label) for each piece of live context that would be sent (`assistant_ctl::chips_of`);
     /// empty while "Assistant follows the selection" is off.
     pub chips: &'a [(&'static str, String)],
-    /// (label, prompt) quick-prompt buttons.
-    pub quick: &'a [(String, String)],
+    /// ws:skills: every skill (`engine::skills::all`), and the names the user ran last (newest first).
+    pub skills: &'a [Skill],
+    pub recent: &'a [String],
     /// (undo-stack length, label of its top entry) - decides whether a request's Undo still applies.
     pub undo_top: (usize, Option<&'a str>),
     /// `Settings.assistant_backend`: "claude" | "codex" | "custom" | "external".
@@ -167,6 +228,7 @@ pub enum Out {
     Attach(Attach),
     /// "Handle my comments" switched on (true) or off.
     Comments(bool),
+    Skill(SkillOut),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -202,7 +264,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AssistantState, v: &View) -> Out {
     // pane border and lost their last pixels to its clip rect
     egui::Frame::NONE.inner_margin(egui::Margin { left: 4, right: 8, top: 2, bottom: 2 }).show(ui, |ui| {
         header(ui, state, v, &mut out);
-        ui.horizontal(|ui| {
+        // wraps: four tabs must not widen a narrow pane
+        ui.horizontal_wrapped(|ui| {
             let n = state.conv().map_or(0, |c| c.tasks.len());
             let tasks = if n > 0 { format!("Tasks ({n})") } else { "Tasks".into() };
             let tip = "Scripts the assistant writes for you to run";
@@ -218,12 +281,17 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AssistantState, v: &View) -> Out {
             if ui.selectable_label(state.tab == Tab::History, history).on_hover_text(tip).clicked() {
                 state.tab = Tab::History;
             }
+            let tip = "Saved instructions you run in chat as /name";
+            if ui.selectable_label(state.tab == Tab::Skills, "Skills").on_hover_text(tip).clicked() {
+                state.tab = Tab::Skills;
+            }
         });
         ui.separator();
         match state.tab {
             Tab::Tasks => tasks_tab(ui, state, v, &pal, &mut out),
             Tab::Chat => chat_tab(ui, state, v, &pal, &mut out),
             Tab::History => history_tab(ui, state, v),
+            Tab::Skills => skills_tab(ui, state, v, &mut out),
         }
     });
     out
@@ -419,14 +487,22 @@ fn x_button(ui: &mut egui::Ui, salt: impl std::hash::Hash) -> egui::Response {
 
 fn tasks_tab(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, pal: &Palette, out: &mut Out) {
     let external = v.backend == "external";
+    // ws:skills: `/name` works here too
+    let tid = ui.id().with("assistant_task_prompt");
+    let (slash, done) = slash_list(ui, &mut state.task_prompt, &mut state.slash_sel, v.skills, tid);
     ui.horizontal(|ui| {
         let w = (ui.available_width() - 48.0).max(80.0);
         let r = ui.add(
             egui::TextEdit::singleline(&mut state.task_prompt)
-                .id(ui.id().with("assistant_task_prompt"))
-                .hint_text("Describe a task…")
-                .desired_width(w),
+                .id(tid)
+                .hint_text("Describe a task, or / for a skill…")
+                .desired_width(w)
+                .lock_focus(slash),
         );
+        if done {
+            r.request_focus();
+            cursor_to_end(ui.ctx(), tid, &state.task_prompt);
+        }
         let can = !state.task_prompt.trim().is_empty() && !external;
         let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
         let add = ui.add_enabled(can, egui::Button::new("Add"));
@@ -606,14 +682,209 @@ fn empty_chat(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, out: &mut
                   one undo step.",
         });
         ui.add_space(8.0);
-        for (label, prompt) in v.quick {
-            let r = ui.add_enabled(!v.running, egui::Button::new(label.as_str()).small());
-            if r.on_hover_text(prompt.as_str()).clicked() {
-                state.prompt = prompt.clone();
-                *out = Out::Send;
+        // ws:skills: the skills the user ran last, then the first ones; each chip is one Button so the
+        // row wraps instead of widening the pane
+        ui.horizontal_wrapped(|ui| {
+            for s in chip_skills(v.skills, v.recent, CHIPS) {
+                let r = ui.add_enabled(!v.running, egui::Button::new(format!("/{}", s.name)).small());
+                if r.on_hover_text(s.description.as_str()).clicked() {
+                    run_skill(state, s, out);
+                }
             }
+        });
+        if !v.skills.is_empty() {
+            ui.weak("Type / for every skill.");
         }
     });
+}
+
+/// How many skill chips an empty chat shows.
+const CHIPS: usize = 5;
+
+/// The chip row: skills from `recent` that still exist, then the rest in list order; at most `n`.
+pub fn chip_skills<'a>(all: &'a [Skill], recent: &[String], n: usize) -> Vec<&'a Skill> {
+    let mut out: Vec<&Skill> = recent.iter().filter_map(|r| all.iter().find(|s| s.name == *r)).collect();
+    out.extend(all.iter().filter(|s| !recent.contains(&s.name)));
+    out.truncate(n);
+    out
+}
+
+/// Run a skill from a chip or the Skills tab: one without arguments goes at once; one that takes
+/// arguments is typed into the chat prompt for the user to finish.
+pub fn run_skill(state: &mut AssistantState, s: &Skill, out: &mut Out) {
+    state.tab = Tab::Chat;
+    if s.args.is_empty() {
+        state.prompt = format!("/{}", s.name);
+        *out = Out::Send;
+    } else {
+        state.prompt = format!("/{} ", s.name);
+        state.focus_prompt = true;
+        state.cursor_end = true;
+    }
+}
+
+/// The text after a leading `/` while a skill name is still being typed (no space yet).
+fn slash_query(prompt: &str) -> Option<&str> {
+    prompt.strip_prefix('/').filter(|q| !q.contains(char::is_whitespace))
+}
+
+// ---------------------------------------------------------------------------------------------------
+// skills (ws:skills)
+
+fn skills_tab(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, out: &mut Out) {
+    ui.horizontal_wrapped(|ui| {
+        let r = ui.button("New skill").on_hover_text("Describe it and let the assistant write it, or write it yourself");
+        if r.clicked() {
+            state.skill_draft = Some(SkillDraft::default());
+        }
+        if ui.button("Open skills folder").on_hover_text("Your skills are Markdown files in this folder").clicked() {
+            skills::open_folder();
+        }
+    });
+    ui.add_space(2.0);
+    egui::ScrollArea::vertical().id_salt("assistant_skills").auto_shrink([false, false]).show(ui, |ui| {
+        if v.skills.is_empty() {
+            ui.weak("No skills yet.");
+            return;
+        }
+        for s in v.skills {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(egui::RichText::new(format!("/{}", s.name)).strong());
+                if !s.args.is_empty() {
+                    ui.label(egui::RichText::new(&s.args).small().weak());
+                }
+                ui.label(egui::RichText::new(s.source.label()).small().weak());
+            });
+            if !s.description.is_empty() {
+                ui.add(egui::Label::new(egui::RichText::new(&s.description).weak()).wrap());
+            }
+            ui.horizontal_wrapped(|ui| {
+                let run = ui.add_enabled(!v.running, egui::Button::new("Run").small());
+                let tip = if s.args.is_empty() { "Run it now" } else { "Type what it should work on in Chat, then send" };
+                if run.on_hover_text(tip).on_disabled_hover_text("Wait for the assistant to finish").clicked() {
+                    run_skill(state, s, out);
+                }
+                if s.source == Source::User {
+                    if ui.small_button("Edit").clicked() {
+                        state.skill_draft = Some(SkillDraft::edit(s));
+                    }
+                    if ui.small_button("Duplicate").clicked() {
+                        state.skill_draft = Some(SkillDraft::copy(s, v.skills));
+                    }
+                    if ui.small_button("Delete").clicked() {
+                        *out = Out::Skill(SkillOut::Delete(s.name.clone()));
+                    }
+                } else if ui.small_button("Duplicate to edit").on_hover_text("Make your own copy to change").clicked() {
+                    state.skill_draft = Some(SkillDraft::copy(s, v.skills));
+                }
+            });
+            ui.add_space(6.0);
+        }
+    });
+}
+
+/// The New / Edit skill window (non-modal; WINDOW_DRAWERS through `assistant_ctl`). Closes itself on
+/// Cancel; the app closes it after a Save or "Write it for me".
+pub fn skill_window(ctx: &egui::Context, state: &mut AssistantState, running: bool) -> Out {
+    let mut out = Out::None;
+    let Some(d) = state.skill_draft.as_mut() else { return out };
+    let (mut open, mut cancel) = (true, false);
+    let title = if d.editing.is_some() { "Edit skill" } else { "New skill" };
+    egui::Window::new(title)
+        .id(egui::Id::new("assistant_skill_window"))
+        .open(&mut open)
+        .collapsible(false)
+        .default_width(440.0)
+        .show(ctx, |ui| {
+            ui.label("Name");
+            ui.add(egui::TextEdit::singleline(&mut d.name).hint_text("vlog-intro").desired_width(f32::INFINITY));
+            let name_ok = skills::valid_name(&d.name);
+            if !d.name.is_empty() && !name_ok {
+                ui.colored_label(ui.visuals().warn_fg_color, "Lowercase letters, digits and - only; you run it as /name");
+            }
+            if !d.plain {
+                ui.label("What should it do?");
+                ui.add(
+                    egui::TextEdit::multiline(&mut d.what)
+                        .hint_text("Add an intro title with my channel name, then a whoosh sound")
+                        .desired_rows(4)
+                        .desired_width(f32::INFINITY),
+                );
+                ui.horizontal(|ui| {
+                    let can = !d.what.trim().is_empty() && !running && (d.name.is_empty() || name_ok);
+                    let r = ui.add_enabled(can, egui::Button::new("Write it for me"));
+                    let r = r
+                        .on_hover_text("The assistant writes the skill and saves it; it then shows in the Skills list")
+                        .on_disabled_hover_text("Say what it should do first (and wait for the assistant to finish)");
+                    if r.clicked() {
+                        out = Out::Skill(SkillOut::Draft);
+                    }
+                    if ui.button("Write it myself").clicked() {
+                        d.plain = true;
+                        if d.description.is_empty() {
+                            d.description = short(&d.what, 80);
+                        }
+                        if d.body.is_empty() {
+                            d.body = d.what.clone();
+                        }
+                    }
+                });
+                return;
+            }
+            ui.label("Description");
+            ui.add(egui::TextEdit::singleline(&mut d.description).hint_text("One line, shown in the / list").desired_width(f32::INFINITY));
+            ui.label("Arguments hint (optional)");
+            ui.add(egui::TextEdit::singleline(&mut d.args).hint_text("[style]").desired_width(f32::INFINITY));
+            ui.label("Instructions");
+            ui.weak("$ARGS is replaced by what is typed after /name.");
+            egui::ScrollArea::vertical().id_salt("skill_body").max_height(320.0).show(ui, |ui| {
+                ui.add(egui::TextEdit::multiline(&mut d.body).code_editor().desired_rows(12).desired_width(f32::INFINITY));
+            });
+            if !d.error.is_empty() {
+                ui.colored_label(ui.visuals().error_fg_color, d.error.as_str());
+            }
+            ui.horizontal(|ui| {
+                let can = name_ok && !d.description.trim().is_empty() && !d.body.trim().is_empty();
+                if ui.add_enabled(can, egui::Button::new("Save")).clicked() {
+                    out = Out::Skill(SkillOut::Save);
+                }
+                if ui.button("Cancel").clicked() {
+                    cancel = true;
+                }
+            });
+        });
+    if !open || cancel {
+        state.skill_draft = None;
+    }
+    out
+}
+
+/// A library skill's first run: its whole text, then Run / Cancel. Some(true) = run it.
+pub fn read_first_window(ctx: &egui::Context, s: &Skill) -> Option<bool> {
+    let mut answer = None;
+    egui::Window::new(format!("Run /{}?", s.name))
+        .id(egui::Id::new("assistant_skill_read_first"))
+        .collapsible(false)
+        .default_width(480.0)
+        .show(ctx, |ui| {
+            ui.label(
+                "This skill comes from the library. A skill is instructions the assistant follows, so read it \
+                 before it runs the first time.",
+            );
+            ui.strong(s.description.as_str());
+            egui::ScrollArea::vertical().id_salt("skill_read_first").max_height(340.0).show(ui, |ui| {
+                ui.add(egui::Label::new(egui::RichText::new(&s.body).monospace().small()).wrap());
+            });
+            ui.horizontal(|ui| {
+                if ui.button("Run").clicked() {
+                    answer = Some(true);
+                }
+                if ui.button("Cancel").clicked() {
+                    answer = Some(false);
+                }
+            });
+        });
+    answer
 }
 
 fn conversation(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, pal: &Palette, out: &mut Out) {
@@ -798,17 +1069,26 @@ fn composer(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, pal: &Palet
                 ui.add_space(2.0);
             }
             let id = ui.id().with("assistant_prompt");
+            let (slash, done) = slash_list(ui, &mut state.prompt, &mut state.slash_sel, v.skills, id);
+            if done {
+                (state.cursor_end, state.focus_prompt) = (true, true);
+            }
             let r = ui.add(
                 egui::TextEdit::multiline(&mut state.prompt)
                     .id(id)
                     .frame(false)
                     .desired_rows(2)
                     .desired_width(f32::INFINITY)
-                    .hint_text("Ask the assistant…  (Enter sends, Shift+Enter for a new line)")
-                    .return_key(egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter)),
+                    .hint_text("Ask the assistant…  (Enter sends, Shift+Enter for a new line, / for skills)")
+                    .return_key(egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter))
+                    // while the `/` list is open Tab completes instead of moving the focus on
+                    .lock_focus(slash),
             );
             if std::mem::take(&mut state.focus_prompt) {
                 r.request_focus();
+            }
+            if std::mem::take(&mut state.cursor_end) {
+                cursor_to_end(ui.ctx(), id, &state.prompt);
             }
             let can_send = !v.running && !state.prompt.trim().is_empty();
             if r.has_focus() && can_send && ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift) {
@@ -828,18 +1108,6 @@ fn composer(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, pal: &Palet
                     }
                     if menu::row(ui, Some(Glyph::Folder), "Image file…", "").clicked() {
                         *out = Out::Attach(Attach::File);
-                    }
-                    if !v.quick.is_empty() {
-                        ui.separator();
-                        menu::sub(ui, Some(Glyph::Bolt), "Quick prompts", |ui| {
-                            for (label, prompt) in v.quick {
-                                let r = ui.add_enabled_ui(!v.running, |ui| menu::row(ui, None, label, "")).inner;
-                                if r.on_hover_text(prompt.as_str()).clicked() {
-                                    state.prompt = prompt.clone();
-                                    *out = Out::Send;
-                                }
-                            }
-                        });
                     }
                 })
                 .response
@@ -864,6 +1132,69 @@ fn composer(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, pal: &Palet
             });
         });
     ui.add_space(2.0);
+}
+
+/// ws:skills: the `/` list above a prompt box (`text`, widget `id`) while a skill name is typed:
+/// filtered as the user types; Up / Down pick (`sel`), Enter / Tab / a click complete to `/name `.
+/// Returns (open, completed this frame); the caller focuses the box and moves its cursor on a completion.
+pub fn slash_list(ui: &mut egui::Ui, text: &mut String, sel: &mut usize, all: &[Skill], id: egui::Id) -> (bool, bool) {
+    let Some(q) = slash_query(text) else {
+        *sel = 0;
+        return (false, false);
+    };
+    let hits = skills::filter(all, q, 8);
+    if hits.is_empty() {
+        return (false, false);
+    }
+    *sel = (*sel).min(hits.len() - 1);
+    let mut pick = None;
+    if ui.memory(|m| m.has_focus(id)) {
+        let none = egui::Modifiers::NONE;
+        let (up, down, enter, tab) = ui.input_mut(|i| {
+            (
+                i.consume_key(none, egui::Key::ArrowUp),
+                i.consume_key(none, egui::Key::ArrowDown),
+                i.consume_key(none, egui::Key::Enter),
+                i.consume_key(none, egui::Key::Tab),
+            )
+        });
+        if up {
+            *sel = sel.checked_sub(1).unwrap_or(hits.len() - 1);
+        }
+        if down {
+            *sel = (*sel + 1) % hits.len();
+        }
+        if enter || tab {
+            pick = Some(*sel);
+        }
+    }
+    for (i, s) in hits.iter().enumerate() {
+        let mut text = format!("/{}", s.name);
+        if !s.args.is_empty() {
+            text += &format!(" {}", s.args);
+        }
+        if !s.description.is_empty() {
+            text += &format!("  ·  {}", s.description);
+        }
+        let r = ui.add(egui::Button::selectable(i == *sel, text).truncate());
+        if r.on_hover_text(s.description.as_str()).clicked() {
+            pick = Some(i);
+        }
+    }
+    ui.separator();
+    if let Some(i) = pick {
+        *text = format!("/{} ", hits[i].name);
+        *sel = 0;
+    }
+    (true, pick.is_some())
+}
+
+/// Put a TextEdit's cursor at the end of `text`.
+fn cursor_to_end(ctx: &egui::Context, id: egui::Id, text: &str) {
+    let mut s = egui::text_edit::TextEditState::load(ctx, id).unwrap_or_default();
+    let end = egui::text::CCursor::new(text.chars().count());
+    s.cursor.set_char_range(Some(egui::text::CCursorRange::one(end)));
+    s.store(ctx, id);
 }
 
 #[cfg(test)]
@@ -895,11 +1226,12 @@ mod tests {
         task_hand_over(state.tasks_mut(), Some(id), "Cut ums", "editor.log('x')", "cuts them");
         state.pinned.push(Chip { label: "In/Out 1.0s–2.0s".into(), data: serde_json::json!({"kind": "range"}) });
         let chips = [("selection", "2 clips".to_string()), ("playhead", "Playhead 0:12".to_string())];
-        let quick = crate::settings::default_assistant_quick();
+        let all = test_skills();
         let v = View {
             running: false,
             chips: &chips,
-            quick: &quick,
+            skills: &all,
+            recent: &[],
             undo_top: (4, Some("Assistant: Tighten the intro")),
             backend: "claude",
             model: "sonnet",
@@ -927,8 +1259,8 @@ mod tests {
         state.tab = Tab::Chat;
         state.prompt = "tighten this".into();
         state.focus_prompt = true;
-        let quick = crate::settings::default_assistant_quick();
-        let v = View { running: false, chips: &[], quick: &quick, undo_top: (0, None), backend: "claude", model: "", effort: "", queued: 0 };
+        let all = test_skills();
+        let v = view(&all);
         // (the pressed modifiers are read from the frame's input state, not from the key event)
         let mut frame = |state: &mut AssistantState, events: Vec<egui::Event>| {
             let mut out = Out::None;
@@ -946,6 +1278,143 @@ mod tests {
         assert_eq!(frame(&mut state, vec![]), Out::None);
         assert_eq!(frame(&mut state, vec![key(egui::Modifiers::SHIFT)]), Out::None, "Shift+Enter is a new line");
         assert_eq!(frame(&mut state, vec![key(egui::Modifiers::NONE)]), Out::Send, "Enter sends");
+    }
+
+    // ---- ws:skills ----
+
+    fn skill(name: &str, args: &str, source: Source) -> Skill {
+        Skill {
+            name: name.into(),
+            description: format!("{name} description"),
+            args: args.into(),
+            body: "Do it. $ARGS".into(),
+            source,
+            path: None,
+        }
+    }
+
+    fn test_skills() -> Vec<Skill> {
+        vec![
+            skill("captions", "[style]", Source::BuiltIn),
+            skill("cut-silences", "", Source::BuiltIn),
+            skill("my-intro", "", Source::User),
+            skill("shorts", "", Source::Library),
+        ]
+    }
+
+    fn view(all: &[Skill]) -> View<'_> {
+        View {
+            running: false,
+            chips: &[],
+            skills: all,
+            recent: &[],
+            undo_top: (0, None),
+            backend: "claude",
+            model: "",
+            effort: "",
+            queued: 0,
+        }
+    }
+
+    /// Typing `/c` lists the matching skills above the prompt; Down + Enter completes to `/name `
+    /// without sending, Tab completes too, and Enter then sends. (Headless: the window has focus here,
+    /// unlike an SE_BACKGROUND test window - see notes.md.)
+    #[test]
+    fn slash_list_filters_and_completes() {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::test_fonts());
+        let all = test_skills();
+        let v = view(&all);
+        let mut state = AssistantState { tab: Tab::Chat, prompt: "/c".into(), focus_prompt: true, ..Default::default() };
+        let frame = |state: &mut AssistantState, keys: &[egui::Key]| {
+            let mut out = Out::None;
+            let events = keys
+                .iter()
+                .map(|&key| egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE })
+                .collect();
+            let _ = ctx.run(egui::RawInput { events, ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| out = draw(ui, state, &v));
+            });
+            out
+        };
+        assert_eq!(frame(&mut state, &[]), Out::None); // the prompt takes focus
+        assert_eq!(frame(&mut state, &[]), Out::None);
+        assert_eq!(frame(&mut state, &[egui::Key::ArrowDown]), Out::None);
+        assert_eq!(state.slash_sel, 1, "captions, cut-silences: Down picks the second");
+        assert_eq!(frame(&mut state, &[egui::Key::Enter]), Out::None, "Enter completes while the list is open");
+        assert_eq!(state.prompt, "/cut-silences ");
+        assert_eq!(frame(&mut state, &[]), Out::None);
+        assert_eq!(frame(&mut state, &[egui::Key::Enter]), Out::Send, "with the name typed, Enter sends");
+        state.prompt = "/sh".into();
+        assert_eq!(frame(&mut state, &[]), Out::None);
+        assert_eq!(frame(&mut state, &[egui::Key::Tab]), Out::None);
+        assert_eq!(state.prompt, "/shorts ", "Tab completes");
+        assert_eq!(frame(&mut state, &[]), Out::None);
+        assert_eq!(frame(&mut state, &[egui::Key::Enter]), Out::Send, "the prompt kept the focus through Tab");
+        state.prompt = "/zz".into();
+        assert_eq!(frame(&mut state, &[]), Out::None);
+        assert_eq!(frame(&mut state, &[egui::Key::Enter]), Out::Send, "no match: no list, Enter sends as text");
+    }
+
+    /// Chips: the skills run last first; Run of a skill without arguments sends, one with arguments is
+    /// typed into the prompt.
+    #[test]
+    fn skill_chips_and_run() {
+        let all = test_skills();
+        let names = |v: Vec<&Skill>| v.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(",");
+        assert_eq!(names(chip_skills(&all, &["shorts".into(), "gone".into()], 3)), "shorts,captions,cut-silences");
+        let mut state = AssistantState::default();
+        let mut out = Out::None;
+        run_skill(&mut state, &all[1], &mut out);
+        assert_eq!((state.prompt.as_str(), &out, state.tab), ("/cut-silences", &Out::Send, Tab::Chat));
+        let mut out = Out::None;
+        run_skill(&mut state, &all[0], &mut out);
+        assert_eq!((state.prompt.as_str(), &out, state.focus_prompt), ("/captions ", &Out::None, true));
+        let copy = SkillDraft::copy(&all[2], &all);
+        assert_eq!((copy.name.as_str(), copy.editing.is_none(), copy.plain), ("my-intro-copy", true, true));
+        assert_eq!(SkillDraft::edit(&all[2]).editing.as_deref(), Some("my-intro"));
+    }
+
+    #[test]
+    fn assert_no_idle_repaint_assistant_skills_tab() {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::test_fonts());
+        let all = test_skills();
+        let v = view(&all);
+        let mut state = AssistantState { tab: Tab::Skills, ..Default::default() };
+        run_frames(&ctx, &mut state, &v, 30);
+        assert!(!ctx.has_requested_repaint(), "an idle Skills tab must request no repaint");
+        // the `/` list open in the chat composer
+        state.tab = Tab::Chat;
+        state.prompt = "/".into();
+        run_frames(&ctx, &mut state, &v, 30);
+        assert!(!ctx.has_requested_repaint(), "an open / list must request no repaint");
+    }
+
+    #[test]
+    fn assert_no_idle_repaint_assistant_new_skill_window() {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::test_fonts());
+        let all = test_skills();
+        for draft in [SkillDraft::default(), SkillDraft::edit(&all[2])] {
+            let mut state = AssistantState { skill_draft: Some(draft), ..Default::default() };
+            for _ in 0..30 {
+                let _ = ctx.run(egui::RawInput::default(), |ctx| assert_eq!(skill_window(ctx, &mut state, false), Out::None));
+            }
+            assert!(state.skill_draft.is_some(), "it stays open");
+            assert!(!ctx.has_requested_repaint(), "an idle skill window must request no repaint");
+        }
+    }
+
+    #[test]
+    fn assert_no_idle_repaint_assistant_skill_read_first() {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::test_fonts());
+        let s = skill("shorts", "", Source::Library);
+        for _ in 0..30 {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| assert_eq!(read_first_window(ctx, &s), None));
+        }
+        assert!(!ctx.has_requested_repaint(), "an idle read-first window must request no repaint");
     }
 
     #[test]

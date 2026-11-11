@@ -59,6 +59,9 @@ pub fn leaves_project(tool: &str, args: &Value) -> bool {
                 | "tasks.run"
                 | "media.convert"
                 | "media.batch_convert"
+                // ws:skills: a skill is instructions for the assistant - writing or removing one is held
+                | "skills.save"
+                | "skills.delete"
         )
         || (tool == "ui.action" && args.get("id").and_then(Value::as_str).is_some_and(|id| LEAVING_ACTIONS.contains(&id)))
 }

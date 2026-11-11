@@ -164,6 +164,7 @@ impl Project {
             parent: Some(parent),
             range: Some((in_t, out_t)),
             effects: Vec::new(),
+            html: None,
         });
         Some(id)
     }
@@ -403,6 +404,7 @@ mod tests {
             parent: None,
             range: None,
             effects: Vec::new(),
+            html: None,
         }
     }
 

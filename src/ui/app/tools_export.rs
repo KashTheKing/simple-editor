@@ -771,6 +771,7 @@ mod tests {
             parent: None,
             range: None,
             effects: Vec::new(),
+            html: None,
         }
     }
 

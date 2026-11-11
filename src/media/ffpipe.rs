@@ -132,6 +132,7 @@ pub fn probe(path: &str) -> Result<Asset, String> {
         parent: None,
         range: None,
         effects: Vec::new(),
+        html: None,
     };
     let mut video: Option<&Value> = None;
     let mut stream_dur: f64 = 0.0;

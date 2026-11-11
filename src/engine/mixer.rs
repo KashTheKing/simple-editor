@@ -431,6 +431,7 @@ mod tests {
             parent: None,
             range: None,
             effects: Vec::new(),
+            html: None,
         }
     }
 
@@ -869,6 +870,8 @@ mod tests {
             direction: 0,
             ease: Ease::Linear,
             edge: Default::default(),
+            shader: String::new(),
+            params: Vec::new(),
         });
         let mut pool = DecoderPool::new(Backend::Ffmpeg);
         pool.insert_audio("Z:\\nope\\a.wav", 0, Box::new(Const(0.8)));
@@ -902,6 +905,8 @@ mod tests {
             direction: 0,
             ease: Ease::Linear,
             edge: Default::default(),
+            shader: String::new(),
+            params: Vec::new(),
         });
     }
 

@@ -21,6 +21,9 @@ pub struct ShaderMeta {
     pub params: Vec<ShaderParam>,
     /// `// @needs previous`: the effect also samples earlier frames (`u_prev` / `u_next` / `u_frames`).
     pub needs_previous: bool,
+    /// `// @needs previous <n>`: how many frames back `u_prev` is (1..=8, default 1); `u_next` sits
+    /// halfway between it and the current frame.
+    pub prev_gap: u32,
     pub credit: String,
 }
 
@@ -60,7 +63,12 @@ pub fn parse_meta(src: &str) -> ShaderMeta {
             "tags" => {
                 m.tags = val.split(',').map(|t| t.trim().to_ascii_lowercase()).filter(|t| !t.is_empty()).collect()
             }
-            "needs" => m.needs_previous |= val.starts_with("previous"),
+            "needs" => {
+                if let Some(n) = val.strip_prefix("previous") {
+                    m.needs_previous = true;
+                    m.prev_gap = n.trim().parse::<u32>().unwrap_or(1).clamp(1, 8);
+                }
+            }
             "param" => {
                 let w: Vec<&str> = val.split_whitespace().collect();
                 let n: Vec<f64> = w.iter().skip(1).filter_map(|v| v.parse().ok()).collect();
@@ -137,6 +145,11 @@ mod tests {
         assert_eq!(m.tags, ["light", "bloom"]);
         assert_eq!(m.params, [ShaderParam { id: "glow_size".into(), default: 0.5, min: 0.0, max: 2.0 }]);
         assert!(m.needs_previous);
+        assert_eq!(m.prev_gap, 1);
+        assert_eq!(parse_meta("// @needs previous 4
+vec4 effect(vec4 s, vec2 uv) { return s; }").prev_gap, 4);
+        assert_eq!(parse_meta("// @needs previous 99
+").prev_gap, 8);
         assert_eq!(label("glow_size"), "Glow Size");
         assert_eq!(lint(src, false).len(), 1, "the two bad @param lines are one finding");
         assert!(lint("vec4 effect(vec4 s, vec2 uv) { return s; }", false).len() >= 3);

@@ -79,7 +79,8 @@ pub fn export_xmeml(project: &Project) -> String {
                     let Some((cut, h)) = track.transition_clips(tr).and_then(|(l, r)| tr.cut_half(l, r)) else {
                         continue;
                     };
-                    if tr.kind != TransitionKind::CrossFade {
+                    if !matches!(tr.kind, TransitionKind::CrossFade | TransitionKind::Shader) {
+                        // ws:shader-library: a shader transition exports as the cross dissolve it falls back to
                         // ponytail: only cross dissolves map 1:1 - dips/pushes/wipes need per-app effect ids
                         let _ = writeln!(x, "<!-- {} transition at {} skipped (not interchangeable) -->", tr.kind.name(), fr(cut));
                         continue;
@@ -299,6 +300,7 @@ mod tests {
             parent: None,
             range: None,
             effects: Vec::new(),
+            html: None,
         }
     }
 

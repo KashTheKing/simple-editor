@@ -14,7 +14,13 @@ vec2 u_res - layer size in pixels\n\
 float u_time - clip-local seconds\n\
 float u_scale - preview scale (multiply pixel-sized amounts by it)\n\
 float p0..p7 - the eight knobs, also named u1..u8\n\
-sampler2D u_mask, int u_has_mask - the effect's mask (applied for you)";
+sampler2D u_mask, int u_has_mask - the effect's mask (applied for you)\n\
+\n\
+Header lines (top of the file, before any code):\n\
+// @name Glow - the name in the effect stack and the Effects list\n\
+// @desc One sentence.   // @tags light, bloom\n\
+// @param glow_size 0.5 0 2 - a named control \"Glow Size\" (default, min, max), a float glow_size in the code; up to 8\n\
+// @needs previous [n] - also sampler2D u_prev (n frames earlier, default 1), u_next (halfway), float u_frames (how many are real)";
 
 /// Starting points for the Examples menu: our `effect()` dialect and two shadertoy-style ones.
 pub const EXAMPLES: [(&str, &str); 3] = [
@@ -52,6 +58,10 @@ pub struct ShaderUi {
     pub src: String,
     /// The driver's log for the last applied source; empty once it links.
     pub error: String,
+    // ---- ws:shader-library ----
+    /// "Save to Library…": the name typed (empty = the header's `@name`) and the last result.
+    pub save_name: String,
+    pub save_msg: String,
 }
 
 impl ShaderUi {
@@ -61,6 +71,7 @@ impl ShaderUi {
         self.target = Some((clip, index));
         self.src = src.to_string();
         self.error.clear();
+        self.save_msg.clear();
     }
 }
 
@@ -96,7 +107,25 @@ pub fn show(ctx: &egui::Context, state: &mut ShaderUi) -> bool {
                     }
                 }
             });
+            // ws:shader-library: install this source as a library effect (it then shows in the Effects list)
+            ui.separator();
+            let header = crate::engine::shaderlib::parse_meta(&state.src).name;
+            let hint = if header.is_empty() { "Name".to_string() } else { header.clone() };
+            ui.add(egui::TextEdit::singleline(&mut state.save_name).hint_text(hint).desired_width(120.0));
+            if ui.button("Save to Library…").on_hover_text("Install it as a library effect").clicked() {
+                let name = if state.save_name.trim().is_empty() { header } else { state.save_name.clone() };
+                state.save_msg = match crate::engine::library::save(crate::engine::library::Kind::Effect, &name, &state.src) {
+                    Ok(item) => {
+                        crate::ui::transitions_ui::refresh_library();
+                        format!("Saved to the library as effects/{}", item.id)
+                    }
+                    Err(e) => e,
+                };
+            }
         });
+        if !state.save_msg.is_empty() {
+            ui.weak(&state.save_msg);
+        }
         ui.collapsing("Uniforms", |ui| ui.weak(UNIFORMS));
         if !state.error.is_empty() {
             let red = ui.visuals().error_fg_color;
@@ -144,6 +173,22 @@ mod tests {
         let text = painted(&out);
         assert!(text.contains("undefined variable"), "the log must be shown verbatim: {text}");
         assert!(text.contains("Apply") && text.contains("vec4 effect"), "{text}");
+    }
+
+    /// The help lists the header syntax, the window has a Save to Library button, and an idle open
+    /// window asks for no repaint.
+    #[test]
+    fn assert_no_idle_repaint_shader_editor() {
+        let ctx = egui::Context::default();
+        let mut st = ShaderUi::default();
+        st.edit(7, 0, "// @name Glow\nvec4 effect(vec4 src, vec2 uv) { return src; }");
+        let mut out = None;
+        for _ in 0..30 {
+            out = Some(ctx.run(egui::RawInput::default(), |ctx| assert!(!show(ctx, &mut st))));
+        }
+        assert!(painted(&out.unwrap()).contains("Save to Library"));
+        assert!(UNIFORMS.contains("@param") && UNIFORMS.contains("@needs previous"));
+        assert!(!ctx.has_requested_repaint(), "the idle Shader Editor requested a repaint");
     }
 
     /// Closing the window (or never opening it) is a no-op.

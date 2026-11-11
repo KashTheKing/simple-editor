@@ -209,7 +209,7 @@ impl NodeKind {
             NodeKind::Color(_) => "Color".into(),
             NodeKind::Clip(_) => "Clip".into(),
             NodeKind::Asset(_) => "Asset".into(),
-            NodeKind::Effect(e) => e.kind.name().into(),
+            NodeKind::Effect(e) => e.name().into(),
             NodeKind::Blend { .. } => "Blend".into(),
             NodeKind::Combine { .. } => "Combine".into(),
             NodeKind::Merge => "Merge".into(),

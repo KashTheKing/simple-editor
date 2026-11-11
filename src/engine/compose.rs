@@ -382,7 +382,8 @@ impl Compositor {
     ) {
         let p = trans_progress(tr, left, right, t) as f32;
         match tr.kind {
-            TransitionKind::CrossFade => {
+            // ws:shader-library: a shader transition is GPU-only; the CPU compositor cross-fades
+            TransitionKind::CrossFade | TransitionKind::Shader => {
                 if let Some(left) = left {
                     // fading out to nothing, the outgoing clip itself thins; on a cut it stays opaque
                     let op = if right.is_none() { 1.0 - p } else { 1.0 };
@@ -1389,6 +1390,7 @@ mod tests {
             parent: None,
             range: None,
             effects: Vec::new(),
+            html: None,
         }
     }
 
@@ -1558,6 +1560,8 @@ mod tests {
             direction: 0,
             ease: Ease::Linear,
             edge: Default::default(),
+            shader: String::new(),
+            params: Vec::new(),
         });
         let mut pool = DecoderPool::new(Backend::Ffmpeg);
         pool.insert_video("Z:\\nope\\fake.mp4", Box::new(FakeVideo([255, 0, 0, 255])));
@@ -1641,6 +1645,8 @@ mod tests {
             direction: 0,
             ease: Ease::Linear,
             edge: crate::model::TransitionEdge::Out,
+            shader: String::new(),
+            params: Vec::new(),
         });
         let mut comp = Compositor::new();
         let mut text = TextRasterizer::new();
@@ -1722,6 +1728,8 @@ mod tests {
             direction: 0,
             ease: Ease::Linear,
             edge: Default::default(),
+            shader: String::new(),
+            params: Vec::new(),
         });
         let mut pool = DecoderPool::new(Backend::Ffmpeg);
         let mut comp = Compositor::new();

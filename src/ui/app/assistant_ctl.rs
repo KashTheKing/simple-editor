@@ -11,6 +11,7 @@
 use super::tools_helpers::*;
 use super::*;
 use crate::engine::agent::{self, Event};
+use crate::engine::skills::{self, Skill, Source};
 use crate::mcp::tools::{ToolDef, ToolKind, ToolOutcome};
 use crate::ui::assistant_ui::{self as aui, Attach, Line, Out, Pin, TaskStatus, View};
 use std::collections::VecDeque;
@@ -32,8 +33,20 @@ script. Times are seconds, ids are integers; several cuts or deletes go back to 
 argument from your tool list - never guess one.";
 
 /// MCP tools an agent may only call after the user clicks Allow (they leave the project).
+/// ws:skills: `skills.save` / `skills.delete` too - a saved skill is instructions a later request
+/// follows. ponytail: they are not in `mcp::tools::leaves_project`, so the MCP client waits its
+/// usual 60 s for them, not `HELD_WAIT`; `held_wait` matches that.
 pub(super) fn leaves_project(tool: &str, args: &Value) -> bool {
-    mcp::tools::leaves_project(tool, args)
+    mcp::tools::leaves_project(tool, args) || matches!(tool, "skills.save" | "skills.delete")
+}
+
+/// How long the MCP client waits for a held call before it gives up.
+fn held_wait(tool: &str, args: &Value) -> Duration {
+    if mcp::tools::leaves_project(tool, args) {
+        mcp::HELD_WAIT
+    } else {
+        Duration::from_secs(60)
+    }
 }
 
 /// What "Always allow this session" remembers: the tool, or `ui.action:<id>` for one Action.
@@ -47,9 +60,14 @@ fn allow_key(tool: &str, args: &Value) -> String {
 /// Whether `guard` would hold a call to `tool` (also what `edit.batch` refuses to run inside a batch).
 pub(super) fn needs_approval(app: &App, tool: &str, args: &Value) -> bool {
     let rt = &app.assistant_rt;
+    // ws:skills: the user ran /create-skill, so saving its result is what they asked for.
+    // ponytail: the server doesn't know which client calls; another MCP client saving during that run
+    // passes too
+    let creating = tool == "skills.save" && rt.run.is_some() && rt.skill.as_deref() == Some(skills::CREATE);
     !rt.bypass
         && app.settings.assistant_guard
         && leaves_project(tool, args)
+        && !creating
         && !rt.always.iter().any(|t| *t == allow_key(tool, args))
 }
 
@@ -70,6 +88,8 @@ struct Req {
     /// The whole prompt the agent gets.
     full: String,
     images: Vec<aui::Attachment>,
+    /// ws:skills: the skill it runs (`/name`), if any.
+    skill: Option<String>,
 }
 
 #[derive(Default)]
@@ -102,6 +122,11 @@ pub(super) struct AssistantRt {
     /// "Handle my comments": markers up to this id are not new; the candidate settling.
     comment_since: Option<Id>,
     comment_slot: Option<(Id, String, Instant)>,
+    // ---- ws:skills ----
+    /// The skill the running request runs.
+    skill: Option<String>,
+    /// A library skill waiting for its first-run Run / Cancel, and whether it came from the Tasks box.
+    read_first: Option<(Skill, bool)>,
 }
 
 fn busy(app: &App) -> bool {
@@ -224,6 +249,10 @@ fn send(app: &mut App) {
     if prompt.is_empty() {
         return;
     }
+    let Some(skill) = resolve_skill(app, &prompt, false) else {
+        app.assistant.prompt = prompt; // waits for the library skill's Run / Cancel
+        return;
+    };
     let off = std::mem::take(&mut app.assistant.chips_off);
     let pinned = std::mem::take(&mut app.assistant.pinned);
     let images = std::mem::take(&mut app.assistant.images);
@@ -235,6 +264,14 @@ fn send(app: &mut App) {
             chips_of(c).into_iter().filter(|(k, l)| !off.contains(k) && !labels.contains(l)).map(|(_, l)| l).collect();
         labels.extend(live_labels);
     }
+    // the chat shows what the user typed, plus the skill's name; the agent gets the skill's text
+    let request = match &skill {
+        Some((s, args)) => {
+            labels.insert(0, format!("Skill: /{}", s.name));
+            format!("(the user ran the skill /{} - follow its instructions)\n{}", s.name, skills::expand(s, args))
+        }
+        None => prompt.clone(),
+    };
     let ctx = compose_context(live, &off, &pinned);
     let st = &mut app.assistant;
     if st.conv_mut().title.is_empty() {
@@ -248,8 +285,8 @@ fn send(app: &mut App) {
     if app.settings.assistant_backend == "external" {
         // assistant.wait attaches the live context itself; pinned chips ride along in the text
         let text = match ctx.get("pinned") {
-            Some(p) => format!("{prompt}\n\nPinned context: {p}"),
-            None => prompt,
+            Some(p) => format!("{request}\n\nPinned context: {p}"),
+            None => request,
         };
         app.assistant.pending.push_back(text);
         app.assistant_rt.attachments = images;
@@ -257,8 +294,30 @@ fn send(app: &mut App) {
         switch_mcp_on(app);
         return;
     }
-    let full = format!("{}\n\nRequest: {prompt}", preamble(&ctx, images.len()));
-    enqueue(app, Req { kind: Kind::Chat, label: prompt, full, images });
+    let full = format!("{}\n\nRequest: {request}", preamble(&ctx, images.len()));
+    let skill = skill.map(|(s, _)| s.name);
+    enqueue(app, Req { kind: Kind::Chat, label: prompt, full, images, skill });
+}
+
+/// ws:skills: `/name args` -> Some(Some((skill, args))); plain text or an unknown `/name` ->
+/// Some(None); None = a library skill's first run, waiting for its read-first window (`task`: it came
+/// from the Tasks box). A run is remembered for the chip row.
+fn resolve_skill(app: &mut App, text: &str, task: bool) -> Option<Option<(Skill, String)>> {
+    let Some((s, args)) = skills::parse_invocation(text).and_then(|(n, a)| Some((skills::get(n)?, a.to_string()))) else {
+        return Some(None);
+    };
+    if s.source == Source::Library && app.settings.skills_accepted.get(&s.name) != Some(&skills::content_hash(&s)) {
+        app.assistant_rt.read_first = Some((s, task));
+        return None;
+    }
+    let recent = &mut app.settings.skills_recent;
+    if recent.first() != Some(&s.name) {
+        recent.retain(|n| *n != s.name);
+        recent.insert(0, s.name.clone());
+        recent.truncate(8);
+        app.settings.save();
+    }
+    Some(Some((s, args)))
 }
 
 /// The Tasks tab's Add: a "Writing…" card, and a request asking the agent for its script.
@@ -267,6 +326,12 @@ fn add_task(app: &mut App) {
     if desc.is_empty() {
         return;
     }
+    let Some(skill) = resolve_skill(app, &desc, true) else {
+        app.assistant.task_prompt = desc;
+        return;
+    };
+    let what = skill.as_ref().map_or_else(|| desc.clone(), |(s, args)| skills::expand(s, args));
+    let skill = skill.map(|(s, _)| s.name);
     let st = &mut app.assistant;
     let id = aui::task_writing(st.tasks_mut(), &desc);
     if st.conv_mut().title.is_empty() {
@@ -275,8 +340,8 @@ fn add_task(app: &mut App) {
     st.push(Line::User(format!("Task: {desc}")));
     st.dirty = true;
     let ctx = compose_context(live_context(app), &[], &[]);
-    let full = format!("{}\n\n{TASK_BRIEF}\n\nTask: {desc}", preamble(&ctx, 0));
-    enqueue(app, Req { kind: Kind::Task(id), label: format!("Task: {desc}"), full, images: Vec::new() });
+    let full = format!("{}\n\n{TASK_BRIEF}\n\nTask: {what}", preamble(&ctx, 0));
+    enqueue(app, Req { kind: Kind::Task(id), label: format!("Task: {desc}"), full, images: Vec::new(), skill });
 }
 
 /// "Handle my comments": a settled new comment becomes a background request.
@@ -288,7 +353,7 @@ fn comment_req(comment: Value, id: Id) -> Req {
          comment done when you finish, so don't mark it yourself.\nComment: {note}",
         preamble(&ctx, 0)
     );
-    Req { kind: Kind::Comment(id), label: format!("Comment: {}", aui::short(&note, 50)), full, images: Vec::new() }
+    Req { kind: Kind::Comment(id), label: format!("Comment: {}", aui::short(&note, 50)), full, images: Vec::new(), skill: None }
 }
 
 fn switch_mcp_on(app: &mut App) {
@@ -360,6 +425,7 @@ fn start_queued(app: &mut App) {
     rt.active = Some((req.kind, group_label, app.undo.len()));
     (rt.split, rt.ok) = (false, false);
     rt.attachments = req.images;
+    rt.skill = req.skill;
     rt.run = Some(agent::start(spec));
 }
 
@@ -367,6 +433,7 @@ fn start_queued(app: &mut App) {
 /// "Done" with its Undo when its entry is on the stack, then the next queued request may start.
 fn finish(app: &mut App) {
     app.assistant_rt.run = None; // drops the Run: kills the child if it's still alive
+    app.assistant_rt.skill = None;
     let active = app.assistant_rt.active.take();
     let ok = app.assistant_rt.ok;
     match active.as_ref().map(|a| a.0) {
@@ -626,7 +693,7 @@ pub(super) fn approvals(app: &mut App, ctx: &egui::Context) {
         let _ = call.reply.send(Err(format!("the user denied '{}'", call.name)));
         return;
     }
-    if held_at.elapsed() >= mcp::HELD_WAIT {
+    if held_at.elapsed() >= held_wait(&call.name, &call.args) {
         // the agent was already told it timed out: running it now would surprise everyone
         app.toast(format!("'{}' waited too long - the agent gave up on it; nothing was run", call.name));
         return;
@@ -655,12 +722,14 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
     let chips = live_context(app).map(|c| chips_of(&c)).unwrap_or_default();
     let running = busy(app);
     let queued = queued_comments(app);
+    let all = skills::all();
     let out = {
         let s = &app.settings;
         let v = View {
             running,
             chips: &chips,
-            quick: &s.assistant_quick,
+            skills: &all,
+            recent: &s.skills_recent,
             undo_top: (app.undo.len(), app.undo.last().map(|e| e.label.as_str())),
             backend: &s.assistant_backend,
             model: &s.assistant_model,
@@ -707,15 +776,108 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
                 rt.backlog.retain(|r| !matches!(r.kind, Kind::Comment(_)));
             }
         }
+        Out::Skill(o) => skill_out(app, o),
         Out::None => {}
     }
     true
+}
+
+// ---------------------------------------------------------------------------------------------------
+// skills (ws:skills)
+
+fn skill_out(app: &mut App, o: aui::SkillOut) {
+    match o {
+        aui::SkillOut::Delete(name) => crate::ui::confirm::ask_app(
+            "Delete skill?",
+            format!("Delete /{name}? Its file is removed from your skills folder."),
+            move |app| match skills::delete(&name) {
+                Ok(()) => app.toast(format!("Deleted /{name}")),
+                Err(e) => app.toast(e),
+            },
+        ),
+        aui::SkillOut::Draft => {
+            let Some(d) = app.assistant.skill_draft.take() else { return };
+            let mut args = d.what.trim().to_string();
+            if !d.name.is_empty() {
+                args += &format!("\nName it `{}`.", d.name);
+            }
+            app.assistant.prompt = format!("/{} {args}", skills::CREATE);
+            app.assistant.tab = aui::Tab::Chat;
+            send(app);
+        }
+        aui::SkillOut::Save => {
+            let Some(d) = app.assistant.skill_draft.as_mut() else { return };
+            let taken = d.editing.as_deref() != Some(d.name.as_str())
+                && skills::all().iter().any(|s| s.name == d.name && s.source == Source::User);
+            if taken {
+                d.error = format!("You already have a skill named {}", d.name);
+                return;
+            }
+            match skills::save(&d.name, &d.description, &d.args, &d.body) {
+                Ok(_) => {
+                    if let Some(old) = d.editing.as_deref().filter(|old| *old != d.name) {
+                        let _ = skills::delete(old);
+                    }
+                    let name = d.name.clone();
+                    app.assistant.skill_draft = None;
+                    app.toast(format!("Saved /{name}"));
+                }
+                Err(e) => d.error = e,
+            }
+        }
+    }
+}
+
+/// WINDOW_DRAWERS entry: the New / Edit skill window and a library skill's read-first window.
+pub(super) fn skill_windows(app: &mut App, ctx: &egui::Context) {
+    if app.assistant.skill_draft.is_some() {
+        let running = busy(app);
+        if let Out::Skill(o) = aui::skill_window(ctx, &mut app.assistant, running) {
+            skill_out(app, o);
+        }
+    }
+    let Some((s, _)) = &app.assistant_rt.read_first else { return };
+    let Some(run) = aui::read_first_window(ctx, s) else { return };
+    let Some((s, task)) = app.assistant_rt.read_first.take() else { return };
+    if run {
+        app.settings.skills_accepted.insert(s.name.clone(), skills::content_hash(&s));
+        app.settings.save();
+        if task {
+            add_task(app);
+        } else {
+            send(app);
+        }
+    }
+    ctx.request_repaint();
+}
+
+/// Quick prompts become user skills, once: off the UI thread, then the listing is re-read.
+fn migrate_quick_prompts(app: &mut App) {
+    if app.settings.skills_migrated {
+        return;
+    }
+    app.settings.skills_migrated = true;
+    app.settings.save();
+    // only prompts the user wrote or changed: the stock five are covered by the built-in skills
+    let stock = crate::settings::default_assistant_quick();
+    let quick: Vec<(String, String)> =
+        app.settings.assistant_quick.iter().filter(|q| !stock.contains(q)).cloned().collect();
+    if quick.is_empty() {
+        return;
+    }
+    let _ = std::thread::Builder::new().name("skills-migrate".into()).spawn(move || {
+        let taken: Vec<String> = skills::all().iter().filter(|s| s.source != Source::User).map(|s| s.name.clone()).collect();
+        if skills::migrate_in(&skills::user_dir(), &quick, &taken) > 0 {
+            skills::invalidate();
+        }
+    });
 }
 
 /// FRAME_HOOKS entry: the conversation store, "Add to Assistant" clicks, a dictated / quick prompt
 /// waiting to go, new comments to handle, the queue, the server coming up for a queued request, and
 /// the running agent's events. Schedules nothing when idle.
 pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
+    migrate_quick_prompts(app); // ws:skills: once
     sync_store(app);
     for pin in aui::take_pins() {
         pin_add(app, pin);
@@ -1066,10 +1228,25 @@ mod tests {
     #[test]
     fn guarded_tools() {
         let none = json!({});
-        for t in ["export.video", "export.edl", "export.xml", "project.open", "project.new", "settings.set", "scripts.run", "tasks.run", "media.convert"] {
+        for t in [
+            "export.video",
+            "export.edl",
+            "export.xml",
+            "project.open",
+            "project.new",
+            "settings.set",
+            "scripts.run",
+            "tasks.run",
+            "media.convert",
+            "skills.save",
+            "skills.delete",
+        ] {
             assert!(leaves_project(t, &none), "{t}");
         }
-        for t in ["timeline.cut", "editor.context", "markers.add", "project.summary", "ui.action", "tasks.add", "tasks.list"] {
+        assert_eq!(held_wait("skills.save", &none), mcp::HELD_WAIT);
+        assert_eq!(held_wait("timeline.cut", &none), Duration::from_secs(60));
+        assert_eq!(held_wait("export.video", &none), mcp::HELD_WAIT);
+        for t in ["timeline.cut", "editor.context", "markers.add", "project.summary", "ui.action", "tasks.add", "tasks.list", "skills.list", "skills.get"] {
             assert!(!leaves_project(t, &none), "{t}");
         }
         // ui.action: only the Actions that leave the project, and every listed id is a real Action

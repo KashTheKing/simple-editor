@@ -85,8 +85,8 @@ pub(super) fn anim_of<'a>(clip: &'a mut Clip, name: &str) -> Option<&'a mut crat
     }
     let (effect, param) = name.split_once(':')?;
     let (effect, param) = (effect.trim(), param.trim());
-    let e = clip.effects.iter_mut().find(|e| e.kind.name().eq_ignore_ascii_case(effect))?;
-    let i = e.kind.params().iter().position(|p| p.name.eq_ignore_ascii_case(param))?;
+    let e = clip.effects.iter_mut().find(|e| e.name().eq_ignore_ascii_case(effect) || e.kind.name().eq_ignore_ascii_case(effect))?;
+    let i = e.specs().iter().position(|p| p.name.eq_ignore_ascii_case(param))?;
     e.params.get_mut(i)
 }
 

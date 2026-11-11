@@ -1823,6 +1823,7 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:shader-library ----
     tools_shader::windows,
     // ---- ws:skills ----
+    assistant_ctl::skill_windows,
     // ---- ws:online-library ----
     library_ctl::windows,
 ];

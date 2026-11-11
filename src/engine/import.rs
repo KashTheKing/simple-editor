@@ -582,6 +582,7 @@ fn asset_of(file: &El, fps: f64, files: &mut HashMap<String, Id>, subject: &str,
         parent: None,
         range: None,
         effects: Vec::new(),
+        html: None,
     };
     let id = b.add_asset(asset);
     files.insert(fid, id);
@@ -835,6 +836,7 @@ fn read_edl(text: &str, b: &mut Build) {
             parent: None,
             range: None,
             effects: Vec::new(),
+            html: None,
         });
         assets.insert(name, id);
     }
@@ -1277,6 +1279,7 @@ pub fn placeholder(path: &str) -> Asset {
         parent: None,
         range: None,
         effects: Vec::new(),
+        html: None,
     }
 }
 
@@ -1369,6 +1372,7 @@ mod tests {
             parent: None,
             range: None,
             effects: Vec::new(),
+            html: None,
         }
     }
 

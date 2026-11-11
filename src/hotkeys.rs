@@ -347,6 +347,11 @@ actions! {
     PushToTalk => "push_to_talk", "Push to Talk", None;
     // ---- ws:docs-release ----
     // ---- ws:html-layer ----
+    // HTML + CSS layers (Add menu / palette; the clip menu and a double-click edit them). Unbound by design.
+    AddHtmlLayer => "add_html_layer", "Add HTML Layer", None;
+    AddHtmlScene => "add_html_scene", "Add HTML Scene", None;
+    EditHtml => "edit_html", "Edit HTML…", None;
+    SaveHtmlToLibrary => "save_html_to_library", "Save to Library", None;
     // ---- ws:shader-library ----
     // ---- ws:skills ----
     // ---- ws:online-library ----
@@ -652,6 +657,7 @@ pub fn group(a: Action) -> &'static str {
         PushToTalk => "Panels & Pages",
         // ---- ws:docs-release ----
         // ---- ws:html-layer ----
+        AddHtmlLayer | AddHtmlScene | EditHtml | SaveHtmlToLibrary => "Add",
         // ---- ws:shader-library ----
         // ---- ws:skills ----
         // ---- ws:online-library ----

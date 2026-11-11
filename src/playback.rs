@@ -1811,7 +1811,9 @@ fn layer_for<'p>(
             let (dw, dh) = layer_size(src, (dw, dh), still);
             // ponytail: two extra samples half a frame apart feed shutter-based effects; a shutter-angle
             // driven sample count is the upgrade if motion blur ever needs to be exact.
-            let motion = clip.effects.iter().any(|e| e.enabled && e.kind.needs_motion());
+            // ws:shader-library: a `// @needs previous <n>` shader widens the gap to n frames (the
+            // widest effect on the clip wins; the built-in kinds then also see that earlier frame).
+            let motion = clip.effects.iter().filter(|e| e.enabled).map(|e| e.motion_gap()).max().unwrap_or(0);
             let fd = project.frame_dur();
             // earliest first: one decoder serves all three, and in time order it only ever reads
             // forward instead of seeking back for the samples after the frame itself
@@ -1916,10 +1918,12 @@ fn clip_src(src_t: f64, src_duration: f64) -> f64 {
 }
 
 /// The samples a video layer decodes, in decode order: the motion-blur neighbours (offsets in
-/// frames) before the frame itself (None) - all forward reads for the one decoder.
-fn motion_samples(motion: bool) -> Vec<Option<f64>> {
-    if motion {
-        vec![Some(-1.0), Some(-0.5), None]
+/// frames: `gap` back and halfway there; 0 = none) before the frame itself (None) - all forward
+/// reads for the one decoder.
+fn motion_samples(gap: u32) -> Vec<Option<f64>> {
+    if gap > 0 {
+        let g = gap as f64;
+        vec![Some(-g), Some(-g / 2.0), None]
     } else {
         vec![None]
     }
@@ -2239,8 +2243,9 @@ mod render_thread_tests {
     #[test]
     fn motion_samples_decode_in_time_order() {
         use crate::model::{Effect, EffectKind};
-        assert_eq!(motion_samples(false), vec![None]);
-        assert_eq!(motion_samples(true), vec![Some(-1.0), Some(-0.5), None]);
+        assert_eq!(motion_samples(0), vec![None]);
+        assert_eq!(motion_samples(1), vec![Some(-1.0), Some(-0.5), None]);
+        assert_eq!(motion_samples(4), vec![Some(-4.0), Some(-2.0), None]);
         let (mut project, mut pool, ids, logs) = stack(&[("Video", "C:\\a.mp4")]);
         project.clip_mut(ids[0]).unwrap().effects.push(Effect::new(EffectKind::MotionBlur));
         let (mut text, mut shapes, mut comp) = (TextRasterizer::new(), ShapeRasterizer::new(), Compositor::new());
@@ -2453,6 +2458,8 @@ mod tests {
             direction: 0,
             ease: Default::default(),
             edge: Default::default(),
+            shader: String::new(),
+            params: Vec::new(),
         });
         let wend = spans_using_source(&tp, &path).iter().fold(f64::MIN, |m, &(_, b)| m.max(b));
         assert!((wend - end - 1.5).abs() < 1e-6, "widened by the longest transition: {wend} vs {end}");
@@ -2638,6 +2645,7 @@ mod tests {
                 parent: None,
                 range: None,
                 effects: Vec::new(),
+                html: None,
             }
         }
 
@@ -2998,6 +3006,8 @@ mod tests {
             direction: 0,
             ease: Ease::Linear,
             edge: Default::default(),
+            shader: String::new(),
+            params: Vec::new(),
         });
         let (mut pool, mut spare) = (DecoderPool::new(Backend::Ffmpeg), Vec::new());
         let (mut text, mut shapes, mut comp) = (TextRasterizer::new(), ShapeRasterizer::new(), Compositor::new());

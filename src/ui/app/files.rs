@@ -29,6 +29,7 @@ impl App {
                     self.toast(format!("Missing media: {m}"));
                 }
                 self.check_lock_file(path);
+                crate::engine::lut::set_project(Some(path)); // ws:online-library: LUTs copied beside it
                 self.set_project(project, Some(path.to_path_buf()));
                 self.settings.touch_recent_project(&path.to_string_lossy());
                 self.settings.save();
@@ -153,6 +154,13 @@ impl App {
         match self.project.save(&path) {
             Ok(()) => {
                 self.dirty = false;
+                // ---- ws:online-library ---- library LUTs the project uses go beside it
+                crate::engine::lut::set_project(Some(&path));
+                if let Ok(v) = serde_json::to_value(&self.project) {
+                    if let Err(e) = crate::engine::lut::copy_beside_project(&v, &path) {
+                        self.toast(format!("Couldn't copy the project's LUTs: {e}"));
+                    }
+                }
                 self.settings.touch_recent_project(&path.to_string_lossy());
                 self.settings.save();
                 let _ = std::fs::remove_file(Self::lock_path(&path));
