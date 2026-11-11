@@ -54,6 +54,13 @@ pub struct SourceState {
     fit_px: f32,
     /// The media's own width in px, for the Zoom ▾ percentages.
     width: u32,
+    // ---- ws:play-source-monitor ----
+    /// What `player` is showing (the file's own single-clip project, or the tape's): the GPU path
+    /// renders the player's layers against it on the UI thread.
+    pub project: Project,
+    /// The canvas last handed to `player.set_canvas` (before its `max_width` clamp) - the size the
+    /// GPU path renders the player's layers at.
+    pub(crate) canvas: (u32, u32),
 }
 
 impl SourceState {
@@ -74,6 +81,8 @@ impl SourceState {
             view: (1.0, egui::Vec2::ZERO),
             fit_px: 0.0,
             width: asset.width,
+            project: Project::from_media(asset.clone()),
+            canvas: (0, 0),
         }
     }
 
@@ -116,12 +125,14 @@ impl SourceState {
         match &tape {
             Some(t) => {
                 self.player.set_project(&t.project);
+                self.project = t.project.clone();
                 self.duration = t.project.duration().max(MIN_CLIP);
                 self.has_video = t.project.assets.iter().any(|a| a.has_video());
                 self.is_image = false;
             }
             None => {
                 self.player.set_project(own);
+                self.project = own.clone();
                 self.duration = own.duration().max(MIN_CLIP);
             }
         }
@@ -302,6 +313,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut SourceState, c: SourceCtx<'_>) -> Source
         let full = ((lb.width() * ui.pixels_per_point()) as u32, (lb.height() * ui.pixels_per_point()) as u32);
         let (cw, ch) = preview_canvas(full, settings.preview_quality);
         st.player.set_canvas(cw.max(16), ch.max(16), settings.preview_max_width);
+        st.canvas = (cw.max(16), ch.max(16));
         if resp.buffering {
             ui.put(egui::Rect::from_center_size(lb.center(), egui::vec2(32.0, 32.0)), egui::Spinner::new().size(32.0));
         }

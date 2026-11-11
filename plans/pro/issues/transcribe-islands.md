@@ -1,6 +1,6 @@
 # Island transcription for drift-free word timings
 
-**Workstream:** `transcribe-islands` · **Plan:** [plans/pro/README.md](../README.md) · **Wave:** 3 · **Coding batch:** A · **Branch:** `feat/pro`
+**Workstream:** `transcribe-islands` · **Issue:** [#152](https://github.com/KashTheKing/simple-editor/issues/152) · **Plan:** [plans/pro/README.md](../README.md) · **Wave:** 3 · **Coding batch:** A · **Branch:** `feat/pro`
 
 Read [agents.md](../../../agents.md), [goals.md](../../../goals.md), [notes.md](../../../notes.md), [ARCHITECTURE.md](../../../ARCHITECTURE.md) and the master plan [README.md](../README.md) before starting: its findings table gives the file:line evidence, and its "Execution" section gives this workstream's file ownership and the rules for the first coding pass.
 

@@ -1,7 +1,8 @@
 //! Export: render the timeline with the CPU Compositor + Mixer and pipe it into ffmpeg.exe
-//! (`-f rawvideo -pix_fmt rgba -s WxH -r fps -i pipe:0` + pre-mixed temp WAV), encoder chosen by the
-//! output extension / settings. Plus the lossless `-c copy` fast path for pure cuts of one source.
-//! Runs on a background thread; the UI polls `Progress`.
+//! (`-f rawvideo -pix_fmt rgba|nv12 -s WxH -r fps -i pipe:0` + one headerless `f32le` audio input per
+//! `AudioInput`, mixed on its own thread and streamed over a loopback socket while the video renders),
+//! encoder chosen by the output extension / settings. Plus the lossless `-c copy` fast path for pure
+//! cuts of one source. Runs on a background thread; the UI polls `Progress`.
 
 use crate::engine::compose::Compositor;
 use crate::engine::mixer::Mixer;
@@ -9,6 +10,7 @@ use crate::engine::text::TextRasterizer;
 use crate::media::{ffpipe, Backend, DecoderPool, Frame, SAMPLE_RATE};
 use crate::model::{ClipKind, Project, Track};
 use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -23,7 +25,12 @@ pub struct GpuFrameRequest {
     pub t: f64,
     pub w: u32,
     pub h: u32,
-    /// The rendered frame, or None when the renderer died (the export falls back to the CPU compositor).
+    /// ws:export-pipeline: read back as NV12 bytes (`w*h*3/2` in `rgba`, BT.709 limited) instead of RGBA.
+    pub nv12: bool,
+    /// The buffer to read into and reply with (recycled by the sender; `Frame::default()` is fine).
+    pub buf: Frame,
+    /// The rendered frame, or None / a dropped sender when the renderer died (the export falls back
+    /// to the CPU compositor).
     pub reply: std::sync::mpsc::SyncSender<Option<Frame>>,
 }
 
@@ -74,6 +81,142 @@ pub struct ExportOptions {
     /// differs from the project's. Only the platform-preset tiles set this; a hand-typed custom size
     /// keeps the plain stretch it always had.
     pub letterbox: bool,
+    // ---- ws:pro-schema ----
+    /// How the audio leaves the export: one mix, one stream per stem, or separate stem files.
+    pub audio: AudioLayout,
+    /// What a "stem" is when `audio` isn't `Mix`.
+    pub stem_by: StemBy,
+}
+
+// ---- ws:pro-schema ----
+/// `ExportOptions.audio` (ws:export-audio-tracks consumes it; `Settings.export_audio` is its string).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AudioLayout {
+    /// One stereo mix - what every export did before.
+    #[default]
+    Mix,
+    /// One audio stream per stem inside the same file.
+    Streams,
+    /// One separate audio file per stem next to the video.
+    Stems,
+}
+
+/// `ExportOptions.stem_by`: how clips are grouped into stems.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StemBy {
+    /// One stem per audio track.
+    #[default]
+    Track,
+    /// One stem per mixer bus.
+    Bus,
+    /// One stem per clip role (Dialogue / Music / Sfx / Ambience).
+    Role,
+}
+
+// ---- ws:export-audio-tracks ----
+impl AudioLayout {
+    /// From `Settings.export_audio` / the `audio` tool arg: "streams", "stems", anything else = Mix.
+    pub fn parse(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "streams" => AudioLayout::Streams,
+            "stems" => AudioLayout::Stems,
+            _ => AudioLayout::Mix,
+        }
+    }
+}
+
+impl StemBy {
+    /// From `Settings.export_stem_by` / the `stem_by` tool arg: "bus", "role", anything else = Track.
+    pub fn parse(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "bus" => StemBy::Bus,
+            "role" => StemBy::Role,
+            _ => StemBy::Track,
+        }
+    }
+}
+
+/// Containers that can carry several audio streams (`AudioLayout::Streams`). ponytail: webm/ogg
+/// (Matroska/Ogg can) left out until verified with the opus/vorbis encoders.
+pub const MULTI_AUDIO_EXTS: &[&str] = &["mp4", "mov", "mkv", "m4v"];
+
+/// The layout an export to `ext` really writes: Streams falls back to Mix where the container can't
+/// hold several audio streams.
+pub fn effective_layout(layout: AudioLayout, ext: &str) -> AudioLayout {
+    if layout == AudioLayout::Streams && !MULTI_AUDIO_EXTS.contains(&ext) {
+        AudioLayout::Mix
+    } else {
+        layout
+    }
+}
+
+/// `<output stem> stems` beside `out`: where `AudioLayout::Stems` puts its WAVs.
+pub fn stems_dir(out: &Path) -> PathBuf {
+    let stem = out.file_stem().unwrap_or_default().to_string_lossy();
+    out.with_file_name(format!("{stem} stems"))
+}
+
+/// Main-output audio options: loudnorm (only on the mix stream, `-filter:a:0`, when the file carries
+/// stems too), and for Streams each stream's title with the mix as the only default track.
+fn audio_out_args(af: &str, layout: AudioLayout, titles: &[&str]) -> Vec<String> {
+    let streams = layout == AudioLayout::Streams;
+    let mut a: Vec<String> = Vec::new();
+    if !af.is_empty() {
+        // loudnorm resamples to 192 kHz internally; without -ar a WAV/FLAC would keep that rate
+        let flag = if streams { "-filter:a:0" } else { "-af" };
+        a.extend([flag.to_string(), af.to_string(), "-ar".into(), "48000".into()]);
+    }
+    if streams {
+        for (i, t) in titles.iter().enumerate() {
+            a.extend([
+                format!("-metadata:s:a:{i}"),
+                format!("title={t}"),
+                format!("-disposition:a:{i}"),
+                (if i == 0 { "default" } else { "0" }).to_string(),
+            ]);
+        }
+    }
+    a
+}
+
+/// One extra ffmpeg output per stem (Stems layout): input `first_stem + i` → `dir/NN <title>.wav`,
+/// 24-bit 48 kHz, no metadata.
+fn stem_outputs(first_stem: usize, titles: &[&str], dir: &Path) -> Vec<String> {
+    let mut a: Vec<String> = Vec::new();
+    for (i, t) in titles.iter().enumerate() {
+        a.extend([
+            "-map".to_string(),
+            format!("{}:a", first_stem + i),
+            "-c:a".into(),
+            "pcm_s24le".into(),
+            "-ar".into(),
+            "48000".into(),
+            "-map_metadata".into(),
+            "-1".into(),
+            dir.join(crate::engine::stems::file_name(i, t)).to_string_lossy().into_owned(),
+        ]);
+    }
+    a
+}
+
+/// A folder deleted (with its contents) on drop, unless its files were `commit`ted elsewhere first.
+struct TempDir(PathBuf);
+impl TempDir {
+    /// Move every file into `dst` (created if missing; same-named files replaced, others kept).
+    fn commit(&self, dst: &Path) -> Result<(), String> {
+        let err = |e: std::io::Error| format!("stems to {}: {e}", dst.display());
+        std::fs::create_dir_all(dst).map_err(err)?;
+        for e in std::fs::read_dir(&self.0).map_err(err)? {
+            let e = e.map_err(err)?;
+            std::fs::rename(e.path(), dst.join(e.file_name())).map_err(err)?;
+        }
+        Ok(())
+    }
+}
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 // ---- ws:export-deliver ----
@@ -134,7 +277,7 @@ pub fn scale_vf(src: (u32, u32), out: (u32, u32), scaler: &str, letterbox: bool)
 
 /// The `(-vf, -af)` filter strings for an export's ffmpeg command (empty = omit the flag). Pure so
 /// the loudnorm / letterbox / even-size rules are testable without spawning ffmpeg. `audio` = the
-/// export carries a mixed WAV; `args` = the codec args (`pix_fmt` decides the even-size pad).
+/// export carries audio; `args` = the codec args (`pix_fmt` decides the even-size pad).
 fn output_filters(opts: &ExportOptions, project: (u32, u32), audio: bool, args: &[String]) -> (String, String) {
     let scale = opts.out_size.filter(|&s| s != project);
     let mut vf = match scale {
@@ -245,8 +388,9 @@ pub(crate) const CANCELLED: &str = "cancelled";
 const MIX_BLOCK: usize = 1024;
 
 /// Start a full (re-encoding) export on a background thread. Frames are rendered at project size
-/// with `Compositor` and audio mixed with `Mixer` into a temp WAV first (fast), then video frames are
-/// piped to ffmpeg's stdin. Progress 0..1; cancel kills ffmpeg and removes the partial file.
+/// (`Compositor`, or the UI thread's GPU) and piped to ffmpeg's stdin by a writer thread, while audio
+/// is mixed with `Mixer` on its own thread and streamed alongside. Progress 0..1 follows the video;
+/// cancel kills ffmpeg and removes the partial file.
 /// Audio-only extensions (mp3, wav, m4a, flac, ogg, aac, opus) skip video (`-vn`); gif skips audio.
 pub fn start_export(project: Project, opts: ExportOptions, text: Arc<Mutex<TextRasterizer>>) -> Arc<Progress> {
     spawn_job("export", move |prog| run_export(&project, &opts, &text, prog))
@@ -293,42 +437,70 @@ fn run_export(
     let (start, dur, n) = frame_plan(project.duration(), fps, opts.range)?;
     let (w, h) = (project.width.max(1), project.height.max(1));
     let mut pool = DecoderPool::new(opts.backend);
+    let backend = opts.backend;
 
-    // 1. audio → temp WAV
-    let has_audio = !is_gif
-        && project
-            .audio_tracks()
-            .into_iter()
-            .any(|i| project.active(i) && project.tracks[i].clips.iter().any(|c| c.enabled));
-    let wav = if has_audio { Some(mix_to_wav(project, &mut pool, prog, start, dur)?) } else { None };
-    if audio_only && wav.is_none() {
+    // 1. audio inputs: each is mixed on its own thread while the video renders (step 4)
+    // ws:export-audio-tracks: Streams needs a container with room for several audio streams
+    let layout = effective_layout(opts.audio, &ext);
+    let audio_note = if layout != opts.audio {
+        " · separate audio tracks need mp4/mov/mkv/m4v - wrote one mix"
+    } else {
+        ""
+    };
+    let inputs = audio_inputs(project, is_gif, layout, opts.stem_by, (start, start + dur));
+    // Stems: the file gets the mix (input 0 of the audio), the rest go to their own WAV outputs
+    let main_audio = if layout == AudioLayout::Stems { inputs.len().min(1) } else { inputs.len() };
+    let stem_dir = if inputs.len() > main_audio {
+        let d = TempDir(stems_dir(&tmp.0));
+        let _ = std::fs::remove_dir_all(&d.0); // a leftover from a crashed run
+        std::fs::create_dir_all(&d.0).map_err(|e| format!("stems folder: {e}"))?;
+        Some(d)
+    } else {
+        None
+    };
+    if audio_only && inputs.is_empty() {
         return Err("Nothing to export: no audio clips".into());
     }
+    let listeners = inputs
+        .iter()
+        .map(|_| TcpListener::bind(("127.0.0.1", 0)))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("audio socket: {e}"))?;
+    let ports = listeners
+        .iter()
+        .map(|l| l.local_addr().map(|a| a.port()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("audio socket: {e}"))?;
 
-    // 2. ffmpeg
+    // 2. how frames leave: NV12 straight off the GPU when the encode is 4:2:0 anyway (even sizes
+    // only - NV12 has no odd-size chroma here), RGBA otherwise and always on the CPU path
+    // ws:export-encoders: "auto" → probed hardware encoder; a stale explicit choice falls back to auto
+    let (encoder, note) = resolve_encoder(&ext, &opts.encoder);
+    if let Some(n) = note {
+        prog.set(0.0, n);
+    }
+    let args = codec_args(&ext, &encoder, opts.crf, &opts.preset, &detect_encoders());
+    let gpu_tx = match &opts.frames {
+        FrameSource::Gpu(tx) => Some(tx.clone()),
+        FrameSource::Cpu => None,
+    };
+    let nv12 = NV12_READBACK
+        && gpu_tx.is_some()
+        && w % 2 == 0
+        && h % 2 == 0
+        && args.iter().any(|a| a == "yuv420p" || a == "nv12");
+    let video = (!audio_only).then_some(if nv12 { VideoIn::Nv12 } else { VideoIn::Rgba });
+
+    // 3. ffmpeg
     let mut cmd = ffpipe::command(&ffmpeg);
     cmd.args(["-y", "-hide_banner", "-loglevel", "error"]);
-    if !audio_only {
-        cmd.args(["-f", "rawvideo", "-pix_fmt", "rgba", "-s", &format!("{w}x{h}"), "-r", &format!("{fps}")]);
-        cmd.args(["-i", "pipe:0"]);
-    }
-    if let Some(wav) = &wav {
-        cmd.arg("-i").arg(&wav.0);
-    }
-    if !audio_only {
-        cmd.args(["-map", "0:v"]);
-        if wav.is_some() {
-            cmd.args(["-map", "1:a"]);
-        }
-    }
-    let args = codec_args(&ext, &opts.encoder, opts.crf, &opts.preset, &detect_encoders());
-    let (vf, af) = output_filters(opts, (w, h), wav.is_some(), &args);
+    cmd.args(input_args(video, (w, h), fps, &ports, main_audio));
+    let (vf, af) = output_filters(opts, (w, h), !inputs.is_empty(), &args);
     if !audio_only && !vf.is_empty() {
         cmd.args(["-vf", &vf]);
     }
-    if !af.is_empty() {
-        cmd.args(["-af", &af]);
-    }
+    let titles: Vec<&str> = inputs.iter().map(|a| a.title.as_str()).collect();
+    cmd.args(audio_out_args(&af, layout, &titles[..main_audio]));
     cmd.args(&args);
     // nothing is inherited from the inputs; only what the user typed is written
     cmd.args(["-map_metadata", "-1"]);
@@ -339,93 +511,399 @@ fn run_export(
         cmd.arg("-an");
     }
     // (no `-shortest`: it drops the last video frame when dur isn't a whole number of frames; video and
-    // WAV both end at ≥ dur anyway)
+    // audio both end at ≥ dur anyway)
     cmd.arg(&tmp.0);
+    if let Some(d) = &stem_dir {
+        cmd.args(stem_outputs(usize::from(video.is_some()) + main_audio, &titles[main_audio..], &d.0));
+    }
     cmd.stdin(if audio_only { Stdio::null() } else { Stdio::piped() }).stdout(Stdio::null()).stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| format!("ffmpeg: {e}"))?;
     let tail = stderr_tail(&mut child);
 
-    // 3. frames
-    let mut stdin = child.stdin.take();
-    if let Some(pipe) = stdin.as_mut() {
-        let mut frame = Frame::new(w, h);
-        let mut comp = Compositor::new();
-        // GPU path: decode here (off the UI thread), composite there (the GL context lives on the UI
-        // thread), so an export runs the very same shaders the preview does.
-        let mut gpu = match &opts.frames {
-            FrameSource::Gpu(tx) => Some((tx.clone(), GpuScratch::new(opts.backend))),
-            FrameSource::Cpu => None,
-        };
-        let mut gaps = if gpu.is_some() { String::new() } else { cpu_gaps(project) };
-        for i in 0..n {
-            if prog.is_cancelled() {
-                break;
-            }
-            let t = start + i as f64 / fps;
-            let mut done = false;
-            if let Some((tx, scratch)) = gpu.as_mut() {
-                match scratch.render(project, t, w, h, tx, &text) {
-                    Some(f) => {
-                        frame = f;
-                        done = true;
+    // 4. audio threads + writer thread + frames on this thread, all at once. Whatever ends first
+    // (done, cancel, ffmpeg dying) the others follow: a dead ffmpeg breaks the pipe/sockets, cancel is
+    // polled everywhere, and `stop` releases audio threads still waiting for ffmpeg to connect.
+    let stop = AtomicBool::new(false);
+    let audio_done: Vec<AtomicU32> = inputs.iter().map(|_| AtomicU32::new(0)).collect();
+    std::thread::scope(|s| {
+        for ((input, listener), done) in inputs.iter().zip(listeners).zip(&audio_done) {
+            let stop = &stop;
+            s.spawn(move || feed_audio(input, listener, backend, start, dur, prog, stop, done, audio_only));
+        }
+        if let Some(mut pipe) = child.stdin.take() {
+            // writer: a small bounded queue so the pipe write overlaps the next decode/render; written
+            // buffers come back for reuse
+            let (wtx, wrx) = std::sync::mpsc::sync_channel::<Frame>(WRITE_QUEUE);
+            let (back_tx, back_rx) = std::sync::mpsc::channel::<Frame>();
+            let writer = s.spawn(move || {
+                for f in wrx {
+                    if pipe.write_all(&f.rgba).is_err() {
+                        return; // ffmpeg died - its stderr tells why
                     }
-                    // the renderer died or the UI stopped answering: finish on the CPU and say so
-                    None => {
+                    let _ = back_tx.send(f);
+                }
+            });
+            let mut comp = Compositor::new();
+            let mut cpu_rgba = Frame::new(w, h);
+            // GPU path: decode here (off the UI thread), composite there (the GL context lives on the UI
+            // thread), so an export runs the very same shaders the preview does.
+            let mut gpu = gpu_tx.map(|tx| GpuScratch::new(backend, tx, nv12));
+            let mut gaps = if gpu.is_some() { String::new() } else { cpu_gaps(project) };
+            let end = start + dur;
+            let mut next_req = 0u64;
+            for i in 0..n {
+                if prog.is_cancelled() {
+                    break;
+                }
+                let t = start + i as f64 / fps;
+                let mut frame = None;
+                if let Some(g) = gpu.as_mut() {
+                    next_req = next_req.max(i);
+                    while next_req < n && g.window.has_room() {
+                        let buf = back_rx.try_recv().unwrap_or_default();
+                        if !g.request(project, start + next_req as f64 / fps, w, h, buf, text) {
+                            break;
+                        }
+                        next_req += 1;
+                    }
+                    frame = g.window.pop(GPU_TIMEOUT);
+                    if frame.is_none() {
+                        // the renderer died or the UI stopped answering: finish on the CPU from this very
+                        // frame (requests still in flight are dropped with the window) and say so
                         gpu = None;
                         gaps = cpu_gaps(project);
                     }
                 }
+                let frame = match frame {
+                    Some(f) => f,
+                    None => {
+                        let mut out = back_rx.try_recv().unwrap_or_default();
+                        let mut tr = text.lock().unwrap_or_else(|e| e.into_inner());
+                        if nv12 {
+                            // ffmpeg was promised NV12: convert the CPU frame the same way the GPU does
+                            comp.render(project, t, w, h, &mut pool, &mut tr, &mut cpu_rgba);
+                            out.resize(w, h);
+                            rgba_to_nv12(&cpu_rgba.rgba, w, h, &mut out.rgba);
+                        } else {
+                            out.resize(w, h);
+                            out.rgba.resize(w as usize * h as usize * 4, 0);
+                            comp.render(project, t, w, h, &mut pool, &mut tr, &mut out);
+                        }
+                        out
+                    }
+                };
+                if wtx.send(frame).is_err() {
+                    break; // the writer stopped: ffmpeg died
+                }
+                prog.set(
+                    (i + 1) as f32 / n as f32,
+                    format!("Encoding {t:.1} / {end:.1} s{gaps}{audio_note}{}", audio_status(&audio_done)),
+                );
             }
-            if !done {
-                let mut tr = text.lock().unwrap_or_else(|e| e.into_inner());
-                comp.render(project, t, w, h, &mut pool, &mut tr, &mut frame);
+            if prog.is_cancelled() {
+                let _ = child.kill(); // unblocks the writer and the audio threads at once
             }
-            if pipe.write_all(&frame.rgba).is_err() {
-                break; // ffmpeg died - its stderr tells why
-            }
-            let end = start + dur;
-            prog.set(0.1 + 0.9 * (i + 1) as f32 / n as f32, format!("Encoding {t:.1} / {end:.1} s{gaps}"));
+            drop(wtx);
+            let _ = writer.join();
         }
-    } else {
-        prog.set(0.5, "Encoding audio…");
-    }
-    drop(stdin);
-
-    // 4. wait, then move the finished file into place (decoders released first so an in-place
-    // export over the source can replace it)
-    wait_ffmpeg(&mut child, tail, prog)?;
+        // 5. wait (audio threads are joined when the scope ends - after `stop` frees any still waiting)
+        let r = wait_ffmpeg(&mut child, tail, prog);
+        stop.store(true, Ordering::SeqCst);
+        r
+    })?;
+    // move the finished file into place (decoders released first so an in-place export over the source
+    // can replace it)
     drop(pool);
-    tmp.commit(&opts.out_path)
+    tmp.commit(&opts.out_path)?;
+    // the stems folder only appears once the whole export succeeded (a failure drops `stem_dir`,
+    // which deletes the partial WAVs)
+    match &stem_dir {
+        Some(d) => d.commit(&stems_dir(&opts.out_path)),
+        None => Ok(()),
+    }
 }
 
-/// Decoder state for the GPU export path: the same layer decoding the player does, on this thread.
+// ---- ws:export-pipeline ----
+/// Item 4's switch: GPU exports read frames back as NV12 when the encode is 4:2:0.
+const NV12_READBACK: bool = true;
+/// GPU frame requests kept in flight by one export.
+const GPU_WINDOW: usize = 4;
+/// "The GPU stopped answering": how long the oldest in-flight request may take before the export
+/// finishes on the CPU.
+const GPU_TIMEOUT: Duration = Duration::from_secs(5);
+/// Frames queued between the render loop and the pipe writer.
+const WRITE_QUEUE: usize = 3;
+
+/// How the picture reaches ffmpeg's stdin.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum VideoIn {
+    Rgba,
+    /// BT.709 limited range, declared on the input so ffmpeg never guesses.
+    Nv12,
+}
+
+/// One audio stream of the export: headerless `f32le` stereo at `SAMPLE_RATE`, mixed from `project`
+/// on its own thread and streamed to ffmpeg over a loopback socket (`tcp://127.0.0.1:<port>` - std
+/// has no second pipe to hand a child on Windows, and a temp file can't be read while it is written).
+/// The order of `audio_inputs` is the order of the output's audio streams.
+pub(crate) struct AudioInput<'a> {
+    /// Stream title (`-metadata:s:a:N title=`); empty = none.
+    pub title: String,
+    /// What this stream mixes: the project itself, or (stems) an owned copy with other tracks muted.
+    pub project: std::borrow::Cow<'a, Project>,
+}
+
+/// The export's audio streams: one mix of everything (titled "Mix" for Streams), then - unless the
+/// layout is Mix - one per stem over `range` (`engine::stems`); none for a gif / a project with no
+/// enabled audio.
+fn audio_inputs(
+    project: &Project,
+    is_gif: bool,
+    layout: AudioLayout,
+    stem_by: StemBy,
+    range: (f64, f64),
+) -> Vec<AudioInput<'_>> {
+    let has_audio = !is_gif
+        && project
+            .audio_tracks()
+            .into_iter()
+            .any(|i| project.active(i) && project.tracks[i].clips.iter().any(|c| c.enabled));
+    if !has_audio {
+        return Vec::new();
+    }
+    let title = if layout == AudioLayout::Streams { "Mix" } else { "" };
+    let mut v = vec![AudioInput { title: title.into(), project: std::borrow::Cow::Borrowed(project) }];
+    if layout != AudioLayout::Mix {
+        v.extend(
+            crate::engine::stems::groups(project, stem_by, range)
+                .into_iter()
+                .map(|s| AudioInput { title: s.title, project: std::borrow::Cow::Owned(s.project) }),
+        );
+    }
+    v
+}
+
+/// ffmpeg's inputs and stream maps: raw video on stdin as input 0 (none for audio-only), then one
+/// `f32le` input per audio port; the first `mapped` of them are mapped (in order) into the main output
+/// (the rest feed the stem outputs).
+fn input_args(video: Option<VideoIn>, size: (u32, u32), fps: f64, audio_ports: &[u16], mapped: usize) -> Vec<String> {
+    let mut a: Vec<String> = Vec::new();
+    if let Some(v) = video {
+        a.extend(["-f", "rawvideo"].map(String::from));
+        match v {
+            VideoIn::Rgba => a.extend(["-pix_fmt", "rgba"].map(String::from)),
+            VideoIn::Nv12 => a.extend(
+                [
+                    "-pix_fmt",
+                    "nv12",
+                    "-colorspace",
+                    "bt709",
+                    "-color_primaries",
+                    "bt709",
+                    "-color_trc",
+                    "bt709",
+                    "-color_range",
+                    "tv",
+                ]
+                .map(String::from),
+            ),
+        }
+        a.extend([
+            String::from("-s"),
+            format!("{}x{}", size.0, size.1),
+            String::from("-r"),
+            format!("{fps}"),
+            String::from("-i"),
+            String::from("pipe:0"),
+        ]);
+    }
+    for port in audio_ports {
+        a.extend([
+            String::from("-f"),
+            String::from("f32le"),
+            String::from("-ar"),
+            SAMPLE_RATE.to_string(),
+            String::from("-ac"),
+            String::from("2"),
+            String::from("-i"),
+            format!("tcp://127.0.0.1:{port}"),
+        ]);
+    }
+    let first_audio = usize::from(video.is_some());
+    if video.is_some() {
+        a.extend(["-map", "0:v"].map(String::from));
+    }
+    for i in 0..mapped.min(audio_ports.len()) {
+        a.extend([String::from("-map"), format!("{}:a", first_audio + i)]);
+    }
+    a
+}
+
+/// " · mixing audio N %" while any audio stream is still behind, for the progress line.
+fn audio_status(done: &[AtomicU32]) -> String {
+    match done.iter().map(|d| d.load(Ordering::Relaxed)).min() {
+        Some(p) if p < 1000 => format!(" · mixing audio {} %", p / 10),
+        _ => String::new(),
+    }
+}
+
+/// Mix `input` over `[start, start + dur)` and stream it to ffmpeg's first connection on `listener`.
+/// `done` = permille mixed; `report` (audio-only exports) also drives `prog`. Returns when finished,
+/// cancelled, `stop`ped, or when ffmpeg went away (its exit status says why, not this).
+#[allow(clippy::too_many_arguments)]
+fn feed_audio(
+    input: &AudioInput,
+    listener: TcpListener,
+    backend: Backend,
+    start: f64,
+    dur: f64,
+    prog: &Progress,
+    stop: &AtomicBool,
+    done: &AtomicU32,
+    report: bool,
+) {
+    let quit = || prog.is_cancelled() || stop.load(Ordering::SeqCst);
+    if listener.set_nonblocking(true).is_err() {
+        return;
+    }
+    let mut sock = loop {
+        match listener.accept() {
+            Ok((sock, _)) => break sock,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if quit() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(_) => return,
+        }
+    };
+    if sock.set_nonblocking(false).is_err() {
+        return;
+    }
+    let mut pool = DecoderPool::new(backend);
+    let mut mixer = Mixer::new();
+    let total = (dur * SAMPLE_RATE as f64).ceil() as u64;
+    let mut buf = vec![0f32; MIX_BLOCK * 2];
+    let mut bytes: Vec<u8> = Vec::with_capacity(MIX_BLOCK * 8);
+    let mut mixed = 0u64;
+    while mixed < total {
+        if quit() {
+            return;
+        }
+        let n = (total - mixed).min(MIX_BLOCK as u64) as usize;
+        mixer.mix(&input.project, start + mixed as f64 / SAMPLE_RATE as f64, &mut pool, &mut buf[..n * 2]);
+        bytes.clear();
+        for s in &buf[..n * 2] {
+            bytes.extend_from_slice(&s.to_le_bytes());
+        }
+        if sock.write_all(&bytes).is_err() {
+            return;
+        }
+        mixed += n as u64;
+        let f = mixed as f32 / total.max(1) as f32;
+        done.store((f * 1000.0) as u32, Ordering::Relaxed);
+        if report {
+            prog.set(f, "Encoding audio…");
+        }
+    }
+    let _ = sock.shutdown(std::net::Shutdown::Write);
+}
+
+/// RGBA → NV12 with `NV12_MAIN`'s maths (BT.709 limited, 2x2 box chroma), for a GPU export that
+/// finishes on the CPU after ffmpeg was already promised NV12. `w`, `h` even.
+fn rgba_to_nv12(rgba: &[u8], w: u32, h: u32, out: &mut Vec<u8>) {
+    let (w, h) = (w as usize, h as usize);
+    out.clear();
+    out.resize(w * h * 3 / 2, 0);
+    let px = |x: usize, y: usize| {
+        let i = (y * w + x) * 4;
+        [rgba[i] as f32 / 255.0, rgba[i + 1] as f32 / 255.0, rgba[i + 2] as f32 / 255.0]
+    };
+    let luma = |c: [f32; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    let q = |v: f32| v.round().clamp(0.0, 255.0) as u8;
+    for y in 0..h {
+        for x in 0..w {
+            out[y * w + x] = q(16.0 + 219.0 * luma(px(x, y)));
+        }
+    }
+    let uv = &mut out[w * h..];
+    for j in 0..h / 2 {
+        for i in 0..w / 2 {
+            let mut c = [0f32; 3];
+            for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                let p = px(2 * i + dx, 2 * j + dy);
+                for k in 0..3 {
+                    c[k] += p[k] * 0.25;
+                }
+            }
+            let y = luma(c);
+            uv[j * w + 2 * i] = q(128.0 + 224.0 * (c[2] - y) / 1.8556);
+            uv[j * w + 2 * i + 1] = q(128.0 + 224.0 * (c[0] - y) / 1.5748);
+        }
+    }
+}
+
+/// GPU requests in flight, oldest first. Replies are taken strictly in send order, so frames reach
+/// ffmpeg in timeline order however the UI thread schedules them.
+struct ReplyWindow {
+    cap: usize,
+    rx: std::collections::VecDeque<std::sync::mpsc::Receiver<Option<Frame>>>,
+}
+
+impl ReplyWindow {
+    fn new(cap: usize) -> Self {
+        Self { cap, rx: std::collections::VecDeque::new() }
+    }
+    fn has_room(&self) -> bool {
+        self.rx.len() < self.cap
+    }
+    fn push(&mut self, rx: std::sync::mpsc::Receiver<Option<Frame>>) {
+        self.rx.push_back(rx);
+    }
+    /// The oldest request's frame. None = it failed (renderer gone / sender dropped), it took longer
+    /// than `timeout`, or nothing is in flight.
+    fn pop(&mut self, timeout: Duration) -> Option<Frame> {
+        self.rx.pop_front()?.recv_timeout(timeout).ok().flatten()
+    }
+}
+
+/// Decoder state for the GPU export path: the same layer decoding the player does, on this thread,
+/// plus the requests in flight to the UI thread.
 struct GpuScratch {
     pool: DecoderPool,
     spare: Vec<Frame>,
     shapes: crate::engine::shapes::ShapeRasterizer,
     comp: Compositor,
+    tx: std::sync::mpsc::Sender<GpuFrameRequest>,
+    window: ReplyWindow,
+    nv12: bool,
 }
 
 impl GpuScratch {
-    fn new(backend: Backend) -> Self {
+    fn new(backend: Backend, tx: std::sync::mpsc::Sender<GpuFrameRequest>, nv12: bool) -> Self {
         Self {
             pool: DecoderPool::new(backend),
             spare: Vec::new(),
             shapes: crate::engine::shapes::ShapeRasterizer::new(),
             comp: Compositor::new(),
+            tx,
+            window: ReplyWindow::new(GPU_WINDOW),
+            nv12,
         }
     }
-    /// Decode the layers for `t` and have the UI thread composite them. None = give up on the GPU path
-    /// (renderer gone, UI not answering within 5 s, or the request channel closed).
-    fn render(
+    /// Decode the layers for `t` and queue them for the UI thread to composite into `buf`. False = the
+    /// request channel is closed (give up on the GPU path once the window drains).
+    #[allow(clippy::too_many_arguments)]
+    fn request(
         &mut self,
         project: &Project,
         t: f64,
         w: u32,
         h: u32,
-        tx: &std::sync::mpsc::Sender<GpuFrameRequest>,
+        buf: Frame,
         text: &Arc<Mutex<TextRasterizer>>,
-    ) -> Option<Frame> {
+    ) -> bool {
         let layers = {
             let mut tr = text.lock().unwrap_or_else(|e| e.into_inner());
             crate::playback::decode_layers(
@@ -441,8 +919,11 @@ impl GpuScratch {
             )
         };
         let (reply, rx) = std::sync::mpsc::sync_channel(1);
-        tx.send(GpuFrameRequest { layers, t, w, h, reply }).ok()?;
-        rx.recv_timeout(Duration::from_secs(5)).ok().flatten()
+        if self.tx.send(GpuFrameRequest { layers, t, w, h, nv12: self.nv12, buf, reply }).is_err() {
+            return false;
+        }
+        self.window.push(rx);
+        true
     }
 }
 
@@ -479,65 +960,6 @@ fn cpu_gaps(project: &Project) -> String {
     } else {
         format!(" - not rendered: {}", parts.join(", "))
     }
-}
-
-/// Mix `dur` seconds of timeline from `start` into a temp WAV (f32 stereo 48 kHz). Progress 0..0.1.
-fn mix_to_wav(
-    project: &Project,
-    pool: &mut DecoderPool,
-    prog: &Progress,
-    start: f64,
-    dur: f64,
-) -> Result<TempFile, String> {
-    static N: AtomicU32 = AtomicU32::new(0);
-    let tmp = TempFile(std::env::temp_dir().join(format!(
-        "simple-editor-mix-{}-{}.wav",
-        std::process::id(),
-        N.fetch_add(1, Ordering::Relaxed)
-    )));
-    let total = (dur * SAMPLE_RATE as f64).ceil() as u64;
-    let mut f = std::io::BufWriter::new(std::fs::File::create(&tmp.0).map_err(|e| format!("temp wav: {e}"))?);
-    f.write_all(&wav_header(total)).map_err(|e| format!("temp wav: {e}"))?;
-    let mut mixer = Mixer::new();
-    let mut buf = vec![0f32; MIX_BLOCK * 2];
-    let mut bytes = vec![0u8; MIX_BLOCK * 8];
-    let mut done = 0u64;
-    while done < total {
-        if prog.is_cancelled() {
-            return Err(CANCELLED.into());
-        }
-        let n = (total - done).min(MIX_BLOCK as u64) as usize;
-        mixer.mix(project, start + done as f64 / SAMPLE_RATE as f64, pool, &mut buf[..n * 2]);
-        for (b, s) in bytes.chunks_exact_mut(4).zip(&buf[..n * 2]) {
-            b.copy_from_slice(&s.to_le_bytes());
-        }
-        f.write_all(&bytes[..n * 8]).map_err(|e| format!("temp wav: {e}"))?;
-        done += n as u64;
-        prog.set(0.1 * done as f32 / total.max(1) as f32, "Mixing audio…");
-    }
-    f.flush().map_err(|e| format!("temp wav: {e}"))?;
-    drop(f);
-    Ok(tmp)
-}
-
-/// 44-byte RIFF/WAVE header: IEEE float 32-bit, stereo, 48 kHz, `frames` sample frames.
-fn wav_header(frames: u64) -> [u8; 44] {
-    // ponytail: sizes saturate at 4 GB (~3 h); ffmpeg reads to EOF anyway - RF64 if that matters
-    let data = (frames * 8).min(u32::MAX as u64 - 36) as u32;
-    let mut h = [0u8; 44];
-    h[0..4].copy_from_slice(b"RIFF");
-    h[4..8].copy_from_slice(&(36 + data).to_le_bytes());
-    h[8..16].copy_from_slice(b"WAVEfmt ");
-    h[16..20].copy_from_slice(&16u32.to_le_bytes());
-    h[20..22].copy_from_slice(&3u16.to_le_bytes()); // WAVE_FORMAT_IEEE_FLOAT
-    h[22..24].copy_from_slice(&2u16.to_le_bytes());
-    h[24..28].copy_from_slice(&SAMPLE_RATE.to_le_bytes());
-    h[28..32].copy_from_slice(&(SAMPLE_RATE * 8).to_le_bytes());
-    h[32..34].copy_from_slice(&8u16.to_le_bytes());
-    h[34..36].copy_from_slice(&32u16.to_le_bytes());
-    h[36..40].copy_from_slice(b"data");
-    h[40..44].copy_from_slice(&data.to_le_bytes());
-    h
 }
 
 /// Deleted on drop (a no-op once `commit`ted into place).
@@ -673,6 +1095,47 @@ pub fn lossless_segments(project: &Project) -> Option<Vec<(f64, f64)>> {
     Some(segs)
 }
 
+// ---- ws:export-encoders ----
+/// One stretch of a smart render, in SOURCE seconds `[a, b)`.
+#[allow(dead_code)] // planning only: the copy/encode/concat/verify runner is not written yet
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SmartSpan {
+    /// Whole GOPs (`a` is a keyframe, `b` is the next keyframe or the segment end on one) - stream copy.
+    Copy(f64, f64),
+    /// Partial GOPs at a cut - re-encode with parameters matched to the source.
+    Encode(f64, f64),
+}
+
+/// Smart-render plan for `lossless_segments` output, given the source's sorted keyframe times (one
+/// `ffprobe -skip_frame nokey -show_entries frame=pts_time` listing). Each segment copies from its
+/// first keyframe at/after the in point to the last keyframe at/before the out point, and re-encodes
+/// the head and tail around that. A segment with no whole GOP inside is re-encoded entirely.
+#[allow(dead_code)]
+pub fn smart_spans(segs: &[(f64, f64)], keyframes: &[f64]) -> Vec<SmartSpan> {
+    const EPS: f64 = 1e-4;
+    let mut out = Vec::new();
+    for &(a, dur) in segs {
+        let b = a + dur;
+        let first = keyframes.iter().copied().find(|&k| k >= a - EPS);
+        let last = keyframes.iter().copied().rev().find(|&k| k <= b + EPS);
+        // a keyframe sitting on the out point ends the copy there exactly
+        let copy_end = if keyframes.iter().any(|&k| (k - b).abs() <= EPS) { Some(b) } else { last };
+        match (first, copy_end) {
+            (Some(k0), Some(k1)) if k1 - k0 > EPS => {
+                if k0 - a > EPS {
+                    out.push(SmartSpan::Encode(a, k0));
+                }
+                out.push(SmartSpan::Copy(k0.max(a), k1));
+                if b - k1 > EPS {
+                    out.push(SmartSpan::Encode(k1, b));
+                }
+            }
+            _ => out.push(SmartSpan::Encode(a, b)),
+        }
+    }
+    out
+}
+
 /// Lossless cut: `ffmpeg -ss in -t dur -i src -c copy -avoid_negative_ts make_zero` per segment (with
 /// `-map` dropping muted audio streams), then concat demuxer when there is more than one segment.
 /// Cuts land on keyframes (not frame-accurate) - that's the trade for being instant.
@@ -773,6 +1236,35 @@ fn parse_encoders(s: &str) -> Vec<String> {
         .collect()
 }
 
+// ---- ws:export-encoders ----
+/// The preset handed to `codec_args`: the Advanced Preset when one is chosen, else the Export pane's
+/// Speed choice (`Settings.export_speed`: "speed" | "balanced" | "small").
+pub fn effective_preset(preset: &str, speed: &str) -> String {
+    if preset.is_empty() || preset == "auto" { speed.to_string() } else { preset.to_string() }
+}
+
+/// Speed tier of a Speed token or an x264 preset name (hardware encoders map the tier to their own).
+fn speed_tier(preset: &str) -> &'static str {
+    match preset {
+        "speed" | "ultrafast" | "superfast" | "veryfast" | "faster" => "speed",
+        "small" | "slow" | "slower" | "veryslow" | "placebo" => "small",
+        _ => "balanced",
+    }
+}
+
+/// What "auto" / a stale choice becomes for this export: the probed fastest hardware H.264 encoder
+/// for the container (software when the probe hasn't finished - never waits for it). The note is
+/// for the export status when an explicit choice was dropped.
+pub fn resolve_encoder(ext: &str, encoder: &str) -> (String, Option<String>) {
+    use crate::engine::encoders;
+    let note = encoders::is_broken(encoder)
+        .then(|| format!("{encoder} can't run on this machine - using auto"));
+    if note.is_some() || encoder.is_empty() || encoder == "auto" {
+        return (encoders::best_for(ext).unwrap_or_else(|| "auto".into()), note);
+    }
+    (encoder.to_string(), None)
+}
+
 /// ffmpeg output arguments (codec/quality) for an extension, given the user's encoder preference and the
 /// available encoders. "auto": mp4/mov/mkv/m4v → libx264 (+aac), webm → libvpx-vp9 (+libopus),
 /// gif → gif, avi → mpeg4 (+mp3), audio-only → sensible codec for the container. The preference is
@@ -816,7 +1308,23 @@ pub fn codec_args(ext: &str, encoder: &str, crf: u32, preset: &str, available: &
         if !has(enc) {
             enc = "libx264";
         }
-        let preset = if preset.is_empty() { "medium" } else { preset };
+        // ws:export-encoders: a Speed token ("speed" | "balanced" | "small", see `effective_preset`)
+        // maps per encoder; an explicit x264 name passes through to x264/x265 and picks the tier for
+        // hardware encoders.
+        let tier = speed_tier(preset);
+        let preset = match preset {
+            "" | "auto" | "speed" | "balanced" | "small" => match tier {
+                "speed" => "veryfast",
+                "small" => "slow",
+                _ => "medium",
+            },
+            p => p,
+        };
+        let (nv, qsv, amf) = match tier {
+            "speed" => ("p1", "veryfast", "speed"),
+            "small" => ("p7", "veryslow", "quality"),
+            _ => ("p4", "medium", "balanced"),
+        };
         // `crf` is stored on the x264 0..=51 scale (what the quality-percent slider maps through).
         // Encoders on other scales get it converted HERE, at emission: vp9/av1 use 0..=63, and QSV's
         // global_quality treats 0 as "unset" so its best real value is 1.
@@ -826,11 +1334,17 @@ pub fn codec_args(ext: &str, encoder: &str, crf: u32, preset: &str, available: &
             "libx264" | "libx265" => {
                 format!("-c:v {enc} -preset {preset} -crf {crf} -pix_fmt yuv420p")
             }
-            "h264_nvenc" | "hevc_nvenc" => {
-                format!("-c:v {enc} -preset p4 -cq {crf} -b:v 0 -pix_fmt yuv420p")
+            "h264_nvenc" | "hevc_nvenc" | "av1_nvenc" => {
+                format!("-c:v {enc} -preset {nv} -cq {crf} -b:v 0 -pix_fmt yuv420p")
             }
-            "h264_qsv" | "hevc_qsv" => format!("-c:v {enc} -global_quality {crf_qsv} -pix_fmt nv12"),
-            "h264_amf" | "hevc_amf" => format!("-c:v {enc} -rc cqp -qp_i {crf} -qp_p {crf}"),
+            "h264_qsv" | "hevc_qsv" => {
+                format!("-c:v {enc} -preset {qsv} -global_quality {crf_qsv} -pix_fmt nv12")
+            }
+            "h264_amf" | "hevc_amf" => format!("-c:v {enc} -quality {amf} -rc cqp -qp_i {crf} -qp_p {crf}"),
+            // ponytail: av1_qsv / av1_amf get the speed preset only - their quality scales (0..255)
+            // are not confirmed here, so they run at the encoder's default rate control.
+            "av1_qsv" => format!("-c:v av1_qsv -preset {qsv} -pix_fmt nv12"),
+            "av1_amf" => format!("-c:v av1_amf -quality {amf}"),
             "libvpx-vp9" => {
                 format!("-c:v libvpx-vp9 -crf {crf63} -b:v 0 -row-mt 1 -cpu-used 2 -pix_fmt yuv420p")
             }
@@ -865,13 +1379,14 @@ pub fn quality_percent_from_crf(crf: u32) -> u32 {
 /// Rough estimated output size in bytes for the export progress/quality UI - NOT a guarantee, since CRF
 /// targets a quality level, not a bitrate. Video bitrate is extrapolated from a "reasonable quality" x264
 /// ballpark at CRF 23 (0.1 bits/pixel/frame), scaled by the x264 rule of thumb that every 6 CRF steps
-/// roughly halves/doubles bitrate; audio assumes one ~128kbps AAC-ish stereo track.
-pub fn estimate_export_bytes(width: u32, height: u32, fps: f64, duration_secs: f64, crf: u32) -> u64 {
+/// roughly halves/doubles bitrate; audio assumes ~128kbps AAC-ish stereo per stream in the file
+/// (`audio_streams`: 1 for a mix, 1 + stems for "Separate tracks in file").
+pub fn estimate_export_bytes(width: u32, height: u32, fps: f64, duration_secs: f64, crf: u32, audio_streams: u32) -> u64 {
     let pixels_per_sec = width as f64 * height as f64 * fps;
     let base_bitrate_bps = pixels_per_sec * 0.1;
     let scale = 2f64.powf((23.0 - crf as f64) / 6.0);
     let video_bitrate_bps = (base_bitrate_bps * scale).clamp(50_000.0, (pixels_per_sec * 2.0).max(50_000.0));
-    let audio_bitrate_bps = 128_000.0;
+    let audio_bitrate_bps = 128_000.0 * audio_streams as f64;
     ((video_bitrate_bps + audio_bitrate_bps) / 8.0 * duration_secs.max(0.0)) as u64
 }
 
@@ -1026,7 +1541,8 @@ pub(crate) mod tests {
         assert_eq!(j(codec_args("wav", "auto", 18, "", &[])), "-c:a pcm_s16le");
         assert_eq!(j(codec_args("gif", "auto", 18, "", &[])), "-c:v gif");
         let s = j(codec_args("mkv", "hevc_nvenc", 20, "slow", &["hevc_nvenc".into(), "libx264".into()]));
-        assert!(s.contains("-c:v hevc_nvenc -preset p4 -cq 20 -b:v 0"), "{s}");
+        // ws:export-encoders: an x264 preset name picks the hardware tier (slow → p7)
+        assert!(s.contains("-c:v hevc_nvenc -preset p7 -cq 20 -b:v 0"), "{s}");
         // requested encoder unavailable → libx264
         let s = j(codec_args("mp4", "h264_nvenc", 20, "slow", &["libx264".into()]));
         assert!(s.contains("-c:v libx264 -preset slow -crf 20"), "{s}");
@@ -1042,6 +1558,42 @@ pub(crate) mod tests {
         assert!(j(codec_args("mov", "libvpx-vp9", 20, "", &[])).contains("-c:v libx264"));
         assert!(j(codec_args("mkv", "libvpx-vp9", 20, "", &[])).contains("-c:v libvpx-vp9"));
         assert!(j(codec_args("mpg", "auto", 20, "", &[])).ends_with("-c:a mp2 -b:a 192k"));
+    }
+
+    // ---- ws:export-encoders ----
+    #[test]
+    fn speed_choice_maps_to_each_encoder_preset() {
+        let j = |enc: &str, p: &str| codec_args("mp4", enc, 20, p, &[]).join(" ");
+        for (speed, x264, nv, qsv, amf) in [
+            ("speed", "veryfast", "p1", "veryfast", "speed"),
+            ("balanced", "medium", "p4", "medium", "balanced"),
+            ("small", "slow", "p7", "veryslow", "quality"),
+        ] {
+            assert!(j("libx264", speed).contains(&format!("-preset {x264} -crf 20")), "{speed}");
+            assert!(j("h264_nvenc", speed).contains(&format!("-preset {nv} -cq 20")), "{speed}");
+            assert!(j("h264_qsv", speed).contains(&format!("-preset {qsv} -global_quality 20")), "{speed}");
+            assert!(j("h264_amf", speed).contains(&format!("-quality {amf} -rc cqp")), "{speed}");
+        }
+        // an explicit Advanced preset wins over the Speed choice
+        assert_eq!(effective_preset("ultrafast", "small"), "ultrafast");
+        assert_eq!(effective_preset("auto", "small"), "small");
+        assert_eq!(effective_preset("", "speed"), "speed");
+        assert!(j("libx264", "ultrafast").contains("-preset ultrafast"));
+        // auto with no finished probe stays software
+        assert!(j("auto", "balanced").contains("-c:v libx264 -preset medium"));
+    }
+
+    #[test]
+    fn smart_spans_copy_whole_gops_only() {
+        use SmartSpan::*;
+        let kf = [0.0, 2.0, 4.0, 6.0, 8.0];
+        // 1.0..7.0: head 1-2 encoded, 2-6 copied, tail 6-7 encoded
+        assert_eq!(smart_spans(&[(1.0, 6.0)], &kf), vec![Encode(1.0, 2.0), Copy(2.0, 6.0), Encode(6.0, 7.0)]);
+        // exactly on keyframes: all copy
+        assert_eq!(smart_spans(&[(2.0, 4.0)], &kf), vec![Copy(2.0, 6.0)]);
+        // no whole GOP inside: all encode
+        assert_eq!(smart_spans(&[(2.5, 1.0)], &kf), vec![Encode(2.5, 3.5)]);
+        assert_eq!(smart_spans(&[(1.0, 1.0)], &[]), vec![Encode(1.0, 2.0)]);
     }
 
     #[test]
@@ -1093,14 +1645,16 @@ pub(crate) mod tests {
     fn estimate_bytes_sane_ballpark() {
         // 1920x1080 @ 30fps, 60s, CRF 23, by hand: base = 1920*1080*30*0.1 = 6,220,800 bps;
         // scale(23) = 1; + 128kbps audio = 6,348,800 bps; /8 * 60s = 47,616,000 bytes (~47.6 MB).
-        let bytes = estimate_export_bytes(1920, 1080, 30.0, 60.0, 23);
+        let bytes = estimate_export_bytes(1920, 1080, 30.0, 60.0, 23, 1);
         assert!((40_000_000..55_000_000).contains(&bytes), "{bytes}");
+        // each extra audio stream adds 128 kbps * 60 s / 8 = 960,000 bytes
+        assert_eq!(estimate_export_bytes(1920, 1080, 30.0, 60.0, 23, 3) - bytes, 1_920_000);
     }
 
     #[test]
     fn estimate_bytes_crf_scaling_halves_roughly() {
-        let base = estimate_export_bytes(1920, 1080, 30.0, 60.0, 23);
-        let raised = estimate_export_bytes(1920, 1080, 30.0, 60.0, 29); // +6 CRF ~= half the bitrate
+        let base = estimate_export_bytes(1920, 1080, 30.0, 60.0, 23, 1);
+        let raised = estimate_export_bytes(1920, 1080, 30.0, 60.0, 29, 1); // +6 CRF ~= half the bitrate
         let ratio = raised as f64 / base as f64;
         assert!((0.4..0.6).contains(&ratio), "ratio={ratio}");
     }
@@ -1183,20 +1737,116 @@ pub(crate) mod tests {
         assert!(lossless_segments(&q).is_none());
     }
 
+    // ---- ws:export-pipeline ----
     #[test]
-    fn wav_header_is_readable() {
-        if ffpipe::ffprobe_exe().is_none() {
-            eprintln!("ffprobe missing - skipped");
-            return;
+    fn input_args_video_audio_and_maps() {
+        let s = |v: Vec<String>| v.join(" ");
+        assert_eq!(
+            s(input_args(Some(VideoIn::Rgba), (320, 240), 30.0, &[5000], 1)),
+            "-f rawvideo -pix_fmt rgba -s 320x240 -r 30 -i pipe:0 \
+             -f f32le -ar 48000 -ac 2 -i tcp://127.0.0.1:5000 -map 0:v -map 1:a"
+        );
+        let nv12 = s(input_args(Some(VideoIn::Nv12), (1920, 1080), 25.0, &[], 0));
+        assert!(nv12.starts_with("-f rawvideo -pix_fmt nv12 -colorspace bt709"), "{nv12}");
+        assert!(nv12.contains("-color_range tv") && nv12.ends_with("-i pipe:0 -map 0:v"), "{nv12}");
+        // audio-only: the audio inputs are 0..N; N stems map in order
+        assert_eq!(
+            s(input_args(None, (1, 1), 30.0, &[1, 2], 2)),
+            "-f f32le -ar 48000 -ac 2 -i tcp://127.0.0.1:1 -f f32le -ar 48000 -ac 2 -i tcp://127.0.0.1:2 \
+             -map 0:a -map 1:a"
+        );
+        // ws:export-audio-tracks: Stems maps only the mix into the main output
+        assert!(s(input_args(Some(VideoIn::Rgba), (2, 2), 30.0, &[1, 2, 3], 1)).ends_with("-map 0:v -map 1:a"));
+    }
+
+    // ---- ws:export-audio-tracks ----
+    #[test]
+    fn streams_args_title_disposition_and_mix_only_loudnorm() {
+        let s = |v: Vec<String>| v.join(" ");
+        assert_eq!(
+            s(audio_out_args(LOUDNORM, AudioLayout::Streams, &["Mix", "Dialogue", "Music"])),
+            "-filter:a:0 loudnorm=I=-14:TP=-1:LRA=11 -ar 48000 \
+             -metadata:s:a:0 title=Mix -disposition:a:0 default \
+             -metadata:s:a:1 title=Dialogue -disposition:a:1 0 \
+             -metadata:s:a:2 title=Music -disposition:a:2 0"
+        );
+        // Mix / Stems: plain -af over the single stream in the file, no titles
+        assert_eq!(s(audio_out_args(LOUDNORM, AudioLayout::Mix, &[""])), "-af loudnorm=I=-14:TP=-1:LRA=11 -ar 48000");
+        assert_eq!(s(audio_out_args("", AudioLayout::Stems, &[""])), "");
+    }
+
+    #[test]
+    fn streams_fall_back_to_mix_outside_multi_audio_containers() {
+        for ext in ["mp4", "mov", "mkv", "m4v"] {
+            assert_eq!(effective_layout(AudioLayout::Streams, ext), AudioLayout::Streams);
         }
-        let dir = temp_dir("wav");
-        let path = dir.join("hdr.wav");
-        let mut bytes = wav_header(SAMPLE_RATE as u64).to_vec();
-        bytes.resize(44 + SAMPLE_RATE as usize * 8, 0);
-        std::fs::write(&path, bytes).unwrap();
-        let d = probe_duration(&path).expect("ffprobe reads header");
-        assert!((d - 1.0).abs() < 0.01, "{d}");
-        let _ = std::fs::remove_dir_all(&dir);
+        for ext in ["webm", "avi", "wav", "mp3", "gif"] {
+            assert_eq!(effective_layout(AudioLayout::Streams, ext), AudioLayout::Mix);
+        }
+        assert_eq!(effective_layout(AudioLayout::Stems, "wav"), AudioLayout::Stems);
+        assert_eq!(AudioLayout::parse("Streams"), AudioLayout::Streams);
+        assert_eq!(AudioLayout::parse("??"), AudioLayout::Mix);
+        assert_eq!(StemBy::parse("role"), StemBy::Role);
+    }
+
+    #[test]
+    fn stem_outputs_name_files_beside_the_video() {
+        let out = Path::new("C:\\v\\My cut.mp4");
+        let dir = stems_dir(out);
+        assert_eq!(dir, Path::new("C:\\v\\My cut stems"));
+        let a = stem_outputs(2, &["Dialogue", "SFX/Foley"], &dir);
+        assert_eq!(&a[..8], ["-map", "2:a", "-c:a", "pcm_s24le", "-ar", "48000", "-map_metadata", "-1"]);
+        assert!(a[8].ends_with("01 Dialogue.wav"), "{}", a[8]);
+        assert_eq!(a[10], "3:a");
+        assert!(a[17].ends_with("02 SFX_Foley.wav"), "{}", a[17]);
+    }
+
+    #[test]
+    fn reply_window_answers_in_send_order() {
+        let mut win = ReplyWindow::new(3);
+        let mut tx = Vec::new();
+        for _ in 0..3 {
+            assert!(win.has_room());
+            let (t, r) = std::sync::mpsc::sync_channel::<Option<Frame>>(1);
+            win.push(r);
+            tx.push(t);
+        }
+        assert!(!win.has_room());
+        // answered out of order, taken in order
+        for (i, t) in tx.iter().enumerate().rev() {
+            t.send(Some(Frame { pts: i as f64, ..Frame::default() })).unwrap();
+        }
+        let short = Duration::from_millis(50);
+        assert_eq!(win.pop(short).map(|f| f.pts), Some(0.0));
+        assert!(win.has_room());
+        assert_eq!(win.pop(short).map(|f| f.pts), Some(1.0));
+        // a dropped sender / None reply / nothing in flight = give up on the GPU
+        let (t, r) = std::sync::mpsc::sync_channel::<Option<Frame>>(1);
+        win.push(r);
+        drop(t);
+        assert_eq!(win.pop(short).map(|f| f.pts), Some(2.0));
+        assert!(win.pop(short).is_none());
+        assert!(win.pop(short).is_none());
+    }
+
+    #[test]
+    fn rgba_to_nv12_is_bt709_limited() {
+        // 2x2: white, black / red, blue
+        let px = [[255, 255, 255, 255], [0, 0, 0, 255], [255, 0, 0, 255], [0, 0, 255, 255]];
+        let rgba: Vec<u8> = px.concat();
+        let mut out = Vec::new();
+        rgba_to_nv12(&rgba, 2, 2, &mut out);
+        assert_eq!(out.len(), 6);
+        assert_eq!(&out[..4], &[235, 16, 63, 32], "Y: 16..235, BT.709 weights");
+        // one chroma sample for the block: the average colour (0.5, 0.25, 0.5)
+        let (r, g, b) = (0.5f32, 0.25f32, 0.5f32);
+        let y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        let cb = (128.0 + 224.0 * (b - y) / 1.8556).round() as u8;
+        let cr = (128.0 + 224.0 * (r - y) / 1.5748).round() as u8;
+        assert_eq!(&out[4..], &[cb, cr]);
+        // grey has no chroma
+        rgba_to_nv12(&[128, 128, 128, 255].repeat(4), 2, 2, &mut out);
+        assert_eq!(&out[4..], &[128, 128]);
     }
 
     #[test]
@@ -1279,6 +1929,9 @@ pub(crate) mod tests {
             range: None,
             loudnorm: false,
             letterbox: false,
+            // ---- ws:pro-schema ----
+            audio: Default::default(),
+            stem_by: Default::default(),
         };
         let text = Arc::new(Mutex::new(TextRasterizer::new()));
         assert_eq!(wait_done(&start_export(p, opts, text)), None);
@@ -1315,6 +1968,9 @@ pub(crate) mod tests {
             range: None,
             loudnorm: false,
             letterbox: false,
+            // ---- ws:pro-schema ----
+            audio: Default::default(),
+            stem_by: Default::default(),
         };
         let text = Arc::new(Mutex::new(TextRasterizer::new()));
         let prog = start_export(p.clone(), opts.clone(), text.clone());
@@ -1350,6 +2006,9 @@ pub(crate) mod tests {
             range: None,
             loudnorm: false,
             letterbox: false,
+            // ---- ws:pro-schema ----
+            audio: Default::default(),
+            stem_by: Default::default(),
         }
     }
 
@@ -1431,5 +2090,53 @@ pub(crate) mod tests {
         assert!(p.eta().is_some());
         p.finish(None);
         assert_eq!(p.eta(), None, "a finished job has no ETA");
+    }
+
+    // ---- ws:perf-baseline ----
+    /// A fixed 10 s 1080p60 two-layer project (a full-frame clip with a half-size copy on top)
+    /// exported through the CPU path with libx264 and, when ffmpeg lists one, a hardware H.264 encoder;
+    /// prints fps for each. Timing-only, so not a regular test:
+    /// `cargo test --release bench_export -- --ignored --nocapture`
+    /// ponytail: GPU-path (`FrameSource::Gpu`) is not covered - it needs the UI thread's GL context
+    /// serving frames; time it from the app (Export, with the HUD on) until a headless GL path exists.
+    #[test]
+    #[ignore]
+    fn bench_export() {
+        use crate::model::Keyframe;
+        let dir = std::env::temp_dir().join("se-bench");
+        let _ = std::fs::create_dir_all(&dir);
+        let src = dir.join("1080p60.mp4");
+        let ok = src.exists()
+            || std::process::Command::new("ffmpeg")
+                .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=60", "-t", "10"])
+                .args(["-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p"])
+                .arg(&src)
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+        if !ok {
+            eprintln!("ffmpeg missing; skipped");
+            return;
+        }
+        let mut p = Project::new();
+        (p.width, p.height, p.fps) = (1920, 1080, 60.0);
+        let aid = p.add_asset(crate::media::probe(&src.to_string_lossy(), Backend::Auto).expect("probe 1080p60"));
+        let _ = p.insert_asset_clips(aid, 0.0, None);
+        let top = p.insert_asset_clips(aid, 0.0, None)[0];
+        p.clip_mut(top).unwrap().scale.keys = vec![Keyframe { t: 0.0, v: 0.5, ease: Default::default() }];
+        let mut encoders = vec!["libx264".to_string()];
+        let available = detect_encoders();
+        if let Some(hw) = ["h264_nvenc", "h264_qsv", "h264_amf"].into_iter().find(|e| available.iter().any(|a| a == e)) {
+            encoders.push(hw.to_string());
+        }
+        let text = Arc::new(Mutex::new(TextRasterizer::new()));
+        for enc in encoders {
+            let out = dir.join(format!("bench-{enc}.mp4"));
+            let opts = ExportOptions { encoder: enc.clone(), preset: "veryfast".into(), ..opts_for(out) };
+            let t0 = std::time::Instant::now();
+            let err = wait_done(&start_export(p.clone(), opts, text.clone()));
+            let secs = t0.elapsed().as_secs_f64();
+            eprintln!("export 10 s 1080p60, 2 layers, CPU path, {enc}: {:.1} fps ({secs:.1} s) {err:?}", 600.0 / secs);
+        }
     }
 }

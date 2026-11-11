@@ -58,6 +58,7 @@ impl App {
     pub(crate) fn close_source(&mut self) {
         self.source = None;
         self.source_tex = None;
+        self.source_gpu_tex = None;
         self.source_live = None;
         self.source_focus = false;
     }
@@ -123,6 +124,7 @@ impl App {
             },
         };
         let mut player = Player::new(ctx.clone(), self.backend(), self.text.clone());
+        self.configure_player(&mut player); // ws:play-source-monitor: GPU layers, proxies, cache share
         player.set_project(&Project::from_media(asset.clone()));
         match seek {
             Some(t) => player.seek(t.clamp(0.0, asset.duration.max(0.0))),
@@ -130,6 +132,7 @@ impl App {
         }
         self.source = Some(SourceState::new(player, &asset, path, id));
         self.source_tex = None;
+        self.source_gpu_tex = None;
         self.source_live = None;
     }
 
@@ -194,11 +197,22 @@ impl App {
                 }
             }
         }
+        // ---- ws:play-source-monitor ----
+        // the clock only moves while playing; a published frame wakes the UI itself (`Player::due`)
         if playing {
-            ctx.request_repaint();
+            self.animate_until(ctx, Instant::now() + Duration::from_millis(16));
         }
-        let t = self.source_tex.as_ref()?;
-        Some(library::PreviewFrame { tex: t.id(), size: [t.size()[0] as u32, t.size()[1] as u32], playing })
+        self.source_preview_frame(playing)
+    }
+
+    /// What the pane paints: the GPU canvas when the GPU path rendered one, else the CPU upload.
+    pub(super) fn source_preview_frame(&self, playing: bool) -> Option<library::PreviewFrame> {
+        let (tex, size) = match (self.source_gpu_tex, &self.source_tex) {
+            (Some(g), _) => g,
+            (None, Some(t)) => (t.id(), [t.size()[0] as u32, t.size()[1] as u32]),
+            (None, None) => return None,
+        };
+        Some(library::PreviewFrame { tex, size, playing })
     }
 }
 

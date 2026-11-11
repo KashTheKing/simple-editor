@@ -462,6 +462,42 @@ pub struct Settings {
     // ---- ws:keyframe-blocks ----
     /// Keyframe blocks the user saved from a clip's keys (Gallery ▸ Animate, after the builtins).
     pub key_blocks: Vec<crate::model::KeyBlock>,
+    // ---- ws:perf-baseline ----
+    // ---- ws:pro-schema ----
+    // (no per-field `#[serde(default)]`: the container-level one back-fills a missing field from
+    // `Default for Settings` below, which a field-level attribute would override with "" / false)
+    /// Show the performance HUD over the Preview (ws:perf-baseline draws it).
+    pub hud: bool,
+    /// Which agent the Assistant pane drives: "claude" (the Claude Code CLI), "custom" (the
+    /// `assistant_command` template) or "external" (requests wait for an MCP client's `assistant.wait`).
+    pub assistant_backend: String,
+    /// The "custom" backend's command line; `{prompt}` and `{mcp_url}` are substituted. Empty = unset.
+    pub assistant_command: String,
+    /// Model passed to the assistant CLI. Empty = the CLI's own default.
+    pub assistant_model: String,
+    /// A finished dictation sends the prompt straight away instead of leaving it in the box.
+    pub voice_autosend: bool,
+    /// Export audio layout: "mix" (one stereo track), "streams" (one stream per stem) or "stems"
+    /// (separate files) - mirrors `engine::export::AudioLayout`.
+    pub export_audio: String,
+    /// What a stem is when `export_audio` isn't "mix": "track", "bus" or "role" (`StemBy`).
+    pub export_stem_by: String,
+    /// Encoder trade-off: "speed", "balanced" or "small".
+    pub export_speed: String,
+    /// Copy unchanged GOPs instead of re-encoding them (ships off until it is proven).
+    pub export_smart_render: bool,
+    // ---- ws:play-decode-path ----
+    // ---- ws:play-render-thread ----
+    // ---- ws:play-source-monitor ----
+    // ---- ws:export-audio-tracks ----
+    // ---- ws:export-encoders ----
+    // ---- ws:export-pipeline ----
+    // ---- ws:interchange ----
+    // ---- ws:assistant-pane ----
+    // ---- ws:mcp-context ----
+    // ---- ws:transcribe-islands ----
+    // ---- ws:voice-input ----
+    // ---- ws:docs-release ----
 }
 
 impl Default for Settings {
@@ -624,6 +660,29 @@ impl Default for Settings {
             // ---- ws:keys-actions ----
             // ---- ws:keyframe-blocks ----
             key_blocks: Vec::new(),
+            // ---- ws:perf-baseline ----
+            // ---- ws:pro-schema ----
+            hud: false,
+            assistant_backend: "claude".into(),
+            assistant_command: String::new(),
+            assistant_model: String::new(),
+            voice_autosend: false,
+            export_audio: "mix".into(),
+            export_stem_by: "track".into(),
+            export_speed: "balanced".into(),
+            export_smart_render: false,
+            // ---- ws:play-decode-path ----
+            // ---- ws:play-render-thread ----
+            // ---- ws:play-source-monitor ----
+            // ---- ws:export-audio-tracks ----
+            // ---- ws:export-encoders ----
+            // ---- ws:export-pipeline ----
+            // ---- ws:interchange ----
+            // ---- ws:assistant-pane ----
+            // ---- ws:mcp-context ----
+            // ---- ws:transcribe-islands ----
+            // ---- ws:voice-input ----
+            // ---- ws:docs-release ----
         }
     }
 }

@@ -7,7 +7,7 @@
 //! missing media, speed ramps, colour pages) becomes an `Issue` instead of failing the import.
 
 use crate::media::{self, is_image_path, Backend};
-use crate::model::{Asset, AudioStreamInfo, Clip, ClipKind, Id, Project, TrackKind, TransitionKind, MIN_CLIP};
+use crate::model::{Asset, AudioStreamInfo, Clip, ClipKind, Id, Marker, Project, TrackKind, TransitionKind, MIN_CLIP};
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -408,7 +408,14 @@ fn read_xmeml(text: &str, b: &mut Build) -> Result<(), String> {
         let Some(sec) = seq.path(&["media", section]) else { continue };
         for (n, tr) in sec.kids_named("track").enumerate() {
             let ti = track_slot(&mut b.project, kind, n);
-            let label = b.project.tracks[ti].name.clone();
+            let mut label = b.project.tracks[ti].name.clone();
+            // not part of xmeml v5, but some writers add it - keep it when present
+            let tname = tr.text_of("name");
+            if !tname.is_empty() {
+                b.note(Level::Ok, format!("track {label}"), format!("named '{tname}'"));
+                b.project.tracks[ti].name = tname.to_string();
+                label = tname.to_string();
+            }
             if tr.text_of("enabled").eq_ignore_ascii_case("false") {
                 b.project.tracks[ti].muted = true;
             }
@@ -442,7 +449,24 @@ fn read_xmeml(text: &str, b: &mut Build) -> Result<(), String> {
             ),
         }
     }
+    for m in seq.kids_named("marker") {
+        let (t, duration, name, note) = marker_of(m, fps);
+        let id = b.project.add_marker(t, name.clone());
+        if let Some(mm) = b.project.marker_mut(id) {
+            mm.duration = duration;
+            mm.note = note;
+        }
+        b.note(Level::Ok, format!("marker '{name}'"), format!("sequence marker at {t:.2} s"));
+    }
     Ok(())
+}
+
+/// `<marker>` → (seconds, duration, name, comment). `<out>` -1 (or missing) is a point marker.
+fn marker_of(m: &El, fps: f64) -> (f64, f64, String, String) {
+    let fin = m.num("in").unwrap_or(0.0).max(0.0);
+    let out = m.num("out").unwrap_or(-1.0);
+    let duration = if out > fin { (out - fin) / fps } else { 0.0 };
+    (fin / fps, duration, m.text_of("name").to_string(), m.text_of("comment").to_string())
 }
 
 fn read_clipitem(item: &El, kind: TrackKind, ti: usize, fps: f64, files: &mut HashMap<String, Id>, b: &mut Build) {
@@ -488,6 +512,20 @@ fn read_clipitem(item: &El, kind: TrackKind, ti: usize, fps: f64, files: &mut Ha
         }
     }
     read_filters(item, &mut c, size, &subject, b);
+    for m in item.kids_named("marker") {
+        // clip markers are in source-media frames; ours are clip-local seconds
+        let (src_t, duration, name, note) = marker_of(m, fps);
+        let id = b.project.new_id();
+        c.markers.push(Marker {
+            id,
+            t: (src_t - c.src_in).clamp(0.0, c.duration),
+            duration,
+            name: name.clone(),
+            note,
+            ..Default::default()
+        });
+        b.note(Level::Ok, format!("marker '{name}'"), format!("on {subject}"));
+    }
     place(&mut b.project, ti, c);
 }
 
@@ -584,6 +622,16 @@ fn read_filters(item: &El, c: &mut Clip, size: (f64, f64), subject: &str, b: &mu
                     // FCP centre is a fraction of the frame, ours is pixels from the middle
                     c.x.value = center.num("horiz").unwrap_or(0.0) * size.0;
                     c.y.value = center.num("vert").unwrap_or(0.0) * size.1;
+                }
+            }
+            "audiolevels" => {
+                if let Some(v) = param("level") {
+                    c.volume.value = v.max(0.0);
+                }
+            }
+            "audiopan" => {
+                if let Some(v) = param("pan") {
+                    c.pan.value = v.clamp(-1.0, 1.0);
                 }
             }
             _ => {
@@ -791,7 +839,10 @@ fn read_edl(text: &str, b: &mut Build) {
         let (video, audio) = channels(&e.channel);
         let dur = (e.rec_out - e.rec_in).max(MIN_CLIP);
         if e.rec_out <= e.rec_in {
-            b.note(Level::Warning, format!("line {}", e.line), "record out is not after record in");
+            // a zero-length cut is the outgoing ("from") half of a dissolve pair - nothing to place
+            if e.rec_out < e.rec_in || e.kind != 'C' {
+                b.note(Level::Warning, format!("line {}", e.line), "record out is not after record in");
+            }
             continue;
         }
         let name = source_name(e);
@@ -868,7 +919,13 @@ fn timecode(s: &str, fps: f64) -> Option<f64> {
         return None;
     }
     let per = fps.round().max(1.0) as i64;
-    Some((((n[0] * 60 + n[1]) * 60 + n[2]) * per + n[3]) as f64 / fps)
+    let mut frames = ((n[0] * 60 + n[1]) * 60 + n[2]) * per + n[3];
+    if s.contains(';') && per == 30 && (fps - 30.0).abs() > 1e-3 {
+        // 29.97 drop-frame: two frame numbers skipped every minute except every tenth
+        let mins = n[0] * 60 + n[1];
+        frames -= 2 * (mins - mins / 10);
+    }
+    Some(frames as f64 / fps)
 }
 
 /// `001  AX  V  C  00:00:00:00 00:00:02:00 00:00:00:00 00:00:02:00` (a `D`/`W` adds a frame count).
@@ -1367,6 +1424,72 @@ mod tests {
         // the file was never there: counted once, not once per clip
         assert_eq!(r.missing_media, 1);
         assert_eq!(r.issues.iter().filter(|i| i.detail.contains("media not found")).count(), 1);
+    }
+
+    /// Sequence and clip markers written by engine::xmeml come back with their name, note and times.
+    #[test]
+    fn xmeml_markers_round_trip() {
+        let mut p = Project::from_media(asset(r"C:\media\m.mp4", 1));
+        let id = p.add_marker(2.0, "Seq & one");
+        if let Some(m) = p.marker_mut(id) {
+            m.note = "a <note>".into();
+            m.duration = 1.0;
+        }
+        let cid = p.tracks[0].clips[0].id;
+        assert!(p.add_clip_marker(cid, 1.5, "clip m").is_some());
+        let r = import_text(&export_xmeml(&p), "markers.xml");
+        assert_eq!(r.project.markers.len(), 1, "{}", r.to_markdown());
+        let m = &r.project.markers[0];
+        assert_eq!((m.name.as_str(), m.note.as_str()), ("Seq & one", "a <note>"));
+        assert!((m.t - 2.0).abs() < 1e-6 && (m.duration - 1.0).abs() < 1e-6, "{m:?}");
+        let cm = &r.project.tracks[0].clips[0].markers;
+        assert_eq!(cm.len(), 1, "{}", r.to_markdown());
+        assert_eq!(cm[0].name, "clip m");
+        assert!((cm[0].t - 1.5).abs() < 1e-6 && cm[0].duration == 0.0, "{:?}", cm[0]);
+        assert!(r.issues.iter().any(|i| i.subject == "marker 'Seq & one'"));
+    }
+
+    /// What engine::edl writes, the EDL reader reads back: same clips, times, tracks and the dissolve.
+    #[test]
+    fn edl_round_trip() {
+        let mut p = Project::from_media(asset(r"C:\media\red clip.mp4", 2));
+        p.split_at(4.0, None);
+        let right = p.tracks[0].clips[1].id;
+        assert!(p.add_transition(right, TransitionKind::CrossFade, 0.5).is_some());
+        let want: Vec<(TrackKind, f64, f64, f64)> = p
+            .tracks
+            .iter()
+            .flat_map(|t| t.clips.iter().map(move |c| (t.kind, c.start, c.duration, c.src_in)))
+            .collect();
+        let edls = crate::engine::edl::export_edl(&p);
+        assert_eq!(edls.len(), 1, "one video track → one EDL");
+        let text = &edls[0].1;
+        assert!(text.contains("FCM: NON-DROP FRAME") && text.contains("* FROM CLIP NAME: red clip.mp4"), "{text}");
+        let r = import_text(text, "rt.edl");
+        let got: Vec<(TrackKind, f64, f64, f64)> = r
+            .project
+            .tracks
+            .iter()
+            .flat_map(|t| t.clips.iter().map(move |c| (t.kind, c.start, c.duration, c.src_in)))
+            .collect();
+        assert_eq!(got.len(), want.len(), "{}\n{text}", r.to_markdown());
+        for (g, w) in got.iter().zip(&want) {
+            assert_eq!(g.0, w.0, "track kind");
+            assert!((g.1 - w.1).abs() < 1e-6 && (g.2 - w.2).abs() < 1e-6 && (g.3 - w.3).abs() < 1e-6, "{g:?} vs {w:?}");
+        }
+        assert_eq!(r.project.assets.len(), 1);
+        assert_eq!(r.project.assets[0].path, r"C:\media\red clip.mp4");
+        let v = r.project.video_tracks()[0];
+        let tr = &r.project.tracks[v].transitions;
+        assert_eq!(tr.len(), 1, "{}", r.to_markdown());
+        assert!((tr[0].duration - 0.5).abs() < 1e-6);
+        assert!(!r.issues.iter().any(|i| i.detail.contains("record out")), "the from-half of a dissolve is silent");
+        // 29.97 drop-frame timecode survives the trip too
+        let df = 30000.0 / 1001.0;
+        for f in [0, 1799, 1800, 17982, 107892] {
+            let back = timecode(&crate::engine::edl::tc(f, df), df).unwrap();
+            assert_eq!((back * df).round() as i64, f);
+        }
     }
 
     /// A text clip is a comment in the export (no clipitem), so it simply does not come back.

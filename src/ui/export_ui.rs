@@ -116,15 +116,20 @@ pub fn build_choice(
             out_path,
             encoder: settings.encoder.clone(),
             crf: settings.crf,
-            preset: settings.preset.clone(),
+            preset: export::effective_preset(&settings.preset, &settings.export_speed),
             backend: Backend::parse(&settings.decoder),
             out_size: size,
             scaler: settings.export_scaler.clone(),
+            // placeholder: `App::start_export_choice` swaps in `App::export_frames()` (GPU when on)
             frames: crate::engine::export::FrameSource::Cpu,
             metadata: if state.metadata_on { state.metadata.clone() } else { Vec::new() },
             range: export_range(project, state.range),
             loudnorm: settings.loudnorm,
             letterbox: state.letterbox && state.tile.is_some(),
+            // ---- ws:pro-schema ----
+            // ws:export-audio-tracks
+            audio: export::AudioLayout::parse(&settings.export_audio),
+            stem_by: export::StemBy::parse(&settings.export_stem_by),
         },
         lossless,
         use_project_bg: state.use_project_bg,
@@ -220,6 +225,16 @@ pub fn body(
         }
         ui.add_space(2.0);
 
+        // ---- ws:export-encoders: the speed/size trade-off (picking one hands the preset back to it) ----
+        ui.horizontal(|ui| {
+            ui.label("Speed");
+            const SPEEDS: [(&str, &str); 3] = [("speed", "Speed"), ("balanced", "Balanced"), ("small", "Smallest file")];
+            if combo(ui, "export_speed", &mut settings.export_speed, &SPEEDS, None) {
+                settings.preset = "auto".into();
+                save = true;
+            }
+        });
+
         let mut changed = false;
         egui::CollapsingHeader::new("Advanced").default_open(false).show(ui, |ui| {
             egui::Grid::new("export_opts").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
@@ -273,8 +288,21 @@ pub fn body(
                 ui.end_row();
 
                 ui.label("Preset");
-                let opts: Vec<(&str, &str)> = ENCODER_PRESETS.iter().map(|p| (*p, *p)).collect();
+                // ws:export-encoders: "auto" follows the Speed choice; a named preset wins over it
+                let opts: Vec<(&str, &str)> = std::iter::once(("auto", "auto (Speed)"))
+                    .chain(ENCODER_PRESETS.iter().map(|p| (*p, *p)))
+                    .collect();
                 save |= combo(ui, "export_preset", &mut settings.preset, &opts, None);
+                ui.end_row();
+
+                ui.label("Smart render");
+                save |= ui
+                    .checkbox(&mut settings.export_smart_render, "Experimental")
+                    .on_hover_text(
+                        "Copy the untouched stretches of a single H.264/HEVC source instead of \
+                         re-encoding them. Not wired into exports yet - every export is a full encode.",
+                    )
+                    .changed();
                 ui.end_row();
             });
         });
@@ -303,7 +331,16 @@ pub fn body(
         // meaningless for a lossless cut (-c copy ignores quality entirely)
         if !state.lossless {
             let (w, h) = out_size;
-            let est_bytes = export::estimate_export_bytes(w, h, project.fps, export_dur, settings.crf);
+            // ws:export-audio-tracks: "Separate tracks in file" adds one stream per stem
+            let streams = if export::effective_layout(export::AudioLayout::parse(&settings.export_audio), default_ext(state))
+                == export::AudioLayout::Streams
+            {
+                let span = range.unwrap_or((0.0, project.duration()));
+                1 + crate::engine::stems::count(project, export::StemBy::parse(&settings.export_stem_by), span) as u32
+            } else {
+                1
+            };
+            let est_bytes = export::estimate_export_bytes(w, h, project.fps, export_dur, settings.crf, streams);
             ui.weak(format!(
                 "~{} ({w}×{h} · {:.0} fps · {})",
                 format_bytes(est_bytes),
@@ -381,6 +418,8 @@ pub fn body(
             .checkbox(&mut settings.loudnorm, "Normalize loudness (−14 LUFS)")
             .on_hover_text("ffmpeg loudnorm, the level YouTube/Spotify play back at. Skipped when there is no audio.")
             .changed();
+        // ---- ws:export-audio-tracks ----
+        save |= audio_row(ui, state, settings);
         ui.weak("Audio extensions (mp3, wav, m4a, flac) export audio only; gif has no audio.");
         if settings.gpu || settings.preview_quality < 100 {
             // Settings ▸ Performance only changes what you watch, never what is written
@@ -415,6 +454,49 @@ pub fn body(
         settings.save();
     }
     out
+}
+
+// ---- ws:export-audio-tracks ----
+/// The container the save dialog will default to (`pick_and_build`'s rule).
+fn default_ext(state: &ExportUi) -> &str {
+    if state.tile.is_some() && !state.ext.is_empty() {
+        state.ext.as_str()
+    } else {
+        "mp4"
+    }
+}
+
+/// The "Audio" row: Mix / Separate tracks in file / WAV stems, and "Split by" when not Mix. Writes
+/// `Settings.export_audio` / `export_stem_by`; true when either changed.
+fn audio_row(ui: &mut egui::Ui, state: &ExportUi, settings: &mut Settings) -> bool {
+    let mut changed = false;
+    let multi = export::MULTI_AUDIO_EXTS.contains(&default_ext(state));
+    ui.horizontal(|ui| {
+        ui.label("Audio");
+        let a = &mut settings.export_audio;
+        changed |= ui.selectable_value(a, "mix".to_string(), "Mix").clicked();
+        changed |= ui
+            .add_enabled_ui(multi, |ui| ui.selectable_value(a, "streams".to_string(), "Separate tracks in file"))
+            .inner
+            .on_hover_text("The mix first (the default track), then one audio track per stem - mp4/mov/mkv only.")
+            .on_disabled_hover_text(format!("{} can't hold several audio tracks - use mp4, mov or mkv", default_ext(state)))
+            .clicked();
+        changed |= ui
+            .selectable_value(a, "stems".to_string(), "WAV stems")
+            .on_hover_text("The file gets the mix; each stem is written as 24-bit WAV in a \"<name> stems\" folder beside it.")
+            .clicked();
+    });
+    if settings.export_audio != "mix" {
+        ui.horizontal(|ui| {
+            ui.label("Split by");
+            const BY: [(&str, &str); 3] = [("track", "Track"), ("bus", "Bus"), ("role", "Role")];
+            changed |= combo(ui, "export_stem_by", &mut settings.export_stem_by, &BY, None);
+        });
+        if settings.export_audio == "streams" && !multi {
+            ui.weak("This container gets one mix - pick mp4, mov or mkv for separate tracks.");
+        }
+    }
+    changed
 }
 
 fn init_from_settings(state: &mut ExportUi, settings: &Settings, project: &Project) {
@@ -598,6 +680,22 @@ mod tests {
         assert!(c.opts.letterbox, "a tile fits-and-pads instead of stretching");
         assert_eq!(c.last, ExportPresetRef::Preset(shorts.name));
         assert_eq!(slug("Shorts / Reels / TikTok"), "shorts-reels-tiktok");
+    }
+
+    // ---- ws:export-audio-tracks ----
+    #[test]
+    fn audio_settings_flow_into_options() {
+        let project = ranged_project();
+        let mut settings = Settings::default();
+        settings.export_audio = "stems".into();
+        settings.export_stem_by = "role".into();
+        let c = build_choice(&ExportUi::default(), &project, &settings, "x.mp4".into());
+        assert_eq!(c.opts.audio, export::AudioLayout::Stems);
+        assert_eq!(c.opts.stem_by, export::StemBy::Role);
+        // the pane (with its Split by row) still lays out
+        let ctx = egui::Context::default();
+        let mut st = ExportUi::default();
+        assert!(frame(&ctx, &mut st, &project, &mut settings).is_none());
     }
 
     #[test]

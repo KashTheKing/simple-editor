@@ -61,6 +61,26 @@ pub(super) struct TranscriptState {
     /// at startup: only once the Speech panel is first opened).
     voices_rx: Option<Receiver<Vec<String>>>,
     pub(super) window: transcript_ui::TranscriptWindow,
+    /// Last finished whisper run per clip: None = ok, Some(error). What `transcribe.status` reports
+    /// once a run has left `runs` (an `async:true` caller has no other way to see a failure).
+    finished: Vec<(Id, Option<String>)>,
+}
+
+/// `transcribe.status`: "running" (+ fraction/status), "done", "failed" (+ error) or "none".
+pub(super) fn status_json(app: &App, clip: Id) -> Value {
+    if let Some(r) = app.transcript.runs.iter().find(|r| r.clip == clip) {
+        return json!({"clip_id": clip, "state": "running", "fraction": r.job.progress.fraction(), "status": r.job.progress.status()});
+    }
+    match app.transcript.finished.iter().find(|f| f.0 == clip) {
+        Some((_, None)) => json!({"clip_id": clip, "state": "done"}),
+        Some((_, Some(e))) => json!({"clip_id": clip, "state": "failed", "error": e}),
+        None => json!({"clip_id": clip, "state": "none"}),
+    }
+}
+
+fn record_finished(app: &mut App, clip: Id, err: Option<String>) {
+    app.transcript.finished.retain(|f| f.0 != clip);
+    app.transcript.finished.push((clip, err));
 }
 
 // ---- ws:jobs-panel ----
@@ -127,7 +147,7 @@ fn transcribe_or_offer(app: &mut App, clip: Id) {
         );
         return;
     }
-    if let Err(e) = app.transcribe_clip(clip, None, None, true) {
+    if let Err(e) = app.transcribe_clip(clip, None, None, true, false) {
         app.toast(e);
     }
 }
@@ -284,13 +304,16 @@ impl App {
     /// Start whisper on `clip` as a background job (word timings always on): the words are written
     /// to `Project.transcripts` when it finishes (`finish_transcribe`), with cues generated too when
     /// `gen_cues`. `model` = a `transcribe::MODELS` name/file (default: the pane's pick). The returned
-    /// `Progress` is the OUTER one (done only once the project holds the result).
+    /// `Progress` is the OUTER one (done only once the project holds the result). `islands` = split
+    /// the audio at long silences (`autocut::loud_segments` over the cached waveform, the same detector
+    /// as `autocut.detect`) and run whisper per island so word timings can't drift across pauses.
     pub(super) fn transcribe_clip(
         &mut self,
         clip: Id,
         model: Option<&str>,
         language: Option<&str>,
         gen_cues: bool,
+        islands: bool,
     ) -> Result<Arc<Progress>, String> {
         if transcribe::exe().is_none() {
             return Err(transcribe::install_hint());
@@ -313,6 +336,27 @@ impl App {
         if self.transcript.runs.iter().any(|r| r.clip == clip) {
             return Err("that clip is already being transcribed".into());
         }
+        let islands = if islands {
+            let c = self.project.clip(clip).ok_or("no such clip")?;
+            let stream = c.audio_stream;
+            let peaks = self
+                .waveforms
+                .get(&t.path, stream)
+                .ok_or("waveform still computing - try again in a moment (islands need it)")?;
+            let loud = crate::engine::autocut::loud_segments(
+                &peaks,
+                t.src_start,
+                t.src_dur,
+                &crate::engine::autocut::AutoCutParams::default(),
+            );
+            let isl = transcribe::islands_from_ranges(&loud, transcribe::ISLAND_GAP);
+            if isl.is_empty() {
+                return Err("no speech found in that clip (silence detection found nothing loud)".into());
+            }
+            isl
+        } else {
+            Vec::new()
+        };
         let st = &self.subtitles_ui.transcribe;
         let job = transcribe::start(Options {
             path: t.path,
@@ -322,6 +366,7 @@ impl App {
             language: language.map(str::to_string).unwrap_or_else(|| st.language.clone()),
             words: true,
             prompt: st.prompt.clone(),
+            islands,
         });
         let outer = Progress::new();
         let label = format!("Transcribing {}…", transcript_ui::clip_label(&self.project, clip));
@@ -398,13 +443,17 @@ impl App {
 fn finish_transcribe(app: &mut App, run: TranscribeRun) {
     if let Some(e) = run.job.progress.error() {
         app.push_toast(Toast::new(format!("Transcribe failed: {e}")).kind(ToastKind::Error));
+        record_finished(app, run.clip, Some(e.clone()));
         run.outer.finish(Some(e));
         return;
     }
     if app.project.clip(run.clip).is_none() {
-        run.outer.finish(Some("the clip was deleted while it was being transcribed".into()));
+        let e = "the clip was deleted while it was being transcribed".to_string();
+        record_finished(app, run.clip, Some(e.clone()));
+        run.outer.finish(Some(e));
         return;
     }
+    record_finished(app, run.clip, None);
     let mut segs = run.job.segments();
     transcribe::retime(&mut segs, run.map.0, run.map.1);
     let words: Vec<(f64, f64, String)> = segs.iter().map(|s| (s.start, s.end, s.text.clone())).collect();

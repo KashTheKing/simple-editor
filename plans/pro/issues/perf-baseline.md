@@ -1,6 +1,6 @@
 # Frame-time HUD, export and source-monitor benches, baselines
 
-**Workstream:** `perf-baseline` · **Plan:** [plans/pro/README.md](../README.md) · **Wave:** 0 · **Coding batch:** 0 · **Branch:** `feat/pro`
+**Workstream:** `perf-baseline` · **Issue:** [#141](https://github.com/KashTheKing/simple-editor/issues/141) · **Plan:** [plans/pro/README.md](../README.md) · **Wave:** 0 · **Coding batch:** 0 · **Branch:** `feat/pro`
 
 Read [agents.md](../../../agents.md), [goals.md](../../../goals.md), [notes.md](../../../notes.md), [ARCHITECTURE.md](../../../ARCHITECTURE.md) and the master plan [README.md](../README.md) before starting: its findings table gives the file:line evidence, and its "Execution" section gives this workstream's file ownership and the rules for the first coding pass.
 

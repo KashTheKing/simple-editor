@@ -290,7 +290,7 @@ mod tests {
     #[test]
     fn encoder_filter() {
         let all: Vec<String> =
-            ["libx264", "h264_nvenc", "hevc_qsv", "libvpx-vp9", "libaom-av1", "h264_amf", "mpeg4", "gif", "aac"]
+            ["libx264", "h264_nvenc", "hevc_qsv", "libvpx-vp9", "libaom-av1", "h264_amf", "h264_mf", "mpeg4", "gif", "aac"]
                 .iter()
                 .map(|s| s.to_string())
                 .collect();

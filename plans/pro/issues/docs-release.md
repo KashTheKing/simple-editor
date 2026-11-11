@@ -1,6 +1,6 @@
 # Docs and release notes for the Pro plan
 
-**Workstream:** `docs-release` · **Plan:** [plans/pro/README.md](../README.md) · **Wave:** 4 · **Coding batch:** C · **Branch:** `feat/pro`
+**Workstream:** `docs-release` · **Issue:** [#153](https://github.com/KashTheKing/simple-editor/issues/153) · **Plan:** [plans/pro/README.md](../README.md) · **Wave:** 4 · **Coding batch:** C · **Branch:** `feat/pro`
 
 Read [agents.md](../../../agents.md), [goals.md](../../../goals.md), [notes.md](../../../notes.md), [ARCHITECTURE.md](../../../ARCHITECTURE.md) and the master plan [README.md](../README.md) before starting: its findings table gives the file:line evidence, and its "Execution" section gives this workstream's file ownership and the rules for the first coding pass.
 

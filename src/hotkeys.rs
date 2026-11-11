@@ -317,6 +317,28 @@ actions! {
     // ---- ws:inspector-surface ----
     // ---- ws:side-panels ----
     // ---- ws:keys-actions ----
+    // ---- ws:perf-baseline ----
+    // Unbound by design (Playback menu / palette), like ToggleOverview.
+    ToggleHud => "toggle_hud", "Performance HUD", None;
+    // ---- ws:pro-schema ----
+    // Unbound by design (Window menu / palette), like ToggleJobs/ToggleScopes.
+    ToggleAssistant => "assistant", "Assistant", None;
+    // ---- ws:play-decode-path ----
+    // ---- ws:play-render-thread ----
+    // ---- ws:play-source-monitor ----
+    // ---- ws:export-audio-tracks ----
+    // ---- ws:export-encoders ----
+    // ---- ws:export-pipeline ----
+    // ---- ws:interchange ----
+    ExportEdl => "export_edl", "Export Avid EDL…", None;
+    // ---- ws:assistant-pane ----
+    // ---- ws:mcp-context ----
+    // A marker over In/Out (else the selected clips, else the playhead) with its note focused - a
+    // review comment an agent can read (markers.list) and tick off (markers.set). Unbound by design.
+    AddComment => "add_comment", "Add Comment", None;
+    // ---- ws:transcribe-islands ----
+    // ---- ws:voice-input ----
+    // ---- ws:docs-release ----
     // ---- tool selection (ui::tools) - polled and dispatched there, not through App::act ----
     ToolSelect => "tool_select", "Select Tool", sc(NONE, Key::V);
     ToolText => "tool_text", "Text Tool", sc(NONE, Key::T);
@@ -585,7 +607,7 @@ pub fn group(a: Action) -> &'static str {
         Workspace1 | Workspace2 | Workspace3 | Workspace4 | Workspace5 | Workspace6 | MaximizePane | TogglePin
         | ToggleLayoutMode | ToggleLibrary | ToggleInspector | ToggleEffects | ToggleTransitions | ToggleCurves
         | ToggleSubtitles | TogglePlanner | ToggleMarkers | ToggleNodes | ToggleMixer | ToggleTools | ToggleSource
-        | ToggleJobs | ToggleScopes => "Panels & Pages",
+        | ToggleJobs | ToggleAssistant | ToggleScopes => "Panels & Pages",
         RelinkMedia | ConsolidateMedia | NewSubclip => "Media",
         ToolSelect | ToolText | ToolDraw | ToolMask | ToolMarker | ToolCut | ToolStretch | ToolSpacer => "Tools",
         ToolTrackForward | ToolTrackBackward | ToolRipple | ToolRolling | ToolSlip | ToolSlide | ToolPen | ToolHand
@@ -598,6 +620,23 @@ pub fn group(a: Action) -> &'static str {
         // ---- ws:inspector-surface ----
         // ---- ws:side-panels ----
         // ---- ws:keys-actions ----
+        // ---- ws:perf-baseline ----
+        ToggleHud => "Playback",
+        // ---- ws:pro-schema ----
+        // ---- ws:play-decode-path ----
+        // ---- ws:play-render-thread ----
+        // ---- ws:play-source-monitor ----
+        // ---- ws:export-audio-tracks ----
+        // ---- ws:export-encoders ----
+        // ---- ws:export-pipeline ----
+        // ---- ws:interchange ----
+        ExportEdl => "File",
+        // ---- ws:assistant-pane ----
+        // ---- ws:mcp-context ----
+        AddComment => "Marking",
+        // ---- ws:transcribe-islands ----
+        // ---- ws:voice-input ----
+        // ---- ws:docs-release ----
         // unreachable today (every variant has an arm above); a new variant compiles into "Other" and
         // `group_covers_every_action` names it.
         #[allow(unreachable_patterns)]

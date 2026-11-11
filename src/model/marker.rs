@@ -24,6 +24,11 @@ pub struct Marker {
     /// markers only, for scoping `Project.markers` per sequence - clip markers already scope
     /// through their clip and ignore this field.
     pub sequence: Option<Id>,
+    // ---- ws:pro-schema ----
+    /// Ticked off (a review note that has been dealt with). Missing on old projects = false.
+    pub done: bool,
+    /// Who left it: "" = the user, otherwise an agent's name (MCP co-editing). Missing = "".
+    pub author: String,
 }
 
 impl Default for Marker {
@@ -37,6 +42,9 @@ impl Default for Marker {
             label: 0,
             icon: "flag".to_string(),
             sequence: None,
+            // ---- ws:pro-schema ----
+            done: false,
+            author: String::new(),
         }
     }
 }

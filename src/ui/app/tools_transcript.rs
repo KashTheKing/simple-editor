@@ -1,6 +1,6 @@
 //! ---- ws:transcript-captions ----
 //! MCP tools over transcripts (auto-Luau-exposed via `TOOL_TABLES`): transcript.get/set/cut_words/
-//! remove_fillers/search/export, transcribe.run/install, tracking.run, subtitles.animation, tts.speak,
+//! remove_fillers/search/export, transcribe.run/status/install, tracking.run, subtitles.animation, tts.speak,
 //! plus the agent-facing media.transcribe / media.transcript pair. Every cut goes through
 //! `Project::cut_word_ranges`; every whisper run through `App::transcribe_clip` (the same job the
 //! clip menu and the Subtitles pane use). Job-kind rows return the OUTER progress that completes only
@@ -75,11 +75,25 @@ fn anim_from(kind: &str, color: Option<[u8; 4]>) -> Result<SubtitleAnim, String>
 }
 
 /// A transcribe job for `clip` (see `App::transcribe_clip`) as a Job outcome - the reply's `path`
-/// is empty on purpose: the result is in the project, read it with media.transcript.
+/// is empty on purpose: the result is in the project, read it with media.transcript. With
+/// `async:true` it replies at once instead (for clients that time out on long calls); poll
+/// transcribe.status.
 fn transcribe_job(app: &mut App, clip: Id, a: &Args, gen_cues: bool) -> Result<ToolOutcome, String> {
-    let prog = app.transcribe_clip(clip, a.str("model"), a.str("language"), gen_cues)?;
+    let islands = a.bool("islands").unwrap_or(false);
+    let prog = app.transcribe_clip(clip, a.str("model"), a.str("language"), gen_cues, islands)?;
+    if a.bool("async").unwrap_or(false) {
+        return Ok(ToolOutcome::Done(json!({
+            "ok": true,
+            "started": true,
+            "clip_id": clip,
+            "poll": "transcribe.status {clip_id} until state is done or failed, then media.transcript",
+        })));
+    }
     Ok(ToolOutcome::Job(prog, PathBuf::new()))
 }
+
+const ISLANDS_ARG: &str = "islands:boolean:false:default false - split at long silences (autocut.detect's detector) and transcribe each speech island alone, so word times don't drift on long takes";
+const ASYNC_ARG: &str = "async:boolean:false:default false - reply at once with {started, clip_id}; poll transcribe.status";
 
 pub const TOOLS: &[ToolDef] = &[
     ToolDef {
@@ -226,12 +240,14 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "transcribe.run",
-        desc: "Transcribe a clip's audio with whisper (background job; word timings always on). On completion the words are in Project.transcripts (media.transcript) and, with cues=true (default), captions are generated.",
+        desc: "Transcribe a clip's audio with whisper (background job; word timings always on). On completion the words are in Project.transcripts (media.transcript) and, with cues=true (default), captions are generated. islands=true transcribes each speech island separately (accurate cut points on long takes with pauses; needs the clip's waveform). async=true replies at once - poll transcribe.status {clip_id} until state is done/failed.",
         args: &[
             "clip_id:integer:true:",
             "model:string:false:tiny.en|base.en|small.en|base (default: the Subtitles pane's pick)",
             "language:string:false:auto, en, de, …",
             "cues:boolean:false:default true - also generate subtitle cues",
+            ISLANDS_ARG,
+            ASYNC_ARG,
         ],
         kind: ToolKind::Job,
         run: |app, args| {
@@ -239,6 +255,16 @@ pub const TOOLS: &[ToolDef] = &[
             let clip = req(a.id("clip_id"), "clip_id")?;
             let cues = a.bool("cues").unwrap_or(true);
             transcribe_job(app, clip, &a, cues)
+        },
+    },
+    ToolDef {
+        name: "transcribe.status",
+        desc: "State of the clip's latest whisper run (for transcribe.run / media.transcribe with async=true): {state: running (+fraction, status) | done | failed (+error) | none}. When done, read the words with media.transcript.",
+        args: &["clip_id:integer:true:"],
+        kind: ToolKind::Read,
+        run: |app, args| {
+            let clip = req(Args(args).id("clip_id"), "clip_id")?;
+            Ok(ToolOutcome::Done(super::transcript_ctl::status_json(app, clip)))
         },
     },
     ToolDef {
@@ -322,8 +348,14 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "media.transcribe",
-        desc: "Transcribe a clip (or the first timeline clip of an asset) with whisper - same job as transcribe.run without generating cues; fills Project.transcripts when done (read with media.transcript).",
-        args: &["clip_id:integer:false:one of clip_id / asset_id", "asset_id:integer:false:", "model:string:false:tiny.en|base.en|small.en|base"],
+        desc: "Transcribe a clip (or the first timeline clip of an asset) with whisper - same job as transcribe.run without generating cues; fills Project.transcripts when done (read with media.transcript). islands / async as in transcribe.run (async: poll transcribe.status).",
+        args: &[
+            "clip_id:integer:false:one of clip_id / asset_id",
+            "asset_id:integer:false:",
+            "model:string:false:tiny.en|base.en|small.en|base",
+            ISLANDS_ARG,
+            ASYNC_ARG,
+        ],
         kind: ToolKind::Job,
         run: |app, args| {
             let a = Args(args);
@@ -384,6 +416,7 @@ mod tests {
             "transcript.search",
             "transcript.export",
             "transcribe.run",
+            "transcribe.status",
             "transcribe.install",
             "tracking.run",
             "subtitles.animation",

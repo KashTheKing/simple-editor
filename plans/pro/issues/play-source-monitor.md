@@ -1,6 +1,6 @@
 # Source monitor on the GPU, proxy and cache path
 
-**Workstream:** `play-source-monitor` · **Plan:** [plans/pro/README.md](../README.md) · **Wave:** 1 · **Coding batch:** A · **Branch:** `feat/pro`
+**Workstream:** `play-source-monitor` · **Issue:** [#142](https://github.com/KashTheKing/simple-editor/issues/142) · **Plan:** [plans/pro/README.md](../README.md) · **Wave:** 1 · **Coding batch:** A · **Branch:** `feat/pro`
 
 Read [agents.md](../../../agents.md), [goals.md](../../../goals.md), [notes.md](../../../notes.md), [ARCHITECTURE.md](../../../ARCHITECTURE.md) and the master plan [README.md](../README.md) before starting: its findings table gives the file:line evidence, and its "Execution" section gives this workstream's file ownership and the rules for the first coding pass.
 

@@ -1,6 +1,6 @@
 # MCP: editor context, comments, grouped undo, images, external live mode
 
-**Workstream:** `mcp-context` · **Plan:** [plans/pro/README.md](../README.md) · **Wave:** 3 · **Coding batch:** A · **Branch:** `feat/pro`
+**Workstream:** `mcp-context` · **Issue:** [#149](https://github.com/KashTheKing/simple-editor/issues/149) · **Plan:** [plans/pro/README.md](../README.md) · **Wave:** 3 · **Coding batch:** A · **Branch:** `feat/pro`
 
 Read [agents.md](../../../agents.md), [goals.md](../../../goals.md), [notes.md](../../../notes.md), [ARCHITECTURE.md](../../../ARCHITECTURE.md) and the master plan [README.md](../README.md) before starting: its findings table gives the file:line evidence, and its "Execution" section gives this workstream's file ownership and the rules for the first coding pass.
 

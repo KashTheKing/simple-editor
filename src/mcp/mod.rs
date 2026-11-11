@@ -20,12 +20,68 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// One tool invocation forwarded to the UI thread; reply with Ok(result json) or Err(message).
+/// One tool invocation forwarded to the UI thread; reply with Ok(result) or Err(message).
 pub struct ToolCall {
     pub name: String,
     pub args: Value,
-    pub reply: Sender<Result<Value, String>>,
+    pub reply: Sender<Result<ToolReply, String>>,
 }
+
+// ---- ws:mcp-context ----
+/// A tool's reply as the server sends it: JSON text, or an image content block (+ its metadata as text).
+pub enum ToolReply {
+    Json(Value),
+    Image { png_b64: String, meta: Value },
+}
+
+impl From<Value> for ToolReply {
+    fn from(v: Value) -> Self {
+        ToolReply::Json(v)
+    }
+}
+
+impl ToolReply {
+    /// For callers that want plain JSON (resources/read): an image becomes `tools::image_json`.
+    pub fn into_json(self) -> Value {
+        match self {
+            ToolReply::Json(v) => v,
+            ToolReply::Image { png_b64, meta } => tools::image_json(&png_b64, meta),
+        }
+    }
+    /// The `tools/call` result's `content` array.
+    fn content(self) -> Value {
+        match self {
+            ToolReply::Json(v) => json!([{"type": "text", "text": v.to_string()}]),
+            ToolReply::Image { png_b64, meta } => json!([
+                {"type": "image", "data": png_b64, "mimeType": "image/png"},
+                {"type": "text", "text": meta.to_string()},
+            ]),
+        }
+    }
+}
+
+/// The port the app's server actually bound (0 = none) - set by `App::sync_mcp` only, so tests that
+/// start their own servers never change what `claude_code_command` prints.
+static RUNNING_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+
+pub fn set_running_port(port: u16) {
+    RUNNING_PORT.store(port, Ordering::Relaxed);
+}
+
+/// The `initialize` reply's `instructions`: how to co-edit well, for any MCP client.
+const INSTRUCTIONS: &str = "Simple Editor live co-editing: your tool calls edit the project open on the user's screen, \
+through its undo stack. Times are seconds, ids are integers.\n\
+1. Start every request with editor.context (playhead, in/out, selected clips/markers/transcript words, page) and act on \
+what the user is looking at.\n\
+2. Wrap one request's edits in edit.begin{label} ... edit.end, or send them as one edit.batch{calls, label}: the user \
+gets ONE undo step named after your label, sees the changed clips glow, and can undo it from a toast. A failed call \
+rolls back only itself (a failed batch rolls back the whole batch).\n\
+3. Several cuts or deletes: work back to front (latest time first) so earlier times do not shift under you.\n\
+4. Take cut points from transcripts (transcript.get word times): cut between words, never mid-word.\n\
+5. Check results visually with render.frame{t} or render.contact_sheet{from, to, count} - both return images.\n\
+6. Comments are markers with notes: markers.list returns note/done/author; mark one handled with \
+markers.set{id, done: true}; markers.comment leaves your own.\n\
+7. Live mode: loop on assistant.wait{timeout_s}; it returns the user's next request or new comment with the context.";
 
 const MAX_BODY: usize = 8 * 1024 * 1024;
 const MAX_CONNS: usize = 16;
@@ -81,7 +137,6 @@ impl Server {
     }
 
     /// The actual bound port (differs from the requested one when starting on port 0).
-    #[cfg(test)]
     pub fn port(&self) -> u16 {
         self.port
     }
@@ -94,8 +149,13 @@ impl Server {
     }
 }
 
-/// The `claude mcp add` command line shown in the settings UI.
+/// The `claude mcp add` command line shown in the settings UI. `port` is the configured one; while the
+/// app's server runs on another (the configured port was busy) the running port wins.
 pub fn claude_code_command(port: u16) -> String {
+    let port = match RUNNING_PORT.load(Ordering::Relaxed) {
+        0 => port,
+        p => p,
+    };
     format!("claude mcp add --transport http simple-editor http://127.0.0.1:{port}/mcp")
 }
 
@@ -283,6 +343,7 @@ fn dispatch(req: &Value, tx: &Sender<ToolCall>, ctx: &egui::Context) -> Option<V
                 "protocolVersion": pv,
                 "capabilities": {"tools": {}, "resources": {}},
                 "serverInfo": {"name": "simple-editor", "version": env!("CARGO_PKG_VERSION")},
+                "instructions": INSTRUCTIONS,
             }))
         }
         "ping" => Ok(json!({})),
@@ -292,7 +353,7 @@ fn dispatch(req: &Value, tx: &Sender<ToolCall>, ctx: &egui::Context) -> Option<V
             Some(name) => {
                 let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
                 Ok(match call_tool(name, args, tx, ctx) {
-                    Ok(v) => json!({"content": [{"type": "text", "text": v.to_string()}], "isError": false}),
+                    Ok(r) => json!({"content": r.content(), "isError": false}),
                     Err(msg) => json!({"content": [{"type": "text", "text": msg}], "isError": true}),
                 })
             }
@@ -314,7 +375,8 @@ fn dispatch(req: &Value, tx: &Sender<ToolCall>, ctx: &egui::Context) -> Option<V
                 Err((-32602, format!("unknown resource: {uri}")))
             } else {
                 match call_tool(tool, json!({}), tx, ctx) {
-                    Ok(v) => {
+                    Ok(r) => {
+                        let v = r.into_json();
                         let text = v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string());
                         Ok(json!({"contents": [{"uri": uri, "mimeType": mime, "text": text}]}))
                     }
@@ -335,7 +397,7 @@ fn rpc_err(id: Value, code: i64, message: String) -> Value {
 }
 
 /// Forward one tool call to the UI thread and wait for the reply.
-fn call_tool(name: &str, args: Value, tx: &Sender<ToolCall>, ctx: &egui::Context) -> Result<Value, String> {
+fn call_tool(name: &str, args: Value, tx: &Sender<ToolCall>, ctx: &egui::Context) -> Result<ToolReply, String> {
     let (reply, rx) = mpsc::channel();
     tx.send(ToolCall { name: name.to_string(), args, reply }).map_err(|_| "editor is shutting down".to_string())?;
     ctx.request_repaint();
@@ -482,11 +544,13 @@ mod tests {
         assert_eq!(server.url(), format!("http://127.0.0.1:{port}/mcp"));
         // UI-thread stand-in: answer two tool calls.
         let answerer = std::thread::spawn(move || {
-            for _ in 0..2 {
+            for _ in 0..3 {
                 let Ok(call) = rx.recv_timeout(Duration::from_secs(10)) else { return };
                 let r = match call.name.as_str() {
-                    "project.summary" => Ok(json!({"clips": 3})),
-                    "notes.get" => Ok(json!("hello notes")),
+                    "project.summary" => Ok(json!({"clips": 3}).into()),
+                    "notes.get" => Ok(json!("hello notes").into()),
+                    // ---- ws:mcp-context ----
+                    "render.frame" => Ok(ToolReply::Image { png_b64: "iVBO".into(), meta: json!({"width": 1}) }),
                     other => Err(format!("unknown tool {other}")),
                 };
                 let _ = call.reply.send(r);
@@ -504,6 +568,9 @@ mod tests {
         assert_eq!(v["result"]["protocolVersion"], "2025-03-26");
         assert_eq!(v["result"]["serverInfo"]["name"], "simple-editor");
         assert!(v["result"]["capabilities"]["tools"].is_object());
+        // ---- ws:mcp-context ----
+        let guide = v["result"]["instructions"].as_str().unwrap();
+        assert!(guide.contains("editor.context") && guide.len() < 1500, "{}", guide.len());
 
         // notifications/initialized -> 202, empty body
         let (st, v) = post(&mut s, r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#);
@@ -533,6 +600,15 @@ mod tests {
         assert_eq!(st, 200);
         assert_eq!(v["result"]["isError"], false);
         assert!(v["result"]["content"][0]["text"].as_str().unwrap().contains("clips"));
+
+        // ---- ws:mcp-context ---- an image result goes out as an image content block
+        let (_, v) = post(
+            &mut s,
+            r#"{"jsonrpc":"2.0","id":41,"method":"tools/call","params":{"name":"render.frame","arguments":{"t":0}}}"#,
+        );
+        assert_eq!(v["result"]["content"][0]["type"], "image");
+        assert_eq!(v["result"]["content"][0]["mimeType"], "image/png");
+        assert_eq!(v["result"]["content"][0]["data"], "iVBO");
 
         // resources/read notes -> forwarded as notes.get
         let (st, v) = post(

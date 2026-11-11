@@ -244,6 +244,9 @@ pub fn run(args: &[String]) -> i32 {
         range: None,
         loudnorm: false,
         letterbox: false,
+        // ---- ws:pro-schema ----
+        audio: Default::default(),
+        stem_by: Default::default(),
     };
     let trimmed = |a: f64, b: f64| -> Result<Project, String> {
         let mut p = Project::from_media(probe()?);

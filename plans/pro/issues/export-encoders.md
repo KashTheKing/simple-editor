@@ -1,6 +1,6 @@
 # Encoders: probed hardware encoders, auto pick, smart render
 
-**Workstream:** `export-encoders` · **Plan:** [plans/pro/README.md](../README.md) · **Wave:** 2 · **Coding batch:** B · **Branch:** `feat/pro`
+**Workstream:** `export-encoders` · **Issue:** [#146](https://github.com/KashTheKing/simple-editor/issues/146) · **Plan:** [plans/pro/README.md](../README.md) · **Wave:** 2 · **Coding batch:** B · **Branch:** `feat/pro`
 
 Read [agents.md](../../../agents.md), [goals.md](../../../goals.md), [notes.md](../../../notes.md), [ARCHITECTURE.md](../../../ARCHITECTURE.md) and the master plan [README.md](../README.md) before starting: its findings table gives the file:line evidence, and its "Execution" section gives this workstream's file ownership and the rules for the first coding pass.
 

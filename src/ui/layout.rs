@@ -142,6 +142,11 @@ pub enum Pane {
     Grade,
     /// The Color page's clip thumbnail strip: one card per video clip, click to grade it.
     Clips,
+    // ---- ws:pro-schema ----
+    /// The AI assistant: a prompt box and a log of what the agent said and did (`ui::assistant_ui`).
+    /// Declared by pro-schema with a placeholder drawer; ws:assistant-pane fills it in. Tab-stacked
+    /// hidden in every preset (`stack_unplaced`), never in `ROUND3`.
+    Assistant,
 }
 
 impl Pane {
@@ -200,6 +205,21 @@ impl Pane {
         // ---- ws:color-page ----
         Pane::Grade,
         Pane::Clips,
+        // ---- ws:perf-baseline ----
+        // ---- ws:pro-schema ----
+        Pane::Assistant,
+        // ---- ws:play-decode-path ----
+        // ---- ws:play-render-thread ----
+        // ---- ws:play-source-monitor ----
+        // ---- ws:export-audio-tracks ----
+        // ---- ws:export-encoders ----
+        // ---- ws:export-pipeline ----
+        // ---- ws:interchange ----
+        // ---- ws:assistant-pane ----
+        // ---- ws:mcp-context ----
+        // ---- ws:transcribe-islands ----
+        // ---- ws:voice-input ----
+        // ---- ws:docs-release ----
     ];
     /// Panes added in round 3 - a stored layout without them is from an older version (see `from_json`).
     /// Tools left this list with the pages (no page places it; the viewer's tool rail replaces it).
@@ -234,6 +254,7 @@ impl Pane {
             Pane::MediaBrowser => Glyph::Link,
             Pane::Grade => Glyph::Wheel,
             Pane::Clips => Glyph::FilmStrip,
+            Pane::Assistant => Glyph::Assistant,
         }
     }
     pub fn title(self) -> &'static str {
@@ -264,6 +285,7 @@ impl Pane {
             Pane::MediaBrowser => "Media Browser",
             Pane::Grade => "Color Wheels",
             Pane::Clips => "Clips",
+            Pane::Assistant => "Assistant",
         }
     }
 }
@@ -1509,7 +1531,16 @@ mod tests {
     fn pane_source_not_in_round3() {
         assert_eq!(Pane::ROUND3, [Pane::Nodes, Pane::Mixer, Pane::Markers]);
         assert!(!Pane::ALL.contains(&Pane::Tools), "the viewer's tool rail replaced the Tools pane");
-        for p in [Pane::Source, Pane::Jobs, Pane::Scopes, Pane::Export, Pane::MediaBrowser, Pane::Grade, Pane::Clips] {
+        for p in [
+            Pane::Source,
+            Pane::Jobs,
+            Pane::Scopes,
+            Pane::Export,
+            Pane::MediaBrowser,
+            Pane::Grade,
+            Pane::Clips,
+            Pane::Assistant,
+        ] {
             assert!(Pane::ALL.contains(&p), "{p:?} is still a pane");
             assert!(!Pane::ROUND3.contains(&p), "{p:?} must not make a stored layout unloadable");
         }

@@ -30,7 +30,7 @@ fn acts_if(ui: &mut egui::Ui, on: bool, items: &[Option<Action>]) {
 }
 
 /// Window menu: the everyday panels first, then the niche ones under More ▸ (hidden, not deleted).
-const MAIN_PANES: [Pane; 15] = [
+const MAIN_PANES: [Pane; 16] = [
     Pane::Library,
     Pane::MediaBrowser,
     Pane::Effects,
@@ -46,6 +46,8 @@ const MAIN_PANES: [Pane; 15] = [
     Pane::Scopes,
     Pane::Export,
     Pane::Jobs,
+    // ---- ws:pro-schema ----
+    Pane::Assistant,
 ];
 const MORE_PANES: [Pane; 9] = [
     Pane::Grade,
@@ -77,6 +79,8 @@ pub(super) fn toggle_action(p: Pane) -> Option<Action> {
         Pane::Source => ToggleSource,
         Pane::Jobs => ToggleJobs,
         Pane::Scopes => ToggleScopes,
+        // ---- ws:pro-schema ----
+        Pane::Assistant => ToggleAssistant,
         _ => return None,
     })
 }
@@ -152,7 +156,7 @@ impl App {
         });
         menu::sub(ui, Some(tools::Glyph::ExportArrow), "Export", |ui| {
             acts(ui, &[Some(ExportVideo)]);
-            acts_if(ui, has_clips, &[Some(QuickExport), Some(ExportFrame), Some(ExportXml), Some(ExportLossless)]);
+            acts_if(ui, has_clips, &[Some(QuickExport), Some(ExportFrame), Some(ExportXml), Some(ExportEdl), Some(ExportLossless)]);
             let can_overwrite = self.project.source_video.is_some() && has_clips;
             let r = ui.add_enabled_ui(can_overwrite, |ui| menu::row(ui, None, "Overwrite Original Video…", "")).inner;
             if r.on_disabled_hover_text("Only for a project opened from a single video").clicked() {
@@ -320,6 +324,10 @@ impl App {
         }
         if menu::check(ui, self.settings.movie_mode, "Movie Mode (pre-render)", &menu::shortcut(MovieMode)).clicked() {
             out.push(MovieMode);
+        }
+        // ws:perf-baseline
+        if menu::check(ui, self.settings.hud, "Performance HUD", &menu::shortcut(ToggleHud)).clicked() {
+            out.push(ToggleHud);
         }
         menu::sub(ui, None, "Playback Resolution", |ui| {
             for q in crate::ui::preview::QUALITIES {

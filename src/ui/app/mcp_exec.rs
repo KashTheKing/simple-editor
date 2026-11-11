@@ -54,8 +54,10 @@ impl App {
                         }
                         Ok(v)
                     }
+                    // ---- ws:mcp-context ---- a script gets an image as the old {.., data_url} JSON
+                    Ok(ToolOutcome::Image { png_b64, meta }) => Ok(mcp::tools::image_json(&png_b64, meta)),
                     // a script runs synchronously and can't await a background job's reply
-                    Ok(ToolOutcome::Job(..)) => {
+                    Ok(ToolOutcome::Job(..) | ToolOutcome::Wait(_)) => {
                         Err(format!("'{tool}' starts a background job and can't be called from a script"))
                     }
                     Err(e) => {
@@ -111,25 +113,40 @@ impl App {
         if !want {
             if let Some((server, _)) = self.mcp.take() {
                 server.stop();
+                mcp::set_running_port(0);
                 self.toast("MCP server stopped");
             }
             return;
         }
-        if self.mcp.is_some() && self.mcp_port_running == port {
+        // ---- ws:mcp-context ---- `port_wanted` is the configured port the running server was started
+        // for; `mcp_port_running` the one it actually bound (the next free one when that was taken)
+        if self.mcp.is_some() && self.mcp_ctx.port_wanted == port {
             return;
         }
         if let Some((server, _)) = self.mcp.take() {
             server.stop();
         }
-        match mcp::Server::start(port, ctx.clone()) {
-            Ok((server, rx)) => {
-                self.toast(format!("MCP server at {}", server.url()));
+        self.mcp_ctx.port_wanted = port;
+        let mut last_err = String::new();
+        let started = (0..=20u16).filter_map(|i| port.checked_add(i)).find_map(|p| {
+            mcp::Server::start(p, ctx.clone()).map_err(|e| last_err = e).ok()
+        });
+        match started {
+            Some((server, rx)) => {
+                let bound = server.port();
+                if bound == port {
+                    self.toast(format!("MCP server at {}", server.url()));
+                } else {
+                    self.toast(format!("MCP server at {} (port {port} was busy)", server.url()));
+                }
+                mcp::set_running_port(bound);
                 self.mcp = Some((server, rx));
-                self.mcp_port_running = port;
+                self.mcp_port_running = bound;
             }
-            Err(e) => {
-                self.toast(format!("MCP server failed: {e}"));
-                self.settings.mcp_enabled = false; // don't retry every frame
+            None => {
+                mcp::set_running_port(0);
+                self.toast(format!("MCP server failed: {last_err}"));
+                self.settings.mcp_enabled = false; // every candidate port failed: don't retry every frame
                 self.settings.save();
             }
         }
@@ -142,10 +159,11 @@ impl App {
             while i < self.mcp_jobs.len() {
                 if self.mcp_jobs[i].prog.is_done() {
                     let j = self.mcp_jobs.remove(i);
-                    let r = match j.prog.error() {
+                    let r: Result<mcp::ToolReply, String> = match j.prog.error() {
                         // ws:job-completion-hitches: `status` = the worker's last line (timeline.import's
                         // clip/track/missing counts); "Done" for the older jobs
-                        None => Ok(json!({"ok": true, "path": j.out.to_string_lossy(), "status": j.prog.status()})),
+                        None => Ok(json!({"ok": true, "path": j.out.to_string_lossy(), "status": j.prog.status()})
+                            .into()),
                         Some(e) => Err(e),
                     };
                     let _ = j.reply.send(r);
@@ -155,16 +173,30 @@ impl App {
             }
             ctx.request_repaint_after(Duration::from_millis(200));
         }
-        // one per frame: render.frame blocks the UI thread for up to 3 s, so a queue must not run in one go
-        let call = self.mcp.as_ref().and_then(|(_, rx)| rx.try_recv().ok());
-        if let Some(c) = call {
+        // ---- ws:mcp-context ---- drain the queue for a few ms per frame (an agent's burst of small edits
+        // lands in one frame); a render.* call blocks for up to 3 s, so it always ends the frame's batch
+        let t0 = Instant::now();
+        let mut ran = false;
+        loop {
+            let Some(c) = self.mcp.as_ref().and_then(|(_, rx)| rx.try_recv().ok()) else { break };
+            let render = c.name.starts_with("render.");
             self.handle_tool(c);
-            ctx.request_repaint(); // anything else queued runs on the next frames
+            ran = true;
+            if render || t0.elapsed() > Duration::from_millis(8) {
+                break;
+            }
+        }
+        if ran {
+            ctx.request_repaint(); // show the edits; anything still queued runs on the next frames
         }
     }
 
     pub(super) fn handle_tool(&mut self, call: mcp::ToolCall) {
         let mcp::ToolCall { name, args, reply } = call;
+        // ---- ws:mcp-context ---- any call keeps an open undo group alive (it closes after 30 s idle)
+        if let Some(g) = self.mcp_ctx.group.as_mut() {
+            g.last_call = Instant::now();
+        }
         // ---- ws:registries-schema-hooks ----
         // Every tool (including the two ToolKind::Job ones) now runs through its own ToolDef.run,
         // replacing the old hand-matched "export.video" | "media.convert" arm and the old hand-kept
@@ -177,14 +209,18 @@ impl App {
         let before = self.run_snapshot_if_mutate(def);
         match (def.run)(self, &args) {
             Ok(ToolOutcome::Job(prog, out)) => self.mcp_jobs.push(McpJob { prog, reply, out }),
-            Ok(ToolOutcome::Done(v)) => {
+            // ---- ws:mcp-context ----
+            Ok(ToolOutcome::Wait(deadline)) => self.park_wait(reply, deadline),
+            Ok(out @ (ToolOutcome::Done(_) | ToolOutcome::Image { .. })) => {
                 if let Some(snap) = before {
-                    if snap != self.project.to_json() {
-                        push_undo_json(&mut self.undo, &mut self.redo, snap);
-                    }
-                    self.after_edit();
+                    self.commit_tool_edit(snap);
                 }
-                let _ = reply.send(Ok(v));
+                let r = match out {
+                    ToolOutcome::Image { png_b64, meta } => mcp::ToolReply::Image { png_b64, meta },
+                    ToolOutcome::Done(v) => mcp::ToolReply::Json(v),
+                    _ => unreachable!(),
+                };
+                let _ = reply.send(Ok(r));
             }
             Err(e) => {
                 if let Some(snap) = before {
@@ -208,16 +244,19 @@ impl App {
         let def = mcp::tools::find(name).ok_or_else(|| format!("unknown tool '{name}'"))?;
         let before = self.run_snapshot_if_mutate(def);
         match (def.run)(self, args) {
-            Ok(ToolOutcome::Done(v)) => {
+            Ok(out @ (ToolOutcome::Done(_) | ToolOutcome::Image { .. })) => {
                 if let Some(snap) = before {
-                    if snap != self.project.to_json() {
-                        push_undo_json(&mut self.undo, &mut self.redo, snap);
-                    }
-                    self.after_edit();
+                    self.commit_tool_edit(snap); // ws:mcp-context: one entry per call, or the open group's
                 }
-                Ok(v)
+                Ok(match out {
+                    ToolOutcome::Image { png_b64, meta } => mcp::tools::image_json(&png_b64, meta),
+                    ToolOutcome::Done(v) => v,
+                    _ => unreachable!(),
+                })
             }
-            Ok(ToolOutcome::Job(..)) => Err(format!("'{name}' starts a background job - not runnable from here")),
+            Ok(ToolOutcome::Job(..) | ToolOutcome::Wait(_)) => {
+                Err(format!("'{name}' starts a background job - not runnable from here"))
+            }
             Err(e) => {
                 if let Some(snap) = before {
                     self.run_rollback(snap); // a failed tool is a no-op
@@ -256,6 +295,10 @@ impl App {
                 range: None,
                 loudnorm: false,
                 letterbox: false,
+                // ---- ws:pro-schema ----
+                // ws:export-audio-tracks: the args, else what the Export pane last used
+                audio: export::AudioLayout::parse(arg_str(args, "audio").unwrap_or(&self.settings.export_audio)),
+                stem_by: export::StemBy::parse(arg_str(args, "stem_by").unwrap_or(&self.settings.export_stem_by)),
             };
             let mut project = self.export_project();
             // MCP exports have no background opt-in either - "use_project_bg": true opts in per call

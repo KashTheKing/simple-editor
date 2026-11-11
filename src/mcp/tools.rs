@@ -35,6 +35,22 @@ pub enum ToolKind {
 pub enum ToolOutcome {
     Done(Value),
     Job(std::sync::Arc<crate::engine::export::Progress>, std::path::PathBuf),
+    // ---- ws:mcp-context ----
+    /// A PNG (base64) plus its JSON metadata: MCP clients get an image content block, Luau / palette
+    /// callers get `image_json` (the metadata plus a `data_url`, the shape `render.frame` always had).
+    Image { png_b64: String, meta: Value },
+    /// A long poll (`assistant.wait`): `App::handle_tool` parks the reply and `tools_context::tick`
+    /// answers it before this deadline. Only reachable from MCP (`ToolKind::Job` rows).
+    Wait(std::time::Instant),
+}
+
+// ---- ws:mcp-context ----
+/// The pre-image-content JSON shape of an image result: `meta` plus `data_url`.
+pub fn image_json(png_b64: &str, mut meta: Value) -> Value {
+    if let Some(o) = meta.as_object_mut() {
+        o.insert("data_url".into(), Value::String(format!("data:image/png;base64,{png_b64}")));
+    }
+    meta
 }
 
 /// One MCP tool: name/description/argument docs (unchanged shape from the old tuple) plus the kind

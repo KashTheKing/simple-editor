@@ -293,6 +293,9 @@ impl App {
         if map != self.proxy_map {
             crate::media::proxy::set_ready(map.keys().cloned().collect()); // badges track the same push
             self.proxy_map = map.clone();
+            if let Some(s) = self.source.as_mut() {
+                s.player.set_proxies(map.clone()); // ws:play-source-monitor
+            }
             self.player.set_proxies(map);
         }
         if let Some((src, dst)) = want {

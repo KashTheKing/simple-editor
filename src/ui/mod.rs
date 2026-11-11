@@ -22,6 +22,7 @@ pub mod history_ui;
 pub mod spiky_ball;
 // ---- ws:layout-modes-onboarding ----
 pub mod home;
+pub mod hud; // ws:perf-baseline
 pub mod import_ui;
 pub mod inspector;
 pub mod inspector_audio;
@@ -59,6 +60,8 @@ pub mod transcript_ui;
 pub mod transitions_ui;
 // ---- ws:jobs-panel ----
 pub mod jobs_ui;
+// ---- ws:pro-schema ----
+pub mod assistant_ui;
 
 use crate::model::{AnimLink, Animated, Id, Mask, MaskShape, Project, LABEL_COLORS};
 use crate::theme::Palette;
@@ -509,7 +512,14 @@ pub const ENCODER_PRESETS: [&str; 7] = ["ultrafast", "superfast", "veryfast", "f
 /// Encoder names worth offering: the h264 / hevc / vp9 / av1 families (software + nvenc/qsv/amf).
 pub fn encoder_options(encoders: &[String]) -> Vec<&str> {
     const KEYS: [&str; 9] = ["264", "265", "hevc", "vp9", "av1", "x264", "x265", "nvenc", "qsv"];
-    encoders.iter().map(String::as_str).filter(|e| KEYS.iter().any(|k| e.contains(k)) || e.contains("amf")).collect()
+    // ws:export-encoders: hide hardware encoders the probe found unable to run, and Media Foundation
+    // (`*_mf`) - `codec_args` has no confirmed rate-control arguments for it.
+    encoders
+        .iter()
+        .map(String::as_str)
+        .filter(|e| KEYS.iter().any(|k| e.contains(k)) || e.contains("amf"))
+        .filter(|e| !e.ends_with("_mf") && !crate::engine::encoders::is_broken(e))
+        .collect()
 }
 
 #[cfg(test)]

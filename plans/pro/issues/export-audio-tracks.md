@@ -1,6 +1,6 @@
 # Export separate audio tracks (streams in file, WAV stems)
 
-**Workstream:** `export-audio-tracks` · **Plan:** [plans/pro/README.md](../README.md) · **Wave:** 2 · **Coding batch:** B · **Branch:** `feat/pro`
+**Workstream:** `export-audio-tracks` · **Issue:** [#147](https://github.com/KashTheKing/simple-editor/issues/147) · **Plan:** [plans/pro/README.md](../README.md) · **Wave:** 2 · **Coding batch:** B · **Branch:** `feat/pro`
 
 Read [agents.md](../../../agents.md), [goals.md](../../../goals.md), [notes.md](../../../notes.md), [ARCHITECTURE.md](../../../ARCHITECTURE.md) and the master plan [README.md](../README.md) before starting: its findings table gives the file:line evidence, and its "Execution" section gives this workstream's file ownership and the rules for the first coding pass.
 

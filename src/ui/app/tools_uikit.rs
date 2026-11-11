@@ -233,7 +233,7 @@ fn crop_frame(img: &egui::ColorImage, px: Option<egui::Rect>) -> Frame {
         None => (0, 0, w, h),
     };
     let rgba = (y0..y1).flat_map(|y| img.pixels[y * w + x0..y * w + x1].iter().flat_map(|c| c.to_array())).collect();
-    Frame { width: x1.saturating_sub(x0) as u32, height: y1.saturating_sub(y0) as u32, pts: 0.0, rgba }
+    Frame { width: x1.saturating_sub(x0) as u32, height: y1.saturating_sub(y0) as u32, pts: 0.0, rgba, bgrx: false }
 }
 
 #[cfg(test)]

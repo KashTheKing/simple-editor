@@ -20,7 +20,8 @@ use crate::settings::Settings;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// Downloadable whisper.cpp models: (name, file, download size in MB).
 pub const MODELS: [(&str, &str, u32); 4] = [
@@ -37,19 +38,18 @@ const MIN_WORDS: usize = 2;
 /// Duplicate ranges closer than this are cut as one.
 const MERGE_GAP: f64 = 0.35;
 
-// ponytail: the settings are read once per process and never written back from the pane - a
-// load-modify-save here would race the app's in-memory copy. Edit settings.json to change them.
-fn settings() -> &'static (String, String) {
-    static S: OnceLock<(String, String)> = OnceLock::new();
-    S.get_or_init(|| {
-        let s = Settings::load();
-        (s.whisper_dir, s.transcribe_model)
-    })
+// ponytail: re-read on every call (only on user actions - pane open, Transcribe click, a job start), so
+// a changed whisper_dir / transcribe_model applies without a restart. Never written back from here - a
+// load-modify-save would race the app's in-memory copy.
+fn settings() -> (String, String) {
+    let s = Settings::load();
+    (s.whisper_dir, s.transcribe_model)
 }
 
 /// Index into `MODELS` of `Settings.transcribe_model` (by name or file), else base.en.
 pub fn default_model() -> usize {
-    let want = settings().1.trim();
+    let s = settings();
+    let want = s.1.trim();
     if want.is_empty() {
         return 1;
     }
@@ -82,7 +82,7 @@ pub fn have_model(file: &str) -> bool {
 /// A whisper.cpp binary, or None. `main.exe` is only accepted from a directory we were pointed at -
 /// a `main.exe` picked up off PATH would be anything at all.
 pub fn exe() -> Option<PathBuf> {
-    let dirs = [PathBuf::from(&settings().0), exe_dir()];
+    let dirs = [PathBuf::from(settings().0), exe_dir()];
     for name in ["whisper-cli.exe", "whisper.exe", "main.exe"] {
         if let Some(p) = dirs.iter().map(|d| d.join(name)).find(|p| p.is_file()) {
             return Some(p);
@@ -195,6 +195,44 @@ pub struct Options {
     /// whisper.cpp `--prompt`: vocabulary/style hints (names, jargon, punctuation style). Not commands -
     /// the model only mimics it, it does not follow instructions.
     pub prompt: String,
+    /// Speech islands in SOURCE seconds (absolute, inside the clip's range): each is cut to its own wav
+    /// and transcribed alone, so `-ml 1` word timings cannot drift across long pauses. Empty = one run
+    /// over the whole range, as before.
+    pub islands: Vec<(f64, f64)>,
+}
+
+/// Silences shorter than this (seconds) do not split an island - whisper keeps time fine across them,
+/// and every island costs a model load.
+pub const ISLAND_GAP: f64 = 1.5;
+
+/// Loud ranges (`autocut::loud_segments`, source seconds) → islands: overlaps and gaps under `min_gap`
+/// merged, empty/backwards ranges dropped, sorted.
+pub fn islands_from_ranges(ranges: &[(f64, f64)], min_gap: f64) -> Vec<(f64, f64)> {
+    let mut r: Vec<(f64, f64)> = ranges.iter().copied().filter(|(a, b)| b > a).collect();
+    r.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut out: Vec<(f64, f64)> = Vec::new();
+    for (a, b) in r {
+        match out.last_mut() {
+            Some(l) if a - l.1 < min_gap => l.1 = l.1.max(b),
+            _ => out.push((a, b)),
+        }
+    }
+    out
+}
+
+/// Island-relative word times → times relative to the clip's `src_start` (what `retime` expects).
+pub fn offset_words(words: &mut [(f64, f64, String)], shift: f64) {
+    for w in words {
+        w.0 += shift;
+        w.1 += shift;
+    }
+}
+
+/// A temp wav path no other run (in this process or another) is using.
+fn temp_wav() -> PathBuf {
+    static N: AtomicU64 = AtomicU64::new(0);
+    let n = N.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!("se-transcribe-{}-{n}.wav", std::process::id()))
 }
 
 /// A running transcription. `segments()` grows while it runs; `progress` drives the UI and cancels it.
@@ -216,17 +254,17 @@ pub fn start(opts: Options) -> Job {
     Job { progress, out }
 }
 
-/// 16 kHz mono wav of the clip's range, through the ffmpeg we already ship next to.
-fn extract_wav(opts: &Options, prog: &Progress) -> Result<PathBuf, String> {
+/// 16 kHz mono wav of `[start, start+dur)` source seconds, through the ffmpeg we already ship next to.
+fn extract_wav(path: &str, start: f64, dur: f64, prog: &Progress) -> Result<PathBuf, String> {
     let ffmpeg = ffpipe::ffmpeg_exe().ok_or("ffmpeg.exe not found")?;
-    let wav = std::env::temp_dir().join(format!("se-transcribe-{}.wav", std::process::id()));
+    let wav = temp_wav();
     let mut child = ffpipe::command(&ffmpeg)
         .args(["-v", "error", "-y", "-ss"])
-        .arg(format!("{:.3}", opts.src_start.max(0.0)))
+        .arg(format!("{:.3}", start.max(0.0)))
         .arg("-t")
-        .arg(format!("{:.3}", opts.src_duration.max(0.1)))
+        .arg(format!("{:.3}", dur.max(0.1)))
         .arg("-i")
-        .arg(&opts.path)
+        .arg(path)
         .args(["-vn", "-ac", "1", "-ar", "16000", "-f", "wav"])
         .arg(&wav)
         .stdin(Stdio::null())
@@ -235,8 +273,12 @@ fn extract_wav(opts: &Options, prog: &Progress) -> Result<PathBuf, String> {
         .spawn()
         .map_err(|e| format!("ffmpeg: {e}"))?;
     let tail = export::stderr_tail(&mut child);
-    export::wait_ffmpeg(&mut child, tail, prog)?;
+    if let Err(e) = export::wait_ffmpeg(&mut child, tail, prog) {
+        let _ = std::fs::remove_file(&wav);
+        return Err(e);
+    }
     if std::fs::metadata(&wav).map(|m| m.len()).unwrap_or(0) < 1024 {
+        let _ = std::fs::remove_file(&wav);
         return Err("that clip has no audio to transcribe".into());
     }
     Ok(wav)
@@ -248,13 +290,64 @@ fn run(opts: &Options, prog: &Progress, sink: &Mutex<Vec<Segment>>) -> Result<()
     if !model.is_file() {
         return Err(format!("model {} is not downloaded", opts.model));
     }
-    prog.set(0.01, "Extracting audio…");
-    let wav = extract_wav(opts, prog)?;
-    prog.set(0.05, "Transcribing…");
+    // (start, duration) in source seconds; one span = the whole clip, as before islands existed
+    let spans: Vec<(f64, f64)> = if opts.islands.is_empty() {
+        vec![(opts.src_start, opts.src_duration)]
+    } else {
+        opts.islands.iter().map(|&(a, b)| (a, b - a)).collect()
+    };
+    let total: f64 = spans.iter().map(|s| s.1.max(0.1)).sum();
+    let mut done = 0.0;
+    let mut n = 0usize;
+    // ponytail: one whisper process per island (a model load each; ISLAND_GAP keeps the count down).
+    // One run with several `-f` inputs + per-file `-osrt` would save the reloads if that ever matters.
+    for (i, &(start, dur)) in spans.iter().enumerate() {
+        if prog.is_cancelled() {
+            return Err(export::CANCELLED.into());
+        }
+        let label = if spans.len() > 1 { format!("Island {} of {}…", i + 1, spans.len()) } else { "Transcribing…".into() };
+        prog.set((0.01 + 0.98 * done / total) as f32, "Extracting audio…");
+        let wav = match extract_wav(&opts.path, start, dur, prog) {
+            Ok(w) => w,
+            // an island with no decodable audio is just skipped; the whole clip having none is an error
+            Err(_) if spans.len() > 1 && !prog.is_cancelled() => {
+                done += dur.max(0.1);
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
+        let range = (done / total, dur.max(0.1) / total);
+        let r = whisper_once(&exe, &model, opts, &wav, start - opts.src_start, dur.max(0.1), range, &label, prog, sink);
+        let _ = std::fs::remove_file(&wav);
+        n += r?;
+        done += dur.max(0.1);
+    }
+    if n == 0 {
+        return Err("nothing was transcribed (no speech, or the model failed to load)".into());
+    }
+    prog.set(1.0, format!("{n} segments"));
+    Ok(())
+}
 
+/// One whisper run over `wav`; its segment times are shifted by `shift` (the wav's start relative to
+/// `opts.src_start`) and pushed to `sink`. `range` = (start, share) of the overall progress. Returns
+/// how many segments it found.
+#[allow(clippy::too_many_arguments)]
+fn whisper_once(
+    exe: &std::path::Path,
+    model: &std::path::Path,
+    opts: &Options,
+    wav: &std::path::Path,
+    shift: f64,
+    dur: f64,
+    range: (f64, f64),
+    label: &str,
+    prog: &Progress,
+    sink: &Mutex<Vec<Segment>>,
+) -> Result<usize, String> {
     let lang = if opts.language.trim().is_empty() { "auto".to_string() } else { opts.language.trim().to_string() };
-    let mut cmd = ffpipe::command(&exe);
-    cmd.arg("-m").arg(&model).arg("-f").arg(&wav).args(["-l", &lang]);
+    let mut cmd = ffpipe::command(exe);
+    cmd.arg("-m").arg(model).arg("-f").arg(wav).args(["-l", &lang]);
     if opts.words {
         cmd.args(["-ml", "1", "-sow"]);
     }
@@ -268,29 +361,56 @@ fn run(opts: &Options, prog: &Progress, sink: &Mutex<Vec<Segment>>) -> Result<()
         .spawn()
         .map_err(|e| format!("{}: {e}", exe.display()))?;
     let tail = export::stderr_tail(&mut child);
-    let total = opts.src_duration.max(0.1);
-    let mut raw: Vec<(f64, f64, String)> = Vec::new();
+    let mut n = 0usize;
     if let Some(stdout) = child.stdout.take() {
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
             if prog.is_cancelled() {
                 break; // wait_ffmpeg kills the child and reports CANCELLED
             }
             let Some(seg) = parse_line(&line) else { continue };
-            prog.set((0.05 + 0.94 * (seg.1 / total)).clamp(0.05, 0.99) as f32, "Transcribing…");
-            raw.push(seg.clone());
+            let f = range.0 + range.1 * (seg.1 / dur).clamp(0.0, 1.0);
+            prog.set((0.01 + 0.98 * f).clamp(0.01, 0.99) as f32, label);
+            let mut one = [seg];
+            offset_words(&mut one, shift);
+            let [(a, b, t)] = one;
+            n += 1;
             // raw segments, one word each with -ml 1: the UI regroups them into sentences, so the
             // grouping can be re-run with new parameters without re-transcribing
-            sink.lock().unwrap_or_else(|e| e.into_inner()).push(Segment::plain(seg.0, seg.1, seg.2));
+            sink.lock().unwrap_or_else(|e| e.into_inner()).push(Segment::plain(a, b, t));
         }
     }
-    let r = export::wait_ffmpeg(&mut child, tail, prog);
-    let _ = std::fs::remove_file(&wav);
-    r?;
-    if raw.is_empty() {
-        return Err("nothing was transcribed (no speech, or the model failed to load)".into());
+    export::wait_ffmpeg(&mut child, tail, prog)?;
+    Ok(n)
+}
+
+// ---- ws:voice-input ----
+/// One plain whisper run over a 16 kHz mono `wav` (dictation): the settings' model, no word timings,
+/// no progress - the recognised segments joined with spaces. Blocks, so call it off the UI thread.
+pub(crate) fn plain_text(wav: &std::path::Path) -> Result<String, String> {
+    let exe = exe().ok_or_else(install_hint)?;
+    let file = MODELS[default_model()].1;
+    let model = model_path(file);
+    if !have_model(file) {
+        return Err(format!("model {file} is not downloaded (Subtitles ▸ Get captions)"));
     }
-    prog.set(1.0, format!("{} segments", raw.len()));
-    Ok(())
+    // ponytail: an English-only model is told "en", any other auto-detects
+    let lang = if file.contains(".en.") { "en" } else { "auto" };
+    let out = ffpipe::command(&exe)
+        .arg("-m")
+        .arg(&model)
+        .arg("-f")
+        .arg(wav)
+        .args(["-l", lang])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("{}: {e}", exe.display()))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        let last = err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string();
+        return Err(if last.is_empty() { format!("whisper failed ({})", out.status) } else { last });
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    Ok(text.lines().filter_map(parse_line).map(|s| s.2).collect::<Vec<_>>().join(" "))
 }
 
 // ---------------------------------------------------------------- parsing
@@ -873,6 +993,33 @@ mod tests {
         assert_eq!(ripple_time(4.0, &removed), Some(2.0));
         assert_eq!(ripple_time(7.0, &removed), Some(4.0));
         assert_eq!(ripple_time(7.0, &[]), Some(7.0));
+    }
+
+    #[test]
+    fn islands_merge_short_gaps_and_drop_junk() {
+        let r = [(10.0, 12.0), (0.0, 2.0), (2.5, 4.0), (5.0, 5.0), (7.0, 6.0), (11.0, 13.0)];
+        // 0-2 and 2.5-4 merge (gap 0.5); 4 → 10 is a real pause; 11-13 overlaps 10-12
+        assert_eq!(islands_from_ranges(&r, ISLAND_GAP), vec![(0.0, 4.0), (10.0, 13.0)]);
+        assert_eq!(islands_from_ranges(&r, 0.0), vec![(0.0, 2.0), (2.5, 4.0), (10.0, 13.0)]);
+        assert!(islands_from_ranges(&[], ISLAND_GAP).is_empty());
+    }
+
+    #[test]
+    fn island_words_shift_by_the_island_start() {
+        let mut w = vec![(0.0, 0.4, "a".to_string()), (0.5, 1.0, "b".to_string())];
+        offset_words(&mut w, 30.0);
+        assert_eq!(w, vec![(30.0, 30.4, "a".to_string()), (30.5, 31.0, "b".to_string())]);
+        // then retime maps them onto the timeline exactly like a whole-clip run
+        let mut segs: Vec<Segment> = w.into_iter().map(|(a, b, t)| Segment::plain(a, b, t)).collect();
+        retime(&mut segs, 5.0, 0.5);
+        assert_eq!((segs[0].start, segs[1].end), (20.0, 20.5));
+    }
+
+    #[test]
+    fn temp_wavs_are_unique() {
+        let (a, b) = (temp_wav(), temp_wav());
+        assert_ne!(a, b);
+        assert!(a.to_string_lossy().contains(&format!("se-transcribe-{}-", std::process::id())));
     }
 
     #[test]

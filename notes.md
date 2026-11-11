@@ -7,6 +7,18 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
 
 ---
 
+- **perf-baseline (2026-11-10): how to take the Pro plan's baseline. Numbers: not measured yet.**
+  On a quiet machine (nothing else encoding, plugged in), release build:
+  `cargo test --release bench_export -- --ignored --nocapture` (10 s 1080p60 two-layer project, CPU
+  path, libx264 + the hardware H.264 encoder if ffmpeg lists one: fps each),
+  `cargo test --release bench_source_monitor -- --ignored --nocapture` (1080p60 through the Source
+  player: frames published vs due, dropped), plus the existing `bench_4k_preview` and
+  `bench_multilayer_preview`. Then in the app turn on Playback ▸ Performance HUD (or MCP
+  `playback.hud`), play a 1080p60 clip for 10 s in each monitor and read UI avg/p95, GL composite,
+  upload, decode avg/worst, cache %, dropped (the same numbers come back from `playback.status`).
+  GPU-path export is not benched (needs the UI's GL context) - time it from the app.
+  Baseline: not measured yet. Record it here, then confirm the budgets in goals.md.
+
 - **alpha-proxy (2026-10-06): a `.mov` with alpha previewed on black because its proxy was yuv420p.**
   Export was always right (it reads the source). Such a source now gets a STACKED proxy, `<hash>-a.mp4`:
   still all-intra H.264 that Media Foundation reads, twice as tall, premultiplied colour on top and the

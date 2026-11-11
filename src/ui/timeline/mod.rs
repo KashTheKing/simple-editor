@@ -176,6 +176,11 @@ pub struct TimelineState {
     pub show_kinds: (bool, bool),
     /// tools-panel: the Marker tool's press time while a drag is out - a range marker on release.
     marker_from: Option<f64>,
+    // ---- ws:mcp-context ----
+    /// Clips an agent's undo group just changed, outlined at `flash_alpha` (faded by
+    /// `ui::app::tools_context::tick`; 0 = nothing drawn).
+    pub flash: Vec<Id>,
+    pub flash_alpha: f32,
 }
 
 impl Default for TimelineState {
@@ -206,6 +211,9 @@ impl Default for TimelineState {
             hover_time: None,
             show_kinds: (true, true),
             marker_from: None,
+            // ---- ws:mcp-context ----
+            flash: Vec::new(),
+            flash_alpha: 0.0,
         }
     }
 }
@@ -1092,14 +1100,10 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     continue;
                 }
                 let sel = state.selected_marker == Some(m.id);
-                flag(
-                    &lp.with_clip_rect(vis),
-                    mx,
-                    rect.top() + 1.0,
-                    rect.bottom(),
-                    label_color(c.project, m.label, pal.text),
-                    sel,
-                );
+                // ws:mcp-context: a ticked-off comment is drawn dimmed
+                let col = label_color(c.project, m.label, pal.text);
+                let col = if m.done { col.gamma_multiply(0.35) } else { col };
+                flag(&lp.with_clip_rect(vis), mx, rect.top() + 1.0, rect.bottom(), col, sel);
                 // interaction is registered after the clip bodies (below) so the small flags win hit-testing
                 let mr = Rect::from_min_size(pos2(mx - 2.0, rect.top()), vec2(FLAG_W + 4.0, 10.0)).intersect(lanes);
                 if mr.is_positive() {
@@ -1111,6 +1115,11 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 lp.rect_stroke(rect, cr, Stroke::new(2.0, pal.selection), StrokeKind::Inside);
             } else if linked_sel.contains(&clip.id) {
                 lp.rect_stroke(rect, cr, Stroke::new(1.0, pal.selection), StrokeKind::Inside);
+            }
+            // ws:mcp-context: the clips an agent's edit just changed, a fading outline
+            if state.flash_alpha > 0.0 && state.flash.contains(&clip.id) {
+                let s = Stroke::new(2.0, pal.accent.gamma_multiply(state.flash_alpha));
+                lp.rect_stroke(rect, cr, s, StrokeKind::Outside);
             }
 
             // interaction: body, then volume line, then edges, then fade handles on top
@@ -1637,11 +1646,25 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             continue;
         }
         let mx = state.x_at(m.t);
-        if mx < ruler.left() - FLAG_W || mx > ruler.right() {
+        // ws:mcp-context: a range marker is a translucent span with the flag at its start (so it is
+        // still drawn while only its tail is in view); a ticked-off comment is dimmed
+        let end_x = state.x_at(m.t + m.duration.max(0.0));
+        if end_x.max(mx) < ruler.left() - FLAG_W || mx > ruler.right() {
             continue;
         }
         let sel = state.selected_marker == Some(m.id);
-        flag(&rp, mx, ruler.top() + 1.0, ruler.bottom(), label_color(c.project, m.label, pal.accent), sel);
+        let col = label_color(c.project, m.label, pal.accent);
+        let col = if m.done { col.gamma_multiply(0.35) } else { col };
+        if m.duration > 0.0 {
+            let span = Rect::from_min_max(
+                pos2(mx.max(ruler.left()), ruler.top() + 1.0),
+                pos2(end_x.min(ruler.right()), ruler.bottom()),
+            );
+            if span.is_positive() {
+                rp.rect_filled(span, 0, col.gamma_multiply(0.25));
+            }
+        }
+        flag(&rp, mx, ruler.top() + 1.0, ruler.bottom(), col, sel);
         let mr = Rect::from_min_size(pos2(mx - 2.0, ruler.top()), vec2(FLAG_W + 4.0, RULER_H)).intersect(ruler);
         if mr.is_positive() {
             let r = ui.interact(mr, id.with(("mk", m.id)), Sense::click_and_drag());

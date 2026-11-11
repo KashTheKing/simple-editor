@@ -4,9 +4,12 @@
 //! and audio tracks (one per project audio track, channel-source by stream). Text clips are exported as
 //! a generator-less gap (Premiere/Resolve text isn't interchangeable) - mention it in a comment.
 //! Paths as `file://localhost/C:/...` pathurls. Timebase = round(fps), NTSC flag when fps is fractional.
+//! Also: audio level / pan filters, `<link>` between linked A/V clipitems, cross dissolves as
+//! `<transitionitem>`, and sequence + clip `<marker>`s (name, comment, in, out). Track names and marker
+//! colours are not written: xmeml v5 has no element for either that Premiere and Resolve both read.
 
-use crate::model::{Asset, Clip, ClipKind, Project, TrackKind};
-use std::collections::HashSet;
+use crate::model::{Asset, Clip, ClipKind, Id, Marker, Project, TrackKind, TransitionEdge, TransitionKind};
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
 pub fn export_xmeml(project: &Project) -> String {
@@ -33,7 +36,21 @@ pub fn export_xmeml(project: &Project) -> String {
         project.width, project.height
     );
     let mut defined: HashSet<u64> = HashSet::new();
-    let mut n_item = 0;
+    // clip id → (clipitem number, is video, track index within its kind, clip index within its track),
+    // all 1-based - numbered up front so a `<link>` can point at a clipitem written later
+    let mut items: HashMap<Id, (usize, bool, usize, usize)> = HashMap::new();
+    let mut groups: HashMap<Id, Vec<Id>> = HashMap::new();
+    for kind in [TrackKind::Video, TrackKind::Audio] {
+        for (k, track) in project.tracks.iter().filter(|t| t.kind == kind).enumerate() {
+            let exported = track.clips.iter().filter(|c| c.uses_asset() && project.asset(c.asset).is_some());
+            for (ci, c) in exported.enumerate() {
+                items.insert(c.id, (items.len() + 1, kind == TrackKind::Video, k + 1, ci + 1));
+                if c.link != 0 {
+                    groups.entry(c.link).or_default().push(c.id);
+                }
+            }
+        }
+    }
     for kind in [TrackKind::Video, TrackKind::Audio] {
         if kind == TrackKind::Audio {
             x.push_str("</video>\n<audio>\n");
@@ -57,7 +74,28 @@ pub fn export_xmeml(project: &Project) -> String {
                     );
                     continue;
                 };
-                n_item += 1;
+                let n_item = items.get(&c.id).map(|i| i.0).unwrap_or(0);
+                for tr in track.transitions.iter().filter(|t| t.right == c.id && t.edge == TransitionEdge::Cut) {
+                    let Some((cut, h)) = track.transition_clips(tr).and_then(|(l, r)| tr.cut_half(l, r)) else {
+                        continue;
+                    };
+                    if tr.kind != TransitionKind::CrossFade {
+                        // ponytail: only cross dissolves map 1:1 - dips/pushes/wipes need per-app effect ids
+                        let _ = writeln!(x, "<!-- {} transition at {} skipped (not interchangeable) -->", tr.kind.name(), fr(cut));
+                        continue;
+                    }
+                    let effect = if kind == TrackKind::Video {
+                        "<name>Cross Dissolve</name><effectid>Cross Dissolve</effectid><effectcategory>Dissolve</effectcategory><effecttype>transition</effecttype><mediatype>video</mediatype>"
+                    } else {
+                        "<name>Cross Fade (+3dB)</name><effectid>KGAudioTransCrossFade3dB</effectid><effecttype>transition</effecttype><mediatype>audio</mediatype>"
+                    };
+                    let _ = writeln!(
+                        x,
+                        "<transitionitem>\n{rate}\n<start>{}</start>\n<end>{}</end>\n<alignment>center</alignment>\n<effect>{effect}</effect>\n</transitionitem>",
+                        fr(cut - h),
+                        fr(cut + h)
+                    );
+                }
                 let src_dur = if asset.kind == ClipKind::Image { c.duration } else { asset.duration };
                 let _ = writeln!(x, "<clipitem id=\"clipitem-{n_item}\">\n<name>{}</name>", esc(&c.name));
                 let _ =
@@ -83,14 +121,67 @@ pub fn export_xmeml(project: &Project) -> String {
                         "<sourcetrack><mediatype>audio</mediatype><trackindex>{}</trackindex></sourcetrack>",
                         c.audio_stream + 1
                     );
+                    write_audio_filters(&mut x, c);
+                }
+                if let Some(group) = groups.get(&c.link).filter(|g| c.link != 0 && g.len() > 1) {
+                    for (n, video, ti, ci) in group.iter().filter_map(|id| items.get(id)) {
+                        let _ = writeln!(
+                            x,
+                            "<link><linkclipref>clipitem-{n}</linkclipref><mediatype>{}</mediatype><trackindex>{ti}</trackindex><clipindex>{ci}</clipindex></link>",
+                            if *video { "video" } else { "audio" }
+                        );
+                    }
+                }
+                for m in &c.markers {
+                    // clip markers sit in source-media frames in xmeml; ours are clip-local seconds
+                    let fin = fr(c.src_in + m.t * c.speed);
+                    write_marker(&mut x, m, fin, fin + fr(m.duration * c.speed));
                 }
                 x.push_str("</clipitem>\n");
             }
             let _ = writeln!(x, "<enabled>{}</enabled>\n<locked>FALSE</locked>\n</track>", tf(project.active(ti)));
         }
     }
-    x.push_str("</audio>\n</media>\n</sequence>\n</xmeml>\n");
+    x.push_str("</audio>\n</media>\n");
+    // the main timeline's markers (export_project has already closed any open nested sequence)
+    for m in project.markers.iter().filter(|m| m.sequence.is_none()) {
+        let fin = fr(m.t);
+        write_marker(&mut x, m, fin, fin + fr(m.duration));
+    }
+    x.push_str("</sequence>\n</xmeml>\n");
     x
+}
+
+/// `<out>` -1 is a point marker. No colour: xmeml v5 has no marker colour element.
+fn write_marker(x: &mut String, m: &Marker, fin: i64, fout: i64) {
+    let _ = writeln!(
+        x,
+        "<marker>\n<comment>{}</comment>\n<name>{}</name>\n<in>{fin}</in>\n<out>{}</out>\n</marker>",
+        esc(&m.note),
+        esc(&m.name),
+        if fout > fin { fout } else { -1 }
+    );
+}
+
+/// Static clip gain (linear, FCP's 0 … 3.98 = +12 dB) and pan (-1 … 1) when non-default.
+fn write_audio_filters(x: &mut String, c: &Clip) {
+    // ponytail: animated volume / pan are written as their value at clip start, like write_filters
+    if !c.volume.is_default(1.0) {
+        let _ = writeln!(
+            x,
+            "<filter><effect><name>Audio Levels</name><effectid>audiolevels</effectid><effectcategory>audiolevels</effectcategory><effecttype>audiolevels</effecttype><mediatype>audio</mediatype>\
+<parameter><parameterid>level</parameterid><name>Level</name><valuemin>0</valuemin><valuemax>3.98109</valuemax><value>{}</value></parameter></effect></filter>",
+            c.volume.at(0.0).clamp(0.0, 3.98109)
+        );
+    }
+    if !c.pan.is_default(0.0) {
+        let _ = writeln!(
+            x,
+            "<filter><effect><name>Audio Pan</name><effectid>audiopan</effectid><effectcategory>audiopan</effectcategory><effecttype>audiopan</effecttype><mediatype>audio</mediatype>\
+<parameter><parameterid>pan</parameterid><name>Pan</name><valuemin>-1</valuemin><valuemax>1</valuemax><value>{}</value></parameter></effect></filter>",
+            c.pan.at(0.0).clamp(-1.0, 1.0)
+        );
+    }
 }
 
 fn write_file(x: &mut String, asset: &Asset, rate: &str, frames: i64) {
@@ -254,5 +345,26 @@ mod tests {
         assert!(x.contains("clip \"Intro - - - v2\""), "{x}");
         // UNC paths keep their host
         assert_eq!(pathurl("\\\\nas\\share\\a b\\v.mp4"), "file://nas/share/a%20b/v.mp4");
+    }
+
+    #[test]
+    fn xmeml_links_levels_transitions_markers() {
+        let mut p = Project::from_media(asset());
+        p.split_at(4.0, None);
+        let right = p.tracks[0].clips[1].id;
+        assert!(p.add_transition(right, TransitionKind::CrossFade, 0.5).is_some());
+        let a1 = p.audio_tracks()[0];
+        p.tracks[a1].clips[0].volume.value = 0.5;
+        p.add_marker(2.0, "M & N");
+        let x = export_xmeml(&p);
+        assert_eq!(count(&x, "<transitionitem>"), 1, "{x}");
+        assert!(x.contains("<effectid>Cross Dissolve</effectid>"));
+        assert!(x.contains("<effectid>audiolevels</effectid>") && x.contains("<value>0.5</value>"), "{x}");
+        assert!(x.contains("<linkclipref>clipitem-1</linkclipref>"), "linked A/V clipitems point at each other");
+        assert!(x.contains("<name>M &amp; N</name>\n<in>60</in>\n<out>-1</out>"), "{x}");
+        for tag in ["link", "marker", "transitionitem", "effect", "filter", "sequence"] {
+            let open = count(&x, &format!("<{tag}>")) + count(&x, &format!("<{tag} "));
+            assert_eq!(open, count(&x, &format!("</{tag}>")), "{tag}");
+        }
     }
 }

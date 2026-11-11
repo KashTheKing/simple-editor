@@ -113,6 +113,7 @@ const K_MASK: u64 = 2;
 const K_COPY: u64 = 3;
 const K_MATTE: u64 = 4;
 const K_CHECKER: u64 = 5;
+const K_NV12: u64 = 15; // ws:export-pipeline
 const EFFECT_BASE: u64 = 16;
 const USER_BIT: u64 = 1 << 63;
 
@@ -141,6 +142,56 @@ vec4 effect(vec4 src, vec2 uv) {
     return vec4(mix(vec3(0.60), vec3(0.80), parity), 1.0);
 }
 "#;
+
+// ---- ws:export-pipeline ----
+/// Export readback in NV12: drawn into a `W x 3H/2` target whose red channel, read with
+/// `glReadPixels(GL_RED)`, is exactly ffmpeg's `nv12` layout - rows `0..H` the Y plane, rows `H..`
+/// the interleaved Cb,Cr plane (2x2 box-averaged). BT.709 limited range, the same matrix/range
+/// `run_export` declares to ffmpeg with `-colorspace bt709 -color_range tv`. Alpha is ignored, as
+/// ffmpeg's own rgba->yuv420p does. `u_res` = the canvas size (W, H); W and H must be even.
+/// Canvas GL row y is image row y (see `shaders::VERT`), so no flip.
+const NV12_MAIN: &str = r#"
+vec3 rgb_at(int x, int y) { return texelFetch(tex, ivec2(x, y), 0).rgb; }
+void main() {
+    int h = int(u_res.y);
+    ivec2 p = ivec2(gl_FragCoord.xy);
+    float v;
+    if (p.y < h) {
+        v = 16.0 + 219.0 * luma(rgb_at(p.x, p.y));
+    } else {
+        int cx = (p.x / 2) * 2;
+        int cy = (p.y - h) * 2;
+        vec3 c = 0.25 * (rgb_at(cx, cy) + rgb_at(cx + 1, cy) + rgb_at(cx, cy + 1) + rgb_at(cx + 1, cy + 1));
+        float y = luma(c);
+        v = (p.x % 2 == 0) ? 128.0 + 224.0 * (c.b - y) / 1.8556 : 128.0 + 224.0 * (c.r - y) / 1.5748;
+    }
+    v = clamp(v, 0.0, 255.0) / 255.0;
+    out_color = vec4(v, v, v, 1.0);
+}
+"#;
+
+/// Pixel-pack buffers in the export readback ring: frame k is read back while k+1 and k+2 render.
+pub const READBACK_RING: usize = 3;
+
+/// One export readback in flight in a PBO.
+struct PendingRead {
+    slot: usize,
+    bytes: usize,
+    w: u32,
+    h: u32,
+    t: f64,
+}
+
+/// The export readback ring (`render_export_begin` / `render_export_finish`).
+#[derive(Default)]
+struct Readback {
+    /// (buffer, bytes allocated) per slot; created on first use.
+    pbos: Vec<(glow::Buffer, usize)>,
+    next: usize,
+    pending: std::collections::VecDeque<PendingRead>,
+    /// A buffer call failed once: every later export frame takes the synchronous path.
+    broken: bool,
+}
 
 /// Texture units.
 const U_TEX: u32 = 0;
@@ -268,6 +319,17 @@ pub struct GpuRenderer {
     /// The last computed `FrameStats` and the playhead time it was sampled at, so a repeated call at the
     /// same time (the common "MCP asked twice") does not re-render/re-read anything.
     last_stats: Option<(f64, FrameStats)>,
+    // ---- ws:perf-baseline ----
+    /// Microseconds spent in `render_canvas` from `render_preview_texture` / in the per-clip `upload`
+    /// since the HUD last took them (`ui::hud::Hud::take_gpu` zeroes both once per UI frame).
+    pub perf_composite_us: u64,
+    pub perf_upload_us: u64,
+    // ---- ws:play-source-monitor ----
+    /// The Source monitor's canvas: owned here, never in `loaned`/`pool`, so the main preview's
+    /// `reclaim` cannot recycle (and redraw over) it, and it stays paintable on frames with no new layers.
+    source_canvas: Option<Target>,
+    // ---- ws:export-pipeline ----
+    readback: Readback,
 }
 
 impl GpuRenderer {
@@ -305,6 +367,10 @@ impl GpuRenderer {
                 lut_textures: HashMap::new(),
                 stats_wanted: false,
                 last_stats: None,
+                perf_composite_us: 0,
+                perf_upload_us: 0,
+                source_canvas: None,
+                readback: Readback::default(), // ws:export-pipeline
             };
             // The composite program is the one nothing works without: fail loudly here instead of
             // silently rendering black later.
@@ -323,6 +389,10 @@ impl GpuRenderer {
         let rev = (frame.rgba.as_ptr() as usize, frame.pts.to_bits());
         let (w, h) = (frame.width, frame.height);
         let used = self.renders;
+        // An MF video frame arrives as BGRX (`Frame::bgrx`): the driver swaps B and R on upload and
+        // the texture's alpha swizzle reads 1 for the undefined X byte, so no shader sees the
+        // difference and no CPU loop swizzles it.
+        let (format, alpha) = if frame.bgrx { (glow::BGRA, glow::ONE) } else { (glow::RGBA, glow::ALPHA) };
         unsafe {
             match self.textures.get_mut(&key) {
                 Some(lt) if lt.w == w && lt.h == h => {
@@ -332,6 +402,7 @@ impl GpuRenderer {
                     }
                     lt.rev = rev;
                     gl.bind_texture(glow::TEXTURE_2D, Some(lt.tex));
+                    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_SWIZZLE_A, alpha as i32);
                     gl.tex_sub_image_2d(
                         glow::TEXTURE_2D,
                         0,
@@ -339,7 +410,7 @@ impl GpuRenderer {
                         0,
                         w as i32,
                         h as i32,
-                        glow::RGBA,
+                        format,
                         glow::UNSIGNED_BYTE,
                         glow::PixelUnpackData::Slice(Some(&frame.rgba)),
                     );
@@ -353,6 +424,7 @@ impl GpuRenderer {
             let Ok(tex) = gl.create_texture() else { return self.blank };
             gl.bind_texture(glow::TEXTURE_2D, Some(tex));
             tex_params(&gl);
+            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_SWIZZLE_A, alpha as i32);
             gl.tex_image_2d(
                 glow::TEXTURE_2D,
                 0,
@@ -360,7 +432,7 @@ impl GpuRenderer {
                 w as i32,
                 h as i32,
                 0,
-                glow::RGBA,
+                format,
                 glow::UNSIGNED_BYTE,
                 glow::PixelUnpackData::Slice(Some(&frame.rgba)),
             );
@@ -423,6 +495,181 @@ impl GpuRenderer {
         self.restore(host);
     }
 
+    // ---- ws:export-pipeline ----
+    /// Bytes an export frame reads back: RGBA, or NV12 (`w*h*3/2`; `w`, `h` even).
+    pub fn export_bytes(w: u32, h: u32, nv12: bool) -> usize {
+        let px = w as usize * h as usize;
+        if nv12 {
+            px * 3 / 2
+        } else {
+            px * 4
+        }
+    }
+
+    /// Render the canvas for an export frame and, for `nv12`, pack it (see `NV12_MAIN`). The returned
+    /// target is what `glReadPixels` reads (`GL_RED` for NV12, `GL_RGBA` otherwise); the caller puts it
+    /// back in the pool. Caller does `reclaim`/`host_fbo`/`restore`.
+    fn export_target(&mut self, project: &Project, t: f64, w: u32, h: u32, layers: &LayerSet, nv12: bool) -> Option<Target> {
+        let canvas = self.render_canvas(project, t, w, h, layers)?;
+        if !nv12 {
+            return Some(canvas);
+        }
+        let packed = match self.ensure(K_NV12) {
+            Ok(()) => self.acquire(w, h * 3 / 2),
+            Err(_) => None,
+        };
+        let Some(packed) = packed else {
+            self.pool.put(canvas);
+            return None;
+        };
+        let gl = self.gl.clone();
+        self.draw(K_NV12, &packed, canvas.tex, None, |p| unsafe {
+            gl.uniform_2_f32(p.uni.get("u_res"), w as f32, h as f32);
+        });
+        self.pool.put(canvas);
+        Some(packed)
+    }
+
+    /// Synchronous export frame: render and `glReadPixels` straight into `out` (RGBA, or NV12 bytes in
+    /// `out.rgba` with `out.width/height` the picture size). A failed render leaves a black frame,
+    /// like `render_frame`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_export_sync(
+        &mut self,
+        project: &Project,
+        t: f64,
+        w: u32,
+        h: u32,
+        layers: &LayerSet,
+        nv12: bool,
+        out: &mut Frame,
+    ) {
+        self.reclaim();
+        let host = self.host_fbo();
+        out.resize(w, h);
+        out.pts = t;
+        out.rgba.resize(Self::export_bytes(w, h, nv12), 0);
+        if w == 0 || h == 0 {
+            self.restore(host);
+            return;
+        }
+        if let Some(target) = self.export_target(project, t, w, h, layers, nv12) {
+            let gl = self.gl.clone();
+            unsafe {
+                gl.bind_framebuffer(glow::FRAMEBUFFER, Some(target.fbo));
+                gl.pixel_store_i32(glow::PACK_ALIGNMENT, 1);
+                gl.read_pixels(
+                    0,
+                    0,
+                    target.w as i32,
+                    target.h as i32,
+                    if nv12 { glow::RED } else { glow::RGBA },
+                    glow::UNSIGNED_BYTE,
+                    glow::PixelPackData::Slice(Some(&mut out.rgba)),
+                );
+            }
+            self.pool.put(target);
+        }
+        self.restore(host);
+    }
+
+    /// Asynchronous export frame: render and start its readback into the next pixel-pack buffer of the
+    /// ring. False = nothing was queued (ring full, a buffer call failed - then for good - or the render
+    /// failed): the caller uses `render_export_sync` instead. Completed in FIFO order by
+    /// `render_export_finish`.
+    pub fn render_export_begin(&mut self, project: &Project, t: f64, w: u32, h: u32, layers: &LayerSet, nv12: bool) -> bool {
+        if self.readback.broken || self.readback.pending.len() >= READBACK_RING || w == 0 || h == 0 {
+            return false;
+        }
+        self.reclaim();
+        let host = self.host_fbo();
+        let ok = match self.export_target(project, t, w, h, layers, nv12) {
+            Some(target) => {
+                let ok = self.pbo_read(&target, nv12, (w, h), t);
+                self.pool.put(target);
+                ok
+            }
+            None => false,
+        };
+        self.restore(host);
+        ok
+    }
+
+    /// Export frames whose readback is in flight.
+    pub fn export_pending(&self) -> usize {
+        self.readback.pending.len()
+    }
+
+    /// Copy the oldest in-flight readback into `out` (waits only if the GPU has not finished it yet).
+    /// False when nothing is pending.
+    pub fn render_export_finish(&mut self, out: &mut Frame) -> bool {
+        let Some(p) = self.readback.pending.pop_front() else { return false };
+        let buf = self.readback.pbos[p.slot].0;
+        out.resize(p.w, p.h);
+        out.pts = p.t;
+        out.rgba.resize(p.bytes, 0);
+        unsafe {
+            self.gl.bind_buffer(glow::PIXEL_PACK_BUFFER, Some(buf));
+            self.gl.get_buffer_sub_data(glow::PIXEL_PACK_BUFFER, 0, &mut out.rgba);
+            self.gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
+        }
+        true
+    }
+
+    /// Queue `glReadPixels` of `target` into the next free ring buffer. False (and the ring marked
+    /// broken) when GL reports an error, so the caller degrades to the synchronous read.
+    fn pbo_read(&mut self, target: &Target, nv12: bool, size: (u32, u32), t: f64) -> bool {
+        let gl = self.gl.clone();
+        let bytes = target.w as usize * target.h as usize * if nv12 { 1 } else { 4 };
+        let rb = &mut self.readback;
+        unsafe {
+            // drop stale error flags so the check below only sees ours (bounded: a lost context repeats)
+            for _ in 0..8 {
+                if gl.get_error() == glow::NO_ERROR {
+                    break;
+                }
+            }
+            if rb.pbos.is_empty() {
+                for _ in 0..READBACK_RING {
+                    match gl.create_buffer() {
+                        Ok(b) => rb.pbos.push((b, 0)),
+                        Err(_) => {
+                            rb.broken = true;
+                            return false;
+                        }
+                    }
+                }
+            }
+            // FIFO completion + round-robin slots: with fewer than READBACK_RING pending, `next` is free
+            let slot = rb.next;
+            let (buf, alloc) = &mut rb.pbos[slot];
+            gl.bind_buffer(glow::PIXEL_PACK_BUFFER, Some(*buf));
+            if *alloc != bytes {
+                gl.buffer_data_size(glow::PIXEL_PACK_BUFFER, bytes as i32, glow::STREAM_READ);
+                *alloc = bytes;
+            }
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(target.fbo));
+            gl.pixel_store_i32(glow::PACK_ALIGNMENT, 1);
+            gl.read_pixels(
+                0,
+                0,
+                target.w as i32,
+                target.h as i32,
+                if nv12 { glow::RED } else { glow::RGBA },
+                glow::UNSIGNED_BYTE,
+                glow::PixelPackData::BufferOffset(0),
+            );
+            gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
+            if gl.get_error() != glow::NO_ERROR {
+                rb.broken = true;
+                return false;
+            }
+            rb.next = (slot + 1) % READBACK_RING;
+        }
+        rb.pending.push_back(PendingRead { slot, bytes, w: size.0, h: size.1, t });
+        true
+    }
+
     /// Apply one effect to a texture (used by the effect-thumbnail grid and the node editor previews).
     /// Render the timeline into an off-screen texture the caller can paint directly (zero-copy preview).
     /// The texture stays owned by the renderer and is valid until the next call; `reclaim()` recycles it
@@ -440,7 +687,9 @@ impl GpuRenderer {
         }
         self.reclaim();
         let host = self.host_fbo();
+        let perf_t0 = std::time::Instant::now(); // ws:perf-baseline
         let canvas = self.render_canvas(project, t, w, h, layers);
+        self.perf_composite_us += perf_t0.elapsed().as_micros() as u64; // ws:perf-baseline
         // ---- ws:color-engine ----
         // Guarded stats readback: ONLY here (the live-preview path App::update actually calls), never
         // render_to_texture (dead code) or the shared render_canvas caller render_frame uses (export /
@@ -453,6 +702,36 @@ impl GpuRenderer {
         let out = (canvas.tex, canvas.w, canvas.h);
         // hand it out for this frame; `loaned` returns it to the pool on the next `reclaim`
         self.loaned.push(canvas);
+        Some(out)
+    }
+
+    // ---- ws:play-source-monitor ----
+    /// `render_preview_texture` for the Source monitor: same compositor, but the result is kept in
+    /// `source_canvas` (the previous one goes back to the pool) instead of `loaned`. No `reclaim`, so
+    /// the main preview's canvas loaned this same frame is never recycled under it, and the texture stays
+    /// valid until the next call here - the pane repaints it without re-rendering while nothing changed.
+    /// ponytail: layer textures are keyed by clip id, which the Source's synthetic project shares with
+    /// the timeline's - both playing at once re-upload on every switch (correct, just slower). A key
+    /// namespace per canvas is the upgrade if that shows up in the HUD.
+    pub fn render_source_texture(
+        &mut self,
+        project: &Project,
+        t: f64,
+        w: u32,
+        h: u32,
+        layers: &LayerSet,
+    ) -> Option<(glow::Texture, u32, u32)> {
+        if w == 0 || h == 0 {
+            return None;
+        }
+        let host = self.host_fbo();
+        let canvas = self.render_canvas(project, t, w, h, layers);
+        self.restore(host);
+        let canvas = canvas?;
+        let out = (canvas.tex, canvas.w, canvas.h);
+        if let Some(old) = self.source_canvas.replace(canvas) {
+            self.pool.put(old);
+        }
         Some(out)
     }
 
@@ -715,6 +994,7 @@ impl GpuRenderer {
             K_COPY => format!("{}\n{}\n{}", shaders::PRELUDE, COPY_BODY, shaders::MAIN),
             K_MATTE => format!("{}\n{}\n{}", shaders::PRELUDE, MATTE_BODY, shaders::MAIN),
             K_CHECKER => format!("{}\n{}\n{}", shaders::PRELUDE, CHECKER_BODY, shaders::MAIN),
+            K_NV12 => format!("{}\n{}", shaders::PRELUDE, NV12_MAIN), // ws:export-pipeline
             _ => return Err("no source for this program".into()),
         };
         self.link(key, &src)
@@ -937,7 +1217,7 @@ impl GpuRenderer {
             return None;
         }
         let frame = layers.get(clip)?;
-        crate::engine::effects::track(frame, &param_values(effect, t))
+        crate::engine::effects::track(&frame.to_rgba(), &param_values(effect, t))
     }
 
     /// The neighbouring frames a `needs_motion` effect wants: (prev, next, how many are real).
@@ -1279,7 +1559,9 @@ impl GpuRenderer {
         p.cy += extra.dy;
         let Some(inv) = inverse_placement(&p, focal, z0) else { return canvas };
 
+        let perf_t0 = std::time::Instant::now(); // ws:perf-baseline
         let tex = self.upload(clip.id, frame);
+        self.perf_upload_us += perf_t0.elapsed().as_micros() as u64; // ws:perf-baseline
         let lsize = (frame.width, frame.height);
         // effect scale: layer px per project px (matches compose::apply_effects' img_scale - footage
         // is decoded at roughly the placed size, text/shape bitmaps arrive at canvas scale already)
@@ -1598,12 +1880,15 @@ impl Drop for GpuRenderer {
             for (_, t) in self.lut_textures.drain() {
                 gl.delete_texture(t);
             }
-            for t in self.loaned.drain(..).chain(self.pool.free.drain(..)) {
+            for t in self.loaned.drain(..).chain(self.pool.free.drain(..)).chain(self.source_canvas.take()) {
                 gl.delete_framebuffer(t.fbo);
                 gl.delete_texture(t.tex);
             }
             for (_, p) in self.programs.map.drain() {
                 gl.delete_program(p.p);
+            }
+            for (b, _) in self.readback.pbos.drain(..) {
+                gl.delete_buffer(b); // ws:export-pipeline
             }
             gl.delete_shader(self.vert);
             gl.delete_texture(self.blank);
@@ -2214,6 +2499,7 @@ mod tests {
                 MATTE_BODY,
                 shaders::MAIN
             ),
+            format!("{}\n{}", shaders::PRELUDE, NV12_MAIN), // ws:export-pipeline
         ];
         sources.extend(
             crate::model::EffectKind::ALL.iter().filter_map(|k| shaders::fragment(*k, crate::model::DEFAULT_SHADER)),
