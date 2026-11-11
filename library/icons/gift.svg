@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+<title>Gift</title>
+<desc>gift, present, reward, giveaway</desc>
+<path fill-rule="evenodd" d="M4.5 12.5h15V19a2 2 0 0 1-2 2h-11a2 2 0 0 1-2-2zM11 12.5v8.5h2v-8.5z"/><path fill-rule="evenodd" d="M3.5 7.5h17a1 1 0 0 1 1 1v2.5a1 1 0 0 1-1 1h-17a1 1 0 0 1-1-1V8.5a1 1 0 0 1 1-1zM11 7.5v4.5h2V7.5z"/><path d="M12 7C10 7 7.5 6 7.5 4.5S10 3 12 7c2-4 4.5-3.5 4.5-2.5S14 7 12 7z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

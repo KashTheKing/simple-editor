@@ -1,0 +1,34 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Meme Caption</title>
+<meta name="se:kind" content="layer">
+<meta name="se:desc" content="Classic meme text: white Impact capitals with a thick black outline, top and bottom, each punching in.">
+<meta name="se:tags" content="meme, caption, impact, funny, text, top text, bottom text">
+<meta name="se:size" content="1920x1080">
+<meta name="se:duration" content="4s">
+<meta name="se:field" content="top | text | When the build finally passes">
+<meta name="se:field" content="bottom | text | But you forgot to save the file">
+<style>
+  html, body { margin: 0; background: transparent; overflow: hidden; }
+  body { position: relative; width: 100vw; height: 100vh; font-family: Impact, "Arial Black", "Segoe UI", sans-serif; }
+
+  .line { position: absolute; left: 80px; right: 80px; display: flex; justify-content: center; text-align: center;
+    color: #fff; font-size: 128px; line-height: 1.06; letter-spacing: 2px; text-transform: uppercase;
+    -webkit-text-stroke: 14px #000; paint-order: stroke fill; stroke-linejoin: round;
+    text-shadow: 0 6px 0 #000, 0 10px 18px rgba(0, 0, 0, .45); overflow-wrap: anywhere; }
+  .top { top: 36px; align-items: flex-start; }
+  .bottom { bottom: 36px; align-items: flex-end; }
+  .top span { transform-origin: 50% 0; animation: punch .35s cubic-bezier(.2, 1.5, .4, 1) .2s both; }
+  .bottom span { transform-origin: 50% 100%; animation: punch .35s cubic-bezier(.2, 1.5, .4, 1) .9s both; }
+  span { display: block; max-width: 100%; }
+
+  @keyframes punch { 0% { transform: scale(2.4); opacity: 0; } 35% { opacity: 1; } 100% { transform: scale(1); opacity: 1; } }
+</style>
+</head>
+<body>
+<div class="line top"><span>{{top}}</span></div>
+<div class="line bottom"><span>{{bottom}}</span></div>
+</body>
+</html>

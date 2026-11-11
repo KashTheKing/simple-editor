@@ -1,0 +1,66 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Subscribe Button</title>
+<meta name="se:kind" content="layer">
+<meta name="se:desc" content="A video-site subscribe button pops in, a cursor clicks it and it turns into a grey Subscribed state with a tick.">
+<meta name="se:tags" content="subscribe, button, cursor, click, social, youtuber">
+<meta name="se:size" content="600x240">
+<meta name="se:duration" content="4s">
+<meta name="se:thumb" content="2.6">
+<meta name="se:field" content="label | text | Subscribe">
+<meta name="se:field" content="subscribed_label | text | Subscribed">
+<meta name="se:field" content="accent | color | #e62117">
+<style>
+  :root { --accent: {{accent}}; }
+  html, body { margin: 0; background: transparent; overflow: hidden; }
+  body { width: 100vw; height: 100vh; display: grid; place-items: center;
+    font-family: "Segoe UI", Arial, sans-serif; }
+
+  .stage { position: relative; animation: pop .6s cubic-bezier(.2, 1.5, .4, 1) both; }
+  .btn { position: relative; display: grid; align-items: center; height: 80px; padding: 0 40px;
+    border-radius: 40px; overflow: hidden; background: var(--accent); color: #fff;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, .35), 0 2px 6px rgba(0, 0, 0, .25);
+    animation: press .32s ease-in-out 1.5s both, toGrey .25s ease-out 1.62s both; }
+  .lbl { grid-area: 1 / 1; display: flex; align-items: center; justify-content: center; gap: 12px;
+    max-width: 400px; font-size: 32px; font-weight: 700; letter-spacing: .2px; white-space: nowrap; }
+  .lbl span { overflow: hidden; text-overflow: ellipsis; }
+  .a { animation: out .12s ease-in 1.6s both; }
+  .b { color: #0f0f0f; animation: in .35s cubic-bezier(.2, 1.4, .4, 1) 1.7s both; }
+  .tick { flex: none; width: 30px; height: 30px; }
+  .tick path { stroke-dasharray: 30; animation: draw .35s ease-out 1.8s both; }
+  .ripple { position: absolute; right: 38px; top: 55%; width: 40px; height: 40px; margin: -20px -20px 0 0;
+    border-radius: 50%; background: rgba(255, 255, 255, .55); animation: ripple .6s ease-out 1.58s both; }
+
+  .cursor { position: absolute; right: -6px; top: 44px; width: 44px; height: 52px;
+    filter: drop-shadow(0 3px 4px rgba(0, 0, 0, .45));
+    animation: cIn .85s cubic-bezier(.3, .7, .2, 1) .55s both, cTap .3s ease-in-out 1.5s both,
+      cOut .6s cubic-bezier(.6, 0, .8, .4) 2.7s both; }
+
+  @keyframes pop { from { transform: scale(0); opacity: 0; } 40% { opacity: 1; } to { transform: scale(1); } }
+  @keyframes press { 0%, 100% { transform: scale(1); } 45% { transform: scale(.9, .86); } 75% { transform: scale(1.04); } }
+  @keyframes toGrey { from { background: var(--accent); } to { background: #ececec; } }
+  @keyframes out { to { opacity: 0; transform: translateY(-16px); } }
+  @keyframes in { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
+  @keyframes draw { from { stroke-dashoffset: 30; } to { stroke-dashoffset: 0; } }
+  @keyframes ripple { from { transform: scale(0); opacity: 1; } to { transform: scale(14); opacity: 0; } }
+  @keyframes cIn { from { transform: translate(160px, 140px); opacity: 0; } 20% { opacity: 1; } to { transform: none; } }
+  @keyframes cTap { 50% { scale: .8; } }
+  @keyframes cOut { to { translate: 180px 120px; opacity: 0; } }
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="btn">
+    <div class="ripple"></div>
+    <div class="lbl a"><span>{{label}}</span></div>
+    <div class="lbl b">
+      <svg class="tick" viewBox="0 0 24 24"><path d="M4 12.5l5 5L20 6.5" fill="none" stroke="#0f0f0f" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span>{{subscribed_label}}</span>
+    </div>
+  </div>
+  <svg class="cursor" viewBox="0 0 22 26"><path d="M2 1.5v19.5l5.2-4.6 3.4 7.6 3.6-1.6-3.4-7.4H18z" fill="#fff" stroke="#111" stroke-width="1.6" stroke-linejoin="round"/></svg>
+</div>
+</body>
+</html>

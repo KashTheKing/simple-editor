@@ -1,0 +1,56 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Scoreboard</title>
+<meta name="se:kind" content="layer">
+<meta name="se:desc" content="A sports scoreboard with two team names, colour chips, scores and a clock in the middle.">
+<meta name="se:tags" content="scoreboard, sports, score, match, game, teams">
+<meta name="se:size" content="900x180">
+<meta name="se:duration" content="5s">
+<meta name="se:field" content="team_a | text | Falcons">
+<meta name="se:field" content="team_b | text | Wolves">
+<meta name="se:field" content="score_a | number | 2 | 0 | 999">
+<meta name="se:field" content="score_b | number | 1 | 0 | 999">
+<meta name="se:field" content="clock | text | 78:12">
+<meta name="se:field" content="colour_a | color | #2563eb">
+<meta name="se:field" content="colour_b | color | #f59e0b">
+<style>
+  :root { --a: {{colour_a}}; --b: {{colour_b}}; }
+  html, body { margin: 0; background: transparent; overflow: hidden; }
+  body { width: 100vw; height: 100vh; display: grid; place-items: center;
+    font-family: "Bahnschrift", "Segoe UI", Arial, sans-serif; }
+
+  .board { box-sizing: border-box; width: 820px; height: 100px; display: grid; grid-template-columns: 1fr 150px 1fr;
+    background: #12151c; color: #fff; border-radius: 20px; overflow: hidden;
+    box-shadow: 0 16px 36px rgba(0, 0, 0, .42), 0 3px 8px rgba(0, 0, 0, .3), inset 0 0 0 1px rgba(255, 255, 255, .1);
+    animation: drop .6s cubic-bezier(.2, 1.3, .35, 1) both; }
+  .team { display: flex; align-items: center; min-width: 0; }
+  .team.b { flex-direction: row-reverse; }
+  .chip { flex: none; width: 22px; height: 100%; }
+  .a .chip { background: var(--a); transform-origin: left; animation: chip .5s ease-out .4s both; }
+  .b .chip { background: var(--b); transform-origin: right; animation: chip .5s ease-out .4s both; }
+  .name { flex: 1; min-width: 0; padding: 0 22px; font-size: 38px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; animation: fade .5s ease-out .5s both; }
+  .a .name { text-align: right; } .b .name { text-align: left; }
+  .score { flex: none; width: 92px; height: 100%; display: grid; place-items: center; font-size: 62px; font-weight: 700;
+    font-variant-numeric: tabular-nums; background: rgba(255, 255, 255, .08);
+    animation: bump .5s cubic-bezier(.2, 1.8, .4, 1) 1.2s both; }
+  .mid { display: grid; place-items: center; background: #fff; color: #12151c; }
+  .clock { font-size: 40px; font-weight: 700; letter-spacing: 1px; font-variant-numeric: tabular-nums;
+    max-width: 130px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; animation: fade .5s ease-out .6s both; }
+
+  @keyframes drop { from { transform: translateY(-60px) scale(.92); opacity: 0; } 55% { opacity: 1; } to { transform: none; } }
+  @keyframes chip { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+  @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes bump { 0% { transform: scale(1); } 50% { transform: scale(1.3); } 100% { transform: scale(1); } }
+</style>
+</head>
+<body>
+<div class="board">
+  <div class="team a"><div class="chip"></div><div class="name">{{team_a}}</div><div class="score">{{score_a}}</div></div>
+  <div class="mid"><div class="clock">{{clock}}</div></div>
+  <div class="team b"><div class="chip"></div><div class="name">{{team_b}}</div><div class="score">{{score_b}}</div></div>
+</div>
+</body>
+</html>

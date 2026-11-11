@@ -1,0 +1,51 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Emoji Burst</title>
+<meta name="se:kind" content="layer">
+<meta name="se:desc" content="A dozen emoji pop out of the centre, spin outward and fade away.">
+<meta name="se:tags" content="emoji, burst, reaction, particles, fun">
+<meta name="se:size" content="720x720">
+<meta name="se:duration" content="3s">
+<meta name="se:field" content="emoji | text | 🔥">
+<style>
+  html, body { margin: 0; background: transparent; overflow: hidden; }
+  body { position: relative; width: 100vw; height: 100vh; font-family: "Segoe UI Emoji", "Segoe UI Symbol", sans-serif; }
+
+  .e { position: absolute; left: 50%; top: 50%; width: 120px; height: 120px; margin: -60px 0 0 -60px;
+    display: grid; place-items: center; font-size: calc(var(--s) * 1px); line-height: 1; white-space: nowrap;
+    filter: drop-shadow(0 6px 8px rgba(0, 0, 0, .35));
+    animation: fly 2.2s cubic-bezier(.15, .75, .3, 1) var(--d) both; }
+  .big { width: 260px; height: 260px; margin: -130px 0 0 -130px; font-size: 190px; animation: hero 2.4s cubic-bezier(.2, 1.4, .4, 1) both; }
+
+  @keyframes fly {
+    0% { transform: translate(0, 0) scale(0) rotate(0); opacity: 0; }
+    10% { opacity: 1; }
+    70% { opacity: 1; }
+    100% { transform: translate(var(--x), var(--y)) scale(1) rotate(var(--r)); opacity: 0; }
+  }
+  @keyframes hero {
+    0% { transform: scale(0) rotate(-20deg); opacity: 0; }
+    18% { transform: scale(1.15) rotate(6deg); opacity: 1; }
+    30% { transform: scale(1) rotate(0); }
+    75% { transform: scale(1.05); opacity: 1; }
+    100% { transform: scale(.9); opacity: 0; }
+  }
+</style>
+</head>
+<body>
+<div class="e" style="--x:0px;--y:-290px;--r:40deg;--s:64;--d:.05s">{{emoji}}</div>
+<div class="e" style="--x:150px;--y:-250px;--r:-70deg;--s:84;--d:.12s">{{emoji}}</div>
+<div class="e" style="--x:270px;--y:-120px;--r:90deg;--s:60;--d:.02s">{{emoji}}</div>
+<div class="e" style="--x:300px;--y:30px;--r:-30deg;--s:76;--d:.15s">{{emoji}}</div>
+<div class="e" style="--x:200px;--y:210px;--r:120deg;--s:58;--d:.08s">{{emoji}}</div>
+<div class="e" style="--x:60px;--y:300px;--r:-100deg;--s:80;--d:.18s">{{emoji}}</div>
+<div class="e" style="--x:-80px;--y:290px;--r:60deg;--s:62;--d:.04s">{{emoji}}</div>
+<div class="e" style="--x:-210px;--y:200px;--r:-140deg;--s:86;--d:.1s">{{emoji}}</div>
+<div class="e" style="--x:-300px;--y:50px;--r:30deg;--s:60;--d:.14s">{{emoji}}</div>
+<div class="e" style="--x:-280px;--y:-110px;--r:-60deg;--s:74;--d:.06s">{{emoji}}</div>
+<div class="e" style="--x:-170px;--y:-240px;--r:110deg;--s:56;--d:.2s">{{emoji}}</div>
+<div class="e big">{{emoji}}</div>
+</body>
+</html>
