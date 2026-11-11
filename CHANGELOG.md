@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Creator Kit
+- **HTML + CSS layers and scenes** (Add ▸ HTML Layer / HTML Scene): titles, lower thirds, buttons and
+  cards written in HTML and CSS (no JavaScript), rendered by the Microsoft Edge that ships with Windows,
+  with transparency, and exported with the video. A template's texts and colours show as **Fields** in
+  the Inspector; double-click the clip for the HTML editor (live preview, scrub bar, Ask the assistant).
+- **Shader transitions** in the gl-transitions format and **shader effects** with named controls
+  (`// @param glow 0.5 0 2`), added without rebuilding the app. The Shader Editor can save to the library.
+- **Online library** in the Gallery (Transitions, Effects, LUTs, HTML, Icons, Skills): 40 transitions,
+  40 effects, 30 LUTs, 36 HTML layers and scenes, 40 icons and 21 skills. Items with a cloud mark download
+  on first click; what a project uses is stored in the project (LUTs are copied into a folder beside it).
+- **Assistant skills**: type `/` in the chat or the Tasks box (`/captions bold yellow`, `/lower-third`,
+  `/shorts`, `/create-skill …`); a Skills tab to run, edit, duplicate and write your own. Skills are
+  Markdown files in `%APPDATA%\SimpleEditor\skills`. Quick prompts you wrote yourself become skills.
+- MCP: `html.*`, `clip.set_shader`, `shader.check`, `transition.set_shader`, `skills.*`, `library.*`.
+- Fixed: the outgoing clip of a transition went black after the cut when it used its file to the last frame.
+
 The Pro plan's first coding pass. Not built or tested yet: everything below is what the code is written
 to do.
 

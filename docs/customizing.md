@@ -90,6 +90,31 @@ curl -s -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' -H 'content-type: ap
 > wait for the user's Allow (`ui/app/assistant_ctl.rs`, `leaves_project`). The Assistant redesign added
 > `assistant.add_selection`, `assistant.attachments`, `assistant.attachment` and the five `tasks.*` tools
 > (also from the source, not a live call).
+
+> **Creator Kit (2026-11-11, from a live `tools/list`: 295 tools).** `skills.save` and `skills.delete`
+> are also held for the user's Allow. `library.*` below is the CONTENT library (transitions, effects,
+> LUTs, HTML templates, icons, skills); `library.select` / `library.columns` are the media library panel.
+
+| Tool | Kind | Arguments | What it does |
+|---|---|---|---|
+| `html.create` | Mutate | html, at?, duration?, name?, fields? | Add an HTML + CSS layer or scene clip (format: `library/README.md`); rendered in the background. `fields` is an object `{name: value}`. |
+| `html.get` | Read | clip | The clip's source, fields with current values, size, duration, render state, lint. |
+| `html.set` | Mutate | clip, html?, fields?, name? | Replace the source and/or set field values (`null` = default); the clip keeps position, effects and keyframes. |
+| `html.render` | Read | clip | Render again when the current source has no render (also retries a failed one). |
+| `html.check` | Read (image) | clip? \| html?, t?, fields? | One rendered frame as an image, plus lint. |
+| `clip.set_shader` | Mutate | clip, index?, src | Set a clip's shader effect source; returns `{ok, log, params}` (a compile error is a result, not a failure). |
+| `shader.check` | Read | src, kind? | Compile an effect or transition shader without changing anything. |
+| `transition.set_shader` | Mutate | id? \| clip?, src, params? | Make a transition a shader transition (gl-transitions format). |
+| `skills.list` | Read | - | Assistant skills: name, description, args, source. |
+| `skills.get` | Read | name | One skill's text and parsed parts. |
+| `skills.save` | Ui (held) | name, description, args?, body | Write a skill into the user's skills folder. |
+| `skills.delete` | Ui (held) | name | Delete a user skill. |
+| `library.list` | Read | kind?, query? | Installed and online items, each with `installed`; `catalogue` is `loading`, `ok` or a note. |
+| `library.install` | Job | id | Download an item (`transitions/paper-tear`). |
+| `library.apply` | Mutate | id, clip?, at? | Install if needed, then use it: transition on a cut, effect / LUT on a clip, HTML / icon as a new clip. |
+| `library.save` | Ui | kind, name, text | Save a shader, HTML layer, skill or `.cube` text as a library item (checked first). |
+| `library.remove` | Ui | id | Remove an installed item. |
+
 `kind` isn't part of the wire response (`mcp::tools::list_json` only serialises
 `name`/`description`/`inputSchema` — see `src/mcp/tools.rs`), so the `Kind` column below is a source
 cross-reference (each tool's own `ToolDef.kind` in its `tools_*.rs` file), not something you'll see

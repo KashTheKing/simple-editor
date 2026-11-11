@@ -101,6 +101,14 @@ Pulled forward from CHANGELOG.md — mark new completions here as they land.
 
 ## In progress / open
 
+- [ ] **Creator Kit** - HTML + CSS layers, assistant skills, shader effects / transitions from files, the
+  online library with its first content set; planned and built 2026-11-11 on `feat/pro`
+  ([plans/creator-kit/README.md](plans/creator-kit/README.md), formats in `library/README.md`). Built,
+  tested and live-checked (notes.md, "creator-kit build"). Open: `.mogrt` limited import (needs sample
+  files), `library/` reaching `main` (the catalogue URL points there), per-item looks review from the
+  contact sheet. **Size: the kit added about 0.73 MB of exe (release-fast, measured), above the plan's
+  0.2-0.4 MB estimate - a size decision for the maintainer, recorded here, not yet offset.**
+
 - [ ] **Pro plan** — fast playback, fast export, separate audio tracks, live co-editing; planned
   2026-11-10 in [plans/pro/README.md](plans/pro/README.md) (issues #140-#153, one issue-ready file
   per workstream under `plans/pro/issues/`). Size budget, decided once for the whole plan:

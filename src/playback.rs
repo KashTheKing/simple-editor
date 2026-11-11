@@ -1911,7 +1911,10 @@ fn decode_one(
 /// A source time kept inside the source (`src_duration` 0 = unknown: only kept off negatives).
 fn clip_src(src_t: f64, src_duration: f64) -> f64 {
     if src_duration > 0.0 {
-        src_t.clamp(0.0, (src_duration - 1e-4).max(0.0))
+        // a 60th of a second before the end: a time inside the last 0.1 ms came back with no frame at
+        // all (the outgoing clip of every transition went black after the cut when it used its file
+        // to the last frame). ponytail: the last frame's own time, once the decoders report it.
+        src_t.clamp(0.0, (src_duration - 1.0 / 60.0).max(0.0))
     } else {
         src_t.max(0.0)
     }

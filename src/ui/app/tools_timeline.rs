@@ -70,6 +70,11 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                     None => app.project_path.clone().ok_or("no project file yet - pass a path")?,
                 };
                 app.project.save(&path).map_err(|e| e.to_string())?;
+                // ws:online-library: as File > Save does - library LUTs the project uses go beside it
+                crate::engine::lut::set_project(Some(&path));
+                if let Ok(v) = serde_json::to_value(&app.project) {
+                    let _ = crate::engine::lut::copy_beside_project(&v, &path);
+                }
                 app.project_path = Some(path.clone());
                 app.dirty = false;
                 Ok(json!({"ok": true, "path": path.to_string_lossy()}))

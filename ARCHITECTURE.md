@@ -115,6 +115,20 @@ src/engine/stems.rs     export stems: by track / bus / AudioRole, each a project
 src/engine/agent.rs     Assistant backends: `claude -p --output-format stream-json` (prompt on stdin)
                         or a custom argv template; API key in Windows Credential Manager
 src/engine/voice.rs     push-to-talk: cpal input on its own thread -> 16 kHz mono WAV -> whisper
+# (Creator Kit, 2026-11-11: built, tested, live-checked - plans/creator-kit/, library/README.md):
+src/engine/html.rs      HTML + CSS layers: template parsing (se: meta tags, {{fields}}), sanitising, lint,
+                        and the renderer - one headless Edge driven over DevTools by a std-only WebSocket
+                        client; frames as PNG-in-MOV (alpha) in cache_dir/html, content-addressed
+src/engine/shaderlib.rs shader file headers (@name/@desc/@tags/@param/@needs) for effects and transitions
+src/engine/skills.rs    assistant skills: Markdown with a --- header; user folder, library, built-ins
+src/engine/library.rs   the content library: installed items in %APPDATA%\SimpleEditor\library, the
+                        index.json catalogue (local folder or curl.exe), fetch / install
+src/engine/gpu/library_tests.rs  every library shader compiled and drawn on the real driver
+src/ui/html_ui.rs       HTML editor window; Inspector "Fields" controls
+src/ui/app/html_ctl.rs  render jobs, asset re-pointing, Add HTML Layer / Scene, add_html_clip
+src/ui/app/library_ctl.rs  catalogue / download jobs, apply by kind, Gallery library tabs' App side
+src/ui/app/tools_{html,shader,skills,library}.rs  html.*, clip.set_shader / shader.check /
+                        transition.set_shader, skills.*, library.*
 
 src/playback.rs         Player: render thread + audio thread + wall clock; decode_layers()/
                         request_layers() for the GPU (see "Alt-render channel" below); Clock.rate/

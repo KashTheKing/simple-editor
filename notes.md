@@ -7,6 +7,52 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
 
 ---
 
+- **creator-kit build (2026-11-11): how it was run, what the live run found.**
+  Order: spike (entry below) -> `library/README.md` (formats) -> wave 0 by the lead (marker sections,
+  registered stub modules with the cross-workstream signatures, the installed-library core, shader
+  header parsing + wrappers, a real-driver test over `library/**/*.glsl`; `plans/creator-kit/
+  engine-contract.md` is the shared brief) -> four engine agents in the SAME worktree on disjoint files
+  (html-layer, shader-library, skills, online-library; `cargo check` allowed, others' errors ignored)
+  next to twelve content agents writing only under `library/`. What made the content good: every
+  author could LOOK at its work with the app's own renderer - a preview tool built from the spike for
+  HTML / icons, and the built test binary re-run with `SE_ONLY` / `SE_SHOTS` for shaders (files are read
+  at run time, so the binary need not be rebuilt). Merge: 2 test failures, both from the lead's own
+  integration edits; then `cargo test` 1417 passed, `--selftest` OK.
+  **Live, release-fast, scratch profile, second monitor, over MCP** (all five checks of the plan):
+  (1) `html.create` with the library Subscribe button -> over video with clean alpha at its natural
+  size; `html.set` label + accent -> re-rendered; the exported frame shows it. (2) "Add a lower third
+  with my name": the assistant found `html/lower-third-clean` with `library.list`, installed and
+  applied it, set name / role with `html.set`, looked with `html.check`; 24 s. (3) the `/` list
+  filters as typed, the Skills tab lists built-ins and "Yours"; `/create-skill …` wrote
+  `skills\punch-words.md` in 32 s; `/captions` ran as a skill and stopped to ask before the 142 MB
+  speech model download (not installed in the scratch profile, so captioning itself was not run).
+  (4) a cloud transition clicked in the Gallery (library read from the local `library/` folder) was
+  copied in and applied with a toast; `library.apply` for an effect and a LUT; export matches the
+  preview. (5) the saved project on a clean profile with the first profile's library and cache hidden:
+  the HTML layer re-rendered from the project, the shader effect and transition drew, the LUT came from
+  `kit LUTs\` beside the project (pixel-identical bars).
+  **Found and fixed**: the Gallery's tab row scrolled sideways, hiding the library tabs in a narrow
+  pane (it wraps now); `project.save` over MCP skipped the LUT copy that File > Save does; the outgoing
+  clip of EVERY transition (built-in Push too, so older than the kit) went black after the cut when the
+  clip used its file to the last frame - a source time within 0.1 ms of the end came back with no
+  frame; `playback::clip_src` now clamps a 60th of a second before the end. The countdown template's
+  thumbnail fell on a frame where its digit is mid pop-in (`se:thumb` added).
+  **Gotchas**: launching with a FILE ARGUMENT starts as a full-screen player that plays at once - a test
+  window then "goes black" over the gaps of the timeline and `layout.list` shows no pane rects: use
+  `project.open` after launch, or `ui.action fullscreen`. A test profile that is not reset saves its
+  window rect as the OUTER size, so the window grows 16x39 px per relaunch. Python heredocs in the agent
+  shell eat backslashes (`\\n` in a patch became a real newline): write patch scripts to a file. Two
+  shader authors overwrote each other's helper script in the shared scratch folder: give each agent its
+  own folder. Disk D: fell to 4 GB during the build (one debug + one release-fast target).
+  **Not done / ceilings**: `.mogrt` import (needs sample files); nothing fetched over the network yet
+  (the catalogue URL is `main`, where `library/` is not yet); `html.check` blocks the UI thread while it
+  renders (0.1-0.3 s warm, +1.3 s when Edge has to start); one Edge, one render at a time; an export
+  started while an HTML layer is still rendering is stopped with a toast; library transitions show a
+  plain dissolve card in the Transitions pane (the Gallery has the real thumbnails); `thumbs.rs` still
+  lists `lut_dirs` every frame the Looks / Luts tab is open; no hover preview for library items; QSV /
+  the Codex backend etc. are as untested as before. **Size**: release-fast exe 13,129,216 B before the
+  kit -> 13,880,320 B (+751,104 B, +0.72 MB), above the plan's 0.2-0.4 MB estimate.
+
 - **creator-kit spike (2026-11-11): headless Edge can step CSS animations exactly, with alpha. Go.**
   Edge 157, RTX 2060 SUPER, machine in normal use. A std-only throwaway program (TcpStream WebSocket
   client, serde_json) started `msedge.exe --headless --remote-debugging-port=0 --user-data-dir=<temp>

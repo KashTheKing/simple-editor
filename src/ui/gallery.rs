@@ -427,24 +427,22 @@ pub fn show(
     if state.tab == GalleryTab::Transitions {
         state.tab = GalleryTab::Looks;
     }
-    // one row that scrolls sideways when the pane is narrower than the tabs
-    egui::ScrollArea::horizontal().id_salt("gallery_tabs").show(ui, |ui| {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            for tab in GalleryTab::ALL.into_iter().filter(|&t| t != GalleryTab::Transitions) {
-                if ui.selectable_label(state.lib.is_none() && state.tab == tab, tab.label()).clicked() {
-                    state.tab = tab;
-                    state.lib = None;
-                    settings.gallery_tab = tab.name().to_string();
-                }
+    // the tabs wrap onto a second row in a narrow pane (a sideways-scrolling row hid the library tabs)
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        for tab in GalleryTab::ALL.into_iter().filter(|&t| t != GalleryTab::Transitions) {
+            if ui.selectable_label(state.lib.is_none() && state.tab == tab, tab.label()).clicked() {
+                state.tab = tab;
+                state.lib = None;
+                settings.gallery_tab = tab.name().to_string();
             }
-            // ---- ws:online-library ----
-            for (kind, label) in LIB_TABS {
-                if ui.selectable_label(state.lib == Some(kind), label).clicked() {
-                    state.lib = Some(kind);
-                }
+        }
+        // ---- ws:online-library ----
+        for (kind, label) in LIB_TABS {
+            if ui.selectable_label(state.lib == Some(kind), label).clicked() {
+                state.lib = Some(kind);
             }
-        });
+        }
     });
     ui.separator();
     // ---- ws:online-library ---- a library tab, or the library's LUTs above the Luts tab's folders
