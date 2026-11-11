@@ -109,6 +109,9 @@ pub trait VideoSource: Send {
     /// `frame_at` handing out the frame itself, decoded into a buffer from `spare` when it needs
     /// one. A decoder that keeps its current frame anyway (MF) hands out that very frame - no copy -
     /// and may leave it `Frame::bgrx`. Only `DecoderPool::frame_arc` calls this.
+    /// Exact one-shot decoding (see `DecoderPool::set_exact`): a decoder that follows the requested
+    /// size lazily (MF) switches to it at once while this is on.
+    fn set_exact(&mut self, _on: bool) {}
     fn frame_shared(&mut self, t: f64, w: u32, h: u32, spare: &mut Vec<Frame>) -> Option<Arc<Frame>> {
         let mut f = spare.pop().unwrap_or_default();
         if self.frame_at(t, w, h, &mut f) {
@@ -241,6 +244,9 @@ pub struct DecoderPool {
     /// (`take_missed`) - one slow open must not hold up every other layer.
     deadline: Option<Instant>,
     missed: bool,
+    /// One-shot renders (Export Frame, a full-size `render.frame`): read the original file, not its
+    /// proxy, at exactly the size asked for, and skip the source cache's (preview-sized) frames.
+    exact: bool,
     /// A source finished opening and `video` took it in itself: `collect` has yet to say so.
     arrived: bool,
 }
@@ -369,6 +375,7 @@ impl DecoderPool {
             queue: VecDeque::new(),
             deadline: None,
             missed: false,
+            exact: false,
             arrived: false,
         }
     }
@@ -382,7 +389,7 @@ impl DecoderPool {
     /// opening thread too and thrown away, so the reader's start-up (codec set-up, the seek) is
     /// paid there and the cut itself finds a decoder already rolling.
     pub fn warm(&mut self, path: &str, first: Option<f64>) {
-        let path = self.proxies.get(path).cloned().unwrap_or_else(|| path.to_string());
+        let path = self.resolved(path);
         if self.videos.contains_key(&path) || self.warming.len() >= 8 || self.warming.contains_key(&path) {
             return;
         }
@@ -521,7 +528,7 @@ impl DecoderPool {
     /// reader goes through `Frame::to_rgba`.
     pub fn frame_arc(&mut self, path: &str, t: f64, w: u32, h: u32, spare: &mut Vec<Frame>) -> Option<Arc<Frame>> {
         let us = SourceCache::us(t);
-        if let Some(f) = self.source_cache.get(path, us, w, h) {
+        if let Some(f) = self.cached(path, t, w, h) {
             return Some(f);
         }
         if spare.is_empty() {
@@ -538,7 +545,27 @@ impl DecoderPool {
     }
     /// The source cache's frame for this request, if it holds one (nothing is decoded or opened).
     pub fn cached(&mut self, path: &str, t: f64, w: u32, h: u32) -> Option<Arc<Frame>> {
+        if self.exact {
+            return None; // cached frames were decoded for the preview: its size, maybe its proxy
+        }
         self.source_cache.get(path, SourceCache::us(t), w, h)
+    }
+    /// The file a source is decoded from: its proxy in a preview pool, unless `exact` is on.
+    fn resolved(&self, path: &str) -> String {
+        match self.proxies.get(path) {
+            Some(p) if !self.exact => p.clone(),
+            _ => path.to_string(),
+        }
+    }
+    /// Turn exact one-shot decoding on or off (see the `exact` field). Decoders opened meanwhile
+    /// pick the flag up in `video`.
+    pub fn set_exact(&mut self, on: bool) {
+        self.exact = on;
+        for (_, v) in self.videos.values_mut() {
+            if let Some(v) = v {
+                v.set_exact(on);
+            }
+        }
     }
     /// `frame_arc` for several `(path, t, w, h)` requests at once, results in the same order. Cache
     /// hits are taken here; the misses decode side by side, one thread per decoder - the requests
@@ -548,14 +575,14 @@ impl DecoderPool {
     /// ponytail: a spawn per layer per frame; persistent workers if spawn cost shows in the HUD.
     pub fn frames_arc(&mut self, jobs: &[(&str, f64, u32, u32)], spare: &mut Vec<Frame>) -> Vec<Option<Arc<Frame>>> {
         let mut out: Vec<Option<Arc<Frame>>> =
-            jobs.iter().map(|&(p, t, w, h)| self.source_cache.get(p, SourceCache::us(t), w, h)).collect();
+            jobs.iter().map(|&(p, t, w, h)| self.cached(p, t, w, h)).collect();
         // (resolved path, its decoder - taken out of the pool while it works -, the requests it serves)
         let mut groups: Vec<(String, Box<dyn VideoSource>, Vec<usize>)> = Vec::new();
         for (i, &(p, ..)) in jobs.iter().enumerate() {
             if out[i].is_some() {
                 continue;
             }
-            let key = self.proxies.get(p).cloned().unwrap_or_else(|| p.to_string());
+            let key = self.resolved(p);
             if let Some(g) = groups.iter_mut().find(|g| g.0 == key) {
                 g.2.push(i);
                 continue;
@@ -637,7 +664,7 @@ impl DecoderPool {
     }
     pub fn video(&mut self, path: &str) -> Option<&mut (dyn VideoSource + 'static)> {
         // preview pools decode the proxy when one exists (export pools carry an empty map)
-        let path = self.proxies.get(path).cloned().unwrap_or_else(|| path.to_string());
+        let path = self.resolved(path);
         let path = path.as_str();
         if let (Some(deadline), false) = (self.deadline, self.videos.contains_key(path)) {
             // opening is the slow part (a 9 MP still: half a second of ffmpeg.exe): it happens on a
@@ -668,6 +695,11 @@ impl DecoderPool {
             (tick, v)
         });
         e.0 = tick;
+        if self.exact {
+            if let Some(v) = e.1.as_mut() {
+                v.set_exact(true);
+            }
+        }
         if e.1.is_some() {
             // Stills that keep their pixels are budgeted by those (a preview pool, which has a
             // budget and decodes every still of the timeline ahead of time); everything else by

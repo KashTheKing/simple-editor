@@ -65,6 +65,15 @@ pub const TOOLS: &[ToolDef] = &[
                 }
             };
             let ctx = app.uikit.ctx.clone().ok_or("no frame drawn yet")?;
+            // A minimised window is 0 x 0 px: eframe's screen readback panics on that size
+            // ("chunk size must be non-zero" in egui_glow) and takes the whole app down.
+            let hidden = ctx.input(|i| {
+                let v = i.viewport();
+                v.minimized.unwrap_or(false) || v.inner_rect.is_some_and(|r| r.width() < 1.0 || r.height() < 1.0)
+            });
+            if hidden {
+                return Err("the window is minimised - restore it to take a screenshot".into());
+            }
             let prog = Progress::new();
             app.uikit.next_shot += 1;
             let tag = app.uikit.next_shot;

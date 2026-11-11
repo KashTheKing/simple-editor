@@ -168,9 +168,13 @@ fn audio_out_args(af: &str, layout: AudioLayout, titles: &[&str]) -> Vec<String>
     }
     if streams {
         for (i, t) in titles.iter().enumerate() {
+            // mp4/mov keep a track's name only as its handler name (ffmpeg drops a stream `title`
+            // there); mkv keeps `title`. Write both.
             a.extend([
                 format!("-metadata:s:a:{i}"),
                 format!("title={t}"),
+                format!("-metadata:s:a:{i}"),
+                format!("handler_name={t}"),
                 format!("-disposition:a:{i}"),
                 (if i == 0 { "default" } else { "0" }).to_string(),
             ]);
@@ -1871,9 +1875,9 @@ pub(crate) mod tests {
         assert_eq!(
             s(audio_out_args(LOUDNORM, AudioLayout::Streams, &["Mix", "Dialogue", "Music"])),
             "-filter:a:0 loudnorm=I=-14:TP=-1:LRA=11 -ar 48000 \
-             -metadata:s:a:0 title=Mix -disposition:a:0 default \
-             -metadata:s:a:1 title=Dialogue -disposition:a:1 0 \
-             -metadata:s:a:2 title=Music -disposition:a:2 0"
+             -metadata:s:a:0 title=Mix -metadata:s:a:0 handler_name=Mix -disposition:a:0 default \
+             -metadata:s:a:1 title=Dialogue -metadata:s:a:1 handler_name=Dialogue -disposition:a:1 0 \
+             -metadata:s:a:2 title=Music -metadata:s:a:2 handler_name=Music -disposition:a:2 0"
         );
         // Mix / Stems: plain -af over the single stream in the file, no titles
         assert_eq!(s(audio_out_args(LOUDNORM, AudioLayout::Mix, &[""])), "-af loudnorm=I=-14:TP=-1:LRA=11 -ar 48000");

@@ -883,9 +883,14 @@ fn render_thread(
                     let h = ((ph as u64 * w as u64) / pw as u64).max(1) as u32;
                     let mut set = LayerSet::default();
                     let text = &mut TextRef::Shared(&text);
+                    // a one-shot bigger than the preview (Export Frame) must not be an upscale of the
+                    // preview's decode size or of a proxy: read the originals at exactly this size
+                    let exact = w > lock(&shared.clock).canvas.0;
+                    pool.set_exact(exact);
                     guarded(&mut pool, |pool| {
                         set = layers_with(&project, t, w, h, pool, &mut spare_layers, text, &mut shapes, &mut comp)
                     });
+                    pool.set_exact(false);
                     let _ = reply.send(Arc::new(set));
                 }
                 Cmd::RenderOnce(t, max_w, reply) => {

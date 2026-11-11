@@ -75,12 +75,18 @@ pub fn undo_state(undo: &Option<(usize, String)>, top: (usize, Option<&str>)) ->
 
 pub fn draw(ui: &mut egui::Ui, state: &mut AssistantState, v: &View) -> Out {
     let mut out = Out::None;
-    let reserve = 150.0;
+    // The input block is laid out first, as a bottom panel sized by its own content (chips and
+    // quick prompts wrap to as many rows as the pane's width needs); the log takes what is left.
+    // A fixed reserve cut the Send row off whenever those rows wrapped.
+    egui::TopBottomPanel::bottom(ui.id().with("assistant_input"))
+        .frame(egui::Frame::NONE)
+        .resizable(false)
+        .show_inside(ui, |ui| input_block(ui, state, v, &mut out));
+    let pal = crate::theme::palette(ui.ctx());
     egui::ScrollArea::vertical()
         .id_salt("assistant_log")
         .stick_to_bottom(true)
         .auto_shrink([false, false])
-        .max_height((ui.available_height() - reserve).max(60.0))
         .show(ui, |ui| {
             if state.log.is_empty() {
                 ui.weak(match v.backend {
@@ -100,7 +106,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AssistantState, v: &View) -> Out {
                         ui.label(egui::RichText::new(t).strong());
                     }
                     Line::Text(t) => {
-                        ui.label(t);
+                        // agents answer in markdown (**bold**, lists, `code`)
+                        crate::ui::markdown::show(ui, t, &pal);
                     }
                     Line::Tool(t) => {
                         ui.label(egui::RichText::new(format!("› {t}")).monospace().small().weak());
@@ -134,7 +141,12 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AssistantState, v: &View) -> Out {
                 ui.weak("Working…");
             }
         });
-    ui.separator();
+    out
+}
+
+/// Context chips, quick prompts, the prompt box and the Send / Stop / mic row.
+fn input_block(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, out: &mut Out) {
+    ui.add_space(4.0);
     if !v.chips.is_empty() {
         ui.horizontal_wrapped(|ui| {
             ui.weak("Context:");
@@ -157,7 +169,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AssistantState, v: &View) -> Out {
                 let r = ui.add_enabled(!v.running, egui::Button::new(label.as_str()).small());
                 if r.on_hover_text(prompt.as_str()).clicked() {
                     state.prompt = prompt.clone();
-                    out = Out::Send;
+                    *out = Out::Send;
                 }
             }
         });
@@ -173,14 +185,14 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AssistantState, v: &View) -> Out {
     );
     let can_send = !v.running && !state.prompt.trim().is_empty();
     if r.has_focus() && can_send && ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift) {
-        out = Out::Send;
+        *out = Out::Send;
     }
     ui.horizontal(|ui| {
         if ui.add_enabled(can_send, egui::Button::new("Send")).clicked() {
-            out = Out::Send;
+            *out = Out::Send;
         }
         if ui.add_enabled(v.running, egui::Button::new("Stop")).on_hover_text("Stop the agent").clicked() {
-            out = Out::Stop;
+            *out = Out::Stop;
         }
         let mic = glyph_text_button(ui, Glyph::Mic, if state.mic_wanted { "Stop" } else { "" });
         let mic = mic.on_hover_text(if state.mic_wanted { "Stop dictating" } else { "Dictate the request" });
@@ -191,7 +203,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AssistantState, v: &View) -> Out {
             ui.weak(state.mic_status.as_str());
         }
     });
-    out
+    ui.add_space(2.0);
 }
 
 #[cfg(test)]

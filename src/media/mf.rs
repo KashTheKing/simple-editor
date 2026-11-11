@@ -335,6 +335,8 @@ struct MfVideo {
     req_streak: u32,
     /// True after the first `SetCurrentMediaType` size negotiation (successful or not).
     negotiated: bool,
+    /// Renegotiate to the requested size at once (one-shot renders: `VideoSource::set_exact`).
+    exact: bool,
     width: u32,
     height: u32,
     /// MF_MT_DEFAULT_STRIDE of the current type (0 = unknown; negative = bottom-up).
@@ -408,6 +410,7 @@ pub fn open_video(path: &str) -> Result<Box<dyn VideoSource>, String> {
         req_last: (0, 0),
         req_streak: 0,
         negotiated: false,
+        exact: false,
         width: 0,
         height: 0,
         stride: 0,
@@ -495,7 +498,7 @@ impl MfVideo {
             self.req_last = t;
             self.req_streak = 1;
         }
-        if self.req_streak < STABLE_REQS && self.negotiated {
+        if self.req_streak < STABLE_REQS && self.negotiated && !self.exact {
             return; // not settled yet: serve the current size, `rescale` bridges the gap
         }
         self.negotiated = true;
@@ -754,6 +757,9 @@ impl VideoSource for MfVideo {
         }
         self.emit(w, h, out, false);
         true
+    }
+    fn set_exact(&mut self, on: bool) {
+        self.exact = on;
     }
     /// At the decode size, the cached frame itself (BGRX, no copy); otherwise one scaled copy.
     fn frame_shared(&mut self, t: f64, w: u32, h: u32, spare: &mut Vec<Frame>) -> Option<Arc<Frame>> {

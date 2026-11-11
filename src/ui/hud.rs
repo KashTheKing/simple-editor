@@ -96,8 +96,9 @@ impl Hud {
 /// Paint the HUD at the top-left of `ui`'s rect (the Preview pane).
 pub fn draw(ui: &egui::Ui, hud: &Hud, dropped: u64) {
     let p = ui.painter();
-    let at = ui.max_rect().left_top() + egui::vec2(8.0, 8.0);
     let galley = p.layout_no_wrap(hud.lines(dropped), egui::FontId::monospace(11.0), egui::Color32::WHITE);
+    // top right: the Preview's tool strip and clip badge live in the top-left corner
+    let at = ui.max_rect().right_top() + egui::vec2(-8.0 - galley.size().x, 8.0);
     let bg = egui::Rect::from_min_size(at, galley.size()).expand(4.0);
     p.rect_filled(bg, 3.0, egui::Color32::from_black_alpha(170));
     p.galley(at, galley, egui::Color32::WHITE);

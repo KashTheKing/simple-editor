@@ -7,6 +7,39 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
 
 ---
 
+- **pro first live run (2026-11-11):** release-fast exe driven over MCP with a scratch profile
+  (`APPDATA`/`LOCALAPPDATA` pointed at a temp folder, `SE_BACKGROUND=1`), RTX 2060 SUPER, ffmpeg 7.1.
+  Test project: 18 s, 1080p60, two H.264 clips (the first 28 Mbit/s), a PNG on V2, two audio tracks.
+  Worked: timeline playback 60 fps / 0 dropped with the BGRX upload (colours match the CPU thumbnails);
+  Source monitor on the GPU canvas; `render.frame` / `render.contact_sheet` as MCP images; export
+  through the GPU window + PBO + NV12 path (1080 frames, bt709/tv tags, pixels within 2/255 of the
+  app's own RGB frame); encoder probe (found `h264_nvenc`, `hevc_nvenc`, wrote `encoders.json`) and
+  auto picking NVENC; Streams (mix + one stream per track) and Stems (24-bit WAVs in `<name> stems/`);
+  EDL / XML export; `editor.context`; `edit.batch` as one undo step labelled "Claude: ...", its
+  rollback on a failing call; comments; the Assistant pane spawning `claude -p` (it read the selection
+  from the context and called `markers_add`); mic capture -> whisper ("Didn't catch that" in a silent
+  room); island transcription of a speech clip with 3 s pauses (every word inside its island).
+  Timings, same timeline, one run each, machine in normal use: CPU compositor + libx264 39.0 s,
+  GPU path + libx264 12.0 s, GPU path + NVENC 9.6-11.1 s. The encoder is not the limit any more
+  (x264 vs NVENC is ~1 s apart); full-size software decode on the export thread probably is.
+  Found and fixed: (1) audio stream titles vanish in mp4/mov - ffmpeg only keeps `handler_name` there,
+  so both are written now; (2) the Assistant pane's Send row was cut off when chips/quick prompts
+  wrapped (fixed reserve) - the input block is a bottom panel now - and agent text is rendered as
+  markdown; (3) the HUD sat on the Preview's tool strip - moved to the top right; (4) `ui.screenshot`
+  with the window minimised panicked inside egui_glow (0 px wide readback) and took the app down -
+  it now returns an error; this one predates the branch; (5) Export Frame / a full-size `render.frame`
+  came out soft: one-shot renders reused the preview's decode size (MF only renegotiates after 3
+  identical requests, and the paused read-ahead keeps interleaving its own) and its proxy. Same logic
+  on main, so also older than the branch. `DecoderPool::set_exact` now makes a one-shot wider than
+  the preview canvas read the original at exactly the requested size, past the source cache.
+  Gotchas: launching the app from inside a Claude Code session leaks `CLAUDE_CODE_*` /
+  `ANTHROPIC_BASE_URL` into the spawned `claude`, which then answers "Credit balance is too low" -
+  strip those variables in test launchers; untagged HD files are decoded as BT.709 by MF but as
+  BT.601 by ffmpeg, so compare an export against the app's own frame, not against ffmpeg's decode
+  of the source. Still not tried: QSV/AMF, the software retry after a failed hardware encoder,
+  the custom-CLI and external backends, the API key in Credential Manager, the approval prompt
+  (it was switched off for the run), push-to-talk from the keyboard, the benches.
+
 - **pro first compile (2026-11-10, same day, later):** `cargo check --all-targets` found ONE error
   (`slot` scoped inside an `unsafe` block in `GpuRenderer::pbo_read`); after that `cargo test` was
   1350 passed / 2 failed, both test expectations (a BGRX layer read as RGBA in
