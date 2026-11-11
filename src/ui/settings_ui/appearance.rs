@@ -21,6 +21,10 @@ pub(super) fn appearance(ui: &mut egui::Ui, s: &mut Settings) -> bool {
             Some(200.0),
         );
     });
+    changed |= ui
+        .checkbox(&mut s.start_maximized, "Open maximised")
+        .on_hover_text("Fill the screen when the app starts. Off: reopen where and how big the window was left.")
+        .changed();
     ui.add_space(4.0);
     let has_overrides =
         s.palette != crate::theme::PaletteOverride { mode: s.palette.mode.clone(), ..Default::default() };

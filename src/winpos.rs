@@ -102,6 +102,18 @@ pub fn apply_rect(vb: eframe::egui::ViewportBuilder, rect: Option<[i32; 4]>) -> 
     }
 }
 
+/// `Settings::start_maximized`: open maximised on the monitor under the mouse. The position only picks
+/// the monitor (a window maximises on the monitor it is created on); `place_on_cursor_monitor` then
+/// finds the window already there and leaves it alone.
+pub fn maximized_on_cursor_monitor(vb: eframe::egui::ViewportBuilder) -> eframe::egui::ViewportBuilder {
+    let mut cursor = POINT::default();
+    let area = if unsafe { GetCursorPos(&mut cursor) }.is_ok() { work_area(cursor) } else { None };
+    match area {
+        Some(a) => vb.with_position([a.left as f32, a.top as f32]).with_maximized(true),
+        None => vb.with_maximized(true),
+    }
+}
+
 /// Debounced window-rect save, called once a frame: reads the OS-reported outer rect, (re)starts a
 /// 500ms debounce whenever it has moved, and writes `settings.window_rect` + saves once it has settled.
 /// Returns the next wake-up `Instant` while a debounce is still pending, `None` once settled - this fn

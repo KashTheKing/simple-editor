@@ -316,6 +316,9 @@ pub struct Settings {
     /// feature for the window rect specifically. `None` until the window has moved/resized once.
     /// Written (debounced) by `winpos::tick`; read once by `main.rs` to seed the `ViewportBuilder`.
     pub window_rect: Option<[i32; 4]>,
+    /// Open the window maximised, on the monitor under the mouse (on by default). Off = reopen at
+    /// `window_rect`, the way it was left. Read once by `main.rs`.
+    pub start_maximized: bool,
     /// `env!("CARGO_PKG_VERSION")` last seen at startup - compared on the next launch to gate the
     /// What's New window (a version bump opens it once).
     pub last_seen_version: String,
@@ -595,6 +598,7 @@ impl Default for Settings {
             autosave_secs: 30,
             // ---- ws:size-diet ----
             window_rect: None,
+            start_maximized: true,
             last_seen_version: String::new(),
             // ---- ws:split-god-files ----
             // ---- ws:audio-analysis ----

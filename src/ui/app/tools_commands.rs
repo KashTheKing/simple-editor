@@ -29,6 +29,7 @@ const SCALAR_WHITELIST: &[&str] = &[
     "assistant_model",
     "assistant_guard",
     "voice_autosend",
+    "start_maximized",
 ];
 
 fn get_scalar(s: &Settings, key: &str) -> Option<Value> {
@@ -50,6 +51,7 @@ fn get_scalar(s: &Settings, key: &str) -> Option<Value> {
         "assistant_model" => json!(s.assistant_model),
         "assistant_guard" => json!(s.assistant_guard),
         "voice_autosend" => json!(s.voice_autosend),
+        "start_maximized" => json!(s.start_maximized),
         _ => return None,
     })
 }
@@ -88,6 +90,7 @@ fn set_scalar(s: &mut Settings, key: &str, value: &str) -> Result<(), String> {
         "assistant_model" => s.assistant_model = value.trim().to_string(),
         "assistant_guard" => s.assistant_guard = parse_bool(value)?,
         "voice_autosend" => s.voice_autosend = parse_bool(value)?,
+        "start_maximized" => s.start_maximized = parse_bool(value)?,
         _ => return Err(format!("'{key}' is not a whitelisted setting")),
     }
     Ok(())

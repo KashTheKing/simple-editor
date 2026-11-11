@@ -64,7 +64,8 @@ fn main() {
 
     // read once to seed the viewport; App::new does its own (cheap) re-read of the same file - not
     // worth threading a loaded Settings through eframe's boxed FnOnce for this one field.
-    let window_rect = settings::Settings::load().window_rect;
+    let seed = settings::Settings::load();
+    let window_rect = seed.window_rect;
     let mut viewport = winpos::apply_rect(
         eframe::egui::ViewportBuilder::default()
             .with_title("Simple Editor")
@@ -78,6 +79,9 @@ fn main() {
     );
     if let Some(s) = size {
         viewport = viewport.with_inner_size(s);
+    } else if seed.start_maximized && !winpos::background() && screenshot.is_none() {
+        // (automation - SE_BACKGROUND, --size, --screenshot - keeps the exact rect it asked for)
+        viewport = winpos::maximized_on_cursor_monitor(viewport);
     }
     if winpos::background() {
         viewport = viewport.with_active(false); // shown with SW_SHOWNOACTIVATE
