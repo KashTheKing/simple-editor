@@ -478,6 +478,8 @@ pub struct Settings {
     pub assistant_command: String,
     /// Model passed to the assistant CLI. Empty = the CLI's own default.
     pub assistant_model: String,
+    /// Effort passed to the assistant CLI (`low` .. `max`). Empty = the model's own default.
+    pub assistant_effort: String,
     /// A finished dictation sends the prompt straight away instead of leaving it in the box.
     pub voice_autosend: bool,
     /// Export audio layout: "mix" (one stereo track), "streams" (one stream per stem) or "stems"
@@ -698,6 +700,7 @@ impl Default for Settings {
             assistant_backend: "claude".into(),
             assistant_command: String::new(),
             assistant_model: String::new(),
+            assistant_effort: String::new(),
             voice_autosend: false,
             export_audio: "mix".into(),
             export_stem_by: "track".into(),

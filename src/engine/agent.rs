@@ -54,6 +54,8 @@ pub struct Spec {
     pub mcp_url: String,
     /// claude: `--model`, codex: `-m`, custom: `{model}`; empty = the CLI's default.
     pub model: String,
+    /// claude: `--effort` (`low` .. `max`); empty = the model's default.
+    pub effort: String,
     /// claude: the session to `--resume`.
     pub resume: Option<String>,
     /// custom: the command template.
@@ -160,7 +162,7 @@ pub fn mcp_config_json(mcp_url: &str) -> String {
 }
 
 /// `claude`'s argv (the prompt goes on stdin).
-pub fn claude_args(mcp_config: &str, model: &str, resume: Option<&str>) -> Vec<String> {
+pub fn claude_args(mcp_config: &str, model: &str, effort: &str, resume: Option<&str>) -> Vec<String> {
     let mut a: Vec<String> = [
         "-p",
         "--output-format",
@@ -180,6 +182,9 @@ pub fn claude_args(mcp_config: &str, model: &str, resume: Option<&str>) -> Vec<S
     .map(|s| s.to_string())
     .collect();
     a.extend(model_flag("claude", model));
+    if !effort.trim().is_empty() {
+        a.extend(["--effort".to_string(), effort.trim().to_string()]);
+    }
     if let Some(s) = resume.filter(|s| !s.is_empty()) {
         a.extend(["--resume".to_string(), s.to_string()]);
     }
@@ -284,7 +289,7 @@ fn run_claude(spec: &Spec, tx: &Sender<Event>, slot: &Mutex<Option<Child>>, stop
     let cfg_s = cfg.to_string_lossy().into_owned();
     let mut resume = spec.resume.clone();
     loop {
-        let args = claude_args(&cfg_s, &spec.model, resume.as_deref());
+        let args = claude_args(&cfg_s, &spec.model, &spec.effort, resume.as_deref());
         let resuming = resume.is_some();
         let mut produced = false;
         let mut done: Option<Event> = None;
@@ -525,7 +530,7 @@ mod tests {
 
     #[test]
     fn claude_argv() {
-        let a = claude_args("C:\\t\\m.json", "", None);
+        let a = claude_args("C:\\t\\m.json", "", "", None);
         assert_eq!(
             a,
             [
@@ -542,8 +547,11 @@ mod tests {
                 ""
             ]
         );
-        let a = claude_args("m.json", " sonnet ", Some("s1"));
+        let a = claude_args("m.json", " sonnet ", "", Some("s1"));
         assert_eq!(&a[a.len() - 4..], ["--model", "sonnet", "--resume", "s1"]);
+        // an exact model id and an effort level
+        let a = claude_args("m.json", "claude-opus-4-6", "xhigh", None);
+        assert_eq!(&a[a.len() - 4..], ["--model", "claude-opus-4-6", "--effort", "xhigh"]);
         // the header's model picker: "Default" is no flag, an alias goes to the agent's own flag
         assert!(model_flag("claude", "").is_empty() && model_flag("claude", "  ").is_empty());
         assert_eq!(model_flag("claude", "fable"), ["--model", "fable"]);

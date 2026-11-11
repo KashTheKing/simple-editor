@@ -23,6 +23,8 @@ pub enum Tab {
     #[default]
     Tasks,
     Chat,
+    /// Every saved conversation of this project.
+    History,
 }
 
 /// Shared state of the Assistant pane (`App.assistant`). `mcp-context` reads `pending`
@@ -139,6 +141,8 @@ pub struct View<'a> {
     /// `Settings.assistant_backend`: "claude" | "codex" | "custom" | "external".
     pub backend: &'a str,
     pub model: &'a str,
+    /// `Settings.assistant_effort`: "" (the model's default) or one of `EFFORTS`.
+    pub effort: &'a str,
     /// Comments waiting for the agent ("Handle my comments").
     pub queued: usize,
 }
@@ -153,6 +157,7 @@ pub enum Out {
     Undo,
     Backend(&'static str),
     Model(String),
+    Effort(String),
     /// Send `state.task_prompt` as a script-writing task.
     AddTask,
     /// Run one task / every Ready task in order.
@@ -207,11 +212,18 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AssistantState, v: &View) -> Out {
             if ui.selectable_label(state.tab == Tab::Chat, "Chat").clicked() {
                 state.tab = Tab::Chat;
             }
+            let saved = state.convs.iter().filter(|c| !c.is_empty()).count();
+            let history = if saved > 0 { format!("History ({saved})") } else { "History".into() };
+            let tip = "Past chats in this project";
+            if ui.selectable_label(state.tab == Tab::History, history).on_hover_text(tip).clicked() {
+                state.tab = Tab::History;
+            }
         });
         ui.separator();
         match state.tab {
             Tab::Tasks => tasks_tab(ui, state, v, &pal, &mut out),
             Tab::Chat => chat_tab(ui, state, v, &pal, &mut out),
+            Tab::History => history_tab(ui, state, v),
         }
     });
     out
@@ -260,35 +272,118 @@ fn header(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, out: &mut Out
         if ui.add_enabled(!v.running, egui::Button::new("+").small()).on_hover_text("New chat").clicked() {
             state.new_chat();
         }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            model_picker(ui, state, v, out);
-            menu::button(ui, format!("{} ▾", agent_label(v.backend)), |ui| {
-                for &(value, label) in AGENTS {
-                    if menu::check(ui, v.backend == value, label, "").clicked() && v.backend != value {
-                        *out = Out::Backend(value);
-                    }
+    });
+    // agent, model and effort on a row of their own: three pickers do not fit beside the title
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        menu::button(ui, format!("{} ▾", agent_label(v.backend)), |ui| {
+            for &(value, label) in AGENTS {
+                if menu::check(ui, v.backend == value, label, "").clicked() && v.backend != value {
+                    *out = Out::Backend(value);
                 }
-            })
-            .response
-            .on_hover_text("Which agent runs the requests (Settings ▸ Assistant)");
-        });
+            }
+        })
+        .response
+        .on_hover_text("Which agent runs the requests (Settings ▸ Assistant)");
+        model_picker(ui, state, v, out);
+        effort_picker(ui, v, out);
+    });
+}
+
+/// How hard the model thinks, for agents that take it.
+fn effort_picker(ui: &mut egui::Ui, v: &View, out: &mut Out) {
+    if v.backend != "claude" {
+        return;
+    }
+    let shown = EFFORTS.iter().find(|(id, _)| *id == v.effort).map_or("Default effort", |(_, l)| l);
+    menu::button(ui, format!("{shown} ▾"), |ui| {
+        if menu::check(ui, v.effort.is_empty(), "Default effort", "").clicked() {
+            *out = Out::Effort(String::new());
+        }
+        ui.separator();
+        for &(id, label) in EFFORTS {
+            if menu::check(ui, v.effort == id, label, "").clicked() {
+                *out = Out::Effort(id.to_string());
+            }
+        }
+    })
+    .response
+    .on_hover_text("Effort: how hard the model thinks. Higher is slower and more thorough.");
+}
+
+/// Past chats of this project, newest first: click one to open it.
+fn history_tab(ui: &mut egui::Ui, state: &mut AssistantState, v: &View) {
+    let now = now_secs();
+    let current = state.conv().map(|c| c.id);
+    let mut rows: Vec<(f64, u64, String, String)> = state
+        .convs
+        .iter()
+        .filter(|c| !c.is_empty())
+        .map(|c| {
+            let asked = c.lines.iter().filter(|l| matches!(l, Line::User(_))).count();
+            let mut sub = format!("{} · {asked} message{}", ago(c.updated, now), if asked == 1 { "" } else { "s" });
+            if !c.tasks.is_empty() {
+                sub += &format!(" · {} task{}", c.tasks.len(), if c.tasks.len() == 1 { "" } else { "s" });
+            }
+            (c.updated, c.id, short(c.title(), 60), sub)
+        })
+        .collect();
+    rows.sort_by(|a, b| b.0.total_cmp(&a.0));
+    egui::ScrollArea::vertical().id_salt("assistant_history").auto_shrink([false, false]).show(ui, |ui| {
+        if rows.is_empty() {
+            ui.add_space(8.0);
+            ui.weak("No past chats in this project yet. Chats and tasks are saved as you go.");
+            return;
+        }
+        let (mut open, mut delete) = (None, None);
+        ui.add_enabled_ui(!v.running, |ui| {
+            for (_, id, title, sub) in &rows {
+                ui.horizontal(|ui| {
+                    if ui.selectable_label(current == Some(*id), title.as_str()).clicked() {
+                        open = Some(*id);
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if x_button(ui, ("del_hist", *id)).on_hover_text("Delete this chat").clicked() {
+                            delete = Some(*id);
+                        }
+                    });
+                });
+                ui.label(egui::RichText::new(sub.as_str()).small().weak());
+                ui.add_space(4.0);
+            }
+        })
+        .response
+        .on_disabled_hover_text("Wait for the assistant to finish");
+        if let Some(id) = delete {
+            state.delete(id);
+        }
+        if let Some(id) = open {
+            state.open(id);
+            // a chat that only has tasks opens on them
+            let chatty = state.conv().is_some_and(|c| !c.lines.is_empty());
+            state.tab = if chatty { Tab::Chat } else { Tab::Tasks };
+        }
     });
 }
 
 fn model_picker(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, out: &mut Out) {
     match v.backend {
         "external" => {}
-        "claude" if !state.model_other && (v.model.is_empty() || CLAUDE_MODELS.contains(&v.model)) => {
-            let shown = if v.model.is_empty() { "Default" } else { v.model };
+        "claude" if !state.model_other && (v.model.is_empty() || CLAUDE_MODELS.iter().any(|(id, _)| *id == v.model)) => {
+            let shown = if v.model.is_empty() { "Default model" } else { model_label(v.model) };
             menu::button(ui, format!("{shown} ▾"), |ui| {
-                if menu::check(ui, v.model.is_empty(), "Default", "").clicked() {
+                if menu::check(ui, v.model.is_empty(), "Default model", "").clicked() {
                     *out = Out::Model(String::new());
                 }
-                for &m in CLAUDE_MODELS {
-                    if menu::check(ui, v.model == m, m, "").clicked() {
-                        *out = Out::Model(m.to_string());
+                for (i, &(id, label)) in CLAUDE_MODELS.iter().enumerate() {
+                    if i == 0 || i == CLAUDE_ALIASES {
+                        ui.separator();
+                    }
+                    if menu::check(ui, v.model == id, label, "").clicked() {
+                        *out = Out::Model(id.to_string());
                     }
                 }
+                ui.separator();
                 if menu::row(ui, None, "Other…", "").clicked() {
                     state.model_other = true;
                 }
@@ -298,7 +393,7 @@ fn model_picker(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, out: &m
         }
         _ => {
             let mut m = v.model.to_string();
-            let r = ui.add(egui::TextEdit::singleline(&mut m).hint_text("model").desired_width(90.0));
+            let r = ui.add(egui::TextEdit::singleline(&mut m).hint_text("model id").desired_width(130.0));
             if r.changed() {
                 *out = Out::Model(m.trim().to_string());
             }
@@ -808,6 +903,7 @@ mod tests {
             undo_top: (4, Some("Assistant: Tighten the intro")),
             backend: "claude",
             model: "sonnet",
+            effort: "high",
             queued: 0,
         };
         for tab in [Tab::Tasks, Tab::Chat] {
@@ -832,7 +928,7 @@ mod tests {
         state.prompt = "tighten this".into();
         state.focus_prompt = true;
         let quick = crate::settings::default_assistant_quick();
-        let v = View { running: false, chips: &[], quick: &quick, undo_top: (0, None), backend: "claude", model: "", queued: 0 };
+        let v = View { running: false, chips: &[], quick: &quick, undo_top: (0, None), backend: "claude", model: "", effort: "", queued: 0 };
         // (the pressed modifiers are read from the frame's input state, not from the key event)
         let mut frame = |state: &mut AssistantState, events: Vec<egui::Event>| {
             let mut out = Out::None;

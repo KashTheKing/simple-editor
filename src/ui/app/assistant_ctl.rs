@@ -348,6 +348,7 @@ fn start_queued(app: &mut App) {
         prompt: req.full,
         mcp_url: url,
         model: s.assistant_model.clone(),
+        effort: s.assistant_effort.clone(),
         resume,
         command: s.assistant_command.clone(),
         key: agent::key_load().map(|k| (key_env, k)),
@@ -663,6 +664,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
             undo_top: (app.undo.len(), app.undo.last().map(|e| e.label.as_str())),
             backend: &s.assistant_backend,
             model: &s.assistant_model,
+            effort: &s.assistant_effort,
             queued,
         };
         aui::draw(ui, &mut app.assistant, &v)
@@ -679,6 +681,10 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
         }
         Out::Model(m) => {
             app.settings.assistant_model = m;
+            app.settings.save();
+        }
+        Out::Effort(e) => {
+            app.settings.assistant_effort = e;
             app.settings.save();
         }
         Out::AddTask => add_task(app),

@@ -27,6 +27,7 @@ const SCALAR_WHITELIST: &[&str] = &[
     // the Assistant tab (never the API key: it lives in Credential Manager, not Settings)
     "assistant_backend",
     "assistant_model",
+    "assistant_effort",
     "assistant_guard",
     "voice_autosend",
     "start_maximized",
@@ -49,6 +50,7 @@ fn get_scalar(s: &Settings, key: &str) -> Option<Value> {
         "layout_mode" => json!(s.layout_mode),
         "assistant_backend" => json!(s.assistant_backend),
         "assistant_model" => json!(s.assistant_model),
+        "assistant_effort" => json!(s.assistant_effort),
         "assistant_guard" => json!(s.assistant_guard),
         "voice_autosend" => json!(s.voice_autosend),
         "start_maximized" => json!(s.start_maximized),
@@ -88,6 +90,10 @@ fn set_scalar(s: &mut Settings, key: &str, value: &str) -> Result<(), String> {
             _ => return Err("assistant_backend: expected claude, custom or external".into()),
         },
         "assistant_model" => s.assistant_model = value.trim().to_string(),
+        "assistant_effort" => match value.trim() {
+            v @ ("" | "low" | "medium" | "high" | "xhigh" | "max") => s.assistant_effort = v.to_string(),
+            _ => return Err("assistant_effort: '' | low | medium | high | xhigh | max".into()),
+        },
         "assistant_guard" => s.assistant_guard = parse_bool(value)?,
         "voice_autosend" => s.voice_autosend = parse_bool(value)?,
         "start_maximized" => s.start_maximized = parse_bool(value)?,

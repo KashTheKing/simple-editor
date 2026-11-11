@@ -21,8 +21,50 @@ pub const ATTACH_MAX: u32 = 1024;
 /// labels are the one place a vendor name appears (an option the user picks).
 pub const AGENTS: &[(&str, &str)] =
     &[("claude", "Claude Code"), ("codex", "Codex"), ("custom", "Custom command"), ("external", "External agent")];
-/// Model aliases the "claude" agent takes for `--model` ("" = the CLI's default).
-pub const CLAUDE_MODELS: &[&str] = &["fable", "opus", "sonnet", "haiku"];
+/// Models the "claude" agent takes for `--model`: (id passed to the CLI, label). "" = the CLI's own
+/// default. The first four are aliases that follow the newest release of a family; the rest are exact.
+/// ponytail: a fixed list - a model released after this build is reachable through "Other…"; make the
+/// list a setting if retyping an id there gets old.
+pub const CLAUDE_MODELS: &[(&str, &str)] = &[
+    ("fable", "Fable (latest)"),
+    ("opus", "Opus (latest)"),
+    ("sonnet", "Sonnet (latest)"),
+    ("haiku", "Haiku (latest)"),
+    ("claude-fable-5-2", "Fable 5.2"),
+    ("claude-fable-5-1", "Fable 5.1"),
+    ("claude-fable-5", "Fable 5"),
+    ("claude-opus-5-5", "Opus 5.5"),
+    ("claude-opus-5", "Opus 5"),
+    ("claude-opus-4-8", "Opus 4.8"),
+    ("claude-opus-4-7", "Opus 4.7"),
+    ("claude-opus-4-6", "Opus 4.6"),
+    ("claude-sonnet-5-5", "Sonnet 5.5"),
+    ("claude-sonnet-5", "Sonnet 5"),
+    ("claude-sonnet-4-6", "Sonnet 4.6"),
+    ("claude-haiku-5-5", "Haiku 5.5"),
+    ("claude-haiku-4-5", "Haiku 4.5"),
+];
+/// How many of `CLAUDE_MODELS` are the "latest" aliases (a separator follows them in the menu).
+pub const CLAUDE_ALIASES: usize = 4;
+/// Effort levels the "claude" agent takes for `--effort`: (value, label). "" = the model's default.
+pub const EFFORTS: &[(&str, &str)] =
+    &[("low", "Low"), ("medium", "Medium"), ("high", "High"), ("xhigh", "Extra high"), ("max", "Max")];
+
+/// The label of a listed model, else the id itself.
+pub fn model_label(model: &str) -> &str {
+    CLAUDE_MODELS.iter().find(|(id, _)| *id == model).map_or(model, |(_, l)| l)
+}
+
+/// "3 min ago" for a `now_secs`-style timestamp.
+pub fn ago(then: f64, now: f64) -> String {
+    let s = (now - then).max(0.0);
+    match s {
+        s if s < 60.0 => "just now".into(),
+        s if s < 3600.0 => format!("{} min ago", (s / 60.0) as u64),
+        s if s < 86_400.0 => format!("{} h ago", (s / 3600.0) as u64),
+        s => format!("{} d ago", (s / 86_400.0) as u64),
+    }
+}
 
 pub fn agent_label(backend: &str) -> &'static str {
     AGENTS.iter().find(|(v, _)| *v == backend).map_or("Agent", |(_, l)| l)

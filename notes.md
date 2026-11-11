@@ -7,6 +7,13 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
 
 ---
 
+- **assistant pickers + history (2026-11-11):** the header has an exact-model menu (ids from
+  Anthropic's model table in `assistant_data::CLAUDE_MODELS`, the four family aliases on top, "Other…"
+  for anything newer), an effort menu (`--effort low|medium|high|xhigh|max`, Claude Code agent only,
+  `Settings.assistant_effort`) and a History tab listing every saved chat of the project. Live-checked:
+  a request with `claude-haiku-4-5` + `low` answered. The model list is fixed in the build
+  (`ponytail:` note there); update it when models change.
+
 - **assistant redesign (2026-11-11, after the maintainer tried the first pane):** the pane is a tab
   beside the Inspector; Tasks (the agent writes a Luau script per described task into a queue of
   cards: Run / Edit / Save to Scripts, "Handle my comments") and Chat (bubbles, collapsed actions,
