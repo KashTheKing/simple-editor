@@ -7,6 +7,33 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
 
 ---
 
+- **pro first coding pass (2026-11-10): for whoever compiles `feat/pro` first.** Nothing in it has
+  been compiled, run, tested or measured: every Pro workstream (#140-#153) was written by reading only.
+  Expect compile errors; the docs (website pages, ARCHITECTURE.md "coded 2026-11-10" blocks,
+  customizing.md rows, CHANGELOG "Unreleased") describe what the code is written to do, not what was seen.
+  Verify in this order: (1) `cargo test` (then fix, repeat); (2) `--selftest`; (3) a `--screenshot`,
+  looked at, with a video clip in the Preview and the Source monitor; (4) the benches from the
+  perf-baseline note below, on a quiet machine, before/after against `main`; (5) `scripts/size.ps1`
+  (budget: +0.5 MB for the whole plan). Look at these first, they are the riskiest:
+  - scoped-thread decode (`DecoderPool::frames_arc`, `media/mod.rs`): MF readers taken out of the pool
+    and driven from `std::thread::scope` threads - check COM/MF init on those threads and that a
+    decoder used from a new thread every frame is allowed at all;
+  - the texture alpha swizzle for BGRX layers (`engine/gpu.rs` `upload`: `GL_BGRA` +
+    `TEXTURE_SWIZZLE_A = ONE`, set per upload on a texture that can switch between RGBA and BGRX) -
+    wrong colours or a transparent layer would show here;
+  - NV12 readback (`NV12_MAIN` / `render_export_*`): row order (GL rows vs. image rows, "no flip"),
+    the chroma plane layout, and the colour flags (`-colorspace bt709 -color_range tv`) - compare an
+    export against the same frame from the CPU path;
+  - audio over `tcp://127.0.0.1:<port>` into ffmpeg (`run_export`): accept/connect ordering, ffmpeg
+    waiting on one socket while another's writer blocks, a firewall prompt, cancel/cleanup;
+  - the Credential Manager calls (`engine/agent.rs` `key_load` / `key_save` / `key_delete`, the
+    `windows` crate features they need in `Cargo.toml`);
+  - `claude -p` reading the prompt from stdin, and `claude.cmd` through std's batch-file handling;
+    check `--resume` with a stored session and the stream-json parsing against a real run.
+  Also: regenerate the docs screenshots (`scripts/docs-shots.ps1`) and the generated shortcuts page
+  (`--dump-hotkeys` -> `website/docs/shortcuts.md`; new actions: Performance HUD, Assistant, Export Avid
+  EDL…, Add Comment, Push to Talk). No new screenshots were referenced by the new pages.
+
 - **perf-baseline (2026-11-10): how to take the Pro plan's baseline. Numbers: not measured yet.**
   On a quiet machine (nothing else encoding, plugged in), release build:
   `cargo test --release bench_export -- --ignored --nocapture` (10 s 1080p60 two-layer project, CPU

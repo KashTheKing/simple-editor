@@ -106,6 +106,25 @@ Pulled forward from CHANGELOG.md — mark new completions here as they land.
   per workstream under `plans/pro/issues/`). Size budget, decided once for the whole plan:
   **pro plan: up to +0.5 MB over the pre-plan exe, each PR still held to the size gate.**
   Performance budgets: see "Performance budgets" at the end of this section.
+  **First coding pass (2026-11-10) on `feat/pro`: coded, not compiled, run or measured** - nothing here
+  moves to "Achieved" until `cargo test`, `--selftest`, a viewed screenshot, the benches and
+  `scripts/size.ps1` have run (order in notes.md).
+  - Coded: perf HUD + `playback.hud` + bench tests (perf-baseline); shared/BGRX frames and parallel
+    layer decode (play-decode-path steps 1-2, 4); render-thread work in `playback.rs`
+    (play-render-thread, partial); Source monitor on the GPU path; export request window, PBO readback,
+    NV12 readback, writer thread, audio over loopback sockets (export-pipeline); hardware-encoder probe,
+    Speed/Balanced/Smallest, `smart_spans` planning + an off-by-default checkbox (export-encoders);
+    Mix / separate tracks / WAV stems by track, bus or role (export-audio-tracks); XML additions, EDL
+    export/import, Avid marker file (interchange); `editor.context`, undo groups, image results,
+    `assistant.wait`, comments (mcp-context); speech islands + async transcription
+    (transcribe-islands); Assistant pane, backends, guard, Settings ▸ Assistant (assistant-pane);
+    dictation + Push to Talk (voice-input); docs (docs-release, this entry).
+  - Left out on purpose: NV12 **decode** (play-decode-path step 3) and the `se-engine` crate at
+    `opt-level=3` (step 5) - both gated on measurements not taken yet; the smart-render **runner**
+    (only the planning function exists, nothing calls it); in play-render-thread, the nested-sequence
+    clone and the `set_project` shortcut.
+  - Still to do after it builds: regenerate the docs screenshots (`scripts/docs-shots.ps1`) and the
+    generated shortcuts page (`--dump-hotkeys`); a checkbox for `voice_autosend`.
 - [x] wave-0c size-diet (issue #18) landed: release exe 15.23 MB -> 9.65 MB (-5.58 MB measured,
   correcting an earlier PR-body report that mistakenly said the main-crate `opt-level="s"` gate was
   skipped — `size_log.csv`'s `bc4c19e` row confirms it was kept, validated against

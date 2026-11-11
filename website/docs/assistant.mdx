@@ -1,0 +1,90 @@
+---
+title: Work with Claude
+description: Ask an AI agent to edit your project from the Assistant panel, leave it comments on the timeline, and undo a whole request in one step.
+---
+
+The **Assistant** panel is a chat box for editing: type what you want ("remove the silences in the
+selected clips", "add a chapter marker at each topic change") and an AI agent does it in the project you
+have open, through the same tools as the [MCP server](scripting.mdx#the-mcp-server-edit-together-with-an-ai).
+You watch the edits land on the timeline while it works.
+
+Open it with **Window ▸ Assistant**, or from the command palette. It is hidden on every page until you
+open it.
+
+## Pick an agent
+
+**Settings ▸ Assistant ▸ Agent** decides who answers:
+
+| Agent | What runs |
+|---|---|
+| **Claude Code** (default) | The `claude` command-line tool, limited to this editor's tools: no shell, no files. Install Claude Code first; the settings say whether `claude` was found. **Model** is optional (empty = Claude Code's default). |
+| **Custom command** | Your own command line, for Codex or any other agent that speaks MCP. `{prompt}` and `{mcp_url}` are filled in; "double quotes" group words; no shell runs it. |
+| **External agent** | Nothing is started. Requests wait for an agent you already connected over MCP, which picks them up with `assistant.wait`. |
+
+**API key** (Claude Code and custom command) is optional. Leave it empty to use the agent's own sign-in.
+A key you save is kept in Windows Credential Manager (as `SimpleEditor/assistant`), never in
+`settings.json`, and handed to the agent as `ANTHROPIC_API_KEY` (Claude Code) or in the **Key variable**
+you name (custom command, `OPENAI_API_KEY` by default).
+
+Sending a request turns the MCP server on if it was off. Claude Code keeps one conversation per saved
+project, so a follow-up request can refer to the last one; an unsaved project starts a fresh conversation
+with each request.
+
+## Ask
+
+1. Select what the request is about: clips, an In/Out range, transcript words, or a marker with a comment.
+2. Type the request and press <kbd>Enter</kbd> (<kbd>Shift+Enter</kbd> for a new line), or click **Send**.
+3. The log shows what the agent says and each tool it calls. **Stop** ends a request early; what it did
+   so far stays, as one undo step.
+
+**Context chips** above the prompt box show what is sent with the request: the selection, the In/Out range,
+the playhead and a selected comment. Click a chip to leave it out of the next request.
+
+**Quick prompts** are one-click requests: **Remove silences**, **Cut filler words**, **Caption this**,
+**Tighten selection** and **Add chapter markers**. Edit, add or remove them in **Settings ▸ Assistant ▸
+Quick prompts**; **Reset to built-ins** brings the five back.
+
+From anywhere, open the command palette and type `>` followed by a request (for example
+`> trim the long pause at the playhead`) to send it without opening the panel first.
+
+## Undo a request
+
+Everything one request changes is **one** undo step, named after the request in **History**. When a request
+finishes, the log shows **Finished** and an **Undo all** button. It works while that request is still the
+last thing on the undo stack; once you edit something after it, use **History** to step back further.
+If you edit by hand while a request is still running, your edit is its own undo step and the request
+continues as a second step after it; **Undo all** then undoes only that last part.
+The clips a request changed get a short outline on the timeline.
+
+## Approve risky tools
+
+Some tools reach outside the project: exports, opening or creating a project, changing settings, running
+scripts and converting media, and the menu commands that do the same (`ui.action` with New / Open
+Project, Save, the exports, Settings…). When an agent calls one, a small **An agent wants to leave the
+project** window appears with who is asking, the tool and its arguments:
+
+- **Allow** runs it once.
+- **Always allow this session** runs it and stops asking for that tool (or that menu command) until you
+  restart.
+- **Deny** tells the agent you said no.
+
+Turn the check off with **Settings ▸ Assistant ▸ Guard**. It applies to every MCP client, not only the
+Assistant panel.
+
+## Leave comments for the agent
+
+A comment is a marker with a note:
+
+- **Add Comment** (command palette) drops one over the In/Out range, else over the selected clips, else
+  at the playhead, and opens the **Markers** panel with its note ready to type in.
+- An agent can read open comments (`markers.list` with `open`), leave its own (`markers.comment`), and tick
+  them off (`markers.set` with `done`). The Markers panel shows who left a comment and whether it is done;
+  done comments are drawn dimmed on the ruler. A comment over a range is drawn as a shaded span.
+
+With the **External agent** backend, an agent looping on `assistant.wait` also wakes up for a new comment
+of yours once you stop typing in it.
+
+## Connect your own agent
+
+Any MCP client can do what the Assistant panel does; see [Scripting & MCP](scripting.mdx). The tools made
+for this are listed there under [Co-editing tools](scripting.mdx#co-editing-tools).

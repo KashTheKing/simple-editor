@@ -1190,18 +1190,21 @@ fn render_thread(
     }
 }
 
-/// The size the CPU preview is made at for a pane `canvas` pixels big: the smallest eighth of the
-/// project's size that covers it (`layer_size`'s video steps), so a divider drag or a DPI change
-/// mostly lands on the size already made - same caches, same decode sizes. The pane shows it
-/// scaled to fit, so nothing changes on screen. A pane larger than the project keeps its own size.
-/// ponytail: up to an eighth of the project over `preview_max_width`; cap the step there if that
-/// costs.
+/// The size the CPU preview is made at for a pane `canvas` pixels big: the largest eighth of the
+/// project's size that fits inside it, so a divider drag or a DPI change mostly lands on the size
+/// already made - same caches, same decode sizes - and never more than `preview_quality` /
+/// `preview_max_width` asked for. The pane shows it scaled to fit. A pane larger than the project,
+/// or smaller than an eighth of it, keeps its own size.
 pub fn step_canvas(project: (u32, u32), canvas: (u32, u32)) -> (u32, u32) {
     let empty = canvas.0 == 0 || canvas.1 == 0 || project.0 == 0 || project.1 == 0;
     if empty || canvas.0 > project.0 || canvas.1 > project.1 {
         return canvas;
     }
-    layer_size(project, canvas, false)
+    let fits = |k: u32| project.0 * k / 8 <= canvas.0 && project.1 * k / 8 <= canvas.1;
+    match (1..=8).rev().find(|&k| fits(k)) {
+        Some(k) => ((project.0 * k / 8).max(1), (project.1 * k / 8).max(1)),
+        None => canvas,
+    }
 }
 
 /// The frames to pre-render around a paused playhead at `idx`, most wanted first: where a scrub
@@ -1475,13 +1478,16 @@ fn gpu_cached(
     };
     let set = Arc::new(set);
     if ok {
-        // a frame shared with the pool's source cache (a still, see `DecoderPool::frame_arc`) is
-        // paid for there: counting it once per index would size the read-ahead as if every frame
-        // of a ten-still stack held ten bitmaps of its own. Capacity, not length: a recycled buffer
-        // that once held a full frame still holds that much when a small layer is decoded into it
-        let own = |f: &Arc<Frame>| if Arc::strong_count(f) == 1 { f.rgba.capacity() } else { 0 };
-        let bytes: usize = set.layers.iter().map(|(_, f)| own(f)).sum::<usize>()
-            + set.motion.iter().map(|(_, _, f)| own(f)).sum::<usize>();
+        // a shared STILL (kept by its decoder, see `DecoderPool::frame_arc`) is paid for there:
+        // counting it once per index would size the read-ahead as if every frame of a ten-still
+        // stack held ten bitmaps of its own. A video frame is shared with the source cache too now,
+        // but that cache drops it long before this one does - it is counted here, or the read-ahead
+        // pins every frame it ever played at 0 bytes. Capacity, not length: a recycled buffer that
+        // once held a full frame still holds that much when a small layer is decoded into it
+        let still = |id| project.clip(id).is_some_and(|c| c.kind == ClipKind::Image);
+        let own = |id, f: &Arc<Frame>| if Arc::strong_count(f) == 1 || !still(id) { f.rgba.capacity() } else { 0 };
+        let bytes: usize = set.layers.iter().map(|(id, f)| own(*id, f)).sum::<usize>()
+            + set.motion.iter().map(|(id, _, f)| own(*id, f)).sum::<usize>();
         for old in cache.insert(idx, bytes, set.clone()) {
             recycle(Some(old), spare);
         }
@@ -2242,18 +2248,20 @@ mod render_thread_tests {
         assert_eq!(set.get(ids[0]).map(|f| f.pts), Some(*log.last().unwrap()), "the layer is the latest one");
     }
 
-    /// The CPU preview is made at eighths of the project's size: a divider drag that stays within
-    /// one step keeps the size (and the caches); a pane bigger than the project keeps its own.
+    /// The CPU preview is made at eighths of the project's size, rounded down so it never exceeds
+    /// the requested size: a divider drag that stays within one step keeps the size (and the
+    /// caches); a pane bigger than the project keeps its own.
     #[test]
     fn canvas_steps_by_eighths_of_the_project() {
         let p = (1920, 1080);
-        assert_eq!(step_canvas(p, (1000, 563)), (1200, 675));
-        assert_eq!(step_canvas(p, (1100, 619)), (1200, 675), "a small drag: the same size");
-        assert_eq!(step_canvas(p, (1201, 676)), (1440, 810));
+        assert_eq!(step_canvas(p, (1000, 563)), (960, 540));
+        assert_eq!(step_canvas(p, (1100, 619)), (960, 540), "a small drag: the same size");
+        assert_eq!(step_canvas(p, (1201, 676)), (1200, 675));
         assert_eq!(step_canvas(p, (1920, 1080)), (1920, 1080));
         assert_eq!(step_canvas(p, (2560, 1440)), (2560, 1440), "bigger than the project: as it is");
         assert_eq!(step_canvas(p, (0, 0)), (0, 0), "no pane yet: nothing to make");
-        assert_eq!(step_canvas((320, 240), (100, 75)), (120, 90));
+        assert_eq!(step_canvas((320, 240), (100, 75)), (80, 60));
+        assert_eq!(step_canvas(p, (200, 112)), (200, 112), "under an eighth: as it is");
     }
 }
 
@@ -2353,8 +2361,8 @@ mod tests {
         assert!(start.elapsed() < Duration::from_secs(2), "release_files took {:?}", start.elapsed());
         p.seek(1.0); // published pts sit on the fps grid, so ask for a grid time
         p.set_canvas(160, 120, 100); // clamp keeps aspect, and the preview re-renders after release
-        // (100x75 is made at the next eighth of the 320x240 project up: `step_canvas`)
-        wait_frame(&mut p, 1.0, (120, 90));
+        // (100x75 is made at the next eighth of the 320x240 project down: `step_canvas`)
+        wait_frame(&mut p, 1.0, (80, 60));
 
         // render_once: synchronous frame for tools (MCP render.frame), independent of the preview canvas
         let f = p.render_once(2.5, 160).expect("render_once");
@@ -3535,7 +3543,9 @@ mod tests {
     // ---- ws:perf-baseline ----
     /// A 1080p60 H.264 file played for 5 s through a `Player` set up like the Source monitor's
     /// (`source_pane::source_open_now`: `Player::new` + `Project::from_media` + `play`), polled like the
-    /// UI does. Prints frames shown vs due and the dropped count. Timing-only, so not a regular test:
+    /// UI does. Prints frames shown vs due and the dropped count. Limit: this is a default CPU-mode
+    /// `Player`, not the Source player as the app configures it (GPU layer mode, cache share, proxies) -
+    /// GPU layer mode needs a GL context, so it cannot run headless. Timing-only, so not a regular test:
     /// `cargo test --release bench_source_monitor -- --ignored --nocapture`
     #[test]
     #[ignore]

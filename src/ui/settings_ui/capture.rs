@@ -96,7 +96,9 @@ pub(super) fn export(ui: &mut egui::Ui, s: &mut Settings, encoders: &[String]) -
         ui.end_row();
 
         ui.label("Preset");
-        let opts: Vec<(&str, &str)> = ENCODER_PRESETS.iter().map(|p| (*p, *p)).collect();
+        // "auto" follows the Export pane's Speed choice; a named preset wins over it
+        let opts: Vec<(&str, &str)> =
+            std::iter::once(("auto", "auto (Speed)")).chain(ENCODER_PRESETS.iter().map(|p| (*p, *p))).collect();
         changed |= combo(ui, "preset", &mut s.preset, &opts, Some(260.0));
         ui.end_row();
     });

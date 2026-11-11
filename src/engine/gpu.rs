@@ -328,9 +328,15 @@ pub struct GpuRenderer {
     /// The Source monitor's canvas: owned here, never in `loaned`/`pool`, so the main preview's
     /// `reclaim` cannot recycle (and redraw over) it, and it stays paintable on frames with no new layers.
     source_canvas: Option<Target>,
+    /// ORed into every `upload` key: `SOURCE_KEY` while `render_source_texture` runs, else 0, so the
+    /// Source's synthetic project (which reuses low clip ids) never shares a texture with the timeline.
+    key_tag: u64,
     // ---- ws:export-pipeline ----
     readback: Readback,
 }
+
+/// High bit of the layer-texture key space reserved for the Source monitor's canvas.
+const SOURCE_KEY: u64 = 1 << 62;
 
 impl GpuRenderer {
     /// Compile the shader set. Err (with the GLSL log) when the driver rejects something - the caller
@@ -370,6 +376,7 @@ impl GpuRenderer {
                 perf_composite_us: 0,
                 perf_upload_us: 0,
                 source_canvas: None,
+                key_tag: 0,
                 readback: Readback::default(), // ws:export-pipeline
             };
             // The composite program is the one nothing works without: fail loudly here instead of
@@ -385,6 +392,7 @@ impl GpuRenderer {
         if frame.is_empty() {
             return self.blank;
         }
+        let key = key | self.key_tag;
         let gl = self.gl.clone();
         let rev = (frame.rgba.as_ptr() as usize, frame.pts.to_bits());
         let (w, h) = (frame.width, frame.height);
@@ -531,8 +539,9 @@ impl GpuRenderer {
     }
 
     /// Synchronous export frame: render and `glReadPixels` straight into `out` (RGBA, or NV12 bytes in
-    /// `out.rgba` with `out.width/height` the picture size). A failed render leaves a black frame,
-    /// like `render_frame`.
+    /// `out.rgba` with `out.width/height` the picture size). False when the render failed: `out` then
+    /// holds no picture (zeros are green in NV12) and the caller must not send it - reply None so the
+    /// export finishes on the CPU from that frame.
     #[allow(clippy::too_many_arguments)]
     pub fn render_export_sync(
         &mut self,
@@ -543,7 +552,7 @@ impl GpuRenderer {
         layers: &LayerSet,
         nv12: bool,
         out: &mut Frame,
-    ) {
+    ) -> bool {
         self.reclaim();
         let host = self.host_fbo();
         out.resize(w, h);
@@ -551,9 +560,11 @@ impl GpuRenderer {
         out.rgba.resize(Self::export_bytes(w, h, nv12), 0);
         if w == 0 || h == 0 {
             self.restore(host);
-            return;
+            return false;
         }
-        if let Some(target) = self.export_target(project, t, w, h, layers, nv12) {
+        let target = self.export_target(project, t, w, h, layers, nv12);
+        let ok = target.is_some();
+        if let Some(target) = target {
             let gl = self.gl.clone();
             unsafe {
                 gl.bind_framebuffer(glow::FRAMEBUFFER, Some(target.fbo));
@@ -571,6 +582,7 @@ impl GpuRenderer {
             self.pool.put(target);
         }
         self.restore(host);
+        ok
     }
 
     /// Asynchronous export frame: render and start its readback into the next pixel-pack buffer of the
@@ -710,9 +722,7 @@ impl GpuRenderer {
     /// `source_canvas` (the previous one goes back to the pool) instead of `loaned`. No `reclaim`, so
     /// the main preview's canvas loaned this same frame is never recycled under it, and the texture stays
     /// valid until the next call here - the pane repaints it without re-rendering while nothing changed.
-    /// ponytail: layer textures are keyed by clip id, which the Source's synthetic project shares with
-    /// the timeline's - both playing at once re-upload on every switch (correct, just slower). A key
-    /// namespace per canvas is the upgrade if that shows up in the HUD.
+    /// Layer textures uploaded here carry `SOURCE_KEY`, so they never collide with the timeline's.
     pub fn render_source_texture(
         &mut self,
         project: &Project,
@@ -725,7 +735,9 @@ impl GpuRenderer {
             return None;
         }
         let host = self.host_fbo();
+        self.key_tag = SOURCE_KEY;
         let canvas = self.render_canvas(project, t, w, h, layers);
+        self.key_tag = 0;
         self.restore(host);
         let canvas = canvas?;
         let out = (canvas.tex, canvas.w, canvas.h);
@@ -733,6 +745,13 @@ impl GpuRenderer {
             self.pool.put(old);
         }
         Some(out)
+    }
+
+    /// Return the Source monitor's canvas to the pool (the Source closed).
+    pub fn release_source_texture(&mut self) {
+        if let Some(old) = self.source_canvas.take() {
+            self.pool.put(old);
+        }
     }
 
     /// Render `effect` over `src` and read the result back into `out` (catalogue thumbnails).
@@ -829,8 +848,10 @@ impl GpuRenderer {
         unsafe {
             match key {
                 Some(k) => {
-                    if let Some(t) = self.textures.remove(&k) {
-                        gl.delete_texture(t.tex);
+                    for k in [k, k | SOURCE_KEY] {
+                        if let Some(t) = self.textures.remove(&k) {
+                            gl.delete_texture(t.tex);
+                        }
                     }
                 }
                 None => {

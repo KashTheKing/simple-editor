@@ -173,6 +173,11 @@ impl App {
                 }
                 if self.settings.cache_mb != cache_before {
                     self.player.set_cache_bytes(crate::playback::cache_budget_bytes(self.settings.cache_mb));
+                    if let Some(s) = self.source.as_mut() {
+                        s.player.set_cache_bytes(
+                            crate::playback::cache_budget_bytes(self.settings.cache_mb) / super::gpu::SOURCE_CACHE_DIV,
+                        );
+                    }
                 }
                 if self.settings.context_menu != ctxmenu_before {
                     let r = if self.settings.context_menu {

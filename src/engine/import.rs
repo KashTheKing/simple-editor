@@ -728,14 +728,20 @@ fn read_edl(text: &str, b: &mut Build) {
         let u = l.to_ascii_uppercase();
         u.contains("FCM:") && u.contains("DROP") && !u.contains("NON-DROP") && !u.contains("NON DROP")
     });
-    // ponytail: an EDL carries no frame rate - 30 / 29.97 is the CMX assumption, retime after import
-    let fps = if drop_frame { 30.0 * 1000.0 / 1001.0 } else { 30.0 };
+    // the app's own EDLs carry `* FPS: <rate>` (engine::edl); others get the CMX assumption, 30 / 29.97
+    let stated = text.lines().find_map(|l| {
+        let r = l.trim().strip_prefix('*')?.trim();
+        let v = r.get(..4).filter(|k| k.eq_ignore_ascii_case("FPS:")).map(|_| r[4..].trim())?;
+        v.parse::<f64>().ok().filter(|f| f.is_finite() && *f > 0.0)
+    });
+    let fps = stated.unwrap_or(if drop_frame { 30.0 * 1000.0 / 1001.0 } else { 30.0 });
     b.project.fps = fps;
-    b.note(
-        Level::Warning,
-        "sequence",
-        format!("an EDL stores no frame rate or picture size; assumed {fps:.3} fps at the default size"),
-    );
+    let msg = if stated.is_some() {
+        format!("an EDL stores no picture size; {fps:.3} fps from its FPS comment, default size")
+    } else {
+        format!("an EDL stores no frame rate or picture size; assumed {fps:.3} fps at the default size")
+    };
+    b.note(Level::Warning, "sequence", msg);
 
     let mut events: Vec<Event> = Vec::new();
     for (n, raw) in text.lines().enumerate() {
@@ -1489,6 +1495,21 @@ mod tests {
         for f in [0, 1799, 1800, 17982, 107892] {
             let back = timecode(&crate::engine::edl::tc(f, df), df).unwrap();
             assert_eq!((back * df).round() as i64, f);
+        }
+        // 25 fps: the `* FPS:` comment brings the rate back, so the times land exactly
+        p.fps = 25.0;
+        let text = &crate::engine::edl::export_edl(&p)[0].1;
+        assert!(text.contains("* FPS: 25\n"), "{text}");
+        let r = import_text(text, "rt25.edl");
+        assert!((r.project.fps - 25.0).abs() < 1e-9, "{}", r.project.fps);
+        let got: Vec<(f64, f64, f64)> =
+            r.project.all_clips().map(|(_, c)| (c.start, c.duration, c.src_in)).collect();
+        assert_eq!(got.len(), want.len(), "{}\n{text}", r.to_markdown());
+        for w in &want {
+            assert!(
+                got.iter().any(|g| (g.0 - w.1).abs() < 1e-6 && (g.1 - w.2).abs() < 1e-6 && (g.2 - w.3).abs() < 1e-6),
+                "{w:?} not in {got:?}"
+            );
         }
     }
 

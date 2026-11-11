@@ -148,6 +148,21 @@ pub fn is_broken(enc: &str) -> bool {
     st.as_ref().is_some_and(|s| s.done && CANDIDATES.contains(&enc) && !s.working.iter().any(|w| w == enc))
 }
 
+/// Drop `enc` from the working set (an export found it dead after a GPU/driver change) and rewrite
+/// the cache file, so "auto" stops picking it until ffmpeg changes or the cache is cleared.
+/// ponytail: no machine key in the cache (the GPU name lives with the UI's GL context); this is the
+/// self-heal instead.
+pub fn mark_broken(enc: &str) {
+    let mut st = lock();
+    let Some(s) = st.as_mut() else { return };
+    s.working.retain(|w| w != enc);
+    if s.done {
+        let _ = std::fs::create_dir_all(Settings::cache_dir());
+        let json = serde_json::json!({ "key": s.key, "working": s.working });
+        let _ = std::fs::write(cache_file(), json.to_string());
+    }
+}
+
 /// Fastest working encoder for "auto" on this container, None = the software default.
 pub fn best_for(ext: &str) -> Option<String> {
     pick(ext, &working()).map(String::from)

@@ -338,6 +338,8 @@ actions! {
     AddComment => "add_comment", "Add Comment", None;
     // ---- ws:transcribe-islands ----
     // ---- ws:voice-input ----
+    // Hold to dictate into the Assistant prompt (a tap / the palette toggles). Unbound by design.
+    PushToTalk => "push_to_talk", "Push to Talk", None;
     // ---- ws:docs-release ----
     // ---- tool selection (ui::tools) - polled and dispatched there, not through App::act ----
     ToolSelect => "tool_select", "Select Tool", sc(NONE, Key::V);
@@ -636,6 +638,7 @@ pub fn group(a: Action) -> &'static str {
         AddComment => "Marking",
         // ---- ws:transcribe-islands ----
         // ---- ws:voice-input ----
+        PushToTalk => "Panels & Pages",
         // ---- ws:docs-release ----
         // unreachable today (every variant has an arm above); a new variant compiles into "Other" and
         // `group_covers_every_action` names it.

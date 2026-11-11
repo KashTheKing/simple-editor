@@ -277,7 +277,7 @@ impl App {
             acts(ui, &[TrimLeft1, TrimRight1, TrimLeft10, TrimRight10].map(Some));
             acts(ui, &[None, Some(ExtendEdit), Some(TrimTop), Some(TrimTail), None, Some(SlipLeft), Some(SlipRight)]);
         });
-        acts(ui, &[Some(AddMarker), None]);
+        acts(ui, &[Some(AddMarker), Some(AddComment), None]); // ws:mcp-context: AddComment
         menu::sub(ui, Some(tools::Glyph::Waveform), "Auto", |ui| {
             acts(ui, &[Some(Action::AutoCut)]);
             // scene detection lives in the Auto-cut panel, beside silence detection

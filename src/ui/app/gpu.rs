@@ -29,8 +29,9 @@ fn serve_export_request(
             g.render_export_finish(&mut b);
             let _ = r.send(Some(b));
         }
-        g.render_export_sync(project, t, w, h, &layers, nv12, &mut buf);
-        let _ = reply.send(Some(buf));
+        // a failed render has no picture (zeros = green in NV12): None finishes this export on the CPU
+        let ok = g.render_export_sync(project, t, w, h, &layers, nv12, &mut buf);
+        let _ = reply.send(ok.then_some(buf));
     }
 }
 
@@ -122,9 +123,8 @@ impl App {
         self.source_live = self.source_preview_frame(playing);
     }
 
-    /// Render one catalogue thumbnail per `EffectKind` over the stock image and hand them to the effects
-    /// panel. Runs once per (stock image, size) - the GPU renderer owns the GL context, so this happens on
-    /// the UI thread. Without a GPU the panel keeps its neutral named cards.
+    /// Where an export renders its frames: on the GPU renderer (requests served on the UI thread by
+    /// the queue below) when it is up, else the CPU compositor on the export thread.
     pub(super) fn export_frames(&self) -> crate::engine::export::FrameSource {
         match self.gpu {
             Some(_) => crate::engine::export::FrameSource::Gpu(self.gpu_export.0.clone()),
@@ -342,7 +342,7 @@ impl App {
 
 // ---- ws:play-source-monitor ----
 /// The Source monitor's share of `Settings.cache_mb`: it shows one file, the timeline's player needs the rest.
-const SOURCE_CACHE_DIV: usize = 8;
+pub(super) const SOURCE_CACHE_DIV: usize = 8;
 
 /// The three settings a secondary player takes from the app. A trait only so the test can record them -
 /// `Player` sends them to its render thread and keeps nothing readable.

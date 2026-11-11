@@ -141,6 +141,8 @@ mod tools_uikit;
 // ---- ws:transcript-captions ----
 mod transcript_ctl;
 mod trim_actions;
+// ---- ws:voice-input ----
+mod voice_ctl;
 mod whatsnew;
 #[path = "windows.rs"]
 mod windows_dlg;
@@ -477,11 +479,15 @@ pub struct App {
     // ---- ws:export-pipeline ----
     // ---- ws:interchange ----
     // ---- ws:assistant-pane ----
+    /// The Assistant's running agent, queued request and held (guarded) MCP calls.
+    assistant_rt: assistant_ctl::AssistantRt,
     // ---- ws:mcp-context ----
     /// Agent undo groups, `assistant.wait` long polls, the changed-clip flash and the MCP port wanted.
     mcp_ctx: tools_context::ContextState,
     // ---- ws:transcribe-islands ----
     // ---- ws:voice-input ----
+    /// Dictation into the Assistant prompt (recorder + whisper job).
+    voice: voice_ctl::VoiceState,
     // ---- ws:docs-release ----
 }
 
@@ -922,10 +928,12 @@ impl App {
             // ---- ws:export-pipeline ----
             // ---- ws:interchange ----
             // ---- ws:assistant-pane ----
+            assistant_rt: Default::default(),
             // ---- ws:mcp-context ----
             mcp_ctx: Default::default(),
             // ---- ws:transcribe-islands ----
             // ---- ws:voice-input ----
+            voice: Default::default(),
             // ---- ws:docs-release ----
         };
         if let Some(reason) = settings_bad {
@@ -993,6 +1001,9 @@ impl App {
         self.dirty = false;
         self.undo.clear();
         self.redo.clear();
+        // ws:mcp-context: the group's snapshot and the comment watermark belong to the old project
+        self.mcp_ctx.group = None;
+        self.mcp_ctx.seen = None;
         self.selection.clear();
         // the old project's Source clip and library picks point at assets that no longer exist
         self.close_source();
@@ -1158,6 +1169,11 @@ impl eframe::App for App {
             } else {
                 self.close_confirmed = true;
             }
+        }
+        // the window really closes this frame: answer held / parked MCP calls instead of letting them time out
+        if self.close_confirmed && ctx.input(|i| i.viewport().close_requested()) {
+            assistant_ctl::deny_held(self, "the app closed");
+            tools_context::end_waits(self, "the app closed");
         }
 
         // live links (paths / expressions) re-bake when their inputs changed; a hash check otherwise
@@ -1554,10 +1570,12 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:interchange ----
     tools_interchange::TOOLS,
     // ---- ws:assistant-pane ----
+    assistant_ctl::TOOLS,
     // ---- ws:mcp-context ----
     tools_context::TOOLS,
     // ---- ws:transcribe-islands ----
     // ---- ws:voice-input ----
+    voice_ctl::TOOLS,
     // ---- ws:docs-release ----
 ];
 
@@ -1625,6 +1643,7 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     tools_context::act,
     // ---- ws:transcribe-islands ----
     // ---- ws:voice-input ----
+    voice_ctl::act,
     // ---- ws:docs-release ----
 ];
 
@@ -1684,10 +1703,12 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:export-pipeline ----
     // ---- ws:interchange ----
     // ---- ws:assistant-pane ----
+    assistant_ctl::tick,
     // ---- ws:mcp-context ----
     tools_context::tick,
     // ---- ws:transcribe-islands ----
     // ---- ws:voice-input ----
+    voice_ctl::tick,
     // ---- ws:docs-release ----
 ];
 
@@ -1742,6 +1763,7 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:export-pipeline ----
     // ---- ws:interchange ----
     // ---- ws:assistant-pane ----
+    assistant_ctl::approvals,
     // ---- ws:mcp-context ----
     // ---- ws:transcribe-islands ----
     // ---- ws:voice-input ----
@@ -1880,7 +1902,8 @@ impl App {
         // files for guards only this ws's rows table needs. See `enabled_for2`.
         Self::enabled_for2(
             a,
-            self.undo.is_empty(),
+            // ws:mcp-context: an open agent group has no entry until tools_context::act closes it
+            self.undo.is_empty() && self.mcp_ctx.group.is_none(),
             self.redo.is_empty(),
             self.timeline_is_empty(),
             // a clicked transition clears the clip selection; Delete removes `sel_transitions` too

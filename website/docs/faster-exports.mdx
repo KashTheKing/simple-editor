@@ -1,0 +1,45 @@
+---
+title: Faster exports
+description: Trade export speed against file size, and let Simple Editor use your graphics card's video encoder when it works.
+---
+
+## Speed, Balanced or Smallest file
+
+The **Speed** choice on the Export panel sets how hard the encoder works:
+
+| Speed | What it means |
+|---|---|
+| **Speed** | Finishes soonest; the file is a little bigger at the same quality. |
+| **Balanced** (default) | The middle ground. |
+| **Smallest file** | Takes longest; the smallest file at the same quality. |
+
+The **Quality** setting stays the same either way. Picking a **Speed** sets **Advanced ▸ Preset** back to
+**auto (Speed)**; choose a named preset there instead if you want one, and it wins over **Speed**.
+
+## Hardware encoders, picked for you
+
+Many graphics cards have a video encoder of their own (NVIDIA NVENC, Intel Quick Sync, AMD AMF). FFmpeg
+lists them whenever it was built with them, even when your card or driver can't run them, so Simple Editor
+tries each one once in the background with a one-frame test, and remembers which ones really work (it tries
+again when FFmpeg changes).
+
+With **Advanced ▸ Encoder** on **auto**, an MP4, MOV, M4V or MKV export uses the first working H.264
+hardware encoder, in the order NVIDIA, Intel, AMD, and falls back to the software encoder (x264) when none
+works or the test hasn't finished yet. **auto** never picks HEVC or AV1, so the file plays everywhere.
+Encoders that failed the test are left out of the **Encoder** list; if you had picked one, the export uses
+**auto** and says so.
+
+## What the graphics card does
+
+When GPU rendering is on, each export frame is rendered on the graphics card with the same shaders as the
+Preview. Frames are now read back while the next ones render, and when the encode is 4:2:0 (the usual for
+MP4) and the size is even, the card also converts them to the encoder's colour format, so less data comes
+back and the CPU has less to convert. Sound is mixed at the same time as the picture and streamed to FFmpeg
+alongside it. If the GPU stops answering, the export finishes on the CPU, as before.
+
+## Smart render (experimental)
+
+**Advanced ▸ Smart render** is a placeholder for copying untouched stretches of a single H.264 or HEVC
+source instead of re-encoding them. It is off by default and does nothing yet: every export is a full
+encode. For an instant export of a plain cut of one video, use **Fast lossless cut** (see
+[Export](export.mdx#advanced)).

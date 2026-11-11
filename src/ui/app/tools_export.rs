@@ -706,14 +706,14 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "markers.export",
-        desc: "Write every marker in timeline order to a CSV or a YouTube-chapters text file.",
-        args: &["path:string:true:", "format:string:false:csv | youtube_chapters, default csv"],
+        desc: "Write every marker in timeline order to a CSV, a YouTube-chapters or an Avid Markers text file.",
+        args: &["path:string:true:", "format:string:false:csv | youtube_chapters | avid, default csv"],
         kind: ToolKind::Read,
         run: |app, args| {
             let path = PathBuf::from(req(arg_str(args, "path"), "path")?);
             let fmt = match arg_str(args, "format") {
                 None => MarkerFmt::Csv,
-                Some(s) => MarkerFmt::parse(s).ok_or("format must be csv | youtube_chapters")?,
+                Some(s) => MarkerFmt::parse(s).ok_or("format must be csv | youtube_chapters | avid")?,
             };
             let text = markers_ui::export_markers(&app.project, app.project.fps, fmt);
             std::fs::write(&path, &text).map_err(|e| e.to_string())?;

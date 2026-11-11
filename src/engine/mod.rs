@@ -1,5 +1,7 @@
 //! Rendering / mixing / export engine. Pure CPU, RGBA8 + f32 audio. Shared by preview and export.
 
+// ---- ws:assistant-pane ----
+pub mod agent;
 pub mod analysis;
 pub mod autocut;
 pub mod blend;

@@ -292,7 +292,8 @@ impl SourceCache {
             return;
         }
         self.tick += 1;
-        let bytes = f.rgba.len();
+        // capacity: a recycled buffer (`free`, MF's spares) keeps the size of the biggest frame it held
+        let bytes = f.rgba.capacity();
         if bytes > self.budget {
             return; // a frame bigger than the whole budget would just evict everything for nothing
         }
@@ -303,7 +304,7 @@ impl SourceCache {
         // buffer under two keys and costed twice - the budget errs on the small side.
         if let Some(m) = self.map.get_mut(path) {
             if let Some((_, old)) = m.insert((us, w, h), (self.tick, f)) {
-                self.bytes -= old.rgba.len();
+                self.bytes -= old.rgba.capacity();
             }
         }
         self.bytes += bytes;
@@ -322,7 +323,7 @@ impl SourceCache {
         let Some((p, k)) = lru else { return false };
         let Some(m) = self.map.get_mut(&p) else { return false };
         if let Some((_, old)) = m.remove(&k) {
-            self.bytes -= old.rgba.len();
+            self.bytes -= old.rgba.capacity();
             if let Ok(f) = Arc::try_unwrap(old) {
                 if self.free.len() < Self::FREE {
                     self.free.push(f);
@@ -339,7 +340,7 @@ impl SourceCache {
         self.map.retain(|k, m| {
             let keep = !k.eq_ignore_ascii_case(path);
             if !keep {
-                self.bytes -= m.values().map(|(_, f)| f.rgba.len()).sum::<usize>();
+                self.bytes -= m.values().map(|(_, f)| f.rgba.capacity()).sum::<usize>();
             }
             keep
         });

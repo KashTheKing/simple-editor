@@ -1,5 +1,48 @@
 # Changelog
 
+## Unreleased
+
+The Pro plan's first coding pass. Not built or tested yet: everything below is what the code is written
+to do.
+
+### Work with Claude
+- New **Assistant** panel (Window ▸ Assistant): type a request and an AI agent edits the open project
+  while you watch. Runs Claude Code, your own command (Codex or any MCP agent), or waits for an agent you
+  connected yourself. Settings ▸ Assistant holds the agent, model, an optional API key (kept in Windows
+  Credential Manager) and the quick-prompt buttons.
+- Context chips show what goes with a request (selection, In/Out, playhead, a comment); click one to leave
+  it out. Type `>` in the command palette to ask from anywhere.
+- Every request is one undo step, with **Undo all** in the panel; the clips it changed get a short outline.
+- Exports, opening projects, settings changes and scripts called by an agent wait for your **Allow**
+  (switch off in Settings ▸ Assistant).
+- **Add Comment** leaves a note over In/Out, the selection or the playhead for an agent to pick up and
+  tick off; comments show who left them and dim once done, and range markers draw as a span.
+- Voice: the mic button and **Push to Talk** dictate a request (needs whisper.cpp, like subtitles).
+- MCP: `editor.context`, `edit.begin` / `edit.end` / `edit.batch` (one undo step), `render.contact_sheet`,
+  `render.frame` as a real image, `assistant.*`, `voice.*`, `markers.comment` / `markers.set`,
+  `transcribe.status`, and `islands` / `async` on transcription for accurate word times on long takes.
+
+### Export
+- **Speed / Balanced / Smallest file** on the Export panel.
+- "auto" uses your NVIDIA, Intel or AMD hardware H.264 encoder once a one-frame test shows it really works;
+  encoders that can't run are hidden.
+- GPU exports read frames back while the next ones render, in the encoder's own colour format when it
+  can; sound is mixed alongside the picture.
+- **Audio**: one mix, separate audio tracks in the file (MP4 / MOV / MKV / M4V), or WAV stems in a folder
+  beside it, split by track, bus or role.
+- Surround audio is downmixed properly (the centre channel is no longer dropped).
+
+### Hand-off
+- **Export Avid EDL…** (CMX 3600, one file per video track) and **Avid markers…** in the Markers panel.
+- Premiere / Resolve XML now carries audio volume and pan, A/V links, cross dissolves and markers, and
+  reads its markers back on import. EDL import understands 29.97 drop-frame.
+
+### Playback
+- Decoded frames are shared instead of copied, video frames go to the GPU without a CPU colour swizzle,
+  and a frame's layers decode side by side.
+- The Source monitor plays through the GPU like the Preview.
+- **Playback ▸ Performance HUD** shows frame, upload, decode and cache timings over the Preview.
+
 ## 1.1.0
 
 ### Preview performance

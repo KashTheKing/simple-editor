@@ -26,8 +26,8 @@ const FLASH_SECS: f32 = 1.5;
 /// A new comment goes to `assistant.wait` once its note has stopped changing for this long (so a
 /// comment being typed is not sent after its first letter).
 const COMMENT_SETTLE: Duration = Duration::from_millis(1500);
-/// `assistant.wait` is checked at this cadence (through `App::animate_until`), never every frame.
-const WAIT_POLL: Duration = Duration::from_millis(500);
+/// `render.contact_sheet` stops rendering tiles once this much time is used (UI thread).
+const SHEET_BUDGET: Duration = Duration::from_secs(5);
 
 /// An open undo group (`App::begin_group`).
 pub(super) struct UndoGroup {
@@ -38,7 +38,17 @@ pub(super) struct UndoGroup {
     /// `undo.len()` when it opened. Mutate tools push nothing while a group is open, so a longer stack
     /// means the user edited by hand (see `tick`).
     pub(super) undo_len: usize,
+    /// The top undo entry's timestamp when it opened: a hand edit changes it even when the 200-entry
+    /// cap keeps the length unchanged (see `hand_edited`).
+    pub(super) top_at: Option<f64>,
     pub(super) last_call: Instant,
+}
+
+impl UndoGroup {
+    /// The user pushed an undo entry by hand since the group opened.
+    pub(super) fn hand_edited(&self, undo: &[UndoEntry]) -> bool {
+        undo.len() > self.undo_len || undo.last().map(|e| e.at) != self.top_at
+    }
 }
 
 /// A parked `assistant.wait` call.
@@ -59,6 +69,10 @@ pub(super) struct ContextState {
     flash_at: Option<Instant>,
     /// The configured port the running MCP server was started for (`App::sync_mcp`).
     pub(super) port_wanted: u16,
+    /// Markers up to this id are not (or no longer) new comments for `assistant.wait`: the highest id
+    /// when the first wait was parked, then the last comment delivered. Session-wide, so a comment
+    /// left while the agent was busy between two waits is still delivered by the next one.
+    pub(super) seen: Option<Id>,
 }
 
 impl App {
@@ -72,8 +86,16 @@ impl App {
             label: format!("{author}: {label}"),
             before: self.project.to_json(),
             undo_len: self.undo.len(),
+            top_at: self.undo.last().map(|e| e.at),
             last_call: Instant::now(),
         });
+    }
+
+    /// The user is about to edit by hand (a palette-run tool): close the agent's group first so the
+    /// user's edit is its own undo step (inside a group it would push nothing of its own). A running
+    /// in-app request continues in a fresh group (`assistant_ctl::tick`).
+    pub(crate) fn close_group_for_user_edit(&mut self) {
+        self.end_group();
     }
 
     /// Close the open group: push ONE labelled undo entry iff the project changed, outline the clips it
@@ -103,7 +125,8 @@ impl App {
 
     /// Park an `assistant.wait` reply; `tick` answers it.
     pub(super) fn park_wait(&mut self, reply: Sender<Result<mcp::ToolReply, String>>, deadline: Instant) {
-        let since = max_marker_id(&self.project);
+        let max = max_marker_id(&self.project);
+        let since = *self.mcp_ctx.seen.get_or_insert(max);
         self.mcp_ctx.waits.push(Wait { reply, deadline, since });
     }
 }
@@ -283,19 +306,26 @@ fn contact_sheet(app: &mut App, args: &Value) -> Result<ToolOutcome, String> {
     if to < from {
         return Err("'to' must not be before 'from'".into());
     }
-    let count = arg_u64(args, "count").unwrap_or(9).clamp(1, 36) as u32;
+    // runs on the UI thread: few tiles and a total budget, so the app never freezes for long
+    let count = arg_u64(args, "count").unwrap_or(9).clamp(1, 16) as u32;
     let cols = ((count as f64).sqrt().ceil() as u32).max(1);
     let w = arg_u64(args, "width").map(|w| w as u32).unwrap_or(320).clamp(16, 3840 / cols);
-    let times: Vec<f64> = (0..count)
+    let mut times: Vec<f64> = (0..count)
         .map(|i| if count == 1 { from } else { from + (to - from) * i as f64 / (count - 1) as f64 })
         .collect();
+    let started = Instant::now();
     let mut frames = Vec::with_capacity(times.len());
     for &t in &times {
+        if !frames.is_empty() && started.elapsed() >= SHEET_BUDGET {
+            break;
+        }
         frames.push(app.render_frame_now(t, w).ok_or("render timed out")?);
     }
+    let truncated = frames.len() < times.len();
+    times.truncate(frames.len());
     let sheet = tile(&frames, cols);
-    let meta = json!({"times": times, "cols": cols, "rows": count.div_ceil(cols),
-                      "width": sheet.width, "height": sheet.height});
+    let meta = json!({"times": times, "cols": cols, "rows": (frames.len() as u32).div_ceil(cols),
+                      "width": sheet.width, "height": sheet.height, "truncated": truncated});
     Ok(png_outcome(&sheet, meta))
 }
 
@@ -357,7 +387,13 @@ fn batch(app: &mut App, args: &Value) -> Result<ToolOutcome, String> {
         app.begin_group(arg_str(args, "label").unwrap_or("Batch edit"), arg_str(args, "author").unwrap_or(""));
     }
     let snap = app.project.to_json();
-    let r = run_calls(&calls, &mut |name, a| app.run_tool_undoable(name, a));
+    let r = run_calls(&calls, &mut |name, a| {
+        // a batch must not get around the Assistant guard's Allow window
+        if super::assistant_ctl::needs_approval(app, name, a) {
+            return Err("needs the user's approval - call it on its own, not inside edit.batch".into());
+        }
+        app.run_tool_undoable(name, a)
+    });
     match r {
         Ok(results) => {
             if own {
@@ -427,6 +463,13 @@ fn settled_comment(app: &mut App, since: Id, now: Instant) -> Option<(Value, Id)
     }
 }
 
+/// Answer every parked `assistant.wait` with an error (the app is closing).
+pub(super) fn end_waits(app: &mut App, why: &str) {
+    for w in app.mcp_ctx.waits.drain(..) {
+        let _ = w.reply.send(Err(format!("assistant.wait: {why}")));
+    }
+}
+
 /// Answer due `assistant.wait` calls: timeouts, then the oldest waiter gets the next Assistant-pane
 /// request or a settled new comment.
 fn poll_waits(app: &mut App, now: Instant) {
@@ -436,21 +479,24 @@ fn poll_waits(app: &mut App, now: Instant) {
         let _ = w.reply.send(Ok(json!({"timeout": true}).into()));
     }
     let Some(since) = app.mcp_ctx.waits.first().map(|w| w.since) else { return };
-    let (request, text) = if let Some(text) = app.assistant.pending.pop_front() {
-        (json!({"kind": "request", "text": text.clone()}), Some(text))
+    let (request, text, comment) = if let Some(text) = app.assistant.pending.pop_front() {
+        (json!({"kind": "request", "text": text.clone()}), Some(text), None)
     } else {
         let Some((v, id)) = settled_comment(app, since, now) else { return };
-        for w in &mut app.mcp_ctx.waits {
-            w.since = w.since.max(id); // delivered once, not to every waiter
-        }
-        (v, None)
+        (v, None, Some(id))
     };
     let w = app.mcp_ctx.waits.remove(0);
     let reply = json!({"request": request, "context": context_json(app)});
     if w.reply.send(Ok(reply.into())).is_err() {
-        // the client went away: keep the user's request for the next wait
+        // the client went away: keep the user's request (or comment) for the next wait
         if let Some(t) = text {
             app.assistant.pending.push_front(t);
+        }
+    } else if let Some(id) = comment {
+        // delivered once, not to every waiter
+        app.mcp_ctx.seen = Some(id);
+        for w in &mut app.mcp_ctx.waits {
+            w.since = w.since.max(id);
         }
     }
 }
@@ -462,7 +508,7 @@ fn poll_waits(app: &mut App, now: Instant) {
 /// `assistant.wait`. Every wake goes through `App::animate_until`; with nothing open it schedules none.
 pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
     let now = Instant::now();
-    let group = app.mcp_ctx.group.as_ref().map(|g| (app.undo.len() > g.undo_len, g.last_call + GROUP_IDLE));
+    let group = app.mcp_ctx.group.as_ref().map(|g| (g.hand_edited(&app.undo), g.last_call + GROUP_IDLE));
     if let Some((manual_edit, idle_at)) = group {
         if manual_edit || now >= idle_at {
             app.end_group();
@@ -483,8 +529,12 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
     }
     if !app.mcp_ctx.waits.is_empty() {
         poll_waits(app, now);
-        if !app.mcp_ctx.waits.is_empty() {
-            app.animate_until(ctx, now + WAIT_POLL);
+        // wake only when something can change without a frame of its own: the next deadline, and a
+        // watched comment's note settling (a new request / marker arrives on a frame that runs anyway)
+        let deadline = app.mcp_ctx.waits.iter().map(|w| w.deadline).min();
+        let settle = app.mcp_ctx.comment.as_ref().map(|(_, _, at)| *at + COMMENT_SETTLE);
+        if let Some(at) = deadline.into_iter().chain(settle).min() {
+            app.animate_until(ctx, at);
         }
     }
 }
@@ -564,7 +614,7 @@ pub const TOOLS: &[ToolDef] = &[
         args: &[
             "from:number:true:",
             "to:number:true:",
-            "count:integer:false:1..36, default 9",
+            "count:integer:false:1..16, default 9 (stops early after ~5 s: `truncated`)",
             "width:integer:false:px per tile, default 320",
         ],
         kind: ToolKind::Read,
@@ -614,7 +664,7 @@ mod tests {
     use super::*;
 
     fn group(label: &str, p: &Project, undo_len: usize) -> UndoGroup {
-        UndoGroup { label: label.into(), before: p.to_json(), undo_len, last_call: Instant::now() }
+        UndoGroup { label: label.into(), before: p.to_json(), undo_len, top_at: None, last_call: Instant::now() }
     }
 
     /// N mutating calls inside a group push nothing of their own; closing it pushes ONE entry, labelled,
@@ -643,6 +693,22 @@ mod tests {
         let idle = group("Claude: nothing", &p, undo.len());
         assert!(!push_group_entry(&mut undo, &mut redo, &idle, &p.to_json()));
         assert_eq!(undo.len(), 2);
+    }
+
+    /// A hand edit is seen even when the 200-entry cap keeps the stack length unchanged.
+    #[test]
+    fn hand_edit_seen_at_the_undo_cap() {
+        let (mut undo, mut redo) = (Vec::new(), Vec::new());
+        for i in 0..200 {
+            push_undo_json(&mut undo, &mut redo, format!("{i}"));
+        }
+        let p = Project::new();
+        let mut g = group("Claude: x", &p, undo.len());
+        g.top_at = undo.last().map(|e| e.at);
+        assert!(!g.hand_edited(&undo));
+        undo.last_mut().unwrap().at += 1.0; // a new push at the cap: same length, new top entry
+        assert_eq!(undo.len(), 200);
+        assert!(g.hand_edited(&undo));
     }
 
     /// A manual edit while a group is open: the group's entry goes beneath the user's, so Ctrl+Z undoes

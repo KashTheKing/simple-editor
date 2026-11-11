@@ -59,6 +59,9 @@ impl App {
         self.source = None;
         self.source_tex = None;
         self.source_gpu_tex = None;
+        if let Some(gpu) = self.gpu.as_mut() {
+            gpu.release_source_texture();
+        }
         self.source_live = None;
         self.source_focus = false;
     }

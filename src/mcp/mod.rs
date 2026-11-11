@@ -83,6 +83,10 @@ rolls back only itself (a failed batch rolls back the whole batch).\n\
 markers.set{id, done: true}; markers.comment leaves your own.\n\
 7. Live mode: loop on assistant.wait{timeout_s}; it returns the user's next request or new comment with the context.";
 
+/// How long a call the Assistant guard holds (`tools::leaves_project`) waits for the user's Allow;
+/// the approval window refuses to run one held longer than this (its client has given up).
+pub const HELD_WAIT: Duration = Duration::from_secs(10 * 60);
+
 const MAX_BODY: usize = 8 * 1024 * 1024;
 const MAX_CONNS: usize = 16;
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
@@ -399,6 +403,7 @@ fn rpc_err(id: Value, code: i64, message: String) -> Value {
 /// Forward one tool call to the UI thread and wait for the reply.
 fn call_tool(name: &str, args: Value, tx: &Sender<ToolCall>, ctx: &egui::Context) -> Result<ToolReply, String> {
     let (reply, rx) = mpsc::channel();
+    let held = tools::leaves_project(name, &args);
     tx.send(ToolCall { name: name.to_string(), args, reply }).map_err(|_| "editor is shutting down".to_string())?;
     ctx.request_repaint();
     // ---- ws:registries-schema-hooks ----
@@ -406,6 +411,8 @@ fn call_tool(name: &str, args: Value, tx: &Sender<ToolCall>, ctx: &egui::Context
     // job (export/convert today) gets the long timeout, whatever module registers it.
     let timeout = match tools::find(name).map(|t| t.kind) {
         Some(tools::ToolKind::Job) => Duration::from_secs(30 * 60),
+        // ws:assistant-pane: may sit in the app's approval window until the user clicks Allow
+        _ if held => HELD_WAIT,
         _ => Duration::from_secs(60),
     };
     rx.recv_timeout(timeout).map_err(|_| format!("{name}: timed out"))?

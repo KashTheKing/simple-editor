@@ -16,6 +16,8 @@
 //! shared `SettingsUi` state, the ffmpeg/context-menu `Status` cache and the tab dispatcher.
 
 mod appearance;
+// ---- ws:assistant-pane ----
+mod assistant;
 mod capture;
 mod general;
 mod hotkeys;
@@ -136,6 +138,7 @@ pub fn show(
             ui.selectable_value(&mut state.tab, 3, "Export");
             ui.selectable_value(&mut state.tab, 4, "Hotkeys");
             ui.selectable_value(&mut state.tab, 5, "Appearance");
+            ui.selectable_value(&mut state.tab, 6, "Assistant"); // ws:assistant-pane
         });
         ui.separator();
         // the tab row stays put; a tab taller than the window scrolls
@@ -147,6 +150,7 @@ pub fn show(
                 2 => capture::capture_tab(ui, settings, audio_inputs),
                 3 => capture::export(ui, settings, encoders),
                 4 => hotkeys::hotkeys_tab(ui, state, hotkeys, settings),
+                6 => assistant::assistant_tab(ui, settings), // ws:assistant-pane
                 _ => appearance::appearance(ui, settings),
             })
             .inner;
@@ -177,7 +181,7 @@ mod tests {
         let palette = Palette::new(false, egui::Color32::BLACK);
         let mut st = SettingsUi { open: true, ..Default::default() };
         let inputs = vec![("Microphone (USB)".to_string(), false), ("Stereo Mix".to_string(), true)];
-        for tab in [0, 1, 2, 3, 4, 5] {
+        for tab in [0, 1, 2, 3, 4, 5, 6] {
             st.tab = tab;
             for _ in 0..2 {
                 let _ = ctx.run(egui::RawInput::default(), |ctx| {

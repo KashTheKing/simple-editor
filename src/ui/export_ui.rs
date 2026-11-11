@@ -478,8 +478,14 @@ fn audio_row(ui: &mut egui::Ui, state: &ExportUi, settings: &mut Settings) -> bo
         changed |= ui
             .add_enabled_ui(multi, |ui| ui.selectable_value(a, "streams".to_string(), "Separate tracks in file"))
             .inner
-            .on_hover_text("The mix first (the default track), then one audio track per stem - mp4/mov/mkv only.")
-            .on_disabled_hover_text(format!("{} can't hold several audio tracks - use mp4, mov or mkv", default_ext(state)))
+            .on_hover_text(
+                "The mix first (the default track), then one audio track per stem. Only MP4, MOV and MKV \
+                 support it - saved as another container, the file gets one mix instead.",
+            )
+            .on_disabled_hover_text(format!(
+                "{} can't hold several audio tracks - only MP4, MOV and MKV support it",
+                default_ext(state)
+            ))
             .clicked();
         changed |= ui
             .selectable_value(a, "stems".to_string(), "WAV stems")

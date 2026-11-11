@@ -100,10 +100,36 @@ Tools are grouped by the first part of their name. The biggest groups:
 | `playback.*`, `source.*`, `preview.*` | the transport, the Source monitor, the viewer |
 | `project.*`, `markers.*`, `history.*`, `plan.*` | the project file, markers, undo history, the planner |
 | `layout.*`, `ui.*`, `hotkeys.*`, `settings.*` | pages and panels, actions, shortcuts, settings |
+| `editor.*`, `edit.*`, `assistant.*`, `voice.*` | what you are looking at, one-step undo, the Assistant panel, dictation |
 
 `tools/list` always has the full, current list with every argument. The
 [customizing guide](https://github.com/KashTheKing/simple-editor/blob/main/docs/customizing.md) in the
 repository has a table of all of them.
+
+### Co-editing tools
+
+These make an agent a better editing partner. The [Assistant panel](assistant.mdx) uses them itself.
+
+- `editor.context`: what you are looking at: playhead, In/Out, the selected clips, transitions, subtitles,
+  markers and transcript words, the sequence and the page. An agent should call it first.
+- `edit.begin {label}` … `edit.end`: everything in between is **one** undo step, shown in History as
+  "Claude: label" (or the `author` given). The changed clips get a short outline and you get an Undo
+  button. A group left open closes itself after 30 seconds without a call, or as soon as you edit or undo.
+- `edit.batch {calls}`: several tool calls in order as one undo step; if one fails, the whole batch is
+  rolled back.
+- `render.frame` and `render.contact_sheet {from, to, count}` return pictures the agent can look at (a
+  grid of frames for the contact sheet).
+- `markers.list {open}`, `markers.comment`, `markers.set`: read your comments, leave its own, tick them
+  off with `done`.
+- `assistant.wait`: waits until you send a request from the Assistant panel (with **External agent**
+  picked) or leave a comment, and returns it with the context. Loop on it for a live session.
+- `transcribe.run` / `media.transcribe` take `islands` (transcribe each stretch of speech separately, so
+  word times stay accurate on long takes) and `async` (reply at once; poll `transcribe.status`).
+
+With **Settings ▸ Assistant ▸ Guard** on (the default), tools that leave the project (exports, opening a
+project, settings, scripts, conversions, and `ui.action` with a menu command that does the same) wait until
+you click **Allow**; see
+[Approve risky tools](assistant.mdx#approve-risky-tools).
 
 ### Automating the UI itself
 

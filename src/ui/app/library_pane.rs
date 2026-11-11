@@ -80,6 +80,10 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, browser: bool) {
         // decoders hold the proxy files open on Windows: release them before deleting
         app.player.set_proxies(std::collections::HashMap::new());
         app.player.release_files();
+        if let Some(s) = app.source.as_mut() {
+            s.player.set_proxies(std::collections::HashMap::new());
+            s.player.release_files();
+        }
         for src in resp.regen_proxy {
             let _ = std::fs::remove_file(crate::media::proxy::proxy_path(&src, app.settings.proxy_height));
         }

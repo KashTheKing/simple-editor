@@ -494,10 +494,33 @@ pub struct Settings {
     // ---- ws:export-pipeline ----
     // ---- ws:interchange ----
     // ---- ws:assistant-pane ----
+    /// The Assistant pane's quick-prompt buttons: (label, prompt), editable in Settings ▸ Assistant.
+    pub assistant_quick: Vec<(String, String)>,
+    /// Hold an agent's MCP calls that leave the project (export, open/new project, settings, scripts,
+    /// convert) until the user clicks Allow.
+    pub assistant_guard: bool,
+    /// The environment variable the "custom" backend gets the stored API key in.
+    pub assistant_key_env: String,
+    /// Claude Code session id per project path ("" = unsaved project), so follow-ups resume it.
+    pub assistant_sessions: BTreeMap<String, String>,
     // ---- ws:mcp-context ----
     // ---- ws:transcribe-islands ----
     // ---- ws:voice-input ----
     // ---- ws:docs-release ----
+}
+
+/// ws:assistant-pane: the built-in quick prompts (also what "Reset" restores).
+pub fn default_assistant_quick() -> Vec<(String, String)> {
+    [
+        ("Remove silences", "Remove the silent parts of the selected clips (or the whole timeline if nothing is selected). Keep short natural pauses."),
+        ("Cut filler words", "Using the transcript, cut filler words (um, uh, like, you know) from the selected clips, cutting between words."),
+        ("Caption this", "Transcribe the selected clips (or the timeline) and add subtitles for them."),
+        ("Tighten selection", "Tighten the edit in the selection or In/Out range: trim dead air and long pauses without cutting words."),
+        ("Add chapter markers", "Add a chapter marker at each topic change, named after the topic, using the transcript."),
+    ]
+    .iter()
+    .map(|(l, p)| (l.to_string(), p.to_string()))
+    .collect()
 }
 
 impl Default for Settings {
@@ -508,7 +531,8 @@ impl Default for Settings {
             download_dir: String::new(),
             encoder: "auto".into(),
             crf: 18,
-            preset: "veryfast".into(),
+            // "auto" follows `export_speed`; a stored explicit preset (old files: "veryfast") keeps winning
+            preset: "auto".into(),
             confirm_overwrite: true,
             lossless_save: false,
             context_menu: true,
@@ -679,6 +703,10 @@ impl Default for Settings {
             // ---- ws:export-pipeline ----
             // ---- ws:interchange ----
             // ---- ws:assistant-pane ----
+            assistant_quick: default_assistant_quick(),
+            assistant_guard: true,
+            assistant_key_env: "OPENAI_API_KEY".into(),
+            assistant_sessions: BTreeMap::new(),
             // ---- ws:mcp-context ----
             // ---- ws:transcribe-islands ----
             // ---- ws:voice-input ----

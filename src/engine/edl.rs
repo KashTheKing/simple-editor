@@ -46,8 +46,9 @@ pub fn export_edl(project: &Project) -> Vec<(String, String)> {
 
 fn header(project: &Project, suffix: String) -> String {
     let fps = project.fps.max(1.0);
+    // `* FPS:` is a comment to other readers; `import::read_edl` takes the rate from it
     format!(
-        "TITLE: {}{suffix}\nFCM: {}\n\n",
+        "TITLE: {}{suffix}\nFCM: {}\n* FPS: {fps}\n\n",
         one_line(&project.name),
         if drop_frame(fps) { "DROP FRAME" } else { "NON-DROP FRAME" }
     )
@@ -129,7 +130,8 @@ fn events(s: &mut String, n: &mut usize, project: &Project, ti: usize, chan: &st
         let si = fr(c.src_in);
         let so = si + (ro - ri);
         *n += 1;
-        let num = *n % 1000;
+        // past 999 the number grows to 4 digits instead of wrapping to 000 (`import::read_edl` takes any)
+        let num = *n;
         let tr = track.transitions.iter().find(|t| t.right == c.id && t.edge == TransitionEdge::Cut);
         let dissolve = tr.and_then(|t| {
             let (l, r) = track.transition_clips(t)?;
@@ -157,6 +159,7 @@ fn events(s: &mut String, n: &mut usize, project: &Project, ti: usize, chan: &st
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn line(s: &mut String, num: usize, reel: &str, chan: &str, kind: &str, dur: &str, t: [i64; 4], fps: f64) {
     let _ = writeln!(
         s,

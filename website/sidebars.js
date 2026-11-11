@@ -14,7 +14,13 @@ module.exports = {
       type: 'category',
       label: 'Finishing',
       collapsed: false,
-      items: ['captions', 'color', 'audio', 'export'],
+      items: ['captions', 'color', 'audio', 'export', 'export-audio-tracks', 'faster-exports', 'handoff'],
+    },
+    {
+      type: 'category',
+      label: 'Editing with AI',
+      collapsed: false,
+      items: ['assistant', 'voice'],
     },
     {
       type: 'category',

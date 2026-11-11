@@ -24,6 +24,11 @@ const SCALAR_WHITELIST: &[&str] = &[
     "autosave_secs",
     "cache_mb",
     "layout_mode",
+    // the Assistant tab (never the API key: it lives in Credential Manager, not Settings)
+    "assistant_backend",
+    "assistant_model",
+    "assistant_guard",
+    "voice_autosend",
 ];
 
 fn get_scalar(s: &Settings, key: &str) -> Option<Value> {
@@ -41,6 +46,10 @@ fn get_scalar(s: &Settings, key: &str) -> Option<Value> {
         "autosave_secs" => json!(s.autosave_secs),
         "cache_mb" => json!(s.cache_mb),
         "layout_mode" => json!(s.layout_mode),
+        "assistant_backend" => json!(s.assistant_backend),
+        "assistant_model" => json!(s.assistant_model),
+        "assistant_guard" => json!(s.assistant_guard),
+        "voice_autosend" => json!(s.voice_autosend),
         _ => return None,
     })
 }
@@ -72,6 +81,13 @@ fn set_scalar(s: &mut Settings, key: &str, value: &str) -> Result<(), String> {
         }
         "cache_mb" => s.cache_mb = value.parse().map_err(|_| "cache_mb: expected an integer".to_string())?,
         "layout_mode" => s.layout_mode = value.to_string(),
+        "assistant_backend" => match value {
+            "claude" | "custom" | "external" => s.assistant_backend = value.to_string(),
+            _ => return Err("assistant_backend: expected claude, custom or external".into()),
+        },
+        "assistant_model" => s.assistant_model = value.trim().to_string(),
+        "assistant_guard" => s.assistant_guard = parse_bool(value)?,
+        "voice_autosend" => s.voice_autosend = parse_bool(value)?,
         _ => return Err(format!("'{key}' is not a whitelisted setting")),
     }
     Ok(())
@@ -279,5 +295,10 @@ mod tests {
         }
         assert!(set_scalar(&mut s, "mcp_port", "not-a-number").is_err());
         assert!(set_scalar(&mut s, "snap", "maybe").is_err());
+        assert!(set_scalar(&mut s, "assistant_backend", "bash").is_err());
+        set_scalar(&mut s, "voice_autosend", "true").unwrap();
+        assert_eq!(get_scalar(&s, "voice_autosend"), Some(json!(true)));
+        // the API key is never a setting
+        assert!(!SCALAR_WHITELIST.iter().any(|k| k.starts_with("assistant_key")));
     }
 }

@@ -806,7 +806,7 @@ fn rs_kernel() -> &'static [[f32; 2 * RS_HALF]] {
 }
 
 /// Append `src` (interleaved `ch` channels at `rate`) to `fifo` as interleaved stereo @ SAMPLE_RATE.
-/// Mono is duplicated, >2 channels keep L/R (never reached from `open_audio`, which hands those to ffmpeg). Non-48k input goes through a 16-tap windowed sinc (44.1 kHz
+/// Mono is duplicated, >2 channels keep L/R (only when `open_audio` could not hand them to ffmpeg). Non-48k input goes through a 16-tap windowed sinc (44.1 kHz
 /// MP3 always comes this way - see `audio_reader`): flat within 1 dB to ~16 kHz. A frame is written once
 /// the `RS_HALF` input frames after it have arrived, so the last 0.2 ms of a stream is never written.
 /// ponytail: the kernel is not widened for rates above 48 kHz, which alias as the old linear
@@ -914,9 +914,12 @@ pub fn open_audio(path: &str, stream: usize) -> Result<Box<dyn AudioSource>, Str
     };
     // ws:export-audio-tracks: MF didn't downmix this surround stream for us and `push_audio` would keep
     // only L/R (losing the centre - dialogue - channel). ffmpeg's decoder downmixes properly (`-ac 2`),
-    // so let Auto fall through to it, as for FLAC. Mono/stereo files are unaffected.
+    // so hand the stream to it - here rather than with an Err, so a forced-MF backend (no Auto
+    // fallback) doesn't lose the file's audio. No ffmpeg: keep L/R as before. Mono/stereo unaffected.
     if ch > 2 {
-        return Err(format!("MF: {ch}-channel audio would keep only L/R, use ffmpeg to downmix"));
+        if let Ok(a) = super::ffpipe::open_audio(path, stream) {
+            return Ok(a);
+        }
     }
     let mut a = MfAudio {
         reader,

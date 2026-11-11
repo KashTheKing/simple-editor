@@ -202,10 +202,19 @@ fn stem_outputs(first_stem: usize, titles: &[&str], dir: &Path) -> Vec<String> {
 /// A folder deleted (with its contents) on drop, unless its files were `commit`ted elsewhere first.
 struct TempDir(PathBuf);
 impl TempDir {
-    /// Move every file into `dst` (created if missing; same-named files replaced, others kept).
+    /// Move every file into `dst` (created if missing; same-named files replaced). Stale stems of an
+    /// earlier export (`NN <title>.wav` not written this time) are removed; any other file is kept.
     fn commit(&self, dst: &Path) -> Result<(), String> {
         let err = |e: std::io::Error| format!("stems to {}: {e}", dst.display());
         std::fs::create_dir_all(dst).map_err(err)?;
+        let fresh: Vec<std::ffi::OsString> =
+            std::fs::read_dir(&self.0).map_err(err)?.filter_map(|e| e.ok().map(|e| e.file_name())).collect();
+        for e in std::fs::read_dir(dst).map_err(err)?.flatten() {
+            let name = e.file_name();
+            if is_stem_file(&name.to_string_lossy()) && !fresh.contains(&name) {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
         for e in std::fs::read_dir(&self.0).map_err(err)? {
             let e = e.map_err(err)?;
             std::fs::rename(e.path(), dst.join(e.file_name())).map_err(err)?;
@@ -217,6 +226,13 @@ impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
+}
+
+/// `stems::file_name`'s shape: two or more digits, a space, a name, `.wav`.
+fn is_stem_file(name: &str) -> bool {
+    let digits = name.bytes().take_while(u8::is_ascii_digit).count();
+    let lower = name.to_ascii_lowercase();
+    digits >= 2 && name.as_bytes().get(digits) == Some(&b' ') && lower.ends_with(".wav") && name.len() > digits + 5
 }
 
 // ---- ws:export-deliver ----
@@ -293,6 +309,22 @@ fn output_filters(opts: &ExportOptions, project: (u32, u32), audio: bool, args: 
     }
     let af = if opts.loudnorm && audio { LOUDNORM.to_string() } else { String::new() };
     (vf, af)
+}
+
+/// RGBA input headed for a 4:2:0 encode (the same outputs the NV12 path serves): convert to that
+/// `pix_fmt` as BT.709 limited range at the end of `vf` and return the output colour tags, so the
+/// CPU/odd-size path matches the GPU's NV12 colour instead of ffmpeg's untagged BT.601 default.
+/// Anything else (gif, images, audio, NV12 input) passes through with no tags.
+fn rgba_bt709(mut vf: String, rgba_in: bool, args: &[String]) -> (String, Vec<String>) {
+    let Some(pf) = args.iter().find(|a| *a == "yuv420p" || *a == "nv12").filter(|_| rgba_in) else {
+        return (vf, Vec::new());
+    };
+    if !vf.is_empty() {
+        vf.push(',');
+    }
+    vf.push_str(&format!("scale=out_color_matrix=bt709:out_range=tv,format={pf}"));
+    let tags = ["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv"];
+    (vf, tags.map(String::from).to_vec())
 }
 
 /// `(start, duration, frame count)` an export renders: the whole project, or `range` clamped into it.
@@ -421,11 +453,39 @@ pub(crate) fn ext_of(path: &Path) -> String {
     path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default()
 }
 
+/// Frames an "auto"-picked hardware encoder may have been sent before an ffmpeg failure still counts
+/// as "it could not start" (driver/GPU changed since the probe) rather than a mid-export error.
+const HW_START_FRAMES: u64 = 30;
+
 fn run_export(
     project: &Project,
     opts: &ExportOptions,
     text: &Arc<Mutex<TextRasterizer>>,
     prog: &Progress,
+) -> Result<(), String> {
+    let mut hw = None;
+    let r = run_export_with(project, opts, text, prog, None, &mut hw);
+    match (r, hw) {
+        (Err(e), Some(enc)) if e != CANCELLED && !prog.is_cancelled() => {
+            // ws:export-encoders: the probe's verdict is stale - forget the encoder and go software once
+            crate::engine::encoders::mark_broken(&enc);
+            let note = format!("{enc} failed to start - retried in software");
+            run_export_with(project, opts, text, prog, Some(note), &mut None)
+        }
+        (r, _) => r,
+    }
+}
+
+/// One export attempt. `retry` = Some(status note): a software retry (encoder forced to the software
+/// default). `hw_failed` is set to the encoder when "auto" picked hardware and ffmpeg failed within
+/// the first `HW_START_FRAMES` frames.
+fn run_export_with(
+    project: &Project,
+    opts: &ExportOptions,
+    text: &Arc<Mutex<TextRasterizer>>,
+    prog: &Progress,
+    retry: Option<String>,
+    hw_failed: &mut Option<String>,
 ) -> Result<(), String> {
     let ffmpeg = ffpipe::ffmpeg_exe().ok_or("ffmpeg.exe not found")?;
     let ext = ext_of(&opts.out_path);
@@ -475,9 +535,18 @@ fn run_export(
     // 2. how frames leave: NV12 straight off the GPU when the encode is 4:2:0 anyway (even sizes
     // only - NV12 has no odd-size chroma here), RGBA otherwise and always on the CPU path
     // ws:export-encoders: "auto" → probed hardware encoder; a stale explicit choice falls back to auto
-    let (encoder, note) = resolve_encoder(&ext, &opts.encoder);
-    if let Some(n) = note {
-        prog.set(0.0, n);
+    let is_retry = retry.is_some();
+    let (encoder, note) = match retry {
+        Some(n) => ("auto".to_string(), Some(n)),
+        None => resolve_encoder(&ext, &opts.encoder),
+    };
+    let auto_hw = !is_retry
+        && (opts.encoder.is_empty() || opts.encoder == "auto" || note.is_some())
+        && crate::engine::encoders::CANDIDATES.contains(&encoder.as_str());
+    // carried on every progress line (like the audio notes) so the first update does not erase it
+    let enc_note = note.map(|n| format!(" · {n}")).unwrap_or_default();
+    if !enc_note.is_empty() {
+        prog.set(0.0, enc_note.trim_start_matches(" · "));
     }
     let args = codec_args(&ext, &encoder, opts.crf, &opts.preset, &detect_encoders());
     let gpu_tx = match &opts.frames {
@@ -496,12 +565,14 @@ fn run_export(
     cmd.args(["-y", "-hide_banner", "-loglevel", "error"]);
     cmd.args(input_args(video, (w, h), fps, &ports, main_audio));
     let (vf, af) = output_filters(opts, (w, h), !inputs.is_empty(), &args);
+    let (vf, colour_tags) = rgba_bt709(vf, video == Some(VideoIn::Rgba), &args);
     if !audio_only && !vf.is_empty() {
         cmd.args(["-vf", &vf]);
     }
     let titles: Vec<&str> = inputs.iter().map(|a| a.title.as_str()).collect();
     cmd.args(audio_out_args(&af, layout, &titles[..main_audio]));
     cmd.args(&args);
+    cmd.args(&colour_tags);
     // nothing is inherited from the inputs; only what the user typed is written
     cmd.args(["-map_metadata", "-1"]);
     for (k, v) in opts.metadata.iter().filter(|(k, _)| !k.trim().is_empty()) {
@@ -525,7 +596,8 @@ fn run_export(
     // polled everywhere, and `stop` releases audio threads still waiting for ffmpeg to connect.
     let stop = AtomicBool::new(false);
     let audio_done: Vec<AtomicU32> = inputs.iter().map(|_| AtomicU32::new(0)).collect();
-    std::thread::scope(|s| {
+    let mut sent = 0u64;
+    let r = std::thread::scope(|s| {
         for ((input, listener), done) in inputs.iter().zip(listeners).zip(&audio_done) {
             let stop = &stop;
             s.spawn(move || feed_audio(input, listener, backend, start, dur, prog, stop, done, audio_only));
@@ -595,9 +667,10 @@ fn run_export(
                 if wtx.send(frame).is_err() {
                     break; // the writer stopped: ffmpeg died
                 }
+                sent += 1;
                 prog.set(
                     (i + 1) as f32 / n as f32,
-                    format!("Encoding {t:.1} / {end:.1} s{gaps}{audio_note}{}", audio_status(&audio_done)),
+                    format!("Encoding {t:.1} / {end:.1} s{gaps}{audio_note}{enc_note}{}", audio_status(&audio_done)),
                 );
             }
             if prog.is_cancelled() {
@@ -610,7 +683,11 @@ fn run_export(
         let r = wait_ffmpeg(&mut child, tail, prog);
         stop.store(true, Ordering::SeqCst);
         r
-    })?;
+    });
+    if r.is_err() && auto_hw && sent <= HW_START_FRAMES {
+        *hw_failed = Some(encoder.clone());
+    }
+    r?;
     // move the finished file into place (decoders released first so an in-place export over the source
     // can replace it)
     drop(pool);
@@ -1578,6 +1655,10 @@ pub(crate) mod tests {
         assert_eq!(effective_preset("ultrafast", "small"), "ultrafast");
         assert_eq!(effective_preset("auto", "small"), "small");
         assert_eq!(effective_preset("", "speed"), "speed");
+        // new settings follow the Speed choice; an old file's stored "veryfast" keeps winning
+        let s = crate::settings::Settings::default();
+        assert_eq!(effective_preset(&s.preset, "small"), "small");
+        assert_eq!(effective_preset("veryfast", &s.export_speed), "veryfast");
         assert!(j("libx264", "ultrafast").contains("-preset ultrafast"));
         // auto with no finished probe stays software
         assert!(j("auto", "balanced").contains("-c:v libx264 -preset medium"));
@@ -1757,6 +1838,30 @@ pub(crate) mod tests {
         );
         // ws:export-audio-tracks: Stems maps only the mix into the main output
         assert!(s(input_args(Some(VideoIn::Rgba), (2, 2), 30.0, &[1, 2, 3], 1)).ends_with("-map 0:v -map 1:a"));
+    }
+
+    /// RGBA into a 4:2:0 encode converts and tags BT.709 limited like the NV12 path; gif/NV12 untouched.
+    #[test]
+    fn rgba_path_is_bt709_limited_and_tagged() {
+        let x264 = codec_args("mp4", "libx264", 18, "medium", &[]);
+        let (vf, tags) = rgba_bt709("pad=ceil(iw/2)*2:ceil(ih/2)*2".into(), true, &x264);
+        assert_eq!(vf, "pad=ceil(iw/2)*2:ceil(ih/2)*2,scale=out_color_matrix=bt709:out_range=tv,format=yuv420p");
+        assert_eq!(tags.join(" "), "-colorspace bt709 -color_primaries bt709 -color_trc bt709 -color_range tv");
+        let (vf, _) = rgba_bt709(String::new(), true, &codec_args("mp4", "h264_qsv", 18, "medium", &[]));
+        assert_eq!(vf, "scale=out_color_matrix=bt709:out_range=tv,format=nv12");
+        assert_eq!(rgba_bt709(String::new(), false, &x264), (String::new(), Vec::new()), "NV12 input is already 709");
+        let gif = codec_args("gif", "auto", 18, "medium", &[]);
+        assert_eq!(rgba_bt709(String::new(), true, &gif), (String::new(), Vec::new()));
+    }
+
+    #[test]
+    fn stale_stem_files_are_recognised_by_name_only() {
+        assert!(is_stem_file("01 Dialogue.wav"));
+        assert!(is_stem_file("12 A_B_ _x__.WAV"));
+        assert!(!is_stem_file("notes.txt"));
+        assert!(!is_stem_file("1 x.wav"), "stems are two digits at least");
+        assert!(!is_stem_file("01Dialogue.wav"));
+        assert!(!is_stem_file("01 .wav"));
     }
 
     // ---- ws:export-audio-tracks ----
