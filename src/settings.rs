@@ -517,6 +517,8 @@ pub struct Settings {
     // ---- ws:voice-input ----
     // ---- ws:docs-release ----
     // ---- ws:html-layer ----
+    /// The program "Open in code editor" starts for an HTML layer's file; empty = VS Code if installed, else Notepad.
+    pub html_editor: String,
     // ---- ws:shader-library ----
     // ---- ws:skills ----
     /// `assistant_quick` was turned into user skills once (`engine::skills::migrate_in`).
@@ -742,6 +744,7 @@ impl Default for Settings {
             // ---- ws:voice-input ----
             // ---- ws:docs-release ----
             // ---- ws:html-layer ----
+            html_editor: String::new(),
             // ---- ws:shader-library ----
             // ---- ws:skills ----
             skills_migrated: false,

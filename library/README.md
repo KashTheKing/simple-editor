@@ -178,6 +178,8 @@ only: `@keyframes` + `animation`.
 | `se:thumb` | optional; the second the preview picture is taken at (default: 60 % of the duration). |
 | `se:field` | zero or more editable values: `name \| type \| default` (number: `name \| number \| default \| min \| max`). Types: `text`, `color` (`#rrggbb` or `#rrggbbaa`), `number`, `image` (a file the user picks; empty default). `name` is a lowercase identifier; the Inspector shows `first_line` as "First Line". At most 12. |
 
+| `se:param` | zero or more **animatable** numbers: `name \| number \| default \| min \| max` (min and max optional). The value reaches the page as the CSS variable `--name` (a plain number: `calc(var(--progress) * 1%)`, `transform: rotate(calc(var(--angle) * 1deg))`, `opacity: var(--amount)`), set for every rendered frame, so it can be keyframed in the Inspector (the diamond next to it) or with `html.set {params}`. A page with a keyframed param is rendered as a video even if it has no CSS animation. Declare it, then read it as `var(--name)` somewhere, or the editor warns. At most 12. |
+
 Fields: every `{{name}}` in the file is replaced before rendering (text is HTML-escaped; an image
 becomes a `file:///` URL, or a transparent pixel when empty). Use them in markup or CSS, e.g.
 `:root { --accent: {{accent}}; }`. An unknown `{{name}}` is left as it is, so do not use double

@@ -99,7 +99,10 @@ curl -s -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' -H 'content-type: ap
 |---|---|---|---|
 | `html.create` | Mutate | html, at?, duration?, name?, fields? | Add an HTML + CSS layer or scene clip (format: `library/README.md`); rendered in the background. `fields` is an object `{name: value}`. |
 | `html.get` | Read | clip | The clip's source, fields with current values, size, duration, render state, lint. |
-| `html.set` | Mutate | clip, html?, fields?, name? | Replace the source and/or set field values (`null` = default); the clip keeps position, effects and keyframes. |
+| `html.set` | Mutate | clip, html?, fields?, params?, width?, name? | Replace the source and/or set field values (`null` = default) and `se:param` values (a number or `[{t,v,ease}]` keyframes); the clip keeps position, effects and keyframes. |
+| `html.import` | Mutate | path, at?, link? | Add a `.html` file as a clip, linked to the file (edit either side). |
+| `html.link` | Mutate | clip, path, write? | Link a clip to a `.html` file (read it, or write the clip into it); empty path unlinks. |
+| `html.snapshot` | Mutate | url, width? | Snapshot a real web page by address (private Edge, scripts dropped) and add it as a linked clip. |
 | `html.render` | Read | clip | Render again when the current source has no render (also retries a failed one). |
 | `html.check` | Read (image) | clip? \| html?, t?, fields? | One rendered frame as an image, plus lint. |
 | `clip.set_shader` | Mutate | clip, index?, src | Set a clip's shader effect source; returns `{ok, log, params}` (a compile error is a result, not a failure). |

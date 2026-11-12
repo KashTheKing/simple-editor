@@ -871,6 +871,29 @@ fn clip_section(
     }
     ui.separator();
 
+    // ---- ws:html-layer ---- an HTML layer is code, not footage: its source, file and fields lead
+    let mut html_changed = false;
+    if !multi && clip.uses_asset() && project.asset(clip.asset).is_some_and(|a| a.html.is_some()) {
+        section(ui, "html_source", "HTML", true, folds.map, None, |ui| {
+            html_changed |= crate::ui::html_ui::source_section(ui, project, id, undo);
+        });
+        section(ui, "fields", "Fields", true, folds.map, None, |ui| {
+            html_changed |= crate::ui::html_ui::fields_section(ui, project, id, undo);
+        });
+        {
+            let at = clip.src_time(playhead);
+            section(ui, "html_mouse", "Mouse", false, folds.map, None, |ui| {
+                html_changed |= crate::ui::html_ui::mouse_section(ui, project, id, at, palette, undo);
+            });
+        }
+        if crate::ui::html_ui::has_params(project, id) {
+            let at = clip.src_time(playhead);
+            section(ui, "html_params", "Parameters", true, folds.map, None, |ui| {
+                html_changed |= crate::ui::html_ui::params_section(ui, project, id, at, palette, undo);
+            });
+        }
+    }
+
     // ---- ws:text-titles: primary-first ordering ----
     // For a Text clip, typography is what a beginner needs first, so its section leads (and is the one
     // open). The "Text style presets" sub-panel sits at its end: it needs `&mut Settings`, which
@@ -1129,14 +1152,6 @@ fn clip_section(
                 });
             }
         }); // end zone 2 (add_enabled_ui)
-    }
-
-    // ---- ws:html-layer ---- an HTML layer's template fields (open by default: they are its content)
-    let mut html_changed = false;
-    if !multi && clip.uses_asset() && project.asset(clip.asset).is_some_and(|a| a.html.is_some()) {
-        section(ui, "fields", "Fields", true, folds.map, None, |ui| {
-            html_changed = crate::ui::html_ui::fields_section(ui, project, id, undo);
-        });
     }
 
     // asset details: a status line + "Open in Library" - description/tags/label/folder are edited ONLY

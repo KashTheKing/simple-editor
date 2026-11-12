@@ -65,6 +65,7 @@ pub mod assistant_ui;
 // ---- ws:assistant-pane ----
 pub mod assistant_data;
 // ---- ws:html-layer ----
+pub mod html_code;
 pub mod html_ui;
 
 use crate::model::{AnimLink, Animated, Id, Mask, MaskShape, Project, LABEL_COLORS};

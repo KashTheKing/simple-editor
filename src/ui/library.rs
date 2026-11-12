@@ -620,6 +620,15 @@ fn band_select(ui: &egui::Ui, state: &mut LibraryState, rows: &[(Pick, egui::Rec
 
 // ---------- pure filter helpers ----------
 
+/// What a library row calls an asset: "HTML" for a layer made from source (its file is only a cache).
+fn asset_tag(a: &crate::model::Asset) -> &'static str {
+    if a.html.is_some() {
+        "HTML"
+    } else {
+        kind_tag(a.kind)
+    }
+}
+
 fn kind_tag(k: ClipKind) -> &'static str {
     match k {
         ClipKind::Video => "V",
@@ -1688,7 +1697,7 @@ fn empty_menu(
 
 /// kind · duration · W×H · fps · audio streams · subclip range.
 fn format_line(a: &crate::model::Asset) -> String {
-    let mut line = format!("{} · {}", kind_tag(a.kind), dur_cell(a));
+    let mut line = format!("{} · {}", asset_tag(a), dur_cell(a));
     if a.width > 0 {
         line.push_str(&format!(" · {}×{}", a.width, a.height));
     }
@@ -2503,7 +2512,7 @@ impl Tree<'_, '_> {
             // the configured columns, in order; tags last (they truncate against the row's edge)
             for c in columns.iter().filter(|c| c.as_str() != "tags") {
                 match c.as_str() {
-                    "kind" => ui.weak(kind_tag(a.kind)),
+                    "kind" => ui.weak(asset_tag(a)),
                     "duration" => ui.weak(dur_cell(a)),
                     "fps" if a.kind == ClipKind::Video && a.fps > 0.0 => ui.weak(format!("{:.2} fps", a.fps)),
                     // ponytail: one stat per VISIBLE row per frame; memoise on the asset if a
@@ -2574,10 +2583,10 @@ impl Tree<'_, '_> {
         let button = None;
         let mut tag = match crate::media::proxy::status(a, self.settings.use_proxies, self.settings.proxy_height) {
             crate::media::proxy::ProxyStatus::Building(f) => {
-                format!("{} · proxy {:.0} %", kind_tag(a.kind), f * 100.0)
+                format!("{} · proxy {:.0} %", asset_tag(a), f * 100.0)
             }
-            crate::media::proxy::ProxyStatus::Queued => format!("{} · proxy queued", kind_tag(a.kind)),
-            _ => kind_tag(a.kind).to_string(),
+            crate::media::proxy::ProxyStatus::Queued => format!("{} · proxy queued", asset_tag(a)),
+            _ => asset_tag(a).to_string(),
         };
         if a.parent.is_some() {
             tag.push_str(" · sub");

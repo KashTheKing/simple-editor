@@ -75,7 +75,26 @@ pub struct Template {
     pub duration: f64,
     pub thumb: Option<f64>,
     pub fields: Vec<Field>,
+    /// `se:fullpage`: a page without animation is captured over its whole scroll height (a web page
+    /// snapshot), not just the `se:size` viewport. The viewport still decides `vh`, `%` and media queries.
+    pub fullpage: bool,
+    /// `se:param` (number fields, animatable): each is the CSS variable `--name` while rendering.
+    pub params: Vec<Field>,
 }
+
+/// Everything about the page's surroundings a render depends on besides its source and fields.
+#[derive(Clone, Copy, Default)]
+pub struct View<'a> {
+    /// The folder of the page's file (relative links resolve there); empty = none.
+    pub base: &'a str,
+    pub params: &'a [(String, crate::model::Animated)],
+    /// The layout width in CSS px (0 = the template's `se:size`).
+    pub width: u32,
+    pub mouse: Option<&'a crate::model::Mouse>,
+}
+
+/// Param tracks as the renderer takes them: (name, constant or keyframed value).
+pub type Params = Vec<(String, crate::model::Animated)>;
 
 impl Template {
     /// The second the preview picture is taken at: `se:thumb`, else 60 % of the duration.
@@ -248,7 +267,201 @@ pub fn parse(src: &str) -> Template {
         duration: first("se:duration").and_then(|d| secs(&d)).unwrap_or(4.0).clamp(0.5, 60.0),
         thumb: first("se:thumb").and_then(|d| secs(&d)),
         fields: metas(src, "se:field").iter().filter_map(|f| field_of(f)).collect(),
+        params: metas(src, "se:param")
+            .iter()
+            .filter_map(|f| field_of(f))
+            .filter(|f| matches!(f.ty, FieldType::Number))
+            .collect(),
+        // a page with no se: tags at all is an ordinary web page: capture all of it
+        fullpage: first("se:fullpage")
+            .map_or_else(|| first("se:size").is_none() && first("se:kind").is_none() && first("se:duration").is_none(), |v| !matches!(v.trim().to_ascii_lowercase().as_str(), "" | "0" | "false" | "no")),
     }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// params: numbers a page declares (`<meta name="se:param" content="progress | number | 0 | 0 | 100">`),
+// keyframed in the editor, handed to the page as CSS variables (`var(--progress)`) frame by frame
+
+/// The page's declared params with their tracks from `set` (a missing one is its default), in
+/// declaration order.
+pub fn params_of(src: &str, set: &std::collections::BTreeMap<String, crate::model::Animated>) -> Params {
+    parse(src)
+        .params
+        .iter()
+        .map(|p| {
+            let default = p.default.trim().parse::<f64>().unwrap_or(0.0);
+            (p.name.clone(), set.get(&p.name).cloned().unwrap_or_else(|| crate::model::Animated::new(default)))
+        })
+        .collect()
+}
+
+/// (name, value) of every declared param at second `t`; values outside the declared range are clamped.
+fn values_at(tpl: &Template, params: &[(String, crate::model::Animated)], t: f64) -> Vec<(String, f64)> {
+    tpl.params
+        .iter()
+        .map(|p| {
+            let default = p.default.trim().parse::<f64>().unwrap_or(0.0);
+            let v = params.iter().find(|(n, _)| *n == p.name).map_or(default, |(_, a)| a.at(t));
+            let v = match (p.min, p.max) {
+                (Some(a), Some(b)) if a <= b => v.clamp(a, b),
+                _ => v,
+            };
+            (p.name.clone(), if v.is_finite() { v } else { default })
+        })
+        .collect()
+}
+
+fn animated_params(tpl: &Template, params: &[(String, crate::model::Animated)]) -> bool {
+    params.iter().any(|(n, a)| a.is_animated() && tpl.params.iter().any(|p| p.name == *n))
+}
+
+// ---------------------------------------------------------------------------------------------------
+// linked files: a page that refers to local stylesheets, images and fonts, like a real browser
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let (mut out, mut i) = (Vec::with_capacity(b.len()), 0);
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// A reference found in a page or a stylesheet, as a local file (None: a web address, `data:`, an anchor,
+/// a `{{field}}`, nothing).
+fn resolve_ref(r: &str, dir: &Path) -> Option<PathBuf> {
+    let r = r.trim().trim_matches(|c| c == '"' || c == '\'').trim();
+    let low = r.to_ascii_lowercase();
+    if r.is_empty()
+        || r.starts_with('#')
+        || r.contains("{{")
+        || ["data:", "http:", "https:", "//", "about:", "blob:", "javascript:", "cid:"].iter().any(|p| low.starts_with(p))
+    {
+        return None;
+    }
+    let r = r.split(['?', '#']).next().unwrap_or("");
+    let r = r.strip_prefix("file:///").unwrap_or(r);
+    if r.is_empty() {
+        return None;
+    }
+    let d = percent_decode(r);
+    let p = Path::new(&d);
+    Some(if p.is_absolute() || d.as_bytes().get(1) == Some(&b':') { p.to_path_buf() } else { dir.join(p) })
+}
+
+/// Every `url(…)`, `@import "…"` and `<link href>` / `<img src>` / `<source src>` / `poster` / SVG `href`.
+fn refs_in(text: &str) -> Vec<String> {
+    let mut v = Vec::new();
+    let mut rest = text;
+    while let Some(i) = rest.find("url(") {
+        let t = &rest[i + 4..];
+        let end = t.find(')').unwrap_or(t.len());
+        v.push(t[..end].trim().trim_matches(|c| c == '"' || c == '\'').to_string());
+        rest = &t[end..];
+    }
+    let mut rest = text;
+    while let Some(i) = rest.find("@import") {
+        let t = rest[i + 7..].trim_start();
+        if let Some(q) = t.chars().next().filter(|c| *c == '"' || *c == '\'') {
+            if let Some(e) = t[1..].find(q) {
+                v.push(t[1..1 + e].to_string());
+            }
+        }
+        rest = &rest[i + 7..];
+    }
+    for (tag, names) in [("link", &["href"][..]), ("img", &["src"]), ("source", &["src"]), ("video", &["poster"]), ("image", &["href", "xlink:href"]), ("use", &["href", "xlink:href"])] {
+        for t in open_tags(text, tag) {
+            for a in attrs(t) {
+                if names.contains(&a.name.as_str()) {
+                    v.push(unescape(a.value));
+                }
+            }
+        }
+    }
+    v
+}
+
+/// The local files a page needs (one level of stylesheets inside stylesheets and up to 3 deep), resolved
+/// against `base` (the folder the page lives in). Only files that exist are listed.
+pub fn local_deps(page: &str, base: &str) -> Vec<PathBuf> {
+    if base.is_empty() {
+        return Vec::new();
+    }
+    let mut out: Vec<PathBuf> = Vec::new();
+    let mut work: Vec<(String, PathBuf, usize)> = vec![(page.to_string(), PathBuf::from(base), 0)];
+    while let Some((text, dir, depth)) = work.pop() {
+        for r in refs_in(&text) {
+            let Some(p) = resolve_ref(&r, &dir) else { continue };
+            if out.contains(&p) || !p.is_file() {
+                continue;
+            }
+            let is_css = p.extension().is_some_and(|e| e.eq_ignore_ascii_case("css"));
+            if is_css && depth < 3 {
+                if let Ok(css) = std::fs::read_to_string(&p) {
+                    work.push((css, p.parent().map(Path::to_path_buf).unwrap_or_default(), depth + 1));
+                }
+            }
+            out.push(p);
+        }
+        if out.len() > 2000 {
+            break;
+        }
+    }
+    out
+}
+
+/// A number that changes when any linked file does (its name, size and modified time).
+pub fn deps_stamp(page: &str, base: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let mut files = local_deps(page, base);
+    files.sort();
+    for f in files {
+        let m = std::fs::metadata(&f).ok();
+        (f, m.as_ref().map(|m| m.len()), m.and_then(|m| m.modified().ok())).hash(&mut h);
+    }
+    h.finish()
+}
+
+/// Remove every `<base …>` tag (a saved page's own base would point its links back at the web).
+pub fn strip_base_tags(page: &str) -> String {
+    let low = page.to_ascii_lowercase();
+    let (mut out, mut at) = (String::with_capacity(page.len()), 0);
+    while let Some(i) = low[at..].find("<base").map(|p| p + at) {
+        if !low.as_bytes().get(i + 5).is_some_and(|c| c.is_ascii_whitespace() || *c == b'>' || *c == b'/') {
+            out.push_str(&page[at..i + 5]);
+            at = i + 5;
+            continue;
+        }
+        out.push_str(&page[at..i]);
+        at = tag_end(page.as_bytes(), i);
+    }
+    out.push_str(&page[at..]);
+    out
+}
+
+/// `<base href="…">` right after `<head>` so relative links in the page resolve against `base`.
+fn with_base(page: String, base: &str) -> String {
+    if base.is_empty() || page.to_ascii_lowercase().contains("<base ") {
+        return page;
+    }
+    let tag = format!("<base href=\"{}/\">", file_url(Path::new(base)).trim_end_matches('/'));
+    let low = page.to_ascii_lowercase();
+    for open in ["<head", "<html"] {
+        if let Some(i) = low.find(open).filter(|&i| low.as_bytes().get(i + open.len()).is_some_and(|c| c.is_ascii_whitespace() || *c == b'>')) {
+            let at = tag_end(page.as_bytes(), i);
+            return format!("{}{}{}", &page[..at], tag, &page[at..]);
+        }
+    }
+    format!("{tag}{page}")
 }
 
 fn valid_color(s: &str) -> bool {
@@ -419,6 +632,16 @@ pub fn sanitize(src: &str) -> String {
     replace_ci(&out, "javascript:", "blocked:")
 }
 
+/// Params declared but never read as `var(--name)`.
+fn unused_params(src: &str) -> Vec<String> {
+    parse(src)
+        .params
+        .iter()
+        .filter(|p| !src.contains(&format!("var(--{}", p.name)))
+        .map(|p| format!("param '{}' is declared but never used (read it as var(--{}))", p.name, p.name))
+        .collect()
+}
+
 /// What breaks the library rules (`library/README.md`, "HTML layers and scenes"); empty = fine.
 pub fn lint(src: &str) -> Vec<String> {
     let mut e = Vec::new();
@@ -527,13 +750,20 @@ pub fn lint(src: &str) -> Vec<String> {
             e.push(format!("contains <{el}> (not allowed)"));
         }
     }
+    e.extend(unused_params(src));
     e
 }
 
 /// Template + the page Edge loads: fields substituted, then sanitised.
 pub fn prepare(src: &str, values: &[(String, String)]) -> (Template, String) {
+    prepare_in(src, values, "")
+}
+
+/// `prepare`, for a page that lives in folder `base` (a linked or imported file): its relative links to
+/// stylesheets, images and fonts resolve there.
+pub fn prepare_in(src: &str, values: &[(String, String)], base: &str) -> (Template, String) {
     let tpl = parse(src);
-    let page = sanitize(&substitute(src, &tpl, values));
+    let page = with_base(sanitize(&substitute(src, &tpl, values)), base);
     (tpl, page)
 }
 
@@ -703,6 +933,21 @@ impl Cdp {
 /// Edge is closed after this long without a render (it costs ~1.3 s to start again).
 const IDLE: Duration = Duration::from_secs(90);
 
+/// Where the fake mouse has been (so only changes are sent to the page).
+struct MouseState {
+    x: f64,
+    y: f64,
+    down: bool,
+    ready: bool,
+    press_ms: f64,
+}
+
+impl Default for MouseState {
+    fn default() -> Self {
+        MouseState { x: 0.0, y: 0.0, down: false, ready: false, press_ms: -1e9 }
+    }
+}
+
 struct Edge {
     child: Child,
     profile: PathBuf,
@@ -766,6 +1011,12 @@ fn remove_profile(dir: &Path) {
 
 impl Edge {
     fn launch() -> Result<Edge, String> {
+        Self::launch_with(false)
+    }
+
+    /// `network`: let the page reach the web (a private Edge that snapshots a site); off for rendering,
+    /// where a page must not fetch anything.
+    fn launch_with(network: bool) -> Result<Edge, String> {
         let exe = edge_exe()
             .ok_or("Microsoft Edge not found - HTML layers are rendered with the Edge that ships with Windows")?;
         static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -777,7 +1028,8 @@ impl Edge {
         let mut child = ffpipe::command(&exe)
             .args(["--headless", "--remote-debugging-port=0", "--no-first-run", "--no-default-browser-check"])
             .args(["--hide-scrollbars", "--mute-audio", "--disable-extensions", "--disable-background-networking"])
-            .args(["--disable-sync", "--disable-component-update", "--host-resolver-rules=MAP * ~NOTFOUND"])
+            .args(["--disable-sync", "--disable-component-update"])
+            .args(if network { vec![] } else { vec!["--host-resolver-rules=MAP * ~NOTFOUND"] })
             .arg(format!("--user-data-dir={}", profile.join("p").display()))
             .arg("about:blank")
             .stdin(Stdio::null())
@@ -874,6 +1126,98 @@ impl Edge {
         Ok((v[0].as_u64().unwrap_or(0), v[1].as_u64() == Some(1), v[2].as_f64().unwrap_or(0.0)))
     }
 
+    /// Make the page safe to click (links and forms go nowhere) and put a cursor on it.
+    fn mouse_setup(&mut self) -> Result<(), String> {
+        self.cdp
+            .eval(
+                r##"(()=>{
+for(const a of document.querySelectorAll('a[href],area[href]'))a.setAttribute('href','javascript:void(0)');
+for(const f of document.querySelectorAll('form'))f.setAttribute('action','javascript:void(0)');
+for(const b of document.querySelectorAll('[formaction]'))b.setAttribute('formaction','javascript:void(0)');
+if(!document.getElementById('se-cursor')){
+ const c=document.createElement('div');c.id='se-cursor';
+ c.style.cssText='position:fixed;left:0;top:0;width:0;height:0;z-index:2147483647;pointer-events:none';
+ c.innerHTML='<div id="se-ring" style="position:absolute;left:-26px;top:-26px;width:52px;height:52px;border-radius:50%;border:4px solid rgba(61,123,253,.95);opacity:0"></div>'
+ +'<svg id="se-arrow" width="30" height="40" viewBox="0 0 26 34" style="position:absolute;left:-2px;top:-2px;filter:drop-shadow(0 2px 3px rgba(0,0,0,.45))"><path d="M2 2 L2 26 L8.5 20.5 L13 31 L18 29 L13.5 19 L22 19 Z" fill="#fff" stroke="#111" stroke-width="2" stroke-linejoin="round"/></svg>';
+ document.documentElement.appendChild(c);
+}
+})()"##,
+            )
+            .map(|_| ())
+    }
+
+    /// Move / press / release the page's real mouse to match the fake one, and draw the cursor (with a
+    /// ring that opens and fades for 0.45 s after a press). Events go to the page itself, so `:hover` and
+    /// `:active` styles apply and the transitions they start can be stepped by `seek_rel`.
+    fn mouse_frame(&mut self, st: &mut MouseState, x: f64, y: f64, down: bool, ms: f64) -> Result<(), String> {
+        let ev = |ty: &str, buttons: u32| {
+            json!({"type": ty, "x": x, "y": y, "button": if buttons > 0 || ty == "mouseReleased" { "left" } else { "none" },
+                   "buttons": buttons, "clickCount": u32::from(ty != "mouseMoved")})
+        };
+        if !st.ready || (x, y) != (st.x, st.y) {
+            self.cdp.call("Input.dispatchMouseEvent", ev("mouseMoved", u32::from(down)))?;
+        }
+        if down && !st.down {
+            self.cdp.call("Input.dispatchMouseEvent", ev("mousePressed", 1))?;
+            st.press_ms = ms;
+        }
+        if !down && st.down {
+            self.cdp.call("Input.dispatchMouseEvent", ev("mouseReleased", 0))?;
+        }
+        let ring = ((ms - st.press_ms) / 450.0).clamp(0.0, 1.0);
+        let ring = if st.press_ms < -1e8 { 1.0 } else { ring };
+        self.cdp.eval(&format!(
+            "(()=>{{const c=document.getElementById('se-cursor');if(!c)return;c.style.transform='translate({x}px,{y}px)';\
+             const r=document.getElementById('se-ring');r.style.opacity='{}';r.style.transform='scale({})'}})()",
+            if ring >= 1.0 { 0.0 } else { 1.0 - ring },
+            0.4 + ring * 1.1
+        ))?;
+        *st = MouseState { x, y, down, ready: true, press_ms: st.press_ms };
+        Ok(())
+    }
+
+    /// Every animation paused at `ms` since it began: the ones the page had at the start began at 0, one
+    /// started later (a hover's transition) began when first seen, so it plays from its own start.
+    fn seek_rel(&mut self, ms: f64) -> Result<(), String> {
+        self.cdp
+            .eval(&format!(
+                "(()=>{{const ms={ms};for(const a of document.getAnimations()){{if(a.__t0===undefined)a.__t0=window.__seFirst===undefined?0:ms;\
+                 a.pause();a.currentTime=ms-a.__t0}}window.__seFirst=1}})()"
+            ))
+            .map(|_| ())
+    }
+
+    /// The page's params as CSS variables on `<html>` (set from here, so no script runs in the page).
+    fn set_params(&mut self, values: &[(String, f64)]) -> Result<(), String> {
+        if values.is_empty() {
+            return Ok(());
+        }
+        let obj: serde_json::Map<String, Value> = values.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
+        self.cdp
+            .eval(&format!(
+                "(()=>{{const s=document.documentElement.style;for(const [k,v] of Object.entries({})){{s.setProperty('--'+k,String(v))}}}})()",
+                Value::Object(obj)
+            ))
+            .map(|_| ())
+    }
+
+    /// The whole scrollable page (at most 16000 CSS px tall) as PNG bytes.
+    fn shot_full(&mut self, width: u32, out: &mut Vec<u8>) -> Result<(), String> {
+        let h = self
+            .cdp
+            .eval("Math.max(document.documentElement.scrollHeight,document.body?document.body.scrollHeight:0)")?
+            .as_f64()
+            .unwrap_or(0.0)
+            .clamp(1.0, 16000.0);
+        let clip = json!({"x": 0, "y": 0, "width": width, "height": h, "scale": 1});
+        let r = self.cdp.call("Page.captureScreenshot", json!({"format": "png", "captureBeyondViewport": true, "clip": clip}))?;
+        b64_decode(r["data"].as_str().unwrap_or("").as_bytes(), out);
+        if png_size(out).is_none() {
+            return Err("Edge returned no picture".into());
+        }
+        Ok(())
+    }
+
     /// The viewport as PNG bytes.
     fn shot(&mut self, out: &mut Vec<u8>) -> Result<(), String> {
         let r = self.cdp.call("Page.captureScreenshot", json!({"format": "png", "optimizeForSpeed": true}))?;
@@ -913,6 +1257,53 @@ fn with_edge<T>(mut f: impl FnMut(&mut Edge) -> Result<T, String>) -> Result<T, 
         }
     }
     unreachable!()
+}
+
+/// A page from the web as an MHTML archive, the way a browser's own "save as single file" makes it: loaded
+/// in a private Edge (network and scripts on, nothing kept), scrolled once to wake lazy images, then
+/// snapshotted. It is what a visitor who is not signed in sees; the page you are signed in to comes from
+/// your own browser (see `tools/browser-extension`).
+pub fn capture_mhtml(url: &str, width: u32, height: u32, prog: &Progress) -> Result<Vec<u8>, String> {
+    let url = url.trim();
+    let url = if url.contains("://") { url.to_string() } else { format!("https://{url}") };
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err("only http and https addresses can be snapshotted".into());
+    }
+    prog.set(0.05, "Starting Edge…");
+    let mut e = Edge::launch_with(true)?;
+    let r = (|| -> Result<Vec<u8>, String> {
+        let c = &mut e.cdp;
+        c.call("Emulation.setScriptExecutionDisabled", json!({"value": false}))?;
+        c.call("Emulation.setDefaultBackgroundColorOverride", json!({}))?;
+        let session = c.session.take();
+        let ua = c.call("Browser.getVersion", json!({}))?["userAgent"].as_str().unwrap_or("").replace("HeadlessChrome", "Chrome");
+        c.session = session;
+        if !ua.is_empty() {
+            c.call("Emulation.setUserAgentOverride", json!({"userAgent": ua}))?;
+        }
+        let m = json!({"width": width.clamp(320, 3840), "height": height.clamp(240, 2160), "deviceScaleFactor": 1, "mobile": false});
+        c.call("Emulation.setDeviceMetricsOverride", m)?;
+        prog.set(0.1, "Loading the page…");
+        c.loaded = false;
+        let nav = c.call("Page.navigate", json!({"url": url}))?;
+        if let Some(err) = nav["errorText"].as_str().filter(|e| !e.is_empty()) {
+            return Err(format!("Edge could not open {url}: {err}"));
+        }
+        while !c.loaded {
+            c.recv().map_err(|e| format!("Edge (loading {url}): {e}"))?;
+        }
+        prog.set(0.5, "Scrolling through the page…");
+        let wake = "(async()=>{const h=()=>Math.max(document.documentElement.scrollHeight,document.body?document.body.scrollHeight:0);\
+            let y=0;while(y<h()&&y<24000){window.scrollTo(0,y);await new Promise(r=>setTimeout(r,140));y+=innerHeight*0.8}\
+            window.scrollTo(0,0);await new Promise(r=>setTimeout(r,700));try{await document.fonts.ready}catch(e){}return h()})()";
+        c.call("Runtime.evaluate", json!({"expression": wake, "awaitPromise": true, "returnByValue": true}))?;
+        prog.set(0.85, "Saving the page…");
+        let snap = c.call("Page.captureSnapshot", json!({"format": "mhtml"}))?;
+        let data = snap["data"].as_str().ok_or("Edge returned no snapshot")?;
+        Ok(data.as_bytes().to_vec())
+    })();
+    e.close();
+    r
 }
 
 /// Closes the shared Edge once it has been idle for `IDLE` (one such thread per started Edge).
@@ -966,6 +1357,13 @@ fn b64_decode(s: &[u8], out: &mut Vec<u8>) {
 }
 
 /// Width and height from a PNG's IHDR.
+pub fn png_file_size(path: &Path) -> Option<(u32, u32)> {
+    let mut head = [0u8; 32];
+    let mut f = std::fs::File::open(path).ok()?;
+    std::io::Read::read_exact(&mut f, &mut head).ok()?;
+    png_size(&head)
+}
+
 pub fn png_size(png: &[u8]) -> Option<(u32, u32)> {
     if png.len() < 24 || &png[..8] != b"\x89PNG\r\n\x1a\n" {
         return None;
@@ -1013,13 +1411,34 @@ pub fn pixel_size(size: (u32, u32), scale: f64) -> (u32, u32) {
 /// One frame of `html` (fields applied) at second `t`, as PNG bytes. Blocking: never on the UI thread
 /// for long (a cold Edge takes ~1.3 s, a warm one a few tens of ms plus the page load).
 pub fn render_png(html: &str, fields: &[(String, String)], scale: f64, t: f64) -> Result<Vec<u8>, String> {
-    let (tpl, page) = prepare(html, fields);
+    render_png_in(html, fields, scale, t, &View::default())
+}
+
+/// `render_png` for a page in its surroundings: its folder, `se:param` tracks and fake mouse evaluated at
+/// `t`, and the layout width.
+pub fn render_png_in(html: &str, fields: &[(String, String)], scale: f64, t: f64, v: &View) -> Result<Vec<u8>, String> {
+    let (tpl, page) = prepare_in(html, fields, v.base);
     let scale = scale.clamp(0.05, 4.0);
+    let values = values_at(&tpl, v.params, t);
+    let size = sized(&tpl, v.width);
     with_edge(|e| {
-        e.load(&page, tpl.size, scale)?;
-        e.seek((t.max(0.0) * 1000.0).min(1e9))?;
+        e.load(&page, size, scale)?;
+        e.set_params(&values)?;
+        if let Some(m) = v.mouse {
+            // a still of the moment: the mouse is where it is at `t`, its hover has settled
+            let mut st = MouseState::default();
+            e.mouse_setup()?;
+            let (x, y, down) = m.state(t);
+            e.mouse_frame(&mut st, x, y, down, t * 1000.0)?;
+        }
+        let (count, _, _) = e.timing()?;
         let mut png = Vec::new();
-        e.shot(&mut png)?;
+        if tpl.fullpage && count == 0 {
+            e.shot_full(size.0, &mut png)?;
+        } else {
+            e.seek((t.max(0.0) * 1000.0).min(1e9))?;
+            e.shot(&mut png)?;
+        }
         Ok(png)
     })
 }
@@ -1027,6 +1446,11 @@ pub fn render_png(html: &str, fields: &[(String, String)], scale: f64, t: f64) -
 /// CONTRACT: one frame (straight-alpha RGBA) of `html` at `t` seconds. Blocking; never on the UI thread.
 pub fn render_frame(html: &str, fields: &[(String, String)], scale: f64, t: f64) -> Result<Frame, String> {
     decode_png(&render_png(html, fields, scale, t)?)
+}
+
+/// `render_frame` for a page in its surroundings.
+pub fn render_frame_in(html: &str, fields: &[(String, String)], scale: f64, t: f64, v: &View) -> Result<Frame, String> {
+    decode_png(&render_png_in(html, fields, scale, t, v)?)
 }
 
 /// What a full render needs; the output file is named by a hash of all of it.
@@ -1037,6 +1461,14 @@ pub struct Spec {
     pub scale: f64,
     pub fps: f64,
     pub duration: f64,
+    /// The folder of the page's file when it has one (relative links resolve there); empty = none.
+    pub base: String,
+    /// The page's `se:param` tracks.
+    pub params: Params,
+    /// The layout width in CSS pixels (0 = the template's `se:size`).
+    pub width: u32,
+    /// The fake mouse.
+    pub mouse: Option<crate::model::Mouse>,
 }
 
 /// A finished (or cached) render.
@@ -1053,13 +1485,29 @@ pub fn dir() -> PathBuf {
     crate::settings::Settings::cache_dir().join("html")
 }
 
+/// The viewport of a render: the template's `se:size`, or its height at the width asked for.
+fn sized(tpl: &Template, width: u32) -> (u32, u32) {
+    if width > 0 {
+        (width.clamp(2, 3840), tpl.size.1)
+    } else {
+        tpl.size
+    }
+}
+
+/// The part of the params a render depends on: declared ones only.
+fn params_hashable<'a>(tpl: &Template, params: &'a [(String, crate::model::Animated)]) -> Vec<&'a (String, crate::model::Animated)> {
+    params.iter().filter(|(n, _)| tpl.params.iter().any(|p| p.name == *n)).collect()
+}
+
 /// `cache_dir()/html/<hash>` (no extension) and the picture size for `spec`.
 pub fn out_base(spec: &Spec) -> (PathBuf, (u32, u32)) {
     use std::hash::{Hash, Hasher};
-    let (tpl, page) = prepare(&spec.html, &spec.fields);
-    let px = pixel_size(tpl.size, spec.scale.clamp(0.05, 4.0));
+    let (tpl, page) = prepare_in(&spec.html, &spec.fields, &spec.base);
+    let px = pixel_size(sized(&tpl, spec.width), spec.scale.clamp(0.05, 4.0));
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    ("html-v1", &page, px, spec.fps.to_bits(), spec.duration.to_bits()).hash(&mut h);
+    let params = serde_json::to_string(&params_hashable(&tpl, &spec.params)).unwrap_or_default();
+    let mouse = serde_json::to_string(&spec.mouse).unwrap_or_default();
+    ("html-v4", &page, px, spec.fps.to_bits(), spec.duration.to_bits(), deps_stamp(&page, &spec.base), params, mouse).hash(&mut h);
     (dir().join(format!("{:016x}", h.finish())), px)
 }
 
@@ -1068,7 +1516,12 @@ pub fn cached(spec: &Spec) -> Option<Rendered> {
     let (base, (width, height)) = out_base(spec);
     [("mov", true), ("png", false)].into_iter().find_map(|(ext, animated)| {
         let path = base.with_extension(ext);
-        path.is_file().then_some(Rendered { path, width, height, animated })
+        if !path.is_file() {
+            return None;
+        }
+        // a full-page capture is as tall as its page: ask the file
+        let (width, height) = if animated { (width, height) } else { png_file_size(&path).unwrap_or((width, height)) };
+        Some(Rendered { path, width, height, animated })
     })
 }
 
@@ -1080,18 +1533,31 @@ pub fn render_to_file(spec: &Spec, prog: &Progress) -> Result<Rendered, String> 
         return Ok(r);
     }
     let (base, _) = out_base(spec);
-    let (tpl, page) = prepare(&spec.html, &spec.fields);
+    let (tpl, page) = prepare_in(&spec.html, &spec.fields, &spec.base);
+    let size = sized(&tpl, spec.width);
     let (scale, fps) = (spec.scale.clamp(0.05, 4.0), spec.fps.clamp(1.0, 240.0));
     let frames = (spec.duration.clamp(0.04, 3600.0) * fps).ceil().max(1.0) as usize;
     std::fs::create_dir_all(dir()).map_err(|e| format!("{}: {e}", dir().display()))?;
     let ffmpeg = ffpipe::ffmpeg_exe().ok_or("ffmpeg.exe not found")?;
     prog.set(0.0, "Rendering HTML…");
+    // a keyframed param or a mouse moves the picture as surely as a CSS animation does
+    let moving_params = animated_params(&tpl, &spec.params) || spec.mouse.is_some();
     with_edge(|e| {
-        e.load(&page, tpl.size, scale)?;
+        e.load(&page, size, scale)?;
+        e.set_params(&values_at(&tpl, &spec.params, 0.0))?;
+        let mut mouse_state = MouseState::default();
+        if spec.mouse.is_some() {
+            e.mouse_setup()?;
+        }
         let (count, infinite, end_ms) = e.timing()?;
+        let infinite = infinite || moving_params;
         let mut png = Vec::new();
-        if count == 0 {
-            e.shot(&mut png)?;
+        if count == 0 && !moving_params {
+            if tpl.fullpage {
+                e.shot_full(size.0, &mut png)?;
+            } else {
+                e.shot(&mut png)?;
+            }
             let out = base.with_extension("png");
             let tmp = export::temp_output(&out);
             std::fs::write(&tmp.0, &png).map_err(|e| format!("{}: {e}", out.display()))?;
@@ -1122,7 +1588,14 @@ pub fn render_to_file(spec: &Spec, prog: &Progress) -> Result<Rendered, String> 
                 let ms = i as f64 * 1000.0 / fps;
                 let frozen = !infinite && ms >= end_ms;
                 if !(frozen && held) {
-                    e.seek(ms)?;
+                    e.set_params(&values_at(&tpl, &spec.params, ms / 1000.0))?;
+                    if let Some(m) = &spec.mouse {
+                        let (x, y, down) = m.state(ms / 1000.0);
+                        e.mouse_frame(&mut mouse_state, x, y, down, ms)?;
+                        e.seek_rel(ms)?;
+                    } else {
+                        e.seek(ms)?;
+                    }
                     e.shot(&mut png)?;
                     held = frozen;
                     if i == 0 {
@@ -1358,6 +1831,231 @@ mod tests {
         missing
     }
 
+    fn temp_dir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("se-html-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn references_to_local_files_are_found_and_web_addresses_are_not() {
+        let d = Path::new("C:/site");
+        assert_eq!(resolve_ref("css/a.css", d), Some(PathBuf::from("C:/site/css/a.css")));
+        assert_eq!(resolve_ref("\"my%20pic.png?v=3#x\"", d), Some(PathBuf::from("C:/site/my pic.png")));
+        assert_eq!(resolve_ref("file:///D:/x/y.png", d), Some(PathBuf::from("D:/x/y.png")));
+        for no in ["https://a.b/c.css", "//cdn/x.js", "data:image/png;base64,AAAA", "#top", "{{pic}}", "", "about:blank"] {
+            assert_eq!(resolve_ref(no, d), None, "{no}");
+        }
+        let page = r#"<link rel="stylesheet" href="s.css"><img src='p.png'><style>a{background:url("b/c.png")} @import "i.css";</style>"#;
+        let r = refs_in(page);
+        for want in ["s.css", "p.png", "b/c.png", "i.css"] {
+            assert!(r.iter().any(|x| x == want), "{want} in {r:?}");
+        }
+    }
+
+    #[test]
+    fn a_base_folder_goes_into_the_head_and_linked_files_change_the_stamp() {
+        let d = temp_dir("deps");
+        std::fs::create_dir_all(d.join("img")).unwrap();
+        std::fs::write(d.join("s.css"), "body{background:url(img/a.png)} @import 'more.css';").unwrap();
+        std::fs::write(d.join("more.css"), "p{color:red}").unwrap();
+        std::fs::write(d.join("img/a.png"), b"x").unwrap();
+        let page = r#"<html><head><title>t</title><link rel="stylesheet" href="s.css"></head><body></body></html>"#;
+        let deps = local_deps(page, &d.to_string_lossy());
+        for f in ["s.css", "more.css", "img/a.png"] {
+            assert!(deps.contains(&d.join(f)), "{f} in {deps:?}");
+        }
+        let (_, prepared) = prepare_in(page, &[], &d.to_string_lossy());
+        assert!(prepared.contains("<head><base href=\"file:///"), "{prepared}");
+        assert!(!prepare_in(page, &[], "").1.contains("<base"));
+        let (a, b) = (deps_stamp(page, &d.to_string_lossy()), deps_stamp(page, &d.to_string_lossy()));
+        assert_eq!(a, b);
+        std::fs::write(d.join("more.css"), "p{color:blue;margin:0}").unwrap(); // a stylesheet imported by a stylesheet
+        assert_ne!(a, deps_stamp(page, &d.to_string_lossy()), "a changed nested file changes the render's cache key");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Edge renders what a real browser would: the stylesheet and the picture are separate files.
+    #[test]
+    fn linked_stylesheets_and_images_render_like_a_browser() {
+        if tools_missing() {
+            return;
+        }
+        let d = temp_dir("linked");
+        std::fs::write(d.join("site.css"), "body{margin:0;background:transparent} #a{position:absolute;left:0;top:0;width:60px;height:60px;background:rgb(255,0,0)} #b{position:absolute;left:100px;top:0;width:60px;height:60px;background:url(dot.png) no-repeat;background-size:60px 60px}").unwrap();
+        // a 1x1 green PNG
+        let green = [
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01,
+            0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xDE, 0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41,
+            0x54, 0x08, 0xD7, 0x63, 0x60, 0xF8, 0xCF, 0x00, 0x00, 0x02, 0x03, 0x01, 0x01, 0x6B, 0x41, 0xDA, 0xEE, 0x00, 0x00, 0x00,
+            0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+        ];
+        std::fs::write(d.join("dot.png"), green).unwrap();
+        let page = r#"<!doctype html><html><head><title>t</title><meta name="se:size" content="200x100"><link rel="stylesheet" href="site.css"></head><body><div id="a"></div><div id="b"></div></body></html>"#;
+        let px = |f: &Frame, x: u32, y: u32| -> [u8; 4] { f.rgba[((y * f.width + x) * 4) as usize..][..4].try_into().unwrap() };
+        let base = d.to_string_lossy().into_owned();
+        let f = render_frame_in(page, &[], 1.0, 0.0, &View { base: &base, ..Default::default() }).expect("render");
+        assert_eq!(px(&f, 10, 10), [255, 0, 0, 255], "the stylesheet applied");
+        assert!(px(&f, 130, 10)[1] > 100 && px(&f, 130, 10)[3] == 255, "the css image loaded: {:?}", px(&f, 130, 10));
+        // without the folder the same page has neither
+        let f = render_frame(page, &[], 1.0, 0.0).expect("render");
+        assert_eq!(px(&f, 10, 10)[3], 0, "no folder: no stylesheet");
+        // the cache key follows the stylesheet
+        let spec = Spec { html: page.into(), fields: Vec::new(), scale: 1.0, fps: 10.0, duration: 1.0, base, params: Vec::new(), width: 0, mouse: None };
+        let k1 = out_base(&spec).0;
+        std::fs::write(d.join("site.css"), "body{margin:0}").unwrap();
+        assert_ne!(k1, out_base(&spec).0);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    const PARAM_PAGE: &str = r#"<!doctype html><html><head><title>p</title><meta name="se:size" content="200x60">
+        <meta name="se:param" content="x | number | 10 | 0 | 150"><meta name="se:param" content="size | number | 20 | 5 | 50">
+        <meta name="se:param" content="unused | number | 1">
+        <style>html,body{margin:0;background:transparent}
+        #b{position:absolute;top:0;left:calc(var(--x) * 1px);width:calc(var(--size) * 1px);height:calc(var(--size) * 1px);background:rgb(255,0,0)}</style>
+        </head><body><div id="b"></div></body></html>"#;
+
+    fn track(keys: &[(f64, f64)]) -> crate::model::Animated {
+        let mut a = crate::model::Animated::new(keys[0].1);
+        a.keys = keys.iter().map(|&(t, v)| crate::model::Keyframe { t, v, ease: crate::model::Ease::Linear }).collect();
+        a
+    }
+
+    #[test]
+    fn params_are_declared_defaulted_clamped_and_linted() {
+        let tpl = parse(PARAM_PAGE);
+        assert_eq!(tpl.params.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["x", "size", "unused"]);
+        let set = std::collections::BTreeMap::from([("x".to_string(), track(&[(0.0, 0.0), (1.0, 100.0)]))]);
+        let p = params_of(PARAM_PAGE, &set);
+        assert_eq!(p.len(), 3);
+        assert_eq!(p[1].1.value, 20.0, "a param nobody set is its default");
+        let v = |t| values_at(&tpl, &p, t).into_iter().map(|(_, v)| v).collect::<Vec<_>>();
+        assert_eq!(v(0.5), [50.0, 20.0, 1.0]);
+        let wild = vec![("x".to_string(), crate::model::Animated::new(9999.0)), ("size".to_string(), crate::model::Animated::new(f64::NAN))];
+        assert_eq!(values_at(&tpl, &wild, 0.0), [("x".to_string(), 150.0), ("size".to_string(), 20.0), ("unused".to_string(), 1.0)]);
+        // keyed -> the page moves
+        assert!(animated_params(&tpl, &p) && !animated_params(&tpl, &params_of(PARAM_PAGE, &Default::default())));
+        // declared but never read
+        let l = lint(PARAM_PAGE);
+        assert!(l.iter().any(|m| m.contains("'unused'")) && !l.iter().any(|m| m.contains("'x'")), "{l:?}");
+        // a render's cache key follows the tracks, and ignores undeclared ones
+        let spec = |params: Params| Spec { html: PARAM_PAGE.into(), fields: Vec::new(), scale: 1.0, fps: 10.0, duration: 1.0, base: String::new(), params, width: 0, mouse: None };
+        assert_ne!(out_base(&spec(p.clone())).0, out_base(&spec(params_of(PARAM_PAGE, &Default::default()))).0);
+        let mut extra = p.clone();
+        extra.push(("nope".into(), crate::model::Animated::new(1.0)));
+        assert_eq!(out_base(&spec(p)).0, out_base(&spec(extra)).0);
+    }
+
+    /// The real thing: a keyframed number moves a box through CSS, frame by frame, with no CSS animation
+    /// and no script in the page; a constant one is applied to a still.
+    #[test]
+    fn a_keyframed_param_drives_the_page_through_a_css_variable() {
+        if tools_missing() {
+            return;
+        }
+        let px = |f: &Frame, x: u32, y: u32| -> [u8; 4] { f.rgba[((y * f.width + x) * 4) as usize..][..4].try_into().unwrap() };
+        let set = std::collections::BTreeMap::from([("x".to_string(), track(&[(0.0, 0.0), (1.0, 100.0)]))]);
+        let params = params_of(PARAM_PAGE, &set);
+        // one preview frame at 0.5 s: the box is at x = 50 (20 px wide, the default size)
+        let f = render_frame_in(PARAM_PAGE, &[], 1.0, 0.5, &View { params: &params, ..Default::default() }).expect("render");
+        assert_eq!(px(&f, 55, 10), [255, 0, 0, 255], "inside the box at x=50");
+        assert_eq!(px(&f, 45, 10)[3], 0, "left of it");
+        assert_eq!(px(&f, 75, 10)[3], 0, "right of it");
+        // a constant: still the default 10 px
+        let f = render_frame_in(PARAM_PAGE, &[], 1.0, 0.0, &View::default()).expect("render");
+        assert_eq!(px(&f, 15, 10), [255, 0, 0, 255]);
+        assert_eq!(px(&f, 35, 10)[3], 0);
+        // the full render is a video (no CSS animation, but moving params) and its frames agree
+        let spec = Spec { html: PARAM_PAGE.into(), fields: Vec::new(), scale: 1.0, fps: 10.0, duration: 1.0, base: String::new(), params, width: 0, mouse: None };
+        if let Some(r) = cached(&spec) {
+            let _ = std::fs::remove_file(r.path);
+        }
+        let r = render_to_file(&spec, &Progress::new()).expect("render to file");
+        assert!(r.animated, "keyframed params make a video");
+        let mut v = ffpipe::open_video(&r.path.to_string_lossy()).expect("open");
+        for (t, left) in [(0.2, 20u32), (0.8, 80)] {
+            let mut f = Frame::default();
+            assert!(v.frame_at(t, 200, 60, &mut f), "decode {t}");
+            assert_eq!(px(&f, left + 5, 10), [255, 0, 0, 255], "box at {left} for t={t}");
+            assert_eq!(px(&f, left.saturating_sub(5), 10)[3], 0);
+        }
+    }
+
+    /// A fake mouse: its position, :hover and the transition it starts are real, stepped frame by frame.
+    #[test]
+    fn a_fake_mouse_hovers_and_the_transition_it_starts_plays_from_that_moment() {
+        if tools_missing() {
+            return;
+        }
+        let page = r#"<!doctype html><html><head><title>m</title><meta name="se:size" content="200x100">
+            <style>html,body{margin:0;background:#fff} #b{position:absolute;left:0;top:0;width:80px;height:40px;background:rgb(255,0,0);transition:background-color .5s linear}
+            #b:hover{background:rgb(0,0,255)} #b:active{background:rgb(0,255,0)} a{display:block;position:absolute;top:60px;left:0;width:50px;height:20px;background:#888}</style>
+            </head><body><div id="b"></div><a href="https://example.com/next">go</a></body></html>"#;
+        let px = |f: &Frame, x: u32, y: u32| -> [u8; 4] { f.rgba[((y * f.width + x) * 4) as usize..][..4].try_into().unwrap() };
+        let mut m = crate::model::Mouse::at(300.0, 20.0);
+        m.x = track(&[(0.0, 300.0), (1.0, 40.0), (2.0, 40.0)]);
+        // 0 = up; pressed from 2.0 s to 2.2 s
+        m.down = track(&[(0.0, 0.0), (2.0, 0.0), (2.01, 1.0), (2.2, 1.0), (2.21, 0.0)]);
+        let spec = Spec {
+            html: page.into(),
+            fields: Vec::new(),
+            scale: 1.0,
+            fps: 20.0,
+            duration: 3.0,
+            base: String::new(),
+            params: Vec::new(),
+            width: 0,
+            mouse: Some(m.clone()),
+        };
+        if let Some(r) = cached(&spec) {
+            let _ = std::fs::remove_file(r.path);
+        }
+        let r = render_to_file(&spec, &Progress::new()).expect("render to file");
+        assert!(r.animated, "a mouse makes a video");
+        let mut v = ffpipe::open_video(&r.path.to_string_lossy()).expect("open");
+        let mut at = |t: f64| {
+            let mut f = Frame::default();
+            assert!(v.frame_at(t, 200, 100, &mut f), "decode {t}");
+            f
+        };
+        let before = px(&at(0.4), 10, 10);
+        assert!(before[0] > 240 && before[2] < 20, "the mouse is far away: still red {before:?}");
+        let mid = px(&at(1.0), 10, 10);
+        assert!(mid[0] > 60 && mid[2] > 60 && mid[1] < 40, "inside the 0.5 s transition (it began when the pointer arrived): {mid:?}");
+        let after = px(&at(1.7), 10, 10);
+        assert!(after[2] > 240 && after[0] < 20, "hovered: blue {after:?}");
+        // pressed at 2.01 s: :active starts a 0.5 s fade from blue to green - 0.09 s in, a fifth of the way
+        let pressed = px(&at(2.1), 10, 10);
+        assert!(pressed[1] > 10 && pressed[1] < 120 && pressed[2] < 250, "pressed: :active began its fade to green {pressed:?}");
+        let later = px(&at(2.19), 10, 10);
+        assert!(later[1] > pressed[1], "and it keeps going: {pressed:?} then {later:?}");
+        // the cursor is drawn: the white arrow just right of and below its tip at (40, 20)
+        let arrow = px(&at(1.7), 44, 30);
+        assert!(arrow[0] > 220 && arrow[1] > 220 && arrow[2] > 220, "the arrow {arrow:?}");
+        // the link was clicked and went nowhere: the page is still this one
+        let grey = |p: [u8; 4]| p[0].abs_diff(136) < 14 && p[1].abs_diff(136) < 14 && p[2].abs_diff(136) < 14;
+        let (l1, l2) = (px(&at(1.7), 45, 75), px(&at(2.9), 45, 75));
+        assert!(grey(l1) && grey(l2), "the link's grey box is still there: {l1:?} then {l2:?}");
+        // a still of a moment (the editor preview): the hover has settled
+        let still = render_frame_in(page, &[], 1.0, 1.6, &View { mouse: Some(&m), ..Default::default() }).expect("render");
+        let s = px(&still, 10, 10);
+        assert!(s[2] > 240 && s[0] < 20, "still at 1.6 s: blue {s:?}");
+    }
+
+    /// `se:fullpage`: a page taller than its viewport is captured whole.
+    #[test]
+    fn a_full_page_capture_is_as_tall_as_the_page() {
+        if tools_missing() {
+            return;
+        }
+        let page = r#"<!doctype html><html><head><title>t</title><meta name="se:size" content="200x100"><meta name="se:fullpage" content="auto"></head><body style="margin:0"><div style="height:450px;background:#0a0"></div></body></html>"#;
+        let f = render_frame(page, &[], 1.0, 0.0).expect("render");
+        assert_eq!((f.width, f.height), (200, 450), "the whole page, not the 100 px viewport");
+        let plain = page.replace(r#"<meta name="se:fullpage" content="auto">"#, "");
+        assert_eq!(render_frame(&plain, &[], 1.0, 0.0).expect("render").height, 100);
+    }
+
     /// The real thing: Edge renders a moving box at exact positions with straight alpha, a script in
     /// the page does not run, and the full render writes a PNG-in-MOV that decodes to the same frames.
     #[test]
@@ -1385,7 +2083,7 @@ mod tests {
         let f = render_frame(MOVING, &[], 1.0, 0.5).expect("render");
         eprintln!("first frame (Edge start included): {} ms", t0.elapsed().as_millis());
         check(&f, 50);
-        let spec = Spec { html: MOVING.into(), fields: Vec::new(), scale: 1.0, fps: 10.0, duration: 2.5 };
+        let spec = Spec { html: MOVING.into(), fields: Vec::new(), scale: 1.0, fps: 10.0, duration: 2.5, base: String::new(), params: Vec::new(), width: 0, mouse: None };
         if let Some(r) = cached(&spec) {
             let _ = std::fs::remove_file(r.path);
         }

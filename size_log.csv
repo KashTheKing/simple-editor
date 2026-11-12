@@ -41,3 +41,4 @@ c0a7b45,12231680,jobs-panel #64: Pane::Jobs aggregator + 4 jobs.* tools, job_win
 8478016,10806272,"size-recovery: egui popup/menu code compiled once (ui::menu::{context|button|sub|scroll} pass the body as one &mut dyn FnMut) instead of once per menu closure; -3,729,408 B vs 955b937 (same code as f787468: 14,536,192 B; this row also includes #102/#105), -1,636,352 B vs wave 0 51738cb"
 f44595e,12326400,"feat/pro before the creator kit (the Pro plan and everything on main since the row above), measured 2026-11-11: +1,520,128 B vs 8478016"
 a17154b,13067264,"creator kit (HTML layers, shader library, skills, online library): +740,864 B vs f44595e, above the plan's 200-400 KB estimate"
+da35401+wip,13457920,"HTML editing, web snapshots, params, fake mouse: +390,656 B vs a17154b (+1,131,520 B vs f44595e)"

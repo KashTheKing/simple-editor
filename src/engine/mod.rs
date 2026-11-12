@@ -25,6 +25,7 @@ pub mod html;
 pub mod library;
 pub mod shaderlib;
 pub mod skills;
+pub mod webcap;
 pub mod shaders;
 pub mod shapes;
 // ---- ws:export-audio-tracks ----

@@ -394,3 +394,19 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
   `analysis::detect_beat_markers`/`split_beats` into a pure `detect_beats` (returns per-clip onset
   times + BPM, no mutation) plus `beat_markers`/`split_beats` (act on the cached preview). UI now
   has Detect Beats → Add Markers / Split at Beats, matching the other sections' shape.
+
+## Web snapshots, params, fake mouse (2026-11-12)
+- Snapshot from an address = a private, network-enabled Edge (`capture_mhtml`) -> `.mhtml` under
+  `%APPDATA%\SimpleEditor\web\snapshots` -> `import_with_undo_at`. Signed-in pages cannot be reached natively
+  (Edge profile is private by design), so "From my browser" = extension (`tools/browser-extension`,
+  `pageCapture.saveAsMHTML`) + a 1 s Downloads watcher (new, stable `.mhtml` newer than window-open).
+- Fake mouse = real `Input.dispatchMouseEvent`; transitions stepped by `seek_rel` so they are frame-exact.
+  Coordinates are viewport CSS px (top viewport only; a tall page's lower part is not hoverable - use Scroll).
+- Decision: Record mode (live cursor -> few keyframes, click-through to next snapshot) is in goals.md, not built.
+- Live-tested 2026-11-12 in a scratch instance: real snapshots of wikipedia.org, roblox.com (full page, tall) and
+  youtube.com (signed-out feed is empty - that is what "From my browser" is for) render with CSS/images/fonts;
+  Downloads watcher imported a dropped .mhtml in 2 s; fake mouse cursor drawn; Mouse section works.
+  Found live: Chrome/Edge MHTML links its stylesheets as `cid:css-...@mhtml.blink` (fixed in webcap).
+- NOT verified: the extension itself inside Brave (needs Developer mode > Load unpacked by hand), a .mhtml saved by
+  Brave's own Ctrl+S, the editor OS window / F11 on a second monitor, params UI with keyframes in the Inspector.
+- Size: 13,457,920 B (+390,656 vs a17154b; +1,131,520 vs f44595e).

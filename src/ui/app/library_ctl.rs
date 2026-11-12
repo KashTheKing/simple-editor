@@ -93,7 +93,13 @@ impl OnlineState {
                 self.note.clear();
             }
             Err(e) if self.cat.is_none() => {
-                self.note = format!("Library not reachable ({}): showing installed items.", first_line(&e))
+                // curl's "returned error: 404": the address is fine but nothing is published there
+                self.note = if e.contains("404") {
+                    "The online library is not published yet (no library folder on the main branch).                      Click \"Use a folder…\" and pick the library folder of the repository to use it now;                      installed items are shown meanwhile."
+                        .into()
+                } else {
+                    format!("Library not reachable ({}): showing installed items.", first_line(&e))
+                }
             }
             Err(_) => self.note = "Offline: showing the saved catalogue.".into(),
         }

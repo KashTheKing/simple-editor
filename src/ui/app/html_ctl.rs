@@ -105,6 +105,20 @@ pub struct HtmlState {
     scan_at: Option<Instant>,
     was_exporting: bool,
     pub(crate) editor: html_ui::HtmlUi,
+    /// Linked `.html` files: per asset, the hash of the source as last synced and the file's mtime then.
+    link: std::collections::HashMap<Id, (Option<u64>, Option<std::time::SystemTime>)>,
+    /// The next look at the linked files.
+    link_at: Option<Instant>,
+    /// The Web Page Snapshot window.
+    web: html_ui::WebUi,
+    /// A snapshot being taken from an address: its progress and, when done, the saved `.mhtml`.
+    web_job: Option<(Arc<Progress>, Arc<Mutex<Option<PathBuf>>>, u32)>,
+    /// Downloads: the time the window opened (older files are not ours), files already taken, and size
+    /// seen last look (a file still being written grows).
+    web_since: Option<std::time::SystemTime>,
+    web_seen: HashSet<PathBuf>,
+    web_sizes: std::collections::HashMap<PathBuf, u64>,
+    web_at: Option<Instant>,
 }
 
 impl Drop for HtmlState {
@@ -133,6 +147,14 @@ fn placeholder() -> String {
     p.to_string_lossy().into_owned()
 }
 
+/// The folder of a linked file (its relative links to stylesheets and images resolve there).
+pub(super) fn base_of(h: &HtmlSource) -> String {
+    if h.file.is_empty() {
+        return String::new();
+    }
+    Path::new(&h.file).parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
 fn spec_of(p: &Project, h: &HtmlSource) -> html::Spec {
     html::Spec {
         html: h.src.clone(),
@@ -140,6 +162,10 @@ fn spec_of(p: &Project, h: &HtmlSource) -> html::Spec {
         scale: html::scale_for(p.width, p.height),
         fps: if p.fps > 0.0 { p.fps } else { 30.0 },
         duration: h.duration,
+        base: base_of(h),
+        params: html::params_of(&h.src, &h.params),
+        width: h.width,
+        mouse: h.mouse.clone(),
     }
 }
 
@@ -151,6 +177,8 @@ fn reconcile(app: &mut App) {
     let mut wanted = HashSet::new();
     let mut start: Vec<(PathBuf, String, html::Spec)> = Vec::new();
     let mut kinds: Vec<(Id, ClipKind)> = Vec::new();
+    // (asset, size before, size now): a render of another size (a web page as tall as it is)
+    let mut resized: Vec<(Id, (u32, u32), (u32, u32))> = Vec::new();
     let mut pending: Option<String> = None;
     let fps = if app.project.fps > 0.0 { app.project.fps } else { 30.0 };
     for i in 0..app.project.assets.len() {
@@ -160,6 +188,9 @@ fn reconcile(app: &mut App) {
         if let Some(r) = html::cached(&spec) {
             let path = r.path.to_string_lossy().into_owned();
             if a.path != path {
+                if (a.width, a.height) != (r.width, r.height) && a.width > 0 && a.height > 0 {
+                    resized.push((a.id, (a.width, a.height), (r.width, r.height)));
+                }
                 a.path = path;
                 a.kind = if r.animated { ClipKind::Video } else { ClipKind::Image };
                 (a.width, a.height, a.fps, a.duration) = (r.width, r.height, fps, h.duration);
@@ -190,6 +221,17 @@ fn reconcile(app: &mut App) {
         for c in app.project.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()) {
             if c.asset == aid && matches!(c.kind, ClipKind::Video | ClipKind::Image) {
                 c.kind = kind;
+            }
+        }
+    }
+    // a clip left at its natural size (1 asset pixel = 1 project pixel) keeps it when the picture's size changes
+    let (pw, ph) = (app.project.width.max(1) as f64, app.project.height.max(1) as f64);
+    let fit = |s: (u32, u32)| (pw / s.0 as f64).min(ph / s.1 as f64);
+    for (aid, old, new) in resized {
+        for c in app.project.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()) {
+            if c.asset == aid && !c.scale.is_animated() && (c.scale.value - 1.0 / fit(old)).abs() < 1e-6 {
+                c.scale.value = 1.0 / fit(new);
+                changed = true;
             }
         }
     }
@@ -243,6 +285,30 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
             }
             true
         }
+        Action::SnapshotWeb => {
+            let w = &mut app.html.web;
+            if !w.open {
+                w.open = true;
+                w.status.clear();
+                if w.width == 0 {
+                    w.width = app.project.width.clamp(320, 3840);
+                }
+                app.html.web_since = Some(std::time::SystemTime::now());
+                app.html.web_seen.clear();
+                app.html.web_sizes.clear();
+            }
+            true
+        }
+        Action::ImportHtml => {
+            let pick = rfd::FileDialog::new()
+                .add_filter("HTML or saved web page", &["html", "htm", "mhtml", "mht"])
+                .set_title("Import an HTML file or a saved web page")
+                .pick_file();
+            if let Some(p) = pick {
+                import_with_undo(app, &p, None);
+            }
+            true
+        }
         Action::SaveHtmlToLibrary => {
             let Some(h) = selected_html_clip(app).and_then(|id| html_of(app, id).map(|(_, h)| h)) else {
                 app.toast("Select an HTML layer first");
@@ -272,6 +338,11 @@ pub(super) fn html_of(app: &App, clip: Id) -> Option<(Id, HtmlSource)> {
 
 fn open_editor(app: &mut App, clip: Id) {
     if let Some((_, h)) = html_of(app, clip) {
+        app.html.editor.name = h.name.clone();
+        app.html.editor.base = base_of(&h);
+        app.html.editor.params = html::params_of(&h.src, &h.params);
+        app.html.editor.width = h.width;
+        app.html.editor.mouse = h.mouse.clone();
         app.html.editor.edit(clip, &h.src, h.field_list(), h.duration);
     }
 }
@@ -281,6 +352,11 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
     if let Some(id) = html_ui::take_edit_request() {
         open_editor(app, id);
     }
+    for op in html_ui::take_ops() {
+        run_op(app, op);
+    }
+    sync_files(app, ctx, now);
+    web_tick(app, ctx, now);
     if html_ui::take_fields_edited() {
         app.html.due = Some(now + SETTLE);
     }
@@ -331,6 +407,16 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
 }
 
 pub(super) fn windows(app: &mut App, ctx: &egui::Context) {
+    let wr = html_ui::show_web(ctx, &mut app.html.web);
+    if let Some((url, w)) = wr.capture {
+        start_snapshot(app, url, w);
+    }
+    if wr.import_file {
+        act(app, Action::ImportHtml);
+    }
+    if wr.save_extension {
+        save_extension(app);
+    }
     let r = html_ui::show(ctx, &mut app.html.editor);
     if r.apply {
         apply_editor(app);
@@ -364,10 +450,15 @@ fn apply_editor(app: &mut App) {
     reconcile(app);
 }
 
-/// "Ask the assistant": pin the clip and send the request with how to edit it.
+/// "Ask the assistant" in the editor window.
 fn ask_assistant(app: &mut App, text: &str) {
-    let Some(clip) = app.html.editor.clip else { return };
-    let name = html_of(app, clip).map(|(_, h)| h.name).unwrap_or_default();
+    if let Some(clip) = app.html.editor.clip {
+        ask_about(app, clip, text);
+    }
+}
+
+/// Pin the clip and send the request with how to edit it.
+fn ask_about(app: &mut App, clip: Id, text: &str) {    let name = html_of(app, clip).map(|(_, h)| h.name).unwrap_or_default();
     let chip = crate::ui::assistant_data::Chip {
         label: format!("Clip: {}", crate::ui::assistant_data::short(&name, 28)),
         data: json!({"kind": "clips", "clips": [{"id": clip, "name": name, "html": true}]}),
@@ -380,6 +471,439 @@ fn ask_assistant(app: &mut App, text: &str) {
     );
     if let Err(e) = assistant_ctl::ask(app, &request) {
         app.toast(e);
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// web page snapshots
+
+/// "From a web address": a private Edge opens the page and saves it as an `.mhtml`; the clip is made
+/// when it is done (`web_tick`).
+pub(super) fn start_snapshot(app: &mut App, url: String, width: u32) -> bool {
+    if app.html.web_job.is_some() {
+        return false;
+    }
+    let slot: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
+    let s2 = slot.clone();
+    let host: String = url.split("://").last().unwrap_or("").split(['/', '?', '#']).next().unwrap_or("").to_string();
+    let prog = export::spawn_job("web-snapshot", move |prog| {
+        let bytes = html::capture_mhtml(&url, width, 1080, prog)?;
+        let dir = crate::settings::Settings::dir().join("web").join("snapshots");
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        let name = crate::engine::library::slug(&host);
+        let path = dir.join(format!("{}-{secs}.mhtml", if name.is_empty() { "page" } else { &name }));
+        std::fs::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+        *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(path);
+        Ok(())
+    });
+    app.html.web.busy = Some(0.0);
+    app.html.web.status = "Taking the snapshot…".into();
+    app.html.web_job = Some((prog, s2, width));
+    true
+}
+
+/// MHTML files that appeared in `dir` since `since`, are no longer growing and are not `seen` yet.
+fn fresh_snapshots(
+    dir: &Path,
+    since: std::time::SystemTime,
+    seen: &HashSet<PathBuf>,
+    sizes: &mut std::collections::HashMap<PathBuf, u64>,
+) -> Vec<PathBuf> {
+    let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut out = Vec::new();
+    for e in rd.flatten() {
+        let p = e.path();
+        let is = p.extension().is_some_and(|x| x.eq_ignore_ascii_case("mhtml") || x.eq_ignore_ascii_case("mht"));
+        let Ok(m) = e.metadata() else { continue };
+        let fresh = m.modified().is_ok_and(|t| t >= since - Duration::from_secs(5));
+        if !is || !fresh || seen.contains(&p) || m.len() == 0 {
+            continue;
+        }
+        // taken once it has stopped growing (a browser writes it for a moment)
+        if sizes.insert(p.clone(), m.len()) == Some(m.len()) {
+            out.push(p);
+        }
+    }
+    out
+}
+
+fn downloads_dir() -> PathBuf {
+    std::env::var_os("USERPROFILE").map(|h| PathBuf::from(h).join("Downloads")).unwrap_or_default()
+}
+
+fn web_tick(app: &mut App, ctx: &egui::Context, now: Instant) {
+    // a snapshot from an address, in progress or done
+    if let Some((prog, slot, width)) = app.html.web_job.clone() {
+        app.html.web.busy = Some(prog.fraction());
+        if prog.is_done() {
+            app.html.web_job = None;
+            app.html.web.busy = None;
+            let path = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+            match (prog.error(), path) {
+                (Some(e), _) if e != export::CANCELLED => app.html.web.status = format!("Snapshot failed: {e}"),
+                (None, Some(p)) => {
+                    app.html.web.status = "Done: the page is on the timeline.".into();
+                    import_with_undo_at(app, &p, None, Some(width));
+                }
+                _ => {}
+            }
+        } else {
+            app.animate_until(ctx, now + Duration::from_millis(200));
+        }
+    }
+    // pages saved by the user's browser while the window is open
+    if app.html.web.open {
+        if app.html.web_at.is_none_or(|t| t <= now) {
+            app.html.web_at = Some(now + Duration::from_secs(1));
+            if let Some(since) = app.html.web_since {
+                let (seen, mut sizes) = (app.html.web_seen.clone(), std::mem::take(&mut app.html.web_sizes));
+                let found = fresh_snapshots(&downloads_dir(), since, &seen, &mut sizes);
+                app.html.web_sizes = sizes;
+                for p in found {
+                    app.html.web_seen.insert(p.clone());
+                    app.html.web.status = format!("Imported {}", p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+                    import_with_undo_at(app, &p, None, None);
+                }
+            }
+        }
+        app.animate_until(ctx, app.html.web_at.unwrap_or(now) + Duration::from_millis(50));
+    } else {
+        app.html.web_at = None;
+    }
+}
+
+/// Write the browser extension's files to `%APPDATA%\SimpleEditor\browser-extension` and show the folder.
+fn save_extension(app: &mut App) {
+    let dir = crate::settings::Settings::dir().join("browser-extension");
+    let files = [
+        ("manifest.json", include_str!("../../../tools/browser-extension/manifest.json")),
+        ("popup.html", include_str!("../../../tools/browser-extension/popup.html")),
+        ("popup.js", include_str!("../../../tools/browser-extension/popup.js")),
+    ];
+    let r = std::fs::create_dir_all(&dir).and_then(|_| files.iter().try_for_each(|(n, c)| std::fs::write(dir.join(n), c)));
+    match r {
+        Ok(()) => {
+            let _ = std::process::Command::new("explorer").arg(&dir).spawn();
+            app.html.web.status = format!("Extension saved to {} - load that folder in your browser's extensions page (Developer mode, Load unpacked).", dir.display());
+        }
+        Err(e) => app.html.web.status = format!("Could not save the extension: {e}"),
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// files: import, link, sync, open in a code editor
+
+fn hash_of(s: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::hash::DefaultHasher::new();
+    s.hash(&mut h);
+    h.finish()
+}
+
+fn mtime(p: &Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(p).and_then(|m| m.modified()).ok()
+}
+
+pub(super) fn is_html_file(p: &Path) -> bool {
+    p.extension().is_some_and(|e| ["html", "htm", "mhtml", "mht"].iter().any(|x| e.eq_ignore_ascii_case(x)))
+}
+
+fn is_mhtml(p: &Path) -> bool {
+    p.extension().is_some_and(|e| e.eq_ignore_ascii_case("mhtml") || e.eq_ignore_ascii_case("mht"))
+}
+
+/// A `.html` file as a new HTML clip at `at` (the playhead when None). With `link` the file and the
+/// clip stay in sync. No undo of its own (a `Mutate` tool wraps it; `import_with_undo` for the UI).
+pub(super) fn import_file(app: &mut App, path: &Path, at: Option<f64>, link: bool) -> Result<Id, String> {
+    import_file_w(app, path, at, link, None)
+}
+
+/// `import_file` with a layout width for an ordinary web page (default: the frame's width).
+pub(super) fn import_file_w(app: &mut App, path: &Path, at: Option<f64>, link: bool, width: Option<u32>) -> Result<Id, String> {
+    // a page saved as one .mhtml file is unpacked first (index.html + files/), then imported like any page
+    let unpacked;
+    let path = if is_mhtml(path) {
+        let data = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let stem = crate::engine::library::slug(&path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default());
+        let dir = crate::settings::Settings::dir().join("web").join(format!("{}-{:08x}", if stem.is_empty() { "page" } else { &stem }, hash_of(&path.to_string_lossy()) as u32));
+        let _ = std::fs::remove_dir_all(&dir);
+        unpacked = crate::engine::webcap::mhtml_to_folder(&data, &dir)?;
+        unpacked.as_path()
+    } else {
+        path
+    };
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    // a plain page has no <title>: the file name will do
+    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned());
+    let name = if html::parse(&text).title.is_empty() { stem.as_deref() } else { None };
+    let id = app.add_html_clip(&text, name, at, None, &[])?;
+    if link {
+        if let Some((aid, _)) = html_of(app, id) {
+            if let Some(h) = app.project.asset_mut(aid).and_then(|a| a.html.as_mut()) {
+                h.file = path.to_string_lossy().into_owned();
+            }
+            // an ordinary web page is laid out at the width of the frame (a Short: a phone-width page)
+            if html::parse(&text).fullpage {
+                let w = width.unwrap_or(app.project.width).clamp(320, 3840);
+                if let Some(h) = app.project.asset_mut(aid).and_then(|a| a.html.as_mut()) {
+                    h.width = w;
+                }
+                reconcile(app);
+            }
+        }
+    }
+    Ok(id)
+}
+
+pub(super) fn import_with_undo(app: &mut App, path: &Path, at: Option<f64>) {
+    import_with_undo_at(app, path, at, None);
+}
+
+pub(super) fn import_with_undo_at(app: &mut App, path: &Path, at: Option<f64>, width: Option<u32>) {
+    let before = app.project.to_json();
+    match import_file_w(app, path, at, true, width) {
+        Ok(id) => {
+            app.push_undo_labeled(before, "Import HTML file");
+            app.after_edit();
+            app.selection = vec![id];
+            app.toast(if is_mhtml(path) {
+                format!("Imported the page {}", path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())
+            } else {
+                format!("Imported {} - edit the file in any code editor and the clip follows", path.display())
+            });
+        }
+        Err(e) => app.toast(format!("Import HTML: {e}")),
+    }
+}
+
+/// `html.link`: with a path, make it the clip's file - `write` puts the clip's source into it (a new
+/// file or an overwrite), otherwise the file's text becomes the source. No path unlinks. No undo of
+/// its own.
+pub(super) fn link_file(app: &mut App, clip: Id, path: Option<&Path>, write: bool) -> Result<(), String> {
+    let (aid, h) = html_of(app, clip).ok_or_else(|| format!("clip {clip} is not an HTML layer"))?;
+    let mut new = h.clone();
+    match path {
+        None => new.file.clear(),
+        Some(p) => {
+            if write {
+                if let Some(d) = p.parent() {
+                    let _ = std::fs::create_dir_all(d);
+                }
+                std::fs::write(p, &h.src).map_err(|e| format!("{}: {e}", p.display()))?;
+            } else {
+                new.src = std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()))?;
+                if new.src.trim().is_empty() {
+                    return Err(format!("{} is empty", p.display()));
+                }
+                let tpl = html::parse(&new.src);
+                new.fields.retain(|k, _| tpl.fields.iter().any(|f| f.name == *k));
+            }
+            new.file = p.to_string_lossy().into_owned();
+        }
+    }
+    if let Some(a) = app.project.asset_mut(aid) {
+        a.html = Some(new);
+    }
+    app.html.link.remove(&aid); // the next look adopts the new pair
+    reconcile(app);
+    Ok(())
+}
+
+fn link_with_undo(app: &mut App, clip: Id, path: Option<&Path>, write: bool, label: &'static str) {
+    let before = app.project.to_json();
+    match link_file(app, clip, path, write) {
+        Ok(()) => {
+            app.push_undo_labeled(before, label);
+            app.after_edit();
+        }
+        Err(e) => app.toast(e),
+    }
+}
+
+/// The file an HTML clip is linked to, made on first use under `%APPDATA%\SimpleEditor\html`.
+fn file_for(app: &mut App, clip: Id) -> Result<PathBuf, String> {
+    let (aid, h) = html_of(app, clip).ok_or("that HTML clip is gone")?;
+    if !h.file.is_empty() && Path::new(&h.file).is_file() {
+        return Ok(PathBuf::from(&h.file));
+    }
+    let dir = crate::settings::Settings::dir().join("html");
+    let slug = crate::engine::library::slug(&h.name);
+    let slug = if slug.is_empty() { "html-layer".to_string() } else { slug };
+    let path = dir.join(format!("{slug}-{aid}.html"));
+    link_with_undo(app, clip, Some(&path), true, "Link HTML file");
+    Ok(path)
+}
+
+/// VS Code when it is installed (or the program in `Settings.html_editor`), else Notepad.
+/// ponytail: a path in settings.json, no Settings UI - add a picker if people ask for another editor.
+fn open_in_editor(path: &Path, custom: &str) -> String {
+    let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_default();
+    let pf = std::env::var_os("ProgramFiles").map(PathBuf::from).unwrap_or_default();
+    let exe: Option<(PathBuf, &str)> = if !custom.trim().is_empty() {
+        Some((PathBuf::from(custom.trim()), "your code editor"))
+    } else {
+        [local.join("Programs/Microsoft VS Code/Code.exe"), pf.join("Microsoft VS Code/Code.exe")]
+            .into_iter()
+            .find(|p| p.is_file())
+            .map(|p| (p, "VS Code"))
+    };
+    let (exe, what) = exe.unwrap_or((PathBuf::from("notepad.exe"), "Notepad"));
+    match std::process::Command::new(&exe).arg(path).spawn() {
+        Ok(_) => format!("Opened {} in {what} - save it there and the clip updates", path.display()),
+        Err(e) => format!("Couldn't start {}: {e}", exe.display()),
+    }
+}
+
+fn run_op(app: &mut App, op: html_ui::Op) {
+    use html_ui::Op;
+    match op {
+        Op::OpenExternal(clip) => match file_for(app, clip) {
+            Ok(p) => {
+                let msg = open_in_editor(&p, &app.settings.html_editor.clone());
+                app.toast(msg);
+            }
+            Err(e) => app.toast(format!("Open in code editor: {e}")),
+        },
+        Op::LinkPick(clip) => {
+            let pick =
+                rfd::FileDialog::new().add_filter("HTML", &["html", "htm"]).set_title("Link an HTML file").pick_file();
+            if let Some(p) = pick {
+                link_with_undo(app, clip, Some(&p), false, "Link HTML file");
+            }
+        }
+        Op::SaveAs(clip) => {
+            let name = html_of(app, clip).map(|(_, h)| h.name).unwrap_or_default();
+            let pick = rfd::FileDialog::new()
+                .add_filter("HTML", &["html"])
+                .set_file_name(format!("{}.html", crate::engine::library::slug(&name)))
+                .save_file();
+            if let Some(p) = pick {
+                link_with_undo(app, clip, Some(&p), true, "Save HTML as file");
+            }
+        }
+        Op::Unlink(clip) => link_with_undo(app, clip, None, false, "Unlink HTML file"),
+        Op::Reveal(clip) => {
+            if let Some((_, h)) = html_of(app, clip).filter(|(_, h)| !h.file.is_empty()) {
+                let _ = std::process::Command::new("explorer").arg("/select,").arg(&h.file).spawn();
+            }
+        }
+        Op::Ask(clip, text) => ask_about(app, clip, &text),
+        Op::Scroll(clip) => scroll_page(app, clip),
+    }
+}
+
+/// Position Y keys that carry a page taller than the frame from its top edge to its bottom edge over
+/// the clip (ease in-out; Position Y grows downward, from the clip's centre).
+fn scroll_page(app: &mut App, clip: Id) {
+    let (pw, ph) = (app.project.width.max(1) as f64, app.project.height.max(1) as f64);
+    let Some(c) = app.project.clip(clip) else { return };
+    let Some(a) = app.project.asset(c.asset).filter(|a| a.width > 0 && a.height > 0) else { return };
+    // how tall the page is on screen: the asset fitted into the frame, times the clip's scale
+    let fit = (pw / a.width as f64).min(ph / a.height as f64);
+    let shown = a.height as f64 * fit * c.scale.at(0.0);
+    let over = (shown - ph) / 2.0;
+    if over <= 1.0 {
+        app.toast("The page already fits the frame - nothing to scroll");
+        return;
+    }
+    let dur = c.duration;
+    let before = app.project.to_json();
+    if let Some(c) = app.project.clip_mut(clip) {
+        let mut y = crate::model::Animated::new(over);
+        y.keys = vec![
+            crate::model::Keyframe { t: 0.0, v: over, ease: crate::model::Ease::EaseInOut },
+            crate::model::Keyframe { t: dur, v: -over, ease: crate::model::Ease::Linear },
+        ];
+        c.y = y;
+    }
+    app.push_undo_labeled(before, "Scroll page");
+    app.after_edit();
+    app.toast("Scrolling the page top to bottom over the clip - change the keys on Position Y to speed it up, pause or reverse");
+}
+
+const LINK_POLL: Duration = Duration::from_millis(700);
+
+/// Per linked clip: the hash of the source as last synced, and the file's modified time then.
+type Link = (Option<u64>, Option<std::time::SystemTime>);
+
+#[derive(Debug, PartialEq)]
+enum Step {
+    Nothing,
+    /// The clip changed: write its source to the file.
+    WriteFile,
+    /// The file changed: this is its text.
+    Reload(String),
+}
+
+/// One look at one linked pair. `mtime_now` is the file's modified time; `read` reads its text (only
+/// asked when the time moved, or the pair was never seen). Pure, so the rules are testable:
+/// the clip changed since the last sync -> the file follows; the file changed -> the clip follows;
+/// first sight of a pair -> the file wins (a project just opened); an empty file (a half-finished
+/// save) is ignored until the next save.
+fn sync_step(st: &mut Link, src: &str, mtime_now: Option<std::time::SystemTime>, read: &mut dyn FnMut() -> Option<String>) -> Step {
+    let cur = hash_of(src);
+    if st.0.is_some_and(|synced| synced != cur) {
+        return Step::WriteFile;
+    }
+    if st.0.is_none() || mtime_now != st.1 {
+        if let Some(text) = read() {
+            st.1 = mtime_now;
+            if text.trim().is_empty() {
+                return Step::Nothing;
+            }
+            if text != src {
+                return Step::Reload(text);
+            }
+            st.0 = Some(cur);
+        }
+    }
+    Step::Nothing
+}
+
+/// Keep linked files and their clips equal. A change made in the app (the Inspector, the editor
+/// window, an agent, undo) is written to the file; a change made to the file is read into the clip as
+/// one undo step. First sight of a pair (a project just opened) lets the file win. Runs only while a
+/// linked clip exists.
+fn sync_files(app: &mut App, ctx: &egui::Context, now: Instant) {
+    if !app.project.assets.iter().any(|a| a.html.as_ref().is_some_and(|h| !h.file.is_empty())) {
+        app.html.link.clear();
+        return;
+    }
+    if let Some(t) = app.html.link_at.filter(|t| *t > now) {
+        app.animate_until(ctx, t);
+        return;
+    }
+    app.html.link_at = Some(now + LINK_POLL);
+    app.animate_until(ctx, now + LINK_POLL);
+    let mut reload: Vec<(Id, String)> = Vec::new();
+    for a in &app.project.assets {
+        let Some(h) = a.html.as_ref().filter(|h| !h.file.is_empty()) else { continue };
+        let path = Path::new(&h.file);
+        let st = app.html.link.entry(a.id).or_default();
+        match sync_step(st, &h.src, mtime(path), &mut || std::fs::read_to_string(path).ok()) {
+            Step::Nothing => {}
+            Step::WriteFile => {
+                if std::fs::write(path, &h.src).is_ok() {
+                    *st = (Some(hash_of(&h.src)), mtime(path));
+                }
+            }
+            Step::Reload(text) => reload.push((a.id, text)),
+        }
+    }
+    for (aid, text) in reload {
+        let before = app.project.to_json();
+        let tpl = html::parse(&text);
+        let mut file_time = None;
+        if let Some(h) = app.project.asset_mut(aid).and_then(|a| a.html.as_mut()) {
+            h.fields.retain(|k, _| tpl.fields.iter().any(|f| f.name == *k));
+            h.src = text.clone();
+            file_time = mtime(Path::new(&h.file));
+        }
+        app.html.link.insert(aid, (Some(hash_of(&text)), file_time));
+        app.push_undo_labeled(before, "Reload HTML from file");
+        app.after_edit();
+        reconcile(app);
     }
 }
 
@@ -438,7 +962,7 @@ impl App {
             parent: None,
             range: None,
             effects: Vec::new(),
-            html: Some(HtmlSource { name: name.clone(), src: html.to_string(), fields, duration: dur }),
+            html: Some(HtmlSource { name: name.clone(), src: html.to_string(), fields, duration: dur, ..Default::default() }),
         });
         // on top, like a text clip: a layer sits over the footage
         let prefer = p.video_tracks().last().copied();
@@ -507,6 +1031,45 @@ mod tests {
             assert!(html::lint(s).is_empty(), "{:?}", html::lint(s));
         }
         assert!(!html::parse(LAYER_STARTER).scene && html::parse(SCENE_STARTER).scene);
+    }
+
+    fn at(secs: u64) -> Option<std::time::SystemTime> {
+        Some(std::time::UNIX_EPOCH + Duration::from_secs(secs))
+    }
+
+    /// The sync rules, one case each (no files, no App: the decision is a pure function).
+    #[test]
+    fn linked_files_and_clips_follow_each_other() {
+        let mut never = || -> Option<String> { panic!("the file must not be read when nothing moved") };
+        // in sync, file untouched: nothing read, nothing done
+        let mut st: Link = (Some(hash_of("a")), at(1));
+        assert_eq!(sync_step(&mut st, "a", at(1), &mut never), Step::Nothing);
+        // saved in a code editor: the clip follows
+        let mut st: Link = (Some(hash_of("a")), at(1));
+        assert_eq!(sync_step(&mut st, "a", at(2), &mut || Some("b".into())), Step::Reload("b".into()));
+        // edited in the app (or by an agent, or undone): the file follows, and the file is not read
+        let mut st: Link = (Some(hash_of("a")), at(1));
+        assert_eq!(sync_step(&mut st, "c", at(1), &mut never), Step::WriteFile);
+        // a half-written (empty) file is ignored
+        let mut st: Link = (Some(hash_of("a")), at(1));
+        assert_eq!(sync_step(&mut st, "a", at(2), &mut || Some("  \n".into())), Step::Nothing);
+        // first sight, file differs: the file wins
+        let mut st: Link = (None, None);
+        assert_eq!(sync_step(&mut st, "old", at(5), &mut || Some("new".into())), Step::Reload("new".into()));
+        // first sight, same text: adopted, so the next edit in the app is a WriteFile
+        let mut st: Link = (None, None);
+        assert_eq!(sync_step(&mut st, "same", at(5), &mut || Some("same".into())), Step::Nothing);
+        assert_eq!(st.0, Some(hash_of("same")));
+        assert_eq!(sync_step(&mut st, "edited", at(5), &mut never), Step::WriteFile);
+        // the file is gone: nothing happens (the clip keeps its source)
+        let mut st: Link = (Some(hash_of("a")), at(1));
+        assert_eq!(sync_step(&mut st, "a", None, &mut || None), Step::Nothing);
+    }
+
+    #[test]
+    fn html_files_are_recognised() {
+        assert!(is_html_file(Path::new("C:/x/Card.HTML")) && is_html_file(Path::new("a.htm")));
+        assert!(!is_html_file(Path::new("a.mp4")) && !is_html_file(Path::new("html")));
     }
 
     #[test]

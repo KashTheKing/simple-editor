@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "Simple Editor - Snapshot this page",
+  "version": "1.0.0",
+  "description": "Saves the page you are looking at (exactly as it is on your screen, signed in and scrolled) as a single .mhtml file in Downloads. Simple Editor picks it up and turns it into an HTML layer.",
+  "permissions": ["pageCapture", "downloads", "activeTab"],
+  "action": {
+    "default_title": "Snapshot this page for Simple Editor",
+    "default_popup": "popup.html"
+  },
+  "commands": {
+    "_execute_action": {
+      "suggested_key": { "default": "Alt+Shift+S" },
+      "description": "Snapshot this page for Simple Editor"
+    }
+  }
+}

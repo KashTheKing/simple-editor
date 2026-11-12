@@ -15,6 +15,17 @@
 - **Assistant skills**: type `/` in the chat or the Tasks box (`/captions bold yellow`, `/lower-third`,
   `/shorts`, `/create-skill …`); a Skills tab to run, edit, duplicate and write your own. Skills are
   Markdown files in `%APPDATA%\SimpleEditor\skills`. Quick prompts you wrote yourself become skills.
+- **HTML clips look and edit like HTML**: a `</>` mark and no filmstrip on the timeline; the Inspector shows
+  the code with syntax colours and completion; the editor is a real, maximisable window (F11). Link a clip to
+  a `.html` file (edit either side), open it in your code editor, or import / drop `.html` and `.mhtml`
+  files; linked CSS and images are followed and re-render when they change.
+- **Parameters** (`<meta name="se:param" content="name | number | default | min | max">`): animatable
+  numbers, the CSS variable `var(--name)`, keyframed in the Inspector or with `html.set`.
+- **Web Page Snapshot** (Add ▸ Web Page Snapshot…): a real page by address (the bundled Edge keeps the HTML
+  and CSS, drops scripts) or, signed in, from your own browser with the small extension in
+  `tools/browser-extension` (saved to Downloads, imported automatically). Scroll, zoom, animate it.
+- **Fake mouse** (Inspector ▸ Mouse): keyframe a cursor's position and press; real hover and `:active`
+  styles and their CSS transitions play, frame-exact. Links go nowhere.
 - MCP: `html.*`, `clip.set_shader`, `shader.check`, `transition.set_shader`, `skills.*`, `library.*`.
 - Fixed: the outgoing clip of a transition went black after the cut when it used its file to the last frame.
 

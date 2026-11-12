@@ -48,6 +48,15 @@ impl App {
             self.confirm_discard_then(move |app| app.open_project(&dropped0));
             return;
         }
+        // ---- ws:html-layer ---- an .html file becomes an HTML layer linked to the file
+        let (pages, dropped): (Vec<PathBuf>, Vec<PathBuf>) =
+            dropped.into_iter().partition(|p| super::html_ctl::is_html_file(p));
+        for p in &pages {
+            super::html_ctl::import_with_undo(self, p, None);
+        }
+        if dropped.is_empty() {
+            return;
+        }
         let ids = self.open_or_import(&dropped);
         if ids.is_empty() {
             return;

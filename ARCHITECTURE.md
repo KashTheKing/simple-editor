@@ -119,6 +119,8 @@ src/engine/voice.rs     push-to-talk: cpal input on its own thread -> 16 kHz mon
 src/engine/html.rs      HTML + CSS layers: template parsing (se: meta tags, {{fields}}), sanitising, lint,
                         and the renderer - one headless Edge driven over DevTools by a std-only WebSocket
                         client; frames as PNG-in-MOV (alpha) in cache_dir/html, content-addressed
+src/engine/webcap.rs    .mhtml (browser "single file" saves) unpacked to a folder of HTML + files
+src/ui/html_code.rs     HTML/CSS syntax colours and completion for the code box
 src/engine/shaderlib.rs shader file headers (@name/@desc/@tags/@param/@needs) for effects and transitions
 src/engine/skills.rs    assistant skills: Markdown with a --- header; user folder, library, built-ins
 src/engine/library.rs   the content library: installed items in %APPDATA%\SimpleEditor\library, the

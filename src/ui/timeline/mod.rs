@@ -84,6 +84,9 @@ const MAX_TRACK_H: f32 = 300.0;
 const KEY_LANE_MIN: f32 = 28.0;
 /// Inset of the value lane inside the clip rect (points), top and bottom.
 const KEY_PAD: f32 = 3.0;
+/// ws:html-layer: the body colour of a clip made from HTML source (a label still wins).
+const HTML_CLIP: Color32 = Color32::from_rgb(104, 82, 184);
+
 /// On-screen clip width (same measure as `detailed` below) above which the keyframe mini-graph toggle
 /// appears: wide enough for the corner icon plus a graph worth looking at, not just barely visible.
 const MINI_GRAPH_MIN_W: f32 = 120.0;
@@ -864,7 +867,10 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             }
             // custom labels win over the per-kind fill (Shape / Adjustment have their own)
             let clip_label = c.project.clip_label(clip);
-            let mut color = label_color(c.project, clip_label, pal.clip_color(clip.kind));
+            // ws:html-layer: a layer made from HTML source has its own colour, a </> mark and no filmstrip
+            // (its picture is a cache of the code, not footage)
+            let is_html = clip.uses_asset() && c.project.asset(clip.asset).is_some_and(|a| a.html.is_some());
+            let mut color = label_color(c.project, clip_label, if is_html { HTML_CLIP } else { pal.clip_color(clip.kind) });
             if !clip.enabled || !active {
                 color = color.gamma_multiply(0.5);
             }
@@ -882,6 +888,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 hatch(&lp.with_clip_rect(vis), vis, pal.text.gamma_multiply(0.25));
             } else if clip.is_empty_container() && detailed {
                 hatch(&lp.with_clip_rect(vis), vis, pal.accent.gamma_multiply(0.35));
+            } else if is_html && detailed {
+                hatch(&lp.with_clip_rect(vis), vis, Color32::WHITE.gamma_multiply(0.10)); // ws:html-layer
             }
             if !detailed {
                 if c.selection.contains(&clip.id) {
@@ -900,7 +908,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 if let Some(peaks) = peaks {
                     draw_waveform(&lp, &peaks, clip, vis.shrink(1.0), state, wave_color(color, clip_label, &pal));
                 }
-            } else if matches!(clip.kind, ClipKind::Video | ClipKind::Image | ClipKind::Sequence) && c.view.thumbs {
+            } else if matches!(clip.kind, ClipKind::Video | ClipKind::Image | ClipKind::Sequence) && c.view.thumbs && !is_html {
                 let p: &Project = c.project;
                 let path_at = |t: f64| {
                     let (a, t) = if clip.kind == ClipKind::Sequence {
@@ -953,6 +961,14 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                         font.clone(),
                         pal.text,
                     );
+                }
+            } else if is_html {
+                // ws:html-layer: the </> mark says "code", wherever the clip sits
+                let pill = Rect::from_min_size(name_pos, vec2(25.0, 14.0));
+                name_pc.rect_filled(pill, CornerRadius::same(3), Color32::from_black_alpha(130));
+                name_pc.text(pill.center(), Align2::CENTER_CENTER, "</>", small.clone(), Color32::WHITE);
+                if c.view.clip_text {
+                    name_pc.text(pos2(pill.right() + 4.0, name_pos.y), Align2::LEFT_TOP, &clip.name, font.clone(), pal.text);
                 }
             } else if c.view.clip_text {
                 name_pc.text(name_pos, Align2::LEFT_TOP, &clip.name, font.clone(), pal.text);
