@@ -8,7 +8,7 @@ module.exports = {
       type: 'category',
       label: 'Editing',
       collapsed: false,
-      items: ['library', 'viewer', 'timeline', 'inspector', 'effects'],
+      items: ['library', 'viewer', 'timeline', 'inspector', 'effects', 'html-layers', 'online-library'],
     },
     {
       type: 'category',
@@ -26,7 +26,7 @@ module.exports = {
       type: 'category',
       label: 'Reference',
       collapsed: false,
-      items: ['right-click', 'shortcuts', 'advanced', 'scripting'],
+      items: ['right-click', 'shortcuts', 'advanced', 'scripting', 'report-a-bug'],
     },
   ],
 };

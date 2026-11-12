@@ -77,21 +77,20 @@ curl -s -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' -H 'content-type: ap
   http://127.0.0.1:<port>/mcp
 ```
 
-**Verified against a live call at jobs-panel (#64): 240 tools, exactly matching this table's count.**
+**Verified against a live `tools/list` on the 1.2.0 release build (2026-11-12): 298 tools.** The tables below
+were written per feature as it landed; if a row disagrees with `tools/list`, `tools/list` wins.
 
-> **Pro plan (coded 2026-11-10, not yet compiled or run):** the rows it added or changed
+> **Pro plan (built and live-tested, 1.2.0):** the rows it added or changed
 > (`assistant.*`, `edit.*`, `editor.*`, `voice.*`, `export.edl`, `export.xml`, `markers.comment`,
 > `markers.set`, `playback.hud`, `render.contact_sheet`, `transcribe.status`, and new arguments on
 > `export.queue`, `export.video`, `markers.add`, `markers.list`, `markers.export`, `media.transcribe`,
-> `transcribe.run`) are transcribed from the `ToolDef` rows in the source, not from a live
-> `tools/list`. The counts and totals here predate them; re-take them from a live call once it builds.
+> `transcribe.run`) are listed below.
 > With `Settings.assistant_guard` on (default), `export.*`, `project.open`, `project.new`,
 > `settings.set`, `scripts.run`, `tasks.run`, `media.convert` and `media.batch_convert` called over MCP
 > wait for the user's Allow (`ui/app/assistant_ctl.rs`, `leaves_project`). The Assistant redesign added
-> `assistant.add_selection`, `assistant.attachments`, `assistant.attachment` and the five `tasks.*` tools
-> (also from the source, not a live call).
+> `assistant.add_selection`, `assistant.attachments`, `assistant.attachment` and the five `tasks.*` tools.
 
-> **Creator Kit (2026-11-11, from a live `tools/list`: 295 tools).** `skills.save` and `skills.delete`
+> **Creator Kit (1.2.0).** `skills.save` and `skills.delete`
 > are also held for the user's Allow. `library.*` below is the CONTENT library (transitions, effects,
 > LUTs, HTML templates, icons, skills); `library.select` / `library.columns` are the media library panel.
 

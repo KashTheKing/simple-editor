@@ -1,0 +1,40 @@
+---
+title: Online library
+description: Download shader effects, transitions, LUTs, HTML layers, icons and assistant skills from inside the Gallery.
+---
+
+The **Gallery** has extra tabs that fill from an online library: **Transitions**, **Effects**, **LUTs**,
+**HTML**, **Icons** and **Skills**. Nothing is bundled in the exe; the first time you open one of these tabs
+the catalogue is fetched (Simple Editor makes no network call before that).
+
+- Cards with a **cloud mark** download the first time you click them; after that they are on your PC.
+- What a project uses is stored **in the project**: send the project to a friend and it still looks the
+  same. LUTs are copied into a folder beside the project file.
+- **Refresh** fetches the catalogue again.
+- **Use a folder…** reads the library from a local folder (one with an `index.json`) instead. Use it to try
+  your own items or to work offline; **Use the online library** switches back.
+
+## What is in it
+
+| Tab | What you get |
+|---|---|
+| Transitions | Shader transitions in the gl-transitions format |
+| Effects | Shader effects with named controls, every control keyframeable |
+| LUTs | 3D colour looks (`.cube`), also readable by Premiere and Resolve |
+| HTML | [HTML layers and scenes](html-layers.mdx): titles, buttons, bubbles, end screens |
+| Icons | SVG icons |
+| Skills | Recipes for the [Assistant](assistant.mdx) |
+
+## Add your own
+
+Shaders are text files with a short header, so you can write them in the **Shader Editor** (which can
+save to the library) or ask the [Assistant](assistant.mdx). The file formats and the rules for sharing an
+item are in [`library/README.md`](https://github.com/KashTheKing/simple-editor/blob/main/library/README.md);
+to contribute, open a pull request on GitHub.
+
+## Skills
+
+A skill is a Markdown file the Assistant follows when you type `/` and its name (for example
+`/captions bold yellow`, `/lower-third`, `/shorts`). The **Skills** tab in the Assistant lists them with
+Run, Edit and Duplicate. `/create-skill …` writes a new one for you. Your own skills live in
+`%APPDATA%\SimpleEditor\skills`.

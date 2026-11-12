@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 1.2.0
+
+The biggest release yet: an AI **Assistant** that edits your project while you watch, HTML + CSS
+layers, shader effects and transitions, an online library, web page snapshots, faster and smaller-file
+exports, and an easy way to report bugs.
 
 ### Creator Kit
 - **HTML + CSS layers and scenes** (Add ▸ HTML Layer / HTML Scene): titles, lower thirds, buttons and
@@ -29,10 +33,7 @@
 - MCP: `html.*`, `clip.set_shader`, `shader.check`, `transition.set_shader`, `skills.*`, `library.*`.
 - Fixed: the outgoing clip of a transition went black after the cut when it used its file to the last frame.
 
-The Pro plan's first coding pass. Not built or tested yet: everything below is what the code is written
-to do.
-
-### Work with Claude
+### Work with an AI agent
 - New **Assistant** panel (Window ▸ Assistant): type a request and an AI agent edits the open project
   while you watch. Runs Claude Code, your own command (Codex or any MCP agent), or waits for an agent you
   connected yourself. Settings ▸ Assistant holds the agent, model, an optional API key (kept in Windows
@@ -63,6 +64,11 @@ to do.
 - **Export Avid EDL…** (CMX 3600, one file per video track) and **Avid markers…** in the Markers panel.
 - Premiere / Resolve XML now carries audio volume and pan, A/V links, cross dissolves and markers, and
   reads its markers back on import. EDL import understands 29.97 drop-frame.
+
+### Reporting bugs
+- **Help ▸ Report a Bug…** opens the GitHub issue form with the version filled in; a short form asks what
+  went wrong, the steps, and optional screenshots or `crash.log`. Ideas go through **Suggest a feature**.
+  Questions go to the Discord. See "Report a bug" in the guide.
 
 ### Playback
 - Decoded frames are shared instead of copied, video frames go to the GPU without a CPU colour swizzle,

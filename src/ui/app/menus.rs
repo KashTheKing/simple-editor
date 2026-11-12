@@ -87,6 +87,8 @@ pub(super) fn toggle_action(p: Pane) -> Option<Action> {
 
 /// Where Help ▸ Tutorial & docs goes (the Docusaurus site, wave 2 of plans/simplify).
 const DOCS_URL: &str = "https://kashtheking.com/simple-editor/guide/";
+/// Where Help ▸ Report a Bug… goes (`.github/ISSUE_TEMPLATE/`).
+const ISSUES_URL: &str = "https://github.com/KashTheKing/simple-editor/issues/new";
 
 impl App {
     /// (Re)load the editor background image texture when the path or blur setting changed.
@@ -497,6 +499,11 @@ impl App {
         use Action::*;
         if menu::row(ui, None, "Tutorial & Docs", "").on_hover_text(DOCS_URL).clicked() {
             let _ = std::process::Command::new("explorer").arg(DOCS_URL).spawn();
+        }
+        // the issue form on GitHub, with the version filled in (`version` is that form's field id)
+        let report = format!("{ISSUES_URL}?template=bug_report.yml&version={}", env!("CARGO_PKG_VERSION"));
+        if menu::row(ui, None, "Report a Bug…", "").on_hover_text("Opens the GitHub issue form").clicked() {
+            let _ = std::process::Command::new("explorer").arg(report).spawn();
         }
         acts(ui, &[Some(CheatSheet), Some(CommandPalette), None, Some(WhatsNew), Some(ShowWelcome), None]);
         ui.weak(format!("Simple Editor {}", env!("CARGO_PKG_VERSION")));

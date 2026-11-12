@@ -410,3 +410,17 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
 - NOT verified: the extension itself inside Brave (needs Developer mode > Load unpacked by hand), a .mhtml saved by
   Brave's own Ctrl+S, the editor OS window / F11 on a second monitor, params UI with keyframes in the Inspector.
 - Size: 13,457,920 B (+390,656 vs a17154b; +1,131,520 vs f44595e).
+
+## Release 1.2.0 (2026-11-12)
+- First release of the Pro plan + Creator Kit + web snapshots (feat/pro, 15 commits, squash-merged). Version bumped,
+  CHANGELOG `Unreleased` -> `1.2.0`, docs refreshed for agents (agents.md: map, MCP driving rules, triage, releasing;
+  llms.txt; README; ARCHITECTURE; customizing.md tool count re-taken from a live `tools/list`: 298).
+- New: Help > Report a Bug... (opens the GitHub issue form with the version prefilled), `.github/ISSUE_TEMPLATE/`
+  (bug_report.yml, feature_request.yml, config.yml: blank issues off, Discord link), website pages `html-layers`,
+  `online-library`, `report-a-bug`.
+- Verified: cargo test 1439 passed (one perf test, `headless_1000_assets_stays_fast`, failed once while an npm build
+  ran alongside and passed alone: timing flake under load), `--selftest` OK on the release exe, docs site builds,
+  live `tools/list` = 298, Help menu shows "Report a Bug...". Release exe 13,458,944 B (+2,119,168 B vs 1.1.0).
+- NOT verified: clicking Report a Bug opening the browser at the prefilled form (the form field id is `version`;
+  GitHub accepts `?template=bug_report.yml&version=...`), the extension inside Brave.
+

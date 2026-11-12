@@ -1,0 +1,19 @@
+# Simple Editor
+
+> A fast, free video editor for Windows: one small exe, no installer. Rust (egui), Windows Media Foundation and ffmpeg. It hosts an MCP server so AI agents can edit the live, running project.
+
+## For AI agents
+
+- [Agent guide](https://github.com/KashTheKing/simple-editor/blob/main/agents.md): workflow, conventions, verification, how to drive the running app over MCP, releasing
+- [MCP tool catalogue and Luau API](https://github.com/KashTheKing/simple-editor/blob/main/docs/customizing.md): every tool with its arguments
+- [Architecture](https://github.com/KashTheKing/simple-editor/blob/main/ARCHITECTURE.md): module map, project format, render pipeline
+- [Goals and budgets](https://github.com/KashTheKing/simple-editor/blob/main/goals.md): binary size, dependency and UX rules
+- [Library file formats](https://github.com/KashTheKing/simple-editor/blob/main/library/README.md): shader effects and transitions, LUTs, HTML layers (`se:` meta tags), icons, assistant skills
+- [Changelog](https://github.com/KashTheKing/simple-editor/blob/main/CHANGELOG.md)
+
+## For users
+
+- [User guide](https://kashtheking.com/simple-editor/guide/)
+- [Download](https://github.com/KashTheKing/simple-editor/releases/latest)
+- [Report a bug](https://kashtheking.com/simple-editor/guide/report-a-bug) (or Help > Report a Bug in the app)
+- [Discord](https://discord.gg/6taNJVs5FT)

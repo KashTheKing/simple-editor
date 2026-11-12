@@ -7,13 +7,13 @@ Priorities, in order: **performance (startup, seek, playback, export), low memor
 open → cut → save, then everything else.** Bare Windows-Forms-style UI matching the OS theme; DaVinci-like
 dockable layout without decoration. Popups never block the editor (plain `egui::Window`, never `Modal`).
 
-Measured baselines (release, RTX 2060 SUPER): exe **12,167,168 B (11.60 MB)** at `86c1793`
-(wave-3-complete — see `size_log.csv`'s last row; still over the ~10 MB core goal, tracked in
-goals.md) · first frame ~330 ms · idle CPU 0.0 % · ~125 MB working set with a clip open BEFORE
+Measured baselines (release, RTX 2060 SUPER): exe **13,458,944 B (12.84 MB)** at 1.2.0
+(11.60 MB at `86c1793`, wave-3-complete; the Pro plan and Creator Kit added the rest on purpose — see
+`size_log.csv`'s last row; over the ~10 MB core goal, tracked in goals.md) · first frame ~330 ms · idle CPU 0.0 % · ~125 MB working set with a clip open BEFORE
 playback caches fill — the playback cache may then grow to its budget (`Settings::cache_mb`, auto =
 ¼ of RAM clamped 512 MB–4 GB, plus ¼ of that for decoded source frames; deliberate, user-tunable in
-Settings ▸ Performance) · **1126 unit/integration tests + a headless `--selftest`** (`cargo test`,
-this PR's own rerun: 1126 passed, 2 ignored, 0 failed).
+Settings ▸ Performance) · **1439 unit/integration tests + a headless `--selftest`** (`cargo test` at 1.2.0:
+1439 passed, 9 ignored by design, 0 failed).
 
 ## Stack
 
@@ -106,7 +106,7 @@ src/engine/transcribe.rs speech->text through a downloaded whisper.cpp model + e
 src/engine/tts.rs       Windows-voices text-to-speech, dropped on the timeline as a linked audio clip
 src/engine/xmeml.rs     FCP7 XML export for Premiere / Resolve
                         (+ audio level/pan, A/V `<link>`s, cross dissolves, sequence/clip markers)
-# (Pro plan, coded 2026-11-10, not yet compiled or measured):
+# (Pro plan, built and live-tested 2026-11-11):
 src/engine/edl.rs       CMX 3600 EDL export (one EDL per video track, audio on the first; D/W events)
 src/engine/encoders.rs  background one-frame probe of NVENC/QSV/AMF, cached per ffmpeg (path, mtime)
                         in cache_dir/encoders.json; `best_for(ext)` = what "auto" resolves to
@@ -195,7 +195,7 @@ src/ui/find_ui.rs       Find window (search clips/markers/text across the timeli
 src/ui/{retime,export_ui,frame_ui,capture_ui,import_ui,paste_ui,transitions_ui,shader_ui}.rs windows
 src/ui/settings_ui/mod.rs Settings window: tabs + shared plumbing (settings_ui/*.rs re-exports)
 src/ui/settings_ui/{appearance,capture,general,hotkeys,performance}.rs one settings tab each
-# (Pro plan, coded 2026-11-10, not yet compiled or measured):
+# (Pro plan, built and live-tested 2026-11-11):
 src/ui/settings_ui/assistant.rs Settings ▸ Assistant: backend, model/command, key, guard, quick prompts
 src/ui/assistant_ui.rs  Assistant pane widget (pure): log, context chips, quick prompts, prompt, mic
 src/ui/hud.rs           performance HUD over the Preview (UI frame, GL composite, upload, decode, cache)
@@ -344,7 +344,7 @@ lazily, keeps a size-keyed FBO pool, and evaluates either the linear stack or th
 * `Project.scaler` picks nearest / bilinear / bicubic sampling; `Settings.preview_quality` scales the
   preview render size; **movie mode** plays back `engine::prerender` frames.
 
-**Export pipeline (Pro plan, coded 2026-11-10, not yet compiled or measured).** `engine::export::run_export`:
+**Export pipeline (Pro plan, built and live-tested 2026-11-11).** `engine::export::run_export`:
 
 * **Request window**: the export thread keeps a few `GpuFrameRequest`s queued (each carrying a
   recycled buffer) instead of one in flight; `App::serve_gpu_exports` answers them for at most 12 ms
@@ -436,7 +436,7 @@ GL work happens **only on the UI thread** (it owns the context). Everything GPU 
   fixed forward-1x/no-loop clock (`now = base_t + elapsed·rate`, stop at 0/duration, wrap inside a loop
   range) — JKL shuttle, Loop In→Out and Play In→Out all build on this, not a second clock.
 
-**Playback additions (Pro plan, coded 2026-11-10, not yet compiled or measured):**
+**Playback additions (Pro plan, built and live-tested 2026-11-11):**
 
 * **Shared frames, BGRX upload**: `DecoderPool::frame_arc` hands out the cached `Arc<Frame>` itself
   (no copy); an MF video frame stays in MF's B,G,R,X order (`Frame::bgrx`). `engine::gpu::upload`
@@ -465,7 +465,7 @@ GL work happens **only on the UI thread** (it owns the context). Everything GPU 
 * Every decode on a long-lived worker runs under `catch_unwind`; MF objects are per-thread
   (`unsafe impl Send` newtypes, COM/MF init per thread).
 
-(Pro plan, coded 2026-11-10, not yet compiled or measured):
+(Pro plan, built and live-tested 2026-11-11):
 
 * Render thread: layer decodes fan out to short-lived scoped threads, one per decoder that missed the
   cache (`DecoderPool::frames_arc`), each with an MF reader taken out of the pool while it works.
@@ -515,7 +515,7 @@ machinery. `tools_registry_tests.rs`'s `every_edit_op_has_a_tool` scans every `s
 `Ui`; see `docs/customizing.md`'s full table, transcribed from a live `tools/list` call, not this
 count alone).
 
-**Tool registry additions (Pro plan, coded 2026-11-10, not yet compiled or measured):** `ToolOutcome` gains `Image { png_b64, meta }` (MCP replies
+**Tool registry additions (Pro plan, built and live-tested 2026-11-11):** `ToolOutcome` gains `Image { png_b64, meta }` (MCP replies
 with an image content block; Luau / palette callers get `image_json`: `meta` + a `data_url`, the old
 `render.frame` shape) and `Wait(Instant)` (`assistant.wait`'s long poll: `handle_tool` parks the reply
 and `tools_context::tick` answers it before the deadline). **Undo groups**: `App::begin_group(label,
@@ -526,7 +526,7 @@ back on the first failing call. **Guard**: `handle_tool`'s first step is `assist
 holds `export.*`, `project.open/new`, `settings.set`, `scripts.run`, `media.convert/batch_convert` for an
 Allow / Always allow this session / Deny window while `Settings.assistant_guard` is on.
 
-## Assistant (Pro plan, coded 2026-11-10, not yet compiled or measured)
+## Assistant (Pro plan, built and live-tested 2026-11-11)
 
 `Pane::Assistant` (`ui/assistant_ui.rs` widget, `ui/assistant_data.rs` data + store, `ui/app/assistant_ctl.rs`
 App side, `engine/agent.rs` process side). It rides hidden in the Inspector's tab group on every page

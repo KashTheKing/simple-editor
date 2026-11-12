@@ -12,8 +12,8 @@ trades size/deps/speed for a feature, or before designing a UI panel.
   before `egui_commonmark` landed). Post-size-diet (issue #18, corrected once the main-crate
   `opt-level="s"` gate was confirmed kept, not reverted): **9.65 MB** (10,121,728 B, sha `bc4c19e`),
   a measured delta of **-5.58 MB**. Wave 1-3 feature work (19 workstreams) then added size back: the
-  final measured exe at wave-3-complete is **11.60 MB** (12,167,168 B, sha `86c1793` — see
-  `size_log.csv`'s last row and ARCHITECTURE.md's header). Any change that grows the binary should
+  final measured exe at wave-3-complete is **11.60 MB** (12,167,168 B, sha `86c1793`); the Pro plan and
+  Creator Kit (1.2.0) took it to **12.84 MB** (13,458,944 B, see `size_log.csv`'s last row and ARCHITECTURE.md's header). Any change that grows the binary should
   say by how much.
 - **Few dependencies.** Every new crate is a liability (compile time, binary size, supply chain,
   MSRV drift). Prefer stdlib, the `windows` crate, or shelling out to `ffmpeg.exe` over a new
@@ -101,7 +101,7 @@ Pulled forward from CHANGELOG.md — mark new completions here as they land.
 
 ## In progress / open
 
-- [ ] **Creator Kit** - HTML + CSS layers, assistant skills, shader effects / transitions from files, the
+- [ ] **Creator Kit** (shipped in 1.2.0, 2026-11-12; the web-snapshot / fake-mouse follow-up too) - HTML + CSS layers, assistant skills, shader effects / transitions from files, the
   online library with its first content set; planned and built 2026-11-11 on `feat/pro`
   ([plans/creator-kit/README.md](plans/creator-kit/README.md), formats in `library/README.md`). Built,
   tested and live-checked (notes.md, "creator-kit build"). Open: `.mogrt` limited import (needs sample
@@ -110,7 +110,7 @@ Pulled forward from CHANGELOG.md — mark new completions here as they land.
   above the plan's 0.2-0.4 MB estimate and over the +300 KB gate: a size decision for the maintainer,
   recorded here, not yet offset.**
 
-- [ ] **Pro plan** — fast playback, fast export, separate audio tracks, live co-editing; planned
+- [ ] **Pro plan** (shipped in 1.2.0, 2026-11-12) — fast playback, fast export, separate audio tracks, live co-editing; planned
   2026-11-10 in [plans/pro/README.md](plans/pro/README.md) (issues #140-#153, one issue-ready file
   per workstream under `plans/pro/issues/`). Size budget, decided once for the whole plan:
   **pro plan: up to +0.5 MB over the pre-plan exe, each PR still held to the size gate.**

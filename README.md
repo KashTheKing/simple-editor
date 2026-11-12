@@ -13,8 +13,11 @@ anyone editing video for work or school. Everything the big paid apps give you, 
 the price tag.
 
 **[Download the latest release](https://github.com/KashTheKing/simple-editor/releases/latest)**
-(about 10 MB) and **[join the Discord](https://discord.gg/6taNJVs5FT)**. This is a young project and
+(about 13 MB) and **[join the Discord](https://discord.gg/6taNJVs5FT)**. This is a young project and
 I want your feedback. Tell me what's broken, what's missing, what would make you switch for good.
+
+**Found a bug?** Use **Help ▸ Report a Bug…** in the app: it opens a short form on GitHub with your version
+filled in. No account? Tell us in the Discord. See [Reporting bugs](#reporting-bugs).
 
 > **Beta software.** Most features are still being tested and polished daily. It's great for
 > everyday editing right now, but it's not ready for huge productions or anything mission critical
@@ -27,7 +30,7 @@ ramping, transitions, blend modes), Simple Editor also has:
 
 - AI transcription, auto subtitles, and double-take detection
 - Dead-air removal (auto-cut silence)
-- Just one file, ~15 MB, opens almost instantly
+- Just one file, ~13 MB, opens almost instantly
 - Built-in file converter
 - YouTube, TikTok, X, and general URL video downloader/importer
 - Luau scripting, plugins, tooling, and expressions
@@ -42,9 +45,32 @@ ramping, transitions, blend modes), Simple Editor also has:
 - Planning and to-do lists for your project
 - Auto-keyframing and velocity tools for smooth animation
 - Style-summary generator (auto-writes a style guide for your project)
-- MCP server so AI assistants (like Claude) can help you edit
+- **Assistant**: an AI agent (Claude Code, Codex or your own) that edits your project while you watch, writes
+  scripts you review and run, and answers your timeline comments. Every request is one undo step
+- **HTML + CSS layers**: titles, buttons and scenes written in HTML, with live editing, animatable
+  parameters, and **Web Page Snapshot** (copy a real web page in, then fake a mouse over it)
+- **Online library**: shader effects and transitions, LUTs, HTML layers, icons and assistant skills,
+  downloaded on first use
+- Faster, smaller exports: hardware encoders, Speed / Balanced / Smallest file, separate audio tracks
+- MCP server (about 300 tools) so any AI agent can help you edit; see [agents.md](agents.md)
 - Import/export project files with DaVinci Resolve and Premiere Pro
 - And a lot more
+
+## Reporting bugs
+
+The easiest way: **Help ▸ Report a Bug…** in the app. It opens the
+[bug form](https://github.com/KashTheKing/simple-editor/issues/new?template=bug_report.yml) with your version
+filled in; say what went wrong and how to make it happen again, and drag in a screenshot if you have one. If the
+app crashed, attach `crash.log` from `%APPDATA%\SimpleEditor` (it holds a copy of your timeline, so look at it first).
+Ideas go to [Suggest a feature](https://github.com/KashTheKing/simple-editor/issues/new?template=feature_request.yml);
+questions and chat to the [Discord](https://discord.gg/6taNJVs5FT).
+
+## For AI agents and contributors
+
+Read [agents.md](agents.md) first (workflow, conventions, how to drive the running app over MCP, releasing),
+then [goals.md](goals.md), [ARCHITECTURE.md](ARCHITECTURE.md) and [notes.md](notes.md). The MCP tool list
+is in [docs/customizing.md](docs/customizing.md); the library file formats are in
+[library/README.md](library/README.md). Machine-readable pointers: [llms.txt](website/static/llms.txt).
 
 ## Requirements
 
