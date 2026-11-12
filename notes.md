@@ -50,8 +50,9 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
   started while an HTML layer is still rendering is stopped with a toast; library transitions show a
   plain dissolve card in the Transitions pane (the Gallery has the real thumbnails); `thumbs.rs` still
   lists `lut_dirs` every frame the Looks / Luts tab is open; no hover preview for library items; QSV /
-  the Codex backend etc. are as untested as before. **Size**: release-fast exe 13,129,216 B before the
-  kit -> 13,880,320 B (+751,104 B, +0.72 MB), above the plan's 0.2-0.4 MB estimate.
+  the Codex backend etc. are as untested as before. **Size** (`scripts/size.ps1`, release): 12,326,400 B before
+  the kit (`f44595e`, built from an exported copy) -> 13,067,264 B (`a17154b`): +740,864 B (+0.71 MB),
+  above the plan's 0.2-0.4 MB estimate. The row before those two in `size_log.csv` predates the Pro plan.
 
 - **creator-kit spike (2026-11-11): headless Edge can step CSS animations exactly, with alpha. Go.**
   Edge 157, RTX 2060 SUPER, machine in normal use. A std-only throwaway program (TcpStream WebSocket
