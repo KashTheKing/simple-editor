@@ -1,0 +1,68 @@
+name: Report a bug
+description: Something broke, looks wrong, or doesn't do what you expected.
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! You don't need to know anything technical. Just tell us what you did and what happened.
+        (In the app: **Help ▸ Report a Bug…** opens this form with the version filled in.)
+  - type: textarea
+    id: what
+    attributes:
+      label: What went wrong?
+      description: What did you expect, and what happened instead?
+      placeholder: "I clicked Export and it got stuck at 40%."
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How can we make it happen again?
+      description: The clicks or steps, as short as you can. A bug we can repeat is a bug we can fix.
+      placeholder: |
+        1. Add a video and an MP3 to the timeline
+        2. File ▸ Export
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Help ▸ the line at the bottom of the menu ("Simple Editor 1.2.0").
+      placeholder: "1.2.0"
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: Your PC (optional)
+      description: Windows version and graphics card, if you know them.
+      placeholder: "Windows 11, NVIDIA RTX 3060"
+  - type: textarea
+    id: files
+    attributes:
+      label: Screenshots, recordings and logs (optional)
+      description: |
+        Drag files here. A screenshot or short screen recording helps a lot.
+        If the app crashed, attach `crash.log` from `%APPDATA%\SimpleEditor` (paste that into Explorer's address bar).
+        It contains a copy of your project's timeline (clip names and file paths), so look at it first.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where does it happen? (optional)
+      multiple: true
+      options:
+        - Playback / preview
+        - Export
+        - Timeline / editing
+        - Effects / transitions / colour
+        - Audio
+        - Captions / transcription
+        - HTML layers / web snapshots
+        - Assistant / AI
+        - Gallery / library
+        - Settings / layout
+        - Something else

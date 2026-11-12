@@ -1,0 +1,31 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Lower Third Boxed</title>
+<meta name="se:kind" content="layer">
+<meta name="se:desc" content="Two stacked boxes, name on the accent colour and role on white, revealed with an offset wipe.">
+<meta name="se:tags" content="lower third, name, title, boxed, news">
+<meta name="se:size" content="1920x1080">
+<meta name="se:duration" content="6s">
+<meta name="se:field" content="name | text | Sam Rivera">
+<meta name="se:field" content="role | text | Lead Reporter">
+<meta name="se:field" content="accent | color | #e11d48">
+<style>
+  :root { --accent: {{accent}}; }
+  html, body { margin: 0; width: 100vw; height: 100vh; overflow: hidden; background: transparent;
+    font-family: "Segoe UI", Arial, sans-serif; }
+  .stage { position: absolute; left: 96px; bottom: 120px; max-width: 1100px;
+    filter: drop-shadow(0 10px 22px rgba(0, 0, 0, .4));
+    animation: out .6s cubic-bezier(.5, 0, .8, .4) 5.2s both; }
+  .box { display: block; width: max-content; max-width: 900px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .name { padding: 14px 40px 16px; background: var(--accent); color: #fff; font-size: 56px; line-height: 1.15; font-weight: 800;
+    animation: wipe .6s cubic-bezier(.7, 0, .2, 1) .1s both; }
+  .role { margin: 0 0 0 44px; padding: 10px 34px 12px; background: #fff; color: #14161c; font-size: 30px; line-height: 1.25; font-weight: 600;
+    letter-spacing: .6px; animation: wipe .6s cubic-bezier(.7, 0, .2, 1) .35s both; }
+  @keyframes wipe { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0 0 0 0); } }
+  @keyframes out { to { opacity: 0; transform: translateX(-36px); } }
+</style>
+</head>
+<body><div class="stage"><div class="box name">{{name}}</div><div class="box role">{{role}}</div></div></body>
+</html>

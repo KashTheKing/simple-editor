@@ -1,0 +1,104 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>End Screen</title>
+<meta name="se:kind" content="layer">
+<meta name="se:desc" content="A full-frame end screen: two video frames, a round channel avatar with its name and a subscribe pill, all animating in.">
+<meta name="se:tags" content="end screen, outro, subscribe, watch next, avatar, youtuber">
+<meta name="se:size" content="1920x1080">
+<meta name="se:duration" content="8s">
+<meta name="se:thumb" content="2.5">
+<meta name="se:field" content="heading | text | Keep watching">
+<meta name="se:field" content="channel | text | Pixel Kitchen">
+<meta name="se:field" content="label1 | text | Watch next">
+<meta name="se:field" content="label2 | text | Recommended">
+<meta name="se:field" content="accent | color | #e62117">
+<meta name="se:field" content="avatar | image | ">
+<style>
+  :root { --accent: {{accent}}; }
+  html, body { margin: 0; background: transparent; overflow: hidden; }
+  body { width: 100vw; height: 100vh; position: relative; font-family: "Segoe UI", Arial, sans-serif; color: #fff; }
+
+  .shade { position: absolute; inset: 0;
+    background: radial-gradient(ellipse 75% 70% at 50% 52%, rgba(0, 0, 0, .3), rgba(0, 0, 0, .6));
+    animation: fade .8s ease-out both; }
+  h1 { position: absolute; left: 160px; right: 160px; top: 160px; margin: 0; text-align: center;
+    font-size: 80px; font-weight: 900; letter-spacing: -1px; line-height: 1.1;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    text-shadow: 0 4px 16px rgba(0, 0, 0, .6), 0 2px 4px rgba(0, 0, 0, .5);
+    animation: down .7s cubic-bezier(.2, 1.2, .4, 1) .1s both; }
+  h1::after { content: ""; display: block; width: 120px; height: 8px; margin: 24px auto 0; border-radius: 4px;
+    background: var(--accent); box-shadow: 0 2px 8px rgba(0, 0, 0, .4);
+    animation: bar .6s cubic-bezier(.6, 0, .2, 1) .5s both; }
+
+  .row { position: absolute; left: 96px; right: 96px; top: 392px; display: flex; gap: 64px; align-items: flex-start; }
+  .vid { position: relative; flex: none; width: 640px; }
+  .tag { display: inline-flex; align-items: center; gap: 8px; height: 48px; max-width: 560px; padding: 0 24px;
+    box-sizing: border-box; border-radius: 24px; background: var(--accent);
+    font-size: 26px; font-weight: 700; white-space: nowrap; overflow: hidden;
+    box-shadow: 0 6px 16px rgba(0, 0, 0, .4); }
+  .tag span { overflow: hidden; text-overflow: ellipsis; }
+  .frame { margin-top: 24px; height: 360px; border-radius: 24px; border: 6px solid #fff; box-sizing: border-box;
+    background: rgba(0, 0, 0, .3); box-shadow: 0 16px 48px rgba(0, 0, 0, .5), inset 0 0 0 1px rgba(0, 0, 0, .3);
+    display: grid; place-items: center; overflow: hidden; }
+  .frame::before { content: ""; grid-area: 1 / 1; width: 200%; height: 100%;
+    background: linear-gradient(100deg, transparent 40%, rgba(255, 255, 255, .25) 50%, transparent 60%);
+    animation: sweep 1.2s ease-in-out both; }
+  .frame svg { grid-area: 1 / 1; width: 96px; height: 96px; opacity: .8; }
+  .v1 { animation: rise .8s cubic-bezier(.2, 1.3, .4, 1) .35s both; }
+  .v2 { animation: rise .8s cubic-bezier(.2, 1.3, .4, 1) .55s both; }
+  .v1 .tag { animation: tagIn .5s cubic-bezier(.2, 1.4, .4, 1) .9s both; }
+  .v2 .tag { animation: tagIn .5s cubic-bezier(.2, 1.4, .4, 1) 1.05s both; }
+  .v1 .frame::before { animation-delay: 1.2s; }
+  .v2 .frame::before { animation-delay: 1.4s; }
+
+  .me { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; padding-top: 64px; }
+  .av { position: relative; width: 208px; height: 208px; border-radius: 50%; overflow: hidden;
+    border: 6px solid #fff; box-shadow: 0 0 0 6px var(--accent), 0 16px 40px rgba(0, 0, 0, .5);
+    background: linear-gradient(145deg, #4a4f63, #23262f);
+    animation: pop .7s cubic-bezier(.2, 1.5, .4, 1) .7s both; }
+  .av svg, .av img { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .av img { object-fit: cover; }
+  .name { max-width: 100%; margin-top: 32px; font-size: 36px; font-weight: 700; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; text-shadow: 0 2px 10px rgba(0, 0, 0, .7);
+    animation: up .6s cubic-bezier(.2, 1.2, .4, 1) 1s both; }
+  .sub { display: flex; align-items: center; gap: 8px; margin-top: 16px; height: 56px; padding: 0 32px;
+    border-radius: 28px; background: #fff; color: #0f0f0f; font-size: 26px; font-weight: 700;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, .45);
+    animation: pop .6s cubic-bezier(.2, 1.6, .4, 1) 1.2s both; }
+  .sub i { width: 12px; height: 12px; border-radius: 50%; background: var(--accent); }
+
+  @keyframes fade { from { opacity: 0; } }
+  @keyframes down { from { opacity: 0; transform: translateY(-40px); } }
+  @keyframes up { from { opacity: 0; transform: translateY(24px); } }
+  @keyframes bar { from { transform: scaleX(0); } }
+  @keyframes rise { from { opacity: 0; transform: translateY(80px) scale(.9); } }
+  @keyframes tagIn { from { opacity: 0; transform: translateX(-24px); } }
+  @keyframes pop { from { opacity: 0; transform: scale(0); } 40% { opacity: 1; } }
+  @keyframes sweep { from { transform: translateX(-75%); } to { transform: translateX(75%); } }
+</style>
+</head>
+<body>
+<div class="shade"></div>
+<h1>{{heading}}</h1>
+<div class="row">
+  <div class="vid v1">
+    <div class="tag"><span>{{label1}}</span></div>
+    <div class="frame"><svg viewBox="0 0 48 48"><circle cx="24" cy="24" r="22" fill="rgba(0,0,0,.45)" stroke="#fff" stroke-width="2"/><path d="M19 15.5v17l14-8.5z" fill="#fff"/></svg></div>
+  </div>
+  <div class="me">
+    <div class="av">
+      <svg viewBox="0 0 100 100"><circle cx="50" cy="40" r="17" fill="#c9cede"/><path d="M18 92c2-19 15-29 32-29s30 10 32 29z" fill="#c9cede"/></svg>
+      <img src="{{avatar}}" alt="">
+    </div>
+    <div class="name">{{channel}}</div>
+    <div class="sub"><i></i>Subscribe</div>
+  </div>
+  <div class="vid v2">
+    <div class="tag"><span>{{label2}}</span></div>
+    <div class="frame"><svg viewBox="0 0 48 48"><circle cx="24" cy="24" r="22" fill="rgba(0,0,0,.45)" stroke="#fff" stroke-width="2"/><path d="M19 15.5v17l14-8.5z" fill="#fff"/></svg></div>
+  </div>
+</div>
+</body>
+</html>

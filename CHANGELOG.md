@@ -1,5 +1,81 @@
 # Changelog
 
+## 1.2.0
+
+The biggest release yet: an AI **Assistant** that edits your project while you watch, HTML + CSS
+layers, shader effects and transitions, an online library, web page snapshots, faster and smaller-file
+exports, and an easy way to report bugs.
+
+### Creator Kit
+- **HTML + CSS layers and scenes** (Add ▸ HTML Layer / HTML Scene): titles, lower thirds, buttons and
+  cards written in HTML and CSS (no JavaScript), rendered by the Microsoft Edge that ships with Windows,
+  with transparency, and exported with the video. A template's texts and colours show as **Fields** in
+  the Inspector; double-click the clip for the HTML editor (live preview, scrub bar, Ask the assistant).
+- **Shader transitions** in the gl-transitions format and **shader effects** with named controls
+  (`// @param glow 0.5 0 2`), added without rebuilding the app. The Shader Editor can save to the library.
+- **Online library** in the Gallery (Transitions, Effects, LUTs, HTML, Icons, Skills): 40 transitions,
+  40 effects, 30 LUTs, 36 HTML layers and scenes, 40 icons and 21 skills. Items with a cloud mark download
+  on first click; what a project uses is stored in the project (LUTs are copied into a folder beside it).
+- **Assistant skills**: type `/` in the chat or the Tasks box (`/captions bold yellow`, `/lower-third`,
+  `/shorts`, `/create-skill …`); a Skills tab to run, edit, duplicate and write your own. Skills are
+  Markdown files in `%APPDATA%\SimpleEditor\skills`. Quick prompts you wrote yourself become skills.
+- **HTML clips look and edit like HTML**: a `</>` mark and no filmstrip on the timeline; the Inspector shows
+  the code with syntax colours and completion; the editor is a real, maximisable window (F11). Link a clip to
+  a `.html` file (edit either side), open it in your code editor, or import / drop `.html` and `.mhtml`
+  files; linked CSS and images are followed and re-render when they change.
+- **Parameters** (`<meta name="se:param" content="name | number | default | min | max">`): animatable
+  numbers, the CSS variable `var(--name)`, keyframed in the Inspector or with `html.set`.
+- **Web Page Snapshot** (Add ▸ Web Page Snapshot…): a real page by address (the bundled Edge keeps the HTML
+  and CSS, drops scripts) or, signed in, from your own browser with the small extension in
+  `tools/browser-extension` (saved to Downloads, imported automatically). Scroll, zoom, animate it.
+- **Fake mouse** (Inspector ▸ Mouse): keyframe a cursor's position and press; real hover and `:active`
+  styles and their CSS transitions play, frame-exact. Links go nowhere.
+- MCP: `html.*`, `clip.set_shader`, `shader.check`, `transition.set_shader`, `skills.*`, `library.*`.
+- Fixed: the outgoing clip of a transition went black after the cut when it used its file to the last frame.
+
+### Work with an AI agent
+- New **Assistant** panel (Window ▸ Assistant): type a request and an AI agent edits the open project
+  while you watch. Runs Claude Code, your own command (Codex or any MCP agent), or waits for an agent you
+  connected yourself. Settings ▸ Assistant holds the agent, model, an optional API key (kept in Windows
+  Credential Manager) and the quick-prompt buttons.
+- Context chips show what goes with a request (selection, In/Out, playhead, a comment); click one to leave
+  it out. Type `>` in the command palette to ask from anywhere.
+- Every request is one undo step, with **Undo all** in the panel; the clips it changed get a short outline.
+- Exports, opening projects, settings changes and scripts called by an agent wait for your **Allow**
+  (switch off in Settings ▸ Assistant).
+- **Add Comment** leaves a note over In/Out, the selection or the playhead for an agent to pick up and
+  tick off; comments show who left them and dim once done, and range markers draw as a span.
+- Voice: the mic button and **Push to Talk** dictate a request (needs whisper.cpp, like subtitles).
+- MCP: `editor.context`, `edit.begin` / `edit.end` / `edit.batch` (one undo step), `render.contact_sheet`,
+  `render.frame` as a real image, `assistant.*`, `voice.*`, `markers.comment` / `markers.set`,
+  `transcribe.status`, and `islands` / `async` on transcription for accurate word times on long takes.
+
+### Export
+- **Speed / Balanced / Smallest file** on the Export panel.
+- "auto" uses your NVIDIA, Intel or AMD hardware H.264 encoder once a one-frame test shows it really works;
+  encoders that can't run are hidden.
+- GPU exports read frames back while the next ones render, in the encoder's own colour format when it
+  can; sound is mixed alongside the picture.
+- **Audio**: one mix, separate audio tracks in the file (MP4 / MOV / MKV / M4V), or WAV stems in a folder
+  beside it, split by track, bus or role.
+- Surround audio is downmixed properly (the centre channel is no longer dropped).
+
+### Hand-off
+- **Export Avid EDL…** (CMX 3600, one file per video track) and **Avid markers…** in the Markers panel.
+- Premiere / Resolve XML now carries audio volume and pan, A/V links, cross dissolves and markers, and
+  reads its markers back on import. EDL import understands 29.97 drop-frame.
+
+### Reporting bugs
+- **Help ▸ Report a Bug…** opens the GitHub issue form with the version filled in; a short form asks what
+  went wrong, the steps, and optional screenshots or `crash.log`. Ideas go through **Suggest a feature**.
+  Questions go to the Discord. See "Report a bug" in the guide.
+
+### Playback
+- Decoded frames are shared instead of copied, video frames go to the GPU without a CPU colour swizzle,
+  and a frame's layers decode side by side.
+- The Source monitor plays through the GPU like the Preview.
+- **Playback ▸ Performance HUD** shows frame, upload, decode and cache timings over the Preview.
+
 ## 1.1.0
 
 ### Preview performance

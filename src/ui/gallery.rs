@@ -97,9 +97,171 @@ impl GalleryTab {
     }
 }
 
+// ---- ws:online-library ----
+/// Library tabs after the Gallery's own (LUTs from the library show in the Luts tab).
+pub const LIB_TABS: [(crate::engine::library::Kind, &str); 5] = {
+    use crate::engine::library::Kind;
+    [
+        (Kind::Transition, "Transitions"),
+        (Kind::Effect, "Effects"),
+        (Kind::Html, "HTML"),
+        (Kind::Icon, "Icons"),
+        (Kind::Skill, "Skills"),
+    ]
+};
+
+/// One library cell, prepared by `ui::app::library_ctl` each frame.
+pub struct LibCell {
+    pub id: String,
+    pub name: String,
+    pub desc: String,
+    pub installed: bool,
+    /// Download progress while downloading.
+    pub busy: Option<f32>,
+    pub skill: bool,
+}
+
+/// What the library part of the Gallery draws. `thumb` is only called for cells on screen.
+pub struct LibView<'a> {
+    pub cells: Vec<LibCell>,
+    pub source: String,
+    pub local: bool,
+    pub note: String,
+    pub loading: bool,
+    pub thumb: &'a mut dyn FnMut(&str) -> Option<(egui::TextureId, [u32; 2])>,
+}
+
+/// A library click / menu choice, handled by `ui::app::gallery_ctl`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum LibAct {
+    Apply(String),
+    Install(String),
+    Remove(String),
+    Reveal(String),
+    View(String),
+    Refresh,
+    UseFolder,
+    UseOnline,
+}
+
+thread_local! {
+    /// The Luts tab's file listing and the folder stamps it was made from (a folder's modified time
+    /// changes when a file is added or removed), so it is not re-scanned every frame.
+    static LUT_LIST: RefCell<Option<(Vec<Option<std::time::SystemTime>>, Vec<String>)>> = const { RefCell::new(None) };
+}
+
+/// Re-list the LUT folders next time (after an install / remove).
+pub(crate) fn forget_lut_listing() {
+    LUT_LIST.with(|l| *l.borrow_mut() = None);
+}
+
+/// `.cube` files in the managed library folder, then in `Settings.lut_dirs` (24 per folder, as before).
+fn lut_files(settings: &Settings) -> Vec<String> {
+    let dirs: Vec<std::path::PathBuf> = std::iter::once(crate::engine::library::root().join("luts"))
+        .chain(settings.lut_dirs.iter().map(std::path::PathBuf::from))
+        .collect();
+    let stamps: Vec<_> = dirs.iter().map(|d| std::fs::metadata(d).and_then(|m| m.modified()).ok()).collect();
+    if let Some(list) = LUT_LIST.with(|l| l.borrow().as_ref().filter(|(s, _)| *s == stamps).map(|(_, v)| v.clone())) {
+        return list;
+    }
+    let list: Vec<String> = dirs
+        .iter()
+        .flat_map(|d| {
+            std::fs::read_dir(d)
+                .into_iter()
+                .flatten()
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("cube")))
+                .take(24)
+        })
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    LUT_LIST.with(|l| *l.borrow_mut() = Some((stamps, list.clone())));
+    list
+}
+
+/// A small cloud in a tile's top-right corner: online, not installed yet.
+fn cloud(p: &egui::Painter, tile: Rect) {
+    let c = egui::pos2(tile.right() - 13.0, tile.top() + 10.0);
+    let col = Color32::from_white_alpha(230);
+    p.rect_filled(Rect::from_center_size(c + egui::vec2(0.0, 2.0), egui::vec2(16.0, 6.0)), 3.0, col);
+    p.circle_filled(c + egui::vec2(-3.0, 0.0), 3.5, col);
+    p.circle_filled(c + egui::vec2(2.5, -1.5), 4.5, col);
+}
+
+/// The library grid: search, source line, cells. One cell drawing (`card`) for every kind.
+fn library_grid(ui: &mut egui::Ui, state: &mut GalleryState, lib: &mut LibView, out: &mut GalleryResponse) {
+    ui.horizontal(|ui| {
+        ui.add(egui::TextEdit::singleline(&mut state.lib_query).hint_text("Search").desired_width(150.0));
+        if ui.small_button("Refresh").on_hover_text("Fetch the catalogue again").clicked() {
+            out.lib = Some(LibAct::Refresh);
+        }
+        if lib.loading {
+            ui.weak("Loading…");
+        }
+    });
+    ui.horizontal_wrapped(|ui| {
+        ui.weak(format!("From {}", lib.source));
+        if ui.small_button("Use a folder…").on_hover_text("Read the library from a local folder").clicked() {
+            out.lib = Some(LibAct::UseFolder);
+        }
+        if lib.local && ui.small_button("Use online library").clicked() {
+            out.lib = Some(LibAct::UseOnline);
+        }
+    });
+    if !lib.note.is_empty() {
+        ui.weak(&lib.note);
+    }
+    if lib.cells.is_empty() && !lib.loading {
+        ui.weak("Nothing here yet.");
+    }
+    let LibView { cells, thumb, .. } = lib;
+    ui.horizontal_wrapped(|ui| {
+        for c in cells.iter() {
+            let r = card(ui, &c.name, |p, t| {
+                if p.clip_rect().intersects(t) {
+                    thumb_or_blank(p, t, (*thumb)(&c.id));
+                }
+                if !c.installed {
+                    cloud(p, t);
+                }
+                if let Some(f) = c.busy {
+                    let bar = Rect::from_min_size(t.left_bottom() - egui::vec2(0.0, 4.0), egui::vec2(t.width(), 4.0));
+                    p.rect_filled(bar, 0.0, Color32::from_black_alpha(160));
+                    let w = t.width() * f.clamp(0.1, 1.0);
+                    p.rect_filled(Rect::from_min_size(bar.min, egui::vec2(w, 4.0)), 0.0, Color32::LIGHT_BLUE);
+                }
+            });
+            let r = if c.desc.is_empty() { r } else { r.on_hover_text(&c.desc) };
+            if r.clicked() {
+                out.lib = Some(if c.skill { LibAct::View(c.id.clone()) } else { LibAct::Apply(c.id.clone()) });
+            }
+            menu::context(&r, |ui| {
+                let rows: [(bool, &str, fn(String) -> LibAct); 5] = [
+                    (!c.skill, "Apply", LibAct::Apply),
+                    (!c.installed, "Install", LibAct::Install),
+                    (c.skill, "View text", LibAct::View),
+                    (true, "Show in folder", LibAct::Reveal),
+                    (c.installed, "Remove", LibAct::Remove),
+                ];
+                for (show, label, act) in rows {
+                    if show && menu::row(ui, None, label, "").clicked() {
+                        out.lib = Some(act(c.id.clone()));
+                    }
+                }
+            });
+        }
+    });
+}
+
 #[derive(Default)]
 pub struct GalleryState {
     pub tab: GalleryTab,
+    // ---- ws:online-library ----
+    /// A library tab (`LIB_TABS`) is open instead of `tab`.
+    pub lib: Option<crate::engine::library::Kind>,
+    pub lib_query: String,
     /// The "Save look from selection…" name prompt: `Some` while it is open (the typed name so far).
     pub save_name: Option<String>,
     // ---- ws:text-titles ----
@@ -131,6 +293,8 @@ pub struct GalleryResponse {
     pub customized: Vec<(Id, Clip)>,
     /// ws:keyframe-blocks: forget this saved block (Animate card menu).
     pub forget_block: Option<String>,
+    /// ws:online-library: a library cell click / menu choice.
+    pub lib: Option<LibAct>,
 }
 
 /// One clickable card: `picture` paints the tile's contents (thumbnail / swatch / nothing - the name is
@@ -179,16 +343,8 @@ pub fn card_names(tab: GalleryTab, settings: &Settings) -> Vec<String> {
             .map(|p| p.name)
             .chain(settings.effect_presets.iter().filter(|p| !p.is_graph()).map(|p| p.name.clone()))
             .collect(),
-        GalleryTab::Luts => settings
-            .lut_dirs
-            .iter()
-            .flat_map(|d| std::fs::read_dir(d).into_iter().flatten())
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("cube")))
-            .take(24 * settings.lut_dirs.len().max(1))
-            .map(|p| p.to_string_lossy().into_owned())
-            .collect(),
+        // ---- ws:online-library ---- cached listing: the managed library folder, then `lut_dirs`
+        GalleryTab::Luts => lut_files(settings),
         GalleryTab::Captions => crate::engine::presets::builtin_caption_styles()
             .into_iter()
             .map(|s| s.text)
@@ -264,27 +420,47 @@ pub fn show(
     project: &crate::model::Project,
     selection: &[Id],
     palette: &Palette,
+    lib: Option<LibView>,
 ) -> GalleryResponse {
     let mut out = GalleryResponse::default();
     let bg = crate::ui::markers_ui::menu_area(ui);
     if state.tab == GalleryTab::Transitions {
         state.tab = GalleryTab::Looks;
     }
-    // one row that scrolls sideways when the pane is narrower than the tabs
-    egui::ScrollArea::horizontal().id_salt("gallery_tabs").show(ui, |ui| {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            for tab in GalleryTab::ALL.into_iter().filter(|&t| t != GalleryTab::Transitions) {
-                if ui.selectable_label(state.tab == tab, tab.label()).clicked() {
-                    state.tab = tab;
-                    settings.gallery_tab = tab.name().to_string();
-                }
+    // the tabs wrap onto a second row in a narrow pane (a sideways-scrolling row hid the library tabs)
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        for tab in GalleryTab::ALL.into_iter().filter(|&t| t != GalleryTab::Transitions) {
+            if ui.selectable_label(state.lib.is_none() && state.tab == tab, tab.label()).clicked() {
+                state.tab = tab;
+                state.lib = None;
+                settings.gallery_tab = tab.name().to_string();
             }
-        });
+        }
+        // ---- ws:online-library ----
+        for (kind, label) in LIB_TABS {
+            if ui.selectable_label(state.lib == Some(kind), label).clicked() {
+                state.lib = Some(kind);
+            }
+        }
     });
     ui.separator();
-    let names = card_names(state.tab, settings);
-    if names.is_empty() {
+    // ---- ws:online-library ---- a library tab, or the library's LUTs above the Luts tab's folders
+    let mut lib = lib;
+    if state.lib.is_some() {
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            if let Some(lib) = lib.as_mut() {
+                library_grid(ui, state, lib, &mut out);
+            }
+        });
+        return out;
+    }
+    let lib_luts = crate::engine::library::root().join("luts");
+    let mut names = card_names(state.tab, settings);
+    if state.tab == GalleryTab::Luts {
+        names.retain(|n| !std::path::Path::new(n).starts_with(&lib_luts)); // drawn by the library grid
+    }
+    if names.is_empty() && state.tab != GalleryTab::Luts {
         ui.weak(match state.tab {
             GalleryTab::Luts => "No .cube files found - add a folder in Settings ▸ Color.",
             GalleryTab::Templates => "No saved templates yet.",
@@ -293,6 +469,10 @@ pub fn show(
         });
     }
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        if let Some(lib) = lib.as_mut() {
+            library_grid(ui, state, lib, &mut out);
+            ui.separator();
+        }
         ui.horizontal_wrapped(|ui| {
             for name in &names {
                 let tab = state.tab;
@@ -463,10 +643,81 @@ mod tests {
         let mut out = GalleryResponse::default();
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                out = show(ui, state, settings, &crate::model::Project::new(), &[7], &palette);
+                out = show(ui, state, settings, &crate::model::Project::new(), &[7], &palette, None);
             });
         });
         out
+    }
+
+    // ---- ws:online-library ----
+    fn run_lib(ctx: &egui::Context, state: &mut GalleryState, settings: &mut Settings, asked: &mut Vec<String>) {
+        let palette = Palette::new(true, Color32::WHITE);
+        let cells = || {
+            (0..40)
+                .map(|i| LibCell {
+                    id: format!("effects/e{i}"),
+                    name: format!("Effect {i}"),
+                    desc: String::new(),
+                    installed: i % 2 == 0,
+                    busy: None,
+                    skill: false,
+                })
+                .collect()
+        };
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 300.0))),
+            ..Default::default()
+        };
+        let _ = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let mut thumb = |id: &str| -> Option<(egui::TextureId, [u32; 2])> {
+                    asked.push(id.to_string());
+                    None
+                };
+                let lib = LibView {
+                    cells: cells(),
+                    source: "D:/lib".into(),
+                    local: true,
+                    note: String::new(),
+                    loading: false,
+                    thumb: &mut thumb,
+                };
+                show(ui, state, settings, &crate::model::Project::new(), &[7], &palette, Some(lib));
+            });
+        });
+    }
+
+    #[test]
+    fn assert_no_idle_repaint_gallery_library() {
+        let ctx = ctx();
+        let mut state = GalleryState { lib: Some(crate::engine::library::Kind::Effect), ..Default::default() };
+        let mut settings = Settings::default();
+        let mut asked = Vec::new();
+        for _ in 0..30 {
+            run_lib(&ctx, &mut state, &mut settings, &mut asked);
+        }
+        assert!(!ctx.has_requested_repaint(), "an idle library tab requested a repaint");
+        let per_frame = asked.len() / 30;
+        assert!(per_frame > 0 && per_frame < 40, "thumbnails asked for visible cells only ({per_frame} of 40)");
+    }
+
+    #[test]
+    fn library_lut_listing_is_cached_until_a_folder_changes() {
+        let dir = std::env::temp_dir().join(format!("se-gallery-luts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.cube"), "").unwrap();
+        let mut settings = Settings::default();
+        settings.lut_dirs = vec![dir.to_string_lossy().into_owned()];
+        forget_lut_listing();
+        let n = |s: &Settings| lut_files(s).iter().filter(|p| p.contains("se-gallery-luts")).count();
+        assert_eq!(n(&settings), 1);
+        // same stamps: the cached list (a file written behind its back with the stamp forced equal)
+        LUT_LIST.with(|l| l.borrow_mut().as_mut().unwrap().1.push("se-gallery-luts-fake".into()));
+        assert_eq!(n(&settings), 2, "no rescan while the folders are unchanged");
+        forget_lut_listing();
+        assert_eq!(n(&settings), 1, "forget = rescan");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

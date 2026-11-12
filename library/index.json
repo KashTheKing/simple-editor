@@ -1,0 +1,3369 @@
+{
+  "version": 1,
+  "items": [
+    {
+      "id": "effects/anamorphic-streak",
+      "kind": "effect",
+      "name": "Anamorphic Streak",
+      "desc": "Long horizontal blue lens streaks shoot out of bright lights, like an anamorphic cinema lens.",
+      "tags": [
+        "anamorphic",
+        "streak",
+        "flare",
+        "lens",
+        "cinematic",
+        "sci-fi",
+        "highlights"
+      ],
+      "file": "effects/anamorphic-streak.glsl",
+      "size": 1529,
+      "credit": "",
+      "thumb": "thumbs/effects-anamorphic-streak.jpg"
+    },
+    {
+      "id": "effects/beat-pulse",
+      "kind": "effect",
+      "name": "Beat Pulse",
+      "desc": "Pulses on every beat of a tempo: a quick scale bump, brightness flash and RGB split that fade out.",
+      "tags": [
+        "beat",
+        "pulse",
+        "music",
+        "rhythm",
+        "bpm",
+        "flash",
+        "rgb"
+      ],
+      "file": "effects/beat-pulse.glsl",
+      "size": 789,
+      "credit": "",
+      "thumb": "thumbs/effects-beat-pulse.jpg"
+    },
+    {
+      "id": "effects/bloom",
+      "kind": "effect",
+      "name": "Bloom",
+      "desc": "Soft dreamy bloom: bright parts of the picture glow and spill light into their surroundings.",
+      "tags": [
+        "bloom",
+        "glow",
+        "dreamy",
+        "soft",
+        "highlights",
+        "light"
+      ],
+      "file": "effects/bloom.glsl",
+      "size": 1505,
+      "credit": "",
+      "thumb": "thumbs/effects-bloom.jpg"
+    },
+    {
+      "id": "effects/cartoon",
+      "kind": "effect",
+      "name": "Cartoon",
+      "desc": "Cel-shaded cartoon look: smooth flat colours in a few bright tones with bold ink outlines.",
+      "tags": [
+        "cartoon",
+        "cel",
+        "toon",
+        "comic",
+        "outline",
+        "anime",
+        "posterize"
+      ],
+      "file": "effects/cartoon.glsl",
+      "size": 2358,
+      "credit": "",
+      "thumb": "thumbs/effects-cartoon.jpg"
+    },
+    {
+      "id": "effects/chromatic-aberration",
+      "kind": "effect",
+      "name": "Chromatic Aberration",
+      "desc": "Splits red and blue apart toward the edges of the frame, like a cheap lens.",
+      "tags": [
+        "lens",
+        "rgb",
+        "glitch",
+        "split",
+        "aberration"
+      ],
+      "file": "effects/chromatic-aberration.glsl",
+      "size": 782,
+      "credit": "",
+      "thumb": "thumbs/effects-chromatic-aberration.jpg"
+    },
+    {
+      "id": "effects/crt",
+      "kind": "effect",
+      "name": "CRT Monitor",
+      "desc": "Curved glass, scanlines, RGB phosphor mask, vignette and a faint flicker.",
+      "tags": [
+        "crt",
+        "retro",
+        "scanlines",
+        "monitor",
+        "80s"
+      ],
+      "file": "effects/crt.glsl",
+      "size": 1851,
+      "credit": "",
+      "thumb": "thumbs/effects-crt.jpg"
+    },
+    {
+      "id": "effects/cutout-outline",
+      "kind": "effect",
+      "name": "Cut-out Outline",
+      "desc": "Sticker-style solid outline around the opaque part of a clip with transparency.",
+      "tags": [
+        "alpha",
+        "cutout",
+        "outline",
+        "sticker",
+        "border",
+        "stroke"
+      ],
+      "file": "effects/cutout-outline.glsl",
+      "size": 1012,
+      "credit": "",
+      "thumb": "thumbs/effects-cutout-outline.jpg"
+    },
+    {
+      "id": "effects/cutout-shadow",
+      "kind": "effect",
+      "name": "Cut-out Shadow",
+      "desc": "Soft drop shadow behind a cut-out subject, with angle, distance, softness and opacity.",
+      "tags": [
+        "alpha",
+        "cutout",
+        "shadow",
+        "drop shadow",
+        "depth"
+      ],
+      "file": "effects/cutout-shadow.glsl",
+      "size": 1152,
+      "credit": "",
+      "thumb": "thumbs/effects-cutout-shadow.jpg"
+    },
+    {
+      "id": "effects/duotone",
+      "kind": "effect",
+      "name": "Duotone",
+      "desc": "Maps the picture to two colours by brightness: one for shadows, one for highlights.",
+      "tags": [
+        "duotone",
+        "color",
+        "stylize",
+        "two-tone",
+        "poster"
+      ],
+      "file": "effects/duotone.glsl",
+      "size": 622,
+      "credit": "",
+      "thumb": "thumbs/effects-duotone.jpg"
+    },
+    {
+      "id": "effects/echo-trails",
+      "kind": "effect",
+      "name": "Echo Trails",
+      "desc": "Motion echoes: wherever something moved, bright colour-shifted copies of it trail behind and fade, like a long exposure.",
+      "tags": [
+        "echo",
+        "trail",
+        "motion",
+        "long exposure",
+        "music video",
+        "neon",
+        "dance"
+      ],
+      "file": "effects/echo-trails.glsl",
+      "size": 1482,
+      "credit": "",
+      "thumb": "thumbs/effects-echo-trails.jpg"
+    },
+    {
+      "id": "effects/film-grain",
+      "kind": "effect",
+      "name": "Film Grain",
+      "desc": "Animated film grain that bites hardest in the mid-tones and leaves deep shadows and highlights alone.",
+      "tags": [
+        "grain",
+        "film",
+        "noise",
+        "cinematic",
+        "texture"
+      ],
+      "file": "effects/film-grain.glsl",
+      "size": 1290,
+      "credit": "",
+      "thumb": "thumbs/effects-film-grain.jpg"
+    },
+    {
+      "id": "effects/fire",
+      "kind": "effect",
+      "name": "Fire",
+      "desc": "Procedural flames lick up from the bottom of the frame, flickering yellow, orange and red over the picture.",
+      "tags": [
+        "fire",
+        "flames",
+        "burn",
+        "hot",
+        "inferno",
+        "glow",
+        "animated"
+      ],
+      "file": "effects/fire.glsl",
+      "size": 2367,
+      "credit": "",
+      "thumb": "thumbs/effects-fire.jpg"
+    },
+    {
+      "id": "effects/fisheye",
+      "kind": "effect",
+      "name": "Fisheye",
+      "desc": "Fisheye lens: bulges the middle and bends the edges. Negative strength pinches instead.",
+      "tags": [
+        "lens",
+        "fisheye",
+        "distortion",
+        "barrel",
+        "wide"
+      ],
+      "file": "effects/fisheye.glsl",
+      "size": 774,
+      "credit": "",
+      "thumb": "thumbs/effects-fisheye.jpg"
+    },
+    {
+      "id": "effects/fog",
+      "kind": "effect",
+      "name": "Drifting Fog",
+      "desc": "Slow volumetric-looking fog that rolls sideways and pools toward the bottom of the frame.",
+      "tags": [
+        "fog",
+        "mist",
+        "atmosphere",
+        "haze",
+        "horror"
+      ],
+      "file": "effects/fog.glsl",
+      "size": 1496,
+      "credit": "",
+      "thumb": "thumbs/effects-fog.jpg"
+    },
+    {
+      "id": "effects/ghost-camera",
+      "kind": "effect",
+      "name": "Ghost Camera",
+      "desc": "The spirit-camera look: anything that moves leaves pale, cool, translucent copies of itself behind.",
+      "tags": [
+        "ghost",
+        "spirit",
+        "trail",
+        "echo",
+        "motion",
+        "paranormal",
+        "horror"
+      ],
+      "file": "effects/ghost-camera.glsl",
+      "size": 2135,
+      "credit": "",
+      "thumb": "thumbs/effects-ghost-camera.jpg"
+    },
+    {
+      "id": "effects/glitch-blocks",
+      "kind": "effect",
+      "name": "Glitch Blocks",
+      "desc": "Digital glitch: random blocks slide sideways with an RGB split, in jittery bursts.",
+      "tags": [
+        "glitch",
+        "digital",
+        "rgb",
+        "blocks",
+        "distortion"
+      ],
+      "file": "effects/glitch-blocks.glsl",
+      "size": 1207,
+      "credit": "",
+      "thumb": "thumbs/effects-glitch-blocks.jpg"
+    },
+    {
+      "id": "effects/gradient-map",
+      "kind": "effect",
+      "name": "Gradient Map",
+      "desc": "Recolours the picture with a three-colour gradient by brightness: shadows, midtones, highlights.",
+      "tags": [
+        "gradient map",
+        "color",
+        "grade",
+        "stylize",
+        "sunset"
+      ],
+      "file": "effects/gradient-map.glsl",
+      "size": 700,
+      "credit": "",
+      "thumb": "thumbs/effects-gradient-map.jpg"
+    },
+    {
+      "id": "effects/halation",
+      "kind": "effect",
+      "name": "Halation",
+      "desc": "Film halation: a red-orange glow bleeds out around bright highlights, like light scattering in film stock.",
+      "tags": [
+        "film",
+        "halation",
+        "glow",
+        "highlights",
+        "analog",
+        "cinematic",
+        "warm"
+      ],
+      "file": "effects/halation.glsl",
+      "size": 1746,
+      "credit": "",
+      "thumb": "thumbs/effects-halation.jpg"
+    },
+    {
+      "id": "effects/halftone",
+      "kind": "effect",
+      "name": "Halftone",
+      "desc": "Printed halftone dots: CMYK screens at classic angles, or a single-ink newsprint look.",
+      "tags": [
+        "halftone",
+        "comic",
+        "print",
+        "dots",
+        "pop art",
+        "retro"
+      ],
+      "file": "effects/halftone.glsl",
+      "size": 1878,
+      "credit": "",
+      "thumb": "thumbs/effects-halftone.jpg"
+    },
+    {
+      "id": "effects/handheld-shake",
+      "kind": "effect",
+      "name": "Handheld Shake",
+      "desc": "Organic handheld camera movement: smooth drifting, tiny rotation and a slight zoom so edges never show.",
+      "tags": [
+        "shake",
+        "handheld",
+        "camera",
+        "movement",
+        "organic",
+        "documentary"
+      ],
+      "file": "effects/handheld-shake.glsl",
+      "size": 1383,
+      "credit": "",
+      "thumb": "thumbs/effects-handheld-shake.jpg"
+    },
+    {
+      "id": "effects/heat-haze",
+      "kind": "effect",
+      "name": "Heat Haze",
+      "desc": "Rising heat shimmer, like air over hot tarmac or a desert: the picture wobbles more toward the bottom.",
+      "tags": [
+        "heat",
+        "haze",
+        "shimmer",
+        "desert",
+        "mirage",
+        "distortion",
+        "summer"
+      ],
+      "file": "effects/heat-haze.glsl",
+      "size": 1602,
+      "credit": "",
+      "thumb": "thumbs/effects-heat-haze.jpg"
+    },
+    {
+      "id": "effects/kaleidoscope",
+      "kind": "effect",
+      "name": "Kaleidoscope",
+      "desc": "Mirrored wedges around the centre, slowly rotating.",
+      "tags": [
+        "kaleidoscope",
+        "mirror",
+        "symmetry",
+        "psychedelic",
+        "rotate"
+      ],
+      "file": "effects/kaleidoscope.glsl",
+      "size": 754,
+      "credit": "",
+      "thumb": "thumbs/effects-kaleidoscope.jpg"
+    },
+    {
+      "id": "effects/lens-flare",
+      "kind": "effect",
+      "name": "Lens Flare",
+      "desc": "A sunlit lens flare: glowing core, starburst rays, a chain of coloured ghosts and a rainbow halo.",
+      "tags": [
+        "flare",
+        "lens",
+        "sun",
+        "light",
+        "glow",
+        "cinematic",
+        "summer"
+      ],
+      "file": "effects/lens-flare.glsl",
+      "size": 2706,
+      "credit": "",
+      "thumb": "thumbs/effects-lens-flare.jpg"
+    },
+    {
+      "id": "effects/light-leaks",
+      "kind": "effect",
+      "name": "Light Leaks",
+      "desc": "Slow warm and magenta light leaks drifting in from the frame edges, screen-blended.",
+      "tags": [
+        "light leak",
+        "film",
+        "warm",
+        "dreamy",
+        "overlay"
+      ],
+      "file": "effects/light-leaks.glsl",
+      "size": 1864,
+      "credit": "",
+      "thumb": "thumbs/effects-light-leaks.jpg"
+    },
+    {
+      "id": "effects/mirror",
+      "kind": "effect",
+      "name": "Mirror",
+      "desc": "Mirrors one half of the picture onto the other: left to right, right to left, top to bottom or bottom to top.",
+      "tags": [
+        "mirror",
+        "symmetry",
+        "flip",
+        "reflection"
+      ],
+      "file": "effects/mirror.glsl",
+      "size": 744,
+      "credit": "",
+      "thumb": "thumbs/effects-mirror.jpg"
+    },
+    {
+      "id": "effects/night-vision",
+      "kind": "effect",
+      "name": "Night Vision",
+      "desc": "Green phosphor night-vision goggles: boosted light, grain, scanlines and a round vignette.",
+      "tags": [
+        "night",
+        "green",
+        "military",
+        "grain",
+        "scanlines",
+        "vignette"
+      ],
+      "file": "effects/night-vision.glsl",
+      "size": 1309,
+      "credit": "",
+      "thumb": "thumbs/effects-night-vision.jpg"
+    },
+    {
+      "id": "effects/oil-paint",
+      "kind": "effect",
+      "name": "Oil Paint",
+      "desc": "Turns the picture into thick oil paint: flat dabs of colour with crisp edges, brush bristles and canvas.",
+      "tags": [
+        "painting",
+        "oil",
+        "artistic",
+        "kuwahara",
+        "canvas",
+        "painterly"
+      ],
+      "file": "effects/oil-paint.glsl",
+      "size": 3116,
+      "credit": "",
+      "thumb": "thumbs/effects-oil-paint.jpg"
+    },
+    {
+      "id": "effects/old-film",
+      "kind": "effect",
+      "name": "Old Film",
+      "desc": "Silent-film look: sepia or mono, flicker, scratches, dust, gate weave and a vignette.",
+      "tags": [
+        "film",
+        "vintage",
+        "retro",
+        "sepia",
+        "scratches",
+        "dust",
+        "silent"
+      ],
+      "file": "effects/old-film.glsl",
+      "size": 2344,
+      "credit": "",
+      "thumb": "thumbs/effects-old-film.jpg"
+    },
+    {
+      "id": "effects/pixel-sort",
+      "kind": "effect",
+      "name": "Pixel Sort",
+      "desc": "Glitch-art pixel sorting: bright rows smear sideways in random bands, streaking toward the darker side.",
+      "tags": [
+        "glitch",
+        "pixel sort",
+        "smear",
+        "streak",
+        "datamosh"
+      ],
+      "file": "effects/pixel-sort.glsl",
+      "size": 1772,
+      "credit": "",
+      "thumb": "thumbs/effects-pixel-sort.jpg"
+    },
+    {
+      "id": "effects/radial-blur",
+      "kind": "effect",
+      "name": "Spin Blur",
+      "desc": "Rotational blur around a centre point, like a spinning camera or a whirlpool.",
+      "tags": [
+        "blur",
+        "spin",
+        "radial",
+        "rotate",
+        "motion"
+      ],
+      "file": "effects/radial-blur.glsl",
+      "size": 923,
+      "credit": "",
+      "thumb": "thumbs/effects-radial-blur.jpg"
+    },
+    {
+      "id": "effects/rain-on-glass",
+      "kind": "effect",
+      "name": "Rain on Glass",
+      "desc": "Looking through a rainy window: drops slide down the fogged glass, leave clear trails and bend the picture behind them.",
+      "tags": [
+        "rain",
+        "window",
+        "glass",
+        "drops",
+        "weather",
+        "moody",
+        "water"
+      ],
+      "file": "effects/rain-on-glass.glsl",
+      "size": 4808,
+      "credit": "",
+      "thumb": "thumbs/effects-rain-on-glass.jpg"
+    },
+    {
+      "id": "effects/sketch",
+      "kind": "effect",
+      "name": "Pencil Sketch",
+      "desc": "Redraws the picture as a graphite pencil sketch: dark outlines, hatching in the shadows and paper grain.",
+      "tags": [
+        "sketch",
+        "pencil",
+        "drawing",
+        "artistic",
+        "hatching",
+        "paper"
+      ],
+      "file": "effects/sketch.glsl",
+      "size": 3807,
+      "credit": "",
+      "thumb": "thumbs/effects-sketch.jpg"
+    },
+    {
+      "id": "effects/snow",
+      "kind": "effect",
+      "name": "Falling Snow",
+      "desc": "Soft round snowflakes drifting down in three parallax layers over the picture.",
+      "tags": [
+        "snow",
+        "winter",
+        "weather",
+        "christmas",
+        "particles"
+      ],
+      "file": "effects/snow.glsl",
+      "size": 1784,
+      "credit": "",
+      "thumb": "thumbs/effects-snow.jpg"
+    },
+    {
+      "id": "effects/sparks",
+      "kind": "effect",
+      "name": "Rising Sparks",
+      "desc": "Glowing embers lifting off the bottom of the frame, flickering and curling as they rise.",
+      "tags": [
+        "sparks",
+        "embers",
+        "fire",
+        "particles",
+        "glow"
+      ],
+      "file": "effects/sparks.glsl",
+      "size": 1874,
+      "credit": "",
+      "thumb": "thumbs/effects-sparks.jpg"
+    },
+    {
+      "id": "effects/speed-lines",
+      "kind": "effect",
+      "name": "Speed Lines",
+      "desc": "Anime-style streaks racing in from the edges toward a focus point, flickering like hand-drawn frames.",
+      "tags": [
+        "anime",
+        "manga",
+        "speed",
+        "action",
+        "lines",
+        "comic"
+      ],
+      "file": "effects/speed-lines.glsl",
+      "size": 1611,
+      "credit": "",
+      "thumb": "thumbs/effects-speed-lines.jpg"
+    },
+    {
+      "id": "effects/thermal",
+      "kind": "effect",
+      "name": "Thermal Camera",
+      "desc": "Heat-camera palette: black, blue, purple, red, orange, yellow, white by brightness.",
+      "tags": [
+        "thermal",
+        "heat",
+        "infrared",
+        "palette",
+        "false color"
+      ],
+      "file": "effects/thermal.glsl",
+      "size": 1435,
+      "credit": "",
+      "thumb": "thumbs/effects-thermal.jpg"
+    },
+    {
+      "id": "effects/tilt-shift",
+      "kind": "effect",
+      "name": "Tilt-Shift",
+      "desc": "Miniature-world look: a sharp band across the frame with growing blur above and below.",
+      "tags": [
+        "blur",
+        "miniature",
+        "tilt shift",
+        "focus",
+        "toy"
+      ],
+      "file": "effects/tilt-shift.glsl",
+      "size": 1180,
+      "credit": "",
+      "thumb": "thumbs/effects-tilt-shift.jpg"
+    },
+    {
+      "id": "effects/vhs-pro",
+      "kind": "effect",
+      "name": "VHS Tape",
+      "desc": "Worn tape: colour bleed, wobbling lines, a rolling tracking bar, noise and soft crushed colour.",
+      "tags": [
+        "vhs",
+        "retro",
+        "glitch",
+        "tape",
+        "90s"
+      ],
+      "file": "effects/vhs-pro.glsl",
+      "size": 2726,
+      "credit": "",
+      "thumb": "thumbs/effects-vhs-pro.jpg"
+    },
+    {
+      "id": "effects/zoom-blur",
+      "kind": "effect",
+      "name": "Zoom Blur",
+      "desc": "Dolly-zoom streaks radiating from a centre point.",
+      "tags": [
+        "blur",
+        "zoom",
+        "radial",
+        "speed",
+        "motion"
+      ],
+      "file": "effects/zoom-blur.glsl",
+      "size": 831,
+      "credit": "",
+      "thumb": "thumbs/effects-zoom-blur.jpg"
+    },
+    {
+      "id": "effects/zoom-punch",
+      "kind": "effect",
+      "name": "Zoom Punch",
+      "desc": "Punch-in zoom that snaps in fast and eases back, repeating, with a touch of radial blur at the peak.",
+      "tags": [
+        "zoom",
+        "punch",
+        "pulse",
+        "emphasis",
+        "impact",
+        "radial blur"
+      ],
+      "file": "effects/zoom-punch.glsl",
+      "size": 948,
+      "credit": "",
+      "thumb": "thumbs/effects-zoom-punch.jpg"
+    },
+    {
+      "id": "transitions/blinds",
+      "kind": "transition",
+      "name": "Blinds",
+      "desc": "Venetian blinds: a row of slats each opens to reveal the incoming picture, with a soft edge.",
+      "tags": [
+        "blinds",
+        "slats",
+        "venetian",
+        "wipe",
+        "stripes"
+      ],
+      "file": "transitions/blinds.glsl",
+      "size": 734,
+      "credit": "",
+      "thumb": "thumbs/transitions-blinds.jpg"
+    },
+    {
+      "id": "transitions/burn-through",
+      "kind": "transition",
+      "name": "Burn Through",
+      "desc": "Holes burn through the outgoing picture with charred edges and a glowing ember rim.",
+      "tags": [
+        "burn",
+        "fire",
+        "ember",
+        "char",
+        "paper"
+      ],
+      "file": "transitions/burn-through.glsl",
+      "size": 3104,
+      "credit": "",
+      "thumb": "thumbs/transitions-burn-through.jpg"
+    },
+    {
+      "id": "transitions/clock-wipe",
+      "kind": "transition",
+      "name": "Clock Wipe",
+      "desc": "The incoming picture is revealed by a hand sweeping clockwise from 12 o'clock around the centre.",
+      "tags": [
+        "clock",
+        "wipe",
+        "radial",
+        "sweep",
+        "angular"
+      ],
+      "file": "transitions/clock-wipe.glsl",
+      "size": 641,
+      "credit": "",
+      "thumb": "thumbs/transitions-clock-wipe.jpg"
+    },
+    {
+      "id": "transitions/color-swipe",
+      "kind": "transition",
+      "name": "Color Swipe",
+      "desc": "A solid colour panel with a slanted edge sweeps across, covers the outgoing picture, then sweeps off to reveal the incoming one.",
+      "tags": [
+        "swipe",
+        "color",
+        "panel",
+        "wipe",
+        "slant"
+      ],
+      "file": "transitions/color-swipe.glsl",
+      "size": 1231,
+      "credit": "",
+      "thumb": "thumbs/transitions-color-swipe.jpg"
+    },
+    {
+      "id": "transitions/color-swipe-double",
+      "kind": "transition",
+      "name": "Color Swipe Double",
+      "desc": "Two to four stacked colour bands chase each other diagonally across the frame, covering the outgoing picture and uncovering the incoming one.",
+      "tags": [
+        "swipe",
+        "color",
+        "bands",
+        "diagonal",
+        "wipe"
+      ],
+      "file": "transitions/color-swipe-double.glsl",
+      "size": 2067,
+      "credit": "",
+      "thumb": "thumbs/transitions-color-swipe-double.jpg"
+    },
+    {
+      "id": "transitions/cross-warp",
+      "kind": "transition",
+      "name": "Cross Warp",
+      "desc": "The outgoing image zooms in while the incoming one zooms out into place, sweeping from right to left.",
+      "tags": [
+        "warp",
+        "zoom",
+        "horizontal"
+      ],
+      "file": "transitions/cross-warp.glsl",
+      "size": 397,
+      "credit": "Eke Péter <peterekepeter@gmail.com>, gl-transitions (MIT)",
+      "thumb": "thumbs/transitions-cross-warp.jpg"
+    },
+    {
+      "id": "transitions/crumple",
+      "kind": "transition",
+      "name": "Crumple",
+      "desc": "The outgoing picture crumples into a faceted paper ball that drops away, revealing the incoming one.",
+      "tags": [
+        "paper",
+        "crumple",
+        "ball",
+        "fold",
+        "trash"
+      ],
+      "file": "transitions/crumple.glsl",
+      "size": 4073,
+      "credit": "",
+      "thumb": "thumbs/transitions-crumple.jpg"
+    },
+    {
+      "id": "transitions/cube",
+      "kind": "transition",
+      "name": "Cube",
+      "desc": "The two images are faces of a box that turns a quarter turn in perspective, above a reflective floor.",
+      "tags": [
+        "3d",
+        "cube",
+        "rotate",
+        "reflection"
+      ],
+      "file": "transitions/cube.glsl",
+      "size": 5140,
+      "credit": "gre, gl-transitions (MIT)",
+      "thumb": "thumbs/transitions-cube.jpg"
+    },
+    {
+      "id": "transitions/directional-warp",
+      "kind": "transition",
+      "name": "Directional Warp",
+      "desc": "A diagonal wipe with a warped, smeared edge.",
+      "tags": [
+        "wipe",
+        "warp",
+        "directional"
+      ],
+      "file": "transitions/directional-warp.glsl",
+      "size": 613,
+      "credit": "pschroen, gl-transitions (MIT)",
+      "thumb": "thumbs/transitions-directional-warp.jpg"
+    },
+    {
+      "id": "transitions/doorway",
+      "kind": "transition",
+      "name": "Doorway",
+      "desc": "The outgoing image opens like double doors as the incoming one comes forward from the room behind.",
+      "tags": [
+        "doors",
+        "3d",
+        "reflection"
+      ],
+      "file": "transitions/doorway.glsl",
+      "size": 4136,
+      "credit": "gre, gl-transitions (MIT)",
+      "thumb": "thumbs/transitions-doorway.jpg"
+    },
+    {
+      "id": "transitions/dreamy",
+      "kind": "transition",
+      "name": "Dreamy",
+      "desc": "A crossfade with a gentle wavy distortion.",
+      "tags": [
+        "wave",
+        "blend",
+        "dreamy"
+      ],
+      "file": "transitions/dreamy.glsl",
+      "size": 480,
+      "credit": "mikolalysenko, gl-transitions (MIT)",
+      "thumb": "thumbs/transitions-dreamy.jpg"
+    },
+    {
+      "id": "transitions/explosion-flash",
+      "kind": "transition",
+      "name": "Explosion Flash",
+      "desc": "A blast from the centre: radial streaks blow the outgoing picture outward into a white-orange flash that clears on the incoming one.",
+      "tags": [
+        "explosion",
+        "blast",
+        "flash",
+        "impact",
+        "action"
+      ],
+      "file": "transitions/explosion-flash.glsl",
+      "size": 3302,
+      "credit": "",
+      "thumb": "thumbs/transitions-explosion-flash.jpg"
+    },
+    {
+      "id": "transitions/film-burn",
+      "kind": "transition",
+      "name": "Film Burn",
+      "desc": "Warm orange and white burn blobs bloom in from the left, overexpose the frame, then roll off to the right over the incoming picture.",
+      "tags": [
+        "film",
+        "burn",
+        "retro",
+        "analog",
+        "flash",
+        "warm"
+      ],
+      "file": "transitions/film-burn.glsl",
+      "size": 3123,
+      "credit": "",
+      "thumb": "thumbs/transitions-film-burn.jpg"
+    },
+    {
+      "id": "transitions/fire-wipe",
+      "kind": "transition",
+      "name": "Fire Wipe",
+      "desc": "A wall of flame sweeps up the frame and leaves the incoming picture behind it.",
+      "tags": [
+        "fire",
+        "flame",
+        "wipe",
+        "heat",
+        "smoke"
+      ],
+      "file": "transitions/fire-wipe.glsl",
+      "size": 3997,
+      "credit": "",
+      "thumb": "thumbs/transitions-fire-wipe.jpg"
+    },
+    {
+      "id": "transitions/flash",
+      "kind": "transition",
+      "name": "Flash",
+      "desc": "A quick flash: the outgoing picture blows out to white (or a tint) and the incoming picture comes down from it.",
+      "tags": [
+        "flash",
+        "white",
+        "light",
+        "exposure",
+        "burst"
+      ],
+      "file": "transitions/flash.glsl",
+      "size": 698,
+      "credit": "",
+      "thumb": "thumbs/transitions-flash.jpg"
+    },
+    {
+      "id": "transitions/glitch",
+      "kind": "transition",
+      "name": "Glitch",
+      "desc": "Digital glitch: displaced blocks, RGB split and scanline tearing that peak at the midpoint where the pictures swap.",
+      "tags": [
+        "glitch",
+        "digital",
+        "rgb",
+        "distort",
+        "tear"
+      ],
+      "file": "transitions/glitch.glsl",
+      "size": 1552,
+      "credit": "",
+      "thumb": "thumbs/transitions-glitch.jpg"
+    },
+    {
+      "id": "transitions/hexagonalize",
+      "kind": "transition",
+      "name": "Hexagonalize",
+      "desc": "Both images turn into hexagons, crossfade, then sharpen again.",
+      "tags": [
+        "pixelate",
+        "hexagon",
+        "blend"
+      ],
+      "file": "transitions/hexagonalize.glsl",
+      "size": 1780,
+      "credit": "Fernando Kuteken, gl-transitions (MIT)",
+      "thumb": "thumbs/transitions-hexagonalize.jpg"
+    },
+    {
+      "id": "transitions/ink-bleed",
+      "kind": "transition",
+      "name": "Ink Bleed",
+      "desc": "The incoming picture blooms in like ink dropped in water, with feathery tendrils and a darker wet edge.",
+      "tags": [
+        "ink",
+        "water",
+        "bleed",
+        "organic",
+        "watercolor",
+        "dissolve"
+      ],
+      "file": "transitions/ink-bleed.glsl",
+      "size": 2515,
+      "credit": "",
+      "thumb": "thumbs/transitions-ink-bleed.jpg"
+    },
+    {
+      "id": "transitions/iris-circle",
+      "kind": "transition",
+      "name": "Iris Circle",
+      "desc": "A circular iris opens from the centre and reveals the incoming picture.",
+      "tags": [
+        "iris",
+        "circle",
+        "wipe",
+        "reveal",
+        "round"
+      ],
+      "file": "transitions/iris-circle.glsl",
+      "size": 601,
+      "credit": "",
+      "thumb": "thumbs/transitions-iris-circle.jpg"
+    },
+    {
+      "id": "transitions/iris-diamond",
+      "kind": "transition",
+      "name": "Iris Diamond",
+      "desc": "A diamond-shaped iris opens from the centre and reveals the incoming picture.",
+      "tags": [
+        "iris",
+        "diamond",
+        "wipe",
+        "reveal",
+        "shape"
+      ],
+      "file": "transitions/iris-diamond.glsl",
+      "size": 663,
+      "credit": "",
+      "thumb": "thumbs/transitions-iris-diamond.jpg"
+    },
+    {
+      "id": "transitions/iris-star",
+      "kind": "transition",
+      "name": "Iris Star",
+      "desc": "A five-pointed star iris grows from the centre, turning slightly, and reveals the incoming picture.",
+      "tags": [
+        "iris",
+        "star",
+        "wipe",
+        "reveal",
+        "shape"
+      ],
+      "file": "transitions/iris-star.glsl",
+      "size": 1241,
+      "credit": "",
+      "thumb": "thumbs/transitions-iris-star.jpg"
+    },
+    {
+      "id": "transitions/kaleidoscope",
+      "kind": "transition",
+      "name": "Kaleidoscope",
+      "desc": "The picture folds into a turning kaleidoscope at the midpoint and unfolds onto the incoming picture.",
+      "tags": [
+        "kaleidoscope",
+        "mirror",
+        "symmetry",
+        "psychedelic",
+        "trippy"
+      ],
+      "file": "transitions/kaleidoscope.glsl",
+      "size": 2163,
+      "credit": "",
+      "thumb": "thumbs/transitions-kaleidoscope.jpg"
+    },
+    {
+      "id": "transitions/light-leak",
+      "kind": "transition",
+      "name": "Light Leak",
+      "desc": "A soft warm-to-magenta anamorphic light leak sweeps across the frame and dissolves to the incoming picture under its peak.",
+      "tags": [
+        "light",
+        "leak",
+        "flare",
+        "anamorphic",
+        "warm",
+        "dreamy",
+        "film"
+      ],
+      "file": "transitions/light-leak.glsl",
+      "size": 2568,
+      "credit": "",
+      "thumb": "thumbs/transitions-light-leak.jpg"
+    },
+    {
+      "id": "transitions/noise-dissolve",
+      "kind": "transition",
+      "name": "Noise Dissolve",
+      "desc": "An organic dissolve through smooth noise, with a thin bright line glowing along the dissolve front.",
+      "tags": [
+        "dissolve",
+        "noise",
+        "organic",
+        "burn",
+        "edge"
+      ],
+      "file": "transitions/noise-dissolve.glsl",
+      "size": 1376,
+      "credit": "",
+      "thumb": "thumbs/transitions-noise-dissolve.jpg"
+    },
+    {
+      "id": "transitions/page-turn",
+      "kind": "transition",
+      "name": "Page Turn",
+      "desc": "The outgoing picture peels from the bottom-right corner around a curl, showing its pale back and casting a soft shadow.",
+      "tags": [
+        "page",
+        "curl",
+        "book",
+        "paper",
+        "peel"
+      ],
+      "file": "transitions/page-turn.glsl",
+      "size": 3505,
+      "credit": "",
+      "thumb": "thumbs/transitions-page-turn.jpg"
+    },
+    {
+      "id": "transitions/paper-tear",
+      "kind": "transition",
+      "name": "Paper Tear",
+      "desc": "The outgoing picture is ripped away like a sheet of paper along a ragged, fibrous edge.",
+      "tags": [
+        "paper",
+        "tear",
+        "rip",
+        "craft",
+        "wipe"
+      ],
+      "file": "transitions/paper-tear.glsl",
+      "size": 2956,
+      "credit": "",
+      "thumb": "thumbs/transitions-paper-tear.jpg"
+    },
+    {
+      "id": "transitions/pixelate",
+      "kind": "transition",
+      "name": "Pixelate",
+      "desc": "The picture breaks into bigger and bigger square blocks up to the midpoint, swaps, then resolves again.",
+      "tags": [
+        "pixelate",
+        "mosaic",
+        "blocks",
+        "retro"
+      ],
+      "file": "transitions/pixelate.glsl",
+      "size": 619,
+      "credit": "",
+      "thumb": "thumbs/transitions-pixelate.jpg"
+    },
+    {
+      "id": "transitions/rgb-slide",
+      "kind": "transition",
+      "name": "RGB Slide",
+      "desc": "The red, green and blue channels slide in separately, so the incoming picture assembles from coloured ghosts.",
+      "tags": [
+        "rgb",
+        "slide",
+        "ghost",
+        "chromatic",
+        "channels"
+      ],
+      "file": "transitions/rgb-slide.glsl",
+      "size": 956,
+      "credit": "",
+      "thumb": "thumbs/transitions-rgb-slide.jpg"
+    },
+    {
+      "id": "transitions/ripple",
+      "kind": "transition",
+      "name": "Ripple",
+      "desc": "Ripples spread from the center while crossfading.",
+      "tags": [
+        "ripple",
+        "wave",
+        "blend"
+      ],
+      "file": "transitions/ripple.glsl",
+      "size": 485,
+      "credit": "gre, gl-transitions (MIT)",
+      "thumb": "thumbs/transitions-ripple.jpg"
+    },
+    {
+      "id": "transitions/shockwave",
+      "kind": "transition",
+      "name": "Shockwave",
+      "desc": "A refracting ring bursts out from the centre, bending the picture with a chromatic fringe and leaving the incoming picture inside it.",
+      "tags": [
+        "shockwave",
+        "ring",
+        "refraction",
+        "lens",
+        "ripple",
+        "impact"
+      ],
+      "file": "transitions/shockwave.glsl",
+      "size": 2302,
+      "credit": "",
+      "thumb": "thumbs/transitions-shockwave.jpg"
+    },
+    {
+      "id": "transitions/spin",
+      "kind": "transition",
+      "name": "Spin",
+      "desc": "Both pictures rotate around the centre with rotational blur and swap at the midpoint.",
+      "tags": [
+        "spin",
+        "rotate",
+        "blur",
+        "twist"
+      ],
+      "file": "transitions/spin.glsl",
+      "size": 1380,
+      "credit": "",
+      "thumb": "thumbs/transitions-spin.jpg"
+    },
+    {
+      "id": "transitions/swirl",
+      "kind": "transition",
+      "name": "Swirl",
+      "desc": "Both pictures twist into a vortex around the centre, cross-fade inside the twist, then untwist.",
+      "tags": [
+        "swirl",
+        "twirl",
+        "vortex",
+        "spin",
+        "twist"
+      ],
+      "file": "transitions/swirl.glsl",
+      "size": 1663,
+      "credit": "",
+      "thumb": "thumbs/transitions-swirl.jpg"
+    },
+    {
+      "id": "transitions/tv-off",
+      "kind": "transition",
+      "name": "TV Switch Off",
+      "desc": "Old TV switch-off: the outgoing picture collapses to a bright line, then a dot, on black; the incoming picture switches on the reverse way.",
+      "tags": [
+        "tv",
+        "crt",
+        "retro",
+        "switch off",
+        "line",
+        "dot"
+      ],
+      "file": "transitions/tv-off.glsl",
+      "size": 1536,
+      "credit": "",
+      "thumb": "thumbs/transitions-tv-off.jpg"
+    },
+    {
+      "id": "transitions/vhs-rewind",
+      "kind": "transition",
+      "name": "VHS Rewind",
+      "desc": "VHS rewind: tearing bands roll up the frame, colour bleeds, a noise bar sweeps through and the picture wobbles desaturated at the swap.",
+      "tags": [
+        "vhs",
+        "rewind",
+        "retro",
+        "tape",
+        "glitch",
+        "noise"
+      ],
+      "file": "transitions/vhs-rewind.glsl",
+      "size": 1752,
+      "credit": "",
+      "thumb": "thumbs/transitions-vhs-rewind.jpg"
+    },
+    {
+      "id": "transitions/whip-pan-down",
+      "kind": "transition",
+      "name": "Whip Pan Down",
+      "desc": "A fast camera whip to the down: both pictures slide with strong directional motion blur that peaks mid-move and lands softly.",
+      "tags": [
+        "whip",
+        "pan",
+        "blur",
+        "slide",
+        "camera",
+        "down"
+      ],
+      "file": "transitions/whip-pan-down.glsl",
+      "size": 923,
+      "credit": "",
+      "thumb": "thumbs/transitions-whip-pan-down.jpg"
+    },
+    {
+      "id": "transitions/whip-pan-left",
+      "kind": "transition",
+      "name": "Whip Pan Left",
+      "desc": "A fast camera whip to the left: both pictures slide with strong directional motion blur that peaks mid-move and lands softly.",
+      "tags": [
+        "whip",
+        "pan",
+        "blur",
+        "slide",
+        "camera",
+        "left"
+      ],
+      "file": "transitions/whip-pan-left.glsl",
+      "size": 921,
+      "credit": "",
+      "thumb": "thumbs/transitions-whip-pan-left.jpg"
+    },
+    {
+      "id": "transitions/whip-pan-right",
+      "kind": "transition",
+      "name": "Whip Pan Right",
+      "desc": "A fast camera whip to the right: both pictures slide with strong directional motion blur that peaks mid-move and lands softly.",
+      "tags": [
+        "whip",
+        "pan",
+        "blur",
+        "slide",
+        "camera",
+        "right"
+      ],
+      "file": "transitions/whip-pan-right.glsl",
+      "size": 926,
+      "credit": "",
+      "thumb": "thumbs/transitions-whip-pan-right.jpg"
+    },
+    {
+      "id": "transitions/whip-pan-up",
+      "kind": "transition",
+      "name": "Whip Pan Up",
+      "desc": "A fast camera whip to the up: both pictures slide with strong directional motion blur that peaks mid-move and lands softly.",
+      "tags": [
+        "whip",
+        "pan",
+        "blur",
+        "slide",
+        "camera",
+        "up"
+      ],
+      "file": "transitions/whip-pan-up.glsl",
+      "size": 919,
+      "credit": "",
+      "thumb": "thumbs/transitions-whip-pan-up.jpg"
+    },
+    {
+      "id": "transitions/wind",
+      "kind": "transition",
+      "name": "Wind",
+      "desc": "A ragged left-to-right wipe, as if the image was blown away by the wind.",
+      "tags": [
+        "wipe",
+        "horizontal",
+        "noise"
+      ],
+      "file": "transitions/wind.glsl",
+      "size": 574,
+      "credit": "gre, gl-transitions (MIT)",
+      "thumb": "thumbs/transitions-wind.jpg"
+    },
+    {
+      "id": "transitions/zoom-blur",
+      "kind": "transition",
+      "name": "Zoom Blur",
+      "desc": "The outgoing picture zooms in with radial blur, swaps at the peak, and the incoming picture settles from a zoomed, blurred state.",
+      "tags": [
+        "zoom",
+        "blur",
+        "radial",
+        "punch"
+      ],
+      "file": "transitions/zoom-blur.glsl",
+      "size": 1100,
+      "credit": "",
+      "thumb": "thumbs/transitions-zoom-blur.jpg"
+    },
+    {
+      "id": "luts/bleach-bypass",
+      "kind": "lut",
+      "name": "Bleach Bypass",
+      "desc": "Silvery, desaturated and gritty with deep blacks.",
+      "tags": [
+        "gritty",
+        "desaturated",
+        "war",
+        "contrast"
+      ],
+      "file": "luts/bleach-bypass.cube",
+      "size": 132811,
+      "credit": "",
+      "thumb": "thumbs/luts-bleach-bypass.jpg"
+    },
+    {
+      "id": "luts/bw-high-contrast",
+      "kind": "lut",
+      "name": "B&W High Contrast",
+      "desc": "Punchy black and white with dark skies and deep blacks.",
+      "tags": [
+        "black and white",
+        "contrast",
+        "dramatic",
+        "mono"
+      ],
+      "file": "luts/bw-high-contrast.cube",
+      "size": 132832,
+      "credit": "",
+      "thumb": "thumbs/luts-bw-high-contrast.jpg"
+    },
+    {
+      "id": "luts/bw-soft",
+      "kind": "lut",
+      "name": "B&W Soft",
+      "desc": "Gentle black and white with lifted blacks and smooth tones.",
+      "tags": [
+        "black and white",
+        "soft",
+        "gentle",
+        "mono"
+      ],
+      "file": "luts/bw-soft.cube",
+      "size": 132812,
+      "credit": "",
+      "thumb": "thumbs/luts-bw-soft.jpg"
+    },
+    {
+      "id": "luts/classic-warm-stock",
+      "kind": "lut",
+      "name": "Classic Warm Stock",
+      "desc": "Rich reds and yellows, warm shadows and a golden cast, like a vintage print stock.",
+      "tags": [
+        "film",
+        "warm",
+        "rich",
+        "classic"
+      ],
+      "file": "luts/classic-warm-stock.cube",
+      "size": 132845,
+      "credit": "",
+      "thumb": "thumbs/luts-classic-warm-stock.jpg"
+    },
+    {
+      "id": "luts/clean-skin",
+      "kind": "lut",
+      "name": "Clean Skin",
+      "desc": "Gentle and flattering: slightly warm, smooth skin, natural everything else.",
+      "tags": [
+        "skin",
+        "portrait",
+        "natural",
+        "flattering"
+      ],
+      "file": "luts/clean-skin.cube",
+      "size": 132832,
+      "credit": "",
+      "thumb": "thumbs/luts-clean-skin.jpg"
+    },
+    {
+      "id": "luts/cool-noir",
+      "kind": "lut",
+      "name": "Cool Noir",
+      "desc": "Almost colourless, steel-blue and contrasty like a rainy night street.",
+      "tags": [
+        "noir",
+        "cool",
+        "dark",
+        "moody"
+      ],
+      "file": "luts/cool-noir.cube",
+      "size": 132813,
+      "credit": "",
+      "thumb": "thumbs/luts-cool-noir.jpg"
+    },
+    {
+      "id": "luts/cross-process",
+      "kind": "lut",
+      "name": "Cross Process",
+      "desc": "Blue-cyan shadows, yellow-green highlights and hard contrast.",
+      "tags": [
+        "cross process",
+        "retro",
+        "edgy",
+        "colour shift"
+      ],
+      "file": "luts/cross-process.cube",
+      "size": 132829,
+      "credit": "",
+      "thumb": "thumbs/luts-cross-process.jpg"
+    },
+    {
+      "id": "luts/cyberpunk",
+      "kind": "lut",
+      "name": "Cyberpunk",
+      "desc": "Magenta shadows, cyan highlights and glowing neon accents.",
+      "tags": [
+        "cyberpunk",
+        "neon",
+        "magenta",
+        "cyan",
+        "scifi"
+      ],
+      "file": "luts/cyberpunk.cube",
+      "size": 132815,
+      "credit": "",
+      "thumb": "thumbs/luts-cyberpunk.jpg"
+    },
+    {
+      "id": "luts/day-for-night",
+      "kind": "lut",
+      "name": "Day for Night",
+      "desc": "Dim, blue moonlight look made from daytime footage.",
+      "tags": [
+        "night",
+        "blue",
+        "dark",
+        "moonlight"
+      ],
+      "file": "luts/day-for-night.cube",
+      "size": 132807,
+      "credit": "",
+      "thumb": "thumbs/luts-day-for-night.jpg"
+    },
+    {
+      "id": "luts/desert-heat",
+      "kind": "lut",
+      "name": "Desert Heat",
+      "desc": "Dry ochre earth, burnt oranges and bleached sky.",
+      "tags": [
+        "desert",
+        "hot",
+        "warm",
+        "dry"
+      ],
+      "file": "luts/desert-heat.cube",
+      "size": 132794,
+      "credit": "",
+      "thumb": "thumbs/luts-desert-heat.jpg"
+    },
+    {
+      "id": "luts/faded-matte",
+      "kind": "lut",
+      "name": "Faded Matte",
+      "desc": "Lifted blacks and soft colour for a flat, matte film look.",
+      "tags": [
+        "matte",
+        "faded",
+        "lifted",
+        "indie"
+      ],
+      "file": "luts/faded-matte.cube",
+      "size": 132809,
+      "credit": "",
+      "thumb": "thumbs/luts-faded-matte.jpg"
+    },
+    {
+      "id": "luts/food-pop",
+      "kind": "lut",
+      "name": "Food Pop",
+      "desc": "Warm, juicy and appetising: bright reds, oranges and greens.",
+      "tags": [
+        "food",
+        "warm",
+        "saturated",
+        "appetising"
+      ],
+      "file": "luts/food-pop.cube",
+      "size": 132811,
+      "credit": "",
+      "thumb": "thumbs/luts-food-pop.jpg"
+    },
+    {
+      "id": "luts/forest-deep",
+      "kind": "lut",
+      "name": "Forest Deep",
+      "desc": "Dense, deep greens and cool shade for woodland scenes.",
+      "tags": [
+        "forest",
+        "green",
+        "nature",
+        "deep"
+      ],
+      "file": "luts/forest-deep.cube",
+      "size": 132805,
+      "credit": "",
+      "thumb": "thumbs/luts-forest-deep.jpg"
+    },
+    {
+      "id": "luts/gaming-vibrant",
+      "kind": "lut",
+      "name": "Gaming Vibrant",
+      "desc": "Saturated, hard-hitting colour with cool shadows for gameplay.",
+      "tags": [
+        "gaming",
+        "vibrant",
+        "saturated",
+        "bold"
+      ],
+      "file": "luts/gaming-vibrant.cube",
+      "size": 132824,
+      "credit": "",
+      "thumb": "thumbs/luts-gaming-vibrant.jpg"
+    },
+    {
+      "id": "luts/golden-hour",
+      "kind": "lut",
+      "name": "Golden Hour",
+      "desc": "Low sun glow: warm highlights, bright and flattering.",
+      "tags": [
+        "warm",
+        "golden",
+        "sunset",
+        "glow"
+      ],
+      "file": "luts/golden-hour.cube",
+      "size": 132803,
+      "credit": "",
+      "thumb": "thumbs/luts-golden-hour.jpg"
+    },
+    {
+      "id": "luts/horror",
+      "kind": "lut",
+      "name": "Horror",
+      "desc": "Sickly desaturated green-grey with crushed, cold shadows.",
+      "tags": [
+        "horror",
+        "dark",
+        "creepy",
+        "desaturated"
+      ],
+      "file": "luts/horror.cube",
+      "size": 132804,
+      "credit": "",
+      "thumb": "thumbs/luts-horror.jpg"
+    },
+    {
+      "id": "luts/moody-green",
+      "kind": "lut",
+      "name": "Moody Green",
+      "desc": "Dark, cool, green-tinted shadows with rich foliage.",
+      "tags": [
+        "moody",
+        "green",
+        "dark",
+        "cinematic"
+      ],
+      "file": "luts/moody-green.cube",
+      "size": 132804,
+      "credit": "",
+      "thumb": "thumbs/luts-moody-green.jpg"
+    },
+    {
+      "id": "luts/muted-documentary",
+      "kind": "lut",
+      "name": "Muted Documentary",
+      "desc": "Low-saturation, natural and unfussy, with a touch of cool shade.",
+      "tags": [
+        "documentary",
+        "muted",
+        "natural",
+        "neutral"
+      ],
+      "file": "luts/muted-documentary.cube",
+      "size": 132836,
+      "credit": "",
+      "thumb": "thumbs/luts-muted-documentary.jpg"
+    },
+    {
+      "id": "luts/neon-night",
+      "kind": "lut",
+      "name": "Neon Night",
+      "desc": "Deep blue-violet shadows and electric colour for city lights.",
+      "tags": [
+        "neon",
+        "night",
+        "vivid",
+        "purple"
+      ],
+      "file": "luts/neon-night.cube",
+      "size": 132809,
+      "credit": "",
+      "thumb": "thumbs/luts-neon-night.jpg"
+    },
+    {
+      "id": "luts/ocean-teal",
+      "kind": "lut",
+      "name": "Ocean Teal",
+      "desc": "Turquoise water and cool shadows with warm skin kept natural.",
+      "tags": [
+        "ocean",
+        "teal",
+        "water",
+        "cool"
+      ],
+      "file": "luts/ocean-teal.cube",
+      "size": 132807,
+      "credit": "",
+      "thumb": "thumbs/luts-ocean-teal.jpg"
+    },
+    {
+      "id": "luts/pastel-dream",
+      "kind": "lut",
+      "name": "Pastel Dream",
+      "desc": "Soft, airy, lifted colour in candy pinks and blues.",
+      "tags": [
+        "pastel",
+        "soft",
+        "dreamy",
+        "airy"
+      ],
+      "file": "luts/pastel-dream.cube",
+      "size": 132803,
+      "credit": "",
+      "thumb": "thumbs/luts-pastel-dream.jpg"
+    },
+    {
+      "id": "luts/punchy-vlog",
+      "kind": "lut",
+      "name": "Punchy Vlog",
+      "desc": "Bright, clean and contrasty with lively colour; made for faces.",
+      "tags": [
+        "vlog",
+        "bright",
+        "punchy",
+        "clean"
+      ],
+      "file": "luts/punchy-vlog.cube",
+      "size": 132814,
+      "credit": "",
+      "thumb": "thumbs/luts-punchy-vlog.jpg"
+    },
+    {
+      "id": "luts/rose-gold",
+      "kind": "lut",
+      "name": "Rose Gold",
+      "desc": "Soft pink-gold glow with creamy skin and light shadows.",
+      "tags": [
+        "rose",
+        "pink",
+        "gold",
+        "soft",
+        "glam"
+      ],
+      "file": "luts/rose-gold.cube",
+      "size": 132803,
+      "credit": "",
+      "thumb": "thumbs/luts-rose-gold.jpg"
+    },
+    {
+      "id": "luts/sepia",
+      "kind": "lut",
+      "name": "Sepia",
+      "desc": "Classic brown-toned monochrome.",
+      "tags": [
+        "sepia",
+        "brown",
+        "old",
+        "monochrome"
+      ],
+      "file": "luts/sepia.cube",
+      "size": 132772,
+      "credit": "",
+      "thumb": "thumbs/luts-sepia.jpg"
+    },
+    {
+      "id": "luts/sunset-magenta",
+      "kind": "lut",
+      "name": "Sunset Magenta",
+      "desc": "Pink and magenta dusk glow over deep violet shadows.",
+      "tags": [
+        "sunset",
+        "magenta",
+        "pink",
+        "dusk"
+      ],
+      "file": "luts/sunset-magenta.cube",
+      "size": 132809,
+      "credit": "",
+      "thumb": "thumbs/luts-sunset-magenta.jpg"
+    },
+    {
+      "id": "luts/teal-and-orange",
+      "kind": "lut",
+      "name": "Teal and Orange",
+      "desc": "Warm skin, teal shadows: the blockbuster look.",
+      "tags": [
+        "cinematic",
+        "warm",
+        "teal"
+      ],
+      "file": "luts/teal-and-orange.cube",
+      "size": 132799,
+      "credit": "",
+      "thumb": "thumbs/luts-teal-and-orange.jpg"
+    },
+    {
+      "id": "luts/travel-vivid",
+      "kind": "lut",
+      "name": "Travel Vivid",
+      "desc": "Deep blue skies, rich greens and warm light for holiday footage.",
+      "tags": [
+        "travel",
+        "vivid",
+        "bright",
+        "holiday"
+      ],
+      "file": "luts/travel-vivid.cube",
+      "size": 132820,
+      "credit": "",
+      "thumb": "thumbs/luts-travel-vivid.jpg"
+    },
+    {
+      "id": "luts/vintage-70s",
+      "kind": "lut",
+      "name": "Vintage 70s",
+      "desc": "Warm amber cast, creamy highlights and olive greens.",
+      "tags": [
+        "retro",
+        "vintage",
+        "warm",
+        "amber"
+      ],
+      "file": "luts/vintage-70s.cube",
+      "size": 132803,
+      "credit": "",
+      "thumb": "thumbs/luts-vintage-70s.jpg"
+    },
+    {
+      "id": "luts/warm-film",
+      "kind": "lut",
+      "name": "Warm Film",
+      "desc": "Soft, golden, slightly faded colour with gentle contrast.",
+      "tags": [
+        "film",
+        "warm",
+        "soft",
+        "nostalgic"
+      ],
+      "file": "luts/warm-film.cube",
+      "size": 132804,
+      "credit": "",
+      "thumb": "thumbs/luts-warm-film.jpg"
+    },
+    {
+      "id": "luts/winter-blue",
+      "kind": "lut",
+      "name": "Winter Blue",
+      "desc": "Crisp, cold and bright with icy blue shadows.",
+      "tags": [
+        "cold",
+        "blue",
+        "winter",
+        "crisp"
+      ],
+      "file": "luts/winter-blue.cube",
+      "size": 132794,
+      "credit": "",
+      "thumb": "thumbs/luts-winter-blue.jpg"
+    },
+    {
+      "id": "html/bell-ring",
+      "kind": "html",
+      "name": "Bell Ring",
+      "desc": "A notification bell swings and rings with sound-wave arcs while a red badge pops in.",
+      "tags": [
+        "bell",
+        "notification",
+        "ring",
+        "badge",
+        "alert",
+        "subscribe",
+        "youtuber"
+      ],
+      "file": "html/bell-ring.html",
+      "size": 4083,
+      "credit": "",
+      "thumb": "thumbs/html-bell-ring.jpg"
+    },
+    {
+      "id": "html/callout-arrow",
+      "kind": "html",
+      "name": "Callout Arrow",
+      "desc": "A hand-drawn curved arrow sketches itself toward the lower left, ending at a marker-style label.",
+      "tags": [
+        "arrow",
+        "callout",
+        "pointer",
+        "hand-drawn",
+        "label",
+        "highlight"
+      ],
+      "file": "html/callout-arrow.html",
+      "size": 2622,
+      "credit": "",
+      "thumb": "thumbs/html-callout-arrow.jpg"
+    },
+    {
+      "id": "html/chapter-card",
+      "kind": "html",
+      "name": "Chapter Card",
+      "desc": "A centred chapter title card on a dimmed backdrop with lines that draw in.",
+      "tags": [
+        "chapter",
+        "title card",
+        "section",
+        "divider"
+      ],
+      "file": "html/chapter-card.html",
+      "size": 2707,
+      "credit": "",
+      "thumb": "thumbs/html-chapter-card.jpg"
+    },
+    {
+      "id": "html/checklist",
+      "kind": "html",
+      "name": "Checklist",
+      "desc": "A titled to-do list whose four items slide in and get ticked off one after another.",
+      "tags": [
+        "checklist",
+        "todo",
+        "tick",
+        "steps",
+        "list",
+        "tasks"
+      ],
+      "file": "html/checklist.html",
+      "size": 3952,
+      "credit": "",
+      "thumb": "thumbs/html-checklist.jpg"
+    },
+    {
+      "id": "html/comment-bubble",
+      "kind": "html",
+      "name": "Comment Bubble",
+      "desc": "A video-site style comment card with avatar, username, time and likes slides up into view.",
+      "tags": [
+        "comment",
+        "social",
+        "reaction",
+        "chat",
+        "card",
+        "youtuber"
+      ],
+      "file": "html/comment-bubble.html",
+      "size": 3630,
+      "credit": "",
+      "thumb": "thumbs/html-comment-bubble.jpg"
+    },
+    {
+      "id": "html/countdown",
+      "kind": "html",
+      "name": "Countdown 5 to 1",
+      "desc": "A 5 to 1 countdown inside a ring that empties every second.",
+      "tags": [
+        "countdown",
+        "timer",
+        "intro",
+        "numbers"
+      ],
+      "file": "html/countdown.html",
+      "size": 2193,
+      "credit": "",
+      "thumb": "thumbs/html-countdown.jpg"
+    },
+    {
+      "id": "html/counter",
+      "kind": "html",
+      "name": "Number Counter",
+      "desc": "A big number that counts up from zero to your target with a label underneath.",
+      "tags": [
+        "counter",
+        "number",
+        "milestone",
+        "subscribers",
+        "stats"
+      ],
+      "file": "html/counter.html",
+      "size": 2477,
+      "credit": "",
+      "thumb": "thumbs/html-counter.jpg"
+    },
+    {
+      "id": "html/emoji-burst",
+      "kind": "html",
+      "name": "Emoji Burst",
+      "desc": "A dozen emoji pop out of the centre, spin outward and fade away.",
+      "tags": [
+        "emoji",
+        "burst",
+        "reaction",
+        "particles",
+        "fun"
+      ],
+      "file": "html/emoji-burst.html",
+      "size": 2637,
+      "credit": "",
+      "thumb": "thumbs/html-emoji-burst.jpg"
+    },
+    {
+      "id": "html/end-screen",
+      "kind": "html",
+      "name": "End Screen",
+      "desc": "A full-frame end screen: two video frames, a round channel avatar with its name and a subscribe pill, all animating in.",
+      "tags": [
+        "end screen",
+        "outro",
+        "subscribe",
+        "watch next",
+        "avatar",
+        "youtuber"
+      ],
+      "file": "html/end-screen.html",
+      "size": 6156,
+      "credit": "",
+      "thumb": "thumbs/html-end-screen.jpg"
+    },
+    {
+      "id": "html/game-chat-bubble",
+      "kind": "html",
+      "name": "Game Chat Bubble",
+      "desc": "A blocky game-style chat bubble with a tail that bounces in over a character's head, with an optional username tag.",
+      "tags": [
+        "chat",
+        "bubble",
+        "speech",
+        "game",
+        "block game",
+        "gaming",
+        "text"
+      ],
+      "file": "html/game-chat-bubble.html",
+      "size": 2934,
+      "credit": "",
+      "thumb": "thumbs/html-game-chat-bubble.jpg"
+    },
+    {
+      "id": "html/intro-title-bold",
+      "kind": "html",
+      "name": "Bold Intro Title",
+      "desc": "A big bold kinetic intro: a colour wipe, the title slams in with a shake and echo, an accent bar wipes under it and the subtitle rises.",
+      "tags": [
+        "intro",
+        "title",
+        "bold",
+        "kinetic",
+        "opener",
+        "typography",
+        "energetic"
+      ],
+      "file": "html/intro-title-bold.html",
+      "size": 4479,
+      "credit": "",
+      "thumb": "thumbs/html-intro-title-bold.jpg"
+    },
+    {
+      "id": "html/intro-title-cinematic",
+      "kind": "html",
+      "name": "Cinematic Intro Title",
+      "desc": "A slow, elegant film-style title: letters drift apart as they fade in, thin lines draw out and a soft light glows behind.",
+      "tags": [
+        "intro",
+        "title",
+        "cinematic",
+        "film",
+        "elegant",
+        "trailer",
+        "documentary",
+        "minimal"
+      ],
+      "file": "html/intro-title-cinematic.html",
+      "size": 4830,
+      "credit": "",
+      "thumb": "thumbs/html-intro-title-cinematic.jpg"
+    },
+    {
+      "id": "html/intro-title-glitch",
+      "kind": "html",
+      "name": "Glitch Intro Title",
+      "desc": "A dark tech intro: the title flickers on with an RGB-split glitch over scanlines, and the subtitle types out.",
+      "tags": [
+        "intro",
+        "title",
+        "glitch",
+        "tech",
+        "cyber",
+        "rgb split",
+        "scanlines",
+        "gaming"
+      ],
+      "file": "html/intro-title-glitch.html",
+      "size": 7224,
+      "credit": "",
+      "thumb": "thumbs/html-intro-title-glitch.jpg"
+    },
+    {
+      "id": "html/like-pop",
+      "kind": "html",
+      "name": "Like Pop",
+      "desc": "A thumbs-up pops with a ring burst and confetti particles, with a like counter beside it.",
+      "tags": [
+        "like",
+        "thumbs up",
+        "social",
+        "pop",
+        "burst",
+        "counter",
+        "youtuber"
+      ],
+      "file": "html/like-pop.html",
+      "size": 3849,
+      "credit": "",
+      "thumb": "thumbs/html-like-pop.jpg"
+    },
+    {
+      "id": "html/lower-third-bar",
+      "kind": "html",
+      "name": "Lower Third Bar",
+      "desc": "A thick accent bar grows upward, then the name and role slide out from behind it.",
+      "tags": [
+        "lower third",
+        "name",
+        "title",
+        "bar",
+        "accent"
+      ],
+      "file": "html/lower-third-bar.html",
+      "size": 2180,
+      "credit": "",
+      "thumb": "thumbs/html-lower-third-bar.jpg"
+    },
+    {
+      "id": "html/lower-third-boxed",
+      "kind": "html",
+      "name": "Lower Third Boxed",
+      "desc": "Two stacked boxes, name on the accent colour and role on white, revealed with an offset wipe.",
+      "tags": [
+        "lower third",
+        "name",
+        "title",
+        "boxed",
+        "news"
+      ],
+      "file": "html/lower-third-boxed.html",
+      "size": 1816,
+      "credit": "",
+      "thumb": "thumbs/html-lower-third-boxed.jpg"
+    },
+    {
+      "id": "html/lower-third-clean",
+      "kind": "html",
+      "name": "Lower Third Clean",
+      "desc": "A name and role on a soft dark plate that wipes in from the left and slides away at the end.",
+      "tags": [
+        "lower third",
+        "name",
+        "title",
+        "clean",
+        "interview"
+      ],
+      "file": "html/lower-third-clean.html",
+      "size": 2206,
+      "credit": "",
+      "thumb": "thumbs/html-lower-third-clean.jpg"
+    },
+    {
+      "id": "html/lower-third-gradient",
+      "kind": "html",
+      "name": "Lower Third Gradient",
+      "desc": "A pill-shaped gradient plate with a round icon dot, a name and a role.",
+      "tags": [
+        "lower third",
+        "name",
+        "title",
+        "gradient",
+        "pill"
+      ],
+      "file": "html/lower-third-gradient.html",
+      "size": 2608,
+      "credit": "",
+      "thumb": "thumbs/html-lower-third-gradient.jpg"
+    },
+    {
+      "id": "html/lower-third-minimal",
+      "kind": "html",
+      "name": "Lower Third Minimal",
+      "desc": "Just text with a thin accent underline that draws itself, fading up with a strong shadow.",
+      "tags": [
+        "lower third",
+        "name",
+        "title",
+        "minimal",
+        "text"
+      ],
+      "file": "html/lower-third-minimal.html",
+      "size": 2147,
+      "credit": "",
+      "thumb": "thumbs/html-lower-third-minimal.jpg"
+    },
+    {
+      "id": "html/meme-caption",
+      "kind": "html",
+      "name": "Meme Caption",
+      "desc": "Classic meme text: white Impact capitals with a thick black outline, top and bottom, each punching in.",
+      "tags": [
+        "meme",
+        "caption",
+        "impact",
+        "funny",
+        "text",
+        "top text",
+        "bottom text"
+      ],
+      "file": "html/meme-caption.html",
+      "size": 1799,
+      "credit": "",
+      "thumb": "thumbs/html-meme-caption.jpg"
+    },
+    {
+      "id": "html/name-tag",
+      "kind": "html",
+      "name": "Speaker Name Tag",
+      "desc": "A slightly tilted speaker name tag sticker that pops in with a small bounce.",
+      "tags": [
+        "name tag",
+        "sticker",
+        "speaker",
+        "label"
+      ],
+      "file": "html/name-tag.html",
+      "size": 1738,
+      "credit": "",
+      "thumb": "thumbs/html-name-tag.jpg"
+    },
+    {
+      "id": "html/news-ticker",
+      "kind": "html",
+      "name": "News Ticker",
+      "desc": "A breaking-news tag, headline strip and a bottom ticker bar with text scrolling right to left without end.",
+      "tags": [
+        "news",
+        "ticker",
+        "breaking",
+        "headline",
+        "lower third",
+        "broadcast"
+      ],
+      "file": "html/news-ticker.html",
+      "size": 3301,
+      "credit": "",
+      "thumb": "thumbs/html-news-ticker.jpg"
+    },
+    {
+      "id": "html/notification-toast",
+      "kind": "html",
+      "name": "Notification Toast",
+      "desc": "A phone-style notification drops in from the top with an app icon, title and message, then slides away.",
+      "tags": [
+        "notification",
+        "toast",
+        "alert",
+        "popup",
+        "phone",
+        "message"
+      ],
+      "file": "html/notification-toast.html",
+      "size": 3184,
+      "credit": "",
+      "thumb": "thumbs/html-notification-toast.jpg"
+    },
+    {
+      "id": "html/outro-card",
+      "kind": "html",
+      "name": "Outro Card",
+      "desc": "A thanks-for-watching outro with the channel name, a row of social handles with simple icons and a shining subscribe pill.",
+      "tags": [
+        "outro",
+        "thanks for watching",
+        "end card",
+        "social",
+        "handles",
+        "subscribe",
+        "youtuber"
+      ],
+      "file": "html/outro-card.html",
+      "size": 6805,
+      "credit": "",
+      "thumb": "thumbs/html-outro-card.jpg"
+    },
+    {
+      "id": "html/phone-messages",
+      "kind": "html",
+      "name": "Phone Messages",
+      "desc": "A phone text conversation: four bubbles appear one after another, with typing dots before each incoming message.",
+      "tags": [
+        "text message",
+        "chat",
+        "phone",
+        "conversation",
+        "typing",
+        "sms",
+        "story"
+      ],
+      "file": "html/phone-messages.html",
+      "size": 5836,
+      "credit": "",
+      "thumb": "thumbs/html-phone-messages.jpg"
+    },
+    {
+      "id": "html/poll-bars",
+      "kind": "html",
+      "name": "Poll Bars",
+      "desc": "A poll card with a question and three options whose bars grow while the percentages count up.",
+      "tags": [
+        "poll",
+        "vote",
+        "results",
+        "bars",
+        "survey",
+        "percentage",
+        "chart"
+      ],
+      "file": "html/poll-bars.html",
+      "size": 4476,
+      "credit": "",
+      "thumb": "thumbs/html-poll-bars.jpg"
+    },
+    {
+      "id": "html/progress-bar",
+      "kind": "html",
+      "name": "Progress Bar",
+      "desc": "A slim progress bar along the bottom that fills over the whole clip, with a part label.",
+      "tags": [
+        "progress",
+        "bar",
+        "part",
+        "series",
+        "timeline"
+      ],
+      "file": "html/progress-bar.html",
+      "size": 1834,
+      "credit": "",
+      "thumb": "thumbs/html-progress-bar.jpg"
+    },
+    {
+      "id": "html/quote-card",
+      "kind": "html",
+      "name": "Quote Card",
+      "desc": "A rounded quote card with a large quotation mark; the text reveals downward line by line, then the author.",
+      "tags": [
+        "quote",
+        "testimonial",
+        "card",
+        "review",
+        "text"
+      ],
+      "file": "html/quote-card.html",
+      "size": 3055,
+      "credit": "",
+      "thumb": "thumbs/html-quote-card.jpg"
+    },
+    {
+      "id": "html/rating-stars",
+      "kind": "html",
+      "name": "Rating Stars",
+      "desc": "Five stars pop in and fill up to a rating, with a score label.",
+      "tags": [
+        "rating",
+        "stars",
+        "review",
+        "score",
+        "five stars"
+      ],
+      "file": "html/rating-stars.html",
+      "size": 4860,
+      "credit": "",
+      "thumb": "thumbs/html-rating-stars.jpg"
+    },
+    {
+      "id": "html/sale-badge",
+      "kind": "html",
+      "name": "Sale Badge",
+      "desc": "A starburst discount seal spins in with a pop and a shine that keeps sweeping across it.",
+      "tags": [
+        "sale",
+        "badge",
+        "discount",
+        "offer",
+        "starburst",
+        "price"
+      ],
+      "file": "html/sale-badge.html",
+      "size": 4624,
+      "credit": "",
+      "thumb": "thumbs/html-sale-badge.jpg"
+    },
+    {
+      "id": "html/scoreboard",
+      "kind": "html",
+      "name": "Scoreboard",
+      "desc": "A sports scoreboard with two team names, colour chips, scores and a clock in the middle.",
+      "tags": [
+        "scoreboard",
+        "sports",
+        "score",
+        "match",
+        "game",
+        "teams"
+      ],
+      "file": "html/scoreboard.html",
+      "size": 3452,
+      "credit": "",
+      "thumb": "thumbs/html-scoreboard.jpg"
+    },
+    {
+      "id": "html/social-handles",
+      "kind": "html",
+      "name": "Social Handle",
+      "desc": "A pill with a cycling generic glyph and your @handle that slides in and shimmers.",
+      "tags": [
+        "social",
+        "handle",
+        "follow",
+        "username",
+        "pill"
+      ],
+      "file": "html/social-handles.html",
+      "size": 2692,
+      "credit": "",
+      "thumb": "thumbs/html-social-handles.jpg"
+    },
+    {
+      "id": "html/stream-chat",
+      "kind": "html",
+      "name": "Stream Chat",
+      "desc": "A live-stream chat panel: messages with coloured usernames arrive one at a time and push the older ones up.",
+      "tags": [
+        "chat",
+        "live",
+        "stream",
+        "streaming",
+        "comments",
+        "gaming",
+        "overlay"
+      ],
+      "file": "html/stream-chat.html",
+      "size": 7379,
+      "credit": "",
+      "thumb": "thumbs/html-stream-chat.jpg"
+    },
+    {
+      "id": "html/subscribe-bell",
+      "kind": "html",
+      "name": "Subscribe and Bell",
+      "desc": "A subscribe button and a notification bell: the cursor clicks Subscribe, then the bell, which rings with a little burst.",
+      "tags": [
+        "subscribe",
+        "bell",
+        "notification",
+        "button",
+        "cursor",
+        "social",
+        "youtuber"
+      ],
+      "file": "html/subscribe-bell.html",
+      "size": 6362,
+      "credit": "",
+      "thumb": "thumbs/html-subscribe-bell.jpg"
+    },
+    {
+      "id": "html/subscribe-button",
+      "kind": "html",
+      "name": "Subscribe Button",
+      "desc": "A video-site subscribe button pops in, a cursor clicks it and it turns into a grey Subscribed state with a tick.",
+      "tags": [
+        "subscribe",
+        "button",
+        "cursor",
+        "click",
+        "social",
+        "youtuber"
+      ],
+      "file": "html/subscribe-button.html",
+      "size": 3868,
+      "credit": "",
+      "thumb": "thumbs/html-subscribe-button.jpg"
+    },
+    {
+      "id": "html/versus-card",
+      "kind": "html",
+      "name": "Versus Card",
+      "desc": "Two name plates slam in from either side of a diagonal split and a big VS punches in with a flash.",
+      "tags": [
+        "versus",
+        "vs",
+        "battle",
+        "matchup",
+        "split",
+        "intro",
+        "challenge"
+      ],
+      "file": "html/versus-card.html",
+      "size": 4729,
+      "credit": "",
+      "thumb": "thumbs/html-versus-card.jpg"
+    },
+    {
+      "id": "icons/arrow-down",
+      "kind": "icon",
+      "name": "Arrow down",
+      "desc": "arrow, down, direction",
+      "tags": [
+        "arrow",
+        "down",
+        "direction"
+      ],
+      "file": "icons/arrow-down.svg",
+      "size": 270,
+      "credit": "",
+      "thumb": "thumbs/icons-arrow-down.jpg"
+    },
+    {
+      "id": "icons/arrow-left",
+      "kind": "icon",
+      "name": "Arrow left",
+      "desc": "arrow, left, direction",
+      "tags": [
+        "arrow",
+        "left",
+        "direction"
+      ],
+      "file": "icons/arrow-left.svg",
+      "size": 271,
+      "credit": "",
+      "thumb": "thumbs/icons-arrow-left.jpg"
+    },
+    {
+      "id": "icons/arrow-right",
+      "kind": "icon",
+      "name": "Arrow right",
+      "desc": "arrow, right, direction",
+      "tags": [
+        "arrow",
+        "right",
+        "direction"
+      ],
+      "file": "icons/arrow-right.svg",
+      "size": 272,
+      "credit": "",
+      "thumb": "thumbs/icons-arrow-right.jpg"
+    },
+    {
+      "id": "icons/arrow-up",
+      "kind": "icon",
+      "name": "Arrow up",
+      "desc": "arrow, up, direction",
+      "tags": [
+        "arrow",
+        "up",
+        "direction"
+      ],
+      "file": "icons/arrow-up.svg",
+      "size": 267,
+      "credit": "",
+      "thumb": "thumbs/icons-arrow-up.jpg"
+    },
+    {
+      "id": "icons/bell",
+      "kind": "icon",
+      "name": "Bell",
+      "desc": "bell, notification, subscribe",
+      "tags": [
+        "bell",
+        "notification",
+        "subscribe"
+      ],
+      "file": "icons/bell.svg",
+      "size": 329,
+      "credit": "",
+      "thumb": "thumbs/icons-bell.jpg"
+    },
+    {
+      "id": "icons/bookmark",
+      "kind": "icon",
+      "name": "Bookmark",
+      "desc": "bookmark, save, later",
+      "tags": [
+        "bookmark",
+        "save",
+        "later"
+      ],
+      "file": "icons/bookmark.svg",
+      "size": 270,
+      "credit": "",
+      "thumb": "thumbs/icons-bookmark.jpg"
+    },
+    {
+      "id": "icons/camera",
+      "kind": "icon",
+      "name": "Camera",
+      "desc": "camera, photo, picture",
+      "tags": [
+        "camera",
+        "photo",
+        "picture"
+      ],
+      "file": "icons/camera.svg",
+      "size": 301,
+      "credit": "",
+      "thumb": "thumbs/icons-camera.jpg"
+    },
+    {
+      "id": "icons/check",
+      "kind": "icon",
+      "name": "Check",
+      "desc": "check, tick, done, yes",
+      "tags": [
+        "check",
+        "tick",
+        "done",
+        "yes"
+      ],
+      "file": "icons/check.svg",
+      "size": 272,
+      "credit": "",
+      "thumb": "thumbs/icons-check.jpg"
+    },
+    {
+      "id": "icons/clock",
+      "kind": "icon",
+      "name": "Clock",
+      "desc": "clock, time, duration, watch",
+      "tags": [
+        "clock",
+        "time",
+        "duration",
+        "watch"
+      ],
+      "file": "icons/clock.svg",
+      "size": 297,
+      "credit": "",
+      "thumb": "thumbs/icons-clock.jpg"
+    },
+    {
+      "id": "icons/coin",
+      "kind": "icon",
+      "name": "Coin",
+      "desc": "coin, money, gold, currency",
+      "tags": [
+        "coin",
+        "money",
+        "gold",
+        "currency"
+      ],
+      "file": "icons/coin.svg",
+      "size": 337,
+      "credit": "",
+      "thumb": "thumbs/icons-coin.jpg"
+    },
+    {
+      "id": "icons/comment",
+      "kind": "icon",
+      "name": "Comment",
+      "desc": "speech bubble, comment, chat",
+      "tags": [
+        "speech bubble",
+        "comment",
+        "chat"
+      ],
+      "file": "icons/comment.svg",
+      "size": 432,
+      "credit": "",
+      "thumb": "thumbs/icons-comment.jpg"
+    },
+    {
+      "id": "icons/cross",
+      "kind": "icon",
+      "name": "Cross",
+      "desc": "cross, close, no, x",
+      "tags": [
+        "cross",
+        "close",
+        "no",
+        "x"
+      ],
+      "file": "icons/cross.svg",
+      "size": 273,
+      "credit": "",
+      "thumb": "thumbs/icons-cross.jpg"
+    },
+    {
+      "id": "icons/crown",
+      "kind": "icon",
+      "name": "Crown",
+      "desc": "crown, king, winner, premium",
+      "tags": [
+        "crown",
+        "king",
+        "winner",
+        "premium"
+      ],
+      "file": "icons/crown.svg",
+      "size": 282,
+      "credit": "",
+      "thumb": "thumbs/icons-crown.jpg"
+    },
+    {
+      "id": "icons/dislike",
+      "kind": "icon",
+      "name": "Dislike",
+      "desc": "thumbs down, dislike, social",
+      "tags": [
+        "thumbs down",
+        "dislike",
+        "social"
+      ],
+      "file": "icons/dislike.svg",
+      "size": 375,
+      "credit": "",
+      "thumb": "thumbs/icons-dislike.jpg"
+    },
+    {
+      "id": "icons/download",
+      "kind": "icon",
+      "name": "Download",
+      "desc": "download, save, arrow, tray",
+      "tags": [
+        "download",
+        "save",
+        "arrow",
+        "tray"
+      ],
+      "file": "icons/download.svg",
+      "size": 309,
+      "credit": "",
+      "thumb": "thumbs/icons-download.jpg"
+    },
+    {
+      "id": "icons/eye",
+      "kind": "icon",
+      "name": "Eye",
+      "desc": "eye, view, watch, visible",
+      "tags": [
+        "eye",
+        "view",
+        "watch",
+        "visible"
+      ],
+      "file": "icons/eye.svg",
+      "size": 348,
+      "credit": "",
+      "thumb": "thumbs/icons-eye.jpg"
+    },
+    {
+      "id": "icons/fire",
+      "kind": "icon",
+      "name": "Fire",
+      "desc": "fire, flame, hot, trending",
+      "tags": [
+        "fire",
+        "flame",
+        "hot",
+        "trending"
+      ],
+      "file": "icons/fire.svg",
+      "size": 366,
+      "credit": "",
+      "thumb": "thumbs/icons-fire.jpg"
+    },
+    {
+      "id": "icons/flag",
+      "kind": "icon",
+      "name": "Flag",
+      "desc": "flag, mark, report, goal",
+      "tags": [
+        "flag",
+        "mark",
+        "report",
+        "goal"
+      ],
+      "file": "icons/flag.svg",
+      "size": 332,
+      "credit": "",
+      "thumb": "thumbs/icons-flag.jpg"
+    },
+    {
+      "id": "icons/gamepad",
+      "kind": "icon",
+      "name": "Gamepad",
+      "desc": "gamepad, controller, gaming, game",
+      "tags": [
+        "gamepad",
+        "controller",
+        "gaming",
+        "game"
+      ],
+      "file": "icons/gamepad.svg",
+      "size": 394,
+      "credit": "",
+      "thumb": "thumbs/icons-gamepad.jpg"
+    },
+    {
+      "id": "icons/gift",
+      "kind": "icon",
+      "name": "Gift",
+      "desc": "gift, present, reward, giveaway",
+      "tags": [
+        "gift",
+        "present",
+        "reward",
+        "giveaway"
+      ],
+      "file": "icons/gift.svg",
+      "size": 561,
+      "credit": "",
+      "thumb": "thumbs/icons-gift.jpg"
+    },
+    {
+      "id": "icons/heart",
+      "kind": "icon",
+      "name": "Heart",
+      "desc": "heart, love, favorite",
+      "tags": [
+        "heart",
+        "love",
+        "favorite"
+      ],
+      "file": "icons/heart.svg",
+      "size": 279,
+      "credit": "",
+      "thumb": "thumbs/icons-heart.jpg"
+    },
+    {
+      "id": "icons/info",
+      "kind": "icon",
+      "name": "Info",
+      "desc": "info, information, about, details",
+      "tags": [
+        "info",
+        "information",
+        "about",
+        "details"
+      ],
+      "file": "icons/info.svg",
+      "size": 298,
+      "credit": "",
+      "thumb": "thumbs/icons-info.jpg"
+    },
+    {
+      "id": "icons/lightning",
+      "kind": "icon",
+      "name": "Lightning",
+      "desc": "lightning, bolt, energy, fast",
+      "tags": [
+        "lightning",
+        "bolt",
+        "energy",
+        "fast"
+      ],
+      "file": "icons/lightning.svg",
+      "size": 287,
+      "credit": "",
+      "thumb": "thumbs/icons-lightning.jpg"
+    },
+    {
+      "id": "icons/like",
+      "kind": "icon",
+      "name": "Like",
+      "desc": "thumbs up, like, social",
+      "tags": [
+        "thumbs up",
+        "like",
+        "social"
+      ],
+      "file": "icons/like.svg",
+      "size": 360,
+      "credit": "",
+      "thumb": "thumbs/icons-like.jpg"
+    },
+    {
+      "id": "icons/link",
+      "kind": "icon",
+      "name": "Link",
+      "desc": "link, chain, url",
+      "tags": [
+        "link",
+        "chain",
+        "url"
+      ],
+      "file": "icons/link.svg",
+      "size": 349,
+      "credit": "",
+      "thumb": "thumbs/icons-link.jpg"
+    },
+    {
+      "id": "icons/lock",
+      "kind": "icon",
+      "name": "Lock",
+      "desc": "lock, secure, private, locked",
+      "tags": [
+        "lock",
+        "secure",
+        "private",
+        "locked"
+      ],
+      "file": "icons/lock.svg",
+      "size": 473,
+      "credit": "",
+      "thumb": "thumbs/icons-lock.jpg"
+    },
+    {
+      "id": "icons/mic",
+      "kind": "icon",
+      "name": "Microphone",
+      "desc": "microphone, mic, voice, audio",
+      "tags": [
+        "microphone",
+        "mic",
+        "voice",
+        "audio"
+      ],
+      "file": "icons/mic.svg",
+      "size": 366,
+      "credit": "",
+      "thumb": "thumbs/icons-mic.jpg"
+    },
+    {
+      "id": "icons/music",
+      "kind": "icon",
+      "name": "Music",
+      "desc": "music, note, song, audio",
+      "tags": [
+        "music",
+        "note",
+        "song",
+        "audio"
+      ],
+      "file": "icons/music.svg",
+      "size": 335,
+      "credit": "",
+      "thumb": "thumbs/icons-music.jpg"
+    },
+    {
+      "id": "icons/pause",
+      "kind": "icon",
+      "name": "Pause",
+      "desc": "pause, stop, video",
+      "tags": [
+        "pause",
+        "stop",
+        "video"
+      ],
+      "file": "icons/pause.svg",
+      "size": 247,
+      "credit": "",
+      "thumb": "thumbs/icons-pause.jpg"
+    },
+    {
+      "id": "icons/pin",
+      "kind": "icon",
+      "name": "Pin",
+      "desc": "map pin, location, place",
+      "tags": [
+        "map pin",
+        "location",
+        "place"
+      ],
+      "file": "icons/pin.svg",
+      "size": 288,
+      "credit": "",
+      "thumb": "thumbs/icons-pin.jpg"
+    },
+    {
+      "id": "icons/play",
+      "kind": "icon",
+      "name": "Play",
+      "desc": "play, start, video",
+      "tags": [
+        "play",
+        "start",
+        "video"
+      ],
+      "file": "icons/play.svg",
+      "size": 240,
+      "credit": "",
+      "thumb": "thumbs/icons-play.jpg"
+    },
+    {
+      "id": "icons/question",
+      "kind": "icon",
+      "name": "Question",
+      "desc": "question, help, why, faq",
+      "tags": [
+        "question",
+        "help",
+        "why",
+        "faq"
+      ],
+      "file": "icons/question.svg",
+      "size": 366,
+      "credit": "",
+      "thumb": "thumbs/icons-question.jpg"
+    },
+    {
+      "id": "icons/rocket",
+      "kind": "icon",
+      "name": "Rocket",
+      "desc": "rocket, launch, boost, space",
+      "tags": [
+        "rocket",
+        "launch",
+        "boost",
+        "space"
+      ],
+      "file": "icons/rocket.svg",
+      "size": 360,
+      "credit": "",
+      "thumb": "thumbs/icons-rocket.jpg"
+    },
+    {
+      "id": "icons/search",
+      "kind": "icon",
+      "name": "Search",
+      "desc": "search, magnifier, find, zoom",
+      "tags": [
+        "search",
+        "magnifier",
+        "find",
+        "zoom"
+      ],
+      "file": "icons/search.svg",
+      "size": 409,
+      "credit": "",
+      "thumb": "thumbs/icons-search.jpg"
+    },
+    {
+      "id": "icons/share",
+      "kind": "icon",
+      "name": "Share",
+      "desc": "share, forward, arrow",
+      "tags": [
+        "share",
+        "forward",
+        "arrow"
+      ],
+      "file": "icons/share.svg",
+      "size": 294,
+      "credit": "",
+      "thumb": "thumbs/icons-share.jpg"
+    },
+    {
+      "id": "icons/sparkle",
+      "kind": "icon",
+      "name": "Sparkle",
+      "desc": "sparkle, magic, shine, new",
+      "tags": [
+        "sparkle",
+        "magic",
+        "shine",
+        "new"
+      ],
+      "file": "icons/sparkle.svg",
+      "size": 353,
+      "credit": "",
+      "thumb": "thumbs/icons-sparkle.jpg"
+    },
+    {
+      "id": "icons/star",
+      "kind": "icon",
+      "name": "Star",
+      "desc": "star, favorite, rating",
+      "tags": [
+        "star",
+        "favorite",
+        "rating"
+      ],
+      "file": "icons/star.svg",
+      "size": 320,
+      "credit": "",
+      "thumb": "thumbs/icons-star.jpg"
+    },
+    {
+      "id": "icons/trophy",
+      "kind": "icon",
+      "name": "Trophy",
+      "desc": "trophy, cup, winner, award",
+      "tags": [
+        "trophy",
+        "cup",
+        "winner",
+        "award"
+      ],
+      "file": "icons/trophy.svg",
+      "size": 448,
+      "credit": "",
+      "thumb": "thumbs/icons-trophy.jpg"
+    },
+    {
+      "id": "icons/user",
+      "kind": "icon",
+      "name": "User",
+      "desc": "user, person, profile, account",
+      "tags": [
+        "user",
+        "person",
+        "profile",
+        "account"
+      ],
+      "file": "icons/user.svg",
+      "size": 259,
+      "credit": "",
+      "thumb": "thumbs/icons-user.jpg"
+    },
+    {
+      "id": "icons/warning",
+      "kind": "icon",
+      "name": "Warning",
+      "desc": "warning, alert, caution, attention",
+      "tags": [
+        "warning",
+        "alert",
+        "caution",
+        "attention"
+      ],
+      "file": "icons/warning.svg",
+      "size": 406,
+      "credit": "",
+      "thumb": "thumbs/icons-warning.jpg"
+    },
+    {
+      "id": "skills/b-roll",
+      "kind": "skill",
+      "name": "b-roll",
+      "desc": "Cover talking-head sections with cutaway footage from your library.",
+      "tags": [],
+      "file": "skills/b-roll.md",
+      "size": 2071,
+      "credit": "",
+      "thumb": ""
+    },
+    {
+      "id": "skills/captions",
+      "kind": "skill",
+      "name": "captions",
+      "desc": "Transcribe the timeline and add styled captions.",
+      "tags": [],
+      "file": "skills/captions.md",
+      "size": 2080,
+      "credit": "",
+      "thumb": ""
+    },
+    {
+      "id": "skills/chapters",
+      "kind": "skill",
+      "name": "chapters",
+      "desc": "Find the topic changes and add chapter markers with titles.",
+      "tags": [],
+      "file": "skills/chapters.md",
+      "size": 1898,
+      "credit": "",
+      "thumb": ""
+    },
+    {
+      "id": "skills/clean-audio",
+      "kind": "skill",
+      "name": "clean-audio",
+      "desc": "Clean up speech audio: repair, level it and duck music under it.",
+      "tags": [],
+      "file": "skills/clean-audio.md",
+      "size": 2101,
+      "credit": "",
+      "thumb": ""
+    },
+    {
+      "id": "skills/color-match",
+      "kind": "skill",
+      "name": "color-match",
+      "desc": "Make clips from different cameras or lighting look consistent.",
+      "tags": [],
+      "file": "skills/color-match.md",
+      "size": 2000,
+      "credit": "",
+      "thumb": ""
+    },
+    {
+      "id": "skills/create-skill",
+      "kind": "skill",
+      "name": "create-skill",
+      "desc": "Write a new assistant skill from your description and save it.",
+      "tags": [],
+      "file": "skills/create-skill.md",
+      "size": 2592,
+      "credit": "",
+      "thumb": ""
+    },
+    {
+      "id": "skills/cut-silences",
+      "kind": "skill",
+      "name": "cut-silences",
+      "desc": "Remove silences and dead air from the selected clips (preview first).",
+      "tags": [],
+      "file": "skills/cut-silences.md",
+      "size": 1950,
+      "credit": "",
+      "thumb": ""
+    },
+    {
+      "id": "skills/description",
+      "kind": "skill",
+      "name": "description",
+      "desc": "Write a title, description and tags for the video from its transcript (answered in chat).",
+      "tags": [],
+      "file": "skills/description.md",
+      "size": 2068,
+      "credit": "",
+      "thumb": ""
+    },
+    {
+      "id": "skills/export-all",
+      "kind": "skill",
+      "name": "export-all",
+      "desc": "Export the video for one or more platforms using the preset list (asks first).",
+      "tags": [],
+      "file": "skills/export-all.md",
+      "size": 2171,
+      "credit": "",
+      "thumb": ""
+    },
+    {
+      "id": "skills/highlight-reel",
+      "kind": "skill",
+      "name": "highlight-reel",
+      "desc": "Build a short highlight reel from the best moments of the selected footage.",
+      "tags": [],
+      "file": "skills/highlight-reel.md",
+      "size": 2034,
+      "credit": "",
+      "thumb": ""
+    },
+    {
+      "id": "skills/intro-outro",
+      "kind": "skill",
+      "name": "intro-outro",
+      "desc": "Add a short intro and outro (title, fade and end card) to the video.",
+      "tags": [],
+      "file": "skills/intro-outro.md",
+      "size": 2107,
+      "credit": "",
+      "thumb": ""
+    },
+    {
+      "id": "skills/lower-third",
+      "kind": "skill",
+      "name": "lower-third",
+      "desc": "Add an animated name and role caption over the video.",
+      "tags": [],
+      "file": "skills/lower-third.md",
+      "size": 2648,
+      "credit": "",
+      "thumb": ""
+    },
+    {
+      "id": "skills/remove-fillers",
+      "kind": "skill",
+      "name": "remove-fillers",
+      "desc": "Cut \"um\", \"uh\" and other filler words out of a transcribed clip.",
+      "tags": [],
+      "file": "skills/remove-fillers.md",
+      "size": 1874,
+      "credit": "",
+      "thumb": ""
+    },
+    {
+      "id": "skills/review",
+      "kind": "skill",
+      "name": "review",
+      "desc": "Review the edit and leave pacing notes as comments on the timeline.",
+      "tags": [],
+      "file": "skills/review.md",
+      "size": 2053,
+      "credit": "",
+      "thumb": ""
+    },
+    {
+      "id": "skills/sfx-pass",
+      "kind": "skill",
+      "name": "sfx-pass",
+      "desc": "Add sound effects at cuts, text and key moments from your library.",
+      "tags": [],
+      "file": "skills/sfx-pass.md",
+      "size": 1970,
+      "credit": "",
+      "thumb": ""
+    },
+    {
+      "id": "skills/shorts",
+      "kind": "skill",
+      "name": "shorts",
+      "desc": "Turn a clip into a vertical 9:16 short with captions and a hook.",
+      "tags": [],
+      "file": "skills/shorts.md",
+      "size": 2421,
+      "credit": "",
+      "thumb": ""
+    },
+    {
+      "id": "skills/sync-to-beat",
+      "kind": "skill",
+      "name": "sync-to-beat",
+      "desc": "Cut or mark the video to the beat of the music track.",
+      "tags": [],
+      "file": "skills/sync-to-beat.md",
+      "size": 2044,
+      "credit": "",
+      "thumb": ""
+    },
+    {
+      "id": "skills/thumbnail-frame",
+      "kind": "skill",
+      "name": "thumbnail-frame",
+      "desc": "Find strong still frames and export one as a thumbnail image.",
+      "tags": [],
+      "file": "skills/thumbnail-frame.md",
+      "size": 1962,
+      "credit": "",
+      "thumb": ""
+    },
+    {
+      "id": "skills/title-card",
+      "kind": "skill",
+      "name": "title-card",
+      "desc": "Add an animated full-screen title card (an HTML scene).",
+      "tags": [],
+      "file": "skills/title-card.md",
+      "size": 2625,
+      "credit": "",
+      "thumb": ""
+    },
+    {
+      "id": "skills/translate-captions",
+      "kind": "skill",
+      "name": "translate-captions",
+      "desc": "Translate the existing captions into another language, keeping their timing.",
+      "tags": [],
+      "file": "skills/translate-captions.md",
+      "size": 1950,
+      "credit": "",
+      "thumb": ""
+    },
+    {
+      "id": "skills/zoom-punch",
+      "kind": "skill",
+      "name": "zoom-punch",
+      "desc": "Add quick punch-in zooms on emphasised moments to a talking clip.",
+      "tags": [],
+      "file": "skills/zoom-punch.md",
+      "size": 2020,
+      "credit": "",
+      "thumb": ""
+    }
+  ]
+}

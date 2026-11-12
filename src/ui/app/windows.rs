@@ -173,6 +173,11 @@ impl App {
                 }
                 if self.settings.cache_mb != cache_before {
                     self.player.set_cache_bytes(crate::playback::cache_budget_bytes(self.settings.cache_mb));
+                    if let Some(s) = self.source.as_mut() {
+                        s.player.set_cache_bytes(
+                            crate::playback::cache_budget_bytes(self.settings.cache_mb) / super::gpu::SOURCE_CACHE_DIV,
+                        );
+                    }
                 }
                 if self.settings.context_menu != ctxmenu_before {
                     let r = if self.settings.context_menu {
@@ -211,7 +216,7 @@ impl App {
                 let snap = self.project.to_json();
                 let changed = match self.project.clip_mut(id).and_then(|c| c.effects.get_mut(i)) {
                     Some(fx) if fx.kind == EffectKind::Shader && fx.shader != src => {
-                        fx.shader = src.clone();
+                        fx.set_shader(&src); // ws:shader-library: keeps control values by index
                         true
                     }
                     _ => false,

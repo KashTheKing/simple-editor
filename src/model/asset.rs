@@ -1,5 +1,6 @@
 use crate::model::*;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
@@ -78,10 +79,97 @@ pub struct Asset {
     /// this asset, ahead of the clip's own effect stack. Unused this wave (schema only).
     #[serde(default)]
     pub effects: Vec<Effect>,
+    // ---- ws:html-layer ----
+    /// An HTML layer / scene: its source and field values live here (the project is self-contained);
+    /// `path` is only the rendered cache file (`engine::html`), re-made whenever it is missing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub html: Option<HtmlSource>,
+}
+
+// ---- ws:html-layer ----
+/// The template behind an HTML asset (`library/README.md`, "HTML layers and scenes").
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct HtmlSource {
+    /// Display name (the template's `<title>` unless the user named it).
+    pub name: String,
+    /// The whole HTML file, CSS included.
+    pub src: String,
+    /// Values for its `se:field`s; a field not listed here uses its default.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub fields: BTreeMap<String, String>,
+    /// Seconds rendered.
+    pub duration: f64,
+    /// Values (constant or keyframed over the layer's own time, in seconds) of the page's `se:param`s:
+    /// each is the CSS variable `--name` while the page is rendered. A param not listed is its default.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub params: BTreeMap<String, Animated>,
+    /// The width in CSS pixels a web page is laid out at (a page without `se:size`); 0 = the template's.
+    /// A saved page has no say in this: a phone-width layout and a desktop one are different pages.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub width: u32,
+    /// A fake mouse over the page: where it is, and whether its button is down, over the layer's own
+    /// time. The renderer really moves and presses a mouse in the page, so `:hover`, `:active` and the
+    /// transitions they start run as they would in a browser (and a cursor is drawn). None = no mouse.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mouse: Option<Mouse>,
+    /// A `.html` file kept in sync with `src` (edit it in any code editor, or the clip, and the other
+    /// follows); empty = not linked. The project still stores `src`, so it opens without the file.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub file: String,
+}
+
+/// The tracks of a fake mouse: position in CSS pixels of the page's viewport, and the button
+/// (a value of 0.5 or more is "pressed").
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Mouse {
+    pub x: Animated,
+    pub y: Animated,
+    pub down: Animated,
+}
+
+impl Mouse {
+    /// A mouse resting at (x, y), button up.
+    pub fn at(x: f64, y: f64) -> Mouse {
+        Mouse { x: Animated::new(x), y: Animated::new(y), down: Animated::new(0.0) }
+    }
+    /// (x, y, pressed) at the layer's second `t`.
+    pub fn state(&self, t: f64) -> (f64, f64, bool) {
+        (self.x.at(t), self.y.at(t), self.down.at(t) >= 0.5)
+    }
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+#[cfg(test)]
+mod html_tests {
+    use super::*;
+
+    #[test]
+    fn a_linked_file_is_saved_and_an_unlinked_one_leaves_no_trace() {
+        let mut h = HtmlSource { name: "x".into(), src: "<p>".into(), duration: 4.0, ..Default::default() };
+        assert!(!serde_json::to_string(&h).unwrap().contains("file"), "unlinked: no field in the project file");
+        h.file = "C:/x/card.html".into();
+        let back: HtmlSource = serde_json::from_str(&serde_json::to_string(&h).unwrap()).unwrap();
+        assert_eq!(back.file, "C:/x/card.html");
+        let old: HtmlSource = serde_json::from_str(r#"{"name":"x","src":"<p>","duration":4.0}"#).unwrap();
+        assert!(old.file.is_empty(), "a project from before linking opens unlinked");
+    }
+}
+
+impl HtmlSource {
+    pub fn field_list(&self) -> Vec<(String, String)> {
+        self.fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+    }
 }
 
 impl Asset {
     pub fn name(&self) -> String {
+        if let Some(h) = self.html.as_ref().filter(|h| !h.name.is_empty()) {
+            return h.name.clone(); // ws:html-layer: the path is a cache hash
+        }
         Path::new(&self.path).file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| self.path.clone())
     }
     pub fn has_video(&self) -> bool {

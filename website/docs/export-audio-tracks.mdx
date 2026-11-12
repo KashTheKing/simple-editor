@@ -1,0 +1,43 @@
+---
+title: Export separate audio tracks
+description: Export dialogue, music and effects as their own audio tracks in the video file, or as WAV stems beside it.
+---
+
+By default an export has one stereo mix. For a mixer, a translator or a client who wants to change the
+music later, the **Audio** row on the Export panel can also give you each part on its own.
+
+## Pick a layout
+
+| Audio | What you get |
+|---|---|
+| **Mix** (default) | One stereo track, as before. |
+| **Separate tracks in file** | The mix first (the default track players use), then one more audio track per stem, each named after it. MP4, MOV, MKV and M4V only. |
+| **WAV stems** | The file gets the mix, and each stem is written as a 24-bit, 48 kHz WAV in a folder beside it. |
+
+**Separate tracks in file** is greyed out when the format you picked can't hold several audio tracks. If
+you save to such a format anyway, the export writes one mix and says so.
+
+## Split by
+
+When the layout isn't **Mix**, **Split by** decides what one stem is:
+
+- **Track**: one stem per audio track. A muted track (or one silenced by another track's solo) is silent
+  in the mix, so it gets no stem.
+- **Bus**: one stem per [Mixer](audio.mdx#the-mixer) bus a clip is routed to (the clip's own bus, else its
+  track's, else Main).
+- **Role**: one stem per clip audio role: **Dialogue**, **Music**, **SFX**, **Ambience**, and **Other** for
+  clips without a role.
+
+Each stem sounds exactly as it does inside the mix: after its volume, pan, track and bus settings. Put the
+stems together and you get the mix back, except for effects that react to the whole mix (a compressor or
+limiter on Main or on a bus several stems share) and crossfades between clips of different stems on one
+track.
+
+## Where the stems go
+
+Exporting `My video.mp4` with **WAV stems** creates a folder `My video stems` next to it, with files
+numbered in stem order: `01 Dialogue.wav`, `02 Music.wav` and so on. The folder only appears once the whole
+export has succeeded.
+
+Scripts and agents choose the same thing with the `audio` (`mix`, `streams` or `stems`) and `stem_by`
+(`track`, `bus` or `role`) arguments of `export.video` and `export.queue`.

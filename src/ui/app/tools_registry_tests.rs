@@ -345,6 +345,7 @@ fn default_asset() -> crate::model::Asset {
         parent: None,
         range: None,
         effects: Vec::new(),
+        html: None,
     }
 }
 

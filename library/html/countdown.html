@@ -1,0 +1,33 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Countdown 5 to 1</title>
+<meta name="se:kind" content="layer">
+<meta name="se:desc" content="A 5 to 1 countdown inside a ring that empties every second.">
+<meta name="se:tags" content="countdown, timer, intro, numbers">
+<meta name="se:size" content="400x400">
+<meta name="se:duration" content="5s">
+<meta name="se:thumb" content="2.6">
+<meta name="se:field" content="accent | color | #22d3ee">
+<style>
+  @property --n { syntax: "<integer>"; inherits: false; initial-value: 5; }
+  :root { --accent: {{accent}}; }
+  html, body { margin: 0; width: 100vw; height: 100vh; overflow: hidden; background: transparent;
+    font-family: "Segoe UI", Arial, sans-serif; }
+  .wrap { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+  svg { position: absolute; left: 0; top: 0; width: 400px; height: 400px; filter: drop-shadow(0 6px 18px rgba(0, 0, 0, .45)); }
+  .back { fill: rgba(12, 14, 22, .82); }
+  .track { fill: none; stroke: rgba(255, 255, 255, .16); stroke-width: 14; }
+  .ring { fill: none; stroke: var(--accent); stroke-width: 14; stroke-linecap: round; stroke-dasharray: 942.5; transform: rotate(-90deg); transform-origin: 200px 200px;
+    animation: deplete 1s linear 0s 5 both; }
+  .num { position: relative; color: #fff; font-size: 190px; line-height: 1; font-weight: 900; text-shadow: 0 4px 16px rgba(0, 0, 0, .5);
+    counter-reset: n var(--n); animation: seq 5s linear both, pulse 1s cubic-bezier(.2, 1.4, .4, 1) 0s 5 both; }
+  .num::before { content: counter(n); }
+  @keyframes seq { 0%, 19.99% { --n: 5; } 20%, 39.99% { --n: 4; } 40%, 59.99% { --n: 3; } 60%, 79.99% { --n: 2; } 80%, 100% { --n: 1; } }
+  @keyframes pulse { from { transform: scale(1.35); opacity: 0; } 25% { opacity: 1; } to { transform: scale(1); opacity: 1; } }
+  @keyframes deplete { from { stroke-dashoffset: 0; } to { stroke-dashoffset: 942.5; } }
+</style>
+</head>
+<body><div class="wrap"><svg viewBox="0 0 400 400"><circle class="back" cx="200" cy="200" r="168"/><circle class="track" cx="200" cy="200" r="150"/><circle class="ring" cx="200" cy="200" r="150"/></svg><div class="num"></div></div></body>
+</html>

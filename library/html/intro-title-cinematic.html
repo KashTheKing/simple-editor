@@ -1,0 +1,74 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Cinematic Intro Title</title>
+<meta name="se:kind" content="scene">
+<meta name="se:desc" content="A slow, elegant film-style title: letters drift apart as they fade in, thin lines draw out and a soft light glows behind.">
+<meta name="se:tags" content="intro, title, cinematic, film, elegant, trailer, documentary, minimal">
+<meta name="se:size" content="1920x1080">
+<meta name="se:duration" content="6s">
+<meta name="se:thumb" content="4">
+<meta name="se:field" content="title | text | The Long Road North">
+<meta name="se:field" content="subtitle | text | A film about leaving home">
+<meta name="se:field" content="accent | color | #d4b07a">
+<style>
+  :root { --accent: {{accent}}; }
+  html, body { margin: 0; overflow: hidden; }
+  body { width: 100vw; height: 100vh; position: relative; color: #f4efe6;
+    background: radial-gradient(ellipse 90% 80% at 50% 45%, #1d1e24 0%, #0d0e12 55%, #050507 100%);
+    font-family: "Segoe UI Light", "Segoe UI", Arial, sans-serif; }
+
+  .light { position: absolute; left: 50%; top: 46%; width: 1300px; height: 520px; margin: -260px 0 0 -650px;
+    border-radius: 50%; background: var(--accent); opacity: .14; filter: blur(160px);
+    animation: light 6s ease-in-out both; }
+  .leak { position: absolute; right: -300px; top: -300px; width: 900px; height: 900px; border-radius: 50%;
+    background: radial-gradient(circle, rgba(255, 170, 90, .16), transparent 65%);
+    animation: leak 6s ease-in-out both; }
+  .grain { position: absolute; inset: 0; opacity: .08; mix-blend-mode: overlay;
+    background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='240' height='240' filter='url(%23n)'/%3E%3C/svg%3E");
+    animation: grain .5s steps(4) infinite both; }
+  .bars::before, .bars::after { content: ""; position: absolute; left: 0; right: 0; height: 120px; background: #000; }
+  .bars::before { top: 0; animation: barT 1.4s cubic-bezier(.6, 0, .2, 1) both; }
+  .bars::after { bottom: 0; animation: barB 1.4s cubic-bezier(.6, 0, .2, 1) both; }
+  .vig { position: absolute; inset: 0; background: radial-gradient(ellipse 80% 75% at 50% 50%, transparent 50%, rgba(0, 0, 0, .7)); }
+
+  .center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  .line { height: 2px; width: 760px; background: linear-gradient(90deg, transparent, var(--accent) 30%, var(--accent) 70%, transparent);
+    animation: draw 2.2s cubic-bezier(.6, 0, .2, 1) both; }
+  .line.top { margin-bottom: 48px; animation-delay: .5s; }
+  .line.bot { margin-top: 48px; animation-delay: .8s; }
+  .t { max-width: 1680px; font-size: 104px; font-weight: 300; line-height: 1.15; text-transform: uppercase;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center;
+    text-shadow: 0 0 40px rgba(0, 0, 0, .5);
+    animation: spread 5.2s cubic-bezier(.2, .6, .3, 1) .2s both, reveal 2.4s ease-out .2s both; }
+  .sub { max-width: 1400px; margin-top: 40px; font-family: Georgia, "Times New Roman", serif; font-style: italic;
+    font-size: 40px; letter-spacing: 1px; color: var(--accent); white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; animation: subIn 1.8s ease-out 2s both; }
+
+  @keyframes spread { from { letter-spacing: 4px; padding-left: 4px; } to { letter-spacing: 24px; padding-left: 24px; } }
+  @keyframes reveal { from { opacity: 0; filter: blur(14px); } to { opacity: 1; filter: blur(0); } }
+  @keyframes draw { from { transform: scaleX(0); opacity: 0; } to { transform: scaleX(1); opacity: 1; } }
+  @keyframes subIn { from { opacity: 0; transform: translateY(12px); filter: blur(4px); } to { opacity: 1; transform: none; filter: blur(0); } }
+  @keyframes light { from { opacity: 0; transform: scale(.8); } to { opacity: .14; transform: scale(1.05); } }
+  @keyframes leak { from { opacity: 0; transform: translate(0, 0); } 50% { opacity: 1; } to { opacity: .6; transform: translate(-160px, 120px); } }
+  @keyframes grain { 0% { background-position: 0 0; } 25% { background-position: -60px 40px; }
+    50% { background-position: 80px -30px; } 75% { background-position: -20px -90px; } 100% { background-position: 0 0; } }
+  @keyframes barT { from { transform: translateY(-100%); } }
+  @keyframes barB { from { transform: translateY(100%); } }
+</style>
+</head>
+<body>
+<div class="light"></div>
+<div class="leak"></div>
+<div class="center">
+  <div class="line top"></div>
+  <div class="t">{{title}}</div>
+  <div class="sub">{{subtitle}}</div>
+  <div class="line bot"></div>
+</div>
+<div class="grain"></div>
+<div class="vig"></div>
+<div class="bars"></div>
+</body>
+</html>

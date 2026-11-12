@@ -222,6 +222,7 @@ mod tests {
             parent: None,
             range: None,
             effects: Vec::new(),
+            html: None,
         });
         p.insert_asset_clips(aid, 0.0, Some(0));
         let id = p.tracks[0].clips[0].id;
@@ -328,6 +329,7 @@ mod tests {
             parent: None,
             range: None,
             effects: Vec::new(),
+            html: None,
         });
         // lands on a fresh track since track 0 is already occupied at [0,10) by clip 1
         let id2 = p.insert_asset_clips(aid2, 0.0, None)[0];

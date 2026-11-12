@@ -217,6 +217,9 @@ pub(super) struct ClipMenu<'a> {
     pub labels: &'a [Label],
     pub buses: &'a [crate::model::Bus],
     pub shared_effects: &'a [EffectKind],
+    // ---- ws:html-layer ----
+    /// The clip's asset is an HTML layer / scene.
+    pub html: bool,
 }
 
 /// The clip body / edge right-click menu. Actions run on the selection (a right-click on an unselected
@@ -321,5 +324,11 @@ pub(super) fn clip_menu(
             *act = Some(Act::ReplaceClip(m.id));
         }
         acts(ui, &[None, Some(SaveTemplate)]);
+        // ---- ws:html-layer ----
+        if m.html {
+            acts(ui, &[Some(EditHtml), Some(SaveHtmlToLibrary)]);
+        }
+        // ---- ws:assistant-pane ---- (the right-click already selected the clip)
+        crate::ui::assistant_ui::add_to_assistant_row(ui, crate::ui::assistant_data::Pin::Clips);
     });
 }

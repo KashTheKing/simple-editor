@@ -64,8 +64,9 @@ impl Project {
                 }
                 for e in &mut c.effects {
                     // older files / edited files: make sure every parameter exists
-                    while e.params.len() < e.kind.params().len() {
-                        let d = e.kind.params()[e.params.len()].default;
+                    let specs = e.specs();
+                    while e.params.len() < specs.len() {
+                        let d = specs[e.params.len()].default;
                         e.params.push(Animated::new(d));
                     }
                 }

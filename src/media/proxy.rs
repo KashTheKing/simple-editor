@@ -64,7 +64,11 @@ pub fn set_ready(sources: Vec<String>) {
 /// and the builder can't drift.
 pub fn status(a: &crate::model::Asset, use_proxies: bool, proxy_height: u32) -> ProxyStatus {
     let h = proxy_height.max(120);
-    if !use_proxies || a.kind != crate::model::ClipKind::Video || a.height <= h || a.duration <= 0.0 {
+    if !use_proxies || a.kind != crate::model::ClipKind::Video || a.duration <= 0.0 {
+        return ProxyStatus::NotNeeded;
+    }
+    // ws:html-layer: a source with alpha gets its proxy at any size (`eligible`)
+    if a.height <= h && has_alpha(&a.path) != Some(true) {
         return ProxyStatus::NotNeeded;
     }
     if let Some((p, f)) = lock(&BUILDING).as_ref() {
@@ -160,6 +164,30 @@ pub fn has_alpha(src: &str) -> Option<bool> {
         lock(&KNOWN).insert(key, Some(alpha));
     });
     None
+}
+
+// ---- ws:html-layer ----
+/// Does `a` get a proxy at proxy height `h`? Video that out-sizes it, or video with alpha at ANY size:
+/// decoding PNG frames through the ffmpeg pipe costs ~36 ms a 1080p frame and every backwards seek
+/// restarts the pipe, so a small overlay (an HTML layer) needs its stacked proxy just as much. Not
+/// yet a file still being probed for alpha (`None`): the next scan asks again.
+pub fn eligible(a: &crate::model::Asset, h: u32) -> bool {
+    a.kind == crate::model::ClipKind::Video
+        && a.duration > 0.0
+        && match has_alpha(&a.path) {
+            Some(alpha) => alpha || a.height > h,
+            None => false,
+        }
+}
+
+/// The height `a`'s proxy is built at: the proxy height, or the source's own (even) height when that
+/// is lower - an alpha source is never scaled up.
+pub fn height_for(a: &crate::model::Asset, h: u32) -> u32 {
+    if a.height > 0 && a.height < h {
+        a.height.max(2) & !1
+    } else {
+        h
+    }
 }
 
 /// Is `path` a stacked colour-over-alpha proxy (see the module docs)? By name and folder, so a
@@ -272,7 +300,7 @@ fn run(src: &str, dst: &PathBuf, height: u32, prog: &Progress) -> Result<(), Str
     cmd.args(["-y", "-hide_banner", "-loglevel", "error", "-progress", "pipe:1"]);
     cmd.arg("-i").arg(src);
     // -2 keeps aspect at an even width; -g 1 = all-intra; no audio (the original supplies it)
-    let mut vf = format!("scale=-2:{}", height.max(120));
+    let mut vf = format!("scale=-2:{}", height.max(2)); // ws:html-layer: callers pick the height (`height_for`)
     if is_stacked(dst) {
         // premultiplied BEFORE the downscale (scaling straight alpha drags the colour hidden under
         // transparent pixels - usually black - into every edge: dark fringes), then colour over alpha
@@ -335,6 +363,7 @@ mod tests {
             parent: None,
             range: None,
             effects: Vec::new(),
+            html: None,
         };
         assert_eq!(status(&a, false, 720), ProxyStatus::NotNeeded, "proxies off");
         let small = Asset { height: 720, ..a.clone() };
@@ -394,6 +423,12 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert_eq!(has_alpha(&src), Some(true));
+        // ws:html-layer: an alpha source below the proxy height still gets one, at its own height
+        let mut small = crate::media::probe(&src, crate::media::Backend::Auto).unwrap();
+        small.kind = crate::model::ClipKind::Video;
+        assert!(eligible(&small, 720), "alpha at 480 high, proxy height 720");
+        assert_eq!(height_for(&small, 720), 480);
+        assert!(!matches!(status(&small, true, 720), ProxyStatus::NotNeeded));
 
         // invalidation: the stacked proxy has its own name, and building it deletes the old one
         let (old, dst) = (stacked_or_plain(&src, 240, false), proxy_path(&src, 240));
@@ -493,6 +528,18 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ---- ws:html-layer ----
+    #[test]
+    fn alpha_proxies_at_any_height_others_only_above_it() {
+        use crate::model::{Asset, ClipKind};
+        let a = Asset { kind: ClipKind::Video, duration: 4.0, width: 640, height: 361, ..crate::engine::import::placeholder("C:\\x\\small.mp4") };
+        assert!(!eligible(&a, 720), "plain footage below the proxy height gains nothing");
+        assert!(eligible(&Asset { height: 1080, ..a.clone() }, 720));
+        assert!(!eligible(&Asset { kind: ClipKind::Image, height: 1080, ..a.clone() }, 720));
+        assert_eq!(height_for(&a, 720), 360, "never taller than the source, always even");
+        assert_eq!(height_for(&Asset { height: 1080, ..a.clone() }, 720), 720);
     }
 
     /// The proxy name is stable for the same (path, mtime, height) and changes with any of them.

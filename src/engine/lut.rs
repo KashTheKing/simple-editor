@@ -95,10 +95,95 @@ pub fn load(path: &str) -> Result<Arc<Lut3d>, String> {
     if let Some(l) = cache.lock().unwrap().get(path) {
         return Ok(l.clone());
     }
-    let src = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+    let src = std::fs::read_to_string(resolve(path)).map_err(|e| format!("{path}: {e}"))?;
     let lut = Arc::new(parse_cube(&src)?);
     cache.lock().unwrap().insert(path.to_string(), lut.clone());
     Ok(lut)
+}
+
+// ---- ws:online-library ----
+// "Whatever a project uses is copied into the project": on save, every `.cube` an effect references
+// from the managed library folder (`%APPDATA%\SimpleEditor\library\luts`) is copied into
+// `<project dir>\<project file name> LUTs\`. An effect keeps the path it was given; when that file is
+// missing (the project opened on another PC), `load` reads the copy beside the project instead, then
+// this PC's installed library LUT of the same name.
+
+static PROJECT_LUTS: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
+
+/// `C:\x\Trip.sedit` -> `C:\x\Trip LUTs`.
+pub fn project_luts_dir(project_path: &std::path::Path) -> std::path::PathBuf {
+    let stem = project_path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    project_path.with_file_name(format!("{stem} LUTs"))
+}
+
+/// The open project's file (None: unsaved): where `load` looks for a LUT whose own path is missing.
+pub fn set_project(project_path: Option<&std::path::Path>) {
+    *PROJECT_LUTS.lock().unwrap() = project_path.map(project_luts_dir);
+}
+
+fn resolve(path: &str) -> std::path::PathBuf {
+    let dir = PROJECT_LUTS.lock().unwrap().clone();
+    resolve_in(path, dir.as_deref(), &crate::engine::library::root().join("luts"))
+}
+
+fn resolve_in(path: &str, project_luts: Option<&std::path::Path>, lib_luts: &std::path::Path) -> std::path::PathBuf {
+    let p = std::path::Path::new(path);
+    if p.is_file() {
+        return p.to_path_buf();
+    }
+    let Some(name) = p.file_name() else { return p.to_path_buf() };
+    project_luts.into_iter().chain([lib_luts]).map(|d| d.join(name)).find(|c| c.is_file()).unwrap_or(p.to_path_buf())
+}
+
+/// Every `lut` path in a project's JSON that lives under `lib_luts`.
+pub fn used_library_luts(project: &serde_json::Value, lib_luts: &std::path::Path) -> Vec<std::path::PathBuf> {
+    fn walk(v: &serde_json::Value, lib: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        match v {
+            serde_json::Value::Object(m) => {
+                for (k, v) in m {
+                    match v.as_str() {
+                        Some(s) if k == "lut" && std::path::Path::new(s).starts_with(lib) => {
+                            out.push(s.into());
+                        }
+                        _ => walk(v, lib, out),
+                    }
+                }
+            }
+            serde_json::Value::Array(a) => a.iter().for_each(|v| walk(v, lib, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(project, lib_luts, &mut out);
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Copy the library LUTs `project` uses beside `project_path` (only files that are new or changed);
+/// returns how many were copied. Called after a successful save.
+pub fn copy_beside_project(project: &serde_json::Value, project_path: &std::path::Path) -> Result<usize, String> {
+    copy_beside_in(project, project_path, &crate::engine::library::root().join("luts"))
+}
+
+fn copy_beside_in(
+    project: &serde_json::Value,
+    project_path: &std::path::Path,
+    lib_luts: &std::path::Path,
+) -> Result<usize, String> {
+    let dir = project_luts_dir(project_path);
+    let mut n = 0;
+    for src in used_library_luts(project, lib_luts) {
+        let (Some(name), Ok(meta)) = (src.file_name(), std::fs::metadata(&src)) else { continue };
+        let dst = dir.join(name);
+        if std::fs::metadata(&dst).is_ok_and(|m| m.len() == meta.len()) {
+            continue;
+        }
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        std::fs::copy(&src, &dst).map_err(|e| format!("{}: {e}", dst.display()))?;
+        n += 1;
+    }
+    Ok(n)
 }
 
 #[cfg(test)]
@@ -129,6 +214,30 @@ mod tests {
         // a mismatched row count is an error, not a silent truncation
         assert!(parse_cube("LUT_3D_SIZE 2\n0.0 0.0 0.0\n").is_err());
         assert!(parse_cube("0.0 0.0 0.0\n").is_err(), "missing LUT_3D_SIZE");
+    }
+
+    #[test]
+    fn library_luts_copy_beside_the_project_and_resolve_from_there() {
+        let base = std::env::temp_dir().join(format!("se-lut-copy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let lib = base.join("lib").join("luts");
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::write(lib.join("warm.cube"), IDENTITY_2).unwrap();
+        let used = lib.join("warm.cube").to_string_lossy().into_owned();
+        let project = serde_json::json!({"tracks": [{"clips": [
+            {"effects": [{"lut": used}, {"lut": "D:/elsewhere/own.cube"}]},
+            {"effects": [{"lut": used}]}]}]});
+        assert_eq!(used_library_luts(&project, &lib), vec![std::path::PathBuf::from(&used)], "deduped, library only");
+        let proj = base.join("Trip.sedit");
+        assert_eq!(project_luts_dir(&proj), base.join("Trip LUTs"));
+        assert_eq!(copy_beside_in(&project, &proj, &lib).unwrap(), 1);
+        assert_eq!(copy_beside_in(&project, &proj, &lib).unwrap(), 0, "an unchanged copy is not rewritten");
+        // another PC: the library copy is gone, the one beside the project is found
+        std::fs::remove_file(lib.join("warm.cube")).unwrap();
+        let copy = base.join("Trip LUTs").join("warm.cube");
+        assert_eq!(resolve_in(&used, Some(&base.join("Trip LUTs")), &lib), copy);
+        assert_eq!(resolve_in(&used, None, &lib), std::path::PathBuf::from(&used), "nothing found: the path as given");
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

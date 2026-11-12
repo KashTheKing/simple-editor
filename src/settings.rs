@@ -316,6 +316,9 @@ pub struct Settings {
     /// feature for the window rect specifically. `None` until the window has moved/resized once.
     /// Written (debounced) by `winpos::tick`; read once by `main.rs` to seed the `ViewportBuilder`.
     pub window_rect: Option<[i32; 4]>,
+    /// Open the window maximised, on the monitor under the mouse (on by default). Off = reopen at
+    /// `window_rect`, the way it was left. Read once by `main.rs`.
+    pub start_maximized: bool,
     /// `env!("CARGO_PKG_VERSION")` last seen at startup - compared on the next launch to gate the
     /// What's New window (a version bump opens it once).
     pub last_seen_version: String,
@@ -462,6 +465,91 @@ pub struct Settings {
     // ---- ws:keyframe-blocks ----
     /// Keyframe blocks the user saved from a clip's keys (Gallery ▸ Animate, after the builtins).
     pub key_blocks: Vec<crate::model::KeyBlock>,
+    // ---- ws:perf-baseline ----
+    // ---- ws:pro-schema ----
+    // (no per-field `#[serde(default)]`: the container-level one back-fills a missing field from
+    // `Default for Settings` below, which a field-level attribute would override with "" / false)
+    /// Show the performance HUD over the Preview (ws:perf-baseline draws it).
+    pub hud: bool,
+    /// Which agent the Assistant pane drives: "claude" (the `claude` CLI), "codex" (`codex exec`), "custom" (the
+    /// `assistant_command` template) or "external" (requests wait for an MCP client's `assistant.wait`).
+    pub assistant_backend: String,
+    /// The "custom" backend's command line; `{prompt}` and `{mcp_url}` are substituted. Empty = unset.
+    pub assistant_command: String,
+    /// Model passed to the assistant CLI. Empty = the CLI's own default.
+    pub assistant_model: String,
+    /// Effort passed to the assistant CLI (`low` .. `max`). Empty = the model's own default.
+    pub assistant_effort: String,
+    /// A finished dictation sends the prompt straight away instead of leaving it in the box.
+    pub voice_autosend: bool,
+    /// Export audio layout: "mix" (one stereo track), "streams" (one stream per stem) or "stems"
+    /// (separate files) - mirrors `engine::export::AudioLayout`.
+    pub export_audio: String,
+    /// What a stem is when `export_audio` isn't "mix": "track", "bus" or "role" (`StemBy`).
+    pub export_stem_by: String,
+    /// Encoder trade-off: "speed", "balanced" or "small".
+    pub export_speed: String,
+    /// Copy unchanged GOPs instead of re-encoding them (ships off until it is proven).
+    pub export_smart_render: bool,
+    // ---- ws:play-decode-path ----
+    // ---- ws:play-render-thread ----
+    // ---- ws:play-source-monitor ----
+    // ---- ws:export-audio-tracks ----
+    // ---- ws:export-encoders ----
+    // ---- ws:export-pipeline ----
+    // ---- ws:interchange ----
+    // ---- ws:assistant-pane ----
+    /// The Assistant pane's quick-prompt buttons: (label, prompt), editable in Settings ▸ Assistant.
+    pub assistant_quick: Vec<(String, String)>,
+    /// Hold an agent's MCP calls that leave the project (export, open/new project, settings, scripts,
+    /// convert) until the user clicks Allow.
+    pub assistant_guard: bool,
+    /// The environment variable the "custom" backend gets the stored API key in.
+    pub assistant_key_env: String,
+    /// Agent session id per project path (no longer written: each Assistant conversation keeps its own,
+    /// in the conversation store). Kept so stored settings still load.
+    pub assistant_sessions: BTreeMap<String, String>,
+    /// The timeline toolbar's "Assistant follows the selection": the composer attaches the live
+    /// selection / In-Out / playhead (off = only what the user pins).
+    pub assistant_follow: bool,
+    // ---- ws:mcp-context ----
+    // ---- ws:transcribe-islands ----
+    // ---- ws:voice-input ----
+    // ---- ws:docs-release ----
+    // ---- ws:html-layer ----
+    /// The program "Open in code editor" starts for an HTML layer's file; empty = VS Code if installed, else Notepad.
+    pub html_editor: String,
+    // ---- ws:shader-library ----
+    // ---- ws:skills ----
+    /// `assistant_quick` was turned into user skills once (`engine::skills::migrate_in`).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub skills_migrated: bool,
+    /// Library skills whose text the user read and ran: name -> `skills::content_hash` (a changed file
+    /// asks again).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub skills_accepted: BTreeMap<String, String>,
+    /// Skills the user ran, most recent first (the Assistant's chip row).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub skills_recent: Vec<String>,
+    // ---- ws:online-library ----
+    /// Where the online library is read from: the URL of the repo's `library/` folder (raw files).
+    pub library_url: String,
+    /// A local folder read INSTEAD of `library_url` when not empty (testing before `library/` is on `main`).
+    pub library_dir: String,
+}
+
+/// ws:assistant-pane: the built-in quick prompts (also what "Reset" restores).
+pub fn default_assistant_quick() -> Vec<(String, String)> {
+    [
+        ("Remove silences", "Remove the silent parts of the selected clips (or the whole timeline if nothing is selected). Keep short natural pauses."),
+        ("Cut filler words", "Using the transcript, cut filler words (um, uh, like, you know) from the selected clips, cutting between words."),
+        ("Caption this", "Transcribe the selected clips (or the timeline) and add subtitles for them."),
+        ("Tighten selection", "Tighten the edit in the selection or In/Out range: trim dead air and long pauses without cutting words."),
+        ("Add chapter markers", "Add a chapter marker at each topic change, named after the topic, using the transcript."),
+    ]
+    .iter()
+    .map(|(l, p)| (l.to_string(), p.to_string()))
+    .collect()
 }
 
 impl Default for Settings {
@@ -472,7 +560,8 @@ impl Default for Settings {
             download_dir: String::new(),
             encoder: "auto".into(),
             crf: 18,
-            preset: "veryfast".into(),
+            // "auto" follows `export_speed`; a stored explicit preset (old files: "veryfast") keeps winning
+            preset: "auto".into(),
             confirm_overwrite: true,
             lossless_save: false,
             context_menu: true,
@@ -535,6 +624,7 @@ impl Default for Settings {
             autosave_secs: 30,
             // ---- ws:size-diet ----
             window_rect: None,
+            start_maximized: true,
             last_seen_version: String::new(),
             // ---- ws:split-god-files ----
             // ---- ws:audio-analysis ----
@@ -624,6 +714,45 @@ impl Default for Settings {
             // ---- ws:keys-actions ----
             // ---- ws:keyframe-blocks ----
             key_blocks: Vec::new(),
+            // ---- ws:perf-baseline ----
+            // ---- ws:pro-schema ----
+            hud: false,
+            assistant_backend: "claude".into(),
+            assistant_command: String::new(),
+            assistant_model: String::new(),
+            assistant_effort: String::new(),
+            voice_autosend: false,
+            export_audio: "mix".into(),
+            export_stem_by: "track".into(),
+            export_speed: "balanced".into(),
+            export_smart_render: false,
+            // ---- ws:play-decode-path ----
+            // ---- ws:play-render-thread ----
+            // ---- ws:play-source-monitor ----
+            // ---- ws:export-audio-tracks ----
+            // ---- ws:export-encoders ----
+            // ---- ws:export-pipeline ----
+            // ---- ws:interchange ----
+            // ---- ws:assistant-pane ----
+            assistant_quick: default_assistant_quick(),
+            assistant_guard: true,
+            assistant_key_env: "OPENAI_API_KEY".into(),
+            assistant_sessions: BTreeMap::new(),
+            assistant_follow: true,
+            // ---- ws:mcp-context ----
+            // ---- ws:transcribe-islands ----
+            // ---- ws:voice-input ----
+            // ---- ws:docs-release ----
+            // ---- ws:html-layer ----
+            html_editor: String::new(),
+            // ---- ws:shader-library ----
+            // ---- ws:skills ----
+            skills_migrated: false,
+            skills_accepted: BTreeMap::new(),
+            skills_recent: Vec::new(),
+            // ---- ws:online-library ----
+            library_url: "https://raw.githubusercontent.com/KashTheKing/simple-editor/main/library".into(),
+            library_dir: String::new(),
         }
     }
 }

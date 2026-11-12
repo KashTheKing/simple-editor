@@ -45,6 +45,8 @@ const MEDIA_EXTS: &[&str] = &[
 ];
 
 mod actions;
+// ---- ws:pro-schema ----
+mod assistant_ctl;
 mod audio_actions;
 // ---- ws:forgiveness ----
 mod autosave;
@@ -99,11 +101,15 @@ mod tools_clip;
 mod tools_color;
 // ---- ws:command-palette ----
 mod tools_commands;
+// ---- ws:mcp-context ----
+mod tools_context;
 // ---- ws:export-deliver ----
 mod tools_export;
 // ---- ws:inspector-gallery ----
 mod tools_gallery;
 mod tools_helpers;
+// ---- ws:interchange ----
+mod tools_interchange;
 mod tools_keyblocks;
 // ---- ws:layout-modes-onboarding ----
 mod tools_layout;
@@ -135,6 +141,18 @@ mod tools_uikit;
 // ---- ws:transcript-captions ----
 mod transcript_ctl;
 mod trim_actions;
+// ---- ws:voice-input ----
+mod voice_ctl;
+// ---- ws:html-layer ----
+mod html_ctl;
+mod tools_html;
+// ---- ws:shader-library ----
+mod tools_shader;
+// ---- ws:skills ----
+mod tools_skills;
+// ---- ws:online-library ----
+mod library_ctl;
+mod tools_library;
 mod whatsnew;
 #[path = "windows.rs"]
 mod windows_dlg;
@@ -147,7 +165,7 @@ enum ExportKind {
 /// A blocking MCP tool job (export.video / media.convert): the reply is sent when the job finishes.
 struct McpJob {
     prog: Arc<Progress>,
-    reply: Sender<Result<Value, String>>,
+    reply: Sender<Result<mcp::ToolReply, String>>, // ws:mcp-context: was Result<Value, String>
     out: PathBuf,
 }
 
@@ -454,6 +472,43 @@ pub struct App {
     // ---- ws:inspector-surface ----
     // ---- ws:side-panels ----
     // ---- ws:keys-actions ----
+    // ---- ws:perf-baseline ----
+    /// Frame-time HUD numbers (`ui::hud`), fed at the end of every `update`, drawn when `settings.hud`.
+    hud: crate::ui::hud::Hud,
+    // ---- ws:pro-schema ----
+    /// The Assistant pane's prompt / pending requests / log (`ui::assistant_ui`).
+    pub(crate) assistant: crate::ui::assistant_ui::AssistantState,
+    // ---- ws:play-decode-path ----
+    // ---- ws:play-render-thread ----
+    // ---- ws:play-source-monitor ----
+    /// The Source monitor's GPU canvas (`GpuRenderer::render_source_texture`): id + pixel size. Valid
+    /// until the next source render replaces it; None on the CPU path.
+    source_gpu_tex: Option<(egui::TextureId, [u32; 2])>,
+    // ---- ws:export-audio-tracks ----
+    // ---- ws:export-encoders ----
+    // ---- ws:export-pipeline ----
+    // ---- ws:interchange ----
+    // ---- ws:assistant-pane ----
+    /// The Assistant's running agent, queued request and held (guarded) MCP calls.
+    assistant_rt: assistant_ctl::AssistantRt,
+    // ---- ws:mcp-context ----
+    /// Agent undo groups, `assistant.wait` long polls, the changed-clip flash and the MCP port wanted.
+    mcp_ctx: tools_context::ContextState,
+    // ---- ws:transcribe-islands ----
+    // ---- ws:voice-input ----
+    /// Dictation into the Assistant prompt (recorder + whisper job).
+    voice: voice_ctl::VoiceState,
+    // ---- ws:docs-release ----
+    // ---- ws:html-layer ----
+    /// HTML layers: the Edge renderer's jobs and the HTML editor window.
+    pub(crate) html: html_ctl::HtmlState,
+    // ---- ws:shader-library ----
+    /// Shader effects / transitions from the library: whatever the UI side needs to keep.
+    pub(crate) shader_lib: tools_shader::ShaderLibState,
+    // ---- ws:skills ----
+    // ---- ws:online-library ----
+    /// The online library: the catalogue, downloads in flight, Gallery state.
+    pub(crate) online: library_ctl::OnlineState,
 }
 
 // ---- ws:canvas-handles-monitor ----
@@ -880,6 +935,33 @@ impl App {
             // ---- ws:inspector-surface ----
             // ---- ws:side-panels ----
             // ---- ws:keys-actions ----
+            // ---- ws:perf-baseline ----
+            hud: Default::default(),
+            // ---- ws:pro-schema ----
+            assistant: Default::default(),
+            // ---- ws:play-decode-path ----
+            // ---- ws:play-render-thread ----
+            // ---- ws:play-source-monitor ----
+            source_gpu_tex: None,
+            // ---- ws:export-audio-tracks ----
+            // ---- ws:export-encoders ----
+            // ---- ws:export-pipeline ----
+            // ---- ws:interchange ----
+            // ---- ws:assistant-pane ----
+            assistant_rt: Default::default(),
+            // ---- ws:mcp-context ----
+            mcp_ctx: Default::default(),
+            // ---- ws:transcribe-islands ----
+            // ---- ws:voice-input ----
+            voice: Default::default(),
+            // ---- ws:docs-release ----
+            // ---- ws:html-layer ----
+            html: Default::default(),
+            // ---- ws:shader-library ----
+            shader_lib: Default::default(),
+            // ---- ws:skills ----
+            // ---- ws:online-library ----
+            online: Default::default(),
         };
         if let Some(reason) = settings_bad {
             app.toast(format!("Settings file was corrupt (saved as settings.json.bad): {reason}"));
@@ -946,6 +1028,9 @@ impl App {
         self.dirty = false;
         self.undo.clear();
         self.redo.clear();
+        // ws:mcp-context: the group's snapshot and the comment watermark belong to the old project
+        self.mcp_ctx.group = None;
+        self.mcp_ctx.seen = None;
         self.selection.clear();
         // the old project's Source clip and library picks point at assets that no longer exist
         self.close_source();
@@ -1031,6 +1116,7 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let perf_t0 = Instant::now(); // ws:perf-baseline: the HUD's UI frame time
         if !self.window_shown {
             // viewport commands apply after this frame is painted, so no white flash
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
@@ -1111,6 +1197,12 @@ impl eframe::App for App {
                 self.close_confirmed = true;
             }
         }
+        // the window really closes this frame: answer held / parked MCP calls instead of letting them time out
+        if self.close_confirmed && ctx.input(|i| i.viewport().close_requested()) {
+            assistant_ctl::deny_held(self, "the app closed");
+            assistant_ctl::save_now(self); // ws:assistant-pane: the conversations, synchronously
+            tools_context::end_waits(self, "the app closed");
+        }
 
         // live links (paths / expressions) re-bake when their inputs changed; a hash check otherwise
         self.project.refresh_links();
@@ -1152,6 +1244,7 @@ impl eframe::App for App {
                 }
             }
         }
+        self.source_gpu_render(_frame); // ws:play-source-monitor: needs `eframe::Frame`, which FRAME_HOOKS lack
         if let Some(f) = self.player.take_frame() {
             self.pending_frame = Some(f);
         }
@@ -1409,6 +1502,8 @@ impl eframe::App for App {
 
         // toasts: drawn by feedback::draw, a WINDOW_DRAWER (ws:forgiveness) - this used to be an inline
         // block here; see windows() -> WINDOW_DRAWERS.
+        let hits = self.player.cache_hits(); // ws:perf-baseline
+        self.hud.end_frame(perf_t0, self.gpu.as_mut(), hits);
     }
 
     // ---- ws:ui-kit ----
@@ -1492,6 +1587,32 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     color_page::TOOLS,
     // ---- ws:keyframe-blocks ----
     tools_keyblocks::TOOLS,
+    // ---- ws:perf-baseline ----
+    // ---- ws:pro-schema ----
+    // ---- ws:play-decode-path ----
+    // ---- ws:play-render-thread ----
+    // ---- ws:play-source-monitor ----
+    // ---- ws:export-audio-tracks ----
+    // ---- ws:export-encoders ----
+    // ---- ws:export-pipeline ----
+    // ---- ws:interchange ----
+    tools_interchange::TOOLS,
+    // ---- ws:assistant-pane ----
+    assistant_ctl::TOOLS,
+    // ---- ws:mcp-context ----
+    tools_context::TOOLS,
+    // ---- ws:transcribe-islands ----
+    // ---- ws:voice-input ----
+    voice_ctl::TOOLS,
+    // ---- ws:docs-release ----
+    // ---- ws:html-layer ----
+    tools_html::TOOLS,
+    // ---- ws:shader-library ----
+    tools_shader::TOOLS,
+    // ---- ws:skills ----
+    tools_skills::TOOLS,
+    // ---- ws:online-library ----
+    tools_library::TOOLS,
 ];
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
@@ -1541,6 +1662,32 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     // ---- ws:inspector-surface ----
     // ---- ws:side-panels ----
     // ---- ws:keys-actions ----
+    // ---- ws:perf-baseline ----
+    tools_playback::act_hud,
+    // ---- ws:pro-schema ----
+    assistant_ctl::act,
+    // ---- ws:play-decode-path ----
+    // ---- ws:play-render-thread ----
+    // ---- ws:play-source-monitor ----
+    // ---- ws:export-audio-tracks ----
+    // ---- ws:export-encoders ----
+    // ---- ws:export-pipeline ----
+    // ---- ws:interchange ----
+    tools_interchange::act,
+    // ---- ws:assistant-pane ----
+    // ---- ws:mcp-context ----
+    tools_context::act,
+    // ---- ws:transcribe-islands ----
+    // ---- ws:voice-input ----
+    voice_ctl::act,
+    // ---- ws:docs-release ----
+    // ---- ws:html-layer ----
+    html_ctl::act,
+    // ---- ws:shader-library ----
+    tools_shader::act,
+    // ---- ws:skills ----
+    // ---- ws:online-library ----
+    library_ctl::act,
 ];
 
 pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
@@ -1589,6 +1736,30 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:keys-actions ----
     // ---- ws:color-page ----
     color_page::tick,
+    // ---- ws:perf-baseline ----
+    // ---- ws:pro-schema ----
+    // ---- ws:play-decode-path ----
+    // ---- ws:play-render-thread ----
+    // ---- ws:play-source-monitor ----
+    // ---- ws:export-audio-tracks ----
+    // ---- ws:export-encoders ----
+    // ---- ws:export-pipeline ----
+    // ---- ws:interchange ----
+    // ---- ws:assistant-pane ----
+    assistant_ctl::tick,
+    // ---- ws:mcp-context ----
+    tools_context::tick,
+    // ---- ws:transcribe-islands ----
+    // ---- ws:voice-input ----
+    voice_ctl::tick,
+    // ---- ws:docs-release ----
+    // ---- ws:html-layer ----
+    html_ctl::tick,
+    // ---- ws:shader-library ----
+    tools_shader::tick,
+    // ---- ws:skills ----
+    // ---- ws:online-library ----
+    library_ctl::tick,
 ];
 
 pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
@@ -1632,6 +1803,29 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:inspector-surface ----
     // ---- ws:side-panels ----
     // ---- ws:keys-actions ----
+    // ---- ws:perf-baseline ----
+    // ---- ws:pro-schema ----
+    // ---- ws:play-decode-path ----
+    // ---- ws:play-render-thread ----
+    // ---- ws:play-source-monitor ----
+    // ---- ws:export-audio-tracks ----
+    // ---- ws:export-encoders ----
+    // ---- ws:export-pipeline ----
+    // ---- ws:interchange ----
+    // ---- ws:assistant-pane ----
+    assistant_ctl::approvals,
+    // ---- ws:mcp-context ----
+    // ---- ws:transcribe-islands ----
+    // ---- ws:voice-input ----
+    // ---- ws:docs-release ----
+    // ---- ws:html-layer ----
+    html_ctl::windows,
+    // ---- ws:shader-library ----
+    tools_shader::windows,
+    // ---- ws:skills ----
+    assistant_ctl::skill_windows,
+    // ---- ws:online-library ----
+    library_ctl::windows,
 ];
 
 pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
@@ -1673,6 +1867,25 @@ pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
     // ---- ws:keys-actions ----
     // ---- ws:color-page ----
     color_page::draw,
+    // ---- ws:perf-baseline ----
+    // ---- ws:pro-schema ----
+    assistant_ctl::draw,
+    // ---- ws:play-decode-path ----
+    // ---- ws:play-render-thread ----
+    // ---- ws:play-source-monitor ----
+    // ---- ws:export-audio-tracks ----
+    // ---- ws:export-encoders ----
+    // ---- ws:export-pipeline ----
+    // ---- ws:interchange ----
+    // ---- ws:assistant-pane ----
+    // ---- ws:mcp-context ----
+    // ---- ws:transcribe-islands ----
+    // ---- ws:voice-input ----
+    // ---- ws:docs-release ----
+    // ---- ws:html-layer ----
+    // ---- ws:shader-library ----
+    // ---- ws:skills ----
+    // ---- ws:online-library ----
 ];
 
 /// The dominant kind of the current selection, for a contextual inspector/palette to key off without
@@ -1751,7 +1964,8 @@ impl App {
         // files for guards only this ws's rows table needs. See `enabled_for2`.
         Self::enabled_for2(
             a,
-            self.undo.is_empty(),
+            // ws:mcp-context: an open agent group has no entry until tools_context::act closes it
+            self.undo.is_empty() && self.mcp_ctx.group.is_none(),
             self.redo.is_empty(),
             self.timeline_is_empty(),
             // a clicked transition clears the clip selection; Delete removes `sel_transitions` too

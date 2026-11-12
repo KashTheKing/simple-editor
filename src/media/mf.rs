@@ -5,6 +5,8 @@
 //!  * `open_video(path)` -> VideoSource producing top-down RGBA8 at the requested size (RGB32 output type +
 //!                          MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING; handle negative stride / bottom-up;
 //!                          scale to (w,h) - either via the reader's output type or a simple resize in Rust).
+//!                          `frame_shared` (the preview's path) skips the swizzle: it hands out MF's BGRX
+//!                          as a `Frame::bgrx` frame, the cached one itself at the decode size.
 //!  * `open_audio(path, stream)` -> AudioSource producing stereo f32 @ 48 kHz (PCM float output type; stream
 //!                          = Nth audio stream in container order; resample/upmix in Rust if MF refuses).
 //! Seeking: SetCurrentPosition then decode forward until pts >= t. Sequential reads must not seek.
@@ -13,7 +15,7 @@
 
 use super::{AudioSource, Frame, VideoSource, CHANNELS, SAMPLE_RATE};
 use crate::model::{Asset, AudioStreamInfo, ClipKind};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use windows::core::{Interface, BOOL, GUID, HSTRING};
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
 use windows::Win32::Graphics::Direct3D11::{
@@ -268,6 +270,7 @@ pub fn probe(path: &str) -> Result<Asset, String> {
         parent: None,
         range: None,
         effects: Vec::new(),
+        html: None,
     };
     let mut has_video = false;
     for s in streams(&reader) {
@@ -333,14 +336,17 @@ struct MfVideo {
     req_streak: u32,
     /// True after the first `SetCurrentMediaType` size negotiation (successful or not).
     negotiated: bool,
+    /// Renegotiate to the requested size at once (one-shot renders: `VideoSource::set_exact`).
+    exact: bool,
     width: u32,
     height: u32,
     /// MF_MT_DEFAULT_STRIDE of the current type (0 = unknown; negative = bottom-up).
     stride: i32,
     /// Fallback frame duration when a sample has none.
     frame_hns: i64,
-    /// Native-size top-down RGBA of the cached frame.
-    native: Vec<u8>,
+    /// The cached frame at decode size (`width` x `height`), top-down, still in MF's BGRX order
+    /// (`Frame::bgrx`): `frame_shared` hands this very `Arc` out, `emit` swizzles it for `frame_at`.
+    native: Arc<Frame>,
     have: bool,
     /// Cached frame covers [pts, end) (pts may be pulled back to the requested t when the reader
     /// returned a later frame); `rpts` is the real sample time.
@@ -405,11 +411,12 @@ pub fn open_video(path: &str) -> Result<Box<dyn VideoSource>, String> {
         req_last: (0, 0),
         req_streak: 0,
         negotiated: false,
+        exact: false,
         width: 0,
         height: 0,
         stride: 0,
         frame_hns: if fps > 0.0 { (HNS / fps) as i64 } else { 333_333 },
-        native: Vec::new(),
+        native: Arc::default(),
         have: false,
         pts: 0,
         end: 0,
@@ -433,11 +440,14 @@ pub fn open_video(path: &str) -> Result<Box<dyn VideoSource>, String> {
     (v.native_w, v.native_h) = (v.width, v.height);
     // Decode the first frame now: surfaces "codec not decodable" at open (so Auto falls back to ffmpeg),
     // fixes the time origin and warms the cache for the usual first request at t=0.
-    if !v.read_until(0) {
+    if !v.read_until(0, &mut Vec::new()) {
         return Err("MF: cannot decode first video frame".into());
     }
     v.origin = v.rpts.max(0);
     v.pts = v.rpts;
+    if let Some(f) = Arc::get_mut(&mut v.native) {
+        f.pts = (v.rpts - v.origin) as f64 / HNS; // decoded before the origin was known
+    }
     Ok(Box::new(v))
 }
 
@@ -455,8 +465,7 @@ impl MfVideo {
         self.width = w;
         self.height = h;
         self.stride = unsafe { cur.GetUINT32(&MF_MT_DEFAULT_STRIDE) }.map(|s| s as i32).unwrap_or(0);
-        self.native.resize((w * h * 4) as usize, 0);
-        self.have = false;
+        self.have = false; // `copy_sample` sizes the next frame
         self.svalid = false;
         true
     }
@@ -490,7 +499,7 @@ impl MfVideo {
             self.req_last = t;
             self.req_streak = 1;
         }
-        if self.req_streak < STABLE_REQS && self.negotiated {
+        if self.req_streak < STABLE_REQS && self.negotiated && !self.exact {
             return; // not settled yet: serve the current size, `rescale` bridges the gap
         }
         self.negotiated = true;
@@ -518,8 +527,9 @@ impl MfVideo {
         ok
     }
 
-    /// Read forward until a sample whose end is past `tt`; cache it. False at EOF / error.
-    fn read_until(&mut self, tt: i64) -> bool {
+    /// Read forward until a sample whose end is past `tt`; cache it (in a buffer from `spare` when
+    /// the last one is still held elsewhere). False at EOF / error.
+    fn read_until(&mut self, tt: i64, spare: &mut Vec<Frame>) -> bool {
         for _ in 0..MAX_READS {
             let mut flags = 0u32;
             let mut ts = 0i64;
@@ -545,7 +555,8 @@ impl MfVideo {
             if end <= tt {
                 continue;
             }
-            if !self.copy_sample(&sample) {
+            if !self.copy_sample(&sample, ts, spare) {
+                self.have = false; // `native` may be half written
                 return false;
             }
             self.have = true;
@@ -558,9 +569,21 @@ impl MfVideo {
         false
     }
 
-    /// BGRX sample -> top-down RGBA `native`.
-    fn copy_sample(&mut self, sample: &IMFSample) -> bool {
+    /// BGRX sample -> top-down BGRX `native` (row copies, no swizzle). The buffer is the old
+    /// `native` when nothing else holds it any more, else one from `spare`, else a fresh one.
+    fn copy_sample(&mut self, sample: &IMFSample, ts: i64, spare: &mut Vec<Frame>) -> bool {
         let (w, h) = (self.width as usize, self.height as usize);
+        let mut f = Arc::try_unwrap(std::mem::take(&mut self.native))
+            .unwrap_or_else(|_| spare.pop().unwrap_or_default());
+        f.resize_for_overwrite(self.width, self.height);
+        f.bgrx = true;
+        f.pts = (ts - self.origin) as f64 / HNS;
+        let ok = Self::copy_buffer(sample, self.stride, w, h, &mut f.rgba);
+        self.native = Arc::new(f);
+        ok
+    }
+
+    fn copy_buffer(sample: &IMFSample, stride: i32, w: usize, h: usize, dst: &mut [u8]) -> bool {
         unsafe {
             let Ok(buf) = sample.ConvertToContiguousBuffer() else {
                 return false;
@@ -572,7 +595,7 @@ impl MfVideo {
                     return false;
                 }
                 // Lock2D: p = top row, pitch signed.
-                convert_rows(p, pitch as isize, w, h, &mut self.native);
+                copy_rows(p, pitch as isize, w, h, dst, false);
                 let _ = b2.Unlock2D();
             } else {
                 let mut p: *mut u8 = std::ptr::null_mut();
@@ -580,42 +603,60 @@ impl MfVideo {
                 if buf.Lock(&mut p, None, Some(&mut len)).is_err() || p.is_null() {
                     return false;
                 }
-                let stride = if self.stride != 0 { self.stride as isize } else { (w * 4) as isize };
+                let stride = if stride != 0 { stride as isize } else { (w * 4) as isize };
                 if (len as usize) < h * stride.unsigned_abs() {
                     let _ = buf.Unlock();
                     return false;
                 }
                 // Negative stride: memory starts with the bottom row, so the top row is the last one.
                 let top = if stride < 0 { p.offset((h as isize - 1) * -stride) } else { p };
-                convert_rows(top, stride, w, h, &mut self.native);
+                copy_rows(top, stride, w, h, dst, false);
                 let _ = buf.Unlock();
             }
         }
         true
     }
 
-    /// Write the cached frame at (w,h) into `out`.
-    fn emit(&mut self, w: u32, h: u32, out: &mut Frame) {
-        out.resize(w, h);
-        out.pts = (self.rpts - self.origin) as f64 / HNS;
-        if w == self.width && h == self.height {
-            out.rgba.copy_from_slice(&self.native);
-            return;
-        }
+    /// Write the cached frame at (w,h) into `out`: RGBA, or left BGRX (`Frame::bgrx`) when `bgrx`.
+    fn emit(&mut self, w: u32, h: u32, out: &mut Frame, bgrx: bool) {
+        out.resize_for_overwrite(w, h);
+        out.bgrx = bgrx;
+        out.pts = self.native.pts;
         // one pixel short of the decode size is `ensure_decode_size`'s even alignment (a 1200x675
         // canvas decodes at 1200x676): drop the spare row/column instead of resampling the whole
         // frame for it, which cost more than the decode did (6.5 ms of a 9 ms 720p frame)
         let (sw, sh) = (self.width as usize, self.height as usize);
         if (sw - 1..=sw).contains(&(w as usize)) && (sh - 1..=sh).contains(&(h as usize)) {
-            for (d, s) in out.rgba.chunks_exact_mut(w as usize * 4).zip(self.native.chunks_exact(sw * 4)) {
-                d.copy_from_slice(&s[..w as usize * 4]);
-            }
+            // SAFETY: `native` holds sh >= h rows of sw >= w pixels
+            unsafe { copy_rows(self.native.rgba.as_ptr(), (sw * 4) as isize, w as usize, h as usize, &mut out.rgba, !bgrx) };
             return;
         }
         if !(self.svalid && self.sw == w && self.sh == h) {
             self.rescale(w, h);
         }
-        out.rgba.copy_from_slice(&self.scaled);
+        // SAFETY: `scaled` is w x h
+        unsafe { copy_rows(self.scaled.as_ptr(), w as isize * 4, w as usize, h as usize, &mut out.rgba, !bgrx) };
+    }
+
+    /// Make sure the frame shown at `t` is cached (`native`). False at/after EOF or on error.
+    fn ready(&mut self, t: f64, w: u32, h: u32, spare: &mut Vec<Frame>) -> bool {
+        if w == 0 || h == 0 {
+            return false;
+        }
+        self.ensure_decode_size(w, h);
+        // +5 ms display-time tolerance: MKV pts are ms-rounded (frame n's pts can land just after n/fps),
+        // raw mp4 pts jitter ±1 hns - without it every other frame repeats when stepping at n/fps.
+        let tt = hns(t) + 50_000 + self.origin;
+        if self.eof_at.is_some_and(|e| tt >= e) {
+            return false;
+        }
+        if !(self.have && tt >= self.pts && tt < self.end) {
+            let forward = self.have && tt >= self.end && tt < self.pts + VIDEO_FWD_HNS;
+            if (!forward && !self.seek(tt)) || !self.read_until(tt, spare) {
+                return false;
+            }
+        }
+        true
     }
 
     fn rescale(&mut self, w: u32, h: u32) {
@@ -628,10 +669,10 @@ impl MfVideo {
                 self.ys = (0..=h).map(|j| (j as u64 * self.height as u64 / h as u64) as u32).collect();
                 self.acc.resize(w as usize * 3, 0);
             }
-            box_down(&self.native, self.width, &self.xs, &self.ys, &mut self.acc, &mut self.scaled);
+            box_down(&self.native.rgba, self.width, &self.xs, &self.ys, &mut self.acc, &mut self.scaled);
         } else {
             // ponytail: bilinear per pixel - the compositor never asks for more than native size.
-            bilinear(&self.native, self.width, self.height, w, h, &mut self.scaled);
+            bilinear(&self.native.rgba, self.width, self.height, w, h, &mut self.scaled);
         }
         self.svalid = true;
         self.sw = w;
@@ -639,10 +680,15 @@ impl MfVideo {
     }
 }
 
-/// Copy `h` rows of `w` BGRX pixels starting at `top` (row stride `pitch`, signed) into top-down RGBA.
-unsafe fn convert_rows(top: *const u8, pitch: isize, w: usize, h: usize, dst: &mut [u8]) {
+/// Copy `h` rows of `w` BGRX pixels starting at `top` (row stride `pitch`, signed) into top-down
+/// `dst`: as they are (a memcpy per row), or swizzled to RGBA when `swizzle`.
+unsafe fn copy_rows(top: *const u8, pitch: isize, w: usize, h: usize, dst: &mut [u8], swizzle: bool) {
     for (y, drow) in dst.chunks_exact_mut(w * 4).take(h).enumerate() {
         let src = std::slice::from_raw_parts(top.offset(y as isize * pitch), w * 4);
+        if !swizzle {
+            drow.copy_from_slice(src);
+            continue;
+        }
         for (s, d) in src.chunks_exact(4).zip(drow.chunks_exact_mut(4)) {
             d[0] = s[2];
             d[1] = s[1];
@@ -706,24 +752,27 @@ impl VideoSource for MfVideo {
         (self.native_w, self.native_h)
     }
     fn frame_at(&mut self, t: f64, w: u32, h: u32, out: &mut Frame) -> bool {
-        if w == 0 || h == 0 {
+        // nobody else holds `native` on this path, so its buffer is decoded into again: no spare needed
+        if !self.ready(t, w, h, &mut Vec::new()) {
             return false;
         }
-        self.ensure_decode_size(w, h);
-        // +5 ms display-time tolerance: MKV pts are ms-rounded (frame n's pts can land just after n/fps),
-        // raw mp4 pts jitter ±1 hns - without it every other frame repeats when stepping at n/fps.
-        let tt = hns(t) + 50_000 + self.origin;
-        if self.eof_at.is_some_and(|e| tt >= e) {
-            return false;
-        }
-        if !(self.have && tt >= self.pts && tt < self.end) {
-            let forward = self.have && tt >= self.end && tt < self.pts + VIDEO_FWD_HNS;
-            if (!forward && !self.seek(tt)) || !self.read_until(tt) {
-                return false;
-            }
-        }
-        self.emit(w, h, out);
+        self.emit(w, h, out, false);
         true
+    }
+    fn set_exact(&mut self, on: bool) {
+        self.exact = on;
+    }
+    /// At the decode size, the cached frame itself (BGRX, no copy); otherwise one scaled copy.
+    fn frame_shared(&mut self, t: f64, w: u32, h: u32, spare: &mut Vec<Frame>) -> Option<Arc<Frame>> {
+        if !self.ready(t, w, h, spare) {
+            return None;
+        }
+        if (w, h) == (self.width, self.height) {
+            return Some(self.native.clone());
+        }
+        let mut f = spare.pop().unwrap_or_default();
+        self.emit(w, h, &mut f, true);
+        Some(Arc::new(f))
     }
 }
 
@@ -764,7 +813,7 @@ fn rs_kernel() -> &'static [[f32; 2 * RS_HALF]] {
 }
 
 /// Append `src` (interleaved `ch` channels at `rate`) to `fifo` as interleaved stereo @ SAMPLE_RATE.
-/// Mono is duplicated, >2 channels keep L/R. Non-48k input goes through a 16-tap windowed sinc (44.1 kHz
+/// Mono is duplicated, >2 channels keep L/R (only when `open_audio` could not hand them to ffmpeg). Non-48k input goes through a 16-tap windowed sinc (44.1 kHz
 /// MP3 always comes this way - see `audio_reader`): flat within 1 dB to ~16 kHz. A frame is written once
 /// the `RS_HALF` input frames after it have arrived, so the last 0.2 ms of a stream is never written.
 /// ponytail: the kernel is not widened for rates above 48 kHz, which alias as the old linear
@@ -870,6 +919,15 @@ pub fn open_audio(path: &str, stream: usize) -> Result<Box<dyn AudioSource>, Str
         }
         audio_format(&reader, idx)?
     };
+    // ws:export-audio-tracks: MF didn't downmix this surround stream for us and `push_audio` would keep
+    // only L/R (losing the centre - dialogue - channel). ffmpeg's decoder downmixes properly (`-ac 2`),
+    // so hand the stream to it - here rather than with an Err, so a forced-MF backend (no Auto
+    // fallback) doesn't lose the file's audio. No ffmpeg: keep L/R as before. Mono/stereo unaffected.
+    if ch > 2 {
+        if let Ok(a) = super::ffpipe::open_audio(path, stream) {
+            return Ok(a);
+        }
+    }
     let mut a = MfAudio {
         reader,
         stream: idx,
@@ -1420,7 +1478,10 @@ mod tests {
         // a BGRX row with negative pitch (bottom-up memory) lands top-down
         let rows: [[u8; 8]; 2] = [[1, 2, 3, 0, 4, 5, 6, 0], [7, 8, 9, 0, 10, 11, 12, 0]]; // mem: bottom row first
         let mut out = vec![0u8; 16];
-        unsafe { convert_rows(rows[1].as_ptr(), -8, 2, 2, &mut out) };
+        unsafe { copy_rows(rows[1].as_ptr(), -8, 2, 2, &mut out, true) };
         assert_eq!(out, [9, 8, 7, 255, 12, 11, 10, 255, 3, 2, 1, 255, 6, 5, 4, 255]);
+        // kept as BGRX (the decode path): the same rows, untouched
+        unsafe { copy_rows(rows[1].as_ptr(), -8, 2, 2, &mut out, false) };
+        assert_eq!(out, [7, 8, 9, 0, 10, 11, 12, 0, 1, 2, 3, 0, 4, 5, 6, 0]);
     }
 }

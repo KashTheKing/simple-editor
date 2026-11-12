@@ -1,0 +1,95 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Outro Card</title>
+<meta name="se:kind" content="scene">
+<meta name="se:desc" content="A thanks-for-watching outro with the channel name, a row of social handles with simple icons and a shining subscribe pill.">
+<meta name="se:tags" content="outro, thanks for watching, end card, social, handles, subscribe, youtuber">
+<meta name="se:size" content="1920x1080">
+<meta name="se:duration" content="6s">
+<meta name="se:thumb" content="3">
+<meta name="se:field" content="heading | text | Thanks for watching!">
+<meta name="se:field" content="channel | text | Pixel Kitchen">
+<meta name="se:field" content="handle1 | text | @pixelkitchen">
+<meta name="se:field" content="handle2 | text | hello@pixelkitchen.tv">
+<meta name="se:field" content="accent | color | #ff3d57">
+<meta name="se:field" content="background | color | #0f1118">
+<style>
+  :root { --accent: {{accent}}; --bg: {{background}}; }
+  html, body { margin: 0; overflow: hidden; }
+  body { width: 100vw; height: 100vh; position: relative; background: var(--bg); color: #fff;
+    font-family: "Segoe UI", Arial, sans-serif; }
+
+  .blob { position: absolute; border-radius: 50%; background: var(--accent); filter: blur(160px); opacity: .28; }
+  .b1 { width: 900px; height: 700px; left: -250px; top: -250px; animation: float1 6s ease-in-out both; }
+  .b2 { width: 800px; height: 600px; right: -250px; bottom: -250px; opacity: .18; animation: float2 6s ease-in-out both; }
+  .dots { position: absolute; inset: 0; opacity: .12;
+    background: radial-gradient(circle, #fff 1.5px, transparent 2px) 0 0 / 40px 40px;
+    -webkit-mask-image: radial-gradient(ellipse 60% 55% at 50% 50%, transparent 30%, #000);
+    mask-image: radial-gradient(ellipse 60% 55% at 50% 50%, transparent 30%, #000); }
+  .vig { position: absolute; inset: 0; background: radial-gradient(ellipse 90% 85% at 50% 50%, transparent 55%, rgba(0, 0, 0, .55)); }
+
+  .center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  .mask { max-width: 1680px; overflow: hidden; padding: 0 16px 8px; }
+  h1 { margin: 0; font-size: 132px; font-weight: 900; letter-spacing: -2px; line-height: 1.1; text-align: center;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    animation: rise .9s cubic-bezier(.2, 1, .3, 1) .2s both; }
+  .chan { display: flex; align-items: center; gap: 24px; margin-top: 16px; max-width: 1200px;
+    font-size: 36px; font-weight: 600; letter-spacing: 6px; text-transform: uppercase; color: rgba(255, 255, 255, .85);
+    animation: fade .8s ease-out .75s both; }
+  .chan span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .chan::before, .chan::after { content: ""; flex: none; width: 64px; height: 3px; border-radius: 2px; background: var(--accent);
+    animation: grow .7s cubic-bezier(.6, 0, .2, 1) .85s both; }
+
+  .row { display: flex; align-items: center; gap: 24px; margin-top: 72px; max-width: 1700px; }
+  .ic, .chip { flex: none; display: flex; align-items: center; height: 80px; border-radius: 40px;
+    background: rgba(255, 255, 255, .08); border: 2px solid rgba(255, 255, 255, .14);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, .3); box-sizing: border-box; }
+  .ic { width: 80px; justify-content: center; }
+  .chip { flex: 0 1 auto; min-width: 0; gap: 16px; padding: 0 32px 0 12px; font-size: 30px; font-weight: 600; }
+  .chip span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .chip .g { flex: none; width: 56px; height: 56px; border-radius: 50%; background: var(--accent);
+    display: grid; place-items: center; }
+  svg { width: 32px; height: 32px; fill: none; stroke: #fff; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+  .i1 { animation: pop .55s cubic-bezier(.2, 1.5, .4, 1) 1.05s both; }
+  .i2 { animation: pop .55s cubic-bezier(.2, 1.5, .4, 1) 1.17s both; }
+  .i3 { animation: pop .55s cubic-bezier(.2, 1.5, .4, 1) 1.29s both; }
+  .i4 { animation: pop .55s cubic-bezier(.2, 1.5, .4, 1) 1.41s both; }
+
+  .sub { position: relative; overflow: hidden; display: flex; align-items: center; gap: 16px; margin-top: 56px;
+    height: 88px; padding: 0 48px 0 32px; border-radius: 44px; background: var(--accent);
+    font-size: 36px; font-weight: 700; box-shadow: 0 16px 40px rgba(0, 0, 0, .4);
+    animation: pop .6s cubic-bezier(.2, 1.6, .4, 1) 1.75s both; }
+  .sub svg { width: 36px; height: 36px; fill: #fff; stroke: none; }
+  .sub::after { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 120px;
+    background: linear-gradient(100deg, transparent, rgba(255, 255, 255, .45), transparent);
+    animation: shine 3s ease-in-out 2.4s infinite both; }
+
+  @keyframes rise { from { transform: translateY(110%); } to { transform: none; } }
+  @keyframes fade { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
+  @keyframes grow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+  @keyframes pop { from { opacity: 0; transform: scale(.3); } 40% { opacity: 1; } to { opacity: 1; transform: scale(1); } }
+  @keyframes shine { 0% { transform: translateX(-160px); } 40%, 100% { transform: translateX(560px); } }
+  @keyframes float1 { from { transform: translate(0, 0) scale(.9); opacity: .1; } to { transform: translate(160px, 90px) scale(1.05); opacity: .28; } }
+  @keyframes float2 { from { transform: translate(0, 0); opacity: .06; } to { transform: translate(-140px, -80px); opacity: .18; } }
+</style>
+</head>
+<body>
+<div class="blob b1"></div>
+<div class="blob b2"></div>
+<div class="dots"></div>
+<div class="vig"></div>
+<div class="center">
+  <div class="mask"><h1>{{heading}}</h1></div>
+  <div class="chan"><span>{{channel}}</span></div>
+  <div class="row">
+    <div class="ic i1"><svg viewBox="0 0 24 24"><path d="M8 5.5v13l10.5-6.5z" fill="#fff"/></svg></div>
+    <div class="chip i2"><div class="g"><svg viewBox="0 0 24 24"><path d="M8.5 6.5l1.4-2.2h4.2l1.4 2.2H19a2.5 2.5 0 0 1 2.5 2.5v8.5A2.5 2.5 0 0 1 19 20H5a2.5 2.5 0 0 1-2.5-2.5V9A2.5 2.5 0 0 1 5 6.5z"/><circle cx="12" cy="13" r="3.8"/></svg></div><span>{{handle1}}</span></div>
+    <div class="chip i3"><div class="g"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.8"/><path d="M15.8 8.5v5a2.7 2.7 0 0 0 5.2 1V12a9 9 0 1 0-3.6 7.2"/></svg></div><span>{{handle2}}</span></div>
+    <div class="ic i4"><svg viewBox="0 0 24 24"><path d="M4 5.5h16a1.5 1.5 0 0 1 1.5 1.5v9a1.5 1.5 0 0 1-1.5 1.5h-9l-5 4v-4H4A1.5 1.5 0 0 1 2.5 16V7A1.5 1.5 0 0 1 4 5.5z"/></svg></div>
+  </div>
+  <div class="sub"><svg viewBox="0 0 24 24"><path d="M12 2.5a6.5 6.5 0 0 0-6.5 6.5v4l-1.8 3.2c-.4.8.1 1.8 1 1.8h14.6c.9 0 1.4-1 1-1.8L18.5 13V9A6.5 6.5 0 0 0 12 2.5zM9.2 19.5a2.8 2.8 0 0 0 5.6 0z"/></svg>Subscribe</div>
+</div>
+</body>
+</html>

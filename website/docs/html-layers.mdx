@@ -1,0 +1,74 @@
+---
+title: HTML layers & web snapshots
+description: Make titles, buttons and whole scenes with HTML and CSS, copy a real web page into your edit, and fake a mouse over it.
+---
+
+An **HTML layer** is a clip made from HTML and CSS: a lower third, a subscribe button, a chat bubble, a whole
+scene. It is drawn by the Microsoft Edge that comes with Windows, keeps its transparency, animates with
+CSS, and is exported with the video. There is no JavaScript: scripts are removed.
+
+## Add one
+
+- **Add ▸ HTML Layer** (transparent, sits over video) or **Add ▸ HTML Scene** (full frame with its own
+  background) gives you a starter you can change.
+- **Add ▸ Import HTML File…**, or drop a `.html` or `.mhtml` file on the timeline. The clip is **linked** to the
+  file: edit either side. Linked CSS and images are followed and render again when they change.
+- The [online library](online-library.mdx) has ready-made layers (buttons, lower thirds, bubbles, end screens).
+
+On the timeline an HTML clip shows a `</>` mark instead of a filmstrip.
+
+## Edit it
+
+Select the clip: the [Inspector](inspector.mdx) shows its **code** with syntax colours and completion.
+**Fields** (the texts and colours a template exposes) are plain controls above it. Double-click the clip, or press
+the pop-out button, to open the **HTML editor** in its own window: live preview, a scrub bar, and an
+**Ask the assistant** box. **F11** makes it full screen. You can also open the file in your own code editor
+and the clip follows.
+
+Problems (a missing closing tag, something that is not allowed, such as a network address in a
+template) show as a list under the code.
+
+## Animate it
+
+Motion is CSS: `@keyframes` and `animation`. The app sets the time of every animation per frame, so what
+you write is what renders at any frame rate.
+
+To animate a number from the timeline, declare a **parameter**:
+
+```html
+<meta name="se:param" content="progress | number | 0 | 0 | 100">
+<style> .bar { width: calc(var(--progress) * 1%); } </style>
+```
+
+`progress` shows in the Inspector with a keyframe diamond, and your CSS reads it as `var(--progress)`.
+
+## Web Page Snapshot
+
+**Add ▸ Web Page Snapshot…** copies a real web page into your edit as HTML and CSS you can scroll, zoom and
+animate. Pick a size (Phone, Short, Desktop or your own width) and one of two ways:
+
+- **From a web address.** Paste the address. Simple Editor opens it in its own private Edge, as a visitor
+  who is not signed in, keeps the HTML and CSS, drops the scripts, and adds a linked clip. Pages that need a
+  login, or fill themselves in with scripts, may come out empty.
+- **From my browser.** For the page exactly as you see it (signed in, scrolled, a menu open). Install the tiny
+  extension once: the window can **save the extension to a folder**; in your browser open the extensions page
+  (`brave://extensions`, `chrome://extensions` or `edge://extensions`), turn on **Developer mode**, click
+  **Load unpacked** and pick that folder. Then click the extension's button, or press **Alt+Shift+S**, on any
+  page. The snapshot lands in your Downloads folder and appears in Simple Editor as a new clip within a couple
+  of seconds. Nothing leaves your computer.
+
+  No extension? Save the page as a single file (`.mhtml`) and drop it on the timeline.
+
+## Fake mouse
+
+Select an HTML clip and open **Mouse** in the Inspector. Tick **Fake mouse**, then keyframe **X** and **Y** (page
+pixels from the top-left of the visible page) and **Pressed**. **Click here** adds a press and a release at the
+playhead. The page reacts like a real one: `:hover` and `:active` styles and the CSS transitions they start
+play, frame-exact. Links go nowhere. The mouse reaches the top screenful of the page; scroll the page first
+for lower parts.
+
+## For AI agents
+
+Everything above is also available over MCP: `html.create`, `html.get`, `html.set` (source, fields,
+parameters), `html.import`, `html.link`, `html.snapshot`, `html.render` and `html.check` (one rendered frame
+as an image). See [Scripting & MCP](scripting.mdx).

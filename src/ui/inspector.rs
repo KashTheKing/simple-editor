@@ -281,7 +281,7 @@ fn transition_section(ui: &mut egui::Ui, project: &mut Project, ids: &[Id], undo
     let mut e = first.clone();
     Grid::new("insp_transition").num_columns(2).show(ui, |ui| {
         ui.label("Kind");
-        egui::ComboBox::from_id_salt("insp_tr_kind").selected_text(e.kind.name()).show_ui(ui, |ui| {
+        egui::ComboBox::from_id_salt("insp_tr_kind").selected_text(e.name()).show_ui(ui, |ui| {
             for k in TransitionKind::ALL {
                 g.note(&ui.selectable_value(&mut e.kind, k, k.name()));
             }
@@ -306,6 +306,11 @@ fn transition_section(ui: &mut egui::Ui, project: &mut Project, ids: &[Id], undo
                 }
             });
             ui.end_row();
+        }
+        // ws:shader-library: a shader transition's named controls
+        if e.kind == TransitionKind::Shader {
+            let specs = crate::model::shader_specs(&e.shader);
+            crate::ui::effects_ui::plain_param_rows(ui, &specs, &mut e.params, &mut g);
         }
         ui.label("Ease");
         egui::ComboBox::from_id_salt("insp_tr_ease").selected_text(e.ease.name()).show_ui(ui, |ui| {
@@ -351,6 +356,9 @@ fn transition_section(ui: &mut egui::Ui, project: &mut Project, ids: &[Id], undo
             }
             if e.ease != first.ease {
                 t.ease = e.ease;
+            }
+            if e.params != first.params && t.kind == TransitionKind::Shader {
+                t.params.clone_from(&e.params); // ws:shader-library
             }
         }
     }
@@ -863,6 +871,29 @@ fn clip_section(
     }
     ui.separator();
 
+    // ---- ws:html-layer ---- an HTML layer is code, not footage: its source, file and fields lead
+    let mut html_changed = false;
+    if !multi && clip.uses_asset() && project.asset(clip.asset).is_some_and(|a| a.html.is_some()) {
+        section(ui, "html_source", "HTML", true, folds.map, None, |ui| {
+            html_changed |= crate::ui::html_ui::source_section(ui, project, id, undo);
+        });
+        section(ui, "fields", "Fields", true, folds.map, None, |ui| {
+            html_changed |= crate::ui::html_ui::fields_section(ui, project, id, undo);
+        });
+        {
+            let at = clip.src_time(playhead);
+            section(ui, "html_mouse", "Mouse", false, folds.map, None, |ui| {
+                html_changed |= crate::ui::html_ui::mouse_section(ui, project, id, at, palette, undo);
+            });
+        }
+        if crate::ui::html_ui::has_params(project, id) {
+            let at = clip.src_time(playhead);
+            section(ui, "html_params", "Parameters", true, folds.map, None, |ui| {
+                html_changed |= crate::ui::html_ui::params_section(ui, project, id, at, palette, undo);
+            });
+        }
+    }
+
     // ---- ws:text-titles: primary-first ordering ----
     // For a Text clip, typography is what a beginner needs first, so its section leads (and is the one
     // open). The "Text style presets" sub-panel sits at its end: it needs `&mut Settings`, which
@@ -1274,6 +1305,7 @@ fn clip_section(
         || text_changed
         || speed_changed
         || effects_changed
+        || html_changed // ws:html-layer
 }
 
 /// Text style presets, at the end of the Text section: save the clip's (or the selected characters')
@@ -1532,6 +1564,7 @@ mod tests {
             parent: None,
             range: None,
             effects: Vec::new(),
+            html: None,
         };
         let mut p = Project::from_media(a);
         let aid = p.assets[0].id;
@@ -1832,6 +1865,7 @@ mod tests {
                 parent: None,
                 range: None,
                 effects: Vec::new(),
+                html: None,
             });
             let vi = p.tracks.iter().position(|t| t.kind == crate::model::TrackKind::Video).unwrap();
             let mut c = Clip::new(500, ClipKind::Video, "v", 0.0, 5.0);
@@ -2406,6 +2440,7 @@ mod tests {
             parent: None,
             range: None,
             effects: Vec::new(),
+            html: None,
         };
         let mut p = Project::from_media(a);
         let vid = p.tracks[0].clips[0].id;

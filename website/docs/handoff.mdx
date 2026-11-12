@@ -1,0 +1,48 @@
+---
+title: Hand off to Premiere, Resolve and Avid
+description: Send your edit to Premiere Pro, DaVinci Resolve or Avid Media Composer as XML, EDL and marker files.
+---
+
+When a project moves on to a colourist, a sound mixer or another editor, export the timeline as a file
+their editor can open. All of these are in **File ▸ Export**, and they write the main timeline.
+
+## Premiere Pro and DaVinci Resolve: XML
+
+**Export Premiere / Resolve XML…** (<kbd>Ctrl+Shift+E</kbd>) writes Final Cut Pro 7 XML, which both open.
+It carries:
+
+- every clip, with its source file, in and out points and track;
+- audio **volume** and **pan** (when not the default);
+- the **link** between a video clip and its audio;
+- **cross dissolves**;
+- **markers**, on the sequence and on clips, with their name, note and length.
+
+Simple Editor reads its own XML back with the markers (**File ▸ Import ▸ Import Timeline**).
+
+## Avid Media Composer: EDL
+
+**Export Avid EDL…** writes a CMX 3600 EDL. Avid, Premiere and Resolve can all import it.
+
+- One EDL per video track: the first at the name you chose (with every audio track in it as A, A2, A3…),
+  the others beside it as `<name>_V2.edl`, `<name>_V3.edl`…
+- Each event names its source file, so the other editor can relink the media.
+- Cross fades, dips and pushes become dissolves; wipes become a standard wipe.
+- 29.97 fps timelines use drop-frame timecode.
+
+## Avid markers
+
+In the **Markers** panel, right-click an empty spot ▸ **Export** ▸ **Avid markers…** writes a text file for
+Avid's **Markers** window (import it there). Each marker becomes one line with its author, timecode, track,
+colour, name and note, and length. Labels are matched to the nearest of Avid's eight marker colours (red when
+there is no label).
+
+## Known limits
+
+- **Timecode starts at 00:00:00:00** in the EDL and the Avid markers file. Set the Avid sequence's start
+  timecode to match before importing markers.
+- **59.94 fps** is written as non-drop-frame timecode.
+- **XML**: track names and marker colours aren't written (the format has nowhere both Premiere and Resolve
+  read them). Only cross dissolves carry over as transitions; dips, pushes and wipes don't. Animated
+  volume or pan is written as its value at the start of the clip.
+- Effects, titles and colour grades stay in Simple Editor. For those, export a video, or the
+  [audio stems](export-audio-tracks.mdx) for the sound mix.

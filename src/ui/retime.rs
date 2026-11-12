@@ -239,6 +239,7 @@ mod tests {
             parent: None,
             range: None,
             effects: Vec::new(),
+            html: None,
         };
         let p = Project::from_media(a);
         let id = p.tracks[0].clips[0].id;

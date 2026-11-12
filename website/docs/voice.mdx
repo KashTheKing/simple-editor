@@ -1,0 +1,33 @@
+---
+title: Voice commands
+description: Dictate a request to the Assistant with the microphone, push to talk.
+---
+
+You can speak a request to the [Assistant](assistant.mdx) instead of typing it. Your speech is turned into
+text on your own PC by whisper.cpp, the same tool that writes [subtitles](captions.mdx).
+
+## Before you start
+
+Voice needs whisper.cpp and a whisper model, set up the same way as for subtitles: see
+[Captions](captions.mdx). Without them the Assistant panel says what is missing next to the mic button.
+
+## Dictate
+
+1. Click the **mic** button under the Assistant's prompt box and speak.
+2. Click it again (it now says **Stop**) when you are done. Recording also stops by itself after 60 seconds.
+3. The status next to the button reads **Listening…**, then **Transcribing…**, and the text is added to
+   the prompt box. Check it and press <kbd>Enter</kbd>.
+
+## Push to talk
+
+**Push to Talk** has no key by default: give it one in **Settings ▸ Hotkeys**. Hold the key to record and
+let go to stop. Run from the command palette, it starts recording, and running it again stops.
+
+The key is ignored while a text box has focus (including the prompt box itself); click outside it first,
+or use the mic button.
+
+## Send without checking
+
+The `voice_autosend` setting sends a finished dictation straight away instead of leaving it in the prompt
+box. It is off by default and has no checkbox yet: set `"voice_autosend": true` in
+`%APPDATA%\SimpleEditor\settings.json` while Simple Editor is closed.

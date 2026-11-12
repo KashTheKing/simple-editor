@@ -1,0 +1,30 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Progress Bar</title>
+<meta name="se:kind" content="layer">
+<meta name="se:desc" content="A slim progress bar along the bottom that fills over the whole clip, with a part label.">
+<meta name="se:tags" content="progress, bar, part, series, timeline">
+<meta name="se:size" content="1920x1080">
+<meta name="se:duration" content="8s">
+<meta name="se:field" content="label | text | Part 1 of 3">
+<meta name="se:field" content="accent | color | #38bdf8">
+<style>
+  :root { --accent: {{accent}}; }
+  html, body { margin: 0; width: 100vw; height: 100vh; overflow: hidden; background: transparent;
+    font-family: "Segoe UI", Arial, sans-serif; }
+  .label { position: absolute; left: 96px; bottom: 92px; max-width: 700px; box-sizing: border-box; padding: 8px 20px 9px; border-radius: 999px;
+    overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+    background: rgba(12, 14, 22, .82); color: #fff; font-size: 26px; line-height: 1.25; font-weight: 600; letter-spacing: .6px;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, .35); animation: in .6s cubic-bezier(.2, .8, .2, 1) .1s both; }
+  .track { position: absolute; left: 96px; right: 96px; bottom: 60px; height: 12px; border-radius: 6px; overflow: hidden;
+    background: rgba(12, 14, 22, .6); box-shadow: 0 0 0 2px rgba(255, 255, 255, .22), 0 4px 14px rgba(0, 0, 0, .35);
+    animation: in .6s cubic-bezier(.2, .8, .2, 1) both; }
+  .fill { height: 100%; border-radius: 6px; background: var(--accent); animation: fill 8s linear both; }
+  @keyframes fill { from { width: 0; } to { width: 100%; } }
+  @keyframes in { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
+</style>
+</head>
+<body><div class="label">{{label}}</div><div class="track"><div class="fill"></div></div></body>
+</html>

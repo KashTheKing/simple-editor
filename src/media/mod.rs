@@ -18,7 +18,11 @@ use std::time::Instant;
 pub const SAMPLE_RATE: u32 = 48000;
 pub const CHANNELS: usize = 2;
 
-/// Top-down RGBA8 image. `rgba.len() == width*height*4`.
+/// Top-down RGBA8 image (straight alpha). `rgba.len() == width*height*4`.
+/// One exception, `bgrx`: a Media Foundation video frame handed out by `DecoderPool::frame_arc`
+/// keeps MF's B,G,R,X byte order (no per-pixel swizzle on the decode path). `engine::gpu::upload`
+/// takes it as it is; every CPU reader goes through `to_rgba` / `make_rgba` (or gets its pixels from
+/// `DecoderPool::frame_at` / `VideoSource::frame_at`, which are always RGBA).
 #[derive(Clone, Default)]
 pub struct Frame {
     pub width: u32,
@@ -26,20 +30,53 @@ pub struct Frame {
     /// Source/timeline time this frame represents (informational).
     pub pts: f64,
     pub rgba: Vec<u8>,
+    /// Pixels are B,G,R,X (X undefined, alpha is 255) instead of RGBA. See above.
+    pub bgrx: bool,
 }
 
 impl Frame {
     pub fn new(width: u32, height: u32) -> Self {
-        Self { width, height, pts: 0.0, rgba: vec![0; (width * height * 4) as usize] }
+        Self { width, height, pts: 0.0, rgba: vec![0; (width * height * 4) as usize], bgrx: false }
     }
-    /// Resize (contents undefined/zero when the size changes).
+    /// Resize (contents undefined/zero when the size changes). The writer is about to fill it as RGBA.
     pub fn resize(&mut self, width: u32, height: u32) {
+        self.bgrx = false;
         if self.width != width || self.height != height {
             self.width = width;
             self.height = height;
             self.rgba.clear();
             self.rgba.resize((width * height * 4) as usize, 0);
         }
+    }
+    /// `resize` for a writer that overwrites every byte: a recycled buffer is not zeroed first, and
+    /// a fresh one comes zeroed from the allocator (lazily, page by page) instead of by a memset.
+    pub fn resize_for_overwrite(&mut self, width: u32, height: u32) {
+        let n = (width * height * 4) as usize;
+        (self.width, self.height, self.bgrx) = (width, height, false);
+        if self.rgba.capacity() < n {
+            self.rgba = vec![0; n];
+        } else {
+            self.rgba.resize(n, 0); // shrinks, or zeroes only the tail it grows by
+        }
+    }
+    /// Turn a `bgrx` frame into RGBA in place (nothing to do for one that is RGBA already).
+    pub fn make_rgba(&mut self) {
+        if std::mem::take(&mut self.bgrx) {
+            for px in self.rgba.chunks_exact_mut(4) {
+                px.swap(0, 2);
+                px[3] = 255;
+            }
+        }
+    }
+    /// This frame as RGBA: itself, or a converted copy of a `bgrx` one - for CPU readers of a
+    /// frame that may have come from `DecoderPool::frame_arc`.
+    pub fn to_rgba(&self) -> std::borrow::Cow<'_, Frame> {
+        if !self.bgrx {
+            return std::borrow::Cow::Borrowed(self);
+        }
+        let mut f = self.clone();
+        f.make_rgba();
+        std::borrow::Cow::Owned(f)
     }
     pub fn fill(&mut self, rgba: [u8; 4]) {
         for px in self.rgba.chunks_exact_mut(4) {
@@ -54,9 +91,10 @@ impl Frame {
     }
     /// Become a copy of `f`, reusing this buffer.
     pub fn copy_from(&mut self, f: &Frame) {
-        self.resize(f.width, f.height);
+        self.resize_for_overwrite(f.width, f.height);
         self.rgba.copy_from_slice(&f.rgba);
         self.pts = f.pts;
+        self.bgrx = f.bgrx;
     }
 }
 
@@ -68,6 +106,21 @@ pub trait VideoSource: Send {
     /// Returns false at/after EOF or on error (then `out` is untouched). Must be cheap for sequential
     /// increasing `t` (playback: keep decoding forward); may seek for other jumps.
     fn frame_at(&mut self, t: f64, w: u32, h: u32, out: &mut Frame) -> bool;
+    /// `frame_at` handing out the frame itself, decoded into a buffer from `spare` when it needs
+    /// one. A decoder that keeps its current frame anyway (MF) hands out that very frame - no copy -
+    /// and may leave it `Frame::bgrx`. Only `DecoderPool::frame_arc` calls this.
+    /// Exact one-shot decoding (see `DecoderPool::set_exact`): a decoder that follows the requested
+    /// size lazily (MF) switches to it at once while this is on.
+    fn set_exact(&mut self, _on: bool) {}
+    fn frame_shared(&mut self, t: f64, w: u32, h: u32, spare: &mut Vec<Frame>) -> Option<Arc<Frame>> {
+        let mut f = spare.pop().unwrap_or_default();
+        if self.frame_at(t, w, h, &mut f) {
+            Some(Arc::new(f))
+        } else {
+            spare.push(f);
+            None
+        }
+    }
     /// A still image: every `t` is the same picture, so callers may cache one frame per size.
     fn is_still(&self) -> bool {
         false
@@ -191,6 +244,9 @@ pub struct DecoderPool {
     /// (`take_missed`) - one slow open must not hold up every other layer.
     deadline: Option<Instant>,
     missed: bool,
+    /// One-shot renders (Export Frame, a full-size `render.frame`): read the original file, not its
+    /// proxy, at exactly the size asked for, and skip the source cache's (preview-sized) frames.
+    exact: bool,
     /// A source finished opening and `video` took it in itself: `collect` has yet to say so.
     arrived: bool,
 }
@@ -205,15 +261,23 @@ pub struct DecoderPool {
 /// this one only needs "recently decoded stays".
 #[derive(Default)]
 struct SourceCache {
-    map: HashMap<(String, i64, u32, u32), (u64, Arc<Frame>)>,
+    /// Source path, spelled as the caller spells it (callers pass `Asset::path`, the same string
+    /// every time), then (time µs, w, h): a lookup hashes the `&str` it is given - no lower-cased
+    /// `String` per call. `evict_path` still matches case-insensitively.
+    map: HashMap<String, HashMap<(i64, u32, u32), (u64, Arc<Frame>)>>,
     bytes: usize,
     budget: usize,
     tick: u64,
+    /// Buffers of evicted frames nobody else held, for the next decode (`DecoderPool::frame_arc`):
+    /// a cold cache under a full budget evicts one frame per decoded frame, and reusing it beats
+    /// a fresh multi-MB allocation. ponytail: at most `FREE` kept; outside the budget.
+    free: Vec<Frame>,
 }
 
 impl SourceCache {
     /// The time key of a still: no real request rounds to it.
     const STILL_T: i64 = i64::MIN;
+    const FREE: usize = 8;
     fn us(t: f64) -> i64 {
         (t * 1e6).round() as i64
     }
@@ -223,11 +287,9 @@ impl SourceCache {
             return None;
         }
         self.tick += 1;
-        let mut key = (path.to_ascii_lowercase(), Self::STILL_T, w, h);
-        if !self.map.contains_key(&key) {
-            key.1 = us;
-        }
-        let e = self.map.get_mut(&key)?;
+        let m = self.map.get_mut(path)?;
+        let k = if m.contains_key(&(Self::STILL_T, w, h)) { (Self::STILL_T, w, h) } else { (us, w, h) };
+        let e = m.get_mut(&k)?;
         e.0 = self.tick;
         Some(e.1.clone())
     }
@@ -236,29 +298,55 @@ impl SourceCache {
             return;
         }
         self.tick += 1;
-        let bytes = f.rgba.len();
+        // capacity: a recycled buffer (`free`, MF's spares) keeps the size of the biggest frame it held
+        let bytes = f.rgba.capacity();
         if bytes > self.budget {
             return; // a frame bigger than the whole budget would just evict everything for nothing
         }
-        if let Some((_, old)) = self.map.insert((path.to_ascii_lowercase(), us, w, h), (self.tick, f)) {
-            self.bytes -= old.rgba.len();
+        if !self.map.contains_key(path) {
+            self.map.insert(path.to_string(), HashMap::new());
         }
-        self.bytes += bytes;
-        while self.bytes > self.budget {
-            // ponytail: O(n) min scan per eviction, like playback::Cache - n stays small.
-            let Some(k) = self.map.iter().min_by_key(|(_, (t, _))| *t).map(|(k, _)| k.clone()) else { break };
-            if let Some((_, old)) = self.map.remove(&k) {
-                self.bytes -= old.rgba.len();
+        // ponytail: an MF frame shown at two timeline times (60 fps over 30 fps footage) is one
+        // buffer under two keys and costed twice - the budget errs on the small side.
+        if let Some(m) = self.map.get_mut(path) {
+            if let Some((_, old)) = m.insert((us, w, h), (self.tick, f)) {
+                self.bytes -= old.rgba.capacity();
             }
         }
+        self.bytes += bytes;
+        while self.bytes > self.budget && self.evict_lru() {}
+    }
+    /// Drop the least recently used entry, keeping its buffer in `free` when it was the last
+    /// holder. False when there is nothing left to drop.
+    /// ponytail: O(n) min scan per eviction, like playback::Cache - n stays small.
+    fn evict_lru(&mut self) -> bool {
+        let lru = self
+            .map
+            .iter()
+            .flat_map(|(p, m)| m.iter().map(move |(k, (t, _))| (*t, p, *k)))
+            .min_by_key(|e| e.0)
+            .map(|(_, p, k)| (p.clone(), k));
+        let Some((p, k)) = lru else { return false };
+        let Some(m) = self.map.get_mut(&p) else { return false };
+        if let Some((_, old)) = m.remove(&k) {
+            self.bytes -= old.rgba.capacity();
+            if let Ok(f) = Arc::try_unwrap(old) {
+                if self.free.len() < Self::FREE {
+                    self.free.push(f);
+                }
+            }
+        }
+        if m.is_empty() {
+            self.map.remove(&p);
+        }
+        true
     }
     /// Drop every entry for one source path (case-insensitive) - a proxy for it appeared/vanished.
     fn evict_path(&mut self, path: &str) {
-        let p = path.to_ascii_lowercase();
-        self.map.retain(|(k, _, _, _), (_, f)| {
-            let keep = *k != p;
+        self.map.retain(|k, m| {
+            let keep = !k.eq_ignore_ascii_case(path);
             if !keep {
-                self.bytes -= f.rgba.len();
+                self.bytes -= m.values().map(|(_, f)| f.rgba.capacity()).sum::<usize>();
             }
             keep
         });
@@ -287,6 +375,7 @@ impl DecoderPool {
             queue: VecDeque::new(),
             deadline: None,
             missed: false,
+            exact: false,
             arrived: false,
         }
     }
@@ -300,7 +389,7 @@ impl DecoderPool {
     /// opening thread too and thrown away, so the reader's start-up (codec set-up, the seek) is
     /// paid there and the cut itself finds a decoder already rolling.
     pub fn warm(&mut self, path: &str, first: Option<f64>) {
-        let path = self.proxies.get(path).cloned().unwrap_or_else(|| path.to_string());
+        let path = self.resolved(path);
         if self.videos.contains_key(&path) || self.warming.len() >= 8 || self.warming.contains_key(&path) {
             return;
         }
@@ -411,52 +500,161 @@ impl DecoderPool {
         if bytes == 0 {
             self.source_cache.clear();
         } else {
-            while self.source_cache.bytes > bytes {
-                let sc = &mut self.source_cache;
-                let Some(k) = sc.map.iter().min_by_key(|(_, (t, _))| *t).map(|(k, _)| k.clone()) else { break };
-                if let Some((_, old)) = sc.map.remove(&k) {
-                    sc.bytes -= old.rgba.len();
-                }
-            }
+            while self.source_cache.bytes > bytes && self.source_cache.evict_lru() {}
         }
     }
-    /// Decode a frame through the source-frame cache: a hit is one memcpy instead of a seek /
-    /// ffmpeg respawn. Same contract as `VideoSource::frame_at` (`out` untouched on `false`).
+    /// Decode a frame (always RGBA) through the source-frame cache: a hit is one copy instead of
+    /// a seek / ffmpeg respawn. Same contract as `VideoSource::frame_at` (`out` untouched on `false`).
     pub fn frame_at(&mut self, path: &str, t: f64, w: u32, h: u32, out: &mut Frame) -> bool {
-        if let Some(f) = self.source_cache.get(path, SourceCache::us(t), w, h) {
+        if self.source_cache.budget > 0 {
+            // the decode is kept by the cache as it is and `out` gets the one copy (made RGBA)
+            let Some(f) = self.frame_arc(path, t, w, h, &mut Vec::new()) else { return false };
             out.copy_from(&f);
+            out.make_rgba();
             return true;
         }
         let Some(dec) = self.video(path) else { return false };
         if let Some(f) = dec.still(w, h) {
-            out.copy_from(&f); // kept by the decoder itself: nothing to cache
+            out.copy_from(&f); // kept by the decoder itself
             return true;
         }
-        if !dec.frame_at(t, w, h, out) {
-            return false;
-        }
-        let us = if dec.is_still() { SourceCache::STILL_T } else { SourceCache::us(t) };
-        self.source_cache.insert(path, us, w, h, Arc::new(out.clone()));
-        true
+        dec.frame_at(t, w, h, out)
     }
-    /// `frame_at` that hands out the frame itself (in a buffer from `spare` when it has to decode).
-    /// A cached STILL comes back as the cache's own `Arc`: the same pixels at the same address on
-    /// every frame, so a still on screen costs no copy here and no texture upload in `engine::gpu`
-    /// (which re-uploads a layer only when its pointer/pts change). Video frames stay private
-    /// copies - their buffers are recycled, and nothing would reuse a shared one anyway.
+    /// `frame_at` that hands out the frame itself, no copy: a cache hit is the cache's own `Arc`,
+    /// a decode goes into a buffer from `spare` (or the cache's recycled ones) and is cached as it
+    /// is. A still is the same pixels at the same address on every frame, a replayed video frame
+    /// too, so neither costs a copy here or a texture upload in `engine::gpu` (which re-uploads a
+    /// layer only when its pointer/pts change). The frame may be `Frame::bgrx` (MF video): a CPU
+    /// reader goes through `Frame::to_rgba`.
     pub fn frame_arc(&mut self, path: &str, t: f64, w: u32, h: u32, spare: &mut Vec<Frame>) -> Option<Arc<Frame>> {
-        if let Some(f) = self.source_cache.get(path, SourceCache::STILL_T, w, h) {
+        let us = SourceCache::us(t);
+        if let Some(f) = self.cached(path, t, w, h) {
             return Some(f);
         }
-        if let Some(f) = self.video(path).and_then(|d| d.still(w, h)) {
-            return Some(f);
+        if spare.is_empty() {
+            spare.extend(self.source_cache.free.pop());
         }
-        let mut frame = spare.pop().unwrap_or_default();
-        if !self.frame_at(path, t, w, h, &mut frame) {
-            spare.push(frame);
-            return None;
+        let dec = self.video(path)?;
+        if let Some(f) = dec.still(w, h) {
+            return Some(f); // kept by the decoder itself: nothing to cache
         }
-        Some(Arc::new(frame))
+        let still = dec.is_still();
+        let f = dec.frame_shared(t, w, h, spare)?;
+        self.source_cache.insert(path, if still { SourceCache::STILL_T } else { us }, w, h, f.clone());
+        Some(f)
+    }
+    /// The source cache's frame for this request, if it holds one (nothing is decoded or opened).
+    pub fn cached(&mut self, path: &str, t: f64, w: u32, h: u32) -> Option<Arc<Frame>> {
+        if self.exact {
+            return None; // cached frames were decoded for the preview: its size, maybe its proxy
+        }
+        self.source_cache.get(path, SourceCache::us(t), w, h)
+    }
+    /// The file a source is decoded from: its proxy in a preview pool, unless `exact` is on.
+    fn resolved(&self, path: &str) -> String {
+        match self.proxies.get(path) {
+            Some(p) if !self.exact => p.clone(),
+            _ => path.to_string(),
+        }
+    }
+    /// Turn exact one-shot decoding on or off (see the `exact` field). Decoders opened meanwhile
+    /// pick the flag up in `video`.
+    pub fn set_exact(&mut self, on: bool) {
+        self.exact = on;
+        for (_, v) in self.videos.values_mut() {
+            if let Some(v) = v {
+                v.set_exact(on);
+            }
+        }
+    }
+    /// `frame_arc` for several `(path, t, w, h)` requests at once, results in the same order. Cache
+    /// hits are taken here; the misses decode side by side, one thread per decoder - the requests
+    /// of one source run in the order given on its thread, so it reads forward - the first decoder
+    /// on the calling thread, and no thread at all when there is only one. Opening (and the
+    /// `deadline` / `take_missed` rules) is `video`'s, as for `frame_arc`.
+    /// ponytail: a spawn per layer per frame; persistent workers if spawn cost shows in the HUD.
+    pub fn frames_arc(&mut self, jobs: &[(&str, f64, u32, u32)], spare: &mut Vec<Frame>) -> Vec<Option<Arc<Frame>>> {
+        let mut out: Vec<Option<Arc<Frame>>> =
+            jobs.iter().map(|&(p, t, w, h)| self.cached(p, t, w, h)).collect();
+        // (resolved path, its decoder - taken out of the pool while it works -, the requests it serves)
+        let mut groups: Vec<(String, Box<dyn VideoSource>, Vec<usize>)> = Vec::new();
+        for (i, &(p, ..)) in jobs.iter().enumerate() {
+            if out[i].is_some() {
+                continue;
+            }
+            let key = self.resolved(p);
+            if let Some(g) = groups.iter_mut().find(|g| g.0 == key) {
+                g.2.push(i);
+                continue;
+            }
+            // (`video` never evicts a taken decoder: its slot reads as empty until it is put back)
+            if self.video(p).is_none() {
+                continue;
+            }
+            let Some(dec) = self.videos.get_mut(&key).and_then(|e| e.1.take()) else { continue };
+            groups.push((key, dec, vec![i]));
+        }
+        // a buffer per request for every thread, from the caller's spares or the cache's recycled ones
+        let mut spares: Vec<Vec<Frame>> = Vec::with_capacity(groups.len());
+        for g in &groups {
+            let mut s = Vec::new();
+            for _ in &g.2 {
+                s.extend(spare.pop().or_else(|| self.source_cache.free.pop()));
+            }
+            spares.push(s);
+        }
+        // (request, frame, its source-cache time key - None for a still the decoder keeps itself)
+        type Done = Vec<(usize, Arc<Frame>, Option<i64>)>;
+        let run = &|dec: &mut Box<dyn VideoSource>, idx: &[usize], spare: &mut Vec<Frame>| -> Done {
+            let mut done = Vec::new();
+            for &i in idx {
+                let (_, t, w, h) = jobs[i];
+                if let Some(f) = dec.still(w, h) {
+                    done.push((i, f, None));
+                    continue;
+                }
+                let key = if dec.is_still() { SourceCache::STILL_T } else { SourceCache::us(t) };
+                if let Some(f) = dec.frame_shared(t, w, h, spare) {
+                    done.push((i, f, Some(key)));
+                }
+            }
+            done
+        };
+        let results: Vec<Done> = std::thread::scope(|s| {
+            let mut work = groups.iter_mut().zip(spares.iter_mut());
+            let first = work.next();
+            let handles: Vec<_> = work
+                .map(|((_, dec, idx), sp)| {
+                    s.spawn(move || {
+                        mf::init_thread(); // MF readers live in the multithreaded apartment
+                        run(dec, &idx[..], sp)
+                    })
+                })
+                .collect();
+            let mut res: Vec<Done> = Vec::with_capacity(handles.len() + 1);
+            if let Some(((_, dec, idx), sp)) = first {
+                res.push(run(dec, &idx[..], sp));
+            }
+            for h in handles {
+                // a panicking decoder panics the caller, as it would have decoding there itself
+                res.push(h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)));
+            }
+            res
+        });
+        for (key, dec, _) in groups {
+            if let Some(e) = self.videos.get_mut(&key) {
+                e.1 = Some(dec);
+            }
+        }
+        for (i, f, key) in results.into_iter().flatten() {
+            if let Some(k) = key {
+                let (p, _, w, h) = jobs[i];
+                self.source_cache.insert(p, k, w, h, f.clone());
+            }
+            out[i] = Some(f);
+        }
+        spare.extend(spares.into_iter().flatten());
+        out
     }
     pub fn set_backend(&mut self, b: Backend) {
         if b != self.backend {
@@ -466,7 +664,7 @@ impl DecoderPool {
     }
     pub fn video(&mut self, path: &str) -> Option<&mut (dyn VideoSource + 'static)> {
         // preview pools decode the proxy when one exists (export pools carry an empty map)
-        let path = self.proxies.get(path).cloned().unwrap_or_else(|| path.to_string());
+        let path = self.resolved(path);
         let path = path.as_str();
         if let (Some(deadline), false) = (self.deadline, self.videos.contains_key(path)) {
             // opening is the slow part (a 9 MP still: half a second of ffmpeg.exe): it happens on a
@@ -497,6 +695,11 @@ impl DecoderPool {
             (tick, v)
         });
         e.0 = tick;
+        if self.exact {
+            if let Some(v) = e.1.as_mut() {
+                v.set_exact(true);
+            }
+        }
         if e.1.is_some() {
             // Stills that keep their pixels are budgeted by those (a preview pool, which has a
             // budget and decodes every still of the timeline ahead of time); everything else by
@@ -715,7 +918,7 @@ mod tests {
         let a = pool.frame_arc("C:\\s.png", 0.4, 8, 8, &mut spare).unwrap();
         let b = pool.frame_arc("C:\\s.png", 9.0, 8, 8, &mut spare).unwrap();
         assert!(Arc::ptr_eq(&a, &b), "one frame for every time");
-        assert_eq!(Arc::strong_count(&first), 1, "the decode that filled the cache stays the caller's own");
+        assert!(Arc::ptr_eq(&first, &a), "the decode that filled the cache is the frame it hands out: no copy");
         assert_eq!(c.load(Ordering::SeqCst), 3, "decoded once");
         // the CPU compositor's copying path reads the same entry
         let mut out = Frame::default();
@@ -851,5 +1054,63 @@ mod tests {
         pool.video(&path(20));
         assert_eq!(live(&pool, 21), 18, "250 more bytes: the three least recently used go");
         assert!(!pool.has_video(&path(0)) && !pool.has_video(&path(2)) && pool.has_video(&path(3)));
+    }
+
+    /// A BGRX frame reads as RGBA through `to_rgba` / `make_rgba`; an RGBA one is not copied.
+    #[test]
+    fn bgrx_frames_convert_to_rgba() {
+        let mut f = Frame { width: 2, height: 1, pts: 0.5, rgba: vec![1, 2, 3, 0, 4, 5, 6, 9], bgrx: true };
+        assert_eq!(f.to_rgba().rgba, [3, 2, 1, 255, 6, 5, 4, 255]);
+        assert!(!f.to_rgba().bgrx && f.bgrx, "to_rgba leaves the frame itself alone");
+        f.make_rgba();
+        assert_eq!((f.rgba.as_slice(), f.bgrx), (&[3u8, 2, 1, 255, 6, 5, 4, 255][..], false));
+        f.make_rgba(); // RGBA already: untouched
+        assert_eq!(f.rgba[0], 3);
+        assert!(matches!(f.to_rgba(), std::borrow::Cow::Borrowed(_)));
+        // the copying pool path hands a CPU reader RGBA whatever the decoder kept
+        struct Bgrx;
+        impl VideoSource for Bgrx {
+            fn size(&self) -> (u32, u32) {
+                (1, 1)
+            }
+            fn frame_at(&mut self, _t: f64, _w: u32, _h: u32, _out: &mut Frame) -> bool {
+                false
+            }
+            fn frame_shared(&mut self, _t: f64, _w: u32, _h: u32, _s: &mut Vec<Frame>) -> Option<Arc<Frame>> {
+                Some(Arc::new(Frame { width: 1, height: 1, pts: 0.0, rgba: vec![10, 20, 30, 0], bgrx: true }))
+            }
+        }
+        let mut pool = DecoderPool::new(Backend::Ffmpeg);
+        pool.set_source_cache_bytes(1 << 20);
+        pool.insert_video("C:\\b.mp4", Box::new(Bgrx));
+        assert!(pool.frame_arc("C:\\b.mp4", 0.0, 1, 1, &mut Vec::new()).unwrap().bgrx, "the GPU path keeps BGRX");
+        let mut out = Frame::default();
+        assert!(pool.frame_at("C:\\b.mp4", 0.0, 1, 1, &mut out));
+        assert_eq!((out.rgba.as_slice(), out.bgrx), (&[30u8, 20, 10, 255][..], false));
+    }
+
+    /// A video frame decoded through `frame_arc` is the cached frame itself (no copy), a replay is
+    /// that same `Arc`, and an evicted frame's buffer is reused by the next decode.
+    #[test]
+    fn frame_arc_caches_video_without_a_copy() {
+        let c = Arc::new(AtomicUsize::new(0));
+        let mut pool = DecoderPool::new(Backend::Ffmpeg);
+        pool.insert_video("C:\\v.mp4", fake(&c));
+        pool.set_source_cache_bytes(600); // two 8x8 frames
+        let mut spare = Vec::new();
+        let a = pool.frame_arc("C:\\v.mp4", 1.0, 8, 8, &mut spare).unwrap();
+        let again = pool.frame_arc("C:\\v.mp4", 1.0, 8, 8, &mut spare);
+        assert!(Arc::ptr_eq(&a, &again.unwrap()), "a replay is the cached frame itself");
+        assert_eq!(c.load(Ordering::SeqCst), 1);
+        let ptr = a.rgba.as_ptr();
+        drop(a);
+        pool.frame_arc("C:\\v.mp4", 2.0, 8, 8, &mut spare);
+        let third = pool.frame_arc("C:\\v.mp4", 3.0, 8, 8, &mut spare).unwrap(); // evicts t=1
+        assert_eq!(c.load(Ordering::SeqCst), 3);
+        let fourth = pool.frame_arc("C:\\v.mp4", 4.0, 8, 8, &mut spare).unwrap(); // evicts t=2
+        assert!(
+            [third.rgba.as_ptr(), fourth.rgba.as_ptr()].contains(&ptr),
+            "the evicted frame's buffer was decoded into again"
+        );
     }
 }

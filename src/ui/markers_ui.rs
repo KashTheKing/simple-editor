@@ -51,6 +51,9 @@ pub struct MarkersState {
     band: Option<(f64, bool)>,
     /// Right-click ▸ Rename: open this row and focus its name field (cleared once focused).
     rename: Option<Id>,
+    // ---- ws:mcp-context ----
+    /// Add Comment: open this row and focus its note field (cleared once focused).
+    pub focus_note: Option<Id>,
 }
 
 /// A row's right-click verbs, applied to the row's targets after the list is drawn (one undo).
@@ -155,6 +158,9 @@ pub enum MarkerFmt {
     /// `HH:MM:SS Name` per line - paste into a YouTube description. YouTube insists the list starts
     /// at 00:00:00, so an "Intro" line is prepended when the first marker doesn't.
     YoutubeChapters,
+    // ---- ws:interchange ----
+    /// Avid Media Composer's Markers-window text: `user⇥timecode⇥track⇥colour⇥comment⇥duration` per line.
+    Avid,
 }
 
 impl MarkerFmt {
@@ -162,6 +168,7 @@ impl MarkerFmt {
         match s.to_ascii_lowercase().as_str() {
             "csv" => Some(MarkerFmt::Csv),
             "youtube_chapters" | "youtube" | "chapters" => Some(MarkerFmt::YoutubeChapters),
+            "avid" => Some(MarkerFmt::Avid),
             _ => None,
         }
     }
@@ -230,10 +237,9 @@ fn csv_split(line: &str) -> Vec<String> {
     out
 }
 
-/// Every marker (project + clip, every sequence) in timeline order as text. `fps` is unused by both
-/// formats today (chapters are whole seconds, CSV keeps float seconds) but kept so a frame-based
-/// format can slot in without changing callers.
-pub fn export_markers(project: &Project, _fps: f64, fmt: MarkerFmt) -> String {
+/// Every marker (project + clip, every sequence) in timeline order as text. `fps` is only used by the
+/// frame-based Avid format (chapters are whole seconds, CSV keeps float seconds).
+pub fn export_markers(project: &Project, fps: f64, fmt: MarkerFmt) -> String {
     let rows = project.markers_in_timeline();
     let mut s = String::new();
     match fmt {
@@ -263,8 +269,59 @@ pub fn export_markers(project: &Project, _fps: f64, fmt: MarkerFmt) -> String {
                 s.push_str(&format!("{} {name}\n", hms(t)));
             }
         }
+        MarkerFmt::Avid => {
+            let fps = fps.max(1.0);
+            let flat = |s: &str| s.replace(['\t', '\n', '\r'], " ");
+            for (id, t, dur, name, label) in rows {
+                // (marker, track): project markers sit on V1, clip markers on their clip's track
+                let found = project.markers.iter().find(|m| m.id == id).map(|m| (m, "V1".to_string())).or_else(|| {
+                    project.tracks.iter().enumerate().find_map(|(ti, tr)| {
+                        let m = tr.clips.iter().flat_map(|c| c.markers.iter()).find(|m| m.id == id)?;
+                        let video = tr.kind == crate::model::TrackKind::Video;
+                        let list = if video { project.video_tracks() } else { project.audio_tracks() };
+                        let n = list.iter().position(|&i| i == ti).unwrap_or(0) + 1;
+                        Some((m, format!("{}{n}", if video { 'V' } else { 'A' })))
+                    })
+                });
+                let (author, note, track) =
+                    found.map(|(m, tr)| (m.author.clone(), m.note.clone(), tr)).unwrap_or_default();
+                let user = if author.is_empty() { "user".to_string() } else { flat(&author) };
+                let comment = match (name.is_empty(), note.is_empty()) {
+                    (_, true) => name,
+                    (true, false) => note,
+                    (false, false) => format!("{name} - {note}"),
+                };
+                let track = if track.is_empty() { "V1".to_string() } else { track };
+                // ponytail: record timecode starts at 00:00:00:00 like the EDL export - set the Avid
+                // sequence's start timecode to match before importing
+                let tc = crate::engine::edl::tc((t * fps).round() as i64, fps);
+                let frames = ((dur * fps).round() as i64).max(1);
+                s.push_str(&format!(
+                    "{user}\t{tc}\t{track}\t{}\t{}\t{frames}\n",
+                    avid_color(project.label_color(label)),
+                    flat(&comment)
+                ));
+            }
+        }
     }
     s
+}
+
+/// Nearest of the eight colours Avid's Markers window knows (no label → red, Avid's default).
+fn avid_color(rgb: Option<[u8; 3]>) -> &'static str {
+    const AVID: [(&str, [i32; 3]); 8] = [
+        ("red", [255, 0, 0]),
+        ("green", [0, 255, 0]),
+        ("blue", [0, 0, 255]),
+        ("cyan", [0, 255, 255]),
+        ("magenta", [255, 0, 255]),
+        ("yellow", [255, 255, 0]),
+        ("black", [0, 0, 0]),
+        ("white", [255, 255, 255]),
+    ];
+    let Some(c) = rgb else { return "red" };
+    let d = |a: [i32; 3]| (0..3).map(|i| (a[i] - c[i] as i32).pow(2)).sum::<i32>();
+    AVID.iter().min_by_key(|(_, a)| d(*a)).map(|(n, _)| *n).unwrap_or("red")
 }
 
 /// Add project markers from `export_markers(Csv)` text (or any `time,name[,note,label]` /
@@ -305,6 +362,7 @@ pub fn export_markers_dialog(project: &Project, fmt: MarkerFmt) -> Result<Option
     let (filter, ext) = match fmt {
         MarkerFmt::Csv => ("CSV", "csv"),
         MarkerFmt::YoutubeChapters => ("Text", "txt"),
+        MarkerFmt::Avid => ("Avid markers", "txt"),
     };
     let Some(out) = rfd::FileDialog::new()
         .add_filter(filter, &[ext])
@@ -431,7 +489,7 @@ pub fn show(
                 let header_id = ui.id().with(("marker_row", row.id));
                 let mut cs =
                     egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), header_id, false);
-                if state.rename == Some(row.id) {
+                if state.rename == Some(row.id) || state.focus_note == Some(row.id) {
                     cs.set_open(true);
                 }
                 cs.show_header(ui, |ui| {
@@ -526,6 +584,11 @@ pub fn show(
                             .desired_width(f32::INFINITY)
                             .hint_text("note"),
                     );
+                    // ---- ws:mcp-context ----
+                    if state.focus_note == Some(row.id) {
+                        r.request_focus();
+                        state.focus_note = None;
+                    }
                     start |= r.gained_focus();
                     changed |= r.changed();
                     ui.horizontal_wrapped(|ui| {
@@ -599,7 +662,11 @@ pub fn show(
         }
         // ---- ws:export-deliver ----
         menu::sub(ui, Some(Glyph::ExportArrow), "Export", |ui| {
-            for (label, fmt) in [("CSV…", MarkerFmt::Csv), ("YouTube chapters…", MarkerFmt::YoutubeChapters)] {
+            for (label, fmt) in [
+                ("CSV…", MarkerFmt::Csv),
+                ("YouTube chapters…", MarkerFmt::YoutubeChapters),
+                ("Avid markers…", MarkerFmt::Avid),
+            ] {
                 if menu::row(ui, None, label, "").clicked() {
                     // ponytail: the toast lives with the Action (App::act_export_markers); this inline
                     // path just writes, since a leaf pane has no toast handle
@@ -889,6 +956,16 @@ mod tests {
         assert!(yt.contains("00:00:04 Chapter"), "unnamed markers still get a chapter title: {yt}");
         assert_eq!(MarkerFmt::parse("youtube_chapters"), Some(MarkerFmt::YoutubeChapters));
         assert_eq!(MarkerFmt::parse("nope"), None);
+        // ---- ws:interchange ---- Avid: six tab-separated fields per marker, frame timecode
+        let avid = export_markers(&p, 30.0, MarkerFmt::Avid);
+        let rows: Vec<Vec<&str>> = avid.lines().map(|l| l.split('\t').collect()).collect();
+        assert_eq!(rows.len(), 3, "{avid}");
+        assert!(rows.iter().all(|f| f.len() == 6), "{avid}");
+        assert_eq!(rows[0][1], "00:00:01:15");
+        assert_eq!(rows[0][4], "Intro, part \"one\" - line break", "tabs/newlines flattened");
+        assert_eq!((rows[1][1], rows[1][2]), ("00:00:03:00", "V1"), "clip marker on its clip's track");
+        assert_eq!(rows[2][5], "15", "0.5 s at 30 fps");
+        assert_eq!(MarkerFmt::parse("avid"), Some(MarkerFmt::Avid));
     }
 
     #[test]

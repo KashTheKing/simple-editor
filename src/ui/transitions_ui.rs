@@ -10,6 +10,11 @@
 //! no neighbour on that side gets an EDGE transition (blend from/to nothing) instead of a cut transition,
 //! so lone clips can fade in/out too.
 //!
+//! ws:shader-library: after the four built-ins, one card per installed library transition
+//! (`library::installed(Kind::Transition)`, listed by `library_items`: read once, re-read only when the
+//! folder's mtime changes). Picking one makes the next transition a `TransitionKind::Shader` running
+//! that source (`TransitionsState::shader`); its named controls replace colour / direction in the row.
+//!
 //! A transition already on the timeline is edited where it is selected: the Inspector (kind, duration,
 //! colour, direction, ease, remove) and the band's right-click (Change Type / Easing, Remove).
 
@@ -19,6 +24,7 @@ use crate::ui::effects_ui::CARD;
 use crate::ui::{menu, DragPayload};
 use eframe::egui::{self, pos2, vec2, Color32, DragValue, Rect, Response, Stroke, StrokeKind, Vec2};
 use std::cell::RefCell;
+use std::rc::Rc;
 
 #[cfg(test)]
 use crate::ui::effects_ui::test_rects;
@@ -45,24 +51,127 @@ pub struct TransitionsState {
     /// future async GPU hover preview (ws:inspector-gallery, wave 2). Unread this wave.
     #[allow(dead_code)]
     pub hover: Option<usize>,
+    // ---- ws:shader-library ----
+    /// The library transition picked (`kind == ALL.len()`): its source, library id and control values.
+    pub shader: String,
+    pub shader_id: String,
+    pub params: Vec<f64>,
 }
 
 impl Default for TransitionsState {
     fn default() -> Self {
-        Self { duration: 1.0, kind: 0, color: [0, 0, 0, 255], direction: 0, hover: None }
+        Self {
+            duration: 1.0,
+            kind: 0,
+            color: [0, 0, 0, 255],
+            direction: 0,
+            hover: None,
+            shader: String::new(),
+            shader_id: String::new(),
+            params: Vec::new(),
+        }
     }
 }
+
+/// `TransitionsState::kind` of "the picked library transition" (after the built-ins).
+const SHADER_SLOT: usize = TransitionKind::ALL.len();
 
 impl TransitionsState {
     /// The selected kind - also the one Ctrl+T repeats, because every apply path records here.
     pub fn kind(&self) -> TransitionKind {
+        if self.kind >= SHADER_SLOT && !self.shader.is_empty() {
+            return TransitionKind::Shader;
+        }
         TransitionKind::ALL[self.kind.min(TransitionKind::ALL.len() - 1)]
     }
     /// Remember what was just applied (from any path) so Ctrl+T is never stale.
     pub(crate) fn remember(&mut self, kind: TransitionKind, dur: f64) {
-        self.kind = TransitionKind::ALL.iter().position(|&k| k == kind).unwrap_or(0);
+        self.kind = TransitionKind::ALL.iter().position(|&k| k == kind).unwrap_or(SHADER_SLOT);
         self.duration = dur;
     }
+    /// Pick a library transition for the next apply (its controls start at the header defaults).
+    pub(crate) fn pick_shader(&mut self, id: &str, src: &str) {
+        if self.shader != src {
+            self.params = crate::engine::shaderlib::parse_meta(src).params.iter().map(|p| p.default).collect();
+        }
+        self.kind = SHADER_SLOT;
+        self.shader = src.to_string();
+        self.shader_id = id.to_string();
+    }
+}
+
+/// One installed library shader (effect or transition) as the catalogues list it.
+pub(crate) struct LibItem {
+    pub id: String,
+    pub name: String,
+    pub desc: String,
+    /// The `@tags` joined with spaces (lowercase), for search.
+    pub tags: String,
+    pub src: Rc<str>,
+}
+
+struct LibList {
+    mtime: Option<std::time::SystemTime>,
+    /// `ui.input().time` of the last mtime check.
+    checked: f64,
+    items: Rc<Vec<LibItem>>,
+}
+
+thread_local! {
+    static LIB: RefCell<std::collections::HashMap<crate::engine::library::Kind, LibList>> = RefCell::default();
+}
+
+/// Installed library shaders of `kind`, sorted by name. Read from disk on first use and again only when
+/// the folder's mtime changed - checked at most every 2 s of `now` (UI time), so a frame never waits on
+/// the disk for more than one `metadata` call. `refresh_library` forces a re-read (after a save).
+pub(crate) fn library_items(kind: crate::engine::library::Kind, now: f64) -> Rc<Vec<LibItem>> {
+    let dir = crate::engine::library::root().join(kind.dir());
+    LIB.with(|l| {
+        let mut l = l.borrow_mut();
+        if let Some(e) = l.get_mut(&kind) {
+            if now - e.checked < 2.0 && now >= e.checked {
+                return e.items.clone();
+            }
+            e.checked = now;
+            let m = std::fs::metadata(&dir).and_then(|m| m.modified()).ok();
+            if m == e.mtime {
+                return e.items.clone();
+            }
+        }
+        let mtime = std::fs::metadata(&dir).and_then(|m| m.modified()).ok();
+        let mut items: Vec<LibItem> = crate::engine::library::installed(kind)
+            .into_iter()
+            .filter_map(|it| {
+                let src = std::fs::read_to_string(&it.path).ok()?;
+                let m = crate::engine::shaderlib::parse_meta(&src);
+                let name = if m.name.is_empty() { it.id.clone() } else { m.name };
+                Some(LibItem { id: it.id, name, desc: m.desc, tags: m.tags.join(" "), src: src.into() })
+            })
+            .collect();
+        items.sort_by(|a, b| a.name.cmp(&b.name));
+        let items = Rc::new(items);
+        l.insert(kind, LibList { mtime, checked: now, items: items.clone() });
+        items
+    })
+}
+
+/// Forget the cached library listings (something was just saved or installed).
+pub(crate) fn refresh_library() {
+    LIB.with(|l| l.borrow_mut().clear());
+}
+
+/// Tests: stand in for the installed library of `kind` (until `now` + 1000 s of UI time).
+#[cfg(test)]
+pub(crate) fn fake_library(kind: crate::engine::library::Kind, items: Vec<(&str, &str)>) {
+    let items = items
+        .into_iter()
+        .map(|(id, src)| {
+            let m = crate::engine::shaderlib::parse_meta(src);
+            LibItem { id: id.into(), name: m.name, desc: m.desc, tags: m.tags.join(" "), src: src.into() }
+        })
+        .collect();
+    let mtime = std::fs::metadata(crate::engine::library::root().join(kind.dir())).and_then(|m| m.modified()).ok();
+    LIB.with(|l| l.borrow_mut().insert(kind, LibList { mtime, checked: 0.0, items: Rc::new(items) }));
 }
 
 /// The clip starting exactly where `id` ends, on the same track.
@@ -112,6 +221,11 @@ pub(crate) fn add_transitions(
             if let Some(t) = project.transition_mut(tid) {
                 t.color = st.color;
                 t.direction = st.direction;
+                if kind == TransitionKind::Shader {
+                    // ws:shader-library: the picked library source and its control values
+                    t.params.clone_from(&st.params);
+                    t.set_shader(&st.shader); // also trims / pads the values to the header
+                }
             }
             added += 1;
         }
@@ -163,7 +277,8 @@ fn paint_preview(
     let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
     let (a, b) = (Color32::WHITE, palette.accent);
     match kind {
-        TransitionKind::CrossFade => {
+        // ws:shader-library: a library card (no GPU pass here) reads as a dissolve
+        TransitionKind::CrossFade | TransitionKind::Shader => {
             p.image(tex, tile, uv, a);
             p.image(tex, tile, uv, b.gamma_multiply(0.5));
         }
@@ -195,10 +310,26 @@ fn transition_card(
     palette: &Palette,
     selected: bool,
 ) -> Response {
+    let r = card(ui, ("tr_card", kind.name()), kind.name(), DragPayload::Transition(kind), kind, st, palette, selected);
+    r.on_hover_text(format!("{} - click to pick, drag onto a cut", kind.name()))
+}
+
+/// A card for a built-in or a library transition (`name`, dragging `payload`, previewed as `kind`).
+#[allow(clippy::too_many_arguments)]
+fn card(
+    ui: &mut egui::Ui,
+    salt: impl std::hash::Hash,
+    name: &str,
+    payload: DragPayload,
+    kind: TransitionKind,
+    st: &TransitionsState,
+    palette: &Palette,
+    selected: bool,
+) -> Response {
     let font = egui::TextStyle::Small.resolve(ui.style());
     let name_h = ui.text_style_height(&egui::TextStyle::Small);
-    let id = ui.id().with(("tr_card", kind.name()));
-    let r = crate::ui::drag_source(ui, id, DragPayload::Transition(kind), |ui| {
+    let id = ui.id().with(salt);
+    let r = crate::ui::drag_source(ui, id, payload, |ui| {
         let (rect, _) = ui.allocate_exact_size(vec2(CARD.0, CARD.1 + name_h + 2.0), egui::Sense::hover());
         let tile = Rect::from_min_size(rect.min, vec2(CARD.0, CARD.1));
         let p = ui.painter();
@@ -207,11 +338,11 @@ fn transition_card(
             None => {
                 // no GPU thumbnails yet: a neutral tile that still names the transition
                 p.rect_filled(tile, 2.0, palette.header);
-                let g = p.layout(kind.name().to_string(), font.clone(), palette.text_dim, CARD.0 - 8.0);
+                let g = p.layout(name.to_string(), font.clone(), palette.text_dim, CARD.0 - 8.0);
                 p.galley(tile.center() - g.size() / 2.0, g, palette.text_dim);
             }
         }
-        let label = p.layout_no_wrap(kind.name().to_string(), font, palette.text);
+        let label = p.layout_no_wrap(name.to_string(), font, palette.text);
         let lx = (rect.left() + (CARD.0 - label.size().x) / 2.0).max(rect.left());
         p.with_clip_rect(Rect::from_min_max(pos2(rect.left(), tile.bottom()), rect.max)).galley(
             pos2(lx, tile.bottom() + 2.0),
@@ -222,7 +353,7 @@ fn transition_card(
     let tile = Rect::from_min_size(r.rect.min, vec2(CARD.0, CARD.1));
     let border = if selected || r.hovered() { palette.accent } else { palette.border };
     ui.painter().rect_stroke(tile, 2.0, Stroke::new(if selected { 2.0 } else { 1.0 }, border), StrokeKind::Inside);
-    r.on_hover_text(format!("{} - click to pick, drag onto a cut", kind.name()))
+    r
 }
 
 // ---- ws:inspector-gallery ----
@@ -234,6 +365,8 @@ fn transition_card(
 pub struct TransitionsResponse {
     pub edited: bool,
     pub hover: Option<TransitionKind>,
+    /// ws:shader-library: a library card hovered >=150ms - its source, for `AltRequest::ShaderTransition`.
+    pub hover_shader: Option<String>,
 }
 
 /// Directions a Push / Wipe travels from, in `Transition::direction` order.
@@ -261,6 +394,9 @@ pub fn show(
         if kind == TransitionKind::FadeToColor {
             ui.color_edit_button_srgba_unmultiplied(&mut state.color);
         }
+        if kind == TransitionKind::Shader {
+            ui.weak(crate::engine::shaderlib::parse_meta(&state.shader).name);
+        }
         if kind.has_direction() {
             let cur = DIRECTIONS[(state.direction as usize).min(3)];
             egui::ComboBox::from_id_salt("tr_direction").selected_text(format!("From {cur}")).show_ui(ui, |ui| {
@@ -271,8 +407,22 @@ pub fn show(
         }
     });
 
+    // ws:shader-library: a picked library transition's named controls (for the next one added)
+    if kind == TransitionKind::Shader {
+        let specs = crate::model::shader_specs(&state.shader);
+        if !specs.is_empty() {
+            let mut g = crate::ui::Gesture::default();
+            egui::Grid::new("tr_shader_params").num_columns(2).show(ui, |ui| {
+                crate::ui::effects_ui::plain_param_rows(ui, &specs, &mut state.params, &mut g)
+            });
+        }
+    }
+
     // the cuts the selection offers, for the cards' quick-action menus
     let ids: Vec<Id> = selection.iter().copied().filter(|&id| project.clip(id).is_some()).collect();
+    let library = library_items(crate::engine::library::Kind::Transition, ui.input(|i| i.time));
+    let mut lib_pick: Option<usize> = None;
+    let mut hover_shader = None;
     let mut hover = None;
     let mut pick = None;
     let mut apply: Option<bool> = None; // Some(at_end)
@@ -313,10 +463,48 @@ pub fn show(
                     }
                 });
             }
+            // ws:shader-library: the installed library transitions, same card, same gestures
+            for (n, item) in library.iter().enumerate() {
+                if ui.available_size_before_wrap().x < CARD.0 {
+                    ui.end_row();
+                }
+                let sel = state.kind == SHADER_SLOT && state.shader_id == item.id;
+                let payload = DragPayload::ShaderTransition(item.src.to_string());
+                let r = card(ui, ("tr_lib", &item.id), &item.name, payload, TransitionKind::Shader, state, palette, sel);
+                #[cfg(test)]
+                test_rects::push(format!("card_{}", item.name), r.rect);
+                let r = r.on_hover_text(format!("{} - {}", item.name, item.desc));
+                if crate::ui::hover_after(ui, r.id, &r, 150.0) {
+                    hover_shader = Some(item.src.to_string());
+                }
+                if r.clicked() {
+                    lib_pick = Some(n);
+                }
+                menu::context(&r, |ui| {
+                    let rows = [
+                        ("Add at start of selected clip(s)", Some(false)),
+                        ("Add at end of selected clip(s)", Some(true)),
+                        ("Add at every cut on this track", None),
+                    ];
+                    for (label, at_end) in rows {
+                        let r = ui.add_enabled_ui(!ids.is_empty(), |ui| menu::row(ui, None, label, "")).inner;
+                        if r.on_disabled_hover_text("Select a clip first").clicked() {
+                            lib_pick = Some(n);
+                            match at_end {
+                                Some(e) => apply = Some(e),
+                                None => every_cut = true,
+                            }
+                        }
+                    }
+                });
+            }
         });
     });
     if let Some(i) = pick {
         state.kind = i;
+    }
+    if let Some(item) = lib_pick.and_then(|n| library.get(n)) {
+        state.pick_shader(&item.id, &item.src);
     }
     let kind = state.kind();
     let dur = state.duration;
@@ -335,7 +523,7 @@ pub fn show(
             changed |= add_transitions(project, &cuts, state, kind, dur, false) > 0;
         }
     }
-    TransitionsResponse { edited: changed, hover }
+    TransitionsResponse { edited: changed, hover, hover_shader }
 }
 
 #[cfg(test)]
@@ -376,6 +564,7 @@ mod tests {
                 parent: None,
                 range: None,
                 effects: Vec::new(),
+                html: None,
             });
             project.insert_asset_clips(aid, 0.0, Some(0));
             project.insert_asset_clips(aid, 10.0, Some(0));
@@ -663,6 +852,48 @@ mod tests {
         let last = test_rects::get("card_Wipe").expect("card recorded");
         assert!(last.right() <= 3.5 * CARD.0, "the last card fits the pane: {last:?}");
         assert!(last.top() > first.bottom() - 1.0, "... on a row of its own: {last:?} vs {first:?}");
+    }
+
+    const SPLIT: &str = "// @name Split Wipe\n// @desc Test.\n// @tags test\n// @param edge 0.25 0 1\n\
+                         vec4 transition(vec2 uv) { return uv.x < progress ? getToColor(uv) : getFromColor(uv); }\n";
+
+    /// A library transition card applies a `TransitionKind::Shader` carrying its source and the
+    /// controls picked in the row above the cards.
+    #[test]
+    fn a_library_card_applies_a_shader_transition() {
+        let kind = crate::engine::library::Kind::Transition;
+        fake_library(kind, vec![("split-wipe", SPLIT)]);
+        let mut h = Harness::new();
+        let v2 = h.project.tracks[0].clips[1].id;
+        h.selection = vec![v2];
+        assert!(h.menu_pick("Split Wipe", "Add at start"));
+        assert_eq!(h.undos, 1);
+        let tr = h.project.tracks[0].transitions.iter().find(|t| t.right == v2).expect("transition");
+        assert_eq!((tr.kind, tr.name().as_str(), tr.params.as_slice()), (TransitionKind::Shader, "Split Wipe", &[0.25][..]));
+        // (the harness's follow-up click lands on the Wipe card under the closed menu and re-picks it,
+        // so check what the apply recorded, not the card under the pointer)
+        assert_eq!(h.state.shader, SPLIT, "the applied library source is remembered for Ctrl+T");
+        let mut st = TransitionsState::default();
+        st.pick_shader("split-wipe", SPLIT);
+        st.remember(TransitionKind::Shader, 1.0);
+        assert_eq!(st.kind(), TransitionKind::Shader, "Ctrl+T repeats the library transition");
+        // the audio mirror stays a gain cross fade
+        assert!(h.project.tracks[1].transitions.iter().all(|t| t.kind == TransitionKind::CrossFade));
+        refresh_library();
+    }
+
+    /// 30 idle frames of the pane with a library card and a picked shader's control row: no repaint.
+    #[test]
+    fn assert_no_idle_repaint_transitions_library() {
+        fake_library(crate::engine::library::Kind::Transition, vec![("split-wipe", SPLIT)]);
+        let mut h = Harness::new();
+        h.state.pick_shader("split-wipe", SPLIT);
+        for _ in 0..30 {
+            h.frame(vec![]);
+        }
+        assert!(test_rects::get("card_Wipe").is_some());
+        assert!(!h.ctx.has_requested_repaint(), "the idle Transitions pane requested a repaint");
+        refresh_library();
     }
 
     /// The preview geometry follows the direction the same way the compositor does.

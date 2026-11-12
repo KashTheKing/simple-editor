@@ -42,7 +42,7 @@ impl Project {
             if fx.kind != kind {
                 continue;
             }
-            let specs = fx.kind.params();
+            let specs = fx.specs();
             for (pname, &v) in params {
                 if let Some(i) = specs.iter().position(|s| s.name.eq_ignore_ascii_case(pname)) {
                     fx.params[i].value = v;

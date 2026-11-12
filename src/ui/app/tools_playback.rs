@@ -164,7 +164,21 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                     "dropped_frames": app.player.dropped_frames(),
                     "buffering": app.player.is_buffering(),
                     "loop_range": app.player.loop_range(),
+                    // ---- ws:perf-baseline ---- (the HUD's numbers; ms, rolling over ~120 UI frames)
+                    "ui_frame_ms": app.hud.frame.avg(),
+                    "ui_frame_p95_ms": app.hud.frame.p95(),
+                    "gl_composite_ms": app.hud.composite.avg(),
+                    "upload_ms": app.hud.upload.avg(),
+                    "decode_ms": app.hud.decode_avg_ms,
+                    "decode_worst_ms": app.hud.decode_worst_ms,
+                    "cache_hit_rate": app.hud.hit_rate,
                 }))
+            }
+            // ---- ws:perf-baseline ----
+            "playback.hud" => {
+                app.settings.hud = arg_bool(args, "on").unwrap_or(!app.settings.hud);
+                app.settings.save();
+                Ok(json!({"ok": true, "hud": app.settings.hud}))
             }
             "render.layers_async" => {
                 let t = req(arg_f64(args, "t"), "t")?;
@@ -183,6 +197,17 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
         }
     }
     Some(run(app, name, args))
+}
+
+// ---- ws:perf-baseline ----
+/// ACT_HANDLERS entry: Playback ▸ Performance HUD.
+pub(super) fn act_hud(app: &mut App, a: Action) -> bool {
+    if a != Action::ToggleHud {
+        return false;
+    }
+    app.settings.hud = !app.settings.hud;
+    app.settings.save();
+    true
 }
 
 // ---- ws:registries-schema-hooks ----
@@ -209,12 +234,14 @@ pub const TOOLS: &[ToolDef] = &[
         "Edit a sequence (swap it into the timeline); omit id to go back to the main timeline.",
         &["id:integer:false:"]
     ),
-    row!(
-        "render.frame",
-        ToolKind::Read,
-        "Render the timeline at time t as a PNG (base64 data url), max `width` px wide (default 640).",
-        &["t:number:true:", "width:integer:false:"]
-    ),
+    // ---- ws:mcp-context ---- an image result (MCP image content; Luau still gets {width,height,data_url})
+    ToolDef {
+        name: "render.frame",
+        desc: "Render the timeline at time t as a PNG image, max `width` px wide (default 640).",
+        args: &["t:number:true:", "width:integer:false:"],
+        kind: ToolKind::Read,
+        run: super::tools_context::render_frame_image,
+    },
     row!("playback.seek", ToolKind::Read, "Move the playhead.", &["t:number:true:"]),
     row!("playback.play", ToolKind::Read, "Start playback.", &[]),
     row!("playback.pause", ToolKind::Read, "Pause playback.", &[]),
@@ -274,7 +301,14 @@ pub const TOOLS: &[ToolDef] = &[
         "Emit one BLOCK (~21ms) of audio at t without moving the clock (paused only).",
         &["t:number:true:timeline seconds"]
     ),
-    row!("playback.status", ToolKind::Read, "Current rate, time, dropped and published frame counts, longest wait between two frames since the last call (ms), buffering flag, and loop range.", &[]),
+    row!("playback.status", ToolKind::Read, "Current rate, time, dropped and published frame counts, longest wait between two frames since the last call (ms), buffering flag, loop range, and the performance HUD's numbers (UI frame avg/p95, GL composite, texture upload, decode avg/worst ms, cache hit rate).", &[]),
+    // ---- ws:perf-baseline ---- (the ToolDef twin of Action::ToggleHud)
+    row!(
+        "playback.hud",
+        ToolKind::Ui,
+        "Show or hide the performance HUD over the Preview; omit `on` to toggle.",
+        &["on:boolean:false:"]
+    ),
     row!(
         "render.layers_async",
         ToolKind::Ui,

@@ -391,29 +391,68 @@ void main() {
 /// shadertoy's `void mainImage(out vec4, in vec2)` (gets `SHADERTOY`), or our
 /// `vec4 effect(vec4 src, vec2 uv)` (see `model::DEFAULT_SHADER`). `#line 1` before the user text makes
 /// the driver's log count lines in the user's source, not in the assembled program.
+/// ws:shader-library: every `// @param <id> ...` header line also names its knob (`#define <id> p<i>`),
+/// and `// @needs previous` declares `u_prev` / `u_next` / `u_frames` (see `library/README.md`).
 pub fn user_shader(src: &str) -> String {
     let toy = src.contains("mainImage");
-    let mut s = String::with_capacity(PRELUDE.len() + SHADERTOY.len() + src.len() + 512);
+    let meta = crate::engine::shaderlib::parse_meta(src);
+    let mut s = String::with_capacity(PRELUDE.len() + SHADERTOY.len() + src.len() + 768);
     s.push_str(PRELUDE);
-    for i in 0..8 {
-        s.push_str(&format!(
-            "#define u{} p{}
-",
-            i + 1,
-            i
-        ));
+    if meta.needs_previous {
+        s.push_str("uniform sampler2D u_prev;
+uniform sampler2D u_next;
+uniform float u_frames;
+");
     }
+    push_knobs(&mut s, &meta);
     if toy {
         s.push_str(SHADERTOY);
     }
-    s.push_str(
-        "#line 1
-",
-    );
+    s.push_str("#line 1
+");
     s.push_str(src);
     if !toy {
         s.push_str(MAIN);
     }
+    s
+}
+
+/// `u1..u8` and the header's named params, as defines over `p0..p7`.
+fn push_knobs(s: &mut String, meta: &crate::engine::shaderlib::ShaderMeta) {
+    for i in 0..8 {
+        s.push_str(&format!("#define u{} p{}
+", i + 1, i));
+    }
+    for (i, p) in meta.params.iter().enumerate() {
+        s.push_str(&format!("#define {} p{}
+", p.id, i));
+    }
+}
+
+/// ws:shader-library: wrap a shader TRANSITION (the gl-transitions format: `vec4 transition(vec2 uv)`
+/// with `getFromColor` / `getToColor`, `progress`, `ratio`) into a complete program. Its `uv` has
+/// y = 0 at the bottom, as in that collection, so its files drop in unchanged; our textures are
+/// top-down, hence the two flips. Inputs: `u_from` / `u_to` (the two pictures, straight alpha).
+pub fn transition_shader(src: &str) -> String {
+    let meta = crate::engine::shaderlib::parse_meta(src);
+    let mut s = String::with_capacity(PRELUDE.len() + src.len() + 1024);
+    s.push_str(PRELUDE);
+    s.push_str(
+        "uniform sampler2D u_from;
+uniform sampler2D u_to;
+uniform float progress;
+uniform float ratio;
+         vec4 getFromColor(vec2 uv) { return texture(u_from, vec2(uv.x, 1.0 - uv.y)); }
+         vec4 getToColor(vec2 uv) { return texture(u_to, vec2(uv.x, 1.0 - uv.y)); }
+",
+    );
+    push_knobs(&mut s, &meta);
+    s.push_str("#line 1
+");
+    s.push_str(src);
+    s.push_str("
+void main() { out_color = transition(vec2(v_uv.x, 1.0 - v_uv.y)); }
+");
     s
 }
 

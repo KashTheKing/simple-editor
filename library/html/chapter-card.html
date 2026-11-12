@@ -1,0 +1,40 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Chapter Card</title>
+<meta name="se:kind" content="layer">
+<meta name="se:desc" content="A centred chapter title card on a dimmed backdrop with lines that draw in.">
+<meta name="se:tags" content="chapter, title card, section, divider">
+<meta name="se:size" content="1920x1080">
+<meta name="se:duration" content="6s">
+<meta name="se:field" content="chapter | text | Chapter 2">
+<meta name="se:field" content="title | text | Setting Up the Project">
+<meta name="se:field" content="accent | color | #fbbf24">
+<style>
+  :root { --accent: {{accent}}; }
+  html, body { margin: 0; width: 100vw; height: 100vh; overflow: hidden; background: transparent;
+    font-family: "Segoe UI", Arial, sans-serif; }
+  .stage { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    animation: out .6s ease-in 5.3s both; }
+  .dim { position: absolute; inset: 0; background: rgba(6, 8, 14, .6); animation: fade .6s ease-out both; }
+  .card { position: relative; box-sizing: border-box; width: 1280px; max-width: 1280px; padding: 64px 80px 72px; text-align: center;
+    border-radius: 28px; background: rgba(12, 14, 22, .86); box-shadow: 0 24px 70px rgba(0, 0, 0, .5);
+    animation: rise .8s cubic-bezier(.2, .85, .2, 1) .15s both; }
+  .line { height: 4px; border-radius: 2px; background: var(--accent); transform-origin: 50% 50%; margin: 0 auto; width: 160px;
+    animation: draw .8s cubic-bezier(.7, 0, .2, 1) .5s both; }
+  .chapter { margin: 28px 0 0; color: var(--accent); font-size: 32px; line-height: 1.2; font-weight: 700; letter-spacing: 10px; text-transform: uppercase;
+    animation: up .7s cubic-bezier(.2, .8, .2, 1) .8s both; }
+  .title { margin: 18px 0 0; color: #fff; font-size: 92px; line-height: 1.25; font-weight: 800; letter-spacing: -.5px;
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
+    animation: up .8s cubic-bezier(.2, .8, .2, 1) 1s both; }
+  .line.b { margin-top: 40px; width: 480px; animation-delay: 1.3s; }
+  @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes rise { from { opacity: 0; transform: translateY(40px) scale(.97); } to { opacity: 1; transform: none; } }
+  @keyframes draw { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+  @keyframes up { from { opacity: 0; transform: translateY(22px); } to { opacity: 1; transform: none; } }
+  @keyframes out { to { opacity: 0; } }
+</style>
+</head>
+<body><div class="stage"><div class="dim"></div><div class="card"><div class="line"></div><div class="chapter">{{chapter}}</div><div class="title">{{title}}</div><div class="line b"></div></div></div></body>
+</html>

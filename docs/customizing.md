@@ -77,7 +77,46 @@ curl -s -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' -H 'content-type: ap
   http://127.0.0.1:<port>/mcp
 ```
 
-**Verified against a live call at jobs-panel (#64): 240 tools, exactly matching this table's count.**
+**Verified against a live `tools/list` on the 1.2.0 release build (2026-11-12): 298 tools.** The tables below
+were written per feature as it landed; if a row disagrees with `tools/list`, `tools/list` wins.
+
+> **Pro plan (built and live-tested, 1.2.0):** the rows it added or changed
+> (`assistant.*`, `edit.*`, `editor.*`, `voice.*`, `export.edl`, `export.xml`, `markers.comment`,
+> `markers.set`, `playback.hud`, `render.contact_sheet`, `transcribe.status`, and new arguments on
+> `export.queue`, `export.video`, `markers.add`, `markers.list`, `markers.export`, `media.transcribe`,
+> `transcribe.run`) are listed below.
+> With `Settings.assistant_guard` on (default), `export.*`, `project.open`, `project.new`,
+> `settings.set`, `scripts.run`, `tasks.run`, `media.convert` and `media.batch_convert` called over MCP
+> wait for the user's Allow (`ui/app/assistant_ctl.rs`, `leaves_project`). The Assistant redesign added
+> `assistant.add_selection`, `assistant.attachments`, `assistant.attachment` and the five `tasks.*` tools.
+
+> **Creator Kit (1.2.0).** `skills.save` and `skills.delete`
+> are also held for the user's Allow. `library.*` below is the CONTENT library (transitions, effects,
+> LUTs, HTML templates, icons, skills); `library.select` / `library.columns` are the media library panel.
+
+| Tool | Kind | Arguments | What it does |
+|---|---|---|---|
+| `html.create` | Mutate | html, at?, duration?, name?, fields? | Add an HTML + CSS layer or scene clip (format: `library/README.md`); rendered in the background. `fields` is an object `{name: value}`. |
+| `html.get` | Read | clip | The clip's source, fields with current values, size, duration, render state, lint. |
+| `html.set` | Mutate | clip, html?, fields?, params?, width?, name? | Replace the source and/or set field values (`null` = default) and `se:param` values (a number or `[{t,v,ease}]` keyframes); the clip keeps position, effects and keyframes. |
+| `html.import` | Mutate | path, at?, link? | Add a `.html` file as a clip, linked to the file (edit either side). |
+| `html.link` | Mutate | clip, path, write? | Link a clip to a `.html` file (read it, or write the clip into it); empty path unlinks. |
+| `html.snapshot` | Mutate | url, width? | Snapshot a real web page by address (private Edge, scripts dropped) and add it as a linked clip. |
+| `html.render` | Read | clip | Render again when the current source has no render (also retries a failed one). |
+| `html.check` | Read (image) | clip? \| html?, t?, fields? | One rendered frame as an image, plus lint. |
+| `clip.set_shader` | Mutate | clip, index?, src | Set a clip's shader effect source; returns `{ok, log, params}` (a compile error is a result, not a failure). |
+| `shader.check` | Read | src, kind? | Compile an effect or transition shader without changing anything. |
+| `transition.set_shader` | Mutate | id? \| clip?, src, params? | Make a transition a shader transition (gl-transitions format). |
+| `skills.list` | Read | - | Assistant skills: name, description, args, source. |
+| `skills.get` | Read | name | One skill's text and parsed parts. |
+| `skills.save` | Ui (held) | name, description, args?, body | Write a skill into the user's skills folder. |
+| `skills.delete` | Ui (held) | name | Delete a user skill. |
+| `library.list` | Read | kind?, query? | Installed and online items, each with `installed`; `catalogue` is `loading`, `ok` or a note. |
+| `library.install` | Job | id | Download an item (`transitions/paper-tear`). |
+| `library.apply` | Mutate | id, clip?, at? | Install if needed, then use it: transition on a cut, effect / LUT on a clip, HTML / icon as a new clip. |
+| `library.save` | Ui | kind, name, text | Save a shader, HTML layer, skill or `.cube` text as a library item (checked first). |
+| `library.remove` | Ui | id | Remove an installed item. |
+
 `kind` isn't part of the wire response (`mcp::tools::list_json` only serialises
 `name`/`description`/`inputSchema` — see `src/mcp/tools.rs`), so the `Kind` column below is a source
 cross-reference (each tool's own `ToolDef.kind` in its `tools_*.rs` file), not something you'll see
@@ -88,6 +127,18 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 "Luau scripting" above).
 
 **Totals by kind**: 109 Mutate, 70 Read, 48 Ui, 13 Job.
+
+**`assistant.*`** (7 tools)
+
+| Tool | Kind | Args | Description |
+|---|---|---|---|
+| `assistant.add_selection` | Ui | what | Pin a snapshot of the user's selection to the Assistant's next chat message and show the pane (same as right-click ▸ Add to Assistant). what: selection (clips, else transcript words, a marker, else In/Out), clips, words, marker or range. what: default selection. |
+| `assistant.attachment` | Read | index | One image the user attached to the current Assistant request, as an image (PNG). index: 0-based, see assistant.attachments. |
+| `assistant.attachments` | Read | - | The images the user attached to the current Assistant request: [{index, name, width, height}]. assistant.attachment{index} returns one. |
+| `assistant.send` | Ui | prompt | Send a request to the Assistant pane's chat, as if the user typed it (one request at a time). |
+| `assistant.status` | Read | - | The Assistant pane: whether a request is running, the backend, requests waiting (for assistant.wait, and the queue behind the running one), and the last 20 lines of the shown conversation. |
+| `assistant.stop` | Ui | - | Stop the Assistant pane's running request (its edits so far stay, as one undo step). |
+| `assistant.wait` | Job | timeout_s | Block until the user sends a request from the Assistant pane or adds a comment (a marker with a note); returns {request, context}, or {timeout: true}. Loop on it for live mode. timeout_s: default 300, max 1500. |
 
 **`audio.*`** (13 tools)
 
@@ -168,19 +219,35 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `container.replace` | Mutate | asset_id, clip_id, pair | Replace media in a container clip (effects, transforms, keyframes preserved). |
 | `container.unmake` | Mutate | clip_ids | Remove container flag from clips. |
 
-**`export.*`** (9 tools)
+**`edit.*`** (3 tools)
+
+| Tool | Kind | Args | Description |
+|---|---|---|---|
+| `edit.batch` | Ui | author, calls, label | Run several tool calls (calls: [{name, args}] in order) in one frame, as one undo step; returns each result. A failing call stops the batch and rolls the whole batch back (the error names the call). label default 'Batch edit', author default Claude. |
+| `edit.begin` | Ui | author, label | Start one undo step for a request: until edit.end every edit joins it, and the user can undo it all at once ('<author>: <label>' in History). Closes by itself after 30 s without calls. |
+| `edit.end` | Ui | - | End the undo step edit.begin started: one History entry if anything changed, the changed clips glow, the user gets an Undo toast. |
+
+**`editor.*`** (1 tool)
+
+| Tool | Kind | Args | Description |
+|---|---|---|---|
+| `editor.context` | Read | - | What the user is looking at: playhead, in/out, selected clips (name, kind, track, times), transitions, subtitle cues, markers (with notes), edit point, selected transcript words (text, start, end), sequence and page. Call it first in every request. |
+
+**`export.*`** (11 tools)
 
 | Tool | Kind | Args | Description |
 |---|---|---|---|
 | `export.bake` | Job | clip_ids | Render the given clip(s) in place (effects flattened into a new asset) and swap them onto it; the original asset stays in the library. Blocks until the swap lands. |
 | `export.denoise` | Job | clip_ids | Bake the clip(s) through ffmpeg afftdn spectral audio denoise, then swap them onto the result. |
+| `export.edl` | Read | path | Write the main timeline as CMX 3600 EDL (for Avid): one file per video track (the first at path, others as <stem>_V2.edl …), the first also carrying every audio track; dissolves as D events. |
 | `export.presets` | Read | - | List platform export presets (name, ext, size, crf, loudnorm). |
-| `export.queue` | Ui | path, preset, range_in, range_out | Append an export job to the render queue; returns immediately with its queue position. |
+| `export.queue` | Ui | audio, path, preset, range_in, range_out, stem_by | Append an export job to the render queue; returns immediately with its queue position. audio: mix \| streams \| stems, stem_by: track \| bus \| role (default the Export pane's). |
 | `export.quick` | Job | path, preset | Export with the last-used (or given) preset/options; blocks until the file is written (up to 30 min). |
 | `export.slowmo` | Job | clip_ids, factor | Bake the clip(s) through setpts+minterpolate optical-flow slow motion, then swap them onto the result (the clip keeps its length and now shows the first part of the slowed footage — extend its end to reveal the rest). |
 | `export.stabilize` | Job | clip_ids | Bake the clip(s) through ffmpeg deshake, then swap them onto the result. |
 | `export.status` | Read | - | Current export progress (fraction, status, ETA seconds) and the queue / bake counts. |
-| `export.video` | Job | crf, encoder, height, path, scaler, width | Export the timeline to a file (blocks until done, up to 30 min); encoder/crf default to settings. |
+| `export.xml` | Read | path | Write the main timeline as Final Cut Pro 7 XML (xmeml v5) for Premiere / Resolve: clips, audio level/pan, A/V links, cross dissolves and sequence + clip markers (track names are not part of xmeml). |
+| `export.video` | Job | audio, crf, encoder, height, path, scaler, stem_by, width | Export the timeline to a file (blocks until done, up to 30 min); encoder/crf/audio/stem_by default to settings. audio=streams adds one audio track per stem after the mix (mp4/mov/mkv/m4v, else one mix); audio=stems writes '<name> stems/NN <stem>.wav' beside the file. |
 
 **`frame.*`** (2 tools)
 
@@ -265,15 +332,17 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `looks.apply` | Mutate | clip_id, intensity, name | Apply a Look (built-in or user-saved) to a clip, replacing its effect stack, scaled by intensity (0 = no-op, 1 = the Look unmodified). Same resolution/result as gallery.apply(tab=Looks) for the same name. |
 | `looks.list` | Read | - | Names of every Look: the 12 built-ins plus any user-saved (non-graph) Settings.effect_presets — same list gallery.list(tab=Looks) returns. |
 
-**`markers.*`** (5 tools)
+**`markers.*`** (7 tools)
 
 | Tool | Kind | Args | Description |
 |---|---|---|---|
-| `markers.add` | Mutate | clip_id, duration, label, name, note, t | Add a marker at a timeline time (on a clip with clip_id). |
-| `markers.export` | Read | format, path | Write every marker in timeline order to a CSV or a YouTube-chapters text file. |
+| `markers.add` | Mutate | author, clip_id, duration, label, name, note, t | Add a marker at a timeline time (on a clip with clip_id). author: your name, so the user sees who left it. |
+| `markers.comment` | Mutate | author, duration, note, t | Leave a comment (a marker with a note, author = you) over In/Out, else the selected clips, else the playhead - or at t / duration when given. Same as the Add Comment action. |
+| `markers.export` | Read | format, path | Write every marker in timeline order to a CSV, a YouTube-chapters or an Avid Markers text file (format: csv \| youtube_chapters \| avid, default csv). |
 | `markers.import` | Mutate | path | Add project markers from a CSV file (time,name[,note,label] — or markers.export's own header form). |
-| `markers.list` | Read | - | Every marker in timeline time (project markers + clip markers). |
+| `markers.list` | Read | open | Every marker in timeline time (project markers + clip markers) with name, note, icon, done, author ("" = the user). Markers with notes are the user's review comments. open: only open comments (not done, with a note). |
 | `markers.remove` | Mutate | id | Remove a marker by id. |
+| `markers.set` | Mutate | author, done, duration, icon, id, label, name, note, t | Edit a marker: only the fields given change (done=true ticks a comment off). t: timeline seconds (timeline markers only). |
 
 **`media.*`** (15 tools)
 
@@ -292,7 +361,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `media.smart_bin` | Mutate | id, name, op | Manage Project.smart_bins: save the current library filter under a name, apply one (by index or name) to the library, list them, or delete one. |
 | `media.status` | Read | id | AssetStatus per asset id (Ready \| Decoding \| Offline \| ProxyBuilding, with percent) from the same tick that drives the library badge. |
 | `media.subclip` | Mutate | asset_id, in, name, out | Create a subclip asset (a named in/out range into an existing library asset). |
-| `media.transcribe` | Job | asset_id, clip_id, model | Transcribe a clip (or the first timeline clip of an asset) with whisper — same job as transcribe.run without generating cues; fills Project.transcripts when done (read with media.transcript). |
+| `media.transcribe` | Job | async, asset_id, clip_id, islands, model | Transcribe a clip (or the first timeline clip of an asset) with whisper — same job as transcribe.run without generating cues; fills Project.transcripts when done (read with media.transcript). islands / async as in transcribe.run (async: poll transcribe.status). |
 | `media.transcript` | Read | asset_id, clip_id | {clip_id, words:[{start,end,text}], text} for one clip (clip_id, or asset_id's first timeline clip), or every transcript when both are omitted. A clip without one gives empty words plus a hint. |
 
 **`mixer.*`** (1 tool)
@@ -331,10 +400,11 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `plan.remove` | Mutate | id | Remove a planner item. |
 | `plan.set` | Mutate | done, id, notes, title | Update a planner item. |
 
-**`playback.*`** (9 tools)
+**`playback.*`** (10 tools)
 
 | Tool | Kind | Args | Description |
 |---|---|---|---|
+| `playback.hud` | Ui | on | Show or hide the performance HUD over the Preview; omit `on` to toggle. |
 | `playback.loop` | Ui | in, on, out | Enable/disable Loop In->Out playback. |
 | `playback.pause` | Read | - | Pause playback. |
 | `playback.play` | Read | - | Start playback. |
@@ -342,7 +412,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `playback.rate` | Ui | rate | Set shuttle/playback rate (starts playing if paused); -8..8, 0 rejected (use playback.pause). |
 | `playback.scrub` | Ui | t | Emit one BLOCK (~21ms) of audio at t without moving the clock (paused only). |
 | `playback.seek` | Read | t | Move the playhead. |
-| `playback.status` | Read | - | Current rate, time, dropped and published frame counts, longest wait between two frames since the last call (ms), buffering flag, and loop range. |
+| `playback.status` | Read | - | Current rate, time, dropped and published frame counts, longest wait between two frames since the last call (ms), buffering flag, loop range, and the performance HUD's numbers (UI frame avg/p95, GL composite, texture upload, decode avg/worst ms, cache hit rate). |
 | `playback.step` | Ui | frames | Step the playhead by N frames (negative = back); pauses first. |
 
 **`playhead.*`** (2 tools)
@@ -374,11 +444,12 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `project.set` | Mutate | fps, height, name, width | Change project format/name. |
 | `project.summary` | Read | - | Project overview: format, duration, tracks, clips per track, assets, sequences, subtitles count, planner progress, notes — and the markdown style summary. |
 
-**`render.*`** (4 tools)
+**`render.*`** (5 tools)
 
 | Tool | Kind | Args | Description |
 |---|---|---|---|
-| `render.frame` | Read | t, width | Render the timeline at time t as a PNG (base64 data url), max `width` px wide (default 640). |
+| `render.contact_sheet` | Read | count, from, to, width | Tile `count` frames (1..36, default 9) evenly spread over [from, to] into one PNG image (left to right, top to bottom; `times` lists each tile's time). width: px per tile, default 320. |
+| `render.frame` | Read | t, width | Render the timeline at time t as a PNG image, max `width` px wide (default 640). MCP clients get an image content block; Luau gets {width, height, data_url}. |
 | `render.layers_async` | Ui | max_w, t | Queue a non-blocking one-shot layer decode; returns a request id. |
 | `render.poll_layers` | Read | id | Poll for the async layer-decode reply (not ready until it matches the given id, or it was superseded by a newer request). |
 | `render.range` | Ui | a, b | Pre-render [a, b) into the movie-mode cache without touching the in/out points. |
@@ -457,6 +528,19 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `subtitles.import` | Mutate | path | Import .srt/.vtt (replaces). |
 | `subtitles.set` | Mutate | cues | Replace all cues: [{start,end,text}]. |
 | `subtitles.style_preset` | Mutate | name | Set project.subtitle_style from a named caption style (builtin or Settings.caption_presets). |
+
+**`tasks.*`** (5 tools)
+
+The Assistant's Tasks queue (per conversation, saved with it). A task is a Luau script an agent wrote for
+the user to review and run; each run is one undo step labelled `Assistant task: <title>`.
+
+| Tool | Kind | Args | Description |
+|---|---|---|---|
+| `tasks.add` | Ui | code, note, title | Hand a Luau script over to the Assistant's Tasks queue for the user to review and run (it is not run now). title: a few words; note: one line on what it does. |
+| `tasks.list` | Read | - | The Assistant's Tasks queue in order: [{id, title, note, status, error, code}]. |
+| `tasks.remove` | Ui | id | Remove a task from the Assistant's queue. |
+| `tasks.run` | Ui | id | Run one task, or (no id) every Ready task in queue order; each run is one undo step and a failing task stops the queue. |
+| `tasks.set` | Ui | code, id, title | Change a task's title and/or code (new code makes it Ready again). |
 
 **`templates.*`** (4 tools)
 
@@ -549,12 +633,13 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 |---|---|---|---|
 | `tracking.run` | Job | apply, backward, clip_id, cx, cy, hh, hw, search | NCC point-track a region of a clip (job): box centre (cx,cy) and half-size (hw,hh) in canvas px relative to the centre. With apply (default true) the path is written as the clip's X/Y keyframes when done. |
 
-**`transcribe.*`** (2 tools)
+**`transcribe.*`** (3 tools)
 
 | Tool | Kind | Args | Description |
 |---|---|---|---|
 | `transcribe.install` | Job | model | Download a whisper model into the cache (job; 75–466 MB). Already downloaded = done at once. |
-| `transcribe.run` | Job | clip_id, cues, language, model | Transcribe a clip's audio with whisper (background job; word timings always on). On completion the words are in Project.transcripts, and with cues=true (default), captions are generated. |
+| `transcribe.run` | Job | async, clip_id, cues, islands, language, model | Transcribe a clip's audio with whisper (background job; word timings always on). On completion the words are in Project.transcripts (media.transcript) and, with cues=true (default), captions are generated. islands=true transcribes each speech island separately (accurate cut points on long takes with pauses; needs the clip's waveform). async=true replies at once - poll transcribe.status {clip_id} until state is done/failed. |
+| `transcribe.status` | Read | clip_id | State of the clip's latest whisper run (for transcribe.run / media.transcribe with async=true): {state: running (+fraction, status) \| done \| failed (+error) \| none}. When done, read the words with media.transcript. |
 
 **`transcript.*`** (6 tools)
 
@@ -583,6 +668,14 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `ui.palette` | Read | query | List palette rows (Actions, Panes, arg-free Tools, Scripts, Workspaces), optionally fuzzy-filtered by 'query'. |
 | `ui.toast` | Ui | kind, text | Shows a toast identical to the app's own (dedupes against the last toast with the same text). |
 | `ui.zoom_factor` | Ui | value | Get/set the UI zoom factor (0.5-2.5); omit 'value' to read. |
+
+**`voice.*`** (3 tools)
+
+| Tool | Kind | Args | Description |
+|---|---|---|---|
+| `voice.start` | Ui | - | Start dictating into the Assistant prompt from the microphone (stops by itself after 60 s). |
+| `voice.status` | Read | - | Dictation state: 'recording', 'transcribing' or 'idle', the pane's status line, and the last take's 'text' or 'error'. |
+| `voice.stop` | Ui | - | Stop dictating and transcribe. whisper takes a few seconds: poll voice.status until state is 'idle', then 'text' (also appended to the prompt) or 'error'. |
 
 ### A note on `gen_docs.luau`
 

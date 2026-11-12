@@ -320,6 +320,10 @@ pub fn show(
                 if ui.add_enabled_ui(n > 0, |ui| menu::row(ui, None, "Deselect", "")).inner.clicked() {
                     st.sel = None;
                 }
+                // ---- ws:assistant-pane ----
+                ui.add_enabled_ui(n > 0, |ui| {
+                    crate::ui::assistant_ui::add_to_assistant_row(ui, crate::ui::assistant_data::Pin::Words)
+                });
             });
         });
     }
@@ -590,6 +594,7 @@ mod tests {
             parent: None,
             range: None,
             effects: Vec::new(),
+            html: None,
         });
         p.insert_asset_clips(aid, 0.0, Some(0));
         let id = p.tracks[0].clips[0].id;

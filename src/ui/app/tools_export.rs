@@ -342,6 +342,7 @@ pub(crate) fn start_bake(app: &mut App, ids: &[Id], kind: BakeKind) -> Result<(A
     app.player.pause();
     let mut opts = app.export_opts(tmp.clone());
     opts.loudnorm = false; // a bake is a picture/sound replacement, not a delivery master
+    opts.audio = export::AudioLayout::Mix; // ws:export-audio-tracks: and never carries stems
     let prog = export::start_export(iso, opts, app.text.clone());
     let overall = Progress::new();
     overall.set(0.0, kind.label());
@@ -624,6 +625,8 @@ pub const TOOLS: &[ToolDef] = &[
             "path:string:true:",
             "range_in:number:false:seconds",
             "range_out:number:false:seconds",
+            "audio:string:false:mix | streams | stems, default the Export pane's",
+            "stem_by:string:false:track | bus | role, default the Export pane's",
         ],
         // Ui, not Mutate (the issue table says Mutate): the queue is App state, not the Project - the
         // Mutate path's unconditional after_edit would dirty a clean project for no project change.
@@ -642,6 +645,13 @@ pub const TOOLS: &[ToolDef] = &[
                 }
                 choice.opts.range = Some((a, b));
                 choice.lossless = false;
+            }
+            // ws:export-audio-tracks
+            if let Some(a) = arg_str(args, "audio") {
+                choice.opts.audio = export::AudioLayout::parse(a);
+            }
+            if let Some(b) = arg_str(args, "stem_by") {
+                choice.opts.stem_by = export::StemBy::parse(b);
             }
             if files::refuses_source(&app.project, &choice.opts.out_path) {
                 return Err("that path is a source of this project".into());
@@ -696,14 +706,14 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "markers.export",
-        desc: "Write every marker in timeline order to a CSV or a YouTube-chapters text file.",
-        args: &["path:string:true:", "format:string:false:csv | youtube_chapters, default csv"],
+        desc: "Write every marker in timeline order to a CSV, a YouTube-chapters or an Avid Markers text file.",
+        args: &["path:string:true:", "format:string:false:csv | youtube_chapters | avid, default csv"],
         kind: ToolKind::Read,
         run: |app, args| {
             let path = PathBuf::from(req(arg_str(args, "path"), "path")?);
             let fmt = match arg_str(args, "format") {
                 None => MarkerFmt::Csv,
-                Some(s) => MarkerFmt::parse(s).ok_or("format must be csv | youtube_chapters")?,
+                Some(s) => MarkerFmt::parse(s).ok_or("format must be csv | youtube_chapters | avid")?,
             };
             let text = markers_ui::export_markers(&app.project, app.project.fps, fmt);
             std::fs::write(&path, &text).map_err(|e| e.to_string())?;
@@ -761,6 +771,7 @@ mod tests {
             parent: None,
             range: None,
             effects: Vec::new(),
+            html: None,
         }
     }
 

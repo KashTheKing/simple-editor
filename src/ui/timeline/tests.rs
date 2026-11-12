@@ -185,6 +185,7 @@ impl Harness {
             parent: None,
             range: None,
             effects: Vec::new(),
+            html: None,
         });
         project.insert_asset_clips(aid, 0.0, None);
         let waves = WaveformCache::new(ctx.clone(), Backend::Ffmpeg);
@@ -1527,6 +1528,7 @@ fn test_clip_menu<'a>(labels: &'a [Label], buses: &'a [crate::model::Bus], share
         labels,
         buses,
         shared_effects: shared,
+        html: false,
     }
 }
 
@@ -1594,6 +1596,7 @@ fn transform_menu_bulk_stretches_selection_with_one_undo() {
         parent: None,
         range: None,
         effects: Vec::new(),
+        html: None,
     });
     let id2 = h.project.insert_asset_clips(aid2, 11.0, Some(0))[0];
     let id1 = h.video_clip().id;
@@ -2294,6 +2297,7 @@ fn audio_drop_infers_pointer_audio_row() {
         parent: None,
         range: None,
         effects: Vec::new(),
+        html: None,
     });
     let a1_y = lanes.top() + h.project.tracks[0].height + 20.0; // inside the A1 row
     let drop = pos2(lanes.left() + 480.0, a1_y);
@@ -2332,6 +2336,7 @@ fn ctrl_splice_and_alt_overwrite_drop_onto_pointer_audio_row() {
         parent: None,
         range: None,
         effects: Vec::new(),
+        html: None,
     });
     let a2_top = row_top(&h.state, &h.project, a2).unwrap();
     let drop = pos2(lanes.left() + 480.0, a2_top + 20.0); // inside the A2 row

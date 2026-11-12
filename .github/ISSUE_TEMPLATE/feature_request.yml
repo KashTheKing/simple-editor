@@ -1,0 +1,17 @@
+name: Suggest a feature
+description: Something you wish Simple Editor could do.
+title: "[Idea] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What would you like?
+      description: Describe what you are trying to do. How do you do it today, and what is annoying about that?
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else? (optional)
+      description: Screenshots, examples from other editors, links.

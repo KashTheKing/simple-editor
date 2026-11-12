@@ -134,7 +134,7 @@ impl Work {
             &mut self.comp,
         );
         let (reply, rx) = std::sync::mpsc::sync_channel(1);
-        tx.send(GpuFrameRequest { layers, t, w, h, reply }).ok()?;
+        tx.send(GpuFrameRequest { layers, t, w, h, nv12: false, buf: Frame::default(), reply }).ok()?;
         rx.recv_timeout(Duration::from_secs(5)).ok().flatten()
     }
 

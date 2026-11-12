@@ -1,6 +1,6 @@
 [package]
 name = "simple-editor"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2021"
 description = "Simple Editor — a tiny, fast video trimmer/editor for Windows"
 default-run = "simple-editor"
@@ -37,6 +37,9 @@ windows = { version = "0.62", features = [
     "Win32_Graphics_Dxgi_Common",
     "Win32_System_Time",
     "Win32_System_SystemInformation",
+    # ws:assistant-pane: the Assistant's API key in Windows Credential Manager
+    "Win32_Security",
+    "Win32_Security_Credentials",
 ] }
 
 [profile.release]

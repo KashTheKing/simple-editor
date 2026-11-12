@@ -306,7 +306,7 @@ pub fn apply_look(preset: &EffectPreset, project: &mut Project, clip: Id, intens
     let f = intensity.clamp(0.0, 1.0) as f64;
     if let Some(c) = project.clip_mut(clip) {
         for e in &mut c.effects {
-            let specs = e.kind.params();
+            let specs = e.specs();
             for (i, anim) in e.params.iter_mut().enumerate() {
                 let default = specs.get(i).map(|s| s.default).unwrap_or(anim.value);
                 anim.value = default + (anim.value - default) * f;
@@ -543,6 +543,7 @@ mod tests {
             parent: None,
             range: None,
             effects: Vec::new(),
+            html: None,
         }
     }
 

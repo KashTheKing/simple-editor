@@ -142,6 +142,11 @@ pub enum Pane {
     Grade,
     /// The Color page's clip thumbnail strip: one card per video clip, click to grade it.
     Clips,
+    // ---- ws:pro-schema ----
+    /// The AI assistant: a prompt box and a log of what the agent said and did (`ui::assistant_ui`).
+    /// Declared by pro-schema with a placeholder drawer; ws:assistant-pane fills it in. Tab-stacked
+    /// hidden in every preset (`stack_unplaced`), never in `ROUND3`.
+    Assistant,
 }
 
 impl Pane {
@@ -200,6 +205,21 @@ impl Pane {
         // ---- ws:color-page ----
         Pane::Grade,
         Pane::Clips,
+        // ---- ws:perf-baseline ----
+        // ---- ws:pro-schema ----
+        Pane::Assistant,
+        // ---- ws:play-decode-path ----
+        // ---- ws:play-render-thread ----
+        // ---- ws:play-source-monitor ----
+        // ---- ws:export-audio-tracks ----
+        // ---- ws:export-encoders ----
+        // ---- ws:export-pipeline ----
+        // ---- ws:interchange ----
+        // ---- ws:assistant-pane ----
+        // ---- ws:mcp-context ----
+        // ---- ws:transcribe-islands ----
+        // ---- ws:voice-input ----
+        // ---- ws:docs-release ----
     ];
     /// Panes added in round 3 - a stored layout without them is from an older version (see `from_json`).
     /// Tools left this list with the pages (no page places it; the viewer's tool rail replaces it).
@@ -234,6 +254,7 @@ impl Pane {
             Pane::MediaBrowser => Glyph::Link,
             Pane::Grade => Glyph::Wheel,
             Pane::Clips => Glyph::FilmStrip,
+            Pane::Assistant => Glyph::Assistant,
         }
     }
     pub fn title(self) -> &'static str {
@@ -264,6 +285,7 @@ impl Pane {
             Pane::MediaBrowser => "Media Browser",
             Pane::Grade => "Color Wheels",
             Pane::Clips => "Clips",
+            Pane::Assistant => "Assistant",
         }
     }
 }
@@ -511,6 +533,46 @@ impl Layout {
                 tiles.set_visible(id, false);
             }
         }
+        Self::home_assistant(tiles);
+    }
+    // ---- ws:assistant-pane ----
+    /// The Assistant rides in the Inspector's tab group (top right on every page), hidden until it is
+    /// toggled on, the Inspector staying in front. A lone Inspector is wrapped in a tab group in place
+    /// (the group takes its tile id, so the row's share stays). A visible Assistant is left wherever the
+    /// user put it; a hidden one elsewhere (a layout saved before this) is moved there.
+    pub(crate) fn home_assistant(tiles: &mut egui_tiles::Tiles<Pane>) {
+        use egui_tiles::{Container, Tile};
+        let Some(insp) = tiles.find_pane(&Pane::Inspector) else { return };
+        let asst = match tiles.find_pane(&Pane::Assistant) {
+            Some(a) if tiles.is_visible(a) => return,
+            Some(a) => a,
+            None => {
+                let a = tiles.insert_pane(Pane::Assistant);
+                tiles.set_visible(a, false);
+                a
+            }
+        };
+        let group = match tiles.parent_of(insp) {
+            Some(g) if matches!(tiles.get(g), Some(Tile::Container(Container::Tabs(_)))) => g,
+            _ => {
+                // a new id while `insp` still holds the pane, so the two can't collide
+                let moved = tiles.insert_pane(Pane::Inspector);
+                if !tiles.is_visible(insp) {
+                    tiles.set_visible(moved, false);
+                }
+                tiles.insert(insp, Tile::Container(Container::new_tabs(vec![moved])));
+                insp
+            }
+        };
+        if tiles.parent_of(asst) == Some(group) {
+            return;
+        }
+        if let Some(Tile::Container(old)) = tiles.parent_of(asst).and_then(|p| tiles.get_mut(p)) {
+            old.remove_child(asst);
+        }
+        if let Some(Tile::Container(Container::Tabs(tabs))) = tiles.get_mut(group) {
+            tabs.add_child(asst); // behind the Inspector: `add_child` keeps the active tab
+        }
     }
     pub fn to_json(&self) -> String {
         serde_json::to_string(self).unwrap_or_default()
@@ -522,6 +584,7 @@ impl Layout {
         let mut l: Self = serde_json::from_str(s).ok()?;
         l.tree.root()?;
         l.drop_retired();
+        Self::home_assistant(&mut l.tree.tiles);
         let has_all = Pane::ROUND3.iter().all(|p| l.tree.tiles.find_pane(p).is_some() || l.popped.contains(p));
         has_all.then_some(l)
     }
@@ -546,6 +609,7 @@ impl Layout {
                 }
             }
         }
+        Self::home_assistant(&mut l.tree.tiles);
         Some(l)
     }
     // ---- ws:viewer-surface ----
@@ -1509,7 +1573,16 @@ mod tests {
     fn pane_source_not_in_round3() {
         assert_eq!(Pane::ROUND3, [Pane::Nodes, Pane::Mixer, Pane::Markers]);
         assert!(!Pane::ALL.contains(&Pane::Tools), "the viewer's tool rail replaced the Tools pane");
-        for p in [Pane::Source, Pane::Jobs, Pane::Scopes, Pane::Export, Pane::MediaBrowser, Pane::Grade, Pane::Clips] {
+        for p in [
+            Pane::Source,
+            Pane::Jobs,
+            Pane::Scopes,
+            Pane::Export,
+            Pane::MediaBrowser,
+            Pane::Grade,
+            Pane::Clips,
+            Pane::Assistant,
+        ] {
             assert!(Pane::ALL.contains(&p), "{p:?} is still a pane");
             assert!(!Pane::ROUND3.contains(&p), "{p:?} must not make a stored layout unloadable");
         }
@@ -1655,12 +1728,54 @@ mod tests {
         assert!(Layout::from_json("{}").is_none());
     }
 
+    // ---- ws:assistant-pane ----
+    /// Every page's default stacks the Assistant (hidden) in the Inspector's tab group, the Inspector in
+    /// front; toggling it on shows it there. A stored layout with it hidden elsewhere gets it moved
+    /// there on load; a visible one stays where the user put it.
+    #[test]
+    fn assistant_rides_with_the_inspector() {
+        let group_of = |l: &Layout, p: Pane| l.tree.tiles.parent_of(l.tree.tiles.find_pane(&p).unwrap());
+        for &name in PAGES {
+            let mut l = page_layout(name).unwrap()();
+            assert_eq!(group_of(&l, Pane::Assistant), group_of(&l, Pane::Inspector), "{name}");
+            assert!(!l.is_visible(Pane::Assistant), "{name}: hidden until toggled");
+            if name != "Media" {
+                assert!(in_front(&l, Pane::Inspector), "{name}: the Inspector stays in front");
+            }
+            l.toggle(Pane::Assistant);
+            assert!(l.is_visible(Pane::Assistant) && in_front(&l, Pane::Assistant), "{name}: the toggle reveals it");
+        }
+        // an older layout: the Assistant hidden behind the Library
+        let mut old = Layout::default_layout();
+        let lib = group_of(&old, Pane::Library).unwrap();
+        let a = old.tree.tiles.find_pane(&Pane::Assistant).unwrap();
+        let insp_group = group_of(&old, Pane::Inspector);
+        if let Some(egui_tiles::Tile::Container(c)) = insp_group.and_then(|g| old.tree.tiles.get_mut(g)) {
+            c.remove_child(a);
+        }
+        if let Some(egui_tiles::Tile::Container(c)) = old.tree.tiles.get_mut(lib) {
+            c.add_child(a);
+        }
+        assert_eq!(group_of(&old, Pane::Assistant), Some(lib));
+        for l in [Layout::from_json(&old.to_json()).unwrap(), Layout::from_json_migrating(&old.to_json()).unwrap()] {
+            assert_eq!(group_of(&l, Pane::Assistant), group_of(&l, Pane::Inspector), "moved on load");
+            assert!(in_front(&l, Pane::Inspector));
+        }
+        // shown somewhere on purpose: left alone
+        let mut mine = Layout::default_layout();
+        mine.add_to(Pane::Assistant, lib);
+        let back = Layout::from_json(&mine.to_json()).unwrap();
+        assert_eq!(group_of(&back, Pane::Assistant), Some(lib));
+    }
+
     /// Moving a pane keeps the slice of its parent it had (not the even split a fresh container hands
     /// out), and the move is undoable / redoable on the layout's own stack.
     #[test]
     fn move_keeps_its_share_and_is_undoable() {
         let mut l = Layout::default_layout();
-        let inspector = l.tree.tiles.find_pane(&Pane::Inspector).unwrap();
+        // ws:assistant-pane: the Inspector's tab group (it shares it with the hidden Assistant) is the tile
+        let group = |l: &Layout| l.tree.tiles.parent_of(l.tree.tiles.find_pane(&Pane::Inspector).unwrap()).unwrap();
+        let inspector = group(&l);
         let row = l.tree.tiles.parent_of(inspector).unwrap();
         let was = share_fraction(&l.tree, inspector).unwrap();
         assert!((was - 0.28).abs() < 1e-4, "the Inspector owns 28 % of the top row, got {was}");
@@ -1679,9 +1794,9 @@ mod tests {
 
         l.push_undo(snapshot);
         assert!(l.undo(), "the move undoes");
-        assert_eq!(l.tree.tiles.parent_of(l.tree.tiles.find_pane(&Pane::Inspector).unwrap()), Some(row));
+        assert_eq!(l.tree.tiles.parent_of(group(&l)), Some(row));
         assert!(l.redo(), "and redoes");
-        let inspector = l.tree.tiles.find_pane(&Pane::Inspector).unwrap();
+        let inspector = group(&l);
         assert_eq!(l.tree.tiles.parent_of(inspector), Some(root));
         assert!((share_fraction(&l.tree, inspector).unwrap() - was).abs() < 1e-4, "the fraction survives the trip");
         assert!(!l.redo(), "nothing left to redo");

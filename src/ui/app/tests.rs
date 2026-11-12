@@ -79,6 +79,7 @@ fn asset(path: &str) -> Asset {
         parent: None,
         range: None,
         effects: Vec::new(),
+        html: None,
     }
 }
 

@@ -1,0 +1,63 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Sale Badge</title>
+<meta name="se:kind" content="layer">
+<meta name="se:desc" content="A starburst discount seal spins in with a pop and a shine that keeps sweeping across it.">
+<meta name="se:tags" content="sale, badge, discount, offer, starburst, price">
+<meta name="se:size" content="480x480">
+<meta name="se:duration" content="4s">
+<meta name="se:thumb" content="1.4">
+<meta name="se:field" content="big | text | 50%">
+<meta name="se:field" content="small | text | OFF">
+<meta name="se:field" content="accent | color | #ff3b30">
+<style>
+  :root { --accent: {{accent}}; }
+  html, body { margin: 0; background: transparent; overflow: hidden; }
+  body { position: relative; width: 100vw; height: 100vh; font-family: "Arial Black", "Segoe UI", Arial, sans-serif; }
+
+  .badge { position: absolute; inset: 0; filter: drop-shadow(0 12px 16px rgba(0, 0, 0, .4));
+    animation: spin 1.1s cubic-bezier(.2, 1.1, .3, 1) both; }
+  svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .shine { transform-box: fill-box; animation: sweep 2.4s ease-in-out 1.2s infinite both; }
+
+  .txt { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    color: #fff; text-align: center; text-shadow: 0 4px 0 rgba(0, 0, 0, .28), 0 8px 14px rgba(0, 0, 0, .25);
+    animation: txt .5s cubic-bezier(.2, 1.6, .4, 1) .7s both; }
+  .big { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 6px;
+    font-size: 128px; line-height: 1; letter-spacing: -3px; }
+  .small { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    margin-top: 2px; font-size: 56px; line-height: 1.1; letter-spacing: 6px; text-indent: 6px; }
+
+  @keyframes spin { from { transform: rotate(-540deg) scale(0); opacity: 0; } 25% { opacity: 1; } to { transform: none; opacity: 1; } }
+  @keyframes txt { from { transform: scale(.4); opacity: 0; } to { transform: none; opacity: 1; } }
+  @keyframes sweep { 0% { transform: translateX(-260px); } 45%, 100% { transform: translateX(560px); } }
+</style>
+</head>
+<body>
+<div class="badge">
+  <svg viewBox="0 0 480 480">
+    <defs>
+      <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#fff" stop-opacity=".28"/>
+        <stop offset=".5" stop-color="#fff" stop-opacity="0"/>
+        <stop offset="1" stop-color="#000" stop-opacity=".22"/>
+      </linearGradient>
+      <linearGradient id="s" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0" stop-color="#fff" stop-opacity="0"/>
+        <stop offset=".5" stop-color="#fff" stop-opacity=".6"/>
+        <stop offset="1" stop-color="#fff" stop-opacity="0"/>
+      </linearGradient>
+      <clipPath id="c"><polygon id="p" points="240.0,18.0 274.4,45.0 315.9,31.4 339.0,68.5 382.7,69.9 391.7,112.7 432.3,129.0 426.1,172.3 458.6,201.5 438.0,240.0 458.6,278.5 426.1,307.7 432.3,351.0 391.7,367.3 382.7,410.1 339.0,411.5 315.9,448.6 274.4,435.0 240.0,462.0 205.6,435.0 164.1,448.6 141.0,411.5 97.3,410.1 88.3,367.3 47.7,351.0 53.9,307.7 21.4,278.5 42.0,240.0 21.4,201.5 53.9,172.3 47.7,129.0 88.3,112.7 97.3,69.9 141.0,68.5 164.1,31.4 205.6,45.0"/></clipPath>
+    </defs>
+    <polygon points="240.0,18.0 274.4,45.0 315.9,31.4 339.0,68.5 382.7,69.9 391.7,112.7 432.3,129.0 426.1,172.3 458.6,201.5 438.0,240.0 458.6,278.5 426.1,307.7 432.3,351.0 391.7,367.3 382.7,410.1 339.0,411.5 315.9,448.6 274.4,435.0 240.0,462.0 205.6,435.0 164.1,448.6 141.0,411.5 97.3,410.1 88.3,367.3 47.7,351.0 53.9,307.7 21.4,278.5 42.0,240.0 21.4,201.5 53.9,172.3 47.7,129.0 88.3,112.7 97.3,69.9 141.0,68.5 164.1,31.4 205.6,45.0"
+      fill="var(--accent)" stroke="#fff" stroke-width="8" stroke-linejoin="round"/>
+    <polygon points="240.0,18.0 274.4,45.0 315.9,31.4 339.0,68.5 382.7,69.9 391.7,112.7 432.3,129.0 426.1,172.3 458.6,201.5 438.0,240.0 458.6,278.5 426.1,307.7 432.3,351.0 391.7,367.3 382.7,410.1 339.0,411.5 315.9,448.6 274.4,435.0 240.0,462.0 205.6,435.0 164.1,448.6 141.0,411.5 97.3,410.1 88.3,367.3 47.7,351.0 53.9,307.7 21.4,278.5 42.0,240.0 21.4,201.5 53.9,172.3 47.7,129.0 88.3,112.7 97.3,69.9 141.0,68.5 164.1,31.4 205.6,45.0" fill="url(#g)"/>
+    <circle cx="240" cy="240" r="168" fill="none" stroke="#fff" stroke-opacity=".85" stroke-width="4" stroke-dasharray="3 11" stroke-linecap="round"/>
+    <g clip-path="url(#c)"><rect class="shine" x="0" y="-40" width="110" height="560" fill="url(#s)" transform="skewX(-20)"/></g>
+  </svg>
+  <div class="txt"><div class="big">{{big}}</div><div class="small">{{small}}</div></div>
+</div>
+</body>
+</html>

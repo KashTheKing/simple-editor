@@ -1466,6 +1466,7 @@ mod tests {
             parent: None,
             range: None,
             effects: fx,
+            html: None,
         }
     }
 

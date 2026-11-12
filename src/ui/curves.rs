@@ -223,7 +223,7 @@ pub(crate) fn prop_label(c: &Clip, i: usize) -> String {
     for e in &c.effects {
         if i < e.params.len() {
             let p = e.specs().get(i).map(|s| s.name).unwrap_or("?");
-            return format!("{}: {}", e.kind.name(), p);
+            return format!("{}: {}", e.name(), p);
         }
         i -= e.params.len();
     }

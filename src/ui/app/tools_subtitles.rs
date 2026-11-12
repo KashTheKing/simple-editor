@@ -105,15 +105,34 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                 }
                 Ok(json!({"ok": true}))
             }
+            // ---- ws:mcp-context ---- (+ note/icon/done/author, `open` = only not-done ones with a note)
             "markers.list" => {
-                let list: Vec<Value> = app
-                    .project
-                    .markers_in_timeline()
-                    .into_iter()
-                    .map(|(id, t, dur, name, label)| json!({"id": id, "t": t, "duration": dur, "name": name,
-                                                            "label": label, "label_name": app.project.label_name(label)}))
-                    .collect();
-                Ok(json!(list))
+                let p = &app.project;
+                let open_only = arg_bool(args, "open").unwrap_or(false);
+                let row = |m: &crate::model::Marker, offset: f64, clip: Option<Id>| -> Value {
+                    json!({"id": m.id, "t": offset + m.t, "duration": m.duration, "name": m.name,
+                           "note": m.note, "icon": m.icon, "done": m.done, "author": m.author,
+                           "label": m.label, "label_name": p.label_name(m.label), "clip_id": clip})
+                };
+                let mut list: Vec<(f64, Value)> = p.markers.iter().map(|m| (m.t, row(m, 0.0, None))).collect();
+                for (_, c) in p.all_clips() {
+                    list.extend(c.markers.iter().map(|m| (c.start + m.t, row(m, c.start, Some(c.id)))));
+                }
+                list.retain(|(_, v)| !open_only || (v["done"] == false && v["note"] != ""));
+                list.sort_by(|a, b| a.0.total_cmp(&b.0));
+                Ok(json!(list.into_iter().map(|(_, v)| v).collect::<Vec<_>>()))
+            }
+            "markers.set" => {
+                let id = req(arg_u64(args, "id"), "id")?;
+                if let Some(t) = arg_f64(args, "t") {
+                    // timeline seconds; a clip marker's own time is clip-local, so only these move
+                    let m = app.project.markers.iter_mut().find(|m| m.id == id).ok_or("t only moves timeline markers")?;
+                    m.t = t.max(0.0);
+                }
+                let m = app.project.marker_mut(id).ok_or("no such marker")?;
+                apply_marker_patch(m, args);
+                app.project.sort_markers();
+                Ok(json!({"ok": true, "id": id}))
             }
             "markers.add" => {
                 let t = req(arg_f64(args, "t"), "t")?;
@@ -135,7 +154,12 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                     if let Some(d) = arg_f64(args, "duration") {
                         m.duration = d.max(0.0);
                     }
+                    // ---- ws:mcp-context ----
+                    if let Some(a) = arg_str(args, "author") {
+                        m.author = a.to_string();
+                    }
                 }
+                app.fire_markers_added(&[id]);
                 Ok(json!({"ok": true, "id": id}))
             }
             "markers.remove" => {
@@ -187,6 +211,33 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
     Some(run(app, name, args))
 }
 
+// ---- ws:mcp-context ----
+/// `markers.set`'s field edits (everything but `t`, which needs the timeline/clip distinction): only the
+/// keys present in `args` change. Split out so a test can run it on a bare `Marker`.
+pub(super) fn apply_marker_patch(m: &mut crate::model::Marker, args: &Value) {
+    if let Some(s) = arg_str(args, "name") {
+        m.name = s.to_string();
+    }
+    if let Some(s) = arg_str(args, "note") {
+        m.note = s.to_string();
+    }
+    if let Some(s) = arg_str(args, "icon") {
+        m.icon = s.to_string();
+    }
+    if let Some(s) = arg_str(args, "author") {
+        m.author = s.to_string();
+    }
+    if let Some(d) = arg_bool(args, "done") {
+        m.done = d;
+    }
+    if let Some(d) = arg_f64(args, "duration") {
+        m.duration = d.max(0.0);
+    }
+    if let Some(l) = arg_u64(args, "label") {
+        m.label = l.min(255) as u8;
+    }
+}
+
 // ---- ws:registries-schema-hooks ----
 use crate::mcp::tools::{ToolDef, ToolKind, ToolOutcome};
 
@@ -232,7 +283,15 @@ pub const TOOLS: &[ToolDef] = &[
         "Replace the project notes (append=true to append a paragraph).",
         &["text:string:true:", "append:boolean:false:"]
     ),
-    row!("markers.list", ToolKind::Read, "Every marker in timeline time (project markers + clip markers).", &[]),
+    // ---- ws:mcp-context ---- (markers.list: note/icon/done/author/clip_id + `open`; markers.add: author;
+    // markers.set is new)
+    row!(
+        "markers.list",
+        ToolKind::Read,
+        "Every marker in timeline time (project markers + clip markers) with name, note, icon, done, author \
+         (\"\" = the user). Markers with notes are the user's review comments.",
+        &["open:boolean:false:only open comments (not done, with a note)"]
+    ),
     row!(
         "markers.add",
         ToolKind::Mutate,
@@ -243,7 +302,24 @@ pub const TOOLS: &[ToolDef] = &[
             "note:string:false:",
             "label:integer:false:",
             "duration:number:false:range markers",
-            "clip_id:integer:false:"
+            "clip_id:integer:false:",
+            "author:string:false:your name, so the user sees who left it"
+        ]
+    ),
+    row!(
+        "markers.set",
+        ToolKind::Mutate,
+        "Edit a marker: only the fields given change (done=true ticks a comment off).",
+        &[
+            "id:integer:true:",
+            "t:number:false:timeline seconds (timeline markers only)",
+            "duration:number:false:",
+            "name:string:false:",
+            "note:string:false:",
+            "icon:string:false:glyph name",
+            "label:integer:false:",
+            "done:boolean:false:",
+            "author:string:false:"
         ]
     ),
     row!("markers.remove", ToolKind::Mutate, "Remove a marker by id.", &["id:integer:true:"]),

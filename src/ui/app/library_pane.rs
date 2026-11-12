@@ -80,8 +80,15 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, browser: bool) {
         // decoders hold the proxy files open on Windows: release them before deleting
         app.player.set_proxies(std::collections::HashMap::new());
         app.player.release_files();
+        if let Some(s) = app.source.as_mut() {
+            s.player.set_proxies(std::collections::HashMap::new());
+            s.player.release_files();
+        }
         for src in resp.regen_proxy {
-            let _ = std::fs::remove_file(crate::media::proxy::proxy_path(&src, app.settings.proxy_height));
+            // ws:html-layer: an alpha source lower than the proxy height has its proxy at its own height
+            let h = app.settings.proxy_height;
+            let h = app.project.assets.iter().find(|a| a.path == src).map_or(h, |a| crate::media::proxy::height_for(a, h));
+            let _ = std::fs::remove_file(crate::media::proxy::proxy_path(&src, h));
         }
         app.proxy_map.clear();
         crate::media::proxy::set_ready(Vec::new()); // regen: nothing is proxied right now

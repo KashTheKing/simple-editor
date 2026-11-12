@@ -35,6 +35,64 @@ pub enum ToolKind {
 pub enum ToolOutcome {
     Done(Value),
     Job(std::sync::Arc<crate::engine::export::Progress>, std::path::PathBuf),
+    // ---- ws:mcp-context ----
+    /// A PNG (base64) plus its JSON metadata: MCP clients get an image content block, Luau / palette
+    /// callers get `image_json` (the metadata plus a `data_url`, the shape `render.frame` always had).
+    Image { png_b64: String, meta: Value },
+    /// A long poll (`assistant.wait`): `App::handle_tool` parks the reply and `tools_context::tick`
+    /// answers it before this deadline. Only reachable from MCP (`ToolKind::Job` rows).
+    Wait(std::time::Instant),
+}
+
+// ---- ws:assistant-pane ----
+/// Tools an agent may only call after the user clicks Allow (they leave the project) - the Assistant
+/// guard (`ui::app::assistant_ctl::guard`) holds them, so `call_tool` waits `HELD_WAIT` for them.
+/// `ui.action` counts when its `id` is one of `LEAVING_ACTIONS`.
+pub fn leaves_project(tool: &str, args: &Value) -> bool {
+    tool.starts_with("export.") // export.video / export.quick / export.edl / export.xml / …
+        || matches!(
+            tool,
+            "project.open"
+                | "project.new"
+                | "settings.set"
+                | "scripts.run"
+                | "tasks.run"
+                | "media.convert"
+                | "media.batch_convert"
+                // ws:skills: a skill is instructions for the assistant - writing or removing one is held
+                | "skills.save"
+                | "skills.delete"
+        )
+        || (tool == "ui.action" && args.get("id").and_then(Value::as_str).is_some_and(|id| LEAVING_ACTIONS.contains(&id)))
+}
+
+/// `Action` ids (`hotkeys.rs`) that leave the project: replace it, write files, or open Settings.
+const LEAVING_ACTIONS: &[&str] = &[
+    "new_project",
+    "open",
+    "open_project",
+    "save", // may overwrite the opened video
+    "save_project_as",
+    "export",
+    "export_lossless",
+    "export_xml",
+    "export_edl",
+    "quick_export",
+    "export_frame",
+    "export_markers",
+    "export_transcript",
+    "import_timeline",
+    "relink_media",
+    "settings",
+];
+
+// ---- ws:mcp-context ----
+/// The pre-image-content JSON shape of an image result: `meta` plus `data_url`.
+pub fn image_json(png_b64: &str, mut meta: Value) -> Value {
+    if let Some(o) = meta.as_object_mut() {
+        o.insert("data_url".into(), Value::String(format!("data:image/png;base64,{png_b64}")));
+    }
+    meta
 }
 
 /// One MCP tool: name/description/argument docs (unchanged shape from the old tuple) plus the kind

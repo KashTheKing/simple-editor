@@ -317,6 +317,46 @@ actions! {
     // ---- ws:inspector-surface ----
     // ---- ws:side-panels ----
     // ---- ws:keys-actions ----
+    // ---- ws:perf-baseline ----
+    // Unbound by design (Playback menu / palette), like ToggleOverview.
+    ToggleHud => "toggle_hud", "Performance HUD", None;
+    // ---- ws:pro-schema ----
+    // Unbound by design (Window menu / palette), like ToggleJobs/ToggleScopes.
+    ToggleAssistant => "assistant", "Assistant", None;
+    // ---- ws:play-decode-path ----
+    // ---- ws:play-render-thread ----
+    // ---- ws:play-source-monitor ----
+    // ---- ws:export-audio-tracks ----
+    // ---- ws:export-encoders ----
+    // ---- ws:export-pipeline ----
+    // ---- ws:interchange ----
+    ExportEdl => "export_edl", "Export Avid EDL…", None;
+    // ---- ws:assistant-pane ----
+    // Pin the selection (clips, else transcript words, a marker, else In/Out) to the Assistant's next
+    // message, and switch to its Chat. Unbound by design (right-click menus / palette).
+    AssistantAddSelection => "assistant_add_selection", "Add to Assistant", None;
+    // The timeline toolbar's toggle: the composer shows live chips for the selection / In-Out / playhead.
+    ToggleAssistantFollow => "assistant_follow", "Assistant Follows the Selection", None;
+    // ---- ws:mcp-context ----
+    // A marker over In/Out (else the selected clips, else the playhead) with its note focused - a
+    // review comment an agent can read (markers.list) and tick off (markers.set). Unbound by design.
+    AddComment => "add_comment", "Add Comment", None;
+    // ---- ws:transcribe-islands ----
+    // ---- ws:voice-input ----
+    // Hold to dictate into the Assistant prompt (a tap / the palette toggles). Unbound by design.
+    PushToTalk => "push_to_talk", "Push to Talk", None;
+    // ---- ws:docs-release ----
+    // ---- ws:html-layer ----
+    // HTML + CSS layers (Add menu / palette; the clip menu and a double-click edit them). Unbound by design.
+    AddHtmlLayer => "add_html_layer", "Add HTML Layer", None;
+    AddHtmlScene => "add_html_scene", "Add HTML Scene", None;
+    ImportHtml => "import_html", "Import HTML File…", None;
+    SnapshotWeb => "snapshot_web", "Web Page Snapshot…", None;
+    EditHtml => "edit_html", "Edit HTML…", None;
+    SaveHtmlToLibrary => "save_html_to_library", "Save to Library", None;
+    // ---- ws:shader-library ----
+    // ---- ws:skills ----
+    // ---- ws:online-library ----
     // ---- tool selection (ui::tools) - polled and dispatched there, not through App::act ----
     ToolSelect => "tool_select", "Select Tool", sc(NONE, Key::V);
     ToolText => "tool_text", "Text Tool", sc(NONE, Key::T);
@@ -585,7 +625,7 @@ pub fn group(a: Action) -> &'static str {
         Workspace1 | Workspace2 | Workspace3 | Workspace4 | Workspace5 | Workspace6 | MaximizePane | TogglePin
         | ToggleLayoutMode | ToggleLibrary | ToggleInspector | ToggleEffects | ToggleTransitions | ToggleCurves
         | ToggleSubtitles | TogglePlanner | ToggleMarkers | ToggleNodes | ToggleMixer | ToggleTools | ToggleSource
-        | ToggleJobs | ToggleScopes => "Panels & Pages",
+        | ToggleJobs | ToggleAssistant | ToggleScopes => "Panels & Pages",
         RelinkMedia | ConsolidateMedia | NewSubclip => "Media",
         ToolSelect | ToolText | ToolDraw | ToolMask | ToolMarker | ToolCut | ToolStretch | ToolSpacer => "Tools",
         ToolTrackForward | ToolTrackBackward | ToolRipple | ToolRolling | ToolSlip | ToolSlide | ToolPen | ToolHand
@@ -598,6 +638,31 @@ pub fn group(a: Action) -> &'static str {
         // ---- ws:inspector-surface ----
         // ---- ws:side-panels ----
         // ---- ws:keys-actions ----
+        // ---- ws:perf-baseline ----
+        ToggleHud => "Playback",
+        // ---- ws:pro-schema ----
+        // ---- ws:play-decode-path ----
+        // ---- ws:play-render-thread ----
+        // ---- ws:play-source-monitor ----
+        // ---- ws:export-audio-tracks ----
+        // ---- ws:export-encoders ----
+        // ---- ws:export-pipeline ----
+        // ---- ws:interchange ----
+        ExportEdl => "File",
+        // ---- ws:assistant-pane ----
+        AssistantAddSelection => "Panels & Pages",
+        ToggleAssistantFollow => "Panels & Pages",
+        // ---- ws:mcp-context ----
+        AddComment => "Marking",
+        // ---- ws:transcribe-islands ----
+        // ---- ws:voice-input ----
+        PushToTalk => "Panels & Pages",
+        // ---- ws:docs-release ----
+        // ---- ws:html-layer ----
+        AddHtmlLayer | AddHtmlScene | ImportHtml | SnapshotWeb | EditHtml | SaveHtmlToLibrary => "Add",
+        // ---- ws:shader-library ----
+        // ---- ws:skills ----
+        // ---- ws:online-library ----
         // unreachable today (every variant has an arm above); a new variant compiles into "Other" and
         // `group_covers_every_action` names it.
         #[allow(unreachable_patterns)]

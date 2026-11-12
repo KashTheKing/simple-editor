@@ -68,6 +68,7 @@ pub(super) fn progress_jobs(app: &App) -> Vec<ProgJob> {
         v.push((JobKind::Download, format!("Download · {}", d.url), d.progress.clone()));
     }
     v.extend(app.transcript.jobs());
+    v.extend(app.html.jobs()); // ws:html-layer: HTML layer renders
     if let Some((c, out)) = &app.screen_rec {
         v.push((JobKind::ScreenRec, format!("Recording screen · {}", file_name(out)), c.progress()));
     }

@@ -1,0 +1,68 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Poll Bars</title>
+<meta name="se:kind" content="layer">
+<meta name="se:desc" content="A poll card with a question and three options whose bars grow while the percentages count up.">
+<meta name="se:tags" content="poll, vote, results, bars, survey, percentage, chart">
+<meta name="se:size" content="900x520">
+<meta name="se:duration" content="5s">
+<meta name="se:field" content="question | text | What should we build next?">
+<meta name="se:field" content="option1 | text | Video templates">
+<meta name="se:field" content="option2 | text | Sound packs">
+<meta name="se:field" content="option3 | text | Colour grades">
+<meta name="se:field" content="pct1 | number | 52 | 0 | 100">
+<meta name="se:field" content="pct2 | number | 31 | 0 | 100">
+<meta name="se:field" content="pct3 | number | 17 | 0 | 100">
+<meta name="se:field" content="accent | color | #8b5cf6">
+<style>
+  :root { --accent: {{accent}}; }
+  @property --n1 { syntax: "<integer>"; inherits: false; initial-value: 0; }
+  @property --n2 { syntax: "<integer>"; inherits: false; initial-value: 0; }
+  @property --n3 { syntax: "<integer>"; inherits: false; initial-value: 0; }
+  html, body { margin: 0; background: transparent; overflow: hidden; }
+  body { width: 100vw; height: 100vh; display: grid; place-items: center;
+    font-family: "Segoe UI", Arial, sans-serif; }
+
+  .card { box-sizing: border-box; width: 820px; padding: 34px 40px 38px; border-radius: 30px;
+    background: rgba(20, 22, 29, .95); color: #fff; border: 1px solid rgba(255, 255, 255, .12);
+    box-shadow: 0 20px 48px rgba(0, 0, 0, .42), 0 3px 8px rgba(0, 0, 0, .3);
+    animation: in .6s cubic-bezier(.2, 1.25, .35, 1) both; }
+  .q { font-size: 40px; font-weight: 700; line-height: 1.2; overflow: hidden; margin-bottom: 26px;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; animation: fade .5s ease-out .3s both; }
+  .opt { margin-top: 22px; animation: fade .45s ease-out var(--d) both; }
+  .top { display: flex; justify-content: space-between; align-items: baseline; gap: 20px; }
+  .name { min-width: 0; font-size: 28px; font-weight: 600; color: rgba(255, 255, 255, .92); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pct { flex: none; font-size: 30px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .pct::before { content: counter(n) "%"; }
+  .track { height: 22px; margin-top: 8px; border-radius: 11px; background: rgba(255, 255, 255, .12); overflow: hidden; }
+  .bar { height: 100%; width: 0; border-radius: 11px; background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 75%, #fff), var(--accent)); }
+
+  .o1 { --d: .6s; } .o2 { --d: .75s; } .o3 { --d: .9s; }
+  .o1 .bar { animation: g1 1.6s cubic-bezier(.2, .8, .2, 1) 1s both; }
+  .o2 .bar { animation: g2 1.6s cubic-bezier(.2, .8, .2, 1) 1.15s both; }
+  .o3 .bar { animation: g3 1.6s cubic-bezier(.2, .8, .2, 1) 1.3s both; }
+  .o1 .pct { counter-reset: n var(--n1); animation: c1 1.6s cubic-bezier(.2, .8, .2, 1) 1s both; }
+  .o2 .pct { counter-reset: n var(--n2); animation: c2 1.6s cubic-bezier(.2, .8, .2, 1) 1.15s both; }
+  .o3 .pct { counter-reset: n var(--n3); animation: c3 1.6s cubic-bezier(.2, .8, .2, 1) 1.3s both; }
+
+  @keyframes in { from { transform: translateY(50px) scale(.95); opacity: 0; } 60% { opacity: 1; } to { transform: none; } }
+  @keyframes fade { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+  @keyframes g1 { from { width: 0; } to { width: calc({{pct1}} * 1%); } }
+  @keyframes g2 { from { width: 0; } to { width: calc({{pct2}} * 1%); } }
+  @keyframes g3 { from { width: 0; } to { width: calc({{pct3}} * 1%); } }
+  @keyframes c1 { from { --n1: 0; } to { --n1: {{pct1}}; } }
+  @keyframes c2 { from { --n2: 0; } to { --n2: {{pct2}}; } }
+  @keyframes c3 { from { --n3: 0; } to { --n3: {{pct3}}; } }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="q">{{question}}</div>
+  <div class="opt o1"><div class="top"><span class="name">{{option1}}</span><span class="pct"></span></div><div class="track"><div class="bar"></div></div></div>
+  <div class="opt o2"><div class="top"><span class="name">{{option2}}</span><span class="pct"></span></div><div class="track"><div class="bar"></div></div></div>
+  <div class="opt o3"><div class="top"><span class="name">{{option3}}</span><span class="pct"></span></div><div class="track"><div class="bar"></div></div></div>
+</div>
+</body>
+</html>

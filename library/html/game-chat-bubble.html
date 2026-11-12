@@ -1,0 +1,54 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Game Chat Bubble</title>
+<meta name="se:kind" content="layer">
+<meta name="se:desc" content="A blocky game-style chat bubble with a tail that bounces in over a character's head, with an optional username tag.">
+<meta name="se:tags" content="chat, bubble, speech, game, block game, gaming, text">
+<meta name="se:size" content="640x320">
+<meta name="se:duration" content="4s">
+<meta name="se:thumb" content="1.2">
+<meta name="se:field" content="username | text | builder_kid42">
+<meta name="se:field" content="message | text | wait... did anyone else see that?!">
+<meta name="se:field" content="bubble | color | #ffffff">
+<style>
+  :root { --bubble: {{bubble}}; }
+  html, body { margin: 0; background: transparent; overflow: hidden; }
+  body { width: 100vw; height: 100vh; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; font-family: "Segoe UI", Arial, sans-serif; }
+
+  .float { display: flex; flex-direction: column; align-items: center;
+    animation: bob 2.4s ease-in-out 1.2s infinite alternate both; }
+  .user { margin-bottom: 8px; max-width: 400px; padding: 4px 16px; border-radius: 8px;
+    background: rgba(0, 0, 0, .55); color: #fff; font-size: 22px; font-weight: 700;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, .6);
+    animation: userIn .4s cubic-bezier(.2, 1.4, .4, 1) .3s both; }
+  .user:empty { display: none; }
+  .bubble { position: relative; max-width: 520px; min-width: 120px; box-sizing: border-box;
+    padding: 16px 24px; border-radius: 20px; background: var(--bubble);
+    box-shadow: 0 6px 0 rgba(0, 0, 0, .18), 0 12px 28px rgba(0, 0, 0, .35);
+    transform-origin: 50% 100%;
+    animation: pop .6s ease-out both; }
+  .bubble::after { content: ""; position: absolute; left: 50%; bottom: -21px; margin-left: -22px;
+    border: 22px solid transparent; border-bottom: 0; border-top-color: var(--bubble); }
+  .msg { color: #1b1b1f; font-size: 32px; font-weight: 700; line-height: 1.25; text-align: center; text-wrap: balance;
+    overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3;
+    overflow: hidden; animation: msgIn .25s ease-out .14s both; }
+
+  @keyframes pop { 0% { transform: translateY(40px) scale(0); } 45% { transform: translateY(0) scale(1.1, 1.06); }
+    70% { transform: translateY(0) scale(.96, .98); } 88% { transform: translateY(0) scale(1.02); }
+    100% { transform: translateY(0) scale(1); } }
+  @keyframes msgIn { from { opacity: 0; } }
+  @keyframes userIn { from { opacity: 0; transform: translateY(12px) scale(.8); } }
+  @keyframes bob { from { transform: translateY(0); } to { transform: translateY(-8px); } }
+</style>
+</head>
+<body>
+<div class="float">
+  <div class="user">{{username}}</div>
+  <div class="bubble"><div class="msg">{{message}}</div></div>
+</div>
+</body>
+</html>

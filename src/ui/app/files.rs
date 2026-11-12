@@ -29,6 +29,7 @@ impl App {
                     self.toast(format!("Missing media: {m}"));
                 }
                 self.check_lock_file(path);
+                crate::engine::lut::set_project(Some(path)); // ws:online-library: LUTs copied beside it
                 self.set_project(project, Some(path.to_path_buf()));
                 self.settings.touch_recent_project(&path.to_string_lossy());
                 self.settings.save();
@@ -153,6 +154,13 @@ impl App {
         match self.project.save(&path) {
             Ok(()) => {
                 self.dirty = false;
+                // ---- ws:online-library ---- library LUTs the project uses go beside it
+                crate::engine::lut::set_project(Some(&path));
+                if let Ok(v) = serde_json::to_value(&self.project) {
+                    if let Err(e) = crate::engine::lut::copy_beside_project(&v, &path) {
+                        self.toast(format!("Couldn't copy the project's LUTs: {e}"));
+                    }
+                }
                 self.settings.touch_recent_project(&path.to_string_lossy());
                 self.settings.save();
                 let _ = std::fs::remove_file(Self::lock_path(&path));
@@ -233,7 +241,7 @@ impl App {
             out_path,
             encoder: self.settings.encoder.clone(),
             crf: self.settings.crf,
-            preset: self.settings.preset.clone(),
+            preset: export::effective_preset(&self.settings.preset, &self.settings.export_speed),
             backend: self.backend(),
             out_size: None,
             scaler: self.settings.export_scaler.clone(),
@@ -243,12 +251,18 @@ impl App {
             range: None,
             loudnorm: self.settings.loudnorm,
             letterbox: false,
+            // ---- ws:pro-schema ----
+            // ws:export-audio-tracks
+            audio: export::AudioLayout::parse(&self.settings.export_audio),
+            stem_by: export::StemBy::parse(&self.settings.export_stem_by),
         }
     }
 
     pub(super) fn detect_encoders_once(&mut self) {
         if self.encoders.is_empty() && media::ffpipe::ffmpeg_exe().is_some() {
             self.encoders = export::detect_encoders();
+            // ws:export-encoders: background hardware probe (cached per ffmpeg path + mtime)
+            crate::engine::encoders::start();
         }
     }
 
@@ -302,7 +316,9 @@ impl App {
         let prog = if choice.lossless {
             export::start_lossless_cut(project, choice.opts.out_path.clone())
         } else {
-            export::start_export(project, choice.opts, self.text.clone())
+            // ws:export-pipeline: the same frame source every other export gets (GPU when it is on)
+            let opts = ExportOptions { frames: self.export_frames(), ..choice.opts };
+            export::start_export(project, opts, self.text.clone())
         };
         self.export = Some((prog.clone(), ExportKind::File { path }));
         // ---- ws:export-deliver ----
@@ -445,7 +461,13 @@ impl App {
         let prog = if lossless {
             export::start_lossless_cut(project, temp.clone())
         } else {
-            export::start_export(project, self.export_opts(temp.clone()), self.text.clone())
+            let mut opts = self.export_opts(temp.clone());
+            // ws:export-audio-tracks: stems would be named after the hidden temp file - an overwrite
+            // keeps "separate tracks in file" but writes no stem folder
+            if opts.audio == export::AudioLayout::Stems {
+                opts.audio = export::AudioLayout::Mix;
+            }
+            export::start_export(project, opts, self.text.clone())
         };
         self.export = Some((prog, ExportKind::Overwrite { original, temp }));
     }

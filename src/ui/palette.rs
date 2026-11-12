@@ -298,7 +298,7 @@ pub fn show(ctx: &egui::Context, state: &mut PaletteState, rows: &[Row]) -> Opti
             let r = ui.add(
                 egui::TextEdit::singleline(&mut state.query)
                     .id(id)
-                    .hint_text("Type a command…  (':' + a tool name for one that needs args)")
+                    .hint_text("Type a command…  (':' + a tool name for one that needs args, '>' + a request for the assistant)")
                     .desired_width(f32::INFINITY),
             );
             if first_frame {

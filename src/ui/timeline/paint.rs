@@ -259,6 +259,15 @@ pub(super) fn marker_hit(
     }
     let r = r.on_hover_ui(|ui| {
         ui.label(if m.name.is_empty() { "(unnamed marker)" } else { m.name.as_str() });
+        // ---- ws:mcp-context ---- comments: the note, who left it, whether it is dealt with
+        if !m.note.is_empty() {
+            ui.label(m.note.as_str());
+        }
+        if !m.author.is_empty() || m.done {
+            let who = if m.author.is_empty() { String::new() } else { format!("by {}", m.author) };
+            let done = if m.done { "done" } else { "" };
+            ui.weak([who.as_str(), done].iter().filter(|s| !s.is_empty()).copied().collect::<Vec<_>>().join(" · "));
+        }
     });
     menu::context(&r, |ui| {
         ui.horizontal(|ui| {
@@ -274,6 +283,8 @@ pub(super) fn marker_hit(
         if menu::row(ui, Some(Glyph::Cross), "Delete Marker", "").clicked() {
             *act = Some(Act::DelMarker(m.id));
         }
+        // ---- ws:assistant-pane ---- (the right-click already selected the marker)
+        crate::ui::assistant_ui::add_to_assistant_row(ui, crate::ui::assistant_data::Pin::Marker);
         menu::sub(ui, Some(Glyph::Swatch), "Label", |ui| {
             if menu::row(ui, None, "None", "").clicked() {
                 *act = Some(Act::MarkerLabel(m.id, 0));

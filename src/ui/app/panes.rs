@@ -117,7 +117,9 @@ impl App {
                     self.after_edit();
                 }
                 // ---- ws:inspector-gallery ----
-                self.alt_render.request(resp.hover.map(monitor::AltRequest::Transition));
+                // ws:shader-library: a library card previews its own source
+                let req = resp.hover_shader.map(monitor::AltRequest::ShaderTransition);
+                self.alt_render.request(req.or(resp.hover.map(monitor::AltRequest::Transition)));
             }
             Pane::Curves => {
                 let resp = {

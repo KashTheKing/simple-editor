@@ -1,0 +1,72 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Versus Card</title>
+<meta name="se:kind" content="layer">
+<meta name="se:desc" content="Two name plates slam in from either side of a diagonal split and a big VS punches in with a flash.">
+<meta name="se:tags" content="versus, vs, battle, matchup, split, intro, challenge">
+<meta name="se:size" content="1920x1080">
+<meta name="se:duration" content="5s">
+<meta name="se:thumb" content="2.2">
+<meta name="se:field" content="left | text | Team Red">
+<meta name="se:field" content="right | text | Team Blue">
+<meta name="se:field" content="colour_left | color | #e5322d">
+<meta name="se:field" content="colour_right | color | #2f6bff">
+<style>
+  :root { --l: {{colour_left}}; --r: {{colour_right}}; }
+  html, body { margin: 0; background: transparent; overflow: hidden; }
+  body { position: relative; width: 100vw; height: 100vh; font-family: "Arial Black", Impact, "Segoe UI", sans-serif; }
+
+  .panel { position: absolute; inset: 0; }
+  .pl { clip-path: polygon(0 0, 54.4% 0, 45.6% 100%, 0 100%);
+    background: linear-gradient(90deg, color-mix(in srgb, var(--l) 88%, transparent), color-mix(in srgb, var(--l) 45%, transparent));
+    animation: fromL .55s cubic-bezier(.2, .9, .2, 1) both; }
+  .pr { clip-path: polygon(54.4% 0, 100% 0, 100% 100%, 45.6% 100%);
+    background: linear-gradient(270deg, color-mix(in srgb, var(--r) 88%, transparent), color-mix(in srgb, var(--r) 45%, transparent));
+    animation: fromR .55s cubic-bezier(.2, .9, .2, 1) both; }
+  .gap { position: absolute; left: 50%; top: -10%; width: 14px; height: 120%; margin-left: -7px; background: #fff;
+    transform: skewX(-9deg); box-shadow: 0 0 40px rgba(255, 255, 255, .6); animation: line .5s ease-out .5s both; }
+
+  .plate { position: absolute; top: 50%; height: 190px; margin-top: -95px; width: 760px; display: flex; align-items: center;
+    background: #0d0f14; color: #fff; box-shadow: 0 20px 44px rgba(0, 0, 0, .5); }
+  .plate span { display: block; width: 100%; box-sizing: border-box; padding: 0 56px; font-size: 84px; line-height: 190px;
+    text-transform: uppercase; letter-spacing: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pL { left: 90px; clip-path: polygon(0 0, 100% 0, 92% 100%, 0 100%); border-left: 22px solid var(--l); text-align: left;
+    animation: slamL .5s cubic-bezier(.2, 1.2, .3, 1) .35s both; }
+  .pR { right: 90px; clip-path: polygon(8% 0, 100% 0, 100% 100%, 0 100%); border-right: 22px solid var(--r); text-align: right;
+    animation: slamR .5s cubic-bezier(.2, 1.2, .3, 1) .35s both; }
+  .pL span { padding-right: 90px; } .pR span { padding-left: 90px; }
+
+  .vs { position: absolute; left: 50%; top: 50%; width: 400px; height: 400px; margin: -200px 0 0 -200px; display: grid; place-items: center;
+    font: 400 260px/1 Impact, "Arial Black", sans-serif; color: #fff; font-style: italic; letter-spacing: 4px;
+    -webkit-text-stroke: 12px #0d0f14; paint-order: stroke fill;
+    text-shadow: 0 12px 0 rgba(0, 0, 0, .35), 0 0 50px rgba(255, 255, 255, .35);
+    animation: punch .5s cubic-bezier(.2, 1.7, .4, 1) 1s both, idle 1.6s ease-in-out 1.6s infinite; }
+  .flash { position: absolute; inset: 0; background: radial-gradient(circle at 50% 50%, #fff 0, rgba(255, 255, 255, .7) 14%, rgba(255, 255, 255, 0) 45%);
+    animation: flash .6s ease-out 1s both; }
+  .ring { position: absolute; left: 50%; top: 50%; width: 300px; height: 300px; margin: -150px 0 0 -150px; border-radius: 50%;
+    border: 10px solid #fff; animation: ring .7s ease-out 1s both; }
+
+  @keyframes fromL { from { transform: translateX(-100%); } to { transform: none; } }
+  @keyframes fromR { from { transform: translateX(100%); } to { transform: none; } }
+  @keyframes slamL { from { transform: translateX(-1100px); } to { transform: none; } }
+  @keyframes slamR { from { transform: translateX(1100px); } to { transform: none; } }
+  @keyframes line { from { transform: skewX(-9deg) scaleY(0); } to { transform: skewX(-9deg) scaleY(1); } }
+  @keyframes punch { 0% { transform: scale(3.2) rotate(-6deg); opacity: 0; } 40% { opacity: 1; } 100% { transform: scale(1) rotate(0); opacity: 1; } }
+  @keyframes idle { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.05); } }
+  @keyframes flash { 0% { opacity: 0; } 15% { opacity: 1; } 100% { opacity: 0; } }
+  @keyframes ring { from { transform: scale(.3); opacity: .9; } to { transform: scale(4); opacity: 0; } }
+</style>
+</head>
+<body>
+<div class="panel pl"></div>
+<div class="panel pr"></div>
+<div class="gap"></div>
+<div class="plate pL"><span>{{left}}</span></div>
+<div class="plate pR"><span>{{right}}</span></div>
+<div class="ring"></div>
+<div class="vs">VS</div>
+<div class="flash"></div>
+</body>
+</html>

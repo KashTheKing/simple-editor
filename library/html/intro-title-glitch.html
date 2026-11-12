@@ -1,0 +1,114 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Glitch Intro Title</title>
+<meta name="se:kind" content="scene">
+<meta name="se:desc" content="A dark tech intro: the title flickers on with an RGB-split glitch over scanlines, and the subtitle types out.">
+<meta name="se:tags" content="intro, title, glitch, tech, cyber, rgb split, scanlines, gaming">
+<meta name="se:size" content="1920x1080">
+<meta name="se:duration" content="5s">
+<meta name="se:thumb" content="2.4">
+<meta name="se:field" content="title | text | System Override">
+<meta name="se:field" content="subtitle | text | Season 2 begins now">
+<meta name="se:field" content="accent | color | #00e5ff">
+<style>
+  :root { --accent: {{accent}}; --hot: #ff2a6d; }
+  html, body { margin: 0; overflow: hidden; }
+  body { width: 100vw; height: 100vh; position: relative; background: #06070b;
+    font-family: Bahnschrift, "Segoe UI", Arial, sans-serif; color: #fff; }
+
+  .grid { position: absolute; inset: 0; opacity: .5;
+    background: linear-gradient(rgba(255, 255, 255, .035) 1px, transparent 1px) 0 0 / 64px 64px,
+      linear-gradient(90deg, rgba(255, 255, 255, .035) 1px, transparent 1px) 0 0 / 64px 64px;
+    -webkit-mask-image: radial-gradient(ellipse 70% 60% at 50% 50%, #000, transparent);
+    mask-image: radial-gradient(ellipse 70% 60% at 50% 50%, #000, transparent);
+    animation: fadeIn 1s ease-out both; }
+  .glow { position: absolute; left: 50%; top: 50%; width: 1400px; height: 600px; margin: -300px 0 0 -700px;
+    border-radius: 50%; background: var(--accent); opacity: .1; filter: blur(140px);
+    animation: fadeIn 1.5s ease-out .4s both; }
+
+  .center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  .t { position: relative; max-width: 1700px; font-size: 176px; font-weight: 700; line-height: 1.1;
+    letter-spacing: 8px; text-transform: uppercase; white-space: nowrap;
+    animation: flickerIn .8s steps(1) .3s both, jolt 3s steps(1) 1.1s infinite both; }
+  .t span, .t::before, .t::after { display: block; overflow: hidden; text-overflow: ellipsis; padding: 0 16px; }
+  .t span { text-shadow: 0 0 24px rgba(255, 255, 255, .25); }
+  .t::before, .t::after { content: attr(data-text); position: absolute; inset: 0; mix-blend-mode: screen; }
+  .t::before { color: var(--accent); animation: gA 3s steps(1) 1.1s infinite both; }
+  .t::after { color: var(--hot); animation: gB 3s steps(1) 1.1s infinite both; }
+
+  .sub { position: relative; margin-top: 40px; display: flex; align-items: center;
+    font-family: Consolas, "Courier New", monospace; font-size: 44px; color: var(--accent); }
+  .tw { display: grid; }
+  .tw > * { grid-area: 1 / 1; display: flex; align-items: center; gap: 4px; justify-self: start; }
+  .sizer { visibility: hidden; }
+  .sub b { font-weight: 400; opacity: .6; margin-right: 12px; }
+  .tw span { max-width: 48ch; white-space: nowrap; overflow: hidden; }
+  .typed span { animation: type 1.92s steps(48) 1.3s both; }
+  .caret { flex: none; width: 22px; height: 44px; background: var(--accent);
+    animation: blink .9s steps(1) infinite both; }
+  .rule { width: 0; height: 2px; margin-top: 32px; background: linear-gradient(90deg, transparent, var(--accent), transparent);
+    animation: rule .9s cubic-bezier(.6, 0, .2, 1) 1s both; }
+
+  .corner { position: absolute; width: 56px; height: 56px; border: 3px solid var(--accent); opacity: .7;
+    animation: cornerIn .6s cubic-bezier(.2, 1.2, .3, 1) .1s both; }
+  .c1 { left: 64px; top: 64px; border-right: 0; border-bottom: 0; }
+  .c2 { right: 64px; top: 64px; border-left: 0; border-bottom: 0; }
+  .c3 { left: 64px; bottom: 64px; border-right: 0; border-top: 0; }
+  .c4 { right: 64px; bottom: 64px; border-left: 0; border-top: 0; }
+  .hud { position: absolute; left: 136px; top: 70px; font: 18px Consolas, monospace; letter-spacing: 3px;
+    color: rgba(255, 255, 255, .45); animation: fadeIn .4s steps(3) .5s both; }
+  .hud.r { left: auto; right: 136px; top: auto; bottom: 70px; }
+
+  .scan { position: absolute; inset: 0; pointer-events: none;
+    background: repeating-linear-gradient(transparent 0 3px, rgba(0, 0, 0, .35) 3px 4px); }
+  .bar { position: absolute; left: 0; right: 0; top: 0; height: 160px;
+    background: linear-gradient(transparent, rgba(255, 255, 255, .05), transparent);
+    animation: sweep 3.5s linear infinite both; }
+  .vig { position: absolute; inset: 0; background: radial-gradient(ellipse 85% 80% at 50% 50%, transparent 55%, rgba(0, 0, 0, .75)); }
+
+  @keyframes fadeIn { from { opacity: 0; } }
+  @keyframes flickerIn { 0% { opacity: 0; } 10% { opacity: 1; } 18% { opacity: 0; } 30% { opacity: .8; }
+    36% { opacity: 0; } 48% { opacity: 1; } 56% { opacity: .3; } 64%, 100% { opacity: 1; } }
+  @keyframes jolt { 0% { transform: none; } 2% { transform: translateX(-6px) skewX(-6deg); } 4% { transform: translateX(4px); }
+    6%, 50% { transform: none; } 52% { transform: translateX(8px) skewX(4deg); } 54%, 100% { transform: none; } }
+  @keyframes gA { 0% { clip-path: inset(10% 0 62% 0); transform: translate(-12px, -2px); }
+    2% { clip-path: inset(56% 0 20% 0); transform: translate(10px, 2px); }
+    4% { clip-path: inset(30% 0 48% 0); transform: translate(-6px, 0); }
+    6% { clip-path: inset(80% 0 4% 0); transform: translate(14px, 0); }
+    8%, 50% { clip-path: inset(0 0 0 0); transform: translate(-3px, 0); }
+    52% { clip-path: inset(40% 0 35% 0); transform: translate(-16px, 0); }
+    54% { clip-path: inset(70% 0 8% 0); transform: translate(8px, 0); }
+    56%, 100% { clip-path: inset(0 0 0 0); transform: translate(-3px, 0); } }
+  @keyframes gB { 0% { clip-path: inset(64% 0 12% 0); transform: translate(12px, 2px); }
+    2% { clip-path: inset(14% 0 66% 0); transform: translate(-10px, -2px); }
+    4% { clip-path: inset(44% 0 30% 0); transform: translate(8px, 0); }
+    6% { clip-path: inset(2% 0 82% 0); transform: translate(-14px, 0); }
+    8%, 50% { clip-path: inset(0 0 0 0); transform: translate(3px, 0); }
+    52% { clip-path: inset(18% 0 60% 0); transform: translate(16px, 0); }
+    54% { clip-path: inset(6% 0 76% 0); transform: translate(-8px, 0); }
+    56%, 100% { clip-path: inset(0 0 0 0); transform: translate(3px, 0); } }
+  @keyframes type { from { max-width: 0ch; } to { max-width: 48ch; } }
+  @keyframes blink { 50% { opacity: 0; } }
+  @keyframes rule { to { width: 900px; } }
+  @keyframes cornerIn { from { opacity: 0; transform: scale(1.6); } }
+  @keyframes sweep { from { transform: translateY(-200px); } to { transform: translateY(1100px); } }
+</style>
+</head>
+<body>
+<div class="grid"></div>
+<div class="glow"></div>
+<div class="center">
+  <div class="t" data-text="{{title}}"><span>{{title}}</span></div>
+  <div class="rule"></div>
+  <div class="sub"><b>&gt;</b><div class="tw"><div class="sizer"><span>{{subtitle}}</span><i class="caret"></i></div><div class="typed"><span>{{subtitle}}</span><i class="caret"></i></div></div></div>
+</div>
+<div class="corner c1"></div><div class="corner c2"></div><div class="corner c3"></div><div class="corner c4"></div>
+<div class="hud">SIGNAL // LIVE</div>
+<div class="hud r">CH-07 · 1080P</div>
+<div class="bar"></div>
+<div class="scan"></div>
+<div class="vig"></div>
+</body>
+</html>

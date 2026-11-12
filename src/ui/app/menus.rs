@@ -30,7 +30,7 @@ fn acts_if(ui: &mut egui::Ui, on: bool, items: &[Option<Action>]) {
 }
 
 /// Window menu: the everyday panels first, then the niche ones under More ▸ (hidden, not deleted).
-const MAIN_PANES: [Pane; 15] = [
+const MAIN_PANES: [Pane; 16] = [
     Pane::Library,
     Pane::MediaBrowser,
     Pane::Effects,
@@ -46,6 +46,8 @@ const MAIN_PANES: [Pane; 15] = [
     Pane::Scopes,
     Pane::Export,
     Pane::Jobs,
+    // ---- ws:pro-schema ----
+    Pane::Assistant,
 ];
 const MORE_PANES: [Pane; 9] = [
     Pane::Grade,
@@ -77,12 +79,16 @@ pub(super) fn toggle_action(p: Pane) -> Option<Action> {
         Pane::Source => ToggleSource,
         Pane::Jobs => ToggleJobs,
         Pane::Scopes => ToggleScopes,
+        // ---- ws:pro-schema ----
+        Pane::Assistant => ToggleAssistant,
         _ => return None,
     })
 }
 
 /// Where Help ▸ Tutorial & docs goes (the Docusaurus site, wave 2 of plans/simplify).
 const DOCS_URL: &str = "https://kashtheking.com/simple-editor/guide/";
+/// Where Help ▸ Report a Bug… goes (`.github/ISSUE_TEMPLATE/`).
+const ISSUES_URL: &str = "https://github.com/KashTheKing/simple-editor/issues/new";
 
 impl App {
     /// (Re)load the editor background image texture when the path or blur setting changed.
@@ -152,7 +158,7 @@ impl App {
         });
         menu::sub(ui, Some(tools::Glyph::ExportArrow), "Export", |ui| {
             acts(ui, &[Some(ExportVideo)]);
-            acts_if(ui, has_clips, &[Some(QuickExport), Some(ExportFrame), Some(ExportXml), Some(ExportLossless)]);
+            acts_if(ui, has_clips, &[Some(QuickExport), Some(ExportFrame), Some(ExportXml), Some(ExportEdl), Some(ExportLossless)]);
             let can_overwrite = self.project.source_video.is_some() && has_clips;
             let r = ui.add_enabled_ui(can_overwrite, |ui| menu::row(ui, None, "Overwrite Original Video…", "")).inner;
             if r.on_disabled_hover_text("Only for a project opened from a single video").clicked() {
@@ -246,6 +252,7 @@ impl App {
             acts(ui, &[Some(AddText), Some(AddShape), Some(AddAdjustment)]);
             acts_if(ui, has_sel, &[Some(AddMask)]);
             acts(ui, &[Some(AddSubtitle), Some(AddContainer)]);
+            acts(ui, &[None, Some(AddHtmlLayer), Some(AddHtmlScene), Some(ImportHtml), Some(SnapshotWeb)]); // ws:html-layer
         });
         menu::sub(ui, Some(tools::Glyph::Transition), "Transition", |ui| {
             acts_if(ui, has_sel, &[Some(AddTransition), Some(AddLastTransition), Some(AddTransitionEnd)]);
@@ -273,7 +280,7 @@ impl App {
             acts(ui, &[TrimLeft1, TrimRight1, TrimLeft10, TrimRight10].map(Some));
             acts(ui, &[None, Some(ExtendEdit), Some(TrimTop), Some(TrimTail), None, Some(SlipLeft), Some(SlipRight)]);
         });
-        acts(ui, &[Some(AddMarker), None]);
+        acts(ui, &[Some(AddMarker), Some(AddComment), None]); // ws:mcp-context: AddComment
         menu::sub(ui, Some(tools::Glyph::Waveform), "Auto", |ui| {
             acts(ui, &[Some(Action::AutoCut)]);
             // scene detection lives in the Auto-cut panel, beside silence detection
@@ -320,6 +327,10 @@ impl App {
         }
         if menu::check(ui, self.settings.movie_mode, "Movie Mode (pre-render)", &menu::shortcut(MovieMode)).clicked() {
             out.push(MovieMode);
+        }
+        // ws:perf-baseline
+        if menu::check(ui, self.settings.hud, "Performance HUD", &menu::shortcut(ToggleHud)).clicked() {
+            out.push(ToggleHud);
         }
         menu::sub(ui, None, "Playback Resolution", |ui| {
             for q in crate::ui::preview::QUALITIES {
@@ -488,6 +499,11 @@ impl App {
         use Action::*;
         if menu::row(ui, None, "Tutorial & Docs", "").on_hover_text(DOCS_URL).clicked() {
             let _ = std::process::Command::new("explorer").arg(DOCS_URL).spawn();
+        }
+        // the issue form on GitHub, with the version filled in (`version` is that form's field id)
+        let report = format!("{ISSUES_URL}?template=bug_report.yml&version={}", env!("CARGO_PKG_VERSION"));
+        if menu::row(ui, None, "Report a Bug…", "").on_hover_text("Opens the GitHub issue form").clicked() {
+            let _ = std::process::Command::new("explorer").arg(report).spawn();
         }
         acts(ui, &[Some(CheatSheet), Some(CommandPalette), None, Some(WhatsNew), Some(ShowWelcome), None]);
         ui.weak(format!("Simple Editor {}", env!("CARGO_PKG_VERSION")));

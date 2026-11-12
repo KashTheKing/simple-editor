@@ -1,0 +1,139 @@
+---
+title: Work with the Assistant
+description: Let an AI agent write edits as scripts you queue and run, answer your timeline comments in the background, or chat with it about the project you have open.
+---
+
+The **Assistant** panel puts an AI agent next to your edit. It works through the same tools as the
+[MCP server](scripting.mdx#the-mcp-server-edit-together-with-an-ai), on the project you have open, and
+every request is one undo step. There are three ways to use it, and you never have to chat if you don't
+want to:
+
+- **Tasks**: describe a change, the assistant writes it as a script, you review it and run it.
+- **Handle my comments**: leave comments on the timeline and keep editing; the assistant works through
+  them in the background.
+- **Chat**: ask for something specific, with the clips, ranges and frames you attach.
+
+Open it with **Window ▸ Assistant** or from the command palette. It opens as a tab beside the
+**Inspector**, top right, on every page.
+
+## The header
+
+One row across the top:
+
+- **The conversation menu** (its title and ▾) lists this project's conversations, newest first; pick one
+  to go back to it, × deletes one. **+** starts a new chat. Conversations are kept per project (up to 50)
+  in `%APPDATA%\SimpleEditor\assistant`, with their tasks and the images you attached; an unsaved project
+  shares one "untitled" set. Going back to a conversation continues it where it left off.
+- **The agent picker** decides who answers (also in **Settings ▸ Assistant**):
+
+| Agent | What runs |
+|---|---|
+| **Claude Code** (default) | The `claude` command-line tool, limited to this editor's tools: no shell, no files. Install it first; Settings says whether `claude` was found. |
+| **Codex** | `codex exec`, pointed at this editor's MCP server. |
+| **Custom command** | Your own command line, for any agent that speaks MCP. `{prompt}`, `{mcp_url}` and `{model}` are filled in; "double quotes" group words; no shell runs it. |
+| **External agent** | Nothing is started. Requests wait for an agent you already connected over MCP, which picks them up with `assistant.wait`. Tasks and Handle my comments need one of the other agents. |
+
+- **The model picker**: for Claude Code, **Default**, `fable`, `opus`, `sonnet` or `haiku`, or **Other…**
+  to type any model name; for Codex and a custom command, a text field (empty = the agent's default).
+  Switching agents goes back to its default model.
+
+**API key** (Settings ▸ Assistant) is optional. Leave it empty to use the agent's own sign-in. A key you
+save is kept in Windows Credential Manager (as `SimpleEditor/assistant`), never in `settings.json`, and
+handed to the agent as `ANTHROPIC_API_KEY` (Claude Code), `OPENAI_API_KEY` (Codex) or the **Key
+variable** you name (custom command). Sending a request turns the MCP server on if it was off.
+
+## Tasks
+
+The **Tasks** tab is where the panel opens.
+
+1. Type what you want in **Describe a task…** ("cut every pause longer than a second in the selected
+   clips") and press <kbd>Enter</kbd> or **Add**.
+2. A card appears as **Writing…** while the assistant reads the project and writes a
+   [Luau script](scripting.mdx) for it. It doesn't change anything itself.
+3. When the card says **Ready**, click **Run**. **Run all** runs every Ready task from top to bottom.
+
+Each run is one undo step, named `Assistant task: <title>` in **History**. If a task fails, its card
+says **Failed** with the error, and **Run all** stops there so nothing after it runs on a half-done edit.
+
+On each card: **Edit** opens the script to read or change (**Save** makes it Ready again), **Save to
+Scripts** keeps it in the [Scripts menu](scripting.mdx) for reuse, **↑ / ↓** reorder the queue and **×**
+removes it. Tasks are saved with their conversation.
+
+### Handle my comments
+
+Tick **Handle my comments** on the Tasks tab, then leave comments on the timeline as you go (**Add
+Comment** in the command palette drops one over the In/Out range, else the selected clips, else the
+playhead). Once you stop typing a comment's note, it goes to the assistant, which works on it in the
+background and ticks the comment off when it is done. One comment is handled at a time; the tab shows how
+many are waiting. Each one is one undo step, and undoing it reopens the comment.
+
+## Chat
+
+The **Chat** tab is laid out like a chat app: your messages on the right, the assistant's answers on the
+left. The tools it called fold into one line under its answer (**3 actions**; click to see them). Under
+each finished answer, **Undo** takes back everything it did in one step, and **Copy** copies the answer.
+
+Type in the box at the bottom and press <kbd>Enter</kbd> (<kbd>Shift+Enter</kbd> for a new line), or
+click **Send**; while the assistant works, **Send** becomes **Stop** (what it did so far stays, as one
+undo step). The mic button dictates into the box (see **Settings ▸ Assistant ▸ Voice**).
+
+### What the assistant sees
+
+The chips above the prompt are what goes with your message:
+
+- **Live chips** follow your selection, In/Out range and playhead, while **Assistant follows the
+  selection** is on: the assistant icon in the timeline toolbar. Click × on one to leave it out of the
+  next message. Turn the toggle off and nothing is sent unless you add it.
+- **Pinned chips** (outlined) are a snapshot you added on purpose; they stay until you send or remove
+  them. Right-click a clip (or a multi-selection), the ruler, a marker or selected transcript words and
+  pick **Add to Assistant**; or use **Add to Assistant** in the command palette for the current
+  selection. The panel switches to Chat with the cursor in the box, ready for you to type what you want.
+
+The **+** button attaches more: **Current frame** (the timeline at the playhead, as an image),
+**Selection**, **In/Out range**, **Image file…** (a PNG or JPG) and the **Quick prompts**. Images show as
+thumbnails (hover for a bigger one) and stay with the conversation.
+
+**Quick prompts** are one-click requests: **Remove silences**, **Cut filler words**, **Caption this**,
+**Tighten selection** and **Add chapter markers**; a new chat shows them too. Edit them in **Settings ▸
+Assistant ▸ Quick prompts**.
+
+From anywhere, open the command palette and type `>` followed by a request (for example
+`> trim the long pause at the playhead`) to send it to the chat without opening the panel first.
+
+## Undo
+
+Everything one request changes is **one** undo step, named `Assistant: <request>` in **History**. **Undo**
+under an answer works while that request is still the last thing on the undo stack; once you edit
+something after it, use **History** to step back further. If you edit by hand while a request is still
+running, your edit is its own undo step and the request continues as a second step after it; **Undo** then
+undoes only that last part. The clips a request changed get a short outline on the timeline.
+
+## Approve risky tools
+
+Some tools reach outside the project: exports, opening or creating a project, changing settings, running
+scripts or tasks and converting media, and the menu commands that do the same (`ui.action` with New /
+Open Project, Save, the exports, Settings…). When an agent calls one, a small **An agent wants to leave
+the project** window appears with who is asking, the tool and its arguments:
+
+- **Allow** runs it once.
+- **Always allow this session** runs it and stops asking for that tool (or that menu command) until you
+  restart.
+- **Deny** tells the agent you said no.
+
+Turn the check off with **Settings ▸ Assistant ▸ Guard**. It applies to every MCP client, not only the
+Assistant panel. Running a task yourself (**Run**) never asks.
+
+## Comments for any agent
+
+A comment is a marker with a note. An agent can read open comments (`markers.list` with `open`), leave its
+own (`markers.comment`, signed "Assistant" unless it names itself), and tick them off (`markers.set` with
+`done`). The Markers panel shows who left a comment and whether it is done; done comments are drawn dimmed
+on the ruler. With the **External agent**, an agent looping on `assistant.wait` wakes up for a new comment
+of yours once you stop typing in it.
+
+## Connect your own agent
+
+Any MCP client can do what the Assistant panel does; see [Scripting & MCP](scripting.mdx). The tools made
+for it are `assistant.*` (send, status, stop, wait, add_selection, attachments, attachment) and `tasks.*`
+(add, list, run, remove, set), listed with the rest under
+[Co-editing tools](scripting.mdx#co-editing-tools).

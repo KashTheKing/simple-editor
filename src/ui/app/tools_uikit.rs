@@ -65,6 +65,15 @@ pub const TOOLS: &[ToolDef] = &[
                 }
             };
             let ctx = app.uikit.ctx.clone().ok_or("no frame drawn yet")?;
+            // A minimised window is 0 x 0 px: eframe's screen readback panics on that size
+            // ("chunk size must be non-zero" in egui_glow) and takes the whole app down.
+            let hidden = ctx.input(|i| {
+                let v = i.viewport();
+                v.minimized.unwrap_or(false) || v.inner_rect.is_some_and(|r| r.width() < 1.0 || r.height() < 1.0)
+            });
+            if hidden {
+                return Err("the window is minimised - restore it to take a screenshot".into());
+            }
             let prog = Progress::new();
             app.uikit.next_shot += 1;
             let tag = app.uikit.next_shot;
@@ -233,7 +242,7 @@ fn crop_frame(img: &egui::ColorImage, px: Option<egui::Rect>) -> Frame {
         None => (0, 0, w, h),
     };
     let rgba = (y0..y1).flat_map(|y| img.pixels[y * w + x0..y * w + x1].iter().flat_map(|c| c.to_array())).collect();
-    Frame { width: x1.saturating_sub(x0) as u32, height: y1.saturating_sub(y0) as u32, pts: 0.0, rgba }
+    Frame { width: x1.saturating_sub(x0) as u32, height: y1.saturating_sub(y0) as u32, pts: 0.0, rgba, bgrx: false }
 }
 
 #[cfg(test)]

@@ -7,6 +7,201 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
 
 ---
 
+- **creator-kit build (2026-11-11): how it was run, what the live run found.**
+  Order: spike (entry below) -> `library/README.md` (formats) -> wave 0 by the lead (marker sections,
+  registered stub modules with the cross-workstream signatures, the installed-library core, shader
+  header parsing + wrappers, a real-driver test over `library/**/*.glsl`; `plans/creator-kit/
+  engine-contract.md` is the shared brief) -> four engine agents in the SAME worktree on disjoint files
+  (html-layer, shader-library, skills, online-library; `cargo check` allowed, others' errors ignored)
+  next to twelve content agents writing only under `library/`. What made the content good: every
+  author could LOOK at its work with the app's own renderer - a preview tool built from the spike for
+  HTML / icons, and the built test binary re-run with `SE_ONLY` / `SE_SHOTS` for shaders (files are read
+  at run time, so the binary need not be rebuilt). Merge: 2 test failures, both from the lead's own
+  integration edits; then `cargo test` 1417 passed, `--selftest` OK.
+  **Live, release-fast, scratch profile, second monitor, over MCP** (all five checks of the plan):
+  (1) `html.create` with the library Subscribe button -> over video with clean alpha at its natural
+  size; `html.set` label + accent -> re-rendered; the exported frame shows it. (2) "Add a lower third
+  with my name": the assistant found `html/lower-third-clean` with `library.list`, installed and
+  applied it, set name / role with `html.set`, looked with `html.check`; 24 s. (3) the `/` list
+  filters as typed, the Skills tab lists built-ins and "Yours"; `/create-skill …` wrote
+  `skills\punch-words.md` in 32 s; `/captions` ran as a skill and stopped to ask before the 142 MB
+  speech model download (not installed in the scratch profile, so captioning itself was not run).
+  (4) a cloud transition clicked in the Gallery (library read from the local `library/` folder) was
+  copied in and applied with a toast; `library.apply` for an effect and a LUT; export matches the
+  preview. (5) the saved project on a clean profile with the first profile's library and cache hidden:
+  the HTML layer re-rendered from the project, the shader effect and transition drew, the LUT came from
+  `kit LUTs\` beside the project (pixel-identical bars).
+  **Found and fixed**: the Gallery's tab row scrolled sideways, hiding the library tabs in a narrow
+  pane (it wraps now); `project.save` over MCP skipped the LUT copy that File > Save does; the outgoing
+  clip of EVERY transition (built-in Push too, so older than the kit) went black after the cut when the
+  clip used its file to the last frame - a source time within 0.1 ms of the end came back with no
+  frame; `playback::clip_src` now clamps a 60th of a second before the end. The countdown template's
+  thumbnail fell on a frame where its digit is mid pop-in (`se:thumb` added).
+  **Gotchas**: launching with a FILE ARGUMENT starts as a full-screen player that plays at once - a test
+  window then "goes black" over the gaps of the timeline and `layout.list` shows no pane rects: use
+  `project.open` after launch, or `ui.action fullscreen`. A test profile that is not reset saves its
+  window rect as the OUTER size, so the window grows 16x39 px per relaunch. Python heredocs in the agent
+  shell eat backslashes (`\\n` in a patch became a real newline): write patch scripts to a file. Two
+  shader authors overwrote each other's helper script in the shared scratch folder: give each agent its
+  own folder. Disk D: fell to 4 GB during the build (one debug + one release-fast target).
+  **Not done / ceilings**: `.mogrt` import (needs sample files); nothing fetched over the network yet
+  (the catalogue URL is `main`, where `library/` is not yet); `html.check` blocks the UI thread while it
+  renders (0.1-0.3 s warm, +1.3 s when Edge has to start); one Edge, one render at a time; an export
+  started while an HTML layer is still rendering is stopped with a toast; library transitions show a
+  plain dissolve card in the Transitions pane (the Gallery has the real thumbnails); `thumbs.rs` still
+  lists `lut_dirs` every frame the Looks / Luts tab is open; no hover preview for library items; QSV /
+  the Codex backend etc. are as untested as before. **Size** (`scripts/size.ps1`, release): 12,326,400 B before
+  the kit (`f44595e`, built from an exported copy) -> 13,067,264 B (`a17154b`): +740,864 B (+0.71 MB),
+  above the plan's 0.2-0.4 MB estimate. The row before those two in `size_log.csv` predates the Pro plan.
+
+- **creator-kit spike (2026-11-11): headless Edge can step CSS animations exactly, with alpha. Go.**
+  Edge 157, RTX 2060 SUPER, machine in normal use. A std-only throwaway program (TcpStream WebSocket
+  client, serde_json) started `msedge.exe --headless --remote-debugging-port=0 --user-data-dir=<temp>
+  --host-resolver-rules="MAP * ~NOTFOUND"`, read the port and browser path from
+  `<profile>\DevToolsActivePort`, and drove one tab over the browser socket with flat sessions
+  (`Target.createTarget` + `Target.attachToTarget{flatten:true}`): `Emulation.setDeviceMetricsOverride`,
+  `Emulation.setDefaultBackgroundColorOverride{a:0}`, `Emulation.setScriptExecutionDisabled{true}`,
+  `Page.navigate` to a `file:///` URL, `Page.loadEventFired`, then per frame "set every animation's time"
+  and `Page.captureScreenshot{format:"png", optimizeForSpeed:true}`. PNG bytes went straight down
+  ffmpeg's stdin (`-f image2pipe -framerate F -c:v png -i - -c:v copy out.mov`): PNG-in-MOV, rgba,
+  no re-encode.
+  **Exactness**: a test page (linear `left`, delayed opacity fade, `steps()` on a `::after`, an
+  infinite alternate compositor `transform`, a 50 % white box) rendered 90 frames at 1080p30; a Python
+  check of the decoded `.mov` matched the expected position / alpha of every element on all 90 frames,
+  background alpha 0, the half-transparent box (255,255,255,128) = straight alpha. A `<script>` in the
+  page did not run. Two ways to set the time were tried and gave byte-identical files:
+  (a) `Runtime.evaluate("for(const a of document.getAnimations()){a.pause();a.currentTime=T}")` - runs
+  from the host although page scripts are disabled; (b) no JavaScript at all: `Animation.enable` +
+  `Animation.setPlaybackRate{0}` before the load, ids from `Animation.animationStarted`,
+  `Animation.seekAnimations{ids, currentTime:T}`. **Chosen: (a)** - it always sees every animation
+  (pseudo-elements, delayed ones) and can also ask for the longest `endTime`, so frames after the last
+  animation ends need not be rendered again; (b) depends on having caught every start event. The page
+  itself has no JavaScript either way (stripped by the app and disabled in Edge).
+  **Speed** (ms per frame, seek + screenshot + base64 + pipe): 640x360 ~40, **1080p 52-61** (screenshot
+  is ~48 of it), 4K ~148. Edge start to first frame ~1.3 s cold, so the renderer keeps one Edge alive.
+  Tried and dropped: 2/4/6 windows in parallel (frames identical, 45/34/37 ms a frame, but every extra
+  window costs its own load: no net gain on a 3 s layer; each needs `newWindow:true`, a background tab
+  never answers a screenshot); `--disable-gpu`, `--disable-gpu-vsync --disable-frame-rate-limit`,
+  `--run-all-compositor-stages-before-draw`: none faster. `Target.createTarget` refuses `width`/`height`
+  without `newWindow`. Decode of the result through ffmpeg: PNG-in-MOV 8 ms a 1080p frame, `qtrle` 10
+  (smaller on flat art, 1.8 vs 4.5 MB for the test, but worse on gradients): PNG kept.
+  **Decisions for the engine**: (1) a render writes a NEW content-addressed file
+  (`cache\html\<hash of html + fields + size + fps + duration>.mov`, or `.png` when the page has no
+  animation) and points the asset's `path` at it - Windows cannot rename over a file a decoder has
+  open, the clip only knows the asset id so it keeps its effects / keyframes / position, and undo of a
+  field change finds the old file still there; (2) alpha sources get the stacked proxy at ANY height
+  (the same ffmpeg filter was run on a 640x360 alpha `.mov` at height 360 and gave a correct 640x720
+  colour-over-alpha file) - `proxy_eligible` must stop requiring `height > proxy height` for them and
+  build at `min(proxy height, source height)`; (3) neither `ffpipe::bake_sequence` nor the bake
+  pipeline is used. Spike source: not kept in the repo (the engine's `html` module supersedes it).
+
+- **assistant pickers + history (2026-11-11):** the header has an exact-model menu (ids from
+  Anthropic's model table in `assistant_data::CLAUDE_MODELS`, the four family aliases on top, "Other…"
+  for anything newer), an effort menu (`--effort low|medium|high|xhigh|max`, Claude Code agent only,
+  `Settings.assistant_effort`) and a History tab listing every saved chat of the project. Live-checked:
+  a request with `claude-haiku-4-5` + `low` answered. The model list is fixed in the build
+  (`ponytail:` note there); update it when models change.
+
+- **assistant redesign (2026-11-11, after the maintainer tried the first pane):** the pane is a tab
+  beside the Inspector; Tasks (the agent writes a Luau script per described task into a queue of
+  cards: Run / Edit / Save to Scripts, "Handle my comments") and Chat (bubbles, collapsed actions,
+  history per project under `%APPDATA%\SimpleEditorssistant`, pinned context chips, image
+  attachments served to any agent through `assistant.attachment`). No vendor name in the app's own
+  wording. Live-checked over MCP: a described task became a script and ran as one undo step
+  ("Assistant task: ..."); a frame attached from the `+` menu was fetched and described by the agent;
+  history survived a relaunch; "Add to Assistant" is in the clip menu. Gotchas: (1) a row of chips
+  built from `Frame { horizontal { label, x } }` does not wrap inside `horizontal_wrapped` and widens
+  the whole pane (Send got clipped) - a chip is one `Button` now; (2) `Response::has_focus()` is
+  false while the WINDOW has no OS focus, so Enter-to-send cannot be driven through `ui.input` on an
+  `SE_BACKGROUND` window (typing still works: `TextEdit` reads memory focus) - the headless test
+  `enter_sends_from_the_prompt` covers it instead; (3) never `taskkill /IM simple-editor.exe` to free
+  the exe for a rebuild - it closes the maintainer's own running app; kill the test instance by pid.
+  Not live-tested: Codex backend flags, Image file..., "Handle my comments", task Edit / Save to
+  Scripts, the marker / ruler / transcript "Add to Assistant" rows.
+
+- **pro first live run (2026-11-11):** release-fast exe driven over MCP with a scratch profile
+  (`APPDATA`/`LOCALAPPDATA` pointed at a temp folder, `SE_BACKGROUND=1`), RTX 2060 SUPER, ffmpeg 7.1.
+  Test project: 18 s, 1080p60, two H.264 clips (the first 28 Mbit/s), a PNG on V2, two audio tracks.
+  Worked: timeline playback 60 fps / 0 dropped with the BGRX upload (colours match the CPU thumbnails);
+  Source monitor on the GPU canvas; `render.frame` / `render.contact_sheet` as MCP images; export
+  through the GPU window + PBO + NV12 path (1080 frames, bt709/tv tags, pixels within 2/255 of the
+  app's own RGB frame); encoder probe (found `h264_nvenc`, `hevc_nvenc`, wrote `encoders.json`) and
+  auto picking NVENC; Streams (mix + one stream per track) and Stems (24-bit WAVs in `<name> stems/`);
+  EDL / XML export; `editor.context`; `edit.batch` as one undo step labelled "Claude: ...", its
+  rollback on a failing call; comments; the Assistant pane spawning `claude -p` (it read the selection
+  from the context and called `markers_add`); mic capture -> whisper ("Didn't catch that" in a silent
+  room); island transcription of a speech clip with 3 s pauses (every word inside its island).
+  Timings, same timeline, one run each, machine in normal use: CPU compositor + libx264 39.0 s,
+  GPU path + libx264 12.0 s, GPU path + NVENC 9.6-11.1 s. The encoder is not the limit any more
+  (x264 vs NVENC is ~1 s apart); full-size software decode on the export thread probably is.
+  Found and fixed: (1) audio stream titles vanish in mp4/mov - ffmpeg only keeps `handler_name` there,
+  so both are written now; (2) the Assistant pane's Send row was cut off when chips/quick prompts
+  wrapped (fixed reserve) - the input block is a bottom panel now - and agent text is rendered as
+  markdown; (3) the HUD sat on the Preview's tool strip - moved to the top right; (4) `ui.screenshot`
+  with the window minimised panicked inside egui_glow (0 px wide readback) and took the app down -
+  it now returns an error; this one predates the branch; (5) Export Frame / a full-size `render.frame`
+  came out soft: one-shot renders reused the preview's decode size (MF only renegotiates after 3
+  identical requests, and the paused read-ahead keeps interleaving its own) and its proxy. Same logic
+  on main, so also older than the branch. `DecoderPool::set_exact` now makes a one-shot wider than
+  the preview canvas read the original at exactly the requested size, past the source cache.
+  Gotchas: launching the app from inside a Claude Code session leaks `CLAUDE_CODE_*` /
+  `ANTHROPIC_BASE_URL` into the spawned `claude`, which then answers "Credit balance is too low" -
+  strip those variables in test launchers; untagged HD files are decoded as BT.709 by MF but as
+  BT.601 by ffmpeg, so compare an export against the app's own frame, not against ffmpeg's decode
+  of the source. Still not tried: QSV/AMF, the software retry after a failed hardware encoder,
+  the custom-CLI and external backends, the API key in Credential Manager, the approval prompt
+  (it was switched off for the run), push-to-talk from the keyboard, the benches.
+
+- **pro first compile (2026-11-10, same day, later):** `cargo check --all-targets` found ONE error
+  (`slot` scoped inside an `unsafe` block in `GpuRenderer::pbo_read`); after that `cargo test` was
+  1350 passed / 2 failed, both test expectations (a BGRX layer read as RGBA in
+  `gpu_mode_publishes_layers`; `<transitionitem>` counted without the mirrored audio cross fades),
+  then 1352 passed, and `--selftest` is OK including `export/mp4`, `export/wav` (audio over
+  `tcp://127.0.0.1`), `lossless`, `xmeml`, `prerender`. NOT exercised by either: the GPU export path
+  (request window, PBO readback, NV12) and the BGRX texture upload on a real driver, the
+  hardware-encoder probe and retry, Streams/Stems exports through a real ffmpeg, the Assistant's
+  `claude` spawn and Credential Manager calls, the cpal microphone stream, island transcription.
+  Those need the live app. No perf number has been measured and `scripts/size.ps1` has not run.
+
+- **pro first coding pass (2026-11-10): for whoever compiles `feat/pro` first.** Nothing in it has
+  been compiled, run, tested or measured: every Pro workstream (#140-#153) was written by reading only.
+  Expect compile errors; the docs (website pages, ARCHITECTURE.md "coded 2026-11-10" blocks,
+  customizing.md rows, CHANGELOG "Unreleased") describe what the code is written to do, not what was seen.
+  Verify in this order: (1) `cargo test` (then fix, repeat); (2) `--selftest`; (3) a `--screenshot`,
+  looked at, with a video clip in the Preview and the Source monitor; (4) the benches from the
+  perf-baseline note below, on a quiet machine, before/after against `main`; (5) `scripts/size.ps1`
+  (budget: +0.5 MB for the whole plan). Look at these first, they are the riskiest:
+  - scoped-thread decode (`DecoderPool::frames_arc`, `media/mod.rs`): MF readers taken out of the pool
+    and driven from `std::thread::scope` threads - check COM/MF init on those threads and that a
+    decoder used from a new thread every frame is allowed at all;
+  - the texture alpha swizzle for BGRX layers (`engine/gpu.rs` `upload`: `GL_BGRA` +
+    `TEXTURE_SWIZZLE_A = ONE`, set per upload on a texture that can switch between RGBA and BGRX) -
+    wrong colours or a transparent layer would show here;
+  - NV12 readback (`NV12_MAIN` / `render_export_*`): row order (GL rows vs. image rows, "no flip"),
+    the chroma plane layout, and the colour flags (`-colorspace bt709 -color_range tv`) - compare an
+    export against the same frame from the CPU path;
+  - audio over `tcp://127.0.0.1:<port>` into ffmpeg (`run_export`): accept/connect ordering, ffmpeg
+    waiting on one socket while another's writer blocks, a firewall prompt, cancel/cleanup;
+  - the Credential Manager calls (`engine/agent.rs` `key_load` / `key_save` / `key_delete`, the
+    `windows` crate features they need in `Cargo.toml`);
+  - `claude -p` reading the prompt from stdin, and `claude.cmd` through std's batch-file handling;
+    check `--resume` with a stored session and the stream-json parsing against a real run.
+  Also: regenerate the docs screenshots (`scripts/docs-shots.ps1`) and the generated shortcuts page
+  (`--dump-hotkeys` -> `website/docs/shortcuts.md`; new actions: Performance HUD, Assistant, Export Avid
+  EDL…, Add Comment, Push to Talk). No new screenshots were referenced by the new pages.
+
+- **perf-baseline (2026-11-10): how to take the Pro plan's baseline. Numbers: not measured yet.**
+  On a quiet machine (nothing else encoding, plugged in), release build:
+  `cargo test --release bench_export -- --ignored --nocapture` (10 s 1080p60 two-layer project, CPU
+  path, libx264 + the hardware H.264 encoder if ffmpeg lists one: fps each),
+  `cargo test --release bench_source_monitor -- --ignored --nocapture` (1080p60 through the Source
+  player: frames published vs due, dropped), plus the existing `bench_4k_preview` and
+  `bench_multilayer_preview`. Then in the app turn on Playback ▸ Performance HUD (or MCP
+  `playback.hud`), play a 1080p60 clip for 10 s in each monitor and read UI avg/p95, GL composite,
+  upload, decode avg/worst, cache %, dropped (the same numbers come back from `playback.status`).
+  GPU-path export is not benched (needs the UI's GL context) - time it from the app.
+  Baseline: not measured yet. Record it here, then confirm the budgets in goals.md.
+
 - **alpha-proxy (2026-10-06): a `.mov` with alpha previewed on black because its proxy was yuv420p.**
   Export was always right (it reads the source). Such a source now gets a STACKED proxy, `<hash>-a.mp4`:
   still all-intra H.264 that Media Foundation reads, twice as tall, premultiplied colour on top and the
@@ -199,3 +394,33 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
   `analysis::detect_beat_markers`/`split_beats` into a pure `detect_beats` (returns per-clip onset
   times + BPM, no mutation) plus `beat_markers`/`split_beats` (act on the cached preview). UI now
   has Detect Beats → Add Markers / Split at Beats, matching the other sections' shape.
+
+## Web snapshots, params, fake mouse (2026-11-12)
+- Snapshot from an address = a private, network-enabled Edge (`capture_mhtml`) -> `.mhtml` under
+  `%APPDATA%\SimpleEditor\web\snapshots` -> `import_with_undo_at`. Signed-in pages cannot be reached natively
+  (Edge profile is private by design), so "From my browser" = extension (`tools/browser-extension`,
+  `pageCapture.saveAsMHTML`) + a 1 s Downloads watcher (new, stable `.mhtml` newer than window-open).
+- Fake mouse = real `Input.dispatchMouseEvent`; transitions stepped by `seek_rel` so they are frame-exact.
+  Coordinates are viewport CSS px (top viewport only; a tall page's lower part is not hoverable - use Scroll).
+- Decision: Record mode (live cursor -> few keyframes, click-through to next snapshot) is in goals.md, not built.
+- Live-tested 2026-11-12 in a scratch instance: real snapshots of wikipedia.org, roblox.com (full page, tall) and
+  youtube.com (signed-out feed is empty - that is what "From my browser" is for) render with CSS/images/fonts;
+  Downloads watcher imported a dropped .mhtml in 2 s; fake mouse cursor drawn; Mouse section works.
+  Found live: Chrome/Edge MHTML links its stylesheets as `cid:css-...@mhtml.blink` (fixed in webcap).
+- NOT verified: the extension itself inside Brave (needs Developer mode > Load unpacked by hand), a .mhtml saved by
+  Brave's own Ctrl+S, the editor OS window / F11 on a second monitor, params UI with keyframes in the Inspector.
+- Size: 13,457,920 B (+390,656 vs a17154b; +1,131,520 vs f44595e).
+
+## Release 1.2.0 (2026-11-12)
+- First release of the Pro plan + Creator Kit + web snapshots (feat/pro, 15 commits, squash-merged). Version bumped,
+  CHANGELOG `Unreleased` -> `1.2.0`, docs refreshed for agents (agents.md: map, MCP driving rules, triage, releasing;
+  llms.txt; README; ARCHITECTURE; customizing.md tool count re-taken from a live `tools/list`: 298).
+- New: Help > Report a Bug... (opens the GitHub issue form with the version prefilled), `.github/ISSUE_TEMPLATE/`
+  (bug_report.yml, feature_request.yml, config.yml: blank issues off, Discord link), website pages `html-layers`,
+  `online-library`, `report-a-bug`.
+- Verified: cargo test 1439 passed (one perf test, `headless_1000_assets_stays_fast`, failed once while an npm build
+  ran alongside and passed alone: timing flake under load), `--selftest` OK on the release exe, docs site builds,
+  live `tools/list` = 298, Help menu shows "Report a Bug...". Release exe 13,458,944 B (+2,119,168 B vs 1.1.0).
+- NOT verified: clicking Report a Bug opening the browser at the prefilled form (the form field id is `version`;
+  GitHub accepts `?template=bug_report.yml&version=...`), the extension inside Brave.
+

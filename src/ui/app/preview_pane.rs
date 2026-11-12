@@ -165,6 +165,9 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
     if app.tools.recording != recording {
         app.toggle_draw_recording(app.tools.recording);
     }
+    if app.settings.hud {
+        crate::ui::hud::draw(ui, &app.hud, app.player.dropped_frames()); // ws:perf-baseline
+    }
 }
 
 // ---- ws:viewer-surface ----

@@ -2024,6 +2024,7 @@ mod tests {
                 parent: None,
                 range: None,
                 effects: Vec::new(),
+                html: None,
             });
             self.project.clip_mut(7).unwrap().asset = a;
             self.panel = Rect::from_min_size(Pos2::ZERO, vec2(700.0, 620.0));

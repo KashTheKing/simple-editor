@@ -7,13 +7,13 @@ Priorities, in order: **performance (startup, seek, playback, export), low memor
 open → cut → save, then everything else.** Bare Windows-Forms-style UI matching the OS theme; DaVinci-like
 dockable layout without decoration. Popups never block the editor (plain `egui::Window`, never `Modal`).
 
-Measured baselines (release, RTX 2060 SUPER): exe **12,167,168 B (11.60 MB)** at `86c1793`
-(wave-3-complete — see `size_log.csv`'s last row; still over the ~10 MB core goal, tracked in
-goals.md) · first frame ~330 ms · idle CPU 0.0 % · ~125 MB working set with a clip open BEFORE
+Measured baselines (release, RTX 2060 SUPER): exe **13,458,944 B (12.84 MB)** at 1.2.0
+(11.60 MB at `86c1793`, wave-3-complete; the Pro plan and Creator Kit added the rest on purpose — see
+`size_log.csv`'s last row; over the ~10 MB core goal, tracked in goals.md) · first frame ~330 ms · idle CPU 0.0 % · ~125 MB working set with a clip open BEFORE
 playback caches fill — the playback cache may then grow to its budget (`Settings::cache_mb`, auto =
 ¼ of RAM clamped 512 MB–4 GB, plus ¼ of that for decoded source frames; deliberate, user-tunable in
-Settings ▸ Performance) · **1126 unit/integration tests + a headless `--selftest`** (`cargo test`,
-this PR's own rerun: 1126 passed, 2 ignored, 0 failed).
+Settings ▸ Performance) · **1439 unit/integration tests + a headless `--selftest`** (`cargo test` at 1.2.0:
+1439 passed, 9 ignored by design, 0 failed).
 
 ## Stack
 
@@ -105,6 +105,32 @@ src/engine/tracking.rs  point / area tracking: NCC template match on a worker th
 src/engine/transcribe.rs speech->text through a downloaded whisper.cpp model + exe, auto-subs, double takes
 src/engine/tts.rs       Windows-voices text-to-speech, dropped on the timeline as a linked audio clip
 src/engine/xmeml.rs     FCP7 XML export for Premiere / Resolve
+                        (+ audio level/pan, A/V `<link>`s, cross dissolves, sequence/clip markers)
+# (Pro plan, built and live-tested 2026-11-11):
+src/engine/edl.rs       CMX 3600 EDL export (one EDL per video track, audio on the first; D/W events)
+src/engine/encoders.rs  background one-frame probe of NVENC/QSV/AMF, cached per ffmpeg (path, mtime)
+                        in cache_dir/encoders.json; `best_for(ext)` = what "auto" resolves to
+src/engine/stems.rs     export stems: by track / bus / AudioRole, each a project copy with only that
+                        group's clips enabled, mixed through the unchanged Mixer
+src/engine/agent.rs     Assistant backends: `claude -p --output-format stream-json` (prompt on stdin)
+                        or a custom argv template; API key in Windows Credential Manager
+src/engine/voice.rs     push-to-talk: cpal input on its own thread -> 16 kHz mono WAV -> whisper
+# (Creator Kit, 2026-11-11: built, tested, live-checked - plans/creator-kit/, library/README.md):
+src/engine/html.rs      HTML + CSS layers: template parsing (se: meta tags, {{fields}}), sanitising, lint,
+                        and the renderer - one headless Edge driven over DevTools by a std-only WebSocket
+                        client; frames as PNG-in-MOV (alpha) in cache_dir/html, content-addressed
+src/engine/webcap.rs    .mhtml (browser "single file" saves) unpacked to a folder of HTML + files
+src/ui/html_code.rs     HTML/CSS syntax colours and completion for the code box
+src/engine/shaderlib.rs shader file headers (@name/@desc/@tags/@param/@needs) for effects and transitions
+src/engine/skills.rs    assistant skills: Markdown with a --- header; user folder, library, built-ins
+src/engine/library.rs   the content library: installed items in %APPDATA%\SimpleEditor\library, the
+                        index.json catalogue (local folder or curl.exe), fetch / install
+src/engine/gpu/library_tests.rs  every library shader compiled and drawn on the real driver
+src/ui/html_ui.rs       HTML editor window; Inspector "Fields" controls
+src/ui/app/html_ctl.rs  render jobs, asset re-pointing, Add HTML Layer / Scene, add_html_clip
+src/ui/app/library_ctl.rs  catalogue / download jobs, apply by kind, Gallery library tabs' App side
+src/ui/app/tools_{html,shader,skills,library}.rs  html.*, clip.set_shader / shader.check /
+                        transition.set_shader, skills.*, library.*
 
 src/playback.rs         Player: render thread + audio thread + wall clock; decode_layers()/
                         request_layers() for the GPU (see "Alt-render channel" below); Clock.rate/
@@ -169,6 +195,16 @@ src/ui/find_ui.rs       Find window (search clips/markers/text across the timeli
 src/ui/{retime,export_ui,frame_ui,capture_ui,import_ui,paste_ui,transitions_ui,shader_ui}.rs windows
 src/ui/settings_ui/mod.rs Settings window: tabs + shared plumbing (settings_ui/*.rs re-exports)
 src/ui/settings_ui/{appearance,capture,general,hotkeys,performance}.rs one settings tab each
+# (Pro plan, built and live-tested 2026-11-11):
+src/ui/settings_ui/assistant.rs Settings ▸ Assistant: backend, model/command, key, guard, quick prompts
+src/ui/assistant_ui.rs  Assistant pane widget (pure): log, context chips, quick prompts, prompt, mic
+src/ui/hud.rs           performance HUD over the Preview (UI frame, GL composite, upload, decode, cache)
+src/ui/app/assistant_ctl.rs Pane::Assistant's App side: send/stop/Undo all, `>` palette prefix, the
+                        MCP guard + approval window, assistant.send/status/stop
+src/ui/app/voice_ctl.rs dictation into the Assistant prompt, Push to Talk, voice.start/stop/status
+src/ui/app/tools_context.rs editor.context, undo groups (edit.begin/end/batch), render.contact_sheet,
+                        assistant.wait, comments (Add Comment, markers.comment)
+src/ui/app/tools_interchange.rs Export Avid EDL… + export.edl / export.xml
 
 src/ui/app/mod.rs       App: top-level state + frame loop; the five dispatch registries
                         (TOOL_TABLES/ACT_HANDLERS/FRAME_HOOKS/WINDOW_DRAWERS/PANE_DRAWERS — see
@@ -308,6 +344,33 @@ lazily, keeps a size-keyed FBO pool, and evaluates either the linear stack or th
 * `Project.scaler` picks nearest / bilinear / bicubic sampling; `Settings.preview_quality` scales the
   preview render size; **movie mode** plays back `engine::prerender` frames.
 
+**Export pipeline (Pro plan, built and live-tested 2026-11-11).** `engine::export::run_export`:
+
+* **Request window**: the export thread keeps a few `GpuFrameRequest`s queued (each carrying a
+  recycled buffer) instead of one in flight; `App::serve_gpu_exports` answers them for at most 12 ms
+  per UI update (`SERVE_BUDGET`).
+* **PBO readback**: `render_export_begin` renders a frame and starts `glReadPixels` into the next of a
+  small ring of pixel-pack buffers, so frame k reads back while k+1, k+2 render;
+  `render_export_finish` completes them in FIFO order. All in-flight readbacks are finished before
+  `serve_gpu_exports` returns. A failed buffer call marks the ring broken and every later frame takes
+  the synchronous `render_export_sync` path.
+* **NV12**: when the encode is 4:2:0 and the size is even (`NV12_READBACK`), the GPU packs the canvas
+  into a `W x 3H/2` target (Y rows, then interleaved CbCr, 2x2 box chroma, BT.709 limited) read with
+  `GL_RED`; ffmpeg gets `-pix_fmt nv12 -colorspace bt709 -color_range tv`. A GPU export that falls
+  back to the CPU converts with `rgba_to_nv12` (same maths). The CPU path otherwise stays RGBA.
+* **Writer thread**: frames are piped to ffmpeg's stdin by a writer thread while the next ones render.
+* **Audio over loopback sockets**: each `AudioInput` (the mix, plus one per stem for "Separate tracks
+  in file" / "WAV stems") is mixed on its own thread and streamed as headerless `f32le` to ffmpeg over
+  `tcp://127.0.0.1:<port>` (one `TcpListener` per input), while the video renders; no temp WAV.
+  Stems layout adds one 24-bit WAV output per stem into `<name> stems/` (`stems_dir`), created in the
+  temp location and only kept when the whole export succeeds.
+* **Encoders**: `resolve_encoder` turns "auto" into `encoders::best_for(ext)` (first working of
+  h264_nvenc / h264_qsv / h264_amf for mp4/mov/m4v/mkv, software until the probe finishes);
+  `effective_preset` maps the Export pane's Speed (speed / balanced / small) to x264
+  veryfast / medium / slow, NVENC p1 / p4 / p7, QSV and AMF equivalents. A named Advanced preset wins.
+* **Smart render**: only `smart_spans` (which source stretches are whole GOPs to copy vs. re-encode) is
+  coded, with a test; nothing calls it, and `Settings.export_smart_render` ships off.
+
 GL work happens **only on the UI thread** (it owns the context). Everything GPU degrades to `Option`/
 `Result` — a missing context or a rejected shader falls back and says so once.
 
@@ -373,6 +436,25 @@ GL work happens **only on the UI thread** (it owns the context). Everything GPU 
   fixed forward-1x/no-loop clock (`now = base_t + elapsed·rate`, stop at 0/duration, wrap inside a loop
   range) — JKL shuttle, Loop In→Out and Play In→Out all build on this, not a second clock.
 
+**Playback additions (Pro plan, built and live-tested 2026-11-11):**
+
+* **Shared frames, BGRX upload**: `DecoderPool::frame_arc` hands out the cached `Arc<Frame>` itself
+  (no copy); an MF video frame stays in MF's B,G,R,X order (`Frame::bgrx`). `engine::gpu::upload`
+  uploads it as BGRA with an alpha swizzle that reads 1 for the X byte, so no CPU loop swizzles.
+  Every CPU reader goes through `Frame::to_rgba` / `make_rgba`; `frame_at` stays RGBA. Evicted
+  buffers are recycled (`free`) for the next decode.
+* **Parallel layer decode**: `DecoderPool::frames_arc` takes a frame's layer requests at once; cache
+  hits are served directly, misses decode one scoped thread per decoder (requests of one source in
+  order on its thread; the first decoder on the calling thread; no thread for a single miss).
+* **Source monitor on the GPU path**: the Source player renders through the same GPU compositor into
+  its own `source_canvas` (never pooled or reclaimed by the main preview), repainted without
+  re-rendering while nothing changed. Layer textures are keyed by clip id, shared with the timeline.
+* **HUD**: `ui::hud` shows UI frame avg/p95, GL composite, texture upload, decode avg/worst and cache
+  hit rate (Playback ▸ Performance HUD, `playback.hud`); the same numbers are in `playback.status`.
+  Decode stats are process-wide statics, so both players add into them.
+* **Not built** on purpose: NV12 decode, the `se-engine` crate at `opt-level=3`, and in
+  `play-render-thread` the nested-sequence clone and the `set_project` shortcut.
+
 ## Threading
 
 * UI thread: egui, all GL, MCP tool execution, export frame service, pre-render slices, alt-render service.
@@ -382,6 +464,18 @@ GL work happens **only on the UI thread** (it owns the context). Everything GPU 
 * Waveform + thumbnail workers: one background thread each, LIFO, memoised failures.
 * Every decode on a long-lived worker runs under `catch_unwind`; MF objects are per-thread
   (`unsafe impl Send` newtypes, COM/MF init per thread).
+
+(Pro plan, built and live-tested 2026-11-11):
+
+* Render thread: layer decodes fan out to short-lived scoped threads, one per decoder that missed the
+  cache (`DecoderPool::frames_arc`), each with an MF reader taken out of the pool while it works.
+* Export: the export thread (frames), a writer thread (ffmpeg stdin), one mixing thread per audio
+  input (loopback socket each); the UI thread serves GPU frames.
+* Assistant: one worker thread per request runs the agent child process and streams `agent::Event`s
+  over a channel; a FRAME_HOOKS tick drains them every 150 ms only while a request is in flight.
+* Voice: the cpal input stream is built, kept and dropped on the recorder's own thread (it isn't
+  `Send`); whisper runs on another thread over the finished WAV.
+* Encoder probe: one background thread per (ffmpeg path, mtime), once.
 
 ## Registries
 
@@ -421,6 +515,44 @@ machinery. `tools_registry_tests.rs`'s `every_edit_op_has_a_tool` scans every `s
 `Ui`; see `docs/customizing.md`'s full table, transcribed from a live `tools/list` call, not this
 count alone).
 
+**Tool registry additions (Pro plan, built and live-tested 2026-11-11):** `ToolOutcome` gains `Image { png_b64, meta }` (MCP replies
+with an image content block; Luau / palette callers get `image_json`: `meta` + a `data_url`, the old
+`render.frame` shape) and `Wait(Instant)` (`assistant.wait`'s long poll: `handle_tool` parks the reply
+and `tools_context::tick` answers it before the deadline). **Undo groups**: `App::begin_group(label,
+author)` / `end_group()` (tools `edit.begin` / `edit.end`, `edit.batch`, and every Assistant request)
+make all Mutate calls in between ONE undo entry `"<author>: <label>"`; a group closes itself after 30 s
+without a call, when the user edits by hand, or on Undo / Redo. `edit.batch` rolls the whole batch
+back on the first failing call. **Guard**: `handle_tool`'s first step is `assistant_ctl::guard`, which
+holds `export.*`, `project.open/new`, `settings.set`, `scripts.run`, `media.convert/batch_convert` for an
+Allow / Always allow this session / Deny window while `Settings.assistant_guard` is on.
+
+## Assistant (Pro plan, built and live-tested 2026-11-11)
+
+`Pane::Assistant` (`ui/assistant_ui.rs` widget, `ui/assistant_data.rs` data + store, `ui/app/assistant_ctl.rs`
+App side, `engine/agent.rs` process side). It rides hidden in the Inspector's tab group on every page
+(`Layout::home_assistant`, also applied to stored layouts). Header: conversation menu, New chat, agent and
+model pickers. Tabs: **Tasks** (the agent writes Luau scripts it hands over with `tasks.add`; the user runs
+them through `App::run_script_src`, one undo step each, a failure stops Run all; "Handle my comments" turns
+settled new comments - `tools_context::settled_comment`, shared with `assistant.wait` - into queued background
+requests that mark their marker done) and **Chat** (bubbles, folded tool lines, Undo / Copy, composer with
+live chips while `Settings.assistant_follow` is on, pinned chips from "Add to Assistant", image attachments
+read by the agent through `assistant.attachment`). A request turns the MCP server on, attaches that context,
+opens an undo group `Assistant: <label>` and starts the backend; one runs at a time, the rest queue:
+
+* **claude**: `claude -p --output-format stream-json --verbose --mcp-config <tmp> --strict-mcp-config
+  --allowedTools mcp__simple-editor [--model M] [--resume S]`, prompt on stdin, one JSON event per
+  stdout line; the session id is kept per conversation, and a failed `--resume` is retried once without it.
+* **codex**: `codex exec --skip-git-repo-check -c mcp_servers.simple-editor.url="<url>" [-m M] <prompt>`.
+* **custom**: `Settings.assistant_command` split into argv without a shell, `{prompt}` / `{mcp_url}` /
+  `{model}` substituted; the stored key goes in `Settings.assistant_key_env`.
+* **external**: nothing is spawned; the request queues in `AssistantState.pending` for `assistant.wait`.
+
+Conversations (lines, tasks, session, attachments) persist per project in
+`%APPDATA%\SimpleEditor\assistant\<fnv1a(path)|untitled>.json` (attachments as PNG + raw thumbnail files in
+the matching folder), 50 per project, written off the UI thread on change and synchronously on exit. The API
+key lives only in Windows Credential Manager (generic credential `SimpleEditor/assistant`) and the child's
+environment. The palette's `>` prefix and `assistant.send` go through the same `ask`. Voice
+(`voice_ctl.rs`) appends dictated text to the chat prompt (`voice_autosend` sends it).
 ## Gesture model
 
 The timeline's modifier table is frozen in `src/ui/timeline/arm.rs`: a pure lookup

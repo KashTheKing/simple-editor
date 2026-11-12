@@ -37,6 +37,8 @@ impl Project {
             direction: 0,
             ease: Ease::Linear,
             edge,
+            shader: String::new(),
+            params: Vec::new(),
         });
         // mirror on linked clips (audio crossfade / fade)
         if r.link != 0 {
@@ -62,6 +64,8 @@ impl Project {
                     direction: 0,
                     ease: Ease::Linear,
                     edge,
+                    shader: String::new(),
+                    params: Vec::new(),
                 });
             }
         }

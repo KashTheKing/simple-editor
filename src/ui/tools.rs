@@ -323,6 +323,22 @@ pub(crate) enum Glyph {
     History,
     /// Two chasing arrows - a proxy being built.
     Proxy,
+    // ---- ws:perf-baseline ----
+    // ---- ws:pro-schema ----
+    /// A speech bubble with a sparkle - the Assistant pane (painted: `draw_glyph`).
+    Assistant,
+    // ---- ws:play-decode-path ----
+    // ---- ws:play-render-thread ----
+    // ---- ws:play-source-monitor ----
+    // ---- ws:export-audio-tracks ----
+    // ---- ws:export-encoders ----
+    // ---- ws:export-pipeline ----
+    // ---- ws:interchange ----
+    // ---- ws:assistant-pane ----
+    // ---- ws:mcp-context ----
+    // ---- ws:transcribe-islands ----
+    // ---- ws:voice-input ----
+    // ---- ws:docs-release ----
 }
 
 impl Glyph {
@@ -465,6 +481,21 @@ impl Glyph {
         Glyph::Speed,
         Glyph::History,
         Glyph::Proxy,
+        // ---- ws:perf-baseline ----
+        // ---- ws:pro-schema ----
+        Glyph::Assistant,
+        // ---- ws:play-decode-path ----
+        // ---- ws:play-render-thread ----
+        // ---- ws:play-source-monitor ----
+        // ---- ws:export-audio-tracks ----
+        // ---- ws:export-encoders ----
+        // ---- ws:export-pipeline ----
+        // ---- ws:interchange ----
+        // ---- ws:assistant-pane ----
+        // ---- ws:mcp-context ----
+        // ---- ws:transcribe-islands ----
+        // ---- ws:voice-input ----
+        // ---- ws:docs-release ----
     ];
 
     /// Stable lower-case name of the variant, kept in sync with `from_name` - what a saved icon
@@ -611,6 +642,21 @@ impl Glyph {
             Glyph::Speed => "speed",
             Glyph::History => "history",
             Glyph::Proxy => "proxy",
+            // ---- ws:perf-baseline ----
+            // ---- ws:pro-schema ----
+            Glyph::Assistant => "assistant",
+            // ---- ws:play-decode-path ----
+            // ---- ws:play-render-thread ----
+            // ---- ws:play-source-monitor ----
+            // ---- ws:export-audio-tracks ----
+            // ---- ws:export-encoders ----
+            // ---- ws:export-pipeline ----
+            // ---- ws:interchange ----
+            // ---- ws:assistant-pane ----
+            // ---- ws:mcp-context ----
+            // ---- ws:transcribe-islands ----
+            // ---- ws:voice-input ----
+            // ---- ws:docs-release ----
         }
     }
 
@@ -732,6 +778,8 @@ impl Glyph {
             // the icon font's diamond is drawn slanted - paint the same one every keyframe uses
             Glyph::Diamond => return None,
             Glyph::RollCursor | Glyph::SlipCursor => return None,
+            // painted (no icon-font symbol to risk on Windows 10's MDL2 font)
+            Glyph::Assistant => return None,
         };
         char::from_u32(cp)
     }
@@ -1450,6 +1498,29 @@ pub(crate) fn draw_glyph(p: &egui::Painter, rect: egui::Rect, g: Glyph, fg: Colo
         Glyph::Diamond => {
             p.add(diamond(c, 5.0, fg, Stroke::NONE));
         }
+        // assistant: a speech bubble (rounded box + tail) with a small four-point sparkle inside
+        Glyph::Assistant => {
+            let body = egui::Rect::from_center_size(c + egui::vec2(0.0, -1.0), egui::vec2(13.0, 9.5));
+            p.rect_stroke(body, CornerRadius::same(3), stroke, StrokeKind::Inside);
+            let tail = vec![
+                body.left_bottom() + egui::vec2(3.0, -0.5),
+                body.left_bottom() + egui::vec2(6.5, -0.5),
+                body.left_bottom() + egui::vec2(2.0, 3.5),
+            ];
+            p.add(egui::Shape::convex_polygon(tail, fg, Stroke::NONE));
+            let s = body.center();
+            let star = vec![
+                s + egui::vec2(0.0, -3.0),
+                s + egui::vec2(0.8, -0.8),
+                s + egui::vec2(3.0, 0.0),
+                s + egui::vec2(0.8, 0.8),
+                s + egui::vec2(0.0, 3.0),
+                s + egui::vec2(-0.8, 0.8),
+                s + egui::vec2(-3.0, 0.0),
+                s + egui::vec2(-0.8, -0.8),
+            ];
+            p.add(egui::Shape::closed_line(star, Stroke::new(1.0, fg)));
+        }
         _ => {} // every other glyph has an icon (`every_glyph_paints_a_picture` holds that)
     }
 }
@@ -1784,7 +1855,7 @@ mod tests {
             .iter()
             .flat_map(|p| [p[0], p[1], p[2], 1.0].map(|v| (v * 255.0).round().clamp(0.0, 255.0) as u8))
             .collect();
-        let frame = crate::media::Frame { width: w as u32, height: h as u32, pts: 0.0, rgba };
+        let frame = crate::media::Frame { width: w as u32, height: h as u32, pts: 0.0, rgba, bgrx: false };
         let out = std::env::var("SE_GLYPH_SHEET").unwrap_or_else(|_| "glyph-sheet.png".into());
         std::fs::write(&out, crate::mcp::png_encode(&frame)).unwrap();
         eprintln!("glyph sheet: {out}");

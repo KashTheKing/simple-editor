@@ -39,3 +39,7 @@ c0a7b45,12231680,jobs-panel #64: Pane::Jobs aggregator + 4 jobs.* tools, job_win
 51738cb,12442624,"simplify wave 0 (#86 keys, #87 recording, #88 seq audio, #89 panels, #90 ui-kit native icons): +17,408 B vs pre-wave-0 main 0898096 (12,425,216 B, measured the same day); the +239,616 B vs the row above is against a side-branch measurement"
 955b937,14535680,"simplify wave 1 + follow-ups (#92-#101): +2,093,056 B vs wave 0 - over the +300 KB gate; release bisect: #92 12,992,000 / #96 13,556,736 / #99 14,034,944 / #101 14,535,680, i.e. ~+0.5 MB per step, suspected egui generic monomorphization per context-menu closure; size-recovery PR follows"
 8478016,10806272,"size-recovery: egui popup/menu code compiled once (ui::menu::{context|button|sub|scroll} pass the body as one &mut dyn FnMut) instead of once per menu closure; -3,729,408 B vs 955b937 (same code as f787468: 14,536,192 B; this row also includes #102/#105), -1,636,352 B vs wave 0 51738cb"
+f44595e,12326400,"feat/pro before the creator kit (the Pro plan and everything on main since the row above), measured 2026-11-11: +1,520,128 B vs 8478016"
+a17154b,13067264,"creator kit (HTML layers, shader library, skills, online library): +740,864 B vs f44595e, above the plan's 200-400 KB estimate"
+da35401+wip,13457920,"HTML editing, web snapshots, params, fake mouse: +390,656 B vs a17154b (+1,131,520 B vs f44595e)"
+0990cfc,13458944,release 1.2.0 (Pro plan, Creator Kit, web snapshots, Report a Bug): +1,024 B vs the row above; +2,119,168 B vs the 1.1.0 release exe (11,339,776 B)

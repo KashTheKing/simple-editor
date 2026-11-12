@@ -45,6 +45,8 @@ use crate::ui::tracking_ui::TrackState;
 pub(crate) enum AltRequest {
     Effect(EffectKind),
     Transition(TransitionKind),
+    /// ws:shader-library: a library shader transition, by source.
+    ShaderTransition(String),
     /// Reserved for inspector-gallery's wave-2 `gallery.hover` tool (a catalogue tab + item name): that
     /// workstream should target this same `App.alt_render` pipeline instead of inventing a second hover
     /// mechanism. No catalogue data model exists yet this wave, so `tick` treats it as a no-op stub.
@@ -253,9 +255,17 @@ fn alt_project(project: &Project, selection: &[Id], playhead: f64, req: &AltRequ
             p.clip_mut(id)?.effects.push(Effect::new(*kind));
             Some((p, playhead))
         }
-        AltRequest::Transition(kind) => {
+        AltRequest::Transition(_) | AltRequest::ShaderTransition(_) => {
             let dur = 1.0;
-            p.add_edge_transition(id, *kind, dur, true)?;
+            let (kind, src) = match req {
+                AltRequest::ShaderTransition(src) => (TransitionKind::CrossFade, Some(src)),
+                AltRequest::Transition(k) => (*k, None),
+                _ => return None,
+            };
+            let tid = p.add_edge_transition(id, kind, dur, true)?;
+            if let (Some(src), Some(tr)) = (src, p.transition_mut(tid)) {
+                tr.set_shader(src);
+            }
             let (start, end) = {
                 let c = p.clip(id)?;
                 (c.start, c.end())
@@ -575,6 +585,7 @@ mod tests {
             parent: None,
             range: None,
             effects: Vec::new(),
+            html: None,
         });
         let mut c = Clip::new(7, ClipKind::Video, "v", 0.0, 4.0);
         c.asset = a;

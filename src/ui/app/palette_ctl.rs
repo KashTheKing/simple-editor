@@ -35,11 +35,20 @@ pub(super) fn windows(app: &mut App, ctx: &egui::Context) {
         return;
     }
     let query = app.cmd_palette.query.clone();
-    let rows = match query.strip_prefix(':') {
-        Some(rest) => palette::tool_rows(rest.trim_start()),
-        None => palette_rows(app, &query),
+    // ---- ws:assistant-pane ---- '>' + a request asks the assistant
+    let ask = query.strip_prefix('>').map(str::trim);
+    let rows = match (ask, query.strip_prefix(':')) {
+        (Some(text), _) => vec![assistant_ctl::palette_row(text)],
+        (None, Some(rest)) => palette::tool_rows(rest.trim_start()),
+        (None, None) => palette_rows(app, &query),
     };
     if let Some(cmd) = palette::show(ctx, &mut app.cmd_palette, &rows) {
+        if let Some(text) = ask {
+            if let Err(e) = assistant_ctl::ask(app, text) {
+                app.toast(format!("Assistant: {e}"));
+            }
+            return;
+        }
         // read BEFORE anything else touches cmd_palette - `palette::show`'s doc comment guarantees this
         // is still the just-submitted arg form for exactly this Command::Tool result, nothing else's.
         let arg_form = app.cmd_palette.arg_form.take();
@@ -146,6 +155,8 @@ fn dispatch(app: &mut App, cmd: Command, arg_form: Option<(&'static str, Vec<(St
         Command::Pane(p) => app.surface(p),
         Command::Tool(name) => {
             let args = arg_form.filter(|(n, _)| *n == name).map(|(_, f)| arg_form_to_json(&f)).unwrap_or(json!({}));
+            // the user's own edit: never folded into an agent's open undo group
+            app.close_group_for_user_edit();
             if let Err(e) = app.run_tool_undoable(name, &args) {
                 app.toast(format!("{name}: {e}"));
             }

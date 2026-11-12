@@ -84,6 +84,9 @@ const MAX_TRACK_H: f32 = 300.0;
 const KEY_LANE_MIN: f32 = 28.0;
 /// Inset of the value lane inside the clip rect (points), top and bottom.
 const KEY_PAD: f32 = 3.0;
+/// ws:html-layer: the body colour of a clip made from HTML source (a label still wins).
+const HTML_CLIP: Color32 = Color32::from_rgb(104, 82, 184);
+
 /// On-screen clip width (same measure as `detailed` below) above which the keyframe mini-graph toggle
 /// appears: wide enough for the corner icon plus a graph worth looking at, not just barely visible.
 const MINI_GRAPH_MIN_W: f32 = 120.0;
@@ -176,6 +179,11 @@ pub struct TimelineState {
     pub show_kinds: (bool, bool),
     /// tools-panel: the Marker tool's press time while a drag is out - a range marker on release.
     marker_from: Option<f64>,
+    // ---- ws:mcp-context ----
+    /// Clips an agent's undo group just changed, outlined at `flash_alpha` (faded by
+    /// `ui::app::tools_context::tick`; 0 = nothing drawn).
+    pub flash: Vec<Id>,
+    pub flash_alpha: f32,
 }
 
 impl Default for TimelineState {
@@ -206,6 +214,9 @@ impl Default for TimelineState {
             hover_time: None,
             show_kinds: (true, true),
             marker_from: None,
+            // ---- ws:mcp-context ----
+            flash: Vec::new(),
+            flash_alpha: 0.0,
         }
     }
 }
@@ -856,7 +867,10 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             }
             // custom labels win over the per-kind fill (Shape / Adjustment have their own)
             let clip_label = c.project.clip_label(clip);
-            let mut color = label_color(c.project, clip_label, pal.clip_color(clip.kind));
+            // ws:html-layer: a layer made from HTML source has its own colour, a </> mark and no filmstrip
+            // (its picture is a cache of the code, not footage)
+            let is_html = clip.uses_asset() && c.project.asset(clip.asset).is_some_and(|a| a.html.is_some());
+            let mut color = label_color(c.project, clip_label, if is_html { HTML_CLIP } else { pal.clip_color(clip.kind) });
             if !clip.enabled || !active {
                 color = color.gamma_multiply(0.5);
             }
@@ -874,6 +888,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 hatch(&lp.with_clip_rect(vis), vis, pal.text.gamma_multiply(0.25));
             } else if clip.is_empty_container() && detailed {
                 hatch(&lp.with_clip_rect(vis), vis, pal.accent.gamma_multiply(0.35));
+            } else if is_html && detailed {
+                hatch(&lp.with_clip_rect(vis), vis, Color32::WHITE.gamma_multiply(0.10)); // ws:html-layer
             }
             if !detailed {
                 if c.selection.contains(&clip.id) {
@@ -892,7 +908,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 if let Some(peaks) = peaks {
                     draw_waveform(&lp, &peaks, clip, vis.shrink(1.0), state, wave_color(color, clip_label, &pal));
                 }
-            } else if matches!(clip.kind, ClipKind::Video | ClipKind::Image | ClipKind::Sequence) && c.view.thumbs {
+            } else if matches!(clip.kind, ClipKind::Video | ClipKind::Image | ClipKind::Sequence) && c.view.thumbs && !is_html {
                 let p: &Project = c.project;
                 let path_at = |t: f64| {
                     let (a, t) = if clip.kind == ClipKind::Sequence {
@@ -945,6 +961,14 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                         font.clone(),
                         pal.text,
                     );
+                }
+            } else if is_html {
+                // ws:html-layer: the </> mark says "code", wherever the clip sits
+                let pill = Rect::from_min_size(name_pos, vec2(25.0, 14.0));
+                name_pc.rect_filled(pill, CornerRadius::same(3), Color32::from_black_alpha(130));
+                name_pc.text(pill.center(), Align2::CENTER_CENTER, "</>", small.clone(), Color32::WHITE);
+                if c.view.clip_text {
+                    name_pc.text(pos2(pill.right() + 4.0, name_pos.y), Align2::LEFT_TOP, &clip.name, font.clone(), pal.text);
                 }
             } else if c.view.clip_text {
                 name_pc.text(name_pos, Align2::LEFT_TOP, &clip.name, font.clone(), pal.text);
@@ -1092,14 +1116,10 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     continue;
                 }
                 let sel = state.selected_marker == Some(m.id);
-                flag(
-                    &lp.with_clip_rect(vis),
-                    mx,
-                    rect.top() + 1.0,
-                    rect.bottom(),
-                    label_color(c.project, m.label, pal.text),
-                    sel,
-                );
+                // ws:mcp-context: a ticked-off comment is drawn dimmed
+                let col = label_color(c.project, m.label, pal.text);
+                let col = if m.done { col.gamma_multiply(0.35) } else { col };
+                flag(&lp.with_clip_rect(vis), mx, rect.top() + 1.0, rect.bottom(), col, sel);
                 // interaction is registered after the clip bodies (below) so the small flags win hit-testing
                 let mr = Rect::from_min_size(pos2(mx - 2.0, rect.top()), vec2(FLAG_W + 4.0, 10.0)).intersect(lanes);
                 if mr.is_positive() {
@@ -1111,6 +1131,11 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 lp.rect_stroke(rect, cr, Stroke::new(2.0, pal.selection), StrokeKind::Inside);
             } else if linked_sel.contains(&clip.id) {
                 lp.rect_stroke(rect, cr, Stroke::new(1.0, pal.selection), StrokeKind::Inside);
+            }
+            // ws:mcp-context: the clips an agent's edit just changed, a fading outline
+            if state.flash_alpha > 0.0 && state.flash.contains(&clip.id) {
+                let s = Stroke::new(2.0, pal.accent.gamma_multiply(state.flash_alpha));
+                lp.rect_stroke(rect, cr, s, StrokeKind::Outside);
             }
 
             // interaction: body, then volume line, then edges, then fade handles on top
@@ -1156,8 +1181,11 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             if br.double_clicked() {
                 c.selection.clear();
                 c.selection.push(clip.id);
+                let html = clip.uses_asset() && c.project.asset(clip.asset).is_some_and(|a| a.html.is_some());
                 if clip.kind == ClipKind::Sequence {
                     out.open_sequence = Some(clip.sequence);
+                } else if html {
+                    crate::ui::html_ui::request_edit(ui.ctx(), clip.id); // ws:html-layer: opens the HTML editor
                 } else if let Some(p) = br.interact_pointer_pos() {
                     *c.playhead = snap_playhead(state.time_at(p.x).max(0.0), c.snap, state.zoom, c.project);
                     out.seeked = true;
@@ -1178,6 +1206,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 labels,
                 buses,
                 shared_effects: &shared_effects,
+                // ---- ws:html-layer ----
+                html: clip.uses_asset() && c.project.asset(clip.asset).is_some_and(|a| a.html.is_some()),
             };
             let mut toggle_graph = false;
             let mut rclick = br.secondary_clicked();
@@ -1379,7 +1409,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 lp.with_clip_rect(bvis).text(
                     band.center(),
                     Align2::CENTER_CENTER,
-                    tr.kind.name(),
+                    tr.name(), // ws:shader-library: a shader transition shows its `@name`
                     small.clone(),
                     pal.text,
                 );
@@ -1637,11 +1667,25 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             continue;
         }
         let mx = state.x_at(m.t);
-        if mx < ruler.left() - FLAG_W || mx > ruler.right() {
+        // ws:mcp-context: a range marker is a translucent span with the flag at its start (so it is
+        // still drawn while only its tail is in view); a ticked-off comment is dimmed
+        let end_x = state.x_at(m.t + m.duration.max(0.0));
+        if end_x.max(mx) < ruler.left() - FLAG_W || mx > ruler.right() {
             continue;
         }
         let sel = state.selected_marker == Some(m.id);
-        flag(&rp, mx, ruler.top() + 1.0, ruler.bottom(), label_color(c.project, m.label, pal.accent), sel);
+        let col = label_color(c.project, m.label, pal.accent);
+        let col = if m.done { col.gamma_multiply(0.35) } else { col };
+        if m.duration > 0.0 {
+            let span = Rect::from_min_max(
+                pos2(mx.max(ruler.left()), ruler.top() + 1.0),
+                pos2(end_x.min(ruler.right()), ruler.bottom()),
+            );
+            if span.is_positive() {
+                rp.rect_filled(span, 0, col.gamma_multiply(0.25));
+            }
+        }
+        flag(&rp, mx, ruler.top() + 1.0, ruler.bottom(), col, sel);
         let mr = Rect::from_min_size(pos2(mx - 2.0, ruler.top()), vec2(FLAG_W + 4.0, RULER_H)).intersect(ruler);
         if mr.is_positive() {
             let r = ui.interact(mr, id.with(("mk", m.id)), Sense::click_and_drag());
@@ -1699,7 +1743,10 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     let mut pick_view = None;
     menu::context(&ruler_resp, |ui| {
         use crate::hotkeys::Action::*;
-        menus::acts(ui, &[Some(AddMarker), None, Some(MarkIn), Some(MarkOut), Some(ClearInOut), None]);
+        menus::acts(ui, &[Some(AddMarker), None, Some(MarkIn), Some(MarkOut), Some(ClearInOut)]);
+        // ---- ws:assistant-pane ----
+        crate::ui::assistant_ui::add_to_assistant_row(ui, crate::ui::assistant_data::Pin::Range);
+        ui.separator();
         paste_menu(ui);
         menu::sub(ui, Some(Glyph::Rows), "View", |ui| {
             for (i, v) in c.views.iter().enumerate() {
@@ -1915,7 +1962,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     .filter(|(_, cl)| (cl.kind == ClipKind::Audio) == k.applies_to_audio())
                     .map(|(r, _)| r),
                 DragPayload::KeyBlock(_) => drop_on_clip(state, c.project, pos, t).map(|(r, _)| r),
-                DragPayload::Transition(_) => drop_on_clip(state, c.project, pos, t).map(|(r, cl)| {
+                DragPayload::Transition(_) | DragPayload::ShaderTransition(_) => drop_on_clip(state, c.project, pos, t).map(|(r, cl)| {
                     // the half you are over picks the cut (same rule the app applies on release)
                     let x = if crate::ui::transitions_ui::drop_at_end(cl, t) { r.right() } else { r.left() };
                     Rect::from_min_max(pos2(x - 6.0, r.top()), pos2(x + 6.0, r.bottom()))
@@ -1927,7 +1974,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 lp.rect_stroke(hit, 0, Stroke::new(2.0, pal.selection), StrokeKind::Inside);
             } else if !matches!(
                 &*payload,
-                DragPayload::Effect(_) | DragPayload::Transition(_) | DragPayload::KeyBlock(_)
+                DragPayload::Effect(_) | DragPayload::Transition(_) | DragPayload::ShaderTransition(_) | DragPayload::KeyBlock(_)
             ) {
                 let dur = match &*payload {
                     DragPayload::Asset(aid) => {
