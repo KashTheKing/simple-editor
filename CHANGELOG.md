@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Chat, forum and video-comment threads
+- **Lists are tables now** (a rule for every list in the app): UI list/row layout: any vertical list of rows is laid out as a table with fixed, aligned columns [drag handle][arrow][label, fills and truncates][fixed value columns][fixed right-aligned controls]; controls never float after variable-length text; form fields use two aligned columns (labels at one x, inputs at one x); reorder = drag handle + up/down + Alt+Up/Down, one undo step; use the shared helper (`ui::list_rows`). The thread editor's messages, comments and cast follow it; drag a row's grip to reorder (replies move with their comment, and a horizontal move picks the nesting), Esc cancels.
+- **Messages only, DMs, typing and video comments**: a chat is now just the people messaging by default;
+  server rail, channel / conversation list, member list, top bar, header, message box, typing line, date
+  dividers, NEW line, scrollbar and a transparent background are each a switch, with Server channel / DM /
+  Group DM layouts. New **typing animation**: your messages type into the message box key by key (speed,
+  typos with backspace, caret), then send, while the others "are typing"; all CSS timing, frame-exact. New
+  **Video Comments** thread (comment box, comments, likes, hearts, pins, replies) whose comment can be typed,
+  the Comment button pressed (the fake mouse can aim at it) and posted. Six Gallery cards.
+- **Fake chat and forum threads** (Add ▸ Chat Thread / Forum Thread, the online library, or `thread.create`):
+  build a chat window or a forum post with nested comments from a list instead of HTML. Inspector ▸ Thread has
+  + Add message / comment / reply, move, duplicate, delete and fold per item; a cast of people with avatars
+  from your project, name colours and badges (change one and all their messages follow); reactions, embeds,
+  replies, system lines, typing indicator, six looks, themes, fonts and times; a script box that turns plain
+  lines into messages, and JSON import / export. Items arrive one after another with exact CSS timing (pop,
+  slide, fade, typing dots, vote counts counting up, pulse), the newest always in view. `thread.*` MCP tools.
+
 ### HTML layers
 - **Long HTML layers render many times faster**, always at the project's frame rate: several copies of
   Edge share the work (up to 4), and frames where nothing moves are reused. A 60 s layer shows a still

@@ -1919,6 +1919,57 @@
       "thumb": "thumbs/html-chapter-card.jpg"
     },
     {
+      "id": "html/chat-dm-typing",
+      "kind": "html",
+      "name": "Chat Thread",
+      "desc": "A fake chat thread: avatars, coloured names, timestamps and messages that arrive one after another.",
+      "tags": [
+        "chat",
+        "thread",
+        "messages",
+        "discord-style",
+        "skit"
+      ],
+      "file": "html/chat-dm-typing.html",
+      "size": 19661,
+      "credit": "",
+      "thumb": "thumbs/html-chat-dm-typing.jpg"
+    },
+    {
+      "id": "html/chat-server-typing",
+      "kind": "html",
+      "name": "Chat Thread",
+      "desc": "A fake chat thread: avatars, coloured names, timestamps and messages that arrive one after another.",
+      "tags": [
+        "chat",
+        "thread",
+        "messages",
+        "discord-style",
+        "skit"
+      ],
+      "file": "html/chat-server-typing.html",
+      "size": 20993,
+      "credit": "",
+      "thumb": "thumbs/html-chat-server-typing.jpg"
+    },
+    {
+      "id": "html/chat-thread",
+      "kind": "html",
+      "name": "Chat Thread",
+      "desc": "A fake chat thread: avatars, coloured names, timestamps and messages that arrive one after another.",
+      "tags": [
+        "chat",
+        "thread",
+        "messages",
+        "discord-style",
+        "skit"
+      ],
+      "file": "html/chat-thread.html",
+      "size": 14590,
+      "credit": "",
+      "thumb": "thumbs/html-chat-thread.jpg"
+    },
+    {
       "id": "html/checklist",
       "kind": "html",
       "name": "Checklist",
@@ -2021,6 +2072,23 @@
       "size": 6442,
       "credit": "",
       "thumb": "thumbs/html-end-screen.jpg"
+    },
+    {
+      "id": "html/forum-thread",
+      "kind": "html",
+      "name": "Forum Thread",
+      "desc": "A fake forum thread: a post with votes, flair and nested comments that arrive one after another.",
+      "tags": [
+        "forum",
+        "thread",
+        "comments",
+        "post",
+        "skit"
+      ],
+      "file": "html/forum-thread.html",
+      "size": 15140,
+      "credit": "",
+      "thumb": "thumbs/html-forum-thread.jpg"
     },
     {
       "id": "html/game-chat-bubble",
@@ -2510,6 +2578,40 @@
       "size": 4825,
       "credit": "",
       "thumb": "thumbs/html-versus-card.jpg"
+    },
+    {
+      "id": "html/video-comment-typing",
+      "kind": "html",
+      "name": "Video Comments",
+      "desc": "A fake video comment section: a comment typed into the box and posted, likes, replies, hearts and pins.",
+      "tags": [
+        "comments",
+        "video",
+        "thread",
+        "typing",
+        "skit"
+      ],
+      "file": "html/video-comment-typing.html",
+      "size": 18937,
+      "credit": "",
+      "thumb": "thumbs/html-video-comment-typing.jpg"
+    },
+    {
+      "id": "html/video-comments",
+      "kind": "html",
+      "name": "Video Comments",
+      "desc": "A fake video comment section: a comment typed into the box and posted, likes, replies, hearts and pins.",
+      "tags": [
+        "comments",
+        "video",
+        "thread",
+        "typing",
+        "skit"
+      ],
+      "file": "html/video-comments.html",
+      "size": 13872,
+      "credit": "",
+      "thumb": "thumbs/html-video-comments.jpg"
     },
     {
       "id": "icons/arrow-down",

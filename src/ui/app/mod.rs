@@ -146,6 +146,8 @@ mod voice_ctl;
 // ---- ws:html-layer ----
 mod html_ctl;
 mod tools_html;
+// ---- ws:thread-viewers ----
+mod tools_thread;
 // ---- ws:shader-library ----
 mod tools_shader;
 // ---- ws:skills ----
@@ -1607,6 +1609,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:docs-release ----
     // ---- ws:html-layer ----
     tools_html::TOOLS,
+    // ---- ws:thread-viewers ----
+    tools_thread::TOOLS,
     // ---- ws:shader-library ----
     tools_shader::TOOLS,
     // ---- ws:skills ----
@@ -1683,6 +1687,8 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     // ---- ws:docs-release ----
     // ---- ws:html-layer ----
     html_ctl::act,
+    // ---- ws:thread-viewers ----
+    tools_thread::act,
     // ---- ws:shader-library ----
     tools_shader::act,
     // ---- ws:skills ----

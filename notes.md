@@ -202,6 +202,30 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
   GPU-path export is not benched (needs the UI's GL context) - time it from the app.
   Baseline: not measured yet. Record it here, then confirm the budgets in goals.md.
 
+- **thread-viewers (2026-11-13): chat / forum threads are DATA that generate an HTML layer.** The thread
+  (cast, items, look, animation) is JSON inside the page (`<meta name="se:thread">`, `://` escaped so lint
+  stays clean), so Save to Library / Gallery / `html.get` carry it with no model change. `engine::thread`
+  parses it, edits it and writes the page; `ui::thread_ui` (Inspector > Thread) and `tools_thread` (`thread.*`)
+  are two front ends on the same calls. Motion is all CSS timing from the data: an item is `.it` (a grid whose
+  `grid-template-rows` goes 0fr -> 1fr, so the newest pushes the rest up with no height estimates) > `.in`
+  (clipped; pops / slides / fades); the viewport is bottom-anchored (`justify-content:flex-end`) with a
+  `min-height:100%` column, which IS the auto-scroll, and top-anchored when animation is off. Gotchas:
+  `infinite` animations make every frame "moving" in `render_to_file`, so the typing dots run a counted
+  number of times; per-item times are inline `animation-delay` / `--d`; vote counting is a stepped strip of
+  the numbers (`steps(var(--n))`), not `@property`, so it stays plain CSS. New files written with CRLF put
+  `\r\n` into the page through `include_str!`: the golden test for the two library templates catches it
+  (`SE_UPDATE_THREAD_LIBRARY=1 cargo test library_templates_are` rewrites them).
+
+- **thread-viewers: avatars vanished from the rendered frames (a held transform animation).** In the timeline / exported
+  render an avatar (`border-radius` + `overflow:hidden` circle) was not painted once an ANCESTOR had run a `transform`
+  animation with fill-mode `both` (the end state is held): the text stayed, the circle and its picture were gone, and a
+  whole forum comment vanished the same way. `html.check` showed it at t=3 s and not at t=5 s, and `animation:none` on
+  the ancestor cured it. The pop / slide effects now move with `top` / `left` + `opacity` instead of `transform`.
+  Do NOT "fix" it with `animation-fill-mode: backwards` instead of `both`: a finished animation without a forwards fill
+  drops out of `document.getAnimations()`, so the renderer's `seek` can no longer rewind it and, when Edge is slow (a
+  loaded machine), early frames show the END state. The avatar picture is the circle's `background-image` (no `<img>`).
+  `ui.input` has a `drag` event now (press, glide, release) for testing drags.
+
 - **alpha-proxy (2026-10-06): a `.mov` with alpha previewed on black because its proxy was yuv420p.**
   Export was always right (it reads the source). Such a source now gets a STACKED proxy, `<hash>-a.mp4`:
   still all-intra H.264 that Media Foundation reads, twice as tall, premultiplied colour on top and the

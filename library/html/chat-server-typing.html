@@ -1,0 +1,155 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Chat Thread</title>
+<meta name="se:kind" content="layer">
+<meta name="se:desc" content="A fake chat thread: avatars, coloured names, timestamps and messages that arrive one after another.">
+<meta name="se:tags" content="chat, thread, messages, discord-style, skit">
+<meta name="se:size" content="1160x940">
+<meta name="se:duration" content="12.0s">
+<meta name="se:thumb" content="10.8">
+<meta name="se:field" content="font | font | Segoe UI">
+<meta name="se:param" content="scroll | number | 0 | -4000 | 4000">
+<meta name="se:thread" content="{&quot;kind&quot;:&quot;chat&quot;,&quot;layout&quot;:&quot;cozy&quot;,&quot;theme&quot;:&quot;dark&quot;,&quot;accent&quot;:&quot;#5b6cf0&quot;,&quot;font&quot;:&quot;Segoe UI&quot;,&quot;radius&quot;:12,&quot;density&quot;:&quot;normal&quot;,&quot;size&quot;:28,&quot;width&quot;:1160,&quot;height&quot;:940,&quot;title&quot;:&quot;general&quot;,&quot;topic&quot;:&quot;talk about anything, be nice&quot;,&quot;server&quot;:&quot;The Squad&quot;,&quot;icon&quot;:&quot;&quot;,&quot;time_format&quot;:&quot;today&quot;,&quot;now&quot;:&quot;2026-11-13 4:40 PM&quot;,&quot;group&quot;:true,&quot;rail&quot;:true,&quot;sidebar&quot;:false,&quot;header&quot;:true,&quot;composer&quot;:true,&quot;mode&quot;:&quot;server&quot;,&quot;me&quot;:&quot;Maya&quot;,&quot;channels&quot;:true,&quot;topbar&quot;:false,&quot;indicator&quot;:true,&quot;dividers&quot;:false,&quot;unread_line&quot;:false,&quot;scrollbar&quot;:false,&quot;transparent&quot;:false,&quot;cast&quot;:[{&quot;name&quot;:&quot;Maya&quot;,&quot;color&quot;:&quot;#e5534b&quot;},{&quot;name&quot;:&quot;Jordan&quot;,&quot;color&quot;:&quot;#3fa34d&quot;,&quot;status&quot;:&quot;Online&quot;},{&quot;name&quot;:&quot;Dave&quot;,&quot;color&quot;:&quot;#4f6bed&quot;}],&quot;items&quot;:[{&quot;id&quot;:1,&quot;who&quot;:&quot;Jordan&quot;,&quot;text&quot;:&quot;did anyone watch the new episode&quot;,&quot;date&quot;:&quot;2026-11-13&quot;,&quot;time&quot;:&quot;4:31 PM&quot;},{&quot;id&quot;:2,&quot;who&quot;:&quot;Dave&quot;,&quot;text&quot;:&quot;not yet, no spoilers&quot;,&quot;date&quot;:&quot;2026-11-13&quot;,&quot;time&quot;:&quot;4:32 PM&quot;},{&quot;id&quot;:3,&quot;who&quot;:&quot;Maya&quot;,&quot;text&quot;:&quot;I just finished it. I have **thoughts**&quot;,&quot;date&quot;:&quot;2026-11-13&quot;,&quot;time&quot;:&quot;4:33 PM&quot;},{&quot;id&quot;:4,&quot;who&quot;:&quot;Jordan&quot;,&quot;text&quot;:&quot;tell me everything&quot;,&quot;date&quot;:&quot;2026-11-13&quot;,&quot;time&quot;:&quot;4:34 PM&quot;},{&quot;id&quot;:5,&quot;who&quot;:&quot;Maya&quot;,&quot;text&quot;:&quot;ok. first of all. the ending.&quot;,&quot;date&quot;:&quot;2026-11-13&quot;,&quot;time&quot;:&quot;4:35 PM&quot;}],&quot;post&quot;:{&quot;title&quot;:&quot;&quot;,&quot;who&quot;:&quot;&quot;,&quot;flair&quot;:&quot;&quot;,&quot;flair_color&quot;:&quot;&quot;,&quot;score&quot;:0,&quot;comments&quot;:0,&quot;awards&quot;:[],&quot;age&quot;:&quot;&quot;,&quot;body&quot;:&quot;&quot;,&quot;image&quot;:&quot;&quot;,&quot;link&quot;:&quot;&quot;,&quot;thumb&quot;:&quot;&quot;,&quot;sort&quot;:&quot;&quot;},&quot;anim&quot;:{&quot;on&quot;:true,&quot;start&quot;:0.4,&quot;gap&quot;:0.45,&quot;typing&quot;:0.9,&quot;effect&quot;:&quot;pop&quot;,&quot;autoscroll&quot;:true,&quot;tick&quot;:true,&quot;shown&quot;:0,&quot;hold&quot;:1.5,&quot;compose&quot;:true,&quot;cps&quot;:16.0,&quot;typos&quot;:false,&quot;pause&quot;:0.4}}">
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;background:transparent;overflow:hidden}
+body{width:100vw;height:100vh;font:400 var(--fs)/1.38 {{font}};color:var(--fg)}
+.win{width:100%;height:100%;display:flex;color:var(--fg);background:var(--bg);border-radius:var(--r);overflow:hidden}
+.dark{--bg:#2e3138;--bg2:#272a30;--bg3:#1f2227;--fg:#e1e4ea;--mut:#8d95a3;--line:#3c4048;--hl:rgba(110,125,255,.2);--lnk:#4aa3ff;--page:#15171b;--card:#1f2227}
+.light{--bg:#fff;--bg2:#f3f4f6;--bg3:#e5e7eb;--fg:#23272e;--mut:#666e7a;--line:#dfe2e7;--hl:rgba(79,107,237,.14);--lnk:#2563eb;--page:#e9ecef;--card:#fff}
+.d-compact{--g:.4}.d-normal{--g:1}.d-roomy{--g:1.7}
+.main{flex:1;min-width:0;display:flex;flex-direction:column}
+.vp{position:relative;flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+.vp.end{justify-content:flex-end}
+.col{flex:none;min-height:100%;transform:translateY(calc(var(--scroll,0) * 1px))}
+.it{display:grid;grid-template-rows:1fr}
+.it>.in{min-height:0;overflow:hidden;position:relative}
+.anim .a{animation:grow var(--gd,.3s) ease-out var(--d,0s) both}
+.anim .a>.in{animation:var(--fx,pop) var(--fd,.4s) cubic-bezier(.2,.9,.3,1) var(--d,0s) both}
+@keyframes grow{from{grid-template-rows:0fr}to{grid-template-rows:1fr}}
+@keyframes pop{from{opacity:0;top:.6em}to{opacity:1;top:0}}
+@keyframes slide{from{opacity:0;left:-2em}to{opacity:1;left:0}}
+@keyframes fade{from{opacity:0}to{opacity:1}}
+.pl{position:absolute;inset:0;background:var(--accent);opacity:0;pointer-events:none;animation:pulse 1.8s ease-out both}
+@keyframes pulse{0%{opacity:0}12%{opacity:.3}100%{opacity:0}}
+.av{flex:none;position:relative;width:2.4em;height:2.4em;border-radius:50%;display:grid;place-items:center;font-weight:700;color:#fff;overflow:hidden}
+.av img,.ci img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.bdg{display:inline-block;padding:0 .4em;border-radius:.3em;background:var(--accent);color:#fff;font-size:.62em;font-weight:700;line-height:1.5;vertical-align:middle}
+.tk{display:inline-block;height:1.25em;line-height:1.25em;overflow:hidden;vertical-align:bottom}
+.tkc{display:block;animation:tick var(--td,1.2s) steps(var(--n),end) var(--ts,0s) both}
+@keyframes tick{from{transform:none}to{transform:translateY(calc(var(--n) * -1.25em))}}
+.tx{overflow-wrap:anywhere}
+.tx b{font-weight:700}
+.tx code{font:.88em Consolas,monospace;background:var(--bg3);padding:.1em .3em;border-radius:.25em}
+.tx pre{margin:.3em 0;padding:.6em .8em;background:var(--bg3);border:1px solid var(--line);border-radius:.4em;font:.88em/1.4 Consolas,monospace;white-space:pre-wrap}
+.tx pre code{background:none;padding:0}
+.tx blockquote{margin:.2em 0;padding:0 0 0 .8em;border-left:.25em solid var(--line)}
+.tx .sp{background:var(--bg3);color:transparent;border-radius:.25em;padding:0 .2em}
+.anim .a .sp{animation:unsp .25s ease calc(var(--d,0s) + 1.6s) both}
+@keyframes unsp{from{color:transparent;background:var(--bg3)}to{color:var(--fg);background:var(--bg2)}}
+.tx .mn{color:var(--accent);background:var(--hl);border-radius:.25em;padding:0 .15em}
+.tx .lk{color:var(--lnk)}
+.tx .ed{color:var(--mut);font-size:.7em;margin-left:.4em}
+.att img{display:block;max-width:100%;max-height:15em;border-radius:.4em;margin-top:.35em}
+.r{display:inline-flex;gap:.35em;align-items:center;padding:.05em .5em;border-radius:.5em;background:var(--bg2);border:1px solid transparent;font-size:.85em}
+.r b{font-weight:600;color:var(--mut)}
+.r.me{background:var(--hl);border-color:var(--accent)}
+.r.me b{color:var(--accent)}
+.anim .a .r{animation:rpop .35s cubic-bezier(.3,1.7,.5,1) both}
+@keyframes rpop{from{transform:scale(0);opacity:0}to{transform:none;opacity:1}}
+.win.tr{background:transparent}
+.av.sm{width:1.9em;height:1.9em;font-size:.85em}
+.ph{color:var(--mut)}
+.tbox{position:absolute;inset:0;display:flex;justify-content:flex-end;align-items:center;overflow:hidden;opacity:0;background:var(--bg2);animation:tw 1s linear both}
+@keyframes tw{0%{opacity:0}0.01%{opacity:1}99.99%{opacity:1}100%{opacity:0}}
+.tin{min-width:100%;white-space:pre;padding:0 1em;line-height:1.5}
+.c{font-size:0;animation:chr .001s both}
+.c.w{animation-name:chw}
+@keyframes chr{from{font-size:0}to{font-size:1em}}
+@keyframes chw{0%{font-size:0}0.01%{font-size:1em}99.99%{font-size:1em}100%{font-size:0}}
+.cr{display:inline-block;width:2px;height:1.15em;margin-left:1px;vertical-align:text-bottom;background:var(--fg);animation:blink 1s steps(1) both}
+@keyframes blink{0%{opacity:1}50%{opacity:0}}
+.gx{display:grid;grid-template-rows:0fr;animation:grow .25s ease-out both}
+.gx>div{min-height:0;overflow:hidden}
+.gy{display:grid;grid-template-rows:1fr;animation:shut .25s ease-in both}
+.gy>div{min-height:0;overflow:hidden}
+@keyframes shut{from{grid-template-rows:1fr}to{grid-template-rows:0fr}}
+
+.rail{flex:none;width:3.2em;background:var(--bg3);display:flex;flex-direction:column;align-items:center;gap:.5em;padding:.6em 0}
+.rail i{position:relative;width:2.1em;height:2.1em;border-radius:50%;background:var(--bg);display:grid;place-items:center;font-style:normal;font-weight:700;overflow:hidden}
+.rail i.on{background:var(--accent);color:#fff;border-radius:32%}
+.rail img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.hd0{flex:none;display:flex;align-items:center;gap:.55em;height:2.5em;padding:0 1em;border-bottom:1px solid var(--line);font-weight:700}
+.hd0 .hash{color:var(--mut);font-weight:400;font-size:1.25em}
+.hd0 .sep{width:1px;height:1.2em;background:var(--line)}
+.hd0 .topic{font-weight:400;color:var(--mut);font-size:.78em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chat .col{display:flex;flex-direction:column;justify-content:flex-end;padding:.4em 0}
+.row{display:flex;gap:.9em;padding:.1em 1em .1em 1em}
+.m .row{padding-top:calc(.12em * var(--g))}
+.m.f .row{padding-top:calc(.5em * var(--g))}
+.gt{flex:none;width:2.4em}
+.bd{min-width:0;flex:1}
+.hd{display:flex;align-items:baseline;gap:.5em}
+.un{font-weight:600}
+.hd time,.row>time{color:var(--mut);font-size:.68em;font-weight:400}
+.pn{font-size:.7em;color:var(--mut)}
+.m .in.hl{background:var(--hl);box-shadow:inset .22em 0 var(--accent)}
+.rp{display:flex;align-items:center;gap:.4em;margin:.35em 1em -.05em 2.6em;font-size:.76em;color:var(--mut);white-space:nowrap;overflow:hidden}
+.rp::before{content:"";flex:none;width:1.6em;height:.6em;border-left:2px solid var(--line);border-top:2px solid var(--line);border-top-left-radius:.5em;align-self:flex-end}
+.rp .av{width:1.3em;height:1.3em;font-size:.7em}
+.rp b{font-weight:600}
+.rp span{overflow:hidden;text-overflow:ellipsis}
+.emb{display:flex;gap:.9em;max-width:27em;margin:.35em 0;padding:.6em .8em;background:var(--bg2);border-left:.3em solid var(--ec,var(--accent));border-radius:.35em}
+.emb .et{font-weight:700}
+.emb .ed2{font-size:.88em}
+.emb img{flex:none;width:4.5em;height:4.5em;object-fit:cover;border-radius:.3em}
+.rx{display:flex;flex-wrap:wrap;gap:.4em;margin-top:.35em}
+.sy{display:flex;align-items:baseline;gap:.5em;padding:calc(.35em * var(--g)) 1em calc(.35em * var(--g)) 1.4em;color:var(--mut);font-size:.92em}
+.sy .si{color:#3ba55d;font-weight:700}
+.sy b{color:var(--fg);font-weight:600}
+.dv{display:flex;align-items:center;gap:.7em;padding:.5em 1em;color:var(--mut);font-size:.72em;font-weight:600}
+.dv i{flex:1;height:1px;background:var(--line)}
+.dv.nw{color:#ed4245}
+.dv.nw i{background:#ed4245}
+.dv.nw span{background:#ed4245;color:#fff;padding:0 .5em;border-radius:.6em;font-size:.9em}
+.foot{flex:none;padding:0 1em .9em}
+.tyw{position:relative;height:1.5em;font-size:.74em;color:var(--mut)}
+.ty{position:absolute;left:.4em;top:.1em;display:flex;align-items:center;gap:.5em;opacity:0;animation:tyw 1s linear both}
+.ty b{color:var(--fg);font-weight:700}
+@keyframes tyw{0%{opacity:0}3%{opacity:1}97%{opacity:1}100%{opacity:0}}
+.dots{display:inline-flex;gap:.2em}
+.dots i{width:.4em;height:.4em;border-radius:50%;background:var(--fg);opacity:.4;animation:dot .9s ease-in-out both}
+@keyframes dot{0%,100%{transform:none;opacity:.4}40%{transform:translateY(-.3em);opacity:1}}
+.side{flex:none;width:12em;background:var(--bg2);border-left:1px solid var(--line);padding:.8em .7em;overflow:hidden}
+.side h4{margin:0 0 .5em;font-size:.68em;letter-spacing:.04em;color:var(--mut)}
+.side>div{display:flex;align-items:center;gap:.6em;padding:.25em 0;font-size:.9em;font-weight:600}
+.side .av{width:1.9em;height:1.9em;font-size:.8em}
+.c-compact .row{gap:.6em;padding-left:1em}
+.c-compact .row>time{flex:none;width:9em;white-space:nowrap;text-align:right;padding-top:.2em}
+.c-compact .bd{display:block}
+.c-compact .tx{display:inline}
+.c-compact .un{margin-right:.45em}
+.c-compact .m.f .row{padding-top:calc(.12em * var(--g))}
+.cmp{position:relative;height:2.6em;display:flex;align-items:center;padding:0 1em;border-radius:.6em;background:var(--bg2);color:var(--mut);overflow:hidden}
+.cmp .tbox{border-radius:.6em;color:var(--fg)}
+.tb{flex:none;display:flex;justify-content:flex-end;align-items:center;height:2em;padding:0 1em;background:var(--bg3)}
+.srch{padding:.1em 1.4em .1em .7em;border-radius:.3em;background:var(--bg);color:var(--mut);font-size:.7em}
+.chs{flex:none;width:11em;background:var(--bg2);padding:.8em .6em}
+.chs h3{margin:0 0 .6em;font-size:.95em}
+.chs h4{margin:.4em 0;font-size:.62em;letter-spacing:.04em;color:var(--mut)}
+.chs>div{display:flex;align-items:center;gap:.5em;padding:.25em .5em;border-radius:.3em;color:var(--mut);font-size:.9em;font-weight:600}
+.chs>div.on{background:var(--hl);color:var(--fg)}
+.dmh{gap:.6em}
+.st{display:flex;align-items:center;gap:.35em;font-weight:400;color:var(--mut);font-size:.75em}
+.dot{display:inline-block;width:.6em;height:.6em;border-radius:50%;background:#3ba55d}
+.stack{display:inline-flex}
+.stack .av{margin-left:-.5em;border:2px solid var(--bg)}
+.stack .av:first-child{margin-left:0}
+.sbar{position:absolute;right:.25em;top:.4em;bottom:.4em;width:.5em;border-radius:1em;background:var(--bg3)}
+.sbar i{position:absolute;left:0;right:0;bottom:0;height:32%;border-radius:1em;background:var(--line)}
+</style>
+</head>
+<body class="anim" style="--accent:#5b6cf0;--r:12px;--fs:28px;--fx:pop;--fd:.4s;--gd:.3s"><div class="win chat dark c-cozy d-normal"><div class="rail"><i class="on"><span>T</span></i><i></i><i></i><i></i></div><div class="chs"><h3>The Squad</h3><h4>TEXT CHANNELS</h4><div class="on"># general</div><div># random</div><div># memes</div><div># videos</div></div><div class="main"><div class="hd0"><span class="hash">#</span><b>general</b><span class="sep"></span><span class="topic">talk about anything, be nice</span></div><div class="vp end"><div class="col"><div class="it m f a" style="--d:1.3s;"><div class="in"><div class="row"><div class="av" style="background:#3fa34d"><span>J</span></div><div class="bd"><div class="hd"><b class="un" style="color:#3fa34d">Jordan</b><time>Today at 4:31 PM</time></div><div class="tx">did anyone watch the new episode</div></div></div></div></div><div class="it m f a" style="--d:2.65s;"><div class="in"><div class="row"><div class="av" style="background:#4f6bed"><span>D</span></div><div class="bd"><div class="hd"><b class="un" style="color:#4f6bed">Dave</b><time>Today at 4:32 PM</time></div><div class="tx">not yet, no spoilers</div></div></div></div></div><div class="it m f a" style="--d:5.938s;"><div class="in"><div class="row"><div class="av" style="background:#e5534b"><span>M</span></div><div class="bd"><div class="hd"><b class="un" style="color:#e5534b">Maya</b><time>Today at 4:33 PM</time></div><div class="tx">I just finished it. I have <b>thoughts</b></div></div></div></div></div><div class="it m f a" style="--d:7.288s;"><div class="in"><div class="row"><div class="av" style="background:#3fa34d"><span>J</span></div><div class="bd"><div class="hd"><b class="un" style="color:#3fa34d">Jordan</b><time>Today at 4:34 PM</time></div><div class="tx">tell me everything</div></div></div></div></div><div class="it m f a" style="--d:9.95s;"><div class="in"><div class="row"><div class="av" style="background:#e5534b"><span>M</span></div><div class="bd"><div class="hd"><b class="un" style="color:#e5534b">Maya</b><time>Today at 4:35 PM</time></div><div class="tx">ok. first of all. the ending.</div></div></div></div></div></div></div><div class="foot"><div class="tyw"><div class="ty" style="animation-delay:0.4s;animation-duration:0.9s"><span class="dots"><i style="animation-delay:0.4s;animation-iteration-count:1"></i><i style="animation-delay:0.55s;animation-iteration-count:1"></i><i style="animation-delay:0.7s;animation-iteration-count:1"></i></span><span><b>Jordan</b> is typing…</span></div><div class="ty" style="animation-delay:1.75s;animation-duration:0.9s"><span class="dots"><i style="animation-delay:1.75s;animation-iteration-count:1"></i><i style="animation-delay:1.9s;animation-iteration-count:1"></i><i style="animation-delay:2.05s;animation-iteration-count:1"></i></span><span><b>Dave</b> is typing…</span></div><div class="ty" style="animation-delay:6.388s;animation-duration:0.9s"><span class="dots"><i style="animation-delay:6.388s;animation-iteration-count:1"></i><i style="animation-delay:6.538s;animation-iteration-count:1"></i><i style="animation-delay:6.688s;animation-iteration-count:1"></i></span><span><b>Jordan</b> is typing…</span></div></div><div class="cmp"><span class="ph">Message #general</span><div class="tbox" style="animation-delay:3.1s;animation-duration:2.837s"><div class="tin"><span class="c" style="animation-delay:3.1s">I</span><span class="c" style="animation-delay:3.163s">&nbsp;</span><span class="c" style="animation-delay:3.225s">j</span><span class="c" style="animation-delay:3.288s">u</span><span class="c" style="animation-delay:3.35s">s</span><span class="c" style="animation-delay:3.413s">t</span><span class="c" style="animation-delay:3.475s">&nbsp;</span><span class="c" style="animation-delay:3.538s">f</span><span class="c" style="animation-delay:3.6s">i</span><span class="c" style="animation-delay:3.663s">n</span><span class="c" style="animation-delay:3.725s">i</span><span class="c" style="animation-delay:3.788s">s</span><span class="c" style="animation-delay:3.85s">h</span><span class="c" style="animation-delay:3.913s">e</span><span class="c" style="animation-delay:3.975s">d</span><span class="c" style="animation-delay:4.037s">&nbsp;</span><span class="c" style="animation-delay:4.1s">i</span><span class="c" style="animation-delay:4.162s">t</span><span class="c" style="animation-delay:4.225s">.</span><span class="c" style="animation-delay:4.287s">&nbsp;</span><span class="c" style="animation-delay:4.35s">I</span><span class="c" style="animation-delay:4.412s">&nbsp;</span><span class="c" style="animation-delay:4.475s">h</span><span class="c" style="animation-delay:4.537s">a</span><span class="c" style="animation-delay:4.6s">v</span><span class="c" style="animation-delay:4.662s">e</span><span class="c" style="animation-delay:4.725s">&nbsp;</span><span class="c" style="animation-delay:4.787s">*</span><span class="c" style="animation-delay:4.85s">*</span><span class="c" style="animation-delay:4.912s">t</span><span class="c" style="animation-delay:4.975s">h</span><span class="c" style="animation-delay:5.037s">o</span><span class="c" style="animation-delay:5.1s">u</span><span class="c" style="animation-delay:5.162s">g</span><span class="c" style="animation-delay:5.225s">h</span><span class="c" style="animation-delay:5.287s">t</span><span class="c" style="animation-delay:5.35s">s</span><span class="c" style="animation-delay:5.412s">*</span><span class="c" style="animation-delay:5.475s">*</span><i class="cr" style="animation-delay:3.1s;animation-iteration-count:3"></i></div></div><div class="tbox" style="animation-delay:7.738s;animation-duration:2.213s"><div class="tin"><span class="c" style="animation-delay:7.738s">o</span><span class="c" style="animation-delay:7.8s">k</span><span class="c" style="animation-delay:7.863s">.</span><span class="c" style="animation-delay:7.925s">&nbsp;</span><span class="c" style="animation-delay:7.988s">f</span><span class="c" style="animation-delay:8.05s">i</span><span class="c" style="animation-delay:8.113s">r</span><span class="c" style="animation-delay:8.175s">s</span><span class="c" style="animation-delay:8.238s">t</span><span class="c" style="animation-delay:8.3s">&nbsp;</span><span class="c" style="animation-delay:8.363s">o</span><span class="c" style="animation-delay:8.425s">f</span><span class="c" style="animation-delay:8.488s">&nbsp;</span><span class="c" style="animation-delay:8.55s">a</span><span class="c" style="animation-delay:8.613s">l</span><span class="c" style="animation-delay:8.675s">l</span><span class="c" style="animation-delay:8.738s">.</span><span class="c" style="animation-delay:8.8s">&nbsp;</span><span class="c" style="animation-delay:8.863s">t</span><span class="c" style="animation-delay:8.925s">h</span><span class="c" style="animation-delay:8.988s">e</span><span class="c" style="animation-delay:9.05s">&nbsp;</span><span class="c" style="animation-delay:9.113s">e</span><span class="c" style="animation-delay:9.175s">n</span><span class="c" style="animation-delay:9.238s">d</span><span class="c" style="animation-delay:9.3s">i</span><span class="c" style="animation-delay:9.363s">n</span><span class="c" style="animation-delay:9.425s">g</span><span class="c" style="animation-delay:9.488s">.</span><i class="cr" style="animation-delay:7.738s;animation-iteration-count:3"></i></div></div></div></div></div></div></body>
+</html>

@@ -882,12 +882,21 @@ fn clip_section(
                 crate::ui::html_ui::live_section(ui, project, id, at);
             });
         }
-        section(ui, "html_source", "HTML", true, folds.map, None, |ui| {
+        // ---- ws:thread-viewers ---- a chat / forum thread is edited as data; its page is generated
+        let is_thread = crate::ui::thread_ui::is_thread(project, id);
+        if is_thread {
+            section(ui, "thread", "Thread", true, folds.map, None, |ui| {
+                html_changed |= crate::ui::thread_ui::section(ui, project, id, fonts, undo);
+            });
+        }
+        section(ui, "html_source", "HTML", !is_thread, folds.map, None, |ui| {
             html_changed |= crate::ui::html_ui::source_section(ui, project, id, undo);
         });
-        section(ui, "fields", "Fields", true, folds.map, None, |ui| {
-            html_changed |= crate::ui::html_ui::fields_section(ui, project, id, fonts, undo);
-        });
+        if !is_thread {
+            section(ui, "fields", "Fields", true, folds.map, None, |ui| {
+                html_changed |= crate::ui::html_ui::fields_section(ui, project, id, fonts, undo);
+            });
+        }
         {
             let at = clip.src_time(playhead);
             section(ui, "html_mouse", "Mouse", false, folds.map, None, |ui| {

@@ -308,6 +308,11 @@ fn metas(src: &str, name: &str) -> Vec<String> {
         .collect()
 }
 
+/// Every `content` of `<meta name="<name>">`, in order (a template's own data, like `se:thread`).
+pub fn meta_values(src: &str, name: &str) -> Vec<String> {
+    metas(src, name)
+}
+
 fn title_of(src: &str) -> String {
     let low = src.to_ascii_lowercase();
     let Some(t) = open_tags(src, "title").first().map(|t| t.as_ptr() as usize - src.as_ptr() as usize + t.len()) else {

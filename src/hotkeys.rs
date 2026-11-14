@@ -350,6 +350,10 @@ actions! {
     // HTML + CSS layers (Add menu / palette; the clip menu and a double-click edit them). Unbound by design.
     AddHtmlLayer => "add_html_layer", "Add HTML Layer", None;
     AddHtmlScene => "add_html_scene", "Add HTML Scene", None;
+    // ---- ws:thread-viewers ----
+    AddChatThread => "add_chat_thread", "Add Chat Thread", None;
+    AddForumThread => "add_forum_thread", "Add Forum Thread", None;
+    AddVideoComments => "add_video_comments", "Add Video Comments", None;
     ImportHtml => "import_html", "Import HTML File…", None;
     SnapshotWeb => "snapshot_web", "Web Page Snapshot…", None;
     EditHtml => "edit_html", "Edit HTML…", None;
@@ -659,7 +663,7 @@ pub fn group(a: Action) -> &'static str {
         PushToTalk => "Panels & Pages",
         // ---- ws:docs-release ----
         // ---- ws:html-layer ----
-        AddHtmlLayer | AddHtmlScene | ImportHtml | SnapshotWeb | EditHtml | SaveHtmlToLibrary => "Add",
+        AddHtmlLayer | AddHtmlScene | AddChatThread | AddForumThread | AddVideoComments | ImportHtml | SnapshotWeb | EditHtml | SaveHtmlToLibrary => "Add",
         // ---- ws:shader-library ----
         // ---- ws:skills ----
         // ---- ws:online-library ----

@@ -227,6 +227,14 @@ changes live.
 | `/se-verify` | Run the verification paths above and report status against goals.md budgets |
 | `/se-review` | Review the current diff against this project's goals and conventions |
 
+## UI conventions
+
+- **UI list/row layout: any vertical list of rows is laid out as a table with fixed, aligned columns [drag handle][arrow][label, fills and truncates][fixed value columns][fixed right-aligned controls]; controls never float after variable-length text; form fields use two aligned columns (labels at one x, inputs at one x); reorder = drag handle + up/down + Alt+Up/Down, one undo step; use the shared helper (`ui::list_rows`).** A list is `Rows::new(...)`, one `rows.row(...)` per row (the row's body, if open, is drawn by the
+  caller right after it), then `rows.finish(ui)` returns the move (`Moved::Slot` from a drag, `Step` / `Indent` from
+  Alt+arrows) for the caller to apply as ONE undo step. `ui::thread_ui` is the reference user; its test checks the
+  control x positions are identical across rows of different text lengths. Retrofit a list when you touch it; do not
+  hunt through the app for others.
+
 ## Things to never do
 
 - Don't bump egui/eframe past 0.33 without a toolchain bump and explicit sign-off.

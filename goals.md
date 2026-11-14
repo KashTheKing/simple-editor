@@ -241,6 +241,9 @@ and "powerful."
   selection", on by default), no longer a named mode in the UI. Don't regress toward one fixed
   layout.
 
+**Lists and forms**
+- UI list/row layout: any vertical list of rows is laid out as a table with fixed, aligned columns [drag handle][arrow][label, fills and truncates][fixed value columns][fixed right-aligned controls]; controls never float after variable-length text; form fields use two aligned columns (labels at one x, inputs at one x); reorder = drag handle + up/down + Alt+Up/Down, one undo step; use the shared helper (`ui::list_rows`).
+
 **Direct manipulation**
 - Prefer dragging on the preview canvas (move/scale/crop/rotate with visible bounding boxes)
   over numeric X/Y/scale fields in a side panel. Numeric fields can still exist for precision,
