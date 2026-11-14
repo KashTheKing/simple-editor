@@ -8,19 +8,8 @@
   --btn-fg: #ffffff;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #181818;
-    --fg: #eeeeee;
-    --muted: #aaaaaa;
-    --border: #444444;
-    --card-bg: #262626;
-    --btn-bg: #eeeeee;
-    --btn-fg: #181818;
-  }
-}
-
-body:has(#theme-toggle:checked) {
+/* The checkbox decides; a small script ticks it to match the system (or the saved choice) on load. */
+:root:has(#theme-toggle:checked) {
   --bg: #181818;
   --fg: #eeeeee;
   --muted: #aaaaaa;
@@ -28,6 +17,7 @@ body:has(#theme-toggle:checked) {
   --card-bg: #262626;
   --btn-bg: #eeeeee;
   --btn-fg: #181818;
+  color-scheme: dark;
 }
 
 * {

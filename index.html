@@ -25,6 +25,16 @@
 
 <div class="theme-switch">
   <label><input type="checkbox" id="theme-toggle"> Dark mode</label>
+  <script>
+    (function () {
+      var t = document.getElementById('theme-toggle'), saved = null;
+      try { saved = localStorage.getItem('theme'); } catch (e) {}
+      t.checked = saved ? saved === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+      t.addEventListener('change', function () {
+        try { localStorage.setItem('theme', t.checked ? 'dark' : 'light'); } catch (e) {}
+      });
+    })();
+  </script>
 </div>
 
 <div class="page">
