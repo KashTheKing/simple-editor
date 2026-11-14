@@ -58,11 +58,7 @@ pub(super) fn start_play_range(app: &mut App, mode: &str) {
         app.settings.preroll_secs as f64,
     );
     app.seek(start);
-    if app.player.is_playing() {
-        app.player.set_rate(1.0);
-    } else {
-        app.player.play();
-    }
+    app.play_gated(1.0); // already playing (or buffering): just back to 1x
     app.play_stop_at = Some(stop);
 }
 
@@ -83,12 +79,9 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
                 app.source_shuttle(back);
                 return true;
             }
-            let cur = if app.player.is_playing() { app.player.rate() } else { 0.0 };
+            let cur = if app.transport_playing() { app.transport_rate() } else { 0.0 };
             let new_rate = shuttle_rate(cur, back);
-            if !app.player.is_playing() {
-                app.player.play();
-            }
-            app.player.set_rate(new_rate);
+            app.play_gated(new_rate); // ws:play-gate: starts at that rate, or sets it if already going
             true
         }
         Action::LoopInOut => {
@@ -125,27 +118,25 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
         Action::FastReview => {
             // ponytail: flat 4x forward shuttle to the end, no per-cut pause-and-resume. Upgrade path:
             // reuse Project::cut_points() (already used by PrevCut/NextCut) to schedule holds here.
-            if !app.player.is_playing() {
-                app.player.play();
-            }
-            app.player.set_rate(4.0);
+            app.play_gated(4.0);
             true
         }
         _ => false,
     }
 }
 
-pub(super) fn tick(app: &mut App, _ctx: &egui::Context) {
+pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
+    super::playgate::tick(app, ctx); // ws:play-gate: starts the clock once Play's window is ready
     if let Some(stop_at) = app.play_stop_at {
-        if !app.player.is_playing() {
-            app.play_stop_at = None; // stopped some other way (K, buffering, end of timeline)
+        if !app.transport_playing() {
+            app.play_stop_at = None; // stopped some other way (K, end of timeline)
         } else if stop_reached(app.player.time(), stop_at) {
             app.player.pause();
             app.seek(stop_at.clamp(0.0, app.project.duration()));
             app.play_stop_at = None;
         }
     }
-    if should_scrub(app.settings.audio_scrub, app.player.is_playing(), app.scrub_last_t, app.playhead) {
+    if should_scrub(app.settings.audio_scrub, app.transport_playing(), app.scrub_last_t, app.playhead) {
         app.player.scrub(app.playhead);
     }
     app.scrub_last_t = app.playhead;

@@ -922,6 +922,70 @@ impl GpuRenderer {
         self.link(key, &shaders::transition_shader(src))
     }
 
+    /// Buffer before playing: build the programs the video clips overlapping `[t0, t1]` will need that
+    /// are not built yet (effects, node-graph effects, shader transitions, the mask program), stopping
+    /// once `budget` is spent (`None`: build nothing, only count). Returns how many are still to build.
+    /// The first one is always built, so a call per frame makes progress on a slow driver, and the UI
+    /// thread is never held longer than that one build plus `budget`. A program that failed to link
+    /// counts as done (the renderer skips it).
+    pub fn warm(&mut self, project: &Project, t0: f64, t1: f64, budget: Option<std::time::Duration>) -> usize {
+        let began = std::time::Instant::now();
+        let (mut built, mut left) = (0, 0);
+        // `build` runs only while the budget lasts; a finished or failed key is not work
+        macro_rules! need {
+            ($key:expr, $build:expr) => {{
+                let key: u64 = $key;
+                if !self.programs.map.contains_key(&key) && !self.programs.failed.contains_key(&key) {
+                    if budget.is_none_or(|b| built > 0 && began.elapsed() >= b) {
+                        left += 1;
+                    } else {
+                        built += 1;
+                        let _ = $build;
+                    }
+                }
+            }};
+        }
+        let mut effects: Vec<&Effect> = Vec::new();
+        let (mut masks, mut graphs) = (false, false);
+        for track in project.tracks.iter().filter(|t| t.kind == TrackKind::Video) {
+            for c in track.clips.iter().filter(|c| c.enabled && c.start < t1 && c.end() > t0) {
+                effects.extend(c.effects.iter());
+                effects.extend(project.asset(c.asset).into_iter().flat_map(|a| a.effects.iter()));
+                if let Some(g) = &c.graph {
+                    graphs = true;
+                    effects.extend(g.nodes.iter().filter_map(|n| match &n.kind {
+                        NodeKind::Effect(e) => Some(e),
+                        _ => None,
+                    }));
+                }
+                masks |= c.mask.is_some();
+            }
+            for tr in track.transitions.iter().filter(|t| t.kind == crate::model::TransitionKind::Shader) {
+                if let Some(right) = track.clips.iter().find(|c| c.id == tr.right) {
+                    if right.start - tr.duration < t1 && right.start + tr.duration > t0 {
+                        need!(transition_key(&tr.shader), self.check_transition(&tr.shader));
+                    }
+                }
+            }
+        }
+        // (the composite program is built with the renderer; the copy program only by node graphs)
+        if graphs {
+            need!(K_COPY, self.ensure(K_COPY));
+        }
+        if masks {
+            need!(K_MASK, self.ensure(K_MASK));
+        }
+        for e in effects.into_iter().filter(|e| e.enabled) {
+            let has_body =
+                if e.kind == EffectKind::Shader { !e.shader.is_empty() } else { shaders::body(e.kind).is_some() };
+            if has_body {
+                let key = if e.kind == EffectKind::Shader { user_key(&e.shader) } else { EFFECT_BASE + e.kind as u64 };
+                need!(key, self.effect_program(e));
+            }
+        }
+        left
+    }
+
     /// The log a shader transition source was rejected with, if it ever was.
     pub fn transition_error(&self, src: &str) -> Option<&str> {
         self.programs.failed.get(&transition_key(src)).map(|s| s.as_str())

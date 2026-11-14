@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Playback
+- **Buffer before playing**: when the frames just ahead of the playhead are not decoded yet (the first Play
+  after opening a project, after a seek, over 4K or stacked layers, effects not compiled yet), Play now waits
+  up to 3 seconds for the next second of picture and sound, shows "Buffering" over the Monitor, and starts by
+  itself, instead of stuttering with the audio running ahead. When it is ready Play starts at once as before.
+  Space cancels it. Settings > Performance > Buffer before playing turns it off.
+
 ## 1.2.0
 
 The biggest release yet: an AI **Assistant** that edits your project while you watch, HTML + CSS

@@ -415,6 +415,23 @@ GL work happens **only on the UI thread** (it owns the context). Everything GPU 
   step or the next scrub seek finds its frame cached. While playing, `warm_clips` opens the clips of
   the next 3 s and decodes each one's first frame on the opening thread (`DecoderPool::warm`), and
   the timeline's hover time (`Player::hint`) opens what is under the pointer.
+* **Buffer before playing** (`src/ui/app/playgate.rs`, `Settings::buffer_before_play`, default on): Play asks
+  `ready?` first. The check reads what the render thread already published (`Shared::cov`: the run of whole
+  cached frames from the paused playhead, trusted only while no command is in flight - `Shared::sent` vs the
+  `seen` count it was made under), so a playhead that has rested starts the clock in the same call, as before.
+  Not ready: `Player::preroll(window)` makes the render thread fill the window ahead of the paused playhead
+  (nearest frame first, one decode per pass, a frame made without a still-opening source does not count) and
+  the audio thread fill the ring from the playhead with the device stopped; the clock stays frozen and the
+  Monitor shows "Buffering N %". The UI (`playgate::tick`, every frame while buffering) folds the player's
+  video and audio answers and every `playgate::SOURCES` entry (the shader programs of the clips in the window
+  are built a few ms a frame by `GpuRenderer::warm`) into one `Verdict` and starts the clock when it is ready,
+  or after `playgate::CAP` (3 s) regardless, then shows "Still loading" for 2 s. The window is 0.5-1.5 s of
+  frames, scaled by the measured cost of an uncached frame. Space, Stop, a step or any `pause()` cancels (the
+  gate watches `Player::pauses`); a seek keeps buffering at the new place; J/L/`playback.rate` change the
+  rate it starts at. A new slow thing (the HTML renderer's layer still rendering) adds one
+  `fn(&mut App, &Query) -> Report` to `SOURCES`. Not gated: the Source monitor, recording takes (`roll`), movie
+  mode, export and scripts. Mid-play the existing stall (pause + spinner + resume) is unchanged, and a loop wrap
+  onto a cold cache now enters it at once (`lands_cold`).
 * **Hidden layers**: `decode_layers` skips a clip that `compose::can_show` rules out (opacity 0,
   wholly off the canvas) and every track under the topmost layer that `compose::covers` the canvas
   (opaque codec, Normal blend, full opacity, no mask/effect/graph/rotation, frame really decoded);

@@ -101,6 +101,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
             timeline: tl,
             settings,
             player,
+            play_gate,
             palette,
             tools,
             prerender,
@@ -158,7 +159,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
                 palette,
                 snap: settings.snap,
                 snap_markers: settings.snap_markers,
-                playing: player.is_playing(),
+                playing: player.is_playing() || play_gate.buffering(),
                 thumbs: Some(thumbs),
                 // only while the Auto-cut pane is on screen: a stale overlay would keep
                 // shading the timeline after the pane is hidden or a new project is opened
