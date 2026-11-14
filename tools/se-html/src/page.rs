@@ -307,9 +307,11 @@ impl Page {
             doc.set_style_property(root, n, v);
         }
         doc.resolve(t.max(0.0) + EPS);
-        let (ox, oy) = ((rect[0] * eff).round().max(0.0) as u32, (rect[1] * eff).round().max(0.0) as u32);
+        // the part's corner goes to (0, 0) by scrolling the viewport there: paint_scene's x/y offsets are
+        // ADDED to the page's position (they move the page right / down), so they cannot do this
+        doc.set_viewport_scroll(blitz_dom::Point { x: rect[0].max(0.0), y: rect[1].max(0.0) });
         let (ew, eh) = (((rect[2] * eff).round().max(1.0)) as u32, ((rect[3] * eff).round().max(1.0)) as u32);
-        let mut buf = render_to_buffer::<VelloCpuImageRenderer, _>(|scene| paint_scene(scene, doc.as_mut(), eff, ew, eh, ox, oy), ew, eh);
+        let mut buf = render_to_buffer::<VelloCpuImageRenderer, _>(|scene| paint_scene(scene, doc.as_mut(), eff, ew, eh, 0, 0), ew, eh);
         if (ew, eh) != (pw, ph) {
             buf = box_down(&buf, ew, eh, pw, ph);
         }

@@ -136,6 +136,27 @@ fn hover_and_pressed_states_and_the_element_map() {
     h.close();
 }
 
+/// A region far from the page's corner shows what is THERE (the browser layer's zoom details ask for
+/// parts thousands of px down the page): blitz-paint ADDS its x/y offsets, so the helper must scroll
+/// instead (found in the integration smoke test: zooms showed the page's top, shifted right and down).
+#[test]
+fn a_region_away_from_the_corner_shows_that_part_of_the_page() {
+    need_helper!();
+    let page = r#"<html><body style="margin:0;background:#fff;height:3000px">
+<div style="position:absolute;left:300px;top:1400px;width:40px;height:40px;background:#f00"></div></body></html>"#;
+    for scale in [1.0, 2.5] {
+        let png = blitz::region_png(page, "", 800, [290.0, 1390.0, 60.0, 60.0], scale, 0.0).expect("region");
+        let f = html::decode_png(&png).unwrap();
+        let px = |x: u32, y: u32| {
+            let i = ((y * f.width + x) * 4) as usize;
+            [f.rgba[i], f.rgba[i + 1], f.rgba[i + 2]]
+        };
+        let (w, h) = (f.width, f.height);
+        assert_eq!(px(w / 2, h / 2), [255, 0, 0], "scale {scale}: the red box is in the middle of the region");
+        assert_eq!(px(2, 2), [255, 255, 255], "scale {scale}: white around it");
+    }
+}
+
 #[test]
 fn a_panic_in_the_renderer_is_an_error_not_a_crash_and_the_helper_lives_on() {
     need_helper!();

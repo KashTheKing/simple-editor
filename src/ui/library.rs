@@ -1245,7 +1245,10 @@ fn browser(
             1 => order.sort_by(|&x, &y| project.assets[x].duration.total_cmp(&project.assets[y].duration)),
             2 => order.sort_by_key(|&i| kind_rank(project.assets[i].kind)),
             3 => order.sort_by_key(|&i| std::cmp::Reverse(project.assets[i].id)),
-            _ => order.sort_by_cached_key(|&i| project.assets[i].name().to_lowercase()),
+            // natural order ("take2" before "take10"), as a folder import files them
+            _ => order.sort_by(|&x, &y| {
+                crate::engine::folder_import::natural_cmp(&project.assets[x].name().to_lowercase(), &project.assets[y].name().to_lowercase())
+            }),
         }
         {
             let mut tree = Tree {
