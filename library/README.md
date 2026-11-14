@@ -12,6 +12,7 @@ library/transitions/*.glsl    shader transitions
 library/luts/*.cube           3D LUTs
 library/html/*.html           HTML + CSS layers and scenes (one file each)
 library/icons/*.svg           icons
+library/thread/*.css          the look of Chat / Forum Thread layers (compiled into the exe: `engine::thread`)
 library/skills/*.md           assistant skills
 library/thumbs/*              generated previews
 ```

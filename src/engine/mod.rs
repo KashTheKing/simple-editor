@@ -40,6 +40,8 @@ pub mod stems;
 pub mod style;
 pub mod subtitles;
 pub mod text;
+// ---- ws:thread-viewers ----
+pub mod thread;
 pub mod tracking;
 pub mod transcribe;
 // ---- ws:transcript-captions ----

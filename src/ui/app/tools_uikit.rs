@@ -88,8 +88,8 @@ pub const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "ui.input",
         desc: "Play synthetic input into the live UI, one step per frame; replies after the last step has been \
-               drawn. events: [{type: move|click|rclick|dclick|down|up|key|text|scroll (down / up = the left \
-               button alone, with `move`s between them: a drag), x, y (points, see ui.screenshot), \
+               drawn. events: [{type: move|click|rclick|dclick|down|up|drag (x2, y2)|key|text|scroll (down / up = \
+               the left button alone, with `move`s between them: a drag), x, y (points, see ui.screenshot), \
                key (egui name: A, Space, Enter, Escape, F1, ArrowLeft...), mods ('ctrl+shift+alt'), text, \
                delta (scroll [dx, dy] points or just dy; positive dy moves content down = scrolls up)}].",
         args: &["events:array:true:input events, played in order"],
@@ -136,6 +136,16 @@ fn expand(events: &[Value]) -> Result<Vec<Step>, String> {
                 let p = pos()?;
                 steps.push(vec![Event::PointerMoved(p)]);
                 steps.push(vec![button(PointerButton::Primary, kind == "down", p)]);
+            }
+            "drag" => {
+                // press at (x, y), glide to (x2, y2) in a few steps, release (a row dragged by its grip)
+                let (p, q) = (pos()?, egui::pos2(arg_f64(e, "x2").ok_or("drag: x2 and y2 required")? as f32, arg_f64(e, "y2").ok_or("drag: x2 and y2 required")? as f32));
+                steps.push(vec![Event::PointerMoved(p)]);
+                steps.push(vec![button(PointerButton::Primary, true, p)]);
+                for k in 1..=6 {
+                    steps.push(vec![Event::PointerMoved(p + (q - p) * (k as f32 / 6.0))]);
+                }
+                steps.push(vec![button(PointerButton::Primary, false, q)]);
             }
             "key" => {
                 let name = e.get("key").and_then(Value::as_str).ok_or("key: key required")?;

@@ -1,0 +1,63 @@
+*{box-sizing:border-box}
+html,body{margin:0;background:transparent;overflow:hidden}
+body{width:100vw;height:100vh;font:400 var(--fs)/1.38 {{font}};color:var(--fg)}
+.win{width:100%;height:100%;display:flex;color:var(--fg);background:var(--bg);border-radius:var(--r);overflow:hidden}
+.dark{--bg:#2e3138;--bg2:#272a30;--bg3:#1f2227;--fg:#e1e4ea;--mut:#8d95a3;--line:#3c4048;--hl:rgba(110,125,255,.2);--lnk:#4aa3ff;--page:#15171b;--card:#1f2227}
+.light{--bg:#fff;--bg2:#f3f4f6;--bg3:#e5e7eb;--fg:#23272e;--mut:#666e7a;--line:#dfe2e7;--hl:rgba(79,107,237,.14);--lnk:#2563eb;--page:#e9ecef;--card:#fff}
+.d-compact{--g:.4}.d-normal{--g:1}.d-roomy{--g:1.7}
+.main{flex:1;min-width:0;display:flex;flex-direction:column}
+.vp{position:relative;flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+.vp.end{justify-content:flex-end}
+.col{flex:none;min-height:100%;transform:translateY(calc(var(--scroll,0) * 1px))}
+.it{display:grid;grid-template-rows:1fr}
+.it>.in{min-height:0;overflow:hidden;position:relative}
+.anim .a{animation:grow var(--gd,.3s) ease-out var(--d,0s) both}
+.anim .a>.in{animation:var(--fx,pop) var(--fd,.4s) cubic-bezier(.2,.9,.3,1) var(--d,0s) both}
+@keyframes grow{from{grid-template-rows:0fr}to{grid-template-rows:1fr}}
+@keyframes pop{from{opacity:0;top:.6em}to{opacity:1;top:0}}
+@keyframes slide{from{opacity:0;left:-2em}to{opacity:1;left:0}}
+@keyframes fade{from{opacity:0}to{opacity:1}}
+.pl{position:absolute;inset:0;background:var(--accent);opacity:0;pointer-events:none;animation:pulse 1.8s ease-out both}
+@keyframes pulse{0%{opacity:0}12%{opacity:.3}100%{opacity:0}}
+.av{flex:none;position:relative;width:2.4em;height:2.4em;border-radius:50%;display:grid;place-items:center;font-weight:700;color:#fff;overflow:hidden}
+.av img,.ci img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.bdg{display:inline-block;padding:0 .4em;border-radius:.3em;background:var(--accent);color:#fff;font-size:.62em;font-weight:700;line-height:1.5;vertical-align:middle}
+.tk{display:inline-block;height:1.25em;line-height:1.25em;overflow:hidden;vertical-align:bottom}
+.tkc{display:block;animation:tick var(--td,1.2s) steps(var(--n),end) var(--ts,0s) both}
+@keyframes tick{from{transform:none}to{transform:translateY(calc(var(--n) * -1.25em))}}
+.tx{overflow-wrap:anywhere}
+.tx b{font-weight:700}
+.tx code{font:.88em Consolas,monospace;background:var(--bg3);padding:.1em .3em;border-radius:.25em}
+.tx pre{margin:.3em 0;padding:.6em .8em;background:var(--bg3);border:1px solid var(--line);border-radius:.4em;font:.88em/1.4 Consolas,monospace;white-space:pre-wrap}
+.tx pre code{background:none;padding:0}
+.tx blockquote{margin:.2em 0;padding:0 0 0 .8em;border-left:.25em solid var(--line)}
+.tx .sp{background:var(--bg3);color:transparent;border-radius:.25em;padding:0 .2em}
+.anim .a .sp{animation:unsp .25s ease calc(var(--d,0s) + 1.6s) both}
+@keyframes unsp{from{color:transparent;background:var(--bg3)}to{color:var(--fg);background:var(--bg2)}}
+.tx .mn{color:var(--accent);background:var(--hl);border-radius:.25em;padding:0 .15em}
+.tx .lk{color:var(--lnk)}
+.tx .ed{color:var(--mut);font-size:.7em;margin-left:.4em}
+.att img{display:block;max-width:100%;max-height:15em;border-radius:.4em;margin-top:.35em}
+.r{display:inline-flex;gap:.35em;align-items:center;padding:.05em .5em;border-radius:.5em;background:var(--bg2);border:1px solid transparent;font-size:.85em}
+.r b{font-weight:600;color:var(--mut)}
+.r.me{background:var(--hl);border-color:var(--accent)}
+.r.me b{color:var(--accent)}
+.anim .a .r{animation:rpop .35s cubic-bezier(.3,1.7,.5,1) both}
+@keyframes rpop{from{transform:scale(0);opacity:0}to{transform:none;opacity:1}}
+.win.tr{background:transparent}
+.av.sm{width:1.9em;height:1.9em;font-size:.85em}
+.ph{color:var(--mut)}
+.tbox{position:absolute;inset:0;display:flex;justify-content:flex-end;align-items:center;overflow:hidden;opacity:0;background:var(--bg2);animation:tw 1s linear both}
+@keyframes tw{0%{opacity:0}0.01%{opacity:1}99.99%{opacity:1}100%{opacity:0}}
+.tin{min-width:100%;white-space:pre;padding:0 1em;line-height:1.5}
+.c{font-size:0;animation:chr .001s both}
+.c.w{animation-name:chw}
+@keyframes chr{from{font-size:0}to{font-size:1em}}
+@keyframes chw{0%{font-size:0}0.01%{font-size:1em}99.99%{font-size:1em}100%{font-size:0}}
+.cr{display:inline-block;width:2px;height:1.15em;margin-left:1px;vertical-align:text-bottom;background:var(--fg);animation:blink 1s steps(1) both}
+@keyframes blink{0%{opacity:1}50%{opacity:0}}
+.gx{display:grid;grid-template-rows:0fr;animation:grow .25s ease-out both}
+.gx>div{min-height:0;overflow:hidden}
+.gy{display:grid;grid-template-rows:1fr;animation:shut .25s ease-in both}
+.gy>div{min-height:0;overflow:hidden}
+@keyframes shut{from{grid-template-rows:1fr}to{grid-template-rows:0fr}}

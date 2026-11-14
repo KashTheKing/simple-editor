@@ -54,6 +54,11 @@ pub fn take_edit_request() -> Option<Id> {
     EDIT.with(|e| e.borrow_mut().take())
 }
 
+/// ws:thread-viewers: a thread edit wants the layer rendered again.
+pub fn mark_edited() {
+    EDITED.with(|e| e.set(true));
+}
+
 /// A field value was changed in the Inspector since the last call.
 pub fn take_fields_edited() -> bool {
     EDITED.with(|e| e.replace(false))
@@ -530,7 +535,7 @@ fn body(ui: &mut egui::Ui, st: &mut HtmlUi, resp: &mut EditorResponse) {
 // ---------------------------------------------------------------------------------------------------
 // the Inspector's Fields section
 
-fn hex_rgba(s: &str) -> [u8; 4] {
+pub(crate) fn hex_rgba(s: &str) -> [u8; 4] {
     let h = s.trim().trim_start_matches('#');
     let d = |i: usize, n: usize| u8::from_str_radix(h.get(i..i + n).unwrap_or("0"), 16).unwrap_or(0);
     match h.len() {
@@ -543,7 +548,7 @@ fn hex_rgba(s: &str) -> [u8; 4] {
     }
 }
 
-fn rgba_hex(c: [u8; 4]) -> String {
+pub(crate) fn rgba_hex(c: [u8; 4]) -> String {
     match c[3] {
         255 => format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]),
         a => format!("#{:02x}{:02x}{:02x}{a:02x}", c[0], c[1], c[2]),

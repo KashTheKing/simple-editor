@@ -8,7 +8,7 @@ module.exports = {
       type: 'category',
       label: 'Editing',
       collapsed: false,
-      items: ['library', 'viewer', 'timeline', 'inspector', 'effects', 'html-layers', 'online-library', 'my-gallery'],
+      items: ['library', 'viewer', 'timeline', 'inspector', 'effects', 'html-layers', 'chat-forum-threads', 'online-library', 'my-gallery'],
     },
     {
       type: 'category',

@@ -46,3 +46,4 @@ da35401+wip,13457920,"HTML editing, web snapshots, params, fake mouse: +390,656 
 b05471e+html-load+blitz,13834752,"feat/blitz-helper main exe: +134,144 B vs origin/main + the html-load patch (13,700,608 B): the se-html client, install, lint and the renderer setting (about 1.2k lines); Blitz itself is NOT linked (it is the separate se-html.exe row above, 11.0 MB)"
 b05471e,11007488,"se-html: the fast HTML renderer helper 0.1.0 (separate exe, not linked into simple-editor.exe). final: layout at scale 1 below 1.0 (averaged down), base_url fix, mem in ping"
 b05471e+wip,13536768,"folder import (bins from folders, media.import_folder): +77,312 B vs the 1.2.0 release exe built from b05471e (13,459,456 B)"
+b05471e+wip,14470656,"thread viewers (chat / forum / video comments, typing animation, list rows): +770,048 B vs the same tree without it (13,700,608 B = origin/main + the html-load working tree); no offset found: needs a decision"

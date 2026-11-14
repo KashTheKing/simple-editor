@@ -68,6 +68,9 @@ pub mod assistant_data;
 // ---- ws:html-layer ----
 pub mod html_code;
 pub mod html_ui;
+// ---- ws:thread-viewers ----
+pub mod list_rows;
+pub mod thread_ui;
 
 use crate::model::{AnimLink, Animated, Id, Mask, MaskShape, Project, LABEL_COLORS};
 use crate::theme::Palette;

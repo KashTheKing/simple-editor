@@ -105,6 +105,14 @@ were written per feature as it landed; if a row disagrees with `tools/list`, `to
 | `html.link` | Mutate | clip, path, write? | Link a clip to a `.html` file (read it, or write the clip into it); empty path unlinks. |
 | `html.snapshot` | Mutate | url, width? | Snapshot a real web page by address (private Edge, scripts dropped) and add it as a linked clip. |
 | `html.render` | Read | clip | Render again when the current source has no render (also retries a failed one). |
+| `thread.create` | Mutate | kind?, mode?, style?, script?, patch?, at?, duration?, name? | Add a fake chat / forum / video-comment thread layer made from data. kind: chat (messages only), chat_typing (DM / group DM / server where `me` types into the message box and the others "are typing"), forum, comments, comments_typing (a comment typed, Comment pressed, posted). Styles: Dark / Light / Compact chat, Classic / Card / Dark forum, Light / Dark / Compact comments. |
+| `thread.get` | Read | clip | The thread (look, cast, items with ids, post, animation), when each item appears (and when its typing starts), its length, the Comment button's rectangle and press time, and it as script lines. |
+| `thread.set` | Mutate | clip, id?, patch?, thread?, mouse? | Patch an item (`id`) or the thread (toggles by name: rail, channels, sidebar, topbar, header, composer, indicator, dividers, unread_line, scrollbar, transparent, mode, me, anim.compose / cps / typos / pause); `thread` replaces everything; `mouse: true` aims the fake mouse at the Comment button. |
+| `thread.add` | Mutate | clip, who?, text?, item?, at?, after?, duplicate? | Add a message / comment (`depth` nests a forum reply); a new speaker joins the cast. |
+| `thread.remove` | Mutate | clip, id | Remove an item. |
+| `thread.move` | Mutate | clip, id, to? \| by? \| depth? \| indent? | Reorder an item, or nest a forum comment. |
+| `thread.from_script` | Mutate | clip, script, mode? | Plain lines (`name (4:32 PM): text`, `--- divider`, `> reply`) become items (append or replace). |
+| `thread.cast` | Mutate | clip, action?, name?, avatar?, color?, badge?, to? | List / set / remove / rename cast members; their messages follow. |
 | `html.check` | Read (image) | clip? \| html?, t?, fields? | One rendered frame as an image, plus lint. |
 | `clip.set_shader` | Mutate | clip, index?, src | Set a clip's shader effect source; returns `{ok, log, params}` (a compile error is a result, not a failure). |
 | `shader.check` | Read | src, kind? | Compile an effect or transition shader without changing anything. |

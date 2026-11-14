@@ -1,0 +1,122 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Forum Thread</title>
+<meta name="se:kind" content="layer">
+<meta name="se:desc" content="A fake forum thread: a post with votes, flair and nested comments that arrive one after another.">
+<meta name="se:tags" content="forum, thread, comments, post, skit">
+<meta name="se:size" content="1160x980">
+<meta name="se:duration" content="5.9s">
+<meta name="se:thumb" content="4.2">
+<meta name="se:field" content="font | font | Segoe UI">
+<meta name="se:param" content="scroll | number | 0 | -4000 | 4000">
+<meta name="se:thread" content="{&quot;kind&quot;:&quot;forum&quot;,&quot;layout&quot;:&quot;classic&quot;,&quot;theme&quot;:&quot;light&quot;,&quot;accent&quot;:&quot;#e8523a&quot;,&quot;font&quot;:&quot;Segoe UI&quot;,&quot;radius&quot;:10,&quot;density&quot;:&quot;normal&quot;,&quot;size&quot;:28,&quot;width&quot;:1160,&quot;height&quot;:980,&quot;title&quot;:&quot;r/ShortStories&quot;,&quot;topic&quot;:&quot;&quot;,&quot;server&quot;:&quot;&quot;,&quot;icon&quot;:&quot;&quot;,&quot;time_format&quot;:&quot;today&quot;,&quot;now&quot;:&quot;&quot;,&quot;group&quot;:true,&quot;rail&quot;:false,&quot;sidebar&quot;:false,&quot;header&quot;:false,&quot;composer&quot;:false,&quot;mode&quot;:&quot;server&quot;,&quot;me&quot;:&quot;&quot;,&quot;channels&quot;:false,&quot;topbar&quot;:false,&quot;indicator&quot;:false,&quot;dividers&quot;:false,&quot;unread_line&quot;:false,&quot;scrollbar&quot;:false,&quot;transparent&quot;:false,&quot;cast&quot;:[{&quot;name&quot;:&quot;Maya&quot;,&quot;color&quot;:&quot;#e5534b&quot;},{&quot;name&quot;:&quot;Jordan&quot;,&quot;color&quot;:&quot;#3fa34d&quot;},{&quot;name&quot;:&quot;dave_the_lunch_thief&quot;,&quot;color&quot;:&quot;#4f6bed&quot;},{&quot;name&quot;:&quot;throwaway_4821&quot;,&quot;color&quot;:&quot;#8b5cf6&quot;}],&quot;items&quot;:[{&quot;id&quot;:1,&quot;who&quot;:&quot;Maya&quot;,&quot;text&quot;:&quot;Honestly a legend. The sandwich was the *jury* and the sauce was the verdict.&quot;,&quot;age&quot;:&quot;4 hr. ago&quot;,&quot;score&quot;:4200,&quot;awards&quot;:[&quot;:gold:&quot;]},{&quot;id&quot;:2,&quot;who&quot;:&quot;dave_the_lunch_thief&quot;,&quot;text&quot;:&quot;I regret everything.&quot;,&quot;age&quot;:&quot;3 hr. ago&quot;,&quot;score&quot;:2100,&quot;depth&quot;:1},{&quot;id&quot;:3,&quot;who&quot;:&quot;Jordan&quot;,&quot;text&quot;:&quot;Label your food and he will still eat it. Respect the trap :fire:&quot;,&quot;age&quot;:&quot;2 hr. ago&quot;,&quot;score&quot;:987}],&quot;post&quot;:{&quot;title&quot;:&quot;My roommate keeps eating my lunch, so I finally set a trap&quot;,&quot;who&quot;:&quot;throwaway_4821&quot;,&quot;flair&quot;:&quot;Story&quot;,&quot;flair_color&quot;:&quot;#e8523a&quot;,&quot;score&quot;:12400,&quot;comments&quot;:0,&quot;awards&quot;:[&quot;:gold:&quot;,&quot;:trophy:&quot;],&quot;age&quot;:&quot;5 hr. ago&quot;,&quot;body&quot;:&quot;Three weeks of missing sandwiches. Yesterday I made one with **way** too much hot sauce.\n\nHe has not left the bathroom since.&quot;,&quot;image&quot;:&quot;&quot;,&quot;link&quot;:&quot;&quot;,&quot;thumb&quot;:&quot;&quot;,&quot;sort&quot;:&quot;Best&quot;},&quot;anim&quot;:{&quot;on&quot;:true,&quot;start&quot;:0.6,&quot;gap&quot;:1.4,&quot;typing&quot;:0.0,&quot;effect&quot;:&quot;pop&quot;,&quot;autoscroll&quot;:true,&quot;tick&quot;:true,&quot;shown&quot;:0,&quot;hold&quot;:2.0,&quot;compose&quot;:false,&quot;cps&quot;:14.0,&quot;typos&quot;:false,&quot;pause&quot;:0.5}}">
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;background:transparent;overflow:hidden}
+body{width:100vw;height:100vh;font:400 var(--fs)/1.38 {{font}};color:var(--fg)}
+.win{width:100%;height:100%;display:flex;color:var(--fg);background:var(--bg);border-radius:var(--r);overflow:hidden}
+.dark{--bg:#2e3138;--bg2:#272a30;--bg3:#1f2227;--fg:#e1e4ea;--mut:#8d95a3;--line:#3c4048;--hl:rgba(110,125,255,.2);--lnk:#4aa3ff;--page:#15171b;--card:#1f2227}
+.light{--bg:#fff;--bg2:#f3f4f6;--bg3:#e5e7eb;--fg:#23272e;--mut:#666e7a;--line:#dfe2e7;--hl:rgba(79,107,237,.14);--lnk:#2563eb;--page:#e9ecef;--card:#fff}
+.d-compact{--g:.4}.d-normal{--g:1}.d-roomy{--g:1.7}
+.main{flex:1;min-width:0;display:flex;flex-direction:column}
+.vp{position:relative;flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+.vp.end{justify-content:flex-end}
+.col{flex:none;min-height:100%;transform:translateY(calc(var(--scroll,0) * 1px))}
+.it{display:grid;grid-template-rows:1fr}
+.it>.in{min-height:0;overflow:hidden;position:relative}
+.anim .a{animation:grow var(--gd,.3s) ease-out var(--d,0s) both}
+.anim .a>.in{animation:var(--fx,pop) var(--fd,.4s) cubic-bezier(.2,.9,.3,1) var(--d,0s) both}
+@keyframes grow{from{grid-template-rows:0fr}to{grid-template-rows:1fr}}
+@keyframes pop{from{opacity:0;top:.6em}to{opacity:1;top:0}}
+@keyframes slide{from{opacity:0;left:-2em}to{opacity:1;left:0}}
+@keyframes fade{from{opacity:0}to{opacity:1}}
+.pl{position:absolute;inset:0;background:var(--accent);opacity:0;pointer-events:none;animation:pulse 1.8s ease-out both}
+@keyframes pulse{0%{opacity:0}12%{opacity:.3}100%{opacity:0}}
+.av{flex:none;position:relative;width:2.4em;height:2.4em;border-radius:50%;display:grid;place-items:center;font-weight:700;color:#fff;overflow:hidden}
+.av img,.ci img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.bdg{display:inline-block;padding:0 .4em;border-radius:.3em;background:var(--accent);color:#fff;font-size:.62em;font-weight:700;line-height:1.5;vertical-align:middle}
+.tk{display:inline-block;height:1.25em;line-height:1.25em;overflow:hidden;vertical-align:bottom}
+.tkc{display:block;animation:tick var(--td,1.2s) steps(var(--n),end) var(--ts,0s) both}
+@keyframes tick{from{transform:none}to{transform:translateY(calc(var(--n) * -1.25em))}}
+.tx{overflow-wrap:anywhere}
+.tx b{font-weight:700}
+.tx code{font:.88em Consolas,monospace;background:var(--bg3);padding:.1em .3em;border-radius:.25em}
+.tx pre{margin:.3em 0;padding:.6em .8em;background:var(--bg3);border:1px solid var(--line);border-radius:.4em;font:.88em/1.4 Consolas,monospace;white-space:pre-wrap}
+.tx pre code{background:none;padding:0}
+.tx blockquote{margin:.2em 0;padding:0 0 0 .8em;border-left:.25em solid var(--line)}
+.tx .sp{background:var(--bg3);color:transparent;border-radius:.25em;padding:0 .2em}
+.anim .a .sp{animation:unsp .25s ease calc(var(--d,0s) + 1.6s) both}
+@keyframes unsp{from{color:transparent;background:var(--bg3)}to{color:var(--fg);background:var(--bg2)}}
+.tx .mn{color:var(--accent);background:var(--hl);border-radius:.25em;padding:0 .15em}
+.tx .lk{color:var(--lnk)}
+.tx .ed{color:var(--mut);font-size:.7em;margin-left:.4em}
+.att img{display:block;max-width:100%;max-height:15em;border-radius:.4em;margin-top:.35em}
+.r{display:inline-flex;gap:.35em;align-items:center;padding:.05em .5em;border-radius:.5em;background:var(--bg2);border:1px solid transparent;font-size:.85em}
+.r b{font-weight:600;color:var(--mut)}
+.r.me{background:var(--hl);border-color:var(--accent)}
+.r.me b{color:var(--accent)}
+.anim .a .r{animation:rpop .35s cubic-bezier(.3,1.7,.5,1) both}
+@keyframes rpop{from{transform:scale(0);opacity:0}to{transform:none;opacity:1}}
+.win.tr{background:transparent}
+.av.sm{width:1.9em;height:1.9em;font-size:.85em}
+.ph{color:var(--mut)}
+.tbox{position:absolute;inset:0;display:flex;justify-content:flex-end;align-items:center;overflow:hidden;opacity:0;background:var(--bg2);animation:tw 1s linear both}
+@keyframes tw{0%{opacity:0}0.01%{opacity:1}99.99%{opacity:1}100%{opacity:0}}
+.tin{min-width:100%;white-space:pre;padding:0 1em;line-height:1.5}
+.c{font-size:0;animation:chr .001s both}
+.c.w{animation-name:chw}
+@keyframes chr{from{font-size:0}to{font-size:1em}}
+@keyframes chw{0%{font-size:0}0.01%{font-size:1em}99.99%{font-size:1em}100%{font-size:0}}
+.cr{display:inline-block;width:2px;height:1.15em;margin-left:1px;vertical-align:text-bottom;background:var(--fg);animation:blink 1s steps(1) both}
+@keyframes blink{0%{opacity:1}50%{opacity:0}}
+.gx{display:grid;grid-template-rows:0fr;animation:grow .25s ease-out both}
+.gx>div{min-height:0;overflow:hidden}
+.gy{display:grid;grid-template-rows:1fr;animation:shut .25s ease-in both}
+.gy>div{min-height:0;overflow:hidden}
+@keyframes shut{from{grid-template-rows:1fr}to{grid-template-rows:0fr}}
+
+.fwin{flex-direction:column;background:var(--page)}
+.top{flex:none;display:flex;align-items:center;gap:.6em;padding:.55em 1em;background:var(--card);border-bottom:1px solid var(--line)}
+.ci{position:relative;flex:none;width:1.9em;height:1.9em;border-radius:50%;background:var(--accent);color:#fff;display:grid;place-items:center;font-weight:700;font-size:.85em;overflow:hidden}
+.top .so{margin-left:auto;color:var(--mut);font-size:.75em;font-weight:600}
+.post{display:flex;gap:.8em;background:var(--card);padding:.8em 1em .7em .5em;border-bottom:1px solid var(--line)}
+.vt{flex:none;width:2.6em;display:flex;flex-direction:column;align-items:center;color:var(--mut);font-weight:700;font-size:.88em}
+.vt svg{width:1.35em;height:1.35em;fill:currentColor}
+.vt .dn{transform:rotate(180deg)}
+.vt.on{color:var(--accent)}
+.pb{flex:1;min-width:0}
+.meta{display:flex;flex-wrap:wrap;align-items:center;gap:.4em;color:var(--mut);font-size:.72em}
+.meta b{color:var(--fg);font-weight:600}
+h1{margin:.25em 0 .3em;font-size:1.3em;line-height:1.25;font-weight:600}
+.fl{display:inline-block;margin-left:.5em;padding:.05em .6em;border-radius:1em;font-size:.55em;font-weight:600;vertical-align:middle;color:#fff;background:var(--fc,var(--accent))}
+.aw{letter-spacing:.1em}
+.pimg img{display:block;max-width:100%;max-height:17em;border-radius:.4em;margin:.5em 0 .2em}
+.pl2{display:inline-block;margin-top:.4em;padding:.25em .7em;border-radius:.4em;background:var(--bg2);color:var(--lnk);font-size:.75em}
+.th{flex:none;width:5.4em;height:4.2em;border-radius:.4em;object-fit:cover;background:var(--bg3)}
+.acts{display:flex;gap:1.3em;color:var(--mut);font-size:.72em;font-weight:700;margin-top:.55em}
+.sb{padding:.5em 1em;color:var(--mut);font-size:.72em;font-weight:700;background:var(--card);border-bottom:1px solid var(--line)}
+.cm .bx{position:relative;background:var(--card);padding:.55em 1em .15em calc(1em + var(--dp) * 1.7em)}
+.ln{position:absolute;top:0;bottom:0;left:calc(1.15em + var(--k) * 1.7em);width:2px;background:var(--line)}
+.cb .ch{display:flex;align-items:center;gap:.45em;font-size:.76em;color:var(--mut)}
+.cb .ch b{color:var(--fg);font-weight:600}
+.cb .av{width:1.9em;height:1.9em;font-size:.8em}
+.op{color:var(--accent);font-weight:700}
+.cb .tx{margin:.2em 0 0;font-size:.95em}
+.ca{display:flex;align-items:center;gap:1em;margin:.2em 0 .35em -.3em;font-size:.7em;font-weight:700;color:var(--mut)}
+.ca .vv{display:inline-flex;align-items:center;gap:.3em}
+.ca svg{width:1.5em;height:1.5em;fill:currentColor}
+.ca .dn{transform:rotate(180deg)}
+.cc{font-size:.74em;color:var(--mut);padding:.1em 0 .35em}
+.mr{color:var(--lnk);font-size:.74em;font-weight:700;padding:.1em 0 .4em}
+.f-card .col{display:flex;flex-direction:column;padding:.7em}
+.f-card .post{border:1px solid var(--line);border-radius:calc(var(--r) * .6);margin-bottom:.5em}
+.f-card .sb{border:0;background:none;padding:.2em .3em .5em}
+.f-card .cm{margin-left:calc(var(--dp) * 1.3em)}
+.f-card .cm .bx{border:1px solid var(--line);border-radius:calc(var(--r) * .6);margin-bottom:.4em;padding-left:1em}
+.f-card .ln{display:none}
+</style>
+</head>
+<body class="anim" style="--accent:#e8523a;--r:10px;--fs:28px;--fx:pop;--fd:.4s;--gd:.3s"><div class="win fwin forum light f-classic d-normal"><div class="top"><span class="ci"><span>R</span></span><b>r/ShortStories</b><span class="so"></span></div><div class="main"><div class="vp end"><div class="col"><div class="post"><div class="vt"><svg viewBox="0 0 16 16"><path d="M8 1.5 15 9.5H10.5V14.5h-5V9.5H1z"/></svg><span><span class="tk"><span class="tkc" style="--n:12;--td:1.2s;--ts:0.3s">1<br>1.9k<br>3.7k<br>5.4k<br>6.8k<br>8.1k<br>9.3k<br>10.2k<br>11k<br>11.6k<br>12k<br>12.3k<br>12.4k</span></span></span><svg class="dn" viewBox="0 0 16 16"><path d="M8 1.5 15 9.5H10.5V14.5h-5V9.5H1z"/></svg></div><div class="pb"><div class="meta"><b>r/ShortStories</b><span>•</span><span>Posted by <b>u/throwaway_4821</b></span><span>•</span><span>5 hr. ago</span><span class="aw">🥇🏆</span></div><h1>My roommate keeps eating my lunch, so I finally set a trap<span class="fl" style="--fc:#e8523a">Story</span></h1><div class="tx">Three weeks of missing sandwiches. Yesterday I made one with <b>way</b> too much hot sauce.<br><br>He has not left the bathroom since.</div><div class="acts"><span>💬 3 Comments</span><span>🎁 Award</span><span>↗ Share</span><span>⚑ Save</span></div></div></div><div class="sb">Sort by: Best ▾</div><div class="it cm a" style="--dp:0;--d:0.6s;"><div class="in"><div class="bx" style="--dp:0"><div class="cb"><div class="ch"><div class="av" style="background:#e5534b"><span>M</span></div><b>Maya</b><span>•</span><span>4 hr. ago</span><span class="aw">🥇</span></div><div class="tx">Honestly a legend. The sandwich was the <i>jury</i> and the sauce was the verdict.</div><div class="ca"><span class="vv"><svg viewBox="0 0 16 16"><path d="M8 1.5 15 9.5H10.5V14.5h-5V9.5H1z"/></svg><span class="tk"><span class="tkc" style="--n:12;--td:1.2s;--ts:0.85s">1<br>672<br>1.2k<br>1.8k<br>2.3k<br>2.7k<br>3.1k<br>3.4k<br>3.7k<br>3.9k<br>4k<br>4.1k<br>4.2k</span></span><svg class="dn" viewBox="0 0 16 16"><path d="M8 1.5 15 9.5H10.5V14.5h-5V9.5H1z"/></svg></span><span>Reply</span><span>Share</span></div></div></div></div></div><div class="it cm a" style="--dp:1;--d:2s;"><div class="in"><div class="bx" style="--dp:1"><i class="ln" style="--k:0"></i><div class="cb"><div class="ch"><div class="av" style="background:#4f6bed"><span>D</span></div><b>dave_the_lunch_thief</b><span>•</span><span>3 hr. ago</span></div><div class="tx">I regret everything.</div><div class="ca"><span class="vv"><svg viewBox="0 0 16 16"><path d="M8 1.5 15 9.5H10.5V14.5h-5V9.5H1z"/></svg><span class="tk"><span class="tkc" style="--n:12;--td:1.2s;--ts:2.25s">1<br>336<br>642<br>919<br>1.1k<br>1.3k<br>1.5k<br>1.7k<br>1.8k<br>1.9k<br>2k<br>2k<br>2.1k</span></span><svg class="dn" viewBox="0 0 16 16"><path d="M8 1.5 15 9.5H10.5V14.5h-5V9.5H1z"/></svg></span><span>Reply</span><span>Share</span></div></div></div></div></div><div class="it cm a" style="--dp:0;--d:3.4s;"><div class="in"><div class="bx" style="--dp:0"><div class="cb"><div class="ch"><div class="av" style="background:#3fa34d"><span>J</span></div><b>Jordan</b><span>•</span><span>2 hr. ago</span></div><div class="tx">Label your food and he will still eat it. Respect the trap 🔥</div><div class="ca"><span class="vv"><svg viewBox="0 0 16 16"><path d="M8 1.5 15 9.5H10.5V14.5h-5V9.5H1z"/></svg><span class="tk"><span class="tkc" style="--n:12;--td:1.2s;--ts:3.65s">1<br>158<br>302<br>432<br>549<br>651<br>741<br>816<br>877<br>925<br>960<br>980<br>987</span></span><svg class="dn" viewBox="0 0 16 16"><path d="M8 1.5 15 9.5H10.5V14.5h-5V9.5H1z"/></svg></span><span>Reply</span><span>Share</span></div></div></div></div></div></div></div></div></div></body>
+</html>
