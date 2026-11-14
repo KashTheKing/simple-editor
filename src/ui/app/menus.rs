@@ -30,11 +30,9 @@ fn acts_if(ui: &mut egui::Ui, on: bool, items: &[Option<Action>]) {
 }
 
 /// Window menu: the everyday panels first, then the niche ones under More ▸ (hidden, not deleted).
-const MAIN_PANES: [Pane; 16] = [
+const MAIN_PANES: [Pane; 14] = [
     Pane::Library,
     Pane::MediaBrowser,
-    Pane::Effects,
-    Pane::Transitions,
     Pane::Presets,
     Pane::Source,
     Pane::Preview,
@@ -67,8 +65,6 @@ pub(super) fn toggle_action(p: Pane) -> Option<Action> {
     Some(match p {
         Pane::Library => ToggleLibrary,
         Pane::Inspector => ToggleInspector,
-        Pane::Effects => ToggleEffects,
-        Pane::Transitions => ToggleTransitions,
         Pane::Curves => ToggleCurves,
         Pane::Subtitles => ToggleSubtitles,
         Pane::Planner => TogglePlanner,
@@ -262,6 +258,7 @@ impl App {
         acts_if(ui, self.selection.len() >= 2, &[Some(MulticamCreate)]);
         acts_if(ui, tools_monitor::multicam_available(self), &[Some(MulticamAngles)]);
         acts(ui, &[None, Some(MatchFrame), Some(RevealInLibrary), None]);
+        acts_if(ui, has_sel || !self.sel_transitions.is_empty(), &[Some(SaveToGallery)]);
         acts_if(ui, has_sel, &[Some(SaveTemplate)]);
         acts_if(ui, self.selection.len() == 2, &[Some(ApplyFlow)]);
     }

@@ -77,7 +77,7 @@ curl -s -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' -H 'content-type: ap
   http://127.0.0.1:<port>/mcp
 ```
 
-**Verified against a live `tools/list` on the 1.2.0 release build (2026-11-12): 298 tools; `media.import_folder` is the 299th.** The tables below
+**Verified against a live `tools/list` on the 1.2.0 release build (2026-11-12): 298 tools. Added since (each listed in its feature's rows below): `media.import_folder`, `gallery.tab` and the `where` / `skip_existing` arguments of `gallery.apply` and `library.apply`, and the tools of the HTML renderer, thread, browser and social-guides work.** The tables below
 were written per feature as it landed; if a row disagrees with `tools/list`, `tools/list` wins.
 
 > **Pro plan (built and live-tested, 1.2.0):** the rows it added or changed
@@ -113,9 +113,9 @@ were written per feature as it landed; if a row disagrees with `tools/list`, `to
 | `skills.get` | Read | name | One skill's text and parsed parts. |
 | `skills.save` | Ui (held) | name, description, args?, body | Write a skill into the user's skills folder. |
 | `skills.delete` | Ui (held) | name | Delete a user skill. |
-| `library.list` | Read | kind?, query? | Installed and online items, each with `installed`; `catalogue` is `loading`, `ok` or a note. |
+| `library.list` | Read | kind?, query? | Installed items and, once the online library is connected (`gallery.connect`), the online ones, each with `installed`; `catalogue` is `not connected`, `loading`, `ok` or a note. |
 | `library.install` | Job | id | Download an item (`transitions/paper-tear`). |
-| `library.apply` | Mutate | id, clip?, at? | Install if needed, then use it: transition on a cut, effect / LUT on a clip, HTML / icon as a new clip. |
+| `library.apply` | Mutate | at, clip, clips, id, track, where | Use a CONTENT library item (not the media library): a transition goes on the clip's cut, an effect or LUT on the clip (default: the selection), an HTML template or icon is added as an HTML layer at `at` (default: the playhead), a skill is installed for the Assistant. An online item must be installed first (library.install). One undo step. |
 | `library.save` | Ui | kind, name, text | Save a shader, HTML layer, skill or `.cube` text as a library item (checked first). |
 | `library.remove` | Ui | id | Remove an installed item. |
 
@@ -258,13 +258,19 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `frame.export` | Read | height, path, quality, resize, t, width, with_effects | Save the frame at time t as PNG/JPG/WebP (by the path's extension). |
 | `frame.stats` | Read | t | Histogram/percentile/mean of the frame at t (256x144 downsample), sourced from the live preview render path; {} when the GPU or the requested frame is unavailable. |
 
-**`gallery.*`** (3 tools)
+**`gallery.*`** (8 tools)
 
 | Tool | Kind | Args | Description |
 |---|---|---|---|
-| `gallery.apply` | Mutate | clip_ids, intensity, name, tab | Apply a Gallery card (Look/LUT/Caption/SpeedRamp/Transition) to clip_ids (default selection); Captions is project-wide. Templates place at the playhead instead — use templates.apply. |
+| `gallery.apply` | Mutate | at, clip_ids, intensity, name, skip_existing, tab, track, where | Apply a Gallery card (Look/LUT/Caption/SpeedRamp/Effect/Transition) to clip_ids (default selection); Captions is project-wide. Effects: name = an effect's display name or a library id (effects/glow), where=track adds it to every clip on the selection's track. Transitions: name = Cross Fade\|Fade to Color\|Push\|Wipe or a library id (transitions/x); where = start\|end (an edge transition on that side of each clip), connection (the cut at its start/end where a clip abuts), connection_start\|connection_end, all (the cut at each clip's start, else a fade-in) - omit for the old default (= all, unclamped). Duration is the Transitions tab's, clamped to half the shorter clip. Templates place at the playhead instead - use templates.apply. |
 | `gallery.hover` | Ui | name, tab | Set/clear the monitor's alt-render preview to a Gallery card (name:null clears). UI-only, no mutation, no undo. |
-| `gallery.list` | Read | tab | Card names in one Gallery tab (Looks\|Luts\|Captions\|SpeedRamps\|Transitions\|Templates), or every tab when omitted. Looks excludes saved node-graph presets and reuses color-engine's builtin_looks() — the sole tool surface for Looks. |
+| `gallery.import` | Ui | paths | Import to Gallery: Gallery item files, audio files (into Sounds), folders (searched through) and .zip files, into your gallery folder. A name that is taken is numbered, nothing is overwritten. Returns what was added and what was skipped. |
+| `gallery.list` | Read | mine, tab, source, query, category, sort, detail | Card names in one Gallery tab (Looks\|Luts\|Captions\|SpeedRamps\|Effects\|Transitions\|Templates\|Titles\|Animate\|Sounds), or every tab when omitted. Looks excludes saved node-graph presets and reuses color-engine's builtin_looks() - the sole tool surface for Looks. With `source`, `query`, `category` or `sort` (the Gallery header's chips, search box, category menu and sort order) the list is filtered the same way and also holds the library's items for Effects / Transitions / Luts (installed ones always; online ones once the online library is connected: see gallery.connect). `detail` returns {name, source (Built-in\|Mine\|Installed\|Online), id, categories, uses} per card. |
+| `gallery.connect` | Ui | on | Switch the online library on or off for the Gallery (the "Browse online library" button / the tab menu's "Turn the online library off"). Off by default: until it is on nothing is fetched from the network, and the Gallery lists only built-in, your own and already-installed items. On: the small catalogue index is fetched (nothing else; an item downloads when it is used). Remembered between sessions. UI-only, no undo. |
+| `gallery.manage` | Ui | action, kind, name, new_name, tags | Change one of your saved Gallery items: action = rename (new_name) \| tags (tags: replaces them) \| duplicate \| replace (with the current selection's version) \| delete (moved to the gallery folder's .trash). kind as gallery.save's: look\|effect\|transition\|caption\|speed\|animate\|template\|sound. |
+| `gallery.reveal` | Ui | kind, name | Show a saved Gallery item's file in Explorer (kind + name), or - with only kind (or nothing) - open that gallery folder. The files are plain JSON (sounds: the audio file) you can zip and share. |
+| `gallery.save` | Ui | clip_id, index, kind, name, replace, tags, transition_id | Save something of yours to your own Gallery (files in %APPDATA%\SimpleEditor\gallery\<kind>\, shown in the matching tab marked Mine). kind: look (a clip's effect stack) \| effect (index = one effect, else the whole stack, added on use) \| transition (transition_id, default the selected one: length, colour, direction, shader controls) \| caption (the project's style) \| speed (a clip's speed curve) \| animate (a clip's keyframes) \| template (the selected clips; titles too) \| sound (an audio clip: its whole file, or the trimmed range) \| shader_effect (index) \| shader_transition \| html (an HTML layer) \| lut (index) - the last four go to the local library. A taken name is numbered unless replace=true. No undo (it is a file). |
+| `gallery.tab` | Ui | tab | Open the Gallery pane on a tab (Looks\|Luts\|Captions\|SpeedRamps\|Effects\|Transitions\|Templates\|Titles\|Animate, or the library tabs HTML\|Icons\|Skills), the same as clicking it; the pane is shown if it was hidden. What Ctrl+3 (Effects) and Ctrl+4 (Transitions) do. UI-only, no undo. |
 
 **`help.*`** (1 tool)
 

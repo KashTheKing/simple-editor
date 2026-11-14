@@ -226,12 +226,6 @@ impl Source {
             Source::Dir(PathBuf::from(dir))
         }
     }
-    pub fn label(&self) -> String {
-        match self {
-            Source::Dir(d) => d.display().to_string(),
-            Source::Url(u) => u.clone(),
-        }
-    }
     /// Where `rel` is (or will be) on this PC: in the folder, or its cached copy.
     pub fn local(&self, rel: &str) -> PathBuf {
         self.local_in(&cache_root(), rel)

@@ -97,8 +97,8 @@ actions! {
     AddAudioTrack => "add_audio_track", "Add Audio Track", None;
     ToggleLibrary => "toggle_library", "Show / Hide Library", sc(CTRL, Key::Num1);
     ToggleInspector => "toggle_inspector", "Show / Hide Inspector", sc(CTRL, Key::Num2);
-    ToggleEffects => "toggle_effects", "Show / Hide Effects", sc(CTRL, Key::Num3);
-    ToggleTransitions => "toggle_transitions", "Show / Hide Transitions", sc(CTRL, Key::Num4);
+    ToggleEffects => "toggle_effects", "Gallery: Effects", sc(CTRL, Key::Num3);
+    ToggleTransitions => "toggle_transitions", "Gallery: Transitions", sc(CTRL, Key::Num4);
     ToggleCurves => "toggle_curves", "Show / Hide Curve Editor", sc(CTRL, Key::Num5);
     ToggleSubtitles => "toggle_subtitles", "Show / Hide Subtitles", sc(CTRL, Key::Num6);
     Retime => "retime", "Speed / Retime…", sc(CTRL, Key::R);
@@ -294,6 +294,8 @@ actions! {
     ToggleTrimView => "toggle_trim_view", "Trim View in Preview", None;
     CompareWipe => "compare_wipe", "Wipe Compare", None;
     SaveStill => "save_still", "Save Still", None;
+    // ---- ws:my-gallery ----
+    SaveToGallery => "save_to_gallery", "Save to Gallery…", None;
     ToggleScopes => "toggle_scopes", "Show / Hide Scopes", None;
     MulticamCreate => "multicam_create", "Create Multicam from Selection", None;
     NextAngle => "next_angle", "Next Angle at Playhead", None;
@@ -661,6 +663,8 @@ pub fn group(a: Action) -> &'static str {
         // ---- ws:docs-release ----
         // ---- ws:html-layer ----
         AddHtmlLayer | AddHtmlScene | ImportHtml | SnapshotWeb | EditHtml | SaveHtmlToLibrary => "Add",
+        // ---- ws:my-gallery ----
+        SaveToGallery => "Clip",
         // ---- ws:shader-library ----
         // ---- ws:skills ----
         // ---- ws:online-library ----

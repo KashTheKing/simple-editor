@@ -676,6 +676,49 @@ fn headless_dnd_effect_targets_the_clip_under_the_pointer() {
     assert!(!h.project.tracks[0].clips[0].contains(*t));
 }
 
+/// A Gallery card dragged over the lanes is reported with where it resolved to - the clip(s), the cut, the
+/// track or the new-track lane - by the same `aim` that lit the hover, and nothing is edited by the timeline.
+#[test]
+fn headless_dnd_gallery_card_reports_where_it_landed() {
+    use crate::ui::gallery::GalleryTab;
+    use crate::ui::timeline::gallery_drop::Aim;
+    let mut h = Harness::new();
+    let lanes = h.state.lanes_rect;
+    let clip = h.project.tracks[0].clips[0].id;
+    let drop = |h: &mut Harness, payload: DragPayload, at: Pos2| {
+        h.press(pos2(10.0, 10.0));
+        egui::DragAndDrop::set_payload(&h.ctx, payload);
+        h.frame(vec![Event::PointerMoved(at)]);
+        let r = h.release(at);
+        assert!(!r.edited, "the app applies it, the timeline changes nothing");
+        assert_eq!((r.dropped_other.len(), r.dropped_aims.len()), (1, 1));
+        r.dropped_aims[0].clone()
+    };
+    // a look on the clip body (t = 5 s of the 0..10 s clip)
+    let on_clip = pos2(lanes.left() + 200.0, lanes.top() + 30.0);
+    let got = drop(&mut h, DragPayload::GalleryCard(GalleryTab::Looks, "Warm".into()), on_clip);
+    assert!(matches!(&got, Some(Aim::Clips { clips, hit, .. }) if clips == &[clip] && *hit == clip), "{got:?}");
+    // a transition near the clip's end snaps to that edge
+    let near_end = pos2(lanes.left() + 395.0, lanes.top() + 30.0); // t = 9.875 s
+    let got = drop(&mut h, DragPayload::Transition(crate::model::TransitionKind::Wipe), near_end);
+    assert_eq!(got, Some(Aim::Edge { clip, out: true }));
+    // a template on the empty part of the video track: placed there
+    let empty = pos2(lanes.left() + 480.0, lanes.top() + 30.0); // t = 12 s
+    let got = drop(&mut h, DragPayload::Template("T".into()), empty);
+    assert!(matches!(got, Some(Aim::Place { track: Some(0), .. })), "{got:?}");
+    // the same template below the last track: a new track
+    let below = pos2(lanes.left() + 480.0, paint::row_top(&h.state, &h.project, 1).unwrap() + 1000.0);
+    if below.y < lanes.bottom() {
+        let got = drop(&mut h, DragPayload::Template("T".into()), below);
+        assert!(matches!(got, Some(Aim::Place { track: None, .. })), "{got:?}");
+    }
+    // a skill is no timeline thing; a card dropped on nothing valid reports no aim
+    let got = drop(&mut h, DragPayload::LibItem("skills/tidy".into()), on_clip);
+    assert_eq!(got, None);
+    let got = drop(&mut h, DragPayload::GalleryCard(GalleryTab::Looks, "Warm".into()), empty);
+    assert_eq!(got, None, "a look over empty lane lands nowhere");
+}
+
 #[test]
 fn headless_dnd_drops_asset_and_ctrl_wheel_zooms() {
     let mut h = Harness::new();

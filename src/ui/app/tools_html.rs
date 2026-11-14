@@ -457,7 +457,10 @@ fn helper_status(_app: &mut App, args: &Value) -> Result<ToolOutcome, String> {
         "path": blitz::helper_exe().map(|p| p.display().to_string()),
         "version": blitz::version_line(),
         "install_started": started,
-        "library": crate::engine::library::Source::of(&crate::settings::Settings::load()).label(),
+        "library": match crate::engine::library::Source::of(&crate::settings::Settings::load()) {
+            crate::engine::library::Source::Dir(d) => d.display().to_string(),
+            crate::engine::library::Source::Url(u) => u,
+        },
     })))
 }
 

@@ -54,7 +54,7 @@ fn kind_arg(args: &Value) -> Result<Option<Kind>, String> {
 pub const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "library.list",
-        desc: "Items of the CONTENT library (shader transitions and effects, LUTs, HTML templates, icons, skills - not the media library panel): installed ones and the online catalogue, each with `installed`. The first call starts loading the catalogue: `catalogue` is \"loading\" until it arrives (call again).",
+        desc: "Items of the CONTENT library (shader transitions and effects, LUTs, HTML templates, icons, skills - not the media library panel): installed ones and, once the online library is connected (gallery.connect, or the Gallery's \"Browse online library\"), the online catalogue, each with `installed`. Until connected nothing is fetched and `catalogue` is \"not connected\"; after connecting the first call starts loading the catalogue: `catalogue` is \"loading\" until it arrives (call again).",
         args: &["kind:string:false:effect|transition|lut|html|icon|skill", "query:string:false:words matched in name / tags / description"],
         kind: ToolKind::Read,
         run: |app, args| {
@@ -72,6 +72,7 @@ pub const TOOLS: &[ToolDef] = &[
                 })
                 .collect();
             let state = match (&app.online.cat, app.online.loading()) {
+                _ if !app.online.connected => "not connected".to_string(),
                 (_, true) => "loading".to_string(),
                 (Some(_), _) if app.online.note.is_empty() => "ok".to_string(),
                 _ => app.online.note.clone(),
@@ -100,12 +101,15 @@ pub const TOOLS: &[ToolDef] = &[
         args: &[
             "id:string:true:<kind dir>/<file id>",
             "clip:integer:false:clip id (default: the selection)",
+            "clips:array:false:several clip ids (an effect / LUT / transition on each)",
             "at:number:false:timeline seconds for HTML / icons (default: the playhead)",
+            "track:integer:false:HTML / icons: a video track index, -1 for a new track (default: a free one)",
+            "where:string:false:a transition only: start|end|connection|all (see gallery.apply); default = the old behaviour",
         ],
         kind: ToolKind::Mutate,
         run: |app, args| {
             let (id, _, _) = id_arg(args)?;
-            let msg = library_ctl::apply(app, &id, arg_u64(args, "clip"), arg_f64(args, "at"))?;
+            let msg = library_ctl::apply(app, &id, &library_ctl::Target::from_args(args))?;
             Ok(ToolOutcome::Done(json!({"ok": true, "message": msg})))
         },
     },

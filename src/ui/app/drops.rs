@@ -48,6 +48,18 @@ impl App {
             self.confirm_discard_then(move |app| app.open_project(&dropped0));
             return;
         }
+        // ---- ws:my-gallery ---- items, sounds, folders and zips dropped on the Gallery pane join your Gallery
+        let over_gallery =
+            pos.is_some_and(|p| self.layout.rects.iter().any(|(pane, r)| *pane == Pane::Presets && r.contains(p)));
+        let gallery_file = |p: &PathBuf| {
+            p.is_dir()
+                || crate::engine::gallery::is_audio(p)
+                || p.extension().is_some_and(|e| e.eq_ignore_ascii_case("json") || e.eq_ignore_ascii_case("zip"))
+        };
+        if over_gallery && dropped.iter().all(gallery_file) {
+            gallery_mine::import(self, &dropped);
+            return;
+        }
         // ---- ws:html-layer ---- an .html file becomes an HTML layer linked to the file
         let (pages, dropped): (Vec<PathBuf>, Vec<PathBuf>) =
             dropped.into_iter().partition(|p| super::html_ctl::is_html_file(p));

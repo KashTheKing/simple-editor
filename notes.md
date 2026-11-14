@@ -434,3 +434,31 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
 - NOT verified: clicking Report a Bug opening the browser at the prefilled form (the form field id is `version`;
   GitHub accepts `?template=bug_report.yml&version=...`), the extension inside Brave.
 
+
+- **Gallery: scroll bug, Effects/Transitions merge, drag onto the timeline (2026-11-12, fix/gallery-scroll).** Root cause
+  of "tons of items in one row, can't scroll": `ui::drag_source` draws its body in a `ui.scope`, which takes the rest of
+  the row instead of wrapping, so any card drawn *inside* it in a `horizontal_wrapped` grid never wraps (the Animate tab,
+  28 blocks; `effects_ui::effect_card` had met it before and allocated first). Every Gallery card now goes through
+  `gallery::card`, which `allocate_exact_size`s its slot first and is itself the drag source. A second trap found on the
+  way: a widget wider than the pane (the 150 pt search box in a 120 pt pane) widens the scroll area's `max_rect`, and the
+  wrapping rows below it with it - keep fixed-width widgets under `available_width()`. Effects / Transitions are Gallery
+  tabs (`Pane::Effects`/`Transitions` are gone; their names still deserialise as `Pane::Presets`, `Layout::fold_gallery`
+  keeps one tile). `ui.input` gained `down` / `up` so a drag can be driven (move, screenshot, release). Hard-won test
+  facts: a widget outside the clip rect is not painted (assert on a scrolled pane or on recorded rects, not painted
+  text); `vertical_scroll_offset` is NOT clamped in the frame it is set (pass `content - viewport`); egui drops a dnd
+  payload on Esc but a held button keeps `is_being_dragged`, so a drag source must remember it was cancelled
+  (`gallery::drag_lifted`). `engine::library::index_tests::library_index_matches_files` fails on a CRLF checkout
+  (sizes in index.json are LF sizes) - unrelated, pre-existing.
+
+- **Gallery: one grid, one header, online library as a switch (2026-11-13, fix/gallery-scroll).** The "use online library or
+  a folder" screen is gone: `Settings.library_online` (default false) is set by the "Browse online library" banner (or
+  `gallery.connect`); `library_ctl::ensure` returns before any thread/request unless `connected(settings)` (a folder counts),
+  and then only reads the installed items + the catalogue already saved on disk. Rows of the catalogue that are not
+  installed show only when connected (`OnlineState::rows`); a thumbnail is only queued when connected. Every tab draws
+  through `gallery_filter::grid` (measures the pane, picks whole columns, publishes the card size in a ctx temp that
+  `card` reads) under one header (`gallery::header`). Traps: egui's `ComboBox` is ~100 pt wide whatever `.width()` says and
+  widens a narrow pane (and the scroll area under it) - use `menu::button` + `menu::check` rows; `ctx.run` may run the
+  closure more than once per frame, so counts accumulate into `count_acc` that `show` resets each pass; Ctrl+F is the
+  Find action (polled before the panes draw), so `Action::Find` over `Pane::Presets` calls `gallery::focus_search()` instead.
+  The Library (media) pane's reuse list keeps only node graphs now - effects, looks and adjustment layers are Gallery cards.
+

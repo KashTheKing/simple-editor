@@ -133,7 +133,8 @@ src/engine/library.rs   the content library: installed items in %APPDATA%\Simple
 src/engine/gpu/library_tests.rs  every library shader compiled and drawn on the real driver
 src/ui/html_ui.rs       HTML editor window; Inspector "Fields" controls
 src/ui/app/html_ctl.rs  render jobs, asset re-pointing, Add HTML Layer / Scene, add_html_clip
-src/ui/app/library_ctl.rs  catalogue / download jobs, apply by kind, Gallery library tabs' App side
+src/ui/app/library_ctl.rs  catalogue (only once connected: no network before the user opts in) / download jobs,
+                        apply by kind, Gallery library tabs' App side
 src/ui/app/tools_{html,shader,skills,library}.rs  html.*, clip.set_shader / shader.check /
                         transition.set_shader, skills.*, library.*
 
@@ -170,9 +171,19 @@ src/ui/inspector_audio.rs clip audio properties (props grid, fades, blend, bus o
                         buttons dispatching Action::AutoDuck/Normalize)
 src/ui/inspector_text.rs text/typography editing + per-selection style overrides
 src/ui/color_ui.rs      Color inspector section: LUT/Primaries/Qualifier params, Gallery Looks tabs
-src/ui/effects_ui.rs    effect catalogue (thumbnail grid) + the clip's effect stack (drag-reorder, bulk edit)
-src/ui/gallery.rs       Gallery pane: re-purposed `Pane::Presets` drawer (effects/node-graphs/adjustment
-                        layers/templates/LUTs/Looks/Titles/Captions tabs) (inspector-gallery)
+src/ui/effects_ui.rs    the clip's effect stack (drag-reorder, bulk edit) + the catalogue helpers/thumbnails the
+                        Gallery's Effects tab uses (the old Effects pane is gone)
+src/ui/gallery.rs       Gallery pane: `Pane::Presets` drawer; tabs Animate/Looks/Luts/Captions/Speed/Effects/
+                        Transitions/Templates/Titles + the library's HTML/Icons/Skills. Every card is drawn by
+                        `card` (claims its grid slot first, so rows wrap; drag source with a `DragPayload`).
+                        Effects/Transitions list built-in, yours and library items in one grid (inspector-gallery);
+                        every tab is one `gallery_filter::grid` under one pinned header (search, source chips,
+                        category, sort, size)
+src/ui/gallery_filter.rs the Gallery's view state (`Filters`: search / chip / category / sort / size), the pure
+                        filter + sort + column rules, and the `grid` every card is drawn in
+src/ui/timeline/gallery_drop.rs  what a dragged Gallery card means under the pointer (`aim`: clips / edge /
+                        place), its hover paint, `pull_to_track`
+src/ui/app/gallery_drop_ctl.rs   executes a dropped card through the click paths (one undo)
 src/ui/nodes.rs         node-graph editor
 src/ui/curves.rs        keyframe graph editor (bezier velocity, presets, flow)
 src/ui/library.rs       library + recent: folders, tags, labels, search, filters, linked folders,
@@ -658,7 +669,9 @@ is the second real pane and followed this exact list, reusing `Glyph::Queue` and
 pane-shaped in the original design became something cheaper: Color is an inspector section +
 Gallery tabs, Scopes/the multicam angle grid are `egui::Window`s, Transcript is a collapsible section
 inside Subtitles, Titles/Captions are Gallery tabs, the timeline overview is an inline minimap strip,
-trim view/wipe are Preview overlays, `Pane::Presets` kept its variant but now draws the Gallery. A new
+trim view/wipe are Preview overlays, `Pane::Presets` kept its variant but now draws the Gallery - and the
+Effects and Transitions panes are Gallery tabs (their old names still deserialise, as the Gallery, so a
+saved layout loads; `Layout::fold_gallery` keeps one tile). A new
 pane costs all of the following — do every step, in this order, before calling it done:
 
 1. Add the variant to `Pane` and to the `Pane::ALL` slice (own marker section) in `src/ui/layout.rs`.

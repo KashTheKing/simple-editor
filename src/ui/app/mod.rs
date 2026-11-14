@@ -62,6 +62,8 @@ mod folder_import;
 mod frame;
 // ---- ws:inspector-gallery ----
 mod gallery_ctl;
+mod gallery_drop_ctl;
+pub(crate) mod gallery_mine;
 mod gpu;
 mod jobs;
 // ---- ws:jobs-panel ----
@@ -437,6 +439,10 @@ pub struct App {
     gallery_textures: Vec<egui::TextureHandle>,
     /// Gallery pane state (open tab, save-from-selection scratch).
     gallery: crate::ui::gallery::GalleryState,
+    /// "Save to Gallery…" / rename / tags prompt (`gallery_mine`).
+    save_dialog: gallery_mine::SaveDialog,
+    /// The sound the Gallery is previewing (`gallery_mine::frame`).
+    sound_playing: Option<PathBuf>,
     // ---- ws:media-library ----
     /// Image-sequence bakes and consolidate copies in flight, polled by `media_sync::tick`.
     media_jobs: Vec<media_sync::MediaJob>,
@@ -916,6 +922,8 @@ impl App {
             // ---- ws:inspector-gallery ----
             gallery_textures: Vec::new(),
             gallery: crate::ui::gallery::GalleryState::default(),
+            save_dialog: Default::default(),
+            sound_playing: None,
             // ---- ws:media-library ----
             media_jobs: Vec::new(),
             offline_scan_at: None,
@@ -1770,6 +1778,8 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:skills ----
     // ---- ws:online-library ----
     library_ctl::tick,
+    // ---- ws:my-gallery ----
+    gallery_mine::frame,
 ];
 
 pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
@@ -1836,6 +1846,8 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     assistant_ctl::skill_windows,
     // ---- ws:online-library ----
     library_ctl::windows,
+    // ---- ws:my-gallery ----
+    gallery_mine::windows,
 ];
 
 pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[

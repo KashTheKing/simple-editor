@@ -14,6 +14,8 @@ pub mod effects;
 // ---- ws:export-encoders ----
 pub mod encoders;
 pub mod export;
+pub mod gallery;
+pub mod gallery_sync;
 pub mod gpu;
 pub mod folder_import;
 pub mod import;

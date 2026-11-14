@@ -70,6 +70,9 @@ pub(super) fn transition_menu(ui: &mut egui::Ui, tr: &crate::model::Transition, 
         *act = Some(if many { Act::RemoveTransitions(sel.to_vec()) } else { Act::RemoveTransition(tr.id) });
     }
     ui.separator();
+    if menu::row(ui, None, "Save to Gallery…", "").clicked() {
+        *act = Some(Act::SaveTransition(tr.id));
+    }
     menu::sub(ui, Some(Glyph::Transition), "Change Type", |ui| {
         for k in TransitionKind::ALL {
             if menu::check(ui, k == tr.kind, k.name(), "").clicked() {
@@ -323,7 +326,7 @@ pub(super) fn clip_menu(
         if menu::item(ui, ReplaceWithLibrarySelection, m.library_selected.is_some()) {
             *act = Some(Act::ReplaceClip(m.id));
         }
-        acts(ui, &[None, Some(SaveTemplate)]);
+        acts(ui, &[None, Some(SaveToGallery), Some(SaveTemplate)]);
         // ---- ws:html-layer ----
         if m.html {
             acts(ui, &[Some(EditHtml), Some(SaveHtmlToLibrary)]);

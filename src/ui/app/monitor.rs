@@ -112,7 +112,7 @@ impl AltRenderState {
     /// PREVIOUS frame's pane-draw phase, and it resets the flag so THIS frame's pane-draw phase can
     /// assert fresh for the next tick to check.
     ///
-    /// A hover-owning pane's own match arm (`Pane::Transitions` in panes.rs, the Gallery pane's drawer in
+    /// A hover-owning pane's drawer (the Gallery pane's, in
     /// gallery_ctl.rs) is the only thing that calls `request(Some(...))`, and only while it is drawn -
     /// while the user keeps hovering the same card in a pane that's still on screen, that arm re-asserts
     /// every single frame, so this never fires. But if the user switches away from that pane entirely
@@ -751,7 +751,7 @@ mod tests {
     fn clear_if_stale_drops_a_request_nothing_reasserted() {
         let mut state = AltRenderState::default();
         // Frame N: a pane hovers a transition and asserts the request (mirrors panes.rs's
-        // `Pane::Transitions` arm calling `app.alt_render.request(Some(...))` during its pane-draw phase).
+        // the Gallery's Transitions tab calling `app.alt_render.request(Some(...))` during its pane-draw phase).
         state.request(Some(AltRequest::Transition(TransitionKind::CrossFade)));
         // Frame N+1's tick runs BEFORE panes are drawn - it sees frame N's assertion, so the request
         // survives this check.

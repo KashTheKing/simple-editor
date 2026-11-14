@@ -19,7 +19,7 @@ fn switch(app: &mut App, name: &str) -> Result<ToolOutcome, String> {
 
 /// A pane by its title, case-insensitively ("inspector", "Auto-cut", …).
 fn pane_by_name(s: &str) -> Result<Pane, String> {
-    Pane::ALL.iter().copied().find(|p| p.title().eq_ignore_ascii_case(s.trim())).ok_or_else(|| {
+    Pane::by_title(s).ok_or_else(|| {
         format!("unknown pane '{s}' (one of {})", Pane::ALL.iter().map(|p| p.title()).collect::<Vec<_>>().join(", "))
     })
 }
