@@ -77,7 +77,7 @@ curl -s -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' -H 'content-type: ap
   http://127.0.0.1:<port>/mcp
 ```
 
-**Verified against a live `tools/list` on the 1.2.0 release build (2026-11-12): 298 tools.** The tables below
+**Verified against a live `tools/list` on the 1.2.0 release build (2026-11-12): 298 tools; `media.import_folder` is the 299th.** The tables below
 were written per feature as it landed; if a row disagrees with `tools/list`, `tools/list` wins.
 
 > **Pro plan (built and live-tested, 1.2.0):** the rows it added or changed
@@ -351,7 +351,8 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `media.batch_convert` | Read | ext, height, ids, scaler, width | Convert every id with the same options (the scripted batch path — the Convert… window stays single-target); starts one job per asset and returns their output paths at once. |
 | `media.consolidate` | Mutate | dir | Copy every asset from outside dir (default: the project's own folder) into it and repoint the paths — both halves run here, synchronously, as one undo step. |
 | `media.convert` | Job | ext, height, path, scaler, width | Convert a file with ffmpeg (gif/mp4/mov/mkv/webm/mp3/wav…); returns the output path when done (blocks up to 10 min). |
-| `media.import` | Read | paths | Import media files into the library; returns asset ids. |
+| `media.import` | Read | paths | Import media files into the library; returns asset ids. A folder among the paths imports as a bin in the background (no ids; use `media.import_folder` for options or to wait). |
+| `media.import_folder` | Job | path, recursive, bin_name, extensions | Import a folder as a library bin named after it (`bin_name` overrides): supported media sorted naturally, sub-folders as nested bins (up to 8 deep, `recursive` false = top level only), `extensions` filters (`["wav","mp3"]`). Hidden/system entries and unsupported files are skipped and counted, files already in the library are reused. One undo step; replies when applied, `status` reads like "Imported 84 files into 'SFX' (3 skipped)". |
 | `media.import_sequence` | Job | fps, path | Detect the numbered still run `path` belongs to (3+ frames, same prefix/extension) and bake it to one video asset in the background; fires the `import` hook once when it lands. |
 | `media.list` | Read | - | Library assets (id, path, kind, duration, size, tags, label, folder, description, used). |
 | `media.relink` | Mutate | dir, ids | Relink offline assets: by file name, then by duration within one frame, inside dir (+ one level of subfolders); returns {relinked, still_missing}. |

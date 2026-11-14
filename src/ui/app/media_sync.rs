@@ -116,21 +116,32 @@ fn refresh_offline(app: &mut App) {
 /// A background job this workstream polls in `tick`.
 pub(super) enum MediaJob {
     /// An image-sequence bake: `out` is imported when it lands, then `import` fires once.
-    Sequence { prog: Arc<Progress>, out: PathBuf, frames: usize },
+    /// `bin` = the library bin a folder import wants the baked video filed in ("" = the root).
+    Sequence { prog: Arc<Progress>, out: PathBuf, frames: usize, bin: String },
     /// Consolidate's copy phase (file I/O only); `tick` repoints + pushes one undo when it finishes.
     Consolidate { prog: Arc<Progress>, results: Arc<Mutex<Vec<(Id, PathBuf, Result<(), String>)>>> },
+    /// A folder import's scan (file I/O only); `folder_import::finish` applies it on the UI thread.
+    /// `done` is what an MCP caller waits on: it ends once the scan has been applied.
+    Folder {
+        prog: Arc<Progress>,
+        slot: Arc<Mutex<Option<crate::engine::folder_import::Scan>>>,
+        confirm: bool,
+        done: Arc<Progress>,
+        name: String,
+    },
 }
 
 impl MediaJob {
     pub(super) fn progress(&self) -> &Arc<Progress> {
         match self {
-            MediaJob::Sequence { prog, .. } | MediaJob::Consolidate { prog, .. } => prog,
+            MediaJob::Sequence { prog, .. } | MediaJob::Consolidate { prog, .. } | MediaJob::Folder { prog, .. } => prog,
         }
     }
     pub(super) fn label(&self) -> String {
         match self {
             MediaJob::Sequence { out, .. } => out.file_name().unwrap_or_default().to_string_lossy().into_owned(),
             MediaJob::Consolidate { .. } => "Consolidate media".into(),
+            MediaJob::Folder { name, .. } => format!("Import folder · {name}"),
         }
     }
 }
@@ -175,7 +186,10 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
     }
     for job in take_done(&mut app.media_jobs) {
         match job {
-            MediaJob::Sequence { prog, out, frames } => finish_sequence(app, &prog, out, frames),
+            MediaJob::Sequence { prog, out, frames, bin } => finish_sequence(app, &prog, out, frames, &bin),
+            MediaJob::Folder { prog, slot, confirm, done, name } => {
+                super::folder_import::finish(app, &prog, &slot, confirm, done, &name)
+            }
             MediaJob::Consolidate { prog, results } => {
                 let results = std::mem::take(&mut *results.lock().unwrap_or_else(|e| e.into_inner()));
                 finish_consolidate(app, &prog, &results);
@@ -187,13 +201,20 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
     }
 }
 
-fn finish_sequence(app: &mut App, prog: &Progress, out: PathBuf, frames: usize) {
+fn finish_sequence(app: &mut App, prog: &Progress, out: PathBuf, frames: usize, bin: &str) {
     if let Some(e) = prog.error() {
         app.toast(format!("Sequence import failed: {e}"));
         return;
     }
     let ids = app.import_files(std::slice::from_ref(&out));
     let Some(&id) = ids.last() else { return };
+    if !bin.is_empty() {
+        // a folder import's run: it belongs in that bin, not the library root
+        app.project.add_folder(bin);
+        if let Some(a) = app.project.asset_mut(id) {
+            a.folder = bin.to_string();
+        }
+    }
     app.library.tab = 0;
     app.library.selected = Some(id);
     app.toast_with_folder(format!("Imported {frames}-frame sequence"), out.clone());
@@ -413,6 +434,16 @@ pub(super) fn start_import_sequence(
     first_frame: &Path,
     fps: Option<f64>,
 ) -> Result<(Arc<Progress>, PathBuf), String> {
+    start_import_sequence_in(app, first_frame, fps, "")
+}
+
+/// `start_import_sequence`, filing the baked video under library bin `bin` ("" = the root).
+pub(super) fn start_import_sequence_in(
+    app: &mut App,
+    first_frame: &Path,
+    fps: Option<f64>,
+    bin: &str,
+) -> Result<(Arc<Progress>, PathBuf), String> {
     let seq = detect_sequence(first_frame)
         .ok_or_else(|| format!("{} is not part of a numbered still sequence (3+ frames)", first_frame.display()))?;
     if media::ffpipe::ffmpeg_exe().is_none() {
@@ -423,7 +454,7 @@ pub(super) fn start_import_sequence(
     let frames = seq.frames.len();
     let bake_out = out.clone();
     let prog = export::spawn_job("sequence", move |p| media::ffpipe::bake_sequence(&seq, fps, &bake_out, p));
-    app.media_jobs.push(MediaJob::Sequence { prog: prog.clone(), out: out.clone(), frames });
+    app.media_jobs.push(MediaJob::Sequence { prog: prog.clone(), out: out.clone(), frames, bin: bin.to_string() });
     app.toast(format!("Baking {frames}-frame sequence…"));
     Ok((prog, out))
 }
@@ -499,7 +530,7 @@ mod tests {
         let prog = Progress::new();
         prog.finish(None);
         let mut jobs = vec![
-            MediaJob::Sequence { prog: prog.clone(), out: PathBuf::from("C:/seq.mp4"), frames: 3 },
+            MediaJob::Sequence { prog: prog.clone(), out: PathBuf::from("C:/seq.mp4"), frames: 3, bin: String::new() },
             MediaJob::Consolidate { prog: Progress::new(), results: Arc::new(Mutex::new(Vec::new())) },
         ];
         let done = take_done(&mut jobs);

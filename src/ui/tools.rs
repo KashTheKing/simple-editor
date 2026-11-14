@@ -1546,7 +1546,7 @@ pub(crate) fn action_glyph(a: crate::hotkeys::Action) -> Option<Glyph> {
         OpenFile | OpenProject => Glyph::Folder,
         Save | SaveProjectAs => Glyph::FloppyDisk,
         ExportVideo | ExportLossless | ExportXml => Glyph::ExportArrow,
-        ImportMedia => Glyph::ImportArrow,
+        ImportMedia | ImportFolder => Glyph::ImportArrow,
         CopyClips => Glyph::Copy,
         CutClips => Glyph::Razor,
         PasteClips => Glyph::Paste,

@@ -15,6 +15,7 @@ pub mod effects;
 pub mod encoders;
 pub mod export;
 pub mod gpu;
+pub mod folder_import;
 pub mod import;
 pub mod lut;
 pub mod mixer;

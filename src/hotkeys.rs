@@ -58,6 +58,7 @@ actions! {
     ExportLossless => "export_lossless", "Fast Lossless Cut…", sc(CTRL_ALT, Key::E);
     ExportXml => "export_xml", "Export Premiere / Resolve XML…", sc(CTRL_SHIFT, Key::E);
     ImportMedia => "import", "Import Media…", sc(CTRL, Key::I);
+    ImportFolder => "import_folder", "Import Folder as Bin…", None;
     Settings => "settings", "Settings…", sc(CTRL, Key::Comma);
     Undo => "undo", "Undo", sc(CTRL, Key::Z);
     Redo => "redo", "Redo", sc(CTRL_SHIFT, Key::Z);
@@ -593,9 +594,9 @@ pub const GROUPS: &[&str] = &[
 pub fn group(a: Action) -> &'static str {
     use Action::*;
     match a {
-        NewProject | OpenFile | OpenProject | Save | SaveProjectAs | ImportMedia | ImportTimeline | ExportVideo
-        | QuickExport | ExportLossless | ExportXml | ExportFrame | ExportMarkers | ScreenCapture | Voiceover
-        | RestoreBackup | Settings => "File",
+        NewProject | OpenFile | OpenProject | Save | SaveProjectAs | ImportMedia | ImportFolder | ImportTimeline
+        | ExportVideo | QuickExport | ExportLossless | ExportXml | ExportFrame | ExportMarkers | ScreenCapture
+        | Voiceover | RestoreBackup | Settings => "File",
         Undo | Redo | CutClips | CopyClips | PasteClips | PasteInsert | PasteAtTop | PasteInPlace | CopyAttributes
         | PasteAttributes | Delete | RippleDelete | SelectAll | Deselect | SelectForward | SelectBackward
         | SelectAtPlayhead | Find => "Edit",

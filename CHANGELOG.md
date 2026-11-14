@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Library
+- **Import a folder as a bin.** Drop a folder from Explorer on the window, click the folder button next to
+  **+ Import**, or use **File ▸ Import ▸ Import Folder as Bin…** (also in the command palette, the empty-spot
+  menu, and **Browse**'s right-click ▸ **Import folder as bin**). The folder becomes a bin named after it with
+  every video, audio and image file inside in natural name order; sub-folders become nested bins (8 levels).
+  Hidden/system files and unsupported types are skipped and counted in the toast ("Imported 84 files into
+  'SFX' (3 skipped)"), files already in the Library are reused, it runs in the background, asks above 500
+  files and is one Undo step. A numbered PNG run in a folder still bakes into one clip, filed in its bin.
+- MCP: new `media.import_folder` (`path`, `recursive`, `bin_name`, `extensions`); `media.import` also accepts
+  folders in `paths`.
+
 ## 1.2.0
 
 The biggest release yet: an AI **Assistant** that edits your project while you watch, HTML + CSS

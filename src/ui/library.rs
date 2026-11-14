@@ -44,7 +44,7 @@ use crate::settings::{RecentAsset, Settings};
 use crate::theme::Palette;
 use crate::ui::confirm::{self, ConfirmAction};
 use crate::ui::menu;
-use crate::ui::tools::{draw_glyph, glyph_text_button, Glyph};
+use crate::ui::tools::{draw_glyph, glyph_text_button, icon_button, Glyph};
 use crate::ui::{duration_text, label_color, DragPayload};
 use eframe::egui::{self, RichText};
 use std::collections::HashSet;
@@ -135,6 +135,8 @@ pub struct LibraryState {
 #[derive(Default)]
 pub struct LibraryResponse {
     pub import: bool,
+    /// "Import folder as bin…" (header button, empty state, right-click menu): the app opens the picker.
+    pub import_folder: bool,
     /// A folder was just linked: bring the Media Browser pane (where linked folders live) forward.
     pub show_browser: bool,
     /// Assets to put on the timeline, back to back in THIS order (the selection's click order).
@@ -1499,9 +1501,13 @@ fn empty_state(ui: &mut egui::Ui, palette: &Palette, resp: &mut LibraryResponse)
         egui::TextStyle::Body.resolve(ui.style()),
         palette.text_dim,
     );
-    let slot = egui::Rect::from_center_size(r.center() + egui::vec2(0.0, 14.0), egui::vec2(110.0, 22.0));
+    let slot = egui::Rect::from_center_size(r.center() + egui::vec2(-62.0, 14.0), egui::vec2(110.0, 22.0));
     if ui.put(slot, egui::Button::new("Import media…")).clicked() {
         resp.import = true;
+    }
+    let slot = slot.translate(egui::vec2(120.0, 0.0));
+    if ui.put(slot, egui::Button::new("Import folder…")).on_hover_text("A folder becomes a bin").clicked() {
+        resp.import_folder = true;
     }
 }
 
@@ -1545,6 +1551,10 @@ fn header(
                 };
                 if glyph_text_button(ui, Glyph::Letter('+'), "Import").on_hover_text(tip).clicked() {
                     resp.import = true;
+                }
+                let tip = "Import a folder as a bin: its sub-folders become nested bins";
+                if icon_button(ui, palette, egui::Id::new("lib-import-folder"), Glyph::Folder, tip, false).clicked() {
+                    resp.import_folder = true;
                 }
                 menu::button(ui, "View ▾", |ui| view_menu(ui, state, settings, columns_changed));
                 // every filter in one menu; the button says how many are on
@@ -1650,6 +1660,7 @@ fn empty_menu(
 ) {
     let project_view = state.tab == 0;
     menu::action_item(ui, Action::ImportMedia);
+    menu::action_item(ui, Action::ImportFolder);
     // only when yt-dlp is installed - the whole URL import is optional
     if m.ytdlp
         && menu::row(ui, Some(Glyph::ImportArrow), "Import from URL…", "")
@@ -2806,6 +2817,15 @@ impl Tree<'_, '_> {
             if menu::row(ui, Some(Glyph::Folder), "Reveal in Explorer", "").clicked() {
                 let _ = std::process::Command::new("explorer").arg(path).spawn();
             }
+            // the folder (every folder in the selection, when this one is part of it) becomes a bin
+            if menu::row(ui, Some(Glyph::ImportArrow), "Import folder as bin", "")
+                .on_hover_text("Every media file in it, sub-folders as nested bins")
+                .clicked()
+            {
+                let sel = &self.state.sel_paths;
+                let dirs = if sel.iter().any(|p| p == path) { sel.clone() } else { vec![path.to_string()] };
+                self.resp.open_paths.extend(dirs.iter().filter(|p| std::path::Path::new(p).is_dir()).map(PathBuf::from));
+            }
             if root && menu::row(ui, Some(Glyph::Cross), "Unlink folder", "").clicked() {
                 self.ops.push(LibOp::UnlinkFolder(path.to_string()));
                 *self.op_start = true;
@@ -2950,6 +2970,9 @@ impl Tree<'_, '_> {
             ui.separator();
             if menu::row(ui, Some(Glyph::ImportArrow), "Add to the project", "").clicked() {
                 self.resp.open_paths.extend(paths.iter().map(PathBuf::from));
+                // a folder selected alongside comes in as a bin
+                let sel = self.state.sel_paths.iter().filter(|p| std::path::Path::new(p).is_dir());
+                self.resp.open_paths.extend(sel.map(PathBuf::from));
             }
             if menu::row(ui, Some(Glyph::Folder), "Reveal in Explorer", "").clicked() {
                 let _ = std::process::Command::new("explorer").arg(format!("/select,{first}")).spawn();
@@ -4140,6 +4163,35 @@ mod tests {
         assert!(text_rect(&shapes, "Reveal in Explorer").is_some() && text_rect(&shapes, "Unlink folder").is_none());
     }
 
+    /// A folder in the Media Browser imports as a bin: its menu hands the folder's path to the app, which
+    /// routes it through the import funnel (`take_folders`).
+    #[test]
+    fn browser_folder_menu_imports_it_as_a_bin() {
+        let dirs = known_folders();
+        let Some((first, dir)) = dirs.first() else { return }; // a profile with none of them (CI)
+        let (mut project, mut settings) = (Project::new(), Settings::default());
+        let mut state = LibraryState::media_browser();
+        let mut pane = Pane::new(420.0, 900.0);
+        let (shapes, _) = pane.step(&mut state, &mut project, &mut settings, vec![]);
+        let at = text_rect(&shapes, first).expect("known folder drawn").center();
+        let r = menu_pick(&mut pane, &mut state, &mut project, &mut settings, at, "Import folder as bin");
+        assert_eq!(r.open_paths, vec![PathBuf::from(dir)]);
+        assert!(project.assets.is_empty(), "the pane only asks; the app imports");
+    }
+
+    /// The header's folder button next to + Import asks the app for the folder picker.
+    #[test]
+    fn header_folder_button_asks_for_the_folder_picker() {
+        let (mut project, mut settings) = (Project::new(), Settings::default());
+        let mut state = LibraryState::default();
+        let mut pane = Pane::new(300.0, 600.0);
+        pane.step(&mut state, &mut project, &mut settings, vec![]);
+        pane.step(&mut state, &mut project, &mut settings, vec![]);
+        let at = pane.ctx.read_response(egui::Id::new("lib-import-folder")).expect("folder button drawn").rect.center();
+        let (_, r) = pane.step(&mut state, &mut project, &mut settings, press(at, egui::PointerButton::Primary));
+        assert!(r.import_folder && !r.import);
+    }
+
     /// Same gate for the Media Browser pane (`tab` 1): recent files, a linked folder, both views.
     #[test]
     fn assert_no_idle_repaint_media_browser() {
@@ -4383,6 +4435,7 @@ mod tests {
         let (shapes, _) = pane.step(&mut state, &mut project, &mut settings, vec![]);
         for item in [
             "Import Media…",
+            "Import Folder as Bin…",
             "Import from URL…",
             "New folder",
             "New sequence",
@@ -4409,6 +4462,8 @@ mod tests {
         let _ = menu::take_queued();
         menu_pick(&mut pane, &mut state, &mut project, &mut settings, bare, "Import Media…");
         assert_eq!(menu::take_queued(), vec![Action::ImportMedia]);
+        menu_pick(&mut pane, &mut state, &mut project, &mut settings, bare, "Import Folder as Bin…");
+        assert_eq!(menu::take_queued(), vec![Action::ImportFolder]);
         // no yt-dlp: no URL import; nothing unused: no Remove unused
         pane.ytdlp = false;
         pane.step(&mut state, &mut project, &mut settings, press(bare, egui::PointerButton::Secondary));

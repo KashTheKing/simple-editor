@@ -41,6 +41,7 @@ impl App {
             ExportLossless => self.act_export_lossless(),
             ExportXml => self.act_export_xml(),
             ImportMedia => self.act_import(),
+            ImportFolder => self.act_import_folder(),
             Settings => self.settings_ui.open = !self.settings_ui.open,
             Undo => {
                 if let Some(entry) = self.undo.pop() {

@@ -2,7 +2,9 @@ use super::*;
 
 impl App {
     pub(super) fn open_path(&mut self, path: &Path) {
-        if path.extension().map(|e| e.to_string_lossy().eq_ignore_ascii_case(PROJECT_EXT)).unwrap_or(false) {
+        if path.is_dir() {
+            self.start_folder_import(path, crate::engine::folder_import::Options::default(), true);
+        } else if path.extension().map(|e| e.to_string_lossy().eq_ignore_ascii_case(PROJECT_EXT)).unwrap_or(false) {
             self.open_project(path);
         } else {
             self.open_media(path);

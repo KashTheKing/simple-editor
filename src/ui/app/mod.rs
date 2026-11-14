@@ -57,6 +57,7 @@ mod drops;
 mod edit_ops;
 mod feedback;
 mod files;
+mod folder_import;
 // ---- ws:layout-modes-onboarding ----
 mod frame;
 // ---- ws:inspector-gallery ----
@@ -994,8 +995,10 @@ impl App {
     /// ponytail: that single file is still probed on this thread - it settles the project format, size
     /// and zoom before anything is drawn; give it a placeholder too if opening ever feels slow.
     fn open_or_import(&mut self, paths: &[PathBuf]) -> Vec<Id> {
+        // a folder imports as a bin on its own; only the plain files can open as the project
+        let paths = self.take_folders(paths);
         // ---- ws:media-library ----: a frame of a numbered still run bakes as one clip instead
-        let paths = media_sync::intercept_sequences(self, paths);
+        let paths = media_sync::intercept_sequences(self, &paths);
         if self.project.is_empty() && self.project.assets.is_empty() && paths.len() == 1 {
             self.open_media(&paths[0]);
             return Vec::new();
@@ -1086,9 +1089,11 @@ impl App {
     /// ponytail: an MCP `media.import` reply therefore quotes duration 0 until the probe lands;
     /// blocking the tool call on it is the fix if an agent ever needs the number in the same reply.
     fn import_files(&mut self, paths: &[PathBuf]) -> Vec<Id> {
+        // a folder is a bin import of its own (async, so its assets are not in the returned ids)
+        let paths = self.take_folders(paths);
         // ---- ws:media-library ----: every import path (Ctrl+I, drops, MCP media.import) funnels
         // through here, so this one gate covers them all - see media_sync::intercept_sequences
-        let paths = media_sync::intercept_sequences(self, paths);
+        let paths = media_sync::intercept_sequences(self, &paths);
         let mut ids = Vec::new();
         let mut fresh: Vec<(Id, String)> = Vec::new();
         for path in &paths {
