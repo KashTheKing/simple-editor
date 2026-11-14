@@ -12,12 +12,12 @@
 //! labels into `se:field`s (`make_editable`), and pictures of a part of a page at any scale for deep
 //! zooms (`render_region`).
 //!
-//! Renderer note: the three things here that need the page laid out (`scan`, `make_editable`,
-//! `render_region`) go through `html::with_page` only - one place to port if the HTML engine ever
-//! draws with something other than Edge.
+//! Renderer note: `scan` and `render_region` use the fast renderer (`engine::blitz::page_map` /
+//! `region_png`) when the Auto rules pick it, and `html::with_page` (Edge) otherwise or when it fails;
+//! `make_editable` (a DOM script + outerHTML) is Edge only.
 
 use crate::engine::export::Progress;
-use crate::engine::html;
+use crate::engine::{blitz, html};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -155,6 +155,32 @@ fn hash(s: &str) -> u64 {
     h.finish()
 }
 
+/// Whether the fast renderer (`engine::blitz`, Auto rules: installed, nothing in the page it cannot
+/// draw, no failure remembered) serves this page's map and zoom details instead of Edge.
+fn fast(src: &str) -> bool {
+    blitz::choose(crate::model::HtmlRenderer::Auto, src).engine == blitz::Engine::Blitz
+}
+
+/// The `href` of the page's `<link rel="icon">`, or "".
+fn favicon(text: &str) -> String {
+    let low = text.to_ascii_lowercase();
+    let mut at = 0;
+    while let Some(i) = low[at..].find("<link").map(|i| i + at) {
+        let end = low[i..].find('>').map_or(low.len(), |j| i + j);
+        let tag = &low[i..end];
+        at = end;
+        if tag.contains("icon") {
+            if let Some(h) = tag.find("href=") {
+                let rest = &text[i + h + 5..end];
+                let q = rest.chars().next().filter(|c| *c == '"' || *c == '\'');
+                let rest = q.map_or(rest, |c| rest[1..].split(c).next().unwrap_or(""));
+                return rest.split(|c: char| c.is_whitespace()).next().unwrap_or("").to_string();
+            }
+        }
+    }
+    String::new()
+}
+
 /// The folder of a page file, as `html::prepare_in` wants it.
 fn base_of(index: &Path) -> String {
     index.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default()
@@ -203,8 +229,21 @@ pub fn import(src: &str, width: u32, prog: &Progress) -> Result<PathBuf, String>
 /// The page map of HTML `text` laid out at `width`, as JSON.
 fn scan(text: &str, base: &str, width: u32, url: &str) -> Result<String, String> {
     let page = html::prepare_in(text, &[], base).1;
-    let found = html::with_page(&page, width, &mut |s| s.eval(SCAN))?;
-    let mut v: Value = serde_json::from_str(found.as_str().unwrap_or("")).map_err(|e| format!("page scan: {e}"))?;
+    let mut v = match fast(text).then(|| blitz::page_map(&page, base, width)) {
+        // the fast renderer: same element fields as SCAN; title / favicon read from the source, and
+        // pictures still missing are not known (0)
+        Some(Ok((elements, height))) => {
+            let tpl = html::parse(text);
+            json!({"height": height, "missing": 0, "title": tpl.title, "favicon": favicon(text), "elements": elements})
+        }
+        r => {
+            if let Some(Err(e)) = r {
+                blitz::remember_failure(text, &e);
+            }
+            let found = html::with_page(&page, width, &mut |s| s.eval(SCAN))?;
+            serde_json::from_str(found.as_str().unwrap_or("")).map_err(|e| format!("page scan: {e}"))?
+        }
+    };
     v["width"] = json!(width);
     v["url"] = json!(url);
     // a page icon that came with the page is a file beside it
@@ -267,7 +306,16 @@ pub fn render_region(
     if !out.is_file() {
         std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let page = html::prepare_in(src, fields, base).1;
-        let png = html::with_page(&page, width, &mut |s| s.shot(rect, scale))?;
+        // the fast renderer draws a region at any scale too; Edge when it is not installed or fails
+        let png = match fast(src).then(|| blitz::region_png(&page, base, width, rect, scale, 0.0)) {
+            Some(Ok(png)) => png,
+            r => {
+                if let Some(Err(e)) = r {
+                    blitz::remember_failure(src, &e);
+                }
+                html::with_page(&page, width, &mut |s| s.shot(rect, scale))?
+            }
+        };
         std::fs::write(&out, png).map_err(|e| format!("{}: {e}", out.display()))?;
     }
     Ok(out)
@@ -297,6 +345,14 @@ pub fn open_sign_in(url: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_favicon_is_read_from_the_source_for_the_fast_renderer_map() {
+        let page = r#"<head><link rel="stylesheet" href="a.css"><LINK REL='shortcut icon' href='files/Fav.ico'></head>"#;
+        assert_eq!(favicon(page), "files/Fav.ico");
+        assert_eq!(favicon("<link rel=icon href=i.png>"), "i.png");
+        assert_eq!(favicon("<link rel=stylesheet href=a.css>"), "");
+    }
 
     fn map() -> PageMap {
         let text = r#"{"url":"https://site.example/charts","title":"Charts","width":1424,"height":3667,"scale":2,
