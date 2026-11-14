@@ -24,6 +24,7 @@ Keys are written the way the app writes them: `OpenBracket` is `[`, `Semicolon` 
 | Fast Lossless Cut… | <kbd>Ctrl+Alt+E</kbd> |
 | Export Premiere / Resolve XML… | <kbd>Ctrl+Shift+E</kbd> |
 | Import Media… | <kbd>Ctrl+I</kbd> |
+| Import Folder as Bin… | - |
 | Settings… | <kbd>Ctrl+Comma</kbd> |
 | Export Frame… | <kbd>Ctrl+Shift+F</kbd> |
 | Record Voiceover… | <kbd>Ctrl+Alt+R</kbd> |

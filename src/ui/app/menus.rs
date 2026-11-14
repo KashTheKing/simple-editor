@@ -149,7 +149,7 @@ impl App {
         self.recent_menu(ui);
         acts(ui, &[Some(Save), Some(SaveProjectAs), None]);
         menu::sub(ui, Some(tools::Glyph::ImportArrow), "Import", |ui| {
-            acts(ui, &[Some(ImportMedia), Some(ImportTimeline)]);
+            acts(ui, &[Some(ImportMedia), Some(ImportFolder), Some(ImportTimeline)]);
             let yt = self.ytdlp_available.load(Ordering::Relaxed);
             let url = ui.add_enabled_ui(yt, |ui| menu::row(ui, None, "From URL…", "")).inner;
             if url.on_disabled_hover_text("yt-dlp not found - set its folder in Settings ▸ General").clicked() {

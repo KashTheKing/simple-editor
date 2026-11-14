@@ -18,6 +18,9 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, browser: bool) {
     if resp.import {
         app.act_import();
     }
+    if resp.import_folder {
+        app.act_import_folder();
+    }
     if resp.show_browser {
         app.layout.reveal(Pane::MediaBrowser);
     }
