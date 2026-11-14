@@ -174,6 +174,7 @@ fn spec_of(p: &Project, h: &HtmlSource) -> html::Spec {
         width: h.width,
         mouse: h.mouse.clone(),
         focus: None,
+        renderer: h.renderer,
     }
 }
 
@@ -411,6 +412,7 @@ fn open_editor(app: &mut App, clip: Id) {
         app.html.editor.params = html::params_of(&h.src, &h.params);
         app.html.editor.width = h.width;
         app.html.editor.mouse = h.mouse.clone();
+        app.html.editor.renderer = h.renderer;
         app.html.editor.fps = if app.project.fps > 0.0 { app.project.fps } else { 30.0 };
         app.html.editor.edit(clip, &h.src, h.field_list(), h.duration);
     }

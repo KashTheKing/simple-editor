@@ -162,6 +162,8 @@ fn get(app: &mut App, args: &Value) -> Result<ToolOutcome, String> {
         "clip": clip, "asset": aid, "name": h.name, "html": h.src, "fields": declared, "file": h.file, "params": params, "width": h.width,
         "duration": h.duration, "size": [tpl.size.0, tpl.size.1], "scene": tpl.scene,
         "rendered": html_ctl::rendered(app, clip), "lint": html::lint(&h.src),
+        "renderer": format!("{:?}", h.renderer).to_lowercase(),
+        "engine": if crate::engine::blitz::choose(h.renderer, &h.src).engine == crate::engine::blitz::Engine::Blitz { "blitz" } else { "edge" },
         "media": media_json(&h.src, &h.field_list(), &html_ctl::base_of(&h)),
     })))
 }
@@ -203,14 +205,17 @@ fn set(app: &mut App, args: &Value) -> Result<ToolOutcome, String> {
 }
 
 fn check(app: &mut App, args: &Value) -> Result<ToolOutcome, String> {
-    let (src, fields, scale, base, params, width, mouse) = match (arg_u64(args, "clip"), arg_str(args, "html")) {
+    let (src, fields, scale, base, params, width, mouse, renderer) = match (arg_u64(args, "clip"), arg_str(args, "html")) {
         (Some(clip), None) => {
             let s = html_ctl::spec_of_clip(app, clip).ok_or_else(|| format!("clip {clip} is not an HTML layer"))?;
             let mut fields = s.fields;
             fields.extend(fields_arg(args)?);
-            (s.html, fields, s.scale, s.base, s.params, s.width, s.mouse)
+            (s.html, fields, s.scale, s.base, s.params, s.width, s.mouse, s.renderer)
         }
-        (None, Some(src)) => (src.to_string(), fields_arg(args)?, 1.0, String::new(), Vec::new(), 0, None),
+        (None, Some(src)) => {
+            let r = arg_str(args, "renderer").map(|r| crate::model::HtmlRenderer::parse(r).ok_or("renderer: auto, blitz or edge")).transpose()?;
+            (src.to_string(), fields_arg(args)?, 1.0, String::new(), Vec::new(), 0, None, r.unwrap_or_default())
+        }
         _ => return Err("give clip (an HTML layer) or html (source to try), not both".into()),
     };
     let tpl = html::parse(&src);
@@ -221,12 +226,15 @@ fn check(app: &mut App, args: &Value) -> Result<ToolOutcome, String> {
     let base_m = base.clone();
     let (s2, f2) = (src.clone(), fields.clone());
     std::thread::spawn(move || {
-        let _ = tx.send(html::render_png_in(&s2, &f2, scale, t, &html::View { base: &base, params: &params, width, mouse: mouse.as_ref() }));
+        let _ = tx.send(html::render_png_in(&s2, &f2, scale, t, &html::View { base: &base, params: &params, width, mouse: mouse.as_ref(), renderer }));
     });
     let png =
         rx.recv_timeout(Duration::from_secs(30)).map_err(|_| "html.check: the render timed out".to_string())??;
     let (w, h) = html::png_size(&png).unwrap_or((0, 0));
+    let choice = crate::engine::blitz::choose(renderer, &src);
     let meta = json!({"t": t, "width": w, "height": h, "duration": tpl.duration, "lint": html::lint(&src),
+                      "renderer": if choice.engine == crate::engine::blitz::Engine::Blitz { "blitz" } else { "edge" },
+                      "renderer_note": choice.reason, "renderer_lint": crate::engine::html_lint::scan(&src).blocks,
                       "media": media_json(&src, &fields, &base_m),
                       "note": "transparent where the layer is transparent"});
     Ok(ToolOutcome::Image { png_b64: thumbs::base64(&png), meta })
@@ -397,11 +405,61 @@ pub const TOOLS: &[ToolDef] = &[
             "html:string:false:HTML source to render instead of a clip",
             "t:number:false:second to show",
             "fields:object:false:{name: value} to try",
+            "renderer:string:false:with html: auto (default), blitz (the fast built-in renderer) or edge",
         ],
         kind: ToolKind::Read,
         run: check,
     },
+    ToolDef {
+        name: "html.renderer",
+        desc: "Which program draws an HTML layer: auto (default: the fast renderer when it is installed and the layer only uses CSS it can draw, else Edge), blitz (always the fast one) or edge. Without renderer it only reports. Returns {renderer, engine (what draws it now), reason (why Edge, or what the fast path leaves out), blocks (CSS the fast renderer cannot draw), installed}.",
+        args: &["clip:integer:true:an HTML layer clip id", "renderer:string:false:auto, blitz or edge"],
+        kind: ToolKind::Mutate,
+        run: set_renderer,
+    },
+    ToolDef {
+        name: "html.helper",
+        desc: "Status of the fast HTML renderer (the se-html helper, about 11 MB, installed under %APPDATA%/SimpleEditor/bin): {installed, path, version, library}. install=true downloads and installs it from the library as a background job - ONLY when the user asked for it (nothing downloads on its own).",
+        args: &["install:boolean:false:download and install it now (a job; poll again for the status)"],
+        kind: ToolKind::Read,
+        run: helper_status,
+    },
 ];
+
+fn set_renderer(app: &mut App, args: &Value) -> Result<ToolOutcome, String> {
+    use crate::engine::{blitz, html_lint};
+    let clip = req(arg_u64(args, "clip"), "clip")?;
+    let (aid, mut h) = html_ctl::html_of(app, clip).ok_or_else(|| format!("clip {clip} is not an HTML layer"))?;
+    if let Some(r) = arg_str(args, "renderer") {
+        h.renderer = crate::model::HtmlRenderer::parse(r).ok_or("renderer: auto, blitz or edge")?;
+        if let Some(a) = app.project.asset_mut(aid) {
+            a.html = Some(h.clone());
+        }
+    }
+    let c = blitz::choose(h.renderer, &h.src);
+    Ok(ToolOutcome::Done(json!({
+        "ok": true, "clip": clip,
+        "renderer": format!("{:?}", h.renderer).to_lowercase(),
+        "engine": if c.engine == blitz::Engine::Blitz { "blitz" } else { "edge" },
+        "reason": c.reason, "blocks": html_lint::scan(&h.src).blocks, "installed": blitz::available(),
+    })))
+}
+
+fn helper_status(_app: &mut App, args: &Value) -> Result<ToolOutcome, String> {
+    use crate::engine::blitz;
+    let mut started = false;
+    if args.get("install").and_then(|v| v.as_bool()) == Some(true) && !blitz::available() {
+        blitz::start_install();
+        started = true;
+    }
+    Ok(ToolOutcome::Done(json!({
+        "installed": blitz::available(),
+        "path": blitz::helper_exe().map(|p| p.display().to_string()),
+        "version": blitz::version_line(),
+        "install_started": started,
+        "library": crate::engine::library::Source::of(&crate::settings::Settings::load()).label(),
+    })))
+}
 
 #[cfg(test)]
 mod tests {

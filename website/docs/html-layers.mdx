@@ -86,6 +86,35 @@ A video plays muted. On the timeline and in the export it is exactly in step wit
 live preview it simply plays. Animated GIFs play in the preview but are not frame-exact on the
 timeline: use a video when timing matters.
 
+## The fast renderer
+
+HTML layers can be drawn by a small built-in renderer instead of Microsoft Edge. It is a separate 11 MB
+program (`se-html`), so the editor itself stays small: install it once with the **Install** button the
+Inspector shows (nothing downloads before you press it). It uses about 25 MB of memory instead of
+Edge's 700 MB, draws a frame in milliseconds, and never opens a browser.
+
+Inspector > HTML > **Renderer**:
+
+- **Auto** (default): the fast renderer when it is installed and the layer only uses CSS it can draw,
+  otherwise Edge. The line under the setting says why Edge was chosen, for example "uses a backdrop
+  filter: rendering with Edge".
+- **Fast (built-in)**: always the fast renderer, even for a layer Auto would send to Edge (it may then
+  look different).
+- **Edge**: always Edge.
+
+What it cannot draw (Auto uses Edge for these): colour filters (`hue-rotate`, `saturate`, `brightness`,
+`contrast`, `grayscale`, `sepia`, `invert`), `backdrop-filter`, `mix-blend-mode`, `-webkit-text-stroke`,
+`position: sticky`, 3D transforms, CSS counters and `@property`, vertical writing, and an inline SVG
+that is styled by the page's own CSS (use attributes on the SVG elements instead; an SVG cannot be
+animated from the inside). Drawn, with a small difference: `text-shadow` (not drawn: put a copy of the
+text behind it instead), `text-overflow: ellipsis` and `-webkit-line-clamp` (the text is cut),
+`text-wrap: balance`. If the renderer fails on a layer (a crash, a hang) the layer is drawn by Edge
+instead and Auto remembers.
+
+Two things stay with Edge: **Web Page Snapshot** (the page runs its scripts once, in a private Edge,
+before it is saved) and any layer you set to Edge. Everything after the snapshot is drawn by the fast
+renderer. `html.renderer` and `html.helper` do the same over MCP.
+
 ## The live preview
 
 The Inspector's **Preview** and the HTML editor show the page itself, running: a field, a parameter or a

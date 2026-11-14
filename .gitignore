@@ -12,3 +12,6 @@ target*/
 website/node_modules/
 website/build/
 website/.docusaurus/
+dist/
+tools/se-html/*.log
+tools/se-html/target/

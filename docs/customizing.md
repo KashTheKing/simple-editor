@@ -100,6 +100,8 @@ were written per feature as it landed; if a row disagrees with `tools/list`, `to
 | `html.get` | Read | clip | The clip's source, fields with current values, size, duration, render state, lint. |
 | `html.set` | Mutate | clip, html?, fields?, params?, width?, name? | Replace the source and/or set field values (`null` = default) and `se:param` values (a number or `[{t,v,ease}]` keyframes); the clip keeps position, effects and keyframes. |
 | `html.import` | Mutate | path, at?, link? | Add a `.html` file as a clip, linked to the file (edit either side). |
+| `html.renderer` | Mutate | clip, renderer? | Which program draws an HTML layer: `auto` (the fast helper when installed and the layer passes the lint, else Edge), `blitz`, `edge`; reports the engine in use, why, and the CSS the fast renderer cannot draw. |
+| `html.helper` | Read | install? | Status of the fast HTML renderer helper (`se-html`, ~11 MB, `%APPDATA%\SimpleEditor\bin`); `install: true` downloads it from the library as a job (only when the user asked). |
 | `html.link` | Mutate | clip, path, write? | Link a clip to a `.html` file (read it, or write the clip into it); empty path unlinks. |
 | `html.snapshot` | Mutate | url, width? | Snapshot a real web page by address (private Edge, scripts dropped) and add it as a linked clip. |
 | `html.render` | Read | clip | Render again when the current source has no render (also retries a failed one). |
