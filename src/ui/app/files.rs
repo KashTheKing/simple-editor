@@ -75,8 +75,8 @@ impl App {
             let mut p = Project::new();
             if let Some(f) = preset.and_then(|i| crate::ui::guides::PRESETS.get(i)) {
                 (p.width, p.height, p.fps) = (f.w, f.h, f.fps);
-                if app.settings.guide != f.guide {
-                    app.settings.guide = f.guide;
+                if app.settings.guide.as_deref() != f.guide {
+                    app.settings.guide = f.guide.map(str::to_string);
                     app.settings.save();
                 }
             }

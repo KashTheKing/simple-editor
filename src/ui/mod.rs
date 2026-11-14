@@ -18,6 +18,7 @@ pub mod frame_ui;
 // ---- ws:inspector-gallery ----
 pub mod gallery;
 pub mod guides;
+pub mod social;
 pub mod history_ui;
 pub mod spiky_ball;
 // ---- ws:layout-modes-onboarding ----

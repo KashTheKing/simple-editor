@@ -376,13 +376,13 @@ fn project_section(
     settings: &mut Settings,
     undo: &mut dyn FnMut(&Project),
 ) -> bool {
-    use crate::ui::guides::{scale_to_tier, Guide, FPS_PRESETS, PRESETS, RES_TIERS};
+    use crate::ui::guides::{scale_to_tier, FPS_PRESETS, PRESETS, RES_TIERS};
     let mut edited = false;
     // resolution before any of this frame's widgets can touch it - diffed at the bottom to offer the
     // rescale prompt once, regardless of which control changed it.
     let size_before = (project.width, project.height);
     // dropdown picks, applied after the form: (w, h), fps, and the platform guide overlay a preset shows
-    let (mut size, mut fps_pick, mut guide): (Option<(u32, u32)>, Option<f64>, Option<Option<Guide>>) =
+    let (mut size, mut fps_pick, mut guide): (Option<(u32, u32)>, Option<f64>, Option<Option<&'static str>>) =
         (None, None, None);
     let (mut delete, mut save_as): (Option<usize>, Option<String>) = (None, None);
     let naming_id = egui::Id::new("insp_format_naming");
@@ -432,7 +432,7 @@ fn project_section(
         // presets can share a size (YouTube = General Long Form): the one whose guide is on wins
         let preset = PRESETS
             .iter()
-            .find(|p| same(p.w, p.h, p.fps) && p.guide == settings.guide)
+            .find(|p| same(p.w, p.h, p.fps) && p.guide == settings.guide.as_deref())
             .or_else(|| PRESETS.iter().find(|p| same(p.w, p.h, p.fps)));
         let saved = settings.project_templates.iter().find(|t| same(t.width, t.height, t.fps));
         let current = preset.map(|p| p.name).or(saved.map(|t| t.name.as_str())).unwrap_or("Custom");
@@ -624,8 +624,8 @@ fn project_section(
         }
         edited = true;
     }
-    if let Some(g) = guide.filter(|g| *g != settings.guide) {
-        settings.guide = g;
+    if let Some(g) = guide.filter(|g| *g != settings.guide.as_deref()) {
+        settings.guide = g.map(str::to_string);
         settings.save();
     }
     if let Some(i) = delete {
@@ -1832,7 +1832,7 @@ mod tests {
     fn format_names_the_preset_whose_guide_is_on() {
         let mut h = H::project();
         h.project.fps = 60.0;
-        h.settings.guide = Some(crate::ui::guides::Guide::YouTube);
+        h.settings.guide = Some("yt_long".into());
         h.frame(vec![]);
         assert!(h.text_at("YouTube").is_some() && h.text_at("General Long Form").is_none());
         h.settings.guide = None;

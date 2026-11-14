@@ -257,3 +257,11 @@ real tools only. Keep the user in control: one undo group, no export or file del
 ```
 
 `kind` is one of `effect`, `transition`, `lut`, `html`, `icon`, `skill`. Skills have no thumbnail.
+
+## guides/guides.json (social guides data)
+
+Not a catalogue item: one file the app reads on a click (Settings > Social > Check the library for
+updated guides) and installs as `%APPDATA%\SimpleEditor\library\guides\guides.json`. It lists each social
+platform's zones, UI silhouettes and sheet behaviour with a `ver` date and a `src` note; the format is in
+`docs/customizing.md` ("Social guides (data and profiles)"). It must be a copy of `assets/guides.json` when
+the data in the app changes.

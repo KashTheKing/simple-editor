@@ -1,0 +1,113 @@
+---
+title: Social guides & profiles
+description: See where YouTube, TikTok, Instagram and the other apps cover your video, and preview it on a phone with your own channel name, picture and caption.
+---
+
+Every platform draws its own buttons, captions and bars over your video. **Social Guides** shows you
+where, measured on the real apps' own pages, so a Roblox Short or Reel keeps its important parts clear
+of them.
+
+Right-click the Preview ▸ **Social Guides** (or **Window ▸ Social Guides**) and pick a platform. Pick
+**Off** to hide it. The guide only ever draws over the picture: it never changes your project or your export.
+
+## Three ways to look
+
+| Mode | What you see |
+|---|---|
+| **Safe zone** | The parts the app covers in red, parts it sometimes covers in amber, the safe area outlined in green, and a percentage on each. A dashed outline is what a profile-grid thumbnail keeps. |
+| **UI preview** | The app's buttons drawn over your video as plain silhouettes (action column, avatar, caption, sound row, progress bar), filled in with your profile. |
+| **Device preview** | Your video inside a drawn phone, tablet or desktop browser, with the app's UI on top, and **everything clickable** (see below). |
+
+Under the platform list:
+
+- **Device**: iPhone (19.5:9, Dynamic Island), Android (20:9, punch-hole), a small 16:9 phone, a tablet
+  and a desktop browser. A phone's status bar and home indicator are shown as system bars in Safe zone mode.
+- **Preview as**: which of your [profiles](#profiles) the guide shows.
+- **Worst case of all platforms**: one safe area that works on every platform of the same shape at once
+  (all the vertical ones, for a Short you post everywhere).
+- **Maintain Aspect Ratio**: draw each guide at its platform's own shape (9:16 on a 16:9 project, dimming
+  what gets cropped), or stretch it over the whole picture.
+- **Draw in render.frame and contact sheets**: off by default. When on, `render.frame` and
+  `render.contact_sheet` carry the guide, which is handy for sharing a preview.
+
+## Device preview
+
+Click things like you would on the phone:
+
+- **Comments**: a sheet slides up from the bottom. YouTube Shorts, TikTok and Instagram Reels **shrink
+  the video into the part above the sheet**; the others dim it and slide the sheet over it. Click the **X**,
+  the grabber or the dimmed video to close it.
+- **The caption or "… more"**: the description sheet, with your caption, hashtags and counts.
+- **The avatar** or **channel name**: a profile sheet. **The sound row** or disc: a sound sheet.
+  **Share** and **⋮ more**: the share and menu sheets.
+- Long form (YouTube) and feed posts (Instagram post, X) get the page around the player: title, channel
+  row, description and comments, which open under the player.
+- The progress bar follows the **playhead**: press Play, or scrub the timeline.
+
+Each sheet shows the sample comments from your profile.
+
+### Desktop player: default, theatre, fullscreen
+
+Pick **Desktop browser** as the device and YouTube (long form) as the platform, and the player has the three
+views of the real site, all measured on it:
+
+- **Default**: the video on the left (70 % of the page), the related videos on the right, title, channel row,
+  description and comments under it.
+- **Theatre mode**: a player as wide as the page; a 16:9 video is 84 % of the page with black bars at the sides, and the
+  related videos move below.
+- **Fullscreen**: the browser and the page disappear and the video fills the screen with the title bar, the control
+  bar and the progress bar.
+
+Click the **theatre** or **fullscreen** button in the drawn control bar, press <kbd>T</kbd> or <kbd>F</kbd> while the
+pointer is over the preview (<kbd>Esc</kbd> leaves fullscreen), or use right-click ▸ Social Guides ▸ **Player view**.
+The player glides between the views. A project that is not 16:9 is letterboxed or pillarboxed inside the player, as on
+the site. (Mini-player is not drawn.)
+
+Everything stays inside the device: the screen is clipped to its rounded corners and nothing is drawn outside the body.
+
+## Profiles
+
+**Settings ▸ Social** holds fake accounts, one tab per network: YouTube, TikTok, Instagram, Facebook,
+Snapchat and X. A profile has a handle, display name, verified badge, follower count, a sample caption,
+hashtags, a sound title, like / comment / share / save / view counts (type anything: these are mock-ups),
+a channel link, a picture and a few sample comments. Add as many as you like per network and pick the
+one the guide uses with **Use this profile** (●), or from the viewer's **Preview as**.
+
+**No account is ever linked.** Nothing asks for a password, a login or a token, and nothing is stored but
+the text you see.
+
+### Fetch from my public profile
+
+Type your public profile address (or just `@handle`) and press **Fetch**. Simple Editor downloads that one
+public page, without logging in and without cookies, reads its name, picture and follower text, and shows
+you **exactly what it found and where from**. Nothing is applied until you press **Apply to this profile**.
+
+- It only happens when you press the button. Never at start-up, never while you edit.
+- Many sites (Instagram, X, Facebook) show no public name or picture without a login. Then you get a plain
+  "nothing found" and you fill the fields in by hand.
+- **Choose picture…** takes any picture file; it's cropped to a circle and kept inside `settings.json`, so
+  the profile moves with your settings. **Export profiles…** / **Import profiles…** do the same through a file.
+
+## How accurate is it?
+
+Each platform's numbers were measured on its real logged-out web pages (browser DevTools: the on-video
+buttons, text sizes and sheets) and from the platforms' own safe-zone documents; every platform lists what
+it was measured on and the date. Settings ▸ Social ▸ **Guide data** shows the file's date.
+
+What could **not** be measured without logging in, and is an estimate, is marked `est` in the data: the
+exact native-app layout of TikTok and Instagram Reels, how Instagram and Facebook's comment sheets move
+the video, and the phone-app controls of YouTube long form. If a guide looks out of date, check the app
+against it and tell us, or update it yourself.
+
+### Updating the guides without a new release
+
+The guides are one small file, `guides.json`. Put a newer copy in
+`%APPDATA%\SimpleEditor\library\guides\guides.json` (Settings ▸ Social ▸ **Open folder**) and platforms
+with the same id replace the built-in ones; new ids are added. **Check the library for updated guides**
+downloads the library's copy on a click. The format is in `library/README.md`.
+
+## For scripts and agents
+
+`guides.list`, `guides.set`, `guides.preview`, `profile.get`, `profile.set`, `profile.fetch`: set the
+platform, mode, device and open sheet, and get a picture of the result (`state: comments` for the comments
+sheet open). `profile.fetch` reads a web page, so the Assistant asks you first.

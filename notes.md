@@ -7,6 +7,29 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
 
 ---
 
+- **social-guides (2026-11-13): the guides are data, measured on the real pages.** `assets/guides.json`
+  (embedded, 20 KB; a copy in `library/guides/`) replaces the hard-coded zones; `ui::social` turns it into
+  draw lists (`Op`) that egui (`paint`) and a small bitmap renderer (`raster`, same shapes, text through
+  `TextRasterizer`) both replay, so `render.frame` / `guides.preview` match the viewer. Rectangles are dp on a
+  reference screen and every coordinate sticks to its nearest screen edge (`Map`), which is what lets one
+  layout serve 16:9, 19.5:9 and 20:9 phones. Measuring (Brave over CDP, logged out): mobile web is NOT the
+  app - YouTube Shorts mobile web letterboxes the video, shows a 70% comments sheet that covers and dims it and
+  never animates; TikTok mobile web shows a 2:3 video and a 300 ms ease sheet that does not move the video. The
+  native apps' comment behaviour (the video shrinking above the sheet) and TikTok / Reels app layouts are
+  estimates (`src: "est"`), TikTok publishes no pixel safe zone, Meta's 14 / 35 / 6 % is from its ads guide
+  (Instagram; Facebook's own page 404ed). Instagram, X and Facebook hide almost everything without a login.
+  Profiles live in settings.json with the avatar as a base64 96x96 PNG; the only network code is
+  `profile::fetch` (curl.exe, one public page + its og:image, behind a click or the assistant guard). Gotchas:
+  YouTube Shorts: the real Shorts app shows a thumbs-down next to the like; the logged-out mobile web player we
+  measured has none, and it was removed from the guide at Kash's request (no toggle kept: it would cost size for
+  a button nobody wants). The like is a thumbs-up on YouTube and a heart elsewhere. Device emulator: the screen
+  corners are clipped by a mask ring (backdrop-coloured ring from the rounded edge outwards, then the bezel ring)
+  plus an op-level cull of anything outside the screen; a test checks every device x platform x viewer shape.
+  Desktop long form has default / theatre / fullscreen from measured boxes (`vw`; fullscreen is a screenshot proxy
+  because headless Chrome cannot enter it); T / F / Esc and the control-bar buttons drive it. Heredocs with
+  apostrophes break the agent shell (write scripts to files); a 'shrink' sheet must not
+  change the render size (`Scene.base` is the unshrunk rect) or every slide re-renders the frame.
+
 - **creator-kit build (2026-11-11): how it was run, what the live run found.**
   Order: spike (entry below) -> `library/README.md` (formats) -> wave 0 by the lead (marker sections,
   registered stub modules with the cross-workstream signatures, the installed-library core, shader

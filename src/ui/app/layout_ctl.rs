@@ -679,8 +679,8 @@ fn apply_format(app: &mut App, i: usize) {
     app.project.fps = p.fps;
     app.push_undo_labeled(before, "Project format");
     app.after_edit();
-    if app.settings.guide != p.guide {
-        app.settings.guide = p.guide;
+    if app.settings.guide.as_deref() != p.guide {
+        app.settings.guide = p.guide.map(str::to_string);
         app.settings.save();
     }
     app.toast(format!("Project format: {} ({}×{} at {:.0} fps)", p.name, p.w, p.h, p.fps));

@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased
+
+### Social guides, remade from the real apps
+- **Measured, not guessed.** Every platform's guide was re-made from its real logged-out web pages
+  (buttons, text sizes, bars, the comment sheets) and the platforms' own safe-zone documents, and stored
+  as one small data file with a "verified on" date and where it came from. New: YouTube long form (title
+  bar, controls, captions, watermark, end screens), Instagram post (4:5 and the 3:4 / 1:1 grid crops),
+  Facebook Reels, Snapchat Spotlight and X video, besides TikTok, Reels and Shorts.
+- **Three modes** (right-click the Preview > Social Guides): **Safe zone** (danger, caution and safe
+  areas with percentages, plus the phone's status bar and home indicator), **UI preview** (the app's
+  buttons as plain silhouettes with your profile filled in), and **Device preview**.
+- **Device preview**: your video inside a drawn iPhone, Android, small phone, tablet or desktop browser
+  with the app's UI on top. Click **Comments** and the sheet slides up while the video shrinks into the
+  part above it (where the app does that); click the caption, avatar, sound, Share or the three dots for the
+  other sheets; the progress bar follows the playhead. View only: it never changes the project or the export.
+- **Desktop player views**: with the Desktop browser device, YouTube long form shows its default, theatre and
+  fullscreen layouts (measured on the real site); click the control bar's buttons, press T / F (Esc leaves
+  fullscreen) or use Social Guides ▸ Player view, and the player glides between them.
+- The device is clipped to its rounded screen and body: no video, silhouette or sheet corner is drawn outside it.
+- **Worst case of all platforms**: one safe area for every vertical platform at once.
+- **Profiles** (Settings > Social): handle, name, picture, verified badge, followers, caption, hashtags,
+  sound, counts and sample comments, several per network. **Fetch from my public profile** reads the
+  public page's name, picture and follower text (no login, no cookies, only when you click, and it shows
+  exactly what it found before it applies anything).
+- **Updatable without a release**: drop a newer `guides.json` in `%APPDATA%\SimpleEditor\library\guides`, or
+  Settings > Social > Check the library for updated guides.
+- MCP: `guides.list`, `guides.set`, `guides.preview` (a picture of the device with a sheet open),
+  `profile.get`, `profile.set`, `profile.fetch`; `render.frame` and `render.contact_sheet` take `guide`.
+- Old settings load unchanged (the five old guide names map to their new platforms).
+
 ## 1.2.0
 
 The biggest release yet: an AI **Assistant** that edits your project while you watch, HTML + CSS
