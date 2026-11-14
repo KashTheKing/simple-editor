@@ -291,8 +291,11 @@ pub struct Settings {
     /// Library asset preview: draw a "spiky ball" audio visualizer over audio-only files that have
     /// no thumbnail. Off = plain black, on = the ball. Toggled from the preview's right-click menu.
     pub audio_visualizer: bool,
-    /// Social-guide overlay drawn over the preview (None = off). A view preference, not project data.
-    pub guide: Option<crate::ui::guides::Guide>,
+    /// Social-guide platform drawn over the preview (None = off): an id from `ui::social`'s guides.json.
+    /// A view preference, not project data. Settings from before the data-driven guides stored a
+    /// variant name ("TikTok", "YtShorts"...); `legacy_guide` maps those.
+    #[serde(deserialize_with = "legacy_guide")]
+    pub guide: Option<String>,
     /// "Maintain Aspect Ratio": draw each guide at its platform's own aspect (TikTok 9:16 even on a
     /// 16:9 project), dimming what the platform crops. Off = stretched over the whole video.
     pub guides_keep_aspect: bool,
@@ -563,6 +566,37 @@ pub struct Settings {
     pub library_online: bool,
     /// How often each Gallery card was applied ("Tab:name" -> count), for the "Most used" order.
     pub gallery_used: std::collections::BTreeMap<String, u32>,
+    // ---- ws:social-guides ----
+    /// What the guide shows: "safe" (zones), "ui" (silhouettes with the profile) or "device" (phone frame).
+    pub guide_mode: String,
+    /// Device class of the guide / device preview: an id from guides.json `devices`.
+    pub guide_device: String,
+    /// Safe-zone mode: the worst case across every platform of the same shape.
+    pub guide_worst: bool,
+    /// Draw the guide in `render.frame` / `render.contact_sheet` (and `frame.export` never): opt-in.
+    pub guide_render: bool,
+    /// Desktop long-form player view: "default", "theatre" or "fullscreen".
+    pub guide_view: String,
+    /// The user's fake accounts (Settings ▸ Social). No credentials, ever.
+    pub social_profiles: Vec<crate::ui::social::profile::SocialProfile>,
+    /// The profile used per network (id), when more than one exists.
+    pub social_active: BTreeMap<String, String>,
+}
+
+/// `guide` as stored by builds before the guides became data: the old enum's variant name.
+fn legacy_guide<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    let s: Option<String> = Option::deserialize(d)?;
+    Ok(s.map(|s| {
+        match s.as_str() {
+            "TikTok" => "tiktok",
+            "IgReels" => "ig_reels",
+            "YtShorts" => "yt_shorts",
+            "IgPost" => "ig_feed",
+            "YouTube" => "yt_long",
+            other => other,
+        }
+        .to_string()
+    }))
 }
 
 /// ws:assistant-pane: the built-in quick prompts (also what "Reset" restores).
@@ -787,6 +821,14 @@ impl Default for Settings {
             library_dir: String::new(),
             library_online: false,
             gallery_used: Default::default(),
+            // ---- ws:social-guides ----
+            guide_mode: "safe".into(),
+            guide_device: "iphone".into(),
+            guide_worst: false,
+            guide_render: false,
+            guide_view: "default".into(),
+            social_profiles: Vec::new(),
+            social_active: BTreeMap::new(),
         }
     }
 }

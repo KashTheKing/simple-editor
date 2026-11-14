@@ -361,18 +361,8 @@ impl App {
         });
         ui.separator();
         menu::sub(ui, Some(tools::Glyph::Guides), "Social Guides", |ui| {
-            use crate::ui::guides::Guide;
-            for g in std::iter::once(None).chain(Guide::ALL.map(Some)) {
-                let name = g.map_or("Off", |g| g.name());
-                if menu::check(ui, self.settings.guide == g, name, "").clicked() {
-                    self.settings.guide = g;
-                    self.settings.save();
-                }
-            }
-            ui.separator();
-            if menu::check(ui, self.settings.guides_keep_aspect, "Maintain Aspect Ratio", "").clicked() {
-                self.settings.guides_keep_aspect ^= true;
-                self.settings.save();
+            if let Some(set) = crate::ui::social::menu_rows(ui, &self.settings) {
+                set.apply(&mut self.settings);
             }
         });
         menu::sub(ui, None, "Layout", |ui| self.layout_menu(ui));

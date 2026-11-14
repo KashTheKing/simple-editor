@@ -87,7 +87,7 @@ were written per feature as it landed; if a row disagrees with `tools/list`, `to
 > `transcribe.run`) are listed below.
 > With `Settings.assistant_guard` on (default), `export.*`, `project.open`, `project.new`,
 > `settings.set`, `scripts.run`, `tasks.run`, `media.convert` and `media.batch_convert` called over MCP
-> wait for the user's Allow (`ui/app/assistant_ctl.rs`, `leaves_project`). The Assistant redesign added
+> wait for the user's Allow (`ui/app/assistant_ctl.rs`, `leaves_project`; `profile.fetch` too). The Assistant redesign added
 > `assistant.add_selection`, `assistant.attachments`, `assistant.attachment` and the five `tasks.*` tools.
 
 > **Creator Kit (1.2.0).** `skills.save` and `skills.delete`
@@ -133,6 +133,12 @@ were written per feature as it landed; if a row disagrees with `tools/list`, `to
 | `library.apply` | Mutate | at, clip, clips, id, track, where | Use a CONTENT library item (not the media library): a transition goes on the clip's cut, an effect or LUT on the clip (default: the selection), an HTML template or icon is added as an HTML layer at `at` (default: the playhead), a skill is installed for the Assistant. An online item must be installed first (library.install). One undo step. |
 | `library.save` | Ui | kind, name, text | Save a shader, HTML layer, skill or `.cube` text as a library item (checked first). |
 | `library.remove` | Ui | id | Remove an installed item. |
+| `guides.list` | Read | - | The social guides: every platform (id, network, aspect, verified date, source, zones as fractions of the frame, how each sheet moves the video), the devices and the current setting. |
+| `guides.set` | Ui | platform?, mode?, device?, profile?, worst_case?, keep_aspect?, draw_in_render?, state? | What the viewer's guide shows: platform (`off` hides it), `safe` / `ui` / `device`, device class, the active profile, and which sheet the device preview has open. View only: never the project or the export. |
+| `guides.preview` | Read (image) | platform?, device?, mode?, state?, profile?, t?, width? | A picture of the guide: the frame at `t` inside the device with the platform UI and the sheet open (`state`: `default`, `theatre`, `fullscreen` (desktop long form), `comments`, `desc`, `share`, `more`, `profile`, `sound`), or with the safe-zone / UI overlay. Deterministic. |
+| `profile.get` | Read | id?, network? | The social profiles (fake accounts the guide shows) and which is active per network. |
+| `profile.set` | Ui | id? \| network?, fields?, avatar_path?, active?, delete? | Create or edit a profile: handle, display, verified, followers, caption, tags, sound, counts, link, `comment_list`; a picture file; make it active. No credentials exist anywhere. |
+| `profile.fetch` | Ui | id, url?, apply? | Fill a profile from its PUBLIC page (curl, no login, no cookies): name, picture, follower text. Returns what was found and from where. Held for the user's Allow like `export.*`: it is the only call that reads the web. |
 
 `kind` isn't part of the wire response (`mcp::tools::list_json` only serialises
 `name`/`description`/`inputSchema` — see `src/mcp/tools.rs`), so the `Kind` column below is a source
@@ -756,3 +762,29 @@ exist in the tree. If a future size crunch makes this worth actually building, t
 the modules named above (`src/engine/tracking.rs`, `src/engine/presets.rs`'s template half,
 `src/ui/nodes.rs`'s color-graph usage, `titles.*`/`multicam.*`'s MCP tools and their UI) — not a
 promise that the cut is trivial, just where the plan expected the boundary to fall.
+
+## Social guides (data and profiles)
+
+`assets/guides.json` (embedded in the exe, 20 KB) is the data behind the viewer's Social Guides, and
+`library/guides/guides.json` is the same file for the online library. Platforms in
+`%APPDATA%\SimpleEditor\library\guides\guides.json` replace the built-in ones with the same `id`
+(new ids are added; a file that fails validation is ignored). Format, per platform:
+
+- `id`, `n` (name), `net` (account family: youtube, tiktok, instagram, facebook, snapchat, x), `pg` (page shape in
+  device preview: `full`, `feed` or `watch`), `a` (the player's aspect `[w, h]`), `ver` (the date it was
+  verified) and `src` (what it was measured on; say when something is an estimate).
+- `lay.phone` / `lay.desktop`: `ref` (the reference screen in dp the rectangles were measured on), `fit`
+  (`cover` or `contain`), `zones` (`k`: `d` danger, `c` caution, `s` safe, `x` crop; `r`: `[x0, y0, x1, y1]`
+  in dp; `l`: label), `safe` (the safe rectangle), and `ui`: the silhouettes. Every coordinate sticks to its
+  nearest screen edge, so the action column stays at the right edge and the caption at the bottom on a taller
+  phone. An element `t` is `scr` (gradient scrim), `bar`, `ico` (glyph `i`, count `n`, label `lbl`), `ava`,
+  `txt` (profile field `f` or literal `x`, size `s`, `l` collapsed lines, `more`), `pil`, `prg` (progress
+  bar, filled by the playhead) or `chp`. `tap` names the sheet it opens in device preview; `o: 1` = outside the frame.
+- `vw` (long form only): the desktop player's `default`, `theatre` and `full` boxes as `[x0, y0, x1, y1]` px of a
+  1920x1080 viewport (`full` = the whole screen).
+- `st`: `comments`, `desc`, `share`, `more`, each `{m, sh, ms}`: `shrink` (the video shrinks into the part
+  above the sheet), `cover` (the sheet covers and dims it) or `page` (long form: the page scrolls under the
+  player); `sh` = where the sheet's top edge is, as a fraction of the screen; `ms` = the slide time.
+
+`ui::social::profile` holds `SocialProfile` (Settings `social_profiles`, `social_active`): no secret of any
+kind. Its only network call, `fetch`, runs from the Settings button or `profile.fetch`.

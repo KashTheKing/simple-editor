@@ -291,6 +291,7 @@ pub(super) fn render_frame_image(app: &mut App, args: &Value) -> Result<ToolOutc
     let t = req(arg_f64(args, "t"), "t")?;
     let w = arg_u64(args, "width").map(|w| w as u32).unwrap_or(640).clamp(16, 3840);
     let frame = app.render_frame_now(t, w).ok_or("render timed out")?;
+    let frame = super::tools_social::decorate(app, frame, t, args); // ws:social-guides: opt-in guide
     Ok(png_outcome(&frame, json!({"t": t, "width": frame.width, "height": frame.height})))
 }
 
@@ -319,7 +320,8 @@ fn contact_sheet(app: &mut App, args: &Value) -> Result<ToolOutcome, String> {
         if !frames.is_empty() && started.elapsed() >= SHEET_BUDGET {
             break;
         }
-        frames.push(app.render_frame_now(t, w).ok_or("render timed out")?);
+        let f = app.render_frame_now(t, w).ok_or("render timed out")?;
+        frames.push(super::tools_social::decorate(app, f, t, args)); // ws:social-guides: opt-in guide
     }
     let truncated = frames.len() < times.len();
     times.truncate(frames.len());
@@ -621,6 +623,7 @@ pub const TOOLS: &[ToolDef] = &[
             "to:number:true:",
             "count:integer:false:1..16, default 9 (stops early after ~5 s: `truncated`)",
             "width:integer:false:px per tile, default 320",
+            "guide:boolean:false:draw the current social guide on every tile (default: the Settings option)",
         ],
         kind: ToolKind::Read,
         run: contact_sheet,

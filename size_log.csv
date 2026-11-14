@@ -52,3 +52,4 @@ b05471e+wip,13963264,"browser layer phase 2 (web page import, element map, sharp
 b05471e+wip,13988352,"browser layer phase 3 (pages as HTML layers, Page only, make editable): +529,408 B vs 1.2.0, +25,088 B vs the row above"
 b05471e+wip,13977600,"browser layer phase 4 (Window zoom, zoom levels, hand-written JSON): +518,656 B vs 1.2.0, -10,752 B vs the row above"
 b05471e+wip,13905408,"browser layer phase 5 (7 tools with an action argument, table-driven JSON and Inspector, out-of-line Animated clone, tab rows on ui::list_rows (about 13 KB of it is that shared helper), insertion sorts): +446,464 B vs 1.2.0, -72,192 B vs the row above; the -200 KB target is NOT met"
+b05471e+wip,14074880,"social guides remade as data (guides.json 20 KB, device preview, profiles, fetch, bitmap renderer, 6 tools): +615,424 B vs origin/main b05471e rebuilt the same way (13,459,456 B)"

@@ -161,6 +161,8 @@ mod tools_skills;
 // ---- ws:online-library ----
 mod library_ctl;
 mod tools_library;
+// ---- ws:social-guides ----
+mod tools_social;
 mod whatsnew;
 #[path = "windows.rs"]
 mod windows_dlg;
@@ -1644,6 +1646,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     tools_library::TOOLS,
     // ---- ws:browser-layer ----
     browser_ctl::TOOLS,
+    // ---- ws:social-guides ----
+    tools_social::TOOLS,
 ];
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[

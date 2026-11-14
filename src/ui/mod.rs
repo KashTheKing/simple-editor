@@ -19,6 +19,7 @@ pub mod frame_ui;
 pub mod gallery;
 pub mod gallery_filter;
 pub mod guides;
+pub mod social;
 pub mod history_ui;
 pub mod spiky_ball;
 // ---- ws:layout-modes-onboarding ----

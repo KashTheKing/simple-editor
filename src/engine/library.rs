@@ -289,6 +289,12 @@ fn fetch(src: &Source, rel: &str, reuse: bool) -> Result<Vec<u8>, String> {
     std::fs::read(&p).map_err(|e| format!("{}: {e}", p.display()))
 }
 
+/// The library's `guides/guides.json` (the social platform guides, see `ui::social`). Fetched on a click in
+/// Settings ▸ Social, never at start-up. Blocking: background threads only.
+pub fn fetch_guides(src: &Source) -> Result<String, String> {
+    String::from_utf8(fetch(src, "guides/guides.json", false)?).map_err(|e| e.to_string())
+}
+
 /// Parse `index.json`, dropping items whose id / file is not one the app would read.
 pub fn parse_catalogue(text: &str) -> Result<Catalogue, String> {
     let mut c: Catalogue = serde_json::from_str(text).map_err(|e| format!("index.json: {e}"))?;

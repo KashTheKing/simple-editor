@@ -76,8 +76,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
                     buffer_note: play_gate.note(), // ws:play-gate
                     proxy: proxy_busy,
                     tracker,
-                    guide: settings.guide,
-                    guides_keep_aspect: settings.guides_keep_aspect,
+                    settings: &*settings,
                     // ---- ws:canvas-handles-monitor ----
                     canvas_snap: settings.canvas_snap,
                     // an export is served on this thread: the monitor keeps the live frame meanwhile
@@ -129,12 +128,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
             (app.tracking.cx, app.tracking.cy) = (x, y);
         }
         if let Some(g) = resp.set_guide {
-            app.settings.guide = g;
-            app.settings.save();
-        }
-        if let Some(on) = resp.set_guides_keep_aspect {
-            app.settings.guides_keep_aspect = on;
-            app.settings.save();
+            g.apply(&mut app.settings);
         }
         // ---- ws:canvas-handles-monitor ----
         if let Some(on) = resp.set_canvas_snap {
