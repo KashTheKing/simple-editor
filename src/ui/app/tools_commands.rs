@@ -31,6 +31,7 @@ const SCALAR_WHITELIST: &[&str] = &[
     "assistant_guard",
     "voice_autosend",
     "start_maximized",
+    "buffer_before_play", // ws:play-gate
 ];
 
 fn get_scalar(s: &Settings, key: &str) -> Option<Value> {
@@ -54,6 +55,7 @@ fn get_scalar(s: &Settings, key: &str) -> Option<Value> {
         "assistant_guard" => json!(s.assistant_guard),
         "voice_autosend" => json!(s.voice_autosend),
         "start_maximized" => json!(s.start_maximized),
+        "buffer_before_play" => json!(s.buffer_before_play),
         _ => return None,
     })
 }
@@ -97,6 +99,7 @@ fn set_scalar(s: &mut Settings, key: &str, value: &str) -> Result<(), String> {
         "assistant_guard" => s.assistant_guard = parse_bool(value)?,
         "voice_autosend" => s.voice_autosend = parse_bool(value)?,
         "start_maximized" => s.start_maximized = parse_bool(value)?,
+        "buffer_before_play" => s.buffer_before_play = parse_bool(value)?,
         _ => return Err(format!("'{key}' is not a whitelisted setting")),
     }
     Ok(())

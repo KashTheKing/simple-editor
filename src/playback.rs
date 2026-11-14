@@ -293,6 +293,34 @@ struct Shared {
     /// The newest published frame lacks a layer whose source was not open in time; the whole
     /// frame follows. Written under the `frame` / `layers` lock it describes.
     partial: AtomicBool,
+    // ---- ws:play-gate ----
+    /// Buffer before playing: the contiguous run of whole cached frames the render thread last saw
+    /// from the paused playhead (`Player::video_report`).
+    cov: Mutex<Cov>,
+    /// Commands queued for the render thread so far (counted BEFORE each send). A `cov` made after the
+    /// render thread had drained all of them (`Cov::gen` = how many it had) is current; any command
+    /// still in flight makes the UI answer "not yet" instead of trusting it.
+    sent: AtomicU64,
+    /// The audio ring holds its first buffers for the paused playhead (device still stopped).
+    audio_ready: AtomicBool,
+    /// Cumulative `pause()` calls: the play gate cancels when this moves (any Stop/step/Pause).
+    pauses: AtomicU64,
+    /// Moving average of the time (µs) the render thread took to make one uncached frame; 0 = unknown.
+    frame_cost_us: AtomicU64,
+    /// µs from the clock starting to the audio ring holding its first block (0 = it was filled first).
+    audio_lag_us: AtomicU64,
+}
+
+/// What the render thread has cached from a paused playhead: whole frames `lo..=hi` (grid indices),
+/// `cap` the last index it looks at (`read_ahead` past `lo`, or the last frame), made after `gen`
+/// commands had been drained.
+#[derive(Clone, Copy, Default)]
+struct Cov {
+    gen: u64,
+    fps: f64,
+    lo: i64,
+    hi: i64,
+    cap: i64,
 }
 
 // ---- ws:perf-baseline ----
@@ -358,6 +386,10 @@ enum Cmd {
     LayersAsync,
     /// Render-thread only: the pointer is over the timeline at this time - open what is there.
     Hint(f64),
+    // ---- ws:play-gate ----
+    /// Buffer before playing: fill this many seconds ahead of the paused playhead (frames into the
+    /// cache, audio into the ring) without moving the clock. Ended by `Play` or `Pause`.
+    Preroll(f64),
     Quit,
 }
 
@@ -405,6 +437,12 @@ impl Player {
             worst_gap: AtomicU64::new(0),
             partial: AtomicBool::new(false),
             ahead: Mutex::new(VecDeque::new()),
+            cov: Mutex::new(Cov::default()),
+            sent: AtomicU64::new(0),
+            audio_ready: AtomicBool::new(false),
+            pauses: AtomicU64::new(0),
+            frame_cost_us: AtomicU64::new(0),
+            audio_lag_us: AtomicU64::new(0),
         });
         let (render, rx) = mpsc::channel();
         let (s, c) = (shared.clone(), ctx.clone());
@@ -437,7 +475,15 @@ impl Player {
     }
     fn both(&self, c: Cmd) {
         let _ = self.audio.send(c.clone());
-        let _ = self.render.send(c);
+        let _ = self.send_render(c);
+    }
+    /// Queue a command for the render thread, counted first (`Shared::sent`) unless it cannot change
+    /// what is cached (`touches_cache`: the hover hint and the one-shot renders, which are frequent).
+    fn send_render(&self, c: Cmd) -> Result<(), mpsc::SendError<Cmd>> {
+        if touches_cache(&c) {
+            self.shared.sent.fetch_add(1, Ordering::AcqRel);
+        }
+        self.render.send(c)
     }
     /// Replace the project (cheap clone; called after every edit). Re-renders the current frame.
     pub fn set_project(&mut self, project: &Project) {
@@ -451,12 +497,12 @@ impl Player {
     /// GPU preview: the render thread publishes decoded layers (`take_layers`) instead of a composited
     /// frame. Switching back to false resumes the CPU compositor on the next render.
     pub fn set_gpu(&mut self, on: bool) {
-        let _ = self.render.send(Cmd::Gpu(on));
+        let _ = self.send_render(Cmd::Gpu(on));
     }
     /// Byte budget for the render thread's caches (see `cache_budget_bytes`). Render-only, like
     /// `set_gpu`/`set_proxies` - the audio thread caches nothing.
     pub fn set_cache_bytes(&mut self, bytes: usize) {
-        let _ = self.render.send(Cmd::CacheBudget(bytes));
+        let _ = self.send_render(Cmd::CacheBudget(bytes));
     }
     /// Preview canvas size in pixels (the Player clamps width to `max_width`, keeping aspect).
     pub fn set_canvas(&mut self, w: u32, h: u32, max_width: u32) {
@@ -469,7 +515,7 @@ impl Player {
         if c.canvas != (w, h) {
             c.canvas = (w, h);
             drop(c);
-            let _ = self.render.send(Cmd::Canvas);
+            let _ = self.send_render(Cmd::Canvas);
         }
     }
     pub fn play(&mut self) {
@@ -492,6 +538,7 @@ impl Player {
             // this a bare Space after J J J would silently resume playing backward at -4x.
             c.rate = 1.0;
         }
+        self.shared.audio_lag_us.store(0, Ordering::Relaxed);
         self.both(Cmd::Play);
     }
     pub fn pause(&mut self) {
@@ -500,6 +547,7 @@ impl Player {
             c.base_t = c.now();
             c.playing = false;
         }
+        self.shared.pauses.fetch_add(1, Ordering::Relaxed);
         self.both(Cmd::Pause);
     }
     pub fn toggle(&mut self) {
@@ -555,6 +603,55 @@ impl Player {
     pub fn is_buffering(&self) -> bool {
         self.shared.buffering.load(Ordering::Relaxed)
     }
+    // ---- ws:play-gate ----
+
+    /// Buffer before playing: start filling `window` seconds ahead of the paused playhead - frames into
+    /// the cache, audio into the ring - without moving the clock. `play()` (or `pause()`) ends it.
+    pub fn preroll(&mut self, window: f64) {
+        self.shared.audio_ready.store(false, Ordering::Relaxed);
+        self.both(Cmd::Preroll(window));
+        self.ctx.request_repaint(); // the UI's next frame starts polling it (`playgate::tick`)
+    }
+    /// Is the cache holding the `window` seconds of whole frames after the paused playhead? (ready,
+    /// fraction 0..1). Cheap, never waits on a thread: it reads what the render thread last published,
+    /// and anything that could have changed the cache since makes it answer "not yet". Nothing to
+    /// render (no preview size yet) is ready.
+    pub fn video_report(&self, window: f64) -> (bool, f32) {
+        let (t, dur, canvas) = {
+            let mut c = lock(&self.shared.clock);
+            (c.now(), c.duration, c.canvas)
+        };
+        if canvas.0 == 0 || canvas.1 == 0 {
+            return (true, 1.0);
+        }
+        let fps = lock(&self.shared.project).fps.max(1.0);
+        let idx = (t * fps + 1e-6).floor() as i64;
+        let last = (((dur * fps).ceil() as i64) - 1).max(idx);
+        let need = ((window * fps).ceil() as i64).min(last - idx).max(0);
+        let cov = *lock(&self.shared.cov);
+        if cov.gen != self.shared.sent.load(Ordering::Acquire) || cov.fps != fps || idx < cov.lo || idx > cov.hi {
+            return (false, 0.0);
+        }
+        let want = (idx + need).min(cov.cap);
+        let have = (cov.hi.min(want) - idx + 1) as f32;
+        (cov.hi >= want, (have / (want - idx + 1) as f32).clamp(0.0, 1.0))
+    }
+    /// The audio ring holds its first buffers for the paused playhead (see `preroll`).
+    pub fn audio_ready(&self) -> bool {
+        self.shared.audio_ready.load(Ordering::Relaxed)
+    }
+    /// Cumulative `pause()` calls (the play gate cancels when it moves).
+    pub fn pauses(&self) -> u64 {
+        self.shared.pauses.load(Ordering::Relaxed)
+    }
+    /// Seconds the render thread recently took to make one frame that was not cached; None = unknown.
+    pub fn frame_cost(&self) -> Option<f64> {
+        Some(self.shared.frame_cost_us.load(Ordering::Relaxed)).filter(|&us| us > 0).map(|us| us as f64 / 1e6)
+    }
+    /// ms from the clock starting to the audio ring holding its first block (0 when it was filled first).
+    pub fn audio_start_lag_ms(&self) -> f64 {
+        self.shared.audio_lag_us.load(Ordering::Relaxed) as f64 / 1e3
+    }
     /// How many frames/layer sets have been served from the RAM cache instead of rendered.
     pub fn cache_hits(&self) -> u64 {
         self.shared.cache_hits.load(Ordering::Relaxed)
@@ -564,20 +661,20 @@ impl Player {
     /// Not a hot path (MCP `render.frame` tool): allocates a fresh frame per call.
     pub fn render_once(&self, t: f64, max_w: u32) -> Option<Arc<Frame>> {
         let (tx, rx) = mpsc::sync_channel(1);
-        self.render.send(Cmd::RenderOnce(t, max_w, tx)).ok()?;
+        self.send_render(Cmd::RenderOnce(t, max_w, tx)).ok()?;
         rx.recv_timeout(Duration::from_secs(3)).ok()
     }
     /// Synchronously decode the layers at `t` (at most `max_w` px wide) on the render thread, for a
     /// one-off GPU render on the UI thread (export-frame, MCP tools). None if it takes longer than 3 s.
     pub fn layers_once(&self, t: f64, max_w: u32) -> Option<Arc<LayerSet>> {
         let (tx, rx) = mpsc::sync_channel(1);
-        self.render.send(Cmd::LayersOnce(t, max_w, tx)).ok()?;
+        self.send_render(Cmd::LayersOnce(t, max_w, tx)).ok()?;
         rx.recv_timeout(Duration::from_secs(3)).ok()
     }
     /// Swap the preview proxy map (source path -> proxy file). Video only: the render thread's pool
     /// re-resolves every decode through it; audio always reads the originals.
     pub fn set_proxies(&mut self, map: HashMap<String, String>) {
-        let _ = self.render.send(Cmd::Proxies(map));
+        let _ = self.send_render(Cmd::Proxies(map));
     }
     /// Synchronously drop every decoder on both threads (before overwriting a source file).
     pub fn release_files(&mut self) {
@@ -654,7 +751,7 @@ impl Player {
     pub fn hint(&mut self, t: f64) {
         let q = (t * 4.0).floor() as i64;
         if q != std::mem::replace(&mut self.hinted, q) {
-            let _ = self.render.send(Cmd::Hint(t));
+            let _ = self.send_render(Cmd::Hint(t));
         }
     }
     /// (frames published so far, longest wait in ms between two publishes since the last call).
@@ -669,7 +766,7 @@ impl Player {
     pub fn request_layers(&self, t: f64, max_w: u32) -> u64 {
         let id = self.shared.next_req.fetch_add(1, Ordering::Relaxed) + 1;
         *lock(&self.shared.req) = Some((id, t, max_w));
-        let _ = self.render.send(Cmd::LayersAsync);
+        let _ = self.send_render(Cmd::LayersAsync);
         id
     }
     /// Poll for `request_layers`' async reply (consumes it). `None` until ready, or forever for a
@@ -733,6 +830,15 @@ fn render_thread(
     let (mut rested_at, mut heading) = (-1i64, 0i64);
     // the canvas size the cached frames were made at (`step_canvas`)
     let mut made_at = (0u32, 0u32);
+    // ---- ws:play-gate ----
+    // commands drained so far (`Shared::sent` counts the ones queued)
+    let mut seen = 0u64;
+    // buffer before playing: seconds ahead of the paused playhead being filled, and whether the
+    // window is complete (the thread then waits for a command instead of looking again)
+    let mut pre: Option<f64> = None;
+    let mut pre_done = false;
+    // `Clock::wraps` last seen: a loop wrap onto a cold cache is a stall
+    let mut last_wraps = 0u64;
     // clear both caches, recycling their buffers (`drain` so a per-edit clear does not thrash the allocator)
     macro_rules! clear_caches {
         () => {
@@ -769,6 +875,7 @@ fn render_thread(
             c.now();
             c.playing
         };
+        let pre_busy = pre.is_some() && !pre_done;
         // a source finished opening: the frames that went without it are redone, this one first
         if pool.collect() && !partial.is_empty() {
             for i in partial.drain(..) {
@@ -781,7 +888,7 @@ fn render_thread(
             }
             dirty = true;
         }
-        if pending.is_none() && !dirty && !playing && !stall && !idle {
+        if pending.is_none() && !dirty && !playing && !stall && !idle && !pre_busy {
             // idle: block, zero CPU - looking in now and then only while sources are still opening
             pending = if pool.busy() {
                 match rx.recv_timeout(Duration::from_millis(10)) {
@@ -806,6 +913,8 @@ fn render_thread(
                 },
             };
             idle = true;
+            seen += touches_cache(&c) as u64;
+            pre_done = false;
             match c {
                 Cmd::SetProject => {
                     let new = lock(&shared.project).clone();
@@ -828,7 +937,16 @@ fn render_thread(
                     // rate) reads the whole jump as decode falling behind, not an intentional skip.
                     last_pub = -1;
                 }
-                Cmd::Play | Cmd::Pause => dirty = true,
+                Cmd::Play | Cmd::Pause => {
+                    dirty = true;
+                    // the clock (or the user) takes over from the buffering; time spent buffering is
+                    // not a wait between two frames (`Shared::worst_gap`)
+                    if pre.take().is_some() {
+                        mark = Instant::now();
+                    }
+                }
+                // ---- ws:play-gate ----
+                Cmd::Preroll(w) => pre = (w > 0.0).then_some(w),
                 // (the caches are cleared below, once the size frames are made at really changes)
                 Cmd::Canvas => dirty = true,
                 Cmd::Backend(b) => {
@@ -923,10 +1041,10 @@ fn render_thread(
                 Cmd::Quit => return,
             }
         }
-        let (playing, t, (w, h), duration, rate) = {
+        let (playing, t, (w, h), duration, rate, wraps) = {
             let mut c = lock(&shared.clock);
             let t = c.now();
-            (c.playing, t, c.canvas, c.duration, c.rate)
+            (c.playing, t, c.canvas, c.duration, c.rate, c.wraps)
         };
         // the CPU frame is drawn scaled into the pane anyway, so it is made at a step of the
         // project's size: dragging a pane divider keeps the caches (and the decoders' output size).
@@ -940,13 +1058,13 @@ fn render_thread(
         if std::mem::take(&mut preload) {
             pool.set_stills(stills(&project, t));
         }
-        if !playing && !dirty && !stall && !idle {
+        if !playing && !dirty && !stall && !idle && !pre_busy {
             continue;
         }
         let force = std::mem::take(&mut dirty);
         let fps = project.fps.max(1.0);
         if w == 0 || h == 0 {
-            (stall, idle) = (false, false);
+            (stall, idle, pre_done) = (false, false, true);
             shared.buffering.store(false, Ordering::Relaxed);
             if playing {
                 std::thread::sleep(Duration::from_secs_f64(1.0 / fps)); // nothing to render, keep pace
@@ -987,7 +1105,8 @@ fn render_thread(
         macro_rules! render_idx {
             ($i:expr, $wait:expr) => {{
                 let hits = shared.cache_hits.load(Ordering::Relaxed);
-                pool.set_deadline(Some(Instant::now() + $wait));
+                let began_at = Instant::now();
+                pool.set_deadline(Some(began_at + $wait));
                 let out = if gpu {
                     let (set, ok) = gpu_cached(
                         &mut lcache,
@@ -1027,9 +1146,37 @@ fn render_thread(
                     if missed {
                         partial.push($i);
                     }
+                    // ---- ws:play-gate ---- what a frame costs here: it sizes the buffering window
+                    let us = began_at.elapsed().as_micros() as u64;
+                    let old = shared.frame_cost_us.load(Ordering::Relaxed);
+                    let new = if old == 0 { us.max(1) } else { (old * 7 + us) / 8 };
+                    shared.frame_cost_us.store(new, Ordering::Relaxed);
                 }
                 out
             }};
+        }
+        // ---- ws:play-gate ----
+        // the whole-frame run from the playhead, published for `Player::video_report`
+        macro_rules! publish_cov {
+            () => {{
+                let cap = (idx + read_ahead).min(last_idx);
+                let mut hi = idx - 1;
+                while hi < cap && cached!(hi + 1) && !partial.contains(&(hi + 1)) {
+                    hi += 1;
+                }
+                *lock(&shared.cov) = Cov { gen: seen, fps, lo: idx, hi, cap };
+            }};
+        }
+        // a loop wrap onto frames that are not cached is a stall before it is a late frame: hold the
+        // clock and refill (the same exit test as a stall, so it cannot flap)
+        if wraps != std::mem::replace(&mut last_wraps, wraps)
+            && playing
+            && !stall
+            && lands_cold(idx, read_ahead, last_idx, rate, |i| cached!(i))
+        {
+            stall = true;
+            shared.buffering.store(true, Ordering::Relaxed);
+            ctx.request_repaint();
         }
         // buffering: the clock ran STALL_BEHIND past the newest published frame and the due frame
         // still isn't cached - declare a stall instead of grinding out one late frame at a time.
@@ -1055,8 +1202,7 @@ fn render_thread(
                 }
             }
             // enough contiguous frames ready (hysteresis: a third of the horizon) -> resume
-            let (glo, ghi) = read_ahead_window(idx, (read_ahead / 3).max(2), last_idx, rate);
-            if stall && (glo..=ghi).all(|i| cached!(i)) {
+            if stall && !lands_cold(idx, read_ahead, last_idx, rate, |i| cached!(i)) {
                 stall = false;
                 shared.buffering.store(false, Ordering::Relaxed);
                 dirty = true; // republish the (now cached) due frame on the next pass
@@ -1159,6 +1305,35 @@ fn render_thread(
                     break; // a decode panicked and the pool was cleared: stop prefetching this window
                 }
             }
+        } else if let (Some(win), false) = (pre, stall) {
+            // ---- ws:play-gate ---- Buffer before playing: the window ahead of the paused playhead,
+            // nearest frame first, one frame per pass so a seek or Pause is never behind more than one
+            // decode. Frames made while a source was still opening are redone when it arrives
+            // (`pool.collect`, top of the loop); until then this waits on the channel, not in a spin.
+            idle = false;
+            let hi = (idx + ((fps * win).ceil() as i64).min(read_ahead)).min(last_idx);
+            match (idx..=hi).find(|i| !cached!(*i)) {
+                Some(i) => match rx.try_recv() {
+                    Ok(c) => pending = Some(c),
+                    Err(TryRecvError::Disconnected) => return,
+                    Err(TryRecvError::Empty) => {
+                        mark = Instant::now();
+                        if !render_idx!(i, Duration::ZERO).2 {
+                            pre_done = true; // a decode panicked and the pool was cleared: say what is cached
+                        }
+                    }
+                },
+                None if (idx..=hi).any(|i| partial.contains(&i)) => match rx.recv_timeout(Duration::from_millis(5)) {
+                    Ok(c) => pending = Some(c),
+                    Err(RecvTimeoutError::Timeout) => {}
+                    Err(RecvTimeoutError::Disconnected) => return,
+                },
+                None => pre_done = true,
+            }
+            publish_cov!();
+            if pre_done {
+                ctx.request_repaint(); // the UI starts the clock now, not at its next poll
+            }
         } else if !stall {
             // Paused: pre-render what will be asked for next (`idle_order`) into the cache, so that
             // Play, a step or the scrub under way finds its frame there. It is the lowest work this
@@ -1190,7 +1365,9 @@ fn render_thread(
                 if !render_idx!(i, Duration::ZERO).2 {
                     break;
                 }
+                publish_cov!(); // ws:play-gate
             }
+            publish_cov!(); // ws:play-gate
         }
     }
 }
@@ -1251,6 +1428,24 @@ fn read_ahead_window(idx: i64, read_ahead: i64, last_idx: i64, rate: f64) -> (i6
     } else {
         ((idx - read_ahead).max(0), idx)
     }
+}
+
+/// ---- ws:play-gate ---- How long the playhead rests before the audio ring is filled for a Play from it.
+const PRE_REST: Duration = Duration::from_millis(150);
+
+/// ---- ws:play-gate ---- Can this command change what the render thread has cached (so a `Cov` made
+/// before it is stale)? The hover hint and the one-shot renders cannot.
+fn touches_cache(c: &Cmd) -> bool {
+    !matches!(c, Cmd::Hint(_) | Cmd::LayersAsync | Cmd::RenderOnce(..) | Cmd::LayersOnce(..))
+}
+
+/// ---- ws:play-gate ---- Is the playhead on a cold cache: the first third of the read-ahead (the
+/// window a stall waits for before it resumes) is not all cached. A loop wrap that lands cold is a
+/// stall before it is a late frame; using the stall's own exit test means a wrap cannot enter a stall
+/// that it would leave on the very next pass.
+fn lands_cold(idx: i64, read_ahead: i64, last_idx: i64, rate: f64, cached: impl Fn(i64) -> bool) -> bool {
+    let (lo, hi) = read_ahead_window(idx, (read_ahead / 3).max(2), last_idx, rate);
+    !(lo..=hi).all(cached)
 }
 
 /// Nearest-first, stride-sampled frame indices covering `[lo, hi]` - the order the prefetcher fills
@@ -1972,15 +2167,39 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
     // frames), decimated/duplicated down to exactly BLOCK output frames; last_wraps detects a loop seam.
     let mut scratch = vec![0f32; BLOCK * 2 * 2];
     let mut last_wraps: u64 = 0;
+    // ---- ws:play-gate ----
+    // buffer before playing: the ring is being filled from the paused clock time `pre_at` with the
+    // device stopped; `Play` from that same time keeps it, so audio starts with the first frame
+    let mut pre = false;
+    let mut pre_at = 0.0;
+    // the playhead is paused somewhere new (a seek, an edit, a stop): once it has rested `PRE_REST`, fill
+    // the ring there as for a buffering Play, so the first Play of a cold project starts with its sound
+    let mut want_pre = false;
+    // after a Play that found the ring empty: the clock's start, until the first block is in the ring
+    let mut lag_from: Option<Instant> = None;
     let is_playing = || {
         let mut c = lock(&shared.clock);
         c.now();
         c.playing
     };
     loop {
-        if pending.is_none() && !running && !(stream.is_some() && is_playing()) {
-            let Ok(c) = rx.recv() else { return }; // idle (or no device): block, zero CPU
-            pending = Some(c);
+        if pending.is_none() && !running && !pre && !(stream.is_some() && is_playing()) {
+            if want_pre && !is_playing() {
+                match rx.recv_timeout(PRE_REST) {
+                    Ok(c) => pending = Some(c),
+                    Err(RecvTimeoutError::Timeout) => {
+                        want_pre = false;
+                        (pre, pre_at) = (true, lock(&shared.clock).now());
+                        lock(&ring).clear();
+                        mixed_until = pre_at;
+                        shared.audio_ready.store(false, Ordering::Relaxed);
+                    }
+                    Err(RecvTimeoutError::Disconnected) => return,
+                }
+            } else {
+                let Ok(c) = rx.recv() else { return }; // idle (or no device): block, zero CPU
+                pending = Some(c);
+            }
         }
         loop {
             let c = match pending.take() {
@@ -1992,13 +2211,59 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
                 },
             };
             match c {
-                Cmd::SetProject => project = lock(&shared.project).clone(),
-                Cmd::Play | Cmd::Seek => {
-                    lock(&ring).clear();
-                    mixed_until = lock(&shared.clock).now();
-                    filling = true;
+                Cmd::SetProject => {
+                    project = lock(&shared.project).clone();
+                    want_pre = true;
+                    if pre {
+                        // the buffered audio may be from the old project: fill again from the same time
+                        lock(&ring).clear();
+                        mixed_until = pre_at;
+                        shared.audio_ready.store(false, Ordering::Relaxed);
+                    }
                 }
-                Cmd::Pause => lock(&ring).clear(),
+                Cmd::Play | Cmd::Seek => {
+                    let (t, base) = {
+                        let mut c = lock(&shared.clock);
+                        (c.now(), c.base_t)
+                    };
+                    // Play from exactly where the buffering filled the ring: keep it (ws:play-gate)
+                    let kept = matches!(c, Cmd::Play) && pre && (base - pre_at).abs() < 1e-6 && !lock(&ring).is_empty();
+                    if kept {
+                        lag_from = None;
+                        shared.audio_lag_us.store(0, Ordering::Relaxed);
+                    } else {
+                        lock(&ring).clear();
+                        mixed_until = t;
+                        filling = true;
+                        if matches!(c, Cmd::Play) {
+                            lag_from = Some(lock(&shared.clock).base_at);
+                        }
+                        if pre {
+                            // a seek while buffering: fill again from there
+                            pre_at = t;
+                            shared.audio_ready.store(false, Ordering::Relaxed);
+                        }
+                    }
+                    want_pre = matches!(c, Cmd::Seek);
+                    if matches!(c, Cmd::Play) {
+                        pre = false;
+                    }
+                }
+                Cmd::Pause => {
+                    lock(&ring).clear();
+                    (pre, want_pre) = (false, true);
+                }
+                Cmd::Preroll(_) => {
+                    // ---- ws:play-gate ---- (a ring already filled from this very time is kept)
+                    let t = lock(&shared.clock).now();
+                    want_pre = false;
+                    if !(pre && (t - pre_at).abs() < 1e-6) {
+                        (pre, pre_at) = (true, t);
+                        lock(&ring).clear();
+                        mixed_until = t;
+                    }
+                    shared.audio_ready.store(false, Ordering::Relaxed); // true again once the ring is full
+                }
                 Cmd::Canvas => {}
                 Cmd::Backend(b) => pool.set_backend(b),
                 Cmd::Gpu(_) | Cmd::Proxies(_) | Cmd::CacheBudget(_) => {} // render-thread only
@@ -2032,6 +2297,24 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
             }
         }
         let playing = is_playing();
+        if pre && !playing {
+            // ---- ws:play-gate ---- buffer before playing: the first LEAD_SECS of audio from the paused
+            // playhead goes into the ring, a block per pass, device stopped; then wait for a command
+            let queued = lock(&ring).len() as f64 / (2 * SAMPLE_RATE) as f64;
+            if queued < LEAD_SECS {
+                if guarded(&mut pool, |pool| mixer.mix(&project, mixed_until, pool, &mut block)) {
+                    lock(&ring).extend(block.iter().copied());
+                } else {
+                    shared.audio_ready.store(true, Ordering::Relaxed); // a failing mixer must not hold the start
+                }
+                mixed_until += BLOCK as f64 / SAMPLE_RATE as f64;
+            } else {
+                shared.audio_ready.store(true, Ordering::Relaxed);
+                let Ok(c) = rx.recv() else { return };
+                pending = Some(c);
+            }
+            continue;
+        }
         if playing && (stream.is_none() || dead.swap(false, Ordering::Relaxed)) {
             // lazy/late open: no device at startup, or it went away / the default changed mid-session.
             // If it fails we fall back to the idle recv above (retried on the next command).
@@ -2075,6 +2358,9 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
                 // unchanged fast path: byte-identical to the pre-rate-loop code at the default rate
                 if guarded(&mut pool, |pool| mixer.mix(&project, mixed_until, pool, &mut block)) {
                     lock(&ring).extend(block.iter().copied()); // a panicked block: underrun instead
+                    if let Some(from) = lag_from.take() {
+                        shared.audio_lag_us.store(from.elapsed().as_micros() as u64, Ordering::Relaxed);
+                    }
                                                                // ---- ws:audio-dsp-automation ----
                                                                // hand the post-fader bus blocks to the UI thread's meters/LUFS (App::sync_buses)
                     mixer.graph().publish(&METER_FEED);
@@ -3611,5 +3897,128 @@ mod tests {
             published - published0,
             p.dropped_frames() - dropped0,
         );
+    }
+
+    // ---- ws:play-gate ----
+
+    /// Poll `ready` for up to 5 s.
+    fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
+        for _ in 0..500 {
+            if ready() {
+                return;
+            }
+            sleep(Duration::from_millis(10));
+        }
+        panic!("{what} within 5 s");
+    }
+
+    fn flat_player(fps: f64, cost: Duration) -> Player {
+        let mut pool = DecoderPool::new(Backend::Ffmpeg);
+        pool.insert_video("C:\\a.mp4", Box::new(Flat(RED, cost)));
+        tiny_player(fps, &[("Video", "C:\\a.mp4")], pool)
+    }
+
+    /// Buffer before playing, video side: a cold window is not ready, `preroll` fills it with the
+    /// clock still, the report climbs to ready, and anything that may have changed the cache makes the
+    /// answer "not yet" until the render thread has looked again.
+    #[test]
+    fn preroll_fills_the_window_and_the_clock_stays_put() {
+        let mut p = flat_player(10.0, Duration::from_millis(15));
+        let (ready, frac) = p.video_report(1.0);
+        assert!(!ready && frac == 0.0, "nothing is cached yet");
+        p.preroll(1.0);
+        let mut best = 0.0f32;
+        wait_until("the window fills", || {
+            let (ready, frac) = p.video_report(1.0);
+            assert!(frac >= 0.0 && frac <= 1.0);
+            best = best.max(frac);
+            ready
+        });
+        assert!(!p.is_playing() && p.time() == 0.0, "buffering does not move the clock");
+        assert_eq!(p.video_report(1.0), (true, 1.0));
+        // a bigger window than the cache looks ahead is capped by it, never unreachable
+        assert!(p.video_report(60.0).0 || p.video_report(60.0).1 > 0.5);
+        // an edit in flight: not ready until the render thread has drained it and looked again
+        let project = lock(&p.shared.project).clone();
+        p.set_project(&project);
+        assert!(!p.video_report(1.0).0, "a command is in flight");
+        wait_until("ready again after the edit", || p.video_report(1.0).0);
+        // a seek moves the window with it
+        p.seek(5.0);
+        assert!(!p.video_report(1.0).0, "the new window is not cached");
+        wait_until("the window at the seek fills", || p.video_report(1.0).0);
+        p.pause();
+    }
+
+    /// At the press: a playhead that has rested has its read-ahead cached (the paused prefetch), so the
+    /// check is a yes without ever asking for buffering. This is the "starts instantly" half.
+    #[test]
+    fn a_rested_playhead_is_ready_without_buffering() {
+        let mut p = flat_player(10.0, Duration::from_millis(2));
+        p.seek(1.0);
+        wait_until("the paused read-ahead covers the window", || p.video_report(1.0).0);
+        // and the answer costs no thread hop: it is a lock and a few comparisons
+        let t = Instant::now();
+        for _ in 0..1000 {
+            assert!(p.video_report(1.0).0);
+        }
+        assert!(t.elapsed() < Duration::from_millis(50), "{:?} for 1000 checks", t.elapsed());
+    }
+
+    /// The window never asks past the end of the timeline.
+    #[test]
+    fn the_window_stops_at_the_last_frame() {
+        let mut p = flat_player(10.0, Duration::from_millis(1));
+        p.seek(19.8); // 20 s timeline: two frames to go
+        p.preroll(1.5);
+        wait_until("the tail fills", || p.video_report(1.5).0);
+    }
+
+    /// Audio side: the ring is filled for the paused playhead with the device stopped, and a Play from
+    /// that same time keeps it (the lag counter says 0: the audio did not have to be mixed after the start).
+    #[test]
+    fn preroll_fills_the_audio_ring_and_play_keeps_it() {
+        let mut p = flat_player(10.0, Duration::from_millis(1));
+        p.preroll(1.0);
+        wait_until("the audio ring fills", || p.audio_ready());
+        p.play();
+        sleep(Duration::from_millis(100));
+        assert_eq!(p.audio_start_lag_ms(), 0.0, "the ring was full before the clock started");
+        p.pause();
+        assert!(p.pauses() >= 1);
+    }
+
+    /// A playhead that has rested has its audio ring filled too (no `preroll`, no request): the first
+    /// Play of a cold project then starts with the sound, not 150-500 ms behind the picture.
+    #[test]
+    fn a_rested_playhead_has_its_audio_ready() {
+        let mut p = flat_player(10.0, Duration::from_millis(1));
+        p.seek(1.0);
+        wait_until("the rested playhead's audio is filled", || p.audio_ready());
+        p.play();
+        sleep(Duration::from_millis(100));
+        assert_eq!(p.audio_start_lag_ms(), 0.0, "the ring was full before the clock started");
+        p.pause();
+        // a seek moves it: not ready until the playhead has rested there again
+        p.seek(2.0);
+        wait_until("filled again at the new place", || p.audio_ready());
+    }
+
+    /// A loop wrap onto frames that are not cached is a stall; onto cached ones it is not. The test is
+    /// the stall's own exit test.
+    #[test]
+    fn a_loop_lands_cold_only_when_the_cache_is_cold() {
+        let hot = |_: i64| true;
+        let cold = |i: i64| i > 100;
+        assert!(!lands_cold(10, 45, 600, 1.0, hot));
+        assert!(lands_cold(10, 45, 600, 1.0, cold));
+        // a third of the read-ahead is enough to call it warm
+        assert!(!lands_cold(10, 45, 600, 1.0, |i| i <= 25));
+        assert!(lands_cold(10, 45, 600, 1.0, |i| i <= 24));
+        // never past the end
+        assert!(!lands_cold(598, 45, 599, 1.0, |i| i >= 598));
+        // reverse looks behind
+        assert!(!lands_cold(100, 45, 600, -1.0, |i| (85..=100).contains(&i)));
+        assert!(lands_cold(100, 45, 600, -1.0, |i| (90..=100).contains(&i)));
     }
 }

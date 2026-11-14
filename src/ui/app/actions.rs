@@ -89,11 +89,16 @@ impl App {
                 // source_ctl::act first and never gets here)
                 if self.buffer_stall {
                     self.buffer_stall = false; // buffering held the clock: space means "stop waiting"
+                } else if self.play_gate.buffering() {
+                    self.play_gate.cancel(); // ws:play-gate: Play was waiting for the frames: Space cancels it
+                    self.player.pause();
+                } else if self.player.is_playing() {
+                    self.player.pause();
                 } else {
-                    if !self.player.is_playing() && self.playhead >= self.project.duration() - 1e-6 {
+                    if self.playhead >= self.project.duration() - 1e-6 {
                         self.seek(0.0);
                     }
-                    self.player.toggle();
+                    self.play_gated(1.0);
                 }
             }
             Stop => {

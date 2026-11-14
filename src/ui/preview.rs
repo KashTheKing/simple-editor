@@ -387,6 +387,9 @@ pub struct PreviewCtx<'a> {
     pub prerender: Option<f32>,
     /// Playback is held while the player refills its read-ahead: draw a spinner over the video.
     pub buffering: bool,
+    /// ---- ws:play-gate ---- A pill under the spinner: "Buffering 40 %" while Play waits for the frames
+    /// ahead, "Still loading" for a moment after the cap started playback anyway (no spinner then).
+    pub buffer_note: Option<String>,
     /// Progress 0..1 of the proxy build in flight (None = no proxy being built).
     pub proxy: Option<f32>,
     /// Tracker box of the Tracking pane (centre + half sizes, project px relative to the canvas
@@ -1347,6 +1350,14 @@ fn video_body(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_
         ui.put(Rect::from_center_size(lb.center(), vec2(32.0, 32.0)), egui::Spinner::new().size(32.0));
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
     }
+    if let Some(note) = &c.buffer_note {
+        let g = painter.layout_no_wrap(note.clone(), egui::FontId::proportional(12.0), Color32::WHITE);
+        let y = if c.buffering { 28.0 } else { 0.0 };
+        let at = lb.center() + vec2(0.0, y + g.size().y * 0.5 + 6.0);
+        let pill = Rect::from_center_size(at, g.size() + vec2(16.0, 8.0));
+        painter.rect_filled(pill, 9.0, Color32::from_black_alpha(150));
+        painter.galley(pill.center() - g.size() * 0.5, g, Color32::WHITE);
+    }
     if c.fullscreen {
         // double-click toggles fullscreen, like every player
         if resp.double_clicked() {
@@ -1898,6 +1909,8 @@ mod tests {
         guide: Option<crate::ui::guides::Guide>,
         /// Clip rects of the guide-name chip ("YouTube" text) found in the preview's own layer last frame.
         guide_chip: Vec<Rect>,
+        /// ---- ws:play-gate ---- the Buffering pill (and its spinner) shown over the video.
+        buffer_note: Option<String>,
     }
 
     impl H {
@@ -1920,6 +1933,7 @@ mod tests {
                 use_proxies: false,
                 guide: None,
                 guide_chip: Vec::new(),
+                buffer_note: None,
             }
         }
         fn frame(&mut self, events: Vec<Event>) -> PreviewResponse {
@@ -1949,6 +1963,7 @@ mod tests {
                 use_proxies,
                 guide,
                 guide_chip,
+                buffer_note,
                 ..
             } = self;
             let mut out = PreviewResponse::default();
@@ -1974,7 +1989,8 @@ mod tests {
                             quality: 100,
                             movie_mode: false,
                             prerender: Some(0.4),
-                            buffering: false,
+                            buffering: buffer_note.is_some(),
+                            buffer_note: buffer_note.clone(),
                             proxy: None,
                             tracker: None,
                             guide: *guide,
@@ -2789,5 +2805,20 @@ mod tests {
             h.frame(vec![]);
         }
         assert!(!h.ctx.has_requested_repaint(), "idle frame with the rail and options requested a repaint");
+    }
+
+    /// ---- ws:play-gate ---- No buffering note, no repaint over any number of idle frames; with one the
+    /// spinner keeps the frame coming (only while it is up), and the pill text is on screen.
+    #[test]
+    fn assert_no_idle_repaint_buffering_note() {
+        let mut h = H::new();
+        h.with_asset();
+        for _ in 0..30 {
+            h.frame(vec![]);
+        }
+        assert!(!h.ctx.has_requested_repaint(), "idle frame without a buffering note requested a repaint");
+        h.buffer_note = Some("Buffering 40 %".into());
+        h.frame(vec![]);
+        assert!(h.ctx.has_requested_repaint(), "the spinner polls while Play is waiting");
     }
 }

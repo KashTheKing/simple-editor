@@ -409,12 +409,12 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `playback.hud` | Ui | on | Show or hide the performance HUD over the Preview; omit `on` to toggle. |
 | `playback.loop` | Ui | in, on, out | Enable/disable Loop In->Out playback. |
 | `playback.pause` | Read | - | Pause playback. |
-| `playback.play` | Read | - | Start playback. |
+| `playback.play` | Read | - | Start playback. With Settings > Performance > "Buffer before playing" on (default) it first waits, at most 3 s, until the next second of frames and audio is ready, so it returns at once with `state` "buffering" or "playing": poll `playback.status` until `settled` is true. |
 | `playback.play_range` | Ui | mode | Play In->Out, Play Around Playhead, or Play to Out, auto-stopping at the target. |
 | `playback.rate` | Ui | rate | Set shuttle/playback rate (starts playing if paused); -8..8, 0 rejected (use playback.pause). |
 | `playback.scrub` | Ui | t | Emit one BLOCK (~21ms) of audio at t without moving the clock (paused only). |
 | `playback.seek` | Read | t | Move the playhead. |
-| `playback.status` | Read | - | Current rate, time, dropped and published frame counts, longest wait between two frames since the last call (ms), buffering flag, loop range, and the performance HUD's numbers (UI frame avg/p95, GL composite, texture upload, decode avg/worst ms, cache hit rate). |
+| `playback.status` | Read | - | Current rate, time, dropped and published frame counts, longest wait between two frames since the last call (ms), state (playing / buffering / paused), `buffering` with `buffer_fraction` (0..1 or null) and `waiting_on` while Play waits for the frames ahead or the player refills after a stall, `settled` (true when nothing is buffering: poll for it), `start_wait_ms` / `start_capped` (how the last Play started), `audio_start_lag_ms`, loop range, and the performance HUD's numbers (UI frame avg/p95, GL composite, texture upload, decode avg/worst ms, cache hit rate). |
 | `playback.step` | Ui | frames | Step the playhead by N frames (negative = back); pauses first. |
 
 **`playhead.*`** (2 tools)

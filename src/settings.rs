@@ -353,6 +353,10 @@ pub struct Settings {
     pub audio_scrub: bool,
     /// Symmetric pre/post roll (seconds) for Play Around Playhead.
     pub preroll_secs: f32,
+    // ---- ws:play-gate ----
+    /// Play waits (at most a few seconds) for the frames just ahead of the playhead to be ready
+    /// before the clock starts, instead of starting at once and stuttering (`ui::app::playgate`).
+    pub buffer_before_play: bool,
     // ---- ws:snap-engine ----
     /// Markers (project + clip-local) count as timeline snap candidates. No per-field serde
     /// attribute: `Settings`' container-level `#[serde(default)]` already back-fills old files,
@@ -647,6 +651,8 @@ impl Default for Settings {
             // ---- ws:player-rate-loop ----
             audio_scrub: true,
             preroll_secs: 2.0,
+            // ---- ws:play-gate ----
+            buffer_before_play: true,
             // ---- ws:snap-engine ----
             snap_markers: true,
             // ---- ws:trim-model ----

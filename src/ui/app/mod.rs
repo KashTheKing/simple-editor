@@ -81,6 +81,7 @@ mod monitor;
 mod palette_ctl;
 mod panes;
 mod playback_ctl;
+mod playgate;
 mod preview_pane;
 // ---- ws:forgiveness ----
 // pub(crate): main.rs calls recovery::install_panic_hook() before eframe::run_native.
@@ -335,6 +336,8 @@ pub struct App {
     movie_stall: bool,
     /// True while playback is held because the player reported buffering (spinner shown).
     buffer_stall: bool,
+    /// ---- ws:play-gate ---- Buffer before playing: Play waits here until the frames ahead are ready.
+    play_gate: playgate::Gate,
     /// A script picked from the Scripts menu, run on the next update (outside menu layout).
     run_script_path: Option<std::path::PathBuf>,
     /// Proxy build in flight: (source path, proxy file, job). One transcode at a time.
@@ -873,6 +876,7 @@ impl App {
             prerender: PreRender::new(),
             movie_stall: false,
             buffer_stall: false,
+            play_gate: playgate::Gate::default(),
             run_script_path: None,
             proxy_job: None,
             proxy_map: std::collections::HashMap::new(),
@@ -974,7 +978,7 @@ impl App {
             // launched from Explorer ("Open with"): behave like a player - full screen, rolling
             if app.screenshot.is_none() && !app.project.tracks.iter().all(|t| t.clips.is_empty()) {
                 app.fullscreen = true;
-                app.player.play();
+                app.play_gated(1.0);
             }
         }
         app
@@ -1056,6 +1060,7 @@ impl App {
     fn seek(&mut self, t: f64) {
         self.playhead = t.clamp(0.0, self.project.duration().max(0.0));
         self.player.seek(self.playhead);
+        self.play_gate.on_seek();
         // an explicit seek always brings the playhead back into view (a user pan only suspends the
         // follow while playing)
         self.timeline.follow_playhead(self.playhead);

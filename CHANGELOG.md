@@ -30,6 +30,12 @@
 - **Your project's files by name**: `<img src="logo.png">`, `<video src="clip.mp4">`, CSS
   `url("bg.jpg")` find the project's file of that name; missing names are listed in the Inspector.
   Videos inside a layer are frame-exact on the timeline and in exports.
+### Playback
+- **Buffer before playing**: when the frames just ahead of the playhead are not decoded yet (the first Play
+  after opening a project, after a seek, over 4K or stacked layers, effects not compiled yet), Play now waits
+  up to 3 seconds for the next second of picture and sound, shows "Buffering" over the Monitor, and starts by
+  itself, instead of stuttering with the audio running ahead. When it is ready Play starts at once as before.
+  Space cancels it. Settings > Performance > Buffer before playing turns it off.
 
 ## 1.2.0
 

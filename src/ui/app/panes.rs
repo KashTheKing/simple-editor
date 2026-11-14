@@ -145,7 +145,7 @@ impl App {
                 if resp.seeked {
                     self.player.seek(self.playhead);
                     if resp.play {
-                        self.player.play();
+                        self.play_gated(1.0);
                     } else {
                         self.player.pause();
                     }
