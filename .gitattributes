@@ -12,3 +12,7 @@ CHANGELOG.md merge=union
 # such LF-only literal search (found via new_subclip_undo_restores_pre_subclip_project failing after
 # the media-library merge). Force LF regardless of the developer's global git config.
 *.rs text eol=lf
+
+# integration/nov13: the thread CSS is include_str!'d into generated pages that a test compares with
+# library/html/*.html; a CRLF checkout made the generated pages differ (library_templates_are_the_starters).
+library/thread/*.css text eol=lf
