@@ -486,3 +486,166 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
   Find action (polled before the panes draw), so `Action::Find` over `Pane::Presets` calls `gallery::focus_search()` instead.
   The Library (media) pane's reuse list keeps only node graphs now - effects, looks and adjustment layers are Gallery cards.
 
+## Browser layer + fake mouse (2026-11-13, feat/browser-layer, not committed)
+- `ClipKind::Browser`: the canvas so far becomes the page inside a drawn window. No shader, no web engine: both
+  compositors use what they had (clear, placed bitmap, masked placed bitmap). Bitmaps go through the `LayerSet`
+  under `browser::key(clip, slot)`; the window art is cached and only the address / load bar are redrawn.
+- Scroll moves the layers BELOW the browser (`scroll_shift`), so a tall screenshot scrolls at its own resolution;
+  culling in `decode_layers` is off while a browser clip is on screen.
+- Gotcha found live: `gpu::render_mask` sends polygon points absolute but the shader subtracts `m_center`, while
+  the CPU's points are relative to the centre. The two only agree around (0, 0) - the browser's page mask is
+  rasterised there (`MASK_ORIGIN`). A user's polygon clip mask may be displaced on the GPU for the same reason:
+  not checked, not changed.
+- Size trap: `serde_json::to_value` / `from_value` on a new struct compiles a second copy of its (de)serialisers
+  (104 KB here, cargo-bloat). Go through text (`style_json`) when the type is already in the project format.
+- A first import into an empty project sets the project to that file's size (a 1920x4200 screenshot made a
+  portrait project): scripts should `project.set` first.
+- Verified: 26 new tests; `cargo test`: 6 failed, none of them here, the rest passed (5 `engine::html` tests:
+  "Microsoft Edge exited at start"; `library_index_matches_files`: file sizes differ in a CRLF checkout);
+  `--selftest` OK on the release exe; live in a scratch release instance over MCP (demo project, frames, contact
+  sheet, Inspector, Record-mouse start / stop). Release exe 13,762,048 B (+303,104 B = +296 KB vs 1.2.0).
+- NOT verified: Record mouse and Place waypoints with a real hand on the mouse (no agent can move it; the take
+  pipeline was fed 476 synthetic 120 Hz samples through `cursor.from_samples`), export of a browser project to a
+  file, a browser inside a nested sequence in the app (unit-tested through the CPU compositor only), favicon and
+  background pictures on the GPU path beyond one favicon, the docs site build with the new page.
+
+## Browser layer, phase 2: real pages, sharp zoom, click and go (2026-11-13, not committed)
+- Zoom moved from "scale the picture of the frame" to the layers below (`engine::browser::LayerView`, with
+  scroll): a page with more pixels than the frame is decoded at the size shown. Three places must agree or
+  the zoom is soft: the compositors' placement, `layer_for`'s decode size (`zoom_on_screen`) and - the one
+  found live - `playback::still_need` (`max_zoom_over`), because a preview pool opens a still no bigger than
+  the largest size it is "ever shown at".
+- Import (`engine::webpage`): `html::capture_mhtml` -> `webcap::mhtml_to_folder` -> one PNG of the whole page
+  at up to 3x (36 MP budget) + a `.json` beside it (`PageMap`: url, title, CSS size, density, elements). Any
+  picture with such a `.json` beside it is a page. `Page.captureScreenshot` with `clip.scale` really re-draws
+  at that scale (checked at 8x), which is what `browser.sharpen` uses for "Zoom detail" clips.
+- html.rs hunks (the HTML agent owns the file): `PageSession` / `with_page` / `CAPTURE_PROFILE` appended at the
+  end, and three lines in `Edge::launch_with`. Against `perf/html-load` this is ONE conflict (the
+  `match Self::connect(&mut child, ...)` line: keep theirs with `&data`) plus `with_edge(true, |e| ...)` in
+  `with_page`. `browser-demo/combo.sh` + `resolve.py` build that combination; the live test ran on it, because
+  on this machine main's Edge launch fails ("Microsoft Edge exited at start").
+- Fixed on the way: GPU polygon masks were drawn a layer-centre away from where the CPU draws them
+  (`gpu::render_mask` sent absolute points to a shader that subtracts the centre). Test:
+  `gpu::browser_tests::a_polygon_mask_is_where_the_cpu_puts_it`.
+- Live (release exe of the combined tree, scratch profile, port 7492, pid-checked before every call):
+  roblox.com/charts and the Forsaken game page imported by address (8 s and 11-27 s), 507 and 41 elements;
+  scroll; zoom 3x and 8x sharp after Sharpen zooms; click_go on the real "Forsaken" tile; hover + click on the
+  real Play button (an icon-only button: named from its markup); export to mp4; nested sequence; background
+  picture. Game thumbnails stay grey placeholders: the site only loads them for a real browser session.
+- NOT verified: the sign-in window and an import "as me" (needs the user to sign in; never done by an agent),
+  the Import Web Page window and the Inspector's new buttons by hand (driven over MCP only), slide / zoom page
+  transitions live (fade was), Record mouse by hand (as before).
+- Size: 13,963,264 B = +504,320 B (+492 KB) vs 1.2.0 on this branch alone (phase 1 was +296 KB).
+
+## Browser layer, phase 3: pages are HTML layers, Page only, the Forsaken demo (2026-11-13, not committed)
+- An imported page is now an ordinary linked HTML layer clip (`html_ctl::import_file_w`), not a picture: the
+  import (`engine::webpage::import`) only captures, unpacks, freezes animations (a `<style>` that stops them:
+  with the site's loading shimmers the HTML engine rendered a 6000 px tall FILM, 45-75 s and a decode per zoom
+  step) and writes the element map as `index.json` beside `index.html`. The first render says how tall the
+  page is, so "fit as page" waits for it (`BrowserCtl::fit_due`).
+- Pictures: the capture now waits until images are complete and no `shimmer` / `skeleton` placeholders are
+  left (at most 20 s, or 3 s without change) - a small change inside `html::capture_mhtml`'s script. Before
+  that roblox.com's game icons were all grey. The map counts what is still missing and the import says so.
+- Sharp zoom: the page's own render is at project scale (1 px per CSS px at 1920 wide). Wherever the zoom rests
+  above that, `browser_ctl::details_wanted` asks `webpage::render_region` for that part from the HTML (with
+  its field values) at exactly that scale - "Zoom detail" clips, made by themselves 0.7 s after an edit (no
+  undo step), budget `Settings.page_zoom_megapixels` (16). While a zoom is MOVING the 1x render is enlarged;
+  it is sharp once inside the detail. The fake cursor does not grow with the zoom.
+- `BrowserStyle.display`: Window (default; old projects) or Page (no window art, no background, the page is
+  the frame; the compositors only draw the mouse and overlays).
+- "Make editable" (`webpage::make_editable`): leaf headings / button / link / short paragraph texts become
+  `se:field`s (plus the page background colour) by rewriting the DOM in Edge and saving its outerHTML.
+- html.rs hunks now: the appended `PageSession` / `with_page` / `CAPTURE_PROFILE` block, three lines in
+  `Edge::launch_with`, and the wait added to `capture_mhtml`'s script. Against perf/html-load still one
+  conflict (the `match Self::connect` line) + `with_edge(true, ...)`.
+- Live (combined tree, release, port 7492, pid-checked): the acceptance demo `browser-demo/drive4.py` ->
+  `roblox-forsaken-demo.sedit` / `.mp4` (1920x1080, 15.5 s): Page only, real icons, zoom into the Forsaken tile,
+  click, fade through to the game page, scroll to "Active 80,243", zoom on it, zoom out, hand to Play, click.
+  Also: an effect on the whole page, a masked blur on a region, a heading retyped through its field.
+- NOT verified: playback smoothness by eye (frames and the export were checked, not the interactive
+  preview at 60 fps), slide / zoom presets of Click and go (the demo scripts its own zoom-through with a
+  fade), the Import Web Page window by hand, the sign-in profile, Record mouse by hand.
+- Size: 13,988,352 B = +529,408 B (+517 KB) vs 1.2.0.
+
+## Browser layer, phase 4: Window zoom, nothing stretched, the demo again (2026-11-13, not committed)
+- Layers under a browser are no longer drawn into a picture of the frame that is then fitted into the window:
+  `engine::browser::LayerView` is now the whole transform (scroll, page Zoom, the window's page area, its
+  rotation, the Window zoom) and each layer is placed straight where it shows, at that size. `Plan::page` is
+  always the whole canvas. Push / wipe transitions under a browser use frame-sized offsets and are a little off
+  on the CPU path.
+- Window zoom (`BrowserStyle::wzoom` + `wzoom_x/y`): `Plan::zoom_about` scales frame, page area, mask and mouse
+  about a frame point; the window art and the cursor sprite are drawn again at that size in steps of sqrt(2)
+  (`level`, `raster_scale`, bitmap capped near 4096 px wide), text / shape layers below too (`draw_boost`,
+  GPU path only), stills are decoded for the largest zoom they reach.
+- Sharp while moving: `zoom_levels` samples the clip at 15 Hz and gives, for every stretch where the page is
+  shown bigger than 2^(n-1) and at most 2^n, the part seen; `browser_ctl::details_wanted` has the HTML engine
+  draw each at 2^n (through `webpage::render_region` -> `html::with_page`, region + scale: the call a faster
+  renderer can serve). So every frame of a move shows a picture at least as sharp as the screen, smaller if
+  anything. This is a level cache, not one render per frame; it is the same in preview and export.
+- The browser model's JSON is written by hand through `serde_json::Value` (`BrowserStyle::to_json` /
+  `set_json`); `browser.set` is `check_fields` + `set_json`. That, and removing the old rests code, paid for
+  phase 4's additions: the exe moved from +517 KB to +506 KB, far from the -200 KB asked for.
+- Make editable now also makes image fields of the biggest pictures (cap 24 fields).
+- Lists in the Inspector (tabs, events) are fixed-column rows with controls on the right and up / down for
+  tabs; no drag handle or Alt+Up/Down yet (waiting for the shared `ui::list_rows`).
+- Live: `browser-demo/drive4.py` on the combined tree -> `roblox-forsaken-demo.mp4`, read back with ffprobe:
+  h264 1920x1080, 30 fps, 465 frames, 15.5 s; frames taken from the mp4 at 2.9 s (mid zoom), 4.3 s, 10 s, 11 s
+  and 14.25 s are sharp and the hand grows with the zoom; the Top Songs pictures are real.
+- NOT verified: interactive playback by eye; a Window zoom with the chrome ON in the app (unit and GPU tests
+  only - the demo is Page only); the Import Web Page window through the UI; slide / zoom presets of Click and
+  go; image fields from Make editable live; the new tab / event rows by eye; sign-in; Record mouse by hand.
+- Size: 13,977,600 B = +518,656 B (+506 KB) vs 1.2.0.
+
+## Browser layer, phase 5: size, load bar, live checks (2026-11-13, not committed)
+- Size, measured: a 1.2.0 tree (`b05471e`) and this tree built with the same flags (release + debuginfo, no strip, so
+  `cargo bloat` can read them; that flavour is +4,608 B over the plain release) and the symbols diffed. Official
+  numbers are plain `cargo build --release` exes.
+
+  | step | exe B | vs 1.2.0 (13,458,944) |
+  |---|---|---|
+  | handover (phase 4 row of size_log.csv) | 13,977,600 | +518,656 (+506 KB) |
+  | B1: 21 tools -> 7, table-driven JSON (`F` / `fields`) and Inspector rows, tab rows on `ui::list_rows`, `elements` as a loop (bloat flavour) | 13,909,504 | +445,952 vs the 1.2.0 build in the same flavour |
+  | B2: + insertion sorts, `Animated::clone` out of line, shorter descriptions, `sharp_state` without `format!` (bloat flavour) | 13,903,360 | +439,808 vs the same |
+  | final plain release | **13,905,408** | **+446,464 (+436 KB)** |
+
+  Not met: -200 KB (target +306 KB). What was tried and what it bought: tools 21 -> 7 and shorter descriptions
+  (~20 KB), hand-written JSON driven by one field table (model::browser 73 -> 38 KB), Inspector helpers
+  (browser_ui 42 -> ~23 KB without the tab rows), insertion sorts and the out-of-line `Animated::clone` (only ~6 KB in all:
+  the sort copies and clones were mostly merged by LTO already), `list_rows` adoption cost ~13 KB (the shared helper:
+  it is paid once when feat/thread-viewers merges).
+- Where the rest is (B1 symbols, KB): Inspector sections + tab rows 51 (13 of it list_rows), import + page placement +
+  Make editable 56, MCP tools and helpers 46, model style / cursor / JSON / take 49, model edit ops 15, engine geometry +
+  window art + cursor sprite 36, Record mouse / waypoints 28, Sharpen / zoom details 26, Click and go / move_to 10. The code is
+  ordinary Rust at `opt-level = "s"`, about 90 B per source line: there is no single big thing left, so another -200 KB
+  means dropping features or changing the whole app's profile (`opt-level = "z"` for the crate: not tried, a perf
+  decision for the maintainer; `panic = "abort"` is out, the decoders and jobs rely on `catch_unwind`).
+- The 1.2.0 diff is not just additions: `html_ctl::import_file_w` and the snapshot job shrank 22 KB because
+  `mhtml_to_folder` / `capture_mhtml` became shared functions (+21 KB) - the import reuses the HTML engine's code.
+- Load bar (Page only): it draws on the GPU path and in an exported mp4. `gpu::browser_tests::
+  the_page_only_load_bar_is_drawn_on_the_gpu` passes (the bar is the `BG` slot's 1x1 frame, placed along the top edge);
+  the CPU twin is in `engine::browser::tests::the_page_below_shows_inside_the_window`. Live: click-and-go with a 1.6 s
+  load, exported 1920x1080 mp4: the accent bar is 892, 1456 and 1849 px wide at 2.5, 2.9 and 3.4 s and absent before
+  the click and after the load. I could not reproduce a "wrong slot" bug: whatever it was, it is not there now.
+- Tests added: `gpu::browser_tests::a_window_zoom_with_the_chrome_on_is_the_window_drawn_at_that_scale` (Window zoom with
+  tabs, address bar and mouse == the same window at that Scale, at rest and mid-move, and as sharp);
+  `the_page_only_load_bar_is_drawn_on_the_gpu`; load-bar assertions in the CPU page test. The scaled-frame ==
+  direct-render and the mid-zoom sharpness tests were already there (`a_zoomed_frame_is_a_direct_render_at_that_scale_not_
+  an_enlarged_picture`: 0..3 grey levels, sharpness metric at t = 1 s mid-move).
+- `browser.animate {preset: zoom_to, target: "<element text>"}` already held the zoom on an element by name (page zoom
+  and `whole`); checked live on a local page (anchor kept at the button's place). No separate `browser.zoom_to` tool.
+- Tools are now: browser.add, browser.set (read when no `fields`), browser.animate, browser.page (fit, next, click_go,
+  elements, sharpen, make_editable), browser.import (import, jobs, sign_in), cursor.set (move_to, path, event, press,
+  tidy, samples), cursor.record (start, stop). Old names are gone (no alias).
+- Live (combined tree: origin/main + html-load's Edge fix + this branch, release exe, scratch profile, port 7492,
+  pid checked before every call, window on DISPLAY2 left): Window zoom with the chrome ON, exported mp4 (h264 1920x1080,
+  360 frames): frames at 1.7, 2.9 and 6.0 s show the address text, the tab and the cursor growing together, sharp (no
+  enlarged bitmap); the Import Web Page window opens from the action and shows the right text (Import stays disabled
+  until an address is typed); a local page imported by `browser.import`, Make editable made 10 fields incl. `image_1`;
+  changing the image field re-drew the page with the other picture; the tab rows in the Inspector are aligned columns
+  with the grip, truncated title, [front] [icon] [remove] and a title box under the list.
+- A gotcha that cost an hour: the FIRST clip added to an empty project resizes the project to its picture (a 1920x4200
+  screenshot -> a 1920x4200 project): exports then look horizontally stretched. `project.set` AFTER the first clip.
+- NOT verified: dragging a tab row and Alt+Up/Down with a real hand (list_rows has its own tests in feat/thread-viewers;
+  nothing here drives egui input); sign-in; Record mouse by hand; slide / zoom page presets live; playback smoothness by eye.
+- list_rows: `src/ui/list_rows.rs` is a byte-for-byte copy of feat/thread-viewers's (uncommitted there), plus one line in
+  `ui/mod.rs`. If that branch merges first, drop this copy (identical content: git should take it as the same file).

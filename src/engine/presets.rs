@@ -335,7 +335,7 @@ pub fn is_container_template(t: &Template) -> bool {
 /// or a dangling `Sequence` - model/ops/templates.rs), so a Titles-tab template always places 1:1.
 pub fn is_text_template(t: &Template) -> bool {
     decode_template(t).is_some_and(|(c, _)| {
-        !c.is_empty() && c.iter().all(|c| matches!(c.kind, ClipKind::Text | ClipKind::Shape | ClipKind::Adjustment))
+        !c.is_empty() && c.iter().all(|c| matches!(c.kind, ClipKind::Text | ClipKind::Shape | ClipKind::Adjustment | ClipKind::Browser))
     })
 }
 
@@ -496,6 +496,8 @@ pub fn builtin_titles() -> Vec<Template> {
         Template { name: "Lower Third".into(), json: encode(lower_third) },
         Template { name: "Title Card".into(), json: encode(title_card) },
         Template { name: "Caption Box".into(), json: encode(caption_box) },
+        // ws:browser-layer: a browser window over whatever is below it (edited in the Inspector)
+        Template { name: "Browser Window".into(), json: encode(vec![Clip::new(0, ClipKind::Browser, "Browser", 0.0, 5.0)]) },
     ]
 }
 
@@ -956,18 +958,18 @@ mod tests {
     #[test]
     fn builtin_titles_decode_and_are_text_templates() {
         let titles = builtin_titles();
-        assert_eq!(titles.len(), 3);
+        assert_eq!(titles.len(), 4);
         let mut names: Vec<&str> = titles.iter().map(|t| t.name.as_str()).collect();
         names.sort();
         names.dedup();
-        assert_eq!(names.len(), 3, "every title has a unique name");
+        assert_eq!(names.len(), 4, "every title has a unique name");
         for t in &titles {
             let (clips, assets) = decode_template(t).unwrap_or_else(|| panic!("{} failed to decode", t.name));
             assert!(assets.is_empty(), "{}: titles carry no media assets", t.name);
             assert!(!clips.is_empty(), "{}: at least one clip", t.name);
             assert!(is_text_template(t), "{}: must be a Text/Shape/Adjustment-only template", t.name);
             assert!(
-                clips.iter().any(|c| !c.exposed.is_empty()),
+                clips.iter().any(|c| !c.exposed.is_empty() || c.kind == ClipKind::Browser),
                 "{}: at least one clip exposes a Customize field",
                 t.name
             );

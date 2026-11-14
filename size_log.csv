@@ -47,3 +47,8 @@ b05471e+html-load+blitz,13834752,"feat/blitz-helper main exe: +134,144 B vs orig
 b05471e,11007488,"se-html: the fast HTML renderer helper 0.1.0 (separate exe, not linked into simple-editor.exe). final: layout at scale 1 below 1.0 (averaged down), base_url fix, mem in ping"
 b05471e+wip,13536768,"folder import (bins from folders, media.import_folder): +77,312 B vs the 1.2.0 release exe built from b05471e (13,459,456 B)"
 b05471e+wip,14470656,"thread viewers (chat / forum / video comments, typing animation, list rows): +770,048 B vs the same tree without it (13,700,608 B = origin/main + the html-load working tree); no offset found: needs a decision"
+b05471e+wip,13762048,"browser layer + fake mouse (feat/browser-layer): +303,104 B vs 1.2.0"
+b05471e+wip,13963264,"browser layer phase 2 (web page import, element map, sharp zoom, click and go): +504,320 B vs 1.2.0, +201,216 B vs the row above"
+b05471e+wip,13988352,"browser layer phase 3 (pages as HTML layers, Page only, make editable): +529,408 B vs 1.2.0, +25,088 B vs the row above"
+b05471e+wip,13977600,"browser layer phase 4 (Window zoom, zoom levels, hand-written JSON): +518,656 B vs 1.2.0, -10,752 B vs the row above"
+b05471e+wip,13905408,"browser layer phase 5 (7 tools with an action argument, table-driven JSON and Inspector, out-of-line Animated clone, tab rows on ui::list_rows (about 13 KB of it is that shared helper), insertion sorts): +446,464 B vs 1.2.0, -72,192 B vs the row above; the -200 KB target is NOT met"

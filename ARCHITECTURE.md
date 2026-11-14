@@ -15,6 +15,18 @@ playback caches fill — the playback cache may then grow to its budget (`Settin
 Settings ▸ Performance) · **1439 unit/integration tests + a headless `--selftest`** (`cargo test` at 1.2.0:
 1439 passed, 9 ignored by design, 0 failed).
 
+## Browser layer (`ClipKind::Browser`)
+
+`model/browser.rs` (style, cursor, events, path reduction), `model/ops/browser.rs` (edit ops),
+`engine/browser.rs` (geometry + cached bitmaps), `ui/browser_ui.rs` (Inspector), `ui/app/browser_ctl.rs`
+(actions, recorder, tools). A browser clip takes the canvas composited so far as its page: both
+compositors clear to the background, draw the window bitmap at the clip's placement, then the page as
+a placed, polygon-masked layer, then the cursor sprite - all with primitives they already had
+(`composite` / `render_mask` on the GPU, `draw_layer_masked` / `mask_coverage` on the CPU). Its bitmaps
+travel in the `LayerSet` under `browser::key(clip.id, slot)`. Scroll is a per-track offset
+(`browser::scroll_shift`) applied to the layers below, so a tall page scrolls at its own resolution;
+`decode_layers` turns culling off while a browser clip is on screen for that reason.
+
 ## Stack
 
 | Concern | Choice | Why |

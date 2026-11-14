@@ -249,6 +249,7 @@ impl App {
             acts_if(ui, has_sel, &[Some(AddMask)]);
             acts(ui, &[Some(AddSubtitle), Some(AddContainer)]);
             acts(ui, &[None, Some(AddHtmlLayer), Some(AddHtmlScene), Some(AddChatThread), Some(AddForumThread), Some(AddVideoComments), Some(ImportHtml), Some(SnapshotWeb)]); // ws:html-layer
+            acts(ui, &[None, Some(AddBrowser), Some(ImportWebPage), Some(RecordMouse), Some(CursorWaypoints)]); // ws:browser-layer
         });
         menu::sub(ui, Some(tools::Glyph::Transition), "Transition", |ui| {
             acts_if(ui, has_sel, &[Some(AddTransition), Some(AddLastTransition), Some(AddTransitionEnd)]);

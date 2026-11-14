@@ -5,6 +5,8 @@ pub mod agent;
 pub mod analysis;
 pub mod autocut;
 pub mod blend;
+// ---- ws:browser-layer ----
+pub mod browser;
 pub mod capture;
 pub mod compose;
 pub mod convert;
@@ -33,6 +35,8 @@ pub mod library;
 pub mod shaderlib;
 pub mod skills;
 pub mod webcap;
+// ---- ws:browser-layer ----
+pub mod webpage;
 pub mod shaders;
 pub mod shapes;
 // ---- ws:export-audio-tracks ----

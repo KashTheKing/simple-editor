@@ -517,6 +517,10 @@ pub struct Settings {
     /// Hold an agent's MCP calls that leave the project (export, open/new project, settings, scripts,
     /// convert) until the user clicks Allow.
     pub assistant_guard: bool,
+    // ---- ws:browser-layer ----
+    /// Most megapixels one zoomed part of a web page is drawn with (browser layer ▸ sharp zoom).
+    /// Set in settings.json.
+    pub page_zoom_megapixels: f32,
     /// The environment variable the "custom" backend gets the stored API key in.
     pub assistant_key_env: String,
     /// Agent session id per project path (no longer written: each Assistant conversation keeps its own,
@@ -762,6 +766,7 @@ impl Default for Settings {
             // ---- ws:assistant-pane ----
             assistant_quick: default_assistant_quick(),
             assistant_guard: true,
+            page_zoom_megapixels: 16.0,
             assistant_key_env: "OPENAI_API_KEY".into(),
             assistant_sessions: BTreeMap::new(),
             assistant_follow: true,

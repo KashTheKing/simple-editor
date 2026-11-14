@@ -147,6 +147,8 @@ mod transcript_ctl;
 mod trim_actions;
 // ---- ws:voice-input ----
 mod voice_ctl;
+// ---- ws:browser-layer ----
+mod browser_ctl;
 // ---- ws:html-layer ----
 mod html_ctl;
 mod tools_html;
@@ -510,6 +512,9 @@ pub struct App {
     // ---- ws:voice-input ----
     /// Dictation into the Assistant prompt (recorder + whisper job).
     voice: voice_ctl::VoiceState,
+    // ---- ws:browser-layer ----
+    /// Browser layers: the mouse recorder and waypoint mode.
+    browser: browser_ctl::BrowserCtl,
     // ---- ws:docs-release ----
     // ---- ws:html-layer ----
     /// HTML layers: the Edge renderer's jobs and the HTML editor window.
@@ -969,6 +974,8 @@ impl App {
             // ---- ws:transcribe-islands ----
             // ---- ws:voice-input ----
             voice: Default::default(),
+            // ---- ws:browser-layer ----
+            browser: Default::default(),
             // ---- ws:docs-release ----
             // ---- ws:html-layer ----
             html: Default::default(),
@@ -1635,6 +1642,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     tools_skills::TOOLS,
     // ---- ws:online-library ----
     tools_library::TOOLS,
+    // ---- ws:browser-layer ----
+    browser_ctl::TOOLS,
 ];
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
@@ -1712,6 +1721,8 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     // ---- ws:skills ----
     // ---- ws:online-library ----
     library_ctl::act,
+    // ---- ws:browser-layer ----
+    browser_ctl::act,
 ];
 
 pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
@@ -1786,6 +1797,8 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     library_ctl::tick,
     // ---- ws:my-gallery ----
     gallery_mine::frame,
+    // ---- ws:browser-layer ----
+    browser_ctl::tick,
 ];
 
 pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
@@ -1854,6 +1867,8 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     library_ctl::windows,
     // ---- ws:my-gallery ----
     gallery_mine::windows,
+    // ---- ws:browser-layer ----
+    browser_ctl::windows,
 ];
 
 pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
@@ -1954,6 +1969,7 @@ impl App {
                 ClipKind::Shape => SelectionKind::Shape,
                 ClipKind::Sequence => SelectionKind::Sequence,
                 ClipKind::Adjustment => SelectionKind::Adjustment,
+                ClipKind::Browser => SelectionKind::Shape, // ws:browser-layer: Inspector, like a shape
             },
             _ => SelectionKind::Mixed,
         }

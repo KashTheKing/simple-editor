@@ -364,6 +364,17 @@ actions! {
     // ---- ws:shader-library ----
     // ---- ws:skills ----
     // ---- ws:online-library ----
+    // ---- ws:browser-layer ----
+    // A drawn browser window over what is below it, and its fake mouse. Unbound by design.
+    AddBrowser => "add_browser", "Add Browser Window", None;
+    BrowserFitPages => "browser_fit_pages", "Browser: Fit Pages to the Window", None;
+    BrowserNextPage => "browser_next_page", "Browser: Next Page Here", None;
+    RecordMouse => "record_mouse", "Record Mouse (Browser Cursor)", None;
+    CursorWaypoints => "cursor_waypoints", "Place Cursor Waypoints", None;
+    CursorPress => "cursor_press", "Press What Is under the Cursor", None;
+    ImportWebPage => "import_web_page", "Import Web Page…", None;
+    SharpenZooms => "sharpen_zooms", "Browser: Sharpen Zooms", None;
+    PageMakeEditable => "page_make_editable", "Browser: Make the Page Editable", None;
     // ---- tool selection (ui::tools) - polled and dispatched there, not through App::act ----
     ToolSelect => "tool_select", "Select Tool", sc(NONE, Key::V);
     ToolText => "tool_text", "Text Tool", sc(NONE, Key::T);
@@ -672,6 +683,9 @@ pub fn group(a: Action) -> &'static str {
         // ---- ws:shader-library ----
         // ---- ws:skills ----
         // ---- ws:online-library ----
+        // ---- ws:browser-layer ----
+        AddBrowser | ImportWebPage => "Add",
+        BrowserFitPages | BrowserNextPage | RecordMouse | CursorWaypoints | CursorPress | SharpenZooms | PageMakeEditable => "Clip",
         // unreachable today (every variant has an arm above); a new variant compiles into "Other" and
         // `group_covers_every_action` names it.
         #[allow(unreachable_patterns)]

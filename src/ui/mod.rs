@@ -69,8 +69,10 @@ pub mod assistant_data;
 pub mod html_code;
 pub mod html_ui;
 // ---- ws:thread-viewers ----
-pub mod list_rows;
+pub mod list_rows; // the shared table rows (thread viewers and the browser layer's tab rows)
 pub mod thread_ui;
+// ---- ws:browser-layer ----
+mod browser_ui;
 
 use crate::model::{AnimLink, Animated, Id, Mask, MaskShape, Project, LABEL_COLORS};
 use crate::theme::Palette;

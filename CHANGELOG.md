@@ -112,6 +112,33 @@
   shorter clip it touches.
 - **Fixed: the Animate tab ran off the right edge in one row**, so most keyframe blocks could not be reached.
   Every Gallery card now wraps to the pane's width and the pane scrolls down to the last row.
+- **Browser window layer** (Clip ▸ Add ▸ Add Browser Window, or Gallery ▸ Titles ▸ Browser Window):
+  everything on the tracks below shows inside a drawn browser window with tabs, an address bar, a load
+  bar, a shadow and a background. Looks: Light, Dark, Minimal, Mobile. Scroll and zoom the page with
+  keyframes; the address can type itself out; **Next page here** cuts the page and runs the load bar.
+- **Fake mouse** on the browser layer: arrow, hand and text pointers, click ripples, drags, wheel marks
+  and a keystroke overlay. **Record mouse** plays the timeline and turns your real mouse over the viewer
+  into a few editable keyframes and click marks (re-record any part); or click waypoints on the viewer.
+- **Import Web Page…** (Clip ▸ Add): a real page by address or from a saved `.mhtml` / `.html` file becomes a
+  real HTML layer under a browser layer (effects, masks and fields work on it), stored on your computer
+  with its scripts removed, with a map of its links and buttons. **Make editable** turns its headings
+  and labels into fields. **Sign in…** opens a browser profile kept only for Simple Editor so you can import a
+  page as you see it; the editor never sees your password.
+- **Scroll and zoom without blur**: scrolling and zooming a browser layer enlarge the page itself, and
+  **Sharpen zooms** redraws an imported page at exactly the zoom you rest on (crisp at 800 %).
+  **Zoom in ×2** zooms to where the mouse is.
+- **Go to it** and **Click and go**: the mouse finds a link or button by its text, eases onto it with a
+  slight overshoot, and one step clicks it and changes to the next page with a fade, a load bar and the
+  new address and tab title.
+- **Window zoom** on a browser layer: the whole browser and the mouse cursor zoom together, redrawn at the
+  zoomed size (`browser.animate {preset: "zoom_to", whole: true}`).
+- **Display ▸ Page only** on a browser layer: just the page, edge to edge, no window around it.
+- Fixed: a polygon mask on a clip was drawn in the wrong place in the preview (it was right in a nested
+  sequence and wrong everywhere else).
+- 7 new tools for scripts and the assistant, most with an `action` argument: `browser.add`, `browser.set` (read or
+  change), `browser.animate`, `browser.page` (fit, next, click_go, elements, sharpen, make_editable),
+  `browser.import` (import, jobs, sign_in), `cursor.set` (move_to, path, event, press, tidy, samples) and
+  `cursor.record` (start, stop).
 
 ## 1.2.0
 

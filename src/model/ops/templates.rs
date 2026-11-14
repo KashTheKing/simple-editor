@@ -50,7 +50,11 @@ impl Project {
                 pictures.push((old_link, c.sequence));
             }
             let kind = if c.kind == ClipKind::Audio || sound { TrackKind::Audio } else { TrackKind::Video };
-            let ti = self.find_free_track(kind, c.start, c.duration, None);
+            let ti = match c.kind {
+                // ws:browser-layer: a browser window only makes sense above what it shows
+                ClipKind::Browser => self.track_above_all(c.start, c.duration),
+                _ => self.find_free_track(kind, c.start, c.duration, None),
+            };
             out.push(c.id);
             self.tracks[ti].clips.push(c);
             self.tracks[ti].sort();
