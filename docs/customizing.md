@@ -77,7 +77,7 @@ curl -s -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' -H 'content-type: ap
   http://127.0.0.1:<port>/mcp
 ```
 
-**Verified against a live `tools/list` on the 1.2.0 release build (2026-11-12): 298 tools. Added since (each listed in its feature's rows below): `media.import_folder`, `gallery.tab` and the `where` / `skip_existing` arguments of `gallery.apply` and `library.apply`, the HTML renderer, thread and social-guides tools, and 7 browser-layer tools (21 rows folded into `action` arguments).** The tables below
+**Verified against a live `tools/list` on the 1.2.0 release build (2026-11-12): 298 tools. Added since (each listed in its feature's rows below): `media.import_folder`, `gallery.tab` and the `where` / `skip_existing` arguments of `gallery.apply` and `library.apply`, the HTML renderer, thread and social-guides tools, and 7 browser-layer tools (21 rows folded into `action` arguments). The merged integration/nov13 build lists 329 (live `tools/list`, 2026-11-13).** The tables below
 were written per feature as it landed; if a row disagrees with `tools/list`, `tools/list` wins.
 
 > **Pro plan (built and live-tested, 1.2.0):** the rows it added or changed

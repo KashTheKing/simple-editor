@@ -1034,6 +1034,74 @@ fn keys_overlay(b: &BrowserStyle, lt: f64, s: f32, text: &mut TextRasterizer) ->
     (img.width > 1).then(|| (img, ((1.0 - youngest) * 5.0).clamp(0.0, 1.0)))
 }
 
+// ---------------------------------------------------------------------------------------------------
+// Zoom details: the parts of an HTML page a browser layer zooms into, drawn again by the HTML engine at
+// the scale they are shown at (`webpage::render_region`, cached on disk by source + fields + region +
+// scale). They are NOT part of the project: no clips, no assets, nothing on the timeline or in the
+// Library. `render_view` adds them to the copy of the project the player / export / pre-render draw.
+
+/// One zoomed part of the page under a browser clip: clip-local `from..to`, `rect` = where it goes
+/// (project px from the frame's middle, before scroll and zoom), the picture and its size.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ZoomDetail {
+    pub from: f64,
+    pub to: f64,
+    pub rect: (f64, f64, f64, f64),
+    pub path: String,
+    pub size: (u32, u32),
+}
+
+static DETAILS: std::sync::Mutex<Vec<(crate::model::Id, Vec<ZoomDetail>)>> = std::sync::Mutex::new(Vec::new());
+
+fn details() -> std::sync::MutexGuard<'static, Vec<(crate::model::Id, Vec<ZoomDetail>)>> {
+    DETAILS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Replace browser clip `browser`'s zoom details.
+pub fn set_zoom_details(browser: crate::model::Id, list: Vec<ZoomDetail>) {
+    let mut s = details();
+    s.retain(|(b, _)| *b != browser);
+    if !list.is_empty() {
+        s.push((browser, list));
+    }
+}
+
+/// Forget every zoom detail (another project was opened).
+pub fn clear_zoom_details() {
+    details().clear();
+}
+
+/// Browser clip `browser`'s zoom details as they are now.
+pub fn zoom_details(browser: crate::model::Id) -> Vec<ZoomDetail> {
+    details().iter().find(|(b, _)| *b == browser).map(|(_, l)| l.clone()).unwrap_or_default()
+}
+
+/// Ids of what `render_view` adds start here, far above any id a project hands out.
+const VIEW_IDS: crate::model::Id = 1 << 40;
+
+/// The project as it is drawn: `p` plus the zoom details of its browser clips as picture layers over
+/// their pages (a copy; `p` itself is untouched). Borrowed when there is nothing to add.
+pub fn render_view(p: &crate::model::Project) -> std::borrow::Cow<'_, crate::model::Project> {
+    let s = details();
+    let mine: Vec<&(crate::model::Id, Vec<ZoomDetail>)> =
+        s.iter().filter(|(b, _)| p.clip(*b).is_some_and(|c| c.kind == ClipKind::Browser)).collect();
+    if mine.is_empty() {
+        return std::borrow::Cow::Borrowed(p);
+    }
+    let mut v = p.clone();
+    v.next_id = v.next_id.max(VIEW_IDS);
+    for (b, list) in mine {
+        for d in list {
+            let json = serde_json::json!({"id": 0, "path": d.path, "kind": "Image", "duration": 0.0, "width": d.size.0, "height": d.size.1, "fps": 0.0});
+            // through text: from_value would compile a second copy of Asset's deserialiser
+            let Ok(a) = serde_json::from_str::<crate::model::Asset>(&json.to_string()) else { continue };
+            let aid = v.add_asset(a);
+            v.browser_add_detail(*b, aid, d.from, d.to, d.rect);
+        }
+    }
+    std::borrow::Cow::Owned(v)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -429,6 +429,8 @@ const MIX_BLOCK: usize = 1024;
 /// cancel kills ffmpeg and removes the partial file.
 /// Audio-only extensions (mp3, wav, m4a, flac, ogg, aac, opus) skip video (`-vn`); gif skips audio.
 pub fn start_export(project: Project, opts: ExportOptions, text: Arc<Mutex<TextRasterizer>>) -> Arc<Progress> {
+    // browser zooms: the page parts drawn at the scale they are shown at (not project clips)
+    let project = crate::engine::browser::render_view(&project).into_owned();
     spawn_job("export", move |prog| run_export(&project, &opts, &text, prog))
 }
 

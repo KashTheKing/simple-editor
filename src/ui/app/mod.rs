@@ -1065,6 +1065,8 @@ impl App {
         lib.sel_ids.clear();
         self.playhead = 0.0;
         self.player.pause();
+        // ws:browser-layer: zoom details are per project (and old builds' picture clips go)
+        browser_ctl::project_loaded(self);
         self.player.set_project(&self.project);
         self.player.seek(0.0);
         self.timeline.zoom_to_fit(self.project.duration(), self.timeline.lanes_rect.width().max(800.0));

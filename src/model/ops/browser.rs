@@ -594,6 +594,18 @@ mod tests {
         assert_eq!(p.track_of(hl), Some(dt));
         assert_eq!(p.browser_clear_details(id), 1);
         assert!(p.clip(d).is_none() && p.clip(hl).is_some());
+        // zoom details made by the app are not project clips: only the drawn copy has them
+        use crate::engine::browser::{render_view, set_zoom_details, ZoomDetail};
+        let clips = |p: &Project| p.all_clips().count();
+        let (n, na) = (clips(&p), p.assets.len());
+        set_zoom_details(id, vec![ZoomDetail { from: r.from, to: r.to, rect: r.rect, path: "zoom.png".into(), size: (1920, 1040) }]);
+        let view = render_view(&p).into_owned();
+        set_zoom_details(id, Vec::new());
+        assert_eq!((clips(&p), p.assets.len()), (n, na), "the project is untouched");
+        assert_eq!((clips(&view), view.assets.len()), (n + 1, na + 1), "the drawn copy has the detail");
+        let v = view.all_clips().map(|(_, c)| c).find(|c| c.name == DETAIL).unwrap();
+        assert!(v.id >= 1 << 40 && v.asset >= 1 << 40, "ids no project will ever hand out");
+        assert!(matches!(render_view(&p), std::borrow::Cow::Borrowed(_)), "nothing to add: no copy");
         // a page cut leaves highlights alone
         let cut = p.browser_page_cut(id, 1.0, &NextPage { load: 0.5, ..Default::default() });
         assert_eq!(cut.len(), 1);

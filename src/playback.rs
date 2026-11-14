@@ -487,9 +487,15 @@ impl Player {
     }
     /// Replace the project (cheap clone; called after every edit). Re-renders the current frame.
     pub fn set_project(&mut self, project: &Project) {
-        *lock(&self.shared.project) = Arc::new(project.clone());
+        // browser zooms: the page parts drawn at the scale they are shown at (not project clips)
+        *lock(&self.shared.project) = Arc::new(crate::engine::browser::render_view(project).into_owned());
         lock(&self.shared.clock).duration = project.duration();
         self.both(Cmd::SetProject);
+    }
+    /// The project this player draws (`set_project`'s, with `browser::render_view` applied): what a
+    /// compositor of its layers must be given.
+    pub fn project(&self) -> Arc<Project> {
+        lock(&self.shared.project).clone()
     }
     pub fn set_backend(&mut self, b: Backend) {
         self.both(Cmd::Backend(b));

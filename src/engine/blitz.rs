@@ -40,8 +40,9 @@ pub fn bin_dir() -> PathBuf {
 /// The helper program: `SE_HTML_HELPER` (a path; tests and development), else the installed copy, else
 /// one beside this exe (a portable / developer layout). None = not installed.
 pub fn helper_exe() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("SE_HTML_HELPER").map(PathBuf::from) {
-        return p.is_file().then_some(p);
+    // a stale SE_HTML_HELPER (a path that is gone) must not hide an installed helper
+    if let Some(p) = std::env::var_os("SE_HTML_HELPER").map(PathBuf::from).filter(|p| p.is_file()) {
+        return Some(p);
     }
     let own = bin_dir().join("se-html.exe");
     if own.is_file() {

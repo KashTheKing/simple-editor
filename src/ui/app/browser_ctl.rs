@@ -113,7 +113,8 @@ fn finish_jobs(app: &mut App) {
         };
         let msg = match said {
             Ok(m) => {
-                if !job.quiet {
+                // (a job may change nothing in the project: Sharpen zooms fills an internal cache)
+                if !job.quiet && app.project.to_json() != before {
                     app.push_undo_labeled(before, job.label);
                 }
                 app.after_edit();
@@ -147,19 +148,6 @@ fn page_under(app: &App, id: Id, t: f64) -> Option<(Id, PageMap)> {
         let c = app.project.clip(cid).filter(|c| c.contains(t) && c.enabled)?;
         Some((cid, page_map(app.project.asset(c.asset)?)?))
     })
-}
-
-/// A picture file the app made itself as a library asset, without waiting for a probe.
-#[inline(never)]
-fn picture_asset(app: &mut App, path: &std::path::Path) -> Result<Id, String> {
-    let head = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let (w, h) = crate::engine::html::png_size(&head).ok_or("not a PNG picture")?;
-    let a: crate::model::Asset = serde_json::from_str(
-        &json!({"id": 0, "path": path.to_string_lossy(), "kind": "Image", "duration": 0.0, "width": w, "height": h, "fps": 0.0})
-            .to_string(),
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(app.project.add_asset(a))
 }
 
 /// Import a page (an address or a saved file) on a thread; when it is in, it becomes an HTML layer
@@ -395,10 +383,8 @@ fn sharp_state(app: &App, id: Id, todo: &[Detail]) -> u64 {
         }
         (&d.fields, d.width, &d.src).hash(&mut h);
     }
-    for c in app.project.browser_pages(id).iter().filter_map(|&c| app.project.clip(c)) {
-        if c.name == crate::model::ops::browser::DETAIL {
-            (c.start.to_bits(), c.duration.to_bits(), c.asset).hash(&mut h);
-        }
+    for d in br::zoom_details(id) {
+        (d.from.to_bits(), d.to.to_bits(), &d.path).hash(&mut h);
     }
     h.finish()
 }
@@ -414,7 +400,8 @@ fn start_sharpen(app: &mut App, id: Id, quiet: bool) -> usize {
     }
     let n = todo.len();
     if n == 0 {
-        app.project.browser_clear_details(id);
+        br::set_zoom_details(id, Vec::new());
+        app.player.set_project(&app.project);
         app.browser.sharp.insert(id, sharp_state(app, id, &[]));
         return 0;
     }
@@ -426,17 +413,56 @@ fn start_sharpen(app: &mut App, id: Id, quiet: bool) -> usize {
             made.push((d.from, d.to, d.frame, webpage::render_region(&d.src, &d.fields, &d.base, d.width, d.css, d.scale, budget)?));
         }
         Ok(Box::new(move |app: &mut App| {
-            app.project.browser_clear_details(id);
+            // internal: drawn over the page by the player / export (`browser::render_view`), never project
+            // clips or Library assets
+            let mut list = Vec::new();
             for (from, to, frame, path) in &made {
-                let aid = picture_asset(app, path)?;
-                app.project.browser_add_detail(id, aid, *from, *to, *frame);
+                let head = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+                let size = crate::engine::html::png_size(&head).ok_or("not a PNG picture")?;
+                list.push(br::ZoomDetail { from: *from, to: *to, rect: *frame, path: path.to_string_lossy().into_owned(), size });
             }
+            br::set_zoom_details(id, list);
+            app.player.set_project(&app.project);
             let now = sharp_state(app, id, &details_wanted(app, id));
             app.browser.sharp.insert(id, now);
             Ok(format!("{} zoomed part(s) of the page drawn at full sharpness", made.len()))
         }) as Apply)
     }));
     n
+}
+
+/// Remove the "Zoom detail" picture clips earlier builds laid under browser layers, and their pictures
+/// in the Library when nothing else uses them: zooms are drawn from the HTML now. Returns how many clips.
+pub(super) fn remove_legacy_details(app: &mut App) -> usize {
+    let legacy = |c: &Clip| c.name == crate::model::ops::browser::DETAIL && c.kind == ClipKind::Image;
+    let assets: Vec<Id> = app.project.all_clips().filter(|(_, c)| legacy(c)).map(|(_, c)| c.asset).collect();
+    if assets.is_empty() {
+        return 0;
+    }
+    let browsers: Vec<Id> = app.project.all_clips().filter(|(_, c)| c.kind == ClipKind::Browser).map(|(_, c)| c.id).collect();
+    let n = browsers.into_iter().map(|b| app.project.browser_clear_details(b)).sum();
+    for a in assets {
+        if !app.project.all_clips().any(|(_, c)| c.asset == a) {
+            app.project.remove_asset(a);
+        }
+    }
+    n
+}
+
+/// A project was opened: zoom details belong to it (drawn again a moment later), and the picture
+/// clips older builds made for them are removed (one undo step).
+pub(super) fn project_loaded(app: &mut App) {
+    br::clear_zoom_details();
+    app.browser.sharp.clear();
+    let before = app.project.to_json();
+    let n = remove_legacy_details(app);
+    if n > 0 {
+        app.push_undo_labeled(before, "Remove old zoom detail clips");
+        app.toast(format!("Removed {n} old 'Zoom detail' picture clip(s): zooms are drawn from the HTML page now"));
+    }
+    if app.project.all_clips().any(|(_, c)| c.kind == ClipKind::Browser) {
+        app.browser.sharpen_at = Some(Instant::now() + std::time::Duration::from_millis(300));
+    }
 }
 
 /// Seconds the playhead moves on after a waypoint click, so the next click is the next stop.
@@ -583,6 +609,11 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
         Action::ImportWebPage => app.browser.import.open = true,
         Action::SharpenZooms => {
             let Some(id) = need(app) else { return true };
+            let before = app.project.to_json();
+            if remove_legacy_details(app) > 0 {
+                app.push_undo_labeled(before, "Remove old zoom detail clips");
+                app.after_edit();
+            }
             match start_sharpen(app, id, false) {
                 0 => app.toast("Nothing to sharpen: no zoom goes past what the page holds (or the page is a plain picture)"),
                 n => app.toast(format!("Drawing {n} zoomed part(s) of the page…")),
@@ -1110,7 +1141,7 @@ fn samples_tool(app: &mut App, id: Id, args: &Value) -> Result<ToolOutcome, Stri
     done(json!({"keys": take.keys.len(), "events": take.events.len(), "samples": s.len()}))
 }
 
-const BROWSER_ACTIONS: &str = "fit | next | click_go | elements | sharpen | make_editable";
+const BROWSER_ACTIONS: &str = "fit | next | click_go | elements | sharpen | cleanup | make_editable";
 const CURSOR_ACTIONS: &str = "move_to | path | event | press | tidy | samples";
 
 pub const TOOLS: &[ToolDef] = &[
@@ -1219,10 +1250,10 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "browser.page",
-        desc: "Pages under a browser layer. action: fit (pictures below page-wide, top at the top; {max_scroll}); next (another page at `at`: cut with a transition, load bar, new address / title / icon; {clip_ids}); click_go (the mouse goes to `target`, an element's text, or x, y, clicks at `at`, the page changes as in next; one undo step); elements (links, buttons, inputs of the imported page: boxes in project px from the frame's middle, filter `query`); sharpen (redraw every zoom at its own scale; job); make_editable (headings, labels, short texts become fields of the HTML layer; job).",
+        desc: "Pages under a browser layer. action: fit (pictures below page-wide, top at the top; {max_scroll}); next (another page at `at`: cut with a transition, load bar, new address / title / icon; {clip_ids}); click_go (the mouse goes to `target`, an element's text, or x, y, clicks at `at`, the page changes as in next; one undo step); elements (links, buttons, inputs of the imported page: boxes in project px from the frame's middle, filter `query`); sharpen (draw every zoomed part of the page again from the HTML at the scale it is shown at, into an internal cache the preview and export use - no clips; job; {regions}); cleanup (remove the picture clips older builds made for zooms; {removed}); make_editable (headings, labels, short texts become fields of the HTML layer; job).",
         args: &[
             CLIP,
-            "action:string:true:fit | next | click_go | elements | sharpen | make_editable",
+            "action:string:true:fit | next | click_go | elements | sharpen | cleanup | make_editable",
             AT,
             "target:string:false:click_go: text of the link / button",
             "nth:integer:false:click_go: which match, from 0",
@@ -1251,6 +1282,7 @@ pub const TOOLS: &[ToolDef] = &[
                 "click_go" => click_go_tool(app, id, args),
                 "elements" => elements(app, id, args),
                 "sharpen" => done(json!({"regions": start_sharpen(app, id, false)})),
+                "cleanup" => done(json!({"removed": remove_legacy_details(app)})),
                 "make_editable" => {
                     let a = Args(args);
                     start_make_editable(app, id, a.t_or_playhead("at", app), a.id("max").unwrap_or(24) as usize)?;

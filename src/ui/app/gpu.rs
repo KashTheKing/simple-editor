@@ -152,7 +152,8 @@ impl App {
         while !dead && started.elapsed() < SERVE_BUDGET {
             let Ok(req) = self.gpu_export.1.try_recv() else { break };
             served = true;
-            let App { gpu, project, .. } = self;
+            let view = self.player.project(); // with the browser zoom details (browser::render_view)
+            let (project, gpu) = (&*view, &mut self.gpu);
             let Some(g) = gpu.as_mut() else {
                 // None tells the export thread to finish on the CPU compositor
                 let _ = req.reply.send(None);
@@ -206,9 +207,9 @@ impl App {
             return None;
         }
         let made = {
-            let App { gpu, project, .. } = self;
-            let gpu = gpu.as_mut()?;
-            guarded(|| gpu.render_preview_texture(project, t, w, h, layers)).flatten()
+            let view = self.player.project(); // with the browser zoom details (browser::render_view)
+            let gpu = self.gpu.as_mut()?;
+            guarded(|| gpu.render_preview_texture(&view, t, w, h, layers)).flatten()
         };
         let (tex, tw, th) = made?;
         let id = match self.gpu_tex_ids.get(&tex) {
@@ -240,9 +241,9 @@ impl App {
             _ => Frame::default(),
         };
         let ok = {
-            let App { gpu, project, .. } = self;
-            let gpu = gpu.as_mut()?;
-            guarded(|| gpu.render_frame(project, t, w, h, layers, &mut out)).is_some()
+            let view = self.player.project(); // with the browser zoom details (browser::render_view)
+            let gpu = self.gpu.as_mut()?;
+            guarded(|| gpu.render_frame(&view, t, w, h, layers, &mut out)).is_some()
         };
         if !ok {
             self.gpu_off("the renderer panicked");
