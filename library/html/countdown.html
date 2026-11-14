@@ -10,11 +10,12 @@
 <meta name="se:duration" content="5s">
 <meta name="se:thumb" content="2.6">
 <meta name="se:field" content="accent | color | #22d3ee">
+<meta name="se:field" content="font | font | Segoe UI">
 <style>
   @property --n { syntax: "<integer>"; inherits: false; initial-value: 5; }
   :root { --accent: {{accent}}; }
   html, body { margin: 0; width: 100vw; height: 100vh; overflow: hidden; background: transparent;
-    font-family: "Segoe UI", Arial, sans-serif; }
+    font-family: {{font}}; }
   .wrap { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
   svg { position: absolute; left: 0; top: 0; width: 400px; height: 400px; filter: drop-shadow(0 6px 18px rgba(0, 0, 0, .45)); }
   .back { fill: rgba(12, 14, 22, .82); }

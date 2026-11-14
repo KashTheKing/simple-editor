@@ -12,11 +12,12 @@
 <meta name="se:field" content="title | text | System Override">
 <meta name="se:field" content="subtitle | text | Season 2 begins now">
 <meta name="se:field" content="accent | color | #00e5ff">
+<meta name="se:field" content="font | font | Bahnschrift">
 <style>
   :root { --accent: {{accent}}; --hot: #ff2a6d; }
   html, body { margin: 0; overflow: hidden; }
   body { width: 100vw; height: 100vh; position: relative; background: #06070b;
-    font-family: Bahnschrift, "Segoe UI", Arial, sans-serif; color: #fff; }
+    font-family: {{font}}; color: #fff; }
 
   .grid { position: absolute; inset: 0; opacity: .5;
     background: linear-gradient(rgba(255, 255, 255, .035) 1px, transparent 1px) 0 0 / 64px 64px,

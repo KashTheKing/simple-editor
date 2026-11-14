@@ -11,13 +11,17 @@
 <meta name="se:field" content="quote | text | The best way to predict the future is to build it, one small step at a time.">
 <meta name="se:field" content="author | text | Morgan Ellis, Product Designer">
 <meta name="se:field" content="accent | color | #6366f1">
+<meta name="se:field" content="font | font | Segoe UI">
+<meta name="se:field" content="radius | radius | 32 | 0 | 120">
+<meta name="se:field" content="shadow | toggle | on | 0 24px 60px rgba(0, 0, 0, .35), 0 4px 10px rgba(0, 0, 0, .15) | none">
+<meta name="se:field" content="outline | outline | 0 #ffffff">
 <style>
   :root { --accent: {{accent}}; }
   html, body { margin: 0; width: 100vw; height: 100vh; overflow: hidden; background: transparent;
-    font-family: "Segoe UI", Arial, sans-serif; }
+    font-family: {{font}}; }
   .wrap { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
-  .card { position: relative; box-sizing: border-box; width: 1040px; padding: 40px 72px 44px; border-radius: 32px; background: #fff;
-    box-shadow: 0 24px 60px rgba(0, 0, 0, .35), 0 4px 10px rgba(0, 0, 0, .15);
+  .card { position: relative; box-sizing: border-box; width: 1040px; padding: 40px 72px 44px; border-radius: {{radius}}; outline: {{outline}}; outline-offset: -1px; background: #fff;
+    box-shadow: {{shadow}};
     animation: pop .8s cubic-bezier(.2, 1.15, .35, 1) .1s both; }
   .mark { height: 84px; color: var(--accent); font-family: Georgia, "Times New Roman", serif; font-size: 190px; line-height: 1; font-weight: 700;
     overflow: hidden; animation: scale .6s cubic-bezier(.2, 1.5, .4, 1) .45s both; transform-origin: 0 100%; }

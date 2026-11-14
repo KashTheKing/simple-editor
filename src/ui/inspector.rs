@@ -874,11 +874,19 @@ fn clip_section(
     // ---- ws:html-layer ---- an HTML layer is code, not footage: its source, file and fields lead
     let mut html_changed = false;
     if !multi && clip.uses_asset() && project.asset(clip.asset).is_some_and(|a| a.html.is_some()) {
+        {
+            // the page live (instant on every edit); the timeline keeps the frame-exact render
+            let within = playhead >= clip.start && playhead < clip.start + clip.duration;
+            let at = within.then(|| clip.src_time(playhead));
+            section(ui, "html_live", "Preview", true, folds.map, None, |ui| {
+                crate::ui::html_ui::live_section(ui, project, id, at);
+            });
+        }
         section(ui, "html_source", "HTML", true, folds.map, None, |ui| {
             html_changed |= crate::ui::html_ui::source_section(ui, project, id, undo);
         });
         section(ui, "fields", "Fields", true, folds.map, None, |ui| {
-            html_changed |= crate::ui::html_ui::fields_section(ui, project, id, undo);
+            html_changed |= crate::ui::html_ui::fields_section(ui, project, id, fonts, undo);
         });
         {
             let at = clip.src_time(playhead);

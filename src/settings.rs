@@ -519,6 +519,10 @@ pub struct Settings {
     // ---- ws:html-layer ----
     /// The program "Open in code editor" starts for an HTML layer's file; empty = VS Code if installed, else Notepad.
     pub html_editor: String,
+    /// Seconds of an HTML layer rendered first, at the project's frame rate, around the playhead (or
+    /// from the start of the part of the layer the clip uses), so a long layer plays at full rate there
+    /// while the rest renders. Every frame is always rendered before an export. Set in settings.json.
+    pub html_render_window_secs: f64,
     // ---- ws:shader-library ----
     // ---- ws:skills ----
     /// `assistant_quick` was turned into user skills once (`engine::skills::migrate_in`).
@@ -745,6 +749,7 @@ impl Default for Settings {
             // ---- ws:docs-release ----
             // ---- ws:html-layer ----
             html_editor: String::new(),
+            html_render_window_secs: 10.0,
             // ---- ws:shader-library ----
             // ---- ws:skills ----
             skills_migrated: false,

@@ -172,7 +172,9 @@ pub fn has_alpha(src: &str) -> Option<bool> {
 /// restarts the pipe, so a small overlay (an HTML layer) needs its stacked proxy just as much. Not
 /// yet a file still being probed for alpha (`None`): the next scan asks again.
 pub fn eligible(a: &crate::model::Asset, h: u32) -> bool {
-    a.kind == crate::model::ClipKind::Video
+    // an HTML layer's draft is replaced within seconds: a proxy of it would be wasted work
+    !a.path.ends_with(".draft.mov") && !a.path.ends_with(".window.mov")
+        && a.kind == crate::model::ClipKind::Video
         && a.duration > 0.0
         && match has_alpha(&a.path) {
             Some(alpha) => alpha || a.height > h,

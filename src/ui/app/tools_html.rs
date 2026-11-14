@@ -119,6 +119,22 @@ fn clip_arg(args: &Value) -> Result<Id, String> {
     req(arg_u64(args, "clip"), "clip")
 }
 
+/// The page's references to project media by file name: what each found, what is missing, warnings.
+fn media_json(src: &str, fields: &[(String, String)], base: &str) -> Value {
+    let tpl = html::parse(src);
+    let page = html::sanitize(&html::substitute(src, &tpl, fields));
+    let (mut found, mut missing) = (Vec::new(), Vec::new());
+    for r in html::media_refs(&page, base) {
+        match r {
+            html::MediaRef::Found { name, path, warning } => {
+                found.push(json!({"ref": name, "file": path.to_string_lossy(), "warning": warning}))
+            }
+            html::MediaRef::Missing(n) => missing.push(json!(n)),
+        }
+    }
+    json!({"resolved": found, "missing": missing})
+}
+
 fn get(app: &mut App, args: &Value) -> Result<ToolOutcome, String> {
     let clip = clip_arg(args)?;
     let (aid, h) = html_ctl::html_of(app, clip).ok_or_else(|| format!("clip {clip} is not an HTML layer"))?;
@@ -146,6 +162,7 @@ fn get(app: &mut App, args: &Value) -> Result<ToolOutcome, String> {
         "clip": clip, "asset": aid, "name": h.name, "html": h.src, "fields": declared, "file": h.file, "params": params, "width": h.width,
         "duration": h.duration, "size": [tpl.size.0, tpl.size.1], "scene": tpl.scene,
         "rendered": html_ctl::rendered(app, clip), "lint": html::lint(&h.src),
+        "media": media_json(&h.src, &h.field_list(), &html_ctl::base_of(&h)),
     })))
 }
 
@@ -201,6 +218,7 @@ fn check(app: &mut App, args: &Value) -> Result<ToolOutcome, String> {
     let scale = scale.min(960.0 / tpl.size.0.max(tpl.size.1) as f64);
     let t = arg_f64(args, "t").unwrap_or_else(|| tpl.thumb_at()).max(0.0);
     let (tx, rx) = std::sync::mpsc::channel();
+    let base_m = base.clone();
     let (s2, f2) = (src.clone(), fields.clone());
     std::thread::spawn(move || {
         let _ = tx.send(html::render_png_in(&s2, &f2, scale, t, &html::View { base: &base, params: &params, width, mouse: mouse.as_ref() }));
@@ -209,6 +227,7 @@ fn check(app: &mut App, args: &Value) -> Result<ToolOutcome, String> {
         rx.recv_timeout(Duration::from_secs(30)).map_err(|_| "html.check: the render timed out".to_string())??;
     let (w, h) = html::png_size(&png).unwrap_or((0, 0));
     let meta = json!({"t": t, "width": w, "height": h, "duration": tpl.duration, "lint": html::lint(&src),
+                      "media": media_json(&src, &fields, &base_m),
                       "note": "transparent where the layer is transparent"});
     Ok(ToolOutcome::Image { png_b64: thumbs::base64(&png), meta })
 }
@@ -239,7 +258,7 @@ pub const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "html.get",
         desc: "An HTML layer clip's source, its declared fields with their current values, duration, size, whether \
-               its render is done, and what breaks the library rules (lint).",
+               its render is done, what breaks the library rules (lint), and media: the project files its                references by name (src=\"image.png\", url(bg.jpg)) resolved to, and the ones missing.",
         args: &["clip:integer:true:an HTML layer clip id"],
         kind: ToolKind::Read,
         run: get,
@@ -248,7 +267,7 @@ pub const TOOLS: &[ToolDef] = &[
         name: "html.set",
         desc: "Change an HTML layer clip: replace its source (html) and/or set field values (fields: {name: value}, \
                null = back to the default). The clip keeps its position, effects and keyframes; it re-renders in \
-               the background and the old picture stays until the new one is ready.",
+               the background: a still of the new one shows within a moment, its animation when the render is done.",
         args: &[
             "clip:integer:true:an HTML layer clip id",
             "html:string:false:the whole new HTML file",
@@ -318,6 +337,29 @@ pub const TOOLS: &[ToolDef] = &[
         },
     },
     ToolDef {
+        name: "html.preview",
+        desc: "The Inspector's live preview of an HTML layer clip (the page itself running, separate from the \
+               timeline's frame-exact render): hold second t of the layer, and/or play / pause it. Shown when the \
+               clip is selected. Returns the preview's time and play state as last drawn.",
+        args: &[
+            "clip:integer:true:an HTML layer clip id",
+            "t:number:false:hold this second of the layer's own time",
+            "playing:boolean:false:true = play from there in real time, false = pause",
+        ],
+        kind: ToolKind::Read,
+        run: |app, args| {
+            let clip = clip_arg(args)?;
+            html_ctl::html_of(app, clip).ok_or_else(|| format!("clip {clip} is not an HTML layer"))?;
+            let (t, playing) = (arg_f64(args, "t"), arg_bool(args, "playing"));
+            if t.is_some() || playing.is_some() {
+                crate::ui::html_ui::ask_preview(clip, t, playing); // the MCP call repaints after it
+            }
+            let st = crate::ui::html_ui::preview_state().filter(|s| s.0 == clip);
+            Ok(ToolOutcome::Done(json!({"ok": true, "shown": st.is_some(), "t": st.map(|s| s.1), "playing": st.map(|s| s.2),
+                "note": "applied the next time the Inspector draws the clip (select it to see it)"})))
+        },
+    },
+    ToolDef {
         name: "html.render",
         desc: "Render an HTML layer clip again if its current source has no render yet (also retries after a failed \
                or cancelled render). Returns {rendered}: true = already up to date.",
@@ -332,15 +374,20 @@ pub const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "html.check",
         desc: "Render one frame of an HTML layer and return it as an image (transparent areas stay transparent) plus \
-               lint. clip = an HTML layer clip (its source and field values); or html = any source, to look before \
+               lint and media (references to project files by name: resolved / missing). Any <img src>, <video src>,                <audio>/<source>, CSS url() or @font-face src that is a plain file name (\"logo.png\") uses the                project's file of that name (project folder, then media pool, any case). clip = an HTML layer clip (its source and field values); or html = any source, to look before \
                creating. t = second (default: se:thumb or 60 % of the duration); fields = values to try. FORMAT: \
                One HTML file, CSS in <style>, NO JavaScript; motion = CSS @keyframes / animation (time 0 = the \
                clip's first frame; use animation-fill-mode: both). Head: <title>, <meta name=\"se:kind\" \
                content=\"layer|scene\"> (layer = transparent over video, scene = full frame), se:desc, se:tags, \
                se:size \"WxH\" in CSS px against a 1080-high frame (1920x1080 when the position in the frame \
                matters, a tight size for free-floating buttons and badges), se:duration \"4s\", se:field \
-               \"name | text|color|number|image | default [| min | max]\" used as {{name}} in markup or CSS; \
-               se:param \"name | number | default | min | max\" = an ANIMATABLE number, the CSS variable var(--name) \
+               \"name | type | default [| ...]\" used as {{name}} in markup or CSS. Types: text, color, image, \
+               number (| min | max | unit), range / radius / size (sliders: | min | max | step | unit; radius and \
+               size default to px), font (a family: font-family: {{font}} gets a fallback stack), select \
+               (| sharp=0px, rounded=12px, pill=999px: the user picks a label, the page gets its value), toggle \
+               (default on/off | value when on | value when off), shadow (\"20 #00000080\" -> box-shadow value), \
+               outline (\"2 #ffffff\" -> outline / border value). \
+               se:param \"name | number|range|radius|size | default | min | max\" = an ANIMATABLE number, the CSS variable var(--name) \
                (keyframe it with html.set params or in the Inspector; use it in calc(), transform, width, \
                opacity...). No \
                network URLs, web fonts or @import: installed fonts with fallbacks (\"Segoe UI\", Arial, \

@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### HTML layers
+- **Long HTML layers render many times faster**, always at the project's frame rate: several copies of
+  Edge share the work (up to 4), and frames where nothing moves are reused. A 60 s layer shows a still
+  at once, a draft of the whole layer within seconds, then the 10 s around the playhead at full rate
+  (`html_render_window_secs`), then the rest. Edge starts in the background when a project with HTML
+  layers opens, and its processes now always close with the app.
+- **Live preview**: the Inspector's new Preview and the HTML editor show the page itself running, so a
+  field, parameter or code change shows at once while the timeline's frame-exact render catches up. Each
+  has its own player: a time bar, play / pause, frame steps, start / end, loop, follow playhead, timecode
+  (Space, Left / Right, Home / End); `html.preview` sets it over MCP.
+- **More fields for HTML layers**: font (installed and the app's own fonts, previewed as you hover),
+  select, toggle, range / radius / size sliders, shadow and outline. The library templates use them for
+  font, corner radius, shadow and outline, with their look unchanged.
+- **Your project's files by name**: `<img src="logo.png">`, `<video src="clip.mp4">`, CSS
+  `url("bg.jpg")` find the project's file of that name; missing names are listed in the Inspector.
+  Videos inside a layer are frame-exact on the timeline and in exports.
+
 ## 1.2.0
 
 The biggest release yet: an AI **Assistant** that edits your project while you watch, HTML + CSS

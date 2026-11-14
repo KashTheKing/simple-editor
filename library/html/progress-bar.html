@@ -10,14 +10,18 @@
 <meta name="se:duration" content="8s">
 <meta name="se:field" content="label | text | Part 1 of 3">
 <meta name="se:field" content="accent | color | #38bdf8">
+<meta name="se:field" content="font | font | Segoe UI">
+<meta name="se:field" content="radius | radius | 999 | 0 | 120">
+<meta name="se:field" content="shadow | toggle | on | 0 6px 18px rgba(0, 0, 0, .35) | none">
+<meta name="se:field" content="outline | outline | 0 #ffffff">
 <style>
   :root { --accent: {{accent}}; }
   html, body { margin: 0; width: 100vw; height: 100vh; overflow: hidden; background: transparent;
-    font-family: "Segoe UI", Arial, sans-serif; }
-  .label { position: absolute; left: 96px; bottom: 92px; max-width: 700px; box-sizing: border-box; padding: 8px 20px 9px; border-radius: 999px;
+    font-family: {{font}}; }
+  .label { position: absolute; left: 96px; bottom: 92px; max-width: 700px; box-sizing: border-box; padding: 8px 20px 9px; border-radius: {{radius}}; outline: {{outline}}; outline-offset: -1px;
     overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
     background: rgba(12, 14, 22, .82); color: #fff; font-size: 26px; line-height: 1.25; font-weight: 600; letter-spacing: .6px;
-    box-shadow: 0 6px 18px rgba(0, 0, 0, .35); animation: in .6s cubic-bezier(.2, .8, .2, 1) .1s both; }
+    box-shadow: {{shadow}}; animation: in .6s cubic-bezier(.2, .8, .2, 1) .1s both; }
   .track { position: absolute; left: 96px; right: 96px; bottom: 60px; height: 12px; border-radius: 6px; overflow: hidden;
     background: rgba(12, 14, 22, .6); box-shadow: 0 0 0 2px rgba(255, 255, 255, .22), 0 4px 14px rgba(0, 0, 0, .35);
     animation: in .6s cubic-bezier(.2, .8, .2, 1) both; }

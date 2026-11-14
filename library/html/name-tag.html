@@ -10,14 +10,18 @@
 <meta name="se:duration" content="4s">
 <meta name="se:field" content="name | text | Dana Whitfield">
 <meta name="se:field" content="accent | color | #f43f5e">
+<meta name="se:field" content="font | font | Segoe UI">
+<meta name="se:field" content="radius | radius | 16 | 0 | 120">
+<meta name="se:field" content="shadow | toggle | on | 0 10px 28px rgba(0, 0, 0, .35), 0 2px 4px rgba(0, 0, 0, .2) | none">
+<meta name="se:field" content="outline | outline | 0 #ffffff">
 <style>
   :root { --accent: {{accent}}; }
   html, body { margin: 0; width: 100vw; height: 100vh; overflow: hidden; background: transparent;
-    font-family: "Segoe UI", Arial, sans-serif; }
+    font-family: {{font}}; }
   .wrap { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
-  .tag { width: max-content; min-width: 260px; max-width: 460px; box-sizing: border-box; overflow: hidden; border-radius: 16px;
+  .tag { width: max-content; min-width: 260px; max-width: 460px; box-sizing: border-box; overflow: hidden; border-radius: {{radius}}; outline: {{outline}}; outline-offset: -1px;
     background: #fff; transform: rotate(-3deg);
-    box-shadow: 0 10px 28px rgba(0, 0, 0, .35), 0 2px 4px rgba(0, 0, 0, .2);
+    box-shadow: {{shadow}};
     animation: pop .6s cubic-bezier(.2, 1.5, .4, 1) .1s both; }
   .top { padding: 7px 24px 6px; background: var(--accent); color: #fff; font-size: 14px; font-weight: 800; letter-spacing: 4px; text-transform: uppercase; }
   .name { padding: 12px 24px 16px; color: #15171e; font-size: 38px; line-height: 1.2; font-weight: 800;

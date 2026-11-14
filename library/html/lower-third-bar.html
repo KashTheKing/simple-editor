@@ -11,10 +11,11 @@
 <meta name="se:field" content="name | text | Jordan Lee">
 <meta name="se:field" content="role | text | Senior Editor">
 <meta name="se:field" content="accent | color | #f59e0b">
+<meta name="se:field" content="font | font | Segoe UI">
 <style>
   :root { --accent: {{accent}}; }
   html, body { margin: 0; width: 100vw; height: 100vh; overflow: hidden; background: transparent;
-    font-family: "Segoe UI", Arial, sans-serif; }
+    font-family: {{font}}; }
   .stage { position: absolute; left: 96px; bottom: 120px; display: flex; align-items: stretch; max-width: 1100px;
     filter: drop-shadow(0 12px 26px rgba(0, 0, 0, .4));
     animation: out .6s cubic-bezier(.5, 0, .8, .4) 5.2s both; }

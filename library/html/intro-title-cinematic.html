@@ -12,12 +12,13 @@
 <meta name="se:field" content="title | text | The Long Road North">
 <meta name="se:field" content="subtitle | text | A film about leaving home">
 <meta name="se:field" content="accent | color | #d4b07a">
+<meta name="se:field" content="font | font | Segoe UI Light">
 <style>
   :root { --accent: {{accent}}; }
   html, body { margin: 0; overflow: hidden; }
   body { width: 100vw; height: 100vh; position: relative; color: #f4efe6;
     background: radial-gradient(ellipse 90% 80% at 50% 45%, #1d1e24 0%, #0d0e12 55%, #050507 100%);
-    font-family: "Segoe UI Light", "Segoe UI", Arial, sans-serif; }
+    font-family: {{font}}; }
 
   .light { position: absolute; left: 50%; top: 46%; width: 1300px; height: 520px; margin: -260px 0 0 -650px;
     border-radius: 50%; background: var(--accent); opacity: .14; filter: blur(160px);

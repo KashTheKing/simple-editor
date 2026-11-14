@@ -2103,6 +2103,7 @@ dependencies = [
  "egui_tiles",
  "fontdb",
  "mlua",
+ "png",
  "raw-window-handle",
  "rfd",
  "serde",

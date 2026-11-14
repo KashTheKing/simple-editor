@@ -14,6 +14,9 @@ mlua = { version = "0.10", features = ["luau"] }
 eframe = { version = "0.33", default-features = false, features = ["glow"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# already in the build (eframe -> arboard -> image -> png): named here to decode the live HTML preview's
+# frames in-process instead of one ffmpeg.exe per picture
+png = "0.18"
 cpal = "0.18"
 rfd = "0.17"
 winreg = "0.56"
@@ -37,6 +40,9 @@ windows = { version = "0.62", features = [
     "Win32_Graphics_Dxgi_Common",
     "Win32_System_Time",
     "Win32_System_SystemInformation",
+    # ws:html-layer: headless Edge trees die with the app (a crash or a test run included)
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
     # ws:assistant-pane: the Assistant's API key in Windows Credential Manager
     "Win32_Security",
     "Win32_Security_Credentials",

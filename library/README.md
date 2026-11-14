@@ -176,14 +176,29 @@ only: `@keyframes` + `animation`.
 | `se:size` | `WxH` in CSS pixels, measured against a **1080-pixel-high frame**. Default `1920x1080`. The app renders at project resolution (a 4K project renders at 2x). Use `1920x1080` when the position in the frame matters (lower thirds, tickers, end screens, every scene). Use a tight size for free-floating things the user drags around (buttons, badges, bubbles), with ~40 px of padding for shadows and overshoot. Even numbers, at most 3840x2160. |
 | `se:duration` | default clip length, e.g. `4s` (0.5 to 60). |
 | `se:thumb` | optional; the second the preview picture is taken at (default: 60 % of the duration). |
-| `se:field` | zero or more editable values: `name \| type \| default` (number: `name \| number \| default \| min \| max`). Types: `text`, `color` (`#rrggbb` or `#rrggbbaa`), `number`, `image` (a file the user picks; empty default). `name` is a lowercase identifier; the Inspector shows `first_line` as "First Line". At most 12. |
+| `se:field` | zero or more editable values: `name \| type \| default [\| more]`. Types: `text`; `color` (`#rrggbb` or `#rrggbbaa`); `number` (`\| min \| max \| unit`, e.g. `gap \| number \| 1.5 \| 0 \| 4 \| em` gives `1.5em`); `range`, `radius`, `size` (sliders: `\| min \| max \| step \| unit`; radius 0-200 px and size 0-400 px unless given); `font` (a font family, installed or one of the app's own fonts: `font-family: {{font}}` gets `'Family', 'Segoe UI', Arial, sans-serif`); `select` (`corner \| select \| rounded \| sharp=0px, rounded=12px, pill=999px`: the user picks a label, the page gets its value); `toggle` (`shadow \| toggle \| on \| 0 10px 30px #0006 \| none`: the value when on, then when off; default 1 / 0); `shadow` (`20 #00000080` gives `0 10px 20px #00000080`, `none` at 0); `outline` (`2 #ffffff` gives `2px solid #ffffff`, `none` at 0); `image` (a file the user picks; empty default). `name` is a lowercase identifier; the Inspector shows `first_line` as "First Line". At most 12. Give the look-changing ones (font, corner radius, shadow, outline) defaults that keep the template's own look. |
 
-| `se:param` | zero or more **animatable** numbers: `name \| number \| default \| min \| max` (min and max optional). The value reaches the page as the CSS variable `--name` (a plain number: `calc(var(--progress) * 1%)`, `transform: rotate(calc(var(--angle) * 1deg))`, `opacity: var(--amount)`), set for every rendered frame, so it can be keyframed in the Inspector (the diamond next to it) or with `html.set {params}`. A page with a keyframed param is rendered as a video even if it has no CSS animation. Declare it, then read it as `var(--name)` somewhere, or the editor warns. At most 12. |
+| `se:param` | zero or more **animatable** numbers: `name \| number \| default \| min \| max` (min and max optional; `range`, `radius` and `size` work too and show as sliders). The value reaches the page as the CSS variable `--name` (a plain number: `calc(var(--progress) * 1%)`, `transform: rotate(calc(var(--angle) * 1deg))`, `opacity: var(--amount)`), set for every rendered frame, so it can be keyframed in the Inspector (the diamond next to it) or with `html.set {params}`. A page with a keyframed param is rendered as a video even if it has no CSS animation. Declare it, then read it as `var(--name)` somewhere, or the editor warns. At most 12. |
 
 Fields: every `{{name}}` in the file is replaced before rendering (text is HTML-escaped; an image
 becomes a `file:///` URL, or a transparent pixel when empty). Use them in markup or CSS, e.g.
 `:root { --accent: {{accent}}; }`. An unknown `{{name}}` is left as it is, so do not use double
 braces for anything else.
+
+Project media by name: in a layer of the user's own project (not in library items, which must stay
+self-contained), a plain file name in `<img src>`, `<video src>`, `<audio>` / `<source src>`,
+`poster`, `<link href>` or CSS `url()` (backgrounds, `@font-face src`) is the project's file of that
+name: `<img src="logo.png">`, `background: url("bg.jpg")`. Looked up in this order: the path under the
+project's folder (`shots/a.png`), then the file name in any case among the project's media and the
+files in its folder, then a name without an extension (`logo`) if exactly one file has it. Two files
+with the same name: the one in the project folder, else the most recently imported, with a warning.
+A name nothing has stays as it is and the Inspector, the editor and `html.get` / `html.check` list it
+as `missing: logo.png`. Only those files can be reached this way (no `..`, no web addresses). Replacing
+the file on disk or re-linking the asset re-renders the layer (the render's cache key includes each
+file's size and modified time). A `<video>` is muted; on the timeline and in export it is moved to the
+frame's exact time for every frame (looping if it has `loop`); the live preview plays it as is.
+Animated GIF / WebP / APNG run on the browser's own clock: fine in the live preview, but not
+frame-exact on the timeline - use a video for motion that must line up.
 
 Rules:
 
@@ -193,7 +208,7 @@ Rules:
   (`infinite`) animations are fine. The app sets each animation's time per frame, so what you write is
   what renders, at any frame rate.
 - Nothing that needs a pointer, a clock or a script: no `:hover`, no `transition` triggered by state,
-  no `<video>`, `<audio>`, `<iframe>`, `<canvas>`, forms that need input, `prefers-*` media queries.
+  no `<video>` / `<audio>` in a library item (a project's own layer may use its media, above), no `<iframe>`, `<canvas>`, forms that need input, `prefers-*` media queries.
 - No network: no `http(s)://` URLs, no `@import`, no web fonts. Fonts: installed Windows fonts only,
   always with fallbacks, e.g. `"Segoe UI", Arial, sans-serif`; safe choices are Segoe UI (all
   weights incl. Semibold / Black), Arial, Arial Black, Impact, Bahnschrift, Trebuchet MS, Verdana,

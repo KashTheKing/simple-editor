@@ -69,6 +69,10 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
     if lib_kind.is_some() {
         library_ctl::ensure(app, false); // the first library tab opened: no network before this
     }
+    // ---- ws:html-layer ---- browsing HTML layers / icons: start Edge now, so the first one placed shows at once
+    if matches!(lib_kind, Some(Kind::Html | Kind::Icon)) {
+        crate::engine::html::prewarm();
+    }
     // one scroll area (inside `gallery::show`, under the pinned tab strip) - no outer one around it
     let resp = {
         let src = Source::of(&app.settings);

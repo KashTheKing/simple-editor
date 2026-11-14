@@ -86,6 +86,7 @@ struct RenderJob {
     base: PathBuf,
     name: String,
     prog: Arc<Progress>,
+    started: Instant,
 }
 
 /// Render jobs in flight, the editor window's state.
@@ -104,6 +105,12 @@ pub struct HtmlState {
     /// The periodic scan.
     scan_at: Option<Instant>,
     was_exporting: bool,
+    /// `html::stills_written` when last looked at: a new interim still re-points its asset at once.
+    stills: u64,
+    /// The project file last seen (a project with HTML layers just opened: start Edge in the background).
+    opened: Option<Option<PathBuf>>,
+    /// `Settings.user_fonts` as last handed to the renderer (font fields can name these).
+    app_fonts: Option<Vec<String>>,
     pub(crate) editor: html_ui::HtmlUi,
     /// Linked `.html` files: per asset, the hash of the source as last synced and the file's mtime then.
     link: std::collections::HashMap<Id, (Option<u64>, Option<std::time::SystemTime>)>,
@@ -166,12 +173,61 @@ fn spec_of(p: &Project, h: &HtmlSource) -> html::Spec {
         params: html::params_of(&h.src, &h.params),
         width: h.width,
         mouse: h.mouse.clone(),
+        focus: None,
     }
+}
+
+/// The part of asset `aid`'s own time (seconds) to render first: `secs` around the playhead when it is
+/// over a clip of the asset, else `secs` from the start of the part the first such clip uses.
+fn focus_of(p: &Project, aid: Id, playhead: f64, secs: f64) -> Option<(f64, f64)> {
+    if secs <= 0.0 {
+        return None;
+    }
+    let clips: Vec<&crate::model::Clip> = p.tracks.iter().flat_map(|t| t.clips.iter()).filter(|c| c.asset == aid).collect();
+    let used = |c: &crate::model::Clip| {
+        let (a, b) = (c.src_time(c.start), c.src_time(c.start + c.duration - 1e-6));
+        (a.min(b).max(0.0), a.max(b))
+    };
+    let (c, at) = match clips.iter().find(|c| playhead >= c.start && playhead < c.start + c.duration) {
+        Some(c) => (*c, Some(c.src_time(playhead))),
+        None => (*clips.first()?, None),
+    };
+    let (lo, hi) = used(c);
+    let (a, b) = match at {
+        Some(t) => (t - secs / 2.0, t + secs / 2.0),
+        None => (lo, lo + secs),
+    };
+    // slide the window inside the used part, keeping its length where it fits
+    let (a, b) = if a < lo { (lo, (lo + secs).min(hi)) } else if b > hi { ((hi - secs).max(lo), hi) } else { (a, b) };
+    Some((a, b))
 }
 
 /// Compare every HTML asset with the cache: re-point hits, start renders for misses, cancel renders
 /// nothing wants any more. Cheap (a parse + hash and a stat or two per HTML asset).
+/// The app's own fonts (Settings ▸ fonts imported for text): their family names, for font fields.
+fn sync_app_fonts(app: &mut App) {
+    if app.html.app_fonts.as_ref() == Some(&app.settings.user_fonts) {
+        return;
+    }
+    let mut out = Vec::new();
+    for p in &app.settings.user_fonts {
+        let mut db = fontdb::Database::new();
+        if db.load_font_file(p).is_ok() {
+            if let Some(fam) = db.faces().next().and_then(|f| f.families.first().map(|(n, _)| n.clone())) {
+                out.push((fam, PathBuf::from(p)));
+            }
+        }
+    }
+    html::set_app_fonts(out);
+    app.html.app_fonts = Some(app.settings.user_fonts.clone());
+}
+
 fn reconcile(app: &mut App) {
+    sync_app_fonts(app);
+    // the files a page may name ("image.png"): the project's folder and its media (not HTML renders)
+    let dir = app.project_path.as_ref().and_then(|p| p.parent()).map(Path::to_path_buf);
+    let assets = app.project.assets.iter().filter(|a| a.html.is_none()).map(|a| PathBuf::from(&a.path)).collect();
+    html::set_media(html::Media::new(dir, assets));
     let mut changed = false;
     let mut stale = HashSet::new();
     let mut wanted = HashSet::new();
@@ -183,7 +239,8 @@ fn reconcile(app: &mut App) {
     let fps = if app.project.fps > 0.0 { app.project.fps } else { 30.0 };
     for i in 0..app.project.assets.len() {
         let Some(h) = app.project.assets[i].html.clone() else { continue };
-        let spec = spec_of(&app.project, &h);
+        let mut spec = spec_of(&app.project, &h);
+        spec.focus = focus_of(&app.project, app.project.assets[i].id, app.playhead, app.settings.html_render_window_secs);
         let a = &mut app.project.assets[i];
         if let Some(r) = html::cached(&spec) {
             let path = r.path.to_string_lossy().into_owned();
@@ -201,7 +258,18 @@ fn reconcile(app: &mut App) {
             continue;
         }
         stale.insert(a.id);
-        if !Path::new(&a.path).is_file() {
+        if let Some(r) = html::interim(&spec) {
+            // the still of the new source at once, then (a long layer) a draft that plays, while it renders
+            let path = r.path.to_string_lossy().into_owned();
+            if a.path != path {
+                a.path = path;
+                a.kind = if r.animated { ClipKind::Video } else { ClipKind::Image };
+                (a.width, a.height, a.fps, a.duration) = (r.width, r.height, fps, h.duration);
+                a.codec = "png".into();
+                kinds.push((a.id, a.kind));
+                changed = true;
+            }
+        } else if !Path::new(&a.path).is_file() {
             // nothing to show yet (a new clip, a project from another PC): transparent, not "missing"
             a.path = pending.get_or_insert_with(placeholder).clone();
             a.kind = ClipKind::Image;
@@ -245,7 +313,7 @@ fn reconcile(app: &mut App) {
     });
     for (base, name, spec) in start {
         let prog = export::spawn_job("html-render", move |prog| html::render_to_file(&spec, prog).map(|_| ()));
-        app.html.jobs.push(RenderJob { base, name, prog });
+        app.html.jobs.push(RenderJob { base, name, prog, started: Instant::now() });
     }
     app.html.stale = stale;
     if changed {
@@ -343,6 +411,7 @@ fn open_editor(app: &mut App, clip: Id) {
         app.html.editor.params = html::params_of(&h.src, &h.params);
         app.html.editor.width = h.width;
         app.html.editor.mouse = h.mouse.clone();
+        app.html.editor.fps = if app.project.fps > 0.0 { app.project.fps } else { 30.0 };
         app.html.editor.edit(clip, &h.src, h.field_list(), h.duration);
     }
 }
@@ -377,6 +446,17 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
             }
         }
     }
+    if app.html.opened.as_ref() != Some(&app.project_path) {
+        app.html.opened = Some(app.project_path.clone());
+        if app.project.assets.iter().any(|a| a.html.is_some()) {
+            html::prewarm(); // its layers may need rendering, a field edit soon will
+        }
+    }
+    let stills = html::stills_written();
+    if stills != app.html.stills {
+        app.html.stills = stills;
+        app.html.due = Some(now);
+    }
     let scan = app.html.scan_at.is_none_or(|t| t <= now);
     if !done.is_empty() || scan || app.html.due.is_some_and(|d| d <= now) {
         app.html.due = None;
@@ -400,7 +480,9 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
     app.html.was_exporting = exporting;
     // wake only for what can change without a frame of its own
     if !app.html.jobs.is_empty() {
-        app.animate_until(ctx, now + Duration::from_millis(250));
+        // a job's interim still lands within a second or so of its start: look often until then
+        let young = app.html.jobs.iter().any(|j| j.started.elapsed() < Duration::from_secs(3));
+        app.animate_until(ctx, now + Duration::from_millis(if young { 30 } else { 250 }));
     } else if let Some(d) = app.html.due {
         app.animate_until(ctx, d);
     }
@@ -1064,6 +1146,23 @@ mod tests {
         // the file is gone: nothing happens (the clip keeps its source)
         let mut st: Link = (Some(hash_of("a")), at(1));
         assert_eq!(sync_step(&mut st, "a", None, &mut || None), Step::Nothing);
+    }
+
+    /// The part of a long layer rendered first: around the playhead when it is over the clip, else the
+    /// start of what the clip uses; always inside the used part.
+    #[test]
+    fn the_first_seconds_rendered_follow_the_playhead_and_the_trim() {
+        let mut p = Project::new();
+        let mut c = crate::model::Clip::new(1, ClipKind::Video, "h", 100.0, 40.0);
+        c.asset = 7;
+        c.src_in = 5.0; // the clip uses the layer's 5..45 s
+        p.tracks[0].clips.push(c);
+        assert_eq!(focus_of(&p, 7, 120.0, 10.0), Some((20.0, 30.0)), "playhead at layer time 25");
+        assert_eq!(focus_of(&p, 7, 101.0, 10.0), Some((5.0, 15.0)), "slid inside the used part");
+        assert_eq!(focus_of(&p, 7, 139.9, 10.0).map(|w| (w.1 - 45.0).abs() < 1e-3), Some(true), "near the end");
+        assert_eq!(focus_of(&p, 7, 10.0, 10.0), Some((5.0, 15.0)), "playhead elsewhere: from the start of the trim");
+        assert_eq!(focus_of(&p, 7, 120.0, 0.0), None, "0 = no window");
+        assert_eq!(focus_of(&p, 8, 120.0, 10.0), None, "an asset no clip uses");
     }
 
     #[test]

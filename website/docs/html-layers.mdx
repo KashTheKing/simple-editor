@@ -72,3 +72,53 @@ for lower parts.
 Everything above is also available over MCP: `html.create`, `html.get`, `html.set` (source, fields,
 parameters), `html.import`, `html.link`, `html.snapshot`, `html.render` and `html.check` (one rendered frame
 as an image). See [Scripting & MCP](scripting.mdx).
+
+## Your project's pictures and videos, by name
+
+Write a plain file name and the layer uses the project's file of that name: `<img src="logo.png">`,
+`<video src="clip.mp4">`, `background: url("bg.jpg")`. The app looks in the project's folder first,
+then at the media in the project (any upper / lower case), and for a name without an extension
+(`logo`) takes the one file called that. If two files share the name, the one in the project folder
+wins (else the newest), and you get a warning; a name it cannot find shows as **missing: logo.png**
+under the source in the Inspector. Change the file on disk and the layer updates.
+
+A video plays muted. On the timeline and in the export it is exactly in step with the layer; in the
+live preview it simply plays. Animated GIFs play in the preview but are not frame-exact on the
+timeline: use a video when timing matters.
+
+## The live preview
+
+The Inspector's **Preview** and the HTML editor show the page itself, running: a field, a parameter or a
+line of code you change shows at once, while the picture on the timeline is rendered frame by frame in
+the background (a still of it shows within a moment).
+
+Each preview has its own small player, separate from the timeline: a time bar you click or drag, play /
+pause, previous / next frame (at the project frame rate), start and end, loop, and the time as timecode
+and frame number. Picking a time holds that frame (exactly what the timeline renders there); play runs
+the animation live from there, and keeps its place when you change a field. **Follow playhead** makes the
+preview show the moment under the timeline playhead. Click the picture, then use Space, Left / Right and
+Home / End.
+
+## Fields the Inspector shows
+
+Templates declare their editable values in the head (see the library format). Besides text, colour,
+number and image there are **font** (a list of your installed fonts and the app's own; hover a name to
+see the layer in it), **select** (named choices such as sharp / rounded / pill corners), **toggle** (shadow
+on / off), **range**, **radius** and **size** sliders, **shadow** and **outline** (a size and a colour).
+The library's templates come with a font, a corner radius, a shadow switch and an outline where they
+have them, set to their original look.
+
+## How long layers render
+
+An HTML layer is rendered frame by frame at your project's frame rate (60 fps project: 60 frames a
+second of layer). A long one shows up in steps, so you never wait for the whole thing before you can
+work:
+
+1. a still, within a second;
+2. a quick draft (5 pictures a second) of the whole layer, within seconds;
+3. the 10 seconds around the playhead (or the start of the part of the layer the clip uses), at full
+   frame rate;
+4. every other frame, nearest the playhead first. An export waits for this step.
+
+Several copies of Edge share the work (up to 4). The length of step 3 is `html_render_window_secs` in
+`settings.json` (default 10).

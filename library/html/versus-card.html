@@ -13,10 +13,12 @@
 <meta name="se:field" content="right | text | Team Blue">
 <meta name="se:field" content="colour_left | color | #e5322d">
 <meta name="se:field" content="colour_right | color | #2f6bff">
+<meta name="se:field" content="font | font | Arial Black">
+<meta name="se:field" content="shadow | toggle | on | 0 0 40px rgba(255, 255, 255, .6) | none">
 <style>
   :root { --l: {{colour_left}}; --r: {{colour_right}}; }
   html, body { margin: 0; background: transparent; overflow: hidden; }
-  body { position: relative; width: 100vw; height: 100vh; font-family: "Arial Black", Impact, "Segoe UI", sans-serif; }
+  body { position: relative; width: 100vw; height: 100vh; font-family: {{font}}; }
 
   .panel { position: absolute; inset: 0; }
   .pl { clip-path: polygon(0 0, 54.4% 0, 45.6% 100%, 0 100%);
@@ -26,7 +28,7 @@
     background: linear-gradient(270deg, color-mix(in srgb, var(--r) 88%, transparent), color-mix(in srgb, var(--r) 45%, transparent));
     animation: fromR .55s cubic-bezier(.2, .9, .2, 1) both; }
   .gap { position: absolute; left: 50%; top: -10%; width: 14px; height: 120%; margin-left: -7px; background: #fff;
-    transform: skewX(-9deg); box-shadow: 0 0 40px rgba(255, 255, 255, .6); animation: line .5s ease-out .5s both; }
+    transform: skewX(-9deg); box-shadow: {{shadow}}; animation: line .5s ease-out .5s both; }
 
   .plate { position: absolute; top: 50%; height: 190px; margin-top: -95px; width: 760px; display: flex; align-items: center;
     background: #0d0f14; color: #fff; box-shadow: 0 20px 44px rgba(0, 0, 0, .5); }
