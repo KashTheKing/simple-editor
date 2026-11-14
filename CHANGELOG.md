@@ -3,6 +3,18 @@
 ## Unreleased
 
 ### HTML layers
+- **A fast, small renderer for HTML layers** (optional, 11 MB): the app can draw HTML layers with its
+  own helper (`se-html`: Blitz, no browser, no JavaScript) instead of Microsoft Edge: ~25 MB of memory
+  instead of ~700 MB, a picture in milliseconds, no Edge process to start. Inspector > HTML > Renderer:
+  **Auto** (default) uses it when it is installed and the layer only uses CSS it can draw, else Edge,
+  and says why ("uses a backdrop filter: rendering with Edge"); Fast and Edge force one. Nothing
+  downloads until you press **Install** on the card the Inspector shows (the helper lives in
+  `%APPDATA%\SimpleEditor\bin`, size and SHA-256 checked); Edge keeps working meanwhile and is the
+  fallback if the helper fails on a layer. Export, the timeline render, live preview, `html.check`,
+  hover and the fake mouse all go through it; web page snapshots are still taken by Edge (the page runs
+  scripts once) and drawn by the helper afterwards. New tools `html.renderer`, `html.helper`; the
+  library templates were rewritten where they needed CSS the helper cannot draw (same look).
+  `simple-editor.exe` itself does not grow by a byte of Blitz: the helper is its own program.
 - **Long HTML layers render many times faster**, always at the project's frame rate: several copies of
   Edge share the work (up to 4), and frames where nothing moves are reused. A 60 s layer shows a still
   at once, a draft of the whole layer within seconds, then the 10 s around the playhead at full rate

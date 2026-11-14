@@ -22,6 +22,10 @@ pub mod mixer_fx;
 pub mod prerender;
 pub mod presets;
 pub mod html;
+pub mod blitz; // ws:html-layer: the fast renderer (se-html helper)
+pub mod html_lint;
+#[cfg(test)]
+mod blitz_tests;
 pub mod library;
 pub mod shaderlib;
 pub mod skills;

@@ -20,7 +20,9 @@
 //! the TREE by its own pid (`taskkill /PID <pid> /T /F`, never by image name: the user's own Edge is
 //! running), then delete the profile with a few retries, never blocking for long.
 
+use crate::engine::blitz;
 use crate::engine::export::{self, Progress};
+use crate::model::HtmlRenderer;
 use crate::media::{ffpipe, Frame};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -181,6 +183,8 @@ pub struct View<'a> {
     /// The layout width in CSS px (0 = the template's `se:size`).
     pub width: u32,
     pub mouse: Option<&'a crate::model::Mouse>,
+    /// Which program draws it (the layer's Renderer setting).
+    pub renderer: HtmlRenderer,
 }
 
 /// Param tracks as the renderer takes them: (name, constant or keyframed value).
@@ -1349,7 +1353,7 @@ pub fn edge_exe() -> Option<PathBuf> {
 /// Windows closes when this process ends, however it ends - a crash, a killed test run - and closing it
 /// kills them all. Before this, every test run or crash left a headless Edge tree behind (~0.3-0.9 GB
 /// each). Best effort: without the job, `close` / `shutdown` still do the normal clean-up.
-fn tie_to_us(child: &Child) {
+pub(crate) fn tie_to_us(child: &Child) {
     use std::os::windows::io::AsRawHandle;
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::System::JobObjects::*;
@@ -1819,7 +1823,8 @@ fn reap_when_idle() {
 pub fn prewarm() {
     static LAST: Mutex<Option<Instant>> = Mutex::new(None);
     let mut last = lock(&LAST);
-    if last.is_some_and(|t| t.elapsed() < IDLE) || edge_exe().is_none() {
+    // with the fast renderer installed Edge is the exception (a layer it cannot draw): started when needed, not here
+    if last.is_some_and(|t| t.elapsed() < IDLE) || edge_exe().is_none() || blitz::available() {
         return;
     }
     *last = Some(Instant::now());
@@ -1846,6 +1851,13 @@ pub struct LiveReq {
     pub looping: bool,
     pub epoch: u64,
     pub duration: f64,
+    /// Drawn by the fast renderer (`engine::blitz`) instead of an Edge tab, decided by the caller.
+    pub fast: bool,
+    /// The folder of the page's file, and a key of its source (for remembering a failure) - fast only.
+    pub base: String,
+    pub src_key: u64,
+    /// The fake mouse's position and button at `at`, when the layer has one (fast only: hover / active).
+    pub ptr: Option<(f64, f64, bool)>,
 }
 
 /// Live previews that can be on screen at once, each with a tab of its own (one shared tab made two
@@ -1893,12 +1905,13 @@ pub fn live_show(slot: usize, req: LiveReq, wake: impl Fn() + Send + Sync + 'sta
             let _ = tx.send(LiveEv::Req);
         }
     }
-    if !g.thread && !cfg!(test) && edge_exe().is_some() {
+    let fast = g.req.as_ref().is_some_and(|r| r.fast);
+    if !g.thread && !cfg!(test) && (fast || edge_exe().is_some()) {
         // ponytail: no live Edge in unit tests (the idle-repaint tests draw the editor)
         g.wake = Some(std::sync::Arc::new(wake));
         g.thread = true;
         let slot = slot.min(LIVE_SLOTS - 1);
-        let _ = std::thread::Builder::new().name("html-live".into()).spawn(move || live_thread(slot));
+        let _ = std::thread::Builder::new().name("html-live".into()).spawn(move || live_thread(slot, fast));
     }
     let gen = g.gen;
     g.frame.as_ref().map(|(fg, f)| (f.clone(), *fg == gen))
@@ -1975,8 +1988,8 @@ impl LiveConn {
     }
 }
 
-fn live_thread(slot: usize) {
-    let r = live_run(slot);
+fn live_thread(slot: usize, fast: bool) {
+    let r = if fast { live_run_fast(slot) } else { live_run(slot) };
     let mut all = lock(&LIVE);
     all[slot].thread = false;
     all[slot].tx = None;
@@ -2063,8 +2076,8 @@ fn live_run(slot: usize) -> Result<(), String> {
                 let g = &all[slot];
                 (g.seen.map_or(Duration::MAX, |s| s.elapsed()), g.req.clone(), g.gen)
             };
-            if seen > Duration::from_secs(60) {
-                return Ok(());
+            if seen > Duration::from_secs(60) || req.as_ref().is_some_and(|r| r.fast) {
+                return Ok(()); // closed for good, or the layer now uses the fast renderer (a new thread)
             }
             if seen > Duration::from_secs(1) {
                 if casting {
@@ -2156,8 +2169,99 @@ fn live_run(slot: usize) -> Result<(), String> {
     result
 }
 
-/// Close the shared Edge now (app exit). Safe to call any time; a later render starts a new one.
+/// The live preview of a slot drawn by the fast renderer: one `se-html` process, a page loaded in it, and
+/// a frame drawn at the preview's own clock (30 a second while playing, one per change otherwise) and
+/// published as raw RGBA (no PNG, no browser tab). A failure is remembered (the layer is Edge's from now
+/// on) and ends the thread; the caller's next `live_show` starts the Edge one.
+fn live_run_fast(slot: usize) -> Result<(), String> {
+    let r = (|| -> Result<(), String> {
+        let mut helper: Option<blitz::Helper> = None;
+        let mut loaded: Option<(u64, (String, (u32, u32), u64, String))> = None;
+        let (mut shown_gen, mut last_t, mut timing, mut started) = (0u64, f64::NAN, None::<(u64, u64, bool)>, (Instant::now(), 0.0f64));
+        loop {
+            let (seen, req, gen) = {
+                let all = lock(&LIVE);
+                let g = &all[slot];
+                (g.seen.map_or(Duration::MAX, |s| s.elapsed()), g.req.clone(), g.gen)
+            };
+            if seen > Duration::from_secs(60) {
+                return Ok(());
+            }
+            let Some(req) = req else {
+                std::thread::sleep(Duration::from_millis(50));
+                continue;
+            };
+            if !req.fast {
+                return Ok(());
+            }
+            if seen > Duration::from_secs(1) {
+                // not on screen: nothing is drawn; shown again, the clock starts afresh
+                timing = None;
+                std::thread::sleep(Duration::from_millis(100));
+                continue;
+            }
+            if helper.is_none() {
+                helper = Some(blitz::Helper::spawn()?);
+            }
+            let h = helper.as_mut().unwrap();
+            let key = (req.page.clone(), req.size, req.scale.to_bits(), req.base.clone());
+            if loaded.as_ref().map(|l| &l.1) != Some(&key) {
+                if let Some((id, _)) = loaded.take() {
+                    h.free(id);
+                }
+                let info = h.load(&req.page, &req.base, req.size, req.scale)?;
+                loaded = Some((info.id, key));
+                last_t = f64::NAN;
+            }
+            let id = loaded.as_ref().unwrap().0;
+            let d = req.duration.max(0.05);
+            let tk = (req.at.to_bits(), req.epoch, req.playing);
+            if timing != Some(tk) {
+                timing = Some(tk);
+                started = (Instant::now(), req.at);
+            }
+            let t = if req.playing {
+                let x = started.1 + started.0.elapsed().as_secs_f64();
+                if req.looping { x % d } else { x.min(d) }
+            } else {
+                req.at
+            };
+            if req.playing || gen != shown_gen || t != last_t {
+                let t0 = Instant::now();
+                let pic = h.frame(id, t, &req.params, req.ptr, false)?;
+                let f = Frame { width: pic.w, height: pic.h, pts: 0.0, rgba: pic.bytes, bgrx: false };
+                let wake = {
+                    let mut all = lock(&LIVE);
+                    let g = &mut all[slot];
+                    g.frame = Some((gen, std::sync::Arc::new(f)));
+                    g.wake.clone()
+                };
+                if let Some(w) = wake {
+                    w();
+                }
+                shown_gen = gen;
+                last_t = t;
+                if req.playing {
+                    std::thread::sleep(Duration::from_millis(33).saturating_sub(t0.elapsed()));
+                    continue;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(30));
+        }
+    })();
+    if let Err(e) = &r {
+        let key = lock(&LIVE)[slot].req.as_ref().map(|q| q.src_key);
+        if let Some(k) = key {
+            blitz::remember_failure_key(k, e);
+        }
+    }
+    r
+}
+
+/// Close the shared Edge and the fast renderer now (app exit). Safe to call any time; a later render
+/// starts a new one.
 pub fn shutdown() {
+    blitz::shutdown();
     if let Some(e) = lock(&EDGE).take() {
         e.close();
     }
@@ -2248,6 +2352,14 @@ pub fn render_png_in(html: &str, fields: &[(String, String)], scale: f64, t: f64
     let scale = scale.clamp(0.05, 4.0);
     let values = values_at(&tpl, v.params, t);
     let size = sized(&tpl, v.width);
+    // the fast renderer (engine::blitz) first; Edge below is also the fallback when it fails
+    if blitz::choose(v.renderer, html).engine == blitz::Engine::Blitz {
+        let ptr = v.mouse.map(|m| m.state(t));
+        match blitz::png_still(&page, v.base, size, scale, t, &values, ptr, tpl.fullpage) {
+            Ok(png) => return Ok(png),
+            Err(e) => blitz::remember_failure(html, &e),
+        }
+    }
     with_edge(true, |e| {
         e.load(&page, size, scale)?;
         e.set_params(&values)?;
@@ -2300,6 +2412,8 @@ pub struct Spec {
     /// as soon as they are in, at full rate, with the draft filling the rest (`interim`). Not part of
     /// the cache key: it only changes the order frames are rendered in.
     pub focus: Option<(f64, f64)>,
+    /// Which program draws it (the layer's Renderer setting; `Auto` picks by `engine::blitz::choose`).
+    pub renderer: HtmlRenderer,
 }
 
 /// A finished (or cached) render.
@@ -2332,6 +2446,12 @@ fn params_hashable<'a>(tpl: &Template, params: &'a [(String, crate::model::Anima
 
 /// `cache_dir()/html/<hash>` (no extension) and the picture size for `spec`.
 pub fn out_base(spec: &Spec) -> (PathBuf, (u32, u32)) {
+    out_base_for(spec, blitz::choose(spec.renderer, &spec.html).engine == blitz::Engine::Blitz)
+}
+
+/// `out_base` for a renderer: the fast renderer's pictures are not Edge's (different anti-aliasing, a few
+/// CSS differences), so they live in files of their own; Edge's names are the ones from before.
+fn out_base_for(spec: &Spec, fast: bool) -> (PathBuf, (u32, u32)) {
     use std::hash::{Hash, Hasher};
     let (tpl, page) = prepare_in(&spec.html, &spec.fields, &spec.base);
     let px = pixel_size(sized(&tpl, spec.width), spec.scale.clamp(0.05, 4.0));
@@ -2339,12 +2459,19 @@ pub fn out_base(spec: &Spec) -> (PathBuf, (u32, u32)) {
     let params = serde_json::to_string(&params_hashable(&tpl, &spec.params)).unwrap_or_default();
     let mouse = serde_json::to_string(&spec.mouse).unwrap_or_default();
     ("html-v4", &page, px, spec.fps.to_bits(), spec.duration.to_bits(), deps_stamp(&page, &spec.base), params, mouse).hash(&mut h);
+    if fast {
+        "blitz-1".hash(&mut h);
+    }
     (dir().join(format!("{:016x}", h.finish())), px)
 }
 
 /// The render for `spec` if it is already in the cache (no render).
 pub fn cached(spec: &Spec) -> Option<Rendered> {
     let (base, (width, height)) = out_base(spec);
+    cached_at(&base, width, height)
+}
+
+fn cached_at(base: &Path, width: u32, height: u32) -> Option<Rendered> {
     [("mov", true), ("png", false)].into_iter().find_map(|(ext, animated)| {
         let path = base.with_extension(ext);
         if !path.is_file() {
@@ -2393,7 +2520,25 @@ pub fn render_to_file(spec: &Spec, prog: &Progress) -> Result<Rendered, String> 
     if let Some(r) = cached(spec) {
         return Ok(r);
     }
-    let (base, _) = out_base(spec);
+    if blitz::choose(spec.renderer, &spec.html).engine == blitz::Engine::Blitz {
+        match render_to_file_with(spec, prog, true) {
+            Err(e) if !prog.is_cancelled() => {
+                // the fast renderer could not draw it (panic, hang, bad page): Edge does, and Auto remembers
+                blitz::remember_failure(&spec.html, &e);
+                eprintln!("html: fast renderer failed ({e}); drawing with Edge");
+            }
+            r => return r,
+        }
+    }
+    render_to_file_with(spec, prog, false)
+}
+
+/// `render_to_file` with the renderer decided: `fast` = the `se-html` helper, else Edge.
+fn render_to_file_with(spec: &Spec, prog: &Progress, fast: bool) -> Result<Rendered, String> {
+    let (base, (pw, ph)) = out_base_for(spec, fast);
+    if let Some(r) = cached_at(&base, pw, ph) {
+        return Ok(r);
+    }
     let (tpl, page) = prepare_in(&spec.html, &spec.fields, &spec.base);
     let vp = sized(&tpl, spec.width);
     let (scale, fps) = (spec.scale.clamp(0.05, 4.0), spec.fps.clamp(1.0, 240.0));
@@ -2405,7 +2550,32 @@ pub fn render_to_file(spec: &Spec, prog: &Progress) -> Result<Rendered, String> 
     let moving = animated_params(&tpl, &spec.params) || spec.mouse.is_some();
     let still_ms = tpl.thumb_at().min(spec.duration).max(0.0) * 1000.0;
     // 1: the animations, and the picture to show until the render is done (or the only one)
-    let first = with_edge(true, |e| {
+    let mut shooter: Option<blitz::Shooter> = None;
+    let first = if fast {
+        let mut sh = blitz::Shooter::open(&page, &spec.base, vp, scale)?;
+        if !sh.info.animated && !moving {
+            sh.close();
+            let png = blitz::png_still(&page, &spec.base, vp, scale, 0.0, &values_at(&tpl, &spec.params, 0.0), None, tpl.fullpage)?;
+            let out = base.with_extension("png");
+            write_file(&out, &png)?;
+            let (width, height) = png_size(&png).unwrap_or((1, 1));
+            return Ok(Rendered { path: out, width, height, animated: false });
+        }
+        if spec.mouse.is_none() {
+            let png = sh.png(still_ms / 1000.0, &values_at(&tpl, &spec.params, still_ms / 1000.0), None)?;
+            write_file(&base.with_extension("still.png"), &png)?;
+            STILLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        // the one window in which the page can move: a finite animation's, or all of time
+        let phases = match (sh.info.animated, sh.info.ends) {
+            (false, _) => Vec::new(),
+            (true, Some(e)) => vec![(0.0, e * 1000.0)],
+            (true, None) => vec![(0.0, f64::INFINITY)],
+        };
+        shooter = Some(sh);
+        Ok(phases)
+    } else {
+      with_edge(true, |e| {
         e.load(&page, vp, scale)?;
         let (count, phases) = e.timing()?;
         let mut png = Vec::new();
@@ -2429,7 +2599,8 @@ pub fn render_to_file(spec: &Spec, prog: &Progress) -> Result<Rendered, String> 
             STILLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
         Ok(Ok(phases))
-    })?;
+      })?
+    };
     let phases = match first {
         Ok(p) => p,
         Err(done) => return Ok(done),
@@ -2453,9 +2624,12 @@ pub fn render_to_file(spec: &Spec, prog: &Progress) -> Result<Rendered, String> 
     let yields = spec.mouse.is_none();
     let mut size = (1u32, 1u32);
     let to_render = frames_to_render(&phases, moving, frames, fps);
-    let workers = if spec.mouse.is_none() { worker_count(to_render) } else { 1 };
+    let workers = if spec.mouse.is_none() { worker_count_for(to_render, fast) } else { 1 };
     let fed = if workers > 1 {
-        let job = Job { page: &page, vp, scale, fps, frames, tpl: &tpl, params: &spec.params, phases: &phases, moving };
+        if let Some(sh) = shooter.take() {
+            sh.close(); // the workers open their own
+        }
+        let job = Job { page: &page, base: &spec.base, fast, vp, scale, fps, frames, tpl: &tpl, params: &spec.params, phases: &phases, moving };
         // a long one: a 5 fps draft the clip can play first, then the frames around the playhead at full
         // rate (with the draft filling the rest), then every frame
         let long = frames as f64 / fps > 8.0;
@@ -2467,6 +2641,36 @@ pub fn render_to_file(spec: &Spec, prog: &Progress) -> Result<Rendered, String> 
         let window = window.filter(|&(a, b)| b - a < frames).map(|w| (w, base.with_extension("window.mov")));
         let window = window.as_ref().map(|(w, p)| (*w, p.as_path()));
         render_parallel(&job, workers, &mut stdin, draft.as_deref(), window, prog).map(|s| size = s)
+    } else if fast {
+        // one helper process, in frame order (also the only way a fake mouse's hover state is replayed)
+        let mut sh = match shooter.take() {
+            Some(s) => s,
+            None => blitz::Shooter::open(&page, &spec.base, vp, scale)?,
+        };
+        let r = (|| -> Result<(), String> {
+            let (mut png, mut last_ms) = (Vec::new(), None::<f64>);
+            for i in 0..frames {
+                if prog.is_cancelled() {
+                    return Ok(()); // wait_ffmpeg below kills it and says so
+                }
+                let ms = i as f64 * 1000.0 / fps;
+                if moving || last_ms.is_none_or(|a| moves_between(&phases, a, ms)) {
+                    let ptr = spec.mouse.as_ref().map(|m| m.state(ms / 1000.0));
+                    png = sh.png(ms / 1000.0, &values_at(&tpl, &spec.params, ms / 1000.0), ptr)?;
+                    if i == 0 {
+                        size = png_size(&png).unwrap_or(size);
+                    }
+                    last_ms = Some(ms);
+                }
+                if stdin.write_all(&png).is_err() {
+                    return Ok(()); // ffmpeg stopped: its own error is the one worth reporting
+                }
+                prog.set((i + 1) as f32 / frames as f32 * 0.99, "Rendering HTML…");
+            }
+            Ok(())
+        })();
+        sh.close();
+        r
     } else {
         let mut i = 0usize;
         let (mut png, mut last_ms, mut mouse_state, mut mouse_ready) = (Vec::new(), None::<f64>, MouseState::default(), false);
@@ -2559,9 +2763,62 @@ fn worker_count(to_render: usize) -> usize {
     (cores / 2).clamp(1, 4).min(to_render / 60).max(1)
 }
 
+/// `worker_count`, or for the fast renderer (a worker is ~25 MB, not ~900 MB): up to 6, one per 40 frames.
+fn worker_count_for(to_render: usize, fast: bool) -> usize {
+    if !fast || std::env::var("SE_HTML_WORKERS").is_ok() {
+        return worker_count(to_render);
+    }
+    if to_render < 80 {
+        return 1;
+    }
+    let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
+    (cores.saturating_sub(1)).clamp(1, 6).min(to_render / 40).max(1)
+}
+
+/// A render worker's frame source: its own Edge page, or its own `se-html` process.
+enum WorkerSrc {
+    Edge(Edge),
+    Fast(blitz::Shooter),
+}
+
+impl WorkerSrc {
+    fn open(job: &Job) -> Result<WorkerSrc, String> {
+        if job.fast {
+            return blitz::Shooter::open(job.page, job.base, job.vp, job.scale).map(WorkerSrc::Fast);
+        }
+        let mut e = Edge::launch()?;
+        e.load(job.page, job.vp, job.scale)?;
+        Ok(WorkerSrc::Edge(e))
+    }
+
+    /// PNG of the frame at `ms` (params applied).
+    fn shoot(&mut self, job: &Job, ms: f64) -> Result<Vec<u8>, String> {
+        let values = values_at(job.tpl, job.params, ms / 1000.0);
+        match self {
+            WorkerSrc::Fast(s) => s.png(ms / 1000.0, &values, None),
+            WorkerSrc::Edge(e) => {
+                e.set_params(&values)?;
+                e.seek(ms)?;
+                let mut v = Vec::new();
+                e.shot(&mut v)?;
+                Ok(v)
+            }
+        }
+    }
+
+    fn close(self) {
+        match self {
+            WorkerSrc::Fast(s) => s.close(),
+            WorkerSrc::Edge(e) => e.close(),
+        }
+    }
+}
+
 /// What every worker of a parallel render needs.
 struct Job<'a> {
     page: &'a str,
+    base: &'a str,
+    fast: bool,
     vp: (u32, u32),
     scale: f64,
     fps: f64,
@@ -2660,7 +2917,7 @@ fn render_parallel(
         for _ in 0..n {
             let (tx, next, pieces) = (tx.clone(), &next, &pieces);
             sc.spawn(move || {
-                let mut e = match Edge::launch() {
+                let mut e = match WorkerSrc::open(job) {
                     Ok(e) => e,
                     Err(err) => {
                         let _ = tx.send(Err(err));
@@ -2668,7 +2925,6 @@ fn render_parallel(
                     }
                 };
                 let r = (|| -> Result<(), String> {
-                    e.load(job.page, job.vp, job.scale)?;
                     loop {
                         let p = next.fetch_add(1, SeqCst);
                         if p >= pieces.len() || prog.is_cancelled() {
@@ -2680,11 +2936,7 @@ fn render_parallel(
                             let png = match &last {
                                 Some((a, p)) if !job.moving && *a <= ms && !moves_between(job.phases, *a, ms) => p.clone(),
                                 _ => {
-                                    e.set_params(&values_at(job.tpl, job.params, ms / 1000.0))?;
-                                    e.seek(ms)?;
-                                    let mut v = Vec::new();
-                                    e.shot(&mut v)?;
-                                    let p = Arc::new(v);
+                                    let p = Arc::new(e.shoot(job, ms)?);
                                     last = Some((ms, p.clone()));
                                     p
                                 }
@@ -3039,14 +3291,14 @@ mod tests {
         let page = r#"<!doctype html><html><head><title>t</title><meta name="se:size" content="200x100"><link rel="stylesheet" href="site.css"></head><body><div id="a"></div><div id="b"></div></body></html>"#;
         let px = |f: &Frame, x: u32, y: u32| -> [u8; 4] { f.rgba[((y * f.width + x) * 4) as usize..][..4].try_into().unwrap() };
         let base = d.to_string_lossy().into_owned();
-        let f = render_frame_in(page, &[], 1.0, 0.0, &View { base: &base, ..Default::default() }).expect("render");
+        let f = render_frame_in(page, &[], 1.0, 0.0, &View { base: &base, renderer: HtmlRenderer::Edge, ..Default::default() }).expect("render");
         assert_eq!(px(&f, 10, 10), [255, 0, 0, 255], "the stylesheet applied");
         assert!(px(&f, 130, 10)[1] > 100 && px(&f, 130, 10)[3] == 255, "the css image loaded: {:?}", px(&f, 130, 10));
         // without the folder the same page has neither
-        let f = render_frame(page, &[], 1.0, 0.0).expect("render");
+        let f = render_frame_in(page, &[], 1.0, 0.0, &View { renderer: HtmlRenderer::Edge, ..Default::default() }).expect("render");
         assert_eq!(px(&f, 10, 10)[3], 0, "no folder: no stylesheet");
         // the cache key follows the stylesheet
-        let spec = Spec { html: page.into(), fields: Vec::new(), scale: 1.0, fps: 10.0, duration: 1.0, base, params: Vec::new(), width: 0, mouse: None, focus: None };
+        let spec = Spec { html: page.into(), fields: Vec::new(), scale: 1.0, fps: 10.0, duration: 1.0, base, params: Vec::new(), width: 0, mouse: None, focus: None, renderer: HtmlRenderer::Edge };
         let k1 = out_base(&spec).0;
         std::fs::write(d.join("site.css"), "body{margin:0}").unwrap();
         assert_ne!(k1, out_base(&spec).0);
@@ -3084,7 +3336,7 @@ mod tests {
         let l = lint(PARAM_PAGE);
         assert!(l.iter().any(|m| m.contains("'unused'")) && !l.iter().any(|m| m.contains("'x'")), "{l:?}");
         // a render's cache key follows the tracks, and ignores undeclared ones
-        let spec = |params: Params| Spec { html: PARAM_PAGE.into(), fields: Vec::new(), scale: 1.0, fps: 10.0, duration: 1.0, base: String::new(), params, width: 0, mouse: None, focus: None };
+        let spec = |params: Params| Spec { html: PARAM_PAGE.into(), fields: Vec::new(), scale: 1.0, fps: 10.0, duration: 1.0, base: String::new(), params, width: 0, mouse: None, focus: None, renderer: HtmlRenderer::Edge };
         assert_ne!(out_base(&spec(p.clone())).0, out_base(&spec(params_of(PARAM_PAGE, &Default::default()))).0);
         let mut extra = p.clone();
         extra.push(("nope".into(), crate::model::Animated::new(1.0)));
@@ -3102,16 +3354,16 @@ mod tests {
         let set = std::collections::BTreeMap::from([("x".to_string(), track(&[(0.0, 0.0), (1.0, 100.0)]))]);
         let params = params_of(PARAM_PAGE, &set);
         // one preview frame at 0.5 s: the box is at x = 50 (20 px wide, the default size)
-        let f = render_frame_in(PARAM_PAGE, &[], 1.0, 0.5, &View { params: &params, ..Default::default() }).expect("render");
+        let f = render_frame_in(PARAM_PAGE, &[], 1.0, 0.5, &View { params: &params, renderer: HtmlRenderer::Edge, ..Default::default() }).expect("render");
         assert_eq!(px(&f, 55, 10), [255, 0, 0, 255], "inside the box at x=50");
         assert_eq!(px(&f, 45, 10)[3], 0, "left of it");
         assert_eq!(px(&f, 75, 10)[3], 0, "right of it");
         // a constant: still the default 10 px
-        let f = render_frame_in(PARAM_PAGE, &[], 1.0, 0.0, &View::default()).expect("render");
+        let f = render_frame_in(PARAM_PAGE, &[], 1.0, 0.0, &View { renderer: HtmlRenderer::Edge, ..Default::default() }).expect("render");
         assert_eq!(px(&f, 15, 10), [255, 0, 0, 255]);
         assert_eq!(px(&f, 35, 10)[3], 0);
         // the full render is a video (no CSS animation, but moving params) and its frames agree
-        let spec = Spec { html: PARAM_PAGE.into(), fields: Vec::new(), scale: 1.0, fps: 10.0, duration: 1.0, base: String::new(), params, width: 0, mouse: None, focus: None };
+        let spec = Spec { html: PARAM_PAGE.into(), fields: Vec::new(), scale: 1.0, fps: 10.0, duration: 1.0, base: String::new(), params, width: 0, mouse: None, focus: None, renderer: HtmlRenderer::Edge };
         if let Some(r) = cached(&spec) {
             let _ = std::fs::remove_file(r.path);
         }
@@ -3152,6 +3404,7 @@ mod tests {
             width: 0,
             mouse: Some(m.clone()),
             focus: None,
+            renderer: HtmlRenderer::Edge,
         };
         if let Some(r) = cached(&spec) {
             let _ = std::fs::remove_file(r.path);
@@ -3183,7 +3436,7 @@ mod tests {
         let (l1, l2) = (px(&at(1.7), 45, 75), px(&at(2.9), 45, 75));
         assert!(grey(l1) && grey(l2), "the link's grey box is still there: {l1:?} then {l2:?}");
         // a still of a moment (the editor preview): the hover has settled
-        let still = render_frame_in(page, &[], 1.0, 1.6, &View { mouse: Some(&m), ..Default::default() }).expect("render");
+        let still = render_frame_in(page, &[], 1.0, 1.6, &View { mouse: Some(&m), renderer: HtmlRenderer::Edge, ..Default::default() }).expect("render");
         let s = px(&still, 10, 10);
         assert!(s[2] > 240 && s[0] < 20, "still at 1.6 s: blue {s:?}");
     }
@@ -3195,10 +3448,10 @@ mod tests {
             return;
         }
         let page = r#"<!doctype html><html><head><title>t</title><meta name="se:size" content="200x100"><meta name="se:fullpage" content="auto"></head><body style="margin:0"><div style="height:450px;background:#0a0"></div></body></html>"#;
-        let f = render_frame(page, &[], 1.0, 0.0).expect("render");
+        let f = render_frame_in(page, &[], 1.0, 0.0, &View { renderer: HtmlRenderer::Edge, ..Default::default() }).expect("render");
         assert_eq!((f.width, f.height), (200, 450), "the whole page, not the 100 px viewport");
         let plain = page.replace(r#"<meta name="se:fullpage" content="auto">"#, "");
-        assert_eq!(render_frame(&plain, &[], 1.0, 0.0).expect("render").height, 100);
+        assert_eq!(render_frame_in(&plain, &[], 1.0, 0.0, &View { renderer: HtmlRenderer::Edge, ..Default::default() }).expect("render").height, 100);
     }
 
     /// The real thing: Edge renders a moving box at exact positions with straight alpha, a script in
@@ -3225,10 +3478,10 @@ mod tests {
             assert_eq!(px(f, 5, 155)[3], 0, "the page's script did not run");
         };
         let t0 = Instant::now();
-        let f = render_frame(MOVING, &[], 1.0, 0.5).expect("render");
+        let f = render_frame_in(MOVING, &[], 1.0, 0.5, &View { renderer: HtmlRenderer::Edge, ..Default::default() }).expect("render");
         eprintln!("first frame (Edge start included): {} ms", t0.elapsed().as_millis());
         check(&f, 50);
-        let spec = Spec { html: MOVING.into(), fields: Vec::new(), scale: 1.0, fps: 10.0, duration: 2.5, base: String::new(), params: Vec::new(), width: 0, mouse: None, focus: None };
+        let spec = Spec { html: MOVING.into(), fields: Vec::new(), scale: 1.0, fps: 10.0, duration: 2.5, base: String::new(), params: Vec::new(), width: 0, mouse: None, focus: None, renderer: HtmlRenderer::Edge };
         if let Some(r) = cached(&spec) {
             let _ = std::fs::remove_file(r.path);
         }
@@ -3287,7 +3540,7 @@ mod tests {
         for (name, html) in &jobs {
             let tpl = parse(html);
             let scale = 480.0 / tpl.size.0.max(tpl.size.1) as f64;
-            match render_frame(html, &[], scale, tpl.thumb_at()) {
+            match render_frame_in(html, &[], scale, tpl.thumb_at(), &View { renderer: HtmlRenderer::Edge, ..Default::default() }) {
                 Ok(mut f) => {
                     if f.rgba.chunks_exact(4).all(|p| p[3] == 0) {
                         empty.push(name.clone());
@@ -3382,7 +3635,7 @@ mod tests {
         );
         for (t, want) in [(0.5, [255, 0, 0]), (1.5, [0, 0, 255]), (0.2, [255, 0, 0])] {
             let t0 = Instant::now();
-            let f = render_frame(&page, &[], 1.0, t).expect("render");
+            let f = render_frame_in(&page, &[], 1.0, t, &View { renderer: HtmlRenderer::Edge, ..Default::default() }).expect("render");
             eprintln!("video frame at {t}: {} ms", t0.elapsed().as_millis());
             let p = &f.rgba[((45 * f.width + 80) * 4) as usize..][..3];
             // the colour of the frame shown (a decoded H.264 red is not exactly 255,0,0): the right one dominates
@@ -3408,6 +3661,10 @@ mod tests {
             looping: true,
             epoch: 0,
             duration: 4.0,
+            fast: false,
+            base: String::new(),
+            src_key: 0,
+            ptr: None,
         };
         let gen = |slot: usize| lock(&LIVE)[slot].gen;
         let (g0, g1) = (gen(LIVE_INSPECTOR), gen(LIVE_EDITOR));
@@ -3497,7 +3754,7 @@ mod tests {
             let tpl = parse(&b);
             let scale = 480.0 / tpl.size.0.max(tpl.size.1) as f64;
             for t in [tpl.duration * 0.2, tpl.thumb_at(), tpl.duration * 0.9] {
-                let (fa, fb) = (render_frame(&a, &[], scale, t).unwrap(), render_frame(&b, &[], scale, t).unwrap());
+                let (fa, fb) = (render_frame_in(&a, &[], scale, t, &View { renderer: HtmlRenderer::Edge, ..Default::default() }).unwrap(), render_frame_in(&b, &[], scale, t, &View { renderer: HtmlRenderer::Edge, ..Default::default() }).unwrap());
                 // anti-aliasing differs by a level or two between any two loads: count real changes
                 let diff = fa.rgba.iter().zip(&fb.rgba).filter(|(x, y)| x.abs_diff(**y) > 8).count();
                 eprintln!("{name} at {t:.2}: {diff} bytes differ");
@@ -3540,7 +3797,7 @@ mod tests {
         );
         // SE_BENCH_FOCUS: the second the playhead is at (10 s around it are rendered first)
         let focus = std::env::var("SE_BENCH_FOCUS").ok().and_then(|v| v.parse::<f64>().ok()).map(|t| (t - 5.0, t + 5.0));
-        let spec = Spec { html: page, fields: Vec::new(), scale: 1.0, fps, duration: secs, base: String::new(), params: Vec::new(), width: 0, mouse: None, focus };
+        let spec = Spec { html: page, fields: Vec::new(), scale: 1.0, fps, duration: secs, base: String::new(), params: Vec::new(), width: 0, mouse: None, focus, renderer: HtmlRenderer::Edge };
         let (b, _) = out_base(&spec);
         for ext in ["mov", "still.png", "draft.mov", "window.mov"] {
             let _ = std::fs::remove_file(b.with_extension(ext));
@@ -3575,4 +3832,29 @@ mod tests {
         }
         shutdown();
     }
+
+    /// The frames of a parallel render by the fast renderer are those of a single worker, byte for byte, in
+    /// order (every worker is a process of its own, taking pieces of the frame list).
+    #[test]
+    fn fast_parallel_render_equals_one_worker() {
+        if blitz::helper_exe().is_none() {
+            eprintln!("se-html not built: test skipped (set SE_HTML_HELPER)");
+            return;
+        }
+        let src = r#"<html><head><meta name="se:size" content="160x90"><style>html,body{margin:0;background:transparent}
+            .a{position:absolute;top:10px;width:30px;height:30px;background:#e33;animation:m 2s linear infinite alternate}
+            @keyframes m{from{left:0}to{left:120px}}</style></head><body><div class="a"></div></body></html>"#;
+        let (tpl, page) = prepare_in(src, &[], "");
+        let (frames, fps) = (70usize, 20.0);
+        let run = |n: usize| -> Vec<u8> {
+            let job = Job { page: &page, base: "", fast: true, vp: (160, 90), scale: 1.0, fps, frames, tpl: &tpl, params: &[], phases: &[(0.0, f64::INFINITY)], moving: true };
+            let mut out = Vec::new();
+            render_parallel(&job, n, &mut out, None, None, &Progress::new()).expect("render");
+            out
+        };
+        let one = run(1);
+        let three = run(3);
+        assert!(!one.is_empty() && one == three, "{} vs {} bytes", one.len(), three.len());
+    }
+
 }

@@ -117,6 +117,41 @@ pub struct HtmlSource {
     /// follows); empty = not linked. The project still stores `src`, so it opens without the file.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub file: String,
+    /// Which program draws the layer: `Auto` = the fast helper when it is installed and the layer only
+    /// uses CSS it can draw, else Edge (`engine::blitz`, `engine::html_lint`).
+    #[serde(skip_serializing_if = "HtmlRenderer::is_auto")]
+    pub renderer: HtmlRenderer,
+}
+
+/// The renderer setting of an HTML layer (Inspector > HTML > Renderer).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum HtmlRenderer {
+    #[default]
+    Auto,
+    Blitz,
+    Edge,
+}
+
+impl HtmlRenderer {
+    pub fn is_auto(&self) -> bool {
+        *self == HtmlRenderer::Auto
+    }
+    pub fn parse(s: &str) -> Option<HtmlRenderer> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(HtmlRenderer::Auto),
+            "blitz" | "fast" | "helper" => Some(HtmlRenderer::Blitz),
+            "edge" | "browser" => Some(HtmlRenderer::Edge),
+            _ => None,
+        }
+    }
+    pub fn label(&self) -> &'static str {
+        match self {
+            HtmlRenderer::Auto => "Auto",
+            HtmlRenderer::Blitz => "Fast (built-in)",
+            HtmlRenderer::Edge => "Edge",
+        }
+    }
 }
 
 /// The tracks of a fake mouse: position in CSS pixels of the page's viewport, and the button

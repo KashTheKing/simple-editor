@@ -421,6 +421,16 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
 - Verified: cargo test 1439 passed (one perf test, `headless_1000_assets_stays_fast`, failed once while an npm build
   ran alongside and passed alone: timing flake under load), `--selftest` OK on the release exe, docs site builds,
   live `tools/list` = 298, Help menu shows "Report a Bug...". Release exe 13,458,944 B (+2,119,168 B vs 1.1.0).
+- Blitz helper (feat/blitz-helper, 2026-11-13): HTML layers can be drawn by `se-html` (tools/se-html, a separate crate
+  and exe, ~11 MB, NOT linked into simple-editor.exe: linking measured +10.2 MB) instead of Edge: ~25 MB RAM vs ~700 MB,
+  ms per frame, no start-up. Client `engine/blitz.rs`, protocol `tools/se-html/src/proto.rs` (shared file), lint
+  `engine/html_lint.rs`, per-layer `HtmlSource.renderer` (Auto / Blitz / Edge), install on a click (`blitz::install`:
+  library `bin/se-html.json` + exe, size and SHA-256 checked), build + manifest `scripts/build-helper.ps1`. Blitz is beta:
+  it needs `floats` (without it a plain float hangs layout), beta.4 declares rustc 1.91 and is built with
+  `--ignore-rust-version` on the pinned 1.90, colour filters make vello_cpu panic (caught per command -> Edge), and an
+  inline svg cannot be animated from the inside. Pitfalls found: Windows names "Arial Black" / "Segoe UI Black" by weight
+  so the helper adds @font-face rules for them; transformed siblings paint above plain ones in a browser but not in Blitz
+  (give the top copy `position: relative; z-index: 1`); a zero-area `clip-path: inset(0 100% 0 0)` is not clipped.
 - NOT verified: clicking Report a Bug opening the browser at the prefilled form (the form field id is `version`;
   GitHub accepts `?template=bug_report.yml&version=...`), the extension inside Brave.
 

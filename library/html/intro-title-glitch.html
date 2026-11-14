@@ -35,7 +35,7 @@
     animation: flickerIn .8s steps(1) .3s both, jolt 3s steps(1) 1.1s infinite both; }
   .t span, .t::before, .t::after { display: block; overflow: hidden; text-overflow: ellipsis; padding: 0 16px; }
   .t span { text-shadow: 0 0 24px rgba(255, 255, 255, .25); }
-  .t::before, .t::after { content: attr(data-text); position: absolute; inset: 0; mix-blend-mode: screen; }
+  .t::before, .t::after { content: attr(data-text); position: absolute; inset: 0; }
   .t::before { color: var(--accent); animation: gA 3s steps(1) 1.1s infinite both; }
   .t::after { color: var(--hot); animation: gB 3s steps(1) 1.1s infinite both; }
 

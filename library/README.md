@@ -220,7 +220,19 @@ Rules:
 - Readable on any footage: text on a layer needs its own backing, outline or shadow.
 - Counting numbers without script: animate a registered custom property
   (`@property --n { syntax: "<integer>"; inherits: false; initial-value: 0; }`) and print it with
-  `counter-reset: n var(--n); content: counter(n);`.
+  `counter-reset: n var(--n); content: counter(n);` - but Edge only: the fast renderer cannot do it. For a
+  template that should draw with both, roll digit wheels instead (`library/html/counter.html`: nine
+  strips `0..9`, each translated by `mod(round(down, var(--t) / var(--k), 1), 10)` lines) or step a strip of
+  numbers (`poll-bars.html`).
+- **Draw with both renderers.** The fast renderer (`se-html`, `engine::blitz`) is the default when it is
+  installed; `engine::html_lint` sends a layer that needs CSS it cannot draw to Edge. Library templates must
+  not need that (a test renders every one with both and compares them). Do not use: colour filters
+  (`hue-rotate`, `saturate`, `brightness`, `contrast`, `grayscale`, `sepia`, `invert`), `backdrop-filter`,
+  `mix-blend-mode`, `-webkit-text-stroke` / `paint-order` (outline with copies of the text instead, see
+  `meme-caption.html`), `position: sticky`, 3D transforms, `counter()`, `@property`, vertical writing, and an
+  inline `<svg>` styled by the page's CSS (put `fill` / `stroke` as attributes; animate the `<svg>` element
+  or a wrapper, never a part inside it). `text-shadow` is not drawn (put a copy of the text behind it, see
+  `intro-title-bold.html`); an ellipsis or line clamp only cuts. Inline margins need `display: inline-block`.
 
 ## Icons (`icons/*.svg`)
 

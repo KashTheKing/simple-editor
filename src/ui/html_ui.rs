@@ -135,6 +135,9 @@ pub struct LiveInput<'a> {
     /// The playhead in the layer's own time when it is over the clip (for "follow playhead"); None in
     /// the editor window or when the playhead is elsewhere.
     pub playhead: Option<f64>,
+    /// The layer's Renderer setting and its fake mouse (the fast renderer applies hover from it).
+    pub renderer: crate::model::HtmlRenderer,
+    pub mouse: Option<&'a crate::model::Mouse>,
 }
 
 /// `t` seconds as HH:MM:SS:FF and the frame number, at `fps`.
@@ -257,6 +260,7 @@ impl LivePreview {
         }
         if let Some((page, size, scale)) = &self.page {
             let params = html::param_values(inp.src, inp.params, self.now(d));
+            let fast = crate::engine::blitz::choose(inp.renderer, inp.src).engine == crate::engine::blitz::Engine::Blitz;
             let req = html::LiveReq {
                 page: page.clone(),
                 size: *size,
@@ -268,6 +272,10 @@ impl LivePreview {
                 looping: self.looping,
                 epoch: self.epoch,
                 duration: d,
+                fast,
+                base: inp.base.to_string(),
+                src_key: crate::engine::blitz::source_key(inp.src),
+                ptr: inp.mouse.map(|m| m.state(self.t)),
             };
             let ctx = ui.ctx().clone();
             if let Some((f, current)) = html::live_show(self.slot, req, move || ctx.request_repaint()) {
@@ -369,6 +377,7 @@ pub struct HtmlUi {
     /// The layout width (0 = the template's).
     pub width: u32,
     pub mouse: Option<crate::model::Mouse>,
+    pub renderer: crate::model::HtmlRenderer,
     /// The page's param tracks (the preview shows them at the scrub time).
     pub params: crate::engine::html::Params,
     /// The clip being edited.
@@ -486,6 +495,8 @@ fn body(ui: &mut egui::Ui, st: &mut HtmlUi, resp: &mut EditorResponse) {
             duration: st.duration,
             fps: st.fps,
             playhead: None,
+            renderer: st.renderer,
+            mouse: st.mouse.as_ref(),
         };
         st.live.show(ui, w * 9.0 / 16.0, &inp);
         st.t = st.live.now(st.duration);
@@ -766,6 +777,7 @@ Save in your code editor and the clip updates; edit here and the file follows.",
     for l in lint.iter().take(3) {
         ui.colored_label(ui.visuals().warn_fg_color, l);
     }
+    let renderer_changed = renderer_row(ui, clip, h.renderer, &src, key);
 
     // ask the assistant about this clip
     let aid_ask = ui.make_persistent_id(("html_ask", clip));
@@ -781,6 +793,14 @@ Save in your code editor and the clip updates; edit here and the file follows.",
     });
     ui.data_mut(|d| d.insert_temp(aid_ask, ask));
 
+    if let Some(r) = renderer_changed.filter(|r| *r != h.renderer) {
+        undo(project);
+        if let Some(x) = project.asset_mut(aid).and_then(|a| a.html.as_mut()) {
+            x.renderer = r;
+        }
+        EDITED.with(|e| e.set(true));
+        return true;
+    }
     if let Some(w) = width_changed.filter(|w| *w != h.width) {
         undo(project);
         if let Some(x) = project.asset_mut(aid).and_then(|a| a.html.as_mut()) {
@@ -805,6 +825,59 @@ Save in your code editor and the clip updates; edit here and the file follows.",
     }
     EDITED.with(|e| e.set(true));
     true
+}
+
+/// The Renderer row of the Inspector's HTML section: the setting, what draws the layer now and why, and
+/// (when the fast renderer is not installed) the one-click install card. Returns a new setting if picked.
+/// Nothing here starts a process or touches the network: the decision is `engine::blitz::choose`, and the
+/// download only starts from the button.
+fn renderer_row(ui: &mut egui::Ui, clip: Id, current: crate::model::HtmlRenderer, src: &str, key: u64) -> Option<crate::model::HtmlRenderer> {
+    use crate::engine::blitz;
+    use crate::model::HtmlRenderer as R;
+    let mut picked = None;
+    // the lint scan reads the whole source: once per change of the text / setting / install state
+    let installed = blitz::available();
+    let cid = ui.make_persistent_id(("html_renderer_choice", clip));
+    let c = match ui.data(|d| d.get_temp::<(u64, crate::model::HtmlRenderer, bool, blitz::Choice)>(cid)) {
+        Some((k, r, i, c)) if k == key && r == current && i == installed => c,
+        _ => {
+            let c = blitz::choose_with(current, src, installed);
+            ui.data_mut(|d| d.insert_temp(cid, (key, current, installed, c.clone())));
+            c
+        }
+    };
+    ui.horizontal(|ui| {
+        ui.label("Renderer");
+        let mut r = current;
+        egui::ComboBox::from_id_salt(("html_renderer", clip)).selected_text(current.label()).show_ui(ui, |ui| {
+            for v in [R::Auto, R::Blitz, R::Edge] {
+                ui.selectable_value(&mut r, v, v.label());
+            }
+        })
+        .response
+        .on_hover_text("Auto: the fast built-in renderer when it can draw this layer, else Edge. The fast one uses ~25 MB instead of ~700 MB and starts instantly.");
+        if r != current {
+            picked = Some(r);
+        }
+        ui.weak(if c.engine == blitz::Engine::Blitz { "drawn by the fast renderer" } else { "drawn by Edge" });
+    });
+    if let Some(why) = &c.reason {
+        ui.colored_label(ui.visuals().warn_fg_color, why);
+    }
+    if !blitz::available() && current != R::Edge {
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Install the fast HTML renderer (about 11 MB)");
+                if blitz::installing() {
+                    ui.add(egui::Spinner::new());
+                    ui.weak("installing, see Jobs");
+                } else if ui.button("Install").on_hover_text("Downloads it from the library once; until then layers are drawn with Edge").clicked() {
+                    blitz::start_install();
+                }
+            });
+        });
+    }
+    picked
 }
 
 /// Keys for one click at `at`: the button goes down and, 0.18 s later, up (a step: it holds each value).
@@ -1000,7 +1073,7 @@ pub fn live_section(ui: &mut egui::Ui, project: &Project, clip: Id, at: Option<f
     let (sw, sh) = (tpl.size.0.max(1) as f32, tpl.size.1.max(1) as f32);
     let hgt = (w * sh / sw).clamp(60.0, 240.0);
     let d = h.duration;
-    let inp = LiveInput { src: &h.src, fields: &fields, base: &base, width: h.width, params: &params, duration: d, fps, playhead: at };
+    let inp = LiveInput { src: &h.src, fields: &fields, base: &base, width: h.width, params: &params, duration: d, fps, playhead: at, renderer: h.renderer, mouse: h.mouse.as_ref() };
     INSPECTOR_LIVE.with(|l| {
         let mut l = l.borrow_mut();
         if PREVIEW_STATE.with(Cell::get).map(|s| s.0) != Some(clip) {
@@ -1242,7 +1315,7 @@ mod tests {
         let mut lp = LivePreview::for_slot(html::LIVE_EDITOR);
         lp.hold(1.25, 4.0);
         let epoch = lp.epoch;
-        let inp = LiveInput { src: &src, fields: &[], base: "", width: 0, params: &[], duration: 4.0, fps: 60.0, playhead: None };
+        let inp = LiveInput { src: &src, fields: &[], base: "", width: 0, params: &[], duration: 4.0, fps: 60.0, playhead: None, renderer: crate::model::HtmlRenderer::Edge, mouse: None };
         for _ in 0..30 {
             let _ = ctx.run(egui::RawInput::default(), |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| lp.show(ui, 120.0, &inp));
