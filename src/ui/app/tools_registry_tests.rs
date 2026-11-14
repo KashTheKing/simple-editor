@@ -94,6 +94,19 @@ const OP_TOOLS: &[(&str, &str)] = &[
     ("retime_key_block", "keyblocks.retime"),
     ("remove_key_block", "keyblocks.remove"),
     ("ease_key_block", "keyblocks.ease"),
+    // ---- ws:browser-layer ----
+    ("add_browser_clip", "browser.add"),
+    ("browser_fit_pages", "browser.page"),
+    ("browser_page_cut", "browser.page"),
+    ("cursor_set_path", "cursor.set"),
+    ("cursor_event", "cursor.set"),
+    ("cursor_apply_take", "cursor.set"),
+    ("cursor_tidy", "cursor.set"),
+    ("cursor_press", "cursor.set"),
+    ("cursor_move_to", "cursor.set"),
+    ("browser_add_detail", "browser.page"),
+    ("browser_clear_details", "browser.page"),
+    ("browser_add_highlight", "cursor.set"),
 ];
 
 /// (Project op fn name, why it has no MCP tool yet). Every entry is a real, deliberate gap - either a
@@ -163,6 +176,7 @@ const OP_INTERNAL: &[(&str, &str)] = &[
 const OP_FILES: &[&str] = &[
     include_str!("../../model/ops/assets.rs"),
     include_str!("../../model/ops/attrs.rs"),
+    include_str!("../../model/ops/browser.rs"),
     include_str!("../../model/ops/autocut.rs"),
     include_str!("../../model/ops/buses.rs"),
     include_str!("../../model/ops/editing.rs"),

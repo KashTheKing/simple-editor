@@ -1025,19 +1025,20 @@ impl Edge {
         let profile = std::env::temp_dir().join(format!("se-edge-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&profile);
         std::fs::create_dir_all(&profile).map_err(|e| format!("Edge profile: {e}"))?;
+        let data = capture_profile(network).unwrap_or_else(|| profile.join("p")); // ws:browser-layer
         let mut child = ffpipe::command(&exe)
             .args(["--headless", "--remote-debugging-port=0", "--no-first-run", "--no-default-browser-check"])
             .args(["--hide-scrollbars", "--mute-audio", "--disable-extensions", "--disable-background-networking"])
             .args(["--disable-sync", "--disable-component-update"])
             .args(if network { vec![] } else { vec!["--host-resolver-rules=MAP * ~NOTFOUND"] })
-            .arg(format!("--user-data-dir={}", profile.join("p").display()))
+            .arg(format!("--user-data-dir={}", data.display()))
             .arg("about:blank")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
             .map_err(|e| format!("Microsoft Edge: {e}"))?;
-        match Self::connect(&mut child, &profile.join("p")) {
+        match Self::connect(&mut child, &data) {
             Ok(cdp) => Ok(Edge { child, profile, cdp, used: Instant::now(), pages: 0 }),
             Err(e) => {
                 kill_tree(&mut child);
@@ -1294,8 +1295,11 @@ pub fn capture_mhtml(url: &str, width: u32, height: u32, prog: &Progress) -> Res
         }
         prog.set(0.5, "Scrolling through the page…");
         let wake = "(async()=>{const h=()=>Math.max(document.documentElement.scrollHeight,document.body?document.body.scrollHeight:0);\
-            let y=0;while(y<h()&&y<24000){window.scrollTo(0,y);await new Promise(r=>setTimeout(r,140));y+=innerHeight*0.8}\
-            window.scrollTo(0,0);await new Promise(r=>setTimeout(r,700));try{await document.fonts.ready}catch(e){}return h()})()";
+            let y=0;while(y<h()&&y<24000){window.scrollTo(0,y);await new Promise(r=>setTimeout(r,220));y+=innerHeight*0.8}\
+            window.scrollTo(0,0);await new Promise(r=>setTimeout(r,700));\
+            /* ws:browser-layer: until the pictures are in (placeholders gone), or nothing changes for 3 s, at most 20 s */\
+            const pend=()=>[...document.images].filter(i=>!i.complete||!i.naturalWidth).length+document.querySelectorAll('[class*=shimmer],[class*=skeleton]').length;\
+            for(let t0=Date.now(),last=-1,same=0;Date.now()-t0<20000&&pend()>0&&same<12;){const p=pend();same=p===last?same+1:0;last=p;await new Promise(r=>setTimeout(r,250))}try{await document.fonts.ready}catch(e){}return h()})()";
         c.call("Runtime.evaluate", json!({"expression": wake, "awaitPromise": true, "returnByValue": true}))?;
         prog.set(0.85, "Saving the page…");
         let snap = c.call("Page.captureSnapshot", json!({"format": "mhtml"}))?;
@@ -1644,6 +1648,45 @@ pub fn icon_page(name: &str, svg: &str) -> String {
          svg {{ display: block; width: 448px; height: 448px; margin: 32px; \
          filter: drop-shadow(0 6px 14px rgba(0, 0, 0, .45)); }}\n</style>\n</head>\n<body>{svg}</body>\n</html>\n"
     )
+}
+
+// ---------------------------------------------------------------------------------------------------
+// ---- ws:browser-layer ---- what `engine::webpage` needs from the Edge kept here
+
+/// A page loaded in the shared Edge, for a caller that needs more than a frame of it.
+pub struct PageSession<'a>(&'a mut Edge);
+
+impl PageSession<'_> {
+    /// The value of a JavaScript expression (it runs although the page's own scripts never do).
+    pub fn eval(&mut self, js: &str) -> Result<Value, String> {
+        self.0.cdp.eval(js)
+    }
+    /// PNG of the part `rect` (x, y, w, h in CSS px, anywhere on the page) drawn at `scale` picture px
+    /// per CSS px.
+    pub fn shot(&mut self, rect: [f64; 4], scale: f64) -> Result<Vec<u8>, String> {
+        let clip = json!({"x": rect[0], "y": rect[1], "width": rect[2], "height": rect[3], "scale": scale});
+        let args = json!({"format": "png", "captureBeyondViewport": true, "clip": clip});
+        let r = self.0.cdp.call("Page.captureScreenshot", args)?;
+        let mut out = Vec::new();
+        b64_decode(r["data"].as_str().unwrap_or("").as_bytes(), &mut out);
+        png_size(&out).map(|_| out).ok_or_else(|| "Edge returned no picture".to_string())
+    }
+}
+
+/// Load `page` (as `prepare_in` returns it) at `width` CSS px in the shared Edge and run `f` on it.
+pub fn with_page<T>(page: &str, width: u32, f: &mut dyn FnMut(&mut PageSession) -> Result<T, String>) -> Result<T, String> {
+    with_edge(|e| {
+        e.load(page, (width, 1080), 1.0)?;
+        f(&mut PageSession(e))
+    })
+}
+
+/// The browser profile `capture_mhtml` runs on instead of a private, throw-away one: the folder the
+/// user signed in to (`webpage::sign_in_profile`), so a capture shows what they see. None = private.
+pub static CAPTURE_PROFILE: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+fn capture_profile(network: bool) -> Option<PathBuf> {
+    lock(&CAPTURE_PROFILE).clone().filter(|_| network)
 }
 
 #[cfg(test)]

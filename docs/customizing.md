@@ -77,7 +77,8 @@ curl -s -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' -H 'content-type: ap
   http://127.0.0.1:<port>/mcp
 ```
 
-**Verified against a live `tools/list` on the 1.2.0 release build (2026-11-12): 298 tools.** The tables below
+**Verified against a live `tools/list` on the 1.2.0 release build (2026-11-12): 298 tools; the browser layer
+branch adds 7 (21 rows folded into `action` arguments; checked live 2026-11-13).** The tables below
 were written per feature as it landed; if a row disagrees with `tools/list`, `tools/list` wins.
 
 > **Pro plan (built and live-tested, 1.2.0):** the rows it added or changed
@@ -97,6 +98,13 @@ were written per feature as it landed; if a row disagrees with `tools/list`, `to
 | Tool | Kind | Arguments | What it does |
 |---|---|---|---|
 | `html.create` | Mutate | html, at?, duration?, name?, fields? | Add an HTML + CSS layer or scene clip (format: `library/README.md`); rendered in the background. `fields` is an object `{name: value}`. |
+| `browser.add` | Mutate | at?, duration?, fields?, fit? | Add a browser window layer above what is there: the tracks below show inside it. Returns `{clip_id, max_scroll}`. |
+| `browser.set` | Mutate | clip?, fields? | Without `fields`: read `{clip_id, start, end, style, page}` (the page area in cursor coordinates). With `fields`: change any key of that style (`display` `window` / `page`, `theme`, `tabs`, `url`, `bg`, `scroll`, `zoom`, `cursor: {...}`...); a number for a keyframable field is a constant. |
+| `browser.animate` | Mutate | clip?, preset, at?, duration?, value?, target?, at_cursor?, whole?, x?, y? | Presets as keyframes: `type_url`, `load`, `switch_tab`, `scroll_to`, `zoom_to` (the point held still: an element's text as `target`, the mouse, or `x`, `y`; `whole` zooms the whole browser). |
+| `browser.page` | Mutate | clip?, action, at?, target?, nth?, x?, y?, asset?, url?, title?, favicon?, load?, transition?, transition_secs?, type_url?, query?, max? | `action`: `fit` (pictures below page-wide, top at the top), `next` (cut the clips below with a transition, run the load bar, change address / title / icon), `click_go` (mouse move with overshoot, hand, highlight, click, then `next`: one undo step), `elements` (links, buttons and inputs of the imported page with their boxes), `sharpen` (redraw the zoomed parts of an imported page at exactly their zoom; background job), `make_editable` (headings and labels become fields of the page's HTML layer; background job). |
+| `browser.import` | Ui | action?, src?, width?, at?, place?, signed_in? | `action`: `import` (default: a real page by address, `.mhtml` or `.html` as an HTML layer clip with an element map; background job), `jobs` (pending page imports / zoom details and what the last one said), `sign_in` (open the sign-in browser window; the user signs in, the tool reads nothing). |
+| `cursor.set` | Mutate | clip?, action, at?, target?, nth?, x?, y?, duration?, hover?, hold?, click?, points?, mode?, kind?, value?, press?, tolerance?, from?, to?, samples?, smoothing? | `action`: `move_to` (to an element by its text, or a point, scrolling there first if needed), `path` (`[[t, x, y], ...]`, `stops` or `glide`), `event` (click / double / down / up / scroll / key / shape), `press` (the clip under the cursor dips and springs back), `tidy` (remove jitter, keys under clicks stay), `samples` (raw pointer samples reduced to keys and events, as Record mouse does). |
+| `cursor.record` | Ui | clip?, action, at?, discard? | `action` `start`: Record mouse (the user's real mouse over the viewer); `stop`: write the take (one undo step), or `discard` it. |
 | `html.get` | Read | clip | The clip's source, fields with current values, size, duration, render state, lint. |
 | `html.set` | Mutate | clip, html?, fields?, params?, width?, name? | Replace the source and/or set field values (`null` = default) and `se:param` values (a number or `[{t,v,ease}]` keyframes); the clip keeps position, effects and keyframes. |
 | `html.import` | Mutate | path, at?, link? | Add a `.html` file as a clip, linked to the file (edit either side). |

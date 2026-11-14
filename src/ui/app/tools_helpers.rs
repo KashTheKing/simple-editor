@@ -83,6 +83,24 @@ pub(super) fn anim_of<'a>(clip: &'a mut Clip, name: &str) -> Option<&'a mut crat
         "Pan" => return Some(&mut clip.pan),
         _ => {}
     }
+    // ws:browser-layer: a browser clip's own keyframable numbers
+    if let Some(b) = clip.browser.as_mut() {
+        match name {
+            "Scroll" => return Some(&mut b.scroll),
+            "Zoom" => return Some(&mut b.zoom),
+            "Zoom X" => return Some(&mut b.zoom_x),
+            "Zoom Y" => return Some(&mut b.zoom_y),
+            "Window zoom" => return Some(&mut b.wzoom),
+            "Window zoom X" => return Some(&mut b.wzoom_x),
+            "Window zoom Y" => return Some(&mut b.wzoom_y),
+            "Typed" => return Some(&mut b.url_typed),
+            "Load bar" => return Some(&mut b.load),
+            "Tab" => return Some(&mut b.active_tab),
+            "Cursor X" => return b.cursor.as_mut().map(|c| &mut c.x),
+            "Cursor Y" => return b.cursor.as_mut().map(|c| &mut c.y),
+            _ => {}
+        }
+    }
     let (effect, param) = name.split_once(':')?;
     let (effect, param) = (effect.trim(), param.trim());
     let e = clip.effects.iter_mut().find(|e| e.name().eq_ignore_ascii_case(effect) || e.kind.name().eq_ignore_ascii_case(effect))?;

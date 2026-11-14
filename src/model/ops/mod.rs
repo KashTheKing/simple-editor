@@ -1,5 +1,7 @@
 mod assets;
 mod attrs;
+// ws:browser-layer: `CursorMove` is a free-standing type the tools name, hence `pub` (as `trim`)
+pub mod browser;
 mod autocut;
 mod buses;
 mod editing;

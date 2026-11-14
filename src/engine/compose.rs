@@ -249,6 +249,13 @@ pub struct Compositor {
     /// Cached subtitle style (subtitle_style + current cue text) to avoid per-frame clones.
     sub_style: TextStyle,
     sub_key: u64,
+    // ---- ws:browser-layer ----
+    /// Browser window art (own cache, like `shapes`).
+    pub(crate) browser: crate::engine::browser::BrowserRasterizer,
+    /// Scratch: the canvas below a browser clip, taken as its page.
+    page: Frame,
+    /// What a browser clip above does to the layers of the track being drawn (scroll, zoom).
+    view: crate::engine::browser::LayerView,
 }
 
 impl Default for Compositor {
@@ -270,6 +277,9 @@ impl Compositor {
             seq: Vec::new(),
             sub_style: TextStyle::subtitle_default(),
             sub_key: 0,
+            browser: Default::default(),
+            page: Frame::default(),
+            view: crate::engine::browser::LayerView::NONE,
         }
     }
 
@@ -342,10 +352,12 @@ impl Compositor {
         if w == 0 || h == 0 {
             return;
         }
+        let outer = self.view; // ws:browser-layer (a nested sequence has its own)
         for (ti, track) in tracks.iter().enumerate() {
             if track.kind != TrackKind::Video || !track_active(tracks, ti) {
                 continue;
             }
+            self.view = crate::engine::browser::layer_view(tracks, ti, t, pw, w, h);
             if let Some((tr, left, right)) = track.transition_at(t) {
                 self.render_transition(project, pw, tr, left, right, t, w, h, pool, text, out, depth);
                 continue;
@@ -354,12 +366,14 @@ impl Compositor {
             // every track under a layer that covers the canvas (`playback::decode_layers`); doing it
             // here needs that layer's frame in hand before the tracks below it are drawn.
             for clip in &track.clips {
-                if !clip.enabled || !clip.contains(t) || !can_show(project, pw, clip, t, w, h) {
+                // (a scrolled or zoomed layer is not where its own placement says: never culled)
+                if !clip.enabled || !clip.contains(t) || (self.view.is_none() && !can_show(project, pw, clip, t, w, h)) {
                     continue;
                 }
                 self.render_clip(project, pw, clip, t, w, h, pool, text, out, depth, Extra::NONE);
             }
         }
+        self.view = outer;
     }
 
     /// Blend the two sides of a transition per kind at progress `tr.progress`. Edge transitions have
@@ -484,6 +498,41 @@ impl Compositor {
         }
         let s = w as f32 / pw.max(1) as f32;
         match clip.kind {
+            // ---- ws:browser-layer ---- (the steps are listed in engine/browser.rs; gpu.rs mirrors them)
+            ClipKind::Browser => {
+                let Some(b) = &clip.browser else { return };
+                let Some(mut plan) = crate::engine::browser::plan(pw, clip, t, w, h) else { return };
+                plan.shift(extra.dx, extra.dy);
+                let rs = crate::engine::browser::raster_scale(clip, s, lt);
+                let l = self.browser.layers(b, lt, s, rs, text, &mut |p, w, h| {
+                    pool.frame_arc(p, 0.0, w, h, &mut Vec::new())
+                });
+                let (n, sc) = (BlendMode::Normal, project.scaler);
+                if !plan.page_only {
+                    let mut page = std::mem::take(&mut self.page);
+                    page.copy_from(out);
+                    out.fill([b.bg[0], b.bg[1], b.bg[2], 255]);
+                    let (wf, hf) = (w as f32, h as f32);
+                    let full = Placement { cx: wf / 2.0, cy: hf / 2.0, w: wf, h: hf, rot: 0.0, yaw: 0.0, pitch: 0.0 };
+                    if let Some(bg) = &l.bg {
+                        draw_layer(out, bg, full, n, 1.0, Scaler::Bilinear, &mut self.layer);
+                    }
+                    if let Some(win) = &l.window {
+                        draw_layer(out, win, plan.window, n, opacity, sc, &mut self.layer);
+                    }
+                    mask_coverage(&plan.mask, w, h, 0.0, 1.0, crate::engine::browser::MASK_ORIGIN, &mut self.cov);
+                    draw_layer_masked(out, &page, plan.page, n, opacity, sc, &mut self.layer, Some(&self.cov));
+                    self.page = page;
+                } else if let (Some(bar), Some(p)) = (&l.bg, plan.load_bar(b, lt, s)) {
+                    draw_layer(out, bar, p, n, opacity, Scaler::Nearest, &mut self.layer);
+                }
+                if let (Some(img), Some(p)) = (&l.cursor, plan.cursor(b, lt, s)) {
+                    draw_layer(out, img, p, n, opacity, sc, &mut self.layer);
+                }
+                if let Some((img, a)) = &l.keys {
+                    draw_layer(out, img, plan.keys(b, (img.width, img.height)), n, a * opacity, sc, &mut self.layer);
+                }
+            }
             ClipKind::Shape => {
                 let Some(style) = &clip.shape else { return };
                 let img = self.shapes.render(style, s, lt);
@@ -540,6 +589,7 @@ impl Compositor {
                     return;
                 }
                 let mut p = placement_w(pw, clip, t, native, w, h, true);
+                self.view.apply(&mut p); // ws:browser-layer
                 if !(p.w.is_finite() && p.h.is_finite()) {
                     return;
                 }
@@ -607,6 +657,7 @@ impl Compositor {
                     return;
                 }
                 let mut p = placement_w(pw, clip, t, (qw, qh), w, h, true);
+                self.view.apply(&mut p); // ws:browser-layer
                 if !(p.w.is_finite() && p.h.is_finite() && p.w > 0.0 && p.h > 0.0) {
                     return;
                 }
@@ -665,6 +716,7 @@ impl Compositor {
         let lt = clip.local(t);
         let s = w as f32 / pw.max(1) as f32;
         let mut p = placement_w(pw, clip, t, native, w, h, false);
+        self.view.apply(&mut p); // ws:browser-layer
         // a fade also needs the copy path - fade_to writes into the layer, and the cached bitmap is
         // shared with the rasteriser's cache
         if effects::effects_for(project, clip).iter().any(|e| e.on_at(lt)) || extra.fade > 0.0 {

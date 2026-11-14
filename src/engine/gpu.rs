@@ -336,6 +336,8 @@ pub struct GpuRenderer {
     /// ORed into every `upload` key: `SOURCE_KEY` while `render_source_texture` runs, else 0, so the
     /// Source's synthetic project (which reuses low clip ids) never shares a texture with the timeline.
     key_tag: u64,
+    /// ws:browser-layer: what a browser clip above does to the layers of the track being drawn.
+    view: crate::engine::browser::LayerView,
     // ---- ws:export-pipeline ----
     readback: Readback,
 }
@@ -382,6 +384,7 @@ impl GpuRenderer {
                 perf_upload_us: 0,
                 source_canvas: None,
                 key_tag: 0,
+                view: crate::engine::browser::LayerView::NONE,
                 readback: Readback::default(), // ws:export-pipeline
             };
             // The composite program is the one nothing works without: fail loudly here instead of
@@ -1327,9 +1330,11 @@ impl GpuRenderer {
         let dst = self.acquire(size.0, size.1)?;
         let gl = self.gl.clone();
         let mut pts = Vec::with_capacity(mask.points.len().min(MAX_MASK_POINTS) * 2);
+        // relative to the layer centre, like the shader's `q` (and like `compose::mask_coverage`):
+        // sent absolute, a polygon mask landed a whole layer-centre away from where the CPU drew it
         for (x, y) in mask.points.iter().take(MAX_MASK_POINTS) {
-            pts.push(centre.0 + x * scale);
-            pts.push(centre.1 + y * scale);
+            pts.push(x * scale);
+            pts.push(y * scale);
         }
         let n = (pts.len() / 2) as i32;
         let shape = match mask.shape {
@@ -1339,7 +1344,12 @@ impl GpuRenderer {
             // curves, so a real bezier SDF only matters for very sparse paths.
             MaskShape::Polygon | MaskShape::Path => 2,
         };
-        let (cx, cy) = (centre.0 + mask.cx.at(t) as f32 * scale, centre.1 + mask.cy.at(t) as f32 * scale);
+        // (a polygon's points already say where it is: its centre is the layer's, as on the CPU)
+        let (cx, cy) = if shape == 2 {
+            centre
+        } else {
+            (centre.0 + mask.cx.at(t) as f32 * scale, centre.1 + mask.cy.at(t) as f32 * scale)
+        };
         let (rx, ry) = (mask.rx.at(t) as f32 * scale, mask.ry.at(t) as f32 * scale);
         self.draw(K_MASK, &dst, self.blank, None, |p| unsafe {
             gl.uniform_2_f32(p.uni.get("u_res"), size.0 as f32, size.1 as f32);
@@ -1410,6 +1420,7 @@ impl GpuRenderer {
             if track.kind != TrackKind::Video || !project.active(ti) || ti < layers.base {
                 continue;
             }
+            self.view = crate::engine::browser::layer_view(&project.tracks, ti, t, project.width, w, h);
             if let Some((tr, left, right)) = track.transition_at(t) {
                 let p = crate::engine::compose::trans_progress(tr, left, right, t) as f32;
                 canvas = self.draw_transition(project, tr, left, right, p, t, canvas, layers);
@@ -1422,6 +1433,7 @@ impl GpuRenderer {
                 canvas = self.draw_clip(project, clip, t, canvas, layers, Extra::NONE);
             }
         }
+        self.view = crate::engine::browser::LayerView::NONE;
         if project.show_subtitles {
             if let Some(sub) = layers.get(LayerSet::SUBTITLES) {
                 canvas = self.draw_subtitles(project, sub, canvas);
@@ -1650,6 +1662,9 @@ impl GpuRenderer {
             self.pool.put(canvas);
             return out;
         }
+        if clip.kind == ClipKind::Browser {
+            return self.draw_browser(project, clip, t, canvas, layers, opacity, extra);
+        }
 
         let Some(frame) = layers.get(clip.id) else { return canvas };
         if frame.is_empty() {
@@ -1660,6 +1675,12 @@ impl GpuRenderer {
         let mut p = crate::engine::compose::placement(project, clip, t, native, cw, ch, contain);
         if !(p.w.is_finite() && p.h.is_finite() && p.w > 0.0 && p.h > 0.0) {
             return canvas;
+        }
+        if !contain {
+            // ws:browser-layer: text and shapes under a zoomed browser arrive drawn that much bigger
+            // (`playback::layer_for`), so they are sharp once the view enlarges them
+            let q = crate::engine::browser::draw_boost(&project.tracks, t, project.width, project.height);
+            (p.w, p.h) = (p.w / q, p.h / q);
         }
         // geometric effects move the layer instead of touching pixels
         let (mut focal, mut z0) = (cw as f32, 0.0f32);
@@ -1687,6 +1708,7 @@ impl GpuRenderer {
         }
         p.cx += extra.dx;
         p.cy += extra.dy;
+        self.view.apply(&mut p);
         let Some(inv) = inverse_placement(&p, focal, z0) else { return canvas };
 
         let perf_t0 = std::time::Instant::now(); // ws:perf-baseline
@@ -1717,6 +1739,65 @@ impl GpuRenderer {
             }
         }
         out
+    }
+
+    // ---- ws:browser-layer ----
+    /// A browser clip: what is on the canvas becomes the page inside the window (the steps are listed
+    /// in engine/browser.rs; mirrors `compose::render_clip`). Its bitmaps come in `layers` under
+    /// `browser::key(clip.id, slot)`.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_browser(
+        &mut self,
+        project: &Project,
+        clip: &Clip,
+        t: f64,
+        page: Target,
+        layers: &LayerSet,
+        opacity: f32,
+        extra: Extra,
+    ) -> Target {
+        use crate::engine::browser as br;
+        use crate::engine::compose::Placement;
+        let (cw, ch) = (page.w, page.h);
+        let Some(b) = &clip.browser else { return page };
+        let Some(mut plan) = br::plan(project.width, clip, t, cw, ch) else { return page };
+        plan.shift(extra.dx, extra.dy);
+        let (lt, s) = (clip.local(t), cw as f32 / project.width.max(1) as f32);
+        let (wf, hf) = (cw as f32, ch as f32);
+        let full = Placement { cx: wf / 2.0, cy: hf / 2.0, w: wf, h: hf, rot: 0.0, yaw: 0.0, pitch: 0.0 };
+        let bitmap = |me: &mut Self, out: Target, slot: u64, p: Option<Placement>, a: f32, scaler: Scaler| {
+            let k = br::key(clip.id, slot);
+            let (Some(f), Some(p)) = (layers.get(k), p) else { return out };
+            let Some(inv) = inverse_placement(&p, wf, 0.0) else { return out };
+            let tex = me.upload(k, f);
+            me.composite(out, tex, (f.width, f.height), inv, BlendMode::Normal, a, scaler, None)
+        };
+        let sc = project.scaler;
+        // Page only: the canvas is the page as it is; only the mouse and overlays go on top
+        let mut out = if plan.page_only {
+            bitmap(self, page, br::BG, plan.load_bar(b, lt, s), opacity, Scaler::Nearest)
+        } else {
+            let Some(mut out) = self.acquire(cw, ch) else { return page };
+            self.clear(&out, [b.bg[0] as f32 / 255.0, b.bg[1] as f32 / 255.0, b.bg[2] as f32 / 255.0, 1.0]);
+            out = bitmap(self, out, br::BG, Some(full), 1.0, Scaler::Bilinear);
+            out = bitmap(self, out, br::WINDOW, Some(plan.window), opacity, sc);
+            if let Some(inv) = inverse_placement(&plan.page, wf, 0.0) {
+                let mask = self.render_mask(&plan.mask, (cw, ch), 0.0, 1.0, br::MASK_ORIGIN);
+                let m = mask.as_ref().map(|m| m.tex);
+                out = self.composite(out, page.tex, (cw, ch), inv, BlendMode::Normal, opacity, sc, m);
+                if let Some(m) = mask {
+                    self.pool.put(m);
+                }
+            }
+            self.pool.put(page);
+            out
+        };
+        out = bitmap(self, out, br::CURSOR, plan.cursor(b, lt, s), opacity, sc);
+        // the overlay's opacity rides with its bitmap as a 1x1 companion frame (playback::layer_for)
+        let keys = layers.get(br::key(clip.id, br::KEYS));
+        let a = layers.get(br::key(clip.id, br::KEYS_ALPHA)).map_or(1.0, |f| f.rgba[3] as f32 / 255.0);
+        let p = keys.map(|f| plan.keys(b, (f.width, f.height)));
+        bitmap(self, out, br::KEYS, p, a * opacity, sc)
     }
 
     /// The clip's effect chain (node graph when it has one, else the linear stack, master (Asset)
@@ -2656,6 +2737,8 @@ mod tests {
 
 /// Real-driver checks: a legacy WGL context on a hidden window (compatibility profiles accept
 /// `#version 330 core`). Skips, loudly, on a machine with no OpenGL driver.
+#[cfg(test)]
+mod browser_tests; // ws:browser-layer: the browser clip and polygon masks on the real driver
 #[cfg(test)]
 mod library_tests; // ws:shader-library: every library shader on the real driver
 

@@ -219,6 +219,7 @@ pub(super) fn primary_section(page: &str, kind: ClipKind, audio: bool) -> &'stat
         (_, ClipKind::Text) => "text",
         (_, ClipKind::Shape) => "shape",
         (_, ClipKind::Adjustment) => "effects",
+        (_, ClipKind::Browser) => "browser", // ws:browser-layer
         _ => "transform",
     }
 }
@@ -1014,6 +1015,16 @@ fn clip_section(
     let zone2 = clip.shape.is_some() || clip.kind == ClipKind::Shape || !audio || !project.paths.is_empty();
     if zone2 {
         ui.add_enabled_ui(!multi, |ui| {
+            // ws:browser-layer
+            if let Some(b) = &mut clip.browser {
+                let pages: Vec<(Id, String)> = project
+                    .assets
+                    .iter()
+                    .filter(|a| a.kind == ClipKind::Image)
+                    .map(|a| (a.id, a.name()))
+                    .collect();
+                crate::ui::browser_ui::section(ui, b, lt, fonts, &pages, palette, &mut folds, &mut g);
+            }
             // shape style
             if let Some(sh) = &mut clip.shape {
                 fold(ui, &mut folds, "shape", "Shape", None, |ui| {

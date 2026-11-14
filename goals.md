@@ -169,6 +169,18 @@ Pulled forward from CHANGELOG.md — mark new completions here as they land.
   working. The pieces it can stand on already exist: the renderer, `html_code` (a tokenizer that knows
   every tag, rule and field), and the file link. Needs a design pass first (a small element tree
   round-tripped through the source, snapping, selection, undo).
+- [ ] **Browser layer + fake mouse** (asked and built 2026-11-13 on `feat/browser-layer`, not merged): a drawn
+  browser window over the tracks below it (Light / Dark / Minimal / Mobile, tabs, address typing, load bar,
+  scroll, zoom), a fake mouse (Record mouse, waypoints, keyframes; clicks, drags, wheel, keystroke overlay),
+  page changes and button presses as one-undo helpers, `browser.*` / `cursor.*` tools. Guide page
+  `website/docs/browser-layer.mdx`. Phase 2 the same day: Import Web Page (address / .mhtml / .html, element map,
+  optional sign-in profile), zoom on the pages themselves + Sharpen zooms, cursor.move_to by element text, Click
+  and go to page. Phase 3: imported pages are HTML layer clips (Make editable, automatic
+  zoom details), Display: Browser window / Page only. Phase 4: Window zoom (the whole browser and the mouse), zoom levels so no frame of
+  a zoom is enlarged. **Size: +446,464 B (+436 KB) of release exe after phase 5 (21 tools folded into 7, table-driven JSON and
+  Inspector; was +506 KB): over the +300 KB gate, the -200 KB trimming target NOT met - a size decision for the maintainer
+  (notes.md has the breakdown and what each piece costs).** Open: try Record mouse by hand; a real page behind it still comes from
+  screenshots / HTML layers / web snapshots (the item below is the live-page version).
 - [ ] **Record mode: a fake browser for pure animation** (asked 2026-11-12, not started; builds on the
   fake mouse and web-page snapshots that land first). Press Record on a snapshot clip and use the page
   in a live view inside the editor: your real mouse drives a fake cursor, `:hover` / `:active` / CSS

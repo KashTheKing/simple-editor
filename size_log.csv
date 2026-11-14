@@ -43,3 +43,8 @@ f44595e,12326400,"feat/pro before the creator kit (the Pro plan and everything o
 a17154b,13067264,"creator kit (HTML layers, shader library, skills, online library): +740,864 B vs f44595e, above the plan's 200-400 KB estimate"
 da35401+wip,13457920,"HTML editing, web snapshots, params, fake mouse: +390,656 B vs a17154b (+1,131,520 B vs f44595e)"
 0990cfc,13458944,release 1.2.0 (Pro plan, Creator Kit, web snapshots, Report a Bug): +1,024 B vs the row above; +2,119,168 B vs the 1.1.0 release exe (11,339,776 B)
+b05471e+wip,13762048,"browser layer + fake mouse (feat/browser-layer): +303,104 B vs 1.2.0"
+b05471e+wip,13963264,"browser layer phase 2 (web page import, element map, sharp zoom, click and go): +504,320 B vs 1.2.0, +201,216 B vs the row above"
+b05471e+wip,13988352,"browser layer phase 3 (pages as HTML layers, Page only, make editable): +529,408 B vs 1.2.0, +25,088 B vs the row above"
+b05471e+wip,13977600,"browser layer phase 4 (Window zoom, zoom levels, hand-written JSON): +518,656 B vs 1.2.0, -10,752 B vs the row above"
+b05471e+wip,13905408,"browser layer phase 5 (7 tools with an action argument, table-driven JSON and Inspector, out-of-line Animated clone, tab rows on ui::list_rows (about 13 KB of it is that shared helper), insertion sorts): +446,464 B vs 1.2.0, -72,192 B vs the row above; the -200 KB target is NOT met"

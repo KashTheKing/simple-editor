@@ -1,0 +1,151 @@
+---
+title: Browser window & fake mouse
+description: Put your footage inside a drawn browser window, scroll and zoom the page, and record a mouse cursor that clicks around in it.
+---
+
+A **browser layer** is a clip that shows everything on the tracks below it inside a browser window:
+tabs, an address bar, a shadow, a background around it. A **fake mouse** moves over the page, clicks,
+drags and scrolls. Use it for web demos, game-site walkthroughs and tutorials: you decide what the
+"browser" shows and what the mouse does, and you can change both afterwards.
+
+The window is drawn by the editor. It needs no real browser and adds almost nothing to memory: the
+window art is drawn once and reused, the page is your own clips.
+
+## Add one
+
+- **Clip ▸ Add ▸ Add Browser Window**, or the **Browser Window** card in **Gallery ▸ Titles**.
+- The clip goes on a track **above** what is there and lasts to the end of the timeline. Trim it like
+  any clip: where it ends, the picture is normal again.
+- Put the page under it: a screenshot, a screen recording, an [HTML layer](html-layers.mdx), an imported
+  web page (below), several clips at once. Whatever is below is the page.
+- Pictures already under it are fitted as pages straight away: as wide as the window, top at the top.
+  **Fit pages automatically** in the Inspector turns that off.
+
+Move, scale and rotate the window on the [viewer](viewer.mdx) or in **Transform**, with keyframes if
+you like: the page and the mouse move with it.
+
+## Import a real web page
+
+**Clip ▸ Add ▸ Import Web Page…** (or **Import web page…** in the Inspector) takes a page address, or a
+page you saved from your browser as a single file (`.mhtml`) or as `.html`.
+
+- The page is saved to this computer with its styles, pictures and fonts. Its scripts are removed and
+  nothing is fetched from the internet again later.
+- It becomes an [HTML layer](html-layers.mdx) clip under a browser layer (a new one if there is none),
+  with the address and tab title filled in. It is the real page, drawn by the editor: effects, masks,
+  LUTs, blend modes and keyframes work on it like on any clip, and you can open its code.
+- **Make editable** turns the page's headings, button and link labels and short texts into **Fields**
+  of that clip (and the page background into a colour): select the page clip and retype them in the
+  Inspector.
+- The editor also remembers every **link, button and input** on the page: its text and where it is. The
+  mouse can then go to them by name (below).
+
+An address is opened the way a visitor who is not signed in sees it. To import a page **as you**, press
+**Sign in…** first: it opens Microsoft Edge with a profile kept only for Simple Editor, and you sign in
+there yourself. Simple Editor never asks for, reads or stores your password. Close that window, tick
+**As me**, and import. A page imported as you shows your own view of the site (your name, your lists):
+it stays on this computer unless you share the project or the video.
+
+Some sites load their pictures only for a real, signed-in browser; those pictures stay grey in a page
+imported by address. Save the page from your own browser as a single file and import that instead.
+
+## Scroll and zoom without blur
+
+**Window zoom** makes the whole browser bigger - frame, tabs, page and the mouse cursor - like a camera
+moving closer to the screen. **Zoom at** is the point it holds still; **In ×2** zooms to where the mouse is.
+**Page zoom** enlarges only the page inside an unchanged window. Both are drawn again at the zoomed size, so
+nothing is stretched: the window and cursor are redrawn, and an imported page is drawn at each zoom level
+it passes through.
+
+**Scroll** and **Zoom** move and enlarge the clips under the browser, not a picture of the frame. A page
+with more pixels than the frame (a tall screenshot, an imported page) is shown from its own pixels.
+
+- **Zoom at** is the point the zoom holds still. **In ×2** zooms in to where the mouse cursor is;
+  **Out** goes back.
+- Zooming into an imported page stays crisp: wherever the zoom rests, that part of the page is drawn
+  again from its HTML at exactly that zoom (300 %, 800 % and beyond). This happens by itself a moment
+  after you change a zoom; it shows as a **Zoom detail** clip under the browser. **Sharpen zooms** does
+  it at once. While the zoom is moving, the picture is enlarged and settles sharp when it rests.
+
+## Browser window or page only
+
+**Display** at the top of the Browser section chooses what is drawn around the page:
+
+- **Browser window**: tabs, address bar, frame, shadow and a background. Each part has its own switch
+  under **Show** (an address bar without tabs, for example); set Shadow or Corners to 0 to drop those.
+- **Page only**: nothing but the page, filling the frame edge to edge, like a browser in full screen.
+  Scroll, zoom, the mouse, hover, clicks and page changes work the same.
+
+## The window
+
+Select the browser clip. The [Inspector](inspector.mdx) has a **Browser** section:
+
+| Control | What it does |
+|---|---|
+| **Look** | Light, Dark, Minimal (one slim bar) or Mobile (a phone-shaped window). |
+| **Address** | The text in the address bar. **Type it** makes it type itself out from the playhead. |
+| **Tabs** | One row per tab: its title, an optional icon picture, and a dot that puts it in front from the playhead on. |
+| **Scroll** | Moves the page up, in pixels. Keyframe it to scroll. |
+| **Zoom** | 1 fits the page to the window's width; more zooms in. See below. |
+| **Load bar** | The thin bar under the address. **Run** plays it once from the playhead. |
+| **Size**, **Corners**, **Shadow** | The window itself. |
+| **Show** | Tabs, address bar, window dots, bookmarks bar. |
+| **Font** | The font of the window's own text. |
+| **Around it** | One colour, two colours (a top-to-bottom gradient) or a picture. |
+
+**Fit pages** makes the pictures below as wide as the window with their top at the top. Do this for a
+tall screenshot: **Scroll** then runs down the whole page at the screenshot's own sharpness.
+
+**Next page here** cuts what is below at the playhead and runs the load bar. Replace the clip after the
+cut with the next page and you have a page change. It is one undo step.
+
+## The mouse
+
+The **Mouse** section holds the cursor: arrow, hand or text pointer, its size and colours, the click
+ripple colour. Three ways to make it move:
+
+1. **Record mouse.** Press it, and the timeline plays. Move your real mouse over the viewer, click, drag,
+   turn the wheel. Press **Esc** (or the red label) to stop. The recording becomes a handful of keyframes
+   and click marks, not one per frame, so you can still edit it. **Smoothing** sets how much is
+   simplified. To redo one part, put the playhead there and record again: only the part you record is
+   replaced.
+2. **Place waypoints.** Click on the viewer where the cursor should be at the playhead. Each click moves
+   the playhead on a little, so a few clicks make a path. **Shift**-click adds a click there.
+3. **Keyframes.** **X** and **Y** have the usual ◆ buttons.
+
+**Curved** runs the cursor through its keys on a smooth curve instead of straight lines. **Tidy path**
+removes jitter from a path that is already there.
+
+At the playhead you can add a **Click**, **Double click**, **Press** / **Release** (a drag), a
+**Wheel** mark, or switch the pointer to a hand or text pointer from there on (for hovering a link or a
+text box). **Show keys** shows keys such as `Ctrl+L` in a small overlay.
+
+**Go to it**: type the text of a link or button of an imported page (`Play`, a game's name) and the mouse
+moves there, arriving at the playhead. It eases in, runs a little past, and settles, the way a hand does,
+and lands on the element wherever the page is scrolled or zoomed to. If the element is out of sight, the
+page scrolls to it first.
+
+**Click and go**: choose the next page (any picture in the Library, such as a second imported page) and
+press it. In one undo step the mouse goes to the element, turns into a hand, the element lights up, it
+clicks at the playhead, the page fades to the next one, the load bar runs, and the address and tab title
+become the next page's.
+
+**Press what is under it** makes the clip under the cursor dip and spring back, like a pressed button.
+It works on a clip that is a button of its own (a picture, an HTML layer), not on a whole-page
+screenshot.
+
+## For scripts and the assistant
+
+Everything above is also a tool, seven in all: `browser.add`, `browser.set` (read the style, or change
+it), `browser.animate` (type_url, load, switch_tab, scroll_to, zoom_to), `browser.page` (`action`: fit, next,
+click_go, elements, sharpen, make_editable), `browser.import` (`action`: import, jobs, sign_in), `cursor.set`
+(`action`: move_to, path, event, press, tidy, samples) and `cursor.record` (`action`: start, stop). See
+[Scripting](scripting.mdx).
+
+## Good to know
+
+- The window is not a real browser: links do nothing by themselves. A click is a mark on the timeline;
+  what happens next is your next clip.
+- A browser layer inside a nested sequence works the same.
+- While a browser clip is on screen, the outline handles of the clips below it sit where those clips
+  really are, not where the page shows them.

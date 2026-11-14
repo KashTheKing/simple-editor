@@ -795,7 +795,7 @@ mod tests {
         let text_id = p.add_text_clip(0.0, 2.0);
         settings.templates.push(crate::engine::presets::capture_template("My Title", &p, &[text_id]));
         let names = card_names(GalleryTab::Titles, &settings);
-        assert_eq!(names.len(), 3 + 1, "3 builtins + the one saved text template");
+        assert_eq!(names.len(), 4 + 1, "4 builtins (ws:browser-layer added Browser Window) + the one saved text template");
         assert!(names.contains(&"My Title".to_string()));
         assert!(names.contains(&"Lower Third".to_string()));
     }

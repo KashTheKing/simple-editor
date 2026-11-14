@@ -1605,7 +1605,8 @@ fn layers_with(
     // ponytail: a node graph on screen turns all of this off for the frame - its Clip and Asset
     // nodes may sample layers that are hidden themselves. Follow the references if graph-heavy
     // timelines need the culling.
-    let cull = !tracks().flat_map(|(_, tr)| on_screen(tr, t)).any(|c| c.graph.is_some());
+    // (ws:browser-layer: so does a browser - it scrolls the layers below it, on or off the canvas)
+    let cull = !tracks().flat_map(|(_, tr)| on_screen(tr, t)).any(|c| c.graph.is_some() || c.kind == ClipKind::Browser);
     let near = [t - 2.0 * project.frame_dur(), t, t + 2.0 * project.frame_dur()];
     let covering = |c: &Clip| near.iter().all(|&t| c.contains(t) && covers(project, c, t, w, h));
     let unseen = |c: &Clip| near.iter().all(|&t| !can_show(project, project.width, c, t, w, h));
@@ -1729,7 +1730,9 @@ fn still_need(project: &Project, clip: &Clip, size: (u32, u32)) -> (u32, u32) {
     if !(w.is_finite() && h.is_finite()) {
         return size;
     }
-    ((w.ceil() as u32).min(size.0), (h.ceil() as u32).min(size.1))
+    // ws:browser-layer: a browser above zooms the still in: that much more of it is kept
+    let z = crate::engine::browser::max_zoom_over(&project.tracks, clip.start, clip.end());
+    (((w * z).ceil() as u32).min(size.0), ((h * z).ceil() as u32).min(size.1))
 }
 
 /// One clip's layer: video/images decode, text/shapes rasterise, a nested sequence is composited on the
@@ -1772,6 +1775,9 @@ fn layer_for<'p>(
         return;
     }
     let s = w as f32 / project.width.max(1) as f32;
+    // ws:browser-layer: text and shapes under a zoomed browser are drawn that much bigger (gpu::draw_clip
+    // places them at their own size again)
+    let sv = s * crate::engine::browser::draw_boost(&project.tracks, t, project.width, project.height);
     match clip.kind {
         ClipKind::Video | ClipKind::Image => {
             if clip.is_empty_container() {
@@ -1804,8 +1810,10 @@ fn layer_for<'p>(
             if !(p.w.is_finite() && p.h.is_finite()) {
                 return;
             }
-            let dw = (p.w.round().max(1.0) as u32).clamp(1, native.0);
-            let dh = (p.h.round().max(1.0) as u32).clamp(1, native.1);
+            // ws:browser-layer: under a zoomed browser the layer is shown that much bigger
+            let z = crate::engine::browser::zoom_on_screen(&project.tracks, t, project.width, project.height);
+            let dw = ((p.w * z).round().max(1.0) as u32).clamp(1, native.0);
+            let dh = ((p.h * z).round().max(1.0) as u32).clamp(1, native.1);
             // what the decoder really has: the proxy's size when one stands in for the footage
             let Some((src, still)) = pool.video(&asset.path).map(|d| (d.size(), d.is_still())) else { return };
             let (dw, dh) = layer_size(src, (dw, dh), still);
@@ -1841,14 +1849,14 @@ fn layer_for<'p>(
         }
         ClipKind::Text => {
             let Some(style) = &clip.text else { return };
-            let img = text.with(|tx| tx.render(style, s, clip.local(t)));
+            let img = text.with(|tx| tx.render(style, sv, clip.local(t)));
             if img.width > 1 || img.height > 1 {
                 set.layers.push((clip.id, img));
             }
         }
         ClipKind::Shape => {
             let Some(style) = &clip.shape else { return };
-            let img = shapes.render(style, s, clip.local(t));
+            let img = shapes.render(style, sv, clip.local(t));
             if !img.is_empty() {
                 set.layers.push((clip.id, img));
             }
@@ -1888,6 +1896,23 @@ fn layer_for<'p>(
             let mut frame = spare.pop().unwrap_or_default();
             text.with(|tx| comp.render(&sub, st, dw, dh, pool, tx, &mut frame));
             set.layers.push((clip.id, Arc::new(frame)));
+        }
+        // ---- ws:browser-layer ---- the window art, cursor sprite and overlays, under slot keys
+        ClipKind::Browser => {
+            use crate::engine::browser as br;
+            let Some(b) = &clip.browser else { return };
+            let rs = br::raster_scale(clip, s, clip.local(t));
+            let mut load = |p: &str, w: u32, h: u32| pool.frame_arc(p, 0.0, w, h, &mut Vec::new());
+            let l = text.with(|tx| comp.browser.layers(b, clip.local(t), s, rs, tx, &mut load));
+            for (slot, f) in [(br::BG, l.bg), (br::WINDOW, l.window), (br::CURSOR, l.cursor)] {
+                set.layers.extend(f.map(|f| (br::key(clip.id, slot), f)));
+            }
+            if let Some((f, a)) = l.keys {
+                let mut one = Frame::new(1, 1);
+                one.rgba[3] = (a * 255.0) as u8;
+                set.layers.push((br::key(clip.id, br::KEYS), f));
+                set.layers.push((br::key(clip.id, br::KEYS_ALPHA), Arc::new(one)));
+            }
         }
         ClipKind::Audio | ClipKind::Adjustment => {}
     }
