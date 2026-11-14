@@ -716,8 +716,27 @@ mod tests {
         s.effect_presets.push(capture_effects("Look", p.clip(id).unwrap()));
         p.ensure_graph(id);
         s.effect_presets.push(capture_effects("Graph", p.clip(id).unwrap()));
-        // machine-local: the presets ride in settings.json, not the project file
-        let s: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        // machine-local: the presets are files in the gallery folder (not settings.json, not the project file)
+        let root = std::env::temp_dir().join(format!("se-presets-roundtrip-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for e in &s.effect_presets {
+            let data = serde_json::from_str(&e.json).unwrap();
+            crate::engine::gallery::save(
+                &root,
+                crate::engine::gallery::Kind::Look,
+                &e.name,
+                &[],
+                data,
+                crate::engine::gallery::Collide::Number,
+            )
+            .unwrap();
+        }
+        let mut s = Settings::default();
+        for i in crate::engine::gallery::list(&root, crate::engine::gallery::Kind::Look) {
+            s.effect_presets.push(EffectPreset { name: i.name, json: i.data.to_string() });
+        }
+        s.effect_presets.sort_by(|a, b| b.name.cmp(&a.name)); // Look, Graph
+        let _ = std::fs::remove_dir_all(&root);
         assert!(!s.effect_presets[0].is_graph() && s.effect_presets[1].is_graph());
 
         // apply into a different project

@@ -33,8 +33,9 @@
 //! (`LibraryState.view`) and the zoom (`LibraryState.zoom`, View ▾ Size and Ctrl+Scroll) that scales
 //! both gallery tiles and row thumbnails. A search or a filter flattens "Project" into its hits, the way
 //! an explorer shows search results.
-//! Under the tree, "Project" also lists what the project can reuse: the effects / node graphs /
-//! adjustment layers already in use or saved in settings.json (`reuse_ui`).
+//! Under the tree, "Project" also lists the node graphs the project can reuse (clips that render from one,
+//! saved graph presets: `reuse_ui`). Effects, looks and adjustment layers are Gallery cards now (the
+//! Gallery's Effects / Looks / Templates tabs), so they are not repeated here.
 
 use crate::hotkeys::Action;
 use crate::media::proxy::ProxyStatus;
@@ -2992,83 +2993,42 @@ fn glyph(ui: &mut egui::Ui, g: Glyph, palette: &Palette) {
     draw_glyph(ui.painter(), rect, g, palette.text_dim);
 }
 
-/// One reusable thing the project already holds.
+/// One reusable thing the project already holds: a node graph (the Gallery has no card for those).
 enum Reuse {
-    /// An effect kind already used somewhere in the project.
-    Effect(EffectKind),
-    /// Index into `Settings::effect_presets` - a saved chain or a saved node graph.
+    /// Index into `Settings::effect_presets` holding a saved node graph.
     Preset(usize),
     /// A clip that renders from a node graph.
     Graph(Id),
-    /// Index into `Settings::templates` holding a saved adjustment layer.
-    Adjustment(usize),
 }
 
-/// The reusable sections, read straight off the project and settings.json each frame.
-/// ponytail: linear scans + a JSON decode per template (`is_adjustment_template`), same as the Presets
-/// pane - the lists are short. A dedicated presets store plugs in here as extra `Reuse` items.
+/// The reusable section, read straight off the project and settings.json each frame.
+/// ponytail: linear scans, same as the old Presets pane - the lists are short.
 fn reuse_sections(project: &Project, settings: &Settings) -> Vec<(&'static str, Vec<Reuse>)> {
-    let mut kinds: Vec<EffectKind> = Vec::new();
-    let mut graphs: Vec<Reuse> = Vec::new();
-    for (_, c) in project.all_clips() {
-        for e in &c.effects {
-            if !kinds.contains(&e.kind) {
-                kinds.push(e.kind);
-            }
-        }
-        // uses_graph, not graph.is_some(): a bare Input->Output pass-through is not worth reusing, and
-        // since the node editor became opt-in it no longer means the clip renders from a graph
-        if c.uses_graph() {
-            graphs.push(Reuse::Graph(c.id));
-        }
-    }
-    let mut fx: Vec<Reuse> = kinds.into_iter().map(Reuse::Effect).collect();
-    for (i, p) in settings.effect_presets.iter().enumerate() {
-        if p.is_graph() {
-            graphs.push(Reuse::Preset(i));
-        } else {
-            fx.push(Reuse::Preset(i));
-        }
-    }
-    let adj = settings
-        .templates
-        .iter()
-        .enumerate()
-        .filter(|(_, t)| crate::engine::presets::is_adjustment_template(t))
-        .map(|(i, _)| Reuse::Adjustment(i))
-        .collect();
-    vec![("Effects", fx), ("Node graphs", graphs), ("Adjustment layers", adj)]
+    // uses_graph, not graph.is_some(): a bare Input->Output pass-through is not worth reusing, and
+    // since the node editor became opt-in it no longer means the clip renders from a graph
+    let mut graphs: Vec<Reuse> =
+        project.all_clips().filter(|(_, c)| c.uses_graph()).map(|(_, c)| Reuse::Graph(c.id)).collect();
+    graphs.extend(
+        settings.effect_presets.iter().enumerate().filter(|(_, p)| p.is_graph()).map(|(i, _)| Reuse::Preset(i)),
+    );
+    vec![("Node graphs", graphs)]
 }
 
 /// (name, kind tag, icon, drag payload) of one reusable item.
-/// ponytail: only adjustment layers have a drop target today - the others carry their name as a
-/// `Template` payload because `row()`/`tile()` are drag sources, and a stray drop just misses.
 fn reuse_face(item: &Reuse, project: &Project, settings: &Settings) -> (String, &'static str, Glyph, DragPayload) {
-    let by_name = |name: String, tag, icon| (name.clone(), tag, icon, DragPayload::Template(name));
-    match *item {
-        Reuse::Effect(k) => by_name(k.name().to_string(), "FX", Glyph::Star),
-        Reuse::Preset(i) => match settings.effect_presets.get(i) {
-            Some(p) if p.is_graph() => by_name(p.name.clone(), "Graph", Glyph::Nodes),
-            Some(p) => by_name(p.name.clone(), "FX", Glyph::Star),
-            None => by_name(String::new(), "FX", Glyph::Star),
-        },
-        Reuse::Graph(id) => {
-            let name = project.clip(id).map(|c| c.name.clone()).unwrap_or_default();
-            by_name(name, "Graph", Glyph::Nodes)
-        }
-        Reuse::Adjustment(i) => {
-            by_name(settings.templates.get(i).map(|t| t.name.clone()).unwrap_or_default(), "Adj", Glyph::Layers)
-        }
+    let name = match *item {
+        Reuse::Preset(i) => settings.effect_presets.get(i).map(|p| p.name.clone()),
+        Reuse::Graph(id) => project.clip(id).map(|c| c.name.clone()),
     }
+    .unwrap_or_default();
+    (name.clone(), "Graph", Glyph::Nodes, DragPayload::Template(name))
 }
 
 /// What a click on a reusable item asks the app to do.
-fn reuse_pick(item: &Reuse, name: &str, resp: &mut LibraryResponse) {
+fn reuse_pick(item: &Reuse, resp: &mut LibraryResponse) {
     match *item {
-        Reuse::Effect(k) => resp.add_effect = Some(k),
         Reuse::Preset(i) => resp.apply_preset = Some(i),
         Reuse::Graph(id) => resp.copy_graph = Some(id),
-        Reuse::Adjustment(_) => resp.place_template.push(name.to_string()),
     }
 }
 
@@ -3099,14 +3059,7 @@ pub(crate) fn reuse_ui(
             let (name, tag, icon, payload) = reuse_face(item, project, settings);
             let id = egui::Id::new((title, i));
             let r = if view == 1 {
-                let art = match *item {
-                    Reuse::Effect(k) => match crate::ui::effects_ui::thumbnail(k) {
-                        Some((tex, size)) => Art::Image(tex, size),
-                        None => Art::Icon(icon),
-                    },
-                    _ => Art::Icon(icon),
-                };
-                tile(ui, id, payload, false, tag, &name, palette.text, palette, art, TILE * zoom, None).0
+                tile(ui, id, payload, false, tag, &name, palette.text, palette, Art::Icon(icon), TILE * zoom, None).0
             } else {
                 row(ui, id, payload, false, None, |ui| {
                     glyph(ui, icon, palette);
@@ -3116,7 +3069,7 @@ pub(crate) fn reuse_ui(
                 .0
             };
             if r.clicked() {
-                reuse_pick(item, &name, resp);
+                reuse_pick(item, resp);
             }
         };
         if view == 1 {
@@ -3864,7 +3817,7 @@ mod tests {
 
         let counts: Vec<(&str, usize)> =
             reuse_sections(&project, &settings).iter().map(|(t, v)| (*t, v.len())).collect();
-        assert_eq!(counts, vec![("Effects", 2), ("Node graphs", 2), ("Adjustment layers", 1)]);
+        assert_eq!(counts, vec![("Node graphs", 2)], "only what the Gallery has no card for");
 
         let palette = Palette::new(true, egui::Color32::WHITE);
         let ctx = egui::Context::default();
@@ -3891,23 +3844,22 @@ mod tests {
                     .filter(|t| text_rect(&out.shapes, t).is_some())
                     .copied()
                     .collect();
-                assert!(text_rect(&out.shapes, "Blur").is_some(), "view {view} lists the effect as a file");
-                assert!(text_rect(&out.shapes, "Look").is_some(), "view {view} lists the preset as a file");
+                assert!(text_rect(&out.shapes, "Graph").is_some(), "view {view} lists the saved graph as a file");
+                assert!(
+                    text_rect(&out.shapes, "Look").is_none() && text_rect(&out.shapes, "Blur").is_none(),
+                    "view {view}: effects and looks are Gallery cards, not repeated here"
+                );
             }
             assert!(titles.is_empty(), "view {view} still draws section headings: {titles:?}");
         }
 
         // clicking each kind of item
         let mut resp = LibraryResponse::default();
-        reuse_pick(&Reuse::Effect(EffectKind::Blur), "Blur", &mut resp);
-        reuse_pick(&Reuse::Preset(1), "Graph", &mut resp);
-        reuse_pick(&Reuse::Graph(adj), "", &mut resp);
-        reuse_pick(&Reuse::Adjustment(0), "Grade", &mut resp);
-        assert_eq!(resp.add_effect, Some(EffectKind::Blur));
+        reuse_pick(&Reuse::Preset(1), &mut resp);
+        reuse_pick(&Reuse::Graph(adj), &mut resp);
         assert_eq!(resp.apply_preset, Some(1));
         assert_eq!(resp.copy_graph, Some(adj));
-        assert_eq!(resp.place_template, vec!["Grade".to_string()]);
-        assert_eq!(reuse_face(&Reuse::Effect(EffectKind::Blur), &project, &settings).0, "Blur");
+        assert_eq!(reuse_face(&Reuse::Preset(1), &project, &settings).0, "Graph");
     }
 
     // ---- ws:media-library ----

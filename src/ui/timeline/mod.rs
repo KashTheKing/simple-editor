@@ -128,6 +128,10 @@ pub struct TimelineState {
     pub scroll_y: f32,
     /// Width of the header column in points.
     pub header_w: f32,
+    /// A Gallery card being dragged over the lanes: how long the clip it would place is (seconds, for the
+    /// hover ghost), and the key of the payload it was measured for. Set by the app (`timeline_pane`).
+    pub drag_len: f64,
+    pub drag_key: String,
     /// Content rect (lanes area, excluding header & ruler) from the last frame - used by the app for file drops.
     pub lanes_rect: egui::Rect,
     /// Active move/trim gesture.
@@ -193,6 +197,8 @@ impl Default for TimelineState {
             scroll_x: 0.0,
             scroll_y: 0.0,
             header_w: 150.0,
+            drag_len: 3.0,
+            drag_key: String::new(),
             lanes_rect: egui::Rect::NOTHING,
             drag: None,
             user_panned: false,
@@ -360,6 +366,10 @@ pub struct TimelineResponse {
     /// Other dnd payloads (Sequence / Template / Effect / Transition) dropped on the lanes - the app
     /// places them; an Effect or a Transition goes onto the clip that contains the reported time.
     pub dropped_other: Vec<(DragPayload, f64, Option<usize>)>,
+    /// One entry per `dropped_other` one: where a Gallery card (`gallery_drop::drop_kind`) landed - the clip(s),
+    /// the cut or the track it resolved to. None for any other payload, or when the pointer was not on a
+    /// valid target (the app then says so instead of swallowing the gesture).
+    pub dropped_aims: Vec<Option<gallery_drop::Aim>>,
     /// Actions requested from the timeline's context menus (Retime, AddTransition, FreezeFrame, AutoCut, …).
     pub actions: Vec<crate::hotkeys::Action>,
     /// Container media replacement request - (clip id, pair mode).
@@ -495,6 +505,8 @@ enum Act {
     EaseBlock(Id, usize, Ease),
     DelBlock(Id, usize),
     RemoveTransition(Id),
+    /// "Save to Gallery…" on a transition band: select it, then ask the app for the dialog.
+    SaveTransition(Id),
     RemoveTransitions(Vec<Id>),
     /// Right-click quick-change: absolute-overwrite every listed transition's kind. Unlike
     /// `inspector.rs`'s `transition_section` (diff-against-first, only fields the user actually
@@ -534,6 +546,7 @@ enum Act {
 
 mod arm;
 mod cue_lane;
+pub(crate) mod gallery_drop;
 mod gestures;
 mod header;
 mod menus;
@@ -1955,27 +1968,17 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     );
                 }
             }
-            // an effect lands on ONE clip and a transition on ONE cut, so they highlight what is under
-            // the pointer instead of a ghost clip that would lie about a duration
-            let target = match &*payload {
-                DragPayload::Effect(k) => drop_on_clip(state, c.project, pos, t)
-                    .filter(|(_, cl)| (cl.kind == ClipKind::Audio) == k.applies_to_audio())
-                    .map(|(r, _)| r),
-                DragPayload::KeyBlock(_) => drop_on_clip(state, c.project, pos, t).map(|(r, _)| r),
-                DragPayload::Transition(_) | DragPayload::ShaderTransition(_) => drop_on_clip(state, c.project, pos, t).map(|(r, cl)| {
-                    // the half you are over picks the cut (same rule the app applies on release)
-                    let x = if crate::ui::transitions_ui::drop_at_end(cl, t) { r.right() } else { r.left() };
-                    Rect::from_min_max(pos2(x - 6.0, r.top()), pos2(x + 6.0, r.bottom()))
-                }),
-                _ => None,
-            };
-            if let Some(hit) = target {
-                lp.rect_filled(hit, 0, pal.selection.gamma_multiply(0.35));
-                lp.rect_stroke(hit, 0, Stroke::new(2.0, pal.selection), StrokeKind::Inside);
-            } else if !matches!(
-                &*payload,
-                DragPayload::Effect(_) | DragPayload::Transition(_) | DragPayload::ShaderTransition(_) | DragPayload::KeyBlock(_)
-            ) {
+            // a Gallery card lights what it would land on (clips / a cut / a ghost clip - see `gallery_drop`);
+            // anything else (media) shows the ghost clip of its length
+            let ti = state.track_at(pos.y, c.project);
+            let below = ti.is_none() && pos.y > gallery_drop::row_end(state, c.project) && pos.y <= lanes.bottom();
+            let thr = (gallery_drop::EDGE_PX / state.zoom) as f64;
+            if gallery_drop::drop_kind(&payload).is_some() {
+                let aim = gallery_drop::aim(c.project, c.selection, &payload, t, ti, below, thr);
+                if let Some(a) = aim {
+                    gallery_drop::paint(&lp, &pal, state, c.project, &a, state.drag_len);
+                }
+            } else {
                 let dur = match &*payload {
                     DragPayload::Asset(aid) => {
                         c.project.asset(*aid).map(|a| if a.kind == ClipKind::Image { 5.0 } else { a.duration })
@@ -1984,7 +1987,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     _ => None,
                 }
                 .unwrap_or(2.0);
-                let ti = state.track_at(pos.y, c.project).or_else(|| c.project.video_tracks().first().copied());
+                let ti = ti.or_else(|| c.project.video_tracks().first().copied());
                 if let Some((ti, top)) = ti.and_then(|ti| Some((ti, row_top(state, c.project, ti)?))) {
                     let h = c.project.tracks[ti].height;
                     let ghost =
@@ -2010,7 +2013,13 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     act = Some(Act::DropAsset(*aid, t, ti, kind));
                 }
                 DragPayload::Path(p) => out.dropped_files.push((PathBuf::from(p), t, ti)),
-                other => out.dropped_other.push((other.clone(), t, ti)),
+                other => {
+                    // (a Gallery card also reports where it resolved to - the same `aim` the hover lit)
+                    let below = ti.is_none() && pos.y > gallery_drop::row_end(state, c.project) && pos.y <= lanes.bottom();
+                    let thr = (gallery_drop::EDGE_PX / state.zoom) as f64;
+                    out.dropped_aims.push(gallery_drop::aim(c.project, c.selection, other, t, ti, below, thr));
+                    out.dropped_other.push((other.clone(), t, ti));
+                }
             }
         }
     }
@@ -2297,6 +2306,13 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                         }
                     }
                 }
+            }
+            Act::SaveTransition(tid) => {
+                changed = false;
+                c.sel_transitions.clear();
+                c.sel_transitions.push(tid);
+                c.selection.clear();
+                out.actions.push(crate::hotkeys::Action::SaveToGallery);
             }
             Act::RemoveTransition(tid) => p.remove_transition(tid),
             Act::MoveTransition(tid, pos) => {

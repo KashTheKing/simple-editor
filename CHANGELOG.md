@@ -1,5 +1,57 @@
 # Changelog
 
+## Unreleased
+
+### My Gallery
+- **Save to Gallery…** (right-click a clip, an effect row in the Inspector, a transition or an empty spot in
+  the Gallery; also Clip menu and the `gallery.save` tool): keep your own effect stacks / single effects,
+  transitions (with duration and shader controls), looks, caption styles, speed ramps, keyframe animations,
+  titles and templates, HTML layers, shader effects, LUTs and sounds. They show in the matching Gallery tab
+  marked **M**, with a **Mine** filter; right-click one for Rename, Edit tags, Duplicate, Replace with
+  current, Open file location and Delete (to a `.trash` folder). The old save paths (`stills.save`,
+  `keyblocks.save`, `templates.save`, Save Template) now write the same files.
+- **Plain files you can share**: `%APPDATA%\SimpleEditor\gallery\<kind>\<name>.json` (a sound is the audio
+  file with a small `.json` beside it) and an `index.json` that is rebuilt from the files when missing. Items
+  that used to live in `settings.json` move there once. **Folder** and **Import…** buttons per tab; drop
+  files, folders or a `.zip` onto the Gallery to import; a taken name is numbered, never overwritten.
+- **Sounds tab**: your sound effects as cards with waveform and length, preview on hover, click to add at the
+  playhead, drag onto an audio track (or below the last track for a new one). Nothing is decoded at start-up.
+- New tools: `gallery.save`, `gallery.import`, `gallery.manage`, `gallery.reveal`; `gallery.list {mine}`;
+  `gallery.apply {tab: "Sounds", at, track}`.
+
+### Gallery
+- **One grid, one header, everywhere.** Every Gallery tab (Animate, Looks, Luts, Captions, Speed, Effects,
+  Transitions, Templates, Titles, Sounds, HTML, Icons, Skills) is a wrapping grid that fills the panel and
+  reflows when you resize it, with the tab strip and a search header pinned above it: one search box (names,
+  tags, descriptions; <kbd>Ctrl+F</kbd> over the pane focuses it, <kbd>Esc</kbd> clears it), **All / Built-in /
+  Mine / Installed / Online** chips, a category menu (effect categories, transition kinds, tags), a sort order
+  (Default, Name, Recent, Most used), the result count and an **S / M / L** card size.
+- **The online library is not a separate screen any more**, and nothing is fetched until you ask. The
+  "use online library or a folder" choice is gone: each tab shows the built-in cards, yours, what is installed
+  and, after you click **Browse online library** once (remembered), the online items - the small index only.
+  Clicking an online card downloads just that item (progress on the card) and uses it. **Use a folder** and
+  **Turn the online library off** moved to the tab's **⋯** menu. The Library panel no longer repeats the
+  Effects / Adjustment-layer lists the Gallery has.
+- New tool `gallery.connect`; `gallery.list` takes `source`, `query`, `category`, `sort` and `detail` (and
+  lists library items); `library.list` shows only installed items until the library is connected.
+- **Effects and Transitions are Gallery tabs now**; the separate Effects and Transitions panes are gone.
+  Each tab lists the built-in cards and the online library's (installed or not, cloud mark) in one grid under
+  one search. <kbd>Ctrl+3</kbd> / <kbd>Ctrl+4</kbd> open the Gallery on that tab. A saved layout, page or
+  profile that still has the old panes loads with one Gallery tab where they were; `layout.surface`,
+  `layout.pin` and `ui.screenshot` still accept the names "Effects" and "Transitions" (they mean the Gallery).
+  New tool `gallery.tab`; `gallery.apply` takes tab `Effects` and, for Transitions, `where`
+  (`start | end | connection | all`).
+- **Drag any Gallery card onto the timeline**: effects, looks, LUTs, caption styles, speed ramps and keyframe
+  blocks onto a clip (the whole selection when you drop on one of several selected clips); transitions onto a
+  cut or a clip edge (snaps to the nearest edge); templates, titles, HTML layers and icons onto an empty video
+  track or the lane below the last one. The target lights up while you drag, <kbd>Esc</kbd> cancels, a
+  library item that is not installed yet downloads first, and a click still just applies the card.
+- **Right-click a transition card**: Apply to Start, Apply to End, Apply to Connection (when the clip touches
+  another one) and Apply to All (with two or more clips selected). The length is never more than half of the
+  shorter clip it touches.
+- **Fixed: the Animate tab ran off the right edge in one row**, so most keyframe blocks could not be reached.
+  Every Gallery card now wraps to the pane's width and the pane scrolls down to the last row.
+
 ## 1.2.0
 
 The biggest release yet: an AI **Assistant** that edits your project while you watch, HTML + CSS

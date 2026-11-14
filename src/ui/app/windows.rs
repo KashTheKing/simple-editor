@@ -97,10 +97,11 @@ impl App {
         // save template / save layout profile
         if let Some(name) = Self::name_window(ctx, "Save Template", &mut self.template_name) {
             let t = crate::engine::presets::capture_template(&name, &self.project, &self.selection);
-            self.settings.templates.retain(|x| x.name != name);
-            self.settings.templates.push(t);
-            self.settings.save();
-            self.toast(format!("Template '{name}' saved"));
+            let data = serde_json::from_str(&t.json).unwrap_or(Value::Null);
+            match gallery_mine::put(self, crate::engine::gallery::Kind::Template, &name, &[], data, true) {
+                Ok(_) => self.toast(format!("Template '{name}' saved")),
+                Err(e) => self.toast(e),
+            }
         }
         if let Some(name) = Self::name_window(ctx, "Save Layout Profile", &mut self.profile_name) {
             let json = self.layout.to_json();

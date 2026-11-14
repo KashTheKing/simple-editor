@@ -227,7 +227,11 @@ pub struct Settings {
     /// (global, reusable across projects - the Presets pane lists all of them).
     pub curve_presets: Vec<CurvePreset>,
     pub motion_presets: Vec<MotionPreset>,
+    /// The four Gallery kinds below live as files in the gallery folder (`engine::gallery_sync`): these
+    /// vectors are the in-memory view, still READ from an older settings.json (imported once) but never written.
+    #[serde(skip_serializing)]
     pub effect_presets: Vec<EffectPreset>,
+    #[serde(skip_serializing)]
     pub templates: Vec<Template>,
     /// Saved text-clip looks (font/size/bold/italic/colour/letter-spacing), appliable to a whole clip
     /// or a selected span. Also exportable to / importable from `.sedit-textstyle` files.
@@ -384,11 +388,15 @@ pub struct Settings {
     pub inspector_folds: BTreeMap<String, bool>,
     /// User-saved caption styles (Gallery ▸ Captions, "Save current style…"), alongside the built-in
     /// ones from `engine::presets::builtin_caption_styles()`.
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub caption_presets: Vec<TextStyle>,
     /// Last open Gallery tab (`GalleryTab`'s name), remembered across restarts.
     #[serde(default)]
     pub gallery_tab: String,
+    /// "Apply to All" (Gallery ▸ Transitions) leaves a clip that already has a transition at that spot
+    /// alone instead of replacing it. Off by default: the new transition replaces the old one.
+    #[serde(default)]
+    pub transition_skip_existing: bool,
     // ---- ws:layout-modes-onboarding ----
     /// The pre-pages workspace name (Simple / Edit / Color / Audio / Text / Deliver). Read once by
     /// `layout_ctl::migrate_to_pages` to pick the starting page; never written back.
@@ -464,6 +472,7 @@ pub struct Settings {
     // ---- ws:keys-actions ----
     // ---- ws:keyframe-blocks ----
     /// Keyframe blocks the user saved from a clip's keys (Gallery ▸ Animate, after the builtins).
+    #[serde(skip_serializing)]
     pub key_blocks: Vec<crate::model::KeyBlock>,
     // ---- ws:perf-baseline ----
     // ---- ws:pro-schema ----
@@ -536,6 +545,12 @@ pub struct Settings {
     pub library_url: String,
     /// A local folder read INSTEAD of `library_url` when not empty (testing before `library/` is on `main`).
     pub library_dir: String,
+    /// The user clicked "Browse online library" once: from then on the Gallery lists the online library
+    /// (the small index only; an item is downloaded when it is clicked). Off until then, so a fresh
+    /// install fetches nothing.
+    pub library_online: bool,
+    /// How often each Gallery card was applied ("Tab:name" -> count), for the "Most used" order.
+    pub gallery_used: std::collections::BTreeMap<String, u32>,
 }
 
 /// ws:assistant-pane: the built-in quick prompts (also what "Reset" restores).
@@ -658,6 +673,7 @@ impl Default for Settings {
             inspector_folds: BTreeMap::new(),
             caption_presets: Vec::new(),
             gallery_tab: "Looks".into(),
+            transition_skip_existing: false,
             // ---- ws:layout-modes-onboarding ----
             workspace: "Edit".into(),
             home_screen: true,
@@ -753,6 +769,8 @@ impl Default for Settings {
             // ---- ws:online-library ----
             library_url: "https://raw.githubusercontent.com/KashTheKing/simple-editor/main/library".into(),
             library_dir: String::new(),
+            library_online: false,
+            gallery_used: Default::default(),
         }
     }
 }
@@ -798,7 +816,12 @@ impl Settings {
     /// the corrupt file isn't silently overwritten by the next save) and returns
     /// `(Self::default(), Some(reason))`. A MISSING file (first run) is not an error: `(default, None)`.
     fn load_inner() -> (Self, Option<String>) {
-        Self::load_from(&Self::path())
+        #[allow(unused_mut)]
+        let (mut s, bad) = Self::load_from(&Self::path());
+        // (a test never touches the real gallery folder)
+        #[cfg(not(test))]
+        crate::engine::gallery_sync::load_into(&mut s, &crate::engine::gallery::root());
+        (s, bad)
     }
     /// The actual quarantine logic, over an explicit path - split out so a test can point it at a temp
     /// file instead of the real %APPDATA%\SimpleEditor\settings.json.
@@ -826,6 +849,8 @@ impl Settings {
     }
     /// Writes a temp file then renames, so a failed write can't destroy the previous settings.
     pub fn save(&self) {
+        #[cfg(not(test))]
+        crate::engine::gallery_sync::mirror(self, &crate::engine::gallery::root());
         let _ = std::fs::create_dir_all(Self::dir());
         if let Ok(s) = serde_json::to_string_pretty(self) {
             let tmp = Self::dir().join("settings.json.tmp");

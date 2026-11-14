@@ -16,7 +16,12 @@ use crate::ui::timeline::{dupe_groups, pacing_spans};
 pub(super) fn act(app: &mut App, a: Action) -> bool {
     match a {
         Action::Find => {
-            app.find.open = true;
+            // over the Gallery, Ctrl+F is its search box
+            if app.layout.hovered == Some(Pane::Presets) {
+                crate::ui::gallery::focus_search();
+            } else {
+                app.find.open = true;
+            }
             true
         }
         Action::ToggleOverview => {

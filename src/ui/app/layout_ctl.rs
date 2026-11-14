@@ -122,7 +122,8 @@ pub(super) fn panes_for(kind: SelectionKind) -> &'static [Pane] {
         | SelectionKind::Sequence
         | SelectionKind::Adjustment => &[Pane::Inspector],
         SelectionKind::Audio => &[Pane::Mixer, Pane::Inspector],
-        SelectionKind::Transition => &[Pane::Transitions, Pane::Inspector],
+        // (the Inspector edits it; the Gallery's Transitions tab is a catalogue, not worth stealing the tab for)
+        SelectionKind::Transition => &[Pane::Inspector],
         SelectionKind::Cue => &[Pane::Subtitles],
         SelectionKind::None | SelectionKind::Mixed | SelectionKind::EditPoint => &[],
     }
@@ -720,7 +721,7 @@ mod tests {
             (SelectionKind::Sequence, Some(Pane::Inspector)),
             (SelectionKind::Adjustment, Some(Pane::Inspector)),
             (SelectionKind::Audio, Some(Pane::Mixer)),
-            (SelectionKind::Transition, Some(Pane::Transitions)),
+            (SelectionKind::Transition, Some(Pane::Inspector)),
             (SelectionKind::Cue, Some(Pane::Subtitles)),
             (SelectionKind::None, None),
             (SelectionKind::Mixed, None),

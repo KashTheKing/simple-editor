@@ -49,6 +49,8 @@ thread_local! {
     /// (clip, effect index): draw that effect's mask in the viewport / edit that shader effect's GLSL.
     static EFFECT_MASK: RefCell<Option<(Id, usize)>> = const { RefCell::new(None) };
     static EDIT_SHADER: RefCell<Option<(Id, usize)>> = const { RefCell::new(None) };
+    /// An effect row's "Save to Gallery…" (clip, stack index).
+    static SAVE_EFFECT: RefCell<Option<(Id, usize)>> = const { RefCell::new(None) };
     /// Timeline time a keyframe menu's Previous / Next key asked for.
     static PENDING_SEEK: RefCell<Option<f64>> = const { RefCell::new(None) };
 }
@@ -75,6 +77,10 @@ pub fn take_effect_mask() -> Option<(Id, usize)> {
 }
 
 /// (clip, effect index) of the Shader effect whose GLSL the user wants to edit.
+pub fn take_save_effect() -> Option<(Id, usize)> {
+    SAVE_EFFECT.with(|p| p.borrow_mut().take())
+}
+
 pub fn take_edit_shader() -> Option<(Id, usize)> {
     EDIT_SHADER.with(|p| p.borrow_mut().take())
 }
@@ -1000,6 +1006,9 @@ fn clip_section(
             }
             if let Some(i) = r.mask_for {
                 EFFECT_MASK.with(|p| *p.borrow_mut() = Some((id, i)));
+            }
+            if let Some(i) = r.save_effect {
+                SAVE_EFFECT.with(|p| *p.borrow_mut() = Some((id, i)));
             }
             if let Some(i) = r.edit_shader {
                 EDIT_SHADER.with(|p| *p.borrow_mut() = Some((id, i)));

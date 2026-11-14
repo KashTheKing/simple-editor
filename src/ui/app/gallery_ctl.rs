@@ -15,7 +15,10 @@ use crate::ui::gallery;
 fn library_act(app: &mut App, act: gallery::LibAct) {
     use gallery::LibAct;
     match act {
-        LibAct::Apply(id) => library_ctl::click(app, &id),
+        LibAct::Apply(id) => library_ctl::click(app, &id, Default::default()),
+        LibAct::ApplyAt(id, at) => {
+            library_ctl::click(app, &id, library_ctl::Target { place: Some(at.to_string()), ..Default::default() })
+        }
         LibAct::Install(id) => {
             library_ctl::start_download(app, &id, library_ctl::Then::Install);
         }
@@ -42,6 +45,8 @@ fn library_act(app: &mut App, act: gallery::LibAct) {
             }
         }
         LibAct::Refresh => library_ctl::ensure(app, true),
+        LibAct::Connect => library_ctl::set_connected(app, true),
+        LibAct::Disconnect => library_ctl::set_connected(app, false),
         LibAct::UseFolder => {
             if let Some(dir) = rfd::FileDialog::new().set_title("Library folder (has index.json)").pick_folder() {
                 app.settings.library_dir = dir.to_string_lossy().into_owned();
@@ -51,10 +56,15 @@ fn library_act(app: &mut App, act: gallery::LibAct) {
         }
         LibAct::UseOnline => {
             app.settings.library_dir.clear();
-            app.settings.save();
-            library_ctl::ensure(app, true);
+            library_ctl::set_connected(app, true);
         }
     }
+}
+
+/// One more use of a Gallery card (the "Most used" order): `tab` is a `GalleryTab::name()` or "lib".
+pub(super) fn count_use(app: &mut App, tab: &str, name: &str) {
+    *app.settings.gallery_used.entry(gallery::used_key(tab, name)).or_insert(0) += 1;
+    app.settings.save();
 }
 
 pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
@@ -62,31 +72,37 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
         return false;
     }
     // ---- ws:online-library ---- GPU thumbnails only where they are drawn (Looks / folder LUTs)
-    let lib_kind = app.gallery.lib.or((app.gallery.tab == gallery::GalleryTab::Luts).then_some(Kind::Lut));
+    // (Effects and Transitions list their library items beside the built-in cards)
+    let lib_kind = app.gallery.lib.or(gallery::lib_kind_of(app.gallery.tab));
     if app.gallery.lib.is_none() && matches!(app.gallery.tab, gallery::GalleryTab::Looks | gallery::GalleryTab::Luts) {
         app.build_gallery_thumbnails(ui.ctx());
     }
     if lib_kind.is_some() {
-        library_ctl::ensure(app, false); // the first library tab opened: no network before this
+        // not connected: reads what is installed and nothing else (no network until "Browse online library")
+        library_ctl::ensure(app, false);
     }
     // one scroll area (inside `gallery::show`, under the pinned tab strip) - no outer one around it
     let resp = {
         let src = Source::of(&app.settings);
-        let App { gallery: st, settings, project, selection, palette, online, thumbs, .. } = app;
+        let App { gallery: st, settings, project, selection, palette, online, thumbs, transitions_ui: tr, .. } = app;
+        // every row: the Gallery's header filters them (search, chips, category, sort)
         let cells = lib_kind
-            .map(|k| online.rows(Some(k), &st.lib_query))
+            .map(|k| online.rows(Some(k), ""))
             .unwrap_or_default()
             .into_iter()
             .map(|r| gallery::LibCell {
                 busy: online.busy(&r.id),
                 skill: r.kind == Kind::Skill,
                 id: r.id,
+                kind: r.kind,
                 name: r.name,
                 desc: r.desc,
                 installed: r.installed,
+                tags: r.tags,
+                yours: r.yours,
             })
             .collect();
-        let (note, loading) = (online.note.clone(), online.loading());
+        let (note, loading, connected) = (online.note.clone(), online.loading(), online.connected);
         let ctx = ui.ctx().clone();
         let mut thumb = |id: &str| {
             let p = online.thumb_path(id)?;
@@ -94,31 +110,38 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
         };
         let lib = lib_kind.map(|_| gallery::LibView {
             cells,
-            source: src.label(),
             local: matches!(src, Source::Dir(_)),
             note,
             loading,
+            connected,
             thumb: &mut thumb,
         });
-        gallery::show(ui, st, settings, project, selection, palette, lib)
+        gallery::show(ui, st, settings, project, selection, palette, tr, lib)
     };
     if let Some(act) = resp.lib {
         library_act(app, act);
     }
     if let Some((tab, name, intensity)) = resp.apply {
-        let ids = app.project.expand_links(&app.selection);
-        let args = json!({"tab": tab.name(), "name": name, "clip_ids": ids, "intensity": intensity});
-        if let Err(e) = app.run_tool_undoable("gallery.apply", &args) {
-            app.toast(e);
+        // (a transition / effect mirrors onto linked clips itself: the plain selection, not its links)
+        let ids = match tab {
+            gallery::GalleryTab::Effects | gallery::GalleryTab::Transitions => app.selection.clone(),
+            _ => app.project.expand_links(&app.selection),
+        };
+        let args = json!({"tab": tab.name(), "name": name, "clip_ids": ids, "intensity": intensity, "where": resp.apply_where});
+        match app.run_tool_undoable("gallery.apply", &args) {
+            Ok(_) => count_use(app, tab.name(), &name),
+            Err(e) => app.toast(e),
         }
     }
     if let Some(name) = resp.place {
         app.place_template(&name, app.playhead);
+        count_use(app, "Templates", &name);
     }
     // ---- ws:text-titles ----
     if let Some(name) = resp.place_title {
         match app.place_title_template(&name, app.playhead) {
             Ok((_, customize)) => {
+                count_use(app, "Titles", &name);
                 app.gallery.customize = customize;
                 if app.gallery.customize.is_empty() {
                     app.toast(format!("Placed \"{name}\" (nothing to customize)"));
@@ -138,18 +161,37 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
         }
         app.after_edit();
     }
-    // "Save look from selection…" (the pane's right-click): capture the first selected clip's effect
-    // stack as a reusable EffectPreset - same shape `engine::presets::capture_template`'s siblings use
-    if let Some(name) = App::name_window(ui.ctx(), "Save look from selection", &mut app.gallery.save_name) {
-        if let Some(c) = app.selection.first().and_then(|&id| app.project.clip(id)) {
-            let preset =
-                crate::settings::EffectPreset { name, json: serde_json::to_string(&c.effects).unwrap_or_default() };
-            app.settings.effect_presets.retain(|p| p.name != preset.name);
-            app.settings.effect_presets.push(preset);
-            app.settings.save();
-            app.toast("Look saved");
-        } else {
-            app.toast("Select a clip first");
+    // ---- ws:my-gallery ----: Save to Gallery…, the Mine menu, Import…, Folder, a clicked sound
+    if resp.save_dialog {
+        gallery_mine::open_dialog(app, None);
+    }
+    if let Some((act, r)) = resp.mine {
+        gallery_mine::act(app, act, r);
+    }
+    if let Some(folder) = resp.import {
+        gallery_mine::import_dialog(app, folder);
+    }
+    if let Some(k) = resp.open_folder {
+        gallery_mine::open_folder(k);
+    }
+    if let Some(name) = resp.sound {
+        app.push_undo();
+        let at = app.playhead;
+        match gallery_mine::place_sound(app, &name, at, None, false) {
+            Ok(ids) => {
+                count_use(app, "Sounds", &name);
+                app.selection = ids;
+                app.after_edit();
+                app.toast(format!("{name} added at the playhead"));
+            }
+            Err(e) => app.toast(e),
+        }
+    }
+    // waveforms for the sound cards on screen: a few per frame, decoded lazily (nothing at start-up)
+    for path in gallery::take_sound_wants().into_iter().take(6) {
+        if let Some(pk) = app.waveforms.get(&path.to_string_lossy(), 0) {
+            gallery::set_sound_peaks(path, pk);
+            ui.ctx().request_repaint();
         }
     }
     // ---- ws:keyframe-blocks ----
@@ -158,16 +200,13 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
             app.toast(e);
         }
     }
-    if let Some(name) = App::name_window(ui.ctx(), "Save keyframe block", &mut app.gallery.save_block) {
-        match app.selection.first().copied() {
-            Some(id) => match super::tools_keyblocks::save_block(app, id, &name, None, None) {
-                Ok(()) => app.toast(format!("Saved \"{name}\" to Gallery ▸ Animate")),
-                Err(e) => app.toast(e),
-            },
-            None => app.toast("Select a clip first"),
-        }
-    }
-    let want = resp.hover.map(|(tab, name)| monitor::AltRequest::Gallery(tab.name().to_string(), name));
+    // a transition card previews in the monitor (a library one: its own source); the other tabs' requests are
+    // the reserved `AltRequest::Gallery`
+    let want = resp.hover.map(|(tab, name)| match (tab, crate::model::TransitionKind::from_name(&name)) {
+        (gallery::GalleryTab::Transitions, Some(kind)) => monitor::AltRequest::Transition(kind),
+        _ => monitor::AltRequest::Gallery(tab.name().to_string(), name),
+    });
+    let want = resp.hover_shader.map(monitor::AltRequest::ShaderTransition).or(want);
     app.alt_render.request(want);
     true
 }

@@ -79,6 +79,10 @@ impl App {
                     // ws:pages: no page shows the Tools pane any more - the viewer paints the mask tool
                     self.tools.tool = Tool::Mask(shape);
                 }
+                if let Some((id, i)) = inspector::take_save_effect() {
+                    self.selection = vec![id];
+                    gallery_mine::open_dialog(self, Some(gallery_mine::Save::Effect(Some(i))));
+                }
                 if let Some((id, i)) = inspector::take_edit_shader() {
                     let src = self
                         .project
@@ -93,33 +97,6 @@ impl App {
                         self.shader_ui.error = known.unwrap_or_default().to_string();
                     }
                 }
-            }
-            // ---- ws:inspector-surface: the catalogue only - the applied stack lives in the Inspector ----
-            Pane::Effects => {
-                let resp = {
-                    let App { project, selection, undo, redo, palette, .. } = self;
-                    let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
-                    egui::ScrollArea::vertical()
-                        .show(ui, |ui| effects_ui::show(ui, project, selection, palette, &mut push))
-                        .inner
-                };
-                if resp.edited {
-                    self.after_edit();
-                }
-            }
-            Pane::Transitions => {
-                let resp = {
-                    let App { project, selection, undo, redo, transitions_ui: st, palette, .. } = self;
-                    let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
-                    transitions_ui::show(ui, st, project, selection, palette, &mut push)
-                };
-                if resp.edited {
-                    self.after_edit();
-                }
-                // ---- ws:inspector-gallery ----
-                // ws:shader-library: a library card previews its own source
-                let req = resp.hover_shader.map(monitor::AltRequest::ShaderTransition);
-                self.alt_render.request(req.or(resp.hover.map(monitor::AltRequest::Transition)));
             }
             Pane::Curves => {
                 let resp = {
