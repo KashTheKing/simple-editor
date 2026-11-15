@@ -1,0 +1,36 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Warning Disclaimer</title>
+<meta name="se:kind" content="layer">
+<meta name="se:desc" content="Full-screen black warning card: big red title and a centred disclaimer. Fades in in 0.25 s, slowly zooms in for 10 s, then fades out fast.">
+<meta name="se:tags" content="warning, disclaimer, content warning, notice, documentary, intro, text">
+<meta name="se:size" content="1920x1080">
+<meta name="se:duration" content="10.5s">
+<meta name="se:field" content="title | text | WARNING">
+<meta name="se:field" content="description | text | This video contains references to recreational drugs and drug-related themes in an educational context. These references are not intended to promote or glorify illegal drug usage. This documentary is for educational purposes only. This video has been edited to comply with YouTube's guidelines. Viewer discretion is advised.">
+<meta name="se:field" content="accent | color | #ee2224">
+<meta name="se:field" content="text | color | #ffffff">
+<meta name="se:field" content="background | color | #000000">
+<meta name="se:field" content="font | font | Montserrat">
+<meta name="se:field" content="zoom | range | 1.12 | 1 | 1.5 | 0.01">
+<meta name="se:field" content="shadow | toggle | off | 0 4px 24px rgba(0, 0, 0, .6) | none">
+<style>
+  html, body { margin: 0; width: 100vw; height: 100vh; overflow: hidden; background: {{background}};
+    font-family: {{font}}; }
+  /* fade in .25s, fade out .4s from 10s; the zoom runs the whole 10s */
+  .stage { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    animation: in .25s ease-out both, out .4s ease-in 10s both; }
+  .card { width: 1500px; text-align: center; transform-origin: 50% 50%;
+    animation: zoom 10s linear both; }
+  .title { color: {{accent}}; font-size: 170px; line-height: 1; font-weight: 900; letter-spacing: -2px;
+    margin-bottom: 36px; text-shadow: {{shadow}}; }
+  .desc { color: {{text}}; font-size: 54px; line-height: 1.2; font-weight: 600; text-shadow: {{shadow}}; }
+  @keyframes in { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes out { to { opacity: 0; } }
+  @keyframes zoom { from { transform: scale(1); } to { transform: scale({{zoom}}); } }
+</style>
+</head>
+<body><div class="stage"><div class="card"><div class="title">{{title}}</div><div class="desc">{{description}}</div></div></div></body>
+</html>
