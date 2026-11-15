@@ -2512,6 +2512,25 @@
       "thumb": "thumbs/html-versus-card.jpg"
     },
     {
+      "id": "html/warning-disclaimer",
+      "kind": "html",
+      "name": "Warning Disclaimer",
+      "desc": "Full-screen black warning card: big red title and a centred disclaimer. Fades in in 0.25 s, slowly zooms in for 10 s, then fades out fast.",
+      "tags": [
+        "warning",
+        "disclaimer",
+        "content warning",
+        "notice",
+        "documentary",
+        "intro",
+        "text"
+      ],
+      "file": "html/warning-disclaimer.html",
+      "size": 2416,
+      "credit": "",
+      "thumb": "thumbs/html-warning-disclaimer.jpg"
+    },
+    {
       "id": "icons/arrow-down",
       "kind": "icon",
       "name": "Arrow down",
