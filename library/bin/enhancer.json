@@ -1,0 +1,8 @@
+{
+  "name": "AI enhancer (Real-ESRGAN ncnn-vulkan)",
+  "version": "20220424",
+  "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-windows.zip",
+  "sha256": "abc02804e17982a3be33675e4d471e91ea374e65b70167abc09e31acb412802d",
+  "size": 45474481,
+  "license": "BSD-3-Clause (https://github.com/xinntao/Real-ESRGAN/blob/master/LICENSE)"
+}

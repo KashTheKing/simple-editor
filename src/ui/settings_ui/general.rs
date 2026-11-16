@@ -60,6 +60,11 @@ pub(super) fn general(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Setting
         }
         ui.end_row();
 
+        // ---- ws:ai-enhancer ----
+        ui.label("AI enhancer");
+        ui.horizontal(enhancer_row);
+        ui.end_row();
+
         ui.label("Downloads folder");
         ui.horizontal(|ui| {
             changed |= ui
@@ -189,4 +194,39 @@ pub(super) fn port_field(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Sett
         return true;
     }
     false
+}
+
+// ---- ws:ai-enhancer ----
+/// Install / uninstall the optional AI enhancer add-on (Real-ESRGAN, used by clip ▸ AI Upscale).
+fn enhancer_row(ui: &mut egui::Ui) {
+    use crate::engine::enhance;
+    if let Some(p) = enhance::installing() {
+        ui.add(egui::Spinner::new());
+        ui.weak(format!("{:.0}% · {}", p.fraction() * 100.0, p.status()));
+    } else if enhance::available() {
+        ui.weak(match enhance::version() {
+            Some(v) => format!("installed ({v})"),
+            None => "installed".into(),
+        });
+        let id = egui::Id::new("enhancer_uninstall_error");
+        if ui.button("Uninstall").on_hover_text("Removes the add-on; files it already upscaled stay").clicked() {
+            let r = enhance::uninstall().err();
+            ui.data_mut(|d| d.insert_temp(id, r));
+        }
+        if let Some(e) = ui.data(|d| d.get_temp::<Option<String>>(id)).flatten() {
+            ui.colored_label(ui.visuals().error_fg_color, e);
+        }
+    } else {
+        if ui
+            .button("Install")
+            .on_hover_text("Real-ESRGAN AI upscaling on the graphics card: right-click a clip ▸ AI Upscale. About 45 MB, downloaded once.")
+            .clicked()
+        {
+            enhance::start_install();
+        }
+        match enhance::install_error() {
+            Some(e) => ui.colored_label(ui.visuals().error_fg_color, format!("install failed: {e}")),
+            None => ui.weak("optional, about 45 MB"),
+        };
+    }
 }

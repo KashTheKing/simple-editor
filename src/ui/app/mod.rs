@@ -163,6 +163,8 @@ mod library_ctl;
 mod tools_library;
 // ---- ws:social-guides ----
 mod tools_social;
+// ---- ws:ai-enhancer ----
+mod enhance_ctl;
 mod whatsnew;
 #[path = "windows.rs"]
 mod windows_dlg;
@@ -1650,6 +1652,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     browser_ctl::TOOLS,
     // ---- ws:social-guides ----
     tools_social::TOOLS,
+    // ---- ws:ai-enhancer ----
+    enhance_ctl::TOOLS,
 ];
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
@@ -1729,6 +1733,8 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     library_ctl::act,
     // ---- ws:browser-layer ----
     browser_ctl::act,
+    // ---- ws:ai-enhancer ----
+    enhance_ctl::act,
 ];
 
 pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
@@ -1805,6 +1811,8 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     gallery_mine::frame,
     // ---- ws:browser-layer ----
     browser_ctl::tick,
+    // ---- ws:ai-enhancer ----
+    enhance_ctl::tick,
 ];
 
 pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[

@@ -1221,6 +1221,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 shared_effects: &shared_effects,
                 // ---- ws:html-layer ----
                 html: clip.uses_asset() && c.project.asset(clip.asset).is_some_and(|a| a.html.is_some()),
+                // ---- ws:ai-enhancer ----
+                zoom: clip.scale.keys.iter().map(|k| k.v).fold(clip.scale.value, f64::max)
+                    * clip.scale_x.value.max(clip.scale_y.value),
             };
             let mut toggle_graph = false;
             let mut rclick = br.secondary_clicked();

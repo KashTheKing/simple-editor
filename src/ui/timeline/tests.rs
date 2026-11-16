@@ -1572,6 +1572,7 @@ fn test_clip_menu<'a>(labels: &'a [Label], buses: &'a [crate::model::Bus], share
         buses,
         shared_effects: shared,
         html: false,
+        zoom: 1.0,
     }
 }
 
@@ -3231,4 +3232,25 @@ fn headless_key_block_bar_moves_and_stretches() {
     assert!((c.blocks[0].dur - 1.8).abs() < 1.0 / 30.0 + 1e-6, "stretched to {}", c.blocks[0].dur);
     assert!((c.rotation.at(c.blocks[0].end()) - 360.0).abs() < 1e-6);
     assert_eq!(h.undos, 2);
+}
+
+// ---- ws:ai-enhancer ----
+/// AI Upscale sits under Transform, and comes up to the top level, naming the zoom, on a clip zoomed
+/// past `enhance::OFFER_ZOOM` (the zoom is where an upscale shows).
+#[test]
+fn ai_upscale_is_offered_at_the_top_on_zoomed_clips() {
+    let p = Project::new();
+    for (zoom, top) in [(1.0, false), (1.6, true)] {
+        let m = ClipMenu { zoom, ..test_clip_menu(&p.labels, &p.buses, &[]) };
+        let (mut act, mut tg, mut el) = (None, false, false);
+        let mut draw = |ui: &mut egui::Ui| clip_menu(ui, &m, &mut act, &mut tg, &mut el);
+        let mut probe = MenuProbe::new();
+        probe.run(vec![], &mut draw);
+        assert_eq!(probe.has("AI Upscale — zoomed 1.6×"), top, "{:?}", probe.texts());
+        assert!(!probe.has("AI Upscale"), "plain entry is not at the top level");
+        if !top {
+            probe.click("Transform", &mut draw);
+            assert!(probe.has("AI Upscale"), "{:?}", probe.texts());
+        }
+    }
 }
