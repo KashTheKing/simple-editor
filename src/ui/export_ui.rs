@@ -578,6 +578,20 @@ mod tests {
         assert_eq!(preset_size(1920, 1080, "custom", (100, 50)), Some((100, 50)));
     }
 
+    fn frame(
+        ctx: &egui::Context,
+        st: &mut ExportUi,
+        project: &Project,
+        settings: &mut Settings,
+    ) -> Option<(ExportChoice, bool)> {
+        let mut out = None;
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default()
+                .show(ctx, |ui| out = body(ui, st, project, settings, &["libx264".into()], false));
+        });
+        out
+    }
+
     #[test]
     fn show_headless() {
         let project = Project::new();
