@@ -8,8 +8,10 @@
 //! `Browser.close` after `IDLE` without a render and on app exit (`shutdown`). Per frame every CSS
 //! animation's `currentTime` is set through `Runtime.evaluate` (a host-side evaluation: the page
 //! itself never runs script) and the viewport is captured as a PNG with a transparent background.
-//! A full render pipes those PNGs into ffmpeg as PNG-in-MOV (`-c:v copy`, straight alpha kept); a
-//! page without animations is one PNG. Output files are content-addressed in `cache_dir()/html/`.
+//! A full render pipes those PNGs into ffmpeg and encodes H.264 (`encode_args`): `<hash>.mp4` when the
+//! page is opaque, `<hash>.stacked.mp4` (colour over alpha, as `media::proxy`'s alpha proxies) when it has
+//! transparency; a page without animations is one PNG. Output files are content-addressed in
+//! `cache_dir()/html/`. (Up to html-v4 renders were PNG-in-MOV, ~100 MB each: `cache_lru` deletes those.)
 //!
 //! Shutdown: the spike's preview tool killed Edge's main process and waited, which sometimes hung
 //! after pages with infinite animations. Killing only the browser process orphans its renderer /
@@ -2589,12 +2591,57 @@ pub struct Rendered {
     pub path: PathBuf,
     pub width: u32,
     pub height: u32,
-    /// `.mov` (true) or a single `.png` (the page has no animation).
+    /// an H.264 `.mp4` (true) or a single `.png` (the page has no animation).
     pub animated: bool,
 }
 
 pub fn dir() -> PathBuf {
+    if cfg!(test) {
+        // tests render for real: into a temp folder of their own, never the user's cache
+        return std::env::temp_dir().join(format!("se-test-html-{}", std::process::id()));
+    }
     crate::settings::Settings::cache_dir().join("html")
+}
+
+/// The viewport of `src` at layout width `width` (0 = its `se:size`), in CSS pixels.
+pub fn viewport(src: &str, width: u32) -> (u32, u32) {
+    sized(&parse(src), width)
+}
+
+/// An animated render's file: `<hash><part>.mp4`, `.stacked.mp4` when it has transparency. `part` is
+/// "" (the render), ".draft" or ".window" (`interim`).
+fn anim_path(base: &Path, part: &str, alpha: bool) -> PathBuf {
+    let name = base.file_name().unwrap_or_default().to_string_lossy();
+    base.with_file_name(format!("{name}{part}{}", if alpha { ".stacked.mp4" } else { ".mp4" }))
+}
+
+/// A draft or window file (`interim`): only shown while the render runs, never kept or proxied.
+pub fn is_interim(path: &Path) -> bool {
+    let n = path.file_name().unwrap_or_default().to_string_lossy();
+    n.contains(".draft.") || n.contains(".window.")
+}
+
+/// Every file a render may have left for the cache name `stem` (16 hex digits): the render (either
+/// layout), its interims and its still, and the PNG-in-MOV files of html-v4 and before.
+pub fn render_files(stem: &str) -> Vec<PathBuf> {
+    if stem.len() != 16 || !stem.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Vec::new(); // not a render (pending.png, a zoom detail, a temp file)
+    }
+    let base = dir().join(stem);
+    let mut v: Vec<PathBuf> = ["", ".draft", ".window"]
+        .iter()
+        .flat_map(|part| [anim_path(&base, part, false), anim_path(&base, part, true)])
+        .collect();
+    v.extend(["png", "still.png", "mov", "draft.mov", "window.mov"].map(|e| base.with_extension(e)));
+    v
+}
+
+/// The interims of the render named `base` (drafts, windows, the still): done with once it is in.
+pub fn interim_files(base: &Path) -> Vec<PathBuf> {
+    let mut v: Vec<PathBuf> =
+        [".draft", ".window"].iter().flat_map(|p| [anim_path(base, p, false), anim_path(base, p, true)]).collect();
+    v.push(base.with_extension("still.png"));
+    v
 }
 
 /// The viewport of a render: the template's `se:size`, or its height at the width asked for.
@@ -2635,7 +2682,7 @@ fn out_base_for(spec: &Spec, fast: bool) -> (PathBuf, (u32, u32)) {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     let params = serde_json::to_string(&params_hashable(tpl, &spec.params)).unwrap_or_default();
     let mouse = serde_json::to_string(&spec.mouse).unwrap_or_default();
-    ("html-v4", page, px, spec.fps.to_bits(), spec.duration.to_bits(), prep.deps_stamp(&spec.base), params, mouse)
+    ("html-v5", page, px, spec.fps.to_bits(), spec.duration.to_bits(), prep.deps_stamp(&spec.base), params, mouse)
         .hash(&mut h);
     if fast {
         "blitz-1".hash(&mut h);
@@ -2650,15 +2697,22 @@ pub fn cached(spec: &Spec) -> Option<Rendered> {
 }
 
 fn cached_at(base: &Path, width: u32, height: u32) -> Option<Rendered> {
-    [("mov", true), ("png", false)].into_iter().find_map(|(ext, animated)| {
-        let path = base.with_extension(ext);
-        if !path.is_file() {
-            return None;
-        }
-        // a full-page capture is as tall as its page: ask the file
-        let (width, height) = if animated { (width, height) } else { png_file_size(&path).unwrap_or((width, height)) };
-        Some(Rendered { path, width, height, animated })
+    let (ew, eh) = even((width, height));
+    let anim = [anim_path(base, "", false), anim_path(base, "", true)].into_iter().find(|p| p.is_file());
+    if let Some(path) = anim {
+        return Some(Rendered { path, width: ew, height: eh, animated: true });
+    }
+    let path = base.with_extension("png");
+    // a full-page capture is as tall as its page: ask the file
+    path.is_file().then(|| {
+        let (width, height) = png_file_size(&path).unwrap_or((width, height));
+        Rendered { path, width, height, animated: false }
     })
+}
+
+/// H.264 4:2:0 wants even sizes: an odd one is encoded a pixel bigger.
+fn even((w, h): (u32, u32)) -> (u32, u32) {
+    ((w.max(2) + 1) & !1, (h.max(2) + 1) & !1)
 }
 
 /// The interim still of `spec` (its moment `thumb_at`), if one was written: what the asset shows while
@@ -2670,10 +2724,13 @@ pub fn interim(spec: &Spec) -> Option<Rendered> {
 }
 
 fn interim_at(base: &Path, width: u32, height: u32) -> Option<Rendered> {
-    for ext in ["window.mov", "draft.mov"] {
-        let p = base.with_extension(ext);
-        if p.is_file() {
-            return Some(Rendered { path: p, width, height, animated: true });
+    let (ew, eh) = even((width, height));
+    for part in [".window", ".draft"] {
+        for alpha in [false, true] {
+            let p = anim_path(base, part, alpha);
+            if p.is_file() {
+                return Some(Rendered { path: p, width: ew, height: eh, animated: true });
+            }
         }
     }
     let path = base.with_extension("still.png");
@@ -2697,8 +2754,8 @@ fn write_file(out: &Path, bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-/// Render `spec` into the cache (or reuse what is there): PNG frames piped to ffmpeg as PNG-in-MOV,
-/// or one `.png` for a page with no animation. First (as a short render, ahead of any long one) the
+/// Render `spec` into the cache (or reuse what is there): PNG frames piped to ffmpeg as H.264
+/// (`encode_args`), or one `.png` for a page with no animation. First (as a short render, ahead of any long one) the
 /// still `interim` shows. A frame where no animation is in its active phase since the frame before is
 /// that same picture: rendered once, repeated (holds between an intro and an outro, the end). The
 /// frame loop steps aside for short renders between frames (not with a fake mouse: its hover state
@@ -2720,8 +2777,73 @@ pub fn render_to_file(spec: &Spec, prog: &Progress) -> Result<Rendered, String> 
     render_to_file_with(spec, prog, false)
 }
 
-/// `render_to_file` with the renderer decided: `fast` = the `se-html` helper, else Edge.
+/// `render_to_file` with the renderer decided: `fast` = the `se-html` helper, else Edge. The GPU's H.264
+/// encoder when one works (`encoders::best_for`), else libx264; a GPU encode that fails (a driver out of
+/// sessions, say) renders again in software.
 fn render_to_file_with(spec: &Spec, prog: &Progress, fast: bool) -> Result<Rendered, String> {
+    let enc = crate::engine::encoders::best_for("mp4");
+    match render_encoded(spec, prog, fast, enc.as_deref()) {
+        Err(e) if enc.is_some() && e.starts_with(ENCODER_FAILED) && !prog.is_cancelled() => {
+            eprintln!("html: {e}; software encode");
+            render_encoded(spec, prog, fast, None)
+        }
+        r => r,
+    }
+}
+
+/// The error of a render whose encoder (not its frames) failed: `render_to_file_with` retries those.
+const ENCODER_FAILED: &str = "encoder failed: ";
+
+/// ffmpeg output args of an animated render at `fps`, `size` (even) pixels: H.264 4:2:0, a keyframe
+/// every half second and no B-frames (seeks and scrubs decode at most half a second), constant frame
+/// rate. Opaque = a plain picture; `alpha` = the stacked colour-over-alpha layout of the alpha proxies
+/// (`proxy::stacked_filter`), which `proxy::StackedAlpha` folds back at decode. `enc` = a GPU encoder
+/// (`encoders::best_for`), anything else = libx264. Quality ~CRF 18: a 5 s 1080p60 title is a few MB
+/// where the PNG-in-MOV of html-v4 was ~150 MB.
+fn encode_args(enc: Option<&str>, alpha: bool, size: (u32, u32), fps: f64) -> Vec<String> {
+    let wh = format!("{}:{}", size.0, size.1);
+    let vf = if alpha { crate::media::proxy::stacked_filter_to(&wh) } else { format!("scale={wh},format=yuv420p") };
+    let codec: &[&str] = match enc {
+        Some("h264_nvenc") => {
+            &["-c:v", "h264_nvenc", "-preset", "p6", "-tune", "hq", "-rc", "vbr", "-cq", "19", "-b:v", "0"]
+        }
+        Some("h264_qsv") => &["-c:v", "h264_qsv", "-preset", "slow", "-global_quality", "19"],
+        Some("h264_amf") => &["-c:v", "h264_amf", "-quality", "quality", "-rc", "cqp", "-qp_i", "19", "-qp_p", "21"],
+        _ => &["-c:v", "libx264", "-preset", "medium", "-crf", "18"],
+    };
+    let rate = format!("{}/1000", (fps * 1000.0).round());
+    let gop = ((fps / 2.0).round() as u32).max(1).to_string();
+    let mut v: Vec<String> = ["-vf", vf.as_str()].iter().chain(codec).map(|a| a.to_string()).collect();
+    v.extend(
+        ["-g", &gop, "-bf", "0", "-pix_fmt", "yuv420p", "-r", &rate, "-an", "-movflags", "+faststart", "-f", "mp4"]
+            .map(String::from),
+    );
+    v
+}
+
+/// Is this PNG opaque (every pixel's alpha 255)? An RGB / grey PNG is without reading a pixel.
+fn opaque(png: &[u8]) -> bool {
+    if png.len() > 25 && matches!(png[25], 0 | 2) {
+        return true;
+    }
+    decode_png(png).is_ok_and(|f| f.rgba.chunks_exact(4).all(|p| p[3] == 255))
+}
+
+/// Does the layer have transparency? Asked of four moments: the start, the still, the middle, the last
+/// frame. ponytail: a page opaque at all four but see-through in between (a mid-layer cut-out) loses it;
+/// check every frame as it is written if one ever does. A fake mouse is always stacked (its hover state
+/// is replayed in order, so no moments out of order are shot).
+fn probe_alpha(times: [f64; 4], mut shot: impl FnMut(f64) -> Result<Vec<u8>, String>) -> Result<bool, String> {
+    for ms in times {
+        if !opaque(&shot(ms)?) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Render with encoder `enc` (None = libx264).
+fn render_encoded(spec: &Spec, prog: &Progress, fast: bool, enc: Option<&str>) -> Result<Rendered, String> {
     let (base, (pw, ph)) = out_base_for(spec, fast);
     if let Some(r) = cached_at(&base, pw, ph) {
         return Ok(r);
@@ -2736,6 +2858,7 @@ fn render_to_file_with(spec: &Spec, prog: &Progress, fast: bool) -> Result<Rende
     // a keyframed param or a mouse moves the picture as surely as a CSS animation does
     let moving = animated_params(&tpl, &spec.params) || spec.mouse.is_some();
     let still_ms = tpl.thumb_at().min(spec.duration).max(0.0) * 1000.0;
+    let probe_ms = [0.0, still_ms, frames as f64 / 2.0 * 1000.0 / fps, (frames - 1) as f64 * 1000.0 / fps];
     // 1: the animations, and the picture to show until the render is done (or the only one)
     let mut shooter: Option<blitz::Shooter> = None;
     let first = if fast {
@@ -2759,8 +2882,10 @@ fn render_to_file_with(spec: &Spec, prog: &Progress, fast: bool) -> Result<Rende
             (true, Some(e)) => vec![(0.0, e * 1000.0)],
             (true, None) => vec![(0.0, f64::INFINITY)],
         };
+        let alpha = spec.mouse.is_some()
+            || probe_alpha(probe_ms, |ms| sh.png(ms / 1000.0, &values_at(&tpl, &spec.params, ms / 1000.0), None))?;
         shooter = Some(sh);
-        Ok(phases)
+        Ok((phases, alpha))
     } else {
       with_edge(true, |e| {
         e.load(&page, vp, scale)?;
@@ -2785,40 +2910,34 @@ fn render_to_file_with(spec: &Spec, prog: &Progress, fast: bool) -> Result<Rende
             write_file(&base.with_extension("still.png"), &png)?;
             STILLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
-        Ok(Ok(phases))
+        let alpha = spec.mouse.is_some()
+            || probe_alpha(probe_ms, |ms| {
+                e.set_params(&values_at(&tpl, &spec.params, ms / 1000.0))?;
+                e.seek(ms)?;
+                let mut p = Vec::new();
+                e.shot(&mut p)?;
+                Ok(p)
+            })?;
+        Ok(Ok((phases, alpha)))
       })?
     };
-    let phases = match first {
+    let (phases, alpha) = match first {
         Ok(p) => p,
         Err(done) => return Ok(done),
     };
+    let size = even((pw, ph));
     // 2: every frame. A chunk is Ok(true) when the render is over (done, cancelled, ffmpeg gone), Ok(false)
     // when it steps aside for a short render.
-    let out = base.with_extension("mov");
+    // H.264 that Media Foundation plays like footage (the PNG-in-MOV of html-v4 cost ~36 ms a frame to
+    // decode and needed a proxy besides): no proxy is built for it
+    let out = anim_path(&base, "", alpha);
     let tmp = export::temp_output(&out);
-    // the stacked playback proxy in the same pass: the PNG .mov costs ~36 ms a frame to decode, the
-    // proxy plays like footage from the moment the render is done (no second encode, and it stays on
-    // disk for every later open). Height as `proxy::height_for` picks it, so the scan finds it.
-    let proxy_h = match crate::media::proxy::HTML_PROXY_H.load(std::sync::atomic::Ordering::Relaxed) {
-        0 => None,
-        h if ph < h => Some(ph.max(2) & !1),
-        h => Some(h),
-    };
-    let proxy_tmp = proxy_h.map(|_| export::temp_output(&base.with_extension("proxy.mp4")));
     let mut cmd = crate::media::bg::command(&ffmpeg);
     cmd.args(["-y", "-hide_banner", "-loglevel", "error", "-f", "image2pipe"])
         .args(["-framerate", &format!("{}/1000", (fps * 1000.0).round())])
         .args(["-c:v", "png", "-i", "-"]);
-    if let (Some(h), Some(p)) = (proxy_h, &proxy_tmp) {
-        cmd.args(["-filter_complex", &format!("[0:v]{}[px]", crate::media::proxy::stacked_filter(h))])
-            .args(["-map", "[px]"])
-            .args(crate::media::proxy::ENCODE)
-            .args(["-f", "mp4"])
-            .arg(&p.0)
-            .args(["-map", "0:v"]);
-    }
     let mut child = cmd
-        .args(["-c:v", "copy", "-f", "mov"])
+        .args(encode_args(enc, alpha, size, fps))
         .arg(&tmp.0)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
@@ -2828,25 +2947,24 @@ fn render_to_file_with(spec: &Spec, prog: &Progress, fast: bool) -> Result<Rende
     let tail = export::stderr_tail(&mut child);
     let mut stdin = child.stdin.take().ok_or("ffmpeg stdin")?;
     let yields = spec.mouse.is_none();
-    let mut size = (1u32, 1u32);
     let to_render = frames_to_render(&phases, moving, frames, fps);
     let workers = if spec.mouse.is_none() { worker_count_for(to_render, fast) } else { 1 };
     let fed = if workers > 1 {
         if let Some(sh) = shooter.take() {
             sh.close(); // the workers open their own
         }
-        let job = Job { page: &page, base: &spec.base, fast, vp, scale, fps, frames, tpl: &tpl, params: &spec.params, phases: &phases, moving };
+        let job = Job { page: &page, base: &spec.base, fast, vp, scale, fps, frames, tpl: &tpl, params: &spec.params, phases: &phases, moving, enc, alpha, size };
         // a long one: a 5 fps draft the clip can play first, then the frames around the playhead at full
         // rate (with the draft filling the rest), then every frame
         let long = frames as f64 / fps > 8.0;
-        let draft = long.then(|| base.with_extension("draft.mov"));
+        let draft = long.then(|| anim_path(&base, ".draft", alpha));
         let window = spec.focus.filter(|_| long).map(|(a, b)| {
             let f = |t: f64| ((t * fps).round().max(0.0) as usize).min(frames);
             (f(a), f(b).max(f(a) + 1).min(frames))
         });
-        let window = window.filter(|&(a, b)| b - a < frames).map(|w| (w, base.with_extension("window.mov")));
+        let window = window.filter(|&(a, b)| b - a < frames).map(|w| (w, anim_path(&base, ".window", alpha)));
         let window = window.as_ref().map(|(w, p)| (*w, p.as_path()));
-        render_parallel(&job, workers, &mut stdin, draft.as_deref(), window, prog).map(|s| size = s)
+        render_parallel(&job, workers, &mut stdin, draft.as_deref(), window, prog)
     } else if fast {
         // one helper process, in frame order (also the only way a fake mouse's hover state is replayed)
         let mut sh = match shooter.take() {
@@ -2863,9 +2981,6 @@ fn render_to_file_with(spec: &Spec, prog: &Progress, fast: bool) -> Result<Rende
                 if moving || last_ms.is_none_or(|a| moves_between(&phases, a, ms)) {
                     let ptr = spec.mouse.as_ref().map(|m| m.state(ms / 1000.0));
                     png = sh.png(ms / 1000.0, &values_at(&tpl, &spec.params, ms / 1000.0), ptr)?;
-                    if i == 0 {
-                        size = png_size(&png).unwrap_or(size);
-                    }
                     last_ms = Some(ms);
                 }
                 if stdin.write_all(&png).is_err() {
@@ -2905,9 +3020,6 @@ fn render_to_file_with(spec: &Spec, prog: &Progress, fast: bool) -> Result<Rende
                         e.seek(ms)?;
                     }
                     e.shot(&mut png)?;
-                    if i == 0 {
-                        size = png_size(&png).unwrap_or(size);
-                    }
                     last_ms = Some(ms);
                 }
                 if stdin.write_all(&png).is_err() {
@@ -2935,15 +3047,15 @@ fn render_to_file_with(spec: &Spec, prog: &Progress, fast: bool) -> Result<Rende
         }
         return Err(err);
     }
-    export::wait_ffmpeg(&mut child, tail, prog)?;
+    export::wait_ffmpeg(&mut child, tail, prog).map_err(|e| match enc {
+        Some(enc) if e != export::CANCELLED => format!("{ENCODER_FAILED}{enc}: {e}"),
+        _ => e,
+    })?;
     tmp.commit(&out)?;
-    if let (Some(h), Some(p)) = (proxy_h, proxy_tmp) {
-        // named after the committed file (its mtime is in the key); a failure only means the proxy
-        // scan builds it later, the old way
-        let dst = crate::media::proxy::stacked_or_plain(&out.to_string_lossy(), h, true);
-        if std::fs::create_dir_all(crate::media::proxy::dir()).is_ok() {
-            let _ = p.commit(&dst);
-        }
+    // the draft and window were only for while it rendered (one still open in a decoder goes when the
+    // asset is re-pointed: `html_ctl`)
+    for f in interim_files(&base).iter().filter(|f| f.extension().is_some_and(|e| e == "mp4")) {
+        let _ = std::fs::remove_file(f);
     }
     Ok(Rendered { path: out, width: size.0, height: size.1, animated: true })
 }
@@ -3041,6 +3153,10 @@ struct Job<'a> {
     params: &'a [(String, crate::model::Animated)],
     phases: &'a [(f64, f64)],
     moving: bool,
+    /// The encoder, the layout and the (even) size of the files written (`encode_args`).
+    enc: Option<&'a str>,
+    alpha: bool,
+    size: (u32, u32),
 }
 
 /// Frames per piece of work a worker takes (in order, so the writer never waits on far-ahead frames).
@@ -3049,7 +3165,7 @@ const PIECE: usize = 30;
 /// (`interim`); the full render reuses them.
 const DRAFT_FPS: f64 = 5.0;
 
-/// A PNG-in-MOV writer: ffmpeg fed PNG bytes on its stdin, `-c:v copy` (no re-encode).
+/// An interim writer (draft, window): ffmpeg fed PNG bytes on its stdin, encoded as the render is.
 struct MovOut {
     child: Child,
     stdin: Option<std::process::ChildStdin>,
@@ -3059,13 +3175,14 @@ struct MovOut {
 }
 
 impl MovOut {
-    fn start(out: &Path, fps: f64) -> Result<MovOut, String> {
+    fn start(out: &Path, fps: f64, job: &Job) -> Result<MovOut, String> {
         let ffmpeg = ffpipe::ffmpeg_exe().ok_or("ffmpeg.exe not found")?;
         let tmp = export::temp_output(out);
         let mut child = crate::media::bg::command(&ffmpeg)
             .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "image2pipe"])
             .args(["-framerate", &format!("{}/1000", (fps * 1000.0).round())])
-            .args(["-c:v", "png", "-i", "-", "-c:v", "copy"])
+            .args(["-c:v", "png", "-i", "-"])
+            .args(encode_args(job.enc, job.alpha, job.size, fps))
             .arg(&tmp.0)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
@@ -3100,9 +3217,9 @@ impl Drop for MovOut {
 /// each taking the next `PIECE` frames of a shared list as it finishes one, and written to `out` in
 /// order. Frames are exactly those of the one-Edge render: every frame is seeked and captured the same
 /// way, at `job.fps`. The list: with `draft` every k-th frame first (`DRAFT_FPS`), written as `draft`
-/// once in (a short PNG-in-MOV the clip plays while the rest renders); with `window` (frames [a, b))
+/// once in (a short video the clip plays while the rest renders); with `window` (frames [a, b))
 /// those next, written as a full-length, full-rate MOV where frames outside the window repeat the
-/// nearest draft frame; then the rest, nearest the window first. Returns the picture size.
+/// nearest draft frame; then the rest, nearest the window first.
 /// ponytail: frames rendered ahead of the one being written wait in memory (every frame of a 60 s
 /// 1080p layer is ~150-300 MB of PNG); a spill to disk if that ever matters.
 fn render_parallel(
@@ -3112,7 +3229,7 @@ fn render_parallel(
     draft: Option<&Path>,
     window: Option<((usize, usize), &Path)>,
     prog: &Progress,
-) -> Result<(u32, u32), String> {
+) -> Result<(), String> {
     use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
     use std::sync::Arc;
     let k = if draft.is_some() { (job.fps / DRAFT_FPS).round().max(2.0) as usize } else { 0 };
@@ -3173,10 +3290,10 @@ fn render_parallel(
         // every frame in so far, kept until the window file is written (it needs them all again)
         let mut all: Vec<Option<Arc<Vec<u8>>>> = if window.is_some() { vec![None; job.frames] } else { Vec::new() };
         let mut got: std::collections::HashMap<usize, Arc<Vec<u8>>> = std::collections::HashMap::new();
-        let (mut want, mut size, mut dpos, mut in_count) = (0usize, (1u32, 1u32), 0usize, 0usize);
+        let (mut want, mut dpos, mut in_count) = (0usize, 0usize, 0usize);
         let (mut draft_done, mut window_done) = (draft_idx.is_empty(), window.is_none());
         let mut dout = match draft {
-            Some(d) if !draft_idx.is_empty() => Some(MovOut::start(d, job.fps / k as f64)?),
+            Some(d) if !draft_idx.is_empty() => Some(MovOut::start(d, job.fps / k as f64, job)?),
             _ => None,
         };
         for m in rx {
@@ -3207,7 +3324,7 @@ fn render_parallel(
             // then the window, full rate, the draft standing in for what is not rendered yet
             if draft_done && !window_done && in_count >= draft_idx.len() + win_idx.len() && win_idx.iter().all(|&i| all[i].is_some()) {
                 if let Some((_, path)) = window {
-                    let mut w = MovOut::start(path, job.fps)?;
+                    let mut w = MovOut::start(path, job.fps, job)?;
                     let mut ok = true;
                     for i in 0..job.frames {
                         let held = if k > 0 { i - i % k } else { i };
@@ -3225,18 +3342,15 @@ fn render_parallel(
                 all = Vec::new();
             }
             while let Some(png) = got.remove(&want) {
-                if want == 0 {
-                    size = png_size(&png).unwrap_or(size);
-                }
                 if out.write_all(&png).is_err() {
-                    return Ok(size); // ffmpeg stopped: its own error is the one worth reporting
+                    return Ok(()); // ffmpeg stopped: its own error is the one worth reporting
                 }
                 want += 1;
             }
             let label = if !draft_done { "draft" } else if !window_done { "around the playhead" } else { "every frame" };
             prog.set(in_count as f32 / job.frames as f32 * 0.99, format!("Rendering HTML: {label} ({n} at once)…"));
         }
-        Ok(size)
+        Ok(())
     })
 }
 
@@ -3333,7 +3447,7 @@ mod tests {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         let params = serde_json::to_string(&params_hashable(&tpl, &spec.params)).unwrap_or_default();
         let mouse = serde_json::to_string(&spec.mouse).unwrap_or_default();
-        ("html-v4", &page, px, spec.fps.to_bits(), spec.duration.to_bits(), deps_stamp(&page, ""), params, mouse)
+        ("html-v5", &page, px, spec.fps.to_bits(), spec.duration.to_bits(), deps_stamp(&page, ""), params, mouse)
             .hash(&mut h);
         assert_eq!(a, dir().join(format!("{:016x}", h.finish())));
         assert!(!page.contains("<script") && !page.contains("onclick"), "still sanitised");
@@ -3676,11 +3790,12 @@ mod tests {
         }
         let r = render_to_file(&spec, &Progress::new()).expect("render to file");
         assert!(r.animated, "keyframed params make a video");
-        let mut v = ffpipe::open_video(&r.path.to_string_lossy()).expect("open");
+        let mut v = crate::media::open_video(&r.path.to_string_lossy(), crate::media::Backend::Auto).expect("open");
         for (t, left) in [(0.2, 20u32), (0.8, 80)] {
             let mut f = Frame::default();
             assert!(v.frame_at(t, 200, 60, &mut f), "decode {t}");
-            assert_eq!(px(&f, left + 5, 10), [255, 0, 0, 255], "box at {left} for t={t}");
+            let b = px(&f, left + 5, 10);
+            assert!(b[0] > 230 && b[1] < 24 && b[2] < 24 && b[3] == 255, "box at {left} for t={t}: {b:?}");
             assert_eq!(px(&f, left.saturating_sub(5), 10)[3], 0);
         }
     }
@@ -3718,7 +3833,7 @@ mod tests {
         }
         let r = render_to_file(&spec, &Progress::new()).expect("render to file");
         assert!(r.animated, "a mouse makes a video");
-        let mut v = ffpipe::open_video(&r.path.to_string_lossy()).expect("open");
+        let mut v = crate::media::open_video(&r.path.to_string_lossy(), crate::media::Backend::Auto).expect("open");
         let mut at = |t: f64| {
             let mut f = Frame::default();
             assert!(v.frame_at(t, 200, 100, &mut f), "decode {t}");
@@ -3799,12 +3914,18 @@ mod tests {
             t0.elapsed().as_millis(),
             t0.elapsed().as_secs_f64() * 1000.0 / 25.0
         );
-        assert!(r.animated && r.path.extension().is_some_and(|e| e == "mov") && (r.width, r.height) == (320, 180));
-        let mut v = ffpipe::open_video(&r.path.to_string_lossy()).expect("open the render");
-        for (t, left) in [(0.5, 50), (1.5, 150)] {
+        assert!(r.animated && r.path.to_string_lossy().ends_with(".stacked.mp4") && (r.width, r.height) == (320, 180));
+        let mut v = crate::media::open_video(&r.path.to_string_lossy(), crate::media::Backend::Auto).expect("open the render");
+        for (t, left) in [(0.5, 50u32), (1.5, 150)] {
             let mut f = Frame::default();
             assert!(v.frame_at(t, 320, 180, &mut f), "decode {t}");
-            check(&f, left);
+            // H.264: the box's colour within a few levels, its alpha snapped to 0 / 255 by `StackedAlpha`
+            let b = px(&f, left + 10, 30);
+            assert!(b[0] > 240 && b[1] < 16 && b[2] < 16 && b[3] == 255, "the box at {left}: {b:?}");
+            assert_eq!(px(&f, left.saturating_sub(5), 30)[3], 0, "left of the box at {left}");
+            assert_eq!(px(&f, 5, 5)[3], 0, "transparent background");
+            let h = px(&f, 270, 120);
+            assert!(h[3].abs_diff(128) <= 4 && h[0] >= 240, "half white, straight alpha within a few levels: {h:?}");
         }
         drop(v);
         assert!(cached(&spec).is_some(), "the next ask is a cache hit");
@@ -4106,8 +4227,9 @@ mod tests {
         let focus = std::env::var("SE_BENCH_FOCUS").ok().and_then(|v| v.parse::<f64>().ok()).map(|t| (t - 5.0, t + 5.0));
         let spec = Spec { html: page, fields: Vec::new(), scale: 1.0, fps, duration: secs, base: String::new(), params: Vec::new(), width: 0, mouse: None, focus, renderer: HtmlRenderer::Edge };
         let (b, _) = out_base(&spec);
-        for ext in ["mov", "still.png", "draft.mov", "window.mov"] {
-            let _ = std::fs::remove_file(b.with_extension(ext));
+        let stem = b.file_name().unwrap().to_string_lossy().into_owned();
+        for f in render_files(&stem) {
+            let _ = std::fs::remove_file(f);
         }
         let t = Instant::now();
         let s2 = spec.clone();
@@ -4120,7 +4242,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         let draft = t.elapsed().as_secs_f64();
-        while !interim(&spec).is_some_and(|r| r.path.to_string_lossy().ends_with(".window.mov")) && !h.is_finished() {
+        while !interim(&spec).is_some_and(|r| r.path.to_string_lossy().contains(".window.")) && !h.is_finished() {
             std::thread::sleep(Duration::from_millis(5));
         }
         let window = t.elapsed().as_secs_f64();
@@ -4133,9 +4255,118 @@ mod tests {
             total * 1000.0 / n,
             n / total
         );
-        let _ = std::fs::remove_file(r.path);
-        for ext in ["still.png", "draft.mov", "window.mov"] {
-            let _ = std::fs::remove_file(b.with_extension(ext));
+        eprintln!("{}: {:.1} MB", r.path.display(), std::fs::metadata(&r.path).map_or(0, |m| m.len()) as f64 / 1e6);
+        for f in render_files(&stem) {
+            let _ = std::fs::remove_file(f);
+        }
+        shutdown();
+    }
+
+    /// The encoder args: opaque = plain H.264, transparency = the stacked colour-over-alpha layout the
+    /// alpha proxies use; a GPU encoder by name, libx264 otherwise; CFR, short GOP, no B-frames, mp4.
+    #[test]
+    fn encode_args_opaque_plain_alpha_stacked() {
+        let j = |enc, alpha| encode_args(enc, alpha, (1920, 1080), 59.94).join(" ");
+        let opaque = j(None, false);
+        assert!(opaque.contains("-vf scale=1920:1080,format=yuv420p") && !opaque.contains("vstack"), "{opaque}");
+        assert!(opaque.contains("-c:v libx264") && opaque.contains("-crf 18"), "{opaque}");
+        assert!(
+            opaque.contains("-r 59940/1000") && opaque.contains("-g 30 -bf 0") && opaque.ends_with("-f mp4"),
+            "{opaque}"
+        );
+        let alpha = j(None, true);
+        assert!(alpha.contains(&crate::media::proxy::stacked_filter_to("1920:1080")), "{alpha}");
+        assert!(alpha.contains("premultiply") && alpha.contains("alphaextract") && alpha.contains("vstack"), "{alpha}");
+        assert!(
+            j(Some("h264_nvenc"), true).contains("-c:v h264_nvenc") && !j(Some("h264_nvenc"), true).contains("libx264")
+        );
+        assert!(j(Some("h264_qsv"), false).contains("-c:v h264_qsv"));
+        assert!(j(Some("h264_amf"), false).contains("-c:v h264_amf"));
+        assert!(j(Some("hevc_nvenc"), false).contains("-c:v libx264"), "not an H.264 GPU encoder: software");
+        // the file names follow the layout, and stacked ones decode as stacked
+        let b = dir().join("0123456789abcdef");
+        assert!(anim_path(&b, "", false).to_string_lossy().ends_with("0123456789abcdef.mp4"));
+        let st = anim_path(&b, ".draft", true);
+        assert!(crate::media::proxy::is_stacked(&st) && is_interim(&st) && !is_interim(&anim_path(&b, "", true)));
+        assert_eq!(even((1001, 241)), (1002, 242));
+        // opaque PNG detection: RGB at once, RGBA by its pixels
+        let mut f = Frame::new(4, 4);
+        f.rgba.iter_mut().for_each(|v| *v = 255);
+        assert!(super::opaque(&crate::mcp::png_encode(&f)));
+        f.rgba[3] = 254;
+        assert!(!super::opaque(&crate::mcp::png_encode(&f)));
+    }
+
+    /// The size goal: a 5 s 1080p60 animated page is a few MB (it was ~150 MB as PNG-in-MOV), opaque as
+    /// plain H.264, see-through as stacked H.264 whose alpha decodes back within a few levels.
+    /// Prints both sizes (`--nocapture`).
+    #[test]
+    fn a_5s_1080p60_page_renders_small_with_and_without_alpha() {
+        if tools_missing() {
+            return;
+        }
+        let opaque_page = r#"<html><head><title>s</title><meta name="se:size" content="1920x1080"><meta name="se:duration" content="5s">
+            <style>html,body{margin:0;overflow:hidden}body{width:100vw;height:100vh;display:grid;place-items:center;font-family:'Segoe UI',Arial;
+            background:linear-gradient(120deg,#1b2a6b,#7a1f5c);background-size:200% 200%;animation:d 5s ease-in-out both}
+            h1{margin:0;color:#fff;font-size:140px;animation:r 1s ease-out .2s both}
+            @keyframes d{from{background-position:0% 50%}to{background-position:100% 50%}}
+            @keyframes r{from{opacity:0;transform:translateY(40px)}to{opacity:1;transform:none}}</style></head><body><h1>Chapter One</h1></body></html>"#;
+        let alpha_page = r#"<html><head><title>a</title><meta name="se:size" content="1920x1080"><meta name="se:duration" content="5s">
+            <style>html,body{margin:0;background:transparent;overflow:hidden;font-family:'Segoe UI',Arial}
+            .b{position:absolute;left:80px;bottom:120px;padding:16px 32px;background:rgba(12,14,20,.5);border-left:12px solid #3d7bfd;
+            animation:s 5s linear both}h1{margin:0;color:#fff;font-size:64px}
+            @keyframes s{from{transform:translateX(-200px)}to{transform:translateX(600px)}}</style></head>
+            <body><div class="b"><h1>Your Title</h1></div></body></html>"#;
+        let spec = |html: &str| Spec {
+            html: html.into(),
+            fields: Vec::new(),
+            scale: 1.0,
+            fps: 60.0,
+            duration: 5.0,
+            base: String::new(),
+            params: Vec::new(),
+            width: 0,
+            mouse: None,
+            focus: None,
+            renderer: HtmlRenderer::Auto,
+        };
+        for (name, page, stacked) in [("opaque", opaque_page, false), ("alpha", alpha_page, true)] {
+            let sp = spec(page);
+            let stem = out_base(&sp).0.file_name().unwrap().to_string_lossy().into_owned();
+            render_files(&stem).into_iter().for_each(|f| {
+                let _ = std::fs::remove_file(f);
+            });
+            let t0 = Instant::now();
+            let r = render_to_file(&sp, &Progress::new()).expect("render");
+            let mb = std::fs::metadata(&r.path).unwrap().len() as f64 / 1e6;
+            eprintln!("SIZE {name}: {} {:.2} MB in {:.1} s", r.path.display(), mb, t0.elapsed().as_secs_f64());
+            assert!(r.animated && (r.width, r.height) == (1920, 1080));
+            assert_eq!(crate::media::proxy::is_stacked(&r.path), stacked, "{name}: {}", r.path.display());
+            assert!(mb < 15.0, "{name}: {mb:.1} MB");
+            assert!(
+                interim_files(&out_base(&sp).0)
+                    .iter()
+                    .all(|f| f.extension().is_some_and(|e| e == "png") || !f.exists()),
+                "interims gone"
+            );
+            let mut v = crate::media::open_video(&r.path.to_string_lossy(), crate::media::Backend::Auto).expect("open");
+            let mut f = Frame::default();
+            assert!(v.frame_at(2.5, 1920, 1080, &mut f), "decode");
+            let px =
+                |x: u32, y: u32| -> [u8; 4] { f.rgba[((y * f.width + x) * 4) as usize..][..4].try_into().unwrap() };
+            if stacked {
+                assert_eq!(px(10, 10)[3], 0, "transparent corner");
+                // the bar at 2.5 s: translateX(200px) from left 80 -> x 280..; its 50% black is alpha 128
+                let bar = px(300, 1080 - 125);
+                assert!(bar[3].abs_diff(128) <= 4 && bar[0] < 40, "half see-through bar within a few levels: {bar:?}");
+            } else {
+                assert_eq!(px(10, 10)[3], 255, "opaque");
+            }
+            drop(v);
+            // SE_KEEP_RENDERS=1 keeps them (to compare with other formats by hand)
+            render_files(&stem).into_iter().filter(|_| std::env::var_os("SE_KEEP_RENDERS").is_none()).for_each(|f| {
+                let _ = std::fs::remove_file(f);
+            });
         }
         shutdown();
     }
@@ -4154,7 +4385,7 @@ mod tests {
         let (tpl, page) = prepare_in(src, &[], "");
         let (frames, fps) = (70usize, 20.0);
         let run = |n: usize| -> Vec<u8> {
-            let job = Job { page: &page, base: "", fast: true, vp: (160, 90), scale: 1.0, fps, frames, tpl: &tpl, params: &[], phases: &[(0.0, f64::INFINITY)], moving: true };
+            let job = Job { page: &page, base: "", fast: true, vp: (160, 90), scale: 1.0, fps, frames, tpl: &tpl, params: &[], phases: &[(0.0, f64::INFINITY)], moving: true, enc: None, alpha: true, size: (160, 90) };
             let mut out = Vec::new();
             render_parallel(&job, n, &mut out, None, None, &Progress::new()).expect("render");
             out

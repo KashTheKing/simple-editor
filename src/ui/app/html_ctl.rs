@@ -9,7 +9,8 @@
 //! changed - an undo entry pushed or popped, the project's size / fps / file, a field edit (after
 //! a short settle, so typing renders once), a job ending - and every 2 s, never per frame. The
 //! re-point is not an undo step of its own: undo restores `html`, and the next reconcile finds the
-//! file that belongs to it (still in the cache, renders write new files, never over old ones).
+//! file that belongs to it, or renders it again: a re-point deletes the render it replaced once no
+//! asset shows it (`sweep`), so the cache holds one render per layer, not one per edit.
 //! While nothing is rendered yet the asset shows `pending.png` (transparent, real, so the library
 //! never reports a layer that is still rendering as missing media).
 
@@ -93,6 +94,8 @@ struct RenderJob {
 #[derive(Default)]
 pub struct HtmlState {
     jobs: Vec<RenderJob>,
+    /// Render files superseded by a newer render, to delete (`sweep`).
+    doomed: Vec<PathBuf>,
     /// Renders that failed or were cancelled by the user: not retried until the source changes
     /// (another hash) or `html.render` asks.
     failed: HashSet<PathBuf>,
@@ -162,11 +165,11 @@ pub(super) fn base_of(h: &HtmlSource) -> String {
     Path::new(&h.file).parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
-fn spec_of(p: &Project, h: &HtmlSource) -> html::Spec {
+fn spec_of(p: &Project, aid: Id, h: &HtmlSource) -> html::Spec {
     html::Spec {
         html: h.src.clone(),
         fields: h.field_list(),
-        scale: html::scale_for(p.width, p.height),
+        scale: render_scale(p, aid, h),
         fps: if p.fps > 0.0 { p.fps } else { 30.0 },
         duration: h.duration,
         base: base_of(h),
@@ -176,6 +179,59 @@ fn spec_of(p: &Project, h: &HtmlSource) -> html::Spec {
         focus: None,
         renderer: h.renderer,
     }
+}
+
+/// The render scale of asset `aid`: the project's (`html::scale_for`), lowered to the size the layer is
+/// shown at, so a render never has more pixels than the project unless a clip zooms it past the frame
+/// (a 2560x1440 page fitted into a 1080p project renders at 1920x1080). A clip's scale 1 fits the
+/// picture to the frame; the largest scale of any clip of it (keys included), rounded up to a quarter
+/// so a small resize does not render again, sets the size. No clip: fitted to the frame.
+/// ponytail: clip scale only - a zoom by an effect, a container or a browser layer is not seen; add it
+/// here if a layer ever looks soft.
+fn render_scale(p: &Project, aid: Id, h: &HtmlSource) -> f64 {
+    let s = html::scale_for(p.width, p.height);
+    let (w, hh) = html::pixel_size(html::viewport(&h.src, h.width), s);
+    let fit = (p.width.max(1) as f64 / w as f64).min(p.height.max(1) as f64 / hh as f64);
+    let top =
+        |a: &crate::model::Animated| a.keys.iter().chain(&a.baked).map(|k| k.v.abs()).fold(a.value.abs(), f64::max);
+    let shown = p
+        .tracks
+        .iter()
+        .chain(p.sequences.iter().flat_map(|q| q.tracks.iter()))
+        .flat_map(|t| t.clips.iter())
+        .filter(|c| c.asset == aid)
+        .map(|c| top(&c.scale) * top(&c.scale_x).max(top(&c.scale_y)))
+        .fold(None, |m: Option<f64>, v| Some(m.map_or(v, |m| m.max(v))))
+        .map_or(1.0, |v| ((v * 4.0).ceil() / 4.0).max(0.25));
+    s * (fit * shown).min(1.0)
+}
+
+/// The files `old` (an HTML asset's path before it was re-pointed at render `base`) leaves behind: every
+/// file of another render, and, once `done`, the interims of this one.
+fn superseded(old: &str, base: &Path, done: bool) -> Vec<PathBuf> {
+    let old = Path::new(old);
+    let mut v = Vec::new();
+    if old.parent() == base.parent()
+        && crate::engine::cache_lru::stem_of(old) != crate::engine::cache_lru::stem_of(base)
+    {
+        v = html::render_files(&crate::engine::cache_lru::stem_of(old));
+    }
+    if done {
+        v.extend(html::interim_files(base));
+    }
+    v
+}
+
+/// Delete the superseded render files no asset shows (`used`: every asset's path). One still open in a
+/// decoder stays listed and goes on a later pass; one an asset points at again is kept.
+/// ponytail: an undo that brings an older source back renders it again (seconds to a minute) instead
+/// of every edit's render being kept (the cache grew 9 GB in a day); renders other projects use are
+/// rendered again by them.
+fn sweep(doomed: &mut Vec<PathBuf>, used: &HashSet<&str>) {
+    doomed.retain(|f| {
+        let in_use = used.iter().any(|u| Path::new(u) == f);
+        !in_use && f.exists() && std::fs::remove_file(f).is_err()
+    });
 }
 
 /// The part of asset `aid`'s own time (seconds) to render first: `secs` around the playhead when it is
@@ -238,9 +294,10 @@ fn reconcile(app: &mut App) {
     let mut resized: Vec<(Id, (u32, u32), (u32, u32))> = Vec::new();
     let mut pending: Option<String> = None;
     let fps = if app.project.fps > 0.0 { app.project.fps } else { 30.0 };
+    let mut doomed: Vec<PathBuf> = Vec::new();
     for i in 0..app.project.assets.len() {
         let Some(h) = app.project.assets[i].html.clone() else { continue };
-        let mut spec = spec_of(&app.project, &h);
+        let mut spec = spec_of(&app.project, app.project.assets[i].id, &h);
         spec.focus = focus_of(&app.project, app.project.assets[i].id, app.playhead, app.settings.html_render_window_secs);
         let a = &mut app.project.assets[i];
         // ponytail: ONE cache key per layer per scan (it was three: cached, interim, out_base - each a
@@ -252,10 +309,11 @@ fn reconcile(app: &mut App) {
                 if (a.width, a.height) != (r.width, r.height) && a.width > 0 && a.height > 0 {
                     resized.push((a.id, (a.width, a.height), (r.width, r.height)));
                 }
+                doomed.extend(superseded(&a.path, &base, true));
                 a.path = path;
                 a.kind = if r.animated { ClipKind::Video } else { ClipKind::Image };
                 (a.width, a.height, a.fps, a.duration) = (r.width, r.height, fps, h.duration);
-                a.codec = "png".into();
+                a.codec = if r.animated { "h264" } else { "png" }.into();
                 kinds.push((a.id, a.kind));
                 changed = true;
             }
@@ -266,14 +324,16 @@ fn reconcile(app: &mut App) {
             // the still of the new source at once, then (a long layer) a draft that plays, while it renders
             let path = r.path.to_string_lossy().into_owned();
             if a.path != path {
+                doomed.extend(superseded(&a.path, &base, false));
                 a.path = path;
                 a.kind = if r.animated { ClipKind::Video } else { ClipKind::Image };
                 (a.width, a.height, a.fps, a.duration) = (r.width, r.height, fps, h.duration);
-                a.codec = "png".into();
+                a.codec = if r.animated { "h264" } else { "png" }.into();
                 kinds.push((a.id, a.kind));
                 changed = true;
             }
         } else if !Path::new(&a.path).is_file() {
+            doomed.extend(superseded(&a.path, &base, false));
             // nothing to show yet (a new clip, a project from another PC): transparent, not "missing"
             a.path = pending.get_or_insert_with(placeholder).clone();
             a.kind = ClipKind::Image;
@@ -321,6 +381,11 @@ fn reconcile(app: &mut App) {
     app.html.stale = stale;
     if changed {
         app.player.set_project(&app.project);
+    }
+    app.html.doomed.extend(doomed);
+    if !app.html.doomed.is_empty() {
+        let used: HashSet<&str> = app.project.assets.iter().map(|a| a.path.as_str()).collect();
+        sweep(&mut app.html.doomed, &used);
     }
 }
 
@@ -1091,8 +1156,8 @@ pub(super) fn known_fields(
 
 /// `html.render`: forget a failure for this clip's asset and render it again if it is not cached.
 pub(super) fn rerender(app: &mut App, clip: Id) -> Result<(), String> {
-    let (_, h) = html_of(app, clip).ok_or_else(|| format!("clip {clip} is not an HTML layer"))?;
-    let (base, _) = html::out_base(&spec_of(&app.project, &h));
+    let (aid, h) = html_of(app, clip).ok_or_else(|| format!("clip {clip} is not an HTML layer"))?;
+    let (base, _) = html::out_base(&spec_of(&app.project, aid, &h));
     app.html.failed.remove(&base);
     reconcile(app);
     Ok(())
@@ -1105,7 +1170,7 @@ pub(super) fn rendered(app: &App, clip: Id) -> bool {
 
 /// The render scale and the spec of a clip, for `html.check`.
 pub(super) fn spec_of_clip(app: &App, clip: Id) -> Option<html::Spec> {
-    html_of(app, clip).map(|(_, h)| spec_of(&app.project, &h))
+    html_of(app, clip).map(|(aid, h)| spec_of(&app.project, aid, &h))
 }
 
 #[cfg(test)]
@@ -1118,6 +1183,65 @@ mod tests {
             assert!(html::lint(s).is_empty(), "{:?}", html::lint(s));
         }
         assert!(!html::parse(LAYER_STARTER).scene && html::parse(SCENE_STARTER).scene);
+    }
+
+    /// A re-point deletes the render it replaced (and, once done, the interims), but never a file an
+    /// asset still shows, and never a file that is not a render.
+    #[test]
+    fn superseded_renders_go_and_referenced_ones_stay() {
+        let d = html::dir();
+        std::fs::create_dir_all(&d).unwrap();
+        let (old, new, shared) = ("00000000000000a1", "00000000000000b2", "00000000000000c3");
+        let f = |n: &str| d.join(n);
+        for n in [format!("{old}.mp4"), format!("{old}.still.png"), format!("{old}.mov"), format!("{new}.stacked.mp4")]
+        {
+            std::fs::write(f(&n), b"x").unwrap();
+        }
+        std::fs::write(f(&format!("{new}.draft.stacked.mp4")), b"x").unwrap();
+        std::fs::write(f(&format!("{shared}.mp4")), b"x").unwrap();
+        std::fs::write(f("pending.png"), b"x").unwrap();
+        let new_path = f(&format!("{new}.stacked.mp4")).to_string_lossy().into_owned();
+        let shared_path = f(&format!("{shared}.mp4")).to_string_lossy().into_owned();
+        let mut doomed = superseded(&f(&format!("{old}.mp4")).to_string_lossy(), &d.join(new), true);
+        // another asset (a duplicate layer) still shows the shared render: kept
+        doomed.extend(superseded(&shared_path, &d.join(new), false));
+        doomed.extend(superseded(&f("pending.png").to_string_lossy(), &d.join(new), false));
+        let used: HashSet<&str> = [new_path.as_str(), shared_path.as_str()].into_iter().collect();
+        sweep(&mut doomed, &used);
+        assert!(doomed.is_empty(), "everything deletable went: {doomed:?}");
+        for n in
+            [format!("{old}.mp4"), format!("{old}.still.png"), format!("{old}.mov"), format!("{new}.draft.stacked.mp4")]
+        {
+            assert!(!f(&n).exists(), "{n} superseded");
+        }
+        assert!(Path::new(&new_path).exists() && Path::new(&shared_path).exists(), "referenced renders stay");
+        assert!(f("pending.png").exists(), "not a render: never touched");
+        for n in [new_path, shared_path] {
+            let _ = std::fs::remove_file(n);
+        }
+    }
+
+    /// A layer fitted to a 1080p frame never renders above 1080p, a small one at the size it is shown
+    /// (in quarters), and one zoomed past the frame keeps the project's full render size.
+    #[test]
+    fn renders_are_never_bigger_than_shown() {
+        let big = r#"<html><head><meta name="se:size" content="2560x1440"></head><body></body></html>"#;
+        let mut p = Project::default();
+        (p.width, p.height) = (1920, 1080);
+        let h = HtmlSource { src: big.into(), ..Default::default() };
+        let px = |p: &Project| html::pixel_size(html::viewport(big, 0), render_scale(p, 7, &h));
+        assert_eq!(px(&p), (1920, 1080), "no clip: fitted to the frame");
+        let mut c = crate::model::Clip::new(1, ClipKind::Video, "page", 0.0, 1.0);
+        c.asset = 7;
+        p.tracks.push(crate::model::Track::new(1, TrackKind::Video, "V1"));
+        p.tracks[0].clips.push(c);
+        assert_eq!(px(&p), (1920, 1080), "scale 1 = fitted");
+        p.tracks[0].clips[0].scale.value = 0.3;
+        assert_eq!(px(&p), (960, 540), "shown at 0.3: rendered at 0.5 (quarters, rounded up)");
+        p.tracks[0].clips[0].scale.value = 4.0 / 3.0;
+        assert_eq!(px(&p), (2560, 1440), "zoomed to 1:1: the page's full size");
+        p.tracks[0].clips[0].scale.value = 3.0;
+        assert_eq!(px(&p), (2560, 1440), "never above what scale_for gives");
     }
 
     fn at(secs: u64) -> Option<std::time::SystemTime> {

@@ -512,7 +512,7 @@ fn shapes_to_html(app: &mut App, ids: &[Id]) -> Result<usize, String> {
 }
 
 /// Render in Place for HTML layers: their render is already a video file (transparency kept), so no
-/// export runs - the file (and its playback proxy) is copied beside the project and each selected
+/// export runs - the file (H.264, stacked when it has transparency) is copied beside the project and each selected
 /// clip's asset becomes a plain video asset of it, effects and keyframes untouched. One undo step.
 /// None = the selection is not all rendered HTML layers (the normal bake handles it).
 fn html_to_video(app: &mut App, ids: &[Id]) -> Option<Result<usize, String>> {
@@ -529,28 +529,24 @@ fn html_to_video(app: &mut App, ids: &[Id]) -> Option<Result<usize, String>> {
         return None;
     }
     let dir = default_out_dir(app);
-    let h = media::proxy::HTML_PROXY_H.load(std::sync::atomic::Ordering::Relaxed);
     let mut fresh: Vec<(Id, crate::model::Asset)> = Vec::new();
     for aid in assets {
         let a = app.project.asset(aid)?;
         let src = Path::new(&a.path);
         let name = src.file_name().unwrap_or_default().to_string_lossy();
-        if name == "pending.png" || name.ends_with(".draft.mov") || name.ends_with(".window.mov") || !src.exists() {
+        if name == "pending.png" || crate::engine::html::is_interim(src) || !src.exists() {
             return Some(Err(format!("'{}' is still rendering - try again when it is done", a.name())));
         }
         let stem: String = a.name().chars().map(|c| if c.is_alphanumeric() || c == '-' { c } else { '_' }).collect();
-        let ext = src.extension().unwrap_or_default().to_string_lossy().into_owned();
+        // a render with transparency keeps its stacked suffix, so the copy still decodes with alpha
+        let ext = if media::proxy::is_stacked(src) {
+            "stacked.mp4".into()
+        } else {
+            src.extension().unwrap_or_default().to_string_lossy().into_owned()
+        };
         let out = unique_path(&dir, &format!("{stem}_html"), &ext);
         if let Err(e) = std::fs::copy(src, &out) {
             return Some(Err(format!("copy to {}: {e}", out.display())));
-        }
-        // the proxy is keyed by path + mtime; a copy keeps the mtime, so the built proxy carries over
-        if h > 0 {
-            let ph = media::proxy::height_for(a, h);
-            let from = media::proxy::stacked_or_plain(&a.path, ph, true);
-            if from.exists() {
-                let _ = std::fs::copy(&from, media::proxy::stacked_or_plain(&out.to_string_lossy(), ph, true));
-            }
         }
         let mut v = a.clone();
         v.html = None;

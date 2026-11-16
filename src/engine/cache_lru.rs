@@ -1,6 +1,7 @@
 //! ws:cache-budget: one disk budget for the html, prerender, proxy and peaks caches, pruned least recently
 //! used first. Pure over a directory (a test points it at a temp dir). Models, the library and the other
-//! small files in the cache dir are never counted or deleted.
+//! small files in the cache dir are never counted or deleted. HTML renders also have a cap of their own
+//! (`prune_html`), with or without a budget.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -10,6 +11,8 @@ use std::time::{Duration, SystemTime};
 const FOLDERS: [&str; 3] = ["html", "prerender", "proxies"];
 /// A file touched this recently may be mid-write: never deleted.
 const FRESH: Duration = Duration::from_secs(120);
+/// HTML renders' own share: one render per layer is a few MB, so this holds a few hundred layers.
+pub const HTML_CAP: u64 = 1 << 30;
 /// `touch_if_stale` rewrites an mtime at most this often per file.
 const STALE: Duration = Duration::from_secs(600);
 
@@ -80,7 +83,32 @@ pub fn budgeted_bytes(root: &Path) -> u64 {
 /// first, then `soft` oldest first; `hard` and fresh files never. A file that will not delete (a decoder
 /// has it open) is skipped. Protected files are touched (their "last use" is now).
 pub fn prune(root: &Path, budget: u64, protect: &Protect, now: SystemTime) -> Pruned {
-    let mut files = entries(root);
+    evict(entries(root), budget, protect, now)
+}
+
+/// The HTML renders: first every PNG-in-MOV of html-v4 and before (`.mov`: renders are H.264 `.mp4`
+/// since, and those files are ~100 MB each - this runs once at start, see `ui::app::caches`), then the
+/// oldest until the renders fit `cap`. What the open project shows (`hard`) and fresh files stay.
+pub fn prune_html(root: &Path, cap: u64, protect: &Protect, now: SystemTime) -> Pruned {
+    let dir = root.join("html");
+    let mut files: Vec<Entry> = entries(root).into_iter().filter(|e| e.path.parent() == Some(dir.as_path())).collect();
+    let fresh = |e: &Entry| now.duration_since(e.used).map_or(true, |age| age < FRESH);
+    let mut done = Pruned::default();
+    files.retain(|e| {
+        let legacy = e.path.extension().is_some_and(|x| x.eq_ignore_ascii_case("mov"));
+        if !legacy || protect.hard.contains(&e.stem) || fresh(e) || std::fs::remove_file(&e.path).is_err() {
+            return true;
+        }
+        done.files += 1;
+        done.bytes += e.len;
+        false
+    });
+    let more = evict(files, cap, protect, now);
+    Pruned { files: done.files + more.files, bytes: done.bytes + more.bytes }
+}
+
+/// `prune` over `files`.
+fn evict(mut files: Vec<Entry>, budget: u64, protect: &Protect, now: SystemTime) -> Pruned {
     let protected: Vec<PathBuf> = files
         .iter()
         .filter(|e| protect.soft.contains(&e.stem) || protect.hard.contains(&e.stem))
@@ -207,6 +235,28 @@ mod tests {
         prune(&d, 0, &p, SystemTime::now());
         assert!(!left(&d, "proxies/soft.mp4"));
         assert!(left(&d, "html/hard.mov") && left(&d, "proxies/new.mp4"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn html_renders_have_their_own_cap_and_legacy_movs_go_first() {
+        let d = temp("html");
+        put(&d, "html/old1.mov", 100, 500); // legacy, old enough
+        put(&d, "html/used.mov", 100, 9000); // legacy, but the open project shows it
+        put(&d, "html/busy.mov", 100, 1); // legacy, maybe mid-write
+        put(&d, "html/a.mp4", 300, 8000);
+        put(&d, "html/b.stacked.mp4", 300, 7000);
+        put(&d, "html/c.png", 50, 6000);
+        put(&d, "proxies/p.mp4", 5000, 9999); // not an HTML render: the cap never looks at it
+        let mut p = Protect::default();
+        p.hard.insert("used".into());
+        let r = prune_html(&d, 600, &p, SystemTime::now());
+        assert!(!left(&d, "html/old1.mov"), "a legacy render goes whatever the cap");
+        assert!(left(&d, "html/used.mov") && left(&d, "html/busy.mov"), "shown or fresh: kept");
+        assert!(!left(&d, "html/a.mp4"), "oldest render over the cap goes");
+        assert!(left(&d, "html/b.stacked.mp4") && left(&d, "html/c.png") && left(&d, "proxies/p.mp4"));
+        assert_eq!(r, Pruned { files: 2, bytes: 400 });
+        assert_eq!(prune_html(&d, 10_000, &p, SystemTime::now()), Pruned::default(), "only legacy files and the cap");
         let _ = std::fs::remove_dir_all(&d);
     }
 

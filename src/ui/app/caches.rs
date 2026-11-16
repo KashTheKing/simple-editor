@@ -56,8 +56,9 @@ fn protect_for(app: &App) -> Protect {
     p
 }
 
-/// Prune on a low-priority thread (one at a time); the UI never waits for it.
-fn spawn_prune(budget: u64, protect: Protect) {
+/// Prune on a low-priority thread (one at a time); the UI never waits for it. The HTML renders' cap (and
+/// the one-time removal of the old PNG-in-MOV renders) always, the whole budget when there is one.
+fn spawn_prune(budget: Option<u64>, protect: Protect) {
     use std::sync::atomic::Ordering;
     if RUNNING.swap(true, Ordering::AcqRel) {
         return;
@@ -68,16 +69,18 @@ fn spawn_prune(budget: u64, protect: Protect) {
             use windows::Win32::System::Threading::*;
             let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
         }
-        cache_lru::prune(&Settings::cache_dir(), budget, &protect, std::time::SystemTime::now());
+        let (dir, now) = (Settings::cache_dir(), std::time::SystemTime::now());
+        cache_lru::prune_html(&dir, cache_lru::HTML_CAP, &protect, now);
+        if let Some(b) = budget {
+            cache_lru::prune(&dir, b, &protect, now);
+        }
         RUNNING.store(false, Ordering::Release);
     });
 }
 
 /// Run the pruner now (the `caches.prune` tool).
 pub(super) fn prune_now(app: &mut App) {
-    if let Some(b) = cache_lru::budget_bytes(app.settings.cache_disk_gb) {
-        spawn_prune(b, protect_for(app));
-    }
+    spawn_prune(cache_lru::budget_bytes(app.settings.cache_disk_gb), protect_for(app));
 }
 
 pub(super) fn size_report(s: &Settings) -> Value {
@@ -90,8 +93,9 @@ pub(super) fn size_report(s: &Settings) -> Value {
     })
 }
 
-/// Frame hook: prune 45 s after start, then hourly and whenever the budget setting changes; warn once when
-/// the cache drive has less than twice the budget free.
+/// Frame hook: prune 45 s after start (the first run also clears the old PNG-in-MOV HTML renders), then
+/// hourly and whenever the budget setting changes; warn once when the cache drive has less than twice the
+/// budget free.
 pub(super) fn tick(app: &mut App, _ctx: &egui::Context) {
     if cfg!(test) {
         return; // a test never touches the real cache
@@ -108,9 +112,10 @@ pub(super) fn tick(app: &mut App, _ctx: &egui::Context) {
         return;
     }
     st.next = now + EVERY;
-    let Some(b) = cache_lru::budget_bytes(gb) else { return };
-    let warn = !st.warned
-        && cache_lru::free_bytes(&Settings::cache_dir()).is_some_and(|f| cache_lru::low_on_space(f, Some(b)));
+    let b = cache_lru::budget_bytes(gb);
+    let warn = b.is_some()
+        && !st.warned
+        && cache_lru::free_bytes(&Settings::cache_dir()).is_some_and(|f| cache_lru::low_on_space(f, b));
     st.warned |= warn;
     drop(g);
     spawn_prune(b, protect_for(app));

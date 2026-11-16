@@ -201,8 +201,11 @@ pub fn eligible(a: &crate::model::Asset, _h: u32) -> bool {
 
 /// Video that may play from a proxy: not a throw-away draft, not switched off, alpha probe answered.
 /// An existing proxy of such a source is used even when `wants` no longer asks for a new one.
+/// Never an HTML render's interim (draft / window) or a stacked render: those are already H.264, and a
+/// plain proxy of a stacked file would show its alpha half as picture.
 pub fn usable(a: &crate::model::Asset) -> bool {
-    !a.path.ends_with(".draft.mov") && !a.path.ends_with(".window.mov")
+    !crate::engine::html::is_interim(std::path::Path::new(&a.path))
+        && !is_stacked(std::path::Path::new(&a.path))
         && a.kind == crate::model::ClipKind::Video
         && a.duration > 0.0
         && a.proxy != Some(false)
@@ -252,9 +255,12 @@ pub fn height_for(a: &crate::model::Asset, h: u32) -> u32 {
 
 /// Is `path` a stacked colour-over-alpha proxy (see the module docs)? By name and folder, so a
 /// user's own `take-a.mp4` is never mistaken for one.
+/// An HTML render with transparency (`engine::html`) is stacked too: `<name>.stacked.mp4`, wherever it is
+/// (Render in Place copies it beside the project under that suffix).
 pub fn is_stacked(path: &std::path::Path) -> bool {
-    path.file_name().is_some_and(|n| n.to_string_lossy().ends_with("-a.mp4"))
-        && path.parent().and_then(|d| d.file_name()).is_some_and(|d| d == "proxies")
+    let name = path.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    name.ends_with(".stacked.mp4")
+        || (name.ends_with("-a.mp4") && path.parent().and_then(|d| d.file_name()).is_some_and(|d| d == "proxies"))
 }
 
 /// Where the proxy for `src` at `height` lives (whether or not it has been built yet). A source
@@ -342,11 +348,6 @@ impl VideoSource for StackedAlpha {
     }
 }
 
-/// The proxy height an HTML render writes its stacked proxy at, in the same ffmpeg pass as the render
-/// itself, so a layer plays like footage the moment it is rendered (and on every later open: proxies
-/// are on disk). 0 = proxies off. Kept in step with the settings by `App::sync_proxies`.
-pub static HTML_PROXY_H: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(720);
-
 /// Encoder args of every proxy: all-intra H.264 (`-g 1`: seeks and reverse scrubs are free), no audio.
 pub const ENCODE: [&str; 13] =
     ["-c:v", "libx264", "-preset", "veryfast", "-g", "1", "-crf", "20", "-pix_fmt", "yuv420p", "-an", "-movflags", "+faststart"];
@@ -367,10 +368,14 @@ fn hw_encode(enc: &str) -> Option<Vec<&'static str>> {
 /// the downscale: scaling straight alpha drags the colour hidden under transparent pixels (usually
 /// black) into every edge - dark fringes.
 pub fn stacked_filter(height: u32) -> String {
+    stacked_filter_to(&format!("-2:{}", height.max(2)))
+}
+
+/// `stacked_filter` scaled to `size` (an ffmpeg `scale` size, "w:h").
+pub fn stacked_filter_to(size: &str) -> String {
     format!(
-        "format=gbrap,premultiply=inplace=1,scale=-2:{},format=gbrap,split[c][a];\
-         [a]alphaextract,format=yuv420p[m];[c]format=yuv420p[k];[k][m]vstack",
-        height.max(2)
+        "format=gbrap,premultiply=inplace=1,scale={size},format=gbrap,split[c][a];\
+         [a]alphaextract,format=yuv420p[m];[c]format=yuv420p[k];[k][m]vstack"
     )
 }
 
