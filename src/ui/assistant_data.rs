@@ -496,6 +496,38 @@ pub fn bucket(project: Option<&Path>) -> String {
     }
 }
 
+/// The chats saved inside a project file (None = it has none yet: an older project).
+pub fn chats_in_file(path: &Path) -> Option<Vec<Conversation>> {
+    serde_json::from_str(&crate::model::io::chats_json_in(path)?).ok()
+}
+
+/// Does `q` (case-insensitive, every word) appear in the chat's title or its messages?
+pub fn matches(c: &Conversation, q: &str) -> bool {
+    let hay: String = std::iter::once(c.title().to_string())
+        .chain(c.lines.iter().filter_map(|l| match l {
+            Line::User(t) | Line::Text(t) => Some(t.clone()),
+            _ => None,
+        }))
+        .collect::<Vec<_>>()
+        .join("
+")
+        .to_lowercase();
+    q.to_lowercase().split_whitespace().all(|w| hay.contains(w))
+}
+
+/// The file "Export chats" / "Save chat" writes.
+pub fn export_json(convs: &[&Conversation]) -> String {
+    serde_json::to_string_pretty(&json!({"format": "simple-editor-chats", "version": 1, "chats": convs}))
+        .unwrap_or_default()
+}
+
+/// Chats out of an exported file (or a bare array of them).
+pub fn parse_import(s: &str) -> Result<Vec<Conversation>, String> {
+    let v: Value = serde_json::from_str(s).map_err(|e| e.to_string())?;
+    let list = if v.is_array() { v } else { v.get("chats").cloned().ok_or("not a chats file")? };
+    serde_json::from_value(list).map_err(|e| e.to_string())
+}
+
 /// A bucket's conversations (oldest first); empty when there are none or the file is unreadable.
 pub fn load(dir: &Path, bucket: &str) -> Vec<Conversation> {
     std::fs::read_to_string(dir.join(format!("{bucket}.json")))
@@ -550,6 +582,26 @@ pub fn save(dir: &Path, bucket: &str, json: &str) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chats_live_in_the_project_file_and_export_round_trips() {
+        let dir = std::env::temp_dir().join(format!("se-chats-in-file-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("p.sedit");
+        let mut c = Conversation::new(1);
+        c.title = "Fix the intro".into();
+        c.lines.push(Line::User("trim the silence".into()));
+        let p = crate::model::Project::new();
+        p.save_with_chats(&f, Some(snapshot(&[c.clone()]).0)).unwrap();
+        assert_eq!(chats_in_file(&f).unwrap()[0].title, "Fix the intro");
+        assert!(crate::model::Project::load(&f).is_ok(), "the project still loads");
+        p.save(&f).unwrap(); // a save that doesn't know the chats keeps them
+        assert_eq!(chats_in_file(&f).unwrap().len(), 1);
+        assert!(matches(&c, "SILENCE intro") && !matches(&c, "zebra"));
+        let back = parse_import(&export_json(&[&c])).unwrap();
+        assert_eq!(back[0].lines, c.lines);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     fn conv(id: u64, updated: f64, text: &str) -> Conversation {
         Conversation {

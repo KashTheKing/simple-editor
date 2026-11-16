@@ -244,6 +244,7 @@ actions! {
     QuickExport => "quick_export", "Quick Export", sc(CTRL, Key::M);
     RenderSelection => "render_selection", "Render Selection (pre-render)", None;
     BakeSelection => "bake_selection", "Render in Place (bake to new asset)", None;
+    ShapesToHtml => "shapes_to_html", "Convert to HTML Layer", None;
     ExportMarkers => "export_markers", "Export Markers…", None;
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
@@ -626,7 +627,7 @@ pub fn group(a: Action) -> &'static str {
         LiftInOut | ExtractInOut | TrimToInOut | RippleDeleteInOut | CloseGapAtPlayhead | JoinThroughEdit
         | SpliceInsert | OverwriteAtPlayhead | ZoomIn | ZoomOut | ZoomFit | ToggleSnap | ToggleOverview
         | AddVideoTrack | AddAudioTrack | RenameTrack | ToggleTrackLock | ToggleTrackRipple | ToggleTrackMagnetic
-        | OpenParentSequence | RenderSelection | BakeSelection => "Timeline",
+        | OpenParentSequence | RenderSelection | BakeSelection | ShapesToHtml => "Timeline",
         ToggleAutoCloseGaps | ToggleShowVideoTracks | ToggleShowAudioTracks => "Timeline",
         Split | DuplicateClips | ToggleEnabled | LinkToggle | NudgeLeft | NudgeRight | Retime | FreezeFrame
         | AddTransition | AddLastTransition | AddTransitionEnd | ApplyFlow | AutoReframe | SaveTemplate => "Clip",

@@ -110,6 +110,8 @@ pub struct LibraryState {
     pub rename_seq: Option<(Id, String)>,
     /// (subclip being renamed, edit buffer) - a subclip's name is its `description`.
     pub rename_asset: Option<(Id, String)>,
+    /// (asset, time) of a click on an already-selected asset's name: a second of stillness starts a rename.
+    pub rename_arm: Option<(Id, f64)>,
     /// The item right-click ▸ Info… opened (None = the window is closed).
     info: Option<Pick>,
     /// Same, for a recent file in the Info window (its tags live on its `RecentAsset`).
@@ -304,6 +306,11 @@ pub fn keyboard(state: &mut LibraryState, ctx: &egui::Context) -> LibraryNav {
         .map(|(_, n)| n)
         .collect()
     });
+    if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F2)) {
+        if let Some(id) = nav_targets(state).first() {
+            state.rename_asset = Some((*id, String::new()));
+        }
+    }
     if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::A)) {
         select_all(state);
     }
@@ -399,11 +406,11 @@ fn size_text(bytes: u64) -> String {
 
 /// What a row shows as its name: a subclip's own name (its `description`) when it has one, else the
 /// file name - subclips share the parent's path, so the file name alone would repeat it.
-fn display_name(a: &crate::model::Asset) -> String {
+fn display_name(p: &Project, a: &crate::model::Asset) -> String {
     if a.parent.is_some() && !a.description.is_empty() {
         a.description.clone()
     } else {
-        a.name()
+        p.asset_names.get(&a.id).cloned().unwrap_or_else(|| a.name())
     }
 }
 
@@ -429,6 +436,7 @@ enum LibOp {
     AssetLabel(Id, u8),
     AssetFolder(Id, String),
     AssetDesc(Id, String),
+    AssetName(Id, String),
     AssetTags(Id, Vec<String>),
     FolderNew(String),
     FolderRename(String, String),
@@ -1246,9 +1254,12 @@ fn browser(
             2 => order.sort_by_key(|&i| kind_rank(project.assets[i].kind)),
             3 => order.sort_by_key(|&i| std::cmp::Reverse(project.assets[i].id)),
             // natural order ("take2" before "take10"), as a folder import files them
-            _ => order.sort_by(|&x, &y| {
-                crate::engine::folder_import::natural_cmp(&project.assets[x].name().to_lowercase(), &project.assets[y].name().to_lowercase())
-            }),
+            _ => {
+                // lower-case each name once, not twice per comparison
+                let keys: std::collections::HashMap<usize, String> =
+                    order.iter().map(|&i| (i, project.assets[i].name().to_lowercase())).collect();
+                order.sort_by(|x, y| crate::engine::folder_import::natural_cmp(&keys[x], &keys[y]));
+            }
         }
         {
             let mut tree = Tree {
@@ -1265,6 +1276,8 @@ fn browser(
                 rows: &mut rows,
                 click: &mut click,
                 rec: &mut rec,
+                subs: Default::default(),
+                files: Default::default(),
             };
             if imported {
                 tree.imported(ui, &order, flat);
@@ -1343,6 +1356,15 @@ fn browser(
                 LibOp::AssetFolder(id, f) => {
                     if let Some(a) = project.asset_mut(id) {
                         a.folder = f;
+                    }
+                }
+                LibOp::AssetName(id, n) => {
+                    // "" or the file's own name = back to the default
+                    let own = project.asset(id).map(|a| a.name()).unwrap_or_default();
+                    if n.is_empty() || n == own {
+                        project.asset_names.remove(&id);
+                    } else {
+                        project.asset_names.insert(id, n);
                     }
                 }
                 LibOp::AssetDesc(id, d) => {
@@ -1747,7 +1769,7 @@ fn info_window(
 ) {
     let Some(pick) = state.info.clone() else { return };
     let title = match &pick {
-        Pick::Asset(id) => project.asset(*id).map(display_name),
+        Pick::Asset(id) => project.asset(*id).map(|a| display_name(project, a)),
         Pick::Path(p) => Some(split_path(p).0.to_string()),
         Pick::Folder(_) => None,
     };
@@ -2043,6 +2065,10 @@ struct Tree<'a, 'b> {
     /// settings.json edit asked for by a recent file's menu; `settings` is only borrowed shared here,
     /// so the browser applies it after the tree.
     rec: &'a mut Option<RecOp>,
+    /// Folder -> its subfolders / the filtered assets directly in it, built once per frame (the tree
+    /// used to rescan every folder and asset for each folder it drew).
+    subs: std::collections::HashMap<String, Vec<String>>,
+    files: std::collections::HashMap<String, Vec<usize>>,
 }
 
 impl Tree<'_, '_> {
@@ -2121,6 +2147,12 @@ impl Tree<'_, '_> {
             return;
         }
         let names = folder_tree_names(self.project);
+        for n in &names {
+            self.subs.entry(parent_of(n).to_string()).or_default().push(n.clone());
+        }
+        for &i in order {
+            self.files.entry(self.project.assets[i].folder.clone()).or_default().push(i);
+        }
         self.folder(ui, "", 0, &names, order);
     }
 
@@ -2181,7 +2213,7 @@ impl Tree<'_, '_> {
     /// The subfolders of `path` (folders first, like an explorer), then the assets that live in it.
     /// In the gallery the subfolders are cards; an open one's contents follow the grid under its name.
     fn folder(&mut self, ui: &mut egui::Ui, path: &str, depth: usize, names: &[String], order: &[usize]) {
-        let subs: Vec<String> = names.iter().filter(|n| parent_of(n) == path).cloned().collect();
+        let subs: Vec<String> = self.subs.get(path).cloned().unwrap_or_default();
         if self.state.view == 1 {
             let w = TILE * self.state.zoom;
             let mut open = Vec::new();
@@ -2222,7 +2254,7 @@ impl Tree<'_, '_> {
         if path.is_empty() {
             self.sequences(ui, depth, false); // sequences live at the root, after the folders
         }
-        let here: Vec<usize> = order.iter().copied().filter(|&i| self.project.assets[i].folder == *path).collect();
+        let here: Vec<usize> = self.files.get(path).cloned().unwrap_or_default();
         self.assets(ui, depth, &here);
     }
 
@@ -2237,8 +2269,7 @@ impl Tree<'_, '_> {
     ) -> bool {
         let key = format!("f:{child}");
         let last = child.rsplit('/').next().unwrap_or(child).to_string();
-        let kids = names.iter().any(|n| parent_of(n) == child.as_str())
-            || order.iter().any(|&i| self.project.assets[i].folder == *child);
+        let kids = self.subs.contains_key(child.as_str()) || self.files.contains_key(child.as_str());
         if self.state.rename_folder.as_ref().is_some_and(|(o, _)| o == child) {
             let mut renamed = None;
             ui.horizontal(|ui| {
@@ -2455,12 +2486,18 @@ impl Tree<'_, '_> {
             tile_grid(ui, indent(depth) + ARROW, list, w, |ui, &i| self.asset_tile(ui, i));
         } else {
             let ids: HashSet<Id> = list.iter().map(|&i| self.project.assets[i].id).collect();
+            let mut kids: std::collections::HashMap<Id, Vec<usize>> = Default::default();
+            for &i in list {
+                if let Some(p) = self.project.assets[i].parent {
+                    kids.entry(p).or_default().push(i);
+                }
+            }
             for &i in list {
                 let a = &self.project.assets[i];
                 if a.parent.is_some_and(|p| ids.contains(&p)) {
                     continue; // drawn under its parent below, at whatever depth that turns out to be
                 }
-                self.asset_and_kids(ui, depth, list, i);
+                self.asset_and_kids(ui, depth, &kids, i);
             }
         }
     }
@@ -2468,12 +2505,11 @@ impl Tree<'_, '_> {
     /// Draw asset row `i`, then every row in `list` that is its child, one level deeper - and so on
     /// for THEIR children, so nesting isn't capped at one level (a grandchild used to be skipped by
     /// `assets` above as "drawn under its parent" and then never actually drawn by anyone).
-    fn asset_and_kids(&mut self, ui: &mut egui::Ui, depth: usize, list: &[usize], i: usize) {
+    fn asset_and_kids(&mut self, ui: &mut egui::Ui, depth: usize, kids: &std::collections::HashMap<Id, Vec<usize>>, i: usize) {
         let id = self.project.assets[i].id;
         self.asset_row(ui, depth, i);
-        let kids: Vec<usize> = list.iter().copied().filter(|&j| self.project.assets[j].parent == Some(id)).collect();
-        for j in kids {
-            self.asset_and_kids(ui, depth + 1, list, j);
+        for &j in kids.get(&id).map(Vec::as_slice).unwrap_or(&[]) {
+            self.asset_and_kids(ui, depth + 1, kids, j);
         }
     }
 
@@ -2482,31 +2518,53 @@ impl Tree<'_, '_> {
         // ---- ws:library-surface ----
         // a subclip being renamed: an inline field in place of its row (its name is its description)
         if self.state.rename_asset.as_ref().is_some_and(|(x, _)| *x == a.id) {
-            let (id, old) = (a.id, a.description.clone());
+            let (id, sub, old) = (a.id, a.parent.is_some(), display_name(self.project, a));
             let mut done = None;
             ui.horizontal(|ui| {
                 ui.add_space(indent(depth) + ARROW);
                 self.folder_icon(ui, Glyph::Chain);
                 let (_, buf) = self.state.rename_asset.as_mut().unwrap();
+                if buf.is_empty() {
+                    *buf = old.clone(); // F2 / click-and-wait open it empty
+                }
                 done = inline_edit(ui, buf);
             });
             if let Some(new) = done {
                 if !new.is_empty() && new != old {
-                    self.ops.push(LibOp::AssetDesc(id, new));
+                    self.ops.push(if sub { LibOp::AssetDesc(id, new) } else { LibOp::AssetName(id, new) });
                     *self.op_start = true;
                 }
                 self.state.rename_asset = None;
             }
             return;
         }
+        // click an already-selected asset's name, then hold still for a second: rename in place
+        let now = ui.input(|i| i.time);
+        if let Some((aid, t)) = self.state.rename_arm {
+            if aid == a.id && now - t >= 1.0 {
+                self.state.rename_arm = None;
+                if self.state.sel_ids.len() <= 1 && self.state.selected == Some(a.id) {
+                    self.state.rename_asset = Some((a.id, String::new()));
+                    ui.ctx().request_repaint();
+                    return;
+                }
+            }
+        }
         let selected = self.state.sel_ids.contains(&a.id);
         let tint = (a.label != 0).then(|| lbl_color(self.labels, a.label, self.palette));
         let used = self.used.contains(&a.id);
         let offline = self.state.offline.contains(&a.id);
-        let pstatus = crate::media::proxy::status(a, self.settings.use_proxies, self.settings.proxy_height);
+        // the proxy lookup stats the file for some containers: only rows on screen pay for it
+        let pstatus = if row_visible(ui, ROW_H * self.state.zoom) {
+            crate::media::proxy::status(a, self.settings.use_proxies, self.settings.proxy_height)
+        } else {
+            ProxyStatus::NotNeeded
+        };
         let (palette, thumbs, h) = (self.palette, &mut *self.thumbs, ROW_H * self.state.zoom);
         let (columns, labels) = (&self.settings.library_columns, self.labels);
         let payload = drag_payload(self.state, Pick::Asset(a.id));
+        let shown = display_name(self.project, a);
+        let mut name_rect = egui::Rect::NOTHING;
         let (r, add) = row(ui, egui::Id::new(("asset", a.id)), payload, selected, None, |ui| {
             ui.add_space(indent(depth) + ARROW);
             // label tint: a colour bar on the left and the name in the same colour
@@ -2521,11 +2579,11 @@ impl Tree<'_, '_> {
                 draw_glyph(ui.painter(), g, Glyph::Chain, palette.text_dim);
                 gr.on_hover_text(format!("Subclip of {}", a.name()));
             }
-            let mut name = RichText::new(display_name(a));
+            let mut name = RichText::new(shown);
             if let Some(c) = tint {
                 name = name.color(c);
             }
-            ui.label(if selected { name.strong() } else { name });
+            name_rect = ui.label(if selected { name.strong() } else { name }).rect;
             // the configured columns, in order; tags last (they truncate against the row's edge)
             for c in columns.iter().filter(|c| c.as_str() != "tags") {
                 match c.as_str() {
@@ -2578,6 +2636,17 @@ impl Tree<'_, '_> {
             }
         });
         let (id, path) = (a.id, a.path.clone());
+        if r.double_clicked() || r.dragged() {
+            self.state.rename_arm = None;
+        } else if r.clicked() {
+            let plain = ui.input(|i| !i.modifiers.any());
+            let on_name = r.interact_pointer_pos().is_some_and(|p| name_rect.contains(p));
+            let was_only = selected && self.state.sel_ids.len() <= 1;
+            self.state.rename_arm = (plain && on_name && was_only).then_some((id, now));
+            if self.state.rename_arm.is_some() {
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(1050));
+            }
+        }
         self.hit(ui, &r, Pick::Asset(id), &path);
         if add {
             self.resp.add_to_timeline.push(id);
@@ -2587,6 +2656,21 @@ impl Tree<'_, '_> {
 
     fn asset_tile(&mut self, ui: &mut egui::Ui, i: usize) {
         let a = &self.project.assets[i];
+        if self.state.rename_asset.as_ref().is_some_and(|(x, _)| *x == a.id) {
+            let (id, sub, old) = (a.id, a.parent.is_some(), display_name(self.project, a));
+            let (_, buf) = self.state.rename_asset.as_mut().unwrap();
+            if buf.is_empty() {
+                *buf = old.clone();
+            }
+            if let Some(new) = inline_edit(ui, buf) {
+                if !new.is_empty() && new != old {
+                    self.ops.push(if sub { LibOp::AssetDesc(id, new) } else { LibOp::AssetName(id, new) });
+                    *self.op_start = true;
+                }
+                self.state.rename_asset = None;
+            }
+            return;
+        }
         let selected = self.state.sel_ids.contains(&a.id);
         let tint = (a.label != 0).then(|| lbl_color(self.labels, a.label, self.palette)).unwrap_or(self.palette.text);
         let w = TILE * self.state.zoom;
@@ -2611,7 +2695,7 @@ impl Tree<'_, '_> {
         if self.state.offline.contains(&a.id) {
             tag.push_str(" · OFFLINE");
         }
-        let (r, add) = tile(ui, id, payload, selected, &tag, &display_name(a), tint, self.palette, art, w, button);
+        let (r, add) = tile(ui, id, payload, selected, &tag, &display_name(self.project, a), tint, self.palette, art, w, button);
         let (aid, path) = (a.id, a.path.clone());
         self.hit(ui, &r, Pick::Asset(aid), &path);
         if add {
@@ -2653,8 +2737,8 @@ impl Tree<'_, '_> {
             }
             ui.separator();
             // a subclip's name is its own (its description); a file's name is its file name
-            if a.parent.is_some() && menu::row(ui, None, "Rename", "").clicked() {
-                self.state.rename_asset = Some((a.id, display_name(a)));
+            if menu::row(ui, None, "Rename", "F2").clicked() {
+                self.state.rename_asset = Some((a.id, String::new()));
             }
             if menu::row(ui, Some(Glyph::Notepad), "Info…", "")
                 .on_hover_text("Description, tags, label, folder")
@@ -4613,6 +4697,26 @@ mod tests {
         let r = menu_pick(&mut pane, &mut state, &mut project, &mut settings, at, "Delete");
         assert!(project.sequences.is_empty());
         assert_eq!(r.deleted_sequence.as_deref(), Some("Opening"));
+    }
+
+    /// Any asset (not just a subclip) renames from its right-click; the file keeps its name.
+    #[test]
+    fn plain_asset_renames_from_menu() {
+        let mut project = Project::new();
+        let id = project.add_asset(asset(0, ClipKind::Video, 5.0));
+        let mut settings = Settings::default();
+        let mut state = LibraryState::default();
+        let mut pane = Pane::new(420.0, 900.0);
+        let (shapes, _) = pane.step(&mut state, &mut project, &mut settings, vec![]);
+        let at = text_rect(&shapes, "file0.mp4").expect("row").center();
+        menu_pick(&mut pane, &mut state, &mut project, &mut settings, at, "Rename");
+        pane.step(&mut state, &mut project, &mut settings, vec![]);
+        state.rename_asset.as_mut().expect("renaming").1 = "Opening shot".into();
+        pane.step(&mut state, &mut project, &mut settings, vec![]);
+        pane.step(&mut state, &mut project, &mut settings, vec![key(egui::Key::Enter)]);
+        pane.step(&mut state, &mut project, &mut settings, vec![]);
+        assert_eq!(project.asset_names.get(&id).map(String::as_str), Some("Opening shot"));
+        assert_eq!(project.asset(id).unwrap().name(), "file0.mp4");
     }
 
     /// The column header's right-click is its Columns menu.

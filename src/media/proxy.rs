@@ -206,7 +206,7 @@ pub fn proxy_path(src: &str, height: u32) -> PathBuf {
     stacked_or_plain(src, height, has_alpha(src) == Some(true))
 }
 
-fn stacked_or_plain(src: &str, height: u32, stacked: bool) -> PathBuf {
+pub fn stacked_or_plain(src: &str, height: u32, stacked: bool) -> PathBuf {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     (src.to_ascii_lowercase(), mtime_secs(src), height).hash(&mut h);
@@ -284,6 +284,26 @@ impl VideoSource for StackedAlpha {
     }
 }
 
+/// The proxy height an HTML render writes its stacked proxy at, in the same ffmpeg pass as the render
+/// itself, so a layer plays like footage the moment it is rendered (and on every later open: proxies
+/// are on disk). 0 = proxies off. Kept in step with the settings by `App::sync_proxies`.
+pub static HTML_PROXY_H: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(720);
+
+/// Encoder args of every proxy: all-intra H.264 (`-g 1`: seeks and reverse scrubs are free), no audio.
+pub const ENCODE: [&str; 13] =
+    ["-c:v", "libx264", "-preset", "veryfast", "-g", "1", "-crf", "20", "-pix_fmt", "yuv420p", "-an", "-movflags", "+faststart"];
+
+/// Straight-alpha frames to a stacked proxy `height` tall (colour over alpha). Premultiplied BEFORE
+/// the downscale: scaling straight alpha drags the colour hidden under transparent pixels (usually
+/// black) into every edge - dark fringes.
+pub fn stacked_filter(height: u32) -> String {
+    format!(
+        "format=gbrap,premultiply=inplace=1,scale=-2:{},format=gbrap,split[c][a];\
+         [a]alphaextract,format=yuv420p[m];[c]format=yuv420p[k];[k][m]vstack",
+        height.max(2)
+    )
+}
+
 /// Transcode `src` into its proxy file on a background thread (temp + rename; the destination never
 /// exists half-written). Video only - audio always plays from the original.
 pub fn generate(src: String, dst: PathBuf, height: u32) -> Arc<Progress> {
@@ -304,17 +324,11 @@ fn run(src: &str, dst: &PathBuf, height: u32, prog: &Progress) -> Result<(), Str
     // -2 keeps aspect at an even width; -g 1 = all-intra; no audio (the original supplies it)
     let mut vf = format!("scale=-2:{}", height.max(2)); // ws:html-layer: callers pick the height (`height_for`)
     if is_stacked(dst) {
-        // premultiplied BEFORE the downscale (scaling straight alpha drags the colour hidden under
-        // transparent pixels - usually black - into every edge: dark fringes), then colour over alpha
-        vf = format!(
-            "format=gbrap,premultiply=inplace=1,{vf},format=gbrap,split[c][a];\
-             [a]alphaextract,format=yuv420p[m];[c]format=yuv420p[k];[k][m]vstack"
-        );
+        vf = stacked_filter(height);
         // the proxy this source got before proxies kept alpha: same name without the `-a`
         let _ = std::fs::remove_file(stacked_or_plain(src, height, false));
     }
-    cmd.args(["-vf", &vf, "-c:v", "libx264", "-preset", "veryfast", "-g", "1", "-crf", "20"]);
-    cmd.args(["-pix_fmt", "yuv420p", "-an", "-movflags", "+faststart"]);
+    cmd.args(["-vf", &vf]).args(ENCODE);
     cmd.arg(&tmp.0);
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| format!("ffmpeg: {e}"))?;

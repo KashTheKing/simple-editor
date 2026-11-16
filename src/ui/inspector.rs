@@ -1283,6 +1283,7 @@ fn clip_section(
             c.label = clip.label;
             c.mask = clip.mask.clone();
             c.shape = clip.shape.clone();
+            c.browser = clip.browser.clone(); // ws:browser-layer: its section edits the clone too
             if cg.changed {
                 c.effects = clip.effects.clone();
             }

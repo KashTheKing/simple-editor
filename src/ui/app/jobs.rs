@@ -272,11 +272,15 @@ impl App {
         }
         self.proxy_scan_at = Some(Instant::now() + Duration::from_secs(2));
         let h = self.settings.proxy_height.max(120);
+        crate::media::proxy::HTML_PROXY_H.store(h, std::sync::atomic::Ordering::Relaxed);
         let mut map = std::collections::HashMap::new();
         let mut want: Option<(String, std::path::PathBuf)> = None;
-        if self.settings.use_proxies {
+        // an HTML layer always plays from its proxy: "Use proxies" is about footage, and the PNG frames
+        // of a render cost ~36 ms each to decode - with it off, only HTML assets are mapped / built
+        let all = self.settings.use_proxies;
+        {
             for a in &self.project.assets {
-                if !proxy_eligible(a, h) {
+                if !(all || a.html.is_some()) || !proxy_eligible(a, h) {
                     continue;
                 }
                 let dst = crate::media::proxy::proxy_path(&a.path, crate::media::proxy::height_for(a, h));
@@ -285,7 +289,11 @@ impl App {
                 }
             }
             // ---- ws:jobs-panel ----
-            want = pick_next_proxy(&proxy_candidates(&self.project.assets, h), self.proxy_next.as_deref());
+            let mut cands = proxy_candidates(&self.project.assets, h);
+            if !all {
+                cands.retain(|(src, _)| self.project.assets.iter().any(|a| a.path == *src && a.html.is_some()));
+            }
+            want = pick_next_proxy(&cands, self.proxy_next.as_deref());
             if want.is_some() {
                 self.proxy_next = None;
             }

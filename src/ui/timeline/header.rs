@@ -28,12 +28,30 @@ pub(super) fn draw_header(
     track_toggle: &mut Option<(usize, TrackFlag)>,
     track_rename: &mut Option<(usize, String)>,
     show_kinds: (bool, bool),
+    sel_tracks: &mut Vec<Id>,
 ) -> Option<Act> {
     let mut act: Option<Act> = None;
     let hr = Rect::from_min_max(pos2(header.left(), row.top()), pos2(header.right(), row.bottom()));
     let tid = id.with(track.id);
     let hresp = ui.interact(hr, tid.with("hdr"), Sense::click());
     let is_video = track.kind == TrackKind::Video;
+    // click selects the track (Ctrl/Shift+click adds or removes); Delete then removes it
+    if hresp.clicked() {
+        let m = ui.input(|i| i.modifiers);
+        if m.command || m.shift {
+            match sel_tracks.iter().position(|&x| x == track.id) {
+                Some(i) => {
+                    sel_tracks.remove(i);
+                }
+                None => sel_tracks.push(track.id),
+            }
+        } else {
+            *sel_tracks = vec![track.id];
+        }
+    }
+    if sel_tracks.contains(&track.id) {
+        bp.rect_filled(hr, 0, pal.accent.gamma_multiply(0.25));
+    }
     // right to left: eye / speaker, lock, then solo
     let bw = vec2(18.0, 16.0);
     let mb = Rect::from_center_size(pos2(hr.right() - 4.0 - bw.x * 0.5, hr.center().y), bw);

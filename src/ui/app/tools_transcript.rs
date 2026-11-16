@@ -35,10 +35,58 @@ fn parse_words(v: Option<&Value>) -> Result<Vec<(f64, f64, String)>, String> {
     Ok(out)
 }
 
+/// Longer transcripts never go through the MCP reply (a 10-minute clip is ~60k chars and blows the
+/// client's token limit): the full data goes to files and the reply is a small pointer.
+const INLINE_WORDS: usize = 60;
+
+/// Writes `<temp>/simple-editor-transcripts/clip-<id>.json` (full words) and `.txt` (one line per
+/// ~12 words / sentence: `[start-end] text`, greppable and Read-able with offset/limit) and returns
+/// a summary. ponytail: files are overwritten per clip, never cleaned up (tiny).
+fn saved_transcript(clip: Id, words: &[(f64, f64, String)]) -> Value {
+    let dir = std::env::temp_dir().join("simple-editor-transcripts");
+    let (json_path, txt_path) = (dir.join(format!("clip-{clip}.json")), dir.join(format!("clip-{clip}.txt")));
+    let mut lines = String::new();
+    let (mut start, mut line, mut n) = (0.0, String::new(), 0);
+    for w in words {
+        if n == 0 {
+            start = w.0;
+        }
+        line.push_str(&w.2);
+        line.push(' ');
+        n += 1;
+        if n >= 12 || w.2.ends_with(['.', '?', '!']) {
+            lines.push_str(&format!("[{:.2}-{:.2}] {}\n", start, w.1, line.trim()));
+            line.clear();
+            n = 0;
+        }
+    }
+    if n > 0 {
+        lines.push_str(&format!("[{:.2}-{:.2}] {}\n", start, words[words.len() - 1].1, line.trim()));
+    }
+    let full = json!({"clip_id": clip, "words": words_json(words)});
+    let ok = std::fs::create_dir_all(&dir).is_ok()
+        && std::fs::write(&json_path, full.to_string()).is_ok()
+        && std::fs::write(&txt_path, lines).is_ok();
+    if !ok {
+        return json!({"clip_id": clip, "error": "could not write transcript files", "dir": dir});
+    }
+    json!({
+        "clip_id": clip,
+        "word_count": words.len(),
+        "start": words[0].0,
+        "end": words[words.len() - 1].1,
+        "saved_to": {"text_lines": txt_path, "words_json": json_path},
+        "how": "Transcript saved to files, not returned. Read text_lines with offset/limit (or grep it): '[start-end] text' per line, timeline seconds. For per-word timings parse words_json ([{start,end,text}]) with a script, e.g. python -c \"import json;w=json.load(open(P))['words']\". To edit use transcript.search / transcript.cut_words (word_indices index into words_json).",
+    })
+}
+
 /// `{clip_id, words:[{start,end,text}], text}`; a clip with no transcript yields empty words plus a
 /// hint, not an error.
 fn transcript_value(app: &App, clip: Id) -> Value {
     let words = app.project.transcript(clip).map(|t| t.words.as_slice()).unwrap_or(&[]);
+    if words.len() > INLINE_WORDS {
+        return saved_transcript(clip, words);
+    }
     let mut v = json!({
         "clip_id": clip,
         "words": words_json(words),
@@ -98,7 +146,7 @@ const ASYNC_ARG: &str = "async:boolean:false:default false - reply at once with 
 pub const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "transcript.get",
-        desc: "Word timings (timeline seconds) for one transcribed clip, or every transcript when clip_id is omitted.",
+        desc: "Word timings (timeline seconds) for one transcribed clip, or every transcript when clip_id is omitted. Transcripts over 60 words are saved to files and the reply is {saved_to, word_count, how} instead of the words.",
         args: &["clip_id:integer:false:omit for all clips"],
         kind: ToolKind::Read,
         run: |app, args| {
@@ -365,7 +413,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "media.transcript",
-        desc: "{clip_id, words:[{start,end,text}], text} for one clip (clip_id, or asset_id's first timeline clip), or every transcript when both are omitted. A clip without one gives empty words plus a hint.",
+        desc: "{clip_id, words:[{start,end,text}], text} for one clip (over 60 words: saved to files, reply is {saved_to: {text_lines, words_json}, word_count, how}) (clip_id, or asset_id's first timeline clip), or every transcript when both are omitted. A clip without one gives empty words plus a hint.",
         args: &["clip_id:integer:false:", "asset_id:integer:false:"],
         kind: ToolKind::Read,
         run: |app, args| {

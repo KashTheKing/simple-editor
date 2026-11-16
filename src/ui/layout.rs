@@ -1074,9 +1074,6 @@ impl egui_tiles::Behavior<Pane> for Behaviour<'_> {
         if pane.is_some() && pane == self.scroll_to {
             ui.scroll_to_rect(tab_rect, None);
         }
-        if tab_response.double_clicked() {
-            self.maximize.extend(pane);
-        }
         let main_end = tab_rect.left() + x_margin + icon_w + gap + galley.size().x + pin_w;
         let main_rect = egui::Rect::from_min_max(tab_rect.min, egui::pos2(main_end + seq_gap / 2.0, tab_rect.bottom()));
         let close_rect = egui::Rect::from_min_max(
@@ -1184,7 +1181,7 @@ impl egui_tiles::Behavior<Pane> for Behaviour<'_> {
         let Some(&pane) = tiles.get_pane(&tile_id) else { return button_response };
         menu::context(&button_response, |ui| {
             // ---- ws:pages ----
-            let max = if self.maximized == Some(pane) { "Restore panel" } else { "Maximise panel" };
+            let max = if self.maximized == Some(pane) { "Restore panel" } else { "Fullscreen Panel" };
             if menu::row(ui, Some(Glyph::Maximize), max, &menu::shortcut(Action::MaximizePane)).clicked() {
                 self.maximize.push(pane);
             }

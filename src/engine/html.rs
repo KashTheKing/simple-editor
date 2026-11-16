@@ -2425,6 +2425,53 @@ pub struct Spec {
     pub renderer: HtmlRenderer,
 }
 
+/// Why this layer is slower than a plain CSS layer to render (empty = the quick path: the fast renderer
+/// in parallel, unchanged frames reused). Shown on the clip's mark in the timeline. Effects, speed and
+/// masks are not here: they work on the rendered frames on the GPU and cost the render nothing.
+pub fn slow_reasons(h: &crate::model::HtmlSource) -> std::sync::Arc<Vec<String>> {
+    use std::hash::{Hash, Hasher};
+    static MEMO: Mutex<Option<std::collections::HashMap<u64, std::sync::Arc<Vec<String>>>>> = Mutex::new(None);
+    let mut k = std::hash::DefaultHasher::new();
+    (&h.src, h.mouse.is_some(), format!("{:?}{:?}", h.renderer, h.params), h.duration.to_bits()).hash(&mut k);
+    let key = k.finish();
+    if let Some(v) = lock(&MEMO).as_ref().and_then(|m| m.get(&key)) {
+        return v.clone();
+    }
+    let v = std::sync::Arc::new(slow_reasons_uncached(h));
+    let mut g = lock(&MEMO);
+    let m = g.get_or_insert_with(Default::default);
+    if m.len() > 256 {
+        m.clear();
+    }
+    m.insert(key, v.clone());
+    v
+}
+
+fn slow_reasons_uncached(h: &crate::model::HtmlSource) -> Vec<String> {
+    let mut why = Vec::new();
+    let choice = blitz::choose(h.renderer, &h.src);
+    if choice.engine == blitz::Engine::Edge {
+        why.push(match choice.reason {
+            Some(r) => format!("Edge renderer: {r}"),
+            None => "Edge renderer: fewer frames at once than the fast renderer".into(),
+        });
+    }
+    if h.mouse.is_some() {
+        why.push("Fake mouse: hover and click states are recorded in order, one frame at a time".into());
+    }
+    let tpl = parse(&h.src);
+    if animated_params(&tpl, &params_of(&h.src, &h.params)) {
+        why.push("Keyframed params: every frame is drawn, none can be reused".into());
+    }
+    if h.src.to_ascii_lowercase().contains("infinite") {
+        why.push("An infinite animation: every frame of the layer is drawn".into());
+    }
+    if h.duration > 60.0 {
+        why.push(format!("Long layer ({:.0} s): a 5 fps draft plays first while the rest renders", h.duration));
+    }
+    why
+}
+
 /// A finished (or cached) render.
 #[derive(Clone, Debug)]
 pub struct Rendered {
@@ -2618,10 +2665,29 @@ fn render_to_file_with(spec: &Spec, prog: &Progress, fast: bool) -> Result<Rende
     // when it steps aside for a short render.
     let out = base.with_extension("mov");
     let tmp = export::temp_output(&out);
-    let mut child = ffpipe::command(&ffmpeg)
-        .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "image2pipe"])
+    // the stacked playback proxy in the same pass: the PNG .mov costs ~36 ms a frame to decode, the
+    // proxy plays like footage from the moment the render is done (no second encode, and it stays on
+    // disk for every later open). Height as `proxy::height_for` picks it, so the scan finds it.
+    let proxy_h = match crate::media::proxy::HTML_PROXY_H.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => None,
+        h if ph < h => Some(ph.max(2) & !1),
+        h => Some(h),
+    };
+    let proxy_tmp = proxy_h.map(|_| export::temp_output(&base.with_extension("proxy.mp4")));
+    let mut cmd = ffpipe::command(&ffmpeg);
+    cmd.args(["-y", "-hide_banner", "-loglevel", "error", "-f", "image2pipe"])
         .args(["-framerate", &format!("{}/1000", (fps * 1000.0).round())])
-        .args(["-c:v", "png", "-i", "-", "-c:v", "copy"])
+        .args(["-c:v", "png", "-i", "-"]);
+    if let (Some(h), Some(p)) = (proxy_h, &proxy_tmp) {
+        cmd.args(["-filter_complex", &format!("[0:v]{}[px]", crate::media::proxy::stacked_filter(h))])
+            .args(["-map", "[px]"])
+            .args(crate::media::proxy::ENCODE)
+            .args(["-f", "mp4"])
+            .arg(&p.0)
+            .args(["-map", "0:v"]);
+    }
+    let mut child = cmd
+        .args(["-c:v", "copy", "-f", "mov"])
         .arg(&tmp.0)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
@@ -2740,6 +2806,14 @@ fn render_to_file_with(spec: &Spec, prog: &Progress, fast: bool) -> Result<Rende
     }
     export::wait_ffmpeg(&mut child, tail, prog)?;
     tmp.commit(&out)?;
+    if let (Some(h), Some(p)) = (proxy_h, proxy_tmp) {
+        // named after the committed file (its mtime is in the key); a failure only means the proxy
+        // scan builds it later, the old way
+        let dst = crate::media::proxy::stacked_or_plain(&out.to_string_lossy(), h, true);
+        if std::fs::create_dir_all(crate::media::proxy::dir()).is_ok() {
+            let _ = p.commit(&dst);
+        }
+    }
     Ok(Rendered { path: out, width: size.0, height: size.1, animated: true })
 }
 
@@ -3092,6 +3166,19 @@ fn capture_profile(network: bool) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slow_reasons_name_the_mouse_and_infinite_animations_only_when_used() {
+        let has = |v: &[String], w: &str| v.iter().any(|r| r.starts_with(w));
+        let mut h = crate::model::HtmlSource { src: "<style>p{animation:a 1s}</style><p>hi</p>".into(), duration: 4.0, ..Default::default() };
+        let plain = slow_reasons(&h);
+        assert!(!has(&plain, "Fake mouse") && !has(&plain, "An infinite") && !has(&plain, "Long"));
+        h.src = "<style>p{animation:a 1s infinite}</style><p>hi</p>".into();
+        h.mouse = Some(crate::model::Mouse::at(0.0, 0.0));
+        h.duration = 90.0;
+        let slow = slow_reasons(&h);
+        assert!(has(&slow, "Fake mouse") && has(&slow, "An infinite") && has(&slow, "Long"));
+    }
 
     #[test]
     fn an_icon_becomes_a_page_with_a_colour_field() {

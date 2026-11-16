@@ -223,6 +223,8 @@ pub(super) struct ClipMenu<'a> {
     // ---- ws:html-layer ----
     /// The clip's asset is an HTML layer / scene.
     pub html: bool,
+    /// A shape clip: offers "Convert to HTML Layer".
+    pub shape: bool,
 }
 
 /// The clip body / edge right-click menu. Actions run on the selection (a right-click on an unselected
@@ -330,6 +332,9 @@ pub(super) fn clip_menu(
         // ---- ws:html-layer ----
         if m.html {
             acts(ui, &[Some(EditHtml), Some(SaveHtmlToLibrary)]);
+        }
+        if m.shape {
+            acts(ui, &[Some(ShapesToHtml)]);
         }
         // ---- ws:assistant-pane ---- (the right-click already selected the clip)
         crate::ui::assistant_ui::add_to_assistant_row(ui, crate::ui::assistant_data::Pin::Clips);

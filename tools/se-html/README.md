@@ -25,15 +25,33 @@ cd tools\se-html; cargo build --ignore-rust-version      # a dev build (deps sta
 * `panic = "unwind"` is required: a panic inside the renderer (vello_cpu has `unimplemented!` for colour
   filters) is caught per command and answered as an error.
 
-## Ship
+## Ship (and update) the helper
 
-`build-helper.ps1` writes `dist\se-html\bin\se-html.json` (`version`, `protocol`, `url`, `size`, `sha256`).
-Publish both files under `bin/` next to the library (`library/` on the library URL, or the folder set in
-Settings > Library folder), or upload `se-html.exe` as a release asset and build with
-`-Url https://github.com/.../releases/download/.../se-html.exe`. The app's **Install** button
-(`engine::blitz::install`) reads the manifest, downloads the exe, checks size and SHA-256, runs it once to check
-the protocol and moves it to `%APPDATA%\SimpleEditor\bin\se-html.exe`. Nothing is fetched before that click.
-Bump `PROTOCOL` in `src/proto.rs` when a command changes meaning: an app refuses a helper with another one.
+The exe is NOT committed to git (11 MB per version would live in history forever). It is a **GitHub release
+asset**; only the small manifest `library/bin/se-html.json` is in the repo. The app's **Install** button
+(`engine::blitz::install`) reads that manifest from the library URL (default
+`https://raw.githubusercontent.com/KashTheKing/simple-editor/main/library`), downloads the exe from the
+manifest's `url`, checks size and SHA-256, runs it once to check the protocol, and moves it to
+`%APPDATA%\SimpleEditor\bin\se-html.exe`. Nothing is fetched before that click. If `main` has no
+`library/bin/se-html.json` the install fails with a 404 (that was the original bug).
+
+To publish a new version (bump `version` in `Cargo.toml`; bump `PROTOCOL` in `src/proto.rs` too when a command
+changes meaning - an app refuses a helper that speaks another protocol, and old apps keep the old release):
+
+1. Build and write the manifest, pointing it at the new release tag:
+   `scripts\build-helper.ps1 -Url https://github.com/KashTheKing/simple-editor/releases/download/se-html-vX.Y.Z/se-html.exe`
+   (output: `dist\se-html\bin\se-html.exe` + `se-html.json`, and a size_log.csv row).
+2. Upload the exe as a release asset:
+   `gh release create se-html-vX.Y.Z dist\se-html\bin\se-html.exe --repo KashTheKing/simple-editor --title "se-html X.Y.Z" --notes "..."`
+3. Check the upload: download it from that URL and compare its SHA-256 with the manifest
+   (`certutil -hashfile <file> SHA256`).
+4. Commit `dist\se-html\bin\se-html.json` as `library/bin/se-html.json` on `main` and push. The manifest is the
+   switch: until it is on `main`, nobody sees the new version. If local `main` has unpushed work, commit the
+   manifest in a throwaway worktree on top of `origin/main` (`git worktree add --detach <dir> origin/main`) and
+   `git push origin HEAD:main`, so only that one commit goes out.
+5. Existing installs keep the old exe; they get the new one by clicking Install again (it replaces the file).
+   Test on a machine with `%APPDATA%\SimpleEditor\bin` emptied, or point Settings > Library folder at a local
+   copy of `library/` to try the flow before publishing.
 
 ## Protocol (see `src/main.rs` for the exact fields)
 

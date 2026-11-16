@@ -1572,6 +1572,7 @@ fn test_clip_menu<'a>(labels: &'a [Label], buses: &'a [crate::model::Bus], share
         buses,
         shared_effects: shared,
         html: false,
+        shape: false,
     }
 }
 

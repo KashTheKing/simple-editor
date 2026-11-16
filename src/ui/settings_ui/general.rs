@@ -1,4 +1,4 @@
-//! The General tab: theme/decoder/ffmpeg-and-yt-dlp folders/downloads/preview width/snapping/confirm
+//! The General tab: decoder/ffmpeg-and-yt-dlp folders/downloads/preview width/snapping/confirm
 //! overwrite/context-menu, imported fonts, and the MCP server section. Extracted verbatim from
 //! settings_ui.rs (see mod.rs's module doc for the whole settings window).
 
@@ -7,17 +7,12 @@ use crate::settings::Settings;
 use crate::ui::combo;
 use eframe::egui;
 
-const THEMES: [(&str, &str); 3] = [("system", "System"), ("dark", "Dark"), ("light", "Light")];
 const DECODERS: [(&str, &str); 3] =
     [("auto", "Auto (Media Foundation, ffmpeg fallback)"), ("mf", "Media Foundation"), ("ffmpeg", "ffmpeg")];
 
 pub(super) fn general(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Settings, mcp_status: &str) -> bool {
     let mut changed = false;
     egui::Grid::new("general").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-        ui.label("Theme");
-        changed |= combo(ui, "theme", &mut s.theme, &THEMES, Some(260.0));
-        ui.end_row();
-
         ui.label("Decoder");
         changed |= combo(ui, "decoder", &mut s.decoder, &DECODERS, Some(260.0));
         ui.end_row();

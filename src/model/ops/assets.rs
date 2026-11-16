@@ -39,6 +39,7 @@ impl Project {
             transcripts: Vec::new(),
             subtitle_anim: SubtitleAnim::default(),
             smart_bins: Vec::new(),
+            asset_names: Default::default(),
             // ---- ws:size-diet ----
             // ---- ws:split-god-files ----
             // ---- ws:audio-analysis ----

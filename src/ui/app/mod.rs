@@ -1020,6 +1020,13 @@ impl App {
     fn open_or_import(&mut self, paths: &[PathBuf]) -> Vec<Id> {
         // a folder imports as a bin on its own; only the plain files can open as the project
         let paths = self.take_folders(paths);
+        // a project file is opened, never imported as media (the probe would only say "invalid data")
+        let (projects, paths): (Vec<PathBuf>, Vec<PathBuf>) = paths.into_iter().partition(|p| {
+            p.extension().is_some_and(|e| e.to_string_lossy().eq_ignore_ascii_case(PROJECT_EXT))
+        });
+        if let Some(p) = projects.into_iter().next() {
+            self.confirm_discard_then(move |app| app.open_project(&p));
+        }
         // ---- ws:media-library ----: a frame of a numbered still run bakes as one clip instead
         let paths = media_sync::intercept_sequences(self, &paths);
         if self.project.is_empty() && self.project.assets.is_empty() && paths.len() == 1 {
@@ -1051,6 +1058,7 @@ impl App {
         self.probes.clear(); // import probes belong to the project that started them
         self.project = project;
         self.project_path = path;
+        assistant_ctl::project_changed(self, self.project_path.clone().as_deref());
         self.dirty = false;
         self.undo.clear();
         self.redo.clear();
@@ -1117,6 +1125,13 @@ impl App {
     fn import_files(&mut self, paths: &[PathBuf]) -> Vec<Id> {
         // a folder is a bin import of its own (async, so its assets are not in the returned ids)
         let paths = self.take_folders(paths);
+        // a project file is opened, never imported as media (the probe would only say "invalid data")
+        let (projects, paths): (Vec<PathBuf>, Vec<PathBuf>) = paths.into_iter().partition(|p| {
+            p.extension().is_some_and(|e| e.to_string_lossy().eq_ignore_ascii_case(PROJECT_EXT))
+        });
+        if let Some(p) = projects.into_iter().next() {
+            self.confirm_discard_then(move |app| app.open_project(&p));
+        }
         // ---- ws:media-library ----: every import path (Ctrl+I, drops, MCP media.import) funnels
         // through here, so this one gate covers them all - see media_sync::intercept_sequences
         let paths = media_sync::intercept_sequences(self, &paths);
@@ -1231,7 +1246,6 @@ impl eframe::App for App {
         // the window really closes this frame: answer held / parked MCP calls instead of letting them time out
         if self.close_confirmed && ctx.input(|i| i.viewport().close_requested()) {
             assistant_ctl::deny_held(self, "the app closed");
-            assistant_ctl::save_now(self); // ws:assistant-pane: the conversations, synchronously
             tools_context::end_waits(self, "the app closed");
         }
 

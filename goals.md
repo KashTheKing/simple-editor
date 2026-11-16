@@ -194,6 +194,20 @@ Pulled forward from CHANGELOG.md — mark new completions here as they land.
   for the final picture. Open design points: pages to jump to (a list in the Record window, or the
   link's own address matched to snapshots), whether a click scrolls the viewport, keyboard typing into
   fields (a text-typing track).
+- [ ] **AI upscale in place** (asked 2026-11-15, not started): right-click a clip on the timeline ▸ "AI upscale"
+  runs Real-ESRGAN (`realesrgan-ncnn-vulkan`, on the GPU; ×2 / ×4; `realesr-animevideov3` for game and
+  animation footage, `realesrgan-x4plus` for real-world video) on just the clip's used source range plus small
+  handles (enough for its transitions), then swaps the clip's media in place keeping its effects, transform,
+  keyframes, transitions and timing, and adds the upscaled file to the media library (an "AI enhanced" bin)
+  next to the original, which stays untouched on disk. Runs as a background job with progress and cancel.
+  Ships as an **optional add-on**, not in the base binary: the upscaler and its models are a separate download
+  (like the whisper models), so the exe size gate is unaffected. Learned doing it by hand on the GTA 6 game-swap
+  video: ~1.3 frames/s at ×2 from 1080p on an RTX 2060 Super, so upscale only what is on screen, never the
+  whole source; the swap must keep the clip's source times (write the upscaled range at its original
+  timestamps, or offset `src_in`), because today `timeline.replace` / `container.replace` with a
+  different-length asset drop the clip and place the whole new file on a new track; and a clip whose kind is
+  `Image` while its asset is a video has to swap as a video. Worth offering automatically on clips that are
+  scaled past ~1.2× (the zoom is where the upscale shows).
 - [ ] (add more as they're identified — via `/se-goal` or `/goal`)
 
 ### Performance budgets

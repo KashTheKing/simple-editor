@@ -1,6 +1,16 @@
 use crate::model::*;
 use std::path::Path;
 
+/// The `assistant_chats` array of a saved project, as JSON text (None = no such key / unreadable).
+pub fn chats_json_in(path: &Path) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct F {
+        assistant_chats: Option<serde_json::Value>,
+    }
+    let f: F = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    f.assistant_chats.map(|v| v.to_string())
+}
+
 impl Project {
     // ---------- persistence ----------
     pub fn to_json(&self) -> String {
@@ -137,9 +147,23 @@ impl Project {
     }
     /// Writes beside the target then renames, so a failed write can't destroy the previous save.
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
+        self.save_with_chats(path, None)
+    }
+    /// `save` plus the Assistant's chats as a top-level `assistant_chats` key (JSON array text). They
+    /// live beside the project, not in `Project` (undo snapshots would carry - and revert - them).
+    /// `None` keeps whatever the file being replaced already holds, so a save that doesn't know the
+    /// chats (an MCP save, a recovery) never wipes them.
+    pub fn save_with_chats(&self, path: &Path, chats: Option<String>) -> std::io::Result<()> {
+        let mut json = self.to_json();
+        let chats = chats.or_else(|| chats_json_in(path));
+        if let (Some(c), Some(head)) = (chats, json.trim_end().strip_suffix('}')) {
+            json = format!("{head},
+  \"assistant_chats\": {c}
+}}");
+        }
         let mut tmp = path.as_os_str().to_owned();
         tmp.push(".tmp");
-        std::fs::write(&tmp, self.to_json())?;
+        std::fs::write(&tmp, json)?;
         std::fs::rename(&tmp, path)
     }
     pub fn load(path: &Path) -> Result<Self, String> {
