@@ -5,9 +5,12 @@ description: Turn a song into moving pictures - built-in visualizer styles, your
 
 ![Neon Orb, Spectrum Bars, Voxel Blocks and a custom style on the same song](/img/tutorial/visualizer-styles.jpg)
 
-A visualizer is a layer that moves with the music. Right-click an audio clip on the timeline and open
-**Audio ▸ Add Audio Visualizer**: a full-frame layer appears above it, exactly as long as the song, and plays
-along. The sound is analysed **once** when the visualizer is made (loudness, six frequency bands from bass to
+A visualizer is a layer that moves with the music. Right-click a song in the **Media Library** and pick
+**Add with Audio Visualizer**: the song goes on the timeline at the playhead with a full-frame visualizer layer
+above it, exactly as long. For a song already on the timeline, right-click it and open **Audio ▸ Add Audio
+Visualizer**. Either way the two are **linked**, like a video and its own sound: move, trim or delete one and
+the other follows, and exporting the timeline renders the visualizer with the song. A new visualizer gets the
+style you picked last. The sound is analysed **once** when the visualizer is made (loudness, six frequency bands from bass to
 treble, and the beats), and the result is stored as keyframes on the layer. Playback and export only read
 those keyframes, so a visualizer never makes playback stutter, and the export looks exactly like the preview.
 

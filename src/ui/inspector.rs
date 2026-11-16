@@ -924,7 +924,12 @@ fn clip_section(
     if !multi && crate::ui::visualizer_ui::style(project, id).is_some() {
         let backend = crate::media::Backend::parse(&settings.decoder);
         section(ui, "visualizer", "Visualizer", true, folds.map, None, |ui| {
-            visualizer_changed = crate::ui::visualizer_ui::section(ui, project, id, backend, undo);
+            let last = settings.visualizer_style.clone();
+            visualizer_changed =
+                crate::ui::visualizer_ui::section(ui, project, id, backend, &mut settings.visualizer_style, undo);
+            if settings.visualizer_style != last {
+                settings.save();
+            }
         });
     }
 

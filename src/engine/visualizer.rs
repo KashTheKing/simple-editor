@@ -86,6 +86,12 @@ fn find_in(all: Vec<Style>, name: Option<&str>) -> Result<Style, String> {
     }
 }
 
+/// The last-used style (`Settings::visualizer_style`), falling back to the default when it is unset or
+/// no longer installed.
+pub fn last_used(name: &str) -> Style {
+    find((!name.is_empty()).then_some(name)).or_else(|_| find(None)).expect("a built-in style")
+}
+
 /// The style name of a visualizer effect: its shader's `@name`.
 pub fn style_of(e: &Effect) -> Option<String> {
     (e.kind == crate::model::EffectKind::Shader && is_visualizer(&e.shader)).then(|| e.name())
@@ -244,8 +250,14 @@ pub fn bake(e: &mut Effect, an: &Analysis, fps: f64) -> usize {
     n
 }
 
-/// The audio clip a visualizer layer listens to: the audio-track clip overlapping it the most.
+/// The audio clip a visualizer layer listens to: its linked song, else the audio-track clip
+/// overlapping it the most.
 pub fn source_of(p: &Project, vis: Id) -> Option<Id> {
+    // the song it is linked to, when it is (Add with Audio Visualizer / Add Audio Visualizer link them)
+    let linked = p.linked(vis).into_iter().find(|&id| id != vis && p.clip(id).is_some_and(|c| c.kind == ClipKind::Audio));
+    if linked.is_some() {
+        return linked;
+    }
     let v = p.clip(vis)?;
     let (a, b) = (v.start, v.start + v.duration);
     p.tracks
@@ -291,7 +303,9 @@ pub fn restyle(p: &mut Project, vis: Id, style: &Style, backend: Backend) -> Res
 }
 
 /// A full-frame black shape over audio clip `audio`'s span carrying `style`, baked from its sound: the
-/// one-click visualizer (clip menu ▸ Audio, `audio.visualizer`). Returns the new clip.
+/// one-click visualizer (clip menu ▸ Audio, `audio.visualizer`). It joins the song's link group (a
+/// new one when the song has none), so moving, trimming or deleting either takes the other along like a
+/// video's own audio. Returns the new clip.
 pub fn add(p: &mut Project, audio: Id, style: &Style, backend: Backend) -> Result<Id, String> {
     let (at, dur) = p.clip(audio).filter(|c| c.kind == ClipKind::Audio).map(|c| (c.start, c.duration)).ok_or("not an audio clip")?;
     let id = p.add_shape_clip(crate::model::ShapeKind::Rect, at, dur);
@@ -307,11 +321,51 @@ pub fn add(p: &mut Project, audio: Id, style: &Style, backend: Backend) -> Resul
         p.delete_clips(&[id], false);
         return Err(e);
     }
+    link(p, audio, id);
     Ok(id)
 }
 
+/// Put `vis` in `audio`'s link group, giving the song one first if it has none.
+fn link(p: &mut Project, audio: Id, vis: Id) {
+    let l = match p.clip(audio).map(|c| c.link) {
+        Some(0) | None => {
+            let l = p.new_id();
+            if let Some(c) = p.clip_mut(audio) {
+                c.link = l;
+            }
+            l
+        }
+        Some(l) => l,
+    };
+    if let Some(c) = p.clip_mut(vis) {
+        c.link = l;
+    }
+}
+
+/// The song itself with its visualizer: audio asset `asset` placed at `at` (the first audio track free
+/// there) and a linked visualizer layer over the same span (Library ▸ Add with Audio Visualizer,
+/// `audio.visualizer {asset_id}`). Nothing is left behind on failure. Returns (song clip, visualizer).
+pub fn add_song(p: &mut Project, asset: Id, at: f64, style: &Style, backend: Backend) -> Result<(Id, Id), String> {
+    if p.asset(asset).ok_or("no such asset")?.kind != ClipKind::Audio {
+        return Err("not an audio file".into());
+    }
+    let ids = p.insert_asset_clips(asset, at.max(0.0), None);
+    let audio = ids.iter().copied().find(|&id| p.clip(id).is_some_and(|c| c.kind == ClipKind::Audio));
+    let Some(audio) = audio else {
+        p.delete_clips(&ids, false);
+        return Err("the file has no sound to place".into());
+    };
+    match add(p, audio, style, backend) {
+        Ok(vis) => Ok((audio, vis)),
+        Err(e) => {
+            p.delete_clips(&ids, false);
+            Err(e)
+        }
+    }
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// A test source: stereo `f(t)` at 48 kHz.
@@ -441,6 +495,107 @@ vec4 effect(vec4 s, vec2 uv) { return vec4(level); }
         assert_eq!((e.at(1, b0 + 0.01), e.at(1, b1 + 0.01)), (1.0, 2.0), "count steps on each beat");
         assert!((e.at(2, 1.0) - bpm).abs() < 1e-9);
         assert!(is_visualizer(src), "beat params alone make a visualizer");
+    }
+
+    /// A 2 s mono 48 kHz WAV: a loud 220 Hz tone for the first second, nearly silent after. Written
+    /// once per test under the temp dir, decoded by the real decoders like any imported song.
+    pub(crate) fn song_wav(tag: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("se-visualizer-{tag}-{}.wav", std::process::id()));
+        let n = 2 * SAMPLE_RATE as usize;
+        let mut b: Vec<u8> = Vec::with_capacity(44 + n * 2);
+        let le32 = |b: &mut Vec<u8>, v: u32| b.extend_from_slice(&v.to_le_bytes());
+        b.extend_from_slice(b"RIFF");
+        le32(&mut b, 36 + n as u32 * 2);
+        b.extend_from_slice(b"WAVEfmt ");
+        le32(&mut b, 16);
+        b.extend_from_slice(&[1, 0, 1, 0]); // PCM, mono
+        le32(&mut b, SAMPLE_RATE);
+        le32(&mut b, SAMPLE_RATE * 2);
+        b.extend_from_slice(&[2, 0, 16, 0]);
+        b.extend_from_slice(b"data");
+        le32(&mut b, n as u32 * 2);
+        for i in 0..n {
+            let t = i as f64 / SAMPLE_RATE as f64;
+            let amp = if t < 1.0 { 0.8 } else { 0.02 };
+            let v = (amp * (std::f64::consts::TAU * 220.0 * t).sin() * 32767.0) as i16;
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        std::fs::write(&path, b).unwrap();
+        path
+    }
+
+    pub(crate) fn song_asset(p: &mut Project, path: &std::path::Path) -> Id {
+        let mut a = crate::media::probe(&path.to_string_lossy(), Backend::Ffmpeg).expect("probe the test song");
+        a.id = 0;
+        p.add_asset(a)
+    }
+
+    /// Library ▸ Add with Audio Visualizer: the song lands at the playhead on an audio track, the
+    /// visualizer over exactly its span on a video track, both in one link group, the audio baked in
+    /// (loud first second, quiet after).
+    #[test]
+    fn add_song_places_the_song_and_a_linked_visualizer() {
+        let wav = song_wav("add");
+        let mut p = Project::new();
+        let asset = song_asset(&mut p, &wav);
+        let style = find(None).unwrap();
+        let (audio, vis) = add_song(&mut p, asset, 3.0, &style, Backend::Ffmpeg).unwrap();
+        let (a, v) = (p.clip(audio).unwrap().clone(), p.clip(vis).unwrap().clone());
+        assert_eq!(p.tracks[p.track_of(audio).unwrap()].kind, TrackKind::Audio);
+        assert_eq!(p.tracks[p.track_of(vis).unwrap()].kind, TrackKind::Video);
+        assert!((a.start - 3.0).abs() < 1e-9 && (a.duration - 2.0).abs() < 0.05, "{} {}", a.start, a.duration);
+        assert_eq!((v.start, v.duration), (a.start, a.duration), "same span");
+        assert!(a.link != 0 && a.link == v.link, "one link group");
+        let mut group = p.linked(vis);
+        group.sort();
+        assert_eq!(group, vec![audio, vis]);
+        assert_eq!(source_of(&p, vis), Some(audio));
+        let level = |t: f64| v.effects[0].at(0, t);
+        assert!(level(0.5) > 0.8 && level(1.6) < 0.2, "loud then quiet: {} {}", level(0.5), level(1.6));
+        // not audio / not a file: refused, nothing left on the timeline
+        let clips = |p: &Project| p.tracks.iter().map(|t| t.clips.len()).sum::<usize>();
+        let before = clips(&p);
+        assert!(add_song(&mut p, 9999, 0.0, &style, Backend::Ffmpeg).is_err());
+        assert_eq!(clips(&p), before);
+        let _ = std::fs::remove_file(wav);
+    }
+
+    /// Linked like a video and its audio: what the timeline does to a link group (move, trim, delete -
+    /// its gestures expand a pick to `Project::linked`) keeps the song and its visualizer together.
+    #[test]
+    fn the_song_and_its_visualizer_move_trim_and_delete_together() {
+        let wav = song_wav("move");
+        let mut p = Project::new();
+        let asset = song_asset(&mut p, &wav);
+        let (audio, vis) = add_song(&mut p, asset, 0.0, &find(None).unwrap(), Backend::Ffmpeg).unwrap();
+        let group = p.linked(audio);
+        assert!(p.move_clips(&group, 1.5, 0, None));
+        assert_eq!((p.clip(audio).unwrap().start, p.clip(vis).unwrap().start), (1.5, 1.5));
+        let edges: Vec<(Id, bool)> = p.linked(vis).into_iter().map(|id| (id, false)).collect();
+        assert!(p.trim_edges(&edges, -0.5, false), "trim both ends");
+        let (a, v) = (p.clip(audio).unwrap(), p.clip(vis).unwrap());
+        assert!((a.duration - v.duration).abs() < 1e-9 && (a.duration - 1.5).abs() < 0.05, "{} {}", a.duration, v.duration);
+        p.delete_clips(&p.linked(vis), false);
+        assert!(p.clip(audio).is_none() && p.clip(vis).is_none(), "deleted together");
+        let _ = std::fs::remove_file(wav);
+    }
+
+    /// Add Audio Visualizer on a song already on the timeline links too - into the song's existing group
+    /// when it has one (a video's own audio), so the picture, its sound and the visualizer stay together.
+    #[test]
+    fn add_links_into_an_existing_group() {
+        let wav = song_wav("group");
+        let mut p = Project::new();
+        let asset = song_asset(&mut p, &wav);
+        let audio = p.insert_asset_clips(asset, 0.0, None)[0];
+        let video = p.add_shape_clip(crate::model::ShapeKind::Rect, 0.0, 2.0);
+        let l = p.new_id();
+        p.clip_mut(audio).unwrap().link = l;
+        p.clip_mut(video).unwrap().link = l;
+        let vis = add(&mut p, audio, &find(Some("Spectrum Bars")).unwrap(), Backend::Ffmpeg).unwrap();
+        assert_eq!(p.clip(vis).unwrap().link, l);
+        assert_eq!(p.linked(vis).len(), 3);
+        let _ = std::fs::remove_file(wav);
     }
 
     /// `bake` keys exactly the audio params a shader declares, on their own ranges.

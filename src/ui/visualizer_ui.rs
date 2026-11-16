@@ -14,7 +14,15 @@ pub fn style(project: &Project, id: Id) -> Option<String> {
 }
 
 /// Draw the section; true when the project changed.
-pub fn section(ui: &mut egui::Ui, project: &mut Project, id: Id, backend: Backend, undo: &mut dyn FnMut(&Project)) -> bool {
+/// `last` is `Settings::visualizer_style`: a pick becomes the style the next visualizer gets.
+pub fn section(
+    ui: &mut egui::Ui,
+    project: &mut Project,
+    id: Id,
+    backend: Backend,
+    last: &mut String,
+    undo: &mut dyn FnMut(&Project),
+) -> bool {
     let Some(current) = style(project, id) else { return false };
     let err_id = egui::Id::new(("visualizer_err", id));
     let mut pick: Option<visualizer::Style> = None;
@@ -58,6 +66,7 @@ pub fn section(ui: &mut egui::Ui, project: &mut Project, id: Id, backend: Backen
     let r = match (pick, rebake, source) {
         (Some(s), _, _) => {
             undo(project);
+            *last = s.name.clone();
             Some(visualizer::restyle(project, id, &s, backend))
         }
         (None, true, Some(a)) => {
@@ -88,7 +97,7 @@ mod tests {
         let (mut changed, mut undos) = (false, 0);
         let out = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                changed = section(ui, p, id, Backend::Auto, &mut |_| undos += 1);
+                changed = section(ui, p, id, Backend::Auto, &mut String::new(), &mut |_| undos += 1);
             });
         });
         let text: String = out.shapes.iter().map(|s| format!("{:?}", s.shape)).collect();

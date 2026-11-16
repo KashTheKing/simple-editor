@@ -3033,6 +3033,40 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
         }
     }
 
+    /// What an export draws: `GpuRenderer::render_frame` (the compositor the export's GPU path runs) of a
+    /// project holding a song and its linked Neon Orb, at a loud and a quiet moment. Not black, and the
+    /// loud frame has clearly more light.
+    #[test]
+    fn an_exported_visualizer_frame_follows_the_song() {
+        let Some(gl) = gl() else {
+            eprintln!("SKIPPED: no OpenGL driver for a hidden WGL context");
+            return;
+        };
+        use crate::engine::visualizer;
+        let wav = visualizer::tests::song_wav("export");
+        let mut p = crate::model::Project::new();
+        (p.width, p.height) = (320, 180);
+        let asset = visualizer::tests::song_asset(&mut p, &wav);
+        visualizer::add_song(&mut p, asset, 0.0, &visualizer::find(None).unwrap(), crate::media::Backend::Ffmpeg).unwrap();
+        let mut r = GpuRenderer::new(std::sync::Arc::new(gl)).expect("renderer");
+        // the export's GPU path: layers decoded / rasterized like `export::GpuScratch::request`, then
+        // composited by `render_frame`
+        let mut pool = crate::media::DecoderPool::new(crate::media::Backend::Ffmpeg);
+        let (mut spare, mut text) = (Vec::new(), crate::engine::text::TextRasterizer::new());
+        let (mut shapes, mut comp) = (crate::engine::shapes::ShapeRasterizer::new(), crate::engine::compose::Compositor::new());
+        let mut light = |r: &mut GpuRenderer, t: f64| {
+            let layers =
+                crate::playback::decode_layers(&p, t, 320, 180, &mut pool, &mut spare, &mut text, &mut shapes, &mut comp);
+            let mut out = Frame::default();
+            r.render_frame(&p, t, 320, 180, &layers, &mut out);
+            out.rgba.chunks_exact(4).map(|c| c[0] as u64 + c[1] as u64 + c[2] as u64).sum::<u64>()
+        };
+        let (loud, quiet) = (light(&mut r, 0.5), light(&mut r, 1.7));
+        let _ = std::fs::remove_file(wav);
+        assert!(quiet > 50_000, "the orb shows even when quiet: {quiet}");
+        assert!(loud > quiet * 12 / 10, "louder audio, brighter frame: {loud} vs {quiet}");
+    }
+
     /// GPU cost of each visualizer style at 1080p (fastest of 8 runs, minus the same at 16x16 for compile + setup):
     /// `cargo test bench_visualizer_styles -- --ignored --nocapture`.
     #[test]

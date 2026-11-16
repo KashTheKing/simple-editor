@@ -371,20 +371,36 @@ pub const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "audio.visualizer",
         desc: "Add an audio visualizer over an audio clip: a full-frame layer spanning it whose shader follows \
-               the music (level + 6 spectrum bands baked to keyframes once, so playback stays cheap). Same as \
-               right-click > Audio > Add Audio Visualizer. Given a visualizer clip instead, switches its style \
-               and bakes the audio under it again. style: a name from audio.visualizer_styles (built-in Neon \
-               Orb (default), Spectrum Bars, or a custom library effect that declares level/band1..band6).",
+               the music (level + 6 spectrum bands baked to keyframes once, so playback stays cheap), LINKED to \
+               the song so moving / trimming / deleting one does the other. Same as right-click > Audio > Add \
+               Audio Visualizer. asset_id instead: places that audio file at `at` (default the playhead) with \
+               its linked visualizer, as Library > Add with Audio Visualizer does. Given a visualizer clip, \
+               switches its style and bakes the audio again. style: a name from audio.visualizer_styles \
+               (default the last used, else Neon Orb).",
         args: &[
-            "clip_id:integer:true:an audio clip (adds a visualizer) or a visualizer clip (restyles it)",
-            "style:string:false:style name, default Neon Orb",
+            "clip_id:integer:false:an audio clip (adds a visualizer) or a visualizer clip (restyles it)",
+            "asset_id:integer:false:an audio file in the library: place it with a visualizer",
+            "at:number:false:with asset_id: timeline seconds, default the playhead",
+            "style:string:false:style name, default the last used",
         ],
         kind: ToolKind::Mutate,
         run: |app, args| {
             let a = Args(args);
-            let id = req(a.id("clip_id"), "clip_id")?;
-            let style = visualizer::find(a.str("style"))?;
+            let style = match a.str("style") {
+                Some(n) => visualizer::find(Some(n))?,
+                None => visualizer::last_used(&app.settings.visualizer_style),
+            };
             let backend = app.backend();
+            if a.str("style").is_some() && app.settings.visualizer_style != style.name {
+                app.settings.visualizer_style = style.name.clone();
+                app.settings.save();
+            }
+            if let Some(asset) = a.id("asset_id") {
+                let at = a.f64("at").unwrap_or(app.playhead);
+                let (song, vis) = visualizer::add_song(&mut app.project, asset, at, &style, backend)?;
+                return Ok(ToolOutcome::Done(json!({"ok": true, "clip_id": vis, "audio_clip_id": song, "style": style.name})));
+            }
+            let id = req(a.id("clip_id"), "clip_id or asset_id")?;
             let clip = app.project.clip(id).ok_or("no such clip_id")?;
             if clip.effects.iter().any(|e| visualizer::style_of(e).is_some()) {
                 visualizer::restyle(&mut app.project, id, &style, backend)?;

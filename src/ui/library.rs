@@ -178,6 +178,9 @@ pub struct LibraryResponse {
     /// Show this in the Source monitor: (file, its library asset when it is one, play it). A click
     /// pauses on the first frame, a double-click plays.
     pub source: Option<(PathBuf, Option<Id>, bool)>,
+    // ---- ws:audio-visualizer ----
+    /// Audio assets to place at the playhead, each with a linked visualizer layer.
+    pub add_with_visualizer: Vec<Id>,
     /// Template names to place at the playhead.
     pub place_template: Vec<String>,
     /// The user asked to import media from a URL (the app opens the Import URL window).
@@ -2737,6 +2740,12 @@ impl Tree<'_, '_> {
             if place_verbs(ui, self.resp) {
                 self.resp.add_to_timeline.extend(ids.iter().copied());
             }
+            // ---- ws:audio-visualizer ----
+            let songs: Vec<Id> =
+                ids.iter().copied().filter(|id| project.asset(*id).is_some_and(|a| a.kind == ClipKind::Audio)).collect();
+            if !songs.is_empty() && menu::row(ui, Some(Glyph::Waveform), "Add with Audio Visualizer", "").clicked() {
+                self.resp.add_with_visualizer = songs;
+            }
             ui.separator();
             // a subclip's name is its own (its description); a file's name is its file name
             if menu::row(ui, None, "Rename", "F2").clicked() {
@@ -4571,6 +4580,31 @@ mod tests {
         state.sel_ids = vec![a];
         let r = menu_pick(&mut pane, &mut state, &mut project, &mut settings, at, "Convert…");
         assert_eq!((r.convert_dialog, r.convert.len()), (Some(a), 0));
+    }
+
+    /// ws:audio-visualizer: an audio file's menu offers Add with Audio Visualizer and reports that file;
+    /// a video's menu does not offer it.
+    #[test]
+    fn an_audio_file_offers_add_with_audio_visualizer() {
+        let mut project = Project::new();
+        let mut song = asset(0, ClipKind::Audio, 30.0);
+        song.path = r"C:\media\song.mp3".into();
+        let song = project.add_asset(song);
+        let mut clip = asset(0, ClipKind::Video, 5.0);
+        clip.path = r"C:\media\shot.mp4".into();
+        project.add_asset(clip);
+        let mut settings = Settings::default();
+        let mut state = LibraryState::default();
+        let mut pane = Pane::new(420.0, 900.0);
+        let (shapes, _) = pane.step(&mut state, &mut project, &mut settings, vec![]);
+        let at = |n: &str| text_rect(&shapes, n).expect("row").center();
+        let r = menu_pick(&mut pane, &mut state, &mut project, &mut settings, at("song.mp3"), "Add with Audio Visualizer");
+        assert_eq!(r.add_with_visualizer, vec![song]);
+        pane.step(&mut state, &mut project, &mut settings, vec![]);
+        pane.step(&mut state, &mut project, &mut settings, press(at("shot.mp4"), egui::PointerButton::Secondary));
+        let (shapes, _) = pane.step(&mut state, &mut project, &mut settings, vec![]);
+        assert!(text_rect(&shapes, "Add to timeline at playhead").is_some(), "the menu is open");
+        assert!(text_rect(&shapes, "Add with Audio Visualizer").is_none(), "not for a video");
     }
 
     /// A click only selects; a double-click opens Source; Ctrl / Shift build an ordered selection;

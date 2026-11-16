@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Audio visualizers
+- **Add with Audio Visualizer**: right-click a song in the Media Library to put it on the timeline at the
+  playhead together with a visualizer layer over the same span, in the style you used last (Neon Orb at first).
+  The two are linked like a video and its own audio: moving, trimming or deleting one takes the other along, and
+  the export renders the visualizer with the song. **Add Audio Visualizer** on a timeline clip links too.
+  `audio.visualizer {asset_id}` does the same for the Assistant.
+
 ## 1.3.0
 
 ### Performance: peak playback
