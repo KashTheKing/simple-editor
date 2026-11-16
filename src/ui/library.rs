@@ -2723,7 +2723,7 @@ impl Tree<'_, '_> {
         let ids = self.menu_targets(a.id);
         let offline = ids.iter().any(|id| self.state.offline.contains(id));
         let first = self.project.asset(ids[0]).unwrap_or(a);
-        let folders = folder_tree_names(self.project);
+        let project = self.project;
         menu::context(&r, |ui| {
             if ids.len() > 1 {
                 ui.weak(format!("{} selected", ids.len()));
@@ -2757,6 +2757,9 @@ impl Tree<'_, '_> {
                 None => {}
             }
             menu::sub(ui, Some(Glyph::Folder), "Move to folder", |ui| {
+                // only while this submenu is open: every asset row is drawn each frame, and the list is
+                // O(assets) - per row it was O(assets^2) per frame, most of the UI frame at 200 assets
+                let folders = folder_tree_names(project);
                 for f in std::iter::once("").chain(folders.iter().map(String::as_str)) {
                     if menu::row(ui, None, if f.is_empty() { "(top level)" } else { f }, "").clicked() {
                         for id in &ids {
@@ -4310,6 +4313,16 @@ mod tests {
         assert!(c.left() > m.left() + 8.0, "the child is indented under the master");
         assert!(g.left() > c.left() + 8.0, "the grandchild is indented one level deeper than its parent");
         assert!(g.top() > c.top() && c.top() > m.top());
+    }
+
+    /// Regression: every asset row built its "Move to folder" list each frame, closed menu or not -
+    /// O(assets) per row, O(assets^2) per frame: most of the UI frame on a 216-asset project.
+    #[test]
+    fn asset_rows_build_the_folder_list_only_when_the_menu_opens() {
+        let src = include_str!("library.rs");
+        let body = &src[src.find("fn asset_menu(").unwrap()..];
+        let open = body.find("menu::context(").unwrap();
+        assert!(!body[..open].contains("folder_tree_names("), "the list belongs inside the menu closure");
     }
 
     /// 1000 assets in the list stay cheap per frame (no per-row decode, no O(n²) walks) - same

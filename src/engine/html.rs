@@ -276,7 +276,11 @@ fn attrs(t: &str) -> Vec<Attr<'_>> {
 
 /// The text (after the name) of every `<name …>` opening tag, case-insensitive.
 fn open_tags<'a>(src: &'a str, name: &str) -> Vec<&'a str> {
-    let low = src.to_ascii_lowercase();
+    open_tags_in(src, &src.to_ascii_lowercase(), name)
+}
+
+/// `open_tags` with `src`'s lower-case copy already made.
+fn open_tags_in<'a>(src: &'a str, low: &str, name: &str) -> Vec<&'a str> {
     let pat = format!("<{name}");
     let (b, mut i, mut out) = (src.as_bytes(), 0, Vec::new());
     while let Some(p) = low[i..].find(&pat) {
@@ -359,7 +363,28 @@ fn field_of(s: &str) -> Option<Field> {
 }
 
 /// Read a template's head. Never fails: what is missing gets its default (`lint` reports it).
+/// Remembered per source: the HTML layer scan asks for every layer every 2 s, and a saved web page is
+/// ~1 MB that `metas` would lower-case once per tag it looks for.
 pub fn parse(src: &str) -> Template {
+    static MEMO: Mutex<Option<std::collections::HashMap<u64, Template>>> = Mutex::new(None);
+    if src.len() < 16 * 1024 {
+        return parse_uncached(src); // cheaper than the hash
+    }
+    let key = blitz::source_key(src);
+    if let Some(t) = lock(&MEMO).as_ref().and_then(|m| m.get(&key)) {
+        return t.clone();
+    }
+    let t = parse_uncached(src);
+    let mut g = lock(&MEMO);
+    let m = g.get_or_insert_with(Default::default);
+    if m.len() > 64 {
+        m.clear();
+    }
+    m.insert(key, t.clone());
+    t
+}
+
+fn parse_uncached(src: &str) -> Template {
     let first = |n: &str| metas(src, n).into_iter().next();
     let (w, h) = first("se:size").and_then(|s| size_of(&s)).unwrap_or((1920, 1080));
     Template {
@@ -484,10 +509,14 @@ fn refs_in(text: &str) -> Vec<String> {
         }
         rest = &rest[i + 7..];
     }
+    // one lower-case copy for all eight tag kinds (a saved web page is ~1 MB, mostly `data:` images)
+    let low = text.to_ascii_lowercase();
     for (tag, names) in [("link", &["href"][..]), ("img", &["src"]), ("source", &["src"]), ("video", &["src", "poster"]), ("audio", &["src"]), ("track", &["src"]), ("image", &["href", "xlink:href"]), ("use", &["href", "xlink:href"])] {
-        for t in open_tags(text, tag) {
+        for t in open_tags_in(text, &low, tag) {
             for a in attrs(t) {
-                if names.contains(&a.name.as_str()) {
+                if names.contains(&a.name.as_str())
+                    && !a.value.trim_start().get(..5).is_some_and(|p| p.eq_ignore_ascii_case("data:"))
+                {
                     v.push(unescape(a.value));
                 }
             }
@@ -525,10 +554,15 @@ pub fn local_deps(page: &str, base: &str) -> Vec<PathBuf> {
 
 /// A number that changes when any linked file does (its name, size and modified time).
 pub fn deps_stamp(page: &str, base: &str) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
     let mut files = local_deps(page, base);
     files.sort();
+    stamp_of(&files)
+}
+
+/// `deps_stamp` of an already listed (sorted) set of files: a stat each.
+fn stamp_of(files: &[PathBuf]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
     for f in files {
         let m = std::fs::metadata(&f).ok();
         (f, m.as_ref().map(|m| m.len()), m.and_then(|m| m.modified().ok())).hash(&mut h);
@@ -602,6 +636,7 @@ pub fn set_media(m: Media) {
     let mut g = MEDIA.write().unwrap_or_else(|e| e.into_inner());
     if g.as_ref() != Some(&m) {
         *g = Some(m);
+        PREP_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -824,6 +859,7 @@ static APP_FONTS: std::sync::RwLock<Vec<(String, PathBuf)>> = std::sync::RwLock:
 
 pub fn set_app_fonts(fonts: Vec<(String, PathBuf)>) {
     *APP_FONTS.write().unwrap_or_else(|e| e.into_inner()) = fonts;
+    PREP_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// A family as a CSS font-family stack with fallbacks that exist on every Windows.
@@ -1118,6 +1154,69 @@ pub fn prepare(src: &str, values: &[(String, String)]) -> (Template, String) {
 /// `prepare`, for a page that lives in folder `base` (a linked or imported file): its relative links to
 /// stylesheets, images and fonts resolve there.
 pub fn prepare_in(src: &str, values: &[(String, String)], base: &str) -> (Template, String) {
+    let p = prepared(src, values, base, blitz::source_key(src));
+    (p.tpl.clone(), p.page.clone())
+}
+
+/// A prepared page, and the local files it links to (listed again at most every `RELIST`: a file the
+/// page names that appears later is still noticed, without a scan of the page every 2 s).
+struct Prepared {
+    tpl: Template,
+    page: String,
+    deps: Mutex<Option<(std::time::Instant, Vec<PathBuf>)>>,
+}
+
+const RELIST: std::time::Duration = std::time::Duration::from_secs(10);
+
+impl Prepared {
+    /// `deps_stamp(page, base)`, from the remembered list while it is fresh and unchanged.
+    fn deps_stamp(&self, base: &str) -> u64 {
+        let mut d = lock(&self.deps);
+        if let Some((_, files)) = d.as_ref().filter(|(at, _)| at.elapsed() < RELIST) {
+            return stamp_of(files);
+        }
+        let mut files = local_deps(&self.page, base);
+        files.sort();
+        let stamp = stamp_of(&files);
+        *d = Some((std::time::Instant::now(), files));
+        stamp
+    }
+}
+
+/// `prepare_in`, remembered: it is a pure function of the source, the values, the base and the two
+/// globals it reads (project media, app fonts - `PREP_GEN` counts their changes), and the HTML layer
+/// scan asks for every layer every 2 s plus once per still a render writes. Uncached it lower-cases and
+/// copies a ~1 MB web page a few dozen times: seconds of UI thread per scan on a project with six of them.
+/// ponytail: cleared when it holds 32 pages; an LRU if projects ever hold more web pages than that.
+fn prepared(src: &str, values: &[(String, String)], base: &str, src_key: u64) -> std::sync::Arc<Prepared> {
+    use std::hash::{Hash, Hasher};
+    static MEMO: Mutex<Option<std::collections::HashMap<u64, std::sync::Arc<Prepared>>>> = Mutex::new(None);
+    let mut h = std::hash::DefaultHasher::new();
+    (src_key, values, base, PREP_GEN.load(std::sync::atomic::Ordering::Relaxed)).hash(&mut h);
+    let key = h.finish();
+    if let Some(p) = lock(&MEMO).as_ref().and_then(|m| m.get(&key)) {
+        return p.clone();
+    }
+    let (tpl, page) = prepare_uncached(src, values, base);
+    let p = std::sync::Arc::new(Prepared { tpl, page, deps: Mutex::new(None) });
+    let mut g = lock(&MEMO);
+    let m = g.get_or_insert_with(Default::default);
+    if m.len() > 32 {
+        m.clear();
+    }
+    m.insert(key, p.clone());
+    p
+}
+
+#[cfg(test)]
+thread_local!(static PREPARES: std::cell::Cell<u32> = const { std::cell::Cell::new(0) });
+
+/// Bumped whenever `set_media` / `set_app_fonts` change what `prepare_in` would produce.
+static PREP_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn prepare_uncached(src: &str, values: &[(String, String)], base: &str) -> (Template, String) {
+    #[cfg(test)]
+    PREPARES.with(|n| n.set(n.get() + 1));
     let tpl = parse(src);
     let page = with_base(with_media(sanitize(&substitute(src, &tpl, values)), base), base);
     let page = with_app_fonts(page, &tpl, values);
@@ -2303,11 +2402,23 @@ fn b64_decode(s: &[u8], out: &mut Vec<u8>) {
 
 /// Width and height from a PNG's IHDR.
 pub fn png_file_size(path: &Path) -> Option<(u32, u32)> {
+    if let Some(&size) = lock(&PNG_SIZES).get(path) {
+        return Some(size);
+    }
     let mut head = [0u8; 32];
     let mut f = std::fs::File::open(path).ok()?;
     std::io::Read::read_exact(&mut f, &mut head).ok()?;
-    png_size(&head)
+    let size = png_size(&head)?;
+    lock(&PNG_SIZES).insert(path.to_path_buf(), size);
+    Some(size)
 }
+
+/// Sizes of the cache's PNGs, remembered: their names are content hashes (a path always holds the same
+/// picture), and the HTML layer scan asks for them every 2 s and after every still. Opening a freshly
+/// written page-tall PNG blocked the UI thread for seconds while the virus scanner read it.
+/// ponytail: grows by one entry per picture rendered this session - bytes, not worth evicting.
+static PNG_SIZES: Mutex<std::collections::BTreeMap<PathBuf, (u32, u32)>> =
+    Mutex::new(std::collections::BTreeMap::new());
 
 pub fn png_size(png: &[u8]) -> Option<(u32, u32)> {
     if png.len() < 24 || &png[..8] != b"\x89PNG\r\n\x1a\n" {
@@ -2505,16 +2616,27 @@ pub fn out_base(spec: &Spec) -> (PathBuf, (u32, u32)) {
     out_base_for(spec, blitz::choose(spec.renderer, &spec.html).engine == blitz::Engine::Blitz)
 }
 
+/// The cached render and the interim picture for `spec`, from ONE `out_base` (what the HTML layer
+/// scan needs per layer): (base, size, cached, interim). `interim` is only looked up on a cache miss.
+pub fn lookup(spec: &Spec) -> (PathBuf, (u32, u32), Option<Rendered>, Option<Rendered>) {
+    let (base, (w, h)) = out_base(spec);
+    let done = cached_at(&base, w, h);
+    let interim = if done.is_none() { interim_at(&base, w, h) } else { None };
+    (base, (w, h), done, interim)
+}
+
 /// `out_base` for a renderer: the fast renderer's pictures are not Edge's (different anti-aliasing, a few
 /// CSS differences), so they live in files of their own; Edge's names are the ones from before.
 fn out_base_for(spec: &Spec, fast: bool) -> (PathBuf, (u32, u32)) {
     use std::hash::{Hash, Hasher};
-    let (tpl, page) = prepare_in(&spec.html, &spec.fields, &spec.base);
-    let px = pixel_size(sized(&tpl, spec.width), spec.scale.clamp(0.05, 4.0));
+    let prep = prepared(&spec.html, &spec.fields, &spec.base, blitz::source_key(&spec.html));
+    let (tpl, page) = (&prep.tpl, &prep.page);
+    let px = pixel_size(sized(tpl, spec.width), spec.scale.clamp(0.05, 4.0));
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    let params = serde_json::to_string(&params_hashable(&tpl, &spec.params)).unwrap_or_default();
+    let params = serde_json::to_string(&params_hashable(tpl, &spec.params)).unwrap_or_default();
     let mouse = serde_json::to_string(&spec.mouse).unwrap_or_default();
-    ("html-v4", &page, px, spec.fps.to_bits(), spec.duration.to_bits(), deps_stamp(&page, &spec.base), params, mouse).hash(&mut h);
+    ("html-v4", page, px, spec.fps.to_bits(), spec.duration.to_bits(), prep.deps_stamp(&spec.base), params, mouse)
+        .hash(&mut h);
     if fast {
         "blitz-1".hash(&mut h);
     }
@@ -2541,8 +2663,13 @@ fn cached_at(base: &Path, width: u32, height: u32) -> Option<Rendered> {
 
 /// The interim still of `spec` (its moment `thumb_at`), if one was written: what the asset shows while
 /// its whole animation renders (`render_to_file` writes it first).
+#[cfg(test)] // the app asks through `lookup` (one cache key per layer)
 pub fn interim(spec: &Spec) -> Option<Rendered> {
     let (base, (width, height)) = out_base(spec);
+    interim_at(&base, width, height)
+}
+
+fn interim_at(base: &Path, width: u32, height: u32) -> Option<Rendered> {
     for ext in ["window.mov", "draft.mov"] {
         let p = base.with_extension(ext);
         if p.is_file() {
@@ -2563,7 +2690,11 @@ fn moves_between(phases: &[(f64, f64)], a: f64, b: f64) -> bool {
 fn write_file(out: &Path, bytes: &[u8]) -> Result<(), String> {
     let tmp = export::temp_output(out);
     std::fs::write(&tmp.0, bytes).map_err(|e| format!("{}: {e}", out.display()))?;
-    tmp.commit(out)
+    tmp.commit(out)?;
+    if let Some(size) = png_size(bytes) {
+        lock(&PNG_SIZES).insert(out.to_path_buf(), size); // the scan never has to open it
+    }
+    Ok(())
 }
 
 /// Render `spec` into the cache (or reuse what is there): PNG frames piped to ffmpeg as PNG-in-MOV,
@@ -3166,6 +3297,45 @@ fn capture_profile(network: bool) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: opening a project with six saved web pages (~780 KB of HTML each, mostly `data:`
+    /// images) blocked the UI thread for minutes - the 2 s HTML layer scan re-prepared every page three
+    /// times per pass. Now a page is prepared once, and its cache name is exactly the old one (renders
+    /// already on disk stay valid).
+    #[test]
+    fn big_web_page_scan_prepares_once_and_keeps_its_cache_name() {
+        use std::hash::{Hash, Hasher};
+        let img = format!("<img src=\"data:image/png;base64,{}\">", "QUJD".repeat(200_000));
+        let page = format!("<html><head><title>Saved page</title><script>x()</script></head><body>{img}<p onclick=\"y()\">hi</p></body></html>");
+        let spec = Spec {
+            html: page,
+            fields: Vec::new(),
+            scale: 1.0,
+            fps: 60.0,
+            duration: 4.0,
+            base: String::new(),
+            params: Vec::new(),
+            width: 0,
+            mouse: None,
+            focus: None,
+            renderer: HtmlRenderer::Edge,
+        };
+        let before = PREPARES.with(|n| n.get());
+        let (a, px) = out_base(&spec);
+        let (b, _, _, _) = lookup(&spec);
+        assert_eq!(a, b);
+        assert_eq!(PREPARES.with(|n| n.get()) - before, 1, "the second scan reuses the prepared page");
+        // the name the code before the memo gave it
+        let (tpl, page) = prepare_uncached(&spec.html, &spec.fields, &spec.base);
+        assert_eq!(px, pixel_size(sized(&tpl, 0), 1.0));
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        let params = serde_json::to_string(&params_hashable(&tpl, &spec.params)).unwrap_or_default();
+        let mouse = serde_json::to_string(&spec.mouse).unwrap_or_default();
+        ("html-v4", &page, px, spec.fps.to_bits(), spec.duration.to_bits(), deps_stamp(&page, ""), params, mouse)
+            .hash(&mut h);
+        assert_eq!(a, dir().join(format!("{:016x}", h.finish())));
+        assert!(!page.contains("<script") && !page.contains("onclick"), "still sanitised");
+    }
 
     #[test]
     fn slow_reasons_name_the_mouse_and_infinite_animations_only_when_used() {

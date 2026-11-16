@@ -565,6 +565,20 @@ pub fn slug(name: &str) -> String {
 mod tests {
     use super::*;
 
+    /// One frame of the Export pane body (the old window's `frame`).
+    fn frame(
+        ctx: &egui::Context,
+        state: &mut ExportUi,
+        project: &Project,
+        settings: &mut Settings,
+    ) -> Option<(ExportChoice, bool)> {
+        let mut out = None;
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| out = body(ui, state, project, settings, &[], false));
+        });
+        out
+    }
+
     #[test]
     fn preset_sizes() {
         // 16:9 project: 720p derives 1280 wide

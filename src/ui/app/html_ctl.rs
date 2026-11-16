@@ -243,7 +243,10 @@ fn reconcile(app: &mut App) {
         let mut spec = spec_of(&app.project, &h);
         spec.focus = focus_of(&app.project, app.project.assets[i].id, app.playhead, app.settings.html_render_window_secs);
         let a = &mut app.project.assets[i];
-        if let Some(r) = html::cached(&spec) {
+        // ponytail: ONE cache key per layer per scan (it was three: cached, interim, out_base - each a
+        // full prepare of the page, seconds of UI thread per scan with a few saved web pages)
+        let (base, _, done, interim) = html::lookup(&spec);
+        if let Some(r) = done {
             let path = r.path.to_string_lossy().into_owned();
             if a.path != path {
                 if (a.width, a.height) != (r.width, r.height) && a.width > 0 && a.height > 0 {
@@ -259,7 +262,7 @@ fn reconcile(app: &mut App) {
             continue;
         }
         stale.insert(a.id);
-        if let Some(r) = html::interim(&spec) {
+        if let Some(r) = interim {
             // the still of the new source at once, then (a long layer) a draft that plays, while it renders
             let path = r.path.to_string_lossy().into_owned();
             if a.path != path {
@@ -277,7 +280,6 @@ fn reconcile(app: &mut App) {
             kinds.push((a.id, a.kind));
             changed = true;
         }
-        let (base, _) = html::out_base(&spec);
         wanted.insert(base.clone());
         if !app.html.failed.contains(&base)
             && !app.html.jobs.iter().any(|j| j.base == base)

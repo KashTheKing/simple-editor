@@ -239,3 +239,47 @@ mod tests {
         assert_eq!(loaded.version, Project::VERSION + 1, "the newer version itself is preserved, not clamped");
     }
 }
+
+#[cfg(test)]
+mod big_open_bench {
+    use super::*;
+    /// The open path of a big real project, step by step (never commit numbers from it - it reads
+    /// whatever file you point it at): `SE_BIG_PROJECT=<a COPY of a .sedit> cargo test
+    /// big_project_open_steps -- --ignored --nocapture`. The HTML part is what `html_ctl::reconcile`
+    /// does per layer per scan: the first scan prepares the pages, the next ones must be ~free.
+    #[test]
+    #[ignore]
+    fn big_project_open_steps() {
+        let Ok(path) = std::env::var("SE_BIG_PROJECT") else { return };
+        let t = std::time::Instant::now();
+        let p = Project::load(Path::new(&path)).unwrap();
+        eprintln!("load {:?}", t.elapsed());
+        let t = std::time::Instant::now();
+        let st = crate::engine::style::style_summary(&p);
+        eprintln!("style_summary {} chars {:?}", st.len(), t.elapsed());
+        use crate::engine::html;
+        let dir = Path::new(&path).parent().map(Path::to_path_buf);
+        let media = p.assets.iter().filter(|a| a.html.is_none()).map(|a| std::path::PathBuf::from(&a.path)).collect();
+        html::set_media(html::Media::new(dir, media));
+        for pass in ["cold", "warm"] {
+            let t = std::time::Instant::now();
+            for h in p.assets.iter().filter_map(|a| a.html.as_ref()) {
+                let spec = html::Spec {
+                    html: h.src.clone(),
+                    fields: h.field_list(),
+                    scale: html::scale_for(p.width, p.height),
+                    fps: p.fps,
+                    duration: h.duration,
+                    base: String::new(),
+                    params: html::params_of(&h.src, &h.params),
+                    width: h.width,
+                    mouse: h.mouse.clone(),
+                    focus: None,
+                    renderer: h.renderer,
+                };
+                let _ = html::lookup(&spec);
+            }
+            eprintln!("html scan ({pass}) {:?}", t.elapsed());
+        }
+    }
+}
