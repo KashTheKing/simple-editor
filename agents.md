@@ -28,9 +28,14 @@ to work on it*, not what it does.
 3. `cargo run -- <video> --screenshot x.ppm` then `ffmpeg -i x.ppm x.png` and actually view the
    PNG for UI/rendering changes. Type-checking is not feature verification — look at the output.
 4. For perf-sensitive changes: `cargo test --release bench_4k_preview -- --ignored --nocapture`.
-5. Check the release binary size against the goal in goals.md when a change adds code/deps — see
+5. Perf gate (playback-affecting changes): `scripts/perf-bench.ps1 -Synthetic` (builds an ffmpeg testsrc stress
+   project, plays it in a scratch profile, appends a row to `perf_log.csv`). It FAILS if dropped frames > 0,
+   worst gap > 50 ms, or any metric is >10% worse than the previous `perf_log.csv` row with the same label.
+   `-Project <file.sedit> -Label x` benches a COPY of a real project (no gate). `playback.trace {secs}` (MCP)
+   dumps a Chrome-trace JSON of the instrumented spans (`src/perf.rs`).
+6. Check the release binary size against the goal in goals.md when a change adds code/deps — see
    "Size gate" below for the exact command and thresholds.
-6. Structural parity, enforced by the build itself but worth checking by eye before you push: every
+7. Structural parity, enforced by the build itself but worth checking by eye before you push: every
    new `Action`/`Gesture`/`Pane`/`pub fn ...(&mut self)` on `Project` has a matching `ToolDef` row;
    every new pane/overlay/window has its own `assert_no_idle_repaint_<context>` test; every new Luau
    `-- @on <event>` hook has exactly one real `fire_hook(...)` call site (not just a declared event

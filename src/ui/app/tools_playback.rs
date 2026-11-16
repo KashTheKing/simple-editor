@@ -152,6 +152,22 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                 app.player.scrub(t);
                 Ok(json!({"ok": true}))
             }
+            "playback.trace" => {
+                let secs = arg_f64(args, "secs").unwrap_or(3.0).clamp(0.1, 60.0);
+                let path = std::env::temp_dir().join(format!("simple-editor-trace-{}.json", std::process::id()));
+                let _ = std::fs::remove_file(&path);
+                crate::perf::start();
+                let p = path.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs_f64(secs));
+                    crate::perf::stop();
+                    let tmp = p.with_extension("tmp");
+                    if std::fs::write(&tmp, crate::perf::trace_json()).is_ok() {
+                        let _ = std::fs::rename(&tmp, &p);
+                    }
+                });
+                Ok(json!({"ok": true, "path": path, "ready_in_s": secs}))
+            }
             "playback.status" => {
                 let (published, worst_gap_ms) = app.player.publish_stats();
                 let mut out = json!({
@@ -304,6 +320,7 @@ pub const TOOLS: &[ToolDef] = &[
         "Emit one BLOCK (~21ms) of audio at t without moving the clock (paused only).",
         &["t:number:true:timeline seconds"]
     ),
+    row!("playback.trace", ToolKind::Read, "Record timing spans (UI frame, timeline and inspector draw, render-thread frame, layer decode, GPU composite and upload) for `secs` (default 3) and write a Chrome-trace JSON (chrome://tracing, Perfetto). Returns the file `path` at once; it appears when the recording ends (`ready_in_s`).", &["secs:number:false:recording length, 0.1-60"]),
     row!("playback.status", ToolKind::Read, "Current rate, time, dropped and published frame counts, longest wait between two frames since the last call (ms), state (playing / buffering / paused), `buffering` with `buffer_fraction` (0..1 or null) and `waiting_on` while Play waits for the frames ahead or the player refills after a stall, `settled` (true when nothing is buffering: poll for it), `start_wait_ms` / `start_capped` (how the last Play started), `audio_start_lag_ms`, loop range, and the performance HUD's numbers (UI frame avg/p95, GL composite, texture upload, decode avg/worst ms, cache hit rate).", &[]),
     // ---- ws:perf-baseline ---- (the ToolDef twin of Action::ToggleHud)
     row!(

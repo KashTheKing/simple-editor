@@ -15,6 +15,7 @@ mod keymaps;
 mod mcp;
 mod media;
 mod model;
+mod perf;
 mod playback;
 mod scripting;
 mod selftest;
