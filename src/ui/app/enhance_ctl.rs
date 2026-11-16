@@ -334,6 +334,7 @@ mod tests {
             rel_path: None,
             parent: None,
             range: None,
+            proxy: None,
             effects: vec![],
             html: None,
         }
