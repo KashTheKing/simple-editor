@@ -1264,7 +1264,9 @@ fn video(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r:
 /// ws:social-guides: what the guide shows this frame (None = off).
 fn guide_view<'a>(c: &PreviewCtx<'a>) -> Option<crate::ui::social::paint::GuideView<'a>> {
     let aspect = c.project.width.max(1) as f32 / c.project.height.max(1) as f32;
-    crate::ui::social::paint::GuideView::new(c.settings, &c.project.name, aspect, c.playhead, c.project.duration())
+    let mut g = crate::ui::social::paint::GuideView::new(c.settings, &c.project.name, aspect, c.playhead, c.project.duration())?;
+    g.playing = c.playing;
+    Some(g)
 }
 
 fn video_body(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r: &mut PreviewResponse) {

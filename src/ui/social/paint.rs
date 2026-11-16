@@ -22,15 +22,27 @@ pub struct GuideView<'a> {
     pub title: String,
     pub progress: f32,
     pub clock: String,
+    /// The editor is playing (the player buttons show pause). `new` leaves it false: set it from the player.
+    pub playing: bool,
     /// The project's aspect (w / h).
     pub aspect: f32,
     /// The desktop long-form player view.
     pub view: ViewMode,
 }
 
+/// A player's "elapsed / total" text: whole seconds, rounded down like the real players, with hours once
+/// either side reaches one ("1:02:03"). The tiny bias keeps a frame time like 3.0 (stored as 2.9999...) on 0:03.
 pub fn clock(t: f64, dur: f64) -> String {
-    let f = |s: f64| format!("{}:{:02}", (s / 60.0) as u32, (s % 60.0) as u32);
-    format!("{} / {}", f(t.max(0.0)), f(dur.max(0.0)))
+    let f = |s: f64| {
+        let s = (s.max(0.0) + 1e-6) as u64;
+        if dur >= 3600.0 { format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60) } else { format!("{}:{:02}", s / 60, s % 60) }
+    };
+    format!("{} / {}", f(t), f(dur))
+}
+
+/// How full a player's progress bar is at `t` of `dur` seconds (0..1; 0 for an empty timeline).
+pub fn progress(t: f64, dur: f64) -> f32 {
+    if dur > 0.0 { (t / dur).clamp(0.0, 1.0) as f32 } else { 0.0 }
 }
 
 impl<'a> GuideView<'a> {
@@ -52,8 +64,9 @@ impl<'a> GuideView<'a> {
             keep: s.guides_keep_aspect,
             profile,
             title: title.to_string(),
-            progress: if duration > 0.0 { (playhead / duration).clamp(0.0, 1.0) as f32 } else { 0.0 },
+            progress: progress(playhead, duration),
             clock: clock(playhead, duration),
+            playing: false,
             aspect,
             view: ViewMode::from_id(&s.guide_view).unwrap_or_default(),
         })
@@ -65,7 +78,7 @@ impl<'a> GuideView<'a> {
         self.data.device(self.device)
     }
     pub fn ctx(&self) -> scene::Ctx<'_> {
-        scene::Ctx { prof: &self.profile, title: &self.title, progress: self.progress, clock: &self.clock }
+        scene::Ctx { prof: &self.profile, title: &self.title, progress: self.progress, clock: &self.clock, playing: self.playing }
     }
     /// Where the platform's own aspect sits inside the video rectangle `lb`: the largest centred
     /// rectangle of that aspect, or `lb` itself when "Maintain Aspect Ratio" is off.
@@ -84,6 +97,7 @@ impl<'a> GuideView<'a> {
             title: &self.title,
             progress: self.progress,
             clock: &self.clock,
+            playing: self.playing,
             pa: self.aspect,
             open,
             e,

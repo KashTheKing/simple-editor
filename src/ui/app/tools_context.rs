@@ -624,6 +624,7 @@ pub const TOOLS: &[ToolDef] = &[
             "count:integer:false:1..16, default 9 (stops early after ~5 s: `truncated`)",
             "width:integer:false:px per tile, default 320",
             "guide:boolean:false:draw the current social guide on every tile (default: the Settings option)",
+            "playing:boolean:false:the guide's play button state (default: the editor's)",
         ],
         kind: ToolKind::Read,
         run: contact_sheet,

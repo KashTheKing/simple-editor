@@ -250,6 +250,10 @@ pub fn glyph(b: &mut B, name: &str, c: Pos2, h: f32, col: Color32) {
             b.line(p(-0.05, -0.9), p(0.7, -0.45), w * 1.3, col);
         }
         "play" => b.poly(vec![p(-0.5, -0.8), p(-0.5, 0.8), p(0.85, 0.0)], col),
+        "pause" => {
+            b.rect(Rect::from_min_max(p(-0.6, -0.8), p(-0.15, 0.8)), h * 0.06, col);
+            b.rect(Rect::from_min_max(p(0.15, -0.8), p(0.6, 0.8)), h * 0.06, col);
+        }
         "mute" => {
             b.poly(vec![p(-0.95, -0.3), p(-0.4, -0.3), p(0.1, -0.8), p(0.1, 0.8), p(-0.4, 0.3), p(-0.95, 0.3)], col);
             b.line(p(0.45, -0.4), p(0.45, 0.4), w, col);
@@ -348,6 +352,8 @@ pub struct Ctx<'a> {
     pub progress: f32,
     /// "0:11 / 8:58".
     pub clock: &'a str,
+    /// The editor is playing: a player's play button shows its pause icon.
+    pub playing: bool,
 }
 
 /// Draw `lay.ui` through `map`. Elements flagged `o` (outside the frame) only draw when `outside`.
@@ -372,7 +378,8 @@ pub fn draw_ui(b: &mut B, lay: &Layout, map: &Map, cx: &Ctx, outside: bool) -> V
                 let has_t = !e.n.is_empty() || !e.lbl.is_empty();
                 let half = if has_t { (w * 0.31).min(h * 0.25) } else { w.min(h) * 0.28 };
                 let cy = if has_t { r.top() + h * 0.34 } else { r.center().y };
-                glyph(b, &e.i, pos2(cxp, cy), half, ink);
+                let icon = if e.i == "play" && cx.playing { "pause" } else { e.i.as_str() };
+                glyph(b, icon, pos2(cxp, cy), half, ink);
                 let t = if e.lbl.is_empty() { cx.prof.count(&e.n).to_string() } else { e.lbl.clone() };
                 b.text(pos2(cxp, r.top() + h * 0.62), 12.0 * k, ink, false, &t, 1);
             }
