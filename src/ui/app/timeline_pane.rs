@@ -65,6 +65,7 @@ fn toolbar(ui: &mut egui::Ui, pal: &crate::theme::Palette, snap: (bool, bool, bo
 }
 
 pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
+    let _s = crate::perf::span("timeline_draw");
     // ---- ws:timeline-surface: one toolbar row ----
     let mut zoom = app.timeline.zoom;
     // tools-panel: the tool groups lead the row, Premiere-style (right-click / long-press a group)

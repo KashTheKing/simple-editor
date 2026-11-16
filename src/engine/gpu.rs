@@ -397,6 +397,7 @@ impl GpuRenderer {
     /// Upload/refresh a decoded layer as a texture keyed by (clip id, source time bucket). Returns the
     /// texture to use; re-uploads only when the frame actually changed (`Frame` pointer/pts).
     pub fn upload(&mut self, key: u64, frame: &Frame) -> glow::Texture {
+        let _s = crate::perf::span("gpu_upload");
         if frame.is_empty() {
             return self.blank;
         }
@@ -1447,6 +1448,7 @@ impl GpuRenderer {
         scaler: Scaler,
         mask: Option<glow::Texture>,
     ) -> Target {
+        let _s = crate::perf::span("gpu_composite");
         if self.ensure(K_COMPOSITE).is_err() {
             return canvas;
         }

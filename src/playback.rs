@@ -876,6 +876,7 @@ fn render_thread(
         };
     }
     loop {
+        let _s = crate::perf::span("render_frame");
         let playing = {
             let mut c = lock(&shared.clock);
             c.now();
@@ -1720,6 +1721,7 @@ pub(crate) fn decode_layers(
     shapes: &mut ShapeRasterizer,
     comp: &mut Compositor,
 ) -> LayerSet {
+    let _s = crate::perf::span("layer_decode");
     layers_with(project, t, w, h, pool, spare, &mut TextRef::Own(text), shapes, comp)
 }
 

@@ -1162,6 +1162,7 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let _s = crate::perf::span("ui_frame");
         let perf_t0 = Instant::now(); // ws:perf-baseline: the HUD's UI frame time
         if !self.window_shown {
             // viewport commands apply after this frame is painted, so no white flash

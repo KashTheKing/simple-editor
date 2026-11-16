@@ -242,6 +242,7 @@ pub fn show(
     settings: &mut Settings,
     undo: &mut dyn FnMut(&Project),
 ) -> bool {
+    let _s = crate::perf::span("inspector_draw");
     let first = selection.iter().copied().find(|&id| project.clip(id).is_some());
     let edited = match first {
         None if !sel_transitions.is_empty() => transition_section(ui, project, sel_transitions, undo),
