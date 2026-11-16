@@ -376,6 +376,9 @@ actions! {
     ImportWebPage => "import_web_page", "Import Web Page…", None;
     SharpenZooms => "sharpen_zooms", "Browser: Sharpen Zooms", None;
     PageMakeEditable => "page_make_editable", "Browser: Make the Page Editable", None;
+    // ---- ws:perf-window ----
+    // The Performance window (Window menu / palette / `perf.window`). Unbound by design.
+    PerfWindow => "performance", "Performance…", None;
     // ---- tool selection (ui::tools) - polled and dispatched there, not through App::act ----
     ToolSelect => "tool_select", "Select Tool", sc(NONE, Key::V);
     ToolText => "tool_text", "Text Tool", sc(NONE, Key::T);
@@ -687,6 +690,8 @@ pub fn group(a: Action) -> &'static str {
         // ---- ws:browser-layer ----
         AddBrowser | ImportWebPage => "Add",
         BrowserFitPages | BrowserNextPage | RecordMouse | CursorWaypoints | CursorPress | SharpenZooms | PageMakeEditable => "Clip",
+        // ---- ws:perf-window ----
+        PerfWindow => "Playback",
         // unreachable today (every variant has an arm above); a new variant compiles into "Other" and
         // `group_covers_every_action` names it.
         #[allow(unreachable_patterns)]

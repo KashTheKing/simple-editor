@@ -7,8 +7,19 @@ use std::sync::OnceLock;
 use std::time::Instant;
 
 /// The instrumented points. Add a name here before using it in `span`.
-pub const NAMES: [&str; 8] =
-    ["ui_frame", "timeline_draw", "inspector_draw", "render_frame", "layer_decode", "gpu_composite", "gpu_upload", "other"];
+pub const NAMES: [&str; 11] = [
+    "ui_frame",
+    "timeline_draw",
+    "inspector_draw",
+    "render_frame",
+    "layer_decode",
+    "gpu_composite",
+    "gpu_upload",
+    "nested_render",
+    "effects",
+    "audio_mix",
+    "other",
+];
 
 struct Slot {
     name: AtomicU64, // NAMES index + 1; 0 = empty (written last)
@@ -123,6 +134,7 @@ pub fn trace_json() -> String {
 pub struct Span {
     name: usize, // usize::MAX = not recording
     start_us: u64,
+    acc: bool, // pushed on this thread's STACK
 }
 
 fn now_us() -> u64 {
@@ -130,19 +142,91 @@ fn now_us() -> u64 {
 }
 
 pub fn span(name: &'static str) -> Span {
-    if !RING.is_on() {
-        return Span { name: usize::MAX, start_us: 0 };
+    let acc = ACC_ON.load(Relaxed);
+    if !RING.is_on() && !acc {
+        return Span { name: usize::MAX, start_us: 0, acc: false };
     }
     let idx = NAMES.iter().position(|n| *n == name).unwrap_or(NAMES.len() - 1);
-    Span { name: idx, start_us: now_us() }
+    if acc {
+        STACK.with(|s| s.borrow_mut().push((idx, 0)));
+    }
+    Span { name: idx, start_us: now_us(), acc }
 }
 
 impl Drop for Span {
     fn drop(&mut self) {
-        if self.name != usize::MAX {
-            RING.record(self.name, TID.with(|t| *t), self.start_us, now_us().saturating_sub(self.start_us));
+        if self.name == usize::MAX {
+            return;
+        }
+        let dur = now_us().saturating_sub(self.start_us);
+        if RING.is_on() {
+            RING.record(self.name, TID.with(|t| *t), self.start_us, dur);
+        }
+        if self.acc {
+            STACK.with(|s| {
+                let mut s = s.borrow_mut();
+                let child = s.pop().map_or(0, |e| e.1);
+                if let Some(parent) = s.last_mut() {
+                    parent.1 += dur;
+                }
+                // everything inside a nested sequence is that sequence's cost
+                let owner = if s.iter().any(|e| e.0 == NESTED) { NESTED } else { self.name };
+                SELF_US[owner].fetch_add(dur.saturating_sub(child), Relaxed);
+            });
         }
     }
+}
+
+// ---- ws:perf-window ----
+// The Performance window's live breakdown: while `accumulate(true)`, every span adds its SELF time (its
+// duration minus the spans inside it, on the same thread) to a per-name total, so the totals never count
+// a microsecond twice. A span inside `nested_render` is credited to it (the nested sequence's whole cost).
+const NESTED: usize = 7; // NAMES index of "nested_render"
+static ACC_ON: AtomicBool = AtomicBool::new(false);
+static SELF_US: [AtomicU64; NAMES.len()] = [const { AtomicU64::new(0) }; NAMES.len()];
+thread_local! { static STACK: std::cell::RefCell<Vec<(usize, u64)>> = const { std::cell::RefCell::new(Vec::new()) }; }
+
+pub fn accumulate(on: bool) {
+    ORIGIN.get_or_init(Instant::now);
+    ACC_ON.store(on, Relaxed);
+}
+pub fn accumulating() -> bool {
+    ACC_ON.load(Relaxed)
+}
+/// Cumulative self time (µs) per `NAMES` entry since the process started accumulating.
+pub fn self_totals() -> [u64; NAMES.len()] {
+    std::array::from_fn(|i| SELF_US[i].load(Relaxed))
+}
+
+/// Measured decode cost of one source while accumulating: (decodes, total µs, any frame came zero-copy).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SourceStat {
+    pub n: u64,
+    pub us: u64,
+    pub hw: bool,
+}
+static SOURCES: std::sync::Mutex<Vec<(String, SourceStat)>> = std::sync::Mutex::new(Vec::new());
+
+/// One video decode of `path` (the asset path, not its proxy). Free unless accumulating.
+/// ponytail: a linear scan under one lock per decode; a map if a project ever has hundreds of live sources.
+pub fn source_decode(path: &str, us: u64, hw: bool) {
+    if !ACC_ON.load(Relaxed) {
+        return;
+    }
+    let mut v = SOURCES.lock().unwrap_or_else(|e| e.into_inner());
+    let i = match v.iter().position(|(p, _)| p == path) {
+        Some(i) => i,
+        None => {
+            v.push((path.to_string(), SourceStat::default()));
+            v.len() - 1
+        }
+    };
+    let s = &mut v[i].1;
+    (s.n, s.us, s.hw) = (s.n + 1, s.us + us, s.hw || hw);
+}
+pub fn source_stat(path: &str) -> Option<SourceStat> {
+    let v = SOURCES.lock().unwrap_or_else(|e| e.into_inner());
+    v.iter().find(|(p, _)| p == path).map(|(_, s)| s.clone())
 }
 
 #[cfg(test)]
@@ -169,6 +253,36 @@ mod tests {
         r.stop();
         r.record(1, 1, 99, 1);
         assert_eq!(r.snapshot().len(), 4);
+    }
+
+    #[test]
+    fn self_time_is_exclusive_and_nested_owns_its_children() {
+        accumulate(true);
+        let before = self_totals();
+        {
+            let _outer = span("render_frame");
+            {
+                let _n = span("nested_render");
+                let _c = span("gpu_composite");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            let _d = span("layer_decode");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let after = self_totals();
+        let d = |n: &str| {
+            let i = NAMES.iter().position(|x| *x == n).unwrap();
+            after[i] - before[i]
+        };
+        assert!(d("nested_render") >= 5000, "the composite inside a nested sequence is the nested cost");
+        assert!(d("layer_decode") >= 5000);
+        assert!(d("render_frame") < 2000, "the outer span keeps only its own time");
+        source_decode("a.mp4", 10, false);
+        source_decode("a.mp4", 30, true);
+        assert_eq!(source_stat("a.mp4"), Some(SourceStat { n: 2, us: 40, hw: true }));
+        accumulate(false);
+        source_decode("b.mp4", 10, false);
+        assert_eq!(source_stat("b.mp4"), None, "nothing is measured while off");
     }
 
     #[test]

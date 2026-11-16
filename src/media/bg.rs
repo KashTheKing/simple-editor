@@ -16,7 +16,17 @@ pub fn set_playing(on: bool) {
 }
 
 pub fn playing() -> bool {
-    PLAYING.load(Ordering::Relaxed)
+    PLAYING.load(Ordering::Relaxed) || PAUSED.load(Ordering::Relaxed)
+}
+
+// ---- ws:perf-window ----
+static PAUSED: AtomicBool = AtomicBool::new(false);
+/// The Performance window's "Pause background jobs": workers wait as if something were playing.
+pub fn set_paused(on: bool) {
+    PAUSED.store(on, Ordering::Relaxed);
+}
+pub fn paused() -> bool {
+    PAUSED.load(Ordering::Relaxed)
 }
 
 /// Call at the top of every background worker thread.

@@ -676,14 +676,18 @@ impl DecoderPool {
                     done.push((i, f, None));
                     continue;
                 }
+                // ws:perf-window: per-source decode cost
+                let t0 = std::time::Instant::now();
                 // a GPU frame stays out of the source cache: its CPU readers would pay a readback
                 // ponytail: so a scrub back re-decodes zero-copy sources; cache them (VRAM-budgeted) if that shows
                 if let Some(f) = gpu.then(|| dec.frame_gpu(t, w, h)).flatten() {
+                    crate::perf::source_decode(jobs[i].0, t0.elapsed().as_micros() as u64, true);
                     done.push((i, f, None));
                     continue;
                 }
                 let key = if dec.is_still() { SourceCache::STILL_T } else { SourceCache::us(t) };
                 if let Some(f) = dec.frame_shared(t, w, h, spare) {
+                    crate::perf::source_decode(jobs[i].0, t0.elapsed().as_micros() as u64, false);
                     done.push((i, f, Some(key)));
                 }
             }
