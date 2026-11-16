@@ -275,11 +275,10 @@ impl App {
         }
         self.proxy_scan_at = Some(Instant::now() + Duration::from_secs(2));
         let h = self.settings.proxy_height.max(120);
-        crate::media::proxy::HTML_PROXY_H.store(h, std::sync::atomic::Ordering::Relaxed);
         let mut map = std::collections::HashMap::new();
         let mut want: Option<(String, std::path::PathBuf)> = None;
-        // an HTML layer always plays from its proxy: "Use proxies" is about footage, and the PNG frames
-        // of a render cost ~36 ms each to decode - with it off, only HTML assets are mapped / built
+        // HTML assets are mapped / built even with "Use proxies" off (that is about footage); their renders
+        // are H.264 since html-v5, so only one bigger than 1080p still wants one (`proxy::wants`)
         let all = self.settings.use_proxies;
         {
             for a in &self.project.assets {
