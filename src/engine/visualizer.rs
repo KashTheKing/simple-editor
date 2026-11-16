@@ -54,12 +54,17 @@ pub fn styles() -> Vec<Style> {
     )
 }
 
+/// The beat-synced sprite shader: it shows a cell of the image clip it sits on, so it is placed by
+/// `add_sprite`, never offered as a style for the plain visualizer layer.
+pub const BEAT_SPRITE: &str = include_str!("../../library/effects/beat-sprite.glsl");
+
 /// The built-ins, then each `(id, source)` that is a visualizer, named by its `@name` (else the id).
 pub fn styles_from(custom: impl IntoIterator<Item = (String, String)>) -> Vec<Style> {
     let mut out: Vec<Style> =
         BUILTIN.iter().map(|&(n, s)| Style { name: n.into(), src: s.into(), custom: false }).collect();
     for (id, src) in custom {
-        if !is_visualizer(&src) {
+        // a "sprite" shader animates the picture it sits on: no style for an empty visualizer layer
+        if !is_visualizer(&src) || crate::engine::shaderlib::parse_meta(&src).tags.iter().any(|t| t == "sprite") {
             continue;
         }
         let name = crate::engine::shaderlib::parse_meta(&src).name;
@@ -310,6 +315,112 @@ pub fn add(p: &mut Project, audio: Id, style: &Style, backend: Backend) -> Resul
     Ok(id)
 }
 
+/// A sprite sheet: the image and its grid (`cols` x `rows`, the first `frames` cells used).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Sheet {
+    pub path: std::path::PathBuf,
+    pub cols: u32,
+    pub rows: u32,
+    pub frames: u32,
+}
+
+/// Frames a video / image sequence is sampled to.
+pub const SHEET_FRAMES: u32 = 16;
+
+/// `name_4x2.png` / `dance 8x1.png`: the grid written in an image's file name, else None.
+pub fn grid_in_name(path: &std::path::Path) -> Option<(u32, u32)> {
+    let stem = path.file_stem()?.to_string_lossy().to_ascii_lowercase();
+    let tail = stem.rsplit(|c: char| c == '_' || c == ' ' || c == '-').next()?;
+    let (c, r) = tail.split_once('x')?;
+    let (c, r) = (c.parse::<u32>().ok()?, r.parse::<u32>().ok()?);
+    (1..=16).contains(&c).then_some(())?;
+    (1..=16).contains(&r).then_some((c, r))
+}
+
+/// The sprite sheet for `input`: an image is a sheet already (grid from its name, else one cell); a
+/// video, or a folder of numbered images, is sampled to `SHEET_FRAMES` evenly spaced frames tiled 4x4
+/// into a PNG (alpha kept) under `out_dir`, by ffmpeg, once.
+pub fn make_sheet(input: &std::path::Path, out_dir: &std::path::Path) -> Result<Sheet, String> {
+    const IMAGES: [&str; 6] = ["png", "jpg", "jpeg", "bmp", "webp", "gif"];
+    let ext = |p: &std::path::Path| p.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    if input.is_file() && IMAGES.contains(&ext(input).as_str()) {
+        let (cols, rows) = grid_in_name(input).unwrap_or((1, 1));
+        return Ok(Sheet { path: input.to_path_buf(), cols, rows, frames: cols * rows });
+    }
+    let ffmpeg = crate::media::ffpipe::ffmpeg_exe().ok_or("ffmpeg not found")?;
+    std::fs::create_dir_all(out_dir).map_err(|e| format!("{}: {e}", out_dir.display()))?;
+    let (cols, rows) = (4, SHEET_FRAMES / 4);
+    let name = crate::engine::library::slug(&input.file_stem().unwrap_or_default().to_string_lossy());
+    let out = out_dir.join(format!("{}-{cols}x{rows}.png", if name.is_empty() { "loop" } else { &name }));
+    let tile = format!("scale=256:256:force_original_aspect_ratio=decrease,format=rgba,tile={cols}x{rows}");
+    let mut cmd = crate::media::ffpipe::command(&ffmpeg);
+    cmd.args(["-v", "error", "-y"]);
+    if input.is_dir() {
+        // a numbered image sequence: every Nth file so SHEET_FRAMES span the whole loop
+        let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(input)
+            .map_err(|e| e.to_string())?
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| IMAGES.contains(&ext(p).as_str()))
+            .collect();
+        files.sort();
+        if files.is_empty() {
+            return Err("the folder has no images".into());
+        }
+        let pick: Vec<&std::path::PathBuf> =
+            (0..SHEET_FRAMES as usize).map(|i| &files[i * files.len() / SHEET_FRAMES as usize]).collect();
+        let list = out_dir.join(format!("{name}-frames.txt"));
+        let text: String = pick.iter().map(|p| format!("file '{}'\n", p.display().to_string().replace('\'', "'\\''"))).collect();
+        std::fs::write(&list, text).map_err(|e| e.to_string())?;
+        cmd.args(["-f", "concat", "-safe", "0", "-i"]).arg(&list).args(["-vf", &tile]);
+    } else {
+        let dur = crate::media::probe(&input.to_string_lossy(), Backend::Auto).map(|a| a.duration).unwrap_or(0.0);
+        if dur <= 0.0 {
+            return Err(format!("{}: not a video, image or image folder", input.display()));
+        }
+        let vf = format!("fps={:.6},{tile}", SHEET_FRAMES as f64 / dur);
+        cmd.arg("-i").arg(input).args(["-vf", &vf]);
+    }
+    let st = cmd.args(["-frames:v", "1"]).arg(&out).stdin(std::process::Stdio::null()).output().map_err(|e| e.to_string())?;
+    if !st.status.success() || !out.is_file() {
+        return Err(format!("ffmpeg could not tile the loop: {}", String::from_utf8_lossy(&st.stderr).trim()));
+    }
+    Ok(Sheet { path: out, cols, rows, frames: SHEET_FRAMES })
+}
+
+/// The beat-synced clip: image asset `sheet_asset` (a sprite sheet) over audio clip `audio`'s span with
+/// the Beat Sprite effect, its grid set and its beats baked from the audio. Returns the new clip.
+pub fn add_sprite(p: &mut Project, audio: Id, sheet_asset: Id, sheet: &Sheet, backend: Backend) -> Result<Id, String> {
+    let (at, dur) = p.clip(audio).filter(|c| c.kind == ClipKind::Audio).map(|c| (c.start, c.duration)).ok_or("not an audio clip")?;
+    let vt = p.video_tracks().last().copied();
+    let ti = p.find_free_track(TrackKind::Video, at, dur, vt);
+    let mut c = crate::model::Clip::new(p.new_id(), ClipKind::Image, "Beat-Synced Clip", at, dur);
+    c.asset = sheet_asset;
+    // a dancer beside whatever is under it: lower right, half height (move / scale it like any clip)
+    // ponytail: assumes x/y are project px from the canvas centre, as the Inspector's Position shows
+    (c.scale, c.x, c.y) = (Animated::new(0.5), Animated::new(p.width as f64 * 0.3), Animated::new(p.height as f64 * 0.22));
+    let mut e = Effect::from_shader(BEAT_SPRITE);
+    let meta = crate::engine::shaderlib::parse_meta(BEAT_SPRITE);
+    for (i, prm) in meta.params.iter().enumerate() {
+        let v = match prm.id.as_str() {
+            "cols" => sheet.cols as f64,
+            "rows" => sheet.rows as f64,
+            "frames" => sheet.frames as f64,
+            _ => continue,
+        };
+        e.params[i] = Animated::new(v);
+    }
+    c.effects.push(e);
+    let id = c.id;
+    p.tracks[ti].clips.push(c);
+    p.tracks[ti].sort();
+    if let Err(e) = rebake(p, id, audio, backend) {
+        p.delete_clips(&[id], false);
+        return Err(e);
+    }
+    Ok(id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -441,6 +552,32 @@ vec4 effect(vec4 s, vec2 uv) { return vec4(level); }
         assert_eq!((e.at(1, b0 + 0.01), e.at(1, b1 + 0.01)), (1.0, 2.0), "count steps on each beat");
         assert!((e.at(2, 1.0) - bpm).abs() < 1e-9);
         assert!(is_visualizer(src), "beat params alone make a visualizer");
+    }
+
+    #[test]
+    fn sheet_grids_come_from_the_name() {
+        use std::path::Path;
+        assert_eq!(grid_in_name(Path::new("C:/a/dance-loop_4x2.png")), Some((4, 2)));
+        assert_eq!(grid_in_name(Path::new("walk 8x1.png")), Some((8, 1)));
+        assert_eq!(grid_in_name(Path::new("photo.png")), None);
+        assert_eq!(grid_in_name(Path::new("big_40x2.png")), None);
+        let s = make_sheet(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tools/visualizer-sample/dance-loop_4x2.png")), Path::new(".")).unwrap();
+        assert_eq!((s.cols, s.rows, s.frames), (4, 2, 8));
+        assert!(!styles_from([("beat-sprite".to_string(), BEAT_SPRITE.to_string())]).iter().any(|s| s.name == "Beat Sprite"), "not a layer style");
+    }
+
+    /// The beat-synced clip: an image clip over the song carrying Beat Sprite with the sheet's grid.
+    #[test]
+    fn add_sprite_places_the_sheet_over_the_song() {
+        let mut p = Project::new();
+        let at = p.audio_tracks()[0];
+        p.tracks[at].clips.push(crate::model::Clip::new(900, ClipKind::Audio, "song", 2.0, 6.0));
+        let sheet = Sheet { path: "x_4x2.png".into(), cols: 4, rows: 2, frames: 8 };
+        // no media behind the audio clip: placement fails cleanly and leaves nothing behind
+        let before = p.tracks.iter().map(|t| t.clips.len()).sum::<usize>();
+        assert!(add_sprite(&mut p, 900, 77, &sheet, Backend::Auto).is_err());
+        assert_eq!(p.tracks.iter().map(|t| t.clips.len()).sum::<usize>(), before);
+        assert!(add_sprite(&mut p, 12345, 77, &sheet, Backend::Auto).is_err(), "not an audio clip");
     }
 
     /// `bake` keys exactly the audio params a shader declares, on their own ranges.

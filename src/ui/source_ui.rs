@@ -324,6 +324,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut SourceState, c: SourceCtx<'_>) -> Source
             // cover art (an audio file's embedded picture) wins over the visualizer when there is one
             let cover =
                 thumbs.and_then(|t| t.texture(ui.ctx(), &path, 0.0, (rect.height() * ui.pixels_per_point()) as u32));
+            let cover = cover.or_else(|| crate::ui::audio_card::cover(ui.ctx(), &path));
             if cover.is_some() || !settings.audio_visualizer {
                 // ws:audio-visualizer: the "now playing" card - cover (or the music-note icon) + title
                 let title = crate::ui::audio_card::title(ui.ctx(), &path);

@@ -159,14 +159,14 @@ vec4 effect(vec4 src, vec2 uv) {
     vec2 sp = vec2((uv.x - 0.5) * asp, 0.5 - uv.y);
     // orbiting camera around the island's centre
     float ang = u_time * 0.12 * speed + 0.7;
-    float dist = mix(17.0, 26.0, camera);
+    float dist = mix(18.0, 27.0, camera);
     float elev = mix(0.38, 0.85, camera);
-    vec3 target = vec3(float(N) * 0.5, 4.0, float(N) * 0.5);
+    vec3 target = vec3(float(N) * 0.5, 2.6, float(N) * 0.5);
     vec3 ro = target + dist * vec3(cos(ang) * cos(elev), sin(elev), sin(ang) * cos(elev));
     vec3 fw = normalize(target - ro);
     vec3 rt = normalize(cross(fw, vec3(0, 1, 0)));
     vec3 up = cross(rt, fw);
-    vec3 rd = normalize(fw * 1.7 + rt * sp.x + up * sp.y);
+    vec3 rd = normalize(fw * 1.6 + rt * sp.x + up * sp.y);
 
     // DDA through the grid's box
     vec3 nrm0;

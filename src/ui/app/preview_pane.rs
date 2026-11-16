@@ -98,7 +98,10 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
                 let aspect = app.project.width.max(1) as f32 / app.project.height.max(1) as f32;
                 let lb = preview::letterbox(app.preview.canvas_rect, aspect, ui.pixels_per_point());
                 if lb.is_positive() {
-                    let cover = app.thumbs.texture(ui.ctx(), &path, 0.0, (lb.height() * ui.pixels_per_point()) as u32);
+                    let cover = app
+                        .thumbs
+                        .texture(ui.ctx(), &path, 0.0, (lb.height() * ui.pixels_per_point()) as u32)
+                        .or_else(|| crate::ui::audio_card::cover(ui.ctx(), &path));
                     let title = crate::ui::audio_card::title(ui.ctx(), &path);
                     crate::ui::audio_card::paint(ui, lb, cover, &title);
                 }

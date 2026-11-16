@@ -14,7 +14,7 @@ module.exports = {
       type: 'category',
       label: 'Finishing',
       collapsed: false,
-      items: ['captions', 'color', 'audio', 'export', 'export-audio-tracks', 'faster-exports', 'handoff'],
+      items: ['captions', 'color', 'audio', 'audio-visualizers', 'export', 'export-audio-tracks', 'faster-exports', 'handoff'],
     },
     {
       type: 'category',

@@ -2975,6 +2975,29 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
         }
     }
 
+    /// GPU cost of each visualizer style at 1080p (fastest of 8 runs, minus the same at 16x16 for compile + setup):
+    /// `cargo test bench_visualizer_styles -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_visualizer_styles_1080p() {
+        let Some(gl) = gl() else { return };
+        for (style, src) in crate::engine::visualizer::BUILTIN {
+            let params: Vec<f32> = crate::engine::shaderlib::parse_meta(src).params.iter().map(|p| p.default as f32).collect();
+            // the fastest of 8 runs: the driver caches the compiled program, so the minimum is the draw
+            let time = |w, h| {
+                (0..8)
+                    .map(|_| {
+                        let t0 = std::time::Instant::now();
+                        unsafe { run_sized(&gl, src, w, h, 2.0, &params) }.unwrap();
+                        t0.elapsed().as_secs_f64() * 1000.0
+                    })
+                    .fold(f64::MAX, f64::min)
+            };
+            let (small, big) = (time(16, 16), time(1920, 1080));
+            eprintln!("{style}: {:.1} ms per 1080p frame ({big:.1} ms with compile + readback)", big - small);
+        }
+    }
+
     /// Shadertoy's default plasma at a 320x240 layer and at 1920x1080: red falls smoothly and
     /// monotonically left to right (no bands or steps), and the two sizes agree.
     #[test]

@@ -139,6 +139,47 @@ pub fn act(app: &mut App, a: Action) -> bool {
             }
             true
         }
+        Action::AddBeatSyncedClip => {
+            let Some(&src) = crate::ui::autocut_ui::audio_targets(&app.project, &app.selection).first() else {
+                app.toast("Select an audio clip (or a video clip with linked audio)");
+                return true;
+            };
+            let Some(pick) = rfd::FileDialog::new()
+                .set_title("Dance loop: a video, or a sprite sheet named like name_4x2.png")
+                .add_filter("Video or sprite sheet", &["mp4", "mov", "mkv", "webm", "avi", "gif", "png", "jpg", "jpeg", "webp"])
+                .pick_file()
+            else {
+                return true;
+            };
+            let before = app.project.to_json();
+            match add_beat_sprite(app, src, &pick) {
+                Ok(id) => {
+                    app.push_undo_labeled(before, "Add Beat-Synced Clip");
+                    app.selection = vec![id];
+                    app.after_edit();
+                }
+                Err(e) => app.toast(e),
+            }
+            true
+        }
         _ => false,
     }
+}
+
+/// The beat-synced clip from `input` (a video, a folder of numbered images or a sprite sheet) over
+/// audio clip `audio`: the sheet is made once (`visualizer::make_sheet`, under the settings folder so a
+/// cache clear never orphans it), added to the library, and placed with its beats baked. Shared by
+/// `Action::AddBeatSyncedClip` and `audio.beat_sprite`.
+pub(super) fn add_beat_sprite(app: &mut App, audio: Id, input: &std::path::Path) -> Result<Id, String> {
+    use crate::engine::visualizer;
+    let sheet = visualizer::make_sheet(input, &crate::settings::Settings::dir().join("visualizer-sheets"))?;
+    let path = sheet.path.to_string_lossy().into_owned();
+    let backend = app.backend();
+    // probed here, not through `import_files`: its async probe rebuilds the asset's clips when it lands,
+    // which would replace the clip placed below (a still's probe is quick)
+    let asset = match app.project.asset_by_path(&path) {
+        Some(a) => a.id,
+        None => app.project.add_asset(crate::media::probe(&path, backend)?),
+    };
+    visualizer::add_sprite(&mut app.project, audio, asset, &sheet, backend)
 }

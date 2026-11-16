@@ -395,6 +395,34 @@ pub const TOOLS: &[ToolDef] = &[
         },
     },
     ToolDef {
+        name: "audio.beat_sprite",
+        desc: "Add a beat-synced clip over an audio clip: a looping animation (a video, a folder of numbered \
+               images, or a sprite-sheet image named like name_4x2.png) that steps through its frames in time \
+               with the detected beats - one loop every loop_beats beats, poses landing on the beats (the \
+               Beat Sprite effect on an image clip; a video / sequence is tiled into a 4x4 sheet once). Same \
+               as right-click > Audio > Add Beat-Synced Clip. Returns the new clip id.",
+        args: &[
+            "clip_id:integer:true:the audio clip to follow",
+            "path:string:true:video, image folder or sprite sheet",
+            "loop_beats:number:false:beats per loop, default 4",
+        ],
+        kind: ToolKind::Mutate,
+        run: |app, args| {
+            let a = Args(args);
+            let audio = req(a.id("clip_id"), "clip_id")?;
+            let path = std::path::PathBuf::from(req(a.str("path"), "path")?);
+            let id = super::audio_actions::add_beat_sprite(app, audio, &path)?;
+            if let Some(lb) = a.f64("loop_beats") {
+                let e = app.project.clip_mut(id).and_then(|c| c.effects.last_mut()).ok_or("clip vanished")?;
+                let i = crate::engine::shaderlib::parse_meta(&e.shader).params.iter().position(|p| p.id == "loop_beats");
+                if let Some(i) = i {
+                    e.params[i] = crate::model::Animated::new(lb.clamp(1.0, 32.0));
+                }
+            }
+            Ok(ToolOutcome::Done(json!({"ok": true, "clip_id": id})))
+        },
+    },
+    ToolDef {
         name: "audio.visualizer_styles",
         desc: "The audio visualizer styles audio.visualizer and the Inspector offer: the built-ins, then every \
                library effect that reads audio (its header declares `level` or `band1`..`band6`; save one \
@@ -478,7 +506,7 @@ mod tests {
     /// App-construction deviation note in tools_registry_tests.rs) so this stays at the registry level.
     #[test]
     fn tools_audio_args_parse_and_round_trip() {
-        assert_eq!(TOOLS.len(), 12);
+        assert_eq!(TOOLS.len(), 13);
         let names = [
             "audio.analyze",
             "audio.beats",
@@ -491,6 +519,7 @@ mod tests {
             "media.scene_cuts",
             "audio.bake_keys",
             "audio.visualizer",
+            "audio.beat_sprite",
             "audio.visualizer_styles",
         ];
         for (t, want) in TOOLS.iter().zip(names) {
