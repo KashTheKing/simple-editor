@@ -1,5 +1,5 @@
 // @name Neon Orb
-// @desc Audio visualizer: a glowing, noise-rippled orb in a dark void with bright neon veins. Key "level" to the music (Audio ▸ Bake to keyframes, or audio.bake_keys) and it swells and boils with every beat.
+// @desc Audio visualizer: a glowing, noise-rippled orb in a dark void with bright neon veins. Right-click an audio clip ▸ Audio ▸ Add Audio Visualizer (or key "level" with audio.bake_keys) and it swells and boils with every beat.
 // @tags visualizer, audio, music, orb, neon, glow, noise, sphere, blender
 // @param level 0.3 0 1
 // @param orb_size 0.35 0.05 1

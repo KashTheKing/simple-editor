@@ -120,6 +120,28 @@ pub fn act(app: &mut App, a: Action) -> bool {
             app.after_edit();
             true
         }
+        // ---- ws:audio-visualizer ----
+        Action::AddAudioVisualizer => {
+            let Some(&src) = crate::ui::autocut_ui::audio_targets(&app.project, &app.selection).first() else {
+                app.toast("Select an audio clip (or a video clip with linked audio)");
+                return true;
+            };
+            let asset = app.project.clip(src).map_or(0, |c| c.asset);
+            let Some(peaks) = asset_peaks(&mut app.waveforms)(&app.project, asset) else {
+                app.toast("Waveform still computing - try again in a moment");
+                return true;
+            };
+            let before = app.project.to_json();
+            match super::tools_audio::add_visualizer(&mut app.project, &peaks, src) {
+                Ok(id) => {
+                    app.push_undo_labeled(before, "Add Audio Visualizer");
+                    app.selection = vec![id];
+                    app.after_edit();
+                }
+                Err(e) => app.toast(e),
+            }
+            true
+        }
         _ => false,
     }
 }

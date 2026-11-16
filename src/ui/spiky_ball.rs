@@ -10,7 +10,7 @@ use eframe::egui_glow;
 use eframe::glow::{self, HasContext};
 use std::sync::{Arc, Mutex};
 
-const SRC: &str = include_str!("../../library/effects/neon-orb.glsl");
+pub const SRC: &str = include_str!("../../library/effects/neon-orb.glsl");
 
 /// Loudness (0..1, unscaled) of what is audible right now: RMS of `playback::SCOPE` when the speakers
 /// are playing anything, else the `Peaks` envelope at `t` (no audio device).

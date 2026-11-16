@@ -1,5 +1,5 @@
 //! ---- ws:audio-analysis ----
-//! 9 MCP tools over `engine::analysis` + `engine::autocut` (auto-Luau-exposed via `TOOL_TABLES`):
+//! MCP tools over `engine::analysis` + `engine::autocut` (auto-Luau-exposed via `TOOL_TABLES`):
 //! audio.analyze/beats/duck/normalize/match_loudness/sync_offset, autocut.detect/mark, media.scene_cuts.
 //! Every tool that writes a marker (audio.beats' as_markers, autocut.mark, media.scene_cuts' as_markers)
 //! routes through `App::fire_markers_added` so `marker_added` fires exactly once per marker, identically
@@ -362,29 +362,77 @@ pub const TOOLS: &[ToolDef] = &[
             let (src, dst) = (req(a.id("clip_id"), "clip_id")?, req(a.id("target_id"), "target_id")?);
             let fps = a.f64("fps").unwrap_or(30.0).clamp(1.0, 120.0);
             let peaks = get_peaks(app, src).ok_or("waveform still computing - try again in a moment")?;
-            let audio = app.project.clip(src).ok_or("no such clip_id")?.clone();
-            let target = app.project.clip_mut(dst).ok_or("no such target_id")?;
-            let (start, len) = (target.start, target.duration);
-            let n = target.effects.len();
-            let ei = a.f64("effect").map(|v| v as usize).unwrap_or(n.wrapping_sub(1));
-            let fx = target.effects.get_mut(ei).ok_or("target has no such effect")?;
-            let name = a.str("param").unwrap_or("level");
-            let specs = fx.specs();
-            let pi = specs.iter().position(|p| p.name.replace(' ', "_").eq_ignore_ascii_case(name)).ok_or(format!("effect has no param '{name}'"))?;
-            let (lo, hi) = (specs[pi].min, specs[pi].max);
-            while fx.params.len() <= pi {
-                let d = specs[fx.params.len()].default;
-                fx.params.push(crate::model::Animated::new(d));
-            }
-            let level = loudness_keys(&peaks, |lt| audio.src_time(start + lt), len, fps);
-            fx.params[pi].keys = level
-                .iter()
-                .map(|&(t, v)| crate::model::Keyframe { t, v: lo + (hi - lo) * v, ease: Default::default() })
-                .collect();
-            Ok(ToolOutcome::Done(json!({"ok": true, "keys": level.len()})))
+            let ei = a.f64("effect").map(|v| v as usize);
+            let n = bake_level(&mut app.project, &peaks, src, dst, ei, a.str("param").unwrap_or("level"), fps)?;
+            Ok(ToolOutcome::Done(json!({"ok": true, "keys": n})))
+        },
+    },
+    ToolDef {
+        name: "audio.visualizer",
+        desc: "Add a Neon Orb audio visualizer over an audio clip: a full-frame layer spanning the clip whose orb \
+               swells and boils with its loudness (level keyframes baked from the audio, like \
+               audio.bake_keys). Same as right-click > Audio > Add Audio Visualizer. Returns the new clip id.",
+        args: &["clip_id:integer:true:the audio clip to visualize"],
+        kind: ToolKind::Mutate,
+        run: |app, args| {
+            let src = req(Args(args).id("clip_id"), "clip_id")?;
+            let peaks = get_peaks(app, src).ok_or("waveform still computing - try again in a moment")?;
+            let id = add_visualizer(&mut app.project, &peaks, src)?;
+            Ok(ToolOutcome::Done(json!({"ok": true, "clip_id": id})))
         },
     },
 ];
+
+/// Bake audio clip `src`'s loudness into keyframes on `dst`'s effect `ei` (default: the last one),
+/// parameter `name`: one key per `1/fps` s over `dst`, 0..1 loudness mapped onto the parameter's range.
+/// Shared by `audio.bake_keys` and `Action::AddAudioVisualizer`. Returns the key count.
+pub(super) fn bake_level(
+    p: &mut Project,
+    peaks: &Peaks,
+    src: Id,
+    dst: Id,
+    ei: Option<usize>,
+    name: &str,
+    fps: f64,
+) -> Result<usize, String> {
+    let audio = p.clip(src).ok_or("no such clip_id")?.clone();
+    let target = p.clip_mut(dst).ok_or("no such target_id")?;
+    let (start, len) = (target.start, target.duration);
+    let ei = ei.unwrap_or(target.effects.len().wrapping_sub(1));
+    let fx = target.effects.get_mut(ei).ok_or("target has no such effect")?;
+    let specs = fx.specs();
+    let pi = specs
+        .iter()
+        .position(|p| p.name.replace(' ', "_").eq_ignore_ascii_case(name))
+        .ok_or(format!("effect has no param '{name}'"))?;
+    let (lo, hi) = (specs[pi].min, specs[pi].max);
+    while fx.params.len() <= pi {
+        fx.params.push(crate::model::Animated::new(specs[fx.params.len()].default));
+    }
+    let level = loudness_keys(peaks, |lt| audio.src_time(start + lt), len, fps);
+    fx.params[pi].keys = level
+        .iter()
+        .map(|&(t, v)| crate::model::Keyframe { t, v: lo + (hi - lo) * v, ease: Default::default() })
+        .collect();
+    Ok(level.len())
+}
+
+/// A full-frame black shape over audio clip `src`'s span carrying the Neon Orb effect, its `level` baked
+/// from `src`'s loudness: the one-click audio visualizer (clip menu ▸ Audio, `ui.action`). Returns the
+/// new clip.
+pub(super) fn add_visualizer(p: &mut Project, peaks: &Peaks, src: Id) -> Result<Id, String> {
+    let (at, dur) = p.clip(src).map(|c| (c.start, c.duration)).ok_or("no such clip")?;
+    let id = p.add_shape_clip(crate::model::ShapeKind::Rect, at, dur);
+    let (w, h) = (p.width as f64, p.height as f64);
+    let c = p.clip_mut(id).ok_or("shape clip vanished")?;
+    c.name = "Audio Visualizer".into();
+    if let Some(s) = c.shape.as_mut() {
+        (s.w, s.h, s.fill) = (crate::model::Animated::new(w), crate::model::Animated::new(h), [0, 0, 0, 255]);
+    }
+    c.effects.push(crate::model::Effect::from_shader(crate::ui::spiky_ball::SRC));
+    bake_level(p, peaks, src, id, None, "level", 30.0)?;
+    Ok(id)
+}
 
 /// (clip-local time, 0..1 loudness) every `1/fps` s over `len` s; `src(lt)` maps to source time. Peak
 /// level per frame, normalised to the loudest frame, with an instant attack and a ~0.15 s release so it
@@ -421,7 +469,7 @@ mod tests {
     /// App-construction deviation note in tools_registry_tests.rs) so this stays at the registry level.
     #[test]
     fn tools_audio_args_parse_and_round_trip() {
-        assert_eq!(TOOLS.len(), 10);
+        assert_eq!(TOOLS.len(), 11);
         let names = [
             "audio.analyze",
             "audio.beats",
@@ -433,6 +481,7 @@ mod tests {
             "autocut.mark",
             "media.scene_cuts",
             "audio.bake_keys",
+            "audio.visualizer",
         ];
         for (t, want) in TOOLS.iter().zip(names) {
             assert_eq!(t.name, want);
@@ -459,5 +508,31 @@ mod tests {
         assert!(k[18].1 > 0.3 && k[18].1 < k[15].1, "then decays, no snap to 0");
         assert!((k[45].1 - 0.5).abs() < 0.05, "half as loud, half as high: {}", k[45].1);
         assert!(k.iter().all(|&(_, v)| (0.0..=1.0).contains(&v)));
+    }
+
+    /// The one-click visualizer: a full-frame opaque layer above the music, exactly its span, carrying
+    /// the Neon Orb with `level` keyed from the audio (and one undo-able project edit, no other clip moved).
+    #[test]
+    fn add_visualizer_covers_the_audio_with_a_baked_orb() {
+        let mut p = Project::new();
+        let ati = *p.audio_tracks().first().unwrap();
+        let mut music = Clip::new(p.new_id(), ClipKind::Audio, "song", 1.0, 2.0);
+        music.src_in = 0.0;
+        let src = music.id;
+        p.tracks[ati].clips.push(music);
+        let max: Vec<f32> = (0..300).map(|i| if i == 150 { 0.9 } else { 0.05 }).collect();
+        let peaks = Peaks { min: max.iter().map(|m| -m).collect(), max };
+        let id = add_visualizer(&mut p, &peaks, src).unwrap();
+        let c = p.clip(id).unwrap();
+        assert_eq!((c.start, c.duration), (1.0, 2.0), "spans the music");
+        assert!(p.tracks[p.track_of(id).unwrap()].kind == TrackKind::Video);
+        let s = c.shape.as_ref().unwrap();
+        assert_eq!((s.w.at(0.0), s.h.at(0.0), s.fill[3]), (p.width as f64, p.height as f64, 255));
+        assert_eq!(c.effects.len(), 1);
+        assert_eq!(c.effects[0].name(), "Neon Orb");
+        let keys = &c.effects[0].params[0].keys;
+        assert_eq!(keys.len(), 61, "level keyed at 30 fps over 2 s");
+        // the hit at source 1.5 s = clip-local 1.5 s (music starts at source 0, clip at timeline 1)
+        assert!(keys[45].v > 0.99 && keys[5].v < 0.1, "loud at the hit, quiet elsewhere");
     }
 }

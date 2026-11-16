@@ -448,6 +448,27 @@
       "thumb": "thumbs/effects-mirror.jpg"
     },
     {
+      "id": "effects/neon-orb",
+      "kind": "effect",
+      "name": "Neon Orb",
+      "desc": "Audio visualizer: a glowing, noise-rippled orb in a dark void with bright neon veins. Right-click an audio clip ▸ Audio ▸ Add Audio Visualizer (or key \"level\" with audio.bake_keys) and it swells and boils with every beat.",
+      "tags": [
+        "visualizer",
+        "audio",
+        "music",
+        "orb",
+        "neon",
+        "glow",
+        "noise",
+        "sphere",
+        "blender"
+      ],
+      "file": "effects/neon-orb.glsl",
+      "size": 3300,
+      "credit": "",
+      "thumb": "thumbs/effects-neon-orb.jpg"
+    },
+    {
       "id": "effects/night-vision",
       "kind": "effect",
       "name": "Night Vision",
@@ -2612,6 +2633,25 @@
       "size": 13872,
       "credit": "",
       "thumb": "thumbs/html-video-comments.jpg"
+    },
+    {
+      "id": "html/warning-disclaimer",
+      "kind": "html",
+      "name": "Warning Disclaimer",
+      "desc": "Full-screen black warning card: big red title and a centred disclaimer. Fades in in 0.25 s, slowly zooms in for 10 s, then fades out fast.",
+      "tags": [
+        "warning",
+        "disclaimer",
+        "content warning",
+        "notice",
+        "documentary",
+        "intro",
+        "text"
+      ],
+      "file": "html/warning-disclaimer.html",
+      "size": 2416,
+      "credit": "",
+      "thumb": "thumbs/html-warning-disclaimer.jpg"
     },
     {
       "id": "icons/arrow-down",
