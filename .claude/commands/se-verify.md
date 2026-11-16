@@ -12,7 +12,7 @@ Read [goals.md](../../goals.md) for the current budgets/targets first.
    `<sha>,<bytes>,<note>` to `size_log.csv`, and prints the delta vs the previous row. Fail this verify
    pass when that delta exceeds +65536 bytes and the PR body has no `size: +N KB — reason` line; a
    delta over +300 KB needs a named offset regardless.
-4. Playback-affecting change: `scripts/perf-bench.ps1 -Synthetic` against the release exe. Fail this verify
+4. Playback-affecting change: `cargo build`, then `scripts/perf-bench.ps1 -Synthetic` (dev exe - never benchmark a release build). Fail this verify
    pass when it exits non-zero: dropped frames > 0, worst gap > 50 ms, or any metric >10% worse than the
    previous `perf_log.csv` row with the same label. Surface the summary line.
 5. If UI-relevant code changed since the last verify, take a real screenshot

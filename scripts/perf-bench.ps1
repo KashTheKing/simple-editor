@@ -10,7 +10,7 @@ param([string]$Exe, [string]$Project, [string]$Label, [switch]$Synthetic, [int]$
   [double]$From = 0, [double]$To = 0, [int]$Settle = 10, [int]$CallTimeout = 300, [switch]$NoLog)
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path (Split-Path $MyInvocation.MyCommand.Path)
-if (-not $Exe) { $Exe = "$repo\target\release\simple-editor.exe" }
+if (-not $Exe) { $Exe = "$repo\target\debug\simple-editor.exe" }  # rule: benchmark the dev exe, never a release build
 if (-not $Label) { $Label = if ($Synthetic) { 'synthetic' } else { [IO.Path]::GetFileNameWithoutExtension($Project) } }
 if (-not $Synthetic -and -not (Test-Path $Project)) { throw "pass -Project <file.sedit> or -Synthetic" }
 if ($Port -eq 7878) { throw "7878 is the live editor's port" }

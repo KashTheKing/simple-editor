@@ -27,8 +27,8 @@ to work on it*, not what it does.
 2. `cargo run -- --selftest` — real media end-to-end smoke test, including an `idle_repaint` step.
 3. `cargo run -- <video> --screenshot x.ppm` then `ffmpeg -i x.ppm x.png` and actually view the
    PNG for UI/rendering changes. Type-checking is not feature verification — look at the output.
-4. For perf-sensitive changes: `cargo test --release bench_4k_preview -- --ignored --nocapture`.
-5. Perf gate (playback-affecting changes): `scripts/perf-bench.ps1 -Synthetic` (builds an ffmpeg testsrc stress
+4. For perf-sensitive changes: `cargo test bench_4k_preview -- --ignored --nocapture` (dev build: benchmarks never use `--release`).
+5. Perf gate (playback-affecting changes): `cargo build` then `scripts/perf-bench.ps1 -Synthetic` (runs the dev exe) (builds an ffmpeg testsrc stress
    project, plays it in a scratch profile, appends a row to `perf_log.csv`). It FAILS if dropped frames > 0,
    worst gap > 50 ms, or any metric is >10% worse than the previous `perf_log.csv` row with the same label.
    `-Project <file.sedit> -Label x` benches a COPY of a real project (no gate). `playback.trace {secs}` (MCP)
@@ -56,8 +56,10 @@ and plain `cargo build` never hit this: they use the dev profile (no LTO, many c
 are fast/incremental. Consequences for how you verify:
 
 - Default to `cargo test` / `cargo build` (dev) for iteration and for step 1-3 of Verification
-  above. Only reach for `--release` when a step explicitly calls for it (perf benches, the size
-  gate) — never as a generic "does it build" check.
+  above. Only reach for `--release` for the shipped exe and the size gate. **Never benchmark a release
+  build**: benches and the perf gate run the dev exe (its deps are opt-level 3, playback work is MF/GPU;
+  a release build costs minutes per try and changes nothing a bench is looking for). Never use
+  `--release` as a generic "does it build" check either.
 - Make worktrees with `scripts/worktree.sh <name> <branch>`: each worktree gets its OWN `target/`,
   pre-seeded with hard links to the main tree's compiled dependencies. A change then rebuilds only
   the `simple-editor` crate, incrementally (~20 s + ~20 s for the whole test suite), with no lock
