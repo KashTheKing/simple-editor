@@ -7,6 +7,7 @@ pub mod autocut;
 pub mod blend;
 // ---- ws:browser-layer ----
 pub mod browser;
+pub mod cache_lru;
 pub mod capture;
 pub mod compose;
 pub mod convert;

@@ -565,6 +565,21 @@ pub fn slug(name: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Draw the pane body in a bare panel for one frame.
+    fn frame(
+        ctx: &egui::Context,
+        st: &mut ExportUi,
+        project: &Project,
+        settings: &mut Settings,
+    ) -> Option<(ExportChoice, bool)> {
+        let mut out = None;
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default()
+                .show(ctx, |ui| out = body(ui, st, project, settings, &["libx264".into()], false));
+        });
+        out
+    }
+
     #[test]
     fn preset_sizes() {
         // 16:9 project: 720p derives 1280 wide

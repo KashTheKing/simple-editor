@@ -83,6 +83,14 @@ pub(super) fn general(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Setting
             ui.weak(if s.autosave_secs == 0 { "off" } else { "s" });
         });
         ui.end_row();
+
+        // ---- ws:cache-budget ----
+        ui.label("Cache disk budget");
+        ui.horizontal(|ui| {
+            changed |= ui.add(egui::DragValue::new(&mut s.cache_disk_gb).range(0..=2000).speed(1)).changed();
+            ui.weak(if s.cache_disk_gb == 0 { "unlimited" } else { "GB (HTML, pre-render, proxies, peaks; oldest first)" });
+        });
+        ui.end_row();
     });
     ui.add_space(6.0);
     // ---- ws:pages ---- (was the Dynamic / Granular layout mode; same field)

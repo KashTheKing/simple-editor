@@ -382,6 +382,11 @@ impl PreRender {
         (1.0 - left / total as f32).clamp(0.0, 1.0)
     }
 
+    /// File stems (`<key>`) of the seconds rendered this session: the pruner keeps them for last.
+    pub fn done_stems(&self) -> Vec<String> {
+        self.done.iter().map(|(_, k)| format!("{k:016x}")).collect()
+    }
+
     /// Requested ranges as merged runs of whole seconds with their state: `(from, to, ready)`.
     /// Drawn as the pre-render bar at the top of the timeline.
     pub fn segments(&self) -> Vec<(f64, f64, bool)> {
@@ -477,7 +482,7 @@ pub fn key_for(project: &Project, sec: i64) -> u64 {
     project.fps.to_bits().hash(&mut h);
     project.scaler.hash(&mut h);
     sec.hash(&mut h);
-    let mut any_sequence = false;
+    let mut used_seqs = std::collections::BTreeSet::new();
     for (ti, track) in project.tracks.iter().enumerate() {
         if track.kind != TrackKind::Video || !project.active(ti) {
             continue;
@@ -499,13 +504,12 @@ pub fn key_for(project: &Project, sec: i64) -> u64 {
             if let Some(asset) = project.asset(clip.asset) {
                 hash_json(&mut h, asset);
             }
-            any_sequence |= clip.kind == ClipKind::Sequence;
+            if clip.kind == ClipKind::Sequence {
+                used_seqs.insert(clip.sequence);
+            }
         }
     }
-    if any_sequence {
-        // ponytail: a nested sequence rehashes wholesale - cheap enough, and always correct.
-        hash_json(&mut h, &project.sequences);
-    }
+    hash_used_sequences(&mut h, project, used_seqs);
     if project.show_subtitles {
         project.subtitle_margin.to_bits().hash(&mut h);
         hash_json(&mut h, &project.subtitle_style);
@@ -514,6 +518,26 @@ pub fn key_for(project: &Project, sec: i64) -> u64 {
         }
     }
     h.finish()
+}
+
+/// ws:cache-budget: hash only the sequences a span actually uses (and the ones they nest, and the assets
+/// their clips show), so editing one nested sequence invalidates just the spans that place it.
+fn hash_used_sequences(h: &mut DefaultHasher, project: &Project, mut todo: std::collections::BTreeSet<crate::model::Id>) {
+    let mut seen = std::collections::BTreeSet::new();
+    while let Some(id) = todo.pop_first() {
+        if !seen.insert(id) {
+            continue;
+        }
+        let Some(seq) = project.sequences.iter().find(|s| s.id == id) else { continue };
+        hash_json(h, seq);
+        for clip in seq.tracks.iter().flat_map(|t| &t.clips) {
+            if clip.kind == ClipKind::Sequence {
+                todo.insert(clip.sequence);
+            } else if let Some(asset) = project.asset(clip.asset) {
+                hash_json(h, asset);
+            }
+        }
+    }
 }
 
 fn hash_json<T: serde::Serialize>(h: &mut DefaultHasher, v: &T) {
@@ -654,6 +678,33 @@ mod tests {
         let v = p.tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
         p.tracks[v].clips.push(c);
         p
+    }
+
+    /// ws:cache-budget: editing one nested sequence invalidates only the spans that place it.
+    #[test]
+    fn key_hashes_per_sequence() {
+        use crate::model::Sequence;
+        let mut p = project_with_clip();
+        let mk = |p: &mut Project| {
+            let id = p.new_id();
+            Sequence { id, name: "s".into(), width: 32, height: 16, fps: 10.0, tracks: Vec::new() }
+        };
+        let (a, b) = (mk(&mut p), mk(&mut p));
+        let (ia, ib) = (a.id, b.id);
+        p.sequences = vec![a, b];
+        let v = p.tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        for (start, seq) in [(10.0, ia), (20.0, ib)] {
+            let id = p.new_id();
+            let mut c = Clip::new(id, ClipKind::Sequence, "n", start, 2.0);
+            c.sequence = seq;
+            p.tracks[v].clips.push(c);
+        }
+        let (ka, kb) = (key_for(&p, 10), key_for(&p, 20));
+        let plain = key_for(&p, 0);
+        p.sequences[1].name = "edited".into();
+        assert_eq!(ka, key_for(&p, 10), "the other sequence's span is untouched");
+        assert_eq!(plain, key_for(&p, 0), "a span without sequences is untouched");
+        assert_ne!(kb, key_for(&p, 20), "the edited sequence's span is invalidated");
     }
 
     #[test]
