@@ -1,6 +1,6 @@
 ---
 title: Audio visualizers
-description: Turn a song into moving pictures - built-in visualizer styles, beat-synced dance loops, your own GLSL visualizers, and the now-playing card.
+description: Turn a song into moving pictures - built-in visualizer styles, your own GLSL visualizers, and the now-playing card.
 ---
 
 ![Neon Orb, Spectrum Bars, Voxel Blocks and a custom style on the same song](/img/tutorial/visualizer-styles.jpg)
@@ -36,21 +36,6 @@ The style's own knobs are in the clip's **Effects** section like any effect. Vox
 
 The **Source** monitor shows a visualizer too, for audio files without cover art. Right-click it ▸ **Audio
 Visualizer** to pick the style or turn it off.
-
-## Beat-synced dance loops
-
-**Audio ▸ Add Beat-Synced Clip…** puts a looping animation over the song that steps in time with the
-detected beats: one full loop every 4 beats, with poses landing on the beats and a little bounce on each hit.
-Pick one of:
-
-- **A video** of the loop (for example a dance animation recorded in Roblox Studio). It is sampled into 16
-  frames once, kept in `%APPDATA%\SimpleEditor\visualizer-sheets`.
-- **A sprite sheet** image with the grid in its name: `dance_4x2.png` is 4 columns by 2 rows. A PNG with a
-  transparent background keeps it transparent.
-
-It lands lower right at half size; move and scale it like any clip. Its **Beat Sprite** effect has
-**Loop Beats** (beats per loop), **Bounce**, and the grid (**Cols**, **Rows**, **Frames**). A placeholder
-dance loop to try is in the repository: `tools/visualizer-sample/dance-loop_4x2.png`.
 
 ## Making your own visualizer
 
@@ -112,5 +97,4 @@ the monitors; it is not part of the export.
 |---|---|
 | `audio.visualizer {clip_id, style}` | adds a visualizer over an audio clip, or restyles a visualizer clip |
 | `audio.visualizer_styles` | lists the styles, built-in and custom |
-| `audio.beat_sprite {clip_id, path, loop_beats}` | adds a beat-synced clip from a video, image folder or sprite sheet |
 | `audio.bake_keys {clip_id, target_id, effect, param}` | bakes a clip's loudness into any effect parameter |
