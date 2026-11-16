@@ -52,9 +52,22 @@ pub fn helper_exe() -> Option<PathBuf> {
     beside.is_file().then_some(beside)
 }
 
+/// Is the helper installed? Remembered for 2 s: `choose` asks it per HTML layer per scan, and while
+/// renders run the scan follows every still they write - two stats of a missing exe each time were most
+/// of the UI thread on a project with nine layers. An install clears it (`start_install`).
 pub fn available() -> bool {
-    helper_exe().is_some()
+    let mut g = lock(&AVAILABLE);
+    if let Some((at, yes)) = *g {
+        if at.elapsed() < Duration::from_secs(2) {
+            return yes;
+        }
+    }
+    let yes = helper_exe().is_some();
+    *g = Some((Instant::now(), yes));
+    yes
 }
+
+static AVAILABLE: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
 
 // ---------------------------------------------------------------------------------------------------
 // the process
@@ -413,8 +426,7 @@ pub fn choose(setting: HtmlRenderer, src: &str) -> Choice {
 static SCANS: Mutex<Option<HashMap<u64, html_lint::Findings>>> = Mutex::new(None);
 
 /// `html_lint::scan`, remembered per source (a web page is ~1 MB and the decision is asked for every frame).
-fn scan_cached(src: &str) -> html_lint::Findings {
-    let key = source_key(src);
+fn scan_cached(src: &str, key: u64) -> html_lint::Findings {
     if let Some(f) = lock(&SCANS).as_ref().and_then(|m| m.get(&key)) {
         return f.clone();
     }
@@ -433,7 +445,7 @@ pub fn choose_with(setting: HtmlRenderer, src: &str, helper_installed: bool) -> 
         HtmlRenderer::Edge => Choice { engine: Engine::Edge, reason: None },
         HtmlRenderer::Blitz => {
             if helper_installed {
-                let f = scan_cached(src);
+                let f = scan_cached(src, source_key(src));
                 let reason = (!f.blocks.is_empty()).then(|| format!("uses {}: may not draw as in a browser", f.blocks.join(", ")));
                 Choice { engine: Engine::Blitz, reason }
             } else {
@@ -444,11 +456,13 @@ pub fn choose_with(setting: HtmlRenderer, src: &str, helper_installed: bool) -> 
             if !helper_installed {
                 return Choice { engine: Engine::Edge, reason: Some("the fast renderer is not installed: rendering with Edge".into()) };
             }
-            let f = scan_cached(src);
+            // ponytail: one hash of the source for both lookups (a web page is ~1 MB, asked per layer per scan)
+            let key = source_key(src);
+            let f = scan_cached(src, key);
             if let Some(b) = f.blocks.first() {
                 return Choice { engine: Engine::Edge, reason: Some(format!("uses {b}: rendering with Edge")) };
             }
-            if let Some(why) = failure_of(src) {
+            if let Some(why) = lock(&FAILED).as_ref().and_then(|m| m.get(&key).cloned()) {
                 return Choice { engine: Engine::Edge, reason: Some(format!("the fast renderer failed ({why}): rendering with Edge")) };
             }
             Choice { engine: Engine::Blitz, reason: f.notes.first().cloned() }
@@ -571,6 +585,7 @@ pub fn start_install() {
     }
     crate::engine::export::spawn_job("html-helper", |prog| {
         let r = install(prog);
+        *lock(&AVAILABLE) = None;
         INSTALLING.store(false, SeqCst);
         r.map(|_| ())
     });

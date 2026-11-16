@@ -100,10 +100,47 @@ pub(crate) fn status_of(offline: &HashSet<Id>, a: &Asset, use_proxies: bool, pro
 }
 
 /// Every asset whose file is not on disk right now.
-/// ponytail: one `exists()` per asset on the UI thread every 2 s - the proxy scan already pays the
-/// same per-asset stat; a worker + channel is the upgrade if a network drive ever makes it hitch.
 pub(crate) fn offline_set(project: &Project) -> HashSet<Id> {
     project.assets.iter().filter(|a| !a.path.is_empty() && !Path::new(&a.path).exists()).map(|a| a.id).collect()
+}
+
+/// The 2 s rescan's answer from its thread: (id, path) of every asset it found missing. A stat is
+/// ~65 us on an idle disk and 0.3 ms+ while proxies build: 70 ms of UI thread every 2 s on a 216-asset
+/// project when it ran here.
+static OFFLINE_FOUND: Mutex<Option<Vec<(Id, String)>>> = Mutex::new(None);
+static OFFLINE_SCANNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Start the rescan on a thread (one at a time); `take_offline_scan` applies what it found.
+fn start_offline_scan(project: &Project, ctx: &egui::Context) {
+    use std::sync::atomic::Ordering::SeqCst;
+    if OFFLINE_SCANNING.swap(true, SeqCst) {
+        return;
+    }
+    let list: Vec<(Id, String)> =
+        project.assets.iter().filter(|a| !a.path.is_empty()).map(|a| (a.id, a.path.clone())).collect();
+    let ctx = ctx.clone();
+    let spawned = std::thread::Builder::new().name("offline-scan".into()).spawn(move || {
+        let missing: Vec<(Id, String)> = list.into_iter().filter(|(_, p)| !Path::new(p).exists()).collect();
+        *OFFLINE_FOUND.lock().unwrap_or_else(|e| e.into_inner()) = Some(missing);
+        OFFLINE_SCANNING.store(false, SeqCst);
+        ctx.request_repaint();
+    });
+    if spawned.is_err() {
+        OFFLINE_SCANNING.store(false, SeqCst);
+    }
+}
+
+/// The finished rescan as the offline set of `project`: an asset counts only if its path is still the one
+/// that was found missing (a relink or another project in between: not offline).
+fn take_offline_scan(project: &Project) -> Option<HashSet<Id>> {
+    let found = OFFLINE_FOUND.lock().unwrap_or_else(|e| e.into_inner()).take()?;
+    Some(
+        found
+            .into_iter()
+            .filter(|(id, p)| project.asset(*id).is_some_and(|a| a.path == *p))
+            .map(|(id, _)| id)
+            .collect(),
+    )
 }
 
 fn refresh_offline(app: &mut App) {
@@ -156,9 +193,14 @@ pub(super) fn take_done(jobs: &mut Vec<MediaJob>) -> Vec<MediaJob> {
 
 /// FRAME_HOOK.
 pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
+    if let Some(now) = take_offline_scan(&app.project) {
+        if now != app.library.offline {
+            app.library.offline = now;
+        }
+    }
     if app.offline_scan_at.is_none_or(|t| t <= Instant::now()) {
         app.offline_scan_at = Some(Instant::now() + Duration::from_secs(2));
-        refresh_offline(app);
+        start_offline_scan(&app.project, ctx);
     }
     // keyboard navigation over the hovered library - before Hotkeys::poll consumes the same keys
     if app.library.hovered && !ctx.wants_keyboard_input() {
@@ -546,6 +588,34 @@ mod tests {
             body.find("import_files").unwrap() < body.find("fire_hook").unwrap(),
             "asset added before the hook sees its id"
         );
+    }
+
+    /// Regression: the 2 s offline rescan stat'ed every asset on the UI thread (70 ms per pass on a
+    /// 216-asset project while proxies built). It runs on a thread now; what it finds only counts for
+    /// assets still at the path it checked.
+    #[test]
+    fn offline_rescan_runs_off_the_ui_thread_and_ignores_relinked_assets() {
+        let mut p = Project::new();
+        let gone = p.add_asset(asset(0, "Z:/gone/a.mp4"));
+        let moved = p.add_asset(asset(0, "Z:/gone/b.mp4"));
+        let ctx = egui::Context::default();
+        start_offline_scan(&p, &ctx);
+        let t0 = Instant::now();
+        let found = loop {
+            if let Some(f) = take_offline_scan(&p) {
+                break f;
+            }
+            assert!(t0.elapsed() < Duration::from_secs(10), "the scan thread never answered");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(found, HashSet::from([gone, moved]));
+        // the same answer after `moved` was relinked: only `gone` is still offline
+        *OFFLINE_FOUND.lock().unwrap() = Some(vec![(gone, "Z:/gone/a.mp4".into()), (moved, "Z:/gone/b.mp4".into())]);
+        p.asset_mut(moved).unwrap().path = "C:/found/b.mp4".into();
+        assert_eq!(take_offline_scan(&p), Some(HashSet::from([gone])));
+        let src = include_str!("media_sync.rs");
+        let tick = &src[src.find("pub(super) fn tick").unwrap()..src.find("fn finish_sequence").unwrap()];
+        assert!(!tick.contains("refresh_offline("), "the periodic rescan must not stat on the UI thread");
     }
 
     #[test]

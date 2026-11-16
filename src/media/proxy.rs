@@ -112,7 +112,30 @@ pub fn dir() -> PathBuf {
     crate::settings::Settings::cache_dir().join("proxies")
 }
 
+/// The source's modified time (seconds), remembered for 2 s per path: the proxy scan asks it three or
+/// four times per video asset per pass and the library once per row per frame - a stat each was most of
+/// the UI thread on a 200-asset project. A file rewritten in place is seen within 2 s; a missing one
+/// (0) is not remembered, so a file that has just been written (an HTML render) is seen at once.
 fn mtime_secs(src: &str) -> u64 {
+    static SEEN: Mutex<BTreeMap<String, (std::time::Instant, u64)>> = Mutex::new(BTreeMap::new());
+    if let Some(&(at, m)) = lock(&SEEN).get(src) {
+        if at.elapsed() < std::time::Duration::from_secs(2) {
+            return m;
+        }
+    }
+    let m = mtime_now(src);
+    if m == 0 {
+        return 0;
+    }
+    let mut seen = lock(&SEEN);
+    if seen.len() > 4096 {
+        seen.clear(); // ponytail: a project's worth of paths; an LRU if libraries ever get that big
+    }
+    seen.insert(src.to_string(), (std::time::Instant::now(), m));
+    m
+}
+
+fn mtime_now(src: &str) -> u64 {
     std::fs::metadata(src)
         .and_then(|m| m.modified())
         .ok()
@@ -416,6 +439,23 @@ fn run_with(src: &str, dst: &PathBuf, height: u32, prog: &Progress, encode: &[&s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: the proxy scan and the library rows stat'ed every video source several times a
+    /// pass - most of the UI thread on a 200-asset project. The mtime is remembered, but a file that
+    /// did not exist yet (an HTML render about to be committed) is seen the moment it is written.
+    #[test]
+    fn proxy_scan_mtime_is_remembered_but_a_new_file_is_seen_at_once() {
+        let dir = std::env::temp_dir().join(format!("se-proxy-mtime-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("render.mov");
+        let src = f.to_string_lossy().into_owned();
+        assert_eq!(mtime_secs(&src), 0, "not written yet");
+        std::fs::write(&f, b"x").unwrap();
+        let m = mtime_secs(&src);
+        assert!(m > 0, "a missing file is not remembered as missing");
+        assert_eq!(mtime_secs(&src), m);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// One test for the whole ladder (BUILDING/READY are process-global statics - keeping every
     /// assertion in one test avoids parallel-test interference on them).
