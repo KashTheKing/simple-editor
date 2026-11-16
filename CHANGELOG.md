@@ -18,6 +18,10 @@
 - **One disk-cache budget** (Settings ▸ General, default 30 GB) with least-recently-used cleanup across HTML
   renders, pre-renders, proxies and waveforms, a low-disk warning, and pre-renders that only redo the sequence you
   edited. `caches.prune`.
+- **HTML renders are ~50x smaller**: animated HTML layers render to H.264 (GPU encoder when present; transparent
+  layers as stacked colour-over-alpha) instead of lossless PNG movies, at the size they are shown (never above the
+  project size), superseded renders are deleted after an edit, and HTML renders get their own 1 GB cap. Old PNG
+  renders are cleaned up in the background; each HTML layer re-renders once in the new format.
 - **Performance window** (Window ▸ Performance…): live FPS in a donut chart of where each frame's time goes,
   live tiles (dropped frames, worst gap, decode, cache, background jobs) coloured against the budgets, and a
   Project tab ranking the heaviest sources and clips with Jump to and one-click fixes (Make proxy, Pre-render,
