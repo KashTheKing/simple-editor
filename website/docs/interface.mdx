@@ -148,8 +148,19 @@ on the [keyboard shortcuts](shortcuts.md) page.
 
 **File ▸ Settings…** (<kbd>Ctrl+Comma</kbd>) has six tabs:
 
-- **General**: theme, where FFmpeg and yt-dlp are, autosave, snapping, the "follow the selection" and
+- **General**: theme, where FFmpeg and yt-dlp are, autosave, the cache budget and **Cache folder**, the
+  **Web browser** links and the page-snapshot steps use, snapping, the "follow the selection" and
   home-card switches, the Explorer right-click entry, fonts, and the MCP server for AI co-editing.
+
+  **Cache folder** shows where renders, pre-renders, proxies, waveform peaks and downloaded models are kept,
+  how much they use and the drive's free space. **Browse…** picks another folder (on a bigger or faster
+  drive, say), then **Move existing cache** moves the files there in the background (a row in Jobs; a file
+  still being written stays behind) or **Start fresh** leaves the old folder (tick *and delete the old
+  folder* to remove it). The new folder is used at once. **Reset to default** goes back to
+  `%LOCALAPPDATA%\SimpleEditor\cache`.
+
+  **Web browser** is **Default** (the Windows default browser) or any browser installed, or **Other…** for
+  a program of your own.
 - **Performance**: GPU preview, preview quality, the playback cache, proxies, movie mode.
 - **Capture**: screen recording and voiceover inputs.
 - **Export**: default encoder, quality and speed preset.

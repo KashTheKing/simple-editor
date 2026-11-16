@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Settings
+- **Cache folder** (Settings ▸ General): see where renders, pre-renders, proxies, peaks and models are kept, their
+  size and the drive's free space; **Browse…** to another folder and **Move existing cache** (a low-priority
+  background job that skips files still being written and is safe to stop or resume) or **Start fresh** (optionally
+  deleting the old folder). Takes effect at once; **Open folder**, **Reset to default**. `settings.get/set
+  cache_folder`.
+- **Web browser** (Settings ▸ General): links and the page-snapshot steps use your Windows default browser, or the
+  one you pick (any installed browser, or Other…). `settings.get/set web_browser`.
+
+### Web pages
+- **Works with any browser**: Web Page Snapshot ▸ From my browser shows the steps for your browser (its own
+  extensions page: `chrome://extensions`, `edge://extensions`, …) and watches its download folder; Firefox, which
+  cannot save a page as one file, gets the Ctrl+S ▸ Web Page, complete route instead. No browser or site is
+  named in examples any more (example.com, neutral sample captions and hashtags).
+
 ## 1.3.0
 
 ### Performance: peak playback

@@ -145,6 +145,20 @@ impl App {
             if std::mem::take(&mut self.settings_ui.clear_caches) {
                 caches::clear(self);
             }
+            // ---- ws:neutral-web ----
+            if let Some(c) = self.settings_ui.cache_change.take() {
+                match caches::change_folder(self, &c.path, c.mv, c.delete_old, c.root_ok) {
+                    Ok(m) => {
+                        self.settings_ui.cache_error = None;
+                        self.toast(m);
+                    }
+                    Err(e) => {
+                        self.settings_ui.cache_error = Some(e);
+                        self.settings_ui.reopen_cache_pick(c);
+                    }
+                }
+            }
+            crate::engine::browsers::set_choice(&self.settings.web_browser);
             if changed {
                 self.hotkeys.to_settings(&mut self.settings);
                 self.settings.save();

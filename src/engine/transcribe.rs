@@ -56,7 +56,7 @@ pub fn default_model() -> usize {
     MODELS.iter().position(|(n, f, _)| *f == want || n.starts_with(want)).unwrap_or(1)
 }
 
-/// `%LOCALAPPDATA%\SimpleEditor\cache\models` - where downloaded models live.
+/// `Settings::cache_dir()/models` - where downloaded models live.
 pub fn models_dir() -> PathBuf {
     Settings::cache_dir().join("models")
 }
