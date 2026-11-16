@@ -4,6 +4,7 @@
 //! Everything produces top-down RGBA8 frames and interleaved stereo f32 audio at SAMPLE_RATE.
 
 pub mod d3d;
+pub mod bg;
 pub mod ffpipe;
 pub mod mf;
 pub mod proxy;

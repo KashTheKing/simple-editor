@@ -210,6 +210,7 @@ mod tests {
             range: None,
             effects: Vec::new(),
             html: None,
+            proxy: None,
         });
         for (id, x) in [(1u64, 0.0), (2, 500.0)] {
             let mut c = Clip::new(id, ClipKind::Video, "v", 0.0, 4.0);

@@ -80,6 +80,7 @@ fn asset(path: &str) -> Asset {
         range: None,
         effects: Vec::new(),
         html: None,
+        proxy: None,
     }
 }
 

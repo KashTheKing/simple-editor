@@ -441,7 +441,12 @@ pub(crate) fn spawn_job(
 ) -> Arc<Progress> {
     let prog = Progress::new();
     let p = prog.clone();
+    let background = matches!(name, "proxy" | "transcribe" | "whisper-model" | "html-render" | "html-helper");
     let spawned = std::thread::Builder::new().name(name.into()).spawn(move || {
+        if background {
+            crate::media::bg::lower_thread();
+            crate::media::bg::pause_point(|| p.is_cancelled());
+        }
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&p)));
         p.finish(match r {
             Ok(Ok(())) => None,
@@ -1512,6 +1517,7 @@ pub(crate) mod tests {
             range: None,
             effects: Vec::new(),
             html: None,
+            proxy: None,
         }
     }
 

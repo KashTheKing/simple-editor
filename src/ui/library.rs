@@ -162,6 +162,8 @@ pub struct LibraryResponse {
     pub convert: Vec<(Id, String)>,
     /// Source paths whose proxy should be rebuilt (the app releases decoders, deletes, rescans).
     pub regen_proxy: Vec<String>,
+    /// Per-source proxy choice from the Proxies menu: (asset id, None = auto / Some(on)).
+    pub proxy_mode: Vec<(crate::model::Id, Option<bool>)>,
     /// Asset for which the app should open the Convert To… options dialog.
     pub convert_dialog: Option<Id>,
     /// Asset for which the app should open the Compress… dialog.
@@ -2787,6 +2789,11 @@ impl Tree<'_, '_> {
                     if menu::row(ui, None, "Regenerate proxy", "").clicked() {
                         self.resp.regen_proxy.extend(videos.iter().cloned());
                     }
+                    for (label, mode) in [("Proxy: automatic", None), ("Proxy: always", Some(true)), ("Proxy: never", Some(false))] {
+                        if menu::row(ui, None, label, "").clicked() {
+                            self.resp.proxy_mode.extend(ids.iter().map(|id| (*id, mode)));
+                        }
+                    }
                 });
             }
             menu::sub(ui, None, "Convert To", |ui| {
@@ -3220,6 +3227,7 @@ mod tests {
             range: None,
             effects: Vec::new(),
             html: None,
+            proxy: None,
         }
     }
 

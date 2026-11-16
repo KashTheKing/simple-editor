@@ -240,6 +240,7 @@ mod tests {
             range: None,
             effects: Vec::new(),
             html: None,
+            proxy: None,
         };
         let p = Project::from_media(a);
         let id = p.tracks[0].clips[0].id;

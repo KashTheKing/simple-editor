@@ -1439,7 +1439,7 @@ impl Edge {
         let _ = std::fs::remove_dir_all(&profile);
         std::fs::create_dir_all(&profile).map_err(|e| format!("Edge profile: {e}"))?;
         let data = capture_profile(network).unwrap_or_else(|| profile.join("p")); // ws:browser-layer
-        let mut child = ffpipe::command(&exe)
+        let mut child = crate::media::bg::command(&exe)
             .args(["--headless", "--remote-debugging-port=0", "--no-first-run", "--no-default-browser-check"])
             .args(["--hide-scrollbars", "--mute-audio", "--disable-extensions", "--disable-background-networking"])
             .args(["--disable-sync", "--disable-component-update"])
@@ -2674,7 +2674,7 @@ fn render_to_file_with(spec: &Spec, prog: &Progress, fast: bool) -> Result<Rende
         h => Some(h),
     };
     let proxy_tmp = proxy_h.map(|_| export::temp_output(&base.with_extension("proxy.mp4")));
-    let mut cmd = ffpipe::command(&ffmpeg);
+    let mut cmd = crate::media::bg::command(&ffmpeg);
     cmd.args(["-y", "-hide_banner", "-loglevel", "error", "-f", "image2pipe"])
         .args(["-framerate", &format!("{}/1000", (fps * 1000.0).round())])
         .args(["-c:v", "png", "-i", "-"]);
@@ -2931,7 +2931,7 @@ impl MovOut {
     fn start(out: &Path, fps: f64) -> Result<MovOut, String> {
         let ffmpeg = ffpipe::ffmpeg_exe().ok_or("ffmpeg.exe not found")?;
         let tmp = export::temp_output(out);
-        let mut child = ffpipe::command(&ffmpeg)
+        let mut child = crate::media::bg::command(&ffmpeg)
             .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "image2pipe"])
             .args(["-framerate", &format!("{}/1000", (fps * 1000.0).round())])
             .args(["-c:v", "png", "-i", "-", "-c:v", "copy"])
@@ -3000,6 +3000,7 @@ fn render_parallel(
         for _ in 0..n {
             let (tx, next, pieces) = (tx.clone(), &next, &pieces);
             sc.spawn(move || {
+                crate::media::bg::lower_thread();
                 let mut e = match WorkerSrc::open(job) {
                     Ok(e) => e,
                     Err(err) => {
@@ -3009,6 +3010,7 @@ fn render_parallel(
                 };
                 let r = (|| -> Result<(), String> {
                     loop {
+                        crate::media::bg::pause_point(|| prog.is_cancelled());
                         let p = next.fetch_add(1, SeqCst);
                         if p >= pieces.len() || prog.is_cancelled() {
                             return Ok(());

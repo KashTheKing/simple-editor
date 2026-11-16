@@ -778,6 +778,7 @@ mod tests {
             range: None,
             effects: Vec::new(),
             html: None,
+            proxy: None,
         });
         p.insert_asset_clips(aid, 0.0, Some(0));
         let vid = p.tracks[0].clips[0].id;
@@ -812,6 +813,7 @@ mod tests {
             range: None,
             effects: Vec::new(),
             html: None,
+            proxy: None,
         });
         project.insert_asset_clips(aid, 0.0, Some(0));
         let aud = project.tracks[1].clips[0].id;
@@ -884,6 +886,7 @@ mod tests {
             range: None,
             effects: Vec::new(),
             html: None,
+            proxy: None,
         });
         project.insert_asset_clips(aid, 0.0, Some(0));
         let vid = project.tracks[0].clips[0].id;

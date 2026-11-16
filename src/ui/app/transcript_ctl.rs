@@ -725,6 +725,7 @@ mod tests {
             range: None,
             effects: Vec::new(),
             html: None,
+            proxy: None,
         };
         let new = place_tts(&mut p, wav, 1.0, Some(tc));
         assert!(!new.is_empty(), "the WAV landed as at least one clip");

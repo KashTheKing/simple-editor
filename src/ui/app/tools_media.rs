@@ -48,6 +48,14 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                 if let Some(f) = arg_str(args, "folder") {
                     a.folder = f.to_string();
                 }
+                if let Some(m) = arg_str(args, "proxy") {
+                    a.proxy = match m {
+                        "on" => Some(true),
+                        "off" => Some(false),
+                        "auto" => None,
+                        _ => return Err("proxy: auto | on | off".into()),
+                    };
+                }
                 Ok(json!({"ok": true}))
             }
             _ => unreachable!(),
@@ -91,7 +99,7 @@ pub const TOOLS: &[ToolDef] = &[
         },
     },
     row!("media.list", ToolKind::Read, "Library assets (id, path, kind, duration, size, tags, label, folder, description, used).", &[]),
-    row!("media.set", ToolKind::Mutate, "Edit asset metadata.", &["id:integer:true:", "description:string:false:", "tags:array:false:strings", "label:integer:false:0..8", "folder:string:false:"]),
+    row!("media.set", ToolKind::Mutate, "Edit asset metadata.", &["id:integer:true:", "description:string:false:", "tags:array:false:strings", "label:integer:false:0..8", "folder:string:false:", "proxy:string:false:auto | on | off (per-source proxy; auto builds one only when decoding is too slow for real time)"]),
     // Job-kind: never routed through `dispatch` (they don't mutate the project directly, they write a
     // file) - `App::handle_tool` starts the job via `start_tool_job` and replies when it finishes.
     ToolDef {

@@ -84,6 +84,11 @@ pub struct Asset {
     /// `path` is only the rendered cache file (`engine::html`), re-made whenever it is missing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub html: Option<HtmlSource>,
+    // ---- ws:smart-proxy ----
+    /// Per-source proxy choice: None = automatic (`media::proxy::needs_proxy`), Some(true) = always
+    /// build one, Some(false) = never use one. An already built proxy stays valid either way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy: Option<bool>,
 }
 
 // ---- ws:html-layer ----

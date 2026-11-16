@@ -550,6 +550,7 @@ mod tests {
                     range: None,
                     effects: Vec::new(),
                     html: None,
+                    proxy: None,
                 });
                 let cid = p.new_id();
                 let mut c = Clip::new(cid, ClipKind::Video, "cam", 0.0, 10.0);
@@ -600,6 +601,7 @@ mod tests {
             range: None,
             effects: Vec::new(),
             html: None,
+            proxy: None,
         });
         let cid = base.new_id();
         let mut c = Clip::new(cid, ClipKind::Video, "v", 0.0, 3.0);
