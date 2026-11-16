@@ -1880,7 +1880,7 @@
         "youtuber"
       ],
       "file": "html/bell-ring.html",
-      "size": 4083,
+      "size": 4879,
       "credit": "",
       "thumb": "thumbs/html-bell-ring.jpg"
     },
@@ -1898,7 +1898,7 @@
         "highlight"
       ],
       "file": "html/callout-arrow.html",
-      "size": 2622,
+      "size": 3176,
       "credit": "",
       "thumb": "thumbs/html-callout-arrow.jpg"
     },
@@ -1914,9 +1914,60 @@
         "divider"
       ],
       "file": "html/chapter-card.html",
-      "size": 2707,
+      "size": 2993,
       "credit": "",
       "thumb": "thumbs/html-chapter-card.jpg"
+    },
+    {
+      "id": "html/chat-dm-typing",
+      "kind": "html",
+      "name": "Chat Thread",
+      "desc": "A fake chat thread: avatars, coloured names, timestamps and messages that arrive one after another.",
+      "tags": [
+        "chat",
+        "thread",
+        "messages",
+        "discord-style",
+        "skit"
+      ],
+      "file": "html/chat-dm-typing.html",
+      "size": 19661,
+      "credit": "",
+      "thumb": "thumbs/html-chat-dm-typing.jpg"
+    },
+    {
+      "id": "html/chat-server-typing",
+      "kind": "html",
+      "name": "Chat Thread",
+      "desc": "A fake chat thread: avatars, coloured names, timestamps and messages that arrive one after another.",
+      "tags": [
+        "chat",
+        "thread",
+        "messages",
+        "discord-style",
+        "skit"
+      ],
+      "file": "html/chat-server-typing.html",
+      "size": 20993,
+      "credit": "",
+      "thumb": "thumbs/html-chat-server-typing.jpg"
+    },
+    {
+      "id": "html/chat-thread",
+      "kind": "html",
+      "name": "Chat Thread",
+      "desc": "A fake chat thread: avatars, coloured names, timestamps and messages that arrive one after another.",
+      "tags": [
+        "chat",
+        "thread",
+        "messages",
+        "discord-style",
+        "skit"
+      ],
+      "file": "html/chat-thread.html",
+      "size": 14590,
+      "credit": "",
+      "thumb": "thumbs/html-chat-thread.jpg"
     },
     {
       "id": "html/checklist",
@@ -1932,7 +1983,7 @@
         "tasks"
       ],
       "file": "html/checklist.html",
-      "size": 3952,
+      "size": 4238,
       "credit": "",
       "thumb": "thumbs/html-checklist.jpg"
     },
@@ -1950,7 +2001,7 @@
         "youtuber"
       ],
       "file": "html/comment-bubble.html",
-      "size": 3630,
+      "size": 3916,
       "credit": "",
       "thumb": "thumbs/html-comment-bubble.jpg"
     },
@@ -1966,7 +2017,7 @@
         "numbers"
       ],
       "file": "html/countdown.html",
-      "size": 2193,
+      "size": 4458,
       "credit": "",
       "thumb": "thumbs/html-countdown.jpg"
     },
@@ -1983,7 +2034,7 @@
         "stats"
       ],
       "file": "html/counter.html",
-      "size": 2477,
+      "size": 3952,
       "credit": "",
       "thumb": "thumbs/html-counter.jpg"
     },
@@ -2000,7 +2051,7 @@
         "fun"
       ],
       "file": "html/emoji-burst.html",
-      "size": 2637,
+      "size": 2660,
       "credit": "",
       "thumb": "thumbs/html-emoji-burst.jpg"
     },
@@ -2018,9 +2069,26 @@
         "youtuber"
       ],
       "file": "html/end-screen.html",
-      "size": 6156,
+      "size": 6442,
       "credit": "",
       "thumb": "thumbs/html-end-screen.jpg"
+    },
+    {
+      "id": "html/forum-thread",
+      "kind": "html",
+      "name": "Forum Thread",
+      "desc": "A fake forum thread: a post with votes, flair and nested comments that arrive one after another.",
+      "tags": [
+        "forum",
+        "thread",
+        "comments",
+        "post",
+        "skit"
+      ],
+      "file": "html/forum-thread.html",
+      "size": 15140,
+      "credit": "",
+      "thumb": "thumbs/html-forum-thread.jpg"
     },
     {
       "id": "html/game-chat-bubble",
@@ -2037,7 +2105,7 @@
         "text"
       ],
       "file": "html/game-chat-bubble.html",
-      "size": 2934,
+      "size": 3220,
       "credit": "",
       "thumb": "thumbs/html-game-chat-bubble.jpg"
     },
@@ -2056,7 +2124,7 @@
         "energetic"
       ],
       "file": "html/intro-title-bold.html",
-      "size": 4479,
+      "size": 4693,
       "credit": "",
       "thumb": "thumbs/html-intro-title-bold.jpg"
     },
@@ -2076,7 +2144,7 @@
         "minimal"
       ],
       "file": "html/intro-title-cinematic.html",
-      "size": 4830,
+      "size": 4828,
       "credit": "",
       "thumb": "thumbs/html-intro-title-cinematic.jpg"
     },
@@ -2096,7 +2164,7 @@
         "gaming"
       ],
       "file": "html/intro-title-glitch.html",
-      "size": 7224,
+      "size": 7225,
       "credit": "",
       "thumb": "thumbs/html-intro-title-glitch.jpg"
     },
@@ -2115,7 +2183,7 @@
         "youtuber"
       ],
       "file": "html/like-pop.html",
-      "size": 3849,
+      "size": 4135,
       "credit": "",
       "thumb": "thumbs/html-like-pop.jpg"
     },
@@ -2132,7 +2200,7 @@
         "accent"
       ],
       "file": "html/lower-third-bar.html",
-      "size": 2180,
+      "size": 2215,
       "credit": "",
       "thumb": "thumbs/html-lower-third-bar.jpg"
     },
@@ -2149,7 +2217,7 @@
         "news"
       ],
       "file": "html/lower-third-boxed.html",
-      "size": 1816,
+      "size": 1851,
       "credit": "",
       "thumb": "thumbs/html-lower-third-boxed.jpg"
     },
@@ -2166,7 +2234,7 @@
         "interview"
       ],
       "file": "html/lower-third-clean.html",
-      "size": 2206,
+      "size": 2418,
       "credit": "",
       "thumb": "thumbs/html-lower-third-clean.jpg"
     },
@@ -2183,7 +2251,7 @@
         "pill"
       ],
       "file": "html/lower-third-gradient.html",
-      "size": 2608,
+      "size": 2894,
       "credit": "",
       "thumb": "thumbs/html-lower-third-gradient.jpg"
     },
@@ -2200,7 +2268,7 @@
         "text"
       ],
       "file": "html/lower-third-minimal.html",
-      "size": 2147,
+      "size": 2433,
       "credit": "",
       "thumb": "thumbs/html-lower-third-minimal.jpg"
     },
@@ -2219,7 +2287,7 @@
         "bottom text"
       ],
       "file": "html/meme-caption.html",
-      "size": 1799,
+      "size": 2833,
       "credit": "",
       "thumb": "thumbs/html-meme-caption.jpg"
     },
@@ -2235,7 +2303,7 @@
         "label"
       ],
       "file": "html/name-tag.html",
-      "size": 1738,
+      "size": 2024,
       "credit": "",
       "thumb": "thumbs/html-name-tag.jpg"
     },
@@ -2253,7 +2321,7 @@
         "broadcast"
       ],
       "file": "html/news-ticker.html",
-      "size": 3301,
+      "size": 3410,
       "credit": "",
       "thumb": "thumbs/html-news-ticker.jpg"
     },
@@ -2271,7 +2339,7 @@
         "message"
       ],
       "file": "html/notification-toast.html",
-      "size": 3184,
+      "size": 3470,
       "credit": "",
       "thumb": "thumbs/html-notification-toast.jpg"
     },
@@ -2290,7 +2358,7 @@
         "youtuber"
       ],
       "file": "html/outro-card.html",
-      "size": 6805,
+      "size": 7091,
       "credit": "",
       "thumb": "thumbs/html-outro-card.jpg"
     },
@@ -2309,7 +2377,7 @@
         "story"
       ],
       "file": "html/phone-messages.html",
-      "size": 5836,
+      "size": 6104,
       "credit": "",
       "thumb": "thumbs/html-phone-messages.jpg"
     },
@@ -2328,7 +2396,7 @@
         "chart"
       ],
       "file": "html/poll-bars.html",
-      "size": 4476,
+      "size": 6768,
       "credit": "",
       "thumb": "thumbs/html-poll-bars.jpg"
     },
@@ -2345,7 +2413,7 @@
         "timeline"
       ],
       "file": "html/progress-bar.html",
-      "size": 1834,
+      "size": 2120,
       "credit": "",
       "thumb": "thumbs/html-progress-bar.jpg"
     },
@@ -2362,7 +2430,7 @@
         "text"
       ],
       "file": "html/quote-card.html",
-      "size": 3055,
+      "size": 3341,
       "credit": "",
       "thumb": "thumbs/html-quote-card.jpg"
     },
@@ -2379,7 +2447,7 @@
         "five stars"
       ],
       "file": "html/rating-stars.html",
-      "size": 4860,
+      "size": 5319,
       "credit": "",
       "thumb": "thumbs/html-rating-stars.jpg"
     },
@@ -2397,7 +2465,7 @@
         "price"
       ],
       "file": "html/sale-badge.html",
-      "size": 4624,
+      "size": 4907,
       "credit": "",
       "thumb": "thumbs/html-sale-badge.jpg"
     },
@@ -2415,7 +2483,7 @@
         "teams"
       ],
       "file": "html/scoreboard.html",
-      "size": 3452,
+      "size": 3726,
       "credit": "",
       "thumb": "thumbs/html-scoreboard.jpg"
     },
@@ -2432,7 +2500,7 @@
         "pill"
       ],
       "file": "html/social-handles.html",
-      "size": 2692,
+      "size": 2978,
       "credit": "",
       "thumb": "thumbs/html-social-handles.jpg"
     },
@@ -2451,7 +2519,7 @@
         "overlay"
       ],
       "file": "html/stream-chat.html",
-      "size": 7379,
+      "size": 7477,
       "credit": "",
       "thumb": "thumbs/html-stream-chat.jpg"
     },
@@ -2470,7 +2538,7 @@
         "youtuber"
       ],
       "file": "html/subscribe-bell.html",
-      "size": 6362,
+      "size": 6648,
       "credit": "",
       "thumb": "thumbs/html-subscribe-bell.jpg"
     },
@@ -2488,7 +2556,7 @@
         "youtuber"
       ],
       "file": "html/subscribe-button.html",
-      "size": 3868,
+      "size": 4154,
       "credit": "",
       "thumb": "thumbs/html-subscribe-button.jpg"
     },
@@ -2507,9 +2575,43 @@
         "challenge"
       ],
       "file": "html/versus-card.html",
-      "size": 4729,
+      "size": 5466,
       "credit": "",
       "thumb": "thumbs/html-versus-card.jpg"
+    },
+    {
+      "id": "html/video-comment-typing",
+      "kind": "html",
+      "name": "Video Comments",
+      "desc": "A fake video comment section: a comment typed into the box and posted, likes, replies, hearts and pins.",
+      "tags": [
+        "comments",
+        "video",
+        "thread",
+        "typing",
+        "skit"
+      ],
+      "file": "html/video-comment-typing.html",
+      "size": 18937,
+      "credit": "",
+      "thumb": "thumbs/html-video-comment-typing.jpg"
+    },
+    {
+      "id": "html/video-comments",
+      "kind": "html",
+      "name": "Video Comments",
+      "desc": "A fake video comment section: a comment typed into the box and posted, likes, replies, hearts and pins.",
+      "tags": [
+        "comments",
+        "video",
+        "thread",
+        "typing",
+        "skit"
+      ],
+      "file": "html/video-comments.html",
+      "size": 13872,
+      "credit": "",
+      "thumb": "thumbs/html-video-comments.jpg"
     },
     {
       "id": "html/warning-disclaimer",
