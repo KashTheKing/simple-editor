@@ -22,6 +22,8 @@ pub mod guides;
 pub mod social;
 pub mod history_ui;
 pub mod spiky_ball;
+pub mod visualizer_ui; // ws:audio-visualizer
+pub mod audio_card; // ws:audio-visualizer
 // ---- ws:layout-modes-onboarding ----
 pub mod home;
 pub mod hud; // ws:perf-baseline

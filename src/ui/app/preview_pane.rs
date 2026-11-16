@@ -91,6 +91,22 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
                 },
             )
         };
+        // ---- ws:audio-visualizer ---- a stretch with only sound: the "now playing" card over the frame
+        if let Some(aid) = crate::ui::audio_card::audio_only_at(&app.project, app.playhead) {
+            let path = app.project.clip(aid).and_then(|c| app.project.asset(c.asset)).map(|a| a.path.clone());
+            if let Some(path) = path {
+                let aspect = app.project.width.max(1) as f32 / app.project.height.max(1) as f32;
+                let lb = preview::letterbox(app.preview.canvas_rect, aspect, ui.pixels_per_point());
+                if lb.is_positive() {
+                    let cover = app
+                        .thumbs
+                        .texture(ui.ctx(), &path, 0.0, (lb.height() * ui.pixels_per_point()) as u32)
+                        .or_else(|| crate::ui::audio_card::cover(ui.ctx(), &path));
+                    let title = crate::ui::audio_card::title(ui.ctx(), &path);
+                    crate::ui::audio_card::paint(ui, lb, cover, &title);
+                }
+            }
+        }
         // ---- ws:pro-monitor ----
         // `pick_armed` is only consumed on an actual click (`resp.picked` is `Some`) - armed once by the
         // Color panel's Eyedropper button, it must survive every frame the user hasn't clicked yet

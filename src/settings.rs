@@ -288,9 +288,13 @@ pub struct Settings {
     pub whisper_dir: String,
     /// Model the Subtitles pane offers first: a `engine::transcribe::MODELS` name or file name.
     pub transcribe_model: String,
-    /// Library asset preview: draw a "spiky ball" audio visualizer over audio-only files that have
+    /// Library asset preview: draw the Neon Orb audio visualizer over audio-only files that have
     /// no thumbnail. Off = plain black, on = the ball. Toggled from the preview's right-click menu.
     pub audio_visualizer: bool,
+    // ---- ws:audio-visualizer ----
+    /// Which visualizer style the Source monitor draws (`engine::visualizer` name; empty = the default,
+    /// Neon Orb). Picked from the preview's right-click menu.
+    pub audio_visualizer_style: String,
     /// Social-guide platform drawn over the preview (None = off): an id from `ui::social`'s guides.json.
     /// A view preference, not project data. Settings from before the data-driven guides stored a
     /// variant name ("TikTok", "YtShorts"...); `legacy_guide` maps those.
@@ -676,6 +680,7 @@ impl Default for Settings {
             whisper_dir: String::new(),
             transcribe_model: String::new(),
             audio_visualizer: true,
+            audio_visualizer_style: String::new(),
             guide: None,
             project_templates: Vec::new(),
             ui_look: "cozy".into(),

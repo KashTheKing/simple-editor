@@ -51,7 +51,7 @@ Header lines (all `// @key value`, at the top of the file, before any code):
 | `// @name <text>` | required; shown in the Effects list |
 | `// @desc <text>` | required; one sentence |
 | `// @tags a, b, c` | required; lowercase search words |
-| `// @param <id> <default> <min> <max>` | 0 to 8 controls. `<id>` is a lowercase identifier (`[a-z][a-z0-9_]*`); the Inspector shows it as "Glow Size" for `glow_size`; in the code it is a `float` of that name. Every control is keyframeable. Defaults must give a visible, good-looking result. |
+| `// @param <id> <default> <min> <max>` | 0 to 14 controls. `<id>` is a lowercase identifier (`[a-z][a-z0-9_]*`); the Inspector shows it as "Glow Size" for `glow_size`; in the code it is a `float` of that name. Every control is keyframeable. Defaults must give a visible, good-looking result. |
 | `// @needs previous [n]` | optional; the effect also gets earlier frames (below). `n` = how many frames back the earliest one is, 1 to 8 (default 1); the "ghost camera" / echo look wants 3 to 6 |
 | `// @credit <text>` | optional; required for adapted work |
 
@@ -74,7 +74,19 @@ Conventions: colours are **straight alpha**, 0..1, not premultiplied; keep `src.
 is about transparency. `uv` is 0..1 with **y = 0 at the top**. Sampling outside 0..1 clamps to the
 edge; use `sample_clamped` or handle it. Aspect-correct shapes with `u_res.x / u_res.y`. Keep it
 real-time at 1080p: at most ~64 texture samples per pixel, no loops with non-constant bounds. Names
-taken: `tex`, `u_*`, `p0`..`p7`, `u1`..`u8`, `v_uv`, `out_color`, `main`, `effect`, the helpers above.
+taken: `tex`, `u_*`, `p0`..`p13`, `u1`..`u8`, `v_uv`, `out_color`, `main`, `effect`, the helpers above.
+
+### Audio visualizers
+
+An effect whose header declares any of `level`, `band1` .. `band6` is an **audio visualizer style**:
+it appears in the Inspector's Visualizer ▸ Style list (and `audio.visualizer {style}` /
+`audio.visualizer_styles`) next to the built-ins, Neon Orb and Spectrum Bars. When a visualizer is
+made or restyled, the audio under the clip is analysed once and baked into keyframes on those params:
+`level` is the loudness, `band1` (about 60 Hz) to `band6` (about 8 kHz) a log-spaced spectrum, each
+0..1 mapped onto the param's own range. Give them defaults that look good on their own (the library
+thumbnail and the Source monitor without sound use them). A sample: `tools/visualizer-sample/
+pulse-rings.glsl`; install your own with `library.save` (kind `effect`) or by copying the file into
+`%APPDATA%\SimpleEditor\library\effects`.
 
 ## Shader transitions (`transitions/*.glsl`)
 

@@ -2905,12 +2905,12 @@ mod driver_tests {
     /// Compile + link `user_shader(src)` with the real driver, draw it into a 4x4 target at t = 0 and
     /// return the top-left pixel.
     unsafe fn run(gl: &glow::Context, src: &str) -> Result<[u8; 4], String> {
-        let px = run_sized(gl, src, 4, 4, 0.0)?;
+        let px = run_sized(gl, src, 4, 4, 0.0, &[])?;
         Ok([px[0], px[1], px[2], px[3]])
     }
 
     /// The whole `w`x`h` RGBA8 output at clip time `t` (row 0 = uv.y 0 = top of the image).
-    unsafe fn run_sized(gl: &glow::Context, src: &str, w: i32, h: i32, t: f32) -> Result<Vec<u8>, String> {
+    unsafe fn run_sized(gl: &glow::Context, src: &str, w: i32, h: i32, t: f32, params: &[f32]) -> Result<Vec<u8>, String> {
         let vert = compile(gl, glow::VERTEX_SHADER, shaders::VERT)?;
         let prog = build(gl, vert, &shaders::user_shader(src))?;
         let tex = gl.create_texture()?;
@@ -2951,6 +2951,9 @@ mod driver_tests {
         gl.uniform_1_i32(prog.uni.get("tex"), 0);
         gl.uniform_2_f32(prog.uni.get("u_res"), w as f32, h as f32);
         gl.uniform_1_f32(prog.uni.get("u_time"), t);
+        for (i, v) in params.iter().enumerate() {
+            gl.uniform_1_f32(prog.uni.get(PARAM_NAMES[i]), *v);
+        }
         let vao = gl.create_vertex_array()?;
         gl.bind_vertex_array(Some(vao));
         gl.draw_arrays(glow::TRIANGLES, 0, 3);
@@ -2985,6 +2988,74 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
         assert!(log.contains("(2)") || log.contains(":2:"), "error must point at user line 2: {log}");
     }
 
+    /// Every visualizer style (the built-ins and the custom sample) on the real driver: something lit on
+    /// a dark void, and loud audio (every audio param at its max) draws more light than quiet audio
+    /// (0.1). Writes target/visualizer-<style>-{quiet,loud}.ppm to look at.
+    #[test]
+    fn visualizer_styles_react_to_audio_on_the_real_driver() {
+        let Some(gl) = gl() else {
+            eprintln!("SKIPPED: no OpenGL driver for a hidden WGL context");
+            return;
+        };
+        let mut styles: Vec<(&str, &str)> = crate::engine::visualizer::BUILTIN.to_vec();
+        styles.push(("Pulse Rings", include_str!("../../tools/visualizer-sample/pulse-rings.glsl")));
+        let (w, h) = (480, 270);
+        for (style, src) in styles {
+            let meta = crate::engine::shaderlib::parse_meta(src);
+            let mut light = Vec::new();
+            for (name, level) in [("quiet", 0.1f64), ("loud", 1.0)] {
+                let params: Vec<f32> = meta
+                    .params
+                    .iter()
+                    .map(|p| {
+                        let audio = crate::engine::visualizer::AUDIO_PARAMS.contains(&p.id.as_str());
+                        // a black backdrop for styles that offer one, so "void" is comparable
+                        let v = if audio { p.min + (p.max - p.min) * level } else if p.id == "background" { 2.0 } else { p.default };
+                        v as f32
+                    })
+                    .collect();
+                let px = unsafe { run_sized(&gl, src, w, h, 2.0, &params) }.unwrap();
+                let at = |x: i32, y: i32| &px[((y * w + x) * 4) as usize..][..4];
+                assert!(at(2, 2)[..3].iter().all(|&c| c < 8), "{style} {name}: corner stays void: {:?}", at(2, 2));
+                let mut ppm = format!("P6 {w} {h} 255
+").into_bytes();
+                for y in (0..h).rev() {
+                    for x in 0..w {
+                        ppm.extend_from_slice(&at(x, y)[..3]);
+                    }
+                }
+                let file = crate::engine::library::slug(style);
+                let _ = std::fs::write(format!("target/visualizer-{file}-{name}.ppm"), ppm);
+                light.push(px.chunks_exact(4).map(|p| p[0] as u64 + p[1] as u64 + p[2] as u64).sum::<u64>());
+            }
+            assert!(light[0] > 20_000, "{style}: visible even when quiet: {light:?}");
+            assert!(light[1] > light[0] * 11 / 10, "{style}: louder = more light: {light:?}");
+        }
+    }
+
+    /// GPU cost of each visualizer style at 1080p (fastest of 8 runs, minus the same at 16x16 for compile + setup):
+    /// `cargo test bench_visualizer_styles -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_visualizer_styles_1080p() {
+        let Some(gl) = gl() else { return };
+        for (style, src) in crate::engine::visualizer::BUILTIN {
+            let params: Vec<f32> = crate::engine::shaderlib::parse_meta(src).params.iter().map(|p| p.default as f32).collect();
+            // the fastest of 8 runs: the driver caches the compiled program, so the minimum is the draw
+            let time = |w, h| {
+                (0..8)
+                    .map(|_| {
+                        let t0 = std::time::Instant::now();
+                        unsafe { run_sized(&gl, src, w, h, 2.0, &params) }.unwrap();
+                        t0.elapsed().as_secs_f64() * 1000.0
+                    })
+                    .fold(f64::MAX, f64::min)
+            };
+            let (small, big) = (time(16, 16), time(1920, 1080));
+            eprintln!("{style}: {:.1} ms per 1080p frame ({big:.1} ms with compile + readback)", big - small);
+        }
+    }
+
     /// Shadertoy's default plasma at a 320x240 layer and at 1920x1080: red falls smoothly and
     /// monotonically left to right (no bands or steps), and the two sizes agree.
     #[test]
@@ -2996,7 +3067,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
         let plasma = crate::ui::shader_ui::EXAMPLES[1].1;
         let mut reds = Vec::new();
         for (w, h) in [(320, 240), (1920, 1080)] {
-            let px = unsafe { run_sized(&gl, plasma, w, h, 1.0) }.unwrap();
+            let px = unsafe { run_sized(&gl, plasma, w, h, 1.0, &[]) }.unwrap();
             let row = (h / 2 * w * 4) as usize;
             let r: Vec<i32> = (0..w as usize).map(|x| px[row + x * 4] as i32).collect();
             assert!(r.windows(2).all(|p| p[1] <= p[0]), "{w}x{h}: red not monotonic: {r:?}");

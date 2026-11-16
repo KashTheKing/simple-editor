@@ -919,6 +919,15 @@ fn clip_section(
         }
     }
 
+    // ---- ws:audio-visualizer ---- style picker for a visualizer layer
+    let mut visualizer_changed = false;
+    if !multi && crate::ui::visualizer_ui::style(project, id).is_some() {
+        let backend = crate::media::Backend::parse(&settings.decoder);
+        section(ui, "visualizer", "Visualizer", true, folds.map, None, |ui| {
+            visualizer_changed = crate::ui::visualizer_ui::section(ui, project, id, backend, undo);
+        });
+    }
+
     // ---- ws:text-titles: primary-first ordering ----
     // For a Text clip, typography is what a beginner needs first, so its section leads (and is the one
     // open). The "Text style presets" sub-panel sits at its end: it needs `&mut Settings`, which
@@ -1345,6 +1354,7 @@ fn clip_section(
         || speed_changed
         || effects_changed
         || html_changed // ws:html-layer
+        || visualizer_changed // ws:audio-visualizer
 }
 
 /// Text style presets, at the end of the Text section: save the clip's (or the selected characters')

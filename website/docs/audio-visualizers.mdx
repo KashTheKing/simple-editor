@@ -1,0 +1,116 @@
+---
+title: Audio visualizers
+description: Turn a song into moving pictures - built-in visualizer styles, beat-synced dance loops, your own GLSL visualizers, and the now-playing card.
+---
+
+![Neon Orb, Spectrum Bars, Voxel Blocks and a custom style on the same song](/img/tutorial/visualizer-styles.jpg)
+
+A visualizer is a layer that moves with the music. Right-click an audio clip on the timeline and open
+**Audio ▸ Add Audio Visualizer**: a full-frame layer appears above it, exactly as long as the song, and plays
+along. The sound is analysed **once** when the visualizer is made (loudness, six frequency bands from bass to
+treble, and the beats), and the result is stored as keyframes on the layer. Playback and export only read
+those keyframes, so a visualizer never makes playback stutter, and the export looks exactly like the preview.
+
+## Picking a style
+
+Select the visualizer clip. The Inspector's **Visualizer** section has a **Style** list and shows which audio
+clip it listens to (the one under it on the timeline).
+
+![The Visualizer section in the Inspector](/img/tutorial/visualizer-inspector.png)
+
+| Style | What it does |
+|---|---|
+| **Neon Orb** | a glowing, rippling orb in a dark void that swells and boils with the loudness |
+| **Spectrum Bars** | a mirrored field of thin blue and green bars receding to a horizon, bass in the middle (the Source monitor's original visualizer) |
+| **Voxel Blocks** | a blocky pixel-art island: columns rise with the spectrum, a block drops in and stacks on every beat while the oldest ones break away, and the camera slowly orbits |
+| your own | any shader in your library that reads audio (below), marked *(custom)* |
+
+Changing the style swaps the effect and reads the audio again. Moved or trimmed the clip? Press **Re-bake**.
+The style's own knobs are in the clip's **Effects** section like any effect. Voxel Blocks has:
+
+- **Palette**: 0 meadow (grass, dirt, stone, ores), 1 ember (red rock, glowing ore), 2 snow, 3 desert.
+- **Speed**: how fast the camera orbits (0 = still). **Camera**: 0 low and close to 1 high and wide.
+- **Background**: 0 transparent (the island floats over whatever is on the tracks below), 1 sky, 2 black.
+
+![Voxel Blocks palettes, a black background, and a transparent background](/img/tutorial/visualizer-voxel-palettes.jpg)
+
+The **Source** monitor shows a visualizer too, for audio files without cover art. Right-click it ▸ **Audio
+Visualizer** to pick the style or turn it off.
+
+## Beat-synced dance loops
+
+**Audio ▸ Add Beat-Synced Clip…** puts a looping animation over the song that steps in time with the
+detected beats: one full loop every 4 beats, with poses landing on the beats and a little bounce on each hit.
+Pick one of:
+
+- **A video** of the loop (for example a dance animation recorded in Roblox Studio). It is sampled into 16
+  frames once, kept in `%APPDATA%\SimpleEditor\visualizer-sheets`.
+- **A sprite sheet** image with the grid in its name: `dance_4x2.png` is 4 columns by 2 rows. A PNG with a
+  transparent background keeps it transparent.
+
+It lands lower right at half size; move and scale it like any clip. Its **Beat Sprite** effect has
+**Loop Beats** (beats per loop), **Bounce**, and the grid (**Cols**, **Rows**, **Frames**). A placeholder
+dance loop to try is in the repository: `tools/visualizer-sample/dance-loop_4x2.png`.
+
+## Making your own visualizer
+
+A visualizer style is a [shader effect](effects.mdx) (GLSL, the same format as the library's effects) that
+declares any of these controls in its header. When a visualizer is made, they are filled in from the music:
+
+| Control | Header line | Value |
+|---|---|---|
+| `level` | `// @param level 0.3 0 1` | loudness, mapped onto the control's range |
+| `band1` .. `band6` | `// @param band1 0.5 0 1` | the spectrum, about 60 Hz (`band1`) to 8 kHz (`band6`), each mapped onto its range |
+| `beat` | `// @param beat 0 0 1` | 0 on each detected beat, rising to 1 just before the next |
+| `beats` | `// @param beats 0 0 100000` | how many beats have passed: 0, then 1, 2, 3, ... |
+| `bpm` | `// @param bpm 120 0 300` | the song's tempo |
+
+Everything else in the header is a normal knob. Give the audio controls defaults that look good on their
+own: the library thumbnail and the Source monitor (without sound) use them. A shader may have up to 14
+controls.
+
+```glsl
+// @name Pulse Rings
+// @desc Six neon rings, bass in the middle to treble outside.
+// @tags visualizer, audio
+// @param level 0.3 0 1
+// @param band1 0.5 0 1
+// @param band6 0.25 0 1
+// @param beat 0 0 1
+vec4 effect(vec4 src, vec2 uv) {
+    vec2 p = (uv - 0.5) * vec2(u_res.x / u_res.y, 1.0);
+    float r = length(p);
+    float ring = exp(-pow((r - 0.1 - 0.05 * band1) / 0.01, 2.0)) + exp(-pow((r - 0.3 - 0.05 * band6) / 0.01, 2.0));
+    float flash = exp(-beat * 6.0);              // bright on every beat, fading until the next
+    return vec4(vec3(1.0, 0.3, 0.8) * ring * (0.5 + level + flash), 1.0);
+}
+```
+
+Some ideas with the beat inputs: `floor(beats)` counts hits, so `mod(floor(beats), 8.0)` cycles through 8
+states and `hash11(floor(beats))` picks something new on every beat (Voxel Blocks drops each block onto the
+column `hash(beats)` picks); `beat` animates within one beat, so `1.0 - beat` is a decay and
+`smoothstep(0.0, 0.3, beat)` a drop that lands a third of the way in.
+
+To install it, save the file into `%APPDATA%\SimpleEditor\library\effects` (or ask the Assistant to save it
+with `library.save`, kind `effect`). It then appears in the Visualizer **Style** list as *(custom)*. Use the
+Shader Editor's log, or `shader.check`, to fix compile errors first. A complete sample:
+`tools/visualizer-sample/pulse-rings.glsl`.
+
+## Now playing
+
+![The now-playing card: cover art and tags, or the music-note icon](/img/tutorial/visualizer-now-playing.jpg)
+
+When only sound is playing, with no picture and no visualizer (a song in the Source monitor with the
+visualizer off, or a stretch of the timeline with only audio), the monitor shows the song's **cover art**
+(the picture embedded in the file) and its **title and artist**, or the music-note icon and the file name when
+the file has neither. The tags and picture are read once per file in the background. The card shows only in
+the monitors; it is not part of the export.
+
+## For the Assistant (MCP)
+
+| Tool | Does |
+|---|---|
+| `audio.visualizer {clip_id, style}` | adds a visualizer over an audio clip, or restyles a visualizer clip |
+| `audio.visualizer_styles` | lists the styles, built-in and custom |
+| `audio.beat_sprite {clip_id, path, loop_beats}` | adds a beat-synced clip from a video, image folder or sprite sheet |
+| `audio.bake_keys {clip_id, target_id, effect, param}` | bakes a clip's loudness into any effect parameter |
